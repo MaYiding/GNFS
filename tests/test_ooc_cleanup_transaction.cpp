@@ -1,4 +1,5 @@
 #include <gnfs/core/relation.hpp>
+#include <gnfs/relation/ooc_authorized_cleanup_intent.hpp>
 #include <gnfs/relation/ooc_cleanup_transaction.hpp>
 #include <gnfs/relation/ooc_durable_handoff.hpp>
 #include <gnfs/relation/ooc_relation_format.hpp>
@@ -46,6 +47,8 @@
 namespace {
 
 using gnfs::core::Relation;
+using gnfs::relation::OOCAuthorizedCleanupIntentV2;
+using gnfs::relation::OOCAuthorizedCleanupMarkerKindV2;
 using gnfs::relation::OOCCleanupFaultPoint;
 using gnfs::relation::OOCCleanupOwnershipReceipt;
 using gnfs::relation::OOCCleanupPaths;
@@ -423,6 +426,69 @@ handoff_pair_descriptor(const OOCSnapshotDescriptor& descriptor) {
         .index_extent = OOCRelationWriter::index_size_for_count(descriptor.count),
         .data_extent = descriptor.data_end,
     };
+}
+
+[[nodiscard]] gnfs::util::Sha256Digest authorized_cleanup_test_digest(std::uint8_t seed) {
+    gnfs::util::Sha256Digest digest;
+    for (std::size_t index = 0; index < digest.bytes.size(); ++index) {
+        digest.bytes[index] = static_cast<std::byte>(static_cast<std::uint8_t>(seed + index * 29U));
+    }
+    return digest;
+}
+
+[[nodiscard]] gnfs::util::durable_immutable_record::NativeIdentity
+authorized_cleanup_test_identity(std::uint64_t seed) {
+    return {
+        .first = seed,
+        .second = seed + 1,
+        .third = seed + 2,
+    };
+}
+
+[[nodiscard]] std::vector<std::byte>
+authorized_cleanup_v2_marker_bytes(OOCAuthorizedCleanupMarkerKindV2 kind) {
+    OOCAuthorizedCleanupIntentV2 marker;
+    marker.marker_kind = kind;
+    marker.base_path_digest = authorized_cleanup_test_digest(0x01);
+    marker.external_authorization_digest = authorized_cleanup_test_digest(0x21);
+    marker.generic_handoff_self_digest = authorized_cleanup_test_digest(0x41);
+    marker.lease_id = {UINT64_C(0x0102030405060708), UINT64_C(0x1112131415161718)};
+    marker.parent_directory_identity =
+        authorized_cleanup_test_identity(UINT64_C(0x2122232425262728));
+    marker.lock_identity = authorized_cleanup_test_identity(UINT64_C(0x3132333435363738));
+    marker.directory_identity = authorized_cleanup_test_identity(UINT64_C(0x4142434445464748));
+    marker.owner_marker_identity = authorized_cleanup_test_identity(UINT64_C(0x5152535455565758));
+    marker.owned_marker_identity = authorized_cleanup_test_identity(UINT64_C(0x6162636465666768));
+    marker.pair = OOCPrivateHandoffPairDescriptorV1{
+        .format_version = OOCRelationStoreFormat::FORMAT_VERSION_V3,
+        .store_id = UINT64_C(0x7172737475767778),
+        .generation = UINT64_C(0x8182838485868788),
+        .count = 0,
+        .index_extent = OOCRelationStoreFormat::INDEX_HEADER_BYTES +
+                        OOCRelationStoreFormat::INDEX_SENTINEL_BYTES,
+        .data_extent = OOCRelationStoreFormat::DATA_HEADER_BYTES,
+    };
+    marker.handoff = {
+        .identity = authorized_cleanup_test_identity(UINT64_C(0x9192939495969798)),
+        .extent = gnfs::relation::OOC_PRIVATE_HANDOFF_WIRE_FIXED_BYTES_V1,
+    };
+    marker.index = {
+        .identity = authorized_cleanup_test_identity(UINT64_C(0xa1a2a3a4a5a6a7a8)),
+        .extent = marker.pair.index_extent,
+    };
+    marker.data = {
+        .identity = authorized_cleanup_test_identity(UINT64_C(0xb1b2b3b4b5b6b7b8)),
+        .extent = marker.pair.data_extent,
+    };
+    const auto sealed = gnfs::relation::seal_ooc_authorized_cleanup_intent(marker);
+    if (!sealed) {
+        throw std::runtime_error("could not seal authorized cleanup V2 test marker");
+    }
+    const auto encoded = gnfs::relation::encode_ooc_authorized_cleanup_intent(marker);
+    if (!encoded || !encoded.bytes.has_value()) {
+        throw std::runtime_error("could not encode authorized cleanup V2 test marker");
+    }
+    return *encoded.bytes;
 }
 
 constexpr std::uint32_t PRIVATE_HANDOFF_PAYLOAD_KIND = 0x474E4653U;
@@ -1163,6 +1229,53 @@ void test_marker_corruption_is_fail_closed() {
         CHECK(OOCCleanupTransaction::resume(base).status == OOCCleanupStatus::IntentCorrupt);
         CHECK(exists(paths.quarantine_index_path));
         CHECK(exists(paths.quarantine_data_path));
+    }
+}
+
+void test_authorized_v2_markers_are_not_legacy_cleanup_authority() {
+    TempDirectory temp;
+    constexpr std::uint64_t store_id = UINT64_C(0x0a0b0c0d0e0f1011);
+
+    {
+        const auto base = temp.path() / "v2-in-legacy-intent";
+        write_pair(base, store_id);
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        const auto index_bytes = read_test_bytes(paths.index_path);
+        const auto data_bytes = read_test_bytes(paths.data_path);
+        const auto v2_intent =
+            authorized_cleanup_v2_marker_bytes(OOCAuthorizedCleanupMarkerKindV2::intent);
+        write_test_bytes(paths.intent_path, v2_intent);
+
+        CHECK(OOCCleanupTransaction::resume(base).status == OOCCleanupStatus::IntentCorrupt);
+        check_test_bytes_preserved(paths.index_path, index_bytes);
+        check_test_bytes_preserved(paths.data_path, data_bytes);
+        check_test_bytes_preserved(paths.intent_path, v2_intent);
+        CHECK(!entry_exists_no_follow(paths.staged_path));
+        CHECK(!entry_exists_no_follow(paths.quarantine_index_path));
+        CHECK(!entry_exists_no_follow(paths.quarantine_data_path));
+    }
+
+    {
+        const auto base = temp.path() / "v2-in-legacy-staged";
+        write_pair(base, store_id + 1);
+        StopContext stop{.target = OOCCleanupFaultPoint::IntentDurable};
+        CHECK(begin_cleanup(base, store_id + 1, stop_hooks(stop)).status ==
+              OOCCleanupStatus::Interrupted);
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        const auto index_bytes = read_test_bytes(paths.index_path);
+        const auto data_bytes = read_test_bytes(paths.data_path);
+        const auto legacy_intent_bytes = read_test_bytes(paths.intent_path);
+        const auto v2_staged =
+            authorized_cleanup_v2_marker_bytes(OOCAuthorizedCleanupMarkerKindV2::staged);
+        write_test_bytes(paths.staged_path, v2_staged);
+
+        CHECK(OOCCleanupTransaction::resume(base).status == OOCCleanupStatus::IntentCorrupt);
+        check_test_bytes_preserved(paths.index_path, index_bytes);
+        check_test_bytes_preserved(paths.data_path, data_bytes);
+        check_test_bytes_preserved(paths.intent_path, legacy_intent_bytes);
+        check_test_bytes_preserved(paths.staged_path, v2_staged);
+        CHECK(!entry_exists_no_follow(paths.quarantine_index_path));
+        CHECK(!entry_exists_no_follow(paths.quarantine_data_path));
     }
 }
 
@@ -4944,6 +5057,7 @@ void run_core_suite(const std::string& executable) {
     test_exact_finalized_expectation();
     test_real_finalized_store_cleanup();
     test_marker_corruption_is_fail_closed();
+    test_authorized_v2_markers_are_not_legacy_cleanup_authority();
     test_absence_before_staged_has_no_delete_authority();
     test_reverse_pre_staged_state_is_rejected();
     test_source_link_attacks_are_fail_closed();

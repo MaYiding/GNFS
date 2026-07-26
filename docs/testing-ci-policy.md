@@ -135,11 +135,13 @@ and multi-config build trees cannot accidentally validate a stale root
 the disabled stress boundary above.
 
 `test_ooc_durable_handoff` is split into two `instant` CTest entries. The core
-suite fixes the canonical V1 encoding, sealing, round-trip, zero-row, and
-64-KiB opaque-payload boundary. The negative suite mutates every durable
-binding class and rejects malformed lengths, versions, identities, extents,
-digests, truncation, and trailing bytes. This target is a pure protocol test:
-it performs no filesystem mutation and grants no adoption or cleanup authority.
+suite fixes the canonical generic-handoff V1 and authorized-cleanup-marker V2
+encodings, sealing, round-trip, zero-row, phase-kind separation, optional
+duplicate-pending snapshot, and 64-KiB opaque-payload boundary. The negative
+suite mutates every durable binding class and rejects malformed lengths,
+versions, marker kinds, identities, extents, digests, truncation, trailing
+bytes, and V1/V2 reinterpretation. This target is a pure protocol test: it
+performs no filesystem mutation and grants no adoption or cleanup authority.
 
 `test_ooc_cleanup_transaction` is split into three CTest entries.
 `OOCCleanupTransactionCore` is an `instant` ownership and state-machine
@@ -147,7 +149,8 @@ contract covering move-only receipt consumption, repairable pending
 publication, exact finalized expectations, a production writer/reader fixture,
 SHA-256 marker corruption, ordered namespace states, injected rename/unlink
 and parent-sync failures, foreign replacement, symlink/hardlink rejection,
-reserved-name isolation, and real self-exec lock contention.
+reserved-name isolation, raw V2 rejection by the unchanged V1 runtime, and real
+self-exec lock contention.
 `OOCCleanupTransactionCrash` is a `fast` self-exec matrix that terminates the
 child process at every canonical durable intent, quarantine,
 delete-authorization, unlink, and intent-consumption boundary, then completes

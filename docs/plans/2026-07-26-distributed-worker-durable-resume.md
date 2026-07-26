@@ -204,6 +204,24 @@ authorization plus exact absence permits only that completion publication.
 Absence without the matching external authorization is never treated as
 successful cleanup.
 
+Implementation is intentionally split at the authority boundary. M1.7a freezes
+the pure V2 marker codec without wiring it into cleanup recovery. The fixed
+little-endian record binds the frozen native-path digest, external
+authorization digest, generic-handoff self-digest, complete lease and V3 pair,
+canonical handoff snapshot, optional duplicate-pending observation, and
+index/data bindings. `Intent` and `Staged` are distinct digest-bound marker
+kinds, and decoding requires the expected kind. Copying bytes between their
+leaves therefore fails at the codec boundary. An all-zero SHA-256 value remains
+a present value, not an absence sentinel. M1.7b alone may combine a
+WaveStore-only typed authorization receipt with a fresh locked adoption
+receipt. Before canonical V2 publication, it must remove any exact observed
+duplicate pending leaf, sync its parent, reconfirm absence, and revalidate the
+canonical handoff and pair. Canonical runtime markers require an absent
+`pending_handoff`; any later pending leaf taints recovery and is never
+reclaimed. The converter may then publish canonical V2, spend both
+capabilities, and consume the canonical handoff. Until M1.7b lands, legacy
+runtime entry points reject V2 bytes without mutation.
+
 ## Wave Namespace and Locking
 
 Durable mode requires:
@@ -1028,6 +1046,7 @@ immutable auxiliary payload and exact lease capability.
 | `include/gnfs/sieve/distributed_sieve.hpp` | Opt-in config, result dispositions, and move-only `DistributedSieveWaveResult` |
 | `src/sieve/distributed_sieve.cpp` | Orchestrate durable plan; stop successful child cleanup-intent publication |
 | `include/gnfs/relation/ooc_durable_handoff.hpp` | Opaque no-delete private state, locked classifier, cross-process adoption, and authorized exact consumption |
+| `include/gnfs/relation/ooc_authorized_cleanup_intent.hpp`, `src/relation/ooc_authorized_cleanup_intent.cpp` | Pure V2 intent/staged marker codec and complete durable binding |
 | `include/gnfs/relation/ooc_cleanup_transaction.hpp` | Integrate `HandoffPresent` before preactive recovery/reservation; durable handoff-to-cleanup-intent transition |
 | `include/gnfs/relation/relation_corpus.hpp` | Adopt protected OOC corpora with preserve-only ownership and provide a non-armable read-only view |
 | `include/gnfs/relation/ooc_relation_store.hpp` | `OOCRelationReader` constructor from owned exact index/data handles; expose frozen native identities |
@@ -1349,6 +1368,8 @@ checks passed in Debug.
 - [x] Make canonical handoff dominate recovery, revoke/consume `RESERVED`, and
   invalidate stale writer/private-lease receipts.
 - [x] Add locked cross-process adoption with no cleanup authority.
+- [x] Freeze the role-separated V2 authorized-cleanup marker codec and exact
+  canonical/optional-pending handoff bindings without enabling runtime use.
 - [ ] Add the two-capability application-authorization conversion into
   canonical cleanup intent.
 - [x] Add owned-handle `MmapFile`, `OOCRelationReader`, and non-armable corpus
@@ -1445,8 +1466,29 @@ legacy leaves, directory replacement, lock replacement, descriptor balance,
 and retry after non-mutating interruption. Non-macOS platforms return
 unsupported after pure request validation and before filesystem observation.
 
-The two-capability cleanup conversion remains required before the M1 exit
-criterion is complete.
+The M1.7a pure authorized-cleanup marker codec completed on 2026-07-26. Its
+480-byte frame has independent magic, schema, phase kind, and digest domain.
+It captures both the canonical generic-handoff record snapshot and the optional
+duplicate pending observation made under lock. The field is pure evidence, not
+permission to unlink a post-crash name. Canonical runtime markers will reject a
+present value after the precommit normalization described above. Canonical and
+pending snapshots bind native identity and exact encoded extent within the
+nonadversarial same-user threat boundary stated above; they do not claim to
+defeat deliberate inode cycling by a hostile same-user process. The base digest
+reuses the private-lease `frozen_path_digest()` rule over raw `path.native()`
+code units. Pure tests freeze the complete layout and platform-specific
+self-digests, mutate every authority field, cover zero rows, bounds, overflow,
+aliases, framing, required expected-kind decoding, and phase separation, and
+prove that V1 and V2 codecs cannot reinterpret each other. Legacy cleanup
+recovery also rejects raw V2 intent or staged bytes while preserving the pair
+and every marker.
+
+The M1.7b two-capability cleanup conversion remains required before the M1
+exit criterion is complete. It must use a WaveStore-only mint key, creator-PID
+checks, the fixed lock order `wave lock -> target BaseLock`, and a private
+relation bridge. It must also enforce the closed canonical-marker validator and
+the precommit pending normalization above. No public record, digest, path,
+reader, or adoption receipt alone may reach deletion.
 
 Exit criterion: a finalized synthetic private OOC corpus can survive owner
 death, reject every stale cleanup receipt, be adopted without deletion

@@ -311,6 +311,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/ooc_durable_handoff.cpp")
     target_sources(gnfs_core PRIVATE src/relation/ooc_durable_handoff.cpp)
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/ooc_authorized_cleanup_intent.cpp")
+    target_sources(gnfs_core PRIVATE src/relation/ooc_authorized_cleanup_intent.cpp)
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/ooc_private_handoff_adoption.cpp")
     target_sources(gnfs_core PRIVATE src/relation/ooc_private_handoff_adoption.cpp)
 endif()

@@ -1,3 +1,4 @@
+#include <gnfs/relation/ooc_authorized_cleanup_intent.hpp>
 #include <gnfs/relation/ooc_durable_handoff.hpp>
 #include <gnfs/relation/ooc_relation_format.hpp>
 #include <gnfs/util/sha256.hpp>
@@ -20,6 +21,9 @@
 namespace {
 
 namespace relation = gnfs::relation;
+using AuthorizedCode = relation::OOCAuthorizedCleanupIntentProtocolCode;
+using AuthorizedRecord = relation::OOCAuthorizedCleanupIntentV2;
+using AuthorizedStatus = relation::OOCAuthorizedCleanupIntentProtocolStatus;
 using Code = relation::OOCPrivateHandoffProtocolCode;
 using Digest = gnfs::util::Sha256Digest;
 using Record = relation::OOCPrivateHandoffRecordV1;
@@ -37,6 +41,18 @@ static_assert(noexcept(relation::seal_ooc_private_handoff_record(std::declval<Re
 static_assert(noexcept(relation::encode_ooc_private_handoff_record(std::declval<const Record&>())));
 static_assert(noexcept(
     relation::decode_ooc_private_handoff_record(std::declval<std::span<const std::byte>>())));
+static_assert(relation::OOC_AUTHORIZED_CLEANUP_INTENT_WIRE_BYTES_V2 == 480);
+static_assert(noexcept(
+    relation::validate_ooc_authorized_cleanup_intent(std::declval<const AuthorizedRecord&>())));
+static_assert(noexcept(
+    relation::ooc_authorized_cleanup_intent_digest(std::declval<const AuthorizedRecord&>())));
+static_assert(
+    noexcept(relation::seal_ooc_authorized_cleanup_intent(std::declval<AuthorizedRecord&>())));
+static_assert(noexcept(
+    relation::encode_ooc_authorized_cleanup_intent(std::declval<const AuthorizedRecord&>())));
+static_assert(noexcept(relation::decode_ooc_authorized_cleanup_intent(
+    std::declval<std::span<const std::byte>>(),
+    std::declval<relation::OOCAuthorizedCleanupMarkerKindV2>())));
 
 class TestFailure final : public std::runtime_error {
 public:
@@ -759,16 +775,523 @@ void test_result_invariants() {
     CHECK(invalid_decode.status.byte_offset != relation::OOC_PRIVATE_HANDOFF_NO_OFFSET);
 }
 
+void require_authorized_ok(const AuthorizedStatus& status, std::string_view context) {
+    if (!status) {
+        fail(context, __LINE__,
+             relation::ooc_authorized_cleanup_intent_protocol_code_name(status.code));
+    }
+}
+
+void require_authorized_code(const AuthorizedStatus& status, AuthorizedCode expected,
+                             std::string_view context) {
+    if (status || status.code != expected) {
+        fail(context, __LINE__,
+             relation::ooc_authorized_cleanup_intent_protocol_code_name(status.code));
+    }
+}
+
+[[nodiscard]] Digest seeded_digest(std::uint8_t seed) {
+    Digest digest;
+    for (std::size_t index = 0; index < digest.bytes.size(); ++index) {
+        digest.bytes[index] = static_cast<std::byte>(static_cast<std::uint8_t>(seed + index * 17U));
+    }
+    return digest;
+}
+
+[[nodiscard]] AuthorizedRecord make_unsealed_authorized_intent(std::uint64_t count = 3) {
+    AuthorizedRecord intent;
+    intent.schema_version = relation::OOC_AUTHORIZED_CLEANUP_INTENT_SCHEMA_VERSION_V2;
+    intent.platform_id = relation::OOC_AUTHORIZED_CLEANUP_INTENT_CURRENT_PLATFORM_V1;
+    intent.base_path_digest = seeded_digest(0x01);
+    intent.external_authorization_digest = seeded_digest(0x21);
+    intent.generic_handoff_self_digest = seeded_digest(0x41);
+    intent.lease_id = {
+        UINT64_C(0x0807060504030201),
+        UINT64_C(0x1817161514131211),
+    };
+    intent.parent_directory_identity = native_identity(UINT64_C(0x2122232425262728));
+    intent.lock_identity = native_identity(UINT64_C(0x3132333435363738));
+    intent.directory_identity = native_identity(UINT64_C(0x4142434445464748));
+    intent.owner_marker_identity = native_identity(UINT64_C(0x5152535455565758));
+    intent.owned_marker_identity = native_identity(UINT64_C(0x6162636465666768));
+    intent.pair.format_version = relation::OOCRelationStoreFormat::FORMAT_VERSION_V3;
+    intent.pair.store_id = UINT64_C(0x7172737475767778);
+    intent.pair.generation = UINT64_C(0x8182838485868788);
+    intent.pair.count = count;
+    intent.pair.index_extent = index_extent_for_count(count);
+    intent.pair.data_extent =
+        count == 0 ? relation::OOCRelationStoreFormat::DATA_HEADER_BYTES : UINT64_C(0x280);
+    intent.handoff.identity = native_identity(UINT64_C(0x9192939495969798));
+    intent.handoff.extent = relation::OOC_PRIVATE_HANDOFF_WIRE_FIXED_BYTES_V1 + 17U;
+    intent.pending_handoff = relation::OOCPrivateHandoffArtifactBindingV1{
+        .identity = native_identity(UINT64_C(0x999a9b9c9d9e9fa0)),
+        .extent = intent.handoff.extent,
+    };
+    intent.index.identity = native_identity(UINT64_C(0xa1a2a3a4a5a6a7a8));
+    intent.index.extent = intent.pair.index_extent;
+    intent.data.identity = native_identity(UINT64_C(0xb1b2b3b4b5b6b7b8));
+    intent.data.extent = intent.pair.data_extent;
+    return intent;
+}
+
+[[nodiscard]] AuthorizedRecord make_sealed_authorized_intent(std::uint64_t count = 3) {
+    AuthorizedRecord intent = make_unsealed_authorized_intent(count);
+    require_authorized_ok(relation::seal_ooc_authorized_cleanup_intent(intent),
+                          "seal authorized intent fixture");
+    return intent;
+}
+
+[[nodiscard]] std::vector<std::byte> encode_authorized_or_fail(const AuthorizedRecord& intent) {
+    const auto encoded = relation::encode_ooc_authorized_cleanup_intent(intent);
+    if (!encoded) {
+        fail("encode_ooc_authorized_cleanup_intent", __LINE__,
+             relation::ooc_authorized_cleanup_intent_protocol_code_name(encoded.status.code));
+    }
+    CHECK(encoded.bytes.has_value());
+    return *encoded.bytes;
+}
+
+[[nodiscard]] Digest authorized_digest_or_fail(const AuthorizedRecord& intent) {
+    const auto digest = relation::ooc_authorized_cleanup_intent_digest(intent);
+    if (!digest) {
+        fail("ooc_authorized_cleanup_intent_digest", __LINE__,
+             relation::ooc_authorized_cleanup_intent_protocol_code_name(digest.status.code));
+    }
+    CHECK(digest.digest.has_value());
+    return *digest.digest;
+}
+
+void test_authorized_intent_constants_and_roundtrip() {
+    [[maybe_unused]] constexpr std::string_view EXPECTED_POSIX_SELF_DIGEST =
+        "25ba7fb211fc5886b6c02d8b2bf0c53530b3e3e19b508db91dd1886f0c9ef12f";
+    [[maybe_unused]] constexpr std::string_view EXPECTED_WINDOWS_SELF_DIGEST =
+        "931124e3d7d1690efeb6e1c884ea530e2b95d9998f4de59772928414fbec77e0";
+#ifdef _WIN32
+    constexpr std::string_view EXPECTED_SELF_DIGEST = EXPECTED_WINDOWS_SELF_DIGEST;
+#else
+    constexpr std::string_view EXPECTED_SELF_DIGEST = EXPECTED_POSIX_SELF_DIGEST;
+#endif
+    CHECK(relation::OOC_AUTHORIZED_CLEANUP_INTENT_SCHEMA_VERSION_V2 == 2);
+    CHECK(relation::OOC_AUTHORIZED_CLEANUP_INTENT_WIRE_VERSION_V1 == 1);
+    CHECK(relation::OOC_AUTHORIZED_CLEANUP_INTENT_WIRE_BYTES_V2 == 480);
+
+    constexpr std::array CODES{
+        AuthorizedCode::none,
+        AuthorizedCode::input_too_large,
+        AuthorizedCode::output_too_large,
+        AuthorizedCode::truncated,
+        AuthorizedCode::trailing_bytes,
+        AuthorizedCode::invalid_magic,
+        AuthorizedCode::unsupported_wire_version,
+        AuthorizedCode::unsupported_schema_version,
+        AuthorizedCode::platform_mismatch,
+        AuthorizedCode::declared_size_mismatch,
+        AuthorizedCode::invalid_value,
+        AuthorizedCode::unexpected_marker_kind,
+        AuthorizedCode::integer_out_of_range,
+        AuthorizedCode::digest_mismatch,
+        AuthorizedCode::digest_unavailable,
+        AuthorizedCode::resource_exhausted,
+    };
+    static_assert(static_cast<std::uint8_t>(AuthorizedCode::resource_exhausted) + 1U ==
+                  CODES.size());
+    for (std::size_t index = 0; index < CODES.size(); ++index) {
+        CHECK(static_cast<std::uint8_t>(CODES[index]) == index);
+        CHECK(!relation::ooc_authorized_cleanup_intent_protocol_code_name(CODES[index]).empty());
+    }
+    CHECK(!relation::ooc_authorized_cleanup_intent_protocol_code_name(
+               static_cast<AuthorizedCode>(0xff))
+               .empty());
+
+    const AuthorizedRecord first = make_sealed_authorized_intent();
+    const AuthorizedRecord second = make_sealed_authorized_intent();
+    CHECK(first == second);
+    require_authorized_ok(relation::validate_ooc_authorized_cleanup_intent(first),
+                          "validate authorized intent fixture");
+    CHECK(first.self_digest == authorized_digest_or_fail(first));
+    CHECK(first.self_digest == digest_from_hex(EXPECTED_SELF_DIGEST));
+
+    constexpr std::array EXPECTED_MAGIC{
+        std::byte{'G'}, std::byte{'N'}, std::byte{'F'}, std::byte{'S'},
+        std::byte{'A'}, std::byte{'C'}, std::byte{'I'}, std::byte{'2'},
+    };
+    const auto first_bytes = encode_authorized_or_fail(first);
+    const auto second_bytes = encode_authorized_or_fail(second);
+    CHECK(first_bytes == second_bytes);
+    CHECK(first_bytes.size() == relation::OOC_AUTHORIZED_CLEANUP_INTENT_WIRE_BYTES_V2);
+    CHECK(std::equal(EXPECTED_MAGIC.begin(), EXPECTED_MAGIC.end(), first_bytes.begin()));
+
+    const auto decoded =
+        relation::decode_ooc_authorized_cleanup_intent(first_bytes, first.marker_kind);
+    CHECK(decoded);
+    CHECK(decoded.value == first);
+    CHECK(decoded.status.code == AuthorizedCode::none);
+    CHECK(decoded.status.byte_offset == relation::OOC_AUTHORIZED_CLEANUP_INTENT_NO_OFFSET);
+    CHECK(encode_authorized_or_fail(*decoded.value) == first_bytes);
+}
+
+void test_authorized_intent_little_endian_fields() {
+    const AuthorizedRecord intent = make_sealed_authorized_intent();
+    const auto bytes = encode_authorized_or_fail(intent);
+
+    CHECK(load_u32_le(bytes, 8) == relation::OOC_AUTHORIZED_CLEANUP_INTENT_WIRE_VERSION_V1);
+    CHECK(load_u32_le(bytes, 12) == intent.schema_version);
+    CHECK(load_u64_le(bytes, 16) == intent.platform_id);
+    CHECK(load_u32_le(bytes, 24) == relation::OOC_AUTHORIZED_CLEANUP_INTENT_WIRE_BYTES_V2);
+    CHECK(load_u32_le(bytes, 28) ==
+          static_cast<std::uint32_t>(relation::OOCAuthorizedCleanupMarkerKindV2::intent));
+    CHECK(std::equal(intent.base_path_digest.bytes.begin(), intent.base_path_digest.bytes.end(),
+                     bytes.begin() + 32));
+    CHECK(std::equal(intent.external_authorization_digest.bytes.begin(),
+                     intent.external_authorization_digest.bytes.end(), bytes.begin() + 64));
+    CHECK(std::equal(intent.generic_handoff_self_digest.bytes.begin(),
+                     intent.generic_handoff_self_digest.bytes.end(), bytes.begin() + 96));
+    CHECK(load_u64_le(bytes, 128) == intent.lease_id[0]);
+    CHECK(load_u64_le(bytes, 136) == intent.lease_id[1]);
+    check_identity_le(bytes, 144, intent.parent_directory_identity);
+    check_identity_le(bytes, 168, intent.lock_identity);
+    check_identity_le(bytes, 192, intent.directory_identity);
+    check_identity_le(bytes, 216, intent.owner_marker_identity);
+    check_identity_le(bytes, 240, intent.owned_marker_identity);
+    CHECK(load_u64_le(bytes, 264) == intent.pair.format_version);
+    CHECK(load_u64_le(bytes, 272) == intent.pair.store_id);
+    CHECK(load_u64_le(bytes, 280) == intent.pair.generation);
+    CHECK(load_u64_le(bytes, 288) == intent.pair.count);
+    CHECK(load_u64_le(bytes, 296) == intent.pair.index_extent);
+    CHECK(load_u64_le(bytes, 304) == intent.pair.data_extent);
+    check_identity_le(bytes, 312, intent.handoff.identity);
+    CHECK(load_u64_le(bytes, 336) == intent.handoff.extent);
+    CHECK(intent.pending_handoff.has_value());
+    CHECK(load_u32_le(bytes, 344) == 1);
+    CHECK(load_u32_le(bytes, 348) == 0);
+    check_identity_le(bytes, 352, intent.pending_handoff->identity);
+    CHECK(load_u64_le(bytes, 376) == intent.pending_handoff->extent);
+    check_identity_le(bytes, 384, intent.index.identity);
+    CHECK(load_u64_le(bytes, 408) == intent.index.extent);
+    check_identity_le(bytes, 416, intent.data.identity);
+    CHECK(load_u64_le(bytes, 440) == intent.data.extent);
+    CHECK(std::equal(intent.self_digest.bytes.begin(), intent.self_digest.bytes.end(),
+                     bytes.begin() + 448));
+}
+
+void test_authorized_intent_zero_digest_and_zero_row() {
+    AuthorizedRecord zero_digests = make_unsealed_authorized_intent();
+    zero_digests.base_path_digest = {};
+    zero_digests.external_authorization_digest = {};
+    zero_digests.generic_handoff_self_digest = {};
+    require_authorized_ok(relation::seal_ooc_authorized_cleanup_intent(zero_digests),
+                          "all-zero input digests are present values");
+    const auto decoded = relation::decode_ooc_authorized_cleanup_intent(
+        encode_authorized_or_fail(zero_digests), zero_digests.marker_kind);
+    CHECK(decoded);
+    CHECK(decoded.value == zero_digests);
+
+    AuthorizedRecord no_pending = make_unsealed_authorized_intent();
+    no_pending.pending_handoff.reset();
+    require_authorized_ok(relation::seal_ooc_authorized_cleanup_intent(no_pending),
+                          "absent pending handoff is explicit");
+    const auto no_pending_bytes = encode_authorized_or_fail(no_pending);
+    CHECK(load_u32_le(no_pending_bytes, 344) == 0);
+    CHECK(std::all_of(no_pending_bytes.begin() + 348, no_pending_bytes.begin() + 384,
+                      [](std::byte byte) { return byte == std::byte{0}; }));
+    const auto no_pending_decoded =
+        relation::decode_ooc_authorized_cleanup_intent(no_pending_bytes, no_pending.marker_kind);
+    CHECK(no_pending_decoded);
+    CHECK(no_pending_decoded.value == no_pending);
+
+    const AuthorizedRecord zero_row = make_sealed_authorized_intent(0);
+    CHECK(zero_row.pair.index_extent == relation::OOCRelationStoreFormat::INDEX_HEADER_BYTES +
+                                            relation::OOCRelationStoreFormat::INDEX_SENTINEL_BYTES);
+    CHECK(zero_row.pair.data_extent == relation::OOCRelationStoreFormat::DATA_HEADER_BYTES);
+    const auto zero_decoded = relation::decode_ooc_authorized_cleanup_intent(
+        encode_authorized_or_fail(zero_row), zero_row.marker_kind);
+    CHECK(zero_decoded);
+    CHECK(zero_decoded.value == zero_row);
+}
+
+template <typename Mutation>
+void check_authorized_digest_binding(const AuthorizedRecord& baseline, std::string_view name,
+                                     Mutation mutation) {
+    AuthorizedRecord changed = baseline;
+    mutation(changed);
+    require_authorized_ok(relation::validate_ooc_authorized_cleanup_intent(changed, false), name);
+    require_authorized_code(relation::validate_ooc_authorized_cleanup_intent(changed),
+                            AuthorizedCode::digest_mismatch, name);
+    const Digest changed_digest = authorized_digest_or_fail(changed);
+    CHECK(changed_digest != baseline.self_digest);
+    require_authorized_ok(relation::seal_ooc_authorized_cleanup_intent(changed), name);
+    CHECK(changed.self_digest == changed_digest);
+}
+
+[[nodiscard]] gnfs::util::durable_immutable_record::NativeIdentity&
+authorized_identity_at(AuthorizedRecord& intent, std::size_t index) {
+    switch (index) {
+    case 0:
+        return intent.parent_directory_identity;
+    case 1:
+        return intent.lock_identity;
+    case 2:
+        return intent.directory_identity;
+    case 3:
+        return intent.owner_marker_identity;
+    case 4:
+        return intent.owned_marker_identity;
+    case 5:
+        return intent.handoff.identity;
+    case 6:
+        return intent.pending_handoff->identity;
+    case 7:
+        return intent.index.identity;
+    case 8:
+        return intent.data.identity;
+    default:
+        throw TestFailure("authorized identity index is out of range");
+    }
+}
+
+void test_authorized_intent_binding_digest() {
+    const AuthorizedRecord baseline = make_sealed_authorized_intent();
+    check_authorized_digest_binding(baseline, "marker kind", [](AuthorizedRecord& intent) {
+        intent.marker_kind = relation::OOCAuthorizedCleanupMarkerKindV2::staged;
+    });
+    check_authorized_digest_binding(baseline, "base path digest", [](AuthorizedRecord& intent) {
+        intent.base_path_digest.bytes.front() ^= std::byte{0x01};
+    });
+    check_authorized_digest_binding(
+        baseline, "external authorization digest", [](AuthorizedRecord& intent) {
+            intent.external_authorization_digest.bytes.front() ^= std::byte{0x02};
+        });
+    check_authorized_digest_binding(
+        baseline, "generic handoff digest", [](AuthorizedRecord& intent) {
+            intent.generic_handoff_self_digest.bytes.front() ^= std::byte{0x04};
+        });
+    check_authorized_digest_binding(baseline, "lease low",
+                                    [](AuthorizedRecord& intent) { ++intent.lease_id[0]; });
+    check_authorized_digest_binding(baseline, "lease high",
+                                    [](AuthorizedRecord& intent) { ++intent.lease_id[1]; });
+    for (std::size_t index = 0; index < 9; ++index) {
+        check_authorized_digest_binding(
+            baseline, "native identity first",
+            [index](AuthorizedRecord& intent) { ++authorized_identity_at(intent, index).first; });
+        check_authorized_digest_binding(
+            baseline, "native identity second",
+            [index](AuthorizedRecord& intent) { ++authorized_identity_at(intent, index).second; });
+        check_authorized_digest_binding(
+            baseline, "native identity third",
+            [index](AuthorizedRecord& intent) { ++authorized_identity_at(intent, index).third; });
+    }
+    check_authorized_digest_binding(baseline, "store id",
+                                    [](AuthorizedRecord& intent) { ++intent.pair.store_id; });
+    check_authorized_digest_binding(baseline, "generation",
+                                    [](AuthorizedRecord& intent) { ++intent.pair.generation; });
+    check_authorized_digest_binding(
+        baseline, "count and index extent", [](AuthorizedRecord& intent) {
+            ++intent.pair.count;
+            intent.pair.index_extent = index_extent_for_count(intent.pair.count);
+            intent.index.extent = intent.pair.index_extent;
+        });
+    check_authorized_digest_binding(baseline, "data extent", [](AuthorizedRecord& intent) {
+        ++intent.pair.data_extent;
+        intent.data.extent = intent.pair.data_extent;
+    });
+    check_authorized_digest_binding(baseline, "handoff extent", [](AuthorizedRecord& intent) {
+        ++intent.handoff.extent;
+        ++intent.pending_handoff->extent;
+    });
+    check_authorized_digest_binding(
+        baseline, "pending handoff presence",
+        [](AuthorizedRecord& intent) { intent.pending_handoff.reset(); });
+}
+
+template <typename Mutation>
+void check_invalid_authorized_intent(const AuthorizedRecord& baseline, AuthorizedCode expected,
+                                     std::string_view name, Mutation mutation) {
+    AuthorizedRecord changed = baseline;
+    mutation(changed);
+    require_authorized_code(relation::validate_ooc_authorized_cleanup_intent(changed, false),
+                            expected, name);
+    const AuthorizedRecord before = changed;
+    require_authorized_code(relation::seal_ooc_authorized_cleanup_intent(changed), expected, name);
+    CHECK(changed == before);
+    const auto encoded = relation::encode_ooc_authorized_cleanup_intent(changed);
+    CHECK(!encoded);
+    CHECK(!encoded.bytes.has_value());
+    CHECK(encoded.status.code == expected);
+}
+
+void test_authorized_intent_invalid_bindings() {
+    const AuthorizedRecord baseline = make_sealed_authorized_intent();
+    check_invalid_authorized_intent(baseline, AuthorizedCode::unsupported_schema_version,
+                                    "schema version",
+                                    [](AuthorizedRecord& intent) { ++intent.schema_version; });
+    check_invalid_authorized_intent(
+        baseline, AuthorizedCode::platform_mismatch, "platform",
+        [](AuthorizedRecord& intent) { intent.platform_id = UINT64_C(0xffff); });
+    check_invalid_authorized_intent(
+        baseline, AuthorizedCode::invalid_value, "marker kind", [](AuthorizedRecord& intent) {
+            intent.marker_kind = static_cast<relation::OOCAuthorizedCleanupMarkerKindV2>(0);
+        });
+    check_invalid_authorized_intent(baseline, AuthorizedCode::invalid_value, "nil lease",
+                                    [](AuthorizedRecord& intent) { intent.lease_id = {}; });
+    for (std::size_t index = 0; index < 9; ++index) {
+        AuthorizedRecord zero = baseline;
+        authorized_identity_at(zero, index) = {};
+        require_authorized_code(relation::validate_ooc_authorized_cleanup_intent(zero, false),
+                                AuthorizedCode::invalid_value, "zero native identity");
+        for (std::size_t right = index + 1; right < 9; ++right) {
+            AuthorizedRecord aliased = baseline;
+            authorized_identity_at(aliased, right) = authorized_identity_at(aliased, index);
+            require_authorized_code(
+                relation::validate_ooc_authorized_cleanup_intent(aliased, false),
+                AuthorizedCode::invalid_value, "aliased native identities");
+        }
+    }
+    check_invalid_authorized_intent(
+        baseline, AuthorizedCode::invalid_value, "format version", [](AuthorizedRecord& intent) {
+            intent.pair.format_version = relation::OOCRelationStoreFormat::FORMAT_VERSION_V2;
+        });
+    check_invalid_authorized_intent(baseline, AuthorizedCode::invalid_value, "store id",
+                                    [](AuthorizedRecord& intent) { intent.pair.store_id = 0; });
+    check_invalid_authorized_intent(baseline, AuthorizedCode::invalid_value, "generation",
+                                    [](AuthorizedRecord& intent) { intent.pair.generation = 0; });
+    check_invalid_authorized_intent(baseline, AuthorizedCode::invalid_value, "index extent formula",
+                                    [](AuthorizedRecord& intent) { ++intent.pair.index_extent; });
+    check_invalid_authorized_intent(baseline, AuthorizedCode::invalid_value, "index binding extent",
+                                    [](AuthorizedRecord& intent) { ++intent.index.extent; });
+    check_invalid_authorized_intent(baseline, AuthorizedCode::invalid_value, "data binding extent",
+                                    [](AuthorizedRecord& intent) { ++intent.data.extent; });
+    check_invalid_authorized_intent(baseline, AuthorizedCode::invalid_value,
+                                    "handoff below minimum", [](AuthorizedRecord& intent) {
+                                        intent.handoff.extent =
+                                            relation::OOC_PRIVATE_HANDOFF_WIRE_FIXED_BYTES_V1 - 1U;
+                                    });
+    check_invalid_authorized_intent(baseline, AuthorizedCode::invalid_value,
+                                    "handoff above maximum", [](AuthorizedRecord& intent) {
+                                        intent.handoff.extent =
+                                            relation::OOC_PRIVATE_HANDOFF_MAX_RECORD_BYTES + 1U;
+                                    });
+    check_invalid_authorized_intent(
+        baseline, AuthorizedCode::invalid_value, "pending handoff extent",
+        [](AuthorizedRecord& intent) { ++intent.pending_handoff->extent; });
+    check_invalid_authorized_intent(baseline, AuthorizedCode::integer_out_of_range,
+                                    "index overflow", [](AuthorizedRecord& intent) {
+                                        intent.pair.count =
+                                            std::numeric_limits<std::uint64_t>::max();
+                                    });
+}
+
+void test_authorized_intent_wire_rejection_and_codec_separation() {
+    constexpr auto INTENT_KIND = relation::OOCAuthorizedCleanupMarkerKindV2::intent;
+    constexpr auto STAGED_KIND = relation::OOCAuthorizedCleanupMarkerKindV2::staged;
+    const AuthorizedRecord baseline = make_sealed_authorized_intent();
+    const auto encoded = encode_authorized_or_fail(baseline);
+    CHECK(relation::decode_ooc_authorized_cleanup_intent(
+              encoded, static_cast<relation::OOCAuthorizedCleanupMarkerKindV2>(0))
+              .status.code == AuthorizedCode::invalid_value);
+    for (std::size_t prefix = 0; prefix < encoded.size(); ++prefix) {
+        const auto decoded = relation::decode_ooc_authorized_cleanup_intent(
+            std::span<const std::byte>(encoded).first(prefix), INTENT_KIND);
+        CHECK(!decoded);
+        CHECK(decoded.status.code == AuthorizedCode::truncated);
+    }
+
+    auto trailing = encoded;
+    trailing.push_back(std::byte{0x42});
+    CHECK(relation::decode_ooc_authorized_cleanup_intent(trailing, INTENT_KIND).status.code ==
+          AuthorizedCode::trailing_bytes);
+    std::vector<std::byte> oversized(encoded.size() + 64U * 1024U + 1U, std::byte{0});
+    CHECK(relation::decode_ooc_authorized_cleanup_intent(oversized, INTENT_KIND).status.code ==
+          AuthorizedCode::input_too_large);
+
+    auto changed = encoded;
+    changed.front() ^= std::byte{0x01};
+    CHECK(relation::decode_ooc_authorized_cleanup_intent(changed, INTENT_KIND).status.code ==
+          AuthorizedCode::invalid_magic);
+    changed = encoded;
+    store_u32_le(changed, 8, relation::OOC_AUTHORIZED_CLEANUP_INTENT_WIRE_VERSION_V1 + 1U);
+    CHECK(relation::decode_ooc_authorized_cleanup_intent(changed, INTENT_KIND).status.code ==
+          AuthorizedCode::unsupported_wire_version);
+    changed = encoded;
+    store_u32_le(changed, 12, relation::OOC_AUTHORIZED_CLEANUP_INTENT_SCHEMA_VERSION_V2 + 1U);
+    CHECK(relation::decode_ooc_authorized_cleanup_intent(changed, INTENT_KIND).status.code ==
+          AuthorizedCode::unsupported_schema_version);
+    changed = encoded;
+    store_u64_le(changed, 16, UINT64_C(0xffff));
+    CHECK(relation::decode_ooc_authorized_cleanup_intent(changed, INTENT_KIND).status.code ==
+          AuthorizedCode::platform_mismatch);
+    changed = encoded;
+    store_u32_le(
+        changed, 24,
+        static_cast<std::uint32_t>(relation::OOC_AUTHORIZED_CLEANUP_INTENT_WIRE_BYTES_V2 - 1U));
+    CHECK(relation::decode_ooc_authorized_cleanup_intent(changed, INTENT_KIND).status.code ==
+          AuthorizedCode::declared_size_mismatch);
+    changed = encoded;
+    store_u32_le(changed, 28, 0);
+    CHECK(relation::decode_ooc_authorized_cleanup_intent(changed, INTENT_KIND).status.code ==
+          AuthorizedCode::invalid_value);
+    changed = encoded;
+    store_u32_le(changed, 344, 2);
+    CHECK(relation::decode_ooc_authorized_cleanup_intent(changed, INTENT_KIND).status.code ==
+          AuthorizedCode::invalid_value);
+    changed = encoded;
+    store_u32_le(changed, 348, 1);
+    CHECK(relation::decode_ooc_authorized_cleanup_intent(changed, INTENT_KIND).status.code ==
+          AuthorizedCode::invalid_value);
+    changed = encoded;
+    store_u32_le(changed, 344, 0);
+    CHECK(relation::decode_ooc_authorized_cleanup_intent(changed, INTENT_KIND).status.code ==
+          AuthorizedCode::invalid_value);
+
+    AuthorizedRecord staged = baseline;
+    staged.marker_kind = STAGED_KIND;
+    require_authorized_code(relation::validate_ooc_authorized_cleanup_intent(staged),
+                            AuthorizedCode::digest_mismatch,
+                            "intent digest cannot authorize staged marker");
+    require_authorized_ok(relation::seal_ooc_authorized_cleanup_intent(staged),
+                          "seal staged marker");
+    const auto staged_bytes = encode_authorized_or_fail(staged);
+    CHECK(staged_bytes != encoded);
+    const auto staged_decoded =
+        relation::decode_ooc_authorized_cleanup_intent(staged_bytes, STAGED_KIND);
+    CHECK(staged_decoded);
+    CHECK(staged_decoded.value->marker_kind == STAGED_KIND);
+    CHECK(relation::decode_ooc_authorized_cleanup_intent(encoded, STAGED_KIND).status.code ==
+          AuthorizedCode::unexpected_marker_kind);
+    CHECK(relation::decode_ooc_authorized_cleanup_intent(staged_bytes, INTENT_KIND).status.code ==
+          AuthorizedCode::unexpected_marker_kind);
+    changed = encoded;
+    store_u32_le(changed, 28, static_cast<std::uint32_t>(STAGED_KIND));
+    CHECK(relation::decode_ooc_authorized_cleanup_intent(changed, STAGED_KIND).status.code ==
+          AuthorizedCode::digest_mismatch);
+
+    changed = encoded;
+    changed.back() ^= std::byte{0x80};
+    const auto digest_mismatch =
+        relation::decode_ooc_authorized_cleanup_intent(changed, INTENT_KIND);
+    CHECK(digest_mismatch.status.code == AuthorizedCode::digest_mismatch);
+    CHECK(digest_mismatch.status.byte_offset == 448);
+
+    const auto legacy_bytes = encode_or_fail(make_sealed_record());
+    CHECK(relation::decode_ooc_authorized_cleanup_intent(legacy_bytes, INTENT_KIND).status.code ==
+          AuthorizedCode::truncated);
+    CHECK(relation::decode_ooc_private_handoff_record(encoded).status.code == Code::invalid_magic);
+}
+
 using TestFunction = void (*)();
 
 void run_suite(std::string_view suite) {
-    const std::array<std::pair<std::string_view, TestFunction>, 4> core_tests = {{
+    const std::array<std::pair<std::string_view, TestFunction>, 7> core_tests = {{
         {"protocol constants and closed names", test_protocol_constants_and_closed_names},
         {"sealed roundtrip and deterministic fixture", test_sealed_round_trip_and_determinism},
         {"little-endian wire fields", test_little_endian_wire_fields},
         {"zero-row and payload boundary", test_zero_row_and_payload_boundary},
+        {"authorized intent constants and roundtrip",
+         test_authorized_intent_constants_and_roundtrip},
+        {"authorized intent little-endian fields", test_authorized_intent_little_endian_fields},
+        {"authorized intent zero digest and zero row",
+         test_authorized_intent_zero_digest_and_zero_row},
     }};
-    const std::array<std::pair<std::string_view, TestFunction>, 6> negative_tests = {{
+    const std::array<std::pair<std::string_view, TestFunction>, 9> negative_tests = {{
         {"binding-field digest drift", test_every_binding_field_affects_self_digest},
         {"invalid versions, platform, identities, and values",
          test_invalid_versions_platform_identities_and_values},
@@ -777,6 +1300,10 @@ void run_suite(std::string_view suite) {
         {"wire framing, magic, version, and unknown platform",
          test_wire_framing_magic_versions_and_unknown_platform},
         {"result invariants", test_result_invariants},
+        {"authorized intent binding digest", test_authorized_intent_binding_digest},
+        {"authorized intent invalid bindings", test_authorized_intent_invalid_bindings},
+        {"authorized intent wire rejection and codec separation",
+         test_authorized_intent_wire_rejection_and_codec_separation},
     }};
 
     const auto run = [](std::string_view heading, const auto& tests) {
