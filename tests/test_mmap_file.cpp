@@ -10,25 +10,50 @@
 #include "gnfs/util/temp_path.hpp"
 
 #include <cassert>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <random>
+#include <stdexcept>
 #include <string>
+#include <system_error>
+#include <type_traits>
+#include <utility>
 #include <vector>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 using namespace gnfs::util;
 
 namespace {
 
+[[noreturn]] void fail_check(const char* expression, int line) {
+    throw std::runtime_error(std::string("CHECK failed at line ") + std::to_string(line) + ": " +
+                             expression);
+}
+
+#define CHECK(expression)                                                                          \
+    do {                                                                                           \
+        if (!(expression)) {                                                                       \
+            fail_check(#expression, __LINE__);                                                     \
+        }                                                                                          \
+    } while (false)
+
 // Generate a unique temp path per test invocation (PID + counter).
 std::string make_temp_path(const char* tag) {
     static int counter = 0;
     char buf[256];
-    std::snprintf(buf, sizeof(buf), "gnfs_test_mmap_%d_%d_%s.bin",
-                  gnfs::util::process_id(), counter++, tag);
+    std::snprintf(buf, sizeof(buf), "gnfs_test_mmap_%d_%d_%s.bin", gnfs::util::process_id(),
+                  counter++, tag);
     return gnfs::util::temp_path(buf);
 }
 
@@ -45,12 +70,102 @@ void write_bytes(const std::string& path, const std::vector<uint8_t>& data) {
 struct FileGuard {
     std::string path;
     explicit FileGuard(std::string p) : path(std::move(p)) {}
-    ~FileGuard() { std::remove(path.c_str()); }
+    ~FileGuard() {
+        std::remove(path.c_str());
+    }
     FileGuard(const FileGuard&) = delete;
     FileGuard& operator=(const FileGuard&) = delete;
 };
 
-}  // namespace
+using TestNativeHandle = OwnedNativeFile::NativeHandle;
+
+TestNativeHandle open_native_read_only(const std::string& path) {
+#ifdef _WIN32
+    const std::filesystem::path filesystem_path(path);
+    HANDLE handle =
+        ::CreateFileW(filesystem_path.c_str(), GENERIC_READ,
+                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    CHECK(handle != INVALID_HANDLE_VALUE);
+    return handle;
+#else
+    int descriptor = -1;
+    do {
+        descriptor = ::open(path.c_str(), O_RDONLY);
+    } while (descriptor < 0 && errno == EINTR);
+    CHECK(descriptor >= 0);
+    return descriptor;
+#endif
+}
+
+TestNativeHandle open_native_write_only(const std::string& path) {
+#ifdef _WIN32
+    const std::filesystem::path filesystem_path(path);
+    HANDLE handle =
+        ::CreateFileW(filesystem_path.c_str(), GENERIC_WRITE,
+                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    CHECK(handle != INVALID_HANDLE_VALUE);
+    return handle;
+#else
+    int descriptor = -1;
+    do {
+        descriptor = ::open(path.c_str(), O_WRONLY);
+    } while (descriptor < 0 && errno == EINTR);
+    CHECK(descriptor >= 0);
+    return descriptor;
+#endif
+}
+
+OwnedNativeFile open_owned_read_only(const std::string& path) {
+    return OwnedNativeFile::adopt_ownership(open_native_read_only(path));
+}
+
+void check_native_handle_open(TestNativeHandle handle) {
+#ifdef _WIN32
+    DWORD flags = 0;
+    CHECK(::GetHandleInformation(handle, &flags) != 0);
+#else
+    int result = -1;
+    do {
+        result = ::fcntl(handle, F_GETFD);
+    } while (result < 0 && errno == EINTR);
+    CHECK(result >= 0);
+#endif
+}
+
+void check_native_handle_closed(TestNativeHandle handle) {
+#ifdef _WIN32
+    DWORD flags = 0;
+    ::SetLastError(ERROR_SUCCESS);
+    CHECK(::GetHandleInformation(handle, &flags) == 0);
+    CHECK(::GetLastError() == ERROR_INVALID_HANDLE);
+#else
+    errno = 0;
+    CHECK(::fcntl(handle, F_GETFD) == -1);
+    CHECK(errno == EBADF);
+#endif
+}
+
+void replace_file(const std::string& source, const std::string& destination) {
+#ifdef _WIN32
+    const std::filesystem::path source_path(source);
+    const std::filesystem::path destination_path(destination);
+    CHECK(::MoveFileExW(source_path.c_str(), destination_path.c_str(),
+                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0);
+#else
+    std::error_code error;
+    std::filesystem::rename(source, destination, error);
+    CHECK(!error);
+#endif
+}
+
+static_assert(!std::is_copy_constructible_v<OwnedNativeFile>);
+static_assert(!std::is_copy_assignable_v<OwnedNativeFile>);
+static_assert(std::is_nothrow_move_constructible_v<OwnedNativeFile>);
+static_assert(std::is_nothrow_move_assignable_v<OwnedNativeFile>);
+
+} // namespace
 
 void test_basic_open_and_read() {
     std::cout << "Testing MmapFile basic open and read..." << std::endl;
@@ -80,12 +195,12 @@ void test_empty_file() {
     std::string path = make_temp_path("empty");
     FileGuard guard(path);
 
-    write_bytes(path, {});  // create empty file
+    write_bytes(path, {}); // create empty file
 
     MmapFile mf(path);
-    assert(mf.is_open());   // fd is open
+    assert(mf.is_open()); // fd is open
     assert(mf.size() == 0);
-    assert(mf.data() == nullptr);  // no mapping for empty file
+    assert(mf.data() == nullptr); // no mapping for empty file
 
     std::cout << "  empty file: PASS" << std::endl;
 }
@@ -105,7 +220,7 @@ void test_nonexistent_file_throws() {
         threw = true;
     }
     assert(threw);
-    (void)threw;  // appease -Wunused-but-set-variable when NDEBUG defined
+    (void)threw; // appease -Wunused-but-set-variable when NDEBUG defined
 
     std::cout << "  nonexistent throws: PASS" << std::endl;
 }
@@ -119,11 +234,13 @@ void test_read_at_typed_values() {
     // Layout: uint32_t header | int64_t value | uint16_t array of 3 elements
     std::vector<uint8_t> buf;
     auto append_u32 = [&buf](uint32_t v) {
-        for (int i = 0; i < 4; ++i) buf.push_back(static_cast<uint8_t>(v >> (i * 8)));
+        for (int i = 0; i < 4; ++i)
+            buf.push_back(static_cast<uint8_t>(v >> (i * 8)));
     };
     auto append_i64 = [&buf](int64_t v) {
         uint64_t u = static_cast<uint64_t>(v);
-        for (int i = 0; i < 8; ++i) buf.push_back(static_cast<uint8_t>(u >> (i * 8)));
+        for (int i = 0; i < 8; ++i)
+            buf.push_back(static_cast<uint8_t>(u >> (i * 8)));
     };
     auto append_u16 = [&buf](uint16_t v) {
         buf.push_back(static_cast<uint8_t>(v));
@@ -131,7 +248,7 @@ void test_read_at_typed_values() {
     };
 
     append_u32(0xDEADBEEF);
-    append_i64(-9223372036854775000ll);  // near INT64_MIN
+    append_i64(-9223372036854775000ll); // near INT64_MIN
     append_u16(100);
     append_u16(200);
     append_u16(300);
@@ -166,7 +283,8 @@ void test_ptr_at() {
     std::vector<uint8_t> buf;
     // 4 uint32_t values at offsets 0, 4, 8, 12
     for (uint32_t v : {0x12345678u, 0xABCDEF01u, 0xDEADBEEFu, 0xCAFEBABEu}) {
-        for (int i = 0; i < 4; ++i) buf.push_back(static_cast<uint8_t>(v >> (i * 8)));
+        for (int i = 0; i < 4; ++i)
+            buf.push_back(static_cast<uint8_t>(v >> (i * 8)));
     }
     write_bytes(path, buf);
 
@@ -192,11 +310,12 @@ void test_advise_random() {
     FileGuard guard(path);
 
     std::vector<uint8_t> buf(64, 0);
-    for (size_t i = 0; i < buf.size(); ++i) buf[i] = static_cast<uint8_t>(i);
+    for (size_t i = 0; i < buf.size(); ++i)
+        buf[i] = static_cast<uint8_t>(i);
     write_bytes(path, buf);
 
     MmapFile mf(path);
-    mf.advise_random();  // switch hint
+    mf.advise_random(); // switch hint
 
     // Data still readable
     for (size_t i = 0; i < buf.size(); ++i) {
@@ -281,7 +400,7 @@ void test_large_multi_page() {
     std::string path = make_temp_path("large");
     FileGuard guard(path);
 
-    constexpr size_t SIZE = 256 * 1024;  // 256 KiB, span many pages
+    constexpr size_t SIZE = 256 * 1024; // 256 KiB, span many pages
     std::vector<uint8_t> buf(SIZE);
     std::mt19937 rng(0xBEEFCAFE);
     for (size_t i = 0; i < SIZE; ++i) {
@@ -322,12 +441,188 @@ void test_default_constructed_state() {
     std::cout << "  default constructed: PASS" << std::endl;
 }
 
+void test_owned_native_file_exact_handle_read() {
+    std::cout << "Testing MmapFile consumes and reads the exact owned handle..." << std::endl;
+
+    std::string path = make_temp_path("owned_exact");
+    FileGuard guard(path);
+    const std::vector<uint8_t> payload = {0x10, 0x20, 0x30, 0x40, 0x50};
+    write_bytes(path, payload);
+
+    OwnedNativeFile owned = open_owned_read_only(path);
+    CHECK(owned.valid());
+
+    MmapFile mapped(std::move(owned));
+    CHECK(!owned.valid());
+    CHECK(mapped.is_open());
+    CHECK(mapped.size() == payload.size());
+    CHECK(mapped.data() != nullptr);
+    CHECK(std::memcmp(mapped.data(), payload.data(), payload.size()) == 0);
+
+    std::cout << "  exact owned handle: PASS" << std::endl;
+}
+
+void test_owned_native_file_survives_path_replacement() {
+    std::cout << "Testing owned-handle mapping ignores later path replacement..." << std::endl;
+
+    std::string path = make_temp_path("owned_replaced");
+    std::string replacement_path = make_temp_path("owned_replacement_source");
+    FileGuard guard(path);
+    FileGuard replacement_guard(replacement_path);
+
+    const std::vector<uint8_t> original = {0xAA, 0xBB, 0xCC, 0xDD};
+    const std::vector<uint8_t> replacement = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
+    write_bytes(path, original);
+
+    OwnedNativeFile owned = open_owned_read_only(path);
+    CHECK(owned.valid());
+
+    write_bytes(replacement_path, replacement);
+    replace_file(replacement_path, path);
+
+    MmapFile mapped_owned(std::move(owned));
+    CHECK(mapped_owned.size() == original.size());
+    CHECK(std::memcmp(mapped_owned.data(), original.data(), original.size()) == 0);
+
+    MmapFile mapped_path(path);
+    CHECK(mapped_path.size() == replacement.size());
+    CHECK(std::memcmp(mapped_path.data(), replacement.data(), replacement.size()) == 0);
+
+    std::cout << "  path replacement isolation: PASS" << std::endl;
+}
+
+void test_owned_native_empty_file() {
+    std::cout << "Testing empty owned native file..." << std::endl;
+
+    std::string path = make_temp_path("owned_empty");
+    FileGuard guard(path);
+    write_bytes(path, {});
+
+    OwnedNativeFile owned = open_owned_read_only(path);
+    MmapFile mapped(std::move(owned));
+
+    CHECK(!owned.valid());
+    CHECK(mapped.is_open());
+    CHECK(mapped.size() == 0);
+    CHECK(mapped.data() == nullptr);
+
+    std::cout << "  empty owned native file: PASS" << std::endl;
+}
+
+void test_owned_native_file_move_and_close() {
+    std::cout << "Testing OwnedNativeFile move and close semantics..." << std::endl;
+
+    std::string first_path = make_temp_path("owned_move_first");
+    std::string second_path = make_temp_path("owned_move_second");
+    FileGuard first_guard(first_path);
+    FileGuard second_guard(second_path);
+    write_bytes(first_path, {0x11});
+    write_bytes(second_path, {0x22});
+
+    const TestNativeHandle original_handle = open_native_read_only(first_path);
+    OwnedNativeFile original = OwnedNativeFile::adopt_ownership(original_handle);
+    OwnedNativeFile moved(std::move(original));
+    CHECK(!original.valid());
+    CHECK(moved.valid());
+    check_native_handle_open(original_handle);
+
+    const TestNativeHandle overwritten_handle = open_native_read_only(second_path);
+    OwnedNativeFile assigned = OwnedNativeFile::adopt_ownership(overwritten_handle);
+    CHECK(assigned.valid());
+    assigned = std::move(moved);
+    CHECK(!moved.valid());
+    CHECK(assigned.valid());
+    check_native_handle_closed(overwritten_handle);
+    check_native_handle_open(original_handle);
+
+    assigned.close();
+    CHECK(!assigned.valid());
+    check_native_handle_closed(original_handle);
+    assigned.close();
+    CHECK(!assigned.valid());
+
+    std::cout << "  owned move/close: PASS" << std::endl;
+}
+
+void test_invalid_owned_native_file_rejected() {
+    std::cout << "Testing invalid owned native file is rejected..." << std::endl;
+
+    OwnedNativeFile invalid;
+    CHECK(!invalid.valid());
+
+    bool threw = false;
+    try {
+        MmapFile mapped(std::move(invalid));
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    CHECK(threw);
+    CHECK(!invalid.valid());
+
+    bool adopt_threw = false;
+    try {
+#ifdef _WIN32
+        (void)OwnedNativeFile::adopt_ownership(INVALID_HANDLE_VALUE);
+#else
+        (void)OwnedNativeFile::adopt_ownership(-1);
+#endif
+    } catch (const std::invalid_argument&) {
+        adopt_threw = true;
+    }
+    CHECK(adopt_threw);
+
+    std::cout << "  invalid owned handle: PASS" << std::endl;
+}
+
+void test_owned_native_file_mapping_failure_closes_temporary_handle() {
+    std::cout << "Testing failed owned-handle mapping closes temporary ownership..." << std::endl;
+
+    std::string path = make_temp_path("owned_mapping_failure");
+    FileGuard guard(path);
+    write_bytes(path, {0x42});
+
+    const TestNativeHandle write_only_handle = open_native_write_only(path);
+    check_native_handle_open(write_only_handle);
+
+    bool threw = false;
+    try {
+        MmapFile mapped(OwnedNativeFile::adopt_ownership(write_only_handle));
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+    check_native_handle_closed(write_only_handle);
+
+    const TestNativeHandle retained_handle = open_native_write_only(path);
+    OwnedNativeFile retained = OwnedNativeFile::adopt_ownership(retained_handle);
+    threw = false;
+    try {
+        MmapFile mapped(std::move(retained));
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+    CHECK(retained.valid());
+    check_native_handle_open(retained_handle);
+    retained.close();
+    check_native_handle_closed(retained_handle);
+
+    std::cout << "  mapping failure closes temporary handle: PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== util/mmap_file.hpp tests ===" << std::endl;
 
+    test_owned_native_file_exact_handle_read();
+    test_owned_native_file_survives_path_replacement();
+    test_owned_native_empty_file();
+    test_owned_native_file_move_and_close();
+    test_invalid_owned_native_file_rejected();
+    test_owned_native_file_mapping_failure_closes_temporary_handle();
+
 #ifdef _WIN32
     test_default_constructed_state();
-    std::cout << "MmapFile path-backed tests skipped on Windows (mmap unavailable)\n";
+    std::cout << "Legacy MmapFile path-backed tests skipped on Windows\n";
     return 0;
 #else
     test_default_constructed_state();
