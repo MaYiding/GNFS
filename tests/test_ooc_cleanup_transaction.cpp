@@ -6,6 +6,7 @@
 #include <gnfs/relation/ooc_relation_store.hpp>
 
 #include <ooc_private_cleanup_action_permit_internal.hpp>
+#include <ooc_private_lease_reservation_protocol_internal.hpp>
 
 #include "support/child_process.hpp"
 
@@ -21,6 +22,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -105,6 +107,9 @@ using gnfs::relation::ooc_cleanup_detail::PrivateCleanupUnionRawObservation;
 using gnfs::relation::ooc_cleanup_detail::PrivateHandoffLeafObservationKind;
 using gnfs::relation::ooc_cleanup_detail::PrivateHandoffLeafSlot;
 using gnfs::relation::ooc_cleanup_detail::PrivateLeaseRemovalAdmission;
+using gnfs::relation::ooc_cleanup_detail::PrivateLeaseReservationBoundary;
+using gnfs::relation::ooc_cleanup_detail::PrivateLeaseReservationMarkerRole;
+using gnfs::relation::ooc_cleanup_detail::PrivateLeaseReservationRunResult;
 using gnfs::relation::ooc_cleanup_detail::PrivateNamespaceAction;
 using gnfs::relation::ooc_cleanup_detail::PrivateNamespaceActionDisposition;
 using gnfs::relation::ooc_cleanup_detail::reconcile_private_handoff_from_permit;
@@ -160,6 +165,265 @@ int checks_failed = 0;
             std::cerr << "FAIL: " #condition " at " << __FILE__ << ':' << __LINE__ << '\n';        \
         }                                                                                          \
     } while (false)
+
+enum class ReservationProtocolEventKind : std::uint8_t {
+    Checkpoint,
+    PublishMarker,
+    CreateStagingDirectory,
+    PromoteFinalDirectory,
+    Complete,
+};
+
+struct ReservationNamespacePrefix final {
+    bool reserved_pending = false;
+    bool reserved = false;
+    bool staging_directory = false;
+    bool owner_pending = false;
+    bool owner = false;
+    bool owned_pending = false;
+    bool owned = false;
+    bool final_directory = false;
+};
+
+struct ReservationBoundaryContract final {
+    PrivateLeaseReservationBoundary boundary;
+    ReservationProtocolEventKind event_kind;
+    PrivateLeaseReservationMarkerRole role;
+    OOCPrivateLeaseFaultPoint fault_point;
+    ReservationNamespacePrefix prefix;
+};
+
+constexpr std::array PRIVATE_LEASE_RESERVATION_BOUNDARY_CONTRACTS{
+    ReservationBoundaryContract{
+        .boundary = PrivateLeaseReservationBoundary::PermitAcquired,
+        .event_kind = ReservationProtocolEventKind::Checkpoint,
+        .role = PrivateLeaseReservationMarkerRole::Count,
+        .fault_point = OOCPrivateLeaseFaultPoint::ReservationPermitAcquired,
+        .prefix = {},
+    },
+    ReservationBoundaryContract{
+        .boundary = PrivateLeaseReservationBoundary::ReservedPendingDurable,
+        .event_kind = ReservationProtocolEventKind::PublishMarker,
+        .role = PrivateLeaseReservationMarkerRole::Reserved,
+        .fault_point = OOCPrivateLeaseFaultPoint::ReservedPendingDurable,
+        .prefix = {.reserved_pending = true},
+    },
+    ReservationBoundaryContract{
+        .boundary = PrivateLeaseReservationBoundary::ReservedCanonicalDurable,
+        .event_kind = ReservationProtocolEventKind::Checkpoint,
+        .role = PrivateLeaseReservationMarkerRole::Count,
+        .fault_point = OOCPrivateLeaseFaultPoint::ReservedDurable,
+        .prefix = {.reserved = true},
+    },
+    ReservationBoundaryContract{
+        .boundary = PrivateLeaseReservationBoundary::StagingDirectoryDurable,
+        .event_kind = ReservationProtocolEventKind::Checkpoint,
+        .role = PrivateLeaseReservationMarkerRole::Count,
+        .fault_point = OOCPrivateLeaseFaultPoint::StagingDirectoryDurable,
+        .prefix = {.reserved = true, .staging_directory = true},
+    },
+    ReservationBoundaryContract{
+        .boundary = PrivateLeaseReservationBoundary::OwnerPendingDurable,
+        .event_kind = ReservationProtocolEventKind::PublishMarker,
+        .role = PrivateLeaseReservationMarkerRole::Owner,
+        .fault_point = OOCPrivateLeaseFaultPoint::OwnerPendingDurable,
+        .prefix =
+            {
+                .reserved = true,
+                .staging_directory = true,
+                .owner_pending = true,
+            },
+    },
+    ReservationBoundaryContract{
+        .boundary = PrivateLeaseReservationBoundary::OwnerCanonicalDurable,
+        .event_kind = ReservationProtocolEventKind::Checkpoint,
+        .role = PrivateLeaseReservationMarkerRole::Count,
+        .fault_point = OOCPrivateLeaseFaultPoint::OwnerDurable,
+        .prefix =
+            {
+                .reserved = true,
+                .staging_directory = true,
+                .owner = true,
+            },
+    },
+    ReservationBoundaryContract{
+        .boundary = PrivateLeaseReservationBoundary::OwnedPendingDurable,
+        .event_kind = ReservationProtocolEventKind::PublishMarker,
+        .role = PrivateLeaseReservationMarkerRole::Owned,
+        .fault_point = OOCPrivateLeaseFaultPoint::OwnedPendingDurable,
+        .prefix =
+            {
+                .reserved = true,
+                .staging_directory = true,
+                .owner = true,
+                .owned_pending = true,
+            },
+    },
+    ReservationBoundaryContract{
+        .boundary = PrivateLeaseReservationBoundary::OwnedCanonicalDurable,
+        .event_kind = ReservationProtocolEventKind::Checkpoint,
+        .role = PrivateLeaseReservationMarkerRole::Count,
+        .fault_point = OOCPrivateLeaseFaultPoint::OwnedDurable,
+        .prefix =
+            {
+                .reserved = true,
+                .staging_directory = true,
+                .owner = true,
+                .owned = true,
+            },
+    },
+    ReservationBoundaryContract{
+        .boundary = PrivateLeaseReservationBoundary::FinalDirectoryDurable,
+        .event_kind = ReservationProtocolEventKind::Checkpoint,
+        .role = PrivateLeaseReservationMarkerRole::Count,
+        .fault_point = OOCPrivateLeaseFaultPoint::FinalRenameDurable,
+        .prefix =
+            {
+                .reserved = true,
+                .owner = true,
+                .owned = true,
+                .final_directory = true,
+            },
+    },
+};
+
+static_assert(PRIVATE_LEASE_RESERVATION_BOUNDARY_CONTRACTS.size() ==
+              gnfs::relation::ooc_cleanup_detail::PRIVATE_LEASE_RESERVATION_BOUNDARIES.size());
+static_assert([] {
+    std::array<bool, static_cast<std::size_t>(PrivateLeaseReservationMarkerRole::Count)>
+        role_seen{};
+    for (std::size_t index = 0; index < PRIVATE_LEASE_RESERVATION_BOUNDARY_CONTRACTS.size();
+         ++index) {
+        const auto& contract = PRIVATE_LEASE_RESERVATION_BOUNDARY_CONTRACTS[index];
+        if (contract.boundary !=
+                gnfs::relation::ooc_cleanup_detail::PRIVATE_LEASE_RESERVATION_BOUNDARIES[index] ||
+            static_cast<std::size_t>(contract.boundary) != index) {
+            return false;
+        }
+        if (contract.event_kind == ReservationProtocolEventKind::PublishMarker) {
+            if (contract.role == PrivateLeaseReservationMarkerRole::Count) {
+                return false;
+            }
+            const auto role_index = static_cast<std::size_t>(contract.role);
+            if (role_seen[role_index]) {
+                return false;
+            }
+            role_seen[role_index] = true;
+        } else if (contract.event_kind != ReservationProtocolEventKind::Checkpoint ||
+                   contract.role != PrivateLeaseReservationMarkerRole::Count) {
+            return false;
+        }
+        for (std::size_t prior = 0; prior < index; ++prior) {
+            if (PRIVATE_LEASE_RESERVATION_BOUNDARY_CONTRACTS[prior].fault_point ==
+                contract.fault_point) {
+                return false;
+            }
+        }
+    }
+    for (const bool seen : role_seen) {
+        if (!seen) {
+            return false;
+        }
+    }
+    return true;
+}());
+
+struct ReservationProtocolEvent final {
+    ReservationProtocolEventKind kind;
+    PrivateLeaseReservationBoundary boundary = PrivateLeaseReservationBoundary::Count;
+    PrivateLeaseReservationMarkerRole role = PrivateLeaseReservationMarkerRole::Count;
+
+    friend bool operator==(const ReservationProtocolEvent&,
+                           const ReservationProtocolEvent&) = default;
+};
+
+struct RecordingReservationTarget final {
+    std::optional<PrivateLeaseReservationBoundary> interrupt_at;
+    std::vector<ReservationProtocolEvent> events;
+
+    [[nodiscard]] bool checkpoint(PrivateLeaseReservationBoundary boundary) {
+        events.push_back({
+            .kind = ReservationProtocolEventKind::Checkpoint,
+            .boundary = boundary,
+        });
+        return interrupt_at == boundary;
+    }
+
+    [[nodiscard]] bool publish_marker(PrivateLeaseReservationMarkerRole role,
+                                      PrivateLeaseReservationBoundary boundary) {
+        events.push_back({
+            .kind = ReservationProtocolEventKind::PublishMarker,
+            .boundary = boundary,
+            .role = role,
+        });
+        return interrupt_at == boundary;
+    }
+
+    void create_staging_directory() {
+        events.push_back({
+            .kind = ReservationProtocolEventKind::CreateStagingDirectory,
+        });
+    }
+
+    void promote_final_directory() {
+        events.push_back({
+            .kind = ReservationProtocolEventKind::PromoteFinalDirectory,
+        });
+    }
+
+    void complete() {
+        events.push_back({
+            .kind = ReservationProtocolEventKind::Complete,
+        });
+    }
+};
+
+static_assert(
+    gnfs::relation::ooc_cleanup_detail::PrivateLeaseReservationTarget<RecordingReservationTarget>);
+
+void test_private_lease_reservation_protocol_order_and_interruptions() {
+    using Boundary = PrivateLeaseReservationBoundary;
+    using EventKind = ReservationProtocolEventKind;
+
+    std::vector<ReservationProtocolEvent> expected;
+    expected.reserve(PRIVATE_LEASE_RESERVATION_BOUNDARY_CONTRACTS.size() + 3);
+    for (const auto& contract : PRIVATE_LEASE_RESERVATION_BOUNDARY_CONTRACTS) {
+        if (contract.boundary == Boundary::StagingDirectoryDurable) {
+            expected.push_back({.kind = EventKind::CreateStagingDirectory});
+        }
+        if (contract.boundary == Boundary::FinalDirectoryDurable) {
+            expected.push_back({.kind = EventKind::PromoteFinalDirectory});
+        }
+        expected.push_back({
+            .kind = contract.event_kind,
+            .boundary = contract.boundary,
+            .role = contract.role,
+        });
+    }
+    expected.push_back({.kind = EventKind::Complete});
+
+    RecordingReservationTarget completed;
+    CHECK(gnfs::relation::ooc_cleanup_detail::run_private_lease_reservation_protocol(completed) ==
+          PrivateLeaseReservationRunResult::Completed);
+    CHECK(completed.events == expected);
+
+    for (const auto& contract : PRIVATE_LEASE_RESERVATION_BOUNDARY_CONTRACTS) {
+        const auto boundary = contract.boundary;
+        RecordingReservationTarget interrupted{.interrupt_at = boundary};
+        CHECK(gnfs::relation::ooc_cleanup_detail::run_private_lease_reservation_protocol(
+                  interrupted) == PrivateLeaseReservationRunResult::Interrupted);
+        const auto stop = std::find_if(expected.begin(), expected.end(),
+                                       [boundary](const ReservationProtocolEvent& event) {
+                                           return event.boundary == boundary;
+                                       });
+        CHECK(stop != expected.end());
+        const auto prefix_size =
+            static_cast<std::size_t>(std::distance(expected.begin(), stop)) + 1;
+        CHECK(interrupted.events.size() == prefix_size);
+        CHECK(std::equal(interrupted.events.begin(), interrupted.events.end(), expected.begin(),
+                         stop + 1));
+    }
+}
 
 [[nodiscard]] PrivateCleanupUnionClassification expected_private_cleanup_union_classification(
     const PrivateCleanupUnionRawObservation& observation) {
@@ -3761,18 +4025,6 @@ void test_private_lease_receipt_rejects_replacement_directory() {
     CHECK(entry_exists_no_follow(paths.lock_path));
 }
 
-constexpr std::array PRIVATE_LEASE_RESERVE_FAULT_POINTS{
-    OOCPrivateLeaseFaultPoint::ReservationPermitAcquired,
-    OOCPrivateLeaseFaultPoint::ReservedPendingDurable,
-    OOCPrivateLeaseFaultPoint::ReservedDurable,
-    OOCPrivateLeaseFaultPoint::StagingDirectoryDurable,
-    OOCPrivateLeaseFaultPoint::OwnerPendingDurable,
-    OOCPrivateLeaseFaultPoint::OwnerDurable,
-    OOCPrivateLeaseFaultPoint::OwnedPendingDurable,
-    OOCPrivateLeaseFaultPoint::OwnedDurable,
-    OOCPrivateLeaseFaultPoint::FinalRenameDurable,
-};
-
 constexpr std::array PRIVATE_LEASE_REMOVE_FAULT_POINTS{
     OOCPrivateLeaseFaultPoint::ReservedRemovedDurable,
     OOCPrivateLeaseFaultPoint::OwnerRemovedDurable,
@@ -3825,11 +4077,11 @@ private_lease_crash_hooks(PrivateLeaseCrashContext& context) noexcept {
 int run_private_lease_crash_child(std::string_view operation, std::size_t point_index,
                                   const std::filesystem::path& base) {
     if (operation == "reserve") {
-        if (point_index >= PRIVATE_LEASE_RESERVE_FAULT_POINTS.size()) {
+        if (point_index >= PRIVATE_LEASE_RESERVATION_BOUNDARY_CONTRACTS.size()) {
             return 64;
         }
         PrivateLeaseCrashContext context{
-            .target = PRIVATE_LEASE_RESERVE_FAULT_POINTS[point_index],
+            .target = PRIVATE_LEASE_RESERVATION_BOUNDARY_CONTRACTS[point_index].fault_point,
         };
         const auto result =
             OOCCleanupTransaction::reserve_private_lease(base, private_lease_crash_hooks(context));
@@ -3943,7 +4195,67 @@ private_lease_staging_entries(const gnfs::relation::OOCCleanupPaths& paths) {
     return entries;
 }
 
-void check_empty_private_lease_recovery(const std::filesystem::path& base) {
+void check_private_lease_reservation_crash_prefix(const std::filesystem::path& base,
+                                                  const ReservationBoundaryContract& contract) {
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    const auto& expected = contract.prefix;
+
+    CHECK(entry_exists_no_follow(paths.lock_path));
+    CHECK(std::filesystem::is_regular_file(symlink_status_no_follow(paths.lock_path)));
+    CHECK(entry_exists_no_follow(paths.lease_reserved_pending_path) == expected.reserved_pending);
+    CHECK(entry_exists_no_follow(paths.lease_reserved_path) == expected.reserved);
+    CHECK(entry_exists_no_follow(paths.lease_owned_pending_path) == expected.owned_pending);
+    CHECK(entry_exists_no_follow(paths.lease_owned_path) == expected.owned);
+    CHECK(entry_exists_no_follow(paths.private_directory) == expected.final_directory);
+
+    const auto staging = private_lease_staging_entries(paths);
+    CHECK(staging.size() == (expected.staging_directory ? 1U : 0U));
+
+    std::optional<std::filesystem::path> protocol_directory;
+    if (expected.staging_directory && staging.size() == 1) {
+        protocol_directory = staging.front();
+    } else if (expected.final_directory && entry_exists_no_follow(paths.private_directory)) {
+        protocol_directory = paths.private_directory;
+    }
+    if (protocol_directory) {
+        CHECK(std::filesystem::is_directory(symlink_status_no_follow(*protocol_directory)));
+        const auto owner_path =
+            gnfs::relation::ooc_cleanup_detail::private_lease_owner_path(*protocol_directory);
+        const auto owner_pending_path =
+            gnfs::relation::ooc_cleanup_detail::private_lease_owner_pending_path(
+                *protocol_directory);
+        CHECK(entry_exists_no_follow(owner_path) == expected.owner);
+        CHECK(entry_exists_no_follow(owner_pending_path) == expected.owner_pending);
+
+        std::error_code error;
+        const auto entry_count = static_cast<std::size_t>(
+            std::distance(std::filesystem::directory_iterator(*protocol_directory, error),
+                          std::filesystem::directory_iterator{}));
+        CHECK(!error);
+        CHECK(entry_count == static_cast<std::size_t>(expected.owner) +
+                                 static_cast<std::size_t>(expected.owner_pending));
+    }
+
+    const std::array unrelated{
+        paths.index_path,
+        paths.data_path,
+        paths.intent_path,
+        paths.intent_pending_path,
+        paths.staged_path,
+        paths.staged_pending_path,
+        paths.private_handoff_path,
+        paths.private_handoff_pending_path,
+        paths.quarantine_index_path,
+        paths.quarantine_data_path,
+    };
+    for (const auto& path : unrelated) {
+        CHECK(!entry_exists_no_follow(path));
+    }
+}
+
+void check_empty_private_lease_recovery(
+    const std::filesystem::path& base,
+    std::optional<OOCCleanupStatus> expected_initial_status = std::nullopt) {
     const auto paths = OOCCleanupTransaction::paths_for(base);
     const auto recovered = OOCCleanupTransaction::recover_private_lease(base);
     if (!recovered.transaction_terminal()) {
@@ -3952,6 +4264,9 @@ void check_empty_private_lease_recovery(const std::filesystem::path& base) {
                   << " error=" << recovered.native_error.message() << '\n';
     }
     CHECK(recovered.transaction_terminal());
+    if (expected_initial_status) {
+        CHECK(recovered.status == *expected_initial_status);
+    }
     CHECK(!entry_exists_no_follow(paths.private_directory));
     CHECK(!entry_exists_no_follow(paths.lease_reserved_pending_path));
     CHECK(!entry_exists_no_follow(paths.lease_reserved_path));
@@ -3979,16 +4294,23 @@ void check_empty_private_lease_recovery(const std::filesystem::path& base) {
 void test_private_lease_process_crash_recovery(const std::string& executable) {
     TempDirectory temp;
 
-    for (std::size_t index = 0; index < PRIVATE_LEASE_RESERVE_FAULT_POINTS.size(); ++index) {
+    for (std::size_t index = 0; index < PRIVATE_LEASE_RESERVATION_BOUNDARY_CONTRACTS.size();
+         ++index) {
+        const auto& contract = PRIVATE_LEASE_RESERVATION_BOUNDARY_CONTRACTS[index];
         const auto lease = temp.path() / ("reserve-" + std::to_string(index) + ".gnfs-sink-lease");
         const auto base = lease / "corpus";
         const auto child = gnfs::test::run_child_process(
             executable, {"--crash-private-lease", "reserve", std::to_string(index), base.string()});
         CHECK(child.exited);
         CHECK(!child.signaled);
-        CHECK(child.exit_code == PRIVATE_LEASE_CRASH_EXIT_BASE +
-                                     static_cast<int>(PRIVATE_LEASE_RESERVE_FAULT_POINTS[index]));
-        check_empty_private_lease_recovery(base);
+        CHECK(child.exit_code ==
+              PRIVATE_LEASE_CRASH_EXIT_BASE + static_cast<int>(contract.fault_point));
+        check_private_lease_reservation_crash_prefix(base, contract);
+        const auto expected_recovery =
+            contract.boundary == PrivateLeaseReservationBoundary::PermitAcquired
+                ? OOCCleanupStatus::NoTransaction
+                : OOCCleanupStatus::Completed;
+        check_empty_private_lease_recovery(base, expected_recovery);
     }
 
     for (std::size_t index = 0; index < PRIVATE_LEASE_REMOVE_FAULT_POINTS.size(); ++index) {
@@ -9850,6 +10172,7 @@ void run_core_suite(const std::string& executable) {
 }
 
 void run_authority_union_suite() {
+    test_private_lease_reservation_protocol_order_and_interruptions();
     test_private_cleanup_union_policy_exhaustive();
 }
 
