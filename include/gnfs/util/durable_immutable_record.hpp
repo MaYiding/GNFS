@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gnfs/util/durable_immutable_file.hpp"
+#include "gnfs/util/owned_native_file.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -8,6 +9,7 @@
 #include <optional>
 #include <span>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace gnfs::util::durable_immutable_record {
@@ -17,8 +19,9 @@ inline constexpr NativeHandle INVALID_NATIVE_HANDLE = durable_immutable_file::IN
 inline constexpr std::uint64_t MAX_BOUNDED_READ_BYTES = 16U * 1024U * 1024U;
 
 namespace detail {
+class OwnedFileOpenResultFactory;
 class RecordPublishResultFactory;
-}
+} // namespace detail
 
 /// Stable native identity of one held filesystem object.
 ///
@@ -137,6 +140,101 @@ private:
     std::optional<RecordSnapshot> snapshot_;
     std::error_code native_error_;
 };
+
+enum class OwnedFileOpenState : std::uint8_t {
+    missing,
+    exact,
+    rejected,
+    interrupted,
+    unsupported,
+    failed,
+};
+
+/// One exact held file and the snapshot proven for that same native handle.
+///
+/// This value carries read ownership only. It is not cleanup, adoption, or
+/// application-authorization authority.
+struct OpenedOwnedFile final {
+    OpenedOwnedFile(const OpenedOwnedFile&) = delete;
+    OpenedOwnedFile& operator=(const OpenedOwnedFile&) = delete;
+    OpenedOwnedFile(OpenedOwnedFile&&) noexcept = default;
+    OpenedOwnedFile& operator=(OpenedOwnedFile&&) noexcept = default;
+
+    OwnedNativeFile file;
+    RecordSnapshot snapshot;
+
+private:
+    OpenedOwnedFile(OwnedNativeFile&& owned_file, RecordSnapshot exact_snapshot) noexcept
+        : file(std::move(owned_file)), snapshot(exact_snapshot) {}
+
+    friend class detail::OwnedFileOpenResultFactory;
+};
+
+/// Closed outcome for a production handle-relative exact-file open.
+///
+/// `exact` is the only state carrying a move-only native file. The file and
+/// snapshot are committed together after parent, held-file, named-file,
+/// identity, extent, owner, mode, link-count, and ACL revalidation.
+class OwnedFileOpenResult final {
+public:
+    OwnedFileOpenResult() = delete;
+    OwnedFileOpenResult(const OwnedFileOpenResult&) = delete;
+    OwnedFileOpenResult& operator=(const OwnedFileOpenResult&) = delete;
+    OwnedFileOpenResult(OwnedFileOpenResult&&) noexcept = default;
+    OwnedFileOpenResult& operator=(OwnedFileOpenResult&&) noexcept = default;
+
+    [[nodiscard]] constexpr OwnedFileOpenState state() const noexcept {
+        return state_;
+    }
+
+    [[nodiscard]] const std::optional<OpenedOwnedFile>& opened() const& noexcept {
+        return opened_;
+    }
+
+    [[nodiscard]] std::optional<OpenedOwnedFile> take_opened() && noexcept {
+        return std::exchange(opened_, std::nullopt);
+    }
+
+    [[nodiscard]] const std::error_code& native_error() const noexcept {
+        return native_error_;
+    }
+
+private:
+    OwnedFileOpenResult(OwnedFileOpenState state, std::optional<OpenedOwnedFile> opened,
+                        std::error_code native_error) noexcept
+        : state_(state), opened_(std::move(opened)), native_error_(native_error) {}
+
+    OwnedFileOpenState state_;
+    std::optional<OpenedOwnedFile> opened_;
+    std::error_code native_error_;
+
+    friend class detail::OwnedFileOpenResultFactory;
+};
+
+/// Trusted test-only observation boundary for the exact owned-file opener.
+enum class OwnedFileOpenFaultPoint : std::uint8_t {
+    InitialValidationComplete,
+};
+
+struct OwnedFileOpenTestHooks final {
+    using StopAfter = bool (*)(OwnedFileOpenFaultPoint point, void* context) noexcept;
+
+    StopAfter stop_after = nullptr;
+    void* context = nullptr;
+};
+
+/// Production handle-relative exact owned-file open.
+///
+/// macOS opens one ASCII relative leaf with no-follow/nonblocking semantics,
+/// proves the exact expected native identity and extent, and returns that same
+/// held file without reopening a path. Linux, Windows, and other platforms
+/// return `unsupported` after validating the in-memory request and before
+/// filesystem observation because no approved full-filesystem ACL adapter is
+/// available there.
+[[nodiscard]] OwnedFileOpenResult open_owned_exact_at(NativeHandle parent_handle,
+                                                      const std::filesystem::path& leaf,
+                                                      const RecordSnapshot& expected,
+                                                      OwnedFileOpenTestHooks hooks = {}) noexcept;
 
 enum class MutationState : std::uint8_t {
     succeeded,

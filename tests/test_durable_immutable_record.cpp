@@ -1,4 +1,5 @@
 #include <gnfs/util/durable_immutable_record.hpp>
+#include <gnfs/util/mmap_file.hpp>
 #include <gnfs/util/process.hpp>
 #include <gnfs/util/temp_path.hpp>
 
@@ -46,6 +47,14 @@ namespace durable_record = gnfs::util::durable_immutable_record;
 static_assert(!std::is_default_constructible_v<durable_record::InspectResult>);
 static_assert(!std::is_default_constructible_v<durable_record::MutationResult>);
 static_assert(!std::is_default_constructible_v<durable_record::BoundedReadResult>);
+static_assert(!std::is_default_constructible_v<durable_record::OwnedFileOpenResult>);
+static_assert(!std::is_copy_constructible_v<durable_record::OwnedFileOpenResult>);
+static_assert(std::is_nothrow_move_constructible_v<durable_record::OwnedFileOpenResult>);
+static_assert(!std::is_copy_constructible_v<durable_record::OpenedOwnedFile>);
+static_assert(std::is_nothrow_move_constructible_v<durable_record::OpenedOwnedFile>);
+static_assert(
+    !std::is_constructible_v<durable_record::OpenedOwnedFile, gnfs::util::OwnedNativeFile&&,
+                             durable_record::RecordSnapshot>);
 static_assert(
     !std::is_constructible_v<durable_record::BoundedReadResult, durable_record::BoundedReadState,
                              std::optional<std::vector<std::byte>>,
@@ -519,6 +528,56 @@ void test_bounded_read_synthetic_results_and_contract() {
     require_contract_failure(PAYLOAD.size(), PAYLOAD.size(), 0, PAYLOAD.size() - 1);
 }
 
+struct OwnedOpenObservationContext final {
+    bool called = false;
+    bool stop = false;
+};
+
+[[nodiscard]] bool observe_owned_file_open(durable_record::OwnedFileOpenFaultPoint,
+                                           void* opaque) noexcept {
+    auto& context = *static_cast<OwnedOpenObservationContext*>(opaque);
+    context.called = true;
+    return context.stop;
+}
+
+void test_owned_file_open_invalid_requests_stop_before_observation() {
+    constexpr durable_record::NativeHandle PARENT = 73;
+    constexpr durable_record::RecordSnapshot EXPECTED{{1, 2, 0}, PAYLOAD.size()};
+    const auto require_rejected = [&](durable_record::NativeHandle parent,
+                                      const std::filesystem::path& leaf,
+                                      const durable_record::RecordSnapshot* expected = nullptr) {
+        OwnedOpenObservationContext observation;
+        auto result = durable_record::open_owned_exact_at(
+            parent, leaf, expected == nullptr ? EXPECTED : *expected,
+            durable_record::OwnedFileOpenTestHooks{
+                .stop_after = observe_owned_file_open,
+                .context = &observation,
+            });
+        CHECK(result.state() == durable_record::OwnedFileOpenState::rejected);
+        CHECK(!result.opened().has_value());
+        CHECK(result.native_error() == std::errc::invalid_argument);
+        CHECK(!observation.called);
+    };
+
+    require_rejected(durable_record::INVALID_NATIVE_HANDLE, "record.bin");
+    require_rejected(PARENT, "");
+    require_rejected(PARENT, ".");
+    require_rejected(PARENT, "..");
+    require_rejected(PARENT, "nested/record.bin");
+    require_rejected(PARENT, std::filesystem::path("/record.bin"));
+    require_rejected(PARENT, std::filesystem::path(std::string("bad\0leaf", 8)));
+#ifndef _WIN32
+    require_rejected(-2, "record.bin");
+    require_rejected(static_cast<durable_record::NativeHandle>(
+                         static_cast<std::uintmax_t>(std::numeric_limits<int>::max()) + 1U),
+                     "record.bin");
+    require_rejected(PARENT, std::filesystem::path(std::string("\xC3\xA9.bin")));
+    auto oversized = EXPECTED;
+    oversized.size = static_cast<std::uint64_t>(std::numeric_limits<off_t>::max()) + 1U;
+    require_rejected(PARENT, "record.bin", &oversized);
+#endif
+}
+
 #ifndef _WIN32
 
 class ParentDirectory final {
@@ -640,6 +699,22 @@ void write_leaf(int parent_fd, std::string_view leaf, std::span<const std::byte>
     return status;
 }
 
+[[nodiscard]] durable_record::RecordSnapshot leaf_snapshot(int parent_fd, std::string_view leaf) {
+    const auto status = leaf_stat(parent_fd, leaf);
+    if (status.st_size < 0) {
+        throw TestFailure("fixture leaf has negative size");
+    }
+    return durable_record::RecordSnapshot{
+        .identity =
+            {
+                .first = static_cast<std::uint64_t>(status.st_dev),
+                .second = static_cast<std::uint64_t>(status.st_ino),
+                .third = 0,
+            },
+        .size = static_cast<std::uint64_t>(status.st_size),
+    };
+}
+
 [[nodiscard]] std::vector<std::byte> read_leaf(int parent_fd, std::string_view leaf) {
     const std::string name{leaf};
     const int fd = ::openat(parent_fd, name.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
@@ -679,11 +754,296 @@ void require_preserved(int parent_fd, std::string_view leaf, std::span<const std
 
 #if defined(__APPLE__)
 
+void install_extended_read_acl(int descriptor);
+
 void check_bounded_rejected(const durable_record::BoundedReadResult& result) {
     CHECK(result.state() == durable_record::BoundedReadState::rejected);
     CHECK(!result.bytes().has_value());
     CHECK(!result.snapshot().has_value());
     CHECK(result.native_error());
+}
+
+void check_owned_open_rejected(durable_record::OwnedFileOpenResult result) {
+    CHECK(result.state() == durable_record::OwnedFileOpenState::rejected);
+    CHECK(!result.opened().has_value());
+    CHECK(result.native_error());
+}
+
+void test_owned_file_open_exact_missing_and_same_handle() {
+    TempDirectory directory;
+    ParentDirectory parent(directory.path());
+    write_leaf(parent.fd(), "record.bin", PAYLOAD);
+    const auto expected = leaf_snapshot(parent.fd(), "record.bin");
+
+    auto result =
+        durable_record::open_owned_exact_at(parent.native_handle(), "record.bin", expected);
+    CHECK(result.state() == durable_record::OwnedFileOpenState::exact);
+    CHECK(result.opened().has_value());
+    CHECK(result.opened()->file.valid());
+    CHECK(result.opened()->snapshot == expected);
+    CHECK(!result.native_error());
+
+    auto opened = std::move(result).take_opened();
+    CHECK(opened.has_value());
+    CHECK(!result.opened().has_value());
+    CHECK(!std::move(result).take_opened().has_value());
+    CHECK(::renameat(parent.fd(), "record.bin", parent.fd(), "original.bin") == 0);
+    sync_parent(parent.fd());
+    write_leaf(parent.fd(), "record.bin", OTHER_PAYLOAD);
+
+    gnfs::util::MmapFile mapped(std::move(opened->file));
+    CHECK(mapped.size() == PAYLOAD.size());
+    CHECK(std::equal(PAYLOAD.begin(), PAYLOAD.end(),
+                     reinterpret_cast<const std::byte*>(mapped.data())));
+    require_preserved(parent.fd(), "original.bin", PAYLOAD);
+    require_preserved(parent.fd(), "record.bin", OTHER_PAYLOAD);
+
+    auto missing =
+        durable_record::open_owned_exact_at(parent.native_handle(), "missing.bin", expected);
+    CHECK(missing.state() == durable_record::OwnedFileOpenState::missing);
+    CHECK(!missing.opened().has_value());
+    CHECK(!missing.native_error());
+    CHECK(parent.is_open());
+}
+
+struct OwnedOpenReplacementContext final {
+    int parent_fd = -1;
+    bool invoked = false;
+    bool replaced = false;
+};
+
+[[nodiscard]] bool replace_owned_open_leaf(durable_record::OwnedFileOpenFaultPoint,
+                                           void* opaque) noexcept {
+    auto& context = *static_cast<OwnedOpenReplacementContext*>(opaque);
+    context.invoked = true;
+    context.replaced =
+        ::renameat(context.parent_fd, "record.bin", context.parent_fd, "original.bin") == 0 &&
+        ::renameat(context.parent_fd, "replacement.bin", context.parent_fd, "record.bin") == 0 &&
+        ::fsync(context.parent_fd) == 0;
+    return false;
+}
+
+struct OwnedOpenHardlinkContext final {
+    int parent_fd = -1;
+    bool invoked = false;
+    bool linked = false;
+};
+
+[[nodiscard]] bool add_owned_open_hardlink(durable_record::OwnedFileOpenFaultPoint,
+                                           void* opaque) noexcept {
+    auto& context = *static_cast<OwnedOpenHardlinkContext*>(opaque);
+    context.invoked = true;
+    context.linked =
+        ::linkat(context.parent_fd, "record.bin", context.parent_fd, "linked.bin", 0) == 0 &&
+        ::fsync(context.parent_fd) == 0;
+    return false;
+}
+
+struct OwnedOpenMetadataDriftContext final {
+    int parent_fd = -1;
+    bool invoked = false;
+    bool drifted = false;
+};
+
+[[nodiscard]] bool drift_owned_open_metadata(durable_record::OwnedFileOpenFaultPoint,
+                                             void* opaque) noexcept {
+    auto& context = *static_cast<OwnedOpenMetadataDriftContext*>(opaque);
+    context.invoked = true;
+    const int descriptor =
+        ::openat(context.parent_fd, "record.bin", O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+    if (descriptor < 0) {
+        return false;
+    }
+    const std::array<timespec, 2> timestamps{
+        timespec{.tv_sec = 1, .tv_nsec = 0},
+        timespec{.tv_sec = 1, .tv_nsec = 0},
+    };
+    const bool changed = ::fchmod(descriptor, 0400) == 0 && ::fchmod(descriptor, 0600) == 0 &&
+                         ::futimens(descriptor, timestamps.data()) == 0 && ::fsync(descriptor) == 0;
+    const bool closed = ::close(descriptor) == 0;
+    context.drifted = changed && closed;
+    return false;
+}
+
+void test_owned_file_open_rejects_drift_and_interruption() {
+    {
+        TempDirectory directory;
+        ParentDirectory parent(directory.path());
+        write_leaf(parent.fd(), "record.bin", PAYLOAD);
+        write_leaf(parent.fd(), "replacement.bin", OTHER_PAYLOAD);
+        const auto expected = leaf_snapshot(parent.fd(), "record.bin");
+        OwnedOpenReplacementContext replacement{.parent_fd = parent.fd()};
+        auto result =
+            durable_record::open_owned_exact_at(parent.native_handle(), "record.bin", expected,
+                                                durable_record::OwnedFileOpenTestHooks{
+                                                    .stop_after = replace_owned_open_leaf,
+                                                    .context = &replacement,
+                                                });
+        CHECK(replacement.invoked);
+        CHECK(replacement.replaced);
+        check_owned_open_rejected(std::move(result));
+        require_preserved(parent.fd(), "original.bin", PAYLOAD);
+        require_preserved(parent.fd(), "record.bin", OTHER_PAYLOAD);
+    }
+    {
+        TempDirectory directory;
+        ParentDirectory parent(directory.path());
+        write_leaf(parent.fd(), "record.bin", PAYLOAD);
+        const auto expected = leaf_snapshot(parent.fd(), "record.bin");
+        OwnedOpenHardlinkContext hardlink{.parent_fd = parent.fd()};
+        auto result =
+            durable_record::open_owned_exact_at(parent.native_handle(), "record.bin", expected,
+                                                durable_record::OwnedFileOpenTestHooks{
+                                                    .stop_after = add_owned_open_hardlink,
+                                                    .context = &hardlink,
+                                                });
+        CHECK(hardlink.invoked);
+        CHECK(hardlink.linked);
+        check_owned_open_rejected(std::move(result));
+        require_preserved(parent.fd(), "record.bin", PAYLOAD);
+        require_preserved(parent.fd(), "linked.bin", PAYLOAD);
+    }
+    {
+        TempDirectory directory;
+        ParentDirectory parent(directory.path());
+        write_leaf(parent.fd(), "record.bin", PAYLOAD);
+        const auto expected = leaf_snapshot(parent.fd(), "record.bin");
+        OwnedOpenMetadataDriftContext drift{.parent_fd = parent.fd()};
+        auto result =
+            durable_record::open_owned_exact_at(parent.native_handle(), "record.bin", expected,
+                                                durable_record::OwnedFileOpenTestHooks{
+                                                    .stop_after = drift_owned_open_metadata,
+                                                    .context = &drift,
+                                                });
+        CHECK(drift.invoked);
+        CHECK(drift.drifted);
+        check_owned_open_rejected(std::move(result));
+        require_preserved(parent.fd(), "record.bin", PAYLOAD);
+        CHECK(leaf_mode(parent.fd(), "record.bin") == 0600);
+    }
+    {
+        TempDirectory directory;
+        ParentDirectory parent(directory.path());
+        write_leaf(parent.fd(), "record.bin", PAYLOAD);
+        const auto expected = leaf_snapshot(parent.fd(), "record.bin");
+        const int recyclable_descriptor =
+            ::openat(parent.fd(), "record.bin", O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+        CHECK(recyclable_descriptor >= 0);
+        CHECK(::close(recyclable_descriptor) == 0);
+        OwnedOpenObservationContext interruption{.stop = true};
+        auto result =
+            durable_record::open_owned_exact_at(parent.native_handle(), "record.bin", expected,
+                                                durable_record::OwnedFileOpenTestHooks{
+                                                    .stop_after = observe_owned_file_open,
+                                                    .context = &interruption,
+                                                });
+        CHECK(interruption.called);
+        CHECK(result.state() == durable_record::OwnedFileOpenState::interrupted);
+        CHECK(!result.opened().has_value());
+        CHECK(result.native_error() == std::errc::operation_canceled);
+        const int reopened_descriptor =
+            ::openat(parent.fd(), "record.bin", O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+        CHECK(reopened_descriptor == recyclable_descriptor);
+        CHECK(::close(reopened_descriptor) == 0);
+        require_preserved(parent.fd(), "record.bin", PAYLOAD);
+    }
+}
+
+void test_owned_file_open_rejects_policy_and_binding_mismatch() {
+    {
+        TempDirectory directory;
+        ParentDirectory parent(directory.path());
+        write_leaf(parent.fd(), "record.bin", PAYLOAD);
+        auto wrong = leaf_snapshot(parent.fd(), "record.bin");
+        ++wrong.identity.second;
+        check_owned_open_rejected(
+            durable_record::open_owned_exact_at(parent.native_handle(), "record.bin", wrong));
+        wrong = leaf_snapshot(parent.fd(), "record.bin");
+        ++wrong.size;
+        check_owned_open_rejected(
+            durable_record::open_owned_exact_at(parent.native_handle(), "record.bin", wrong));
+        require_preserved(parent.fd(), "record.bin", PAYLOAD);
+    }
+    {
+        TempDirectory directory;
+        ParentDirectory parent(directory.path());
+        write_leaf(parent.fd(), "target.bin", PAYLOAD);
+        CHECK(::symlinkat("target.bin", parent.fd(), "record.bin") == 0);
+        sync_parent(parent.fd());
+        check_owned_open_rejected(durable_record::open_owned_exact_at(
+            parent.native_handle(), "record.bin", leaf_snapshot(parent.fd(), "target.bin")));
+        require_preserved(parent.fd(), "target.bin", PAYLOAD);
+    }
+    {
+        TempDirectory directory;
+        ParentDirectory parent(directory.path());
+        write_leaf(parent.fd(), "record.bin", PAYLOAD);
+        CHECK(::linkat(parent.fd(), "record.bin", parent.fd(), "linked.bin", 0) == 0);
+        sync_parent(parent.fd());
+        check_owned_open_rejected(durable_record::open_owned_exact_at(
+            parent.native_handle(), "record.bin", leaf_snapshot(parent.fd(), "record.bin")));
+        require_preserved(parent.fd(), "record.bin", PAYLOAD);
+    }
+    {
+        TempDirectory directory;
+        ParentDirectory parent(directory.path());
+        CHECK(::mkfifoat(parent.fd(), "record.bin", 0600) == 0);
+        sync_parent(parent.fd());
+        check_owned_open_rejected(durable_record::open_owned_exact_at(
+            parent.native_handle(), "record.bin", leaf_snapshot(parent.fd(), "record.bin")));
+        CHECK(S_ISFIFO(leaf_stat(parent.fd(), "record.bin").st_mode));
+    }
+    {
+        TempDirectory directory;
+        ParentDirectory parent(directory.path());
+        CHECK(::mkdirat(parent.fd(), "record.bin", 0700) == 0);
+        sync_parent(parent.fd());
+        check_owned_open_rejected(durable_record::open_owned_exact_at(
+            parent.native_handle(), "record.bin", leaf_snapshot(parent.fd(), "record.bin")));
+        CHECK(S_ISDIR(leaf_stat(parent.fd(), "record.bin").st_mode));
+    }
+    for (const mode_t mode : {static_cast<mode_t>(0400), static_cast<mode_t>(0640),
+                              static_cast<mode_t>(0700), static_cast<mode_t>(04600)}) {
+        TempDirectory directory;
+        ParentDirectory parent(directory.path());
+        write_leaf(parent.fd(), "record.bin", PAYLOAD, mode);
+        check_owned_open_rejected(durable_record::open_owned_exact_at(
+            parent.native_handle(), "record.bin", leaf_snapshot(parent.fd(), "record.bin")));
+        require_preserved(parent.fd(), "record.bin", PAYLOAD);
+    }
+    {
+        TempDirectory directory;
+        ParentDirectory parent(directory.path());
+        write_leaf(parent.fd(), "record.bin", PAYLOAD);
+        const int descriptor =
+            ::openat(parent.fd(), "record.bin", O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+        CHECK(descriptor >= 0);
+        install_extended_read_acl(descriptor);
+        CHECK(::close(descriptor) == 0);
+        check_owned_open_rejected(durable_record::open_owned_exact_at(
+            parent.native_handle(), "record.bin", leaf_snapshot(parent.fd(), "record.bin")));
+        require_preserved(parent.fd(), "record.bin", PAYLOAD);
+    }
+    {
+        TempDirectory directory;
+        ParentDirectory parent(directory.path());
+        write_leaf(parent.fd(), "record.bin", PAYLOAD);
+        const auto expected = leaf_snapshot(parent.fd(), "record.bin");
+        CHECK(::chmod(directory.path().c_str(), 0770) == 0);
+        check_owned_open_rejected(
+            durable_record::open_owned_exact_at(parent.native_handle(), "record.bin", expected));
+        require_preserved(parent.fd(), "record.bin", PAYLOAD);
+    }
+    {
+        TempDirectory directory;
+        ParentDirectory parent(directory.path());
+        write_leaf(parent.fd(), "record.bin", PAYLOAD);
+        const auto expected = leaf_snapshot(parent.fd(), "record.bin");
+        install_extended_read_acl(parent.fd());
+        check_owned_open_rejected(
+            durable_record::open_owned_exact_at(parent.native_handle(), "record.bin", expected));
+        require_preserved(parent.fd(), "record.bin", PAYLOAD);
+    }
 }
 
 void test_bounded_read_exact_missing_and_stable_identity() {
@@ -759,8 +1119,6 @@ void test_bounded_read_inclusive_size_bounds() {
         CHECK(parent.is_open());
     }
 }
-
-void install_extended_read_acl(int descriptor);
 
 void test_bounded_read_rejects_malformed_leaves_without_blocking() {
     {
@@ -899,6 +1257,45 @@ void test_bounded_read_parent_policy_fails_closed() {
 }
 
 #elif defined(__linux__)
+
+void test_linux_owned_file_open_is_unsupported_before_observation() {
+    TempDirectory directory;
+    ParentDirectory parent(directory.path());
+    write_leaf(parent.fd(), "record.bin", PAYLOAD);
+    const auto expected = leaf_snapshot(parent.fd(), "record.bin");
+    const auto before = leaf_stat(parent.fd(), "record.bin");
+    OwnedOpenObservationContext observation;
+
+    auto existing =
+        durable_record::open_owned_exact_at(parent.native_handle(), "record.bin", expected,
+                                            durable_record::OwnedFileOpenTestHooks{
+                                                .stop_after = observe_owned_file_open,
+                                                .context = &observation,
+                                            });
+    CHECK(existing.state() == durable_record::OwnedFileOpenState::unsupported);
+    CHECK(!existing.opened().has_value());
+    CHECK(existing.native_error() == std::errc::operation_not_supported);
+    CHECK(!observation.called);
+
+    auto missing =
+        durable_record::open_owned_exact_at(parent.native_handle(), "missing.bin", expected,
+                                            durable_record::OwnedFileOpenTestHooks{
+                                                .stop_after = observe_owned_file_open,
+                                                .context = &observation,
+                                            });
+    CHECK(missing.state() == durable_record::OwnedFileOpenState::unsupported);
+    CHECK(!missing.opened().has_value());
+    CHECK(missing.native_error() == std::errc::operation_not_supported);
+    CHECK(!observation.called);
+    CHECK(!leaf_exists(parent.fd(), "missing.bin"));
+
+    const auto after = leaf_stat(parent.fd(), "record.bin");
+    CHECK(after.st_dev == before.st_dev);
+    CHECK(after.st_ino == before.st_ino);
+    CHECK(after.st_mode == before.st_mode);
+    CHECK(after.st_size == before.st_size);
+    require_preserved(parent.fd(), "record.bin", PAYLOAD);
+}
 
 void test_linux_bounded_read_is_unsupported_before_action() {
     TempDirectory directory;
@@ -1240,6 +1637,50 @@ private:
     HANDLE handle_ = INVALID_HANDLE_VALUE;
 };
 
+void test_windows_owned_file_open_is_unsupported_before_observation() {
+    TempDirectory directory;
+    WindowsParentDirectory parent(directory.path());
+    const auto existing_path = directory.path() / "record.bin";
+    {
+        std::ofstream output(existing_path, std::ios::binary | std::ios::trunc);
+        CHECK(output.is_open());
+        output.write(reinterpret_cast<const char*>(PAYLOAD.data()),
+                     static_cast<std::streamsize>(PAYLOAD.size()));
+        CHECK(output.good());
+    }
+    const auto size_before = std::filesystem::file_size(existing_path);
+    constexpr durable_record::RecordSnapshot EXPECTED{{1, 2, 3}, PAYLOAD.size()};
+    OwnedOpenObservationContext observation;
+    const durable_record::OwnedFileOpenTestHooks hooks{
+        .stop_after = observe_owned_file_open,
+        .context = &observation,
+    };
+
+    auto existing =
+        durable_record::open_owned_exact_at(parent.native_handle(), "record.bin", EXPECTED, hooks);
+    CHECK(existing.state() == durable_record::OwnedFileOpenState::unsupported);
+    CHECK(!existing.opened().has_value());
+    CHECK(existing.native_error() == std::errc::operation_not_supported);
+    CHECK(!observation.called);
+
+    auto missing =
+        durable_record::open_owned_exact_at(parent.native_handle(), "missing.bin", EXPECTED, hooks);
+    CHECK(missing.state() == durable_record::OwnedFileOpenState::unsupported);
+    CHECK(!missing.opened().has_value());
+    CHECK(missing.native_error() == std::errc::operation_not_supported);
+    CHECK(!observation.called);
+    CHECK(!std::filesystem::exists(directory.path() / "missing.bin"));
+    CHECK(std::filesystem::file_size(existing_path) == size_before);
+
+    std::ifstream input(existing_path, std::ios::binary);
+    CHECK(input.is_open());
+    std::array<std::byte, PAYLOAD.size()> bytes{};
+    input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    CHECK(input.good());
+    CHECK(bytes == PAYLOAD);
+    CHECK(parent.is_open());
+}
+
 void test_windows_production_fails_before_mutation() {
     TempDirectory directory;
     WindowsParentDirectory parent(directory.path());
@@ -1529,13 +1970,20 @@ void run_tests(std::string_view suite) {
         run("probe fail-closed", test_probe_fails_closed_before_mutation);
         run("bounded read request validation", test_bounded_read_invalid_requests_stop_before_ops);
         run("bounded read synthetic contract", test_bounded_read_synthetic_results_and_contract);
+        run("owned exact open request validation",
+            test_owned_file_open_invalid_requests_stop_before_observation);
 #if defined(__APPLE__)
+        run("owned exact open and same handle", test_owned_file_open_exact_missing_and_same_handle);
+        run("owned exact open drift", test_owned_file_open_rejects_drift_and_interruption);
+        run("owned exact open policy", test_owned_file_open_rejects_policy_and_binding_mismatch);
         run("bounded read exact and missing", test_bounded_read_exact_missing_and_stable_identity);
         run("bounded read inclusive bounds", test_bounded_read_inclusive_size_bounds);
         run("bounded read malformed leaves",
             test_bounded_read_rejects_malformed_leaves_without_blocking);
         run("bounded read parent policy", test_bounded_read_parent_policy_fails_closed);
 #elif defined(__linux__)
+        run("Linux owned exact open unsupported before observation",
+            test_linux_owned_file_open_is_unsupported_before_observation);
         run("Linux bounded read unsupported before action",
             test_linux_bounded_read_is_unsupported_before_action);
 #endif
@@ -1547,6 +1995,8 @@ void run_tests(std::string_view suite) {
         run("content and mode conflicts", test_wrong_bytes_sizes_and_modes_are_preserved);
         run("malformed leaves", test_symlink_hardlink_and_nonregular_are_preserved);
 #else
+        run("Windows owned exact open unsupported before observation",
+            test_windows_owned_file_open_is_unsupported_before_observation);
         run("Windows production fail-closed", test_windows_production_fails_before_mutation);
 #endif
     }

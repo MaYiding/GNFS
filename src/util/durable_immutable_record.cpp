@@ -38,6 +38,46 @@ namespace gnfs::util::durable_immutable_record {
 
 namespace detail {
 
+class OwnedFileOpenResultFactory final {
+public:
+    [[nodiscard]] static OwnedFileOpenResult missing() noexcept {
+        return OwnedFileOpenResult(OwnedFileOpenState::missing, std::nullopt, {});
+    }
+
+    [[nodiscard]] static OwnedFileOpenResult exact(OwnedNativeFile file,
+                                                   RecordSnapshot snapshot) noexcept {
+        static_assert(std::is_nothrow_move_constructible_v<OpenedOwnedFile>);
+        auto opened = OpenedOwnedFile(std::move(file), snapshot);
+        return OwnedFileOpenResult(OwnedFileOpenState::exact,
+                                   std::optional<OpenedOwnedFile>(std::move(opened)), {});
+    }
+
+    [[nodiscard]] static OwnedFileOpenResult rejected(std::error_code error) noexcept {
+        return failure(OwnedFileOpenState::rejected, error);
+    }
+
+    [[nodiscard]] static OwnedFileOpenResult interrupted(std::error_code error) noexcept {
+        return failure(OwnedFileOpenState::interrupted, error);
+    }
+
+    [[nodiscard]] static OwnedFileOpenResult unsupported(std::error_code error) noexcept {
+        return failure(OwnedFileOpenState::unsupported, error);
+    }
+
+    [[nodiscard]] static OwnedFileOpenResult failed(std::error_code error) noexcept {
+        return failure(OwnedFileOpenState::failed, error);
+    }
+
+private:
+    [[nodiscard]] static OwnedFileOpenResult failure(OwnedFileOpenState state,
+                                                     std::error_code error) noexcept {
+        if (!error) {
+            error = std::make_error_code(std::errc::protocol_error);
+        }
+        return OwnedFileOpenResult(state, std::nullopt, error);
+    }
+};
+
 class RecordPublishResultFactory final {
 public:
     [[nodiscard]] static RecordPublishResult durable(RecordPublishDisposition disposition,
@@ -181,6 +221,35 @@ validate_bounded_read_request(NativeHandle parent_handle, const std::filesystem:
     return std::nullopt;
 }
 
+[[nodiscard]] std::optional<OwnedFileOpenResult>
+validate_owned_file_open_request(NativeHandle parent_handle, const std::filesystem::path& leaf,
+                                 const RecordSnapshot& expected) noexcept {
+    try {
+        if (parent_handle == INVALID_NATIVE_HANDLE || invalid_relative_leaf(leaf)) {
+            return detail::OwnedFileOpenResultFactory::rejected(invalid_argument_error());
+        }
+#ifndef _WIN32
+        if (parent_handle < 0 ||
+            static_cast<std::uintmax_t>(parent_handle) >
+                static_cast<std::uintmax_t>(std::numeric_limits<int>::max()) ||
+            expected.size > static_cast<std::uint64_t>(std::numeric_limits<off_t>::max())) {
+            return detail::OwnedFileOpenResultFactory::rejected(invalid_argument_error());
+        }
+#else
+        (void)expected;
+#endif
+    } catch (const std::bad_alloc&) {
+        return detail::OwnedFileOpenResultFactory::failed(
+            std::make_error_code(std::errc::not_enough_memory));
+    } catch (const std::filesystem::filesystem_error& error) {
+        return detail::OwnedFileOpenResultFactory::rejected(error.code());
+    } catch (...) {
+        return detail::OwnedFileOpenResultFactory::failed(
+            std::make_error_code(std::errc::io_error));
+    }
+    return std::nullopt;
+}
+
 [[nodiscard]] std::optional<RecordPublishResult>
 validate_request(NativeHandle parent_handle, const std::filesystem::path& pending_leaf,
                  const std::filesystem::path& canonical_leaf,
@@ -265,6 +334,11 @@ make_interrupted(RecordPublishDisposition disposition,
 }
 
 [[nodiscard]] bool should_interrupt(const RecordTestHooks& hooks, RecordFaultPoint point) noexcept {
+    return hooks.stop_after != nullptr && hooks.stop_after(point, hooks.context);
+}
+
+[[nodiscard]] bool should_interrupt_owned_file_open(const OwnedFileOpenTestHooks& hooks,
+                                                    OwnedFileOpenFaultPoint point) noexcept {
     return hooks.stop_after != nullptr && hooks.stop_after(point, hooks.context);
 }
 
@@ -526,6 +600,20 @@ inspect_failure(const InspectResult& inspection, RecordPublishStatus rejected_st
 [[nodiscard]] bool same_named_object(const struct stat& held, const struct stat& named) noexcept {
     return held.st_dev == named.st_dev && held.st_ino == named.st_ino;
 }
+
+#if defined(__APPLE__)
+[[nodiscard]] bool stable_open_metadata(const struct stat& before,
+                                        const struct stat& after) noexcept {
+    return before.st_dev == after.st_dev && before.st_ino == after.st_ino &&
+           before.st_uid == after.st_uid && before.st_gid == after.st_gid &&
+           before.st_mode == after.st_mode && before.st_nlink == after.st_nlink &&
+           before.st_size == after.st_size &&
+           before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec &&
+           before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec &&
+           before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec &&
+           before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec;
+}
+#endif
 
 [[nodiscard]] bool named_snapshot_matches(const struct stat& metadata,
                                           const RecordSnapshot& expected) noexcept {
@@ -1194,6 +1282,178 @@ BoundedReadResult read_bounded_at_with_ops(NativeHandle parent_handle,
     } catch (...) {
         return BoundedReadResult::failed(std::make_error_code(std::errc::io_error));
     }
+}
+
+OwnedFileOpenResult open_owned_exact_at(NativeHandle parent_handle,
+                                        const std::filesystem::path& leaf,
+                                        const RecordSnapshot& expected,
+                                        OwnedFileOpenTestHooks hooks) noexcept {
+    if (auto invalid = validate_owned_file_open_request(parent_handle, leaf, expected)) {
+        return std::move(*invalid);
+    }
+
+#if !defined(__APPLE__)
+    (void)hooks;
+    return detail::OwnedFileOpenResultFactory::unsupported(unsupported_error());
+#else
+    const auto parent = parent_descriptor(parent_handle);
+    if (!parent) {
+        return detail::OwnedFileOpenResultFactory::rejected(posix_error(EBADF));
+    }
+
+    const auto parent_failure = [](const ParentPolicyResult& policy) noexcept {
+        switch (policy.state) {
+        case ParentPolicyState::rejected:
+            return detail::OwnedFileOpenResultFactory::rejected(policy.error);
+        case ParentPolicyState::unsupported:
+            return detail::OwnedFileOpenResultFactory::unsupported(policy.error);
+        case ParentPolicyState::failed:
+            return detail::OwnedFileOpenResultFactory::failed(policy.error);
+        case ParentPolicyState::accepted:
+            break;
+        }
+        return detail::OwnedFileOpenResultFactory::failed(protocol_error());
+    };
+
+    const auto parent_before = inspect_parent_policy(*parent);
+    if (parent_before.state != ParentPolicyState::accepted) {
+        return parent_failure(parent_before);
+    }
+
+    int file_descriptor = -1;
+    do {
+        file_descriptor =
+            ::openat(*parent, leaf.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
+    } while (file_descriptor < 0 && errno == EINTR);
+    if (file_descriptor < 0) {
+        const int saved_errno = errno;
+        if (saved_errno == ENOENT) {
+            const auto parent_after = inspect_parent_policy(*parent);
+            if (parent_after.state != ParentPolicyState::accepted) {
+                return parent_failure(parent_after);
+            }
+            struct stat named{};
+            int missing_result = -1;
+            do {
+                missing_result = ::fstatat(*parent, leaf.c_str(), &named, AT_SYMLINK_NOFOLLOW);
+            } while (missing_result != 0 && errno == EINTR);
+            if (missing_result == 0) {
+                return detail::OwnedFileOpenResultFactory::rejected(protocol_error());
+            }
+            if (errno != ENOENT) {
+                return detail::OwnedFileOpenResultFactory::failed(posix_error(errno));
+            }
+            return detail::OwnedFileOpenResultFactory::missing();
+        }
+        if (saved_errno == ELOOP) {
+            return detail::OwnedFileOpenResultFactory::rejected(posix_error(saved_errno));
+        }
+        return detail::OwnedFileOpenResultFactory::failed(posix_error(saved_errno));
+    }
+
+    const auto close_and_return =
+        [&](OwnedFileOpenResult intended) noexcept -> OwnedFileOpenResult {
+        // Do not retry close(2): after EINTR the descriptor state is
+        // platform-dependent and a retry can close a reused descriptor.
+        if (::close(file_descriptor) == 0) {
+            return intended;
+        }
+        return detail::OwnedFileOpenResultFactory::failed(posix_error(errno));
+    };
+    const auto rejected = [&](std::error_code error = protocol_error()) noexcept {
+        return close_and_return(detail::OwnedFileOpenResultFactory::rejected(error));
+    };
+    const auto failed = [&](std::error_code error) noexcept {
+        return close_and_return(detail::OwnedFileOpenResultFactory::failed(error));
+    };
+    const auto check_acl = [&](int descriptor) noexcept -> std::optional<OwnedFileOpenResult> {
+        std::error_code acl_error;
+        switch (inspect_extended_acl(descriptor, acl_error)) {
+        case ExtendedAclState::absent:
+            return std::nullopt;
+        case ExtendedAclState::present:
+            return detail::OwnedFileOpenResultFactory::rejected(protocol_error());
+        case ExtendedAclState::unsupported:
+            return detail::OwnedFileOpenResultFactory::unsupported(acl_error);
+        case ExtendedAclState::failed:
+            return detail::OwnedFileOpenResultFactory::failed(acl_error);
+        }
+        return detail::OwnedFileOpenResultFactory::failed(protocol_error());
+    };
+
+    struct stat held_before{};
+    struct stat named_before{};
+    int stat_result = -1;
+    do {
+        stat_result = ::fstat(file_descriptor, &held_before);
+    } while (stat_result != 0 && errno == EINTR);
+    if (stat_result != 0) {
+        return failed(posix_error(errno));
+    }
+    do {
+        stat_result = ::fstatat(*parent, leaf.c_str(), &named_before, AT_SYMLINK_NOFOLLOW);
+    } while (stat_result != 0 && errno == EINTR);
+    if (stat_result != 0) {
+        return rejected(posix_error(errno));
+    }
+    if (!named_snapshot_matches(held_before, expected) ||
+        !named_snapshot_matches(named_before, expected) ||
+        !same_named_object(held_before, named_before)) {
+        return rejected();
+    }
+    if (auto acl = check_acl(file_descriptor)) {
+        return close_and_return(std::move(*acl));
+    }
+
+    if (should_interrupt_owned_file_open(hooks,
+                                         OwnedFileOpenFaultPoint::InitialValidationComplete)) {
+        return close_and_return(detail::OwnedFileOpenResultFactory::interrupted(
+            std::make_error_code(std::errc::operation_canceled)));
+    }
+
+    struct stat held_after{};
+    struct stat named_after{};
+    do {
+        stat_result = ::fstat(file_descriptor, &held_after);
+    } while (stat_result != 0 && errno == EINTR);
+    if (stat_result != 0) {
+        return failed(posix_error(errno));
+    }
+    do {
+        stat_result = ::fstatat(*parent, leaf.c_str(), &named_after, AT_SYMLINK_NOFOLLOW);
+    } while (stat_result != 0 && errno == EINTR);
+    if (stat_result != 0) {
+        return rejected(posix_error(errno));
+    }
+    if (!named_snapshot_matches(held_after, expected) ||
+        !named_snapshot_matches(named_after, expected) ||
+        !same_named_object(held_after, named_after) ||
+        !stable_open_metadata(held_before, held_after)) {
+        return rejected();
+    }
+    if (auto acl = check_acl(file_descriptor)) {
+        return close_and_return(std::move(*acl));
+    }
+
+    const auto parent_after = inspect_parent_policy(*parent);
+    if (parent_after.state != ParentPolicyState::accepted) {
+        return close_and_return(parent_failure(parent_after));
+    }
+
+    try {
+        auto file = OwnedNativeFile::adopt_ownership(file_descriptor);
+        file_descriptor = -1;
+        return detail::OwnedFileOpenResultFactory::exact(
+            std::move(file), RecordSnapshot{
+                                 .identity = native_identity(held_after),
+                                 .size = static_cast<std::uint64_t>(held_after.st_size),
+                             });
+    } catch (const std::bad_alloc&) {
+        return failed(std::make_error_code(std::errc::not_enough_memory));
+    } catch (...) {
+        return failed(std::make_error_code(std::errc::io_error));
+    }
+#endif
 }
 
 BoundedReadResult read_bounded_at(NativeHandle parent_handle, const std::filesystem::path& leaf,

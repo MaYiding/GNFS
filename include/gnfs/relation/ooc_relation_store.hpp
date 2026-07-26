@@ -6,6 +6,7 @@
 #include "gnfs/relation/ooc_relation_format.hpp"
 #include "gnfs/relation/relation_sequence_receipt.hpp"
 #include "gnfs/util/mmap_file.hpp"
+#include "gnfs/util/owned_native_file.hpp"
 #include "gnfs/util/process.hpp"
 #include <array>
 #include <atomic>

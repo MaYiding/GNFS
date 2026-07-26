@@ -1413,6 +1413,18 @@ RESERVED replacement also forces verification failure before activation
 returns; the same regression proves that the durability barrier, rather than a
 later successful absence check, is the capability transition.
 
+The exact owned-file opener foundation completed on 2026-07-26. The production
+macOS path validates a pure relative request, opens one no-follow/nonblocking
+leaf below a caller-held directory, and proves exact native identity, extent,
+owner, mode, single-link policy, ACL absence, stable metadata, and parent policy
+before returning the same move-only handle. Missing leaves are rechecked under
+the held parent. Rejected, interrupted, and failed paths close the internal
+descriptor without exposing a partial payload; the successful payload is
+factory-only and single-consumption. Linux and Windows return unsupported after
+pure request validation and before filesystem observation. This utility grants
+read ownership for one leaf only: it does not bind the directory's named path,
+commit an index/data pair, classify a handoff, or mint adoption authority.
+
 Locked cross-process adoption and the two-capability cleanup conversion remain
 required before the M1 exit criterion is complete.
 

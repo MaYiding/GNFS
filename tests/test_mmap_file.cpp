@@ -6,6 +6,7 @@
 // large multi-page mappings, and move semantics are now isolated.
 
 #include "gnfs/util/mmap_file.hpp"
+#include "gnfs/util/owned_native_file.hpp"
 #include "gnfs/util/process.hpp"
 #include "gnfs/util/temp_path.hpp"
 
