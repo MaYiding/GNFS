@@ -1,4 +1,7 @@
+#include <gnfs/relation/ooc_cleanup_transaction.hpp>
 #include <gnfs/sieve/distributed_sieve_protocol.hpp>
+
+#include "ooc_private_handoff_cleanup_authorization_internal.hpp"
 
 #include <algorithm>
 #include <array>
@@ -21,11 +24,52 @@
 namespace {
 
 namespace sieve = gnfs::sieve;
+namespace cleanup_detail = gnfs::relation::ooc_cleanup_detail;
 using Digest = gnfs::util::Sha256Digest;
 using Record = sieve::DistributedSieveProtocolRecordV1;
 using Status = sieve::DistributedSieveProtocolStatus;
 
 static_assert(!noexcept(sieve::distributed_sieve_record_kind(std::declval<const Record&>())));
+static_assert(
+    std::is_default_constructible_v<cleanup_detail::OOCPrivateHandoffCleanupAuthorizationBinding>);
+static_assert(
+    std::is_copy_constructible_v<cleanup_detail::OOCPrivateHandoffCleanupAuthorizationBinding>);
+static_assert(
+    !std::is_default_constructible_v<cleanup_detail::OOCPrivateHandoffCleanupAuthorizationMintKey>);
+static_assert(
+    !std::is_copy_constructible_v<cleanup_detail::OOCPrivateHandoffCleanupAuthorizationMintKey>);
+static_assert(
+    !std::is_move_constructible_v<cleanup_detail::OOCPrivateHandoffCleanupAuthorizationMintKey>);
+static_assert(
+    !std::is_move_assignable_v<cleanup_detail::OOCPrivateHandoffCleanupAuthorizationMintKey>);
+static_assert(
+    !std::is_default_constructible_v<cleanup_detail::OOCPrivateHandoffCleanupAuthorizationReceipt>);
+static_assert(
+    !std::is_copy_constructible_v<cleanup_detail::OOCPrivateHandoffCleanupAuthorizationReceipt>);
+static_assert(
+    !std::is_copy_assignable_v<cleanup_detail::OOCPrivateHandoffCleanupAuthorizationReceipt>);
+static_assert(std::is_nothrow_move_constructible_v<
+              cleanup_detail::OOCPrivateHandoffCleanupAuthorizationReceipt>);
+static_assert(
+    !std::is_move_assignable_v<cleanup_detail::OOCPrivateHandoffCleanupAuthorizationReceipt>);
+static_assert(
+    !std::is_constructible_v<cleanup_detail::OOCPrivateHandoffCleanupAuthorizationReceipt,
+                             cleanup_detail::OOCPrivateHandoffCleanupAuthorizationBinding>);
+static_assert(
+    !std::is_constructible_v<cleanup_detail::OOCPrivateHandoffCleanupAuthorizationReceipt,
+                             cleanup_detail::OOCPrivateHandoffCleanupAuthorizationMintKey&&,
+                             cleanup_detail::OOCPrivateHandoffCleanupAuthorizationBinding,
+                             std::shared_ptr<const void>, std::uint64_t>);
+static_assert(!std::is_constructible_v<cleanup_detail::OOCPrivateHandoffCleanupAuthorizationReceipt,
+                                       sieve::ArtifactCleanupAuthorizedV1>);
+static_assert(!std::is_constructible_v<cleanup_detail::OOCPrivateHandoffCleanupAuthorizationReceipt,
+                                       gnfs::relation::OOCPrivateHandoffRecordV1>);
+static_assert(!std::is_constructible_v<cleanup_detail::OOCPrivateHandoffCleanupAuthorizationReceipt,
+                                       gnfs::relation::OOCPrivateHandoffAdoptionReceipt>);
+static_assert(!std::is_constructible_v<cleanup_detail::OOCPrivateHandoffCleanupAuthorizationReceipt,
+                                       std::filesystem::path>);
+static_assert(
+    !std::is_constructible_v<cleanup_detail::OOCPrivateHandoffCleanupAuthorizationReceipt, Digest>);
 
 class TestFailure final : public std::runtime_error {
 public:

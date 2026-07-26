@@ -927,6 +927,9 @@ if(GNFS_BUILD_TESTS)
     add_executable(test_distributed_sieve_resume
         tests/test_distributed_sieve_resume.cpp
     )
+    target_include_directories(test_distributed_sieve_resume PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/relation
+    )
     target_link_libraries(test_distributed_sieve_resume PRIVATE gnfs_core Threads::Threads)
     add_test(
         NAME DistributedSieveResumeCore

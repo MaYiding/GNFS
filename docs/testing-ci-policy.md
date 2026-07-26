@@ -210,6 +210,13 @@ receipt after its descriptor-bound read. The test does not claim that a
 completed worker can be adopted after a master crash; the current contract
 invalidates and recomputes the whole distributed wave.
 
+`test_distributed_sieve_resume` is currently an `instant` pure protocol and
+compile-boundary contract. Besides the closed record/dependency tests, it
+compiles the source-private cleanup-authorization passkey and receipt traits.
+The passkey and receipt have no production or test mint route, so these checks
+freeze only the inaccessible capability surface; they are not evidence of a
+durable WaveStore or cleanup authority.
+
 `test_local_sieve_thread_budget` is the `instant` contract for balanced lane
 allocation, invalid limits, and a bounded property grid. The 64-special-Q probe
 remains a manual measurement and does not enter routine CI.

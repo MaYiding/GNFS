@@ -1370,6 +1370,8 @@ checks passed in Debug.
 - [x] Add locked cross-process adoption with no cleanup authority.
 - [x] Bind each adoption capability to its adopter process and retain the
   optional duplicate-pending observation for private conversion.
+- [x] Freeze a source-private, non-instantiable mint-key/receipt type seam
+  without adding a production or test mint path.
 - [x] Freeze the role-separated V2 authorized-cleanup marker codec and exact
   canonical/optional-pending handoff bindings without enabling runtime use.
 - [ ] Add the two-capability application-authorization conversion into
@@ -1479,6 +1481,15 @@ remains ordinary read-only data and grants no conversion or cleanup authority.
 The parent receipt or reader remains valid because the child changes only its
 copy-on-write state. The pending observation stays private and grants no
 unlink, intent, or cleanup authority.
+
+The source-private M1.7b capability seam was frozen next. Its passkey cannot be
+defaulted, copied, moved, or constructed outside the future WaveStore, and its
+receipt cannot be built from a protocol record, digest, path, lock lifetime,
+generic handoff, or adoption receipt. No production or test path can currently
+instantiate a valid receipt. This is compile-time authority-surface groundwork,
+not durable cleanup authority: minting remains blocked until a stable WaveStore
+root, held permanent lock, canonical same-handle record confirmation, and
+creator-process binding exist together.
 
 The M1.7a pure authorized-cleanup marker codec completed on 2026-07-26. Its
 480-byte frame has independent magic, schema, phase kind, and digest domain.
