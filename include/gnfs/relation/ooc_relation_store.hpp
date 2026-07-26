@@ -1025,8 +1025,13 @@ public:
             .index_size = index_size_for_count(descriptor.count),
             .data_size = descriptor.data_end,
         };
+        OOCCleanupOwnershipReceipt escrow(std::move(*cleanup_receipt_));
+        cleanup_receipt_.reset();
         const auto result = OOCCleanupTransaction::publish_private_lease_cleanup_handoff(
-            *cleanup_receipt_, *deferred_private_lease_, exact, hooks);
+            escrow, *deferred_private_lease_, exact, hooks);
+        if (!escrow.spent()) {
+            cleanup_receipt_.emplace(std::move(escrow));
+        }
         if (!result.completed() || result.stage != OOCCleanupStage::IntentDurable) {
             const auto error = result.native_error
                                    ? result.native_error

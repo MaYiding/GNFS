@@ -1526,11 +1526,12 @@ Expected-role V1 bytes remain `LegacyV1`; opposite-role V1 pending bytes remain
 foreign. Any nonempty crash prefix of the independent V2 magic fails closed, so
 a partial V2 publication cannot be rewritten as V1. Role-correct private V2
 records return `PlatformUnsupported` before a sync, rename, rewrite, or unlink.
-The public deferred-writer cleanup-handoff workflow runs this read-only
-admission before `finalize()` can change pair metadata, then repeats it under
-the same inherited `BaseLock` immediately before legacy intent publication.
-Ordinary non-private V1 paths retain their existing `IntentCorrupt` result for
-raw V2 bytes.
+The public deferred-writer cleanup-handoff workflow retains one read-only
+fail-early admission before `finalize()` can change pair metadata. That
+observation grants no authority across finalization. After the pair is durably
+final, publication mints a new action-bound permit from the finalized pair,
+exact lease generation, and inherited `BaseLock`. Ordinary non-private V1
+paths retain their existing `IntentCorrupt` result for raw V2 bytes.
 
 The adapter combines the cleanup facts, generic-handoff facts, and unknown or
 case-fold-colliding directory facts before one reduction. This preserves the
@@ -1649,13 +1650,64 @@ cross-path and cross-lock reuse, and fork-child rejection after parent
 authorization. Linux and Windows retain their path-limited policy and now
 share begin, resume, and receipt-preservation coverage.
 
-Nested Recover and Remove execution remains inside its existing action permit;
-the deferred writer's publication-only path also remains a separate action.
-Neither may mint or borrow a `RunLegacyCleanup` permit. The remaining action
-groups still require separate migrations. None of these checks claims
-protection against deliberate same-user inode cycling between a final
-revalidation and the following syscall, which remains outside the documented
-threat boundary.
+`PublishPrivateLeaseCleanupHandoff` now owns a separate post-finalize permit.
+Its production mint freezes the union witness, exact RESERVED/OWNED generation,
+external pending siblings, owner and directory generation, finalized pair
+fingerprints, exact cleanup expectation, creator process, frozen paths, and a
+strong reference to the same `BaseLock`. The former publication-entry and
+inner transaction preflights, plus the independent C1 classifier, are removed.
+An observation-only retained C1 consumer terminates the permit on any canonical
+or pending handoff.
+
+Every permit owns a per-`BaseLock` logical-action claim. The OS lock excludes
+independent opens; this claim also rejects a reentrant action that reuses the
+same inherited lock object. Blocked admission, exceptions, and permit
+destruction release the claim. It is defense in depth rather than a
+cross-process lock: fork copies still require the permit's retained union,
+lease, and pair witnesses.
+
+The deferred writer moves its pair receipt into a local escrow before any
+publication callback. The receipt is visibly unavailable throughout the
+attempt, so a callback cannot move it or reenter publication. A failure before
+canonical intent restores the unspent receipt. The same confirmation that
+proves an exact durable canonical marker commits the spend immediately. This
+happens before duplicate-pending removal, successor observation, final audit,
+or the `IntentDurable` callback. Any later failure keeps the spend committed
+and never recreates the capability.
+
+Publication uses a phase-aware mutation gate rather than the legacy one-shot
+gate. It revalidates the original retained witness before pending preparation,
+binds the exact durable pending inode before the pending callback, and saves a
+full successor witness. Before canonical rename, the gate proves that every
+non-intent slot still matches the original witness and that the only admitted
+change is the expected `intent.pending`. After canonical durability commits
+the receipt, it saves the canonical successor and revalidates it before
+duplicate-pending removal and successful return. Staged, staged-pending,
+quarantine, C1, lease-generation, pair, or inode drift therefore fails closed.
+An after-authorization hook deterministically creates the exact destination
+and covers `rename_no_replace()` convergence without bypassing sticky commit.
+
+Deterministic regressions cover post-finalize permit interruption and retry,
+pair-receipt escrow, rejected receipt extraction and reentrant publication,
+post-permit and post-pending C1 insertion, nested Recover and Remove returning
+`Busy`, pending interruption and retry, canonical interruption with a
+permanently spent pair receipt, claim release, and same-byte pending inode
+replacement at both rename and unlink operation hooks. Valid staged and
+staged-pending injection proves that policy-valid sibling slots cannot replace
+an exact phase transition. Duplicate-pending unlink and parent-sync failures
+prove that canonical commitment is sticky. A POSIX fork-copy race proves that
+the retained filesystem witness, not the process-local claim, closes shared
+lock-description publication. Complete namespace snapshots prove that every
+rejected prefix preserves the exact observed state. The same matrix directly
+covers `DestinationExists` convergence.
+
+Nested Recover and Remove execution inside their existing executors remains
+under the outer action permit. Public nested actions cannot mint a second
+permit on the same live lock. No action may mint or borrow a
+`RunLegacyCleanup` permit. The remaining action groups still require separate
+migrations. None of these checks claims protection against deliberate
+same-user inode cycling between a final revalidation and the following syscall,
+which remains outside the documented threat boundary.
 
 The policy implementation is compiled into `gnfs_core`. Its 60,025 closed leaf
 combinations, all current entry groups, out-of-range enum values, and

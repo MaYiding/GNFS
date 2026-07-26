@@ -214,8 +214,9 @@ regression also proves that a rejected generic-handoff leaf retains
 foreign-preservation precedence when legacy V1 markers coexist. Static entry
 placement keeps the preflight before sync, rename, rewrite, reconciliation, or
 unlink. The deferred-writer integration additionally snapshots an open pair
-and V2 leaf around rejection, proving its public cleanup-handoff preflight runs
-before `finalize()` changes pair bytes; marker publication repeats the check.
+and V2 leaf around rejection, proving its fail-early cleanup-handoff preflight
+runs before `finalize()` changes pair bytes. That observation never authorizes
+publication across finalization.
 The current runtime adapter combines all six logical leaf facts before
 reduction. Recovery now receives a production-only, move-only,
 `RecoverPrivateLease`-bound permit that retains the union observation and C1
@@ -256,6 +257,30 @@ begin receipts, and macOS byte-identical C1 replacement. The Linux and Windows
 policy branch shares canonical/pending
 begin and resume coverage. Nested Recover/Remove execution and the deferred
 writer's publication-only path remain under their distinct action contracts.
+Publication now mints a source-private permit only after the pair is durably
+final. It binds the retained union, exact lease generation, exact finalized
+pair, creator process, frozen paths, and a strong reference to the inherited
+`BaseLock`. A per-lock logical-action claim rejects nested Remove on the same
+live lock. Nested Recover opens a distinct lock and is rejected by the
+existing OS lock. Both return `Busy` without minting a second permit.
+
+The writer escrows its pair receipt for the complete publication attempt.
+Tests observe it as unavailable in permit, pending, and canonical callbacks;
+pre-canonical interruption restores it. The same exact durable canonical proof
+commits the spend before duplicate-pending cleanup, final audit, and the
+post-canonical callback. Later failures never restore the receipt. Receipt
+extraction and reentrant publication are rejected during escrow.
+
+The publication gate revalidates at pending preparation, binds the exact
+durable pending inode before the pending callback, saves the exact successor,
+and proves that only the expected intent slot changes before canonical rename.
+After sticky canonical commitment, it revalidates the canonical successor
+before duplicate-pending removal and successful return. Tests cover valid
+staged sibling injection at pending and operation hooks, cross-platform
+same-byte pending replacement at rename and unlink seams, duplicate-pending
+unlink and parent-sync failures, nested actions, canonical interruption, claim
+release, `DestinationExists` convergence, and a POSIX fork-copy publisher.
+Every failure comparison uses a complete namespace snapshot.
 `OOCCleanupPrivateLeaseCrash` is a `fast` self-exec suite from the same
 binary. It terminates children at each durable private-lease marker, rename,
 and teardown boundary. It also covers writer termination after the first and

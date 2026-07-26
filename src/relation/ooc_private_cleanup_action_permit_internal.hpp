@@ -19,6 +19,12 @@ class PrivateCleanupActionPermit;
 struct PrivateCleanupActionAdmission;
 struct PrivateLeaseRemovalAdmission;
 
+/// Source-private logical claim layered over one inherited BaseLock. The OS
+/// lock excludes independent opens; this claim also excludes reentrant actions
+/// that share the same live lock object.
+[[nodiscard]] bool try_claim_private_cleanup_action(BaseLock& lock) noexcept;
+void release_private_cleanup_action(BaseLock& lock) noexcept;
+
 /// Exact current lease generation proven against one caller receipt before a
 /// RemovePrivateLease permit may observe or reconcile C1.
 struct PrivateLeaseRemovalGenerationProof final {
@@ -71,6 +77,13 @@ private:
         const std::array<std::uint64_t, 3>& expected_directory_identity,
         const std::array<std::uint64_t, 3>& expected_owner_identity,
         const std::array<std::uint64_t, 3>& expected_owned_identity);
+    friend PrivateCleanupActionAdmission admit_private_lease_cleanup_handoff_locked(
+        const OOCCleanupPaths& paths, std::shared_ptr<BaseLock> lock,
+        const OOCCleanupRequest& request, const OwnershipProof& ownership_proof,
+        const std::array<std::uint64_t, 2>& expected_lease_id,
+        const std::array<std::uint64_t, 3>& expected_directory_identity,
+        const std::array<std::uint64_t, 3>& expected_owner_identity,
+        const std::array<std::uint64_t, 3>& expected_owned_identity);
     friend const BaseLock& begin_private_cleanup_action(PrivateCleanupActionPermit& permit,
                                                         const OOCCleanupPaths& paths,
                                                         PrivateNamespaceAction expected_action);
@@ -82,9 +95,22 @@ private:
                                           PrivateNamespaceAction expected_action);
     friend OOCPrivateHandoffInspectResult
     inspect_private_handoff_from_permit(PrivateCleanupActionPermit& permit);
+    friend OOCPrivateHandoffInspectResult
+    inspect_private_lease_cleanup_handoff_from_permit(PrivateCleanupActionPermit& permit);
     friend void authorize_private_cleanup_mutation(PrivateCleanupMutationGate& gate,
                                                    const OOCCleanupPaths& paths,
-                                                   const BaseLock& lock);
+                                                   const BaseLock& lock,
+                                                   PrivateCleanupMutationBoundary boundary);
+    friend void record_private_cleanup_pending_successor(PrivateCleanupMutationGate& gate,
+                                                         const OOCCleanupPaths& paths,
+                                                         const BaseLock& lock,
+                                                         const std::filesystem::path& pending_path,
+                                                         const FileIdentity& identity);
+    friend void commit_private_cleanup_canonical(PrivateCleanupMutationGate& gate,
+                                                 const OOCCleanupPaths& paths, const BaseLock& lock,
+                                                 const FileIdentity& durable_identity,
+                                                 bool renamed_from_pending,
+                                                 bool pending_must_remain);
 };
 
 /// Source-private bridge from the public inline executor to the retained
@@ -96,7 +122,7 @@ public:
         : permit_(&permit) {}
 
     [[nodiscard]] bool authorized() const noexcept {
-        return state_ == State::Authorized;
+        return state_ != State::Fresh && state_ != State::Failed;
     }
 
     PrivateCleanupMutationGate() = delete;
@@ -108,16 +134,36 @@ public:
 private:
     enum class State : std::uint8_t {
         Fresh,
-        Authorized,
+        LegacyAuthorized,
+        PublicationPendingPreparationAuthorized,
+        PublicationPendingDurable,
+        PublicationCanonicalRenameAuthorized,
+        PublicationReceiptCommitted,
+        PublicationPendingRemovalAuthorized,
+        PublicationCompleted,
         Failed,
     };
 
     PrivateCleanupActionPermit* permit_ = nullptr;
     State state_ = State::Fresh;
+    std::optional<FileIdentity> publication_pending_identity_;
+    std::optional<FileIdentity> publication_canonical_identity_;
+    bool publication_receipt_committed_ = false;
 
     friend void authorize_private_cleanup_mutation(PrivateCleanupMutationGate& gate,
                                                    const OOCCleanupPaths& paths,
-                                                   const BaseLock& lock);
+                                                   const BaseLock& lock,
+                                                   PrivateCleanupMutationBoundary boundary);
+    friend void record_private_cleanup_pending_successor(PrivateCleanupMutationGate& gate,
+                                                         const OOCCleanupPaths& paths,
+                                                         const BaseLock& lock,
+                                                         const std::filesystem::path& pending_path,
+                                                         const FileIdentity& identity);
+    friend void commit_private_cleanup_canonical(PrivateCleanupMutationGate& gate,
+                                                 const OOCCleanupPaths& paths, const BaseLock& lock,
+                                                 const FileIdentity& durable_identity,
+                                                 bool renamed_from_pending,
+                                                 bool pending_must_remain);
 };
 
 /// Exactly one of `blocked` and `permit` is populated by the production
@@ -142,6 +188,13 @@ private:
     admit_private_cleanup_action_locked(const OOCCleanupPaths& paths,
                                         std::shared_ptr<BaseLock> lock,
                                         PrivateNamespaceAction action);
+    friend PrivateCleanupActionAdmission admit_private_lease_cleanup_handoff_locked(
+        const OOCCleanupPaths& paths, std::shared_ptr<BaseLock> lock,
+        const OOCCleanupRequest& request, const OwnershipProof& ownership_proof,
+        const std::array<std::uint64_t, 2>& expected_lease_id,
+        const std::array<std::uint64_t, 3>& expected_directory_identity,
+        const std::array<std::uint64_t, 3>& expected_owner_identity,
+        const std::array<std::uint64_t, 3>& expected_owned_identity);
 };
 
 /// RemovePrivateLease admission keeps union-blocker precedence ahead of receipt
@@ -188,6 +241,16 @@ admit_private_lease_removal_locked(const OOCCleanupPaths& paths, std::shared_ptr
                                    const std::array<std::uint64_t, 3>& expected_owner_identity,
                                    const std::array<std::uint64_t, 3>& expected_owned_identity);
 
+/// Publication-specific mint. In addition to the retained authority-union
+/// witness, this binds the exact live lease generation and finalized pair
+/// proven by the two move-only receipts.
+[[nodiscard]] PrivateCleanupActionAdmission admit_private_lease_cleanup_handoff_locked(
+    const OOCCleanupPaths& paths, std::shared_ptr<BaseLock> lock, const OOCCleanupRequest& request,
+    const OwnershipProof& ownership_proof, const std::array<std::uint64_t, 2>& expected_lease_id,
+    const std::array<std::uint64_t, 3>& expected_directory_identity,
+    const std::array<std::uint64_t, 3>& expected_owner_identity,
+    const std::array<std::uint64_t, 3>& expected_owned_identity);
+
 /// Commit one action consumption attempt and return its retained BaseLock.
 /// Wrong-action, wrong-path, moved-from, fork-child, or repeated consumption is
 /// rejected before a namespace probe or mutation.
@@ -225,5 +288,17 @@ reconcile_private_handoff_from_permit(PrivateCleanupActionPermit& permit,
 /// handoff leaf.
 [[nodiscard]] OOCPrivateHandoffInspectResult
 inspect_private_handoff_from_permit(PrivateCleanupActionPermit& permit);
+
+/// Consume the retained C1 observation for cleanup-handoff publication without
+/// reconciling either leaf. Only an absent C1 state may reach its phase gate.
+[[nodiscard]] OOCPrivateHandoffInspectResult
+inspect_private_lease_cleanup_handoff_from_permit(PrivateCleanupActionPermit& permit);
+
+/// Bind the exact pending inode produced or confirmed by this action before any
+/// pending-durable test callback runs.
+void record_private_cleanup_pending_successor(PrivateCleanupMutationGate& gate,
+                                              const OOCCleanupPaths& paths, const BaseLock& lock,
+                                              const std::filesystem::path& pending_path,
+                                              const FileIdentity& identity);
 
 } // namespace gnfs::relation::ooc_cleanup_detail
