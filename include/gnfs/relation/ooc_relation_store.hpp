@@ -554,6 +554,7 @@ private:
                                                  ooc_cleanup_detail::protocol_error());
                     }
                     ooc_cleanup_detail::require_pair_namespace_reusable_locked(cleanup_paths);
+                    cleanup_lock->require_stable();
                 }
 
                 // Reserve both fresh names with O_EXCL before opening either
@@ -564,23 +565,37 @@ private:
                 std::optional<FreshArtifactReservation> index_reservation;
                 std::optional<FreshArtifactReservation> data_reservation;
                 try {
-                    index_reservation.emplace(FreshArtifactReservation::create(index_path));
-                    if (ooc_cleanup_detail::should_interrupt_private_lease(
-                            private_lease_hooks, OOCPrivateLeaseFaultPoint::FreshIndexReserved)) {
+                    index_reservation.emplace(
+                        ooc_cleanup_detail::invoke_with_stable_base_lock(*cleanup_lock, [&] {
+                            return FreshArtifactReservation::create(index_path);
+                        }));
+                    if (ooc_cleanup_detail::invoke_with_stable_base_lock(*cleanup_lock, [&] {
+                            return ooc_cleanup_detail::should_interrupt_private_lease(
+                                private_lease_hooks, OOCPrivateLeaseFaultPoint::FreshIndexReserved);
+                        })) {
                         throw std::system_error(
                             std::make_error_code(std::errc::operation_canceled),
                             "OOCRelationWriter: interrupted after fresh index reservation");
                     }
-                    data_reservation.emplace(FreshArtifactReservation::create(data_path));
-                    if (ooc_cleanup_detail::should_interrupt_private_lease(
-                            private_lease_hooks, OOCPrivateLeaseFaultPoint::FreshDataReserved)) {
+                    data_reservation.emplace(
+                        ooc_cleanup_detail::invoke_with_stable_base_lock(*cleanup_lock, [&] {
+                            return FreshArtifactReservation::create(data_path);
+                        }));
+                    if (ooc_cleanup_detail::invoke_with_stable_base_lock(*cleanup_lock, [&] {
+                            return ooc_cleanup_detail::should_interrupt_private_lease(
+                                private_lease_hooks, OOCPrivateLeaseFaultPoint::FreshDataReserved);
+                        })) {
                         throw std::system_error(
                             std::make_error_code(std::errc::operation_canceled),
                             "OOCRelationWriter: interrupted after fresh data reservation");
                     }
 
-                    data_stream_.open(data_path, std::ios::in | std::ios::out | std::ios::binary);
-                    idx_stream_.open(index_path, std::ios::in | std::ios::out | std::ios::binary);
+                    ooc_cleanup_detail::invoke_with_stable_base_lock(*cleanup_lock, [&] {
+                        data_stream_.open(data_path,
+                                          std::ios::in | std::ios::out | std::ios::binary);
+                        idx_stream_.open(index_path,
+                                         std::ios::in | std::ios::out | std::ios::binary);
+                    });
                     if (!data_stream_ || !idx_stream_) {
                         throw std::runtime_error("OOCRelationWriter: cannot open files at " +
                                                  base_path);
@@ -592,40 +607,52 @@ private:
                     const uint64_t format_version = FORMAT_VERSION;
                     const uint64_t durable_store_id = store_id_;
                     const uint64_t incomplete_count = 0;
-                    idx_stream_.write(reinterpret_cast<const char*>(&magic), 8);
-                    idx_stream_.write(reinterpret_cast<const char*>(&format_version), 8);
-                    idx_stream_.write(reinterpret_cast<const char*>(&durable_store_id), 8);
-                    idx_stream_.write(reinterpret_cast<const char*>(&incomplete_count), 8);
-                    const uint64_t data_magic = MAGIC_V3_DATA;
-                    data_stream_.write(reinterpret_cast<const char*>(&data_magic), 8);
-                    data_stream_.write(reinterpret_cast<const char*>(&format_version), 8);
-                    data_stream_.write(reinterpret_cast<const char*>(&durable_store_id), 8);
-                    ensure_streams_good("constructor header write");
-                    validate_open_v3_pair_headers("constructor header validation",
-                                                  incomplete_count);
-                    if (ooc_cleanup_detail::should_interrupt_private_lease(
-                            private_lease_hooks,
-                            OOCPrivateLeaseFaultPoint::FreshHeadersValidated)) {
+                    ooc_cleanup_detail::invoke_with_stable_base_lock(*cleanup_lock, [&] {
+                        idx_stream_.write(reinterpret_cast<const char*>(&magic), 8);
+                        idx_stream_.write(reinterpret_cast<const char*>(&format_version), 8);
+                        idx_stream_.write(reinterpret_cast<const char*>(&durable_store_id), 8);
+                        idx_stream_.write(reinterpret_cast<const char*>(&incomplete_count), 8);
+                        const uint64_t data_magic = MAGIC_V3_DATA;
+                        data_stream_.write(reinterpret_cast<const char*>(&data_magic), 8);
+                        data_stream_.write(reinterpret_cast<const char*>(&format_version), 8);
+                        data_stream_.write(reinterpret_cast<const char*>(&durable_store_id), 8);
+                        ensure_streams_good("constructor header write");
+                        validate_open_v3_pair_headers("constructor header validation",
+                                                      incomplete_count);
+                    });
+                    if (ooc_cleanup_detail::invoke_with_stable_base_lock(*cleanup_lock, [&] {
+                            return ooc_cleanup_detail::should_interrupt_private_lease(
+                                private_lease_hooks,
+                                OOCPrivateLeaseFaultPoint::FreshHeadersValidated);
+                        })) {
                         throw std::system_error(
                             std::make_error_code(std::errc::operation_canceled),
                             "OOCRelationWriter: interrupted after fresh header validation");
                     }
-                    data_reservation->close_checked(data_path);
-                    index_reservation->close_checked(index_path);
-                    auto cleanup_receipt = capture_fresh_cleanup_ownership_checked(
-                        base_path_, store_id_, index_reservation->identity(),
-                        data_reservation->identity());
+                    ooc_cleanup_detail::invoke_with_stable_base_lock(*cleanup_lock, [&] {
+                        data_reservation->close_checked(data_path);
+                        index_reservation->close_checked(index_path);
+                    });
+                    auto cleanup_receipt =
+                        ooc_cleanup_detail::invoke_with_stable_base_lock(*cleanup_lock, [&] {
+                            return capture_fresh_cleanup_ownership_checked(
+                                base_path_, store_id_, index_reservation->identity(),
+                                data_reservation->identity());
+                        });
                     static_assert(std::is_nothrow_move_constructible_v<OOCCleanupOwnershipReceipt>);
                     cleanup_receipt_.emplace(std::move(cleanup_receipt));
                     if (private_lease != nullptr) {
-                        if (ooc_cleanup_detail::should_interrupt_private_lease(
-                                private_lease_hooks,
-                                OOCPrivateLeaseFaultPoint::FreshPairOwnershipCaptured)) {
+                        if (ooc_cleanup_detail::invoke_with_stable_base_lock(*cleanup_lock, [&] {
+                                return ooc_cleanup_detail::should_interrupt_private_lease(
+                                    private_lease_hooks,
+                                    OOCPrivateLeaseFaultPoint::FreshPairOwnershipCaptured);
+                            })) {
                             throw std::system_error(
                                 std::make_error_code(std::errc::operation_canceled),
                                 "OOCRelationWriter: interrupted after fresh pair ownership");
                         }
                         if (private_lease_mode == PrivateLeaseMode::DeferCleanupHandoff) {
+                            cleanup_lock->require_stable();
                             deferred_private_lease_ = private_lease;
                         } else {
                             const auto activated =
@@ -641,12 +668,17 @@ private:
                             }
                         }
                     }
+                    cleanup_lock->require_stable();
                 } catch (...) {
                     abort_close_noexcept();
-                    if (data_reservation) {
+                    const bool preactive_pair_rollback =
+                        private_lease == nullptr || !private_lease->active_;
+                    if (preactive_pair_rollback && data_reservation &&
+                        cleanup_lock->stable_noexcept()) {
                         data_reservation->remove_path_if_same_identity_noexcept(data_path);
                     }
-                    if (index_reservation) {
+                    if (preactive_pair_rollback && index_reservation &&
+                        cleanup_lock->stable_noexcept()) {
                         index_reservation->remove_path_if_same_identity_noexcept(index_path);
                     }
                     throw;

@@ -1395,6 +1395,24 @@ contract tests passed. The complete relation module and dependency-deep changed
 selection also passed, including the API contract regression and GNFS E2E. The
 final independent security review reported no P0, P1, or P2 findings.
 
+The BaseLock stability gate completed on 2026-07-26. POSIX now revalidates that
+the held flock inode is still the regular single-link object at the frozen lock
+leaf before and after every authority-bearing phase. The same gate surrounds
+generic intent publication and cleanup, private-lease publication and
+recovery, reservation and activation, and fresh writer construction. Noexcept
+publication callbacks use a non-throwing probe and stop before the next
+namespace mutation. Deterministic regressions replace the lock at handoff
+promotion, intent-pending durability, final lease rename, and RESERVED
+revocation; they prove that no stale receipt, lease, or writer authority is
+returned and that exact protocol artifacts remain preserved. The common
+lock-replacement cases run on both supported POSIX families. A separate
+in-process interruption at durable RESERVED removal proves that activation has
+already revoked preactive rollback authority, so constructor failure preserves
+the committed pair exactly as process-crash recovery does. A post-sync foreign
+RESERVED replacement also forces verification failure before activation
+returns; the same regression proves that the durability barrier, rather than a
+later successful absence check, is the capability transition.
+
 Locked cross-process adoption and the two-capability cleanup conversion remain
 required before the M1 exit criterion is complete.
 
