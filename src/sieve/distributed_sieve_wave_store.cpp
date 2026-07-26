@@ -72,6 +72,10 @@ open_failure(DistributedSieveWaveStoreDiagnostic failure) noexcept {
     return {nullptr, std::move(failure)};
 }
 
+[[nodiscard]] constexpr char decimal_digit(std::uint32_t value) noexcept {
+    return static_cast<char>('0' + value);
+}
+
 [[nodiscard]] constexpr bool nil_identity(const NativeIdentityV1& identity) noexcept {
     return identity.volume == 0 && identity.object == 0 && identity.generation == 0;
 }
@@ -1451,6 +1455,90 @@ confirm_final_manifest(int root_fd, std::span<const std::byte> expected_bytes,
 #endif
 
 } // namespace
+
+std::optional<DistributedSieveWorkerAttemptNamesV1>
+distributed_sieve_worker_attempt_names_v1(std::string_view chunk_relative_artifact_stem,
+                                          std::uint32_t chunk_id, std::uint32_t attempt_ordinal) {
+    if (chunk_id >= DISTRIBUTED_SIEVE_PROTOCOL_MAX_CHUNKS ||
+        attempt_ordinal >= DISTRIBUTED_SIEVE_PROTOCOL_MAX_ATTEMPTS ||
+        chunk_relative_artifact_stem.size() >
+            DISTRIBUTED_SIEVE_PROTOCOL_MAX_ARTIFACT_STEM_BYTES -
+                DISTRIBUTED_SIEVE_WORKER_ATTEMPT_STEM_TAG_V1.size() -
+                DISTRIBUTED_SIEVE_WORKER_ATTEMPT_DECIMAL_WIDTH_V1) {
+        return std::nullopt;
+    }
+
+    DistributedSieveWorkerAttemptNamesV1 names;
+    names.relative_lease_stem.reserve(chunk_relative_artifact_stem.size() +
+                                      DISTRIBUTED_SIEVE_WORKER_ATTEMPT_STEM_TAG_V1.size() +
+                                      DISTRIBUTED_SIEVE_WORKER_ATTEMPT_DECIMAL_WIDTH_V1);
+    names.relative_lease_stem.append(chunk_relative_artifact_stem);
+    names.relative_lease_stem.append(DISTRIBUTED_SIEVE_WORKER_ATTEMPT_STEM_TAG_V1);
+    names.relative_lease_stem.push_back(decimal_digit(attempt_ordinal / 10U));
+    names.relative_lease_stem.push_back(decimal_digit(attempt_ordinal % 10U));
+    if (!distributed_sieve_worker_attempt_relative_stem_matches(
+            chunk_relative_artifact_stem, attempt_ordinal, names.relative_lease_stem)) {
+        return std::nullopt;
+    }
+
+    names.canonical_record_leaf.reserve(
+        DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_PREFIX.size() +
+        DISTRIBUTED_SIEVE_WORKER_ATTEMPT_DECIMAL_WIDTH_V1 +
+        DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_ORDINAL_SEPARATOR.size() +
+        DISTRIBUTED_SIEVE_WORKER_ATTEMPT_DECIMAL_WIDTH_V1);
+    names.canonical_record_leaf.append(DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_PREFIX);
+    names.canonical_record_leaf.push_back(decimal_digit(chunk_id / 10U));
+    names.canonical_record_leaf.push_back(decimal_digit(chunk_id % 10U));
+    names.canonical_record_leaf.append(DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_ORDINAL_SEPARATOR);
+    names.canonical_record_leaf.push_back(decimal_digit(attempt_ordinal / 10U));
+    names.canonical_record_leaf.push_back(decimal_digit(attempt_ordinal % 10U));
+    names.pending_record_leaf = names.canonical_record_leaf;
+    names.pending_record_leaf.append(DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_PENDING_SUFFIX);
+    return names;
+}
+
+std::optional<DistributedSieveParsedWorkerAttemptLeafV1>
+parse_distributed_sieve_worker_attempt_leaf_v1(std::string_view leaf) noexcept {
+    bool pending = false;
+    if (leaf.ends_with(DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_PENDING_SUFFIX)) {
+        pending = true;
+        leaf.remove_suffix(DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_PENDING_SUFFIX.size());
+    }
+    const std::size_t expected_size =
+        DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_PREFIX.size() +
+        DISTRIBUTED_SIEVE_WORKER_ATTEMPT_DECIMAL_WIDTH_V1 +
+        DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_ORDINAL_SEPARATOR.size() +
+        DISTRIBUTED_SIEVE_WORKER_ATTEMPT_DECIMAL_WIDTH_V1;
+    if (leaf.size() != expected_size ||
+        !leaf.starts_with(DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_PREFIX)) {
+        return std::nullopt;
+    }
+    std::size_t cursor = DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_PREFIX.size();
+    const auto parse_two_digits = [&](std::uint32_t& output) noexcept {
+        if (leaf[cursor] < '0' || leaf[cursor] > '9' || leaf[cursor + 1U] < '0' ||
+            leaf[cursor + 1U] > '9') {
+            return false;
+        }
+        output = static_cast<std::uint32_t>(leaf[cursor] - '0') * 10U +
+                 static_cast<std::uint32_t>(leaf[cursor + 1U] - '0');
+        cursor += DISTRIBUTED_SIEVE_WORKER_ATTEMPT_DECIMAL_WIDTH_V1;
+        return true;
+    };
+
+    DistributedSieveParsedWorkerAttemptLeafV1 parsed{.pending = pending};
+    if (!parse_two_digits(parsed.chunk_id) ||
+        leaf.substr(cursor, DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_ORDINAL_SEPARATOR.size()) !=
+            DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_ORDINAL_SEPARATOR) {
+        return std::nullopt;
+    }
+    cursor += DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_ORDINAL_SEPARATOR.size();
+    if (!parse_two_digits(parsed.attempt_ordinal) || cursor != leaf.size() ||
+        parsed.chunk_id >= DISTRIBUTED_SIEVE_PROTOCOL_MAX_CHUNKS ||
+        parsed.attempt_ordinal >= DISTRIBUTED_SIEVE_PROTOCOL_MAX_ATTEMPTS) {
+        return std::nullopt;
+    }
+    return parsed;
+}
 
 struct DistributedSieveWaveStore::State final {
     std::filesystem::path absolute_root;

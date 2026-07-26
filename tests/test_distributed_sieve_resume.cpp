@@ -559,7 +559,7 @@ struct ProtocolFixture final {
         attempt.sq_end = 3;
         attempt.attempt_ordinal = 0;
         attempt.predecessor_digest = manifest.self_digest;
-        attempt.lease = lease_identity(100, "worker_0_attempt_0");
+        attempt.lease = lease_identity(100, "chunk_0_attempt_00");
         attempt.retry_policy_version = 1;
         attempt = seal_value(std::move(attempt));
 
@@ -569,14 +569,14 @@ struct ProtocolFixture final {
         failure_attempt_0.sq_end = 5;
         failure_attempt_0.attempt_ordinal = 0;
         failure_attempt_0.predecessor_digest = manifest.self_digest;
-        failure_attempt_0.lease = lease_identity(130, "worker_1_attempt_0");
+        failure_attempt_0.lease = lease_identity(130, "chunk_1_attempt_00");
         failure_attempt_0.retry_policy_version = 1;
         failure_attempt_0 = seal_value(std::move(failure_attempt_0));
 
         failure_attempt_1 = failure_attempt_0;
         failure_attempt_1.attempt_ordinal = 1;
         failure_attempt_1.predecessor_digest = failure_attempt_0.self_digest;
-        failure_attempt_1.lease = lease_identity(160, "worker_1_attempt_1");
+        failure_attempt_1.lease = lease_identity(160, "chunk_1_attempt_01");
         failure_attempt_1 = reseal(std::move(failure_attempt_1));
 
         terminal_failure.manifest_digest = manifest.self_digest;
@@ -1194,6 +1194,278 @@ void test_manifest_canonical_order_and_limits() {
     require_failed(validate_value(over_budget, false), "consumption attempt budget limit");
 }
 
+void test_worker_attempt_naming_contract() {
+    const auto two_digits = [](uint32_t value) {
+        std::string digits(2, '0');
+        digits[0] = static_cast<char>('0' + value / 10U);
+        digits[1] = static_cast<char>('0' + value % 10U);
+        return digits;
+    };
+    const auto ascii_casefold = [](std::string value) {
+        for (char& character : value) {
+            if (character >= 'A' && character <= 'Z') {
+                character = static_cast<char>(character + ('a' - 'A'));
+            }
+        }
+        return value;
+    };
+    const auto require_unique = [](std::vector<std::string> values) {
+        std::sort(values.begin(), values.end());
+        CHECK(std::adjacent_find(values.begin(), values.end()) == values.end());
+    };
+
+    std::vector<std::string> stems;
+    std::vector<std::string> record_leaves = {
+        std::string(wave_detail::DISTRIBUTED_SIEVE_WAVE_LOCK_LEAF),
+        std::string(wave_detail::DISTRIBUTED_SIEVE_WAVE_MANIFEST_LEAF),
+        std::string(wave_detail::DISTRIBUTED_SIEVE_WAVE_MANIFEST_PENDING_LEAF),
+    };
+    stems.reserve(static_cast<std::size_t>(sieve::DISTRIBUTED_SIEVE_PROTOCOL_MAX_CHUNKS) *
+                  sieve::DISTRIBUTED_SIEVE_PROTOCOL_MAX_ATTEMPTS);
+    record_leaves.reserve(
+        3U + 2U * static_cast<std::size_t>(sieve::DISTRIBUTED_SIEVE_PROTOCOL_MAX_CHUNKS) *
+                 sieve::DISTRIBUTED_SIEVE_PROTOCOL_MAX_ATTEMPTS);
+
+    for (uint32_t chunk_id = 0; chunk_id < sieve::DISTRIBUTED_SIEVE_PROTOCOL_MAX_CHUNKS;
+         ++chunk_id) {
+        const std::string chunk_digits = two_digits(chunk_id);
+        const std::string chunk_stem = "S" + chunk_digits;
+        for (uint32_t ordinal = 0; ordinal < sieve::DISTRIBUTED_SIEVE_PROTOCOL_MAX_ATTEMPTS;
+             ++ordinal) {
+            const std::string ordinal_digits = two_digits(ordinal);
+            const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+                chunk_stem, chunk_id, ordinal);
+            CHECK(names.has_value());
+            CHECK(names->relative_lease_stem ==
+                  chunk_stem + std::string(sieve::DISTRIBUTED_SIEVE_WORKER_ATTEMPT_STEM_TAG_V1) +
+                      ordinal_digits);
+            CHECK(names->canonical_record_leaf ==
+                  std::string(wave_detail::DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_PREFIX) +
+                      chunk_digits +
+                      std::string(
+                          wave_detail::DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_ORDINAL_SEPARATOR) +
+                      ordinal_digits);
+            CHECK(names->pending_record_leaf ==
+                  names->canonical_record_leaf +
+                      std::string(
+                          wave_detail::DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_PENDING_SUFFIX));
+            CHECK(names->canonical_record_leaf != names->pending_record_leaf);
+            CHECK(names->relative_lease_stem.size() <=
+                  sieve::DISTRIBUTED_SIEVE_PROTOCOL_MAX_ARTIFACT_STEM_BYTES);
+            CHECK(sieve::distributed_sieve_worker_attempt_relative_stem_matches(
+                chunk_stem, ordinal, names->relative_lease_stem));
+
+            const auto canonical = wave_detail::parse_distributed_sieve_worker_attempt_leaf_v1(
+                names->canonical_record_leaf);
+            const auto pending = wave_detail::parse_distributed_sieve_worker_attempt_leaf_v1(
+                names->pending_record_leaf);
+            CHECK(canonical.has_value());
+            CHECK(pending.has_value());
+            CHECK(canonical->chunk_id == chunk_id);
+            CHECK(canonical->attempt_ordinal == ordinal);
+            CHECK(!canonical->pending);
+            CHECK(pending->chunk_id == chunk_id);
+            CHECK(pending->attempt_ordinal == ordinal);
+            CHECK(pending->pending);
+
+            stems.push_back(names->relative_lease_stem);
+            record_leaves.push_back(names->canonical_record_leaf);
+            record_leaves.push_back(names->pending_record_leaf);
+        }
+    }
+
+    require_unique(stems);
+    require_unique(record_leaves);
+    for (std::string& stem : stems) {
+        stem = ascii_casefold(std::move(stem));
+    }
+    for (std::string& leaf : record_leaves) {
+        leaf = ascii_casefold(std::move(leaf));
+    }
+    require_unique(std::move(stems));
+    require_unique(std::move(record_leaves));
+
+    for (uint32_t ordinal = 0; ordinal < sieve::DISTRIBUTED_SIEVE_PROTOCOL_MAX_ATTEMPTS;
+         ++ordinal) {
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1("S", 0, ordinal);
+        CHECK(names.has_value());
+        CHECK(names->relative_lease_stem == "S_attempt_" + two_digits(ordinal));
+    }
+
+    const auto lower_bound = wave_detail::distributed_sieve_worker_attempt_names_v1("S", 0, 0);
+    const auto upper_bound = wave_detail::distributed_sieve_worker_attempt_names_v1("S", 63, 63);
+    CHECK(lower_bound.has_value());
+    CHECK(upper_bound.has_value());
+    CHECK(lower_bound->canonical_record_leaf == ".gnfs-wave-v1.attempt-c00-a00");
+    CHECK(upper_bound->canonical_record_leaf == ".gnfs-wave-v1.attempt-c63-a63");
+    CHECK(!wave_detail::distributed_sieve_worker_attempt_names_v1(
+        "S", sieve::DISTRIBUTED_SIEVE_PROTOCOL_MAX_CHUNKS, 0));
+    CHECK(!wave_detail::distributed_sieve_worker_attempt_names_v1(
+        "S", 0, sieve::DISTRIBUTED_SIEVE_PROTOCOL_MAX_ATTEMPTS));
+    CHECK(!sieve::distributed_sieve_worker_attempt_relative_stem_matches(
+        "S", sieve::DISTRIBUTED_SIEVE_PROTOCOL_MAX_ATTEMPTS, "S_attempt_64"));
+
+    constexpr std::size_t ATTEMPT_STEM_SUFFIX_BYTES =
+        sieve::DISTRIBUTED_SIEVE_WORKER_ATTEMPT_STEM_TAG_V1.size() +
+        sieve::DISTRIBUTED_SIEVE_WORKER_ATTEMPT_DECIMAL_WIDTH_V1;
+    constexpr std::size_t MAX_CHUNK_STEM_BYTES =
+        sieve::DISTRIBUTED_SIEVE_PROTOCOL_MAX_ARTIFACT_STEM_BYTES - ATTEMPT_STEM_SUFFIX_BYTES;
+    const std::string maximum_chunk_stem(MAX_CHUNK_STEM_BYTES, 's');
+    const std::string too_long_chunk_stem(MAX_CHUNK_STEM_BYTES + 1U, 't');
+    const auto maximum_names =
+        wave_detail::distributed_sieve_worker_attempt_names_v1(maximum_chunk_stem, 63, 63);
+    CHECK(maximum_names.has_value());
+    CHECK(maximum_names->relative_lease_stem.size() ==
+          sieve::DISTRIBUTED_SIEVE_PROTOCOL_MAX_ARTIFACT_STEM_BYTES);
+    CHECK(!wave_detail::distributed_sieve_worker_attempt_names_v1(too_long_chunk_stem, 0, 0));
+    CHECK(!sieve::distributed_sieve_worker_attempt_relative_stem_matches(
+        too_long_chunk_stem, 0, too_long_chunk_stem + "_attempt_00"));
+
+    ProtocolFixture fixture;
+    auto maximum_manifest = fixture.manifest;
+    maximum_manifest.chunks[0].relative_artifact_stem = maximum_chunk_stem;
+    require_ok(validate_value(maximum_manifest, false),
+               "maximum representable nonempty worker-attempt stem");
+
+    auto too_long_nonempty_manifest = fixture.manifest;
+    too_long_nonempty_manifest.chunks[0].relative_artifact_stem = too_long_chunk_stem;
+    require_failed(validate_value(too_long_nonempty_manifest, false),
+                   "nonempty chunk stem must leave room for attempt suffix");
+
+    auto long_empty_manifest = fixture.manifest;
+    long_empty_manifest.effective_sq_end = long_empty_manifest.chunks[0].sq_end;
+    long_empty_manifest.chunks[1].sq_begin = long_empty_manifest.chunks[0].sq_end;
+    long_empty_manifest.chunks[1].sq_end = long_empty_manifest.chunks[0].sq_end;
+    long_empty_manifest.chunks[1].relative_artifact_stem.assign(
+        sieve::DISTRIBUTED_SIEVE_PROTOCOL_MAX_ARTIFACT_STEM_BYTES, 'e');
+    require_ok(validate_value(long_empty_manifest, false),
+               "empty chunk may retain a maximum-length manifest stem");
+    CHECK(!wave_detail::distributed_sieve_worker_attempt_names_v1(
+        long_empty_manifest.chunks[1].relative_artifact_stem, 1, 0));
+    CHECK(!sieve::distributed_sieve_worker_attempt_relative_stem_matches(
+        long_empty_manifest.chunks[1].relative_artifact_stem, 0,
+        long_empty_manifest.chunks[1].relative_artifact_stem + "_attempt_00"));
+
+    auto empty_manifest = fixture.manifest;
+    empty_manifest.effective_sq_end = empty_manifest.chunks[0].sq_end;
+    empty_manifest.chunks[1].sq_begin = empty_manifest.chunks[0].sq_end;
+    empty_manifest.chunks[1].sq_end = empty_manifest.chunks[0].sq_end;
+    empty_manifest = reseal(std::move(empty_manifest));
+    const auto empty_chunk_names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        empty_manifest.chunks[1].relative_artifact_stem, 1, 0);
+    CHECK(empty_chunk_names.has_value());
+    auto empty_chunk_attempt = fixture.failure_attempt_0;
+    empty_chunk_attempt.manifest_digest = empty_manifest.self_digest;
+    empty_chunk_attempt.sq_begin = empty_manifest.chunks[1].sq_begin;
+    empty_chunk_attempt.sq_end = empty_manifest.chunks[1].sq_end;
+    empty_chunk_attempt.predecessor_digest = empty_manifest.self_digest;
+    empty_chunk_attempt.lease.relative_stem = empty_chunk_names->relative_lease_stem;
+    require_failed(validate_value(empty_chunk_attempt, false),
+                   "record semantics reject a syntactically valid empty-chunk attempt");
+    const std::span<const sieve::AttemptStartedV1> empty_chunk_attempts;
+    require_failed(sieve::validate_worker_attempt_chain(empty_manifest, 1, empty_chunk_attempts,
+                                                        nullptr, nullptr),
+                   "empty chunk has no worker-attempt chain");
+
+    constexpr std::array<std::string_view, 12> INVALID_BASE_STEMS = {
+        "",        ".",        "..",  ".foo", "foo.", "foo.bar",
+        "foo/bar", "foo\\bar", "CON", "nul",  "COM1", "lPt9",
+    };
+    for (const auto stem : INVALID_BASE_STEMS) {
+        CHECK(!wave_detail::distributed_sieve_worker_attempt_names_v1(stem, 0, 0));
+        CHECK(!sieve::distributed_sieve_worker_attempt_relative_stem_matches(
+            stem, 0, std::string(stem) + "_attempt_00"));
+    }
+
+    constexpr std::array<std::string_view, 25> INVALID_RECORD_LEAVES = {
+        "",
+        ".gnfs-wave-v1.attempt-c7-a09",
+        ".gnfs-wave-v1.attempt-c007-a09",
+        ".gnfs-wave-v1.attempt-c07-a9",
+        ".gnfs-wave-v1.attempt-c07-a009",
+        ".GNFS-wave-v1.attempt-c07-a09",
+        ".gnfs-WAVE-v1.attempt-c07-a09",
+        ".gnfs-wave-v1.ATTEMPT-c07-a09",
+        ".gnfs-wave-v1.attempt-C07-a09",
+        ".gnfs-wave-v1.attempt-c07-A09",
+        ".gnfs-wave-v1.attempt-c07_a09",
+        ".gnfs-wave-v1.attempt-c07.a09",
+        ".gnfs-wave-v1.attempt-c07-b09",
+        ".gnfs-wave-v1.attempt-c+7-a09",
+        ".gnfs-wave-v1.attempt-c-7-a09",
+        ".gnfs-wave-v1.attempt-c07-a+9",
+        ".gnfs-wave-v1.attempt-c07-a-9",
+        ".gnfs-wave-v1.attempt-c07-a09.PENDING",
+        ".gnfs-wave-v1.attempt-c07-a09.pending.pending",
+        ".gnfs-wave-v1.attempt-c07-a09.tmp",
+        ".gnfs-wave-v1.attempt-c07-a09.trailing",
+        ".gnfs-wave-v1.attempt-c64-a00",
+        ".gnfs-wave-v1.attempt-c00-a64",
+        ".gnfs-wave-v1.attempt-c99-a99",
+        "gnfs-wave-v1.attempt-c07-a09",
+    };
+    for (const auto leaf : INVALID_RECORD_LEAVES) {
+        CHECK(!wave_detail::parse_distributed_sieve_worker_attempt_leaf_v1(leaf));
+    }
+    CHECK(!wave_detail::parse_distributed_sieve_worker_attempt_leaf_v1(
+        wave_detail::DISTRIBUTED_SIEVE_WAVE_LOCK_LEAF));
+    CHECK(!wave_detail::parse_distributed_sieve_worker_attempt_leaf_v1(
+        wave_detail::DISTRIBUTED_SIEVE_WAVE_MANIFEST_LEAF));
+    CHECK(!wave_detail::parse_distributed_sieve_worker_attempt_leaf_v1(
+        wave_detail::DISTRIBUTED_SIEVE_WAVE_MANIFEST_PENDING_LEAF));
+    std::string nul_terminated_alias = ".gnfs-wave-v1.attempt-c07-a09";
+    nul_terminated_alias.push_back('\0');
+    CHECK(!wave_detail::parse_distributed_sieve_worker_attempt_leaf_v1(nul_terminated_alias));
+
+    const auto expected_names =
+        wave_detail::distributed_sieve_worker_attempt_names_v1("chunk_0", 0, 0);
+    CHECK(expected_names.has_value());
+    CHECK(fixture.attempt.lease.relative_stem == expected_names->relative_lease_stem);
+    const std::array baseline_attempts = {fixture.attempt};
+    require_ok(sieve::validate_worker_attempt_chain(fixture.manifest, 0, baseline_attempts, nullptr,
+                                                    nullptr),
+               "worker chain accepts exact derived lease stem");
+
+    const auto require_wrong_stem_rejected = [&](std::string wrong_stem) {
+        auto attempt = fixture.attempt;
+        attempt.lease.relative_stem = std::move(wrong_stem);
+        attempt = reseal(std::move(attempt));
+        const std::array attempts = {attempt};
+        const auto status =
+            sieve::validate_worker_attempt_chain(fixture.manifest, 0, attempts, nullptr, nullptr);
+        CHECK(!status);
+        CHECK(status.error == sieve::DistributedSieveProtocolError::noncanonical_order);
+    };
+    require_wrong_stem_rejected("chunk_0_attempt_0");
+    require_wrong_stem_rejected("chunk_0_attempt_000");
+    require_wrong_stem_rejected("Chunk_0_attempt_00");
+    require_wrong_stem_rejected("chunk_0_Attempt_00");
+    require_wrong_stem_rejected("chunk_0-attempt-00");
+    require_wrong_stem_rejected("chunk_1_attempt_00");
+    require_wrong_stem_rejected("chunk_0_attempt_01");
+    require_wrong_stem_rejected("chunk_0_attempt_00_trailing");
+
+    const std::array valid_retry_attempts = {fixture.failure_attempt_0, fixture.failure_attempt_1};
+    require_ok(sieve::validate_worker_attempt_chain(fixture.manifest, 1, valid_retry_attempts,
+                                                    nullptr, nullptr),
+               "worker retry chain accepts per-ordinal derived stems");
+    auto wrong_retry = fixture.failure_attempt_1;
+    wrong_retry.lease.relative_stem = fixture.failure_attempt_0.lease.relative_stem;
+    wrong_retry = reseal(std::move(wrong_retry));
+    const std::array invalid_retry_attempts = {fixture.failure_attempt_0, wrong_retry};
+    require_failed(sieve::validate_worker_attempt_chain(fixture.manifest, 1, invalid_retry_attempts,
+                                                        nullptr, nullptr),
+                   "worker retry chain rejects reused ordinal stem");
+
+    auto wrong_naming_version = fixture.manifest;
+    ++wrong_naming_version.canonical_naming_version;
+    require_failed(validate_value(wrong_naming_version, false),
+                   "manifest rejects unknown canonical naming version");
+    wrong_naming_version.canonical_naming_version = 0;
+    require_failed(validate_value(wrong_naming_version, false),
+                   "manifest rejects zero canonical naming version");
+}
+
 void test_worker_completion_reason_closure() {
     ProtocolFixture fixture;
 
@@ -1248,6 +1520,7 @@ void test_worker_completion_reason_closure() {
     cap_attempt.sq_begin = cap_manifest.effective_sq_begin;
     cap_attempt.sq_end = cap_manifest.effective_sq_end;
     cap_attempt.predecessor_digest = cap_manifest.self_digest;
+    cap_attempt.lease.relative_stem = "cap_worker_attempt_00";
     cap_attempt = reseal(std::move(cap_attempt));
 
     const auto projection_for = [](const sieve::WorkerHandoffV1& handoff) {
@@ -2066,7 +2339,7 @@ void test_predecessor_and_dependency_closure() {
     auto forbidden_attempt = fixture.failure_attempt_1;
     forbidden_attempt.attempt_ordinal = 2;
     forbidden_attempt.predecessor_digest = fixture.failure_attempt_1.self_digest;
-    forbidden_attempt.lease = lease_identity(112, "worker_1_attempt_2");
+    forbidden_attempt.lease = lease_identity(112, "chunk_1_attempt_02");
     forbidden_attempt = reseal(std::move(forbidden_attempt));
     const std::array attempts_beyond_budget = {
         fixture.failure_attempt_0,
@@ -2094,7 +2367,7 @@ void test_predecessor_and_dependency_closure() {
     auto extra_attempt = fixture.attempt;
     extra_attempt.attempt_ordinal = 1;
     extra_attempt.predecessor_digest = fixture.attempt.self_digest;
-    extra_attempt.lease = lease_identity(101, "worker_0_attempt_1");
+    extra_attempt.lease = lease_identity(101, "chunk_0_attempt_01");
     extra_attempt = reseal(std::move(extra_attempt));
     const std::array attempts_after_terminal = {fixture.attempt, extra_attempt};
     require_failed(sieve::validate_worker_attempt_chain(
@@ -2264,7 +2537,7 @@ void test_predecessor_and_dependency_closure() {
                                              fixture.attempt.lease.directory;
                                      },
                                      {}, {}));
-    require_merge_alias_accepted("worker lease stem reuse across distinct directories",
+    require_merge_alias_rejected("worker lease stem must match its chunk and ordinal",
                                  make_merge_alias_case(
                                      [&](auto& attempt_1, auto&) {
                                          attempt_1.lease.relative_stem =
@@ -2468,14 +2741,14 @@ void test_predecessor_and_dependency_closure() {
     case_fold_attempt_0.lease.lease_id = lease_id_with_seed(500);
     case_fold_attempt_0.lease.owner_marker = native_identity(500);
     case_fold_attempt_0.lease.directory = native_identity(550);
-    case_fold_attempt_0.lease.relative_stem = "foo";
+    case_fold_attempt_0.lease.relative_stem = "chunk_1_attempt_00";
     case_fold_attempt_0 = reseal(std::move(case_fold_attempt_0));
     auto case_fold_attempt_1 = fixture.failure_attempt_1;
     case_fold_attempt_1.predecessor_digest = case_fold_attempt_0.self_digest;
     case_fold_attempt_1.lease.lease_id = lease_id_with_seed(501);
     case_fold_attempt_1.lease.owner_marker = native_identity(510);
     case_fold_attempt_1.lease.directory = case_fold_attempt_0.lease.directory;
-    case_fold_attempt_1.lease.relative_stem = "bar";
+    case_fold_attempt_1.lease.relative_stem = "chunk_1_attempt_01";
     case_fold_attempt_1 = reseal(std::move(case_fold_attempt_1));
     const std::array case_fold_attempts = {case_fold_attempt_0, case_fold_attempt_1};
     require_failed(sieve::validate_worker_attempt_chain(fixture.manifest, 1, case_fold_attempts,
@@ -3231,6 +3504,7 @@ void test_empty_chunk_projection_and_merge() {
     attempt.sq_begin = 2;
     attempt.sq_end = 3;
     attempt.predecessor_digest = manifest.self_digest;
+    attempt.lease.relative_stem = "chunk_nonempty_attempt_00";
     attempt = reseal(std::move(attempt));
 
     auto handoff = fixture.handoff;
@@ -4687,11 +4961,12 @@ void test_wave_store_platform_fail_closed() {
 using TestFunction = void (*)();
 
 void run_core_suite() {
-    const std::array<std::pair<std::string_view, TestFunction>, 12> tests = {{
+    const std::array<std::pair<std::string_view, TestFunction>, 13> tests = {{
         {"closed names and kinds", test_closed_names_and_record_kinds},
         {"record round trips and self digests", test_all_record_round_trips_and_self_digests},
         {"exact framing and tamper", test_exact_framing_and_wire_tamper},
         {"manifest canonical order and limits", test_manifest_canonical_order_and_limits},
+        {"worker attempt naming contract", test_worker_attempt_naming_contract},
         {"worker completion reason closure", test_worker_completion_reason_closure},
         {"terminal failure normalization", test_terminal_failure_reason_normalization},
         {"execution-policy field drift", test_execution_policy_closed_inventory_and_field_drift},

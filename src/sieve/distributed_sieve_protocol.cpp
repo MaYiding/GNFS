@@ -107,6 +107,34 @@ failure(DistributedSieveProtocolError error,
     return true;
 }
 
+[[nodiscard]] constexpr std::size_t worker_attempt_stem_suffix_bytes() noexcept {
+    return DISTRIBUTED_SIEVE_WORKER_ATTEMPT_STEM_TAG_V1.size() +
+           DISTRIBUTED_SIEVE_WORKER_ATTEMPT_DECIMAL_WIDTH_V1;
+}
+
+[[nodiscard]] bool worker_attempt_stem_is_representable(std::string_view chunk_stem) noexcept {
+    return canonical_artifact_stem(chunk_stem) &&
+           chunk_stem.size() <= DISTRIBUTED_SIEVE_PROTOCOL_MAX_ARTIFACT_STEM_BYTES -
+                                    worker_attempt_stem_suffix_bytes();
+}
+
+[[nodiscard]] bool worker_attempt_relative_stem_matches(std::string_view chunk_stem,
+                                                        uint32_t attempt_ordinal,
+                                                        std::string_view candidate) noexcept {
+    if (attempt_ordinal >= DISTRIBUTED_SIEVE_PROTOCOL_MAX_ATTEMPTS ||
+        !worker_attempt_stem_is_representable(chunk_stem) ||
+        candidate.size() != chunk_stem.size() + worker_attempt_stem_suffix_bytes() ||
+        candidate.substr(0, chunk_stem.size()) != chunk_stem ||
+        candidate.substr(chunk_stem.size(), DISTRIBUTED_SIEVE_WORKER_ATTEMPT_STEM_TAG_V1.size()) !=
+            DISTRIBUTED_SIEVE_WORKER_ATTEMPT_STEM_TAG_V1) {
+        return false;
+    }
+    const std::size_t digits_offset =
+        chunk_stem.size() + DISTRIBUTED_SIEVE_WORKER_ATTEMPT_STEM_TAG_V1.size();
+    return candidate[digits_offset] == static_cast<char>('0' + attempt_ordinal / 10U) &&
+           candidate[digits_offset + 1U] == static_cast<char>('0' + attempt_ordinal % 10U);
+}
+
 [[nodiscard]] bool canonical_integer(std::string_view value) noexcept {
     if (value.empty() || value.size() > DISTRIBUTED_SIEVE_PROTOCOL_MAX_CANONICAL_INTEGER_BYTES) {
         return false;
@@ -861,7 +889,9 @@ validate_chunk_plans(const std::vector<ChunkPlanV1>& chunks, uint32_t expected_c
                            DISTRIBUTED_SIEVE_PROTOCOL_NO_OFFSET, index);
         }
         if (chunk.sq_end < chunk.sq_begin ||
-            !canonical_artifact_stem(chunk.relative_artifact_stem)) {
+            !canonical_artifact_stem(chunk.relative_artifact_stem) ||
+            (chunk.sq_begin != chunk.sq_end &&
+             !worker_attempt_stem_is_representable(chunk.relative_artifact_stem))) {
             return failure(chunk.sq_end < chunk.sq_begin
                                ? DistributedSieveProtocolError::invalid_value
                                : DistributedSieveProtocolError::invalid_string,
@@ -1050,10 +1080,10 @@ validate_chunk_summaries(const std::vector<ChunkCommitSummaryV1>& summaries) noe
         value.max_merge_build_attempts > DISTRIBUTED_SIEVE_PROTOCOL_MAX_ATTEMPTS ||
         value.max_consumption_attempts == 0 ||
         value.max_consumption_attempts > DISTRIBUTED_SIEVE_PROTOCOL_MAX_ATTEMPTS ||
-        value.canonical_naming_version == 0 || value.retry_policy_version == 0 ||
-        !value.durable_start_consumes_ordinal || value.ooc_format_version == 0 ||
-        value.relation_serialization_version == 0 || value.handoff_version == 0 ||
-        value.receipt_version == 0 || value.digest_version == 0 ||
+        value.canonical_naming_version != DISTRIBUTED_SIEVE_CANONICAL_NAMING_VERSION_V1 ||
+        value.retry_policy_version == 0 || !value.durable_start_consumes_ordinal ||
+        value.ooc_format_version == 0 || value.relation_serialization_version == 0 ||
+        value.handoff_version == 0 || value.receipt_version == 0 || value.digest_version == 0 ||
         value.merge_policy_version == 0) {
         return failure(DistributedSieveProtocolError::invalid_value);
     }
@@ -2877,6 +2907,13 @@ validate_completion_against_manifest(const WaveManifestV1& manifest,
 
 } // namespace distributed_sieve_protocol_detail
 
+bool distributed_sieve_worker_attempt_relative_stem_matches(
+    std::string_view chunk_relative_artifact_stem, uint32_t attempt_ordinal,
+    std::string_view candidate) noexcept {
+    return distributed_sieve_protocol_detail::worker_attempt_relative_stem_matches(
+        chunk_relative_artifact_stem, attempt_ordinal, candidate);
+}
+
 DistributedSieveProtocolDigestResult
 distributed_sieve_attempt_chain_digest(const util::Sha256Digest& manifest_digest,
                                        std::span<const AttemptStartedV1> attempts) noexcept {
@@ -2941,7 +2978,10 @@ DistributedSieveProtocolStatus validate_worker_attempt_chain(
         if (attempt.manifest_digest != manifest.self_digest || attempt.chunk_id != chunk_id ||
             attempt.sq_begin != chunk.sq_begin || attempt.sq_end != chunk.sq_end ||
             attempt.attempt_ordinal != index || attempt.predecessor_digest != predecessor ||
-            attempt.retry_policy_version != manifest.retry_policy_version) {
+            attempt.retry_policy_version != manifest.retry_policy_version ||
+            !worker_attempt_relative_stem_matches(chunk.relative_artifact_stem,
+                                                  attempt.attempt_ordinal,
+                                                  attempt.lease.relative_stem)) {
             return failure(DistributedSieveProtocolError::noncanonical_order,
                            DISTRIBUTED_SIEVE_PROTOCOL_NO_OFFSET, index);
         }

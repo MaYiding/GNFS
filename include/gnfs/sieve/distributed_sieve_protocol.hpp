@@ -31,6 +31,9 @@ inline constexpr uint32_t DISTRIBUTED_SIEVE_PROTOCOL_MAX_FACTOR_BASE_ENTRIES = 1
 inline constexpr uint32_t DISTRIBUTED_SIEVE_PROTOCOL_MAX_RECORD_BYTES = 1U << 20U;
 inline constexpr uint32_t DISTRIBUTED_SIEVE_PROTOCOL_MAX_CANONICAL_INTEGER_BYTES = 4096;
 inline constexpr uint32_t DISTRIBUTED_SIEVE_PROTOCOL_MAX_ARTIFACT_STEM_BYTES = 128;
+inline constexpr uint32_t DISTRIBUTED_SIEVE_CANONICAL_NAMING_VERSION_V1 = 1;
+inline constexpr std::string_view DISTRIBUTED_SIEVE_WORKER_ATTEMPT_STEM_TAG_V1 = "_attempt_";
+inline constexpr uint32_t DISTRIBUTED_SIEVE_WORKER_ATTEMPT_DECIMAL_WIDTH_V1 = 2;
 
 enum class DistributedSieveRecordKindV1 : uint16_t {
     wave_manifest = 1,
@@ -771,6 +774,13 @@ struct DeterministicRandomSeedRequestV1 final {
 
 [[nodiscard]] DistributedSieveProtocolDigestResult derive_distributed_sieve_deterministic_seed(
     const DeterministicRandomSeedRequestV1& request) noexcept;
+
+/// Match the exact V1 generation-local lease stem derived from one manifest
+/// chunk stem and worker-attempt ordinal. V1 uses `_attempt_DD`, where `DD` is
+/// fixed-width decimal in the closed range 00..63.
+[[nodiscard]] bool distributed_sieve_worker_attempt_relative_stem_matches(
+    std::string_view chunk_relative_artifact_stem, uint32_t attempt_ordinal,
+    std::string_view candidate) noexcept;
 
 // Pure predecessor/dependency closure ----------------------------------------
 

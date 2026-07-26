@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <system_error>
 
@@ -24,7 +25,44 @@ inline constexpr std::string_view DISTRIBUTED_SIEVE_WAVE_LOCK_LEAF = ".gnfs-wave
 inline constexpr std::string_view DISTRIBUTED_SIEVE_WAVE_MANIFEST_LEAF = ".gnfs-wave-v1.manifest";
 inline constexpr std::string_view DISTRIBUTED_SIEVE_WAVE_MANIFEST_PENDING_LEAF =
     ".gnfs-wave-v1.manifest.pending";
+inline constexpr std::string_view DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_PREFIX =
+    ".gnfs-wave-v1.attempt-c";
+inline constexpr std::string_view DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_ORDINAL_SEPARATOR = "-a";
+inline constexpr std::string_view DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_PENDING_SUFFIX =
+    ".pending";
 inline constexpr std::uint32_t DISTRIBUTED_SIEVE_WAVE_LOCK_SEMANTICS_VERSION_V1 = 1;
+
+struct DistributedSieveWorkerAttemptNamesV1 final {
+    std::string relative_lease_stem;
+    std::string canonical_record_leaf;
+    std::string pending_record_leaf;
+
+    [[nodiscard]] friend bool operator==(const DistributedSieveWorkerAttemptNamesV1&,
+                                         const DistributedSieveWorkerAttemptNamesV1&) = default;
+};
+
+struct DistributedSieveParsedWorkerAttemptLeafV1 final {
+    std::uint32_t chunk_id = 0;
+    std::uint32_t attempt_ordinal = 0;
+    bool pending = false;
+
+    [[nodiscard]] friend constexpr bool
+    operator==(const DistributedSieveParsedWorkerAttemptLeafV1&,
+               const DistributedSieveParsedWorkerAttemptLeafV1&) noexcept = default;
+};
+
+/// Derive the exact V1 lease stem and immutable record leaves for one bounded
+/// worker attempt. This is naming only and grants no filesystem authority.
+[[nodiscard]] std::optional<DistributedSieveWorkerAttemptNamesV1>
+distributed_sieve_worker_attempt_names_v1(std::string_view chunk_relative_artifact_stem,
+                                          std::uint32_t chunk_id, std::uint32_t attempt_ordinal);
+
+/// Parse only the exact lowercase, fixed-width V1 canonical or pending record
+/// leaf. This pure parser grants no namespace membership: attempt leaves remain
+/// foreign to WaveStore inventory until manifest-aware record loading is wired
+/// in. No other leaf is normalized or accepted as an alias.
+[[nodiscard]] std::optional<DistributedSieveParsedWorkerAttemptLeafV1>
+parse_distributed_sieve_worker_attempt_leaf_v1(std::string_view leaf) noexcept;
 
 enum class DistributedSieveWaveStoreStatus : std::uint8_t {
     ready,

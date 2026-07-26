@@ -377,12 +377,26 @@ Each record binds:
 - retry-policy version; and
 - record digest.
 
+Canonical naming version 1 derives the lease stem as
+`<chunk-stem>_attempt_DD`, where `DD` is the zero-padded decimal ordinal
+`00` through `63`. The matching wave-root record leaves are
+`.gnfs-wave-v1.attempt-cCC-aDD` and
+`.gnfs-wave-v1.attempt-cCC-aDD.pending`, with chunk ID `CC` encoded in the
+same fixed-width range. Variable width, extra zeroes, case variants, and
+unrecognized suffixes are foreign leaves rather than aliases.
+
 The exact lease is durably reserved before this record is published. A crash
 after reservation but before `AttemptStartedV1` performs the existing exact
 preactive rollback and consumes no attempt. The start record is durable before
-`fork`; a crash after publication and before `fork` consumes that attempt. This
-rule is conservative, bounded, and identical on every replay. Missing attempts
-may be started only when the chain and budget permit.
+`fork`; a crash after publication and before `fork` consumes that attempt. An
+exact pending-only start does not consume the ordinal by itself. Recovery first
+proves the exact preactive lease and promotes the pending record to canonical;
+that confirmed canonical record then consumes the ordinal. Because its
+creator-bound lease receipt died with the old process, recovery cleans that
+exact preactive generation and advances without executing it. A reservation
+with no attempt record still rolls back without consuming an ordinal. This rule
+is conservative, bounded, and identical on every replay. Missing attempts may
+be started only when the chain and budget permit.
 
 ### `ChunkTerminalFailureV1`
 
