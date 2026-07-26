@@ -1374,6 +1374,8 @@ checks passed in Debug.
   without adding a production or test mint path.
 - [x] Split generic-handoff classification from the explicit legacy
   pending-reconciliation transition.
+- [x] Freeze the source-private six-leaf union reduction and legacy-only
+  disposition table, including exhaustive policy coverage.
 - [x] Freeze the role-separated V2 authorized-cleanup marker codec and exact
   canonical/optional-pending handoff bindings without enabling runtime use.
 - [ ] Add the two-capability application-authorization conversion into
@@ -1503,6 +1505,19 @@ remove an exact still-preactive pending-only publication. All other
 observations return without a namespace operation. Regression coverage proves
 that inspect, ordinary cleanup resume, and pair-reuse confirmation retain an
 exact duplicate pending leaf while legacy recovery converges it.
+
+The source-private authority-union policy is also frozen, but is not yet a
+runtime gate. It retains independent V1, V2, and generic-handoff facts across
+the four cleanup-marker roles and two handoff roles. A closed disposition table
+rejects foreign evidence first, malformed or wrong-role markers second,
+role-correct V2 records third, and mixed legacy authorities fourth. No V2
+executor exists. Unblocked observations only delegate to the existing V1/C1
+runtime, which must still prove its own exact witness and context. The policy
+implementation is compiled into `gnfs_core` and its 20,736 leaf combinations,
+all current entry groups, out-of-range enum values, and namespace-foreign
+dominance are independently tested. The next milestone must build the
+handle-relative raw observer and place this decision before every first
+namespace mutation.
 
 The M1.7a pure authorized-cleanup marker codec completed on 2026-07-26. Its
 480-byte frame has independent magic, schema, phase kind, and digest domain.

@@ -143,7 +143,7 @@ versions, marker kinds, identities, extents, digests, truncation, trailing
 bytes, and V1/V2 reinterpretation. This target is a pure protocol test: it
 performs no filesystem mutation and grants no adoption or cleanup authority.
 
-`test_ooc_cleanup_transaction` is split into three CTest entries.
+`test_ooc_cleanup_transaction` is split into four CTest entries.
 `OOCCleanupTransactionCore` is an `instant` ownership and state-machine
 contract covering move-only receipt consumption, repairable pending
 publication, exact finalized expectations, a production writer/reader fixture,
@@ -167,6 +167,15 @@ without replacing that lock after a completed lease removal. It also replaces
 an owned empty lease with a different live directory and verifies that the old
 identity-bound receipt rejects the ABA target. The no-argument binary runs all
 suites, so its `scripts/test.sh` tier and timeout are `fast` and 120 seconds.
+`OOCCleanupAuthorityUnion` is an `instant` pure-policy suite from the same
+binary. It exhaustively reduces all 20,736 combinations of four cleanup-marker
+leaf states and two generic-handoff leaf states, plus namespace-foreign
+dominance over the complete matrix. Foreign evidence precedes malformed or
+wrong-role markers, which precede role-correct V2 records and mixed legacy
+authorities. Every V2-family observation rejects all current entry groups;
+only an unblocked state delegates to the existing V1/C1 runtime. This suite
+freezes the policy contract only. Raw filesystem observation and entry-point
+integration remain separate required coverage.
 `OOCCleanupPrivateLeaseCrash` is a `fast` self-exec suite from the same
 binary. It terminates children at each durable private-lease marker, rename,
 and teardown boundary. It also covers writer termination after the first and

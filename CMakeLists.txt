@@ -315,6 +315,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/ooc_authorized_cleanup_inten
     target_sources(gnfs_core PRIVATE src/relation/ooc_authorized_cleanup_intent.cpp)
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/ooc_private_cleanup_union.cpp")
+    target_sources(gnfs_core PRIVATE src/relation/ooc_private_cleanup_union.cpp)
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/ooc_private_handoff_adoption.cpp")
     target_sources(gnfs_core PRIVATE src/relation/ooc_private_handoff_adoption.cpp)
 endif()
@@ -800,7 +804,18 @@ if(GNFS_BUILD_TESTS)
     add_executable(test_ooc_cleanup_transaction
         tests/test_ooc_cleanup_transaction.cpp
     )
+    target_include_directories(test_ooc_cleanup_transaction PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/relation
+    )
     target_link_libraries(test_ooc_cleanup_transaction PRIVATE gnfs_core Threads::Threads)
+    add_test(
+        NAME OOCCleanupAuthorityUnion
+        COMMAND test_ooc_cleanup_transaction --suite authority-union
+    )
+    set_tests_properties(
+        OOCCleanupAuthorityUnion
+        PROPERTIES LABELS "instant" TIMEOUT 20
+    )
     add_test(
         NAME OOCCleanupTransactionCore
         COMMAND test_ooc_cleanup_transaction --suite core

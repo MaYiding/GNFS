@@ -5,6 +5,8 @@
 #include <gnfs/relation/ooc_relation_format.hpp>
 #include <gnfs/relation/ooc_relation_store.hpp>
 
+#include <ooc_private_cleanup_union_internal.hpp>
+
 #include "support/child_process.hpp"
 
 #include <algorithm>
@@ -77,6 +79,13 @@ using gnfs::relation::OOCRelationReader;
 using gnfs::relation::OOCRelationStoreFormat;
 using gnfs::relation::OOCRelationWriter;
 using gnfs::relation::OOCSnapshotDescriptor;
+using gnfs::relation::ooc_cleanup_detail::PrivateCleanupMarkerObservationKind;
+using gnfs::relation::ooc_cleanup_detail::PrivateCleanupUnionBlock;
+using gnfs::relation::ooc_cleanup_detail::PrivateCleanupUnionClassification;
+using gnfs::relation::ooc_cleanup_detail::PrivateCleanupUnionRawObservation;
+using gnfs::relation::ooc_cleanup_detail::PrivateHandoffLeafObservationKind;
+using gnfs::relation::ooc_cleanup_detail::PrivateNamespaceAction;
+using gnfs::relation::ooc_cleanup_detail::PrivateNamespaceActionDisposition;
 
 static_assert(!std::is_default_constructible_v<OOCCleanupOwnershipReceipt>);
 static_assert(!std::is_copy_constructible_v<OOCCleanupOwnershipReceipt>);
@@ -109,6 +118,279 @@ int checks_failed = 0;
             std::cerr << "FAIL: " #condition " at " << __FILE__ << ':' << __LINE__ << '\n';        \
         }                                                                                          \
     } while (false)
+
+[[nodiscard]] PrivateCleanupUnionClassification expected_private_cleanup_union_classification(
+    const PrivateCleanupUnionRawObservation& observation) {
+    constexpr std::array<std::uint8_t, 6> marker_rank{
+        0, // Missing
+        1, // LegacyV1
+        2, // AuthorizedV2
+        3, // WrongRoleV2
+        3, // Malformed
+        4, // Foreign
+    };
+    constexpr std::array<std::uint8_t, 4> handoff_rank{
+        0, // Missing
+        1, // Exact
+        2, // Malformed
+        2, // Foreign
+    };
+    constexpr std::array<std::array<PrivateCleanupUnionBlock, 3>, 5> block_lattice{{
+        {
+            PrivateCleanupUnionBlock::None,
+            PrivateCleanupUnionBlock::None,
+            PrivateCleanupUnionBlock::Foreign,
+        },
+        {
+            PrivateCleanupUnionBlock::None,
+            PrivateCleanupUnionBlock::MixedLegacyAuthorities,
+            PrivateCleanupUnionBlock::Foreign,
+        },
+        {
+            PrivateCleanupUnionBlock::AuthorizedV2Present,
+            PrivateCleanupUnionBlock::AuthorizedV2Present,
+            PrivateCleanupUnionBlock::Foreign,
+        },
+        {
+            PrivateCleanupUnionBlock::MarkerCorrupt,
+            PrivateCleanupUnionBlock::MarkerCorrupt,
+            PrivateCleanupUnionBlock::Foreign,
+        },
+        {
+            PrivateCleanupUnionBlock::Foreign,
+            PrivateCleanupUnionBlock::Foreign,
+            PrivateCleanupUnionBlock::Foreign,
+        },
+    }};
+
+    std::uint8_t cleanup_level = 0;
+    bool has_legacy_v1 = false;
+    bool has_v2_record = false;
+    for (const auto marker : observation.cleanup_markers) {
+        cleanup_level = (std::max)(cleanup_level, marker_rank[static_cast<std::size_t>(marker)]);
+        has_legacy_v1 = has_legacy_v1 || marker == PrivateCleanupMarkerObservationKind::LegacyV1;
+        has_v2_record = has_v2_record ||
+                        marker == PrivateCleanupMarkerObservationKind::AuthorizedV2 ||
+                        marker == PrivateCleanupMarkerObservationKind::WrongRoleV2;
+    }
+
+    std::uint8_t handoff_level = 0;
+    bool has_handoff = false;
+    for (const auto handoff : observation.handoff_markers) {
+        handoff_level = (std::max)(handoff_level, handoff_rank[static_cast<std::size_t>(handoff)]);
+        has_handoff = has_handoff || handoff == PrivateHandoffLeafObservationKind::Exact;
+    }
+
+    return {
+        .block = observation.namespace_foreign ? PrivateCleanupUnionBlock::Foreign
+                                               : block_lattice[cleanup_level][handoff_level],
+        .has_legacy_v1 = has_legacy_v1,
+        .has_v2_record = has_v2_record,
+        .has_handoff = has_handoff,
+    };
+}
+
+[[nodiscard]] PrivateNamespaceActionDisposition
+expected_private_namespace_disposition(PrivateCleanupUnionBlock block) {
+    constexpr std::array dispositions{
+        PrivateNamespaceActionDisposition::DelegateExistingRuntime,
+        PrivateNamespaceActionDisposition::RejectForeignPreserved,
+        PrivateNamespaceActionDisposition::RejectIntentCorrupt,
+        PrivateNamespaceActionDisposition::RejectV2Unsupported,
+        PrivateNamespaceActionDisposition::RejectNamespaceConflict,
+    };
+    static_assert(dispositions.size() == static_cast<std::size_t>(PrivateCleanupUnionBlock::Count));
+    return dispositions[static_cast<std::size_t>(block)];
+}
+
+void test_private_cleanup_union_policy_exhaustive() {
+    constexpr std::array cleanup_states{
+        PrivateCleanupMarkerObservationKind::Missing,
+        PrivateCleanupMarkerObservationKind::LegacyV1,
+        PrivateCleanupMarkerObservationKind::AuthorizedV2,
+        PrivateCleanupMarkerObservationKind::WrongRoleV2,
+        PrivateCleanupMarkerObservationKind::Malformed,
+        PrivateCleanupMarkerObservationKind::Foreign,
+    };
+    static_assert(cleanup_states.size() ==
+                  static_cast<std::size_t>(PrivateCleanupMarkerObservationKind::Count));
+    constexpr std::array handoff_states{
+        PrivateHandoffLeafObservationKind::Missing,
+        PrivateHandoffLeafObservationKind::Exact,
+        PrivateHandoffLeafObservationKind::Malformed,
+        PrivateHandoffLeafObservationKind::Foreign,
+    };
+    static_assert(handoff_states.size() ==
+                  static_cast<std::size_t>(PrivateHandoffLeafObservationKind::Count));
+    constexpr std::array actions{
+        PrivateNamespaceAction::InspectHandoff,
+        PrivateNamespaceAction::AdoptHandoff,
+        PrivateNamespaceAction::RunLegacyCleanup,
+        PrivateNamespaceAction::PublishPrivateLeaseCleanupHandoff,
+        PrivateNamespaceAction::RecoverPrivateLease,
+        PrivateNamespaceAction::RemovePrivateLease,
+        PrivateNamespaceAction::ReservePrivateLease,
+        PrivateNamespaceAction::ConfirmPairReusable,
+        PrivateNamespaceAction::PublishPrivateHandoff,
+        PrivateNamespaceAction::ValidateFreshWriter,
+        PrivateNamespaceAction::ActivateFreshLease,
+    };
+    static_assert(actions.size() == static_cast<std::size_t>(PrivateNamespaceAction::Count));
+
+    enum class ClassificationBucket : std::size_t {
+        Empty,
+        LegacyV1,
+        GenericHandoff,
+        MixedLegacyAuthorities,
+        AuthorizedV2,
+        MarkerCorrupt,
+        Foreign,
+        Count,
+    };
+    std::array<std::size_t, static_cast<std::size_t>(ClassificationBucket::Count)> bucket_counts{};
+    std::size_t combinations = 0;
+    for (const auto intent : cleanup_states) {
+        for (const auto intent_pending : cleanup_states) {
+            for (const auto staged : cleanup_states) {
+                for (const auto staged_pending : cleanup_states) {
+                    for (const auto handoff : handoff_states) {
+                        for (const auto handoff_pending : handoff_states) {
+                            const PrivateCleanupUnionRawObservation observation{
+                                .namespace_foreign = false,
+                                .cleanup_markers =
+                                    {
+                                        intent,
+                                        intent_pending,
+                                        staged,
+                                        staged_pending,
+                                    },
+                                .handoff_markers =
+                                    {
+                                        handoff,
+                                        handoff_pending,
+                                    },
+                            };
+                            const auto expected =
+                                expected_private_cleanup_union_classification(observation);
+                            const auto actual =
+                                gnfs::relation::ooc_cleanup_detail::classify_private_cleanup_union(
+                                    observation);
+                            CHECK(actual == expected);
+
+                            ClassificationBucket bucket = ClassificationBucket::Foreign;
+                            switch (actual.block) {
+                            case PrivateCleanupUnionBlock::None:
+                                if (actual.has_handoff) {
+                                    bucket = ClassificationBucket::GenericHandoff;
+                                } else if (actual.has_legacy_v1) {
+                                    bucket = ClassificationBucket::LegacyV1;
+                                } else {
+                                    bucket = ClassificationBucket::Empty;
+                                }
+                                break;
+                            case PrivateCleanupUnionBlock::MixedLegacyAuthorities:
+                                bucket = ClassificationBucket::MixedLegacyAuthorities;
+                                break;
+                            case PrivateCleanupUnionBlock::AuthorizedV2Present:
+                                bucket = ClassificationBucket::AuthorizedV2;
+                                break;
+                            case PrivateCleanupUnionBlock::MarkerCorrupt:
+                                bucket = ClassificationBucket::MarkerCorrupt;
+                                break;
+                            case PrivateCleanupUnionBlock::Foreign:
+                                bucket = ClassificationBucket::Foreign;
+                                break;
+                            case PrivateCleanupUnionBlock::Count:
+                                bucket = ClassificationBucket::Foreign;
+                                break;
+                            }
+                            ++bucket_counts[static_cast<std::size_t>(bucket)];
+
+                            for (const auto action : actions) {
+                                const auto decision = gnfs::relation::ooc_cleanup_detail::
+                                    decide_private_namespace_action(observation, action);
+                                CHECK(decision.classification == actual);
+                                CHECK(decision.action == action);
+                                CHECK(decision.disposition ==
+                                      expected_private_namespace_disposition(actual.block));
+                                CHECK(gnfs::relation::ooc_cleanup_detail::
+                                          decision_delegates_existing_runtime(decision) ==
+                                      (actual.block == PrivateCleanupUnionBlock::None));
+                                if (actual.has_v2_record) {
+                                    CHECK(!gnfs::relation::ooc_cleanup_detail::
+                                              decision_delegates_existing_runtime(decision));
+                                }
+                            }
+
+                            auto foreign_namespace = observation;
+                            foreign_namespace.namespace_foreign = true;
+                            const auto dominated =
+                                gnfs::relation::ooc_cleanup_detail::classify_private_cleanup_union(
+                                    foreign_namespace);
+                            CHECK(dominated.block == PrivateCleanupUnionBlock::Foreign);
+                            CHECK(dominated.has_legacy_v1 == actual.has_legacy_v1);
+                            CHECK(dominated.has_v2_record == actual.has_v2_record);
+                            CHECK(dominated.has_handoff == actual.has_handoff);
+                            ++combinations;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    CHECK(combinations == 20'736);
+    constexpr std::array<std::size_t, static_cast<std::size_t>(ClassificationBucket::Count)>
+        expected_bucket_counts{
+            1,      // Empty
+            15,     // LegacyV1
+            3,      // GenericHandoff
+            45,     // MixedLegacyAuthorities
+            260,    // AuthorizedV2
+            2'176,  // MarkerCorrupt
+            18'236, // Foreign
+        };
+    CHECK(bucket_counts == expected_bucket_counts);
+
+    const PrivateCleanupUnionRawObservation namespace_foreign{
+        .namespace_foreign = true,
+    };
+    const auto foreign =
+        gnfs::relation::ooc_cleanup_detail::classify_private_cleanup_union(namespace_foreign);
+    CHECK(foreign.block == PrivateCleanupUnionBlock::Foreign);
+    for (const auto action : actions) {
+        const auto decision = gnfs::relation::ooc_cleanup_detail::decide_private_namespace_action(
+            namespace_foreign, action);
+        CHECK(decision.classification == foreign);
+        CHECK(decision.action == action);
+        CHECK(decision.disposition == PrivateNamespaceActionDisposition::RejectForeignPreserved);
+        CHECK(!gnfs::relation::ooc_cleanup_detail::decision_delegates_existing_runtime(decision));
+    }
+
+    const auto invalid_action = gnfs::relation::ooc_cleanup_detail::decide_private_namespace_action(
+        {}, PrivateNamespaceAction::Count);
+    CHECK(invalid_action.classification.block == PrivateCleanupUnionBlock::Foreign);
+    CHECK(invalid_action.disposition == PrivateNamespaceActionDisposition::RejectForeignPreserved);
+    CHECK(!gnfs::relation::ooc_cleanup_detail::decision_delegates_existing_runtime(invalid_action));
+
+    PrivateCleanupUnionRawObservation invalid_marker;
+    invalid_marker.cleanup_markers[0] = static_cast<PrivateCleanupMarkerObservationKind>(0xff);
+    CHECK(
+        gnfs::relation::ooc_cleanup_detail::classify_private_cleanup_union(invalid_marker).block ==
+        PrivateCleanupUnionBlock::Foreign);
+
+    PrivateCleanupUnionRawObservation invalid_handoff;
+    invalid_handoff.handoff_markers[0] = static_cast<PrivateHandoffLeafObservationKind>(0xff);
+    CHECK(
+        gnfs::relation::ooc_cleanup_detail::classify_private_cleanup_union(invalid_handoff).block ==
+        PrivateCleanupUnionBlock::Foreign);
+
+    const auto out_of_range_action =
+        gnfs::relation::ooc_cleanup_detail::decide_private_namespace_action(
+            {}, static_cast<PrivateNamespaceAction>(0xff));
+    CHECK(out_of_range_action.classification.block == PrivateCleanupUnionBlock::Foreign);
+    CHECK(out_of_range_action.disposition ==
+          PrivateNamespaceActionDisposition::RejectForeignPreserved);
+}
 
 class TempDirectory final {
 public:
@@ -5212,6 +5494,10 @@ void run_core_suite(const std::string& executable) {
 #endif
 }
 
+void run_authority_union_suite() {
+    test_private_cleanup_union_policy_exhaustive();
+}
+
 void run_private_lease_crash_suite(const std::string& executable) {
     test_private_lease_process_crash_recovery(executable);
     test_private_lease_preactive_rollback_crash_recovery(executable);
@@ -5337,17 +5623,19 @@ int main(int argc, char* argv[]) {
     bool run_core = argc == 1;
     bool run_crash = argc == 1;
     bool run_private_lease_crash = argc == 1;
+    bool run_authority_union = argc == 1;
     if (argc == 3 && std::string_view(argv[1]) == "--suite") {
         const std::string_view suite(argv[2]);
         run_core = suite == "core";
         run_crash = suite == "crash";
         run_private_lease_crash = suite == "lease-crash";
-        if (!run_core && !run_crash && !run_private_lease_crash) {
+        run_authority_union = suite == "authority-union";
+        if (!run_core && !run_crash && !run_private_lease_crash && !run_authority_union) {
             std::cerr << "unknown suite: " << suite << '\n';
             return 64;
         }
     } else if (argc != 1) {
-        std::cerr << "usage: " << argv[0] << " [--suite core|crash|lease-crash]\n";
+        std::cerr << "usage: " << argv[0] << " [--suite authority-union|core|crash|lease-crash]\n";
         return 64;
     }
 
@@ -5361,6 +5649,9 @@ int main(int argc, char* argv[]) {
         }
         if (run_private_lease_crash) {
             run_private_lease_crash_suite(executable);
+        }
+        if (run_authority_union) {
+            run_authority_union_suite();
         }
     } catch (const std::exception& error) {
         ++checks_failed;
