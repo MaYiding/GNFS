@@ -80,6 +80,44 @@ private:
     friend OOCPrivateHandoffInspectResult
     reconcile_private_handoff_from_permit(PrivateCleanupActionPermit& permit,
                                           PrivateNamespaceAction expected_action);
+    friend OOCPrivateHandoffInspectResult
+    inspect_private_handoff_from_permit(PrivateCleanupActionPermit& permit);
+    friend void authorize_private_cleanup_mutation(PrivateCleanupMutationGate& gate,
+                                                   const OOCCleanupPaths& paths,
+                                                   const BaseLock& lock);
+};
+
+/// Source-private bridge from the public inline executor to the retained
+/// RunLegacyCleanup permit. The first namespace mutation consumes this gate;
+/// later mutations in the same executor are already covered by that transition.
+class PrivateCleanupMutationGate final {
+public:
+    explicit PrivateCleanupMutationGate(PrivateCleanupActionPermit& permit) noexcept
+        : permit_(&permit) {}
+
+    [[nodiscard]] bool authorized() const noexcept {
+        return state_ == State::Authorized;
+    }
+
+    PrivateCleanupMutationGate() = delete;
+    PrivateCleanupMutationGate(const PrivateCleanupMutationGate&) = delete;
+    PrivateCleanupMutationGate& operator=(const PrivateCleanupMutationGate&) = delete;
+    PrivateCleanupMutationGate(PrivateCleanupMutationGate&&) = delete;
+    PrivateCleanupMutationGate& operator=(PrivateCleanupMutationGate&&) = delete;
+
+private:
+    enum class State : std::uint8_t {
+        Fresh,
+        Authorized,
+        Failed,
+    };
+
+    PrivateCleanupActionPermit* permit_ = nullptr;
+    State state_ = State::Fresh;
+
+    friend void authorize_private_cleanup_mutation(PrivateCleanupMutationGate& gate,
+                                                   const OOCCleanupPaths& paths,
+                                                   const BaseLock& lock);
 };
 
 /// Exactly one of `blocked` and `permit` is populated by the production
@@ -181,5 +219,11 @@ void bind_private_lease_removal_generation(PrivateCleanupActionPermit& permit,
 [[nodiscard]] OOCPrivateHandoffInspectResult
 reconcile_private_handoff_from_permit(PrivateCleanupActionPermit& permit,
                                       PrivateNamespaceAction expected_action);
+
+/// Revalidate and consume the C1 portion of an already-started
+/// RunLegacyCleanup permit without publishing, converging, or removing either
+/// handoff leaf.
+[[nodiscard]] OOCPrivateHandoffInspectResult
+inspect_private_handoff_from_permit(PrivateCleanupActionPermit& permit);
 
 } // namespace gnfs::relation::ooc_cleanup_detail

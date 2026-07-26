@@ -242,8 +242,20 @@ states. Malformed cleanup-marker precedence remains `IntentCorrupt`, and only
 successful completion consumes the lease receipt. The blocker-precedence test
 pairs that malformed marker with deliberately mismatched generation inputs, so
 generation validation cannot mask the retained union result. `RunLegacyCleanup`
-still requires a separate action-bound migration with its observation-only C1
-behavior preserved.
+now has a separate source-private permit for public begin and resume. Its first
+C1 consumer is observation-only, and only an absent retained C1 state may
+advance to a first-mutation gate. The gate revalidates the retained witness and
+binds every authorization to the creator process, frozen paths, and exact
+`BaseLock`; wrong consumers, cross-executor reuse, and failed revalidation are
+sticky. Direct tests cover repeat use, wrong-action consumption, path/lock
+confusion, and parent-authorized fork-child rejection. Public tests cover
+pre-mutation interruption, post-permit and post-operation C1 insertion, exact
+intent/staged pending markers, marker-rename failure and receipt retry,
+delete-authorized and staged-only tails, empty-pair receipt commitment, unspent
+begin receipts, and macOS byte-identical C1 replacement. The Linux and Windows
+policy branch shares canonical/pending
+begin and resume coverage. Nested Recover/Remove execution and the deferred
+writer's publication-only path remain under their distinct action contracts.
 `OOCCleanupPrivateLeaseCrash` is a `fast` self-exec suite from the same
 binary. It terminates children at each durable private-lease marker, rename,
 and teardown boundary. It also covers writer termination after the first and

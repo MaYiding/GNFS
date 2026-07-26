@@ -54,10 +54,14 @@ namespace gnfs::relation {
 class OOCRelationWriter;
 class OOCPrivateHandoffReader;
 class OOCCleanupTransaction;
+struct OOCCleanupPaths;
 namespace ooc_cleanup_detail {
 class AdoptionParentDirectoryHandle;
 class BaseLock;
+class PrivateCleanupMutationGate;
 class PrivateDirectoryHandle;
+void authorize_private_cleanup_mutation(PrivateCleanupMutationGate& gate,
+                                        const OOCCleanupPaths& paths, const BaseLock& lock);
 } // namespace ooc_cleanup_detail
 
 /// Last durable cleanup boundary reached by an OOC cleanup transaction.
@@ -272,8 +276,8 @@ struct OOCCleanupRequest final {
     std::optional<OOCExactCleanupExpectation> exact;
 };
 
-/// Trusted test-only interruption boundaries. Each point is emitted only after
-/// the corresponding namespace mutation and parent-directory sync completed.
+/// Trusted test-only interruption boundaries. Durable points are emitted only
+/// after the corresponding namespace mutation and parent-directory sync.
 enum class OOCCleanupFaultPoint : std::uint8_t {
     IntentDurable,
     FirstRenameDurable,
@@ -282,6 +286,9 @@ enum class OOCCleanupFaultPoint : std::uint8_t {
     FirstUnlinkDurable,
     SecondUnlinkDurable,
     IntentRemovedDurable,
+    /// RunLegacyCleanup has retained its action permit, but has not observed C1
+    /// or mutated the cleanup transaction namespace.
+    LegacyCleanupPermitAcquired,
 };
 
 /// Trusted test-only boundaries for the no-authority pending publication
@@ -307,6 +314,7 @@ enum class OOCCleanupTestOperation : std::uint8_t {
     IntentUnlinkParentSync,
     StagedUnlink,
     StagedUnlinkParentSync,
+    MarkerRename,
 };
 
 struct OOCCleanupTestHooks final {
@@ -2877,8 +2885,10 @@ confirm_pending_durable(const std::filesystem::path& pending_path, const IntentR
 }
 
 [[nodiscard]] inline PendingDurableResult
-ensure_pending_durable(const std::filesystem::path& pending_path, const IntentRecord& intent,
-                       std::uint64_t marker_magic, OOCCleanupStage stage) {
+ensure_pending_durable(const OOCCleanupPaths& paths, const std::filesystem::path& pending_path,
+                       const IntentRecord& intent, std::uint64_t marker_magic,
+                       OOCCleanupStage stage, const BaseLock& lock,
+                       PrivateCleanupMutationGate* mutation_gate = nullptr) {
     const auto expected = serialize_marker(intent, marker_magic);
     auto pending = inspect_pending_file(pending_path);
     if (pending.kind == InspectKind::Error) {
@@ -2889,6 +2899,9 @@ ensure_pending_durable(const std::filesystem::path& pending_path, const IntentRe
     }
 
     if (pending.kind == InspectKind::Missing) {
+        if (mutation_gate != nullptr) {
+            authorize_private_cleanup_mutation(*mutation_gate, paths, lock);
+        }
         const auto published = util::durable_immutable_file::publish(pending_path, expected);
         if (!published.is_durable()) {
             pending = inspect_pending_file(pending_path);
@@ -2914,14 +2927,19 @@ ensure_pending_durable(const std::filesystem::path& pending_path, const IntentRe
     // The trusted-parent contract makes a regular single-link malformed
     // pending leaf an abandoned no-authority write. Rewrite that same inode;
     // never unlink it, and never follow or rewrite a hardlink/reparse point.
+    if (mutation_gate != nullptr) {
+        authorize_private_cleanup_mutation(*mutation_gate, paths, lock);
+    }
     rewrite_pending_durable(pending_path, pending.identity, expected, stage);
     return confirm_pending_durable(pending_path, intent, marker_magic, stage, true);
 }
 
-inline void reclaim_pending_for_canonical(const std::filesystem::path& canonical_path,
+inline void reclaim_pending_for_canonical(const OOCCleanupPaths& paths,
+                                          const std::filesystem::path& canonical_path,
                                           const std::filesystem::path& pending_path,
                                           const IntentRecord& intent, std::uint64_t marker_magic,
-                                          OOCCleanupStage stage) {
+                                          OOCCleanupStage stage, const BaseLock& lock,
+                                          PrivateCleanupMutationGate* mutation_gate = nullptr) {
     const auto expected = serialize_marker(intent, marker_magic);
     auto pending = inspect_pending_file(pending_path);
     if (pending.kind == InspectKind::Missing) {
@@ -2950,18 +2968,21 @@ inline void reclaim_pending_for_canonical(const std::filesystem::path& canonical
         !marker_bytes_equal(rechecked.bytes, pending.bytes)) {
         fail(OOCCleanupStatus::ForeignReplacementPreserved, stage, protocol_error());
     }
+    if (mutation_gate != nullptr) {
+        authorize_private_cleanup_mutation(*mutation_gate, paths, lock);
+    }
     remove_file(pending_path, stage);
     sync_parent_directory(pending_path.parent_path(), stage);
     revalidate_marker(canonical_path, intent, marker_magic, stage);
 }
 
-[[nodiscard]] inline bool publish_marker_durable(const std::filesystem::path& canonical_path,
-                                                 const std::filesystem::path& pending_path,
-                                                 const IntentRecord& intent,
-                                                 std::uint64_t marker_magic, OOCCleanupStage stage,
-                                                 const BaseLock& lock,
-                                                 const OOCCleanupTestHooks& hooks,
-                                                 OOCCleanupPublishFaultPoint pending_fault_point) {
+[[nodiscard]] inline bool
+publish_marker_durable(const OOCCleanupPaths& paths, const std::filesystem::path& canonical_path,
+                       const std::filesystem::path& pending_path, const IntentRecord& intent,
+                       std::uint64_t marker_magic, OOCCleanupStage stage, const BaseLock& lock,
+                       const OOCCleanupTestHooks& hooks,
+                       OOCCleanupPublishFaultPoint pending_fault_point,
+                       PrivateCleanupMutationGate* mutation_gate = nullptr) {
     const auto expected = serialize_marker(intent, marker_magic);
     const auto canonical = inspect_file(canonical_path, MARKER_BYTES, true);
     if (canonical.kind == InspectKind::Error) {
@@ -2977,14 +2998,16 @@ inline void reclaim_pending_for_canonical(const std::filesystem::path& canonical
         invoke_with_stable_base_lock(
             lock, [&] { confirm_existing_marker(canonical_path, intent, marker_magic, stage); });
         invoke_with_stable_base_lock(lock, [&] {
-            reclaim_pending_for_canonical(canonical_path, pending_path, intent, marker_magic,
-                                          stage);
+            reclaim_pending_for_canonical(paths, canonical_path, pending_path, intent, marker_magic,
+                                          stage, lock, mutation_gate);
         });
         return false;
     }
 
-    const auto pending = invoke_with_stable_base_lock(
-        lock, [&] { return ensure_pending_durable(pending_path, intent, marker_magic, stage); });
+    const auto pending = invoke_with_stable_base_lock(lock, [&] {
+        return ensure_pending_durable(paths, pending_path, intent, marker_magic, stage, lock,
+                                      mutation_gate);
+    });
     const bool stop_after_pending =
         pending.newly_durable && invoke_with_stable_base_lock(lock, [&] {
             return should_interrupt_publish(hooks, pending_fault_point);
@@ -2999,6 +3022,13 @@ inline void reclaim_pending_for_canonical(const std::filesystem::path& canonical
         fail(OOCCleanupStatus::ForeignReplacementPreserved, stage, protocol_error());
     }
 
+    invoke_with_stable_base_lock(lock, [&] {
+        inject_operation_failure(hooks, OOCCleanupTestOperation::MarkerRename,
+                                 OOCCleanupStatus::IoFailure, stage);
+    });
+    if (mutation_gate != nullptr) {
+        authorize_private_cleanup_mutation(*mutation_gate, paths, lock);
+    }
     const RenameOutcome renamed = invoke_with_stable_base_lock(
         lock, [&] { return rename_no_replace(pending_path, canonical_path); });
     switch (renamed.result) {
@@ -3010,8 +3040,8 @@ inline void reclaim_pending_for_canonical(const std::filesystem::path& canonical
         invoke_with_stable_base_lock(
             lock, [&] { confirm_existing_marker(canonical_path, intent, marker_magic, stage); });
         invoke_with_stable_base_lock(lock, [&] {
-            reclaim_pending_for_canonical(canonical_path, pending_path, intent, marker_magic,
-                                          stage);
+            reclaim_pending_for_canonical(paths, canonical_path, pending_path, intent, marker_magic,
+                                          stage, lock, mutation_gate);
         });
         return false;
     case RenameResult::Unsupported:
@@ -3030,15 +3060,15 @@ inline void reclaim_pending_for_canonical(const std::filesystem::path& canonical
     return false;
 }
 
-[[nodiscard]] inline OOCCleanupResult finish_staged_only_tail(const OOCCleanupPaths& paths,
-                                                              const IntentRecord& staged,
-                                                              const BaseLock& lock,
-                                                              const OOCCleanupTestHooks& hooks) {
+[[nodiscard]] inline OOCCleanupResult
+finish_staged_only_tail(const OOCCleanupPaths& paths, const IntentRecord& staged,
+                        const BaseLock& lock, const OOCCleanupTestHooks& hooks,
+                        PrivateCleanupMutationGate* mutation_gate = nullptr) {
     constexpr OOCCleanupStage stage = OOCCleanupStage::IntentRemoved;
     revalidate_staged(paths, staged, stage);
     invoke_with_stable_base_lock(lock, [&] {
-        reclaim_pending_for_canonical(paths.staged_path, paths.staged_pending_path, staged,
-                                      STAGED_MAGIC, stage);
+        reclaim_pending_for_canonical(paths, paths.staged_path, paths.staged_pending_path, staged,
+                                      STAGED_MAGIC, stage, lock, mutation_gate);
     });
     // Intent has already been durably consumed, so this marker has no delete
     // authority. Original live names may now belong to a newer store and are
@@ -3051,6 +3081,9 @@ inline void reclaim_pending_for_canonical(const std::filesystem::path& canonical
         inject_operation_failure(hooks, OOCCleanupTestOperation::StagedUnlink,
                                  OOCCleanupStatus::IoFailure, stage);
     });
+    if (mutation_gate != nullptr) {
+        authorize_private_cleanup_mutation(*mutation_gate, paths, lock);
+    }
     invoke_with_stable_base_lock(lock, [&] { remove_file(paths.staged_path, stage); });
     invoke_with_stable_base_lock(lock, [&] {
         inject_operation_failure(hooks, OOCCleanupTestOperation::StagedUnlinkParentSync,
@@ -3073,10 +3106,10 @@ inline void reclaim_pending_for_canonical(const std::filesystem::path& canonical
     };
 }
 
-[[nodiscard]] inline OOCCleanupResult advance_transaction(const OOCCleanupPaths& paths,
-                                                          const IntentRecord& intent,
-                                                          bool staged_exists, const BaseLock& lock,
-                                                          const OOCCleanupTestHooks& hooks) {
+[[nodiscard]] inline OOCCleanupResult
+advance_transaction(const OOCCleanupPaths& paths, const IntentRecord& intent, bool staged_exists,
+                    const BaseLock& lock, const OOCCleanupTestHooks& hooks,
+                    PrivateCleanupMutationGate* mutation_gate = nullptr) {
     OOCCleanupStage stage = OOCCleanupStage::IntentDurable;
 
     // Confirm any namespace state recovered after a prior uncertain barrier
@@ -3101,6 +3134,9 @@ inline void reclaim_pending_for_canonical(const std::filesystem::path& canonical
                 inject_operation_failure(hooks, OOCCleanupTestOperation::IndexRename,
                                          OOCCleanupStatus::IoFailure, stage);
             });
+            if (mutation_gate != nullptr) {
+                authorize_private_cleanup_mutation(*mutation_gate, paths, lock);
+            }
             invoke_with_stable_base_lock(lock, [&] {
                 quarantine_one(paths.index_path, paths.quarantine_index_path, stage);
             });
@@ -3132,6 +3168,9 @@ inline void reclaim_pending_for_canonical(const std::filesystem::path& canonical
                 inject_operation_failure(hooks, OOCCleanupTestOperation::DataRename,
                                          OOCCleanupStatus::IoFailure, stage);
             });
+            if (mutation_gate != nullptr) {
+                authorize_private_cleanup_mutation(*mutation_gate, paths, lock);
+            }
             invoke_with_stable_base_lock(
                 lock, [&] { quarantine_one(paths.data_path, paths.quarantine_data_path, stage); });
             invoke_with_stable_base_lock(lock, [&] {
@@ -3162,9 +3201,9 @@ inline void reclaim_pending_for_canonical(const std::filesystem::path& canonical
             state.data != ArtifactLocation::Quarantine) {
             fail(OOCCleanupStatus::NamespaceConflict, stage, protocol_error());
         }
-        if (publish_marker_durable(paths.staged_path, paths.staged_pending_path, intent,
-                                   STAGED_MAGIC, stage, lock, hooks,
-                                   OOCCleanupPublishFaultPoint::StagedPendingDurable)) {
+        if (publish_marker_durable(
+                paths, paths.staged_path, paths.staged_pending_path, intent, STAGED_MAGIC, stage,
+                lock, hooks, OOCCleanupPublishFaultPoint::StagedPendingDurable, mutation_gate)) {
             return interrupted(stage);
         }
         confirm_existing_staged(paths, intent, stage);
@@ -3179,8 +3218,9 @@ inline void reclaim_pending_for_canonical(const std::filesystem::path& canonical
             confirm_existing_staged(paths, intent, OOCCleanupStage::DeleteAuthorized);
         });
         invoke_with_stable_base_lock(lock, [&] {
-            reclaim_pending_for_canonical(paths.staged_path, paths.staged_pending_path, intent,
-                                          STAGED_MAGIC, OOCCleanupStage::DeleteAuthorized);
+            reclaim_pending_for_canonical(paths, paths.staged_path, paths.staged_pending_path,
+                                          intent, STAGED_MAGIC, OOCCleanupStage::DeleteAuthorized,
+                                          lock, mutation_gate);
         });
         stage = OOCCleanupStage::DeleteAuthorized;
     }
@@ -3197,6 +3237,9 @@ inline void reclaim_pending_for_canonical(const std::filesystem::path& canonical
             inject_operation_failure(hooks, OOCCleanupTestOperation::DataUnlink,
                                      OOCCleanupStatus::IoFailure, stage);
         });
+        if (mutation_gate != nullptr) {
+            authorize_private_cleanup_mutation(*mutation_gate, paths, lock);
+        }
         invoke_with_stable_base_lock(lock, [&] { remove_file(paths.quarantine_data_path, stage); });
         invoke_with_stable_base_lock(lock, [&] {
             inject_operation_failure(hooks, OOCCleanupTestOperation::DataUnlinkParentSync,
@@ -3229,6 +3272,9 @@ inline void reclaim_pending_for_canonical(const std::filesystem::path& canonical
             inject_operation_failure(hooks, OOCCleanupTestOperation::IndexUnlink,
                                      OOCCleanupStatus::IoFailure, stage);
         });
+        if (mutation_gate != nullptr) {
+            authorize_private_cleanup_mutation(*mutation_gate, paths, lock);
+        }
         invoke_with_stable_base_lock(lock,
                                      [&] { remove_file(paths.quarantine_index_path, stage); });
         invoke_with_stable_base_lock(lock, [&] {
@@ -3264,6 +3310,9 @@ inline void reclaim_pending_for_canonical(const std::filesystem::path& canonical
         inject_operation_failure(hooks, OOCCleanupTestOperation::IntentUnlink,
                                  OOCCleanupStatus::IoFailure, stage);
     });
+    if (mutation_gate != nullptr) {
+        authorize_private_cleanup_mutation(*mutation_gate, paths, lock);
+    }
     invoke_with_stable_base_lock(lock, [&] { remove_file(paths.intent_path, stage); });
     invoke_with_stable_base_lock(lock, [&] {
         inject_operation_failure(hooks, OOCCleanupTestOperation::IntentUnlinkParentSync,
@@ -3284,26 +3333,30 @@ inline void reclaim_pending_for_canonical(const std::filesystem::path& canonical
         })) {
         return interrupted(stage);
     }
-    return finish_staged_only_tail(paths, intent, lock, hooks);
+    return finish_staged_only_tail(paths, intent, lock, hooks, mutation_gate);
 }
 
 [[nodiscard]] inline OOCCleanupResult
 run_transaction_locked(const OOCCleanupPaths& paths, const BaseLock& held_lock,
                        const OOCCleanupRequest* request, bool allow_begin,
                        const OwnershipProof* ownership_proof, bool* consume_receipt,
-                       const OOCCleanupTestHooks& hooks, bool publish_intent_only = false) {
+                       const OOCCleanupTestHooks& hooks, bool publish_intent_only = false,
+                       PrivateCleanupMutationGate* mutation_gate = nullptr) {
     if (!held_lock.matches(paths.lock_path)) {
         fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
     }
     held_lock.require_stable();
     if ((allow_begin &&
          (request == nullptr || ownership_proof == nullptr || consume_receipt == nullptr)) ||
-        (!allow_begin && ownership_proof != nullptr)) {
+        (!allow_begin && ownership_proof != nullptr) ||
+        (publish_intent_only && mutation_gate != nullptr)) {
         fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
     }
-    if (const auto blocked = preflight_private_cleanup_union_for_transaction_locked(
-            paths, held_lock, publish_intent_only)) {
-        return *blocked;
+    if (mutation_gate == nullptr) {
+        if (const auto blocked = preflight_private_cleanup_union_for_transaction_locked(
+                paths, held_lock, publish_intent_only)) {
+            return *blocked;
+        }
     }
     if (!paths.private_directory.empty() &&
         inspect_directory_identity_locked(paths.private_directory)) {
@@ -3332,7 +3385,8 @@ run_transaction_locked(const OOCCleanupPaths& paths, const BaseLock& held_lock,
             const bool tail_matches_request =
                 request != nullptr && request_matches_intent(*request, staged);
             confirm_existing_staged(paths, staged, OOCCleanupStage::IntentRemoved);
-            const auto tail_result = finish_staged_only_tail(paths, staged, held_lock, hooks);
+            const auto tail_result =
+                finish_staged_only_tail(paths, staged, held_lock, hooks, mutation_gate);
             if (!allow_begin || request == nullptr) {
                 if (request != nullptr && !tail_matches_request) {
                     held_lock.require_stable();
@@ -3380,6 +3434,9 @@ run_transaction_locked(const OOCCleanupPaths& paths, const BaseLock& held_lock,
                 fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
             }
             held_lock.require_stable();
+            if (mutation_gate != nullptr) {
+                authorize_private_cleanup_mutation(*mutation_gate, paths, held_lock);
+            }
             *consume_receipt = true;
             return OOCCleanupResult{
                 .status = OOCCleanupStatus::Completed,
@@ -3396,9 +3453,10 @@ run_transaction_locked(const OOCCleanupPaths& paths, const BaseLock& held_lock,
             fail(OOCCleanupStatus::SourcePairInvalid, OOCCleanupStage::None, protocol_error());
         }
         require_source_pair_unchanged(paths, intent);
-        if (publish_marker_durable(paths.intent_path, paths.intent_pending_path, intent,
+        if (publish_marker_durable(paths, paths.intent_path, paths.intent_pending_path, intent,
                                    INTENT_MAGIC, OOCCleanupStage::None, held_lock, hooks,
-                                   OOCCleanupPublishFaultPoint::IntentPendingDurable)) {
+                                   OOCCleanupPublishFaultPoint::IntentPendingDurable,
+                                   mutation_gate)) {
             return interrupted(OOCCleanupStage::None);
         }
         held_lock.require_stable();
@@ -3425,8 +3483,9 @@ run_transaction_locked(const OOCCleanupPaths& paths, const BaseLock& held_lock,
             *consume_receipt = true;
         }
         invoke_with_stable_base_lock(held_lock, [&] {
-            reclaim_pending_for_canonical(paths.intent_path, paths.intent_pending_path, intent,
-                                          INTENT_MAGIC, OOCCleanupStage::IntentDurable);
+            reclaim_pending_for_canonical(paths, paths.intent_path, paths.intent_pending_path,
+                                          intent, INTENT_MAGIC, OOCCleanupStage::IntentDurable,
+                                          held_lock, mutation_gate);
         });
     }
 
@@ -3459,28 +3518,16 @@ run_transaction_locked(const OOCCleanupPaths& paths, const BaseLock& held_lock,
             confirm_existing_staged(paths, intent, OOCCleanupStage::DeleteAuthorized);
         });
     }
-    return advance_transaction(paths, intent, staged_exists, held_lock, hooks);
+    return advance_transaction(paths, intent, staged_exists, held_lock, hooks, mutation_gate);
 }
 
-[[nodiscard]] inline OOCCleanupResult
-run_transaction(const std::filesystem::path& requested_base, const OOCCleanupRequest* request,
-                bool allow_begin, const OwnershipProof* ownership_proof, bool* consume_receipt,
-                const OOCCleanupTestHooks& hooks) {
-    const OOCCleanupPaths paths = freeze_paths(requested_base);
-    BaseLock lock(paths.lock_path, paths.private_directory.empty());
-    if (!paths.private_directory.empty()) {
-        if (const auto blocked =
-                preflight_private_cleanup_union_for_transaction_locked(paths, lock, false)) {
-            return *blocked;
-        }
-        const auto handoff = classify_private_handoff_locked(paths, lock);
-        if (handoff.state != OOCPrivateHandoffState::None) {
-            return handoff.result;
-        }
-    }
-    return run_transaction_locked(paths, lock, request, allow_begin, ownership_proof,
-                                  consume_receipt, hooks, false);
-}
+/// Run the public legacy cleanup path. The out-of-line implementation retains
+/// a source-private RunLegacyCleanup permit through the complete executor.
+[[nodiscard]] OOCCleanupResult run_transaction(const std::filesystem::path& requested_base,
+                                               const OOCCleanupRequest* request, bool allow_begin,
+                                               const OwnershipProof* ownership_proof,
+                                               bool* consume_receipt,
+                                               const OOCCleanupTestHooks& hooks);
 
 /// Require the complete pair namespace to be empty while the caller holds the
 /// matching BaseLock. The persistent regular lock leaf itself is intentionally

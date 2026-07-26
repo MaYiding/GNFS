@@ -1621,10 +1621,38 @@ and a malformed cleanup-marker blocker paired with a deliberately mismatched
 generation. The old standalone C1 mutator was removed, so Recover and Remove
 can no longer reconcile from a fresh path observation.
 
-`RunLegacyCleanup` and the remaining action groups still use their existing
-preflight paths. They require separate fresh permits; neither a Recover or
-Remove permit nor the deferred writer's pre-finalize admission may cross an
-action or state-changing boundary. None of these checks claims
+`RunLegacyCleanup` now has its own source-private permit for public
+`begin_or_resume()` and `resume()`. The source owner retains the permit through
+the complete legacy executor. Its first C1 consumer is observation-only:
+canonical and pending-only handoffs return their existing blocker without
+convergence, while an absent C1 state may advance to a mutation gate. A
+non-empty observation is terminal for that permit and cannot later authorize
+the executor.
+
+The mutation gate revalidates the same retained union witness immediately
+before the action's first namespace change. Every authorization, including a
+repeated authorized call, checks the creator process, frozen paths, and exact
+retained `BaseLock`. A failed, premature, wrong-action, or cross-executor
+consumer burns both gate and permit. The permitted executor skips its former
+fresh inner preflight, so authority never switches to a later independent
+observation. The gate covers pending publication or rewrite, exact-pending
+rename, duplicate-pending removal, quarantine and unlink paths, staged-only
+completion, and empty-pair receipt commitment.
+
+Deterministic tests cover begin and resume interruption, unspent begin
+receipts, post-permit C1 insertion, insertion after operation hooks, exact
+intent and staged pending markers, marker-rename failure and receipt retry,
+delete-authorized and staged-only tails, private empty-pair completion, and
+macOS byte-identical C1 inode replacement.
+Direct capability guards cover wrong consumers, failed-gate stickiness,
+cross-path and cross-lock reuse, and fork-child rejection after parent
+authorization. Linux and Windows retain their path-limited policy and now
+share begin, resume, and receipt-preservation coverage.
+
+Nested Recover and Remove execution remains inside its existing action permit;
+the deferred writer's publication-only path also remains a separate action.
+Neither may mint or borrow a `RunLegacyCleanup` permit. The remaining action
+groups still require separate migrations. None of these checks claims
 protection against deliberate same-user inode cycling between a final
 revalidation and the following syscall, which remains outside the documented
 threat boundary.
