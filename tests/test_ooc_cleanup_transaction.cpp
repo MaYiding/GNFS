@@ -6,6 +6,7 @@
 #include <gnfs/relation/ooc_relation_store.hpp>
 
 #include <ooc_private_cleanup_action_permit_internal.hpp>
+#include <ooc_private_lease_recovery_protocol_internal.hpp>
 #include <ooc_private_lease_reservation_protocol_internal.hpp>
 
 #include "support/child_process.hpp"
@@ -106,6 +107,9 @@ using gnfs::relation::ooc_cleanup_detail::PrivateCleanupUnionObservationTestHook
 using gnfs::relation::ooc_cleanup_detail::PrivateCleanupUnionRawObservation;
 using gnfs::relation::ooc_cleanup_detail::PrivateHandoffLeafObservationKind;
 using gnfs::relation::ooc_cleanup_detail::PrivateHandoffLeafSlot;
+using gnfs::relation::ooc_cleanup_detail::PrivateLeaseRecoveryAction;
+using gnfs::relation::ooc_cleanup_detail::PrivateLeaseRecoveryRunResult;
+using gnfs::relation::ooc_cleanup_detail::PrivateLeaseRecoveryTransition;
 using gnfs::relation::ooc_cleanup_detail::PrivateLeaseRemovalAdmission;
 using gnfs::relation::ooc_cleanup_detail::PrivateLeaseReservationBoundary;
 using gnfs::relation::ooc_cleanup_detail::PrivateLeaseReservationMarkerRole;
@@ -423,6 +427,290 @@ void test_private_lease_reservation_protocol_order_and_interruptions() {
         CHECK(std::equal(interrupted.events.begin(), interrupted.events.end(), expected.begin(),
                          stop + 1));
     }
+}
+
+enum class RecoveryProtocolEventKind : std::uint8_t {
+    Apply,
+    Checkpoint,
+    Complete,
+    Reject,
+};
+
+struct RecoveryProtocolEvent final {
+    RecoveryProtocolEventKind kind;
+    PrivateLeaseReservationBoundary source = PrivateLeaseReservationBoundary::Count;
+    PrivateLeaseRecoveryAction action = PrivateLeaseRecoveryAction::Count;
+    PrivateLeaseReservationBoundary boundary = PrivateLeaseReservationBoundary::Count;
+
+    friend bool operator==(const RecoveryProtocolEvent&, const RecoveryProtocolEvent&) = default;
+};
+
+struct RecordingRecoveryTarget final {
+    PrivateLeaseReservationBoundary current = PrivateLeaseReservationBoundary::PermitAcquired;
+    std::optional<PrivateLeaseReservationBoundary> interrupt_at;
+    std::optional<PrivateLeaseReservationBoundary> apply_boundary_override;
+    std::optional<PrivateLeaseReservationBoundary> checkpoint_boundary_override;
+    std::optional<PrivateLeaseReservationBoundary> complete_boundary_override;
+    std::vector<RecoveryProtocolEvent> events;
+
+    [[nodiscard]] PrivateLeaseReservationBoundary boundary() const {
+        return current;
+    }
+
+    void apply(PrivateLeaseRecoveryTransition transition) {
+        events.push_back({
+            .kind = RecoveryProtocolEventKind::Apply,
+            .source = transition.source,
+            .action = transition.action,
+            .boundary = transition.successor,
+        });
+        current = apply_boundary_override.value_or(transition.successor);
+    }
+
+    [[nodiscard]] bool checkpoint(PrivateLeaseReservationBoundary successor) {
+        events.push_back({
+            .kind = RecoveryProtocolEventKind::Checkpoint,
+            .boundary = successor,
+        });
+        if (checkpoint_boundary_override.has_value()) {
+            current = *checkpoint_boundary_override;
+        }
+        return interrupt_at == successor;
+    }
+
+    void complete() {
+        events.push_back({.kind = RecoveryProtocolEventKind::Complete});
+        if (complete_boundary_override.has_value()) {
+            current = *complete_boundary_override;
+        }
+    }
+
+    void reject_invalid_boundary() {
+        events.push_back({.kind = RecoveryProtocolEventKind::Reject});
+    }
+};
+
+static_assert(
+    gnfs::relation::ooc_cleanup_detail::PrivateLeaseRecoveryTarget<RecordingRecoveryTarget>);
+
+[[nodiscard]] PrivateLeaseReservationBoundary
+expected_private_lease_recovery_successor(PrivateLeaseRecoveryAction action) {
+    using Action = PrivateLeaseRecoveryAction;
+    using Boundary = PrivateLeaseReservationBoundary;
+    switch (action) {
+    case Action::UnlinkExactReservedPending:
+        return Boundary::PermitAcquired;
+    case Action::RenameReservedCanonicalToPendingNoReplace:
+        return Boundary::ReservedPendingDurable;
+    case Action::RemoveExactEmptyStagingDirectory:
+        return Boundary::ReservedCanonicalDurable;
+    case Action::UnlinkExactOwnerPending:
+        return Boundary::StagingDirectoryDurable;
+    case Action::RenameOwnerCanonicalToPendingNoReplace:
+        return Boundary::OwnerPendingDurable;
+    case Action::UnlinkExactOwnedPending:
+        return Boundary::OwnerCanonicalDurable;
+    case Action::RenameOwnedCanonicalToPendingNoReplace:
+        return Boundary::OwnedPendingDurable;
+    case Action::RenameFinalDirectoryToStagingNoReplace:
+        return Boundary::OwnedCanonicalDurable;
+    case Action::Count:
+        break;
+    }
+    throw std::logic_error("recovery action has no successor");
+}
+
+[[nodiscard]] std::vector<PrivateLeaseRecoveryAction>
+expected_private_lease_recovery_actions(PrivateLeaseReservationBoundary initial) {
+    using Action = PrivateLeaseRecoveryAction;
+    using Boundary = PrivateLeaseReservationBoundary;
+    switch (initial) {
+    case Boundary::PermitAcquired:
+        return {};
+    case Boundary::ReservedPendingDurable:
+        return {Action::UnlinkExactReservedPending};
+    case Boundary::ReservedCanonicalDurable:
+        return {Action::RenameReservedCanonicalToPendingNoReplace,
+                Action::UnlinkExactReservedPending};
+    case Boundary::StagingDirectoryDurable:
+        return {Action::RemoveExactEmptyStagingDirectory,
+                Action::RenameReservedCanonicalToPendingNoReplace,
+                Action::UnlinkExactReservedPending};
+    case Boundary::OwnerPendingDurable:
+        return {Action::UnlinkExactOwnerPending, Action::RemoveExactEmptyStagingDirectory,
+                Action::RenameReservedCanonicalToPendingNoReplace,
+                Action::UnlinkExactReservedPending};
+    case Boundary::OwnerCanonicalDurable:
+        return {Action::RenameOwnerCanonicalToPendingNoReplace, Action::UnlinkExactOwnerPending,
+                Action::RemoveExactEmptyStagingDirectory,
+                Action::RenameReservedCanonicalToPendingNoReplace,
+                Action::UnlinkExactReservedPending};
+    case Boundary::OwnedPendingDurable:
+        return {Action::UnlinkExactOwnedPending,
+                Action::RenameOwnerCanonicalToPendingNoReplace,
+                Action::UnlinkExactOwnerPending,
+                Action::RemoveExactEmptyStagingDirectory,
+                Action::RenameReservedCanonicalToPendingNoReplace,
+                Action::UnlinkExactReservedPending};
+    case Boundary::OwnedCanonicalDurable:
+        return {Action::RenameOwnedCanonicalToPendingNoReplace,
+                Action::UnlinkExactOwnedPending,
+                Action::RenameOwnerCanonicalToPendingNoReplace,
+                Action::UnlinkExactOwnerPending,
+                Action::RemoveExactEmptyStagingDirectory,
+                Action::RenameReservedCanonicalToPendingNoReplace,
+                Action::UnlinkExactReservedPending};
+    case Boundary::FinalDirectoryDurable:
+        return {Action::RenameFinalDirectoryToStagingNoReplace,
+                Action::RenameOwnedCanonicalToPendingNoReplace,
+                Action::UnlinkExactOwnedPending,
+                Action::RenameOwnerCanonicalToPendingNoReplace,
+                Action::UnlinkExactOwnerPending,
+                Action::RemoveExactEmptyStagingDirectory,
+                Action::RenameReservedCanonicalToPendingNoReplace,
+                Action::UnlinkExactReservedPending};
+    case Boundary::Count:
+        break;
+    }
+    throw std::logic_error("recovery boundary has no action sequence");
+}
+
+[[nodiscard]] std::vector<RecoveryProtocolEvent>
+expected_private_lease_recovery_events(PrivateLeaseReservationBoundary initial) {
+    std::vector<RecoveryProtocolEvent> expected;
+    auto source = initial;
+    for (const auto action : expected_private_lease_recovery_actions(initial)) {
+        const auto successor = expected_private_lease_recovery_successor(action);
+        expected.push_back({
+            .kind = RecoveryProtocolEventKind::Apply,
+            .source = source,
+            .action = action,
+            .boundary = successor,
+        });
+        expected.push_back({
+            .kind = RecoveryProtocolEventKind::Checkpoint,
+            .boundary = successor,
+        });
+        source = successor;
+    }
+    expected.push_back({.kind = RecoveryProtocolEventKind::Complete});
+    return expected;
+}
+
+void test_private_lease_recovery_protocol_order_and_interruptions() {
+    using Boundary = PrivateLeaseReservationBoundary;
+    using EventKind = RecoveryProtocolEventKind;
+
+    for (const auto initial :
+         gnfs::relation::ooc_cleanup_detail::PRIVATE_LEASE_RESERVATION_BOUNDARIES) {
+        const auto expected = expected_private_lease_recovery_events(initial);
+        RecordingRecoveryTarget completed{.current = initial};
+        CHECK(gnfs::relation::ooc_cleanup_detail::run_private_lease_recovery_protocol(completed) ==
+              PrivateLeaseRecoveryRunResult::Completed);
+        CHECK(completed.current == Boundary::PermitAcquired);
+        CHECK(completed.events == expected);
+
+        for (const auto& event : expected) {
+            if (event.kind != EventKind::Checkpoint) {
+                continue;
+            }
+            RecordingRecoveryTarget interrupted{
+                .current = initial,
+                .interrupt_at = event.boundary,
+            };
+            CHECK(gnfs::relation::ooc_cleanup_detail::run_private_lease_recovery_protocol(
+                      interrupted) == PrivateLeaseRecoveryRunResult::Interrupted);
+            const auto stop = std::find(expected.begin(), expected.end(), event);
+            CHECK(stop != expected.end());
+            const auto prefix_size =
+                static_cast<std::size_t>(std::distance(expected.begin(), stop)) + 1U;
+            CHECK(interrupted.events.size() == prefix_size);
+            CHECK(std::equal(interrupted.events.begin(), interrupted.events.end(), expected.begin(),
+                             stop + 1));
+            CHECK(interrupted.current == event.boundary);
+        }
+    }
+
+    RecordingRecoveryTarget invalid{.current = Boundary::Count};
+    CHECK(gnfs::relation::ooc_cleanup_detail::run_private_lease_recovery_protocol(invalid) ==
+          PrivateLeaseRecoveryRunResult::Rejected);
+    CHECK(invalid.events == std::vector<RecoveryProtocolEvent>{{.kind = EventKind::Reject}});
+
+    RecordingRecoveryTarget out_of_range{
+        .current = static_cast<Boundary>(std::numeric_limits<std::uint8_t>::max()),
+    };
+    CHECK(gnfs::relation::ooc_cleanup_detail::run_private_lease_recovery_protocol(out_of_range) ==
+          PrivateLeaseRecoveryRunResult::Rejected);
+    CHECK(out_of_range.events == std::vector<RecoveryProtocolEvent>{{.kind = EventKind::Reject}});
+
+    RecordingRecoveryTarget repeated_p0;
+    CHECK(gnfs::relation::ooc_cleanup_detail::run_private_lease_recovery_protocol(repeated_p0) ==
+          PrivateLeaseRecoveryRunResult::Completed);
+    CHECK(gnfs::relation::ooc_cleanup_detail::run_private_lease_recovery_protocol(repeated_p0) ==
+          PrivateLeaseRecoveryRunResult::Completed);
+    const std::vector<RecoveryProtocolEvent> expected_repeated_p0{
+        {.kind = EventKind::Complete},
+        {.kind = EventKind::Complete},
+    };
+    CHECK(repeated_p0.events == expected_repeated_p0);
+    CHECK(repeated_p0.current == Boundary::PermitAcquired);
+
+    const std::vector<RecoveryProtocolEvent> expected_apply_rejection{
+        {
+            .kind = EventKind::Apply,
+            .source = Boundary::ReservedCanonicalDurable,
+            .action = PrivateLeaseRecoveryAction::RenameReservedCanonicalToPendingNoReplace,
+            .boundary = Boundary::ReservedPendingDurable,
+        },
+        {.kind = EventKind::Reject},
+    };
+    RecordingRecoveryTarget stalled_after_apply{
+        .current = Boundary::ReservedCanonicalDurable,
+        .apply_boundary_override = Boundary::ReservedCanonicalDurable,
+    };
+    CHECK(gnfs::relation::ooc_cleanup_detail::run_private_lease_recovery_protocol(
+              stalled_after_apply) == PrivateLeaseRecoveryRunResult::Rejected);
+    CHECK(stalled_after_apply.events == expected_apply_rejection);
+    CHECK(stalled_after_apply.current == Boundary::ReservedCanonicalDurable);
+
+    RecordingRecoveryTarget skipped_after_apply{
+        .current = Boundary::ReservedCanonicalDurable,
+        .apply_boundary_override = Boundary::PermitAcquired,
+    };
+    CHECK(gnfs::relation::ooc_cleanup_detail::run_private_lease_recovery_protocol(
+              skipped_after_apply) == PrivateLeaseRecoveryRunResult::Rejected);
+    CHECK(skipped_after_apply.events == expected_apply_rejection);
+    CHECK(skipped_after_apply.current == Boundary::PermitAcquired);
+
+    RecordingRecoveryTarget changed_during_checkpoint{
+        .current = Boundary::ReservedCanonicalDurable,
+        .interrupt_at = Boundary::ReservedPendingDurable,
+        .checkpoint_boundary_override = Boundary::PermitAcquired,
+    };
+    CHECK(gnfs::relation::ooc_cleanup_detail::run_private_lease_recovery_protocol(
+              changed_during_checkpoint) == PrivateLeaseRecoveryRunResult::Rejected);
+    const std::vector<RecoveryProtocolEvent> expected_checkpoint_rejection{
+        expected_apply_rejection.front(),
+        {
+            .kind = EventKind::Checkpoint,
+            .boundary = Boundary::ReservedPendingDurable,
+        },
+        {.kind = EventKind::Reject},
+    };
+    CHECK(changed_during_checkpoint.events == expected_checkpoint_rejection);
+    CHECK(changed_during_checkpoint.current == Boundary::PermitAcquired);
+
+    RecordingRecoveryTarget changed_during_complete{
+        .complete_boundary_override = Boundary::ReservedPendingDurable,
+    };
+    CHECK(gnfs::relation::ooc_cleanup_detail::run_private_lease_recovery_protocol(
+              changed_during_complete) == PrivateLeaseRecoveryRunResult::Rejected);
+    const std::vector<RecoveryProtocolEvent> expected_complete_rejection{
+        {.kind = EventKind::Complete},
+        {.kind = EventKind::Reject},
+    };
+    CHECK(changed_during_complete.events == expected_complete_rejection);
+    CHECK(changed_during_complete.current == Boundary::ReservedPendingDurable);
 }
 
 [[nodiscard]] PrivateCleanupUnionClassification expected_private_cleanup_union_classification(
@@ -10173,6 +10461,7 @@ void run_core_suite(const std::string& executable) {
 
 void run_authority_union_suite() {
     test_private_lease_reservation_protocol_order_and_interruptions();
+    test_private_lease_recovery_protocol_order_and_interruptions();
     test_private_cleanup_union_policy_exhaustive();
 }
 
