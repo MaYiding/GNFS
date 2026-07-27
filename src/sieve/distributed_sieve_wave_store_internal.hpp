@@ -7,11 +7,14 @@
 #include <gnfs/util/durable_immutable_record.hpp>
 #include <gnfs/util/process.hpp>
 
+#include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -36,12 +39,30 @@ inline constexpr std::string_view DISTRIBUTED_SIEVE_PRIVATE_LEASE_DIRECTORY_SUFF
     ".gnfs-sink-lease";
 inline constexpr std::string_view DISTRIBUTED_SIEVE_PRIVATE_LEASE_BASE_LOCK_SUFFIX =
     ".gnfs-sink-lease.gnfs-ooc-cleanup-v1.lock";
+inline constexpr std::string_view DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVED_SUFFIX =
+    ".gnfs-sink-lease.gnfs-private-lease-v1.reserved";
+inline constexpr std::string_view DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVED_PENDING_SUFFIX =
+    ".gnfs-sink-lease.gnfs-private-lease-v1.reserved.pending";
+inline constexpr std::string_view DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNED_SUFFIX =
+    ".gnfs-sink-lease.gnfs-private-lease-v1.owned";
+inline constexpr std::string_view DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNED_PENDING_SUFFIX =
+    ".gnfs-sink-lease.gnfs-private-lease-v1.owned.pending";
+inline constexpr std::string_view DISTRIBUTED_SIEVE_PRIVATE_LEASE_STAGING_TAG =
+    ".gnfs-sink-lease.gnfs-private-lease-v1.stage-";
+inline constexpr std::string_view DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_LEAF =
+    ".gnfs-private-lease-v1.owner";
+inline constexpr std::string_view DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_PENDING_LEAF =
+    ".gnfs-private-lease-v1.owner.pending";
 inline constexpr std::uint32_t DISTRIBUTED_SIEVE_WAVE_LOCK_SEMANTICS_VERSION_V1 = 1;
 
 struct DistributedSieveWorkerAttemptNamesV1 final {
     std::string relative_lease_stem;
     std::string private_directory_leaf;
     std::string base_lock_leaf;
+    std::string reserved_leaf;
+    std::string reserved_pending_leaf;
+    std::string owned_leaf;
+    std::string owned_pending_leaf;
     std::string canonical_record_leaf;
     std::string pending_record_leaf;
 
@@ -162,18 +183,68 @@ struct DistributedSieveWaveStoreTestHooks final {
     void* context = nullptr;
 };
 
-struct DistributedSieveWaveStoreInventoryTestHooks final {
-    using AfterFirstValidation = void (*)(void* context) noexcept;
-
-    AfterFirstValidation after_first_validation = nullptr;
-    void* context = nullptr;
-};
-
 enum class DistributedSievePrivateLeaseBaseLockSyncPoint : std::uint8_t {
     TargetInitial,
     RootDirectory,
     TargetFinal,
     Count,
+};
+
+/// The nine and only durable prefixes of one private-lease reservation. Values
+/// intentionally mirror the source-private relation driver and are checked
+/// against it in the WaveStore implementation.
+enum class DistributedSievePrivateLeaseReservationBoundary : std::uint8_t {
+    PermitAcquired,
+    ReservedPendingDurable,
+    ReservedCanonicalDurable,
+    StagingDirectoryDurable,
+    OwnerPendingDurable,
+    OwnerCanonicalDurable,
+    OwnedPendingDurable,
+    OwnedCanonicalDurable,
+    FinalDirectoryDurable,
+    Count,
+};
+
+inline constexpr std::array DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVATION_BOUNDARIES{
+    DistributedSievePrivateLeaseReservationBoundary::PermitAcquired,
+    DistributedSievePrivateLeaseReservationBoundary::ReservedPendingDurable,
+    DistributedSievePrivateLeaseReservationBoundary::ReservedCanonicalDurable,
+    DistributedSievePrivateLeaseReservationBoundary::StagingDirectoryDurable,
+    DistributedSievePrivateLeaseReservationBoundary::OwnerPendingDurable,
+    DistributedSievePrivateLeaseReservationBoundary::OwnerCanonicalDurable,
+    DistributedSievePrivateLeaseReservationBoundary::OwnedPendingDurable,
+    DistributedSievePrivateLeaseReservationBoundary::OwnedCanonicalDurable,
+    DistributedSievePrivateLeaseReservationBoundary::FinalDirectoryDurable,
+};
+
+static_assert(DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVATION_BOUNDARIES.size() ==
+              static_cast<std::size_t>(DistributedSievePrivateLeaseReservationBoundary::Count));
+
+struct DistributedSievePrivateLeaseReservationInventoryWitness final {
+    std::string base_lock_leaf;
+    DistributedSievePrivateLeaseReservationBoundary boundary =
+        DistributedSievePrivateLeaseReservationBoundary::PermitAcquired;
+    std::array<std::uint64_t, 2> lease_id{};
+    std::optional<NativeIdentityV1> reserved_marker_identity;
+    std::optional<NativeIdentityV1> directory_identity;
+    std::optional<NativeIdentityV1> owner_marker_identity;
+    std::optional<NativeIdentityV1> owned_marker_identity;
+
+    [[nodiscard]] friend bool
+    operator==(const DistributedSievePrivateLeaseReservationInventoryWitness&,
+               const DistributedSievePrivateLeaseReservationInventoryWitness&) = default;
+};
+
+struct DistributedSieveWaveStoreInventoryTestHooks final {
+    using ObserveReservationWitnesses =
+        void (*)(std::span<const DistributedSievePrivateLeaseReservationInventoryWitness> witnesses,
+                 void* context) noexcept;
+    using AfterFirstValidation = void (*)(void* context) noexcept;
+
+    ObserveReservationWitnesses observe_reservation_witnesses = nullptr;
+    AfterFirstValidation after_first_validation = nullptr;
+    void* context = nullptr;
 };
 
 /// Trusted test-only boundaries for the attempt BaseLockAt transaction. The
@@ -419,6 +490,8 @@ private:
     std::optional<DistributedSieveWorkerAttemptNamesV1> worker_attempt_names_;
     std::optional<std::vector<std::string>> expected_private_lease_base_lock_leaves_;
     std::optional<std::vector<NativeIdentityV1>> expected_private_lease_base_lock_identities_;
+    std::optional<std::vector<DistributedSievePrivateLeaseReservationInventoryWitness>>
+        expected_private_lease_reservation_witnesses_;
     std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt> base_lock_at_;
 
     friend class DistributedSieveWaveStore;

@@ -1880,11 +1880,33 @@ the permanent prefix and exact inode survive, and require explicit
 open-existing recovery. Barrier-controlled tests prove same-State exclusion
 without imposing a process-global lock across independent WaveStores.
 
+The manifest-bound read-only reservation classifier now recognizes the same
+nine forward prefixes as the generic relation reservation driver: permit,
+pending and canonical `RESERVED`, staging, pending and canonical `OWNER`,
+pending and canonical `OWNED`, and final-directory durability. Compile-time
+checks keep the WaveStore phase order aligned with the generic driver.
+
+Every scan starts from the held root descriptor. It validates exact manifest
+names, owner-only metadata, single-link marker files, ACL absence, marker
+records, lease ID and base-path binding, and the complete marker chain. A
+phase witness retains the exact `BaseLock`, marker, directory, and owner
+identities. Store and bound-claim revalidation compare two observations and
+the acquisition baseline, so a same-byte replacement on a new inode fails
+closed. Canonical and pending copies are never accepted together.
+
+Initial create and pending-manifest recovery classify any reservation
+candidate before manifest publication can mutate the namespace. The current
+allowlist intentionally ends at the nine reservation prefixes. Active worker
+corpus children and recovery-deletion tails remain foreign until their
+capability and phase contracts are implemented. A permanent `BaseLock` by
+itself remains a recoverable pre-manifest prefix, but any private-lease
+protocol leaf blocks manifest repair.
+
 The next M2 slice will adapt the generic reservation phase machine to the held
-root descriptor. It must admit only the exact reservation successor at each
-boundary, recover every durable prefix, and release the root claim before
-returning a lease receipt. Attempt-record publication remains blocked until
-that reservation receipt exists.
+root descriptor. It must recover every durable prefix, admit only its exact
+successor during mutation, and release the root claim before returning a lease
+receipt. Attempt-record publication remains blocked until that reservation
+receipt exists.
 
 Exit criterion: two masters cannot both act, and restart cannot exceed the
 manifest retry budget. This milestone remains test/internal and exposes no

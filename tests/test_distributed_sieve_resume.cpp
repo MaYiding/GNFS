@@ -190,6 +190,74 @@ static_assert([] {
     return true;
 }());
 
+struct PrivateLeaseReservationBoundaryContract final {
+    wave_detail::DistributedSievePrivateLeaseReservationBoundary boundary;
+    gnfs::relation::OOCPrivateLeaseFaultPoint relation_fault_point;
+};
+
+constexpr std::array PRIVATE_LEASE_RESERVATION_BOUNDARY_CONTRACTS{
+    PrivateLeaseReservationBoundaryContract{
+        .boundary = wave_detail::DistributedSievePrivateLeaseReservationBoundary::PermitAcquired,
+        .relation_fault_point =
+            gnfs::relation::OOCPrivateLeaseFaultPoint::ReservationPermitAcquired,
+    },
+    PrivateLeaseReservationBoundaryContract{
+        .boundary =
+            wave_detail::DistributedSievePrivateLeaseReservationBoundary::ReservedPendingDurable,
+        .relation_fault_point = gnfs::relation::OOCPrivateLeaseFaultPoint::ReservedPendingDurable,
+    },
+    PrivateLeaseReservationBoundaryContract{
+        .boundary =
+            wave_detail::DistributedSievePrivateLeaseReservationBoundary::ReservedCanonicalDurable,
+        .relation_fault_point = gnfs::relation::OOCPrivateLeaseFaultPoint::ReservedDurable,
+    },
+    PrivateLeaseReservationBoundaryContract{
+        .boundary =
+            wave_detail::DistributedSievePrivateLeaseReservationBoundary::StagingDirectoryDurable,
+        .relation_fault_point = gnfs::relation::OOCPrivateLeaseFaultPoint::StagingDirectoryDurable,
+    },
+    PrivateLeaseReservationBoundaryContract{
+        .boundary =
+            wave_detail::DistributedSievePrivateLeaseReservationBoundary::OwnerPendingDurable,
+        .relation_fault_point = gnfs::relation::OOCPrivateLeaseFaultPoint::OwnerPendingDurable,
+    },
+    PrivateLeaseReservationBoundaryContract{
+        .boundary =
+            wave_detail::DistributedSievePrivateLeaseReservationBoundary::OwnerCanonicalDurable,
+        .relation_fault_point = gnfs::relation::OOCPrivateLeaseFaultPoint::OwnerDurable,
+    },
+    PrivateLeaseReservationBoundaryContract{
+        .boundary =
+            wave_detail::DistributedSievePrivateLeaseReservationBoundary::OwnedPendingDurable,
+        .relation_fault_point = gnfs::relation::OOCPrivateLeaseFaultPoint::OwnedPendingDurable,
+    },
+    PrivateLeaseReservationBoundaryContract{
+        .boundary =
+            wave_detail::DistributedSievePrivateLeaseReservationBoundary::OwnedCanonicalDurable,
+        .relation_fault_point = gnfs::relation::OOCPrivateLeaseFaultPoint::OwnedDurable,
+    },
+    PrivateLeaseReservationBoundaryContract{
+        .boundary =
+            wave_detail::DistributedSievePrivateLeaseReservationBoundary::FinalDirectoryDurable,
+        .relation_fault_point = gnfs::relation::OOCPrivateLeaseFaultPoint::FinalRenameDurable,
+    },
+};
+
+static_assert(PRIVATE_LEASE_RESERVATION_BOUNDARY_CONTRACTS.size() ==
+              wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVATION_BOUNDARIES.size());
+static_assert([] {
+    for (std::size_t index = 0; index < PRIVATE_LEASE_RESERVATION_BOUNDARY_CONTRACTS.size();
+         ++index) {
+        if (PRIVATE_LEASE_RESERVATION_BOUNDARY_CONTRACTS[index].boundary !=
+                wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVATION_BOUNDARIES[index] ||
+            static_cast<std::size_t>(
+                PRIVATE_LEASE_RESERVATION_BOUNDARY_CONTRACTS[index].boundary) != index) {
+            return false;
+        }
+    }
+    return true;
+}());
+
 class TestFailure final : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -1267,7 +1335,7 @@ void test_worker_attempt_naming_contract() {
     stems.reserve(static_cast<std::size_t>(sieve::DISTRIBUTED_SIEVE_PROTOCOL_MAX_CHUNKS) *
                   sieve::DISTRIBUTED_SIEVE_PROTOCOL_MAX_ATTEMPTS);
     namespace_leaves.reserve(
-        3U + 4U * static_cast<std::size_t>(sieve::DISTRIBUTED_SIEVE_PROTOCOL_MAX_CHUNKS) *
+        3U + 8U * static_cast<std::size_t>(sieve::DISTRIBUTED_SIEVE_PROTOCOL_MAX_CHUNKS) *
                  sieve::DISTRIBUTED_SIEVE_PROTOCOL_MAX_ATTEMPTS);
 
     for (uint32_t chunk_id = 0; chunk_id < sieve::DISTRIBUTED_SIEVE_PROTOCOL_MAX_CHUNKS;
@@ -1289,6 +1357,20 @@ void test_worker_attempt_naming_contract() {
             CHECK(names->base_lock_leaf ==
                   names->relative_lease_stem +
                       std::string(wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_BASE_LOCK_SUFFIX));
+            CHECK(names->reserved_leaf ==
+                  names->relative_lease_stem +
+                      std::string(wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVED_SUFFIX));
+            CHECK(names->reserved_pending_leaf ==
+                  names->relative_lease_stem +
+                      std::string(
+                          wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVED_PENDING_SUFFIX));
+            CHECK(names->owned_leaf ==
+                  names->relative_lease_stem +
+                      std::string(wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNED_SUFFIX));
+            CHECK(
+                names->owned_pending_leaf ==
+                names->relative_lease_stem +
+                    std::string(wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNED_PENDING_SUFFIX));
             CHECK(names->canonical_record_leaf ==
                   std::string(wave_detail::DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_PREFIX) +
                       chunk_digits +
@@ -1321,6 +1403,10 @@ void test_worker_attempt_naming_contract() {
             stems.push_back(names->relative_lease_stem);
             namespace_leaves.push_back(names->private_directory_leaf);
             namespace_leaves.push_back(names->base_lock_leaf);
+            namespace_leaves.push_back(names->reserved_leaf);
+            namespace_leaves.push_back(names->reserved_pending_leaf);
+            namespace_leaves.push_back(names->owned_leaf);
+            namespace_leaves.push_back(names->owned_pending_leaf);
             namespace_leaves.push_back(names->canonical_record_leaf);
             namespace_leaves.push_back(names->pending_record_leaf);
         }
@@ -1350,6 +1436,13 @@ void test_worker_attempt_naming_contract() {
     CHECK(upper_bound.has_value());
     CHECK(lower_bound->private_directory_leaf == "S_attempt_00.gnfs-sink-lease");
     CHECK(lower_bound->base_lock_leaf == "S_attempt_00.gnfs-sink-lease.gnfs-ooc-cleanup-v1.lock");
+    CHECK(lower_bound->reserved_leaf ==
+          "S_attempt_00.gnfs-sink-lease.gnfs-private-lease-v1.reserved");
+    CHECK(lower_bound->reserved_pending_leaf ==
+          "S_attempt_00.gnfs-sink-lease.gnfs-private-lease-v1.reserved.pending");
+    CHECK(lower_bound->owned_leaf == "S_attempt_00.gnfs-sink-lease.gnfs-private-lease-v1.owned");
+    CHECK(lower_bound->owned_pending_leaf ==
+          "S_attempt_00.gnfs-sink-lease.gnfs-private-lease-v1.owned.pending");
     CHECK(lower_bound->canonical_record_leaf == ".gnfs-wave-v1.attempt-c00-a00");
     CHECK(upper_bound->canonical_record_leaf == ".gnfs-wave-v1.attempt-c63-a63");
     CHECK(!wave_detail::distributed_sieve_worker_attempt_names_v1(
@@ -4023,6 +4116,69 @@ struct WaveFaultStopContext final {
     return point == context.target;
 }
 
+struct RelationPrivateLeaseStopContext final {
+    gnfs::relation::OOCPrivateLeaseFaultPoint target =
+        gnfs::relation::OOCPrivateLeaseFaultPoint::ReservationPermitAcquired;
+    bool observed = false;
+};
+
+[[nodiscard]] bool
+stop_at_relation_private_lease_fault(gnfs::relation::OOCPrivateLeaseFaultPoint point,
+                                     void* opaque) noexcept {
+    auto& context = *static_cast<RelationPrivateLeaseStopContext*>(opaque);
+    if (point != context.target) {
+        return false;
+    }
+    context.observed = true;
+    return true;
+}
+
+void leave_relation_private_lease_reservation_prefix(
+    const std::filesystem::path& base_path, gnfs::relation::OOCPrivateLeaseFaultPoint fault_point) {
+    RelationPrivateLeaseStopContext context{
+        .target = fault_point,
+    };
+    const auto reservation = gnfs::relation::OOCCleanupTransaction::reserve_private_lease(
+        base_path, gnfs::relation::OOCPrivateLeaseTestHooks{
+                       .stop_after = stop_at_relation_private_lease_fault,
+                       .context = &context,
+                   });
+    CHECK(context.observed);
+    CHECK(reservation.result.status == gnfs::relation::OOCCleanupStatus::Interrupted);
+    CHECK(!reservation.ownership.has_value());
+}
+
+struct WaveReservationWitnessObservationContext final {
+    wave_detail::DistributedSievePrivateLeaseReservationBoundary expected_boundary =
+        wave_detail::DistributedSievePrivateLeaseReservationBoundary::PermitAcquired;
+    std::string expected_base_lock_leaf;
+    bool invoked = false;
+    bool matched = false;
+};
+
+void observe_wave_reservation_witnesses(
+    std::span<const wave_detail::DistributedSievePrivateLeaseReservationInventoryWitness> witnesses,
+    void* opaque) noexcept {
+    auto& context = *static_cast<WaveReservationWitnessObservationContext*>(opaque);
+    context.invoked = true;
+    if (witnesses.size() != 1U) {
+        return;
+    }
+    const auto& witness = witnesses.front();
+    const auto phase = static_cast<std::size_t>(context.expected_boundary);
+    const bool expects_lease_id =
+        context.expected_boundary !=
+        wave_detail::DistributedSievePrivateLeaseReservationBoundary::PermitAcquired;
+    const bool has_lease_id = witness.lease_id[0] != 0 || witness.lease_id[1] != 0;
+    context.matched = witness.base_lock_leaf == context.expected_base_lock_leaf &&
+                      witness.boundary == context.expected_boundary &&
+                      has_lease_id == expects_lease_id &&
+                      witness.reserved_marker_identity.has_value() == (phase >= 1U) &&
+                      witness.directory_identity.has_value() == (phase >= 3U) &&
+                      witness.owner_marker_identity.has_value() == (phase >= 4U) &&
+                      witness.owned_marker_identity.has_value() == (phase >= 6U);
+}
+
 #if !defined(_WIN32)
 
 struct WaveForkFaultContext final {
@@ -4111,6 +4267,70 @@ void replace_base_lock_after_first_inventory(void* opaque) noexcept {
         context.native_error = errno;
         (void)::rename(context.displaced.c_str(), context.canonical.c_str());
         return;
+    }
+    if (::fchmod(descriptor, 0600) != 0) {
+        context.native_error = errno;
+        (void)::close(descriptor);
+        return;
+    }
+    if (::close(descriptor) != 0) {
+        context.native_error = errno;
+        return;
+    }
+    context.replaced = true;
+}
+
+struct WaveSameBytesReplacementContext final {
+    std::filesystem::path canonical;
+    std::filesystem::path displaced;
+    std::vector<std::byte> bytes;
+    int native_error = 0;
+    bool invoked = false;
+    bool replaced = false;
+};
+
+void replace_marker_with_same_bytes_after_first_inventory(void* opaque) noexcept {
+    auto& context = *static_cast<WaveSameBytesReplacementContext*>(opaque);
+    if (context.invoked) {
+        return;
+    }
+    context.invoked = true;
+    int renamed = -1;
+    do {
+        renamed = ::rename(context.canonical.c_str(), context.displaced.c_str());
+    } while (renamed != 0 && errno == EINTR);
+    if (renamed != 0) {
+        context.native_error = errno;
+        return;
+    }
+
+    int descriptor = -1;
+    do {
+        descriptor = ::open(context.canonical.c_str(),
+                            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    } while (descriptor < 0 && errno == EINTR);
+    if (descriptor < 0) {
+        context.native_error = errno;
+        return;
+    }
+    std::size_t offset = 0;
+    while (offset < context.bytes.size()) {
+        const ssize_t written =
+            ::write(descriptor, context.bytes.data() + offset, context.bytes.size() - offset);
+        if (written < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            context.native_error = errno;
+            (void)::close(descriptor);
+            return;
+        }
+        if (written == 0) {
+            context.native_error = EIO;
+            (void)::close(descriptor);
+            return;
+        }
+        offset += static_cast<std::size_t>(written);
     }
     if (::fchmod(descriptor, 0600) != 0) {
         context.native_error = errno;
@@ -5846,6 +6066,316 @@ void test_wave_store_manifest_bound_base_locks_and_claim_inventory_split() {
     require_wave_status(retry_claim.revalidate_authority(),
                         wave_detail::DistributedSieveWaveStoreStatus::ready,
                         "retried claim retains authority after inventory repair");
+}
+
+void test_wave_store_classifies_all_private_lease_reservation_prefixes() {
+    for (std::size_t index = 0; index < PRIVATE_LEASE_RESERVATION_BOUNDARY_CONTRACTS.size();
+         ++index) {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / ("reservation-prefix-" + std::to_string(index));
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create reservation-prefix fixture");
+        const auto& chunk = store.manifest().chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+
+        leave_relation_private_lease_reservation_prefix(
+            root / names->private_directory_leaf / "corpus",
+            PRIVATE_LEASE_RESERVATION_BOUNDARY_CONTRACTS[index].relation_fault_point);
+        CHECK(!entry_exists_no_follow(root / names->canonical_record_leaf));
+        CHECK(!entry_exists_no_follow(root / names->pending_record_leaf));
+        const auto prefix_snapshot = capture_wave_root_snapshot(root);
+        std::optional<std::filesystem::path> reservation_directory;
+        std::optional<std::pair<std::filesystem::path, WaveRootEntrySnapshot>>
+            nested_owner_snapshot;
+        if (index >= 3U) {
+            const auto reserved = cleanup_detail::parse_private_lease_marker(
+                read_file_bytes(root / names->reserved_leaf));
+            reservation_directory =
+                index == 8U
+                    ? root / names->private_directory_leaf
+                    : root /
+                          (names->relative_lease_stem +
+                           std::string(wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_STAGING_TAG) +
+                           cleanup_detail::private_lease_id_hex(reserved.lease_id));
+        }
+        if (index >= 4U) {
+            const auto owner_leaf =
+                index == 4U
+                    ? std::string(wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_PENDING_LEAF)
+                    : std::string(wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_LEAF);
+            const auto owner_path = *reservation_directory / owner_leaf;
+            nested_owner_snapshot.emplace(owner_path,
+                                          capture_wave_root_entry_snapshot(owner_path, owner_leaf));
+        }
+        const auto require_exact_prefix_snapshot = [&] {
+            CHECK(capture_wave_root_snapshot(root) == prefix_snapshot);
+            if (nested_owner_snapshot.has_value()) {
+                CHECK(capture_wave_root_entry_snapshot(nested_owner_snapshot->first,
+                                                       nested_owner_snapshot->second.leaf) ==
+                      nested_owner_snapshot->second);
+            }
+            if (index == 3U) {
+                CHECK(!entry_exists_no_follow(
+                    *reservation_directory /
+                    wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_LEAF));
+                CHECK(!entry_exists_no_follow(
+                    *reservation_directory /
+                    wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_PENDING_LEAF));
+            }
+        };
+        WaveReservationWitnessObservationContext observation{
+            .expected_boundary = PRIVATE_LEASE_RESERVATION_BOUNDARY_CONTRACTS[index].boundary,
+            .expected_base_lock_leaf = names->base_lock_leaf,
+        };
+        require_wave_status(
+            store.revalidate(wave_detail::DistributedSieveWaveStoreInventoryTestHooks{
+                .observe_reservation_witnesses = observe_wave_reservation_witnesses,
+                .context = &observation,
+            }),
+            wave_detail::DistributedSieveWaveStoreStatus::ready,
+            "reservation prefix is a closed manifest-bound inventory");
+        CHECK(observation.invoked);
+        CHECK(observation.matched);
+        require_exact_prefix_snapshot();
+
+        auto root_claimed = store.claim_private_lease_root();
+        auto& root_claim = require_private_lease_root_claim_ready(
+            root_claimed, "reservation prefix admits a generic root claim");
+        require_wave_status(root_claim.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "generic root claim retains reservation prefix witness");
+        root_claimed.claim.reset();
+        require_exact_prefix_snapshot();
+
+        auto attempt_claimed = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        auto& attempt_claim = require_private_lease_root_claim_ready(
+            attempt_claimed, "reservation prefix admits its exact attempt claim");
+        require_wave_status(attempt_claim.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "attempt claim retains reservation prefix witness");
+        const Digest digest = store.manifest_digest();
+        attempt_claimed.claim.reset();
+        require_exact_prefix_snapshot();
+        created.store.reset();
+
+        auto reopened = wave_detail::DistributedSieveWaveStore::open(root, digest);
+        auto& reopened_store =
+            require_wave_ready(reopened, "reopen wave at exact reservation prefix");
+        require_wave_status(reopened_store.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "reopened wave retains exact reservation prefix");
+        require_exact_prefix_snapshot();
+    }
+}
+
+void test_wave_store_rejects_dual_private_lease_marker_states() {
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "dual-private-lease-markers";
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+    auto& store = require_wave_ready(created, "create dual-marker fixture");
+    const auto& chunk = store.manifest().chunks.front();
+    const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk.relative_artifact_stem, chunk.chunk_id, 0);
+    CHECK(names.has_value());
+    const auto base_path = root / names->private_directory_leaf / "corpus";
+    const auto paths = gnfs::relation::OOCCleanupTransaction::paths_for(base_path);
+
+    leave_relation_private_lease_reservation_prefix(
+        base_path, gnfs::relation::OOCPrivateLeaseFaultPoint::OwnedDurable);
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "owned-canonical reservation prefix is initially valid");
+    const auto reserved_record =
+        cleanup_detail::parse_private_lease_marker(read_file_bytes(paths.lease_reserved_path));
+    const auto staging_leaf =
+        names->relative_lease_stem +
+        std::string(wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_STAGING_TAG) +
+        cleanup_detail::private_lease_id_hex(reserved_record.lease_id);
+    const auto staging = root / staging_leaf;
+
+    const auto duplicate_and_reject = [&](const std::filesystem::path& canonical,
+                                          const std::filesystem::path& pending,
+                                          std::string_view context) {
+        write_file_bytes(pending, read_file_bytes(canonical));
+        require_chmod(pending, 0600, "chmod duplicate private-lease marker");
+        require_wave_status(store.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            context);
+        std::error_code error;
+        CHECK(std::filesystem::remove(pending, error));
+        CHECK(!error);
+        require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "removing dual marker restores the exact reservation prefix");
+    };
+
+    duplicate_and_reject(paths.lease_reserved_path, paths.lease_reserved_pending_path,
+                         "canonical plus pending RESERVED is rejected");
+    duplicate_and_reject(staging / wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_LEAF,
+                         staging / wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_PENDING_LEAF,
+                         "canonical plus pending OWNER is rejected");
+    duplicate_and_reject(paths.lease_owned_path, paths.lease_owned_pending_path,
+                         "canonical plus pending OWNED is rejected");
+}
+
+void test_wave_store_private_lease_witness_rejects_same_bytes_replacement() {
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "same-bytes-private-lease-replacement";
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+    auto& store = require_wave_ready(created, "create same-bytes marker fixture");
+    const auto& chunk = store.manifest().chunks.front();
+    const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk.relative_artifact_stem, chunk.chunk_id, 0);
+    CHECK(names.has_value());
+    const auto base_path = root / names->private_directory_leaf / "corpus";
+    const auto paths = gnfs::relation::OOCCleanupTransaction::paths_for(base_path);
+    leave_relation_private_lease_reservation_prefix(
+        base_path, gnfs::relation::OOCPrivateLeaseFaultPoint::ReservedDurable);
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "reserved marker establishes the initial witness");
+
+    const auto displaced_between_observations = temp.path() / "reserved-between-observations";
+    WaveSameBytesReplacementContext between_observations{
+        .canonical = paths.lease_reserved_path,
+        .displaced = displaced_between_observations,
+        .bytes = read_file_bytes(paths.lease_reserved_path),
+    };
+    require_wave_status(
+        store.revalidate(wave_detail::DistributedSieveWaveStoreInventoryTestHooks{
+            .after_first_validation = replace_marker_with_same_bytes_after_first_inventory,
+            .context = &between_observations,
+        }),
+        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+        "same-byte marker replacement between inventory observations is rejected");
+    CHECK(between_observations.invoked);
+    CHECK(between_observations.replaced);
+    CHECK(between_observations.native_error == 0);
+    std::error_code error;
+    CHECK(std::filesystem::remove(paths.lease_reserved_path, error));
+    CHECK(!error);
+    require_rename(displaced_between_observations, paths.lease_reserved_path,
+                   "restore original reserved marker after inventory replacement");
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "restoring marker identity closes the wave inventory");
+
+    auto claimed = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+    auto& claim =
+        require_private_lease_root_claim_ready(claimed, "bind exact reserved-marker witness");
+    const auto displaced_after_acquisition = temp.path() / "reserved-after-acquisition";
+    WaveSameBytesReplacementContext after_acquisition{
+        .canonical = paths.lease_reserved_path,
+        .displaced = displaced_after_acquisition,
+        .bytes = read_file_bytes(paths.lease_reserved_path),
+    };
+    replace_marker_with_same_bytes_after_first_inventory(&after_acquisition);
+    CHECK(after_acquisition.invoked);
+    CHECK(after_acquisition.replaced);
+    CHECK(after_acquisition.native_error == 0);
+    require_wave_status(claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "bound attempt claim rejects same-byte marker replacement");
+    error.clear();
+    CHECK(std::filesystem::remove(paths.lease_reserved_path, error));
+    CHECK(!error);
+    require_rename(displaced_after_acquisition, paths.lease_reserved_path,
+                   "restore original reserved marker after claim replacement");
+    require_wave_status(claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "invalidated bound attempt claim remains fail closed after repair");
+    claimed.claim.reset();
+
+    auto reopened = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+    auto& reopened_claim = require_private_lease_root_claim_ready(
+        reopened, "reopen exact restored reservation prefix");
+    require_wave_status(reopened_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "new attempt claim accepts restored original marker identity");
+}
+
+void test_wave_store_manifest_pending_rejects_valid_reservation_before_repair() {
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "pending-manifest-fake-reservation";
+    WaveFaultStopContext context{
+        .target = wave_detail::DistributedSieveWaveStoreFaultPoint::ManifestPendingDurable,
+    };
+    auto interrupted = wave_detail::DistributedSieveWaveStore::create(
+        root, wave_manifest_draft(),
+        wave_detail::DistributedSieveWaveStoreTestHooks{
+            .stop_after = stop_at_wave_fault,
+            .context = &context,
+        });
+    CHECK(!interrupted);
+    require_wave_status(interrupted.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::interrupted,
+                        "leave pending manifest before fake reservation");
+    const auto draft = wave_manifest_draft();
+    const auto& chunk = draft.chunks.front();
+    const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk.relative_artifact_stem, chunk.chunk_id, 0);
+    CHECK(names.has_value());
+    const auto base_path = root / names->private_directory_leaf / "corpus";
+    const auto paths = gnfs::relation::OOCCleanupTransaction::paths_for(base_path);
+    leave_relation_private_lease_reservation_prefix(
+        base_path, gnfs::relation::OOCPrivateLeaseFaultPoint::ReservedPendingDurable);
+    CHECK(entry_exists_no_follow(paths.lock_path));
+    CHECK(entry_exists_no_follow(paths.lease_reserved_pending_path));
+    const Digest digest = manifest_digest_from_file(wave_manifest_pending_path(root));
+    const auto before = capture_wave_root_snapshot(root);
+
+    auto wrong_digest = digest;
+    perturb_digest(wrong_digest);
+    auto wrong_open = wave_detail::DistributedSieveWaveStore::open(root, wrong_digest);
+    CHECK(!wrong_open);
+    CHECK(wrong_open.store == nullptr);
+    require_wave_status(wrong_open.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::manifest_conflict,
+                        "manifest authority precedes valid pre-manifest reservation on open");
+    CHECK(capture_wave_root_snapshot(root) == before);
+
+    auto mismatched_draft = wave_manifest_draft();
+    ++mismatched_draft.relation_cap_per_worker;
+    auto wrong_create =
+        wave_detail::DistributedSieveWaveStore::create(root, std::move(mismatched_draft));
+    CHECK(!wrong_create);
+    CHECK(wrong_create.store == nullptr);
+    require_wave_status(wrong_create.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::manifest_conflict,
+                        "manifest authority precedes valid pre-manifest reservation on create");
+    CHECK(capture_wave_root_snapshot(root) == before);
+
+    auto rejected = wave_detail::DistributedSieveWaveStore::open(root, digest);
+    CHECK(!rejected);
+    CHECK(rejected.store == nullptr);
+    require_wave_status(rejected.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "pre-manifest valid reservation is rejected before publication repair");
+    CHECK(capture_wave_root_snapshot(root) == before);
+    CHECK(entry_exists_no_follow(wave_manifest_pending_path(root)));
+    CHECK(!entry_exists_no_follow(wave_manifest_path(root)));
+
+    auto create_rejected =
+        wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+    CHECK(!create_rejected);
+    CHECK(create_rejected.store == nullptr);
+    require_wave_status(create_rejected.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "idempotent create rejects valid pre-manifest reservation");
+    CHECK(capture_wave_root_snapshot(root) == before);
+    CHECK(entry_exists_no_follow(wave_manifest_pending_path(root)));
+    CHECK(!entry_exists_no_follow(wave_manifest_path(root)));
+
+    std::error_code error;
+    CHECK(std::filesystem::remove(paths.lease_reserved_pending_path, error));
+    CHECK(!error);
+    auto recovered = wave_detail::DistributedSieveWaveStore::open(root, digest);
+    auto& recovered_store =
+        require_wave_ready(recovered, "recover pending manifest after reservation removal");
+    CHECK(!entry_exists_no_follow(wave_manifest_pending_path(root)));
+    CHECK(entry_exists_no_follow(wave_manifest_path(root)));
+    CHECK(entry_exists_no_follow(paths.lock_path));
+    require_wave_status(recovered_store.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "recovered manifest retains the BaseLock-only attempt prefix");
 }
 
 void test_wave_store_attempt_base_lock_create_recover_and_phase_contract() {
@@ -7737,7 +8267,7 @@ void run_core_suite() {
 
 void run_wave_store_suite() {
 #if !defined(_WIN32)
-    const std::array<std::pair<std::string_view, TestFunction>, 24> tests = {{
+    const std::array<std::pair<std::string_view, TestFunction>, 28> tests = {{
         {"create, open, revalidate, and exact manifest",
          test_wave_store_create_open_revalidate_and_exact_manifest},
         {"store-owned draft fields", test_wave_store_rejects_non_draft_store_owned_fields},
@@ -7757,6 +8287,14 @@ void run_wave_store_suite() {
          test_wave_store_private_lease_root_claim_traits_and_lifetime},
         {"manifest-bound BaseLocks and claim inventory split",
          test_wave_store_manifest_bound_base_locks_and_claim_inventory_split},
+        {"all private-lease reservation prefixes",
+         test_wave_store_classifies_all_private_lease_reservation_prefixes},
+        {"dual private-lease marker states",
+         test_wave_store_rejects_dual_private_lease_marker_states},
+        {"same-byte private-lease marker replacement",
+         test_wave_store_private_lease_witness_rejects_same_bytes_replacement},
+        {"pending manifest rejects valid reservation",
+         test_wave_store_manifest_pending_rejects_valid_reservation_before_repair},
         {"attempt BaseLock create, recover, and phase contract",
          test_wave_store_attempt_base_lock_create_recover_and_phase_contract},
         {"attempt BaseLock durability prefixes",
