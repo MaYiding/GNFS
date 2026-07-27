@@ -493,6 +493,45 @@ struct RecordingRecoveryTarget final {
 static_assert(
     gnfs::relation::ooc_cleanup_detail::PrivateLeaseRecoveryTarget<RecordingRecoveryTarget>);
 
+struct DriftingBeforeCompleteRecoveryTarget final {
+    std::size_t boundary_reads = 0;
+    std::vector<RecoveryProtocolEvent> events;
+
+    [[nodiscard]] PrivateLeaseReservationBoundary boundary() {
+        ++boundary_reads;
+        return boundary_reads == 1U ? PrivateLeaseReservationBoundary::PermitAcquired
+                                    : PrivateLeaseReservationBoundary::ReservedPendingDurable;
+    }
+
+    void apply(PrivateLeaseRecoveryTransition transition) {
+        events.push_back({
+            .kind = RecoveryProtocolEventKind::Apply,
+            .source = transition.source,
+            .action = transition.action,
+            .boundary = transition.successor,
+        });
+    }
+
+    [[nodiscard]] bool checkpoint(PrivateLeaseReservationBoundary boundary) {
+        events.push_back({
+            .kind = RecoveryProtocolEventKind::Checkpoint,
+            .boundary = boundary,
+        });
+        return false;
+    }
+
+    void complete() {
+        events.push_back({.kind = RecoveryProtocolEventKind::Complete});
+    }
+
+    void reject_invalid_boundary() {
+        events.push_back({.kind = RecoveryProtocolEventKind::Reject});
+    }
+};
+
+static_assert(gnfs::relation::ooc_cleanup_detail::PrivateLeaseRecoveryTarget<
+              DriftingBeforeCompleteRecoveryTarget>);
+
 [[nodiscard]] PrivateLeaseReservationBoundary
 expected_private_lease_recovery_successor(PrivateLeaseRecoveryAction action) {
     using Action = PrivateLeaseRecoveryAction;
@@ -711,6 +750,15 @@ void test_private_lease_recovery_protocol_order_and_interruptions() {
     };
     CHECK(changed_during_complete.events == expected_complete_rejection);
     CHECK(changed_during_complete.current == Boundary::ReservedPendingDurable);
+
+    DriftingBeforeCompleteRecoveryTarget drifting_before_complete;
+    CHECK(gnfs::relation::ooc_cleanup_detail::run_private_lease_recovery_protocol(
+              drifting_before_complete) == PrivateLeaseRecoveryRunResult::Rejected);
+    const std::vector<RecoveryProtocolEvent> expected_precomplete_rejection{
+        {.kind = EventKind::Reject},
+    };
+    CHECK(drifting_before_complete.events == expected_precomplete_rejection);
+    CHECK(drifting_before_complete.boundary_reads == 2U);
 }
 
 [[nodiscard]] PrivateCleanupUnionClassification expected_private_cleanup_union_classification(
