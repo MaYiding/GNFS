@@ -221,6 +221,38 @@ inline constexpr std::array DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVATION_BOUNDARI
 static_assert(DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVATION_BOUNDARIES.size() ==
               static_cast<std::size_t>(DistributedSievePrivateLeaseReservationBoundary::Count));
 
+/// Durability operations that can be failed deterministically by the
+/// source-private reservation test hook. The boundary supplied with the point
+/// identifies the exact P1-P8 edge being synchronized.
+enum class DistributedSievePrivateLeaseReservationSyncPoint : std::uint8_t {
+    MarkerFileInitial,
+    ParentDirectory,
+    MarkerFileFinal,
+    StagingDirectory,
+    Count,
+};
+
+inline constexpr std::array DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVATION_SYNC_POINTS{
+    DistributedSievePrivateLeaseReservationSyncPoint::MarkerFileInitial,
+    DistributedSievePrivateLeaseReservationSyncPoint::ParentDirectory,
+    DistributedSievePrivateLeaseReservationSyncPoint::MarkerFileFinal,
+    DistributedSievePrivateLeaseReservationSyncPoint::StagingDirectory,
+};
+
+static_assert(DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVATION_SYNC_POINTS.size() ==
+              static_cast<std::size_t>(DistributedSievePrivateLeaseReservationSyncPoint::Count));
+
+struct DistributedSievePrivateLeaseReservationSyncFailureSite final {
+    DistributedSievePrivateLeaseReservationBoundary boundary =
+        DistributedSievePrivateLeaseReservationBoundary::PermitAcquired;
+    DistributedSievePrivateLeaseReservationSyncPoint point =
+        DistributedSievePrivateLeaseReservationSyncPoint::MarkerFileInitial;
+
+    [[nodiscard]] friend bool
+    operator==(const DistributedSievePrivateLeaseReservationSyncFailureSite&,
+               const DistributedSievePrivateLeaseReservationSyncFailureSite&) = default;
+};
+
 struct DistributedSievePrivateLeaseReservationInventoryWitness final {
     std::string base_lock_leaf;
     DistributedSievePrivateLeaseReservationBoundary boundary =
@@ -285,6 +317,55 @@ struct DistributedSievePrivateLeaseRootClaimTestHooks final {
     void* context = nullptr;
 };
 
+/// Trusted test-only controls for the held-dirfd private-lease phase driver.
+///
+/// `stop_after` is offered only after the named prefix has survived its
+/// durability barrier and a closed successor revalidation. The predecessor
+/// callback runs after the same closed validation immediately before the one
+/// permitted successor mutation.
+struct DistributedSievePrivateLeaseProtocolTestHooks final {
+    using StopAfter = bool (*)(DistributedSievePrivateLeaseReservationBoundary boundary,
+                               void* context) noexcept;
+    using AfterPredecessorValidation =
+        void (*)(DistributedSievePrivateLeaseReservationBoundary successor, void* context) noexcept;
+    using AfterFirstSuccessorValidation =
+        void (*)(DistributedSievePrivateLeaseReservationBoundary successor, void* context) noexcept;
+    using FailBeforeSync = bool (*)(DistributedSievePrivateLeaseReservationBoundary successor,
+                                    DistributedSievePrivateLeaseReservationSyncPoint point,
+                                    void* context) noexcept;
+    using AfterInjectedSyncFailure = void (*)(
+        DistributedSievePrivateLeaseReservationSyncFailureSite site, void* context) noexcept;
+
+    StopAfter stop_after = nullptr;
+    AfterPredecessorValidation after_predecessor_validation = nullptr;
+
+    /// Runs after the first exact successor observation and before the second
+    /// authority/successor validation. It exists only to prove that a
+    /// same-byte replacement cannot inherit this transaction's identity.
+    AfterFirstSuccessorValidation after_first_successor_validation = nullptr;
+
+    /// Select one durability result to fail. Selection runs while the exact
+    /// predecessor is still closed; the production sync still executes, then
+    /// its result is replaced with a fixed durability failure and adjudicated
+    /// through the normal visible-successor path.
+    FailBeforeSync fail_before_sync = nullptr;
+
+    /// Runs only after a selected production sync has completed and its
+    /// result is irreversibly fixed to failure. The callback cannot restore
+    /// success; mandatory authority/target/successor adjudication follows.
+    AfterInjectedSyncFailure after_injected_sync_failure = nullptr;
+    void* context = nullptr;
+};
+
+struct DistributedSievePrivateLeaseReservationReceiptTestHooks final {
+    using AfterFirstTargetValidation = void (*)(void* context) noexcept;
+
+    /// Runs after the first exact target observation and before the second
+    /// authority/target validation.
+    AfterFirstTargetValidation after_first_target_validation = nullptr;
+    void* context = nullptr;
+};
+
 struct DistributedSieveWaveStoreDiagnostic final {
     DistributedSieveWaveStoreStatus status = DistributedSieveWaveStoreStatus::ready;
     std::error_code native_error;
@@ -293,12 +374,23 @@ struct DistributedSieveWaveStoreDiagnostic final {
     std::optional<DistributedSieveWaveStoreFaultPoint> last_durable_fault_point;
     std::optional<DistributedSievePrivateLeaseBaseLockSyncPoint>
         failed_private_lease_base_lock_sync_point;
+    std::optional<DistributedSievePrivateLeaseReservationBoundary>
+        last_private_lease_reservation_boundary;
+    std::optional<DistributedSievePrivateLeaseReservationSyncFailureSite>
+        failed_private_lease_reservation_sync_site;
 };
 
 struct DistributedSieveWaveStoreOpenResult;
 struct DistributedSievePrivateLeaseRootClaimResult;
+struct DistributedSievePrivateLeaseReservationResult;
 class DistributedSievePrivateLeaseRootClaim;
 class DistributedSievePrivateLeaseBaseLockAt;
+class DistributedSievePrivateLeaseReservationReceipt;
+class DistributedSieveFdPrivateLeaseReservationTarget;
+
+[[nodiscard]] DistributedSievePrivateLeaseReservationResult reserve_worker_attempt_private_lease(
+    DistributedSievePrivateLeaseRootClaimResult&& claimed,
+    DistributedSievePrivateLeaseProtocolTestHooks hooks = {}) noexcept;
 
 /// A process-bound lease on one frozen wave root and its permanent lock.
 ///
@@ -386,7 +478,9 @@ private:
     std::shared_ptr<const State> state_;
 
     friend class DistributedSieveExternalCleanupAuthorizationState;
+    friend class DistributedSieveFdPrivateLeaseReservationTarget;
     friend class DistributedSievePrivateLeaseRootClaim;
+    friend class DistributedSievePrivateLeaseReservationReceipt;
 };
 
 /// Source-private root-relative permanent BaseLock capability.
@@ -436,6 +530,7 @@ private:
     std::uint64_t creator_process_id_ = 0;
     mutable std::atomic_bool invalidated_ = false;
 
+    friend class DistributedSieveFdPrivateLeaseReservationTarget;
     friend class DistributedSieveWaveStore;
     friend class DistributedSievePrivateLeaseRootClaim;
 };
@@ -494,7 +589,11 @@ private:
         expected_private_lease_reservation_witnesses_;
     std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt> base_lock_at_;
 
+    friend class DistributedSieveFdPrivateLeaseReservationTarget;
     friend class DistributedSieveWaveStore;
+    friend DistributedSievePrivateLeaseReservationResult reserve_worker_attempt_private_lease(
+        DistributedSievePrivateLeaseRootClaimResult&& claimed,
+        DistributedSievePrivateLeaseProtocolTestHooks hooks) noexcept;
 };
 
 struct DistributedSievePrivateLeaseRootClaimResult final {
@@ -504,6 +603,71 @@ struct DistributedSievePrivateLeaseRootClaimResult final {
     [[nodiscard]] explicit operator bool() const noexcept {
         return claim != nullptr && diagnostic.status == DistributedSieveWaveStoreStatus::ready &&
                claim->owned_by_current_process();
+    }
+};
+
+/// Creator-bound snapshot of one freshly completed P8 reservation.
+///
+/// This source-private object is intentionally not a live filesystem
+/// capability. It retains the WaveStore lifetime and exact final witness, but
+/// it retains neither the target flock nor the same-State root claim. It
+/// cannot create a writer, mutate the root, recover a lease, or authorize
+/// cleanup. A future AttemptStarted publisher must consume it only after
+/// reacquiring `root claim -> target BaseLock` and revalidating the exact P8
+/// witness.
+class DistributedSievePrivateLeaseReservationReceipt final {
+public:
+    DistributedSievePrivateLeaseReservationReceipt() = delete;
+    DistributedSievePrivateLeaseReservationReceipt(
+        const DistributedSievePrivateLeaseReservationReceipt&) = delete;
+    DistributedSievePrivateLeaseReservationReceipt&
+    operator=(const DistributedSievePrivateLeaseReservationReceipt&) = delete;
+    DistributedSievePrivateLeaseReservationReceipt(
+        DistributedSievePrivateLeaseReservationReceipt&&) noexcept = default;
+    DistributedSievePrivateLeaseReservationReceipt&
+    operator=(DistributedSievePrivateLeaseReservationReceipt&&) = delete;
+    ~DistributedSievePrivateLeaseReservationReceipt() = default;
+
+    [[nodiscard]] bool owned_by_current_process() const noexcept;
+
+    /// Read-only current-snapshot check. Success is not mutation authority and
+    /// must not replace the ordered root-claim/BaseLock acquisition required
+    /// by any future consumer.
+    [[nodiscard]] DistributedSieveWaveStoreDiagnostic
+    revalidate(DistributedSievePrivateLeaseReservationReceiptTestHooks hooks = {}) const noexcept;
+
+    [[nodiscard]] std::string_view relative_lease_stem() const noexcept;
+    [[nodiscard]] const std::array<std::uint64_t, 2>& lease_id() const noexcept;
+    [[nodiscard]] const NativeIdentityV1& directory_identity() const noexcept;
+    [[nodiscard]] const NativeIdentityV1& owner_marker_identity() const noexcept;
+    [[nodiscard]] const NativeIdentityV1& owned_marker_identity() const noexcept;
+
+private:
+    DistributedSievePrivateLeaseReservationReceipt(
+        std::shared_ptr<const DistributedSieveWaveStore::State> wave_store_state,
+        DistributedSieveWorkerAttemptNamesV1 worker_attempt_names,
+        NativeIdentityV1 base_lock_identity,
+        DistributedSievePrivateLeaseReservationInventoryWitness final_witness,
+        std::uint64_t creator_process_id) noexcept;
+
+    std::shared_ptr<const DistributedSieveWaveStore::State> wave_store_state_;
+    DistributedSieveWorkerAttemptNamesV1 worker_attempt_names_;
+    NativeIdentityV1 base_lock_identity_{};
+    DistributedSievePrivateLeaseReservationInventoryWitness final_witness_;
+    std::uint64_t creator_process_id_ = 0;
+
+    friend DistributedSievePrivateLeaseReservationResult reserve_worker_attempt_private_lease(
+        DistributedSievePrivateLeaseRootClaimResult&& claimed,
+        DistributedSievePrivateLeaseProtocolTestHooks hooks) noexcept;
+};
+
+struct DistributedSievePrivateLeaseReservationResult final {
+    std::optional<DistributedSievePrivateLeaseReservationReceipt> receipt;
+    DistributedSieveWaveStoreDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return receipt.has_value() && diagnostic.status == DistributedSieveWaveStoreStatus::ready &&
+               receipt->owned_by_current_process();
     }
 };
 

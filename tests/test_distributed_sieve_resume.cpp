@@ -59,6 +59,7 @@ using ExternalCleanupAuthorizationState =
     wave_detail::DistributedSieveExternalCleanupAuthorizationState;
 using PrivateLeaseRootClaim = wave_detail::DistributedSievePrivateLeaseRootClaim;
 using PrivateLeaseBaseLockAt = wave_detail::DistributedSievePrivateLeaseBaseLockAt;
+using PrivateLeaseReservationReceipt = wave_detail::DistributedSievePrivateLeaseReservationReceipt;
 
 static_assert(!noexcept(sieve::distributed_sieve_record_kind(std::declval<const Record&>())));
 static_assert(
@@ -154,6 +155,16 @@ static_assert(!std::is_move_assignable_v<PrivateLeaseBaseLockAt>);
 static_assert(!std::is_constructible_v<PrivateLeaseBaseLockAt, std::filesystem::path>);
 static_assert(!std::is_constructible_v<PrivateLeaseBaseLockAt, std::string>);
 static_assert(!std::is_constructible_v<PrivateLeaseBaseLockAt, int>);
+static_assert(std::is_final_v<PrivateLeaseReservationReceipt>);
+static_assert(!std::is_default_constructible_v<PrivateLeaseReservationReceipt>);
+static_assert(!std::is_copy_constructible_v<PrivateLeaseReservationReceipt>);
+static_assert(!std::is_copy_assignable_v<PrivateLeaseReservationReceipt>);
+static_assert(std::is_nothrow_move_constructible_v<PrivateLeaseReservationReceipt>);
+static_assert(!std::is_move_assignable_v<PrivateLeaseReservationReceipt>);
+static_assert(!std::is_constructible_v<PrivateLeaseReservationReceipt, PrivateLeaseRootClaim&&>);
+static_assert(!std::is_constructible_v<PrivateLeaseReservationReceipt, PrivateLeaseBaseLockAt&&>);
+static_assert(!std::is_constructible_v<PrivateLeaseReservationReceipt, std::filesystem::path>);
+static_assert(!std::is_constructible_v<PrivateLeaseReservationReceipt, int>);
 
 constexpr std::array WAVE_STORE_FAULT_POINTS{
     wave_detail::DistributedSieveWaveStoreFaultPoint::RootDurable,
@@ -257,6 +268,91 @@ static_assert([] {
     }
     return true;
 }());
+
+struct PrivateLeaseReservationSyncFailureSite final {
+    wave_detail::DistributedSievePrivateLeaseReservationBoundary boundary;
+    wave_detail::DistributedSievePrivateLeaseReservationSyncPoint point;
+};
+
+constexpr std::array PRIVATE_LEASE_RESERVATION_SYNC_FAILURE_SITES{
+    PrivateLeaseReservationSyncFailureSite{
+        .boundary =
+            wave_detail::DistributedSievePrivateLeaseReservationBoundary::ReservedPendingDurable,
+        .point = wave_detail::DistributedSievePrivateLeaseReservationSyncPoint::MarkerFileInitial,
+    },
+    PrivateLeaseReservationSyncFailureSite{
+        .boundary =
+            wave_detail::DistributedSievePrivateLeaseReservationBoundary::ReservedPendingDurable,
+        .point = wave_detail::DistributedSievePrivateLeaseReservationSyncPoint::ParentDirectory,
+    },
+    PrivateLeaseReservationSyncFailureSite{
+        .boundary =
+            wave_detail::DistributedSievePrivateLeaseReservationBoundary::ReservedPendingDurable,
+        .point = wave_detail::DistributedSievePrivateLeaseReservationSyncPoint::MarkerFileFinal,
+    },
+    PrivateLeaseReservationSyncFailureSite{
+        .boundary =
+            wave_detail::DistributedSievePrivateLeaseReservationBoundary::ReservedCanonicalDurable,
+        .point = wave_detail::DistributedSievePrivateLeaseReservationSyncPoint::ParentDirectory,
+    },
+    PrivateLeaseReservationSyncFailureSite{
+        .boundary =
+            wave_detail::DistributedSievePrivateLeaseReservationBoundary::StagingDirectoryDurable,
+        .point = wave_detail::DistributedSievePrivateLeaseReservationSyncPoint::StagingDirectory,
+    },
+    PrivateLeaseReservationSyncFailureSite{
+        .boundary =
+            wave_detail::DistributedSievePrivateLeaseReservationBoundary::StagingDirectoryDurable,
+        .point = wave_detail::DistributedSievePrivateLeaseReservationSyncPoint::ParentDirectory,
+    },
+    PrivateLeaseReservationSyncFailureSite{
+        .boundary =
+            wave_detail::DistributedSievePrivateLeaseReservationBoundary::OwnerPendingDurable,
+        .point = wave_detail::DistributedSievePrivateLeaseReservationSyncPoint::MarkerFileInitial,
+    },
+    PrivateLeaseReservationSyncFailureSite{
+        .boundary =
+            wave_detail::DistributedSievePrivateLeaseReservationBoundary::OwnerPendingDurable,
+        .point = wave_detail::DistributedSievePrivateLeaseReservationSyncPoint::ParentDirectory,
+    },
+    PrivateLeaseReservationSyncFailureSite{
+        .boundary =
+            wave_detail::DistributedSievePrivateLeaseReservationBoundary::OwnerPendingDurable,
+        .point = wave_detail::DistributedSievePrivateLeaseReservationSyncPoint::MarkerFileFinal,
+    },
+    PrivateLeaseReservationSyncFailureSite{
+        .boundary =
+            wave_detail::DistributedSievePrivateLeaseReservationBoundary::OwnerCanonicalDurable,
+        .point = wave_detail::DistributedSievePrivateLeaseReservationSyncPoint::ParentDirectory,
+    },
+    PrivateLeaseReservationSyncFailureSite{
+        .boundary =
+            wave_detail::DistributedSievePrivateLeaseReservationBoundary::OwnedPendingDurable,
+        .point = wave_detail::DistributedSievePrivateLeaseReservationSyncPoint::MarkerFileInitial,
+    },
+    PrivateLeaseReservationSyncFailureSite{
+        .boundary =
+            wave_detail::DistributedSievePrivateLeaseReservationBoundary::OwnedPendingDurable,
+        .point = wave_detail::DistributedSievePrivateLeaseReservationSyncPoint::ParentDirectory,
+    },
+    PrivateLeaseReservationSyncFailureSite{
+        .boundary =
+            wave_detail::DistributedSievePrivateLeaseReservationBoundary::OwnedPendingDurable,
+        .point = wave_detail::DistributedSievePrivateLeaseReservationSyncPoint::MarkerFileFinal,
+    },
+    PrivateLeaseReservationSyncFailureSite{
+        .boundary =
+            wave_detail::DistributedSievePrivateLeaseReservationBoundary::OwnedCanonicalDurable,
+        .point = wave_detail::DistributedSievePrivateLeaseReservationSyncPoint::ParentDirectory,
+    },
+    PrivateLeaseReservationSyncFailureSite{
+        .boundary =
+            wave_detail::DistributedSievePrivateLeaseReservationBoundary::FinalDirectoryDurable,
+        .point = wave_detail::DistributedSievePrivateLeaseReservationSyncPoint::ParentDirectory,
+    },
+};
+
+static_assert(PRIVATE_LEASE_RESERVATION_SYNC_FAILURE_SITES.size() == 15U);
 
 class TestFailure final : public std::runtime_error {
 public:
@@ -4133,6 +4229,23 @@ stop_at_relation_private_lease_fault(gnfs::relation::OOCPrivateLeaseFaultPoint p
     return true;
 }
 
+struct WavePrivateLeaseProtocolStopContext final {
+    wave_detail::DistributedSievePrivateLeaseReservationBoundary target =
+        wave_detail::DistributedSievePrivateLeaseReservationBoundary::PermitAcquired;
+    std::array<bool, wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVATION_BOUNDARIES.size()>
+        observed{};
+};
+
+[[nodiscard]] bool stop_at_wave_private_lease_boundary(
+    wave_detail::DistributedSievePrivateLeaseReservationBoundary boundary, void* opaque) noexcept {
+    auto& context = *static_cast<WavePrivateLeaseProtocolStopContext*>(opaque);
+    const auto index = static_cast<std::size_t>(boundary);
+    if (index < context.observed.size()) {
+        context.observed[index] = true;
+    }
+    return boundary == context.target;
+}
+
 void leave_relation_private_lease_reservation_prefix(
     const std::filesystem::path& base_path, gnfs::relation::OOCPrivateLeaseFaultPoint fault_point) {
     RelationPrivateLeaseStopContext context{
@@ -4420,6 +4533,257 @@ void insert_foreign_after_attempt_phase(void* opaque) noexcept {
     context.inserted = true;
 }
 
+struct PrivateLeaseProtocolForeignContext final {
+    wave_detail::DistributedSievePrivateLeaseReservationBoundary successor =
+        wave_detail::DistributedSievePrivateLeaseReservationBoundary::ReservedPendingDurable;
+    AttemptPhaseForeignContext foreign;
+};
+
+void insert_foreign_after_private_lease_predecessor(
+    wave_detail::DistributedSievePrivateLeaseReservationBoundary successor, void* opaque) noexcept {
+    auto& context = *static_cast<PrivateLeaseProtocolForeignContext*>(opaque);
+    if (successor == context.successor) {
+        insert_foreign_after_attempt_phase(&context.foreign);
+    }
+}
+
+struct PrivateLeaseProtocolSyncFailureContext final {
+    PrivateLeaseReservationSyncFailureSite target{
+        .boundary =
+            wave_detail::DistributedSievePrivateLeaseReservationBoundary::ReservedPendingDurable,
+        .point = wave_detail::DistributedSievePrivateLeaseReservationSyncPoint::MarkerFileInitial,
+    };
+    std::array<PrivateLeaseReservationSyncFailureSite,
+               PRIVATE_LEASE_RESERVATION_SYNC_FAILURE_SITES.size()>
+        observed{};
+    std::size_t observed_count = 0;
+    bool selected = false;
+};
+
+[[nodiscard]] bool fail_private_lease_reservation_sync(
+    wave_detail::DistributedSievePrivateLeaseReservationBoundary boundary,
+    wave_detail::DistributedSievePrivateLeaseReservationSyncPoint point, void* opaque) noexcept {
+    auto& context = *static_cast<PrivateLeaseProtocolSyncFailureContext*>(opaque);
+    if (context.observed_count < context.observed.size()) {
+        context.observed[context.observed_count] = {
+            .boundary = boundary,
+            .point = point,
+        };
+    }
+    ++context.observed_count;
+    const bool selected = boundary == context.target.boundary && point == context.target.point;
+    context.selected = context.selected || selected;
+    return selected;
+}
+
+struct PrivateLeaseProtocolSyncRootReplacementContext final {
+    PrivateLeaseProtocolSyncFailureContext sync;
+    WaveRootReplacementContext root;
+    wave_detail::DistributedSievePrivateLeaseReservationSyncFailureSite observed_site;
+    bool after_failure_invoked = false;
+};
+
+[[nodiscard]] bool select_private_lease_sync_for_root_precedence(
+    wave_detail::DistributedSievePrivateLeaseReservationBoundary boundary,
+    wave_detail::DistributedSievePrivateLeaseReservationSyncPoint point, void* opaque) noexcept {
+    auto& context = *static_cast<PrivateLeaseProtocolSyncRootReplacementContext*>(opaque);
+    return fail_private_lease_reservation_sync(boundary, point, &context.sync);
+}
+
+void replace_root_after_injected_private_lease_sync_failure(
+    wave_detail::DistributedSievePrivateLeaseReservationSyncFailureSite site,
+    void* opaque) noexcept {
+    auto& context = *static_cast<PrivateLeaseProtocolSyncRootReplacementContext*>(opaque);
+    context.after_failure_invoked = true;
+    context.observed_site = site;
+    replace_wave_root_after_attempt_phase(&context.root);
+}
+
+struct PrivateLeaseSuccessorMarkerReplacementContext final {
+    wave_detail::DistributedSievePrivateLeaseReservationBoundary target =
+        wave_detail::DistributedSievePrivateLeaseReservationBoundary::ReservedPendingDurable;
+    std::filesystem::path canonical;
+    std::filesystem::path displaced;
+    int native_error = 0;
+    bool invoked = false;
+    bool replaced = false;
+};
+
+void replace_private_lease_successor_marker_after_first_validation(
+    wave_detail::DistributedSievePrivateLeaseReservationBoundary successor, void* opaque) noexcept {
+    auto& context = *static_cast<PrivateLeaseSuccessorMarkerReplacementContext*>(opaque);
+    if (successor != context.target || context.invoked) {
+        return;
+    }
+    context.invoked = true;
+    std::array<std::byte, cleanup_detail::PRIVATE_LEASE_MARKER_BYTES> bytes{};
+    int source = -1;
+    do {
+        source = ::open(context.canonical.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    } while (source < 0 && errno == EINTR);
+    if (source < 0) {
+        context.native_error = errno;
+        return;
+    }
+    std::size_t offset = 0;
+    while (offset < bytes.size()) {
+        ssize_t count = -1;
+        do {
+            count = ::pread(source, bytes.data() + offset, bytes.size() - offset,
+                            static_cast<off_t>(offset));
+        } while (count < 0 && errno == EINTR);
+        if (count <= 0) {
+            context.native_error = count < 0 ? errno : EIO;
+            (void)::close(source);
+            return;
+        }
+        offset += static_cast<std::size_t>(count);
+    }
+    std::byte extra{};
+    ssize_t extra_count = -1;
+    do {
+        extra_count = ::pread(source, &extra, 1, static_cast<off_t>(bytes.size()));
+    } while (extra_count < 0 && errno == EINTR);
+    if (extra_count != 0) {
+        context.native_error = extra_count < 0 ? errno : EFBIG;
+        (void)::close(source);
+        return;
+    }
+    if (::close(source) != 0) {
+        context.native_error = errno;
+        return;
+    }
+
+    int renamed = -1;
+    do {
+        renamed = ::rename(context.canonical.c_str(), context.displaced.c_str());
+    } while (renamed != 0 && errno == EINTR);
+    if (renamed != 0) {
+        context.native_error = errno;
+        return;
+    }
+    int replacement = -1;
+    do {
+        replacement = ::open(context.canonical.c_str(),
+                             O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    } while (replacement < 0 && errno == EINTR);
+    if (replacement < 0) {
+        context.native_error = errno;
+        return;
+    }
+    offset = 0;
+    while (offset < bytes.size()) {
+        ssize_t written = -1;
+        do {
+            written = ::write(replacement, bytes.data() + offset, bytes.size() - offset);
+        } while (written < 0 && errno == EINTR);
+        if (written <= 0) {
+            context.native_error = written < 0 ? errno : EIO;
+            (void)::close(replacement);
+            return;
+        }
+        offset += static_cast<std::size_t>(written);
+    }
+    if (::fchmod(replacement, 0600) != 0) {
+        context.native_error = errno;
+        (void)::close(replacement);
+        return;
+    }
+    if (::close(replacement) != 0) {
+        context.native_error = errno;
+        return;
+    }
+    context.replaced = true;
+}
+
+struct PrivateLeaseSuccessorDirectoryReplacementContext final {
+    wave_detail::DistributedSievePrivateLeaseReservationBoundary target =
+        wave_detail::DistributedSievePrivateLeaseReservationBoundary::StagingDirectoryDurable;
+    std::filesystem::path root;
+    std::string relative_lease_stem;
+    std::filesystem::path canonical;
+    std::filesystem::path displaced;
+    int native_error = 0;
+    bool invoked = false;
+    bool replaced = false;
+};
+
+void replace_private_lease_successor_directory_after_first_validation(
+    wave_detail::DistributedSievePrivateLeaseReservationBoundary successor, void* opaque) noexcept {
+    auto& context = *static_cast<PrivateLeaseSuccessorDirectoryReplacementContext*>(opaque);
+    if (successor != context.target || context.invoked) {
+        return;
+    }
+    context.invoked = true;
+    if (context.canonical.empty()) {
+        try {
+            const std::string prefix =
+                context.relative_lease_stem +
+                std::string(wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_STAGING_TAG);
+            for (const auto& entry : std::filesystem::directory_iterator(context.root)) {
+                const std::string leaf = entry.path().filename().string();
+                if (!leaf.starts_with(prefix)) {
+                    continue;
+                }
+                if (!context.canonical.empty()) {
+                    context.native_error = EEXIST;
+                    return;
+                }
+                context.canonical = entry.path();
+            }
+        } catch (const std::filesystem::filesystem_error& failure) {
+            context.native_error = failure.code().value();
+            return;
+        } catch (...) {
+            context.native_error = EIO;
+            return;
+        }
+    }
+    if (context.canonical.empty()) {
+        context.native_error = ENOENT;
+        return;
+    }
+    int renamed = -1;
+    do {
+        renamed = ::rename(context.canonical.c_str(), context.displaced.c_str());
+    } while (renamed != 0 && errno == EINTR);
+    if (renamed != 0) {
+        context.native_error = errno;
+        return;
+    }
+    int created = -1;
+    do {
+        created = ::mkdir(context.canonical.c_str(), 0700);
+    } while (created != 0 && errno == EINTR);
+    if (created != 0) {
+        context.native_error = errno;
+        return;
+    }
+    int chmod_result = -1;
+    do {
+        chmod_result = ::chmod(context.canonical.c_str(), 0700);
+    } while (chmod_result != 0 && errno == EINTR);
+    if (chmod_result != 0) {
+        context.native_error = errno;
+        return;
+    }
+    context.replaced = true;
+}
+
+struct PrivateLeaseSuccessorRootReplacementContext final {
+    wave_detail::DistributedSievePrivateLeaseReservationBoundary target =
+        wave_detail::DistributedSievePrivateLeaseReservationBoundary::ReservedPendingDurable;
+    WaveRootReplacementContext root;
+};
+
+void replace_private_lease_root_after_first_successor_validation(
+    wave_detail::DistributedSievePrivateLeaseReservationBoundary successor, void* opaque) noexcept {
+    auto& context = *static_cast<PrivateLeaseSuccessorRootReplacementContext*>(opaque);
+    if (successor == context.target) {
+        replace_wave_root_after_attempt_phase(&context.root);
+    }
+}
+
 struct BaseLockSyncFailureContext final {
     wave_detail::DistributedSievePrivateLeaseBaseLockSyncPoint target =
         wave_detail::DistributedSievePrivateLeaseBaseLockSyncPoint::TargetInitial;
@@ -4509,6 +4873,19 @@ void require_strict_empty_base_lock(const std::filesystem::path& path, std::stri
     CHECK(metadata.st_size == 0);
     CHECK(static_cast<std::uint64_t>(metadata.st_uid) == static_cast<std::uint64_t>(::geteuid()));
     CHECK((metadata.st_mode & static_cast<mode_t>(07777)) == 0600);
+}
+
+void require_distinct_entry_identities(const std::filesystem::path& first,
+                                       const std::filesystem::path& second,
+                                       std::string_view context) {
+    struct stat first_metadata{};
+    struct stat second_metadata{};
+    if (::lstat(first.c_str(), &first_metadata) != 0 ||
+        ::lstat(second.c_str(), &second_metadata) != 0) {
+        throw std::system_error(errno, std::generic_category(), std::string(context));
+    }
+    CHECK(first_metadata.st_dev == second_metadata.st_dev);
+    CHECK(first_metadata.st_ino != second_metadata.st_ino);
 }
 
 struct WaveRootEntrySnapshot final {
@@ -6066,6 +6443,647 @@ void test_wave_store_manifest_bound_base_locks_and_claim_inventory_split() {
     require_wave_status(retry_claim.revalidate_authority(),
                         wave_detail::DistributedSieveWaveStoreStatus::ready,
                         "retried claim retains authority after inventory repair");
+}
+
+void test_wave_store_fresh_private_lease_reservation_protocol() {
+    for (std::size_t index = 0;
+         index < wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVATION_BOUNDARIES.size();
+         ++index) {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / ("fresh-reservation-prefix-" + std::to_string(index));
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create fresh reservation prefix fixture");
+        const auto& chunk = store.manifest().chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+
+        auto claimed = store.create_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        (void)require_private_lease_root_claim_ready(claimed, "create fresh reservation BaseLock");
+        WavePrivateLeaseProtocolStopContext context{
+            .target = wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVATION_BOUNDARIES[index],
+        };
+        auto interrupted = wave_detail::reserve_worker_attempt_private_lease(
+            std::move(claimed), wave_detail::DistributedSievePrivateLeaseProtocolTestHooks{
+                                    .stop_after = stop_at_wave_private_lease_boundary,
+                                    .context = &context,
+                                });
+        CHECK(!interrupted);
+        CHECK(!interrupted.receipt.has_value());
+        require_wave_status(interrupted.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::interrupted,
+                            "fresh reservation stops at an exact durable prefix");
+        CHECK(interrupted.diagnostic.last_private_lease_reservation_boundary == context.target);
+        CHECK(claimed.claim == nullptr);
+        for (std::size_t observed = 0; observed < context.observed.size(); ++observed) {
+            CHECK(context.observed[observed] == (observed <= index));
+        }
+        CHECK(!entry_exists_no_follow(root / names->canonical_record_leaf));
+        CHECK(!entry_exists_no_follow(root / names->pending_record_leaf));
+
+        WaveReservationWitnessObservationContext observation{
+            .expected_boundary = context.target,
+            .expected_base_lock_leaf = names->base_lock_leaf,
+        };
+        require_wave_status(
+            store.revalidate(wave_detail::DistributedSieveWaveStoreInventoryTestHooks{
+                .observe_reservation_witnesses = observe_wave_reservation_witnesses,
+                .context = &observation,
+            }),
+            wave_detail::DistributedSieveWaveStoreStatus::ready,
+            "fresh reservation prefix is manifest-bound and closed");
+        CHECK(observation.invoked);
+        CHECK(observation.matched);
+
+        const auto prefix_snapshot = capture_wave_root_snapshot(root);
+        std::optional<std::pair<std::filesystem::path, WaveRootEntrySnapshot>>
+            nested_owner_snapshot;
+        if (index >= 4U) {
+            const auto reserved_path =
+                index == 1U ? root / names->reserved_pending_leaf : root / names->reserved_leaf;
+            const auto reserved =
+                cleanup_detail::parse_private_lease_marker(read_file_bytes(reserved_path));
+            const auto directory =
+                index == 8U
+                    ? root / names->private_directory_leaf
+                    : root /
+                          (names->relative_lease_stem +
+                           std::string(wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_STAGING_TAG) +
+                           cleanup_detail::private_lease_id_hex(reserved.lease_id));
+            const auto owner_leaf =
+                index == 4U
+                    ? std::string(wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_PENDING_LEAF)
+                    : std::string(wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_LEAF);
+            const auto owner = directory / owner_leaf;
+            nested_owner_snapshot.emplace(owner,
+                                          capture_wave_root_entry_snapshot(owner, owner_leaf));
+        }
+        const auto require_prefix_unchanged = [&] {
+            CHECK(capture_wave_root_snapshot(root) == prefix_snapshot);
+            if (nested_owner_snapshot.has_value()) {
+                CHECK(capture_wave_root_entry_snapshot(nested_owner_snapshot->first,
+                                                       nested_owner_snapshot->second.leaf) ==
+                      nested_owner_snapshot->second);
+            }
+        };
+
+        auto generic = store.claim_private_lease_root();
+        auto& generic_claim = require_private_lease_root_claim_ready(
+            generic, "interrupted reservation releases same-State root slot");
+        require_wave_status(generic_claim.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "generic root claim sees exact interrupted prefix");
+        generic.claim.reset();
+
+        auto reopened = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        (void)require_private_lease_root_claim_ready(
+            reopened, "interrupted reservation releases target flock");
+        if (index == 0U) {
+            reopened.claim.reset();
+            auto create_only_rejected =
+                store.create_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+            CHECK(!create_only_rejected);
+            CHECK(create_only_rejected.claim == nullptr);
+            require_wave_status(create_only_rejected.diagnostic,
+                                wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                                "create-only retry never falls back to open-existing");
+        } else {
+            auto fresh_rejected =
+                wave_detail::reserve_worker_attempt_private_lease(std::move(reopened));
+            CHECK(!fresh_rejected);
+            CHECK(!fresh_rejected.receipt.has_value());
+            require_wave_status(fresh_rejected.diagnostic,
+                                wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                                "fresh reservation never continues an existing prefix");
+            if (index == 1U) {
+                auto root_again = store.claim_private_lease_root();
+                (void)require_private_lease_root_claim_ready(
+                    root_again, "existing-prefix rejection releases same-State root slot");
+                root_again.claim.reset();
+                auto target_again = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+                (void)require_private_lease_root_claim_ready(
+                    target_again, "existing-prefix rejection releases target flock");
+                target_again.claim.reset();
+            }
+        }
+        require_prefix_unchanged();
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "fresh-reservation-clean-open";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create clean-open fresh reservation fixture");
+        const auto& chunk = store.manifest().chunks.front();
+
+        auto created_claim = store.create_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        WavePrivateLeaseProtocolStopContext stop_at_p0{
+            .target = wave_detail::DistributedSievePrivateLeaseReservationBoundary::PermitAcquired,
+        };
+        auto base_lock_only = wave_detail::reserve_worker_attempt_private_lease(
+            std::move(created_claim), wave_detail::DistributedSievePrivateLeaseProtocolTestHooks{
+                                          .stop_after = stop_at_wave_private_lease_boundary,
+                                          .context = &stop_at_p0,
+                                      });
+        CHECK(!base_lock_only);
+        require_wave_status(base_lock_only.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::interrupted,
+                            "leave an explicit BaseLock-only P0");
+
+        auto opened_claim = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        auto completed = wave_detail::reserve_worker_attempt_private_lease(std::move(opened_claim));
+        CHECK(completed);
+        CHECK(completed.receipt.has_value());
+        require_wave_status(completed.receipt->revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "fresh reservation may start from an explicitly opened clean P0");
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "fresh-reservation-predecessor-drift";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create reservation predecessor-drift fixture");
+        const auto& chunk = store.manifest().chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+        const auto foreign = root / "reservation-predecessor.foreign";
+        PrivateLeaseProtocolForeignContext context{
+            .foreign =
+                AttemptPhaseForeignContext{
+                    .foreign = foreign,
+                },
+        };
+
+        auto claimed = store.create_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        auto rejected = wave_detail::reserve_worker_attempt_private_lease(
+            std::move(claimed),
+            wave_detail::DistributedSievePrivateLeaseProtocolTestHooks{
+                .after_predecessor_validation = insert_foreign_after_private_lease_predecessor,
+                .context = &context,
+            });
+        CHECK(context.foreign.invoked);
+        CHECK(context.foreign.inserted);
+        CHECK(context.foreign.native_error == 0);
+        CHECK(!rejected);
+        CHECK(!rejected.receipt.has_value());
+        require_wave_status(rejected.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "predecessor drift blocks the first reservation mutation");
+        CHECK(entry_exists_no_follow(foreign));
+        CHECK(read_file_bytes(foreign).empty());
+        CHECK(!entry_exists_no_follow(root / names->reserved_pending_leaf));
+        CHECK(!entry_exists_no_follow(root / names->reserved_leaf));
+
+        std::error_code remove_error;
+        CHECK(std::filesystem::remove(foreign, remove_error));
+        CHECK(!remove_error);
+        require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "removing predecessor drift restores the exact P0");
+    }
+
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "fresh-reservation-complete";
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+    auto& store = require_wave_ready(created, "create complete fresh reservation fixture");
+    const auto& chunk = store.manifest().chunks.front();
+    const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk.relative_artifact_stem, chunk.chunk_id, 0);
+    CHECK(names.has_value());
+    const Digest manifest_digest = store.manifest_digest();
+
+    auto claimed = store.create_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+    auto reserved = wave_detail::reserve_worker_attempt_private_lease(std::move(claimed));
+    CHECK(reserved);
+    CHECK(reserved.receipt.has_value());
+    CHECK(claimed.claim == nullptr);
+    CHECK(reserved.receipt->owned_by_current_process());
+    CHECK(reserved.receipt->relative_lease_stem() == names->relative_lease_stem);
+    CHECK((reserved.receipt->lease_id() != std::array<std::uint64_t, 2>{}));
+    CHECK(reserved.receipt->directory_identity() != sieve::NativeIdentityV1{});
+    CHECK(reserved.receipt->owner_marker_identity() != sieve::NativeIdentityV1{});
+    CHECK(reserved.receipt->owned_marker_identity() != sieve::NativeIdentityV1{});
+    require_wave_status(reserved.receipt->revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "completed reservation receipt observes its exact P8 snapshot");
+    CHECK(!entry_exists_no_follow(root / names->canonical_record_leaf));
+    CHECK(!entry_exists_no_follow(root / names->pending_record_leaf));
+
+    WaveReservationWitnessObservationContext final_observation{
+        .expected_boundary =
+            wave_detail::DistributedSievePrivateLeaseReservationBoundary::FinalDirectoryDurable,
+        .expected_base_lock_leaf = names->base_lock_leaf,
+    };
+    require_wave_status(store.revalidate(wave_detail::DistributedSieveWaveStoreInventoryTestHooks{
+                            .observe_reservation_witnesses = observe_wave_reservation_witnesses,
+                            .context = &final_observation,
+                        }),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "completed fresh reservation is a closed P8 prefix");
+    CHECK(final_observation.invoked);
+    CHECK(final_observation.matched);
+
+    auto generic = store.claim_private_lease_root();
+    (void)require_private_lease_root_claim_ready(
+        generic, "snapshot receipt retains no same-State root claim");
+    generic.claim.reset();
+    auto target = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+    (void)require_private_lease_root_claim_ready(target,
+                                                 "snapshot receipt retains no target flock");
+    target.claim.reset();
+
+    auto second_claim = store.create_worker_attempt_private_lease_root(chunk.chunk_id, 1);
+    auto second_reserved =
+        wave_detail::reserve_worker_attempt_private_lease(std::move(second_claim));
+    CHECK(second_reserved);
+    CHECK(second_reserved.receipt.has_value());
+    require_wave_status(reserved.receipt->revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "first receipt permits and ignores an unrelated valid attempt");
+    require_wave_status(second_reserved.receipt->revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "second receipt independently observes its exact P8 snapshot");
+
+    int ready_pipe[2]{-1, -1};
+    CHECK(::pipe(ready_pipe) == 0);
+    const pid_t child = ::fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        (void)::close(ready_pipe[0]);
+        const bool rejected = !reserved.receipt->owned_by_current_process() &&
+                              reserved.receipt->revalidate().status ==
+                                  wave_detail::DistributedSieveWaveStoreStatus::invalid_request;
+        second_reserved.receipt.reset();
+        reserved.receipt.reset();
+        created.store.reset();
+        const bool signalled = write_pipe_byte(ready_pipe[1], rejected ? 'r' : 'f');
+        (void)::close(ready_pipe[1]);
+        ::_exit(rejected && signalled ? 0 : 85);
+    }
+    (void)::close(ready_pipe[1]);
+    char child_result = '\0';
+    const bool child_reported = read_pipe_byte(ready_pipe[0], child_result);
+    (void)::close(ready_pipe[0]);
+    int child_status = 0;
+    const bool child_waited = wait_for_child(child, child_status);
+    CHECK(child_reported);
+    CHECK(child_result == 'r');
+    CHECK(child_waited);
+    CHECK(WIFEXITED(child_status));
+    CHECK(WEXITSTATUS(child_status) == 0);
+    require_wave_status(reserved.receipt->revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "child receipt reset cannot release parent WaveStore authority");
+
+    const auto completed_snapshot = capture_wave_root_snapshot(root);
+    second_reserved.receipt.reset();
+    created.store.reset();
+    require_wave_status(reserved.receipt->revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "snapshot receipt retains WaveStore authority after facade destruction");
+    reserved.receipt.reset();
+    CHECK(capture_wave_root_snapshot(root) == completed_snapshot);
+
+    auto reopened = wave_detail::DistributedSieveWaveStore::open(root, manifest_digest);
+    auto& reopened_store = require_wave_ready(reopened, "reopen completed fresh reservation");
+    require_wave_status(reopened_store.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "receipt destruction does not mutate the P8 namespace");
+}
+
+void test_wave_store_fresh_private_lease_reservation_sync_failures() {
+    for (std::size_t index = 0; index < PRIVATE_LEASE_RESERVATION_SYNC_FAILURE_SITES.size();
+         ++index) {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / ("fresh-reservation-sync-" + std::to_string(index));
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create reservation sync-failure fixture");
+        const auto& chunk = store.manifest().chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+
+        PrivateLeaseProtocolSyncFailureContext context{
+            .target = PRIVATE_LEASE_RESERVATION_SYNC_FAILURE_SITES[index],
+        };
+        auto claimed = store.create_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        auto failed = wave_detail::reserve_worker_attempt_private_lease(
+            std::move(claimed), wave_detail::DistributedSievePrivateLeaseProtocolTestHooks{
+                                    .fail_before_sync = fail_private_lease_reservation_sync,
+                                    .context = &context,
+                                });
+        CHECK(!failed);
+        CHECK(!failed.receipt.has_value());
+        CHECK(claimed.claim == nullptr);
+        require_wave_status(failed.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::durability_failed,
+                            "deterministic reservation sync failure");
+        const wave_detail::DistributedSievePrivateLeaseReservationSyncFailureSite expected_site{
+            .boundary = context.target.boundary,
+            .point = context.target.point,
+        };
+        CHECK(failed.diagnostic.failed_private_lease_reservation_sync_site == expected_site);
+        CHECK(context.selected);
+        CHECK(context.observed_count == index + 1U);
+        for (std::size_t observed = 0; observed < context.observed_count; ++observed) {
+            CHECK(context.observed[observed].boundary ==
+                  PRIVATE_LEASE_RESERVATION_SYNC_FAILURE_SITES[observed].boundary);
+            CHECK(context.observed[observed].point ==
+                  PRIVATE_LEASE_RESERVATION_SYNC_FAILURE_SITES[observed].point);
+        }
+        CHECK(!entry_exists_no_follow(root / names->canonical_record_leaf));
+        CHECK(!entry_exists_no_follow(root / names->pending_record_leaf));
+
+        WaveReservationWitnessObservationContext observation{
+            .expected_boundary = context.target.boundary,
+            .expected_base_lock_leaf = names->base_lock_leaf,
+        };
+        require_wave_status(
+            store.revalidate(wave_detail::DistributedSieveWaveStoreInventoryTestHooks{
+                .observe_reservation_witnesses = observe_wave_reservation_witnesses,
+                .context = &observation,
+            }),
+            wave_detail::DistributedSieveWaveStoreStatus::ready,
+            "sync failure leaves the exact visible successor prefix");
+        CHECK(observation.invoked);
+        CHECK(observation.matched);
+
+        auto generic = store.claim_private_lease_root();
+        (void)require_private_lease_root_claim_ready(generic,
+                                                     "sync failure releases same-State root slot");
+        generic.claim.reset();
+        auto target = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        (void)require_private_lease_root_claim_ready(target, "sync failure releases target flock");
+        target.claim.reset();
+
+        const auto preserved = capture_wave_root_snapshot(root);
+        auto create_only_retry = store.create_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        CHECK(!create_only_retry);
+        CHECK(create_only_retry.claim == nullptr);
+        require_wave_status(create_only_retry.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "sync failure never falls back to fresh creation");
+        CHECK(capture_wave_root_snapshot(root) == preserved);
+    }
+
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "fresh-reservation-sync-root-precedence";
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+    auto& store = require_wave_ready(created, "create sync/root precedence fixture");
+    const auto& chunk = store.manifest().chunks.front();
+    const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk.relative_artifact_stem, chunk.chunk_id, 0);
+    CHECK(names.has_value());
+    PrivateLeaseProtocolSyncRootReplacementContext context{
+        .sync =
+            PrivateLeaseProtocolSyncFailureContext{
+                .target = PRIVATE_LEASE_RESERVATION_SYNC_FAILURE_SITES.front(),
+            },
+        .root =
+            WaveRootReplacementContext{
+                .canonical = root,
+                .displaced = temp.path() / "original-wave-root-before-sync",
+            },
+    };
+    auto claimed = store.create_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+    auto rejected = wave_detail::reserve_worker_attempt_private_lease(
+        std::move(claimed),
+        wave_detail::DistributedSievePrivateLeaseProtocolTestHooks{
+            .fail_before_sync = select_private_lease_sync_for_root_precedence,
+            .after_injected_sync_failure = replace_root_after_injected_private_lease_sync_failure,
+            .context = &context,
+        });
+    CHECK(!rejected);
+    CHECK(!rejected.receipt.has_value());
+    require_wave_status(rejected.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::root_invalid,
+                        "root replacement outranks a selected sync failure");
+    CHECK(!rejected.diagnostic.failed_private_lease_reservation_sync_site.has_value());
+    CHECK(context.sync.selected);
+    CHECK(context.after_failure_invoked);
+    CHECK(context.observed_site.boundary == context.sync.target.boundary);
+    CHECK(context.observed_site.point == context.sync.target.point);
+    CHECK(context.root.invoked);
+    CHECK(context.root.replaced);
+    CHECK(context.root.native_error == 0);
+    CHECK(!entry_exists_no_follow(root / names->reserved_pending_leaf));
+    CHECK(entry_exists_no_follow(context.root.displaced / names->reserved_pending_leaf));
+}
+
+void test_wave_store_fresh_private_lease_successor_replacements() {
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "fresh-reservation-marker-replacement";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create fresh marker-replacement fixture");
+        const auto& chunk = store.manifest().chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+        PrivateLeaseSuccessorMarkerReplacementContext context{
+            .canonical = root / names->reserved_pending_leaf,
+            .displaced = temp.path() / "original-reserved-pending",
+        };
+
+        auto claimed = store.create_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        auto rejected = wave_detail::reserve_worker_attempt_private_lease(
+            std::move(claimed),
+            wave_detail::DistributedSievePrivateLeaseProtocolTestHooks{
+                .after_first_successor_validation =
+                    replace_private_lease_successor_marker_after_first_validation,
+                .context = &context,
+            });
+        CHECK(!rejected);
+        CHECK(!rejected.receipt.has_value());
+        require_wave_status(rejected.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "same-byte P1 successor replacement is rejected");
+        CHECK(context.invoked);
+        CHECK(context.replaced);
+        CHECK(context.native_error == 0);
+        CHECK(entry_exists_no_follow(context.canonical));
+        CHECK(entry_exists_no_follow(context.displaced));
+        require_distinct_entry_identities(context.canonical, context.displaced,
+                                          "P1 replacement must use a distinct inode");
+        CHECK(!entry_exists_no_follow(root / names->reserved_leaf));
+
+        require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "replacement P1 remains classifier-valid but transaction-distinct");
+        std::error_code remove_error;
+        CHECK(std::filesystem::remove(context.canonical, remove_error));
+        CHECK(!remove_error);
+        require_rename(context.displaced, context.canonical, "restore original P1 marker identity");
+        require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "restoring original P1 identity closes the prefix");
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "fresh-reservation-directory-replacement";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create fresh directory-replacement fixture");
+        const auto& chunk = store.manifest().chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+        PrivateLeaseSuccessorDirectoryReplacementContext context{
+            .root = root,
+            .relative_lease_stem = names->relative_lease_stem,
+            .displaced = temp.path() / "original-staging-directory",
+        };
+
+        auto claimed = store.create_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        auto rejected = wave_detail::reserve_worker_attempt_private_lease(
+            std::move(claimed),
+            wave_detail::DistributedSievePrivateLeaseProtocolTestHooks{
+                .after_first_successor_validation =
+                    replace_private_lease_successor_directory_after_first_validation,
+                .context = &context,
+            });
+        CHECK(!rejected);
+        CHECK(!rejected.receipt.has_value());
+        require_wave_status(rejected.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "same-name P3 successor directory replacement is rejected");
+        CHECK(context.invoked);
+        CHECK(context.replaced);
+        CHECK(context.native_error == 0);
+        CHECK(entry_exists_no_follow(context.canonical));
+        CHECK(entry_exists_no_follow(context.displaced));
+        require_distinct_entry_identities(context.canonical, context.displaced,
+                                          "P3 replacement must use a distinct inode");
+        CHECK(!entry_exists_no_follow(
+            context.canonical / wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_PENDING_LEAF));
+        require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "replacement P3 remains classifier-valid but transaction-distinct");
+
+        std::error_code remove_error;
+        CHECK(std::filesystem::remove(context.canonical, remove_error));
+        CHECK(!remove_error);
+        require_rename(context.displaced, context.canonical,
+                       "restore original P3 directory identity");
+        require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "restoring original P3 identity closes the prefix");
+    }
+}
+
+void test_wave_store_private_lease_receipt_rejects_replacement() {
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "reservation-receipt-owned-replacement";
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+    auto& store = require_wave_ready(created, "create receipt replacement fixture");
+    const auto& chunk = store.manifest().chunks.front();
+    const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk.relative_artifact_stem, chunk.chunk_id, 0);
+    CHECK(names.has_value());
+
+    auto claimed = store.create_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+    auto reserved = wave_detail::reserve_worker_attempt_private_lease(std::move(claimed));
+    CHECK(reserved);
+    CHECK(reserved.receipt.has_value());
+
+    const auto owned = root / names->owned_leaf;
+    const auto displaced = temp.path() / "original-owned-marker";
+    WaveSameBytesReplacementContext context{
+        .canonical = owned,
+        .displaced = displaced,
+        .bytes = read_file_bytes(owned),
+    };
+    require_wave_status(reserved.receipt->revalidate(
+                            wave_detail::DistributedSievePrivateLeaseReservationReceiptTestHooks{
+                                .after_first_target_validation =
+                                    replace_marker_with_same_bytes_after_first_inventory,
+                                .context = &context,
+                            }),
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "receipt rejects same-byte OWNED replacement between target observations");
+    CHECK(context.invoked);
+    CHECK(context.replaced);
+    CHECK(context.native_error == 0);
+    require_distinct_entry_identities(owned, displaced,
+                                      "P8 OWNED replacement must use a distinct inode");
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "same-byte OWNED replacement remains classifier-valid");
+
+    std::error_code remove_error;
+    CHECK(std::filesystem::remove(owned, remove_error));
+    CHECK(!remove_error);
+    require_rename(displaced, owned, "restore receipt-bound OWNED identity");
+    require_wave_status(reserved.receipt->revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "receipt accepts the restored exact P8 witness");
+}
+
+void test_wave_store_private_lease_validation_hook_authority_sandwich() {
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "successor-hook-root-replacement";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create successor-hook authority fixture");
+        const auto& chunk = store.manifest().chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+        PrivateLeaseSuccessorRootReplacementContext context{
+            .root =
+                WaveRootReplacementContext{
+                    .canonical = root,
+                    .displaced = temp.path() / "original-root-after-first-successor",
+                },
+        };
+
+        auto claimed = store.create_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        auto rejected = wave_detail::reserve_worker_attempt_private_lease(
+            std::move(claimed), wave_detail::DistributedSievePrivateLeaseProtocolTestHooks{
+                                    .after_first_successor_validation =
+                                        replace_private_lease_root_after_first_successor_validation,
+                                    .context = &context,
+                                });
+        CHECK(!rejected);
+        CHECK(!rejected.receipt.has_value());
+        require_wave_status(rejected.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::root_invalid,
+                            "successor hook root replacement outranks P1 acceptance");
+        CHECK(context.root.invoked);
+        CHECK(context.root.replaced);
+        CHECK(context.root.native_error == 0);
+        CHECK(!entry_exists_no_follow(root / names->reserved_pending_leaf));
+        CHECK(entry_exists_no_follow(context.root.displaced / names->reserved_pending_leaf));
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "receipt-hook-root-replacement";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create receipt-hook authority fixture");
+        const auto& chunk = store.manifest().chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+        auto claimed = store.create_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        auto reserved = wave_detail::reserve_worker_attempt_private_lease(std::move(claimed));
+        CHECK(reserved);
+        CHECK(reserved.receipt.has_value());
+        WaveRootReplacementContext context{
+            .canonical = root,
+            .displaced = temp.path() / "original-root-after-first-receipt-target",
+        };
+
+        require_wave_status(
+            reserved.receipt->revalidate(
+                wave_detail::DistributedSievePrivateLeaseReservationReceiptTestHooks{
+                    .after_first_target_validation = replace_wave_root_after_attempt_phase,
+                    .context = &context,
+                }),
+            wave_detail::DistributedSieveWaveStoreStatus::root_invalid,
+            "receipt hook root replacement outranks target confirmation");
+        CHECK(context.invoked);
+        CHECK(context.replaced);
+        CHECK(context.native_error == 0);
+        CHECK(!entry_exists_no_follow(root / names->owned_leaf));
+        CHECK(entry_exists_no_follow(context.displaced / names->owned_leaf));
+    }
 }
 
 void test_wave_store_classifies_all_private_lease_reservation_prefixes() {
@@ -8267,7 +9285,7 @@ void run_core_suite() {
 
 void run_wave_store_suite() {
 #if !defined(_WIN32)
-    const std::array<std::pair<std::string_view, TestFunction>, 28> tests = {{
+    const std::array<std::pair<std::string_view, TestFunction>, 33> tests = {{
         {"create, open, revalidate, and exact manifest",
          test_wave_store_create_open_revalidate_and_exact_manifest},
         {"store-owned draft fields", test_wave_store_rejects_non_draft_store_owned_fields},
@@ -8287,6 +9305,16 @@ void run_wave_store_suite() {
          test_wave_store_private_lease_root_claim_traits_and_lifetime},
         {"manifest-bound BaseLocks and claim inventory split",
          test_wave_store_manifest_bound_base_locks_and_claim_inventory_split},
+        {"fresh private-lease reservation protocol",
+         test_wave_store_fresh_private_lease_reservation_protocol},
+        {"fresh private-lease reservation sync failures",
+         test_wave_store_fresh_private_lease_reservation_sync_failures},
+        {"fresh private-lease successor replacements",
+         test_wave_store_fresh_private_lease_successor_replacements},
+        {"private-lease receipt replacement",
+         test_wave_store_private_lease_receipt_rejects_replacement},
+        {"private-lease validation-hook authority sandwich",
+         test_wave_store_private_lease_validation_hook_authority_sandwich},
         {"all private-lease reservation prefixes",
          test_wave_store_classifies_all_private_lease_reservation_prefixes},
         {"dual private-lease marker states",
