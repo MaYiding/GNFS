@@ -94,6 +94,21 @@ static_assert([] {
     }
     return true;
 }());
+static_assert(DISTRIBUTED_SIEVE_PRIVATE_LEASE_RECOVERY_EDGES.size() ==
+              private_lease::PRIVATE_LEASE_RECOVERY_TRANSITIONS.size());
+static_assert([] {
+    for (std::size_t index = 0; index < DISTRIBUTED_SIEVE_PRIVATE_LEASE_RECOVERY_EDGES.size();
+         ++index) {
+        const auto& edge = DISTRIBUTED_SIEVE_PRIVATE_LEASE_RECOVERY_EDGES[index];
+        const auto& transition = private_lease::PRIVATE_LEASE_RECOVERY_TRANSITIONS[index];
+        if (static_cast<std::size_t>(edge.source) != static_cast<std::size_t>(transition.source) ||
+            static_cast<std::size_t>(edge.successor) !=
+                static_cast<std::size_t>(transition.successor)) {
+            return false;
+        }
+    }
+    return true;
+}());
 
 inline constexpr char LOCK_LEAF[] = ".gnfs-wave-v1.lock";
 inline constexpr char MANIFEST_LEAF[] = ".gnfs-wave-v1.manifest";
@@ -2974,6 +2989,23 @@ private_lease_sync_handle(int descriptor) noexcept {
                       error ? error : std::make_error_code(std::errc::io_error));
 }
 
+[[nodiscard]] DistributedSieveWaveStoreDiagnostic private_lease_recovery_sync_handle(
+    int descriptor, DistributedSievePrivateLeaseRecoveryEdge edge,
+    const std::optional<DistributedSievePrivateLeaseRecoveryEdge>& injected_failure) noexcept {
+    auto outcome = private_lease_sync_handle(descriptor);
+    if (outcome.status != DistributedSieveWaveStoreStatus::ready) {
+        outcome.failed_private_lease_recovery_sync_edge = edge;
+        return outcome;
+    }
+    if (!injected_failure.has_value() || *injected_failure != edge) {
+        return outcome;
+    }
+    outcome = diagnostic(DistributedSieveWaveStoreStatus::durability_failed,
+                         std::make_error_code(std::errc::io_error));
+    outcome.failed_private_lease_recovery_sync_edge = edge;
+    return outcome;
+}
+
 [[nodiscard]] DistributedSieveWaveStoreDiagnostic
 read_exact_private_lease_marker_handle(int marker_fd,
                                        const private_lease::PrivateLeaseRecord& expected,
@@ -4953,6 +4985,7 @@ private:
     void require_phase(DistributedSievePrivateLeaseReservationBoundary expected) const;
     void require_current() const;
     void before_mutation();
+    void select_injected_sync_failure(DistributedSievePrivateLeaseRecoveryEdge edge);
 
     [[nodiscard]] private_lease::PrivateLeaseRecord expected_reserved_record() const;
     [[nodiscard]] private_lease::PrivateLeaseRecord expected_owner_record() const;
@@ -4975,8 +5008,12 @@ private:
     [[nodiscard]] DistributedSieveWaveStoreDiagnostic adjudicate_operation_failure(
         DistributedSieveWaveStoreDiagnostic lower,
         const DistributedSievePrivateLeaseClosedSnapshot& possible_successor,
+        DistributedSievePrivateLeaseRecoveryEdge edge,
         LocalValidator&& validate_local) const noexcept;
-    void accept_successor(const DistributedSievePrivateLeaseClosedSnapshot& expected);
+    template <typename LocalValidator>
+    void accept_successor(const DistributedSievePrivateLeaseClosedSnapshot& expected,
+                          DistributedSievePrivateLeaseRecoveryEdge edge,
+                          LocalValidator&& validate_local);
 
     static void insert_protocol_leaf(NamespaceInventory& inventory, const std::string& leaf);
     static void erase_protocol_leaf(NamespaceInventory& inventory, const std::string& leaf);
@@ -4987,15 +5024,19 @@ private:
                                   const std::string& destination,
                                   const private_lease::PrivateLeaseRecord& expected_record,
                                   NativeIdentityV1 expected_identity,
-                                  const DistributedSievePrivateLeaseClosedSnapshot& successor);
+                                  const DistributedSievePrivateLeaseClosedSnapshot& successor,
+                                  DistributedSievePrivateLeaseRecoveryEdge edge);
     void unlink_exact_marker(int parent_fd, const std::string& leaf,
                              const private_lease::PrivateLeaseRecord& expected_record,
                              NativeIdentityV1 expected_identity,
-                             const DistributedSievePrivateLeaseClosedSnapshot& successor);
+                             const DistributedSievePrivateLeaseClosedSnapshot& successor,
+                             DistributedSievePrivateLeaseRecoveryEdge edge);
     void
-    rename_final_directory_to_staging(const DistributedSievePrivateLeaseClosedSnapshot& successor);
+    rename_final_directory_to_staging(const DistributedSievePrivateLeaseClosedSnapshot& successor,
+                                      DistributedSievePrivateLeaseRecoveryEdge edge);
     void remove_exact_empty_staging_directory(
-        const DistributedSievePrivateLeaseClosedSnapshot& successor);
+        const DistributedSievePrivateLeaseClosedSnapshot& successor,
+        DistributedSievePrivateLeaseRecoveryEdge edge);
     [[nodiscard]] bool offer_boundary(DistributedSievePrivateLeaseReservationBoundary boundary);
 
     DistributedSievePrivateLeaseRootClaim& claim_;
@@ -5005,6 +5046,7 @@ private:
     std::size_t target_index_ = 0;
     std::string staging_directory_leaf_;
     UniqueFd directory_;
+    std::optional<DistributedSievePrivateLeaseRecoveryEdge> injected_sync_failure_;
     std::optional<DistributedSievePrivateLeaseReservationBoundary> interrupted_boundary_;
     bool completed_ = false;
     bool rejected_ = false;
@@ -5144,6 +5186,26 @@ void DistributedSieveFdPrivateLeaseRecoveryTarget::before_mutation() {
     require_current();
     if (!process_matches(claim_.creator_process_id_)) {
         fail(process_mismatch());
+    }
+}
+
+void DistributedSieveFdPrivateLeaseRecoveryTarget::select_injected_sync_failure(
+    DistributedSievePrivateLeaseRecoveryEdge edge) {
+    injected_sync_failure_.reset();
+    require_current();
+    if (hooks_.fail_before_sync == nullptr) {
+        return;
+    }
+    if (!process_matches(claim_.creator_process_id_)) {
+        fail(process_mismatch());
+    }
+    const bool selected = hooks_.fail_before_sync(edge, hooks_.context);
+    if (!process_matches(claim_.creator_process_id_)) {
+        fail(process_mismatch());
+    }
+    require_current();
+    if (selected) {
+        injected_sync_failure_ = edge;
     }
 }
 
@@ -5397,7 +5459,7 @@ DistributedSieveWaveStoreDiagnostic
 DistributedSieveFdPrivateLeaseRecoveryTarget::adjudicate_operation_failure(
     DistributedSieveWaveStoreDiagnostic lower,
     const DistributedSievePrivateLeaseClosedSnapshot& possible_successor,
-    LocalValidator&& validate_local) const noexcept {
+    DistributedSievePrivateLeaseRecoveryEdge edge, LocalValidator&& validate_local) const noexcept {
     const auto& state = *claim_.wave_store_state_;
     if (const auto authority = claim_.revalidate_authority();
         authority.status != DistributedSieveWaveStoreStatus::ready) {
@@ -5422,6 +5484,15 @@ DistributedSieveFdPrivateLeaseRecoveryTarget::adjudicate_operation_failure(
     if (const auto local = validate_local(successor);
         local.status != DistributedSieveWaveStoreStatus::ready) {
         return adjudicate_observation_failure(local);
+    }
+    if (successor && hooks_.after_first_successor_validation != nullptr) {
+        if (!process_matches(claim_.creator_process_id_)) {
+            return process_mismatch();
+        }
+        hooks_.after_first_successor_validation(edge, hooks_.context);
+        if (!process_matches(claim_.creator_process_id_)) {
+            return process_mismatch();
+        }
     }
     if (const auto authority = claim_.revalidate_authority();
         authority.status != DistributedSieveWaveStoreStatus::ready) {
@@ -5449,8 +5520,10 @@ DistributedSieveFdPrivateLeaseRecoveryTarget::adjudicate_operation_failure(
     return lower;
 }
 
+template <typename LocalValidator>
 void DistributedSieveFdPrivateLeaseRecoveryTarget::accept_successor(
-    const DistributedSievePrivateLeaseClosedSnapshot& expected) {
+    const DistributedSievePrivateLeaseClosedSnapshot& expected,
+    DistributedSievePrivateLeaseRecoveryEdge edge, LocalValidator&& validate_local) {
     const auto& state = *claim_.wave_store_state_;
     if (const auto authority = claim_.revalidate_authority();
         authority.status != DistributedSieveWaveStoreStatus::ready) {
@@ -5471,6 +5544,19 @@ void DistributedSieveFdPrivateLeaseRecoveryTarget::accept_successor(
             validate_directory_handle(expected.reservation_witnesses[target_index_]);
         directory.status != DistributedSieveWaveStoreStatus::ready) {
         fail(adjudicate_observation_failure(directory));
+    }
+    if (const auto local = validate_local(true);
+        local.status != DistributedSieveWaveStoreStatus::ready) {
+        fail(adjudicate_observation_failure(local));
+    }
+    if (!process_matches(claim_.creator_process_id_)) {
+        fail(process_mismatch());
+    }
+    if (hooks_.after_first_successor_validation != nullptr) {
+        hooks_.after_first_successor_validation(edge, hooks_.context);
+    }
+    if (!process_matches(claim_.creator_process_id_)) {
+        fail(process_mismatch());
     }
     if (const auto authority = claim_.revalidate_authority();
         authority.status != DistributedSieveWaveStoreStatus::ready) {
@@ -5495,6 +5581,10 @@ void DistributedSieveFdPrivateLeaseRecoveryTarget::accept_successor(
         directory.status != DistributedSieveWaveStoreStatus::ready) {
         fail(adjudicate_observation_failure(directory));
     }
+    if (const auto local = validate_local(true);
+        local.status != DistributedSieveWaveStoreStatus::ready) {
+        fail(adjudicate_observation_failure(local));
+    }
     if (const auto authority = claim_.revalidate_authority();
         authority.status != DistributedSieveWaveStoreStatus::ready) {
         fail(authority);
@@ -5505,7 +5595,8 @@ void DistributedSieveFdPrivateLeaseRecoveryTarget::accept_successor(
 void DistributedSieveFdPrivateLeaseRecoveryTarget::rename_marker_no_replace(
     int parent_fd, const std::string& source, const std::string& destination,
     const private_lease::PrivateLeaseRecord& expected_record, NativeIdentityV1 expected_identity,
-    const DistributedSievePrivateLeaseClosedSnapshot& successor) {
+    const DistributedSievePrivateLeaseClosedSnapshot& successor,
+    DistributedSievePrivateLeaseRecoveryEdge edge) {
     before_mutation();
     auto held = hold_exact_marker(parent_fd, source, expected_record, expected_identity);
     const auto validate_local = [&](bool visible_successor) noexcept {
@@ -5518,21 +5609,22 @@ void DistributedSieveFdPrivateLeaseRecoveryTarget::rename_marker_no_replace(
     if (const auto renamed =
             private_lease_rename_no_replace_at(parent_fd, source.c_str(), destination.c_str());
         renamed.status != DistributedSieveWaveStoreStatus::ready) {
-        fail(adjudicate_operation_failure(renamed, successor, validate_local));
+        fail(adjudicate_operation_failure(renamed, successor, edge, validate_local));
     }
     if (const auto validated = validate_local(true);
         validated.status != DistributedSieveWaveStoreStatus::ready) {
-        fail(adjudicate_operation_failure(validated, successor, validate_local));
+        fail(adjudicate_operation_failure(validated, successor, edge, validate_local));
     }
-    if (const auto synchronized = private_lease_sync_handle(parent_fd);
+    if (const auto synchronized =
+            private_lease_recovery_sync_handle(parent_fd, edge, injected_sync_failure_);
         synchronized.status != DistributedSieveWaveStoreStatus::ready) {
-        fail(adjudicate_operation_failure(synchronized, successor, validate_local));
+        fail(adjudicate_operation_failure(synchronized, successor, edge, validate_local));
     }
     if (const auto validated = validate_local(true);
         validated.status != DistributedSieveWaveStoreStatus::ready) {
-        fail(adjudicate_operation_failure(validated, successor, validate_local));
+        fail(adjudicate_operation_failure(validated, successor, edge, validate_local));
     }
-    accept_successor(successor);
+    accept_successor(successor, edge, validate_local);
     if (const auto validated = validate_local(true);
         validated.status != DistributedSieveWaveStoreStatus::ready) {
         fail(adjudicate_observation_failure(validated));
@@ -5542,7 +5634,8 @@ void DistributedSieveFdPrivateLeaseRecoveryTarget::rename_marker_no_replace(
 void DistributedSieveFdPrivateLeaseRecoveryTarget::unlink_exact_marker(
     int parent_fd, const std::string& leaf,
     const private_lease::PrivateLeaseRecord& expected_record, NativeIdentityV1 expected_identity,
-    const DistributedSievePrivateLeaseClosedSnapshot& successor) {
+    const DistributedSievePrivateLeaseClosedSnapshot& successor,
+    DistributedSievePrivateLeaseRecoveryEdge edge) {
     before_mutation();
     auto held = hold_exact_marker(parent_fd, leaf, expected_record, expected_identity);
     const auto validate_local = [&](bool visible_successor) noexcept {
@@ -5556,21 +5649,22 @@ void DistributedSieveFdPrivateLeaseRecoveryTarget::unlink_exact_marker(
     require_current();
     if (const auto removed = private_lease_unlink_at(parent_fd, leaf.c_str(), 0);
         removed.status != DistributedSieveWaveStoreStatus::ready) {
-        fail(adjudicate_operation_failure(removed, successor, validate_local));
+        fail(adjudicate_operation_failure(removed, successor, edge, validate_local));
     }
     if (const auto validated = validate_local(true);
         validated.status != DistributedSieveWaveStoreStatus::ready) {
-        fail(adjudicate_operation_failure(validated, successor, validate_local));
+        fail(adjudicate_operation_failure(validated, successor, edge, validate_local));
     }
-    if (const auto synchronized = private_lease_sync_handle(parent_fd);
+    if (const auto synchronized =
+            private_lease_recovery_sync_handle(parent_fd, edge, injected_sync_failure_);
         synchronized.status != DistributedSieveWaveStoreStatus::ready) {
-        fail(adjudicate_operation_failure(synchronized, successor, validate_local));
+        fail(adjudicate_operation_failure(synchronized, successor, edge, validate_local));
     }
     if (const auto validated = validate_local(true);
         validated.status != DistributedSieveWaveStoreStatus::ready) {
-        fail(adjudicate_operation_failure(validated, successor, validate_local));
+        fail(adjudicate_operation_failure(validated, successor, edge, validate_local));
     }
-    accept_successor(successor);
+    accept_successor(successor, edge, validate_local);
     if (const auto validated = validate_local(true);
         validated.status != DistributedSieveWaveStoreStatus::ready) {
         fail(adjudicate_observation_failure(validated));
@@ -5578,7 +5672,8 @@ void DistributedSieveFdPrivateLeaseRecoveryTarget::unlink_exact_marker(
 }
 
 void DistributedSieveFdPrivateLeaseRecoveryTarget::rename_final_directory_to_staging(
-    const DistributedSievePrivateLeaseClosedSnapshot& successor) {
+    const DistributedSievePrivateLeaseClosedSnapshot& successor,
+    DistributedSievePrivateLeaseRecoveryEdge edge) {
     require_phase(DistributedSievePrivateLeaseReservationBoundary::FinalDirectoryDurable);
     before_mutation();
     if (!directory_ || !current_witness().directory_identity.has_value()) {
@@ -5602,21 +5697,22 @@ void DistributedSieveFdPrivateLeaseRecoveryTarget::rename_final_directory_to_sta
             state.root_fd, worker_attempt_names_.private_directory_leaf.c_str(),
             staging_directory_leaf_.c_str());
         renamed.status != DistributedSieveWaveStoreStatus::ready) {
-        fail(adjudicate_operation_failure(renamed, successor, validate_local));
+        fail(adjudicate_operation_failure(renamed, successor, edge, validate_local));
     }
     if (const auto validated = validate_local(true);
         validated.status != DistributedSieveWaveStoreStatus::ready) {
-        fail(adjudicate_operation_failure(validated, successor, validate_local));
+        fail(adjudicate_operation_failure(validated, successor, edge, validate_local));
     }
-    if (const auto synchronized = private_lease_sync_handle(state.root_fd);
+    if (const auto synchronized =
+            private_lease_recovery_sync_handle(state.root_fd, edge, injected_sync_failure_);
         synchronized.status != DistributedSieveWaveStoreStatus::ready) {
-        fail(adjudicate_operation_failure(synchronized, successor, validate_local));
+        fail(adjudicate_operation_failure(synchronized, successor, edge, validate_local));
     }
     if (const auto validated = validate_local(true);
         validated.status != DistributedSieveWaveStoreStatus::ready) {
-        fail(adjudicate_operation_failure(validated, successor, validate_local));
+        fail(adjudicate_operation_failure(validated, successor, edge, validate_local));
     }
-    accept_successor(successor);
+    accept_successor(successor, edge, validate_local);
     if (const auto validated = validate_local(true);
         validated.status != DistributedSieveWaveStoreStatus::ready) {
         fail(adjudicate_observation_failure(validated));
@@ -5624,7 +5720,8 @@ void DistributedSieveFdPrivateLeaseRecoveryTarget::rename_final_directory_to_sta
 }
 
 void DistributedSieveFdPrivateLeaseRecoveryTarget::remove_exact_empty_staging_directory(
-    const DistributedSievePrivateLeaseClosedSnapshot& successor) {
+    const DistributedSievePrivateLeaseClosedSnapshot& successor,
+    DistributedSievePrivateLeaseRecoveryEdge edge) {
     require_phase(DistributedSievePrivateLeaseReservationBoundary::StagingDirectoryDurable);
     before_mutation();
     if (!directory_ || !current_witness().directory_identity.has_value()) {
@@ -5662,24 +5759,38 @@ void DistributedSieveFdPrivateLeaseRecoveryTarget::remove_exact_empty_staging_di
         return validate_exact_empty_private_lease_directory_handle(removed_directory.get(),
                                                                    claim_.creator_process_id_);
     };
+    if (hooks_.before_staging_directory_remove != nullptr) {
+        if (!process_matches(claim_.creator_process_id_)) {
+            fail(process_mismatch());
+        }
+        hooks_.before_staging_directory_remove(edge, hooks_.context);
+        if (!process_matches(claim_.creator_process_id_)) {
+            fail(process_mismatch());
+        }
+        if (const auto authority = claim_.revalidate_authority();
+            authority.status != DistributedSieveWaveStoreStatus::ready) {
+            fail(authority);
+        }
+    }
     if (const auto removed =
             private_lease_unlink_at(state.root_fd, staging_directory_leaf_.c_str(), AT_REMOVEDIR);
         removed.status != DistributedSieveWaveStoreStatus::ready) {
-        fail(adjudicate_operation_failure(removed, successor, validate_local));
+        fail(adjudicate_operation_failure(removed, successor, edge, validate_local));
     }
     if (const auto validated = validate_local(true);
         validated.status != DistributedSieveWaveStoreStatus::ready) {
-        fail(adjudicate_operation_failure(validated, successor, validate_local));
+        fail(adjudicate_operation_failure(validated, successor, edge, validate_local));
     }
-    if (const auto synchronized = private_lease_sync_handle(state.root_fd);
+    if (const auto synchronized =
+            private_lease_recovery_sync_handle(state.root_fd, edge, injected_sync_failure_);
         synchronized.status != DistributedSieveWaveStoreStatus::ready) {
-        fail(adjudicate_operation_failure(synchronized, successor, validate_local));
+        fail(adjudicate_operation_failure(synchronized, successor, edge, validate_local));
     }
     if (const auto validated = validate_local(true);
         validated.status != DistributedSieveWaveStoreStatus::ready) {
-        fail(adjudicate_operation_failure(validated, successor, validate_local));
+        fail(adjudicate_operation_failure(validated, successor, edge, validate_local));
     }
-    accept_successor(successor);
+    accept_successor(successor, edge, validate_local);
     if (const auto validated = validate_local(true);
         validated.status != DistributedSieveWaveStoreStatus::ready) {
         fail(adjudicate_observation_failure(validated));
@@ -5689,6 +5800,11 @@ void DistributedSieveFdPrivateLeaseRecoveryTarget::remove_exact_empty_staging_di
 void DistributedSieveFdPrivateLeaseRecoveryTarget::apply(
     private_lease::PrivateLeaseRecoveryTransition transition) {
     const auto successor = expected_successor(transition);
+    const DistributedSievePrivateLeaseRecoveryEdge edge{
+        .source = wave_private_lease_boundary(transition.source),
+        .successor = wave_private_lease_boundary(transition.successor),
+    };
+    select_injected_sync_failure(edge);
     const int root_fd = claim_.wave_store_state_->root_fd;
 
     switch (transition.action) {
@@ -5700,7 +5816,7 @@ void DistributedSieveFdPrivateLeaseRecoveryTarget::apply(
         }
         const auto record = expected_reserved_record();
         unlink_exact_marker(root_fd, worker_attempt_names_.reserved_pending_leaf, record,
-                            *current_witness().reserved_marker_identity, successor);
+                            *current_witness().reserved_marker_identity, successor, edge);
         return;
     }
     case private_lease::PrivateLeaseRecoveryAction::RenameReservedCanonicalToPendingNoReplace: {
@@ -5712,11 +5828,11 @@ void DistributedSieveFdPrivateLeaseRecoveryTarget::apply(
         const auto record = expected_reserved_record();
         rename_marker_no_replace(root_fd, worker_attempt_names_.reserved_leaf,
                                  worker_attempt_names_.reserved_pending_leaf, record,
-                                 *current_witness().reserved_marker_identity, successor);
+                                 *current_witness().reserved_marker_identity, successor, edge);
         return;
     }
     case private_lease::PrivateLeaseRecoveryAction::RemoveExactEmptyStagingDirectory:
-        remove_exact_empty_staging_directory(successor);
+        remove_exact_empty_staging_directory(successor, edge);
         return;
     case private_lease::PrivateLeaseRecoveryAction::UnlinkExactOwnerPending: {
         require_phase(DistributedSievePrivateLeaseReservationBoundary::OwnerPendingDurable);
@@ -5727,7 +5843,7 @@ void DistributedSieveFdPrivateLeaseRecoveryTarget::apply(
         const auto record = expected_owner_record();
         unlink_exact_marker(directory_.get(),
                             std::string(DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_PENDING_LEAF), record,
-                            *current_witness().owner_marker_identity, successor);
+                            *current_witness().owner_marker_identity, successor, edge);
         return;
     }
     case private_lease::PrivateLeaseRecoveryAction::RenameOwnerCanonicalToPendingNoReplace: {
@@ -5740,7 +5856,7 @@ void DistributedSieveFdPrivateLeaseRecoveryTarget::apply(
         rename_marker_no_replace(directory_.get(),
                                  std::string(DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_LEAF),
                                  std::string(DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_PENDING_LEAF),
-                                 record, *current_witness().owner_marker_identity, successor);
+                                 record, *current_witness().owner_marker_identity, successor, edge);
         return;
     }
     case private_lease::PrivateLeaseRecoveryAction::UnlinkExactOwnedPending: {
@@ -5751,7 +5867,7 @@ void DistributedSieveFdPrivateLeaseRecoveryTarget::apply(
         }
         const auto record = expected_owned_record();
         unlink_exact_marker(root_fd, worker_attempt_names_.owned_pending_leaf, record,
-                            *current_witness().owned_marker_identity, successor);
+                            *current_witness().owned_marker_identity, successor, edge);
         return;
     }
     case private_lease::PrivateLeaseRecoveryAction::RenameOwnedCanonicalToPendingNoReplace: {
@@ -5763,11 +5879,11 @@ void DistributedSieveFdPrivateLeaseRecoveryTarget::apply(
         const auto record = expected_owned_record();
         rename_marker_no_replace(root_fd, worker_attempt_names_.owned_leaf,
                                  worker_attempt_names_.owned_pending_leaf, record,
-                                 *current_witness().owned_marker_identity, successor);
+                                 *current_witness().owned_marker_identity, successor, edge);
         return;
     }
     case private_lease::PrivateLeaseRecoveryAction::RenameFinalDirectoryToStagingNoReplace:
-        rename_final_directory_to_staging(successor);
+        rename_final_directory_to_staging(successor, edge);
         return;
     case private_lease::PrivateLeaseRecoveryAction::Count:
         break;

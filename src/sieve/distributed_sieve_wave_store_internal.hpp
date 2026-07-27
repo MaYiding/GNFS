@@ -366,6 +366,51 @@ struct DistributedSievePrivateLeaseReservationReceiptTestHooks final {
     void* context = nullptr;
 };
 
+struct DistributedSievePrivateLeaseRecoveryEdge final {
+    DistributedSievePrivateLeaseReservationBoundary source =
+        DistributedSievePrivateLeaseReservationBoundary::Count;
+    DistributedSievePrivateLeaseReservationBoundary successor =
+        DistributedSievePrivateLeaseReservationBoundary::Count;
+
+    friend bool operator==(const DistributedSievePrivateLeaseRecoveryEdge&,
+                           const DistributedSievePrivateLeaseRecoveryEdge&) = default;
+};
+
+inline constexpr std::array DISTRIBUTED_SIEVE_PRIVATE_LEASE_RECOVERY_EDGES{
+    DistributedSievePrivateLeaseRecoveryEdge{
+        .source = DistributedSievePrivateLeaseReservationBoundary::ReservedPendingDurable,
+        .successor = DistributedSievePrivateLeaseReservationBoundary::PermitAcquired,
+    },
+    DistributedSievePrivateLeaseRecoveryEdge{
+        .source = DistributedSievePrivateLeaseReservationBoundary::ReservedCanonicalDurable,
+        .successor = DistributedSievePrivateLeaseReservationBoundary::ReservedPendingDurable,
+    },
+    DistributedSievePrivateLeaseRecoveryEdge{
+        .source = DistributedSievePrivateLeaseReservationBoundary::StagingDirectoryDurable,
+        .successor = DistributedSievePrivateLeaseReservationBoundary::ReservedCanonicalDurable,
+    },
+    DistributedSievePrivateLeaseRecoveryEdge{
+        .source = DistributedSievePrivateLeaseReservationBoundary::OwnerPendingDurable,
+        .successor = DistributedSievePrivateLeaseReservationBoundary::StagingDirectoryDurable,
+    },
+    DistributedSievePrivateLeaseRecoveryEdge{
+        .source = DistributedSievePrivateLeaseReservationBoundary::OwnerCanonicalDurable,
+        .successor = DistributedSievePrivateLeaseReservationBoundary::OwnerPendingDurable,
+    },
+    DistributedSievePrivateLeaseRecoveryEdge{
+        .source = DistributedSievePrivateLeaseReservationBoundary::OwnedPendingDurable,
+        .successor = DistributedSievePrivateLeaseReservationBoundary::OwnerCanonicalDurable,
+    },
+    DistributedSievePrivateLeaseRecoveryEdge{
+        .source = DistributedSievePrivateLeaseReservationBoundary::OwnedCanonicalDurable,
+        .successor = DistributedSievePrivateLeaseReservationBoundary::OwnedPendingDurable,
+    },
+    DistributedSievePrivateLeaseRecoveryEdge{
+        .source = DistributedSievePrivateLeaseReservationBoundary::FinalDirectoryDurable,
+        .successor = DistributedSievePrivateLeaseReservationBoundary::OwnedCanonicalDurable,
+    },
+};
+
 /// Trusted test-only interruption boundary for open-existing rollback.
 ///
 /// `stop_after` is offered only after the named reverse successor has survived
@@ -374,8 +419,28 @@ struct DistributedSievePrivateLeaseReservationReceiptTestHooks final {
 struct DistributedSievePrivateLeaseRecoveryTestHooks final {
     using StopAfter = bool (*)(DistributedSievePrivateLeaseReservationBoundary boundary,
                                void* context) noexcept;
+    using FailBeforeSync = bool (*)(DistributedSievePrivateLeaseRecoveryEdge edge,
+                                    void* context) noexcept;
+    using AfterFirstSuccessorValidation = void (*)(DistributedSievePrivateLeaseRecoveryEdge edge,
+                                                   void* context) noexcept;
+    using BeforeStagingDirectoryRemove = void (*)(DistributedSievePrivateLeaseRecoveryEdge edge,
+                                                  void* context) noexcept;
 
     StopAfter stop_after = nullptr;
+
+    /// Selects an edge while its exact predecessor is still closed. The real
+    /// production sync still runs; only a successful sync is then fixed to a
+    /// durability failure and adjudicated through the ordinary recovery path.
+    FailBeforeSync fail_before_sync = nullptr;
+
+    /// Runs after the first exact closed-successor and held-object
+    /// observation, before mandatory authority and successor confirmation.
+    AfterFirstSuccessorValidation after_first_successor_validation = nullptr;
+
+    /// Runs at the exact P3 predecessor after the final held-directory
+    /// validation and immediately before rmdir. It exists only to exercise the
+    /// unavoidable POSIX final namespace race with a closed predecessor.
+    BeforeStagingDirectoryRemove before_staging_directory_remove = nullptr;
     void* context = nullptr;
 };
 
@@ -391,6 +456,7 @@ struct DistributedSieveWaveStoreDiagnostic final {
         last_private_lease_reservation_boundary;
     std::optional<DistributedSievePrivateLeaseReservationBoundary>
         last_private_lease_recovery_boundary;
+    std::optional<DistributedSievePrivateLeaseRecoveryEdge> failed_private_lease_recovery_sync_edge;
     std::optional<DistributedSievePrivateLeaseReservationSyncFailureSite>
         failed_private_lease_reservation_sync_site;
 };

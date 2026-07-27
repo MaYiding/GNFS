@@ -1982,6 +1982,25 @@ same WaveStore root, and two exact closed-root observations to contain no
 alternate name. The macOS/APFS suite must retain this platform-contract
 regression; an unsupported directory-handle behavior fails closed.
 
+The recovery fault matrix names all eight reverse edges as immutable
+`source -> successor` values and checks them against the generic recovery
+transition table at compile time. A test-only selector runs while the exact
+predecessor is still closed. The production parent-directory sync still
+executes; only its successful result is then fixed to a durability failure and
+passed through the ordinary held-object and authority adjudicator. Every edge
+therefore proves that the exact visible successor survives, the claim and
+target flock are released, and a later open can continue to `P0`.
+
+Both normal success and injected-failure paths expose the same narrow callback
+only after the first complete successor snapshot and action-local held-object
+validation. Root and target-`BaseLock` replacement outrank the fixed durability
+error, while same-byte marker and empty-directory replacement fail the second
+identity observation. A separate trusted `P3` seam moves the held staging
+directory outside the WaveStore and installs an empty replacement in the final
+pre-syscall window. The real `rmdir` removes the replacement, but the retained
+directory proof rejects the apparent `P2` successor and preserves the displaced
+original for explicit handling.
+
 The next M2 slice will consume the lock-free `P8` snapshot by reacquiring
 `root claim -> target BaseLock`, then publish `AttemptStartedV1`. Attempt
 publication remains blocked until that snapshot consumer and its recovery

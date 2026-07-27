@@ -60,6 +60,7 @@ using ExternalCleanupAuthorizationState =
 using PrivateLeaseRootClaim = wave_detail::DistributedSievePrivateLeaseRootClaim;
 using PrivateLeaseBaseLockAt = wave_detail::DistributedSievePrivateLeaseBaseLockAt;
 using PrivateLeaseReservationReceipt = wave_detail::DistributedSievePrivateLeaseReservationReceipt;
+using PrivateLeaseRecoveryEdge = wave_detail::DistributedSievePrivateLeaseRecoveryEdge;
 
 static_assert(!noexcept(sieve::distributed_sieve_record_kind(std::declval<const Record&>())));
 static_assert(
@@ -353,6 +354,23 @@ constexpr std::array PRIVATE_LEASE_RESERVATION_SYNC_FAILURE_SITES{
 };
 
 static_assert(PRIVATE_LEASE_RESERVATION_SYNC_FAILURE_SITES.size() == 15U);
+
+constexpr const auto& PRIVATE_LEASE_RECOVERY_EDGES =
+    wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_RECOVERY_EDGES;
+
+static_assert(PRIVATE_LEASE_RECOVERY_EDGES.size() + 1U ==
+              wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVATION_BOUNDARIES.size());
+static_assert([] {
+    for (std::size_t index = 0; index < PRIVATE_LEASE_RECOVERY_EDGES.size(); ++index) {
+        if (PRIVATE_LEASE_RECOVERY_EDGES[index].source !=
+                wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVATION_BOUNDARIES[index + 1U] ||
+            PRIVATE_LEASE_RECOVERY_EDGES[index].successor !=
+                wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVATION_BOUNDARIES[index]) {
+            return false;
+        }
+    }
+    return true;
+}());
 
 class TestFailure final : public std::runtime_error {
 public:
@@ -4263,6 +4281,30 @@ struct WavePrivateLeaseRecoveryStopContext final {
     return boundary == context.target;
 }
 
+void leave_wave_private_lease_reservation_prefix(
+    wave_detail::DistributedSieveWaveStore& store, std::uint32_t chunk_id,
+    wave_detail::DistributedSievePrivateLeaseReservationBoundary boundary,
+    std::string_view context) {
+    auto claimed = store.create_worker_attempt_private_lease_root(chunk_id, 0);
+    (void)require_private_lease_root_claim_ready(claimed, context);
+    WavePrivateLeaseProtocolStopContext stop{
+        .target = boundary,
+    };
+    auto interrupted = wave_detail::reserve_worker_attempt_private_lease(
+        std::move(claimed), wave_detail::DistributedSievePrivateLeaseProtocolTestHooks{
+                                .stop_after = stop_at_wave_private_lease_boundary,
+                                .context = &stop,
+                            });
+    CHECK(!interrupted);
+    CHECK(!interrupted.receipt.has_value());
+    CHECK(claimed.claim == nullptr);
+    require_wave_status(interrupted.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::interrupted, context);
+    const auto index = static_cast<std::size_t>(boundary);
+    CHECK(index < stop.observed.size());
+    CHECK(stop.observed[index]);
+}
+
 void leave_relation_private_lease_reservation_prefix(
     const std::filesystem::path& base_path, gnfs::relation::OOCPrivateLeaseFaultPoint fault_point) {
     RelationPrivateLeaseStopContext context{
@@ -4799,6 +4841,137 @@ void replace_private_lease_root_after_first_successor_validation(
     if (successor == context.target) {
         replace_wave_root_after_attempt_phase(&context.root);
     }
+}
+
+struct PrivateLeaseRecoverySyncFailureContext final {
+    PrivateLeaseRecoveryEdge target = PRIVATE_LEASE_RECOVERY_EDGES.front();
+    std::array<PrivateLeaseRecoveryEdge, PRIVATE_LEASE_RECOVERY_EDGES.size()> observed{};
+    std::size_t observed_count = 0;
+    std::optional<PrivateLeaseRecoveryEdge> first_successor;
+    std::size_t first_successor_count = 0;
+    bool selected = false;
+};
+
+[[nodiscard]] bool fail_private_lease_recovery_sync(PrivateLeaseRecoveryEdge edge,
+                                                    void* opaque) noexcept {
+    auto& context = *static_cast<PrivateLeaseRecoverySyncFailureContext*>(opaque);
+    if (context.observed_count < context.observed.size()) {
+        context.observed[context.observed_count] = edge;
+    }
+    ++context.observed_count;
+    const bool selected = edge == context.target;
+    context.selected = context.selected || selected;
+    return selected;
+}
+
+void observe_private_lease_recovery_first_successor(PrivateLeaseRecoveryEdge edge,
+                                                    void* opaque) noexcept {
+    auto& context = *static_cast<PrivateLeaseRecoverySyncFailureContext*>(opaque);
+    context.first_successor = edge;
+    ++context.first_successor_count;
+}
+
+struct PrivateLeaseRecoveryRootReplacementContext final {
+    PrivateLeaseRecoverySyncFailureContext sync;
+    WaveRootReplacementContext root;
+};
+
+[[nodiscard]] bool
+select_private_lease_recovery_sync_for_root_replacement(PrivateLeaseRecoveryEdge edge,
+                                                        void* opaque) noexcept {
+    auto& context = *static_cast<PrivateLeaseRecoveryRootReplacementContext*>(opaque);
+    return fail_private_lease_recovery_sync(edge, &context.sync);
+}
+
+void replace_root_after_first_private_lease_recovery_successor(PrivateLeaseRecoveryEdge edge,
+                                                               void* opaque) noexcept {
+    auto& context = *static_cast<PrivateLeaseRecoveryRootReplacementContext*>(opaque);
+    observe_private_lease_recovery_first_successor(edge, &context.sync);
+    if (edge == context.sync.target) {
+        replace_wave_root_after_attempt_phase(&context.root);
+    }
+}
+
+struct PrivateLeaseRecoveryBaseLockReplacementContext final {
+    PrivateLeaseRecoverySyncFailureContext sync;
+    WaveBaseLockReplacementContext target;
+};
+
+[[nodiscard]] bool
+select_private_lease_recovery_sync_for_base_lock_replacement(PrivateLeaseRecoveryEdge edge,
+                                                             void* opaque) noexcept {
+    auto& context = *static_cast<PrivateLeaseRecoveryBaseLockReplacementContext*>(opaque);
+    return fail_private_lease_recovery_sync(edge, &context.sync);
+}
+
+void replace_base_lock_after_first_private_lease_recovery_successor(PrivateLeaseRecoveryEdge edge,
+                                                                    void* opaque) noexcept {
+    auto& context = *static_cast<PrivateLeaseRecoveryBaseLockReplacementContext*>(opaque);
+    observe_private_lease_recovery_first_successor(edge, &context.sync);
+    if (edge == context.sync.target) {
+        replace_base_lock_after_first_inventory(&context.target);
+    }
+}
+
+struct PrivateLeaseRecoveryMarkerReplacementContext final {
+    PrivateLeaseRecoverySyncFailureContext sync;
+    PrivateLeaseSuccessorMarkerReplacementContext marker;
+};
+
+[[nodiscard]] bool
+select_private_lease_recovery_sync_for_marker_replacement(PrivateLeaseRecoveryEdge edge,
+                                                          void* opaque) noexcept {
+    auto& context = *static_cast<PrivateLeaseRecoveryMarkerReplacementContext*>(opaque);
+    return fail_private_lease_recovery_sync(edge, &context.sync);
+}
+
+void replace_marker_after_first_private_lease_recovery_successor(PrivateLeaseRecoveryEdge edge,
+                                                                 void* opaque) noexcept {
+    auto& context = *static_cast<PrivateLeaseRecoveryMarkerReplacementContext*>(opaque);
+    observe_private_lease_recovery_first_successor(edge, &context.sync);
+    if (edge == context.sync.target) {
+        replace_private_lease_successor_marker_after_first_validation(edge.successor,
+                                                                      &context.marker);
+    }
+}
+
+struct PrivateLeaseRecoveryDirectoryReplacementContext final {
+    PrivateLeaseRecoverySyncFailureContext sync;
+    PrivateLeaseSuccessorDirectoryReplacementContext directory;
+};
+
+[[nodiscard]] bool
+select_private_lease_recovery_sync_for_directory_replacement(PrivateLeaseRecoveryEdge edge,
+                                                             void* opaque) noexcept {
+    auto& context = *static_cast<PrivateLeaseRecoveryDirectoryReplacementContext*>(opaque);
+    return fail_private_lease_recovery_sync(edge, &context.sync);
+}
+
+void replace_directory_after_first_private_lease_recovery_successor(PrivateLeaseRecoveryEdge edge,
+                                                                    void* opaque) noexcept {
+    auto& context = *static_cast<PrivateLeaseRecoveryDirectoryReplacementContext*>(opaque);
+    observe_private_lease_recovery_first_successor(edge, &context.sync);
+    if (edge == context.sync.target) {
+        replace_private_lease_successor_directory_after_first_validation(edge.successor,
+                                                                         &context.directory);
+    }
+}
+
+struct PrivateLeaseRecoveryStagingRemoveRaceContext final {
+    PrivateLeaseRecoveryEdge target = PRIVATE_LEASE_RECOVERY_EDGES[2];
+    PrivateLeaseSuccessorDirectoryReplacementContext directory;
+    bool invoked = false;
+};
+
+void replace_staging_directory_before_private_lease_recovery_remove(PrivateLeaseRecoveryEdge edge,
+                                                                    void* opaque) noexcept {
+    auto& context = *static_cast<PrivateLeaseRecoveryStagingRemoveRaceContext*>(opaque);
+    if (edge != context.target || context.invoked) {
+        return;
+    }
+    context.invoked = true;
+    replace_private_lease_successor_directory_after_first_validation(edge.source,
+                                                                     &context.directory);
 }
 
 struct BaseLockSyncFailureContext final {
@@ -7199,6 +7372,427 @@ void test_wave_store_private_lease_recovery_authority_exclusion_and_process_bind
                         wave_detail::DistributedSieveWaveStoreStatus::ready,
                         "new WaveStore returns a live recovered P0 claim");
     CHECK(capture_wave_root_snapshot(root) == p0_snapshot);
+}
+
+void test_wave_store_private_lease_recovery_sync_failures_leave_visible_successors() {
+    using Boundary = wave_detail::DistributedSievePrivateLeaseReservationBoundary;
+
+    for (std::size_t index = 1;
+         index < wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVATION_BOUNDARIES.size();
+         ++index) {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / ("private-lease-recovery-sync-" + std::to_string(index));
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create recovery sync-failure fixture");
+        const auto& chunk = store.manifest().chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+
+        const Boundary source =
+            wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVATION_BOUNDARIES[index];
+        const Boundary successor =
+            wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVATION_BOUNDARIES[index - 1U];
+        leave_wave_private_lease_reservation_prefix(
+            store, chunk.chunk_id, source, "leave source prefix for recovery sync failure");
+
+        PrivateLeaseRecoverySyncFailureContext context{
+            .target = PRIVATE_LEASE_RECOVERY_EDGES[index - 1U],
+        };
+        CHECK(context.target.source == source);
+        CHECK(context.target.successor == successor);
+        auto opened = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        (void)require_private_lease_root_claim_ready(opened,
+                                                     "open prefix for recovery sync failure");
+        auto failed = wave_detail::recover_worker_attempt_private_lease(
+            std::move(opened),
+            wave_detail::DistributedSievePrivateLeaseRecoveryTestHooks{
+                .fail_before_sync = fail_private_lease_recovery_sync,
+                .after_first_successor_validation = observe_private_lease_recovery_first_successor,
+                .context = &context,
+            });
+        CHECK(!failed);
+        CHECK(failed.claim == nullptr);
+        CHECK(opened.claim == nullptr);
+        require_wave_status(failed.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::durability_failed,
+                            "reported recovery sync failure");
+        CHECK(failed.diagnostic.failed_private_lease_recovery_sync_edge == context.target);
+        CHECK(context.selected);
+        CHECK(context.observed_count == 1U);
+        CHECK(context.observed.front() == context.target);
+        CHECK(context.first_successor_count == 1U);
+        CHECK(context.first_successor == context.target);
+
+        WaveReservationWitnessObservationContext observation{
+            .expected_boundary = successor,
+            .expected_base_lock_leaf = names->base_lock_leaf,
+        };
+        require_wave_status(
+            store.revalidate(wave_detail::DistributedSieveWaveStoreInventoryTestHooks{
+                .observe_reservation_witnesses = observe_wave_reservation_witnesses,
+                .context = &observation,
+            }),
+            wave_detail::DistributedSieveWaveStoreStatus::ready,
+            "recovery sync failure leaves an exact visible successor");
+        CHECK(observation.invoked);
+        CHECK(observation.matched);
+        CHECK(!relation_base_lock_reports_busy(root / names->base_lock_leaf));
+
+        auto reopened = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        auto converged = wave_detail::recover_worker_attempt_private_lease(std::move(reopened));
+        auto& converged_claim = require_private_lease_root_claim_ready(
+            converged, "continue from recovery sync-failure successor");
+        require_wave_status(converged_claim.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "continued recovery reaches P0");
+        WaveReservationWitnessObservationContext p0_observation{
+            .expected_boundary = Boundary::PermitAcquired,
+            .expected_base_lock_leaf = names->base_lock_leaf,
+        };
+        require_wave_status(
+            store.revalidate(wave_detail::DistributedSieveWaveStoreInventoryTestHooks{
+                .observe_reservation_witnesses = observe_wave_reservation_witnesses,
+                .context = &p0_observation,
+            }),
+            wave_detail::DistributedSieveWaveStoreStatus::ready,
+            "continued recovery closes the sync-failure prefix");
+        CHECK(p0_observation.invoked);
+        CHECK(p0_observation.matched);
+    }
+
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "private-lease-recovery-success-hook";
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+    auto& store = require_wave_ready(created, "create recovery success-hook fixture");
+    const auto& chunk = store.manifest().chunks.front();
+    leave_wave_private_lease_reservation_prefix(
+        store, chunk.chunk_id, Boundary::ReservedPendingDurable,
+        "leave P1 for normal recovery successor-hook coverage");
+    PrivateLeaseRecoverySyncFailureContext context{
+        .target = PRIVATE_LEASE_RECOVERY_EDGES.front(),
+    };
+    auto opened = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+    auto recovered = wave_detail::recover_worker_attempt_private_lease(
+        std::move(opened),
+        wave_detail::DistributedSievePrivateLeaseRecoveryTestHooks{
+            .after_first_successor_validation = observe_private_lease_recovery_first_successor,
+            .context = &context,
+        });
+    (void)require_private_lease_root_claim_ready(
+        recovered, "normal recovery accepts its twice-validated successor");
+    CHECK(context.observed_count == 0U);
+    CHECK(!context.selected);
+    CHECK(context.first_successor_count == 1U);
+    CHECK(context.first_successor == context.target);
+    CHECK(!recovered.diagnostic.failed_private_lease_recovery_sync_edge.has_value());
+}
+
+void test_wave_store_private_lease_recovery_successor_replacement_precedence() {
+    using Boundary = wave_detail::DistributedSievePrivateLeaseReservationBoundary;
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "private-lease-recovery-root-precedence";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create recovery root-precedence fixture");
+        const auto& chunk = store.manifest().chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+        leave_wave_private_lease_reservation_prefix(store, chunk.chunk_id,
+                                                    Boundary::ReservedPendingDurable,
+                                                    "leave P1 for recovery root precedence");
+
+        PrivateLeaseRecoveryRootReplacementContext context{
+            .sync =
+                PrivateLeaseRecoverySyncFailureContext{
+                    .target = PRIVATE_LEASE_RECOVERY_EDGES[0],
+                },
+            .root =
+                WaveRootReplacementContext{
+                    .canonical = root,
+                    .displaced = temp.path() / "original-root-after-recovery-successor",
+                },
+        };
+        auto opened = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        auto rejected = wave_detail::recover_worker_attempt_private_lease(
+            std::move(opened),
+            wave_detail::DistributedSievePrivateLeaseRecoveryTestHooks{
+                .fail_before_sync = select_private_lease_recovery_sync_for_root_replacement,
+                .after_first_successor_validation =
+                    replace_root_after_first_private_lease_recovery_successor,
+                .context = &context,
+            });
+        CHECK(!rejected);
+        CHECK(rejected.claim == nullptr);
+        require_wave_status(rejected.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::root_invalid,
+                            "root replacement outranks recovery sync failure");
+        CHECK(!rejected.diagnostic.failed_private_lease_recovery_sync_edge.has_value());
+        CHECK(context.sync.selected);
+        CHECK(context.sync.first_successor_count == 1U);
+        CHECK(context.sync.first_successor == context.sync.target);
+        CHECK(context.root.invoked);
+        CHECK(context.root.replaced);
+        CHECK(context.root.native_error == 0);
+        CHECK(!entry_exists_no_follow(root / names->base_lock_leaf));
+        CHECK(entry_exists_no_follow(context.root.displaced / names->base_lock_leaf));
+        CHECK(!relation_base_lock_reports_busy(context.root.displaced / names->base_lock_leaf));
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "private-lease-recovery-base-lock-precedence";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create recovery BaseLock-precedence fixture");
+        const auto& chunk = store.manifest().chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+        leave_wave_private_lease_reservation_prefix(store, chunk.chunk_id,
+                                                    Boundary::ReservedPendingDurable,
+                                                    "leave P1 for recovery BaseLock precedence");
+
+        PrivateLeaseRecoveryBaseLockReplacementContext context{
+            .sync =
+                PrivateLeaseRecoverySyncFailureContext{
+                    .target = PRIVATE_LEASE_RECOVERY_EDGES[0],
+                },
+            .target =
+                WaveBaseLockReplacementContext{
+                    .canonical = root / names->base_lock_leaf,
+                    .displaced = temp.path() / "original-recovery-target-BaseLock",
+                },
+        };
+        auto opened = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        auto rejected = wave_detail::recover_worker_attempt_private_lease(
+            std::move(opened),
+            wave_detail::DistributedSievePrivateLeaseRecoveryTestHooks{
+                .fail_before_sync = select_private_lease_recovery_sync_for_base_lock_replacement,
+                .after_first_successor_validation =
+                    replace_base_lock_after_first_private_lease_recovery_successor,
+                .context = &context,
+            });
+        CHECK(!rejected);
+        CHECK(rejected.claim == nullptr);
+        require_wave_status(rejected.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "target BaseLock replacement outranks recovery sync failure");
+        CHECK(!rejected.diagnostic.failed_private_lease_recovery_sync_edge.has_value());
+        CHECK(context.sync.selected);
+        CHECK(context.sync.first_successor_count == 1U);
+        CHECK(context.sync.first_successor == context.sync.target);
+        CHECK(context.target.invoked);
+        CHECK(context.target.replaced);
+        CHECK(context.target.native_error == 0);
+        require_strict_empty_base_lock(root / names->base_lock_leaf,
+                                       "replacement recovery BaseLock is preserved");
+        require_strict_empty_base_lock(context.target.displaced,
+                                       "displaced recovery BaseLock is preserved");
+        CHECK(!relation_base_lock_reports_busy(root / names->base_lock_leaf));
+        CHECK(!relation_base_lock_reports_busy(context.target.displaced));
+        require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "WaveStore accepts the stable replacement BaseLock inventory");
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "private-lease-recovery-marker-precedence";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create recovery marker-precedence fixture");
+        const auto& chunk = store.manifest().chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+        leave_wave_private_lease_reservation_prefix(store, chunk.chunk_id,
+                                                    Boundary::ReservedCanonicalDurable,
+                                                    "leave P2 for recovery marker precedence");
+
+        PrivateLeaseRecoveryMarkerReplacementContext context{
+            .sync =
+                PrivateLeaseRecoverySyncFailureContext{
+                    .target = PRIVATE_LEASE_RECOVERY_EDGES[1],
+                },
+            .marker =
+                PrivateLeaseSuccessorMarkerReplacementContext{
+                    .target = Boundary::ReservedPendingDurable,
+                    .canonical = root / names->reserved_pending_leaf,
+                    .displaced = temp.path() / "original-recovery-reserved-pending",
+                },
+        };
+        auto opened = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        auto rejected = wave_detail::recover_worker_attempt_private_lease(
+            std::move(opened),
+            wave_detail::DistributedSievePrivateLeaseRecoveryTestHooks{
+                .fail_before_sync = select_private_lease_recovery_sync_for_marker_replacement,
+                .after_first_successor_validation =
+                    replace_marker_after_first_private_lease_recovery_successor,
+                .context = &context,
+            });
+        CHECK(!rejected);
+        CHECK(rejected.claim == nullptr);
+        require_wave_status(rejected.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "marker replacement outranks recovery sync failure");
+        CHECK(!rejected.diagnostic.failed_private_lease_recovery_sync_edge.has_value());
+        CHECK(context.sync.selected);
+        CHECK(context.sync.first_successor_count == 1U);
+        CHECK(context.sync.first_successor == context.sync.target);
+        CHECK(context.marker.invoked);
+        CHECK(context.marker.replaced);
+        CHECK(context.marker.native_error == 0);
+        CHECK(read_file_bytes(context.marker.canonical) ==
+              read_file_bytes(context.marker.displaced));
+        require_distinct_entry_identities(
+            context.marker.canonical, context.marker.displaced,
+            "recovery successor marker replacement uses a distinct inode");
+        require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "same-byte replacement remains a classifier-valid P1");
+        CHECK(!relation_base_lock_reports_busy(root / names->base_lock_leaf));
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "private-lease-recovery-directory-precedence";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create recovery directory-precedence fixture");
+        const auto& chunk = store.manifest().chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+        leave_wave_private_lease_reservation_prefix(store, chunk.chunk_id,
+                                                    Boundary::OwnerPendingDurable,
+                                                    "leave P4 for recovery directory precedence");
+
+        PrivateLeaseRecoveryDirectoryReplacementContext context{
+            .sync =
+                PrivateLeaseRecoverySyncFailureContext{
+                    .target = PRIVATE_LEASE_RECOVERY_EDGES[3],
+                },
+            .directory =
+                PrivateLeaseSuccessorDirectoryReplacementContext{
+                    .target = Boundary::StagingDirectoryDurable,
+                    .root = root,
+                    .relative_lease_stem = names->relative_lease_stem,
+                    .displaced = temp.path() / "original-recovery-staging-directory",
+                },
+        };
+        auto opened = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        auto rejected = wave_detail::recover_worker_attempt_private_lease(
+            std::move(opened),
+            wave_detail::DistributedSievePrivateLeaseRecoveryTestHooks{
+                .fail_before_sync = select_private_lease_recovery_sync_for_directory_replacement,
+                .after_first_successor_validation =
+                    replace_directory_after_first_private_lease_recovery_successor,
+                .context = &context,
+            });
+        CHECK(!rejected);
+        CHECK(rejected.claim == nullptr);
+        require_wave_status(rejected.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "directory replacement outranks recovery sync failure");
+        CHECK(!rejected.diagnostic.failed_private_lease_recovery_sync_edge.has_value());
+        CHECK(context.sync.selected);
+        CHECK(context.sync.first_successor_count == 1U);
+        CHECK(context.sync.first_successor == context.sync.target);
+        CHECK(context.directory.invoked);
+        CHECK(context.directory.replaced);
+        CHECK(context.directory.native_error == 0);
+        CHECK(entry_exists_no_follow(context.directory.canonical));
+        CHECK(entry_exists_no_follow(context.directory.displaced));
+        require_distinct_entry_identities(
+            context.directory.canonical, context.directory.displaced,
+            "recovery successor directory replacement uses a distinct inode");
+        CHECK(std::filesystem::is_empty(context.directory.canonical));
+        CHECK(std::filesystem::is_empty(context.directory.displaced));
+        require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "empty replacement remains a classifier-valid P3");
+        CHECK(!relation_base_lock_reports_busy(root / names->base_lock_leaf));
+    }
+}
+
+void test_wave_store_private_lease_recovery_p3_rejects_moved_held_directory() {
+    using Boundary = wave_detail::DistributedSievePrivateLeaseReservationBoundary;
+
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "private-lease-recovery-p3-held-directory";
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+    auto& store = require_wave_ready(created, "create P3 held-directory fixture");
+    const auto& chunk = store.manifest().chunks.front();
+    const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk.relative_artifact_stem, chunk.chunk_id, 0);
+    CHECK(names.has_value());
+    leave_wave_private_lease_reservation_prefix(store, chunk.chunk_id,
+                                                Boundary::StagingDirectoryDurable,
+                                                "leave P3 for held-directory final-window race");
+
+    const auto reserved =
+        cleanup_detail::parse_private_lease_marker(read_file_bytes(root / names->reserved_leaf));
+    const std::string staging_leaf =
+        names->relative_lease_stem +
+        std::string(wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_STAGING_TAG) +
+        cleanup_detail::private_lease_id_hex(reserved.lease_id);
+    const auto staging = root / staging_leaf;
+    const auto original_directory = capture_wave_root_entry_snapshot(staging, staging_leaf);
+    CHECK(std::filesystem::is_empty(staging));
+
+    PrivateLeaseRecoveryStagingRemoveRaceContext context{
+        .target = PRIVATE_LEASE_RECOVERY_EDGES[2],
+        .directory =
+            PrivateLeaseSuccessorDirectoryReplacementContext{
+                .target = Boundary::StagingDirectoryDurable,
+                .root = root,
+                .relative_lease_stem = names->relative_lease_stem,
+                .canonical = staging,
+                .displaced = temp.path() / "moved-held-staging-directory",
+            },
+    };
+    auto opened = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+    auto rejected = wave_detail::recover_worker_attempt_private_lease(
+        std::move(opened), wave_detail::DistributedSievePrivateLeaseRecoveryTestHooks{
+                               .before_staging_directory_remove =
+                                   replace_staging_directory_before_private_lease_recovery_remove,
+                               .context = &context,
+                           });
+    CHECK(!rejected);
+    CHECK(rejected.claim == nullptr);
+    CHECK(opened.claim == nullptr);
+    require_wave_status(rejected.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "P3 recovery rejects removal of a replacement directory");
+    CHECK(!rejected.diagnostic.failed_private_lease_recovery_sync_edge.has_value());
+    CHECK(context.invoked);
+    CHECK(context.directory.invoked);
+    CHECK(context.directory.replaced);
+    CHECK(context.directory.native_error == 0);
+    CHECK(!entry_exists_no_follow(staging));
+    CHECK(entry_exists_no_follow(context.directory.displaced));
+    CHECK(capture_wave_root_entry_snapshot(context.directory.displaced, staging_leaf) ==
+          original_directory);
+    CHECK(std::filesystem::is_empty(context.directory.displaced));
+    CHECK(!relation_base_lock_reports_busy(root / names->base_lock_leaf));
+
+    WaveReservationWitnessObservationContext p2_observation{
+        .expected_boundary = Boundary::ReservedCanonicalDurable,
+        .expected_base_lock_leaf = names->base_lock_leaf,
+    };
+    require_wave_status(store.revalidate(wave_detail::DistributedSieveWaveStoreInventoryTestHooks{
+                            .observe_reservation_witnesses = observe_wave_reservation_witnesses,
+                            .context = &p2_observation,
+                        }),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "replacement rmdir leaves a classifier-valid P2 root successor");
+    CHECK(p2_observation.invoked);
+    CHECK(p2_observation.matched);
+
+    auto reopened = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+    auto recovered = wave_detail::recover_worker_attempt_private_lease(std::move(reopened));
+    auto& recovered_claim = require_private_lease_root_claim_ready(
+        recovered, "recover P2 after rejecting moved held directory");
+    require_wave_status(recovered_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "P2 remains recoverable after final-window rejection");
 }
 
 void test_wave_store_fresh_private_lease_reservation_sync_failures() {
@@ -9734,7 +10328,7 @@ void run_core_suite() {
 
 void run_wave_store_suite() {
 #if !defined(_WIN32)
-    const std::array<std::pair<std::string_view, TestFunction>, 36> tests = {{
+    const std::array<std::pair<std::string_view, TestFunction>, 39> tests = {{
         {"create, open, revalidate, and exact manifest",
          test_wave_store_create_open_revalidate_and_exact_manifest},
         {"store-owned draft fields", test_wave_store_rejects_non_draft_store_owned_fields},
@@ -9762,6 +10356,12 @@ void run_wave_store_suite() {
          test_wave_store_private_lease_recovery_requires_open_existing_origin},
         {"private-lease recovery authority exclusion and process binding",
          test_wave_store_private_lease_recovery_authority_exclusion_and_process_binding},
+        {"private-lease recovery sync-failure successors",
+         test_wave_store_private_lease_recovery_sync_failures_leave_visible_successors},
+        {"private-lease recovery replacement precedence",
+         test_wave_store_private_lease_recovery_successor_replacement_precedence},
+        {"private-lease recovery P3 moved held directory",
+         test_wave_store_private_lease_recovery_p3_rejects_moved_held_directory},
         {"fresh private-lease reservation sync failures",
          test_wave_store_fresh_private_lease_reservation_sync_failures},
         {"fresh private-lease successor replacements",
