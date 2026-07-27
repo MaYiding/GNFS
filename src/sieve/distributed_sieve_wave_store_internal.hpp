@@ -97,6 +97,7 @@ parse_distributed_sieve_worker_attempt_leaf_v1(std::string_view leaf) noexcept;
 enum class DistributedSieveWaveStoreStatus : std::uint8_t {
     ready,
     interrupted,
+    reconciliation_required,
     invalid_request,
     platform_unsupported,
     root_missing,
@@ -124,6 +125,8 @@ distributed_sieve_wave_store_status_name(DistributedSieveWaveStoreStatus status)
         return "ready";
     case DistributedSieveWaveStoreStatus::interrupted:
         return "interrupted";
+    case DistributedSieveWaveStoreStatus::reconciliation_required:
+        return "reconciliation_required";
     case DistributedSieveWaveStoreStatus::invalid_request:
         return "invalid_request";
     case DistributedSieveWaveStoreStatus::platform_unsupported:
@@ -188,6 +191,25 @@ enum class DistributedSievePrivateLeaseBaseLockSyncPoint : std::uint8_t {
     RootDirectory,
     TargetFinal,
     Count,
+};
+
+/// Durable immutable-record boundaries for one worker-attempt start.
+/// `CanonicalPromoted` intentionally precedes the following root-directory
+/// durability barrier.
+enum class DistributedSieveWorkerAttemptStartFaultPoint : std::uint8_t {
+    PendingDurable,
+    CanonicalPromoted,
+    CanonicalDurable,
+    Count,
+};
+
+/// Authorization outcome of one consumed reservation receipt. A durable
+/// non-fresh record is deliberately distinct from both failure and a freshly
+/// minted worker-start authority.
+enum class DistributedSieveWorkerAttemptStartDisposition : std::uint8_t {
+    failed,
+    fresh_start,
+    reconcile_required,
 };
 
 /// The nine and only durable prefixes of one private-lease reservation. Values
@@ -326,6 +348,40 @@ struct DistributedSievePrivateLeaseBaseLockTestHooks final {
     /// every permanent-BaseLock durability prefix.
     FailBeforeSync fail_before_sync = nullptr;
 
+    void* context = nullptr;
+};
+
+/// Trusted test-only boundaries for the receipt-only AttemptStarted publisher.
+/// Production callers leave every callback empty.
+struct DistributedSieveWorkerAttemptStartTestHooks final {
+    using Boundary = void (*)(void* context) noexcept;
+    using StopAfter = bool (*)(DistributedSieveWorkerAttemptStartFaultPoint point,
+                               void* context) noexcept;
+
+    DistributedSievePrivateLeaseBaseLockTestHooks base_lock;
+
+    /// Runs with `root claim -> target BaseLock` held after the exact receipt,
+    /// P8 lease, and predecessor chain have been established.
+    Boundary after_locked_predecessor_validation = nullptr;
+
+    /// Runs after the final closed predecessor confirmation and immediately
+    /// before the production immutable-record transaction. This trusted seam
+    /// exists only to exercise the unavoidable final POSIX namespace race;
+    /// the callback receives no path, descriptor, record, or authority.
+    Boundary before_record_publication = nullptr;
+
+    StopAfter stop_after = nullptr;
+
+    /// Runs after the first exact canonical-successor observation and before
+    /// its mandatory authority and inventory confirmation.
+    Boundary after_first_successor_validation = nullptr;
+    void* context = nullptr;
+};
+
+struct DistributedSieveWorkerAttemptStartReceiptTestHooks final {
+    using AfterFirstValidation = void (*)(void* context) noexcept;
+
+    AfterFirstValidation after_first_validation = nullptr;
     void* context = nullptr;
 };
 
@@ -471,7 +527,10 @@ struct DistributedSieveWaveStoreDiagnostic final {
     std::error_code native_error;
     std::optional<DistributedSieveProtocolStatus> protocol_status;
     std::optional<util::durable_immutable_record::RecordPublishStatus> publication_status;
+    std::optional<util::durable_immutable_record::RecordPublishDisposition> publication_disposition;
     std::optional<DistributedSieveWaveStoreFaultPoint> last_durable_fault_point;
+    std::optional<DistributedSieveWorkerAttemptStartFaultPoint>
+        last_worker_attempt_start_fault_point;
     std::optional<DistributedSievePrivateLeaseBaseLockSyncPoint>
         failed_private_lease_base_lock_sync_point;
     std::optional<DistributedSievePrivateLeaseReservationBoundary>
@@ -486,9 +545,11 @@ struct DistributedSieveWaveStoreDiagnostic final {
 struct DistributedSieveWaveStoreOpenResult;
 struct DistributedSievePrivateLeaseRootClaimResult;
 struct DistributedSievePrivateLeaseReservationResult;
+struct DistributedSieveWorkerAttemptStartResult;
 class DistributedSievePrivateLeaseRootClaim;
 class DistributedSievePrivateLeaseBaseLockAt;
 class DistributedSievePrivateLeaseReservationReceipt;
+class DistributedSieveWorkerAttemptStartReceipt;
 class DistributedSieveFdPrivateLeaseReservationTarget;
 class DistributedSieveFdPrivateLeaseRecoveryTarget;
 
@@ -503,6 +564,14 @@ class DistributedSieveFdPrivateLeaseRecoveryTarget;
 [[nodiscard]] DistributedSievePrivateLeaseRootClaimResult recover_worker_attempt_private_lease(
     DistributedSievePrivateLeaseRootClaimResult&& claimed,
     DistributedSievePrivateLeaseRecoveryTestHooks hooks = {}) noexcept;
+
+/// Consume one creator-bound P8 reservation snapshot, reacquire
+/// `root claim -> target BaseLock`, and durably publish its internally derived
+/// AttemptStartedV1. Only a fresh canonical publication can mint the
+/// target-lock-retaining start receipt.
+[[nodiscard]] DistributedSieveWorkerAttemptStartResult
+publish_worker_attempt_started(DistributedSievePrivateLeaseReservationReceipt&& reservation,
+                               DistributedSieveWorkerAttemptStartTestHooks hooks = {}) noexcept;
 
 /// A process-bound lease on one frozen wave root and its permanent lock.
 ///
@@ -594,6 +663,10 @@ private:
     friend class DistributedSieveFdPrivateLeaseReservationTarget;
     friend class DistributedSievePrivateLeaseRootClaim;
     friend class DistributedSievePrivateLeaseReservationReceipt;
+    friend class DistributedSieveWorkerAttemptStartReceipt;
+    friend DistributedSieveWorkerAttemptStartResult
+    publish_worker_attempt_started(DistributedSievePrivateLeaseReservationReceipt&& reservation,
+                                   DistributedSieveWorkerAttemptStartTestHooks hooks) noexcept;
 };
 
 /// Source-private root-relative permanent BaseLock capability.
@@ -647,6 +720,10 @@ private:
     friend class DistributedSieveFdPrivateLeaseReservationTarget;
     friend class DistributedSieveWaveStore;
     friend class DistributedSievePrivateLeaseRootClaim;
+    friend class DistributedSieveWorkerAttemptStartReceipt;
+    friend DistributedSieveWorkerAttemptStartResult
+    publish_worker_attempt_started(DistributedSievePrivateLeaseReservationReceipt&& reservation,
+                                   DistributedSieveWorkerAttemptStartTestHooks hooks) noexcept;
 };
 
 /// Source-private, process-bound exclusive authority for one private-lease
@@ -720,6 +797,9 @@ private:
     friend DistributedSievePrivateLeaseReservationResult reserve_worker_attempt_private_lease(
         DistributedSievePrivateLeaseRootClaimResult&& claimed,
         DistributedSievePrivateLeaseProtocolTestHooks hooks) noexcept;
+    friend DistributedSieveWorkerAttemptStartResult
+    publish_worker_attempt_started(DistributedSievePrivateLeaseReservationReceipt&& reservation,
+                                   DistributedSieveWorkerAttemptStartTestHooks hooks) noexcept;
 };
 
 struct DistributedSievePrivateLeaseRootClaimResult final {
@@ -785,6 +865,9 @@ private:
     friend DistributedSievePrivateLeaseReservationResult reserve_worker_attempt_private_lease(
         DistributedSievePrivateLeaseRootClaimResult&& claimed,
         DistributedSievePrivateLeaseProtocolTestHooks hooks) noexcept;
+    friend DistributedSieveWorkerAttemptStartResult
+    publish_worker_attempt_started(DistributedSievePrivateLeaseReservationReceipt&& reservation,
+                                   DistributedSieveWorkerAttemptStartTestHooks hooks) noexcept;
 };
 
 struct DistributedSievePrivateLeaseReservationResult final {
@@ -793,6 +876,68 @@ struct DistributedSievePrivateLeaseReservationResult final {
 
     [[nodiscard]] explicit operator bool() const noexcept {
         return receipt.has_value() && diagnostic.status == DistributedSieveWaveStoreStatus::ready &&
+               receipt->owned_by_current_process();
+    }
+};
+
+/// Creator-bound proof that one freshly published AttemptStartedV1 still owns
+/// the exact target BaseLock which guarded publication.
+///
+/// The receipt retains no root claim and exposes no cleanup, recovery, path,
+/// descriptor, or arbitrary record-publication authority. Destruction is
+/// close-only for the target lock.
+class DistributedSieveWorkerAttemptStartReceipt final {
+public:
+    DistributedSieveWorkerAttemptStartReceipt() = delete;
+    DistributedSieveWorkerAttemptStartReceipt(const DistributedSieveWorkerAttemptStartReceipt&) =
+        delete;
+    DistributedSieveWorkerAttemptStartReceipt&
+    operator=(const DistributedSieveWorkerAttemptStartReceipt&) = delete;
+    DistributedSieveWorkerAttemptStartReceipt(
+        DistributedSieveWorkerAttemptStartReceipt&&) noexcept = default;
+    DistributedSieveWorkerAttemptStartReceipt&
+    operator=(DistributedSieveWorkerAttemptStartReceipt&&) = delete;
+    ~DistributedSieveWorkerAttemptStartReceipt() = default;
+
+    [[nodiscard]] bool owned_by_current_process() const noexcept;
+    [[nodiscard]] DistributedSieveWaveStoreDiagnostic
+    revalidate(DistributedSieveWorkerAttemptStartReceiptTestHooks hooks = {}) const noexcept;
+
+    [[nodiscard]] const AttemptStartedV1& record() const noexcept;
+    [[nodiscard]] const util::durable_immutable_record::RecordSnapshot&
+    canonical_snapshot() const noexcept;
+
+private:
+    DistributedSieveWorkerAttemptStartReceipt(
+        std::shared_ptr<const DistributedSieveWaveStore::State> wave_store_state,
+        DistributedSieveWorkerAttemptNamesV1 worker_attempt_names, AttemptStartedV1 record,
+        util::durable_immutable_record::RecordSnapshot canonical_snapshot,
+        DistributedSievePrivateLeaseReservationInventoryWitness final_witness,
+        std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt> base_lock_at,
+        std::uint64_t creator_process_id) noexcept;
+
+    std::shared_ptr<const DistributedSieveWaveStore::State> wave_store_state_;
+    DistributedSieveWorkerAttemptNamesV1 worker_attempt_names_;
+    AttemptStartedV1 record_;
+    util::durable_immutable_record::RecordSnapshot canonical_snapshot_;
+    DistributedSievePrivateLeaseReservationInventoryWitness final_witness_;
+    std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt> base_lock_at_;
+    std::uint64_t creator_process_id_ = 0;
+
+    friend DistributedSieveWorkerAttemptStartResult
+    publish_worker_attempt_started(DistributedSievePrivateLeaseReservationReceipt&& reservation,
+                                   DistributedSieveWorkerAttemptStartTestHooks hooks) noexcept;
+};
+
+struct DistributedSieveWorkerAttemptStartResult final {
+    std::optional<DistributedSieveWorkerAttemptStartReceipt> receipt;
+    DistributedSieveWaveStoreDiagnostic diagnostic;
+    DistributedSieveWorkerAttemptStartDisposition disposition =
+        DistributedSieveWorkerAttemptStartDisposition::failed;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return receipt.has_value() && diagnostic.status == DistributedSieveWaveStoreStatus::ready &&
+               disposition == DistributedSieveWorkerAttemptStartDisposition::fresh_start &&
                receipt->owned_by_current_process();
     }
 };

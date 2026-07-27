@@ -2027,10 +2027,44 @@ target canonical or pending record before their first mutation. This preserves
 the distinction between an unconsumed prestart lease and a durable start until
 the record-aware reconciler exists.
 
-The next M2 slice will consume the lock-free `P8` snapshot by reacquiring
-`root claim -> target BaseLock`, publish `AttemptStartedV1`, and transfer the
-target flock into a creator-bound start receipt. Attempt publication remains
-blocked until that consumer and its record-aware recovery tests exist.
+The receipt-only attempt-start publisher now consumes the lock-free `P8`
+snapshot at function entry. It derives the chunk and ordinal from the fixed
+canonical leaf, regenerates every name from the manifest, and reacquires
+`root claim -> target BaseLock`. Inside both locks, it requires the exact
+receipt identity, the full `P8` witness, and a contiguous canonical predecessor
+chain. Every predecessor that will become historical must already be at `P0`.
+
+The publisher constructs `AttemptStartedV1` only from the immutable manifest,
+the last predecessor digest, and the receipt-bound lease identities. Before
+publication, it validates the complete candidate chain and rejects a candidate
+whose lease identities overlap any existing attempt record or `BaseLock`.
+Production publication uses the shared durable immutable-record transaction.
+All interrupted prefixes remain classifiable as pending-only or canonical at
+`P8`.
+
+Only a durable `created` disposition with an exact canonical snapshot may mint
+a start receipt. Two complete successor observations must retain the same
+canonical bytes and native snapshot, every other record, all `BaseLock`
+identities, the exact `P8` lease witness, WaveStore authority, and the held
+target lock. Success moves the target lock directly from the root claim into a
+creator-bound receipt before releasing the root slot. No unlock gap exists.
+The receipt retains the shared WaveStore state, sealed record, canonical
+snapshot, exact lease witness, and target lock, but exposes no path,
+descriptor, cleanup, recovery, or publication primitive.
+
+`recovered_pending`, `confirmed_existing`, interruption, and post-publication
+validation failure never mint worker-start authority. The result distinguishes
+fresh start, reconciliation required, and failure so callers cannot interpret
+a durable canonical leaf plus an empty receipt as launch permission. The three
+immutable-record durability boundaries and same-byte canonical, `BaseLock`,
+and root replacement paths preserve their exact diagnostic and release order.
+
+This M2 slice is a dormant durability boundary, not the complete recovery
+boundary. A restart can reopen and classify every published prefix, while the
+old prestart reservation and recovery paths continue to reject it without
+mutation. The next slice must normalize pending or duplicate records, retain a
+record-pinned canonical witness while recovering `P8` through `P0`, and return
+only reconciliation facts. It must not possess a start-receipt mint path.
 
 Exit criterion: two masters cannot both act, and restart cannot exceed the
 manifest retry budget. This milestone remains test/internal and exposes no

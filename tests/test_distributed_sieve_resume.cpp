@@ -62,8 +62,20 @@ using PrivateLeaseRootClaim = wave_detail::DistributedSievePrivateLeaseRootClaim
 using PrivateLeaseBaseLockAt = wave_detail::DistributedSievePrivateLeaseBaseLockAt;
 using PrivateLeaseReservationReceipt = wave_detail::DistributedSievePrivateLeaseReservationReceipt;
 using PrivateLeaseRecoveryEdge = wave_detail::DistributedSievePrivateLeaseRecoveryEdge;
+using WorkerAttemptStartReceipt = wave_detail::DistributedSieveWorkerAttemptStartReceipt;
 
 static_assert(!noexcept(sieve::distributed_sieve_record_kind(std::declval<const Record&>())));
+static_assert(!std::is_default_constructible_v<WorkerAttemptStartReceipt>);
+static_assert(!std::is_copy_constructible_v<WorkerAttemptStartReceipt>);
+static_assert(!std::is_copy_assignable_v<WorkerAttemptStartReceipt>);
+static_assert(std::is_nothrow_move_constructible_v<WorkerAttemptStartReceipt>);
+static_assert(!std::is_move_assignable_v<WorkerAttemptStartReceipt>);
+static_assert(!std::is_constructible_v<WorkerAttemptStartReceipt, sieve::AttemptStartedV1>);
+static_assert(!std::is_constructible_v<WorkerAttemptStartReceipt, durable_record::RecordSnapshot>);
+static_assert(
+    !std::is_constructible_v<WorkerAttemptStartReceipt, PrivateLeaseReservationReceipt&&>);
+static_assert(!std::is_constructible_v<WorkerAttemptStartReceipt, std::filesystem::path>);
+static_assert(!std::is_constructible_v<WorkerAttemptStartReceipt, Digest>);
 static_assert(
     std::is_default_constructible_v<cleanup_detail::OOCPrivateHandoffCleanupAuthorizationBinding>);
 static_assert(
@@ -5474,6 +5486,179 @@ reserve_wave_attempt_p8(wave_detail::DistributedSieveWaveStore& store, std::uint
         fail(context, __LINE__, wave_diagnostic_detail(reserved.diagnostic));
     }
     return std::move(*reserved.receipt);
+}
+
+void require_wave_reservation_receipt_consumed(const PrivateLeaseReservationReceipt& receipt,
+                                               std::string_view context) {
+    CHECK(!receipt.owned_by_current_process());
+    require_wave_status(receipt.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::invalid_request, context);
+}
+
+[[nodiscard]] durable_record::RecordSnapshot
+wave_record_snapshot(const WaveRootEntrySnapshot& entry) {
+    return {
+        .identity =
+            {
+                .first = entry.device,
+                .second = entry.inode,
+                .third = 0,
+            },
+        .size = entry.size,
+    };
+}
+
+struct WorkerAttemptStartStopContext final {
+    wave_detail::DistributedSieveWorkerAttemptStartFaultPoint target =
+        wave_detail::DistributedSieveWorkerAttemptStartFaultPoint::PendingDurable;
+    std::array<bool, static_cast<std::size_t>(
+                         wave_detail::DistributedSieveWorkerAttemptStartFaultPoint::Count)>
+        observed{};
+};
+
+[[nodiscard]] bool
+stop_at_worker_attempt_start_fault(wave_detail::DistributedSieveWorkerAttemptStartFaultPoint point,
+                                   void* opaque) noexcept {
+    auto& context = *static_cast<WorkerAttemptStartStopContext*>(opaque);
+    const auto index = static_cast<std::size_t>(point);
+    if (index < context.observed.size()) {
+        context.observed[index] = true;
+    }
+    return point == context.target;
+}
+
+enum class WorkerAttemptStartReplacementKind : std::uint8_t {
+    canonical,
+    target,
+    root,
+};
+
+struct WorkerAttemptStartReplacementContext final {
+    WorkerAttemptStartReplacementKind kind = WorkerAttemptStartReplacementKind::canonical;
+    WaveSameBytesReplacementContext canonical;
+    WaveBaseLockReplacementContext target;
+    WaveRootReplacementContext root;
+    bool invoked = false;
+};
+
+void replace_worker_attempt_start_successor(void* opaque) noexcept {
+    auto& context = *static_cast<WorkerAttemptStartReplacementContext*>(opaque);
+    if (context.invoked) {
+        return;
+    }
+    context.invoked = true;
+    switch (context.kind) {
+    case WorkerAttemptStartReplacementKind::canonical:
+        replace_marker_with_same_bytes_after_first_inventory(&context.canonical);
+        return;
+    case WorkerAttemptStartReplacementKind::target:
+        replace_base_lock_after_first_inventory(&context.target);
+        return;
+    case WorkerAttemptStartReplacementKind::root:
+        replace_wave_root_after_attempt_phase(&context.root);
+        return;
+    }
+}
+
+enum class WorkerAttemptStartInjectedPrefix : std::uint8_t {
+    pending_only,
+    canonical_only,
+    identical_dual,
+};
+
+struct WorkerAttemptStartInjectedPublishResult final {
+    durable_record::RecordPublishStatus status =
+        durable_record::RecordPublishStatus::unexpected_failure;
+    durable_record::RecordPublishDisposition disposition =
+        durable_record::RecordPublishDisposition::none;
+    std::optional<durable_record::RecordSnapshot> canonical_snapshot;
+};
+
+struct WorkerAttemptStartPublicationInjectionContext final {
+    WorkerAttemptStartInjectedPrefix shape = WorkerAttemptStartInjectedPrefix::pending_only;
+    int root_fd = -1;
+    std::filesystem::path first_source_leaf;
+    std::filesystem::path second_source_leaf;
+    std::filesystem::path pending_leaf;
+    std::filesystem::path canonical_leaf;
+    std::span<const std::byte> bytes;
+    WorkerAttemptStartInjectedPublishResult first;
+    WorkerAttemptStartInjectedPublishResult second;
+    bool invoked = false;
+};
+
+void inject_worker_attempt_start_publication_prefix(void* opaque) noexcept {
+    auto& context = *static_cast<WorkerAttemptStartPublicationInjectionContext*>(opaque);
+    if (context.invoked) {
+        return;
+    }
+    context.invoked = true;
+
+    const auto publish = [&](const std::filesystem::path& source,
+                             const std::filesystem::path& target,
+                             WorkerAttemptStartInjectedPublishResult& observed) noexcept {
+        const auto result =
+            durable_record::publish_at(static_cast<durable_record::NativeHandle>(context.root_fd),
+                                       source, target, context.bytes);
+        observed.status = result.status();
+        observed.disposition = result.disposition();
+        observed.canonical_snapshot = result.canonical_snapshot();
+    };
+
+    switch (context.shape) {
+    case WorkerAttemptStartInjectedPrefix::pending_only:
+        publish(context.first_source_leaf, context.pending_leaf, context.first);
+        return;
+    case WorkerAttemptStartInjectedPrefix::canonical_only:
+        publish(context.first_source_leaf, context.canonical_leaf, context.first);
+        return;
+    case WorkerAttemptStartInjectedPrefix::identical_dual:
+        publish(context.first_source_leaf, context.canonical_leaf, context.first);
+        publish(context.second_source_leaf, context.pending_leaf, context.second);
+        return;
+    }
+}
+
+enum class WorkerAttemptStartForkSeam : std::uint8_t {
+    locked_predecessor,
+    before_publication,
+    canonical_durable,
+    first_successor,
+};
+
+struct WorkerAttemptStartForkContext final {
+    WorkerAttemptStartForkSeam seam = WorkerAttemptStartForkSeam::locked_predecessor;
+    pid_t original_process = -1;
+    pid_t child_process = -1;
+    bool invoked = false;
+};
+
+void fork_at_worker_attempt_start_boundary(void* opaque) noexcept {
+    auto& context = *static_cast<WorkerAttemptStartForkContext*>(opaque);
+    if (context.invoked) {
+        return;
+    }
+    context.invoked = true;
+    const pid_t child = ::fork();
+    if (child != 0) {
+        context.child_process = child;
+    }
+}
+
+[[nodiscard]] bool
+fork_at_worker_attempt_start_fault(wave_detail::DistributedSieveWorkerAttemptStartFaultPoint point,
+                                   void* opaque) noexcept {
+    auto& context = *static_cast<WorkerAttemptStartForkContext*>(opaque);
+    if (context.invoked ||
+        point != wave_detail::DistributedSieveWorkerAttemptStartFaultPoint::CanonicalDurable) {
+        return false;
+    }
+    context.invoked = true;
+    const pid_t child = ::fork();
+    if (child != 0) {
+        context.child_process = child;
+    }
+    return false;
 }
 
 void require_wave_attempt_inventory_reopens(wave_detail::DistributedSieveWaveStoreOpenResult& owner,
@@ -11132,6 +11317,874 @@ void test_wave_store_canonical_attempt_preempts_fresh_private_lease_reservation(
                         "fresh claim accepts preserved canonical-at-P0 inventory");
 }
 
+void test_wave_store_worker_attempt_start_happy_path_and_receipt() {
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "worker-attempt-start-happy";
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+    auto& store = require_wave_ready(created, "create worker-attempt start fixture");
+    const auto manifest = store.manifest();
+    const auto manifest_digest = store.manifest_digest();
+    const auto chunk = manifest.chunks.front();
+    const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk.relative_artifact_stem, chunk.chunk_id, 0);
+    CHECK(names.has_value());
+
+    auto reservation =
+        reserve_wave_attempt_p8(store, chunk.chunk_id, 0, "reserve attempt-start P8");
+    const auto expected = make_wave_attempt_started(manifest, chunk, 0, manifest_digest,
+                                                    wave_attempt_lease_from_receipt(reservation));
+    const auto expected_bytes = encode_or_fail(Record{expected});
+
+    auto started = wave_detail::publish_worker_attempt_started(std::move(reservation));
+    require_wave_reservation_receipt_consumed(
+        reservation, "attempt-start publisher consumes its reservation receipt");
+    CHECK(started);
+    CHECK(started.receipt.has_value());
+    CHECK(started.disposition ==
+          wave_detail::DistributedSieveWorkerAttemptStartDisposition::fresh_start);
+    require_wave_status(started.diagnostic, wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "publish fresh worker-attempt start");
+    CHECK(started.diagnostic.publication_status == durable_record::RecordPublishStatus::durable);
+    CHECK(started.diagnostic.publication_disposition ==
+          durable_record::RecordPublishDisposition::created);
+
+    auto& receipt = *started.receipt;
+    CHECK(receipt.owned_by_current_process());
+    require_wave_status(receipt.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "fresh worker-attempt start receipt revalidates");
+    const auto& record = receipt.record();
+    CHECK(record.manifest_digest == expected.manifest_digest);
+    CHECK(record.chunk_id == expected.chunk_id);
+    CHECK(record.sq_begin == expected.sq_begin);
+    CHECK(record.sq_end == expected.sq_end);
+    CHECK(record.attempt_ordinal == expected.attempt_ordinal);
+    CHECK(record.predecessor_digest == expected.predecessor_digest);
+    CHECK(record.lease.lease_id == expected.lease.lease_id);
+    CHECK(record.lease.owner_marker == expected.lease.owner_marker);
+    CHECK(record.lease.directory == expected.lease.directory);
+    CHECK(record.lease.relative_stem == expected.lease.relative_stem);
+    CHECK(record.retry_policy_version == expected.retry_policy_version);
+    CHECK(record.self_digest == expected.self_digest);
+    require_ok(validate_value(record, false), "published worker-attempt record is valid");
+    const std::array chain{record};
+    require_ok(
+        sieve::validate_worker_attempt_chain(manifest, chunk.chunk_id, chain, nullptr, nullptr),
+        "published worker-attempt record closes the attempt chain");
+
+    const auto canonical_path = root / names->canonical_record_leaf;
+    CHECK(read_file_bytes(canonical_path) == expected_bytes);
+    CHECK(!entry_exists_no_follow(root / names->pending_record_leaf));
+    const auto canonical_entry =
+        capture_wave_root_entry_snapshot(canonical_path, names->canonical_record_leaf);
+    CHECK(receipt.canonical_snapshot() == wave_record_snapshot(canonical_entry));
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "canonical attempt plus P8 remains classifiable");
+    CHECK(relation_base_lock_reports_busy(root / names->base_lock_leaf));
+
+    auto independent_root_claim = store.claim_private_lease_root();
+    (void)require_private_lease_root_claim_ready(independent_root_claim,
+                                                 "start receipt releases its same-State root slot");
+    independent_root_claim.claim.reset();
+
+    const pid_t child = ::fork();
+    if (child == 0) {
+        const auto inherited = receipt.revalidate();
+        const bool rejected =
+            !receipt.owned_by_current_process() &&
+            inherited.status == wave_detail::DistributedSieveWaveStoreStatus::invalid_request;
+        ::_exit(rejected ? 0 : 1);
+    }
+    CHECK(child > 0);
+    int child_status = 0;
+    CHECK(wait_for_child(child, child_status));
+    CHECK(WIFEXITED(child_status));
+    CHECK(WEXITSTATUS(child_status) == 0);
+    CHECK(receipt.owned_by_current_process());
+    require_wave_status(receipt.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "parent start receipt survives child validation");
+    CHECK(relation_base_lock_reports_busy(root / names->base_lock_leaf));
+
+    created.store.reset();
+    require_wave_status(receipt.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "start receipt retains the facade backing state");
+    auto contended_open = wave_detail::DistributedSieveWaveStore::open(root, manifest_digest);
+    CHECK(!contended_open);
+    CHECK(contended_open.store == nullptr);
+    require_wave_status(contended_open.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::lock_busy,
+                        "start receipt retains the permanent wave lock");
+    CHECK(relation_base_lock_reports_busy(root / names->base_lock_leaf));
+
+    started.receipt.reset();
+    CHECK(!relation_base_lock_reports_busy(root / names->base_lock_leaf));
+    auto reopened = wave_detail::DistributedSieveWaveStore::open(root, manifest_digest);
+    auto& reopened_store = require_wave_ready(reopened, "reopen after start receipt destruction");
+    require_wave_status(reopened_store.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "reopened canonical attempt inventory remains classifiable");
+}
+
+void test_wave_store_worker_attempt_start_fresh_retry_chain() {
+    using Boundary = wave_detail::DistributedSievePrivateLeaseReservationBoundary;
+
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "worker-attempt-start-fresh-retry";
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+    auto& store = require_wave_ready(created, "create fresh retry fixture");
+    const auto manifest = store.manifest();
+    const auto chunk = manifest.chunks.front();
+    const auto names_0 = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk.relative_artifact_stem, chunk.chunk_id, 0);
+    const auto names_1 = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk.relative_artifact_stem, chunk.chunk_id, 1);
+    CHECK(names_0.has_value());
+    CHECK(names_1.has_value());
+
+    std::optional<sieve::AttemptStartedV1> attempt_0;
+    {
+        auto reservation_0 =
+            reserve_wave_attempt_p8(store, chunk.chunk_id, 0, "reserve retry predecessor P8");
+        attempt_0.emplace(
+            make_wave_attempt_started(manifest, chunk, 0, store.manifest_digest(),
+                                      wave_attempt_lease_from_receipt(reservation_0)));
+    }
+
+    auto opened_0 = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+    auto recovered_0 = wave_detail::recover_worker_attempt_private_lease(std::move(opened_0));
+    auto& recovered_claim_0 = require_private_lease_root_claim_ready(
+        recovered_0, "recover recordless retry predecessor P8 to P0");
+    require_wave_status(recovered_claim_0.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "recordless retry predecessor recovery returns exact P0");
+    recovered_0.claim.reset();
+    CHECK(!relation_base_lock_reports_busy(root / names_0->base_lock_leaf));
+
+    publish_wave_attempt_canonical_record(root, *names_0, *attempt_0,
+                                          "install recovered retry predecessor");
+    WaveReservationWitnessObservationContext predecessor_observation{
+        .expected_boundary = Boundary::PermitAcquired,
+        .expected_base_lock_leaf = names_0->base_lock_leaf,
+    };
+    require_wave_status(store.revalidate(wave_detail::DistributedSieveWaveStoreInventoryTestHooks{
+                            .observe_reservation_witnesses = observe_wave_reservation_witnesses,
+                            .context = &predecessor_observation,
+                        }),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "historical retry predecessor is canonical at P0");
+    CHECK(predecessor_observation.invoked);
+    CHECK(predecessor_observation.matched);
+
+    auto reservation_1 =
+        reserve_wave_attempt_p8(store, chunk.chunk_id, 1, "reserve fresh retry attempt P8");
+    const auto expected_1 = make_wave_attempt_started(
+        manifest, chunk, 1, attempt_0->self_digest, wave_attempt_lease_from_receipt(reservation_1));
+    const auto expected_1_bytes = encode_or_fail(Record{expected_1});
+    auto started_1 = wave_detail::publish_worker_attempt_started(std::move(reservation_1));
+    require_wave_reservation_receipt_consumed(
+        reservation_1, "fresh retry publisher consumes its reservation receipt");
+
+    CHECK(started_1);
+    CHECK(started_1.receipt.has_value());
+    CHECK(started_1.disposition ==
+          wave_detail::DistributedSieveWorkerAttemptStartDisposition::fresh_start);
+    require_wave_status(started_1.diagnostic, wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "publish fresh retry attempt");
+    CHECK(started_1.diagnostic.publication_status == durable_record::RecordPublishStatus::durable);
+    CHECK(started_1.diagnostic.publication_disposition ==
+          durable_record::RecordPublishDisposition::created);
+    const auto& actual_1 = started_1.receipt->record();
+    CHECK(actual_1.predecessor_digest == attempt_0->self_digest);
+    CHECK(actual_1.self_digest == expected_1.self_digest);
+    CHECK(actual_1.lease == expected_1.lease);
+    const std::array chain{*attempt_0, actual_1};
+    require_ok(
+        sieve::validate_worker_attempt_chain(manifest, chunk.chunk_id, chain, nullptr, nullptr),
+        "fresh retry links to its recovered canonical predecessor");
+    CHECK(read_file_bytes(root / names_0->canonical_record_leaf) ==
+          encode_or_fail(Record{*attempt_0}));
+    CHECK(read_file_bytes(root / names_1->canonical_record_leaf) == expected_1_bytes);
+    CHECK(!entry_exists_no_follow(root / names_1->pending_record_leaf));
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "historical P0 plus fresh retry P8 remains classifiable");
+    CHECK(!relation_base_lock_reports_busy(root / names_0->base_lock_leaf));
+    CHECK(relation_base_lock_reports_busy(root / names_1->base_lock_leaf));
+
+    auto independent_root_claim = store.claim_private_lease_root();
+    (void)require_private_lease_root_claim_ready(independent_root_claim,
+                                                 "fresh retry receipt releases the root slot");
+    independent_root_claim.claim.reset();
+    started_1.receipt.reset();
+    CHECK(!relation_base_lock_reports_busy(root / names_1->base_lock_leaf));
+}
+
+void test_wave_store_worker_attempt_start_receipt_rejects_canonical_replacement() {
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "worker-attempt-start-receipt-replacement";
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+    auto& store = require_wave_ready(created, "create start-receipt replacement fixture");
+    const auto chunk = store.manifest().chunks.front();
+    const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk.relative_artifact_stem, chunk.chunk_id, 0);
+    CHECK(names.has_value());
+
+    auto reservation =
+        reserve_wave_attempt_p8(store, chunk.chunk_id, 0, "reserve start-receipt replacement P8");
+    auto started = wave_detail::publish_worker_attempt_started(std::move(reservation));
+    CHECK(started);
+    CHECK(started.receipt.has_value());
+    CHECK(started.disposition ==
+          wave_detail::DistributedSieveWorkerAttemptStartDisposition::fresh_start);
+    auto& receipt = *started.receipt;
+    const auto canonical = root / names->canonical_record_leaf;
+    WaveSameBytesReplacementContext replacement{
+        .canonical = canonical,
+        .displaced = temp.path() / "start-receipt-original-canonical",
+        .bytes = read_file_bytes(canonical),
+    };
+
+    require_wave_status(
+        receipt.revalidate(wave_detail::DistributedSieveWorkerAttemptStartReceiptTestHooks{
+            .after_first_validation = replace_marker_with_same_bytes_after_first_inventory,
+            .context = &replacement,
+        }),
+        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+        "start receipt rejects canonical replacement between observations");
+    CHECK(replacement.invoked);
+    CHECK(replacement.replaced);
+    CHECK(replacement.native_error == 0);
+    CHECK(read_file_bytes(canonical) == replacement.bytes);
+    CHECK(read_file_bytes(replacement.displaced) == replacement.bytes);
+    require_distinct_entry_identities(canonical, replacement.displaced,
+                                      "start-receipt replacement uses a distinct inode");
+    CHECK(receipt.canonical_snapshot() ==
+          wave_record_snapshot(capture_wave_root_entry_snapshot(
+              replacement.displaced, replacement.displaced.filename().string())));
+    require_wave_status(receipt.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "start receipt remains bound to the original canonical inode");
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "same-byte replacement remains independently classifiable");
+    CHECK(relation_base_lock_reports_busy(root / names->base_lock_leaf));
+
+    auto independent_root_claim = store.claim_private_lease_root();
+    (void)require_private_lease_root_claim_ready(
+        independent_root_claim, "invalidated start receipt still releases the root slot");
+    independent_root_claim.claim.reset();
+
+    std::error_code error;
+    CHECK(std::filesystem::remove(canonical, error));
+    CHECK(!error);
+    require_rename(replacement.displaced, canonical,
+                   "restore original canonical after start-receipt replacement");
+    require_wave_status(receipt.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "start receipt accepts its restored canonical inode");
+    CHECK(relation_base_lock_reports_busy(root / names->base_lock_leaf));
+    started.receipt.reset();
+    CHECK(!relation_base_lock_reports_busy(root / names->base_lock_leaf));
+}
+
+void test_wave_store_worker_attempt_start_rejects_missing_predecessor() {
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "worker-attempt-start-missing-predecessor";
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+    auto& store = require_wave_ready(created, "create missing-predecessor fixture");
+    const auto chunk = store.manifest().chunks.front();
+    const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk.relative_artifact_stem, chunk.chunk_id, 1);
+    CHECK(names.has_value());
+    auto reservation = reserve_wave_attempt_p8(store, chunk.chunk_id, 1, "reserve attempt-one P8");
+
+    const auto before = capture_wave_root_snapshot(root);
+    const auto owner_path = root / names->private_directory_leaf /
+                            std::string(wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_LEAF);
+    const auto owner_before = capture_wave_root_entry_snapshot(
+        owner_path, std::string(wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_LEAF));
+
+    auto rejected = wave_detail::publish_worker_attempt_started(std::move(reservation));
+    require_wave_reservation_receipt_consumed(
+        reservation, "missing-predecessor rejection consumes its reservation receipt");
+    CHECK(!rejected);
+    CHECK(!rejected.receipt.has_value());
+    CHECK(rejected.disposition ==
+          wave_detail::DistributedSieveWorkerAttemptStartDisposition::failed);
+    require_wave_status(rejected.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "attempt one requires canonical attempt zero");
+    CHECK(!rejected.diagnostic.publication_status.has_value());
+    CHECK(!rejected.diagnostic.publication_disposition.has_value());
+    CHECK(!entry_exists_no_follow(root / names->pending_record_leaf));
+    CHECK(!entry_exists_no_follow(root / names->canonical_record_leaf));
+    CHECK(capture_wave_root_snapshot(root) == before);
+    CHECK(capture_wave_root_entry_snapshot(
+              owner_path, std::string(wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_LEAF)) ==
+          owner_before);
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "rejected attempt-one P8 remains classifiable");
+
+    auto root_claim = store.claim_private_lease_root();
+    (void)require_private_lease_root_claim_ready(
+        root_claim, "missing-predecessor rejection releases the root slot");
+    root_claim.claim.reset();
+    CHECK(!relation_base_lock_reports_busy(root / names->base_lock_leaf));
+}
+
+void test_wave_store_worker_attempt_start_rejects_active_canonical_predecessor() {
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "worker-attempt-start-active-predecessor";
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+    auto& store = require_wave_ready(created, "create active-predecessor fixture");
+    const auto manifest = store.manifest();
+    const auto chunk = manifest.chunks.front();
+    const auto names_0 = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk.relative_artifact_stem, chunk.chunk_id, 0);
+    const auto names_1 = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk.relative_artifact_stem, chunk.chunk_id, 1);
+    CHECK(names_0.has_value());
+    CHECK(names_1.has_value());
+
+    auto predecessor_reservation = reserve_wave_attempt_p8(
+        store, chunk.chunk_id, 0, "reserve active canonical predecessor P8");
+    const auto predecessor =
+        make_wave_attempt_started(manifest, chunk, 0, store.manifest_digest(),
+                                  wave_attempt_lease_from_receipt(predecessor_reservation));
+    const auto predecessor_bytes = encode_or_fail(Record{predecessor});
+    publish_wave_attempt_canonical_record(root, *names_0, predecessor,
+                                          "publish active canonical predecessor");
+    require_wave_status(predecessor_reservation.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "canonical predecessor remains at exact P8");
+
+    auto reservation =
+        reserve_wave_attempt_p8(store, chunk.chunk_id, 1, "reserve successor attempt P8");
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "active canonical predecessor is a closed pre-publication inventory");
+    const auto before = capture_wave_root_snapshot(root);
+
+    auto rejected = wave_detail::publish_worker_attempt_started(std::move(reservation));
+    require_wave_reservation_receipt_consumed(
+        reservation, "active-predecessor rejection consumes its reservation receipt");
+    CHECK(!rejected);
+    CHECK(!rejected.receipt.has_value());
+    CHECK(rejected.disposition ==
+          wave_detail::DistributedSieveWorkerAttemptStartDisposition::failed);
+    require_wave_status(rejected.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "successor publisher requires every canonical predecessor at P0");
+    CHECK(!rejected.diagnostic.publication_status.has_value());
+    CHECK(!rejected.diagnostic.publication_disposition.has_value());
+    CHECK(capture_wave_root_snapshot(root) == before);
+    CHECK(read_file_bytes(root / names_0->canonical_record_leaf) == predecessor_bytes);
+    CHECK(!entry_exists_no_follow(root / names_1->pending_record_leaf));
+    CHECK(!entry_exists_no_follow(root / names_1->canonical_record_leaf));
+    require_wave_status(predecessor_reservation.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "publisher rejection preserves predecessor P8");
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "publisher rejection preserves the closed predecessor inventory");
+
+    auto root_claim = store.claim_private_lease_root();
+    (void)require_private_lease_root_claim_ready(
+        root_claim, "active-predecessor rejection releases the root slot");
+    root_claim.claim.reset();
+    CHECK(!relation_base_lock_reports_busy(root / names_0->base_lock_leaf));
+    CHECK(!relation_base_lock_reports_busy(root / names_1->base_lock_leaf));
+}
+
+void test_wave_store_worker_attempt_start_rejects_cross_chunk_candidate_lease_conflict() {
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "worker-attempt-start-cross-chunk-lease-conflict";
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+    auto& store = require_wave_ready(created, "create cross-chunk candidate-conflict fixture");
+    const auto manifest = store.manifest();
+    const auto chunk_0 = manifest.chunks[0];
+    const auto chunk_1 = manifest.chunks[1];
+    const auto names_0 = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk_0.relative_artifact_stem, chunk_0.chunk_id, 0);
+    const auto names_1 = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk_1.relative_artifact_stem, chunk_1.chunk_id, 0);
+    CHECK(names_0.has_value());
+    CHECK(names_1.has_value());
+
+    create_wave_attempt_p0(store, chunk_0.chunk_id, 0, "create existing cross-chunk record P0");
+    auto reservation =
+        reserve_wave_attempt_p8(store, chunk_1.chunk_id, 0, "reserve conflicting candidate P8");
+    const auto candidate_lease = wave_attempt_lease_from_receipt(reservation);
+    auto existing_lease = candidate_lease;
+    existing_lease.relative_stem = names_0->relative_lease_stem;
+    const auto existing = make_wave_attempt_started(manifest, chunk_0, 0, store.manifest_digest(),
+                                                    std::move(existing_lease));
+    const auto existing_bytes = encode_or_fail(Record{existing});
+    publish_wave_attempt_canonical_record(root, *names_0, existing,
+                                          "publish cross-chunk candidate lease owner");
+    CHECK(existing.lease.lease_id == candidate_lease.lease_id);
+    CHECK(existing.lease.owner_marker == candidate_lease.owner_marker);
+    CHECK(existing.lease.directory == candidate_lease.directory);
+    require_wave_status(reservation.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "candidate reservation remains exact after cross-chunk record publication");
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "single cross-chunk lease owner is valid before candidate publication");
+    const auto before = capture_wave_root_snapshot(root);
+
+    auto rejected = wave_detail::publish_worker_attempt_started(std::move(reservation));
+    require_wave_reservation_receipt_consumed(
+        reservation, "cross-chunk lease-conflict rejection consumes its reservation receipt");
+    CHECK(!rejected);
+    CHECK(!rejected.receipt.has_value());
+    CHECK(rejected.disposition ==
+          wave_detail::DistributedSieveWorkerAttemptStartDisposition::failed);
+    require_wave_status(rejected.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "prospective candidate lease cannot alias an existing chunk record");
+    CHECK(!rejected.diagnostic.publication_status.has_value());
+    CHECK(!rejected.diagnostic.publication_disposition.has_value());
+    CHECK(capture_wave_root_snapshot(root) == before);
+    CHECK(read_file_bytes(root / names_0->canonical_record_leaf) == existing_bytes);
+    CHECK(!entry_exists_no_follow(root / names_1->pending_record_leaf));
+    CHECK(!entry_exists_no_follow(root / names_1->canonical_record_leaf));
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "candidate rejection preserves the prior cross-chunk record owner");
+
+    auto root_claim = store.claim_private_lease_root();
+    (void)require_private_lease_root_claim_ready(
+        root_claim, "cross-chunk candidate rejection releases the root slot");
+    root_claim.claim.reset();
+    CHECK(!relation_base_lock_reports_busy(root / names_0->base_lock_leaf));
+    CHECK(!relation_base_lock_reports_busy(root / names_1->base_lock_leaf));
+}
+
+void test_wave_store_worker_attempt_start_fault_prefixes() {
+    constexpr std::array fault_points{
+        wave_detail::DistributedSieveWorkerAttemptStartFaultPoint::PendingDurable,
+        wave_detail::DistributedSieveWorkerAttemptStartFaultPoint::CanonicalPromoted,
+        wave_detail::DistributedSieveWorkerAttemptStartFaultPoint::CanonicalDurable,
+    };
+
+    for (const auto point : fault_points) {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / ("worker-attempt-start-prefix-" +
+                                         std::to_string(static_cast<std::size_t>(point)));
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create attempt-start prefix fixture");
+        const auto manifest = store.manifest();
+        const auto chunk = manifest.chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+        auto reservation =
+            reserve_wave_attempt_p8(store, chunk.chunk_id, 0, "reserve attempt-start prefix P8");
+        const auto expected =
+            make_wave_attempt_started(manifest, chunk, 0, store.manifest_digest(),
+                                      wave_attempt_lease_from_receipt(reservation));
+        const auto expected_bytes = encode_or_fail(Record{expected});
+        WorkerAttemptStartStopContext context{.target = point};
+
+        auto interrupted = wave_detail::publish_worker_attempt_started(
+            std::move(reservation), wave_detail::DistributedSieveWorkerAttemptStartTestHooks{
+                                        .stop_after = stop_at_worker_attempt_start_fault,
+                                        .context = &context,
+                                    });
+        require_wave_reservation_receipt_consumed(
+            reservation, "interrupted attempt-start consumes its reservation receipt");
+        CHECK(!interrupted);
+        CHECK(!interrupted.receipt.has_value());
+        CHECK(interrupted.disposition ==
+              wave_detail::DistributedSieveWorkerAttemptStartDisposition::reconcile_required);
+        require_wave_status(interrupted.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::interrupted,
+                            "attempt-start durable prefix reports interrupted");
+        CHECK(interrupted.diagnostic.publication_status ==
+              durable_record::RecordPublishStatus::interrupted);
+        CHECK(interrupted.diagnostic.publication_disposition ==
+              durable_record::RecordPublishDisposition::created);
+        CHECK(interrupted.diagnostic.last_worker_attempt_start_fault_point == point);
+        CHECK(context.observed[static_cast<std::size_t>(point)]);
+
+        const bool pending =
+            point == wave_detail::DistributedSieveWorkerAttemptStartFaultPoint::PendingDurable;
+        const auto record_path =
+            root / (pending ? names->pending_record_leaf : names->canonical_record_leaf);
+        CHECK(entry_exists_no_follow(record_path));
+        CHECK(read_file_bytes(record_path) == expected_bytes);
+        CHECK(entry_exists_no_follow(root / names->pending_record_leaf) == pending);
+        CHECK(entry_exists_no_follow(root / names->canonical_record_leaf) == !pending);
+        require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "P8 plus interrupted attempt record remains classifiable");
+
+        auto root_claim = store.claim_private_lease_root();
+        (void)require_private_lease_root_claim_ready(
+            root_claim, "attempt-start interruption releases the root slot");
+        root_claim.claim.reset();
+        CHECK(!relation_base_lock_reports_busy(root / names->base_lock_leaf));
+    }
+}
+
+void test_wave_store_worker_attempt_start_reconciles_final_publication_races() {
+    using Boundary = wave_detail::DistributedSievePrivateLeaseReservationBoundary;
+
+    constexpr std::array shapes{
+        WorkerAttemptStartInjectedPrefix::pending_only,
+        WorkerAttemptStartInjectedPrefix::canonical_only,
+        WorkerAttemptStartInjectedPrefix::identical_dual,
+    };
+
+    for (const auto shape : shapes) {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / ("worker-attempt-start-publication-race-" +
+                                         std::to_string(static_cast<std::size_t>(shape)));
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create attempt-start publication-race fixture");
+        const auto manifest = store.manifest();
+        const auto chunk = manifest.chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+        auto reservation = reserve_wave_attempt_p8(store, chunk.chunk_id, 0,
+                                                   "reserve attempt-start publication-race P8");
+        const auto expected =
+            make_wave_attempt_started(manifest, chunk, 0, store.manifest_digest(),
+                                      wave_attempt_lease_from_receipt(reservation));
+        const auto expected_bytes = encode_or_fail(Record{expected});
+
+        int root_fd = -1;
+        do {
+            root_fd =
+                ::open(root.c_str(), O_RDONLY | O_NONBLOCK | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        } while (root_fd < 0 && errno == EINTR);
+        CHECK(root_fd >= 0);
+        WaveSnapshotFd held_root(root_fd);
+        WorkerAttemptStartPublicationInjectionContext context{
+            .shape = shape,
+            .root_fd = held_root.get(),
+            .first_source_leaf =
+                std::filesystem::path{".gnfs-wave-v1.worker-start-injection-a.pending"},
+            .second_source_leaf =
+                std::filesystem::path{".gnfs-wave-v1.worker-start-injection-b.pending"},
+            .pending_leaf = std::filesystem::path{names->pending_record_leaf},
+            .canonical_leaf = std::filesystem::path{names->canonical_record_leaf},
+            .bytes = expected_bytes,
+        };
+
+        auto reconciled = wave_detail::publish_worker_attempt_started(
+            std::move(reservation),
+            wave_detail::DistributedSieveWorkerAttemptStartTestHooks{
+                .before_record_publication = inject_worker_attempt_start_publication_prefix,
+                .context = &context,
+            });
+        require_wave_reservation_receipt_consumed(
+            reservation, "publication-race publisher consumes its reservation receipt");
+        CHECK(context.invoked);
+        CHECK(context.first.status == durable_record::RecordPublishStatus::durable);
+        CHECK(context.first.disposition == durable_record::RecordPublishDisposition::created);
+        CHECK(context.first.canonical_snapshot.has_value());
+        CHECK(!reconciled);
+        CHECK(!reconciled.receipt.has_value());
+        CHECK(reconciled.disposition ==
+              wave_detail::DistributedSieveWorkerAttemptStartDisposition::reconcile_required);
+        require_wave_status(reconciled.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::reconciliation_required,
+                            "publication-race prefix requires explicit reconciliation");
+        CHECK(reconciled.diagnostic.publication_status ==
+              durable_record::RecordPublishStatus::durable);
+        CHECK(reconciled.diagnostic.publication_disposition ==
+              (shape == WorkerAttemptStartInjectedPrefix::pending_only
+                   ? durable_record::RecordPublishDisposition::recovered_pending
+                   : durable_record::RecordPublishDisposition::confirmed_existing));
+
+        if (shape == WorkerAttemptStartInjectedPrefix::identical_dual) {
+            CHECK(context.second.status == durable_record::RecordPublishStatus::durable);
+            CHECK(context.second.disposition == durable_record::RecordPublishDisposition::created);
+            CHECK(context.second.canonical_snapshot.has_value());
+            CHECK(context.first.canonical_snapshot != context.second.canonical_snapshot);
+        } else {
+            CHECK(!context.second.canonical_snapshot.has_value());
+        }
+
+        const auto canonical_path = root / names->canonical_record_leaf;
+        CHECK(entry_exists_no_follow(canonical_path));
+        CHECK(!entry_exists_no_follow(root / names->pending_record_leaf));
+        CHECK(!entry_exists_no_follow(root / context.first_source_leaf));
+        CHECK(!entry_exists_no_follow(root / context.second_source_leaf));
+        CHECK(read_file_bytes(canonical_path) == expected_bytes);
+        const auto canonical_entry =
+            capture_wave_root_entry_snapshot(canonical_path, names->canonical_record_leaf);
+        CHECK(wave_record_snapshot(canonical_entry) == *context.first.canonical_snapshot);
+
+        WaveReservationWitnessObservationContext p8_observation{
+            .expected_boundary = Boundary::FinalDirectoryDurable,
+            .expected_base_lock_leaf = names->base_lock_leaf,
+        };
+        require_wave_status(
+            store.revalidate(wave_detail::DistributedSieveWaveStoreInventoryTestHooks{
+                .observe_reservation_witnesses = observe_wave_reservation_witnesses,
+                .context = &p8_observation,
+            }),
+            wave_detail::DistributedSieveWaveStoreStatus::ready,
+            "reconciled canonical-only record preserves exact P8 inventory");
+        CHECK(p8_observation.invoked);
+        CHECK(p8_observation.matched);
+
+        auto root_claim = store.claim_private_lease_root();
+        (void)require_private_lease_root_claim_ready(
+            root_claim, "publication-race reconciliation releases the root slot");
+        root_claim.claim.reset();
+        CHECK(!relation_base_lock_reports_busy(root / names->base_lock_leaf));
+    }
+}
+
+void test_wave_store_worker_attempt_start_forked_mint_hooks_are_process_bound() {
+    constexpr std::array seams{
+        WorkerAttemptStartForkSeam::locked_predecessor,
+        WorkerAttemptStartForkSeam::before_publication,
+        WorkerAttemptStartForkSeam::canonical_durable,
+        WorkerAttemptStartForkSeam::first_successor,
+    };
+
+    for (const auto seam : seams) {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / ("worker-attempt-start-fork-" +
+                                         std::to_string(static_cast<std::size_t>(seam)));
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create attempt-start fork fixture");
+        const auto manifest = store.manifest();
+        const auto chunk = manifest.chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+        auto reservation =
+            reserve_wave_attempt_p8(store, chunk.chunk_id, 0, "reserve attempt-start fork P8");
+        const auto expected =
+            make_wave_attempt_started(manifest, chunk, 0, store.manifest_digest(),
+                                      wave_attempt_lease_from_receipt(reservation));
+        const auto expected_bytes = encode_or_fail(Record{expected});
+
+        int ready_pipe[2]{-1, -1};
+        int release_pipe[2]{-1, -1};
+        CHECK(::pipe(ready_pipe) == 0);
+        CHECK(::pipe(release_pipe) == 0);
+        WorkerAttemptStartForkContext context{
+            .seam = seam,
+            .original_process = ::getpid(),
+        };
+        wave_detail::DistributedSieveWorkerAttemptStartTestHooks hooks;
+        hooks.context = &context;
+        switch (seam) {
+        case WorkerAttemptStartForkSeam::locked_predecessor:
+            hooks.after_locked_predecessor_validation = fork_at_worker_attempt_start_boundary;
+            break;
+        case WorkerAttemptStartForkSeam::before_publication:
+            hooks.before_record_publication = fork_at_worker_attempt_start_boundary;
+            break;
+        case WorkerAttemptStartForkSeam::canonical_durable:
+            hooks.stop_after = fork_at_worker_attempt_start_fault;
+            break;
+        case WorkerAttemptStartForkSeam::first_successor:
+            hooks.after_first_successor_validation = fork_at_worker_attempt_start_boundary;
+            break;
+        }
+
+        auto started = wave_detail::publish_worker_attempt_started(std::move(reservation), hooks);
+        if (::getpid() != context.original_process) {
+            (void)::close(ready_pipe[0]);
+            (void)::close(release_pipe[1]);
+            const bool published_before_rejection =
+                seam == WorkerAttemptStartForkSeam::canonical_durable ||
+                seam == WorkerAttemptStartForkSeam::first_successor;
+            const bool valid_publication =
+                !published_before_rejection
+                    ? !started.diagnostic.publication_status.has_value() &&
+                          !started.diagnostic.publication_disposition.has_value()
+                    : started.diagnostic.publication_status ==
+                              (seam == WorkerAttemptStartForkSeam::canonical_durable
+                                   ? durable_record::RecordPublishStatus::interrupted
+                                   : durable_record::RecordPublishStatus::durable) &&
+                          started.diagnostic.publication_disposition ==
+                              durable_record::RecordPublishDisposition::created;
+            const bool rejected =
+                context.invoked && !started && !started.receipt.has_value() &&
+                started.diagnostic.status ==
+                    wave_detail::DistributedSieveWaveStoreStatus::invalid_request &&
+                started.disposition ==
+                    (published_before_rejection
+                         ? wave_detail::DistributedSieveWorkerAttemptStartDisposition::
+                               reconcile_required
+                         : wave_detail::DistributedSieveWorkerAttemptStartDisposition::failed) &&
+                valid_publication;
+            const bool signalled = write_pipe_byte(ready_pipe[1], rejected ? 'r' : 'f');
+            char release = '\0';
+            const bool released = read_pipe_byte(release_pipe[0], release);
+            ::_exit(rejected && signalled && released && release == 'x' ? 0 : 97);
+        }
+
+        require_wave_reservation_receipt_consumed(
+            reservation, "forked attempt-start publisher consumes its reservation receipt");
+        (void)::close(ready_pipe[1]);
+        (void)::close(release_pipe[0]);
+        CHECK(context.invoked);
+        CHECK(context.child_process > 0);
+        CHECK(started);
+        CHECK(started.receipt.has_value());
+        CHECK(started.disposition ==
+              wave_detail::DistributedSieveWorkerAttemptStartDisposition::fresh_start);
+        require_wave_status(started.diagnostic, wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "parent continues worker-attempt start after mint-hook fork");
+        CHECK(started.diagnostic.publication_status ==
+              durable_record::RecordPublishStatus::durable);
+        CHECK(started.diagnostic.publication_disposition ==
+              durable_record::RecordPublishDisposition::created);
+
+        char ready = '\0';
+        const bool received = read_pipe_byte(ready_pipe[0], ready);
+        CHECK(received);
+        CHECK(ready == 'r');
+        auto& receipt = *started.receipt;
+        CHECK(receipt.owned_by_current_process());
+        require_wave_status(receipt.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "child rejection leaves parent mint receipt valid");
+        CHECK(relation_base_lock_reports_busy(root / names->base_lock_leaf));
+        auto root_claim = store.claim_private_lease_root();
+        (void)require_private_lease_root_claim_ready(
+            root_claim, "forked mint child releases only its root-slot copy");
+        root_claim.claim.reset();
+
+        const bool released = write_pipe_byte(release_pipe[1], 'x');
+        (void)::close(ready_pipe[0]);
+        (void)::close(release_pipe[1]);
+        int child_status = 0;
+        const bool waited = wait_for_child(context.child_process, child_status);
+        CHECK(released);
+        CHECK(waited);
+        CHECK(WIFEXITED(child_status));
+        CHECK(WEXITSTATUS(child_status) == 0);
+        require_wave_status(receipt.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "parent mint receipt survives child close and exit");
+        CHECK(relation_base_lock_reports_busy(root / names->base_lock_leaf));
+        CHECK(read_file_bytes(root / names->canonical_record_leaf) == expected_bytes);
+        CHECK(!entry_exists_no_follow(root / names->pending_record_leaf));
+        require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "parent fork continuation leaves canonical-only P8 inventory");
+
+        started.receipt.reset();
+        CHECK(!relation_base_lock_reports_busy(root / names->base_lock_leaf));
+    }
+}
+
+void test_wave_store_worker_attempt_start_successor_replacements() {
+    constexpr std::array replacement_kinds{
+        WorkerAttemptStartReplacementKind::canonical,
+        WorkerAttemptStartReplacementKind::target,
+        WorkerAttemptStartReplacementKind::root,
+    };
+
+    for (const auto kind : replacement_kinds) {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / ("worker-attempt-start-replacement-" +
+                                         std::to_string(static_cast<std::size_t>(kind)));
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create attempt-start replacement fixture");
+        const auto manifest = store.manifest();
+        const auto chunk = manifest.chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+        auto reservation = reserve_wave_attempt_p8(store, chunk.chunk_id, 0,
+                                                   "reserve attempt-start replacement P8");
+        const auto expected =
+            make_wave_attempt_started(manifest, chunk, 0, store.manifest_digest(),
+                                      wave_attempt_lease_from_receipt(reservation));
+        const auto expected_bytes = encode_or_fail(Record{expected});
+        WorkerAttemptStartReplacementContext context{
+            .kind = kind,
+            .canonical =
+                {
+                    .canonical = root / names->canonical_record_leaf,
+                    .displaced = temp.path() / "displaced-canonical",
+                    .bytes = expected_bytes,
+                },
+            .target =
+                {
+                    .canonical = root / names->base_lock_leaf,
+                    .displaced = temp.path() / "displaced-target",
+                },
+            .root =
+                {
+                    .canonical = root,
+                    .displaced = temp.path() / "displaced-root",
+                },
+        };
+
+        auto rejected = wave_detail::publish_worker_attempt_started(
+            std::move(reservation),
+            wave_detail::DistributedSieveWorkerAttemptStartTestHooks{
+                .after_first_successor_validation = replace_worker_attempt_start_successor,
+                .context = &context,
+            });
+        require_wave_reservation_receipt_consumed(
+            reservation, "successor replacement consumes its reservation receipt");
+        CHECK(context.invoked);
+        CHECK(!rejected);
+        CHECK(!rejected.receipt.has_value());
+        CHECK(rejected.disposition ==
+              wave_detail::DistributedSieveWorkerAttemptStartDisposition::reconcile_required);
+        require_wave_status(rejected.diagnostic,
+                            kind == WorkerAttemptStartReplacementKind::root
+                                ? wave_detail::DistributedSieveWaveStoreStatus::root_invalid
+                                : wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "same-byte successor replacement fails closed");
+        CHECK(rejected.diagnostic.publication_status ==
+              durable_record::RecordPublishStatus::durable);
+        CHECK(rejected.diagnostic.publication_disposition ==
+              durable_record::RecordPublishDisposition::created);
+
+        switch (kind) {
+        case WorkerAttemptStartReplacementKind::canonical:
+            CHECK(context.canonical.invoked);
+            CHECK(context.canonical.replaced);
+            CHECK(context.canonical.native_error == 0);
+            CHECK(read_file_bytes(context.canonical.canonical) == expected_bytes);
+            CHECK(read_file_bytes(context.canonical.displaced) == expected_bytes);
+            require_distinct_entry_identities(
+                context.canonical.canonical, context.canonical.displaced,
+                "attempt-start canonical replacement uses a distinct inode");
+            require_wave_status(store.revalidate(),
+                                wave_detail::DistributedSieveWaveStoreStatus::ready,
+                                "replacement canonical remains independently classifiable");
+            CHECK(!relation_base_lock_reports_busy(root / names->base_lock_leaf));
+            break;
+        case WorkerAttemptStartReplacementKind::target:
+            CHECK(context.target.invoked);
+            CHECK(context.target.replaced);
+            CHECK(context.target.native_error == 0);
+            require_strict_empty_base_lock(context.target.canonical,
+                                           "validate replacement attempt BaseLock");
+            require_strict_empty_base_lock(context.target.displaced,
+                                           "validate displaced attempt BaseLock");
+            require_distinct_entry_identities(
+                context.target.canonical, context.target.displaced,
+                "attempt-start BaseLock replacement uses a distinct inode");
+            CHECK(read_file_bytes(root / names->canonical_record_leaf) == expected_bytes);
+            require_wave_status(store.revalidate(),
+                                wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                                "replacement target invalidates its P8 lock binding");
+            CHECK(!relation_base_lock_reports_busy(context.target.canonical));
+            CHECK(!relation_base_lock_reports_busy(context.target.displaced));
+            break;
+        case WorkerAttemptStartReplacementKind::root:
+            CHECK(context.root.invoked);
+            CHECK(context.root.replaced);
+            CHECK(context.root.native_error == 0);
+            CHECK(std::filesystem::is_empty(context.root.canonical));
+            CHECK(read_file_bytes(context.root.displaced / names->canonical_record_leaf) ==
+                  expected_bytes);
+            CHECK(entry_exists_no_follow(context.root.displaced / names->private_directory_leaf));
+            CHECK(!relation_base_lock_reports_busy(context.root.displaced / names->base_lock_leaf));
+            break;
+        }
+    }
+}
+
 #else
 
 void test_wave_store_platform_fail_closed() {
@@ -11177,7 +12230,7 @@ void run_core_suite() {
 
 void run_wave_store_suite() {
 #if !defined(_WIN32)
-    const std::array<std::pair<std::string_view, TestFunction>, 46> tests = {{
+    const std::array<std::pair<std::string_view, TestFunction>, 56> tests = {{
         {"create, open, revalidate, and exact manifest",
          test_wave_store_create_open_revalidate_and_exact_manifest},
         {"store-owned draft fields", test_wave_store_rejects_non_draft_store_owned_fields},
@@ -11255,6 +12308,26 @@ void run_wave_store_suite() {
          test_wave_store_attempt_record_preempts_private_lease_recovery},
         {"canonical attempt preempts fresh private-lease reservation",
          test_wave_store_canonical_attempt_preempts_fresh_private_lease_reservation},
+        {"worker-attempt start happy path and receipt",
+         test_wave_store_worker_attempt_start_happy_path_and_receipt},
+        {"worker-attempt start fresh retry chain",
+         test_wave_store_worker_attempt_start_fresh_retry_chain},
+        {"worker-attempt start receipt canonical replacement",
+         test_wave_store_worker_attempt_start_receipt_rejects_canonical_replacement},
+        {"worker-attempt start missing predecessor",
+         test_wave_store_worker_attempt_start_rejects_missing_predecessor},
+        {"worker-attempt start active canonical predecessor",
+         test_wave_store_worker_attempt_start_rejects_active_canonical_predecessor},
+        {"worker-attempt start cross-chunk candidate lease conflict",
+         test_wave_store_worker_attempt_start_rejects_cross_chunk_candidate_lease_conflict},
+        {"worker-attempt start durable prefixes",
+         test_wave_store_worker_attempt_start_fault_prefixes},
+        {"worker-attempt start final-publication races",
+         test_wave_store_worker_attempt_start_reconciles_final_publication_races},
+        {"worker-attempt start forked mint hooks",
+         test_wave_store_worker_attempt_start_forked_mint_hooks_are_process_bound},
+        {"worker-attempt start successor replacements",
+         test_wave_store_worker_attempt_start_successor_replacements},
         {"attempt-record same-byte inode replacement",
          test_wave_store_attempt_record_rejects_same_byte_inode_replacement},
         {"bound attempt claim same-byte record replacement",
