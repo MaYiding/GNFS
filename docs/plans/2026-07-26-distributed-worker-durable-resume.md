@@ -1846,6 +1846,46 @@ fork rejection; concurrent opener exclusion; and inherited lock lifetime. This
 foundation still exposes no deletion, handoff conversion, or
 attempt-reconciliation capability.
 
+The attempt-namespace groundwork now derives every private directory,
+permanent `BaseLock`, and attempt-record leaf from the sealed manifest. The
+closed WaveStore inventory admits only exact nonempty-chunk `BaseLock` leaves
+within the manifest retry budget. It rejects suffix lookalikes, metadata drift,
+ACLs, hardlinks, symlinks, and same-name inode replacement without repairing or
+removing them.
+
+The source-private root-relative `BaseLockAt` transaction keeps the lock order
+`wave lock -> root claim -> target BaseLock`. Fresh acquisition requires an
+absent target and uses one `openat(..., O_EXCL)` descriptor for metadata
+validation, `flock`, durability barriers, and the retained capability.
+Recovery requires the target to exist and never falls back to creation. Both
+routes compare closed before/after namespace witnesses, including every
+pre-existing `BaseLock` identity, and retain failed creation prefixes for
+explicit recovery. The short-lived claim owns the target lock and releases it
+before the same-State root slot; no worker receipt can retain root-mutation
+authority.
+
+Post-lock validation uses one fail-closed precedence:
+wave-root/permanent-lock/manifest authority, target binding, closed inventory,
+then durability. The same order applies while acquiring the capability and
+after returning a bound claim. Every target validation is bracketed by
+WaveStore-authority validation. The claim retains the exact successful
+BaseLock leaf-and-inode inventory and compares it twice on every full revalidation;
+adding another otherwise valid attempt lock or replacing a non-target lock
+invalidates the claim. Namespace failure is sticky for the bound target, so
+recovery destroys the old claim, restores the exact namespace, and uses the
+explicit open-existing route. Deterministic tests replace the root, permanent
+lock, target, and foreign inventory independently and in combination. They
+also stop before each `target -> root -> target` durability barrier, prove that
+the permanent prefix and exact inode survive, and require explicit
+open-existing recovery. Barrier-controlled tests prove same-State exclusion
+without imposing a process-global lock across independent WaveStores.
+
+The next M2 slice will adapt the generic reservation phase machine to the held
+root descriptor. It must admit only the exact reservation successor at each
+boundary, recover every durable prefix, and release the root claim before
+returning a lease receipt. Attempt-record publication remains blocked until
+that reservation receipt exists.
+
 Exit criterion: two masters cannot both act, and restart cannot exceed the
 manifest retry budget. This milestone remains test/internal and exposes no
 production durable flag.

@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -33,6 +34,7 @@
 #include <vector>
 
 #ifndef _WIN32
+#include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -56,6 +58,7 @@ using Status = sieve::DistributedSieveProtocolStatus;
 using ExternalCleanupAuthorizationState =
     wave_detail::DistributedSieveExternalCleanupAuthorizationState;
 using PrivateLeaseRootClaim = wave_detail::DistributedSievePrivateLeaseRootClaim;
+using PrivateLeaseBaseLockAt = wave_detail::DistributedSievePrivateLeaseBaseLockAt;
 
 static_assert(!noexcept(sieve::distributed_sieve_record_kind(std::declval<const Record&>())));
 static_assert(
@@ -142,6 +145,15 @@ static_assert(!std::is_constructible_v<PrivateLeaseRootClaim, std::filesystem::p
 static_assert(!std::is_constructible_v<PrivateLeaseRootClaim, Digest>);
 static_assert(!std::is_constructible_v<PrivateLeaseRootClaim, std::shared_ptr<const void>>);
 static_assert(!std::is_constructible_v<PrivateLeaseRootClaim, int>);
+static_assert(std::is_final_v<PrivateLeaseBaseLockAt>);
+static_assert(!std::is_default_constructible_v<PrivateLeaseBaseLockAt>);
+static_assert(!std::is_copy_constructible_v<PrivateLeaseBaseLockAt>);
+static_assert(!std::is_copy_assignable_v<PrivateLeaseBaseLockAt>);
+static_assert(!std::is_move_constructible_v<PrivateLeaseBaseLockAt>);
+static_assert(!std::is_move_assignable_v<PrivateLeaseBaseLockAt>);
+static_assert(!std::is_constructible_v<PrivateLeaseBaseLockAt, std::filesystem::path>);
+static_assert(!std::is_constructible_v<PrivateLeaseBaseLockAt, std::string>);
+static_assert(!std::is_constructible_v<PrivateLeaseBaseLockAt, int>);
 
 constexpr std::array WAVE_STORE_FAULT_POINTS{
     wave_detail::DistributedSieveWaveStoreFaultPoint::RootDurable,
@@ -155,6 +167,23 @@ static_assert(WAVE_STORE_FAULT_POINTS.size() ==
 static_assert([] {
     for (std::size_t index = 0; index < WAVE_STORE_FAULT_POINTS.size(); ++index) {
         if (static_cast<std::size_t>(WAVE_STORE_FAULT_POINTS[index]) != index) {
+            return false;
+        }
+    }
+    return true;
+}());
+
+constexpr std::array PRIVATE_LEASE_BASE_LOCK_SYNC_POINTS{
+    wave_detail::DistributedSievePrivateLeaseBaseLockSyncPoint::TargetInitial,
+    wave_detail::DistributedSievePrivateLeaseBaseLockSyncPoint::RootDirectory,
+    wave_detail::DistributedSievePrivateLeaseBaseLockSyncPoint::TargetFinal,
+};
+static_assert(
+    PRIVATE_LEASE_BASE_LOCK_SYNC_POINTS.size() ==
+    static_cast<std::size_t>(wave_detail::DistributedSievePrivateLeaseBaseLockSyncPoint::Count));
+static_assert([] {
+    for (std::size_t index = 0; index < PRIVATE_LEASE_BASE_LOCK_SYNC_POINTS.size(); ++index) {
+        if (static_cast<std::size_t>(PRIVATE_LEASE_BASE_LOCK_SYNC_POINTS[index]) != index) {
             return false;
         }
     }
@@ -4095,6 +4124,483 @@ void replace_base_lock_after_first_inventory(void* opaque) noexcept {
     context.replaced = true;
 }
 
+struct WaveRootReplacementContext final {
+    std::filesystem::path canonical;
+    std::filesystem::path displaced;
+    int native_error = 0;
+    bool invoked = false;
+    bool replaced = false;
+};
+
+void replace_wave_root_after_attempt_phase(void* opaque) noexcept {
+    auto& context = *static_cast<WaveRootReplacementContext*>(opaque);
+    if (context.invoked) {
+        return;
+    }
+    context.invoked = true;
+    int renamed = -1;
+    do {
+        renamed = ::rename(context.canonical.c_str(), context.displaced.c_str());
+    } while (renamed != 0 && errno == EINTR);
+    if (renamed != 0) {
+        context.native_error = errno;
+        return;
+    }
+
+    int created = -1;
+    do {
+        created = ::mkdir(context.canonical.c_str(), 0700);
+    } while (created != 0 && errno == EINTR);
+    if (created != 0) {
+        context.native_error = errno;
+        return;
+    }
+    int chmod_result = -1;
+    do {
+        chmod_result = ::chmod(context.canonical.c_str(), 0700);
+    } while (chmod_result != 0 && errno == EINTR);
+    if (chmod_result != 0) {
+        context.native_error = errno;
+        return;
+    }
+    context.replaced = true;
+}
+
+struct AttemptPhaseForeignContext final {
+    std::filesystem::path foreign;
+    int native_error = 0;
+    bool invoked = false;
+    bool inserted = false;
+};
+
+void insert_foreign_after_attempt_phase(void* opaque) noexcept {
+    auto& context = *static_cast<AttemptPhaseForeignContext*>(opaque);
+    if (context.invoked) {
+        return;
+    }
+    context.invoked = true;
+    int descriptor = -1;
+    do {
+        descriptor = ::open(context.foreign.c_str(),
+                            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    } while (descriptor < 0 && errno == EINTR);
+    if (descriptor < 0) {
+        context.native_error = errno;
+        return;
+    }
+    if (::fchmod(descriptor, 0600) != 0) {
+        context.native_error = errno;
+        (void)::close(descriptor);
+        return;
+    }
+    if (::close(descriptor) != 0) {
+        context.native_error = errno;
+        return;
+    }
+    context.inserted = true;
+}
+
+struct BaseLockSyncFailureContext final {
+    wave_detail::DistributedSievePrivateLeaseBaseLockSyncPoint target =
+        wave_detail::DistributedSievePrivateLeaseBaseLockSyncPoint::TargetInitial;
+    std::array<bool, PRIVATE_LEASE_BASE_LOCK_SYNC_POINTS.size()> observed{};
+};
+
+[[nodiscard]] bool
+fail_before_base_lock_sync(wave_detail::DistributedSievePrivateLeaseBaseLockSyncPoint point,
+                           void* opaque) noexcept {
+    auto& context = *static_cast<BaseLockSyncFailureContext*>(opaque);
+    const auto index = static_cast<std::size_t>(point);
+    if (index < context.observed.size()) {
+        context.observed[index] = true;
+    }
+    return point == context.target;
+}
+
+struct MixedAttemptFailureContext final {
+    WaveBaseLockReplacementContext target;
+    WaveBaseLockReplacementContext wave_lock;
+    WaveRootReplacementContext root;
+    AttemptPhaseForeignContext foreign;
+    BaseLockSyncFailureContext sync;
+};
+
+void replace_attempt_target_and_root_after_lock(void* opaque) noexcept {
+    auto& context = *static_cast<MixedAttemptFailureContext*>(opaque);
+    replace_base_lock_after_first_inventory(&context.target);
+    if (context.target.replaced) {
+        replace_wave_root_after_attempt_phase(&context.root);
+    }
+}
+
+void replace_attempt_target_and_wave_lock_after_lock(void* opaque) noexcept {
+    auto& context = *static_cast<MixedAttemptFailureContext*>(opaque);
+    replace_base_lock_after_first_inventory(&context.target);
+    if (context.target.replaced) {
+        replace_base_lock_after_first_inventory(&context.wave_lock);
+    }
+}
+
+void replace_attempt_root_and_wave_lock_after_lock(void* opaque) noexcept {
+    auto& context = *static_cast<MixedAttemptFailureContext*>(opaque);
+    replace_base_lock_after_first_inventory(&context.wave_lock);
+    if (context.wave_lock.replaced) {
+        replace_wave_root_after_attempt_phase(&context.root);
+    }
+}
+
+[[nodiscard]] bool replace_root_and_fail_before_base_lock_sync(
+    wave_detail::DistributedSievePrivateLeaseBaseLockSyncPoint point, void* opaque) noexcept {
+    auto& context = *static_cast<MixedAttemptFailureContext*>(opaque);
+    const bool fail = fail_before_base_lock_sync(point, &context.sync);
+    if (fail) {
+        replace_wave_root_after_attempt_phase(&context.root);
+    }
+    return fail;
+}
+
+[[nodiscard]] bool replace_target_insert_foreign_and_fail_before_base_lock_sync(
+    wave_detail::DistributedSievePrivateLeaseBaseLockSyncPoint point, void* opaque) noexcept {
+    auto& context = *static_cast<MixedAttemptFailureContext*>(opaque);
+    const bool fail = fail_before_base_lock_sync(point, &context.sync);
+    if (fail) {
+        replace_base_lock_after_first_inventory(&context.target);
+        insert_foreign_after_attempt_phase(&context.foreign);
+    }
+    return fail;
+}
+
+[[nodiscard]] bool relation_base_lock_reports_busy(const std::filesystem::path& path) {
+    try {
+        cleanup_detail::BaseLock contender(path, false);
+        return false;
+    } catch (const cleanup_detail::Failure& failure) {
+        return failure.status == gnfs::relation::OOCCleanupStatus::Busy;
+    }
+}
+
+void require_strict_empty_base_lock(const std::filesystem::path& path, std::string_view context) {
+    struct stat metadata{};
+    if (::lstat(path.c_str(), &metadata) != 0) {
+        throw std::system_error(errno, std::generic_category(), std::string(context));
+    }
+    CHECK(S_ISREG(metadata.st_mode));
+    CHECK(metadata.st_nlink == 1);
+    CHECK(metadata.st_size == 0);
+    CHECK(static_cast<std::uint64_t>(metadata.st_uid) == static_cast<std::uint64_t>(::geteuid()));
+    CHECK((metadata.st_mode & static_cast<mode_t>(07777)) == 0600);
+}
+
+struct WaveRootEntrySnapshot final {
+    std::string leaf;
+    std::uint64_t device = 0;
+    std::uint64_t inode = 0;
+    std::uint64_t link_count = 0;
+    std::uint64_t size = 0;
+    std::uint64_t owner = 0;
+    std::uint64_t group = 0;
+    std::uint64_t device_type = 0;
+    mode_t mode = 0;
+    std::vector<std::byte> bytes;
+    std::string symlink_target;
+
+    friend bool operator==(const WaveRootEntrySnapshot&, const WaveRootEntrySnapshot&) = default;
+};
+
+using WaveRootSnapshot = std::vector<WaveRootEntrySnapshot>;
+
+[[nodiscard]] bool same_wave_snapshot_metadata(const struct stat& lhs,
+                                               const struct stat& rhs) noexcept {
+    return lhs.st_dev == rhs.st_dev && lhs.st_ino == rhs.st_ino && lhs.st_nlink == rhs.st_nlink &&
+           lhs.st_mode == rhs.st_mode && lhs.st_uid == rhs.st_uid && lhs.st_gid == rhs.st_gid &&
+           lhs.st_size == rhs.st_size && lhs.st_rdev == rhs.st_rdev;
+}
+
+class WaveSnapshotFd final {
+public:
+    explicit WaveSnapshotFd(int descriptor) noexcept : descriptor_(descriptor) {}
+    ~WaveSnapshotFd() {
+        if (descriptor_ >= 0) {
+            (void)::close(descriptor_);
+        }
+    }
+
+    WaveSnapshotFd(const WaveSnapshotFd&) = delete;
+    WaveSnapshotFd& operator=(const WaveSnapshotFd&) = delete;
+
+    [[nodiscard]] int get() const noexcept {
+        return descriptor_;
+    }
+
+private:
+    int descriptor_ = -1;
+};
+
+class WaveSnapshotDirectory final {
+public:
+    explicit WaveSnapshotDirectory(DIR* directory) noexcept : directory_(directory) {}
+    ~WaveSnapshotDirectory() {
+        if (directory_ != nullptr) {
+            (void)::closedir(directory_);
+        }
+    }
+
+    WaveSnapshotDirectory(const WaveSnapshotDirectory&) = delete;
+    WaveSnapshotDirectory& operator=(const WaveSnapshotDirectory&) = delete;
+
+    [[nodiscard]] DIR* get() const noexcept {
+        return directory_;
+    }
+
+private:
+    DIR* directory_ = nullptr;
+};
+
+[[nodiscard]] WaveRootEntrySnapshot
+wave_root_entry_snapshot_from_metadata(const struct stat& metadata, std::string leaf) {
+    return {
+        .leaf = std::move(leaf),
+        .device = static_cast<std::uint64_t>(metadata.st_dev),
+        .inode = static_cast<std::uint64_t>(metadata.st_ino),
+        .link_count = static_cast<std::uint64_t>(metadata.st_nlink),
+        .size = static_cast<std::uint64_t>(metadata.st_size),
+        .owner = static_cast<std::uint64_t>(metadata.st_uid),
+        .group = static_cast<std::uint64_t>(metadata.st_gid),
+        .device_type = static_cast<std::uint64_t>(metadata.st_rdev),
+        .mode = metadata.st_mode,
+    };
+}
+
+[[nodiscard]] WaveRootEntrySnapshot capture_wave_root_entry_snapshot_at(int root_fd,
+                                                                        std::string_view named_leaf,
+                                                                        std::string snapshot_leaf) {
+    if (named_leaf.empty() || named_leaf == "." || named_leaf == ".." ||
+        named_leaf.find('/') != std::string_view::npos ||
+        named_leaf.find('\0') != std::string_view::npos) {
+        throw TestFailure("invalid anchored wave-store snapshot leaf");
+    }
+    const std::string native_leaf(named_leaf);
+    struct stat named_before{};
+    if (::fstatat(root_fd, native_leaf.c_str(), &named_before, AT_SYMLINK_NOFOLLOW) != 0) {
+        throw std::system_error(errno, std::generic_category(), "snapshot wave-store namespace");
+    }
+
+    auto entry = wave_root_entry_snapshot_from_metadata(named_before, std::move(snapshot_leaf));
+    if (S_ISREG(named_before.st_mode)) {
+        int descriptor = -1;
+        do {
+            descriptor = ::openat(root_fd, native_leaf.c_str(),
+                                  O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
+        } while (descriptor < 0 && errno == EINTR);
+        if (descriptor < 0) {
+            throw std::system_error(errno, std::generic_category(),
+                                    "open wave-store snapshot leaf");
+        }
+        WaveSnapshotFd held(descriptor);
+
+        struct stat held_before{};
+        if (::fstat(held.get(), &held_before) != 0) {
+            throw std::system_error(errno, std::generic_category(),
+                                    "stat wave-store snapshot leaf");
+        }
+        if (!S_ISREG(held_before.st_mode) ||
+            !same_wave_snapshot_metadata(named_before, held_before) || held_before.st_size < 0 ||
+            static_cast<std::uintmax_t>(held_before.st_size) >
+                std::numeric_limits<std::size_t>::max()) {
+            throw TestFailure("wave-store snapshot leaf identity changed before read: " +
+                              native_leaf);
+        }
+        entry.bytes.resize(static_cast<std::size_t>(held_before.st_size));
+        std::size_t offset = 0;
+        while (offset < entry.bytes.size()) {
+            const std::size_t request =
+                std::min(entry.bytes.size() - offset,
+                         static_cast<std::size_t>(std::numeric_limits<ssize_t>::max()));
+            ssize_t count = -1;
+            do {
+                count = ::pread(held.get(), entry.bytes.data() + offset, request,
+                                static_cast<off_t>(offset));
+            } while (count < 0 && errno == EINTR);
+            if (count <= 0) {
+                throw TestFailure("cannot read complete wave-store snapshot leaf: " + native_leaf);
+            }
+            offset += static_cast<std::size_t>(count);
+        }
+
+        struct stat held_after{};
+        struct stat named_after{};
+        if (::fstat(held.get(), &held_after) != 0 ||
+            ::fstatat(root_fd, native_leaf.c_str(), &named_after, AT_SYMLINK_NOFOLLOW) != 0) {
+            throw std::system_error(errno, std::generic_category(),
+                                    "revalidate wave-store snapshot leaf");
+        }
+        if (!same_wave_snapshot_metadata(held_before, held_after) ||
+            !same_wave_snapshot_metadata(held_after, named_after)) {
+            throw TestFailure("wave-store snapshot leaf identity changed during read: " +
+                              native_leaf);
+        }
+    } else if (S_ISLNK(named_before.st_mode)) {
+        if (named_before.st_size < 0) {
+            throw TestFailure("wave-store snapshot symlink has a negative size");
+        }
+        std::size_t capacity =
+            std::max<std::size_t>(256, static_cast<std::size_t>(named_before.st_size) + 1U);
+        std::vector<char> target(capacity);
+        for (;;) {
+            ssize_t count = -1;
+            do {
+                count = ::readlinkat(root_fd, native_leaf.c_str(), target.data(), target.size());
+            } while (count < 0 && errno == EINTR);
+            if (count < 0) {
+                throw std::system_error(errno, std::generic_category(),
+                                        "read anchored wave-store snapshot symlink");
+            }
+            if (static_cast<std::size_t>(count) < target.size()) {
+                entry.symlink_target.assign(target.data(), static_cast<std::size_t>(count));
+                break;
+            }
+            if (target.size() > 1024U * 1024U) {
+                throw TestFailure("wave-store snapshot symlink target exceeds test bound");
+            }
+            target.resize(target.size() * 2U);
+        }
+        struct stat named_after{};
+        if (::fstatat(root_fd, native_leaf.c_str(), &named_after, AT_SYMLINK_NOFOLLOW) != 0 ||
+            !same_wave_snapshot_metadata(named_before, named_after)) {
+            throw TestFailure("wave-store snapshot symlink changed during read: " + native_leaf);
+        }
+    } else {
+        struct stat named_after{};
+        if (::fstatat(root_fd, native_leaf.c_str(), &named_after, AT_SYMLINK_NOFOLLOW) != 0 ||
+            !same_wave_snapshot_metadata(named_before, named_after)) {
+            throw TestFailure("wave-store snapshot entry changed during observation: " +
+                              native_leaf);
+        }
+    }
+    return entry;
+}
+
+[[nodiscard]] WaveRootEntrySnapshot
+capture_wave_root_entry_snapshot(const std::filesystem::path& path, std::string snapshot_leaf) {
+    const auto parent = path.parent_path();
+    const auto named_leaf = path.filename().string();
+    int parent_fd = -1;
+    do {
+        parent_fd =
+            ::open(parent.c_str(), O_RDONLY | O_NONBLOCK | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    } while (parent_fd < 0 && errno == EINTR);
+    if (parent_fd < 0) {
+        throw std::system_error(errno, std::generic_category(),
+                                "open anchored wave-store snapshot parent");
+    }
+    WaveSnapshotFd held_parent(parent_fd);
+    return capture_wave_root_entry_snapshot_at(held_parent.get(), named_leaf,
+                                               std::move(snapshot_leaf));
+}
+
+[[nodiscard]] WaveRootSnapshot capture_wave_root_snapshot(const std::filesystem::path& root) {
+    int root_fd = -1;
+    do {
+        root_fd =
+            ::open(root.c_str(), O_RDONLY | O_NONBLOCK | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    } while (root_fd < 0 && errno == EINTR);
+    if (root_fd < 0) {
+        throw std::system_error(errno, std::generic_category(),
+                                "open anchored wave-store snapshot root");
+    }
+    WaveSnapshotFd held_root(root_fd);
+    struct stat root_before{};
+    if (::fstat(held_root.get(), &root_before) != 0) {
+        throw std::system_error(errno, std::generic_category(),
+                                "stat anchored wave-store snapshot root");
+    }
+    if (!S_ISDIR(root_before.st_mode)) {
+        throw std::system_error(ENOTDIR, std::generic_category(),
+                                "stat anchored wave-store snapshot root");
+    }
+
+    WaveRootSnapshot snapshot;
+    auto root_entry = wave_root_entry_snapshot_from_metadata(root_before, ".");
+    root_entry.link_count = 0;
+    root_entry.size = 0;
+    root_entry.device_type = 0;
+    snapshot.push_back(std::move(root_entry));
+
+    int enumeration_fd = -1;
+    do {
+#if defined(F_DUPFD_CLOEXEC)
+        enumeration_fd = ::fcntl(held_root.get(), F_DUPFD_CLOEXEC, 0);
+#else
+        enumeration_fd = ::dup(held_root.get());
+#endif
+    } while (enumeration_fd < 0 && errno == EINTR);
+    if (enumeration_fd < 0) {
+        throw std::system_error(errno, std::generic_category(),
+                                "duplicate wave-store snapshot root");
+    }
+    DIR* raw_directory = ::fdopendir(enumeration_fd);
+    if (raw_directory == nullptr) {
+        const int saved_errno = errno;
+        (void)::close(enumeration_fd);
+        throw std::system_error(saved_errno, std::generic_category(),
+                                "enumerate anchored wave-store snapshot root");
+    }
+    WaveSnapshotDirectory directory(raw_directory);
+    std::vector<std::string> leaves;
+    for (;;) {
+        errno = 0;
+        const dirent* entry = ::readdir(directory.get());
+        if (entry == nullptr) {
+            if (errno != 0) {
+                throw std::system_error(errno, std::generic_category(),
+                                        "read anchored wave-store snapshot root");
+            }
+            break;
+        }
+        const std::string_view leaf(entry->d_name);
+        if (leaf != "." && leaf != "..") {
+            leaves.emplace_back(leaf);
+        }
+    }
+    std::ranges::sort(leaves);
+    for (const auto& leaf : leaves) {
+        snapshot.push_back(capture_wave_root_entry_snapshot_at(held_root.get(), leaf, leaf));
+    }
+
+    struct stat root_after{};
+    struct stat named_root_after{};
+    if (::fstat(held_root.get(), &root_after) != 0 ||
+        ::lstat(root.c_str(), &named_root_after) != 0 || root_before.st_dev != root_after.st_dev ||
+        root_before.st_ino != root_after.st_ino || root_before.st_mode != root_after.st_mode ||
+        root_before.st_uid != root_after.st_uid || root_before.st_gid != root_after.st_gid ||
+        root_after.st_dev != named_root_after.st_dev ||
+        root_after.st_ino != named_root_after.st_ino ||
+        root_after.st_mode != named_root_after.st_mode ||
+        root_after.st_uid != named_root_after.st_uid ||
+        root_after.st_gid != named_root_after.st_gid) {
+        throw TestFailure("wave-store snapshot root identity changed during observation");
+    }
+    std::ranges::sort(snapshot, {}, &WaveRootEntrySnapshot::leaf);
+    return snapshot;
+}
+
+void erase_wave_root_snapshot_leaf(WaveRootSnapshot& snapshot, std::string_view leaf) {
+    const auto found = std::ranges::find(snapshot, leaf, &WaveRootEntrySnapshot::leaf);
+    if (found == snapshot.end()) {
+        fail("snapshot contains expected wave-store leaf", __LINE__, leaf);
+    }
+    snapshot.erase(found);
+}
+
+[[nodiscard]] const WaveRootEntrySnapshot&
+require_wave_root_snapshot_leaf(const WaveRootSnapshot& snapshot, std::string_view leaf) {
+    const auto found = std::ranges::find(snapshot, leaf, &WaveRootEntrySnapshot::leaf);
+    if (found == snapshot.end()) {
+        fail("snapshot contains requested wave-store leaf", __LINE__, leaf);
+    }
+    return *found;
+}
+
 #endif
 
 void check_wave_fault_prefix(const std::filesystem::path& root,
@@ -5342,6 +5848,1682 @@ void test_wave_store_manifest_bound_base_locks_and_claim_inventory_split() {
                         "retried claim retains authority after inventory repair");
 }
 
+void test_wave_store_attempt_base_lock_create_recover_and_phase_contract() {
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "attempt-base-lock-phase";
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+    auto& store = require_wave_ready(created, "create attempt BaseLock phase fixture");
+    const auto& first_chunk = store.manifest().chunks.at(0);
+    const auto& second_chunk = store.manifest().chunks.at(1);
+    const auto first_names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        first_chunk.relative_artifact_stem, first_chunk.chunk_id, 0);
+    const auto second_names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        second_chunk.relative_artifact_stem, second_chunk.chunk_id, 0);
+    CHECK(first_names.has_value());
+    CHECK(second_names.has_value());
+    const auto first_lock = root / first_names->base_lock_leaf;
+    const auto second_lock = root / second_names->base_lock_leaf;
+    const auto pristine_namespace = capture_wave_root_snapshot(root);
+
+    auto missing = store.open_worker_attempt_private_lease_root(first_chunk.chunk_id, 0);
+    CHECK(!missing);
+    CHECK(missing.claim == nullptr);
+    require_wave_status(missing.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "open-existing attempt BaseLock never creates a missing leaf");
+    CHECK(!entry_exists_no_follow(first_lock));
+    CHECK(capture_wave_root_snapshot(root) == pristine_namespace);
+
+    auto unknown_chunk = store.create_worker_attempt_private_lease_root(
+        sieve::DISTRIBUTED_SIEVE_PROTOCOL_MAX_CHUNKS - 1U, 0);
+    CHECK(!unknown_chunk);
+    CHECK(unknown_chunk.claim == nullptr);
+    require_wave_status(unknown_chunk.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::invalid_request,
+                        "unknown attempt chunk rejected before observation");
+    auto exhausted_ordinal = store.create_worker_attempt_private_lease_root(
+        first_chunk.chunk_id, store.manifest().max_worker_attempts);
+    CHECK(!exhausted_ordinal);
+    CHECK(exhausted_ordinal.claim == nullptr);
+    require_wave_status(exhausted_ordinal.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::invalid_request,
+                        "out-of-manifest attempt ordinal rejected before observation");
+    CHECK(!entry_exists_no_follow(first_lock));
+    CHECK(!entry_exists_no_follow(second_lock));
+    CHECK(capture_wave_root_snapshot(root) == pristine_namespace);
+
+    const auto empty_root = temp.path() / "attempt-base-lock-empty-chunk";
+    auto empty_draft = wave_manifest_draft();
+    empty_draft.effective_sq_end = empty_draft.chunks.front().sq_end;
+    empty_draft.chunks.back().sq_begin = empty_draft.chunks.front().sq_end;
+    empty_draft.chunks.back().sq_end = empty_draft.chunks.front().sq_end;
+    auto empty_created =
+        wave_detail::DistributedSieveWaveStore::create(empty_root, std::move(empty_draft));
+    auto& empty_store =
+        require_wave_ready(empty_created, "create empty-chunk attempt BaseLock fixture");
+    const auto& empty_chunk = empty_store.manifest().chunks.back();
+    const auto empty_names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        empty_chunk.relative_artifact_stem, empty_chunk.chunk_id, 0);
+    CHECK(empty_names.has_value());
+    const auto empty_namespace = capture_wave_root_snapshot(empty_root);
+    auto empty_rejected =
+        empty_store.create_worker_attempt_private_lease_root(empty_chunk.chunk_id, 0);
+    CHECK(!empty_rejected);
+    CHECK(empty_rejected.claim == nullptr);
+    require_wave_status(empty_rejected.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::invalid_request,
+                        "empty manifest chunk cannot reserve a worker BaseLock");
+    CHECK(!entry_exists_no_follow(empty_root / empty_names->base_lock_leaf));
+    CHECK(capture_wave_root_snapshot(empty_root) == empty_namespace);
+
+    auto fresh = store.create_worker_attempt_private_lease_root(first_chunk.chunk_id, 0);
+    auto& fresh_claim =
+        require_private_lease_root_claim_ready(fresh, "create fresh attempt BaseLockAt");
+    CHECK(entry_exists_no_follow(first_lock));
+    CHECK(!entry_exists_no_follow(root / first_names->private_directory_leaf));
+    require_strict_empty_base_lock(first_lock, "strict fresh attempt BaseLock metadata");
+    const auto relation_paths = gnfs::relation::OOCCleanupTransaction::paths_for(
+        root / first_names->private_directory_leaf / "corpus");
+    CHECK(relation_paths.lock_path == first_lock);
+    CHECK(relation_paths.private_directory == root / first_names->private_directory_leaf);
+    require_wave_status(fresh_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "fresh attempt BaseLock claim revalidates");
+    require_wave_status(fresh_claim.revalidate_authority(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "fresh attempt BaseLock authority revalidates");
+    CHECK(relation_base_lock_reports_busy(first_lock));
+    const auto first_claimed_namespace = capture_wave_root_snapshot(root);
+
+    auto invalid_while_busy = store.create_worker_attempt_private_lease_root(
+        sieve::DISTRIBUTED_SIEVE_PROTOCOL_MAX_CHUNKS - 1U, 0);
+    CHECK(!invalid_while_busy);
+    CHECK(invalid_while_busy.claim == nullptr);
+    require_wave_status(invalid_while_busy.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::invalid_request,
+                        "invalid coordinate precedes same-State root contention");
+    CHECK(capture_wave_root_snapshot(root) == first_claimed_namespace);
+
+    auto same_state = store.create_worker_attempt_private_lease_root(second_chunk.chunk_id, 0);
+    CHECK(!same_state);
+    CHECK(same_state.claim == nullptr);
+    require_wave_status(same_state.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::private_lease_root_busy,
+                        "attempt transactions serialize one same-State root action");
+    CHECK(!entry_exists_no_follow(second_lock));
+    CHECK(capture_wave_root_snapshot(root) == first_claimed_namespace);
+
+    fresh.claim.reset();
+    const auto first_released_namespace = capture_wave_root_snapshot(root);
+    auto duplicate_fresh = store.create_worker_attempt_private_lease_root(first_chunk.chunk_id, 0);
+    CHECK(!duplicate_fresh);
+    CHECK(duplicate_fresh.claim == nullptr);
+    require_wave_status(duplicate_fresh.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "fresh entry point never degrades to open-existing");
+    CHECK(capture_wave_root_snapshot(root) == first_released_namespace);
+
+    auto recovered = store.open_worker_attempt_private_lease_root(first_chunk.chunk_id, 0);
+    auto& recovered_claim =
+        require_private_lease_root_claim_ready(recovered, "open existing attempt BaseLockAt");
+    require_wave_status(recovered_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "recovered attempt BaseLock claim revalidates");
+    CHECK(relation_base_lock_reports_busy(first_lock));
+    recovered.claim.reset();
+    CHECK(capture_wave_root_snapshot(root) == first_released_namespace);
+
+    std::unique_ptr<cleanup_detail::BaseLock> external_holder;
+    try {
+        external_holder = std::make_unique<cleanup_detail::BaseLock>(first_lock, false);
+    } catch (const cleanup_detail::Failure& failure) {
+        fail("hold existing attempt BaseLock externally", __LINE__,
+             std::to_string(static_cast<int>(failure.status)));
+    }
+    const auto externally_held_namespace = capture_wave_root_snapshot(root);
+    auto fresh_while_target_busy =
+        store.create_worker_attempt_private_lease_root(first_chunk.chunk_id, 0);
+    CHECK(!fresh_while_target_busy);
+    CHECK(fresh_while_target_busy.claim == nullptr);
+    require_wave_status(fresh_while_target_busy.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "fresh-existing conflict precedes target-lock contention");
+    CHECK(capture_wave_root_snapshot(root) == externally_held_namespace);
+    auto busy = store.open_worker_attempt_private_lease_root(first_chunk.chunk_id, 0);
+    CHECK(!busy);
+    CHECK(busy.claim == nullptr);
+    require_wave_status(busy.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::private_lease_lock_busy,
+                        "existing attempt BaseLock reports target-lock contention");
+    CHECK(capture_wave_root_snapshot(root) == externally_held_namespace);
+    external_holder.reset();
+    auto retry = store.open_worker_attempt_private_lease_root(first_chunk.chunk_id, 0);
+    auto& retry_claim =
+        require_private_lease_root_claim_ready(retry, "retry existing attempt BaseLock");
+    require_wave_status(retry_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "retry after target-lock release revalidates");
+    retry.claim.reset();
+
+    const auto before_between_phase_foreign = capture_wave_root_snapshot(root);
+    const auto between_phase_foreign = root / "between-phase.unexpected-control";
+    AttemptPhaseForeignContext foreign_context{
+        .foreign = between_phase_foreign,
+    };
+    auto between_phase_foreign_rejected = store.create_worker_attempt_private_lease_root(
+        second_chunk.chunk_id, 0,
+        wave_detail::DistributedSievePrivateLeaseBaseLockTestHooks{
+            .after_initial_phase_validation = insert_foreign_after_attempt_phase,
+            .context = &foreign_context,
+        });
+    CHECK(foreign_context.invoked);
+    CHECK(foreign_context.inserted);
+    CHECK(foreign_context.native_error == 0);
+    CHECK(!between_phase_foreign_rejected);
+    CHECK(between_phase_foreign_rejected.claim == nullptr);
+    require_wave_status(between_phase_foreign_rejected.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "foreign leaf inserted between phase witnesses is rejected");
+    CHECK(!entry_exists_no_follow(second_lock));
+    auto after_between_phase_foreign = capture_wave_root_snapshot(root);
+    erase_wave_root_snapshot_leaf(after_between_phase_foreign,
+                                  between_phase_foreign.filename().string());
+    CHECK(after_between_phase_foreign == before_between_phase_foreign);
+    CHECK(read_file_bytes(between_phase_foreign).empty());
+    require_strict_empty_base_lock(between_phase_foreign,
+                                   "between-phase foreign leaf remains exact and strict");
+    std::error_code remove_error;
+    CHECK(std::filesystem::remove(between_phase_foreign, remove_error));
+    CHECK(!remove_error);
+
+    const auto between_phase_displaced = temp.path() / "between-phase-existing-attempt-base-lock";
+    const auto before_between_phase_replacement = capture_wave_root_snapshot(root);
+    WaveBaseLockReplacementContext between_phase_lock_context{
+        .canonical = first_lock,
+        .displaced = between_phase_displaced,
+    };
+    auto between_phase_replacement_rejected = store.create_worker_attempt_private_lease_root(
+        second_chunk.chunk_id, 0,
+        wave_detail::DistributedSievePrivateLeaseBaseLockTestHooks{
+            .after_initial_phase_validation = replace_base_lock_after_first_inventory,
+            .context = &between_phase_lock_context,
+        });
+    CHECK(between_phase_lock_context.invoked);
+    CHECK(between_phase_lock_context.replaced);
+    CHECK(between_phase_lock_context.native_error == 0);
+    CHECK(!between_phase_replacement_rejected);
+    CHECK(between_phase_replacement_rejected.claim == nullptr);
+    require_wave_status(between_phase_replacement_rejected.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "non-target BaseLock identity drift between witnesses is rejected");
+    CHECK(!entry_exists_no_follow(second_lock));
+    auto before_without_first_lock = before_between_phase_replacement;
+    auto after_without_first_lock = capture_wave_root_snapshot(root);
+    erase_wave_root_snapshot_leaf(before_without_first_lock, first_names->base_lock_leaf);
+    erase_wave_root_snapshot_leaf(after_without_first_lock, first_names->base_lock_leaf);
+    CHECK(after_without_first_lock == before_without_first_lock);
+    require_strict_empty_base_lock(first_lock,
+                                   "between-phase replacement BaseLock remains preserved");
+    require_strict_empty_base_lock(between_phase_displaced,
+                                   "between-phase displaced BaseLock remains preserved");
+    CHECK(std::filesystem::remove(first_lock, remove_error));
+    CHECK(!remove_error);
+    require_rename(between_phase_displaced, first_lock,
+                   "restore between-phase non-target BaseLock");
+    CHECK(capture_wave_root_snapshot(root) == before_between_phase_replacement);
+
+    const auto foreign = root / "unexpected.attempt-control";
+    write_foreign_leaf(foreign);
+    const auto namespace_with_foreign = capture_wave_root_snapshot(root);
+    auto foreign_rejected =
+        store.create_worker_attempt_private_lease_root(second_chunk.chunk_id, 0);
+    CHECK(!foreign_rejected);
+    CHECK(foreign_rejected.claim == nullptr);
+    require_wave_status(foreign_rejected.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "fresh attempt requires a closed pre-mutation phase");
+    CHECK(!entry_exists_no_follow(second_lock));
+    CHECK(capture_wave_root_snapshot(root) == namespace_with_foreign);
+    remove_error.clear();
+    CHECK(std::filesystem::remove(foreign, remove_error));
+    CHECK(!remove_error);
+
+    auto second_fresh = store.create_worker_attempt_private_lease_root(second_chunk.chunk_id, 0);
+    auto& second_claim = require_private_lease_root_claim_ready(
+        second_fresh, "fresh attempt succeeds after foreign phase repair");
+    require_wave_status(second_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "second manifest-bound attempt BaseLock revalidates");
+    require_strict_empty_base_lock(second_lock, "strict second attempt BaseLock metadata");
+}
+
+void test_wave_store_attempt_base_lock_durability_prefixes() {
+    WaveStoreTempDirectory temp;
+    for (std::size_t failure_index = 0; failure_index < PRIVATE_LEASE_BASE_LOCK_SYNC_POINTS.size();
+         ++failure_index) {
+        const auto root = temp.path() / ("attempt-base-lock-sync-" + std::to_string(failure_index));
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create attempt BaseLock durability fixture");
+        const auto& chunk = store.manifest().chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+        const auto target = root / names->base_lock_leaf;
+        const auto before = capture_wave_root_snapshot(root);
+
+        BaseLockSyncFailureContext context{
+            .target = PRIVATE_LEASE_BASE_LOCK_SYNC_POINTS[failure_index],
+        };
+        auto interrupted = store.create_worker_attempt_private_lease_root(
+            chunk.chunk_id, 0,
+            wave_detail::DistributedSievePrivateLeaseBaseLockTestHooks{
+                .fail_before_sync = fail_before_base_lock_sync,
+                .context = &context,
+            });
+        CHECK(!interrupted);
+        CHECK(interrupted.claim == nullptr);
+        require_wave_status(interrupted.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::durability_failed,
+                            "deterministic attempt BaseLock durability interruption");
+        CHECK(interrupted.diagnostic.failed_private_lease_base_lock_sync_point == context.target);
+        for (std::size_t observed_index = 0;
+             observed_index < PRIVATE_LEASE_BASE_LOCK_SYNC_POINTS.size(); ++observed_index) {
+            CHECK(context.observed[observed_index] == (observed_index <= failure_index));
+        }
+
+        CHECK(entry_exists_no_follow(target));
+        require_strict_empty_base_lock(target,
+                                       "interrupted attempt BaseLock prefix remains strict");
+        CHECK(!relation_base_lock_reports_busy(target));
+        auto after_interruption = capture_wave_root_snapshot(root);
+        erase_wave_root_snapshot_leaf(after_interruption, names->base_lock_leaf);
+        CHECK(after_interruption == before);
+        require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "interrupted BaseLock prefix remains closed inventory");
+
+        const auto preserved_prefix = capture_wave_root_snapshot(root);
+        auto fresh_retry = store.create_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        CHECK(!fresh_retry);
+        CHECK(fresh_retry.claim == nullptr);
+        require_wave_status(fresh_retry.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "durability interruption never retries as fresh creation");
+        CHECK(capture_wave_root_snapshot(root) == preserved_prefix);
+
+        std::unique_ptr<cleanup_detail::BaseLock> external_holder;
+        try {
+            external_holder = std::make_unique<cleanup_detail::BaseLock>(target, false);
+        } catch (const cleanup_detail::Failure& failure) {
+            fail("hold interrupted BaseLock after failed transaction", __LINE__,
+                 std::to_string(static_cast<int>(failure.status)));
+        }
+        auto externally_contended = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        CHECK(!externally_contended);
+        CHECK(externally_contended.claim == nullptr);
+        require_wave_status(
+            externally_contended.diagnostic,
+            wave_detail::DistributedSieveWaveStoreStatus::private_lease_lock_busy,
+            "durability failure releases root slot but external target lock is observed");
+        CHECK(capture_wave_root_snapshot(root) == preserved_prefix);
+        external_holder.reset();
+
+        auto recovered = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        auto& claim = require_private_lease_root_claim_ready(
+            recovered, "explicit recovery completes interrupted BaseLock durability");
+        require_wave_status(claim.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "recovered interrupted BaseLock claim revalidates");
+        require_wave_status(claim.revalidate_authority(),
+                            wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "recovered interrupted BaseLock authority revalidates");
+        CHECK(relation_base_lock_reports_busy(target));
+        recovered.claim.reset();
+        CHECK(capture_wave_root_snapshot(root) == preserved_prefix);
+        CHECK(!relation_base_lock_reports_busy(target));
+    }
+}
+
+void test_wave_store_attempt_base_lock_state_scope_concurrency() {
+    WaveStoreTempDirectory temp;
+    const auto shared_root = temp.path() / "attempt-base-lock-shared-state";
+    auto shared_created =
+        wave_detail::DistributedSieveWaveStore::create(shared_root, wave_manifest_draft());
+    auto& shared_store =
+        require_wave_ready(shared_created, "create same-State attempt concurrency fixture");
+    const auto& first_chunk = shared_store.manifest().chunks.at(0);
+    const auto& second_chunk = shared_store.manifest().chunks.at(1);
+    const std::array chunk_ids{first_chunk.chunk_id, second_chunk.chunk_id};
+    const auto first_names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        first_chunk.relative_artifact_stem, first_chunk.chunk_id, 0);
+    const auto second_names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        second_chunk.relative_artifact_stem, second_chunk.chunk_id, 0);
+    CHECK(first_names.has_value());
+    CHECK(second_names.has_value());
+    const std::array targets{
+        shared_root / first_names->base_lock_leaf,
+        shared_root / second_names->base_lock_leaf,
+    };
+    const auto shared_baseline = capture_wave_root_snapshot(shared_root);
+
+    std::array<std::unique_ptr<PrivateLeaseRootClaim>, 2> shared_claims;
+    std::array<wave_detail::DistributedSieveWaveStoreDiagnostic, 2> shared_diagnostics;
+    std::barrier<> shared_phases(3);
+    const auto claim_shared_attempt = [&](std::size_t index) {
+        shared_phases.arrive_and_wait();
+        auto result = shared_store.create_worker_attempt_private_lease_root(chunk_ids[index], 0);
+        shared_diagnostics[index] = result.diagnostic;
+        shared_claims[index] = std::move(result.claim);
+        shared_phases.arrive_and_wait();
+    };
+
+    std::thread first_shared(claim_shared_attempt, 0);
+    std::thread second_shared(claim_shared_attempt, 1);
+    shared_phases.arrive_and_wait();
+    shared_phases.arrive_and_wait();
+    first_shared.join();
+    second_shared.join();
+
+    const std::size_t shared_success_count = static_cast<std::size_t>(shared_claims[0] != nullptr) +
+                                             static_cast<std::size_t>(shared_claims[1] != nullptr);
+    CHECK(shared_success_count == 1);
+    const std::size_t winner = shared_claims[0] != nullptr ? 0 : 1;
+    const std::size_t loser = 1U - winner;
+    require_wave_status(shared_diagnostics[winner],
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "same-State attempt concurrency winner");
+    require_wave_status(shared_diagnostics[loser],
+                        wave_detail::DistributedSieveWaveStoreStatus::private_lease_root_busy,
+                        "same-State attempt concurrency loser");
+    CHECK(entry_exists_no_follow(targets[winner]));
+    CHECK(!entry_exists_no_follow(targets[loser]));
+    require_strict_empty_base_lock(targets[winner],
+                                   "same-State concurrency winner BaseLock is strict");
+    CHECK(relation_base_lock_reports_busy(targets[winner]));
+    require_wave_status(shared_claims[winner]->revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "same-State concurrency winner revalidates");
+    require_wave_status(shared_claims[winner]->revalidate_authority(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "same-State concurrency winner authority revalidates");
+    auto shared_after = capture_wave_root_snapshot(shared_root);
+    erase_wave_root_snapshot_leaf(shared_after, winner == 0 ? first_names->base_lock_leaf
+                                                            : second_names->base_lock_leaf);
+    CHECK(shared_after == shared_baseline);
+
+    shared_claims[winner].reset();
+    auto loser_retry = shared_store.create_worker_attempt_private_lease_root(chunk_ids[loser], 0);
+    auto& loser_claim = require_private_lease_root_claim_ready(
+        loser_retry, "same-State concurrency loser retries after release");
+    require_wave_status(loser_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "retried same-State attempt claim revalidates");
+    CHECK(entry_exists_no_follow(targets[loser]));
+
+    const std::array independent_roots{
+        temp.path() / "attempt-base-lock-independent-a",
+        temp.path() / "attempt-base-lock-independent-b",
+    };
+    auto independent_first =
+        wave_detail::DistributedSieveWaveStore::create(independent_roots[0], wave_manifest_draft());
+    auto independent_second =
+        wave_detail::DistributedSieveWaveStore::create(independent_roots[1], wave_manifest_draft());
+    auto& independent_first_store =
+        require_wave_ready(independent_first, "create first independent-State fixture");
+    auto& independent_second_store =
+        require_wave_ready(independent_second, "create second independent-State fixture");
+    const std::array<wave_detail::DistributedSieveWaveStore*, 2> independent_stores{
+        &independent_first_store,
+        &independent_second_store,
+    };
+    const auto independent_chunk_id = independent_first_store.manifest().chunks.front().chunk_id;
+    const auto independent_first_names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        independent_first_store.manifest().chunks.front().relative_artifact_stem,
+        independent_chunk_id, 0);
+    const auto independent_second_names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        independent_second_store.manifest().chunks.front().relative_artifact_stem,
+        independent_chunk_id, 0);
+    CHECK(independent_first_names.has_value());
+    CHECK(independent_second_names.has_value());
+    const std::array independent_targets{
+        independent_roots[0] / independent_first_names->base_lock_leaf,
+        independent_roots[1] / independent_second_names->base_lock_leaf,
+    };
+    const std::array independent_baselines{
+        capture_wave_root_snapshot(independent_roots[0]),
+        capture_wave_root_snapshot(independent_roots[1]),
+    };
+    std::array<std::unique_ptr<PrivateLeaseRootClaim>, 2> independent_claims;
+    std::array<wave_detail::DistributedSieveWaveStoreDiagnostic, 2> independent_diagnostics;
+    std::barrier<> independent_phases(3);
+    const auto claim_independent_attempt = [&](std::size_t index) {
+        independent_phases.arrive_and_wait();
+        auto result = independent_stores[index]->create_worker_attempt_private_lease_root(
+            independent_chunk_id, 0);
+        independent_diagnostics[index] = result.diagnostic;
+        independent_claims[index] = std::move(result.claim);
+        independent_phases.arrive_and_wait();
+    };
+
+    std::thread first_independent(claim_independent_attempt, 0);
+    std::thread second_independent(claim_independent_attempt, 1);
+    independent_phases.arrive_and_wait();
+    independent_phases.arrive_and_wait();
+    first_independent.join();
+    second_independent.join();
+
+    CHECK(independent_claims[0] != nullptr);
+    CHECK(independent_claims[1] != nullptr);
+    require_wave_status(independent_diagnostics[0],
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "first independent-State attempt succeeds concurrently");
+    require_wave_status(independent_diagnostics[1],
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "second independent-State attempt succeeds concurrently");
+    require_wave_status(independent_claims[0]->revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "first independent-State claim revalidates");
+    require_wave_status(independent_claims[1]->revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "second independent-State claim revalidates");
+    require_wave_status(independent_claims[0]->revalidate_authority(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "first independent-State authority revalidates");
+    require_wave_status(independent_claims[1]->revalidate_authority(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "second independent-State authority revalidates");
+    for (std::size_t index = 0; index < independent_targets.size(); ++index) {
+        require_strict_empty_base_lock(independent_targets[index],
+                                       "independent-State concurrent BaseLock is strict");
+        CHECK(relation_base_lock_reports_busy(independent_targets[index]));
+        auto observed = capture_wave_root_snapshot(independent_roots[index]);
+        erase_wave_root_snapshot_leaf(observed, index == 0
+                                                    ? independent_first_names->base_lock_leaf
+                                                    : independent_second_names->base_lock_leaf);
+        CHECK(observed == independent_baselines[index]);
+    }
+
+    independent_claims[0].reset();
+    independent_claims[1].reset();
+    auto independent_first_recovered =
+        independent_first_store.open_worker_attempt_private_lease_root(independent_chunk_id, 0);
+    auto independent_second_recovered =
+        independent_second_store.open_worker_attempt_private_lease_root(independent_chunk_id, 0);
+    (void)require_private_lease_root_claim_ready(
+        independent_first_recovered,
+        "first independent-State target reopens after concurrent release");
+    (void)require_private_lease_root_claim_ready(
+        independent_second_recovered,
+        "second independent-State target reopens after concurrent release");
+}
+
+void test_wave_store_attempt_base_lock_bound_claim_exact_inventory() {
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "attempt-bound-claim-added-lock";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create bound-claim added-lock fixture");
+        const auto& target_chunk = store.manifest().chunks.at(0);
+        const auto& added_chunk = store.manifest().chunks.at(1);
+        const auto target_names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            target_chunk.relative_artifact_stem, target_chunk.chunk_id, 0);
+        const auto added_names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            added_chunk.relative_artifact_stem, added_chunk.chunk_id, 0);
+        CHECK(target_names.has_value());
+        CHECK(added_names.has_value());
+        const auto target = root / target_names->base_lock_leaf;
+        const auto added = root / added_names->base_lock_leaf;
+
+        auto bound = store.create_worker_attempt_private_lease_root(target_chunk.chunk_id, 0);
+        auto& claim =
+            require_private_lease_root_claim_ready(bound, "create exact-inventory bound claim");
+        const auto exact_successor = capture_wave_root_snapshot(root);
+        write_empty_foreign_leaf(added);
+        require_strict_empty_base_lock(added, "otherwise valid added attempt BaseLock is strict");
+        auto added_namespace = capture_wave_root_snapshot(root);
+        erase_wave_root_snapshot_leaf(added_namespace, added_names->base_lock_leaf);
+        CHECK(added_namespace == exact_successor);
+        require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "generic WaveStore accepts added manifest-valid attempt BaseLock");
+        require_wave_status(claim.revalidate_authority(),
+                            wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "bound authority-only check deliberately ignores added inventory");
+        require_wave_status(claim.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "bound claim rejects added manifest-valid attempt BaseLock");
+        CHECK(relation_base_lock_reports_busy(target));
+
+        std::error_code remove_error;
+        CHECK(std::filesystem::remove(added, remove_error));
+        CHECK(!remove_error);
+        CHECK(capture_wave_root_snapshot(root) == exact_successor);
+        require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "generic store recovers after added BaseLock removal");
+        require_wave_status(claim.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "bound target stays sticky-invalid after exact inventory repair");
+        bound.claim.reset();
+
+        auto recovered = store.open_worker_attempt_private_lease_root(target_chunk.chunk_id, 0);
+        auto& recovered_claim = require_private_lease_root_claim_ready(
+            recovered, "explicitly reopen target after added-inventory failure");
+        require_wave_status(recovered_claim.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "new claim accepts repaired exact inventory");
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "attempt-bound-claim-nontarget-split";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create bound-claim non-target fixture");
+        const auto& non_target_chunk = store.manifest().chunks.at(0);
+        const auto& target_chunk = store.manifest().chunks.at(1);
+        const auto non_target_names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            non_target_chunk.relative_artifact_stem, non_target_chunk.chunk_id, 0);
+        const auto target_names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            target_chunk.relative_artifact_stem, target_chunk.chunk_id, 0);
+        CHECK(non_target_names.has_value());
+        CHECK(target_names.has_value());
+        const auto non_target = root / non_target_names->base_lock_leaf;
+        const auto target = root / target_names->base_lock_leaf;
+
+        auto non_target_created =
+            store.create_worker_attempt_private_lease_root(non_target_chunk.chunk_id, 0);
+        (void)require_private_lease_root_claim_ready(non_target_created,
+                                                     "create non-target exact-inventory BaseLock");
+        non_target_created.claim.reset();
+        auto bound = store.create_worker_attempt_private_lease_root(target_chunk.chunk_id, 0);
+        auto& claim = require_private_lease_root_claim_ready(
+            bound, "create target claim with pre-existing non-target BaseLock");
+        const auto exact_successor = capture_wave_root_snapshot(root);
+        const auto original_non_target =
+            require_wave_root_snapshot_leaf(exact_successor, non_target_names->base_lock_leaf);
+        const auto displaced = temp.path() / "attempt-bound-claim-original-nontarget";
+        WaveBaseLockReplacementContext context{
+            .canonical = non_target,
+            .displaced = displaced,
+        };
+        replace_base_lock_after_first_inventory(&context);
+        CHECK(context.invoked);
+        CHECK(context.replaced);
+        CHECK(context.native_error == 0);
+        require_strict_empty_base_lock(non_target,
+                                       "bound-claim non-target replacement remains strict");
+        require_strict_empty_base_lock(displaced,
+                                       "bound-claim displaced non-target remains strict");
+        CHECK(capture_wave_root_entry_snapshot(displaced, non_target_names->base_lock_leaf) ==
+              original_non_target);
+        require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "generic WaveStore accepts stable non-target replacement");
+        require_wave_status(claim.revalidate_authority(),
+                            wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "bound authority-only check accepts unchanged own target");
+        require_wave_status(claim.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "bound claim rejects non-target BaseLock identity replacement");
+        CHECK(relation_base_lock_reports_busy(target));
+        CHECK(!relation_base_lock_reports_busy(non_target));
+        CHECK(!relation_base_lock_reports_busy(displaced));
+
+        std::error_code remove_error;
+        CHECK(std::filesystem::remove(non_target, remove_error));
+        CHECK(!remove_error);
+        require_rename(displaced, non_target, "restore bound-claim exact non-target identity");
+        CHECK(capture_wave_root_snapshot(root) == exact_successor);
+        require_wave_status(claim.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "bound target stays sticky-invalid after non-target identity repair");
+        bound.claim.reset();
+
+        auto recovered = store.open_worker_attempt_private_lease_root(target_chunk.chunk_id, 0);
+        auto& recovered_claim = require_private_lease_root_claim_ready(
+            recovered, "explicitly reopen target after non-target repair");
+        require_wave_status(recovered_claim.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "new target claim accepts restored exact non-target identity");
+    }
+}
+
+void test_wave_store_attempt_base_lock_fork_binding_and_close_only_lifetime() {
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "attempt-base-lock-fork";
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+    auto& store = require_wave_ready(created, "create attempt BaseLock fork fixture");
+    const auto& chunk = store.manifest().chunks.front();
+    const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk.relative_artifact_stem, chunk.chunk_id, 0);
+    CHECK(names.has_value());
+    const auto target = root / names->base_lock_leaf;
+    auto claimed = store.create_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+    auto& claim =
+        require_private_lease_root_claim_ready(claimed, "create attempt BaseLock before fork");
+
+    int ready_pipe[2]{-1, -1};
+    int release_pipe[2]{-1, -1};
+    CHECK(::pipe(ready_pipe) == 0);
+    CHECK(::pipe(release_pipe) == 0);
+    const pid_t child = ::fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        (void)::close(ready_pipe[0]);
+        (void)::close(release_pipe[1]);
+        const auto inherited_full = claim.revalidate();
+        const auto inherited_authority = claim.revalidate_authority();
+        auto inherited_open = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        const bool rejected = !claim.owned_by_current_process() &&
+                              inherited_full.status ==
+                                  wave_detail::DistributedSieveWaveStoreStatus::invalid_request &&
+                              inherited_authority.status ==
+                                  wave_detail::DistributedSieveWaveStoreStatus::invalid_request &&
+                              !inherited_open && inherited_open.claim == nullptr &&
+                              inherited_open.diagnostic.status ==
+                                  wave_detail::DistributedSieveWaveStoreStatus::invalid_request;
+        claimed.claim.reset();
+        const bool signalled = write_pipe_byte(ready_pipe[1], rejected ? 'r' : 'f');
+        char release = '\0';
+        const bool released = read_pipe_byte(release_pipe[0], release);
+        ::_exit(rejected && signalled && released && release == 'x' ? 0 : 85);
+    }
+
+    (void)::close(ready_pipe[1]);
+    (void)::close(release_pipe[0]);
+    char ready = '\0';
+    const bool received = read_pipe_byte(ready_pipe[0], ready);
+    CHECK(received);
+    CHECK(ready == 'r');
+    CHECK(relation_base_lock_reports_busy(target));
+    require_wave_status(claim.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "parent attempt BaseLock survives child close");
+
+    const bool released = write_pipe_byte(release_pipe[1], 'x');
+    (void)::close(ready_pipe[0]);
+    (void)::close(release_pipe[1]);
+    int child_status = 0;
+    const bool waited = wait_for_child(child, child_status);
+    CHECK(released);
+    CHECK(waited);
+    CHECK(WIFEXITED(child_status));
+    CHECK(WEXITSTATUS(child_status) == 0);
+    CHECK(relation_base_lock_reports_busy(target));
+    require_wave_status(claim.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "parent attempt BaseLock survives child exit");
+
+    claimed.claim.reset();
+    auto reopened = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+    auto& reopened_claim =
+        require_private_lease_root_claim_ready(reopened, "reopen after final parent close");
+    require_wave_status(reopened_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "reopened attempt BaseLock revalidates after fork");
+}
+
+void test_wave_store_attempt_base_lock_pre_mutation_authority_replacement() {
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "attempt-authority-replacement";
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+    auto& store = require_wave_ready(created, "create attempt authority-replacement fixture");
+    const auto& chunk = store.manifest().chunks.front();
+    const auto& post_lock_chunk = store.manifest().chunks.at(1);
+    const auto first_names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk.relative_artifact_stem, chunk.chunk_id, 0);
+    const auto second_names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk.relative_artifact_stem, chunk.chunk_id, 1);
+    const auto post_root_names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        post_lock_chunk.relative_artifact_stem, post_lock_chunk.chunk_id, 0);
+    const auto post_wave_lock_names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        post_lock_chunk.relative_artifact_stem, post_lock_chunk.chunk_id, 1);
+    CHECK(first_names.has_value());
+    CHECK(second_names.has_value());
+    CHECK(post_root_names.has_value());
+    CHECK(post_wave_lock_names.has_value());
+
+    const auto original_root = temp.path() / "attempt-authority-original-root";
+    const auto before_root_replacement = capture_wave_root_snapshot(root);
+    WaveRootReplacementContext root_context{
+        .canonical = root,
+        .displaced = original_root,
+    };
+    auto root_rejected = store.create_worker_attempt_private_lease_root(
+        chunk.chunk_id, 0,
+        wave_detail::DistributedSievePrivateLeaseBaseLockTestHooks{
+            .after_initial_phase_validation = replace_wave_root_after_attempt_phase,
+            .context = &root_context,
+        });
+    CHECK(root_context.invoked);
+    CHECK(root_context.replaced);
+    CHECK(root_context.native_error == 0);
+    CHECK(!root_rejected);
+    CHECK(root_rejected.claim == nullptr);
+    require_wave_status(root_rejected.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::root_invalid,
+                        "root identity replacement rejected before BaseLock mutation");
+    CHECK(!entry_exists_no_follow(root / first_names->base_lock_leaf));
+    CHECK(!entry_exists_no_follow(original_root / first_names->base_lock_leaf));
+    CHECK(capture_wave_root_snapshot(root).size() == 1);
+    CHECK(capture_wave_root_snapshot(original_root) == before_root_replacement);
+
+    const auto observed_replacement = temp.path() / "attempt-authority-replacement-root";
+    require_rename(root, observed_replacement, "preserve replacement attempt root");
+    require_rename(original_root, root, "restore original attempt root");
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "store revalidates after attempt-root restoration");
+    auto first_created = store.create_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+    (void)require_private_lease_root_claim_ready(first_created,
+                                                 "fresh BaseLock succeeds after root restoration");
+    first_created.claim.reset();
+
+    const auto original_wave_lock = temp.path() / "attempt-authority-original-wave-lock";
+    const auto before_wave_lock_replacement = capture_wave_root_snapshot(root);
+    WaveBaseLockReplacementContext lock_context{
+        .canonical = wave_lock_path(root),
+        .displaced = original_wave_lock,
+    };
+    auto lock_rejected = store.create_worker_attempt_private_lease_root(
+        chunk.chunk_id, 1,
+        wave_detail::DistributedSievePrivateLeaseBaseLockTestHooks{
+            .after_initial_phase_validation = replace_base_lock_after_first_inventory,
+            .context = &lock_context,
+        });
+    CHECK(lock_context.invoked);
+    CHECK(lock_context.replaced);
+    CHECK(lock_context.native_error == 0);
+    CHECK(!lock_rejected);
+    CHECK(lock_rejected.claim == nullptr);
+    require_wave_status(lock_rejected.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::lock_invalid,
+                        "wave-lock identity replacement rejected before BaseLock mutation");
+    CHECK(!entry_exists_no_follow(root / second_names->base_lock_leaf));
+    auto before_without_wave_lock = before_wave_lock_replacement;
+    auto after_without_wave_lock = capture_wave_root_snapshot(root);
+    erase_wave_root_snapshot_leaf(before_without_wave_lock,
+                                  wave_detail::DISTRIBUTED_SIEVE_WAVE_LOCK_LEAF);
+    erase_wave_root_snapshot_leaf(after_without_wave_lock,
+                                  wave_detail::DISTRIBUTED_SIEVE_WAVE_LOCK_LEAF);
+    CHECK(after_without_wave_lock == before_without_wave_lock);
+    require_strict_empty_base_lock(wave_lock_path(root),
+                                   "replacement permanent wave lock remains strict");
+    require_strict_empty_base_lock(original_wave_lock,
+                                   "displaced permanent wave lock remains strict");
+
+    std::error_code remove_error;
+    CHECK(std::filesystem::remove(wave_lock_path(root), remove_error));
+    CHECK(!remove_error);
+    require_rename(original_wave_lock, wave_lock_path(root), "restore original attempt wave lock");
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "store revalidates after attempt wave-lock restoration");
+    auto second_created = store.create_worker_attempt_private_lease_root(chunk.chunk_id, 1);
+    auto& second_claim = require_private_lease_root_claim_ready(
+        second_created, "fresh BaseLock succeeds after wave-lock restoration");
+    require_wave_status(second_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "post-restoration attempt claim revalidates");
+    second_created.claim.reset();
+
+    const auto post_root_target = root / post_root_names->base_lock_leaf;
+    const auto post_root_displaced = temp.path() / "attempt-authority-post-lock-original-root";
+    const auto before_post_root_replacement = capture_wave_root_snapshot(root);
+    WaveRootReplacementContext post_root_context{
+        .canonical = root,
+        .displaced = post_root_displaced,
+    };
+    auto post_root_rejected = store.create_worker_attempt_private_lease_root(
+        post_lock_chunk.chunk_id, 0,
+        wave_detail::DistributedSievePrivateLeaseBaseLockTestHooks{
+            .after_target_lock_acquired = replace_wave_root_after_attempt_phase,
+            .context = &post_root_context,
+        });
+    CHECK(post_root_context.invoked);
+    CHECK(post_root_context.replaced);
+    CHECK(post_root_context.native_error == 0);
+    CHECK(!post_root_rejected);
+    CHECK(post_root_rejected.claim == nullptr);
+    require_wave_status(post_root_rejected.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::root_invalid,
+                        "post-lock root replacement precedes durability and is preserved");
+    CHECK(capture_wave_root_snapshot(root).size() == 1);
+    CHECK(entry_exists_no_follow(post_root_displaced / post_root_names->base_lock_leaf));
+    require_strict_empty_base_lock(post_root_displaced / post_root_names->base_lock_leaf,
+                                   "post-lock root replacement preserves created BaseLock prefix");
+    auto displaced_post_root_snapshot = capture_wave_root_snapshot(post_root_displaced);
+    erase_wave_root_snapshot_leaf(displaced_post_root_snapshot, post_root_names->base_lock_leaf);
+    CHECK(displaced_post_root_snapshot == before_post_root_replacement);
+
+    const auto observed_post_root_replacement =
+        temp.path() / "attempt-authority-post-lock-replacement-root";
+    require_rename(root, observed_post_root_replacement, "preserve post-lock replacement root");
+    require_rename(post_root_displaced, root, "restore post-lock original root");
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "store accepts preserved BaseLock prefix after root restoration");
+    auto post_root_recovered =
+        store.open_worker_attempt_private_lease_root(post_lock_chunk.chunk_id, 0);
+    auto& post_root_claim = require_private_lease_root_claim_ready(
+        post_root_recovered, "explicitly recover post-lock root-loss prefix");
+    require_wave_status(post_root_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "post-lock root-loss recovery revalidates");
+    CHECK(relation_base_lock_reports_busy(post_root_target));
+    post_root_recovered.claim.reset();
+
+    const auto before_open_root_replacement = capture_wave_root_snapshot(root);
+    const auto open_root_displaced = temp.path() / "attempt-authority-open-original-root";
+    WaveRootReplacementContext open_root_context{
+        .canonical = root,
+        .displaced = open_root_displaced,
+    };
+    auto open_root_rejected = store.open_worker_attempt_private_lease_root(
+        post_lock_chunk.chunk_id, 0,
+        wave_detail::DistributedSievePrivateLeaseBaseLockTestHooks{
+            .after_target_lock_acquired = replace_wave_root_after_attempt_phase,
+            .context = &open_root_context,
+        });
+    CHECK(open_root_context.invoked);
+    CHECK(open_root_context.replaced);
+    CHECK(open_root_context.native_error == 0);
+    CHECK(!open_root_rejected);
+    CHECK(open_root_rejected.claim == nullptr);
+    require_wave_status(open_root_rejected.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::root_invalid,
+                        "open-existing root replacement is rejected without target mutation");
+    CHECK(capture_wave_root_snapshot(root).size() == 1);
+    CHECK(capture_wave_root_snapshot(open_root_displaced) == before_open_root_replacement);
+    CHECK(!relation_base_lock_reports_busy(open_root_displaced / post_root_names->base_lock_leaf));
+
+    const auto observed_open_root_replacement =
+        temp.path() / "attempt-authority-open-replacement-root";
+    require_rename(root, observed_open_root_replacement, "preserve open-existing replacement root");
+    require_rename(open_root_displaced, root, "restore open-existing original root");
+    CHECK(capture_wave_root_snapshot(root) == before_open_root_replacement);
+    auto open_root_retry =
+        store.open_worker_attempt_private_lease_root(post_lock_chunk.chunk_id, 0);
+    auto& open_root_retry_claim = require_private_lease_root_claim_ready(
+        open_root_retry, "retry recovery after open-existing root restoration");
+    require_wave_status(open_root_retry_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "open-existing root-restoration retry revalidates");
+    open_root_retry.claim.reset();
+
+    const auto post_wave_lock_target = root / post_wave_lock_names->base_lock_leaf;
+    const auto post_wave_lock_displaced =
+        temp.path() / "attempt-authority-post-lock-original-wave-lock";
+    const auto before_post_wave_lock_replacement = capture_wave_root_snapshot(root);
+    WaveBaseLockReplacementContext post_wave_lock_context{
+        .canonical = wave_lock_path(root),
+        .displaced = post_wave_lock_displaced,
+    };
+    auto post_wave_lock_rejected = store.create_worker_attempt_private_lease_root(
+        post_lock_chunk.chunk_id, 1,
+        wave_detail::DistributedSievePrivateLeaseBaseLockTestHooks{
+            .after_target_lock_acquired = replace_base_lock_after_first_inventory,
+            .context = &post_wave_lock_context,
+        });
+    CHECK(post_wave_lock_context.invoked);
+    CHECK(post_wave_lock_context.replaced);
+    CHECK(post_wave_lock_context.native_error == 0);
+    CHECK(!post_wave_lock_rejected);
+    CHECK(post_wave_lock_rejected.claim == nullptr);
+    require_wave_status(post_wave_lock_rejected.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::lock_invalid,
+                        "post-lock wave-lock replacement precedes durability and is preserved");
+    CHECK(entry_exists_no_follow(post_wave_lock_target));
+    require_strict_empty_base_lock(
+        post_wave_lock_target, "post-lock wave-lock replacement preserves created BaseLock prefix");
+    auto before_post_wave_lock_without_lock = before_post_wave_lock_replacement;
+    auto after_post_wave_lock_without_lock = capture_wave_root_snapshot(root);
+    erase_wave_root_snapshot_leaf(before_post_wave_lock_without_lock,
+                                  wave_detail::DISTRIBUTED_SIEVE_WAVE_LOCK_LEAF);
+    erase_wave_root_snapshot_leaf(after_post_wave_lock_without_lock,
+                                  wave_detail::DISTRIBUTED_SIEVE_WAVE_LOCK_LEAF);
+    erase_wave_root_snapshot_leaf(after_post_wave_lock_without_lock,
+                                  post_wave_lock_names->base_lock_leaf);
+    CHECK(after_post_wave_lock_without_lock == before_post_wave_lock_without_lock);
+    require_strict_empty_base_lock(wave_lock_path(root),
+                                   "post-lock replacement wave lock remains strict");
+    require_strict_empty_base_lock(post_wave_lock_displaced,
+                                   "post-lock displaced wave lock remains strict");
+
+    remove_error.clear();
+    CHECK(std::filesystem::remove(wave_lock_path(root), remove_error));
+    CHECK(!remove_error);
+    require_rename(post_wave_lock_displaced, wave_lock_path(root),
+                   "restore post-lock original wave lock");
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "store accepts preserved BaseLock prefix after wave-lock restoration");
+    auto post_wave_lock_recovered =
+        store.open_worker_attempt_private_lease_root(post_lock_chunk.chunk_id, 1);
+    auto& post_wave_lock_claim = require_private_lease_root_claim_ready(
+        post_wave_lock_recovered, "explicitly recover post-lock wave-lock-loss prefix");
+    require_wave_status(post_wave_lock_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "post-lock wave-lock-loss recovery revalidates");
+    CHECK(relation_base_lock_reports_busy(post_wave_lock_target));
+    post_wave_lock_recovered.claim.reset();
+
+    const auto before_open_wave_lock_replacement = capture_wave_root_snapshot(root);
+    const auto open_wave_lock_displaced = temp.path() / "attempt-authority-open-original-wave-lock";
+    WaveBaseLockReplacementContext open_wave_lock_context{
+        .canonical = wave_lock_path(root),
+        .displaced = open_wave_lock_displaced,
+    };
+    auto open_wave_lock_rejected = store.open_worker_attempt_private_lease_root(
+        post_lock_chunk.chunk_id, 1,
+        wave_detail::DistributedSievePrivateLeaseBaseLockTestHooks{
+            .after_target_lock_acquired = replace_base_lock_after_first_inventory,
+            .context = &open_wave_lock_context,
+        });
+    CHECK(open_wave_lock_context.invoked);
+    CHECK(open_wave_lock_context.replaced);
+    CHECK(open_wave_lock_context.native_error == 0);
+    CHECK(!open_wave_lock_rejected);
+    CHECK(open_wave_lock_rejected.claim == nullptr);
+    require_wave_status(open_wave_lock_rejected.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::lock_invalid,
+                        "open-existing wave-lock replacement is rejected without target mutation");
+    auto before_open_without_wave_lock = before_open_wave_lock_replacement;
+    auto after_open_without_wave_lock = capture_wave_root_snapshot(root);
+    erase_wave_root_snapshot_leaf(before_open_without_wave_lock,
+                                  wave_detail::DISTRIBUTED_SIEVE_WAVE_LOCK_LEAF);
+    erase_wave_root_snapshot_leaf(after_open_without_wave_lock,
+                                  wave_detail::DISTRIBUTED_SIEVE_WAVE_LOCK_LEAF);
+    CHECK(after_open_without_wave_lock == before_open_without_wave_lock);
+    require_strict_empty_base_lock(wave_lock_path(root),
+                                   "open-existing replacement wave lock remains strict");
+    require_strict_empty_base_lock(open_wave_lock_displaced,
+                                   "open-existing displaced wave lock remains strict");
+    CHECK(!relation_base_lock_reports_busy(post_wave_lock_target));
+
+    remove_error.clear();
+    CHECK(std::filesystem::remove(wave_lock_path(root), remove_error));
+    CHECK(!remove_error);
+    require_rename(open_wave_lock_displaced, wave_lock_path(root),
+                   "restore open-existing original wave lock");
+    CHECK(capture_wave_root_snapshot(root) == before_open_wave_lock_replacement);
+    auto open_wave_lock_retry =
+        store.open_worker_attempt_private_lease_root(post_lock_chunk.chunk_id, 1);
+    auto& open_wave_lock_retry_claim = require_private_lease_root_claim_ready(
+        open_wave_lock_retry, "retry recovery after open-existing wave-lock restoration");
+    require_wave_status(open_wave_lock_retry_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "open-existing wave-lock-restoration retry revalidates");
+}
+
+void test_wave_store_attempt_base_lock_mixed_failure_precedence() {
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "mixed-target-root";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create target-root precedence fixture");
+        const auto& chunk = store.manifest().chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+        const auto target = root / names->base_lock_leaf;
+        MixedAttemptFailureContext context{
+            .target =
+                {
+                    .canonical = target,
+                    .displaced = temp.path() / "mixed-target-root-original-target",
+                },
+            .root =
+                {
+                    .canonical = root,
+                    .displaced = temp.path() / "mixed-target-root-original-root",
+                },
+        };
+
+        auto rejected = store.create_worker_attempt_private_lease_root(
+            chunk.chunk_id, 0,
+            wave_detail::DistributedSievePrivateLeaseBaseLockTestHooks{
+                .after_target_lock_acquired = replace_attempt_target_and_root_after_lock,
+                .context = &context,
+            });
+        CHECK(!rejected);
+        CHECK(rejected.claim == nullptr);
+        require_wave_status(rejected.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::root_invalid,
+                            "root authority outranks simultaneous target identity loss");
+        CHECK(context.target.invoked);
+        CHECK(context.target.replaced);
+        CHECK(context.target.native_error == 0);
+        CHECK(context.root.invoked);
+        CHECK(context.root.replaced);
+        CHECK(context.root.native_error == 0);
+        CHECK(capture_wave_root_snapshot(root).size() == 1);
+        CHECK(!entry_exists_no_follow(target));
+        require_strict_empty_base_lock(context.root.displaced / names->base_lock_leaf,
+                                       "target replacement remains in displaced original root");
+        require_strict_empty_base_lock(context.target.displaced,
+                                       "locked target remains outside displaced original root");
+        CHECK(!relation_base_lock_reports_busy(context.target.displaced));
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "mixed-target-wave-lock";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create target-wave-lock precedence fixture");
+        const auto& chunk = store.manifest().chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+        MixedAttemptFailureContext context{
+            .target =
+                {
+                    .canonical = root / names->base_lock_leaf,
+                    .displaced = temp.path() / "mixed-target-wave-lock-original-target",
+                },
+            .wave_lock =
+                {
+                    .canonical = wave_lock_path(root),
+                    .displaced = temp.path() / "mixed-target-wave-lock-original-wave-lock",
+                },
+        };
+
+        auto rejected = store.create_worker_attempt_private_lease_root(
+            chunk.chunk_id, 0,
+            wave_detail::DistributedSievePrivateLeaseBaseLockTestHooks{
+                .after_target_lock_acquired = replace_attempt_target_and_wave_lock_after_lock,
+                .context = &context,
+            });
+        CHECK(!rejected);
+        CHECK(rejected.claim == nullptr);
+        require_wave_status(rejected.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::lock_invalid,
+                            "wave-lock authority outranks simultaneous target identity loss");
+        CHECK(context.target.invoked);
+        CHECK(context.target.replaced);
+        CHECK(context.target.native_error == 0);
+        CHECK(context.wave_lock.invoked);
+        CHECK(context.wave_lock.replaced);
+        CHECK(context.wave_lock.native_error == 0);
+        require_strict_empty_base_lock(root / names->base_lock_leaf,
+                                       "mixed target-wave replacement target remains preserved");
+        require_strict_empty_base_lock(context.target.displaced,
+                                       "mixed target-wave displaced target remains preserved");
+        require_strict_empty_base_lock(wave_lock_path(root),
+                                       "mixed target-wave replacement wave lock remains preserved");
+        require_strict_empty_base_lock(context.wave_lock.displaced,
+                                       "mixed target-wave displaced wave lock remains preserved");
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "mixed-root-wave-lock";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create root-wave-lock precedence fixture");
+        const auto& chunk = store.manifest().chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+        MixedAttemptFailureContext context{
+            .wave_lock =
+                {
+                    .canonical = wave_lock_path(root),
+                    .displaced = temp.path() / "mixed-root-wave-original-wave-lock",
+                },
+            .root =
+                {
+                    .canonical = root,
+                    .displaced = temp.path() / "mixed-root-wave-original-root",
+                },
+        };
+
+        auto rejected = store.create_worker_attempt_private_lease_root(
+            chunk.chunk_id, 0,
+            wave_detail::DistributedSievePrivateLeaseBaseLockTestHooks{
+                .after_target_lock_acquired = replace_attempt_root_and_wave_lock_after_lock,
+                .context = &context,
+            });
+        CHECK(!rejected);
+        CHECK(rejected.claim == nullptr);
+        require_wave_status(rejected.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::root_invalid,
+                            "root authority outranks simultaneous wave-lock loss");
+        CHECK(context.wave_lock.invoked);
+        CHECK(context.wave_lock.replaced);
+        CHECK(context.wave_lock.native_error == 0);
+        CHECK(context.root.invoked);
+        CHECK(context.root.replaced);
+        CHECK(context.root.native_error == 0);
+        CHECK(capture_wave_root_snapshot(root).size() == 1);
+        require_strict_empty_base_lock(context.root.displaced / names->base_lock_leaf,
+                                       "root-wave replacement preserves created target prefix");
+        require_strict_empty_base_lock(context.root.displaced /
+                                           wave_detail::DISTRIBUTED_SIEVE_WAVE_LOCK_LEAF,
+                                       "root-wave replacement preserves replacement wave lock");
+        require_strict_empty_base_lock(context.wave_lock.displaced,
+                                       "root-wave replacement preserves original wave lock");
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "mixed-root-durability";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create root-durability precedence fixture");
+        const auto& chunk = store.manifest().chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+        MixedAttemptFailureContext context{
+            .root =
+                {
+                    .canonical = root,
+                    .displaced = temp.path() / "mixed-root-durability-original-root",
+                },
+            .sync =
+                {
+                    .target =
+                        wave_detail::DistributedSievePrivateLeaseBaseLockSyncPoint::TargetInitial,
+                },
+        };
+
+        auto rejected = store.create_worker_attempt_private_lease_root(
+            chunk.chunk_id, 0,
+            wave_detail::DistributedSievePrivateLeaseBaseLockTestHooks{
+                .fail_before_sync = replace_root_and_fail_before_base_lock_sync,
+                .context = &context,
+            });
+        CHECK(!rejected);
+        CHECK(rejected.claim == nullptr);
+        require_wave_status(rejected.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::root_invalid,
+                            "root loss outranks simultaneous durability interruption");
+        CHECK(!rejected.diagnostic.failed_private_lease_base_lock_sync_point.has_value());
+        CHECK(context.sync.observed.front());
+        CHECK(context.root.invoked);
+        CHECK(context.root.replaced);
+        CHECK(context.root.native_error == 0);
+        CHECK(capture_wave_root_snapshot(root).size() == 1);
+        require_strict_empty_base_lock(context.root.displaced / names->base_lock_leaf,
+                                       "root-durability failure preserves target prefix");
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "mixed-target-foreign-durability";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store =
+            require_wave_ready(created, "create target-foreign-durability precedence fixture");
+        const auto& chunk = store.manifest().chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+        MixedAttemptFailureContext context{
+            .target =
+                {
+                    .canonical = root / names->base_lock_leaf,
+                    .displaced = temp.path() / "mixed-target-foreign-durability-original-target",
+                },
+            .foreign =
+                {
+                    .foreign = root / "mixed.unexpected-control",
+                },
+            .sync =
+                {
+                    .target =
+                        wave_detail::DistributedSievePrivateLeaseBaseLockSyncPoint::TargetInitial,
+                },
+        };
+
+        auto rejected = store.create_worker_attempt_private_lease_root(
+            chunk.chunk_id, 0,
+            wave_detail::DistributedSievePrivateLeaseBaseLockTestHooks{
+                .fail_before_sync = replace_target_insert_foreign_and_fail_before_base_lock_sync,
+                .context = &context,
+            });
+        CHECK(!rejected);
+        CHECK(rejected.claim == nullptr);
+        require_wave_status(
+            rejected.diagnostic, wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+            "target and inventory drift outrank simultaneous durability interruption");
+        CHECK(!rejected.diagnostic.failed_private_lease_base_lock_sync_point.has_value());
+        CHECK(context.sync.observed.front());
+        CHECK(context.target.invoked);
+        CHECK(context.target.replaced);
+        CHECK(context.target.native_error == 0);
+        CHECK(context.foreign.invoked);
+        CHECK(context.foreign.inserted);
+        CHECK(context.foreign.native_error == 0);
+        require_strict_empty_base_lock(
+            root / names->base_lock_leaf,
+            "target-foreign-durability replacement target remains preserved");
+        require_strict_empty_base_lock(
+            context.target.displaced,
+            "target-foreign-durability displaced target remains preserved");
+        require_strict_empty_base_lock(context.foreign.foreign,
+                                       "target-foreign-durability foreign leaf remains preserved");
+        CHECK(!relation_base_lock_reports_busy(context.target.displaced));
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "mixed-returned-claim";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create returned-claim precedence fixture");
+        const auto& first_chunk = store.manifest().chunks.at(0);
+        const auto& second_chunk = store.manifest().chunks.at(1);
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            first_chunk.relative_artifact_stem, first_chunk.chunk_id, 0);
+        CHECK(names.has_value());
+        auto claimed = store.create_worker_attempt_private_lease_root(first_chunk.chunk_id, 0);
+        auto& claim = require_private_lease_root_claim_ready(
+            claimed, "create returned claim before mixed replacement");
+        MixedAttemptFailureContext context{
+            .target =
+                {
+                    .canonical = root / names->base_lock_leaf,
+                    .displaced = temp.path() / "mixed-returned-claim-original-target",
+                },
+            .root =
+                {
+                    .canonical = root,
+                    .displaced = temp.path() / "mixed-returned-claim-original-root",
+                },
+        };
+        replace_attempt_target_and_root_after_lock(&context);
+        CHECK(context.target.replaced);
+        CHECK(context.root.replaced);
+
+        auto competing = store.create_worker_attempt_private_lease_root(second_chunk.chunk_id, 0);
+        CHECK(!competing);
+        CHECK(competing.claim == nullptr);
+        require_wave_status(competing.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::private_lease_root_busy,
+                            "same-State root arbitration outranks non-owner authority observation");
+        require_wave_status(claim.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::root_invalid,
+                            "returned claim reports root before simultaneous target loss");
+        require_wave_status(
+            claim.revalidate_authority(),
+            wave_detail::DistributedSieveWaveStoreStatus::root_invalid,
+            "returned claim authority reports root before simultaneous target loss");
+        CHECK(relation_base_lock_reports_busy(context.target.displaced));
+
+        const auto observed_replacement = temp.path() / "mixed-returned-claim-replacement-root";
+        require_rename(root, observed_replacement,
+                       "preserve mixed returned-claim replacement root");
+        require_rename(context.root.displaced, root, "restore mixed returned-claim original root");
+        std::error_code remove_error;
+        CHECK(std::filesystem::remove(root / names->base_lock_leaf, remove_error));
+        CHECK(!remove_error);
+        require_rename(context.target.displaced, root / names->base_lock_leaf,
+                       "restore mixed returned-claim original target");
+        require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "store revalidates after mixed returned-claim restoration");
+        require_wave_status(
+            claim.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+            "returned target capability remains sticky-invalid after authority repair");
+        claimed.claim.reset();
+
+        auto recovered = store.open_worker_attempt_private_lease_root(first_chunk.chunk_id, 0);
+        auto& recovered_claim = require_private_lease_root_claim_ready(
+            recovered, "new claim explicitly recovers mixed returned-claim target");
+        require_wave_status(recovered_claim.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "new mixed-recovery claim revalidates");
+    }
+}
+
+void test_wave_store_attempt_base_lock_authority_sandwich() {
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "factory-root-sandwich";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create factory root-sandwich fixture");
+        const auto& chunk = store.manifest().chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+        WaveRootReplacementContext context{
+            .canonical = root,
+            .displaced = temp.path() / "factory-root-sandwich-original",
+        };
+        auto rejected = store.create_worker_attempt_private_lease_root(
+            chunk.chunk_id, 0,
+            wave_detail::DistributedSievePrivateLeaseBaseLockTestHooks{
+                .after_target_revalidation = replace_wave_root_after_attempt_phase,
+                .context = &context,
+            });
+        CHECK(context.invoked);
+        CHECK(context.replaced);
+        CHECK(context.native_error == 0);
+        CHECK(!rejected);
+        CHECK(rejected.claim == nullptr);
+        require_wave_status(rejected.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::root_invalid,
+                            "factory rechecks root authority after target revalidation");
+        CHECK(capture_wave_root_snapshot(root).size() == 1);
+        require_strict_empty_base_lock(context.displaced / names->base_lock_leaf,
+                                       "factory root-sandwich preserves created target prefix");
+        CHECK(!relation_base_lock_reports_busy(context.displaced / names->base_lock_leaf));
+
+        const auto replacement = temp.path() / "factory-root-sandwich-replacement";
+        require_rename(root, replacement, "preserve factory root-sandwich replacement");
+        require_rename(context.displaced, root, "restore factory root-sandwich original");
+        require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "store accepts restored factory root-sandwich namespace");
+        auto recovered = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        auto& recovered_claim = require_private_lease_root_claim_ready(
+            recovered, "explicitly recover factory root-sandwich target");
+        require_wave_status(recovered_claim.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "factory root-sandwich recovery revalidates");
+        CHECK(relation_base_lock_reports_busy(root / names->base_lock_leaf));
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "factory-wave-lock-sandwich";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create factory wave-lock-sandwich fixture");
+        const auto& chunk = store.manifest().chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+        WaveBaseLockReplacementContext context{
+            .canonical = wave_lock_path(root),
+            .displaced = temp.path() / "factory-wave-lock-sandwich-original",
+        };
+        auto rejected = store.create_worker_attempt_private_lease_root(
+            chunk.chunk_id, 0,
+            wave_detail::DistributedSievePrivateLeaseBaseLockTestHooks{
+                .after_target_revalidation = replace_base_lock_after_first_inventory,
+                .context = &context,
+            });
+        CHECK(context.invoked);
+        CHECK(context.replaced);
+        CHECK(context.native_error == 0);
+        CHECK(!rejected);
+        CHECK(rejected.claim == nullptr);
+        require_wave_status(rejected.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::lock_invalid,
+                            "factory rechecks wave-lock authority after target revalidation");
+        require_strict_empty_base_lock(
+            root / names->base_lock_leaf,
+            "factory wave-lock-sandwich preserves created target prefix");
+        CHECK(!relation_base_lock_reports_busy(root / names->base_lock_leaf));
+        require_strict_empty_base_lock(wave_lock_path(root),
+                                       "factory wave-lock-sandwich preserves replacement lock");
+        require_strict_empty_base_lock(context.displaced,
+                                       "factory wave-lock-sandwich preserves original lock");
+
+        std::error_code remove_error;
+        CHECK(std::filesystem::remove(wave_lock_path(root), remove_error));
+        CHECK(!remove_error);
+        require_rename(context.displaced, wave_lock_path(root),
+                       "restore factory wave-lock-sandwich original");
+        require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "store accepts restored factory wave-lock-sandwich namespace");
+        auto recovered = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        auto& recovered_claim = require_private_lease_root_claim_ready(
+            recovered, "explicitly recover factory wave-lock-sandwich target");
+        require_wave_status(recovered_claim.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "factory wave-lock-sandwich recovery revalidates");
+        CHECK(relation_base_lock_reports_busy(root / names->base_lock_leaf));
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "claim-root-sandwich";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create claim root-sandwich fixture");
+        const auto& chunk = store.manifest().chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+        auto bound = store.create_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        auto& claim = require_private_lease_root_claim_ready(
+            bound, "create bound claim for root-sandwich revalidation");
+        WaveRootReplacementContext context{
+            .canonical = root,
+            .displaced = temp.path() / "claim-root-sandwich-original",
+        };
+        require_wave_status(
+            claim.revalidate(wave_detail::DistributedSievePrivateLeaseRootClaimTestHooks{
+                .after_first_authority_validation = replace_wave_root_after_attempt_phase,
+                .context = &context,
+            }),
+            wave_detail::DistributedSieveWaveStoreStatus::root_invalid,
+            "bound claim rechecks root authority after target revalidation");
+        CHECK(context.invoked);
+        CHECK(context.replaced);
+        CHECK(context.native_error == 0);
+        CHECK(relation_base_lock_reports_busy(context.displaced / names->base_lock_leaf));
+
+        const auto replacement = temp.path() / "claim-root-sandwich-replacement";
+        require_rename(root, replacement, "preserve claim root-sandwich replacement");
+        require_rename(context.displaced, root, "restore claim root-sandwich original");
+        require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "store accepts restored claim root-sandwich namespace");
+        require_wave_status(claim.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "root-sandwich failure sticky-invalidates returned target");
+        bound.claim.reset();
+        auto recovered = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        auto& recovered_claim = require_private_lease_root_claim_ready(
+            recovered, "explicitly recover claim root-sandwich target");
+        require_wave_status(recovered_claim.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "claim root-sandwich recovery revalidates");
+        CHECK(relation_base_lock_reports_busy(root / names->base_lock_leaf));
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "claim-wave-lock-sandwich";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create claim wave-lock-sandwich fixture");
+        const auto& chunk = store.manifest().chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+        const auto target = root / names->base_lock_leaf;
+        auto bound = store.create_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        auto& claim = require_private_lease_root_claim_ready(
+            bound, "create bound claim for wave-lock-sandwich revalidation");
+        WaveBaseLockReplacementContext context{
+            .canonical = wave_lock_path(root),
+            .displaced = temp.path() / "claim-wave-lock-sandwich-original",
+        };
+        require_wave_status(
+            claim.revalidate(wave_detail::DistributedSievePrivateLeaseRootClaimTestHooks{
+                .after_first_authority_validation = replace_base_lock_after_first_inventory,
+                .context = &context,
+            }),
+            wave_detail::DistributedSieveWaveStoreStatus::lock_invalid,
+            "bound claim rechecks wave-lock authority after target revalidation");
+        CHECK(context.invoked);
+        CHECK(context.replaced);
+        CHECK(context.native_error == 0);
+        CHECK(relation_base_lock_reports_busy(target));
+
+        std::error_code remove_error;
+        CHECK(std::filesystem::remove(wave_lock_path(root), remove_error));
+        CHECK(!remove_error);
+        require_rename(context.displaced, wave_lock_path(root),
+                       "restore claim wave-lock-sandwich original");
+        require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "store accepts restored claim wave-lock-sandwich namespace");
+        require_wave_status(claim.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "wave-lock-sandwich failure sticky-invalidates returned target");
+        bound.claim.reset();
+        auto recovered = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        auto& recovered_claim = require_private_lease_root_claim_ready(
+            recovered, "explicitly recover claim wave-lock-sandwich target");
+        require_wave_status(recovered_claim.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "claim wave-lock-sandwich recovery revalidates");
+        CHECK(relation_base_lock_reports_busy(target));
+    }
+}
+
+void test_wave_store_attempt_base_lock_identity_split_is_sticky() {
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "attempt-base-lock-identity-split";
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+    auto& store = require_wave_ready(created, "create attempt BaseLock split fixture");
+    const auto& chunk = store.manifest().chunks.front();
+    const auto first_names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk.relative_artifact_stem, chunk.chunk_id, 0);
+    const auto second_names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk.relative_artifact_stem, chunk.chunk_id, 1);
+    CHECK(first_names.has_value());
+    CHECK(second_names.has_value());
+    const auto first_target = root / first_names->base_lock_leaf;
+    const auto first_displaced = temp.path() / "attempt-base-lock-split-during-create";
+
+    WaveBaseLockReplacementContext create_context{
+        .canonical = first_target,
+        .displaced = first_displaced,
+    };
+    auto split_during_create = store.create_worker_attempt_private_lease_root(
+        chunk.chunk_id, 0,
+        wave_detail::DistributedSievePrivateLeaseBaseLockTestHooks{
+            .after_target_lock_acquired = replace_base_lock_after_first_inventory,
+            .context = &create_context,
+        });
+    CHECK(create_context.invoked);
+    CHECK(create_context.replaced);
+    CHECK(create_context.native_error == 0);
+    CHECK(!split_during_create);
+    CHECK(split_during_create.claim == nullptr);
+    require_wave_status(split_during_create.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "same-name target split during acquire is rejected");
+    CHECK(entry_exists_no_follow(first_target));
+    CHECK(entry_exists_no_follow(first_displaced));
+    require_strict_empty_base_lock(first_target, "replacement BaseLock remains preserved");
+    require_strict_empty_base_lock(first_displaced, "locked original BaseLock remains preserved");
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "canonical replacement remains a valid closed inventory member");
+
+    std::error_code remove_error;
+    CHECK(std::filesystem::remove(first_target, remove_error));
+    CHECK(!remove_error);
+    require_rename(first_displaced, first_target, "restore split-during-create BaseLock");
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "restored original BaseLock closes inventory");
+    auto first_recovered = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+    (void)require_private_lease_root_claim_ready(first_recovered,
+                                                 "explicit recovery reopens restored BaseLock");
+    first_recovered.claim.reset();
+
+    const auto recovery_baseline = capture_wave_root_snapshot(root);
+    const auto original_recovery_entry =
+        require_wave_root_snapshot_leaf(recovery_baseline, first_names->base_lock_leaf);
+    const auto recovery_displaced = temp.path() / "attempt-base-lock-split-during-recovery";
+    WaveBaseLockReplacementContext recovery_context{
+        .canonical = first_target,
+        .displaced = recovery_displaced,
+    };
+    auto split_during_recovery = store.open_worker_attempt_private_lease_root(
+        chunk.chunk_id, 0,
+        wave_detail::DistributedSievePrivateLeaseBaseLockTestHooks{
+            .after_target_lock_acquired = replace_base_lock_after_first_inventory,
+            .context = &recovery_context,
+        });
+    CHECK(recovery_context.invoked);
+    CHECK(recovery_context.replaced);
+    CHECK(recovery_context.native_error == 0);
+    CHECK(!split_during_recovery);
+    CHECK(split_during_recovery.claim == nullptr);
+    require_wave_status(split_during_recovery.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "same-name target split during recovery is rejected");
+    CHECK(entry_exists_no_follow(first_target));
+    CHECK(entry_exists_no_follow(recovery_displaced));
+    require_strict_empty_base_lock(first_target, "recovery replacement BaseLock remains preserved");
+    require_strict_empty_base_lock(recovery_displaced,
+                                   "recovery displaced BaseLock remains preserved");
+    const auto recovery_replacement_entry =
+        capture_wave_root_entry_snapshot(first_target, first_names->base_lock_leaf);
+    const auto displaced_recovery_entry =
+        capture_wave_root_entry_snapshot(recovery_displaced, first_names->base_lock_leaf);
+    CHECK(displaced_recovery_entry == original_recovery_entry);
+    CHECK(recovery_replacement_entry.device != displaced_recovery_entry.device ||
+          recovery_replacement_entry.inode != displaced_recovery_entry.inode);
+    auto recovery_baseline_without_target = recovery_baseline;
+    auto recovery_after_without_target = capture_wave_root_snapshot(root);
+    erase_wave_root_snapshot_leaf(recovery_baseline_without_target, first_names->base_lock_leaf);
+    erase_wave_root_snapshot_leaf(recovery_after_without_target, first_names->base_lock_leaf);
+    CHECK(recovery_after_without_target == recovery_baseline_without_target);
+    CHECK(!relation_base_lock_reports_busy(recovery_displaced));
+    CHECK(!relation_base_lock_reports_busy(first_target));
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "recovery replacement remains valid closed inventory");
+
+    const auto recovery_replacement_namespace = capture_wave_root_snapshot(root);
+    auto recovery_create_fallback =
+        store.create_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+    CHECK(!recovery_create_fallback);
+    CHECK(recovery_create_fallback.claim == nullptr);
+    require_wave_status(recovery_create_fallback.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "failed recovery never falls back to fresh creation");
+    CHECK(capture_wave_root_snapshot(root) == recovery_replacement_namespace);
+
+    remove_error.clear();
+    CHECK(std::filesystem::remove(first_target, remove_error));
+    CHECK(!remove_error);
+    require_rename(recovery_displaced, first_target, "restore split-during-recovery BaseLock");
+    CHECK(capture_wave_root_snapshot(root) == recovery_baseline);
+    auto recovery_retry = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+    auto& recovery_retry_claim = require_private_lease_root_claim_ready(
+        recovery_retry, "explicit retry reopens restored recovery BaseLock");
+    require_wave_status(recovery_retry_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "retried recovery claim revalidates");
+    require_wave_status(recovery_retry_claim.revalidate_authority(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "retried recovery authority revalidates");
+    CHECK(relation_base_lock_reports_busy(first_target));
+    recovery_retry.claim.reset();
+
+    const auto second_target = root / second_names->base_lock_leaf;
+    const auto second_displaced = temp.path() / "attempt-base-lock-split-after-acquire";
+    auto second_created = store.create_worker_attempt_private_lease_root(chunk.chunk_id, 1);
+    auto& second_claim = require_private_lease_root_claim_ready(
+        second_created, "create BaseLock before post-acquire identity split");
+    WaveBaseLockReplacementContext live_context{
+        .canonical = second_target,
+        .displaced = second_displaced,
+    };
+    replace_base_lock_after_first_inventory(&live_context);
+    CHECK(live_context.invoked);
+    CHECK(live_context.replaced);
+    CHECK(live_context.native_error == 0);
+    CHECK(entry_exists_no_follow(second_target));
+    CHECK(entry_exists_no_follow(second_displaced));
+    require_wave_status(second_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "live claim rejects same-name target identity split");
+    CHECK(relation_base_lock_reports_busy(second_displaced));
+
+    remove_error.clear();
+    CHECK(std::filesystem::remove(second_target, remove_error));
+    CHECK(!remove_error);
+    require_rename(second_displaced, second_target, "restore live split BaseLock name");
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "store independently accepts restored BaseLock identity");
+    require_wave_status(second_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "observed target identity split keeps capability sticky-invalid");
+    auto contended = store.claim_private_lease_root();
+    CHECK(!contended);
+    CHECK(contended.claim == nullptr);
+    require_wave_status(contended.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::private_lease_root_busy,
+                        "sticky-invalid transaction retains root slot until destruction");
+
+    second_created.claim.reset();
+    auto second_recovered = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 1);
+    auto& recovered_claim = require_private_lease_root_claim_ready(
+        second_recovered, "new transaction reopens restored sticky-invalid target");
+    require_wave_status(recovered_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "new target capability is valid after explicit recovery");
+}
+
 void test_wave_store_private_lease_root_claim_process_and_namespace_binding() {
     {
         WaveStoreTempDirectory temp;
@@ -5555,7 +7737,7 @@ void run_core_suite() {
 
 void run_wave_store_suite() {
 #if !defined(_WIN32)
-    const std::array<std::pair<std::string_view, TestFunction>, 15> tests = {{
+    const std::array<std::pair<std::string_view, TestFunction>, 24> tests = {{
         {"create, open, revalidate, and exact manifest",
          test_wave_store_create_open_revalidate_and_exact_manifest},
         {"store-owned draft fields", test_wave_store_rejects_non_draft_store_owned_fields},
@@ -5575,6 +7757,24 @@ void run_wave_store_suite() {
          test_wave_store_private_lease_root_claim_traits_and_lifetime},
         {"manifest-bound BaseLocks and claim inventory split",
          test_wave_store_manifest_bound_base_locks_and_claim_inventory_split},
+        {"attempt BaseLock create, recover, and phase contract",
+         test_wave_store_attempt_base_lock_create_recover_and_phase_contract},
+        {"attempt BaseLock durability prefixes",
+         test_wave_store_attempt_base_lock_durability_prefixes},
+        {"attempt BaseLock State-scope concurrency",
+         test_wave_store_attempt_base_lock_state_scope_concurrency},
+        {"attempt BaseLock bound-claim exact inventory",
+         test_wave_store_attempt_base_lock_bound_claim_exact_inventory},
+        {"attempt BaseLock fork and close-only lifetime",
+         test_wave_store_attempt_base_lock_fork_binding_and_close_only_lifetime},
+        {"attempt BaseLock pre-mutation authority replacement",
+         test_wave_store_attempt_base_lock_pre_mutation_authority_replacement},
+        {"attempt BaseLock mixed failure precedence",
+         test_wave_store_attempt_base_lock_mixed_failure_precedence},
+        {"attempt BaseLock authority sandwich",
+         test_wave_store_attempt_base_lock_authority_sandwich},
+        {"attempt BaseLock sticky identity split",
+         test_wave_store_attempt_base_lock_identity_split_is_sticky},
         {"typed claim process and namespace binding",
          test_wave_store_private_lease_root_claim_process_and_namespace_binding},
     }};

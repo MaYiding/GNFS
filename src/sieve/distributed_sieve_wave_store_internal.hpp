@@ -7,6 +7,7 @@
 #include <gnfs/util/durable_immutable_record.hpp>
 #include <gnfs/util/process.hpp>
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -14,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
 
 namespace gnfs::sieve::distributed_sieve_resume_detail {
 
@@ -81,6 +83,7 @@ enum class DistributedSieveWaveStoreStatus : std::uint8_t {
     lock_missing,
     lock_busy,
     private_lease_root_busy,
+    private_lease_lock_busy,
     lock_invalid,
     namespace_conflict,
     manifest_missing,
@@ -114,6 +117,8 @@ distributed_sieve_wave_store_status_name(DistributedSieveWaveStoreStatus status)
         return "lock_busy";
     case DistributedSieveWaveStoreStatus::private_lease_root_busy:
         return "private_lease_root_busy";
+    case DistributedSieveWaveStoreStatus::private_lease_lock_busy:
+        return "private_lease_lock_busy";
     case DistributedSieveWaveStoreStatus::lock_invalid:
         return "lock_invalid";
     case DistributedSieveWaveStoreStatus::namespace_conflict:
@@ -164,17 +169,65 @@ struct DistributedSieveWaveStoreInventoryTestHooks final {
     void* context = nullptr;
 };
 
+enum class DistributedSievePrivateLeaseBaseLockSyncPoint : std::uint8_t {
+    TargetInitial,
+    RootDirectory,
+    TargetFinal,
+    Count,
+};
+
+/// Trusted test-only boundaries for the attempt BaseLockAt transaction. The
+/// callbacks run inside the short-lived same-State root claim. Production
+/// callers leave them empty.
+struct DistributedSievePrivateLeaseBaseLockTestHooks final {
+    using Boundary = void (*)(void* context) noexcept;
+    using FailBeforeSync = bool (*)(DistributedSievePrivateLeaseBaseLockSyncPoint point,
+                                    void* context) noexcept;
+
+    /// Runs after the first closed phase witness and before the final
+    /// authority/inventory check that immediately precedes target mutation.
+    Boundary after_initial_phase_validation = nullptr;
+
+    /// Runs after the exact target descriptor is flocked and before its
+    /// held/named identity is accepted.
+    Boundary after_target_lock_acquired = nullptr;
+
+    /// Runs after the first successful retained-target revalidation and before
+    /// the immediately following WaveStore-authority revalidation.
+    Boundary after_target_revalidation = nullptr;
+
+    /// Deterministically fail one durability barrier before issuing its sync.
+    /// This hook exists only to prove preservation and explicit recovery of
+    /// every permanent-BaseLock durability prefix.
+    FailBeforeSync fail_before_sync = nullptr;
+
+    void* context = nullptr;
+};
+
+/// Trusted test-only boundary for a returned attempt-bound root claim.
+struct DistributedSievePrivateLeaseRootClaimTestHooks final {
+    using Boundary = void (*)(void* context) noexcept;
+
+    /// Runs once after WaveStore authority succeeds and before the retained
+    /// target is checked. The claim must revalidate authority again afterward.
+    Boundary after_first_authority_validation = nullptr;
+    void* context = nullptr;
+};
+
 struct DistributedSieveWaveStoreDiagnostic final {
     DistributedSieveWaveStoreStatus status = DistributedSieveWaveStoreStatus::ready;
     std::error_code native_error;
     std::optional<DistributedSieveProtocolStatus> protocol_status;
     std::optional<util::durable_immutable_record::RecordPublishStatus> publication_status;
     std::optional<DistributedSieveWaveStoreFaultPoint> last_durable_fault_point;
+    std::optional<DistributedSievePrivateLeaseBaseLockSyncPoint>
+        failed_private_lease_base_lock_sync_point;
 };
 
 struct DistributedSieveWaveStoreOpenResult;
 struct DistributedSievePrivateLeaseRootClaimResult;
 class DistributedSievePrivateLeaseRootClaim;
+class DistributedSievePrivateLeaseBaseLockAt;
 
 /// A process-bound lease on one frozen wave root and its permanent lock.
 ///
@@ -227,15 +280,92 @@ public:
     [[nodiscard]] DistributedSievePrivateLeaseRootClaimResult
     claim_private_lease_root() const noexcept;
 
+    /// Start a short-lived root transaction for an exact nonempty manifest
+    /// chunk/attempt whose permanent BaseLock must not yet exist. The leaf is
+    /// derived internally and created only with O_EXCL relative to the held
+    /// wave-root descriptor. The returned claim owns the same live flock.
+    [[nodiscard]] DistributedSievePrivateLeaseRootClaimResult
+    create_worker_attempt_private_lease_root(
+        std::uint32_t chunk_id, std::uint32_t attempt_ordinal,
+        DistributedSievePrivateLeaseBaseLockTestHooks hooks = {}) const noexcept;
+
+    /// Start the corresponding recovery transaction when the exact permanent
+    /// BaseLock is already present in the closed phase witness. This entry
+    /// point never creates and never falls back to create-on-missing.
+    [[nodiscard]] DistributedSievePrivateLeaseRootClaimResult
+    open_worker_attempt_private_lease_root(
+        std::uint32_t chunk_id, std::uint32_t attempt_ordinal,
+        DistributedSievePrivateLeaseBaseLockTestHooks hooks = {}) const noexcept;
+
 private:
     struct State;
+    enum class AttemptBaseLockExpectation : std::uint8_t {
+        absent,
+        present,
+    };
 
     explicit DistributedSieveWaveStore(std::shared_ptr<const State> state) noexcept;
     [[nodiscard]] DistributedSieveWaveStoreDiagnostic revalidate_authority() const noexcept;
+    [[nodiscard]] DistributedSievePrivateLeaseRootClaimResult
+    claim_worker_attempt_private_lease_root(
+        std::uint32_t chunk_id, std::uint32_t attempt_ordinal,
+        AttemptBaseLockExpectation expectation,
+        DistributedSievePrivateLeaseBaseLockTestHooks hooks) const noexcept;
 
     std::shared_ptr<const State> state_;
 
     friend class DistributedSieveExternalCleanupAuthorizationState;
+    friend class DistributedSievePrivateLeaseRootClaim;
+};
+
+/// Source-private root-relative permanent BaseLock capability.
+///
+/// Only a WaveStore attempt transaction can acquire this type. It retains the
+/// first and only openat descriptor used for flock, stores only a frozen leaf
+/// plus the already-held root descriptor, and exposes no path, leaf, fd, or
+/// arbitrary namespace operation. Destruction is close-only so a forked child
+/// cannot explicitly unlock the parent's shared open-file description.
+class DistributedSievePrivateLeaseBaseLockAt final {
+public:
+    DistributedSievePrivateLeaseBaseLockAt() = delete;
+    DistributedSievePrivateLeaseBaseLockAt(const DistributedSievePrivateLeaseBaseLockAt&) = delete;
+    DistributedSievePrivateLeaseBaseLockAt&
+    operator=(const DistributedSievePrivateLeaseBaseLockAt&) = delete;
+    DistributedSievePrivateLeaseBaseLockAt(DistributedSievePrivateLeaseBaseLockAt&&) = delete;
+    DistributedSievePrivateLeaseBaseLockAt&
+    operator=(DistributedSievePrivateLeaseBaseLockAt&&) = delete;
+    ~DistributedSievePrivateLeaseBaseLockAt() noexcept;
+
+private:
+    DistributedSievePrivateLeaseBaseLockAt(int root_fd, std::string leaf,
+                                           std::uint64_t creator_process_id) noexcept;
+
+    [[nodiscard]] static std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt>
+    create_new_locked(int root_fd, std::string leaf, std::uint64_t creator_process_id,
+                      DistributedSievePrivateLeaseBaseLockTestHooks hooks,
+                      DistributedSieveWaveStoreDiagnostic& outcome) noexcept;
+
+    [[nodiscard]] static std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt>
+    open_existing_locked(int root_fd, std::string leaf, const NativeIdentityV1& expected_identity,
+                         std::uint64_t creator_process_id,
+                         DistributedSievePrivateLeaseBaseLockTestHooks hooks,
+                         DistributedSieveWaveStoreDiagnostic& outcome) noexcept;
+
+    [[nodiscard]] DistributedSieveWaveStoreDiagnostic revalidate() const noexcept;
+    [[nodiscard]] DistributedSieveWaveStoreDiagnostic
+    synchronize(DistributedSievePrivateLeaseBaseLockTestHooks hooks) const noexcept;
+    [[nodiscard]] bool owned_by_current_process() const noexcept;
+    [[nodiscard]] const NativeIdentityV1& identity() const noexcept;
+    void invalidate() const noexcept;
+
+    int root_fd_ = -1;
+    int lock_fd_ = -1;
+    std::string leaf_;
+    NativeIdentityV1 identity_{};
+    std::uint64_t creator_process_id_ = 0;
+    mutable std::atomic_bool invalidated_ = false;
+
+    friend class DistributedSieveWaveStore;
     friend class DistributedSievePrivateLeaseRootClaim;
 };
 
@@ -244,7 +374,9 @@ private:
 ///
 /// Only the owning WaveStore can mint this opaque claim. It deliberately
 /// exposes no filesystem handle, path, manifest, record, or arbitrary-name
-/// primitive. Destruction releases the same-State claim slot.
+/// primitive. An attempt-bound claim also retains the exact successful
+/// BaseLock inventory witness. Destruction releases its target flock before
+/// the same-State claim slot.
 class DistributedSievePrivateLeaseRootClaim final {
 public:
     DistributedSievePrivateLeaseRootClaim() = delete;
@@ -262,14 +394,20 @@ public:
     [[nodiscard]] bool owned_by_current_process() const noexcept;
 
     /// Re-establish the exact WaveStore authority while retaining the claim.
-    /// The full check also requires the manifest-bound root inventory to be
-    /// closed. This operation never repairs or mutates the namespace.
-    [[nodiscard]] DistributedSieveWaveStoreDiagnostic revalidate() const noexcept;
+    /// A generic claim requires a closed manifest-bound inventory. An
+    /// attempt-bound claim instead requires the exact successful BaseLock
+    /// leaf-and-identity witness in two observations. Any bound namespace
+    /// failure sticky-invalidates the target capability; repair requires
+    /// destroying the old claim and using the explicit open-existing route.
+    /// This operation never repairs or mutates the namespace.
+    [[nodiscard]] DistributedSieveWaveStoreDiagnostic
+    revalidate(DistributedSievePrivateLeaseRootClaimTestHooks hooks = {}) const noexcept;
 
-    /// Re-establish only process, root, permanent-lock, and immutable-manifest
-    /// authority. Ordinary root children are deliberately not enumerated, so
-    /// this result is never sufficient mutation authority without a separate
-    /// phase-aware inventory check.
+    /// Re-establish process, root, permanent-lock, and immutable-manifest
+    /// authority. An attempt-bound claim also revalidates its retained target
+    /// capability, but ordinary root children are deliberately not
+    /// enumerated. This result is never sufficient mutation authority without
+    /// a separate phase-aware inventory check.
     [[nodiscard]] DistributedSieveWaveStoreDiagnostic revalidate_authority() const noexcept;
 
 private:
@@ -278,6 +416,10 @@ private:
 
     std::shared_ptr<const DistributedSieveWaveStore::State> wave_store_state_;
     std::uint64_t creator_process_id_ = 0;
+    std::optional<DistributedSieveWorkerAttemptNamesV1> worker_attempt_names_;
+    std::optional<std::vector<std::string>> expected_private_lease_base_lock_leaves_;
+    std::optional<std::vector<NativeIdentityV1>> expected_private_lease_base_lock_identities_;
+    std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt> base_lock_at_;
 
     friend class DistributedSieveWaveStore;
 };
