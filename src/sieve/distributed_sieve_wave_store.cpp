@@ -574,6 +574,158 @@ acl_rejection(int descriptor, bool directory,
            exact_mode(metadata, 0600);
 }
 
+struct ImmutableProtocolRecordReadResult final {
+    std::optional<std::vector<std::byte>> bytes;
+    std::optional<durable_record::RecordSnapshot> snapshot;
+    bool missing = false;
+    DistributedSieveWaveStoreDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return bytes.has_value() && snapshot.has_value() &&
+               diagnostic.status == DistributedSieveWaveStoreStatus::ready;
+    }
+};
+
+[[nodiscard]] ImmutableProtocolRecordReadResult
+read_immutable_protocol_record_leaf(int root_fd, const char* leaf, std::uint64_t creator_process_id,
+                                    DistributedSieveWaveStoreStatus missing_status,
+                                    DistributedSieveWaveStoreStatus invalid_status) noexcept {
+    ImmutableProtocolRecordReadResult result;
+    if (root_fd < 0 || leaf == nullptr || *leaf == '\0') {
+        result.diagnostic =
+            diagnostic(DistributedSieveWaveStoreStatus::invalid_request, invalid_argument_error());
+        return result;
+    }
+    if (!process_matches(creator_process_id)) {
+        result.diagnostic = process_mismatch();
+        return result;
+    }
+    const int descriptor =
+        openat_retrying_eintr(root_fd, leaf, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
+    if (descriptor < 0) {
+        const int saved_errno = errno;
+        if (saved_errno == ENOENT) {
+            result.missing = true;
+            result.diagnostic = diagnostic(missing_status, posix_error(saved_errno));
+        } else {
+            result.diagnostic = diagnostic(invalid_status, posix_error(saved_errno));
+        }
+        return result;
+    }
+    UniqueFd held(descriptor);
+    if (!process_matches(creator_process_id)) {
+        result.diagnostic = process_mismatch();
+        return result;
+    }
+
+    struct stat held_before{};
+    struct stat named_before{};
+    if (fstat_retrying_eintr(held.get(), held_before) != 0) {
+        result.diagnostic =
+            diagnostic(DistributedSieveWaveStoreStatus::io_failed, posix_error(errno));
+        return result;
+    }
+    if (fstatat_retrying_eintr(root_fd, leaf, named_before) != 0) {
+        result.diagnostic = diagnostic(invalid_status, posix_error(errno));
+        return result;
+    }
+    if (!valid_manifest_metadata(held_before) || !valid_manifest_metadata(named_before) ||
+        !stable_metadata(held_before, named_before)) {
+        result.diagnostic = diagnostic(invalid_status, protocol_error());
+        return result;
+    }
+    if (auto acl = acl_rejection(held.get(), false, invalid_status); acl.has_value()) {
+        result.diagnostic = *acl;
+        return result;
+    }
+
+    const auto exact_size = static_cast<std::size_t>(held_before.st_size);
+    try {
+        result.bytes.emplace(exact_size);
+    } catch (const std::bad_alloc&) {
+        result.diagnostic = diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
+                                       std::make_error_code(std::errc::not_enough_memory));
+        return result;
+    } catch (...) {
+        result.diagnostic = diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                                       std::make_error_code(std::errc::io_error));
+        return result;
+    }
+
+    std::size_t offset = 0;
+    while (offset < result.bytes->size()) {
+        if (!process_matches(creator_process_id)) {
+            result.diagnostic = process_mismatch();
+            return result;
+        }
+        const std::size_t request =
+            std::min(result.bytes->size() - offset,
+                     static_cast<std::size_t>(std::numeric_limits<ssize_t>::max()));
+        const ssize_t count =
+            ::pread(held.get(), result.bytes->data() + offset, request, static_cast<off_t>(offset));
+        if (count < 0) {
+            const int saved_errno = errno;
+            if (saved_errno == EINTR) {
+                continue;
+            }
+            result.diagnostic =
+                diagnostic(DistributedSieveWaveStoreStatus::io_failed, posix_error(saved_errno));
+            return result;
+        }
+        if (count == 0) {
+            result.diagnostic = diagnostic(invalid_status, protocol_error());
+            return result;
+        }
+        offset += static_cast<std::size_t>(count);
+    }
+
+    std::byte trailing{};
+    ssize_t trailing_count = -1;
+    do {
+        trailing_count =
+            ::pread(held.get(), &trailing, 1, static_cast<off_t>(result.bytes->size()));
+    } while (trailing_count < 0 && errno == EINTR);
+    if (trailing_count < 0) {
+        result.diagnostic =
+            diagnostic(DistributedSieveWaveStoreStatus::io_failed, posix_error(errno));
+        return result;
+    }
+    if (trailing_count != 0) {
+        result.diagnostic = diagnostic(invalid_status, protocol_error());
+        return result;
+    }
+
+    struct stat held_after{};
+    struct stat named_after{};
+    if (fstat_retrying_eintr(held.get(), held_after) != 0) {
+        result.diagnostic =
+            diagnostic(DistributedSieveWaveStoreStatus::io_failed, posix_error(errno));
+        return result;
+    }
+    if (fstatat_retrying_eintr(root_fd, leaf, named_after) != 0) {
+        result.diagnostic = diagnostic(invalid_status, posix_error(errno));
+        return result;
+    }
+    if (!valid_manifest_metadata(held_after) || !valid_manifest_metadata(named_after) ||
+        !stable_metadata(held_before, held_after) || !stable_metadata(held_after, named_after)) {
+        result.diagnostic = diagnostic(invalid_status, protocol_error());
+        return result;
+    }
+    if (auto acl = acl_rejection(held.get(), false, invalid_status); acl.has_value()) {
+        result.diagnostic = *acl;
+        return result;
+    }
+    if (!process_matches(creator_process_id)) {
+        result.diagnostic = process_mismatch();
+        return result;
+    }
+    result.snapshot = durable_record::RecordSnapshot{
+        .identity = record_identity(held_after),
+        .size = static_cast<std::uint64_t>(held_after.st_size),
+    };
+    return result;
+}
+
 [[nodiscard]] bool valid_private_lease_marker_metadata(const struct stat& metadata) noexcept {
     return S_ISREG(metadata.st_mode) && metadata.st_nlink == 1 &&
            static_cast<std::uint64_t>(metadata.st_size) ==
@@ -724,6 +876,8 @@ struct NamespaceInventory final {
     bool pending = false;
     std::vector<std::string> private_lease_base_lock_leaves;
     std::vector<std::string> private_lease_protocol_leaves;
+    std::vector<std::string> worker_attempt_record_leaves;
+    std::vector<DistributedSieveWorkerAttemptRecordInventoryWitness> worker_attempt_records;
 
     [[nodiscard]] friend constexpr bool operator==(const NamespaceInventory&,
                                                    const NamespaceInventory&) noexcept = default;
@@ -731,7 +885,8 @@ struct NamespaceInventory final {
 
 [[nodiscard]] bool
 has_pre_manifest_private_lease_candidate(const NamespaceInventory& inventory) noexcept {
-    return !inventory.manifest && !inventory.private_lease_protocol_leaves.empty();
+    return !inventory.manifest && (!inventory.private_lease_protocol_leaves.empty() ||
+                                   !inventory.worker_attempt_record_leaves.empty());
 }
 
 struct NamespaceInventoryResult final {
@@ -826,6 +981,28 @@ struct NamespaceInventoryResult final {
             }
             continue;
         }
+        if (parse_distributed_sieve_worker_attempt_leaf_v1(leaf).has_value()) {
+            constexpr std::size_t max_attempt_record_leaf_count =
+                static_cast<std::size_t>(DISTRIBUTED_SIEVE_PROTOCOL_MAX_CHUNKS) *
+                DISTRIBUTED_SIEVE_PROTOCOL_MAX_ATTEMPTS * 2U;
+            if (inventory.worker_attempt_record_leaves.size() >= max_attempt_record_leaf_count) {
+                return {std::nullopt,
+                        diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
+                                   protocol_error())};
+            }
+            try {
+                inventory.worker_attempt_record_leaves.emplace_back(leaf);
+            } catch (const std::bad_alloc&) {
+                return {std::nullopt,
+                        diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
+                                   std::make_error_code(std::errc::not_enough_memory))};
+            } catch (...) {
+                return {std::nullopt,
+                        diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                                   std::make_error_code(std::errc::io_error))};
+            }
+            continue;
+        }
         constexpr std::size_t max_protocol_leaf_count =
             static_cast<std::size_t>(DISTRIBUTED_SIEVE_PROTOCOL_MAX_CHUNKS) *
             DISTRIBUTED_SIEVE_PROTOCOL_MAX_ATTEMPTS * 6U;
@@ -847,6 +1024,8 @@ struct NamespaceInventoryResult final {
               inventory.private_lease_base_lock_leaves.end());
     std::sort(inventory.private_lease_protocol_leaves.begin(),
               inventory.private_lease_protocol_leaves.end());
+    std::sort(inventory.worker_attempt_record_leaves.begin(),
+              inventory.worker_attempt_record_leaves.end());
     return {std::move(inventory), {}};
 }
 
@@ -1820,13 +1999,301 @@ validate_private_lease_protocol_inventory(int root_fd, const std::filesystem::pa
     return {std::move(witnesses), {}};
 }
 
+struct WorkerAttemptRecordInventoryValidationResult final {
+    std::optional<std::vector<DistributedSieveWorkerAttemptRecordInventoryWitness>> witnesses;
+    DistributedSieveWaveStoreDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return witnesses.has_value() && diagnostic.status == DistributedSieveWaveStoreStatus::ready;
+    }
+};
+
+[[nodiscard]] bool attempt_lease_identities_conflict(const LeaseIdentityV1& left,
+                                                     const LeaseIdentityV1& right) noexcept {
+    return left.lease_id == right.lease_id || left.owner_marker == right.owner_marker ||
+           left.owner_marker == right.directory || left.directory == right.owner_marker ||
+           left.directory == right.directory;
+}
+
+[[nodiscard]] bool attempt_record_matches_live_lease_projection(
+    const AttemptStartedV1& record,
+    const DistributedSievePrivateLeaseReservationInventoryWitness& lease) noexcept {
+    if (lease.boundary == DistributedSievePrivateLeaseReservationBoundary::PermitAcquired) {
+        return true;
+    }
+    if (lease.lease_id != record.lease.lease_id.limbs) {
+        return false;
+    }
+    if (lease.directory_identity.has_value() &&
+        *lease.directory_identity != record.lease.directory) {
+        return false;
+    }
+    return !lease.owner_marker_identity.has_value() ||
+           *lease.owner_marker_identity == record.lease.owner_marker;
+}
+
+[[nodiscard]] WorkerAttemptRecordInventoryValidationResult validate_worker_attempt_record_inventory(
+    int root_fd, const NamespaceInventory& inventory, const WaveManifestV1& manifest,
+    std::span<const NativeIdentityV1> base_lock_identities,
+    std::span<const DistributedSievePrivateLeaseReservationInventoryWitness> private_leases,
+    std::uint64_t creator_process_id) noexcept {
+    const auto fail_with = [](DistributedSieveWaveStoreDiagnostic failure) {
+        return WorkerAttemptRecordInventoryValidationResult{std::nullopt, std::move(failure)};
+    };
+    const auto conflict = [&] {
+        return fail_with(
+            diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error()));
+    };
+    const auto protocol_conflict = [&](DistributedSieveProtocolStatus status) {
+        auto failure =
+            diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error());
+        failure.protocol_status = status;
+        return fail_with(std::move(failure));
+    };
+
+    if (inventory.private_lease_base_lock_leaves.size() != base_lock_identities.size() ||
+        inventory.private_lease_base_lock_leaves.size() != private_leases.size()) {
+        return fail_with(
+            diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure, protocol_error()));
+    }
+
+    std::vector<DistributedSieveWorkerAttemptRecordInventoryWitness> records;
+    try {
+        records.reserve(inventory.worker_attempt_record_leaves.size());
+        for (const auto& leaf : inventory.worker_attempt_record_leaves) {
+            const auto parsed = parse_distributed_sieve_worker_attempt_leaf_v1(leaf);
+            if (!parsed.has_value() || parsed->attempt_ordinal >= manifest.max_worker_attempts) {
+                return conflict();
+            }
+            const ChunkPlanV1* chunk = nullptr;
+            for (const auto& candidate : manifest.chunks) {
+                if (candidate.chunk_id == parsed->chunk_id) {
+                    chunk = &candidate;
+                    break;
+                }
+            }
+            if (chunk == nullptr || chunk->sq_begin >= chunk->sq_end) {
+                return conflict();
+            }
+            const auto names = distributed_sieve_worker_attempt_names_v1(
+                chunk->relative_artifact_stem, parsed->chunk_id, parsed->attempt_ordinal);
+            if (!names.has_value() || leaf != (parsed->pending ? names->pending_record_leaf
+                                                               : names->canonical_record_leaf)) {
+                return conflict();
+            }
+
+            auto loaded = read_immutable_protocol_record_leaf(
+                root_fd, leaf.c_str(), creator_process_id,
+                DistributedSieveWaveStoreStatus::namespace_conflict,
+                DistributedSieveWaveStoreStatus::namespace_conflict);
+            if (!loaded) {
+                return fail_with(std::move(loaded.diagnostic));
+            }
+            auto decoded = decode_distributed_sieve_record(*loaded.bytes);
+            if (!decoded) {
+                return protocol_conflict(decoded.status);
+            }
+            auto* attempt = std::get_if<AttemptStartedV1>(&*decoded.value);
+            if (attempt == nullptr || attempt->chunk_id != parsed->chunk_id ||
+                attempt->attempt_ordinal != parsed->attempt_ordinal ||
+                attempt->manifest_digest != manifest.self_digest ||
+                attempt->sq_begin != chunk->sq_begin || attempt->sq_end != chunk->sq_end ||
+                attempt->retry_policy_version != manifest.retry_policy_version ||
+                attempt->lease.relative_stem != names->relative_lease_stem) {
+                return conflict();
+            }
+
+            const auto position = std::lower_bound(
+                records.begin(), records.end(),
+                std::pair{parsed->chunk_id, parsed->attempt_ordinal},
+                [](const DistributedSieveWorkerAttemptRecordInventoryWitness& candidate,
+                   const std::pair<std::uint32_t, std::uint32_t>& coordinate) {
+                    return std::pair{candidate.chunk_id, candidate.attempt_ordinal} < coordinate;
+                });
+            if (position == records.end() || position->chunk_id != parsed->chunk_id ||
+                position->attempt_ordinal != parsed->attempt_ordinal) {
+                DistributedSieveWorkerAttemptRecordInventoryWitness witness{
+                    .chunk_id = parsed->chunk_id,
+                    .attempt_ordinal = parsed->attempt_ordinal,
+                    .record = std::move(*attempt),
+                    .bytes = std::move(*loaded.bytes),
+                };
+                if (parsed->pending) {
+                    witness.pending_snapshot = *loaded.snapshot;
+                } else {
+                    witness.canonical_snapshot = *loaded.snapshot;
+                }
+                records.insert(position, std::move(witness));
+                continue;
+            }
+            if (position->bytes != *loaded.bytes ||
+                (parsed->pending ? position->pending_snapshot.has_value()
+                                 : position->canonical_snapshot.has_value())) {
+                return conflict();
+            }
+            if (parsed->pending) {
+                position->pending_snapshot = *loaded.snapshot;
+            } else {
+                position->canonical_snapshot = *loaded.snapshot;
+            }
+        }
+    } catch (const std::bad_alloc&) {
+        return fail_with(diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
+                                    std::make_error_code(std::errc::not_enough_memory)));
+    } catch (...) {
+        return fail_with(diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                                    std::make_error_code(std::errc::io_error)));
+    }
+
+    for (std::size_t left = 0; left < records.size(); ++left) {
+        for (const auto& base_lock_identity : base_lock_identities) {
+            if (records[left].record.lease.owner_marker == base_lock_identity ||
+                records[left].record.lease.directory == base_lock_identity) {
+                return conflict();
+            }
+        }
+        for (std::size_t right = left + 1U; right < records.size(); ++right) {
+            if (attempt_lease_identities_conflict(records[left].record.lease,
+                                                  records[right].record.lease)) {
+                return conflict();
+            }
+        }
+    }
+
+    for (const auto& chunk : manifest.chunks) {
+        std::vector<AttemptStartedV1> canonical_chain;
+        const DistributedSieveWorkerAttemptRecordInventoryWitness* pending = nullptr;
+        try {
+            canonical_chain.reserve(manifest.max_worker_attempts);
+        } catch (const std::bad_alloc&) {
+            return fail_with(diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
+                                        std::make_error_code(std::errc::not_enough_memory)));
+        } catch (...) {
+            return fail_with(diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                                        std::make_error_code(std::errc::io_error)));
+        }
+
+        for (const auto& record : records) {
+            if (record.chunk_id != chunk.chunk_id) {
+                continue;
+            }
+            if (record.canonical_snapshot.has_value()) {
+                if (record.attempt_ordinal != canonical_chain.size()) {
+                    return conflict();
+                }
+                try {
+                    canonical_chain.push_back(record.record);
+                } catch (const std::bad_alloc&) {
+                    return fail_with(
+                        diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
+                                   std::make_error_code(std::errc::not_enough_memory)));
+                } catch (...) {
+                    return fail_with(diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                                                std::make_error_code(std::errc::io_error)));
+                }
+            }
+            if (record.pending_snapshot.has_value()) {
+                if (pending != nullptr) {
+                    return conflict();
+                }
+                pending = &record;
+            }
+        }
+
+        if (!canonical_chain.empty()) {
+            const auto status = validate_worker_attempt_chain(manifest, chunk.chunk_id,
+                                                              canonical_chain, nullptr, nullptr);
+            if (!status) {
+                return protocol_conflict(status);
+            }
+        }
+        if (pending != nullptr) {
+            if (pending->canonical_snapshot.has_value()) {
+                if (canonical_chain.empty() ||
+                    pending->attempt_ordinal + 1U != canonical_chain.size()) {
+                    return conflict();
+                }
+            } else {
+                if (pending->attempt_ordinal != canonical_chain.size()) {
+                    return conflict();
+                }
+                try {
+                    canonical_chain.push_back(pending->record);
+                } catch (const std::bad_alloc&) {
+                    return fail_with(
+                        diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
+                                   std::make_error_code(std::errc::not_enough_memory)));
+                } catch (...) {
+                    return fail_with(diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                                                std::make_error_code(std::errc::io_error)));
+                }
+                const auto status = validate_worker_attempt_chain(
+                    manifest, chunk.chunk_id, canonical_chain, nullptr, nullptr);
+                if (!status) {
+                    return protocol_conflict(status);
+                }
+            }
+        }
+
+        const std::size_t canonical_count =
+            canonical_chain.size() -
+            static_cast<std::size_t>(pending != nullptr &&
+                                     !pending->canonical_snapshot.has_value());
+        const bool next_attempt_is_pending =
+            pending != nullptr && !pending->canonical_snapshot.has_value();
+        for (const auto& record : records) {
+            if (record.chunk_id != chunk.chunk_id) {
+                continue;
+            }
+            const auto names = distributed_sieve_worker_attempt_names_v1(
+                chunk.relative_artifact_stem, chunk.chunk_id, record.attempt_ordinal);
+            if (!names.has_value()) {
+                return conflict();
+            }
+            const auto lock_position = std::lower_bound(
+                inventory.private_lease_base_lock_leaves.begin(),
+                inventory.private_lease_base_lock_leaves.end(), names->base_lock_leaf);
+            if (lock_position == inventory.private_lease_base_lock_leaves.end() ||
+                *lock_position != names->base_lock_leaf) {
+                return conflict();
+            }
+            const auto lock_index = static_cast<std::size_t>(
+                std::distance(inventory.private_lease_base_lock_leaves.begin(), lock_position));
+            const auto& lease = private_leases[lock_index];
+            if (!attempt_record_matches_live_lease_projection(record.record, lease)) {
+                return conflict();
+            }
+
+            const bool pending_only =
+                record.pending_snapshot.has_value() && !record.canonical_snapshot.has_value();
+            if (pending_only &&
+                lease.boundary !=
+                    DistributedSievePrivateLeaseReservationBoundary::FinalDirectoryDurable) {
+                return conflict();
+            }
+            const bool historical_canonical =
+                record.canonical_snapshot.has_value() &&
+                (next_attempt_is_pending ? record.attempt_ordinal < canonical_count
+                                         : record.attempt_ordinal + 1U < canonical_count);
+            if (historical_canonical &&
+                lease.boundary != DistributedSievePrivateLeaseReservationBoundary::PermitAcquired) {
+                return conflict();
+            }
+        }
+    }
+    return {std::move(records), {}};
+}
+
 struct ManifestBoundInventoryValidationResult final {
     std::optional<std::vector<NativeIdentityV1>> base_lock_identities;
     std::optional<std::vector<PrivateLeaseReservationWitness>> private_lease_witnesses;
+    std::optional<std::vector<DistributedSieveWorkerAttemptRecordInventoryWitness>>
+        worker_attempt_records;
     DistributedSieveWaveStoreDiagnostic diagnostic;
 
     [[nodiscard]] explicit operator bool() const noexcept {
         return base_lock_identities.has_value() && private_lease_witnesses.has_value() &&
+               worker_attempt_records.has_value() &&
                diagnostic.status == DistributedSieveWaveStoreStatus::ready;
     }
 };
@@ -1835,20 +2302,29 @@ struct ManifestBoundInventoryValidationResult final {
     int root_fd, const std::filesystem::path& absolute_root, const NamespaceInventory& inventory,
     const WaveManifestV1& manifest, std::uint64_t creator_process_id) noexcept {
     if (!inventory.lock || !inventory.manifest || inventory.pending) {
-        return {std::nullopt, std::nullopt,
+        return {std::nullopt, std::nullopt, std::nullopt,
                 diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error())};
     }
     auto base_locks = validate_private_lease_base_lock_inventory(root_fd, inventory, manifest,
                                                                  creator_process_id);
     if (!base_locks) {
-        return {std::nullopt, std::nullopt, std::move(base_locks.diagnostic)};
+        return {std::nullopt, std::nullopt, std::nullopt, std::move(base_locks.diagnostic)};
     }
     auto private_leases = validate_private_lease_protocol_inventory(
         root_fd, absolute_root, inventory, manifest, *base_locks.identities, creator_process_id);
     if (!private_leases) {
-        return {std::nullopt, std::nullopt, std::move(private_leases.diagnostic)};
+        return {std::nullopt, std::nullopt, std::nullopt, std::move(private_leases.diagnostic)};
     }
-    return {std::move(base_locks.identities), std::move(private_leases.witnesses), {}};
+    auto worker_attempts = validate_worker_attempt_record_inventory(
+        root_fd, inventory, manifest, *base_locks.identities, *private_leases.witnesses,
+        creator_process_id);
+    if (!worker_attempts) {
+        return {std::nullopt, std::nullopt, std::nullopt, std::move(worker_attempts.diagnostic)};
+    }
+    return {std::move(base_locks.identities),
+            std::move(private_leases.witnesses),
+            std::move(worker_attempts.witnesses),
+            {}};
 }
 
 struct ManifestBoundInventoryWitnessResult final {
@@ -1883,6 +2359,7 @@ capture_manifest_bound_inventory_witness(int root_fd, const WaveManifestV1& mani
     if (!process_matches(creator_process_id)) {
         return {std::nullopt, std::nullopt, std::nullopt, process_mismatch()};
     }
+    inventory.inventory->worker_attempt_records = std::move(*validated.worker_attempt_records);
     return {
         std::move(inventory.inventory),
         std::move(validated.base_lock_identities),
@@ -2052,7 +2529,8 @@ struct LockOpenResult final {
     }
     if (!before.lock &&
         (before.manifest || before.pending || !before.private_lease_base_lock_leaves.empty() ||
-         !before.private_lease_protocol_leaves.empty())) {
+         !before.private_lease_protocol_leaves.empty() ||
+         !before.worker_attempt_record_leaves.empty())) {
         result.diagnostic =
             diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error());
         return result;
@@ -3745,6 +4223,7 @@ DistributedSieveWaveStoreDiagnostic DistributedSievePrivateLeaseRootClaim::reval
         !expected_private_lease_base_lock_leaves_.has_value() ||
         !expected_private_lease_base_lock_identities_.has_value() ||
         !expected_private_lease_reservation_witnesses_.has_value() ||
+        !expected_worker_attempt_record_witnesses_.has_value() ||
         expected_private_lease_base_lock_leaves_->size() !=
             expected_private_lease_base_lock_identities_->size() ||
         expected_private_lease_base_lock_leaves_->size() !=
@@ -3812,7 +4291,8 @@ DistributedSieveWaveStoreDiagnostic DistributedSievePrivateLeaseRootClaim::reval
     if (first.inventory->private_lease_base_lock_leaves !=
             *expected_private_lease_base_lock_leaves_ ||
         *first.base_lock_identities != *expected_private_lease_base_lock_identities_ ||
-        *first.private_lease_witnesses != *expected_private_lease_reservation_witnesses_) {
+        *first.private_lease_witnesses != *expected_private_lease_reservation_witnesses_ ||
+        first.inventory->worker_attempt_records != *expected_worker_attempt_record_witnesses_) {
         return reject_lower_priority(
             diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error()));
     }
@@ -3833,7 +4313,8 @@ DistributedSieveWaveStoreDiagnostic DistributedSievePrivateLeaseRootClaim::reval
         confirmed.inventory->private_lease_base_lock_leaves !=
             *expected_private_lease_base_lock_leaves_ ||
         *confirmed.base_lock_identities != *expected_private_lease_base_lock_identities_ ||
-        *confirmed.private_lease_witnesses != *expected_private_lease_reservation_witnesses_) {
+        *confirmed.private_lease_witnesses != *expected_private_lease_reservation_witnesses_ ||
+        confirmed.inventory->worker_attempt_records != *expected_worker_attempt_record_witnesses_) {
         return reject_lower_priority(
             diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error()));
     }
@@ -4062,7 +4543,8 @@ public:
             claim_.base_lock_at_ == nullptr || !claim_.worker_attempt_names_.has_value() ||
             !claim_.expected_private_lease_base_lock_leaves_.has_value() ||
             !claim_.expected_private_lease_base_lock_identities_.has_value() ||
-            !claim_.expected_private_lease_reservation_witnesses_.has_value()) {
+            !claim_.expected_private_lease_reservation_witnesses_.has_value() ||
+            !claim_.expected_worker_attempt_record_witnesses_.has_value()) {
             fail(diagnostic(DistributedSieveWaveStoreStatus::invalid_request,
                             invalid_argument_error()));
         }
@@ -4082,12 +4564,23 @@ public:
             *observed.base_lock_identities !=
                 *claim_.expected_private_lease_base_lock_identities_ ||
             *observed.private_lease_witnesses !=
-                *claim_.expected_private_lease_reservation_witnesses_) {
+                *claim_.expected_private_lease_reservation_witnesses_ ||
+            observed.inventory->worker_attempt_records !=
+                *claim_.expected_worker_attempt_record_witnesses_) {
             fail(adjudicate_observation_failure(
                 diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error())));
         }
         current_ = private_lease_closed_snapshot(std::move(observed));
         worker_attempt_names_ = *claim_.worker_attempt_names_;
+        if (std::binary_search(current_.inventory.worker_attempt_record_leaves.begin(),
+                               current_.inventory.worker_attempt_record_leaves.end(),
+                               worker_attempt_names_.canonical_record_leaf) ||
+            std::binary_search(current_.inventory.worker_attempt_record_leaves.begin(),
+                               current_.inventory.worker_attempt_record_leaves.end(),
+                               worker_attempt_names_.pending_record_leaf)) {
+            fail(adjudicate_observation_failure(
+                diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error())));
+        }
 
         const auto target =
             std::lower_bound(current_.inventory.private_lease_base_lock_leaves.begin(),
@@ -5065,6 +5558,7 @@ DistributedSieveFdPrivateLeaseRecoveryTarget::DistributedSieveFdPrivateLeaseReco
         !claim_.expected_private_lease_base_lock_leaves_.has_value() ||
         !claim_.expected_private_lease_base_lock_identities_.has_value() ||
         !claim_.expected_private_lease_reservation_witnesses_.has_value() ||
+        !claim_.expected_worker_attempt_record_witnesses_.has_value() ||
         claim_.base_lock_acquisition_ !=
             DistributedSievePrivateLeaseRootClaim::BaseLockAcquisition::OpenedExisting) {
         fail(
@@ -5085,12 +5579,23 @@ DistributedSieveFdPrivateLeaseRecoveryTarget::DistributedSieveFdPrivateLeaseReco
             *claim_.expected_private_lease_base_lock_leaves_ ||
         *observed.base_lock_identities != *claim_.expected_private_lease_base_lock_identities_ ||
         *observed.private_lease_witnesses !=
-            *claim_.expected_private_lease_reservation_witnesses_) {
+            *claim_.expected_private_lease_reservation_witnesses_ ||
+        observed.inventory->worker_attempt_records !=
+            *claim_.expected_worker_attempt_record_witnesses_) {
         fail(adjudicate_observation_failure(
             diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error())));
     }
     current_ = private_lease_closed_snapshot(std::move(observed));
     worker_attempt_names_ = *claim_.worker_attempt_names_;
+    if (std::binary_search(current_.inventory.worker_attempt_record_leaves.begin(),
+                           current_.inventory.worker_attempt_record_leaves.end(),
+                           worker_attempt_names_.canonical_record_leaf) ||
+        std::binary_search(current_.inventory.worker_attempt_record_leaves.begin(),
+                           current_.inventory.worker_attempt_record_leaves.end(),
+                           worker_attempt_names_.pending_record_leaf)) {
+        fail(adjudicate_observation_failure(
+            diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error())));
+    }
 
     const auto target = std::lower_bound(current_.inventory.private_lease_base_lock_leaves.begin(),
                                          current_.inventory.private_lease_base_lock_leaves.end(),
@@ -5926,6 +6431,7 @@ void DistributedSieveFdPrivateLeaseRecoveryTarget::complete() {
         current_.inventory.private_lease_base_lock_leaves;
     *claim_.expected_private_lease_base_lock_identities_ = current_.base_lock_identities;
     *claim_.expected_private_lease_reservation_witnesses_ = current_.reservation_witnesses;
+    *claim_.expected_worker_attempt_record_witnesses_ = current_.inventory.worker_attempt_records;
     if (const auto validated = claim_.revalidate();
         validated.status != DistributedSieveWaveStoreStatus::ready) {
         fail(validated);
@@ -6135,6 +6641,13 @@ DistributedSieveWaveStore::create(const std::filesystem::path& absolute_root,
         if (!before_publish_private_leases) {
             return open_failure(std::move(before_publish_private_leases.diagnostic));
         }
+        auto before_publish_worker_attempts = validate_worker_attempt_record_inventory(
+            root.root.get(), *before_publish.inventory, inventory_manifest,
+            *before_publish_private_inventory.identities, *before_publish_private_leases.witnesses,
+            creator_process_id);
+        if (!before_publish_worker_attempts) {
+            return open_failure(std::move(before_publish_worker_attempts.diagnostic));
+        }
 
         auto published =
             publish_manifest(root.root.get(), *encoded.bytes, hooks, creator_process_id);
@@ -6184,10 +6697,14 @@ DistributedSieveWaveStore::create(const std::filesystem::path& absolute_root,
                 before_publish.inventory->private_lease_base_lock_leaves ||
             final_inventory.inventory->private_lease_protocol_leaves !=
                 before_publish.inventory->private_lease_protocol_leaves ||
+            final_inventory.inventory->worker_attempt_record_leaves !=
+                before_publish.inventory->worker_attempt_record_leaves ||
             *final_inventory_validated.base_lock_identities !=
                 *before_publish_private_inventory.identities ||
             *final_inventory_validated.private_lease_witnesses !=
-                *before_publish_private_leases.witnesses) {
+                *before_publish_private_leases.witnesses ||
+            *final_inventory_validated.worker_attempt_records !=
+                *before_publish_worker_attempts.witnesses) {
             return open_failure(
                 diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error()));
         }
@@ -6309,6 +6826,12 @@ DistributedSieveWaveStore::open(const std::filesystem::path& absolute_root,
         if (!private_leases) {
             return open_failure(std::move(private_leases.diagnostic));
         }
+        auto worker_attempts = validate_worker_attempt_record_inventory(
+            root.root.get(), *inventory.inventory, *existing.manifest,
+            *inventory_validated.identities, *private_leases.witnesses, creator_process_id);
+        if (!worker_attempts) {
+            return open_failure(std::move(worker_attempts.diagnostic));
+        }
 
         const auto after_read = inspect_namespace(root.root.get());
         if (!after_read) {
@@ -6333,8 +6856,16 @@ DistributedSieveWaveStore::open(const std::filesystem::path& absolute_root,
         if (!after_read_private_leases) {
             return open_failure(std::move(after_read_private_leases.diagnostic));
         }
+        auto after_read_worker_attempts = validate_worker_attempt_record_inventory(
+            root.root.get(), *after_read.inventory, *existing.manifest,
+            *after_read_inventory_validated.identities, *after_read_private_leases.witnesses,
+            creator_process_id);
+        if (!after_read_worker_attempts) {
+            return open_failure(std::move(after_read_worker_attempts.diagnostic));
+        }
         if (*after_read_inventory_validated.identities != *inventory_validated.identities ||
-            *after_read_private_leases.witnesses != *private_leases.witnesses) {
+            *after_read_private_leases.witnesses != *private_leases.witnesses ||
+            *after_read_worker_attempts.witnesses != *worker_attempts.witnesses) {
             return open_failure(
                 diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error()));
         }
@@ -6386,10 +6917,14 @@ DistributedSieveWaveStore::open(const std::filesystem::path& absolute_root,
                 after_read.inventory->private_lease_base_lock_leaves ||
             final_inventory.inventory->private_lease_protocol_leaves !=
                 after_read.inventory->private_lease_protocol_leaves ||
+            final_inventory.inventory->worker_attempt_record_leaves !=
+                after_read.inventory->worker_attempt_record_leaves ||
             *final_inventory_validated.base_lock_identities !=
                 *after_read_inventory_validated.identities ||
             *final_inventory_validated.private_lease_witnesses !=
-                *after_read_private_leases.witnesses) {
+                *after_read_private_leases.witnesses ||
+            *final_inventory_validated.worker_attempt_records !=
+                *after_read_worker_attempts.witnesses) {
             return open_failure(
                 diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error()));
         }
@@ -6567,7 +7102,8 @@ DistributedSieveWaveStoreDiagnostic DistributedSieveWaveStore::revalidate(
         return final_validated.diagnostic;
     }
     if (*final_validated.base_lock_identities != *validated.base_lock_identities ||
-        *final_validated.private_lease_witnesses != *validated.private_lease_witnesses) {
+        *final_validated.private_lease_witnesses != *validated.private_lease_witnesses ||
+        *final_validated.worker_attempt_records != *validated.worker_attempt_records) {
         return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error());
     }
     if (!process_matches(state_->creator_process_id)) {
@@ -6896,6 +7432,8 @@ DistributedSieveWaveStore::claim_worker_attempt_private_lease_root(
             std::move(expected_successor_identities));
         claim.expected_private_lease_reservation_witnesses_.emplace(
             std::move(expected_successor_private_leases));
+        claim.expected_worker_attempt_record_witnesses_.emplace(
+            std::move(expected_successor_inventory.worker_attempt_records));
         claim.base_lock_acquisition_ =
             expectation == AttemptBaseLockExpectation::absent
                 ? DistributedSievePrivateLeaseRootClaim::BaseLockAcquisition::CreatedNew

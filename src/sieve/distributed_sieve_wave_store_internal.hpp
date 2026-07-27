@@ -268,6 +268,28 @@ struct DistributedSievePrivateLeaseReservationInventoryWitness final {
                const DistributedSievePrivateLeaseReservationInventoryWitness&) = default;
 };
 
+/// Exact manifest-bound observation of one immutable AttemptStartedV1 slot.
+///
+/// `bytes` are the canonical protocol encoding shared by the canonical and
+/// optional duplicate-pending leaves. Native snapshots keep same-byte inode
+/// replacement visible to every root-claim inventory comparison.
+struct DistributedSieveWorkerAttemptRecordInventoryWitness final {
+    std::uint32_t chunk_id = 0;
+    std::uint32_t attempt_ordinal = 0;
+    AttemptStartedV1 record;
+    std::vector<std::byte> bytes;
+    std::optional<util::durable_immutable_record::RecordSnapshot> canonical_snapshot;
+    std::optional<util::durable_immutable_record::RecordSnapshot> pending_snapshot;
+
+    [[nodiscard]] friend bool
+    operator==(const DistributedSieveWorkerAttemptRecordInventoryWitness& left,
+               const DistributedSieveWorkerAttemptRecordInventoryWitness& right) noexcept {
+        return left.chunk_id == right.chunk_id && left.attempt_ordinal == right.attempt_ordinal &&
+               left.bytes == right.bytes && left.canonical_snapshot == right.canonical_snapshot &&
+               left.pending_snapshot == right.pending_snapshot;
+    }
+};
+
 struct DistributedSieveWaveStoreInventoryTestHooks final {
     using ObserveReservationWitnesses =
         void (*)(std::span<const DistributedSievePrivateLeaseReservationInventoryWitness> witnesses,
@@ -684,6 +706,8 @@ private:
     std::optional<std::vector<NativeIdentityV1>> expected_private_lease_base_lock_identities_;
     std::optional<std::vector<DistributedSievePrivateLeaseReservationInventoryWitness>>
         expected_private_lease_reservation_witnesses_;
+    std::optional<std::vector<DistributedSieveWorkerAttemptRecordInventoryWitness>>
+        expected_worker_attempt_record_witnesses_;
     std::optional<BaseLockAcquisition> base_lock_acquisition_;
     std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt> base_lock_at_;
 

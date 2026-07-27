@@ -2001,10 +2001,36 @@ pre-syscall window. The real `rmdir` removes the replacement, but the retained
 directory proof rejects the apparent `P2` successor and preserves the displaced
 original for explicit handling.
 
+The manifest-bound inventory now admits exact fixed-width `AttemptStartedV1`
+canonical and pending leaves as a separate record family. It opens every leaf
+relative to the held root without following links, validates owner-only
+metadata and ACL absence, decodes the exact sealed record, and retains both
+bytes and native snapshots. A canonical chain must start at ordinal zero and
+remain contiguous. Pending may name only the next ordinal at an exact `P8`, or
+be a byte-identical duplicate of the last canonical record. Cross-chunk lease
+identities and every record-to-`BaseLock` identity are disjoint.
+
+Historical canonical attempts must be at `P0` before a next pending record can
+exist. The current canonical record may retain a `P1` through `P8` cleanup
+tail, and an identical duplicate pending leaf remains explicit evidence rather
+than an alias. The live lease projection compares every identity that survives
+at the observed boundary. Once cleanup reaches `P0`, the record format cannot
+prove the former directory or marker inode across process restart; this is an
+explicit consequence of the owner-only, lock-cooperating actor model rather
+than a historical identity claim.
+
+Attempt-record witnesses participate in create, open, store revalidation, and
+attempt-bound claim acquisition baselines. Same-byte inode replacement
+therefore invalidates both two-observation store checks and an already-bound
+claim. The old prestart recovery and forward reservation entry points reject a
+target canonical or pending record before their first mutation. This preserves
+the distinction between an unconsumed prestart lease and a durable start until
+the record-aware reconciler exists.
+
 The next M2 slice will consume the lock-free `P8` snapshot by reacquiring
-`root claim -> target BaseLock`, then publish `AttemptStartedV1`. Attempt
-publication remains blocked until that snapshot consumer and its recovery
-tests exist.
+`root claim -> target BaseLock`, publish `AttemptStartedV1`, and transfer the
+target flock into a creator-bound start receipt. Attempt publication remains
+blocked until that consumer and its record-aware recovery tests exist.
 
 Exit criterion: two masters cannot both act, and restart cannot exceed the
 manifest retry budget. This milestone remains test/internal and exposes no
