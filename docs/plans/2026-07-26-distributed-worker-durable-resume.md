@@ -1944,11 +1944,48 @@ claim` in the reverse order. That publisher must consume the snapshot by
 reacquiring `root claim -> target BaseLock` and revalidating the exact `P8`
 witness in one transaction.
 
-The next M2 slice will add open-existing-only reverse recovery for every
-durable prefix. It will converge `P1` through `P8` to `P0` through only
-classifier-approved states, preserve the permanent `BaseLock`, and never fall
-back to create-on-missing. Attempt-record publication remains blocked until
-that recovery contract and the lock-order-safe snapshot consumer both exist.
+The open-existing recovery route now consumes only an attempt claim whose
+`BaseLock` was opened rather than created. A missing lock never falls back to
+creation, a create-origin or generic root claim is rejected, and an opened
+`P0` is idempotent. Recovery walks the generic strict-adjacent graph from
+`P8` through `P1` to `P0`; it cannot skip a boundary or invoke a forward
+action.
+
+Every reverse mutation uses held root or staging descriptors and an exact
+classifier witness. Canonical markers and the final directory move through
+native no-replace renames. Marker deletion retains and revalidates the opened
+inode after unlink, while staging-directory deletion rescans the retained
+directory immediately before exact removal. The parent directory is made
+durable before two complete successor observations. Each observation preserves
+all other attempts and every `BaseLock` identity and is bracketed by WaveStore
+and target-lock authority validation.
+
+Successful recovery refreshes the original claim to the exact `P0` witness and
+returns it without releasing the same-State root slot or target flock. The
+caller can therefore enter a fresh `P0`-to-`P8` reservation without a lock
+reacquisition gap. Rejection, interruption, and failure instead destroy the
+claim and release the target flock before the root slot. Prefix tests generate
+each `P1` through `P8` only with the fresh writer, interrupt after one reverse
+edge, reopen at the exact successor, converge to `P0`, and reserve again with
+the returned claim.
+
+The descriptor-and-identity checks detect namespace replacement but cannot
+undo a hostile same-UID process that replaces a name in the final interval
+before POSIX `unlinkat` or `renameat`. This internal transaction therefore
+retains the existing owner-only, lock-cooperating actor model. Resistance to a
+malicious same-UID actor would require a platform-specific quarantine or
+conditional namespace primitive rather than another observation callback.
+Linux proves an open removed staging directory with `st_nlink == 0`. Darwin
+retains the pre-removal link count, so its fail-closed proof instead requires
+the former leaf to be absent, the held directory's `..` handle to remain the
+same WaveStore root, and two exact closed-root observations to contain no
+alternate name. The macOS/APFS suite must retain this platform-contract
+regression; an unsupported directory-handle behavior fails closed.
+
+The next M2 slice will consume the lock-free `P8` snapshot by reacquiring
+`root claim -> target BaseLock`, then publish `AttemptStartedV1`. Attempt
+publication remains blocked until that snapshot consumer and its recovery
+tests exist.
 
 Exit criterion: two masters cannot both act, and restart cannot exceed the
 manifest retry budget. This milestone remains test/internal and exposes no

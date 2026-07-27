@@ -366,6 +366,19 @@ struct DistributedSievePrivateLeaseReservationReceiptTestHooks final {
     void* context = nullptr;
 };
 
+/// Trusted test-only interruption boundary for open-existing rollback.
+///
+/// `stop_after` is offered only after the named reverse successor has survived
+/// its parent-directory durability barrier and two closed successor
+/// observations. Production callers leave it empty.
+struct DistributedSievePrivateLeaseRecoveryTestHooks final {
+    using StopAfter = bool (*)(DistributedSievePrivateLeaseReservationBoundary boundary,
+                               void* context) noexcept;
+
+    StopAfter stop_after = nullptr;
+    void* context = nullptr;
+};
+
 struct DistributedSieveWaveStoreDiagnostic final {
     DistributedSieveWaveStoreStatus status = DistributedSieveWaveStoreStatus::ready;
     std::error_code native_error;
@@ -376,6 +389,8 @@ struct DistributedSieveWaveStoreDiagnostic final {
         failed_private_lease_base_lock_sync_point;
     std::optional<DistributedSievePrivateLeaseReservationBoundary>
         last_private_lease_reservation_boundary;
+    std::optional<DistributedSievePrivateLeaseReservationBoundary>
+        last_private_lease_recovery_boundary;
     std::optional<DistributedSievePrivateLeaseReservationSyncFailureSite>
         failed_private_lease_reservation_sync_site;
 };
@@ -387,10 +402,19 @@ class DistributedSievePrivateLeaseRootClaim;
 class DistributedSievePrivateLeaseBaseLockAt;
 class DistributedSievePrivateLeaseReservationReceipt;
 class DistributedSieveFdPrivateLeaseReservationTarget;
+class DistributedSieveFdPrivateLeaseRecoveryTarget;
 
 [[nodiscard]] DistributedSievePrivateLeaseReservationResult reserve_worker_attempt_private_lease(
     DistributedSievePrivateLeaseRootClaimResult&& claimed,
     DistributedSievePrivateLeaseProtocolTestHooks hooks = {}) noexcept;
+
+/// Consume only an open-existing attempt claim and roll its exact P0-P8
+/// reservation prefix back to P0. Success returns the same live root
+/// claim/target flock with a refreshed P0 witness, ready for a fresh
+/// reservation. Every failure and interruption releases both locks.
+[[nodiscard]] DistributedSievePrivateLeaseRootClaimResult recover_worker_attempt_private_lease(
+    DistributedSievePrivateLeaseRootClaimResult&& claimed,
+    DistributedSievePrivateLeaseRecoveryTestHooks hooks = {}) noexcept;
 
 /// A process-bound lease on one frozen wave root and its permanent lock.
 ///
@@ -478,6 +502,7 @@ private:
     std::shared_ptr<const State> state_;
 
     friend class DistributedSieveExternalCleanupAuthorizationState;
+    friend class DistributedSieveFdPrivateLeaseRecoveryTarget;
     friend class DistributedSieveFdPrivateLeaseReservationTarget;
     friend class DistributedSievePrivateLeaseRootClaim;
     friend class DistributedSievePrivateLeaseReservationReceipt;
@@ -530,6 +555,7 @@ private:
     std::uint64_t creator_process_id_ = 0;
     mutable std::atomic_bool invalidated_ = false;
 
+    friend class DistributedSieveFdPrivateLeaseRecoveryTarget;
     friend class DistributedSieveFdPrivateLeaseReservationTarget;
     friend class DistributedSieveWaveStore;
     friend class DistributedSievePrivateLeaseRootClaim;
@@ -577,6 +603,11 @@ public:
     [[nodiscard]] DistributedSieveWaveStoreDiagnostic revalidate_authority() const noexcept;
 
 private:
+    enum class BaseLockAcquisition : std::uint8_t {
+        CreatedNew,
+        OpenedExisting,
+    };
+
     explicit DistributedSievePrivateLeaseRootClaim(
         std::shared_ptr<const DistributedSieveWaveStore::State> wave_store_state) noexcept;
 
@@ -587,10 +618,15 @@ private:
     std::optional<std::vector<NativeIdentityV1>> expected_private_lease_base_lock_identities_;
     std::optional<std::vector<DistributedSievePrivateLeaseReservationInventoryWitness>>
         expected_private_lease_reservation_witnesses_;
+    std::optional<BaseLockAcquisition> base_lock_acquisition_;
     std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt> base_lock_at_;
 
+    friend class DistributedSieveFdPrivateLeaseRecoveryTarget;
     friend class DistributedSieveFdPrivateLeaseReservationTarget;
     friend class DistributedSieveWaveStore;
+    friend DistributedSievePrivateLeaseRootClaimResult recover_worker_attempt_private_lease(
+        DistributedSievePrivateLeaseRootClaimResult&& claimed,
+        DistributedSievePrivateLeaseRecoveryTestHooks hooks) noexcept;
     friend DistributedSievePrivateLeaseReservationResult reserve_worker_attempt_private_lease(
         DistributedSievePrivateLeaseRootClaimResult&& claimed,
         DistributedSievePrivateLeaseProtocolTestHooks hooks) noexcept;

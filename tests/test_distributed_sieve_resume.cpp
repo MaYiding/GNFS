@@ -4246,6 +4246,23 @@ struct WavePrivateLeaseProtocolStopContext final {
     return boundary == context.target;
 }
 
+struct WavePrivateLeaseRecoveryStopContext final {
+    wave_detail::DistributedSievePrivateLeaseReservationBoundary target =
+        wave_detail::DistributedSievePrivateLeaseReservationBoundary::PermitAcquired;
+    std::array<bool, wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVATION_BOUNDARIES.size()>
+        observed{};
+};
+
+[[nodiscard]] bool stop_at_wave_private_lease_recovery_boundary(
+    wave_detail::DistributedSievePrivateLeaseReservationBoundary boundary, void* opaque) noexcept {
+    auto& context = *static_cast<WavePrivateLeaseRecoveryStopContext*>(opaque);
+    const auto index = static_cast<std::size_t>(boundary);
+    if (index < context.observed.size()) {
+        context.observed[index] = true;
+    }
+    return boundary == context.target;
+}
+
 void leave_relation_private_lease_reservation_prefix(
     const std::filesystem::path& base_path, gnfs::relation::OOCPrivateLeaseFaultPoint fault_point) {
     RelationPrivateLeaseStopContext context{
@@ -6750,6 +6767,438 @@ void test_wave_store_fresh_private_lease_reservation_protocol() {
     require_wave_status(reopened_store.revalidate(),
                         wave_detail::DistributedSieveWaveStoreStatus::ready,
                         "receipt destruction does not mutate the P8 namespace");
+}
+
+void test_wave_store_private_lease_recovery_from_every_fresh_prefix() {
+    using Boundary = wave_detail::DistributedSievePrivateLeaseReservationBoundary;
+
+    for (std::size_t index = 1;
+         index < wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVATION_BOUNDARIES.size();
+         ++index) {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / ("private-lease-recovery-prefix-" + std::to_string(index));
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create private-lease recovery fixture");
+        const auto& chunk = store.manifest().chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+
+        auto claimed = store.create_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        (void)require_private_lease_root_claim_ready(claimed, "create recovery fixture BaseLock");
+        const auto p0_snapshot = capture_wave_root_snapshot(root);
+
+        WavePrivateLeaseProtocolStopContext reservation_stop{
+            .target = wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVATION_BOUNDARIES[index],
+        };
+        auto interrupted_reservation = wave_detail::reserve_worker_attempt_private_lease(
+            std::move(claimed), wave_detail::DistributedSievePrivateLeaseProtocolTestHooks{
+                                    .stop_after = stop_at_wave_private_lease_boundary,
+                                    .context = &reservation_stop,
+                                });
+        CHECK(!interrupted_reservation);
+        require_wave_status(interrupted_reservation.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::interrupted,
+                            "fresh writer leaves the requested recovery prefix");
+
+        WaveReservationWitnessObservationContext initial_observation{
+            .expected_boundary =
+                wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVATION_BOUNDARIES[index],
+            .expected_base_lock_leaf = names->base_lock_leaf,
+        };
+        require_wave_status(
+            store.revalidate(wave_detail::DistributedSieveWaveStoreInventoryTestHooks{
+                .observe_reservation_witnesses = observe_wave_reservation_witnesses,
+                .context = &initial_observation,
+            }),
+            wave_detail::DistributedSieveWaveStoreStatus::ready,
+            "recovery fixture starts at an exact fresh-writer prefix");
+        CHECK(initial_observation.invoked);
+        CHECK(initial_observation.matched);
+
+        const auto prefix_snapshot = capture_wave_root_snapshot(root);
+        std::optional<std::pair<std::filesystem::path, WaveRootEntrySnapshot>>
+            nested_owner_snapshot;
+        if (index >= 4U) {
+            const auto reserved = cleanup_detail::parse_private_lease_marker(
+                read_file_bytes(root / names->reserved_leaf));
+            const auto directory =
+                index == 8U
+                    ? root / names->private_directory_leaf
+                    : root /
+                          (names->relative_lease_stem +
+                           std::string(wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_STAGING_TAG) +
+                           cleanup_detail::private_lease_id_hex(reserved.lease_id));
+            const auto owner_leaf =
+                index == 4U
+                    ? std::string(wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_PENDING_LEAF)
+                    : std::string(wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_LEAF);
+            const auto owner = directory / owner_leaf;
+            nested_owner_snapshot.emplace(owner,
+                                          capture_wave_root_entry_snapshot(owner, owner_leaf));
+        }
+
+        auto create_only = store.create_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        CHECK(!create_only);
+        CHECK(create_only.claim == nullptr);
+        require_wave_status(create_only.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "recovery prefix rejects the create-only entry point");
+        CHECK(capture_wave_root_snapshot(root) == prefix_snapshot);
+        if (nested_owner_snapshot.has_value()) {
+            CHECK(capture_wave_root_entry_snapshot(nested_owner_snapshot->first,
+                                                   nested_owner_snapshot->second.leaf) ==
+                  nested_owner_snapshot->second);
+        }
+
+        auto opened = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        (void)require_private_lease_root_claim_ready(opened,
+                                                     "open exact prefix for one recovery edge");
+        WavePrivateLeaseRecoveryStopContext recovery_stop{
+            .target =
+                wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVATION_BOUNDARIES[index - 1U],
+        };
+        auto interrupted_recovery = wave_detail::recover_worker_attempt_private_lease(
+            std::move(opened), wave_detail::DistributedSievePrivateLeaseRecoveryTestHooks{
+                                   .stop_after = stop_at_wave_private_lease_recovery_boundary,
+                                   .context = &recovery_stop,
+                               });
+        CHECK(!interrupted_recovery);
+        CHECK(interrupted_recovery.claim == nullptr);
+        CHECK(opened.claim == nullptr);
+        const std::string interrupted_context =
+            "recovery stops only after exact reverse successor P" + std::to_string(index - 1U);
+        require_wave_status(interrupted_recovery.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::interrupted,
+                            interrupted_context);
+        CHECK(interrupted_recovery.diagnostic.last_private_lease_recovery_boundary ==
+              recovery_stop.target);
+        for (std::size_t observed = 0; observed < recovery_stop.observed.size(); ++observed) {
+            CHECK(recovery_stop.observed[observed] == (observed == index - 1U));
+        }
+
+        WaveReservationWitnessObservationContext successor_observation{
+            .expected_boundary = recovery_stop.target,
+            .expected_base_lock_leaf = names->base_lock_leaf,
+        };
+        require_wave_status(
+            store.revalidate(wave_detail::DistributedSieveWaveStoreInventoryTestHooks{
+                .observe_reservation_witnesses = observe_wave_reservation_witnesses,
+                .context = &successor_observation,
+            }),
+            wave_detail::DistributedSieveWaveStoreStatus::ready,
+            "interrupted recovery leaves its exact durable successor");
+        CHECK(successor_observation.invoked);
+        CHECK(successor_observation.matched);
+
+        auto reopened = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        auto recovered = wave_detail::recover_worker_attempt_private_lease(std::move(reopened));
+        auto& recovered_claim = require_private_lease_root_claim_ready(
+            recovered, "reopen and converge the recovery prefix to P0");
+        require_wave_status(recovered_claim.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "recovered claim carries the refreshed P0 witness");
+        CHECK(capture_wave_root_snapshot(root) == p0_snapshot);
+
+        WaveReservationWitnessObservationContext p0_observation{
+            .expected_boundary = Boundary::PermitAcquired,
+            .expected_base_lock_leaf = names->base_lock_leaf,
+        };
+        require_wave_status(
+            store.revalidate(wave_detail::DistributedSieveWaveStoreInventoryTestHooks{
+                .observe_reservation_witnesses = observe_wave_reservation_witnesses,
+                .context = &p0_observation,
+            }),
+            wave_detail::DistributedSieveWaveStoreStatus::ready,
+            "completed recovery is an exact P0 prefix");
+        CHECK(p0_observation.invoked);
+        CHECK(p0_observation.matched);
+        CHECK(relation_base_lock_reports_busy(root / names->base_lock_leaf));
+
+        auto root_busy = store.claim_private_lease_root();
+        CHECK(!root_busy);
+        require_wave_status(root_busy.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::private_lease_root_busy,
+                            "returned recovery claim retains the same-State root slot");
+
+        auto reserved = wave_detail::reserve_worker_attempt_private_lease(std::move(recovered));
+        CHECK(reserved);
+        CHECK(reserved.receipt.has_value());
+        CHECK(recovered.claim == nullptr);
+        require_wave_status(reserved.receipt->revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "recovered P0 claim enters the fresh forward protocol");
+    }
+}
+
+void test_wave_store_private_lease_recovery_requires_open_existing_origin() {
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "private-lease-recovery-origin";
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+    auto& store = require_wave_ready(created, "create recovery-origin fixture");
+    const auto& chunk = store.manifest().chunks.front();
+    const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk.relative_artifact_stem, chunk.chunk_id, 0);
+    CHECK(names.has_value());
+    const auto pristine_snapshot = capture_wave_root_snapshot(root);
+
+    auto generic = store.claim_private_lease_root();
+    (void)require_private_lease_root_claim_ready(generic,
+                                                 "mint generic root claim for recovery rejection");
+    auto generic_rejected = wave_detail::recover_worker_attempt_private_lease(std::move(generic));
+    CHECK(!generic_rejected);
+    CHECK(generic_rejected.claim == nullptr);
+    require_wave_status(generic_rejected.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::invalid_request,
+                        "generic root claim cannot enter attempt recovery");
+    CHECK(capture_wave_root_snapshot(root) == pristine_snapshot);
+
+    auto missing = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+    CHECK(!missing);
+    CHECK(missing.claim == nullptr);
+    require_wave_status(missing.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "open-existing recovery never creates a missing BaseLock");
+    CHECK(!entry_exists_no_follow(root / names->base_lock_leaf));
+    CHECK(capture_wave_root_snapshot(root) == pristine_snapshot);
+
+    auto created_claim = store.create_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+    (void)require_private_lease_root_claim_ready(created_claim, "create P0 for origin split");
+    const auto p0_snapshot = capture_wave_root_snapshot(root);
+    auto create_rejected =
+        wave_detail::recover_worker_attempt_private_lease(std::move(created_claim));
+    CHECK(!create_rejected);
+    CHECK(create_rejected.claim == nullptr);
+    require_wave_status(create_rejected.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::invalid_request,
+                        "create-origin P0 cannot enter open-existing recovery");
+    CHECK(capture_wave_root_snapshot(root) == p0_snapshot);
+
+    auto opened = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+    auto recovered = wave_detail::recover_worker_attempt_private_lease(std::move(opened));
+    (void)require_private_lease_root_claim_ready(recovered,
+                                                 "open-origin P0 recovery is idempotent");
+    CHECK(capture_wave_root_snapshot(root) == p0_snapshot);
+
+    auto recovered_again = wave_detail::recover_worker_attempt_private_lease(std::move(recovered));
+    (void)require_private_lease_root_claim_ready(
+        recovered_again, "returned open-origin claim remains recovery-capable at P0");
+    CHECK(capture_wave_root_snapshot(root) == p0_snapshot);
+    CHECK(relation_base_lock_reports_busy(root / names->base_lock_leaf));
+
+    auto reserved = wave_detail::reserve_worker_attempt_private_lease(std::move(recovered_again));
+    CHECK(reserved);
+    CHECK(reserved.receipt.has_value());
+    require_wave_status(reserved.receipt->revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "idempotently recovered P0 claim may reserve freshly");
+}
+
+void test_wave_store_private_lease_recovery_authority_exclusion_and_process_binding() {
+    using Boundary = wave_detail::DistributedSievePrivateLeaseReservationBoundary;
+
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "private-lease-recovery-authority";
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+    auto& store = require_wave_ready(created, "create recovery-authority fixture");
+    const auto& chunk = store.manifest().chunks.front();
+    const std::uint32_t chunk_id = chunk.chunk_id;
+    const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk.relative_artifact_stem, chunk_id, 0);
+    CHECK(names.has_value());
+    const auto target = root / names->base_lock_leaf;
+    const Digest digest = store.manifest_digest();
+
+    auto fresh = store.create_worker_attempt_private_lease_root(chunk_id, 0);
+    (void)require_private_lease_root_claim_ready(fresh, "create recovery-authority BaseLock");
+    const auto p0_snapshot = capture_wave_root_snapshot(root);
+    WavePrivateLeaseProtocolStopContext initial_reservation_stop{
+        .target = Boundary::ReservedPendingDurable,
+    };
+    auto initial_reservation = wave_detail::reserve_worker_attempt_private_lease(
+        std::move(fresh), wave_detail::DistributedSievePrivateLeaseProtocolTestHooks{
+                              .stop_after = stop_at_wave_private_lease_boundary,
+                              .context = &initial_reservation_stop,
+                          });
+    CHECK(!initial_reservation);
+    CHECK(!initial_reservation.receipt.has_value());
+    CHECK(fresh.claim == nullptr);
+    require_wave_status(initial_reservation.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::interrupted,
+                        "leave P1 for recovery-authority interruption");
+    CHECK(initial_reservation_stop
+              .observed[static_cast<std::size_t>(Boundary::ReservedPendingDurable)]);
+
+    auto opened_for_interruption = store.open_worker_attempt_private_lease_root(chunk_id, 0);
+    (void)require_private_lease_root_claim_ready(opened_for_interruption,
+                                                 "open P1 before recovery-authority interruption");
+    WavePrivateLeaseRecoveryStopContext recovery_stop{
+        .target = Boundary::PermitAcquired,
+    };
+    auto interrupted = wave_detail::recover_worker_attempt_private_lease(
+        std::move(opened_for_interruption),
+        wave_detail::DistributedSievePrivateLeaseRecoveryTestHooks{
+            .stop_after = stop_at_wave_private_lease_recovery_boundary,
+            .context = &recovery_stop,
+        });
+    CHECK(!interrupted);
+    CHECK(interrupted.claim == nullptr);
+    CHECK(opened_for_interruption.claim == nullptr);
+    require_wave_status(interrupted.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::interrupted,
+                        "interrupted recovery returns no live authority");
+    CHECK(interrupted.diagnostic.last_private_lease_recovery_boundary == Boundary::PermitAcquired);
+    CHECK(recovery_stop.observed[static_cast<std::size_t>(Boundary::PermitAcquired)]);
+    CHECK(capture_wave_root_snapshot(root) == p0_snapshot);
+    CHECK(!relation_base_lock_reports_busy(target));
+
+    auto reopened_after_interruption = store.open_worker_attempt_private_lease_root(chunk_id, 0);
+    auto& reopened_after_interruption_claim = require_private_lease_root_claim_ready(
+        reopened_after_interruption, "interrupted recovery releases claim slot and target lock");
+    require_wave_status(reopened_after_interruption_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "reopened P0 claim after recovery interruption");
+    CHECK(relation_base_lock_reports_busy(target));
+
+    WavePrivateLeaseProtocolStopContext repeated_reservation_stop{
+        .target = Boundary::ReservedPendingDurable,
+    };
+    auto repeated_reservation = wave_detail::reserve_worker_attempt_private_lease(
+        std::move(reopened_after_interruption),
+        wave_detail::DistributedSievePrivateLeaseProtocolTestHooks{
+            .stop_after = stop_at_wave_private_lease_boundary,
+            .context = &repeated_reservation_stop,
+        });
+    CHECK(!repeated_reservation);
+    CHECK(!repeated_reservation.receipt.has_value());
+    CHECK(reopened_after_interruption.claim == nullptr);
+    require_wave_status(repeated_reservation.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::interrupted,
+                        "recreate P1 after recovery interruption");
+
+    auto opened = store.open_worker_attempt_private_lease_root(chunk_id, 0);
+    auto recovered = wave_detail::recover_worker_attempt_private_lease(std::move(opened));
+    auto& recovered_claim =
+        require_private_lease_root_claim_ready(recovered, "recover P1 to a retained P0 authority");
+    require_wave_status(recovered_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "returned recovery authority revalidates at P0");
+    CHECK(capture_wave_root_snapshot(root) == p0_snapshot);
+    CHECK(relation_base_lock_reports_busy(target));
+
+    std::array<std::unique_ptr<PrivateLeaseRootClaim>, 2> contender_claims;
+    std::array<wave_detail::DistributedSieveWaveStoreDiagnostic, 2> contender_diagnostics;
+    std::barrier<> contention_phases(2);
+    std::thread contender([&] {
+        contention_phases.arrive_and_wait();
+        auto contender_open = store.open_worker_attempt_private_lease_root(chunk_id, 0);
+        contender_diagnostics[0] = contender_open.diagnostic;
+        contender_claims[0] = std::move(contender_open.claim);
+        auto contender_create = store.create_worker_attempt_private_lease_root(chunk_id, 0);
+        contender_diagnostics[1] = contender_create.diagnostic;
+        contender_claims[1] = std::move(contender_create.claim);
+        contention_phases.arrive_and_wait();
+    });
+    contention_phases.arrive_and_wait();
+    contention_phases.arrive_and_wait();
+    contender.join();
+
+    CHECK(contender_claims[0] == nullptr);
+    CHECK(contender_claims[1] == nullptr);
+    require_wave_status(contender_diagnostics[0],
+                        wave_detail::DistributedSieveWaveStoreStatus::private_lease_root_busy,
+                        "recovered claim excludes concurrent open on the same attempt");
+    require_wave_status(contender_diagnostics[1],
+                        wave_detail::DistributedSieveWaveStoreStatus::private_lease_root_busy,
+                        "recovered claim excludes concurrent create on the same attempt");
+    require_wave_status(recovered_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "recovered authority survives concurrent contenders");
+    CHECK(relation_base_lock_reports_busy(target));
+    CHECK(capture_wave_root_snapshot(root) == p0_snapshot);
+
+    int ready_pipe[2]{-1, -1};
+    int release_pipe[2]{-1, -1};
+    CHECK(::pipe(ready_pipe) == 0);
+    CHECK(::pipe(release_pipe) == 0);
+    const pid_t child = ::fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        (void)::close(ready_pipe[0]);
+        (void)::close(release_pipe[1]);
+        const bool inherited_not_owned =
+            recovered.claim != nullptr && !recovered.claim->owned_by_current_process();
+        auto inherited_recovery =
+            wave_detail::recover_worker_attempt_private_lease(std::move(recovered));
+        const bool rejected = inherited_not_owned && !inherited_recovery &&
+                              inherited_recovery.claim == nullptr && recovered.claim == nullptr &&
+                              inherited_recovery.diagnostic.status ==
+                                  wave_detail::DistributedSieveWaveStoreStatus::invalid_request;
+        const bool signalled = write_pipe_byte(ready_pipe[1], rejected ? 'r' : 'f');
+        char release = '\0';
+        const bool released = read_pipe_byte(release_pipe[0], release);
+        ::_exit(rejected && signalled && released && release == 'x' ? 0 : 86);
+    }
+
+    (void)::close(ready_pipe[1]);
+    (void)::close(release_pipe[0]);
+    char ready = '\0';
+    const bool received = read_pipe_byte(ready_pipe[0], ready);
+    CHECK(received);
+    CHECK(ready == 'r');
+    require_wave_status(recovered_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "parent recovery authority survives inherited child rejection");
+    CHECK(relation_base_lock_reports_busy(target));
+
+    const bool released = write_pipe_byte(release_pipe[1], 'x');
+    (void)::close(ready_pipe[0]);
+    (void)::close(release_pipe[1]);
+    int child_status = 0;
+    const bool waited = wait_for_child(child, child_status);
+    CHECK(released);
+    CHECK(waited);
+    CHECK(WIFEXITED(child_status));
+    CHECK(WEXITSTATUS(child_status) == 0);
+    require_wave_status(recovered_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "parent recovery authority survives child close and exit");
+    CHECK(relation_base_lock_reports_busy(target));
+
+    auto continued = wave_detail::recover_worker_attempt_private_lease(std::move(recovered));
+    auto& continued_claim = require_private_lease_root_claim_ready(
+        continued, "parent can continue recovery after child rejection");
+    CHECK(recovered.claim == nullptr);
+    require_wave_status(continued_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "continued parent recovery retains exact P0 authority");
+    CHECK(capture_wave_root_snapshot(root) == p0_snapshot);
+
+    created.store.reset();
+    require_wave_status(continued_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "recovered claim outlives its WaveStore facade");
+    auto second_store_while_claimed = wave_detail::DistributedSieveWaveStore::open(root, digest);
+    CHECK(!second_store_while_claimed);
+    CHECK(second_store_while_claimed.store == nullptr);
+    require_wave_status(second_store_while_claimed.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::lock_busy,
+                        "recovered claim excludes a second WaveStore");
+
+    continued.claim.reset();
+    CHECK(!relation_base_lock_reports_busy(target));
+    auto reopened_store_result = wave_detail::DistributedSieveWaveStore::open(root, digest);
+    auto& reopened_store =
+        require_wave_ready(reopened_store_result, "open WaveStore after recovered claim release");
+    auto reopened_attempt = reopened_store.open_worker_attempt_private_lease_root(chunk_id, 0);
+    auto reopened_recovery =
+        wave_detail::recover_worker_attempt_private_lease(std::move(reopened_attempt));
+    auto& reopened_recovery_claim = require_private_lease_root_claim_ready(
+        reopened_recovery, "reopen and recover same attempt through a new WaveStore");
+    require_wave_status(reopened_recovery_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "new WaveStore returns a live recovered P0 claim");
+    CHECK(capture_wave_root_snapshot(root) == p0_snapshot);
 }
 
 void test_wave_store_fresh_private_lease_reservation_sync_failures() {
@@ -9285,7 +9734,7 @@ void run_core_suite() {
 
 void run_wave_store_suite() {
 #if !defined(_WIN32)
-    const std::array<std::pair<std::string_view, TestFunction>, 33> tests = {{
+    const std::array<std::pair<std::string_view, TestFunction>, 36> tests = {{
         {"create, open, revalidate, and exact manifest",
          test_wave_store_create_open_revalidate_and_exact_manifest},
         {"store-owned draft fields", test_wave_store_rejects_non_draft_store_owned_fields},
@@ -9307,6 +9756,12 @@ void run_wave_store_suite() {
          test_wave_store_manifest_bound_base_locks_and_claim_inventory_split},
         {"fresh private-lease reservation protocol",
          test_wave_store_fresh_private_lease_reservation_protocol},
+        {"private-lease recovery from every fresh prefix",
+         test_wave_store_private_lease_recovery_from_every_fresh_prefix},
+        {"private-lease recovery requires open-existing origin",
+         test_wave_store_private_lease_recovery_requires_open_existing_origin},
+        {"private-lease recovery authority exclusion and process binding",
+         test_wave_store_private_lease_recovery_authority_exclusion_and_process_binding},
         {"fresh private-lease reservation sync failures",
          test_wave_store_fresh_private_lease_reservation_sync_failures},
         {"fresh private-lease successor replacements",
