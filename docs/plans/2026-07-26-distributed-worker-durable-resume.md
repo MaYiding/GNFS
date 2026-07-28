@@ -2145,6 +2145,35 @@ ambient randomness from the durable route, and finally admit worker launch
 only through a live start receipt. Reconciliation facts may select a next
 ordinal, but they cannot launch or bypass a fresh reserve-and-publish cycle.
 
+The source-private bound-work adapter now closes the next pre-launch seam
+without admitting execution. It accepts only the complete V1 work identity,
+the matching frozen policy, and the heavyweight live `PolynomialContext` and
+`FactorBase`. Polynomial integers, active degree, full retained coefficient
+storage, exact skew bits, factor-base parameters, every ordered entry, and the
+effective sieve prefix must match exactly. The adapter then derives every
+small worker input from identity: sieve/cofactor/lattice configuration, both
+Special-Q ranges, exact chunk plan and stems, caps, attempt budgets, semantic
+versions, work digest, and the V2 seed provider. The OOC version is bound to
+the actual V3 artifact descriptor format rather than treated as an abstract
+ordinal, because handoff and merge validators compare those values directly.
+It rejects unknown semantic contract versions and the existing unsupported
+survival/ECM-pool policies.
+
+The resulting value has deliberately no artifact root, path, descriptor,
+private-lease receipt, WaveStore handle, fork route, or cleanup authority. In
+particular, a raw zero `FactorBase` prefix is not silently equated with the
+live class's effective “all algebraic entries” interpretation. The future
+launcher must rerun this binding immediately before consuming a fresh
+`AttemptStartedV1` receipt. That launcher remains blocked on a one-shot
+receipt-to-writer admission: using the legacy runner would reserve a second
+generic lease and split the durable attempt record from the corpus it claims.
+The closed policy checker scans every repository C/C++/Objective-C++ source
+outside generated build trees, including `bench/`, and currently permits
+bound-work types/functions only in their definition and dedicated test. It
+also rejects any file that combines the projection with the legacy distributed
+runner. The first future production allowlist addition must therefore be the
+receipt-gated launcher itself.
+
 Exit criterion: two masters cannot both act, and restart cannot exceed the
 manifest retry budget. This milestone remains test/internal and exposes no
 production durable flag.

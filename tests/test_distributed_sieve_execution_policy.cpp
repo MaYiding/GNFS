@@ -2,6 +2,7 @@
 #include <gnfs/polynomial/base_m.hpp>
 #include <gnfs/sieve/distributed_sieve_protocol.hpp>
 
+#include "distributed_sieve_bound_work_internal.hpp"
 #include "distributed_sieve_cofactor_runtime_config_internal.hpp"
 #include "distributed_sieve_execution_policy_internal.hpp"
 #include "distributed_sieve_lattice_runtime_config_internal.hpp"
@@ -42,6 +43,7 @@ using Snapshot = policy_detail::DistributedSieveExecutionPolicyEnvironmentSnapsh
 using TernaryMode = policy_detail::DistributedSieveCanonicalTernaryModeV1;
 using LatticeRuntimeConfig = policy_detail::DistributedSieveLatticeRuntimeConfigV1;
 using CofactorRuntime = policy_detail::DistributedSieveCofactorRuntimeV2;
+using BoundWork = policy_detail::DistributedSieveBoundWorkV1;
 using WorkIdentity = sieve::DistributedSieveWorkIdentityV1;
 using gnfs::tests::support::ScopedEnvironmentVariable;
 
@@ -238,7 +240,7 @@ WorkIdentity make_runtime_identity(const FrozenPolicy& frozen) {
     identity.distributed.max_merge_build_attempts = 1;
     identity.distributed.max_consumption_attempts = 1;
     identity.execution_policy = frozen.canonical;
-    identity.semantic_versions = {1, 1, 1, 1, 1, 1, 1, 1, 1};
+    identity.semantic_versions = policy_detail::DISTRIBUTED_SIEVE_BOUND_WORK_VERSIONS_V1;
     CHECK(sieve::validate_distributed_sieve_work_identity(identity));
     return identity;
 }
@@ -249,6 +251,61 @@ CofactorRuntime map_cofactor_runtime_checked(const WorkIdentity& identity,
     CHECK(result);
     CHECK(result.runtime.has_value());
     return *result.runtime;
+}
+
+gnfs::core::PolynomialContext
+make_live_polynomial(std::string_view n = "1000036000099", std::string_view m = "10001",
+                     std::vector<std::string_view> coefficients = {"-5", "3", "1"},
+                     double skewness = 1.25) {
+    std::vector<gnfs::core::Integer> live_coefficients;
+    live_coefficients.reserve(coefficients.size());
+    for (const auto coefficient : coefficients) {
+        live_coefficients.emplace_back(std::string(coefficient));
+    }
+    return gnfs::core::PolynomialContext{gnfs::core::Integer(std::string(n)),
+                                         std::move(live_coefficients),
+                                         gnfs::core::Integer(std::string(m)), skewness};
+}
+
+struct LiveFactorBaseSpec final {
+    gnfs::core::FactorBaseParams params{100, 200, 10'000, 16};
+    std::vector<gnfs::core::RationalPrime> rational{{2, 16}, {5, 25}};
+    std::vector<gnfs::core::AlgebraicPrime> algebraic{{7, 1, 37, 1}, {11, 4, 55, 2}};
+    std::size_t sieve_algebraic_count = 2;
+};
+
+gnfs::factor_base::FactorBase make_live_factor_base(const LiveFactorBaseSpec& spec = {}) {
+    gnfs::factor_base::FactorBase factor_base(spec.params);
+    factor_base.reserve(spec.rational.size(), spec.algebraic.size());
+    for (const auto& entry : spec.rational) {
+        factor_base.add_rational(entry.p, entry.log_p);
+    }
+    for (const auto& entry : spec.algebraic) {
+        factor_base.add_algebraic(entry.p, entry.r, entry.log_p, entry.degree);
+    }
+    factor_base.set_sieve_algebraic_count(spec.sieve_algebraic_count);
+    factor_base.build_index();
+    return factor_base;
+}
+
+BoundWork bind_work_checked(const WorkIdentity& identity, const FrozenPolicy& frozen,
+                            const gnfs::core::PolynomialContext& polynomial,
+                            const gnfs::factor_base::FactorBase& factor_base) {
+    auto result =
+        policy_detail::bind_distributed_sieve_work_v1(identity, frozen, polynomial, factor_base);
+    CHECK(result);
+    CHECK(result.work.has_value());
+    return std::move(*result.work);
+}
+
+void expect_work_binding_rejected(const WorkIdentity& identity, const FrozenPolicy& frozen,
+                                  const gnfs::core::PolynomialContext& polynomial,
+                                  const gnfs::factor_base::FactorBase& factor_base) {
+    const auto result =
+        policy_detail::bind_distributed_sieve_work_v1(identity, frozen, polynomial, factor_base);
+    CHECK(!result);
+    CHECK(!result.work.has_value());
+    CHECK(!result.status);
 }
 
 bool same_lattice_runtime_config(const LatticeRuntimeConfig& lhs,
@@ -1065,6 +1122,260 @@ void test_lattice_runtime_mapping_uses_only_frozen_policy() {
           special_qs.size());
 }
 
+void test_bound_work_derives_every_small_runtime_input() {
+    const auto frozen = freeze_checked(unset_snapshot());
+    auto identity = make_runtime_identity(frozen);
+    identity.distributed.sq_cap_per_worker = 12;
+    identity.distributed.relation_cap_per_worker = 34;
+    identity.distributed.max_worker_attempts = 64;
+    identity.distributed.max_merge_build_attempts = 63;
+    identity.distributed.max_consumption_attempts = 62;
+    identity.original_sq_bounds = {0, 2, 10, 11};
+    identity.effective_sq_bounds = {1, 2, 0, std::numeric_limits<std::uint32_t>::max()};
+    identity.distributed.chunks = {{0, 1, 2, "chunk_0"}};
+    CHECK(sieve::validate_distributed_sieve_work_identity(identity));
+
+    const auto polynomial = make_live_polynomial();
+    const auto factor_base = make_live_factor_base();
+    const auto bound = bind_work_checked(identity, frozen, polynomial, factor_base);
+
+    const auto digest = sieve::distributed_sieve_work_digest(identity);
+    CHECK(digest);
+    CHECK(bound.work_digest == *digest.digest);
+    CHECK(bound.sieve_parameters.log_scale == 16);
+    CHECK(bound.sieve_parameters.rational_threshold == 50);
+    CHECK(bound.sieve_parameters.algebraic_threshold == 51);
+    CHECK(bound.sieve_parameters.large_prime_bound == 0);
+    CHECK(bound.sieve_parameters.enable_2lp);
+    CHECK(!bound.sieve_parameters.enable_3lp);
+    CHECK(bound.sieve_region.i_min == -100);
+    CHECK(bound.sieve_region.i_max == 100);
+    CHECK(bound.sieve_region.j_min == 1);
+    CHECK(bound.sieve_region.j_max == 50);
+
+    CHECK(bound.cofactor.cofactorizer.large_prime_bound == 10'000);
+    CHECK(bound.cofactor.cofactorizer.allow_1lp);
+    CHECK(bound.cofactor.cofactorizer.allow_2lp);
+    CHECK(!bound.cofactor.cofactorizer.allow_3lp);
+    CHECK(bound.cofactor.cofactorizer.max_factorization_attempts ==
+          sieve::DISTRIBUTED_SIEVE_SEMANTIC_DEFAULT_MAX_FACTORIZATION_ATTEMPTS_V2);
+    const auto semantic_root = sieve::distributed_sieve_semantic_seed_root_v2(identity);
+    CHECK(semantic_root);
+    CHECK(bound.cofactor.seed_provider.semantic_seed_root() == *semantic_root.digest);
+    CHECK(same_lattice_runtime_config(bound.lattice, map_lattice_runtime_checked(frozen)));
+
+    CHECK(bound.original_sq_range.start_index == identity.original_sq_bounds.start_index);
+    CHECK(bound.original_sq_range.end_index == identity.original_sq_bounds.end_index);
+    CHECK(bound.original_sq_range.min_q == identity.original_sq_bounds.min_q);
+    CHECK(bound.original_sq_range.max_q == identity.original_sq_bounds.max_q);
+    CHECK(bound.effective_sq_range.start_index == identity.effective_sq_bounds.start_index);
+    CHECK(bound.effective_sq_range.end_index == identity.effective_sq_bounds.end_index);
+    CHECK(bound.effective_sq_range.min_q == 0);
+    CHECK(bound.effective_sq_range.max_q == std::numeric_limits<std::uint32_t>::max());
+
+    CHECK(bound.worker_count == 1);
+    CHECK(bound.chunks == identity.distributed.chunks);
+    CHECK(bound.sq_cap_per_worker == 12);
+    CHECK(bound.relation_cap_per_worker == 34);
+    CHECK(bound.max_worker_attempts == 64);
+    CHECK(bound.max_merge_build_attempts == 63);
+    CHECK(bound.max_consumption_attempts == 62);
+    CHECK(bound.semantic_versions.relation_serialization_version == 1);
+    CHECK(bound.semantic_versions.ooc_format_version ==
+          gnfs::relation::OOCRelationStoreFormat::FORMAT_VERSION_V3);
+    CHECK(bound.semantic_versions.merge_policy_version == 1);
+    CHECK(same_canonical_policy(bound.frozen_policy.canonical, frozen.canonical));
+}
+
+void test_bound_work_rejects_every_live_polynomial_drift() {
+    const auto frozen = freeze_checked(unset_snapshot());
+    const auto identity = make_runtime_identity(frozen);
+    const auto factor_base = make_live_factor_base();
+
+    {
+        const auto live = make_live_polynomial("1000036000101");
+        expect_work_binding_rejected(identity, frozen, live, factor_base);
+    }
+    {
+        const auto live = make_live_polynomial("1000036000099", "10003");
+        expect_work_binding_rejected(identity, frozen, live, factor_base);
+    }
+    {
+        const auto live = make_live_polynomial("1000036000099", "10001", {"-7", "3", "1"});
+        expect_work_binding_rejected(identity, frozen, live, factor_base);
+    }
+    {
+        const auto live = make_live_polynomial("1000036000099", "10001", {"-5", "3", "1", "1"});
+        expect_work_binding_rejected(identity, frozen, live, factor_base);
+    }
+    {
+        // PolynomialContext retains zero storage above its lowered live
+        // degree. V1 binds that storage exactly even though the V2 seed root
+        // deliberately normalizes it.
+        const auto live = make_live_polynomial("1000036000099", "10001", {"-5", "3", "1", "0"});
+        CHECK(live.degree() == identity.polynomial.degree);
+        expect_work_binding_rejected(identity, frozen, live, factor_base);
+    }
+    {
+        const auto live = make_live_polynomial("1000036000099", "10001", {"-5", "3", "1"}, 1.5);
+        expect_work_binding_rejected(identity, frozen, live, factor_base);
+    }
+}
+
+void test_bound_work_rejects_every_live_factor_base_drift() {
+    const auto frozen = freeze_checked(unset_snapshot());
+    const auto identity = make_runtime_identity(frozen);
+    const auto polynomial = make_live_polynomial();
+
+    const auto reject = [&](const LiveFactorBaseSpec& spec) {
+        const auto live = make_live_factor_base(spec);
+        expect_work_binding_rejected(identity, frozen, polynomial, live);
+    };
+
+    {
+        LiveFactorBaseSpec spec;
+        ++spec.params.rational_bound;
+        reject(spec);
+    }
+    {
+        LiveFactorBaseSpec spec;
+        ++spec.params.algebraic_bound;
+        reject(spec);
+    }
+    {
+        LiveFactorBaseSpec spec;
+        ++spec.params.large_prime_bound;
+        reject(spec);
+    }
+    {
+        LiveFactorBaseSpec spec;
+        --spec.params.log_scale;
+        reject(spec);
+    }
+    {
+        LiveFactorBaseSpec spec;
+        ++spec.rational[0].log_p;
+        reject(spec);
+    }
+    {
+        LiveFactorBaseSpec spec;
+        std::swap(spec.rational[0], spec.rational[1]);
+        reject(spec);
+    }
+    {
+        LiveFactorBaseSpec spec;
+        spec.rational.push_back({7, 44});
+        reject(spec);
+    }
+    {
+        LiveFactorBaseSpec spec;
+        ++spec.algebraic[0].r;
+        reject(spec);
+    }
+    {
+        LiveFactorBaseSpec spec;
+        ++spec.algebraic[0].log_p;
+        reject(spec);
+    }
+    {
+        LiveFactorBaseSpec spec;
+        ++spec.algebraic[1].degree;
+        reject(spec);
+    }
+    {
+        LiveFactorBaseSpec spec;
+        std::swap(spec.algebraic[0], spec.algebraic[1]);
+        reject(spec);
+    }
+    {
+        LiveFactorBaseSpec spec;
+        spec.algebraic.push_back({211, 2, 61, 1});
+        reject(spec);
+    }
+    {
+        LiveFactorBaseSpec spec;
+        spec.sieve_algebraic_count = 1;
+        reject(spec);
+    }
+
+    // A raw zero prefix is legal in V1 only when every algebraic entry lies
+    // beyond the algebraic bound. FactorBase interprets its raw zero as "all
+    // entries", so the binder must reject instead of silently equating the two
+    // representations.
+    auto zero_prefix_identity = identity;
+    zero_prefix_identity.factor_base.algebraic_bound = 5;
+    zero_prefix_identity.factor_base.sieve_algebraic_count = 0;
+    CHECK(sieve::validate_distributed_sieve_work_identity(zero_prefix_identity));
+    LiveFactorBaseSpec zero_prefix_spec;
+    zero_prefix_spec.params.algebraic_bound = 5;
+    zero_prefix_spec.sieve_algebraic_count = 0;
+    const auto zero_prefix_live = make_live_factor_base(zero_prefix_spec);
+    CHECK(zero_prefix_live.sieve_algebraic_count() == zero_prefix_live.algebraic_count());
+    expect_work_binding_rejected(zero_prefix_identity, frozen, polynomial, zero_prefix_live);
+}
+
+void test_bound_work_rejects_policy_version_and_mapper_drift() {
+    const auto baseline_frozen = freeze_checked(unset_snapshot());
+    const auto baseline_identity = make_runtime_identity(baseline_frozen);
+    const auto polynomial = make_live_polynomial();
+    const auto factor_base = make_live_factor_base();
+
+    auto canonical_split_brain = baseline_identity;
+    canonical_split_brain.execution_policy.settings[policy_index(Key::lattice_skew)]
+        .canonical_bits = 1;
+    CHECK(sieve::validate_distributed_sieve_work_identity(canonical_split_brain));
+    expect_work_binding_rejected(canonical_split_brain, baseline_frozen, polynomial, factor_base);
+
+    auto typed_split_brain = baseline_frozen;
+    typed_split_brain.sieve.lattice_skew = true;
+    expect_work_binding_rejected(baseline_identity, typed_split_brain, polynomial, factor_base);
+
+    constexpr std::array version_members{
+        &sieve::WorkSemanticVersionsV1::relation_serialization_version,
+        &sieve::WorkSemanticVersionsV1::ooc_format_version,
+        &sieve::WorkSemanticVersionsV1::digest_version,
+        &sieve::WorkSemanticVersionsV1::handoff_version,
+        &sieve::WorkSemanticVersionsV1::retry_policy_version,
+        &sieve::WorkSemanticVersionsV1::chunking_version,
+        &sieve::WorkSemanticVersionsV1::completion_version,
+        &sieve::WorkSemanticVersionsV1::deduplication_version,
+        &sieve::WorkSemanticVersionsV1::merge_policy_version,
+    };
+    for (const auto member : version_members) {
+        auto changed = baseline_identity;
+        ++(changed.semantic_versions.*member);
+        CHECK(sieve::validate_distributed_sieve_work_identity(changed));
+        expect_work_binding_rejected(changed, baseline_frozen, polynomial, factor_base);
+    }
+
+    {
+        auto snapshot = unset_snapshot();
+        set_raw(snapshot, Key::survival_filter, "1");
+        set_raw(snapshot, Key::survival_threshold, "0.25");
+        const auto frozen = freeze_checked(snapshot);
+        const auto identity = make_runtime_identity(frozen);
+        expect_work_binding_rejected(identity, frozen, polynomial, factor_base);
+    }
+    for (const auto key : {Key::ecm_sigma_pool_size, Key::ecm_curve_pool}) {
+        auto snapshot = unset_snapshot();
+        set_raw(snapshot, key, "8");
+        const auto frozen = freeze_checked(snapshot);
+        const auto identity = make_runtime_identity(frozen);
+        expect_work_binding_rejected(identity, frozen, polynomial, factor_base);
+    }
+
+    // Conservative settings are retained in the bound object even before a
+    // launch consumer exists; they are not normalized away or re-read.
+    auto parallel_snapshot = unset_snapshot();
+    set_raw(parallel_snapshot, Key::lattice_basis_parallel_threads, "4");
+    const auto parallel_frozen = freeze_checked(parallel_snapshot);
+    const auto parallel_identity = make_runtime_identity(parallel_frozen);
+    const auto parallel =
+        bind_work_checked(parallel_identity, parallel_frozen, polynomial, factor_base);
+    CHECK(parallel.lattice.lattice_basis_parallel_threads == 4);
+    CHECK(parallel.frozen_policy.sieve.lattice_basis_parallel_threads == 4);
+}
+
 void test_diagnostics_are_noncanonical_and_consistency_is_closed() {
     auto off_snapshot = unset_snapshot();
     off_snapshot.cofactor_timing = "0";
@@ -1104,6 +1415,10 @@ int main() {
         test_frozen_policy_rejects_host_bound_and_ecm_drift();
         test_capture_is_single_read_and_owned();
         test_lattice_runtime_mapping_uses_only_frozen_policy();
+        test_bound_work_derives_every_small_runtime_input();
+        test_bound_work_rejects_every_live_polynomial_drift();
+        test_bound_work_rejects_every_live_factor_base_drift();
+        test_bound_work_rejects_policy_version_and_mapper_drift();
         test_diagnostics_are_noncanonical_and_consistency_is_closed();
         std::cout << "distributed sieve execution-policy tests passed\n";
         return 0;

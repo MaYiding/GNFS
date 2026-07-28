@@ -16,7 +16,19 @@ SOURCE_ROOTS = (
     "src/sieve",
     "src/cofactor",
 )
-SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".inc", ".ipp"}
+SOURCE_SUFFIXES = {
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".h",
+    ".hh",
+    ".hpp",
+    ".hxx",
+    ".inc",
+    ".ipp",
+    ".mm",
+}
 
 SEMANTIC_FLAGS = (
     "GNFS_LATTICE_LLL",
@@ -89,6 +101,8 @@ DURABLE_ENVIRONMENT_FREE_FILES = {
     "include/gnfs/sieve/distributed_sieve_resume.hpp",
     "src/sieve/distributed_sieve_execution_policy.cpp",
     "src/sieve/distributed_sieve_execution_policy_internal.hpp",
+    "src/sieve/distributed_sieve_bound_work.cpp",
+    "src/sieve/distributed_sieve_bound_work_internal.hpp",
     "src/sieve/distributed_sieve_cofactor_runtime_config.cpp",
     "src/sieve/distributed_sieve_cofactor_runtime_config_internal.hpp",
     "src/sieve/distributed_sieve_lattice_runtime_config.cpp",
@@ -111,12 +125,70 @@ DURABLE_FORBIDDEN_CALLS = (
 )
 DURABLE_PURE_RUNTIME_MAPPER_FILES = {
     "include/gnfs/sieve/distributed_sieve_seed_v2.hpp",
+    "src/sieve/distributed_sieve_bound_work.cpp",
+    "src/sieve/distributed_sieve_bound_work_internal.hpp",
     "src/sieve/distributed_sieve_cofactor_runtime_config.cpp",
     "src/sieve/distributed_sieve_cofactor_runtime_config_internal.hpp",
     "src/sieve/distributed_sieve_lattice_runtime_config.cpp",
     "src/sieve/distributed_sieve_lattice_runtime_config_internal.hpp",
     "src/sieve/distributed_sieve_seed_v2.cpp",
 }
+DURABLE_BOUND_WORK_FILES = {
+    "src/sieve/distributed_sieve_bound_work.cpp",
+    "src/sieve/distributed_sieve_bound_work_internal.hpp",
+}
+DURABLE_BOUND_WORK_FORBIDDEN_IDENTIFIERS = (
+    "DistributedSieveWaveStore",
+    "DistributedSieveWorkerAttemptStartReceipt",
+    "OOCCleanupTransaction",
+    "OOCPrivateLease",
+    "OOCRelationWriter",
+    "RelationCollector",
+    "RelationSink",
+    "run_distributed_sieve",
+    "process_id",
+    "getpid",
+    "fork",
+    "open",
+    "mkdir",
+    "rename",
+    "unlink",
+    "posix_spawn",
+    "ThreadPool",
+    "async",
+    "filesystem",
+    "ifstream",
+    "ofstream",
+    "fstream",
+    "fopen",
+    "opendir",
+    "steady_clock",
+    "system_clock",
+    "high_resolution_clock",
+)
+BOUND_WORK_SCAN_EXCLUDED_TOP_LEVEL_PREFIXES = (
+    ".",
+    "build",
+    "cmake-build",
+    "xcode-build",
+)
+BOUND_WORK_USE_SITE_IDENTIFIERS = (
+    "DistributedSieveBoundWorkV1",
+    "DistributedSieveBoundWorkResultV1",
+    "bind_distributed_sieve_work_v1",
+)
+BOUND_WORK_USE_SITE_ALLOWLIST = {
+    "src/sieve/distributed_sieve_bound_work.cpp",
+    "src/sieve/distributed_sieve_bound_work_internal.hpp",
+    "tests/test_distributed_sieve_execution_policy.cpp",
+}
+LEGACY_PIPELINE_FILE = "src/api/pipeline.cpp"
+LEGACY_PIPELINE_DURABLE_FORBIDDEN_IDENTIFIERS = (
+    "DistributedSieveWorkIdentityV1",
+    "DistributedSieveBoundWorkV1",
+    "bind_distributed_sieve_work_v1",
+    "distributed_sieve_bound_work_internal",
+)
 DURABLE_PURE_RUNTIME_MAPPER_FORBIDDEN_IDENTIFIERS = (
     "AdaptiveBasisManager",
     "LatticeSieve",
@@ -607,6 +679,23 @@ class Checks:
                     files.append((relative, path))
         return sorted(files)
 
+    def bound_work_source_files(self) -> list[tuple[str, Path]]:
+        files: list[tuple[str, Path]] = []
+        for path in self.root.rglob("*"):
+            if not path.is_file() or path.suffix not in SOURCE_SUFFIXES:
+                continue
+            relative_path = path.relative_to(self.root)
+            if not relative_path.parts:
+                continue
+            top_level = relative_path.parts[0]
+            if any(
+                top_level.startswith(prefix)
+                for prefix in BOUND_WORK_SCAN_EXCLUDED_TOP_LEVEL_PREFIXES
+            ):
+                continue
+            files.append((relative_path.as_posix(), path))
+        return sorted(files)
+
     def validate_getenv_identifier_uses(
         self, relative: str, text: str, calls: list[GetenvCall]
     ) -> None:
@@ -649,6 +738,15 @@ class Checks:
                     f"durable implementation must not call ambient API {identifier}",
                 )
 
+        if relative in DURABLE_BOUND_WORK_FILES:
+            for identifier in DURABLE_BOUND_WORK_FORBIDDEN_IDENTIFIERS:
+                for use in find_code_identifier_uses(text, identifier):
+                    self.fail(
+                        relative,
+                        use.line,
+                        f"bound-work mapper must not use runtime/side-effect API {identifier}",
+                    )
+
         if relative not in DURABLE_PURE_RUNTIME_MAPPER_FILES:
             return
         for identifier in DURABLE_PURE_RUNTIME_MAPPER_FORBIDDEN_IDENTIFIERS:
@@ -664,6 +762,35 @@ class Checks:
                     relative,
                     use.line,
                     f"pure runtime mapper must not call legacy runtime API {identifier}",
+                )
+
+    def validate_legacy_pipeline_boundary(self, text: str) -> None:
+        for identifier in LEGACY_PIPELINE_DURABLE_FORBIDDEN_IDENTIFIERS:
+            for use in find_code_identifier_uses(text, identifier):
+                self.fail(
+                    LEGACY_PIPELINE_FILE,
+                    use.line,
+                    f"legacy Pipeline must not self-mint durable work via {identifier}",
+                )
+
+    def validate_bound_work_use_site(self, relative: str, text: str) -> None:
+        bound_uses: list[CodeIdentifierUse] = []
+        for identifier in BOUND_WORK_USE_SITE_IDENTIFIERS:
+            uses = find_code_identifier_uses(text, identifier)
+            bound_uses.extend(uses)
+            if relative not in BOUND_WORK_USE_SITE_ALLOWLIST:
+                for use in uses:
+                    self.fail(
+                        relative,
+                        use.line,
+                        f"bound-work use site is not receipt-gated/allowlisted: {identifier}",
+                    )
+        if bound_uses:
+            for use in find_code_identifier_uses(text, "run_distributed_sieve"):
+                self.fail(
+                    relative,
+                    use.line,
+                    "bound-work projection must not coexist with the legacy seeded runner",
                 )
 
     def classify(self, relative: str, call: GetenvCall, categories: dict[str, str]) -> None:
@@ -937,6 +1064,21 @@ class Checks:
                 self.classify(relative, call, categories)
             for use in find_code_identifier_uses(text, "random_device"):
                 self.classify_random_device(relative, use)
+
+        try:
+            pipeline_text = (self.root / LEGACY_PIPELINE_FILE).read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            self.fail(LEGACY_PIPELINE_FILE, 1, f"cannot read source: {exc}")
+        else:
+            self.validate_legacy_pipeline_boundary(pipeline_text)
+
+        for relative, path in self.bound_work_source_files():
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeError) as exc:
+                self.fail(relative, 1, f"cannot read bound-work use site: {exc}")
+                continue
+            self.validate_bound_work_use_site(relative, text)
 
         for entry, count in self.legacy_counts.items():
             if count != 1:
@@ -1333,6 +1475,134 @@ auto seeded_brent_classification = classify_cofactor_seeded_with_brent_v1(
         and "legacy runtime API brent_pollard_enabled"
         in provider_api_checks.errors[0],
         "distributed seed-provider indirect ambient API ban is not enforced",
+    )
+
+    bound_work_checks = Checks(Path("."))
+    bound_work_relative = "src/sieve/distributed_sieve_bound_work.cpp"
+    bound_work_checks.validate_durable_ambient_api_uses(
+        bound_work_relative,
+        r'''
+DistributedSieveWaveStore store;
+DistributedSieveWorkerAttemptStartReceipt receipt;
+RelationCollector collector;
+auto pid = process_id();
+auto rows = run_distributed_sieve(config);
+auto fork_pointer = &fork;
+auto descriptor = open(path, flags);
+std::ofstream output(path);
+auto now = std::chrono::steady_clock::now();
+''',
+    )
+    expect(
+        len(bound_work_checks.errors) == 9
+        and any(
+            "runtime/side-effect API DistributedSieveWaveStore" in error
+            for error in bound_work_checks.errors
+        )
+        and any(
+            "runtime/side-effect API DistributedSieveWorkerAttemptStartReceipt" in error
+            for error in bound_work_checks.errors
+        )
+        and any(
+            "runtime/side-effect API RelationCollector" in error
+            for error in bound_work_checks.errors
+        )
+        and any(
+            "runtime/side-effect API process_id" in error
+            for error in bound_work_checks.errors
+        )
+        and any(
+            "runtime/side-effect API run_distributed_sieve" in error
+            for error in bound_work_checks.errors
+        )
+        and any(
+            "runtime/side-effect API fork" in error
+            for error in bound_work_checks.errors
+        )
+        and any(
+            "runtime/side-effect API open" in error
+            for error in bound_work_checks.errors
+        )
+        and any(
+            "runtime/side-effect API ofstream" in error
+            for error in bound_work_checks.errors
+        )
+        and any(
+            "runtime/side-effect API steady_clock" in error
+            for error in bound_work_checks.errors
+        ),
+        f"bound-work authority/process bans are not closed: "
+        f"{bound_work_checks.errors}",
+    )
+
+    use_site_checks = Checks(Path("."))
+    use_site_checks.validate_bound_work_use_site(
+        "src/sieve/untrusted_wrapper.mm",
+        r'''
+auto bound = bind_distributed_sieve_work_v1(identity, frozen, context, factor_base);
+auto rows = run_distributed_sieve(config, context, factor_base, bound.sieve_parameters);
+''',
+    )
+    expect(
+        len(use_site_checks.errors) == 2
+        and any(
+            "use site is not receipt-gated/allowlisted" in error
+            for error in use_site_checks.errors
+        )
+        and any(
+            "must not coexist with the legacy seeded runner" in error
+            for error in use_site_checks.errors
+        ),
+        f"bound-work repo-wide use-site gate is not enforced: "
+        f"{use_site_checks.errors}",
+    )
+    expect(
+        ".mm" in SOURCE_SUFFIXES,
+        "Objective-C++ sources are missing from the repo-wide bound-work scan",
+    )
+    repository_inventory = Checks(
+        Path(__file__).resolve().parents[1]
+    ).bound_work_source_files()
+    inventory_top_levels = {
+        Path(relative).parts[0] for relative, _ in repository_inventory
+    }
+    expect(
+        {"bench", "include", "src", "tests"} <= inventory_top_levels
+        and any(relative == "src/linalg/metal_spmv.mm" for relative, _ in repository_inventory),
+        "repo-wide bound-work scan misses a current source-bearing top level or Objective-C++ file",
+    )
+    allowed_use_site_checks = Checks(Path("."))
+    allowed_use_site_checks.validate_bound_work_use_site(
+        "tests/test_distributed_sieve_execution_policy.cpp",
+        "auto bound = bind_distributed_sieve_work_v1(identity, frozen, context, factor_base);",
+    )
+    expect(
+        not allowed_use_site_checks.errors,
+        f"allowlisted bound-work test use was rejected: "
+        f"{allowed_use_site_checks.errors}",
+    )
+
+    pipeline_checks = Checks(Path("."))
+    pipeline_checks.validate_legacy_pipeline_boundary(
+        r'''
+// bind_distributed_sieve_work_v1 is ignored in comments.
+const char* ignored = "DistributedSieveWorkIdentityV1";
+DistributedSieveWorkIdentityV1 identity;
+auto bound = bind_distributed_sieve_work_v1(identity, frozen, context, factor_base);
+'''
+    )
+    expect(
+        len(pipeline_checks.errors) == 2
+        and any(
+            "DistributedSieveWorkIdentityV1" in error
+            for error in pipeline_checks.errors
+        )
+        and any(
+            "bind_distributed_sieve_work_v1" in error
+            for error in pipeline_checks.errors
+        ),
+        f"legacy Pipeline durable self-mint ban is not enforced: "
+        f"{pipeline_checks.errors}",
     )
 
     legacy_random_checks = Checks(Path("."))
