@@ -21,6 +21,8 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
+#include <sys/file.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -41,6 +43,13 @@ static_assert(
     std::is_nothrow_move_constructible_v<worker_process::DistributedSieveWorkerProcessBatch>);
 static_assert(!std::is_move_assignable_v<worker_process::DistributedSieveWorkerProcessBatch>);
 
+static_assert(worker_process::DISTRIBUTED_SIEVE_WORKER_CHILD_WAVE_ROOT_DESCRIPTOR == 3);
+static_assert(worker_process::DISTRIBUTED_SIEVE_WORKER_CHILD_PERMANENT_WAVE_STORE_LOCK_DESCRIPTOR ==
+              4);
+static_assert(worker_process::DISTRIBUTED_SIEVE_WORKER_CHILD_ATTEMPT_BASE_LOCK_DESCRIPTOR == 5);
+static_assert(worker_process::DISTRIBUTED_SIEVE_WORKER_CHILD_WORK_PACKAGE_READER_DESCRIPTOR == 6);
+static_assert(worker_process::DISTRIBUTED_SIEVE_WORKER_CHILD_FIRST_UNMAPPED_DESCRIPTOR == 7);
+
 #define CHECK(condition)                                                                           \
     do {                                                                                           \
         if (!(condition)) {                                                                        \
@@ -56,12 +65,39 @@ inline constexpr std::uint32_t REPORT_MAGIC = 0x47575250U;
 inline constexpr std::uint16_t PROTOCOL_VERSION = 1U;
 inline constexpr std::uint64_t ARGUMENT_DIGEST_OFFSET = UINT64_C(14695981039346656037);
 inline constexpr std::uint64_t ARGUMENT_DIGEST_PRIME = UINT64_C(1099511628211);
+inline constexpr std::size_t FIXED_CAPABILITY_COUNT = 4U;
 
 enum class FakeChildMode : std::uint16_t {
     report_and_exit = 1U,
     stop_then_exit = 2U,
     exit_without_report = 3U,
     terminate = 4U,
+};
+
+enum class FakeCapabilityKind : std::uint32_t {
+    none = 0U,
+    directory = 1U,
+    regular_file = 2U,
+};
+
+struct FakeCapabilityExpectation final {
+    std::uint64_t device = 0;
+    std::uint64_t inode = 0;
+    std::uint64_t link_count = 0;
+    FakeCapabilityKind kind = FakeCapabilityKind::none;
+    std::uint32_t permission_bits = 0;
+    std::int32_t access_mode = -1;
+};
+
+struct FakeCapabilityObservation final {
+    std::uint64_t device = 0;
+    std::uint64_t inode = 0;
+    std::uint64_t link_count = 0;
+    std::uint32_t mode = 0;
+    std::uint32_t permission_bits = 0;
+    std::int32_t access_mode = -1;
+    std::int32_t descriptor_flags = -1;
+    std::int32_t native_error = 0;
 };
 
 struct FakeBootstrap final {
@@ -74,6 +110,10 @@ struct FakeBootstrap final {
     std::uint32_t payload_tag = 0;
     std::uint32_t expected_argument_count = 0;
     std::uint64_t expected_argument_digest = ARGUMENT_DIGEST_OFFSET;
+    std::uint32_t expected_capability_count = 0;
+    std::int32_t first_unmapped_descriptor = -1;
+    std::int32_t descriptor_scan_limit = 0;
+    std::array<FakeCapabilityExpectation, FIXED_CAPABILITY_COUNT> expected_capabilities{};
 };
 
 struct FakeReport final {
@@ -85,6 +125,8 @@ struct FakeReport final {
     std::uint32_t payload_tag = 0;
     std::uint32_t argument_count = 0;
     std::uint64_t argument_digest = ARGUMENT_DIGEST_OFFSET;
+    std::array<FakeCapabilityObservation, FIXED_CAPABILITY_COUNT> observed_capabilities{};
+    std::int32_t first_unexpected_open_descriptor = -1;
 };
 
 inline constexpr std::uint32_t INPUT_EXACT = 1U << 0U;
@@ -99,6 +141,18 @@ inline constexpr std::uint32_t PROCESS_GROUP_ISOLATED = 1U << 8U;
 inline constexpr std::uint32_t EMPTY_SIGNAL_MASK = 1U << 9U;
 inline constexpr std::uint32_t DEFAULT_SIGNALS = 1U << 10U;
 inline constexpr std::uint32_t ARGUMENT_DIGEST_MATCHES = 1U << 11U;
+inline constexpr std::uint32_t CAPABILITY_0_MATCHES = 1U << 12U;
+inline constexpr std::uint32_t CAPABILITY_1_MATCHES = 1U << 13U;
+inline constexpr std::uint32_t CAPABILITY_2_MATCHES = 1U << 14U;
+inline constexpr std::uint32_t CAPABILITY_3_MATCHES = 1U << 15U;
+inline constexpr std::uint32_t FIXED_CAPABILITIES_NOT_CLOEXEC = 1U << 16U;
+inline constexpr std::uint32_t NO_UNMAPPED_DESCRIPTOR_LEAK = 1U << 17U;
+inline constexpr std::uint32_t PERMANENT_WAVE_STORE_LOCK_SAME_OFD = 1U << 18U;
+inline constexpr std::uint32_t ATTEMPT_BASE_LOCK_SAME_OFD = 1U << 19U;
+inline constexpr std::uint32_t REQUIRED_CAPABILITY_FLAGS =
+    CAPABILITY_0_MATCHES | CAPABILITY_1_MATCHES | CAPABILITY_2_MATCHES | CAPABILITY_3_MATCHES |
+    FIXED_CAPABILITIES_NOT_CLOEXEC | NO_UNMAPPED_DESCRIPTOR_LEAK |
+    PERMANENT_WAVE_STORE_LOCK_SAME_OFD | ATTEMPT_BASE_LOCK_SAME_OFD;
 inline constexpr std::uint32_t REQUIRED_REPORT_FLAGS =
     INPUT_EXACT | INPUT_EOF | STDIN_OPEN | STDOUT_OPEN | STDERR_OPEN | EXPECTED_DESCRIPTOR_CLOSED |
     EMPTY_ENVIRONMENT | ARGUMENT_COUNT_MATCHES | PROCESS_GROUP_ISOLATED | EMPTY_SIGNAL_MASK |
@@ -207,20 +261,357 @@ private:
     int descriptor_ = -1;
 };
 
+[[nodiscard]] int duplicate_at_least(int descriptor, int minimum) {
+    int duplicate = -1;
+    do {
+        duplicate = ::fcntl(descriptor, F_DUPFD_CLOEXEC, minimum);
+    } while (duplicate < 0 && errno == EINTR);
+    CHECK(duplicate >= minimum);
+    return duplicate;
+}
+
+[[nodiscard]] constexpr std::uint32_t file_permission_bits(mode_t mode) noexcept {
+    return static_cast<std::uint32_t>(mode) & 0777U;
+}
+
+[[nodiscard]] FakeCapabilityExpectation
+capability_expectation(int descriptor, FakeCapabilityKind kind, int access_mode) {
+    struct stat metadata{};
+    CHECK(::fstat(descriptor, &metadata) == 0);
+    return {
+        .device = static_cast<std::uint64_t>(metadata.st_dev),
+        .inode = static_cast<std::uint64_t>(metadata.st_ino),
+        .link_count = static_cast<std::uint64_t>(metadata.st_nlink),
+        .kind = kind,
+        .permission_bits = file_permission_bits(metadata.st_mode),
+        .access_mode = access_mode,
+    };
+}
+
+class FixedDescriptorRestorer final {
+public:
+    FixedDescriptorRestorer() {
+        for (std::size_t index = 0; index < TARGETS.size(); ++index) {
+            const int target = TARGETS[index];
+            int descriptor_flags = -1;
+            do {
+                descriptor_flags = ::fcntl(target, F_GETFD);
+            } while (descriptor_flags < 0 && errno == EINTR);
+            if (descriptor_flags < 0) {
+                CHECK(errno == EBADF);
+                continue;
+            }
+            original_descriptor_flags_[index] = descriptor_flags;
+            backups_[index] = duplicate_at_least(target, BACKUP_DESCRIPTOR_MINIMUM);
+        }
+    }
+
+    ~FixedDescriptorRestorer() {
+        restore();
+    }
+
+    FixedDescriptorRestorer(const FixedDescriptorRestorer&) = delete;
+    FixedDescriptorRestorer& operator=(const FixedDescriptorRestorer&) = delete;
+
+    void install(int target, int source) {
+        CHECK(target >= TARGETS.front());
+        CHECK(target <= TARGETS.back());
+        int result = -1;
+        do {
+            result = ::dup2(source, target);
+        } while (result < 0 && errno == EINTR);
+        CHECK(result == target);
+    }
+
+private:
+    void restore() noexcept {
+        for (std::size_t index = 0; index < TARGETS.size(); ++index) {
+            const int target = TARGETS[index];
+            if (backups_[index] < 0) {
+                (void)::close(target);
+                continue;
+            }
+            int result = -1;
+            do {
+                result = ::dup2(backups_[index], target);
+            } while (result < 0 && errno == EINTR);
+            if (result == target) {
+                (void)::fcntl(target, F_SETFD, original_descriptor_flags_[index]);
+            }
+            (void)::close(std::exchange(backups_[index], -1));
+        }
+    }
+
+    inline static constexpr std::array<int, FIXED_CAPABILITY_COUNT> TARGETS{3, 4, 5, 6};
+    inline static constexpr int BACKUP_DESCRIPTOR_MINIMUM = 512;
+    std::array<int, FIXED_CAPABILITY_COUNT> backups_{{-1, -1, -1, -1}};
+    std::array<int, FIXED_CAPABILITY_COUNT> original_descriptor_flags_{{0, 0, 0, 0}};
+};
+
+class CapabilityFixture final {
+public:
+    explicit CapabilityFixture(std::uint32_t tag) {
+        static std::uint64_t sequence = 0;
+        for (unsigned attempt = 0; attempt < 100U; ++attempt) {
+            path_ = std::filesystem::temp_directory_path() /
+                    ("gnfs-worker-process-capabilities-" + std::to_string(::getpid()) + "-" +
+                     std::to_string(++sequence) + "-" + std::to_string(attempt));
+            std::error_code error;
+            if (std::filesystem::create_directory(path_, error)) {
+                break;
+            }
+            CHECK(!error || error == std::errc::file_exists);
+        }
+        CHECK(!path_.empty());
+        CHECK(std::filesystem::is_directory(path_));
+        CHECK(::chmod(path_.c_str(), 0700) == 0);
+
+        UniqueFd root(open_path(path_, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC, 0));
+        root_.reset(duplicate_at_least(root.get(), SOURCE_DESCRIPTOR_MINIMUM));
+
+        wave_lock_.reset(open_relative("wave.lock", O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0600));
+        lift_source(wave_lock_);
+        lock_exclusively(wave_lock_);
+        attempt_lock_.reset(
+            open_relative("attempt.lock", O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0600));
+        lift_source(attempt_lock_);
+        lock_exclusively(attempt_lock_);
+
+        UniqueFd package_writer(
+            open_relative("package.bin", O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0600));
+        const std::array<std::uint32_t, 4> payload{
+            UINT32_C(0x4757504b),
+            tag,
+            tag ^ UINT32_C(0xa5a5a5a5),
+            UINT32_C(0x01020304),
+        };
+        const auto* bytes = reinterpret_cast<const std::byte*>(payload.data());
+        std::size_t written = 0;
+        while (written < sizeof(payload)) {
+            ssize_t count = -1;
+            do {
+                count = ::write(package_writer.get(), bytes + written, sizeof(payload) - written);
+            } while (count < 0 && errno == EINTR);
+            CHECK(count > 0);
+            written += static_cast<std::size_t>(count);
+        }
+        CHECK(::fchmod(package_writer.get(), 0400) == 0);
+        package_writer.reset();
+        package_.reset(open_relative("package.bin", O_RDONLY | O_NOFOLLOW | O_CLOEXEC, 0));
+        int unlink_result = -1;
+        do {
+            unlink_result = ::unlinkat(root_.get(), "package.bin", 0);
+        } while (unlink_result < 0 && errno == EINTR);
+        CHECK(unlink_result == 0);
+        lift_source(package_);
+        struct stat package_metadata{};
+        CHECK(::fstat(package_.get(), &package_metadata) == 0);
+        CHECK(S_ISREG(package_metadata.st_mode));
+        CHECK(package_metadata.st_nlink == 0);
+        CHECK(file_permission_bits(package_metadata.st_mode) == 0400U);
+    }
+
+    ~CapabilityFixture() {
+        package_.reset();
+        attempt_lock_.reset();
+        wave_lock_.reset();
+        root_.reset();
+        std::error_code ignored;
+        (void)std::filesystem::remove_all(path_, ignored);
+    }
+
+    CapabilityFixture(const CapabilityFixture&) = delete;
+    CapabilityFixture& operator=(const CapabilityFixture&) = delete;
+
+    [[nodiscard]] std::array<int, FIXED_CAPABILITY_COUNT> sources() const noexcept {
+        return {root_.get(), wave_lock_.get(), attempt_lock_.get(), package_.get()};
+    }
+
+    [[nodiscard]] std::array<FakeCapabilityExpectation, FIXED_CAPABILITY_COUNT>
+    expectations() const {
+        return {
+            capability_expectation(root_.get(), FakeCapabilityKind::directory, O_RDONLY),
+            capability_expectation(wave_lock_.get(), FakeCapabilityKind::regular_file, O_RDWR),
+            capability_expectation(attempt_lock_.get(), FakeCapabilityKind::regular_file, O_RDWR),
+            capability_expectation(package_.get(), FakeCapabilityKind::regular_file, O_RDONLY),
+        };
+    }
+
+private:
+    [[nodiscard]] static int open_path(const std::filesystem::path& path, int flags, mode_t mode) {
+        int descriptor = -1;
+        do {
+            descriptor = ::open(path.c_str(), flags, mode);
+        } while (descriptor < 0 && errno == EINTR);
+        CHECK(descriptor >= 0);
+        return descriptor;
+    }
+
+    [[nodiscard]] int open_relative(const char* leaf, int flags, mode_t mode) const {
+        int descriptor = -1;
+        do {
+            descriptor = ::openat(root_.get(), leaf, flags, mode);
+        } while (descriptor < 0 && errno == EINTR);
+        CHECK(descriptor >= 0);
+        return descriptor;
+    }
+
+    static void lift_source(UniqueFd& descriptor) {
+        UniqueFd lifted(duplicate_at_least(descriptor.get(), SOURCE_DESCRIPTOR_MINIMUM));
+        descriptor = std::move(lifted);
+    }
+
+    static void lock_exclusively(const UniqueFd& descriptor) {
+        int result = -1;
+        do {
+            result = ::flock(descriptor.get(), LOCK_EX | LOCK_NB);
+        } while (result < 0 && errno == EINTR);
+        CHECK(result == 0);
+    }
+
+    inline static constexpr int SOURCE_DESCRIPTOR_MINIMUM = 64;
+    std::filesystem::path path_;
+    UniqueFd root_;
+    UniqueFd wave_lock_;
+    UniqueFd attempt_lock_;
+    UniqueFd package_;
+};
+
+[[nodiscard]] worker_process::DistributedSieveWorkerProcessFixedCapabilitySourcesV1
+fixed_capability_sources(const std::array<int, FIXED_CAPABILITY_COUNT>& descriptors) noexcept {
+    return {
+        .wave_root_directory_descriptor = descriptors[0],
+        .permanent_wave_store_lock_descriptor = descriptors[1],
+        .attempt_base_lock_descriptor = descriptors[2],
+        .work_package_reader_descriptor = descriptors[3],
+    };
+}
+
+[[nodiscard]] bool
+descriptor_matches_expectation(int descriptor,
+                               const FakeCapabilityExpectation& expectation) noexcept {
+    struct stat metadata{};
+    if (::fstat(descriptor, &metadata) != 0) {
+        return false;
+    }
+    int flags = -1;
+    do {
+        flags = ::fcntl(descriptor, F_GETFL);
+    } while (flags < 0 && errno == EINTR);
+    if (flags < 0 || static_cast<std::uint64_t>(metadata.st_dev) != expectation.device ||
+        static_cast<std::uint64_t>(metadata.st_ino) != expectation.inode ||
+        static_cast<std::uint64_t>(metadata.st_nlink) != expectation.link_count ||
+        file_permission_bits(metadata.st_mode) != expectation.permission_bits ||
+        (flags & O_ACCMODE) != expectation.access_mode) {
+        return false;
+    }
+    if (expectation.kind == FakeCapabilityKind::directory) {
+        return S_ISDIR(metadata.st_mode);
+    }
+    if (expectation.kind == FakeCapabilityKind::regular_file) {
+        return S_ISREG(metadata.st_mode);
+    }
+    return false;
+}
+
+[[nodiscard]] int descriptor_scan_limit() noexcept {
+    long configured_limit = ::sysconf(_SC_OPEN_MAX);
+    if (configured_limit < 0) {
+        configured_limit = 1024;
+    }
+    return static_cast<int>(std::min<long>(configured_limit, static_cast<long>(4096)));
+}
+
+[[nodiscard]] FakeBootstrap capability_bootstrap(const CapabilityFixture& fixture,
+                                                 std::uint32_t slot,
+                                                 std::uint32_t payload_tag = 0) {
+    FakeBootstrap bootstrap{
+        .mode = FakeChildMode::report_and_exit,
+        .slot = slot,
+        .payload_tag = payload_tag,
+    };
+    bootstrap.expected_capability_count = FIXED_CAPABILITY_COUNT;
+    bootstrap.first_unmapped_descriptor =
+        worker_process::DISTRIBUTED_SIEVE_WORKER_CHILD_FIRST_UNMAPPED_DESCRIPTOR;
+    bootstrap.descriptor_scan_limit = descriptor_scan_limit();
+    bootstrap.expected_capabilities = fixture.expectations();
+    return bootstrap;
+}
+
+struct DescriptorSnapshot final {
+    bool open = false;
+    std::uint64_t device = 0;
+    std::uint64_t inode = 0;
+    std::uint32_t mode = 0;
+    std::int32_t status_flags = -1;
+    std::int32_t descriptor_flags = -1;
+
+    bool operator==(const DescriptorSnapshot&) const = default;
+};
+
+[[nodiscard]] DescriptorSnapshot descriptor_snapshot(int descriptor) {
+    int descriptor_flags = -1;
+    do {
+        descriptor_flags = ::fcntl(descriptor, F_GETFD);
+    } while (descriptor_flags < 0 && errno == EINTR);
+    if (descriptor_flags < 0) {
+        CHECK(errno == EBADF);
+        return {};
+    }
+
+    struct stat metadata{};
+    CHECK(::fstat(descriptor, &metadata) == 0);
+    int status_flags = -1;
+    do {
+        status_flags = ::fcntl(descriptor, F_GETFL);
+    } while (status_flags < 0 && errno == EINTR);
+    CHECK(status_flags >= 0);
+    return {
+        .open = true,
+        .device = static_cast<std::uint64_t>(metadata.st_dev),
+        .inode = static_cast<std::uint64_t>(metadata.st_ino),
+        .mode = static_cast<std::uint32_t>(metadata.st_mode),
+        .status_flags = status_flags,
+        .descriptor_flags = descriptor_flags,
+    };
+}
+
+[[nodiscard]] std::array<DescriptorSnapshot, 3> snapshot_standard_descriptors() {
+    std::array<DescriptorSnapshot, 3> snapshots{};
+    for (int descriptor = STDIN_FILENO; descriptor <= STDERR_FILENO; ++descriptor) {
+        snapshots[static_cast<std::size_t>(descriptor)] = descriptor_snapshot(descriptor);
+    }
+    return snapshots;
+}
+
 class StandardDescriptorRestorer final {
 public:
     StandardDescriptorRestorer() {
         for (int descriptor = STDIN_FILENO; descriptor <= STDERR_FILENO; ++descriptor) {
+            const auto index = static_cast<std::size_t>(descriptor);
+            int descriptor_flags = -1;
+            do {
+                descriptor_flags = ::fcntl(descriptor, F_GETFD);
+            } while (descriptor_flags < 0 && errno == EINTR);
+            if (descriptor_flags < 0) {
+                if (errno != EBADF) {
+                    throw std::runtime_error("cannot inspect standard descriptor " +
+                                             std::to_string(descriptor));
+                }
+                continue;
+            }
+
             int duplicate = -1;
             do {
                 duplicate = ::fcntl(descriptor, F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
             } while (duplicate < 0 && errno == EINTR);
-            if (duplicate < 0 && errno != EBADF) {
+            if (duplicate < 0) {
                 throw std::runtime_error("cannot preserve standard descriptor " +
                                          std::to_string(descriptor));
             }
-            backups_[static_cast<std::size_t>(descriptor)] = duplicate;
-            originally_open_[static_cast<std::size_t>(descriptor)] = duplicate >= 0;
+            backups_[index] = duplicate;
+            originally_open_[index] = true;
+            original_descriptor_flags_[index] = descriptor_flags;
         }
     }
 
@@ -270,6 +661,13 @@ public:
                 complete = false;
                 continue;
             }
+            int flags_result = -1;
+            do {
+                flags_result = ::fcntl(descriptor, F_SETFD, original_descriptor_flags_[index]);
+            } while (flags_result < 0 && errno == EINTR);
+            if (flags_result < 0) {
+                complete = false;
+            }
             (void)::close(std::exchange(backups_[index], -1));
             restored_[index] = true;
         }
@@ -278,6 +676,7 @@ public:
 
 private:
     std::array<int, 3> backups_{{-1, -1, -1}};
+    std::array<int, 3> original_descriptor_flags_{{0, 0, 0}};
     std::array<bool, 3> originally_open_{{false, false, false}};
     std::array<bool, 3> restored_{{false, false, false}};
 };
@@ -512,6 +911,28 @@ void check_report(const FakeReport& report, const FakeBootstrap& bootstrap, pid_
         expect_standard_error_open ? REQUIRED_REPORT_FLAGS : REQUIRED_REPORT_FLAGS & ~STDERR_OPEN;
     CHECK((report.flags & required_flags) == required_flags);
     CHECK(((report.flags & STDERR_OPEN) != 0U) == expect_standard_error_open);
+    if (bootstrap.expected_capability_count == FIXED_CAPABILITY_COUNT) {
+        CHECK((report.flags & REQUIRED_CAPABILITY_FLAGS) == REQUIRED_CAPABILITY_FLAGS);
+        CHECK(report.first_unexpected_open_descriptor == -1);
+        for (std::size_t index = 0; index < FIXED_CAPABILITY_COUNT; ++index) {
+            const auto& expected = bootstrap.expected_capabilities[index];
+            const auto& observed = report.observed_capabilities[index];
+            CHECK(observed.native_error == 0);
+            CHECK(observed.device == expected.device);
+            CHECK(observed.inode == expected.inode);
+            CHECK(observed.link_count == expected.link_count);
+            CHECK(observed.permission_bits == expected.permission_bits);
+            CHECK(observed.access_mode == expected.access_mode);
+            CHECK((observed.descriptor_flags & FD_CLOEXEC) == 0);
+            if (expected.kind == FakeCapabilityKind::directory) {
+                CHECK(S_ISDIR(static_cast<mode_t>(observed.mode)));
+            } else if (expected.kind == FakeCapabilityKind::regular_file) {
+                CHECK(S_ISREG(static_cast<mode_t>(observed.mode)));
+            } else {
+                CHECK(false);
+            }
+        }
+    }
 }
 
 worker_process::DistributedSieveWorkerProcessWaitResult
@@ -699,6 +1120,367 @@ void test_invalid_standard_close_has_no_spawn(const std::string& executable_path
     CHECK(launched.diagnostic.native_error == EINVAL);
     CHECK(spawn_calls == 0);
     CHECK(snapshot_open_descriptors() == baseline);
+}
+
+void test_fixed_capability_sources_at_targets_are_cycle_safe(const std::string& executable_path) {
+    CapabilityFixture fixture(0x101U);
+    FixedDescriptorRestorer fixed_descriptors;
+    const auto backing_sources = fixture.sources();
+    const auto expected = fixture.expectations();
+
+    fixed_descriptors.install(worker_process::DISTRIBUTED_SIEVE_WORKER_CHILD_WAVE_ROOT_DESCRIPTOR,
+                              backing_sources[1]);
+    fixed_descriptors.install(
+        worker_process::DISTRIBUTED_SIEVE_WORKER_CHILD_PERMANENT_WAVE_STORE_LOCK_DESCRIPTOR,
+        backing_sources[2]);
+    fixed_descriptors.install(
+        worker_process::DISTRIBUTED_SIEVE_WORKER_CHILD_ATTEMPT_BASE_LOCK_DESCRIPTOR,
+        backing_sources[3]);
+    fixed_descriptors.install(
+        worker_process::DISTRIBUTED_SIEVE_WORKER_CHILD_WORK_PACKAGE_READER_DESCRIPTOR,
+        backing_sources[0]);
+
+    const std::array<int, FIXED_CAPABILITY_COUNT> permuted_sources{
+        worker_process::DISTRIBUTED_SIEVE_WORKER_CHILD_WORK_PACKAGE_READER_DESCRIPTOR,
+        worker_process::DISTRIBUTED_SIEVE_WORKER_CHILD_WAVE_ROOT_DESCRIPTOR,
+        worker_process::DISTRIBUTED_SIEVE_WORKER_CHILD_PERMANENT_WAVE_STORE_LOCK_DESCRIPTOR,
+        worker_process::DISTRIBUTED_SIEVE_WORKER_CHILD_ATTEMPT_BASE_LOCK_DESCRIPTOR,
+    };
+    const auto capability_sources = fixed_capability_sources(permuted_sources);
+    const FakeBootstrap bootstrap = capability_bootstrap(fixture, 100U, 0x101U);
+    auto prepared = prepare_one(executable_path, bootstrap);
+    CHECK(prepared);
+
+    auto launched = worker_process::spawn_distributed_sieve_worker_process_batch_with_capabilities(
+        std::move(*prepared.batch), std::span{&capability_sources, 1U});
+    CHECK(launched);
+    CHECK(descriptor_matches_expectation(
+        worker_process::DISTRIBUTED_SIEVE_WORKER_CHILD_WAVE_ROOT_DESCRIPTOR, expected[1]));
+    CHECK(descriptor_matches_expectation(
+        worker_process::DISTRIBUTED_SIEVE_WORKER_CHILD_PERMANENT_WAVE_STORE_LOCK_DESCRIPTOR,
+        expected[2]));
+    CHECK(descriptor_matches_expectation(
+        worker_process::DISTRIBUTED_SIEVE_WORKER_CHILD_ATTEMPT_BASE_LOCK_DESCRIPTOR, expected[3]));
+    CHECK(descriptor_matches_expectation(
+        worker_process::DISTRIBUTED_SIEVE_WORKER_CHILD_WORK_PACKAGE_READER_DESCRIPTOR,
+        expected[0]));
+
+    ChildCleanup cleanup;
+    register_started_children(launched, cleanup);
+    auto& process = *launched.children[0].process;
+    const pid_t process_id = process.process_id();
+    const auto waited = wait_and_mark_reaped(process, cleanup);
+    CHECK(waited.reaped);
+    CHECK(waited.success);
+    UniqueFd report(process.release_report_descriptor());
+    check_report(read_fake_report(report.get()), bootstrap, process_id);
+    require_report_eof(report.get());
+}
+
+void test_fixed_capability_targets_replace_only_child_foreign_descriptors(
+    const std::string& executable_path) {
+    CapabilityFixture fixture(0x202U);
+    CapabilityFixture foreign(0x203U);
+    FixedDescriptorRestorer fixed_descriptors;
+    const auto foreign_sources = foreign.sources();
+    const auto foreign_expected = foreign.expectations();
+    for (std::size_t index = 0; index < FIXED_CAPABILITY_COUNT; ++index) {
+        fixed_descriptors.install(
+            static_cast<int>(index) +
+                worker_process::DISTRIBUTED_SIEVE_WORKER_CHILD_WAVE_ROOT_DESCRIPTOR,
+            foreign_sources[index]);
+    }
+
+    const auto capability_sources = fixed_capability_sources(fixture.sources());
+    const FakeBootstrap bootstrap = capability_bootstrap(fixture, 110U, 0x202U);
+    auto prepared = prepare_one(executable_path, bootstrap);
+    CHECK(prepared);
+
+    auto launched = worker_process::spawn_distributed_sieve_worker_process_batch_with_capabilities(
+        std::move(*prepared.batch), std::span{&capability_sources, 1U});
+    CHECK(launched);
+    for (std::size_t index = 0; index < FIXED_CAPABILITY_COUNT; ++index) {
+        const int target = static_cast<int>(index) +
+                           worker_process::DISTRIBUTED_SIEVE_WORKER_CHILD_WAVE_ROOT_DESCRIPTOR;
+        CHECK(descriptor_matches_expectation(target, foreign_expected[index]));
+    }
+
+    ChildCleanup cleanup;
+    register_started_children(launched, cleanup);
+    auto& process = *launched.children[0].process;
+    const pid_t process_id = process.process_id();
+    const auto waited = wait_and_mark_reaped(process, cleanup);
+    CHECK(waited.reaped);
+    CHECK(waited.success);
+    UniqueFd report(process.release_report_descriptor());
+    check_report(read_fake_report(report.get()), bootstrap, process_id);
+    require_report_eof(report.get());
+}
+
+void test_fixed_capability_source_standard_error_is_staged_and_closed(
+    const std::string& executable_path) {
+    CapabilityFixture fixture(0x303U);
+    const auto ordinary_sources = fixture.sources();
+    auto source_descriptors = ordinary_sources;
+    source_descriptors[3] = STDERR_FILENO;
+    const auto capability_sources = fixed_capability_sources(source_descriptors);
+    const FakeBootstrap bootstrap = capability_bootstrap(fixture, 120U, 0x303U);
+
+    auto launched = [&]() {
+        StandardDescriptorRestorer restorer;
+        restorer.close_standard_error();
+        int duplicated = -1;
+        do {
+            duplicated = ::dup2(ordinary_sources[3], STDERR_FILENO);
+        } while (duplicated < 0 && errno == EINTR);
+        CHECK(duplicated == STDERR_FILENO);
+
+        auto prepared = prepare_one(executable_path, bootstrap);
+        CHECK(prepared);
+        auto result =
+            worker_process::spawn_distributed_sieve_worker_process_batch_with_capabilities(
+                std::move(*prepared.batch), std::span{&capability_sources, 1U});
+        const bool restored = restorer.restore();
+        if (!restored) {
+            throw std::runtime_error("failed to restore standard error after capability launch");
+        }
+        return result;
+    }();
+    CHECK(launched);
+
+    ChildCleanup cleanup;
+    register_started_children(launched, cleanup);
+    auto& process = *launched.children[0].process;
+    const pid_t process_id = process.process_id();
+    const auto waited = wait_and_mark_reaped(process, cleanup);
+    CHECK(waited.reaped);
+    CHECK(waited.success);
+    UniqueFd report(process.release_report_descriptor());
+    check_report(read_fake_report(report.get()), bootstrap, process_id, false);
+    require_report_eof(report.get());
+}
+
+void test_fixed_capability_sources_at_standard_io_are_action_order_safe(
+    const std::string& executable_path) {
+    CapabilityFixture fixture(0x304U);
+    const auto ordinary_sources = fixture.sources();
+    auto source_descriptors = ordinary_sources;
+    source_descriptors[0] = STDIN_FILENO;
+    source_descriptors[1] = STDOUT_FILENO;
+    const auto capability_sources = fixed_capability_sources(source_descriptors);
+    const FakeBootstrap bootstrap = capability_bootstrap(fixture, 121U, 0x304U);
+    const auto standard_descriptors_before = snapshot_standard_descriptors();
+
+    auto launched = [&]() {
+        StandardDescriptorRestorer restorer;
+        for (int descriptor = STDIN_FILENO; descriptor <= STDOUT_FILENO; ++descriptor) {
+            int duplicated = -1;
+            do {
+                duplicated =
+                    ::dup2(ordinary_sources[static_cast<std::size_t>(descriptor)], descriptor);
+            } while (duplicated < 0 && errno == EINTR);
+            CHECK(duplicated == descriptor);
+        }
+
+        auto prepared = prepare_one(executable_path, bootstrap);
+        CHECK(prepared);
+        auto result =
+            worker_process::spawn_distributed_sieve_worker_process_batch_with_capabilities(
+                std::move(*prepared.batch), std::span{&capability_sources, 1U});
+        const bool restored = restorer.restore();
+        if (!restored) {
+            throw std::runtime_error(
+                "failed to restore standard descriptors after capability launch");
+        }
+        return result;
+    }();
+    CHECK(snapshot_standard_descriptors() == standard_descriptors_before);
+    CHECK(launched);
+
+    ChildCleanup cleanup;
+    register_started_children(launched, cleanup);
+    auto& process = *launched.children[0].process;
+    const pid_t process_id = process.process_id();
+    const auto waited = wait_and_mark_reaped(process, cleanup);
+    CHECK(waited.reaped);
+    CHECK(waited.success);
+    UniqueFd report(process.release_report_descriptor());
+    check_report(read_fake_report(report.get()), bootstrap, process_id);
+    require_report_eof(report.get());
+}
+
+void test_fixed_capability_middle_spawn_failure_is_slot_local(const std::string& executable_path) {
+    CapabilityFixture fixture_0(0x401U);
+    CapabilityFixture fixture_1(0x402U);
+    CapabilityFixture fixture_2(0x403U);
+    const std::array<FakeBootstrap, 3> bootstraps{{
+        capability_bootstrap(fixture_0, 130U, 0x401U),
+        capability_bootstrap(fixture_1, 131U, 0x402U),
+        capability_bootstrap(fixture_2, 132U, 0x403U),
+    }};
+    const std::array<worker_process::DistributedSieveWorkerProcessSpawnSpec, 3> specs{{
+        {
+            .executable_path = executable_path,
+            .arguments = {},
+            .bootstrap_frame = as_bytes(bootstraps[0]),
+        },
+        {
+            .executable_path = executable_path,
+            .arguments = {},
+            .bootstrap_frame = as_bytes(bootstraps[1]),
+        },
+        {
+            .executable_path = executable_path,
+            .arguments = {},
+            .bootstrap_frame = as_bytes(bootstraps[2]),
+        },
+    }};
+    const std::array capability_sources{
+        fixed_capability_sources(fixture_0.sources()),
+        fixed_capability_sources(fixture_1.sources()),
+        fixed_capability_sources(fixture_2.sources()),
+    };
+    auto prepared =
+        worker_process::prepare_distributed_sieve_worker_process_batch(std::span{specs});
+    CHECK(prepared);
+    SpawnFailureContext failure;
+    auto launched = worker_process::spawn_distributed_sieve_worker_process_batch_with_capabilities(
+        std::move(*prepared.batch), capability_sources, {},
+        {
+            .before_spawn = fail_selected_spawn,
+            .context = &failure,
+        });
+    CHECK(!launched);
+    CHECK(launched.diagnostic.error ==
+          worker_process::DistributedSieveWorkerProcessTransportError::none);
+    CHECK(launched.children.size() == 3U);
+    CHECK(failure.calls == 3);
+    CHECK(launched.children[0]);
+    CHECK(!launched.children[1]);
+    CHECK(launched.children[1].diagnostic.error ==
+          worker_process::DistributedSieveWorkerProcessTransportError::spawn_failed);
+    CHECK(launched.children[1].diagnostic.native_error == EAGAIN);
+    CHECK(launched.children[2]);
+
+    ChildCleanup cleanup;
+    register_started_children(launched, cleanup);
+    for (const std::size_t index : {std::size_t{0}, std::size_t{2}}) {
+        auto& process = *launched.children[index].process;
+        const pid_t process_id = process.process_id();
+        const auto waited = wait_and_mark_reaped(process, cleanup);
+        CHECK(waited.reaped);
+        CHECK(waited.success);
+        UniqueFd report(process.release_report_descriptor());
+        check_report(read_fake_report(report.get()), bootstraps[index], process_id);
+        require_report_eof(report.get());
+    }
+}
+
+void test_invalid_fixed_capability_requests_have_no_spawn(const std::string& executable_path) {
+    CapabilityFixture fixture(0x505U);
+    const auto valid_sources = fixed_capability_sources(fixture.sources());
+
+    {
+        const auto baseline = snapshot_open_descriptors();
+        const FakeBootstrap bootstrap;
+        auto prepared = prepare_one(executable_path, bootstrap);
+        CHECK(prepared);
+        int spawn_calls = 0;
+        const std::span<const worker_process::DistributedSieveWorkerProcessFixedCapabilitySourcesV1>
+            no_capabilities;
+        auto launched =
+            worker_process::spawn_distributed_sieve_worker_process_batch_with_capabilities(
+                std::move(*prepared.batch), no_capabilities, {},
+                {
+                    .before_spawn = count_spawn_calls,
+                    .context = &spawn_calls,
+                });
+        CHECK(!launched);
+        CHECK(launched.children.empty());
+        CHECK(launched.diagnostic.error ==
+              worker_process::DistributedSieveWorkerProcessTransportError::invalid_request);
+        CHECK(launched.diagnostic.native_error == EINVAL);
+        CHECK(spawn_calls == 0);
+        CHECK(snapshot_open_descriptors() == baseline);
+    }
+
+    {
+        const auto baseline = snapshot_open_descriptors();
+        const FakeBootstrap bootstrap;
+        auto prepared = prepare_one(executable_path, bootstrap);
+        CHECK(prepared);
+        auto duplicate = valid_sources;
+        duplicate.permanent_wave_store_lock_descriptor = duplicate.wave_root_directory_descriptor;
+        int spawn_calls = 0;
+        auto launched =
+            worker_process::spawn_distributed_sieve_worker_process_batch_with_capabilities(
+                std::move(*prepared.batch), std::span{&duplicate, 1U}, {},
+                {
+                    .before_spawn = count_spawn_calls,
+                    .context = &spawn_calls,
+                });
+        CHECK(!launched);
+        CHECK(launched.children.empty());
+        CHECK(launched.diagnostic.error ==
+              worker_process::DistributedSieveWorkerProcessTransportError::invalid_request);
+        CHECK(launched.diagnostic.native_error == EINVAL);
+        CHECK(spawn_calls == 0);
+        CHECK(snapshot_open_descriptors() == baseline);
+    }
+
+    {
+        const auto baseline = snapshot_open_descriptors();
+        const FakeBootstrap bootstrap;
+        auto prepared = prepare_one(executable_path, bootstrap);
+        CHECK(prepared);
+        auto unavailable_source = valid_sources;
+        unavailable_source.work_package_reader_descriptor = INT_MAX;
+        int spawn_calls = 0;
+        auto launched =
+            worker_process::spawn_distributed_sieve_worker_process_batch_with_capabilities(
+                std::move(*prepared.batch), std::span{&unavailable_source, 1U}, {},
+                {
+                    .before_spawn = count_spawn_calls,
+                    .context = &spawn_calls,
+                });
+        CHECK(!launched);
+        CHECK(launched.diagnostic.error ==
+              worker_process::DistributedSieveWorkerProcessTransportError::none);
+        CHECK(launched.children.size() == 1U);
+        CHECK(!launched.children[0]);
+        CHECK(!launched.children[0].process.has_value());
+        CHECK(launched.children[0].diagnostic.error ==
+              worker_process::DistributedSieveWorkerProcessTransportError::spawn_failed);
+        CHECK(launched.children[0].diagnostic.native_error == EBADF);
+        CHECK(spawn_calls == 0);
+        CHECK(snapshot_open_descriptors() == baseline);
+    }
+
+    {
+        const FakeBootstrap bootstrap;
+        const auto baseline = snapshot_open_descriptors();
+        auto prepared = prepare_one(executable_path, bootstrap);
+        CHECK(prepared);
+        const auto batch_descriptors = added_descriptors(baseline, snapshot_open_descriptors());
+        CHECK(batch_descriptors.size() == 3U);
+        auto live_batch_source = valid_sources;
+        live_batch_source.wave_root_directory_descriptor = batch_descriptors.front();
+        int spawn_calls = 0;
+        auto launched =
+            worker_process::spawn_distributed_sieve_worker_process_batch_with_capabilities(
+                std::move(*prepared.batch), std::span{&live_batch_source, 1U}, {},
+                {
+                    .before_spawn = count_spawn_calls,
+                    .context = &spawn_calls,
+                });
+        CHECK(!launched);
+        CHECK(launched.children.empty());
+        CHECK(launched.diagnostic.error ==
+              worker_process::DistributedSieveWorkerProcessTransportError::invalid_request);
+        CHECK(launched.diagnostic.native_error == EINVAL);
+        CHECK(spawn_calls == 0);
+        CHECK(snapshot_open_descriptors() == baseline);
+    }
 }
 
 void test_single_child_move_wait_release_and_empty_environment(const std::string& executable_path) {
@@ -1185,6 +1967,12 @@ int main(int argc, char* argv[]) {
         const std::string fake_child_path = resolve_fake_child_path(argc, argv);
         test_invalid_prepare_has_no_descriptor_side_effect(fake_child_path);
         test_invalid_standard_close_has_no_spawn(fake_child_path);
+        test_fixed_capability_sources_at_targets_are_cycle_safe(fake_child_path);
+        test_fixed_capability_targets_replace_only_child_foreign_descriptors(fake_child_path);
+        test_fixed_capability_source_standard_error_is_staged_and_closed(fake_child_path);
+        test_fixed_capability_sources_at_standard_io_are_action_order_safe(fake_child_path);
+        test_fixed_capability_middle_spawn_failure_is_slot_local(fake_child_path);
+        test_invalid_fixed_capability_requests_have_no_spawn(fake_child_path);
         test_single_child_move_wait_release_and_empty_environment(fake_child_path);
         test_cross_child_report_closure(fake_child_path);
         test_external_descriptor_closed_only_in_child(fake_child_path);

@@ -364,6 +364,18 @@ preserve uncertainty for stopped, mismatched, and `ECHILD` observations.
 Windows exercises the explicit unavailable result without claiming
 process-transport coverage.
 
+The same binary covers the exact-role capability transport. It freezes child
+descriptors `0..6` as bootstrap, report, standard-error snapshot, wave-root
+directory, permanent WaveStore lock, attempt `BaseLock`, and anonymous
+work-package file. Collision cases prove that the complete batch's child-side
+sources are pre-staged at descriptor `7` or above before mapping. Closure
+checks cover staged sources, foreign slots, and the platform close-from floor.
+The generic spawn API remains authority-free. The repository policy checker
+permits the exact-role source type and spawn entry point only in the
+source-private process header, its implementation, and this dedicated test.
+This coverage does not claim start-receipt consumption, WaveStore launcher
+integration, writer-authority rehydration, or named-residue reconciliation.
+
 `test_distributed_sieve_work_identity_codec` is the `instant` canonical
 work-preimage contract. It compares the shared allocation-free field emitter
 against an independent little-endian oracle, freezes the existing V1 work

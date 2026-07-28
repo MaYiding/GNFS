@@ -3,11 +3,13 @@
 // Source-private self-exec process transport foundation for sieve workers.
 //
 // This layer encapsulates a posix_spawn()/waitpid() sequence but is not yet
-// integrated into the legacy distributed sieve. It grants no WaveStore, lease,
-// path, relation-writer, or retry authority. A prepared batch owns a per-slot
-// bootstrap-input channel and report-output channel. Every bounded bootstrap
-// frame is written and every parent bootstrap writer is closed before the
-// first child is spawned.
+// integrated into the legacy distributed sieve. The generic entry grants no
+// WaveStore, lease, path, relation-writer, or retry authority. The exact-role
+// entry only transports caller-borrowed descriptors; a receipt-gated higher
+// layer must authenticate and retain those capabilities. A prepared batch owns
+// a per-slot bootstrap-input channel and report-output channel. Every bounded
+// bootstrap frame is written and every parent bootstrap writer is closed
+// before the first child is spawned.
 
 #include <cstddef>
 #include <cstdint>
@@ -33,9 +35,16 @@ inline constexpr std::size_t DISTRIBUTED_SIEVE_WORKER_BOOTSTRAP_FRAME_LIMIT =
     PIPE_BUF < 4096 ? static_cast<std::size_t>(PIPE_BUF) : 4096U;
 #endif
 
+inline constexpr int DISTRIBUTED_SIEVE_WORKER_CHILD_WAVE_ROOT_DESCRIPTOR = 3;
+inline constexpr int DISTRIBUTED_SIEVE_WORKER_CHILD_PERMANENT_WAVE_STORE_LOCK_DESCRIPTOR = 4;
+inline constexpr int DISTRIBUTED_SIEVE_WORKER_CHILD_ATTEMPT_BASE_LOCK_DESCRIPTOR = 5;
+inline constexpr int DISTRIBUTED_SIEVE_WORKER_CHILD_WORK_PACKAGE_READER_DESCRIPTOR = 6;
+inline constexpr int DISTRIBUTED_SIEVE_WORKER_CHILD_FIRST_UNMAPPED_DESCRIPTOR = 7;
+
 class DistributedSieveWorkerProcessBatch;
 struct DistributedSieveWorkerProcessBatchPrepareResult;
 struct DistributedSieveWorkerProcessSpawnSpec;
+struct DistributedSieveWorkerProcessFixedCapabilitySourcesV1;
 struct DistributedSieveWorkerProcessLaunchResult;
 struct DistributedSieveWorkerProcessBatchLaunchResult;
 struct DistributedSieveWorkerProcessSpawnTestHooks;
@@ -140,10 +149,17 @@ private:
     int report_descriptor_ = -1;
     std::optional<DistributedSieveWorkerProcessWaitResult> wait_result_;
 
+    friend class DistributedSieveWorkerProcessBatch;
     friend struct DistributedSieveWorkerProcessBatchLaunchResult;
     friend DistributedSieveWorkerProcessBatchLaunchResult
     spawn_distributed_sieve_worker_process_batch(
         DistributedSieveWorkerProcessBatch&& batch, std::span<const int> close_in_every_child,
+        DistributedSieveWorkerProcessSpawnTestHooks hooks) noexcept;
+    friend DistributedSieveWorkerProcessBatchLaunchResult
+    spawn_distributed_sieve_worker_process_batch_with_capabilities(
+        DistributedSieveWorkerProcessBatch&& batch,
+        std::span<const DistributedSieveWorkerProcessFixedCapabilitySourcesV1> capabilities,
+        std::span<const int> close_in_every_child,
         DistributedSieveWorkerProcessSpawnTestHooks hooks) noexcept;
 };
 
@@ -160,11 +176,24 @@ struct DistributedSieveWorkerProcessSpawnSpec final {
     std::span<const std::byte> bootstrap_frame;
 };
 
+/// Borrowed authority sources for one fixed child slot.
+///
+/// The four roles and child targets are protocol constants, not caller choices.
+/// The caller must keep every source open until the authority-aware spawn call
+/// returns. The transport duplicates the complete batch before the first spawn
+/// and never closes these parent-side sources.
+struct DistributedSieveWorkerProcessFixedCapabilitySourcesV1 final {
+    int wave_root_directory_descriptor = -1;
+    int permanent_wave_store_lock_descriptor = -1;
+    int attempt_base_lock_descriptor = -1;
+    int work_package_reader_descriptor = -1;
+};
+
 /// All bootstrap/report channels and owned argv storage for one future wave.
 ///
 /// The type is move-only and exposes no pipe endpoint. Destruction closes
-/// every still-owned descriptor. `spawn_distributed_sieve_worker_process_batch`
-/// is its sole consumer.
+/// every still-owned descriptor. The generic and authority-aware spawn
+/// functions are its only consumers.
 class DistributedSieveWorkerProcessBatch final {
 public:
     DistributedSieveWorkerProcessBatch() = delete;
@@ -188,6 +217,10 @@ private:
     };
 
     explicit DistributedSieveWorkerProcessBatch(std::vector<SpawnSlot> slots) noexcept;
+    [[nodiscard]] DistributedSieveWorkerProcessBatchLaunchResult
+    launch_impl(std::span<const DistributedSieveWorkerProcessFixedCapabilitySourcesV1> capabilities,
+                bool capability_mode, std::span<const int> close_in_every_child,
+                DistributedSieveWorkerProcessSpawnTestHooks hooks) && noexcept;
 
     std::vector<SpawnSlot> slots_;
 
@@ -198,6 +231,12 @@ private:
     friend DistributedSieveWorkerProcessBatchLaunchResult
     spawn_distributed_sieve_worker_process_batch(
         DistributedSieveWorkerProcessBatch&& batch, std::span<const int> close_in_every_child,
+        DistributedSieveWorkerProcessSpawnTestHooks hooks) noexcept;
+    friend DistributedSieveWorkerProcessBatchLaunchResult
+    spawn_distributed_sieve_worker_process_batch_with_capabilities(
+        DistributedSieveWorkerProcessBatch&& batch,
+        std::span<const DistributedSieveWorkerProcessFixedCapabilitySourcesV1> capabilities,
+        std::span<const int> close_in_every_child,
         DistributedSieveWorkerProcessSpawnTestHooks hooks) noexcept;
 };
 
@@ -278,13 +317,31 @@ prepare_distributed_sieve_worker_process_batch(
 /// declare any ambient non-CLOEXEC descriptor that must not cross exec. A
 /// per-slot spawn failure closes that slot and the remaining fixed slots are
 /// attempted exactly once.
-///
-/// A future receipt-gated launcher will add an exact per-slot source-descriptor
-/// to fixed-child-descriptor mapping for the start-receipt BaseLock. This
-/// foundation intentionally exposes no such authority-bearing mapping.
 [[nodiscard]] DistributedSieveWorkerProcessBatchLaunchResult
 spawn_distributed_sieve_worker_process_batch(
     DistributedSieveWorkerProcessBatch&& batch, std::span<const int> close_in_every_child = {},
+    DistributedSieveWorkerProcessSpawnTestHooks hooks = {}) noexcept;
+
+/// Consume one prepared batch with four exact fixed capabilities per child.
+///
+/// The capability count must equal the prepared slot count. Every source is
+/// borrowed and may use any non-negative descriptor, including 0 through 6.
+/// Within one slot the four sources must be distinct, and no source may alias a
+/// live bootstrap/report endpoint. Before the first spawn, the transport
+/// duplicates the complete source batch at descriptors 7 or greater with
+/// close-on-exec. A failure in that preflight starts no child.
+///
+/// Each child receives the wave-root directory at descriptor 3, the permanent
+/// WaveStore lock at 4, the attempt BaseLock at 5, and the anonymous immutable
+/// work-package reader at 6. Standard input, output, and error retain the
+/// generic contract, except that an authority source occupying parent
+/// descriptor 2 makes child standard error explicitly closed rather than
+/// leaking that authority as a diagnostic stream.
+[[nodiscard]] DistributedSieveWorkerProcessBatchLaunchResult
+spawn_distributed_sieve_worker_process_batch_with_capabilities(
+    DistributedSieveWorkerProcessBatch&& batch,
+    std::span<const DistributedSieveWorkerProcessFixedCapabilitySourcesV1> capabilities,
+    std::span<const int> close_in_every_child = {},
     DistributedSieveWorkerProcessSpawnTestHooks hooks = {}) noexcept;
 
 } // namespace gnfs::sieve::distributed_sieve_worker_process_detail

@@ -4,6 +4,7 @@
 
 #include "distributed_sieve_worker_process_internal.hpp"
 
+#include <array>
 #include <cerrno>
 #include <new>
 #include <utility>
@@ -24,6 +25,26 @@ namespace gnfs::sieve::distributed_sieve_worker_process_detail {
 namespace {
 
 inline constexpr int LAST_STANDARD_DESCRIPTOR = 2;
+inline constexpr std::size_t FIXED_CAPABILITY_COUNT = 4U;
+
+using FixedCapabilityDescriptorArray = std::array<int, FIXED_CAPABILITY_COUNT>;
+
+inline constexpr FixedCapabilityDescriptorArray FIXED_CAPABILITY_TARGETS{
+    DISTRIBUTED_SIEVE_WORKER_CHILD_WAVE_ROOT_DESCRIPTOR,
+    DISTRIBUTED_SIEVE_WORKER_CHILD_PERMANENT_WAVE_STORE_LOCK_DESCRIPTOR,
+    DISTRIBUTED_SIEVE_WORKER_CHILD_ATTEMPT_BASE_LOCK_DESCRIPTOR,
+    DISTRIBUTED_SIEVE_WORKER_CHILD_WORK_PACKAGE_READER_DESCRIPTOR,
+};
+
+[[nodiscard]] constexpr FixedCapabilityDescriptorArray
+capability_sources(const DistributedSieveWorkerProcessFixedCapabilitySourcesV1& sources) noexcept {
+    return {
+        sources.wave_root_directory_descriptor,
+        sources.permanent_wave_store_lock_descriptor,
+        sources.attempt_base_lock_descriptor,
+        sources.work_package_reader_descriptor,
+    };
+}
 
 void close_descriptor(int descriptor) noexcept {
 #if !defined(_WIN32)
@@ -106,6 +127,14 @@ struct DecodedWaitStatus final {
     return {};
 }
 
+[[nodiscard]] int duplicate_cloexec_at_or_above(int descriptor, int minimum) noexcept {
+    int duplicate = -1;
+    do {
+        duplicate = ::fcntl(descriptor, F_DUPFD_CLOEXEC, minimum);
+    } while (duplicate < 0 && errno == EINTR);
+    return duplicate;
+}
+
 #if !defined(__linux__)
 [[nodiscard]] bool set_close_on_exec(int descriptor) noexcept {
     int flags = -1;
@@ -124,14 +153,12 @@ struct DecodedWaitStatus final {
 }
 #endif
 
-[[nodiscard]] bool move_above_standard_streams(int& descriptor) noexcept {
-    if (descriptor > STDERR_FILENO) {
+[[nodiscard]] bool move_to_unmapped_descriptor_range(int& descriptor) noexcept {
+    if (descriptor >= DISTRIBUTED_SIEVE_WORKER_CHILD_FIRST_UNMAPPED_DESCRIPTOR) {
         return true;
     }
-    int duplicate = -1;
-    do {
-        duplicate = ::fcntl(descriptor, F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
-    } while (duplicate < 0 && errno == EINTR);
+    const int duplicate = duplicate_cloexec_at_or_above(
+        descriptor, DISTRIBUTED_SIEVE_WORKER_CHILD_FIRST_UNMAPPED_DESCRIPTOR);
     if (duplicate < 0) {
         return false;
     }
@@ -159,8 +186,8 @@ struct DecodedWaitStatus final {
         return false;
     }
 #endif
-    if (!move_above_standard_streams(descriptors[0]) ||
-        !move_above_standard_streams(descriptors[1])) {
+    if (!move_to_unmapped_descriptor_range(descriptors[0]) ||
+        !move_to_unmapped_descriptor_range(descriptors[1])) {
         const int native_error = errno;
         close_descriptor(descriptors[0]);
         close_descriptor(descriptors[1]);
@@ -197,6 +224,26 @@ struct DecodedWaitStatus final {
     }
     return true;
 }
+
+struct StagedFixedCapabilitySlot final {
+    FixedCapabilityDescriptorArray descriptors{-1, -1, -1, -1};
+};
+
+struct StagedFixedCapabilityBatch final {
+    std::vector<StagedFixedCapabilitySlot> slots;
+
+    StagedFixedCapabilityBatch() = default;
+    StagedFixedCapabilityBatch(const StagedFixedCapabilityBatch&) = delete;
+    StagedFixedCapabilityBatch& operator=(const StagedFixedCapabilityBatch&) = delete;
+
+    ~StagedFixedCapabilityBatch() noexcept {
+        for (auto& slot : slots) {
+            for (int& descriptor : slot.descriptors) {
+                close_descriptor(std::exchange(descriptor, -1));
+            }
+        }
+    }
+};
 
 [[nodiscard]] int configure_spawn_attributes(posix_spawnattr_t& attributes) noexcept {
     sigset_t empty_mask;
@@ -467,21 +514,60 @@ DistributedSieveWorkerProcessBatchPrepareResult prepare_distributed_sieve_worker
 #endif
 }
 
-DistributedSieveWorkerProcessBatchLaunchResult spawn_distributed_sieve_worker_process_batch(
-    DistributedSieveWorkerProcessBatch&& batch, std::span<const int> close_in_every_child,
-    DistributedSieveWorkerProcessSpawnTestHooks hooks) noexcept {
-    auto consumed = std::move(batch);
+DistributedSieveWorkerProcessBatchLaunchResult DistributedSieveWorkerProcessBatch::launch_impl(
+    std::span<const DistributedSieveWorkerProcessFixedCapabilitySourcesV1> capabilities,
+    bool capability_mode, std::span<const int> close_in_every_child,
+    DistributedSieveWorkerProcessSpawnTestHooks hooks) && noexcept {
+    auto consumed = std::move(*this);
     if (consumed.slots_.empty()) {
         return launch_failure(DistributedSieveWorkerProcessTransportError::invalid_request, EINVAL);
     }
+    if ((capability_mode && capabilities.size() != consumed.slots_.size()) ||
+        (!capability_mode && !capabilities.empty())) {
+        return launch_failure(DistributedSieveWorkerProcessTransportError::invalid_request, EINVAL);
+    }
     for (const auto& slot : consumed.slots_) {
-        if (slot.parent_bootstrap_read_descriptor <= LAST_STANDARD_DESCRIPTOR ||
-            slot.parent_report_read_descriptor <= LAST_STANDARD_DESCRIPTOR ||
-            slot.child_report_write_descriptor <= LAST_STANDARD_DESCRIPTOR ||
+        if (slot.parent_bootstrap_read_descriptor <
+                DISTRIBUTED_SIEVE_WORKER_CHILD_FIRST_UNMAPPED_DESCRIPTOR ||
+            slot.parent_report_read_descriptor <
+                DISTRIBUTED_SIEVE_WORKER_CHILD_FIRST_UNMAPPED_DESCRIPTOR ||
+            slot.child_report_write_descriptor <
+                DISTRIBUTED_SIEVE_WORKER_CHILD_FIRST_UNMAPPED_DESCRIPTOR ||
             slot.executable_path.empty() || slot.argument_vector.size() < 2U ||
             slot.argument_vector.back() != nullptr) {
             return launch_failure(DistributedSieveWorkerProcessTransportError::invalid_request,
                                   EINVAL);
+        }
+    }
+    const auto is_live_batch_descriptor = [&consumed](int descriptor) noexcept {
+        for (const auto& slot : consumed.slots_) {
+            if (slot.parent_bootstrap_read_descriptor == descriptor ||
+                slot.parent_report_read_descriptor == descriptor ||
+                slot.child_report_write_descriptor == descriptor) {
+                return true;
+            }
+        }
+        return false;
+    };
+    bool authority_uses_standard_error = false;
+    if (capability_mode) {
+        for (const auto& capability : capabilities) {
+            const auto sources = capability_sources(capability);
+            for (std::size_t role = 0; role < sources.size(); ++role) {
+                const int source = sources[role];
+                if (source < 0 || is_live_batch_descriptor(source)) {
+                    return launch_failure(
+                        DistributedSieveWorkerProcessTransportError::invalid_request, EINVAL);
+                }
+                for (std::size_t prior = 0; prior < role; ++prior) {
+                    if (sources[prior] == source) {
+                        return launch_failure(
+                            DistributedSieveWorkerProcessTransportError::invalid_request, EINVAL);
+                    }
+                }
+                authority_uses_standard_error =
+                    authority_uses_standard_error || source == LAST_STANDARD_DESCRIPTOR;
+            }
         }
     }
     for (const int descriptor : close_in_every_child) {
@@ -507,38 +593,84 @@ DistributedSieveWorkerProcessBatchLaunchResult spawn_distributed_sieve_worker_pr
     return launch_failure(DistributedSieveWorkerProcessTransportError::platform_unavailable,
                           ENOTSUP);
 #else
-    int standard_error_snapshot = -1;
-    do {
-        standard_error_snapshot = ::fcntl(STDERR_FILENO, F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
-    } while (standard_error_snapshot < 0 && errno == EINTR);
-    if (standard_error_snapshot < 0 && errno != EBADF) {
-        const int native_error = errno;
+    const auto fail_all_slots = [&results](DistributedSieveWorkerProcessTransportError error,
+                                           int native_error) noexcept {
         for (auto& result : results) {
             result.diagnostic = {
-                .error = DistributedSieveWorkerProcessTransportError::spawn_failed,
+                .error = error,
                 .native_error = native_error,
             };
         }
-        return {
+        return DistributedSieveWorkerProcessBatchLaunchResult{
             .children = std::move(results),
             .diagnostic = {},
         };
+    };
+
+    StagedFixedCapabilityBatch staged_capabilities;
+    if (capability_mode) {
+        try {
+            staged_capabilities.slots.resize(capabilities.size());
+        } catch (const std::bad_alloc&) {
+            return launch_failure(DistributedSieveWorkerProcessTransportError::resource_exhausted,
+                                  ENOMEM);
+        } catch (...) {
+            return launch_failure(DistributedSieveWorkerProcessTransportError::resource_exhausted,
+                                  ENOMEM);
+        }
+        for (std::size_t slot_index = 0; slot_index < capabilities.size(); ++slot_index) {
+            const auto sources = capability_sources(capabilities[slot_index]);
+            auto& staged = staged_capabilities.slots[slot_index].descriptors;
+            for (std::size_t role = 0; role < sources.size(); ++role) {
+                staged[role] = duplicate_cloexec_at_or_above(
+                    sources[role], DISTRIBUTED_SIEVE_WORKER_CHILD_FIRST_UNMAPPED_DESCRIPTOR);
+                if (staged[role] < 0) {
+                    return fail_all_slots(DistributedSieveWorkerProcessTransportError::spawn_failed,
+                                          errno);
+                }
+            }
+        }
+    }
+
+    int standard_error_snapshot = -1;
+    if (!authority_uses_standard_error) {
+        standard_error_snapshot = duplicate_cloexec_at_or_above(
+            STDERR_FILENO, DISTRIBUTED_SIEVE_WORKER_CHILD_FIRST_UNMAPPED_DESCRIPTOR);
+        if (standard_error_snapshot < 0 && errno != EBADF) {
+            return fail_all_slots(DistributedSieveWorkerProcessTransportError::spawn_failed, errno);
+        }
     }
 
     char* empty_environment[]{nullptr};
-    const auto is_live_batch_descriptor = [&consumed](int descriptor) noexcept {
-        for (const auto& slot : consumed.slots_) {
-            if (slot.parent_bootstrap_read_descriptor == descriptor ||
-                slot.parent_report_read_descriptor == descriptor ||
-                slot.child_report_write_descriptor == descriptor) {
-                return true;
+    const auto is_staging_descriptor = [&staged_capabilities](int descriptor) noexcept {
+        for (const auto& slot : staged_capabilities.slots) {
+            for (const int staged : slot.descriptors) {
+                if (staged == descriptor) {
+                    return true;
+                }
             }
         }
         return false;
     };
-    const auto add_file_actions = [&consumed, close_in_every_child, standard_error_snapshot,
-                                   &is_live_batch_descriptor](posix_spawn_file_actions_t& actions,
-                                                              std::size_t own_index) noexcept {
+    const auto is_authority_source_descriptor = [capability_mode,
+                                                 capabilities](int descriptor) noexcept {
+        if (!capability_mode) {
+            return false;
+        }
+        for (const auto& capability : capabilities) {
+            for (const int source : capability_sources(capability)) {
+                if (source == descriptor) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+    const auto add_file_actions = [&consumed, capabilities, capability_mode, close_in_every_child,
+                                   standard_error_snapshot, &is_authority_source_descriptor,
+                                   &is_live_batch_descriptor, &is_staging_descriptor,
+                                   &staged_capabilities](posix_spawn_file_actions_t& actions,
+                                                         std::size_t own_index) noexcept {
         const auto& own = consumed.slots_[own_index];
         int error = ::posix_spawn_file_actions_adddup2(
             &actions, own.parent_bootstrap_read_descriptor, STDIN_FILENO);
@@ -586,7 +718,8 @@ DistributedSieveWorkerProcessBatchLaunchResult spawn_distributed_sieve_worker_pr
             const int descriptor = close_in_every_child[close_index];
             if (descriptor < 0 ||
                 !is_first_external_descriptor(close_in_every_child, close_index) ||
-                is_live_batch_descriptor(descriptor) || descriptor == standard_error_snapshot) {
+                is_live_batch_descriptor(descriptor) || descriptor == standard_error_snapshot ||
+                is_staging_descriptor(descriptor) || is_authority_source_descriptor(descriptor)) {
                 continue;
             }
             error = ::posix_spawn_file_actions_addclose(&actions, descriptor);
@@ -595,13 +728,60 @@ DistributedSieveWorkerProcessBatchLaunchResult spawn_distributed_sieve_worker_pr
             }
         }
 
+        if (capability_mode) {
+            const auto is_first_authority_source = [capabilities](std::size_t slot_index,
+                                                                  std::size_t role_index) noexcept {
+                const int source = capability_sources(capabilities[slot_index])[role_index];
+                for (std::size_t prior_slot = 0; prior_slot <= slot_index; ++prior_slot) {
+                    const auto prior_sources = capability_sources(capabilities[prior_slot]);
+                    const std::size_t role_limit =
+                        prior_slot == slot_index ? role_index : prior_sources.size();
+                    for (std::size_t prior_role = 0; prior_role < role_limit; ++prior_role) {
+                        if (prior_sources[prior_role] == source) {
+                            return false;
+                        }
+                    }
+                }
+                return true;
+            };
+            for (std::size_t slot_index = 0; slot_index < capabilities.size(); ++slot_index) {
+                const auto sources = capability_sources(capabilities[slot_index]);
+                for (std::size_t role = 0; role < sources.size(); ++role) {
+                    const int source = sources[role];
+                    if (source == STDIN_FILENO || source == STDOUT_FILENO ||
+                        !is_first_authority_source(slot_index, role)) {
+                        continue;
+                    }
+                    error = ::posix_spawn_file_actions_addclose(&actions, source);
+                    if (error != 0) {
+                        return error;
+                    }
+                }
+            }
+
+            const auto& own_staged = staged_capabilities.slots[own_index].descriptors;
+            for (std::size_t role = 0; role < own_staged.size(); ++role) {
+                error = ::posix_spawn_file_actions_adddup2(&actions, own_staged[role],
+                                                           FIXED_CAPABILITY_TARGETS[role]);
+                if (error != 0) {
+                    return error;
+                }
+            }
+            for (const int descriptor : own_staged) {
+                error = ::posix_spawn_file_actions_addclose(&actions, descriptor);
+                if (error != 0) {
+                    return error;
+                }
+            }
+        }
+
 #if defined(__GLIBC__) && defined(__GLIBC_PREREQ)
 #if __GLIBC_PREREQ(2, 34)
         if (error == 0) {
-            // This foundation reserves no authority descriptors. A future
-            // receipt-gated mapping will install exact sources at child
-            // descriptors 3 and 4 and must raise this boundary to 5.
-            error = ::posix_spawn_file_actions_addclosefrom_np(&actions, 3);
+            const int first_unmapped =
+                capability_mode ? DISTRIBUTED_SIEVE_WORKER_CHILD_FIRST_UNMAPPED_DESCRIPTOR
+                                : DISTRIBUTED_SIEVE_WORKER_CHILD_WAVE_ROOT_DESCRIPTOR;
+            error = ::posix_spawn_file_actions_addclosefrom_np(&actions, first_unmapped);
         }
 #endif
 #endif
@@ -678,6 +858,21 @@ DistributedSieveWorkerProcessBatchLaunchResult spawn_distributed_sieve_worker_pr
         .diagnostic = {},
     };
 #endif
+}
+
+DistributedSieveWorkerProcessBatchLaunchResult spawn_distributed_sieve_worker_process_batch(
+    DistributedSieveWorkerProcessBatch&& batch, std::span<const int> close_in_every_child,
+    DistributedSieveWorkerProcessSpawnTestHooks hooks) noexcept {
+    return std::move(batch).launch_impl({}, false, close_in_every_child, hooks);
+}
+
+DistributedSieveWorkerProcessBatchLaunchResult
+spawn_distributed_sieve_worker_process_batch_with_capabilities(
+    DistributedSieveWorkerProcessBatch&& batch,
+    std::span<const DistributedSieveWorkerProcessFixedCapabilitySourcesV1> capabilities,
+    std::span<const int> close_in_every_child,
+    DistributedSieveWorkerProcessSpawnTestHooks hooks) noexcept {
+    return std::move(batch).launch_impl(capabilities, true, close_in_every_child, hooks);
 }
 
 } // namespace gnfs::sieve::distributed_sieve_worker_process_detail

@@ -127,6 +127,15 @@ WORKER_PROCESS_TRANSPORT_FILES = {
     WORKER_PROCESS_TRANSPORT_FILE,
     "src/sieve/distributed_sieve_worker_process_internal.hpp",
 }
+WORKER_PROCESS_FIXED_CAPABILITY_USE_SITE_IDENTIFIERS = (
+    "DistributedSieveWorkerProcessFixedCapabilitySourcesV1",
+    "spawn_distributed_sieve_worker_process_batch_with_capabilities",
+)
+WORKER_PROCESS_FIXED_CAPABILITY_USE_SITE_ALLOWLIST = {
+    "src/sieve/distributed_sieve_worker_process.cpp",
+    "src/sieve/distributed_sieve_worker_process_internal.hpp",
+    "tests/test_distributed_sieve_worker_process.cpp",
+}
 WORKER_PROCESS_LEGACY_FILE = "src/sieve/distributed_sieve.cpp"
 WORKER_PROCESS_POLICY_PREFIXES = (
     "include/gnfs/sieve/",
@@ -914,6 +923,20 @@ class Checks:
                     f"receipt-gated/allowlisted: {identifier}",
                 )
 
+    def validate_worker_process_fixed_capability_use_site(
+        self, relative: str, text: str
+    ) -> None:
+        if relative in WORKER_PROCESS_FIXED_CAPABILITY_USE_SITE_ALLOWLIST:
+            return
+        for identifier in WORKER_PROCESS_FIXED_CAPABILITY_USE_SITE_IDENTIFIERS:
+            for use in find_code_identifier_uses(text, identifier):
+                self.fail(
+                    relative,
+                    use.line,
+                    "fixed-capability worker-process API use site is not "
+                    f"allowlisted: {identifier}",
+                )
+
     def classify(self, relative: str, call: GetenvCall, categories: dict[str, str]) -> None:
         if relative == EXECUTION_POLICY_ENVIRONMENT_ADAPTER:
             literal = LITERAL_ARGUMENT.fullmatch(call.argument)
@@ -1202,6 +1225,7 @@ class Checks:
                 continue
             self.validate_bound_work_use_site(relative, text)
             self.validate_work_package_carrier_use_site(relative, text)
+            self.validate_worker_process_fixed_capability_use_site(relative, text)
 
         for entry, count in self.legacy_counts.items():
             if count != 1:
@@ -1845,6 +1869,39 @@ auto result = create_distributed_sieve_worker_work_package_file_v1(request, iden
         f"allowlisted work-package carrier test use was rejected: "
         f"{allowed_carrier_checks.errors}",
     )
+
+    fixed_capability_use_site_checks = Checks(Path("."))
+    fixed_capability_use_site_checks.validate_worker_process_fixed_capability_use_site(
+        "src/sieve/untrusted_launcher.cpp",
+        r'''
+DistributedSieveWorkerProcessFixedCapabilitySourcesV1 sources;
+auto result = spawn_distributed_sieve_worker_process_batch_with_capabilities(
+    request, sources);
+''',
+    )
+    expect(
+        len(fixed_capability_use_site_checks.errors) == 2
+        and all(
+            "fixed-capability worker-process API use site is not allowlisted" in error
+            for error in fixed_capability_use_site_checks.errors
+        ),
+        "fixed-capability worker-process repo-wide use-site gate is not enforced",
+    )
+    allowed_fixed_capability_snippet = r'''
+DistributedSieveWorkerProcessFixedCapabilitySourcesV1 sources;
+auto result = spawn_distributed_sieve_worker_process_batch_with_capabilities(
+    request, sources);
+'''
+    for relative in sorted(WORKER_PROCESS_FIXED_CAPABILITY_USE_SITE_ALLOWLIST):
+        allowed_fixed_capability_checks = Checks(Path("."))
+        allowed_fixed_capability_checks.validate_worker_process_fixed_capability_use_site(
+            relative, allowed_fixed_capability_snippet
+        )
+        expect(
+            not allowed_fixed_capability_checks.errors,
+            f"allowlisted fixed-capability worker-process use was rejected in "
+            f"{relative}: {allowed_fixed_capability_checks.errors}",
+        )
 
     pipeline_checks = Checks(Path("."))
     pipeline_checks.validate_legacy_pipeline_boundary(

@@ -1864,13 +1864,30 @@ foundation. It does not run C++ callbacks between `fork()` and `exec()`.
 Preparation validates executable-path syntax, owns copied argv storage,
 allocates all bootstrap and report pipes, and prewrites each bounded bootstrap
 frame before the first `posix_spawn()` call. Executable-object authentication
-is not part of this foundation. The standard-stream contract gives a child its
-frame on standard input, its report channel on standard output, the
-launch-time open/closed snapshot of standard error, and an explicitly empty
-environment. The spawn path closes every foreign batch endpoint and a fixed
-caller-supplied descriptor inventory. Platforms with `closefrom` spawn actions
-additionally close all descriptors above standard error; other POSIX builds
-claim only the enumerated closure contract.
+is not part of this foundation.
+
+The low-level exact-role milestone is implemented with one fixed child layout:
+descriptor `0` carries the bounded bootstrap, `1` carries the report, and `2`
+preserves the launch-time open/closed standard-error snapshot. Descriptors `3`
+through `6` carry the wave-root directory, permanent WaveStore lock, attempt
+`BaseLock`, and anonymous immutable work-package file, respectively. Both lock
+roles preserve their supplied open-file-description.
+
+Before any fixed mapping, the transport pre-stages the complete batch's
+child-side sources at descriptor `7` or above. Generated endpoints, the
+standard-error snapshot, and all capability sources therefore survive
+source/target and cross-slot collisions. Each child maps only its own `0..6`
+roles, closes staged sources and foreign batch endpoints, and uses a
+close-from action at floor `7` where the platform provides one. Other POSIX
+builds claim only the enumerated closure contract.
+
+The generic `spawn_distributed_sieve_worker_process_batch()` entry point
+retains the standard-stream-only contract and carries no authority inventory.
+Only the exact-role
+`spawn_distributed_sieve_worker_process_batch_with_capabilities()` entry point
+accepts `DistributedSieveWorkerProcessFixedCapabilitySourcesV1`. The repository
+policy checker allows both identifiers only in the source-private process
+header, its implementation, and the dedicated process test.
 
 The parent receives one move-only process token per successful slot. Its first
 non-`EINTR` wait observation is permanent. Only an exited or signaled child
@@ -1882,14 +1899,13 @@ calls exactly once, and rejects raw `fork()` or parent-environment access in
 the transport.
 
 This transport does not close the durable-launch milestone. The legacy path
-remains unchanged and still reserves and forks one slot at a time. The next
-slice must use the existing `AttemptStartedV1` as the durable job descriptor,
-define a bounded versioned bootstrap, and map four exact capabilities into
-fixed child descriptors: the wave-root directory, the permanent WaveStore lock
-with its same open-file-description, the attempt `BaseLock` with its same
-open-file-description, and an immutable work-package file. The exec image must
-import a writer-only private-lease capability, and WaveStore must become the
-sole start-receipt consumer.
+remains unchanged and still reserves and forks one slot at a time. The
+exact-role API does not consume `AttemptStartedV1`, rerun manifest work
+binding, integrate with WaveStore, or rehydrate writer-only private-lease
+authority in the exec image. The next slice must make WaveStore the sole
+start-receipt consumer and use the existing `AttemptStartedV1` as its durable
+job descriptor. WaveStore reconciliation of any named work-package residue
+also remains future work.
 
 ### Canonical Work-Identity Codec Status
 

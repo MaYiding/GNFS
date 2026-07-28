@@ -2189,13 +2189,36 @@ is a standalone `posix_spawn()` self-exec transport. Preparation validates
 executable-path syntax, owns copied argv storage, creates every bootstrap and
 report channel, and prewrites every bounded bootstrap frame before the first
 spawn. Executable-object authentication remains a later launcher boundary.
-The standard-stream contract gives each child its frame on standard input, its
-report channel on standard output, the launch-time open/closed snapshot of
-standard error, and an explicitly empty environment. Spawn actions close all
-foreign batch endpoints and the caller's fixed descriptor inventory. Darwin
-additionally uses `POSIX_SPAWN_CLOEXEC_DEFAULT`; glibc 2.34 and newer uses a
-close-from action. Other POSIX builds deliberately claim only the enumerated
-closure contract.
+
+The low-level exact-role transport milestone is now implemented. Its fixed
+child layout is:
+
+| Descriptor | Role |
+|---:|---|
+| `0` | Bounded bootstrap frame |
+| `1` | Worker report channel |
+| `2` | Launch-time open/closed standard-error snapshot |
+| `3` | Wave-root directory |
+| `4` | Permanent WaveStore lock with the same open-file-description |
+| `5` | Attempt `BaseLock` with the same open-file-description |
+| `6` | Anonymous immutable work-package file |
+
+Before adding any fixed mapping, the implementation pre-stages the complete
+batch's child-side sources at descriptor `7` or above. This includes generated
+pipe endpoints, the standard-error snapshot, and all four supplied capability
+sources. The two-phase layout prevents source/target and cross-slot collisions.
+Each child maps only its own `0..6` roles, closes staged sources and foreign
+batch endpoints, and uses the platform close-from action at floor `7` when
+available. Other POSIX builds deliberately claim only the enumerated closure
+contract.
+
+The generic `spawn_distributed_sieve_worker_process_batch()` entry point keeps
+its standard-stream-only contract and accepts no authority-bearing capability
+inventory. Exact roles enter only through
+`spawn_distributed_sieve_worker_process_batch_with_capabilities()` and
+`DistributedSieveWorkerProcessFixedCapabilitySourcesV1`. The repository policy
+checker permits those identifiers only in the source-private process header,
+its implementation, and the dedicated process test.
 
 Each successful slot returns a move-only parent token. The first non-`EINTR`
 wait observation is sticky. Only `WIFEXITED` or `WIFSIGNALED` confirms reap
@@ -2211,18 +2234,17 @@ The policy checker reserves `posix_spawn()` for the new transport, requires
 its one direct spawn and wait call, and rejects both raw `fork()` and inherited
 environment access in that source file.
 
-The receipt-gated launcher remains the next slice. Existing
-`AttemptStartedV1` is the durable job descriptor; no parallel job record is
-introduced. The launcher must define a bounded versioned bootstrap, preserve
-all contexts and start receipts in stable preallocated slots, rerun bound-work
-validation immediately before consumption, and map four exact capabilities
-into fixed child descriptors: the wave-root directory, the permanent
-WaveStore lock with its same open-file-description, the attempt `BaseLock`
-with its same open-file-description, and the immutable work-package file. The
-report remains the standard-output channel. The exec image must adopt a
-writer-only lease capability from the inherited lock and bounded witness
-without reopening the path or reserving a second generic lease. WaveStore must
-be the only start-receipt consumer.
+The receipt-gated launcher remains the next slice. The exact-role transport
+does not consume `AttemptStartedV1`, rerun manifest work binding, integrate
+with WaveStore, or rehydrate writer-only private-lease authority in the exec
+image. Existing `AttemptStartedV1` remains the durable job descriptor; no
+parallel job record is introduced. The future launcher must preserve all
+contexts and start receipts in stable preallocated slots, rerun bound-work
+validation immediately before consumption, and adopt writer-only lease
+authority from descriptors `3..6` without reopening a path or reserving a
+second generic lease. WaveStore must be the only start-receipt consumer and
+must still reconcile any named work-package residue left by a failed carrier
+transaction.
 
 Exit criterion: two masters cannot both act, and restart cannot exceed the
 manifest retry budget. This milestone remains test/internal and exposes no

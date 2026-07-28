@@ -1,3 +1,4 @@
+#include <array>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -7,6 +8,8 @@
 #if !defined(_WIN32)
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 extern char** environ;
@@ -19,12 +22,39 @@ inline constexpr std::uint32_t REPORT_MAGIC = 0x47575250U;
 inline constexpr std::uint16_t PROTOCOL_VERSION = 1U;
 inline constexpr std::uint64_t ARGUMENT_DIGEST_OFFSET = UINT64_C(14695981039346656037);
 inline constexpr std::uint64_t ARGUMENT_DIGEST_PRIME = UINT64_C(1099511628211);
+inline constexpr std::size_t FIXED_CAPABILITY_COUNT = 4U;
 
 enum class FakeChildMode : std::uint16_t {
     report_and_exit = 1U,
     stop_then_exit = 2U,
     exit_without_report = 3U,
     terminate = 4U,
+};
+
+enum class FakeCapabilityKind : std::uint32_t {
+    none = 0U,
+    directory = 1U,
+    regular_file = 2U,
+};
+
+struct FakeCapabilityExpectation final {
+    std::uint64_t device = 0;
+    std::uint64_t inode = 0;
+    std::uint64_t link_count = 0;
+    FakeCapabilityKind kind = FakeCapabilityKind::none;
+    std::uint32_t permission_bits = 0;
+    std::int32_t access_mode = -1;
+};
+
+struct FakeCapabilityObservation final {
+    std::uint64_t device = 0;
+    std::uint64_t inode = 0;
+    std::uint64_t link_count = 0;
+    std::uint32_t mode = 0;
+    std::uint32_t permission_bits = 0;
+    std::int32_t access_mode = -1;
+    std::int32_t descriptor_flags = -1;
+    std::int32_t native_error = 0;
 };
 
 struct FakeBootstrap final {
@@ -37,6 +67,10 @@ struct FakeBootstrap final {
     std::uint32_t payload_tag = 0;
     std::uint32_t expected_argument_count = 0;
     std::uint64_t expected_argument_digest = ARGUMENT_DIGEST_OFFSET;
+    std::uint32_t expected_capability_count = 0;
+    std::int32_t first_unmapped_descriptor = -1;
+    std::int32_t descriptor_scan_limit = 0;
+    std::array<FakeCapabilityExpectation, FIXED_CAPABILITY_COUNT> expected_capabilities{};
 };
 
 struct FakeReport final {
@@ -48,6 +82,8 @@ struct FakeReport final {
     std::uint32_t payload_tag = 0;
     std::uint32_t argument_count = 0;
     std::uint64_t argument_digest = ARGUMENT_DIGEST_OFFSET;
+    std::array<FakeCapabilityObservation, FIXED_CAPABILITY_COUNT> observed_capabilities{};
+    std::int32_t first_unexpected_open_descriptor = -1;
 };
 
 inline constexpr std::uint32_t INPUT_EXACT = 1U << 0U;
@@ -62,6 +98,14 @@ inline constexpr std::uint32_t PROCESS_GROUP_ISOLATED = 1U << 8U;
 inline constexpr std::uint32_t EMPTY_SIGNAL_MASK = 1U << 9U;
 inline constexpr std::uint32_t DEFAULT_SIGNALS = 1U << 10U;
 inline constexpr std::uint32_t ARGUMENT_DIGEST_MATCHES = 1U << 11U;
+inline constexpr std::uint32_t CAPABILITY_0_MATCHES = 1U << 12U;
+inline constexpr std::uint32_t CAPABILITY_1_MATCHES = 1U << 13U;
+inline constexpr std::uint32_t CAPABILITY_2_MATCHES = 1U << 14U;
+inline constexpr std::uint32_t CAPABILITY_3_MATCHES = 1U << 15U;
+inline constexpr std::uint32_t FIXED_CAPABILITIES_NOT_CLOEXEC = 1U << 16U;
+inline constexpr std::uint32_t NO_UNMAPPED_DESCRIPTOR_LEAK = 1U << 17U;
+inline constexpr std::uint32_t PERMANENT_WAVE_STORE_LOCK_SAME_OFD = 1U << 18U;
+inline constexpr std::uint32_t ATTEMPT_BASE_LOCK_SAME_OFD = 1U << 19U;
 
 static_assert(std::is_trivially_copyable_v<FakeBootstrap>);
 static_assert(std::is_trivially_copyable_v<FakeReport>);
@@ -123,6 +167,86 @@ static_assert(std::is_trivially_copyable_v<FakeReport>);
     errno = 0;
     const int result = ::fcntl(descriptor, F_GETFD);
     return result < 0 && errno == EBADF;
+}
+
+[[nodiscard]] FakeCapabilityKind object_kind(std::uint32_t mode) noexcept {
+    if (S_ISDIR(static_cast<mode_t>(mode))) {
+        return FakeCapabilityKind::directory;
+    }
+    if (S_ISREG(static_cast<mode_t>(mode))) {
+        return FakeCapabilityKind::regular_file;
+    }
+    return FakeCapabilityKind::none;
+}
+
+[[nodiscard]] constexpr std::uint32_t file_permission_bits(mode_t mode) noexcept {
+    return static_cast<std::uint32_t>(mode) & 0777U;
+}
+
+[[nodiscard]] FakeCapabilityObservation observe_capability(int descriptor) noexcept {
+    FakeCapabilityObservation observation;
+    struct stat metadata{};
+    if (::fstat(descriptor, &metadata) != 0) {
+        observation.native_error = errno;
+        return observation;
+    }
+
+    int status_flags = -1;
+    do {
+        status_flags = ::fcntl(descriptor, F_GETFL);
+    } while (status_flags < 0 && errno == EINTR);
+    if (status_flags < 0) {
+        observation.native_error = errno;
+        return observation;
+    }
+
+    int descriptor_flags = -1;
+    do {
+        descriptor_flags = ::fcntl(descriptor, F_GETFD);
+    } while (descriptor_flags < 0 && errno == EINTR);
+    if (descriptor_flags < 0) {
+        observation.native_error = errno;
+        return observation;
+    }
+
+    observation.device = static_cast<std::uint64_t>(metadata.st_dev);
+    observation.inode = static_cast<std::uint64_t>(metadata.st_ino);
+    observation.link_count = static_cast<std::uint64_t>(metadata.st_nlink);
+    observation.mode = static_cast<std::uint32_t>(metadata.st_mode);
+    observation.permission_bits = file_permission_bits(metadata.st_mode);
+    observation.access_mode = status_flags & O_ACCMODE;
+    observation.descriptor_flags = descriptor_flags;
+    return observation;
+}
+
+[[nodiscard]] bool capability_matches(const FakeCapabilityObservation& observed,
+                                      const FakeCapabilityExpectation& expected) noexcept {
+    return observed.native_error == 0 && observed.device == expected.device &&
+           observed.inode == expected.inode && observed.link_count == expected.link_count &&
+           object_kind(observed.mode) == expected.kind &&
+           observed.permission_bits == expected.permission_bits &&
+           observed.access_mode == expected.access_mode;
+}
+
+[[nodiscard]] bool retains_exclusive_lock(int descriptor) noexcept {
+    int result = -1;
+    do {
+        result = ::flock(descriptor, LOCK_EX | LOCK_NB);
+    } while (result < 0 && errno == EINTR);
+    return result == 0;
+}
+
+[[nodiscard]] std::int32_t first_open_descriptor(std::int32_t first_descriptor,
+                                                 std::int32_t scan_limit) noexcept {
+    if (first_descriptor < 0 || scan_limit <= first_descriptor) {
+        return -1;
+    }
+    for (int descriptor = first_descriptor; descriptor < scan_limit; ++descriptor) {
+        if (descriptor_is_open(descriptor)) {
+            return descriptor;
+        }
+    }
+    return -1;
 }
 
 [[nodiscard]] bool signal_mask_is_empty() noexcept {
@@ -229,6 +353,40 @@ int main(int argc, char* argv[]) {
     }
     if (selected_signals_are_default()) {
         report.flags |= DEFAULT_SIGNALS;
+    }
+    if (bootstrap.expected_capability_count == FIXED_CAPABILITY_COUNT) {
+        constexpr std::array<int, FIXED_CAPABILITY_COUNT> descriptors{3, 4, 5, 6};
+        constexpr std::array<std::uint32_t, FIXED_CAPABILITY_COUNT> match_flags{
+            CAPABILITY_0_MATCHES,
+            CAPABILITY_1_MATCHES,
+            CAPABILITY_2_MATCHES,
+            CAPABILITY_3_MATCHES,
+        };
+        bool all_not_cloexec = true;
+        for (std::size_t index = 0; index < FIXED_CAPABILITY_COUNT; ++index) {
+            report.observed_capabilities[index] = observe_capability(descriptors[index]);
+            if (capability_matches(report.observed_capabilities[index],
+                                   bootstrap.expected_capabilities[index])) {
+                report.flags |= match_flags[index];
+            }
+            all_not_cloexec =
+                all_not_cloexec && report.observed_capabilities[index].native_error == 0 &&
+                (report.observed_capabilities[index].descriptor_flags & FD_CLOEXEC) == 0;
+        }
+        if (all_not_cloexec) {
+            report.flags |= FIXED_CAPABILITIES_NOT_CLOEXEC;
+        }
+        if (retains_exclusive_lock(descriptors[1])) {
+            report.flags |= PERMANENT_WAVE_STORE_LOCK_SAME_OFD;
+        }
+        if (retains_exclusive_lock(descriptors[2])) {
+            report.flags |= ATTEMPT_BASE_LOCK_SAME_OFD;
+        }
+        report.first_unexpected_open_descriptor = first_open_descriptor(
+            bootstrap.first_unmapped_descriptor, bootstrap.descriptor_scan_limit);
+        if (report.first_unexpected_open_descriptor < 0) {
+            report.flags |= NO_UNMAPPED_DESCRIPTOR_LEAK;
+        }
     }
 
     const auto exit_code = static_cast<int>(bootstrap.exit_code) & 0xff;
