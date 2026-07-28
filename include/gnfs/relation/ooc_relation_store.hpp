@@ -358,6 +358,28 @@ public:
 private:
     struct ConstructionToken final {};
 
+    class DeferredPrivateLeaseActionGuard final {
+    public:
+        explicit DeferredPrivateLeaseActionGuard(OOCRelationWriter& owner) : owner_(owner) {
+            if (owner_.deferred_private_lease_action_in_progress_) {
+                throw std::logic_error(
+                    "OOCRelationWriter: deferred private-lease action is already in progress");
+            }
+            owner_.deferred_private_lease_action_in_progress_ = true;
+        }
+
+        DeferredPrivateLeaseActionGuard(const DeferredPrivateLeaseActionGuard&) = delete;
+        DeferredPrivateLeaseActionGuard&
+        operator=(const DeferredPrivateLeaseActionGuard&) = delete;
+
+        ~DeferredPrivateLeaseActionGuard() {
+            owner_.deferred_private_lease_action_in_progress_ = false;
+        }
+
+    private:
+        OOCRelationWriter& owner_;
+    };
+
 public:
     /// Fresh create writes paired incomplete V3 headers with one durable store
     /// identity.
@@ -371,13 +393,32 @@ public:
         : OOCRelationWriter(base_path, std::nullopt, std::nullopt, &private_lease,
                             PrivateLeaseMode::ActivateImmediately, {}, ConstructionToken{}) {}
 
-    /// Fork-worker creation keeps RESERVED and the inherited BaseLock alive
-    /// until finalize_and_publish_cleanup_handoff() makes a canonical intent
-    /// durable. The lease object must outlive this writer.
-    OOCRelationWriter(const std::string& base_path, OOCPrivateLeaseOwnershipReceipt& private_lease,
+    /// Fork-worker creation consumes the child process's move-only lease copy.
+    /// The writer therefore has no same-process external cleanup alias. A
+    /// parent retains its independent post-fork COW receipt and must gate every
+    /// cleanup attempt on confirmed child reap.
+    OOCRelationWriter(const std::string& base_path,
+                      OOCPrivateLeaseOwnershipReceipt&& private_lease,
                       PrivateLeaseMode private_lease_mode)
-        : OOCRelationWriter(base_path, std::nullopt, std::nullopt, &private_lease,
-                            private_lease_mode, {}, ConstructionToken{}) {}
+        : OOCRelationWriter(base_path, std::move(private_lease), private_lease_mode, {}) {}
+
+    /// Trusted test seam for deferred construction boundaries. As with the
+    /// production overload, the caller receipt is moved only after every
+    /// throwing construction step has completed.
+    OOCRelationWriter(const std::string& base_path,
+                      OOCPrivateLeaseOwnershipReceipt&& private_lease,
+                      PrivateLeaseMode private_lease_mode,
+                      OOCPrivateLeaseTestHooks private_lease_hooks)
+        : OOCRelationWriter(
+              base_path, std::nullopt, std::nullopt,
+              require_deferred_private_lease(private_lease, private_lease_mode),
+              private_lease_mode, private_lease_hooks, ConstructionToken{}) {
+        owned_deferred_private_lease_.emplace(std::move(private_lease));
+    }
+
+    OOCRelationWriter(const std::string& base_path,
+                      OOCPrivateLeaseOwnershipReceipt& private_lease,
+                      PrivateLeaseMode private_lease_mode) = delete;
 
     /// Trusted test seam for process termination inside fresh private-writer
     /// construction. Production callers use the overload above.
@@ -397,6 +438,16 @@ public:
                             PrivateLeaseMode::ActivateImmediately, {}, ConstructionToken{}) {}
 
 private:
+    [[nodiscard]] static OOCPrivateLeaseOwnershipReceipt*
+    require_deferred_private_lease(OOCPrivateLeaseOwnershipReceipt& private_lease,
+                                   PrivateLeaseMode private_lease_mode) {
+        if (private_lease_mode != PrivateLeaseMode::DeferCleanupHandoff) {
+            throw std::invalid_argument(
+                "OOCRelationWriter: rvalue private lease is reserved for deferred handoff");
+        }
+        return &private_lease;
+    }
+
     explicit OOCRelationWriter(const std::string& base_path,
                                std::optional<OOCSnapshotDescriptor> recovery_descriptor,
                                std::optional<RelationSequenceReceipt> recovery_sequence_receipt,
@@ -719,7 +770,6 @@ private:
                         fresh_action_permit.reset();
                         if (private_lease_mode == PrivateLeaseMode::DeferCleanupHandoff) {
                             cleanup_lock->require_stable();
-                            deferred_private_lease_ = private_lease;
                         } else {
                             const auto activated =
                                 OOCCleanupTransaction::activate_private_lease_for_fresh_writer(
@@ -1054,6 +1104,10 @@ public:
             throw std::logic_error(
                 "OOCRelationWriter: cleanup ownership cannot outlive an active prefix reader");
         }
+        if (deferred_private_lease_action_in_progress_) {
+            throw std::logic_error(
+                "OOCRelationWriter: cleanup ownership is retained by an active publication");
+        }
         if (!cleanup_receipt_ || cleanup_receipt_->spent()) {
             throw std::logic_error(
                 "OOCRelationWriter: cleanup ownership is unavailable or already consumed");
@@ -1061,6 +1115,40 @@ public:
         OOCCleanupOwnershipReceipt receipt(std::move(*cleanup_receipt_));
         cleanup_receipt_.reset();
         return receipt;
+    }
+
+    /// Return a deferred lease only after the writer is closed.
+    ///
+    /// This seam supports trusted relation-layer handoff assembly without
+    /// restoring the former live-writer alias. While the writer is open the
+    /// lease is deliberately unreachable and cannot authorize cleanup.
+    [[nodiscard]] OOCPrivateLeaseOwnershipReceipt
+    take_deferred_private_lease_ownership() {
+        if (state_ != OOCWriterState::Finalized && state_ != OOCWriterState::Failed) {
+            throw std::logic_error(
+                "OOCRelationWriter: deferred lease ownership requires a closed writer");
+        }
+        if (active_prefix_readers_ != 0) {
+            throw std::logic_error(
+                "OOCRelationWriter: deferred lease cannot outlive an active prefix reader");
+        }
+        if (deferred_private_lease_action_in_progress_) {
+            throw std::logic_error(
+                "OOCRelationWriter: deferred lease is retained by an active publication");
+        }
+        if (!owned_deferred_private_lease_ || owned_deferred_private_lease_->spent()) {
+            throw std::logic_error(
+                "OOCRelationWriter: deferred lease is unavailable or already consumed");
+        }
+        OOCPrivateLeaseOwnershipReceipt receipt(
+            std::move(*owned_deferred_private_lease_));
+        owned_deferred_private_lease_.reset();
+        return receipt;
+    }
+
+    [[nodiscard]] bool has_deferred_private_lease_ownership() const noexcept {
+        return owned_deferred_private_lease_.has_value() &&
+               !owned_deferred_private_lease_->spent();
     }
 
     /// Finalize a deferred private-lease writer and publish only the canonical
@@ -1071,16 +1159,17 @@ public:
     /// before canonical publication remains a RESERVED-authorized rollback.
     [[nodiscard]] OOCSnapshotDescriptor
     finalize_and_publish_cleanup_handoff(OOCCleanupTestHooks hooks = {}) {
-        if (deferred_private_lease_ == nullptr) {
+        if (!owned_deferred_private_lease_) {
             throw std::logic_error(
                 "OOCRelationWriter: cleanup handoff requires deferred private-lease mode");
         }
-        if (!cleanup_receipt_) {
+        if (!cleanup_receipt_ || cleanup_receipt_->spent()) {
             throw std::logic_error("OOCRelationWriter: cleanup handoff ownership is unavailable");
         }
+        DeferredPrivateLeaseActionGuard action_guard(*this);
 
         const auto preflight = OOCCleanupTransaction::preflight_private_lease_cleanup_handoff(
-            *deferred_private_lease_);
+            *owned_deferred_private_lease_);
         if (!preflight.completed()) {
             const auto error = preflight.native_error
                                    ? preflight.native_error
@@ -1102,7 +1191,7 @@ public:
         OOCCleanupOwnershipReceipt escrow(std::move(*cleanup_receipt_));
         cleanup_receipt_.reset();
         const auto result = OOCCleanupTransaction::publish_private_lease_cleanup_handoff(
-            escrow, *deferred_private_lease_, exact, hooks);
+            escrow, *owned_deferred_private_lease_, exact, hooks);
         if (!escrow.spent()) {
             cleanup_receipt_.emplace(std::move(escrow));
         }
@@ -1125,13 +1214,14 @@ public:
     finalize_and_publish_private_handoff(std::uint32_t payload_kind, std::uint32_t payload_version,
                                          std::span<const std::byte> opaque_payload,
                                          OOCPrivateHandoffTestHooks hooks = {}) {
-        if (deferred_private_lease_ == nullptr) {
+        if (!owned_deferred_private_lease_) {
             throw std::logic_error(
                 "OOCRelationWriter: private handoff requires deferred private-lease mode");
         }
-        if (!cleanup_receipt_) {
+        if (!cleanup_receipt_ || cleanup_receipt_->spent()) {
             throw std::logic_error("OOCRelationWriter: private handoff ownership is unavailable");
         }
+        DeferredPrivateLeaseActionGuard action_guard(*this);
         if (payload_kind == 0 || payload_version == 0 ||
             opaque_payload.size() > OOC_PRIVATE_HANDOFF_MAX_OPAQUE_PAYLOAD_BYTES) {
             throw std::invalid_argument(
@@ -1152,7 +1242,7 @@ public:
             .data_extent = descriptor.data_end,
         };
         const auto result = OOCCleanupTransaction::publish_private_handoff(
-            *cleanup_receipt_, *deferred_private_lease_, pair, payload_kind, payload_version,
+            *cleanup_receipt_, *owned_deferred_private_lease_, pair, payload_kind, payload_version,
             opaque_payload, hooks);
         if (!result.canonical()) {
             const auto error = result.result.native_error
@@ -1160,7 +1250,6 @@ public:
                                    : std::make_error_code(std::errc::protocol_error);
             throw std::system_error(error, "OOCRelationWriter: private handoff publication failed");
         }
-        deferred_private_lease_ = nullptr;
         return descriptor;
     }
 
@@ -1195,7 +1284,7 @@ public:
             };
         }
 
-        if (deferred_private_lease_ != nullptr) {
+        if (owned_deferred_private_lease_) {
             // A fork worker must never mutate or unlock the parent-owned lease.
             // Its only destructive-capability transition is canonical intent
             // publication; the parent alone converges that intent or rolls
@@ -2228,6 +2317,9 @@ private:
     std::string base_path_;
     std::vector<char> data_buf_;
     std::vector<char> idx_buf_;
+    // Declared before streams so stream destruction always precedes release of
+    // the lock-owning deferred lease, including exceptional destruction.
+    std::optional<OOCPrivateLeaseOwnershipReceipt> owned_deferred_private_lease_;
     // fstream (not ofstream) to support resume mode: r/w open without trunc,
     // seek to past existing offsets/data.
     std::fstream data_stream_;
@@ -2239,7 +2331,7 @@ private:
     bool fresh_store_ = false;
     bool fresh_artifacts_removed_ = false;
     std::optional<OOCCleanupOwnershipReceipt> cleanup_receipt_;
-    OOCPrivateLeaseOwnershipReceipt* deferred_private_lease_ = nullptr;
+    bool deferred_private_lease_action_in_progress_ = false;
     OOCWriterState state_ = OOCWriterState::Open;
     std::optional<OOCSnapshotDescriptor> suspended_descriptor_;
     std::optional<OOCSnapshotDescriptor> finalized_descriptor_;

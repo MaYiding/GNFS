@@ -430,7 +430,7 @@ private:
             } else {
                 if (private_lease != nullptr) {
                     ooc_writer_ = std::make_unique<OOCRelationWriter>(
-                        config_.ooc_base_path, *private_lease,
+                        config_.ooc_base_path, std::move(*private_lease),
                         OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
                 } else {
                     ooc_writer_ = std::make_unique<OOCRelationWriter>(config_.ooc_base_path);
@@ -447,11 +447,14 @@ public:
     explicit RelationCollector(const CollectorConfig& config)
         : RelationCollector(config, nullptr, ConstructionToken{}) {}
 
-    /// Fresh fork-worker collector. The caller-provided private lease must
-    /// outlive the collector and remains preactive until the worker publishes
-    /// its canonical cleanup handoff.
-    RelationCollector(const CollectorConfig& config, OOCPrivateLeaseOwnershipReceipt& private_lease)
+    /// Fresh fork-worker collector. The child transfers its move-only lease
+    /// copy into the owned OOC writer; no live external cleanup capability
+    /// aliases the collector.
+    RelationCollector(const CollectorConfig& config,
+                      OOCPrivateLeaseOwnershipReceipt&& private_lease)
         : RelationCollector(config, &private_lease, ConstructionToken{}) {}
+
+    RelationCollector(const CollectorConfig&, OOCPrivateLeaseOwnershipReceipt&) = delete;
 
     /// 设置数论上下文(N 和 m),启用 CLAUDE.md 强制的 gcd(a-bm, N)>1 校验。
     /// 没设置时退回旧行为(只检 gcd(a,b)=1)。引用必须在 collector 生存期内有效。

@@ -118,6 +118,13 @@ using gnfs::relation::ooc_cleanup_detail::PrivateNamespaceAction;
 using gnfs::relation::ooc_cleanup_detail::PrivateNamespaceActionDisposition;
 using gnfs::relation::ooc_cleanup_detail::reconcile_private_handoff_from_permit;
 
+static_assert(std::is_constructible_v<
+              OOCRelationWriter, const std::string&, OOCPrivateLeaseOwnershipReceipt&&,
+              OOCRelationWriter::PrivateLeaseMode>);
+static_assert(!std::is_constructible_v<
+              OOCRelationWriter, const std::string&, OOCPrivateLeaseOwnershipReceipt&,
+              OOCRelationWriter::PrivateLeaseMode>);
+
 static_assert(!std::is_default_constructible_v<OOCCleanupOwnershipReceipt>);
 static_assert(!std::is_copy_constructible_v<OOCCleanupOwnershipReceipt>);
 static_assert(!std::is_copy_assignable_v<OOCCleanupOwnershipReceipt>);
@@ -2131,12 +2138,14 @@ prepare_private_legacy_cleanup_intent(const std::filesystem::path& base) {
         throw std::runtime_error("could not reserve private legacy cleanup fixture");
     }
     {
-        OOCRelationWriter writer(base.string(), *reservation.ownership,
+        OOCRelationWriter writer(base.string(), std::move(*reservation.ownership),
                                  OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
         const auto descriptor = writer.finalize_and_publish_cleanup_handoff();
         if (descriptor.count != 0) {
             throw std::runtime_error("unexpected private legacy cleanup fixture count");
         }
+        reservation.ownership.reset();
+        reservation.ownership.emplace(writer.take_deferred_private_lease_ownership());
     }
     const auto paths = OOCCleanupTransaction::paths_for(base);
     if (!entry_exists_no_follow(paths.intent_path) ||
@@ -2158,6 +2167,15 @@ struct PreparedPrivateHandoff final {
     OOCPrivateLeaseOwnershipReceipt lease_ownership;
 };
 
+void restore_deferred_private_lease(OOCPrivateLeaseReservation& reservation,
+                                    OOCRelationWriter& writer) {
+    if (!reservation.ownership || !reservation.ownership->spent()) {
+        throw std::runtime_error("deferred writer source lease was not consumed");
+    }
+    reservation.ownership.reset();
+    reservation.ownership.emplace(writer.take_deferred_private_lease_ownership());
+}
+
 [[nodiscard]] PreparedPrivateHandoff prepare_private_handoff(const std::filesystem::path& base,
                                                              bool write_relation = true) {
     auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
@@ -2165,17 +2183,18 @@ struct PreparedPrivateHandoff final {
         throw std::runtime_error("could not reserve private handoff fixture");
     }
 
-    OOCRelationWriter writer(base.string(), *reservation.ownership,
+    OOCRelationWriter writer(base.string(), std::move(*reservation.ownership),
                              OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
     if (write_relation) {
         (void)writer.write(make_real_relation(17, 19));
     }
     const auto descriptor = writer.finalize();
     auto pair_ownership = writer.take_cleanup_ownership_receipt();
+    auto lease_ownership = writer.take_deferred_private_lease_ownership();
     return PreparedPrivateHandoff{
         .descriptor = descriptor,
         .pair_ownership = std::move(pair_ownership),
-        .lease_ownership = std::move(*reservation.ownership),
+        .lease_ownership = std::move(lease_ownership),
     };
 }
 
@@ -3685,7 +3704,7 @@ void test_private_authority_union_preflight_is_zero_mutation() {
         auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
         CHECK(reservation.completed());
 
-        OOCRelationWriter writer(base.string(), *reservation.ownership,
+        OOCRelationWriter writer(base.string(), std::move(*reservation.ownership),
                                  OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
         (void)writer.write(make_real_relation(11, 13));
         write_private_control_bytes(paths.staged_pending_path, v2_staged);
@@ -4900,8 +4919,10 @@ struct DeferredPublicationPermitHookContext final {
     gnfs::relation::OOCCleanupResult nested_recover;
     bool invoked = false;
     bool pair_escrowed = false;
-    bool lease_fresh = false;
+    bool writer_lease_owned = false;
+    bool external_lease_spent = false;
     bool take_rejected = false;
+    bool lease_take_rejected = false;
     bool reentrant_publication_rejected = false;
     bool identity_replaced = false;
     bool hook_failed = false;
@@ -4918,11 +4939,19 @@ struct DeferredPublicationPermitHookContext final {
     try {
         context.pair_escrowed =
             context.writer != nullptr && !context.writer->has_cleanup_ownership_receipt();
-        context.lease_fresh = context.lease != nullptr && !context.lease->spent();
+        context.writer_lease_owned =
+            context.writer != nullptr &&
+            context.writer->has_deferred_private_lease_ownership();
+        context.external_lease_spent = context.lease != nullptr && context.lease->spent();
         try {
             (void)context.writer->take_cleanup_ownership_receipt();
         } catch (const std::logic_error&) {
             context.take_rejected = true;
+        }
+        try {
+            (void)context.writer->take_deferred_private_lease_ownership();
+        } catch (const std::logic_error&) {
+            context.lease_take_rejected = true;
         }
         try {
             (void)context.writer->finalize_and_publish_cleanup_handoff();
@@ -4964,7 +4993,7 @@ void test_deferred_publication_revalidates_lease_generation() {
         return;
     }
 
-    OOCRelationWriter writer(base.string(), *reservation.ownership,
+    OOCRelationWriter writer(base.string(), std::move(*reservation.ownership),
                              OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
     DeferredPublicationPermitHookContext context{
         .action = DeferredPublicationPermitHookAction::ReplaceOwnedSameBytes,
@@ -4988,13 +5017,16 @@ void test_deferred_publication_revalidates_lease_generation() {
     CHECK(!context.hook_failed);
     CHECK(context.identity_replaced);
     CHECK(context.pair_escrowed);
-    CHECK(context.lease_fresh);
+    CHECK(context.writer_lease_owned);
+    CHECK(context.external_lease_spent);
+    CHECK(context.lease_take_rejected);
     CHECK(context.after_action.has_value());
     if (context.after_action) {
         CHECK(capture_namespace_tree(temp.path()) == *context.after_action);
     }
     CHECK(writer.has_cleanup_ownership_receipt());
-    CHECK(!reservation.ownership->spent());
+    CHECK(reservation.ownership->spent());
+    CHECK(writer.has_deferred_private_lease_ownership());
     CHECK(!entry_exists_no_follow(paths.intent_path));
     CHECK(!entry_exists_no_follow(paths.intent_pending_path));
 }
@@ -5015,7 +5047,8 @@ struct DeferredPublicationPendingHookContext final {
     std::optional<NamespaceTreeSnapshot> after_action;
     bool invoked = false;
     bool pair_escrowed = false;
-    bool lease_fresh = false;
+    bool writer_lease_owned = false;
+    bool external_lease_spent = false;
     bool hook_failed = false;
 };
 
@@ -5039,7 +5072,10 @@ void write_valid_staged_from_intent_pending(const OOCCleanupPaths& paths,
     try {
         context.pair_escrowed =
             context.writer != nullptr && !context.writer->has_cleanup_ownership_receipt();
-        context.lease_fresh = context.lease != nullptr && !context.lease->spent();
+        context.writer_lease_owned =
+            context.writer != nullptr &&
+            context.writer->has_deferred_private_lease_ownership();
+        context.external_lease_spent = context.lease != nullptr && context.lease->spent();
         if (context.action == DeferredPublicationPendingHookAction::InsertHandoff) {
             write_test_leaf(context.paths.private_handoff_pending_path,
                             "post-pending-durable handoff");
@@ -5135,7 +5171,8 @@ struct DeferredPublicationCanonicalHookContext final {
     std::optional<NamespaceTreeSnapshot> snapshot;
     bool invoked = false;
     bool pair_escrowed = false;
-    bool lease_fresh = false;
+    bool writer_lease_owned = false;
+    bool external_lease_spent = false;
     bool hook_failed = false;
 };
 
@@ -5149,7 +5186,10 @@ struct DeferredPublicationCanonicalHookContext final {
     try {
         context.pair_escrowed =
             context.writer != nullptr && !context.writer->has_cleanup_ownership_receipt();
-        context.lease_fresh = context.lease != nullptr && !context.lease->spent();
+        context.writer_lease_owned =
+            context.writer != nullptr &&
+            context.writer->has_deferred_private_lease_ownership();
+        context.external_lease_spent = context.lease != nullptr && context.lease->spent();
         context.snapshot = capture_namespace_tree(context.snapshot_root);
     } catch (...) {
         context.hook_failed = true;
@@ -5167,7 +5207,7 @@ void test_deferred_publication_permit_interrupt_and_retry() {
         return;
     }
 
-    OOCRelationWriter writer(base.string(), *reservation.ownership,
+    OOCRelationWriter writer(base.string(), std::move(*reservation.ownership),
                              OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
     (void)writer.write(make_real_relation(59, 61));
     DeferredPublicationPermitHookContext context{
@@ -5191,7 +5231,9 @@ void test_deferred_publication_permit_interrupt_and_retry() {
     CHECK(context.invoked);
     CHECK(!context.hook_failed);
     CHECK(context.pair_escrowed);
-    CHECK(context.lease_fresh);
+    CHECK(context.writer_lease_owned);
+    CHECK(context.external_lease_spent);
+    CHECK(context.lease_take_rejected);
     CHECK(context.take_rejected);
     CHECK(context.reentrant_publication_rejected);
     CHECK(context.after_action.has_value());
@@ -5199,7 +5241,8 @@ void test_deferred_publication_permit_interrupt_and_retry() {
         CHECK(capture_namespace_tree(temp.path()) == *context.after_action);
     }
     CHECK(writer.has_cleanup_ownership_receipt());
-    CHECK(!reservation.ownership->spent());
+    CHECK(reservation.ownership->spent());
+    CHECK(writer.has_deferred_private_lease_ownership());
     CHECK(!entry_exists_no_follow(paths.intent_path));
     CHECK(!entry_exists_no_follow(paths.intent_pending_path));
 
@@ -5208,6 +5251,7 @@ void test_deferred_publication_permit_interrupt_and_retry() {
     CHECK(!writer.has_cleanup_ownership_receipt());
     CHECK(entry_exists_no_follow(paths.intent_path));
     CHECK(!entry_exists_no_follow(paths.intent_pending_path));
+    restore_deferred_private_lease(reservation, writer);
     CHECK(OOCCleanupTransaction::remove_private_lease(*reservation.ownership).completed());
 }
 
@@ -5221,7 +5265,7 @@ void test_deferred_publication_permit_revalidates_handoff_insertion() {
         return;
     }
 
-    OOCRelationWriter writer(base.string(), *reservation.ownership,
+    OOCRelationWriter writer(base.string(), std::move(*reservation.ownership),
                              OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
     DeferredPublicationPermitHookContext context{
         .action = DeferredPublicationPermitHookAction::InsertHandoff,
@@ -5244,7 +5288,9 @@ void test_deferred_publication_permit_revalidates_handoff_insertion() {
     CHECK(context.invoked);
     CHECK(!context.hook_failed);
     CHECK(context.pair_escrowed);
-    CHECK(context.lease_fresh);
+    CHECK(context.writer_lease_owned);
+    CHECK(context.external_lease_spent);
+    CHECK(context.lease_take_rejected);
     CHECK(context.take_rejected);
     CHECK(context.reentrant_publication_rejected);
     CHECK(context.after_action.has_value());
@@ -5252,7 +5298,8 @@ void test_deferred_publication_permit_revalidates_handoff_insertion() {
         CHECK(capture_namespace_tree(temp.path()) == *context.after_action);
     }
     CHECK(writer.has_cleanup_ownership_receipt());
-    CHECK(!reservation.ownership->spent());
+    CHECK(reservation.ownership->spent());
+    CHECK(writer.has_deferred_private_lease_ownership());
     CHECK(!entry_exists_no_follow(paths.intent_path));
     CHECK(!entry_exists_no_follow(paths.intent_pending_path));
 
@@ -5260,6 +5307,7 @@ void test_deferred_publication_permit_revalidates_handoff_insertion() {
     CHECK(std::filesystem::remove(paths.private_handoff_pending_path, error));
     CHECK(!error);
     (void)writer.finalize_and_publish_cleanup_handoff();
+    restore_deferred_private_lease(reservation, writer);
     CHECK(OOCCleanupTransaction::remove_private_lease(*reservation.ownership).completed());
 }
 
@@ -5273,7 +5321,7 @@ void test_deferred_publication_claim_blocks_nested_actions() {
         return;
     }
 
-    OOCRelationWriter writer(base.string(), *reservation.ownership,
+    OOCRelationWriter writer(base.string(), std::move(*reservation.ownership),
                              OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
     DeferredPublicationPermitHookContext context{
         .action = DeferredPublicationPermitHookAction::NestedActions,
@@ -5290,10 +5338,12 @@ void test_deferred_publication_claim_blocks_nested_actions() {
     CHECK(context.invoked);
     CHECK(!context.hook_failed);
     CHECK(context.pair_escrowed);
-    CHECK(context.lease_fresh);
+    CHECK(context.writer_lease_owned);
+    CHECK(context.external_lease_spent);
+    CHECK(context.lease_take_rejected);
     CHECK(context.take_rejected);
     CHECK(context.reentrant_publication_rejected);
-    CHECK(context.nested_remove.status == OOCCleanupStatus::Busy);
+    CHECK(context.nested_remove.status == OOCCleanupStatus::InvalidRequest);
     CHECK(context.nested_remove.stage == OOCCleanupStage::None);
     CHECK(context.nested_recover.status == OOCCleanupStatus::Busy);
     CHECK(context.nested_recover.stage == OOCCleanupStage::None);
@@ -5303,10 +5353,11 @@ void test_deferred_publication_claim_blocks_nested_actions() {
         CHECK(*context.before_action == *context.after_action);
     }
     CHECK(!writer.has_cleanup_ownership_receipt());
-    CHECK(!reservation.ownership->spent());
+    CHECK(reservation.ownership->spent());
     CHECK(entry_exists_no_follow(paths.intent_path));
     CHECK(!entry_exists_no_follow(paths.intent_pending_path));
 
+    restore_deferred_private_lease(reservation, writer);
     CHECK(OOCCleanupTransaction::remove_private_lease(*reservation.ownership).completed());
     CHECK(reservation.ownership->spent());
 }
@@ -5359,7 +5410,7 @@ void test_deferred_publication_fork_copy_is_closed_by_retained_witness() {
         return;
     }
 
-    OOCRelationWriter writer(base.string(), *reservation.ownership,
+    OOCRelationWriter writer(base.string(), std::move(*reservation.ownership),
                              OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
     (void)writer.write(make_real_relation(67, 71));
     const auto finalized = writer.finalize();
@@ -5427,13 +5478,15 @@ void test_deferred_publication_fork_copy_is_closed_by_retained_witness() {
         CHECK(capture_namespace_tree(temp.path()) == *context.child_publication_snapshot);
     }
     CHECK(writer.has_cleanup_ownership_receipt());
-    CHECK(!reservation.ownership->spent());
+    CHECK(reservation.ownership->spent());
+    CHECK(writer.has_deferred_private_lease_ownership());
     CHECK(entry_exists_no_follow(paths.intent_path));
     CHECK(!entry_exists_no_follow(paths.intent_pending_path));
 
     const auto retried = writer.finalize_and_publish_cleanup_handoff();
     CHECK(retried.count == finalized.count);
     CHECK(!writer.has_cleanup_ownership_receipt());
+    restore_deferred_private_lease(reservation, writer);
     CHECK(OOCCleanupTransaction::remove_private_lease(*reservation.ownership).completed());
 }
 #endif
@@ -5446,7 +5499,7 @@ void test_deferred_publication_pending_phase_and_receipt_escrow() {
         const auto paths = OOCCleanupTransaction::paths_for(base);
         auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
         CHECK(reservation.completed());
-        OOCRelationWriter writer(base.string(), *reservation.ownership,
+        OOCRelationWriter writer(base.string(), std::move(*reservation.ownership),
                                  OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
         DeferredPublicationPendingHookContext context{
             .action = DeferredPublicationPendingHookAction::Interrupt,
@@ -5468,7 +5521,8 @@ void test_deferred_publication_pending_phase_and_receipt_escrow() {
         CHECK(context.invoked);
         CHECK(!context.hook_failed);
         CHECK(context.pair_escrowed);
-        CHECK(context.lease_fresh);
+        CHECK(context.writer_lease_owned);
+        CHECK(context.external_lease_spent);
         CHECK(context.after_action.has_value());
         if (context.after_action) {
             CHECK(capture_namespace_tree(temp.path()) == *context.after_action);
@@ -5481,6 +5535,7 @@ void test_deferred_publication_pending_phase_and_receipt_escrow() {
         CHECK(!writer.has_cleanup_ownership_receipt());
         CHECK(entry_exists_no_follow(paths.intent_path));
         CHECK(!entry_exists_no_follow(paths.intent_pending_path));
+        restore_deferred_private_lease(reservation, writer);
         CHECK(OOCCleanupTransaction::remove_private_lease(*reservation.ownership).completed());
     }
 
@@ -5489,7 +5544,7 @@ void test_deferred_publication_pending_phase_and_receipt_escrow() {
         const auto paths = OOCCleanupTransaction::paths_for(base);
         auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
         CHECK(reservation.completed());
-        OOCRelationWriter writer(base.string(), *reservation.ownership,
+        OOCRelationWriter writer(base.string(), std::move(*reservation.ownership),
                                  OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
         DeferredPublicationPendingHookContext context{
             .action = DeferredPublicationPendingHookAction::InsertHandoff,
@@ -5511,7 +5566,8 @@ void test_deferred_publication_pending_phase_and_receipt_escrow() {
         CHECK(context.invoked);
         CHECK(!context.hook_failed);
         CHECK(context.pair_escrowed);
-        CHECK(context.lease_fresh);
+        CHECK(context.writer_lease_owned);
+        CHECK(context.external_lease_spent);
         CHECK(context.after_action.has_value());
         if (context.after_action) {
             CHECK(capture_namespace_tree(temp.path()) == *context.after_action);
@@ -5524,6 +5580,7 @@ void test_deferred_publication_pending_phase_and_receipt_escrow() {
         CHECK(std::filesystem::remove(paths.private_handoff_pending_path, error));
         CHECK(!error);
         (void)writer.finalize_and_publish_cleanup_handoff();
+        restore_deferred_private_lease(reservation, writer);
         CHECK(OOCCleanupTransaction::remove_private_lease(*reservation.ownership).completed());
     }
 
@@ -5533,7 +5590,7 @@ void test_deferred_publication_pending_phase_and_receipt_escrow() {
         const auto paths = OOCCleanupTransaction::paths_for(base);
         auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
         CHECK(reservation.completed());
-        OOCRelationWriter writer(base.string(), *reservation.ownership,
+        OOCRelationWriter writer(base.string(), std::move(*reservation.ownership),
                                  OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
         DeferredPublicationPendingHookContext context{
             .action = DeferredPublicationPendingHookAction::InsertStaged,
@@ -5555,7 +5612,8 @@ void test_deferred_publication_pending_phase_and_receipt_escrow() {
         CHECK(context.invoked);
         CHECK(!context.hook_failed);
         CHECK(context.pair_escrowed);
-        CHECK(context.lease_fresh);
+        CHECK(context.writer_lease_owned);
+        CHECK(context.external_lease_spent);
         CHECK(context.after_action.has_value());
         if (context.after_action) {
             CHECK(capture_namespace_tree(temp.path()) == *context.after_action);
@@ -5570,6 +5628,7 @@ void test_deferred_publication_pending_phase_and_receipt_escrow() {
         CHECK(!error);
         (void)writer.finalize_and_publish_cleanup_handoff();
         CHECK(!writer.has_cleanup_ownership_receipt());
+        restore_deferred_private_lease(reservation, writer);
         CHECK(OOCCleanupTransaction::remove_private_lease(*reservation.ownership).completed());
     }
 }
@@ -5593,7 +5652,7 @@ void test_deferred_publication_phase_gate_rejects_allowed_slot_and_inode_drift()
             continue;
         }
 
-        OOCRelationWriter writer(base.string(), *reservation.ownership,
+        OOCRelationWriter writer(base.string(), std::move(*reservation.ownership),
                                  OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
         DeferredPublicationOperationHookContext context{
             .target = OOCCleanupTestOperation::MarkerRename,
@@ -5618,7 +5677,8 @@ void test_deferred_publication_phase_gate_rejects_allowed_slot_and_inode_drift()
             CHECK(capture_namespace_tree(temp.path()) == *context.after_action);
         }
         CHECK(writer.has_cleanup_ownership_receipt());
-        CHECK(!reservation.ownership->spent());
+        CHECK(reservation.ownership->spent());
+        CHECK(writer.has_deferred_private_lease_ownership());
         CHECK(entry_exists_no_follow(paths.intent_pending_path));
         CHECK(!entry_exists_no_follow(paths.intent_path));
 
@@ -5635,6 +5695,7 @@ void test_deferred_publication_phase_gate_rejects_allowed_slot_and_inode_drift()
         CHECK(!writer.has_cleanup_ownership_receipt());
         CHECK(entry_exists_no_follow(paths.intent_path));
         CHECK(!entry_exists_no_follow(paths.intent_pending_path));
+        restore_deferred_private_lease(reservation, writer);
         CHECK(OOCCleanupTransaction::remove_private_lease(*reservation.ownership).completed());
     }
 }
@@ -5649,7 +5710,7 @@ void test_deferred_publication_destination_exists_commits_exact_canonical() {
         return;
     }
 
-    OOCRelationWriter writer(base.string(), *reservation.ownership,
+    OOCRelationWriter writer(base.string(), std::move(*reservation.ownership),
                              OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
     DeferredPublicationOperationHookContext context{
         .target = OOCCleanupTestOperation::MarkerRenameAuthorized,
@@ -5667,14 +5728,14 @@ void test_deferred_publication_destination_exists_commits_exact_canonical() {
     CHECK(context.after_action.has_value());
     CHECK(descriptor.store_id != 0);
     CHECK(!writer.has_cleanup_ownership_receipt());
-    CHECK(!reservation.ownership->spent());
+    CHECK(reservation.ownership->spent());
     CHECK(entry_exists_no_follow(paths.intent_path));
     CHECK(!entry_exists_no_follow(paths.intent_pending_path));
+    restore_deferred_private_lease(reservation, writer);
     CHECK(OOCCleanupTransaction::remove_private_lease(*reservation.ownership).completed());
 }
 
 void prepare_deferred_publication_duplicate_canonical(OOCRelationWriter& writer,
-                                                      OOCPrivateLeaseOwnershipReceipt& lease,
                                                       const OOCCleanupPaths& paths) {
     PublishStopContext pending_stop{
         .target = OOCCleanupPublishFaultPoint::IntentPendingDurable,
@@ -5688,7 +5749,7 @@ void prepare_deferred_publication_duplicate_canonical(OOCRelationWriter& writer,
     CHECK(interrupted);
     CHECK(pending_stop.stopped);
     CHECK(writer.has_cleanup_ownership_receipt());
-    CHECK(!lease.spent());
+    CHECK(writer.has_deferred_private_lease_ownership());
     CHECK(entry_exists_no_follow(paths.intent_pending_path));
     CHECK(!entry_exists_no_follow(paths.intent_path));
 
@@ -5714,9 +5775,9 @@ void test_deferred_publication_canonical_commit_survives_pending_cleanup_failure
         if (!reservation.completed()) {
             continue;
         }
-        OOCRelationWriter writer(base.string(), *reservation.ownership,
+        OOCRelationWriter writer(base.string(), std::move(*reservation.ownership),
                                  OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
-        prepare_deferred_publication_duplicate_canonical(writer, *reservation.ownership, paths);
+        prepare_deferred_publication_duplicate_canonical(writer, paths);
 
         DeferredPublicationFailureSnapshotContext failure{
             .target = operations[index],
@@ -5739,7 +5800,8 @@ void test_deferred_publication_canonical_commit_survives_pending_cleanup_failure
             CHECK(capture_namespace_tree(temp.path()) == *failure.before_failure);
         }
         CHECK(!writer.has_cleanup_ownership_receipt());
-        CHECK(!reservation.ownership->spent());
+        CHECK(reservation.ownership->spent());
+        CHECK(writer.has_deferred_private_lease_ownership());
         CHECK(entry_exists_no_follow(paths.intent_path));
         CHECK(entry_exists_no_follow(paths.intent_pending_path) ==
               (operations[index] == OOCCleanupTestOperation::MarkerPendingUnlink));
@@ -5764,9 +5826,9 @@ void test_deferred_publication_pending_unlink_rejects_hook_replacement() {
     if (!reservation.completed()) {
         return;
     }
-    OOCRelationWriter writer(base.string(), *reservation.ownership,
+    OOCRelationWriter writer(base.string(), std::move(*reservation.ownership),
                              OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
-    prepare_deferred_publication_duplicate_canonical(writer, *reservation.ownership, paths);
+    prepare_deferred_publication_duplicate_canonical(writer, paths);
 
     DeferredPublicationOperationHookContext context{
         .target = OOCCleanupTestOperation::MarkerPendingUnlink,
@@ -5792,7 +5854,8 @@ void test_deferred_publication_pending_unlink_rejects_hook_replacement() {
         CHECK(capture_namespace_tree(temp.path()) == *context.after_action);
     }
     CHECK(!writer.has_cleanup_ownership_receipt());
-    CHECK(!reservation.ownership->spent());
+    CHECK(reservation.ownership->spent());
+    CHECK(writer.has_deferred_private_lease_ownership());
     CHECK(entry_exists_no_follow(paths.intent_path));
     CHECK(entry_exists_no_follow(paths.intent_pending_path));
 }
@@ -5807,7 +5870,7 @@ void test_deferred_publication_commits_receipt_before_canonical_hook() {
         return;
     }
 
-    OOCRelationWriter writer(base.string(), *reservation.ownership,
+    OOCRelationWriter writer(base.string(), std::move(*reservation.ownership),
                              OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
     DeferredPublicationCanonicalHookContext context{
         .writer = &writer,
@@ -5827,7 +5890,8 @@ void test_deferred_publication_commits_receipt_before_canonical_hook() {
     CHECK(context.invoked);
     CHECK(!context.hook_failed);
     CHECK(context.pair_escrowed);
-    CHECK(context.lease_fresh);
+    CHECK(context.writer_lease_owned);
+    CHECK(context.external_lease_spent);
     CHECK(context.snapshot.has_value());
     if (context.snapshot) {
         CHECK(capture_namespace_tree(temp.path()) == *context.snapshot);
@@ -5843,6 +5907,7 @@ void test_deferred_publication_commits_receipt_before_canonical_hook() {
         retry_rejected = true;
     }
     CHECK(retry_rejected);
+    restore_deferred_private_lease(reservation, writer);
     CHECK(OOCCleanupTransaction::remove_private_lease(*reservation.ownership).completed());
 }
 
@@ -5855,10 +5920,11 @@ void test_deferred_private_writer_handoff_and_pending_recovery() {
         auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
         CHECK(reservation.completed());
         {
-            OOCRelationWriter writer(base.string(), *reservation.ownership,
+            OOCRelationWriter writer(base.string(), std::move(*reservation.ownership),
                                      OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
             const auto descriptor = writer.finalize_and_publish_cleanup_handoff();
             CHECK(descriptor.count == 0);
+            restore_deferred_private_lease(reservation, writer);
         }
         CHECK(entry_exists_no_follow(paths.lease_reserved_path));
         CHECK(entry_exists_no_follow(paths.lease_owned_path));
@@ -5883,7 +5949,7 @@ void test_deferred_private_writer_handoff_and_pending_recovery() {
         CHECK(reservation.completed());
         bool interrupted = false;
         {
-            OOCRelationWriter writer(base.string(), *reservation.ownership,
+            OOCRelationWriter writer(base.string(), std::move(*reservation.ownership),
                                      OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
             PublishStopContext stop{
                 .target = OOCCleanupPublishFaultPoint::IntentPendingDurable,
@@ -5893,6 +5959,7 @@ void test_deferred_private_writer_handoff_and_pending_recovery() {
             } catch (const std::system_error&) {
                 interrupted = true;
             }
+            restore_deferred_private_lease(reservation, writer);
         }
         CHECK(interrupted);
         CHECK(entry_exists_no_follow(paths.lease_reserved_path));
@@ -5918,9 +5985,10 @@ void test_deferred_handoff_foreign_leaf_blocks_pair_mutation() {
     auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
     CHECK(reservation.completed());
     {
-        OOCRelationWriter writer(base.string(), *reservation.ownership,
+        OOCRelationWriter writer(base.string(), std::move(*reservation.ownership),
                                  OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
         (void)writer.finalize_and_publish_cleanup_handoff();
+        restore_deferred_private_lease(reservation, writer);
     }
 
     const auto foreign = paths.private_directory / "foreign-control-leaf";
@@ -5952,7 +6020,7 @@ void test_private_handoff_writer_rejects_metadata_before_finalize() {
 
     std::optional<OOCSnapshotDescriptor> descriptor;
     {
-        OOCRelationWriter writer(base.string(), *reservation.ownership,
+        OOCRelationWriter writer(base.string(), std::move(*reservation.ownership),
                                  OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
         (void)writer.write(make_real_relation(31, 37));
 
@@ -5988,6 +6056,7 @@ void test_private_handoff_writer_rejects_metadata_before_finalize() {
         (void)writer.write(make_real_relation(47, 53));
 
         descriptor = writer.finalize_and_publish_cleanup_handoff();
+        restore_deferred_private_lease(reservation, writer);
     }
     CHECK(descriptor.has_value());
     if (descriptor) {
@@ -7274,6 +7343,112 @@ struct FreshWriterBoundaryContext final {
     bool injection_failed = false;
 };
 
+struct DeferredConstructionStopContext final {
+    OOCPrivateLeaseFaultPoint target =
+        OOCPrivateLeaseFaultPoint::FreshWriterPermitAcquired;
+    bool invoked = false;
+};
+
+[[nodiscard]] bool stop_deferred_construction(OOCPrivateLeaseFaultPoint point,
+                                              void* opaque) noexcept {
+    auto& context = *static_cast<DeferredConstructionStopContext*>(opaque);
+    if (point != context.target) {
+        return false;
+    }
+    context.invoked = true;
+    return true;
+}
+
+void test_deferred_writer_ownership_is_commit_last() {
+    constexpr std::array TARGETS{
+        OOCPrivateLeaseFaultPoint::FreshWriterPermitAcquired,
+        OOCPrivateLeaseFaultPoint::FreshIndexReserved,
+        OOCPrivateLeaseFaultPoint::FreshDataReserved,
+        OOCPrivateLeaseFaultPoint::FreshHeadersValidated,
+        OOCPrivateLeaseFaultPoint::FreshPairOwnershipCaptured,
+    };
+
+    for (std::size_t index = 0; index < TARGETS.size(); ++index) {
+        TempDirectory temp;
+        const auto base = temp.path() /
+                          ("deferred-commit-last-" + std::to_string(index) +
+                           ".gnfs-sink-lease") /
+                          "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+        CHECK(reservation.completed());
+        if (!reservation.completed()) {
+            continue;
+        }
+
+        DeferredConstructionStopContext context{
+            .target = TARGETS[index],
+        };
+        bool rejected = false;
+        try {
+            OOCRelationWriter writer(
+                base.string(), std::move(*reservation.ownership),
+                OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff,
+                OOCPrivateLeaseTestHooks{
+                    .stop_after = stop_deferred_construction,
+                    .context = &context,
+                });
+        } catch (const std::system_error&) {
+            rejected = true;
+        }
+
+        CHECK(rejected);
+        CHECK(context.invoked);
+        CHECK(reservation.ownership.has_value());
+        CHECK(!reservation.ownership->spent());
+        CHECK(OOCCleanupTransaction::remove_private_lease(*reservation.ownership).completed());
+        CHECK(reservation.ownership->spent());
+        check_cleanup_complete(paths);
+    }
+}
+
+void test_deferred_writer_live_lease_is_unreachable() {
+    TempDirectory temp;
+    const auto base = temp.path() / "deferred-live-ownership.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+    CHECK(reservation.completed());
+    if (!reservation.completed()) {
+        return;
+    }
+
+    OOCRelationWriter writer(base.string(), std::move(*reservation.ownership),
+                             OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
+    CHECK(reservation.ownership->spent());
+    CHECK(writer.has_deferred_private_lease_ownership());
+    const auto before_take = capture_namespace_tree(temp.path());
+    bool live_take_rejected = false;
+    try {
+        (void)writer.take_deferred_private_lease_ownership();
+    } catch (const std::logic_error&) {
+        live_take_rejected = true;
+    }
+    CHECK(live_take_rejected);
+    CHECK(capture_namespace_tree(temp.path()) == before_take);
+
+    const auto moved_from_remove =
+        OOCCleanupTransaction::remove_private_lease(*reservation.ownership);
+    CHECK(moved_from_remove.status == OOCCleanupStatus::InvalidRequest);
+    CHECK(capture_namespace_tree(temp.path()) == before_take);
+
+    writer.abort();
+    restore_deferred_private_lease(reservation, writer);
+    bool second_take_rejected = false;
+    try {
+        (void)writer.take_deferred_private_lease_ownership();
+    } catch (const std::logic_error&) {
+        second_take_rejected = true;
+    }
+    CHECK(second_take_rejected);
+    CHECK(OOCCleanupTransaction::remove_private_lease(*reservation.ownership).completed());
+    check_cleanup_complete(paths);
+}
+
 [[nodiscard]] bool observe_or_inject_fresh_writer_boundary(OOCPrivateLeaseFaultPoint point,
                                                            void* opaque) noexcept {
     auto& context = *static_cast<FreshWriterBoundaryContext*>(opaque);
@@ -7602,7 +7777,7 @@ void test_private_lease_unknown_scan_precedes_legacy_intent_publication() {
     CHECK(reservation.completed());
     const auto owner_path = paths.private_directory / ".gnfs-private-lease-v1.owner";
 
-    OOCRelationWriter writer(base.string(), *reservation.ownership,
+    OOCRelationWriter writer(base.string(), std::move(*reservation.ownership),
                              OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
     (void)writer.write(make_real_relation(59, 61));
     const auto descriptor = writer.finalize();
@@ -7622,6 +7797,8 @@ void test_private_lease_unknown_scan_precedes_legacy_intent_publication() {
     } catch (const std::system_error&) {
         rejected = true;
     }
+    CHECK(reservation.ownership->spent());
+    restore_deferred_private_lease(reservation, writer);
     CHECK(rejected);
     CHECK(!entry_exists_no_follow(paths.intent_pending_path));
     CHECK(!entry_exists_no_follow(paths.intent_path));
@@ -8729,7 +8906,7 @@ void test_private_cleanup_intent_rejects_replaced_held_lock() {
     auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
     CHECK(reservation.completed());
 
-    OOCRelationWriter writer(base.string(), *reservation.ownership,
+    OOCRelationWriter writer(base.string(), std::move(*reservation.ownership),
                              OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
     (void)writer.write(make_real_relation(31, 37));
     const auto original_lock_bytes = read_test_bytes(paths.lock_path);
@@ -8753,6 +8930,8 @@ void test_private_cleanup_intent_rejects_replaced_held_lock() {
     } catch (const std::system_error&) {
         rejected = true;
     }
+    CHECK(reservation.ownership->spent());
+    restore_deferred_private_lease(reservation, writer);
     CHECK(rejected);
     CHECK(replacement.invoked);
     CHECK(replacement.replaced);
@@ -8889,6 +9068,109 @@ void test_private_lease_activation_rejects_replaced_held_lock() {
 #endif
 
 #if defined(__APPLE__)
+struct PrivateHandoffWriterReentryContext final {
+    OOCRelationWriter* writer = nullptr;
+    std::filesystem::path snapshot_root;
+    std::optional<NamespaceTreeSnapshot> before_actions;
+    std::optional<NamespaceTreeSnapshot> after_actions;
+    bool invoked = false;
+    bool pair_take_rejected = false;
+    bool lease_take_rejected = false;
+    bool cleanup_publish_rejected = false;
+    bool private_publish_rejected = false;
+    bool hook_failed = false;
+};
+
+[[nodiscard]] bool reject_private_handoff_writer_reentry(OOCPrivateHandoffFaultPoint point,
+                                                         void* opaque) noexcept {
+    auto& context = *static_cast<PrivateHandoffWriterReentryContext*>(opaque);
+    if (context.invoked || point != OOCPrivateHandoffFaultPoint::PendingDurable) {
+        return false;
+    }
+    context.invoked = true;
+    try {
+        context.before_actions = capture_namespace_tree(context.snapshot_root);
+        try {
+            (void)context.writer->take_cleanup_ownership_receipt();
+        } catch (const std::logic_error&) {
+            context.pair_take_rejected = true;
+        }
+        try {
+            (void)context.writer->take_deferred_private_lease_ownership();
+        } catch (const std::logic_error&) {
+            context.lease_take_rejected = true;
+        }
+        try {
+            (void)context.writer->finalize_and_publish_cleanup_handoff();
+        } catch (const std::logic_error&) {
+            context.cleanup_publish_rejected = true;
+        }
+        try {
+            (void)context.writer->finalize_and_publish_private_handoff(
+                PRIVATE_HANDOFF_PAYLOAD_KIND, PRIVATE_HANDOFF_PAYLOAD_VERSION,
+                PRIVATE_HANDOFF_PAYLOAD);
+        } catch (const std::logic_error&) {
+            context.private_publish_rejected = true;
+        }
+        context.after_actions = capture_namespace_tree(context.snapshot_root);
+    } catch (...) {
+        context.hook_failed = true;
+    }
+    return true;
+}
+
+void test_private_handoff_writer_reentry_is_closed() {
+    TempDirectory temp;
+    const auto base = temp.path() / "private-handoff-writer-reentry.gnfs-sink-lease" / "corpus";
+    auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+    CHECK(reservation.completed());
+    if (!reservation.completed()) {
+        return;
+    }
+
+    OOCRelationWriter writer(base.string(), std::move(*reservation.ownership),
+                             OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
+    PrivateHandoffWriterReentryContext context{
+        .writer = &writer,
+        .snapshot_root = temp.path(),
+    };
+    bool interrupted = false;
+    try {
+        (void)writer.finalize_and_publish_private_handoff(
+            PRIVATE_HANDOFF_PAYLOAD_KIND, PRIVATE_HANDOFF_PAYLOAD_VERSION,
+            PRIVATE_HANDOFF_PAYLOAD,
+            OOCPrivateHandoffTestHooks{
+                .stop_after = reject_private_handoff_writer_reentry,
+                .context = &context,
+            });
+    } catch (const std::system_error&) {
+        interrupted = true;
+    }
+    CHECK(interrupted);
+    CHECK(context.invoked);
+    CHECK(!context.hook_failed);
+    CHECK(context.pair_take_rejected);
+    CHECK(context.lease_take_rejected);
+    CHECK(context.cleanup_publish_rejected);
+    CHECK(context.private_publish_rejected);
+    CHECK(context.before_actions.has_value());
+    CHECK(context.after_actions.has_value());
+    if (context.before_actions && context.after_actions) {
+        CHECK(*context.before_actions == *context.after_actions);
+    }
+    CHECK(writer.has_cleanup_ownership_receipt());
+    CHECK(writer.has_deferred_private_lease_ownership());
+    CHECK(reservation.ownership->spent());
+
+    const auto descriptor = writer.finalize_and_publish_private_handoff(
+        PRIVATE_HANDOFF_PAYLOAD_KIND, PRIVATE_HANDOFF_PAYLOAD_VERSION,
+        PRIVATE_HANDOFF_PAYLOAD);
+    CHECK(descriptor.store_id != 0);
+    restore_deferred_private_lease(reservation, writer);
+    CHECK(OOCCleanupTransaction::remove_private_lease(*reservation.ownership).status ==
+          OOCCleanupStatus::HandoffPresent);
+}
+
 void test_private_handoff_writer_round_trip() {
     TempDirectory temp;
 
@@ -8903,7 +9185,7 @@ void test_private_handoff_writer_round_trip() {
 
         std::optional<OOCSnapshotDescriptor> descriptor;
         {
-            OOCRelationWriter writer(base.string(), *reservation.ownership,
+            OOCRelationWriter writer(base.string(), std::move(*reservation.ownership),
                                      OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
             for (std::size_t index = 0; index < relation_count; ++index) {
                 (void)writer.write(
@@ -8912,6 +9194,18 @@ void test_private_handoff_writer_round_trip() {
             descriptor = writer.finalize_and_publish_private_handoff(
                 PRIVATE_HANDOFF_PAYLOAD_KIND, PRIVATE_HANDOFF_PAYLOAD_VERSION,
                 PRIVATE_HANDOFF_PAYLOAD);
+            const auto after_publish = capture_namespace_tree(temp.path());
+            bool replay_rejected = false;
+            try {
+                (void)writer.finalize_and_publish_private_handoff(
+                    PRIVATE_HANDOFF_PAYLOAD_KIND, PRIVATE_HANDOFF_PAYLOAD_VERSION,
+                    PRIVATE_HANDOFF_PAYLOAD);
+            } catch (const std::logic_error&) {
+                replay_rejected = true;
+            }
+            CHECK(replay_rejected);
+            CHECK(capture_namespace_tree(temp.path()) == after_publish);
+            restore_deferred_private_lease(reservation, writer);
         }
 
         CHECK(descriptor.has_value());
@@ -10552,6 +10846,8 @@ void run_private_lease_crash_suite(const std::string& executable) {
     test_private_handoff_missing_lock_orphan_stage_is_preserved();
     test_private_handoff_invalid_orphan_stage_names_are_ignored();
     test_private_lease_unknown_child_preserves_matching_pending();
+    test_deferred_writer_ownership_is_commit_last();
+    test_deferred_writer_live_lease_is_unreachable();
     test_private_fresh_writer_authorized_gate_rejects_same_inode_size_drift();
     test_private_lease_unknown_scan_precedes_writer_mutation();
     test_unscoped_writer_rejects_existing_preactive_private_lease();
@@ -10592,6 +10888,7 @@ void run_private_lease_crash_suite(const std::string& executable) {
     test_private_handoff_adoption_interruptions(executable);
     test_private_handoff_adoption_rejects_namespace_drift(executable);
     test_private_handoff_publish_rejects_replaced_held_lock();
+    test_private_handoff_writer_reentry_is_closed();
     test_private_handoff_writer_round_trip();
     test_legacy_cleanup_handoff_observation_is_terminal();
     test_legacy_cleanup_permit_rejects_byte_identical_handoff_replacement();

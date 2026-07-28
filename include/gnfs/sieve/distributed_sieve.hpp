@@ -97,6 +97,24 @@ struct DistributedSieveWorkerResult {
     std::string ooc_base_path;  ///< Per-worker OOC base path.
 };
 
+#ifndef _WIN32
+namespace distributed_sieve_detail {
+
+/// Pure wait-status classifier shared by production waitpid handling and the
+/// deterministic stopped-child regression. Only terminal statuses confirm
+/// reap and therefore permit worker-artifact cleanup.
+struct DecodedWorkerWaitStatus final {
+    bool terminal = false;
+    bool success = false;
+    int exit_status = -1;
+    int signal = 0;
+};
+
+[[nodiscard]] DecodedWorkerWaitStatus decode_worker_wait_status(int wait_status) noexcept;
+
+} // namespace distributed_sieve_detail
+#endif
+
 /// A seed provider threw inside a child worker.
 ///
 /// The original exception object cannot cross fork(), so the parent exposes

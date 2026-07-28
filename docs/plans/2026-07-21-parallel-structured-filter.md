@@ -1803,3 +1803,49 @@ orphan cleanup intent. Preserving and adopting completed workers across a
 master restart requires a separate no-delete handoff record bound to a work
 digest and a merge-completion receipt. That durable-resume protocol remains a
 future milestone.
+
+### Deferred Writer Ownership Closure Status
+
+Deferred worker construction now consumes an rvalue private-lease receipt.
+The lvalue overload is deleted, and `RelationCollector` forwards the child
+process's copy into the writer. The writer retains that move-only receipt until
+it reaches `Finalized` or `Failed`. A caller cannot extract the receipt while
+the writer is open, while a prefix reader exists, or while either publication
+transaction is active.
+
+Both cleanup and no-delete handoff publication use one writer-local action
+guard. Publication hooks cannot extract the pair receipt, extract the lease
+receipt, or reenter either publication method. The constructor performs the
+receipt move only after every throwing initialization step, so an interrupted
+construction leaves the caller's receipt usable for exact recovery.
+
+The parent still owns an independent copy-on-write receipt after `fork()`.
+This cross-process capability is safe only under the master lifecycle rule:
+cleanup requires a terminal child status. A returned PID with a stopped or
+continued status does not confirm reap. Such a status preserves the lease,
+suppresses cleanup, and disables every retry in the wave.
+
+### Next Milestone: Same-Handle Writer I/O
+
+The next relation-layer slice removes pathname reopen from out-of-core writer
+I/O. Fresh construction already reserves `.relidx` and `.reldata` with
+exclusive-create native handles, but the current stream attachment resolves
+the path again after the last identity check. A replacement in that interval
+can receive header writes before the next validation detects the drift.
+
+The replacement design keeps the public writer API stable and binds reads,
+writes, truncation, seeking, flushing, and durability barriers to validated
+native handles:
+
+1. Duplicate the retained exclusive-create handles for buffered binary I/O.
+2. Keep the original handles as identity witnesses.
+3. Attach buffering without resolving either canonical pathname again.
+4. Route fresh creation, resume, suspended finalize, final-magic update, and
+   file synchronization through the same handle-backed abstraction.
+5. Add regular-file, symlink, and double-rename replacement tests at the final
+   pre-header boundary. Every detected foreign object and target must remain
+   byte-for-byte unchanged.
+
+Only after this same-handle contract passes the relation module and deep
+dependency gate should the durable WaveStore launcher consume a start receipt
+and fork inside its sole admitted consumer.

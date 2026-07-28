@@ -37,6 +37,7 @@ int main() {
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <csignal>
 #include <cstddef>
 #include <cstdlib>
 #include <fcntl.h>
@@ -52,6 +53,7 @@ int main() {
 #include <system_error>
 #include <tuple>
 #include <type_traits>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
 
@@ -628,6 +630,56 @@ void test_split_sq_range() {
 }
 
 // ── Test 2: ENV parsing ────────────────────────────────────────────────
+void test_wait_status_requires_terminal_child() {
+    std::cout << "[test_wait_status_requires_terminal_child] ... " << std::flush;
+
+    const pid_t child = ::fork();
+    if (child == 0) {
+        (void)std::raise(SIGSTOP);
+        ::_exit(0);
+    }
+
+    int stopped_status = 0;
+    pid_t stopped_result = -1;
+    if (child > 0) {
+        do {
+            stopped_result = ::waitpid(child, &stopped_status, WUNTRACED);
+        } while (stopped_result < 0 && errno == EINTR);
+    }
+    const auto stopped =
+        stopped_result == child
+            ? gnfs::sieve::distributed_sieve_detail::decode_worker_wait_status(stopped_status)
+            : gnfs::sieve::distributed_sieve_detail::DecodedWorkerWaitStatus{};
+
+    int terminal_status = 0;
+    pid_t terminal_result = -1;
+    if (child > 0) {
+        (void)::kill(child, SIGCONT);
+        do {
+            terminal_result = ::waitpid(child, &terminal_status, 0);
+        } while (terminal_result < 0 && errno == EINTR);
+    }
+    const auto terminal =
+        terminal_result == child
+            ? gnfs::sieve::distributed_sieve_detail::decode_worker_wait_status(terminal_status)
+            : gnfs::sieve::distributed_sieve_detail::DecodedWorkerWaitStatus{};
+
+    CHECK(child > 0);
+    CHECK(stopped_result == child);
+    CHECK(WIFSTOPPED(stopped_status));
+    CHECK(!stopped.terminal);
+    CHECK(!stopped.success);
+    CHECK(stopped.exit_status == -1);
+    CHECK(stopped.signal == 0);
+    CHECK(terminal_result == child);
+    CHECK(WIFEXITED(terminal_status));
+    CHECK(terminal.terminal);
+    CHECK(terminal.success);
+    CHECK(terminal.exit_status == 0);
+    CHECK(terminal.signal == 0);
+    std::cout << "PASS\n";
+}
+
 void test_env_parsing() {
     std::cout << "[test_env_parsing] ... " << std::flush;
 
@@ -1368,6 +1420,7 @@ int main() {
     auto t0 = std::chrono::high_resolution_clock::now();
 
     test_split_sq_range();
+    test_wait_status_requires_terminal_child();
     test_env_parsing();
     test_invalid_config();
     test_single_worker_matches_in_process();

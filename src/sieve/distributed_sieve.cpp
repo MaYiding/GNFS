@@ -121,6 +121,31 @@ run_distributed_sieve(const DistributedSieveConfig& cfg, const gnfs::core::Polyn
 
 namespace gnfs::sieve {
 
+namespace distributed_sieve_detail {
+
+DecodedWorkerWaitStatus decode_worker_wait_status(int wait_status) noexcept {
+    if (WIFEXITED(wait_status)) {
+        const int status = WEXITSTATUS(wait_status);
+        return DecodedWorkerWaitStatus{
+            .terminal = true,
+            .success = status == 0,
+            .exit_status = status,
+            .signal = 0,
+        };
+    }
+    if (WIFSIGNALED(wait_status)) {
+        return DecodedWorkerWaitStatus{
+            .terminal = true,
+            .success = false,
+            .exit_status = -1,
+            .signal = WTERMSIG(wait_status),
+        };
+    }
+    return {};
+}
+
+} // namespace distributed_sieve_detail
+
 namespace {
 
 using gnfs::core::Integer;
@@ -275,7 +300,7 @@ static_assert(sizeof(WorkerCompletionReport) <= PIPE_BUF);
 [[noreturn]] void child_worker_main(
     size_t chunk_id, uint32_t sq_begin, uint32_t sq_end, size_t sq_per_worker_cap,
     size_t worker_collector_cap, size_t attempt_number, const std::string& worker_base,
-    gnfs::relation::OOCPrivateLeaseOwnershipReceipt& private_lease, int report_descriptor,
+    gnfs::relation::OOCPrivateLeaseOwnershipReceipt&& private_lease, int report_descriptor,
     const PolynomialContext& ctx, const FactorBase& fb, const SieveParams& sieve_params,
     const SieveRegion& sieve_region, const gnfs::cofactor::CofactorizerConfig& cofac_config,
     const gnfs::cofactor::CofactorSeedProvider* seed_provider, const Integer& n, const Integer& m) {
@@ -301,7 +326,7 @@ static_assert(sizeof(WorkerCompletionReport) <= PIPE_BUF);
         coll_cfg.ooc_enabled = true;
         coll_cfg.ooc_base_path = worker_base;
         coll_cfg.ooc_resume = false;
-        gnfs::relation::RelationCollector collector(coll_cfg, private_lease);
+        gnfs::relation::RelationCollector collector(coll_cfg, std::move(private_lease));
         // gcd(a-bm, N) > 1 guard — must match Pipeline behavior.
         collector.set_polynomial_context(n, m);
 
@@ -454,8 +479,8 @@ SpawnedWorker spawn_worker(size_t chunk_id, uint32_t sq_begin, uint32_t sq_end,
         (void)::close(report_pipe[0]);
         // Child: run sieve, never returns.
         child_worker_main(chunk_id, sq_begin, sq_end, sq_per_worker_cap, worker_collector_cap,
-                          attempt_number, worker_base, private_lease, report_pipe[1], ctx, fb,
-                          sieve_params, sieve_region, cofac_config, seed_provider, n, m);
+                          attempt_number, worker_base, std::move(private_lease), report_pipe[1],
+                          ctx, fb, sieve_params, sieve_region, cofac_config, seed_provider, n, m);
     }
     (void)::close(report_pipe[1]);
     // Parent: return child PID.
@@ -501,37 +526,23 @@ WorkerWaitResult wait_and_decode(pid_t pid) noexcept {
             .failure_kind = WorkerAttemptFailureKind::unreaped,
         };
     }
-    if (WIFEXITED(wstatus)) {
-        const int status = WEXITSTATUS(wstatus);
-        return WorkerWaitResult{
-            .reaped = true,
-            .success = status == 0,
-            .exit_status = status,
-            .signal = 0,
-            .native_error = 0,
-            .failure_kind = status == 0 ? WorkerAttemptFailureKind::none
-                                        : (status == WORKER_EXIT_SEED_PROVIDER_FATAL
-                                               ? WorkerAttemptFailureKind::seed_provider_fatal
-                                               : WorkerAttemptFailureKind::retryable),
-        };
-    }
-    if (WIFSIGNALED(wstatus)) {
-        return WorkerWaitResult{
-            .reaped = true,
-            .success = false,
-            .exit_status = -1,
-            .signal = WTERMSIG(wstatus),
-            .native_error = 0,
-            .failure_kind = WorkerAttemptFailureKind::retryable,
-        };
-    }
+    const auto decoded =
+        distributed_sieve_detail::decode_worker_wait_status(wstatus);
+    const auto failure_kind =
+        !decoded.terminal
+            ? WorkerAttemptFailureKind::unreaped
+            : (decoded.success
+                   ? WorkerAttemptFailureKind::none
+                   : (decoded.exit_status == WORKER_EXIT_SEED_PROVIDER_FATAL
+                          ? WorkerAttemptFailureKind::seed_provider_fatal
+                          : WorkerAttemptFailureKind::retryable));
     return WorkerWaitResult{
-        .reaped = true,
-        .success = false,
-        .exit_status = -1,
-        .signal = 0,
+        .reaped = decoded.terminal,
+        .success = decoded.success,
+        .exit_status = decoded.exit_status,
+        .signal = decoded.signal,
         .native_error = 0,
-        .failure_kind = WorkerAttemptFailureKind::retryable,
+        .failure_kind = failure_kind,
     };
 }
 
@@ -698,6 +709,13 @@ std::vector<Relation> run_distributed_sieve_impl(
     const auto cleanup_attempt = [](WorkerSlot& slot) noexcept {
         if (!slot.private_lease) {
             return true;
+        }
+        if (!slot.reap_confirmed) {
+            std::fprintf(
+                stderr,
+                "[dist_sieve.master] cleanup suppressed chunk=%zu: child reap is unconfirmed\n",
+                slot.chunk_id);
+            return false;
         }
         const auto result =
             gnfs::relation::OOCCleanupTransaction::remove_private_lease(*slot.private_lease);
