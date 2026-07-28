@@ -127,6 +127,9 @@ DURABLE_PURE_RUNTIME_MAPPER_FORBIDDEN_IDENTIFIERS = (
     "parallel_lattice_basis_reduce",
     "brent_pollard_enabled",
     "classify_cofactor",
+    "classify_cofactor_seeded_v1",
+    "classify_cofactor_seeded_with_brent_v1",
+    "quick_factor",
     "survival_filter_enabled",
     "apply_brent_suyama_env",
 )
@@ -1271,13 +1274,18 @@ auto threads = lattice_basis_parallel_threads();
 auto ambient_brent = brent_pollard_enabled();
 auto ambient_threshold = survival_threshold();
 auto legacy_classification = classify_cofactor(cofactor, bound);
+auto direct_ecm = ECM::quick_factor(cofactor);
+auto seeded_classification = classify_cofactor_seeded_v1(
+    cofactor, bound, false, 0, coordinates, side, provider);
+auto seeded_brent_classification = classify_cofactor_seeded_with_brent_v1(
+    cofactor, bound, false, 0, coordinates, side, provider, 0, false, 0);
 '''
     mapper_api_checks = Checks(Path("."))
     mapper_api_checks.validate_durable_ambient_api_uses(
         mapper_relative, mapper_api_snippet
     )
     expect(
-        len(mapper_api_checks.errors) == 8
+        len(mapper_api_checks.errors) == 11
         and any(
             "ambient API hardware_concurrency" in error
             for error in mapper_api_checks.errors
@@ -1297,6 +1305,18 @@ auto legacy_classification = classify_cofactor(cofactor, bound);
         and any(
             "must not call legacy runtime API lattice_basis_parallel_threads"
             in error
+            for error in mapper_api_checks.errors
+        )
+        and any(
+            "legacy runtime API quick_factor" in error
+            for error in mapper_api_checks.errors
+        )
+        and any(
+            "legacy runtime API classify_cofactor_seeded_v1" in error
+            for error in mapper_api_checks.errors
+        )
+        and any(
+            "legacy runtime API classify_cofactor_seeded_with_brent_v1" in error
             for error in mapper_api_checks.errors
         ),
         f"durable runtime-mapper ambient API bans are not closed: "

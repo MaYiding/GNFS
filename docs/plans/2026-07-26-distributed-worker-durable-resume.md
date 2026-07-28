@@ -664,9 +664,10 @@ validated work identity plus its exact frozen policy to
 `CofactorizerConfig` and a root-backed seed provider. It jointly rejects
 identity/policy split-brain, reuses the semantic-root sentinel normalization,
 and fixes the generic deterministic-seed `chunk_id` to zero. Active survival
-filter policy remains fail-closed until `Cofactorizer` has an explicit
-predictor seam. This mapper is not enabled by the legacy `Pipeline`, which
-does not yet own a complete durable work identity.
+filter policy and nonzero legacy ECM sigma/curve-pool policy remain
+fail-closed until `Cofactorizer` has matching explicit seeded-runtime seams.
+This mapper is not enabled by the legacy `Pipeline`, which does not yet own a
+complete durable work identity.
 
 `n` and `m` passed separately to `run_distributed_sieve` must exactly equal the
 polynomial context before any namespace mutation.

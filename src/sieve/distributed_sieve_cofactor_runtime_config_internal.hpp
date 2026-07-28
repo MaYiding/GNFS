@@ -31,7 +31,9 @@ struct DistributedSieveCofactorRuntimeMapResultV2 final {
 /// The identity must be valid, the frozen policy must be internally valid, and
 /// its canonical projection must exactly match identity.execution_policy.
 /// Identity-level zero sentinels are resolved exactly as the V2 semantic root
-/// resolves them. The returned provider is rooted in that same projection.
+/// resolves them. Active survival and nonzero legacy ECM pool policies fail
+/// closed until explicit seeded-runtime seams exist. The returned provider is
+/// rooted in that same projection.
 [[nodiscard]] DistributedSieveCofactorRuntimeMapResultV2 map_distributed_sieve_cofactor_runtime_v2(
     const DistributedSieveWorkIdentityV1& identity,
     const DistributedSieveFrozenExecutionPolicyV1& frozen_policy) noexcept;

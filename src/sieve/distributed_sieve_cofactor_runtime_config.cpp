@@ -45,6 +45,10 @@ DistributedSieveCofactorRuntimeMapResultV2 map_distributed_sieve_cofactor_runtim
     if (frozen_policy.cofactor.survival_filter && frozen_policy.cofactor.survival_threshold > 0.0) {
         return {std::nullopt, runtime_config_failure(DistributedSieveProtocolError::invalid_value)};
     }
+    if (frozen_policy.cofactor.ecm_sigma_pool_size != 0 ||
+        frozen_policy.cofactor.ecm_curve_pool != 0) {
+        return {std::nullopt, runtime_config_failure(DistributedSieveProtocolError::invalid_value)};
+    }
 
     const auto semantic_root = distributed_sieve_semantic_seed_root_v2(identity);
     if (!semantic_root) {

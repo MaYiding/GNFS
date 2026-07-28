@@ -603,6 +603,20 @@ void test_cofactor_runtime_rejects_identity_policy_split_brain() {
     CHECK(!result);
     CHECK(!result.runtime.has_value());
     CHECK(result.status.error == sieve::DistributedSieveProtocolError::invalid_value);
+
+    for (const auto [key, raw] : std::array<std::pair<Key, std::string_view>, 2>{
+             {{Key::ecm_sigma_pool_size, "16"}, {Key::ecm_curve_pool, "8"}}}) {
+        auto unsupported_pool_snapshot = unset_snapshot(4);
+        set_raw(unsupported_pool_snapshot, key, raw);
+        const auto unsupported_pool_policy = freeze_checked(unsupported_pool_snapshot);
+        const auto unsupported_pool_identity = make_runtime_identity(unsupported_pool_policy);
+        CHECK(sieve::distributed_sieve_semantic_seed_root_v2(unsupported_pool_identity));
+        result = policy_detail::map_distributed_sieve_cofactor_runtime_v2(unsupported_pool_identity,
+                                                                          unsupported_pool_policy);
+        CHECK(!result);
+        CHECK(!result.runtime.has_value());
+        CHECK(result.status.error == sieve::DistributedSieveProtocolError::invalid_value);
+    }
 }
 
 void test_ecm_enable_degree_invariant() {
