@@ -372,6 +372,8 @@ void test_coordinate_and_context_boundaries() {
     CHECK(std::all_of(default_context.cofactor_digest.bytes.begin(),
                       default_context.cofactor_digest.bytes.end(),
                       [](std::byte byte) { return byte == std::byte{0}; }));
+    CHECK(default_context.domain == gnfs::cofactor::CofactorRandomDomainV1::brent_pollard_rho);
+    CHECK(default_context.algorithm_identity == 0);
     CHECK(default_context.seed == CofactorSeed256{});
 
     CofactorAttemptContext boundary_context{};
@@ -379,6 +381,9 @@ void test_coordinate_and_context_boundaries() {
     boundary_context.side = CofactorSide::algebraic;
     boundary_context.cofactor_digest =
         gnfs::cofactor::canonical_cofactor_input_digest(Integer("66051"), CofactorSide::algebraic);
+    boundary_context.domain = gnfs::cofactor::CofactorRandomDomainV1::ecm_curve_schedule;
+    boundary_context.algorithm_identity =
+        gnfs::cofactor::COFACTOR_ECM_CURVE_SCHEDULE_ALGORITHM_IDENTITY_V1;
     boundary_context.seed.digest = gnfs::cofactor::cofactor_random_block(CofactorSeed256{}, 0);
 
     const CofactorAttemptContext copy = boundary_context;
@@ -387,6 +392,9 @@ void test_coordinate_and_context_boundaries() {
     CHECK(copy.coordinates.candidate_ordinal == maximum);
     CHECK(copy.side == CofactorSide::algebraic);
     CHECK(digest_hex(copy.cofactor_digest) == ALGEBRAIC_010203_DIGEST);
+    CHECK(copy.domain == gnfs::cofactor::CofactorRandomDomainV1::ecm_curve_schedule);
+    CHECK(copy.algorithm_identity ==
+          gnfs::cofactor::COFACTOR_ECM_CURVE_SCHEDULE_ALGORITHM_IDENTITY_V1);
     CHECK(copy.seed.digest == gnfs::cofactor::cofactor_random_block(CofactorSeed256{}, 0));
 }
 

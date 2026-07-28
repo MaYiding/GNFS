@@ -2,6 +2,7 @@
 
 #include "../core/integer.hpp"
 #include "../util/bit_intrin.hpp"
+#include "attempt_context.hpp"
 #include "ecm_brent_suyama.hpp"
 
 #include <cassert>
@@ -60,6 +61,21 @@ public:
             schedule.sigmas.push_back((rng() % 1'000'000) + 6);
         }
         return schedule;
+    }
+
+    /// Build the V1 ECM schedule from an algorithm-bound attempt context.
+    ///
+    /// Wrong-domain and wrong-version contexts fail closed instead of silently
+    /// reinterpreting a seed produced for another random schedule. Curve
+    /// ordinal i consumes cofactor_random_u64(seed, i), so construction is
+    /// independent of worker scheduling and uses the complete 256-bit seed.
+    [[nodiscard]] static DeterministicCurveSchedule
+    make_deterministic_curve_schedule(uint32_t num_curves, const CofactorAttemptContext& attempt) {
+        if (attempt.domain != CofactorRandomDomainV1::ecm_curve_schedule ||
+            attempt.algorithm_identity != COFACTOR_ECM_CURVE_SCHEDULE_ALGORITHM_IDENTITY_V1) {
+            throw std::invalid_argument("cofactor attempt is not bound to the V1 ECM schedule");
+        }
+        return make_seed256_curve_schedule(num_curves, attempt.seed);
     }
 
     /// 尝试用 ECM 分解 n
@@ -156,6 +172,38 @@ public:
             if (result) return result;
         }
         return std::nullopt;
+    }
+
+    /// Deterministic quick path for per-candidate cofactorization.
+    ///
+    /// The supplied schedule and Brent-Suyama degree are authoritative. This
+    /// overload reads neither ENV nor random_device, while retaining the
+    /// thread-local B1 prime/power cache used by the ambient quick path.
+    [[nodiscard]] static std::optional<Integer>
+    quick_factor(const Integer& n, const DeterministicCurveSchedule& schedule,
+                 uint32_t brent_suyama_degree = 0) {
+        validate_deterministic_curve_schedule(schedule);
+        if (brent_suyama_degree != 0 && !brent_suyama::is_supported_degree(brent_suyama_degree)) {
+            throw std::invalid_argument(
+                "ECM deterministic quick Brent-Suyama degree is unsupported");
+        }
+        if (schedule.sigmas.empty() || n.is_one() || n.is_probable_prime() > 0) {
+            return std::nullopt;
+        }
+
+        thread_local BatchContext cached_ctx = [] {
+            Config cfg;
+            cfg.num_curves = 0;
+            cfg.B1 = 2000;
+            cfg.B2 = 50000;
+            cfg.auto_params = false;
+            cfg.brent_suyama_degree = 0;
+            return prepare_batch(cfg, DeterministicCurveSchedule{});
+        }();
+
+        cached_ctx.sigma_pool = schedule.sigmas;
+        cached_ctx.brent_suyama_degree = brent_suyama_degree;
+        return factor_with_batch(n, cached_ctx);
     }
 
     /// 共享上下文 — 跨多个 cofactor 复用的 N-independent 数据
@@ -259,6 +307,17 @@ public:
     }
 
 private:
+    [[nodiscard]] static DeterministicCurveSchedule
+    make_seed256_curve_schedule(uint32_t num_curves, const CofactorSeed256& seed) {
+        DeterministicCurveSchedule schedule;
+        schedule.sigmas.reserve(num_curves);
+
+        for (uint32_t curve = 0; curve < num_curves; ++curve) {
+            schedule.sigmas.push_back((cofactor_random_u64(seed, curve) % 1'000'000) + 6);
+        }
+        return schedule;
+    }
+
     static void validate_deterministic_curve_schedule(const DeterministicCurveSchedule& schedule) {
         for (uint64_t sigma : schedule.sigmas) {
             if (sigma < 6 || sigma > 1'000'005) {

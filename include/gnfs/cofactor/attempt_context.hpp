@@ -13,6 +13,23 @@ enum class CofactorSide : std::uint8_t {
     algebraic = 1,
 };
 
+/// Algorithm families that may request deterministic cofactor randomness.
+///
+/// Values are protocol identities. Additions require a versioned contract
+/// review instead of reusing an existing value for a different algorithm.
+/// This is a cofactor-provider-local namespace; adapters must map other
+/// protocol domains explicitly and must not rely on numeric casts.
+enum class CofactorRandomDomainV1 : std::uint8_t {
+    brent_pollard_rho = 1,
+    ecm_curve_schedule = 2,
+};
+
+/// SHA-256 ordinal stream -> `(draw % 1'000'000) + 6` ECM sigma mapping.
+///
+/// Increment this identity whenever the draw interpretation, curve ordinal
+/// mapping, modulus, or sigma offset changes.
+inline constexpr std::uint32_t COFACTOR_ECM_CURVE_SCHEDULE_ALGORITHM_IDENTITY_V1 = 1;
+
 struct CofactorAttemptCoordinates final {
     std::uint64_t special_q_index = 0;
     std::uint64_t candidate_ordinal = 0;
@@ -34,6 +51,8 @@ struct CofactorAttemptContext final {
     CofactorAttemptCoordinates coordinates{};
     CofactorSide side = CofactorSide::rational;
     util::Sha256Digest cofactor_digest{};
+    CofactorRandomDomainV1 domain = CofactorRandomDomainV1::brent_pollard_rho;
+    std::uint32_t algorithm_identity = 0;
     CofactorSeed256 seed{};
 
     [[nodiscard]] friend constexpr bool

@@ -23,6 +23,10 @@
 
 namespace {
 
+using gnfs::cofactor::COFACTOR_ECM_CURVE_SCHEDULE_ALGORITHM_IDENTITY_V1;
+using gnfs::cofactor::CofactorAttemptContext;
+using gnfs::cofactor::CofactorRandomDomainV1;
+using gnfs::cofactor::CofactorSeed256;
 using gnfs::cofactor::ECM;
 using gnfs::core::Integer;
 using gnfs::tests::support::ScopedEnvironmentVariable;
@@ -67,6 +71,38 @@ constexpr std::array<std::uint64_t, CURVE_COUNT> SEED_ZERO_SIGMA_GOLDEN{{
     517895,
 }};
 
+// Frozen with an independent Python hashlib.sha256 oracle over
+// "GNFS-COFACTOR-RANDOM-STREAM-V1" || seed32 || ordinal:u64be.
+constexpr std::array<std::uint64_t, CURVE_COUNT> SEED256_ZERO_SIGMA_GOLDEN{{
+    244930,
+    913558,
+    192393,
+    763259,
+    504030,
+    522198,
+    673080,
+    257794,
+    665278,
+    213270,
+    28075,
+    76740,
+    438597,
+    329181,
+    109172,
+    381281,
+}};
+
+constexpr std::array<std::uint64_t, 8> SEED256_RANGE_SIGMA_GOLDEN{{
+    901459,
+    564085,
+    435174,
+    710621,
+    822462,
+    308930,
+    400042,
+    46590,
+}};
+
 [[nodiscard]] ECM::Config make_config(std::uint32_t num_curves = CURVE_COUNT,
                                       std::uint32_t brent_suyama_degree = 0) {
     ECM::Config config;
@@ -76,6 +112,14 @@ constexpr std::array<std::uint64_t, CURVE_COUNT> SEED_ZERO_SIGMA_GOLDEN{{
     config.auto_params = false;
     config.brent_suyama_degree = brent_suyama_degree;
     return config;
+}
+
+[[nodiscard]] CofactorAttemptContext make_ecm_attempt(CofactorSeed256 seed) {
+    CofactorAttemptContext attempt{};
+    attempt.domain = CofactorRandomDomainV1::ecm_curve_schedule;
+    attempt.algorithm_identity = COFACTOR_ECM_CURVE_SCHEDULE_ALGORITHM_IDENTITY_V1;
+    attempt.seed = seed;
+    return attempt;
 }
 
 [[nodiscard]] std::vector<std::uint64_t> local_schedule_oracle(std::uint32_t count,
@@ -178,6 +222,63 @@ void test_seed_repetition_and_cross_thread_exactness() {
     CHECK(seed_one.sigmas != seed_zero.sigmas);
 }
 
+void test_seed256_full_width_goldens_and_cross_thread_exactness() {
+    const CofactorSeed256 zero_seed{};
+    const CofactorAttemptContext zero_attempt = make_ecm_attempt(zero_seed);
+    const auto zero_schedule = ECM::make_deterministic_curve_schedule(CURVE_COUNT, zero_attempt);
+    CHECK(zero_schedule.sigmas == std::vector<std::uint64_t>(SEED256_ZERO_SIGMA_GOLDEN.begin(),
+                                                             SEED256_ZERO_SIGMA_GOLDEN.end()));
+
+    CofactorSeed256 range_seed{};
+    for (std::size_t index = 0; index < range_seed.digest.bytes.size(); ++index) {
+        range_seed.digest.bytes[index] = static_cast<std::byte>(index);
+    }
+    const CofactorAttemptContext range_attempt = make_ecm_attempt(range_seed);
+    const auto range_schedule =
+        ECM::make_deterministic_curve_schedule(SEED256_RANGE_SIGMA_GOLDEN.size(), range_attempt);
+    CHECK(range_schedule.sigmas == std::vector<std::uint64_t>(SEED256_RANGE_SIGMA_GOLDEN.begin(),
+                                                              SEED256_RANGE_SIGMA_GOLDEN.end()));
+
+    CofactorSeed256 last_byte_flipped = range_seed;
+    last_byte_flipped.digest.bytes.back() ^= std::byte{0x01};
+    const CofactorAttemptContext changed_attempt = make_ecm_attempt(last_byte_flipped);
+    const auto changed_schedule =
+        ECM::make_deterministic_curve_schedule(SEED256_RANGE_SIGMA_GOLDEN.size(), changed_attempt);
+    CHECK(changed_schedule.sigmas != range_schedule.sigmas);
+
+    constexpr std::size_t THREADS = 4;
+    std::array<std::future<ECM::DeterministicCurveSchedule>, THREADS> futures;
+    for (auto& future : futures) {
+        future = std::async(std::launch::async, [range_attempt] {
+            return ECM::make_deterministic_curve_schedule(SEED256_RANGE_SIGMA_GOLDEN.size(),
+                                                          range_attempt);
+        });
+    }
+    for (auto& future : futures) {
+        CHECK(future.get().sigmas == range_schedule.sigmas);
+    }
+
+    CHECK(ECM::make_deterministic_curve_schedule(0, range_attempt).sigmas.empty());
+    CHECK(
+        std::all_of(range_schedule.sigmas.begin(), range_schedule.sigmas.end(),
+                    [](std::uint64_t sigma) { return sigma >= MIN_SIGMA && sigma <= MAX_SIGMA; }));
+
+    CofactorAttemptContext wrong_domain = range_attempt;
+    wrong_domain.domain = CofactorRandomDomainV1::brent_pollard_rho;
+    expect_invalid_argument(
+        [&] { (void)ECM::make_deterministic_curve_schedule(CURVE_COUNT, wrong_domain); });
+
+    CofactorAttemptContext wrong_identity = range_attempt;
+    ++wrong_identity.algorithm_identity;
+    expect_invalid_argument(
+        [&] { (void)ECM::make_deterministic_curve_schedule(CURVE_COUNT, wrong_identity); });
+
+    CofactorAttemptContext unbound = range_attempt;
+    unbound.algorithm_identity = 0;
+    expect_invalid_argument(
+        [&] { (void)ECM::make_deterministic_curve_schedule(CURVE_COUNT, unbound); });
+}
+
 void test_legacy_nonzero_seed_matches_explicit_schedule() {
     constexpr std::uint64_t seed = 0x1234'5678'9abc'def0ULL;
     const ECM::Config config = make_config();
@@ -217,6 +318,31 @@ void test_explicit_factor_matches_same_schedule_batch() {
     CHECK(context.sigma_pool == schedule.sigmas);
     CHECK(same_optional_integer(direct, from_context));
     check_valid_factor(n, direct);
+}
+
+void test_deterministic_quick_factor_is_explicit_and_cached() {
+    const Integer n("2261419229");
+    const auto schedule = ECM::make_deterministic_curve_schedule(CURVE_COUNT, 0);
+    const ECM::Config config = make_config(CURVE_COUNT, 12);
+    const auto direct = ECM::factor(n, config, schedule);
+
+    const auto run_quick = [&](const char* ambient_enable, const char* ambient_degree) {
+        ScopedEnvironmentVariable enable("GNFS_ECM_BRENT_SUYAMA", ambient_enable);
+        ScopedEnvironmentVariable degree("GNFS_ECM_BS_DEGREE", ambient_degree);
+        return ECM::quick_factor(n, schedule, 12);
+    };
+    const auto disabled = run_quick("0", "30");
+    const auto conflicting = run_quick("1", "2");
+
+    CHECK(same_optional_integer(disabled, direct));
+    CHECK(same_optional_integer(conflicting, direct));
+    check_valid_factor(n, disabled);
+
+    ECM::DeterministicCurveSchedule empty;
+    CHECK(!ECM::quick_factor(n, empty, 0).has_value());
+    CHECK(!ECM::quick_factor(Integer(1), schedule, 0).has_value());
+    CHECK(!ECM::quick_factor(Integer("6700417"), schedule, 0).has_value());
+    expect_invalid_argument([&] { (void)ECM::quick_factor(n, schedule, 3); });
 }
 
 struct ExplicitRun {
@@ -317,10 +443,14 @@ int main() {
         run_test("seed zero exact ordered golden", test_seed_zero_exact_ordered_golden);
         run_test("seed repeat and cross-thread exactness",
                  test_seed_repetition_and_cross_thread_exactness);
+        run_test("Seed256 full-width goldens and cross-thread exactness",
+                 test_seed256_full_width_goldens_and_cross_thread_exactness);
         run_test("legacy nonzero seed parity", test_legacy_nonzero_seed_matches_explicit_schedule);
         run_test("schedule order/count authority", test_schedule_is_order_and_count_authority);
         run_test("explicit factor and batch parity",
                  test_explicit_factor_matches_same_schedule_batch);
+        run_test("deterministic quick factor explicit cache",
+                 test_deterministic_quick_factor_is_explicit_and_cached);
         run_test("explicit Brent ambient isolation",
                  test_explicit_factor_ignores_brent_ambient_flip);
         run_test("empty/identity/prime boundaries",
