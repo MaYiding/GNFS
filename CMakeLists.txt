@@ -288,7 +288,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/lattice_sieve.cpp")
 endif()
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/distributed_sieve.cpp")
-    target_sources(gnfs_core PRIVATE src/sieve/distributed_sieve.cpp)
+    target_sources(gnfs_core PRIVATE
+        src/sieve/distributed_sieve.cpp
+        src/sieve/distributed_sieve_worker_process.cpp
+    )
 endif()
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/distributed_sieve_protocol.cpp")
@@ -972,6 +975,31 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_distributed_sieve PRIVATE gnfs_core Threads::Threads)
     add_test(NAME DistributedSieve COMMAND test_distributed_sieve)
     set_tests_properties(DistributedSieve PROPERTIES LABELS "fast" TIMEOUT 180)
+
+    add_executable(test_distributed_sieve_worker_process
+        tests/test_distributed_sieve_worker_process.cpp
+    )
+    add_executable(distributed_sieve_worker_process_fake_child
+        tests/support/distributed_sieve_worker_process_fake_child.cpp
+    )
+    target_include_directories(test_distributed_sieve_worker_process PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sieve
+    )
+    target_link_libraries(test_distributed_sieve_worker_process
+        PRIVATE gnfs_core Threads::Threads)
+    add_dependencies(
+        test_distributed_sieve_worker_process
+        distributed_sieve_worker_process_fake_child
+    )
+    add_test(
+        NAME DistributedSieveWorkerProcess
+        COMMAND test_distributed_sieve_worker_process
+                $<TARGET_FILE:distributed_sieve_worker_process_fake_child>
+    )
+    set_tests_properties(
+        DistributedSieveWorkerProcess
+        PROPERTIES LABELS "instant" TIMEOUT 20
+    )
 
     add_executable(test_distributed_sieve_execution_policy
         tests/test_distributed_sieve_execution_policy.cpp

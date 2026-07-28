@@ -110,8 +110,44 @@ DURABLE_ENVIRONMENT_FREE_FILES = {
     "src/sieve/distributed_sieve_protocol.cpp",
     "src/sieve/distributed_sieve_resume.cpp",
     "src/sieve/distributed_sieve_seed_v2.cpp",
+    "src/sieve/distributed_sieve_worker_process.cpp",
+    "src/sieve/distributed_sieve_worker_process_internal.hpp",
     "include/gnfs/sieve/distributed_sieve_seed_v2.hpp",
 }
+
+WORKER_PROCESS_TRANSPORT_FILE = "src/sieve/distributed_sieve_worker_process.cpp"
+WORKER_PROCESS_TRANSPORT_FILES = {
+    WORKER_PROCESS_TRANSPORT_FILE,
+    "src/sieve/distributed_sieve_worker_process_internal.hpp",
+}
+WORKER_PROCESS_LEGACY_FILE = "src/sieve/distributed_sieve.cpp"
+WORKER_PROCESS_POLICY_PREFIXES = (
+    "include/gnfs/sieve/",
+    "src/sieve/",
+)
+WORKER_PROCESS_DIRECT_CALL_ALLOWLIST = {
+    "posix_spawn": {WORKER_PROCESS_TRANSPORT_FILE},
+    "fork": {WORKER_PROCESS_LEGACY_FILE},
+    "waitpid": {
+        WORKER_PROCESS_LEGACY_FILE,
+        WORKER_PROCESS_TRANSPORT_FILE,
+    },
+}
+WORKER_PROCESS_REQUIRED_DIRECT_CALLS = {
+    (WORKER_PROCESS_TRANSPORT_FILE, "posix_spawn"): 1,
+    (WORKER_PROCESS_TRANSPORT_FILE, "waitpid"): 1,
+    (WORKER_PROCESS_LEGACY_FILE, "fork"): 1,
+    (WORKER_PROCESS_LEGACY_FILE, "waitpid"): 1,
+}
+WORKER_PROCESS_FORBIDDEN_PROCESS_IDENTIFIERS = (
+    "_Fork",
+    "vfork",
+    "posix_spawnp",
+    "waitid",
+    "wait3",
+    "wait4",
+)
+WORKER_PROCESS_TRANSPORT_FORBIDDEN_IDENTIFIERS = ("environ",)
 
 # Code-token bans close indirect ambient-policy entrances that do not contain
 # getenv/random_device themselves. The runtime mapper is deliberately a pure
@@ -662,6 +698,9 @@ class Checks:
         self.random_device_counts = {
             relative: 0 for relative in LEGACY_RANDOM_DEVICE_USES
         }
+        self.worker_process_call_counts = {
+            key: 0 for key in WORKER_PROCESS_REQUIRED_DIRECT_CALLS
+        }
 
     def fail(self, relative: str, line: int, message: str) -> None:
         self.errors.append(f"{relative}:{line}: {message}")
@@ -762,6 +801,58 @@ class Checks:
                     relative,
                     use.line,
                     f"pure runtime mapper must not call legacy runtime API {identifier}",
+                )
+
+    def validate_worker_process_transport_boundary(
+        self, relative: str, text: str
+    ) -> None:
+        if not relative.startswith(WORKER_PROCESS_POLICY_PREFIXES):
+            return
+
+        for identifier, allowed_files in WORKER_PROCESS_DIRECT_CALL_ALLOWLIST.items():
+            uses = find_code_identifier_uses(text, identifier)
+            calls = find_call_identifier_uses(text, identifier)
+            if relative not in allowed_files:
+                for use in uses:
+                    self.fail(
+                        relative,
+                        use.line,
+                        f"production {identifier} authority belongs only to "
+                        f"{', '.join(sorted(allowed_files))}",
+                    )
+                continue
+            count_key = (relative, identifier)
+            if count_key in self.worker_process_call_counts:
+                self.worker_process_call_counts[count_key] += len(calls)
+            if len(uses) != len(calls):
+                non_call_offsets = {
+                    use.offset
+                    for use in find_non_call_identifier_uses(text, identifier)
+                }
+                for use in uses:
+                    if use.offset in non_call_offsets:
+                        self.fail(
+                            relative,
+                            use.line,
+                            f"{identifier} authority must be used only as a direct call",
+                        )
+
+        for identifier in WORKER_PROCESS_FORBIDDEN_PROCESS_IDENTIFIERS:
+            for use in find_code_identifier_uses(text, identifier):
+                self.fail(
+                    relative,
+                    use.line,
+                    f"sieve process policy forbids alternate API {identifier}",
+                )
+
+        if relative not in WORKER_PROCESS_TRANSPORT_FILES:
+            return
+        for identifier in WORKER_PROCESS_TRANSPORT_FORBIDDEN_IDENTIFIERS:
+            for use in find_code_identifier_uses(text, identifier):
+                self.fail(
+                    relative,
+                    use.line,
+                    f"self-exec process transport must not use {identifier}",
                 )
 
     def validate_legacy_pipeline_boundary(self, text: str) -> None:
@@ -1058,6 +1149,7 @@ class Checks:
                 self.fail(relative, line, error)
             self.validate_getenv_identifier_uses(relative, text, calls)
             self.validate_durable_ambient_api_uses(relative, text)
+            self.validate_worker_process_transport_boundary(relative, text)
             if relative == EXECUTION_POLICY_ENVIRONMENT_ADAPTER:
                 self.validate_environment_adapter(text, calls)
             for call in calls:
@@ -1111,6 +1203,16 @@ class Checks:
                     relative,
                     1,
                     f"legacy random_device allowlist expects exactly {expected} uses, found {count}",
+                )
+
+        for (relative, identifier), expected in WORKER_PROCESS_REQUIRED_DIRECT_CALLS.items():
+            count = self.worker_process_call_counts[(relative, identifier)]
+            if count != expected:
+                self.fail(
+                    relative,
+                    1,
+                    f"process policy requires exactly "
+                    f"{expected} direct {identifier} call, found {count}",
                 )
 
         observed_flags = {
@@ -1196,6 +1298,109 @@ const char* direct = std::getenv("GNFS_LATTICE_LLL");
         ],
         f"getenv alias/function-pointer reference was not rejected: "
         f"{alias_checks.errors}",
+    )
+
+    transport_checks = Checks(Path("."))
+    transport_checks.validate_worker_process_transport_boundary(
+        WORKER_PROCESS_TRANSPORT_FILE,
+        r'''
+// posix_spawn(); waitpid(); fork(); environ;
+const char* text = "posix_spawn(); waitpid(); fork(); environ;";
+const auto spawn_result = ::posix_spawn(&child, path, &actions, &attributes, argv, envp);
+const auto observed = ::waitpid(child, &status, 0);
+''',
+    )
+    expect(
+        not transport_checks.errors
+        and transport_checks.worker_process_call_counts[
+            (WORKER_PROCESS_TRANSPORT_FILE, "posix_spawn")
+        ]
+        == 1
+        and transport_checks.worker_process_call_counts[
+            (WORKER_PROCESS_TRANSPORT_FILE, "waitpid")
+        ]
+        == 1,
+        "source-private posix_spawn/waitpid direct calls were not counted exactly once",
+    )
+
+    leaked_transport_checks = Checks(Path("."))
+    leaked_transport_checks.validate_worker_process_transport_boundary(
+        "src/sieve/other.cpp",
+        "const auto spawn_result = ::posix_spawn("
+        "&child, path, &actions, &attributes, argv, envp);\n",
+    )
+    expect(
+        leaked_transport_checks.errors
+        == [
+            "src/sieve/other.cpp:1: production posix_spawn authority belongs only to "
+            "src/sieve/distributed_sieve_worker_process.cpp"
+        ],
+        "posix_spawn authority outside the source-private transport was not rejected",
+    )
+
+    aliased_transport_checks = Checks(Path("."))
+    aliased_transport_checks.validate_worker_process_transport_boundary(
+        WORKER_PROCESS_TRANSPORT_FILE,
+        "const auto waiter = ::waitpid;\n",
+    )
+    expect(
+        aliased_transport_checks.errors
+        == [
+            "src/sieve/distributed_sieve_worker_process.cpp:1: "
+            "waitpid authority must be used only as a direct call"
+        ],
+        "waitpid function-pointer alias inside the transport was not rejected",
+    )
+
+    forbidden_transport_checks = Checks(Path("."))
+    forbidden_transport_checks.validate_worker_process_transport_boundary(
+        WORKER_PROCESS_TRANSPORT_FILE,
+        "const auto child = ::fork();\n"
+        "char** inherited_environment = environ;\n",
+    )
+    expect(
+        forbidden_transport_checks.errors
+        == [
+            "src/sieve/distributed_sieve_worker_process.cpp:1: "
+            "production fork authority belongs only to "
+            "src/sieve/distributed_sieve.cpp",
+            "src/sieve/distributed_sieve_worker_process.cpp:2: "
+            "self-exec process transport must not use environ",
+        ],
+        "raw fork or inherited environment inside the transport was not rejected",
+    )
+
+    alternate_process_checks = Checks(Path("."))
+    alternate_process_checks.validate_worker_process_transport_boundary(
+        "include/gnfs/sieve/other.hpp",
+        "const auto a = ::_Fork();\n"
+        "const auto b = ::vfork();\n"
+        "const auto c = ::posix_spawnp(&pid, name, actions, attrs, argv, envp);\n"
+        "const auto d = ::waitid(P_PID, pid, &status, WEXITED);\n"
+        "const auto e = ::wait3(&status, 0, nullptr);\n"
+        "const auto f = ::wait4(pid, &status, 0, nullptr);\n",
+    )
+    expect(
+        len(alternate_process_checks.errors) == 6
+        and all(
+            "sieve process policy forbids alternate API" in error
+            for error in alternate_process_checks.errors
+        ),
+        "alternate spawn/fork/wait APIs or public sieve-header uses were not rejected",
+    )
+
+    header_spawn_checks = Checks(Path("."))
+    header_spawn_checks.validate_worker_process_transport_boundary(
+        "include/gnfs/sieve/other.hpp",
+        "const auto spawned = ::posix_spawn(&pid, path, actions, attrs, argv, envp);\n",
+    )
+    expect(
+        header_spawn_checks.errors
+        == [
+            "include/gnfs/sieve/other.hpp:1: production posix_spawn authority "
+            "belongs only to src/sieve/distributed_sieve_worker_process.cpp"
+        ],
+        "public sieve-header posix_spawn authority was not rejected",
     )
 
     categories, category_errors = build_flag_categories()

@@ -1854,5 +1854,39 @@ after full prefix validation on both appendable and finalized paths; recovery
 must reject at the namespace commit boundary without mutating either object.
 
 After the relation module and deep dependency gate pass, the next durable
-execution milestone moves fork into the sole admitted WaveStore start-receipt
-consumer.
+execution milestone makes one self-exec launcher the sole admitted WaveStore
+start-receipt consumer.
+
+### Source-Private Worker Process Transport Status
+
+The distributed sieve now has a standalone source-private self-exec transport
+foundation. It does not run C++ callbacks between `fork()` and `exec()`.
+Preparation validates executable-path syntax, owns copied argv storage,
+allocates all bootstrap and report pipes, and prewrites each bounded bootstrap
+frame before the first `posix_spawn()` call. Executable-object authentication
+is not part of this foundation. The standard-stream contract gives a child its
+frame on standard input, its report channel on standard output, the
+launch-time open/closed snapshot of standard error, and an explicitly empty
+environment. The spawn path closes every foreign batch endpoint and a fixed
+caller-supplied descriptor inventory. Platforms with `closefrom` spawn actions
+additionally close all descriptors above standard error; other POSIX builds
+claim only the enumerated closure contract.
+
+The parent receives one move-only process token per successful slot. Its first
+non-`EINTR` wait observation is permanent. Only an exited or signaled child
+permits transfer of the report descriptor; stopped, continued, mismatched, or
+failed observations remain uncertain. Token destruction closes the report
+reader but never kills or reaps a child. The static policy gate grants
+`posix_spawn()` only to this source file, requires its direct spawn and wait
+calls exactly once, and rejects raw `fork()` or parent-environment access in
+the transport.
+
+This transport does not close the durable-launch milestone. The legacy path
+remains unchanged and still reserves and forks one slot at a time. The next
+slice must use the existing `AttemptStartedV1` as the durable job descriptor,
+define a bounded versioned bootstrap, and map four exact capabilities into
+fixed child descriptors: the wave-root directory, the permanent WaveStore lock
+with its same open-file-description, the attempt `BaseLock` with its same
+open-file-description, and an immutable work-package file. The exec image must
+import a writer-only private-lease capability, and WaveStore must become the
+sole start-receipt consumer.

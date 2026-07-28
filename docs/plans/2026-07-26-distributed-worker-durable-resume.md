@@ -2174,6 +2174,51 @@ also rejects any file that combines the projection with the legacy distributed
 runner. The first future production allowlist addition must therefore be the
 receipt-gated launcher itself.
 
+### M2f Source-Private Worker Process Transport Status
+
+The first M2f slice centralizes process creation without admitting durable
+work. Deep review rejected the initial generic post-`fork()` callback design:
+another host thread could hold a libc or C++ runtime lock, and a thread-count
+probe cannot make arbitrary child-side C++ async-signal-safe. The replacement
+is a standalone `posix_spawn()` self-exec transport. Preparation validates
+executable-path syntax, owns copied argv storage, creates every bootstrap and
+report channel, and prewrites every bounded bootstrap frame before the first
+spawn. Executable-object authentication remains a later launcher boundary.
+The standard-stream contract gives each child its frame on standard input, its
+report channel on standard output, the launch-time open/closed snapshot of
+standard error, and an explicitly empty environment. Spawn actions close all
+foreign batch endpoints and the caller's fixed descriptor inventory. Darwin
+additionally uses `POSIX_SPAWN_CLOEXEC_DEFAULT`; glibc 2.34 and newer uses a
+close-from action. Other POSIX builds deliberately claim only the enumerated
+closure contract.
+
+Each successful slot returns a move-only parent token. The first non-`EINTR`
+wait observation is sticky. Only `WIFEXITED` or `WIFSIGNALED` confirms reap
+and permits report-descriptor transfer; stopped, continued, mismatched, and
+failed observations preserve uncertainty. Destruction closes only the report
+reader and never kills or reaps the child. Domain policy such as
+seed-provider-fatal classification remains in the legacy runner.
+
+The legacy worker pool is intentionally not integrated with this foundation.
+It still performs per-slot lease reservation and raw fork immediately before
+each legacy worker and therefore does not satisfy the durable wave invariant.
+The policy checker reserves `posix_spawn()` for the new transport, requires
+its one direct spawn and wait call, and rejects both raw `fork()` and inherited
+environment access in that source file.
+
+The receipt-gated launcher remains the next slice. Existing
+`AttemptStartedV1` is the durable job descriptor; no parallel job record is
+introduced. The launcher must define a bounded versioned bootstrap, preserve
+all contexts and start receipts in stable preallocated slots, rerun bound-work
+validation immediately before consumption, and map four exact capabilities
+into fixed child descriptors: the wave-root directory, the permanent
+WaveStore lock with its same open-file-description, the attempt `BaseLock`
+with its same open-file-description, and the immutable work-package file. The
+report remains the standard-output channel. The exec image must adopt a
+writer-only lease capability from the inherited lock and bounded witness
+without reopening the path or reserving a second generic lease. WaveStore must
+be the only start-receipt consumer.
+
 Exit criterion: two masters cannot both act, and restart cannot exceed the
 manifest retry budget. This milestone remains test/internal and exposes no
 production durable flag.

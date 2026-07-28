@@ -352,6 +352,18 @@ receipt after its descriptor-bound read. The test does not claim that a
 completed worker can be adopted after a master crash; the current contract
 invalidates and recomputes the whole distributed wave.
 
+`test_distributed_sieve_worker_process` is the `instant` source-private
+self-exec transport contract. A dedicated helper image proves exact argument
+transfer, a prewritten bounded bootstrap frame on standard input, a report on
+standard output, an empty environment, and closure of the batch's foreign
+pipe endpoints plus the caller's explicit descriptor inventory. The parent
+also covers partial `posix_spawn()` failure without invalidating earlier
+tokens. Tokens are move-only, transfer the report descriptor only after a
+confirmed terminal reap, cache the first non-`EINTR` wait observation, and
+preserve uncertainty for stopped, mismatched, and `ECHILD` observations.
+Windows exercises the explicit unavailable result without claiming
+process-transport coverage.
+
 `test_distributed_sieve_resume` is a split protocol and WaveStore contract.
 `DistributedSieveResumeCore` remains an `instant` pure record, dependency, and
 compile-boundary test. It also compiles the source-private cleanup-authorization
