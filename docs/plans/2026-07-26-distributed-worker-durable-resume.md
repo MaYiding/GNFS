@@ -669,6 +669,19 @@ fail-closed until `Cofactorizer` has matching explicit seeded-runtime seams.
 This mapper is not enabled by the legacy `Pipeline`, which does not yet own a
 complete durable work identity.
 
+The POSIX worker pool now has a separate explicit-seed overload. It derives
+cofactor coordinates only from the global factor-base `SpecialQ::index` and
+the candidate's original vector ordinal, then passes one immutable provider
+through `fork` to the lazy seeded `Cofactorizer` path. Worker, chunk, PID, and
+attempt identities never enter a request. A provider exception exits the child
+through a dedicated fatal status: the parent first reaps and cleans the whole
+wave, skips ordinary retry and merge, and raises
+`DistributedSieveSeedProviderError`. Other seeded worker failures retain the
+bounded retry but cannot return a partial relation vector. The legacy overload
+retains its existing partial-worker-failure behavior. The runtime mapper is
+still deliberately not connected to a launch entry point until a complete
+durable work identity owns the call.
+
 `n` and `m` passed separately to `run_distributed_sieve` must exactly equal the
 polynomial context before any namespace mutation.
 

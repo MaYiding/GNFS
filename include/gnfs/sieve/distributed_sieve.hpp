@@ -12,10 +12,10 @@
 //   Master waitpid()s for all workers. Any worker that exits non-zero or with a
 //   signal, or whose finalized store cannot be read, triggers a single retry.
 //   The parent converges the prior exact lease before reserving a fresh
-//   generation for that range. After retry, an
-//   unrecoverable failure leaves the SQ range's relations missing from the
-//   merged output (warning logged, not fatal — the adaptive sieve loop above
-//   can compensate).
+//   generation for that range. In the legacy overload, an unrecoverable
+//   failure leaves the SQ range's relations missing from the merged output
+//   (warning logged, not fatal — the adaptive sieve loop above can
+//   compensate). The explicit seeded overload is all-or-error.
 //
 //   Each successful attempt is fully read and its lease is transactionally
 //   removed before the slot becomes successful. The master then concatenates
@@ -31,6 +31,7 @@
 // Not Windows-portable (acceptable for GNFS which already requires POSIX).
 
 #include "gnfs/cofactor/cofactorizer.hpp"
+#include "gnfs/cofactor/seed_provider.hpp"
 #include "gnfs/core/polynomial_context.hpp"
 #include "gnfs/core/relation.hpp"
 #include "gnfs/factor_base/factor_base.hpp"
@@ -44,6 +45,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -95,6 +97,31 @@ struct DistributedSieveWorkerResult {
     std::string ooc_base_path;  ///< Per-worker OOC base path.
 };
 
+/// A seed provider threw inside a child worker.
+///
+/// The original exception object cannot cross fork(), so the parent exposes
+/// the stable parent-side chunk and attempt coordinates instead.
+class DistributedSieveSeedProviderError final : public std::runtime_error {
+public:
+    DistributedSieveSeedProviderError(size_t chunk_id, size_t attempt_number)
+        : std::runtime_error("run_distributed_sieve: seed provider failed in chunk " +
+                             std::to_string(chunk_id) + " attempt " +
+                             std::to_string(attempt_number)),
+          chunk_id_(chunk_id), attempt_number_(attempt_number) {}
+
+    [[nodiscard]] size_t chunk_id() const noexcept {
+        return chunk_id_;
+    }
+
+    [[nodiscard]] size_t attempt_number() const noexcept {
+        return attempt_number_;
+    }
+
+private:
+    size_t chunk_id_;
+    size_t attempt_number_;
+};
+
 /// Run the sieve in num_workers child processes.
 /// Returns the merged relation vector (concatenation of all worker OOC stores).
 ///
@@ -123,6 +150,33 @@ struct DistributedSieveWorkerResult {
     const gnfs::factor_base::FactorBase& fb, const SieveParams& sieve_params,
     const SieveRegion& sieve_region, const gnfs::cofactor::CofactorizerConfig& cofac_config,
     const gnfs::core::Integer& n, const gnfs::core::Integer& m, const SpecialQRange& sq_range,
+    std::vector<DistributedSieveWorkerResult>* out_worker_stats = nullptr);
+
+/// Run the distributed sieve with explicit deterministic cofactor randomness.
+///
+/// Every seeded cofactor attempt uses coordinates
+/// `{SpecialQ::index, original candidate index in SieveResult::candidates}`.
+/// Worker/chunk identity and retry count never enter those coordinates, so
+/// changing process topology or replaying a failed worker does not perturb the
+/// seed schedule.
+///
+/// seed_provider must remain alive for the synchronous call and must be safe
+/// to invoke in a fork child. In particular, callers must not concurrently
+/// hold provider-internal locks across this call.
+///
+/// Unlike the legacy overload, this entry point is atomic with respect to
+/// worker success. A provider exception is never retried: the parent reaps the
+/// complete wave, cleans every removable lease, and throws
+/// DistributedSieveSeedProviderError. Any other non-empty worker failure still
+/// receives the bounded retry, then throws std::runtime_error instead of
+/// returning a partial relation vector. Neither path falls back to ambient
+/// randomness or unseeded cofactorization.
+[[nodiscard]] std::vector<gnfs::core::Relation> run_distributed_sieve(
+    const DistributedSieveConfig& cfg, const gnfs::core::PolynomialContext& ctx,
+    const gnfs::factor_base::FactorBase& fb, const SieveParams& sieve_params,
+    const SieveRegion& sieve_region, const gnfs::cofactor::CofactorizerConfig& cofac_config,
+    const gnfs::core::Integer& n, const gnfs::core::Integer& m, const SpecialQRange& sq_range,
+    const gnfs::cofactor::CofactorSeedProvider& seed_provider,
     std::vector<DistributedSieveWorkerResult>* out_worker_stats = nullptr);
 
 /// Parse `GNFS_DISTRIBUTED_SIEVE_WORKERS=N` (range [0, 64]).

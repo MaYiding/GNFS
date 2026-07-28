@@ -18,12 +18,16 @@ int main() {
 //   7. Descriptor- and sequence-bound reports expose counts and reject drift
 //   8. First-attempt and pending-handoff crashes recover through one retry
 //   9. Retry exhaustion removes owned leases without touching legacy leaves
+//  10. Seeded coordinates and request traces ignore worker topology and retry
+//  11. Seed-provider failures reap and clean the complete wave without merge
+//  12. Other seeded retry exhaustion is atomic while legacy behavior remains
 
 #include "gnfs/cofactor/cofactorizer.hpp"
 #include "gnfs/factor_base/builder.hpp"
 #include "gnfs/polynomial/base_m.hpp"
 #include "gnfs/relation/collector.hpp"
 #include "gnfs/relation/ooc_cleanup_transaction.hpp"
+#include "gnfs/relation/relation_sequence_receipt.hpp"
 #include "gnfs/sieve/distributed_sieve.hpp"
 #include "gnfs/sieve/lattice_sieve.hpp"
 #include "gnfs/sieve/special_q.hpp"
@@ -31,8 +35,11 @@ int main() {
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <chrono>
+#include <cstddef>
 #include <cstdlib>
+#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -42,6 +49,9 @@ int main() {
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <tuple>
+#include <type_traits>
 #include <unistd.h>
 #include <vector>
 
@@ -61,6 +71,7 @@ using gnfs::factor_base::FactorBase;
 using gnfs::factor_base::FactorBaseBuilder;
 using gnfs::polynomial::BaseMSelector;
 using gnfs::sieve::DistributedSieveConfig;
+using gnfs::sieve::DistributedSieveSeedProviderError;
 using gnfs::sieve::DistributedSieveWorkerResult;
 using gnfs::sieve::LatticeSieve;
 using gnfs::sieve::run_distributed_sieve;
@@ -139,6 +150,73 @@ struct Fixture {
     }
 };
 
+struct SeededFixture {
+    PolynomialContext ctx;
+    FactorBase fb;
+
+    SeededFixture() : ctx(make_ctx()), fb(build_fb(ctx)) {}
+
+    static PolynomialContext make_ctx() {
+        Integer input("93185905945582757");
+        input *= 15;
+        input += 1;
+
+        std::vector<Integer> coefficients;
+        coefficients.emplace_back(input);
+        coefficients.back().negate();
+        coefficients.emplace_back(1);
+        return PolynomialContext(Integer(3), std::move(coefficients), std::move(input));
+    }
+
+    static FactorBase build_fb(const PolynomialContext& ctx) {
+        FactorBaseBuilder::Options options;
+        options.rational_bound = 100;
+        options.algebraic_bound = 100;
+        options.special_q_bound = 200;
+        options.log_scale = 16;
+        options.parallel = false;
+        return FactorBaseBuilder::build(ctx, options);
+    }
+
+    SieveParams sieve_params() const {
+        SieveParams params;
+        params.log_scale = 16;
+        params.rational_threshold = 320;
+        params.algebraic_threshold = 320;
+        params.enable_2lp = true;
+        params.enable_3lp = false;
+        return params;
+    }
+
+    SieveRegion sieve_region() const {
+        SieveRegion region;
+        region.i_min = -100;
+        region.i_max = 100;
+        region.j_min = 1;
+        region.j_max = 50;
+        return region;
+    }
+
+    gnfs::cofactor::CofactorizerConfig cofac_config() const {
+        gnfs::cofactor::CofactorizerConfig config;
+        config.large_prime_bound = 500'000'000;
+        config.allow_1lp = true;
+        config.allow_2lp = true;
+        config.allow_3lp = false;
+        config.max_factorization_attempts = 50'000;
+        config.seeded_brent_pollard_enabled = true;
+        return config;
+    }
+
+    static SpecialQRange single_sq_range() {
+        return SpecialQRange::from_indices(1, 2);
+    }
+
+    static SpecialQRange topology_range() {
+        return SpecialQRange::from_indices(1, 4);
+    }
+};
+
 // Resolve an absolute temp path that distinguishes per test run / PID, so
 // concurrent ctest invocations cannot collide on stale files.
 std::string make_tmp_base(const std::string& tag) {
@@ -212,6 +290,183 @@ private:
     std::optional<std::string> previous_;
 };
 
+struct ForkSeedRecord final {
+    std::uint64_t special_q_index = 0;
+    std::uint64_t candidate_ordinal = 0;
+    std::uint8_t side = 0;
+    std::uint8_t domain = 0;
+    std::uint16_t reserved = 0;
+    std::uint32_t algorithm_identity = 0;
+    std::array<std::byte, 32> cofactor_digest{};
+    std::array<std::byte, 32> returned_seed{};
+
+    [[nodiscard]] friend bool operator==(const ForkSeedRecord&,
+                                         const ForkSeedRecord&) noexcept = default;
+};
+static_assert(std::is_trivially_copyable_v<ForkSeedRecord>);
+
+class ForkRecordingSeedProvider final : public gnfs::cofactor::CofactorSeedProvider {
+public:
+    explicit ForkRecordingSeedProvider(
+        std::string prefix, bool throw_after_record = false,
+        std::optional<std::uint64_t> throw_on_special_q_index = std::nullopt)
+        : prefix_(std::move(prefix)), throw_after_record_(throw_after_record),
+          throw_on_special_q_index_(throw_on_special_q_index) {}
+
+    [[nodiscard]] gnfs::cofactor::CofactorSeed256
+    seed_for(const gnfs::cofactor::CofactorSeedRequestV1& request) const override {
+        gnfs::cofactor::CofactorSeed256 seed{};
+        for (size_t index = 0; index < seed.digest.bytes.size(); ++index) {
+            seed.digest.bytes[index] = static_cast<std::byte>(index);
+        }
+
+        const ForkSeedRecord record{
+            .special_q_index = request.coordinates.special_q_index,
+            .candidate_ordinal = request.coordinates.candidate_ordinal,
+            .side = static_cast<std::uint8_t>(request.side),
+            .domain = static_cast<std::uint8_t>(request.domain),
+            .reserved = 0,
+            .algorithm_identity = request.algorithm_identity,
+            .cofactor_digest = request.cofactor_digest.bytes,
+            .returned_seed = seed.digest.bytes,
+        };
+        append_record(record);
+
+        if (throw_after_record_ &&
+            (!throw_on_special_q_index_ ||
+             request.coordinates.special_q_index == *throw_on_special_q_index_)) {
+            throw std::runtime_error("injected seed provider failure");
+        }
+        return seed;
+    }
+
+private:
+    void append_record(const ForkSeedRecord& record) const {
+        const std::string path = prefix_ + "." + std::to_string(::getpid()) + ".bin";
+        const int descriptor = ::open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0600);
+        if (descriptor < 0) {
+            throw std::system_error(errno, std::generic_category(), "open seed trace");
+        }
+
+        const auto* bytes = reinterpret_cast<const std::byte*>(&record);
+        size_t offset = 0;
+        int failure = 0;
+        while (offset < sizeof(record)) {
+            const ssize_t count = ::write(descriptor, bytes + offset, sizeof(record) - offset);
+            if (count > 0) {
+                offset += static_cast<size_t>(count);
+            } else if (count < 0 && errno == EINTR) {
+                continue;
+            } else {
+                failure = count == 0 ? EIO : errno;
+                break;
+            }
+        }
+        if (::close(descriptor) != 0 && failure == 0) {
+            failure = errno;
+        }
+        if (failure != 0) {
+            throw std::system_error(failure, std::generic_category(), "write seed trace");
+        }
+    }
+
+    std::string prefix_;
+    bool throw_after_record_ = false;
+    std::optional<std::uint64_t> throw_on_special_q_index_;
+};
+
+struct SeedTraceFile final {
+    std::filesystem::path path;
+    std::vector<ForkSeedRecord> records;
+};
+
+std::vector<SeedTraceFile> collect_seed_trace_files(const std::string& prefix) {
+    const std::filesystem::path prefix_path(prefix);
+    const std::filesystem::path directory = prefix_path.parent_path();
+    const std::string filename_prefix = prefix_path.filename().string() + ".";
+    std::vector<SeedTraceFile> traces;
+    for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+        const std::string filename = entry.path().filename().string();
+        if (!entry.is_regular_file() || !filename.starts_with(filename_prefix) ||
+            !filename.ends_with(".bin")) {
+            continue;
+        }
+
+        const auto byte_count = entry.file_size();
+        CHECK(byte_count % sizeof(ForkSeedRecord) == 0);
+        SeedTraceFile trace{.path = entry.path()};
+        trace.records.resize(byte_count / sizeof(ForkSeedRecord));
+        std::ifstream input(entry.path(), std::ios::binary);
+        CHECK(input.good());
+        input.read(reinterpret_cast<char*>(trace.records.data()),
+                   static_cast<std::streamsize>(byte_count));
+        CHECK(input.good());
+        traces.push_back(std::move(trace));
+    }
+    std::sort(traces.begin(), traces.end(),
+              [](const SeedTraceFile& left, const SeedTraceFile& right) {
+                  return left.path < right.path;
+              });
+    return traces;
+}
+
+class SeedTraceCleanup final {
+public:
+    explicit SeedTraceCleanup(std::string prefix) : prefix_(std::move(prefix)) {}
+
+    ~SeedTraceCleanup() {
+        const std::filesystem::path prefix_path(prefix_);
+        const std::filesystem::path directory = prefix_path.parent_path();
+        const std::string filename_prefix = prefix_path.filename().string() + ".";
+        std::error_code iterator_error;
+        std::filesystem::directory_iterator iterator(directory, iterator_error);
+        const std::filesystem::directory_iterator end;
+        while (!iterator_error && iterator != end) {
+            const auto path = iterator->path();
+            const std::string filename = path.filename().string();
+            if (filename.starts_with(filename_prefix) && filename.ends_with(".bin")) {
+                std::error_code remove_error;
+                (void)std::filesystem::remove(path, remove_error);
+            }
+            iterator.increment(iterator_error);
+        }
+    }
+
+    SeedTraceCleanup(const SeedTraceCleanup&) = delete;
+    SeedTraceCleanup& operator=(const SeedTraceCleanup&) = delete;
+
+private:
+    std::string prefix_;
+};
+
+[[nodiscard]] bool seed_record_less(const ForkSeedRecord& left,
+                                    const ForkSeedRecord& right) noexcept {
+    return std::tie(left.special_q_index, left.candidate_ordinal, left.side, left.domain,
+                    left.algorithm_identity, left.cofactor_digest, left.returned_seed) <
+           std::tie(right.special_q_index, right.candidate_ordinal, right.side, right.domain,
+                    right.algorithm_identity, right.cofactor_digest, right.returned_seed);
+}
+
+std::vector<ForkSeedRecord>
+flatten_and_sort_seed_records(const std::vector<SeedTraceFile>& traces) {
+    std::vector<ForkSeedRecord> records;
+    for (const auto& trace : traces) {
+        records.insert(records.end(), trace.records.begin(), trace.records.end());
+    }
+    std::sort(records.begin(), records.end(), seed_record_less);
+    return records;
+}
+
+void check_calibrated_seed_request(const ForkSeedRecord& record) {
+    CHECK(record.special_q_index == 1);
+    CHECK(record.candidate_ordinal == 5);
+    CHECK(record.side == static_cast<std::uint8_t>(gnfs::cofactor::CofactorSide::rational));
+    CHECK(record.domain ==
+          static_cast<std::uint8_t>(gnfs::cofactor::CofactorRandomDomainV1::brent_pollard_rho));
+    CHECK(record.algorithm_identity ==
+          gnfs::cofactor::COFACTOR_BRENT_POLLARD_RHO_SCHEDULE_ALGORITHM_IDENTITY_V1);
+}
+
 void write_text_file(const std::filesystem::path& path, std::string_view contents) {
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
     if (!output) {
@@ -236,6 +491,40 @@ std::string read_text_file(const std::filesystem::path& path) {
 const Fixture& shared_fixture() {
     static const Fixture fixture;
     return fixture;
+}
+
+const SeededFixture& shared_seeded_fixture() {
+    static const SeededFixture fixture;
+    return fixture;
+}
+
+struct SeededDistributedRun final {
+    std::vector<Relation> relations;
+    std::vector<DistributedSieveWorkerResult> stats;
+    std::vector<SeedTraceFile> traces;
+};
+
+SeededDistributedRun run_seeded_distributed(const SeededFixture& fixture,
+                                            const SpecialQRange& range, size_t num_workers,
+                                            const std::string& tag) {
+    ScopedEnvironment adaptive("GNFS_ADAPTIVE_LATTICE", "0");
+    ScopedEnvironment skew("GNFS_LATTICE_SKEW", "0");
+
+    DistributedSieveConfig config;
+    config.num_workers = num_workers;
+    config.base_path = make_tmp_base(tag);
+    const std::string trace_prefix = config.base_path + ".seedtrace";
+    const SeedTraceCleanup trace_cleanup(trace_prefix);
+    const ForkRecordingSeedProvider provider(trace_prefix);
+
+    SeededDistributedRun run;
+    run.relations = run_distributed_sieve(
+        config, fixture.ctx, fixture.fb, fixture.sieve_params(), fixture.sieve_region(),
+        fixture.cofac_config(), fixture.ctx.n(), fixture.ctx.m(), range, provider, &run.stats);
+    run.traces = collect_seed_trace_files(trace_prefix);
+    check_worker_leases_removed(config.base_path, config.num_workers);
+    cleanup_worker_test_artifacts(config.base_path, config.num_workers);
+    return run;
 }
 
 // Run the in-process baseline sieve (single thread, same SQ range) so the
@@ -800,7 +1089,251 @@ void test_legacy_worker_leaves_are_preserved() {
     std::cout << "PASS\n";
 }
 
-// ── Test 14: ENV-config end-to-end ─────────────────────────────────────
+void test_seeded_candidate_coordinates_are_semantic() {
+    std::cout << "[test_seeded_candidate_coordinates_are_semantic] ... " << std::flush;
+
+    const auto& fixture = shared_seeded_fixture();
+    SpecialQGenerator generator(fixture.fb, SeededFixture::single_sq_range());
+    const auto special_q = generator.next();
+    CHECK(special_q.has_value());
+    CHECK(special_q->q == 5);
+    CHECK(special_q->r == 1);
+    CHECK(special_q->index == 1);
+
+    auto run = run_seeded_distributed(fixture, SeededFixture::single_sq_range(), 1, "seededcoords");
+    CHECK(run.stats.size() == 1);
+    CHECK(run.stats[0].success);
+    CHECK(run.stats[0].attempt_count == 1);
+    CHECK(run.traces.size() == 1);
+    CHECK(run.traces[0].records.size() == 1);
+    check_calibrated_seed_request(run.traces[0].records[0]);
+    std::cout << "PASS\n";
+}
+
+void test_seeded_worker_topology_invariance() {
+    std::cout << "[test_seeded_worker_topology_invariance] ... " << std::flush;
+
+    const auto& fixture = shared_seeded_fixture();
+    auto one_worker =
+        run_seeded_distributed(fixture, SeededFixture::topology_range(), 1, "seededtopology1");
+    auto two_workers =
+        run_seeded_distributed(fixture, SeededFixture::topology_range(), 2, "seededtopology2");
+
+    const auto one_requests = flatten_and_sort_seed_records(one_worker.traces);
+    const auto two_requests = flatten_and_sort_seed_records(two_workers.traces);
+    CHECK(!one_requests.empty());
+    CHECK(one_requests == two_requests);
+    CHECK(gnfs::relation::relation_sequence_receipt(one_worker.relations) ==
+          gnfs::relation::relation_sequence_receipt(two_workers.relations));
+    CHECK(two_workers.stats.size() == 2);
+    CHECK(std::all_of(two_workers.stats.begin(), two_workers.stats.end(),
+                      [](const DistributedSieveWorkerResult& result) { return result.success; }));
+    CHECK(two_workers.stats[1].sq_index_begin == 3);
+    CHECK(two_workers.stats[1].sq_index_end == 4);
+    const std::string second_worker_suffix =
+        "." + std::to_string(two_workers.stats[1].pid) + ".bin";
+    const auto second_worker_trace = std::find_if(
+        two_workers.traces.begin(), two_workers.traces.end(), [&](const SeedTraceFile& trace) {
+            return trace.path.string().ends_with(second_worker_suffix);
+        });
+    CHECK(second_worker_trace != two_workers.traces.end());
+    CHECK(std::any_of(second_worker_trace->records.begin(), second_worker_trace->records.end(),
+                      [](const ForkSeedRecord& record) { return record.special_q_index == 3; }));
+
+    std::cout << "PASS\n";
+}
+
+void test_seeded_retry_replays_identical_requests() {
+    std::cout << "[test_seeded_retry_replays_identical_requests] ... " << std::flush;
+
+    const auto& fixture = shared_seeded_fixture();
+    auto baseline =
+        run_seeded_distributed(fixture, SeededFixture::single_sq_range(), 1, "seededretrybase");
+    CHECK(baseline.traces.size() == 1);
+    CHECK(!baseline.traces[0].records.empty());
+
+    ScopedEnvironment fail_pending("GNFS_DISTRIBUTED_SIEVE_FAIL_HANDOFF_PENDING_ATTEMPT_0", "1");
+    auto replay =
+        run_seeded_distributed(fixture, SeededFixture::single_sq_range(), 1, "seededretry");
+    CHECK(replay.stats.size() == 1);
+    CHECK(replay.stats[0].success);
+    CHECK(replay.stats[0].attempt_count == 2);
+    CHECK(replay.traces.size() == 2);
+    for (const auto& trace : replay.traces) {
+        CHECK(trace.records == baseline.traces[0].records);
+    }
+    CHECK(gnfs::relation::relation_sequence_receipt(replay.relations) ==
+          gnfs::relation::relation_sequence_receipt(baseline.relations));
+
+    std::cout << "PASS\n";
+}
+
+void test_seed_provider_failure_is_wave_fatal() {
+    std::cout << "[test_seed_provider_failure_is_wave_fatal] ... " << std::flush;
+
+    ScopedEnvironment adaptive("GNFS_ADAPTIVE_LATTICE", "0");
+    ScopedEnvironment skew("GNFS_LATTICE_SKEW", "0");
+    const auto& fixture = shared_seeded_fixture();
+    DistributedSieveConfig config;
+    config.num_workers = 1;
+    config.base_path = make_tmp_base("seedfatal");
+    const std::string trace_prefix = config.base_path + ".seedtrace";
+    const SeedTraceCleanup trace_cleanup(trace_prefix);
+    const ForkRecordingSeedProvider provider(trace_prefix, true);
+    std::vector<DistributedSieveWorkerResult> stats;
+
+    bool caught = false;
+    try {
+        (void)run_distributed_sieve(config, fixture.ctx, fixture.fb, fixture.sieve_params(),
+                                    fixture.sieve_region(), fixture.cofac_config(), fixture.ctx.n(),
+                                    fixture.ctx.m(), SeededFixture::single_sq_range(), provider,
+                                    &stats);
+    } catch (const DistributedSieveSeedProviderError& error) {
+        caught = true;
+        CHECK(error.chunk_id() == 0);
+        CHECK(error.attempt_number() == 1);
+    }
+    CHECK(caught);
+    CHECK(stats.size() == 1);
+    CHECK(!stats[0].success);
+    CHECK(stats[0].attempt_count == 1);
+    CHECK(stats[0].exit_status == 2);
+    const auto traces = collect_seed_trace_files(trace_prefix);
+    CHECK(traces.size() == 1);
+    CHECK(traces[0].records.size() == 1);
+    check_calibrated_seed_request(traces[0].records[0]);
+    check_worker_leases_removed(config.base_path, config.num_workers);
+    cleanup_worker_test_artifacts(config.base_path, config.num_workers);
+    std::cout << "PASS\n";
+}
+
+void test_seed_provider_failure_reaps_complete_wave() {
+    std::cout << "[test_seed_provider_failure_reaps_complete_wave] ... " << std::flush;
+
+    ScopedEnvironment adaptive("GNFS_ADAPTIVE_LATTICE", "0");
+    ScopedEnvironment skew("GNFS_LATTICE_SKEW", "0");
+    const auto& fixture = shared_seeded_fixture();
+    DistributedSieveConfig config;
+    config.num_workers = 2;
+    config.base_path = make_tmp_base("seedfatalwave");
+    const std::string trace_prefix = config.base_path + ".seedtrace";
+    const SeedTraceCleanup trace_cleanup(trace_prefix);
+    const ForkRecordingSeedProvider provider(trace_prefix, true, 1);
+    std::vector<DistributedSieveWorkerResult> stats;
+
+    bool caught = false;
+    try {
+        (void)run_distributed_sieve(config, fixture.ctx, fixture.fb, fixture.sieve_params(),
+                                    fixture.sieve_region(), fixture.cofac_config(), fixture.ctx.n(),
+                                    fixture.ctx.m(), SeededFixture::topology_range(), provider,
+                                    &stats);
+    } catch (const DistributedSieveSeedProviderError& error) {
+        caught = true;
+        CHECK(error.chunk_id() == 0);
+        CHECK(error.attempt_number() == 1);
+    }
+    CHECK(caught);
+    CHECK(stats.size() == 2);
+    CHECK(!stats[0].success);
+    CHECK(stats[1].success);
+    CHECK(stats[0].attempt_count == 1);
+    CHECK(stats[1].attempt_count == 1);
+    CHECK(stats[0].reap_confirmed);
+    CHECK(stats[1].reap_confirmed);
+    CHECK(stats[1].relations_count > 0);
+    CHECK(stats[0].merged_relations_count == 0);
+    CHECK(stats[1].merged_relations_count == 0);
+
+    const auto traces = collect_seed_trace_files(trace_prefix);
+    CHECK(traces.size() == 2);
+    const auto records = flatten_and_sort_seed_records(traces);
+    CHECK(std::any_of(records.begin(), records.end(),
+                      [](const ForkSeedRecord& record) { return record.special_q_index == 1; }));
+    CHECK(std::any_of(records.begin(), records.end(),
+                      [](const ForkSeedRecord& record) { return record.special_q_index == 3; }));
+    check_worker_leases_removed(config.base_path, config.num_workers);
+    cleanup_worker_test_artifacts(config.base_path, config.num_workers);
+    std::cout << "PASS\n";
+}
+
+void test_seed_provider_failure_on_retry_is_wave_fatal() {
+    std::cout << "[test_seed_provider_failure_on_retry_is_wave_fatal] ... " << std::flush;
+
+    ScopedEnvironment adaptive("GNFS_ADAPTIVE_LATTICE", "0");
+    ScopedEnvironment skew("GNFS_LATTICE_SKEW", "0");
+    ScopedEnvironment fail_first("GNFS_DISTRIBUTED_SIEVE_FAIL_ATTEMPT_0", "1");
+    const auto& fixture = shared_seeded_fixture();
+    DistributedSieveConfig config;
+    config.num_workers = 1;
+    config.base_path = make_tmp_base("seedfatalretry");
+    const std::string trace_prefix = config.base_path + ".seedtrace";
+    const SeedTraceCleanup trace_cleanup(trace_prefix);
+    const ForkRecordingSeedProvider provider(trace_prefix, true);
+    std::vector<DistributedSieveWorkerResult> stats;
+
+    bool caught = false;
+    try {
+        (void)run_distributed_sieve(config, fixture.ctx, fixture.fb, fixture.sieve_params(),
+                                    fixture.sieve_region(), fixture.cofac_config(), fixture.ctx.n(),
+                                    fixture.ctx.m(), SeededFixture::single_sq_range(), provider,
+                                    &stats);
+    } catch (const DistributedSieveSeedProviderError& error) {
+        caught = true;
+        CHECK(error.chunk_id() == 0);
+        CHECK(error.attempt_number() == 2);
+    }
+    CHECK(caught);
+    CHECK(stats.size() == 1);
+    CHECK(!stats[0].success);
+    CHECK(stats[0].attempt_count == 2);
+    CHECK(stats[0].exit_status == 2);
+    const auto traces = collect_seed_trace_files(trace_prefix);
+    CHECK(traces.size() == 1);
+    CHECK(traces[0].records.size() == 1);
+    check_calibrated_seed_request(traces[0].records[0]);
+    check_worker_leases_removed(config.base_path, config.num_workers);
+    cleanup_worker_test_artifacts(config.base_path, config.num_workers);
+    std::cout << "PASS\n";
+}
+
+void test_seeded_worker_retry_exhaustion_is_atomic() {
+    std::cout << "[test_seeded_worker_retry_exhaustion_is_atomic] ... " << std::flush;
+
+    ScopedEnvironment adaptive("GNFS_ADAPTIVE_LATTICE", "0");
+    ScopedEnvironment skew("GNFS_LATTICE_SKEW", "0");
+    ScopedEnvironment fail_all("GNFS_DISTRIBUTED_SIEVE_FAIL_ATTEMPT_0", "all");
+    const auto& fixture = shared_seeded_fixture();
+    DistributedSieveConfig config;
+    config.num_workers = 1;
+    config.base_path = make_tmp_base("seededretryexhausted");
+    const std::string trace_prefix = config.base_path + ".seedtrace";
+    const SeedTraceCleanup trace_cleanup(trace_prefix);
+    const ForkRecordingSeedProvider provider(trace_prefix);
+    std::vector<DistributedSieveWorkerResult> stats;
+
+    bool caught = false;
+    try {
+        (void)run_distributed_sieve(config, fixture.ctx, fixture.fb, fixture.sieve_params(),
+                                    fixture.sieve_region(), fixture.cofac_config(), fixture.ctx.n(),
+                                    fixture.ctx.m(), SeededFixture::single_sq_range(), provider,
+                                    &stats);
+    } catch (const DistributedSieveSeedProviderError&) {
+        throw std::runtime_error("ordinary seeded worker failure was misclassified as provider");
+    } catch (const std::runtime_error&) {
+        caught = true;
+    }
+    CHECK(caught);
+    CHECK(stats.size() == 1);
+    CHECK(!stats[0].success);
+    CHECK(stats[0].attempt_count == 2);
+    CHECK(stats[0].merged_relations_count == 0);
+    CHECK(collect_seed_trace_files(trace_prefix).empty());
+    check_worker_leases_removed(config.base_path, config.num_workers);
+    cleanup_worker_test_artifacts(config.base_path, config.num_workers);
+    std::cout << "PASS\n";
+}
+
+// ── Test 20: ENV-config end-to-end ─────────────────────────────────────
 // Exercises parse_distributed_sieve_env() path.
 void test_env_config_e2e() {
     std::cout << "[test_env_config_e2e] ... " << std::flush;
@@ -848,6 +1381,13 @@ int main() {
     test_corrupt_sequence_receipt_with_retry();
     test_worker_retry_exhaustion();
     test_legacy_worker_leaves_are_preserved();
+    test_seeded_candidate_coordinates_are_semantic();
+    test_seeded_worker_topology_invariance();
+    test_seeded_retry_replays_identical_requests();
+    test_seed_provider_failure_is_wave_fatal();
+    test_seed_provider_failure_reaps_complete_wave();
+    test_seed_provider_failure_on_retry_is_wave_fatal();
+    test_seeded_worker_retry_exhaustion_is_atomic();
     test_env_config_e2e();
 
     auto t1 = std::chrono::high_resolution_clock::now();

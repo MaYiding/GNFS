@@ -4,6 +4,7 @@
 
 #include "gnfs/sieve/distributed_sieve.hpp"
 
+#include "gnfs/cofactor/candidate_batch.hpp"
 #include "gnfs/cofactor/cofactorizer.hpp"
 #include "gnfs/relation/collector.hpp"
 #include "gnfs/relation/ooc_relation_store.hpp"
@@ -102,6 +103,18 @@ run_distributed_sieve(const DistributedSieveConfig& cfg, const gnfs::core::Polyn
         "run_distributed_sieve: POSIX fork workers are not available on Windows");
 }
 
+std::vector<gnfs::core::Relation>
+run_distributed_sieve(const DistributedSieveConfig& cfg, const gnfs::core::PolynomialContext& ctx,
+                      const gnfs::factor_base::FactorBase& fb, const SieveParams& sieve_params,
+                      const SieveRegion& sieve_region,
+                      const gnfs::cofactor::CofactorizerConfig& cofac_config,
+                      const gnfs::core::Integer& n, const gnfs::core::Integer& m,
+                      const SpecialQRange& sq_range, const gnfs::cofactor::CofactorSeedProvider&,
+                      std::vector<DistributedSieveWorkerResult>* out_worker_stats) {
+    return run_distributed_sieve(cfg, ctx, fb, sieve_params, sieve_region, cofac_config, n, m,
+                                 sq_range, out_worker_stats);
+}
+
 } // namespace gnfs::sieve
 
 #else
@@ -114,6 +127,48 @@ using gnfs::core::Integer;
 using gnfs::core::PolynomialContext;
 using gnfs::core::Relation;
 using gnfs::factor_base::FactorBase;
+
+inline constexpr int WORKER_EXIT_FAILURE = 1;
+inline constexpr int WORKER_EXIT_SEED_PROVIDER_FATAL = 2;
+
+class ChildSeedProviderBoundary final : public gnfs::cofactor::CofactorSeedProvider {
+public:
+    ChildSeedProviderBoundary(const gnfs::cofactor::CofactorSeedProvider& provider, size_t chunk_id,
+                              size_t attempt_number) noexcept
+        : provider_(provider), chunk_id_(chunk_id), attempt_number_(attempt_number) {}
+
+    [[nodiscard]] gnfs::cofactor::CofactorSeed256
+    seed_for(const gnfs::cofactor::CofactorSeedRequestV1& request) const override {
+        try {
+            return provider_.seed_for(request);
+        } catch (const std::exception& error) {
+            std::fprintf(stderr,
+                         "[dist_sieve.worker] chunk=%zu attempt=%zu seed provider failed "
+                         "sq=%llu candidate=%llu side=%u domain=%u algorithm=%u: %s\n",
+                         chunk_id_, attempt_number_,
+                         static_cast<unsigned long long>(request.coordinates.special_q_index),
+                         static_cast<unsigned long long>(request.coordinates.candidate_ordinal),
+                         static_cast<unsigned>(request.side), static_cast<unsigned>(request.domain),
+                         request.algorithm_identity, error.what());
+        } catch (...) {
+            std::fprintf(stderr,
+                         "[dist_sieve.worker] chunk=%zu attempt=%zu seed provider failed "
+                         "sq=%llu candidate=%llu side=%u domain=%u algorithm=%u: "
+                         "unknown exception\n",
+                         chunk_id_, attempt_number_,
+                         static_cast<unsigned long long>(request.coordinates.special_q_index),
+                         static_cast<unsigned long long>(request.coordinates.candidate_ordinal),
+                         static_cast<unsigned>(request.side), static_cast<unsigned>(request.domain),
+                         request.algorithm_identity);
+        }
+        ::_exit(WORKER_EXIT_SEED_PROVIDER_FATAL);
+    }
+
+private:
+    const gnfs::cofactor::CofactorSeedProvider& provider_;
+    size_t chunk_id_;
+    size_t attempt_number_;
+};
 
 /// Stable caller-visible root for one worker chunk.
 std::string worker_artifact_root(const std::string& base, size_t chunk_id) {
@@ -216,15 +271,14 @@ static_assert(sizeof(WorkerCompletionReport) <= PIPE_BUF);
 /// Exit codes:
 ///   0 = success, OOC store finalized with all relations
 ///   1 = failure (exception caught, or invariant violation)
-[[noreturn]] void child_worker_main(size_t chunk_id, uint32_t sq_begin, uint32_t sq_end,
-                                    size_t sq_per_worker_cap, size_t worker_collector_cap,
-                                    size_t attempt_number, const std::string& worker_base,
-                                    gnfs::relation::OOCPrivateLeaseOwnershipReceipt& private_lease,
-                                    int report_descriptor, const PolynomialContext& ctx,
-                                    const FactorBase& fb, const SieveParams& sieve_params,
-                                    const SieveRegion& sieve_region,
-                                    const gnfs::cofactor::CofactorizerConfig& cofac_config,
-                                    const Integer& n, const Integer& m) {
+///   2 = seed provider threw; fatal for the complete seeded wave
+[[noreturn]] void child_worker_main(
+    size_t chunk_id, uint32_t sq_begin, uint32_t sq_end, size_t sq_per_worker_cap,
+    size_t worker_collector_cap, size_t attempt_number, const std::string& worker_base,
+    gnfs::relation::OOCPrivateLeaseOwnershipReceipt& private_lease, int report_descriptor,
+    const PolynomialContext& ctx, const FactorBase& fb, const SieveParams& sieve_params,
+    const SieveRegion& sieve_region, const gnfs::cofactor::CofactorizerConfig& cofac_config,
+    const gnfs::cofactor::CofactorSeedProvider* seed_provider, const Integer& n, const Integer& m) {
     try {
         // ── Test/debug crash injection ────────────────────────────────
         // ENV `GNFS_DISTRIBUTED_SIEVE_FAIL_ATTEMPT_<chunk_id>=N` makes only
@@ -237,7 +291,7 @@ static_assert(sizeof(WorkerCompletionReport) <= PIPE_BUF);
                 (fail_on > 0 && static_cast<size_t>(fail_on) == attempt_number)) {
                 std::fprintf(stderr, "[dist_sieve.worker] chunk=%zu INJECTED FAIL on attempt %zu\n",
                              chunk_id, attempt_number);
-                ::_exit(1);
+                ::_exit(WORKER_EXIT_FAILURE);
             }
         }
 
@@ -259,6 +313,10 @@ static_assert(sizeof(WorkerCompletionReport) <= PIPE_BUF);
         LatticeSieve sieve(ctx, fb, sieve_params);
         sieve.set_region(sieve_region);
         gnfs::cofactor::Cofactorizer cofactorizer(ctx, fb, cofac_config);
+        std::optional<ChildSeedProviderBoundary> child_seed_provider;
+        if (seed_provider != nullptr) {
+            child_seed_provider.emplace(*seed_provider, chunk_id, attempt_number);
+        }
 
         size_t sq_count = 0;
         while (sq_gen.has_next()) {
@@ -272,8 +330,16 @@ static_assert(sizeof(WorkerCompletionReport) <= PIPE_BUF);
                 break;
 
             auto sieve_result = sieve.sieve_special_q(*sq);
-            for (const auto& cand : sieve_result.candidates) {
-                auto rel = cofactorizer.verify(cand, sq->q, sq->r);
+            for (size_t candidate_ordinal = 0; candidate_ordinal < sieve_result.candidates.size();
+                 ++candidate_ordinal) {
+                const auto& cand = sieve_result.candidates[candidate_ordinal];
+                auto rel =
+                    !child_seed_provider
+                        ? cofactorizer.verify(cand, sq->q, sq->r)
+                        : cofactorizer.verify(cand, sq->q, sq->r,
+                                              gnfs::cofactor::candidate_attempt_coordinates_v1(
+                                                  sieve_result, candidate_ordinal),
+                                              *child_seed_provider);
                 if (rel) {
                     collector.add(std::move(*rel));
                 }
@@ -348,10 +414,10 @@ static_assert(sizeof(WorkerCompletionReport) <= PIPE_BUF);
         ::_exit(0);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "[dist_sieve.worker] chunk=%zu EXCEPTION: %s\n", chunk_id, e.what());
-        ::_exit(1);
+        ::_exit(WORKER_EXIT_FAILURE);
     } catch (...) {
         std::fprintf(stderr, "[dist_sieve.worker] chunk=%zu UNKNOWN EXCEPTION\n", chunk_id);
-        ::_exit(1);
+        ::_exit(WORKER_EXIT_FAILURE);
     }
 }
 
@@ -368,8 +434,9 @@ SpawnedWorker spawn_worker(size_t chunk_id, uint32_t sq_begin, uint32_t sq_end,
                            gnfs::relation::OOCPrivateLeaseOwnershipReceipt& private_lease,
                            const PolynomialContext& ctx, const FactorBase& fb,
                            const SieveParams& sieve_params, const SieveRegion& sieve_region,
-                           const gnfs::cofactor::CofactorizerConfig& cofac_config, const Integer& n,
-                           const Integer& m) {
+                           const gnfs::cofactor::CofactorizerConfig& cofac_config,
+                           const gnfs::cofactor::CofactorSeedProvider* seed_provider,
+                           const Integer& n, const Integer& m) {
     int report_pipe[2]{-1, -1};
     if (::pipe(report_pipe) != 0) {
         throw std::runtime_error(std::string("distributed_sieve: pipe() failed: ") +
@@ -388,7 +455,7 @@ SpawnedWorker spawn_worker(size_t chunk_id, uint32_t sq_begin, uint32_t sq_end,
         // Child: run sieve, never returns.
         child_worker_main(chunk_id, sq_begin, sq_end, sq_per_worker_cap, worker_collector_cap,
                           attempt_number, worker_base, private_lease, report_pipe[1], ctx, fb,
-                          sieve_params, sieve_region, cofac_config, n, m);
+                          sieve_params, sieve_region, cofac_config, seed_provider, n, m);
     }
     (void)::close(report_pipe[1]);
     // Parent: return child PID.
@@ -398,12 +465,20 @@ SpawnedWorker spawn_worker(size_t chunk_id, uint32_t sq_begin, uint32_t sq_end,
     };
 }
 
+enum class WorkerAttemptFailureKind : std::uint8_t {
+    none = 0,
+    retryable = 1,
+    seed_provider_fatal = 2,
+    unreaped = 3,
+};
+
 struct WorkerWaitResult final {
     bool reaped = false;
     bool success = false;
     int exit_status = -1;
     int signal = 0;
     int native_error = 0;
+    WorkerAttemptFailureKind failure_kind = WorkerAttemptFailureKind::unreaped;
 };
 
 /// Wait for a single PID and decode the exit status. An uncertain waitpid
@@ -423,6 +498,7 @@ WorkerWaitResult wait_and_decode(pid_t pid) noexcept {
             .exit_status = -1,
             .signal = 0,
             .native_error = errno,
+            .failure_kind = WorkerAttemptFailureKind::unreaped,
         };
     }
     if (WIFEXITED(wstatus)) {
@@ -433,6 +509,10 @@ WorkerWaitResult wait_and_decode(pid_t pid) noexcept {
             .exit_status = status,
             .signal = 0,
             .native_error = 0,
+            .failure_kind = status == 0 ? WorkerAttemptFailureKind::none
+                                        : (status == WORKER_EXIT_SEED_PROVIDER_FATAL
+                                               ? WorkerAttemptFailureKind::seed_provider_fatal
+                                               : WorkerAttemptFailureKind::retryable),
         };
     }
     if (WIFSIGNALED(wstatus)) {
@@ -442,6 +522,7 @@ WorkerWaitResult wait_and_decode(pid_t pid) noexcept {
             .exit_status = -1,
             .signal = WTERMSIG(wstatus),
             .native_error = 0,
+            .failure_kind = WorkerAttemptFailureKind::retryable,
         };
     }
     return WorkerWaitResult{
@@ -450,6 +531,7 @@ WorkerWaitResult wait_and_decode(pid_t pid) noexcept {
         .exit_status = -1,
         .signal = 0,
         .native_error = 0,
+        .failure_kind = WorkerAttemptFailureKind::retryable,
     };
 }
 
@@ -529,11 +611,14 @@ DistributedSieveConfig parse_distributed_sieve_env() noexcept {
     return cfg;
 }
 
-std::vector<Relation> run_distributed_sieve(
+namespace {
+
+std::vector<Relation> run_distributed_sieve_impl(
     const DistributedSieveConfig& cfg, const PolynomialContext& ctx, const FactorBase& fb,
     const SieveParams& sieve_params, const SieveRegion& sieve_region,
     const gnfs::cofactor::CofactorizerConfig& cofac_config, const Integer& n, const Integer& m,
-    const SpecialQRange& sq_range, std::vector<DistributedSieveWorkerResult>* out_worker_stats) {
+    const SpecialQRange& sq_range, const gnfs::cofactor::CofactorSeedProvider* seed_provider,
+    bool require_all_workers_success, std::vector<DistributedSieveWorkerResult>* out_worker_stats) {
     if (cfg.num_workers == 0) {
         throw std::invalid_argument("run_distributed_sieve: num_workers must be > 0");
     }
@@ -607,6 +692,7 @@ std::vector<Relation> run_distributed_sieve(
         bool success = false;
         int exit_status = -1;
         int signal = 0;
+        WorkerAttemptFailureKind failure_kind = WorkerAttemptFailureKind::none;
     };
 
     const auto cleanup_attempt = [](WorkerSlot& slot) noexcept {
@@ -632,6 +718,7 @@ std::vector<Relation> run_distributed_sieve(
         slot.finished = false;
         slot.exit_status = -1;
         slot.signal = 0;
+        slot.failure_kind = WorkerAttemptFailureKind::none;
         slot.pid = -1;
         slot.sq_count = 0;
         slot.persisted_relation_count = 0;
@@ -660,10 +747,11 @@ std::vector<Relation> run_distributed_sieve(
         const size_t next_attempt_number = slot.attempt_count + 1;
 
         try {
-            const auto spawned = spawn_worker(
-                slot.chunk_id, slot.sq_begin, slot.sq_end, cfg.sq_per_worker,
-                cfg.worker_collector_cap, next_attempt_number, slot.worker_base,
-                *slot.private_lease, ctx, fb, sieve_params, sieve_region, cofac_config, n, m);
+            const auto spawned =
+                spawn_worker(slot.chunk_id, slot.sq_begin, slot.sq_end, cfg.sq_per_worker,
+                             cfg.worker_collector_cap, next_attempt_number, slot.worker_base,
+                             *slot.private_lease, ctx, fb, sieve_params, sieve_region, cofac_config,
+                             seed_provider, n, m);
             slot.pid = spawned.pid;
             slot.report_descriptor = spawned.report_descriptor;
             slot.attempt_count = next_attempt_number;
@@ -684,6 +772,7 @@ std::vector<Relation> run_distributed_sieve(
         slot.reap_confirmed = waited.reaped;
         slot.exit_status = waited.exit_status;
         slot.signal = waited.signal;
+        slot.failure_kind = waited.failure_kind;
         if (!waited.reaped) {
             if (slot.report_descriptor >= 0) {
                 (void)::close(slot.report_descriptor);
@@ -736,6 +825,9 @@ std::vector<Relation> run_distributed_sieve(
         const bool cleaned = cleanup_attempt(slot);
         slot.success = ok && cleaned;
         if (!slot.success) {
+            if (slot.failure_kind == WorkerAttemptFailureKind::none) {
+                slot.failure_kind = WorkerAttemptFailureKind::retryable;
+            }
             slot.relations.clear();
         }
         return slot.success;
@@ -777,17 +869,29 @@ std::vector<Relation> run_distributed_sieve(
         if (!finish_attempt(slot)) {
             std::fprintf(stderr,
                          "[dist_sieve.master] worker chunk=%zu pid=%d FAILED "
-                         "(exit=%d signal=%d), will retry\n",
-                         slot.chunk_id, static_cast<int>(slot.pid), slot.exit_status, slot.signal);
+                         "(exit=%d signal=%d), %s\n",
+                         slot.chunk_id, static_cast<int>(slot.pid), slot.exit_status, slot.signal,
+                         slot.failure_kind == WorkerAttemptFailureKind::seed_provider_fatal
+                             ? "seed provider failure is wave-fatal"
+                             : "will retry");
         }
     }
 
     // Stage 3: single retry for any failed worker. The retry runs sequentially
     // (we already have all CPUs from the first wave; a second wave doesn't
     // benefit from parallelism if only a few workers failed).
+    const auto seed_provider_failure = [&]() -> const WorkerSlot* {
+        const auto failed = std::find_if(slots.begin(), slots.end(), [](const WorkerSlot& slot) {
+            return slot.failure_kind == WorkerAttemptFailureKind::seed_provider_fatal;
+        });
+        return failed == slots.end() ? nullptr : &*failed;
+    };
     bool retries_reap_safe = std::all_of(
         slots.begin(), slots.end(), [](const WorkerSlot& slot) { return slot.reap_confirmed; });
     for (auto& slot : slots) {
+        if (seed_provider_failure() != nullptr) {
+            break;
+        }
         if (slot.success)
             continue;
         if (slot.sq_begin >= slot.sq_end)
@@ -805,9 +909,13 @@ std::vector<Relation> run_distributed_sieve(
                      slot.chunk_id, slot.sq_begin, slot.sq_end);
         if (!start_attempt(slot) || !finish_attempt(slot)) {
             std::fprintf(stderr,
-                         "[dist_sieve.master] retry FAILED chunk=%zu (exit=%d signal=%d), "
-                         "chunk contributes 0 relations\n",
-                         slot.chunk_id, slot.exit_status, slot.signal);
+                         "[dist_sieve.master] retry FAILED chunk=%zu (exit=%d signal=%d), %s\n",
+                         slot.chunk_id, slot.exit_status, slot.signal,
+                         require_all_workers_success ? "seeded run will fail"
+                                                     : "chunk contributes 0 relations");
+        }
+        if (slot.failure_kind == WorkerAttemptFailureKind::seed_provider_fatal) {
+            break;
         }
         if (!slot.reap_confirmed) {
             retries_reap_safe = false;
@@ -832,6 +940,16 @@ std::vector<Relation> run_distributed_sieve(
         out_worker_stats->reserve(slots.size());
 
     size_t dup_dropped = 0;
+    const WorkerSlot* fatal_seed_provider_slot = seed_provider_failure();
+    const WorkerSlot* failed_seeded_slot = nullptr;
+    if (require_all_workers_success) {
+        const auto failed = std::find_if(slots.begin(), slots.end(), [](const WorkerSlot& slot) {
+            return slot.sq_begin < slot.sq_end && !slot.success;
+        });
+        if (failed != slots.end()) {
+            failed_seeded_slot = &*failed;
+        }
+    }
     for (auto& slot : slots) {
         DistributedSieveWorkerResult res;
         res.pid = slot.pid;
@@ -847,7 +965,8 @@ std::vector<Relation> run_distributed_sieve(
         res.sq_count = slot.sq_count;
         res.relations_count = slot.persisted_relation_count;
 
-        if (slot.success && slot.sq_begin < slot.sq_end) {
+        if (fatal_seed_provider_slot == nullptr && failed_seeded_slot == nullptr && slot.success &&
+            slot.sq_begin < slot.sq_end) {
             size_t added = 0;
             merged.reserve(merged.size() + slot.relations.size());
             seen_ab.reserve(seen_ab.size() + slot.relations.size());
@@ -866,12 +985,49 @@ std::vector<Relation> run_distributed_sieve(
             out_worker_stats->push_back(std::move(res));
     }
 
+    if (fatal_seed_provider_slot != nullptr) {
+        std::fprintf(stderr,
+                     "[dist_sieve.master] aborted: seed provider failed chunk=%zu attempt=%zu\n",
+                     fatal_seed_provider_slot->chunk_id, fatal_seed_provider_slot->attempt_count);
+        throw DistributedSieveSeedProviderError{fatal_seed_provider_slot->chunk_id,
+                                                fatal_seed_provider_slot->attempt_count};
+    }
+    if (failed_seeded_slot != nullptr) {
+        std::fprintf(stderr,
+                     "[dist_sieve.master] aborted: seeded worker failed chunk=%zu attempts=%zu\n",
+                     failed_seeded_slot->chunk_id, failed_seeded_slot->attempt_count);
+        throw std::runtime_error("run_distributed_sieve: seeded worker chunk " +
+                                 std::to_string(failed_seeded_slot->chunk_id) +
+                                 " failed after bounded retry");
+    }
+
     std::fprintf(stderr,
                  "[dist_sieve.master] complete: merged %zu relations from %zu workers "
                  "(dup_dropped=%zu)\n",
                  merged.size(), slots.size(), dup_dropped);
 
     return merged;
+}
+
+} // namespace
+
+std::vector<Relation> run_distributed_sieve(
+    const DistributedSieveConfig& cfg, const PolynomialContext& ctx, const FactorBase& fb,
+    const SieveParams& sieve_params, const SieveRegion& sieve_region,
+    const gnfs::cofactor::CofactorizerConfig& cofac_config, const Integer& n, const Integer& m,
+    const SpecialQRange& sq_range, std::vector<DistributedSieveWorkerResult>* out_worker_stats) {
+    return run_distributed_sieve_impl(cfg, ctx, fb, sieve_params, sieve_region, cofac_config, n, m,
+                                      sq_range, nullptr, false, out_worker_stats);
+}
+
+std::vector<Relation> run_distributed_sieve(
+    const DistributedSieveConfig& cfg, const PolynomialContext& ctx, const FactorBase& fb,
+    const SieveParams& sieve_params, const SieveRegion& sieve_region,
+    const gnfs::cofactor::CofactorizerConfig& cofac_config, const Integer& n, const Integer& m,
+    const SpecialQRange& sq_range, const gnfs::cofactor::CofactorSeedProvider& seed_provider,
+    std::vector<DistributedSieveWorkerResult>* out_worker_stats) {
+    return run_distributed_sieve_impl(cfg, ctx, fb, sieve_params, sieve_region, cofac_config, n, m,
+                                      sq_range, &seed_provider, true, out_worker_stats);
 }
 
 } // namespace gnfs::sieve
