@@ -1925,7 +1925,32 @@ and trailer write boundaries, including partial short writes. The structural
 package ceiling is 739,266,647 bytes; the largest semantically valid package
 is 739,266,636 bytes.
 
-The next slice streams this envelope into an exact private attempt-directory
-inode, reopens it read-only, proves same-inode content, closes the writer once,
-unlinks the name, requires `nlink == 0`, syncs the directory, and returns only
-the retained read capability.
+### Anonymous Work-Package File Capability Status
+
+The source-private carrier now streams the prepared envelope into the fixed
+`.gnfs-worker-work-package-v1` leaf below a borrowed attempt-directory
+descriptor. It validates the held directory identity, owner, `0700` mode, and
+ACL state before exclusive creation. The writer starts at `0600`, uses a
+sticky 64KiB `pwrite()` buffer, seals to `0400`, synchronizes, and is rebound
+to a separately opened read-only descriptor. Writer, reader, and name must
+identify the same regular inode before the package is decoded.
+
+Success closes the writer exactly once, revalidates the reader and name,
+unlinks the fixed leaf, proves `nlink == 0`, decodes the retained inode again,
+synchronizes the same held directory, and performs a final anonymous-inode
+check. Production returns an opaque move-only token. The injected operation
+seam cannot mint that token and closes its reader before returning a data-only
+witness. Failure never unlinks opportunistically; diagnostics preserve both
+the primary error and any secondary close error, and report whether the named
+leaf may remain.
+
+This milestone is a standalone held-directory transaction on macOS and Linux.
+Windows returns an explicit unavailable result. It does not consume
+`AttemptStartedV1`, validate a manifest binding, map an exec descriptor, or
+grant launch authority. The future receipt-gated launcher must revalidate the
+start receipt before creation and again after successful unlink and directory
+synchronization. It must not invoke the receipt's full namespace scan while
+the fixed leaf is transiently named. WaveStore reconciliation remains
+responsible for fail-closed residue. The static policy gate admits the token
+and production factory only at their definition boundary and dedicated test;
+the receipt-gated launcher must be the first production allowlist expansion.

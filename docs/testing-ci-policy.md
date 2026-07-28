@@ -382,6 +382,20 @@ digests before invoking the identity decoder, so integrity-unbound counts
 cannot trigger destination allocation. Sink coverage includes partial
 short-write prefixes at the header, body, and trailer boundaries.
 
+`test_distributed_sieve_worker_work_package_file` is the `instant` anonymous
+work-package capability contract. The injected operation matrix covers the
+64KiB buffered writer, `EINTR`, short and zero writes, directory and file
+policy drift, exact-once close diagnostics, fixed-leaf conflicts, and package
+decode binding. Native macOS and Linux cases prove exclusive creation below a
+borrowed owner-only directory descriptor, read-only same-inode reopen,
+unlink-to-`nlink == 0`, directory synchronization, move-only token ownership,
+and retained-descriptor revalidation. On Windows the production entry covers
+only the explicit unavailable result; portable injected-state tests do not
+claim native anonymous file-capability support. The repository policy checker
+permits the token and production factory only in their definition boundary and
+this dedicated test. A future receipt-gated launcher requires an explicit
+allowlist expansion.
+
 `test_distributed_sieve_resume` is a split protocol and WaveStore contract.
 `DistributedSieveResumeCore` remains an `instant` pure record, dependency, and
 compile-boundary test. It also compiles the source-private cleanup-authorization

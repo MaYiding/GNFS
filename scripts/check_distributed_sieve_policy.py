@@ -114,6 +114,9 @@ DURABLE_ENVIRONMENT_FREE_FILES = {
     "src/sieve/distributed_sieve_work_identity_codec_internal.hpp",
     "src/sieve/distributed_sieve_work_package_codec.cpp",
     "src/sieve/distributed_sieve_work_package_codec_internal.hpp",
+    "src/sieve/distributed_sieve_worker_work_package_file.cpp",
+    "src/sieve/distributed_sieve_worker_work_package_file_internal.hpp",
+    "src/sieve/distributed_sieve_worker_work_package_file_ops_internal.hpp",
     "src/sieve/distributed_sieve_worker_process.cpp",
     "src/sieve/distributed_sieve_worker_process_internal.hpp",
     "include/gnfs/sieve/distributed_sieve_seed_v2.hpp",
@@ -221,6 +224,15 @@ BOUND_WORK_USE_SITE_ALLOWLIST = {
     "src/sieve/distributed_sieve_bound_work.cpp",
     "src/sieve/distributed_sieve_bound_work_internal.hpp",
     "tests/test_distributed_sieve_execution_policy.cpp",
+}
+WORK_PACKAGE_CARRIER_USE_SITE_IDENTIFIERS = (
+    "DistributedSieveWorkerWorkPackageFileV1",
+    "create_distributed_sieve_worker_work_package_file_v1",
+)
+WORK_PACKAGE_CARRIER_USE_SITE_ALLOWLIST = {
+    "src/sieve/distributed_sieve_worker_work_package_file.cpp",
+    "src/sieve/distributed_sieve_worker_work_package_file_internal.hpp",
+    "tests/test_distributed_sieve_worker_work_package_file.cpp",
 }
 LEGACY_PIPELINE_FILE = "src/api/pipeline.cpp"
 LEGACY_PIPELINE_DURABLE_FORBIDDEN_IDENTIFIERS = (
@@ -888,6 +900,20 @@ class Checks:
                     "bound-work projection must not coexist with the legacy seeded runner",
                 )
 
+    def validate_work_package_carrier_use_site(
+        self, relative: str, text: str
+    ) -> None:
+        if relative in WORK_PACKAGE_CARRIER_USE_SITE_ALLOWLIST:
+            return
+        for identifier in WORK_PACKAGE_CARRIER_USE_SITE_IDENTIFIERS:
+            for use in find_code_identifier_uses(text, identifier):
+                self.fail(
+                    relative,
+                    use.line,
+                    "anonymous work-package carrier authority is not "
+                    f"receipt-gated/allowlisted: {identifier}",
+                )
+
     def classify(self, relative: str, call: GetenvCall, categories: dict[str, str]) -> None:
         if relative == EXECUTION_POLICY_ENVIRONMENT_ADAPTER:
             literal = LITERAL_ARGUMENT.fullmatch(call.argument)
@@ -1175,6 +1201,7 @@ class Checks:
                 self.fail(relative, 1, f"cannot read bound-work use site: {exc}")
                 continue
             self.validate_bound_work_use_site(relative, text)
+            self.validate_work_package_carrier_use_site(relative, text)
 
         for entry, count in self.legacy_counts.items():
             if count != 1:
@@ -1789,6 +1816,34 @@ auto rows = run_distributed_sieve(config, context, factor_base, bound.sieve_para
         not allowed_use_site_checks.errors,
         f"allowlisted bound-work test use was rejected: "
         f"{allowed_use_site_checks.errors}",
+    )
+
+    carrier_use_site_checks = Checks(Path("."))
+    carrier_use_site_checks.validate_work_package_carrier_use_site(
+        "src/sieve/untrusted_launcher.cpp",
+        r'''
+DistributedSieveWorkerWorkPackageFileV1* token = nullptr;
+auto result = create_distributed_sieve_worker_work_package_file_v1(request, identity);
+''',
+    )
+    expect(
+        len(carrier_use_site_checks.errors) == 2
+        and all(
+            "carrier authority is not receipt-gated/allowlisted" in error
+            for error in carrier_use_site_checks.errors
+        ),
+        "anonymous work-package carrier use-site gate is not enforced",
+    )
+    allowed_carrier_checks = Checks(Path("."))
+    allowed_carrier_checks.validate_work_package_carrier_use_site(
+        "tests/test_distributed_sieve_worker_work_package_file.cpp",
+        "auto result = "
+        "create_distributed_sieve_worker_work_package_file_v1(request, identity);",
+    )
+    expect(
+        not allowed_carrier_checks.errors,
+        f"allowlisted work-package carrier test use was rejected: "
+        f"{allowed_carrier_checks.errors}",
     )
 
     pipeline_checks = Checks(Path("."))

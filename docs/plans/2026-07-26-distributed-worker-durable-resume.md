@@ -1,6 +1,7 @@
 # Distributed Sieve Durable Wave Resume
 
-Status: implementation in progress (M0 complete, M1 underway)
+Status: implementation in progress (M0 complete; M1 cleanup conversion and M2
+durable launcher integration underway)
 
 Branch: `codex/parallel-structured-filter`
 
@@ -137,7 +138,8 @@ Each record grants exactly one capability.
 |---|---|---|
 | `WaveManifestV1` | Exact wave identity and immutable chunk plan | Worker completion, cleanup, or retry success |
 | Durable private-lease reservation | One exact attempt or successor generation | Consumption of an attempt ordinal |
-| `AttemptStartedV1` | Consumption of one attempt ordinal | Proof that a child was forked or completed |
+| `AttemptStartedV1` | Consumption of one attempt ordinal | Proof that a child was launched or completed |
+| Opaque anonymous work-package token | Current-process retention of one exact read-only package inode and witness | Manifest binding, receipt consumption, launch, or cleanup authority |
 | `WorkerHandoffV1` | Read and adopt one exact finalized worker corpus | Deletion of the corpus |
 | `ChunkTerminalFailureV1` | Terminal wave-error evidence after exact cleanup and exhausted budget | A partial successful result, merge, ACK, or cleanup of other chunks |
 | Move-only adoption receipt | Current-process use of the exact lease and frozen handles under lock | Durable deletion after a crash |
@@ -159,7 +161,10 @@ wave lock
   -> manifest canonical
   -> worker lease reservation durable
   -> attempt-start canonical
-  -> fork
+  -> bound-work and start-receipt revalidation
+  -> anonymous work-package capability sealed
+  -> start receipt revalidated after unlink and directory sync
+  -> self-exec worker launched
   -> worker OOC pair finalized
   -> worker handoff canonical
   -> inherited locks released
@@ -2260,12 +2265,43 @@ destination allocation. Dedicated tests freeze both digest goldens and all
 header offsets, cover every exact truncation and partial short-write boundary,
 and distinguish outer-integrity rejection from bound body validation.
 
-The next slice writes this envelope through a private attempt-directory
-descriptor. Production success must return only a separately reopened
-read-only descriptor after same-inode/content proof, writer checked-close,
-unlink, `nlink == 0`, directory durability, and final revalidation. The
-portable threat model relies on the existing owner-only attempt directory and
+### M2i Anonymous Work-Package File Capability Status
+
+The source-private M2i carrier writes the immutable envelope to the fixed
+`.gnfs-worker-work-package-v1` leaf through a borrowed attempt-directory
+descriptor. Before exclusive creation it proves the held directory's native
+identity, current effective owner, exact `0700` mode, and lack of an extended
+ACL. The file is normalized to `0600`, streamed through a sticky 64KiB
+`pwrite()` buffer, sealed at `0400`, synchronized, and reopened read-only with
+`O_NONBLOCK`, `O_NOFOLLOW`, and `O_CLOEXEC`. Writer, reader, and name must
+remain the same regular inode with an exact package extent.
+
+The creation transaction decodes the named inode before releasing the writer.
+It then closes the writer exactly once, revalidates the namespace binding,
+unlinks the fixed leaf, proves the retained reader has `nlink == 0`, decodes
+the anonymous inode again, synchronizes the held directory, and performs a
+final metadata and process-ownership check. Production alone can mint the
+opaque move-only token. The injected operation seam returns only a data
+witness and closes the reader. No returned capability exposes the retained
+reader, a path, or the borrowed directory handle. The request explicitly
+borrows that directory handle; the carrier neither stores nor closes it.
+
+Failure does not attempt an unlink. The diagnostic retains the primary error,
+the first secondary close error, and whether the fixed name may remain. This
+fail-closed residue is input to future WaveStore reconciliation rather than an
+implicit cleanup authority. Windows returns an explicit unavailable result.
+The portable threat model still relies on the owner-only attempt directory and
 excludes an adversarial same-UID namespace mutator.
+
+M2i does not yet consume `AttemptStartedV1`, rerun manifest work binding, map a
+child descriptor, or launch a worker. The receipt-gated launcher must
+revalidate the start receipt immediately before this transaction and again
+after successful unlink plus directory synchronization. It cannot call the
+receipt's full namespace scan while the fixed leaf is transiently named.
+WaveStore remains the future sole launcher and residue reconciler. The static
+policy gate currently permits the token and production factory only inside the
+carrier definition and dedicated test. The launcher must become the first
+production allowlist expansion.
 
 ### M3: Worker Handoff and Adoption
 
