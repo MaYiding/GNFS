@@ -24,6 +24,15 @@ enum class CofactorRandomDomainV1 : std::uint8_t {
     ecm_curve_schedule = 2,
 };
 
+/// Seed256 ordinal stream -> fixed three-retry Brent-Pollard-rho schedule.
+///
+/// Retry 0 uses c=1. Retries 1 and 2 map draw ordinals 0 and 1 into the
+/// supported c range for the input cofactor. The starting point remains x0=2.
+/// Increment the identity whenever the retry count, draw mapping, polynomial,
+/// starting point, or budget interpretation changes.
+inline constexpr std::uint32_t COFACTOR_BRENT_POLLARD_RHO_SCHEDULE_ALGORITHM_IDENTITY_V1 = 1;
+inline constexpr std::uint32_t COFACTOR_BRENT_POLLARD_RHO_RETRY_COUNT_V1 = 3;
+
 /// SHA-256 ordinal stream -> `(draw % 1'000'000) + 6` ECM sigma mapping.
 ///
 /// Increment this identity whenever the draw interpretation, curve ordinal
