@@ -295,6 +295,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/distributed_sieve_protocol.cpp"
     target_sources(gnfs_core PRIVATE src/sieve/distributed_sieve_protocol.cpp)
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/distributed_sieve_seed_v2.cpp")
+    target_sources(gnfs_core PRIVATE src/sieve/distributed_sieve_seed_v2.cpp)
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/distributed_sieve_execution_policy.cpp")
     target_sources(gnfs_core PRIVATE
         src/sieve/distributed_sieve_execution_policy.cpp
@@ -979,6 +983,13 @@ if(GNFS_BUILD_TESTS)
         DistributedSieveExecutionPolicy
         PROPERTIES LABELS "instant" TIMEOUT 20
     )
+
+    add_executable(test_distributed_sieve_seed_v2
+        tests/test_distributed_sieve_seed_v2.cpp
+    )
+    target_link_libraries(test_distributed_sieve_seed_v2 PRIVATE gnfs_core)
+    add_test(NAME DistributedSieveSeedV2 COMMAND test_distributed_sieve_seed_v2)
+    set_tests_properties(DistributedSieveSeedV2 PROPERTIES LABELS "instant" TIMEOUT 10)
 
     add_executable(test_distributed_sieve_resume
         tests/test_distributed_sieve_resume.cpp
