@@ -2105,6 +2105,23 @@ randomness policy before hashing or forking, then make the parent scheduler
 consume start receipts and reconciliation facts without introducing a second
 launch path.
 
+M2e starts by separating the only process-environment capture adapter from a
+pure execution-policy resolver. The adapter owns one snapshot of all 31
+canonical settings, the diagnostic-only cofactor timing setting, and the host
+parallelism fact used to normalize bounded thread counts. The resolver performs
+no environment, hardware, clock, process, or randomness reads. One parse
+produces both the typed sieve/cofactor runtime policy and the ordered
+`DistributedSieveExecutionPolicyV1`; a consistency projection and the protocol
+validator must accept the exact same values.
+
+The first M2e commit remains dormant and does not make the legacy worker path
+durable. It establishes the freeze object, descriptor inventory, source
+checker, and exhaustive parser tests. Subsequent commits thread the typed
+policy through lattice/adaptive and cofactor/ECM kernels, remove zero-seed
+ambient randomness from the durable route, and finally admit worker launch
+only through a live start receipt. Reconciliation facts may select a next
+ordinal, but they cannot launch or bypass a fresh reserve-and-publish cycle.
+
 Exit criterion: two masters cannot both act, and restart cannot exceed the
 manifest retry budget. This milestone remains test/internal and exposes no
 production durable flag.
