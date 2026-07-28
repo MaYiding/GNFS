@@ -315,6 +315,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/cofactor/candidate_batch.cpp")
     target_sources(gnfs_core PRIVATE src/cofactor/candidate_batch.cpp)
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/cofactor/attempt_context.cpp")
+    target_sources(gnfs_core PRIVATE src/cofactor/attempt_context.cpp)
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/collector.cpp")
     target_sources(gnfs_core PRIVATE src/relation/collector.cpp)
 endif()
@@ -1063,6 +1067,13 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_cofactor PRIVATE gnfs_core Threads::Threads)
     add_test(NAME Cofactor COMMAND test_cofactor)
     set_tests_properties(Cofactor PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_cofactor_attempt_context
+        tests/test_cofactor_attempt_context.cpp
+    )
+    target_link_libraries(test_cofactor_attempt_context PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME CofactorAttemptContext COMMAND test_cofactor_attempt_context)
+    set_tests_properties(CofactorAttemptContext PROPERTIES LABELS "instant" TIMEOUT 10)
 
     add_executable(test_candidate_chunk_plan
         tests/test_candidate_chunk_plan.cpp
