@@ -114,12 +114,55 @@ DURABLE_ENVIRONMENT_FREE_FILES = {
     "src/sieve/distributed_sieve_work_identity_codec_internal.hpp",
     "src/sieve/distributed_sieve_work_package_codec.cpp",
     "src/sieve/distributed_sieve_work_package_codec_internal.hpp",
+    "src/sieve/distributed_sieve_wave_store.cpp",
+    "src/sieve/distributed_sieve_wave_store_internal.hpp",
+    "src/sieve/distributed_sieve_worker_launcher_fwd_internal.hpp",
+    "src/sieve/distributed_sieve_worker_launcher_internal.hpp",
     "src/sieve/distributed_sieve_worker_work_package_file.cpp",
     "src/sieve/distributed_sieve_worker_work_package_file_internal.hpp",
     "src/sieve/distributed_sieve_worker_work_package_file_ops_internal.hpp",
     "src/sieve/distributed_sieve_worker_process.cpp",
     "src/sieve/distributed_sieve_worker_process_internal.hpp",
     "include/gnfs/sieve/distributed_sieve_seed_v2.hpp",
+}
+
+WORKER_LAUNCHER_IMPLEMENTATION_FILE = "src/sieve/distributed_sieve_wave_store.cpp"
+WORKER_LAUNCHER_INTERFACE_FILES = {
+    "src/sieve/distributed_sieve_wave_store_internal.hpp",
+    "src/sieve/distributed_sieve_worker_launcher_fwd_internal.hpp",
+    "src/sieve/distributed_sieve_worker_launcher_internal.hpp",
+}
+WORKER_LAUNCHER_TEST_FILES = {"tests/test_distributed_sieve_resume.cpp"}
+WORKER_LAUNCHER_USE_SITE_IDENTIFIERS = (
+    "DistributedSieveWorkerLaunchSlotV1",
+    "DistributedSieveWorkerLauncherTestHooksV1",
+    "DistributedSieveWorkerLaunchRequestV1",
+    "DistributedSieveLaunchedWorkerAttemptV1",
+    "DistributedSieveWorkerLaunchPhaseV1",
+    "DistributedSieveWorkerLaunchDispositionV1",
+    "DistributedSieveWorkerLaunchDiagnosticV1",
+    "DistributedSieveWorkerLaunchChildResultV1",
+    "DistributedSieveWorkerLaunchBatchResultV1",
+    "launch_worker_process_batch_v1",
+)
+WORKER_LAUNCHER_USE_SITE_ALLOWLIST = (
+    WORKER_LAUNCHER_INTERFACE_FILES
+    | {WORKER_LAUNCHER_IMPLEMENTATION_FILE}
+    | WORKER_LAUNCHER_TEST_FILES
+)
+WORKER_LAUNCHER_COMPOSITION_FUNCTION = "launch_worker_process_batch_v1"
+WORKER_LAUNCHER_COMPOSITION_USE_COUNTS = {
+    "bind_distributed_sieve_work_v1": 1,
+    "DistributedSieveWorkerWorkPackageFileV1": 1,
+    "create_distributed_sieve_worker_work_package_file_v1": 1,
+    "DistributedSieveWorkerProcessFixedCapabilitySourcesV1": 1,
+    "spawn_distributed_sieve_worker_process_batch_with_capabilities": 1,
+    "retained_reader_": 3,
+}
+WORKER_LAUNCHER_COMPOSITION_DIRECT_CALL_IDENTIFIERS = {
+    "bind_distributed_sieve_work_v1",
+    "create_distributed_sieve_worker_work_package_file_v1",
+    "spawn_distributed_sieve_worker_process_batch_with_capabilities",
 }
 
 WORKER_PROCESS_TRANSPORT_FILE = "src/sieve/distributed_sieve_worker_process.cpp"
@@ -135,6 +178,7 @@ WORKER_PROCESS_FIXED_CAPABILITY_USE_SITE_ALLOWLIST = {
     "src/sieve/distributed_sieve_worker_process.cpp",
     "src/sieve/distributed_sieve_worker_process_internal.hpp",
     "tests/test_distributed_sieve_worker_process.cpp",
+    WORKER_LAUNCHER_IMPLEMENTATION_FILE,
 }
 WORKER_PROCESS_LEGACY_FILE = "src/sieve/distributed_sieve.cpp"
 WORKER_PROCESS_POLICY_PREFIXES = (
@@ -233,6 +277,7 @@ BOUND_WORK_USE_SITE_ALLOWLIST = {
     "src/sieve/distributed_sieve_bound_work.cpp",
     "src/sieve/distributed_sieve_bound_work_internal.hpp",
     "tests/test_distributed_sieve_execution_policy.cpp",
+    WORKER_LAUNCHER_IMPLEMENTATION_FILE,
 }
 WORK_PACKAGE_CARRIER_USE_SITE_IDENTIFIERS = (
     "DistributedSieveWorkerWorkPackageFileV1",
@@ -242,6 +287,13 @@ WORK_PACKAGE_CARRIER_USE_SITE_ALLOWLIST = {
     "src/sieve/distributed_sieve_worker_work_package_file.cpp",
     "src/sieve/distributed_sieve_worker_work_package_file_internal.hpp",
     "tests/test_distributed_sieve_worker_work_package_file.cpp",
+    WORKER_LAUNCHER_IMPLEMENTATION_FILE,
+}
+WORK_PACKAGE_READER_USE_SITE_IDENTIFIER = "retained_reader_"
+WORK_PACKAGE_READER_USE_SITE_ALLOWLIST = {
+    "src/sieve/distributed_sieve_worker_work_package_file.cpp",
+    "src/sieve/distributed_sieve_worker_work_package_file_internal.hpp",
+    WORKER_LAUNCHER_IMPLEMENTATION_FILE,
 }
 LEGACY_PIPELINE_FILE = "src/api/pipeline.cpp"
 LEGACY_PIPELINE_DURABLE_FORBIDDEN_IDENTIFIERS = (
@@ -923,6 +975,19 @@ class Checks:
                     f"receipt-gated/allowlisted: {identifier}",
                 )
 
+    def validate_work_package_reader_use_site(self, relative: str, text: str) -> None:
+        if relative in WORK_PACKAGE_READER_USE_SITE_ALLOWLIST:
+            return
+        for use in find_code_identifier_uses(
+            text, WORK_PACKAGE_READER_USE_SITE_IDENTIFIER
+        ):
+            self.fail(
+                relative,
+                use.line,
+                "anonymous work-package reader authority is not "
+                f"receipt-gated/allowlisted: {WORK_PACKAGE_READER_USE_SITE_IDENTIFIER}",
+            )
+
     def validate_worker_process_fixed_capability_use_site(
         self, relative: str, text: str
     ) -> None:
@@ -935,6 +1000,61 @@ class Checks:
                     use.line,
                     "fixed-capability worker-process API use site is not "
                     f"allowlisted: {identifier}",
+                )
+
+    def validate_worker_launcher_use_site(self, relative: str, text: str) -> None:
+        if relative in WORKER_LAUNCHER_USE_SITE_ALLOWLIST:
+            return
+        for identifier in WORKER_LAUNCHER_USE_SITE_IDENTIFIERS:
+            for use in find_code_identifier_uses(text, identifier):
+                self.fail(
+                    relative,
+                    use.line,
+                    "receipt-gated worker-launcher use site is not "
+                    f"allowlisted: {identifier}",
+                )
+
+    def validate_worker_launcher_composition_body(
+        self, relative: str, text: str
+    ) -> None:
+        if relative != WORKER_LAUNCHER_IMPLEMENTATION_FILE:
+            return
+
+        body, body_line_offset, body_errors = find_function_body(
+            text, WORKER_LAUNCHER_COMPOSITION_FUNCTION
+        )
+        for line, error in body_errors:
+            self.fail(relative, line, error)
+        if body is None:
+            return
+
+        for identifier, expected in WORKER_LAUNCHER_COMPOSITION_USE_COUNTS.items():
+            all_uses = find_code_identifier_uses(text, identifier)
+            body_uses = find_code_identifier_uses(body, identifier)
+            if len(all_uses) != len(body_uses):
+                self.fail(
+                    relative,
+                    1,
+                    f"all {identifier} launcher authority must remain inside "
+                    f"{WORKER_LAUNCHER_COMPOSITION_FUNCTION}",
+                )
+
+            if identifier in WORKER_LAUNCHER_COMPOSITION_DIRECT_CALL_IDENTIFIERS:
+                body_calls = find_call_identifier_uses(body, identifier)
+                if len(body_uses) != expected or len(body_calls) != expected:
+                    self.fail(
+                        relative,
+                        body_line_offset + 1,
+                        f"{WORKER_LAUNCHER_COMPOSITION_FUNCTION} must contain exactly "
+                        f"{expected} direct {identifier} call, found "
+                        f"{len(body_uses)} identifiers and {len(body_calls)} calls",
+                    )
+            elif len(body_uses) != expected:
+                self.fail(
+                    relative,
+                    body_line_offset + 1,
+                    f"{WORKER_LAUNCHER_COMPOSITION_FUNCTION} must contain exactly "
+                    f"{expected} {identifier} identifiers, found {len(body_uses)}",
                 )
 
     def classify(self, relative: str, call: GetenvCall, categories: dict[str, str]) -> None:
@@ -1203,6 +1323,7 @@ class Checks:
             self.validate_getenv_identifier_uses(relative, text, calls)
             self.validate_durable_ambient_api_uses(relative, text)
             self.validate_worker_process_transport_boundary(relative, text)
+            self.validate_worker_launcher_composition_body(relative, text)
             if relative == EXECUTION_POLICY_ENVIRONMENT_ADAPTER:
                 self.validate_environment_adapter(text, calls)
             for call in calls:
@@ -1225,7 +1346,9 @@ class Checks:
                 continue
             self.validate_bound_work_use_site(relative, text)
             self.validate_work_package_carrier_use_site(relative, text)
+            self.validate_work_package_reader_use_site(relative, text)
             self.validate_worker_process_fixed_capability_use_site(relative, text)
+            self.validate_worker_launcher_use_site(relative, text)
 
         for entry, count in self.legacy_counts.items():
             if count != 1:
@@ -1902,6 +2025,216 @@ auto result = spawn_distributed_sieve_worker_process_batch_with_capabilities(
             f"allowlisted fixed-capability worker-process use was rejected in "
             f"{relative}: {allowed_fixed_capability_checks.errors}",
         )
+
+    launcher_use_site_snippet = r'''
+DistributedSieveWorkerLaunchRequestV1 request(path, std::move(slots));
+DistributedSieveWorkerLaunchBatchResultV1 result =
+    store.launch_worker_process_batch_v1(
+        std::move(request), identity, frozen, polynomial, factor_base);
+'''
+    launcher_use_site_checks = Checks(Path("."))
+    launcher_use_site_checks.validate_worker_launcher_use_site(
+        "src/sieve/untrusted_launcher.cpp", launcher_use_site_snippet
+    )
+    expect(
+        len(launcher_use_site_checks.errors) == 3
+        and all(
+            "receipt-gated worker-launcher use site is not allowlisted" in error
+            for error in launcher_use_site_checks.errors
+        ),
+        "receipt-gated worker-launcher repo-wide use-site gate is not enforced",
+    )
+
+    wrong_launcher_test_checks = Checks(Path("."))
+    wrong_launcher_test_checks.validate_worker_launcher_use_site(
+        "tests/test_distributed_sieve_worker_process.cpp",
+        launcher_use_site_snippet,
+    )
+    expect(
+        len(wrong_launcher_test_checks.errors) == 3,
+        "worker-launcher test use escaped the dedicated resume-test allowlist",
+    )
+
+    for relative in sorted(WORKER_LAUNCHER_USE_SITE_ALLOWLIST):
+        allowed_launcher_checks = Checks(Path("."))
+        allowed_launcher_checks.validate_worker_launcher_use_site(
+            relative, launcher_use_site_snippet
+        )
+        expect(
+            not allowed_launcher_checks.errors,
+            f"allowlisted receipt-gated worker-launcher use was rejected in "
+            f"{relative}: {allowed_launcher_checks.errors}",
+        )
+
+    expect(
+        WORKER_LAUNCHER_TEST_FILES == {"tests/test_distributed_sieve_resume.cpp"}
+        and (
+            WORKER_LAUNCHER_USE_SITE_ALLOWLIST - WORKER_LAUNCHER_TEST_FILES
+            == (
+                WORKER_LAUNCHER_INTERFACE_FILES
+                | {WORKER_LAUNCHER_IMPLEMENTATION_FILE}
+            )
+        ),
+        "worker-launcher allowlist is not the exact implementation boundary "
+        "plus the dedicated resume test",
+    )
+
+    lower_capability_allowlists = (
+        BOUND_WORK_USE_SITE_ALLOWLIST,
+        WORK_PACKAGE_CARRIER_USE_SITE_ALLOWLIST,
+        WORKER_PROCESS_FIXED_CAPABILITY_USE_SITE_ALLOWLIST,
+    )
+    for allowlist in lower_capability_allowlists:
+        expect(
+            allowlist
+            & (WORKER_LAUNCHER_INTERFACE_FILES | {WORKER_LAUNCHER_IMPLEMENTATION_FILE})
+            == {WORKER_LAUNCHER_IMPLEMENTATION_FILE},
+            "lower-level launch capability was expanded beyond the real "
+            "WaveStore launcher implementation",
+        )
+
+    launcher_composition_checks = Checks(Path("."))
+    launcher_composition_checks.validate_bound_work_use_site(
+        WORKER_LAUNCHER_IMPLEMENTATION_FILE,
+        "auto bound = bind_distributed_sieve_work_v1("
+        "identity, frozen, polynomial, factor_base);",
+    )
+    launcher_composition_checks.validate_work_package_carrier_use_site(
+        WORKER_LAUNCHER_IMPLEMENTATION_FILE,
+        "auto package = create_distributed_sieve_worker_work_package_file_v1("
+        "carrier_request, identity);",
+    )
+    launcher_composition_checks.validate_worker_process_fixed_capability_use_site(
+        WORKER_LAUNCHER_IMPLEMENTATION_FILE,
+        "DistributedSieveWorkerProcessFixedCapabilitySourcesV1 sources;\n"
+        "auto child = spawn_distributed_sieve_worker_process_batch_with_capabilities("
+        "std::move(prepared), capabilities);",
+    )
+    expect(
+        not launcher_composition_checks.errors,
+        "real WaveStore launcher composition was rejected by a lower-level "
+        f"use-site gate: {launcher_composition_checks.errors}",
+    )
+
+    valid_launcher_composition = r'''
+auto DistributedSieveWaveStore::launch_worker_process_batch_v1() {
+    auto bound = bind_distributed_sieve_work_v1(
+        identity, frozen, polynomial, factor_base);
+    std::vector<std::optional<DistributedSieveWorkerWorkPackageFileV1>> packages;
+    auto created = create_distributed_sieve_worker_work_package_file_v1(
+        carrier_request, identity);
+    std::vector<DistributedSieveWorkerProcessFixedCapabilitySourcesV1> capabilities;
+    if (packages[0]->retained_reader_ < 0 ||
+        packages[0]->retained_reader_ > maximum_descriptor) {
+        return failed;
+    }
+    auto package_reader = packages[0]->retained_reader_;
+    return spawn_distributed_sieve_worker_process_batch_with_capabilities(
+        std::move(prepared), capabilities);
+}
+'''
+    exact_launcher_composition_checks = Checks(Path("."))
+    exact_launcher_composition_checks.validate_worker_launcher_composition_body(
+        WORKER_LAUNCHER_IMPLEMENTATION_FILE, valid_launcher_composition
+    )
+    expect(
+        WORKER_LAUNCHER_COMPOSITION_USE_COUNTS
+        == {
+            "bind_distributed_sieve_work_v1": 1,
+            "DistributedSieveWorkerWorkPackageFileV1": 1,
+            "create_distributed_sieve_worker_work_package_file_v1": 1,
+            "DistributedSieveWorkerProcessFixedCapabilitySourcesV1": 1,
+            "spawn_distributed_sieve_worker_process_batch_with_capabilities": 1,
+            "retained_reader_": 3,
+        }
+        and not exact_launcher_composition_checks.errors,
+        "exact launcher composition body was rejected: "
+        f"{exact_launcher_composition_checks.errors}",
+    )
+
+    outside_launcher_composition = (
+        valid_launcher_composition
+        + r'''
+auto outside_bound = bind_distributed_sieve_work_v1(
+    identity, frozen, polynomial, factor_base);
+DistributedSieveWorkerWorkPackageFileV1 outside_package;
+auto outside_created =
+    create_distributed_sieve_worker_work_package_file_v1(carrier_request, identity);
+DistributedSieveWorkerProcessFixedCapabilitySourcesV1 outside_sources;
+auto outside_child = spawn_distributed_sieve_worker_process_batch_with_capabilities(
+    std::move(prepared), capabilities);
+auto outside_reader = outside_package.retained_reader_;
+'''
+    )
+    outside_launcher_composition_checks = Checks(Path("."))
+    outside_launcher_composition_checks.validate_worker_launcher_composition_body(
+        WORKER_LAUNCHER_IMPLEMENTATION_FILE, outside_launcher_composition
+    )
+    expect(
+        len(outside_launcher_composition_checks.errors) == 6
+        and all(
+            "launcher authority must remain inside "
+            f"{WORKER_LAUNCHER_COMPOSITION_FUNCTION}" in error
+            for error in outside_launcher_composition_checks.errors
+        ),
+        "same-file outside-function launcher composition bypass was not rejected: "
+        f"{outside_launcher_composition_checks.errors}",
+    )
+
+    duplicate_launcher_call = valid_launcher_composition.replace(
+        "    auto bound = bind_distributed_sieve_work_v1(\n"
+        "        identity, frozen, polynomial, factor_base);\n",
+        "    auto bound = bind_distributed_sieve_work_v1(\n"
+        "        identity, frozen, polynomial, factor_base);\n"
+        "    auto duplicate_bound = bind_distributed_sieve_work_v1(\n"
+        "        identity, frozen, polynomial, factor_base);\n",
+    )
+    duplicate_launcher_call_checks = Checks(Path("."))
+    duplicate_launcher_call_checks.validate_worker_launcher_composition_body(
+        WORKER_LAUNCHER_IMPLEMENTATION_FILE, duplicate_launcher_call
+    )
+    expect(
+        len(duplicate_launcher_call_checks.errors) == 1
+        and "exactly 1 direct bind_distributed_sieve_work_v1 call"
+        in duplicate_launcher_call_checks.errors[0],
+        "launcher lower-capability call count is not closed: "
+        f"{duplicate_launcher_call_checks.errors}",
+    )
+
+    reader_use_site_checks = Checks(Path("."))
+    reader_use_site_checks.validate_work_package_reader_use_site(
+        "src/sieve/untrusted_launcher.cpp",
+        "auto descriptor = package.retained_reader_;",
+    )
+    expect(
+        len(reader_use_site_checks.errors) == 1
+        and "work-package reader authority is not receipt-gated/allowlisted"
+        in reader_use_site_checks.errors[0],
+        "anonymous package-reader repo-wide use-site gate is not enforced",
+    )
+    expect(
+        WORK_PACKAGE_READER_USE_SITE_ALLOWLIST
+        == {
+            "src/sieve/distributed_sieve_worker_work_package_file.cpp",
+            "src/sieve/distributed_sieve_worker_work_package_file_internal.hpp",
+            WORKER_LAUNCHER_IMPLEMENTATION_FILE,
+        },
+        "anonymous package-reader allowlist is not the exact definition and "
+        "WaveStore launcher boundary",
+    )
+
+    legacy_launcher_checks = Checks(Path("."))
+    legacy_launcher_checks.validate_worker_launcher_use_site(
+        WORKER_PROCESS_LEGACY_FILE,
+        "auto result = store.launch_worker_process_batch_v1("
+        "std::move(request), identity, frozen, polynomial, factor_base);",
+    )
+    expect(
+        len(legacy_launcher_checks.errors) == 1
+        and "receipt-gated worker-launcher use site is not allowlisted"
+        in legacy_launcher_checks.errors[0],
+        "legacy distributed runner is not isolated from the receipt-gated launcher",
+    )
 
     pipeline_checks = Checks(Path("."))
     pipeline_checks.validate_legacy_pipeline_boundary(

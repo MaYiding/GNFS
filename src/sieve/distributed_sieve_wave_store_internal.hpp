@@ -3,6 +3,8 @@
 // Source-private durable authority boundary for one distributed-sieve wave.
 // This file is intentionally not installed as public API.
 
+#include "distributed_sieve_worker_launcher_fwd_internal.hpp"
+
 #include <gnfs/sieve/distributed_sieve_protocol.hpp>
 #include <gnfs/util/durable_immutable_record.hpp>
 #include <gnfs/util/process.hpp>
@@ -19,6 +21,18 @@
 #include <string_view>
 #include <system_error>
 #include <vector>
+
+namespace gnfs::core {
+class PolynomialContext;
+}
+
+namespace gnfs::factor_base {
+class FactorBase;
+}
+
+namespace gnfs::sieve::distributed_sieve_execution_policy_detail {
+struct DistributedSieveFrozenExecutionPolicyV1;
+}
 
 namespace gnfs::sieve::distributed_sieve_resume_detail {
 
@@ -686,6 +700,23 @@ public:
         std::uint32_t chunk_id, std::uint32_t attempt_ordinal,
         DistributedSievePrivateLeaseBaseLockTestHooks hooks = {}) const noexcept;
 
+    /// Consume a complete fixed batch of fresh AttemptStartedV1 receipts and
+    /// launch their exact self-exec worker processes.
+    ///
+    /// The request owns all receipts and argv strings. Bootstrap frames and
+    /// child capabilities are derived internally; this entry never accepts a
+    /// raw filesystem descriptor or caller-provided attempt record.
+    [[nodiscard]] distributed_sieve_worker_launcher_detail::
+        DistributedSieveWorkerLaunchBatchResultV1
+        launch_worker_process_batch_v1(
+            distributed_sieve_worker_launcher_detail::DistributedSieveWorkerLaunchRequestV1&&
+                request,
+            const DistributedSieveWorkIdentityV1& identity,
+            const distributed_sieve_execution_policy_detail::
+                DistributedSieveFrozenExecutionPolicyV1& frozen_policy,
+            const core::PolynomialContext& polynomial,
+            const factor_base::FactorBase& factor_base) const noexcept;
+
 private:
     struct State;
     enum class AttemptBaseLockExpectation : std::uint8_t {
@@ -978,6 +1009,7 @@ private:
     std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt> base_lock_at_;
     std::uint64_t creator_process_id_ = 0;
 
+    friend class DistributedSieveWaveStore;
     friend DistributedSieveWorkerAttemptStartResult
     publish_worker_attempt_started(DistributedSievePrivateLeaseReservationReceipt&& reservation,
                                    DistributedSieveWorkerAttemptStartTestHooks hooks) noexcept;

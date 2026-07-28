@@ -1887,7 +1887,8 @@ Only the exact-role
 `spawn_distributed_sieve_worker_process_batch_with_capabilities()` entry point
 accepts `DistributedSieveWorkerProcessFixedCapabilitySourcesV1`. The repository
 policy checker allows both identifiers only in the source-private process
-header, its implementation, and the dedicated process test.
+header, its implementation, the WaveStore launcher implementation, and the
+dedicated process test.
 
 The parent receives one move-only process token per successful slot. Its first
 non-`EINTR` wait observation is permanent. Only an exited or signaled child
@@ -1898,14 +1899,14 @@ reader but never kills or reaps a child. The static policy gate grants
 calls exactly once, and rejects raw `fork()` or parent-environment access in
 the transport.
 
-This transport does not close the durable-launch milestone. The legacy path
-remains unchanged and still reserves and forks one slot at a time. The
+This transport alone does not close the durable-launch milestone. The legacy
+path remains unchanged and still reserves and forks one slot at a time. The
 exact-role API does not consume `AttemptStartedV1`, rerun manifest work
 binding, integrate with WaveStore, or rehydrate writer-only private-lease
-authority in the exec image. The next slice must make WaveStore the sole
-start-receipt consumer and use the existing `AttemptStartedV1` as its durable
-job descriptor. WaveStore reconciliation of any named work-package residue
-also remains future work.
+authority in the exec image. The receipt-gated section below adds the sole
+WaveStore start-receipt consumer and keeps the existing `AttemptStartedV1` as
+its durable job descriptor. Worker-side rehydration and durable named-package
+residue recovery remain future work.
 
 ### Canonical Work-Identity Codec Status
 
@@ -1961,12 +1962,67 @@ the primary error and any secondary close error, and report whether the named
 leaf may remain.
 
 This milestone is a standalone held-directory transaction on macOS and Linux.
-Windows returns an explicit unavailable result. It does not consume
+Windows returns an explicit unavailable result. M2i alone does not consume
 `AttemptStartedV1`, validate a manifest binding, map an exec descriptor, or
-grant launch authority. The future receipt-gated launcher must revalidate the
-start receipt before creation and again after successful unlink and directory
-synchronization. It must not invoke the receipt's full namespace scan while
-the fixed leaf is transiently named. WaveStore reconciliation remains
-responsible for fail-closed residue. The static policy gate admits the token
-and production factory only at their definition boundary and dedicated test;
-the receipt-gated launcher must be the first production allowlist expansion.
+grant launch authority. The receipt-gated section below revalidates the start
+receipt before creation and again after successful unlink plus directory
+synchronization. It does not invoke the receipt's full namespace scan while
+the fixed leaf is transiently named. The static policy gate admits the token
+and production factory only at their definition boundary, dedicated test, and
+the WaveStore launcher implementation.
+
+### Receipt-Gated WaveStore Launcher Status
+
+The M2j-A source-private WaveStore launcher is the first composition in
+production source code of bound-work validation, the anonymous package
+carrier, and the exact-role self-exec transport. No production runtime calls
+it yet; this slice remains internal and test-only. The source-private surface
+is split between the launcher forward and full internal headers; the
+implementation stays in the WaveStore translation unit so it can use the
+complete private `State`. It reruns the complete work binding immediately
+before consuming each fresh `AttemptStartedV1` receipt. The launch bootstrap
+comes from that receipt's canonical record encoding, not from caller-supplied
+bytes. Each successful process composite owns the receipt and its attempt
+`BaseLock`. A sticky terminal reap permits ordinary destruction. Abandoning an
+unreaped composite does not wait or kill; it quarantines the receipt and lock
+until process exit.
+
+All slots finish receipt, live-binding, held-directory, package, and
+descriptor preflight before the first spawn. A preflight or descriptor-staging
+failure therefore starts zero children. Launcher storage and transport staging
+are fixed before the first spawn, but they do not all precede the one-shot
+receipt gate. After the spawn loop begins, later failure can yield an explicit
+partial result containing earlier successful composites. The result closes
+this state as `failed_before_gate`, `armed_no_child`, `indeterminate`,
+`partial`, or `all`. The transport reports `spawn_loop_entered` and
+`child_set_complete` separately: global pre-spawn refusal is `false/false`,
+pre-spawn failure with an already complete zero-process slot set is
+`false/true`, and a normal or slot-local partial loop is `true/true`. A
+complete, internally consistent set maps to `armed_no_child`, `partial`, or
+`all` by process count. An incomplete or inconsistent child set maps to
+`indeterminate` and quarantines the whole receipt set. The legacy seeded
+runner remains a separate, non-durable baseline and cannot call or compose the
+launcher.
+
+A carrier result with `named_may_remain` stops the batch and returns
+`reconciliation_required`. After carrier success, one batch-wide absence gate
+stays armed across all slot transactions. It is released only after the
+complete receipt set, every retained exact attempt-directory binding, and
+every fixed-leaf absence have all been revalidated after the final carrier
+hook. A later-slot hook rebuilding an earlier slot's fixed leaf therefore
+stops the batch before spawn, reports the earlier slot, and preserves the
+residue for explicit reconciliation. This first slice never deletes a package
+leaf or replaced directory from its name alone. Identity-bound residue
+recovery across restart is still pending.
+M2j-A is internal and test-only; it also rejects hosts without an atomic
+spawn-time close-all primitive. Path-based `posix_spawn()` is not manifest
+same-object executable authentication. Worker-side descriptor `3..6`
+rehydration, actual sieve execution, no-delete handoff, and restart recovery
+remain later milestones. The static checker count-closes lower-capability and
+reader access inside the exact WaveStore launcher function body.
+
+The launcher matrix contains ten cases. Every non-Windows host runs the
+pre-gate close-all refusal: supported hosts take a trusted force-unavailable
+test seam, while unsupported hosts take the real platform query. Only hosts
+with atomic close-all support register and execute the other nine positive
+launcher cases.

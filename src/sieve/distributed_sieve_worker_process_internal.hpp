@@ -41,6 +41,15 @@ inline constexpr int DISTRIBUTED_SIEVE_WORKER_CHILD_ATTEMPT_BASE_LOCK_DESCRIPTOR
 inline constexpr int DISTRIBUTED_SIEVE_WORKER_CHILD_WORK_PACKAGE_READER_DESCRIPTOR = 6;
 inline constexpr int DISTRIBUTED_SIEVE_WORKER_CHILD_FIRST_UNMAPPED_DESCRIPTOR = 7;
 
+/// Whether the fixed-capability transport can close every unmapped descriptor.
+///
+/// This is true only when the platform supplies an atomic spawn-time close-all
+/// primitive: POSIX_SPAWN_CLOEXEC_DEFAULT on Apple or
+/// posix_spawn_file_actions_addclosefrom_np() on glibc 2.34 and newer. Callers
+/// may use this query before preparing receipt-gated launch state. The
+/// capability spawn entry also enforces it independently.
+[[nodiscard]] bool distributed_sieve_worker_process_fixed_capability_close_all_supported() noexcept;
+
 class DistributedSieveWorkerProcessBatch;
 struct DistributedSieveWorkerProcessBatchPrepareResult;
 struct DistributedSieveWorkerProcessSpawnSpec;
@@ -252,13 +261,16 @@ struct DistributedSieveWorkerProcessBatchPrepareResult final {
 
 /// Test-only per-slot failure injection.
 ///
-/// Return zero to execute the real posix_spawn(). Return a positive errno
-/// value to fail that slot without invoking posix_spawn().
+/// Return zero from `before_spawn` to execute the real posix_spawn(). Return a
+/// positive errno value to fail that slot without invoking posix_spawn().
+/// `force_fixed_capability_close_all_unavailable` exercises the platform
+/// refusal before the first per-slot hook.
 struct DistributedSieveWorkerProcessSpawnTestHooks final {
     using BeforeSpawn = int (*)(std::size_t slot, void* context) noexcept;
 
     BeforeSpawn before_spawn = nullptr;
     void* context = nullptr;
+    bool force_fixed_capability_close_all_unavailable = false;
 };
 
 struct DistributedSieveWorkerProcessLaunchResult final {
@@ -274,9 +286,18 @@ struct DistributedSieveWorkerProcessLaunchResult final {
 struct DistributedSieveWorkerProcessBatchLaunchResult final {
     std::vector<DistributedSieveWorkerProcessLaunchResult> children;
     DistributedSieveWorkerProcessTransportDiagnostic diagnostic;
+    /// True only after control reaches the fixed per-slot spawn loop.
+    bool spawn_loop_entered = false;
+    /// True only when `children` is the complete fixed per-slot result set.
+    ///
+    /// A false value with an empty child set, a non-none global diagnostic,
+    /// and `spawn_loop_entered == false` is a closed global pre-spawn failure,
+    /// not an assertion that a partial child set is complete.
+    bool child_set_complete = false;
 
     [[nodiscard]] explicit operator bool() const noexcept {
-        if (diagnostic.error != DistributedSieveWorkerProcessTransportError::none ||
+        if (!spawn_loop_entered || !child_set_complete ||
+            diagnostic.error != DistributedSieveWorkerProcessTransportError::none ||
             children.empty()) {
             return false;
         }
@@ -336,7 +357,10 @@ spawn_distributed_sieve_worker_process_batch(
 /// work-package reader at 6. Standard input, output, and error retain the
 /// generic contract, except that an authority source occupying parent
 /// descriptor 2 makes child standard error explicitly closed rather than
-/// leaking that authority as a diagnostic stream.
+/// leaking that authority as a diagnostic stream. Platforms without a reliable
+/// spawn-time close-all primitive fail with `platform_unavailable` before any
+/// child is spawned; the explicit close inventory is not an authority-mode
+/// fallback.
 [[nodiscard]] DistributedSieveWorkerProcessBatchLaunchResult
 spawn_distributed_sieve_worker_process_batch_with_capabilities(
     DistributedSieveWorkerProcessBatch&& batch,

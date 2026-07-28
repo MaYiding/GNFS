@@ -95,6 +95,8 @@ launch_failure(DistributedSieveWorkerProcessTransportError error, int native_err
                 .error = error,
                 .native_error = native_error,
             },
+        .spawn_loop_entered = false,
+        .child_set_complete = false,
     };
 }
 
@@ -281,6 +283,20 @@ struct StagedFixedCapabilityBatch final {
 #endif
 
 } // namespace
+
+bool distributed_sieve_worker_process_fixed_capability_close_all_supported() noexcept {
+#if defined(__APPLE__) && defined(POSIX_SPAWN_CLOEXEC_DEFAULT)
+    return true;
+#elif defined(__GLIBC__) && defined(__GLIBC_PREREQ)
+#if __GLIBC_PREREQ(2, 34)
+    return true;
+#else
+    return false;
+#endif
+#else
+    return false;
+#endif
+}
 
 DistributedSieveWorkerProcess::DistributedSieveWorkerProcess(
     DistributedSieveWorkerProcessId process_id, int report_descriptor) noexcept
@@ -576,6 +592,12 @@ DistributedSieveWorkerProcessBatchLaunchResult DistributedSieveWorkerProcessBatc
                                   EINVAL);
         }
     }
+    if (capability_mode &&
+        (hooks.force_fixed_capability_close_all_unavailable ||
+         !distributed_sieve_worker_process_fixed_capability_close_all_supported())) {
+        return launch_failure(DistributedSieveWorkerProcessTransportError::platform_unavailable,
+                              ENOTSUP);
+    }
 
     std::vector<DistributedSieveWorkerProcessLaunchResult> results;
     try {
@@ -588,11 +610,6 @@ DistributedSieveWorkerProcessBatchLaunchResult DistributedSieveWorkerProcessBatc
                               ENOMEM);
     }
 
-#if defined(_WIN32)
-    (void)hooks;
-    return launch_failure(DistributedSieveWorkerProcessTransportError::platform_unavailable,
-                          ENOTSUP);
-#else
     const auto fail_all_slots = [&results](DistributedSieveWorkerProcessTransportError error,
                                            int native_error) noexcept {
         for (auto& result : results) {
@@ -604,18 +621,25 @@ DistributedSieveWorkerProcessBatchLaunchResult DistributedSieveWorkerProcessBatc
         return DistributedSieveWorkerProcessBatchLaunchResult{
             .children = std::move(results),
             .diagnostic = {},
+            .spawn_loop_entered = false,
+            .child_set_complete = true,
         };
     };
 
+#if defined(_WIN32)
+    (void)hooks;
+    return fail_all_slots(DistributedSieveWorkerProcessTransportError::platform_unavailable,
+                          ENOTSUP);
+#else
     StagedFixedCapabilityBatch staged_capabilities;
     if (capability_mode) {
         try {
             staged_capabilities.slots.resize(capabilities.size());
         } catch (const std::bad_alloc&) {
-            return launch_failure(DistributedSieveWorkerProcessTransportError::resource_exhausted,
+            return fail_all_slots(DistributedSieveWorkerProcessTransportError::resource_exhausted,
                                   ENOMEM);
         } catch (...) {
-            return launch_failure(DistributedSieveWorkerProcessTransportError::resource_exhausted,
+            return fail_all_slots(DistributedSieveWorkerProcessTransportError::resource_exhausted,
                                   ENOMEM);
         }
         for (std::size_t slot_index = 0; slot_index < capabilities.size(); ++slot_index) {
@@ -799,18 +823,12 @@ DistributedSieveWorkerProcessBatchLaunchResult DistributedSieveWorkerProcessBatc
             (void)::posix_spawnattr_destroy(&attributes);
         }
         close_descriptor(std::exchange(standard_error_snapshot, -1));
-        for (auto& result : results) {
-            result.diagnostic = {
-                .error = DistributedSieveWorkerProcessTransportError::spawn_failed,
-                .native_error = attribute_error,
-            };
-        }
-        return {
-            .children = std::move(results),
-            .diagnostic = {},
-        };
+        return fail_all_slots(DistributedSieveWorkerProcessTransportError::spawn_failed,
+                              attribute_error);
     }
 
+    // From this point the complete fixed result set is allocated and every
+    // slot is attempted exactly once; no global return can bypass the loop.
     for (std::size_t index = 0; index < consumed.slots_.size(); ++index) {
         auto& own = consumed.slots_[index];
         int spawn_error =
@@ -856,6 +874,8 @@ DistributedSieveWorkerProcessBatchLaunchResult DistributedSieveWorkerProcessBatc
     return {
         .children = std::move(results),
         .diagnostic = {},
+        .spawn_loop_entered = true,
+        .child_set_complete = true,
     };
 #endif
 }

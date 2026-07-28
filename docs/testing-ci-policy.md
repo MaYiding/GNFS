@@ -358,11 +358,17 @@ transfer, a prewritten bounded bootstrap frame on standard input, a report on
 standard output, an empty environment, and closure of the batch's foreign
 pipe endpoints plus the caller's explicit descriptor inventory. The parent
 also covers partial `posix_spawn()` failure without invalidating earlier
-tokens. Tokens are move-only, transfer the report descriptor only after a
-confirmed terminal reap, cache the first non-`EINTR` wait observation, and
-preserve uncertainty for stopped, mismatched, and `ECHILD` observations.
-Windows exercises the explicit unavailable result without claiming
-process-transport coverage.
+tokens. Every batch result states `spawn_loop_entered` and
+`child_set_complete` explicitly. A global validation or portability refusal
+returns `false/false` with an empty child set. A staging or spawn-attribute
+failure after result allocation returns `false/true` with a complete
+zero-process slot set. A normal or slot-local partial spawn returns
+`true/true` with the complete fixed-slot result set. Callers do not infer
+either fact from vector size. Tokens are move-only, transfer the report
+descriptor only after a confirmed terminal reap, cache the first non-`EINTR`
+wait observation, and preserve uncertainty for stopped, mismatched, and
+`ECHILD` observations. Windows exercises the explicit
+unavailable result without claiming process-transport coverage.
 
 The same binary covers the exact-role capability transport. It freezes child
 descriptors `0..6` as bootstrap, report, standard-error snapshot, wave-root
@@ -372,9 +378,10 @@ sources are pre-staged at descriptor `7` or above before mapping. Closure
 checks cover staged sources, foreign slots, and the platform close-from floor.
 The generic spawn API remains authority-free. The repository policy checker
 permits the exact-role source type and spawn entry point only in the
-source-private process header, its implementation, and this dedicated test.
-This coverage does not claim start-receipt consumption, WaveStore launcher
-integration, writer-authority rehydration, or named-residue reconciliation.
+source-private process header, its implementation, the receipt-gated launcher
+implementation, and this dedicated test. This binary does not claim
+start-receipt consumption, WaveStore launcher integration, writer-authority
+rehydration, or named-residue reconciliation.
 
 `test_distributed_sieve_work_identity_codec` is the `instant` canonical
 work-preimage contract. It compares the shared allocation-free field emitter
@@ -405,8 +412,8 @@ and retained-descriptor revalidation. On Windows the production entry covers
 only the explicit unavailable result; portable injected-state tests do not
 claim native anonymous file-capability support. The repository policy checker
 permits the token and production factory only in their definition boundary and
-this dedicated test. A future receipt-gated launcher requires an explicit
-allowlist expansion.
+this dedicated test, plus their first production composition inside the
+receipt-gated launcher.
 
 `test_distributed_sieve_resume` is a split protocol and WaveStore contract.
 `DistributedSieveResumeCore` remains an `instant` pure record, dependency, and
@@ -423,6 +430,80 @@ native-identity replacement. Fork-and-pipe probes cover hook-time PID
 separation, concurrent exclusion, and inherited-open-description lock
 lifetime. The binary catalog is therefore `fast`; its no-argument form runs
 both sub-suites.
+
+The same binary is the dedicated M2j-A receipt-gated launcher contract.
+macOS and supported Linux/glibc hosts run its positive launcher matrix. Every
+non-Windows host runs the close-all-unavailable case: supported hosts use the
+trusted force-unavailable hook, while musl, older glibc, and other unsupported
+hosts exercise the real capability query. The source-private WaveStore member
+derives each bootstrap frame from the canonical `AttemptStartedV1` record
+rather than accepting caller-supplied bytes. It reruns live bound-work
+validation, consumes the start receipt, creates and unlinks the immutable
+package, revalidates the receipt, and supplies the exact descriptor `3..6`
+capability set before the first child can start. The launcher rejects a host
+without an atomic close-all spawn primitive before process preparation.
+
+All result storage, receipt anchors, bootstrap and argument views, package
+storage, capability storage, and transport staging complete before the first
+spawn. They do not all precede the one-shot receipt gate. A failure after that
+gate can therefore return `armed_no_child` while still proving that it started
+zero children. Once the lower transport enters its spawn loop, a later slot
+may fail after earlier slots have started, and the result reports that partial
+batch without discarding successful composites.
+
+The launcher consumes the transport's explicit spawn-loop and complete-child-
+set facts. A closed global refusal and a complete zero-process slot set remain
+proven zero-child outcomes. A complete, internally consistent per-slot set
+maps to `armed_no_child`, `partial`, or `all` by its process count. Any entered
+or otherwise ambiguous result without such a set maps to `indeterminate` and
+quarantines every receipt rather than guessing which `BaseLock` may protect a
+live child.
+
+Ten launcher cases freeze the current boundary. The non-Windows unavailable
+case proves `failed_before_gate`, `process_preparation`, zero spawn, normal
+receipt release, and a ready store. The other nine are successful self-exec,
+live-binding mismatch before the receipt gate, invalid initial receipt after
+the gate, post-carrier fixed-leaf residue, a later-slot hook rebuilding an
+earlier slot's fixed leaf, post-carrier directory replacement, second-slot
+namespace conflict, three-slot partial spawn, and abandoned composite
+quarantine. Those nine are registered and executed only when the host reports
+atomic fixed-capability close-all support; unsupported non-Windows hosts do
+not execute nine no-op cases. The happy and partial children decode the
+canonical `AttemptStartedV1` bootstrap, bind descriptor `3` to the exact
+manifest, and bind descriptor `6` to the expected work digest. They also
+verify all four capability descriptors, same-open-file-description lock
+inheritance, the anonymous package's `0400` mode and zero link count, and
+absence of descriptor `7` or above. The partial case keeps the successful
+slots' `BaseLock` objects busy and releases the failed slot's lock.
+
+The quarantine case runs in a forked supervisor. Its self-exec child validates
+the launch, closes and proves descriptor `5` absent, emits one report frame,
+and remains alive. Destroying the unreaped composite does not wait or kill;
+it deliberately quarantines the receipt, WaveStore state, and `BaseLock` for
+the rest of the supervisor process. The lock remains busy both while the child
+is alive and after an external terminal reap. The supervisor boundary prevents
+that intentional leak from accumulating in the test process.
+
+Carrier diagnostics with `named_may_remain` stop the batch and set
+`reconciliation_required`; the launcher never blindly unlinks the fixed leaf.
+After carrier success, one batch-wide absence gate remains armed across every
+slot. It is released only after the complete receipt set, every exact held
+attempt-directory binding, and every fixed package leaf's absence have all
+been revalidated after the last carrier hook. Any earlier return sets the same
+flag while preserving the primary WaveStore status. The cross-slot case
+rebuilds slot 0's fixed leaf from slot 1's hook and proves that the final gate
+reports slot 0, starts zero children, and preserves the residue. The
+directory-replacement case proves that the launcher retains both the displaced
+original and the replacement directory.
+
+This first slice is internal and test-only. It does not authenticate the
+path-based `posix_spawn()` executable as the same object bound by the
+manifest. It also does not rehydrate descriptors `3..6` in the worker image,
+run the sieve, publish a no-delete handoff, or recover a named package residue
+across restart. The policy checker admits launcher composition only inside the
+exact `launch_worker_process_batch_v1()` function body, with closed counts for
+bound work, carrier, package reader, and fixed-capability uses. Direct launcher
+test use remains confined to `test_distributed_sieve_resume`.
 
 `test_local_sieve_thread_budget` is the `instant` contract for balanced lane
 allocation, invalid limits, and a bounded property grid. The 64-special-Q probe

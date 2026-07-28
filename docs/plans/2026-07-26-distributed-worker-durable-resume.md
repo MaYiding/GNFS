@@ -2127,11 +2127,10 @@ first and final normalized observations, and the `P3` directory-removal
 boundary. Root and target authority outrank record or action-local failures
 throughout normalization and cleanup.
 
-This M2 slice remains a dormant durability boundary rather than production
-worker orchestration. The next slice must freeze and thread execution and
-randomness policy before hashing or forking, then make the parent scheduler
-consume start receipts and reconciliation facts without introducing a second
-launch path.
+This reconciliation slice remains a dormant durability boundary rather than
+production worker orchestration. M2e below subsequently freezes and threads
+execution and randomness policy before the M2j-A launcher consumes start
+receipts. Reconciliation facts still cannot introduce a second launch path.
 
 M2e starts by separating the only process-environment capture adapter from a
 pure execution-policy resolver. The adapter owns one snapshot of all 31
@@ -2167,17 +2166,16 @@ survival/ECM-pool policies.
 The resulting value has deliberately no artifact root, path, descriptor,
 private-lease receipt, WaveStore handle, fork route, or cleanup authority. In
 particular, a raw zero `FactorBase` prefix is not silently equated with the
-live class's effective “all algebraic entries” interpretation. The future
-launcher must rerun this binding immediately before consuming a fresh
-`AttemptStartedV1` receipt. That launcher remains blocked on a one-shot
-receipt-to-writer admission: using the legacy runner would reserve a second
-generic lease and split the durable attempt record from the corpus it claims.
+live class's effective “all algebraic entries” interpretation. The M2j-A
+launcher below reruns this binding immediately before consuming a fresh
+`AttemptStartedV1` receipt. It does not use the legacy runner, which would
+reserve a second generic lease and split the durable attempt record from the
+corpus it claims.
 The closed policy checker scans every repository C/C++/Objective-C++ source
-outside generated build trees, including `bench/`, and currently permits
-bound-work types/functions only in their definition and dedicated test. It
-also rejects any file that combines the projection with the legacy distributed
-runner. The first future production allowlist addition must therefore be the
-receipt-gated launcher itself.
+outside generated build trees, including `bench/`. It permits bound-work
+types/functions in their definition, dedicated test, and the WaveStore
+launcher implementation only. It also rejects any file that combines the
+projection with the legacy distributed runner.
 
 ### M2f Source-Private Worker Process Transport Status
 
@@ -2218,7 +2216,8 @@ inventory. Exact roles enter only through
 `spawn_distributed_sieve_worker_process_batch_with_capabilities()` and
 `DistributedSieveWorkerProcessFixedCapabilitySourcesV1`. The repository policy
 checker permits those identifiers only in the source-private process header,
-its implementation, and the dedicated process test.
+its implementation, the WaveStore launcher implementation, and the dedicated
+process test.
 
 Each successful slot returns a move-only parent token. The first non-`EINTR`
 wait observation is sticky. Only `WIFEXITED` or `WIFSIGNALED` confirms reap
@@ -2234,17 +2233,14 @@ The policy checker reserves `posix_spawn()` for the new transport, requires
 its one direct spawn and wait call, and rejects both raw `fork()` and inherited
 environment access in that source file.
 
-The receipt-gated launcher remains the next slice. The exact-role transport
-does not consume `AttemptStartedV1`, rerun manifest work binding, integrate
-with WaveStore, or rehydrate writer-only private-lease authority in the exec
-image. Existing `AttemptStartedV1` remains the durable job descriptor; no
-parallel job record is introduced. The future launcher must preserve all
-contexts and start receipts in stable preallocated slots, rerun bound-work
-validation immediately before consumption, and adopt writer-only lease
-authority from descriptors `3..6` without reopening a path or reserving a
-second generic lease. WaveStore must be the only start-receipt consumer and
-must still reconcile any named work-package residue left by a failed carrier
-transaction.
+The exact-role transport alone does not consume `AttemptStartedV1`, rerun
+manifest work binding, integrate with WaveStore, or rehydrate writer-only
+private-lease authority in the exec image. Existing `AttemptStartedV1` remains
+the durable job descriptor; no parallel job record is introduced. M2j-A below
+adds the sole WaveStore receipt consumer and preserves each successful receipt
+with its process token. Worker-side writer-authority adoption from descriptors
+`3..6` and durable reconciliation of named package residue remain later
+boundaries.
 
 Exit criterion: two masters cannot both act, and restart cannot exceed the
 manifest retry budget. This milestone remains test/internal and exposes no
@@ -2315,15 +2311,106 @@ implicit cleanup authority. Windows returns an explicit unavailable result.
 The portable threat model still relies on the owner-only attempt directory and
 excludes an adversarial same-UID namespace mutator.
 
-M2i does not yet consume `AttemptStartedV1`, rerun manifest work binding, map a
-child descriptor, or launch a worker. The receipt-gated launcher must
-revalidate the start receipt immediately before this transaction and again
-after successful unlink plus directory synchronization. It cannot call the
-receipt's full namespace scan while the fixed leaf is transiently named.
-WaveStore remains the future sole launcher and residue reconciler. The static
-policy gate currently permits the token and production factory only inside the
-carrier definition and dedicated test. The launcher must become the first
-production allowlist expansion.
+M2i alone does not consume `AttemptStartedV1`, rerun manifest work binding, map
+a child descriptor, or launch a worker. M2j-A below revalidates the start
+receipt before this transaction and again after successful unlink plus
+directory synchronization. It does not call the receipt's full namespace scan
+while the fixed leaf is transiently named. The static policy gate permits the
+token and production factory only inside the carrier definition, its dedicated
+test, and the WaveStore launcher implementation.
+
+### M2j-A Receipt-Gated WaveStore Launcher Status
+
+The source-private `DistributedSieveWaveStore::launch_worker_process_batch_v1()`
+member is now the only composition point in production source code for
+bound-work projection, anonymous package creation, and exact-role process
+transport. No production runtime calls it yet; this slice remains internal and
+test-only. Its declarations live in
+`distributed_sieve_worker_launcher_fwd_internal.hpp`,
+`distributed_sieve_worker_launcher_internal.hpp`, and the WaveStore internal
+header. The implementation remains in `distributed_sieve_wave_store.cpp`,
+where the complete private `State` type is available. Each slot supplies a
+fresh `AttemptStartedV1` receipt and owned arguments; the batch call supplies
+the live polynomial and factor-base state. The launcher reruns the complete
+work binding immediately before it consumes the receipts. It derives each
+bounded bootstrap frame from the receipt's canonical record encoder; callers
+cannot supply an independent bootstrap payload.
+
+The launcher completes every receipt, binding, attempt-directory, and package
+preflight before calling the process transport. It performs a full receipt
+revalidation before package creation and again after the package name has been
+unlinked and the held directory has been synchronized. During the transient
+named interval it uses only the exact held-directory binding required by the
+carrier; it does not run a namespace inventory that would reject the package
+leaf by construction. A batch-wide absence gate remains armed through every
+slot's carrier transaction. Only after the final carrier hook does the
+launcher release that gate, and only after revalidating the complete receipt
+set, every retained exact attempt-directory binding, and absence of every
+fixed package leaf. Descriptor roles remain fixed: `3` is the wave-root
+directory, `4` is the permanent WaveStore lock, `5` is the receipt's attempt
+`BaseLock`, and `6` is the anonymous immutable package reader.
+
+Complete-batch preflight and the transport's complete descriptor staging occur
+before the first child. Any failure in those phases therefore starts zero
+children. Result storage, heap-owned receipt anchors, bootstrap and argument
+views, package and capability storage, and all no-throw post-spawn ownership
+destinations are also fixed before the first spawn. These allocations and
+transport staging do not all precede the receipt gate. A zero-child failure
+after that gate is therefore `armed_no_child`, not `failed_before_gate`.
+
+After the transport enters its spawn loop, a later slot can fail after earlier
+slots have started. The launcher preserves those earlier processes as an
+explicit partial result. The transport reports `spawn_loop_entered` and
+`child_set_complete` as independent facts. A global pre-spawn refusal is
+`false/false`; a pre-spawn failure after complete result allocation is
+`false/true` with a zero-process fixed-slot set; and a normal or slot-local
+partial loop is `true/true` with the complete fixed-slot set. The launcher
+never infers completeness from vector size. A complete, internally consistent
+set maps to `armed_no_child`, `partial`, or `all` by process count. An entered
+or otherwise ambiguous transport outcome without such a set becomes
+`indeterminate`, and every receipt is quarantined because no slot can be
+proven child-free. The closed disposition enum therefore distinguishes
+`failed_before_gate`, `armed_no_child`, `indeterminate`, `partial`, and `all`.
+Each successful composite owns one heap-stable start receipt beside its
+process token. A sticky terminal reap permits ordinary receipt destruction.
+Destroying the composite without terminal proof never waits for or kills the
+child; it intentionally leaks the receipt, shared WaveStore state, and
+`BaseLock` until process exit.
+This process-lifetime quarantine prevents early authority release even if the
+child already closed descriptor `5`. No second receipt, lease, or launch route
+is minted.
+
+If carrier failure reports `named_may_remain`, this first version stops the
+whole launch and sets `reconciliation_required`. After carrier success, the
+same flag remains mandatory until that full-batch gate proves every receipt,
+held directory, and fixed-leaf absence. This closes the cross-slot window in
+which a later carrier hook could rebuild a fixed leaf inside an earlier slot's
+exact directory after its per-slot check. Such a failure reports the affected
+earlier slot, starts zero children, and preserves the residue. A primary
+namespace or I/O status is preserved rather than overwritten by that secondary
+disposition. The launcher never infers ownership from the fixed leaf name and
+never unlinks residue or a replaced directory blindly. Durable, identity-bound
+residue reconciliation across restart remains a later WaveStore transition.
+
+M2j-A remains internal and test-only. The `posix_spawn()` executable is still
+selected by a path, so this slice does not prove that the launched image is
+the same executable object authenticated by the manifest. The worker image
+does not yet rehydrate descriptors `3..6` into writer-only authority, run the
+actual sieve, publish a no-delete handoff, or resume a named package cleanup
+after process restart. Fixed-capability launch also fails closed before process
+preparation when the host cannot atomically close every unmapped descriptor at
+spawn. The policy checker makes this exact function body the first production
+allowlist expansion for bound work, carrier creation, package-reader access,
+and fixed capabilities. It count-closes those uses, rejects same-file
+outside-function bypasses, confines direct launcher test use to the dedicated
+WaveStore resume test, and keeps the legacy seeded runner isolated.
+
+The launcher test matrix has ten cases. The close-all-unavailable pre-gate
+case runs on every non-Windows host: a supported host uses the trusted
+force-unavailable hook, while an unsupported host exercises the real query.
+Only hosts that report atomic close-all support register and execute the other
+nine positive launcher cases. The unavailable case proves zero spawn, normal
+receipt and `BaseLock` release, and a ready WaveStore.
 
 ### M3: Worker Handoff and Adoption
 

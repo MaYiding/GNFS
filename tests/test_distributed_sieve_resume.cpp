@@ -1,7 +1,13 @@
+#include <gnfs/core/polynomial_context.hpp>
+#include <gnfs/factor_base/factor_base.hpp>
 #include <gnfs/relation/ooc_cleanup_transaction.hpp>
 #include <gnfs/sieve/distributed_sieve_protocol.hpp>
 
+#include "distributed_sieve_bound_work_internal.hpp"
+#include "distributed_sieve_execution_policy_internal.hpp"
 #include "distributed_sieve_wave_store_internal.hpp"
+#include "distributed_sieve_work_package_codec_internal.hpp"
+#include "distributed_sieve_worker_launcher_internal.hpp"
 #include "ooc_private_handoff_cleanup_authorization_internal.hpp"
 
 #include <algorithm>
@@ -36,6 +42,8 @@
 #ifndef _WIN32
 #include <dirent.h>
 #include <fcntl.h>
+#include <signal.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -51,6 +59,9 @@ namespace {
 
 namespace sieve = gnfs::sieve;
 namespace cleanup_detail = gnfs::relation::ooc_cleanup_detail;
+namespace execution_policy_detail = gnfs::sieve::distributed_sieve_execution_policy_detail;
+namespace worker_launcher_detail = gnfs::sieve::distributed_sieve_worker_launcher_detail;
+namespace worker_process_detail = gnfs::sieve::distributed_sieve_worker_process_detail;
 namespace wave_detail = gnfs::sieve::distributed_sieve_resume_detail;
 namespace durable_record = gnfs::util::durable_immutable_record;
 using Digest = gnfs::util::Sha256Digest;
@@ -63,6 +74,8 @@ using PrivateLeaseBaseLockAt = wave_detail::DistributedSievePrivateLeaseBaseLock
 using PrivateLeaseReservationReceipt = wave_detail::DistributedSievePrivateLeaseReservationReceipt;
 using PrivateLeaseRecoveryEdge = wave_detail::DistributedSievePrivateLeaseRecoveryEdge;
 using WorkerAttemptStartReceipt = wave_detail::DistributedSieveWorkerAttemptStartReceipt;
+
+std::string worker_launch_test_executable;
 
 template <typename Type>
 concept HasClaimMember = requires(Type& value) { value.claim; };
@@ -82,6 +95,31 @@ static_assert(
     !std::is_constructible_v<WorkerAttemptStartReceipt, PrivateLeaseReservationReceipt&&>);
 static_assert(!std::is_constructible_v<WorkerAttemptStartReceipt, std::filesystem::path>);
 static_assert(!std::is_constructible_v<WorkerAttemptStartReceipt, Digest>);
+static_assert(
+    !std::is_default_constructible_v<worker_launcher_detail::DistributedSieveWorkerLaunchSlotV1>);
+static_assert(
+    !std::is_copy_constructible_v<worker_launcher_detail::DistributedSieveWorkerLaunchSlotV1>);
+static_assert(
+    !std::is_copy_assignable_v<worker_launcher_detail::DistributedSieveWorkerLaunchSlotV1>);
+static_assert(std::is_nothrow_move_constructible_v<
+              worker_launcher_detail::DistributedSieveWorkerLaunchSlotV1>);
+static_assert(
+    !std::is_move_assignable_v<worker_launcher_detail::DistributedSieveWorkerLaunchSlotV1>);
+static_assert(!std::is_default_constructible_v<
+              worker_launcher_detail::DistributedSieveWorkerLaunchRequestV1>);
+static_assert(
+    !std::is_copy_constructible_v<worker_launcher_detail::DistributedSieveWorkerLaunchRequestV1>);
+static_assert(std::is_nothrow_move_constructible_v<
+              worker_launcher_detail::DistributedSieveWorkerLaunchRequestV1>);
+static_assert(!std::is_default_constructible_v<
+              worker_launcher_detail::DistributedSieveLaunchedWorkerAttemptV1>);
+static_assert(
+    !std::is_copy_constructible_v<worker_launcher_detail::DistributedSieveLaunchedWorkerAttemptV1>);
+static_assert(std::is_nothrow_move_constructible_v<
+              worker_launcher_detail::DistributedSieveLaunchedWorkerAttemptV1>);
+static_assert(
+    !std::is_constructible_v<worker_launcher_detail::DistributedSieveLaunchedWorkerAttemptV1,
+                             WorkerAttemptStartReceipt&&>);
 static_assert(
     std::is_default_constructible_v<cleanup_detail::OOCPrivateHandoffCleanupAuthorizationBinding>);
 static_assert(
@@ -414,6 +452,319 @@ void check(bool condition, std::string_view expression, int line) {
 }
 
 #define CHECK(expression) check(static_cast<bool>(expression), #expression, __LINE__)
+
+#if !defined(_WIN32)
+
+inline constexpr std::string_view WORKER_LAUNCH_FAKE_CHILD_ARGUMENT = "--worker-launch-fake-child";
+inline constexpr std::string_view WORKER_LAUNCH_FAKE_CHILD_CLOSE_BASE_LOCK_AND_WAIT_ARGUMENT =
+    "--close-base-lock-and-wait";
+inline constexpr std::uint32_t WORKER_LAUNCH_FAKE_CHILD_REPORT_MAGIC = 0x474c4352U;
+inline constexpr std::size_t WORKER_LAUNCH_FAKE_CHILD_INPUT_LIMIT = 1024U * 1024U;
+inline constexpr int WORKER_LAUNCH_FAKE_CHILD_DESCRIPTOR_SCAN_LIMIT = 4096;
+
+inline constexpr std::uint32_t WORKER_LAUNCH_CHILD_BOOTSTRAP_VALID = 1U << 0U;
+inline constexpr std::uint32_t WORKER_LAUNCH_CHILD_MANIFEST_VALID = 1U << 1U;
+inline constexpr std::uint32_t WORKER_LAUNCH_CHILD_ROOT_IDENTITY_VALID = 1U << 2U;
+inline constexpr std::uint32_t WORKER_LAUNCH_CHILD_WAVE_LOCK_IDENTITY_VALID = 1U << 3U;
+inline constexpr std::uint32_t WORKER_LAUNCH_CHILD_BASE_LOCK_IDENTITY_VALID = 1U << 4U;
+inline constexpr std::uint32_t WORKER_LAUNCH_CHILD_WAVE_LOCK_SAME_OFD = 1U << 5U;
+inline constexpr std::uint32_t WORKER_LAUNCH_CHILD_BASE_LOCK_SAME_OFD = 1U << 6U;
+inline constexpr std::uint32_t WORKER_LAUNCH_CHILD_PACKAGE_METADATA_VALID = 1U << 7U;
+inline constexpr std::uint32_t WORKER_LAUNCH_CHILD_PACKAGE_IDENTITY_VALID = 1U << 8U;
+inline constexpr std::uint32_t WORKER_LAUNCH_CHILD_FIXED_FDS_NOT_CLOEXEC = 1U << 9U;
+inline constexpr std::uint32_t WORKER_LAUNCH_CHILD_NO_DESCRIPTOR_LEAK = 1U << 10U;
+inline constexpr std::uint32_t WORKER_LAUNCH_CHILD_BASE_LOCK_CLOSED = 1U << 11U;
+inline constexpr std::uint32_t WORKER_LAUNCH_CHILD_REQUIRED_FLAGS =
+    WORKER_LAUNCH_CHILD_BOOTSTRAP_VALID | WORKER_LAUNCH_CHILD_MANIFEST_VALID |
+    WORKER_LAUNCH_CHILD_ROOT_IDENTITY_VALID | WORKER_LAUNCH_CHILD_WAVE_LOCK_IDENTITY_VALID |
+    WORKER_LAUNCH_CHILD_BASE_LOCK_IDENTITY_VALID | WORKER_LAUNCH_CHILD_WAVE_LOCK_SAME_OFD |
+    WORKER_LAUNCH_CHILD_BASE_LOCK_SAME_OFD | WORKER_LAUNCH_CHILD_PACKAGE_METADATA_VALID |
+    WORKER_LAUNCH_CHILD_PACKAGE_IDENTITY_VALID | WORKER_LAUNCH_CHILD_FIXED_FDS_NOT_CLOEXEC |
+    WORKER_LAUNCH_CHILD_NO_DESCRIPTOR_LEAK;
+
+struct WorkerLaunchFakeChildReport final {
+    std::uint32_t magic = WORKER_LAUNCH_FAKE_CHILD_REPORT_MAGIC;
+    std::uint32_t flags = 0;
+    std::uint32_t chunk_id = 0;
+    std::uint32_t attempt_ordinal = 0;
+    std::int32_t first_unexpected_descriptor = -1;
+    std::int32_t native_error = 0;
+    Digest manifest_digest;
+    Digest work_digest;
+};
+
+static_assert(std::is_trivially_copyable_v<WorkerLaunchFakeChildReport>);
+
+[[nodiscard]] bool same_native_identity(const sieve::NativeIdentityV1& expected,
+                                        const struct stat& actual) noexcept {
+    return expected.volume == static_cast<std::uint64_t>(actual.st_dev) &&
+           expected.object == static_cast<std::uint64_t>(actual.st_ino) && expected.generation == 0;
+}
+
+[[nodiscard]] bool read_stream_bounded(int descriptor, std::vector<std::byte>& bytes,
+                                       std::size_t limit) noexcept {
+    bytes.clear();
+    std::array<std::byte, 4096> buffer{};
+    for (;;) {
+        ssize_t received = -1;
+        do {
+            received = ::read(descriptor, buffer.data(), buffer.size());
+        } while (received < 0 && errno == EINTR);
+        if (received < 0) {
+            return false;
+        }
+        if (received == 0) {
+            return true;
+        }
+        const auto count = static_cast<std::size_t>(received);
+        if (count > limit - std::min(limit, bytes.size())) {
+            return false;
+        }
+        try {
+            bytes.insert(bytes.end(), buffer.begin(),
+                         buffer.begin() + static_cast<std::ptrdiff_t>(count));
+        } catch (...) {
+            return false;
+        }
+    }
+}
+
+[[nodiscard]] bool read_regular_file_exact(int descriptor, std::vector<std::byte>& bytes) noexcept {
+    struct stat metadata{};
+    if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
+        static_cast<std::uint64_t>(metadata.st_size) >
+            static_cast<std::uint64_t>(WORKER_LAUNCH_FAKE_CHILD_INPUT_LIMIT)) {
+        return false;
+    }
+    try {
+        bytes.resize(static_cast<std::size_t>(metadata.st_size));
+    } catch (...) {
+        return false;
+    }
+    std::size_t consumed = 0;
+    while (consumed < bytes.size()) {
+        ssize_t received = -1;
+        do {
+            received = ::pread(descriptor, bytes.data() + consumed, bytes.size() - consumed,
+                               static_cast<off_t>(consumed));
+        } while (received < 0 && errno == EINTR);
+        if (received <= 0) {
+            return false;
+        }
+        consumed += static_cast<std::size_t>(received);
+    }
+    return true;
+}
+
+[[nodiscard]] bool write_exact_noexcept(int descriptor, const void* source,
+                                        std::size_t size) noexcept {
+    const auto* bytes = static_cast<const std::byte*>(source);
+    std::size_t produced = 0;
+    while (produced < size) {
+        ssize_t written = -1;
+        do {
+            written = ::write(descriptor, bytes + produced, size - produced);
+        } while (written < 0 && errno == EINTR);
+        if (written <= 0) {
+            return false;
+        }
+        produced += static_cast<std::size_t>(written);
+    }
+    return true;
+}
+
+[[nodiscard]] bool descriptor_retains_exclusive_lock(int descriptor) noexcept {
+    int result = -1;
+    do {
+        result = ::flock(descriptor, LOCK_EX | LOCK_NB);
+    } while (result < 0 && errno == EINTR);
+    return result == 0;
+}
+
+[[nodiscard]] bool fixed_descriptors_are_not_cloexec() noexcept {
+    for (int descriptor = 3; descriptor <= 6; ++descriptor) {
+        int flags = -1;
+        do {
+            flags = ::fcntl(descriptor, F_GETFD);
+        } while (flags < 0 && errno == EINTR);
+        if (flags < 0 || (flags & FD_CLOEXEC) != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] int first_open_worker_descriptor() noexcept {
+    for (int descriptor = 7; descriptor < WORKER_LAUNCH_FAKE_CHILD_DESCRIPTOR_SCAN_LIMIT;
+         ++descriptor) {
+        errno = 0;
+        if (::fcntl(descriptor, F_GETFD) >= 0 || errno != EBADF) {
+            return descriptor;
+        }
+    }
+    return -1;
+}
+
+[[nodiscard]] int run_worker_launch_fake_child(bool close_base_lock_and_wait = false) noexcept {
+    WorkerLaunchFakeChildReport report;
+    std::vector<std::byte> attempt_bytes;
+    if (!read_stream_bounded(STDIN_FILENO, attempt_bytes, WORKER_LAUNCH_FAKE_CHILD_INPUT_LIMIT)) {
+        report.native_error = errno;
+        (void)write_exact_noexcept(STDOUT_FILENO, &report, sizeof(report));
+        return 210;
+    }
+
+    const auto attempt_decoded = sieve::decode_distributed_sieve_record(attempt_bytes);
+    const auto* attempt = attempt_decoded && attempt_decoded.value.has_value()
+                              ? std::get_if<sieve::AttemptStartedV1>(&*attempt_decoded.value)
+                              : nullptr;
+    if (attempt == nullptr) {
+        (void)write_exact_noexcept(STDOUT_FILENO, &report, sizeof(report));
+        return 211;
+    }
+    report.flags |= WORKER_LAUNCH_CHILD_BOOTSTRAP_VALID;
+    report.chunk_id = attempt->chunk_id;
+    report.attempt_ordinal = attempt->attempt_ordinal;
+    report.manifest_digest = attempt->manifest_digest;
+
+    const std::string manifest_leaf(wave_detail::DISTRIBUTED_SIEVE_WAVE_MANIFEST_LEAF);
+    int manifest_fd = -1;
+    do {
+        manifest_fd = ::openat(3, manifest_leaf.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    } while (manifest_fd < 0 && errno == EINTR);
+    if (manifest_fd < 0) {
+        report.native_error = errno;
+        (void)write_exact_noexcept(STDOUT_FILENO, &report, sizeof(report));
+        return 212;
+    }
+    std::vector<std::byte> manifest_bytes;
+    const bool manifest_read = read_regular_file_exact(manifest_fd, manifest_bytes);
+    const int manifest_close_result = ::close(manifest_fd);
+    if (!manifest_read || manifest_close_result != 0) {
+        report.native_error = errno;
+        (void)write_exact_noexcept(STDOUT_FILENO, &report, sizeof(report));
+        return 213;
+    }
+    const auto manifest_decoded = sieve::decode_distributed_sieve_record(manifest_bytes);
+    const auto* manifest = manifest_decoded && manifest_decoded.value.has_value()
+                               ? std::get_if<sieve::WaveManifestV1>(&*manifest_decoded.value)
+                               : nullptr;
+    if (manifest == nullptr || manifest->self_digest != attempt->manifest_digest) {
+        (void)write_exact_noexcept(STDOUT_FILENO, &report, sizeof(report));
+        return 214;
+    }
+
+    const auto chunk =
+        std::ranges::find(manifest->chunks, attempt->chunk_id, &sieve::ChunkPlanV1::chunk_id);
+    if (chunk == manifest->chunks.end() || chunk->sq_begin != attempt->sq_begin ||
+        chunk->sq_end != attempt->sq_end) {
+        (void)write_exact_noexcept(STDOUT_FILENO, &report, sizeof(report));
+        return 215;
+    }
+    report.flags |= WORKER_LAUNCH_CHILD_MANIFEST_VALID;
+
+    struct stat root_metadata{};
+    struct stat wave_lock_metadata{};
+    struct stat base_lock_metadata{};
+    struct stat named_base_lock_metadata{};
+    struct stat package_metadata{};
+    if (::fstat(3, &root_metadata) != 0 || ::fstat(4, &wave_lock_metadata) != 0 ||
+        ::fstat(5, &base_lock_metadata) != 0 || ::fstat(6, &package_metadata) != 0) {
+        report.native_error = errno;
+        (void)write_exact_noexcept(STDOUT_FILENO, &report, sizeof(report));
+        return 216;
+    }
+    if (S_ISDIR(root_metadata.st_mode) &&
+        same_native_identity(manifest->wave_root_identity, root_metadata)) {
+        report.flags |= WORKER_LAUNCH_CHILD_ROOT_IDENTITY_VALID;
+    }
+    if (S_ISREG(wave_lock_metadata.st_mode) &&
+        same_native_identity(manifest->permanent_lock_identity, wave_lock_metadata)) {
+        report.flags |= WORKER_LAUNCH_CHILD_WAVE_LOCK_IDENTITY_VALID;
+    }
+
+    const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk->relative_artifact_stem, chunk->chunk_id, attempt->attempt_ordinal);
+    if (!names.has_value() || names->relative_lease_stem != attempt->lease.relative_stem) {
+        (void)write_exact_noexcept(STDOUT_FILENO, &report, sizeof(report));
+        return 217;
+    }
+    const std::string base_lock_leaf(names->base_lock_leaf);
+    if (::fstatat(3, base_lock_leaf.c_str(), &named_base_lock_metadata, AT_SYMLINK_NOFOLLOW) == 0 &&
+        S_ISREG(base_lock_metadata.st_mode) &&
+        base_lock_metadata.st_dev == named_base_lock_metadata.st_dev &&
+        base_lock_metadata.st_ino == named_base_lock_metadata.st_ino) {
+        report.flags |= WORKER_LAUNCH_CHILD_BASE_LOCK_IDENTITY_VALID;
+    }
+    if (descriptor_retains_exclusive_lock(4)) {
+        report.flags |= WORKER_LAUNCH_CHILD_WAVE_LOCK_SAME_OFD;
+    }
+    if (descriptor_retains_exclusive_lock(5)) {
+        report.flags |= WORKER_LAUNCH_CHILD_BASE_LOCK_SAME_OFD;
+    }
+
+    int package_status_flags = -1;
+    do {
+        package_status_flags = ::fcntl(6, F_GETFL);
+    } while (package_status_flags < 0 && errno == EINTR);
+    if (package_status_flags >= 0 && S_ISREG(package_metadata.st_mode) &&
+        package_metadata.st_nlink == 0 &&
+        (package_metadata.st_mode & static_cast<mode_t>(07777)) == 0400 &&
+        (package_status_flags & O_ACCMODE) == O_RDONLY) {
+        report.flags |= WORKER_LAUNCH_CHILD_PACKAGE_METADATA_VALID;
+    }
+
+    std::vector<std::byte> package_bytes;
+    if (!read_regular_file_exact(6, package_bytes)) {
+        report.native_error = errno;
+        (void)write_exact_noexcept(STDOUT_FILENO, &report, sizeof(report));
+        return 218;
+    }
+    const auto package = gnfs::sieve::distributed_sieve_work_package_codec_detail::
+        decode_distributed_sieve_work_package_v1(package_bytes);
+    if (package && package.package.has_value()) {
+        const auto work_digest = sieve::distributed_sieve_work_digest(package.package->identity);
+        if (work_digest && work_digest.digest.has_value() &&
+            *work_digest.digest == manifest->work_sha256 &&
+            package.package->witness.work_sha256 == manifest->work_sha256) {
+            report.flags |= WORKER_LAUNCH_CHILD_PACKAGE_IDENTITY_VALID;
+            report.work_digest = *work_digest.digest;
+        }
+    }
+    if (fixed_descriptors_are_not_cloexec()) {
+        report.flags |= WORKER_LAUNCH_CHILD_FIXED_FDS_NOT_CLOEXEC;
+    }
+    report.first_unexpected_descriptor = first_open_worker_descriptor();
+    if (report.first_unexpected_descriptor < 0) {
+        report.flags |= WORKER_LAUNCH_CHILD_NO_DESCRIPTOR_LEAK;
+    }
+
+    const bool required_valid =
+        (report.flags & WORKER_LAUNCH_CHILD_REQUIRED_FLAGS) == WORKER_LAUNCH_CHILD_REQUIRED_FLAGS;
+    if (close_base_lock_and_wait) {
+        const int close_result = ::close(5);
+        errno = 0;
+        if (close_result == 0 && ::fcntl(5, F_GETFD) < 0 && errno == EBADF) {
+            report.flags |= WORKER_LAUNCH_CHILD_BASE_LOCK_CLOSED;
+        }
+        if (!write_exact_noexcept(STDOUT_FILENO, &report, sizeof(report))) {
+            return 219;
+        }
+        if (!required_valid || (report.flags & WORKER_LAUNCH_CHILD_BASE_LOCK_CLOSED) == 0U) {
+            return 220;
+        }
+        for (;;) {
+            (void)::pause();
+        }
+    }
+
+    if (!write_exact_noexcept(STDOUT_FILENO, &report, sizeof(report))) {
+        return 219;
+    }
+    return required_valid ? 0 : 220;
+}
+
+#endif
 
 void require_ok(const Status& status, std::string_view context) {
     if (!status) {
@@ -4176,6 +4527,97 @@ void write_empty_foreign_leaf(const std::filesystem::path& path) {
     return draft;
 }
 
+[[nodiscard]] execution_policy_detail::DistributedSieveFrozenExecutionPolicyV1
+worker_launch_frozen_policy() {
+    execution_policy_detail::DistributedSieveExecutionPolicyEnvironmentSnapshotV1 snapshot;
+    snapshot.hardware_concurrency = 4;
+    auto frozen = execution_policy_detail::freeze_distributed_sieve_execution_policy_v1(snapshot);
+    if (!frozen || !frozen.policy.has_value()) {
+        fail("freeze worker-launch execution policy", __LINE__,
+             sieve::distributed_sieve_protocol_error_name(frozen.status.error));
+    }
+    return std::move(*frozen.policy);
+}
+
+[[nodiscard]] sieve::DistributedSieveWorkIdentityV1 worker_launch_work_identity(
+    const execution_policy_detail::DistributedSieveFrozenExecutionPolicyV1& frozen,
+    std::uint32_t worker_count = 3) {
+    if (worker_count == 0 || worker_count > 3) {
+        fail("worker-launch fixture count", __LINE__);
+    }
+    auto identity = make_work_identity();
+    identity.execution_policy = frozen.canonical;
+    identity.semantic_versions = execution_policy_detail::DISTRIBUTED_SIEVE_BOUND_WORK_VERSIONS_V1;
+    identity.distributed.worker_count = worker_count;
+    identity.distributed.chunks.clear();
+    identity.distributed.chunks.reserve(worker_count);
+    for (std::uint32_t index = 0; index < worker_count; ++index) {
+        const auto begin = static_cast<std::uint32_t>(2U + index);
+        identity.distributed.chunks.push_back(
+            sieve::ChunkPlanV1{index, begin, static_cast<std::uint32_t>(begin + 1U),
+                               "launch_chunk_" + std::to_string(index)});
+    }
+    identity.original_sq_bounds.start_index = 0;
+    identity.original_sq_bounds.end_index = static_cast<std::uint32_t>(2U + worker_count);
+    identity.effective_sq_bounds.start_index = 2;
+    identity.effective_sq_bounds.end_index = static_cast<std::uint32_t>(2U + worker_count);
+    identity.effective_sq_bounds.min_q = 0;
+    identity.effective_sq_bounds.max_q = std::numeric_limits<std::uint32_t>::max();
+    require_ok(sieve::validate_distributed_sieve_work_identity(identity),
+               "worker-launch work identity");
+    return identity;
+}
+
+[[nodiscard]] gnfs::core::PolynomialContext worker_launch_live_polynomial() {
+    std::vector<gnfs::core::Integer> coefficients;
+    coefficients.emplace_back("-5");
+    coefficients.emplace_back("3");
+    coefficients.emplace_back("1");
+    return gnfs::core::PolynomialContext{gnfs::core::Integer("1000036000099"),
+                                         std::move(coefficients), gnfs::core::Integer("10001"),
+                                         1.25};
+}
+
+[[nodiscard]] gnfs::factor_base::FactorBase worker_launch_live_factor_base() {
+    gnfs::factor_base::FactorBase factor_base(gnfs::core::FactorBaseParams{100, 200, 10'000, 16});
+    factor_base.reserve(2, 5);
+    factor_base.add_rational(2, 16);
+    factor_base.add_rational(5, 25);
+    factor_base.add_algebraic(7, 1, 37, 1);
+    factor_base.add_algebraic(11, 4, 55, 2);
+    factor_base.add_algebraic(211, 3, 61, 1);
+    factor_base.add_algebraic(223, std::numeric_limits<std::uint32_t>::max(), 67, 1);
+    factor_base.add_algebraic(227, 5, 71, 1);
+    factor_base.set_sieve_algebraic_count(2);
+    factor_base.build_index();
+    return factor_base;
+}
+
+[[nodiscard]] sieve::WaveManifestV1
+worker_launch_manifest_draft(const sieve::DistributedSieveWorkIdentityV1& identity) {
+    auto draft = wave_manifest_draft();
+    draft.work_sha256 = work_digest_or_fail(identity);
+    draft.effective_sq_begin = identity.distributed.chunks.front().sq_begin;
+    draft.effective_sq_end = identity.distributed.chunks.back().sq_end;
+    draft.worker_count = identity.distributed.worker_count;
+    draft.chunks = identity.distributed.chunks;
+    draft.sq_cap_per_worker = identity.distributed.sq_cap_per_worker;
+    draft.relation_cap_per_worker = identity.distributed.relation_cap_per_worker;
+    draft.max_worker_attempts = identity.distributed.max_worker_attempts;
+    draft.max_merge_build_attempts = identity.distributed.max_merge_build_attempts;
+    draft.max_consumption_attempts = identity.distributed.max_consumption_attempts;
+    draft.canonical_naming_version = identity.semantic_versions.chunking_version;
+    draft.retry_policy_version = identity.semantic_versions.retry_policy_version;
+    draft.ooc_format_version = identity.semantic_versions.ooc_format_version;
+    draft.relation_serialization_version =
+        identity.semantic_versions.relation_serialization_version;
+    draft.handoff_version = identity.semantic_versions.handoff_version;
+    draft.receipt_version = identity.semantic_versions.completion_version;
+    draft.digest_version = identity.semantic_versions.digest_version;
+    draft.merge_policy_version = identity.semantic_versions.merge_policy_version;
+    return draft;
+}
+
 [[nodiscard]] std::string
 wave_diagnostic_detail(const wave_detail::DistributedSieveWaveStoreDiagnostic& diagnostic) {
     std::string detail(wave_detail::distributed_sieve_wave_store_status_name(diagnostic.status));
@@ -5500,6 +5942,18 @@ void require_wave_reservation_receipt_consumed(const PrivateLeaseReservationRece
     CHECK(!receipt.owned_by_current_process());
     require_wave_status(receipt.revalidate(),
                         wave_detail::DistributedSieveWaveStoreStatus::invalid_request, context);
+}
+
+[[nodiscard]] WorkerAttemptStartReceipt
+publish_worker_launch_receipt(wave_detail::DistributedSieveWaveStore& store, std::uint32_t chunk_id,
+                              std::string_view context) {
+    auto reservation = reserve_wave_attempt_p8(store, chunk_id, 0, context);
+    auto started = wave_detail::publish_worker_attempt_started(std::move(reservation));
+    require_wave_reservation_receipt_consumed(reservation, context);
+    if (!started || !started.receipt.has_value()) {
+        fail(context, __LINE__, wave_diagnostic_detail(started.diagnostic));
+    }
+    return std::move(*started.receipt);
 }
 
 [[nodiscard]] durable_record::RecordSnapshot
@@ -13244,6 +13698,804 @@ void test_wave_store_worker_attempt_start_successor_replacements() {
     }
 }
 
+class WorkerLaunchFixture final {
+public:
+    WorkerLaunchFixture(std::string_view label, std::uint32_t worker_count)
+        : frozen(worker_launch_frozen_policy()),
+          identity(worker_launch_work_identity(frozen, worker_count)),
+          polynomial(worker_launch_live_polynomial()),
+          factor_base(worker_launch_live_factor_base()), root(temp.path() / std::string(label)),
+          opened(wave_detail::DistributedSieveWaveStore::create(
+              root, worker_launch_manifest_draft(identity))) {}
+
+    [[nodiscard]] wave_detail::DistributedSieveWaveStore& store() {
+        return require_wave_ready(opened, "create worker-launch WaveStore fixture");
+    }
+
+    WaveStoreTempDirectory temp;
+    execution_policy_detail::DistributedSieveFrozenExecutionPolicyV1 frozen;
+    sieve::DistributedSieveWorkIdentityV1 identity;
+    gnfs::core::PolynomialContext polynomial;
+    gnfs::factor_base::FactorBase factor_base;
+    std::filesystem::path root;
+    wave_detail::DistributedSieveWaveStoreOpenResult opened;
+};
+
+struct WorkerLauncherHookContext final {
+    std::size_t before_carrier_calls = 0;
+    std::size_t after_carrier_calls = 0;
+    std::size_t before_spawn_calls = 0;
+    std::size_t residue_trigger_slot =
+        worker_launcher_detail::DISTRIBUTED_SIEVE_WORKER_LAUNCH_NO_SLOT;
+    std::size_t failed_spawn_slot = worker_launcher_detail::DISTRIBUTED_SIEVE_WORKER_LAUNCH_NO_SLOT;
+    std::filesystem::path residue_target_path;
+    std::size_t conflict_slot = worker_launcher_detail::DISTRIBUTED_SIEVE_WORKER_LAUNCH_NO_SLOT;
+    std::filesystem::path conflict_path;
+    std::size_t directory_replacement_slot =
+        worker_launcher_detail::DISTRIBUTED_SIEVE_WORKER_LAUNCH_NO_SLOT;
+    std::filesystem::path canonical_directory;
+    std::filesystem::path displaced_directory;
+    int hook_error = 0;
+    bool residue_created = false;
+    bool conflict_created = false;
+    bool directory_replaced = false;
+};
+
+void observe_worker_launch_before_carrier(std::size_t, void* opaque) noexcept {
+    auto& context = *static_cast<WorkerLauncherHookContext*>(opaque);
+    ++context.before_carrier_calls;
+}
+
+void inject_worker_launch_before_carrier_conflict(std::size_t slot, void* opaque) noexcept {
+    auto& context = *static_cast<WorkerLauncherHookContext*>(opaque);
+    ++context.before_carrier_calls;
+    if (slot != context.conflict_slot || context.conflict_created) {
+        return;
+    }
+    int descriptor = -1;
+    do {
+        descriptor = ::open(context.conflict_path.c_str(),
+                            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    } while (descriptor < 0 && errno == EINTR);
+    if (descriptor < 0) {
+        context.hook_error = errno;
+        return;
+    }
+    constexpr std::array<std::byte, 7> foreign{std::byte{0x66}, std::byte{0x6f}, std::byte{0x72},
+                                               std::byte{0x65}, std::byte{0x69}, std::byte{0x67},
+                                               std::byte{0x6e}};
+    std::size_t produced = 0;
+    while (produced < foreign.size()) {
+        ssize_t written = -1;
+        do {
+            written = ::write(descriptor, foreign.data() + produced, foreign.size() - produced);
+        } while (written < 0 && errno == EINTR);
+        if (written <= 0) {
+            context.hook_error = written < 0 ? errno : EIO;
+            (void)::close(descriptor);
+            return;
+        }
+        produced += static_cast<std::size_t>(written);
+    }
+    if (::close(descriptor) != 0) {
+        context.hook_error = errno;
+        return;
+    }
+    context.conflict_created = true;
+}
+
+void inject_worker_launch_named_residue(std::size_t slot, void* opaque) noexcept {
+    auto& context = *static_cast<WorkerLauncherHookContext*>(opaque);
+    ++context.after_carrier_calls;
+    if (slot != context.residue_trigger_slot || context.residue_created) {
+        return;
+    }
+    int descriptor = -1;
+    do {
+        descriptor = ::open(context.residue_target_path.c_str(),
+                            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0400);
+    } while (descriptor < 0 && errno == EINTR);
+    if (descriptor < 0) {
+        context.hook_error = errno;
+        return;
+    }
+    constexpr std::array<std::byte, 4> residue{std::byte{0x73}, std::byte{0x74}, std::byte{0x6f},
+                                               std::byte{0x70}};
+    std::size_t produced = 0;
+    while (produced < residue.size()) {
+        ssize_t written = -1;
+        do {
+            written = ::write(descriptor, residue.data() + produced, residue.size() - produced);
+        } while (written < 0 && errno == EINTR);
+        if (written <= 0) {
+            context.hook_error = written < 0 ? errno : EIO;
+            (void)::close(descriptor);
+            return;
+        }
+        produced += static_cast<std::size_t>(written);
+    }
+    if (::close(descriptor) != 0) {
+        context.hook_error = errno;
+        return;
+    }
+    context.residue_created = true;
+}
+
+void replace_worker_launch_directory_after_carrier(std::size_t slot, void* opaque) noexcept {
+    auto& context = *static_cast<WorkerLauncherHookContext*>(opaque);
+    ++context.after_carrier_calls;
+    if (slot != context.directory_replacement_slot || context.directory_replaced) {
+        return;
+    }
+
+    std::error_code error;
+    std::filesystem::rename(context.canonical_directory, context.displaced_directory, error);
+    if (error) {
+        context.hook_error = error.value();
+        return;
+    }
+    if (!std::filesystem::create_directory(context.canonical_directory, error) || error) {
+        context.hook_error = error ? error.value() : EEXIST;
+        return;
+    }
+    if (::chmod(context.canonical_directory.c_str(), 0700) != 0) {
+        context.hook_error = errno;
+        return;
+    }
+    context.directory_replaced = true;
+}
+
+[[nodiscard]] int fail_selected_worker_spawn(std::size_t slot, void* opaque) noexcept {
+    auto& context = *static_cast<WorkerLauncherHookContext*>(opaque);
+    ++context.before_spawn_calls;
+    return slot == context.failed_spawn_slot ? EAGAIN : 0;
+}
+
+[[nodiscard]] WorkerLaunchFakeChildReport read_worker_launch_child_report_frame(int descriptor) {
+    WorkerLaunchFakeChildReport report;
+    auto* destination = reinterpret_cast<std::byte*>(&report);
+    std::size_t consumed = 0;
+    while (consumed < sizeof(report)) {
+        ssize_t received = -1;
+        do {
+            received = ::read(descriptor, destination + consumed, sizeof(report) - consumed);
+        } while (received < 0 && errno == EINTR);
+        if (received <= 0) {
+            fail("read complete worker-launch child report", __LINE__,
+                 received < 0 ? std::generic_category().message(errno) : "unexpected EOF");
+        }
+        consumed += static_cast<std::size_t>(received);
+    }
+    return report;
+}
+
+[[nodiscard]] WorkerLaunchFakeChildReport read_worker_launch_child_report(int descriptor) {
+    const auto report = read_worker_launch_child_report_frame(descriptor);
+    std::byte trailing{};
+    ssize_t received = -1;
+    do {
+        received = ::read(descriptor, &trailing, sizeof(trailing));
+    } while (received < 0 && errno == EINTR);
+    CHECK(received == 0);
+    return report;
+}
+
+void require_launched_worker_child_success(
+    worker_launcher_detail::DistributedSieveLaunchedWorkerAttemptV1& worker,
+    const Digest& expected_work_digest) {
+    const auto record = worker.record();
+    CHECK(worker.process_id() > 0);
+    CHECK(worker.report_descriptor() >= 0);
+    require_wave_status(worker.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "launched worker retains exact attempt receipt");
+
+    const auto waited = worker.wait_terminal();
+    CHECK(waited.reaped);
+    CHECK(waited.success);
+    CHECK(waited.exit_status == 0);
+    CHECK(waited.signal == 0);
+    CHECK(waited.native_error == 0);
+
+    const int report_descriptor = worker.release_report_descriptor();
+    CHECK(report_descriptor >= 0);
+    WaveSnapshotFd report_fd(report_descriptor);
+    const auto report = read_worker_launch_child_report(report_fd.get());
+    CHECK(report.magic == WORKER_LAUNCH_FAKE_CHILD_REPORT_MAGIC);
+    CHECK((report.flags & WORKER_LAUNCH_CHILD_REQUIRED_FLAGS) ==
+          WORKER_LAUNCH_CHILD_REQUIRED_FLAGS);
+    CHECK(report.first_unexpected_descriptor == -1);
+    CHECK(report.native_error == 0);
+    CHECK(report.chunk_id == record.chunk_id);
+    CHECK(report.attempt_ordinal == record.attempt_ordinal);
+    CHECK(report.manifest_digest == record.manifest_digest);
+    CHECK(report.work_digest == expected_work_digest);
+    CHECK(worker.report_descriptor() == -1);
+    require_wave_status(worker.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "terminal child cannot release the retained attempt receipt");
+}
+
+[[nodiscard]] std::vector<worker_launcher_detail::DistributedSieveWorkerLaunchSlotV1>
+make_worker_launch_slots(wave_detail::DistributedSieveWaveStore& store,
+                         std::span<const std::uint32_t> chunk_ids,
+                         std::vector<sieve::AttemptStartedV1>* records = nullptr) {
+    std::vector<worker_launcher_detail::DistributedSieveWorkerLaunchSlotV1> slots;
+    slots.reserve(chunk_ids.size());
+    if (records != nullptr) {
+        records->clear();
+        records->reserve(chunk_ids.size());
+    }
+    for (const auto chunk_id : chunk_ids) {
+        auto receipt =
+            publish_worker_launch_receipt(store, chunk_id, "publish worker-launch receipt");
+        if (records != nullptr) {
+            records->push_back(receipt.record());
+        }
+        slots.emplace_back(std::move(receipt), std::vector<std::string>{
+                                                   std::string(WORKER_LAUNCH_FAKE_CHILD_ARGUMENT)});
+    }
+    return slots;
+}
+
+[[nodiscard]] std::filesystem::path worker_launch_package_path(const std::filesystem::path& root,
+                                                               const sieve::ChunkPlanV1& chunk,
+                                                               std::uint32_t attempt_ordinal = 0) {
+    const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk.relative_artifact_stem, chunk.chunk_id, attempt_ordinal);
+    CHECK(names.has_value());
+    return root / names->private_directory_leaf /
+           std::string(gnfs::sieve::distributed_sieve_worker_work_package_file_detail::
+                           DISTRIBUTED_SIEVE_WORKER_WORK_PACKAGE_FILE_LEAF_V1);
+}
+
+[[nodiscard]] bool worker_process_is_running(pid_t process) noexcept {
+    int status = 0;
+    pid_t observed = -1;
+    do {
+        observed = ::waitpid(process, &status, WNOHANG);
+    } while (observed < 0 && errno == EINTR);
+    return observed == 0;
+}
+
+void terminate_worker_process(pid_t process) noexcept {
+    if (process <= 0) {
+        return;
+    }
+    int signal_result = -1;
+    do {
+        signal_result = ::kill(process, SIGKILL);
+    } while (signal_result < 0 && errno == EINTR);
+    int status = 0;
+    (void)wait_for_child(process, status);
+}
+
+[[nodiscard]] int run_worker_launch_abandoned_composite_supervisor() noexcept {
+    pid_t worker_process = -1;
+    bool worker_reaped = false;
+    try {
+        WorkerLaunchFixture fixture("worker-launch-abandoned-composite", 1);
+        auto& store = fixture.store();
+        auto receipt =
+            publish_worker_launch_receipt(store, 0, "publish abandoned-composite receipt");
+        const auto record = receipt.record();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            fixture.identity.distributed.chunks[0].relative_artifact_stem, 0, 0);
+        CHECK(names.has_value());
+        const auto base_lock_path = fixture.root / names->base_lock_leaf;
+
+        std::vector<worker_launcher_detail::DistributedSieveWorkerLaunchSlotV1> slots;
+        slots.emplace_back(
+            std::move(receipt),
+            std::vector<std::string>{
+                std::string(WORKER_LAUNCH_FAKE_CHILD_ARGUMENT),
+                std::string(WORKER_LAUNCH_FAKE_CHILD_CLOSE_BASE_LOCK_AND_WAIT_ARGUMENT),
+            });
+        worker_launcher_detail::DistributedSieveWorkerLaunchRequestV1 request(
+            worker_launch_test_executable, std::move(slots));
+        auto launched = store.launch_worker_process_batch_v1(std::move(request), fixture.identity,
+                                                             fixture.frozen, fixture.polynomial,
+                                                             fixture.factor_base);
+        CHECK(launched);
+        CHECK(launched.children.size() == 1);
+        CHECK(launched.children[0]);
+        CHECK(launched.children[0].worker.has_value());
+
+        auto& worker = *launched.children[0].worker;
+        worker_process = worker.process_id();
+        CHECK(worker_process > 0);
+        const int report_descriptor = worker.report_descriptor();
+        CHECK(report_descriptor >= 0);
+        const auto report = read_worker_launch_child_report_frame(report_descriptor);
+        CHECK(report.magic == WORKER_LAUNCH_FAKE_CHILD_REPORT_MAGIC);
+        CHECK((report.flags & WORKER_LAUNCH_CHILD_REQUIRED_FLAGS) ==
+              WORKER_LAUNCH_CHILD_REQUIRED_FLAGS);
+        CHECK((report.flags & WORKER_LAUNCH_CHILD_BASE_LOCK_CLOSED) != 0U);
+        CHECK(report.first_unexpected_descriptor == -1);
+        CHECK(report.native_error == 0);
+        CHECK(report.chunk_id == record.chunk_id);
+        CHECK(report.attempt_ordinal == record.attempt_ordinal);
+        CHECK(report.manifest_digest == record.manifest_digest);
+        CHECK(report.work_digest == work_digest_or_fail(fixture.identity));
+        CHECK(worker_process_is_running(worker_process));
+        CHECK(relation_base_lock_reports_busy(base_lock_path));
+
+        launched.children[0].worker.reset();
+        CHECK(worker_process_is_running(worker_process));
+        CHECK(relation_base_lock_reports_busy(base_lock_path));
+
+        CHECK(::kill(worker_process, SIGTERM) == 0);
+        int worker_status = 0;
+        CHECK(wait_for_child(worker_process, worker_status));
+        worker_reaped = true;
+        CHECK(WIFSIGNALED(worker_status));
+        CHECK(WTERMSIG(worker_status) == SIGTERM);
+        CHECK(relation_base_lock_reports_busy(base_lock_path));
+        require_wave_status(
+            store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+            "abandoned launched-worker receipt remains quarantined after child reap");
+        return 0;
+    } catch (const std::exception& error) {
+        std::cerr << "abandoned-composite supervisor failure: " << error.what() << '\n';
+    } catch (...) {
+        std::cerr << "abandoned-composite supervisor failure: unknown exception\n";
+    }
+    if (!worker_reaped) {
+        terminate_worker_process(worker_process);
+    }
+    return 98;
+}
+
+void test_wave_store_worker_launcher_abandoned_composite_quarantines_receipt() {
+    const pid_t supervisor = ::fork();
+    CHECK(supervisor >= 0);
+    if (supervisor == 0) {
+        ::_exit(run_worker_launch_abandoned_composite_supervisor());
+    }
+
+    int supervisor_status = 0;
+    CHECK(wait_for_child(supervisor, supervisor_status));
+    CHECK(WIFEXITED(supervisor_status));
+    CHECK(WEXITSTATUS(supervisor_status) == 0);
+}
+
+void test_wave_store_worker_launcher_close_all_unavailable_fails_before_gate() {
+    WorkerLaunchFixture fixture("worker-launch-close-all-unavailable", 1);
+    auto& store = fixture.store();
+    constexpr std::array<std::uint32_t, 1> chunks{0};
+    std::vector<sieve::AttemptStartedV1> records;
+    auto slots = make_worker_launch_slots(store, chunks, &records);
+    const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        fixture.identity.distributed.chunks[0].relative_artifact_stem, 0, 0);
+    CHECK(names.has_value());
+    const auto base_lock_path = fixture.root / names->base_lock_leaf;
+    CHECK(relation_base_lock_reports_busy(base_lock_path));
+
+    WorkerLauncherHookContext hooks;
+    const bool close_all_supported = worker_process_detail::
+        distributed_sieve_worker_process_fixed_capability_close_all_supported();
+    worker_launcher_detail::DistributedSieveWorkerLaunchRequestV1 request(
+        worker_launch_test_executable, std::move(slots),
+        worker_launcher_detail::DistributedSieveWorkerLauncherTestHooksV1{
+            .before_spawn = fail_selected_worker_spawn,
+            .context = &hooks,
+            .force_fixed_capability_close_all_unavailable = close_all_supported,
+        });
+    auto rejected =
+        store.launch_worker_process_batch_v1(std::move(request), fixture.identity, fixture.frozen,
+                                             fixture.polynomial, fixture.factor_base);
+    CHECK(!rejected);
+    CHECK(rejected.disposition ==
+          worker_launcher_detail::DistributedSieveWorkerLaunchDispositionV1::failed_before_gate);
+    CHECK(rejected.diagnostic.phase ==
+          worker_launcher_detail::DistributedSieveWorkerLaunchPhaseV1::process_preparation);
+    CHECK(rejected.diagnostic.slot ==
+          worker_launcher_detail::DISTRIBUTED_SIEVE_WORKER_LAUNCH_NO_SLOT);
+    CHECK(rejected.diagnostic.transport.error ==
+          worker_process_detail::DistributedSieveWorkerProcessTransportError::platform_unavailable);
+    CHECK(rejected.diagnostic.transport.native_error == ENOTSUP);
+    CHECK(!rejected.diagnostic.reconciliation_required);
+    CHECK(rejected.children.size() == 1);
+    CHECK(!rejected.children[0].worker.has_value());
+    CHECK(hooks.before_spawn_calls == 0);
+    CHECK(!relation_base_lock_reports_busy(base_lock_path));
+    CHECK(!entry_exists_no_follow(
+        worker_launch_package_path(fixture.root, fixture.identity.distributed.chunks[0])));
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "close-all refusal releases the unconsumed launch receipt normally");
+}
+
+void test_wave_store_worker_launcher_happy_path() {
+    WorkerLaunchFixture fixture("worker-launch-happy", 1);
+    auto& store = fixture.store();
+    constexpr std::array<std::uint32_t, 1> chunks{0};
+    std::vector<sieve::AttemptStartedV1> records;
+    auto slots = make_worker_launch_slots(store, chunks, &records);
+    const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        fixture.identity.distributed.chunks[0].relative_artifact_stem, 0, 0);
+    CHECK(names.has_value());
+
+    worker_launcher_detail::DistributedSieveWorkerLaunchRequestV1 request(
+        worker_launch_test_executable, std::move(slots));
+    auto launched =
+        store.launch_worker_process_batch_v1(std::move(request), fixture.identity, fixture.frozen,
+                                             fixture.polynomial, fixture.factor_base);
+    CHECK(launched);
+    CHECK(launched.disposition ==
+          worker_launcher_detail::DistributedSieveWorkerLaunchDispositionV1::all);
+    CHECK(launched.diagnostic.phase ==
+          worker_launcher_detail::DistributedSieveWorkerLaunchPhaseV1::none);
+    CHECK(launched.children.size() == 1);
+    CHECK(launched.children[0]);
+    CHECK(launched.children[0].chunk_id == 0);
+    CHECK(launched.children[0].attempt_ordinal == 0);
+    CHECK(launched.children[0].attempt_started_digest == records[0].self_digest);
+    require_launched_worker_child_success(*launched.children[0].worker,
+                                          work_digest_or_fail(fixture.identity));
+    CHECK(relation_base_lock_reports_busy(fixture.root / names->base_lock_leaf));
+    CHECK(!entry_exists_no_follow(
+        worker_launch_package_path(fixture.root, fixture.identity.distributed.chunks[0])));
+
+    launched.children[0].worker.reset();
+    CHECK(!relation_base_lock_reports_busy(fixture.root / names->base_lock_leaf));
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "happy launch leaves only canonical P8 inventory");
+}
+
+void test_wave_store_worker_launcher_binding_mismatch_spawns_zero() {
+    WorkerLaunchFixture fixture("worker-launch-binding-mismatch", 1);
+    auto& store = fixture.store();
+    constexpr std::array<std::uint32_t, 1> chunks{0};
+    std::vector<sieve::AttemptStartedV1> records;
+    auto slots = make_worker_launch_slots(store, chunks, &records);
+    WorkerLauncherHookContext hooks;
+    std::vector<gnfs::core::Integer> mismatched_coefficients;
+    mismatched_coefficients.emplace_back("-5");
+    mismatched_coefficients.emplace_back("3");
+    mismatched_coefficients.emplace_back("1");
+    gnfs::core::PolynomialContext mismatched_polynomial{gnfs::core::Integer("1000036000099"),
+                                                        std::move(mismatched_coefficients),
+                                                        gnfs::core::Integer("10002"), 1.25};
+    worker_launcher_detail::DistributedSieveWorkerLaunchRequestV1 request(
+        worker_launch_test_executable, std::move(slots),
+        worker_launcher_detail::DistributedSieveWorkerLauncherTestHooksV1{
+            .before_spawn = fail_selected_worker_spawn,
+            .context = &hooks,
+        });
+
+    auto rejected =
+        store.launch_worker_process_batch_v1(std::move(request), fixture.identity, fixture.frozen,
+                                             mismatched_polynomial, fixture.factor_base);
+    CHECK(!rejected);
+    CHECK(rejected.disposition ==
+          worker_launcher_detail::DistributedSieveWorkerLaunchDispositionV1::failed_before_gate);
+    CHECK(rejected.diagnostic.phase ==
+          worker_launcher_detail::DistributedSieveWorkerLaunchPhaseV1::work_binding);
+    CHECK(!rejected.diagnostic.protocol);
+    CHECK(rejected.children.size() == 1);
+    CHECK(!rejected.children[0].worker.has_value());
+    CHECK(hooks.before_spawn_calls == 0);
+    const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        fixture.identity.distributed.chunks[0].relative_artifact_stem, 0, 0);
+    CHECK(names.has_value());
+    CHECK(!relation_base_lock_reports_busy(fixture.root / names->base_lock_leaf));
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "pre-gate binding rejection leaves classifiable P8");
+}
+
+void test_wave_store_worker_launcher_invalid_initial_receipt_spawns_zero() {
+    WorkerLaunchFixture fixture("worker-launch-invalid-initial-receipt", 1);
+    auto& store = fixture.store();
+    auto receipt = publish_worker_launch_receipt(store, 0, "publish invalidated launch receipt");
+    const auto record = receipt.record();
+    const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        fixture.identity.distributed.chunks[0].relative_artifact_stem, 0, 0);
+    CHECK(names.has_value());
+    WaveSameBytesReplacementContext replacement{
+        .canonical = fixture.root / names->canonical_record_leaf,
+        .displaced = fixture.temp.path() / "displaced-launch-attempt-record",
+        .bytes = read_file_bytes(fixture.root / names->canonical_record_leaf),
+    };
+    replace_marker_with_same_bytes_after_first_inventory(&replacement);
+    CHECK(replacement.invoked);
+    CHECK(replacement.replaced);
+    CHECK(replacement.native_error == 0);
+
+    std::vector<worker_launcher_detail::DistributedSieveWorkerLaunchSlotV1> slots;
+    slots.emplace_back(std::move(receipt),
+                       std::vector<std::string>{std::string(WORKER_LAUNCH_FAKE_CHILD_ARGUMENT)});
+    WorkerLauncherHookContext hooks;
+    worker_launcher_detail::DistributedSieveWorkerLaunchRequestV1 request(
+        worker_launch_test_executable, std::move(slots),
+        worker_launcher_detail::DistributedSieveWorkerLauncherTestHooksV1{
+            .before_spawn = fail_selected_worker_spawn,
+            .context = &hooks,
+        });
+    auto rejected =
+        store.launch_worker_process_batch_v1(std::move(request), fixture.identity, fixture.frozen,
+                                             fixture.polynomial, fixture.factor_base);
+    CHECK(!rejected);
+    CHECK(rejected.disposition ==
+          worker_launcher_detail::DistributedSieveWorkerLaunchDispositionV1::armed_no_child);
+    CHECK(
+        rejected.diagnostic.phase ==
+        worker_launcher_detail::DistributedSieveWorkerLaunchPhaseV1::initial_receipt_revalidation);
+    CHECK(rejected.diagnostic.slot == 0);
+    CHECK(rejected.diagnostic.wave_store.status ==
+          wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict);
+    CHECK(rejected.children.size() == 1);
+    CHECK(!rejected.children[0].worker.has_value());
+    CHECK(rejected.children[0].attempt_started_digest == record.self_digest);
+    CHECK(hooks.before_spawn_calls == 0);
+    CHECK(!relation_base_lock_reports_busy(fixture.root / names->base_lock_leaf));
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "replacement record remains classifiable after gate rejection");
+}
+
+void test_wave_store_worker_launcher_post_carrier_residue_stops() {
+    WorkerLaunchFixture fixture("worker-launch-post-carrier-residue", 1);
+    auto& store = fixture.store();
+    constexpr std::array<std::uint32_t, 1> chunks{0};
+    std::vector<sieve::AttemptStartedV1> records;
+    auto slots = make_worker_launch_slots(store, chunks, &records);
+    WorkerLauncherHookContext hooks{
+        .residue_trigger_slot = 0,
+        .residue_target_path =
+            worker_launch_package_path(fixture.root, fixture.identity.distributed.chunks[0]),
+    };
+    worker_launcher_detail::DistributedSieveWorkerLaunchRequestV1 request(
+        worker_launch_test_executable, std::move(slots),
+        worker_launcher_detail::DistributedSieveWorkerLauncherTestHooksV1{
+            .before_carrier = observe_worker_launch_before_carrier,
+            .after_carrier = inject_worker_launch_named_residue,
+            .before_spawn = fail_selected_worker_spawn,
+            .context = &hooks,
+        });
+    auto stopped =
+        store.launch_worker_process_batch_v1(std::move(request), fixture.identity, fixture.frozen,
+                                             fixture.polynomial, fixture.factor_base);
+    CHECK(!stopped);
+    CHECK(stopped.disposition ==
+          worker_launcher_detail::DistributedSieveWorkerLaunchDispositionV1::armed_no_child);
+    CHECK(stopped.diagnostic.phase ==
+          worker_launcher_detail::DistributedSieveWorkerLaunchPhaseV1::attempt_directory_binding);
+    CHECK(stopped.diagnostic.slot == 0);
+    CHECK(stopped.diagnostic.reconciliation_required);
+    CHECK(stopped.diagnostic.wave_store.status ==
+          wave_detail::DistributedSieveWaveStoreStatus::reconciliation_required);
+    CHECK(stopped.children.size() == 1);
+    CHECK(!stopped.children[0].worker.has_value());
+    CHECK(hooks.before_carrier_calls == 1);
+    CHECK(hooks.after_carrier_calls == 1);
+    CHECK(hooks.before_spawn_calls == 0);
+    CHECK(hooks.hook_error == 0);
+    CHECK(hooks.residue_created);
+    CHECK(entry_exists_no_follow(hooks.residue_target_path));
+
+    CHECK(std::filesystem::remove(hooks.residue_target_path));
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "explicit residue removal restores closed P8 inventory");
+}
+
+void test_wave_store_worker_launcher_later_slot_reopens_earlier_fixed_leaf() {
+    WorkerLaunchFixture fixture("worker-launch-cross-slot-post-carrier-residue", 2);
+    auto& store = fixture.store();
+    constexpr std::array<std::uint32_t, 2> chunks{0, 1};
+    std::vector<sieve::AttemptStartedV1> records;
+    auto slots = make_worker_launch_slots(store, chunks, &records);
+    const auto slot_zero_package =
+        worker_launch_package_path(fixture.root, fixture.identity.distributed.chunks[0]);
+    const auto slot_one_package =
+        worker_launch_package_path(fixture.root, fixture.identity.distributed.chunks[1]);
+    WorkerLauncherHookContext hooks{
+        .residue_trigger_slot = 1,
+        .residue_target_path = slot_zero_package,
+    };
+    worker_launcher_detail::DistributedSieveWorkerLaunchRequestV1 request(
+        worker_launch_test_executable, std::move(slots),
+        worker_launcher_detail::DistributedSieveWorkerLauncherTestHooksV1{
+            .after_carrier = inject_worker_launch_named_residue,
+            .before_spawn = fail_selected_worker_spawn,
+            .context = &hooks,
+        });
+    auto stopped =
+        store.launch_worker_process_batch_v1(std::move(request), fixture.identity, fixture.frozen,
+                                             fixture.polynomial, fixture.factor_base);
+    CHECK(!stopped);
+    CHECK(stopped.disposition ==
+          worker_launcher_detail::DistributedSieveWorkerLaunchDispositionV1::armed_no_child);
+    CHECK(stopped.diagnostic.phase ==
+          worker_launcher_detail::DistributedSieveWorkerLaunchPhaseV1::attempt_directory_binding);
+    CHECK(stopped.diagnostic.slot == 0);
+    CHECK(stopped.diagnostic.reconciliation_required);
+    CHECK(stopped.diagnostic.wave_store.status ==
+          wave_detail::DistributedSieveWaveStoreStatus::reconciliation_required);
+    CHECK(stopped.children.size() == 2);
+    CHECK(!stopped.children[0].worker.has_value());
+    CHECK(!stopped.children[1].worker.has_value());
+    CHECK(hooks.after_carrier_calls == 2);
+    CHECK(hooks.before_spawn_calls == 0);
+    CHECK(hooks.hook_error == 0);
+    CHECK(hooks.residue_created);
+    CHECK(entry_exists_no_follow(slot_zero_package));
+    CHECK(read_file_bytes(slot_zero_package).size() == 4);
+    CHECK(!entry_exists_no_follow(slot_one_package));
+
+    CHECK(std::filesystem::remove(slot_zero_package));
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "explicit cross-slot residue removal restores closed batch inventory");
+}
+
+void test_wave_store_worker_launcher_post_carrier_directory_replacement_requires_reconciliation() {
+    WorkerLaunchFixture fixture("worker-launch-post-carrier-directory-replacement", 1);
+    auto& store = fixture.store();
+    constexpr std::array<std::uint32_t, 1> chunks{0};
+    std::vector<sieve::AttemptStartedV1> records;
+    auto slots = make_worker_launch_slots(store, chunks, &records);
+    const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        fixture.identity.distributed.chunks[0].relative_artifact_stem, 0, 0);
+    CHECK(names.has_value());
+    WorkerLauncherHookContext hooks{
+        .directory_replacement_slot = 0,
+        .canonical_directory = fixture.root / names->private_directory_leaf,
+        .displaced_directory = fixture.temp.path() / "displaced-post-carrier-attempt-directory",
+    };
+    worker_launcher_detail::DistributedSieveWorkerLaunchRequestV1 request(
+        worker_launch_test_executable, std::move(slots),
+        worker_launcher_detail::DistributedSieveWorkerLauncherTestHooksV1{
+            .after_carrier = replace_worker_launch_directory_after_carrier,
+            .before_spawn = fail_selected_worker_spawn,
+            .context = &hooks,
+        });
+    auto stopped =
+        store.launch_worker_process_batch_v1(std::move(request), fixture.identity, fixture.frozen,
+                                             fixture.polynomial, fixture.factor_base);
+    CHECK(!stopped);
+    CHECK(stopped.disposition ==
+          worker_launcher_detail::DistributedSieveWorkerLaunchDispositionV1::armed_no_child);
+    CHECK(stopped.diagnostic.phase ==
+          worker_launcher_detail::DistributedSieveWorkerLaunchPhaseV1::attempt_directory_binding);
+    CHECK(stopped.diagnostic.slot == 0);
+    CHECK(stopped.diagnostic.reconciliation_required);
+    CHECK(stopped.diagnostic.wave_store.status ==
+          wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict);
+    CHECK(stopped.children.size() == 1);
+    CHECK(!stopped.children[0].worker.has_value());
+    CHECK(hooks.after_carrier_calls == 1);
+    CHECK(hooks.before_spawn_calls == 0);
+    CHECK(hooks.hook_error == 0);
+    CHECK(hooks.directory_replaced);
+    CHECK(std::filesystem::is_directory(hooks.canonical_directory));
+    CHECK(std::filesystem::is_directory(hooks.displaced_directory));
+    CHECK(!entry_exists_no_follow(
+        hooks.canonical_directory /
+        std::string(gnfs::sieve::distributed_sieve_worker_work_package_file_detail::
+                        DISTRIBUTED_SIEVE_WORKER_WORK_PACKAGE_FILE_LEAF_V1)));
+    CHECK(!entry_exists_no_follow(
+        hooks.displaced_directory /
+        std::string(gnfs::sieve::distributed_sieve_worker_work_package_file_detail::
+                        DISTRIBUTED_SIEVE_WORKER_WORK_PACKAGE_FILE_LEAF_V1)));
+    require_wave_status(store.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "post-carrier directory replacement remains preserved for reconciliation");
+
+    std::error_code cleanup_error;
+    CHECK(std::filesystem::remove(hooks.canonical_directory, cleanup_error));
+    CHECK(!cleanup_error);
+    std::filesystem::rename(hooks.displaced_directory, hooks.canonical_directory, cleanup_error);
+    CHECK(!cleanup_error);
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "explicit directory restoration recovers the exact post-carrier binding");
+}
+
+void test_wave_store_worker_launcher_second_slot_namespace_conflict_spawns_zero() {
+    WorkerLaunchFixture fixture("worker-launch-second-slot-conflict", 2);
+    auto& store = fixture.store();
+    constexpr std::array<std::uint32_t, 2> chunks{0, 1};
+    std::vector<sieve::AttemptStartedV1> records;
+    auto slots = make_worker_launch_slots(store, chunks, &records);
+    const auto foreign_package =
+        worker_launch_package_path(fixture.root, fixture.identity.distributed.chunks[1]);
+    WorkerLauncherHookContext hooks{
+        .conflict_slot = 1,
+        .conflict_path = foreign_package,
+    };
+    worker_launcher_detail::DistributedSieveWorkerLaunchRequestV1 request(
+        worker_launch_test_executable, std::move(slots),
+        worker_launcher_detail::DistributedSieveWorkerLauncherTestHooksV1{
+            .before_carrier = inject_worker_launch_before_carrier_conflict,
+            .before_spawn = fail_selected_worker_spawn,
+            .context = &hooks,
+        });
+    auto rejected =
+        store.launch_worker_process_batch_v1(std::move(request), fixture.identity, fixture.frozen,
+                                             fixture.polynomial, fixture.factor_base);
+    CHECK(!rejected);
+    CHECK(rejected.disposition ==
+          worker_launcher_detail::DistributedSieveWorkerLaunchDispositionV1::armed_no_child);
+    CHECK(
+        rejected.diagnostic.phase ==
+        worker_launcher_detail::DistributedSieveWorkerLaunchPhaseV1::initial_receipt_revalidation);
+    CHECK(rejected.diagnostic.slot == 1);
+    CHECK(rejected.diagnostic.wave_store.status ==
+          wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict);
+    CHECK(rejected.children.size() == 2);
+    CHECK(!rejected.children[0].worker.has_value());
+    CHECK(!rejected.children[1].worker.has_value());
+    CHECK(hooks.before_carrier_calls == 2);
+    CHECK(hooks.before_spawn_calls == 0);
+    CHECK(hooks.hook_error == 0);
+    CHECK(hooks.conflict_created);
+    CHECK(entry_exists_no_follow(foreign_package));
+    CHECK(read_file_bytes(foreign_package).size() == 7);
+    CHECK(!entry_exists_no_follow(
+        worker_launch_package_path(fixture.root, fixture.identity.distributed.chunks[0])));
+
+    CHECK(std::filesystem::remove(foreign_package));
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "foreign carrier collision removal restores batch inventory");
+}
+
+void test_wave_store_worker_launcher_partial_spawn_keeps_only_success_receipts() {
+    WorkerLaunchFixture fixture("worker-launch-partial-spawn", 3);
+    auto& store = fixture.store();
+    constexpr std::array<std::uint32_t, 3> chunks{0, 1, 2};
+    std::vector<sieve::AttemptStartedV1> records;
+    auto slots = make_worker_launch_slots(store, chunks, &records);
+    WorkerLauncherHookContext hooks{
+        .failed_spawn_slot = 1,
+    };
+    worker_launcher_detail::DistributedSieveWorkerLaunchRequestV1 request(
+        worker_launch_test_executable, std::move(slots),
+        worker_launcher_detail::DistributedSieveWorkerLauncherTestHooksV1{
+            .before_spawn = fail_selected_worker_spawn,
+            .context = &hooks,
+        });
+    auto launched =
+        store.launch_worker_process_batch_v1(std::move(request), fixture.identity, fixture.frozen,
+                                             fixture.polynomial, fixture.factor_base);
+    CHECK(!launched);
+    CHECK(launched.disposition ==
+          worker_launcher_detail::DistributedSieveWorkerLaunchDispositionV1::partial);
+    CHECK(launched.diagnostic.phase ==
+          worker_launcher_detail::DistributedSieveWorkerLaunchPhaseV1::process_spawn);
+    CHECK(launched.diagnostic.slot == 1);
+    CHECK(launched.children.size() == 3);
+    CHECK(launched.children[0]);
+    CHECK(!launched.children[1]);
+    CHECK(launched.children[2]);
+    CHECK(!launched.children[1].worker.has_value());
+    CHECK(launched.children[1].transport.error ==
+          gnfs::sieve::distributed_sieve_worker_process_detail::
+              DistributedSieveWorkerProcessTransportError::spawn_failed);
+    CHECK(launched.children[1].transport.native_error == EAGAIN);
+    CHECK(hooks.before_spawn_calls == 3);
+
+    const auto work_digest = work_digest_or_fail(fixture.identity);
+    require_launched_worker_child_success(*launched.children[0].worker, work_digest);
+    require_launched_worker_child_success(*launched.children[2].worker, work_digest);
+    for (std::size_t index = 0; index < records.size(); ++index) {
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            fixture.identity.distributed.chunks[index].relative_artifact_stem,
+            static_cast<std::uint32_t>(index), 0);
+        CHECK(names.has_value());
+        CHECK(relation_base_lock_reports_busy(fixture.root / names->base_lock_leaf) ==
+              (index != 1));
+        CHECK(!entry_exists_no_follow(
+            worker_launch_package_path(fixture.root, fixture.identity.distributed.chunks[index])));
+    }
+
+    launched.children[0].worker.reset();
+    launched.children[2].worker.reset();
+    for (std::size_t index = 0; index < records.size(); ++index) {
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            fixture.identity.distributed.chunks[index].relative_artifact_stem,
+            static_cast<std::uint32_t>(index), 0);
+        CHECK(names.has_value());
+        CHECK(!relation_base_lock_reports_busy(fixture.root / names->base_lock_leaf));
+    }
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "partial launch result releases every receipt exactly once");
+}
+
 #else
 
 void test_wave_store_platform_fail_closed() {
@@ -13288,8 +14540,16 @@ void run_core_suite() {
 }
 
 void run_wave_store_suite() {
+    std::cout << "===== Distributed Sieve Wave Store Tests =====\n";
+    const auto run_tests = [](const auto& tests) {
+        for (const auto& [name, function] : tests) {
+            function();
+            std::cout << "  " << name << ": PASS\n";
+        }
+    };
+
 #if !defined(_WIN32)
-    const std::array<std::pair<std::string_view, TestFunction>, 65> tests = {{
+    const std::array<std::pair<std::string_view, TestFunction>, 65> common_tests = {{
         {"create, open, revalidate, and exact manifest",
          test_wave_store_create_open_revalidate_and_exact_manifest},
         {"store-owned draft fields", test_wave_store_rejects_non_draft_store_owned_fields},
@@ -13412,18 +14672,45 @@ void run_wave_store_suite() {
         {"attempt-record invalid chains and bindings",
          test_wave_store_attempt_record_inventory_rejects_invalid_chains_and_bindings},
     }};
+    run_tests(common_tests);
+
+    const std::array<std::pair<std::string_view, TestFunction>, 1> unavailable_launcher_tests = {{
+        {"worker launcher close-all unavailable before gate",
+         test_wave_store_worker_launcher_close_all_unavailable_fails_before_gate},
+    }};
+    run_tests(unavailable_launcher_tests);
+
+    if (worker_process_detail::
+            distributed_sieve_worker_process_fixed_capability_close_all_supported()) {
+        const std::array<std::pair<std::string_view, TestFunction>, 9> supported_launcher_tests = {{
+            {"worker launcher happy path", test_wave_store_worker_launcher_happy_path},
+            {"worker launcher binding mismatch zero spawn",
+             test_wave_store_worker_launcher_binding_mismatch_spawns_zero},
+            {"worker launcher invalid initial receipt zero spawn",
+             test_wave_store_worker_launcher_invalid_initial_receipt_spawns_zero},
+            {"worker launcher post-carrier residue stop",
+             test_wave_store_worker_launcher_post_carrier_residue_stops},
+            {"worker launcher cross-slot post-carrier residue",
+             test_wave_store_worker_launcher_later_slot_reopens_earlier_fixed_leaf},
+            {"worker launcher post-carrier directory replacement",
+             test_wave_store_worker_launcher_post_carrier_directory_replacement_requires_reconciliation},
+            {"worker launcher second-slot namespace conflict zero spawn",
+             test_wave_store_worker_launcher_second_slot_namespace_conflict_spawns_zero},
+            {"worker launcher partial spawn receipt ownership",
+             test_wave_store_worker_launcher_partial_spawn_keeps_only_success_receipts},
+            {"worker launcher abandoned composite quarantine",
+             test_wave_store_worker_launcher_abandoned_composite_quarantines_receipt},
+        }};
+        run_tests(supported_launcher_tests);
+    }
 #else
     const std::array<std::pair<std::string_view, TestFunction>, 2> tests = {{
         {"zero open digest", test_wave_store_rejects_zero_open_digest_without_observation},
         {"unsupported platform fails closed", test_wave_store_platform_fail_closed},
     }};
+    run_tests(tests);
 #endif
 
-    std::cout << "===== Distributed Sieve Wave Store Tests =====\n";
-    for (const auto& [name, function] : tests) {
-        function();
-        std::cout << "  " << name << ": PASS\n";
-    }
     std::cout << "===== Distributed Sieve Wave Store Tests PASSED =====\n";
 }
 
@@ -13431,6 +14718,31 @@ void run_wave_store_suite() {
 
 int main(int argc, char** argv) {
     try {
+#if !defined(_WIN32)
+        if (argc == 2 && std::string_view(argv[1]) == WORKER_LAUNCH_FAKE_CHILD_ARGUMENT) {
+            return run_worker_launch_fake_child();
+        }
+        if (argc == 3 && std::string_view(argv[1]) == WORKER_LAUNCH_FAKE_CHILD_ARGUMENT &&
+            std::string_view(argv[2]) ==
+                WORKER_LAUNCH_FAKE_CHILD_CLOSE_BASE_LOCK_AND_WAIT_ARGUMENT) {
+            return run_worker_launch_fake_child(true);
+        }
+#endif
+        std::error_code executable_error;
+        const auto absolute_executable =
+            std::filesystem::absolute(std::filesystem::path(argv[0]), executable_error);
+        if (executable_error) {
+            throw std::filesystem::filesystem_error("resolve test executable", argv[0],
+                                                    executable_error);
+        }
+        const auto canonical_executable =
+            std::filesystem::canonical(absolute_executable, executable_error);
+        if (executable_error) {
+            throw std::filesystem::filesystem_error("canonicalize test executable",
+                                                    absolute_executable, executable_error);
+        }
+        worker_launch_test_executable = canonical_executable.string();
+
         if (argc == 1) {
             run_core_suite();
             run_wave_store_suite();

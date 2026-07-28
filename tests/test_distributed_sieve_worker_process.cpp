@@ -202,6 +202,7 @@ void test_prepare_zero() {
 #if defined(_WIN32)
 
 void test_platform_unavailable() {
+    CHECK(!worker_process::distributed_sieve_worker_process_fixed_capability_close_all_supported());
     const FakeBootstrap bootstrap;
     const worker_process::DistributedSieveWorkerProcessSpawnSpec spec{
         .executable_path = R"(C:\gnfs-fake-child.exe)",
@@ -267,6 +268,21 @@ private:
         duplicate = ::fcntl(descriptor, F_DUPFD_CLOEXEC, minimum);
     } while (duplicate < 0 && errno == EINTR);
     CHECK(duplicate >= minimum);
+    return duplicate;
+}
+
+[[nodiscard]] int duplicate_non_cloexec_at_least(int descriptor, int minimum) {
+    int duplicate = -1;
+    do {
+        duplicate = ::fcntl(descriptor, F_DUPFD, minimum);
+    } while (duplicate < 0 && errno == EINTR);
+    CHECK(duplicate >= minimum);
+    int flags = -1;
+    do {
+        flags = ::fcntl(duplicate, F_GETFD);
+    } while (flags < 0 && errno == EINTR);
+    CHECK(flags >= 0);
+    CHECK((flags & FD_CLOEXEC) == 0);
     return duplicate;
 }
 
@@ -898,6 +914,20 @@ void register_started_children(
     }
 }
 
+void require_global_pre_spawn_refusal(
+    const worker_process::DistributedSieveWorkerProcessBatchLaunchResult& launched) {
+    CHECK(!launched.spawn_loop_entered);
+    CHECK(!launched.child_set_complete);
+    CHECK(launched.children.empty());
+}
+
+void require_complete_spawn_loop_result(
+    const worker_process::DistributedSieveWorkerProcessBatchLaunchResult& launched) {
+    CHECK(launched.spawn_loop_entered);
+    CHECK(launched.child_set_complete);
+    CHECK(!launched.children.empty());
+}
+
 void check_report(const FakeReport& report, const FakeBootstrap& bootstrap, pid_t process,
                   bool expect_standard_error_open = true) {
     CHECK(report.magic == REPORT_MAGIC);
@@ -1118,6 +1148,7 @@ void test_invalid_standard_close_has_no_spawn(const std::string& executable_path
     CHECK(launched.diagnostic.error ==
           worker_process::DistributedSieveWorkerProcessTransportError::invalid_request);
     CHECK(launched.diagnostic.native_error == EINVAL);
+    require_global_pre_spawn_refusal(launched);
     CHECK(spawn_calls == 0);
     CHECK(snapshot_open_descriptors() == baseline);
 }
@@ -1154,6 +1185,7 @@ void test_fixed_capability_sources_at_targets_are_cycle_safe(const std::string& 
     auto launched = worker_process::spawn_distributed_sieve_worker_process_batch_with_capabilities(
         std::move(*prepared.batch), std::span{&capability_sources, 1U});
     CHECK(launched);
+    require_complete_spawn_loop_result(launched);
     CHECK(descriptor_matches_expectation(
         worker_process::DISTRIBUTED_SIEVE_WORKER_CHILD_WAVE_ROOT_DESCRIPTOR, expected[1]));
     CHECK(descriptor_matches_expectation(
@@ -1164,6 +1196,64 @@ void test_fixed_capability_sources_at_targets_are_cycle_safe(const std::string& 
     CHECK(descriptor_matches_expectation(
         worker_process::DISTRIBUTED_SIEVE_WORKER_CHILD_WORK_PACKAGE_READER_DESCRIPTOR,
         expected[0]));
+
+    ChildCleanup cleanup;
+    register_started_children(launched, cleanup);
+    auto& process = *launched.children[0].process;
+    const pid_t process_id = process.process_id();
+    const auto waited = wait_and_mark_reaped(process, cleanup);
+    CHECK(waited.reaped);
+    CHECK(waited.success);
+    UniqueFd report(process.release_report_descriptor());
+    check_report(read_fake_report(report.get()), bootstrap, process_id);
+    require_report_eof(report.get());
+}
+
+void test_fixed_capability_requires_spawn_time_close_all(const std::string& executable_path) {
+    CapabilityFixture fixture(0x100U);
+    const auto sources = fixed_capability_sources(fixture.sources());
+    const FakeBootstrap bootstrap = capability_bootstrap(fixture, 99U, 0x100U);
+    const auto baseline = snapshot_open_descriptors();
+    auto prepared = prepare_one(executable_path, bootstrap);
+    CHECK(prepared);
+    int spawn_calls = 0;
+    auto launched = worker_process::spawn_distributed_sieve_worker_process_batch_with_capabilities(
+        std::move(*prepared.batch), std::span{&sources, 1U}, {},
+        {
+            .before_spawn = count_spawn_calls,
+            .context = &spawn_calls,
+            .force_fixed_capability_close_all_unavailable = true,
+        });
+    CHECK(!launched);
+    CHECK(launched.children.empty());
+    CHECK(launched.diagnostic.error ==
+          worker_process::DistributedSieveWorkerProcessTransportError::platform_unavailable);
+    CHECK(launched.diagnostic.native_error == ENOTSUP);
+    require_global_pre_spawn_refusal(launched);
+    CHECK(spawn_calls == 0);
+    CHECK(snapshot_open_descriptors() == baseline);
+}
+
+void test_fixed_capability_closes_ambient_non_cloexec_descriptor(
+    const std::string& executable_path) {
+    CHECK(worker_process::distributed_sieve_worker_process_fixed_capability_close_all_supported());
+    CapabilityFixture fixture(0x102U);
+    const auto sources = fixed_capability_sources(fixture.sources());
+    const FakeBootstrap bootstrap = capability_bootstrap(fixture, 101U, 0x102U);
+
+    UniqueFd null_descriptor(::open("/dev/null", O_RDONLY | O_CLOEXEC));
+    CHECK(null_descriptor.get() >= 0);
+    UniqueFd ambient_descriptor(duplicate_non_cloexec_at_least(null_descriptor.get(), 128));
+    CHECK(ambient_descriptor.get() >=
+          worker_process::DISTRIBUTED_SIEVE_WORKER_CHILD_FIRST_UNMAPPED_DESCRIPTOR);
+    CHECK(ambient_descriptor.get() < bootstrap.descriptor_scan_limit);
+
+    auto prepared = prepare_one(executable_path, bootstrap);
+    CHECK(prepared);
+    auto launched = worker_process::spawn_distributed_sieve_worker_process_batch_with_capabilities(
+        std::move(*prepared.batch), std::span{&sources, 1U});
+    CHECK(launched);
+    CHECK(descriptor_is_open(ambient_descriptor.get()));
 
     ChildCleanup cleanup;
     register_started_children(launched, cleanup);
@@ -1353,6 +1443,7 @@ void test_fixed_capability_middle_spawn_failure_is_slot_local(const std::string&
     CHECK(!launched);
     CHECK(launched.diagnostic.error ==
           worker_process::DistributedSieveWorkerProcessTransportError::none);
+    require_complete_spawn_loop_result(launched);
     CHECK(launched.children.size() == 3U);
     CHECK(failure.calls == 3);
     CHECK(launched.children[0]);
@@ -1506,6 +1597,7 @@ void test_single_child_move_wait_release_and_empty_environment(const std::string
         return worker_process::spawn_distributed_sieve_worker_process_batch(std::move(batch));
     }();
     CHECK(launched);
+    require_complete_spawn_loop_result(launched);
     CHECK(launched.children.size() == 1U);
     CHECK(batch.size() == 0U);
 
@@ -1748,6 +1840,7 @@ void test_middle_spawn_failure_keeps_fixed_slots(const std::string& executable_p
     CHECK(!launched);
     CHECK(launched.diagnostic.error ==
           worker_process::DistributedSieveWorkerProcessTransportError::none);
+    require_complete_spawn_loop_result(launched);
     CHECK(launched.children.size() == 3U);
     CHECK(failure.calls == 3);
     CHECK(launched.children[0]);
@@ -1967,12 +2060,17 @@ int main(int argc, char* argv[]) {
         const std::string fake_child_path = resolve_fake_child_path(argc, argv);
         test_invalid_prepare_has_no_descriptor_side_effect(fake_child_path);
         test_invalid_standard_close_has_no_spawn(fake_child_path);
-        test_fixed_capability_sources_at_targets_are_cycle_safe(fake_child_path);
-        test_fixed_capability_targets_replace_only_child_foreign_descriptors(fake_child_path);
-        test_fixed_capability_source_standard_error_is_staged_and_closed(fake_child_path);
-        test_fixed_capability_sources_at_standard_io_are_action_order_safe(fake_child_path);
-        test_fixed_capability_middle_spawn_failure_is_slot_local(fake_child_path);
-        test_invalid_fixed_capability_requests_have_no_spawn(fake_child_path);
+        test_fixed_capability_requires_spawn_time_close_all(fake_child_path);
+        if (worker_process::
+                distributed_sieve_worker_process_fixed_capability_close_all_supported()) {
+            test_fixed_capability_sources_at_targets_are_cycle_safe(fake_child_path);
+            test_fixed_capability_closes_ambient_non_cloexec_descriptor(fake_child_path);
+            test_fixed_capability_targets_replace_only_child_foreign_descriptors(fake_child_path);
+            test_fixed_capability_source_standard_error_is_staged_and_closed(fake_child_path);
+            test_fixed_capability_sources_at_standard_io_are_action_order_safe(fake_child_path);
+            test_fixed_capability_middle_spawn_failure_is_slot_local(fake_child_path);
+            test_invalid_fixed_capability_requests_have_no_spawn(fake_child_path);
+        }
         test_single_child_move_wait_release_and_empty_environment(fake_child_path);
         test_cross_child_report_closure(fake_child_path);
         test_external_descriptor_closed_only_in_child(fake_child_path);

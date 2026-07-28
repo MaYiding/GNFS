@@ -8,6 +8,10 @@
 #include <optional>
 #include <string_view>
 
+namespace gnfs::sieve::distributed_sieve_resume_detail {
+class DistributedSieveWaveStore;
+}
+
 namespace gnfs::sieve::distributed_sieve_worker_work_package_file_detail {
 
 inline constexpr std::string_view DISTRIBUTED_SIEVE_WORKER_WORK_PACKAGE_FILE_LEAF_V1 =
@@ -124,6 +128,7 @@ private:
     create_distributed_sieve_worker_work_package_file_v1(
         const DistributedSieveWorkerWorkPackageFileRequestV1& request,
         const DistributedSieveWorkIdentityV1& identity) noexcept;
+    friend class distributed_sieve_resume_detail::DistributedSieveWaveStore;
 };
 
 struct DistributedSieveWorkerWorkPackageFileResultV1 final {
