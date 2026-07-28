@@ -4,20 +4,25 @@
 #include "gnfs/util/ordered_parallel_map.hpp"
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 #include <vector>
 
 namespace gnfs::cofactor {
+namespace {
 
-CandidateBatchResult verify_candidate_batch(const core::PolynomialContext& ctx,
-                                            const factor_base::FactorBase& fb,
-                                            const CofactorizerConfig& config,
-                                            std::span<const sieve::SieveResult> sieve_results,
-                                            const CandidateBatchOptions& options) {
+CandidateBatchResult verify_candidate_batch_impl(const core::PolynomialContext& ctx,
+                                                 const factor_base::FactorBase& fb,
+                                                 const CofactorizerConfig& config,
+                                                 std::span<const sieve::SieveResult> sieve_results,
+                                                 const CofactorSeedProvider* seed_provider,
+                                                 const CandidateBatchOptions& options) {
     if (options.max_workers == 0) {
         throw std::invalid_argument("candidate batch requires at least one worker");
     }
@@ -56,9 +61,18 @@ CandidateBatchResult verify_candidate_batch(const core::PolynomialContext& ctx,
             chunk_relations.reserve((chunk.end - chunk.begin) / 4);
             for (size_t candidate_index = chunk.begin; candidate_index < chunk.end;
                  ++candidate_index) {
-                auto relation =
-                    cofactorizer->verify(sieve_result.candidates[candidate_index],
-                                         sieve_result.special_q.q, sieve_result.special_q.r);
+                std::optional<core::Relation> relation;
+                if (seed_provider == nullptr) {
+                    relation =
+                        cofactorizer->verify(sieve_result.candidates[candidate_index],
+                                             sieve_result.special_q.q, sieve_result.special_q.r);
+                } else {
+                    const CofactorAttemptCoordinates coordinates =
+                        candidate_attempt_coordinates_v1(sieve_result, candidate_index);
+                    relation = cofactorizer->verify(
+                        sieve_result.candidates[candidate_index], sieve_result.special_q.q,
+                        sieve_result.special_q.r, coordinates, *seed_provider);
+                }
                 if (relation) {
                     chunk_relations.push_back(std::move(*relation));
                 }
@@ -89,6 +103,38 @@ CandidateBatchResult verify_candidate_batch(const core::PolynomialContext& ctx,
     }
 
     return result;
+}
+
+} // namespace
+
+CofactorAttemptCoordinates candidate_attempt_coordinates_v1(const sieve::SieveResult& sieve_result,
+                                                            size_t candidate_index) {
+    static_assert(std::numeric_limits<size_t>::digits <=
+                  std::numeric_limits<std::uint64_t>::digits);
+    if (candidate_index >= sieve_result.candidates.size()) {
+        throw std::out_of_range("candidate attempt coordinate index is out of range");
+    }
+    return CofactorAttemptCoordinates{
+        .special_q_index = static_cast<std::uint64_t>(sieve_result.special_q.index),
+        .candidate_ordinal = static_cast<std::uint64_t>(candidate_index),
+    };
+}
+
+CandidateBatchResult verify_candidate_batch(const core::PolynomialContext& ctx,
+                                            const factor_base::FactorBase& fb,
+                                            const CofactorizerConfig& config,
+                                            std::span<const sieve::SieveResult> sieve_results,
+                                            const CandidateBatchOptions& options) {
+    return verify_candidate_batch_impl(ctx, fb, config, sieve_results, nullptr, options);
+}
+
+CandidateBatchResult verify_candidate_batch(const core::PolynomialContext& ctx,
+                                            const factor_base::FactorBase& fb,
+                                            const CofactorizerConfig& config,
+                                            std::span<const sieve::SieveResult> sieve_results,
+                                            const CofactorSeedProvider& seed_provider,
+                                            const CandidateBatchOptions& options) {
+    return verify_candidate_batch_impl(ctx, fb, config, sieve_results, &seed_provider, options);
 }
 
 } // namespace gnfs::cofactor

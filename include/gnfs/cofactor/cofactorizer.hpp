@@ -1,7 +1,5 @@
 #pragma once
 
-#include "smooth_check.hpp"
-#include "trial_division.hpp"
 #include "../core/polynomial_context.hpp"
 #include "../core/relation.hpp"
 #include "../factor_base/factor_base.hpp"
@@ -9,6 +7,8 @@
 #include "../sieve/lattice_sieve.hpp"
 #include "../util/primes.hpp"
 #include "../util/safe_math.hpp"
+#include "smooth_check.hpp"
+#include "trial_division.hpp"
 
 #include <atomic>
 #include <optional>
@@ -24,19 +24,19 @@ using sieve::SieveCandidate;
 
 /// 验证结果
 enum class VerifyResult : uint8_t {
-    Success = 0,           // 成功构建完整关系
-    PartialSuccess = 1,    // 部分关系（有大素数）
-    RationalFail = 2,      // 有理侧不光滑
-    AlgebraicFail = 3,     // 代数侧不光滑
-    BothFail = 4,          // 两侧都不光滑
-    InvalidPair = 5        // 无效的 (a, b) 对
+    Success = 0,        // 成功构建完整关系
+    PartialSuccess = 1, // 部分关系（有大素数）
+    RationalFail = 2,   // 有理侧不光滑
+    AlgebraicFail = 3,  // 代数侧不光滑
+    BothFail = 4,       // 两侧都不光滑
+    InvalidPair = 5     // 无效的 (a, b) 对
 };
 
 /// Cofactorizer 配置
 struct CofactorizerConfig {
-    uint64_t large_prime_bound = 0;      // 大素数上界 (0 = 使用因子基设置)
-    bool allow_1lp = true;               // 允许 1 个大素数
-    bool allow_2lp = true;               // 允许 2 个大素数
+    uint64_t large_prime_bound = 0; // 大素数上界 (0 = 使用因子基设置)
+    bool allow_1lp = true;          // 允许 1 个大素数
+    bool allow_2lp = true;          // 允许 2 个大素数
     // 3LP (3 个 large primes) opt-in via ENV GNFS_3LP=1 in Pipeline. 默认 false 保留
     // 旧行为. 启用时:
     //   (1) cofactorizer 接受 CofactorClass::ThreeLP 分类
@@ -51,8 +51,11 @@ struct CofactorizerConfig {
     // trade-off: 拓宽 LP 空间 vs sieve 吞吐. CADO-NFS 用更复杂的 two-cofactor
     // strategy + ECM gating 改善 ratio, 但本实现采用直接路径 + 推荐仅在小批量
     // 50d/60d 实验性运行使用. 默认 OFF 保留 sieve 吞吐.
-    bool allow_3lp = false;              // 允许 3 个大素数 (opt-in)
-    size_t max_factorization_attempts = 10000;  // Pollard rho 最大尝试次数
+    bool allow_3lp = false;                    // 允许 3 个大素数 (opt-in)
+    size_t max_factorization_attempts = 10000; // Pollard rho 最大尝试次数
+    // Explicit deterministic-seed path only. Zero selects standard stage-2
+    // continuation; nonzero values must be supported Brent-Suyama degrees.
+    std::uint32_t seeded_ecm_brent_suyama_degree = 0;
 };
 
 /// Cofactorizer 统计（原子操作，线程安全）
@@ -61,7 +64,7 @@ struct CofactorizerStats {
     std::atomic<size_t> full_relations{0};
     std::atomic<size_t> partial_1lp{0};
     std::atomic<size_t> partial_2lp{0};
-    std::atomic<size_t> partial_3lp{0};   // 3LP relations (allow_3lp=true 时使用)
+    std::atomic<size_t> partial_3lp{0}; // 3LP relations (allow_3lp=true 时使用)
     std::atomic<size_t> rational_rejects{0};
     std::atomic<size_t> algebraic_rejects{0};
     std::atomic<size_t> both_rejects{0};
@@ -118,13 +121,9 @@ public:
     /// @param ctx 多项式上下文
     /// @param fb 因子基
     /// @param config 配置
-    Cofactorizer(const PolynomialContext& ctx,
-                 const FactorBase& fb,
+    Cofactorizer(const PolynomialContext& ctx, const FactorBase& fb,
                  const CofactorizerConfig& config = CofactorizerConfig{})
-        : ctx_(ctx)
-        , fb_(fb)
-        , config_(config)
-        , divider_(fb) {
+        : ctx_(ctx), fb_(fb), config_(config), divider_(fb) {
 
         // 设置大素数上界
         if (config_.large_prime_bound == 0) {
@@ -132,11 +131,13 @@ public:
         } else {
             large_prime_bound_ = config_.large_prime_bound;
         }
+        detail::validate_seeded_cofactor_randomness_v1(CofactorSide::rational,
+                                                       config_.seeded_ecm_brent_suyama_degree);
 
         // 构建系数向量
         coeffs_.reserve(ctx_.degree() + 1);
         for (uint32_t i = 0; i <= ctx_.degree(); ++i) {
-            coeffs_.emplace_back(ctx_.coeff(i));  // Integer copy ctor
+            coeffs_.emplace_back(ctx_.coeff(i)); // Integer copy ctor
         }
     }
 
@@ -144,17 +145,44 @@ public:
     /// @param cand 筛法候选
     /// @param sq_q, sq_r Special-Q 素数和根 (0 = 无 SQ 优化)
     /// @return 如果成功，返回完整关系；否则返回空
-    [[nodiscard]] std::optional<Relation> verify(const SieveCandidate& cand,
-                                                  uint32_t sq_q = 0, uint32_t sq_r = 0) {
+    [[nodiscard]] std::optional<Relation> verify(const SieveCandidate& cand, uint32_t sq_q = 0,
+                                                 uint32_t sq_r = 0) {
         return verify(cand.a, cand.b, sq_q, sq_r);
+    }
+
+    /// Verify one sieve candidate with stable, algorithm-bound randomness.
+    ///
+    /// The provider is consulted lazily only if a residual cofactor reaches
+    /// the ECM fallback. Provider exceptions propagate without ambient fallback.
+    [[nodiscard]] std::optional<Relation> verify(const SieveCandidate& cand, uint32_t sq_q,
+                                                 uint32_t sq_r,
+                                                 CofactorAttemptCoordinates coordinates,
+                                                 const CofactorSeedProvider& provider) {
+        return verify(cand.a, cand.b, sq_q, sq_r, coordinates, provider);
     }
 
     /// 验证 (a, b) 对
     /// @param a, b 候选对
     /// @param sq_q, sq_r Special-Q 素数和根 (0 = 无 SQ 优化)
     /// @return 如果成功，返回完整关系；否则返回空
-    [[nodiscard]] std::optional<Relation> verify(int64_t a, uint64_t b,
-                                                  uint32_t sq_q = 0, uint32_t sq_r = 0) {
+    [[nodiscard]] std::optional<Relation> verify(int64_t a, uint64_t b, uint32_t sq_q = 0,
+                                                 uint32_t sq_r = 0) {
+        return verify_impl(a, b, sq_q, sq_r, CofactorAttemptCoordinates{}, nullptr);
+    }
+
+    /// Verify an (a, b) pair with stable, algorithm-bound randomness.
+    [[nodiscard]] std::optional<Relation> verify(int64_t a, uint64_t b, uint32_t sq_q,
+                                                 uint32_t sq_r,
+                                                 CofactorAttemptCoordinates coordinates,
+                                                 const CofactorSeedProvider& provider) {
+        return verify_impl(a, b, sq_q, sq_r, coordinates, &provider);
+    }
+
+private:
+    [[nodiscard]] std::optional<Relation> verify_impl(int64_t a, uint64_t b, uint32_t sq_q,
+                                                      uint32_t sq_r,
+                                                      CofactorAttemptCoordinates coordinates,
+                                                      const CofactorSeedProvider* provider) {
         stats_.total_candidates.fetch_add(1, std::memory_order_relaxed);
 
         // 基本验证
@@ -202,7 +230,8 @@ public:
             } else {
                 // GMP fallback
                 Integer rat_value = ctx_.rational_value(a, b);
-                if (rat_value.is_negative()) rat_value.negate();
+                if (rat_value.is_negative())
+                    rat_value.negate();
                 {
                     // v22: gcd 只读 rat_value, 无需 clone (节省 mpz_init_set/clear per candidate)
                     Integer gcd_with_n = core::gcd(rat_value, ctx_.n());
@@ -237,8 +266,13 @@ public:
                 return std::nullopt;
             }
         }
-        CofactorClassification rat_class = classify_cofactor(
-            rat_result.cofactor, large_prime_bound_, config_.allow_3lp);
+        CofactorClassification rat_class =
+            provider == nullptr
+                ? classify_cofactor(rat_result.cofactor, large_prime_bound_, config_.allow_3lp)
+                : classify_cofactor_seeded_v1(
+                      rat_result.cofactor, large_prime_bound_, config_.allow_3lp,
+                      /*smoothness_bound=*/0, coordinates, CofactorSide::rational, *provider,
+                      config_.seeded_ecm_brent_suyama_degree);
 
         // Rational-first 短路: 有理侧不可接受 → 跳过代数试除
         if (!is_acceptable_cofactor(rat_class)) {
@@ -253,21 +287,25 @@ public:
 #if defined(__SIZEOF_INT128__)
             auto [norm_i128, ok] = ctx_.algebraic_norm_i128(a, b);
             if (ok) {
-                if (norm_i128 < 0) norm_i128 = -norm_i128;
+                if (norm_i128 < 0)
+                    norm_i128 = -norm_i128;
                 if (norm_i128 <= static_cast<__int128>(UINT64_MAX)) {
-                    alg_norm = static_cast<uint64_t>(norm_i128);  // mpz_set_ui
+                    alg_norm = static_cast<uint64_t>(norm_i128); // mpz_set_ui
                 } else {
                     // Fits __int128 but not uint64 — construct via string or GMP
                     alg_norm = ctx_.algebraic_norm(a, b);
-                    if (alg_norm.is_negative()) alg_norm.negate();
+                    if (alg_norm.is_negative())
+                        alg_norm.negate();
                 }
             } else {
                 alg_norm = ctx_.algebraic_norm(a, b);
-                if (alg_norm.is_negative()) alg_norm.negate();
+                if (alg_norm.is_negative())
+                    alg_norm.negate();
             }
 #else
             alg_norm = ctx_.algebraic_norm(a, b);
-            if (alg_norm.is_negative()) alg_norm.negate();
+            if (alg_norm.is_negative())
+                alg_norm.negate();
 #endif
         }
 
@@ -282,7 +320,7 @@ public:
                     nv /= sq_q;
                     ++sq_exp;
                 }
-                alg_norm = nv;  // 直接 mpz_set_ui, 省 tmp Integer + move
+                alg_norm = nv; // 直接 mpz_set_ui, 省 tmp Integer + move
             } else {
                 while (mpz_divisible_ui_p(alg_norm.get_mpz(), sq_q) && sq_exp < 255) {
                     mpz_divexact_ui(alg_norm.get_mpz(), alg_norm.get_mpz(), sq_q);
@@ -291,8 +329,8 @@ public:
             }
         }
 
-        auto alg_result = divider_.divide_algebraic(
-            std::move(alg_norm), a, b, fb_.sieve_algebraic_count());
+        auto alg_result =
+            divider_.divide_algebraic(std::move(alg_norm), a, b, fb_.sieve_algebraic_count());
 
         // Fast reject: if 2LP disabled and cofactor > LP_bound, skip expensive classify.
         // allow_3lp 时阈值升到 B³.
@@ -315,8 +353,13 @@ public:
                 return std::nullopt;
             }
         }
-        CofactorClassification alg_class = classify_cofactor(
-            alg_result.cofactor, large_prime_bound_, config_.allow_3lp);
+        CofactorClassification alg_class =
+            provider == nullptr
+                ? classify_cofactor(alg_result.cofactor, large_prime_bound_, config_.allow_3lp)
+                : classify_cofactor_seeded_v1(
+                      alg_result.cofactor, large_prime_bound_, config_.allow_3lp,
+                      /*smoothness_bound=*/0, coordinates, CofactorSide::algebraic, *provider,
+                      config_.seeded_ecm_brent_suyama_degree);
 
         if (!is_acceptable_cofactor(alg_class)) {
             stats_.algebraic_rejects.fetch_add(1, std::memory_order_relaxed);
@@ -358,8 +401,7 @@ public:
                     // Use the stored root from the factor base
                     uint32_t p = alg_primes[idx].p;
                     uint32_t r = alg_primes[idx].r;
-                    rel.algebraic_large_prime.push_back(
-                        PrimePower{p, r, exp});
+                    rel.algebraic_large_prime.push_back(PrimePower{p, r, exp});
                 }
             }
         }
@@ -379,14 +421,15 @@ public:
         return rel;
     }
 
+public:
     /// 批量验证
     /// @param candidates 候选列表
     /// @return 成功验证的关系列表
-    [[nodiscard]] std::vector<Relation> verify_batch(
-            const std::vector<SieveCandidate>& candidates) {
+    [[nodiscard]] std::vector<Relation>
+    verify_batch(const std::vector<SieveCandidate>& candidates) {
 
         std::vector<Relation> relations;
-        relations.reserve(candidates.size() / 10);  // 估计约 10% 成功率
+        relations.reserve(candidates.size() / 10); // 估计约 10% 成功率
 
         for (const auto& cand : candidates) {
             auto rel = verify(cand);
@@ -420,58 +463,57 @@ private:
     /// 检查 cofactor 分类是否可接受
     [[nodiscard]] bool is_acceptable_cofactor(const CofactorClassification& cls) const noexcept {
         switch (cls.type) {
-            case CofactorClass::Smooth:
-                return true;
+        case CofactorClass::Smooth:
+            return true;
 
-            case CofactorClass::Prime:
-            case CofactorClass::PrimePower:
-                return config_.allow_1lp;
+        case CofactorClass::Prime:
+        case CofactorClass::PrimePower:
+            return config_.allow_1lp;
 
-            case CofactorClass::Semiprime:
-                return config_.allow_2lp;
+        case CofactorClass::Semiprime:
+            return config_.allow_2lp;
 
-            case CofactorClass::ThreeLP:
-                return config_.allow_3lp;
+        case CofactorClass::ThreeLP:
+            return config_.allow_3lp;
 
-            case CofactorClass::Composite:
-                // 3LP 分解尝试失败 (合数但 ECM 找不到 3 个 prime ≤ B) → 拒绝
-                return false;
+        case CofactorClass::Composite:
+            // 3LP 分解尝试失败 (合数但 ECM 找不到 3 个 prime ≤ B) → 拒绝
+            return false;
 
-            case CofactorClass::TooLarge:
-            case CofactorClass::Unknown:
-                return false;
+        case CofactorClass::TooLarge:
+        case CofactorClass::Unknown:
+            return false;
 
-            default:
-                return false;
+        default:
+            return false;
         }
     }
 
     /// 添加大素数到关系（有理侧，无需根）
-    void add_large_primes(Relation::LargePrimeList& list,
-                          const CofactorClassification& cls) const {
+    void add_large_primes(Relation::LargePrimeList& list, const CofactorClassification& cls) const {
 
         switch (cls.type) {
-            case CofactorClass::Prime:
-                list.push_back(PrimePower{cls.factor1, static_cast<uint8_t>(1)});
-                break;
+        case CofactorClass::Prime:
+            list.push_back(PrimePower{cls.factor1, static_cast<uint8_t>(1)});
+            break;
 
-            case CofactorClass::PrimePower:
-                list.push_back(PrimePower{cls.factor1, cls.power});
-                break;
+        case CofactorClass::PrimePower:
+            list.push_back(PrimePower{cls.factor1, cls.power});
+            break;
 
-            case CofactorClass::Semiprime:
-                list.push_back(PrimePower{cls.factor1, static_cast<uint8_t>(1)});
-                list.push_back(PrimePower{cls.factor2, static_cast<uint8_t>(1)});
-                break;
+        case CofactorClass::Semiprime:
+            list.push_back(PrimePower{cls.factor1, static_cast<uint8_t>(1)});
+            list.push_back(PrimePower{cls.factor2, static_cast<uint8_t>(1)});
+            break;
 
-            case CofactorClass::ThreeLP:
-                list.push_back(PrimePower{cls.factor1, static_cast<uint8_t>(1)});
-                list.push_back(PrimePower{cls.factor2, static_cast<uint8_t>(1)});
-                list.push_back(PrimePower{cls.factor3, static_cast<uint8_t>(1)});
-                break;
+        case CofactorClass::ThreeLP:
+            list.push_back(PrimePower{cls.factor1, static_cast<uint8_t>(1)});
+            list.push_back(PrimePower{cls.factor2, static_cast<uint8_t>(1)});
+            list.push_back(PrimePower{cls.factor3, static_cast<uint8_t>(1)});
+            break;
 
-            default:
-                break;
+        default:
+            break;
         }
     }
 
@@ -479,8 +521,8 @@ public:
     /// Check the Special-Q ideal identity without computing b^{-1} mod q.
     /// For a finite root, a == b*r (mod q); q | b identifies the projective
     /// root. The sieve invokes this on every candidate, so keep it O(1).
-    [[nodiscard]] static bool special_q_root_matches(int64_t a, uint64_t b,
-                                                      uint32_t q, uint32_t root) noexcept {
+    [[nodiscard]] static bool special_q_root_matches(int64_t a, uint64_t b, uint32_t q,
+                                                     uint32_t root) noexcept {
         if (q < 2) {
             return false;
         }
@@ -523,47 +565,49 @@ public:
         int64_t r = static_cast<int64_t>(p), nr = static_cast<int64_t>(b_mod);
         while (nr != 0) {
             int64_t q = r / nr;
-            t -= q * nt; std::swap(t, nt);
-            r -= q * nr; std::swap(r, nr);
+            t -= q * nt;
+            std::swap(t, nt);
+            r -= q * nr;
+            std::swap(r, nr);
         }
-        uint64_t b_inv = static_cast<uint64_t>((t % static_cast<int64_t>(p) +
-                                                  static_cast<int64_t>(p)) % static_cast<int64_t>(p));
+        uint64_t b_inv = static_cast<uint64_t>(
+            (t % static_cast<int64_t>(p) + static_cast<int64_t>(p)) % static_cast<int64_t>(p));
         return gnfs::util::mul_mod_u64(a_mod, b_inv, p);
     }
 
     /// 添加代数侧大素数（带正确的素理想根 r）
     void add_algebraic_large_primes(Relation::LargePrimeList& list,
-                                     const CofactorClassification& cls,
-                                     int64_t a, uint64_t b) const {
+                                    const CofactorClassification& cls, int64_t a,
+                                    uint64_t b) const {
         switch (cls.type) {
-            case CofactorClass::Prime: {
-                uint64_t r = compute_alg_lp_root(a, b, cls.factor1);
-                list.push_back(PrimePower{cls.factor1, r, static_cast<uint8_t>(1)});
-                break;
-            }
-            case CofactorClass::PrimePower: {
-                uint64_t r = compute_alg_lp_root(a, b, cls.factor1);
-                list.push_back(PrimePower{cls.factor1, r, cls.power});
-                break;
-            }
-            case CofactorClass::Semiprime: {
-                uint64_t r1 = compute_alg_lp_root(a, b, cls.factor1);
-                uint64_t r2 = compute_alg_lp_root(a, b, cls.factor2);
-                list.push_back(PrimePower{cls.factor1, r1, static_cast<uint8_t>(1)});
-                list.push_back(PrimePower{cls.factor2, r2, static_cast<uint8_t>(1)});
-                break;
-            }
-            case CofactorClass::ThreeLP: {
-                uint64_t r1 = compute_alg_lp_root(a, b, cls.factor1);
-                uint64_t r2 = compute_alg_lp_root(a, b, cls.factor2);
-                uint64_t r3 = compute_alg_lp_root(a, b, cls.factor3);
-                list.push_back(PrimePower{cls.factor1, r1, static_cast<uint8_t>(1)});
-                list.push_back(PrimePower{cls.factor2, r2, static_cast<uint8_t>(1)});
-                list.push_back(PrimePower{cls.factor3, r3, static_cast<uint8_t>(1)});
-                break;
-            }
-            default:
-                break;
+        case CofactorClass::Prime: {
+            uint64_t r = compute_alg_lp_root(a, b, cls.factor1);
+            list.push_back(PrimePower{cls.factor1, r, static_cast<uint8_t>(1)});
+            break;
+        }
+        case CofactorClass::PrimePower: {
+            uint64_t r = compute_alg_lp_root(a, b, cls.factor1);
+            list.push_back(PrimePower{cls.factor1, r, cls.power});
+            break;
+        }
+        case CofactorClass::Semiprime: {
+            uint64_t r1 = compute_alg_lp_root(a, b, cls.factor1);
+            uint64_t r2 = compute_alg_lp_root(a, b, cls.factor2);
+            list.push_back(PrimePower{cls.factor1, r1, static_cast<uint8_t>(1)});
+            list.push_back(PrimePower{cls.factor2, r2, static_cast<uint8_t>(1)});
+            break;
+        }
+        case CofactorClass::ThreeLP: {
+            uint64_t r1 = compute_alg_lp_root(a, b, cls.factor1);
+            uint64_t r2 = compute_alg_lp_root(a, b, cls.factor2);
+            uint64_t r3 = compute_alg_lp_root(a, b, cls.factor3);
+            list.push_back(PrimePower{cls.factor1, r1, static_cast<uint8_t>(1)});
+            list.push_back(PrimePower{cls.factor2, r2, static_cast<uint8_t>(1)});
+            list.push_back(PrimePower{cls.factor3, r3, static_cast<uint8_t>(1)});
+            break;
+        }
+        default:
+            break;
         }
     }
 
@@ -587,11 +631,10 @@ public:
 };
 
 /// 便捷函数：验证单个候选
-[[nodiscard]] inline std::optional<Relation> verify_candidate(
-        const PolynomialContext& ctx,
-        const FactorBase& fb,
-        int64_t a, uint64_t b,
-        uint64_t large_prime_bound = 0) {
+[[nodiscard]] inline std::optional<Relation> verify_candidate(const PolynomialContext& ctx,
+                                                              const FactorBase& fb, int64_t a,
+                                                              uint64_t b,
+                                                              uint64_t large_prime_bound = 0) {
 
     CofactorizerConfig config;
     config.large_prime_bound = large_prime_bound;

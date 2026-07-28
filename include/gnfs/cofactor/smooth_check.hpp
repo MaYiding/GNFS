@@ -5,12 +5,14 @@
 #include "../util/primes.hpp"
 #include "brent_pollard_rho.hpp"
 #include "ecm.hpp"
+#include "seed_provider.hpp"
 #include "squfof.hpp"
 #include "survival_predictor.hpp"
 
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <stdexcept>
 
 namespace gnfs::cofactor {
 
@@ -20,7 +22,8 @@ namespace detail {
 
 /// Bit length of an unsigned uint64 value. Returns 0 for v == 0.
 [[nodiscard]] inline uint64_t bit_length_u64(uint64_t v) noexcept {
-    if (v == 0) return 0;
+    if (v == 0)
+        return 0;
     // 64 - clz gives the position of the highest set bit + 1.
     return 64ULL - static_cast<uint64_t>(gnfs::util::clz64(v));
 }
@@ -54,7 +57,8 @@ namespace detail {
             }
         }
         for (uint64_t i = 101; i <= LIMIT; ++i) {
-            if (is_prime[i]) primes.push_back(i);
+            if (is_prime[i])
+                primes.push_back(i);
         }
         return primes;
     }();
@@ -63,23 +67,23 @@ namespace detail {
 
 /// Cofactor 分类
 enum class CofactorClass : uint8_t {
-    Smooth = 0,        // cofactor = 1, 完全光滑
-    Prime = 1,         // cofactor 是单个素数 (1LP)
-    PrimePower = 2,    // cofactor 是素数幂 p^k
-    Semiprime = 3,     // cofactor = p * q (2LP)
-    Composite = 4,     // 其他合数（无法分解或超 3LP space）
-    TooLarge = 5,      // cofactor 超出大素数界限
-    Unknown = 6,       // 无法确定
-    ThreeLP = 7        // cofactor = p * q * r (3LP, 全部 ≤ B)
+    Smooth = 0,     // cofactor = 1, 完全光滑
+    Prime = 1,      // cofactor 是单个素数 (1LP)
+    PrimePower = 2, // cofactor 是素数幂 p^k
+    Semiprime = 3,  // cofactor = p * q (2LP)
+    Composite = 4,  // 其他合数（无法分解或超 3LP space）
+    TooLarge = 5,   // cofactor 超出大素数界限
+    Unknown = 6,    // 无法确定
+    ThreeLP = 7     // cofactor = p * q * r (3LP, 全部 ≤ B)
 };
 
 /// 分类结果
 struct CofactorClassification {
     CofactorClass type = CofactorClass::Unknown;
-    uint64_t factor1 = 0;      // 第一个因子（如果适用）
-    uint64_t factor2 = 0;      // 第二个因子（如果适用）
-    uint64_t factor3 = 0;      // 第三个因子 (ThreeLP 时使用)
-    uint8_t power = 1;         // 幂次（如果是素数幂）
+    uint64_t factor1 = 0; // 第一个因子（如果适用）
+    uint64_t factor2 = 0; // 第二个因子（如果适用）
+    uint64_t factor3 = 0; // 第三个因子 (ThreeLP 时使用)
+    uint8_t power = 1;    // 幂次（如果是素数幂）
 };
 
 /// 确定性 uint64 Miller-Rabin (零 GMP 分配)
@@ -88,22 +92,30 @@ struct CofactorClassification {
 /// 给出 100% 确定性结果（覆盖全部 uint64 值域）。
 /// 参考: Jim Sinclair, https://miller-rabin.appspot.com/
 [[nodiscard]] inline bool is_probable_prime_u64(uint64_t n, [[maybe_unused]] int rounds = 25) {
-    if (n < 2) return false;
-    if (n == 2 || n == 3 || n == 5 || n == 7 || n == 11 || n == 13 || n == 17) return true;
-    if (n % 2 == 0 || n % 3 == 0 || n % 5 == 0) return false;
-    if (n < 19 * 19) return true;  // All remaining primes < 361
+    if (n < 2)
+        return false;
+    if (n == 2 || n == 3 || n == 5 || n == 7 || n == 11 || n == 13 || n == 17)
+        return true;
+    if (n % 2 == 0 || n % 3 == 0 || n % 5 == 0)
+        return false;
+    if (n < 19 * 19)
+        return true; // All remaining primes < 361
 
     // Decompose n-1 = d · 2^r
     uint64_t d = n - 1;
     int r = 0;
-    while ((d & 1) == 0) { d >>= 1; ++r; }
+    while ((d & 1) == 0) {
+        d >>= 1;
+        ++r;
+    }
 
     // Modular exponentiation: base^exp mod mod.
     auto mod_pow = [](uint64_t base, uint64_t exp, uint64_t mod) -> uint64_t {
         uint64_t result = 1;
         base %= mod;
         while (exp > 0) {
-            if (exp & 1) result = gnfs::util::mul_mod_u64(result, base, mod);
+            if (exp & 1)
+                result = gnfs::util::mul_mod_u64(result, base, mod);
             exp >>= 1;
             base = gnfs::util::mul_mod_u64(base, base, mod);
         }
@@ -112,12 +124,15 @@ struct CofactorClassification {
 
     // Single-witness MR test
     auto witness_test = [&](uint64_t a) -> bool {
-        if (a % n == 0) return true;  // trivial witness
+        if (a % n == 0)
+            return true; // trivial witness
         uint64_t x = mod_pow(a, d, n);
-        if (x == 1 || x == n - 1) return true;
+        if (x == 1 || x == n - 1)
+            return true;
         for (int i = 1; i < r; ++i) {
             x = gnfs::util::mul_mod_u64(x, x, n);
-            if (x == n - 1) return true;
+            if (x == n - 1)
+                return true;
         }
         return false;
     };
@@ -134,17 +149,27 @@ struct CofactorClassification {
     // n < 2^64:                           +29, 31, 37 (Sinclair full set)
     constexpr uint64_t witnesses[] = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37};
     int num_witnesses;
-    if      (n < 2047ULL)                     num_witnesses = 1;
-    else if (n < 1373653ULL)                  num_witnesses = 2;
-    else if (n < 25326001ULL)                 num_witnesses = 3;
-    else if (n < 3215031751ULL)               num_witnesses = 4;
-    else if (n < 2152302898747ULL)            num_witnesses = 5;
-    else if (n < 3474749660383ULL)            num_witnesses = 6;
-    else if (n < 341550071728321ULL)          num_witnesses = 7;
-    else if (n < 3825123056546413051ULL)      num_witnesses = 9;
-    else                                      num_witnesses = 12;
+    if (n < 2047ULL)
+        num_witnesses = 1;
+    else if (n < 1373653ULL)
+        num_witnesses = 2;
+    else if (n < 25326001ULL)
+        num_witnesses = 3;
+    else if (n < 3215031751ULL)
+        num_witnesses = 4;
+    else if (n < 2152302898747ULL)
+        num_witnesses = 5;
+    else if (n < 3474749660383ULL)
+        num_witnesses = 6;
+    else if (n < 341550071728321ULL)
+        num_witnesses = 7;
+    else if (n < 3825123056546413051ULL)
+        num_witnesses = 9;
+    else
+        num_witnesses = 12;
     for (int i = 0; i < num_witnesses; ++i) {
-        if (!witness_test(witnesses[i])) return false;
+        if (!witness_test(witnesses[i]))
+            return false;
     }
     return true;
 }
@@ -189,7 +214,8 @@ struct CofactorClassification {
 [[nodiscard]] inline bool is_perfect_power(uint64_t n, uint64_t& base, uint8_t& exp) {
     // n=0/1 不是有意义的"完全幂"。语义上 1=1^k 对任意 k 都成立,n=0 也病态。
     // 返回 false 避免下游 if(exp>1) 误判。
-    if (n < 2) return false;
+    if (n < 2)
+        return false;
 
     // 检查是否是 2 的幂
     if ((n & (n - 1)) == 0) {
@@ -199,7 +225,8 @@ struct CofactorClassification {
             n >>= 1;
             ++exp;
         }
-        if (exp < 2) return false;  // n=2 本身不是幂
+        if (exp < 2)
+            return false; // n=2 本身不是幂
         return true;
     }
 
@@ -210,7 +237,8 @@ struct CofactorClassification {
         double root = std::pow(static_cast<double>(n), 1.0 / k);
         uint64_t b_mid = static_cast<uint64_t>(std::round(root));
 
-        if (b_mid < 2) break;
+        if (b_mid < 2)
+            break;
 
         for (uint64_t b_try = (b_mid > 2 ? b_mid - 1 : 2); b_try <= b_mid + 1; ++b_try) {
             uint64_t power = 1;
@@ -249,8 +277,10 @@ struct CofactorClassification {
 /// @param max_iterations 最大函数求值次数（跨所有 c 值的总限额）
 /// @return 找到的因子，如果失败返回 1
 [[nodiscard]] inline uint64_t pollard_rho(uint64_t n, size_t max_iterations = 100000) {
-    if (n % 2 == 0) return 2;
-    if (n % 3 == 0) return 3;
+    if (n % 2 == 0)
+        return 2;
+    if (n % 3 == 0)
+        return 3;
 
     auto gcd = [](uint64_t a, uint64_t b) -> uint64_t {
         while (b != 0) {
@@ -270,9 +300,9 @@ struct CofactorClassification {
 
         uint64_t x = 2, y = 2;
         uint64_t d = 1;
-        uint64_t r = 1;      // Brent step size (doubles each phase)
-        uint64_t q = 1;      // accumulated product for batch GCD
-        uint64_t ys = 0;     // save point for backtracking
+        uint64_t r = 1;  // Brent step size (doubles each phase)
+        uint64_t q = 1;  // accumulated product for batch GCD
+        uint64_t ys = 0; // save point for backtracking
         size_t total_evals = 0;
 
         do {
@@ -287,13 +317,20 @@ struct CofactorClassification {
             do {
                 ys = y;
                 uint64_t batch = std::min(static_cast<uint64_t>(BATCH_SIZE), r - k);
-                for (uint64_t i = 0; i < batch && total_evals < max_iterations; ++i, ++total_evals) {
+                for (uint64_t i = 0; i < batch && total_evals < max_iterations;
+                     ++i, ++total_evals) {
                     y = f(y);
                     uint64_t diff = (x > y) ? x - y : y - x;
-                    if (diff == 0) { d = n; break; } // cycle without factor
+                    if (diff == 0) {
+                        d = n;
+                        break;
+                    } // cycle without factor
                     q = gnfs::util::mul_mod_u64(q, diff, n);
                 }
-                if (q == 0) { d = n; break; } // product ≡ 0 (mod n)
+                if (q == 0) {
+                    d = n;
+                    break;
+                } // product ≡ 0 (mod n)
                 d = gcd(q, n);
                 k += BATCH_SIZE;
             } while (k < r && d == 1);
@@ -309,13 +346,15 @@ struct CofactorClassification {
             while (d == 1 && backtrack_steps < MAX_BACKTRACK) {
                 ys = f(ys);
                 uint64_t diff = (x > ys) ? x - ys : ys - x;
-                if (diff == 0) break;
+                if (diff == 0)
+                    break;
                 d = gcd(diff, n);
                 ++backtrack_steps;
             }
         }
 
-        if (d != 1 && d != n) return d;
+        if (d != 1 && d != n)
+            return d;
     }
 
     return 1;
@@ -327,34 +366,37 @@ struct CofactorClassification {
 /// PERF: 此函数 ~1-2ms cost (SQUFOF iter cap + Pollard fallback). caller
 /// 应该先用 has_small_factor() 过滤明显的"不可分" cofactors, 避免大量浪费.
 [[nodiscard]] inline uint64_t try_find_one_factor_fast(uint64_t c) {
-    if (c <= 1) return 1;
-    constexpr uint64_t small_primes[] = {
-        2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,
-        53,59,61,67,71,73,79,83,89,97
-    };
+    if (c <= 1)
+        return 1;
+    constexpr uint64_t small_primes[] = {2,  3,  5,  7,  11, 13, 17, 19, 23, 29, 31, 37, 41,
+                                         43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97};
     for (uint64_t sp : small_primes) {
-        if (c % sp == 0 && sp != c) return sp;
+        if (c % sp == 0 && sp != c)
+            return sp;
     }
     if (c < UINT64_C(0x100000000)) {
         const auto& mid = get_mid_primes();
         uint64_t limit = static_cast<uint64_t>(std::sqrt(static_cast<double>(c))) + 1;
         for (uint64_t p : mid) {
-            if (p > limit) break;
-            if (c % p == 0) return p;
+            if (p > limit)
+                break;
+            if (c % p == 0)
+                return p;
         }
     }
     // SQUFOF 用 short iter cap 避免 3LP path 长时间 stall
     if (c < (UINT64_C(1) << 62)) {
         // Cap iterations more aggressively in 3LP path: 1000 vs 2000-20000 in normal path
-        uint32_t lim = (c < (UINT64_C(1) << 40)) ? 1000 :
-                       (c < (UINT64_C(1) << 50)) ? 2000 : 5000;
+        uint32_t lim = (c < (UINT64_C(1) << 40)) ? 1000 : (c < (UINT64_C(1) << 50)) ? 2000 : 5000;
         uint64_t f = SQUFOF::factor(c, lim);
-        if (f != 1 && f != c) return f;
+        if (f != 1 && f != c)
+            return f;
     }
     // Pollard rho with tight iter cap
     size_t max_iter = (c < (UINT64_C(1) << 40)) ? 5000 : 30000;
     uint64_t f = pollard_rho(c, max_iter);
-    if (f != 1 && f != c) return f;
+    if (f != 1 && f != c)
+        return f;
     return 1;
 }
 
@@ -372,10 +414,12 @@ struct CofactorClassification {
 /// 这是个 tradeoff: 节省 sieve overhead 是首要的, 接受少量 3LP loss.
 [[nodiscard]] inline bool has_small_factor(uint64_t c, uint64_t bound = 97) {
     // 用前 10 个 smallest primes 已足够覆盖大多数 random composites
-    constexpr uint64_t tiny_primes[] = {2,3,5,7,11,13,17,19,23,29};
+    constexpr uint64_t tiny_primes[] = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29};
     for (uint64_t p : tiny_primes) {
-        if (p > bound) break;
-        if (c % p == 0) return true;
+        if (p > bound)
+            break;
+        if (c % p == 0)
+            return true;
     }
     return false;
 }
@@ -394,17 +438,22 @@ struct CofactorClassification {
 /// algebraic cofactor reject 都 ~1ms wasted, 50K rejects/SQ → 50s 浪费.
 [[nodiscard]] inline std::optional<CofactorClassification>
 try_classify_three_lp(uint64_t c, uint64_t large_prime_bound) {
-    if (c <= 1) return std::nullopt;
+    if (c <= 1)
+        return std::nullopt;
 
     uint64_t f1 = try_find_one_factor_fast(c);
-    if (f1 == 1) return std::nullopt;
+    if (f1 == 1)
+        return std::nullopt;
     uint64_t rest = c / f1;
-    if (f1 * rest != c) return std::nullopt;  // safety
+    if (f1 * rest != c)
+        return std::nullopt; // safety
 
-    if (f1 > rest) std::swap(f1, rest);
+    if (f1 > rest)
+        std::swap(f1, rest);
 
     if (is_probable_prime_u64(f1)) {
-        if (f1 > large_prime_bound) return std::nullopt;
+        if (f1 > large_prime_bound)
+            return std::nullopt;
         if (is_probable_prime_u64(rest)) {
             if (rest <= large_prime_bound) {
                 CofactorClassification r;
@@ -416,50 +465,117 @@ try_classify_three_lp(uint64_t c, uint64_t large_prime_bound) {
             return std::nullopt;
         }
         uint64_t f2 = try_find_one_factor_fast(rest);
-        if (f2 == 1 || f2 == rest) return std::nullopt;
+        if (f2 == 1 || f2 == rest)
+            return std::nullopt;
         uint64_t f3 = rest / f2;
-        if (f2 * f3 != rest) return std::nullopt;
-        if (!is_probable_prime_u64(f2) || !is_probable_prime_u64(f3)) return std::nullopt;
-        if (f2 > large_prime_bound || f3 > large_prime_bound) return std::nullopt;
+        if (f2 * f3 != rest)
+            return std::nullopt;
+        if (!is_probable_prime_u64(f2) || !is_probable_prime_u64(f3))
+            return std::nullopt;
+        if (f2 > large_prime_bound || f3 > large_prime_bound)
+            return std::nullopt;
         uint64_t a = f1, b = f2, d = f3;
-        if (a > b) std::swap(a, b);
-        if (b > d) std::swap(b, d);
-        if (a > b) std::swap(a, b);
+        if (a > b)
+            std::swap(a, b);
+        if (b > d)
+            std::swap(b, d);
+        if (a > b)
+            std::swap(a, b);
         CofactorClassification r;
         r.type = CofactorClass::ThreeLP;
-        r.factor1 = a; r.factor2 = b; r.factor3 = d;
+        r.factor1 = a;
+        r.factor2 = b;
+        r.factor3 = d;
         return r;
     }
 
     uint64_t f1a = try_find_one_factor_fast(f1);
-    if (f1a == 1 || f1a == f1) return std::nullopt;
+    if (f1a == 1 || f1a == f1)
+        return std::nullopt;
     uint64_t f1b = f1 / f1a;
-    if (f1a * f1b != f1) return std::nullopt;
-    if (!is_probable_prime_u64(f1a) || !is_probable_prime_u64(f1b)) return std::nullopt;
-    if (f1a > large_prime_bound || f1b > large_prime_bound) return std::nullopt;
-    if (!is_probable_prime_u64(rest)) return std::nullopt;
-    if (rest > large_prime_bound) return std::nullopt;
+    if (f1a * f1b != f1)
+        return std::nullopt;
+    if (!is_probable_prime_u64(f1a) || !is_probable_prime_u64(f1b))
+        return std::nullopt;
+    if (f1a > large_prime_bound || f1b > large_prime_bound)
+        return std::nullopt;
+    if (!is_probable_prime_u64(rest))
+        return std::nullopt;
+    if (rest > large_prime_bound)
+        return std::nullopt;
     uint64_t a = f1a, b = f1b, d = rest;
-    if (a > b) std::swap(a, b);
-    if (b > d) std::swap(b, d);
-    if (a > b) std::swap(a, b);
+    if (a > b)
+        std::swap(a, b);
+    if (b > d)
+        std::swap(b, d);
+    if (a > b)
+        std::swap(a, b);
     CofactorClassification r;
     r.type = CofactorClass::ThreeLP;
-    r.factor1 = a; r.factor2 = b; r.factor3 = d;
+    r.factor1 = a;
+    r.factor2 = b;
+    r.factor3 = d;
     return r;
 }
 
+namespace detail {
+
+struct SeededCofactorRandomnessV1 final {
+    CofactorAttemptCoordinates coordinates{};
+    CofactorSide side = CofactorSide::rational;
+    const CofactorSeedProvider* provider = nullptr;
+    std::uint32_t ecm_brent_suyama_degree = 0;
+};
+
+inline void validate_seeded_cofactor_randomness_v1(CofactorSide side,
+                                                   std::uint32_t ecm_brent_suyama_degree) {
+    switch (side) {
+    case CofactorSide::rational:
+    case CofactorSide::algebraic:
+        break;
+    default:
+        throw std::invalid_argument("unknown seeded cofactor side");
+    }
+    if (ecm_brent_suyama_degree != 0 &&
+        !brent_suyama::is_supported_degree(ecm_brent_suyama_degree)) {
+        throw std::invalid_argument("seeded cofactor Brent-Suyama degree is unsupported");
+    }
+}
+
+[[nodiscard]] inline std::optional<Integer>
+quick_factor_with_seeded_randomness_v1(const Integer& cofactor,
+                                       const SeededCofactorRandomnessV1* randomness) {
+    if (randomness == nullptr) {
+        return ECM::quick_factor(cofactor);
+    }
+    if (randomness->provider == nullptr) {
+        throw std::invalid_argument("seeded cofactor randomness requires a provider");
+    }
+
+    const CofactorAttemptContext attempt = make_cofactor_attempt_context_v1(
+        cofactor, randomness->coordinates, randomness->side,
+        CofactorRandomDomainV1::ecm_curve_schedule,
+        COFACTOR_ECM_CURVE_SCHEDULE_ALGORITHM_IDENTITY_V1, *randomness->provider);
+    const ECM::DeterministicCurveSchedule schedule =
+        ECM::make_deterministic_curve_schedule(COFACTOR_ECM_QUICK_CURVE_COUNT_V1, attempt);
+    return ECM::quick_factor(cofactor, schedule, randomness->ecm_brent_suyama_degree);
+}
+
+/// Internal classification implementation shared by the legacy and explicit
+/// deterministic-seed entry points.
+///
+/// The randomness pointer is null for the legacy path and non-null only for
+/// the explicit V1 provider path.
 /// 分类 cofactor
 /// @param cofactor 剩余的未分解部分
 /// @param large_prime_bound 大素数上界
 /// @param allow_3lp 是否尝试 3LP 分解 (默认 false: 保留旧行为)
 /// @param smoothness_bound 光滑界 B（用于 survival predictor，0 = 禁用 predictor）
 /// @return 分类结果
-[[nodiscard]] inline CofactorClassification classify_cofactor(
-        const Integer& cofactor,
-        uint64_t large_prime_bound,
-        bool allow_3lp = false,
-        uint64_t smoothness_bound = 0) {
+[[nodiscard]] inline CofactorClassification
+classify_cofactor_impl_v1(const Integer& cofactor, uint64_t large_prime_bound, bool allow_3lp,
+                          uint64_t smoothness_bound,
+                          const SeededCofactorRandomnessV1* seeded_randomness) {
 
     CofactorClassification result;
 
@@ -478,8 +594,8 @@ try_classify_three_lp(uint64_t c, uint64_t large_prime_bound) {
         smoothness_bound > 0 && survival_filter_enabled() && survival_threshold() > 0.0;
     if (survival_predictor_active) {
         const uint64_t c_bits = cofactor.fits_uint64()
-            ? detail::bit_length_u64(cofactor.to_uint64())
-            : static_cast<uint64_t>(mpz_sizeinbase(cofactor.get_mpz(), 2));
+                                    ? detail::bit_length_u64(cofactor.to_uint64())
+                                    : static_cast<uint64_t>(mpz_sizeinbase(cofactor.get_mpz(), 2));
         const uint64_t B_bits = detail::bit_length_u64(smoothness_bound);
         const uint64_t LP_bits = detail::bit_length_u64(large_prime_bound);
         if (should_reject_cofactor(c_bits, B_bits, LP_bits)) {
@@ -496,23 +612,24 @@ try_classify_three_lp(uint64_t c, uint64_t large_prime_bound) {
         bool active;
         const CofactorClassification* result_ref;
         ~PassRecorder() {
-            if (!active) return;
+            if (!active)
+                return;
             // pass_smooth covers Smooth / Prime / PrimePower / Semiprime / ThreeLP
             // pass_failed covers TooLarge / Composite / Unknown
             switch (result_ref->type) {
-                case CofactorClass::Smooth:
-                case CofactorClass::Prime:
-                case CofactorClass::PrimePower:
-                case CofactorClass::Semiprime:
-                case CofactorClass::ThreeLP:
-                    survival_stats().record_pass_smooth();
-                    break;
-                case CofactorClass::TooLarge:
-                case CofactorClass::Composite:
-                case CofactorClass::Unknown:
-                default:
-                    survival_stats().record_pass_failed();
-                    break;
+            case CofactorClass::Smooth:
+            case CofactorClass::Prime:
+            case CofactorClass::PrimePower:
+            case CofactorClass::Semiprime:
+            case CofactorClass::ThreeLP:
+                survival_stats().record_pass_smooth();
+                break;
+            case CofactorClass::TooLarge:
+            case CofactorClass::Composite:
+            case CofactorClass::Unknown:
+            default:
+                survival_stats().record_pass_failed();
+                break;
             }
         }
     };
@@ -585,13 +702,14 @@ try_classify_three_lp(uint64_t c, uint64_t large_prime_bound) {
         {
             // Phase 1: 小素数预筛 (2,3,5,...,97)
             // 很多 semiprime 有小因子，25 次除法比 Pollard rho 快 100-1000×
-            constexpr uint64_t small_primes[] = {
-                2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,
-                53,59,61,67,71,73,79,83,89,97
-            };
+            constexpr uint64_t small_primes[] = {2,  3,  5,  7,  11, 13, 17, 19, 23, 29, 31, 37, 41,
+                                                 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97};
             uint64_t factor = 1;
             for (uint64_t sp : small_primes) {
-                if (c % sp == 0) { factor = sp; break; }
+                if (c % sp == 0) {
+                    factor = sp;
+                    break;
+                }
             }
 
             // Phase 2: 素数表试除到 sqrt(c) — 只测素数 (was: 全奇数)
@@ -600,8 +718,12 @@ try_classify_three_lp(uint64_t c, uint64_t large_prime_bound) {
                 static const auto& mid_primes = get_mid_primes();
                 uint64_t limit = static_cast<uint64_t>(std::sqrt(static_cast<double>(c))) + 1;
                 for (uint64_t p : mid_primes) {
-                    if (p > limit) break;
-                    if (c % p == 0) { factor = p; break; }
+                    if (p > limit)
+                        break;
+                    if (c % p == 0) {
+                        factor = p;
+                        break;
+                    }
                 }
             }
 
@@ -609,8 +731,9 @@ try_classify_three_lp(uint64_t c, uint64_t large_prime_bound) {
             // Limit iterations: for 2LP cofactors (~10^12), O(N^{1/4}) ≈ 1000 iters.
             // Cap at 2000 to avoid spending too long on hard composites.
             if (factor == 1 && c < (UINT64_C(1) << 62)) {
-                uint32_t squfof_limit = (c < (UINT64_C(1) << 40)) ? 2000 :
-                                        (c < (UINT64_C(1) << 50)) ? 5000 : 20000;
+                uint32_t squfof_limit = (c < (UINT64_C(1) << 40))   ? 2000
+                                        : (c < (UINT64_C(1) << 50)) ? 5000
+                                                                    : 20000;
                 factor = SQUFOF::factor(c, squfof_limit);
             }
 
@@ -654,7 +777,7 @@ try_classify_three_lp(uint64_t c, uint64_t large_prime_bound) {
         // Phase 4: ECM 回退 (仅 Pollard rho 失败时)
         {
             Integer c_int(static_cast<unsigned long long>(c));
-            auto ecm_result = ECM::quick_factor(c_int);
+            auto ecm_result = quick_factor_with_seeded_randomness_v1(c_int, seeded_randomness);
             if (ecm_result && ecm_result->fits_uint64()) {
                 uint64_t f1 = ecm_result->to_uint64();
                 if (f1 != 1 && f1 != c) {
@@ -704,7 +827,7 @@ try_classify_three_lp(uint64_t c, uint64_t large_prime_bound) {
     }
 
     // 尝试 ECM 分解
-    auto ecm_result = ECM::quick_factor(cofactor);
+    auto ecm_result = quick_factor_with_seeded_randomness_v1(cofactor, seeded_randomness);
     if (ecm_result) {
         Integer other;
         mpz_divexact(other.get_mpz(), cofactor.get_mpz(), ecm_result->get_mpz());
@@ -728,26 +851,61 @@ try_classify_three_lp(uint64_t c, uint64_t large_prime_bound) {
     return result;
 }
 
+} // namespace detail
+
+/// Classify a cofactor using the legacy ambient ECM policy.
+[[nodiscard]] inline CofactorClassification classify_cofactor(const Integer& cofactor,
+                                                              uint64_t large_prime_bound,
+                                                              bool allow_3lp = false,
+                                                              uint64_t smoothness_bound = 0) {
+    return detail::classify_cofactor_impl_v1(cofactor, large_prime_bound, allow_3lp,
+                                             smoothness_bound, nullptr);
+}
+
+/// Classify a cofactor with lazy, algorithm-bound ECM randomness.
+///
+/// The provider is not called on deterministic exits. If classification
+/// reaches an ECM fallback, exactly one V1 ECM request is derived from the
+/// residual cofactor, stable candidate coordinates, and side. Provider
+/// exceptions propagate; this path never falls back to ambient entropy.
+///
+/// Brent-Pollard-rho retains its existing fixed schedule in this milestone.
+/// Its Seed256 schedule is a separate versioned integration.
+[[nodiscard]] inline CofactorClassification
+classify_cofactor_seeded_v1(const Integer& cofactor, uint64_t large_prime_bound, bool allow_3lp,
+                            uint64_t smoothness_bound, CofactorAttemptCoordinates coordinates,
+                            CofactorSide side, const CofactorSeedProvider& provider,
+                            std::uint32_t ecm_brent_suyama_degree = 0) {
+    detail::validate_seeded_cofactor_randomness_v1(side, ecm_brent_suyama_degree);
+    const detail::SeededCofactorRandomnessV1 randomness{
+        .coordinates = coordinates,
+        .side = side,
+        .provider = &provider,
+        .ecm_brent_suyama_degree = ecm_brent_suyama_degree,
+    };
+    return detail::classify_cofactor_impl_v1(cofactor, large_prime_bound, allow_3lp,
+                                             smoothness_bound, &randomness);
+}
+
 /// 快速检查 cofactor 是否可能有用（粗略筛选）
 /// @param cofactor 剩余的未分解部分
 /// @param large_prime_bound 大素数上界
 /// @param allow_2lp 是否允许 2LP
 /// @param allow_3lp 是否允许 3LP (默认 false 兼容旧调用)
 /// @return true 如果值得进一步检查
-[[nodiscard]] inline bool quick_cofactor_check(
-        const Integer& cofactor,
-        uint64_t large_prime_bound,
-        bool allow_2lp = true,
-        bool allow_3lp = false) {
+[[nodiscard]] inline bool quick_cofactor_check(const Integer& cofactor, uint64_t large_prime_bound,
+                                               bool allow_2lp = true, bool allow_3lp = false) {
 
     if (cofactor.fits_uint64()) {
         uint64_t c = cofactor.to_uint64();
 
         // 完全光滑
-        if (c == 1) return true;
+        if (c == 1)
+            return true;
 
         // 单个大素数
-        if (c <= large_prime_bound) return true;
+        if (c <= large_prime_bound)
+            return true;
 
         // 2LP: cofactor <= B^2
         if (allow_2lp && !gnfs::util::u64_gt_square(c, large_prime_bound)) {
@@ -756,7 +914,8 @@ try_classify_three_lp(uint64_t c, uint64_t large_prime_bound) {
 
         // 3LP: cofactor <= B^3
         if (allow_3lp) {
-            if (!gnfs::util::u64_gt_cube(c, large_prime_bound)) return true;
+            if (!gnfs::util::u64_gt_cube(c, large_prime_bound))
+                return true;
         }
 
         return false;
@@ -764,18 +923,21 @@ try_classify_three_lp(uint64_t c, uint64_t large_prime_bound) {
 
     // 超出 uint64_t 范围 — 用 Integer 比较
     Integer lp_int(static_cast<unsigned long long>(large_prime_bound));
-    if (cofactor.compare(lp_int) <= 0) return true;  // 1LP
+    if (cofactor.compare(lp_int) <= 0)
+        return true; // 1LP
 
     if (allow_2lp) {
         Integer lp_sq;
         mpz_ui_pow_ui(lp_sq.get_mpz(), large_prime_bound, 2);
-        if (cofactor.compare(lp_sq) <= 0) return true;  // 2LP
+        if (cofactor.compare(lp_sq) <= 0)
+            return true; // 2LP
     }
 
     if (allow_3lp) {
         Integer lp_cube;
         mpz_ui_pow_ui(lp_cube.get_mpz(), large_prime_bound, 3);
-        if (cofactor.compare(lp_cube) <= 0) return true;  // 3LP
+        if (cofactor.compare(lp_cube) <= 0)
+            return true; // 3LP
     }
 
     return false;

@@ -1,6 +1,9 @@
 // test_cofactor_seed_provider.cpp - cofactor seed-provider boundary contracts
 
+#include <gnfs/cofactor/cofactorizer.hpp>
 #include <gnfs/cofactor/seed_provider.hpp>
+#include <gnfs/cofactor/smooth_check.hpp>
+#include <gnfs/factor_base/factor_base.hpp>
 
 #include <algorithm>
 #include <array>
@@ -22,8 +25,10 @@
 namespace {
 
 using gnfs::cofactor::COFACTOR_ECM_CURVE_SCHEDULE_ALGORITHM_IDENTITY_V1;
+using gnfs::cofactor::COFACTOR_ECM_QUICK_CURVE_COUNT_V1;
 using gnfs::cofactor::CofactorAttemptContext;
 using gnfs::cofactor::CofactorAttemptCoordinates;
+using gnfs::cofactor::CofactorClass;
 using gnfs::cofactor::CofactorRandomDomainV1;
 using gnfs::cofactor::CofactorSeed256;
 using gnfs::cofactor::CofactorSeedProvider;
@@ -77,7 +82,11 @@ struct ProviderFailure final : std::runtime_error {
 
 class ThrowingProvider final : public CofactorSeedProvider {
 public:
-    [[nodiscard]] CofactorSeed256 seed_for(const CofactorSeedRequestV1&) const override {
+    [[nodiscard]] CofactorSeed256 seed_for(const CofactorSeedRequestV1& request) const override {
+        {
+            std::lock_guard lock(mutex_);
+            requests_.push_back(request);
+        }
         calls_.fetch_add(1, std::memory_order_relaxed);
         throw ProviderFailure{};
     }
@@ -86,8 +95,15 @@ public:
         return calls_.load(std::memory_order_relaxed);
     }
 
+    [[nodiscard]] std::vector<CofactorSeedRequestV1> requests() const {
+        std::lock_guard lock(mutex_);
+        return requests_;
+    }
+
 private:
     mutable std::atomic<std::size_t> calls_{0};
+    mutable std::mutex mutex_;
+    mutable std::vector<CofactorSeedRequestV1> requests_;
 };
 
 template <class Function> void expect_invalid_argument(Function&& function) {
@@ -104,6 +120,7 @@ void test_exact_request_and_context() {
     CHECK(static_cast<std::uint8_t>(CofactorRandomDomainV1::brent_pollard_rho) == 1);
     CHECK(static_cast<std::uint8_t>(CofactorRandomDomainV1::ecm_curve_schedule) == 2);
     CHECK(COFACTOR_ECM_CURVE_SCHEDULE_ALGORITHM_IDENTITY_V1 == 1);
+    CHECK(COFACTOR_ECM_QUICK_CURVE_COUNT_V1 == 10);
 
     const CofactorSeed256 response = seed_with_bytes(0x12, 0xef);
     const RecordingProvider provider(response);
@@ -224,6 +241,112 @@ void test_provider_exception_propagates_without_retry() {
     CHECK(provider.calls() == 1);
 }
 
+void test_seeded_classification_is_lazy_and_binds_residual_input() {
+    const CofactorSeed256 response = seed_with_bytes(0x9a, 0xbc);
+    const RecordingProvider provider(response);
+    const CofactorAttemptCoordinates coordinates{17, 23};
+
+    const auto smooth = gnfs::cofactor::classify_cofactor_seeded_v1(
+        Integer(1), 1000, false, 0, coordinates, CofactorSide::rational, provider);
+    const auto prime = gnfs::cofactor::classify_cofactor_seeded_v1(
+        Integer(997), 1000, false, 0, coordinates, CofactorSide::algebraic, provider);
+    CHECK(smooth.type == CofactorClass::Smooth);
+    CHECK(prime.type == CofactorClass::Prime);
+    CHECK(provider.requests().empty());
+
+    const Integer residual("2035431132824962728145373");
+    constexpr std::uint64_t large_prime_bound = 2'000'000'000'000ULL;
+    const auto classification = gnfs::cofactor::classify_cofactor_seeded_v1(
+        residual, large_prime_bound, false, 0, coordinates, CofactorSide::rational, provider);
+    CHECK(classification.type == CofactorClass::Semiprime ||
+          classification.type == CofactorClass::Composite);
+
+    const std::vector<CofactorSeedRequestV1> requests = provider.requests();
+    CHECK(requests.size() == 1);
+    CHECK(requests.front().coordinates == coordinates);
+    CHECK(requests.front().side == CofactorSide::rational);
+    CHECK(requests.front().cofactor_digest ==
+          gnfs::cofactor::canonical_cofactor_input_digest(residual, CofactorSide::rational));
+    CHECK(requests.front().domain == CofactorRandomDomainV1::ecm_curve_schedule);
+    CHECK(requests.front().algorithm_identity == COFACTOR_ECM_CURVE_SCHEDULE_ALGORITHM_IDENTITY_V1);
+}
+
+void test_seeded_classification_validation_and_failure_boundaries() {
+    const Integer residual("2035431132824962728145373");
+    constexpr std::uint64_t large_prime_bound = 2'000'000'000'000ULL;
+    const CofactorAttemptCoordinates coordinates{29, 31};
+    const RecordingProvider recording(seed_with_bytes(1, 2));
+
+    expect_invalid_argument([&] {
+        (void)gnfs::cofactor::classify_cofactor_seeded_v1(
+            residual, large_prime_bound, false, 0, coordinates, static_cast<CofactorSide>(0xff),
+            recording);
+    });
+    expect_invalid_argument([&] {
+        (void)gnfs::cofactor::classify_cofactor_seeded_v1(residual, large_prime_bound, false, 0,
+                                                          coordinates, CofactorSide::rational,
+                                                          recording, 3);
+    });
+    CHECK(recording.requests().empty());
+
+    const ThrowingProvider throwing;
+    bool caught_exact_failure = false;
+    try {
+        (void)gnfs::cofactor::classify_cofactor_seeded_v1(
+            residual, large_prime_bound, false, 0, coordinates, CofactorSide::algebraic, throwing);
+    } catch (const ProviderFailure&) {
+        caught_exact_failure = true;
+    }
+    CHECK(caught_exact_failure);
+    CHECK(throwing.calls() == 1);
+}
+
+void test_cofactorizer_binds_trial_division_residual() {
+    const Integer residual("2035431132824962728145373");
+    Integer rational_input(residual);
+    rational_input *= 3;
+
+    std::vector<Integer> coefficients;
+    coefficients.emplace_back(rational_input);
+    coefficients.back().negate();
+    coefficients.emplace_back(1);
+    gnfs::core::PolynomialContext context(Integer(2), std::move(coefficients),
+                                          Integer(rational_input));
+
+    constexpr std::uint64_t large_prime_bound = 2'000'000'000'000ULL;
+    gnfs::core::FactorBaseParams params;
+    params.large_prime_bound = large_prime_bound;
+    gnfs::factor_base::FactorBase factor_base(params);
+    factor_base.add_rational(3, 1);
+    factor_base.build_index();
+
+    gnfs::cofactor::CofactorizerConfig config;
+    config.large_prime_bound = large_prime_bound;
+    gnfs::cofactor::Cofactorizer cofactorizer(context, factor_base, config);
+    const CofactorAttemptCoordinates coordinates{37, 41};
+    const ThrowingProvider provider;
+
+    bool caught_exact_failure = false;
+    try {
+        (void)cofactorizer.verify(0, 1, 0, 0, coordinates, provider);
+    } catch (const ProviderFailure&) {
+        caught_exact_failure = true;
+    }
+
+    CHECK(caught_exact_failure);
+    CHECK(provider.calls() == 1);
+    const std::vector<CofactorSeedRequestV1> requests = provider.requests();
+    CHECK(requests.size() == 1);
+    CHECK(requests.front().coordinates == coordinates);
+    CHECK(requests.front().side == CofactorSide::rational);
+    CHECK(requests.front().cofactor_digest ==
+          gnfs::cofactor::canonical_cofactor_input_digest(residual, CofactorSide::rational));
+    CHECK(requests.front().cofactor_digest !=
+          gnfs::cofactor::canonical_cofactor_input_digest(rational_input, CofactorSide::rational));
+    CHECK(requests.front().domain == CofactorRandomDomainV1::ecm_curve_schedule);
+    CHECK(requests.front().algorithm_identity == COFACTOR_ECM_CURVE_SCHEDULE_ALGORITHM_IDENTITY_V1);
+}
+
 [[nodiscard]] bool request_less(const CofactorSeedRequestV1& left,
                                 const CofactorSeedRequestV1& right) {
     if (left.coordinates.special_q_index != right.coordinates.special_q_index) {
@@ -302,6 +425,9 @@ int main() {
         test_zero_seed_is_valid();
         test_invalid_inputs_fail_before_provider();
         test_provider_exception_propagates_without_retry();
+        test_seeded_classification_is_lazy_and_binds_residual_input();
+        test_seeded_classification_validation_and_failure_boundaries();
+        test_cofactorizer_binds_trial_division_residual();
         test_const_provider_concurrent_contract();
     } catch (const std::exception& error) {
         std::cerr << "Cofactor seed provider test failed: " << error.what() << '\n';

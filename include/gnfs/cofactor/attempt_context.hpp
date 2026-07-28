@@ -27,8 +27,9 @@ enum class CofactorRandomDomainV1 : std::uint8_t {
 /// SHA-256 ordinal stream -> `(draw % 1'000'000) + 6` ECM sigma mapping.
 ///
 /// Increment this identity whenever the draw interpretation, curve ordinal
-/// mapping, modulus, or sigma offset changes.
+/// mapping, modulus, sigma offset, or production quick-curve count changes.
 inline constexpr std::uint32_t COFACTOR_ECM_CURVE_SCHEDULE_ALGORITHM_IDENTITY_V1 = 1;
+inline constexpr std::uint32_t COFACTOR_ECM_QUICK_CURVE_COUNT_V1 = 10;
 
 struct CofactorAttemptCoordinates final {
     std::uint64_t special_q_index = 0;

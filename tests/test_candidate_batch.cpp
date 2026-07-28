@@ -1,11 +1,13 @@
 #include <gnfs/cofactor/candidate_batch.hpp>
 #include <gnfs/cofactor/cofactorizer.hpp>
+#include <gnfs/cofactor/seed_provider.hpp>
 #include <gnfs/core/integer.hpp>
 #include <gnfs/factor_base/builder.hpp>
 #include <gnfs/sieve/lattice_sieve.hpp>
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -18,10 +20,14 @@
 
 namespace {
 
+using gnfs::cofactor::candidate_attempt_coordinates_v1;
 using gnfs::cofactor::CandidateBatchOptions;
 using gnfs::cofactor::CandidateBatchResult;
 using gnfs::cofactor::Cofactorizer;
 using gnfs::cofactor::CofactorizerConfig;
+using gnfs::cofactor::CofactorSeed256;
+using gnfs::cofactor::CofactorSeedProvider;
+using gnfs::cofactor::CofactorSeedRequestV1;
 using gnfs::cofactor::verify_candidate_batch;
 using gnfs::core::Integer;
 using gnfs::core::PolynomialContext;
@@ -46,6 +52,26 @@ struct Fixture {
     PolynomialContext ctx;
     FactorBase fb;
     CofactorizerConfig config;
+};
+
+class UnexpectedSeedRequest final : public std::runtime_error {
+public:
+    UnexpectedSeedRequest() : std::runtime_error("simple candidate requested a random seed") {}
+};
+
+class ThrowOnSeedProvider final : public CofactorSeedProvider {
+public:
+    [[nodiscard]] CofactorSeed256 seed_for(const CofactorSeedRequestV1&) const override {
+        calls_.fetch_add(1, std::memory_order_relaxed);
+        throw UnexpectedSeedRequest{};
+    }
+
+    [[nodiscard]] size_t calls() const noexcept {
+        return calls_.load(std::memory_order_relaxed);
+    }
+
+private:
+    mutable std::atomic<size_t> calls_{0};
 };
 
 [[nodiscard]] Fixture make_fixture() {
@@ -160,10 +186,72 @@ void test_special_q_forwarding_fixture(const Fixture& fixture) {
             "fixture must fail when the batch executor drops special-Q metadata");
 }
 
+void test_stable_attempt_coordinates() {
+    const auto sieve_results = make_sieve_results();
+    constexpr std::array<uint64_t, 3> expected_special_q_indices{10, 12, 11};
+
+    for (size_t result_slot = 0; result_slot < sieve_results.size(); ++result_slot) {
+        const auto& sieve_result = sieve_results[result_slot];
+        require(sieve_result.special_q.index == expected_special_q_indices[result_slot],
+                "stable-coordinate fixture special-Q index changed");
+        for (size_t candidate_index = 0; candidate_index < sieve_result.candidates.size();
+             ++candidate_index) {
+            const auto coordinates =
+                candidate_attempt_coordinates_v1(sieve_result, candidate_index);
+            require(coordinates.special_q_index == expected_special_q_indices[result_slot],
+                    "candidate coordinate used the batch slot instead of SpecialQ.index");
+            require(coordinates.candidate_ordinal == candidate_index,
+                    "candidate coordinate changed the original candidate ordinal");
+        }
+    }
+
+    constexpr std::array<size_t, 3> accepted_result_zero_ordinals{1, 2, 4};
+    for (size_t accepted_index = 0; accepted_index < accepted_result_zero_ordinals.size();
+         ++accepted_index) {
+        const auto coordinates = candidate_attempt_coordinates_v1(
+            sieve_results[0], accepted_result_zero_ordinals[accepted_index]);
+        require(coordinates.candidate_ordinal == accepted_result_zero_ordinals[accepted_index],
+                "accepted candidate ordinal was compacted to relation order");
+        require(coordinates.candidate_ordinal != accepted_index,
+                "accepted candidate fixture no longer exposes ordinal compaction");
+    }
+
+    constexpr std::array<size_t, 3> accepted_result_two_ordinals{0, 2, 3};
+    for (size_t accepted_index = 0; accepted_index < accepted_result_two_ordinals.size();
+         ++accepted_index) {
+        const auto coordinates = candidate_attempt_coordinates_v1(
+            sieve_results[2], accepted_result_two_ordinals[accepted_index]);
+        require(coordinates.candidate_ordinal == accepted_result_two_ordinals[accepted_index],
+                "later special-Q candidate ordinal was compacted");
+        if (accepted_index > 0) {
+            require(coordinates.candidate_ordinal != accepted_index,
+                    "later special-Q fixture no longer exposes ordinal compaction");
+        }
+    }
+
+    bool end_rejected = false;
+    try {
+        (void)candidate_attempt_coordinates_v1(sieve_results[0],
+                                               sieve_results[0].candidates.size());
+    } catch (const std::out_of_range&) {
+        end_rejected = true;
+    }
+    require(end_rejected, "candidate coordinate helper accepted the end iterator");
+
+    bool empty_rejected = false;
+    try {
+        (void)candidate_attempt_coordinates_v1(sieve_results[1], 0);
+    } catch (const std::out_of_range&) {
+        empty_rejected = true;
+    }
+    require(empty_rejected, "candidate coordinate helper accepted an empty result");
+}
+
 void test_worker_and_chunk_invariance(const Fixture& fixture) {
     const auto sieve_results = make_sieve_results();
     require_valid_special_q_lattice_points(sieve_results);
     const auto expected = serial_oracle(fixture, sieve_results);
+    const ThrowOnSeedProvider seed_provider;
     require(expected.size() == 3 && expected[0].size() == 3 && expected[1].empty() &&
                 expected[2].size() == 3,
             "serial oracle fixture acceptance pattern changed");
@@ -182,6 +270,8 @@ void test_worker_and_chunk_invariance(const Fixture& fixture) {
             options.max_workers = workers;
             const CandidateBatchResult result = verify_candidate_batch(
                 fixture.ctx, fixture.fb, fixture.config, sieve_results, options);
+            const CandidateBatchResult seeded_result = verify_candidate_batch(
+                fixture.ctx, fixture.fb, fixture.config, sieve_results, seed_provider, options);
 
             require(result.total_candidates == 10, "candidate batch total differs");
             require(result.planned_chunks == expected_chunks,
@@ -189,11 +279,22 @@ void test_worker_and_chunk_invariance(const Fixture& fixture) {
             require(result.workers_used == std::min<size_t>(workers, expected_chunks),
                     "candidate batch worker clamp differs");
             require_same_batches(result.relations_by_special_q, expected);
+            require(seeded_result.total_candidates == result.total_candidates,
+                    "seeded candidate batch total differs");
+            require(seeded_result.planned_chunks == result.planned_chunks,
+                    "seeded candidate batch chunk count differs");
+            require(seeded_result.workers_used == result.workers_used,
+                    "seeded candidate batch worker count differs");
+            require_same_batches(seeded_result.relations_by_special_q,
+                                 result.relations_by_special_q);
         }
     }
+    require(seed_provider.calls() == 0,
+            "simple and deterministically rejected candidates requested random seeds");
 }
 
 void test_empty_shapes_and_invalid_options(const Fixture& fixture) {
+    const ThrowOnSeedProvider seed_provider;
     CandidateBatchOptions options;
     options.max_workers = 4;
     const CandidateBatchResult no_results = verify_candidate_batch(
@@ -201,6 +302,13 @@ void test_empty_shapes_and_invalid_options(const Fixture& fixture) {
     require(no_results.relations_by_special_q.empty() && no_results.total_candidates == 0 &&
                 no_results.planned_chunks == 0 && no_results.workers_used == 0,
             "empty candidate batch result differs");
+    const CandidateBatchResult seeded_no_results =
+        verify_candidate_batch(fixture.ctx, fixture.fb, fixture.config,
+                               std::span<const SieveResult>{}, seed_provider, options);
+    require(seeded_no_results.relations_by_special_q.empty() &&
+                seeded_no_results.total_candidates == 0 && seeded_no_results.planned_chunks == 0 &&
+                seeded_no_results.workers_used == 0,
+            "seeded empty candidate batch result differs");
 
     std::vector<SieveResult> empty_special_qs(3);
     const CandidateBatchResult empty_shape =
@@ -212,6 +320,14 @@ void test_empty_shapes_and_invalid_options(const Fixture& fixture) {
                 empty_shape.total_candidates == 0 && empty_shape.planned_chunks == 0 &&
                 empty_shape.workers_used == 0,
             "all-empty special-Q shape was not preserved");
+    const CandidateBatchResult seeded_empty_shape = verify_candidate_batch(
+        fixture.ctx, fixture.fb, fixture.config, empty_special_qs, seed_provider, options);
+    require_same_batches(seeded_empty_shape.relations_by_special_q,
+                         empty_shape.relations_by_special_q);
+    require(seeded_empty_shape.total_candidates == empty_shape.total_candidates &&
+                seeded_empty_shape.planned_chunks == empty_shape.planned_chunks &&
+                seeded_empty_shape.workers_used == empty_shape.workers_used,
+            "seeded all-empty special-Q shape differs");
 
     options.max_workers = 0;
     bool zero_workers_rejected = false;
@@ -222,6 +338,14 @@ void test_empty_shapes_and_invalid_options(const Fixture& fixture) {
         zero_workers_rejected = true;
     }
     require(zero_workers_rejected, "zero candidate batch workers must be rejected");
+    bool seeded_zero_workers_rejected = false;
+    try {
+        (void)verify_candidate_batch(fixture.ctx, fixture.fb, fixture.config, empty_special_qs,
+                                     seed_provider, options);
+    } catch (const std::invalid_argument&) {
+        seeded_zero_workers_rejected = true;
+    }
+    require(seeded_zero_workers_rejected, "seeded zero candidate batch workers must be rejected");
 
     options.max_workers = 1;
     options.max_candidates_per_chunk = 0;
@@ -233,6 +357,16 @@ void test_empty_shapes_and_invalid_options(const Fixture& fixture) {
         zero_chunk_rejected = true;
     }
     require(zero_chunk_rejected, "zero candidate batch chunk size must be rejected");
+    bool seeded_zero_chunk_rejected = false;
+    try {
+        (void)verify_candidate_batch(fixture.ctx, fixture.fb, fixture.config, empty_special_qs,
+                                     seed_provider, options);
+    } catch (const std::invalid_argument&) {
+        seeded_zero_chunk_rejected = true;
+    }
+    require(seeded_zero_chunk_rejected, "seeded zero candidate batch chunk size must be rejected");
+    require(seed_provider.calls() == 0,
+            "empty or invalid candidate batches requested random seeds");
 }
 
 } // namespace
@@ -241,6 +375,7 @@ int main() {
     try {
         const Fixture fixture = make_fixture();
         test_special_q_forwarding_fixture(fixture);
+        test_stable_attempt_coordinates();
         test_worker_and_chunk_invariance(fixture);
         test_empty_shapes_and_invalid_options(fixture);
         std::cout << "All candidate batch tests passed\n";
