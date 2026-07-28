@@ -6,6 +6,7 @@
 #include "gnfs/relation/ooc_relation_format.hpp"
 #include "gnfs/relation/relation_sequence_receipt.hpp"
 #include "gnfs/util/mmap_file.hpp"
+#include "gnfs/util/native_binary_update_file.hpp"
 #include "gnfs/util/owned_native_file.hpp"
 #include "gnfs/util/process.hpp"
 #include <array>
@@ -17,7 +18,6 @@
 #include <cstring>
 #include <exception>
 #include <filesystem>
-#include <fstream>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -153,7 +153,11 @@ inline void sync_parent_directory_after_metadata_change(const std::filesystem::p
 
     int result = -1;
     do {
+#if defined(__APPLE__)
+        result = ::fcntl(directory, F_FULLFSYNC);
+#else
         result = ::fsync(directory);
+#endif
     } while (result != 0 && errno == EINTR);
     if (result != 0) {
         const int saved_errno = errno;
@@ -336,6 +340,18 @@ public:
         DeferCleanupHandoff,
     };
 
+    enum class RecoveryFaultPoint : std::uint8_t {
+        AppendablePrefixValidated,
+        FinalizedPrefixValidated,
+    };
+
+    struct RecoveryTestHooks final {
+        using StopAfter = bool (*)(RecoveryFaultPoint point, void* context) noexcept;
+
+        StopAfter stop_after = nullptr;
+        void* context = nullptr;
+    };
+
     [[nodiscard]] static uint64_t index_size_for_count(uint64_t count) {
         if (count >= static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
             throw std::overflow_error("OOCRelationWriter: count leaves no room for sentinel");
@@ -385,13 +401,13 @@ public:
     /// identity.
     explicit OOCRelationWriter(const std::string& base_path)
         : OOCRelationWriter(base_path, std::nullopt, std::nullopt, nullptr,
-                            PrivateLeaseMode::ActivateImmediately, {}, ConstructionToken{}) {}
+                            PrivateLeaseMode::ActivateImmediately, {}, {}, ConstructionToken{}) {}
 
     /// Fresh private-lease creation keeps the lease's persistent BaseLock held
     /// across both O_EXCL reservations and durable lease activation.
     OOCRelationWriter(const std::string& base_path, OOCPrivateLeaseOwnershipReceipt& private_lease)
         : OOCRelationWriter(base_path, std::nullopt, std::nullopt, &private_lease,
-                            PrivateLeaseMode::ActivateImmediately, {}, ConstructionToken{}) {}
+                            PrivateLeaseMode::ActivateImmediately, {}, {}, ConstructionToken{}) {}
 
     /// Fork-worker creation consumes the child process's move-only lease copy.
     /// The writer therefore has no same-process external cleanup alias. A
@@ -405,14 +421,12 @@ public:
     /// Trusted test seam for deferred construction boundaries. As with the
     /// production overload, the caller receipt is moved only after every
     /// throwing construction step has completed.
-    OOCRelationWriter(const std::string& base_path,
-                      OOCPrivateLeaseOwnershipReceipt&& private_lease,
+    OOCRelationWriter(const std::string& base_path, OOCPrivateLeaseOwnershipReceipt&& private_lease,
                       PrivateLeaseMode private_lease_mode,
                       OOCPrivateLeaseTestHooks private_lease_hooks)
-        : OOCRelationWriter(
-              base_path, std::nullopt, std::nullopt,
-              require_deferred_private_lease(private_lease, private_lease_mode),
-              private_lease_mode, private_lease_hooks, ConstructionToken{}) {
+        : OOCRelationWriter(base_path, std::nullopt, std::nullopt,
+                            require_deferred_private_lease(private_lease, private_lease_mode),
+                            private_lease_mode, private_lease_hooks, {}, ConstructionToken{}) {
         owned_deferred_private_lease_.emplace(std::move(private_lease));
     }
 
@@ -425,7 +439,7 @@ public:
     OOCRelationWriter(const std::string& base_path, OOCPrivateLeaseOwnershipReceipt& private_lease,
                       OOCPrivateLeaseTestHooks private_lease_hooks)
         : OOCRelationWriter(base_path, std::nullopt, std::nullopt, &private_lease,
-                            PrivateLeaseMode::ActivateImmediately, private_lease_hooks,
+                            PrivateLeaseMode::ActivateImmediately, private_lease_hooks, {},
                             ConstructionToken{}) {}
 
     /// Paired recovery requires both the structural descriptor and the
@@ -435,7 +449,17 @@ public:
                       const OOCSnapshotDescriptor& recovery_descriptor,
                       const RelationSequenceReceipt& recovery_sequence_receipt)
         : OOCRelationWriter(base_path, recovery_descriptor, recovery_sequence_receipt, nullptr,
-                            PrivateLeaseMode::ActivateImmediately, {}, ConstructionToken{}) {}
+                            PrivateLeaseMode::ActivateImmediately, {}, {}, ConstructionToken{}) {}
+
+    /// Trusted deterministic seam for replacement tests between exact-handle
+    /// recovery validation and the first recovery mutation.
+    OOCRelationWriter(const std::string& base_path,
+                      const OOCSnapshotDescriptor& recovery_descriptor,
+                      const RelationSequenceReceipt& recovery_sequence_receipt,
+                      RecoveryTestHooks recovery_hooks)
+        : OOCRelationWriter(base_path, recovery_descriptor, recovery_sequence_receipt, nullptr,
+                            PrivateLeaseMode::ActivateImmediately, {}, recovery_hooks,
+                            ConstructionToken{}) {}
 
 private:
     [[nodiscard]] static OOCPrivateLeaseOwnershipReceipt*
@@ -453,14 +477,18 @@ private:
                                std::optional<RelationSequenceReceipt> recovery_sequence_receipt,
                                OOCPrivateLeaseOwnershipReceipt* private_lease,
                                PrivateLeaseMode private_lease_mode,
-                               OOCPrivateLeaseTestHooks private_lease_hooks, ConstructionToken)
-        : base_path_(freeze_base_path_checked(base_path)), data_buf_(BUFFER_BYTES),
-          idx_buf_(BUFFER_BYTES / 4), // 256 KB suffices for index
+                               OOCPrivateLeaseTestHooks private_lease_hooks,
+                               RecoveryTestHooks recovery_hooks, ConstructionToken)
+        : base_path_(freeze_base_path_checked(base_path)),
           uncaught_at_ctor_(std::uncaught_exceptions()),
           fresh_store_(!recovery_descriptor.has_value()) {
         if (recovery_sequence_receipt.has_value() != recovery_descriptor.has_value()) {
             throw std::logic_error(
                 "OOCRelationWriter: internal recovery descriptor/receipt pairing violated");
+        }
+        if (recovery_hooks.stop_after != nullptr && !recovery_descriptor) {
+            throw std::invalid_argument(
+                "OOCRelationWriter: recovery hooks require paired recovery");
         }
         if (private_lease != nullptr && recovery_descriptor) {
             throw std::invalid_argument(
@@ -477,16 +505,25 @@ private:
                 "OOCRelationWriter recovery: sequence receipt count differs from descriptor");
         }
 
-        // pubsetbuf 必须在 open 之前调用,所以 fstream 默认构造、
-        // 然后手动 attach buffer、最后 open。
-        data_stream_.rdbuf()->pubsetbuf(data_buf_.data(),
-                                        static_cast<std::streamsize>(data_buf_.size()));
-        idx_stream_.rdbuf()->pubsetbuf(idx_buf_.data(),
-                                       static_cast<std::streamsize>(idx_buf_.size()));
-
         if (recovery_descriptor) {
+            const auto observe_recovery_boundary = [&](RecoveryFaultPoint point) {
+                if (recovery_hooks.stop_after != nullptr &&
+                    recovery_hooks.stop_after(point, recovery_hooks.context)) {
+                    throw std::system_error(
+                        std::make_error_code(std::errc::operation_canceled),
+                        "OOCRelationWriter: interrupted after exact recovery validation");
+                }
+            };
             validate_recovery_descriptor(*recovery_descriptor);
-            const uint64_t existing_magic = read_index_magic(base_path);
+            // Resolve the pair exactly once. All structural validation,
+            // record validation, truncation, metadata rollback, and later
+            // append/finalize operations use these retained handles.
+            data_stream_ = gnfs::util::NativeBinaryUpdateFile::open_existing(base_path + ".reldata",
+                                                                             BUFFER_BYTES);
+            idx_stream_ = gnfs::util::NativeBinaryUpdateFile::open_existing(base_path + ".relidx",
+                                                                            BUFFER_BYTES / 4);
+            require_store_named_identity("recovery open");
+            const uint64_t existing_magic = read_open_index_magic();
             if (existing_magic == MAGIC_V1_FINAL) {
                 throw std::runtime_error(
                     "OOCRelationWriter recovery: legacy finalized V1 store cannot verify identity");
@@ -503,9 +540,11 @@ private:
                 // A clean pipeline end finalizes the corpus before deleting the
                 // paired sieve checkpoint. A crash in that window must never
                 // turn the immutable corpus back into an appendable one.
-                validated_resume_prefix_ =
-                    validate_finalized_prefix(base_path, *recovery_descriptor);
+                validated_resume_prefix_ = validate_finalized_prefix(*recovery_descriptor);
                 validate_recovery_receipt(*validated_resume_prefix_, *recovery_sequence_receipt);
+                require_store_named_identity("finalized recovery validation");
+                observe_recovery_boundary(RecoveryFaultPoint::FinalizedPrefixValidated);
+                require_store_named_identity("finalized recovery boundary");
                 store_id_ = recovery_descriptor->store_id;
                 generation_ = recovery_descriptor->generation;
                 count_ = static_cast<size_t>(validated_resume_prefix_->count);
@@ -519,49 +558,41 @@ private:
                 recovery_outcome_ = OOCRecoveryOutcome::FinalizedCorpus;
                 return;
             }
-            validated_resume_prefix_ = validate_resume_prefix(base_path, *recovery_descriptor);
+            validated_resume_prefix_ = validate_resume_prefix(*recovery_descriptor);
             // The semantic receipt is part of the durable checkpoint. Compare
             // it while recovery is still read-only: a mismatch must not
             // truncate an uncommitted tail or rewrite incomplete metadata.
             validate_recovery_receipt(*validated_resume_prefix_, *recovery_sequence_receipt);
+            require_store_named_identity("resume recovery validation");
+            observe_recovery_boundary(RecoveryFaultPoint::AppendablePrefixValidated);
 
-            // Validation is read-only. Only after the full committed prefix has
-            // proved valid do we discard uncommitted crash tails. Truncate data
-            // first: if the second resize fails, another recovery can still
-            // validate the same descriptor and finish the index rollback.
-            std::filesystem::resize_file(base_path + ".reldata", recovery_descriptor->data_end);
             const uint64_t recovered_index_size = index_size_for_count(recovery_descriptor->count);
-            std::filesystem::resize_file(base_path + ".relidx", recovered_index_size);
 
             store_id_ = recovery_descriptor->store_id;
             generation_ = recovery_descriptor->generation;
             count_ = static_cast<size_t>(validated_resume_prefix_->count);
 
-            // Reopen in r/w mode (no trunc). Revalidate both exact handles
-            // before the first seek or metadata mutation.
-            data_stream_.open(base_path + ".reldata",
-                              std::ios::in | std::ios::out | std::ios::binary);
-            idx_stream_.open(base_path + ".relidx",
-                             std::ios::in | std::ios::out | std::ios::binary);
-            if (!data_stream_ || !idx_stream_) {
-                throw std::runtime_error("OOCRelationWriter resume: cannot reopen at " + base_path);
-            }
+            // Validation above was performed through these exact handles.
+            // Discard crash tails without resolving either pathname again.
             validate_open_v3_pair_headers("resume constructor header validation", std::nullopt);
+            data_stream_.truncate(recovery_descriptor->data_end,
+                                  "resume constructor data truncate");
+            idx_stream_.truncate(recovered_index_size, "resume constructor index truncate");
             // The first append overwrites the committed sentinel slot.
-            data_stream_.seekp(static_cast<std::streamoff>(validated_resume_prefix_->data_end));
+            data_stream_.seek(validated_resume_prefix_->data_end, "resume constructor data seek");
             // A crash during finalize may have persisted a nonzero count under
             // INCOMPLETE magic. Roll it back before returning to append mode;
             // version and store_id remain immutable throughout.
-            idx_stream_.seekp(static_cast<std::streamoff>(INDEX_COUNT_OFFSET));
+            idx_stream_.seek(INDEX_COUNT_OFFSET, "resume constructor count seek");
             const uint64_t incomplete_count = 0;
-            idx_stream_.write(reinterpret_cast<const char*>(&incomplete_count), 8);
-            idx_stream_.flush();
-            ensure_streams_good("resume constructor count rollback");
+            idx_stream_.write_exact(&incomplete_count, sizeof(incomplete_count),
+                                    "resume constructor count rollback");
+            idx_stream_.flush("resume constructor count rollback");
 
             const uint64_t idx_pos =
                 INDEX_HEADER_BYTES + static_cast<uint64_t>(count_) * sizeof(uint64_t);
-            idx_stream_.seekp(static_cast<std::streamoff>(idx_pos));
-            ensure_streams_good("resume constructor seek");
+            idx_stream_.seek(idx_pos, "resume constructor index seek");
+            require_store_named_identity("resume recovery commit");
             recovery_outcome_ = OOCRecoveryOutcome::AppendablePrefix;
         } else {
             try {
@@ -694,15 +725,31 @@ private:
                         OOCCleanupTransaction::PrivateFreshWriterBoundary::BeforeHeaderWrite);
                     index_reservation->require_named_identity(index_path);
                     data_reservation->require_named_identity(data_path);
+                    if (private_lease != nullptr &&
+                        ooc_cleanup_detail::invoke_with_stable_base_lock(*cleanup_lock, [&] {
+                            return ooc_cleanup_detail::should_interrupt_private_lease(
+                                private_lease_hooks,
+                                OOCPrivateLeaseFaultPoint::FreshHeaderWriteAuthorized);
+                        })) {
+                        throw std::system_error(
+                            std::make_error_code(std::errc::operation_canceled),
+                            "OOCRelationWriter: interrupted after header-write authorization");
+                    }
                     ooc_cleanup_detail::invoke_with_stable_base_lock(*cleanup_lock, [&] {
-                        data_stream_.open(data_path,
-                                          std::ios::in | std::ios::out | std::ios::binary);
-                        idx_stream_.open(index_path,
-                                         std::ios::in | std::ios::out | std::ios::binary);
+                        data_stream_ =
+                            data_reservation->duplicate_for_update(BUFFER_BYTES, data_path);
+                        idx_stream_ =
+                            index_reservation->duplicate_for_update(BUFFER_BYTES / 4, index_path);
                     });
-                    if (!data_stream_ || !idx_stream_) {
-                        throw std::runtime_error("OOCRelationWriter: cannot open files at " +
-                                                 base_path);
+                    if (private_lease != nullptr &&
+                        ooc_cleanup_detail::invoke_with_stable_base_lock(*cleanup_lock, [&] {
+                            return ooc_cleanup_detail::should_interrupt_private_lease(
+                                private_lease_hooks,
+                                OOCPrivateLeaseFaultPoint::FreshStreamsAttached);
+                        })) {
+                        throw std::system_error(
+                            std::make_error_code(std::errc::operation_canceled),
+                            "OOCRelationWriter: interrupted after stream attachment");
                     }
                     // 先写 INCOMPLETE 标志。若 write 中途抛(磁盘满等),析构跳过
                     // finalize → reader 看到 INCOMPLETE 拒读,避免 idx/data 不一致。
@@ -712,15 +759,20 @@ private:
                     const uint64_t durable_store_id = store_id_;
                     const uint64_t incomplete_count = 0;
                     ooc_cleanup_detail::invoke_with_stable_base_lock(*cleanup_lock, [&] {
-                        idx_stream_.write(reinterpret_cast<const char*>(&magic), 8);
-                        idx_stream_.write(reinterpret_cast<const char*>(&format_version), 8);
-                        idx_stream_.write(reinterpret_cast<const char*>(&durable_store_id), 8);
-                        idx_stream_.write(reinterpret_cast<const char*>(&incomplete_count), 8);
+                        idx_stream_.write_exact(&magic, sizeof(magic), "constructor index magic");
+                        idx_stream_.write_exact(&format_version, sizeof(format_version),
+                                                "constructor index version");
+                        idx_stream_.write_exact(&durable_store_id, sizeof(durable_store_id),
+                                                "constructor index store identity");
+                        idx_stream_.write_exact(&incomplete_count, sizeof(incomplete_count),
+                                                "constructor index count");
                         const uint64_t data_magic = MAGIC_V3_DATA;
-                        data_stream_.write(reinterpret_cast<const char*>(&data_magic), 8);
-                        data_stream_.write(reinterpret_cast<const char*>(&format_version), 8);
-                        data_stream_.write(reinterpret_cast<const char*>(&durable_store_id), 8);
-                        ensure_streams_good("constructor header write");
+                        data_stream_.write_exact(&data_magic, sizeof(data_magic),
+                                                 "constructor data magic");
+                        data_stream_.write_exact(&format_version, sizeof(format_version),
+                                                 "constructor data version");
+                        data_stream_.write_exact(&durable_store_id, sizeof(durable_store_id),
+                                                 "constructor data store identity");
                         validate_open_v3_pair_headers("constructor header validation",
                                                       incomplete_count);
                     });
@@ -744,6 +796,7 @@ private:
                         data_reservation->close_checked(data_path);
                         index_reservation->close_checked(index_path);
                     });
+                    require_store_named_identity("fresh reservation handoff");
                     auto cleanup_receipt =
                         ooc_cleanup_detail::invoke_with_stable_base_lock(*cleanup_lock, [&] {
                             return capture_fresh_cleanup_ownership_checked(
@@ -823,7 +876,7 @@ public:
     /// truncated. Passing `false` is equivalent to fresh construction.
     explicit OOCRelationWriter(const std::string& base_path, bool legacy_resume)
         : OOCRelationWriter(base_path, reject_legacy_resume(legacy_resume), std::nullopt, nullptr,
-                            PrivateLeaseMode::ActivateImmediately, {}, ConstructionToken{}) {}
+                            PrivateLeaseMode::ActivateImmediately, {}, {}, ConstructionToken{}) {}
 
     /// Append a single relation. Returns the index of the written relation.
     size_t write(const gnfs::core::Relation& rel) {
@@ -835,15 +888,9 @@ public:
         rel.validate_persistence_limits();
 
         try {
-            const auto pos = data_stream_.tellp();
-            if (pos == std::streampos(-1)) {
-                throw std::runtime_error("OOCRelationWriter::write: cannot determine data offset");
-            }
-
-            const uint64_t offset = static_cast<uint64_t>(pos);
-            idx_stream_.write(reinterpret_cast<const char*>(&offset), 8);
+            const uint64_t offset = data_stream_.position("write data offset");
+            idx_stream_.write_exact(&offset, sizeof(offset), "write index offset");
             serialize(rel);
-            ensure_streams_good("write");
 
             ++count_;
             return count_ - 1;
@@ -853,28 +900,23 @@ public:
         }
     }
 
-    /// Flush a stable prefix and suspend append handles without flipping MAGIC.
+    /// Flush a stable prefix and suspend append authority without flipping MAGIC.
     /// `resume_append()` must be called with the returned descriptor before the
-    /// next write. While suspended, a trusted prefix reader may mmap the files.
+    /// next write. The exact update handles remain retained while a trusted
+    /// prefix reader mmaps the immutable committed extent.
     [[nodiscard]] OOCSnapshotDescriptor checkpoint_prefix() {
         require_state(OOCWriterState::Open, "checkpoint_prefix");
         try {
+            require_store_named_identity("checkpoint_prefix preflight");
             validate_open_v3_pair_headers("checkpoint_prefix header validation", uint64_t{0});
 
-            const auto pos = data_stream_.tellp();
-            if (pos == std::streampos(-1)) {
-                throw std::runtime_error(
-                    "OOCRelationWriter::checkpoint_prefix: cannot determine data end");
-            }
-            const uint64_t end_offset = static_cast<uint64_t>(pos);
+            const uint64_t end_offset = data_stream_.position("checkpoint_prefix data end");
 
             // The next offset slot is a temporary end sentinel. A later append
             // overwrites this exact slot with the next relation's start offset.
-            idx_stream_.write(reinterpret_cast<const char*>(&end_offset), 8);
-            idx_stream_.flush();
-            ensure_streams_good("checkpoint_prefix index flush");
+            idx_stream_.write_exact(&end_offset, sizeof(end_offset), "checkpoint_prefix sentinel");
+            idx_stream_.flush("checkpoint_prefix index flush");
 
-            close_streams_checked("checkpoint_prefix close");
             sync_store_files_and_directory();
 
             OOCSnapshotDescriptor descriptor;
@@ -883,7 +925,7 @@ public:
             descriptor.generation = ++generation_;
             descriptor.count = static_cast<uint64_t>(count_);
             descriptor.data_end = end_offset;
-            validate_exact_v3_pair(base_path_, descriptor, MAGIC_V3_INCOMPLETE, uint64_t{0},
+            validate_exact_v3_pair(descriptor, MAGIC_V3_INCOMPLETE, uint64_t{0},
                                    OffsetValidation::BoundaryOnly, "checkpoint_prefix");
             suspended_descriptor_ = descriptor;
             state_ = OOCWriterState::Suspended;
@@ -908,34 +950,16 @@ public:
         }
 
         try {
-            validate_exact_v3_pair(base_path_, descriptor, MAGIC_V3_INCOMPLETE, uint64_t{0},
+            require_store_named_identity("resume_append preflight");
+            validate_exact_v3_pair(descriptor, MAGIC_V3_INCOMPLETE, uint64_t{0},
                                    OffsetValidation::BoundaryOnly, "resume_append");
-            data_stream_.clear();
-            idx_stream_.clear();
-            data_stream_.open(base_path_ + ".reldata",
-                              std::ios::in | std::ios::out | std::ios::binary);
-            idx_stream_.open(base_path_ + ".relidx",
-                             std::ios::in | std::ios::out | std::ios::binary);
-            if (!data_stream_ || !idx_stream_) {
-                throw std::runtime_error("OOCRelationWriter::resume_append: cannot reopen at " +
-                                         base_path_);
-            }
-            validate_open_v3_pair_headers("resume_append reopened header validation", uint64_t{0});
+            validate_open_v3_pair_headers("resume_append retained header validation", uint64_t{0});
 
-            if (descriptor.data_end >
-                static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max())) {
-                throw std::overflow_error(
-                    "OOCRelationWriter::resume_append: data position overflow");
-            }
-            data_stream_.seekp(static_cast<std::streamoff>(descriptor.data_end));
+            data_stream_.seek(descriptor.data_end, "resume_append data seek");
             (void)index_size_for_count(descriptor.count);
             const uint64_t idx_pos = INDEX_HEADER_BYTES + descriptor.count * sizeof(uint64_t);
-            if (idx_pos > static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max())) {
-                throw std::overflow_error(
-                    "OOCRelationWriter::resume_append: index position overflow");
-            }
-            idx_stream_.seekp(static_cast<std::streamoff>(idx_pos));
-            ensure_streams_good("resume_append seek");
+            idx_stream_.seek(idx_pos, "resume_append index seek");
+            require_store_named_identity("resume_append commit");
 
             suspended_descriptor_.reset();
             state_ = OOCWriterState::Open;
@@ -949,10 +973,17 @@ public:
     /// Idempotent: repeated calls return the same final descriptor.
     [[nodiscard]] OOCSnapshotDescriptor finalize(FinalizeStageHook hook = nullptr) {
         if (state_ == OOCWriterState::Finalized) {
+            if (data_stream_.is_open() && idx_stream_.is_open()) {
+                require_store_named_identity("finalize completed preflight");
+            } else if (!finalized_durable_ && (data_stream_.is_open() || idx_stream_.is_open())) {
+                throw std::logic_error(
+                    "OOCRelationWriter::finalize: incomplete retained durability pair");
+            }
             if (!finalized_durable_) {
                 sync_store_files_and_directory();
                 finalized_durable_ = true;
             }
+            close_open_streams_checked("finalize durability retry close");
             return *finalized_descriptor_;
         }
         if (state_ == OOCWriterState::Failed) {
@@ -963,18 +994,14 @@ public:
         }
 
         try {
+            require_store_named_identity("finalize preflight");
             OOCSnapshotDescriptor descriptor;
             bool offsets_validated_before_metadata = false;
             if (state_ == OOCWriterState::Open) {
                 validate_open_v3_pair_headers("finalize header validation", uint64_t{0});
 
-                const auto pos = data_stream_.tellp();
-                if (pos == std::streampos(-1)) {
-                    throw std::runtime_error(
-                        "OOCRelationWriter::finalize: cannot determine data end");
-                }
-                const uint64_t end_offset = static_cast<uint64_t>(pos);
-                idx_stream_.write(reinterpret_cast<const char*>(&end_offset), 8);
+                const uint64_t end_offset = data_stream_.position("finalize data end");
+                idx_stream_.write_exact(&end_offset, sizeof(end_offset), "finalize sentinel");
 
                 descriptor.format_version = FORMAT_VERSION;
                 descriptor.generation = ++generation_;
@@ -982,69 +1009,45 @@ public:
                 descriptor.count = static_cast<uint64_t>(count_);
                 descriptor.data_end = end_offset;
             } else {
-                // Suspended already has a flushed sentinel and closed handles.
+                // Suspended already has a flushed sentinel and retains the
+                // exact handles with append authority logically disabled.
                 descriptor = *suspended_descriptor_;
-                validate_exact_v3_pair(base_path_, descriptor, MAGIC_V3_INCOMPLETE, uint64_t{0},
+                validate_exact_v3_pair(descriptor, MAGIC_V3_INCOMPLETE, uint64_t{0},
                                        OffsetValidation::FullTable, "finalize suspended prefix");
                 offsets_validated_before_metadata = true;
-                data_stream_.clear();
-                idx_stream_.clear();
-                data_stream_.open(base_path_ + ".reldata",
-                                  std::ios::in | std::ios::out | std::ios::binary);
-                idx_stream_.open(base_path_ + ".relidx",
-                                 std::ios::in | std::ios::out | std::ios::binary);
-                if (!data_stream_ || !idx_stream_) {
-                    throw std::runtime_error(
-                        "OOCRelationWriter::finalize: cannot reopen store at " + base_path_);
-                }
-                validate_open_v3_pair_headers("finalize reopened header validation", uint64_t{0});
+                validate_open_v3_pair_headers("finalize retained header validation", uint64_t{0});
             }
 
             // Commit payload metadata first while the file remains INCOMPLETE.
             // MAGIC is written and flushed last, so a failed finalize cannot
             // advertise a prefix whose sentinel/count were not persisted.
-            idx_stream_.seekp(static_cast<std::streamoff>(INDEX_COUNT_OFFSET));
+            idx_stream_.seek(INDEX_COUNT_OFFSET, "finalize count seek");
             const uint64_t final_count = descriptor.count;
-            idx_stream_.write(reinterpret_cast<const char*>(&final_count), 8);
+            idx_stream_.write_exact(&final_count, sizeof(final_count), "finalize count write");
 
             if (data_stream_.is_open())
-                data_stream_.flush();
-            idx_stream_.flush();
-            ensure_open_streams_good("finalize metadata flush");
+                data_stream_.flush("finalize data flush");
+            idx_stream_.flush("finalize index flush");
 
-            // Close and durably sync the full payload while magic remains
+            // Durably sync and close the full payload while magic remains
             // INCOMPLETE. A process exit after this point is recoverable from
             // the paired checkpoint because version/store_id are untouched.
-            close_open_streams_checked("finalize metadata close");
             sync_store_files_and_directory();
             if (hook != nullptr) {
                 hook(FinalizeStage::MetadataDurable);
             }
 
-            validate_exact_v3_pair(base_path_, descriptor, MAGIC_V3_INCOMPLETE, descriptor.count,
+            validate_exact_v3_pair(descriptor, MAGIC_V3_INCOMPLETE, descriptor.count,
                                    offsets_validated_before_metadata
                                        ? OffsetValidation::BoundaryOnly
                                        : OffsetValidation::FullTable,
                                    "finalize precommit");
-            data_stream_.clear();
-            idx_stream_.clear();
-            data_stream_.open(base_path_ + ".reldata",
-                              std::ios::in | std::ios::out | std::ios::binary);
-            idx_stream_.open(base_path_ + ".relidx",
-                             std::ios::in | std::ios::out | std::ios::binary);
-            if (!data_stream_ || !idx_stream_) {
-                throw std::runtime_error(
-                    "OOCRelationWriter::finalize: cannot reopen store for final magic at " +
-                    base_path_);
-            }
-            validate_open_v3_pair_headers("finalize precommit reopened validation",
+            validate_open_v3_pair_headers("finalize precommit retained validation",
                                           descriptor.count);
-            idx_stream_.seekp(0);
+            idx_stream_.seek(0, "finalize magic seek");
             const uint64_t final_magic = MAGIC_V3_FINAL;
-            idx_stream_.write(reinterpret_cast<const char*>(&final_magic), 8);
-            idx_stream_.flush();
-            ensure_open_streams_good("finalize magic flush");
-            close_open_streams_checked("finalize close");
+            idx_stream_.write_exact(&final_magic, sizeof(final_magic), "finalize magic write");
+            idx_stream_.flush("finalize magic flush");
 
             // Once final magic has been flushed and both handles have closed,
             // the pair is visibly committed. Record that outcome before the
@@ -1055,6 +1058,7 @@ public:
             state_ = OOCWriterState::Finalized;
             sync_store_files_and_directory();
             finalized_durable_ = true;
+            close_open_streams_checked("finalize close");
             if (hook != nullptr) {
                 hook(FinalizeStage::FinalMagicDurable);
             }
@@ -1536,6 +1540,24 @@ private:
             return identity_;
         }
 
+        [[nodiscard]] gnfs::util::NativeBinaryUpdateFile
+        duplicate_for_update(std::size_t buffer_bytes, const std::string& path) const {
+#ifdef _WIN32
+            if (handle_ == INVALID_HANDLE_VALUE) {
+                throw std::logic_error(
+                    "OOCRelationWriter: fresh artifact handle is already closed");
+            }
+            return gnfs::util::NativeBinaryUpdateFile::duplicate_from(handle_, buffer_bytes, path);
+#else
+            if (descriptor_ < 0) {
+                throw std::logic_error(
+                    "OOCRelationWriter: fresh artifact descriptor is already closed");
+            }
+            return gnfs::util::NativeBinaryUpdateFile::duplicate_from(descriptor_, buffer_bytes,
+                                                                      path);
+#endif
+        }
+
         void require_named_identity(const std::string& path) const {
 #ifdef _WIN32
             if (handle_ == INVALID_HANDLE_VALUE) {
@@ -1658,71 +1680,49 @@ private:
         }
     }
 
-    static uint64_t read_u64_checked(std::istream& stream, const char* operation,
-                                     const char* field) {
+    static uint64_t read_u64_checked(gnfs::util::NativeBinaryUpdateFile& file,
+                                     const char* operation, const char* field) {
         uint64_t value = 0;
-        stream.read(reinterpret_cast<char*>(&value), sizeof(value));
-        if (stream.gcount() != static_cast<std::streamsize>(sizeof(value))) {
-            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
-                                     ": truncated " + field);
-        }
+        const std::string read_operation = std::string(operation) + " read " + field;
+        file.read_exact(&value, sizeof(value), read_operation.c_str());
         return value;
     }
 
-    static uint64_t stream_size_checked(std::ifstream& stream, const char* operation,
-                                        const char* field) {
-        stream.clear();
-        stream.seekg(0, std::ios::end);
-        const auto position = stream.tellg();
-        if (position == std::streampos(-1)) {
-            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
-                                     ": cannot size " + field);
-        }
-        const auto offset = static_cast<std::streamoff>(position);
-        if (offset < 0) {
-            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
-                                     ": negative " + field + " size");
-        }
-        stream.clear();
-        stream.seekg(0);
-        return static_cast<uint64_t>(offset);
-    }
-
-    /// Validate a closed, exact V3 snapshot through the same two read handles.
-    /// Same-process checkpoint/resume uses the constant-time boundary mode to
-    /// avoid rescanning a growing index every interval. Final commit and crash
-    /// recovery validate the complete offset table.
-    static void validate_exact_v3_pair(const std::string& base_path,
-                                       const OOCSnapshotDescriptor& descriptor,
-                                       uint64_t expected_magic,
-                                       std::optional<uint64_t> expected_persisted_count,
-                                       OffsetValidation offset_validation, const char* operation) {
+    /// Validate an exact V3 snapshot through the writer's retained handles.
+    /// No canonical pathname is resolved between validation and the next
+    /// mutation.
+    void validate_exact_v3_pair(const OOCSnapshotDescriptor& descriptor, uint64_t expected_magic,
+                                std::optional<uint64_t> expected_persisted_count,
+                                OffsetValidation offset_validation, const char* operation) {
         if (descriptor.format_version != FORMAT_VERSION_V3 || descriptor.store_id == 0) {
             throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
                                      ": invalid V3 descriptor identity");
         }
         (void)index_size_for_count(descriptor.count);
-        if (descriptor.data_end < DATA_HEADER_BYTES ||
-            descriptor.data_end >
-                static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max())) {
+        if (descriptor.data_end < DATA_HEADER_BYTES) {
             throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
                                      ": invalid V3 data extent");
         }
 
-        std::ifstream index(base_path + ".relidx", std::ios::binary);
-        std::ifstream data(base_path + ".reldata", std::ios::binary);
-        if (!index || !data) {
+        const uint64_t index_size = idx_stream_.size(operation);
+        const uint64_t data_size = data_stream_.size(operation);
+        if (index_size != index_size_for_count(descriptor.count) ||
+            data_size != descriptor.data_end) {
             throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
-                                     ": paired store is incomplete");
+                                     ": snapshot extent mismatch");
         }
 
-        const uint64_t index_magic = read_u64_checked(index, operation, "index magic");
-        const uint64_t index_version = read_u64_checked(index, operation, "index version");
-        const uint64_t index_store_id = read_u64_checked(index, operation, "index store identity");
-        const uint64_t persisted_count = read_u64_checked(index, operation, "index count");
-        const uint64_t data_magic = read_u64_checked(data, operation, "data magic");
-        const uint64_t data_version = read_u64_checked(data, operation, "data version");
-        const uint64_t data_store_id = read_u64_checked(data, operation, "data store identity");
+        idx_stream_.seek(0, operation);
+        data_stream_.seek(0, operation);
+        const uint64_t index_magic = read_u64_checked(idx_stream_, operation, "index magic");
+        const uint64_t index_version = read_u64_checked(idx_stream_, operation, "index version");
+        const uint64_t index_store_id =
+            read_u64_checked(idx_stream_, operation, "index store identity");
+        const uint64_t persisted_count = read_u64_checked(idx_stream_, operation, "index count");
+        const uint64_t data_magic = read_u64_checked(data_stream_, operation, "data magic");
+        const uint64_t data_version = read_u64_checked(data_stream_, operation, "data version");
+        const uint64_t data_store_id =
+            read_u64_checked(data_stream_, operation, "data store identity");
 
         if (index_magic != expected_magic || index_version != FORMAT_VERSION_V3 ||
             data_magic != MAGIC_V3_DATA || data_version != FORMAT_VERSION_V3 ||
@@ -1736,21 +1736,8 @@ private:
                                      ": persisted count mismatch");
         }
 
-        const uint64_t index_size = stream_size_checked(index, operation, "index");
-        const uint64_t data_size = stream_size_checked(data, operation, "data");
-        if (index_size != index_size_for_count(descriptor.count) ||
-            data_size != descriptor.data_end) {
-            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
-                                     ": snapshot extent mismatch");
-        }
-
-        index.clear();
-        index.seekg(static_cast<std::streamoff>(INDEX_HEADER_BYTES));
-        if (!index) {
-            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
-                                     ": cannot seek offset table");
-        }
-        const uint64_t first_offset = read_u64_checked(index, operation, "first offset");
+        idx_stream_.seek(INDEX_HEADER_BYTES, operation);
+        const uint64_t first_offset = read_u64_checked(idx_stream_, operation, "first offset");
         if (first_offset != DATA_HEADER_BYTES ||
             (descriptor.count == 0 && descriptor.data_end != DATA_HEADER_BYTES) ||
             (descriptor.count != 0 && descriptor.data_end <= DATA_HEADER_BYTES)) {
@@ -1762,7 +1749,7 @@ private:
         if (offset_validation == OffsetValidation::FullTable) {
             uint64_t previous = first_offset;
             for (uint64_t ordinal = 0; ordinal < descriptor.count; ++ordinal) {
-                const uint64_t current = read_u64_checked(index, operation, "offset");
+                const uint64_t current = read_u64_checked(idx_stream_, operation, "offset");
                 if (previous >= current || current > descriptor.data_end) {
                     throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
                                              ": non-monotonic or out-of-range offset");
@@ -1773,13 +1760,8 @@ private:
         } else {
             const uint64_t sentinel_position =
                 INDEX_HEADER_BYTES + descriptor.count * sizeof(uint64_t);
-            index.clear();
-            index.seekg(static_cast<std::streamoff>(sentinel_position));
-            if (!index) {
-                throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
-                                         ": cannot seek final sentinel");
-            }
-            terminal_offset = read_u64_checked(index, operation, "final sentinel");
+            idx_stream_.seek(sentinel_position, operation);
+            terminal_offset = read_u64_checked(idx_stream_, operation, "final sentinel");
         }
         if (terminal_offset != descriptor.data_end) {
             throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
@@ -1787,63 +1769,14 @@ private:
         }
     }
 
-    static uint64_t read_index_magic(const std::string& base_path) {
-        std::ifstream index(base_path + ".relidx", std::ios::binary);
-        if (!index) {
-            throw std::runtime_error("OOCRelationWriter recovery: idx file not found at " +
-                                     base_path);
-        }
+    uint64_t read_open_index_magic() {
+        idx_stream_.seek(0, "recovery index magic seek");
         uint64_t magic = 0;
-        index.read(reinterpret_cast<char*>(&magic), sizeof(magic));
-        if (index.gcount() != static_cast<std::streamsize>(sizeof(magic))) {
-            throw std::runtime_error("OOCRelationWriter recovery: truncated index magic");
-        }
+        idx_stream_.read_exact(&magic, sizeof(magic), "recovery index magic read");
         return magic;
     }
 
-    [[nodiscard]] bool closed_pair_has_owned_incomplete_headers_noexcept() const noexcept {
-        try {
-            std::ifstream index(base_path_ + ".relidx", std::ios::binary);
-            std::ifstream data(base_path_ + ".reldata", std::ios::binary);
-            if (!index || !data) {
-                return false;
-            }
-
-            const uint64_t index_magic =
-                read_u64_checked(index, "exception cleanup", "index magic");
-            const uint64_t index_version =
-                read_u64_checked(index, "exception cleanup", "index version");
-            const uint64_t index_store_id =
-                read_u64_checked(index, "exception cleanup", "index store identity");
-            const uint64_t data_magic = read_u64_checked(data, "exception cleanup", "data magic");
-            const uint64_t data_version =
-                read_u64_checked(data, "exception cleanup", "data version");
-            const uint64_t data_store_id =
-                read_u64_checked(data, "exception cleanup", "data store identity");
-            return index_magic == MAGIC_V3_INCOMPLETE && index_version == FORMAT_VERSION_V3 &&
-                   index_store_id == store_id_ && data_magic == MAGIC_V3_DATA &&
-                   data_version == FORMAT_VERSION_V3 && data_store_id == store_id_;
-        } catch (...) {
-            return false;
-        }
-    }
-
-    [[nodiscard]] bool closed_pair_is_owned_finalized_store_noexcept() const noexcept {
-        try {
-            if (!finalized_descriptor_.has_value() ||
-                finalized_descriptor_->store_id != store_id_) {
-                return false;
-            }
-            validate_exact_v3_pair(base_path_, *finalized_descriptor_, MAGIC_V3_FINAL,
-                                   finalized_descriptor_->count, OffsetValidation::FullTable,
-                                   "exception cleanup");
-            return true;
-        } catch (...) {
-            return false;
-        }
-    }
-
-    static OOCValidatedResumePrefix validate_records(std::ifstream& data,
+    static OOCValidatedResumePrefix validate_records(gnfs::util::NativeBinaryUpdateFile& data,
                                                      const std::vector<uint64_t>& offsets,
                                                      uint64_t count, uint64_t data_end,
                                                      uint64_t checkpoint_count) {
@@ -1869,23 +1802,10 @@ private:
             if (record_size_u64 > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
                 throw std::overflow_error("OOCRelationWriter resume: record size exceeds size_t");
             }
-            if (record_size_u64 >
-                static_cast<uint64_t>(std::numeric_limits<std::streamsize>::max())) {
-                throw std::overflow_error(
-                    "OOCRelationWriter resume: record size exceeds streamsize");
-            }
             const size_t record_size = static_cast<size_t>(record_size_u64);
             record.resize(record_size);
-            data.clear();
-            data.seekg(static_cast<std::streamoff>(offsets[i]));
-            if (!data) {
-                throw std::runtime_error("OOCRelationWriter resume: cannot seek relation record");
-            }
-            data.read(reinterpret_cast<char*>(record.data()),
-                      static_cast<std::streamsize>(record_size));
-            if (data.gcount() != static_cast<std::streamsize>(record_size)) {
-                throw std::runtime_error("OOCRelationWriter resume: relation record truncated");
-            }
+            data.seek(offsets[i], "recovery relation seek");
+            data.read_exact(record.data(), record_size, "recovery relation read");
             const auto relation =
                 detail::deserialize_compact_relation(record.data(), record.size());
             prefix.seen.insert(relation.ab());
@@ -1913,40 +1833,35 @@ private:
         }
     }
 
-    static OOCValidatedResumePrefix
-    validate_finalized_prefix(const std::string& base_path,
-                              const OOCSnapshotDescriptor& descriptor) {
-        std::ifstream index(base_path + ".relidx", std::ios::binary);
-        std::ifstream data(base_path + ".reldata", std::ios::binary);
-        if (!index || !data) {
-            throw std::runtime_error("OOCRelationWriter recovery: finalized store is incomplete");
-        }
-
+    OOCValidatedResumePrefix validate_finalized_prefix(const OOCSnapshotDescriptor& descriptor) {
         constexpr const char* operation = "finalized recovery validation";
-        const uint64_t index_size = stream_size_checked(index, operation, "index");
-        const uint64_t data_size = stream_size_checked(data, operation, "data");
+        const uint64_t index_size = idx_stream_.size(operation);
+        const uint64_t data_size = data_stream_.size(operation);
         if (index_size < INDEX_HEADER_BYTES || data_size < DATA_HEADER_BYTES) {
             throw std::runtime_error("OOCRelationWriter recovery: finalized V3 header truncated");
         }
 
-        if (read_u64_checked(index, operation, "index magic") != MAGIC_V3_FINAL) {
+        idx_stream_.seek(0, operation);
+        data_stream_.seek(0, operation);
+        if (read_u64_checked(idx_stream_, operation, "index magic") != MAGIC_V3_FINAL) {
             throw std::runtime_error("OOCRelationWriter recovery: finalized magic changed");
         }
-        if (read_u64_checked(index, operation, "index format version") != FORMAT_VERSION_V3) {
+        if (read_u64_checked(idx_stream_, operation, "index format version") != FORMAT_VERSION_V3) {
             throw std::runtime_error(
                 "OOCRelationWriter recovery: finalized format version mismatch");
         }
         const uint64_t finalized_store_id =
-            read_u64_checked(index, operation, "index store identity");
+            read_u64_checked(idx_stream_, operation, "index store identity");
         if (finalized_store_id == 0 || finalized_store_id != descriptor.store_id) {
             throw std::runtime_error(
                 "OOCRelationWriter recovery: finalized store identity mismatch");
         }
-        const uint64_t final_count = read_u64_checked(index, operation, "index count");
+        const uint64_t final_count = read_u64_checked(idx_stream_, operation, "index count");
 
-        const uint64_t data_magic = read_u64_checked(data, operation, "data magic");
-        const uint64_t data_version = read_u64_checked(data, operation, "data version");
-        const uint64_t data_store_id = read_u64_checked(data, operation, "data store identity");
+        const uint64_t data_magic = read_u64_checked(data_stream_, operation, "data magic");
+        const uint64_t data_version = read_u64_checked(data_stream_, operation, "data version");
+        const uint64_t data_store_id =
+            read_u64_checked(data_stream_, operation, "data store identity");
         if (data_magic != MAGIC_V3_DATA || data_version != FORMAT_VERSION_V3 ||
             data_store_id != finalized_store_id) {
             throw std::runtime_error(
@@ -1963,7 +1878,7 @@ private:
         std::vector<uint64_t> offsets;
         offsets.reserve(static_cast<size_t>(final_count) + 1);
         for (uint64_t i = 0; i <= final_count; ++i) {
-            offsets.push_back(read_u64_checked(index, operation, "offset"));
+            offsets.push_back(read_u64_checked(idx_stream_, operation, "offset"));
         }
         if (offsets.front() != DATA_HEADER_BYTES || offsets.back() != data_size) {
             throw std::runtime_error("OOCRelationWriter recovery: finalized extent mismatch");
@@ -1978,30 +1893,20 @@ private:
             throw std::runtime_error(
                 "OOCRelationWriter recovery: finalized corpus does not contain checkpoint prefix");
         }
-        return validate_records(data, offsets, final_count, data_size, descriptor.count);
+        return validate_records(data_stream_, offsets, final_count, data_size, descriptor.count);
     }
 
-    static OOCValidatedResumePrefix
-    validate_resume_prefix(const std::string& base_path, const OOCSnapshotDescriptor& descriptor) {
-        std::ifstream index(base_path + ".relidx", std::ios::binary);
-        if (!index) {
-            throw std::runtime_error("OOCRelationWriter resume: idx file not found at " +
-                                     base_path);
-        }
-        std::ifstream data(base_path + ".reldata", std::ios::binary);
-        if (!data) {
-            throw std::runtime_error("OOCRelationWriter resume: data file not found at " +
-                                     base_path);
-        }
-
+    OOCValidatedResumePrefix validate_resume_prefix(const OOCSnapshotDescriptor& descriptor) {
         constexpr const char* operation = "resume validation";
-        const uint64_t index_size = stream_size_checked(index, operation, "index");
-        const uint64_t data_size = stream_size_checked(data, operation, "data");
+        const uint64_t index_size = idx_stream_.size(operation);
+        const uint64_t data_size = data_stream_.size(operation);
         if (index_size < INDEX_HEADER_BYTES || data_size < DATA_HEADER_BYTES) {
             throw std::runtime_error("OOCRelationWriter resume: V3 file header truncated");
         }
 
-        const uint64_t magic = read_u64_checked(index, operation, "index magic");
+        idx_stream_.seek(0, operation);
+        data_stream_.seek(0, operation);
+        const uint64_t magic = read_u64_checked(idx_stream_, operation, "index magic");
         if (magic == MAGIC_V1_FINAL) {
             throw std::runtime_error(
                 "OOCRelationWriter resume: legacy finalized V1 store is unsupported");
@@ -2022,23 +1927,24 @@ private:
         }
 
         const uint64_t persisted_format_version =
-            read_u64_checked(index, operation, "index format version");
+            read_u64_checked(idx_stream_, operation, "index format version");
         if (persisted_format_version != FORMAT_VERSION_V3) {
             throw std::runtime_error("OOCRelationWriter resume: format version mismatch");
         }
         const uint64_t persisted_store_id =
-            read_u64_checked(index, operation, "index store identity");
+            read_u64_checked(idx_stream_, operation, "index store identity");
         if (persisted_store_id == 0 || persisted_store_id != descriptor.store_id) {
             throw std::runtime_error("OOCRelationWriter resume: store identity mismatch");
         }
         // Count is advisory until final magic commits it. It can be nonzero if
         // the previous process died after the finalize metadata flush; recovery
         // trusts only the paired descriptor and resets this field to zero.
-        (void)read_u64_checked(index, operation, "incomplete count");
+        (void)read_u64_checked(idx_stream_, operation, "incomplete count");
 
-        const uint64_t data_magic = read_u64_checked(data, operation, "data magic");
-        const uint64_t data_version = read_u64_checked(data, operation, "data version");
-        const uint64_t data_store_id = read_u64_checked(data, operation, "data store identity");
+        const uint64_t data_magic = read_u64_checked(data_stream_, operation, "data magic");
+        const uint64_t data_version = read_u64_checked(data_stream_, operation, "data version");
+        const uint64_t data_store_id =
+            read_u64_checked(data_stream_, operation, "data store identity");
         if (data_magic != MAGIC_V3_DATA || data_version != FORMAT_VERSION_V3 ||
             data_store_id != persisted_store_id) {
             throw std::runtime_error("OOCRelationWriter resume: V3 index/data header mismatch");
@@ -2056,7 +1962,7 @@ private:
         std::vector<uint64_t> offsets;
         offsets.reserve(static_cast<size_t>(count) + 1);
         for (uint64_t i = 0; i <= count; ++i) {
-            offsets.push_back(read_u64_checked(index, operation, "offset"));
+            offsets.push_back(read_u64_checked(idx_stream_, operation, "offset"));
         }
         if (offsets.front() != DATA_HEADER_BYTES) {
             throw std::runtime_error(
@@ -2073,7 +1979,7 @@ private:
             }
         }
 
-        return validate_records(data, offsets, count, descriptor.data_end, count);
+        return validate_records(data_stream_, offsets, count, descriptor.data_end, count);
     }
 
     void acquire_prefix_reader(const OOCSnapshotDescriptor& descriptor) {
@@ -2082,6 +1988,7 @@ private:
             throw std::invalid_argument(
                 "OOCRelationWriter::acquire_prefix_reader: stale or foreign descriptor");
         }
+        require_store_named_identity("acquire_prefix_reader");
         ++active_prefix_readers_;
     }
 
@@ -2108,15 +2015,15 @@ private:
     }
 
     template <typename T> void write_val(const T& v) {
-        data_stream_.write(reinterpret_cast<const char*>(&v), sizeof(T));
+        data_stream_.write_exact(&v, sizeof(T), "serialize scalar");
     }
 
     void write_vec32(const std::vector<uint32_t>& v) {
         auto sz = static_cast<uint32_t>(v.size());
         write_val(sz);
         if (sz > 0) {
-            data_stream_.write(reinterpret_cast<const char*>(v.data()),
-                               static_cast<std::streamsize>(sz * sizeof(uint32_t)));
+            data_stream_.write_exact(v.data(), static_cast<size_t>(sz) * sizeof(uint32_t),
+                                     "serialize factor vector");
         }
     }
 
@@ -2139,34 +2046,27 @@ private:
             throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
                                      ": store handles are not open");
         }
-        const auto data_position = data_stream_.tellp();
-        const auto index_position = idx_stream_.tellp();
-        if (data_position == std::streampos(-1) || index_position == std::streampos(-1)) {
-            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
-                                     ": cannot preserve stream positions");
-        }
+        const uint64_t data_position = data_stream_.position(operation);
+        const uint64_t index_position = idx_stream_.position(operation);
 
-        data_stream_.flush();
-        idx_stream_.flush();
-        ensure_streams_good(operation);
-        data_stream_.clear();
-        idx_stream_.clear();
-        data_stream_.seekg(0);
-        idx_stream_.seekg(0);
-        if (!data_stream_ || !idx_stream_) {
-            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
-                                     ": cannot seek V3 headers");
-        }
+        data_stream_.flush(operation);
+        idx_stream_.flush(operation);
+        data_stream_.seek(0, operation);
+        idx_stream_.seek(0, operation);
 
-        const uint64_t index_magic = read_u64_checked(idx_stream_, operation, "index magic");
-        const uint64_t index_version = read_u64_checked(idx_stream_, operation, "index version");
-        const uint64_t index_store_id =
-            read_u64_checked(idx_stream_, operation, "index store identity");
-        const uint64_t persisted_count = read_u64_checked(idx_stream_, operation, "index count");
-        const uint64_t data_magic = read_u64_checked(data_stream_, operation, "data magic");
-        const uint64_t data_version = read_u64_checked(data_stream_, operation, "data version");
-        const uint64_t data_store_id =
-            read_u64_checked(data_stream_, operation, "data store identity");
+        const auto read_u64 = [&](gnfs::util::NativeBinaryUpdateFile& file, const char* field) {
+            uint64_t value = 0;
+            file.read_exact(&value, sizeof(value), operation);
+            (void)field;
+            return value;
+        };
+        const uint64_t index_magic = read_u64(idx_stream_, "index magic");
+        const uint64_t index_version = read_u64(idx_stream_, "index version");
+        const uint64_t index_store_id = read_u64(idx_stream_, "index store identity");
+        const uint64_t persisted_count = read_u64(idx_stream_, "index count");
+        const uint64_t data_magic = read_u64(data_stream_, "data magic");
+        const uint64_t data_version = read_u64(data_stream_, "data version");
+        const uint64_t data_store_id = read_u64(data_stream_, "data store identity");
 
         if (index_magic != MAGIC_V3_INCOMPLETE || index_version != FORMAT_VERSION_V3 ||
             data_magic != MAGIC_V3_DATA || data_version != FORMAT_VERSION_V3 ||
@@ -2179,11 +2079,8 @@ private:
                                      ": persisted count mismatch");
         }
 
-        data_stream_.clear();
-        idx_stream_.clear();
-        data_stream_.seekp(data_position);
-        idx_stream_.seekp(index_position);
-        ensure_streams_good(operation);
+        data_stream_.seek(data_position, operation);
+        idx_stream_.seek(index_position, operation);
     }
 
     void require_state(OOCWriterState expected, const char* operation) const {
@@ -2193,45 +2090,18 @@ private:
         }
     }
 
-    void ensure_streams_good(const char* operation) const {
-        if (!data_stream_ || !idx_stream_) {
-            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
-                                     ": stream I/O failed");
-        }
-    }
-
-    void ensure_open_streams_good(const char* operation) const {
-        if ((data_stream_.is_open() && !data_stream_) || (idx_stream_.is_open() && !idx_stream_)) {
-            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
-                                     ": stream I/O failed");
-        }
-    }
-
-    void close_streams_checked(const char* operation) {
-        data_stream_.close();
-        idx_stream_.close();
-        if (data_stream_.fail() || idx_stream_.fail()) {
-            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
-                                     ": stream close failed");
-        }
-    }
-
     void close_open_streams_checked(const char* operation) {
         if (data_stream_.is_open())
-            data_stream_.close();
+            data_stream_.close_checked(operation);
         if (idx_stream_.is_open())
-            idx_stream_.close();
-        if (data_stream_.fail() || idx_stream_.fail()) {
-            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
-                                     ": stream close failed");
-        }
+            idx_stream_.close_checked(operation);
     }
 
     void abort_close_noexcept() noexcept {
         if (data_stream_.is_open())
-            data_stream_.close();
+            data_stream_.close_noexcept();
         if (idx_stream_.is_open())
-            idx_stream_.close();
+            idx_stream_.close_noexcept();
     }
 
     void fail_and_close_noexcept() noexcept {
@@ -2239,56 +2109,22 @@ private:
         abort_close_noexcept();
     }
 
-    [[nodiscard]] static std::runtime_error
-    sync_error(const char* operation, const std::filesystem::path& path, int error_number) {
-        return std::runtime_error(std::string("OOCRelationWriter::") + operation + " " +
-                                  path.string() + ": " + std::strerror(error_number));
+    void require_store_named_identity(const char* operation) const {
+        data_stream_.require_named_identity(base_path_ + ".reldata", operation);
+        idx_stream_.require_named_identity(base_path_ + ".relidx", operation);
     }
 
-    static void sync_file(const std::filesystem::path& path) {
-#ifdef _WIN32
-        const int fd = ::_wopen(path.c_str(), _O_RDWR | _O_BINARY);
-        if (fd < 0) {
-            throw sync_error("sync cannot open", path, errno);
-        }
-        if (::_commit(fd) != 0) {
-            const int saved_errno = errno;
-            ::_close(fd);
-            throw sync_error("sync failed", path, saved_errno);
-        }
-        if (::_close(fd) != 0) {
-            throw sync_error("sync close failed", path, errno);
-        }
-#else
-        int fd = -1;
-        do {
-            fd = ::open(path.c_str(), O_RDWR);
-        } while (fd < 0 && errno == EINTR);
-        if (fd < 0) {
-            throw sync_error("sync cannot open", path, errno);
-        }
-
-        int result = -1;
-        do {
-            result = ::fsync(fd);
-        } while (result != 0 && errno == EINTR);
-        if (result != 0) {
-            const int saved_errno = errno;
-            ::close(fd);
-            throw sync_error("sync failed", path, saved_errno);
-        }
-        if (::close(fd) != 0) {
-            throw sync_error("sync close failed", path, errno);
-        }
-#endif
-    }
-
-    void sync_store_files_and_directory() const {
-        const std::filesystem::path data_path(base_path_ + ".reldata");
+    void sync_store_files_and_directory() {
         const std::filesystem::path index_path(base_path_ + ".relidx");
-        sync_file(data_path);
-        sync_file(index_path);
+        if (!data_stream_.is_open() || !idx_stream_.is_open()) {
+            throw std::logic_error(
+                "OOCRelationWriter: durability barrier requires retained store handles");
+        }
+        require_store_named_identity("store sync preflight");
+        data_stream_.sync("store data sync");
+        idx_stream_.sync("store index sync");
         detail::sync_parent_directory_after_metadata_change(index_path);
+        require_store_named_identity("store sync commit");
     }
 
     static uint64_t allocate_store_id() noexcept {
@@ -2315,15 +2151,11 @@ private:
     }
 
     std::string base_path_;
-    std::vector<char> data_buf_;
-    std::vector<char> idx_buf_;
     // Declared before streams so stream destruction always precedes release of
     // the lock-owning deferred lease, including exceptional destruction.
     std::optional<OOCPrivateLeaseOwnershipReceipt> owned_deferred_private_lease_;
-    // fstream (not ofstream) to support resume mode: r/w open without trunc,
-    // seek to past existing offsets/data.
-    std::fstream data_stream_;
-    std::fstream idx_stream_;
+    gnfs::util::NativeBinaryUpdateFile data_stream_;
+    gnfs::util::NativeBinaryUpdateFile idx_stream_;
     size_t count_ = 0;
     int uncaught_at_ctor_ = 0;
     uint64_t store_id_ = allocate_store_id();
@@ -2794,10 +2626,15 @@ public:
 
         owner.acquire_prefix_reader(descriptor);
         try {
-            // Validate ownership and the Suspended state before opening either file.
-            // On Windows, mmap must never race an open std::fstream writer handle.
-            idx_file_ = gnfs::util::MmapFile(frozen_base_path + ".relidx");
-            data_file_ = gnfs::util::MmapFile(frozen_base_path + ".reldata");
+            // Map duplicates of the writer's exact retained handles. No
+            // pathname is resolved after the Suspended ownership check, so a
+            // rename/replacement cannot redirect either half of this prefix.
+            auto index_file =
+                owner.idx_stream_.duplicate_for_mapping("prefix reader index duplicate");
+            auto data_file =
+                owner.data_stream_.duplicate_for_mapping("prefix reader data duplicate");
+            idx_file_ = gnfs::util::MmapFile(std::move(index_file));
+            data_file_ = gnfs::util::MmapFile(std::move(data_file));
             if (idx_file_.size() < OOCRelationWriter::INDEX_HEADER_BYTES) {
                 throw std::runtime_error("OOCRelationPrefixReader: index file too small");
             }
@@ -2879,8 +2716,8 @@ public:
     }
 
     ~OOCRelationPrefixReader() {
-        // The owner may reopen append handles as soon as the lease is released,
-        // so mappings must be closed first on every platform.
+        // The owner may resume mutation as soon as the lease is released, so
+        // mappings must be closed first on every platform.
         data_file_.close();
         idx_file_.close();
         if (owner_ != nullptr) {

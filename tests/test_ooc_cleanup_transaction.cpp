@@ -4391,6 +4391,8 @@ constexpr std::array PRIVATE_WRITER_FAULT_POINTS{
     OOCPrivateLeaseFaultPoint::FreshWriterPermitAcquired,
     OOCPrivateLeaseFaultPoint::FreshIndexReserved,
     OOCPrivateLeaseFaultPoint::FreshDataReserved,
+    OOCPrivateLeaseFaultPoint::FreshHeaderWriteAuthorized,
+    OOCPrivateLeaseFaultPoint::FreshStreamsAttached,
     OOCPrivateLeaseFaultPoint::FreshHeadersValidated,
     OOCPrivateLeaseFaultPoint::FreshPairOwnershipCaptured,
     OOCPrivateLeaseFaultPoint::ActivationPermitAcquired,
@@ -7364,6 +7366,8 @@ void test_deferred_writer_ownership_is_commit_last() {
         OOCPrivateLeaseFaultPoint::FreshWriterPermitAcquired,
         OOCPrivateLeaseFaultPoint::FreshIndexReserved,
         OOCPrivateLeaseFaultPoint::FreshDataReserved,
+        OOCPrivateLeaseFaultPoint::FreshHeaderWriteAuthorized,
+        OOCPrivateLeaseFaultPoint::FreshStreamsAttached,
         OOCPrivateLeaseFaultPoint::FreshHeadersValidated,
         OOCPrivateLeaseFaultPoint::FreshPairOwnershipCaptured,
     };
@@ -7610,6 +7614,605 @@ void test_private_fresh_writer_authorized_gate_rejects_same_inode_size_drift() {
         reservation.ownership.reset();
         CHECK(!reservation.ownership.has_value());
         check_empty_private_lease_recovery(base);
+    }
+}
+
+enum class FreshWriterPathSwapAction : std::uint8_t {
+    RegularReplacement,
+    SymlinkReplacement,
+    RenameAba,
+};
+
+struct FreshWriterPathSwapContext final {
+    FreshWriterPathSwapAction action = FreshWriterPathSwapAction::RegularReplacement;
+    std::filesystem::path canonical;
+    std::filesystem::path saved_owned;
+    std::filesystem::path attacker_staging;
+    std::filesystem::path attacker_saved;
+    std::filesystem::path symlink_victim;
+    std::optional<std::array<std::uint64_t, 3>> original_identity;
+    std::optional<std::array<std::uint64_t, 3>> attacker_identity;
+    bool authorized_invoked = false;
+    bool attached_invoked = false;
+    bool injection_failed = false;
+};
+
+[[nodiscard]] std::optional<std::array<std::uint64_t, 3>>
+stable_test_file_identity(const std::filesystem::path& path) {
+    const auto inspected = gnfs::relation::ooc_cleanup_detail::inspect_file(path, 0, false);
+    if (inspected.kind != gnfs::relation::ooc_cleanup_detail::InspectKind::Present) {
+        return std::nullopt;
+    }
+    return gnfs::relation::ooc_cleanup_detail::stable_identity(inspected.identity);
+}
+
+[[nodiscard]] bool swap_fresh_writer_path(OOCPrivateLeaseFaultPoint point, void* opaque) noexcept {
+    auto& context = *static_cast<FreshWriterPathSwapContext*>(opaque);
+    try {
+        if (point == OOCPrivateLeaseFaultPoint::FreshHeaderWriteAuthorized) {
+            if (context.authorized_invoked) {
+                context.injection_failed = true;
+                return false;
+            }
+            context.authorized_invoked = true;
+            context.original_identity = stable_test_file_identity(context.canonical);
+            if (!context.original_identity) {
+                context.injection_failed = true;
+                return false;
+            }
+
+            std::error_code error;
+            std::filesystem::rename(context.canonical, context.saved_owned, error);
+            if (error) {
+                context.injection_failed = true;
+                return false;
+            }
+
+            if (context.action == FreshWriterPathSwapAction::SymlinkReplacement) {
+                std::filesystem::create_symlink(context.symlink_victim, context.canonical, error);
+            } else {
+                context.attacker_identity = stable_test_file_identity(context.attacker_staging);
+                if (!context.attacker_identity) {
+                    context.injection_failed = true;
+                    return false;
+                }
+                std::filesystem::rename(context.attacker_staging, context.canonical, error);
+            }
+            if (error) {
+                context.injection_failed = true;
+            }
+            return false;
+        }
+
+        if (point == OOCPrivateLeaseFaultPoint::FreshStreamsAttached &&
+            context.action == FreshWriterPathSwapAction::RenameAba) {
+            if (context.attached_invoked || !context.authorized_invoked) {
+                context.injection_failed = true;
+                return false;
+            }
+            context.attached_invoked = true;
+            std::error_code error;
+            std::filesystem::rename(context.canonical, context.attacker_saved, error);
+            if (!error) {
+                std::filesystem::rename(context.saved_owned, context.canonical, error);
+            }
+            if (error) {
+                context.injection_failed = true;
+            }
+        }
+    } catch (...) {
+        context.injection_failed = true;
+    }
+    return false;
+}
+
+void restore_swapped_fresh_artifact(const FreshWriterPathSwapContext& context) {
+    std::error_code error;
+    if (entry_exists_no_follow(context.canonical)) {
+        CHECK(std::filesystem::remove(context.canonical, error));
+        CHECK(!error);
+    }
+    error.clear();
+    std::filesystem::rename(context.saved_owned, context.canonical, error);
+    CHECK(!error);
+}
+
+void test_private_fresh_writer_same_handle_rejects_regular_replacements() {
+    constexpr std::array TARGET_INDEX{true, false};
+    constexpr std::string_view SENTINEL =
+        "foreign replacement bytes must never receive a GNFS protocol header";
+
+    for (std::size_t iteration = 0; iteration < TARGET_INDEX.size(); ++iteration) {
+        TempDirectory temp;
+        const auto base =
+            temp.path() /
+            ("fresh-handle-regular-" + std::to_string(iteration) + ".gnfs-sink-lease") / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+        CHECK(reservation.completed());
+        if (!reservation.completed()) {
+            continue;
+        }
+
+        const bool target_index = TARGET_INDEX[iteration];
+        const auto canonical = target_index ? paths.index_path : paths.data_path;
+        const auto attacker = temp.path() / ("regular-attacker-" + std::to_string(iteration));
+        const auto saved_owned = temp.path() / ("regular-owned-" + std::to_string(iteration));
+        write_test_leaf(attacker, SENTINEL);
+        const auto sentinel_bytes = read_test_bytes(attacker);
+        FreshWriterPathSwapContext context{
+            .action = FreshWriterPathSwapAction::RegularReplacement,
+            .canonical = canonical,
+            .saved_owned = saved_owned,
+            .attacker_staging = attacker,
+        };
+
+        bool rejected = false;
+        try {
+            OOCRelationWriter writer(base.string(), *reservation.ownership,
+                                     OOCPrivateLeaseTestHooks{
+                                         .stop_after = swap_fresh_writer_path,
+                                         .context = &context,
+                                     });
+        } catch (const std::exception&) {
+            rejected = true;
+        }
+
+        CHECK(context.authorized_invoked);
+        CHECK(!context.attached_invoked);
+        CHECK(!context.injection_failed);
+        CHECK(context.original_identity.has_value());
+        CHECK(context.attacker_identity.has_value());
+        CHECK(rejected);
+        CHECK(!reservation.ownership->spent());
+        CHECK(stable_test_file_identity(canonical) == context.attacker_identity);
+        CHECK(stable_test_file_identity(saved_owned) == context.original_identity);
+        check_test_bytes_preserved(canonical, sentinel_bytes);
+        CHECK(std::filesystem::file_size(saved_owned) ==
+              (target_index ? OOCRelationStoreFormat::INDEX_HEADER_BYTES
+                            : OOCRelationStoreFormat::DATA_HEADER_BYTES));
+
+        restore_swapped_fresh_artifact(context);
+        reservation.ownership.reset();
+        check_empty_private_lease_recovery(base);
+    }
+}
+
+void test_private_fresh_writer_same_handle_rejects_symlink_replacements() {
+    constexpr std::array TARGET_INDEX{true, false};
+    constexpr std::string_view SENTINEL =
+        "symlink victim bytes must never receive a GNFS protocol header";
+
+    for (std::size_t iteration = 0; iteration < TARGET_INDEX.size(); ++iteration) {
+        TempDirectory temp;
+        const auto victim = temp.path() / ("symlink-victim-" + std::to_string(iteration));
+        const auto probe = temp.path() / ("symlink-probe-" + std::to_string(iteration));
+        write_test_leaf(victim, SENTINEL);
+        if (!create_symlink_or_explicit_skip(victim, probe, "fresh writer symlink replacement")) {
+            continue;
+        }
+        std::error_code error;
+        CHECK(std::filesystem::remove(probe, error));
+        CHECK(!error);
+
+        const auto base =
+            temp.path() /
+            ("fresh-handle-symlink-" + std::to_string(iteration) + ".gnfs-sink-lease") / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+        CHECK(reservation.completed());
+        if (!reservation.completed()) {
+            continue;
+        }
+
+        const bool target_index = TARGET_INDEX[iteration];
+        const auto canonical = target_index ? paths.index_path : paths.data_path;
+        const auto saved_owned = temp.path() / ("symlink-owned-" + std::to_string(iteration));
+        const auto victim_bytes = read_test_bytes(victim);
+        FreshWriterPathSwapContext context{
+            .action = FreshWriterPathSwapAction::SymlinkReplacement,
+            .canonical = canonical,
+            .saved_owned = saved_owned,
+            .symlink_victim = victim,
+        };
+
+        bool rejected = false;
+        try {
+            OOCRelationWriter writer(base.string(), *reservation.ownership,
+                                     OOCPrivateLeaseTestHooks{
+                                         .stop_after = swap_fresh_writer_path,
+                                         .context = &context,
+                                     });
+        } catch (const std::exception&) {
+            rejected = true;
+        }
+
+        CHECK(context.authorized_invoked);
+        CHECK(!context.attached_invoked);
+        CHECK(!context.injection_failed);
+        CHECK(context.original_identity.has_value());
+        CHECK(rejected);
+        CHECK(!reservation.ownership->spent());
+        CHECK(entry_is_symlink_no_follow(canonical));
+        if (entry_is_symlink_no_follow(canonical)) {
+            CHECK(std::filesystem::read_symlink(canonical) == victim);
+        }
+        check_test_bytes_preserved(victim, victim_bytes);
+        CHECK(stable_test_file_identity(saved_owned) == context.original_identity);
+        CHECK(std::filesystem::file_size(saved_owned) ==
+              (target_index ? OOCRelationStoreFormat::INDEX_HEADER_BYTES
+                            : OOCRelationStoreFormat::DATA_HEADER_BYTES));
+
+        restore_swapped_fresh_artifact(context);
+        reservation.ownership.reset();
+        check_empty_private_lease_recovery(base);
+    }
+}
+
+void test_private_fresh_writer_same_handle_survives_rename_aba() {
+    constexpr std::array TARGET_INDEX{true, false};
+    constexpr std::string_view SENTINEL =
+        "ABA attacker bytes must remain outside the GNFS protocol";
+
+    for (std::size_t iteration = 0; iteration < TARGET_INDEX.size(); ++iteration) {
+        TempDirectory temp;
+        const auto base = temp.path() /
+                          ("fresh-handle-aba-" + std::to_string(iteration) + ".gnfs-sink-lease") /
+                          "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+        CHECK(reservation.completed());
+        if (!reservation.completed()) {
+            continue;
+        }
+
+        const bool target_index = TARGET_INDEX[iteration];
+        const auto canonical = target_index ? paths.index_path : paths.data_path;
+        const auto attacker = temp.path() / ("aba-attacker-" + std::to_string(iteration));
+        const auto attacker_saved =
+            temp.path() / ("aba-attacker-saved-" + std::to_string(iteration));
+        const auto saved_owned = temp.path() / ("aba-owned-" + std::to_string(iteration));
+        write_test_leaf(attacker, SENTINEL);
+        const auto sentinel_bytes = read_test_bytes(attacker);
+        FreshWriterPathSwapContext context{
+            .action = FreshWriterPathSwapAction::RenameAba,
+            .canonical = canonical,
+            .saved_owned = saved_owned,
+            .attacker_staging = attacker,
+            .attacker_saved = attacker_saved,
+        };
+
+        std::optional<OOCRelationWriter> writer;
+        bool rejected = false;
+        try {
+            writer.emplace(base.string(), *reservation.ownership,
+                           OOCPrivateLeaseTestHooks{
+                               .stop_after = swap_fresh_writer_path,
+                               .context = &context,
+                           });
+        } catch (const std::exception&) {
+            rejected = true;
+        }
+
+        CHECK(context.authorized_invoked);
+        CHECK(context.attached_invoked);
+        CHECK(!context.injection_failed);
+        CHECK(!rejected);
+        CHECK(writer.has_value());
+        CHECK(context.original_identity.has_value());
+        CHECK(context.attacker_identity.has_value());
+        CHECK(stable_test_file_identity(canonical) == context.original_identity);
+        CHECK(stable_test_file_identity(attacker_saved) == context.attacker_identity);
+        check_test_bytes_preserved(attacker_saved, sentinel_bytes);
+        CHECK(!entry_exists_no_follow(paths.lease_reserved_path));
+        CHECK(entry_exists_no_follow(paths.lease_owned_path));
+
+        if (!writer) {
+            continue;
+        }
+        const auto descriptor = writer->finalize();
+        CHECK(descriptor.count == 0);
+        CHECK(descriptor.data_end == OOCRelationStoreFormat::DATA_HEADER_BYTES);
+        CHECK(std::filesystem::file_size(paths.index_path) ==
+              OOCRelationStoreFormat::INDEX_HEADER_BYTES + sizeof(std::uint64_t));
+        CHECK(std::filesystem::file_size(paths.data_path) ==
+              OOCRelationStoreFormat::DATA_HEADER_BYTES);
+        CHECK(writer->remove_owned_artifacts_noexcept().completed());
+        CHECK(OOCCleanupTransaction::remove_private_lease(*reservation.ownership).completed());
+        check_cleanup_complete(paths);
+    }
+}
+
+enum class SuspendedWriterReplacementOperation : std::uint8_t {
+    PrefixReader,
+    Resume,
+    Finalize,
+};
+
+void test_suspended_writer_rejects_byte_identical_replacements() {
+    constexpr std::array OPERATIONS{
+        SuspendedWriterReplacementOperation::PrefixReader,
+        SuspendedWriterReplacementOperation::Resume,
+        SuspendedWriterReplacementOperation::Finalize,
+    };
+    constexpr std::array TARGET_INDEX{true, false};
+
+    for (std::size_t operation_index = 0; operation_index < OPERATIONS.size(); ++operation_index) {
+        for (std::size_t target_index = 0; target_index < TARGET_INDEX.size(); ++target_index) {
+            TempDirectory temp;
+            const auto base =
+                temp.path() /
+                ("suspended-identical-replacement-" + std::to_string(operation_index) + "-" +
+                 std::to_string(target_index) + ".gnfs-sink-lease") /
+                "corpus";
+            const auto paths = OOCCleanupTransaction::paths_for(base);
+            auto reservation = OOCCleanupTransaction::reserve_private_lease(base);
+            CHECK(reservation.completed());
+            if (!reservation.completed()) {
+                continue;
+            }
+
+            OOCRelationWriter writer(base.string(), *reservation.ownership);
+            const auto descriptor = writer.checkpoint_prefix();
+            const bool replace_index = TARGET_INDEX[target_index];
+            const auto canonical = replace_index ? paths.index_path : paths.data_path;
+            const auto saved_owned =
+                temp.path() / ("suspended-owned-" + std::to_string(operation_index) + "-" +
+                               std::to_string(target_index));
+            const auto attacker =
+                temp.path() / ("suspended-attacker-" + std::to_string(operation_index) + "-" +
+                               std::to_string(target_index));
+
+            std::error_code error;
+            CHECK(std::filesystem::copy_file(canonical, attacker,
+                                             std::filesystem::copy_options::none, error));
+            CHECK(!error);
+            const auto original_identity = stable_test_file_identity(canonical);
+            const auto attacker_identity = stable_test_file_identity(attacker);
+            const auto attacker_bytes = read_test_bytes(attacker);
+            CHECK(original_identity.has_value());
+            CHECK(attacker_identity.has_value());
+            CHECK(original_identity != attacker_identity);
+
+            error.clear();
+            std::filesystem::rename(canonical, saved_owned, error);
+            CHECK(!error);
+            error.clear();
+            std::filesystem::rename(attacker, canonical, error);
+            CHECK(!error);
+
+            bool rejected = false;
+            try {
+                switch (OPERATIONS[operation_index]) {
+                case SuspendedWriterReplacementOperation::PrefixReader: {
+                    gnfs::relation::OOCRelationPrefixReader reader(base.string(), descriptor,
+                                                                   writer);
+                    (void)reader;
+                    break;
+                }
+                case SuspendedWriterReplacementOperation::Resume:
+                    writer.resume_append(descriptor);
+                    break;
+                case SuspendedWriterReplacementOperation::Finalize:
+                    (void)writer.finalize();
+                    break;
+                }
+            } catch (const std::exception&) {
+                rejected = true;
+            }
+
+            CHECK(rejected);
+            CHECK(stable_test_file_identity(canonical) == attacker_identity);
+            CHECK(stable_test_file_identity(saved_owned) == original_identity);
+            check_test_bytes_preserved(canonical, attacker_bytes);
+
+            error.clear();
+            CHECK(std::filesystem::remove(canonical, error));
+            CHECK(!error);
+            error.clear();
+            std::filesystem::rename(saved_owned, canonical, error);
+            CHECK(!error);
+
+            writer.abort();
+            CHECK(writer.remove_owned_artifacts_noexcept().completed());
+            CHECK(OOCCleanupTransaction::remove_private_lease(*reservation.ownership).completed());
+            check_cleanup_complete(paths);
+        }
+    }
+}
+
+struct RecoveryPathSwapContext final {
+    OOCRelationWriter::RecoveryFaultPoint target =
+        OOCRelationWriter::RecoveryFaultPoint::AppendablePrefixValidated;
+    std::filesystem::path canonical;
+    std::filesystem::path saved_owned;
+    std::filesystem::path attacker_staging;
+    std::optional<std::array<std::uint64_t, 3>> original_identity;
+    std::optional<std::array<std::uint64_t, 3>> attacker_identity;
+    bool invoked = false;
+    bool injection_failed = false;
+};
+
+[[nodiscard]] bool swap_path_after_recovery_validation(OOCRelationWriter::RecoveryFaultPoint point,
+                                                       void* opaque) noexcept {
+    auto& context = *static_cast<RecoveryPathSwapContext*>(opaque);
+    if (point != context.target || context.invoked) {
+        return false;
+    }
+    context.invoked = true;
+    try {
+        context.original_identity = stable_test_file_identity(context.canonical);
+        context.attacker_identity = stable_test_file_identity(context.attacker_staging);
+        if (!context.original_identity || !context.attacker_identity) {
+            context.injection_failed = true;
+            return false;
+        }
+        std::error_code error;
+        std::filesystem::rename(context.canonical, context.saved_owned, error);
+        if (!error) {
+            std::filesystem::rename(context.attacker_staging, context.canonical, error);
+        }
+        if (error) {
+            context.injection_failed = true;
+        }
+    } catch (...) {
+        context.injection_failed = true;
+    }
+    return false;
+}
+
+void test_recovery_mutates_validated_handles_not_replacements() {
+    constexpr std::array TARGET_INDEX{true, false};
+
+    for (std::size_t iteration = 0; iteration < TARGET_INDEX.size(); ++iteration) {
+        TempDirectory temp;
+        const auto base = temp.path() / ("recovery-handle-swap-" + std::to_string(iteration));
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        OOCRelationWriter source(base.string());
+
+        const Relation committed = make_real_relation(31, 2);
+        const Relation tail_one = make_real_relation(33, 2);
+        const Relation tail_two = make_real_relation(35, 2);
+        CHECK(source.write(committed) == 0);
+        const auto descriptor = source.checkpoint_prefix();
+        gnfs::relation::RelationSequenceReceiptAccumulator sequence;
+        sequence.append(committed);
+        const auto receipt = sequence.finish();
+        source.resume_append(descriptor);
+        CHECK(source.write(tail_one) == 1);
+        CHECK(source.write(tail_two) == 2);
+        source.abort();
+
+        const bool target_index = TARGET_INDEX[iteration];
+        const auto canonical = target_index ? paths.index_path : paths.data_path;
+        const auto attacker = temp.path() / ("recovery-attacker-" + std::to_string(iteration));
+        const auto saved_owned = temp.path() / ("recovery-owned-" + std::to_string(iteration));
+        std::error_code error;
+        CHECK(std::filesystem::copy_file(canonical, attacker, std::filesystem::copy_options::none,
+                                         error));
+        CHECK(!error);
+        const auto attacker_bytes = read_test_bytes(attacker);
+        RecoveryPathSwapContext context{
+            .canonical = canonical,
+            .saved_owned = saved_owned,
+            .attacker_staging = attacker,
+        };
+
+        bool rejected = false;
+        try {
+            OOCRelationWriter recovered(base.string(), descriptor, receipt,
+                                        OOCRelationWriter::RecoveryTestHooks{
+                                            .stop_after = swap_path_after_recovery_validation,
+                                            .context = &context,
+                                        });
+        } catch (const std::exception&) {
+            rejected = true;
+        }
+
+        CHECK(context.invoked);
+        CHECK(!context.injection_failed);
+        CHECK(rejected);
+        CHECK(context.original_identity.has_value());
+        CHECK(context.attacker_identity.has_value());
+        CHECK(stable_test_file_identity(canonical) == context.attacker_identity);
+        CHECK(stable_test_file_identity(saved_owned) == context.original_identity);
+        check_test_bytes_preserved(canonical, attacker_bytes);
+        CHECK(std::filesystem::file_size(saved_owned) ==
+              (target_index ? OOCRelationWriter::index_size_for_count(descriptor.count)
+                            : descriptor.data_end));
+
+        error.clear();
+        CHECK(std::filesystem::remove(canonical, error));
+        CHECK(!error);
+        error.clear();
+        std::filesystem::rename(saved_owned, canonical, error);
+        CHECK(!error);
+
+        {
+            OOCRelationWriter recovered(base.string(), descriptor, receipt);
+            CHECK(recovered.recovery_outcome() ==
+                  gnfs::relation::OOCRecoveryOutcome::AppendablePrefix);
+            recovered.abort();
+        }
+        CHECK(source.remove_owned_artifacts_noexcept().completed());
+        CHECK(!entry_exists_no_follow(paths.index_path));
+        CHECK(!entry_exists_no_follow(paths.data_path));
+    }
+}
+
+void test_finalized_recovery_rejects_post_validation_replacements() {
+    constexpr std::array TARGET_INDEX{true, false};
+
+    for (std::size_t iteration = 0; iteration < TARGET_INDEX.size(); ++iteration) {
+        TempDirectory temp;
+        const auto base =
+            temp.path() / ("finalized-recovery-handle-swap-" + std::to_string(iteration));
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        OOCRelationWriter source(base.string());
+
+        const Relation committed = make_real_relation(41, 2);
+        CHECK(source.write(committed) == 0);
+        const auto descriptor = source.checkpoint_prefix();
+        gnfs::relation::RelationSequenceReceiptAccumulator sequence;
+        sequence.append(committed);
+        const auto receipt = sequence.finish();
+        CHECK(source.finalize() == descriptor);
+
+        const bool target_index = TARGET_INDEX[iteration];
+        const auto canonical = target_index ? paths.index_path : paths.data_path;
+        const auto attacker =
+            temp.path() / ("finalized-recovery-attacker-" + std::to_string(iteration));
+        const auto saved_owned =
+            temp.path() / ("finalized-recovery-owned-" + std::to_string(iteration));
+        std::error_code error;
+        CHECK(std::filesystem::copy_file(canonical, attacker, std::filesystem::copy_options::none,
+                                         error));
+        CHECK(!error);
+        const auto attacker_bytes = read_test_bytes(attacker);
+        RecoveryPathSwapContext context{
+            .target = OOCRelationWriter::RecoveryFaultPoint::FinalizedPrefixValidated,
+            .canonical = canonical,
+            .saved_owned = saved_owned,
+            .attacker_staging = attacker,
+        };
+
+        bool rejected = false;
+        try {
+            OOCRelationWriter recovered(base.string(), descriptor, receipt,
+                                        OOCRelationWriter::RecoveryTestHooks{
+                                            .stop_after = swap_path_after_recovery_validation,
+                                            .context = &context,
+                                        });
+        } catch (const std::exception&) {
+            rejected = true;
+        }
+
+        CHECK(context.invoked);
+        CHECK(!context.injection_failed);
+        CHECK(rejected);
+        CHECK(context.original_identity.has_value());
+        CHECK(context.attacker_identity.has_value());
+        CHECK(stable_test_file_identity(canonical) == context.attacker_identity);
+        CHECK(stable_test_file_identity(saved_owned) == context.original_identity);
+        check_test_bytes_preserved(canonical, attacker_bytes);
+        check_test_bytes_preserved(saved_owned, attacker_bytes);
+
+        error.clear();
+        CHECK(std::filesystem::remove(canonical, error));
+        CHECK(!error);
+        error.clear();
+        std::filesystem::rename(saved_owned, canonical, error);
+        CHECK(!error);
+
+        {
+            OOCRelationWriter recovered(base.string(), descriptor, receipt);
+            CHECK(recovered.recovery_outcome() ==
+                  gnfs::relation::OOCRecoveryOutcome::FinalizedCorpus);
+            CHECK(recovered.finalize() == descriptor);
+        }
+        CHECK(source.remove_owned_artifacts_noexcept().completed());
+        CHECK(!entry_exists_no_follow(paths.index_path));
+        CHECK(!entry_exists_no_follow(paths.data_path));
     }
 }
 
@@ -10849,6 +11452,12 @@ void run_private_lease_crash_suite(const std::string& executable) {
     test_deferred_writer_ownership_is_commit_last();
     test_deferred_writer_live_lease_is_unreachable();
     test_private_fresh_writer_authorized_gate_rejects_same_inode_size_drift();
+    test_private_fresh_writer_same_handle_rejects_regular_replacements();
+    test_private_fresh_writer_same_handle_rejects_symlink_replacements();
+    test_private_fresh_writer_same_handle_survives_rename_aba();
+    test_suspended_writer_rejects_byte_identical_replacements();
+    test_recovery_mutates_validated_handles_not_replacements();
+    test_finalized_recovery_rejects_post_validation_replacements();
     test_private_lease_unknown_scan_precedes_writer_mutation();
     test_unscoped_writer_rejects_existing_preactive_private_lease();
     test_private_lease_unknown_scan_precedes_legacy_intent_publication();

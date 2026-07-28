@@ -150,7 +150,7 @@ Split the collector API into two explicit operations:
 
 For OOC mode, add an explicit writer state machine `Open -> Suspended -> Open`, `Open -> Finalized`, and any I/O failure to `Failed`. `write()` is legal only in `Open`; rejected writes never increment count. `finalize()` is idempotent and is the only operation allowed to publish final `MAGIC`.
 
-`checkpoint_prefix()` returns a descriptor containing `store_id`, `generation`, committed `count`, and `data_end`. Under the collector lock it flushes and checks both streams, writes a temporary sentinel while keeping `MAGIC_INCOMPLETE`, closes writer handles, and then permits an explicit trusted-prefix reader to materialize that descriptor. After the reader is destroyed and all mappings are closed, the writer removes the temporary sentinel, restores the append cursors, and returns to `Open`. This strict close/read/unmap/reopen sequence is required on every platform, including Windows; the implementation must not rely on permissive POSIX sharing behavior.
+`checkpoint_prefix()` returns a descriptor containing `store_id`, `generation`, committed `count`, and `data_end`. Under the collector lock it flushes and checks both exact update handles, writes a temporary sentinel while keeping `MAGIC_INCOMPLETE`, and logically suspends append authority. The trusted-prefix reader maps duplicates of those retained handles; it never resolves either artifact name. After the reader is destroyed and all mappings are closed, the writer restores the append cursors and returns to `Open`. Windows sharing flags permit the read-only mappings while the state machine, rather than pathname close/reopen, excludes concurrent mutation.
 
 The production ordinary-OOC bridge uses the stronger
 `with_unique_ooc_prefix()` boundary. With `check_duplicates=true`, the
@@ -161,7 +161,7 @@ the direct reducer. The entire reduction and every worker future stay inside
 the callback; only after they finish is the reader unmapped and the exact raw
 descriptor resumed.
 
-The ordinary reader continues to reject incomplete stores. The trusted-prefix reader validates descriptor identity, overflow-safe index size, monotonic offsets, `offset[count] == data_end`, file bounds, exact deserialization consumption, and runtime bounds in Release builds. Recovery validates the last committed prefix, closes every handle, truncates uncommitted tails to `count/data_end`, and only then reopens append mode.
+The ordinary reader continues to reject incomplete stores. The trusted-prefix reader validates descriptor identity, overflow-safe index size, monotonic offsets, `offset[count] == data_end`, file bounds, exact deserialization consumption, and runtime bounds in Release builds. Recovery opens each regular single-link artifact once, validates the complete committed prefix and semantic receipt through those handles, truncates uncommitted tails through the same handles, and retains them for append and finalize.
 
 `SieveCheckpoint` moves to a versioned contract that records the OOC format version, store ID, generation, relation count, and data end. Save order is relation-prefix commit first, then a checkpoint containing that descriptor and the special-Q position. A V1 checkpoint cannot prove relation/SQ consistency and is rejected for automatic resume. Normal completion finalizes the relation corpus before deleting the sieve checkpoint. Tests use child-process `std::_Exit()` failpoints rather than “finalize then flip MAGIC” simulations.
 
@@ -1051,7 +1051,7 @@ enum class RelationReductionErrorCode {
 | Method/codepath | Failure | Code or exception | Rescue | Observable result |
 |---|---|---|---|---|
 | `odd_large_prime_keys()` | malformed exponent/key or allocation failure | `InvalidInput`, `std::bad_alloc` | Validate fields; propagate allocation failure | Reduction abort with relation index/key context |
-| `snapshot_relations()` | flush/seek/sentinel/close/reopen failure | `SnapshotIo` | Recover last committed prefix if possible; otherwise writer enters `Failed` | Pipeline stops; writer path and generation logged |
+| `snapshot_relations()` | exact-handle flush/seek/sentinel/sync failure | `SnapshotIo` | Recover last committed prefix if possible; otherwise writer enters `Failed` | Pipeline stops; writer path and generation logged |
 | `snapshot_relations()` | snapshot after finalize or concurrent invalid transition | `SnapshotState` | Reject before mutation | Explicit lifecycle error |
 | `RelationReductionEngine::reduce()` | already-consumed snapshot | Compile-time move-only boundary or explicit invalid-input error | Reject caller bug | Phase and generation logged; no second output |
 | incidence build/commit | row/column views disagree | `IncidenceMismatch` | Discard temporary result | Structured path fails closed |
@@ -1654,7 +1654,9 @@ The fresh-writer integration slice now enforces the following authority chain:
 1. Fresh construction freezes the base path, acquires the per-base lock,
    confirms that every live, pending, canonical, staged, and quarantine leaf is
    absent, and reserves both artifacts with `O_EXCL` while retaining that lock.
-2. The writer closes both exclusive-create reservation handles, then captures
+2. The writer attaches self-buffered duplicates of both exclusive-create
+   handles before the first header byte. Those duplicates remain the writer's
+   exact I/O witnesses. It then closes the reservation handles and captures
    the pair again under the same namespace lock. Receipt construction occurs
    only after the captured identities match the retained reservation
    identities, so no throwing work follows issuance.
@@ -1825,27 +1827,32 @@ cleanup requires a terminal child status. A returned PID with a stopped or
 continued status does not confirm reap. Such a status preserves the lease,
 suppresses cleanup, and disables every retry in the wave.
 
-### Next Milestone: Same-Handle Writer I/O
+### Same-Handle Writer I/O Status
 
-The next relation-layer slice removes pathname reopen from out-of-core writer
-I/O. Fresh construction already reserves `.relidx` and `.reldata` with
-exclusive-create native handles, but the current stream attachment resolves
-the path again after the last identity check. A replacement in that interval
-can receive header writes before the next validation detects the drift.
+Out-of-core writer mutation no longer reopens either artifact pathname. A
+move-only native binary update file owns its buffer and stable file identity.
+Fresh construction attaches it to a duplicate of each exclusive-create
+handle. Descriptor recovery opens each regular single-link leaf once, then
+performs header, extent, offset-table, relation, and semantic-receipt
+validation before truncating through those same handles.
 
-The replacement design keeps the public writer API stable and binds reads,
-writes, truncation, seeking, flushing, and durability barriers to validated
-native handles:
+The `Open -> Suspended -> Open -> Finalized` lifecycle retains the exact pair.
+Checkpoint durability barriers run before suspension. Prefix readers map
+owned duplicates of the retained handles. Resume, suspended finalize,
+metadata sync, final-magic publication, and durability retry therefore cannot
+be redirected by a replacement pathname. Each publication boundary checks
+that both canonical leaves still name the retained identities before and
+after file and parent-directory synchronization.
 
-1. Duplicate the retained exclusive-create handles for buffered binary I/O.
-2. Keep the original handles as identity witnesses.
-3. Attach buffering without resolving either canonical pathname again.
-4. Route fresh creation, resume, suspended finalize, final-magic update, and
-   file synchronization through the same handle-backed abstraction.
-5. Add regular-file, symlink, and double-rename replacement tests at the final
-   pre-header boundary. Every detected foreign object and target must remain
-   byte-for-byte unchanged.
+Trusted pre-header fault points cover regular-file replacement, symlink
+replacement, and a double-rename ABA for both index and data. The foreign
+object or symlink target remains byte-for-byte unchanged; ABA succeeds only
+because writes stay bound to the originally reserved object. Private-lease
+crash and commit-last matrices also cover both new attachment boundaries.
+Recovery fault points replace byte-identical index or data leaves immediately
+after full prefix validation on both appendable and finalized paths; recovery
+must reject at the namespace commit boundary without mutating either object.
 
-Only after this same-handle contract passes the relation module and deep
-dependency gate should the durable WaveStore launcher consume a start receipt
-and fork inside its sole admitted consumer.
+After the relation module and deep dependency gate pass, the next durable
+execution milestone moves fork into the sole admitted WaveStore start-receipt
+consumer.

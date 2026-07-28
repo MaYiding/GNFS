@@ -359,6 +359,13 @@ enum class OOCPrivateLeaseFaultPoint : std::uint8_t {
     FinalRenameDurable,
     FreshIndexReserved,
     FreshDataReserved,
+    /// The private writer permit and both held-name identities have passed the
+    /// final pre-write authorization gate, but no buffered I/O handle has been
+    /// attached yet.
+    FreshHeaderWriteAuthorized,
+    /// Both buffered I/O files are attached to duplicates of the held O_EXCL
+    /// handles, but no protocol header byte has been written yet.
+    FreshStreamsAttached,
     FreshHeadersValidated,
     FreshPairOwnershipCaptured,
     PreactiveDirectoryQuarantinedDurable,
