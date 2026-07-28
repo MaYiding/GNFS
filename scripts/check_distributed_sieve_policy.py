@@ -89,9 +89,38 @@ DURABLE_ENVIRONMENT_FREE_FILES = {
     "include/gnfs/sieve/distributed_sieve_resume.hpp",
     "src/sieve/distributed_sieve_execution_policy.cpp",
     "src/sieve/distributed_sieve_execution_policy_internal.hpp",
+    "src/sieve/distributed_sieve_lattice_runtime_config.cpp",
+    "src/sieve/distributed_sieve_lattice_runtime_config_internal.hpp",
     "src/sieve/distributed_sieve_protocol.cpp",
     "src/sieve/distributed_sieve_resume.cpp",
 }
+
+# Code-token bans close indirect ambient-policy entrances that do not contain
+# getenv/random_device themselves. The runtime mapper is deliberately a pure
+# projection: it must not construct a legacy runtime object or invoke a basis
+# helper whose overload could re-read process or host state.
+DURABLE_FORBIDDEN_IDENTIFIERS = (
+    "from_env",
+)
+DURABLE_FORBIDDEN_CALLS = (
+    "hardware_concurrency",
+)
+DURABLE_PURE_RUNTIME_MAPPER_FILES = {
+    "src/sieve/distributed_sieve_lattice_runtime_config.cpp",
+    "src/sieve/distributed_sieve_lattice_runtime_config_internal.hpp",
+}
+DURABLE_PURE_RUNTIME_MAPPER_FORBIDDEN_IDENTIFIERS = (
+    "AdaptiveBasisManager",
+    "LatticeSieve",
+    "compute_lattice_basis",
+    "compute_lattice_basis_with_skewness",
+    "lattice_reduction_method_from_env",
+    "lattice_skew_enabled_from_env",
+    "parallel_lattice_basis_reduce",
+)
+DURABLE_PURE_RUNTIME_MAPPER_FORBIDDEN_CALLS = (
+    "lattice_basis_parallel_threads",
+)
 
 
 @dataclass(frozen=True)
@@ -399,6 +428,17 @@ def find_non_call_identifier_uses(
     return result
 
 
+def find_call_identifier_uses(
+    text: str, identifier: str
+) -> list[CodeIdentifierUse]:
+    result: list[CodeIdentifierUse] = []
+    for use in find_code_identifier_uses(text, identifier):
+        opening = _skip_call_trivia(text, use.offset + len(identifier))
+        if opening < len(text) and text[opening] == "(":
+            result.append(use)
+    return result
+
+
 def _matching_brace(text: str, opening: int) -> int | None:
     depth = 1
     cursor = opening + 1
@@ -571,6 +611,44 @@ class Checks:
                 f"getenv identifier/direct-call parser mismatch: "
                 f"{direct_getenv_use_count} direct identifiers, {len(calls)} parsed calls",
             )
+
+    def validate_durable_ambient_api_uses(
+        self, relative: str, text: str
+    ) -> None:
+        if relative not in DURABLE_ENVIRONMENT_FREE_FILES:
+            return
+
+        for identifier in DURABLE_FORBIDDEN_IDENTIFIERS:
+            for use in find_code_identifier_uses(text, identifier):
+                self.fail(
+                    relative,
+                    use.line,
+                    f"durable implementation must not use ambient API {identifier}",
+                )
+        for identifier in DURABLE_FORBIDDEN_CALLS:
+            for use in find_call_identifier_uses(text, identifier):
+                self.fail(
+                    relative,
+                    use.line,
+                    f"durable implementation must not call ambient API {identifier}",
+                )
+
+        if relative not in DURABLE_PURE_RUNTIME_MAPPER_FILES:
+            return
+        for identifier in DURABLE_PURE_RUNTIME_MAPPER_FORBIDDEN_IDENTIFIERS:
+            for use in find_code_identifier_uses(text, identifier):
+                self.fail(
+                    relative,
+                    use.line,
+                    f"pure runtime mapper must not use legacy runtime API {identifier}",
+                )
+        for identifier in DURABLE_PURE_RUNTIME_MAPPER_FORBIDDEN_CALLS:
+            for use in find_call_identifier_uses(text, identifier):
+                self.fail(
+                    relative,
+                    use.line,
+                    f"pure runtime mapper must not call legacy runtime API {identifier}",
+                )
 
     def classify(self, relative: str, call: GetenvCall, categories: dict[str, str]) -> None:
         if relative == EXECUTION_POLICY_ENVIRONMENT_ADAPTER:
@@ -836,6 +914,7 @@ class Checks:
             for line, error in parse_errors:
                 self.fail(relative, line, error)
             self.validate_getenv_identifier_uses(relative, text, calls)
+            self.validate_durable_ambient_api_uses(relative, text)
             if relative == EXECUTION_POLICY_ENVIRONMENT_ADAPTER:
                 self.validate_environment_adapter(text, calls)
             for call in calls:
@@ -1163,6 +1242,49 @@ int random_device_suffix = 0;
         == f"{durable_relative}:37: "
         "durable protocol/execution-policy implementation must not use random_device",
         "durable-path random_device ban is not enforced",
+    )
+
+    mapper_relative = sorted(DURABLE_PURE_RUNTIME_MAPPER_FILES)[0]
+    mapper_api_snippet = r'''
+// LatticeSieve and thread::hardware_concurrency() are ignored here.
+const char* ignored = "AdaptiveLatticeConfig{}.from_env()";
+config.lattice_basis_parallel_threads = policy.lattice_basis_parallel_threads;
+using std::thread;
+auto host = thread::hardware_concurrency();
+auto config = AdaptiveLatticeConfig{}.from_env();
+LatticeSieve sieve(context, factor_base);
+auto basis = compute_lattice_basis_with_skewness(sq, skewness);
+auto threads = lattice_basis_parallel_threads();
+'''
+    mapper_api_checks = Checks(Path("."))
+    mapper_api_checks.validate_durable_ambient_api_uses(
+        mapper_relative, mapper_api_snippet
+    )
+    expect(
+        len(mapper_api_checks.errors) == 5
+        and any(
+            "ambient API hardware_concurrency" in error
+            for error in mapper_api_checks.errors
+        )
+        and any(
+            "ambient API from_env" in error
+            for error in mapper_api_checks.errors
+        )
+        and any(
+            "legacy runtime API LatticeSieve" in error
+            for error in mapper_api_checks.errors
+        )
+        and any(
+            "legacy runtime API compute_lattice_basis_with_skewness" in error
+            for error in mapper_api_checks.errors
+        )
+        and any(
+            "must not call legacy runtime API lattice_basis_parallel_threads"
+            in error
+            for error in mapper_api_checks.errors
+        ),
+        f"durable runtime-mapper ambient API bans are not closed: "
+        f"{mapper_api_checks.errors}",
     )
 
     legacy_random_checks = Checks(Path("."))

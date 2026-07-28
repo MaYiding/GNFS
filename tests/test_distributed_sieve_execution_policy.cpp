@@ -1,6 +1,10 @@
+#include <gnfs/factor_base/builder.hpp>
+#include <gnfs/polynomial/base_m.hpp>
 #include <gnfs/sieve/distributed_sieve_protocol.hpp>
 
 #include "distributed_sieve_execution_policy_internal.hpp"
+#include "distributed_sieve_lattice_runtime_config_internal.hpp"
+#include "support/scoped_environment_stderr.hpp"
 
 #include <algorithm>
 #include <array>
@@ -35,6 +39,8 @@ using Classification = policy_detail::DistributedSieveExecutionPolicyClassificat
 using FrozenPolicy = policy_detail::DistributedSieveFrozenExecutionPolicyV1;
 using Snapshot = policy_detail::DistributedSieveExecutionPolicyEnvironmentSnapshotV1;
 using TernaryMode = policy_detail::DistributedSieveCanonicalTernaryModeV1;
+using LatticeRuntimeConfig = policy_detail::DistributedSieveLatticeRuntimeConfigV1;
+using gnfs::tests::support::ScopedEnvironmentVariable;
 
 struct ExpectedDescriptor final {
     Key key;
@@ -195,6 +201,43 @@ FrozenPolicy freeze_checked(const Snapshot& snapshot) {
     return std::move(*result.policy);
 }
 
+LatticeRuntimeConfig map_lattice_runtime_checked(const FrozenPolicy& frozen) {
+    auto result = policy_detail::map_distributed_sieve_lattice_runtime_config_v1(frozen);
+    CHECK(result);
+    CHECK(result.config.has_value());
+    return *result.config;
+}
+
+bool same_lattice_runtime_config(const LatticeRuntimeConfig& lhs,
+                                 const LatticeRuntimeConfig& rhs) noexcept {
+    return lhs.sieve.lattice_basis.base_method == rhs.sieve.lattice_basis.base_method &&
+           lhs.sieve.lattice_basis.skew_enabled == rhs.sieve.lattice_basis.skew_enabled &&
+           lhs.sieve.adaptive_lattice.enabled == rhs.sieve.adaptive_lattice.enabled &&
+           lhs.sieve.adaptive_lattice.density_threshold ==
+               rhs.sieve.adaptive_lattice.density_threshold &&
+           lhs.sieve.adaptive_lattice.max_retries == rhs.sieve.adaptive_lattice.max_retries &&
+           lhs.sieve.adaptive_lattice.perturb_seed == rhs.sieve.adaptive_lattice.perturb_seed &&
+           lhs.lattice_basis_parallel_threads == rhs.lattice_basis_parallel_threads;
+}
+
+bool same_sieve_result(const sieve::SieveResult& lhs, const sieve::SieveResult& rhs) noexcept {
+    if (lhs.special_q.q != rhs.special_q.q || lhs.special_q.r != rhs.special_q.r ||
+        lhs.special_q.index != rhs.special_q.index ||
+        lhs.sieved_positions != rhs.sieved_positions || lhs.smooth_count != rhs.smooth_count ||
+        lhs.candidates.size() != rhs.candidates.size()) {
+        return false;
+    }
+    for (std::size_t index = 0; index < lhs.candidates.size(); ++index) {
+        const auto& left = lhs.candidates[index];
+        const auto& right = rhs.candidates[index];
+        if (left.i != right.i || left.j != right.j || left.a != right.a || left.b != right.b ||
+            left.residual != right.residual) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void expect_bits(Key key, std::string_view raw, std::uint64_t expected,
                  std::uint32_t hardware_concurrency = 8, bool enable_ecm_brent_suyama = false) {
     auto snapshot = unset_snapshot(hardware_concurrency);
@@ -313,6 +356,79 @@ void test_floating_and_adaptive_integer_normalization() {
     expect_bits(Key::adaptive_lattice_seed, "18446744073709551616",
                 std::numeric_limits<std::uint64_t>::max());
     expect_bits(Key::adaptive_lattice_seed, "invalid", 0);
+}
+
+void test_lattice_runtime_config_exact_mapping() {
+    const auto all_unset = map_lattice_runtime_checked(freeze_checked(unset_snapshot()));
+    CHECK(all_unset.sieve.lattice_basis.base_method == sieve::LatticeReductionMethod::LLL);
+    CHECK(!all_unset.sieve.lattice_basis.skew_enabled);
+    CHECK(!all_unset.sieve.adaptive_lattice.enabled);
+    CHECK(all_unset.sieve.adaptive_lattice.density_threshold == 0.5);
+    CHECK(all_unset.sieve.adaptive_lattice.max_retries == 2);
+    CHECK(all_unset.sieve.adaptive_lattice.perturb_seed == 0);
+    CHECK(all_unset.lattice_basis_parallel_threads == 1);
+
+    auto snapshot = unset_snapshot();
+    set_raw(snapshot, Key::lattice_lll, "0");
+    set_raw(snapshot, Key::lattice_skew, "1");
+    auto mapped = map_lattice_runtime_checked(freeze_checked(snapshot));
+    CHECK(mapped.sieve.lattice_basis.base_method == sieve::LatticeReductionMethod::Gauss);
+    CHECK(mapped.sieve.lattice_basis.skew_enabled);
+
+    snapshot = unset_snapshot();
+    set_raw(snapshot, Key::lattice_lll, "1");
+    set_raw(snapshot, Key::lattice_skew, "1");
+    mapped = map_lattice_runtime_checked(freeze_checked(snapshot));
+    CHECK(mapped.sieve.lattice_basis.base_method == sieve::LatticeReductionMethod::LLL);
+    CHECK(mapped.sieve.lattice_basis.skew_enabled);
+
+    snapshot = unset_snapshot(4);
+    set_raw(snapshot, Key::adaptive_lattice, "1");
+    set_raw(snapshot, Key::adaptive_lattice_threshold, "0.0001");
+    set_raw(snapshot, Key::adaptive_lattice_max_retries, "0");
+    set_raw(snapshot, Key::adaptive_lattice_seed, "0");
+    set_raw(snapshot, Key::lattice_basis_parallel_threads, "1");
+    mapped = map_lattice_runtime_checked(freeze_checked(snapshot));
+    CHECK(mapped.sieve.adaptive_lattice.enabled);
+    CHECK(mapped.sieve.adaptive_lattice.density_threshold == 0.0001);
+    CHECK(mapped.sieve.adaptive_lattice.max_retries == 0);
+    CHECK(mapped.sieve.adaptive_lattice.perturb_seed == 0);
+    CHECK(mapped.lattice_basis_parallel_threads == 1);
+
+    snapshot = unset_snapshot(4);
+    set_raw(snapshot, Key::adaptive_lattice, "TRUE");
+    set_raw(snapshot, Key::adaptive_lattice_threshold, "100");
+    set_raw(snapshot, Key::adaptive_lattice_max_retries, "16");
+    set_raw(snapshot, Key::adaptive_lattice_seed, "18446744073709551615");
+    set_raw(snapshot, Key::lattice_basis_parallel_threads, "999");
+    mapped = map_lattice_runtime_checked(freeze_checked(snapshot));
+    CHECK(mapped.sieve.adaptive_lattice.enabled);
+    CHECK(mapped.sieve.adaptive_lattice.density_threshold == 100.0);
+    CHECK(mapped.sieve.adaptive_lattice.max_retries == 16);
+    CHECK(mapped.sieve.adaptive_lattice.perturb_seed == std::numeric_limits<std::uint64_t>::max());
+    CHECK(mapped.lattice_basis_parallel_threads == 8);
+}
+
+void test_lattice_runtime_config_rejects_invalid_frozen_object() {
+    auto typed_drift = freeze_checked(unset_snapshot(4));
+    typed_drift.sieve.lattice_skew = !typed_drift.sieve.lattice_skew;
+    auto result = policy_detail::map_distributed_sieve_lattice_runtime_config_v1(typed_drift);
+    CHECK(!result);
+    CHECK(!result.config.has_value());
+
+    auto canonical_drift = freeze_checked(unset_snapshot(4));
+    canonical_drift.canonical.settings[policy_index(Key::adaptive_lattice_seed)].canonical_bits =
+        42;
+    result = policy_detail::map_distributed_sieve_lattice_runtime_config_v1(canonical_drift);
+    CHECK(!result);
+    CHECK(!result.config.has_value());
+
+    auto host_bound_invalid = freeze_checked(unset_snapshot(4));
+    synchronize_host_bound_thread(host_bound_invalid, Key::lattice_basis_parallel_threads, 9);
+    CHECK(sieve::validate_distributed_sieve_execution_policy(host_bound_invalid.canonical));
+    result = policy_detail::map_distributed_sieve_lattice_runtime_config_v1(host_bound_invalid);
+    CHECK(!result);
+    CHECK(!result.config.has_value());
 }
 
 void test_ecm_enable_degree_invariant() {
@@ -646,6 +762,121 @@ void test_capture_is_single_read_and_owned() {
                       [](std::size_t count) { return count == 1; }));
 }
 
+void test_lattice_runtime_mapping_uses_only_frozen_policy() {
+    CaptureFixture fixture;
+    fixture.hardware_concurrency = 4;
+    fixture.values[policy_index(Key::lattice_lll)] = "1";
+    fixture.values[policy_index(Key::lattice_skew)] = "1";
+    fixture.values[policy_index(Key::adaptive_lattice)] = "1";
+    fixture.values[policy_index(Key::adaptive_lattice_threshold)] = "100";
+    fixture.values[policy_index(Key::adaptive_lattice_max_retries)] = "2";
+    fixture.values[policy_index(Key::adaptive_lattice_seed)] = "0";
+    fixture.values[policy_index(Key::lattice_basis_parallel_threads)] = "8";
+
+    const policy_detail::DistributedSieveExecutionPolicyCaptureSourcesV1 sources{
+        &fixture, capture_environment_reader, capture_hardware_reader};
+    const auto captured =
+        policy_detail::capture_distributed_sieve_execution_policy_environment_v1(sources);
+    CHECK(captured);
+    CHECK(captured.snapshot.has_value());
+
+    const auto frozen = freeze_checked(*captured.snapshot);
+    const auto before = map_lattice_runtime_checked(frozen);
+    CHECK(before.sieve.lattice_basis.base_method == sieve::LatticeReductionMethod::LLL);
+    CHECK(before.sieve.lattice_basis.skew_enabled);
+    CHECK(before.sieve.adaptive_lattice.enabled);
+    CHECK(before.sieve.adaptive_lattice.density_threshold == 100);
+    CHECK(before.sieve.adaptive_lattice.max_retries == 2);
+    CHECK(before.sieve.adaptive_lattice.perturb_seed == 0);
+    CHECK(before.lattice_basis_parallel_threads == 8);
+
+    const auto read_counts_after_capture = fixture.read_counts;
+    const std::size_t hardware_reads_after_capture = fixture.hardware_reads;
+
+    fixture.hardware_concurrency = 99;
+    fixture.values[policy_index(Key::lattice_lll)] = "0";
+    fixture.values[policy_index(Key::lattice_skew)] = "0";
+    fixture.values[policy_index(Key::adaptive_lattice)] = "0";
+    fixture.values[policy_index(Key::adaptive_lattice_threshold)] = "0.001";
+    fixture.values[policy_index(Key::adaptive_lattice_max_retries)] = "0";
+    fixture.values[policy_index(Key::adaptive_lattice_seed)] = "999";
+    fixture.values[policy_index(Key::lattice_basis_parallel_threads)] = "1";
+
+    ScopedEnvironmentVariable ambient_lll("GNFS_LATTICE_LLL", "0");
+    ScopedEnvironmentVariable ambient_skew("GNFS_LATTICE_SKEW", "0");
+    ScopedEnvironmentVariable ambient_adaptive("GNFS_ADAPTIVE_LATTICE", "0");
+    ScopedEnvironmentVariable ambient_threshold("GNFS_ADAPTIVE_LATTICE_THRESHOLD", "0.001");
+    ScopedEnvironmentVariable ambient_retries("GNFS_ADAPTIVE_LATTICE_MAX_RETRIES", "0");
+    ScopedEnvironmentVariable ambient_seed("GNFS_ADAPTIVE_LATTICE_SEED", "999");
+    ScopedEnvironmentVariable ambient_parallel_threads("GNFS_LATTICE_BASIS_PARALLEL_THREADS", "1");
+
+    const auto after = map_lattice_runtime_checked(frozen);
+    CHECK(same_lattice_runtime_config(before, after));
+    CHECK(fixture.read_counts == read_counts_after_capture);
+    CHECK(fixture.hardware_reads == hardware_reads_after_capture);
+
+    const gnfs::core::Integer n("1000036000099");
+    const auto polynomial = gnfs::polynomial::BaseMSelector::select(n, 3);
+    CHECK(polynomial.success);
+    const auto context = gnfs::polynomial::BaseMSelector::create_context(n, polynomial);
+    CHECK(context.verify());
+
+    gnfs::factor_base::FactorBaseBuilder::Options factor_base_options;
+    factor_base_options.rational_bound = 3000;
+    factor_base_options.algebraic_bound = 3000;
+    factor_base_options.log_scale = 16;
+    factor_base_options.parallel = false;
+    const auto factor_base =
+        gnfs::factor_base::FactorBaseBuilder::build(context, factor_base_options);
+
+    sieve::SieveParams sieve_params;
+    sieve_params.log_scale = 16;
+    sieve_params.rational_threshold = 55;
+    sieve_params.algebraic_threshold = 55;
+    const sieve::SieveRegion region{-400, 399, 1, 80};
+
+    sieve::SpecialQRange special_q_range;
+    special_q_range.min_q = 1000;
+    special_q_range.max_q = 3000;
+    sieve::SpecialQGenerator generator(factor_base, special_q_range);
+    std::vector<sieve::SpecialQ> special_qs;
+    while (special_qs.size() < 8 && generator.has_next()) {
+        const auto special_q = generator.next();
+        CHECK(special_q.has_value());
+        special_qs.push_back(*special_q);
+    }
+    CHECK(special_qs.size() == 8);
+
+    sieve::LatticeSieve mapped_sieve(context, factor_base, sieve_params, after.sieve);
+    mapped_sieve.set_region(region);
+    sieve::AdaptiveBasisManager same_adaptive_policy(after.sieve.adaptive_lattice);
+    sieve::LatticeSieve legacy_basis_sieve(context, factor_base, sieve_params);
+    legacy_basis_sieve.set_region(region);
+    legacy_basis_sieve.set_adaptive_manager(&same_adaptive_policy);
+
+    bool observed_basis_sensitive_difference = false;
+    std::size_t candidate_total = 0;
+    for (const auto& special_q : special_qs) {
+        const auto mapped_result = mapped_sieve.sieve_special_q(special_q);
+        const auto legacy_result = legacy_basis_sieve.sieve_special_q(special_q);
+        candidate_total += mapped_result.candidates.size();
+        if (!same_sieve_result(mapped_result, legacy_result)) {
+            observed_basis_sensitive_difference = true;
+        }
+    }
+    CHECK(candidate_total > 0);
+    CHECK(observed_basis_sensitive_difference);
+    CHECK(mapped_sieve.adaptive_manager().config().enabled == after.sieve.adaptive_lattice.enabled);
+    CHECK(mapped_sieve.adaptive_manager().config().density_threshold ==
+          after.sieve.adaptive_lattice.density_threshold);
+    CHECK(mapped_sieve.adaptive_manager().config().max_retries ==
+          after.sieve.adaptive_lattice.max_retries);
+    CHECK(mapped_sieve.adaptive_manager().config().perturb_seed ==
+          after.sieve.adaptive_lattice.perturb_seed);
+    CHECK(mapped_sieve.adaptive_manager().stats().snapshot().special_qs_processed ==
+          special_qs.size());
+}
+
 void test_diagnostics_are_noncanonical_and_consistency_is_closed() {
     auto off_snapshot = unset_snapshot();
     off_snapshot.cofactor_timing = "0";
@@ -673,12 +904,15 @@ int main() {
         test_all_unset_exact_policy();
         test_lattice_reduction_and_boolean_normalization();
         test_floating_and_adaptive_integer_normalization();
+        test_lattice_runtime_config_exact_mapping();
+        test_lattice_runtime_config_rejects_invalid_frozen_object();
         test_ecm_enable_degree_invariant();
         test_cofactor_integer_normalization();
         test_modes_bucket_intent_and_no_tiny_semantics();
         test_tile_and_thread_boundaries();
         test_frozen_policy_rejects_host_bound_and_ecm_drift();
         test_capture_is_single_read_and_owned();
+        test_lattice_runtime_mapping_uses_only_frozen_policy();
         test_diagnostics_are_noncanonical_and_consistency_is_closed();
         std::cout << "distributed sieve execution-policy tests passed\n";
         return 0;
