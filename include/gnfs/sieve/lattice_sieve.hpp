@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <functional>
 #include <numeric>
+#include <optional>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -156,6 +157,13 @@ struct SieveParams {
     }
 };
 
+/// Explicit execution policy for lattice-basis selection and adaptive retries.
+/// Supplying this config prevents these two policies from consulting ENV.
+struct LatticeSieveExecutionConfig {
+    LatticeBasisReductionConfig lattice_basis;
+    AdaptiveLatticeConfig adaptive_lattice;
+};
+
 /// 筛候选点
 struct SieveCandidate {
     int32_t i;              // 格坐标 i
@@ -187,6 +195,12 @@ public:
     LatticeSieve(const PolynomialContext& ctx, const FactorBase& fb,
                  const SieveParams& params = SieveParams{})
         : ctx_(ctx), fb_(fb), params_(params), region_(default_sieve_region(ctx.skewness())) {}
+
+    /// 显式执行配置构造；basis/adaptive policy 均不从 ENV 初始化.
+    LatticeSieve(const PolynomialContext& ctx, const FactorBase& fb, const SieveParams& params,
+                 const LatticeSieveExecutionConfig& config)
+        : ctx_(ctx), fb_(fb), params_(params), region_(default_sieve_region(ctx.skewness())),
+          execution_config_(config), adaptive_internal_(config.adaptive_lattice) {}
 
     /// 设置筛区域
     void set_region(const SieveRegion& region) {
@@ -276,8 +290,17 @@ public:
 
         ensure_sieve_array_storage_();
 
-        // 1. 计算初始格基 (skewness-aware F-K 2005 风格 LLL when skewness != 1.0)
-        LatticeBasis basis = compute_lattice_basis_with_skewness(sq, ctx_.skewness());
+        AdaptiveBasisManager& mgr =
+            (adaptive_external_ != nullptr) ? *adaptive_external_ : adaptive_internal_;
+
+        // 1. 计算初始格基. Explicit instances use their captured policy;
+        // legacy instances retain per-special-q ambient ENV reads.
+        LatticeBasis basis;
+        if (execution_config_.has_value()) {
+            basis = mgr.get_initial(sq, ctx_.skewness(), execution_config_->lattice_basis);
+        } else {
+            basis = mgr.get_initial(sq, ctx_.skewness());
+        }
 
         // First pass: sieve with initial basis.
         sieve_region_once_(basis, sq, result);
@@ -285,9 +308,6 @@ public:
         // Adaptive retry path: only entered when manager is enabled.
         // When disabled, the next call returns nullopt instantly (single bool
         // check) and the loop body is never executed.
-        AdaptiveBasisManager& mgr = (adaptive_external_ != nullptr)
-                                        ? *adaptive_external_
-                                        : adaptive_internal_;
         if (mgr.config().enabled) {
             mgr.mark_special_q_processed();
             const uint64_t cells = static_cast<uint64_t>(region_.size());
@@ -423,23 +443,34 @@ public:
         // Adaptive: share the host's manager across worker copies so telemetry
         // aggregates. When the manager is OFF (default), worker copies see
         // disabled state and skip all overhead.
-        AdaptiveBasisManager& shared_mgr = (adaptive_external_ != nullptr)
-                                               ? *adaptive_external_
-                                               : adaptive_internal_;
+        AdaptiveBasisManager& shared_mgr =
+            (adaptive_external_ != nullptr) ? *adaptive_external_ : adaptive_internal_;
 
-        // Worker function - each thread gets its own LatticeSieve copy
-        // No mutex needed: each thread writes to a unique all_results[idx]
-        auto worker = [&](gnfs::util::QoSClass qos) {
-            gnfs::util::set_current_thread_qos(qos);
-            LatticeSieve local_sieve(ctx_, fb_, params_);
+        auto process_special_qs = [&](LatticeSieve& local_sieve) {
             local_sieve.set_region(region_);
             local_sieve.set_adaptive_manager(&shared_mgr);
 
             while (true) {
                 size_t idx = next_sq.fetch_add(1, std::memory_order_relaxed);
-                if (idx >= special_qs.size()) break;
+                if (idx >= special_qs.size())
+                    break;
 
                 all_results[idx] = local_sieve.sieve_special_q(special_qs[idx]);
+            }
+        };
+
+        // Worker function - each thread gets its own LatticeSieve copy.
+        // Construct each branch directly: AdaptiveBasisManager contains
+        // non-movable atomics, so a conditional temporary is not viable.
+        // No mutex needed: each thread writes to a unique all_results[idx].
+        auto worker = [&](gnfs::util::QoSClass qos) {
+            gnfs::util::set_current_thread_qos(qos);
+            if (execution_config_.has_value()) {
+                LatticeSieve local_sieve(ctx_, fb_, params_, *execution_config_);
+                process_special_qs(local_sieve);
+            } else {
+                LatticeSieve local_sieve(ctx_, fb_, params_);
+                process_special_qs(local_sieve);
             }
         };
 
@@ -469,6 +500,10 @@ private:
 
     RelationCallback relation_callback_;
     ProgressCallback progress_callback_;
+
+    // Present only for the explicit constructor. The legacy constructor leaves
+    // this empty so basis selection continues to read ambient ENV for every SQ.
+    std::optional<LatticeSieveExecutionConfig> execution_config_;
 
     // Adaptive lattice manager. By default each instance gets its own internal
     // manager driven by ENV at construction. `sieve_parallel` injects a shared

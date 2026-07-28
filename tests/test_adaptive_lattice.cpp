@@ -4,7 +4,8 @@
 // LatticeBasis from lattice_basis.hpp). Covers:
 //   1. Config parsing (ENV off / on / custom threshold / retries / seed)
 //   2. Density estimation correctness
-//   3. Perturbation produces valid LLL-reduced basis (size-reduced + Lovász)
+//   3. Perturbation preserves the lattice while intentionally leaving the
+//      canonical LLL representative
 //   4. try_perturb_and_rereduce returns nullopt when density already high
 //   5. try_perturb_and_rereduce returns new basis when density low + retries
 //   6. Retry budget respected (retry_count >= max_retries → nullopt)
@@ -27,6 +28,7 @@
 #include "gnfs/sieve/lattice_sieve.hpp"
 #include "gnfs/sieve/special_q.hpp"
 
+#include <array>
 #include <atomic>
 #include <cassert>
 #include <cstdint>
@@ -99,11 +101,69 @@ namespace {
     return true;
 }
 
+[[noreturn]] void fail_check(const char* message) {
+    std::cerr << "\n  ERROR: " << message << std::endl;
+    std::abort();
+}
+
+void check(bool condition, const char* message) {
+    if (!condition) {
+        fail_check(message);
+    }
+}
+
+[[nodiscard]] bool basis_equal(const LatticeBasis& lhs,
+                               const LatticeBasis& rhs) noexcept {
+    return lhs.e0 == rhs.e0 && lhs.f0 == rhs.f0 &&
+           lhs.e1 == rhs.e1 && lhs.f1 == rhs.f1 &&
+           lhs.q == rhs.q && lhs.r == rhs.r;
+}
+
+[[nodiscard]] bool adaptive_config_equal(
+        const AdaptiveLatticeConfig& lhs,
+        const AdaptiveLatticeConfig& rhs) noexcept {
+    return lhs.enabled == rhs.enabled &&
+           lhs.density_threshold == rhs.density_threshold &&
+           lhs.max_retries == rhs.max_retries &&
+           lhs.perturb_seed == rhs.perturb_seed;
+}
+
+[[nodiscard]] bool sieve_candidate_equal(
+        const SieveCandidate& lhs,
+        const SieveCandidate& rhs) noexcept {
+    return lhs.i == rhs.i && lhs.j == rhs.j && lhs.a == rhs.a &&
+           lhs.b == rhs.b && lhs.residual == rhs.residual;
+}
+
+[[nodiscard]] bool sieve_result_equal(const SieveResult& lhs,
+                                      const SieveResult& rhs) noexcept {
+    if (lhs.special_q.q != rhs.special_q.q ||
+        lhs.special_q.r != rhs.special_q.r ||
+        lhs.special_q.index != rhs.special_q.index ||
+        lhs.sieved_positions != rhs.sieved_positions ||
+        lhs.smooth_count != rhs.smooth_count ||
+        lhs.candidates.size() != rhs.candidates.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < lhs.candidates.size(); ++i) {
+        if (!sieve_candidate_equal(lhs.candidates[i], rhs.candidates[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void clear_env() {
     unsetenv("GNFS_ADAPTIVE_LATTICE");
     unsetenv("GNFS_ADAPTIVE_LATTICE_THRESHOLD");
     unsetenv("GNFS_ADAPTIVE_LATTICE_MAX_RETRIES");
     unsetenv("GNFS_ADAPTIVE_LATTICE_SEED");
+}
+
+void clear_explicit_policy_env() {
+    clear_env();
+    unsetenv("GNFS_LATTICE_LLL");
+    unsetenv("GNFS_LATTICE_SKEW");
 }
 
 }  // namespace
@@ -476,6 +536,113 @@ void test_distinct_perturbations() {
     std::cout << "PASS\n";
 }
 
+void test_seed_zero_exact_retry_sequence_is_repeatable() {
+    std::cout << "test_seed_zero_exact_retry_sequence_is_repeatable ... ";
+
+    constexpr std::array<int, 8> EXPECTED_K = {
+        1, -1, 2, -2, 1, -1, 2, -2};
+    constexpr std::array<SpecialQ, 3> SPECIAL_QS = {{
+        {1009, 503, 0},
+        {100003, 50001, 1},
+        {1000003, 500001, 2},
+    }};
+    const LatticeBasisReductionConfig basis_config{
+        LatticeReductionMethod::LLL, false};
+    const AdaptiveLatticeConfig adaptive_config{true, 100.0, 16, 0};
+    AdaptiveBasisManager first_manager(adaptive_config);
+    AdaptiveBasisManager second_manager(adaptive_config);
+
+    for (const auto& sq : SPECIAL_QS) {
+        const LatticeBasis base =
+            first_manager.get_initial(sq, 1.0, basis_config);
+        const LatticeBasis second_base =
+            second_manager.get_initial(sq, 1.0, basis_config);
+        check(basis_equal(base, second_base),
+              "seed-zero managers produced different initial bases");
+
+        for (std::size_t retry = 0; retry < EXPECTED_K.size(); ++retry) {
+            const int retry_count = static_cast<int>(retry);
+            check(detail::rotation_k_for_retry(retry_count, 0, sq.q) ==
+                      EXPECTED_K[retry],
+                  "seed-zero rotation sequence differs from exact oracle");
+
+            const auto first = first_manager.try_perturb_and_rereduce(
+                base, 0, 1000, retry_count);
+            const auto repeated = first_manager.try_perturb_and_rereduce(
+                base, 0, 1000, retry_count);
+            const auto second = second_manager.try_perturb_and_rereduce(
+                second_base, 0, 1000, retry_count);
+            check(first.has_value() && repeated.has_value() &&
+                      second.has_value(),
+                  "seed-zero retry unexpectedly exhausted its budget");
+
+            const LatticeBasis expected =
+                detail::skew_perturb_basis(base, EXPECTED_K[retry]);
+            check(basis_equal(*first, expected),
+                  "seed-zero perturbation differs from exact basis oracle");
+            check(basis_equal(*first, *repeated),
+                  "seed-zero perturbation changed on repeated invocation");
+            check(basis_equal(*first, *second),
+                  "seed-zero perturbation changed across manager instances");
+        }
+    }
+
+    std::cout << "PASS\n";
+}
+
+void test_explicit_manager_ignores_environment_changes() {
+    std::cout << "test_explicit_manager_ignores_environment_changes ... ";
+    clear_explicit_policy_env();
+
+    const LatticeBasisReductionConfig basis_config{
+        LatticeReductionMethod::LLL, true};
+    const AdaptiveLatticeConfig adaptive_config{true, 100.0, 8, 0};
+    AdaptiveBasisManager manager(adaptive_config);
+    const SpecialQ sq{100003, 50001, 0};
+    constexpr double SKEWNESS = 17.0;
+
+    // Both ambient states conflict with the explicit skew-LLL policy and with
+    // the explicit adaptive settings.
+    setenv("GNFS_LATTICE_LLL", "0", 1);
+    setenv("GNFS_LATTICE_SKEW", "0", 1);
+    setenv("GNFS_ADAPTIVE_LATTICE", "0", 1);
+    setenv("GNFS_ADAPTIVE_LATTICE_THRESHOLD", "0.001", 1);
+    setenv("GNFS_ADAPTIVE_LATTICE_MAX_RETRIES", "0", 1);
+    setenv("GNFS_ADAPTIVE_LATTICE_SEED", "999", 1);
+
+    const LatticeBasis first =
+        manager.get_initial(sq, SKEWNESS, basis_config);
+    const auto first_perturb =
+        manager.try_perturb_and_rereduce(first, 0, 1000, 0);
+    check(first_perturb.has_value(),
+          "explicit adaptive config was replaced by disabled ambient config");
+    check(adaptive_config_equal(manager.config(), adaptive_config),
+          "explicit manager config changed after conflicting ambient reads");
+
+    setenv("GNFS_LATTICE_LLL", "1", 1);
+    setenv("GNFS_LATTICE_SKEW", "0", 1);
+    setenv("GNFS_ADAPTIVE_LATTICE", "1", 1);
+    setenv("GNFS_ADAPTIVE_LATTICE_THRESHOLD", "0.01", 1);
+    setenv("GNFS_ADAPTIVE_LATTICE_MAX_RETRIES", "1", 1);
+    setenv("GNFS_ADAPTIVE_LATTICE_SEED", "123456", 1);
+
+    const LatticeBasis second =
+        manager.get_initial(sq, SKEWNESS, basis_config);
+    const auto second_perturb =
+        manager.try_perturb_and_rereduce(second, 0, 1000, 0);
+    check(second_perturb.has_value(),
+          "explicit adaptive config changed after ambient environment flip");
+    check(basis_equal(first, second),
+          "explicit basis output changed after ambient environment flip");
+    check(basis_equal(*first_perturb, *second_perturb),
+          "explicit perturbation changed after ambient environment flip");
+    check(adaptive_config_equal(manager.config(), adaptive_config),
+          "explicit manager config changed after ambient environment flip");
+
+    clear_explicit_policy_env();
+    std::cout << "PASS\n";
+}
+
 // ── 13. Integration smoke: small SQ range sieve adaptive on vs off ──────
 //
 // This test crosses module boundaries (sieve + adaptive manager) without
@@ -571,7 +738,7 @@ void test_integration_smoke() {
 // with adaptive OFF (baseline) and ON (forced retries via very low
 // threshold), confirm:
 //   - ON ≥ 0.95 × OFF total candidates (no degradation)
-//   - No duplicate (a, b) pairs in ON run
+//   - No duplicate (a, b) pairs within any one special-Q result
 //   - When ON: rescue rate > 0 on at least one SQ (telemetry sanity)
 
 void test_lattice_sieve_integration() {
@@ -616,7 +783,6 @@ void test_lattice_sieve_integration() {
     // ── Baseline: adaptive OFF ────────────────────────────────────────
     clear_env();
     size_t off_total = 0;
-    std::set<std::pair<int64_t, uint64_t>> off_pairs;
     {
         sieve::LatticeSieve sieve(ctx, fb, sieve_params);
         sieve.set_region(region);
@@ -629,9 +795,6 @@ void test_lattice_sieve_integration() {
             if (!sq) break;
             auto r = sieve.sieve_special_q(*sq);
             off_total += r.candidates.size();
-            for (auto& c : r.candidates) {
-                off_pairs.insert({c.a, c.b});
-            }
         }
     }
 
@@ -645,7 +808,6 @@ void test_lattice_sieve_integration() {
     setenv("GNFS_ADAPTIVE_LATTICE_MAX_RETRIES", "2", 1);
 
     size_t on_total = 0;
-    std::set<std::pair<int64_t, uint64_t>> on_pairs;
     sieve::AdaptiveLatticeStats::Snapshot on_snap{};
     {
         sieve::LatticeSieve sieve(ctx, fb, sieve_params);
@@ -659,10 +821,13 @@ void test_lattice_sieve_integration() {
             if (!sq) break;
             auto r = sieve.sieve_special_q(*sq);
             on_total += r.candidates.size();
+            std::set<std::pair<int64_t, uint64_t>> sq_pairs;
             for (auto& c : r.candidates) {
                 // (a, b) pair invariant: gcd=1, b>0 (also checked inside collect_candidates)
-                on_pairs.insert({c.a, c.b});
+                sq_pairs.insert({c.a, c.b});
             }
+            check(sq_pairs.size() == r.candidates.size(),
+                  "adaptive sieve emitted a duplicate (a,b) within one special-Q");
         }
         on_snap = sieve.adaptive_manager().stats().snapshot();
     }
@@ -673,14 +838,8 @@ void test_lattice_sieve_integration() {
     // hold by construction.
     assert(on_total >= off_total * 95 / 100);
 
-    // Invariant 2: no duplicate (a, b) pairs in ON run.
-    // Each SQ produces a unique (a, b) parallelogram, and the in-SQ collector
-    // already dedups via lattice geometry; adoption only ever swaps in a
-    // single retry result per SQ.
-    // (The set itself dedups; we assert size consistency with the count.)
-    assert(on_pairs.size() <= on_total);
-
-    // Invariant 3: telemetry consistent with config.
+    // Invariant 2: telemetry consistent with config. Duplicate checks are
+    // intentionally per-SQ above because different SQ lattices may overlap.
     assert(on_snap.special_qs_processed == NUM_SQ);
     assert(on_snap.retries_attempted > 0);  // threshold is so low retries will fire
 
@@ -690,6 +849,140 @@ void test_lattice_sieve_integration() {
               << " retries=" << on_snap.retries_attempted
               << " rescues=" << on_snap.rescues_succeeded
               << ")\n";
+}
+
+void test_explicit_sieve_parallel_preserves_execution_config() {
+    std::cout << "test_explicit_sieve_parallel_preserves_execution_config ... ";
+
+    using namespace gnfs;
+    using namespace gnfs::core;
+    using namespace gnfs::polynomial;
+    using namespace gnfs::factor_base;
+
+    clear_explicit_policy_env();
+    setenv("GNFS_LATTICE_LLL", "0", 1);
+    setenv("GNFS_LATTICE_SKEW", "0", 1);
+    setenv("GNFS_ADAPTIVE_LATTICE", "0", 1);
+    setenv("GNFS_ADAPTIVE_LATTICE_THRESHOLD", "0.001", 1);
+    setenv("GNFS_ADAPTIVE_LATTICE_MAX_RETRIES", "0", 1);
+    setenv("GNFS_ADAPTIVE_LATTICE_SEED", "999", 1);
+
+    Integer n("1000036000099");
+    const auto poly_result = BaseMSelector::select(n, 3);
+    check(poly_result.success,
+          "explicit parallel fixture polynomial selection failed");
+    const auto ctx = BaseMSelector::create_context(n, poly_result);
+    check(ctx.verify(), "explicit parallel fixture context is invalid");
+
+    FactorBaseBuilder::Options fb_options;
+    fb_options.rational_bound = 3000;
+    fb_options.algebraic_bound = 3000;
+    fb_options.log_scale = 16;
+    fb_options.parallel = false;
+    const auto fb = FactorBaseBuilder::build(ctx, fb_options);
+
+    SieveParams sieve_params;
+    sieve_params.log_scale = 16;
+    sieve_params.rational_threshold = 55;
+    sieve_params.algebraic_threshold = 55;
+
+    SieveRegion region;
+    region.i_min = -400;
+    region.i_max = 399;
+    region.j_min = 1;
+    region.j_max = 80;
+
+    SpecialQRange sq_range;
+    sq_range.min_q = 1000;
+    sq_range.max_q = 3000;
+    SpecialQGenerator generator(fb, sq_range);
+    std::vector<SpecialQ> special_qs;
+    while (special_qs.size() < 8 && generator.has_next()) {
+        const auto sq = generator.next();
+        if (!sq.has_value()) {
+            break;
+        }
+        special_qs.push_back(*sq);
+    }
+    check(special_qs.size() == 8,
+          "explicit parallel fixture did not produce eight special-Q values");
+
+    const LatticeSieveExecutionConfig explicit_config{
+        LatticeBasisReductionConfig{LatticeReductionMethod::LLL, true},
+        AdaptiveLatticeConfig{true, 100.0, 2, 0}};
+
+    LatticeSieve sequential_sieve(ctx, fb, sieve_params, explicit_config);
+    sequential_sieve.set_region(region);
+    std::vector<SieveResult> sequential_results;
+    sequential_results.reserve(special_qs.size());
+    for (const auto& sq : special_qs) {
+        sequential_results.push_back(sequential_sieve.sieve_special_q(sq));
+    }
+    const auto sequential_stats =
+        sequential_sieve.adaptive_manager().stats().snapshot();
+
+    LatticeSieve parallel_sieve(ctx, fb, sieve_params, explicit_config);
+    parallel_sieve.set_region(region);
+    const auto parallel_results =
+        parallel_sieve.sieve_parallel(special_qs, 4);
+    const auto parallel_stats =
+        parallel_sieve.adaptive_manager().stats().snapshot();
+
+    check(parallel_results.size() == sequential_results.size(),
+          "explicit parallel result count differs from sequential result count");
+    std::size_t candidate_total = 0;
+    for (std::size_t i = 0; i < sequential_results.size(); ++i) {
+        check(sieve_result_equal(sequential_results[i], parallel_results[i]),
+              "explicit parallel per-SQ candidate fields/order differ from sequential");
+        candidate_total += sequential_results[i].candidates.size();
+    }
+    check(candidate_total > 0,
+          "explicit parallel fixture produced no observable candidates");
+    check(adaptive_config_equal(parallel_sieve.adaptive_manager().config(),
+                                explicit_config.adaptive_lattice),
+          "explicit parallel host manager lost its adaptive config");
+    check(parallel_stats.special_qs_processed == special_qs.size(),
+          "explicit parallel host manager did not observe every special-Q");
+    check(parallel_stats.retries_attempted > 0,
+          "explicit parallel fixture did not exercise adaptive retries");
+    check(parallel_stats.special_qs_processed ==
+              sequential_stats.special_qs_processed,
+          "parallel and sequential special-Q telemetry differs");
+    check(parallel_stats.retries_attempted ==
+              sequential_stats.retries_attempted,
+          "parallel and sequential retry telemetry differs");
+    check(parallel_stats.rescues_succeeded ==
+              sequential_stats.rescues_succeeded,
+          "parallel and sequential rescue telemetry differs");
+    check(parallel_stats.low_density_skipped ==
+              sequential_stats.low_density_skipped,
+          "parallel and sequential skipped telemetry differs");
+    check(parallel_stats.total_hits == sequential_stats.total_hits,
+          "parallel and sequential hit telemetry differs");
+    check(parallel_stats.total_cells == sequential_stats.total_cells,
+          "parallel and sequential cell telemetry differs");
+
+    // Prove this fixture observes a dropped execution config: a legacy sieve
+    // under the opposite ambient basis policy, but with the same explicit
+    // adaptive manager injected, must differ for at least one SQ.
+    AdaptiveBasisManager explicit_adaptive(explicit_config.adaptive_lattice);
+    LatticeSieve dropped_config_sieve(ctx, fb, sieve_params);
+    dropped_config_sieve.set_region(region);
+    dropped_config_sieve.set_adaptive_manager(&explicit_adaptive);
+    bool observed_policy_difference = false;
+    for (std::size_t i = 0; i < special_qs.size(); ++i) {
+        const auto dropped =
+            dropped_config_sieve.sieve_special_q(special_qs[i]);
+        if (!sieve_result_equal(sequential_results[i], dropped)) {
+            observed_policy_difference = true;
+        }
+    }
+    check(observed_policy_difference,
+          "opposite ambient basis policy did not expose dropped explicit config");
+
+    clear_explicit_policy_env();
+    std::cout << "PASS (sqs=" << special_qs.size()
+              << " candidates=" << candidate_total << ")\n";
 }
 
 // ── main ────────────────────────────────────────────────────────────────
@@ -714,8 +1007,11 @@ int main() {
     test_determinant_preserved();
     test_verify_ab_preserved();
     test_distinct_perturbations();
+    test_seed_zero_exact_retry_sequence_is_repeatable();
+    test_explicit_manager_ignores_environment_changes();
     test_integration_smoke();
     test_lattice_sieve_integration();
+    test_explicit_sieve_parallel_preserves_execution_config();
 
     std::cout << "===========================================" << std::endl;
     std::cout << "  All adaptive lattice tests passed!" << std::endl;

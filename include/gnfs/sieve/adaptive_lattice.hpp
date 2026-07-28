@@ -308,6 +308,14 @@ public:
         return compute_lattice_basis_with_skewness(sq, skewness);
     }
 
+    /// 返回由显式配置决定的初始 basis，不读取 ambient ENV.
+    /// `side` 暂时未用 (rational/algebraic 二者用同 basis), 保留 API 扩展性.
+    [[nodiscard]] LatticeBasis get_initial(const SpecialQ& sq, double skewness,
+                                           const LatticeBasisReductionConfig& config,
+                                           int /*side*/ = 0) const {
+        return compute_lattice_basis_with_skewness(sq, skewness, config);
+    }
+
     /// 检查是否需要 perturb + 给出新 basis.
     ///
     /// @param current_basis     当前 sieve 用的 basis
