@@ -9,10 +9,14 @@
 #include "squfof.hpp"
 #include "survival_predictor.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <optional>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 
 namespace gnfs::cofactor {
 
@@ -525,6 +529,8 @@ struct SeededCofactorRandomnessV1 final {
     CofactorSide side = CofactorSide::rational;
     const CofactorSeedProvider* provider = nullptr;
     std::uint32_t ecm_brent_suyama_degree = 0;
+    bool brent_pollard_enabled = false;
+    BrentPollardRho::EvaluationBudgetV1 brent_pollard_budget{};
 };
 
 inline void validate_seeded_cofactor_randomness_v1(CofactorSide side,
@@ -559,6 +565,36 @@ quick_factor_with_seeded_randomness_v1(const Integer& cofactor,
     const ECM::DeterministicCurveSchedule schedule =
         ECM::make_deterministic_curve_schedule(COFACTOR_ECM_QUICK_CURVE_COUNT_V1, attempt);
     return ECM::quick_factor(cofactor, schedule, randomness->ecm_brent_suyama_degree);
+}
+
+[[nodiscard]] inline std::optional<std::pair<Integer, Integer>>
+brent_split_with_seeded_randomness_v1(std::uint64_t cofactor, std::uint64_t legacy_budget,
+                                      const SeededCofactorRandomnessV1* randomness) {
+    if (randomness == nullptr) {
+        if (!brent_pollard_enabled()) {
+            return std::nullopt;
+        }
+        return BrentPollardRho::split(Integer(cofactor), legacy_budget, /*seed=*/1);
+    }
+    if (!randomness->brent_pollard_enabled ||
+        randomness->brent_pollard_budget.max_function_evaluations == 0) {
+        return std::nullopt;
+    }
+    if (randomness->provider == nullptr) {
+        throw std::invalid_argument("seeded cofactor randomness requires a provider");
+    }
+
+    const Integer cofactor_integer(cofactor);
+    const CofactorAttemptContext attempt = make_cofactor_attempt_context_v1(
+        cofactor_integer, randomness->coordinates, randomness->side,
+        CofactorRandomDomainV1::brent_pollard_rho,
+        COFACTOR_BRENT_POLLARD_RHO_SCHEDULE_ALGORITHM_IDENTITY_V1, *randomness->provider);
+    const BrentPollardRho::Seed256RetryScheduleV1 schedule =
+        BrentPollardRho::make_seed256_retry_schedule_v1(cofactor_integer,
+                                                        randomness->brent_pollard_budget, attempt);
+    BrentPollardRho::SplitOutcomeV1 outcome =
+        BrentPollardRho::split_seeded_v1(cofactor_integer, schedule);
+    return std::move(outcome.factors);
 }
 
 /// Internal classification implementation shared by the legacy and explicit
@@ -737,14 +773,12 @@ classify_cofactor_impl_v1(const Integer& cofactor, uint64_t large_prime_bound, b
                 factor = SQUFOF::factor(c, squfof_limit);
             }
 
-            // Phase 3a-1: BrentPollardRho — opt-in via ENV GNFS_COFACTOR_BRENT=1.
-            // Inserted between SQUFOF and legacy Pollard rho. Brent variant
-            // typically beats both on hard 50-60-bit semiprimes that SQUFOF
-            // fails on. Default OFF (0 behavior change without ENV).
-            if (factor == 1 && brent_pollard_enabled()) {
-                uint64_t bp_max = (c < (UINT64_C(1) << 40)) ? 20000 : 200000;
-                Integer c_int(c);
-                auto sp = BrentPollardRho::split(c_int, bp_max, /*seed=*/1);
+            // Phase 3a-1: BrentPollardRho. The legacy path keeps its cached
+            // GNFS_COFACTOR_BRENT gate and fixed integer seed. The explicit
+            // path consumes only its frozen gate, budget, and Seed256 provider.
+            if (factor == 1) {
+                const uint64_t bp_max = (c < (UINT64_C(1) << 40)) ? 20000 : 200000;
+                auto sp = brent_split_with_seeded_randomness_v1(c, bp_max, seeded_randomness);
                 if (sp && sp->first.fits_uint64()) {
                     uint64_t f = sp->first.to_uint64();
                     if (f > 1 && f < c && c % f == 0) {
@@ -862,29 +896,50 @@ classify_cofactor_impl_v1(const Integer& cofactor, uint64_t large_prime_bound, b
                                              smoothness_bound, nullptr);
 }
 
-/// Classify a cofactor with lazy, algorithm-bound ECM randomness.
+/// Classify a cofactor with lazy, algorithm-bound randomness.
 ///
 /// The provider is not called on deterministic exits. If classification
-/// reaches an ECM fallback, exactly one V1 ECM request is derived from the
-/// residual cofactor, stable candidate coordinates, and side. Provider
-/// exceptions propagate; this path never falls back to ambient entropy.
+/// reaches an enabled Brent stage or an ECM fallback, each stage derives one
+/// domain-separated V1 request from the residual cofactor, stable candidate
+/// coordinates, and side. A disabled or zero-budget Brent stage makes no
+/// request. Provider exceptions propagate; this path never falls back to
+/// ambient entropy.
 ///
-/// Brent-Pollard-rho retains its existing fixed schedule in this milestone.
-/// Its Seed256 schedule is a separate versioned integration.
-[[nodiscard]] inline CofactorClassification
-classify_cofactor_seeded_v1(const Integer& cofactor, uint64_t large_prime_bound, bool allow_3lp,
-                            uint64_t smoothness_bound, CofactorAttemptCoordinates coordinates,
-                            CofactorSide side, const CofactorSeedProvider& provider,
-                            std::uint32_t ecm_brent_suyama_degree = 0) {
+/// V1 intentionally inserts seeded Brent only at the existing uint64
+/// semiprime stage. Larger Integer cofactors retain the existing seeded
+/// direct-to-ECM path. A nonzero smoothness bound can still activate the
+/// existing ambient survival-predictor policy.
+[[nodiscard]] inline CofactorClassification classify_cofactor_seeded_with_brent_v1(
+    const Integer& cofactor, uint64_t large_prime_bound, bool allow_3lp, uint64_t smoothness_bound,
+    CofactorAttemptCoordinates coordinates, CofactorSide side, const CofactorSeedProvider& provider,
+    std::uint32_t ecm_brent_suyama_degree, bool brent_pollard_enabled,
+    std::uint64_t brent_pollard_max_function_evaluations) {
     detail::validate_seeded_cofactor_randomness_v1(side, ecm_brent_suyama_degree);
     const detail::SeededCofactorRandomnessV1 randomness{
         .coordinates = coordinates,
         .side = side,
         .provider = &provider,
         .ecm_brent_suyama_degree = ecm_brent_suyama_degree,
+        .brent_pollard_enabled = brent_pollard_enabled,
+        .brent_pollard_budget =
+            BrentPollardRho::EvaluationBudgetV1{brent_pollard_max_function_evaluations},
     };
     return detail::classify_cofactor_impl_v1(cofactor, large_prime_bound, allow_3lp,
                                              smoothness_bound, &randomness);
+}
+
+/// Source- and function-type-compatible entry point for seeded ECM.
+///
+/// This wrapper intentionally disables the ambient fixed-seed Brent gate.
+/// Use classify_cofactor_seeded_with_brent_v1() for explicit Brent policy.
+[[nodiscard]] inline CofactorClassification
+classify_cofactor_seeded_v1(const Integer& cofactor, uint64_t large_prime_bound, bool allow_3lp,
+                            uint64_t smoothness_bound, CofactorAttemptCoordinates coordinates,
+                            CofactorSide side, const CofactorSeedProvider& provider,
+                            std::uint32_t ecm_brent_suyama_degree = 0) {
+    return classify_cofactor_seeded_with_brent_v1(cofactor, large_prime_bound, allow_3lp,
+                                                  smoothness_bound, coordinates, side, provider,
+                                                  ecm_brent_suyama_degree, false, 0);
 }
 
 /// 快速检查 cofactor 是否可能有用（粗略筛选）

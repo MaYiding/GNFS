@@ -653,7 +653,7 @@ iteration order, or host-endian serialization.
 | Factor-base contents | ordered rational `(p, log_p)`, ordered algebraic `(p, r, log_p, degree)`, sieve algebraic count |
 | Sieve parameters | log scale, rational threshold, algebraic threshold, large-prime bound, 2LP and 3LP flags |
 | Sieve region | `i_min`, `i_max`, `j_min`, `j_max` |
-| Cofactorizer | large-prime bound, 1LP/2LP/3LP flags, maximum factorization attempts |
+| Cofactorizer | large-prime bound, 1LP/2LP/3LP flags, seeded Brent `f(x)` evaluation budget per residual and side |
 | Range | original and effective special-Q bounds |
 | Distributed policy | worker count, ordered chunks, SQ cap, relation cap, and separate worker/merge-build/consumption attempt budgets |
 | Frozen runtime policy | canonical `DistributedSieveExecutionPolicyV1`, including every classified ambient setting reachable from sieve/cofactor execution |

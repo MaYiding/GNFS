@@ -625,6 +625,8 @@ struct CofactorWorkIdentityV1 final {
     bool allow_1lp = false;
     bool allow_2lp = false;
     bool allow_3lp = false;
+    /// Identity-level total seeded Brent f(x) evaluation budget per residual
+    /// and side. Zero is a default sentinel resolved before runtime use.
     uint64_t max_factorization_attempts = 0;
 };
 

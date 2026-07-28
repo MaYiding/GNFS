@@ -24,11 +24,14 @@
 
 namespace {
 
+using gnfs::cofactor::BrentPollardRho;
+using gnfs::cofactor::COFACTOR_BRENT_POLLARD_RHO_SCHEDULE_ALGORITHM_IDENTITY_V1;
 using gnfs::cofactor::COFACTOR_ECM_CURVE_SCHEDULE_ALGORITHM_IDENTITY_V1;
 using gnfs::cofactor::COFACTOR_ECM_QUICK_CURVE_COUNT_V1;
 using gnfs::cofactor::CofactorAttemptContext;
 using gnfs::cofactor::CofactorAttemptCoordinates;
 using gnfs::cofactor::CofactorClass;
+using gnfs::cofactor::CofactorClassification;
 using gnfs::cofactor::CofactorRandomDomainV1;
 using gnfs::cofactor::CofactorSeed256;
 using gnfs::cofactor::CofactorSeedProvider;
@@ -52,6 +55,14 @@ using gnfs::core::Integer;
     CofactorSeed256 seed{};
     seed.digest.bytes.front() = static_cast<std::byte>(first);
     seed.digest.bytes.back() = static_cast<std::byte>(last);
+    return seed;
+}
+
+[[nodiscard]] CofactorSeed256 range_seed() {
+    CofactorSeed256 seed{};
+    for (std::size_t index = 0; index < seed.digest.bytes.size(); ++index) {
+        seed.digest.bytes[index] = static_cast<std::byte>(index);
+    }
     return seed;
 }
 
@@ -106,6 +117,31 @@ private:
     mutable std::vector<CofactorSeedRequestV1> requests_;
 };
 
+class ThrowAfterFirstProvider final : public CofactorSeedProvider {
+public:
+    explicit ThrowAfterFirstProvider(CofactorSeed256 first_response)
+        : first_response_(first_response) {}
+
+    [[nodiscard]] CofactorSeed256 seed_for(const CofactorSeedRequestV1& request) const override {
+        std::lock_guard lock(mutex_);
+        requests_.push_back(request);
+        if (requests_.size() == 1) {
+            return first_response_;
+        }
+        throw ProviderFailure{};
+    }
+
+    [[nodiscard]] std::vector<CofactorSeedRequestV1> requests() const {
+        std::lock_guard lock(mutex_);
+        return requests_;
+    }
+
+private:
+    CofactorSeed256 first_response_{};
+    mutable std::mutex mutex_;
+    mutable std::vector<CofactorSeedRequestV1> requests_;
+};
+
 template <class Function> void expect_invalid_argument(Function&& function) {
     bool caught = false;
     try {
@@ -117,8 +153,15 @@ template <class Function> void expect_invalid_argument(Function&& function) {
 }
 
 void test_exact_request_and_context() {
+    using LegacySeededClassifier = CofactorClassification (*)(
+        const Integer&, std::uint64_t, bool, std::uint64_t, CofactorAttemptCoordinates,
+        CofactorSide, const CofactorSeedProvider&, std::uint32_t);
+    const LegacySeededClassifier legacy_classifier = &gnfs::cofactor::classify_cofactor_seeded_v1;
+    CHECK(legacy_classifier != nullptr);
+
     CHECK(static_cast<std::uint8_t>(CofactorRandomDomainV1::brent_pollard_rho) == 1);
     CHECK(static_cast<std::uint8_t>(CofactorRandomDomainV1::ecm_curve_schedule) == 2);
+    CHECK(COFACTOR_BRENT_POLLARD_RHO_SCHEDULE_ALGORITHM_IDENTITY_V1 == 1);
     CHECK(COFACTOR_ECM_CURVE_SCHEDULE_ALGORITHM_IDENTITY_V1 == 1);
     CHECK(COFACTOR_ECM_QUICK_CURVE_COUNT_V1 == 10);
 
@@ -301,6 +344,167 @@ void test_seeded_classification_validation_and_failure_boundaries() {
     CHECK(throwing.calls() == 1);
 }
 
+void test_seeded_brent_success_and_gate_boundaries() {
+    const Integer residual("93185905945582757"); // 304306693 * 306223649
+    constexpr std::uint64_t large_prime_bound = 500'000'000;
+    const CofactorAttemptCoordinates coordinates{17, 23};
+    const auto expected_digest =
+        gnfs::cofactor::canonical_cofactor_input_digest(residual, CofactorSide::rational);
+
+    const RecordingProvider enabled_provider(range_seed());
+    auto& stats = BrentPollardRho::global_stats();
+    stats.reset();
+    const auto enabled = gnfs::cofactor::classify_cofactor_seeded_with_brent_v1(
+        residual, large_prime_bound, false, 0, coordinates, CofactorSide::rational,
+        enabled_provider, 0, true, 50'000);
+    CHECK(enabled.type == CofactorClass::Semiprime);
+    CHECK(enabled.factor1 == 304306693);
+    CHECK(enabled.factor2 == 306223649);
+    const std::vector<CofactorSeedRequestV1> enabled_requests = enabled_provider.requests();
+    CHECK(enabled_requests.size() == 1);
+    CHECK(enabled_requests.front().coordinates == coordinates);
+    CHECK(enabled_requests.front().side == CofactorSide::rational);
+    CHECK(enabled_requests.front().cofactor_digest == expected_digest);
+    CHECK(enabled_requests.front().domain == CofactorRandomDomainV1::brent_pollard_rho);
+    CHECK(enabled_requests.front().algorithm_identity ==
+          COFACTOR_BRENT_POLLARD_RHO_SCHEDULE_ALGORITHM_IDENTITY_V1);
+    CHECK(stats.tried.load(std::memory_order_relaxed) == 1);
+    CHECK(stats.succ.load(std::memory_order_relaxed) == 1);
+    CHECK(stats.total_iter.load(std::memory_order_relaxed) == 23'009);
+
+    const ThrowingProvider gate_off_provider;
+    const auto gate_off = gnfs::cofactor::classify_cofactor_seeded_with_brent_v1(
+        residual, large_prime_bound, false, 0, coordinates, CofactorSide::rational,
+        gate_off_provider, 0, false, 50'000);
+    CHECK(gate_off.type == CofactorClass::Semiprime);
+    CHECK(gate_off.factor1 == 304306693);
+    CHECK(gate_off.factor2 == 306223649);
+    CHECK(gate_off_provider.calls() == 0);
+
+    const ThrowingProvider zero_budget_provider;
+    const auto zero_budget = gnfs::cofactor::classify_cofactor_seeded_with_brent_v1(
+        residual, large_prime_bound, false, 0, coordinates, CofactorSide::rational,
+        zero_budget_provider, 0, true, 0);
+    CHECK(zero_budget.type == CofactorClass::Semiprime);
+    CHECK(zero_budget.factor1 == 304306693);
+    CHECK(zero_budget.factor2 == 306223649);
+    CHECK(zero_budget_provider.calls() == 0);
+    CHECK(stats.tried.load(std::memory_order_relaxed) == 1);
+    CHECK(stats.succ.load(std::memory_order_relaxed) == 1);
+    CHECK(stats.total_iter.load(std::memory_order_relaxed) == 23'009);
+
+    const ThrowingProvider throwing_provider;
+    stats.reset();
+    bool caught_exact_failure = false;
+    try {
+        (void)gnfs::cofactor::classify_cofactor_seeded_with_brent_v1(
+            residual, large_prime_bound, false, 0, coordinates, CofactorSide::rational,
+            throwing_provider, 0, true, 50'000);
+    } catch (const ProviderFailure&) {
+        caught_exact_failure = true;
+    }
+    CHECK(caught_exact_failure);
+    CHECK(throwing_provider.calls() == 1);
+    const std::vector<CofactorSeedRequestV1> throwing_requests = throwing_provider.requests();
+    CHECK(throwing_requests.size() == 1);
+    CHECK(throwing_requests.front().domain == CofactorRandomDomainV1::brent_pollard_rho);
+    CHECK(stats.tried.load(std::memory_order_relaxed) == 0);
+    CHECK(stats.succ.load(std::memory_order_relaxed) == 0);
+    CHECK(stats.total_iter.load(std::memory_order_relaxed) == 0);
+}
+
+void test_seeded_brent_miss_domain_separates_ecm() {
+    const Integer residual("16381135980032436533"); // 3900122953 * 4200158861
+    constexpr std::uint64_t large_prime_bound = 4'300'000'000ULL;
+    const CofactorAttemptCoordinates coordinates{43, 47};
+    const auto expected_digest =
+        gnfs::cofactor::canonical_cofactor_input_digest(residual, CofactorSide::rational);
+
+    const RecordingProvider provider(range_seed());
+    auto& stats = BrentPollardRho::global_stats();
+    stats.reset();
+    const auto classification = gnfs::cofactor::classify_cofactor_seeded_with_brent_v1(
+        residual, large_prime_bound, false, 0, coordinates, CofactorSide::rational, provider, 0,
+        true, 50'000);
+    CHECK(classification.type == CofactorClass::Semiprime);
+    CHECK(classification.factor1 == 3900122953ULL);
+    CHECK(classification.factor2 == 4200158861ULL);
+
+    const std::vector<CofactorSeedRequestV1> requests = provider.requests();
+    CHECK(requests.size() == 2);
+    CHECK(requests[0].coordinates == coordinates);
+    CHECK(requests[1].coordinates == coordinates);
+    CHECK(requests[0].side == CofactorSide::rational);
+    CHECK(requests[1].side == CofactorSide::rational);
+    CHECK(requests[0].cofactor_digest == expected_digest);
+    CHECK(requests[1].cofactor_digest == expected_digest);
+    CHECK(requests[0].domain == CofactorRandomDomainV1::brent_pollard_rho);
+    CHECK(requests[0].algorithm_identity ==
+          COFACTOR_BRENT_POLLARD_RHO_SCHEDULE_ALGORITHM_IDENTITY_V1);
+    CHECK(requests[1].domain == CofactorRandomDomainV1::ecm_curve_schedule);
+    CHECK(requests[1].algorithm_identity == COFACTOR_ECM_CURVE_SCHEDULE_ALGORITHM_IDENTITY_V1);
+    CHECK(stats.tried.load(std::memory_order_relaxed) == 1);
+    CHECK(stats.succ.load(std::memory_order_relaxed) == 0);
+    CHECK(stats.total_iter.load(std::memory_order_relaxed) == 50'000);
+
+    const ThrowAfterFirstProvider throwing_after_brent(range_seed());
+    stats.reset();
+    bool caught_exact_failure = false;
+    try {
+        (void)gnfs::cofactor::classify_cofactor_seeded_with_brent_v1(
+            residual, large_prime_bound, false, 0, coordinates, CofactorSide::rational,
+            throwing_after_brent, 0, true, 50'000);
+    } catch (const ProviderFailure&) {
+        caught_exact_failure = true;
+    }
+    CHECK(caught_exact_failure);
+    const std::vector<CofactorSeedRequestV1> throwing_requests = throwing_after_brent.requests();
+    CHECK(throwing_requests.size() == 2);
+    CHECK(throwing_requests[0].domain == CofactorRandomDomainV1::brent_pollard_rho);
+    CHECK(throwing_requests[1].domain == CofactorRandomDomainV1::ecm_curve_schedule);
+    CHECK(stats.tried.load(std::memory_order_relaxed) == 1);
+    CHECK(stats.succ.load(std::memory_order_relaxed) == 0);
+    CHECK(stats.total_iter.load(std::memory_order_relaxed) == 50'000);
+}
+
+void test_seeded_brent_scope_boundaries() {
+    const CofactorAttemptCoordinates coordinates{53, 59};
+    auto& stats = BrentPollardRho::global_stats();
+    stats.reset();
+
+    const ThrowingProvider three_lp_provider;
+    const auto three_lp = gnfs::cofactor::classify_cofactor_seeded_with_brent_v1(
+        Integer(101ULL * 103ULL * 107ULL), 200, true, 0, coordinates, CofactorSide::rational,
+        three_lp_provider, 0, true, 50'000);
+    CHECK(three_lp.type == CofactorClass::ThreeLP);
+    CHECK(three_lp.factor1 == 101);
+    CHECK(three_lp.factor2 == 103);
+    CHECK(three_lp.factor3 == 107);
+    CHECK(three_lp_provider.calls() == 0);
+    CHECK(stats.tried.load(std::memory_order_relaxed) == 0);
+    CHECK(stats.succ.load(std::memory_order_relaxed) == 0);
+    CHECK(stats.total_iter.load(std::memory_order_relaxed) == 0);
+
+    const Integer large_residual("2035431132824962728145373");
+    constexpr std::uint64_t large_prime_bound = 2'000'000'000'000ULL;
+    const RecordingProvider large_provider(range_seed());
+    const auto large = gnfs::cofactor::classify_cofactor_seeded_with_brent_v1(
+        large_residual, large_prime_bound, false, 0, coordinates, CofactorSide::algebraic,
+        large_provider, 0, true, 50'000);
+    CHECK(large.type == CofactorClass::Semiprime || large.type == CofactorClass::Composite);
+    const std::vector<CofactorSeedRequestV1> requests = large_provider.requests();
+    CHECK(requests.size() == 1);
+    CHECK(requests.front().coordinates == coordinates);
+    CHECK(requests.front().side == CofactorSide::algebraic);
+    CHECK(requests.front().cofactor_digest ==
+          gnfs::cofactor::canonical_cofactor_input_digest(large_residual, CofactorSide::algebraic));
+    CHECK(requests.front().domain == CofactorRandomDomainV1::ecm_curve_schedule);
+    CHECK(requests.front().algorithm_identity == COFACTOR_ECM_CURVE_SCHEDULE_ALGORITHM_IDENTITY_V1);
+    CHECK(stats.tried.load(std::memory_order_relaxed) == 0);
+    CHECK(stats.succ.load(std::memory_order_relaxed) == 0);
+    CHECK(stats.total_iter.load(std::memory_order_relaxed) == 0);
+}
+
 void test_cofactorizer_binds_trial_division_residual() {
     const Integer residual("2035431132824962728145373");
     Integer rational_input(residual);
@@ -345,6 +549,125 @@ void test_cofactorizer_binds_trial_division_residual() {
           gnfs::cofactor::canonical_cofactor_input_digest(rational_input, CofactorSide::rational));
     CHECK(requests.front().domain == CofactorRandomDomainV1::ecm_curve_schedule);
     CHECK(requests.front().algorithm_identity == COFACTOR_ECM_CURVE_SCHEDULE_ALGORITHM_IDENTITY_V1);
+}
+
+void test_cofactorizer_threads_seeded_brent_rational_first() {
+    const Integer residual("93185905945582757");
+    Integer input(residual);
+    input *= 3;
+
+    std::vector<Integer> coefficients;
+    coefficients.emplace_back(input);
+    coefficients.back().negate();
+    coefficients.emplace_back(1);
+    gnfs::core::PolynomialContext context(Integer(2), std::move(coefficients), Integer(input));
+
+    constexpr std::uint64_t large_prime_bound = 500'000'000;
+    gnfs::core::FactorBaseParams params;
+    params.large_prime_bound = large_prime_bound;
+    gnfs::factor_base::FactorBase factor_base(params);
+    factor_base.add_rational(3, 1);
+    factor_base.add_algebraic(3, 0, 1);
+    factor_base.build_index();
+
+    gnfs::cofactor::CofactorizerConfig config;
+    config.large_prime_bound = large_prime_bound;
+    config.max_factorization_attempts = 50'000;
+    config.seeded_brent_pollard_enabled = true;
+    gnfs::cofactor::Cofactorizer cofactorizer(context, factor_base, config);
+    const CofactorAttemptCoordinates coordinates{37, 41};
+
+    const RecordingProvider provider(range_seed());
+    auto& stats = BrentPollardRho::global_stats();
+    stats.reset();
+    const auto relation = cofactorizer.verify(0, 1, 0, 0, coordinates, provider);
+    CHECK(relation.has_value());
+    const std::vector<CofactorSeedRequestV1> requests = provider.requests();
+    CHECK(requests.size() == 2);
+    CHECK(requests[0].coordinates == coordinates);
+    CHECK(requests[1].coordinates == coordinates);
+    CHECK(requests[0].side == CofactorSide::rational);
+    CHECK(requests[1].side == CofactorSide::algebraic);
+    CHECK(requests[0].cofactor_digest ==
+          gnfs::cofactor::canonical_cofactor_input_digest(residual, CofactorSide::rational));
+    CHECK(requests[1].cofactor_digest ==
+          gnfs::cofactor::canonical_cofactor_input_digest(residual, CofactorSide::algebraic));
+    CHECK(requests[0].domain == CofactorRandomDomainV1::brent_pollard_rho);
+    CHECK(requests[1].domain == CofactorRandomDomainV1::brent_pollard_rho);
+    CHECK(requests[0].algorithm_identity ==
+          COFACTOR_BRENT_POLLARD_RHO_SCHEDULE_ALGORITHM_IDENTITY_V1);
+    CHECK(requests[1].algorithm_identity ==
+          COFACTOR_BRENT_POLLARD_RHO_SCHEDULE_ALGORITHM_IDENTITY_V1);
+    CHECK(stats.tried.load(std::memory_order_relaxed) == 2);
+    CHECK(stats.succ.load(std::memory_order_relaxed) == 2);
+    CHECK(stats.total_iter.load(std::memory_order_relaxed) == 46'018);
+
+    const ThrowingProvider throwing;
+    stats.reset();
+    bool caught_exact_failure = false;
+    try {
+        (void)cofactorizer.verify(0, 1, 0, 0, coordinates, throwing);
+    } catch (const ProviderFailure&) {
+        caught_exact_failure = true;
+    }
+    CHECK(caught_exact_failure);
+    CHECK(throwing.calls() == 1);
+    const std::vector<CofactorSeedRequestV1> throwing_requests = throwing.requests();
+    CHECK(throwing_requests.size() == 1);
+    CHECK(throwing_requests.front().side == CofactorSide::rational);
+    CHECK(throwing_requests.front().domain == CofactorRandomDomainV1::brent_pollard_rho);
+    CHECK(stats.tried.load(std::memory_order_relaxed) == 0);
+    CHECK(stats.succ.load(std::memory_order_relaxed) == 0);
+    CHECK(stats.total_iter.load(std::memory_order_relaxed) == 0);
+}
+
+void test_cofactorizer_threads_exact_brent_budget_before_ecm() {
+    const Integer residual("16381135980032436533");
+    Integer input(residual);
+    input *= 3;
+
+    std::vector<Integer> coefficients;
+    coefficients.emplace_back(input);
+    coefficients.back().negate();
+    coefficients.emplace_back(1);
+    gnfs::core::PolynomialContext context(Integer(2), std::move(coefficients), Integer(input));
+
+    constexpr std::uint64_t large_prime_bound = 4'300'000'000ULL;
+    gnfs::core::FactorBaseParams params;
+    params.large_prime_bound = large_prime_bound;
+    gnfs::factor_base::FactorBase factor_base(params);
+    factor_base.add_rational(3, 1);
+    factor_base.add_algebraic(3, 0, 1);
+    factor_base.build_index();
+
+    gnfs::cofactor::CofactorizerConfig config;
+    config.large_prime_bound = large_prime_bound;
+    config.max_factorization_attempts = 50'000;
+    config.seeded_brent_pollard_enabled = true;
+    gnfs::cofactor::Cofactorizer cofactorizer(context, factor_base, config);
+    const CofactorAttemptCoordinates coordinates{61, 67};
+    const RecordingProvider provider(range_seed());
+
+    auto& stats = BrentPollardRho::global_stats();
+    stats.reset();
+    const auto relation = cofactorizer.verify(0, 1, 0, 0, coordinates, provider);
+    CHECK(relation.has_value());
+    const std::vector<CofactorSeedRequestV1> requests = provider.requests();
+    CHECK(requests.size() == 4);
+    CHECK(requests[0].side == CofactorSide::rational);
+    CHECK(requests[0].domain == CofactorRandomDomainV1::brent_pollard_rho);
+    CHECK(requests[1].side == CofactorSide::rational);
+    CHECK(requests[1].domain == CofactorRandomDomainV1::ecm_curve_schedule);
+    CHECK(requests[2].side == CofactorSide::algebraic);
+    CHECK(requests[2].domain == CofactorRandomDomainV1::brent_pollard_rho);
+    CHECK(requests[3].side == CofactorSide::algebraic);
+    CHECK(requests[3].domain == CofactorRandomDomainV1::ecm_curve_schedule);
+    for (const CofactorSeedRequestV1& request : requests) {
+        CHECK(request.coordinates == coordinates);
+    }
+    CHECK(stats.tried.load(std::memory_order_relaxed) == 2);
+    CHECK(stats.succ.load(std::memory_order_relaxed) == 0);
+    CHECK(stats.total_iter.load(std::memory_order_relaxed) == 100'000);
 }
 
 [[nodiscard]] bool request_less(const CofactorSeedRequestV1& left,
@@ -427,7 +750,12 @@ int main() {
         test_provider_exception_propagates_without_retry();
         test_seeded_classification_is_lazy_and_binds_residual_input();
         test_seeded_classification_validation_and_failure_boundaries();
+        test_seeded_brent_success_and_gate_boundaries();
+        test_seeded_brent_miss_domain_separates_ecm();
+        test_seeded_brent_scope_boundaries();
         test_cofactorizer_binds_trial_division_residual();
+        test_cofactorizer_threads_seeded_brent_rational_first();
+        test_cofactorizer_threads_exact_brent_budget_before_ecm();
         test_const_provider_concurrent_contract();
     } catch (const std::exception& error) {
         std::cerr << "Cofactor seed provider test failed: " << error.what() << '\n';

@@ -51,7 +51,8 @@ inline constexpr DistributedSieveSemanticContractVersionsV2
 ///     effective special-Q index interval.
 /// It also resolves V1 runtime-default sentinels before hashing:
 ///   - zero sieve/cofactor large-prime bounds use the factor-base bound;
-///   - zero max_factorization_attempts uses the frozen V2 default above.
+///   - zero max_factorization_attempts uses the frozen V2 seeded-Brent
+///     f(x)-evaluation budget above.
 /// Semantic binary64 settings normalize both IEEE signed-zero encodings to
 /// positive zero because their runtime comparisons are equivalent.
 /// A later identity-to-runtime adapter must apply these exact effective-value

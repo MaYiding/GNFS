@@ -11,6 +11,7 @@
 #include "trial_division.hpp"
 
 #include <atomic>
+#include <cstdint>
 #include <optional>
 
 namespace gnfs::cofactor {
@@ -51,11 +52,17 @@ struct CofactorizerConfig {
     // trade-off: 拓宽 LP 空间 vs sieve 吞吐. CADO-NFS 用更复杂的 two-cofactor
     // strategy + ECM gating 改善 ratio, 但本实现采用直接路径 + 推荐仅在小批量
     // 50d/60d 实验性运行使用. 默认 OFF 保留 sieve 吞吐.
-    bool allow_3lp = false;                    // 允许 3 个大素数 (opt-in)
-    size_t max_factorization_attempts = 10000; // Pollard rho 最大尝试次数
+    bool allow_3lp = false; // 允许 3 个大素数 (opt-in)
+    // Explicit seeded Brent-Pollard-rho f(x) evaluation budget per residual
+    // and side. Zero is zero work here; distributed adapters must resolve
+    // identity-level default sentinels before constructing this config.
+    std::uint64_t max_factorization_attempts = 10000;
     // Explicit deterministic-seed path only. Zero selects standard stage-2
     // continuation; nonzero values must be supported Brent-Suyama degrees.
     std::uint32_t seeded_ecm_brent_suyama_degree = 0;
+    // Explicit deterministic-seed path only. The legacy verify overload keeps
+    // the cached GNFS_COFACTOR_BRENT gate and fixed integer-seed schedule.
+    bool seeded_brent_pollard_enabled = false;
 };
 
 /// Cofactorizer 统计（原子操作，线程安全）
@@ -152,8 +159,9 @@ public:
 
     /// Verify one sieve candidate with stable, algorithm-bound randomness.
     ///
-    /// The provider is consulted lazily only if a residual cofactor reaches
-    /// the ECM fallback. Provider exceptions propagate without ambient fallback.
+    /// The provider is consulted lazily only if a residual reaches an enabled
+    /// Brent stage or the ECM fallback. Provider exceptions propagate without
+    /// ambient fallback.
     [[nodiscard]] std::optional<Relation> verify(const SieveCandidate& cand, uint32_t sq_q,
                                                  uint32_t sq_r,
                                                  CofactorAttemptCoordinates coordinates,
@@ -269,10 +277,11 @@ private:
         CofactorClassification rat_class =
             provider == nullptr
                 ? classify_cofactor(rat_result.cofactor, large_prime_bound_, config_.allow_3lp)
-                : classify_cofactor_seeded_v1(
+                : classify_cofactor_seeded_with_brent_v1(
                       rat_result.cofactor, large_prime_bound_, config_.allow_3lp,
                       /*smoothness_bound=*/0, coordinates, CofactorSide::rational, *provider,
-                      config_.seeded_ecm_brent_suyama_degree);
+                      config_.seeded_ecm_brent_suyama_degree, config_.seeded_brent_pollard_enabled,
+                      config_.max_factorization_attempts);
 
         // Rational-first 短路: 有理侧不可接受 → 跳过代数试除
         if (!is_acceptable_cofactor(rat_class)) {
@@ -356,10 +365,11 @@ private:
         CofactorClassification alg_class =
             provider == nullptr
                 ? classify_cofactor(alg_result.cofactor, large_prime_bound_, config_.allow_3lp)
-                : classify_cofactor_seeded_v1(
+                : classify_cofactor_seeded_with_brent_v1(
                       alg_result.cofactor, large_prime_bound_, config_.allow_3lp,
                       /*smoothness_bound=*/0, coordinates, CofactorSide::algebraic, *provider,
-                      config_.seeded_ecm_brent_suyama_degree);
+                      config_.seeded_ecm_brent_suyama_degree, config_.seeded_brent_pollard_enabled,
+                      config_.max_factorization_attempts);
 
         if (!is_acceptable_cofactor(alg_class)) {
             stats_.algebraic_rejects.fetch_add(1, std::memory_order_relaxed);
