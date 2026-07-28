@@ -41,7 +41,22 @@ using wide_int = long double;
            static_cast<wide_int>(b0) * static_cast<wide_int>(b1);
 }
 
-[[nodiscard]] wide_int abs_i128(wide_int x) noexcept { return x < 0 ? -x : x; }
+[[nodiscard]] wide_int abs_i128(wide_int x) noexcept {
+    return x < 0 ? -x : x;
+}
+
+[[nodiscard]] bool same_basis(const LatticeBasis& lhs, const LatticeBasis& rhs) noexcept {
+    return lhs.e0 == rhs.e0 && lhs.f0 == rhs.f0 && lhs.e1 == rhs.e1 && lhs.f1 == rhs.f1 &&
+           lhs.q == rhs.q && lhs.r == rhs.r;
+}
+
+void require_same_basis(const LatticeBasis& actual, const LatticeBasis& expected,
+                        const char* context) {
+    if (same_basis(actual, expected))
+        return;
+    std::cerr << "  [FAIL] " << context << std::endl;
+    std::abort();
+}
 
 /// Print 128-bit integer to stderr (for assertion failure debugging).
 void print_i128(wide_int x) {
@@ -630,6 +645,74 @@ void test_skew_lll_dispatch() {
     std::cout << "  PASS (dispatch: default off, ENV opt-in, LLL gate dominates)" << std::endl;
 }
 
+// ─── Test 12: explicit config isolation and legacy parity ───────────
+
+void test_explicit_lattice_basis_config() {
+    std::cout << "Testing explicit lattice config isolation and legacy parity..." << std::endl;
+
+    SpecialQ sq = make_sq(1'000'003u, 500'000u);
+    constexpr double skewness = 10.0;
+    const auto lll = compute_lattice_basis(sq, LatticeReductionMethod::LLL, skewness);
+    const auto skew_lll = compute_lattice_basis(sq, LatticeReductionMethod::SkewLLL, skewness);
+    const auto gauss = compute_lattice_basis(sq, LatticeReductionMethod::Gauss, skewness);
+
+    const LatticeBasisReductionConfig lll_without_skew{};
+    setenv("GNFS_LATTICE_LLL", "0", 1);
+    setenv("GNFS_LATTICE_SKEW", "1", 1);
+    require_same_basis(compute_lattice_basis_with_skewness(sq, skewness, lll_without_skew), lll,
+                       "explicit LLL/skew-off ignored opposite Gauss+skew ENV");
+
+    setenv("GNFS_LATTICE_LLL", "1", 1);
+    setenv("GNFS_LATTICE_SKEW", "0", 1);
+    require_same_basis(compute_lattice_basis_with_skewness(sq, skewness, lll_without_skew), lll,
+                       "explicit LLL/skew-off changed after ENV mutation");
+
+    const LatticeBasisReductionConfig lll_with_skew{
+        LatticeReductionMethod::LLL,
+        true,
+    };
+    setenv("GNFS_LATTICE_LLL", "0", 1);
+    setenv("GNFS_LATTICE_SKEW", "0", 1);
+    require_same_basis(compute_lattice_basis_with_skewness(sq, skewness, lll_with_skew), skew_lll,
+                       "explicit LLL/skew-on ignored opposite Gauss+skew-off ENV");
+
+    setenv("GNFS_LATTICE_LLL", "1", 1);
+    setenv("GNFS_LATTICE_SKEW", "1", 1);
+    require_same_basis(compute_lattice_basis_with_skewness(sq, skewness, lll_with_skew), skew_lll,
+                       "explicit LLL/skew-on changed after ENV mutation");
+
+    const LatticeBasisReductionConfig gauss_with_skew{
+        LatticeReductionMethod::Gauss,
+        true,
+    };
+    require_same_basis(compute_lattice_basis_with_skewness(sq, skewness, gauss_with_skew), gauss,
+                       "explicit Gauss was upgraded when skew was enabled");
+
+    unsetenv("GNFS_LATTICE_LLL");
+    unsetenv("GNFS_LATTICE_SKEW");
+    require_same_basis(compute_lattice_basis_with_skewness(sq, skewness),
+                       compute_lattice_basis_with_skewness(sq, skewness, lll_without_skew),
+                       "legacy default did not match explicit LLL/skew-off");
+
+    setenv("GNFS_LATTICE_SKEW", "1", 1);
+    require_same_basis(compute_lattice_basis_with_skewness(sq, skewness),
+                       compute_lattice_basis_with_skewness(sq, skewness, lll_with_skew),
+                       "legacy skew opt-in did not match explicit LLL/skew-on");
+
+    setenv("GNFS_LATTICE_LLL", "0", 1);
+    require_same_basis(
+        compute_lattice_basis_with_skewness(sq, skewness),
+        compute_lattice_basis_with_skewness(
+            sq, skewness, LatticeBasisReductionConfig{LatticeReductionMethod::Gauss, false}),
+        "legacy Gauss gate did not match explicit Gauss");
+
+    unsetenv("GNFS_LATTICE_LLL");
+    unsetenv("GNFS_LATTICE_SKEW");
+
+    std::cout << "  PASS (explicit config ignores ENV changes; legacy parity preserved)"
+              << std::endl;
+}
+
 int main() {
     std::cout << "===========================================" << std::endl;
     std::cout << "  F-K 2005 LLL Lattice Reduction Tests" << std::endl;
@@ -646,6 +729,7 @@ int main() {
     test_skew_lll_invariants();
     test_skew_lll_boundary();
     test_skew_lll_dispatch();
+    test_explicit_lattice_basis_config();
 
     std::cout << "===========================================" << std::endl;
     std::cout << "  All LLL lattice tests passed!" << std::endl;

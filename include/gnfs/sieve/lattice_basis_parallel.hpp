@@ -180,7 +180,7 @@ lattice_basis_parallel_threads_reset_env_cache_for_testing() noexcept {
 /// `basis_inputs[i]`.
 ///
 /// Behavior:
-///   - threads == 1 (default):  sequential for-loop, no ThreadPool created
+///   - threads <= 1:            sequential for-loop, no ThreadPool created
 ///   - threads >= 2:            ThreadPool dispatch via `submit()` +
 ///                              `future.get()`
 ///   - empty inputs span:       returns empty vector (no pool created)
@@ -200,14 +200,13 @@ lattice_basis_parallel_threads_reset_env_cache_for_testing() noexcept {
 template <typename Result, typename Basis, typename ReduceFn>
 inline std::vector<Result>
 parallel_lattice_basis_reduce(std::span<const Basis> basis_inputs,
-                              ReduceFn&& reduce_fn) {
+                              ReduceFn&& reduce_fn,
+                              std::size_t threads) {
     const std::size_t n = basis_inputs.size();
     std::vector<Result> results;
     if (n == 0) return results;
 
     results.resize(n);
-
-    const std::size_t threads = lattice_basis_parallel_threads();
 
     // Sequential path: zero overhead, preserves original behaviour
     // bit-for-bit (no pool spawn, no future overhead). Also exercised when
@@ -259,6 +258,25 @@ parallel_lattice_basis_reduce(std::span<const Basis> basis_inputs,
     }
 
     return results;
+}
+
+/// Legacy environment-driven wrapper.
+///
+/// Empty input preserves the historical no-op behavior without parsing or
+/// seeding the cached environment value. Non-empty input resolves the cached
+/// legacy thread count once and delegates to the explicit overload above.
+/// The callable is forwarded exactly once so move-sensitive reducers are not
+/// consumed before the selected algorithm path uses them.
+template <typename Result, typename Basis, typename ReduceFn>
+inline std::vector<Result>
+parallel_lattice_basis_reduce(std::span<const Basis> basis_inputs,
+                              ReduceFn&& reduce_fn) {
+    if (basis_inputs.empty()) {
+        return {};
+    }
+    const std::size_t threads = lattice_basis_parallel_threads();
+    return parallel_lattice_basis_reduce<Result, Basis>(
+        basis_inputs, std::forward<ReduceFn>(reduce_fn), threads);
 }
 
 }  // namespace gnfs::sieve

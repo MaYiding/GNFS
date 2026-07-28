@@ -57,6 +57,12 @@ enum class LatticeReductionMethod {
     SkewLLL,
 };
 
+/// 显式格基规约配置。低层调用方通过该配置固定行为，避免隐式依赖进程 ENV。
+struct LatticeBasisReductionConfig {
+    LatticeReductionMethod base_method = LatticeReductionMethod::LLL;
+    bool skew_enabled = false;
+};
+
 /// LatticeBasis - 格基
 /// 格 L_q = {(a, b) : a - b*r ≡ 0 (mod q)} (GNFS convention)
 /// For prime ideal P = (q, α - r), P | (a - bα) iff a - b*r ≡ 0 (mod q)
@@ -414,24 +420,35 @@ inline void lb_reduce_skew_lll(int64_t& v0_a, int64_t& v0_b,
     return compute_lattice_basis(sq, detail::lattice_reduction_method_from_env(), 1.0);
 }
 
-/// 计算格基 (skew-aware overload).
+/// 计算格基 (显式 skew-aware 配置，不读取 ENV).
+[[nodiscard]] inline LatticeBasis
+compute_lattice_basis_with_skewness(const SpecialQ& sq, double skewness,
+                                    const LatticeBasisReductionConfig& config) {
+    auto method = config.base_method;
+    if (method == LatticeReductionMethod::LLL && config.skew_enabled &&
+        std::abs(skewness - 1.0) > 1e-6) {
+        method = LatticeReductionMethod::SkewLLL;
+    }
+    return compute_lattice_basis(sq, method, skewness);
+}
+
+/// 计算格基 (legacy skew-aware ENV wrapper).
 /// 当 `GNFS_LATTICE_SKEW=1` + skewness ≠ 1.0 + LLL method 时升级到 SkewLLL.
-/// 默认 ENV OFF → 行为同 unskewed `compute_lattice_basis(sq)` (LLL).
+/// 每次调用都重新读取 ENV；默认 ENV OFF 时保持 unskewed LLL 行为.
 ///
 /// **设计原因**: SkewLLL 改变 (i, j) → (a, b) 映射的几何, 对小 N
 /// (27-bit / 40-bit) + 固定 sieve region 可能 reduce overlap with smooth
 /// region. 仅在显式 opt-in (ENV) 时启用, 大 N (50d+) explicit 验证后
 /// promote 为 default. 当前 default OFF 保证 zero-regression-risk.
-[[nodiscard]] inline LatticeBasis compute_lattice_basis_with_skewness(
-        const SpecialQ& sq, double skewness) {
-    auto method = detail::lattice_reduction_method_from_env();
-    // 仅当 ENV opt-in + method 是 LLL + skewness 显著 ≠ 1.0 时, 升级为 SkewLLL
-    if (method == LatticeReductionMethod::LLL
-            && detail::lattice_skew_enabled_from_env()
-            && std::abs(skewness - 1.0) > 1e-6) {
-        method = LatticeReductionMethod::SkewLLL;
+[[nodiscard]] inline LatticeBasis compute_lattice_basis_with_skewness(const SpecialQ& sq,
+                                                                      double skewness) {
+    const auto base_method = detail::lattice_reduction_method_from_env();
+    bool skew_enabled = false;
+    if (base_method == LatticeReductionMethod::LLL) {
+        skew_enabled = detail::lattice_skew_enabled_from_env();
     }
-    return compute_lattice_basis(sq, method, skewness);
+    return compute_lattice_basis_with_skewness(
+        sq, skewness, LatticeBasisReductionConfig{base_method, skew_enabled});
 }
 
 /// SieveRegion - 筛区域

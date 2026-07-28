@@ -27,10 +27,12 @@
 #include <atomic>
 #include <cassert>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
+#include <mutex>
 #include <numeric>
 #include <span>
 #include <stdexcept>
@@ -86,6 +88,37 @@ void apply_env(const char* value) {
         setenv("GNFS_LATTICE_BASIS_PARALLEL_THREADS", value, /*overwrite=*/1);
     }
     lattice_basis_parallel_threads_reset_env_cache_for_testing();
+}
+
+[[noreturn]] void fail_check(const char* message) {
+    std::cerr << "\n  ERROR: " << message << std::endl;
+    std::abort();
+}
+
+void check(bool condition, const char* message) {
+    if (!condition) {
+        fail_check(message);
+    }
+}
+
+std::vector<MockBasis> make_cache_isolation_inputs() {
+    std::vector<MockBasis> bases;
+    bases.reserve(16);
+    for (uint64_t i = 0; i < 16; ++i) {
+        bases.push_back({i * 1009ULL + 17, i * 11ULL + 3});
+    }
+    return bases;
+}
+
+void check_mock_results(const std::vector<MockBasis>& bases,
+                        const std::vector<MockReduced>& results,
+                        const char* message) {
+    check(results.size() == bases.size(), message);
+    for (std::size_t i = 0; i < bases.size(); ++i) {
+        if (!(results[i] == mock_reduce(bases[i]))) {
+            fail_check(message);
+        }
+    }
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -581,6 +614,149 @@ void test_reset_env_cache_hook() {
     std::cout << " PASS\n";
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Test 14: an explicit four-thread request must ignore a stale cached legacy
+//          value of one. A two-worker rendezvous proves the parallel path was
+//          entered; output parity alone could not distinguish the paths.
+// ───────────────────────────────────────────────────────────────────────────
+void test_explicit_four_ignores_stale_cached_one() {
+    std::cout << "Test 14: explicit 4 ignores stale cached 1..."
+              << std::flush;
+
+    apply_env("1");
+    check(lattice_basis_parallel_threads() == 1,
+          "failed to seed stale cache with one");
+    setenv("GNFS_LATTICE_BASIS_PARALLEL_THREADS", "4", /*overwrite=*/1);
+
+    auto bases = make_cache_isolation_inputs();
+    std::mutex mutex;
+    std::condition_variable ready;
+    std::size_t active = 0;
+    std::size_t max_active = 0;
+    bool release = false;
+
+    auto results = parallel_lattice_basis_reduce<MockReduced, MockBasis>(
+        std::span<const MockBasis>(bases),
+        [&](const MockBasis& basis) -> MockReduced {
+            std::unique_lock lock(mutex);
+            ++active;
+            max_active = std::max(max_active, active);
+            if (active >= 2) {
+                release = true;
+                ready.notify_all();
+            }
+            const bool rendezvous_reached = ready.wait_for(
+                lock, std::chrono::seconds(2), [&release]() { return release; });
+            if (!rendezvous_reached) {
+                throw std::runtime_error(
+                    "explicit four-thread dispatch used stale sequential cache");
+            }
+            --active;
+            lock.unlock();
+            return mock_reduce(basis);
+        },
+        4);
+
+    check(max_active >= 2,
+          "explicit four-thread dispatch did not run reducers concurrently");
+    check_mock_results(bases, results,
+                       "explicit four-thread results differ from reference");
+    check(lattice_basis_parallel_threads() == 1,
+          "explicit four-thread dispatch mutated stale cached one");
+
+    apply_env(nullptr);
+    std::cout << " PASS\n";
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Test 15: an explicit one-thread request must ignore a stale cached legacy
+//          parallel value. Every reducer must execute on the caller thread.
+// ───────────────────────────────────────────────────────────────────────────
+void test_explicit_one_ignores_stale_cached_four() {
+    std::cout << "Test 15: explicit 1 ignores stale cached 4..."
+              << std::flush;
+
+    apply_env("4");
+    const std::size_t stale_parallel_threads =
+        lattice_basis_parallel_threads();
+    check(stale_parallel_threads >= 2,
+          "failed to seed stale cache with a parallel value");
+    setenv("GNFS_LATTICE_BASIS_PARALLEL_THREADS", "1", /*overwrite=*/1);
+
+    auto bases = make_cache_isolation_inputs();
+    const std::thread::id caller = std::this_thread::get_id();
+    std::atomic<bool> stayed_on_caller{true};
+    auto results = parallel_lattice_basis_reduce<MockReduced, MockBasis>(
+        std::span<const MockBasis>(bases),
+        [&](const MockBasis& basis) -> MockReduced {
+            if (std::this_thread::get_id() != caller) {
+                stayed_on_caller.store(false, std::memory_order_relaxed);
+            }
+            return mock_reduce(basis);
+        },
+        1);
+
+    check(stayed_on_caller.load(std::memory_order_relaxed),
+          "explicit one-thread dispatch used a worker thread");
+    check_mock_results(bases, results,
+                       "explicit one-thread results differ from reference");
+    check(lattice_basis_parallel_threads() == stale_parallel_threads,
+          "explicit one-thread dispatch mutated stale parallel cache");
+
+    apply_env(nullptr);
+    std::cout << " PASS\n";
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Test 16: the explicit overload neither seeds an uninitialized legacy cache
+//          nor mutates an initialized one. threads=0 also proves the explicit
+//          zero request takes the sequential caller-thread path.
+// ───────────────────────────────────────────────────────────────────────────
+void test_explicit_dispatch_does_not_seed_or_mutate_cache() {
+    std::cout << "Test 16: explicit dispatch does not seed/mutate cache..."
+              << std::flush;
+
+    setenv("GNFS_LATTICE_BASIS_PARALLEL_THREADS", "1", /*overwrite=*/1);
+    lattice_basis_parallel_threads_reset_env_cache_for_testing();
+
+    auto bases = make_cache_isolation_inputs();
+    const std::thread::id caller = std::this_thread::get_id();
+    std::atomic<bool> stayed_on_caller{true};
+    auto zero_thread_results =
+        parallel_lattice_basis_reduce<MockReduced, MockBasis>(
+            std::span<const MockBasis>(bases),
+            [&](const MockBasis& basis) -> MockReduced {
+                if (std::this_thread::get_id() != caller) {
+                    stayed_on_caller.store(false, std::memory_order_relaxed);
+                }
+                return mock_reduce(basis);
+            },
+            0);
+    check(stayed_on_caller.load(std::memory_order_relaxed),
+          "explicit zero-thread dispatch used a worker thread");
+    check_mock_results(bases, zero_thread_results,
+                       "explicit zero-thread results differ from reference");
+
+    // If the explicit call had seeded the cache from the previous "1", this
+    // raw env mutation would remain invisible to the first legacy lookup.
+    setenv("GNFS_LATTICE_BASIS_PARALLEL_THREADS", "4", /*overwrite=*/1);
+    const std::size_t cached_parallel_threads =
+        lattice_basis_parallel_threads();
+    check(cached_parallel_threads >= 2,
+          "explicit dispatch seeded the legacy cache");
+
+    auto explicit_results =
+        parallel_lattice_basis_reduce<MockReduced, MockBasis>(
+            std::span<const MockBasis>(bases), mock_reduce, 1);
+    check_mock_results(bases, explicit_results,
+                       "explicit dispatch results differ from reference");
+    check(lattice_basis_parallel_threads() == cached_parallel_threads,
+          "explicit dispatch mutated initialized legacy cache");
+
+    apply_env(nullptr);
+    std::cout << " PASS\n";
+}
+
 }  // namespace
 
 int main() {
@@ -600,6 +776,9 @@ int main() {
     test_non_trivial_result_type();
     test_reduce_fn_exception_propagates();
     test_reset_env_cache_hook();
+    test_explicit_four_ignores_stale_cached_one();
+    test_explicit_one_ignores_stale_cached_four();
+    test_explicit_dispatch_does_not_seed_or_mutate_cache();
 
     std::cout << std::endl
               << "=== All Lattice Basis Parallel Tests PASSED ==="
