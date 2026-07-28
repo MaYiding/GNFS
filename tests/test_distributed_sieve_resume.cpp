@@ -64,6 +64,12 @@ using PrivateLeaseReservationReceipt = wave_detail::DistributedSievePrivateLease
 using PrivateLeaseRecoveryEdge = wave_detail::DistributedSievePrivateLeaseRecoveryEdge;
 using WorkerAttemptStartReceipt = wave_detail::DistributedSieveWorkerAttemptStartReceipt;
 
+template <typename Type>
+concept HasClaimMember = requires(Type& value) { value.claim; };
+
+template <typename Type>
+concept HasReceiptMember = requires(Type& value) { value.receipt; };
+
 static_assert(!noexcept(sieve::distributed_sieve_record_kind(std::declval<const Record&>())));
 static_assert(!std::is_default_constructible_v<WorkerAttemptStartReceipt>);
 static_assert(!std::is_copy_constructible_v<WorkerAttemptStartReceipt>);
@@ -4346,22 +4352,23 @@ void observe_wave_reservation_witnesses(
     void* opaque) noexcept {
     auto& context = *static_cast<WaveReservationWitnessObservationContext*>(opaque);
     context.invoked = true;
-    if (witnesses.size() != 1U) {
+    const auto witness = std::ranges::find(
+        witnesses, context.expected_base_lock_leaf,
+        &wave_detail::DistributedSievePrivateLeaseReservationInventoryWitness::base_lock_leaf);
+    if (witness == witnesses.end()) {
         return;
     }
-    const auto& witness = witnesses.front();
     const auto phase = static_cast<std::size_t>(context.expected_boundary);
     const bool expects_lease_id =
         context.expected_boundary !=
         wave_detail::DistributedSievePrivateLeaseReservationBoundary::PermitAcquired;
-    const bool has_lease_id = witness.lease_id[0] != 0 || witness.lease_id[1] != 0;
-    context.matched = witness.base_lock_leaf == context.expected_base_lock_leaf &&
-                      witness.boundary == context.expected_boundary &&
+    const bool has_lease_id = witness->lease_id[0] != 0 || witness->lease_id[1] != 0;
+    context.matched = witness->boundary == context.expected_boundary &&
                       has_lease_id == expects_lease_id &&
-                      witness.reserved_marker_identity.has_value() == (phase >= 1U) &&
-                      witness.directory_identity.has_value() == (phase >= 3U) &&
-                      witness.owner_marker_identity.has_value() == (phase >= 4U) &&
-                      witness.owned_marker_identity.has_value() == (phase >= 6U);
+                      witness->reserved_marker_identity.has_value() == (phase >= 1U) &&
+                      witness->directory_identity.has_value() == (phase >= 3U) &&
+                      witness->owner_marker_identity.has_value() == (phase >= 4U) &&
+                      witness->owned_marker_identity.has_value() == (phase >= 6U);
 }
 
 #if !defined(_WIN32)
@@ -5659,6 +5666,1058 @@ fork_at_worker_attempt_start_fault(wave_detail::DistributedSieveWorkerAttemptSta
         context.child_process = child;
     }
     return false;
+}
+
+[[nodiscard]] bool wait_for_child(pid_t child, int& status) noexcept;
+
+enum class WorkerAttemptReconcileRecordShape : std::uint8_t {
+    pending_only,
+    canonical_only,
+    identical_dual,
+};
+
+struct WorkerAttemptReconcileFixture final {
+    wave_detail::DistributedSieveWorkerAttemptNamesV1 names;
+    sieve::AttemptStartedV1 record;
+    std::vector<std::byte> bytes;
+    durable_record::RecordSnapshot expected_canonical_snapshot;
+    durable_record::RecordPublishDisposition expected_publication_disposition =
+        durable_record::RecordPublishDisposition::none;
+};
+
+struct WorkerAttemptReconcileStopContext final {
+    wave_detail::DistributedSieveWorkerAttemptReconcileFaultPoint target =
+        wave_detail::DistributedSieveWorkerAttemptReconcileFaultPoint::PendingDurable;
+    std::array<bool, static_cast<std::size_t>(
+                         wave_detail::DistributedSieveWorkerAttemptReconcileFaultPoint::Count)>
+        observed{};
+};
+
+[[nodiscard]] bool stop_at_worker_attempt_reconcile_fault(
+    wave_detail::DistributedSieveWorkerAttemptReconcileFaultPoint point, void* opaque) noexcept {
+    auto& context = *static_cast<WorkerAttemptReconcileStopContext*>(opaque);
+    const auto index = static_cast<std::size_t>(point);
+    if (index < context.observed.size()) {
+        context.observed[index] = true;
+    }
+    return point == context.target;
+}
+
+enum class WorkerAttemptReconcileForkSeam : std::uint8_t {
+    before_normalization,
+    canonical_durable,
+    first_normalized,
+    record_normalized,
+    p3_remove,
+};
+
+struct WorkerAttemptReconcileForkContext final {
+    WorkerAttemptReconcileForkSeam seam = WorkerAttemptReconcileForkSeam::before_normalization;
+    pid_t original_process = -1;
+    pid_t child_process = -1;
+    bool invoked = false;
+};
+
+void fork_worker_attempt_reconcile_once(WorkerAttemptReconcileForkContext& context) noexcept {
+    if (context.invoked) {
+        return;
+    }
+    context.invoked = true;
+    const pid_t child = ::fork();
+    if (child != 0) {
+        context.child_process = child;
+    }
+}
+
+void fork_at_worker_attempt_reconcile_boundary(void* opaque) noexcept {
+    auto& context = *static_cast<WorkerAttemptReconcileForkContext*>(opaque);
+    fork_worker_attempt_reconcile_once(context);
+}
+
+[[nodiscard]] bool fork_at_worker_attempt_reconcile_fault(
+    wave_detail::DistributedSieveWorkerAttemptReconcileFaultPoint point, void* opaque) noexcept {
+    auto& context = *static_cast<WorkerAttemptReconcileForkContext*>(opaque);
+    const bool selected =
+        (context.seam == WorkerAttemptReconcileForkSeam::canonical_durable &&
+         point ==
+             wave_detail::DistributedSieveWorkerAttemptReconcileFaultPoint::CanonicalDurable) ||
+        (context.seam == WorkerAttemptReconcileForkSeam::record_normalized &&
+         point == wave_detail::DistributedSieveWorkerAttemptReconcileFaultPoint::RecordNormalized);
+    if (selected) {
+        fork_worker_attempt_reconcile_once(context);
+    }
+    return false;
+}
+
+void fork_before_worker_attempt_reconcile_p3_remove(PrivateLeaseRecoveryEdge edge,
+                                                    void* opaque) noexcept {
+    auto& context = *static_cast<WorkerAttemptReconcileForkContext*>(opaque);
+    if (edge.source ==
+            wave_detail::DistributedSievePrivateLeaseReservationBoundary::StagingDirectoryDurable &&
+        edge.successor == wave_detail::DistributedSievePrivateLeaseReservationBoundary::
+                              ReservedCanonicalDurable) {
+        fork_worker_attempt_reconcile_once(context);
+    }
+}
+
+struct WorkerAttemptReconcileDeleteRecordContext final {
+    std::filesystem::path record;
+    int native_error = 0;
+    bool invoked = false;
+    bool removed = false;
+};
+
+void delete_worker_attempt_record_before_normalization(void* opaque) noexcept {
+    auto& context = *static_cast<WorkerAttemptReconcileDeleteRecordContext*>(opaque);
+    if (context.invoked) {
+        return;
+    }
+    context.invoked = true;
+    int removed = -1;
+    do {
+        removed = ::unlink(context.record.c_str());
+    } while (removed != 0 && errno == EINTR);
+    if (removed != 0) {
+        context.native_error = errno;
+        return;
+    }
+    context.removed = true;
+}
+
+struct WorkerAttemptReconcileP3RecordReplacementContext final {
+    PrivateLeaseRecoveryEdge target = PRIVATE_LEASE_RECOVERY_EDGES[2];
+    WaveSameBytesReplacementContext record;
+    bool invoked = false;
+};
+
+struct WorkerAttemptReconcileBaseLockDisplacementContext final {
+    std::filesystem::path canonical;
+    std::filesystem::path displaced;
+    int native_error = 0;
+    bool invoked = false;
+    bool displaced_successfully = false;
+};
+
+struct WorkerAttemptReconcileNormalizedReplacementContext final {
+    WorkerAttemptReconcileBaseLockDisplacementContext target;
+    WaveSameBytesReplacementContext record;
+    bool invoked = false;
+};
+
+void displace_worker_attempt_reconcile_base_lock(
+    WorkerAttemptReconcileBaseLockDisplacementContext& context) noexcept {
+    if (context.invoked) {
+        return;
+    }
+    context.invoked = true;
+    int renamed = -1;
+    do {
+        renamed = ::rename(context.canonical.c_str(), context.displaced.c_str());
+    } while (renamed != 0 && errno == EINTR);
+    if (renamed != 0) {
+        context.native_error = errno;
+        return;
+    }
+    context.displaced_successfully = true;
+}
+
+void replace_worker_attempt_normalized_target_and_record(void* opaque) noexcept {
+    auto& context = *static_cast<WorkerAttemptReconcileNormalizedReplacementContext*>(opaque);
+    if (context.invoked) {
+        return;
+    }
+    context.invoked = true;
+    displace_worker_attempt_reconcile_base_lock(context.target);
+    replace_marker_with_same_bytes_after_first_inventory(&context.record);
+}
+
+void replace_worker_attempt_record_before_staging_remove(PrivateLeaseRecoveryEdge edge,
+                                                         void* opaque) noexcept {
+    auto& context = *static_cast<WorkerAttemptReconcileP3RecordReplacementContext*>(opaque);
+    if (edge != context.target || context.invoked) {
+        return;
+    }
+    context.invoked = true;
+    replace_marker_with_same_bytes_after_first_inventory(&context.record);
+}
+
+[[nodiscard]] WorkerAttemptReconcileFixture prepare_worker_attempt_reconcile_fixture(
+    wave_detail::DistributedSieveWaveStore& store, const std::filesystem::path& root,
+    wave_detail::DistributedSievePrivateLeaseReservationBoundary boundary,
+    WorkerAttemptReconcileRecordShape shape, std::uint32_t attempt_ordinal = 0,
+    std::optional<Digest> predecessor_digest = std::nullopt) {
+    using Boundary = wave_detail::DistributedSievePrivateLeaseReservationBoundary;
+
+    const auto manifest = store.manifest();
+    const auto chunk = manifest.chunks.front();
+    const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk.relative_artifact_stem, chunk.chunk_id, attempt_ordinal);
+    CHECK(names.has_value());
+    CHECK(attempt_ordinal < manifest.max_worker_attempts);
+    CHECK((attempt_ordinal == 0) == !predecessor_digest.has_value());
+    const bool p0 = boundary == Boundary::PermitAcquired;
+    const bool p8 = boundary == Boundary::FinalDirectoryDurable;
+    const bool pending_only = shape == WorkerAttemptReconcileRecordShape::pending_only;
+    const bool dual = shape == WorkerAttemptReconcileRecordShape::identical_dual;
+    CHECK(boundary != Boundary::Count);
+    CHECK(!pending_only || p8);
+
+    std::optional<PrivateLeaseReservationReceipt> reservation;
+    sieve::LeaseIdentityV1 lease;
+    if (!p0) {
+        reservation.emplace(reserve_wave_attempt_p8(store, chunk.chunk_id, attempt_ordinal,
+                                                    "reserve reconcile fixture P8"));
+        lease = wave_attempt_lease_from_receipt(*reservation);
+    } else {
+        create_wave_attempt_p0(store, chunk.chunk_id, attempt_ordinal,
+                               "create reconcile fixture P0");
+        lease = lease_identity(1830U + static_cast<std::uint64_t>(attempt_ordinal) * 90U +
+                                   static_cast<std::uint64_t>(shape) * 30U,
+                               names->relative_lease_stem);
+    }
+    if (reservation.has_value()) {
+        CHECK(reservation->owned_by_current_process());
+        require_wave_status(reservation->revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "reconcile fixture retains exact P8 reservation");
+        reservation.reset();
+    }
+    if (!p0 && !p8) {
+        auto opened = store.open_worker_attempt_private_lease_root(chunk.chunk_id, attempt_ordinal);
+        (void)require_private_lease_root_claim_ready(
+            opened, "open P8 reconcile fixture for exact-prefix rollback");
+        WavePrivateLeaseRecoveryStopContext stop{
+            .target = boundary,
+        };
+        auto interrupted = wave_detail::recover_worker_attempt_private_lease(
+            std::move(opened), wave_detail::DistributedSievePrivateLeaseRecoveryTestHooks{
+                                   .stop_after = stop_at_wave_private_lease_recovery_boundary,
+                                   .context = &stop,
+                               });
+        CHECK(!interrupted);
+        CHECK(interrupted.claim == nullptr);
+        CHECK(opened.claim == nullptr);
+        require_wave_status(interrupted.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::interrupted,
+                            "rollback reconcile fixture to exact durable prefix");
+        CHECK(interrupted.diagnostic.last_private_lease_recovery_boundary == boundary);
+        CHECK(stop.observed[static_cast<std::size_t>(boundary)]);
+    }
+
+    const auto record = make_wave_attempt_started(
+        manifest, chunk, attempt_ordinal,
+        predecessor_digest.has_value() ? *predecessor_digest : store.manifest_digest(),
+        std::move(lease));
+    const auto bytes = encode_or_fail(Record{record});
+    if (!pending_only) {
+        publish_wave_attempt_canonical_record(root, *names, record,
+                                              "publish reconcile fixture canonical");
+    }
+    if (pending_only || dual) {
+        publish_wave_attempt_fixture_leaf(root, names->pending_record_leaf, record,
+                                          "publish reconcile fixture pending");
+    }
+
+    const auto canonical_snapshot =
+        !pending_only ? std::optional{wave_record_snapshot(capture_wave_root_entry_snapshot(
+                            root / names->canonical_record_leaf, names->canonical_record_leaf))}
+                      : std::nullopt;
+    const auto pending_snapshot =
+        pending_only || dual ? std::optional{wave_record_snapshot(capture_wave_root_entry_snapshot(
+                                   root / names->pending_record_leaf, names->pending_record_leaf))}
+                             : std::nullopt;
+    CHECK(canonical_snapshot.has_value() || pending_snapshot.has_value());
+    if (dual) {
+        CHECK(canonical_snapshot != pending_snapshot);
+    }
+
+    WaveReservationWitnessObservationContext phase_observation{
+        .expected_boundary = boundary,
+        .expected_base_lock_leaf = names->base_lock_leaf,
+    };
+    require_wave_status(store.revalidate(wave_detail::DistributedSieveWaveStoreInventoryTestHooks{
+                            .observe_reservation_witnesses = observe_wave_reservation_witnesses,
+                            .context = &phase_observation,
+                        }),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "worker-attempt reconcile fixture is initially closed");
+    CHECK(phase_observation.invoked);
+    CHECK(phase_observation.matched);
+    CHECK(!relation_base_lock_reports_busy(root / names->base_lock_leaf));
+
+    return {
+        .names = *names,
+        .record = record,
+        .bytes = bytes,
+        .expected_canonical_snapshot =
+            canonical_snapshot.has_value() ? *canonical_snapshot : *pending_snapshot,
+        .expected_publication_disposition =
+            pending_only ? durable_record::RecordPublishDisposition::recovered_pending
+                         : durable_record::RecordPublishDisposition::confirmed_existing,
+    };
+}
+
+void require_worker_attempt_reconcile_inventory_and_locks_released(
+    wave_detail::DistributedSieveWaveStore& store, const std::filesystem::path& root,
+    const WorkerAttemptReconcileFixture& fixture,
+    wave_detail::DistributedSievePrivateLeaseReservationBoundary expected_boundary,
+    std::string_view context) {
+    WaveReservationWitnessObservationContext observation{
+        .expected_boundary = expected_boundary,
+        .expected_base_lock_leaf = fixture.names.base_lock_leaf,
+    };
+    require_wave_status(store.revalidate(wave_detail::DistributedSieveWaveStoreInventoryTestHooks{
+                            .observe_reservation_witnesses = observe_wave_reservation_witnesses,
+                            .context = &observation,
+                        }),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready, context);
+    CHECK(observation.invoked);
+    CHECK(observation.matched);
+    CHECK(!relation_base_lock_reports_busy(root / fixture.names.base_lock_leaf));
+
+    auto root_claim = store.claim_private_lease_root();
+    (void)require_private_lease_root_claim_ready(root_claim, context);
+    root_claim.claim.reset();
+}
+
+void require_worker_attempt_reconcile_success(
+    wave_detail::DistributedSieveWaveStore& store, const std::filesystem::path& root,
+    const WorkerAttemptReconcileFixture& fixture,
+    std::optional<std::uint32_t> expected_next_attempt_ordinal, std::string_view context) {
+    using Boundary = wave_detail::DistributedSievePrivateLeaseReservationBoundary;
+
+    auto opened = store.open_worker_attempt_private_lease_root(fixture.record.chunk_id,
+                                                               fixture.record.attempt_ordinal);
+    auto& claim = require_private_lease_root_claim_ready(opened, context);
+    require_wave_status(claim.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        context);
+    CHECK(relation_base_lock_reports_busy(root / fixture.names.base_lock_leaf));
+
+    auto reconciled = wave_detail::reconcile_worker_attempt_started(std::move(opened));
+    CHECK(opened.claim == nullptr);
+    CHECK(reconciled);
+    CHECK(reconciled.reconciled.has_value());
+    require_wave_status(reconciled.diagnostic, wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        context);
+    CHECK(reconciled.diagnostic.publication_status == durable_record::RecordPublishStatus::durable);
+    CHECK(reconciled.diagnostic.publication_disposition ==
+          fixture.expected_publication_disposition);
+    const auto& fact = *reconciled.reconciled;
+    CHECK(encode_or_fail(Record{fact.record}) == fixture.bytes);
+    CHECK(fact.canonical_snapshot == fixture.expected_canonical_snapshot);
+    CHECK(fact.next_attempt_ordinal == expected_next_attempt_ordinal);
+
+    const auto canonical_path = root / fixture.names.canonical_record_leaf;
+    CHECK(entry_exists_no_follow(canonical_path));
+    CHECK(!entry_exists_no_follow(root / fixture.names.pending_record_leaf));
+    CHECK(!entry_exists_no_follow(root / fixture.names.private_directory_leaf));
+    CHECK(read_file_bytes(canonical_path) == fixture.bytes);
+    CHECK(wave_record_snapshot(capture_wave_root_entry_snapshot(
+              canonical_path, fixture.names.canonical_record_leaf)) ==
+          fixture.expected_canonical_snapshot);
+    require_worker_attempt_reconcile_inventory_and_locks_released(
+        store, root, fixture, Boundary::PermitAcquired, context);
+}
+
+template <typename Reconcile>
+void run_worker_attempt_reconcile_success_matrix(Reconcile& reconcile) {
+    using Boundary = wave_detail::DistributedSievePrivateLeaseReservationBoundary;
+
+    std::size_t case_index = 0;
+    const auto run_case = [&](Boundary boundary, WorkerAttemptReconcileRecordShape shape) {
+        WaveStoreTempDirectory temp;
+        const auto root =
+            temp.path() / ("worker-attempt-reconcile-success-" + std::to_string(case_index++));
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create attempt-reconcile success fixture");
+        const auto chunk = store.manifest().chunks.front();
+        const auto fixture = prepare_worker_attempt_reconcile_fixture(store, root, boundary, shape);
+
+        auto opened = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+        auto& claim = require_private_lease_root_claim_ready(
+            opened, "open record-bearing attempt for reconciliation");
+        require_wave_status(claim.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "record-bearing reconciliation claim initially revalidates");
+        CHECK(relation_base_lock_reports_busy(root / fixture.names.base_lock_leaf));
+
+        auto reconciled = std::invoke(reconcile, std::move(opened));
+        using Result = std::remove_cvref_t<decltype(reconciled)>;
+        using Fact = typename std::remove_cvref_t<decltype(reconciled.reconciled)>::value_type;
+        static_assert(!HasClaimMember<Result>);
+        static_assert(!HasReceiptMember<Result>);
+        static_assert(!HasClaimMember<Fact>);
+        static_assert(!HasReceiptMember<Fact>);
+
+        CHECK(opened.claim == nullptr);
+        CHECK(reconciled);
+        CHECK(reconciled.reconciled.has_value());
+        require_wave_status(reconciled.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "worker-attempt record reconciliation succeeds");
+        CHECK(reconciled.diagnostic.publication_status ==
+              durable_record::RecordPublishStatus::durable);
+        CHECK(reconciled.diagnostic.publication_disposition ==
+              fixture.expected_publication_disposition);
+        const auto& fact = *reconciled.reconciled;
+        CHECK(encode_or_fail(Record{fact.record}) == fixture.bytes);
+        CHECK(fact.canonical_snapshot == fixture.expected_canonical_snapshot);
+        CHECK(fact.next_attempt_ordinal.has_value());
+        CHECK(*fact.next_attempt_ordinal == 1U);
+
+        const auto canonical_path = root / fixture.names.canonical_record_leaf;
+        CHECK(entry_exists_no_follow(canonical_path));
+        CHECK(!entry_exists_no_follow(root / fixture.names.pending_record_leaf));
+        CHECK(!entry_exists_no_follow(root / fixture.names.private_directory_leaf));
+        CHECK(read_file_bytes(canonical_path) == fixture.bytes);
+        CHECK(wave_record_snapshot(capture_wave_root_entry_snapshot(
+                  canonical_path, fixture.names.canonical_record_leaf)) ==
+              fixture.expected_canonical_snapshot);
+
+        WaveReservationWitnessObservationContext p0_observation{
+            .expected_boundary = Boundary::PermitAcquired,
+            .expected_base_lock_leaf = fixture.names.base_lock_leaf,
+        };
+        require_wave_status(
+            store.revalidate(wave_detail::DistributedSieveWaveStoreInventoryTestHooks{
+                .observe_reservation_witnesses = observe_wave_reservation_witnesses,
+                .context = &p0_observation,
+            }),
+            wave_detail::DistributedSieveWaveStoreStatus::ready,
+            "reconciled attempt is canonical-only at exact P0");
+        CHECK(p0_observation.invoked);
+        CHECK(p0_observation.matched);
+        CHECK(!relation_base_lock_reports_busy(root / fixture.names.base_lock_leaf));
+
+        auto root_claim = store.claim_private_lease_root();
+        (void)require_private_lease_root_claim_ready(
+            root_claim, "attempt reconciliation releases the root slot");
+        root_claim.claim.reset();
+    };
+
+    run_case(Boundary::FinalDirectoryDurable, WorkerAttemptReconcileRecordShape::pending_only);
+    for (const auto boundary :
+         wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVATION_BOUNDARIES) {
+        run_case(boundary, WorkerAttemptReconcileRecordShape::canonical_only);
+        run_case(boundary, WorkerAttemptReconcileRecordShape::identical_dual);
+    }
+    CHECK(case_index == 19U);
+}
+
+void test_wave_store_worker_attempt_reconcile_success_matrix() {
+    auto reconcile = [](auto&& claimed) {
+        return wave_detail::reconcile_worker_attempt_started(
+            std::forward<decltype(claimed)>(claimed));
+    };
+    run_worker_attempt_reconcile_success_matrix(reconcile);
+}
+
+void test_wave_store_worker_attempt_reconcile_publication_faults_replay() {
+    using Boundary = wave_detail::DistributedSievePrivateLeaseReservationBoundary;
+    using Fault = wave_detail::DistributedSieveWorkerAttemptReconcileFaultPoint;
+
+    constexpr std::array fault_points{
+        Fault::PendingDurable,
+        Fault::CanonicalPromoted,
+        Fault::CanonicalDurable,
+        Fault::RecordNormalized,
+    };
+
+    for (const auto point : fault_points) {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / ("worker-attempt-reconcile-publication-fault-" +
+                                         std::to_string(static_cast<std::size_t>(point)));
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store =
+            require_wave_ready(created, "create attempt-reconcile publication-fault fixture");
+        const Digest manifest_digest = store.manifest_digest();
+        auto fixture = prepare_worker_attempt_reconcile_fixture(
+            store, root, Boundary::FinalDirectoryDurable,
+            WorkerAttemptReconcileRecordShape::pending_only);
+
+        auto opened = store.open_worker_attempt_private_lease_root(fixture.record.chunk_id,
+                                                                   fixture.record.attempt_ordinal);
+        (void)require_private_lease_root_claim_ready(
+            opened, "open pending attempt before reconciliation publication interruption");
+        WorkerAttemptReconcileStopContext stop{
+            .target = point,
+        };
+        auto interrupted = wave_detail::reconcile_worker_attempt_started(
+            std::move(opened), wave_detail::DistributedSieveWorkerAttemptReconcileTestHooks{
+                                   .stop_after = stop_at_worker_attempt_reconcile_fault,
+                                   .context = &stop,
+                               });
+        CHECK(opened.claim == nullptr);
+        CHECK(!interrupted);
+        CHECK(!interrupted.reconciled.has_value());
+        require_wave_status(interrupted.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::interrupted,
+                            "attempt reconciliation publication stop returns no fact");
+        CHECK(interrupted.diagnostic.publication_status ==
+              (point == Fault::RecordNormalized
+                   ? durable_record::RecordPublishStatus::durable
+                   : durable_record::RecordPublishStatus::interrupted));
+        CHECK(interrupted.diagnostic.publication_disposition ==
+              durable_record::RecordPublishDisposition::recovered_pending);
+        CHECK(interrupted.diagnostic.last_worker_attempt_reconcile_fault_point == point);
+        CHECK(stop.observed[static_cast<std::size_t>(point)]);
+
+        const bool pending = point == Fault::PendingDurable;
+        const auto visible_path = root / (pending ? fixture.names.pending_record_leaf
+                                                  : fixture.names.canonical_record_leaf);
+        CHECK(entry_exists_no_follow(visible_path));
+        CHECK(entry_exists_no_follow(root / fixture.names.pending_record_leaf) == pending);
+        CHECK(entry_exists_no_follow(root / fixture.names.canonical_record_leaf) == !pending);
+        CHECK(read_file_bytes(visible_path) == fixture.bytes);
+        CHECK(wave_record_snapshot(capture_wave_root_entry_snapshot(
+                  visible_path, visible_path.filename().string())) ==
+              fixture.expected_canonical_snapshot);
+        require_worker_attempt_reconcile_inventory_and_locks_released(
+            store, root, fixture, Boundary::FinalDirectoryDurable,
+            "interrupted record normalization preserves P8 and releases locks");
+
+        created.store.reset();
+        auto reopened = wave_detail::DistributedSieveWaveStore::open(root, manifest_digest);
+        auto& reopened_store =
+            require_wave_ready(reopened, "reopen interrupted reconciliation publication prefix");
+        fixture.expected_publication_disposition =
+            pending ? durable_record::RecordPublishDisposition::recovered_pending
+                    : durable_record::RecordPublishDisposition::confirmed_existing;
+        require_worker_attempt_reconcile_success(
+            reopened_store, root, fixture, std::optional<std::uint32_t>{1U},
+            "replay interrupted reconciliation publication prefix");
+    }
+}
+
+void test_wave_store_worker_attempt_reconcile_recovery_edges_replay() {
+    using Fault = wave_detail::DistributedSieveWorkerAttemptReconcileFaultPoint;
+
+    for (const auto edge : PRIVATE_LEASE_RECOVERY_EDGES) {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / ("worker-attempt-reconcile-recovery-edge-" +
+                                         std::to_string(static_cast<std::size_t>(edge.successor)));
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create attempt-reconcile recovery-edge fixture");
+        const Digest manifest_digest = store.manifest_digest();
+        const auto fixture = prepare_worker_attempt_reconcile_fixture(
+            store, root,
+            wave_detail::DistributedSievePrivateLeaseReservationBoundary::FinalDirectoryDurable,
+            WorkerAttemptReconcileRecordShape::canonical_only);
+
+        auto opened = store.open_worker_attempt_private_lease_root(fixture.record.chunk_id,
+                                                                   fixture.record.attempt_ordinal);
+        (void)require_private_lease_root_claim_ready(
+            opened, "open canonical attempt before reconciliation recovery interruption");
+        WavePrivateLeaseRecoveryStopContext recovery_stop{
+            .target = edge.successor,
+        };
+        auto interrupted = wave_detail::reconcile_worker_attempt_started(
+            std::move(opened),
+            wave_detail::DistributedSieveWorkerAttemptReconcileTestHooks{
+                .recovery =
+                    {
+                        .stop_after = stop_at_wave_private_lease_recovery_boundary,
+                        .context = &recovery_stop,
+                    },
+            });
+        CHECK(opened.claim == nullptr);
+        CHECK(!interrupted);
+        CHECK(!interrupted.reconciled.has_value());
+        require_wave_status(interrupted.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::interrupted,
+                            "attempt reconciliation recovery edge returns no fact");
+        CHECK(interrupted.diagnostic.publication_status ==
+              durable_record::RecordPublishStatus::durable);
+        CHECK(interrupted.diagnostic.publication_disposition ==
+              durable_record::RecordPublishDisposition::confirmed_existing);
+        CHECK(interrupted.diagnostic.last_worker_attempt_reconcile_fault_point ==
+              Fault::RecordNormalized);
+        CHECK(interrupted.diagnostic.last_private_lease_recovery_boundary == edge.successor);
+        CHECK(recovery_stop.observed[static_cast<std::size_t>(edge.successor)]);
+
+        const auto canonical_path = root / fixture.names.canonical_record_leaf;
+        CHECK(entry_exists_no_follow(canonical_path));
+        CHECK(!entry_exists_no_follow(root / fixture.names.pending_record_leaf));
+        CHECK(read_file_bytes(canonical_path) == fixture.bytes);
+        CHECK(wave_record_snapshot(capture_wave_root_entry_snapshot(
+                  canonical_path, fixture.names.canonical_record_leaf)) ==
+              fixture.expected_canonical_snapshot);
+        require_worker_attempt_reconcile_inventory_and_locks_released(
+            store, root, fixture, edge.successor,
+            "interrupted reconciliation recovery preserves its successor and releases locks");
+
+        created.store.reset();
+        auto reopened = wave_detail::DistributedSieveWaveStore::open(root, manifest_digest);
+        auto& reopened_store =
+            require_wave_ready(reopened, "reopen interrupted reconciliation recovery edge");
+        require_worker_attempt_reconcile_success(reopened_store, root, fixture,
+                                                 std::optional<std::uint32_t>{1U},
+                                                 "replay interrupted reconciliation recovery edge");
+    }
+}
+
+void test_wave_store_worker_attempt_reconcile_created_record_requires_replay() {
+    using Boundary = wave_detail::DistributedSievePrivateLeaseReservationBoundary;
+    using Fault = wave_detail::DistributedSieveWorkerAttemptReconcileFaultPoint;
+
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "worker-attempt-reconcile-created-record";
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+    auto& store = require_wave_ready(created, "create attempt-reconcile created-record fixture");
+    const Digest manifest_digest = store.manifest_digest();
+    auto fixture =
+        prepare_worker_attempt_reconcile_fixture(store, root, Boundary::FinalDirectoryDurable,
+                                                 WorkerAttemptReconcileRecordShape::canonical_only);
+    const auto original_snapshot = fixture.expected_canonical_snapshot;
+    WorkerAttemptReconcileDeleteRecordContext deletion{
+        .record = root / fixture.names.canonical_record_leaf,
+    };
+
+    auto opened = store.open_worker_attempt_private_lease_root(fixture.record.chunk_id,
+                                                               fixture.record.attempt_ordinal);
+    (void)require_private_lease_root_claim_ready(
+        opened, "open canonical attempt before final normalization race");
+    auto reconciliation_required = wave_detail::reconcile_worker_attempt_started(
+        std::move(opened),
+        wave_detail::DistributedSieveWorkerAttemptReconcileTestHooks{
+            .before_record_normalization = delete_worker_attempt_record_before_normalization,
+            .context = &deletion,
+        });
+    CHECK(opened.claim == nullptr);
+    CHECK(deletion.invoked);
+    CHECK(deletion.removed);
+    CHECK(deletion.native_error == 0);
+    CHECK(!reconciliation_required);
+    CHECK(!reconciliation_required.reconciled.has_value());
+    require_wave_status(reconciliation_required.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::reconciliation_required,
+                        "freshly recreated canonical requires independent reconciliation replay");
+    CHECK(reconciliation_required.diagnostic.publication_status ==
+          durable_record::RecordPublishStatus::durable);
+    CHECK(reconciliation_required.diagnostic.publication_disposition ==
+          durable_record::RecordPublishDisposition::created);
+    CHECK(reconciliation_required.diagnostic.last_worker_attempt_reconcile_fault_point ==
+          Fault::CanonicalDurable);
+
+    const auto canonical_path = root / fixture.names.canonical_record_leaf;
+    CHECK(entry_exists_no_follow(canonical_path));
+    CHECK(!entry_exists_no_follow(root / fixture.names.pending_record_leaf));
+    CHECK(read_file_bytes(canonical_path) == fixture.bytes);
+    fixture.expected_canonical_snapshot = wave_record_snapshot(
+        capture_wave_root_entry_snapshot(canonical_path, fixture.names.canonical_record_leaf));
+    CHECK(fixture.expected_canonical_snapshot != original_snapshot);
+    require_worker_attempt_reconcile_inventory_and_locks_released(
+        store, root, fixture, Boundary::FinalDirectoryDurable,
+        "created-record reconciliation result preserves P8 and releases locks");
+
+    created.store.reset();
+    auto reopened = wave_detail::DistributedSieveWaveStore::open(root, manifest_digest);
+    auto& reopened_store =
+        require_wave_ready(reopened, "reopen newly created reconciliation record");
+    fixture.expected_publication_disposition =
+        durable_record::RecordPublishDisposition::confirmed_existing;
+    require_worker_attempt_reconcile_success(
+        reopened_store, root, fixture, std::optional<std::uint32_t>{1U},
+        "independent replay confirms the newly created canonical record");
+}
+
+void test_wave_store_worker_attempt_reconcile_reports_exhausted_budget() {
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "worker-attempt-reconcile-exhausted-budget";
+    auto draft = wave_manifest_draft();
+    draft.max_worker_attempts = 1;
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, std::move(draft));
+    auto& store = require_wave_ready(created, "create exhausted reconciliation-budget fixture");
+    const auto fixture = prepare_worker_attempt_reconcile_fixture(
+        store, root,
+        wave_detail::DistributedSievePrivateLeaseReservationBoundary::FinalDirectoryDurable,
+        WorkerAttemptReconcileRecordShape::canonical_only);
+
+    require_worker_attempt_reconcile_success(
+        store, root, fixture, std::nullopt,
+        "reconciled final allowed attempt reports an exhausted retry budget");
+}
+
+void test_wave_store_worker_attempt_reconcile_enforces_latest_attempt() {
+    using Boundary = wave_detail::DistributedSievePrivateLeaseReservationBoundary;
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "worker-attempt-reconcile-latest-attempt-one";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store =
+            require_wave_ready(created, "create latest attempt-one reconciliation fixture");
+        const auto predecessor = prepare_worker_attempt_reconcile_fixture(
+            store, root, Boundary::PermitAcquired,
+            WorkerAttemptReconcileRecordShape::canonical_only);
+        const auto predecessor_snapshot =
+            capture_wave_root_entry_snapshot(root / predecessor.names.canonical_record_leaf,
+                                             predecessor.names.canonical_record_leaf);
+        const auto latest = prepare_worker_attempt_reconcile_fixture(
+            store, root, Boundary::FinalDirectoryDurable,
+            WorkerAttemptReconcileRecordShape::canonical_only, 1U, predecessor.record.self_digest);
+
+        require_worker_attempt_reconcile_success(
+            store, root, latest, std::nullopt,
+            "latest attempt one reconciles and reports exhausted two-attempt budget");
+        CHECK(read_file_bytes(root / predecessor.names.canonical_record_leaf) == predecessor.bytes);
+        CHECK(capture_wave_root_entry_snapshot(root / predecessor.names.canonical_record_leaf,
+                                               predecessor.names.canonical_record_leaf) ==
+              predecessor_snapshot);
+        require_worker_attempt_reconcile_inventory_and_locks_released(
+            store, root, predecessor, Boundary::PermitAcquired,
+            "latest attempt reconciliation preserves historical attempt zero at P0");
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "worker-attempt-reconcile-reject-historical-record";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create historical-record rejection fixture");
+        const auto historical = prepare_worker_attempt_reconcile_fixture(
+            store, root, Boundary::PermitAcquired,
+            WorkerAttemptReconcileRecordShape::canonical_only);
+        const auto latest = prepare_worker_attempt_reconcile_fixture(
+            store, root, Boundary::PermitAcquired,
+            WorkerAttemptReconcileRecordShape::canonical_only, 1U, historical.record.self_digest);
+        const auto before = capture_wave_root_snapshot(root);
+
+        auto opened = store.open_worker_attempt_private_lease_root(
+            historical.record.chunk_id, historical.record.attempt_ordinal);
+        (void)require_private_lease_root_claim_ready(
+            opened, "open historical attempt while a later record exists");
+        auto rejected = wave_detail::reconcile_worker_attempt_started(std::move(opened));
+        CHECK(opened.claim == nullptr);
+        CHECK(!rejected);
+        CHECK(!rejected.reconciled.has_value());
+        require_wave_status(rejected.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "reconciler rejects a historical attempt record");
+        CHECK(!rejected.diagnostic.publication_status.has_value());
+        CHECK(!rejected.diagnostic.publication_disposition.has_value());
+        CHECK(capture_wave_root_snapshot(root) == before);
+        require_worker_attempt_reconcile_inventory_and_locks_released(
+            store, root, historical, Boundary::PermitAcquired,
+            "historical-record rejection preserves attempt zero");
+        require_worker_attempt_reconcile_inventory_and_locks_released(
+            store, root, latest, Boundary::PermitAcquired,
+            "historical-record rejection preserves latest attempt one");
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "worker-attempt-reconcile-reject-later-base-lock";
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create later-BaseLock rejection fixture");
+        const auto historical = prepare_worker_attempt_reconcile_fixture(
+            store, root, Boundary::PermitAcquired,
+            WorkerAttemptReconcileRecordShape::canonical_only);
+        const auto chunk = store.manifest().chunks.front();
+        const auto later_names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 1U);
+        CHECK(later_names.has_value());
+        create_wave_attempt_p0(store, chunk.chunk_id, 1U,
+                               "create recordless later-attempt BaseLock");
+        const auto before = capture_wave_root_snapshot(root);
+
+        auto opened = store.open_worker_attempt_private_lease_root(
+            historical.record.chunk_id, historical.record.attempt_ordinal);
+        (void)require_private_lease_root_claim_ready(
+            opened, "open historical attempt while a later BaseLock exists");
+        auto rejected = wave_detail::reconcile_worker_attempt_started(std::move(opened));
+        CHECK(opened.claim == nullptr);
+        CHECK(!rejected);
+        CHECK(!rejected.reconciled.has_value());
+        require_wave_status(rejected.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "reconciler rejects a historical attempt with later BaseLock");
+        CHECK(!rejected.diagnostic.publication_status.has_value());
+        CHECK(!rejected.diagnostic.publication_disposition.has_value());
+        CHECK(capture_wave_root_snapshot(root) == before);
+        require_worker_attempt_reconcile_inventory_and_locks_released(
+            store, root, historical, Boundary::PermitAcquired,
+            "later-BaseLock rejection preserves historical attempt zero");
+        CHECK(!relation_base_lock_reports_busy(root / later_names->base_lock_leaf));
+        require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "later-BaseLock rejection preserves recordless attempt one");
+    }
+}
+
+void test_wave_store_worker_attempt_reconcile_normalized_target_precedence() {
+    using Boundary = wave_detail::DistributedSievePrivateLeaseReservationBoundary;
+    using Fault = wave_detail::DistributedSieveWorkerAttemptReconcileFaultPoint;
+
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "worker-attempt-reconcile-normalized-target-precedence";
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+    auto& store = require_wave_ready(created, "create normalized target-precedence fixture");
+    const auto fixture =
+        prepare_worker_attempt_reconcile_fixture(store, root, Boundary::FinalDirectoryDurable,
+                                                 WorkerAttemptReconcileRecordShape::canonical_only);
+    const auto canonical = root / fixture.names.canonical_record_leaf;
+    const auto target = root / fixture.names.base_lock_leaf;
+    const auto initial_snapshot = capture_wave_root_snapshot(root);
+    WorkerAttemptReconcileNormalizedReplacementContext replacement{
+        .target =
+            {
+                .canonical = target,
+                .displaced = temp.path() / "original-normalized-target-BaseLock",
+            },
+        .record =
+            {
+                .canonical = canonical,
+                .displaced = temp.path() / "original-normalized-attempt-record",
+                .bytes = fixture.bytes,
+            },
+    };
+
+    auto opened = store.open_worker_attempt_private_lease_root(fixture.record.chunk_id,
+                                                               fixture.record.attempt_ordinal);
+    (void)require_private_lease_root_claim_ready(
+        opened, "open canonical attempt before normalized successor replacement");
+    auto rejected = wave_detail::reconcile_worker_attempt_started(
+        std::move(opened), wave_detail::DistributedSieveWorkerAttemptReconcileTestHooks{
+                               .after_first_normalized_successor_validation =
+                                   replace_worker_attempt_normalized_target_and_record,
+                               .context = &replacement,
+                           });
+    CHECK(opened.claim == nullptr);
+    CHECK(!rejected);
+    CHECK(!rejected.reconciled.has_value());
+    require_wave_status(rejected.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "target authority outranks simultaneous normalized-record drift");
+    CHECK(rejected.diagnostic.native_error == std::error_code(ENOENT, std::generic_category()));
+    CHECK(rejected.diagnostic.publication_status == durable_record::RecordPublishStatus::durable);
+    CHECK(rejected.diagnostic.publication_disposition ==
+          durable_record::RecordPublishDisposition::confirmed_existing);
+    CHECK(rejected.diagnostic.last_worker_attempt_reconcile_fault_point == Fault::CanonicalDurable);
+    CHECK(!rejected.diagnostic.last_private_lease_recovery_boundary.has_value());
+    CHECK(!rejected.diagnostic.failed_private_lease_recovery_sync_edge.has_value());
+    CHECK(replacement.invoked);
+    CHECK(replacement.target.invoked);
+    CHECK(replacement.target.displaced_successfully);
+    CHECK(replacement.target.native_error == 0);
+    CHECK(replacement.record.invoked);
+    CHECK(replacement.record.replaced);
+    CHECK(replacement.record.native_error == 0);
+
+    CHECK(!entry_exists_no_follow(target));
+    CHECK(entry_exists_no_follow(replacement.target.displaced));
+    require_distinct_entry_identities(
+        canonical, replacement.record.displaced,
+        "normalized record replacement uses a distinct canonical inode");
+    CHECK(read_file_bytes(canonical) == fixture.bytes);
+    CHECK(read_file_bytes(replacement.record.displaced) == fixture.bytes);
+    CHECK(entry_exists_no_follow(root / fixture.names.private_directory_leaf));
+    CHECK(!entry_exists_no_follow(root / fixture.names.pending_record_leaf));
+    CHECK(!relation_base_lock_reports_busy(replacement.target.displaced));
+
+    std::error_code error;
+    std::filesystem::rename(replacement.target.displaced, target, error);
+    CHECK(!error);
+    require_worker_attempt_reconcile_inventory_and_locks_released(
+        store, root, fixture, Boundary::FinalDirectoryDurable,
+        "restored target proves normalized rejection left cleanup at exact P8");
+    error.clear();
+    CHECK(std::filesystem::remove(canonical, error));
+    CHECK(!error);
+    error.clear();
+    std::filesystem::rename(replacement.record.displaced, canonical, error);
+    CHECK(!error);
+    CHECK(capture_wave_root_snapshot(root) == initial_snapshot);
+    require_worker_attempt_reconcile_success(
+        store, root, fixture, std::optional<std::uint32_t>{1U},
+        "restored normalized target and record replay to canonical-only P0");
+}
+
+void test_wave_store_worker_attempt_reconcile_p3_revalidates_canonical_pin_before_remove() {
+    using Boundary = wave_detail::DistributedSievePrivateLeaseReservationBoundary;
+    using Fault = wave_detail::DistributedSieveWorkerAttemptReconcileFaultPoint;
+
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "worker-attempt-reconcile-p3-record-replacement";
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+    auto& store =
+        require_wave_ready(created, "create attempt-reconcile P3 pin-revalidation fixture");
+    const Digest manifest_digest = store.manifest_digest();
+    const auto fixture =
+        prepare_worker_attempt_reconcile_fixture(store, root, Boundary::FinalDirectoryDurable,
+                                                 WorkerAttemptReconcileRecordShape::canonical_only);
+    const auto canonical = root / fixture.names.canonical_record_leaf;
+    const std::string staging_leaf =
+        fixture.names.relative_lease_stem +
+        std::string(wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_STAGING_TAG) +
+        cleanup_detail::private_lease_id_hex(fixture.record.lease.lease_id.limbs);
+    const auto staging = root / staging_leaf;
+    CHECK(!entry_exists_no_follow(staging));
+
+    WorkerAttemptReconcileP3RecordReplacementContext replacement{
+        .target = PRIVATE_LEASE_RECOVERY_EDGES[2],
+        .record =
+            {
+                .canonical = canonical,
+                .displaced = temp.path() / "original-pinned-attempt-record",
+                .bytes = fixture.bytes,
+            },
+    };
+    CHECK(replacement.target.source == Boundary::StagingDirectoryDurable);
+    CHECK(replacement.target.successor == Boundary::ReservedCanonicalDurable);
+
+    auto opened = store.open_worker_attempt_private_lease_root(fixture.record.chunk_id,
+                                                               fixture.record.attempt_ordinal);
+    (void)require_private_lease_root_claim_ready(
+        opened, "open canonical attempt before P3 started-pin replacement");
+    auto rejected = wave_detail::reconcile_worker_attempt_started(
+        std::move(opened), wave_detail::DistributedSieveWorkerAttemptReconcileTestHooks{
+                               .recovery =
+                                   {
+                                       .before_staging_directory_remove =
+                                           replace_worker_attempt_record_before_staging_remove,
+                                       .context = &replacement,
+                                   },
+                           });
+    CHECK(opened.claim == nullptr);
+    CHECK(!rejected);
+    CHECK(!rejected.reconciled.has_value());
+    require_wave_status(rejected.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "P3 recovery rejects a replaced canonical started pin before rmdir");
+    CHECK(rejected.diagnostic.publication_status == durable_record::RecordPublishStatus::durable);
+    CHECK(rejected.diagnostic.publication_disposition ==
+          durable_record::RecordPublishDisposition::confirmed_existing);
+    CHECK(rejected.diagnostic.last_worker_attempt_reconcile_fault_point == Fault::RecordNormalized);
+    CHECK(!rejected.diagnostic.failed_private_lease_recovery_sync_edge.has_value());
+    CHECK(replacement.invoked);
+    CHECK(replacement.record.invoked);
+    CHECK(replacement.record.replaced);
+    CHECK(replacement.record.native_error == 0);
+
+    CHECK(entry_exists_no_follow(staging));
+    CHECK(std::filesystem::is_empty(staging));
+    CHECK(read_file_bytes(canonical) == fixture.bytes);
+    CHECK(read_file_bytes(replacement.record.displaced) == fixture.bytes);
+    require_distinct_entry_identities(
+        canonical, replacement.record.displaced,
+        "P3 canonical replacement uses a distinct started-record inode");
+    CHECK(wave_record_snapshot(capture_wave_root_entry_snapshot(
+              replacement.record.displaced, replacement.record.displaced.filename().string())) ==
+          fixture.expected_canonical_snapshot);
+    CHECK(wave_record_snapshot(
+              capture_wave_root_entry_snapshot(canonical, fixture.names.canonical_record_leaf)) !=
+          fixture.expected_canonical_snapshot);
+    require_worker_attempt_reconcile_inventory_and_locks_released(
+        store, root, fixture, Boundary::StagingDirectoryDurable,
+        "P3 pin rejection preserves staging and releases reconciliation locks");
+
+    std::error_code error;
+    CHECK(std::filesystem::remove(canonical, error));
+    CHECK(!error);
+    error.clear();
+    std::filesystem::rename(replacement.record.displaced, canonical, error);
+    CHECK(!error);
+    CHECK(wave_record_snapshot(
+              capture_wave_root_entry_snapshot(canonical, fixture.names.canonical_record_leaf)) ==
+          fixture.expected_canonical_snapshot);
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "restored canonical pin closes the preserved P3 inventory");
+
+    created.store.reset();
+    auto reopened = wave_detail::DistributedSieveWaveStore::open(root, manifest_digest);
+    auto& reopened_store =
+        require_wave_ready(reopened, "reopen restored canonical pin at preserved P3");
+    require_worker_attempt_reconcile_success(
+        reopened_store, root, fixture, std::optional<std::uint32_t>{1U},
+        "replay restored P3 canonical pin to canonical-only P0");
+    CHECK(!entry_exists_no_follow(staging));
+}
+
+void test_wave_store_worker_attempt_reconcile_fork_seams_are_process_bound() {
+    using Boundary = wave_detail::DistributedSievePrivateLeaseReservationBoundary;
+
+    constexpr std::array seams{
+        WorkerAttemptReconcileForkSeam::before_normalization,
+        WorkerAttemptReconcileForkSeam::canonical_durable,
+        WorkerAttemptReconcileForkSeam::first_normalized,
+        WorkerAttemptReconcileForkSeam::record_normalized,
+        WorkerAttemptReconcileForkSeam::p3_remove,
+    };
+
+    for (const auto seam : seams) {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / ("worker-attempt-reconcile-fork-" +
+                                         std::to_string(static_cast<std::size_t>(seam)));
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, wave_manifest_draft());
+        auto& store = require_wave_ready(created, "create attempt-reconcile fork fixture");
+        const auto record_shape = seam == WorkerAttemptReconcileForkSeam::canonical_durable
+                                      ? WorkerAttemptReconcileRecordShape::pending_only
+                                      : WorkerAttemptReconcileRecordShape::canonical_only;
+        const auto fixture = prepare_worker_attempt_reconcile_fixture(
+            store, root, Boundary::FinalDirectoryDurable, record_shape);
+
+        auto opened = store.open_worker_attempt_private_lease_root(fixture.record.chunk_id,
+                                                                   fixture.record.attempt_ordinal);
+        (void)require_private_lease_root_claim_ready(
+            opened, "open canonical attempt before reconciliation fork seam");
+        WorkerAttemptReconcileForkContext context{
+            .seam = seam,
+            .original_process = ::getpid(),
+        };
+        wave_detail::DistributedSieveWorkerAttemptReconcileTestHooks hooks;
+        switch (seam) {
+        case WorkerAttemptReconcileForkSeam::before_normalization:
+            hooks.before_record_normalization = fork_at_worker_attempt_reconcile_boundary;
+            hooks.context = &context;
+            break;
+        case WorkerAttemptReconcileForkSeam::canonical_durable:
+        case WorkerAttemptReconcileForkSeam::record_normalized:
+            hooks.stop_after = fork_at_worker_attempt_reconcile_fault;
+            hooks.context = &context;
+            break;
+        case WorkerAttemptReconcileForkSeam::first_normalized:
+            hooks.after_first_normalized_successor_validation =
+                fork_at_worker_attempt_reconcile_boundary;
+            hooks.context = &context;
+            break;
+        case WorkerAttemptReconcileForkSeam::p3_remove:
+            hooks.recovery.before_staging_directory_remove =
+                fork_before_worker_attempt_reconcile_p3_remove;
+            hooks.recovery.context = &context;
+            break;
+        }
+
+        auto reconciled = wave_detail::reconcile_worker_attempt_started(std::move(opened), hooks);
+        if (::getpid() != context.original_process) {
+            const bool rejected = context.invoked && opened.claim == nullptr && !reconciled &&
+                                  !reconciled.reconciled.has_value() &&
+                                  reconciled.diagnostic.status ==
+                                      wave_detail::DistributedSieveWaveStoreStatus::invalid_request;
+            ::_exit(rejected ? 0 : 96);
+        }
+
+        CHECK(opened.claim == nullptr);
+        CHECK(context.invoked);
+        CHECK(context.child_process > 0);
+        CHECK(reconciled);
+        CHECK(reconciled.reconciled.has_value());
+        require_wave_status(reconciled.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "parent completes reconciliation after forked hook continuation");
+        CHECK(reconciled.diagnostic.publication_status ==
+              durable_record::RecordPublishStatus::durable);
+        CHECK(reconciled.diagnostic.publication_disposition ==
+              fixture.expected_publication_disposition);
+
+        int child_status = 0;
+        CHECK(wait_for_child(context.child_process, child_status));
+        CHECK(WIFEXITED(child_status));
+        CHECK(WEXITSTATUS(child_status) == 0);
+        CHECK(encode_or_fail(Record{reconciled.reconciled->record}) == fixture.bytes);
+        CHECK(reconciled.reconciled->canonical_snapshot == fixture.expected_canonical_snapshot);
+        CHECK(reconciled.reconciled->next_attempt_ordinal == std::optional<std::uint32_t>{1U});
+        require_worker_attempt_reconcile_inventory_and_locks_released(
+            store, root, fixture, Boundary::PermitAcquired,
+            "forked reconcile hook leaves parent canonical-only P0 result authoritative");
+    }
 }
 
 void require_wave_attempt_inventory_reopens(wave_detail::DistributedSieveWaveStoreOpenResult& owner,
@@ -12230,7 +13289,7 @@ void run_core_suite() {
 
 void run_wave_store_suite() {
 #if !defined(_WIN32)
-    const std::array<std::pair<std::string_view, TestFunction>, 56> tests = {{
+    const std::array<std::pair<std::string_view, TestFunction>, 65> tests = {{
         {"create, open, revalidate, and exact manifest",
          test_wave_store_create_open_revalidate_and_exact_manifest},
         {"store-owned draft fields", test_wave_store_rejects_non_draft_store_owned_fields},
@@ -12328,6 +13387,24 @@ void run_wave_store_suite() {
          test_wave_store_worker_attempt_start_forked_mint_hooks_are_process_bound},
         {"worker-attempt start successor replacements",
          test_wave_store_worker_attempt_start_successor_replacements},
+        {"worker-attempt reconciliation success matrix",
+         test_wave_store_worker_attempt_reconcile_success_matrix},
+        {"worker-attempt reconciliation publication replay",
+         test_wave_store_worker_attempt_reconcile_publication_faults_replay},
+        {"worker-attempt reconciliation recovery replay",
+         test_wave_store_worker_attempt_reconcile_recovery_edges_replay},
+        {"worker-attempt reconciliation created-record replay",
+         test_wave_store_worker_attempt_reconcile_created_record_requires_replay},
+        {"worker-attempt reconciliation exhausted budget",
+         test_wave_store_worker_attempt_reconcile_reports_exhausted_budget},
+        {"worker-attempt reconciliation latest-attempt enforcement",
+         test_wave_store_worker_attempt_reconcile_enforces_latest_attempt},
+        {"worker-attempt reconciliation normalized target precedence",
+         test_wave_store_worker_attempt_reconcile_normalized_target_precedence},
+        {"worker-attempt reconciliation P3 canonical pin",
+         test_wave_store_worker_attempt_reconcile_p3_revalidates_canonical_pin_before_remove},
+        {"worker-attempt reconciliation fork seams",
+         test_wave_store_worker_attempt_reconcile_fork_seams_are_process_bound},
         {"attempt-record same-byte inode replacement",
          test_wave_store_attempt_record_rejects_same_byte_inode_replacement},
         {"bound attempt claim same-byte record replacement",

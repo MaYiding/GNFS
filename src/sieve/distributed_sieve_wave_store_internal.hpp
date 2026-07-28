@@ -212,6 +212,19 @@ enum class DistributedSieveWorkerAttemptStartDisposition : std::uint8_t {
     reconcile_required,
 };
 
+/// Durable immutable-record boundaries for one existing worker-attempt
+/// reconciliation. `CanonicalPromoted` intentionally precedes the following
+/// root-directory durability barrier. `RecordNormalized` is offered only
+/// after the target record is canonical-only and has survived a closed,
+/// pinned, double observation.
+enum class DistributedSieveWorkerAttemptReconcileFaultPoint : std::uint8_t {
+    PendingDurable,
+    CanonicalPromoted,
+    CanonicalDurable,
+    RecordNormalized,
+    Count,
+};
+
 /// The nine and only durable prefixes of one private-lease reservation. Values
 /// intentionally mirror the source-private relation driver and are checked
 /// against it in the WaveStore implementation.
@@ -522,6 +535,27 @@ struct DistributedSievePrivateLeaseRecoveryTestHooks final {
     void* context = nullptr;
 };
 
+/// Trusted test-only controls for normalization and cleanup of one already
+/// published AttemptStartedV1. Production callers leave every callback empty.
+struct DistributedSieveWorkerAttemptReconcileTestHooks final {
+    using Boundary = void (*)(void* context) noexcept;
+    using StopAfter = bool (*)(DistributedSieveWorkerAttemptReconcileFaultPoint point,
+                               void* context) noexcept;
+
+    /// Runs after the final closed initial-shape confirmation and immediately
+    /// before the production immutable-record transaction.
+    Boundary before_record_normalization = nullptr;
+
+    StopAfter stop_after = nullptr;
+
+    /// Runs after the first canonical-only successor, exact record pin, and
+    /// full inventory validation, before the mandatory confirmation.
+    Boundary after_first_normalized_successor_validation = nullptr;
+
+    DistributedSievePrivateLeaseRecoveryTestHooks recovery;
+    void* context = nullptr;
+};
+
 struct DistributedSieveWaveStoreDiagnostic final {
     DistributedSieveWaveStoreStatus status = DistributedSieveWaveStoreStatus::ready;
     std::error_code native_error;
@@ -531,6 +565,8 @@ struct DistributedSieveWaveStoreDiagnostic final {
     std::optional<DistributedSieveWaveStoreFaultPoint> last_durable_fault_point;
     std::optional<DistributedSieveWorkerAttemptStartFaultPoint>
         last_worker_attempt_start_fault_point;
+    std::optional<DistributedSieveWorkerAttemptReconcileFaultPoint>
+        last_worker_attempt_reconcile_fault_point;
     std::optional<DistributedSievePrivateLeaseBaseLockSyncPoint>
         failed_private_lease_base_lock_sync_point;
     std::optional<DistributedSievePrivateLeaseReservationBoundary>
@@ -546,6 +582,7 @@ struct DistributedSieveWaveStoreOpenResult;
 struct DistributedSievePrivateLeaseRootClaimResult;
 struct DistributedSievePrivateLeaseReservationResult;
 struct DistributedSieveWorkerAttemptStartResult;
+struct DistributedSieveWorkerAttemptReconcileResult;
 class DistributedSievePrivateLeaseRootClaim;
 class DistributedSievePrivateLeaseBaseLockAt;
 class DistributedSievePrivateLeaseReservationReceipt;
@@ -572,6 +609,14 @@ class DistributedSieveFdPrivateLeaseRecoveryTarget;
 [[nodiscard]] DistributedSieveWorkerAttemptStartResult
 publish_worker_attempt_started(DistributedSievePrivateLeaseReservationReceipt&& reservation,
                                DistributedSieveWorkerAttemptStartTestHooks hooks = {}) noexcept;
+
+/// Consume only an open-existing attempt claim, normalize its immutable
+/// AttemptStartedV1 to one canonical record, and roll the exact record-bound
+/// private lease back to P0. The result carries read-only facts only; it never
+/// returns a claim, lock, cleanup admission, or worker-start authority.
+[[nodiscard]] DistributedSieveWorkerAttemptReconcileResult reconcile_worker_attempt_started(
+    DistributedSievePrivateLeaseRootClaimResult&& claimed,
+    DistributedSieveWorkerAttemptReconcileTestHooks hooks = {}) noexcept;
 
 /// A process-bound lease on one frozen wave root and its permanent lock.
 ///
@@ -667,6 +712,9 @@ private:
     friend DistributedSieveWorkerAttemptStartResult
     publish_worker_attempt_started(DistributedSievePrivateLeaseReservationReceipt&& reservation,
                                    DistributedSieveWorkerAttemptStartTestHooks hooks) noexcept;
+    friend DistributedSieveWorkerAttemptReconcileResult reconcile_worker_attempt_started(
+        DistributedSievePrivateLeaseRootClaimResult&& claimed,
+        DistributedSieveWorkerAttemptReconcileTestHooks hooks) noexcept;
 };
 
 /// Source-private root-relative permanent BaseLock capability.
@@ -724,6 +772,9 @@ private:
     friend DistributedSieveWorkerAttemptStartResult
     publish_worker_attempt_started(DistributedSievePrivateLeaseReservationReceipt&& reservation,
                                    DistributedSieveWorkerAttemptStartTestHooks hooks) noexcept;
+    friend DistributedSieveWorkerAttemptReconcileResult reconcile_worker_attempt_started(
+        DistributedSievePrivateLeaseRootClaimResult&& claimed,
+        DistributedSieveWorkerAttemptReconcileTestHooks hooks) noexcept;
 };
 
 /// Source-private, process-bound exclusive authority for one private-lease
@@ -800,6 +851,9 @@ private:
     friend DistributedSieveWorkerAttemptStartResult
     publish_worker_attempt_started(DistributedSievePrivateLeaseReservationReceipt&& reservation,
                                    DistributedSieveWorkerAttemptStartTestHooks hooks) noexcept;
+    friend DistributedSieveWorkerAttemptReconcileResult reconcile_worker_attempt_started(
+        DistributedSievePrivateLeaseRootClaimResult&& claimed,
+        DistributedSieveWorkerAttemptReconcileTestHooks hooks) noexcept;
 };
 
 struct DistributedSievePrivateLeaseRootClaimResult final {
@@ -939,6 +993,27 @@ struct DistributedSieveWorkerAttemptStartResult final {
         return receipt.has_value() && diagnostic.status == DistributedSieveWaveStoreStatus::ready &&
                disposition == DistributedSieveWorkerAttemptStartDisposition::fresh_start &&
                receipt->owned_by_current_process();
+    }
+};
+
+/// Read-only reconciliation facts for one immutable worker-attempt record.
+///
+/// `next_attempt_ordinal` is empty when the manifest retry budget is exhausted.
+/// This value has no filesystem handle and grants no launch, cleanup, or
+/// publication authority.
+struct DistributedSieveReconciledWorkerAttemptV1 final {
+    AttemptStartedV1 record;
+    util::durable_immutable_record::RecordSnapshot canonical_snapshot;
+    std::optional<std::uint32_t> next_attempt_ordinal;
+};
+
+struct DistributedSieveWorkerAttemptReconcileResult final {
+    std::optional<DistributedSieveReconciledWorkerAttemptV1> reconciled;
+    DistributedSieveWaveStoreDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return reconciled.has_value() &&
+               diagnostic.status == DistributedSieveWaveStoreStatus::ready;
     }
 };
 

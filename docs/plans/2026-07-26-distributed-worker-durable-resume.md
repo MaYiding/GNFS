@@ -2059,12 +2059,51 @@ a durable canonical leaf plus an empty receipt as launch permission. The three
 immutable-record durability boundaries and same-byte canonical, `BaseLock`,
 and root replacement paths preserve their exact diagnostic and release order.
 
-This M2 slice is a dormant durability boundary, not the complete recovery
-boundary. A restart can reopen and classify every published prefix, while the
-old prestart reservation and recovery paths continue to reject it without
-mutation. The next slice must normalize pending or duplicate records, retain a
-record-pinned canonical witness while recovering `P8` through `P0`, and return
-only reconciliation facts. It must not possess a start-receipt mint path.
+The record-aware attempt reconciler now consumes only an opened-existing
+attempt claim. It requires the target to be the latest record and `BaseLock`
+for its chunk. Pending-only is legal only at `P8`; canonical-only and an
+identical canonical/pending pair are legal at `P0` through `P8`. The
+reconciler invokes the production immutable-record transaction with the exact
+stored bytes. Only `recovered_pending` for pending-only or
+`confirmed_existing` for an existing canonical record may continue.
+A durable `created` result always returns `reconciliation_required`; the same
+call never treats the new inode as previously established authority.
+
+After normalization, two complete observations must prove a canonical-only
+record with the expected native snapshot. The reconciler opens and retains
+that exact canonical file, then mints a source-private, move-only cleanup
+admission. Every reverse edge revalidates the held file, its canonical name,
+metadata, ACL state, bytes, decoded inventory record, WaveStore authority, and
+target `BaseLock`. The existing prestart recovery constructor remains separate
+and still rejects any target attempt record.
+
+The started cleanup admission reuses the generic eight-edge `P8`-to-`P0`
+driver without adding a second transition table. Completion returns only the
+sealed `AttemptStartedV1`, its canonical snapshot, and the next ordinal when
+the retry budget permits another attempt. It returns no claim, receipt, file
+descriptor, path, cleanup authority, or start authority. Local marker and
+directory handles close first, followed by the canonical record pin, target
+flock, and same-State root slot.
+
+The dedicated matrix covers all 19 legal initial
+`record shape + private-lease phase` states. It also covers all immutable
+record fault points, every reverse-edge checkpoint, close/open replay,
+durable-created fail-closed behavior, exhausted retry budgets, and canonical
+record replacement immediately before `P3 -> P2`. A missing target-lock
+pathname combined with canonical-record inode replacement produces a distinct
+`ENOENT` result, proving target authority outranks record failure. Latest-slot
+coverage reconciles attempt one, rejects historical attempt zero when attempt
+one has a record, and also rejects it when attempt one's `BaseLock` is
+recordless. Five fork seams cover pre-normalization, canonical durability,
+first and final normalized observations, and the `P3` directory-removal
+boundary. Root and target authority outrank record or action-local failures
+throughout normalization and cleanup.
+
+This M2 slice remains a dormant durability boundary rather than production
+worker orchestration. The next slice must freeze and thread execution and
+randomness policy before hashing or forking, then make the parent scheduler
+consume start receipts and reconciliation facts without introducing a second
+launch path.
 
 Exit criterion: two masters cannot both act, and restart cannot exceed the
 manifest retry budget. This milestone remains test/internal and exposes no
