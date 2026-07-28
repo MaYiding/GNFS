@@ -2240,12 +2240,32 @@ returning an identity. The V1 wire-layout ceiling is 739,266,535 body bytes;
 the largest semantically valid body is 739,266,524 bytes because at least one
 nonempty chunk stem must reserve `_attempt_XX`.
 
-The next slice freezes the work-package envelope and writes it through a
-private attempt-directory descriptor. Production success must return only a
-separately reopened read-only descriptor after same-inode/content proof,
-writer checked-close, unlink, `nlink == 0`, directory durability, and final
-revalidation. The portable threat model relies on the existing owner-only
-attempt directory and excludes an adversarial same-UID namespace mutator.
+### M2h Immutable Work-Package Envelope Status
+
+The source-private V1 package codec now wraps the exact identity preimage in a
+fixed 80-byte little-endian header and a 32-byte domain-separated SHA-256
+trailer. The header binds the package and work schema versions, exact body and
+total extents, and the canonical work digest. Its reserved field is zero and
+covered by the package integrity binding. The structural package ceiling is
+739,266,647 bytes; the largest semantically valid package is 739,266,636
+bytes.
+
+Preparation and emission independently traverse the work identity. A changed
+body length or digest prevents trailer emission, as does a sticky output-sink
+failure at the header, body, or trailer boundary. A longer second pass cannot
+write past the prepared body boundary. The decoder verifies the fixed layout,
+exact extent, package trailer, and work digest before invoking the owning
+identity decoder. Integrity-unbound sequence counts therefore cannot trigger
+destination allocation. Dedicated tests freeze both digest goldens and all
+header offsets, cover every exact truncation and partial short-write boundary,
+and distinguish outer-integrity rejection from bound body validation.
+
+The next slice writes this envelope through a private attempt-directory
+descriptor. Production success must return only a separately reopened
+read-only descriptor after same-inode/content proof, writer checked-close,
+unlink, `nlink == 0`, directory durability, and final revalidation. The
+portable threat model relies on the existing owner-only attempt directory and
+excludes an adversarial same-UID namespace mutator.
 
 ### M3: Worker Handoff and Adoption
 

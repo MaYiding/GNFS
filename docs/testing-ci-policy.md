@@ -371,6 +371,17 @@ digest, and proves decode/re-encode identity. Exact-prefix truncation,
 trailing-byte, schema, tag, string/count bound, wire-ordinal, and semantic
 corruption cases fail closed before the decoded value can be used.
 
+`test_distributed_sieve_work_package_codec` is the `instant` immutable
+work-envelope contract. It freezes the 80-byte little-endian header, exact
+canonical identity body, and 32-byte domain-separated trailer against an
+independent envelope oracle. Preparation and streaming emission recompute the
+work binding on both passes; sink failure, size drift, or digest drift cannot
+produce a trailer, and a longer second pass cannot write past the prepared
+body boundary. Decoding proves the declared and actual extent plus both
+digests before invoking the identity decoder, so integrity-unbound counts
+cannot trigger destination allocation. Sink coverage includes partial
+short-write prefixes at the header, body, and trailer boundaries.
+
 `test_distributed_sieve_resume` is a split protocol and WaveStore contract.
 `DistributedSieveResumeCore` remains an `instant` pure record, dependency, and
 compile-boundary test. It also compiles the source-private cleanup-authorization

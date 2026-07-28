@@ -112,6 +112,8 @@ DURABLE_ENVIRONMENT_FREE_FILES = {
     "src/sieve/distributed_sieve_seed_v2.cpp",
     "src/sieve/distributed_sieve_work_identity_codec.cpp",
     "src/sieve/distributed_sieve_work_identity_codec_internal.hpp",
+    "src/sieve/distributed_sieve_work_package_codec.cpp",
+    "src/sieve/distributed_sieve_work_package_codec_internal.hpp",
     "src/sieve/distributed_sieve_worker_process.cpp",
     "src/sieve/distributed_sieve_worker_process_internal.hpp",
     "include/gnfs/sieve/distributed_sieve_seed_v2.hpp",

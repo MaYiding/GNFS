@@ -1902,8 +1902,30 @@ sink-failure short-circuiting, every exact prefix truncation, trailing bytes,
 wire bounds, ordinals, booleans, and semantic rejection.
 
 The structural body ceiling is 739,266,535 bytes; the valid ceiling is
-739,266,524 because a nonempty chunk stem must reserve `_attempt_XX`. The next
-slice will place this body in a fixed, domain-separated work-package envelope,
-stream it into an exact private attempt-directory inode, reopen it read-only,
-close the writer once, unlink the name, require `nlink == 0`, and return only
+739,266,524 because a nonempty chunk stem must reserve `_attempt_XX`.
+
+### Immutable Work-Package Envelope Status
+
+The source-private V1 work-package codec now encloses the canonical identity
+body in a fixed 80-byte little-endian header and a 32-byte
+domain-separated SHA-256 trailer. The header binds the wire and work schema
+versions, exact body and total extents, and the canonical work digest. Its
+reserved field is zero and included in the package integrity binding.
+Preparation and emission traverse the identity independently. A changed byte
+count or work digest therefore fails closed before a trailer can be emitted.
+The emitter rejects a longer second pass before it can cross the prepared
+body boundary.
+
+The span-backed decoder checks both declared and actual extents, verifies the
+package trailer, and verifies the work digest before invoking the owning
+identity decoder. Integrity-unbound counts cannot reach destination
+allocation. Dedicated tests freeze the header offsets and both digest goldens,
+cover every exact truncation, and prove sticky failure at the header, body,
+and trailer write boundaries, including partial short writes. The structural
+package ceiling is 739,266,647 bytes; the largest semantically valid package
+is 739,266,636 bytes.
+
+The next slice streams this envelope into an exact private attempt-directory
+inode, reopens it read-only, proves same-inode content, closes the writer once,
+unlinks the name, requires `nlink == 0`, syncs the directory, and returns only
 the retained read capability.
