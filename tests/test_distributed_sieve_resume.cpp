@@ -60,6 +60,8 @@ namespace {
 namespace sieve = gnfs::sieve;
 namespace cleanup_detail = gnfs::relation::ooc_cleanup_detail;
 namespace execution_policy_detail = gnfs::sieve::distributed_sieve_execution_policy_detail;
+namespace work_package_codec_detail = gnfs::sieve::distributed_sieve_work_package_codec_detail;
+namespace work_package_file_detail = gnfs::sieve::distributed_sieve_worker_work_package_file_detail;
 namespace worker_launcher_detail = gnfs::sieve::distributed_sieve_worker_launcher_detail;
 namespace worker_process_detail = gnfs::sieve::distributed_sieve_worker_process_detail;
 namespace wave_detail = gnfs::sieve::distributed_sieve_resume_detail;
@@ -6711,7 +6713,6 @@ void test_wave_store_worker_attempt_reconcile_recovery_edges_replay() {
 
 void test_wave_store_worker_attempt_reconcile_created_record_requires_replay() {
     using Boundary = wave_detail::DistributedSievePrivateLeaseReservationBoundary;
-    using Fault = wave_detail::DistributedSieveWorkerAttemptReconcileFaultPoint;
 
     WaveStoreTempDirectory temp;
     const auto root = temp.path() / "worker-attempt-reconcile-created-record";
@@ -6743,18 +6744,31 @@ void test_wave_store_worker_attempt_reconcile_created_record_requires_replay() {
     CHECK(!reconciliation_required);
     CHECK(!reconciliation_required.reconciled.has_value());
     require_wave_status(reconciliation_required.diagnostic,
-                        wave_detail::DistributedSieveWaveStoreStatus::reconciliation_required,
-                        "freshly recreated canonical requires independent reconciliation replay");
-    CHECK(reconciliation_required.diagnostic.publication_status ==
-          durable_record::RecordPublishStatus::durable);
-    CHECK(reconciliation_required.diagnostic.publication_disposition ==
-          durable_record::RecordPublishDisposition::created);
-    CHECK(reconciliation_required.diagnostic.last_worker_attempt_reconcile_fault_point ==
-          Fault::CanonicalDurable);
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "deleted canonical is preserved as pre-normalization drift");
+    CHECK(!reconciliation_required.diagnostic.publication_status.has_value());
+    CHECK(!reconciliation_required.diagnostic.publication_disposition.has_value());
+    CHECK(
+        !reconciliation_required.diagnostic.last_worker_attempt_reconcile_fault_point.has_value());
 
     const auto canonical_path = root / fixture.names.canonical_record_leaf;
-    CHECK(entry_exists_no_follow(canonical_path));
+    CHECK(!entry_exists_no_follow(canonical_path));
     CHECK(!entry_exists_no_follow(root / fixture.names.pending_record_leaf));
+    WaveReservationWitnessObservationContext p8_observation{
+        .expected_boundary = Boundary::FinalDirectoryDurable,
+        .expected_base_lock_leaf = fixture.names.base_lock_leaf,
+    };
+    require_wave_status(store.revalidate(wave_detail::DistributedSieveWaveStoreInventoryTestHooks{
+                            .observe_reservation_witnesses = observe_wave_reservation_witnesses,
+                            .context = &p8_observation,
+                        }),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "deleted canonical remains an exact recordless P8");
+    CHECK(p8_observation.invoked);
+    CHECK(p8_observation.matched);
+
+    publish_wave_attempt_canonical_record(root, fixture.names, fixture.record,
+                                          "recreate canonical for independent replay");
     CHECK(read_file_bytes(canonical_path) == fixture.bytes);
     fixture.expected_canonical_snapshot = wave_record_snapshot(
         capture_wave_root_entry_snapshot(canonical_path, fixture.names.canonical_record_leaf));
@@ -9570,33 +9584,36 @@ void test_wave_store_private_lease_recovery_p3_rejects_moved_held_directory() {
     CHECK(context.directory.invoked);
     CHECK(context.directory.replaced);
     CHECK(context.directory.native_error == 0);
-    CHECK(!entry_exists_no_follow(staging));
+    CHECK(entry_exists_no_follow(staging));
     CHECK(entry_exists_no_follow(context.directory.displaced));
     CHECK(capture_wave_root_entry_snapshot(context.directory.displaced, staging_leaf) ==
           original_directory);
+    require_distinct_entry_identities(staging, context.directory.displaced,
+                                      "P3 replacement keeps both directory identities visible");
+    CHECK(std::filesystem::is_empty(staging));
     CHECK(std::filesystem::is_empty(context.directory.displaced));
     CHECK(!relation_base_lock_reports_busy(root / names->base_lock_leaf));
 
-    WaveReservationWitnessObservationContext p2_observation{
-        .expected_boundary = Boundary::ReservedCanonicalDurable,
+    WaveReservationWitnessObservationContext p3_observation{
+        .expected_boundary = Boundary::StagingDirectoryDurable,
         .expected_base_lock_leaf = names->base_lock_leaf,
     };
     require_wave_status(store.revalidate(wave_detail::DistributedSieveWaveStoreInventoryTestHooks{
                             .observe_reservation_witnesses = observe_wave_reservation_witnesses,
-                            .context = &p2_observation,
+                            .context = &p3_observation,
                         }),
                         wave_detail::DistributedSieveWaveStoreStatus::ready,
-                        "replacement rmdir leaves a classifier-valid P2 root successor");
-    CHECK(p2_observation.invoked);
-    CHECK(p2_observation.matched);
+                        "rejected rmdir preserves a classifier-valid P3 replacement");
+    CHECK(p3_observation.invoked);
+    CHECK(p3_observation.matched);
 
     auto reopened = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
     auto recovered = wave_detail::recover_worker_attempt_private_lease(std::move(reopened));
     auto& recovered_claim = require_private_lease_root_claim_ready(
-        recovered, "recover P2 after rejecting moved held directory");
+        recovered, "recover preserved P3 after rejecting moved held directory");
     require_wave_status(recovered_claim.revalidate(),
                         wave_detail::DistributedSieveWaveStoreStatus::ready,
-                        "P2 remains recoverable after final-window rejection");
+                        "preserved P3 remains recoverable after final-window rejection");
 }
 
 void test_wave_store_fresh_private_lease_reservation_sync_failures() {
@@ -13332,7 +13349,7 @@ void test_wave_store_worker_attempt_start_fault_prefixes() {
     }
 }
 
-void test_wave_store_worker_attempt_start_reconciles_final_publication_races() {
+void test_wave_store_worker_attempt_start_rejects_prepublication_namespace_drift() {
     using Boundary = wave_detail::DistributedSievePrivateLeaseReservationBoundary;
 
     constexpr std::array shapes{
@@ -13393,16 +13410,12 @@ void test_wave_store_worker_attempt_start_reconciles_final_publication_races() {
         CHECK(!reconciled);
         CHECK(!reconciled.receipt.has_value());
         CHECK(reconciled.disposition ==
-              wave_detail::DistributedSieveWorkerAttemptStartDisposition::reconcile_required);
+              wave_detail::DistributedSieveWorkerAttemptStartDisposition::failed);
         require_wave_status(reconciled.diagnostic,
-                            wave_detail::DistributedSieveWaveStoreStatus::reconciliation_required,
-                            "publication-race prefix requires explicit reconciliation");
-        CHECK(reconciled.diagnostic.publication_status ==
-              durable_record::RecordPublishStatus::durable);
-        CHECK(reconciled.diagnostic.publication_disposition ==
-              (shape == WorkerAttemptStartInjectedPrefix::pending_only
-                   ? durable_record::RecordPublishDisposition::recovered_pending
-                   : durable_record::RecordPublishDisposition::confirmed_existing));
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "pre-publication record drift rejects before publisher mutation");
+        CHECK(!reconciled.diagnostic.publication_status.has_value());
+        CHECK(!reconciled.diagnostic.publication_disposition.has_value());
 
         if (shape == WorkerAttemptStartInjectedPrefix::identical_dual) {
             CHECK(context.second.status == durable_record::RecordPublishStatus::durable);
@@ -13414,14 +13427,28 @@ void test_wave_store_worker_attempt_start_reconciles_final_publication_races() {
         }
 
         const auto canonical_path = root / names->canonical_record_leaf;
-        CHECK(entry_exists_no_follow(canonical_path));
-        CHECK(!entry_exists_no_follow(root / names->pending_record_leaf));
+        const auto pending_path = root / names->pending_record_leaf;
+        const bool expects_canonical = shape != WorkerAttemptStartInjectedPrefix::pending_only;
+        const bool expects_pending = shape != WorkerAttemptStartInjectedPrefix::canonical_only;
+        CHECK(entry_exists_no_follow(canonical_path) == expects_canonical);
+        CHECK(entry_exists_no_follow(pending_path) == expects_pending);
         CHECK(!entry_exists_no_follow(root / context.first_source_leaf));
         CHECK(!entry_exists_no_follow(root / context.second_source_leaf));
-        CHECK(read_file_bytes(canonical_path) == expected_bytes);
-        const auto canonical_entry =
-            capture_wave_root_entry_snapshot(canonical_path, names->canonical_record_leaf);
-        CHECK(wave_record_snapshot(canonical_entry) == *context.first.canonical_snapshot);
+        if (expects_canonical) {
+            CHECK(read_file_bytes(canonical_path) == expected_bytes);
+            const auto canonical_entry =
+                capture_wave_root_entry_snapshot(canonical_path, names->canonical_record_leaf);
+            CHECK(wave_record_snapshot(canonical_entry) == *context.first.canonical_snapshot);
+        }
+        if (expects_pending) {
+            CHECK(read_file_bytes(pending_path) == expected_bytes);
+            const auto pending_entry =
+                capture_wave_root_entry_snapshot(pending_path, names->pending_record_leaf);
+            const auto& expected_snapshot = shape == WorkerAttemptStartInjectedPrefix::pending_only
+                                                ? context.first.canonical_snapshot
+                                                : context.second.canonical_snapshot;
+            CHECK(wave_record_snapshot(pending_entry) == *expected_snapshot);
+        }
 
         WaveReservationWitnessObservationContext p8_observation{
             .expected_boundary = Boundary::FinalDirectoryDurable,
@@ -13433,7 +13460,7 @@ void test_wave_store_worker_attempt_start_reconciles_final_publication_races() {
                 .context = &p8_observation,
             }),
             wave_detail::DistributedSieveWaveStoreStatus::ready,
-            "reconciled canonical-only record preserves exact P8 inventory");
+            "rejected pre-publication drift preserves its exact P8 record shape");
         CHECK(p8_observation.invoked);
         CHECK(p8_observation.matched);
 
@@ -14496,6 +14523,808 @@ void test_wave_store_worker_launcher_partial_spawn_keeps_only_success_receipts()
                         "partial launch result releases every receipt exactly once");
 }
 
+[[nodiscard]] int write_worker_package_leaf_native(const std::filesystem::path& path,
+                                                   std::span<const std::byte> bytes,
+                                                   mode_t final_mode) noexcept {
+    int directory = -1;
+    do {
+        directory = ::open(path.parent_path().c_str(),
+                           O_RDONLY | O_NONBLOCK | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    } while (directory < 0 && errno == EINTR);
+    if (directory < 0) {
+        return errno;
+    }
+
+    int writer = -1;
+    do {
+        writer = ::openat(directory, path.filename().c_str(),
+                          O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    } while (writer < 0 && errno == EINTR);
+    if (writer < 0) {
+        const int failure = errno;
+        (void)::close(directory);
+        return failure;
+    }
+
+    int failure = 0;
+    std::size_t offset = 0;
+    while (offset < bytes.size()) {
+        ssize_t written = -1;
+        do {
+            written = ::pwrite(writer, bytes.data() + offset, bytes.size() - offset,
+                               static_cast<off_t>(offset));
+        } while (written < 0 && errno == EINTR);
+        if (written <= 0) {
+            failure = written < 0 ? errno : EIO;
+            break;
+        }
+        offset += static_cast<std::size_t>(written);
+    }
+    if (failure == 0 && ::fchmod(writer, final_mode) != 0) {
+        failure = errno;
+    }
+    int synchronized = -1;
+    if (failure == 0) {
+        do {
+            synchronized = ::fsync(writer);
+        } while (synchronized != 0 && errno == EINTR);
+        if (synchronized != 0) {
+            failure = errno;
+        }
+    }
+    if (::close(writer) != 0 && failure == 0) {
+        failure = errno;
+    }
+    if (failure == 0) {
+        do {
+            synchronized = ::fsync(directory);
+        } while (synchronized != 0 && errno == EINTR);
+        if (synchronized != 0) {
+            failure = errno;
+        }
+    }
+    if (::close(directory) != 0 && failure == 0) {
+        failure = errno;
+    }
+    return failure;
+}
+
+void write_worker_package_leaf(const std::filesystem::path& path, std::span<const std::byte> bytes,
+                               mode_t final_mode = 0400) {
+    const int failure = write_worker_package_leaf_native(path, bytes, final_mode);
+    if (failure != 0) {
+        throw std::system_error(failure, std::generic_category(),
+                                "write sealed worker-package residue");
+    }
+}
+
+enum class WorkerPackageAttemptRecordShape : std::uint8_t {
+    none,
+    canonical,
+    pending_only,
+    identical_dual,
+    wrong_attempt,
+};
+
+struct WorkerPackageAttemptState final {
+    wave_detail::DistributedSieveWorkerAttemptNamesV1 names;
+    sieve::AttemptStartedV1 record;
+};
+
+[[nodiscard]] WorkerPackageAttemptState
+leave_worker_package_attempt(wave_detail::DistributedSieveWaveStore& store,
+                             const sieve::DistributedSieveWorkIdentityV1& identity,
+                             std::uint32_t attempt_ordinal, const Digest& predecessor_digest,
+                             WorkerPackageAttemptRecordShape shape, std::string_view context,
+                             std::size_t chunk_index = 0) {
+    CHECK(chunk_index < identity.distributed.chunks.size());
+    const auto& chunk = identity.distributed.chunks[chunk_index];
+    const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk.relative_artifact_stem, chunk.chunk_id, attempt_ordinal);
+    CHECK(names.has_value());
+    auto reservation = reserve_wave_attempt_p8(store, chunk.chunk_id, attempt_ordinal, context);
+    auto record =
+        make_wave_attempt_started(store.manifest(), chunk, attempt_ordinal, predecessor_digest,
+                                  wave_attempt_lease_from_receipt(reservation));
+
+    if (shape == WorkerPackageAttemptRecordShape::canonical) {
+        auto started = wave_detail::publish_worker_attempt_started(std::move(reservation));
+        require_wave_reservation_receipt_consumed(reservation, context);
+        if (!started || !started.receipt.has_value()) {
+            fail(context, __LINE__, wave_diagnostic_detail(started.diagnostic));
+        }
+        record = started.receipt->record();
+        started.receipt.reset();
+        return {*names, std::move(record)};
+    }
+
+    if (shape == WorkerPackageAttemptRecordShape::wrong_attempt) {
+        record = make_wave_attempt_started(
+            store.manifest(), chunk, static_cast<std::uint32_t>(attempt_ordinal + 1U),
+            predecessor_digest, wave_attempt_lease_from_receipt(reservation));
+        publish_wave_attempt_canonical_record(store.absolute_root(), *names, record, context);
+    } else if (shape == WorkerPackageAttemptRecordShape::pending_only) {
+        publish_wave_attempt_fixture_leaf(store.absolute_root(), names->pending_record_leaf, record,
+                                          context);
+    } else if (shape == WorkerPackageAttemptRecordShape::identical_dual) {
+        publish_wave_attempt_canonical_record(store.absolute_root(), *names, record, context);
+        publish_wave_attempt_fixture_leaf(store.absolute_root(), names->pending_record_leaf, record,
+                                          context);
+    }
+    return {*names, std::move(record)};
+}
+
+[[nodiscard]] work_package_codec_detail::DistributedSieveEncodedWorkPackageV1
+encode_worker_package_or_fail(const sieve::DistributedSieveWorkIdentityV1& identity,
+                              std::string_view context) {
+    auto encoded = work_package_codec_detail::encode_distributed_sieve_work_package_v1(identity);
+    if (!encoded || !encoded.package.has_value()) {
+        fail(context, __LINE__, sieve::distributed_sieve_protocol_error_name(encoded.status.error));
+    }
+    return std::move(*encoded.package);
+}
+
+struct WorkerPackageResidueObservationContext final {
+    std::string expected_base_lock_leaf;
+    work_package_codec_detail::DistributedSieveWorkPackageWitnessV1 expected_package;
+    sieve::NativeIdentityV1 expected_file_identity;
+    std::uint64_t expected_file_extent = 0;
+    std::uint64_t expected_owner_user_id = 0;
+    bool expect_residue = true;
+    bool invoked = false;
+    bool found = false;
+    bool matched = false;
+};
+
+void observe_worker_package_residue(
+    std::span<const wave_detail::DistributedSievePrivateLeaseReservationInventoryWitness> witnesses,
+    void* opaque) noexcept {
+    auto& context = *static_cast<WorkerPackageResidueObservationContext*>(opaque);
+    context.invoked = true;
+    const auto found = std::ranges::find(
+        witnesses, context.expected_base_lock_leaf,
+        &wave_detail::DistributedSievePrivateLeaseReservationInventoryWitness::base_lock_leaf);
+    if (found == witnesses.end()) {
+        return;
+    }
+    context.found = true;
+    if (!context.expect_residue) {
+        context.matched = !found->work_package_residue.has_value();
+        return;
+    }
+    if (!found->work_package_residue.has_value()) {
+        return;
+    }
+    const auto& residue = *found->work_package_residue;
+    context.matched =
+        found->boundary ==
+            wave_detail::DistributedSievePrivateLeaseReservationBoundary::FinalDirectoryDurable &&
+        residue.body_bytes == context.expected_package.body_bytes &&
+        residue.total_bytes == context.expected_package.total_bytes &&
+        residue.work_sha256 == context.expected_package.work_sha256 &&
+        residue.package_sha256 == context.expected_package.package_sha256 &&
+        residue.file_identity == context.expected_file_identity &&
+        residue.file_extent == context.expected_file_extent &&
+        residue.owner_user_id == context.expected_owner_user_id;
+}
+
+[[nodiscard]] sieve::NativeIdentityV1
+package_file_identity(const WaveRootEntrySnapshot& entry) noexcept {
+    return {
+        .volume = entry.device,
+        .object = entry.inode,
+        .generation = 0,
+    };
+}
+
+void require_worker_package_residue_observation(wave_detail::DistributedSieveWaveStore& store,
+                                                WorkerPackageResidueObservationContext& observation,
+                                                std::string_view context) {
+    require_wave_status(store.revalidate(wave_detail::DistributedSieveWaveStoreInventoryTestHooks{
+                            .observe_reservation_witnesses = observe_worker_package_residue,
+                            .context = &observation,
+                        }),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready, context);
+    CHECK(observation.invoked);
+    CHECK(observation.found);
+    CHECK(observation.matched);
+}
+
+class WorkerPackageResidueFixture final {
+public:
+    WorkerPackageResidueFixture(std::string_view label, bool create_residue = true)
+        : wave(label, 1),
+          attempt(leave_worker_package_attempt(
+              wave.store(), wave.identity, 0, wave.store().manifest_digest(),
+              WorkerPackageAttemptRecordShape::canonical, "publish residue-fixture attempt")),
+          encoded(encode_worker_package_or_fail(wave.identity, "encode residue-fixture package")),
+          package_path(
+              wave.root / attempt.names.private_directory_leaf /
+              std::string(
+                  work_package_file_detail::DISTRIBUTED_SIEVE_WORKER_WORK_PACKAGE_FILE_LEAF_V1)),
+          manifest_digest(wave.store().manifest_digest()) {
+        if (create_residue) {
+            write_worker_package_leaf(package_path, encoded.bytes);
+        }
+    }
+
+    WorkerLaunchFixture wave;
+    WorkerPackageAttemptState attempt;
+    work_package_codec_detail::DistributedSieveEncodedWorkPackageV1 encoded;
+    std::filesystem::path package_path;
+    Digest manifest_digest;
+};
+
+void require_rejected_worker_package_restart(WorkerLaunchFixture& fixture,
+                                             const Digest& manifest_digest,
+                                             const std::filesystem::path& package_path,
+                                             std::string_view context) {
+    const auto package_before =
+        capture_wave_root_entry_snapshot(package_path, package_path.filename().string());
+    fixture.opened.store.reset();
+    auto reopened = wave_detail::DistributedSieveWaveStore::open(fixture.root, manifest_digest);
+    CHECK(!reopened);
+    CHECK(reopened.store == nullptr);
+    require_wave_status(reopened.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict, context);
+    CHECK(capture_wave_root_entry_snapshot(package_path, package_path.filename().string()) ==
+          package_before);
+}
+
+void test_wave_store_worker_package_residue_restart_and_mutator_barrier() {
+    WorkerPackageResidueFixture fixture("worker-package-residue-restart", false);
+    auto& initial = fixture.wave.store();
+    WorkerPackageResidueObservationContext no_residue{
+        .expected_base_lock_leaf = fixture.attempt.names.base_lock_leaf,
+        .expect_residue = false,
+    };
+    require_worker_package_residue_observation(initial, no_residue,
+                                               "no-residue P8 baseline remains unchanged");
+
+    fixture.wave.opened.store.reset();
+    auto baseline =
+        wave_detail::DistributedSieveWaveStore::open(fixture.wave.root, fixture.manifest_digest);
+    auto& baseline_store = require_wave_ready(baseline, "reopen no-residue P8 baseline");
+    require_wave_status(baseline_store.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "reopened no-residue P8 baseline remains ready");
+    baseline.store.reset();
+
+    write_worker_package_leaf(fixture.package_path, fixture.encoded.bytes);
+    const auto package_entry = capture_wave_root_entry_snapshot(
+        fixture.package_path, fixture.package_path.filename().string());
+    CHECK((package_entry.mode & static_cast<mode_t>(07777)) == 0400);
+    CHECK(package_entry.link_count == 1);
+    CHECK(package_entry.size == fixture.encoded.bytes.size());
+    CHECK(package_entry.bytes == fixture.encoded.bytes);
+
+    auto reopened =
+        wave_detail::DistributedSieveWaveStore::open(fixture.wave.root, fixture.manifest_digest);
+    auto& store = require_wave_ready(reopened, "reopen exact named worker-package residue");
+    WorkerPackageResidueObservationContext observed{
+        .expected_base_lock_leaf = fixture.attempt.names.base_lock_leaf,
+        .expected_package = fixture.encoded.witness,
+        .expected_file_identity = package_file_identity(package_entry),
+        .expected_file_extent = static_cast<std::uint64_t>(fixture.encoded.bytes.size()),
+        .expected_owner_user_id = static_cast<std::uint64_t>(::geteuid()),
+    };
+    require_worker_package_residue_observation(
+        store, observed, "restart inventory authenticates exact package residue witness");
+
+    auto generic = store.claim_private_lease_root();
+    auto& generic_claim =
+        require_private_lease_root_claim_ready(generic, "generic claim accepts read-only residue");
+    require_wave_status(generic_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "generic claim revalidates exact read-only residue");
+    generic.claim.reset();
+
+    const auto& chunk = fixture.wave.identity.distributed.chunks.front();
+    auto opened_attempt = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+    auto& attempt_claim = require_private_lease_root_claim_ready(
+        opened_attempt, "attempt claim accepts read-only residue inventory");
+    require_wave_status(attempt_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "attempt claim revalidates exact residue witness");
+    const auto package_before = capture_wave_root_entry_snapshot(
+        fixture.package_path, fixture.package_path.filename().string());
+
+    auto recovery = wave_detail::recover_worker_attempt_private_lease(std::move(opened_attempt));
+    CHECK(!recovery);
+    CHECK(recovery.claim == nullptr);
+    require_wave_status(recovery.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::reconciliation_required,
+                        "legacy private-lease recovery cannot clean a package residue");
+    CHECK(capture_wave_root_entry_snapshot(
+              fixture.package_path, fixture.package_path.filename().string()) == package_before);
+
+    auto reconcile_claim = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
+    (void)require_private_lease_root_claim_ready(
+        reconcile_claim, "reopen claim before record reconciliation refusal");
+    auto reconciled = wave_detail::reconcile_worker_attempt_started(std::move(reconcile_claim));
+    CHECK(!reconciled);
+    CHECK(!reconciled.reconciled.has_value());
+    require_wave_status(reconciled.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::reconciliation_required,
+                        "record reconciler cannot clean a package residue");
+    CHECK(capture_wave_root_entry_snapshot(
+              fixture.package_path, fixture.package_path.filename().string()) == package_before);
+
+    auto fresh = store.create_worker_attempt_private_lease_root(chunk.chunk_id, 1);
+    CHECK(!fresh);
+    CHECK(fresh.claim == nullptr);
+    require_wave_status(fresh.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::reconciliation_required,
+                        "fresh reservation entry rejects unreconciled package residue");
+    const auto fresh_names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk.relative_artifact_stem, chunk.chunk_id, 1);
+    CHECK(fresh_names.has_value());
+    CHECK(!entry_exists_no_follow(fixture.wave.root / fresh_names->base_lock_leaf));
+    CHECK(capture_wave_root_entry_snapshot(
+              fixture.package_path, fixture.package_path.filename().string()) == package_before);
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "rejected fresh attempt preserves the residue-bearing inventory");
+}
+
+void test_wave_store_worker_package_residue_record_binding_matrix() {
+    constexpr std::array shapes{
+        WorkerPackageAttemptRecordShape::none,
+        WorkerPackageAttemptRecordShape::pending_only,
+        WorkerPackageAttemptRecordShape::identical_dual,
+        WorkerPackageAttemptRecordShape::wrong_attempt,
+    };
+    for (const auto shape : shapes) {
+        WorkerLaunchFixture fixture("worker-package-residue-record-shape-" +
+                                        std::to_string(static_cast<unsigned int>(shape)),
+                                    1);
+        auto& store = fixture.store();
+        const Digest manifest_digest = store.manifest_digest();
+        const auto attempt =
+            leave_worker_package_attempt(store, fixture.identity, 0, manifest_digest, shape,
+                                         "leave noncanonical residue record shape");
+        const auto encoded =
+            encode_worker_package_or_fail(fixture.identity, "encode record-shape package");
+        const auto package_path =
+            fixture.root / attempt.names.private_directory_leaf /
+            std::string(
+                work_package_file_detail::DISTRIBUTED_SIEVE_WORKER_WORK_PACKAGE_FILE_LEAF_V1);
+        write_worker_package_leaf(package_path, encoded.bytes);
+        require_rejected_worker_package_restart(fixture, manifest_digest, package_path,
+                                                "record shape cannot authorize package residue");
+    }
+
+    WorkerLaunchFixture historical("worker-package-residue-historical-attempt", 1);
+    auto& store = historical.store();
+    const Digest manifest_digest = store.manifest_digest();
+    const auto first = leave_worker_package_attempt(store, historical.identity, 0, manifest_digest,
+                                                    WorkerPackageAttemptRecordShape::canonical,
+                                                    "publish historical residue predecessor");
+    auto later = store.create_worker_attempt_private_lease_root(
+        historical.identity.distributed.chunks.front().chunk_id, 1);
+    auto& later_claim = require_private_lease_root_claim_ready(
+        later, "create later BaseLock-only attempt beside active predecessor");
+    require_wave_status(later_claim.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "later BaseLock-only attempt initially revalidates");
+    later.claim.reset();
+    const auto encoded =
+        encode_worker_package_or_fail(historical.identity, "encode historical package residue");
+    const auto package_path =
+        historical.root / first.names.private_directory_leaf /
+        std::string(work_package_file_detail::DISTRIBUTED_SIEVE_WORKER_WORK_PACKAGE_FILE_LEAF_V1);
+    write_worker_package_leaf(package_path, encoded.bytes);
+    require_rejected_worker_package_restart(
+        historical, manifest_digest, package_path,
+        "later same-chunk BaseLock makes the residue-bearing attempt historical");
+}
+
+enum class WorkerPackageInvalidShape : std::uint8_t {
+    writable_mode,
+    truncated,
+    extended,
+    corrupt_package,
+    wrong_work,
+    symlink,
+    directory,
+    hardlink,
+};
+
+void test_wave_store_worker_package_residue_file_validation_matrix() {
+    constexpr std::array shapes{
+        WorkerPackageInvalidShape::writable_mode, WorkerPackageInvalidShape::truncated,
+        WorkerPackageInvalidShape::extended,      WorkerPackageInvalidShape::corrupt_package,
+        WorkerPackageInvalidShape::wrong_work,    WorkerPackageInvalidShape::symlink,
+        WorkerPackageInvalidShape::directory,     WorkerPackageInvalidShape::hardlink,
+    };
+    for (const auto shape : shapes) {
+        WorkerLaunchFixture fixture("worker-package-residue-file-shape-" +
+                                        std::to_string(static_cast<unsigned int>(shape)),
+                                    1);
+        auto& store = fixture.store();
+        const Digest manifest_digest = store.manifest_digest();
+        const auto attempt = leave_worker_package_attempt(
+            store, fixture.identity, 0, manifest_digest, WorkerPackageAttemptRecordShape::canonical,
+            "publish file-shape attempt");
+        auto encoded = encode_worker_package_or_fail(fixture.identity, "encode file-shape package");
+        const auto package_path =
+            fixture.root / attempt.names.private_directory_leaf /
+            std::string(
+                work_package_file_detail::DISTRIBUTED_SIEVE_WORKER_WORK_PACKAGE_FILE_LEAF_V1);
+
+        switch (shape) {
+        case WorkerPackageInvalidShape::writable_mode:
+            write_worker_package_leaf(package_path, encoded.bytes, 0600);
+            break;
+        case WorkerPackageInvalidShape::truncated:
+            CHECK(!encoded.bytes.empty());
+            encoded.bytes.pop_back();
+            write_worker_package_leaf(package_path, encoded.bytes);
+            break;
+        case WorkerPackageInvalidShape::extended:
+            encoded.bytes.push_back(std::byte{0x7f});
+            write_worker_package_leaf(package_path, encoded.bytes);
+            break;
+        case WorkerPackageInvalidShape::corrupt_package:
+            CHECK(!encoded.bytes.empty());
+            encoded.bytes.back() ^= std::byte{0x01};
+            write_worker_package_leaf(package_path, encoded.bytes);
+            break;
+        case WorkerPackageInvalidShape::wrong_work: {
+            auto wrong_identity = fixture.identity;
+            ++wrong_identity.region.i_max;
+            require_ok(sieve::validate_distributed_sieve_work_identity(wrong_identity),
+                       "wrong-work residue remains structurally valid");
+            encoded =
+                encode_worker_package_or_fail(wrong_identity, "encode wrong-work package residue");
+            write_worker_package_leaf(package_path, encoded.bytes);
+            break;
+        }
+        case WorkerPackageInvalidShape::symlink: {
+            const auto target = fixture.temp.path() / "worker-package-symlink-target";
+            write_worker_package_leaf(target, encoded.bytes);
+            CHECK(::symlink(target.c_str(), package_path.c_str()) == 0);
+            break;
+        }
+        case WorkerPackageInvalidShape::directory:
+            CHECK(::mkdir(package_path.c_str(), 0400) == 0);
+            break;
+        case WorkerPackageInvalidShape::hardlink: {
+            const auto source = fixture.temp.path() / "worker-package-hardlink-source";
+            write_worker_package_leaf(source, encoded.bytes);
+            CHECK(::link(source.c_str(), package_path.c_str()) == 0);
+            break;
+        }
+        }
+        require_rejected_worker_package_restart(fixture, manifest_digest, package_path,
+                                                "invalid package residue fails closed");
+    }
+}
+
+struct InsertSealedWorkerPackageContext final {
+    std::filesystem::path path;
+    std::vector<std::byte> bytes;
+    int native_error = 0;
+    bool invoked = false;
+    bool inserted = false;
+};
+
+void insert_worker_package_before_record_mutation(void* opaque) noexcept {
+    auto& context = *static_cast<InsertSealedWorkerPackageContext*>(opaque);
+    if (context.invoked) {
+        return;
+    }
+    context.invoked = true;
+    context.native_error = write_worker_package_leaf_native(context.path, context.bytes, 0400);
+    context.inserted = context.native_error == 0;
+}
+
+void test_wave_store_worker_package_residue_record_mutation_sandwiches() {
+    {
+        WorkerLaunchFixture fixture("worker-package-residue-before-start-publication", 1);
+        auto& store = fixture.store();
+        const auto& chunk = fixture.identity.distributed.chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+        auto reservation = reserve_wave_attempt_p8(store, chunk.chunk_id, 0,
+                                                   "reserve pre-publication residue fixture");
+        const auto encoded =
+            encode_worker_package_or_fail(fixture.identity, "encode pre-publication residue");
+        InsertSealedWorkerPackageContext insertion{
+            .path =
+                fixture.root / names->private_directory_leaf /
+                std::string(
+                    work_package_file_detail::DISTRIBUTED_SIEVE_WORKER_WORK_PACKAGE_FILE_LEAF_V1),
+            .bytes = encoded.bytes,
+        };
+        auto rejected = wave_detail::publish_worker_attempt_started(
+            std::move(reservation),
+            wave_detail::DistributedSieveWorkerAttemptStartTestHooks{
+                .before_record_publication = insert_worker_package_before_record_mutation,
+                .context = &insertion,
+            });
+        require_wave_reservation_receipt_consumed(
+            reservation, "pre-publication rejection consumes the reservation receipt");
+        CHECK(!rejected);
+        CHECK(!rejected.receipt.has_value());
+        require_wave_status(rejected.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "pre-publication residue invalidates the bound claim");
+        CHECK(insertion.invoked);
+        CHECK(insertion.inserted);
+        CHECK(insertion.native_error == 0);
+        CHECK(entry_exists_no_follow(insertion.path));
+        CHECK(read_file_bytes(insertion.path) == encoded.bytes);
+        CHECK(!entry_exists_no_follow(fixture.root / names->canonical_record_leaf));
+        CHECK(!entry_exists_no_follow(fixture.root / names->pending_record_leaf));
+    }
+
+    {
+        WorkerLaunchFixture fixture("worker-package-residue-before-record-normalization", 1);
+        auto& store = fixture.store();
+        const auto attempt =
+            leave_worker_package_attempt(store, fixture.identity, 0, store.manifest_digest(),
+                                         WorkerPackageAttemptRecordShape::canonical,
+                                         "publish pre-normalization residue fixture");
+        const auto encoded =
+            encode_worker_package_or_fail(fixture.identity, "encode pre-normalization residue");
+        const auto canonical_record = fixture.root / attempt.names.canonical_record_leaf;
+        const auto record_before =
+            capture_wave_root_entry_snapshot(canonical_record, attempt.names.canonical_record_leaf);
+        InsertSealedWorkerPackageContext insertion{
+            .path =
+                fixture.root / attempt.names.private_directory_leaf /
+                std::string(
+                    work_package_file_detail::DISTRIBUTED_SIEVE_WORKER_WORK_PACKAGE_FILE_LEAF_V1),
+            .bytes = encoded.bytes,
+        };
+        auto opened = store.open_worker_attempt_private_lease_root(attempt.record.chunk_id, 0);
+        (void)require_private_lease_root_claim_ready(
+            opened, "open pre-normalization residue fixture claim");
+        auto rejected = wave_detail::reconcile_worker_attempt_started(
+            std::move(opened),
+            wave_detail::DistributedSieveWorkerAttemptReconcileTestHooks{
+                .before_record_normalization = insert_worker_package_before_record_mutation,
+                .context = &insertion,
+            });
+        CHECK(!rejected);
+        CHECK(!rejected.reconciled.has_value());
+        require_wave_status(rejected.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "pre-normalization residue invalidates the bound claim");
+        CHECK(insertion.invoked);
+        CHECK(insertion.inserted);
+        CHECK(insertion.native_error == 0);
+        CHECK(entry_exists_no_follow(insertion.path));
+        CHECK(read_file_bytes(insertion.path) == encoded.bytes);
+        CHECK(capture_wave_root_entry_snapshot(
+                  canonical_record, attempt.names.canonical_record_leaf) == record_before);
+        CHECK(!entry_exists_no_follow(fixture.root / attempt.names.pending_record_leaf));
+    }
+}
+
+struct SealedWorkerPackageReplacementContext final {
+    std::filesystem::path canonical;
+    std::filesystem::path displaced;
+    std::vector<std::byte> bytes;
+    int native_error = 0;
+    bool invoked = false;
+    bool replaced = false;
+};
+
+void replace_worker_package_with_same_bytes_after_first_inventory(void* opaque) noexcept {
+    auto& context = *static_cast<SealedWorkerPackageReplacementContext*>(opaque);
+    if (context.invoked) {
+        return;
+    }
+    context.invoked = true;
+    int renamed = -1;
+    do {
+        renamed = ::rename(context.canonical.c_str(), context.displaced.c_str());
+    } while (renamed != 0 && errno == EINTR);
+    if (renamed != 0) {
+        context.native_error = errno;
+        return;
+    }
+    context.native_error = write_worker_package_leaf_native(context.canonical, context.bytes, 0400);
+    context.replaced = context.native_error == 0;
+}
+
+struct CrossChunkWorkerPackageReplacementContext final {
+    SealedWorkerPackageReplacementContext package;
+    std::optional<PrivateLeaseRecoveryEdge> edge;
+    bool invoked = false;
+};
+
+void replace_cross_chunk_worker_package_before_staging_remove(PrivateLeaseRecoveryEdge edge,
+                                                              void* opaque) noexcept {
+    auto& context = *static_cast<CrossChunkWorkerPackageReplacementContext*>(opaque);
+    if (context.invoked) {
+        return;
+    }
+    context.invoked = true;
+    context.edge = edge;
+    replace_worker_package_with_same_bytes_after_first_inventory(&context.package);
+}
+
+void test_wave_store_worker_package_residue_cross_chunk_recovery_sandwich() {
+    using Boundary = wave_detail::DistributedSievePrivateLeaseReservationBoundary;
+
+    WorkerLaunchFixture fixture("worker-package-residue-cross-chunk-recovery", 2);
+    auto& store = fixture.store();
+    const auto attempt =
+        leave_worker_package_attempt(store, fixture.identity, 0, store.manifest_digest(),
+                                     WorkerPackageAttemptRecordShape::canonical,
+                                     "publish cross-chunk residue-bearing attempt", 0);
+    const auto& recovery_chunk = fixture.identity.distributed.chunks[1];
+    leave_wave_private_lease_reservation_prefix(store, recovery_chunk.chunk_id,
+                                                Boundary::StagingDirectoryDurable,
+                                                "leave cross-chunk staging predecessor");
+
+    const auto encoded =
+        encode_worker_package_or_fail(fixture.identity, "encode cross-chunk package residue");
+    const auto package_path =
+        fixture.root / attempt.names.private_directory_leaf /
+        std::string(work_package_file_detail::DISTRIBUTED_SIEVE_WORKER_WORK_PACKAGE_FILE_LEAF_V1);
+    write_worker_package_leaf(package_path, encoded.bytes);
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "cross-chunk residue and staging predecessor are initially closed");
+
+    const auto recovery_names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        recovery_chunk.relative_artifact_stem, recovery_chunk.chunk_id, 0);
+    CHECK(recovery_names.has_value());
+    const std::string staging_prefix =
+        recovery_names->relative_lease_stem +
+        std::string(wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_STAGING_TAG);
+    std::optional<std::filesystem::path> staging_directory;
+    for (const auto& entry : std::filesystem::directory_iterator(fixture.root)) {
+        if (!entry.path().filename().string().starts_with(staging_prefix)) {
+            continue;
+        }
+        CHECK(!staging_directory.has_value());
+        staging_directory = entry.path();
+    }
+    CHECK(staging_directory.has_value());
+    CHECK(std::filesystem::is_directory(*staging_directory));
+
+    auto opened = store.open_worker_attempt_private_lease_root(recovery_chunk.chunk_id, 0);
+    (void)require_private_lease_root_claim_ready(
+        opened, "open cross-chunk staging predecessor for recovery");
+    CrossChunkWorkerPackageReplacementContext replacement{
+        .package =
+            {
+                .canonical = package_path,
+                .displaced = fixture.temp.path() / "displaced-cross-chunk-worker-package",
+                .bytes = encoded.bytes,
+            },
+    };
+    auto rejected = wave_detail::recover_worker_attempt_private_lease(
+        std::move(opened), wave_detail::DistributedSievePrivateLeaseRecoveryTestHooks{
+                               .before_staging_directory_remove =
+                                   replace_cross_chunk_worker_package_before_staging_remove,
+                               .context = &replacement,
+                           });
+    CHECK(!rejected);
+    CHECK(rejected.claim == nullptr);
+    require_wave_status(rejected.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "cross-chunk residue replacement blocks staging removal");
+    CHECK(replacement.invoked);
+    CHECK(replacement.edge == PRIVATE_LEASE_RECOVERY_EDGES[2]);
+    CHECK(replacement.package.invoked);
+    CHECK(replacement.package.replaced);
+    CHECK(replacement.package.native_error == 0);
+    CHECK(std::filesystem::is_directory(*staging_directory));
+    CHECK(entry_exists_no_follow(replacement.package.canonical));
+    CHECK(entry_exists_no_follow(replacement.package.displaced));
+    CHECK(read_file_bytes(replacement.package.canonical) == encoded.bytes);
+    CHECK(read_file_bytes(replacement.package.displaced) == encoded.bytes);
+    require_distinct_entry_identities(replacement.package.canonical, replacement.package.displaced,
+                                      "cross-chunk package replacement must remain visible");
+    require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "failed cross-chunk recovery preserves a closed successor");
+}
+
+void test_wave_store_worker_package_residue_identity_replacement_matrix() {
+    {
+        WorkerPackageResidueFixture fixture("worker-package-residue-replaced-file");
+        auto& store = fixture.wave.store();
+        SealedWorkerPackageReplacementContext replacement{
+            .canonical = fixture.package_path,
+            .displaced = fixture.wave.temp.path() / "displaced-worker-package",
+            .bytes = fixture.encoded.bytes,
+        };
+        const auto rejected =
+            store.revalidate(wave_detail::DistributedSieveWaveStoreInventoryTestHooks{
+                .after_first_validation =
+                    replace_worker_package_with_same_bytes_after_first_inventory,
+                .context = &replacement,
+            });
+        require_wave_status(rejected,
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "same-byte package inode replacement fails closed");
+        CHECK(replacement.invoked);
+        CHECK(replacement.replaced);
+        CHECK(replacement.native_error == 0);
+        CHECK(entry_exists_no_follow(replacement.canonical));
+        CHECK(entry_exists_no_follow(replacement.displaced));
+        CHECK(read_file_bytes(replacement.canonical) == fixture.encoded.bytes);
+        CHECK(read_file_bytes(replacement.displaced) == fixture.encoded.bytes);
+        require_distinct_entry_identities(replacement.canonical, replacement.displaced,
+                                          "package replacement must use a distinct inode");
+    }
+
+    {
+        WorkerPackageResidueFixture fixture("worker-package-residue-replaced-directory");
+        auto& store = fixture.wave.store();
+        WaveRootReplacementContext replacement{
+            .canonical = fixture.package_path.parent_path(),
+            .displaced = fixture.wave.temp.path() / "displaced-worker-package-directory",
+        };
+        const auto rejected =
+            store.revalidate(wave_detail::DistributedSieveWaveStoreInventoryTestHooks{
+                .after_first_validation = replace_wave_root_after_attempt_phase,
+                .context = &replacement,
+            });
+        require_wave_status(rejected,
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "attempt-directory replacement fails closed");
+        CHECK(replacement.invoked);
+        CHECK(replacement.replaced);
+        CHECK(replacement.native_error == 0);
+        CHECK(std::filesystem::is_directory(replacement.canonical));
+        CHECK(entry_exists_no_follow(replacement.displaced / fixture.package_path.filename()));
+    }
+
+    {
+        WorkerPackageResidueFixture fixture("worker-package-residue-replaced-record");
+        auto& store = fixture.wave.store();
+        const auto record_path = fixture.wave.root / fixture.attempt.names.canonical_record_leaf;
+        WaveSameBytesReplacementContext replacement{
+            .canonical = record_path,
+            .displaced = fixture.wave.temp.path() / "displaced-worker-attempt-record",
+            .bytes = read_file_bytes(record_path),
+        };
+        const auto rejected =
+            store.revalidate(wave_detail::DistributedSieveWaveStoreInventoryTestHooks{
+                .after_first_validation = replace_marker_with_same_bytes_after_first_inventory,
+                .context = &replacement,
+            });
+        require_wave_status(rejected,
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "attempt-record replacement fails closed with residue present");
+        CHECK(replacement.invoked);
+        CHECK(replacement.replaced);
+        CHECK(replacement.native_error == 0);
+        CHECK(entry_exists_no_follow(fixture.package_path));
+        CHECK(read_file_bytes(replacement.canonical) == replacement.bytes);
+        CHECK(read_file_bytes(replacement.displaced) == replacement.bytes);
+    }
+
+    {
+        WorkerPackageResidueFixture fixture("worker-package-residue-replaced-base-lock");
+        auto& store = fixture.wave.store();
+        WaveBaseLockReplacementContext replacement{
+            .canonical = fixture.wave.root / fixture.attempt.names.base_lock_leaf,
+            .displaced = fixture.wave.temp.path() / "displaced-worker-attempt-base-lock",
+        };
+        const auto rejected =
+            store.revalidate(wave_detail::DistributedSieveWaveStoreInventoryTestHooks{
+                .after_first_validation = replace_base_lock_after_first_inventory,
+                .context = &replacement,
+            });
+        require_wave_status(rejected,
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "attempt BaseLock replacement fails closed with residue present");
+        CHECK(replacement.invoked);
+        CHECK(replacement.replaced);
+        CHECK(replacement.native_error == 0);
+        CHECK(entry_exists_no_follow(fixture.package_path));
+        CHECK(entry_exists_no_follow(replacement.canonical));
+        CHECK(entry_exists_no_follow(replacement.displaced));
+    }
+}
+
 #else
 
 void test_wave_store_platform_fail_closed() {
@@ -14549,7 +15378,7 @@ void run_wave_store_suite() {
     };
 
 #if !defined(_WIN32)
-    const std::array<std::pair<std::string_view, TestFunction>, 65> common_tests = {{
+    const std::array<std::pair<std::string_view, TestFunction>, 71> common_tests = {{
         {"create, open, revalidate, and exact manifest",
          test_wave_store_create_open_revalidate_and_exact_manifest},
         {"store-owned draft fields", test_wave_store_rejects_non_draft_store_owned_fields},
@@ -14641,8 +15470,8 @@ void run_wave_store_suite() {
          test_wave_store_worker_attempt_start_rejects_cross_chunk_candidate_lease_conflict},
         {"worker-attempt start durable prefixes",
          test_wave_store_worker_attempt_start_fault_prefixes},
-        {"worker-attempt start final-publication races",
-         test_wave_store_worker_attempt_start_reconciles_final_publication_races},
+        {"worker-attempt start pre-publication namespace drift",
+         test_wave_store_worker_attempt_start_rejects_prepublication_namespace_drift},
         {"worker-attempt start forked mint hooks",
          test_wave_store_worker_attempt_start_forked_mint_hooks_are_process_bound},
         {"worker-attempt start successor replacements",
@@ -14671,6 +15500,18 @@ void run_wave_store_suite() {
          test_wave_store_bound_attempt_claim_rejects_same_byte_record_replacement},
         {"attempt-record invalid chains and bindings",
          test_wave_store_attempt_record_inventory_rejects_invalid_chains_and_bindings},
+        {"worker package residue restart and mutator barrier",
+         test_wave_store_worker_package_residue_restart_and_mutator_barrier},
+        {"worker package residue record binding matrix",
+         test_wave_store_worker_package_residue_record_binding_matrix},
+        {"worker package residue file validation matrix",
+         test_wave_store_worker_package_residue_file_validation_matrix},
+        {"worker package residue record mutation sandwiches",
+         test_wave_store_worker_package_residue_record_mutation_sandwiches},
+        {"worker package residue cross-chunk recovery sandwich",
+         test_wave_store_worker_package_residue_cross_chunk_recovery_sandwich},
+        {"worker package residue identity replacement matrix",
+         test_wave_store_worker_package_residue_identity_replacement_matrix},
     }};
     run_tests(common_tests);
 

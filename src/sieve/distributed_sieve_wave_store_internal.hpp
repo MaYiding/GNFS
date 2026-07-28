@@ -302,6 +302,26 @@ struct DistributedSievePrivateLeaseReservationSyncFailureSite final {
                const DistributedSievePrivateLeaseReservationSyncFailureSite&) = default;
 };
 
+/// Compact, process-independent inventory proof for one authenticated fixed
+/// work-package residue inside a final private-lease directory. The decoded
+/// work identity is validated against the manifest while observing the
+/// residue, but is deliberately not retained in the closed WaveStore
+/// snapshot. Native identity plus the package digest keeps replacement
+/// visible across the mandatory double observations.
+struct DistributedSieveWorkerWorkPackageResidueInventoryWitnessV1 final {
+    std::uint64_t body_bytes = 0;
+    std::uint64_t total_bytes = 0;
+    util::Sha256Digest work_sha256;
+    util::Sha256Digest package_sha256;
+    NativeIdentityV1 file_identity;
+    std::uint64_t file_extent = 0;
+    std::uint64_t owner_user_id = 0;
+
+    [[nodiscard]] friend bool
+    operator==(const DistributedSieveWorkerWorkPackageResidueInventoryWitnessV1&,
+               const DistributedSieveWorkerWorkPackageResidueInventoryWitnessV1&) = default;
+};
+
 struct DistributedSievePrivateLeaseReservationInventoryWitness final {
     std::string base_lock_leaf;
     DistributedSievePrivateLeaseReservationBoundary boundary =
@@ -311,6 +331,7 @@ struct DistributedSievePrivateLeaseReservationInventoryWitness final {
     std::optional<NativeIdentityV1> directory_identity;
     std::optional<NativeIdentityV1> owner_marker_identity;
     std::optional<NativeIdentityV1> owned_marker_identity;
+    std::optional<DistributedSieveWorkerWorkPackageResidueInventoryWitnessV1> work_package_residue;
 
     [[nodiscard]] friend bool
     operator==(const DistributedSievePrivateLeaseReservationInventoryWitness&,

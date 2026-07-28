@@ -2013,7 +2013,8 @@ hook. A later-slot hook rebuilding an earlier slot's fixed leaf therefore
 stops the batch before spawn, reports the earlier slot, and preserves the
 residue for explicit reconciliation. This first slice never deletes a package
 leaf or replaced directory from its name alone. Identity-bound residue
-recovery across restart is still pending.
+deletion across restart is still pending; the B1 classifier below adds
+read-only reopening.
 M2j-A is internal and test-only; it also rejects hosts without an atomic
 spawn-time close-all primitive. Path-based `posix_spawn()` is not manifest
 same-object executable authentication. Worker-side descriptor `3..6`
@@ -2026,3 +2027,41 @@ pre-gate close-all refusal: supported hosts take a trusted force-unavailable
 test seam, while unsupported hosts take the real platform query. Only hosts
 with atomic close-all support register and execute the other nine positive
 launcher cases.
+
+### Read-Only Named Package Residue Reopening Status
+
+M2j-B B1 extends the WaveStore inventory without granting cleanup authority.
+The carrier opens the fixed package leaf relative to the retained final P8
+directory, validates a sealed owner-only regular file with one link, decodes
+the canonical envelope, and returns data only. WaveStore records body and
+total extents, work and package digests, native file identity, file extent, and
+effective owner in its compact double-snapshot witness.
+
+Admission binds the decoded full work identity to the immutable manifest. It
+also requires canonical owner and owned markers, a canonical-only
+`AttemptStartedV1`, the latest same-chunk attempt, and exact agreement on the
+manifest, lease ID, owner marker, directory identity, relative stem, chunk,
+and ordinal. An exact residue therefore survives store destruction and
+reopens through `open()`, `revalidate()`, the generic root claim, and the
+attempt-bound claim.
+
+Existing mutators do not consume this evidence. Lease recovery and record
+reconciliation return `reconciliation_required` before mutation, and fresh
+same-chunk creation returns the same result before creating a `BaseLock`.
+Publication and normalization revalidate the complete claim after their final
+trusted hook. Cross-chunk recovery retains its P3 directory descriptor through
+the last hook, revalidates the whole inventory, and only then removes the
+staging directory.
+
+The restart suite uses the canonical package codec and a synchronized `0400`
+fixed leaf. It verifies the compact witness, the no-residue baseline, record
+shape and latest-attempt failures, content and metadata corruption, and
+same-byte package, directory, record, and `BaseLock` replacement. Every
+failure preserves the observed residue.
+
+B1 does not unlink, repair, reconcile, launch from, or rehydrate the named
+package. It continues to exclude an adversarial same-UID namespace mutator.
+B2 must add an identity-bound cleanup transition before deletion. The policy
+checker count-closes the sole production inspector use inside
+`validate_private_lease_attempt_inventory()`, rejects identifier aliases,
+forbids the `_with_ops` test seam in WaveStore, and isolates the legacy runner.

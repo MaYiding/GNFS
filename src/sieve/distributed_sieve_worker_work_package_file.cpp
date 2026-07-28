@@ -10,11 +10,12 @@
 #include <new>
 #include <optional>
 #include <span>
+#include <type_traits>
 #include <utility>
+#include <vector>
 
 #if defined(__APPLE__) || defined(__linux__)
 #include <fcntl.h>
-#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -37,6 +38,8 @@ using FileStatus = DistributedSieveWorkerWorkPackageFileStatus;
 using Diagnostic = DistributedSieveWorkerWorkPackageFileDiagnostic;
 using PackageWitness =
     distributed_sieve_work_package_codec_detail::DistributedSieveWorkPackageWitnessV1;
+using ResidueInspectionRequest = DistributedSieveWorkerWorkPackageResidueInspectionRequestV1;
+using ResidueWitness = DistributedSieveWorkerWorkPackageResidueWitnessV1;
 
 constexpr std::uint32_t PRIVATE_DIRECTORY_MODE = 0700;
 constexpr std::uint32_t WRITABLE_FILE_MODE = 0600;
@@ -327,6 +330,17 @@ process_check(const DistributedSieveWorkerWorkPackageFileRequestV1& request,
     return make_diagnostic(FileStatus::ready, 0, {}, named_may_remain);
 }
 
+[[nodiscard]] Diagnostic process_check(const ResidueInspectionRequest& request,
+                                       const DistributedSieveWorkerWorkPackageFileOpsV1& ops,
+                                       bool named_may_remain = false) noexcept {
+    if (request.observer_process_id == 0 ||
+        ops.current_process_id() != request.observer_process_id) {
+        return make_diagnostic(FileStatus::invalid_request, PROCESS_ID_MISMATCH_ERROR, {},
+                               named_may_remain);
+    }
+    return make_diagnostic(FileStatus::ready, 0, {}, named_may_remain);
+}
+
 [[nodiscard]] Diagnostic operation_diagnostic(const OperationResult& operation,
                                               FileStatus failure_status,
                                               bool named_may_remain = true) noexcept {
@@ -345,10 +359,10 @@ process_check(const DistributedSieveWorkerWorkPackageFileRequestV1& request,
     return make_diagnostic(failure_status, operation.native_error, {}, named_may_remain);
 }
 
-[[nodiscard]] Diagnostic
-validate_directory(const DistributedSieveWorkerWorkPackageFileRequestV1& request,
-                   DistributedSieveWorkerWorkPackageFileOpsV1& ops,
-                   bool named_may_remain = false) noexcept {
+template <typename Request>
+[[nodiscard]] Diagnostic validate_directory(const Request& request,
+                                            DistributedSieveWorkerWorkPackageFileOpsV1& ops,
+                                            bool named_may_remain = false) noexcept {
     if (auto process = process_check(request, ops, named_may_remain); !process) {
         return process;
     }
@@ -484,10 +498,10 @@ validate_triple_file_binding(const DistributedSieveWorkerWorkPackageFileRequestV
     return validate_handle_acl(reader, ops);
 }
 
+template <typename Request>
 [[nodiscard]] Diagnostic
-validate_reader_and_name(const DistributedSieveWorkerWorkPackageFileRequestV1& request,
-                         NativeHandle reader, const NativeIdentityV1& expected_identity,
-                         std::uint64_t expected_size,
+validate_reader_and_name(const Request& request, NativeHandle reader,
+                         const NativeIdentityV1& expected_identity, std::uint64_t expected_size,
                          DistributedSieveWorkerWorkPackageFileOpsV1& ops) noexcept {
     const auto [reader_metadata, reader_diagnostic] = stat_handle_checked(reader, ops);
     if (!reader_metadata.has_value()) {
@@ -590,6 +604,10 @@ set_mode_checked(NativeHandle handle, std::uint32_t mode,
 }
 
 #if defined(__APPLE__) || defined(__linux__)
+
+static_assert(std::is_integral_v<uid_t>);
+static_assert(!std::numeric_limits<uid_t>::is_signed);
+static_assert(std::numeric_limits<uid_t>::digits <= std::numeric_limits<std::uint64_t>::digits);
 
 [[nodiscard]] bool to_descriptor(NativeHandle handle, int& descriptor) noexcept {
     if (handle < 0 || handle > static_cast<NativeHandle>(std::numeric_limits<int>::max())) {
@@ -833,22 +851,57 @@ public:
             return {operation_failure(OperationState::failed, EBADF), {}};
         }
         if (total_bytes == 0 ||
-            total_bytes > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+            total_bytes > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()) ||
+            total_bytes > maximum_file_offset()) {
             return {operation_failure(OperationState::failed, FILE_EXTENT_OVERFLOW_ERROR), {}};
         }
         const auto length = static_cast<std::size_t>(total_bytes);
-        void* mapping = ::mmap(nullptr, length, PROT_READ, MAP_PRIVATE, descriptor, 0);
-        if (mapping == MAP_FAILED) {
+        std::vector<std::byte> bytes;
+        try {
+            bytes.resize(length);
+        } catch (const std::bad_alloc&) {
+            return {operation_failure(OperationState::failed, ENOMEM), {}};
+        } catch (...) {
+            return {operation_failure(OperationState::failed, ENOMEM), {}};
+        }
+
+        std::size_t offset = 0;
+        while (offset < length) {
+            const std::size_t request = std::min(
+                length - offset, static_cast<std::size_t>(std::numeric_limits<ssize_t>::max()));
+            const ssize_t count =
+                ::pread(descriptor, bytes.data() + static_cast<std::ptrdiff_t>(offset), request,
+                        static_cast<off_t>(offset));
+            if (count < 0) {
+                const auto failure = posix_operation_failure(errno);
+                if (failure.state == OperationState::interrupted) {
+                    continue;
+                }
+                return {failure, {}};
+            }
+            if (count == 0) {
+                return {operation_failure(OperationState::failed, EIO), {}};
+            }
+            offset += static_cast<std::size_t>(count);
+        }
+
+        std::byte extra{};
+        ssize_t extra_count = -1;
+        do {
+            extra_count = ::pread(descriptor, &extra, 1, static_cast<off_t>(total_bytes));
+        } while (extra_count < 0 && errno == EINTR);
+        if (extra_count < 0) {
             return {posix_operation_failure(errno), {}};
         }
-        const auto* bytes = static_cast<const std::byte*>(mapping);
-        auto decoded =
+        if (extra_count != 0) {
+            return {operation_failure(OperationState::failed, EFBIG), {}};
+        }
+
+        return {
+            operation_success(),
             distributed_sieve_work_package_codec_detail::decode_distributed_sieve_work_package_v1(
-                std::span<const std::byte>(bytes, length));
-        if (::munmap(mapping, length) != 0) {
-            return {posix_operation_failure(errno), {}};
-        }
-        return {operation_success(), std::move(decoded)};
+                bytes),
+        };
     }
 
     [[nodiscard]] OperationResult close_handle(NativeHandle handle) noexcept override {
@@ -898,6 +951,240 @@ classify_protocol_failure(DistributedSieveProtocolStatus protocol,
                                   ? FileStatus::resource_exhausted
                                   : fallback;
     return make_diagnostic(status, 0, protocol, named_may_remain);
+}
+
+[[nodiscard]] Diagnostic classify_residue_open_failure(const OperationResult& operation) noexcept {
+    if (operation.state == OperationState::unsupported) {
+        return make_diagnostic(FileStatus::platform_unavailable, operation.native_error);
+    }
+    if (is_resource_error(operation.native_error)) {
+        return make_diagnostic(FileStatus::resource_exhausted, operation.native_error);
+    }
+    return operation_diagnostic(operation, FileStatus::namespace_conflict, true);
+}
+
+[[nodiscard]] Diagnostic validate_residue_metadata(const Metadata& metadata,
+                                                   const NativeIdentityV1& expected_identity,
+                                                   std::uint64_t expected_extent,
+                                                   std::uint64_t expected_user) noexcept {
+    if (!valid_file_metadata(metadata, expected_identity, SEALED_FILE_MODE, 1, expected_extent,
+                             expected_user)) {
+        return make_diagnostic(FileStatus::namespace_conflict, PROTOCOL_CONTRACT_ERROR, {}, true);
+    }
+    return make_diagnostic(FileStatus::ready, 0, {}, true);
+}
+
+[[nodiscard]] Diagnostic
+validate_residue_reader_and_name(const ResidueInspectionRequest& request, NativeHandle reader,
+                                 const NativeIdentityV1& expected_identity,
+                                 std::uint64_t expected_extent, std::uint64_t expected_user,
+                                 DistributedSieveWorkerWorkPackageFileOpsV1& ops) noexcept {
+    if (ops.effective_user_id() != expected_user) {
+        return make_diagnostic(FileStatus::invalid_request, EACCES, {}, true);
+    }
+    const auto [reader_metadata, reader_diagnostic] = stat_handle_checked(reader, ops);
+    if (!reader_metadata.has_value()) {
+        return reader_diagnostic;
+    }
+    const auto [named_metadata, named_diagnostic] =
+        stat_named_checked(request.borrowed_attempt_directory_handle, ops);
+    if (!named_metadata.has_value()) {
+        return named_diagnostic;
+    }
+    if (auto held = validate_residue_metadata(*reader_metadata, expected_identity, expected_extent,
+                                              expected_user);
+        !held) {
+        return held;
+    }
+    if (auto named = validate_residue_metadata(*named_metadata, expected_identity, expected_extent,
+                                               expected_user);
+        !named) {
+        return named;
+    }
+    return validate_handle_acl(reader, ops);
+}
+
+class ResidueInspectionExecution final {
+public:
+    explicit ResidueInspectionExecution(DistributedSieveWorkerWorkPackageFileOpsV1& ops) noexcept
+        : ops_(ops) {}
+
+    void set_reader(NativeHandle reader) noexcept {
+        reader_ = reader;
+    }
+
+    [[nodiscard]] NativeHandle reader() const noexcept {
+        return reader_;
+    }
+
+    [[nodiscard]] DistributedSieveWorkerWorkPackageResidueInspectionResultV1
+    fail(Diagnostic failure) noexcept {
+        close_reader(failure);
+        return {std::nullopt, failure};
+    }
+
+    [[nodiscard]] DistributedSieveWorkerWorkPackageResidueInspectionResultV1
+    succeed(ResidueWitness witness) noexcept {
+        Diagnostic closed = make_diagnostic(FileStatus::ready, 0, {}, true);
+        close_reader(closed);
+        if (!closed) {
+            return {std::nullopt, closed};
+        }
+        return {std::move(witness), {}};
+    }
+
+private:
+    void close_reader(Diagnostic& primary) noexcept {
+        if (reader_ == DISTRIBUTED_SIEVE_WORKER_WORK_PACKAGE_INVALID_HANDLE) {
+            return;
+        }
+        const NativeHandle released =
+            std::exchange(reader_, DISTRIBUTED_SIEVE_WORKER_WORK_PACKAGE_INVALID_HANDLE);
+        // Never retry close: after EINTR POSIX leaves ownership unspecified.
+        const auto closed = ops_.close_handle(released);
+        if (valid_success(closed)) {
+            return;
+        }
+        const int native_error = closed.native_error != 0 ? closed.native_error : EIO;
+        if (primary.status == FileStatus::ready) {
+            primary = make_diagnostic(FileStatus::close_failed, native_error, {}, true);
+        } else if (primary.secondary_close_error == 0) {
+            primary.secondary_close_error = native_error;
+        }
+    }
+
+    DistributedSieveWorkerWorkPackageFileOpsV1& ops_;
+    NativeHandle reader_ = DISTRIBUTED_SIEVE_WORKER_WORK_PACKAGE_INVALID_HANDLE;
+};
+
+[[nodiscard]] DistributedSieveWorkerWorkPackageResidueInspectionResultV1
+run_residue_inspection(const ResidueInspectionRequest& request,
+                       DistributedSieveWorkerWorkPackageFileOpsV1& ops) noexcept {
+    ResidueInspectionExecution execution(ops);
+    if (request.borrowed_attempt_directory_handle ==
+            DISTRIBUTED_SIEVE_WORKER_WORK_PACKAGE_INVALID_HANDLE ||
+        request.borrowed_attempt_directory_handle < 0) {
+        return execution.fail(make_diagnostic(FileStatus::invalid_request, EBADF));
+    }
+    if (auto directory = validate_directory(request, ops); !directory) {
+        return execution.fail(directory);
+    }
+
+    const std::uint64_t owner_user_id = ops.effective_user_id();
+    const auto [initial_metadata, initial_diagnostic] =
+        stat_named_checked(request.borrowed_attempt_directory_handle, ops);
+    if (!initial_metadata.has_value()) {
+        Diagnostic failure = initial_diagnostic;
+        if (failure.native_error == ENOENT) {
+            failure.named_may_remain = false;
+        }
+        return execution.fail(failure);
+    }
+    const std::uint64_t extent = initial_metadata->size;
+    if (initial_metadata->kind != DistributedSieveWorkerWorkPackageObjectKind::regular_file ||
+        initial_metadata->owner_user_id != owner_user_id ||
+        initial_metadata->mode != SEALED_FILE_MODE || initial_metadata->link_count != 1 ||
+        extent == 0 ||
+        extent > distributed_sieve_work_package_codec_detail::
+                     DISTRIBUTED_SIEVE_WORK_PACKAGE_VALID_MAX_BYTES_V1 ||
+        extent > ops.maximum_file_offset() ||
+        extent > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+        return execution.fail(
+            make_diagnostic(FileStatus::namespace_conflict, PROTOCOL_CONTRACT_ERROR, {}, true));
+    }
+    const NativeIdentityV1 file_identity = initial_metadata->identity;
+
+    if (auto directory = validate_directory(request, ops, true); !directory) {
+        return execution.fail(directory);
+    }
+    if (ops.effective_user_id() != owner_user_id) {
+        return execution.fail(make_diagnostic(FileStatus::invalid_request, EACCES, {}, true));
+    }
+    const auto opened = retry_interrupted(
+        [&]() noexcept { return ops.open_readonly_at(request.borrowed_attempt_directory_handle); });
+    if (!valid_success(opened.operation)) {
+        return execution.fail(classify_residue_open_failure(opened.operation));
+    }
+    if (opened.handle == DISTRIBUTED_SIEVE_WORKER_WORK_PACKAGE_INVALID_HANDLE ||
+        opened.handle < 0 || opened.handle == request.borrowed_attempt_directory_handle) {
+        return execution.fail(
+            make_diagnostic(FileStatus::ops_contract_violation, PROTOCOL_CONTRACT_ERROR, {}, true));
+    }
+    execution.set_reader(opened.handle);
+
+    if (auto policy = validate_reader_policy(execution.reader(), ops); !policy) {
+        return execution.fail(policy);
+    }
+    if (auto directory = validate_directory(request, ops, true); !directory) {
+        return execution.fail(directory);
+    }
+    if (auto binding = validate_residue_reader_and_name(request, execution.reader(), file_identity,
+                                                        extent, owner_user_id, ops);
+        !binding) {
+        return execution.fail(binding);
+    }
+    if (auto process = process_check(request, ops, true); !process) {
+        return execution.fail(process);
+    }
+
+    auto decoded =
+        retry_interrupted([&]() noexcept { return ops.decode_exact(execution.reader(), extent); });
+    if (!valid_success(decoded.operation)) {
+        const FileStatus status = is_resource_error(decoded.operation.native_error)
+                                      ? FileStatus::resource_exhausted
+                                      : FileStatus::decode_failed;
+        return execution.fail(operation_diagnostic(decoded.operation, status, true));
+    }
+    if (!decoded.decoded) {
+        return execution.fail(
+            classify_protocol_failure(decoded.decoded.status, FileStatus::decode_failed, true));
+    }
+    if (decoded.decoded.package->witness.total_bytes != extent ||
+        decoded.decoded.package->witness.total_bytes >
+            distributed_sieve_work_package_codec_detail::
+                DISTRIBUTED_SIEVE_WORK_PACKAGE_VALID_MAX_BYTES_V1) {
+        return execution.fail(
+            make_diagnostic(FileStatus::decode_failed, PROTOCOL_CONTRACT_ERROR, {}, true));
+    }
+    const auto work_digest = distributed_sieve_work_digest(decoded.decoded.package->identity);
+    if (!work_digest) {
+        return execution.fail(
+            classify_protocol_failure(work_digest.status, FileStatus::decode_failed, true));
+    }
+    if (work_digest.digest->bytes != decoded.decoded.package->witness.work_sha256.bytes) {
+        return execution.fail(
+            make_diagnostic(FileStatus::decode_failed, PROTOCOL_CONTRACT_ERROR, {}, true));
+    }
+
+    // The decode seam is a hostile callback boundary. Recheck the process,
+    // exact held directory, descriptor policy, held inode, and named inode
+    // before allowing any data witness to escape.
+    if (auto process = process_check(request, ops, true); !process) {
+        return execution.fail(process);
+    }
+    if (auto directory = validate_directory(request, ops, true); !directory) {
+        return execution.fail(directory);
+    }
+    if (auto policy = validate_reader_policy(execution.reader(), ops); !policy) {
+        return execution.fail(policy);
+    }
+    if (auto binding = validate_residue_reader_and_name(request, execution.reader(), file_identity,
+                                                        extent, owner_user_id, ops);
+        !binding) {
+        return execution.fail(binding);
+    }
+    if (auto process = process_check(request, ops, true); !process) {
+        return execution.fail(process);
+    }
+
+    ResidueWitness witness{
+        .identity = std::move(decoded.decoded.package->identity),
+        .package = decoded.decoded.package->witness,
+        .file_identity = file_identity,
+        .file_extent = extent,
+        .owner_user_id = owner_user_id,
+    };
+    return execution.succeed(std::move(witness));
 }
 
 [[nodiscard]] FileExecutionResult
@@ -1115,6 +1402,20 @@ run_file_creation(const DistributedSieveWorkerWorkPackageFileRequestV1& request,
 
 } // namespace
 
+bool operator==(const DistributedSieveWorkerWorkPackageResidueWitnessV1& left,
+                const DistributedSieveWorkerWorkPackageResidueWitnessV1& right) noexcept {
+    if (!same_package_witness(left.package, right.package) ||
+        left.file_identity != right.file_identity || left.file_extent != right.file_extent ||
+        left.owner_user_id != right.owner_user_id) {
+        return false;
+    }
+    const auto left_digest = distributed_sieve_work_digest(left.identity);
+    const auto right_digest = distributed_sieve_work_digest(right.identity);
+    return left_digest && right_digest && left_digest.digest->bytes == right_digest.digest->bytes &&
+           left_digest.digest->bytes == left.package.work_sha256.bytes &&
+           right_digest.digest->bytes == right.package.work_sha256.bytes;
+}
+
 DistributedSieveWorkerWorkPackageFileV1::DistributedSieveWorkerWorkPackageFileV1(
     NativeHandle retained_reader, DistributedSieveWorkerWorkPackageFileWitnessV1 witness,
     std::uint64_t creator_process_id) noexcept
@@ -1201,6 +1502,28 @@ create_distributed_sieve_worker_work_package_file_v1_with_ops(
     DistributedSieveWorkerWorkPackageFileOpsV1& ops) noexcept {
     auto executed = run_file_creation(request, identity, ops, false);
     return {std::move(executed.witness), executed.diagnostic};
+}
+
+DistributedSieveWorkerWorkPackageResidueInspectionResultV1
+inspect_distributed_sieve_worker_work_package_residue_v1(
+    const DistributedSieveWorkerWorkPackageResidueInspectionRequestV1& request) noexcept {
+#if defined(__APPLE__) || defined(__linux__)
+    ProductionDistributedSieveWorkerWorkPackageFileOps ops;
+    return run_residue_inspection(request, ops);
+#else
+    (void)request;
+    return {
+        std::nullopt,
+        make_diagnostic(FileStatus::platform_unavailable, PLATFORM_UNAVAILABLE_ERROR),
+    };
+#endif
+}
+
+DistributedSieveWorkerWorkPackageResidueInspectionResultV1
+inspect_distributed_sieve_worker_work_package_residue_v1_with_ops(
+    const DistributedSieveWorkerWorkPackageResidueInspectionRequestV1& request,
+    DistributedSieveWorkerWorkPackageFileOpsV1& ops) noexcept {
+    return run_residue_inspection(request, ops);
 }
 
 } // namespace gnfs::sieve::distributed_sieve_worker_work_package_file_detail

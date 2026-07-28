@@ -158,6 +158,52 @@ create_distributed_sieve_worker_work_package_file_v1_with_ops(
     const DistributedSieveWorkIdentityV1& identity,
     DistributedSieveWorkerWorkPackageFileOpsV1& ops) noexcept;
 
+/// Read-only cross-process witness for a still-named, sealed work-package
+/// residue. The observer process id authenticates only the live inspection;
+/// it is deliberately absent from the durable witness.
+struct DistributedSieveWorkerWorkPackageResidueInspectionRequestV1 final {
+    DistributedSieveWorkerWorkPackageNativeHandle borrowed_attempt_directory_handle =
+        DISTRIBUTED_SIEVE_WORKER_WORK_PACKAGE_INVALID_HANDLE;
+    NativeIdentityV1 expected_directory_identity;
+    std::uint64_t observer_process_id = 0;
+};
+
+struct DistributedSieveWorkerWorkPackageResidueWitnessV1 final {
+    DistributedSieveWorkIdentityV1 identity;
+    distributed_sieve_work_package_codec_detail::DistributedSieveWorkPackageWitnessV1 package;
+    NativeIdentityV1 file_identity;
+    std::uint64_t file_extent = 0;
+    std::uint64_t owner_user_id = 0;
+
+    /// Authentic residue witnesses compare their canonical work identities by
+    /// the same SHA-256 binding carried by the package envelope.
+    friend bool operator==(const DistributedSieveWorkerWorkPackageResidueWitnessV1& left,
+                           const DistributedSieveWorkerWorkPackageResidueWitnessV1& right) noexcept;
+};
+
+struct DistributedSieveWorkerWorkPackageResidueInspectionResultV1 final {
+    std::optional<DistributedSieveWorkerWorkPackageResidueWitnessV1> witness;
+    DistributedSieveWorkerWorkPackageFileDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return witness.has_value() && static_cast<bool>(diagnostic);
+    }
+};
+
+/// Inspect the fixed named leaf without mutating it or retaining a descriptor.
+/// Success means the leaf was present and fully authenticated against the
+/// exact borrowed attempt-directory capability.
+[[nodiscard]] DistributedSieveWorkerWorkPackageResidueInspectionResultV1
+inspect_distributed_sieve_worker_work_package_residue_v1(
+    const DistributedSieveWorkerWorkPackageResidueInspectionRequestV1& request) noexcept;
+
+/// Test-only state-machine entry point. As with the production inspector, the
+/// reader is always closed and only a copy/move data witness may escape.
+[[nodiscard]] DistributedSieveWorkerWorkPackageResidueInspectionResultV1
+inspect_distributed_sieve_worker_work_package_residue_v1_with_ops(
+    const DistributedSieveWorkerWorkPackageResidueInspectionRequestV1& request,
+    DistributedSieveWorkerWorkPackageFileOpsV1& ops) noexcept;
+
 // This standalone mechanism owns only the fixed-leaf transaction relative to
 // the borrowed attempt-directory descriptor. It neither closes nor stores that
 // descriptor and grants no WaveStore/manifest/launch authority. A launcher

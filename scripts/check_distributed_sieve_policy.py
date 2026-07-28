@@ -289,6 +289,31 @@ WORK_PACKAGE_CARRIER_USE_SITE_ALLOWLIST = {
     "tests/test_distributed_sieve_worker_work_package_file.cpp",
     WORKER_LAUNCHER_IMPLEMENTATION_FILE,
 }
+WORK_PACKAGE_RESIDUE_INSPECTOR_USE_SITE_IDENTIFIERS = (
+    "DistributedSieveWorkerWorkPackageResidueInspectionRequestV1",
+    "DistributedSieveWorkerWorkPackageResidueWitnessV1",
+    "DistributedSieveWorkerWorkPackageResidueInspectionResultV1",
+    "inspect_distributed_sieve_worker_work_package_residue_v1",
+)
+WORK_PACKAGE_RESIDUE_INSPECTOR_USE_SITE_ALLOWLIST = {
+    "src/sieve/distributed_sieve_worker_work_package_file.cpp",
+    "src/sieve/distributed_sieve_worker_work_package_file_internal.hpp",
+    WORKER_LAUNCHER_IMPLEMENTATION_FILE,
+    "tests/test_distributed_sieve_worker_work_package_file.cpp",
+    "tests/test_distributed_sieve_resume.cpp",
+}
+WORK_PACKAGE_RESIDUE_INSPECTOR_WITH_OPS_IDENTIFIER = (
+    "inspect_distributed_sieve_worker_work_package_residue_v1_with_ops"
+)
+WORK_PACKAGE_RESIDUE_INSPECTOR_WITH_OPS_ALLOWLIST = {
+    "src/sieve/distributed_sieve_worker_work_package_file.cpp",
+    "src/sieve/distributed_sieve_worker_work_package_file_internal.hpp",
+    "tests/test_distributed_sieve_worker_work_package_file.cpp",
+}
+WORK_PACKAGE_RESIDUE_INSPECTION_FUNCTION = "validate_private_lease_attempt_inventory"
+WORK_PACKAGE_RESIDUE_INSPECTION_CALL = (
+    "inspect_distributed_sieve_worker_work_package_residue_v1"
+)
 WORK_PACKAGE_READER_USE_SITE_IDENTIFIER = "retained_reader_"
 WORK_PACKAGE_READER_USE_SITE_ALLOWLIST = {
     "src/sieve/distributed_sieve_worker_work_package_file.cpp",
@@ -711,6 +736,58 @@ def find_function_body(
     return text[body_opening + 1 : body_closing], body_line_offset, errors
 
 
+def find_function_definition_body(
+    text: str, function_name: str
+) -> tuple[str | None, int, list[tuple[int, str]]]:
+    """Find one definition while ignoring ordinary calls of the same identifier."""
+
+    candidates: list[tuple[CodeIdentifierUse, int]] = []
+    for use in find_code_identifier_uses(text, function_name):
+        opening = _skip_call_trivia(text, use.offset + len(function_name))
+        if opening >= len(text) or text[opening] != "(":
+            continue
+        closing = _matching_parenthesis(text, opening)
+        if closing is None:
+            continue
+        cursor = _skip_call_trivia(text, closing + 1)
+        if text.startswith("noexcept", cursor):
+            after = cursor + len("noexcept")
+            boundary = text[after] if after < len(text) else ""
+            if not (boundary.isalnum() or boundary == "_"):
+                cursor = _skip_call_trivia(text, after)
+                if cursor < len(text) and text[cursor] == "(":
+                    noexcept_closing = _matching_parenthesis(text, cursor)
+                    if noexcept_closing is None:
+                        continue
+                    cursor = _skip_call_trivia(text, noexcept_closing + 1)
+        if cursor < len(text) and text[cursor] == "{":
+            candidates.append((use, cursor))
+
+    if len(candidates) != 1:
+        return (
+            None,
+            0,
+            [
+                (
+                    1,
+                    f"expected exactly one {function_name} definition, "
+                    f"found {len(candidates)} definitions",
+                )
+            ],
+        )
+
+    use, body_opening = candidates[0]
+    body_closing = _matching_brace(text, body_opening)
+    if body_closing is None:
+        return (
+            None,
+            0,
+            [(use.line, f"{function_name} has an unterminated function body")],
+        )
+    body_line_offset = text.count("\n", 0, body_opening + 1)
+    return text[body_opening + 1 : body_closing], body_line_offset, []
+
+
 def find_getenv_calls(text: str) -> tuple[list[GetenvCall], list[tuple[int, str]]]:
     calls: list[GetenvCall] = []
     errors: list[tuple[int, str]] = []
@@ -974,6 +1051,68 @@ class Checks:
                     "anonymous work-package carrier authority is not "
                     f"receipt-gated/allowlisted: {identifier}",
                 )
+
+    def validate_work_package_residue_inspector_use_site(
+        self, relative: str, text: str
+    ) -> None:
+        if relative not in WORK_PACKAGE_RESIDUE_INSPECTOR_USE_SITE_ALLOWLIST:
+            for identifier in WORK_PACKAGE_RESIDUE_INSPECTOR_USE_SITE_IDENTIFIERS:
+                for use in find_code_identifier_uses(text, identifier):
+                    self.fail(
+                        relative,
+                        use.line,
+                        "named work-package residue inspector is not "
+                        f"allowlisted: {identifier}",
+                    )
+        if relative not in WORK_PACKAGE_RESIDUE_INSPECTOR_WITH_OPS_ALLOWLIST:
+            for use in find_code_identifier_uses(
+                text, WORK_PACKAGE_RESIDUE_INSPECTOR_WITH_OPS_IDENTIFIER
+            ):
+                self.fail(
+                    relative,
+                    use.line,
+                    "test-only named work-package residue inspector is not "
+                    f"allowlisted: {WORK_PACKAGE_RESIDUE_INSPECTOR_WITH_OPS_IDENTIFIER}",
+                )
+
+    def validate_work_package_residue_inspection_body(
+        self, relative: str, text: str
+    ) -> None:
+        if relative != WORKER_LAUNCHER_IMPLEMENTATION_FILE:
+            return
+
+        body, body_line_offset, body_errors = find_function_definition_body(
+            text, WORK_PACKAGE_RESIDUE_INSPECTION_FUNCTION
+        )
+        for line, error in body_errors:
+            self.fail(relative, line, error)
+        if body is None:
+            return
+
+        all_uses = find_code_identifier_uses(
+            text, WORK_PACKAGE_RESIDUE_INSPECTION_CALL
+        )
+        body_uses = find_code_identifier_uses(
+            body, WORK_PACKAGE_RESIDUE_INSPECTION_CALL
+        )
+        body_calls = find_call_identifier_uses(
+            body, WORK_PACKAGE_RESIDUE_INSPECTION_CALL
+        )
+        if len(all_uses) != len(body_uses):
+            self.fail(
+                relative,
+                1,
+                f"all {WORK_PACKAGE_RESIDUE_INSPECTION_CALL} uses must remain inside "
+                f"{WORK_PACKAGE_RESIDUE_INSPECTION_FUNCTION}",
+            )
+        if len(body_uses) != 1 or len(body_calls) != 1:
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                f"{WORK_PACKAGE_RESIDUE_INSPECTION_FUNCTION} must contain exactly "
+                f"1 direct {WORK_PACKAGE_RESIDUE_INSPECTION_CALL} call, found "
+                f"{len(body_uses)} identifiers and {len(body_calls)} calls",
+            )
 
     def validate_work_package_reader_use_site(self, relative: str, text: str) -> None:
         if relative in WORK_PACKAGE_READER_USE_SITE_ALLOWLIST:
@@ -1324,6 +1463,7 @@ class Checks:
             self.validate_durable_ambient_api_uses(relative, text)
             self.validate_worker_process_transport_boundary(relative, text)
             self.validate_worker_launcher_composition_body(relative, text)
+            self.validate_work_package_residue_inspection_body(relative, text)
             if relative == EXECUTION_POLICY_ENVIRONMENT_ADAPTER:
                 self.validate_environment_adapter(text, calls)
             for call in calls:
@@ -1346,6 +1486,7 @@ class Checks:
                 continue
             self.validate_bound_work_use_site(relative, text)
             self.validate_work_package_carrier_use_site(relative, text)
+            self.validate_work_package_residue_inspector_use_site(relative, text)
             self.validate_work_package_reader_use_site(relative, text)
             self.validate_worker_process_fixed_capability_use_site(relative, text)
             self.validate_worker_launcher_use_site(relative, text)
@@ -1991,6 +2132,162 @@ auto result = create_distributed_sieve_worker_work_package_file_v1(request, iden
         not allowed_carrier_checks.errors,
         f"allowlisted work-package carrier test use was rejected: "
         f"{allowed_carrier_checks.errors}",
+    )
+
+    residue_inspector_production_snippet = r'''
+DistributedSieveWorkerWorkPackageResidueInspectionRequestV1 request;
+DistributedSieveWorkerWorkPackageResidueWitnessV1 witness;
+DistributedSieveWorkerWorkPackageResidueInspectionResultV1 result;
+auto inspected = inspect_distributed_sieve_worker_work_package_residue_v1(request);
+'''
+    residue_inspector_with_ops_snippet = r'''
+auto injected =
+    inspect_distributed_sieve_worker_work_package_residue_v1_with_ops(request, ops);
+'''
+    residue_inspector_use_site_snippet = (
+        residue_inspector_production_snippet + residue_inspector_with_ops_snippet
+    )
+    residue_inspector_use_site_checks = Checks(Path("."))
+    residue_inspector_use_site_checks.validate_work_package_residue_inspector_use_site(
+        "src/sieve/untrusted_residue_recovery.cpp",
+        residue_inspector_use_site_snippet,
+    )
+    expect(
+        len(residue_inspector_use_site_checks.errors) == 5
+        and all(
+            "named work-package residue inspector is not allowlisted" in error
+            for error in residue_inspector_use_site_checks.errors
+        ),
+        "named work-package residue inspector use-site gate is not enforced: "
+        f"{residue_inspector_use_site_checks.errors}",
+    )
+    for relative in sorted(WORK_PACKAGE_RESIDUE_INSPECTOR_USE_SITE_ALLOWLIST):
+        allowed_residue_inspector_checks = Checks(Path("."))
+        allowed_residue_inspector_checks.validate_work_package_residue_inspector_use_site(
+            relative, residue_inspector_production_snippet
+        )
+        expect(
+            not allowed_residue_inspector_checks.errors,
+            "allowlisted named work-package residue inspector use was rejected in "
+            f"{relative}: {allowed_residue_inspector_checks.errors}",
+        )
+    for relative in sorted(WORK_PACKAGE_RESIDUE_INSPECTOR_WITH_OPS_ALLOWLIST):
+        allowed_residue_with_ops_checks = Checks(Path("."))
+        allowed_residue_with_ops_checks.validate_work_package_residue_inspector_use_site(
+            relative, residue_inspector_with_ops_snippet
+        )
+        expect(
+            not allowed_residue_with_ops_checks.errors,
+            "allowlisted test-only work-package residue inspector use was rejected in "
+            f"{relative}: {allowed_residue_with_ops_checks.errors}",
+        )
+    wave_store_with_ops_checks = Checks(Path("."))
+    wave_store_with_ops_checks.validate_work_package_residue_inspector_use_site(
+        WORKER_LAUNCHER_IMPLEMENTATION_FILE,
+        residue_inspector_with_ops_snippet,
+    )
+    expect(
+        len(wave_store_with_ops_checks.errors) == 1
+        and "test-only named work-package residue inspector is not allowlisted"
+        in wave_store_with_ops_checks.errors[0],
+        "WaveStore gained the test-only residue inspector: "
+        f"{wave_store_with_ops_checks.errors}",
+    )
+
+    valid_residue_inspection_composition = r'''
+auto validate_private_lease_attempt_inventory() {
+    auto inspected =
+        inspect_distributed_sieve_worker_work_package_residue_v1(request);
+    return inspected;
+}
+auto capture_manifest_bound_inventory_witness() {
+    return validate_private_lease_attempt_inventory();
+}
+'''
+    exact_residue_inspection_checks = Checks(Path("."))
+    exact_residue_inspection_checks.validate_work_package_residue_inspection_body(
+        WORKER_LAUNCHER_IMPLEMENTATION_FILE,
+        valid_residue_inspection_composition,
+    )
+    expect(
+        not exact_residue_inspection_checks.errors,
+        "exact WaveStore residue-inspection body was rejected: "
+        f"{exact_residue_inspection_checks.errors}",
+    )
+
+    outside_residue_inspection = (
+        valid_residue_inspection_composition
+        + r'''
+auto bypass =
+    inspect_distributed_sieve_worker_work_package_residue_v1(request);
+'''
+    )
+    outside_residue_inspection_checks = Checks(Path("."))
+    outside_residue_inspection_checks.validate_work_package_residue_inspection_body(
+        WORKER_LAUNCHER_IMPLEMENTATION_FILE,
+        outside_residue_inspection,
+    )
+    expect(
+        len(outside_residue_inspection_checks.errors) == 1
+        and "uses must remain inside "
+        f"{WORK_PACKAGE_RESIDUE_INSPECTION_FUNCTION}"
+        in outside_residue_inspection_checks.errors[0],
+        "same-file outside-function residue-inspector bypass was not rejected: "
+        f"{outside_residue_inspection_checks.errors}",
+    )
+
+    addressed_residue_inspection = (
+        valid_residue_inspection_composition
+        + r'''
+auto inspector_alias =
+    &inspect_distributed_sieve_worker_work_package_residue_v1;
+'''
+    )
+    addressed_residue_inspection_checks = Checks(Path("."))
+    addressed_residue_inspection_checks.validate_work_package_residue_inspection_body(
+        WORKER_LAUNCHER_IMPLEMENTATION_FILE,
+        addressed_residue_inspection,
+    )
+    expect(
+        len(addressed_residue_inspection_checks.errors) == 1
+        and "uses must remain inside "
+        f"{WORK_PACKAGE_RESIDUE_INSPECTION_FUNCTION}"
+        in addressed_residue_inspection_checks.errors[0],
+        "same-file residue-inspector address bypass was not rejected: "
+        f"{addressed_residue_inspection_checks.errors}",
+    )
+
+    duplicate_residue_inspection = valid_residue_inspection_composition.replace(
+        "    return inspected;\n",
+        "    auto duplicate =\n"
+        "        inspect_distributed_sieve_worker_work_package_residue_v1(request);\n"
+        "    return duplicate;\n",
+    )
+    duplicate_residue_inspection_checks = Checks(Path("."))
+    duplicate_residue_inspection_checks.validate_work_package_residue_inspection_body(
+        WORKER_LAUNCHER_IMPLEMENTATION_FILE,
+        duplicate_residue_inspection,
+    )
+    expect(
+        len(duplicate_residue_inspection_checks.errors) == 1
+        and "must contain exactly 1 direct "
+        f"{WORK_PACKAGE_RESIDUE_INSPECTION_CALL} call"
+        in duplicate_residue_inspection_checks.errors[0],
+        "WaveStore residue-inspector call count is not closed: "
+        f"{duplicate_residue_inspection_checks.errors}",
+    )
+
+    legacy_residue_inspector_checks = Checks(Path("."))
+    legacy_residue_inspector_checks.validate_work_package_residue_inspector_use_site(
+        WORKER_PROCESS_LEGACY_FILE,
+        "auto inspected = "
+        "inspect_distributed_sieve_worker_work_package_residue_v1(request);",
+    )
+    expect(
+        len(legacy_residue_inspector_checks.errors) == 1
+        and "named work-package residue inspector is not allowlisted"
+        in legacy_residue_inspector_checks.errors[0],
+        "legacy distributed runner is not isolated from residue inspection",
     )
 
     fixed_capability_use_site_checks = Checks(Path("."))

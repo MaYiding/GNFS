@@ -28,6 +28,7 @@
 #if !defined(_WIN32)
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -239,8 +240,13 @@ public:
     bool recreate_name_after_first_missing_observation = false;
     bool recreated_foreign_name = false;
     bool directory_sync_observed = false;
+    bool file_has_extended_acl = false;
+    bool replace_named_identity_after_decode = false;
+    bool drift_directory_identity_after_decode = false;
+    bool drift_process_after_decode = false;
     std::uint32_t file_mode = 0600;
     std::uint64_t file_link_count = 0;
+    std::optional<sieve::NativeIdentityV1> named_identity_override;
     std::vector<std::byte> bytes;
 
     std::deque<FileMetadataResult> stat_handle_script;
@@ -310,7 +316,7 @@ public:
         if (handle != WRITER_HANDLE && handle != READER_HANDLE) {
             return {.operation = failed(EBADF), .metadata = {}};
         }
-        return {.operation = succeeded(), .metadata = file_metadata()};
+        return {.operation = succeeded(), .metadata = file_metadata(false)};
     }
 
     [[nodiscard]] FileMetadataResult
@@ -352,7 +358,7 @@ public:
                     },
             };
         }
-        return {.operation = succeeded(), .metadata = file_metadata()};
+        return {.operation = succeeded(), .metadata = file_metadata(true)};
     }
 
     [[nodiscard]] package_file::DistributedSieveWorkerWorkPackageAclResultV1
@@ -370,7 +376,10 @@ public:
         if (!valid_handle) {
             return {.operation = failed(EBADF), .has_extended_acl = false};
         }
-        return {.operation = succeeded(), .has_extended_acl = false};
+        return {
+            .operation = succeeded(),
+            .has_extended_acl = !directory && file_has_extended_acl,
+        };
     }
 
     [[nodiscard]] package_file::DistributedSieveWorkerWorkPackageOpenResult
@@ -506,10 +515,21 @@ public:
         if (handle != READER_HANDLE || !reader_open || total_bytes != bytes.size()) {
             return {.operation = failed(EINVAL), .decoded = {}};
         }
-        return {
+        auto result = package_file::DistributedSieveWorkerWorkPackageDecodeResultV1{
             .operation = succeeded(),
             .decoded = package_codec::decode_distributed_sieve_work_package_v1(bytes),
         };
+        if (replace_named_identity_after_decode) {
+            named_identity_override =
+                sieve::NativeIdentityV1{.volume = 101, .object = 909, .generation = 0};
+        }
+        if (drift_directory_identity_after_decode) {
+            ++directory_metadata.identity.object;
+        }
+        if (drift_process_after_decode) {
+            ++process_id;
+        }
+        return result;
     }
 
     [[nodiscard]] FileOperationResult close_handle(NativeHandle handle) noexcept override {
@@ -552,10 +572,11 @@ private:
         return result;
     }
 
-    [[nodiscard]] FileMetadata file_metadata() const noexcept {
+    [[nodiscard]] FileMetadata file_metadata(bool named) const noexcept {
         return {
             .kind = package_file::DistributedSieveWorkerWorkPackageObjectKind::regular_file,
-            .identity = FILE_IDENTITY,
+            .identity = named && named_identity_override.has_value() ? *named_identity_override
+                                                                     : FILE_IDENTITY,
             .owner_user_id = user_id,
             .mode = file_mode,
             .link_count = file_link_count,
@@ -573,6 +594,23 @@ fake_request(const ScriptedFileOps& ops) {
     };
 }
 
+[[nodiscard]] package_file::DistributedSieveWorkerWorkPackageResidueInspectionRequestV1
+fake_residue_request(const ScriptedFileOps& ops) {
+    return {
+        .borrowed_attempt_directory_handle = ScriptedFileOps::DIRECTORY_HANDLE,
+        .expected_directory_identity = ScriptedFileOps::DIRECTORY_IDENTITY,
+        .observer_process_id = ops.process_id,
+    };
+}
+
+void install_fake_residue(ScriptedFileOps& ops,
+                          const package_codec::DistributedSieveEncodedWorkPackageV1& encoded) {
+    ops.named_exists = true;
+    ops.file_mode = 0400;
+    ops.file_link_count = 1;
+    ops.bytes = encoded.bytes;
+}
+
 void check_package_witness(
     const package_file::DistributedSieveWorkerWorkPackageFileWitnessV1& actual,
     const package_codec::DistributedSieveEncodedWorkPackageV1& expected,
@@ -586,8 +624,26 @@ void check_package_witness(
     CHECK(actual.creator_process_id == process_id);
 }
 
+void check_residue_witness(
+    const package_file::DistributedSieveWorkerWorkPackageResidueWitnessV1& actual,
+    const package_codec::DistributedSieveEncodedWorkPackageV1& expected,
+    const sieve::NativeIdentityV1& expected_file_identity, std::uint64_t owner_user_id) {
+    CHECK(actual.package.body_bytes == expected.witness.body_bytes);
+    CHECK(actual.package.total_bytes == expected.witness.total_bytes);
+    CHECK(actual.package.work_sha256.bytes == expected.witness.work_sha256.bytes);
+    CHECK(actual.package.package_sha256.bytes == expected.witness.package_sha256.bytes);
+    CHECK(actual.file_identity == expected_file_identity);
+    CHECK(actual.file_extent == expected.bytes.size());
+    CHECK(actual.file_extent == actual.package.total_bytes);
+    CHECK(actual.owner_user_id == owner_user_id);
+    const auto digest = sieve::distributed_sieve_work_digest(actual.identity);
+    CHECK(digest);
+    CHECK(digest.digest->bytes == actual.package.work_sha256.bytes);
+}
+
 void test_authority_boundary_and_fixed_contract() {
     using Token = package_file::DistributedSieveWorkerWorkPackageFileV1;
+    using ResidueWitness = package_file::DistributedSieveWorkerWorkPackageResidueWitnessV1;
     using WithOpsResult = package_file::DistributedSieveWorkerWorkPackageFileWithOpsResultV1;
     using Witness = package_file::DistributedSieveWorkerWorkPackageFileWitnessV1;
 
@@ -599,6 +655,10 @@ void test_authority_boundary_and_fixed_contract() {
     static_assert(std::is_nothrow_destructible_v<Token>);
     static_assert(!std::is_constructible_v<Token, NativeHandle, Witness, std::uint64_t>);
     static_assert(std::is_same_v<decltype(WithOpsResult::witness), std::optional<Witness>>);
+    static_assert(std::is_copy_constructible_v<ResidueWitness>);
+    static_assert(std::is_nothrow_move_constructible_v<ResidueWitness>);
+    static_assert(
+        noexcept(std::declval<const ResidueWitness&>() == std::declval<const ResidueWitness&>()));
 
     CHECK(package_file::DISTRIBUTED_SIEVE_WORKER_WORK_PACKAGE_FILE_LEAF_V1 ==
           ".gnfs-worker-work-package-v1");
@@ -946,6 +1006,266 @@ void test_fake_close_is_single_shot_and_preserves_primary_failure() {
     }
 }
 
+void test_fake_residue_inspector_happy_path_and_equality() {
+    const auto identity = make_identity();
+    const auto encoded = package_codec::encode_distributed_sieve_work_package_v1(identity);
+    CHECK(encoded);
+
+    ScriptedFileOps ops;
+    install_fake_residue(ops, *encoded.package);
+    const auto result =
+        package_file::inspect_distributed_sieve_worker_work_package_residue_v1_with_ops(
+            fake_residue_request(ops), ops);
+    CHECK(result);
+    CHECK(result.witness.has_value());
+    check_residue_witness(*result.witness, *encoded.package, ScriptedFileOps::FILE_IDENTITY,
+                          ops.user_id);
+    CHECK(!ops.reader_open);
+    CHECK(ops.reader_close_calls == 1);
+    CHECK(ops.readonly_open_calls == 1);
+    CHECK(ops.decode_calls == 1);
+    CHECK(ops.unlink_calls == 0);
+    CHECK(ops.named_exists);
+
+    auto copy = *result.witness;
+    CHECK(copy == *result.witness);
+    ++copy.owner_user_id;
+    CHECK(!(copy == *result.witness));
+    copy = *result.witness;
+    ++copy.identity.distributed.relation_cap_per_worker;
+    CHECK(!(copy == *result.witness));
+
+    {
+        ScriptedFileOps closing_ops;
+        install_fake_residue(closing_ops, *encoded.package);
+        closing_ops.reader_close_script.push_back(interrupted());
+        const auto close_failed =
+            package_file::inspect_distributed_sieve_worker_work_package_residue_v1_with_ops(
+                fake_residue_request(closing_ops), closing_ops);
+        CHECK(!close_failed);
+        CHECK(!close_failed.witness.has_value());
+        CHECK(close_failed.diagnostic.status ==
+              package_file::DistributedSieveWorkerWorkPackageFileStatus::close_failed);
+        CHECK(close_failed.diagnostic.native_error == EINTR);
+        CHECK(closing_ops.reader_close_calls == 1);
+        CHECK(closing_ops.unlink_calls == 0);
+        CHECK(closing_ops.named_exists);
+    }
+}
+
+void test_fake_residue_inspector_rejects_missing_metadata_acl_and_policy() {
+    const auto identity = make_identity();
+    const auto encoded = package_codec::encode_distributed_sieve_work_package_v1(identity);
+    CHECK(encoded);
+
+    {
+        ScriptedFileOps ops;
+        const auto result =
+            package_file::inspect_distributed_sieve_worker_work_package_residue_v1_with_ops(
+                fake_residue_request(ops), ops);
+        CHECK(!result);
+        CHECK(result.diagnostic.status ==
+              package_file::DistributedSieveWorkerWorkPackageFileStatus::namespace_conflict);
+        CHECK(result.diagnostic.native_error == ENOENT);
+        CHECK(!result.diagnostic.named_may_remain);
+        CHECK(ops.readonly_open_calls == 0);
+        CHECK(ops.unlink_calls == 0);
+    }
+
+    constexpr std::array invalid_metadata{
+        FileMetadata{
+            .kind = package_file::DistributedSieveWorkerWorkPackageObjectKind::directory,
+            .identity = ScriptedFileOps::FILE_IDENTITY,
+            .owner_user_id = 501,
+            .mode = 0400,
+            .link_count = 1,
+            .size = 128,
+        },
+        FileMetadata{
+            .kind = package_file::DistributedSieveWorkerWorkPackageObjectKind::other,
+            .identity = ScriptedFileOps::FILE_IDENTITY,
+            .owner_user_id = 501,
+            .mode = 0400,
+            .link_count = 1,
+            .size = 128,
+        },
+        FileMetadata{
+            .kind = package_file::DistributedSieveWorkerWorkPackageObjectKind::regular_file,
+            .identity = ScriptedFileOps::FILE_IDENTITY,
+            .owner_user_id = 502,
+            .mode = 0400,
+            .link_count = 1,
+            .size = 128,
+        },
+        FileMetadata{
+            .kind = package_file::DistributedSieveWorkerWorkPackageObjectKind::regular_file,
+            .identity = ScriptedFileOps::FILE_IDENTITY,
+            .owner_user_id = 501,
+            .mode = 0600,
+            .link_count = 1,
+            .size = 128,
+        },
+        FileMetadata{
+            .kind = package_file::DistributedSieveWorkerWorkPackageObjectKind::regular_file,
+            .identity = ScriptedFileOps::FILE_IDENTITY,
+            .owner_user_id = 501,
+            .mode = 0400,
+            .link_count = 2,
+            .size = 128,
+        },
+        FileMetadata{
+            .kind = package_file::DistributedSieveWorkerWorkPackageObjectKind::regular_file,
+            .identity = ScriptedFileOps::FILE_IDENTITY,
+            .owner_user_id = 501,
+            .mode = 0400,
+            .link_count = 1,
+            .size = package_codec::DISTRIBUTED_SIEVE_WORK_PACKAGE_VALID_MAX_BYTES_V1 + UINT64_C(1),
+        },
+    };
+    for (const auto& metadata : invalid_metadata) {
+        ScriptedFileOps ops;
+        install_fake_residue(ops, *encoded.package);
+        ops.stat_at_script.push_back({.operation = succeeded(), .metadata = metadata});
+        const auto result =
+            package_file::inspect_distributed_sieve_worker_work_package_residue_v1_with_ops(
+                fake_residue_request(ops), ops);
+        CHECK(!result);
+        CHECK(result.diagnostic.status ==
+              package_file::DistributedSieveWorkerWorkPackageFileStatus::namespace_conflict);
+        CHECK(ops.readonly_open_calls == 0);
+        CHECK(ops.unlink_calls == 0);
+    }
+
+    {
+        ScriptedFileOps ops;
+        install_fake_residue(ops, *encoded.package);
+        ops.file_has_extended_acl = true;
+        const auto result =
+            package_file::inspect_distributed_sieve_worker_work_package_residue_v1_with_ops(
+                fake_residue_request(ops), ops);
+        CHECK(!result);
+        CHECK(result.diagnostic.status ==
+              package_file::DistributedSieveWorkerWorkPackageFileStatus::namespace_conflict);
+        CHECK(result.diagnostic.native_error == EACCES);
+        CHECK(ops.reader_close_calls == 1);
+        CHECK(ops.unlink_calls == 0);
+    }
+
+    {
+        ScriptedFileOps ops;
+        install_fake_residue(ops, *encoded.package);
+        ops.descriptor_policy_script.push_back({
+            .operation = succeeded(),
+            .read_only = false,
+            .close_on_exec = true,
+        });
+        const auto result =
+            package_file::inspect_distributed_sieve_worker_work_package_residue_v1_with_ops(
+                fake_residue_request(ops), ops);
+        CHECK(!result);
+        CHECK(result.diagnostic.status ==
+              package_file::DistributedSieveWorkerWorkPackageFileStatus::namespace_conflict);
+        CHECK(ops.reader_close_calls == 1);
+        CHECK(ops.unlink_calls == 0);
+    }
+}
+
+void test_fake_residue_inspector_revalidates_decode_boundary() {
+    const auto identity = make_identity();
+    const auto encoded = package_codec::encode_distributed_sieve_work_package_v1(identity);
+    CHECK(encoded);
+
+    const auto run_mutation = [&](auto mutate) {
+        ScriptedFileOps ops;
+        install_fake_residue(ops, *encoded.package);
+        mutate(ops);
+        const auto result =
+            package_file::inspect_distributed_sieve_worker_work_package_residue_v1_with_ops(
+                fake_residue_request(ops), ops);
+        CHECK(!result);
+        CHECK(!result.witness.has_value());
+        CHECK(ops.decode_calls == 1);
+        CHECK(ops.reader_close_calls == 1);
+        CHECK(ops.unlink_calls == 0);
+        CHECK(ops.named_exists);
+        return result.diagnostic;
+    };
+
+    const auto name_replaced =
+        run_mutation([](ScriptedFileOps& ops) { ops.replace_named_identity_after_decode = true; });
+    CHECK(name_replaced.status ==
+          package_file::DistributedSieveWorkerWorkPackageFileStatus::namespace_conflict);
+
+    const auto directory_replaced = run_mutation(
+        [](ScriptedFileOps& ops) { ops.drift_directory_identity_after_decode = true; });
+    CHECK(directory_replaced.status ==
+          package_file::DistributedSieveWorkerWorkPackageFileStatus::invalid_request);
+
+    const auto process_changed =
+        run_mutation([](ScriptedFileOps& ops) { ops.drift_process_after_decode = true; });
+    CHECK(process_changed.status ==
+          package_file::DistributedSieveWorkerWorkPackageFileStatus::invalid_request);
+
+    {
+        ScriptedFileOps ops;
+        install_fake_residue(ops, *encoded.package);
+        ops.bytes.back() ^= std::byte{0x01};
+        const auto result =
+            package_file::inspect_distributed_sieve_worker_work_package_residue_v1_with_ops(
+                fake_residue_request(ops), ops);
+        CHECK(!result);
+        CHECK(result.diagnostic.status ==
+              package_file::DistributedSieveWorkerWorkPackageFileStatus::decode_failed);
+        CHECK(ops.reader_close_calls == 1);
+        CHECK(ops.unlink_calls == 0);
+    }
+
+    {
+        ScriptedFileOps ops;
+        install_fake_residue(ops, *encoded.package);
+        ops.decode_script.push_back({
+            .operation = succeeded(),
+            .decoded =
+                {
+                    .package = std::nullopt,
+                    .status =
+                        {
+                            .error = sieve::DistributedSieveProtocolError::resource_exhausted,
+                        },
+                },
+        });
+        const auto result =
+            package_file::inspect_distributed_sieve_worker_work_package_residue_v1_with_ops(
+                fake_residue_request(ops), ops);
+        CHECK(!result);
+        CHECK(result.diagnostic.status ==
+              package_file::DistributedSieveWorkerWorkPackageFileStatus::resource_exhausted);
+        CHECK(result.diagnostic.protocol_status.error ==
+              sieve::DistributedSieveProtocolError::resource_exhausted);
+        CHECK(ops.reader_close_calls == 1);
+        CHECK(ops.unlink_calls == 0);
+        CHECK(ops.named_exists);
+    }
+
+    for (const int extent_delta : {-1, 1}) {
+        ScriptedFileOps ops;
+        install_fake_residue(ops, *encoded.package);
+        if (extent_delta < 0) {
+            ops.bytes.pop_back();
+        } else {
+            ops.bytes.push_back(std::byte{0});
+        }
+        const auto result =
+            package_file::inspect_distributed_sieve_worker_work_package_residue_v1_with_ops(
+                fake_residue_request(ops), ops);
+        CHECK(!result);
+        CHECK(result.diagnostic.status ==
+              package_file::DistributedSieveWorkerWorkPackageFileStatus::decode_failed);
+        CHECK(ops.reader_close_calls == 1);
+        CHECK(ops.unlink_calls == 0);
+    }
+}
+
 #if !defined(_WIN32)
 
 class ScopedFd final {
@@ -1065,6 +1385,15 @@ native_request(int directory_descriptor) {
     };
 }
 
+[[nodiscard]] package_file::DistributedSieveWorkerWorkPackageResidueInspectionRequestV1
+native_residue_request(int directory_descriptor) {
+    return {
+        .borrowed_attempt_directory_handle = directory_descriptor,
+        .expected_directory_identity = descriptor_identity(directory_descriptor),
+        .observer_process_id = static_cast<std::uint64_t>(gnfs::util::process_id()),
+    };
+}
+
 [[nodiscard]] std::string fixed_leaf() {
     return std::string(package_file::DISTRIBUTED_SIEVE_WORKER_WORK_PACKAGE_FILE_LEAF_V1);
 }
@@ -1133,6 +1462,194 @@ void create_leaf_with_bytes(int directory_descriptor, std::string_view leaf,
         ScopedFd held(descriptor);
         write_all(held.get(), bytes);
     }
+}
+
+void create_sealed_leaf_with_bytes(int directory_descriptor, std::string_view leaf,
+                                   std::span<const std::byte> bytes) {
+    const std::string owned_leaf(leaf);
+    int descriptor = -1;
+    do {
+        descriptor = ::openat(directory_descriptor, owned_leaf.c_str(),
+                              O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    } while (descriptor < 0 && errno == EINTR);
+    CHECK(descriptor >= 0);
+    {
+        ScopedFd held(descriptor);
+        write_all(held.get(), bytes);
+        CHECK(::fchmod(held.get(), 0400) == 0);
+    }
+}
+
+void test_real_posix_residue_success_missing_and_fd_hygiene() {
+    const auto identity = make_identity();
+    const auto encoded = package_codec::encode_distributed_sieve_work_package_v1(identity);
+    CHECK(encoded);
+
+    {
+        TempDirectory temp;
+        auto directory = temp.open_directory();
+        create_sealed_leaf_with_bytes(directory.get(), fixed_leaf(), encoded.package->bytes);
+        struct stat before_metadata{};
+        CHECK(::fstatat(directory.get(), fixed_leaf().c_str(), &before_metadata,
+                        AT_SYMLINK_NOFOLLOW) == 0);
+        const auto before_descriptors = snapshot_open_descriptors();
+
+        const auto result = package_file::inspect_distributed_sieve_worker_work_package_residue_v1(
+            native_residue_request(directory.get()));
+        CHECK(result);
+        CHECK(result.witness.has_value());
+        const sieve::NativeIdentityV1 expected_file_identity{
+            .volume = static_cast<std::uint64_t>(before_metadata.st_dev),
+            .object = static_cast<std::uint64_t>(before_metadata.st_ino),
+            .generation = 0,
+        };
+        check_residue_witness(*result.witness, *encoded.package, expected_file_identity,
+                              static_cast<std::uint64_t>(::geteuid()));
+        CHECK(snapshot_open_descriptors() == before_descriptors);
+        CHECK(read_leaf_bytes(directory.get(), fixed_leaf()) == encoded.package->bytes);
+        struct stat after_metadata{};
+        CHECK(::fstatat(directory.get(), fixed_leaf().c_str(), &after_metadata,
+                        AT_SYMLINK_NOFOLLOW) == 0);
+        CHECK(before_metadata.st_dev == after_metadata.st_dev);
+        CHECK(before_metadata.st_ino == after_metadata.st_ino);
+        CHECK(before_metadata.st_mode == after_metadata.st_mode);
+        CHECK(before_metadata.st_nlink == after_metadata.st_nlink);
+    }
+
+    {
+        TempDirectory temp;
+        auto directory = temp.open_directory();
+        const auto before_descriptors = snapshot_open_descriptors();
+        const auto result = package_file::inspect_distributed_sieve_worker_work_package_residue_v1(
+            native_residue_request(directory.get()));
+        CHECK(!result);
+        CHECK(result.diagnostic.status ==
+              package_file::DistributedSieveWorkerWorkPackageFileStatus::namespace_conflict);
+        CHECK(result.diagnostic.native_error == ENOENT);
+        CHECK(!result.diagnostic.named_may_remain);
+        CHECK(snapshot_open_descriptors() == before_descriptors);
+        require_fixed_leaf_missing(directory.get());
+    }
+}
+
+void test_real_posix_residue_rejects_namespace_shapes_and_corruption() {
+    const auto identity = make_identity();
+    const auto encoded = package_codec::encode_distributed_sieve_work_package_v1(identity);
+    CHECK(encoded);
+
+    {
+        TempDirectory temp;
+        auto directory = temp.open_directory();
+        CHECK(::mkdirat(directory.get(), fixed_leaf().c_str(), 0700) == 0);
+        const auto baseline = snapshot_open_descriptors();
+        const auto result = package_file::inspect_distributed_sieve_worker_work_package_residue_v1(
+            native_residue_request(directory.get()));
+        CHECK(!result);
+        CHECK(result.diagnostic.status ==
+              package_file::DistributedSieveWorkerWorkPackageFileStatus::namespace_conflict);
+        CHECK(snapshot_open_descriptors() == baseline);
+    }
+
+    {
+        TempDirectory temp;
+        auto directory = temp.open_directory();
+        constexpr std::string_view target_leaf = "sealed-target";
+        create_sealed_leaf_with_bytes(directory.get(), target_leaf, encoded.package->bytes);
+        CHECK(::symlinkat(std::string(target_leaf).c_str(), directory.get(),
+                          fixed_leaf().c_str()) == 0);
+        const auto baseline = snapshot_open_descriptors();
+        const auto result = package_file::inspect_distributed_sieve_worker_work_package_residue_v1(
+            native_residue_request(directory.get()));
+        CHECK(!result);
+        CHECK(result.diagnostic.status ==
+              package_file::DistributedSieveWorkerWorkPackageFileStatus::namespace_conflict);
+        CHECK(snapshot_open_descriptors() == baseline);
+        CHECK(read_leaf_bytes(directory.get(), target_leaf) == encoded.package->bytes);
+    }
+
+    {
+        TempDirectory temp;
+        auto directory = temp.open_directory();
+        constexpr std::string_view target_leaf = "hardlink-target";
+        create_sealed_leaf_with_bytes(directory.get(), target_leaf, encoded.package->bytes);
+        CHECK(::linkat(directory.get(), std::string(target_leaf).c_str(), directory.get(),
+                       fixed_leaf().c_str(), 0) == 0);
+        const auto baseline = snapshot_open_descriptors();
+        const auto result = package_file::inspect_distributed_sieve_worker_work_package_residue_v1(
+            native_residue_request(directory.get()));
+        CHECK(!result);
+        CHECK(result.diagnostic.status ==
+              package_file::DistributedSieveWorkerWorkPackageFileStatus::namespace_conflict);
+        CHECK(snapshot_open_descriptors() == baseline);
+        CHECK(read_leaf_bytes(directory.get(), target_leaf) == encoded.package->bytes);
+    }
+
+    {
+        TempDirectory temp;
+        auto directory = temp.open_directory();
+        create_leaf_with_bytes(directory.get(), fixed_leaf(), encoded.package->bytes);
+        const auto baseline = snapshot_open_descriptors();
+        const auto result = package_file::inspect_distributed_sieve_worker_work_package_residue_v1(
+            native_residue_request(directory.get()));
+        CHECK(!result);
+        CHECK(result.diagnostic.status ==
+              package_file::DistributedSieveWorkerWorkPackageFileStatus::namespace_conflict);
+        CHECK(snapshot_open_descriptors() == baseline);
+        CHECK(read_leaf_bytes(directory.get(), fixed_leaf()) == encoded.package->bytes);
+    }
+
+    std::array<std::vector<std::byte>, 3> corruptions{
+        encoded.package->bytes,
+        encoded.package->bytes,
+        encoded.package->bytes,
+    };
+    corruptions[0].pop_back();
+    corruptions[1].push_back(std::byte{0});
+    corruptions[2].back() ^= std::byte{0x01};
+    for (const auto& bytes : corruptions) {
+        TempDirectory temp;
+        auto directory = temp.open_directory();
+        create_sealed_leaf_with_bytes(directory.get(), fixed_leaf(), bytes);
+        const auto baseline = snapshot_open_descriptors();
+        const auto result = package_file::inspect_distributed_sieve_worker_work_package_residue_v1(
+            native_residue_request(directory.get()));
+        CHECK(!result);
+        CHECK(result.diagnostic.status ==
+              package_file::DistributedSieveWorkerWorkPackageFileStatus::decode_failed);
+        CHECK(snapshot_open_descriptors() == baseline);
+        CHECK(read_leaf_bytes(directory.get(), fixed_leaf()) == bytes);
+    }
+}
+
+void test_real_posix_residue_rejects_forked_observer() {
+    const auto encoded = package_codec::encode_distributed_sieve_work_package_v1(make_identity());
+    CHECK(encoded);
+    TempDirectory temp;
+    auto directory = temp.open_directory();
+    create_sealed_leaf_with_bytes(directory.get(), fixed_leaf(), encoded.package->bytes);
+    const auto request = native_residue_request(directory.get());
+
+    const pid_t child = ::fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        const auto result =
+            package_file::inspect_distributed_sieve_worker_work_package_residue_v1(request);
+        const bool rejected =
+            !result &&
+            result.diagnostic.status ==
+                package_file::DistributedSieveWorkerWorkPackageFileStatus::invalid_request &&
+            result.diagnostic.native_error == ECHILD;
+        ::_exit(rejected ? 0 : 1);
+    }
+    int status = 0;
+    CHECK(::waitpid(child, &status, 0) == child);
+    CHECK(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 0);
+    CHECK(read_leaf_bytes(directory.get(), fixed_leaf()) == encoded.package->bytes);
+
+    const auto parent_result =
+        package_file::inspect_distributed_sieve_worker_work_package_residue_v1(request);
+    CHECK(parent_result);
 }
 
 void test_real_posix_token_lifetime_revalidation_and_reuse() {
@@ -1283,6 +1800,17 @@ void test_windows_reports_platform_unavailable() {
     CHECK(!result);
     CHECK(result.diagnostic.status ==
           package_file::DistributedSieveWorkerWorkPackageFileStatus::platform_unavailable);
+
+    const package_file::DistributedSieveWorkerWorkPackageResidueInspectionRequestV1 residue_request{
+        .borrowed_attempt_directory_handle = 1,
+        .expected_directory_identity = {.volume = 1, .object = 1, .generation = 0},
+        .observer_process_id = static_cast<std::uint64_t>(gnfs::util::process_id()),
+    };
+    const auto residue =
+        package_file::inspect_distributed_sieve_worker_work_package_residue_v1(residue_request);
+    CHECK(!residue);
+    CHECK(residue.diagnostic.status ==
+          package_file::DistributedSieveWorkerWorkPackageFileStatus::platform_unavailable);
 }
 
 #endif
@@ -1301,7 +1829,13 @@ int main() {
         test_fake_request_directory_pid_and_acl_rejection();
         test_fake_exclusive_create_identity_drift_and_foreign_preservation();
         test_fake_close_is_single_shot_and_preserves_primary_failure();
+        test_fake_residue_inspector_happy_path_and_equality();
+        test_fake_residue_inspector_rejects_missing_metadata_acl_and_policy();
+        test_fake_residue_inspector_revalidates_decode_boundary();
 #if !defined(_WIN32)
+        test_real_posix_residue_success_missing_and_fd_hygiene();
+        test_real_posix_residue_rejects_namespace_shapes_and_corruption();
+        test_real_posix_residue_rejects_forked_observer();
         test_real_posix_token_lifetime_revalidation_and_reuse();
         test_real_posix_foreign_leaves_are_preserved();
         test_real_posix_rejects_directory_mode_and_identity_drift();
