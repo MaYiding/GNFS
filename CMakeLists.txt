@@ -1176,6 +1176,13 @@ if(GNFS_BUILD_TESTS)
     # Marked as fast (60s budget) to accommodate Debug+sanitizers.
     set_tests_properties(BatchECM PROPERTIES LABELS "fast" TIMEOUT 60)
 
+    add_executable(test_ecm_curve_plan
+        tests/test_ecm_curve_plan.cpp
+    )
+    target_link_libraries(test_ecm_curve_plan PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME EcmCurvePlan COMMAND test_ecm_curve_plan)
+    set_tests_properties(EcmCurvePlan PROPERTIES LABELS "fast" TIMEOUT 60)
+
     # Micro-benchmark: not run by default test suites (label "bench")
     # Invoke manually:  ./build-release/test_batch_ecm_bench [count] [seed]
     add_executable(test_batch_ecm_bench

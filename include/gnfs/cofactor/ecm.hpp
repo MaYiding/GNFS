@@ -9,9 +9,10 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <random>
 #include <optional>
+#include <random>
 #include <span>
+#include <stdexcept>
 #include <vector>
 
 namespace gnfs::cofactor {
@@ -37,9 +38,29 @@ public:
         /// May be overridden by ENV `GNFS_ECM_BRENT_SUYAMA` + `GNFS_ECM_BS_DEGREE`.
         uint32_t brent_suyama_degree;
 
-        Config() : num_curves(25), B1(10000), B2(1000000), auto_params(true),
-                   brent_suyama_degree(0) {}
+        Config()
+            : num_curves(25), B1(10000), B2(1000000), auto_params(true), brent_suyama_degree(0) {}
     };
+
+    /// Explicit deterministic curve schedule. The stored order and count are
+    /// authoritative; Config::num_curves is ignored by explicit-schedule APIs.
+    struct DeterministicCurveSchedule final {
+        std::vector<uint64_t> sigmas;
+    };
+
+    /// Build the exact deterministic sigma sequence for a seed.
+    /// Every uint64_t seed is valid, including zero.
+    [[nodiscard]] static DeterministicCurveSchedule
+    make_deterministic_curve_schedule(uint32_t num_curves, uint64_t seed) {
+        DeterministicCurveSchedule schedule;
+        schedule.sigmas.reserve(num_curves);
+
+        std::mt19937_64 rng(seed);
+        for (uint32_t i = 0; i < num_curves; ++i) {
+            schedule.sigmas.push_back((rng() % 1'000'000) + 6);
+        }
+        return schedule;
+    }
 
     /// 尝试用 ECM 分解 n
     /// @param n 要分解的合数
@@ -63,35 +84,30 @@ public:
         std::random_device rd;
         uint64_t n_low = mpz_getlimbn(n.get_mpz(), 0);
         uint64_t seed = rd() ^ n_low;
-        std::mt19937_64 rng(seed);
+        auto schedule = make_deterministic_curve_schedule(config.num_curves, seed);
 
-        // Build BatchContext: pre-compute primes_cache + prime_powers once,
-        // then reuse across all curves via try_curve_with_pk. sigma_pool
-        // remains generated per-call with the n_low XOR rd seed (original
-        // randomization preserved).
-        BatchContext ctx;
-        ctx.B1 = config.B1;
-        ctx.B2 = config.B2;
-        ctx.brent_suyama_degree = config.brent_suyama_degree;
-        ctx.primes_cache = sieve_primes(config.B1);
-        ctx.prime_powers.reserve(ctx.primes_cache.size());
-        for (uint64_t p : ctx.primes_cache) {
-            uint64_t pk = p;
-            while (pk <= config.B1 / p) pk *= p;
-            ctx.prime_powers.push_back(pk);
+        config.auto_params = false;
+        return factor(n, config, schedule);
+    }
+
+    /// Explicit deterministic factor path. This overload does not consult ENV,
+    /// random_device, quick_factor, or any thread-local sigma schedule.
+    [[nodiscard]] static std::optional<Integer> factor(const Integer& n, Config config,
+                                                       const DeterministicCurveSchedule& schedule) {
+        validate_deterministic_curve_schedule(schedule);
+        if (schedule.sigmas.empty()) {
+            return std::nullopt;
         }
-
-        for (uint32_t curve = 0; curve < config.num_curves; ++curve) {
-            // 随机选择 sigma
-            uint64_t sigma = (rng() % 1000000) + 6;
-
-            auto result = try_curve_with_pk(n, sigma, ctx);
-            if (result) {
-                return result;
-            }
+        if (n.is_one() || n.is_probable_prime() > 0) {
+            return std::nullopt;
         }
-
-        return std::nullopt;
+        if (config.auto_params) {
+            const uint32_t explicit_curve_count = config.num_curves;
+            auto_tune(n.bit_length(), config);
+            config.num_curves = explicit_curve_count;
+        }
+        auto ctx = prepare_batch(config, schedule);
+        return factor_with_batch(n, ctx);
     }
 
     /// 快速 ECM 用于小因子 (适合筛法余因子)
@@ -167,11 +183,12 @@ public:
         [[nodiscard]] size_t num_curves() const noexcept { return sigma_pool.size(); }
     };
 
-    /// 构造 BatchContext (N-independent 共享数据)
-    /// @param config B1/B2/num_curves 来源
-    /// @param sigma_seed 0 = 用 time-based seed; 非 0 = 确定性测试可重现
+    /// 构造 deterministic BatchContext (N-independent 共享数据).
+    /// schedule 的顺序和数量是权威值，不读取 Config::num_curves.
     [[nodiscard]] static BatchContext prepare_batch(const Config& config,
-                                                     uint64_t sigma_seed = 0) {
+                                                    const DeterministicCurveSchedule& schedule) {
+        validate_deterministic_curve_schedule(schedule);
+
         BatchContext ctx;
         ctx.B1 = config.B1;
         ctx.B2 = config.B2;
@@ -186,25 +203,26 @@ public:
         ctx.prime_powers.reserve(ctx.primes_cache.size());
         for (uint64_t p : ctx.primes_cache) {
             uint64_t pk = p;
-            while (pk <= config.B1 / p) pk *= p;  // 避免溢出
+            while (pk <= config.B1 / p)
+                pk *= p; // 避免溢出
             ctx.prime_powers.push_back(pk);
         }
 
-        // sigma_pool: 确定性序列 (sigma_seed != 0) 或 time-based (兼容现有行为)
-        // 测试用 deterministic seed 让多次调用 + sequential 等价
-        std::mt19937_64 rng;
-        if (sigma_seed != 0) {
-            rng.seed(sigma_seed);
-        } else {
-            std::random_device rd;
-            rng.seed(rd() ^ static_cast<uint64_t>(0x9E3779B97F4A7C15ULL));
-        }
-        ctx.sigma_pool.reserve(config.num_curves);
-        for (uint32_t i = 0; i < config.num_curves; ++i) {
-            ctx.sigma_pool.push_back((rng() % 1000000) + 6);
-        }
+        ctx.sigma_pool = schedule.sigmas;
 
         return ctx;
+    }
+
+    /// Legacy BatchContext wrapper.
+    /// sigma_seed=0 保持 ambient random_device 语义；非零 seed 委托显式 overload.
+    [[nodiscard]] static BatchContext prepare_batch(const Config& config, uint64_t sigma_seed = 0) {
+        uint64_t seed = sigma_seed;
+        if (seed == 0) {
+            std::random_device rd;
+            seed = rd() ^ static_cast<uint64_t>(0x9E3779B97F4A7C15ULL);
+        }
+        auto schedule = make_deterministic_curve_schedule(config.num_curves, seed);
+        return prepare_batch(config, schedule);
     }
 
     /// Batch ECM: 对一批 cofactor 应用 ECM, 共享 N-independent 数据
@@ -241,6 +259,15 @@ public:
     }
 
 private:
+    static void validate_deterministic_curve_schedule(const DeterministicCurveSchedule& schedule) {
+        for (uint64_t sigma : schedule.sigmas) {
+            if (sigma < 6 || sigma > 1'000'005) {
+                throw std::invalid_argument(
+                    "ECM deterministic curve sigma must be in [6, 1000005]");
+            }
+        }
+    }
+
     /// 蒙哥马利曲线上的点 (仅 XZ 坐标)
     struct Point {
         Integer x;
