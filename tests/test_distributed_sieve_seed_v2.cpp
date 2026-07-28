@@ -24,6 +24,10 @@ namespace sieve = gnfs::sieve;
 using Digest = gnfs::util::Sha256Digest;
 using Identity = sieve::DistributedSieveWorkIdentityV1;
 using SemanticVersions = sieve::DistributedSieveSemanticContractVersionsV2;
+using SeedProvider = sieve::DistributedSieveCofactorSeedProviderV2;
+using gnfs::cofactor::CofactorRandomDomainV1;
+using gnfs::cofactor::CofactorSeedRequestV1;
+using gnfs::cofactor::CofactorSide;
 
 [[noreturn]] void fail(std::string_view message, const char* file, int line) {
     throw std::runtime_error(std::string(message) + " at " + file + ":" + std::to_string(line));
@@ -81,6 +85,10 @@ constexpr std::string_view EXPECTED_V2_PREIMAGE_HEX =
 
 [[nodiscard]] constexpr std::uint64_t binary64_bits(double value) noexcept {
     return std::bit_cast<std::uint64_t>(value);
+}
+
+[[nodiscard]] constexpr std::size_t policy_index(sieve::ExecutionPolicyKeyV1 key) noexcept {
+    return static_cast<std::size_t>(static_cast<std::uint16_t>(key) - 1U);
 }
 
 struct PolicySpec final {
@@ -425,6 +433,48 @@ oracle_preimage(const Identity& identity, std::uint32_t root_schema_version,
     return *result.digest;
 }
 
+[[nodiscard]] CofactorSeedRequestV1 make_seed_request() {
+    CofactorSeedRequestV1 request;
+    request.coordinates.special_q_index = UINT32_C(0x01020304);
+    request.coordinates.candidate_ordinal = UINT64_C(0x1112131415161718);
+    request.side = CofactorSide::algebraic;
+    for (std::size_t index = 0; index < request.cofactor_digest.bytes.size(); ++index) {
+        request.cofactor_digest.bytes[index] =
+            static_cast<std::byte>(static_cast<std::uint8_t>(0xa0U + index));
+    }
+    request.domain = CofactorRandomDomainV1::ecm_curve_schedule;
+    request.algorithm_identity = UINT32_C(0x0a0b0c0d);
+    return request;
+}
+
+[[nodiscard]] sieve::DeterministicRandomDomainV1
+expected_distributed_domain(CofactorRandomDomainV1 domain) {
+    switch (domain) {
+    case CofactorRandomDomainV1::brent_pollard_rho:
+        return sieve::DeterministicRandomDomainV1::pollard_rho;
+    case CofactorRandomDomainV1::ecm_curve_schedule:
+        return sieve::DeterministicRandomDomainV1::ecm_curve;
+    }
+    throw std::invalid_argument("unknown expected cofactor domain");
+}
+
+[[nodiscard]] gnfs::cofactor::CofactorSeed256
+expected_distributed_seed(const Digest& semantic_root, const CofactorSeedRequestV1& request) {
+    CHECK(request.coordinates.special_q_index <= std::numeric_limits<std::uint32_t>::max());
+    const sieve::DeterministicRandomSeedRequestV1 distributed_request{
+        .work_digest = semantic_root,
+        .domain = expected_distributed_domain(request.domain),
+        .chunk_id = 0,
+        .sq_index = static_cast<std::uint32_t>(request.coordinates.special_q_index),
+        .candidate_ordinal = request.coordinates.candidate_ordinal,
+        .algorithm_identity = request.algorithm_identity,
+        .cofactor_input_digest = request.cofactor_digest,
+    };
+    const auto result = sieve::derive_distributed_sieve_deterministic_seed(distributed_request);
+    CHECK(result);
+    return gnfs::cofactor::CofactorSeed256{.digest = *result.digest};
+}
+
 struct Baseline final {
     Identity identity;
     Digest v1_digest;
@@ -485,6 +535,121 @@ void test_independent_byte_and_digest_goldens() {
         CHECK(hash_bytes(oracle_preimage(
                   baseline.identity, sieve::DISTRIBUTED_SIEVE_SEMANTIC_SEED_ROOT_SCHEMA_VERSION_V2,
                   changed)) != baseline.v2_root);
+    }
+}
+
+void test_cofactor_seed_provider_exact_projection_and_field_separation() {
+    const Baseline baseline = make_baseline();
+    const CofactorSeedRequestV1 request = make_seed_request();
+    const SeedProvider provider(baseline.v2_root);
+    const auto expected_seed = expected_distributed_seed(baseline.v2_root, request);
+    const auto actual_seed = provider.seed_for(request);
+
+    CHECK(provider.semantic_seed_root() == baseline.v2_root);
+    CHECK(actual_seed == expected_seed);
+    CHECK(provider.seed_for(request) == actual_seed);
+
+    std::vector<CofactorSeedRequestV1> changed_requests;
+    auto changed = request;
+    ++changed.coordinates.special_q_index;
+    changed_requests.push_back(changed);
+    changed = request;
+    ++changed.coordinates.candidate_ordinal;
+    changed_requests.push_back(changed);
+    changed = request;
+    changed.cofactor_digest.bytes[0] ^= std::byte{1};
+    changed_requests.push_back(changed);
+    changed = request;
+    changed.domain = CofactorRandomDomainV1::brent_pollard_rho;
+    changed_requests.push_back(changed);
+    changed = request;
+    ++changed.algorithm_identity;
+    changed_requests.push_back(changed);
+
+    for (const CofactorSeedRequestV1& changed_request : changed_requests) {
+        CHECK(provider.seed_for(changed_request) != actual_seed);
+    }
+
+    Digest changed_root = baseline.v2_root;
+    changed_root.bytes.back() ^= std::byte{1};
+    CHECK(SeedProvider(changed_root).seed_for(request) != actual_seed);
+    const auto zero_root_expected = expected_distributed_seed(Digest{}, request);
+    CHECK(SeedProvider(Digest{}).seed_for(request) == zero_root_expected);
+
+    auto brent_request = request;
+    brent_request.domain = CofactorRandomDomainV1::brent_pollard_rho;
+    CHECK(provider.seed_for(brent_request) ==
+          expected_distributed_seed(baseline.v2_root, brent_request));
+    CHECK(provider.seed_for(brent_request) != actual_seed);
+
+    auto boundary_request = request;
+    boundary_request.coordinates.special_q_index = std::numeric_limits<std::uint32_t>::max();
+    boundary_request.coordinates.candidate_ordinal = std::numeric_limits<std::uint64_t>::max();
+    boundary_request.algorithm_identity = std::numeric_limits<std::uint32_t>::max();
+    boundary_request.cofactor_digest = {};
+    CHECK(provider.seed_for(boundary_request) ==
+          expected_distributed_seed(baseline.v2_root, boundary_request));
+}
+
+void test_cofactor_seed_provider_rejects_invalid_requests() {
+    const SeedProvider provider(make_baseline().v2_root);
+    const CofactorSeedRequestV1 baseline = make_seed_request();
+    const std::array<CofactorSeedRequestV1, 3> invalid_requests{
+        [&] {
+            auto value = baseline;
+            value.side = static_cast<CofactorSide>(0xff);
+            return value;
+        }(),
+        [&] {
+            auto value = baseline;
+            value.domain = static_cast<CofactorRandomDomainV1>(0xff);
+            return value;
+        }(),
+        [&] {
+            auto value = baseline;
+            value.algorithm_identity = 0;
+            return value;
+        }(),
+    };
+
+    for (const auto& request : invalid_requests) {
+        bool caught = false;
+        try {
+            (void)provider.seed_for(request);
+        } catch (const std::invalid_argument&) {
+            caught = true;
+        }
+        CHECK(caught);
+    }
+
+    auto oversized_special_q = baseline;
+    oversized_special_q.coordinates.special_q_index =
+        static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()) + 1U;
+    bool caught_overflow = false;
+    try {
+        (void)provider.seed_for(oversized_special_q);
+    } catch (const std::overflow_error&) {
+        caught_overflow = true;
+    }
+    CHECK(caught_overflow);
+}
+
+void test_runtime_unprojectable_ecm_policy_fails_closed() {
+    const Identity baseline = make_baseline().identity;
+    std::array<Identity, 2> invalid_runtime_policies{baseline, baseline};
+    invalid_runtime_policies[0]
+        .execution_policy.settings[policy_index(sieve::ExecutionPolicyKeyV1::ecm_brent_suyama)]
+        .canonical_bits = 0;
+    invalid_runtime_policies[1]
+        .execution_policy.settings[policy_index(sieve::ExecutionPolicyKeyV1::ecm_bs_degree)]
+        .canonical_bits = 0;
+
+    for (const Identity& identity : invalid_runtime_policies) {
+        CHECK(sieve::validate_distributed_sieve_work_identity(identity));
+        const auto result = sieve::distributed_sieve_semantic_seed_root_v2(identity);
+        CHECK(!result);
+        CHECK(!result.digest.has_value());
+        CHECK(result.status.error == sieve::DistributedSieveProtocolError::invalid_value);
     }
 }
 
@@ -566,8 +731,13 @@ void test_execution_policy_classification_matrix() {
         const PolicySpec& spec = POLICY_SPECS[index];
         const Mutation mutation{
             spec.semantic ? "semantic execution setting" : "conservative execution setting",
-            [index, alternate = spec.alternate](auto& value) {
+            [index, key = spec.key, alternate = spec.alternate](auto& value) {
                 value.execution_policy.settings[index].canonical_bits = alternate;
+                if (key == sieve::ExecutionPolicyKeyV1::ecm_brent_suyama && alternate == 0) {
+                    value.execution_policy
+                        .settings[policy_index(sieve::ExecutionPolicyKeyV1::ecm_bs_degree)]
+                        .canonical_bits = 0;
+                }
             },
         };
         require_projection(baseline, mutation, spec.semantic);
@@ -772,6 +942,9 @@ void test_invalid_identity_fails_closed_with_v1_status() {
 int main() {
     try {
         test_independent_byte_and_digest_goldens();
+        test_cofactor_seed_provider_exact_projection_and_field_separation();
+        test_cofactor_seed_provider_rejects_invalid_requests();
+        test_runtime_unprojectable_ecm_policy_fails_closed();
         test_topology_provenance_and_storage_exclusions();
         test_execution_policy_classification_matrix();
         test_survival_threshold_signed_zero_normalization();

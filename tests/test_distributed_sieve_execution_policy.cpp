@@ -2,6 +2,7 @@
 #include <gnfs/polynomial/base_m.hpp>
 #include <gnfs/sieve/distributed_sieve_protocol.hpp>
 
+#include "distributed_sieve_cofactor_runtime_config_internal.hpp"
 #include "distributed_sieve_execution_policy_internal.hpp"
 #include "distributed_sieve_lattice_runtime_config_internal.hpp"
 #include "support/scoped_environment_stderr.hpp"
@@ -40,6 +41,8 @@ using FrozenPolicy = policy_detail::DistributedSieveFrozenExecutionPolicyV1;
 using Snapshot = policy_detail::DistributedSieveExecutionPolicyEnvironmentSnapshotV1;
 using TernaryMode = policy_detail::DistributedSieveCanonicalTernaryModeV1;
 using LatticeRuntimeConfig = policy_detail::DistributedSieveLatticeRuntimeConfigV1;
+using CofactorRuntime = policy_detail::DistributedSieveCofactorRuntimeV2;
+using WorkIdentity = sieve::DistributedSieveWorkIdentityV1;
 using gnfs::tests::support::ScopedEnvironmentVariable;
 
 struct ExpectedDescriptor final {
@@ -206,6 +209,46 @@ LatticeRuntimeConfig map_lattice_runtime_checked(const FrozenPolicy& frozen) {
     CHECK(result);
     CHECK(result.config.has_value());
     return *result.config;
+}
+
+WorkIdentity make_runtime_identity(const FrozenPolicy& frozen) {
+    WorkIdentity identity;
+    identity.polynomial.n.decimal = "1000036000099";
+    identity.polynomial.m.decimal = "10001";
+    identity.polynomial.degree = 2;
+    identity.polynomial.coefficients = {{"-5"}, {"3"}, {"1"}};
+    identity.polynomial.skewness_ieee754_bits = binary64_bits(1.25);
+
+    identity.factor_base.rational_bound = 100;
+    identity.factor_base.algebraic_bound = 200;
+    identity.factor_base.large_prime_bound = 10'000;
+    identity.factor_base.log_scale = 16;
+    identity.factor_base.rational = {{2, 16}, {5, 25}};
+    identity.factor_base.algebraic = {{7, 1, 37, 1}, {11, 4, 55, 2}};
+    identity.factor_base.sieve_algebraic_count = 2;
+
+    identity.sieve = {16, 50, 51, 0, true, false};
+    identity.region = {-100, 100, 1, 50};
+    identity.cofactor = {0, true, true, false, 0};
+    identity.original_sq_bounds = {0, 2, 0, std::numeric_limits<std::uint32_t>::max()};
+    identity.effective_sq_bounds = {0, 2, 0, std::numeric_limits<std::uint32_t>::max()};
+    identity.distributed.worker_count = 1;
+    identity.distributed.chunks = {{0, 0, 2, "chunk_0"}};
+    identity.distributed.max_worker_attempts = 1;
+    identity.distributed.max_merge_build_attempts = 1;
+    identity.distributed.max_consumption_attempts = 1;
+    identity.execution_policy = frozen.canonical;
+    identity.semantic_versions = {1, 1, 1, 1, 1, 1, 1, 1, 1};
+    CHECK(sieve::validate_distributed_sieve_work_identity(identity));
+    return identity;
+}
+
+CofactorRuntime map_cofactor_runtime_checked(const WorkIdentity& identity,
+                                             const FrozenPolicy& frozen) {
+    auto result = policy_detail::map_distributed_sieve_cofactor_runtime_v2(identity, frozen);
+    CHECK(result);
+    CHECK(result.runtime.has_value());
+    return *result.runtime;
 }
 
 bool same_lattice_runtime_config(const LatticeRuntimeConfig& lhs,
@@ -429,6 +472,137 @@ void test_lattice_runtime_config_rejects_invalid_frozen_object() {
     result = policy_detail::map_distributed_sieve_lattice_runtime_config_v1(host_bound_invalid);
     CHECK(!result);
     CHECK(!result.config.has_value());
+}
+
+void test_cofactor_runtime_exact_mapping_and_seed_root_binding() {
+    const auto all_unset_policy = freeze_checked(unset_snapshot());
+    const auto sentinel_identity = make_runtime_identity(all_unset_policy);
+    const auto sentinel_runtime = map_cofactor_runtime_checked(sentinel_identity, all_unset_policy);
+    const auto& sentinel_config = sentinel_runtime.cofactorizer;
+    CHECK(sentinel_config.large_prime_bound == 10'000);
+    CHECK(sentinel_config.allow_1lp);
+    CHECK(sentinel_config.allow_2lp);
+    CHECK(!sentinel_config.allow_3lp);
+    CHECK(sentinel_config.max_factorization_attempts ==
+          sieve::DISTRIBUTED_SIEVE_SEMANTIC_DEFAULT_MAX_FACTORIZATION_ATTEMPTS_V2);
+    CHECK(!sentinel_config.seeded_brent_pollard_enabled);
+    CHECK(sentinel_config.seeded_ecm_brent_suyama_degree == 0);
+
+    const auto sentinel_root = sieve::distributed_sieve_semantic_seed_root_v2(sentinel_identity);
+    CHECK(sentinel_root);
+    CHECK(sentinel_runtime.seed_provider.semantic_seed_root() == *sentinel_root.digest);
+
+    auto explicit_identity = sentinel_identity;
+    explicit_identity.cofactor.large_prime_bound = explicit_identity.factor_base.large_prime_bound;
+    explicit_identity.cofactor.max_factorization_attempts =
+        sieve::DISTRIBUTED_SIEVE_SEMANTIC_DEFAULT_MAX_FACTORIZATION_ATTEMPTS_V2;
+    const auto explicit_runtime = map_cofactor_runtime_checked(explicit_identity, all_unset_policy);
+    CHECK(explicit_runtime.cofactorizer.large_prime_bound ==
+          sentinel_runtime.cofactorizer.large_prime_bound);
+    CHECK(explicit_runtime.cofactorizer.max_factorization_attempts ==
+          sentinel_runtime.cofactorizer.max_factorization_attempts);
+    CHECK(explicit_runtime.seed_provider.semantic_seed_root() ==
+          sentinel_runtime.seed_provider.semantic_seed_root());
+
+    auto enabled_snapshot = unset_snapshot();
+    set_raw(enabled_snapshot, Key::cofactor_brent, "1");
+    set_raw(enabled_snapshot, Key::ecm_brent_suyama, "1");
+    set_raw(enabled_snapshot, Key::ecm_bs_degree, "12");
+    const auto enabled_policy = freeze_checked(enabled_snapshot);
+    auto enabled_identity = make_runtime_identity(enabled_policy);
+    enabled_identity.cofactor.large_prime_bound = 20'000;
+    enabled_identity.cofactor.allow_1lp = false;
+    enabled_identity.cofactor.allow_2lp = false;
+    enabled_identity.cofactor.allow_3lp = true;
+    enabled_identity.cofactor.max_factorization_attempts = 50'000;
+    const auto enabled_runtime = map_cofactor_runtime_checked(enabled_identity, enabled_policy);
+    CHECK(enabled_runtime.cofactorizer.large_prime_bound == 20'000);
+    CHECK(!enabled_runtime.cofactorizer.allow_1lp);
+    CHECK(!enabled_runtime.cofactorizer.allow_2lp);
+    CHECK(enabled_runtime.cofactorizer.allow_3lp);
+    CHECK(enabled_runtime.cofactorizer.max_factorization_attempts == 50'000);
+    CHECK(enabled_runtime.cofactorizer.seeded_brent_pollard_enabled);
+    CHECK(enabled_runtime.cofactorizer.seeded_ecm_brent_suyama_degree == 12);
+    CHECK(enabled_runtime.seed_provider.semantic_seed_root() !=
+          sentinel_runtime.seed_provider.semantic_seed_root());
+}
+
+void test_cofactor_runtime_topology_and_conservative_policy_invariance() {
+    const auto baseline_policy = freeze_checked(unset_snapshot());
+    const auto baseline_identity = make_runtime_identity(baseline_policy);
+    const auto baseline_runtime = map_cofactor_runtime_checked(baseline_identity, baseline_policy);
+
+    auto topology_identity = baseline_identity;
+    topology_identity.distributed.worker_count = 2;
+    topology_identity.distributed.chunks = {
+        {0, 0, 1, "left"},
+        {1, 1, 2, "right"},
+    };
+    CHECK(sieve::validate_distributed_sieve_work_identity(topology_identity));
+    const auto topology_runtime = map_cofactor_runtime_checked(topology_identity, baseline_policy);
+    CHECK(topology_runtime.seed_provider.semantic_seed_root() ==
+          baseline_runtime.seed_provider.semantic_seed_root());
+
+    auto conservative_snapshot = unset_snapshot();
+    set_raw(conservative_snapshot, Key::cofactor_batch_size, "64");
+    const auto conservative_policy = freeze_checked(conservative_snapshot);
+    const auto conservative_identity = make_runtime_identity(conservative_policy);
+    const auto conservative_runtime =
+        map_cofactor_runtime_checked(conservative_identity, conservative_policy);
+    CHECK(conservative_runtime.seed_provider.semantic_seed_root() ==
+          baseline_runtime.seed_provider.semantic_seed_root());
+
+    gnfs::cofactor::CofactorSeedRequestV1 request;
+    request.coordinates = {17, 23};
+    request.side = gnfs::cofactor::CofactorSide::algebraic;
+    request.domain = gnfs::cofactor::CofactorRandomDomainV1::ecm_curve_schedule;
+    request.algorithm_identity = 1;
+    CHECK(topology_runtime.seed_provider.seed_for(request) ==
+          baseline_runtime.seed_provider.seed_for(request));
+    CHECK(conservative_runtime.seed_provider.seed_for(request) ==
+          baseline_runtime.seed_provider.seed_for(request));
+}
+
+void test_cofactor_runtime_rejects_identity_policy_split_brain() {
+    const auto baseline_policy = freeze_checked(unset_snapshot(4));
+    const auto baseline_identity = make_runtime_identity(baseline_policy);
+
+    auto changed_snapshot = unset_snapshot(4);
+    set_raw(changed_snapshot, Key::cofactor_brent, "1");
+    const auto changed_policy = freeze_checked(changed_snapshot);
+    const auto changed_identity = make_runtime_identity(changed_policy);
+
+    auto result =
+        policy_detail::map_distributed_sieve_cofactor_runtime_v2(changed_identity, baseline_policy);
+    CHECK(!result);
+    CHECK(!result.runtime.has_value());
+    CHECK(result.status.error == sieve::DistributedSieveProtocolError::invalid_value);
+
+    auto invalid_frozen = baseline_policy;
+    invalid_frozen.cofactor.cofactor_brent = true;
+    result =
+        policy_detail::map_distributed_sieve_cofactor_runtime_v2(baseline_identity, invalid_frozen);
+    CHECK(!result);
+    CHECK(!result.runtime.has_value());
+
+    auto invalid_identity = baseline_identity;
+    invalid_identity.polynomial.n.decimal = "0";
+    result =
+        policy_detail::map_distributed_sieve_cofactor_runtime_v2(invalid_identity, baseline_policy);
+    CHECK(!result);
+    CHECK(!result.runtime.has_value());
+    CHECK(result.status.error == sieve::DistributedSieveProtocolError::invalid_value);
+
+    auto survival_snapshot = unset_snapshot(4);
+    set_raw(survival_snapshot, Key::survival_filter, "1");
+    set_raw(survival_snapshot, Key::survival_threshold, "0.25");
+    const auto survival_policy = freeze_checked(survival_snapshot);
+    const auto survival_identity = make_runtime_identity(survival_policy);
+    result = policy_detail::map_distributed_sieve_cofactor_runtime_v2(survival_identity,
+                                                                      survival_policy);
+    CHECK(!result);
+    CHECK(!result.runtime.has_value());
+    CHECK(result.status.error == sieve::DistributedSieveProtocolError::invalid_value);
 }
 
 void test_ecm_enable_degree_invariant() {
@@ -906,6 +1080,9 @@ int main() {
         test_floating_and_adaptive_integer_normalization();
         test_lattice_runtime_config_exact_mapping();
         test_lattice_runtime_config_rejects_invalid_frozen_object();
+        test_cofactor_runtime_exact_mapping_and_seed_root_binding();
+        test_cofactor_runtime_topology_and_conservative_policy_invariance();
+        test_cofactor_runtime_rejects_identity_policy_split_brain();
         test_ecm_enable_degree_invariant();
         test_cofactor_integer_normalization();
         test_modes_bucket_intent_and_no_tiny_semantics();

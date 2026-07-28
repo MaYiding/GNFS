@@ -303,6 +303,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/distributed_sieve_execution_pol
     target_sources(gnfs_core PRIVATE
         src/sieve/distributed_sieve_execution_policy.cpp
         src/sieve/distributed_sieve_execution_policy_environment.cpp
+        src/sieve/distributed_sieve_cofactor_runtime_config.cpp
         src/sieve/distributed_sieve_lattice_runtime_config.cpp
     )
 endif()

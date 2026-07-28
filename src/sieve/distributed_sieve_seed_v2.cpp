@@ -8,8 +8,10 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string_view>
 
 namespace gnfs::sieve {
@@ -166,13 +168,12 @@ void hash_region(SemanticSeedWriter& writer, const SieveRegionWorkIdentityV1& re
 
 void hash_cofactor(SemanticSeedWriter& writer, const CofactorWorkIdentityV1& cofactor,
                    std::uint64_t factor_base_large_prime_bound) noexcept {
-    const std::uint64_t effective_large_prime_bound = cofactor.large_prime_bound == 0
-                                                          ? factor_base_large_prime_bound
-                                                          : cofactor.large_prime_bound;
+    const std::uint64_t effective_large_prime_bound =
+        effective_distributed_sieve_cofactor_large_prime_bound_v2(cofactor.large_prime_bound,
+                                                                  factor_base_large_prime_bound);
     const std::uint64_t effective_max_factorization_attempts =
-        cofactor.max_factorization_attempts == 0
-            ? DISTRIBUTED_SIEVE_SEMANTIC_DEFAULT_MAX_FACTORIZATION_ATTEMPTS_V2
-            : cofactor.max_factorization_attempts;
+        effective_distributed_sieve_max_factorization_attempts_v2(
+            cofactor.max_factorization_attempts);
 
     writer.put_u8(0x05);
     writer.put_u64(effective_large_prime_bound);
@@ -233,6 +234,25 @@ hash_semantic_execution_policy(SemanticSeedWriter& writer,
     return semantic_ordinal == semantic_count;
 }
 
+[[nodiscard]] bool semantic_execution_policy_is_runtime_projectable_v2(
+    const DistributedSieveExecutionPolicyV1& policy) noexcept {
+    const auto setting = [&policy](ExecutionPolicyKeyV1 key) -> const ExecutionPolicySettingV1* {
+        const std::uint16_t raw_key = static_cast<std::uint16_t>(key);
+        if (raw_key == 0 || raw_key > policy.settings.size()) {
+            return nullptr;
+        }
+        const auto& value = policy.settings[raw_key - 1U];
+        return value.key == key ? &value : nullptr;
+    };
+
+    const auto* enabled = setting(ExecutionPolicyKeyV1::ecm_brent_suyama);
+    const auto* degree = setting(ExecutionPolicyKeyV1::ecm_bs_degree);
+    if (enabled == nullptr || degree == nullptr) {
+        return false;
+    }
+    return (enabled->canonical_bits == 1U) == (degree->canonical_bits != 0);
+}
+
 void hash_semantic_contract_versions(SemanticSeedWriter& writer) noexcept {
     const auto& versions = DISTRIBUTED_SIEVE_SEMANTIC_CONTRACT_VERSIONS_V2;
     writer.put_u8(0x08);
@@ -243,12 +263,35 @@ void hash_semantic_contract_versions(SemanticSeedWriter& writer) noexcept {
     writer.put_u32(versions.cofactor_input_digest);
 }
 
+void validate_cofactor_side(cofactor::CofactorSide side) {
+    switch (side) {
+    case cofactor::CofactorSide::rational:
+    case cofactor::CofactorSide::algebraic:
+        return;
+    }
+    throw std::invalid_argument("unknown distributed cofactor side");
+}
+
+[[nodiscard]] DeterministicRandomDomainV1
+map_cofactor_random_domain(cofactor::CofactorRandomDomainV1 domain) {
+    switch (domain) {
+    case cofactor::CofactorRandomDomainV1::brent_pollard_rho:
+        return DeterministicRandomDomainV1::pollard_rho;
+    case cofactor::CofactorRandomDomainV1::ecm_curve_schedule:
+        return DeterministicRandomDomainV1::ecm_curve;
+    }
+    throw std::invalid_argument("unknown distributed cofactor random domain");
+}
+
 } // namespace
 
 DistributedSieveProtocolDigestResult
 distributed_sieve_semantic_seed_root_v2(const DistributedSieveWorkIdentityV1& identity) noexcept {
     if (const auto status = validate_distributed_sieve_work_identity(identity); !status) {
         return {std::nullopt, status};
+    }
+    if (!semantic_execution_policy_is_runtime_projectable_v2(identity.execution_policy)) {
+        return {std::nullopt, failure(DistributedSieveProtocolError::invalid_value)};
     }
 
     SemanticSeedWriter writer(SEMANTIC_SEED_ROOT_DOMAIN);
@@ -272,6 +315,42 @@ distributed_sieve_semantic_seed_root_v2(const DistributedSieveWorkIdentityV1& id
         return {std::nullopt, failure(DistributedSieveProtocolError::digest_unavailable)};
     }
     return {digest, {}};
+}
+
+DistributedSieveCofactorSeedProviderV2::DistributedSieveCofactorSeedProviderV2(
+    util::Sha256Digest semantic_seed_root) noexcept
+    : semantic_seed_root_(semantic_seed_root) {}
+
+cofactor::CofactorSeed256 DistributedSieveCofactorSeedProviderV2::seed_for(
+    const cofactor::CofactorSeedRequestV1& request) const {
+    validate_cofactor_side(request.side);
+    const DeterministicRandomDomainV1 domain = map_cofactor_random_domain(request.domain);
+    if (request.algorithm_identity == 0) {
+        throw std::invalid_argument("distributed cofactor algorithm identity must be nonzero");
+    }
+    if (request.coordinates.special_q_index > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::overflow_error("distributed cofactor special-Q index exceeds uint32_t");
+    }
+
+    const DeterministicRandomSeedRequestV1 distributed_request{
+        .work_digest = semantic_seed_root_,
+        .domain = domain,
+        .chunk_id = 0,
+        .sq_index = static_cast<std::uint32_t>(request.coordinates.special_q_index),
+        .candidate_ordinal = request.coordinates.candidate_ordinal,
+        .algorithm_identity = request.algorithm_identity,
+        .cofactor_input_digest = request.cofactor_digest,
+    };
+    const auto result = derive_distributed_sieve_deterministic_seed(distributed_request);
+    if (!result) {
+        throw std::logic_error("validated distributed cofactor seed derivation failed");
+    }
+    return cofactor::CofactorSeed256{.digest = *result.digest};
+}
+
+const util::Sha256Digest&
+DistributedSieveCofactorSeedProviderV2::semantic_seed_root() const noexcept {
+    return semantic_seed_root_;
 }
 
 } // namespace gnfs::sieve

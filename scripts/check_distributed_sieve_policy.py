@@ -89,10 +89,14 @@ DURABLE_ENVIRONMENT_FREE_FILES = {
     "include/gnfs/sieve/distributed_sieve_resume.hpp",
     "src/sieve/distributed_sieve_execution_policy.cpp",
     "src/sieve/distributed_sieve_execution_policy_internal.hpp",
+    "src/sieve/distributed_sieve_cofactor_runtime_config.cpp",
+    "src/sieve/distributed_sieve_cofactor_runtime_config_internal.hpp",
     "src/sieve/distributed_sieve_lattice_runtime_config.cpp",
     "src/sieve/distributed_sieve_lattice_runtime_config_internal.hpp",
     "src/sieve/distributed_sieve_protocol.cpp",
     "src/sieve/distributed_sieve_resume.cpp",
+    "src/sieve/distributed_sieve_seed_v2.cpp",
+    "include/gnfs/sieve/distributed_sieve_seed_v2.hpp",
 }
 
 # Code-token bans close indirect ambient-policy entrances that do not contain
@@ -106,8 +110,12 @@ DURABLE_FORBIDDEN_CALLS = (
     "hardware_concurrency",
 )
 DURABLE_PURE_RUNTIME_MAPPER_FILES = {
+    "include/gnfs/sieve/distributed_sieve_seed_v2.hpp",
+    "src/sieve/distributed_sieve_cofactor_runtime_config.cpp",
+    "src/sieve/distributed_sieve_cofactor_runtime_config_internal.hpp",
     "src/sieve/distributed_sieve_lattice_runtime_config.cpp",
     "src/sieve/distributed_sieve_lattice_runtime_config_internal.hpp",
+    "src/sieve/distributed_sieve_seed_v2.cpp",
 }
 DURABLE_PURE_RUNTIME_MAPPER_FORBIDDEN_IDENTIFIERS = (
     "AdaptiveBasisManager",
@@ -117,9 +125,14 @@ DURABLE_PURE_RUNTIME_MAPPER_FORBIDDEN_IDENTIFIERS = (
     "lattice_reduction_method_from_env",
     "lattice_skew_enabled_from_env",
     "parallel_lattice_basis_reduce",
+    "brent_pollard_enabled",
+    "classify_cofactor",
+    "survival_filter_enabled",
+    "apply_brent_suyama_env",
 )
 DURABLE_PURE_RUNTIME_MAPPER_FORBIDDEN_CALLS = (
     "lattice_basis_parallel_threads",
+    "survival_threshold",
 )
 
 
@@ -1255,13 +1268,16 @@ auto config = AdaptiveLatticeConfig{}.from_env();
 LatticeSieve sieve(context, factor_base);
 auto basis = compute_lattice_basis_with_skewness(sq, skewness);
 auto threads = lattice_basis_parallel_threads();
+auto ambient_brent = brent_pollard_enabled();
+auto ambient_threshold = survival_threshold();
+auto legacy_classification = classify_cofactor(cofactor, bound);
 '''
     mapper_api_checks = Checks(Path("."))
     mapper_api_checks.validate_durable_ambient_api_uses(
         mapper_relative, mapper_api_snippet
     )
     expect(
-        len(mapper_api_checks.errors) == 5
+        len(mapper_api_checks.errors) == 8
         and any(
             "ambient API hardware_concurrency" in error
             for error in mapper_api_checks.errors
@@ -1285,6 +1301,18 @@ auto threads = lattice_basis_parallel_threads();
         ),
         f"durable runtime-mapper ambient API bans are not closed: "
         f"{mapper_api_checks.errors}",
+    )
+
+    provider_api_checks = Checks(Path("."))
+    provider_api_checks.validate_durable_ambient_api_uses(
+        "src/sieve/distributed_sieve_seed_v2.cpp",
+        "auto enabled = brent_pollard_enabled();",
+    )
+    expect(
+        len(provider_api_checks.errors) == 1
+        and "legacy runtime API brent_pollard_enabled"
+        in provider_api_checks.errors[0],
+        "distributed seed-provider indirect ambient API ban is not enforced",
     )
 
     legacy_random_checks = Checks(Path("."))
