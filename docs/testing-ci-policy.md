@@ -364,6 +364,13 @@ preserve uncertainty for stopped, mismatched, and `ECHILD` observations.
 Windows exercises the explicit unavailable result without claiming
 process-transport coverage.
 
+`test_distributed_sieve_work_identity_codec` is the `instant` canonical
+work-preimage contract. It compares the shared allocation-free field emitter
+against an independent little-endian oracle, freezes the existing V1 work
+digest, and proves decode/re-encode identity. Exact-prefix truncation,
+trailing-byte, schema, tag, string/count bound, wire-ordinal, and semantic
+corruption cases fail closed before the decoded value can be used.
+
 `test_distributed_sieve_resume` is a split protocol and WaveStore contract.
 `DistributedSieveResumeCore` remains an `instant` pure record, dependency, and
 compile-boundary test. It also compiles the source-private cleanup-authorization

@@ -2223,6 +2223,30 @@ Exit criterion: two masters cannot both act, and restart cannot exceed the
 manifest retry budget. This milestone remains test/internal and exposes no
 production durable flag.
 
+### M2g Canonical Work-Identity Codec Status
+
+The exact V1 work preimage is now emitted by one source-private field archive.
+The existing work digest, a canonical little-endian byte encoder, and the
+future package writer therefore share section tags, field order, scalar
+widths, sequence ordinals, strings, and booleans instead of maintaining
+parallel serializers. The existing work-digest golden remains bit-for-bit
+unchanged.
+
+The decoder consumes a caller-owned span and allocates only the destination
+identity fields. Before any sequence resize it validates the count ceiling and
+the minimum fixed bytes still available. It rejects every exact truncation,
+trailing data, invalid schema/tag/ordinal/boolean, and semantic drift before
+returning an identity. The V1 wire-layout ceiling is 739,266,535 body bytes;
+the largest semantically valid body is 739,266,524 bytes because at least one
+nonempty chunk stem must reserve `_attempt_XX`.
+
+The next slice freezes the work-package envelope and writes it through a
+private attempt-directory descriptor. Production success must return only a
+separately reopened read-only descriptor after same-inode/content proof,
+writer checked-close, unlink, `nlink == 0`, directory durability, and final
+revalidation. The portable threat model relies on the existing owner-only
+attempt directory and excludes an adversarial same-UID namespace mutator.
+
 ### M3: Worker Handoff and Adoption
 
 - [ ] Replace successful worker cleanup-intent publication with handoff.

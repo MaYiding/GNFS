@@ -1890,3 +1890,20 @@ with its same open-file-description, the attempt `BaseLock` with its same
 open-file-description, and an immutable work-package file. The exec image must
 import a writer-only private-lease capability, and WaveStore must become the
 sole start-receipt consumer.
+
+### Canonical Work-Identity Codec Status
+
+One source-private archive now emits the complete V1 work preimage for the
+existing SHA-256 binding, canonical little-endian bytes, counting, and future
+streaming file sinks. The old digest golden is unchanged. Span-backed decoding
+does not copy the body and proves fixed minimum bytes before resizing any
+sequence. Dedicated tests cover an independent byte oracle, round-trip,
+sink-failure short-circuiting, every exact prefix truncation, trailing bytes,
+wire bounds, ordinals, booleans, and semantic rejection.
+
+The structural body ceiling is 739,266,535 bytes; the valid ceiling is
+739,266,524 because a nonempty chunk stem must reserve `_attempt_XX`. The next
+slice will place this body in a fixed, domain-separated work-package envelope,
+stream it into an exact private attempt-directory inode, reopen it read-only,
+close the writer once, unlink the name, require `nlink == 0`, and return only
+the retained read capability.

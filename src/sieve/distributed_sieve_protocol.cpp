@@ -1,5 +1,7 @@
 #include <gnfs/sieve/distributed_sieve_protocol.hpp>
 
+#include "distributed_sieve_work_identity_codec_internal.hpp"
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -2439,122 +2441,14 @@ public:
         return accumulator_.finalize();
     }
 
+    [[nodiscard]] bool good() const noexcept {
+        return !failed_;
+    }
+
 private:
     util::Sha256Accumulator accumulator_;
     bool failed_ = false;
 };
-
-void hash_chunk_plan(HashWriter& writer, const ChunkPlanV1& chunk) noexcept {
-    writer.put_u32(chunk.chunk_id);
-    writer.put_u32(chunk.sq_begin);
-    writer.put_u32(chunk.sq_end);
-    writer.put_string(chunk.relative_artifact_stem);
-}
-
-void hash_special_q_bounds(HashWriter& writer, const SpecialQBoundsV1& bounds) noexcept {
-    writer.put_u32(bounds.start_index);
-    writer.put_u32(bounds.end_index);
-    writer.put_u64(bounds.min_q);
-    writer.put_u64(bounds.max_q);
-}
-
-void hash_work_identity(HashWriter& writer, const DistributedSieveWorkIdentityV1& value) noexcept {
-    writer.put_u32(DISTRIBUTED_SIEVE_PROTOCOL_SCHEMA_VERSION_V1);
-
-    writer.put_u8(0x01);
-    writer.put_string(value.polynomial.n.decimal);
-    writer.put_string(value.polynomial.m.decimal);
-    writer.put_u32(value.polynomial.degree);
-    writer.put_u32(static_cast<uint32_t>(value.polynomial.coefficients.size()));
-    for (uint32_t index = 0; index < value.polynomial.coefficients.size(); ++index) {
-        writer.put_u32(index);
-        writer.put_string(value.polynomial.coefficients[index].decimal);
-    }
-    writer.put_u64(value.polynomial.skewness_ieee754_bits);
-
-    writer.put_u8(0x02);
-    writer.put_u64(value.factor_base.rational_bound);
-    writer.put_u64(value.factor_base.algebraic_bound);
-    writer.put_u64(value.factor_base.large_prime_bound);
-    writer.put_u32(value.factor_base.log_scale);
-    writer.put_u32(static_cast<uint32_t>(value.factor_base.rational.size()));
-    for (uint32_t index = 0; index < value.factor_base.rational.size(); ++index) {
-        const auto& entry = value.factor_base.rational[index];
-        writer.put_u32(index);
-        writer.put_u64(entry.p);
-        writer.put_u32(entry.log_p);
-    }
-    writer.put_u32(static_cast<uint32_t>(value.factor_base.algebraic.size()));
-    for (uint32_t index = 0; index < value.factor_base.algebraic.size(); ++index) {
-        const auto& entry = value.factor_base.algebraic[index];
-        writer.put_u32(index);
-        writer.put_u64(entry.p);
-        writer.put_u64(entry.r);
-        writer.put_u32(entry.log_p);
-        writer.put_u32(entry.degree);
-    }
-    writer.put_u64(value.factor_base.sieve_algebraic_count);
-
-    writer.put_u8(0x03);
-    writer.put_u32(value.sieve.log_scale);
-    writer.put_u16(value.sieve.rational_threshold);
-    writer.put_u16(value.sieve.algebraic_threshold);
-    writer.put_u64(value.sieve.large_prime_bound);
-    writer.put_bool(value.sieve.allow_2lp);
-    writer.put_bool(value.sieve.allow_3lp);
-
-    writer.put_u8(0x04);
-    writer.put_i64(value.region.i_min);
-    writer.put_i64(value.region.i_max);
-    writer.put_i64(value.region.j_min);
-    writer.put_i64(value.region.j_max);
-
-    writer.put_u8(0x05);
-    writer.put_u64(value.cofactor.large_prime_bound);
-    writer.put_bool(value.cofactor.allow_1lp);
-    writer.put_bool(value.cofactor.allow_2lp);
-    writer.put_bool(value.cofactor.allow_3lp);
-    writer.put_u64(value.cofactor.max_factorization_attempts);
-
-    writer.put_u8(0x06);
-    hash_special_q_bounds(writer, value.original_sq_bounds);
-    hash_special_q_bounds(writer, value.effective_sq_bounds);
-
-    writer.put_u8(0x07);
-    writer.put_u32(value.distributed.worker_count);
-    writer.put_u32(static_cast<uint32_t>(value.distributed.chunks.size()));
-    for (uint32_t index = 0; index < value.distributed.chunks.size(); ++index) {
-        writer.put_u32(index);
-        hash_chunk_plan(writer, value.distributed.chunks[index]);
-    }
-    writer.put_u64(value.distributed.sq_cap_per_worker);
-    writer.put_u64(value.distributed.relation_cap_per_worker);
-    writer.put_u32(value.distributed.max_worker_attempts);
-    writer.put_u32(value.distributed.max_merge_build_attempts);
-    writer.put_u32(value.distributed.max_consumption_attempts);
-
-    writer.put_u8(0x08);
-    writer.put_u32(value.execution_policy.schema_version);
-    writer.put_u32(static_cast<uint32_t>(value.execution_policy.settings.size()));
-    for (uint32_t index = 0; index < value.execution_policy.settings.size(); ++index) {
-        const auto& setting = value.execution_policy.settings[index];
-        writer.put_u32(index);
-        writer.put_u16(static_cast<uint16_t>(setting.key));
-        writer.put_u8(static_cast<uint8_t>(setting.kind));
-        writer.put_u64(setting.canonical_bits);
-    }
-
-    writer.put_u8(0x09);
-    writer.put_u32(value.semantic_versions.relation_serialization_version);
-    writer.put_u32(value.semantic_versions.ooc_format_version);
-    writer.put_u32(value.semantic_versions.digest_version);
-    writer.put_u32(value.semantic_versions.handoff_version);
-    writer.put_u32(value.semantic_versions.retry_policy_version);
-    writer.put_u32(value.semantic_versions.chunking_version);
-    writer.put_u32(value.semantic_versions.completion_version);
-    writer.put_u32(value.semantic_versions.deduplication_version);
-    writer.put_u32(value.semantic_versions.merge_policy_version);
-}
 
 } // namespace distributed_sieve_protocol_detail
 
@@ -2739,7 +2633,10 @@ distributed_sieve_work_digest(const DistributedSieveWorkIdentityV1& identity) no
         return {std::nullopt, status};
     }
     HashWriter writer(WORK_DIGEST_DOMAIN);
-    hash_work_identity(writer, identity);
+    if (!distributed_sieve_work_identity_codec_detail::emit_distributed_sieve_work_identity_v1(
+            writer, identity)) {
+        return {std::nullopt, failure(DistributedSieveProtocolError::digest_unavailable)};
+    }
     auto digest = writer.finish();
     if (!digest.has_value()) {
         return {std::nullopt, failure(DistributedSieveProtocolError::digest_unavailable)};
