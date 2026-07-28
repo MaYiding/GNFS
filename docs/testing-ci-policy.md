@@ -505,24 +505,38 @@ exact `launch_worker_process_batch_v1()` function body, with closed counts for
 bound work, carrier, package reader, and fixed-capability uses. Direct launcher
 test use remains confined to `test_distributed_sieve_resume`.
 
-The same binary now covers the M2j-B B1 read-only restart classifier. A
-canonical `0400`, single-link package residue can reopen only inside an exact
-final P8 directory whose owner and owned markers are canonical. Its
-`AttemptStartedV1` must be canonical-only, must be the latest attempt for that
-chunk, and must bind the same manifest, lease ID, owner marker, directory,
-relative stem, and attempt coordinate. The inspector decodes the complete work
-identity and authenticates body extent, total extent, work digest, package
-digest, native file identity, file extent, and effective owner. WaveStore
-stores the compact witness in both inventory observations.
+The same binary covers the M2j-B B1 read-only restart classifier and B2
+identity-bound reconciliation. A canonical `0400`, single-link package residue
+can reopen only inside an exact final P8 directory whose owner and owned
+markers are canonical. Its `AttemptStartedV1` must be canonical-only, must be
+the latest attempt for that chunk, and must bind the same manifest, lease ID,
+owner marker, directory, relative stem, and attempt coordinate. The inspector
+decodes the complete work identity and authenticates body extent, total
+extent, work digest, package digest, native file identity, file extent, and
+effective owner. WaveStore stores the compact witness in both inventory
+observations.
 
 The positive case first reopens the unchanged no-residue P8 baseline. It then
 writes a package through the canonical codec, seals and synchronizes the fixed
 leaf, destroys the store, and proves that `open()`, `revalidate()`, the generic
 root claim, and the exact attempt claim all succeed after restart. Legacy
-private-lease recovery and attempt-record reconciliation return
-`reconciliation_required` without deleting the package. A fresh same-chunk
-attempt also returns `reconciliation_required` before creating its
-`BaseLock`.
+private-lease recovery and fresh same-chunk creation still return
+`reconciliation_required` without mutation. The sole authorized route is
+`reconcile_worker_attempt_started()`: while its attempt `BaseLock` is held, it
+revalidates the exact claim, record, directory, and compact witness; expands
+the full carrier witness; removes that exact residue or confirms its absence;
+and only after a confirmed residue-free successor normalizes the record and
+recovers the private lease to P0.
+
+The carrier synchronizes the held attempt directory for both the
+residue-present and already-absent paths. Interruptions after unlink and after
+directory durability leave the record and P8 lease unchanged; destroying and
+reopening the store then replays both prefixes to P0. Selected directory-sync
+failures return `durability_failed`, preserve the residue-free successor, and
+also replay to P0. Package, directory, record, and `BaseLock` mutation
+sandwiches fail closed before later record or lease mutation. A package
+inserted after the first residue-free observation is preserved rather than
+deleted, and hook-time probes prove that the attempt lock remains held.
 
 Negative matrices preserve every observed leaf. They cover no record, pending
 only, identical dual, wrong-coordinate, and historical-attempt bindings;
@@ -534,13 +548,21 @@ revalidation returns `namespace_conflict` before the publisher runs. A
 cross-chunk P3 recovery hook replaces another chunk's package and proves that
 the staging directory is not removed.
 
-B1 grants no cleanup, unlink, reconciliation, launch, or writer authority.
-The threat model still excludes an adversarial same-UID namespace mutator.
-M2j-B B2 must add an identity-bound cleanup transition before any package
-residue can be removed. The policy checker confines production inspection to
-one direct call inside `validate_private_lease_attempt_inventory()`, counts all
-identifier uses to reject aliases, forbids `_with_ops` in WaveStore, and keeps
-the legacy runner isolated.
+B1 itself grants no cleanup, launch, or writer authority; B2 adds only the
+closed reconciliation transition above. Native cleanup is exercised on macOS
+and Linux. Unsupported platforms fail with the explicit platform status, and
+the portable threat model still excludes an adversarial same-UID namespace
+mutator. The policy checker permits one direct production inspector call in
+each of `validate_private_lease_attempt_inventory()` and
+`reconcile_worker_attempt_started()`, and one direct production reconciler
+call only in the latter. It counts all identifier uses to reject aliases and
+duplicates, forbids both `_with_ops` seams in WaveStore, confines fixed-leaf
+unlink authority to the carrier, and keeps the legacy runner, launcher,
+pipeline, and relation paths isolated.
+
+B2 does not rehydrate descriptors `3..6` in the worker image, run the real
+sieve, or publish a no-delete handoff. Those remain the next worker-execution
+frontier.
 
 `test_local_sieve_thread_budget` is the `instant` contract for balanced lane
 allocation, invalid limits, and a bounded property grid. The 64-special-Q probe

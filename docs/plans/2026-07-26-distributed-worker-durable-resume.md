@@ -2239,8 +2239,8 @@ private-lease authority in the exec image. Existing `AttemptStartedV1` remains
 the durable job descriptor; no parallel job record is introduced. M2j-A below
 adds the sole WaveStore receipt consumer and preserves each successful receipt
 with its process token. Worker-side writer-authority adoption from descriptors
-`3..6` and durable reconciliation of named package residue remain later
-boundaries.
+`3..6` remains a later boundary; the M2j-B B1/B2 section below closes named
+package restart classification and reconciliation.
 
 Exit criterion: two masters cannot both act, and restart cannot exceed the
 manifest retry budget. This milestone remains test/internal and exposes no
@@ -2389,22 +2389,23 @@ exact directory after its per-slot check. Such a failure reports the affected
 earlier slot, starts zero children, and preserves the residue. A primary
 namespace or I/O status is preserved rather than overwritten by that secondary
 disposition. The launcher never infers ownership from the fixed leaf name and
-never unlinks residue or a replaced directory blindly. Durable, identity-bound
-residue deletion across restart remains a later WaveStore transition. The B1
-classifier below adds read-only reopening without cleanup authority.
+never unlinks residue or a replaced directory blindly. The M2j-B section below
+adds read-only reopening and the separate identity-bound WaveStore cleanup
+transition without granting that authority to the launcher.
 
 M2j-A remains internal and test-only. The `posix_spawn()` executable is still
 selected by a path, so this slice does not prove that the launched image is
 the same executable object authenticated by the manifest. The worker image
 does not yet rehydrate descriptors `3..6` into writer-only authority, run the
-actual sieve, publish a no-delete handoff, or resume a named package cleanup
-after process restart. Fixed-capability launch also fails closed before process
-preparation when the host cannot atomically close every unmapped descriptor at
-spawn. The policy checker makes this exact function body the first production
-allowlist expansion for bound work, carrier creation, package-reader access,
-and fixed capabilities. It count-closes those uses, rejects same-file
-outside-function bypasses, confines direct launcher test use to the dedicated
-WaveStore resume test, and keeps the legacy seeded runner isolated.
+actual sieve, or publish a no-delete handoff. Restart cleanup is instead the
+separate M2j-B transition below. Fixed-capability launch also fails closed
+before process preparation when the host cannot atomically close every
+unmapped descriptor at spawn. The policy checker makes this exact function
+body the first production allowlist expansion for bound work, carrier
+creation, package-reader access, and fixed capabilities. It count-closes those
+uses, rejects same-file outside-function bypasses, confines direct launcher
+test use to the dedicated WaveStore resume test, and keeps the legacy seeded
+runner isolated.
 
 The launcher test matrix has ten cases. The close-all-unavailable pre-gate
 case runs on every non-Windows host: a supported host uses the trusted
@@ -2413,9 +2414,10 @@ Only hosts that report atomic close-all support register and execute the other
 nine positive launcher cases. The unavailable case proves zero spawn, normal
 receipt and `BaseLock` release, and a ready WaveStore.
 
-### M2j-B B1 Read-Only Package Residue Reopening Status
+### M2j-B B1/B2 Package Residue Reconciliation Status
 
-WaveStore now admits one fixed named package leaf as read-only restart evidence.
+M2j-B B1 is complete. WaveStore admits one fixed named package leaf as
+read-only restart evidence.
 The carrier inspector opens the leaf relative to the held final P8 directory,
 requires an owner-only sealed regular file with one link, decodes the canonical
 package, and returns a data-only witness. The witness contains the complete
@@ -2432,11 +2434,9 @@ relative stem must match the live reservation. The decoded work identity must
 revalidate every manifest-derived work field and reproduce the manifest work
 digest.
 
-This transition is deliberately observational. A store with an exact residue
-can reopen, revalidate, and mint generic or attempt-bound read claims. Legacy
-lease recovery and record reconciliation return `reconciliation_required`
-before mutation. Fresh creation on the same chunk returns the same disposition
-before it creates a higher-ordinal `BaseLock`. Record publication and
+A store with an exact residue can reopen, revalidate, and mint generic or
+attempt-bound read claims. Legacy lease recovery and fresh creation on the same
+chunk return `reconciliation_required` before mutation. Record publication and
 normalization also perform a full claim revalidation after their last trusted
 hook. Cross-chunk recovery retains its staging-directory descriptor through
 the final hook, revalidates the complete inventory, and only then permits
@@ -2449,15 +2449,36 @@ inode replacement, and directory, record, and `BaseLock` replacement. A real
 restart case verifies the complete compact witness and the unchanged
 no-residue baseline.
 
-B1 does not unlink, repair, reconcile, launch from, or rehydrate a residue. It
-does not grant writer or cleanup authority. The portable threat model still
-excludes an adversarial same-UID namespace mutator. B2 must define an
-identity-bound cleanup transition with fresh namespace and record validation
-before deleting the fixed leaf. The static policy gate restricts the
-production inspector to one direct call inside
-`validate_private_lease_attempt_inventory()`, counts non-call identifier uses,
-forbids the test-only `_with_ops` path in WaveStore, and keeps the legacy
-runner isolated.
+M2j-B B2 is implemented. `reconcile_worker_attempt_started()` is the only
+production transition that can consume the B1 evidence. It holds the attempt
+`BaseLock`, revalidates the claim, canonical record, held final directory, and
+compact witness, then asks the carrier to re-open and authenticate the full
+witness. The carrier either unlinks that exact file identity or confirms that
+the leaf is already absent. Both paths synchronize the attempt directory.
+WaveStore then double-observes the residue-free successor before it permits
+record normalization and private-lease recovery to P0.
+
+The cleanup crash surface is closed. Interruptions after name removal and
+after directory durability leave the record and P8 lease untouched; a new
+store instance replays either state to P0. Selected directory-sync failure in
+both the present and absent paths returns `durability_failed`, exposes no
+later mutation, and also converges on retry. Mutation sandwiches cover the
+package, held directory, canonical record, and `BaseLock`. A new package leaf
+inserted after the first residue-free observation survives the rejected
+transaction. Every trusted hook observes the attempt lock as busy.
+
+B2 grants no launch or sieve writer authority. Native reconciliation is
+supported on macOS and Linux; unsupported targets return the explicit platform
+status. The portable threat model still excludes an adversarial same-UID
+namespace mutator. The static policy gate permits exactly one direct inspector
+call in each of `validate_private_lease_attempt_inventory()` and
+`reconcile_worker_attempt_started()`, and exactly one direct reconciler call
+inside the latter. It rejects aliases, duplicates, calls from the legacy
+runner, launcher, pipeline, or relation paths, and any WaveStore use of the
+test-only `_with_ops` seams. Raw fixed-leaf unlink remains carrier-only.
+
+Descriptor `3..6` rehydration, actual worker-side sieve execution, and the
+no-delete handoff are still pending.
 
 ### M3: Worker Handoff and Adoption
 

@@ -40,6 +40,15 @@ using PackageWitness =
     distributed_sieve_work_package_codec_detail::DistributedSieveWorkPackageWitnessV1;
 using ResidueInspectionRequest = DistributedSieveWorkerWorkPackageResidueInspectionRequestV1;
 using ResidueWitness = DistributedSieveWorkerWorkPackageResidueWitnessV1;
+using ResidueReconciliationRequest =
+    DistributedSieveWorkerWorkPackageResidueReconciliationRequestV1;
+using ResidueReconciliationResult = DistributedSieveWorkerWorkPackageResidueReconciliationResultV1;
+using ResidueReconciliationDisposition =
+    DistributedSieveWorkerWorkPackageResidueReconciliationDispositionV1;
+using ResidueReconciliationFaultPoint =
+    DistributedSieveWorkerWorkPackageResidueReconciliationFaultPointV1;
+using ResidueReconciliationTestHooks =
+    DistributedSieveWorkerWorkPackageResidueReconciliationTestHooksV1;
 
 constexpr std::uint32_t PRIVATE_DIRECTORY_MODE = 0700;
 constexpr std::uint32_t WRITABLE_FILE_MODE = 0600;
@@ -335,6 +344,17 @@ process_check(const DistributedSieveWorkerWorkPackageFileRequestV1& request,
                                        bool named_may_remain = false) noexcept {
     if (request.observer_process_id == 0 ||
         ops.current_process_id() != request.observer_process_id) {
+        return make_diagnostic(FileStatus::invalid_request, PROCESS_ID_MISMATCH_ERROR, {},
+                               named_may_remain);
+    }
+    return make_diagnostic(FileStatus::ready, 0, {}, named_may_remain);
+}
+
+[[nodiscard]] Diagnostic process_check(const ResidueReconciliationRequest& request,
+                                       const DistributedSieveWorkerWorkPackageFileOpsV1& ops,
+                                       bool named_may_remain = false) noexcept {
+    if (request.reconciler_process_id == 0 ||
+        ops.current_process_id() != request.reconciler_process_id) {
         return make_diagnostic(FileStatus::invalid_request, PROCESS_ID_MISMATCH_ERROR, {},
                                named_may_remain);
     }
@@ -974,8 +994,9 @@ classify_protocol_failure(DistributedSieveProtocolStatus protocol,
     return make_diagnostic(FileStatus::ready, 0, {}, true);
 }
 
+template <typename Request>
 [[nodiscard]] Diagnostic
-validate_residue_reader_and_name(const ResidueInspectionRequest& request, NativeHandle reader,
+validate_residue_reader_and_name(const Request& request, NativeHandle reader,
                                  const NativeIdentityV1& expected_identity,
                                  std::uint64_t expected_extent, std::uint64_t expected_user,
                                  DistributedSieveWorkerWorkPackageFileOpsV1& ops) noexcept {
@@ -1185,6 +1206,450 @@ run_residue_inspection(const ResidueInspectionRequest& request,
         .owner_user_id = owner_user_id,
     };
     return execution.succeed(std::move(witness));
+}
+
+[[nodiscard]] Diagnostic validate_reconciliation_process_and_user(
+    const ResidueReconciliationRequest& request, std::uint64_t expected_user,
+    DistributedSieveWorkerWorkPackageFileOpsV1& ops, bool named_may_remain) noexcept {
+    if (auto process = process_check(request, ops, named_may_remain); !process) {
+        return process;
+    }
+    if (ops.effective_user_id() != expected_user) {
+        return make_diagnostic(FileStatus::invalid_request, EACCES, {}, named_may_remain);
+    }
+    return make_diagnostic(FileStatus::ready, 0, {}, named_may_remain);
+}
+
+[[nodiscard]] Diagnostic
+validate_expected_residue_witness(const ResidueWitness& expected,
+                                  DistributedSieveWorkerWorkPackageFileOpsV1& ops) noexcept {
+    if (expected.owner_user_id != ops.effective_user_id() || expected.file_extent == 0 ||
+        expected.file_identity == NativeIdentityV1{} ||
+        expected.file_extent != expected.package.total_bytes ||
+        expected.file_extent > distributed_sieve_work_package_codec_detail::
+                                   DISTRIBUTED_SIEVE_WORK_PACKAGE_VALID_MAX_BYTES_V1 ||
+        expected.file_extent > ops.maximum_file_offset() ||
+        expected.file_extent >
+            static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+        return make_diagnostic(FileStatus::invalid_request, PROTOCOL_CONTRACT_ERROR, {}, true);
+    }
+
+    const auto prepared =
+        distributed_sieve_work_package_codec_detail::prepare_distributed_sieve_work_package_v1(
+            expected.identity);
+    if (!prepared) {
+        return classify_protocol_failure(prepared.status, FileStatus::invalid_request, true);
+    }
+    if (prepared.prepared->body_bytes != expected.package.body_bytes ||
+        prepared.prepared->total_bytes != expected.package.total_bytes ||
+        prepared.prepared->work_sha256.bytes != expected.package.work_sha256.bytes) {
+        return make_diagnostic(FileStatus::invalid_request, PROTOCOL_CONTRACT_ERROR, {}, true);
+    }
+    return make_diagnostic(FileStatus::ready, 0, {}, true);
+}
+
+[[nodiscard]] Diagnostic
+decode_and_validate_exact_residue(NativeHandle reader, const ResidueWitness& expected,
+                                  DistributedSieveWorkerWorkPackageFileOpsV1& ops,
+                                  bool named_may_remain) noexcept {
+    auto decoded = retry_interrupted(
+        [&]() noexcept { return ops.decode_exact(reader, expected.file_extent); });
+    if (!valid_success(decoded.operation)) {
+        const FileStatus status = is_resource_error(decoded.operation.native_error)
+                                      ? FileStatus::resource_exhausted
+                                      : FileStatus::decode_failed;
+        return operation_diagnostic(decoded.operation, status, named_may_remain);
+    }
+    if (!decoded.decoded) {
+        return classify_protocol_failure(decoded.decoded.status, FileStatus::decode_failed,
+                                         named_may_remain);
+    }
+    if (decoded.decoded.package->witness.total_bytes != expected.file_extent) {
+        return make_diagnostic(FileStatus::decode_failed, PROTOCOL_CONTRACT_ERROR, {},
+                               named_may_remain);
+    }
+
+    ResidueWitness observed{
+        .identity = std::move(decoded.decoded.package->identity),
+        .package = decoded.decoded.package->witness,
+        .file_identity = expected.file_identity,
+        .file_extent = expected.file_extent,
+        .owner_user_id = expected.owner_user_id,
+    };
+    if (!(observed == expected)) {
+        return make_diagnostic(FileStatus::decode_failed, PROTOCOL_CONTRACT_ERROR, {},
+                               named_may_remain);
+    }
+    return make_diagnostic(FileStatus::ready, 0, {}, named_may_remain);
+}
+
+[[nodiscard]] Diagnostic
+validate_named_residue_state(const ResidueReconciliationRequest& request, NativeHandle reader,
+                             const ResidueWitness& expected, std::uint64_t expected_user,
+                             DistributedSieveWorkerWorkPackageFileOpsV1& ops) noexcept {
+    if (auto process = validate_reconciliation_process_and_user(request, expected_user, ops, true);
+        !process) {
+        return process;
+    }
+    if (auto directory = validate_directory(request, ops, true); !directory) {
+        return directory;
+    }
+    if (auto policy = validate_reader_policy(reader, ops); !policy) {
+        return policy;
+    }
+    if (auto binding = validate_residue_reader_and_name(request, reader, expected.file_identity,
+                                                        expected.file_extent, expected_user, ops);
+        !binding) {
+        return binding;
+    }
+    if (auto decoded = decode_and_validate_exact_residue(reader, expected, ops, true); !decoded) {
+        return decoded;
+    }
+    if (auto process = validate_reconciliation_process_and_user(request, expected_user, ops, true);
+        !process) {
+        return process;
+    }
+    if (auto directory = validate_directory(request, ops, true); !directory) {
+        return directory;
+    }
+    if (auto policy = validate_reader_policy(reader, ops); !policy) {
+        return policy;
+    }
+    return validate_residue_reader_and_name(request, reader, expected.file_identity,
+                                            expected.file_extent, expected_user, ops);
+}
+
+[[nodiscard]] Diagnostic
+validate_unlinked_residue_state(const ResidueReconciliationRequest& request, NativeHandle reader,
+                                const ResidueWitness& expected, std::uint64_t expected_user,
+                                DistributedSieveWorkerWorkPackageFileOpsV1& ops) noexcept {
+    if (auto process = validate_reconciliation_process_and_user(request, expected_user, ops, false);
+        !process) {
+        return process;
+    }
+    if (auto directory = validate_directory(request, ops, false); !directory) {
+        return directory;
+    }
+    if (auto absent = verify_name_missing(request.borrowed_attempt_directory_handle, ops);
+        !absent) {
+        return absent;
+    }
+    if (auto policy = validate_reader_policy(reader, ops); !policy) {
+        return policy;
+    }
+    if (auto retained =
+            validate_unlinked_reader(reader, expected.file_identity, expected.file_extent, ops);
+        !retained) {
+        return retained;
+    }
+    if (auto decoded = decode_and_validate_exact_residue(reader, expected, ops, false); !decoded) {
+        return decoded;
+    }
+    if (auto process = validate_reconciliation_process_and_user(request, expected_user, ops, false);
+        !process) {
+        return process;
+    }
+    if (auto directory = validate_directory(request, ops, false); !directory) {
+        return directory;
+    }
+    if (auto absent = verify_name_missing(request.borrowed_attempt_directory_handle, ops);
+        !absent) {
+        return absent;
+    }
+    if (auto policy = validate_reader_policy(reader, ops); !policy) {
+        policy.named_may_remain = false;
+        return policy;
+    }
+    auto retained =
+        validate_unlinked_reader(reader, expected.file_identity, expected.file_extent, ops);
+    retained.named_may_remain = false;
+    return retained;
+}
+
+[[nodiscard]] Diagnostic
+validate_absent_residue_state(const ResidueReconciliationRequest& request,
+                              std::uint64_t expected_user,
+                              DistributedSieveWorkerWorkPackageFileOpsV1& ops) noexcept {
+    if (auto process = validate_reconciliation_process_and_user(request, expected_user, ops, false);
+        !process) {
+        return process;
+    }
+    if (auto directory = validate_directory(request, ops, false); !directory) {
+        return directory;
+    }
+    if (auto absent = verify_name_missing(request.borrowed_attempt_directory_handle, ops);
+        !absent) {
+        return absent;
+    }
+    if (auto process = validate_reconciliation_process_and_user(request, expected_user, ops, false);
+        !process) {
+        return process;
+    }
+    if (auto directory = validate_directory(request, ops, false); !directory) {
+        return directory;
+    }
+    auto absent = verify_name_missing(request.borrowed_attempt_directory_handle, ops);
+    if (absent) {
+        absent.named_may_remain = false;
+    }
+    return absent;
+}
+
+class ResidueReconciliationExecution final {
+public:
+    explicit ResidueReconciliationExecution(
+        DistributedSieveWorkerWorkPackageFileOpsV1& ops) noexcept
+        : ops_(ops) {}
+
+    void set_reader(NativeHandle reader) noexcept {
+        reader_ = reader;
+    }
+
+    [[nodiscard]] NativeHandle reader() const noexcept {
+        return reader_;
+    }
+
+    [[nodiscard]] ResidueReconciliationResult
+    fail(Diagnostic failure,
+         std::optional<ResidueReconciliationFaultPoint> fault_point = std::nullopt) noexcept {
+        close_reader(failure);
+        return {std::nullopt, failure, fault_point};
+    }
+
+    [[nodiscard]] ResidueReconciliationResult interrupt(ResidueReconciliationFaultPoint fault_point,
+                                                        bool named_may_remain) noexcept {
+        return fail(make_diagnostic(FileStatus::interrupted, EINTR, {}, named_may_remain),
+                    fault_point);
+    }
+
+    [[nodiscard]] ResidueReconciliationResult
+    succeed(ResidueReconciliationDisposition disposition) noexcept {
+        Diagnostic closed = make_diagnostic(FileStatus::ready);
+        close_reader(closed);
+        if (!closed) {
+            return {std::nullopt, closed, std::nullopt};
+        }
+        return {disposition, {}, std::nullopt};
+    }
+
+private:
+    void close_reader(Diagnostic& primary) noexcept {
+        if (reader_ == DISTRIBUTED_SIEVE_WORKER_WORK_PACKAGE_INVALID_HANDLE) {
+            return;
+        }
+        const NativeHandle released =
+            std::exchange(reader_, DISTRIBUTED_SIEVE_WORKER_WORK_PACKAGE_INVALID_HANDLE);
+        // Never retry close: after EINTR POSIX leaves ownership unspecified.
+        const auto closed = ops_.close_handle(released);
+        if (valid_success(closed)) {
+            return;
+        }
+        const int native_error = closed.native_error != 0 ? closed.native_error : EIO;
+        if (primary.status == FileStatus::ready) {
+            primary = make_diagnostic(FileStatus::close_failed, native_error, {},
+                                      primary.named_may_remain);
+        } else if (primary.secondary_close_error == 0) {
+            primary.secondary_close_error = native_error;
+        }
+    }
+
+    DistributedSieveWorkerWorkPackageFileOpsV1& ops_;
+    NativeHandle reader_ = DISTRIBUTED_SIEVE_WORKER_WORK_PACKAGE_INVALID_HANDLE;
+};
+
+template <typename ValidateCurrentState>
+[[nodiscard]] std::pair<Diagnostic, bool>
+synchronize_reconciled_directory(const ResidueReconciliationRequest& request,
+                                 const ResidueReconciliationTestHooks& hooks,
+                                 DistributedSieveWorkerWorkPackageFileOpsV1& ops,
+                                 ValidateCurrentState&& validate_current_state) noexcept {
+    if (auto predecessor = validate_current_state(); !predecessor) {
+        return {predecessor, false};
+    }
+    const bool inject_failure = hooks.fail_before_directory_sync != nullptr &&
+                                hooks.fail_before_directory_sync(hooks.context);
+    if (auto confirmed = validate_current_state(); !confirmed) {
+        return {confirmed, false};
+    }
+    if (auto process = process_check(request, ops, false); !process) {
+        return {process, false};
+    }
+
+    const auto synchronized = retry_interrupted_operation(
+        [&]() noexcept { return ops.sync_handle(request.borrowed_attempt_directory_handle); });
+    const Diagnostic synchronization =
+        operation_diagnostic(synchronized, FileStatus::durability_failed, false);
+
+    // A sync result is not authoritative by itself. Always adjudicate the
+    // visible successor through the same complete proof, including when a
+    // selected successful sync is deliberately surfaced as a failure.
+    if (auto successor = validate_current_state(); !successor) {
+        return {successor, false};
+    }
+    if (!synchronization) {
+        return {synchronization, false};
+    }
+    if (inject_failure) {
+        return {make_diagnostic(FileStatus::durability_failed, EIO, {}, false), false};
+    }
+    return {make_diagnostic(FileStatus::ready, 0, {}, false), true};
+}
+
+[[nodiscard]] ResidueReconciliationResult
+run_residue_reconciliation(const ResidueReconciliationRequest& request,
+                           DistributedSieveWorkerWorkPackageFileOpsV1& ops,
+                           const ResidueReconciliationTestHooks& hooks) noexcept {
+    ResidueReconciliationExecution execution(ops);
+    if (request.borrowed_attempt_directory_handle ==
+            DISTRIBUTED_SIEVE_WORKER_WORK_PACKAGE_INVALID_HANDLE ||
+        request.borrowed_attempt_directory_handle < 0) {
+        return execution.fail(make_diagnostic(FileStatus::invalid_request, EBADF));
+    }
+    if (hooks.stop_after.has_value() &&
+        *hooks.stop_after != ResidueReconciliationFaultPoint::after_name_unlinked &&
+        *hooks.stop_after != ResidueReconciliationFaultPoint::after_directory_durable) {
+        return execution.fail(
+            make_diagnostic(FileStatus::invalid_request, PROTOCOL_CONTRACT_ERROR));
+    }
+    if (auto process = process_check(request, ops); !process) {
+        return execution.fail(process);
+    }
+
+    const std::uint64_t expected_user = ops.effective_user_id();
+    std::optional<ResidueWitness> expected;
+    if (request.expected_residue != nullptr) {
+        try {
+            expected.emplace(*request.expected_residue);
+        } catch (const std::bad_alloc&) {
+            return execution.fail(
+                make_diagnostic(FileStatus::resource_exhausted, ENOMEM, {}, true));
+        } catch (...) {
+            return execution.fail(
+                make_diagnostic(FileStatus::unexpected_failure, ENOMEM, {}, true));
+        }
+        if (auto witness = validate_expected_residue_witness(*expected, ops); !witness) {
+            return execution.fail(witness);
+        }
+    }
+    if (auto directory = validate_directory(request, ops, expected.has_value()); !directory) {
+        return execution.fail(directory);
+    }
+    if (auto process = validate_reconciliation_process_and_user(request, expected_user, ops,
+                                                                expected.has_value());
+        !process) {
+        return execution.fail(process);
+    }
+
+    if (!expected.has_value()) {
+        if (hooks.stop_after == ResidueReconciliationFaultPoint::after_name_unlinked) {
+            return execution.fail(
+                make_diagnostic(FileStatus::invalid_request, PROTOCOL_CONTRACT_ERROR));
+        }
+        const auto validate_absence = [&]() noexcept {
+            return validate_absent_residue_state(request, expected_user, ops);
+        };
+        if (auto first = validate_absence(); !first) {
+            return execution.fail(first);
+        }
+
+        const auto [synchronization, durable] =
+            synchronize_reconciled_directory(request, hooks, ops, validate_absence);
+        if (!durable) {
+            return execution.fail(synchronization);
+        }
+        if (hooks.stop_after == ResidueReconciliationFaultPoint::after_directory_durable) {
+            return execution.interrupt(ResidueReconciliationFaultPoint::after_directory_durable,
+                                       false);
+        }
+        if (hooks.after_directory_durable != nullptr) {
+            hooks.after_directory_durable(hooks.context);
+        }
+        if (auto successor = validate_absence(); !successor) {
+            return execution.fail(successor);
+        }
+        return execution.succeed(ResidueReconciliationDisposition::confirmed_absent);
+    }
+
+    const auto opened = retry_interrupted(
+        [&]() noexcept { return ops.open_readonly_at(request.borrowed_attempt_directory_handle); });
+    if (!valid_success(opened.operation)) {
+        return execution.fail(classify_residue_open_failure(opened.operation));
+    }
+    if (opened.handle == DISTRIBUTED_SIEVE_WORKER_WORK_PACKAGE_INVALID_HANDLE ||
+        opened.handle < 0 || opened.handle == request.borrowed_attempt_directory_handle) {
+        return execution.fail(
+            make_diagnostic(FileStatus::ops_contract_violation, PROTOCOL_CONTRACT_ERROR, {}, true));
+    }
+    execution.set_reader(opened.handle);
+
+    const auto validate_named = [&]() noexcept {
+        return validate_named_residue_state(request, execution.reader(), *expected, expected_user,
+                                            ops);
+    };
+    if (auto predecessor = validate_named(); !predecessor) {
+        return execution.fail(predecessor);
+    }
+    if (hooks.before_unlink != nullptr) {
+        hooks.before_unlink(hooks.context);
+    }
+    if (auto predecessor = validate_named(); !predecessor) {
+        return execution.fail(predecessor);
+    }
+
+    const auto validate_unlinked = [&]() noexcept {
+        return validate_unlinked_residue_state(request, execution.reader(), *expected,
+                                               expected_user, ops);
+    };
+
+    // unlinkat is destructive and therefore strictly single-shot. In
+    // particular, an EINTR report may hide a completed unlink; retrying could
+    // delete a successor installed at the same fixed name.
+    const auto unlinked = ops.unlink_at(request.borrowed_attempt_directory_handle);
+    if (!valid_success(unlinked)) {
+        Diagnostic failure =
+            unlinked.state == OperationState::interrupted
+                ? make_diagnostic(FileStatus::interrupted,
+                                  unlinked.native_error != 0 ? unlinked.native_error : EINTR, {},
+                                  true)
+                : operation_diagnostic(unlinked, FileStatus::publication_failed, true);
+        auto successor = validate_unlinked();
+        if (successor) {
+            failure.named_may_remain = false;
+            return execution.fail(failure);
+        }
+        if (const auto predecessor = validate_named(); predecessor) {
+            failure.named_may_remain = true;
+            return execution.fail(failure);
+        }
+        // Neither authenticated state survived the ambiguous destructive
+        // boundary. Preserve the namespace and return the successor proof's
+        // stronger diagnostic without attempting another unlink.
+        successor.named_may_remain = true;
+        return execution.fail(successor);
+    }
+
+    if (auto successor = validate_unlinked(); !successor) {
+        return execution.fail(successor);
+    }
+    if (hooks.stop_after == ResidueReconciliationFaultPoint::after_name_unlinked) {
+        return execution.interrupt(ResidueReconciliationFaultPoint::after_name_unlinked, false);
+    }
+
+    const auto [synchronization, durable] =
+        synchronize_reconciled_directory(request, hooks, ops, validate_unlinked);
+    if (!durable) {
+        return execution.fail(synchronization);
+    }
+    if (hooks.stop_after == ResidueReconciliationFaultPoint::after_directory_durable) {
+        return execution.interrupt(ResidueReconciliationFaultPoint::after_directory_durable, false);
+    }
+    if (hooks.after_directory_durable != nullptr) {
+        hooks.after_directory_durable(hooks.context);
+    }
+    if (auto successor = validate_unlinked(); !successor) {
+        return execution.fail(successor);
+    }
+    return execution.succeed(ResidueReconciliationDisposition::removed);
 }
 
 [[nodiscard]] FileExecutionResult
@@ -1524,6 +1989,32 @@ inspect_distributed_sieve_worker_work_package_residue_v1_with_ops(
     const DistributedSieveWorkerWorkPackageResidueInspectionRequestV1& request,
     DistributedSieveWorkerWorkPackageFileOpsV1& ops) noexcept {
     return run_residue_inspection(request, ops);
+}
+
+DistributedSieveWorkerWorkPackageResidueReconciliationResultV1
+reconcile_distributed_sieve_worker_work_package_residue_v1(
+    const DistributedSieveWorkerWorkPackageResidueReconciliationRequestV1& request,
+    const DistributedSieveWorkerWorkPackageResidueReconciliationTestHooksV1& hooks) noexcept {
+#if defined(__APPLE__) || defined(__linux__)
+    ProductionDistributedSieveWorkerWorkPackageFileOps ops;
+    return run_residue_reconciliation(request, ops, hooks);
+#else
+    (void)request;
+    (void)hooks;
+    return {
+        std::nullopt,
+        make_diagnostic(FileStatus::platform_unavailable, PLATFORM_UNAVAILABLE_ERROR),
+        std::nullopt,
+    };
+#endif
+}
+
+DistributedSieveWorkerWorkPackageResidueReconciliationResultV1
+reconcile_distributed_sieve_worker_work_package_residue_v1_with_ops(
+    const DistributedSieveWorkerWorkPackageResidueReconciliationRequestV1& request,
+    DistributedSieveWorkerWorkPackageFileOpsV1& ops,
+    const DistributedSieveWorkerWorkPackageResidueReconciliationTestHooksV1& hooks) noexcept {
+    return run_residue_reconciliation(request, ops, hooks);
 }
 
 } // namespace gnfs::sieve::distributed_sieve_worker_work_package_file_detail

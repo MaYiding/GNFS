@@ -1905,8 +1905,9 @@ exact-role API does not consume `AttemptStartedV1`, rerun manifest work
 binding, integrate with WaveStore, or rehydrate writer-only private-lease
 authority in the exec image. The receipt-gated section below adds the sole
 WaveStore start-receipt consumer and keeps the existing `AttemptStartedV1` as
-its durable job descriptor. Worker-side rehydration and durable named-package
-residue recovery remain future work.
+its durable job descriptor. Worker-side rehydration remains future work; the
+M2j-B B1/B2 section below closes named-package restart classification and
+reconciliation.
 
 ### Canonical Work-Identity Codec Status
 
@@ -2012,15 +2013,16 @@ every fixed-leaf absence have all been revalidated after the final carrier
 hook. A later-slot hook rebuilding an earlier slot's fixed leaf therefore
 stops the batch before spawn, reports the earlier slot, and preserves the
 residue for explicit reconciliation. This first slice never deletes a package
-leaf or replaced directory from its name alone. Identity-bound residue
-deletion across restart is still pending; the B1 classifier below adds
-read-only reopening.
+leaf or replaced directory from its name alone. The M2j-B section below adds
+read-only reopening and a separate identity-bound WaveStore cleanup transition
+without granting cleanup authority to the launcher.
 M2j-A is internal and test-only; it also rejects hosts without an atomic
 spawn-time close-all primitive. Path-based `posix_spawn()` is not manifest
 same-object executable authentication. Worker-side descriptor `3..6`
-rehydration, actual sieve execution, no-delete handoff, and restart recovery
-remain later milestones. The static checker count-closes lower-capability and
-reader access inside the exact WaveStore launcher function body.
+rehydration, actual sieve execution, and no-delete handoff remain later
+milestones. Restart cleanup is the separate M2j-B transition below. The static
+checker count-closes lower-capability and reader access inside the exact
+WaveStore launcher function body.
 
 The launcher matrix contains ten cases. Every non-Windows host runs the
 pre-gate close-all refusal: supported hosts take a trusted force-unavailable
@@ -2028,9 +2030,10 @@ test seam, while unsupported hosts take the real platform query. Only hosts
 with atomic close-all support register and execute the other nine positive
 launcher cases.
 
-### Read-Only Named Package Residue Reopening Status
+### Named Package Residue Reconciliation Status
 
-M2j-B B1 extends the WaveStore inventory without granting cleanup authority.
+M2j-B B1 is complete. It extends the WaveStore inventory without granting
+cleanup authority.
 The carrier opens the fixed package leaf relative to the retained final P8
 directory, validates a sealed owner-only regular file with one link, decodes
 the canonical envelope, and returns data only. WaveStore records body and
@@ -2045,13 +2048,12 @@ and ordinal. An exact residue therefore survives store destruction and
 reopens through `open()`, `revalidate()`, the generic root claim, and the
 attempt-bound claim.
 
-Existing mutators do not consume this evidence. Lease recovery and record
-reconciliation return `reconciliation_required` before mutation, and fresh
-same-chunk creation returns the same result before creating a `BaseLock`.
-Publication and normalization revalidate the complete claim after their final
-trusted hook. Cross-chunk recovery retains its P3 directory descriptor through
-the last hook, revalidates the whole inventory, and only then removes the
-staging directory.
+Legacy lease recovery and fresh same-chunk creation do not consume this
+evidence. They return `reconciliation_required` before mutation. Publication
+and normalization revalidate the complete claim after their final trusted
+hook. Cross-chunk recovery retains its P3 directory descriptor through the
+last hook, revalidates the whole inventory, and only then removes the staging
+directory.
 
 The restart suite uses the canonical package codec and a synchronized `0400`
 fixed leaf. It verifies the compact witness, the no-residue baseline, record
@@ -2059,9 +2061,26 @@ shape and latest-attempt failures, content and metadata corruption, and
 same-byte package, directory, record, and `BaseLock` replacement. Every
 failure preserves the observed residue.
 
-B1 does not unlink, repair, reconcile, launch from, or rehydrate the named
-package. It continues to exclude an adversarial same-UID namespace mutator.
-B2 must add an identity-bound cleanup transition before deletion. The policy
-checker count-closes the sole production inspector use inside
-`validate_private_lease_attempt_inventory()`, rejects identifier aliases,
-forbids the `_with_ops` test seam in WaveStore, and isolates the legacy runner.
+B1 itself does not unlink, repair, launch from, or rehydrate the named package.
+M2j-B B2 is implemented as the sole identity-bound cleanup transition inside
+`reconcile_worker_attempt_started()`. While the attempt `BaseLock` remains
+held, WaveStore revalidates the claim, record, directory, and compact witness;
+the carrier then removes the exact authenticated residue or confirms absence
+and synchronizes the directory. Only a double-confirmed residue-free successor
+can proceed through record normalization and private-lease recovery to P0.
+
+Interruptions after unlink and after directory durability, plus selected
+present and absent directory-sync failures, leave no later record or recovery
+mutation and converge after store destruction, reopen, and retry. Package,
+directory, record, and `BaseLock` replacement sandwiches fail closed. A new
+package inserted after the first successor observation remains intact.
+
+The policy checker count-closes one direct inspector call in each of
+`validate_private_lease_attempt_inventory()` and the reconciliation body, plus
+one direct carrier reconciler call in the reconciliation body. It rejects
+aliases, duplicates, non-carrier fixed-leaf unlink, WaveStore `_with_ops`, and
+legacy, launcher, pipeline, or relation use. Native cleanup is supported on
+macOS and Linux; unsupported targets return the explicit platform status. The
+threat model continues to exclude an adversarial same-UID namespace mutator.
+Descriptor `3..6` rehydration, the real sieve handoff, and no-delete
+publication remain pending.

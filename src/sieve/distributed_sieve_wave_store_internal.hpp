@@ -239,6 +239,15 @@ enum class DistributedSieveWorkerAttemptReconcileFaultPoint : std::uint8_t {
     Count,
 };
 
+/// Durable cleanup prefixes reported by the fixed work-package residue
+/// carrier. `AfterNameUnlinked` intentionally precedes the attempt-directory
+/// durability barrier.
+enum class DistributedSieveWorkerWorkPackageResidueReconciliationFaultPoint : std::uint8_t {
+    AfterNameUnlinked,
+    AfterDirectoryDurable,
+    Count,
+};
+
 /// The nine and only durable prefixes of one private-lease reservation. Values
 /// intentionally mirror the source-private relation driver and are checked
 /// against it in the WaveStore implementation.
@@ -572,10 +581,31 @@ struct DistributedSievePrivateLeaseRecoveryTestHooks final {
 
 /// Trusted test-only controls for normalization and cleanup of one already
 /// published AttemptStartedV1. Production callers leave every callback empty.
+struct DistributedSieveWorkerWorkPackageResidueReconciliationTestHooks final {
+    using Boundary = void (*)(void* context) noexcept;
+    using FailBeforeDirectorySync = bool (*)(void* context) noexcept;
+
+    /// Runs before the final full claim, AttemptStarted, and final-directory
+    /// revalidation that immediately precedes the fixed carrier call.
+    Boundary before_reconciliation = nullptr;
+
+    /// Static carrier fault selection. No callback runs between the final
+    /// WaveStore validation and unlink; the carrier owns that closed interval.
+    FailBeforeDirectorySync fail_before_directory_sync = nullptr;
+    std::optional<DistributedSieveWorkerWorkPackageResidueReconciliationFaultPoint> stop_after;
+
+    /// Runs after the first exact residue-free successor observation and
+    /// before its mandatory full confirmation.
+    Boundary after_first_successor_validation = nullptr;
+    void* context = nullptr;
+};
+
 struct DistributedSieveWorkerAttemptReconcileTestHooks final {
     using Boundary = void (*)(void* context) noexcept;
     using StopAfter = bool (*)(DistributedSieveWorkerAttemptReconcileFaultPoint point,
                                void* context) noexcept;
+
+    DistributedSieveWorkerWorkPackageResidueReconciliationTestHooks work_package_residue;
 
     /// Runs after the final closed initial-shape confirmation and immediately
     /// before the production immutable-record transaction.
@@ -602,6 +632,8 @@ struct DistributedSieveWaveStoreDiagnostic final {
         last_worker_attempt_start_fault_point;
     std::optional<DistributedSieveWorkerAttemptReconcileFaultPoint>
         last_worker_attempt_reconcile_fault_point;
+    std::optional<DistributedSieveWorkerWorkPackageResidueReconciliationFaultPoint>
+        last_worker_work_package_residue_reconciliation_fault_point;
     std::optional<DistributedSievePrivateLeaseBaseLockSyncPoint>
         failed_private_lease_base_lock_sync_point;
     std::optional<DistributedSievePrivateLeaseReservationBoundary>

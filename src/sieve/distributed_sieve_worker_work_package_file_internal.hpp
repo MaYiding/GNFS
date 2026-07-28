@@ -19,6 +19,7 @@ inline constexpr std::string_view DISTRIBUTED_SIEVE_WORKER_WORK_PACKAGE_FILE_LEA
 
 enum class DistributedSieveWorkerWorkPackageFileStatus : std::uint8_t {
     ready,
+    interrupted,
     invalid_request,
     platform_unavailable,
     resource_exhausted,
@@ -36,6 +37,8 @@ enum class DistributedSieveWorkerWorkPackageFileStatus : std::uint8_t {
     switch (status) {
     case DistributedSieveWorkerWorkPackageFileStatus::ready:
         return "ready";
+    case DistributedSieveWorkerWorkPackageFileStatus::interrupted:
+        return "interrupted";
     case DistributedSieveWorkerWorkPackageFileStatus::invalid_request:
         return "invalid_request";
     case DistributedSieveWorkerWorkPackageFileStatus::platform_unavailable:
@@ -203,6 +206,70 @@ inspect_distributed_sieve_worker_work_package_residue_v1(
 inspect_distributed_sieve_worker_work_package_residue_v1_with_ops(
     const DistributedSieveWorkerWorkPackageResidueInspectionRequestV1& request,
     DistributedSieveWorkerWorkPackageFileOpsV1& ops) noexcept;
+
+enum class DistributedSieveWorkerWorkPackageResidueReconciliationDispositionV1 : std::uint8_t {
+    removed,
+    confirmed_absent,
+};
+
+enum class DistributedSieveWorkerWorkPackageResidueReconciliationFaultPointV1 : std::uint8_t {
+    after_name_unlinked,
+    after_directory_durable,
+};
+
+/// A null expected_residue requests the idempotent absence barrier. A non-null
+/// witness authorizes removal only after the named file is proven to be that
+/// exact sealed package. The borrowed directory descriptor remains caller
+/// owned in both cases.
+struct DistributedSieveWorkerWorkPackageResidueReconciliationRequestV1 final {
+    DistributedSieveWorkerWorkPackageNativeHandle borrowed_attempt_directory_handle =
+        DISTRIBUTED_SIEVE_WORKER_WORK_PACKAGE_INVALID_HANDLE;
+    NativeIdentityV1 expected_directory_identity;
+    std::uint64_t reconciler_process_id = 0;
+    const DistributedSieveWorkerWorkPackageResidueWitnessV1* expected_residue = nullptr;
+};
+
+struct DistributedSieveWorkerWorkPackageResidueReconciliationResultV1 final {
+    std::optional<DistributedSieveWorkerWorkPackageResidueReconciliationDispositionV1> disposition;
+    DistributedSieveWorkerWorkPackageFileDiagnostic diagnostic;
+    std::optional<DistributedSieveWorkerWorkPackageResidueReconciliationFaultPointV1> fault_point;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return disposition.has_value() && static_cast<bool>(diagnostic) && !fault_point.has_value();
+    }
+};
+
+using DistributedSieveWorkerWorkPackageResidueReconciliationHookV1 = void (*)(void*) noexcept;
+using DistributedSieveWorkerWorkPackageResidueReconciliationFailBeforeDirectorySyncV1 =
+    bool (*)(void*) noexcept;
+
+/// Trusted internal test bridge for scheduling, injected durability failure,
+/// and crash prefixes. Ordinary production behavior leaves it empty; the
+/// WaveStore may pass only its static source-private bridge. Hooks convey no
+/// filesystem authority and every observation they can invalidate is
+/// re-proven before success.
+struct DistributedSieveWorkerWorkPackageResidueReconciliationTestHooksV1 final {
+    DistributedSieveWorkerWorkPackageResidueReconciliationHookV1 before_unlink = nullptr;
+    DistributedSieveWorkerWorkPackageResidueReconciliationFailBeforeDirectorySyncV1
+        fail_before_directory_sync = nullptr;
+    DistributedSieveWorkerWorkPackageResidueReconciliationHookV1 after_directory_durable = nullptr;
+    std::optional<DistributedSieveWorkerWorkPackageResidueReconciliationFaultPointV1> stop_after;
+    void* context = nullptr;
+};
+
+/// Authenticates and durably removes the exact fixed-leaf residue, or performs
+/// an idempotent durable absence barrier when expected_residue is null.
+[[nodiscard]] DistributedSieveWorkerWorkPackageResidueReconciliationResultV1
+reconcile_distributed_sieve_worker_work_package_residue_v1(
+    const DistributedSieveWorkerWorkPackageResidueReconciliationRequestV1& request,
+    const DistributedSieveWorkerWorkPackageResidueReconciliationTestHooksV1& hooks = {}) noexcept;
+
+/// Test-only state-machine entry point using caller-supplied fake operations.
+[[nodiscard]] DistributedSieveWorkerWorkPackageResidueReconciliationResultV1
+reconcile_distributed_sieve_worker_work_package_residue_v1_with_ops(
+    const DistributedSieveWorkerWorkPackageResidueReconciliationRequestV1& request,
+    DistributedSieveWorkerWorkPackageFileOpsV1& ops,
+    const DistributedSieveWorkerWorkPackageResidueReconciliationTestHooksV1& hooks = {}) noexcept;
 
 // This standalone mechanism owns only the fixed-leaf transaction relative to
 // the borrowed attempt-directory descriptor. It neither closes nor stores that

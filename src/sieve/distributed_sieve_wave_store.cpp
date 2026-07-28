@@ -1671,6 +1671,163 @@ struct PrivateLeaseAttemptValidationResult final {
     return failure;
 }
 
+[[nodiscard]] DistributedSieveWorkerWorkPackageResidueInventoryWitnessV1
+compact_work_package_residue_witness(
+    const work_package_file::DistributedSieveWorkerWorkPackageResidueWitnessV1& witness) noexcept {
+    return {
+        .body_bytes = witness.package.body_bytes,
+        .total_bytes = witness.package.total_bytes,
+        .work_sha256 = witness.package.work_sha256,
+        .package_sha256 = witness.package.package_sha256,
+        .file_identity = witness.file_identity,
+        .file_extent = witness.file_extent,
+        .owner_user_id = witness.owner_user_id,
+    };
+}
+
+[[nodiscard]] DistributedSieveWaveStoreDiagnostic
+work_package_residue_reconciliation_inspection_failure(
+    const work_package_file::DistributedSieveWorkerWorkPackageFileDiagnostic& lower) noexcept {
+    using FileStatus = work_package_file::DistributedSieveWorkerWorkPackageFileStatus;
+    DistributedSieveWaveStoreStatus status = DistributedSieveWaveStoreStatus::unexpected_failure;
+    switch (lower.status) {
+    case FileStatus::ready:
+        status = DistributedSieveWaveStoreStatus::unexpected_failure;
+        break;
+    case FileStatus::interrupted:
+        status = DistributedSieveWaveStoreStatus::interrupted;
+        break;
+    case FileStatus::invalid_request:
+        status = DistributedSieveWaveStoreStatus::invalid_request;
+        break;
+    case FileStatus::platform_unavailable:
+        status = DistributedSieveWaveStoreStatus::platform_unsupported;
+        break;
+    case FileStatus::resource_exhausted:
+        status = DistributedSieveWaveStoreStatus::resource_exhausted;
+        break;
+    case FileStatus::namespace_conflict:
+    case FileStatus::decode_failed:
+        status = DistributedSieveWaveStoreStatus::namespace_conflict;
+        break;
+    case FileStatus::publication_failed:
+        status = DistributedSieveWaveStoreStatus::publication_failed;
+        break;
+    case FileStatus::durability_failed:
+        status = DistributedSieveWaveStoreStatus::durability_failed;
+        break;
+    case FileStatus::close_failed:
+        status = DistributedSieveWaveStoreStatus::io_failed;
+        break;
+    case FileStatus::ops_contract_violation:
+    case FileStatus::unexpected_failure:
+        status = DistributedSieveWaveStoreStatus::unexpected_failure;
+        break;
+    }
+    auto failure = diagnostic(status, lower.native_error != 0 ? posix_error(lower.native_error)
+                                                              : protocol_error());
+    if (lower.protocol_status.error != DistributedSieveProtocolError::none) {
+        failure.protocol_status = lower.protocol_status;
+    }
+    return failure;
+}
+
+[[nodiscard]] std::optional<DistributedSieveWorkerWorkPackageResidueReconciliationFaultPoint>
+wave_work_package_residue_reconciliation_fault_point(
+    std::optional<
+        work_package_file::DistributedSieveWorkerWorkPackageResidueReconciliationFaultPointV1>
+        point) noexcept {
+    if (!point.has_value()) {
+        return std::nullopt;
+    }
+    switch (*point) {
+    case work_package_file::DistributedSieveWorkerWorkPackageResidueReconciliationFaultPointV1::
+        after_name_unlinked:
+        return DistributedSieveWorkerWorkPackageResidueReconciliationFaultPoint::AfterNameUnlinked;
+    case work_package_file::DistributedSieveWorkerWorkPackageResidueReconciliationFaultPointV1::
+        after_directory_durable:
+        return DistributedSieveWorkerWorkPackageResidueReconciliationFaultPoint::
+            AfterDirectoryDurable;
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] std::optional<
+    work_package_file::DistributedSieveWorkerWorkPackageResidueReconciliationFaultPointV1>
+carrier_work_package_residue_reconciliation_fault_point(
+    std::optional<DistributedSieveWorkerWorkPackageResidueReconciliationFaultPoint>
+        point) noexcept {
+    if (!point.has_value()) {
+        return std::nullopt;
+    }
+    switch (*point) {
+    case DistributedSieveWorkerWorkPackageResidueReconciliationFaultPoint::AfterNameUnlinked:
+        return work_package_file::
+            DistributedSieveWorkerWorkPackageResidueReconciliationFaultPointV1::after_name_unlinked;
+    case DistributedSieveWorkerWorkPackageResidueReconciliationFaultPoint::AfterDirectoryDurable:
+        return work_package_file::
+            DistributedSieveWorkerWorkPackageResidueReconciliationFaultPointV1::
+                after_directory_durable;
+    case DistributedSieveWorkerWorkPackageResidueReconciliationFaultPoint::Count:
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] DistributedSieveWaveStoreDiagnostic work_package_residue_reconciliation_failure(
+    const work_package_file::DistributedSieveWorkerWorkPackageResidueReconciliationResultV1&
+        lower) noexcept {
+    using FileStatus = work_package_file::DistributedSieveWorkerWorkPackageFileStatus;
+    DistributedSieveWaveStoreStatus status = DistributedSieveWaveStoreStatus::unexpected_failure;
+    switch (lower.diagnostic.status) {
+    case FileStatus::ready:
+        status = DistributedSieveWaveStoreStatus::unexpected_failure;
+        break;
+    case FileStatus::interrupted:
+        status = DistributedSieveWaveStoreStatus::interrupted;
+        break;
+    case FileStatus::invalid_request:
+        status = DistributedSieveWaveStoreStatus::invalid_request;
+        break;
+    case FileStatus::platform_unavailable:
+        status = DistributedSieveWaveStoreStatus::platform_unsupported;
+        break;
+    case FileStatus::resource_exhausted:
+        status = DistributedSieveWaveStoreStatus::resource_exhausted;
+        break;
+    case FileStatus::namespace_conflict:
+    case FileStatus::decode_failed:
+        status = DistributedSieveWaveStoreStatus::namespace_conflict;
+        break;
+    case FileStatus::publication_failed:
+        status = DistributedSieveWaveStoreStatus::publication_failed;
+        break;
+    case FileStatus::durability_failed:
+        status = DistributedSieveWaveStoreStatus::durability_failed;
+        break;
+    case FileStatus::close_failed:
+        status = DistributedSieveWaveStoreStatus::io_failed;
+        break;
+    case FileStatus::ops_contract_violation:
+    case FileStatus::unexpected_failure:
+        status = DistributedSieveWaveStoreStatus::unexpected_failure;
+        break;
+    }
+    auto failure = diagnostic(status, lower.diagnostic.native_error != 0
+                                          ? posix_error(lower.diagnostic.native_error)
+                                          : protocol_error());
+    if (lower.diagnostic.protocol_status.error != DistributedSieveProtocolError::none) {
+        failure.protocol_status = lower.diagnostic.protocol_status;
+    }
+    failure.last_worker_work_package_residue_reconciliation_fault_point =
+        wave_work_package_residue_reconciliation_fault_point(lower.fault_point);
+    return failure;
+}
+
+[[nodiscard]] bool preselected_work_package_directory_sync_failure(void* context) noexcept {
+    return context != nullptr && *static_cast<const bool*>(context);
+}
+
 [[nodiscard]] PrivateLeaseAttemptValidationResult
 validate_private_lease_attempt_inventory(int root_fd, const std::filesystem::path& absolute_root,
                                          const PrivateLeaseAttemptInventory& attempt,
@@ -1906,15 +2063,7 @@ validate_private_lease_attempt_inventory(int root_fd, const std::filesystem::pat
                     return fail_with(std::move(failure));
                 }
                 witness.work_package_residue =
-                    DistributedSieveWorkerWorkPackageResidueInventoryWitnessV1{
-                        .body_bytes = inspected.witness->package.body_bytes,
-                        .total_bytes = inspected.witness->package.total_bytes,
-                        .work_sha256 = inspected.witness->package.work_sha256,
-                        .package_sha256 = inspected.witness->package.package_sha256,
-                        .file_identity = inspected.witness->file_identity,
-                        .file_extent = inspected.witness->file_extent,
-                        .owner_user_id = inspected.witness->owner_user_id,
-                    };
+                    compact_work_package_residue_witness(*inspected.witness);
             }
         } else if (attempt.owned) {
             witness.boundary =
@@ -8890,15 +9039,6 @@ reconcile_worker_attempt_started(DistributedSievePrivateLeaseRootClaimResult&& c
             return fail_with(reject_lower_priority(
                 diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure, protocol_error())));
         }
-        if (initial.private_lease_witnesses->at(target_index).work_package_residue.has_value()) {
-            if (const auto authority = claim.revalidate_authority();
-                authority.status != DistributedSieveWaveStoreStatus::ready) {
-                return fail_with(authority);
-            }
-            return fail_with(diagnostic(DistributedSieveWaveStoreStatus::reconciliation_required,
-                                        protocol_error()));
-        }
-
         auto recordless = worker_attempt_recordless_projection(initial, *names, parsed->chunk_id,
                                                                parsed->attempt_ordinal);
         if (!recordless.has_value()) {
@@ -8955,6 +9095,302 @@ reconcile_worker_attempt_started(DistributedSievePrivateLeaseRootClaimResult&& c
             authority.status != DistributedSieveWaveStoreStatus::ready) {
             return fail_with(authority);
         }
+
+        if (initial_boundary ==
+            DistributedSievePrivateLeaseReservationBoundary::FinalDirectoryDurable) {
+            const auto& initial_lease = initial.private_lease_witnesses->at(target_index);
+            if (!initial_lease.directory_identity.has_value() ||
+                !initial_lease.reserved_marker_identity.has_value() ||
+                !initial_lease.owner_marker_identity.has_value() ||
+                !initial_lease.owned_marker_identity.has_value() ||
+                initial_lease.lease_id == std::array<std::uint64_t, 2>{} ||
+                initial.base_lock_identities->at(target_index) != claim.base_lock_at_->identity()) {
+                return fail_with(reject_lower_priority(diagnostic(
+                    DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error())));
+            }
+            const NativeIdentityV1 cleanup_directory_identity = *initial_lease.directory_identity;
+            const auto expected_cleanup_residue = initial_lease.work_package_residue;
+
+            const bool pin_canonical = initial_canonical_snapshot.has_value();
+            const auto& pinned_snapshot =
+                pin_canonical ? *initial_canonical_snapshot : *initial_pending_snapshot;
+            const std::string& pinned_leaf =
+                pin_canonical ? names->canonical_record_leaf : names->pending_record_leaf;
+            auto pinned_record = open_worker_attempt_canonical_record(
+                state.root_fd, pinned_leaf, pinned_snapshot, initial_record_bytes,
+                state.creator_process_id);
+            if (!pinned_record) {
+                return fail_with(reject_lower_priority(std::move(pinned_record.diagnostic)));
+            }
+
+            auto directory = inspect_private_lease_directory_at(
+                state.root_fd, names->private_directory_leaf, state.creator_process_id);
+            if (!directory || directory.identity != cleanup_directory_identity ||
+                directory.inventory->work_package_residue != expected_cleanup_residue.has_value()) {
+                return fail_with(reject_lower_priority(
+                    directory ? diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
+                                           protocol_error())
+                              : std::move(directory.diagnostic)));
+            }
+
+            const auto validate_cleanup_bindings =
+                [&]() noexcept -> DistributedSieveWaveStoreDiagnostic {
+                if (const auto validated = claim.revalidate();
+                    validated.status != DistributedSieveWaveStoreStatus::ready) {
+                    return validated;
+                }
+                if (const auto pinned = validate_exact_worker_attempt_record_handle(
+                        state.root_fd, pinned_record.canonical_record.get(), pinned_leaf,
+                        pinned_snapshot, initial_record_bytes, state.creator_process_id);
+                    pinned.status != DistributedSieveWaveStoreStatus::ready) {
+                    return pinned;
+                }
+                if (const auto bound = validate_private_lease_directory_binding(
+                        state.root_fd, directory.directory.get(), names->private_directory_leaf,
+                        state.creator_process_id, cleanup_directory_identity);
+                    bound.status != DistributedSieveWaveStoreStatus::ready) {
+                    return bound;
+                }
+                return claim.revalidate_authority();
+            };
+            const auto validate_cleanup_successor_bindings =
+                [&]() noexcept -> DistributedSieveWaveStoreDiagnostic {
+                if (const auto authority = claim.revalidate_authority();
+                    authority.status != DistributedSieveWaveStoreStatus::ready) {
+                    return authority;
+                }
+                if (const auto pinned = validate_exact_worker_attempt_record_handle(
+                        state.root_fd, pinned_record.canonical_record.get(), pinned_leaf,
+                        pinned_snapshot, initial_record_bytes, state.creator_process_id);
+                    pinned.status != DistributedSieveWaveStoreStatus::ready) {
+                    return pinned;
+                }
+                if (const auto bound = validate_private_lease_directory_binding(
+                        state.root_fd, directory.directory.get(), names->private_directory_leaf,
+                        state.creator_process_id, cleanup_directory_identity);
+                    bound.status != DistributedSieveWaveStoreStatus::ready) {
+                    return bound;
+                }
+                return claim.revalidate_authority();
+            };
+            const auto reject_after_cleanup_mutation =
+                [&](DistributedSieveWaveStoreDiagnostic lower) noexcept {
+                    if (const auto bindings = validate_cleanup_successor_bindings();
+                        bindings.status != DistributedSieveWaveStoreStatus::ready) {
+                        return bindings;
+                    }
+                    return lower;
+                };
+
+            if (const auto hooked = invoke_private_lease_base_lock_hook(
+                    hooks.work_package_residue.before_reconciliation,
+                    hooks.work_package_residue.context, state.creator_process_id);
+                hooked.status != DistributedSieveWaveStoreStatus::ready) {
+                return fail_with(hooked);
+            }
+            bool inject_directory_sync_failure = false;
+            if (hooks.work_package_residue.fail_before_directory_sync != nullptr) {
+                if (!process_matches(state.creator_process_id)) {
+                    return fail_with(process_mismatch());
+                }
+                inject_directory_sync_failure =
+                    hooks.work_package_residue.fail_before_directory_sync(
+                        hooks.work_package_residue.context);
+                if (!process_matches(state.creator_process_id)) {
+                    return fail_with(process_mismatch());
+                }
+            }
+            if (const auto validated = validate_cleanup_bindings();
+                validated.status != DistributedSieveWaveStoreStatus::ready) {
+                return fail_with(validated);
+            }
+
+            std::optional<work_package_file::DistributedSieveWorkerWorkPackageResidueWitnessV1>
+                full_residue;
+            if (expected_cleanup_residue.has_value()) {
+                auto inspected =
+                    work_package_file::inspect_distributed_sieve_worker_work_package_residue_v1({
+                        .borrowed_attempt_directory_handle = static_cast<
+                            work_package_file::DistributedSieveWorkerWorkPackageNativeHandle>(
+                            directory.directory.get()),
+                        .expected_directory_identity = cleanup_directory_identity,
+                        .observer_process_id = state.creator_process_id,
+                    });
+                if (!inspected) {
+                    return fail_with(reject_lower_priority(
+                        work_package_residue_reconciliation_inspection_failure(
+                            inspected.diagnostic)));
+                }
+                const auto work_digest = distributed_sieve_work_digest(inspected.witness->identity);
+                const auto manifest_status =
+                    validate_manifest_work_identity(state.manifest, inspected.witness->identity);
+                if (!work_digest || *work_digest.digest != state.manifest.work_sha256 ||
+                    !manifest_status ||
+                    inspected.witness->package.work_sha256 != state.manifest.work_sha256 ||
+                    inspected.witness->package.total_bytes != inspected.witness->file_extent ||
+                    compact_work_package_residue_witness(*inspected.witness) !=
+                        *expected_cleanup_residue) {
+                    const auto protocol_status =
+                        !work_digest
+                            ? work_digest.status
+                            : (!manifest_status
+                                   ? manifest_status
+                                   : DistributedSieveProtocolStatus{
+                                         .error = DistributedSieveProtocolError::digest_mismatch,
+                                     });
+                    const auto status =
+                        protocol_status.error == DistributedSieveProtocolError::resource_exhausted
+                            ? DistributedSieveWaveStoreStatus::resource_exhausted
+                            : DistributedSieveWaveStoreStatus::namespace_conflict;
+                    auto failure = diagnostic(status, protocol_error());
+                    failure.protocol_status = protocol_status;
+                    return fail_with(reject_lower_priority(std::move(failure)));
+                }
+                full_residue.emplace(std::move(*inspected.witness));
+            }
+            if (const auto validated = validate_cleanup_bindings();
+                validated.status != DistributedSieveWaveStoreStatus::ready) {
+                return fail_with(validated);
+            }
+
+            const auto carrier_stop_after = carrier_work_package_residue_reconciliation_fault_point(
+                hooks.work_package_residue.stop_after);
+            if (hooks.work_package_residue.stop_after.has_value() &&
+                (!carrier_stop_after.has_value() ||
+                 (!full_residue.has_value() &&
+                  hooks.work_package_residue.stop_after ==
+                      DistributedSieveWorkerWorkPackageResidueReconciliationFaultPoint::
+                          AfterNameUnlinked))) {
+                return fail_with(diagnostic(DistributedSieveWaveStoreStatus::invalid_request,
+                                            invalid_argument_error()));
+            }
+            const auto carrier_hooks = work_package_file::
+                DistributedSieveWorkerWorkPackageResidueReconciliationTestHooksV1{
+                    .before_unlink = nullptr,
+                    .fail_before_directory_sync =
+                        inject_directory_sync_failure
+                            ? preselected_work_package_directory_sync_failure
+                            : nullptr,
+                    .after_directory_durable = nullptr,
+                    .stop_after = carrier_stop_after,
+                    .context = &inject_directory_sync_failure,
+                };
+            const auto residue_reconciled =
+                work_package_file::reconcile_distributed_sieve_worker_work_package_residue_v1(
+                    {
+                        .borrowed_attempt_directory_handle = static_cast<
+                            work_package_file::DistributedSieveWorkerWorkPackageNativeHandle>(
+                            directory.directory.get()),
+                        .expected_directory_identity = cleanup_directory_identity,
+                        .reconciler_process_id = state.creator_process_id,
+                        .expected_residue =
+                            full_residue.has_value() ? std::addressof(*full_residue) : nullptr,
+                    },
+                    carrier_hooks);
+            if (!residue_reconciled) {
+                return fail_with(reject_after_cleanup_mutation(
+                    work_package_residue_reconciliation_failure(residue_reconciled)));
+            }
+            const auto expected_disposition =
+                full_residue.has_value()
+                    ? work_package_file::
+                          DistributedSieveWorkerWorkPackageResidueReconciliationDispositionV1::
+                              removed
+                    : work_package_file::
+                          DistributedSieveWorkerWorkPackageResidueReconciliationDispositionV1::
+                              confirmed_absent;
+            if (residue_reconciled.disposition != expected_disposition ||
+                residue_reconciled.fault_point.has_value()) {
+                return fail_with(reject_after_cleanup_mutation(diagnostic(
+                    DistributedSieveWaveStoreStatus::unexpected_failure, protocol_error())));
+            }
+
+            auto expected_cleanup_successor = std::move(confirmed_initial);
+            expected_cleanup_successor.private_lease_witnesses->at(target_index)
+                .work_package_residue.reset();
+            const auto exact_cleanup_successor =
+                [&](const ManifestBoundInventoryWitnessResult& observed) noexcept {
+                    return worker_attempt_start_observations_equal(expected_cleanup_successor,
+                                                                   observed);
+                };
+
+            if (const auto bindings = validate_cleanup_successor_bindings();
+                bindings.status != DistributedSieveWaveStoreStatus::ready) {
+                return fail_with(bindings);
+            }
+            auto first_cleanup_successor = capture_manifest_bound_inventory_witness(
+                state.root_fd, state.manifest, state.absolute_root, state.creator_process_id);
+            if (!first_cleanup_successor || !exact_cleanup_successor(first_cleanup_successor)) {
+                return fail_with(reject_after_cleanup_mutation(
+                    first_cleanup_successor
+                        ? diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
+                                     protocol_error())
+                        : std::move(first_cleanup_successor.diagnostic)));
+            }
+            if (const auto bindings = validate_cleanup_successor_bindings();
+                bindings.status != DistributedSieveWaveStoreStatus::ready) {
+                return fail_with(bindings);
+            }
+            if (const auto hooked = invoke_private_lease_base_lock_hook(
+                    hooks.work_package_residue.after_first_successor_validation,
+                    hooks.work_package_residue.context, state.creator_process_id);
+                hooked.status != DistributedSieveWaveStoreStatus::ready) {
+                return fail_with(hooked);
+            }
+            if (const auto bindings = validate_cleanup_successor_bindings();
+                bindings.status != DistributedSieveWaveStoreStatus::ready) {
+                return fail_with(bindings);
+            }
+            auto confirmed_cleanup_successor = capture_manifest_bound_inventory_witness(
+                state.root_fd, state.manifest, state.absolute_root, state.creator_process_id);
+            if (!confirmed_cleanup_successor ||
+                !exact_cleanup_successor(confirmed_cleanup_successor) ||
+                !worker_attempt_start_observations_equal(first_cleanup_successor,
+                                                         confirmed_cleanup_successor)) {
+                return fail_with(reject_after_cleanup_mutation(
+                    confirmed_cleanup_successor
+                        ? diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
+                                     protocol_error())
+                        : std::move(confirmed_cleanup_successor.diagnostic)));
+            }
+            if (const auto bindings = validate_cleanup_successor_bindings();
+                bindings.status != DistributedSieveWaveStoreStatus::ready) {
+                return fail_with(bindings);
+            }
+
+            *claim.expected_private_lease_base_lock_leaves_ =
+                confirmed_cleanup_successor.inventory->private_lease_base_lock_leaves;
+            *claim.expected_private_lease_base_lock_identities_ =
+                *confirmed_cleanup_successor.base_lock_identities;
+            *claim.expected_private_lease_reservation_witnesses_ =
+                *confirmed_cleanup_successor.private_lease_witnesses;
+            *claim.expected_worker_attempt_record_witnesses_ =
+                confirmed_cleanup_successor.inventory->worker_attempt_records;
+            initial = std::move(confirmed_cleanup_successor);
+            recordless = worker_attempt_recordless_projection(initial, *names, parsed->chunk_id,
+                                                              parsed->attempt_ordinal);
+            if (!recordless.has_value()) {
+                return fail_with(diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                                            protocol_error()));
+            }
+            if (const auto validated = claim.revalidate();
+                validated.status != DistributedSieveWaveStoreStatus::ready) {
+                return fail_with(validated);
+            }
+            if (const auto pinned = validate_exact_worker_attempt_record_handle(
+                    state.root_fd, pinned_record.canonical_record.get(), pinned_leaf,
+                    pinned_snapshot, initial_record_bytes, state.creator_process_id);
+                pinned.status != DistributedSieveWaveStoreStatus::ready) {
+                return fail_with(pinned);
+            }
+            if (const auto bound = validate_private_lease_directory_binding(
+                    state.root_fd, directory.directory.get(), names->private_directory_leaf,
+                    state.creator_process_id, cleanup_directory_identity);
+                bound.status != DistributedSieveWaveStoreStatus::ready) {
+                return fail_with(bound);
+            }
+        }
+
         if (const auto hooked = invoke_private_lease_base_lock_hook(
                 hooks.before_record_normalization, hooks.context, state.creator_process_id);
             hooked.status != DistributedSieveWaveStoreStatus::ready) {
