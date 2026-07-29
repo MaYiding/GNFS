@@ -6143,7 +6143,8 @@ public:
                 });
             if (stop_after_reserved) {
                 publication = ooc_cleanup_detail::handoff_failure(
-                    OOCCleanupStatus::Interrupted, OOCPrivateHandoffState::Canonical, {});
+                    OOCCleanupStatus::Interrupted, OOCPrivateHandoffState::Canonical,
+                    std::make_error_code(std::errc::operation_canceled));
                 publication.record = record;
                 publication.identity = published.canonical_snapshot()->identity;
                 assigned = true;

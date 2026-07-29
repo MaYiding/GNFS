@@ -15,9 +15,14 @@
 #include <map>
 #include <set>
 
+#if defined(__APPLE__)
+#include <sys/param.h>
+#endif
+
 namespace {
 
 using WriterAuthority = entry::DistributedSieveWorkerWriterAuthorityV1;
+using WriterCompletion = entry::DistributedSieveWorkerCompletionFactsV1;
 using WriterResult = entry::DistributedSieveWorkerWriterAdoptionResultV1;
 using WriterPhase = entry::DistributedSieveWorkerWriterPhaseV1;
 using WriterRollback = entry::DistributedSieveWorkerWriterRollbackV1;
@@ -38,6 +43,7 @@ static_assert(noexcept(entry::consume_distributed_sieve_worker_writer_v1(
     std::declval<entry::DistributedSieveWorkerEntryV1&&>())));
 static_assert(noexcept(std::declval<const WriterAuthority&>().valid()));
 static_assert(noexcept(std::declval<const WriterAuthority&>().finalized()));
+static_assert(noexcept(std::declval<const WriterAuthority&>().handoff_published()));
 static_assert(noexcept(std::declval<const WriterAuthority&>().count()));
 static_assert(noexcept(std::declval<const WriterAuthority&>().record()));
 static_assert(noexcept(std::declval<const WriterAuthority&>().manifest()));
@@ -71,6 +77,32 @@ static_assert(noexcept(std::declval<const WriterAuthority&>().witness()));
            left.extra_ab_pairs == right.extra_ab_pairs;
 }
 
+[[nodiscard]] int replace_regular_at_corrupt_same_extent(int directory, std::string_view leaf,
+                                                         std::string_view displaced_leaf) noexcept {
+    std::vector<std::byte> replacement;
+    mode_t mode = 0;
+    if (const int failure = read_regular_at(directory, leaf, replacement, mode); failure != 0) {
+        return failure;
+    }
+    if (replacement.empty()) {
+        return EINVAL;
+    }
+    for (auto& byte : replacement) {
+        byte ^= std::byte{0xff};
+    }
+    return replace_regular_at_bytes(directory, leaf, displaced_leaf, replacement);
+}
+
+[[nodiscard]] WriterCompletion successful_completion(const WriterAuthority& authority) {
+    return {
+        .processed_sq_count = 1,
+        .next_sq_index = authority.record().sq_end,
+        .completion_reason = authority.count() == 0
+                                 ? sieve::WorkerCompletionReasonV1::zero_relations
+                                 : sieve::WorkerCompletionReasonV1::range_exhausted,
+    };
+}
+
 template <typename Callable>
 [[nodiscard]] bool rejects_writer_mutation(Callable&& callable) noexcept {
     try {
@@ -97,6 +129,12 @@ template <typename Callable>
 
 enum class WriterChildScenario : std::uint32_t {
     happy = 1,
+    zero_row,
+    handoff_cache_commit_failure,
+    handoff_pending_durable,
+    handoff_canonical_promoted,
+    handoff_canonical_durable,
+    handoff_reserved_revoked_durable,
     reserved_replacement_sandwich,
     private_directory_replacement_sandwich,
     base_lock_replacement_sandwich,
@@ -131,13 +169,34 @@ inline constexpr std::uint32_t WRITER_FLAG_POST_AUTHORITY_INVALIDATED = 1U << 15
 inline constexpr std::uint32_t WRITER_FLAG_POST_AUTHORITY_FINALIZE_REJECTED = 1U << 16U;
 inline constexpr std::uint32_t WRITER_FLAG_CONSTRUCTION_HOOK_INVOKED = 1U << 17U;
 inline constexpr std::uint32_t WRITER_FLAG_RECONCILIATION_REQUIRED = 1U << 18U;
+inline constexpr std::uint32_t WRITER_FLAG_HANDOFF_PUBLISHED = 1U << 19U;
+inline constexpr std::uint32_t WRITER_FLAG_ZERO_ROW = 1U << 20U;
+inline constexpr std::uint32_t WRITER_FLAG_HANDOFF_INTERRUPTED = 1U << 21U;
+inline constexpr std::uint32_t WRITER_FLAG_HANDOFF_RETRY_SUCCEEDED = 1U << 22U;
+inline constexpr std::uint32_t WRITER_FLAG_HANDOFF_RETRY_DRIFT_REJECTED = 1U << 23U;
+inline constexpr std::uint32_t WRITER_FLAG_HANDOFF_PREFIX_OBSERVED = 1U << 24U;
+inline constexpr std::uint32_t WRITER_FLAG_HANDOFF_PREFIX_NO_CLEANUP = 1U << 25U;
+#if !defined(__APPLE__)
+inline constexpr std::uint32_t WRITER_FLAG_HANDOFF_PLATFORM_UNSUPPORTED = 1U << 26U;
+inline constexpr std::uint32_t WRITER_FLAG_HANDOFF_APPEND_PRESERVED = 1U << 29U;
+#endif
+inline constexpr std::uint32_t WRITER_FLAG_HANDOFF_CACHE_FAILURE = 1U << 27U;
+inline constexpr std::uint32_t WRITER_FLAG_HANDOFF_CACHE_RETRY_SUCCEEDED = 1U << 28U;
+#if defined(__APPLE__)
+inline constexpr std::uint32_t WRITER_FLAG_HANDOFF_MANIFEST_CAP_REJECTED = 1U << 30U;
+#endif
 
 inline constexpr std::uint32_t WRITER_HAPPY_FLAGS =
     WRITER_FLAG_ENTRY_ADOPTED | WRITER_FLAG_FIXED_FDS_CLOSED | WRITER_FLAG_AUTHORITY_READY |
     WRITER_FLAG_BINDINGS_VALID | WRITER_FLAG_SECOND_CONSUME_REJECTED |
     WRITER_FLAG_FORK_WRITE_REJECTED | WRITER_FLAG_FORK_FINALIZE_REJECTED |
     WRITER_FLAG_PARENT_UNCHANGED_AFTER_FORK | WRITER_FLAG_WROTE_EXACT_PAIR | WRITER_FLAG_FINALIZED |
-    WRITER_FLAG_POST_FINALIZE_REJECTED | WRITER_FLAG_FORK_NORMAL_RETURN;
+    WRITER_FLAG_POST_FINALIZE_REJECTED | WRITER_FLAG_FORK_NORMAL_RETURN |
+    WRITER_FLAG_HANDOFF_PUBLISHED
+#if defined(__APPLE__)
+    | WRITER_FLAG_HANDOFF_MANIFEST_CAP_REJECTED
+#endif
+    ;
 
 struct WriterChildReport final {
     std::uint32_t magic = WRITER_CHILD_REPORT_MAGIC;
@@ -159,6 +218,11 @@ struct WriterChildReport final {
     Digest attempt_digest;
     Digest manifest_digest;
     Digest work_digest;
+    Digest handoff_digest;
+    Digest corpus_sha256;
+    std::uint64_t sequence_count = 0;
+    std::uint64_t sequence_low = 0;
+    std::uint64_t sequence_high = 0;
 };
 
 static_assert(std::is_trivially_copyable_v<WriterChildReport>);
@@ -194,6 +258,152 @@ parse_writer_child_scenario(std::string_view raw) noexcept {
 [[nodiscard]] constexpr bool is_construction_failure(WriterChildScenario scenario) noexcept {
     return scenario == WriterChildScenario::construction_clean_rollback ||
            scenario == WriterChildScenario::construction_foreign_index_residue;
+}
+
+[[nodiscard]] constexpr bool is_handoff_fault(WriterChildScenario scenario) noexcept {
+    return scenario == WriterChildScenario::handoff_pending_durable ||
+           scenario == WriterChildScenario::handoff_canonical_promoted ||
+           scenario == WriterChildScenario::handoff_canonical_durable ||
+           scenario == WriterChildScenario::handoff_reserved_revoked_durable;
+}
+
+[[nodiscard]] gnfs::relation::OOCPrivateHandoffFaultPoint
+handoff_fault_point(WriterChildScenario scenario) {
+    switch (scenario) {
+    case WriterChildScenario::handoff_pending_durable:
+        return gnfs::relation::OOCPrivateHandoffFaultPoint::PendingDurable;
+    case WriterChildScenario::handoff_canonical_promoted:
+        return gnfs::relation::OOCPrivateHandoffFaultPoint::CanonicalPromoted;
+    case WriterChildScenario::handoff_canonical_durable:
+        return gnfs::relation::OOCPrivateHandoffFaultPoint::CanonicalDurable;
+    case WriterChildScenario::handoff_reserved_revoked_durable:
+        return gnfs::relation::OOCPrivateHandoffFaultPoint::ReservedRevokedDurable;
+    default:
+        throw std::invalid_argument("writer scenario has no handoff fault point");
+    }
+}
+
+struct WorkerHandoffStopContext final {
+    gnfs::relation::OOCPrivateHandoffFaultPoint target =
+        gnfs::relation::OOCPrivateHandoffFaultPoint::PendingDurable;
+    bool invoked = false;
+};
+
+[[nodiscard]] bool stop_worker_handoff(gnfs::relation::OOCPrivateHandoffFaultPoint point,
+                                       void* opaque) noexcept {
+    auto& context = *static_cast<WorkerHandoffStopContext*>(opaque);
+    if (point != context.target) {
+        return false;
+    }
+    context.invoked = true;
+    return true;
+}
+
+struct LeafFingerprint final {
+    bool present = false;
+    std::uint64_t device = 0;
+    std::uint64_t inode = 0;
+    std::uint64_t size = 0;
+
+    [[nodiscard]] friend constexpr bool operator==(const LeafFingerprint&,
+                                                   const LeafFingerprint&) noexcept = default;
+};
+
+[[nodiscard]] bool regular_leaf_state_at(int directory, std::string_view leaf,
+                                         bool expected_present, int& error,
+                                         LeafFingerprint* fingerprint = nullptr) {
+    struct stat metadata{};
+    int result = -1;
+    do {
+        result = ::fstatat(directory, std::string(leaf).c_str(), &metadata, AT_SYMLINK_NOFOLLOW);
+    } while (result != 0 && errno == EINTR);
+    if (result == 0) {
+        if (fingerprint != nullptr) {
+            *fingerprint = {
+                .present = true,
+                .device = static_cast<std::uint64_t>(metadata.st_dev),
+                .inode = static_cast<std::uint64_t>(metadata.st_ino),
+                .size = metadata.st_size < 0 ? 0 : static_cast<std::uint64_t>(metadata.st_size),
+            };
+        }
+        return expected_present && S_ISREG(metadata.st_mode);
+    }
+    if (errno == ENOENT) {
+        if (fingerprint != nullptr) {
+            *fingerprint = {};
+        }
+        return !expected_present;
+    }
+    error = errno;
+    return false;
+}
+
+struct WorkerHandoffPrefixObservation final {
+    bool exact_shape = false;
+    bool no_cleanup_artifact = false;
+    int error = 0;
+    std::array<LeafFingerprint, 6> protected_leaves{};
+
+    [[nodiscard]] friend constexpr bool
+    operator==(const WorkerHandoffPrefixObservation&,
+               const WorkerHandoffPrefixObservation&) noexcept = default;
+};
+
+[[nodiscard]] WorkerHandoffPrefixObservation
+observe_worker_handoff_prefix(int root_descriptor,
+                              const wave::DistributedSieveWorkerAttemptNamesV1& names,
+                              WriterChildScenario scenario) {
+    WorkerHandoffPrefixObservation observation;
+    int directory = -1;
+    do {
+        directory = ::openat(root_descriptor, names.private_directory_leaf.c_str(),
+                             O_RDONLY | O_NONBLOCK | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    } while (directory < 0 && errno == EINTR);
+    if (directory < 0) {
+        observation.error = errno;
+        return observation;
+    }
+
+    const bool pending = scenario == WriterChildScenario::handoff_pending_durable;
+    const bool canonical =
+        !pending && scenario != WriterChildScenario::handoff_cache_commit_failure;
+    const bool reserved = scenario != WriterChildScenario::handoff_reserved_revoked_durable;
+    observation.exact_shape =
+        regular_leaf_state_at(directory, "corpus.relidx", true, observation.error,
+                              &observation.protected_leaves[0]) &&
+        regular_leaf_state_at(directory, "corpus.reldata", true, observation.error,
+                              &observation.protected_leaves[1]) &&
+        regular_leaf_state_at(directory, "corpus.gnfs-ooc-private-handoff-v1", canonical,
+                              observation.error, &observation.protected_leaves[2]) &&
+        regular_leaf_state_at(directory, "corpus.gnfs-ooc-private-handoff-v1.pending", pending,
+                              observation.error, &observation.protected_leaves[3]) &&
+        regular_leaf_state_at(root_descriptor, names.reserved_leaf, reserved, observation.error,
+                              &observation.protected_leaves[4]) &&
+        regular_leaf_state_at(root_descriptor, names.owned_leaf, true, observation.error,
+                              &observation.protected_leaves[5]) &&
+        regular_leaf_state_at(root_descriptor, names.reserved_pending_leaf, false,
+                              observation.error) &&
+        regular_leaf_state_at(root_descriptor, names.owned_pending_leaf, false, observation.error);
+
+    constexpr std::array<std::string_view, 6> cleanup_leaves{
+        "corpus.gnfs-ooc-cleanup-v1.intent", "corpus.gnfs-ooc-cleanup-v1.intent.pending",
+        "corpus.gnfs-ooc-cleanup-v1.staged", "corpus.gnfs-ooc-cleanup-v1.staged.pending",
+        "corpus.gnfs-ooc-cleanup-v1.relidx", "corpus.gnfs-ooc-cleanup-v1.reldata",
+    };
+    observation.no_cleanup_artifact = true;
+    for (const auto leaf : cleanup_leaves) {
+        if (!regular_leaf_state_at(directory, leaf, false, observation.error)) {
+            observation.no_cleanup_artifact = false;
+            break;
+        }
+    }
+
+    if (::close(directory) != 0 && observation.error == 0) {
+        observation.error = errno;
+        observation.exact_shape = false;
+        observation.no_cleanup_artifact = false;
+    }
+    return observation;
 }
 
 struct NamespaceNode final {
@@ -240,6 +450,24 @@ using NamespaceSnapshot = std::map<std::string, NamespaceNode>;
     return result;
 }
 
+#if defined(__APPLE__)
+[[nodiscard]] std::filesystem::path snapshot_root_path(int descriptor) {
+    std::array<char, MAXPATHLEN> buffer{};
+    int result = -1;
+    do {
+        result = ::fcntl(descriptor, F_GETPATH, buffer.data());
+    } while (result != 0 && errno == EINTR);
+    if (result != 0) {
+        throw std::system_error(errno, std::generic_category(), "recover snapshot root path");
+    }
+    const auto terminator = std::find(buffer.begin(), buffer.end(), '\0');
+    if (terminator == buffer.begin() || terminator == buffer.end()) {
+        throw std::runtime_error("snapshot root path is invalid");
+    }
+    return std::filesystem::path(std::string(buffer.begin(), terminator));
+}
+#endif
+
 [[nodiscard]] bool same_baseline_node(const NamespaceNode& left,
                                       const NamespaceNode& right) noexcept {
     if (left.device != right.device || left.inode != right.inode || left.mode != right.mode) {
@@ -251,8 +479,55 @@ using NamespaceSnapshot = std::map<std::string, NamespaceNode>;
     return true;
 }
 
+[[nodiscard]] bool same_namespace_snapshot(const NamespaceSnapshot& left,
+                                           const NamespaceSnapshot& right) noexcept {
+    if (left.size() != right.size()) {
+        return false;
+    }
+    for (const auto& [path, expected] : left) {
+        const auto found = right.find(path);
+        if (found == right.end() || !same_baseline_node(expected, found->second)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void require_exact_happy_namespace_delta(const WorkerEntryFixture& fixture,
                                          const NamespaceSnapshot& baseline) {
+    const auto names = wave::distributed_sieve_worker_attempt_names_v1("entry_chunk_0", 0, 0);
+    CHECK(names.has_value());
+    const auto after = snapshot_namespace(fixture.root);
+
+    for (const auto& [path, expected] : baseline) {
+        if (path == names->reserved_leaf) {
+            CHECK(!after.contains(path));
+            continue;
+        }
+        const auto found = after.find(path);
+        CHECK(found != after.end());
+        CHECK(same_baseline_node(expected, found->second));
+    }
+
+    std::set<std::string> additions;
+    for (const auto& [path, node] : after) {
+        (void)node;
+        if (!baseline.contains(path)) {
+            additions.insert(path);
+        }
+    }
+    const std::string prefix = names->private_directory_leaf + "/";
+    const std::set<std::string> expected{
+        prefix + "corpus.relidx",
+        prefix + "corpus.reldata",
+        prefix + "corpus.gnfs-ooc-private-handoff-v1",
+    };
+    CHECK(additions == expected);
+}
+
+#if !defined(__APPLE__)
+void require_exact_unsupported_namespace_delta(const WorkerEntryFixture& fixture,
+                                               const NamespaceSnapshot& baseline) {
     const auto names = wave::distributed_sieve_worker_attempt_names_v1("entry_chunk_0", 0, 0);
     CHECK(names.has_value());
     const auto after = snapshot_namespace(fixture.root);
@@ -277,16 +552,23 @@ void require_exact_happy_namespace_delta(const WorkerEntryFixture& fixture,
     };
     CHECK(additions == expected);
 }
+#endif
 
-void require_no_handoff_or_cleanup_publication(const WorkerEntryFixture& fixture) {
+void require_no_cleanup_publication(const WorkerEntryFixture& fixture) {
     const auto names = wave::distributed_sieve_worker_attempt_names_v1("entry_chunk_0", 0, 0);
     CHECK(names.has_value());
     for (const auto& item : std::filesystem::recursive_directory_iterator(fixture.root)) {
         const std::string leaf = item.path().filename().string();
-        CHECK(leaf.find("handoff") == std::string::npos);
         if (leaf.find("cleanup") != std::string::npos && leaf != names->base_lock_leaf) {
             fail("writer authority publishes no cleanup artifact", __LINE__, leaf);
         }
+    }
+}
+
+void require_no_handoff_or_cleanup_publication(const WorkerEntryFixture& fixture) {
+    require_no_cleanup_publication(fixture);
+    for (const auto& item : std::filesystem::recursive_directory_iterator(fixture.root)) {
+        CHECK(item.path().filename().string().find("handoff") == std::string::npos);
     }
 }
 
@@ -347,6 +629,12 @@ void configure_writer_replacement(WriterChildScenario scenario,
         replacement.displaced_leaf = ".gnfs-test-writer-displaced-base-lock";
         break;
     case WriterChildScenario::happy:
+    case WriterChildScenario::zero_row:
+    case WriterChildScenario::handoff_cache_commit_failure:
+    case WriterChildScenario::handoff_pending_durable:
+    case WriterChildScenario::handoff_canonical_promoted:
+    case WriterChildScenario::handoff_canonical_durable:
+    case WriterChildScenario::handoff_reserved_revoked_durable:
     case WriterChildScenario::wrong_base_path_digest:
     case WriterChildScenario::foreign_staging_residue:
     case WriterChildScenario::post_authority_base_lock_replacement:
@@ -423,9 +711,11 @@ struct ConstructionFailureHookContext final {
 [[nodiscard]] int fork_inherited_authority_probe(WriterResult& converted,
                                                  const Relation& relation) {
     auto& authority = *converted.writer;
+    const auto completion = successful_completion(authority);
     const bool invalid = !authority.valid() && !authority.finalized() && authority.count() == 0;
     const bool write_rejected = rejects_writer_mutation([&] { (void)authority.write(relation); });
-    const bool finalize_rejected = rejects_writer_mutation([&] { authority.finalize(); });
+    const bool finalize_rejected =
+        rejects_writer_mutation([&] { (void)authority.finalize_and_publish_handoff(completion); });
 
     // Exercise the inherited authority destructor before a normal return from
     // main. This intentionally does not use _exit(): buffered native streams
@@ -532,7 +822,8 @@ struct ConstructionFailureHookContext final {
                 report.flags |= WRITER_FLAG_MUTATION_SUCCEEDED;
             }
         }
-        if (!is_post_authority_drift(scenario)) {
+        if (!is_post_authority_drift(scenario) && !is_handoff_fault(scenario) &&
+            scenario != WriterChildScenario::handoff_cache_commit_failure) {
             if (::close(root_descriptor) != 0 && report.mutation_error == 0) {
                 report.mutation_error = errno;
             }
@@ -593,7 +884,9 @@ struct ConstructionFailureHookContext final {
                 }
 
                 if (scenario == WriterChildScenario::post_authority_private_directory_replacement) {
-                    if (rejects_writer_runtime_failure([&] { authority.finalize(); })) {
+                    const auto completion = successful_completion(authority);
+                    if (rejects_writer_runtime_failure(
+                            [&] { (void)authority.finalize_and_publish_handoff(completion); })) {
                         report.flags |= WRITER_FLAG_POST_AUTHORITY_FINALIZE_REJECTED;
                     }
                     if (!authority.valid() && !authority.finalized() && authority.count() == 0) {
@@ -610,11 +903,184 @@ struct ConstructionFailureHookContext final {
                     if (!authority.valid() && !authority.finalized() && authority.count() == 0) {
                         report.flags |= WRITER_FLAG_POST_AUTHORITY_INVALIDATED;
                     }
-                    if (rejects_writer_mutation([&] { authority.finalize(); })) {
+                    const auto completion = successful_completion(authority);
+                    if (rejects_writer_mutation(
+                            [&] { (void)authority.finalize_and_publish_handoff(completion); })) {
                         report.flags |= WRITER_FLAG_POST_AUTHORITY_FINALIZE_REJECTED;
                     }
                 }
+            } else if (scenario == WriterChildScenario::handoff_cache_commit_failure) {
+                const bool first_written =
+                    authority.write(first_relation) == 0 && authority.count() == 1;
+                const bool second_written =
+                    authority.write(second_relation) == 1 && authority.count() == 2;
+                if (first_written && second_written) {
+                    report.flags |= WRITER_FLAG_WROTE_EXACT_PAIR;
+                    report.count_after_write = static_cast<std::uint64_t>(authority.count());
+                }
+
+                const auto completion = successful_completion(authority);
+                try {
+                    (void)entry::trusted_test::
+                        finalize_and_publish_distributed_sieve_worker_handoff_v1_with_hooks(
+                            authority, completion,
+                            {
+                                .fail_before_retry_cache_commit = true,
+                            });
+                } catch (const std::bad_alloc&) {
+                    const auto unpublished =
+                        observe_worker_handoff_prefix(root_descriptor, *names, scenario);
+                    if (authority.valid() && authority.finalized() &&
+                        !authority.handoff_published() && authority.count() == 2 &&
+                        unpublished.exact_shape && unpublished.no_cleanup_artifact) {
+                        report.flags |= WRITER_FLAG_HANDOFF_CACHE_FAILURE;
+                    }
+                    if (unpublished.error != 0) {
+                        report.mutation_error = unpublished.error;
+                    }
+                }
+
+                const auto handoff = authority.finalize_and_publish_handoff(completion);
+                report.handoff_digest = handoff.self_digest;
+                if (authority.valid() && authority.finalized() && authority.handoff_published() &&
+                    authority.count() == 2) {
+                    report.flags |= WRITER_FLAG_FINALIZED | WRITER_FLAG_HANDOFF_PUBLISHED |
+                                    WRITER_FLAG_HANDOFF_CACHE_RETRY_SUCCEEDED;
+                }
+            } else if (is_handoff_fault(scenario)) {
+                const bool first_written =
+                    authority.write(first_relation) == 0 && authority.count() == 1;
+                const bool second_written =
+                    authority.write(second_relation) == 1 && authority.count() == 2;
+                if (first_written && second_written) {
+                    report.flags |= WRITER_FLAG_WROTE_EXACT_PAIR;
+                    report.count_after_write = static_cast<std::uint64_t>(authority.count());
+                }
+
+                const auto completion = successful_completion(authority);
+                WorkerHandoffStopContext stop{
+                    .target = handoff_fault_point(scenario),
+                };
+                bool interrupted = false;
+                try {
+                    (void)entry::trusted_test::
+                        finalize_and_publish_distributed_sieve_worker_handoff_v1_with_hooks(
+                            authority, completion,
+                            {
+                                .private_handoff_hooks =
+                                    {
+                                        .stop_after = stop_worker_handoff,
+                                        .context = &stop,
+                                    },
+                            });
+                } catch (const std::system_error& error) {
+                    interrupted =
+                        stop.invoked &&
+                        error.code() == std::make_error_code(std::errc::operation_canceled);
+                    report.writer_native_error = error.code().value();
+                }
+                if (interrupted && authority.valid() && authority.finalized() &&
+                    !authority.handoff_published() && authority.count() == 2) {
+                    report.flags |= WRITER_FLAG_HANDOFF_INTERRUPTED;
+                }
+
+                const auto prefix_before_drift =
+                    observe_worker_handoff_prefix(root_descriptor, *names, scenario);
+#if defined(__APPLE__)
+                const auto namespace_before_drift =
+                    snapshot_namespace(snapshot_root_path(root_descriptor));
+#endif
+                if (prefix_before_drift.exact_shape) {
+                    report.flags |= WRITER_FLAG_HANDOFF_PREFIX_OBSERVED;
+                }
+                if (prefix_before_drift.no_cleanup_artifact) {
+                    report.flags |= WRITER_FLAG_HANDOFF_PREFIX_NO_CLEANUP;
+                }
+                if (prefix_before_drift.error != 0) {
+                    report.mutation_error = prefix_before_drift.error;
+                }
+
+                auto drifted = completion;
+                drifted.processed_sq_count = 2;
+                try {
+                    (void)authority.finalize_and_publish_handoff(drifted);
+                } catch (const std::invalid_argument&) {
+                    const auto prefix_after_drift =
+                        observe_worker_handoff_prefix(root_descriptor, *names, scenario);
+#if defined(__APPLE__)
+                    const auto namespace_after_drift =
+                        snapshot_namespace(snapshot_root_path(root_descriptor));
+                    if (prefix_after_drift == prefix_before_drift &&
+                        same_namespace_snapshot(namespace_before_drift, namespace_after_drift)) {
+#else
+                    if (prefix_after_drift == prefix_before_drift) {
+#endif
+                        report.flags |= WRITER_FLAG_HANDOFF_RETRY_DRIFT_REJECTED;
+                    }
+                }
+
+                const auto handoff = authority.finalize_and_publish_handoff(completion);
+                report.handoff_digest = handoff.self_digest;
+                report.corpus_sha256 = handoff.artifact.corpus_sha256;
+                report.sequence_count = handoff.artifact.sequence_receipt.relation_count;
+                report.sequence_low = handoff.artifact.sequence_receipt.low;
+                report.sequence_high = handoff.artifact.sequence_receipt.high;
+                if (authority.valid() && authority.finalized() && authority.handoff_published() &&
+                    authority.count() == 2) {
+                    report.flags |= WRITER_FLAG_FINALIZED | WRITER_FLAG_HANDOFF_PUBLISHED |
+                                    WRITER_FLAG_HANDOFF_RETRY_SUCCEEDED;
+                }
+                const bool repeated = rejects_writer_mutation(
+                    [&] { (void)authority.finalize_and_publish_handoff(completion); });
+                if (repeated) {
+                    report.flags |= WRITER_FLAG_POST_FINALIZE_REJECTED;
+                }
+            } else if (scenario == WriterChildScenario::zero_row) {
+                const auto handoff =
+                    authority.finalize_and_publish_handoff(successful_completion(authority));
+                report.handoff_digest = handoff.self_digest;
+                report.corpus_sha256 = handoff.artifact.corpus_sha256;
+                report.sequence_count = handoff.artifact.sequence_receipt.relation_count;
+                report.sequence_low = handoff.artifact.sequence_receipt.low;
+                report.sequence_high = handoff.artifact.sequence_receipt.high;
+                if (authority.valid() && authority.finalized() && authority.handoff_published() &&
+                    authority.count() == 0) {
+                    report.flags |= WRITER_FLAG_FINALIZED | WRITER_FLAG_HANDOFF_PUBLISHED |
+                                    WRITER_FLAG_ZERO_ROW;
+                }
+                const bool write_rejected =
+                    rejects_writer_mutation([&] { (void)authority.write(first_relation); });
+                const bool finalize_rejected = rejects_writer_mutation([&] {
+                    (void)authority.finalize_and_publish_handoff(successful_completion(authority));
+                });
+                if (write_rejected && finalize_rejected) {
+                    report.flags |= WRITER_FLAG_POST_FINALIZE_REJECTED;
+                }
             } else if (scenario == WriterChildScenario::happy) {
+#if !defined(__APPLE__)
+                const bool first_written =
+                    authority.write(first_relation) == 0 && authority.count() == 1;
+                const bool second_written =
+                    authority.write(second_relation) == 1 && authority.count() == 2;
+                if (first_written && second_written) {
+                    report.flags |= WRITER_FLAG_WROTE_EXACT_PAIR;
+                    report.count_after_write = static_cast<std::uint64_t>(authority.count());
+                }
+                try {
+                    (void)authority.finalize_and_publish_handoff(successful_completion(authority));
+                } catch (const std::system_error& error) {
+                    report.writer_native_error = error.code().value();
+                    if (error.code() == std::make_error_code(std::errc::operation_not_supported) &&
+                        authority.valid() && !authority.finalized() &&
+                        !authority.handoff_published() && authority.count() == 2 &&
+                        authority.write(make_writer_relation(33, 9, 12)) == 2 &&
+                        authority.count() == 3) {
+                        report.flags |= WRITER_FLAG_HANDOFF_PLATFORM_UNSUPPORTED;
+                        report.flags |= WRITER_FLAG_HANDOFF_APPEND_PRESERVED;
+                        report.count_after_write = static_cast<std::uint64_t>(authority.count());
+                    }
+                }
+#else
                 // Keep one relation buffered across fork. A child-side normal
                 // return must purge, rather than flush, this inherited 1 MB
                 // stdio buffer before the parent appends the second relation.
@@ -644,22 +1110,45 @@ struct ConstructionFailureHookContext final {
                     authority.count() == 1) {
                     report.flags |= WRITER_FLAG_PARENT_UNCHANGED_AFTER_FORK;
                 }
+                try {
+                    (void)authority.finalize_and_publish_handoff({
+                        .processed_sq_count = 1,
+                        .next_sq_index =
+                            static_cast<std::uint32_t>(authority.record().sq_begin + 1U),
+                        .completion_reason = sieve::WorkerCompletionReasonV1::sq_cap,
+                    });
+                } catch (const std::invalid_argument&) {
+                    if (authority.valid() && !authority.finalized() &&
+                        !authority.handoff_published() && authority.count() == 1) {
+                        report.flags |= WRITER_FLAG_HANDOFF_MANIFEST_CAP_REJECTED;
+                    }
+                }
                 if (first_written && authority.write(second_relation) == 1 &&
                     authority.count() == 2) {
                     report.flags |= WRITER_FLAG_WROTE_EXACT_PAIR;
                     report.count_after_write = static_cast<std::uint64_t>(authority.count());
                 }
-                authority.finalize();
-                if (authority.valid() && authority.finalized() && authority.count() == 2) {
+                const auto handoff =
+                    authority.finalize_and_publish_handoff(successful_completion(authority));
+                report.handoff_digest = handoff.self_digest;
+                report.corpus_sha256 = handoff.artifact.corpus_sha256;
+                report.sequence_count = handoff.artifact.sequence_receipt.relation_count;
+                report.sequence_low = handoff.artifact.sequence_receipt.low;
+                report.sequence_high = handoff.artifact.sequence_receipt.high;
+                if (authority.valid() && authority.finalized() && authority.handoff_published() &&
+                    authority.count() == 2) {
                     report.flags |= WRITER_FLAG_FINALIZED;
+                    report.flags |= WRITER_FLAG_HANDOFF_PUBLISHED;
                 }
                 const bool write_rejected =
                     rejects_writer_mutation([&] { (void)authority.write(first_relation); });
-                const bool finalize_rejected =
-                    rejects_writer_mutation([&] { authority.finalize(); });
+                const bool finalize_rejected = rejects_writer_mutation([&] {
+                    (void)authority.finalize_and_publish_handoff(successful_completion(authority));
+                });
                 if (write_rejected && finalize_rejected) {
                     report.flags |= WRITER_FLAG_POST_FINALIZE_REJECTED;
                 }
+#endif
             }
         }
 
@@ -806,6 +1295,22 @@ void require_construction_failure(const WriterChildReport& report, WriterRollbac
 void test_writer_authority_happy_path(const std::filesystem::path& executable) {
     WorkerEntryFixture fixture("writer-happy");
     const auto result = launch_writer_case(fixture, executable, WriterChildScenario::happy);
+#if !defined(__APPLE__)
+    require_writer_entry_was_adopted(result.report);
+    CHECK((result.report.flags & WRITER_FLAG_AUTHORITY_READY) != 0U);
+    CHECK((result.report.flags & WRITER_FLAG_BINDINGS_VALID) != 0U);
+    CHECK((result.report.flags & WRITER_FLAG_SECOND_CONSUME_REJECTED) != 0U);
+    CHECK((result.report.flags & WRITER_FLAG_WROTE_EXACT_PAIR) != 0U);
+    CHECK((result.report.flags & WRITER_FLAG_HANDOFF_PLATFORM_UNSUPPORTED) != 0U);
+    CHECK((result.report.flags & WRITER_FLAG_HANDOFF_APPEND_PRESERVED) != 0U);
+    CHECK((result.report.flags & WRITER_FLAG_FINALIZED) == 0U);
+    CHECK((result.report.flags & WRITER_FLAG_HANDOFF_PUBLISHED) == 0U);
+    CHECK(result.report.count_after_write == 3);
+    CHECK(result.report.writer_native_error ==
+          std::make_error_code(std::errc::operation_not_supported).value());
+    require_exact_unsupported_namespace_delta(fixture, result.baseline);
+    require_no_handoff_or_cleanup_publication(fixture);
+#else
     require_writer_entry_was_adopted(result.report);
     CHECK(result.report.writer_phase == static_cast<std::uint32_t>(WriterPhase::writer_creation));
     CHECK(result.report.writer_status == static_cast<std::uint32_t>(WriterStatus::ready));
@@ -820,13 +1325,273 @@ void test_writer_authority_happy_path(const std::filesystem::path& executable) {
     const auto names = wave::distributed_sieve_worker_attempt_names_v1("entry_chunk_0", 0, 0);
     CHECK(names.has_value());
     const auto base = fixture.root / names->private_directory_leaf / "corpus";
-    gnfs::relation::OOCRelationReader reader(base.string());
-    CHECK(reader.count() == 2);
-    CHECK(writer_relation_equal(reader.read(0), make_writer_relation(31, 7, 10)));
-    CHECK(writer_relation_equal(reader.read(1), make_writer_relation(32, 8, 11)));
+    const Relation first = make_writer_relation(31, 7, 10);
+    const Relation second = make_writer_relation(32, 8, 11);
+    const std::vector<Relation> expected_relations{first, second};
+    const auto expected_sequence = gnfs::relation::relation_sequence_receipt(expected_relations);
+    const auto expected_corpus_sha256 =
+        gnfs::relation::relation_corpus_sha256_v1(expected_relations);
+    CHECK(expected_corpus_sha256.has_value());
+
+    const auto inspected = gnfs::relation::OOCCleanupTransaction::inspect_private_handoff(base);
+    CHECK(inspected.canonical());
+    CHECK(inspected.record.has_value());
+    const auto& envelope = *inspected.record;
+    CHECK(envelope.payload_kind ==
+          static_cast<std::uint32_t>(sieve::DistributedSieveRecordKindV1::worker_handoff));
+    CHECK(envelope.payload_version == 1);
+    const auto decoded = sieve::decode_distributed_sieve_record(envelope.opaque_payload);
+    CHECK(decoded);
+    CHECK(decoded.value.has_value());
+    const auto* handoff = std::get_if<sieve::WorkerHandoffV1>(&*decoded.value);
+    CHECK(handoff != nullptr);
+    CHECK(handoff->self_digest == result.report.handoff_digest);
+    CHECK(handoff->manifest_digest == fixture.store().manifest_digest());
+    CHECK(handoff->work_digest == work_digest(fixture.identity));
+    CHECK(handoff->attempt_started_digest == result.record.self_digest);
+    CHECK(handoff->lease == result.record.lease);
+    CHECK(handoff->chunk_id == result.record.chunk_id);
+    CHECK(handoff->sq_begin == result.record.sq_begin);
+    CHECK(handoff->sq_end == result.record.sq_end);
+    CHECK(handoff->next_sq_index == result.record.sq_end);
+    CHECK(handoff->processed_sq_count == 1);
+    CHECK(handoff->completion_reason == sieve::WorkerCompletionReasonV1::range_exhausted);
+    CHECK(handoff->relation_count == 2);
+    CHECK(handoff->cleanup_intent_absent);
+    CHECK(handoff->artifact.sequence_receipt.relation_count == expected_sequence.relation_count);
+    CHECK(handoff->artifact.sequence_receipt.low == expected_sequence.low);
+    CHECK(handoff->artifact.sequence_receipt.high == expected_sequence.high);
+    CHECK(handoff->artifact.corpus_sha256 == *expected_corpus_sha256);
+    CHECK(handoff->artifact.corpus_sha256 == result.report.corpus_sha256);
+    CHECK(result.report.sequence_count == expected_sequence.relation_count);
+    CHECK(result.report.sequence_low == expected_sequence.low);
+    CHECK(result.report.sequence_high == expected_sequence.high);
+    CHECK(handoff->artifact.index_file.extent == envelope.index.extent);
+    CHECK(handoff->artifact.data_file.extent == envelope.data.extent);
+    CHECK(handoff->artifact.index_file.identity.volume == envelope.index.identity.first);
+    CHECK(handoff->artifact.index_file.identity.object == envelope.index.identity.second);
+    CHECK(handoff->artifact.index_file.identity.generation == envelope.index.identity.third);
+    CHECK(handoff->artifact.data_file.identity.volume == envelope.data.identity.first);
+    CHECK(handoff->artifact.data_file.identity.object == envelope.data.identity.second);
+    CHECK(handoff->artifact.data_file.identity.generation == envelope.data.identity.third);
+    CHECK(handoff->wave_id == fixture.store().manifest().wave_id);
+    CHECK(handoff->attempt_ordinal == result.record.attempt_ordinal);
+    CHECK(handoff->artifact.descriptor.format_version == envelope.pair.format_version);
+    CHECK(handoff->artifact.descriptor.store_id == envelope.pair.store_id);
+    CHECK(handoff->artifact.descriptor.generation == envelope.pair.generation);
+    CHECK(handoff->artifact.descriptor.relation_count == envelope.pair.count);
+    CHECK(handoff->artifact.descriptor.data_end == envelope.pair.data_extent);
     require_exact_happy_namespace_delta(fixture, result.baseline);
-    require_no_handoff_or_cleanup_publication(fixture);
+
+    auto adoption = gnfs::relation::OOCCleanupTransaction::adopt_private_handoff(base);
+    CHECK(adoption.adopted());
+    CHECK(adoption.adoption.has_value());
+
+    const auto private_directory = fixture.root / names->private_directory_leaf;
+    int directory = -1;
+    do {
+        directory = ::open(private_directory.c_str(),
+                           O_RDONLY | O_NONBLOCK | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    } while (directory < 0 && errno == EINTR);
+    CHECK(directory >= 0);
+    CHECK(replace_regular_at_corrupt_same_extent(directory, "corpus.relidx",
+                                                 ".gnfs-test-adopted-index-displaced") == 0);
+    CHECK(replace_regular_at_corrupt_same_extent(directory, "corpus.reldata",
+                                                 ".gnfs-test-adopted-data-displaced") == 0);
+    struct stat named_index{};
+    struct stat named_data{};
+    CHECK(::fstatat(directory, "corpus.relidx", &named_index, AT_SYMLINK_NOFOLLOW) == 0);
+    CHECK(::fstatat(directory, "corpus.reldata", &named_data, AT_SYMLINK_NOFOLLOW) == 0);
+    CHECK(static_cast<std::uint64_t>(named_index.st_dev) != envelope.index.identity.first ||
+          static_cast<std::uint64_t>(named_index.st_ino) != envelope.index.identity.second);
+    CHECK(static_cast<std::uint64_t>(named_data.st_dev) != envelope.data.identity.first ||
+          static_cast<std::uint64_t>(named_data.st_ino) != envelope.data.identity.second);
+    CHECK(static_cast<std::uint64_t>(named_index.st_size) == envelope.index.extent);
+    CHECK(static_cast<std::uint64_t>(named_data.st_size) == envelope.data.extent);
+    CHECK(::close(directory) == 0);
+
+    const gnfs::relation::OOCSnapshotDescriptor expected_descriptor{
+        .format_version = handoff->artifact.descriptor.format_version,
+        .store_id = handoff->artifact.descriptor.store_id,
+        .generation = handoff->artifact.descriptor.generation,
+        .count = handoff->artifact.descriptor.relation_count,
+        .data_end = handoff->artifact.descriptor.data_end,
+    };
+    bool named_reopen_rejected = false;
+    try {
+        gnfs::relation::OOCRelationReader named_reader(base.string(), expected_descriptor);
+        (void)named_reader;
+    } catch (const std::exception&) {
+        named_reopen_rejected = true;
+    }
+    CHECK(named_reopen_rejected);
+
+    gnfs::relation::OOCPrivateHandoffReader adopted_reader(std::move(*adoption.adoption));
+    CHECK(adopted_reader.valid());
+    CHECK(adopted_reader.reader().count() == 2);
+    CHECK(writer_relation_equal(adopted_reader.reader().read(0), first));
+    CHECK(writer_relation_equal(adopted_reader.reader().read(1), second));
+    require_no_cleanup_publication(fixture);
+#endif
 }
+
+#if defined(__APPLE__)
+void test_writer_zero_row_handoff(const std::filesystem::path& executable) {
+    WorkerEntryFixture fixture("writer-zero-row");
+    const auto result = launch_writer_case(fixture, executable, WriterChildScenario::zero_row);
+    require_writer_entry_was_adopted(result.report);
+    CHECK((result.report.flags & WRITER_FLAG_AUTHORITY_READY) != 0U);
+    CHECK((result.report.flags & WRITER_FLAG_BINDINGS_VALID) != 0U);
+    CHECK((result.report.flags & WRITER_FLAG_SECOND_CONSUME_REJECTED) != 0U);
+    CHECK((result.report.flags & WRITER_FLAG_FINALIZED) != 0U);
+    CHECK((result.report.flags & WRITER_FLAG_HANDOFF_PUBLISHED) != 0U);
+    CHECK((result.report.flags & WRITER_FLAG_ZERO_ROW) != 0U);
+    CHECK((result.report.flags & WRITER_FLAG_POST_FINALIZE_REJECTED) != 0U);
+    CHECK(result.report.count_after_write == 0);
+
+    const auto names = wave::distributed_sieve_worker_attempt_names_v1("entry_chunk_0", 0, 0);
+    CHECK(names.has_value());
+    const auto base = fixture.root / names->private_directory_leaf / "corpus";
+    const auto inspected = gnfs::relation::OOCCleanupTransaction::inspect_private_handoff(base);
+    CHECK(inspected.canonical());
+    CHECK(inspected.record.has_value());
+    const auto& envelope = *inspected.record;
+    const auto decoded = sieve::decode_distributed_sieve_record(envelope.opaque_payload);
+    CHECK(decoded);
+    CHECK(decoded.value.has_value());
+    const auto* handoff = std::get_if<sieve::WorkerHandoffV1>(&*decoded.value);
+    CHECK(handoff != nullptr);
+    CHECK(handoff->self_digest == result.report.handoff_digest);
+    CHECK(handoff->completion_reason == sieve::WorkerCompletionReasonV1::zero_relations);
+    CHECK(handoff->processed_sq_count == 1);
+    CHECK(handoff->sq_begin == result.record.sq_begin);
+    CHECK(handoff->sq_end == result.record.sq_end);
+    CHECK(handoff->next_sq_index == result.record.sq_end);
+    CHECK(handoff->relation_count == 0);
+    CHECK(handoff->artifact.descriptor.relation_count == 0);
+    const std::vector<Relation> empty;
+    const auto empty_sequence = gnfs::relation::relation_sequence_receipt(empty);
+    CHECK(handoff->artifact.sequence_receipt.relation_count == empty_sequence.relation_count);
+    CHECK(handoff->artifact.sequence_receipt.low == empty_sequence.low);
+    CHECK(handoff->artifact.sequence_receipt.high == empty_sequence.high);
+    const auto empty_sha256 = gnfs::relation::relation_corpus_sha256_v1(empty);
+    CHECK(empty_sha256.has_value());
+    CHECK(handoff->artifact.corpus_sha256 == *empty_sha256);
+    CHECK(result.report.corpus_sha256 == *empty_sha256);
+    CHECK(envelope.pair.count == 0);
+    CHECK(envelope.pair.index_extent ==
+          gnfs::relation::OOCRelationWriter::INDEX_HEADER_BYTES +
+              gnfs::relation::OOCRelationWriter::INDEX_SENTINEL_BYTES);
+    CHECK(envelope.pair.data_extent == gnfs::relation::OOCRelationWriter::DATA_HEADER_BYTES);
+
+    auto adoption = gnfs::relation::OOCCleanupTransaction::adopt_private_handoff(base);
+    CHECK(adoption.adopted());
+    CHECK(adoption.adoption.has_value());
+    gnfs::relation::OOCPrivateHandoffReader reader(std::move(*adoption.adoption));
+    CHECK(reader.valid());
+    CHECK(reader.reader().count() == 0);
+    require_exact_happy_namespace_delta(fixture, result.baseline);
+    require_no_cleanup_publication(fixture);
+}
+
+void test_worker_handoff_cache_commit_failure_retry(const std::filesystem::path& executable) {
+    WorkerEntryFixture fixture("writer-handoff-cache-commit-failure");
+    const auto result =
+        launch_writer_case(fixture, executable, WriterChildScenario::handoff_cache_commit_failure);
+    require_writer_entry_was_adopted(result.report);
+    CHECK((result.report.flags & WRITER_FLAG_AUTHORITY_READY) != 0U);
+    CHECK((result.report.flags & WRITER_FLAG_BINDINGS_VALID) != 0U);
+    CHECK((result.report.flags & WRITER_FLAG_SECOND_CONSUME_REJECTED) != 0U);
+    CHECK((result.report.flags & WRITER_FLAG_WROTE_EXACT_PAIR) != 0U);
+    CHECK((result.report.flags & WRITER_FLAG_HANDOFF_CACHE_FAILURE) != 0U);
+    CHECK((result.report.flags & WRITER_FLAG_HANDOFF_CACHE_RETRY_SUCCEEDED) != 0U);
+    CHECK((result.report.flags & WRITER_FLAG_FINALIZED) != 0U);
+    CHECK((result.report.flags & WRITER_FLAG_HANDOFF_PUBLISHED) != 0U);
+    CHECK(result.report.count_after_write == 2);
+    CHECK(result.report.mutation_error == 0);
+
+    const auto names = wave::distributed_sieve_worker_attempt_names_v1("entry_chunk_0", 0, 0);
+    CHECK(names.has_value());
+    const auto base = fixture.root / names->private_directory_leaf / "corpus";
+    const auto inspected = gnfs::relation::OOCCleanupTransaction::inspect_private_handoff(base);
+    CHECK(inspected.canonical());
+    CHECK(inspected.record.has_value());
+    const auto decoded = sieve::decode_distributed_sieve_record(inspected.record->opaque_payload);
+    CHECK(decoded);
+    CHECK(decoded.value.has_value());
+    const auto* handoff = std::get_if<sieve::WorkerHandoffV1>(&*decoded.value);
+    CHECK(handoff != nullptr);
+    CHECK(handoff->self_digest == result.report.handoff_digest);
+    CHECK(handoff->relation_count == 2);
+    require_exact_happy_namespace_delta(fixture, result.baseline);
+    require_no_cleanup_publication(fixture);
+}
+
+void test_worker_handoff_durable_prefix_retries(const std::filesystem::path& executable) {
+    constexpr std::array scenarios{
+        WriterChildScenario::handoff_pending_durable,
+        WriterChildScenario::handoff_canonical_promoted,
+        WriterChildScenario::handoff_canonical_durable,
+        WriterChildScenario::handoff_reserved_revoked_durable,
+    };
+    for (const auto scenario : scenarios) {
+        WorkerEntryFixture fixture("writer-handoff-prefix-" +
+                                   std::to_string(static_cast<std::uint32_t>(scenario)));
+        const auto result = launch_writer_case(fixture, executable, scenario);
+        require_writer_entry_was_adopted(result.report);
+        CHECK((result.report.flags & WRITER_FLAG_AUTHORITY_READY) != 0U);
+        CHECK((result.report.flags & WRITER_FLAG_BINDINGS_VALID) != 0U);
+        CHECK((result.report.flags & WRITER_FLAG_SECOND_CONSUME_REJECTED) != 0U);
+        CHECK((result.report.flags & WRITER_FLAG_WROTE_EXACT_PAIR) != 0U);
+        if ((result.report.flags & WRITER_FLAG_HANDOFF_INTERRUPTED) == 0U) {
+            std::cerr << "handoff interruption failed for scenario "
+                      << static_cast<std::uint32_t>(scenario) << ", flags=" << result.report.flags
+                      << ", mutation_error=" << result.report.mutation_error
+                      << ", writer_error=" << result.report.writer_native_error << '\n';
+        }
+        CHECK((result.report.flags & WRITER_FLAG_HANDOFF_INTERRUPTED) != 0U);
+        if ((result.report.flags & WRITER_FLAG_HANDOFF_PREFIX_OBSERVED) == 0U) {
+            std::cerr << "handoff prefix observation failed for scenario "
+                      << static_cast<std::uint32_t>(scenario) << ", flags=" << result.report.flags
+                      << ", mutation_error=" << result.report.mutation_error
+                      << ", writer_error=" << result.report.writer_native_error << '\n';
+        }
+        CHECK((result.report.flags & WRITER_FLAG_HANDOFF_PREFIX_OBSERVED) != 0U);
+        CHECK((result.report.flags & WRITER_FLAG_HANDOFF_PREFIX_NO_CLEANUP) != 0U);
+        CHECK((result.report.flags & WRITER_FLAG_HANDOFF_RETRY_DRIFT_REJECTED) != 0U);
+        CHECK((result.report.flags & WRITER_FLAG_HANDOFF_RETRY_SUCCEEDED) != 0U);
+        CHECK((result.report.flags & WRITER_FLAG_HANDOFF_PUBLISHED) != 0U);
+        CHECK((result.report.flags & WRITER_FLAG_FINALIZED) != 0U);
+        CHECK((result.report.flags & WRITER_FLAG_POST_FINALIZE_REJECTED) != 0U);
+        CHECK(result.report.count_after_write == 2);
+        CHECK(result.report.mutation_error == 0);
+        CHECK(result.report.writer_native_error ==
+              std::make_error_code(std::errc::operation_canceled).value());
+
+        const auto names = wave::distributed_sieve_worker_attempt_names_v1("entry_chunk_0", 0, 0);
+        CHECK(names.has_value());
+        const auto base = fixture.root / names->private_directory_leaf / "corpus";
+        const auto inspected = gnfs::relation::OOCCleanupTransaction::inspect_private_handoff(base);
+        CHECK(inspected.canonical());
+        CHECK(inspected.record.has_value());
+        CHECK(!std::filesystem::exists(base.string() + ".gnfs-ooc-private-handoff-v1.pending"));
+        CHECK(!std::filesystem::exists(fixture.root / names->reserved_leaf));
+        const auto decoded =
+            sieve::decode_distributed_sieve_record(inspected.record->opaque_payload);
+        CHECK(decoded);
+        CHECK(decoded.value.has_value());
+        const auto* handoff = std::get_if<sieve::WorkerHandoffV1>(&*decoded.value);
+        CHECK(handoff != nullptr);
+        CHECK(handoff->self_digest == result.report.handoff_digest);
+        CHECK(handoff->artifact.corpus_sha256 == result.report.corpus_sha256);
+        CHECK(handoff->artifact.sequence_receipt.relation_count == result.report.sequence_count);
+        CHECK(handoff->artifact.sequence_receipt.low == result.report.sequence_low);
+        CHECK(handoff->artifact.sequence_receipt.high == result.report.sequence_high);
+        require_exact_happy_namespace_delta(fixture, result.baseline);
+        require_no_cleanup_publication(fixture);
+    }
+}
+#endif
 
 void test_writer_replacement_sandwiches(const std::filesystem::path& executable) {
     struct Case final {
@@ -1032,6 +1797,11 @@ int main(int argc, char** argv) {
         CHECK(argc >= 1);
         const auto executable = self_executable_path(argv[0]);
         test_writer_authority_happy_path(executable);
+#if defined(__APPLE__)
+        test_writer_zero_row_handoff(executable);
+        test_worker_handoff_cache_commit_failure_retry(executable);
+        test_worker_handoff_durable_prefix_retries(executable);
+#endif
         test_writer_replacement_sandwiches(executable);
         test_writer_wrong_consistent_base_digest(executable);
         test_writer_foreign_staging_residue(executable);

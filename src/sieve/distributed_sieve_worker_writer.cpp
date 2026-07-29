@@ -4,11 +4,16 @@
 #include <gnfs/relation/ooc_relation_store.hpp>
 #include <gnfs/util/process.hpp>
 
+#include <array>
 #include <cerrno>
 #include <new>
+#include <optional>
+#include <span>
 #include <stdexcept>
 #include <system_error>
+#include <type_traits>
 #include <utility>
+#include <vector>
 
 #if !defined(_WIN32)
 #include <unistd.h>
@@ -21,6 +26,8 @@ namespace private_lease = gnfs::relation::ooc_cleanup_detail;
 namespace ooc_store = gnfs::relation::detail;
 
 namespace {
+
+static_assert(std::is_nothrow_move_constructible_v<WorkerHandoffV1>);
 
 [[nodiscard]] std::uint64_t current_process_id() noexcept {
     const int id = gnfs::util::process_id();
@@ -86,6 +93,216 @@ map_writer_creation_failure(const std::exception_ptr& primary,
                        DistributedSieveWorkerWriterStatusV1::unexpected_failure, 0, rollback,
                        rollback_native_error);
     }
+}
+
+struct WorkerHandoffBuildContext final {
+    const AttemptStartedV1* attempt = nullptr;
+    const WaveManifestV1* manifest = nullptr;
+    const ChunkPlanV1* chunk = nullptr;
+    const DistributedSieveWorkerCompletionFactsV1* completion = nullptr;
+    std::optional<WorkerHandoffV1>* pending_handoff = nullptr;
+    std::vector<std::byte>* pending_payload = nullptr;
+    bool fail_before_retry_cache_commit = false;
+};
+
+void validate_worker_completion(const AttemptStartedV1& attempt, const WaveManifestV1& manifest,
+                                std::uint64_t relation_count,
+                                const DistributedSieveWorkerCompletionFactsV1& completion) {
+    if (attempt.sq_end <= attempt.sq_begin || completion.next_sq_index < attempt.sq_begin ||
+        completion.next_sq_index > attempt.sq_end ||
+        completion.processed_sq_count >
+            static_cast<std::uint64_t>(completion.next_sq_index - attempt.sq_begin)) {
+        throw std::invalid_argument("distributed worker completion facts are out of range");
+    }
+    switch (completion.completion_reason) {
+    case WorkerCompletionReasonV1::range_exhausted:
+        if (completion.next_sq_index != attempt.sq_end || completion.processed_sq_count == 0 ||
+            relation_count == 0) {
+            throw std::invalid_argument(
+                "distributed worker range-exhausted completion is inconsistent");
+        }
+        return;
+    case WorkerCompletionReasonV1::sq_cap:
+        if (completion.next_sq_index >= attempt.sq_end || completion.processed_sq_count == 0) {
+            throw std::invalid_argument("distributed worker SQ-cap completion is inconsistent");
+        }
+        if (manifest.sq_cap_per_worker == 0 ||
+            completion.processed_sq_count != manifest.sq_cap_per_worker) {
+            throw std::invalid_argument(
+                "distributed worker SQ-cap completion does not match the manifest");
+        }
+        return;
+    case WorkerCompletionReasonV1::relation_cap:
+        if (completion.next_sq_index >= attempt.sq_end || completion.processed_sq_count == 0 ||
+            relation_count == 0) {
+            throw std::invalid_argument(
+                "distributed worker relation-cap completion is inconsistent");
+        }
+        if (manifest.relation_cap_per_worker == 0 ||
+            relation_count < manifest.relation_cap_per_worker ||
+            (manifest.sq_cap_per_worker > 0 &&
+             completion.processed_sq_count >= manifest.sq_cap_per_worker)) {
+            throw std::invalid_argument(
+                "distributed worker relation-cap completion does not match the manifest");
+        }
+        return;
+    case WorkerCompletionReasonV1::zero_relations:
+        if (completion.next_sq_index != attempt.sq_end || relation_count != 0) {
+            throw std::invalid_argument(
+                "distributed worker zero-relation completion is inconsistent");
+        }
+        return;
+    }
+    throw std::invalid_argument("distributed worker completion reason is unknown");
+}
+
+[[nodiscard]] NativeIdentityV1
+protocol_native_identity(const std::array<std::uint64_t, 3>& identity) noexcept {
+    return {
+        .volume = identity[0],
+        .object = identity[1],
+        .generation = identity[2],
+    };
+}
+
+[[nodiscard]] bool worker_handoff_matches_evidence(
+    const WorkerHandoffV1& handoff,
+    const gnfs::relation::OOCFinalizedCorpusEvidenceV1& evidence) noexcept;
+
+[[nodiscard]] gnfs::relation::OOCPrivateHandoffPayloadV1
+build_worker_handoff_payload(const gnfs::relation::OOCFinalizedCorpusEvidenceV1& evidence,
+                             void* opaque_context) {
+    auto& context = *static_cast<WorkerHandoffBuildContext*>(opaque_context);
+    if (context.attempt == nullptr || context.manifest == nullptr || context.chunk == nullptr ||
+        context.completion == nullptr || context.pending_handoff == nullptr ||
+        context.pending_payload == nullptr || context.pending_handoff->has_value() ||
+        !context.pending_payload->empty()) {
+        throw std::logic_error("distributed worker handoff builder context is invalid");
+    }
+    const auto& attempt = *context.attempt;
+    const auto& manifest = *context.manifest;
+    const auto& chunk = *context.chunk;
+    const auto& completion = *context.completion;
+
+    if (attempt.manifest_digest != manifest.self_digest || attempt.chunk_id != chunk.chunk_id ||
+        attempt.sq_begin != chunk.sq_begin || attempt.sq_end != chunk.sq_end ||
+        evidence.descriptor.format_version != manifest.ooc_format_version ||
+        evidence.descriptor.count != evidence.sequence_receipt.relation_count ||
+        manifest.handoff_version != DISTRIBUTED_SIEVE_PROTOCOL_SCHEMA_VERSION_V1 ||
+        manifest.receipt_version != 1 || manifest.digest_version != 1) {
+        throw std::logic_error(
+            "distributed worker handoff inputs do not share one protocol identity");
+    }
+
+    DistributedSieveProtocolRecordV1 sealed = WorkerHandoffV1{
+        .manifest_digest = manifest.self_digest,
+        .work_digest = manifest.work_sha256,
+        .wave_id = manifest.wave_id,
+        .chunk_id = attempt.chunk_id,
+        .sq_begin = attempt.sq_begin,
+        .sq_end = attempt.sq_end,
+        .attempt_ordinal = attempt.attempt_ordinal,
+        .attempt_started_digest = attempt.self_digest,
+        .lease = attempt.lease,
+        .artifact =
+            {
+                .descriptor =
+                    {
+                        .format_version = evidence.descriptor.format_version,
+                        .store_id = evidence.descriptor.store_id,
+                        .generation = evidence.descriptor.generation,
+                        .relation_count = evidence.descriptor.count,
+                        .data_end = evidence.descriptor.data_end,
+                    },
+                .index_file =
+                    {
+                        .identity = protocol_native_identity(evidence.index_file.identity),
+                        .extent = evidence.index_file.extent,
+                    },
+                .data_file =
+                    {
+                        .identity = protocol_native_identity(evidence.data_file.identity),
+                        .extent = evidence.data_file.extent,
+                    },
+                .sequence_receipt =
+                    {
+                        .relation_count = evidence.sequence_receipt.relation_count,
+                        .low = evidence.sequence_receipt.low,
+                        .high = evidence.sequence_receipt.high,
+                    },
+                .corpus_sha256 = evidence.corpus_sha256,
+            },
+        .processed_sq_count = completion.processed_sq_count,
+        .next_sq_index = completion.next_sq_index,
+        .completion_reason = completion.completion_reason,
+        .relation_count = evidence.descriptor.count,
+        .cleanup_intent_absent = true,
+    };
+    if (const auto status = seal_distributed_sieve_record(sealed); !status) {
+        throw std::runtime_error("distributed worker handoff sealing failed");
+    }
+    const auto encoded = encode_distributed_sieve_record(sealed);
+    if (!encoded || !encoded.bytes) {
+        throw std::runtime_error("distributed worker handoff encoding failed");
+    }
+    const auto decoded = decode_distributed_sieve_record(*encoded.bytes);
+    if (!decoded || !decoded.value) {
+        throw std::runtime_error("distributed worker handoff round-trip validation failed");
+    }
+    const auto* handoff = std::get_if<WorkerHandoffV1>(&*decoded.value);
+    if (handoff == nullptr || !validate_distributed_sieve_record(*decoded.value, true) ||
+        !worker_handoff_matches_evidence(*handoff, evidence)) {
+        throw std::runtime_error("distributed worker handoff decoded as a foreign record");
+    }
+
+    // Complete every allocation before mutating the retry cache. Moving the
+    // finished values below is noexcept, so allocation failure cannot pair a
+    // typed handoff with a missing or different payload.
+    WorkerHandoffV1 cached_handoff = *handoff;
+    std::vector<std::byte> cached_payload = *encoded.bytes;
+    std::vector<std::byte> returned_payload = *encoded.bytes;
+    if (context.fail_before_retry_cache_commit) {
+        throw std::bad_alloc();
+    }
+    context.pending_handoff->emplace(std::move(cached_handoff));
+    context.pending_payload->swap(cached_payload);
+    return {
+        .kind = static_cast<std::uint32_t>(DistributedSieveRecordKindV1::worker_handoff),
+        .version = manifest.handoff_version,
+        .bytes = std::move(returned_payload),
+    };
+}
+
+[[nodiscard]] bool worker_handoff_matches_evidence(
+    const WorkerHandoffV1& handoff,
+    const gnfs::relation::OOCFinalizedCorpusEvidenceV1& evidence) noexcept {
+    const auto& artifact = handoff.artifact;
+    return artifact.descriptor.format_version == evidence.descriptor.format_version &&
+           artifact.descriptor.store_id == evidence.descriptor.store_id &&
+           artifact.descriptor.generation == evidence.descriptor.generation &&
+           artifact.descriptor.relation_count == evidence.descriptor.count &&
+           artifact.descriptor.data_end == evidence.descriptor.data_end &&
+           artifact.index_file.identity == protocol_native_identity(evidence.index_file.identity) &&
+           artifact.index_file.extent == evidence.index_file.extent &&
+           artifact.data_file.identity == protocol_native_identity(evidence.data_file.identity) &&
+           artifact.data_file.extent == evidence.data_file.extent &&
+           artifact.sequence_receipt.relation_count == evidence.sequence_receipt.relation_count &&
+           artifact.sequence_receipt.low == evidence.sequence_receipt.low &&
+           artifact.sequence_receipt.high == evidence.sequence_receipt.high &&
+           artifact.corpus_sha256 == evidence.corpus_sha256;
+}
+
+[[nodiscard]] bool cached_worker_handoff_is_valid(const std::optional<WorkerHandoffV1>& handoff,
+                                                  std::span<const std::byte> payload) {
+    if (!handoff || payload.empty()) {
+        return false;
+    }
+    const auto decoded = decode_distributed_sieve_record(payload);
+    if (!decoded || !decoded.value || !validate_distributed_sieve_record(*decoded.value, true)) {
+        return false;
+    }
+    const auto* decoded_handoff = std::get_if<WorkerHandoffV1>(&*decoded.value);
+    return decoded_handoff != nullptr && decoded_handoff->self_digest == handoff->self_digest;
 }
 
 } // namespace
@@ -298,7 +515,10 @@ struct DistributedSieveWorkerWriterAuthorityV1::State final {
     writer_detail::OOCInheritedP8WriterMintV1 mint;
     std::uint64_t creator_process_id = 0;
     std::unique_ptr<gnfs::relation::OOCRelationWriter> writer;
-    bool finalized = false;
+    std::optional<DistributedSieveWorkerCompletionFactsV1> pending_completion;
+    std::optional<WorkerHandoffV1> pending_handoff;
+    std::vector<std::byte> pending_payload;
+    bool handoff_published = false;
 };
 
 DistributedSieveWorkerWriterAuthorityV1::DistributedSieveWorkerWriterAuthorityV1(
@@ -322,8 +542,11 @@ bool DistributedSieveWorkerWriterAuthorityV1::valid() const noexcept {
 }
 
 bool DistributedSieveWorkerWriterAuthorityV1::finalized() const noexcept {
-    return valid() && state_->finalized &&
-           state_->writer->state() == gnfs::relation::OOCWriterState::Finalized;
+    return valid() && state_->writer->state() == gnfs::relation::OOCWriterState::Finalized;
+}
+
+bool DistributedSieveWorkerWriterAuthorityV1::handoff_published() const noexcept {
+    return valid() && state_->handoff_published;
 }
 
 std::size_t DistributedSieveWorkerWriterAuthorityV1::count() const noexcept {
@@ -353,22 +576,81 @@ DistributedSieveWorkerWriterAuthorityV1::witness() const noexcept {
 }
 
 std::size_t DistributedSieveWorkerWriterAuthorityV1::write(const gnfs::core::Relation& relation) {
-    if (!valid() || state_->finalized) {
+    if (!valid() || finalized() || state_->pending_handoff.has_value()) {
         throw std::logic_error("distributed worker writer authority is not appendable");
     }
     return state_->writer->write(relation);
 }
 
-void DistributedSieveWorkerWriterAuthorityV1::finalize() {
+WorkerHandoffV1 DistributedSieveWorkerWriterAuthorityV1::finalize_and_publish_handoff(
+    const DistributedSieveWorkerCompletionFactsV1& completion) {
+    return finalize_and_publish_handoff_impl(completion, {}, false);
+}
+
+WorkerHandoffV1 DistributedSieveWorkerWriterAuthorityV1::finalize_and_publish_handoff_impl(
+    const DistributedSieveWorkerCompletionFactsV1& completion,
+    gnfs::relation::OOCPrivateHandoffTestHooks hooks, bool fail_before_retry_cache_commit) {
     if (!valid()) {
         throw std::logic_error("distributed worker writer authority is invalid");
     }
-    if (state_->finalized) {
-        throw std::logic_error("distributed worker writer authority is already finalized");
+    if (state_->handoff_published) {
+        throw std::logic_error("distributed worker handoff is already published");
     }
-    (void)state_->writer->finalize();
-    state_->finalized = true;
+#if !defined(__APPLE__)
+    throw std::system_error(std::make_error_code(std::errc::operation_not_supported),
+                            "distributed worker handoff publication is unsupported");
+#endif
+    if (state_->pending_completion && *state_->pending_completion != completion) {
+        throw std::invalid_argument("distributed worker handoff retry changed completion facts");
+    }
+    validate_worker_completion(state_->mint.record_, state_->mint.manifest_,
+                               static_cast<std::uint64_t>(state_->writer->count()), completion);
+    state_->pending_completion = completion;
+
+    if (!state_->pending_handoff) {
+        WorkerHandoffBuildContext context{
+            .attempt = &state_->mint.record_,
+            .manifest = &state_->mint.manifest_,
+            .chunk = &state_->mint.chunk_,
+            .completion = &*state_->pending_completion,
+            .pending_handoff = &state_->pending_handoff,
+            .pending_payload = &state_->pending_payload,
+            .fail_before_retry_cache_commit = fail_before_retry_cache_commit,
+        };
+        state_->writer->finalize_and_publish_private_handoff_built(build_worker_handoff_payload,
+                                                                   &context, hooks);
+        if (!state_->pending_handoff || state_->pending_payload.empty()) {
+            throw std::runtime_error(
+                "distributed worker canonical handoff does not match sealed payload");
+        }
+    } else {
+        if (!cached_worker_handoff_is_valid(state_->pending_handoff, state_->pending_payload)) {
+            throw std::runtime_error("distributed worker cached handoff payload is invalid");
+        }
+        (void)state_->writer->finalize_and_publish_private_handoff(
+            static_cast<std::uint32_t>(DistributedSieveRecordKindV1::worker_handoff),
+            state_->mint.manifest_.handoff_version, state_->pending_payload, hooks);
+    }
+
+    WorkerHandoffV1 published_handoff = std::move(*state_->pending_handoff);
+    state_->pending_handoff.reset();
+    state_->pending_payload.clear();
+    state_->pending_completion.reset();
+    state_->handoff_published = true;
+    return published_handoff;
 }
+
+namespace trusted_test {
+
+WorkerHandoffV1 finalize_and_publish_distributed_sieve_worker_handoff_v1_with_hooks(
+    DistributedSieveWorkerWriterAuthorityV1& writer,
+    const DistributedSieveWorkerCompletionFactsV1& completion,
+    DistributedSieveWorkerHandoffTestHooksV1 hooks) {
+    return writer.finalize_and_publish_handoff_impl(completion, hooks.private_handoff_hooks,
+                                                    hooks.fail_before_retry_cache_commit);
+}
+
+} // namespace trusted_test
 
 namespace distributed_sieve_worker_writer_detail {
 

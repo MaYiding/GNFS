@@ -4,6 +4,7 @@
 #include "gnfs/relation/large_prime_key.hpp"
 #include "gnfs/relation/ooc_cleanup_transaction.hpp"
 #include "gnfs/relation/ooc_relation_format.hpp"
+#include "gnfs/relation/relation_corpus_sha256.hpp"
 #include "gnfs/relation/relation_sequence_receipt.hpp"
 #include "gnfs/util/mmap_file.hpp"
 #include "gnfs/util/native_binary_update_file.hpp"
@@ -22,6 +23,7 @@
 #include <memory>
 #include <optional>
 #include <random>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -46,6 +48,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
+
+namespace gnfs::sieve::distributed_sieve_worker_entry_detail {
+class DistributedSieveWorkerWriterAuthorityV1;
+}
 
 namespace gnfs::relation {
 
@@ -78,6 +84,43 @@ struct OOCSnapshotDescriptor {
 
     friend bool operator==(const OOCSnapshotDescriptor&, const OOCSnapshotDescriptor&) = default;
 };
+
+/// Immutable facts reproduced from the exact retained handles of one durable
+/// finalized V3 corpus.
+///
+/// This value grants no file, namespace, lease, or cleanup authority. The
+/// relation writer mints it only after final MAGIC and directory durability,
+/// then validates the full corpus through read-only duplicates of the same
+/// native objects before closing its update streams.
+struct OOCFinalizedCorpusEvidenceV1 final {
+    struct NativeFileExtent final {
+        std::array<std::uint64_t, 3> identity{};
+        std::uint64_t extent = 0;
+
+        [[nodiscard]] friend constexpr bool operator==(const NativeFileExtent&,
+                                                       const NativeFileExtent&) noexcept = default;
+    };
+
+    OOCSnapshotDescriptor descriptor;
+    NativeFileExtent index_file;
+    NativeFileExtent data_file;
+    RelationSequenceReceipt sequence_receipt;
+    util::Sha256Digest corpus_sha256;
+
+    [[nodiscard]] friend constexpr bool
+    operator==(const OOCFinalizedCorpusEvidenceV1&,
+               const OOCFinalizedCorpusEvidenceV1&) noexcept = default;
+};
+
+/// Opaque application payload produced from exact finalized corpus evidence.
+struct OOCPrivateHandoffPayloadV1 final {
+    std::uint32_t kind = 0;
+    std::uint32_t version = 0;
+    std::vector<std::byte> bytes;
+};
+
+using OOCPrivateHandoffPayloadBuilderV1 =
+    OOCPrivateHandoffPayloadV1 (*)(const OOCFinalizedCorpusEvidenceV1& evidence, void* context);
 
 /// Fully validated paired resume prefix. The writer constructs it only after
 /// validating every compact record and index boundary through the descriptor's
@@ -1166,7 +1209,17 @@ public:
     /// Finalize the store. This is the only operation that flips MAGIC.
     /// Idempotent: repeated calls return the same final descriptor.
     [[nodiscard]] OOCSnapshotDescriptor finalize(FinalizeStageHook hook = nullptr) {
+        return finalize_impl(hook, false);
+    }
+
+private:
+    [[nodiscard]] OOCSnapshotDescriptor finalize_impl(FinalizeStageHook hook,
+                                                      bool retain_finalized_streams) {
         if (state_ == OOCWriterState::Finalized) {
+            if (retain_finalized_streams && (!data_stream_.is_open() || !idx_stream_.is_open())) {
+                throw std::logic_error(
+                    "OOCRelationWriter::finalize: retained finalized handles are unavailable");
+            }
             if (data_stream_.is_open() && idx_stream_.is_open()) {
                 require_store_named_identity("finalize completed preflight");
             } else if (!finalized_durable_ && (data_stream_.is_open() || idx_stream_.is_open())) {
@@ -1177,7 +1230,9 @@ public:
                 sync_store_files_and_directory();
                 finalized_durable_ = true;
             }
-            close_open_streams_checked("finalize durability retry close");
+            if (!retain_finalized_streams) {
+                close_open_streams_checked("finalize durability retry close");
+            }
             return *finalized_descriptor_;
         }
         if (state_ == OOCWriterState::Failed) {
@@ -1253,7 +1308,9 @@ public:
             state_ = OOCWriterState::Finalized;
             sync_store_files_and_directory();
             finalized_durable_ = true;
-            close_open_streams_checked("finalize close");
+            if (!retain_finalized_streams) {
+                close_open_streams_checked("finalize close");
+            }
             if (hook != nullptr) {
                 hook(FinalizeStage::FinalMagicDurable);
             }
@@ -1267,6 +1324,7 @@ public:
         }
     }
 
+public:
     /// Compatibility alias for existing callers.
     void close() {
         (void)finalize();
@@ -2585,6 +2643,13 @@ private:
         return seed == 0 ? 1 : seed;
     }
 
+    [[nodiscard]] OOCFinalizedCorpusEvidenceV1
+    capture_finalized_corpus_evidence(const OOCSnapshotDescriptor& descriptor);
+
+    void finalize_and_publish_private_handoff_built(OOCPrivateHandoffPayloadBuilderV1 builder,
+                                                    void* context,
+                                                    OOCPrivateHandoffTestHooks hooks = {});
+
     std::string base_path_;
     std::optional<ExactPrivateDirectoryBinding> exact_private_directory_;
     // Declared before streams so stream destruction always precedes release of
@@ -2609,6 +2674,8 @@ private:
     size_t active_prefix_readers_ = 0;
 
     friend class OOCRelationPrefixReader;
+    friend class ::gnfs::sieve::distributed_sieve_worker_entry_detail::
+        DistributedSieveWorkerWriterAuthorityV1;
     friend class ::gnfs::sieve::distributed_sieve_worker_entry_detail::
         distributed_sieve_worker_writer_detail::OOCInheritedP8WriterMintV1;
 };
@@ -2941,6 +3008,166 @@ private:
 
     friend class ReadOnlyRelationCorpusView;
 };
+
+inline OOCFinalizedCorpusEvidenceV1
+OOCRelationWriter::capture_finalized_corpus_evidence(const OOCSnapshotDescriptor& descriptor) {
+    if (state_ != OOCWriterState::Finalized || !finalized_durable_ || !finalized_descriptor_ ||
+        *finalized_descriptor_ != descriptor || !data_stream_.is_open() || !idx_stream_.is_open()) {
+        throw std::logic_error(
+            "OOCRelationWriter: finalized corpus evidence requires retained exact handles");
+    }
+    if (!cleanup_receipt_ || cleanup_receipt_->spent() ||
+        cleanup_receipt_->store_id_ != descriptor.store_id) {
+        throw std::logic_error(
+            "OOCRelationWriter: finalized corpus evidence ownership is unavailable");
+    }
+
+    require_store_named_identity("finalized evidence preflight");
+    const std::uint64_t expected_index_extent = index_size_for_count(descriptor.count);
+    if (idx_stream_.size("finalized evidence index extent") != expected_index_extent ||
+        data_stream_.size("finalized evidence data extent") != descriptor.data_end) {
+        throw std::runtime_error("OOCRelationWriter: finalized corpus evidence extent mismatch");
+    }
+
+    auto index_file = idx_stream_.duplicate_for_mapping("finalized evidence index duplicate");
+    auto data_file = data_stream_.duplicate_for_mapping("finalized evidence data duplicate");
+    OOCRelationReader reader(std::move(index_file), std::move(data_file), descriptor);
+
+    RelationSequenceReceiptAccumulator sequence;
+    RelationCorpusSha256AccumulatorV1 corpus_sha256;
+    for (std::size_t index = 0; index < reader.count(); ++index) {
+        const auto relation = reader.read(index);
+        sequence.append(relation);
+        if (!corpus_sha256.append(relation)) {
+            throw std::runtime_error(
+                "OOCRelationWriter: finalized corpus SHA-256 accumulation failed");
+        }
+    }
+    const auto digest = corpus_sha256.finalize();
+    if (!digest || sequence.count() != descriptor.count ||
+        corpus_sha256.count() != descriptor.count) {
+        throw std::runtime_error(
+            "OOCRelationWriter: finalized corpus evidence count or digest mismatch");
+    }
+
+    // The mapping above remains bound to the duplicated exact objects. Repeat
+    // the retained-handle namespace and extent checks before any application
+    // payload can be built from the evidence.
+    require_store_named_identity("finalized evidence commit");
+    if (idx_stream_.size("finalized evidence final index extent") != expected_index_extent ||
+        data_stream_.size("finalized evidence final data extent") != descriptor.data_end) {
+        throw std::runtime_error(
+            "OOCRelationWriter: finalized corpus evidence changed during validation");
+    }
+
+    const auto index_identity = cleanup_receipt_->index_identity_;
+    const auto data_identity = cleanup_receipt_->data_identity_;
+    const std::array<std::uint64_t, 3> index_native{
+        index_identity.first,
+        index_identity.second,
+        index_identity.third,
+    };
+    const std::array<std::uint64_t, 3> data_native{
+        data_identity.first,
+        data_identity.second,
+        data_identity.third,
+    };
+    if (index_native == std::array<std::uint64_t, 3>{} ||
+        data_native == std::array<std::uint64_t, 3>{} || index_native == data_native) {
+        throw std::runtime_error("OOCRelationWriter: finalized corpus native identity is invalid");
+    }
+
+    return {
+        .descriptor = descriptor,
+        .index_file =
+            {
+                .identity = index_native,
+                .extent = expected_index_extent,
+            },
+        .data_file =
+            {
+                .identity = data_native,
+                .extent = descriptor.data_end,
+            },
+        .sequence_receipt = sequence.finish(),
+        .corpus_sha256 = *digest,
+    };
+}
+
+inline void OOCRelationWriter::finalize_and_publish_private_handoff_built(
+    OOCPrivateHandoffPayloadBuilderV1 builder, void* context, OOCPrivateHandoffTestHooks hooks) {
+    if (builder == nullptr) {
+        throw std::invalid_argument(
+            "OOCRelationWriter: private handoff payload builder is missing");
+    }
+    if (!owned_deferred_private_lease_) {
+        throw std::logic_error(
+            "OOCRelationWriter: built private handoff requires deferred private-lease mode");
+    }
+    if (!cleanup_receipt_ || cleanup_receipt_->spent()) {
+        throw std::logic_error("OOCRelationWriter: built private handoff ownership is unavailable");
+    }
+#if !defined(__APPLE__)
+    throw std::system_error(std::make_error_code(std::errc::operation_not_supported),
+                            "OOCRelationWriter: built private handoff publication is unsupported");
+#endif
+    DeferredPrivateLeaseActionGuard action_guard(*this);
+
+    const OOCSnapshotDescriptor descriptor = finalize_impl(nullptr, true);
+    if (descriptor.store_id != store_id_) {
+        throw std::runtime_error(
+            "OOCRelationWriter: built private handoff descriptor identity mismatch");
+    }
+    auto evidence = capture_finalized_corpus_evidence(descriptor);
+    auto payload = builder(evidence, context);
+    if (payload.kind == 0 || payload.version == 0 ||
+        payload.bytes.size() > OOC_PRIVATE_HANDOFF_MAX_OPAQUE_PAYLOAD_BYTES) {
+        throw std::invalid_argument(
+            "OOCRelationWriter: built private handoff payload contract is invalid");
+    }
+
+    // Revoke the last update-capable handles before publication. If a checked
+    // close fails, the caller may retry through finalize(); no handoff or
+    // cleanup namespace mutation has happened yet.
+    close_open_streams_checked("built private handoff close");
+
+    const OOCPrivateHandoffPairDescriptorV1 pair{
+        .format_version = descriptor.format_version,
+        .store_id = descriptor.store_id,
+        .generation = descriptor.generation,
+        .count = descriptor.count,
+        .index_extent = evidence.index_file.extent,
+        .data_extent = evidence.data_file.extent,
+    };
+    const auto result = OOCCleanupTransaction::publish_private_handoff(
+        *cleanup_receipt_, *owned_deferred_private_lease_, pair, payload.kind, payload.version,
+        payload.bytes, hooks);
+    if (!result.canonical() || !result.record) {
+        const auto error = result.result.native_error
+                               ? result.result.native_error
+                               : std::make_error_code(std::errc::protocol_error);
+        throw std::system_error(error,
+                                "OOCRelationWriter: built private handoff publication failed");
+    }
+
+    const auto native_identity = [](const std::array<std::uint64_t, 3>& identity) noexcept {
+        return util::durable_immutable_record::NativeIdentity{
+            .first = identity[0],
+            .second = identity[1],
+            .third = identity[2],
+        };
+    };
+    const auto& record = *result.record;
+    if (record.pair != pair ||
+        record.index.identity != native_identity(evidence.index_file.identity) ||
+        record.index.extent != evidence.index_file.extent ||
+        record.data.identity != native_identity(evidence.data_file.identity) ||
+        record.data.extent != evidence.data_file.extent || record.payload_kind != payload.kind ||
+        record.payload_version != payload.version || record.opaque_payload != payload.bytes) {
+        throw std::runtime_error(
+            "OOCRelationWriter: canonical private handoff does not match finalized evidence");
+    }
+}
 
 /// Move-only same-handle reader owner for one adopted private handoff.
 ///

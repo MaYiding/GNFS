@@ -1,9 +1,9 @@
 #pragma once
 
-// Source-private M3a-2a bridge from one authenticated worker-entry token to
-// one exact P8 relation writer. The caller receives only append/finalize
-// authority: paths, native handles, store identity, cleanup receipts, and
-// handoff/publication operations remain unreachable.
+// Source-private M3a-2 bridge from one authenticated worker-entry token to one
+// exact P8 relation writer and one typed terminal handoff. Paths, native
+// handles, store identity, generic handoff publication, cleanup receipts, and
+// deletion authority remain unreachable.
 
 #include "distributed_sieve_work_package_codec_internal.hpp"
 
@@ -32,6 +32,16 @@ namespace gnfs::sieve::distributed_sieve_worker_entry_detail {
 class DistributedSieveWorkerEntryV1;
 class DistributedSieveWorkerWriterAuthorityV1;
 struct DistributedSieveWorkerWriterAdoptionResultV1;
+
+struct DistributedSieveWorkerCompletionFactsV1 final {
+    std::uint64_t processed_sq_count = 0;
+    std::uint32_t next_sq_index = 0;
+    WorkerCompletionReasonV1 completion_reason = WorkerCompletionReasonV1::range_exhausted;
+
+    [[nodiscard]] friend constexpr bool
+    operator==(const DistributedSieveWorkerCompletionFactsV1&,
+               const DistributedSieveWorkerCompletionFactsV1&) noexcept = default;
+};
 
 enum class DistributedSieveWorkerWriterPhaseV1 : std::uint8_t {
     none,
@@ -120,9 +130,19 @@ struct DistributedSieveWorkerWriterTestHooksV1 final {
     gnfs::relation::OOCPrivateLeaseTestHooks private_lease_hooks;
 };
 
+struct DistributedSieveWorkerHandoffTestHooksV1 final {
+    gnfs::relation::OOCPrivateHandoffTestHooks private_handoff_hooks;
+    bool fail_before_retry_cache_commit = false;
+};
+
 [[nodiscard]] DistributedSieveWorkerWriterAdoptionResultV1
 consume_distributed_sieve_worker_writer_v1_with_hooks(
     DistributedSieveWorkerEntryV1&& entry, DistributedSieveWorkerWriterTestHooksV1 hooks) noexcept;
+
+[[nodiscard]] WorkerHandoffV1 finalize_and_publish_distributed_sieve_worker_handoff_v1_with_hooks(
+    DistributedSieveWorkerWriterAuthorityV1& writer,
+    const DistributedSieveWorkerCompletionFactsV1& completion,
+    DistributedSieveWorkerHandoffTestHooksV1 hooks);
 
 } // namespace trusted_test
 
@@ -283,6 +303,7 @@ public:
 
     [[nodiscard]] bool valid() const noexcept;
     [[nodiscard]] bool finalized() const noexcept;
+    [[nodiscard]] bool handoff_published() const noexcept;
     [[nodiscard]] std::size_t count() const noexcept;
 
     [[nodiscard]] const AttemptStartedV1& record() const noexcept;
@@ -294,17 +315,27 @@ public:
         witness() const noexcept;
 
     std::size_t write(const gnfs::core::Relation& relation);
-    void finalize();
+    [[nodiscard]] WorkerHandoffV1
+    finalize_and_publish_handoff(const DistributedSieveWorkerCompletionFactsV1& completion);
 
 private:
     struct State;
     explicit DistributedSieveWorkerWriterAuthorityV1(std::unique_ptr<State> state) noexcept;
+    [[nodiscard]] WorkerHandoffV1
+    finalize_and_publish_handoff_impl(const DistributedSieveWorkerCompletionFactsV1& completion,
+                                      gnfs::relation::OOCPrivateHandoffTestHooks hooks,
+                                      bool fail_before_retry_cache_commit);
 
     std::unique_ptr<State> state_;
 
     friend DistributedSieveWorkerWriterAdoptionResultV1
     distributed_sieve_worker_writer_detail::mint_distributed_sieve_worker_writer_v1(
         distributed_sieve_worker_writer_detail::OOCInheritedP8WriterMintV1&& mint) noexcept;
+    friend WorkerHandoffV1
+    trusted_test::finalize_and_publish_distributed_sieve_worker_handoff_v1_with_hooks(
+        DistributedSieveWorkerWriterAuthorityV1& writer,
+        const DistributedSieveWorkerCompletionFactsV1& completion,
+        trusted_test::DistributedSieveWorkerHandoffTestHooksV1 hooks);
 };
 
 struct DistributedSieveWorkerWriterAdoptionResultV1 final {

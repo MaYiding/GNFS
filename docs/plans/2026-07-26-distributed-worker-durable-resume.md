@@ -2398,15 +2398,16 @@ selected by a path, so this slice does not prove that the launched image is
 the same executable object authenticated by the manifest. M3a-1 consumes
 descriptors `3..6` in that worker image into read-only, process-bound facts.
 M3a-2a can consume that token once to mint only append/finalize authority for
-the exact inherited P8 directory; it still does not run the actual sieve or
-publish a no-delete handoff. Restart cleanup is instead the separate M2j-B
-transition below. Fixed-capability launch also fails closed before process
-preparation when the host cannot atomically close every unmapped descriptor at
-spawn. The policy checker makes the launcher function body the first production
-allowlist expansion for bound work, carrier creation, package-reader access,
-and fixed capabilities. It separately confines the M3a-1 entry API to its
-source-private implementation, interface, and dedicated self-exec test, and
-keeps the legacy seeded runner isolated.
+the exact inherited P8 directory. M3a-2b converts that authority into one
+typed, no-delete handoff after exact-handle finalization. It still does not run
+the actual sieve. Restart cleanup is instead the separate M2j-B transition
+below. Fixed-capability launch also fails closed before process preparation
+when the host cannot atomically close every unmapped descriptor at spawn. The
+policy checker makes the launcher function body the first production allowlist
+expansion for bound work, carrier creation, package-reader access, and fixed
+capabilities. It separately confines the M3a-1 entry API and M3a-2 writer and
+handoff APIs to their source-private implementations, interfaces, and
+dedicated self-exec test, and keeps the legacy seeded runner isolated.
 
 The launcher test matrix has ten cases. The close-all-unavailable pre-gate
 case runs on every non-Windows host: a supported host uses the trusted
@@ -2499,12 +2500,55 @@ created identity is still named. Construction failures preserve the primary
 error and classify rollback as clean, named residue requiring reconciliation,
 or directory-durability uncertainty without exposing cleanup authority. The
 returned process-bound wrapper exposes only immutable worker facts, `write()`,
-`count()`, and `finalize()`; it exposes no path, descriptor, store ID, raw
-writer, cleanup receipt, handoff, publication, or deletion authority.
-Unfinished destruction is abort-and-close only. A post-fork copy rejects
-mutation, purges inherited stdio buffers, and closes its copied descriptors
-without flushing or finalizing the parent's corpus. Actual worker-side sieve
-execution and no-delete handoff publication remain pending.
+`count()`, and the typed terminal handoff operation; it exposes no path,
+descriptor, store ID, raw writer, cleanup receipt, generic publisher, or
+deletion authority. Unfinished destruction is abort-and-close only. A
+post-fork copy rejects mutation, purges inherited stdio buffers, and closes its
+copied descriptors without flushing or finalizing the parent's corpus.
+
+M3a-2b finalized handoff conversion is implemented. Final MAGIC and directory
+durability complete while the exact update handles remain retained. The
+relation layer duplicates those native objects into a read-only
+`OOCRelationReader`, validates the complete V3 pair, and recomputes the
+relation sequence receipt and versioned, order-sensitive corpus SHA-256 from
+the actual decoded rows. Only immutable descriptor, identity, extent, receipt,
+and digest facts cross into the worker payload builder. This digest binds
+semantic rows, not raw index/data container bytes. Exact native identity,
+extent, full V3 decoding, and private single-writer ownership close the trusted
+producer contract; same-UID hostile in-place mutation remains outside this
+protocol's threat model.
+
+The builder seals and round-trips `WorkerHandoffV1`, including the manifest,
+work, wave, chunk, range, attempt, lease, finalized artifact, progress,
+completion reason, relation count, and cleanup-intent absence. The writer then
+closes its update handles and invokes the existing generic canonical-first
+publisher under the retained private `BaseLock`. Canonical publication
+protects the pair before `RESERVED` revocation consumes rollback and fresh-pair
+cleanup authority. The wrapper caches the sealed payload across an interrupted
+publication. A retry must present identical completion facts and can only
+converge the same canonical handoff. All cache allocations complete before a
+noexcept cache commit, and canonical success returns only through fixed-size
+checks and noexcept moves. A simulated allocation failure before cache commit
+therefore leaves no partial payload and succeeds on an exact retry.
+
+Authoritative generic handoff publication currently depends on the macOS
+bounded-read and ACL implementation. Linux can adopt the worker writer but
+rejects the typed terminal operation before completion facts are frozen, final
+MAGIC is written, or the writer loses append authority. Windows and other
+unsupported hosts reject the worker entry earlier at the platform gate. These
+are explicit platform boundaries, not post-finalize failures.
+
+The self-exec integration test covers two ordered rows, a zero-row nonempty
+chunk, post-fork mutation rejection, allocation-failure recovery, and all four
+generic publication durability prefixes. It observes each intermediate
+pending/canonical/`RESERVED` shape before retry, rejects a different but valid
+completion without changing the complete namespace snapshot, and then
+converges through an exact retry without creating cleanup intent. Adoption is
+captured first, followed by same-extent corrupt named-file replacement; a
+path-based reader rejects the replacements while the adopted reader still
+returns the original rows from its frozen handles. Linux exercises the terminal
+fail-early boundary; other unsupported hosts exercise the earlier worker-entry
+platform gate. Actual worker-side sieve execution remains pending.
 
 ### M3: Worker Handoff and Adoption
 
@@ -2512,11 +2556,11 @@ execution and no-delete handoff publication remain pending.
   descriptors `3..6`, without writer, cleanup, or completion authority.
 - [x] Convert the inherited P8 ownership and `BaseLock` into one-time,
   exact-directory writer authority without exposing a path-based factory.
-- [ ] Replace successful worker cleanup-intent publication with handoff.
-- [ ] Make the handoff phase transition consume old cleanup authority.
-- [ ] Reconcile handoffs under the same private lock before any recovery or new
+- [x] Replace successful worker cleanup-intent publication with handoff.
+- [x] Make the handoff phase transition consume old cleanup authority.
+- [x] Reconcile handoffs under the same private lock before any recovery or new
   lease reservation.
-- [ ] Read adopted OOC pairs through frozen native handles.
+- [x] Read adopted OOC pairs through frozen native handles.
 - [ ] Run only exact missing chunks.
 - [ ] Emit dispositions, deterministic relation receipts, and preserve every
   worker artifact.

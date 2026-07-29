@@ -134,6 +134,13 @@ and multi-config build trees cannot accidentally validate a stale root
 `build/` binary. This keeps CLI/schema drift in routine CTest without weakening
 the disabled stress boundary above.
 
+`test_relation_corpus_sha256` is the `instant` semantic-digest contract for
+relation-corpus SHA-256 V1. Fixed vectors cover the defined zero-row digest,
+one and two ordered rows, row-order sensitivity, every encoded relation field,
+invalid relation shape, and terminal accumulator behavior. The encoding is
+independent of host object layout and filesystem container bytes, so a worker
+handoff can bind the decoded relation sequence reproducibly across platforms.
+
 `test_ooc_durable_handoff` is split into two `instant` CTest entries. The core
 suite fixes the canonical generic-handoff V1 and authorized-cleanup-marker V2
 encodings, sealing, round-trip, zero-row, phase-kind separation, optional
@@ -601,29 +608,45 @@ API directly and return an explicit platform status without claiming native
 coverage.
 
 `test_distributed_sieve_worker_writer_authority` is the `fast`, source-private
-M3a-2a capability-conversion contract. It consumes a valid M3a-1 token exactly
-once, adopts the inherited attempt `BaseLock` as the same open-file-description,
-and creates only `corpus.relidx` and `corpus.reldata` relative to the retained
-P8 directory handle. The narrow authority is move-only and process-bound. It
-exposes immutable worker facts plus append, count, and finalize operations; it
-does not expose a path, descriptor, store ID, raw `OOCRelationWriter`, cleanup
-receipt, handoff, publication, or deletion operation.
+M3a-2a/M3a-2b capability-conversion and terminal-handoff contract. It consumes
+a valid M3a-1 token exactly once, adopts the inherited attempt `BaseLock` as the
+same open-file-description, and creates only `corpus.relidx` and
+`corpus.reldata` relative to the retained P8 directory handle. The narrow
+authority is move-only and process-bound. It exposes immutable worker facts,
+append, count, and one typed terminal handoff operation; it does not expose a
+path, descriptor, store ID, raw `OOCRelationWriter`, generic handoff publisher,
+cleanup receipt, cleanup intent, or deletion operation.
 
 The native happy path writes two fixed relations, rejects a post-fork child's
 mutators after inheriting a nonempty stdio buffer while preserving the parent
-authority, finalizes the exact pair, and reads it back through
-`OOCRelationReader`. Namespace inventory proves that the lease markers and
-attempt artifacts remain unchanged and that no cleanup or handoff artifact
-appears. Replacement sandwiches for the P8 directory, attempt `BaseLock`, and
+authority, finalizes the exact pair, recomputes its sequence receipt and
+semantic corpus SHA-256 through duplicated exact handles, and publishes a
+sealed `WorkerHandoffV1`. The test adopts the canonical handoff under the same
+private lock, replaces both named files with corrupt same-extent objects,
+proves a path-based reader rejects them, and still reads the original pair
+through the frozen native handles. A zero-row, nonempty-chunk case fixes the
+defined empty digest, exact progress facts, and header-only extents. A
+pre-cache allocation failure proves strong retry-cache atomicity. Each of the
+four generic publication durability prefixes is injected independently and
+its pending/canonical/`RESERVED` shape is observed before retry. A different
+but valid completion is rejected without changing the complete namespace
+snapshot, while an exact retry converges the same canonical handoff without
+creating cleanup intent.
+
+Replacement sandwiches for the P8 directory, attempt `BaseLock`, and
 private-lease markers fail after the second validation; post-conversion lock or
 marker drift is rejected again at the next append, while post-conversion P8
-replacement is rejected independently by the finalization preflight. Wrong
+replacement is rejected independently by the terminal preflight. Wrong
 base-path binding and foreign staging residue also fail closed. A failed or
 successful conversion burns the entry. Injected fresh-construction failures
 preserve the primary cancellation error, distinguish a clean rollback from a
 foreign replacement that requires reconciliation, and prove exact-identity
-rollback cannot remove that replacement. Unsupported platforms return the
-explicit platform status without claiming native coverage.
+rollback cannot remove that replacement. macOS exercises authoritative
+handoff publication and adoption. Linux reaches writer authority but rejects
+terminal handoff before finalization or state mutation, preserving append
+authority and every namespace leaf. Windows and other unsupported hosts reject
+the earlier worker-entry platform gate. Neither fallback claims native
+publication coverage.
 
 `test_local_sieve_thread_budget` is the `instant` contract for balanced lane
 allocation, invalid limits, and a bounded property grid. The 64-special-Q probe

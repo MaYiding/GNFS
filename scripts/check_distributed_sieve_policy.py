@@ -210,12 +210,20 @@ WORKER_ENTRY_USE_SITE_ALLOWLIST = {
     WORKER_WRITER_TEST_FILE,
 }
 WORKER_WRITER_USE_SITE_IDENTIFIERS = (
+    "DistributedSieveWorkerCompletionFactsV1",
     "DistributedSieveWorkerWriterAuthorityV1",
     "DistributedSieveWorkerWriterAdoptionResultV1",
+    "DistributedSieveWorkerHandoffTestHooksV1",
     "DistributedSieveWorkerWriterTestHooksV1",
     "DistributedSieveWorkerWriterRollbackV1",
     "consume_distributed_sieve_worker_writer_v1",
     "consume_distributed_sieve_worker_writer_v1_with_hooks",
+    "finalize_and_publish_distributed_sieve_worker_handoff_v1_with_hooks",
+    "finalize_and_publish_handoff",
+)
+WORKER_WRITER_AUTHORITY_IDENTIFIER = "DistributedSieveWorkerWriterAuthorityV1"
+WORKER_WRITER_AUTHORITY_EXCEPTION_FILE = (
+    "include/gnfs/relation/ooc_relation_store.hpp"
 )
 WORKER_WRITER_USE_SITE_ALLOWLIST = {
     WORKER_ENTRY_IMPLEMENTATION_FILE,
@@ -223,6 +231,11 @@ WORKER_WRITER_USE_SITE_ALLOWLIST = {
     WORKER_WRITER_IMPLEMENTATION_FILE,
     WORKER_WRITER_INTERFACE_FILE,
     WORKER_WRITER_TEST_FILE,
+}
+WORKER_WRITER_IDENTIFIER_EXCEPTIONS = {
+    WORKER_WRITER_AUTHORITY_IDENTIFIER: {
+        WORKER_WRITER_AUTHORITY_EXCEPTION_FILE,
+    },
 }
 WORKER_WRITER_BRIDGE_IDENTIFIERS = (
     "DistributedSieveWorkerWriterLifetimeGuardV1",
@@ -243,6 +256,27 @@ WORKER_WRITER_BRIDGE_ALLOWLIST = {
     WORKER_WRITER_IMPLEMENTATION_FILE,
     WORKER_WRITER_INTERFACE_FILE,
 }
+WORKER_HANDOFF_BRIDGE_IDENTIFIERS = (
+    "OOCFinalizedCorpusEvidenceV1",
+    "OOCPrivateHandoffPayloadV1",
+    "OOCPrivateHandoffPayloadBuilderV1",
+    "capture_finalized_corpus_evidence",
+    "finalize_and_publish_private_handoff_built",
+)
+WORKER_HANDOFF_BRIDGE_ALLOWLIST = {
+    "include/gnfs/relation/ooc_relation_store.hpp",
+    WORKER_WRITER_IMPLEMENTATION_FILE,
+}
+RAW_PRIVATE_HANDOFF_PUBLISHER_IDENTIFIER = "finalize_and_publish_private_handoff"
+RAW_PRIVATE_HANDOFF_PUBLISHER_ALLOWLIST = {
+    "include/gnfs/relation/ooc_relation_store.hpp",
+    "tests/test_ooc_cleanup_transaction.cpp",
+    WORKER_WRITER_IMPLEMENTATION_FILE,
+}
+WORKER_HANDOFF_PUBLICATION_FUNCTION = "finalize_and_publish_handoff_impl"
+WORKER_HANDOFF_TYPED_BUILDER_IDENTIFIER = (
+    "finalize_and_publish_private_handoff_built"
+)
 WORKER_PROCESS_LEGACY_FILE = "src/sieve/distributed_sieve.cpp"
 WORKER_PROCESS_POLICY_PREFIXES = (
     "include/gnfs/sieve/",
@@ -1808,6 +1842,10 @@ class Checks:
     def validate_worker_writer_use_site(self, relative: str, text: str) -> None:
         if relative not in WORKER_WRITER_USE_SITE_ALLOWLIST:
             for identifier in WORKER_WRITER_USE_SITE_IDENTIFIERS:
+                if relative in WORKER_WRITER_IDENTIFIER_EXCEPTIONS.get(
+                    identifier, set()
+                ):
+                    continue
                 for use in find_code_identifier_uses(text, identifier):
                     self.fail(
                         relative,
@@ -1824,6 +1862,104 @@ class Checks:
                         "worker-writer private bridge use site is not "
                         f"allowlisted: {identifier}",
                     )
+        if relative not in WORKER_HANDOFF_BRIDGE_ALLOWLIST:
+            for identifier in WORKER_HANDOFF_BRIDGE_IDENTIFIERS:
+                for use in find_code_identifier_uses(text, identifier):
+                    self.fail(
+                        relative,
+                        use.line,
+                        "worker-handoff evidence bridge use site is not "
+                        f"allowlisted: {identifier}",
+                    )
+        if relative not in RAW_PRIVATE_HANDOFF_PUBLISHER_ALLOWLIST:
+            for use in find_code_identifier_uses(
+                text, RAW_PRIVATE_HANDOFF_PUBLISHER_IDENTIFIER
+            ):
+                self.fail(
+                    relative,
+                    use.line,
+                    "raw private-handoff publisher use is not allowlisted",
+                )
+
+    def validate_worker_writer_identifier_exception_boundary(
+        self, relative: str, text: str
+    ) -> None:
+        if relative != WORKER_WRITER_AUTHORITY_EXCEPTION_FILE:
+            return
+
+        identifier = WORKER_WRITER_AUTHORITY_IDENTIFIER
+        uses = find_code_identifier_uses(text, identifier)
+        forward_declarations = list(
+            re.finditer(rf"\bclass\s+{re.escape(identifier)}\s*;", text)
+        )
+        qualified_friend_declarations = list(
+            re.finditer(
+                rf"\bfriend\s+class\s+::gnfs::sieve::"
+                rf"distributed_sieve_worker_entry_detail::\s*"
+                rf"{re.escape(identifier)}\s*;",
+                text,
+            )
+        )
+        allowed_offsets = {
+            match.start() + match.group(0).rfind(identifier)
+            for match in (*forward_declarations, *qualified_friend_declarations)
+        }
+        if (
+            len(uses) != 2
+            or len(forward_declarations) != 1
+            or len(qualified_friend_declarations) != 1
+            or {use.offset for use in uses} != allowed_offsets
+        ):
+            line = uses[0].line if uses else 1
+            self.fail(
+                relative,
+                line,
+                "relation-store worker authority exception must be exactly one "
+                "forward declaration and one qualified friend declaration",
+            )
+
+    def validate_worker_handoff_publication_boundary(
+        self, relative: str, text: str
+    ) -> None:
+        if relative != WORKER_WRITER_IMPLEMENTATION_FILE:
+            return
+
+        body, body_line_offset, body_errors = find_function_definition_body(
+            text, WORKER_HANDOFF_PUBLICATION_FUNCTION
+        )
+        for line, error in body_errors:
+            self.fail(relative, line, error)
+        if body is None:
+            return
+
+        for identifier in (
+            WORKER_HANDOFF_TYPED_BUILDER_IDENTIFIER,
+            RAW_PRIVATE_HANDOFF_PUBLISHER_IDENTIFIER,
+        ):
+            all_uses = find_code_identifier_uses(text, identifier)
+            all_calls = find_call_identifier_uses(text, identifier)
+            body_calls = find_call_identifier_uses(body, identifier)
+            for use in find_non_call_identifier_uses(text, identifier):
+                self.fail(
+                    relative,
+                    use.line,
+                    f"{identifier} authority must be used only as a direct call",
+                )
+            if len(all_calls) != 1 or len(body_calls) != 1:
+                self.fail(
+                    relative,
+                    body_line_offset + 1,
+                    f"{WORKER_HANDOFF_PUBLICATION_FUNCTION} must contain the only "
+                    f"direct {identifier} call, found {len(all_calls)} file calls "
+                    f"and {len(body_calls)} function calls",
+                )
+            if len(all_uses) != len(all_calls):
+                self.fail(
+                    relative,
+                    body_line_offset + 1,
+                    f"{WORKER_HANDOFF_PUBLICATION_FUNCTION} forbids indirect "
+                    f"{identifier} authority",
+                )
 
     def validate_worker_launcher_use_site(self, relative: str, text: str) -> None:
         if relative in WORKER_LAUNCHER_USE_SITE_ALLOWLIST:
@@ -2197,6 +2333,10 @@ class Checks:
             self.validate_worker_process_fixed_capability_use_site(relative, text)
             self.validate_worker_entry_use_site(relative, text)
             self.validate_worker_writer_use_site(relative, text)
+            self.validate_worker_writer_identifier_exception_boundary(
+                relative, text
+            )
+            self.validate_worker_handoff_publication_boundary(relative, text)
             self.validate_worker_launcher_use_site(relative, text)
 
         for entry, count in self.legacy_counts.items():
@@ -3777,9 +3917,15 @@ DistributedSieveWorkerWriterAdoptionResultV1 result =
     consume_distributed_sieve_worker_writer_v1(std::move(entry));
 DistributedSieveWorkerWriterAuthorityV1* writer = &*result.writer;
 trusted_test::DistributedSieveWorkerWriterTestHooksV1 hooks;
+trusted_test::DistributedSieveWorkerHandoffTestHooksV1 handoff_hooks;
+DistributedSieveWorkerCompletionFactsV1 completion;
 DistributedSieveWorkerWriterRollbackV1 rollback;
 auto hooked = consume_distributed_sieve_worker_writer_v1_with_hooks(
     std::move(entry), hooks);
+auto handoff = writer->finalize_and_publish_handoff(completion);
+auto hooked_handoff =
+    finalize_and_publish_distributed_sieve_worker_handoff_v1_with_hooks(
+        *writer, completion, handoff_hooks);
 """
     worker_writer_use_site_checks = Checks(Path("."))
     worker_writer_use_site_checks.validate_worker_writer_use_site(
@@ -3814,6 +3960,63 @@ auto hooked = consume_distributed_sieve_worker_writer_v1_with_hooks(
             WORKER_WRITER_TEST_FILE,
         },
         "worker-writer allowlist is not the exact entry conversion, writer, and test boundary",
+    )
+    relation_friend_snippet = r"""
+namespace gnfs::sieve::distributed_sieve_worker_entry_detail {
+class DistributedSieveWorkerWriterAuthorityV1;
+}
+class OOCRelationWriter {
+    friend class ::gnfs::sieve::distributed_sieve_worker_entry_detail::
+        DistributedSieveWorkerWriterAuthorityV1;
+};
+"""
+    relation_friend_checks = Checks(Path("."))
+    relation_friend_checks.validate_worker_writer_use_site(
+        WORKER_WRITER_AUTHORITY_EXCEPTION_FILE, relation_friend_snippet
+    )
+    relation_friend_checks.validate_worker_writer_identifier_exception_boundary(
+        WORKER_WRITER_AUTHORITY_EXCEPTION_FILE, relation_friend_snippet
+    )
+    expect(
+        not relation_friend_checks.errors,
+        "relation-store authority friend exception was rejected",
+    )
+    relation_friend_overreach_checks = Checks(Path("."))
+    relation_friend_overreach_checks.validate_worker_writer_use_site(
+        "include/gnfs/relation/ooc_relation_store.hpp",
+        "DistributedSieveWorkerCompletionFactsV1 completion;",
+    )
+    expect(
+        len(relation_friend_overreach_checks.errors) == 1
+        and "single-use worker-writer capability use site is not allowlisted"
+        in relation_friend_overreach_checks.errors[0],
+        "relation-store authority friend exception is broader than one identifier",
+    )
+    relation_friend_same_identifier_overreach_checks = Checks(Path("."))
+    relation_friend_same_identifier_overreach_checks.validate_worker_writer_use_site(
+        WORKER_WRITER_AUTHORITY_EXCEPTION_FILE,
+        relation_friend_snippet
+        + "\nvoid escape(DistributedSieveWorkerWriterAuthorityV1* writer);\n",
+    )
+    relation_friend_same_identifier_overreach_checks.validate_worker_writer_identifier_exception_boundary(
+        WORKER_WRITER_AUTHORITY_EXCEPTION_FILE,
+        relation_friend_snippet
+        + "\nvoid escape(DistributedSieveWorkerWriterAuthorityV1* writer);\n",
+    )
+    expect(
+        len(relation_friend_same_identifier_overreach_checks.errors) == 1
+        and "must be exactly one forward declaration and one qualified friend declaration"
+        in relation_friend_same_identifier_overreach_checks.errors[0],
+        "relation-store authority exception permits a third same-identifier use",
+    )
+    expect(
+        WORKER_WRITER_IDENTIFIER_EXCEPTIONS
+        == {
+            WORKER_WRITER_AUTHORITY_IDENTIFIER: {
+                WORKER_WRITER_AUTHORITY_EXCEPTION_FILE,
+            },
+        },
+        "worker-writer identifier exception is not the exact relation-store friend boundary",
     )
 
     worker_writer_bridge_snippet = r"""
@@ -3862,6 +4065,158 @@ discard_inherited_post_fork_child_noexcept();
             WORKER_WRITER_INTERFACE_FILE,
         },
         "worker-writer private bridge allowlist is not exact",
+    )
+
+    worker_handoff_bridge_snippet = r"""
+OOCFinalizedCorpusEvidenceV1 evidence;
+OOCPrivateHandoffPayloadV1 payload;
+OOCPrivateHandoffPayloadBuilderV1 builder = nullptr;
+capture_finalized_corpus_evidence(descriptor);
+finalize_and_publish_private_handoff_built(builder, nullptr);
+"""
+    worker_handoff_bridge_checks = Checks(Path("."))
+    worker_handoff_bridge_checks.validate_worker_writer_use_site(
+        "src/relation/untrusted_worker_handoff_bridge.cpp",
+        worker_handoff_bridge_snippet,
+    )
+    expect(
+        len(worker_handoff_bridge_checks.errors)
+        == len(WORKER_HANDOFF_BRIDGE_IDENTIFIERS)
+        and all(
+            "worker-handoff evidence bridge use site is not allowlisted" in error
+            for error in worker_handoff_bridge_checks.errors
+        ),
+        "worker-handoff evidence bridge repo-wide use-site gate is not enforced",
+    )
+    for relative in sorted(WORKER_HANDOFF_BRIDGE_ALLOWLIST):
+        allowed_worker_handoff_bridge_checks = Checks(Path("."))
+        allowed_worker_handoff_bridge_checks.validate_worker_writer_use_site(
+            relative, worker_handoff_bridge_snippet
+        )
+        expect(
+            not allowed_worker_handoff_bridge_checks.errors,
+            f"allowlisted worker-handoff evidence bridge use was rejected in "
+            f"{relative}: {allowed_worker_handoff_bridge_checks.errors}",
+        )
+    expect(
+        WORKER_HANDOFF_BRIDGE_ALLOWLIST
+        == {
+            "include/gnfs/relation/ooc_relation_store.hpp",
+            WORKER_WRITER_IMPLEMENTATION_FILE,
+        },
+        "worker-handoff evidence bridge allowlist is not exact",
+    )
+
+    raw_private_handoff_checks = Checks(Path("."))
+    raw_private_handoff_checks.validate_worker_writer_use_site(
+        "src/sieve/untrusted_raw_handoff.cpp",
+        "writer.finalize_and_publish_private_handoff(1, 1, payload);",
+    )
+    expect(
+        len(raw_private_handoff_checks.errors) == 1
+        and "raw private-handoff publisher use is not allowlisted"
+        in raw_private_handoff_checks.errors[0],
+        "raw private-handoff publisher repo-wide use gate is not enforced",
+    )
+    raw_private_handoff_alias_checks = Checks(Path("."))
+    raw_private_handoff_alias_checks.validate_worker_writer_use_site(
+        "src/sieve/untrusted_raw_handoff.cpp",
+        "auto raw = &OOCRelationWriter::finalize_and_publish_private_handoff;",
+    )
+    expect(
+        len(raw_private_handoff_alias_checks.errors) == 1
+        and "raw private-handoff publisher use is not allowlisted"
+        in raw_private_handoff_alias_checks.errors[0],
+        "raw private-handoff publisher alias escaped the repo-wide use gate",
+    )
+    for relative in sorted(RAW_PRIVATE_HANDOFF_PUBLISHER_ALLOWLIST):
+        allowed_raw_private_handoff_checks = Checks(Path("."))
+        allowed_raw_private_handoff_checks.validate_worker_writer_use_site(
+            relative,
+            "writer.finalize_and_publish_private_handoff(1, 1, payload);",
+        )
+        expect(
+            not allowed_raw_private_handoff_checks.errors,
+            f"allowlisted raw private-handoff publisher was rejected in "
+            f"{relative}: {allowed_raw_private_handoff_checks.errors}",
+        )
+    expect(
+        RAW_PRIVATE_HANDOFF_PUBLISHER_ALLOWLIST
+        == {
+            "include/gnfs/relation/ooc_relation_store.hpp",
+            "tests/test_ooc_cleanup_transaction.cpp",
+            WORKER_WRITER_IMPLEMENTATION_FILE,
+        },
+        "raw private-handoff publisher allowlist is not exact",
+    )
+
+    worker_handoff_publication_snippet = r"""
+WorkerHandoffV1 finalize_and_publish_handoff_impl(Completion completion) {
+    if (pending) {
+        writer->finalize_and_publish_private_handoff_built(builder, context);
+    } else {
+        writer->finalize_and_publish_private_handoff(1, 1, payload);
+    }
+}
+"""
+    exact_worker_handoff_publication_checks = Checks(Path("."))
+    exact_worker_handoff_publication_checks.validate_worker_handoff_publication_boundary(
+        WORKER_WRITER_IMPLEMENTATION_FILE, worker_handoff_publication_snippet
+    )
+    expect(
+        not exact_worker_handoff_publication_checks.errors,
+        "exact typed-first worker handoff publication boundary was rejected",
+    )
+    for escaped_identifier in (
+        WORKER_HANDOFF_TYPED_BUILDER_IDENTIFIER,
+        RAW_PRIVATE_HANDOFF_PUBLISHER_IDENTIFIER,
+    ):
+        indirect_worker_handoff_checks = Checks(Path("."))
+        indirect_worker_handoff_checks.validate_worker_handoff_publication_boundary(
+            WORKER_WRITER_IMPLEMENTATION_FILE,
+            worker_handoff_publication_snippet
+            + f"\nauto escaped = &OOCRelationWriter::{escaped_identifier};\n",
+        )
+        expect(
+            any(
+                f"{escaped_identifier} authority must be used only as a direct call"
+                in error
+                for error in indirect_worker_handoff_checks.errors
+            ),
+            f"worker handoff {escaped_identifier} indirect authority is not rejected",
+        )
+
+    duplicate_raw_worker_handoff_checks = Checks(Path("."))
+    duplicate_raw_worker_handoff_checks.validate_worker_handoff_publication_boundary(
+        WORKER_WRITER_IMPLEMENTATION_FILE,
+        worker_handoff_publication_snippet
+        + "\nwriter->finalize_and_publish_private_handoff(1, 1, payload);\n",
+    )
+    expect(
+        any(
+            "must contain the only direct finalize_and_publish_private_handoff call"
+            in error
+            for error in duplicate_raw_worker_handoff_checks.errors
+        ),
+        "worker handoff raw retry call count is not closed",
+    )
+
+    missing_typed_worker_handoff_checks = Checks(Path("."))
+    missing_typed_worker_handoff_checks.validate_worker_handoff_publication_boundary(
+        WORKER_WRITER_IMPLEMENTATION_FILE,
+        r"""
+WorkerHandoffV1 finalize_and_publish_handoff_impl(Completion completion) {
+    writer->finalize_and_publish_private_handoff(1, 1, payload);
+}
+""",
+    )
+    expect(
+        any(
+            "must contain the only direct finalize_and_publish_private_handoff_built call"
+            in error
+            for error in missing_typed_worker_handoff_checks.errors
+        ),
+        "worker handoff typed-builder call count is not closed",
     )
 
     launcher_use_site_snippet = r"""

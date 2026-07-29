@@ -559,6 +559,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME Sha256 COMMAND test_sha256)
     set_tests_properties(Sha256 PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_relation_corpus_sha256
+        tests/test_relation_corpus_sha256.cpp
+    )
+    target_link_libraries(test_relation_corpus_sha256 PRIVATE gnfs_core)
+    add_test(NAME RelationCorpusSha256 COMMAND test_relation_corpus_sha256)
+    set_tests_properties(RelationCorpusSha256 PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_integer
         tests/test_integer.cpp
     )
