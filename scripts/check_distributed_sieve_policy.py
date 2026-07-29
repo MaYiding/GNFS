@@ -116,6 +116,8 @@ DURABLE_ENVIRONMENT_FREE_FILES = {
     "src/sieve/distributed_sieve_work_package_codec_internal.hpp",
     "src/sieve/distributed_sieve_wave_store.cpp",
     "src/sieve/distributed_sieve_wave_store_internal.hpp",
+    "src/sieve/distributed_sieve_worker_entry.cpp",
+    "src/sieve/distributed_sieve_worker_entry_internal.hpp",
     "src/sieve/distributed_sieve_worker_launcher_fwd_internal.hpp",
     "src/sieve/distributed_sieve_worker_launcher_internal.hpp",
     "src/sieve/distributed_sieve_worker_work_package_file.cpp",
@@ -132,7 +134,10 @@ WORKER_LAUNCHER_INTERFACE_FILES = {
     "src/sieve/distributed_sieve_worker_launcher_fwd_internal.hpp",
     "src/sieve/distributed_sieve_worker_launcher_internal.hpp",
 }
-WORKER_LAUNCHER_TEST_FILES = {"tests/test_distributed_sieve_resume.cpp"}
+WORKER_LAUNCHER_TEST_FILES = {
+    "tests/test_distributed_sieve_resume.cpp",
+    "tests/test_distributed_sieve_worker_entry.cpp",
+}
 WORKER_LAUNCHER_USE_SITE_IDENTIFIERS = (
     "DistributedSieveWorkerLaunchSlotV1",
     "DistributedSieveWorkerLauncherTestHooksV1",
@@ -179,6 +184,21 @@ WORKER_PROCESS_FIXED_CAPABILITY_USE_SITE_ALLOWLIST = {
     "src/sieve/distributed_sieve_worker_process_internal.hpp",
     "tests/test_distributed_sieve_worker_process.cpp",
     WORKER_LAUNCHER_IMPLEMENTATION_FILE,
+}
+WORKER_ENTRY_IMPLEMENTATION_FILE = "src/sieve/distributed_sieve_worker_entry.cpp"
+WORKER_ENTRY_INTERFACE_FILE = "src/sieve/distributed_sieve_worker_entry_internal.hpp"
+WORKER_ENTRY_TEST_FILE = "tests/test_distributed_sieve_worker_entry.cpp"
+WORKER_ENTRY_USE_SITE_IDENTIFIERS = (
+    "DistributedSieveWorkerEntryV1",
+    "DistributedSieveWorkerEntryAdoptionResultV1",
+    "DistributedSieveWorkerEntryTestHooksV1",
+    "adopt_distributed_sieve_worker_entry_v1",
+    "adopt_distributed_sieve_worker_entry_v1_with_hooks",
+)
+WORKER_ENTRY_USE_SITE_ALLOWLIST = {
+    WORKER_ENTRY_IMPLEMENTATION_FILE,
+    WORKER_ENTRY_INTERFACE_FILE,
+    WORKER_ENTRY_TEST_FILE,
 }
 WORKER_PROCESS_LEGACY_FILE = "src/sieve/distributed_sieve.cpp"
 WORKER_PROCESS_POLICY_PREFIXES = (
@@ -1728,6 +1748,18 @@ class Checks:
                     f"allowlisted: {identifier}",
                 )
 
+    def validate_worker_entry_use_site(self, relative: str, text: str) -> None:
+        if relative in WORKER_ENTRY_USE_SITE_ALLOWLIST:
+            return
+        for identifier in WORKER_ENTRY_USE_SITE_IDENTIFIERS:
+            for use in find_code_identifier_uses(text, identifier):
+                self.fail(
+                    relative,
+                    use.line,
+                    "single-use worker-entry capability use site is not "
+                    f"allowlisted: {identifier}",
+                )
+
     def validate_worker_launcher_use_site(self, relative: str, text: str) -> None:
         if relative in WORKER_LAUNCHER_USE_SITE_ALLOWLIST:
             return
@@ -2098,6 +2130,7 @@ class Checks:
             self.validate_raw_work_package_fixed_leaf_unlink(relative, text)
             self.validate_work_package_reader_use_site(relative, text)
             self.validate_worker_process_fixed_capability_use_site(relative, text)
+            self.validate_worker_entry_use_site(relative, text)
             self.validate_worker_launcher_use_site(relative, text)
 
         for entry, count in self.legacy_counts.items():
@@ -3624,6 +3657,46 @@ auto result = spawn_distributed_sieve_worker_process_batch_with_capabilities(
             f"{relative}: {allowed_fixed_capability_checks.errors}",
         )
 
+    worker_entry_use_site_snippet = r"""
+DistributedSieveWorkerEntryAdoptionResultV1 result =
+    adopt_distributed_sieve_worker_entry_v1();
+DistributedSieveWorkerEntryV1* entry = &*result.entry;
+trusted_test::DistributedSieveWorkerEntryTestHooksV1 hooks;
+auto hooked = adopt_distributed_sieve_worker_entry_v1_with_hooks(hooks);
+"""
+    worker_entry_use_site_checks = Checks(Path("."))
+    worker_entry_use_site_checks.validate_worker_entry_use_site(
+        "src/sieve/untrusted_worker_entry.cpp", worker_entry_use_site_snippet
+    )
+    expect(
+        len(worker_entry_use_site_checks.errors)
+        == len(WORKER_ENTRY_USE_SITE_IDENTIFIERS)
+        and all(
+            "single-use worker-entry capability use site is not allowlisted" in error
+            for error in worker_entry_use_site_checks.errors
+        ),
+        "single-use worker-entry repo-wide use-site gate is not enforced",
+    )
+    for relative in sorted(WORKER_ENTRY_USE_SITE_ALLOWLIST):
+        allowed_worker_entry_checks = Checks(Path("."))
+        allowed_worker_entry_checks.validate_worker_entry_use_site(
+            relative, worker_entry_use_site_snippet
+        )
+        expect(
+            not allowed_worker_entry_checks.errors,
+            f"allowlisted single-use worker-entry use was rejected in "
+            f"{relative}: {allowed_worker_entry_checks.errors}",
+        )
+    expect(
+        WORKER_ENTRY_USE_SITE_ALLOWLIST
+        == {
+            WORKER_ENTRY_IMPLEMENTATION_FILE,
+            WORKER_ENTRY_INTERFACE_FILE,
+            WORKER_ENTRY_TEST_FILE,
+        },
+        "worker-entry allowlist is not the exact implementation, interface, and test boundary",
+    )
+
     launcher_use_site_snippet = r"""
 DistributedSieveWorkerLaunchRequestV1 request(path, std::move(slots));
 DistributedSieveWorkerLaunchBatchResultV1 result =
@@ -3665,13 +3738,17 @@ DistributedSieveWorkerLaunchBatchResultV1 result =
         )
 
     expect(
-        WORKER_LAUNCHER_TEST_FILES == {"tests/test_distributed_sieve_resume.cpp"}
+        WORKER_LAUNCHER_TEST_FILES
+        == {
+            "tests/test_distributed_sieve_resume.cpp",
+            "tests/test_distributed_sieve_worker_entry.cpp",
+        }
         and (
             WORKER_LAUNCHER_USE_SITE_ALLOWLIST - WORKER_LAUNCHER_TEST_FILES
             == (WORKER_LAUNCHER_INTERFACE_FILES | {WORKER_LAUNCHER_IMPLEMENTATION_FILE})
         ),
         "worker-launcher allowlist is not the exact implementation boundary "
-        "plus the dedicated resume test",
+        "plus the dedicated resume and worker-entry tests",
     )
 
     lower_capability_allowlists = (

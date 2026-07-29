@@ -2395,17 +2395,17 @@ transition without granting that authority to the launcher.
 
 M2j-A remains internal and test-only. The `posix_spawn()` executable is still
 selected by a path, so this slice does not prove that the launched image is
-the same executable object authenticated by the manifest. The worker image
-does not yet rehydrate descriptors `3..6` into writer-only authority, run the
-actual sieve, or publish a no-delete handoff. Restart cleanup is instead the
-separate M2j-B transition below. Fixed-capability launch also fails closed
-before process preparation when the host cannot atomically close every
-unmapped descriptor at spawn. The policy checker makes this exact function
-body the first production allowlist expansion for bound work, carrier
-creation, package-reader access, and fixed capabilities. It count-closes those
-uses, rejects same-file outside-function bypasses, confines direct launcher
-test use to the dedicated WaveStore resume test, and keeps the legacy seeded
-runner isolated.
+the same executable object authenticated by the manifest. M3a-1 now consumes
+descriptors `3..6` in that worker image into read-only, process-bound facts,
+but it does not mint writer authority, run the actual sieve, or publish a
+no-delete handoff. Restart cleanup is instead the separate M2j-B transition
+below. Fixed-capability launch also fails closed before process preparation
+when the host cannot atomically close every unmapped descriptor at spawn. The
+policy checker makes the launcher function body the first production
+allowlist expansion for bound work, carrier creation, package-reader access,
+and fixed capabilities. It separately confines the M3a-1 entry API to its
+source-private implementation, interface, and dedicated self-exec test, and
+keeps the legacy seeded runner isolated.
 
 The launcher test matrix has ten cases. The close-all-unavailable pre-gate
 case runs on every non-Windows host: a supported host uses the trusted
@@ -2477,11 +2477,21 @@ inside the latter. It rejects aliases, duplicates, calls from the legacy
 runner, launcher, pipeline, or relation paths, and any WaveStore use of the
 test-only `_with_ops` seams. Raw fixed-leaf unlink remains carrier-only.
 
-Descriptor `3..6` rehydration, actual worker-side sieve execution, and the
-no-delete handoff are still pending.
+M3a-1 descriptor rehydration is implemented. The worker now consumes stdin
+and descriptors `3..6` exactly once, retains only source-private read-only
+capabilities at descriptor `7` or above, proves the inherited lock
+open-file-descriptions, validates the direct-parent and root path binding,
+complete attempt chain, P8 base-path digest, full staging absence, and package
+binding twice, and rejects fork or replacement drift. Actual worker-side sieve
+execution, one-time writer authority, and no-delete handoff publication remain
+pending.
 
 ### M3: Worker Handoff and Adoption
 
+- [x] Add single-use, typed worker exec-image rehydration for stdin and fixed
+  descriptors `3..6`, without writer, cleanup, or completion authority.
+- [ ] Convert the inherited P8 ownership and `BaseLock` into one-time,
+  exact-directory writer authority without exposing a path-based factory.
 - [ ] Replace successful worker cleanup-intent publication with handoff.
 - [ ] Make the handoff phase transition consume old cleanup authority.
 - [ ] Reconcile handoffs under the same private lock before any recovery or new

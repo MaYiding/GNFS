@@ -496,14 +496,14 @@ reports slot 0, starts zero children, and preserves the residue. The
 directory-replacement case proves that the launcher retains both the displaced
 original and the replacement directory.
 
-This first slice is internal and test-only. It does not authenticate the
+The launcher boundary is internal and test-only. It does not authenticate the
 path-based `posix_spawn()` executable as the same object bound by the
-manifest. It also does not rehydrate descriptors `3..6` in the worker image,
-run the sieve, publish a no-delete handoff, or delete a named package residue
-after restart. The policy checker admits launcher composition only inside the
-exact `launch_worker_process_batch_v1()` function body, with closed counts for
-bound work, carrier, package reader, and fixed-capability uses. Direct launcher
-test use remains confined to `test_distributed_sieve_resume`.
+manifest, run the sieve, publish a no-delete handoff, or delete a named package
+residue after restart. The policy checker admits launcher composition only
+inside the exact `launch_worker_process_batch_v1()` function body, with closed
+counts for bound work, carrier, package reader, and fixed-capability uses.
+Direct launcher test use remains confined to `test_distributed_sieve_resume`
+and the worker-entry self-exec contract described below.
 
 The same binary covers the M2j-B B1 read-only restart classifier and B2
 identity-bound reconciliation. A canonical `0400`, single-link package residue
@@ -560,9 +560,44 @@ duplicates, forbids both `_with_ops` seams in WaveStore, confines fixed-leaf
 unlink authority to the carrier, and keeps the legacy runner, launcher,
 pipeline, and relation paths isolated.
 
-B2 does not rehydrate descriptors `3..6` in the worker image, run the real
-sieve, or publish a no-delete handoff. Those remain the next worker-execution
-frontier.
+B2 does not grant worker execution or publication authority. The M3a-1 entry
+boundary below now rehydrates descriptors `3..6` into a read-only typed token;
+actual sieve execution, one-time writer-authority conversion, and no-delete handoff
+publication remain the next worker-execution frontier.
+
+`test_distributed_sieve_worker_entry` is the `fast` source-private M3a-1
+exec-image rehydration contract. On supported macOS and Linux hosts, the
+self-exec child consumes the canonical `AttemptStartedV1` bootstrap and fixed
+descriptors `3..6` exactly once. It stages retained capabilities at descriptor
+`7` or above with `FD_CLOEXEC`, closes the fixed inputs, and returns only a
+move-only, current-process token with immutable record, manifest, work,
+chunk, and package-witness facts. The token exposes no raw descriptor, path,
+writer, cleanup, handoff, retry, or completion authority.
+
+Admission recovers and no-follow reopens the exact absolute root, revalidates
+its direct-parent policy, and binds the root and manifest identities. It reads
+the complete canonical `AttemptStartedV1` predecessor chain, rejects pending,
+later, and over-budget attempt residue, then binds the permanent and attempt
+`BaseLock` names, final P8 directory, exact `RESERVED`/`OWNER`/`OWNED` markers,
+frozen base-path digest, absence of every same-attempt staging candidate, and
+the anonymous read-only `0400`, zero-link work package. Each lock uses a
+contender-first check followed by retained-descriptor validation, so an
+unlocked or freshly reopened same-inode descriptor cannot acquire a lock and
+masquerade as the inherited open-file-description. A complete second
+validation closes replacement sandwiches before the token becomes usable.
+
+The test matrix covers the happy binding, revalidation, repeated adoption,
+fork invalidation with parent-token preservation, every missing fixed
+descriptor, package policy drift, fresh-open permanent and attempt locks,
+forged predecessor chains, wrong but internally consistent base-path markers,
+foreign staging residue, direct-parent policy drift, same-byte manifest,
+attempt-record, and `BaseLock` replacement, and private lease marker or
+pending-leaf drift. Success and failure paths both prove that standard input
+and descriptors `3..6` are closed. Every case preserves the P8 artifacts and
+confirms that the entry boundary creates no relation pair, handoff, cleanup
+intent, or cleanup authorization. Unsupported platforms exercise the entry
+API directly and return an explicit platform status without claiming native
+coverage.
 
 `test_local_sieve_thread_budget` is the `instant` contract for balanced lane
 allocation, invalid limits, and a bounded property grid. The 64-special-Q probe
