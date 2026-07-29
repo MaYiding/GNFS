@@ -561,9 +561,10 @@ unlink authority to the carrier, and keeps the legacy runner, launcher,
 pipeline, and relation paths isolated.
 
 B2 does not grant worker execution or publication authority. The M3a-1 entry
-boundary below now rehydrates descriptors `3..6` into a read-only typed token;
-actual sieve execution, one-time writer-authority conversion, and no-delete handoff
-publication remain the next worker-execution frontier.
+boundary below rehydrates descriptors `3..6` into a read-only typed token, and
+M3a-2a consumes that token into exact-directory append/finalize authority.
+Actual sieve execution and no-delete handoff publication remain the next
+worker-execution frontier.
 
 `test_distributed_sieve_worker_entry` is the `fast` source-private M3a-1
 exec-image rehydration contract. On supported macOS and Linux hosts, the
@@ -598,6 +599,31 @@ confirms that the entry boundary creates no relation pair, handoff, cleanup
 intent, or cleanup authorization. Unsupported platforms exercise the entry
 API directly and return an explicit platform status without claiming native
 coverage.
+
+`test_distributed_sieve_worker_writer_authority` is the `fast`, source-private
+M3a-2a capability-conversion contract. It consumes a valid M3a-1 token exactly
+once, adopts the inherited attempt `BaseLock` as the same open-file-description,
+and creates only `corpus.relidx` and `corpus.reldata` relative to the retained
+P8 directory handle. The narrow authority is move-only and process-bound. It
+exposes immutable worker facts plus append, count, and finalize operations; it
+does not expose a path, descriptor, store ID, raw `OOCRelationWriter`, cleanup
+receipt, handoff, publication, or deletion operation.
+
+The native happy path writes two fixed relations, rejects a post-fork child's
+mutators after inheriting a nonempty stdio buffer while preserving the parent
+authority, finalizes the exact pair, and reads it back through
+`OOCRelationReader`. Namespace inventory proves that the lease markers and
+attempt artifacts remain unchanged and that no cleanup or handoff artifact
+appears. Replacement sandwiches for the P8 directory, attempt `BaseLock`, and
+private-lease markers fail after the second validation; post-conversion lock or
+marker drift is rejected again at the next append, while post-conversion P8
+replacement is rejected independently by the finalization preflight. Wrong
+base-path binding and foreign staging residue also fail closed. A failed or
+successful conversion burns the entry. Injected fresh-construction failures
+preserve the primary cancellation error, distinguish a clean rollback from a
+foreign replacement that requires reconciliation, and prove exact-identity
+rollback cannot remove that replacement. Unsupported platforms return the
+explicit platform status without claiming native coverage.
 
 `test_local_sieve_thread_budget` is the `instant` contract for balanced lane
 allocation, invalid limits, and a bounded property grid. The 64-special-Q probe

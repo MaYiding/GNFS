@@ -2395,13 +2395,14 @@ transition without granting that authority to the launcher.
 
 M2j-A remains internal and test-only. The `posix_spawn()` executable is still
 selected by a path, so this slice does not prove that the launched image is
-the same executable object authenticated by the manifest. M3a-1 now consumes
-descriptors `3..6` in that worker image into read-only, process-bound facts,
-but it does not mint writer authority, run the actual sieve, or publish a
-no-delete handoff. Restart cleanup is instead the separate M2j-B transition
-below. Fixed-capability launch also fails closed before process preparation
-when the host cannot atomically close every unmapped descriptor at spawn. The
-policy checker makes the launcher function body the first production
+the same executable object authenticated by the manifest. M3a-1 consumes
+descriptors `3..6` in that worker image into read-only, process-bound facts.
+M3a-2a can consume that token once to mint only append/finalize authority for
+the exact inherited P8 directory; it still does not run the actual sieve or
+publish a no-delete handoff. Restart cleanup is instead the separate M2j-B
+transition below. Fixed-capability launch also fails closed before process
+preparation when the host cannot atomically close every unmapped descriptor at
+spawn. The policy checker makes the launcher function body the first production
 allowlist expansion for bound work, carrier creation, package-reader access,
 and fixed capabilities. It separately confines the M3a-1 entry API to its
 source-private implementation, interface, and dedicated self-exec test, and
@@ -2477,20 +2478,39 @@ inside the latter. It rejects aliases, duplicates, calls from the legacy
 runner, launcher, pipeline, or relation paths, and any WaveStore use of the
 test-only `_with_ops` seams. Raw fixed-leaf unlink remains carrier-only.
 
-M3a-1 descriptor rehydration is implemented. The worker now consumes stdin
+M3a-1 descriptor rehydration is implemented. The worker consumes stdin
 and descriptors `3..6` exactly once, retains only source-private read-only
 capabilities at descriptor `7` or above, proves the inherited lock
 open-file-descriptions, validates the direct-parent and root path binding,
 complete attempt chain, P8 base-path digest, full staging absence, and package
-binding twice, and rejects fork or replacement drift. Actual worker-side sieve
-execution, one-time writer authority, and no-delete handoff publication remain
-pending.
+binding twice, and rejects fork or replacement drift.
+
+M3a-2a exact writer conversion is implemented. Conversion burns the entry on
+success or failure, repeats the complete validation around the trusted test
+boundary, transfers the inherited attempt-lock open-file-description without
+closing or reopening it, and retains the authenticated root and P8 directory
+handles for the writer lifetime. Every append and finalization boundary
+revalidates the process, root, named locks, exact P8 directory, lease markers,
+allowed directory inventory, and retained entry authority. Fresh relation
+leaves are created with `openat()` and `O_EXCL`
+inside that exact P8 directory, validated by native identity, synchronized
+through the retained directory handle, and rolled back only when the same newly
+created identity is still named. Construction failures preserve the primary
+error and classify rollback as clean, named residue requiring reconciliation,
+or directory-durability uncertainty without exposing cleanup authority. The
+returned process-bound wrapper exposes only immutable worker facts, `write()`,
+`count()`, and `finalize()`; it exposes no path, descriptor, store ID, raw
+writer, cleanup receipt, handoff, publication, or deletion authority.
+Unfinished destruction is abort-and-close only. A post-fork copy rejects
+mutation, purges inherited stdio buffers, and closes its copied descriptors
+without flushing or finalizing the parent's corpus. Actual worker-side sieve
+execution and no-delete handoff publication remain pending.
 
 ### M3: Worker Handoff and Adoption
 
 - [x] Add single-use, typed worker exec-image rehydration for stdin and fixed
   descriptors `3..6`, without writer, cleanup, or completion authority.
-- [ ] Convert the inherited P8 ownership and `BaseLock` into one-time,
+- [x] Convert the inherited P8 ownership and `BaseLock` into one-time,
   exact-directory writer authority without exposing a path-based factory.
 - [ ] Replace successful worker cleanup-intent publication with handoff.
 - [ ] Make the handoff phase transition consume old cleanup authority.

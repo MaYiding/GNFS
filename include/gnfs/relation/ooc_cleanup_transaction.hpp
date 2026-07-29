@@ -49,6 +49,11 @@
 #endif
 #endif
 
+namespace gnfs::sieve::distributed_sieve_worker_entry_detail::
+    distributed_sieve_worker_writer_detail {
+class OOCInheritedP8WriterMintV1;
+}
+
 namespace gnfs::relation {
 
 class OOCRelationWriter;
@@ -267,6 +272,8 @@ private:
 
     friend class OOCRelationWriter;
     friend class OOCCleanupTransaction;
+    friend class ::gnfs::sieve::distributed_sieve_worker_entry_detail::
+        distributed_sieve_worker_writer_detail::OOCInheritedP8WriterMintV1;
 };
 
 struct OOCPrivateLeaseReservation final {
@@ -1848,16 +1855,35 @@ public:
 #else
         struct stat held{};
         struct stat named{};
+        struct stat parent{};
         int held_result = -1;
         do {
             held_result = ::fstat(descriptor_, &held);
         } while (held_result != 0 && errno == EINTR);
         int named_result = -1;
-        do {
-            named_result = ::lstat(path_.c_str(), &named);
-        } while (named_result != 0 && errno == EINTR);
-        return held_result == 0 && named_result == 0 && posix_regular_single_link(held) &&
-               posix_regular_single_link(named) &&
+        int parent_result = 0;
+        if (named_parent_descriptor_ >= 0) {
+            do {
+                parent_result = ::fstat(named_parent_descriptor_, &parent);
+            } while (parent_result != 0 && errno == EINTR);
+            do {
+                named_result = ::fstatat(named_parent_descriptor_, named_leaf_.c_str(), &named,
+                                         AT_SYMLINK_NOFOLLOW);
+            } while (named_result != 0 && errno == EINTR);
+        } else {
+            do {
+                named_result = ::lstat(path_.c_str(), &named);
+            } while (named_result != 0 && errno == EINTR);
+        }
+        const std::array<std::uint64_t, 3> parent_identity{
+            static_cast<std::uint64_t>(parent.st_dev),
+            static_cast<std::uint64_t>(parent.st_ino),
+            0,
+        };
+        return held_result == 0 && named_result == 0 && parent_result == 0 &&
+               (named_parent_descriptor_ < 0 ||
+                (S_ISDIR(parent.st_mode) && parent_identity == named_parent_identity_)) &&
+               posix_regular_single_link(held) && posix_regular_single_link(named) &&
                stable_identity(posix_identity(held)) == identity_ && held.st_dev == named.st_dev &&
                held.st_ino == named.st_ino;
 #endif
@@ -1893,6 +1919,7 @@ public:
 #else
         struct stat held{};
         struct stat named{};
+        struct stat parent{};
         int held_result = -1;
         do {
             held_result = ::fstat(descriptor_, &held);
@@ -1902,14 +1929,32 @@ public:
         }
 
         int named_result = -1;
-        do {
-            named_result = ::lstat(path_.c_str(), &named);
-        } while (named_result != 0 && errno == EINTR);
-        if (named_result != 0 || !posix_regular_single_link(held) ||
-            !posix_regular_single_link(named) ||
+        int parent_result = 0;
+        if (named_parent_descriptor_ >= 0) {
+            do {
+                parent_result = ::fstat(named_parent_descriptor_, &parent);
+            } while (parent_result != 0 && errno == EINTR);
+            do {
+                named_result = ::fstatat(named_parent_descriptor_, named_leaf_.c_str(), &named,
+                                         AT_SYMLINK_NOFOLLOW);
+            } while (named_result != 0 && errno == EINTR);
+        } else {
+            do {
+                named_result = ::lstat(path_.c_str(), &named);
+            } while (named_result != 0 && errno == EINTR);
+        }
+        const std::array<std::uint64_t, 3> parent_identity{
+            static_cast<std::uint64_t>(parent.st_dev),
+            static_cast<std::uint64_t>(parent.st_ino),
+            0,
+        };
+        if (named_result != 0 || parent_result != 0 ||
+            (named_parent_descriptor_ >= 0 &&
+             (!S_ISDIR(parent.st_mode) || parent_identity != named_parent_identity_)) ||
+            !posix_regular_single_link(held) || !posix_regular_single_link(named) ||
             stable_identity(posix_identity(held)) != identity_ || held.st_dev != named.st_dev ||
             held.st_ino != named.st_ino) {
-            const int saved_errno = named_result == 0 ? EACCES : errno;
+            const int saved_errno = named_result == 0 && parent_result == 0 ? EACCES : errno;
             fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
                  posix_error(saved_errno));
         }
@@ -1921,8 +1966,129 @@ public:
     }
 
 private:
+    struct AdoptInheritedOpenFileDescription final {};
+
+    BaseLock(std::filesystem::path path, int descriptor, int named_parent_descriptor,
+             std::string named_leaf, const std::array<std::uint64_t, 3>& expected_parent_identity,
+             const std::array<std::uint64_t, 3>& expected_lock_identity,
+             AdoptInheritedOpenFileDescription)
+        : path_(std::move(path)), named_parent_descriptor_(named_parent_descriptor),
+          named_leaf_(std::move(named_leaf)), named_parent_identity_(expected_parent_identity) {
+#ifdef _WIN32
+        (void)descriptor;
+        (void)expected_lock_identity;
+        fail(OOCCleanupStatus::PlatformUnsupported, OOCCleanupStage::None,
+             std::make_error_code(std::errc::operation_not_supported));
+#else
+        if (descriptor < 0 || named_parent_descriptor_ < 0 || named_leaf_.empty() ||
+            all_zero(expected_parent_identity) || all_zero(expected_lock_identity)) {
+            fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+        }
+
+        const int descriptor_flags = ::fcntl(descriptor, F_GETFD);
+        const int status_flags = ::fcntl(descriptor, F_GETFL);
+        if (descriptor_flags < 0 || status_flags < 0 || (descriptor_flags & FD_CLOEXEC) == 0 ||
+            (status_flags & O_ACCMODE) != O_RDWR) {
+            fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
+                 posix_error(errno == 0 ? EACCES : errno));
+        }
+
+        const auto identity_for = [](const struct stat& metadata) noexcept {
+            return std::array<std::uint64_t, 3>{
+                static_cast<std::uint64_t>(metadata.st_dev),
+                static_cast<std::uint64_t>(metadata.st_ino),
+                0,
+            };
+        };
+        const auto lock_policy = [&](const struct stat& metadata) noexcept {
+            return S_ISREG(metadata.st_mode) && metadata.st_nlink == 1 &&
+                   (metadata.st_mode & static_cast<mode_t>(07777)) == 0600 &&
+                   metadata.st_uid == ::geteuid();
+        };
+        const auto parent_policy = [&](const struct stat& metadata) noexcept {
+            return S_ISDIR(metadata.st_mode) &&
+                   (metadata.st_mode & static_cast<mode_t>(07777)) == 0700 &&
+                   metadata.st_uid == ::geteuid();
+        };
+
+        struct stat parent_before{};
+        struct stat held_before{};
+        struct stat named_before{};
+        if (::fstat(named_parent_descriptor_, &parent_before) != 0 ||
+            ::fstat(descriptor, &held_before) != 0 ||
+            ::fstatat(named_parent_descriptor_, named_leaf_.c_str(), &named_before,
+                      AT_SYMLINK_NOFOLLOW) != 0) {
+            fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, posix_error(errno));
+        }
+        if (!parent_policy(parent_before) || !lock_policy(held_before) ||
+            !lock_policy(named_before) || identity_for(parent_before) != expected_parent_identity ||
+            identity_for(held_before) != expected_lock_identity ||
+            identity_for(named_before) != expected_lock_identity) {
+            fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, posix_error(EACCES));
+        }
+
+        int contender = -1;
+        do {
+            contender = ::openat(named_parent_descriptor_, named_leaf_.c_str(),
+                                 O_RDWR | O_NOFOLLOW | O_CLOEXEC);
+        } while (contender < 0 && errno == EINTR);
+        if (contender < 0) {
+            fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, posix_error(errno));
+        }
+        struct stat contender_metadata{};
+        if (::fstat(contender, &contender_metadata) != 0 || !lock_policy(contender_metadata) ||
+            identity_for(contender_metadata) != expected_lock_identity) {
+            const int saved_errno = errno == 0 ? EACCES : errno;
+            (void)::close(contender);
+            fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
+                 posix_error(saved_errno));
+        }
+        int contender_result = -1;
+        do {
+            contender_result = ::flock(contender, LOCK_EX | LOCK_NB);
+        } while (contender_result != 0 && errno == EINTR);
+        if (contender_result == 0) {
+            (void)::close(contender);
+            fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, posix_error(EACCES));
+        }
+        const int contender_error = errno;
+        (void)::close(contender);
+        if (contender_error != EWOULDBLOCK && contender_error != EAGAIN) {
+            fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, posix_error(contender_error));
+        }
+
+        int retained_result = -1;
+        do {
+            retained_result = ::flock(descriptor, LOCK_EX | LOCK_NB);
+        } while (retained_result != 0 && errno == EINTR);
+        if (retained_result != 0) {
+            fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, posix_error(errno));
+        }
+
+        struct stat parent_after{};
+        struct stat held_after{};
+        struct stat named_after{};
+        if (::fstat(named_parent_descriptor_, &parent_after) != 0 ||
+            ::fstat(descriptor, &held_after) != 0 ||
+            ::fstatat(named_parent_descriptor_, named_leaf_.c_str(), &named_after,
+                      AT_SYMLINK_NOFOLLOW) != 0 ||
+            !parent_policy(parent_after) || !lock_policy(held_after) || !lock_policy(named_after) ||
+            identity_for(parent_after) != expected_parent_identity ||
+            identity_for(held_after) != expected_lock_identity ||
+            identity_for(named_after) != expected_lock_identity) {
+            fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
+                 posix_error(errno == 0 ? EACCES : errno));
+        }
+
+        identity_ = expected_lock_identity;
+        descriptor_ = descriptor;
+#endif
+    }
+
     friend bool try_claim_private_cleanup_action(BaseLock& lock) noexcept;
     friend void release_private_cleanup_action(BaseLock& lock) noexcept;
+    friend class ::gnfs::sieve::distributed_sieve_worker_entry_detail::
+        distributed_sieve_worker_writer_detail::OOCInheritedP8WriterMintV1;
 
     void release_noexcept() noexcept {
 #ifdef _WIN32
@@ -1951,6 +2117,9 @@ private:
 #endif
     std::filesystem::path path_;
     std::array<std::uint64_t, 3> identity_{};
+    int named_parent_descriptor_ = -1;
+    std::string named_leaf_;
+    std::array<std::uint64_t, 3> named_parent_identity_{};
     std::atomic_bool private_cleanup_action_claimed_{false};
 };
 

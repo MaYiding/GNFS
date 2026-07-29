@@ -111,6 +111,9 @@ namespace {
 using Diagnostic = DistributedSieveWorkerEntryDiagnosticV1;
 using Phase = DistributedSieveWorkerEntryPhaseV1;
 using Status = DistributedSieveWorkerEntryStatusV1;
+using WriterDiagnostic = DistributedSieveWorkerWriterDiagnosticV1;
+using WriterPhase = DistributedSieveWorkerWriterPhaseV1;
+using WriterStatus = DistributedSieveWorkerWriterStatusV1;
 
 std::atomic_flag ADOPTION_STARTED = ATOMIC_FLAG_INIT;
 
@@ -134,6 +137,42 @@ std::atomic_flag ADOPTION_STARTED = ATOMIC_FLAG_INIT;
 
 [[nodiscard]] Diagnostic namespace_failure(Phase phase, Status status) noexcept {
     return protocol_failure(phase, status, {.error = DistributedSieveProtocolError::invalid_value});
+}
+
+[[nodiscard]] WriterDiagnostic writer_failure(WriterPhase phase, WriterStatus status,
+                                              int native_error = 0) noexcept {
+    return {
+        .phase = phase,
+        .status = status,
+        .native_error = native_error,
+    };
+}
+
+[[nodiscard]] WriterStatus writer_status_for_entry_failure(const Diagnostic& diagnostic) noexcept {
+    if (diagnostic.status == Status::platform_unsupported) {
+        return WriterStatus::platform_unsupported;
+    }
+    if (diagnostic.status == Status::process_mismatch) {
+        return WriterStatus::process_mismatch;
+    }
+    if (diagnostic.status == Status::resource_exhausted) {
+        return WriterStatus::resource_exhausted;
+    }
+    if (diagnostic.phase == Phase::attempt_base_lock_validation ||
+        diagnostic.status == Status::lock_invalid) {
+        return WriterStatus::lock_invalid;
+    }
+    if (diagnostic.phase == Phase::private_lease_validation ||
+        diagnostic.status == Status::private_lease_invalid) {
+        return WriterStatus::private_lease_invalid;
+    }
+    return WriterStatus::entry_invalid;
+}
+
+[[nodiscard]] WriterDiagnostic writer_entry_failure(WriterPhase phase,
+                                                    const Diagnostic& diagnostic) noexcept {
+    return writer_failure(phase, writer_status_for_entry_failure(diagnostic),
+                          diagnostic.native_error);
 }
 
 [[nodiscard]] std::uint64_t current_process_id() noexcept {
@@ -925,6 +964,54 @@ expected_base_path_digest(std::string_view absolute_root_path,
     return owner_seen ? Diagnostic{} : namespace_failure(phase, Status::private_lease_invalid);
 }
 
+[[nodiscard]] Diagnostic require_writer_directory_contents(int descriptor) noexcept {
+    constexpr Phase phase = Phase::private_lease_validation;
+    const int scan_descriptor =
+        openat_retrying_eintr(descriptor, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (scan_descriptor < 0) {
+        return failure(phase, Status::private_lease_invalid, errno);
+    }
+    DIR* raw_directory = ::fdopendir(scan_descriptor);
+    if (raw_directory == nullptr) {
+        const int saved_errno = errno;
+        (void)::close(scan_descriptor);
+        return failure(phase, Status::private_lease_invalid, saved_errno);
+    }
+    UniqueDirectory directory(raw_directory);
+    bool owner_seen = false;
+    bool index_seen = false;
+    bool data_seen = false;
+    errno = 0;
+    for (;;) {
+        dirent* entry = ::readdir(raw_directory);
+        if (entry == nullptr) {
+            if (errno != 0) {
+                return failure(phase, Status::private_lease_invalid, errno);
+            }
+            break;
+        }
+        const std::string_view leaf(entry->d_name);
+        if (leaf == "." || leaf == "..") {
+            continue;
+        }
+        bool* seen = nullptr;
+        if (leaf == wave::DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_LEAF) {
+            seen = &owner_seen;
+        } else if (leaf == "corpus.relidx") {
+            seen = &index_seen;
+        } else if (leaf == "corpus.reldata") {
+            seen = &data_seen;
+        } else {
+            return namespace_failure(phase, Status::private_lease_invalid);
+        }
+        if (*seen) {
+            return namespace_failure(phase, Status::private_lease_invalid);
+        }
+        *seen = true;
+    }
+    return owner_seen ? Diagnostic{} : namespace_failure(phase, Status::private_lease_invalid);
+}
+
 struct ParsedMarker final {
     std::vector<std::byte> bytes;
     NativeIdentityV1 identity;
@@ -1492,6 +1579,102 @@ template <typename State> [[nodiscard]] Diagnostic validate_state(const State& s
     };
 }
 
+template <typename State>
+[[nodiscard]] Diagnostic validate_writer_lifetime_state(const State& state) {
+    if (state.creator_process_id == 0 || current_process_id() != state.creator_process_id) {
+        return failure(Phase::final_revalidation, Status::process_mismatch, EINVAL);
+    }
+    if (state.invalidated.load(std::memory_order_acquire)) {
+        return namespace_failure(Phase::final_revalidation, Status::namespace_invalid);
+    }
+    if (const auto root = validate_root(state.root_descriptor, state.root_identity); !root) {
+        return root;
+    }
+    if (const auto binding = validate_absolute_root_binding(
+            state.root_descriptor, state.absolute_root_path, state.root_identity);
+        !binding) {
+        return binding;
+    }
+    const auto base_path_digest = expected_base_path_digest(state.absolute_root_path, state.names);
+    if (base_path_digest != state.base_path_digest) {
+        return namespace_failure(Phase::private_lease_validation, Status::private_lease_invalid);
+    }
+    if (const auto locked =
+            validate_named_lock(state.root_descriptor, state.permanent_lock_descriptor,
+                                wave::DISTRIBUTED_SIEVE_WAVE_LOCK_LEAF,
+                                state.permanent_lock_identity, Phase::permanent_lock_validation);
+        !locked) {
+        return locked;
+    }
+    if (const auto locked = validate_named_lock(
+            state.root_descriptor, state.attempt_lock_descriptor, state.names.base_lock_leaf,
+            state.attempt_lock_identity, Phase::attempt_base_lock_validation);
+        !locked) {
+        return locked;
+    }
+    if (const auto directory = validate_attempt_directory(
+            state.root_descriptor, state.attempt_directory_descriptor,
+            state.names.private_directory_leaf, state.attempt_directory_identity);
+        !directory) {
+        return directory;
+    }
+    if (const auto contents = require_writer_directory_contents(state.attempt_directory_descriptor);
+        !contents) {
+        return contents;
+    }
+
+    const auto reserved = read_marker(state.root_descriptor, state.names.reserved_leaf);
+    const auto owned = read_marker(state.root_descriptor, state.names.owned_leaf);
+    const auto owner = read_marker(state.attempt_directory_descriptor,
+                                   wave::DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_LEAF);
+    if (!reserved.marker.has_value()) {
+        return reserved.diagnostic;
+    }
+    if (!owned.marker.has_value()) {
+        return owned.diagnostic;
+    }
+    if (!owner.marker.has_value()) {
+        return owner.diagnostic;
+    }
+    if (reserved.marker->bytes != state.reserved_marker_bytes ||
+        owned.marker->bytes != state.owned_marker_bytes ||
+        owner.marker->bytes != state.owner_marker_bytes ||
+        reserved.marker->record.base_path_digest != base_path_digest ||
+        reserved.marker->identity != state.reserved_marker_identity ||
+        owned.marker->identity != state.owned_marker_identity ||
+        owner.marker->identity != state.owner_marker_identity) {
+        return namespace_failure(Phase::private_lease_validation, Status::private_lease_invalid);
+    }
+    if (const auto missing =
+            require_missing_at(state.root_descriptor, state.names.reserved_pending_leaf,
+                               Phase::private_lease_validation, Status::private_lease_invalid);
+        missing.has_value()) {
+        return *missing;
+    }
+    if (const auto missing =
+            require_missing_at(state.root_descriptor, state.names.owned_pending_leaf,
+                               Phase::private_lease_validation, Status::private_lease_invalid);
+        missing.has_value()) {
+        return *missing;
+    }
+    if (const auto staging =
+            require_no_attempt_staging_candidates(state.root_descriptor, state.names);
+        !staging) {
+        return staging;
+    }
+    if (const auto missing =
+            require_missing_at(state.attempt_directory_descriptor,
+                               wave::DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_PENDING_LEAF,
+                               Phase::private_lease_validation, Status::private_lease_invalid);
+        missing.has_value()) {
+        return *missing;
+    }
+    return {
+        .phase = Phase::final_revalidation,
+        .status = Status::ready,
+    };
+}
+
 #endif
 
 } // namespace
@@ -1565,7 +1748,185 @@ DistributedSieveWorkerEntryAdoptionResultV1 adopt_distributed_sieve_worker_entry
     return trusted_test::adopt_distributed_sieve_worker_entry_v1_with_hooks({});
 }
 
+DistributedSieveWorkerWriterAdoptionResultV1
+consume_distributed_sieve_worker_writer_v1(DistributedSieveWorkerEntryV1&& entry) noexcept {
+    return trusted_test::consume_distributed_sieve_worker_writer_v1_with_hooks(std::move(entry),
+                                                                               {});
+}
+
 namespace trusted_test {
+
+DistributedSieveWorkerWriterAdoptionResultV1 consume_distributed_sieve_worker_writer_v1_with_hooks(
+    DistributedSieveWorkerEntryV1&& entry, DistributedSieveWorkerWriterTestHooksV1 hooks) noexcept {
+    if (entry.state_ == nullptr) {
+        return {
+            .writer = std::nullopt,
+            .diagnostic =
+                writer_failure(WriterPhase::single_use_gate, WriterStatus::already_consumed),
+        };
+    }
+
+    // Burn the entry at the beginning of the conversion attempt. A failed
+    // authority mint cannot be retried with stale or partially transferred
+    // capabilities.
+    auto state = std::move(entry.state_);
+
+#if defined(_WIN32) || (!defined(__APPLE__) && !defined(__linux__))
+    (void)hooks;
+    return {
+        .writer = std::nullopt,
+        .diagnostic =
+            writer_failure(WriterPhase::platform_gate, WriterStatus::platform_unsupported, ENOTSUP),
+    };
+#else
+    if (state->creator_process_id == 0 || current_process_id() != state->creator_process_id) {
+        state->invalidated.store(true, std::memory_order_release);
+        return {
+            .writer = std::nullopt,
+            .diagnostic =
+                writer_failure(WriterPhase::process_gate, WriterStatus::process_mismatch, ECHILD),
+        };
+    }
+
+    try {
+        std::filesystem::path absolute_root(state->absolute_root_path);
+        std::filesystem::path private_directory =
+            absolute_root / state->names.private_directory_leaf;
+        std::filesystem::path base_path = private_directory / "corpus";
+        std::filesystem::path lock_path = absolute_root / state->names.base_lock_leaf;
+        const auto cleanup_paths = private_lease::freeze_paths(base_path);
+        if (cleanup_paths.base_path != base_path ||
+            cleanup_paths.private_directory != private_directory ||
+            cleanup_paths.lock_path != lock_path ||
+            cleanup_paths.index_path.filename() != "corpus.relidx" ||
+            cleanup_paths.data_path.filename() != "corpus.reldata" ||
+            private_lease::frozen_path_digest(cleanup_paths.base_path) != state->base_path_digest ||
+            state->record.lease.lease_id.limbs == std::array<std::uint64_t, 2>{} ||
+            state->record.lease.directory != state->attempt_directory_identity ||
+            state->record.lease.owner_marker != state->owner_marker_identity) {
+            state->invalidated.store(true, std::memory_order_release);
+            return {
+                .writer = std::nullopt,
+                .diagnostic = writer_failure(WriterPhase::capability_transfer,
+                                             WriterStatus::private_lease_invalid, EPROTO),
+            };
+        }
+
+        // Allocate/copy every potentially throwing value before the final
+        // validation. Descriptor transfer after that boundary is exchange-only.
+        distributed_sieve_worker_writer_detail::OOCInheritedP8WriterMintV1 mint(
+            -1, -1, -1, -1, -1, state->creator_process_id, std::move(absolute_root),
+            std::move(base_path), std::move(private_directory), std::move(lock_path),
+            state->names.private_directory_leaf, state->names.base_lock_leaf,
+            relation_identity(state->root_identity),
+            relation_identity(state->attempt_lock_identity),
+            relation_identity(state->attempt_directory_identity),
+            state->record.lease.lease_id.limbs, relation_identity(state->owner_marker_identity),
+            relation_identity(state->owned_marker_identity), state->record, state->manifest,
+            state->identity, state->chunk, state->package_witness, hooks.private_lease_hooks);
+
+        const auto duplicate_for_writer = [](int descriptor) {
+            int duplicate = -1;
+            do {
+                duplicate =
+                    ::fcntl(descriptor, F_DUPFD_CLOEXEC,
+                            process::DISTRIBUTED_SIEVE_WORKER_CHILD_FIRST_UNMAPPED_DESCRIPTOR);
+            } while (duplicate < 0 && errno == EINTR);
+            if (duplicate < 0) {
+                throw std::system_error(errno, std::generic_category(),
+                                        "duplicate retained worker writer capability");
+            }
+            return UniqueFd(duplicate);
+        };
+        auto writer_root = duplicate_for_writer(state->root_descriptor);
+        auto writer_permanent_lock = duplicate_for_writer(state->permanent_lock_descriptor);
+        auto writer_attempt_lock = duplicate_for_writer(state->attempt_lock_descriptor);
+        auto writer_attempt_directory = duplicate_for_writer(state->attempt_directory_descriptor);
+        auto writer_package = duplicate_for_writer(state->package_descriptor);
+
+        const auto first = validate_state(*state);
+        if (!first) {
+            state->invalidated.store(true, std::memory_order_release);
+            return {
+                .writer = std::nullopt,
+                .diagnostic = writer_entry_failure(WriterPhase::entry_revalidation, first),
+            };
+        }
+        if (hooks.after_first_validation != nullptr) {
+            hooks.after_first_validation(hooks.context);
+        }
+        const auto confirmed = validate_state(*state);
+        if (!confirmed) {
+            state->invalidated.store(true, std::memory_order_release);
+            return {
+                .writer = std::nullopt,
+                .diagnostic = writer_entry_failure(WriterPhase::final_revalidation, confirmed),
+            };
+        }
+
+        mint.root_descriptor_ = writer_root.release();
+        mint.permanent_lock_descriptor_ = writer_permanent_lock.release();
+        mint.attempt_lock_descriptor_ = writer_attempt_lock.release();
+        mint.attempt_directory_descriptor_ = writer_attempt_directory.release();
+        mint.package_descriptor_ = writer_package.release();
+
+        auto* retained_state = state.release();
+        distributed_sieve_worker_writer_detail::DistributedSieveWorkerWriterLifetimeGuardV1
+            lifetime_guard(
+                retained_state,
+                +[](const void* opaque) noexcept {
+                    auto* retained =
+                        static_cast<const DistributedSieveWorkerEntryV1::State*>(opaque);
+                    try {
+                        const auto diagnostic = validate_writer_lifetime_state(*retained);
+                        if (diagnostic) {
+                            return true;
+                        }
+                    } catch (...) {
+                    }
+                    const_cast<DistributedSieveWorkerEntryV1::State*>(retained)->invalidated.store(
+                        true, std::memory_order_release);
+                    return false;
+                },
+                +[](void* opaque) noexcept {
+                    delete static_cast<DistributedSieveWorkerEntryV1::State*>(opaque);
+                });
+        mint.attach_lifetime_guard(std::move(lifetime_guard));
+
+        return distributed_sieve_worker_writer_detail::mint_distributed_sieve_worker_writer_v1(
+            std::move(mint));
+    } catch (const std::bad_alloc&) {
+        state->invalidated.store(true, std::memory_order_release);
+        return {
+            .writer = std::nullopt,
+            .diagnostic = writer_failure(WriterPhase::capability_transfer,
+                                         WriterStatus::resource_exhausted, ENOMEM),
+        };
+    } catch (const private_lease::Failure& failure) {
+        state->invalidated.store(true, std::memory_order_release);
+        return {
+            .writer = std::nullopt,
+            .diagnostic = writer_failure(WriterPhase::capability_transfer,
+                                         WriterStatus::private_lease_invalid,
+                                         failure.error ? failure.error.value() : EPROTO),
+        };
+    } catch (const std::system_error& error) {
+        state->invalidated.store(true, std::memory_order_release);
+        return {
+            .writer = std::nullopt,
+            .diagnostic = writer_failure(WriterPhase::capability_transfer,
+                                         WriterStatus::private_lease_invalid, error.code().value()),
+        };
+    } catch (...) {
+        state->invalidated.store(true, std::memory_order_release);
+        return {
+            .writer = std::nullopt,
+            .diagnostic =
+                writer_failure(WriterPhase::capability_transfer, WriterStatus::unexpected_failure),
+        };
+    }
+#endif
+}
 
 DistributedSieveWorkerEntryAdoptionResultV1 adopt_distributed_sieve_worker_entry_v1_with_hooks(
     DistributedSieveWorkerEntryTestHooksV1 hooks) noexcept {

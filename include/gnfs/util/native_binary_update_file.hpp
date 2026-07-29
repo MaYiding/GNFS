@@ -32,6 +32,11 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <stdio.h>
+#elif defined(__linux__)
+#include <stdio_ext.h>
+#endif
 #endif
 
 namespace gnfs::util {
@@ -259,8 +264,60 @@ public:
             0,
         };
         if (!S_ISREG(held.st_mode) || !S_ISREG(named.st_mode) || held.st_nlink != 1 ||
-            named.st_nlink != 1 || held_identity != identity_ || named_identity != identity_) {
+            named.st_nlink != 1 || (held.st_mode & static_cast<mode_t>(07777)) != 0600 ||
+            (named.st_mode & static_cast<mode_t>(07777)) != 0600 || held.st_uid != ::geteuid() ||
+            named.st_uid != ::geteuid() || held_identity != identity_ ||
+            named_identity != identity_) {
             throw std::runtime_error(message(operation, "canonical leaf identity changed"));
+        }
+#endif
+    }
+
+    /// Require a single leaf below an already-open directory to name this
+    /// exact regular single-link file. This is the handle-relative counterpart
+    /// of require_named_identity() for authority-bound private directories.
+    void require_named_identity_at(NativeHandle parent, const std::string& leaf,
+                                   const char* operation) const {
+        require_open(operation);
+#ifdef _WIN32
+        (void)parent;
+        (void)leaf;
+        throw std::system_error(
+            std::make_error_code(std::errc::operation_not_supported),
+            message(operation, "handle-relative named identity is unsupported"));
+#else
+        if (parent < 0 || leaf.empty() || leaf.find('/') != std::string::npos ||
+            leaf.find('\0') != std::string::npos) {
+            throw std::invalid_argument(
+                message(operation, "invalid handle-relative canonical leaf"));
+        }
+        const int descriptor = ::fileno(file_);
+        if (descriptor < 0) {
+            throw_errno(operation);
+        }
+        struct stat held{};
+        struct stat named{};
+        if (::fstat(descriptor, &held) != 0 ||
+            ::fstatat(parent, leaf.c_str(), &named, AT_SYMLINK_NOFOLLOW) != 0) {
+            throw_errno(operation);
+        }
+        const std::array<std::uint64_t, 3> held_identity{
+            static_cast<std::uint64_t>(held.st_dev),
+            static_cast<std::uint64_t>(held.st_ino),
+            0,
+        };
+        const std::array<std::uint64_t, 3> named_identity{
+            static_cast<std::uint64_t>(named.st_dev),
+            static_cast<std::uint64_t>(named.st_ino),
+            0,
+        };
+        if (!S_ISREG(held.st_mode) || !S_ISREG(named.st_mode) || held.st_nlink != 1 ||
+            named.st_nlink != 1 || (held.st_mode & static_cast<mode_t>(07777)) != 0600 ||
+            (named.st_mode & static_cast<mode_t>(07777)) != 0600 || held.st_uid != ::geteuid() ||
+            named.st_uid != ::geteuid() || held_identity != identity_ ||
+            named_identity != identity_) {
+            throw std::runtime_error(
+                message(operation, "handle-relative canonical leaf identity changed"));
         }
 #endif
     }
@@ -460,6 +517,38 @@ public:
         if (file_ != nullptr) {
             (void)::fclose(std::exchange(file_, nullptr));
         }
+    }
+
+    /// Discard inherited stdio output without writing it, then unregister and
+    /// close the stream in a post-fork child.
+    ///
+    /// Only macOS and Linux callers may rely on the no-flush guarantee. Other
+    /// platforms have no supported fork path and use ordinary close as a
+    /// defensive fallback.
+    void discard_and_close_post_fork_child_noexcept() noexcept {
+        std::FILE* file = std::exchange(file_, nullptr);
+        if (file != nullptr) {
+#if defined(__APPLE__)
+            if (::fpurge(file) != 0) {
+                const int descriptor = ::fileno(file);
+                if (descriptor >= 0) {
+                    // Closing the child copy first makes the following
+                    // fclose incapable of writing even if purge failed.
+                    (void)::close(descriptor);
+                }
+            }
+            (void)::fclose(file);
+#elif defined(__linux__)
+            ::__fpurge(file);
+            (void)::fclose(file);
+#else
+            (void)::fclose(file);
+#endif
+        }
+        buffer_.reset();
+        buffer_size_ = 0;
+        identity_ = {};
+        label_.clear();
     }
 
 private:

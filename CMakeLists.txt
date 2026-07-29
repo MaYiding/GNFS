@@ -300,6 +300,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/distributed_sieve_protocol.cpp"
         src/sieve/distributed_sieve_work_identity_codec.cpp
         src/sieve/distributed_sieve_work_package_codec.cpp
         src/sieve/distributed_sieve_worker_entry.cpp
+        src/sieve/distributed_sieve_worker_writer.cpp
         src/sieve/distributed_sieve_worker_work_package_file.cpp
     )
 endif()
@@ -1021,6 +1022,23 @@ if(GNFS_BUILD_TESTS)
     )
     set_tests_properties(
         DistributedSieveWorkerEntry
+        PROPERTIES LABELS "fast" TIMEOUT 60
+    )
+
+    add_executable(test_distributed_sieve_worker_writer_authority
+        tests/test_distributed_sieve_worker_writer_authority.cpp
+    )
+    target_include_directories(test_distributed_sieve_worker_writer_authority PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sieve
+    )
+    target_link_libraries(test_distributed_sieve_worker_writer_authority
+        PRIVATE gnfs_core Threads::Threads)
+    add_test(
+        NAME DistributedSieveWorkerWriterAuthority
+        COMMAND test_distributed_sieve_worker_writer_authority
+    )
+    set_tests_properties(
+        DistributedSieveWorkerWriterAuthority
         PROPERTIES LABELS "fast" TIMEOUT 60
     )
 

@@ -172,6 +172,73 @@ inline void sync_parent_directory_after_metadata_change(const std::filesystem::p
 #endif
 }
 
+inline void sync_directory_descriptor_after_metadata_change(int descriptor,
+                                                            const std::string& label) {
+#ifdef _WIN32
+    (void)descriptor;
+    throw std::system_error(std::make_error_code(std::errc::operation_not_supported),
+                            "OOC directory descriptor sync is unsupported for " + label);
+#else
+    if (descriptor < 0) {
+        throw std::invalid_argument("OOC directory descriptor sync has invalid handle for " +
+                                    label);
+    }
+    struct stat metadata{};
+    if (::fstat(descriptor, &metadata) != 0 || !S_ISDIR(metadata.st_mode)) {
+        const int saved_errno = errno == 0 ? ENOTDIR : errno;
+        throw std::system_error(saved_errno, std::generic_category(),
+                                "OOC directory descriptor sync rejected " + label);
+    }
+    int result = -1;
+    do {
+#if defined(__APPLE__)
+        result = ::fcntl(descriptor, F_FULLFSYNC);
+#else
+        result = ::fsync(descriptor);
+#endif
+    } while (result != 0 && errno == EINTR);
+    if (result != 0) {
+        throw std::system_error(errno, std::generic_category(),
+                                "OOC directory descriptor sync failed for " + label);
+    }
+#endif
+}
+
+enum class OOCExactFreshRollbackDisposition : std::uint8_t {
+    Clean,
+    NamedResidueMayRemain,
+    DirectoryDurabilityUncertain,
+};
+
+class OOCExactFreshConstructionFailure final : public std::exception {
+public:
+    OOCExactFreshConstructionFailure(std::exception_ptr primary,
+                                     OOCExactFreshRollbackDisposition rollback,
+                                     std::error_code rollback_error) noexcept
+        : primary_(std::move(primary)), rollback_(rollback), rollback_error_(rollback_error) {}
+
+    [[nodiscard]] const char* what() const noexcept override {
+        return "OOC exact fresh construction failed";
+    }
+
+    [[nodiscard]] const std::exception_ptr& primary() const noexcept {
+        return primary_;
+    }
+
+    [[nodiscard]] OOCExactFreshRollbackDisposition rollback() const noexcept {
+        return rollback_;
+    }
+
+    [[nodiscard]] const std::error_code& rollback_error() const noexcept {
+        return rollback_error_;
+    }
+
+private:
+    std::exception_ptr primary_;
+    OOCExactFreshRollbackDisposition rollback_ = OOCExactFreshRollbackDisposition::Clean;
+    std::error_code rollback_error_;
+};
+
 inline constexpr uint64_t MAX_COMPACT_RELATION_BYTES =
     sizeof(int64_t) + sizeof(uint64_t) +
     2 * (sizeof(uint32_t) +
@@ -373,6 +440,20 @@ public:
 
 private:
     struct ConstructionToken final {};
+    struct ExactPrivateDirectoryConstructionToken final {};
+
+    struct ExactPrivateDirectoryBinding final {
+        int root_descriptor = -1;
+        int directory_descriptor = -1;
+        std::uint64_t creator_process_id = 0;
+        std::array<std::uint64_t, 3> root_identity{};
+        std::array<std::uint64_t, 3> directory_identity{};
+        std::string directory_leaf;
+        std::string index_leaf;
+        std::string data_leaf;
+        const void* authority_context = nullptr;
+        bool (*authority_stable)(const void* context) noexcept = nullptr;
+    };
 
     class DeferredPrivateLeaseActionGuard final {
     public:
@@ -385,8 +466,7 @@ private:
         }
 
         DeferredPrivateLeaseActionGuard(const DeferredPrivateLeaseActionGuard&) = delete;
-        DeferredPrivateLeaseActionGuard&
-        operator=(const DeferredPrivateLeaseActionGuard&) = delete;
+        DeferredPrivateLeaseActionGuard& operator=(const DeferredPrivateLeaseActionGuard&) = delete;
 
         ~DeferredPrivateLeaseActionGuard() {
             owner_.deferred_private_lease_action_in_progress_ = false;
@@ -401,20 +481,21 @@ public:
     /// identity.
     explicit OOCRelationWriter(const std::string& base_path)
         : OOCRelationWriter(base_path, std::nullopt, std::nullopt, nullptr,
-                            PrivateLeaseMode::ActivateImmediately, {}, {}, ConstructionToken{}) {}
+                            PrivateLeaseMode::ActivateImmediately, {}, {}, {},
+                            ConstructionToken{}) {}
 
     /// Fresh private-lease creation keeps the lease's persistent BaseLock held
     /// across both O_EXCL reservations and durable lease activation.
     OOCRelationWriter(const std::string& base_path, OOCPrivateLeaseOwnershipReceipt& private_lease)
         : OOCRelationWriter(base_path, std::nullopt, std::nullopt, &private_lease,
-                            PrivateLeaseMode::ActivateImmediately, {}, {}, ConstructionToken{}) {}
+                            PrivateLeaseMode::ActivateImmediately, {}, {}, {},
+                            ConstructionToken{}) {}
 
     /// Fork-worker creation consumes the child process's move-only lease copy.
     /// The writer therefore has no same-process external cleanup alias. A
     /// parent retains its independent post-fork COW receipt and must gate every
     /// cleanup attempt on confirmed child reap.
-    OOCRelationWriter(const std::string& base_path,
-                      OOCPrivateLeaseOwnershipReceipt&& private_lease,
+    OOCRelationWriter(const std::string& base_path, OOCPrivateLeaseOwnershipReceipt&& private_lease,
                       PrivateLeaseMode private_lease_mode)
         : OOCRelationWriter(base_path, std::move(private_lease), private_lease_mode, {}) {}
 
@@ -426,12 +507,11 @@ public:
                       OOCPrivateLeaseTestHooks private_lease_hooks)
         : OOCRelationWriter(base_path, std::nullopt, std::nullopt,
                             require_deferred_private_lease(private_lease, private_lease_mode),
-                            private_lease_mode, private_lease_hooks, {}, ConstructionToken{}) {
+                            private_lease_mode, private_lease_hooks, {}, {}, ConstructionToken{}) {
         owned_deferred_private_lease_.emplace(std::move(private_lease));
     }
 
-    OOCRelationWriter(const std::string& base_path,
-                      OOCPrivateLeaseOwnershipReceipt& private_lease,
+    OOCRelationWriter(const std::string& base_path, OOCPrivateLeaseOwnershipReceipt& private_lease,
                       PrivateLeaseMode private_lease_mode) = delete;
 
     /// Trusted test seam for process termination inside fresh private-writer
@@ -439,7 +519,7 @@ public:
     OOCRelationWriter(const std::string& base_path, OOCPrivateLeaseOwnershipReceipt& private_lease,
                       OOCPrivateLeaseTestHooks private_lease_hooks)
         : OOCRelationWriter(base_path, std::nullopt, std::nullopt, &private_lease,
-                            PrivateLeaseMode::ActivateImmediately, private_lease_hooks, {},
+                            PrivateLeaseMode::ActivateImmediately, private_lease_hooks, {}, {},
                             ConstructionToken{}) {}
 
     /// Paired recovery requires both the structural descriptor and the
@@ -449,7 +529,8 @@ public:
                       const OOCSnapshotDescriptor& recovery_descriptor,
                       const RelationSequenceReceipt& recovery_sequence_receipt)
         : OOCRelationWriter(base_path, recovery_descriptor, recovery_sequence_receipt, nullptr,
-                            PrivateLeaseMode::ActivateImmediately, {}, {}, ConstructionToken{}) {}
+                            PrivateLeaseMode::ActivateImmediately, {}, {}, {},
+                            ConstructionToken{}) {}
 
     /// Trusted deterministic seam for replacement tests between exact-handle
     /// recovery validation and the first recovery mutation.
@@ -458,10 +539,22 @@ public:
                       const RelationSequenceReceipt& recovery_sequence_receipt,
                       RecoveryTestHooks recovery_hooks)
         : OOCRelationWriter(base_path, recovery_descriptor, recovery_sequence_receipt, nullptr,
-                            PrivateLeaseMode::ActivateImmediately, {}, recovery_hooks,
+                            PrivateLeaseMode::ActivateImmediately, {}, recovery_hooks, {},
                             ConstructionToken{}) {}
 
 private:
+    OOCRelationWriter(const std::string& base_path, OOCPrivateLeaseOwnershipReceipt&& private_lease,
+                      PrivateLeaseMode private_lease_mode,
+                      OOCPrivateLeaseTestHooks private_lease_hooks,
+                      ExactPrivateDirectoryBinding exact_private_directory,
+                      ExactPrivateDirectoryConstructionToken)
+        : OOCRelationWriter(base_path, std::nullopt, std::nullopt,
+                            require_deferred_private_lease(private_lease, private_lease_mode),
+                            private_lease_mode, private_lease_hooks, {},
+                            std::move(exact_private_directory), ConstructionToken{}) {
+        owned_deferred_private_lease_.emplace(std::move(private_lease));
+    }
+
     [[nodiscard]] static OOCPrivateLeaseOwnershipReceipt*
     require_deferred_private_lease(OOCPrivateLeaseOwnershipReceipt& private_lease,
                                    PrivateLeaseMode private_lease_mode) {
@@ -472,14 +565,14 @@ private:
         return &private_lease;
     }
 
-    explicit OOCRelationWriter(const std::string& base_path,
-                               std::optional<OOCSnapshotDescriptor> recovery_descriptor,
-                               std::optional<RelationSequenceReceipt> recovery_sequence_receipt,
-                               OOCPrivateLeaseOwnershipReceipt* private_lease,
-                               PrivateLeaseMode private_lease_mode,
-                               OOCPrivateLeaseTestHooks private_lease_hooks,
-                               RecoveryTestHooks recovery_hooks, ConstructionToken)
+    explicit OOCRelationWriter(
+        const std::string& base_path, std::optional<OOCSnapshotDescriptor> recovery_descriptor,
+        std::optional<RelationSequenceReceipt> recovery_sequence_receipt,
+        OOCPrivateLeaseOwnershipReceipt* private_lease, PrivateLeaseMode private_lease_mode,
+        OOCPrivateLeaseTestHooks private_lease_hooks, RecoveryTestHooks recovery_hooks,
+        std::optional<ExactPrivateDirectoryBinding> exact_private_directory, ConstructionToken)
         : base_path_(freeze_base_path_checked(base_path)),
+          exact_private_directory_(std::move(exact_private_directory)),
           uncaught_at_ctor_(std::uncaught_exceptions()),
           fresh_store_(!recovery_descriptor.has_value()) {
         if (recovery_sequence_receipt.has_value() != recovery_descriptor.has_value()) {
@@ -498,6 +591,12 @@ private:
             private_lease == nullptr) {
             throw std::invalid_argument(
                 "OOCRelationWriter: deferred cleanup handoff requires a private lease");
+        }
+        if (exact_private_directory_.has_value() &&
+            (private_lease == nullptr || recovery_descriptor.has_value() ||
+             private_lease_mode != PrivateLeaseMode::DeferCleanupHandoff)) {
+            throw std::invalid_argument(
+                "OOCRelationWriter: exact private directory requires a fresh deferred lease");
         }
         if (recovery_descriptor &&
             recovery_sequence_receipt->relation_count != recovery_descriptor->count) {
@@ -601,6 +700,7 @@ private:
                 // canonical, staged, or quarantine leaves fail closed; explicit
                 // transaction recovery must finish before fresh reuse.
                 const auto cleanup_paths = ooc_cleanup_detail::freeze_paths(base_path_);
+                require_exact_private_directory_binding(cleanup_paths, "fresh binding preflight");
                 std::shared_ptr<ooc_cleanup_detail::BaseLock> cleanup_lock;
                 if (private_lease != nullptr) {
                     if (private_lease->spent_ || private_lease->active_ ||
@@ -647,8 +747,35 @@ private:
                 // check and then truncate this store.
                 const std::string index_path = cleanup_paths.index_path.string();
                 const std::string data_path = cleanup_paths.data_path.string();
+                const std::string index_leaf = cleanup_paths.index_path.filename().string();
+                const std::string data_leaf = cleanup_paths.data_path.filename().string();
+                const auto create_reservation =
+                    [&](const std::string& path,
+                        const std::string& leaf) -> FreshArtifactReservation {
+                    if (!exact_private_directory_) {
+                        return FreshArtifactReservation::create(path);
+                    }
+                    require_exact_private_directory_binding(cleanup_paths,
+                                                            "fresh reservation create");
+                    return FreshArtifactReservation::create_at(
+                        exact_private_directory_->directory_descriptor, leaf, path);
+                };
+                const auto require_reservation_identity =
+                    [&](const FreshArtifactReservation& reservation, const std::string& path,
+                        const std::string& leaf) {
+                        if (exact_private_directory_) {
+                            require_exact_private_directory_binding(cleanup_paths,
+                                                                    "fresh reservation validation");
+                            reservation.require_named_identity_at(
+                                exact_private_directory_->directory_descriptor, leaf, path);
+                        } else {
+                            reservation.require_named_identity(path);
+                        }
+                    };
                 std::optional<FreshArtifactReservation> index_reservation;
                 std::optional<FreshArtifactReservation> data_reservation;
+                bool index_creation_attempted = false;
+                bool data_creation_attempted = false;
                 try {
                     const auto require_fresh_boundary =
                         [&](OOCCleanupTransaction::PrivateFreshWriterBoundary boundary,
@@ -685,11 +812,10 @@ private:
                     }
                     require_fresh_boundary(
                         OOCCleanupTransaction::PrivateFreshWriterBoundary::BeforeIndexReservation);
-                    index_reservation.emplace(
-                        ooc_cleanup_detail::invoke_with_stable_base_lock(*cleanup_lock, [&] {
-                            return FreshArtifactReservation::create(index_path);
-                        }));
-                    index_reservation->require_named_identity(index_path);
+                    index_creation_attempted = true;
+                    index_reservation.emplace(ooc_cleanup_detail::invoke_with_stable_base_lock(
+                        *cleanup_lock, [&] { return create_reservation(index_path, index_leaf); }));
+                    require_reservation_identity(*index_reservation, index_path, index_leaf);
                     require_fresh_boundary(
                         OOCCleanupTransaction::PrivateFreshWriterBoundary::IndexReserved,
                         index_reservation->identity());
@@ -703,12 +829,11 @@ private:
                     }
                     require_fresh_boundary(
                         OOCCleanupTransaction::PrivateFreshWriterBoundary::BeforeDataReservation);
-                    data_reservation.emplace(
-                        ooc_cleanup_detail::invoke_with_stable_base_lock(*cleanup_lock, [&] {
-                            return FreshArtifactReservation::create(data_path);
-                        }));
-                    index_reservation->require_named_identity(index_path);
-                    data_reservation->require_named_identity(data_path);
+                    data_creation_attempted = true;
+                    data_reservation.emplace(ooc_cleanup_detail::invoke_with_stable_base_lock(
+                        *cleanup_lock, [&] { return create_reservation(data_path, data_leaf); }));
+                    require_reservation_identity(*index_reservation, index_path, index_leaf);
+                    require_reservation_identity(*data_reservation, data_path, data_leaf);
                     require_fresh_boundary(
                         OOCCleanupTransaction::PrivateFreshWriterBoundary::DataReserved,
                         index_reservation->identity(), data_reservation->identity());
@@ -723,8 +848,8 @@ private:
 
                     require_fresh_boundary(
                         OOCCleanupTransaction::PrivateFreshWriterBoundary::BeforeHeaderWrite);
-                    index_reservation->require_named_identity(index_path);
-                    data_reservation->require_named_identity(data_path);
+                    require_reservation_identity(*index_reservation, index_path, index_leaf);
+                    require_reservation_identity(*data_reservation, data_path, data_leaf);
                     if (private_lease != nullptr &&
                         ooc_cleanup_detail::invoke_with_stable_base_lock(*cleanup_lock, [&] {
                             return ooc_cleanup_detail::should_interrupt_private_lease(
@@ -776,8 +901,8 @@ private:
                         validate_open_v3_pair_headers("constructor header validation",
                                                       incomplete_count);
                     });
-                    index_reservation->require_named_identity(index_path);
-                    data_reservation->require_named_identity(data_path);
+                    require_reservation_identity(*index_reservation, index_path, index_leaf);
+                    require_reservation_identity(*data_reservation, data_path, data_leaf);
                     require_fresh_boundary(
                         OOCCleanupTransaction::PrivateFreshWriterBoundary::HeadersValidated,
                         index_reservation->identity(), data_reservation->identity(), store_id_);
@@ -790,8 +915,8 @@ private:
                             std::make_error_code(std::errc::operation_canceled),
                             "OOCRelationWriter: interrupted after fresh header validation");
                     }
-                    index_reservation->require_named_identity(index_path);
-                    data_reservation->require_named_identity(data_path);
+                    require_reservation_identity(*index_reservation, index_path, index_leaf);
+                    require_reservation_identity(*data_reservation, data_path, data_leaf);
                     ooc_cleanup_detail::invoke_with_stable_base_lock(*cleanup_lock, [&] {
                         data_reservation->close_checked(data_path);
                         index_reservation->close_checked(index_path);
@@ -799,9 +924,14 @@ private:
                     require_store_named_identity("fresh reservation handoff");
                     auto cleanup_receipt =
                         ooc_cleanup_detail::invoke_with_stable_base_lock(*cleanup_lock, [&] {
-                            return capture_fresh_cleanup_ownership_checked(
+                            require_exact_private_directory_binding(
+                                cleanup_paths, "fresh cleanup ownership preflight");
+                            auto receipt = capture_fresh_cleanup_ownership_checked(
                                 base_path_, store_id_, index_reservation->identity(),
                                 data_reservation->identity());
+                            require_exact_private_directory_binding(
+                                cleanup_paths, "fresh cleanup ownership commit");
+                            return receipt;
                         });
                     require_fresh_boundary(
                         OOCCleanupTransaction::PrivateFreshWriterBoundary::PairOwnershipCaptured,
@@ -839,6 +969,7 @@ private:
                     }
                     cleanup_lock->require_stable();
                 } catch (...) {
+                    const std::exception_ptr primary_failure = std::current_exception();
                     abort_close_noexcept();
                     const bool preactive_pair_rollback =
                         private_lease == nullptr || !private_lease->active_;
@@ -851,12 +982,68 @@ private:
                                                : std::nullopt,
                              data_reservation ? std::optional(data_reservation->identity())
                                               : std::nullopt));
+                    const bool lock_stable = cleanup_lock->stable_noexcept();
+                    if (exact_private_directory_) {
+                        bool named_residue_may_remain = false;
+                        bool directory_durability_uncertain = false;
+                        std::error_code rollback_error;
+                        const auto note_error = [&](const std::error_code& error) {
+                            if (!rollback_error && error) {
+                                rollback_error = error;
+                            }
+                        };
+                        const auto rollback_exact =
+                            [&](bool creation_attempted,
+                                std::optional<FreshArtifactReservation>& reservation,
+                                const std::string& leaf) {
+                                if (!creation_attempted) {
+                                    return;
+                                }
+                                if (!reservation || !preactive_pair_rollback ||
+                                    !permit_allows_rollback || !lock_stable) {
+                                    named_residue_may_remain = true;
+                                    note_error(
+                                        std::make_error_code(std::errc::state_not_recoverable));
+                                    return;
+                                }
+                                const auto removed =
+                                    reservation->remove_path_if_same_identity_at_noexcept(
+                                        exact_private_directory_->directory_descriptor, leaf);
+                                if (!removed.absence_proven) {
+                                    named_residue_may_remain = true;
+                                }
+                                note_error(removed.error);
+                            };
+                        rollback_exact(data_creation_attempted, data_reservation, data_leaf);
+                        rollback_exact(index_creation_attempted, index_reservation, index_leaf);
+                        if (index_creation_attempted || data_creation_attempted) {
+                            try {
+                                detail::sync_directory_descriptor_after_metadata_change(
+                                    exact_private_directory_->directory_descriptor, base_path_);
+                            } catch (const std::system_error& error) {
+                                directory_durability_uncertain = true;
+                                note_error(error.code());
+                            } catch (...) {
+                                directory_durability_uncertain = true;
+                                note_error(std::make_error_code(std::errc::io_error));
+                            }
+                        }
+                        const auto disposition =
+                            named_residue_may_remain
+                                ? detail::OOCExactFreshRollbackDisposition::NamedResidueMayRemain
+                            : directory_durability_uncertain
+                                ? detail::OOCExactFreshRollbackDisposition::
+                                      DirectoryDurabilityUncertain
+                                : detail::OOCExactFreshRollbackDisposition::Clean;
+                        throw detail::OOCExactFreshConstructionFailure(primary_failure, disposition,
+                                                                       rollback_error);
+                    }
                     if (preactive_pair_rollback && permit_allows_rollback && data_reservation &&
-                        cleanup_lock->stable_noexcept()) {
+                        lock_stable) {
                         data_reservation->remove_path_if_same_identity_noexcept(data_path);
                     }
                     if (preactive_pair_rollback && permit_allows_rollback && index_reservation &&
-                        cleanup_lock->stable_noexcept()) {
+                        lock_stable) {
                         index_reservation->remove_path_if_same_identity_noexcept(index_path);
                     }
                     throw;
@@ -876,7 +1063,8 @@ public:
     /// truncated. Passing `false` is equivalent to fresh construction.
     explicit OOCRelationWriter(const std::string& base_path, bool legacy_resume)
         : OOCRelationWriter(base_path, reject_legacy_resume(legacy_resume), std::nullopt, nullptr,
-                            PrivateLeaseMode::ActivateImmediately, {}, {}, ConstructionToken{}) {}
+                            PrivateLeaseMode::ActivateImmediately, {}, {}, {},
+                            ConstructionToken{}) {}
 
     /// Append a single relation. Returns the index of the written relation.
     size_t write(const gnfs::core::Relation& rel) {
@@ -888,11 +1076,17 @@ public:
         rel.validate_persistence_limits();
 
         try {
+            if (exact_private_directory_) {
+                require_store_named_identity("write authority preflight");
+            }
             const uint64_t offset = data_stream_.position("write data offset");
             idx_stream_.write_exact(&offset, sizeof(offset), "write index offset");
             serialize(rel);
 
             ++count_;
+            if (exact_private_directory_) {
+                require_store_named_identity("write authority commit");
+            }
             return count_ - 1;
         } catch (...) {
             fail_and_close_noexcept();
@@ -1044,6 +1238,7 @@ public:
                                    "finalize precommit");
             validate_open_v3_pair_headers("finalize precommit retained validation",
                                           descriptor.count);
+            require_store_named_identity("finalize authority before magic");
             idx_stream_.seek(0, "finalize magic seek");
             const uint64_t final_magic = MAGIC_V3_FINAL;
             idx_stream_.write_exact(&final_magic, sizeof(final_magic), "finalize magic write");
@@ -1126,8 +1321,7 @@ public:
     /// This seam supports trusted relation-layer handoff assembly without
     /// restoring the former live-writer alias. While the writer is open the
     /// lease is deliberately unreachable and cannot authorize cleanup.
-    [[nodiscard]] OOCPrivateLeaseOwnershipReceipt
-    take_deferred_private_lease_ownership() {
+    [[nodiscard]] OOCPrivateLeaseOwnershipReceipt take_deferred_private_lease_ownership() {
         if (state_ != OOCWriterState::Finalized && state_ != OOCWriterState::Failed) {
             throw std::logic_error(
                 "OOCRelationWriter: deferred lease ownership requires a closed writer");
@@ -1144,15 +1338,13 @@ public:
             throw std::logic_error(
                 "OOCRelationWriter: deferred lease is unavailable or already consumed");
         }
-        OOCPrivateLeaseOwnershipReceipt receipt(
-            std::move(*owned_deferred_private_lease_));
+        OOCPrivateLeaseOwnershipReceipt receipt(std::move(*owned_deferred_private_lease_));
         owned_deferred_private_lease_.reset();
         return receipt;
     }
 
     [[nodiscard]] bool has_deferred_private_lease_ownership() const noexcept {
-        return owned_deferred_private_lease_.has_value() &&
-               !owned_deferred_private_lease_->spent();
+        return owned_deferred_private_lease_.has_value() && !owned_deferred_private_lease_->spent();
     }
 
     /// Finalize a deferred private-lease writer and publish only the canonical
@@ -1423,6 +1615,82 @@ private:
         }
     }
 
+    void require_exact_private_directory_binding(const OOCCleanupPaths& paths,
+                                                 const char* operation) const {
+        if (!exact_private_directory_) {
+            return;
+        }
+#ifdef _WIN32
+        (void)paths;
+        throw std::system_error(std::make_error_code(std::errc::operation_not_supported),
+                                std::string("OOCRelationWriter::") + operation +
+                                    ": exact private directory is unsupported");
+#else
+        const auto& exact = *exact_private_directory_;
+        if (exact.root_descriptor < 0 || exact.directory_descriptor < 0 ||
+            exact.creator_process_id == 0 ||
+            exact.creator_process_id != static_cast<std::uint64_t>(gnfs::util::process_id()) ||
+            exact.directory_leaf.empty() || exact.index_leaf.empty() || exact.data_leaf.empty() ||
+            paths.private_directory.empty() ||
+            paths.private_directory.filename().string() != exact.directory_leaf ||
+            paths.index_path.filename().string() != exact.index_leaf ||
+            paths.data_path.filename().string() != exact.data_leaf) {
+            throw std::logic_error(std::string("OOCRelationWriter::") + operation +
+                                   ": invalid exact private-directory binding");
+        }
+
+        const int root_descriptor_flags = ::fcntl(exact.root_descriptor, F_GETFD);
+        const int directory_descriptor_flags = ::fcntl(exact.directory_descriptor, F_GETFD);
+        const int root_status_flags = ::fcntl(exact.root_descriptor, F_GETFL);
+        const int directory_status_flags = ::fcntl(exact.directory_descriptor, F_GETFL);
+        if (root_descriptor_flags < 0 || directory_descriptor_flags < 0 || root_status_flags < 0 ||
+            directory_status_flags < 0 || (root_descriptor_flags & FD_CLOEXEC) == 0 ||
+            (directory_descriptor_flags & FD_CLOEXEC) == 0 ||
+            (root_status_flags & O_ACCMODE) != O_RDONLY ||
+            (directory_status_flags & O_ACCMODE) != O_RDONLY) {
+            throw std::system_error(errno == 0 ? EACCES : errno, std::generic_category(),
+                                    std::string("OOCRelationWriter::") + operation +
+                                        ": exact directory descriptor policy changed");
+        }
+
+        struct stat root{};
+        struct stat held_directory{};
+        struct stat named_directory{};
+        if (::fstat(exact.root_descriptor, &root) != 0 ||
+            ::fstat(exact.directory_descriptor, &held_directory) != 0 ||
+            ::fstatat(exact.root_descriptor, exact.directory_leaf.c_str(), &named_directory,
+                      AT_SYMLINK_NOFOLLOW) != 0) {
+            throw std::system_error(errno, std::generic_category(),
+                                    std::string("OOCRelationWriter::") + operation +
+                                        ": cannot inspect exact private directory");
+        }
+        const auto identity_for = [](const struct stat& metadata) noexcept {
+            return std::array<std::uint64_t, 3>{
+                static_cast<std::uint64_t>(metadata.st_dev),
+                static_cast<std::uint64_t>(metadata.st_ino),
+                0,
+            };
+        };
+        const auto owner_directory = [](const struct stat& metadata) noexcept {
+            return S_ISDIR(metadata.st_mode) &&
+                   (metadata.st_mode & static_cast<mode_t>(07777)) == 0700 &&
+                   metadata.st_uid == ::geteuid();
+        };
+        if (!owner_directory(root) || !owner_directory(held_directory) ||
+            !owner_directory(named_directory) || identity_for(root) != exact.root_identity ||
+            identity_for(held_directory) != exact.directory_identity ||
+            identity_for(named_directory) != exact.directory_identity) {
+            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
+                                     ": exact private directory identity changed");
+        }
+        if (exact.authority_context == nullptr || exact.authority_stable == nullptr ||
+            !exact.authority_stable(exact.authority_context)) {
+            throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
+                                     ": inherited worker authority changed");
+        }
+#endif
+    }
+
     [[nodiscard]] static OOCCleanupOwnershipReceipt capture_fresh_cleanup_ownership_checked(
         const std::string& base_path, std::uint64_t store_id,
         const std::array<std::uint64_t, 3>& expected_index_identity,
@@ -1440,6 +1708,11 @@ private:
 
     class FreshArtifactReservation final {
     public:
+        struct ExactRemovalResult final {
+            bool absence_proven = false;
+            std::error_code error;
+        };
+
         FreshArtifactReservation(const FreshArtifactReservation&) = delete;
         FreshArtifactReservation& operator=(const FreshArtifactReservation&) = delete;
 
@@ -1507,6 +1780,48 @@ private:
                 (void)::close(descriptor);
                 throw std::runtime_error(
                     "OOCRelationWriter: fresh artifact has no stable regular-file identity");
+            }
+            return FreshArtifactReservation({static_cast<std::uint64_t>(information.st_dev),
+                                             static_cast<std::uint64_t>(information.st_ino), 0},
+                                            descriptor);
+#endif
+        }
+
+        [[nodiscard]] static FreshArtifactReservation
+        create_at(int parent_descriptor, const std::string& leaf, const std::string& label) {
+#ifdef _WIN32
+            (void)parent_descriptor;
+            (void)leaf;
+            throw std::system_error(
+                std::make_error_code(std::errc::operation_not_supported),
+                "OOCRelationWriter: handle-relative fresh reservation is unsupported for " + label);
+#else
+            if (parent_descriptor < 0 || leaf.empty() || leaf.find('/') != std::string::npos ||
+                leaf.find('\0') != std::string::npos) {
+                throw std::invalid_argument(
+                    "OOCRelationWriter: invalid handle-relative fresh artifact " + label);
+            }
+            int descriptor = -1;
+            do {
+                descriptor = ::openat(parent_descriptor, leaf.c_str(),
+                                      O_CREAT | O_EXCL | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0600);
+            } while (descriptor < 0 && errno == EINTR);
+            if (descriptor < 0) {
+                throw std::system_error(errno, std::generic_category(),
+                                        "OOCRelationWriter: cannot reserve exact fresh artifact " +
+                                            label);
+            }
+            struct stat information{};
+            int inspected = -1;
+            do {
+                inspected = ::fstat(descriptor, &information);
+            } while (inspected != 0 && errno == EINTR);
+            if (inspected != 0) {
+                const int error = errno;
+                (void)::close(descriptor);
+                throw std::system_error(error, std::generic_category(),
+                                        "OOCRelationWriter: cannot identify exact fresh artifact " +
+                                            label);
             }
             return FreshArtifactReservation({static_cast<std::uint64_t>(information.st_dev),
                                              static_cast<std::uint64_t>(information.st_ino), 0},
@@ -1602,6 +1917,40 @@ private:
 #endif
         }
 
+        void require_named_identity_at(int parent_descriptor, const std::string& leaf,
+                                       const std::string& label) const {
+#ifdef _WIN32
+            (void)parent_descriptor;
+            (void)leaf;
+            throw std::system_error(
+                std::make_error_code(std::errc::operation_not_supported),
+                "OOCRelationWriter: handle-relative reservation validation is unsupported for " +
+                    label);
+#else
+            if (descriptor_ < 0) {
+                throw std::logic_error(
+                    "OOCRelationWriter: exact fresh artifact descriptor is already closed");
+            }
+            struct stat held{};
+            struct stat named{};
+            if (::fstat(descriptor_, &held) != 0 ||
+                ::fstatat(parent_descriptor, leaf.c_str(), &named, AT_SYMLINK_NOFOLLOW) != 0 ||
+                !S_ISREG(held.st_mode) || !S_ISREG(named.st_mode) || held.st_nlink != 1 ||
+                named.st_nlink != 1 || (held.st_mode & static_cast<mode_t>(07777)) != 0600 ||
+                (named.st_mode & static_cast<mode_t>(07777)) != 0600 ||
+                held.st_uid != ::geteuid() || named.st_uid != ::geteuid() ||
+                held.st_dev != named.st_dev || held.st_ino != named.st_ino ||
+                identity_ != std::array<std::uint64_t, 3>{
+                                 static_cast<std::uint64_t>(held.st_dev),
+                                 static_cast<std::uint64_t>(held.st_ino),
+                                 0,
+                             }) {
+                throw std::runtime_error(
+                    "OOCRelationWriter: exact fresh artifact leaf changed for " + label);
+            }
+#endif
+        }
+
         void remove_path_if_same_identity_noexcept(const std::string& path) noexcept {
             try {
                 const auto inspected =
@@ -1614,6 +1963,72 @@ private:
                 (void)std::filesystem::remove(path, ignored);
             } catch (...) {
             }
+        }
+
+        [[nodiscard]] ExactRemovalResult
+        remove_path_if_same_identity_at_noexcept(int parent_descriptor,
+                                                 const std::string& leaf) noexcept {
+#ifndef _WIN32
+            if (parent_descriptor < 0 || leaf.empty()) {
+                return {
+                    .absence_proven = false,
+                    .error = std::make_error_code(std::errc::invalid_argument),
+                };
+            }
+            struct stat named{};
+            int inspected = -1;
+            do {
+                inspected = ::fstatat(parent_descriptor, leaf.c_str(), &named, AT_SYMLINK_NOFOLLOW);
+            } while (inspected != 0 && errno == EINTR);
+            if (inspected != 0) {
+                if (errno == ENOENT) {
+                    return {.absence_proven = true, .error = {}};
+                }
+                return {
+                    .absence_proven = false,
+                    .error = std::error_code(errno, std::generic_category()),
+                };
+            }
+            if (!S_ISREG(named.st_mode) || named.st_nlink != 1 ||
+                identity_ != std::array<std::uint64_t, 3>{
+                                 static_cast<std::uint64_t>(named.st_dev),
+                                 static_cast<std::uint64_t>(named.st_ino),
+                                 0,
+                             }) {
+                return {
+                    .absence_proven = false,
+                    .error = std::make_error_code(std::errc::state_not_recoverable),
+                };
+            }
+            int removed = -1;
+            do {
+                removed = ::unlinkat(parent_descriptor, leaf.c_str(), 0);
+            } while (removed != 0 && errno == EINTR);
+            if (removed != 0 && errno != ENOENT) {
+                return {
+                    .absence_proven = false,
+                    .error = std::error_code(errno, std::generic_category()),
+                };
+            }
+            do {
+                inspected = ::fstatat(parent_descriptor, leaf.c_str(), &named, AT_SYMLINK_NOFOLLOW);
+            } while (inspected != 0 && errno == EINTR);
+            if (inspected != 0 && errno == ENOENT) {
+                return {.absence_proven = true, .error = {}};
+            }
+            return {
+                .absence_proven = false,
+                .error = inspected == 0 ? std::make_error_code(std::errc::state_not_recoverable)
+                                        : std::error_code(errno, std::generic_category()),
+            };
+#else
+            (void)parent_descriptor;
+            (void)leaf;
+            return {
+                .absence_proven = false,
+                .error = std::make_error_code(std::errc::operation_not_supported),
+            };
+#endif
         }
 
     private:
@@ -2109,7 +2524,22 @@ private:
         abort_close_noexcept();
     }
 
+    void discard_inherited_post_fork_child_noexcept() noexcept {
+        state_ = OOCWriterState::Failed;
+        data_stream_.discard_and_close_post_fork_child_noexcept();
+        idx_stream_.discard_and_close_post_fork_child_noexcept();
+    }
+
     void require_store_named_identity(const char* operation) const {
+        if (exact_private_directory_) {
+            const auto paths = ooc_cleanup_detail::freeze_paths(base_path_);
+            require_exact_private_directory_binding(paths, operation);
+            data_stream_.require_named_identity_at(exact_private_directory_->directory_descriptor,
+                                                   exact_private_directory_->data_leaf, operation);
+            idx_stream_.require_named_identity_at(exact_private_directory_->directory_descriptor,
+                                                  exact_private_directory_->index_leaf, operation);
+            return;
+        }
         data_stream_.require_named_identity(base_path_ + ".reldata", operation);
         idx_stream_.require_named_identity(base_path_ + ".relidx", operation);
     }
@@ -2123,7 +2553,12 @@ private:
         require_store_named_identity("store sync preflight");
         data_stream_.sync("store data sync");
         idx_stream_.sync("store index sync");
-        detail::sync_parent_directory_after_metadata_change(index_path);
+        if (exact_private_directory_) {
+            detail::sync_directory_descriptor_after_metadata_change(
+                exact_private_directory_->directory_descriptor, base_path_);
+        } else {
+            detail::sync_parent_directory_after_metadata_change(index_path);
+        }
         require_store_named_identity("store sync commit");
     }
 
@@ -2151,6 +2586,7 @@ private:
     }
 
     std::string base_path_;
+    std::optional<ExactPrivateDirectoryBinding> exact_private_directory_;
     // Declared before streams so stream destruction always precedes release of
     // the lock-owning deferred lease, including exceptional destruction.
     std::optional<OOCPrivateLeaseOwnershipReceipt> owned_deferred_private_lease_;
@@ -2173,6 +2609,8 @@ private:
     size_t active_prefix_readers_ = 0;
 
     friend class OOCRelationPrefixReader;
+    friend class ::gnfs::sieve::distributed_sieve_worker_entry_detail::
+        distributed_sieve_worker_writer_detail::OOCInheritedP8WriterMintV1;
 };
 
 /// Read-only mmap-based access to out-of-core relations.

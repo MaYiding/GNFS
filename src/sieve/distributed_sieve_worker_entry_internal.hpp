@@ -7,6 +7,7 @@
 // it grants no path, writer, cleanup, publication, or retry authority.
 
 #include "distributed_sieve_work_package_codec_internal.hpp"
+#include "distributed_sieve_worker_writer_internal.hpp"
 
 #include <gnfs/sieve/distributed_sieve_protocol.hpp>
 
@@ -152,6 +153,12 @@ private:
     friend DistributedSieveWorkerEntryAdoptionResultV1
     trusted_test::adopt_distributed_sieve_worker_entry_v1_with_hooks(
         trusted_test::DistributedSieveWorkerEntryTestHooksV1 hooks) noexcept;
+    friend DistributedSieveWorkerWriterAdoptionResultV1
+    consume_distributed_sieve_worker_writer_v1(DistributedSieveWorkerEntryV1&& entry) noexcept;
+    friend DistributedSieveWorkerWriterAdoptionResultV1
+    trusted_test::consume_distributed_sieve_worker_writer_v1_with_hooks(
+        DistributedSieveWorkerEntryV1&& entry,
+        trusted_test::DistributedSieveWorkerWriterTestHooksV1 hooks) noexcept;
 };
 
 struct DistributedSieveWorkerEntryAdoptionResultV1 final {

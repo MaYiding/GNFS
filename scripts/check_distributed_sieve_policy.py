@@ -118,6 +118,8 @@ DURABLE_ENVIRONMENT_FREE_FILES = {
     "src/sieve/distributed_sieve_wave_store_internal.hpp",
     "src/sieve/distributed_sieve_worker_entry.cpp",
     "src/sieve/distributed_sieve_worker_entry_internal.hpp",
+    "src/sieve/distributed_sieve_worker_writer.cpp",
+    "src/sieve/distributed_sieve_worker_writer_internal.hpp",
     "src/sieve/distributed_sieve_worker_launcher_fwd_internal.hpp",
     "src/sieve/distributed_sieve_worker_launcher_internal.hpp",
     "src/sieve/distributed_sieve_worker_work_package_file.cpp",
@@ -137,6 +139,7 @@ WORKER_LAUNCHER_INTERFACE_FILES = {
 WORKER_LAUNCHER_TEST_FILES = {
     "tests/test_distributed_sieve_resume.cpp",
     "tests/test_distributed_sieve_worker_entry.cpp",
+    "tests/test_distributed_sieve_worker_writer_authority.cpp",
 }
 WORKER_LAUNCHER_USE_SITE_IDENTIFIERS = (
     "DistributedSieveWorkerLaunchSlotV1",
@@ -188,6 +191,9 @@ WORKER_PROCESS_FIXED_CAPABILITY_USE_SITE_ALLOWLIST = {
 WORKER_ENTRY_IMPLEMENTATION_FILE = "src/sieve/distributed_sieve_worker_entry.cpp"
 WORKER_ENTRY_INTERFACE_FILE = "src/sieve/distributed_sieve_worker_entry_internal.hpp"
 WORKER_ENTRY_TEST_FILE = "tests/test_distributed_sieve_worker_entry.cpp"
+WORKER_WRITER_IMPLEMENTATION_FILE = "src/sieve/distributed_sieve_worker_writer.cpp"
+WORKER_WRITER_INTERFACE_FILE = "src/sieve/distributed_sieve_worker_writer_internal.hpp"
+WORKER_WRITER_TEST_FILE = "tests/test_distributed_sieve_worker_writer_authority.cpp"
 WORKER_ENTRY_USE_SITE_IDENTIFIERS = (
     "DistributedSieveWorkerEntryV1",
     "DistributedSieveWorkerEntryAdoptionResultV1",
@@ -199,6 +205,43 @@ WORKER_ENTRY_USE_SITE_ALLOWLIST = {
     WORKER_ENTRY_IMPLEMENTATION_FILE,
     WORKER_ENTRY_INTERFACE_FILE,
     WORKER_ENTRY_TEST_FILE,
+    WORKER_WRITER_IMPLEMENTATION_FILE,
+    WORKER_WRITER_INTERFACE_FILE,
+    WORKER_WRITER_TEST_FILE,
+}
+WORKER_WRITER_USE_SITE_IDENTIFIERS = (
+    "DistributedSieveWorkerWriterAuthorityV1",
+    "DistributedSieveWorkerWriterAdoptionResultV1",
+    "DistributedSieveWorkerWriterTestHooksV1",
+    "DistributedSieveWorkerWriterRollbackV1",
+    "consume_distributed_sieve_worker_writer_v1",
+    "consume_distributed_sieve_worker_writer_v1_with_hooks",
+)
+WORKER_WRITER_USE_SITE_ALLOWLIST = {
+    WORKER_ENTRY_IMPLEMENTATION_FILE,
+    WORKER_ENTRY_INTERFACE_FILE,
+    WORKER_WRITER_IMPLEMENTATION_FILE,
+    WORKER_WRITER_INTERFACE_FILE,
+    WORKER_WRITER_TEST_FILE,
+}
+WORKER_WRITER_BRIDGE_IDENTIFIERS = (
+    "DistributedSieveWorkerWriterLifetimeGuardV1",
+    "OOCInheritedP8WriterMintV1",
+    "OOCExactFreshConstructionFailure",
+    "OOCExactFreshRollbackDisposition",
+    "AdoptInheritedOpenFileDescription",
+    "ExactPrivateDirectoryBinding",
+    "ExactPrivateDirectoryConstructionToken",
+    "discard_and_close_post_fork_child_noexcept",
+    "discard_inherited_post_fork_child_noexcept",
+)
+WORKER_WRITER_BRIDGE_ALLOWLIST = {
+    "include/gnfs/relation/ooc_cleanup_transaction.hpp",
+    "include/gnfs/relation/ooc_relation_store.hpp",
+    "include/gnfs/util/native_binary_update_file.hpp",
+    WORKER_ENTRY_IMPLEMENTATION_FILE,
+    WORKER_WRITER_IMPLEMENTATION_FILE,
+    WORKER_WRITER_INTERFACE_FILE,
 }
 WORKER_PROCESS_LEGACY_FILE = "src/sieve/distributed_sieve.cpp"
 WORKER_PROCESS_POLICY_PREFIXES = (
@@ -418,6 +461,8 @@ PRODUCTION_RAW_UNLINKAT_FUNCTIONS = {
     WORKER_LAUNCHER_IMPLEMENTATION_FILE: WAVE_STORE_PRIVATE_LEASE_UNLINK_HELPER,
     "src/util/durable_immutable_record.cpp": "remove_exact_at",
     "include/gnfs/relation/ooc_cleanup_transaction.hpp": "remove_exact_private_handoff_pending",
+    "include/gnfs/relation/ooc_relation_store.hpp":
+        "remove_path_if_same_identity_at_noexcept",
 }
 WORK_PACKAGE_READER_USE_SITE_IDENTIFIER = "retained_reader_"
 WORK_PACKAGE_READER_USE_SITE_ALLOWLIST = {
@@ -1760,6 +1805,26 @@ class Checks:
                     f"allowlisted: {identifier}",
                 )
 
+    def validate_worker_writer_use_site(self, relative: str, text: str) -> None:
+        if relative not in WORKER_WRITER_USE_SITE_ALLOWLIST:
+            for identifier in WORKER_WRITER_USE_SITE_IDENTIFIERS:
+                for use in find_code_identifier_uses(text, identifier):
+                    self.fail(
+                        relative,
+                        use.line,
+                        "single-use worker-writer capability use site is not "
+                        f"allowlisted: {identifier}",
+                    )
+        if relative not in WORKER_WRITER_BRIDGE_ALLOWLIST:
+            for identifier in WORKER_WRITER_BRIDGE_IDENTIFIERS:
+                for use in find_code_identifier_uses(text, identifier):
+                    self.fail(
+                        relative,
+                        use.line,
+                        "worker-writer private bridge use site is not "
+                        f"allowlisted: {identifier}",
+                    )
+
     def validate_worker_launcher_use_site(self, relative: str, text: str) -> None:
         if relative in WORKER_LAUNCHER_USE_SITE_ALLOWLIST:
             return
@@ -2131,6 +2196,7 @@ class Checks:
             self.validate_work_package_reader_use_site(relative, text)
             self.validate_worker_process_fixed_capability_use_site(relative, text)
             self.validate_worker_entry_use_site(relative, text)
+            self.validate_worker_writer_use_site(relative, text)
             self.validate_worker_launcher_use_site(relative, text)
 
         for entry, count in self.legacy_counts.items():
@@ -3464,6 +3530,11 @@ auto remove_exact_private_handoff_pending() {
     return ::unlinkat(directory, leaf, 0);
 }
 """,
+        "include/gnfs/relation/ooc_relation_store.hpp": r"""
+auto remove_path_if_same_identity_at_noexcept() noexcept {
+    return ::unlinkat(directory, leaf, 0);
+}
+""",
     }
     expect(
         set(allowed_global_raw_unlinkat_snippets)
@@ -3693,8 +3764,104 @@ auto hooked = adopt_distributed_sieve_worker_entry_v1_with_hooks(hooks);
             WORKER_ENTRY_IMPLEMENTATION_FILE,
             WORKER_ENTRY_INTERFACE_FILE,
             WORKER_ENTRY_TEST_FILE,
+            WORKER_WRITER_IMPLEMENTATION_FILE,
+            WORKER_WRITER_INTERFACE_FILE,
+            WORKER_WRITER_TEST_FILE,
         },
-        "worker-entry allowlist is not the exact implementation, interface, and test boundary",
+        "worker-entry allowlist is not the exact entry/writer implementation, interface, "
+        "and test boundary",
+    )
+
+    worker_writer_use_site_snippet = r"""
+DistributedSieveWorkerWriterAdoptionResultV1 result =
+    consume_distributed_sieve_worker_writer_v1(std::move(entry));
+DistributedSieveWorkerWriterAuthorityV1* writer = &*result.writer;
+trusted_test::DistributedSieveWorkerWriterTestHooksV1 hooks;
+DistributedSieveWorkerWriterRollbackV1 rollback;
+auto hooked = consume_distributed_sieve_worker_writer_v1_with_hooks(
+    std::move(entry), hooks);
+"""
+    worker_writer_use_site_checks = Checks(Path("."))
+    worker_writer_use_site_checks.validate_worker_writer_use_site(
+        "src/sieve/untrusted_worker_writer.cpp", worker_writer_use_site_snippet
+    )
+    expect(
+        len(worker_writer_use_site_checks.errors)
+        == len(WORKER_WRITER_USE_SITE_IDENTIFIERS)
+        and all(
+            "single-use worker-writer capability use site is not allowlisted" in error
+            for error in worker_writer_use_site_checks.errors
+        ),
+        "single-use worker-writer repo-wide use-site gate is not enforced",
+    )
+    for relative in sorted(WORKER_WRITER_USE_SITE_ALLOWLIST):
+        allowed_worker_writer_checks = Checks(Path("."))
+        allowed_worker_writer_checks.validate_worker_writer_use_site(
+            relative, worker_writer_use_site_snippet
+        )
+        expect(
+            not allowed_worker_writer_checks.errors,
+            f"allowlisted single-use worker-writer use was rejected in "
+            f"{relative}: {allowed_worker_writer_checks.errors}",
+        )
+    expect(
+        WORKER_WRITER_USE_SITE_ALLOWLIST
+        == {
+            WORKER_ENTRY_IMPLEMENTATION_FILE,
+            WORKER_ENTRY_INTERFACE_FILE,
+            WORKER_WRITER_IMPLEMENTATION_FILE,
+            WORKER_WRITER_INTERFACE_FILE,
+            WORKER_WRITER_TEST_FILE,
+        },
+        "worker-writer allowlist is not the exact entry conversion, writer, and test boundary",
+    )
+
+    worker_writer_bridge_snippet = r"""
+DistributedSieveWorkerWriterLifetimeGuardV1* guard = nullptr;
+OOCInheritedP8WriterMintV1* mint = nullptr;
+OOCExactFreshConstructionFailure* failure = nullptr;
+OOCExactFreshRollbackDisposition rollback;
+AdoptInheritedOpenFileDescription adopted;
+ExactPrivateDirectoryBinding binding;
+ExactPrivateDirectoryConstructionToken token;
+discard_and_close_post_fork_child_noexcept();
+discard_inherited_post_fork_child_noexcept();
+"""
+    worker_writer_bridge_checks = Checks(Path("."))
+    worker_writer_bridge_checks.validate_worker_writer_use_site(
+        "src/relation/untrusted_worker_writer_bridge.cpp",
+        worker_writer_bridge_snippet,
+    )
+    expect(
+        len(worker_writer_bridge_checks.errors)
+        == len(WORKER_WRITER_BRIDGE_IDENTIFIERS)
+        and all(
+            "worker-writer private bridge use site is not allowlisted" in error
+            for error in worker_writer_bridge_checks.errors
+        ),
+        "worker-writer private bridge repo-wide use-site gate is not enforced",
+    )
+    for relative in sorted(WORKER_WRITER_BRIDGE_ALLOWLIST):
+        allowed_worker_writer_bridge_checks = Checks(Path("."))
+        allowed_worker_writer_bridge_checks.validate_worker_writer_use_site(
+            relative, worker_writer_bridge_snippet
+        )
+        expect(
+            not allowed_worker_writer_bridge_checks.errors,
+            f"allowlisted worker-writer private bridge use was rejected in "
+            f"{relative}: {allowed_worker_writer_bridge_checks.errors}",
+        )
+    expect(
+        WORKER_WRITER_BRIDGE_ALLOWLIST
+        == {
+            "include/gnfs/relation/ooc_cleanup_transaction.hpp",
+            "include/gnfs/relation/ooc_relation_store.hpp",
+            "include/gnfs/util/native_binary_update_file.hpp",
+            WORKER_ENTRY_IMPLEMENTATION_FILE,
+            WORKER_WRITER_IMPLEMENTATION_FILE,
+            WORKER_WRITER_INTERFACE_FILE,
+        },
+        "worker-writer private bridge allowlist is not exact",
     )
 
     launcher_use_site_snippet = r"""
@@ -3742,13 +3909,14 @@ DistributedSieveWorkerLaunchBatchResultV1 result =
         == {
             "tests/test_distributed_sieve_resume.cpp",
             "tests/test_distributed_sieve_worker_entry.cpp",
+            "tests/test_distributed_sieve_worker_writer_authority.cpp",
         }
         and (
             WORKER_LAUNCHER_USE_SITE_ALLOWLIST - WORKER_LAUNCHER_TEST_FILES
             == (WORKER_LAUNCHER_INTERFACE_FILES | {WORKER_LAUNCHER_IMPLEMENTATION_FILE})
         ),
         "worker-launcher allowlist is not the exact implementation boundary "
-        "plus the dedicated resume and worker-entry tests",
+        "plus the dedicated resume, worker-entry, and writer-authority tests",
     )
 
     lower_capability_allowlists = (
