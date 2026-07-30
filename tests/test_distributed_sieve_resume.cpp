@@ -1,14 +1,19 @@
 #include <gnfs/core/polynomial_context.hpp>
+#include <gnfs/factor_base/builder.hpp>
 #include <gnfs/factor_base/factor_base.hpp>
+#include <gnfs/polynomial/base_m.hpp>
 #include <gnfs/relation/ooc_cleanup_transaction.hpp>
 #include <gnfs/relation/ooc_relation_store.hpp>
 #include <gnfs/relation/relation_corpus_sha256.hpp>
+#include <gnfs/relation/relation_sequence_receipt.hpp>
 #include <gnfs/sieve/distributed_sieve_protocol.hpp>
 
 #include "distributed_sieve_bound_work_internal.hpp"
 #include "distributed_sieve_execution_policy_internal.hpp"
 #include "distributed_sieve_wave_store_internal.hpp"
 #include "distributed_sieve_work_package_codec_internal.hpp"
+#include "distributed_sieve_worker_coordinator_internal.hpp"
+#include "distributed_sieve_worker_execution_internal.hpp"
 #include "distributed_sieve_worker_launcher_internal.hpp"
 #include "ooc_private_handoff_cleanup_authorization_internal.hpp"
 
@@ -65,6 +70,9 @@ namespace execution_policy_detail = gnfs::sieve::distributed_sieve_execution_pol
 namespace work_package_codec_detail = gnfs::sieve::distributed_sieve_work_package_codec_detail;
 namespace work_package_file_detail = gnfs::sieve::distributed_sieve_worker_work_package_file_detail;
 namespace worker_launcher_detail = gnfs::sieve::distributed_sieve_worker_launcher_detail;
+namespace worker_coordinator_detail = gnfs::sieve::distributed_sieve_worker_coordinator_detail;
+namespace worker_entry_detail = gnfs::sieve::distributed_sieve_worker_entry_detail;
+namespace worker_execution_detail = gnfs::sieve::distributed_sieve_worker_execution_detail;
 namespace worker_process_detail = gnfs::sieve::distributed_sieve_worker_process_detail;
 namespace wave_detail = gnfs::sieve::distributed_sieve_resume_detail;
 namespace durable_record = gnfs::util::durable_immutable_record;
@@ -462,6 +470,8 @@ void check(bool condition, std::string_view expression, int line) {
 inline constexpr std::string_view WORKER_LAUNCH_FAKE_CHILD_ARGUMENT = "--worker-launch-fake-child";
 inline constexpr std::string_view WORKER_LAUNCH_FAKE_CHILD_CLOSE_BASE_LOCK_AND_WAIT_ARGUMENT =
     "--close-base-lock-and-wait";
+inline constexpr std::string_view WORKER_COORDINATOR_REAL_CHILD_ARGUMENT =
+    "--worker-coordinator-real-child";
 inline constexpr std::uint32_t WORKER_LAUNCH_FAKE_CHILD_REPORT_MAGIC = 0x474c4352U;
 inline constexpr std::size_t WORKER_LAUNCH_FAKE_CHILD_INPUT_LIMIT = 1024U * 1024U;
 inline constexpr int WORKER_LAUNCH_FAKE_CHILD_DESCRIPTOR_SCAN_LIMIT = 4096;
@@ -766,6 +776,16 @@ static_assert(std::is_trivially_copyable_v<WorkerLaunchFakeChildReport>);
         return 219;
     }
     return required_valid ? 0 : 220;
+}
+
+[[nodiscard]] int run_worker_coordinator_real_child() noexcept {
+    auto adopted = worker_entry_detail::adopt_distributed_sieve_worker_entry_v1();
+    if (!adopted || !adopted.entry.has_value()) {
+        return 221;
+    }
+    const auto executed = worker_execution_detail::execute_distributed_sieve_worker_entry_v1(
+        std::move(*adopted.entry));
+    return executed ? 0 : 222;
 }
 
 #endif
@@ -15625,6 +15645,505 @@ void test_wave_store_worker_launcher_partial_spawn_keeps_only_success_receipts()
                         "partial launch result releases every receipt exactly once");
 }
 
+#if defined(__APPLE__)
+
+[[nodiscard]] constexpr std::size_t
+worker_coordinator_policy_index(sieve::ExecutionPolicyKeyV1 key) noexcept {
+    return static_cast<std::size_t>(static_cast<std::uint16_t>(key) - 1U);
+}
+
+[[nodiscard]] execution_policy_detail::DistributedSieveFrozenExecutionPolicyV1
+worker_coordinator_frozen_policy() {
+    execution_policy_detail::DistributedSieveExecutionPolicyEnvironmentSnapshotV1 snapshot;
+    snapshot.hardware_concurrency = 4;
+    snapshot.canonical_values[worker_coordinator_policy_index(
+        sieve::ExecutionPolicyKeyV1::cofactor_brent)] = "1";
+    auto frozen = execution_policy_detail::freeze_distributed_sieve_execution_policy_v1(snapshot);
+    if (!frozen || !frozen.policy.has_value()) {
+        fail("freeze worker-coordinator execution policy", __LINE__,
+             sieve::distributed_sieve_protocol_error_name(frozen.status.error));
+    }
+    return std::move(*frozen.policy);
+}
+
+[[nodiscard]] gnfs::core::PolynomialContext worker_coordinator_polynomial() {
+    const gnfs::core::Integer n("1000036000099");
+    const auto selection = gnfs::polynomial::BaseMSelector::select(n, 3);
+    CHECK(selection.success);
+    auto polynomial = gnfs::polynomial::BaseMSelector::create_context(n, selection);
+    CHECK(polynomial.degree() == 3);
+    CHECK(polynomial.verify());
+    return polynomial;
+}
+
+[[nodiscard]] gnfs::factor_base::FactorBase
+worker_coordinator_factor_base(const gnfs::core::PolynomialContext& polynomial) {
+    gnfs::factor_base::FactorBaseBuilder::Options options;
+    options.rational_bound = 5000;
+    options.algebraic_bound = 5000;
+    options.log_scale = 16;
+    options.parallel = false;
+    const auto built = gnfs::factor_base::FactorBaseBuilder::build(polynomial, options);
+    CHECK(built.rational_count() > 0);
+    CHECK(built.algebraic_count() > 0);
+
+    std::vector<gnfs::core::AlgebraicPrime> algebraic(built.algebraic().begin(),
+                                                      built.algebraic().end());
+    std::sort(algebraic.begin(), algebraic.end(), [](const auto& left, const auto& right) {
+        return left.p < right.p || (left.p == right.p && left.r < right.r);
+    });
+
+    gnfs::factor_base::FactorBase factor_base(built.params());
+    factor_base.reserve(built.rational_count(), algebraic.size());
+    for (const auto& factor : built.rational()) {
+        factor_base.add_rational(factor.p, factor.log_p);
+    }
+    for (const auto& factor : algebraic) {
+        factor_base.add_algebraic(factor.p, factor.r, factor.log_p, factor.degree);
+    }
+    factor_base.set_sieve_algebraic_count(built.sieve_algebraic_count());
+    factor_base.build_index();
+    return factor_base;
+}
+
+[[nodiscard]] std::uint32_t
+worker_coordinator_sq_begin(const gnfs::factor_base::FactorBase& factor_base) {
+    const auto algebraic = factor_base.algebraic();
+    for (std::size_t index = 0; index + 1U < algebraic.size(); ++index) {
+        if (algebraic[index].p >= 1000 && algebraic[index].p <= 1300 &&
+            algebraic[index].r != std::numeric_limits<std::uint32_t>::max()) {
+            CHECK(index <= std::numeric_limits<std::uint32_t>::max());
+            return static_cast<std::uint32_t>(index);
+        }
+    }
+    fail("worker-coordinator affine special-Q fixture", __LINE__);
+}
+
+[[nodiscard]] sieve::DistributedSieveWorkIdentityV1 worker_coordinator_work_identity(
+    const execution_policy_detail::DistributedSieveFrozenExecutionPolicyV1& frozen,
+    const gnfs::core::PolynomialContext& polynomial,
+    const gnfs::factor_base::FactorBase& factor_base, std::uint32_t begin) {
+    sieve::DistributedSieveWorkIdentityV1 identity;
+    identity.polynomial.n.decimal = polynomial.n().to_string();
+    identity.polynomial.m.decimal = polynomial.m().to_string();
+    identity.polynomial.degree = polynomial.degree();
+    for (const auto& coefficient : polynomial.coefficients()) {
+        identity.polynomial.coefficients.push_back({coefficient.to_string()});
+    }
+    identity.polynomial.skewness_ieee754_bits = std::bit_cast<std::uint64_t>(polynomial.skewness());
+
+    const auto& parameters = factor_base.params();
+    identity.factor_base.rational_bound = parameters.rational_bound;
+    identity.factor_base.algebraic_bound = parameters.algebraic_bound;
+    identity.factor_base.large_prime_bound = parameters.large_prime_bound;
+    identity.factor_base.log_scale = parameters.log_scale;
+    for (const auto& prime : factor_base.rational()) {
+        identity.factor_base.rational.push_back({prime.p, prime.log_p});
+    }
+    for (const auto& prime : factor_base.algebraic()) {
+        identity.factor_base.algebraic.push_back({prime.p, prime.r, prime.log_p, prime.degree});
+    }
+    identity.factor_base.sieve_algebraic_count = factor_base.sieve_algebraic_count();
+
+    identity.sieve = {
+        .log_scale = 16,
+        .rational_threshold = 60,
+        .algebraic_threshold = 60,
+        .large_prime_bound = 0,
+        .allow_2lp = true,
+        .allow_3lp = false,
+    };
+    identity.region = {
+        .i_min = 0,
+        .i_max = 0,
+        .j_min = 0,
+        .j_max = 0,
+    };
+    identity.cofactor = {
+        .large_prime_bound = factor_base.params().large_prime_bound,
+        .allow_1lp = true,
+        .allow_2lp = false,
+        .allow_3lp = false,
+        .max_factorization_attempts = 10'000,
+    };
+
+    const auto end = static_cast<std::uint32_t>(begin + 2U);
+    identity.original_sq_bounds = {
+        .start_index = begin,
+        .end_index = end,
+        .min_q = 0,
+        .max_q = std::numeric_limits<std::uint32_t>::max(),
+    };
+    identity.effective_sq_bounds = identity.original_sq_bounds;
+    identity.distributed.worker_count = 3;
+    identity.distributed.chunks = {
+        {0, begin, static_cast<std::uint32_t>(begin + 1U), "coordinator_chunk_0"},
+        {1, static_cast<std::uint32_t>(begin + 1U), end, "coordinator_chunk_1"},
+        {2, end, end, "coordinator_chunk_2"},
+    };
+    identity.distributed.max_worker_attempts = 2;
+    identity.distributed.max_merge_build_attempts = 2;
+    identity.distributed.max_consumption_attempts = 2;
+    identity.execution_policy = frozen.canonical;
+    identity.semantic_versions = execution_policy_detail::DISTRIBUTED_SIEVE_BOUND_WORK_VERSIONS_V1;
+    require_ok(sieve::validate_distributed_sieve_work_identity(identity),
+               "worker-coordinator work identity");
+    return identity;
+}
+
+[[nodiscard]] sieve::WaveManifestV1
+worker_coordinator_manifest_draft(const sieve::DistributedSieveWorkIdentityV1& identity) {
+    const auto executable_digest =
+        worker_execution_detail::current_distributed_sieve_worker_executable_sha256_v1();
+    CHECK(executable_digest);
+    CHECK(executable_digest.digest.has_value());
+    auto draft = worker_launch_manifest_draft(identity);
+    draft.executable_sha256 = *executable_digest.digest;
+    return draft;
+}
+
+class WorkerCoordinatorFixture final {
+public:
+    explicit WorkerCoordinatorFixture(std::string_view label)
+        : frozen(worker_coordinator_frozen_policy()), polynomial(worker_coordinator_polynomial()),
+          factor_base(worker_coordinator_factor_base(polynomial)),
+          sq_begin(worker_coordinator_sq_begin(factor_base)),
+          identity(worker_coordinator_work_identity(frozen, polynomial, factor_base, sq_begin)),
+          root(temp.path() / std::string(label)),
+          opened(wave_detail::DistributedSieveWaveStore::create(
+              root, worker_coordinator_manifest_draft(identity))) {}
+
+    [[nodiscard]] wave_detail::DistributedSieveWaveStore& store() {
+        return require_wave_ready(opened, "create worker-coordinator WaveStore fixture");
+    }
+
+    [[nodiscard]] std::unique_ptr<wave_detail::DistributedSieveWaveStore> take_store() {
+        (void)store();
+        return std::move(opened.store);
+    }
+
+    WaveStoreTempDirectory temp;
+    execution_policy_detail::DistributedSieveFrozenExecutionPolicyV1 frozen;
+    gnfs::core::PolynomialContext polynomial;
+    gnfs::factor_base::FactorBase factor_base;
+    std::uint32_t sq_begin = 0;
+    sieve::DistributedSieveWorkIdentityV1 identity;
+    std::filesystem::path root;
+    wave_detail::DistributedSieveWaveStoreOpenResult opened;
+};
+
+struct WorkerCoordinatorLaunchLedger final {
+    std::array<std::size_t, 3> slots{};
+    std::size_t count = 0;
+    bool overflow = false;
+};
+
+[[nodiscard]] int record_worker_coordinator_spawn(std::size_t slot, void* opaque) noexcept {
+    auto& ledger = *static_cast<WorkerCoordinatorLaunchLedger*>(opaque);
+    if (ledger.count < ledger.slots.size()) {
+        ledger.slots[ledger.count] = slot;
+    } else {
+        ledger.overflow = true;
+    }
+    ++ledger.count;
+    return 0;
+}
+
+[[nodiscard]] worker_coordinator_detail::DistributedSieveWorkerCoordinatorRequestV1
+make_worker_coordinator_request(std::unique_ptr<wave_detail::DistributedSieveWaveStore> store,
+                                WorkerCoordinatorLaunchLedger& ledger) {
+    worker_coordinator_detail::DistributedSieveWorkerCoordinatorRequestV1 request;
+    request.store = std::move(store);
+    request.executable_path = worker_launch_test_executable;
+    request.worker_arguments = {std::string(WORKER_COORDINATOR_REAL_CHILD_ARGUMENT)};
+    request.launcher_hooks = {
+        .before_spawn = record_worker_coordinator_spawn,
+        .context = &ledger,
+    };
+    return request;
+}
+
+struct WorkerCoordinatorCorpusFacts final {
+    Digest attempt_started_digest;
+    Digest handoff_digest;
+    Digest corpus_sha256;
+    std::uint64_t relation_count = 0;
+    std::uint64_t sequence_count = 0;
+    std::uint64_t sequence_low = 0;
+    std::uint64_t sequence_high = 0;
+
+    [[nodiscard]] friend bool operator==(const WorkerCoordinatorCorpusFacts&,
+                                         const WorkerCoordinatorCorpusFacts&) noexcept = default;
+};
+
+[[nodiscard]] WorkerCoordinatorCorpusFacts require_worker_coordinator_corpus(
+    const worker_coordinator_detail::DistributedSieveWorkerCoordinatedChunkV1& coordinated,
+    const Digest& expected_manifest_digest, const Digest& expected_work_digest) {
+    CHECK(coordinated.adopted.has_value());
+    CHECK(coordinated.adopted->valid());
+    const auto& handoff = coordinated.adopted->handoff();
+    const auto& reader = coordinated.adopted->reader();
+    CHECK(reader.valid());
+    CHECK(handoff.manifest_digest == expected_manifest_digest);
+    CHECK(handoff.work_digest == expected_work_digest);
+    CHECK(handoff.chunk_id == coordinated.chunk.chunk_id);
+    CHECK(handoff.sq_begin == coordinated.chunk.sq_begin);
+    CHECK(handoff.sq_end == coordinated.chunk.sq_end);
+    CHECK(handoff.next_sq_index == coordinated.chunk.sq_end);
+    CHECK(handoff.relation_count == reader.count());
+    CHECK(handoff.artifact.descriptor.relation_count == handoff.relation_count);
+    CHECK(handoff.artifact.sequence_receipt.relation_count == handoff.relation_count);
+    CHECK(handoff.self_digest != Digest{});
+
+    std::vector<gnfs::core::Relation> rows;
+    rows.reserve(reader.count());
+    for (std::size_t index = 0; index < reader.count(); ++index) {
+        rows.push_back(reader.read(index));
+    }
+    const auto sequence = gnfs::relation::relation_sequence_receipt(rows);
+    const auto corpus = gnfs::relation::relation_corpus_sha256_v1(rows);
+    CHECK(corpus.has_value());
+    CHECK(sequence.relation_count == handoff.artifact.sequence_receipt.relation_count);
+    CHECK(sequence.low == handoff.artifact.sequence_receipt.low);
+    CHECK(sequence.high == handoff.artifact.sequence_receipt.high);
+    CHECK(*corpus == handoff.artifact.corpus_sha256);
+
+    return {
+        .attempt_started_digest = handoff.attempt_started_digest,
+        .handoff_digest = handoff.self_digest,
+        .corpus_sha256 = handoff.artifact.corpus_sha256,
+        .relation_count = handoff.relation_count,
+        .sequence_count = handoff.artifact.sequence_receipt.relation_count,
+        .sequence_low = handoff.artifact.sequence_receipt.low,
+        .sequence_high = handoff.artifact.sequence_receipt.high,
+    };
+}
+
+void require_worker_coordinator_empty_has_no_attempt(const std::filesystem::path& root,
+                                                     const sieve::ChunkPlanV1& chunk) {
+    const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk.relative_artifact_stem, chunk.chunk_id, 0);
+    CHECK(names.has_value());
+    CHECK(!entry_exists_no_follow(root / names->private_directory_leaf));
+    CHECK(!entry_exists_no_follow(root / names->base_lock_leaf));
+    CHECK(!entry_exists_no_follow(root / names->reserved_leaf));
+    CHECK(!entry_exists_no_follow(root / names->reserved_pending_leaf));
+    CHECK(!entry_exists_no_follow(root / names->owned_leaf));
+    CHECK(!entry_exists_no_follow(root / names->owned_pending_leaf));
+    CHECK(!entry_exists_no_follow(root / names->rollback_handoff_leaf));
+    CHECK(!entry_exists_no_follow(root / names->canonical_record_leaf));
+    CHECK(!entry_exists_no_follow(root / names->pending_record_leaf));
+}
+
+[[nodiscard]] std::array<WorkerCoordinatorCorpusFacts, 2> require_worker_coordinator_matrix(
+    const worker_coordinator_detail::DistributedSieveWorkerCoordinatorResultV1& result,
+    const sieve::DistributedSieveWorkIdentityV1& identity,
+    const std::array<worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1, 3>&
+        dispositions,
+    const std::filesystem::path& root) {
+    CHECK(result);
+    CHECK(result.store != nullptr);
+    CHECK(result.coordinator_claim != nullptr);
+    CHECK(result.coordinator_claim->owned_by_current_process());
+    CHECK(result.chunks.size() == identity.distributed.chunks.size());
+    CHECK(result.store->manifest().chunks == identity.distributed.chunks);
+    CHECK(result.store->manifest_digest() == result.store->manifest().self_digest);
+
+    std::array<WorkerCoordinatorCorpusFacts, 2> facts{};
+    for (std::size_t index = 0; index < result.chunks.size(); ++index) {
+        const auto& coordinated = result.chunks[index];
+        CHECK(coordinated.chunk == identity.distributed.chunks[index]);
+        CHECK(coordinated.disposition == dispositions[index]);
+        if (dispositions[index] ==
+            worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::empty) {
+            CHECK(index == 2);
+            CHECK(!coordinated.launched_attempt.has_value());
+            CHECK(!coordinated.wait_facts.has_value());
+            CHECK(!coordinated.adopted.has_value());
+            require_worker_coordinator_empty_has_no_attempt(root, coordinated.chunk);
+            continue;
+        }
+
+        facts[index] = require_worker_coordinator_corpus(
+            coordinated, result.store->manifest_digest(), result.store->manifest().work_sha256);
+        if (dispositions[index] ==
+            worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::executed) {
+            CHECK(coordinated.launched_attempt.has_value());
+            CHECK(coordinated.wait_facts.has_value());
+            CHECK(coordinated.launched_attempt->chunk_id == coordinated.chunk.chunk_id);
+            CHECK(coordinated.launched_attempt->sq_begin == coordinated.chunk.sq_begin);
+            CHECK(coordinated.launched_attempt->sq_end == coordinated.chunk.sq_end);
+            CHECK(coordinated.launched_attempt->self_digest == facts[index].attempt_started_digest);
+            CHECK(coordinated.wait_facts->kind == sieve::WorkerWaitFactKindV1::exited);
+            CHECK(coordinated.wait_facts->exit_code == 0);
+            CHECK(coordinated.wait_facts->signal == 0);
+            CHECK(coordinated.wait_facts->native_error == 0);
+        } else {
+            CHECK(!coordinated.launched_attempt.has_value());
+            CHECK(!coordinated.wait_facts.has_value());
+        }
+    }
+    return facts;
+}
+
+[[nodiscard]] sieve::AttemptStartedV1
+execute_worker_coordinator_fixture_chunk(WorkerCoordinatorFixture& fixture,
+                                         std::uint32_t chunk_id) {
+    auto receipt = publish_worker_launch_receipt(fixture.store(), chunk_id,
+                                                 "publish worker-coordinator mixed receipt");
+    const auto attempt = receipt.record();
+    std::vector<worker_launcher_detail::DistributedSieveWorkerLaunchSlotV1> slots;
+    slots.emplace_back(std::move(receipt), std::vector<std::string>{std::string(
+                                               WORKER_COORDINATOR_REAL_CHILD_ARGUMENT)});
+    worker_launcher_detail::DistributedSieveWorkerLaunchRequestV1 request(
+        worker_launch_test_executable, std::move(slots));
+    auto launched = fixture.store().launch_worker_process_batch_v1(
+        std::move(request), fixture.identity, fixture.frozen, fixture.polynomial,
+        fixture.factor_base);
+    CHECK(launched);
+    CHECK(launched.children.size() == 1);
+    CHECK(launched.children.front());
+    CHECK(launched.children.front().worker.has_value());
+    auto& worker = *launched.children.front().worker;
+    const auto waited = worker.wait_terminal();
+    CHECK(waited.reaped);
+    CHECK(waited.success);
+    CHECK(waited.exit_status == 0);
+    CHECK(waited.signal == 0);
+    CHECK(waited.native_error == 0);
+    const int report_descriptor = worker.release_report_descriptor();
+    CHECK(report_descriptor >= 0);
+    WaveSnapshotFd report(report_descriptor);
+    launched.children.front().worker.reset();
+
+    const auto observed = fixture.store().observe_worker_chunks_v1();
+    CHECK(observed);
+    CHECK(observed.chunks.size() == 3);
+    CHECK(observed.chunks[0].state ==
+          wave_detail::DistributedSieveWorkerChunkDurableStateV1::handoff);
+    CHECK(observed.chunks[1].state ==
+          wave_detail::DistributedSieveWorkerChunkDurableStateV1::missing);
+    CHECK(observed.chunks[2].state ==
+          wave_detail::DistributedSieveWorkerChunkDurableStateV1::empty);
+    return attempt;
+}
+
+void test_worker_coordinator_fresh_repeat_and_empty_matrix() {
+    WorkerCoordinatorFixture fixture("worker-coordinator-fresh-repeat");
+    const auto manifest_digest = fixture.store().manifest_digest();
+    std::array<WorkerCoordinatorCorpusFacts, 2> fresh_facts{};
+    {
+        WorkerCoordinatorLaunchLedger ledger;
+        auto result = worker_coordinator_detail::coordinate_missing_distributed_sieve_workers_v1(
+            make_worker_coordinator_request(fixture.take_store(), ledger), fixture.identity,
+            fixture.frozen, fixture.polynomial, fixture.factor_base);
+        fresh_facts = require_worker_coordinator_matrix(
+            result, fixture.identity,
+            {
+                worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::
+                    executed,
+                worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::
+                    executed,
+                worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::empty,
+            },
+            fixture.root);
+        CHECK(!ledger.overflow);
+        CHECK(ledger.count == 2);
+        CHECK(ledger.slots[0] == 0);
+        CHECK(ledger.slots[1] == 1);
+        CHECK(fresh_facts[0].relation_count == 0);
+        CHECK(fresh_facts[1].relation_count == 0);
+    }
+
+    auto reopened = wave_detail::DistributedSieveWaveStore::open(fixture.root, manifest_digest);
+    (void)require_wave_ready(reopened, "reopen worker-coordinator repeat fixture");
+    WorkerCoordinatorLaunchLedger repeat_ledger;
+    auto repeated = worker_coordinator_detail::coordinate_missing_distributed_sieve_workers_v1(
+        make_worker_coordinator_request(std::move(reopened.store), repeat_ledger), fixture.identity,
+        fixture.frozen, fixture.polynomial, fixture.factor_base);
+    const auto repeated_facts = require_worker_coordinator_matrix(
+        repeated, fixture.identity,
+        {
+            worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::adopted,
+            worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::adopted,
+            worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::empty,
+        },
+        fixture.root);
+    CHECK(!repeat_ledger.overflow);
+    CHECK(repeat_ledger.count == 0);
+    CHECK(repeated_facts == fresh_facts);
+}
+
+void test_worker_coordinator_mixed_launches_only_missing_chunk() {
+    WorkerCoordinatorFixture fixture("worker-coordinator-mixed");
+    const auto preexecuted = execute_worker_coordinator_fixture_chunk(fixture, 0);
+    WorkerCoordinatorLaunchLedger ledger;
+    auto result = worker_coordinator_detail::coordinate_missing_distributed_sieve_workers_v1(
+        make_worker_coordinator_request(fixture.take_store(), ledger), fixture.identity,
+        fixture.frozen, fixture.polynomial, fixture.factor_base);
+    const auto facts = require_worker_coordinator_matrix(
+        result, fixture.identity,
+        {
+            worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::adopted,
+            worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::executed,
+            worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::empty,
+        },
+        fixture.root);
+    CHECK(facts[0].attempt_started_digest == preexecuted.self_digest);
+    CHECK(!ledger.overflow);
+    CHECK(ledger.count == 1);
+    CHECK(ledger.slots[0] == 0);
+    CHECK(result.chunks[1].launched_attempt.has_value());
+    CHECK(result.chunks[1].launched_attempt->chunk_id == 1);
+}
+
+void test_worker_handoff_adoption_rejects_final_marker_replacement() {
+    const auto run_case = [](std::string_view label, bool replace_nested_owner) {
+        WorkerCoordinatorFixture fixture(label);
+        (void)execute_worker_coordinator_fixture_chunk(fixture, 0);
+        const auto& chunk = fixture.identity.distributed.chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+
+        const auto canonical = replace_nested_owner
+                                   ? fixture.root / names->private_directory_leaf /
+                                         wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_LEAF
+                                   : fixture.root / names->owned_leaf;
+        const auto displaced =
+            fixture.temp.path() /
+            (replace_nested_owner ? "displaced-owner-marker" : "displaced-owned-marker");
+        WaveSameBytesReplacementContext replacement{
+            .canonical = canonical,
+            .displaced = displaced,
+            .bytes = read_file_bytes(canonical),
+        };
+        auto rejected = fixture.store().adopt_worker_handoff_v1(
+            chunk.chunk_id, wave_detail::DistributedSieveWorkerHandoffAdoptionTestHooksV1{
+                                .before_final_namespace_revalidation =
+                                    replace_marker_with_same_bytes_after_first_inventory,
+                                .context = &replacement,
+                            });
+        CHECK(!rejected);
+        CHECK(!rejected.adopted.has_value());
+        require_wave_status(rejected.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            replace_nested_owner
+                                ? "handoff adoption rejects final nested OWNER identity replacement"
+                                : "handoff adoption rejects final root OWNED identity replacement");
+        CHECK(replacement.invoked);
+        CHECK(replacement.replaced);
+        CHECK(replacement.native_error == 0);
+        CHECK(entry_exists_no_follow(canonical));
+        CHECK(entry_exists_no_follow(displaced));
+    };
+
+    run_case("worker-adoption-owner-replacement", true);
+    run_case("worker-adoption-owned-replacement", false);
+}
+
+#endif
+
 [[nodiscard]] int write_worker_package_leaf_native(const std::filesystem::path& path,
                                                    std::span<const std::byte> bytes,
                                                    mode_t final_mode) noexcept {
@@ -17079,11 +17598,42 @@ void run_wave_store_suite() {
     std::cout << "===== Distributed Sieve Wave Store Tests PASSED =====\n";
 }
 
+void run_coordinator_suite() {
+    std::cout << "===== Distributed Sieve Worker Coordinator Tests =====\n";
+#if defined(__APPLE__)
+    if (worker_process_detail::
+            distributed_sieve_worker_process_fixed_capability_close_all_supported()) {
+        const std::array<std::pair<std::string_view, TestFunction>, 3> tests = {{
+            {"fresh, all-adopted repeat, and empty slot",
+             test_worker_coordinator_fresh_repeat_and_empty_matrix},
+            {"mixed wave launches only the missing chunk",
+             test_worker_coordinator_mixed_launches_only_missing_chunk},
+            {"handoff adoption final marker replacement",
+             test_worker_handoff_adoption_rejects_final_marker_replacement},
+        }};
+        for (const auto& [name, function] : tests) {
+            function();
+            std::cout << "  " << name << ": PASS\n";
+        }
+    } else {
+        std::cout << "  real worker execution positive matrix: SKIP "
+                     "(fixed-capability close-all unavailable)\n";
+    }
+#else
+    std::cout << "  real worker execution positive matrix: SKIP "
+                 "(worker execution facade requires macOS)\n";
+#endif
+    std::cout << "===== Distributed Sieve Worker Coordinator Tests PASSED =====\n";
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     try {
 #if !defined(_WIN32)
+        if (argc == 2 && std::string_view(argv[1]) == WORKER_COORDINATOR_REAL_CHILD_ARGUMENT) {
+            return run_worker_coordinator_real_child();
+        }
         if (argc == 2 && std::string_view(argv[1]) == WORKER_LAUNCH_FAKE_CHILD_ARGUMENT) {
             return run_worker_launch_fake_child();
         }
@@ -17111,6 +17661,7 @@ int main(int argc, char** argv) {
         if (argc == 1) {
             run_core_suite();
             run_wave_store_suite();
+            run_coordinator_suite();
             return 0;
         }
         if (argc == 3 && std::string_view(argv[1]) == "--suite" &&
@@ -17123,8 +17674,13 @@ int main(int argc, char** argv) {
             run_wave_store_suite();
             return 0;
         }
+        if (argc == 3 && std::string_view(argv[1]) == "--suite" &&
+            std::string_view(argv[2]) == "coordinator") {
+            run_coordinator_suite();
+            return 0;
+        }
 
-        std::cerr << "usage: " << argv[0] << " [--suite core|wave-store]\n";
+        std::cerr << "usage: " << argv[0] << " [--suite core|wave-store|coordinator]\n";
         return 2;
     } catch (const std::exception& error) {
         std::cerr << "Distributed sieve resume test failure: " << error.what() << '\n';

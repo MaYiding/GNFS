@@ -20,6 +20,7 @@
 # 单个测试:
 #   ./scripts/test.sh run <test_name>     # 运行指定测试二进制 (如 test_linalg)
 #   ./scripts/test.sh run test_sqrt       # 运行指定测试
+#   ./scripts/test.sh run test_distributed_sieve_resume --suite coordinator
 #
 # 集成 & E2E:
 #   ./scripts/test.sh e2e                 # E2E 测试 (N=143 完整流水线)
@@ -783,7 +784,7 @@ TEST_TIMEOUT=(
     test_distributed_sieve_worker_work_package_file 20
     test_distributed_sieve_execution_policy 20
     test_distributed_sieve_seed_v2 10
-    test_distributed_sieve_resume 60
+    test_distributed_sieve_resume 180
     test_kleinjung           360
     test_kleinjung_large     600
     test_factor_with_kleinjung 900

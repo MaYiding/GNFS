@@ -148,6 +148,8 @@ DURABLE_ENVIRONMENT_FREE_FILES = {
     "src/sieve/distributed_sieve_work_package_codec_internal.hpp",
     "src/sieve/distributed_sieve_wave_store.cpp",
     "src/sieve/distributed_sieve_wave_store_internal.hpp",
+    "src/sieve/distributed_sieve_worker_coordinator.cpp",
+    "src/sieve/distributed_sieve_worker_coordinator_internal.hpp",
     "src/sieve/distributed_sieve_worker_entry.cpp",
     "src/sieve/distributed_sieve_worker_entry_internal.hpp",
     "src/sieve/distributed_sieve_worker_writer.cpp",
@@ -161,6 +163,104 @@ DURABLE_ENVIRONMENT_FREE_FILES = {
     "src/sieve/distributed_sieve_worker_process_internal.hpp",
     "include/gnfs/sieve/distributed_sieve_seed_v2.hpp",
 } | WORKER_EXECUTOR_DURABLE_FILES
+
+WORKER_COORDINATOR_IMPLEMENTATION_FILE = (
+    "src/sieve/distributed_sieve_worker_coordinator.cpp"
+)
+WORKER_COORDINATOR_INTERFACE_FILE = (
+    "src/sieve/distributed_sieve_worker_coordinator_internal.hpp"
+)
+WORKER_COORDINATOR_TEST_FILE = "tests/test_distributed_sieve_resume.cpp"
+WORKER_COORDINATOR_PRODUCTION_FILES = {
+    WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+    WORKER_COORDINATOR_INTERFACE_FILE,
+}
+WORKER_COORDINATOR_USE_SITE_ALLOWLIST = (
+    WORKER_COORDINATOR_PRODUCTION_FILES | {WORKER_COORDINATOR_TEST_FILE}
+)
+WORKER_COORDINATOR_USE_SITE_IDENTIFIERS = (
+    "distributed_sieve_worker_coordinator_detail",
+    "DistributedSieveWorkerCoordinationDispositionV1",
+    "DistributedSieveWorkerCoordinatorPhaseV1",
+    "DistributedSieveWorkerCoordinatorStatusV1",
+    "DistributedSieveWorkerCoordinatorDiagnosticV1",
+    "DistributedSieveWorkerCoordinatorRequestV1",
+    "DistributedSieveWorkerCoordinatedChunkV1",
+    "DistributedSieveWorkerCoordinatorResultV1",
+    "coordinate_missing_distributed_sieve_workers_v1",
+)
+WORKER_COORDINATOR_COMPOSITION_FUNCTION = (
+    "coordinate_missing_distributed_sieve_workers_v1"
+)
+WORKER_COORDINATOR_BOUND_WORK_IDENTIFIER = "bind_distributed_sieve_work_v1"
+WORKER_COORDINATOR_SEALED_LAUNCHER_IDENTIFIER = (
+    "launch_worker_process_batch_v1"
+)
+WORKER_COORDINATOR_SEALED_LAUNCHER_FRAGMENT = (
+    "result.store->launch_worker_process_batch_v1("
+)
+ALTERNATE_PROCESS_EXECUTION_IDENTIFIERS = (
+    "system",
+    "popen",
+    "_popen",
+    "execl",
+    "execle",
+    "execlp",
+    "execv",
+    "execve",
+    "execveat",
+    "execvp",
+    "fexecve",
+    "_execl",
+    "_execle",
+    "_execlp",
+    "_execlpe",
+    "_execv",
+    "_execve",
+    "_execvp",
+    "_execvpe",
+    "_spawnl",
+    "_spawnle",
+    "_spawnlp",
+    "_spawnlpe",
+    "_spawnv",
+    "_spawnve",
+    "_spawnvp",
+    "_spawnvpe",
+    "clone",
+    "clone3",
+    "forkpty",
+    "CreateProcess",
+    "CreateProcessA",
+    "CreateProcessW",
+    "ShellExecute",
+    "ShellExecuteA",
+    "ShellExecuteW",
+    "WinExec",
+)
+WORKER_COORDINATOR_FORBIDDEN_IDENTIFIERS = {
+    "_Fork",
+    "vfork",
+    "fork",
+    "posix_spawn",
+    "posix_spawnp",
+    "waitpid",
+    "waitid",
+    "wait3",
+    "wait4",
+    "spawn_distributed_sieve_worker_process_batch_with_capabilities",
+    "run_distributed_sieve",
+    "DistributedSieveWorkerResult",
+} | set(ALTERNATE_PROCESS_EXECUTION_IDENTIFIERS)
+WORKER_COORDINATOR_FORBIDDEN_IDENTIFIER_FRAGMENTS = (
+    "cleanup",
+    "unlink",
+)
+WORKER_COORDINATOR_AUTHORITY_FREE_CLEANUP_FACTS = {
+    "cleanup_intent_absent",
+}
+WORKER_COORDINATOR_LEGACY_PUBLIC_HEADER = "gnfs/sieve/distributed_sieve.hpp"
+PUBLIC_SIEVE_HEADER_PREFIX = "include/gnfs/sieve/"
 
 WORKER_LAUNCHER_IMPLEMENTATION_FILE = "src/sieve/distributed_sieve_wave_store.cpp"
 WORKER_LAUNCHER_INTERFACE_FILES = {
@@ -188,6 +288,7 @@ WORKER_LAUNCHER_USE_SITE_IDENTIFIERS = (
 WORKER_LAUNCHER_USE_SITE_ALLOWLIST = (
     WORKER_LAUNCHER_INTERFACE_FILES
     | {WORKER_LAUNCHER_IMPLEMENTATION_FILE}
+    | WORKER_COORDINATOR_PRODUCTION_FILES
     | WORKER_LAUNCHER_TEST_FILES
 )
 WORKER_LAUNCHER_COMPOSITION_FUNCTION = "launch_worker_process_batch_v1"
@@ -240,6 +341,7 @@ WORKER_ENTRY_USE_SITE_ALLOWLIST = {
     WORKER_WRITER_IMPLEMENTATION_FILE,
     WORKER_WRITER_INTERFACE_FILE,
     WORKER_WRITER_TEST_FILE,
+    WORKER_COORDINATOR_TEST_FILE,
 } | WORKER_EXECUTOR_CAPABILITY_USE_SITE_FILES
 WORKER_WRITER_USE_SITE_IDENTIFIERS = (
     "DistributedSieveWorkerCompletionFactsV1",
@@ -1574,13 +1676,16 @@ WORKER_PROCESS_REQUIRED_DIRECT_CALLS = {
     (WORKER_PROCESS_LEGACY_FILE, "fork"): 1,
     (WORKER_PROCESS_LEGACY_FILE, "waitpid"): 1,
 }
-WORKER_PROCESS_FORBIDDEN_PROCESS_IDENTIFIERS = (
-    "_Fork",
-    "vfork",
-    "posix_spawnp",
-    "waitid",
-    "wait3",
-    "wait4",
+WORKER_PROCESS_FORBIDDEN_PROCESS_IDENTIFIERS = frozenset(
+    (
+        "_Fork",
+        "vfork",
+        "posix_spawnp",
+        "waitid",
+        "wait3",
+        "wait4",
+    )
+    + ALTERNATE_PROCESS_EXECUTION_IDENTIFIERS
 )
 WORKER_PROCESS_TRANSPORT_FORBIDDEN_IDENTIFIERS = ("environ",)
 
@@ -1649,6 +1754,7 @@ BOUND_WORK_USE_SITE_ALLOWLIST = {
     "src/sieve/distributed_sieve_bound_work_internal.hpp",
     "tests/test_distributed_sieve_execution_policy.cpp",
     WORKER_LAUNCHER_IMPLEMENTATION_FILE,
+    WORKER_COORDINATOR_IMPLEMENTATION_FILE,
 } | WORKER_EXECUTOR_BOUND_WORK_USE_SITE_FILES
 WORK_PACKAGE_CARRIER_USE_SITE_IDENTIFIERS = (
     "DistributedSieveWorkerWorkPackageFileV1",
@@ -2762,8 +2868,8 @@ class Checks:
                             f"{identifier} authority must be used only as a direct call",
                         )
 
-        for identifier in WORKER_PROCESS_FORBIDDEN_PROCESS_IDENTIFIERS:
-            for use in find_code_identifier_uses(text, identifier):
+        for identifier, use in find_code_identifier_tokens(text):
+            if identifier in WORKER_PROCESS_FORBIDDEN_PROCESS_IDENTIFIERS:
                 self.fail(
                     relative,
                     use.line,
@@ -4662,6 +4768,168 @@ class Checks:
                 "only then advance the resume round",
             )
 
+    def validate_worker_coordinator_use_site(
+        self, relative: str, text: str
+    ) -> None:
+        coordinator_header_includes = [
+            line_number
+            for line_number, line in enumerate(text.splitlines(), start=1)
+            if re.match(r"^[ \t]*#[ \t]*include\b", line)
+            and WORKER_COORDINATOR_INTERFACE_FILE.rsplit("/", 1)[-1] in line
+        ]
+        if relative not in WORKER_COORDINATOR_USE_SITE_ALLOWLIST:
+            for line_number in coordinator_header_includes:
+                self.fail(
+                    relative,
+                    line_number,
+                    "source-private worker-coordinator header include is not allowlisted",
+                )
+            for identifier in WORKER_COORDINATOR_USE_SITE_IDENTIFIERS:
+                for use in find_code_identifier_uses(text, identifier):
+                    self.fail(
+                        relative,
+                        use.line,
+                        "source-private worker-coordinator use site is not "
+                        f"allowlisted: {identifier}",
+                    )
+
+        if not relative.startswith(PUBLIC_SIEVE_HEADER_PREFIX):
+            return
+        for line_number in coordinator_header_includes:
+            self.fail(
+                relative,
+                line_number,
+                "source-private worker-coordinator header leaked into a public sieve header",
+            )
+        for identifier in WORKER_COORDINATOR_USE_SITE_IDENTIFIERS:
+            for use in find_code_identifier_uses(text, identifier):
+                self.fail(
+                    relative,
+                    use.line,
+                    "source-private worker-coordinator API leaked into a public sieve header: "
+                    f"{identifier}",
+                )
+
+    def validate_worker_coordinator_boundary(
+        self, relative: str, text: str
+    ) -> None:
+        if relative not in WORKER_COORDINATOR_PRODUCTION_FILES:
+            return
+
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            if (
+                re.match(r"^[ \t]*#[ \t]*include\b", line)
+                and WORKER_COORDINATOR_LEGACY_PUBLIC_HEADER in line
+            ):
+                self.fail(
+                    relative,
+                    line_number,
+                    "worker coordinator must not include the legacy public "
+                    "distributed-sieve header",
+                )
+
+        for token, use in find_code_identifier_tokens(text):
+            if token in WORKER_COORDINATOR_FORBIDDEN_IDENTIFIERS:
+                reason = "raw process or legacy distributed-sieve identifier"
+            elif token in WORKER_COORDINATOR_AUTHORITY_FREE_CLEANUP_FACTS:
+                continue
+            elif any(
+                fragment in token.lower()
+                for fragment in WORKER_COORDINATOR_FORBIDDEN_IDENTIFIER_FRAGMENTS
+            ):
+                reason = "cleanup or unlink identifier"
+            else:
+                continue
+            self.fail(
+                relative,
+                use.line,
+                f"worker coordinator forbids {reason} {token}",
+            )
+
+        if relative != WORKER_COORDINATOR_IMPLEMENTATION_FILE:
+            return
+
+        body, body_line_offset, body_errors = find_function_definition_body(
+            text, WORKER_COORDINATOR_COMPOSITION_FUNCTION
+        )
+        for line, error in body_errors:
+            self.fail(relative, line, error)
+        if body is None:
+            return
+
+        bound_identifier = WORKER_COORDINATOR_BOUND_WORK_IDENTIFIER
+        all_bound_uses = find_code_identifier_uses(text, bound_identifier)
+        all_bound_calls = find_call_identifier_uses(text, bound_identifier)
+        body_bound_uses = find_code_identifier_uses(body, bound_identifier)
+        body_bound_calls = find_call_identifier_uses(body, bound_identifier)
+        for use in find_non_call_identifier_uses(text, bound_identifier):
+            self.fail(
+                relative,
+                use.line,
+                "coordinator bound-work validation must be used only as a direct call",
+            )
+        if len(all_bound_uses) != 1 or len(all_bound_calls) != 1:
+            self.fail(
+                relative,
+                1,
+                "worker coordinator must contain exactly one direct "
+                f"{bound_identifier} call, found {len(all_bound_uses)} identifiers "
+                f"and {len(all_bound_calls)} calls",
+            )
+        if len(body_bound_uses) != 1 or len(body_bound_calls) != 1:
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                f"the only direct {bound_identifier} call must remain inside "
+                f"{WORKER_COORDINATOR_COMPOSITION_FUNCTION}",
+            )
+
+        identifier = WORKER_COORDINATOR_SEALED_LAUNCHER_IDENTIFIER
+        all_uses = find_code_identifier_uses(text, identifier)
+        all_calls = find_call_identifier_uses(text, identifier)
+        body_uses = find_code_identifier_uses(body, identifier)
+        body_calls = find_call_identifier_uses(body, identifier)
+        for use in find_non_call_identifier_uses(text, identifier):
+            self.fail(
+                relative,
+                use.line,
+                "sealed WaveStore launcher authority must be used only as a direct call",
+            )
+        if len(all_uses) != 1 or len(all_calls) != 1:
+            self.fail(
+                relative,
+                1,
+                "worker coordinator must contain exactly one direct sealed "
+                f"WaveStore {identifier} call, found {len(all_uses)} identifiers "
+                f"and {len(all_calls)} calls",
+            )
+        if len(body_uses) != 1 or len(body_calls) != 1:
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                f"the only direct {identifier} call must remain inside "
+                f"{WORKER_COORDINATOR_COMPOSITION_FUNCTION}",
+            )
+        compact_body = _compact_cpp_tokens(body)
+        if compact_body.count(WORKER_COORDINATOR_SEALED_LAUNCHER_FRAGMENT) != 1:
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                "worker coordinator must call the sealed WaveStore launcher exactly "
+                "once through result.store",
+            )
+        if (
+            len(body_bound_calls) == 1
+            and len(body_calls) == 1
+            and body_bound_calls[0].offset >= body_calls[0].offset
+        ):
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                "worker coordinator must validate bound work before invoking the "
+                "sealed WaveStore launcher",
+            )
+
     def validate_worker_launcher_use_site(self, relative: str, text: str) -> None:
         if relative in WORKER_LAUNCHER_USE_SITE_ALLOWLIST:
             return
@@ -5057,6 +5325,13 @@ class Checks:
                 "legacy execution-policy literal allowlist must contain the exact "
                 "31 canonical flags followed by the diagnostic flag",
             )
+        for relative in sorted(WORKER_COORDINATOR_PRODUCTION_FILES):
+            if not (self.root / relative).is_file():
+                self.fail(
+                    relative,
+                    1,
+                    "worker-coordinator production inventory file is missing",
+                )
 
         for relative, path in self.source_files():
             try:
@@ -5072,6 +5347,7 @@ class Checks:
             self.validate_worker_process_transport_boundary(relative, text)
             self.validate_worker_executor_composition_body(relative, text)
             self.validate_worker_launcher_composition_body(relative, text)
+            self.validate_worker_coordinator_boundary(relative, text)
             self.validate_work_package_residue_inspection_body(relative, text)
             self.validate_work_package_residue_reconciliation_body(relative, text)
             if relative == EXECUTION_POLICY_ENVIRONMENT_ADAPTER:
@@ -5119,6 +5395,7 @@ class Checks:
             self.validate_private_handoff_publication_resume_boundary(
                 relative, text
             )
+            self.validate_worker_coordinator_use_site(relative, text)
             self.validate_worker_launcher_use_site(relative, text)
 
         for entry, count in self.legacy_counts.items():
@@ -5321,6 +5598,12 @@ const auto observed = ::waitpid(child, &status, 0);
         "raw fork or inherited environment inside the transport was not rejected",
     )
 
+    alternate_execution_snippet = "".join(
+        f"const auto alternate_{index} = &::{identifier};\n"
+        for index, identifier in enumerate(
+            ALTERNATE_PROCESS_EXECUTION_IDENTIFIERS
+        )
+    )
     alternate_process_checks = Checks(Path("."))
     alternate_process_checks.validate_worker_process_transport_boundary(
         "include/gnfs/sieve/other.hpp",
@@ -5329,10 +5612,12 @@ const auto observed = ::waitpid(child, &status, 0);
         "const auto c = ::posix_spawnp(&pid, name, actions, attrs, argv, envp);\n"
         "const auto d = ::waitid(P_PID, pid, &status, WEXITED);\n"
         "const auto e = ::wait3(&status, 0, nullptr);\n"
-        "const auto f = ::wait4(pid, &status, 0, nullptr);\n",
+        "const auto f = ::wait4(pid, &status, 0, nullptr);\n"
+        + alternate_execution_snippet,
     )
     expect(
-        len(alternate_process_checks.errors) == 6
+        len(alternate_process_checks.errors)
+        == 6 + len(ALTERNATE_PROCESS_EXECUTION_IDENTIFIERS)
         and all(
             "sieve process policy forbids alternate API" in error
             for error in alternate_process_checks.errors
@@ -6711,9 +6996,10 @@ auto hooked = adopt_distributed_sieve_worker_entry_v1_with_hooks(hooks);
             WORKER_EXECUTOR_IMPLEMENTATION_FILE,
             WORKER_EXECUTOR_INTERFACE_FILE,
             WORKER_EXECUTOR_TEST_FILE,
+            WORKER_COORDINATOR_TEST_FILE,
         },
         "worker-entry allowlist is not the exact entry/writer/executor "
-        "implementation, interface, and dedicated test boundary",
+        "implementation, interface, and dedicated entry plus coordinator tests",
     )
 
     worker_writer_use_site_snippet = r"""
@@ -9023,6 +9309,292 @@ auto reconcile_helper() noexcept {
         f"{reconcile_outside_open_private_handoff_resume_checks.errors}",
     )
 
+    coordinator_use_site_snippet = r"""
+DistributedSieveWorkerCoordinatorRequestV1 request;
+auto result = coordinate_missing_distributed_sieve_workers_v1(
+    std::move(request), identity, frozen, polynomial, factor_base);
+"""
+    untrusted_coordinator_checks = Checks(Path("."))
+    untrusted_coordinator_checks.validate_worker_coordinator_use_site(
+        "src/sieve/untrusted_coordinator.cpp", coordinator_use_site_snippet
+    )
+    expect(
+        untrusted_coordinator_checks.errors
+        and all(
+            "source-private worker-coordinator use site is not allowlisted" in error
+            for error in untrusted_coordinator_checks.errors
+        ),
+        "worker-coordinator repo-wide use-site gate is not enforced: "
+        f"{untrusted_coordinator_checks.errors}",
+    )
+
+    public_coordinator_header_checks = Checks(Path("."))
+    public_coordinator_header_checks.validate_worker_coordinator_use_site(
+        "include/gnfs/sieve/coordinator_leak.hpp",
+        '#include "distributed_sieve_worker_coordinator_internal.hpp"\n'
+        + coordinator_use_site_snippet,
+    )
+    expect(
+        any(
+            "worker-coordinator header leaked into a public sieve header" in error
+            for error in public_coordinator_header_checks.errors
+        )
+        and any(
+            "worker-coordinator API leaked into a public sieve header" in error
+            for error in public_coordinator_header_checks.errors
+        ),
+        "source-private worker-coordinator public-header leak was not rejected: "
+        f"{public_coordinator_header_checks.errors}",
+    )
+
+    for relative in sorted(WORKER_COORDINATOR_USE_SITE_ALLOWLIST):
+        allowed_coordinator_checks = Checks(Path("."))
+        allowed_coordinator_checks.validate_worker_coordinator_use_site(
+            relative, coordinator_use_site_snippet
+        )
+        expect(
+            not allowed_coordinator_checks.errors,
+            f"allowlisted worker-coordinator use was rejected in {relative}: "
+            f"{allowed_coordinator_checks.errors}",
+        )
+
+    expect(
+        WORKER_COORDINATOR_PRODUCTION_FILES
+        == {
+            "src/sieve/distributed_sieve_worker_coordinator.cpp",
+            "src/sieve/distributed_sieve_worker_coordinator_internal.hpp",
+        }
+        and WORKER_COORDINATOR_USE_SITE_ALLOWLIST
+        == (
+            WORKER_COORDINATOR_PRODUCTION_FILES
+            | {"tests/test_distributed_sieve_resume.cpp"}
+        )
+        and WORKER_COORDINATOR_AUTHORITY_FREE_CLEANUP_FACTS
+        == {"cleanup_intent_absent"}
+        and (
+            BOUND_WORK_USE_SITE_ALLOWLIST & WORKER_COORDINATOR_USE_SITE_ALLOWLIST
+            == {WORKER_COORDINATOR_IMPLEMENTATION_FILE}
+        )
+        and WORKER_COORDINATOR_PRODUCTION_FILES <= DURABLE_ENVIRONMENT_FREE_FILES,
+        "worker-coordinator inventory is not the exact source-private "
+        "implementation, interface, and dedicated resume-test boundary",
+    )
+
+    valid_coordinator_composition = r"""
+DistributedSieveWorkerCoordinatorResultV1
+coordinate_missing_distributed_sieve_workers_v1() noexcept {
+    DistributedSieveWorkerCoordinatorResultV1 result;
+    if (!handoff.cleanup_intent_absent) {
+        return result;
+    }
+    auto bound = bind_distributed_sieve_work_v1(
+        identity, frozen_policy, polynomial, factor_base);
+    auto launched = result.store->launch_worker_process_batch_v1(
+        std::move(launch_request), identity, frozen_policy, polynomial, factor_base);
+    return result;
+}
+"""
+    exact_coordinator_checks = Checks(Path("."))
+    exact_coordinator_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE, valid_coordinator_composition
+    )
+    expect(
+        not exact_coordinator_checks.errors,
+        "exact worker-coordinator sealed-launcher composition was rejected: "
+        f"{exact_coordinator_checks.errors}",
+    )
+
+    missing_coordinator_bound_work = valid_coordinator_composition.replace(
+        "    auto bound = bind_distributed_sieve_work_v1(\n"
+        "        identity, frozen_policy, polynomial, factor_base);\n",
+        "",
+    )
+    missing_coordinator_bound_work_checks = Checks(Path("."))
+    missing_coordinator_bound_work_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE, missing_coordinator_bound_work
+    )
+    expect(
+        any(
+            "must contain exactly one direct bind_distributed_sieve_work_v1 call"
+            in error
+            for error in missing_coordinator_bound_work_checks.errors
+        ),
+        "worker coordinator without bound-work validation was accepted: "
+        f"{missing_coordinator_bound_work_checks.errors}",
+    )
+
+    duplicate_coordinator_bound_work = valid_coordinator_composition.replace(
+        "    auto bound = bind_distributed_sieve_work_v1(\n"
+        "        identity, frozen_policy, polynomial, factor_base);\n",
+        "    auto bound = bind_distributed_sieve_work_v1(\n"
+        "        identity, frozen_policy, polynomial, factor_base);\n"
+        "    auto duplicate_bound = bind_distributed_sieve_work_v1(\n"
+        "        identity, frozen_policy, polynomial, factor_base);\n",
+    )
+    duplicate_coordinator_bound_work_checks = Checks(Path("."))
+    duplicate_coordinator_bound_work_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE, duplicate_coordinator_bound_work
+    )
+    expect(
+        any(
+            "must contain exactly one direct bind_distributed_sieve_work_v1 call"
+            in error
+            for error in duplicate_coordinator_bound_work_checks.errors
+        ),
+        "worker coordinator with duplicate bound-work validation was accepted: "
+        f"{duplicate_coordinator_bound_work_checks.errors}",
+    )
+
+    reordered_coordinator_calls = valid_coordinator_composition.replace(
+        "    auto bound = bind_distributed_sieve_work_v1(\n"
+        "        identity, frozen_policy, polynomial, factor_base);\n",
+        "",
+    ).replace(
+        "    auto launched = result.store->launch_worker_process_batch_v1(\n"
+        "        std::move(launch_request), identity, frozen_policy, polynomial, factor_base);\n"
+        "    return result;\n",
+        "    auto launched = result.store->launch_worker_process_batch_v1(\n"
+        "        std::move(launch_request), identity, frozen_policy, polynomial, factor_base);\n"
+        "    auto bound = bind_distributed_sieve_work_v1(\n"
+        "        identity, frozen_policy, polynomial, factor_base);\n"
+        "    return result;\n",
+    )
+    reordered_coordinator_calls_checks = Checks(Path("."))
+    reordered_coordinator_calls_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE, reordered_coordinator_calls
+    )
+    expect(
+        any(
+            "must validate bound work before invoking the sealed WaveStore launcher"
+            in error
+            for error in reordered_coordinator_calls_checks.errors
+        ),
+        "worker coordinator accepted bound-work validation after launch: "
+        f"{reordered_coordinator_calls_checks.errors}",
+    )
+
+    missing_coordinator_launcher = valid_coordinator_composition.replace(
+        "    auto launched = result.store->launch_worker_process_batch_v1(\n"
+        "        std::move(launch_request), identity, frozen_policy, polynomial, factor_base);\n",
+        "    auto launched = 0;\n",
+    )
+    missing_coordinator_launcher_checks = Checks(Path("."))
+    missing_coordinator_launcher_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE, missing_coordinator_launcher
+    )
+    expect(
+        any(
+            "must contain exactly one direct sealed WaveStore" in error
+            for error in missing_coordinator_launcher_checks.errors
+        ),
+        "worker coordinator without the sealed launcher call was accepted: "
+        f"{missing_coordinator_launcher_checks.errors}",
+    )
+
+    duplicate_coordinator_launcher = valid_coordinator_composition.replace(
+        "    return result;\n",
+        "    auto duplicate = result.store->launch_worker_process_batch_v1(\n"
+        "        std::move(other_request), identity, frozen_policy, polynomial, factor_base);\n"
+        "    return result;\n",
+    )
+    duplicate_coordinator_launcher_checks = Checks(Path("."))
+    duplicate_coordinator_launcher_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE, duplicate_coordinator_launcher
+    )
+    expect(
+        any(
+            "must contain exactly one direct sealed WaveStore" in error
+            for error in duplicate_coordinator_launcher_checks.errors
+        ),
+        "worker coordinator with duplicate sealed launcher calls was accepted: "
+        f"{duplicate_coordinator_launcher_checks.errors}",
+    )
+
+    outside_coordinator_launcher = (
+        valid_coordinator_composition
+        + "\nauto outside = result.store->launch_worker_process_batch_v1(\n"
+        "    std::move(other_request), identity, frozen_policy, polynomial, factor_base);\n"
+    )
+    outside_coordinator_launcher_checks = Checks(Path("."))
+    outside_coordinator_launcher_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE, outside_coordinator_launcher
+    )
+    expect(
+        any(
+            "must contain exactly one direct sealed WaveStore" in error
+            for error in outside_coordinator_launcher_checks.errors
+        ),
+        "worker coordinator launcher authority escaped its entry function: "
+        f"{outside_coordinator_launcher_checks.errors}",
+    )
+
+    wrong_coordinator_receiver = valid_coordinator_composition.replace(
+        "result.store->launch_worker_process_batch_v1(",
+        "raw_store->launch_worker_process_batch_v1(",
+    )
+    wrong_coordinator_receiver_checks = Checks(Path("."))
+    wrong_coordinator_receiver_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE, wrong_coordinator_receiver
+    )
+    expect(
+        any(
+            "must call the sealed WaveStore launcher exactly once through result.store"
+            in error
+            for error in wrong_coordinator_receiver_checks.errors
+        ),
+        "worker coordinator accepted an unsealed launcher receiver: "
+        f"{wrong_coordinator_receiver_checks.errors}",
+    )
+
+    forbidden_coordinator_authority = valid_coordinator_composition.replace(
+        "    return result;\n",
+        "    auto forked = fork();\n"
+        "    auto spawned = posix_spawn(&pid, path, actions, attrs, argv, envp);\n"
+        "    auto waited = waitpid(pid, &status, 0);\n"
+        "    auto shelled = system(command);\n"
+        "    auto replaced = execve(path, argv, envp);\n"
+        "    cleanup_worker_artifacts();\n"
+        "    unlink_worker_handoff();\n"
+        "    run_distributed_sieve(config);\n"
+        "    return result;\n",
+    )
+    forbidden_coordinator_checks = Checks(Path("."))
+    forbidden_coordinator_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE, forbidden_coordinator_authority
+    )
+    expect(
+        all(
+            any(identifier in error for error in forbidden_coordinator_checks.errors)
+            for identifier in (
+                "fork",
+                "posix_spawn",
+                "waitpid",
+                "system",
+                "execve",
+                "cleanup_worker_artifacts",
+                "unlink_worker_handoff",
+                "run_distributed_sieve",
+            )
+        ),
+        "worker-coordinator raw process, cleanup, unlink, or legacy-entry bans "
+        f"are not closed: {forbidden_coordinator_checks.errors}",
+    )
+
+    legacy_coordinator_header_checks = Checks(Path("."))
+    legacy_coordinator_header_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        "#include <gnfs/sieve/distributed_sieve.hpp>\n"
+        + valid_coordinator_composition,
+    )
+    expect(
+        any(
+            "must not include the legacy public distributed-sieve header" in error
+            for error in legacy_coordinator_header_checks.errors
+        ),
+        "worker coordinator accepted the legacy public distributed-sieve header: "
+        f"{legacy_coordinator_header_checks.errors}",
+    )
+
     launcher_use_site_snippet = r"""
 DistributedSieveWorkerLaunchRequestV1 request(path, std::move(slots));
 DistributedSieveWorkerLaunchBatchResultV1 result =
@@ -9072,10 +9644,15 @@ DistributedSieveWorkerLaunchBatchResultV1 result =
         }
         and (
             WORKER_LAUNCHER_USE_SITE_ALLOWLIST - WORKER_LAUNCHER_TEST_FILES
-            == (WORKER_LAUNCHER_INTERFACE_FILES | {WORKER_LAUNCHER_IMPLEMENTATION_FILE})
+            == (
+                WORKER_LAUNCHER_INTERFACE_FILES
+                | {WORKER_LAUNCHER_IMPLEMENTATION_FILE}
+                | WORKER_COORDINATOR_PRODUCTION_FILES
+            )
         ),
         "worker-launcher allowlist is not the exact implementation boundary "
-        "plus the dedicated resume, worker-entry, and writer-authority tests",
+        "plus the source-private coordinator and the dedicated resume, worker-entry, "
+        "and writer-authority tests",
     )
 
     lower_capability_allowlists = (

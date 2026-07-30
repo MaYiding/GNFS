@@ -463,7 +463,7 @@ noncanonical or symlinked ancestor paths, ACL and namespace drift, and
 native-identity replacement. Fork-and-pipe probes cover hook-time PID
 separation, concurrent exclusion, and inherited-open-description lock
 lifetime. The binary catalog is therefore `fast`; its no-argument form runs
-both sub-suites.
+the core, WaveStore, and coordinator sub-suites.
 
 The same binary is the dedicated M2j-A receipt-gated launcher contract.
 macOS and supported Linux/glibc hosts run its positive launcher matrix. Every
@@ -733,6 +733,44 @@ The dual-chunk case observes both locks as busy in each round, observes both
 as reacquirable at the round boundary, replaces a lower pending record with a
 same-byte new inode, and proves that only a fresh next-round observation can
 continue.
+
+`DistributedSieveWorkerCoordinator` is the `fast`, 180-second M3a-2c.2
+missing-only ownership contract. The coordinator consumes one WaveStore,
+retains its whole-round claim, and derives chunk and attempt coordinates from
+the frozen manifest. Before reserving an attempt, one pure
+`bind_distributed_sieve_work_v1()` call validates the supplied runtime objects
+against the manifest work digest. Production reaches process creation only
+through one source-private call site to the sealed
+`DistributedSieveWaveStore::launch_worker_process_batch_v1()` member. It then
+waits through typed launched-attempt owners and adopts terminal corpora through
+same-handle readers. The coordinator never receives raw process, cleanup,
+unlink, or legacy distributed-sieve authority. Its result owns the WaveStore,
+round claim, and readers in close-only destruction order.
+
+The positive coordinator matrix is:
+
+| Scenario | Launch oracle | Manifest-ordered result | Artifact oracle |
+|---|---|---|---|
+| Fresh wave | One sealed batch contains every nonempty missing chunk | Every launched terminal chunk is `executed` | Every worker handoff remains |
+| All handoffs present | Zero launch calls at runtime | Every nonempty chunk is `adopted` | Existing handoffs remain byte-identical |
+| Mixed wave | The batch contains only exact missing nonempty chunks | Existing chunks are `adopted`; new terminal chunks are `executed` | Both old and new handoffs remain |
+| More chunks than special-Q values | Zero-length chunks never enter the launch batch | Each zero-length chunk is `empty` in its manifest slot | No empty-chunk artifact is created |
+| Nonempty zero-row handoff | Zero relaunches for that chunk | The terminal chunk is `adopted` with a zero-row receipt | The zero-row handoff remains readable |
+
+The launch ledger must match every `executed` result by chunk, attempt ordinal,
+and `AttemptStartedV1` digest. A successful wait or child report without the
+matching durable handoff is a failure, not `executed`. The policy checker keeps
+the coordinator API source-private, count-closes the single sealed launcher
+call site, and rejects lower transport, cleanup, unlink, legacy entry, or
+public-header use. Its `DistributedSievePolicyInventory` CTest is classified
+as `slow` because the closed repository scan and self-test matrix take about
+five minutes in the measured Debug checkout and exceed the `fast` budget.
+
+Same-handle adoption also sandwiches the full corpus read with final exact
+checks for both the nested `OWNER` marker and root-level `OWNED` marker. The
+coordinator suite replaces each marker with a byte-identical new inode at the
+pre-commit boundary and requires `namespace_conflict`; semantic record equality
+alone is not sufficient lease authority.
 
 The typed worker envelope must bind the exact canonical attempt digest, lease,
 chunk, and ordinal before the relation layer can upgrade an observed permit.

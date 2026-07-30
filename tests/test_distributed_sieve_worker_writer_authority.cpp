@@ -2501,18 +2501,17 @@ void test_positive_relation_worker_execution_facade(const std::filesystem::path&
     require_wave_ready(fixture.store().revalidate(),
                        "revalidate reopened positive worker execution handoff");
 
-    auto adoption = gnfs::relation::OOCCleanupTransaction::adopt_private_handoff(base);
-    CHECK(adoption.adopted());
-    CHECK(adoption.adoption.has_value());
-    gnfs::relation::OOCPrivateHandoffReader reader(std::move(*adoption.adoption));
-    CHECK(reader.valid());
-    CHECK(reader.reader().count() == handoff->relation_count);
+    auto adoption = fixture.store().adopt_worker_handoff_v1(0);
+    CHECK(adoption);
+    CHECK(adoption.adopted.has_value());
+    CHECK(adoption.adopted->handoff().self_digest == handoff->self_digest);
+    CHECK(adoption.adopted->reader().count() == handoff->relation_count);
 
     std::vector<Relation> rows;
-    rows.reserve(reader.reader().count());
+    rows.reserve(adoption.adopted->reader().count());
     std::set<gnfs::core::ABPair> unique_pairs;
-    for (std::size_t index = 0; index < reader.reader().count(); ++index) {
-        rows.push_back(reader.reader().read(index));
+    for (std::size_t index = 0; index < adoption.adopted->reader().count(); ++index) {
+        rows.push_back(adoption.adopted->reader().read(index));
         CHECK(unique_pairs.insert(rows.back().ab()).second);
         require_positive_execution_relation(fixture.polynomial, fixture.factor_base,
                                             fixture.special_q, rows.back());
@@ -2575,12 +2574,11 @@ void test_writer_zero_row_handoff(const std::filesystem::path& executable) {
               gnfs::relation::OOCRelationWriter::INDEX_SENTINEL_BYTES);
     CHECK(envelope.pair.data_extent == gnfs::relation::OOCRelationWriter::DATA_HEADER_BYTES);
 
-    auto adoption = gnfs::relation::OOCCleanupTransaction::adopt_private_handoff(base);
-    CHECK(adoption.adopted());
-    CHECK(adoption.adoption.has_value());
-    gnfs::relation::OOCPrivateHandoffReader reader(std::move(*adoption.adoption));
-    CHECK(reader.valid());
-    CHECK(reader.reader().count() == 0);
+    auto adoption = fixture.store().adopt_worker_handoff_v1(0);
+    CHECK(adoption);
+    CHECK(adoption.adopted.has_value());
+    CHECK(adoption.adopted->handoff().self_digest == handoff->self_digest);
+    CHECK(adoption.adopted->reader().count() == 0);
     require_exact_happy_namespace_delta(fixture, result.baseline);
     require_no_cleanup_publication(fixture);
 }

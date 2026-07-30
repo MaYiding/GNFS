@@ -30,6 +30,11 @@ namespace gnfs::factor_base {
 class FactorBase;
 }
 
+namespace gnfs::relation {
+class OOCPrivateHandoffReader;
+class OOCRelationReader;
+} // namespace gnfs::relation
+
 namespace gnfs::sieve::distributed_sieve_execution_policy_detail {
 struct DistributedSieveFrozenExecutionPolicyV1;
 }
@@ -121,6 +126,7 @@ enum class DistributedSieveWaveStoreStatus : std::uint8_t {
     root_invalid,
     lock_missing,
     lock_busy,
+    worker_coordinator_busy,
     private_lease_root_busy,
     private_lease_lock_busy,
     lock_invalid,
@@ -156,6 +162,8 @@ distributed_sieve_wave_store_status_name(DistributedSieveWaveStoreStatus status)
         return "lock_missing";
     case DistributedSieveWaveStoreStatus::lock_busy:
         return "lock_busy";
+    case DistributedSieveWaveStoreStatus::worker_coordinator_busy:
+        return "worker_coordinator_busy";
     case DistributedSieveWaveStoreStatus::private_lease_root_busy:
         return "private_lease_root_busy";
     case DistributedSieveWaveStoreStatus::private_lease_lock_busy:
@@ -460,6 +468,18 @@ struct DistributedSieveWaveStoreInventoryTestHooks final {
     void* context = nullptr;
 };
 
+/// Trusted test-only boundary for same-handle worker-handoff adoption.
+/// Production callers leave the callback empty.
+struct DistributedSieveWorkerHandoffAdoptionTestHooksV1 final {
+    using BeforeFinalNamespaceRevalidation = void (*)(void* context) noexcept;
+
+    /// Runs after the exact relation corpus has been streamed and verified,
+    /// immediately before the final root, lease-marker, directory, and named
+    /// artifact checks.
+    BeforeFinalNamespaceRevalidation before_final_namespace_revalidation = nullptr;
+    void* context = nullptr;
+};
+
 /// Trusted test-only boundaries for the attempt BaseLockAt transaction. The
 /// callbacks run inside the short-lived same-State root claim. Production
 /// callers leave them empty.
@@ -730,6 +750,11 @@ struct DistributedSievePrivateLeaseRootClaimResult;
 struct DistributedSievePrivateLeaseReservationResult;
 struct DistributedSieveWorkerAttemptStartResult;
 struct DistributedSieveWorkerAttemptReconcileResult;
+struct DistributedSieveWorkerChunkInventoryResultV1;
+struct DistributedSieveWorkerHandoffAdoptionResultV1;
+struct DistributedSieveWorkerCoordinatorClaimResultV1;
+class DistributedSieveAdoptedWorkerChunkV1;
+class DistributedSieveWorkerCoordinatorClaimV1;
 class DistributedSievePrivateLeaseRootClaim;
 class DistributedSievePrivateLeaseBaseLockAt;
 class DistributedSievePrivateLeaseReservationReceipt;
@@ -809,6 +834,29 @@ public:
     [[nodiscard]] DistributedSieveWaveStoreDiagnostic
     revalidate(DistributedSieveWaveStoreInventoryTestHooks hooks = {}) const noexcept;
 
+    /// Double-observe the complete manifest-bound attempt inventory and
+    /// classify every chunk in manifest order. The returned facts are
+    /// read-only; a durable handoff observation is not relation-read
+    /// authority and an incomplete attempt is never reported as missing.
+    [[nodiscard]] DistributedSieveWorkerChunkInventoryResultV1
+    observe_worker_chunks_v1() const noexcept;
+
+    /// Adopt one exact canonical worker handoff through the relation layer's
+    /// same-handle reader path. The returned owner retains the exact pair and
+    /// BaseLock, streams the full relation sequence and corpus digest before
+    /// success, and keeps this WaveStore state alive. It exposes no path,
+    /// descriptor, cleanup, or namespace-mutation capability.
+    [[nodiscard]] DistributedSieveWorkerHandoffAdoptionResultV1 adopt_worker_handoff_v1(
+        std::uint32_t chunk_id,
+        DistributedSieveWorkerHandoffAdoptionTestHooksV1 hooks = {}) const noexcept;
+
+    /// Claim the whole-round source-private worker-coordinator gate. The
+    /// process-bound claim retains the WaveStore state and releases only on
+    /// destruction. It grants no root action, launch, retry, or cleanup
+    /// authority by itself.
+    [[nodiscard]] DistributedSieveWorkerCoordinatorClaimResultV1
+    claim_worker_coordinator_v1() const noexcept;
+
     /// Exclusively claim this exact shared WaveStore state for one future
     /// private-lease root action. The claim is process-bound, keeps the
     /// permanent wave lock alive, and exposes no descriptor, path, or
@@ -868,6 +916,8 @@ private:
     std::shared_ptr<const State> state_;
 
     friend class DistributedSieveExternalCleanupAuthorizationState;
+    friend class DistributedSieveAdoptedWorkerChunkV1;
+    friend class DistributedSieveWorkerCoordinatorClaimV1;
     friend class DistributedSieveFdPrivateLeaseRecoveryTarget;
     friend class DistributedSieveFdPrivateLeaseReservationTarget;
     friend class DistributedSievePrivateLeaseRootClaim;
@@ -879,6 +929,120 @@ private:
     friend DistributedSieveWorkerAttemptReconcileResult reconcile_worker_attempt_started(
         DistributedSievePrivateLeaseRootClaimResult&& claimed,
         DistributedSieveWorkerAttemptReconcileTestHooks hooks) noexcept;
+};
+
+enum class DistributedSieveWorkerChunkDurableStateV1 : std::uint8_t {
+    empty,
+    missing,
+    incomplete_attempt,
+    handoff,
+};
+
+/// Stable read-only classification of one manifest chunk.
+///
+/// `latest_attempt` is present for incomplete and terminal attempt chains.
+/// `handoff` is present only for a fully validated canonical handoff. Neither
+/// value carries a live BaseLock or relation-reader capability.
+struct DistributedSieveWorkerChunkInventoryV1 final {
+    ChunkPlanV1 chunk;
+    DistributedSieveWorkerChunkDurableStateV1 state =
+        DistributedSieveWorkerChunkDurableStateV1::missing;
+    std::optional<AttemptStartedV1> latest_attempt;
+    std::optional<WorkerHandoffV1> handoff;
+};
+
+struct DistributedSieveWorkerChunkInventoryResultV1 final {
+    std::vector<DistributedSieveWorkerChunkInventoryV1> chunks;
+    DistributedSieveWaveStoreDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return diagnostic.status == DistributedSieveWaveStoreStatus::ready;
+    }
+};
+
+/// Move-only same-handle owner for one fully validated worker corpus.
+///
+/// The relation reader is destroyed before the WaveStore lifetime anchor.
+/// This type intentionally exposes only immutable record facts and a const
+/// reader; it cannot reopen paths or authorize artifact cleanup.
+class DistributedSieveAdoptedWorkerChunkV1 final {
+public:
+    DistributedSieveAdoptedWorkerChunkV1() = delete;
+    DistributedSieveAdoptedWorkerChunkV1(const DistributedSieveAdoptedWorkerChunkV1&) = delete;
+    DistributedSieveAdoptedWorkerChunkV1&
+    operator=(const DistributedSieveAdoptedWorkerChunkV1&) = delete;
+    DistributedSieveAdoptedWorkerChunkV1(DistributedSieveAdoptedWorkerChunkV1&&) noexcept;
+    DistributedSieveAdoptedWorkerChunkV1&
+    operator=(DistributedSieveAdoptedWorkerChunkV1&&) = delete;
+    ~DistributedSieveAdoptedWorkerChunkV1();
+
+    [[nodiscard]] bool valid() const noexcept;
+    [[nodiscard]] const WorkerHandoffV1& handoff() const noexcept;
+    [[nodiscard]] const relation::OOCRelationReader& reader() const;
+
+private:
+    DistributedSieveAdoptedWorkerChunkV1(std::shared_ptr<const void> wave_store_state_anchor,
+                                         WorkerHandoffV1 handoff,
+                                         std::unique_ptr<relation::OOCPrivateHandoffReader> reader,
+                                         std::uint64_t creator_process_id) noexcept;
+
+    std::shared_ptr<const void> wave_store_state_anchor_;
+    WorkerHandoffV1 handoff_;
+    std::unique_ptr<relation::OOCPrivateHandoffReader> reader_;
+    std::uint64_t creator_process_id_ = 0;
+
+    friend class DistributedSieveWaveStore;
+};
+
+struct DistributedSieveWorkerHandoffAdoptionResultV1 final {
+    std::optional<DistributedSieveAdoptedWorkerChunkV1> adopted;
+    DistributedSieveWaveStoreDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return adopted.has_value() && diagnostic.status == DistributedSieveWaveStoreStatus::ready &&
+               adopted->valid();
+    }
+};
+
+/// Process-bound whole-round coordinator claim.
+///
+/// Type-erased shared state is used only as a lifetime anchor; the claim
+/// exposes no WaveStore internals. The retained atomic flag is always cleared
+/// after all result readers are destroyed or an incomplete result is dropped.
+class DistributedSieveWorkerCoordinatorClaimV1 final {
+public:
+    DistributedSieveWorkerCoordinatorClaimV1() = delete;
+    DistributedSieveWorkerCoordinatorClaimV1(const DistributedSieveWorkerCoordinatorClaimV1&) =
+        delete;
+    DistributedSieveWorkerCoordinatorClaimV1&
+    operator=(const DistributedSieveWorkerCoordinatorClaimV1&) = delete;
+    DistributedSieveWorkerCoordinatorClaimV1(DistributedSieveWorkerCoordinatorClaimV1&&) = delete;
+    DistributedSieveWorkerCoordinatorClaimV1&
+    operator=(DistributedSieveWorkerCoordinatorClaimV1&&) = delete;
+    ~DistributedSieveWorkerCoordinatorClaimV1() noexcept;
+
+    [[nodiscard]] bool owned_by_current_process() const noexcept;
+
+private:
+    DistributedSieveWorkerCoordinatorClaimV1(std::shared_ptr<const void> wave_store_state_anchor,
+                                             std::atomic_flag* gate,
+                                             std::uint64_t creator_process_id) noexcept;
+
+    std::shared_ptr<const void> wave_store_state_anchor_;
+    std::atomic_flag* gate_ = nullptr;
+    std::uint64_t creator_process_id_ = 0;
+
+    friend class DistributedSieveWaveStore;
+};
+
+struct DistributedSieveWorkerCoordinatorClaimResultV1 final {
+    std::unique_ptr<DistributedSieveWorkerCoordinatorClaimV1> claim;
+    DistributedSieveWaveStoreDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return claim != nullptr && diagnostic.status == DistributedSieveWaveStoreStatus::ready &&
+               claim->owned_by_current_process();
+    }
 };
 
 /// Source-private root-relative permanent BaseLock capability.
