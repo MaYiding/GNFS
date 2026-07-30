@@ -812,6 +812,187 @@ PRIVATE_HANDOFF_ROLLBACK_RECOVERY_BODY = r"""
     lock.require_stable();
     return private_lease_completed();
 """
+PRIVATE_LEASE_GENERIC_RECOVERY_DEFINITION_SHAPE = r"""
+[[nodiscard]] inline OOCCleanupResult
+recover_owned_private_lease_locked(const OOCCleanupPaths& paths, const BaseLock& lock,
+                                   const std::array<std::uint64_t, 3>& parent_identity,
+                                   const LoadedPrivateLeaseMarker& loaded_owned,
+                                   const std::optional<LoadedPrivateLeaseMarker>& loaded_reserved,
+                                   const OOCPrivateLeaseTestHooks& hooks)
+"""
+PRIVATE_LEASE_GENERIC_RECOVERY_BODY = r"""
+    lock.require_stable();
+    const auto& owned = loaded_owned.record;
+    validate_private_lease_record_context(owned, paths, parent_identity, lock.identity());
+    if (owned.phase != PrivateLeasePhase::Owned) {
+        fail(OOCCleanupStatus::IntentConflict, OOCCleanupStage::None, protocol_error());
+    }
+    confirm_private_lease_marker(paths.lease_owned_path, owned, loaded_owned.identity);
+
+    if (loaded_reserved) {
+        validate_private_lease_record_context(loaded_reserved->record, paths, parent_identity,
+                                              lock.identity());
+        validate_private_lease_record_chain(loaded_reserved->record, owned);
+        confirm_private_lease_marker(paths.lease_reserved_path, loaded_reserved->record,
+                                     loaded_reserved->identity);
+    }
+
+    const bool preactive_pair_rollback =
+        loaded_reserved &&
+        owned.capability == PrivateLeaseCapability::RollbackPreactivePairAndLease;
+    const auto staging_path = private_lease_staging_path(paths, owned.lease_id);
+    const auto staging_identity = inspect_directory_identity_locked(staging_path);
+    const auto final_identity = inspect_directory_identity_locked(paths.private_directory);
+    if (staging_identity && final_identity) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+    }
+    if (staging_identity && *staging_identity != owned.directory_identity) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+    }
+    if (final_identity && *final_identity != owned.directory_identity) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+    }
+    if (staging_identity) {
+        if (preactive_pair_rollback) {
+            (void)inspect_private_lease_preactive_entries(staging_path, paths);
+        } else {
+            (void)inspect_private_lease_control_entries(staging_path);
+        }
+    }
+    if (final_identity) {
+        inspect_private_lease_transaction_entries(paths.private_directory, paths);
+    }
+
+    invoke_with_stable_base_lock(lock, [&] {
+        remove_matching_private_lease_pending(paths.lease_owned_pending_path, owned);
+    });
+    if (loaded_reserved) {
+        invoke_with_stable_base_lock(lock, [&] {
+            remove_matching_private_lease_pending(paths.lease_reserved_pending_path,
+                                                  loaded_reserved->record);
+        });
+    }
+    if (preactive_pair_rollback) {
+        invoke_with_stable_base_lock(
+            lock, [&] { discard_matching_preactive_intent_pending_locked(paths); });
+    }
+
+    if (staging_identity) {
+        if (!loaded_reserved) {
+            fail(OOCCleanupStatus::IntentConflict, OOCCleanupStage::None, protocol_error());
+        }
+        if (preactive_pair_rollback) {
+            const auto rolled_back =
+                rollback_owned_preactive_pair_locked(paths, owned, lock, hooks);
+            if (!rolled_back.completed()) {
+                return rolled_back;
+            }
+        } else {
+            const auto entries = inspect_private_lease_control_entries(staging_path);
+            if (!entries.owner) {
+                fail(OOCCleanupStatus::IntentConflict, OOCCleanupStage::None, protocol_error());
+            }
+            validate_private_lease_owner_at(staging_path, owned);
+            invoke_with_stable_base_lock(
+                lock, [&] { remove_owner_marker_durable_locked(staging_path, owned, false); });
+            invoke_with_stable_base_lock(lock, [&] {
+                remove_empty_directory_durable_locked(staging_path, owned.directory_identity);
+            });
+        }
+    } else if (final_identity) {
+        const auto owner_path = private_lease_owner_path(paths.private_directory);
+        const auto owner_inspection = inspect_private_lease_marker(owner_path);
+        if (owner_inspection.kind == InspectKind::Error) {
+            fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, owner_inspection.error);
+        }
+        if (owner_inspection.kind == InspectKind::Rejected) {
+            fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                 protocol_error());
+        }
+        const bool owner_present = owner_inspection.kind == InspectKind::Present;
+        if (owner_present) {
+            validate_private_lease_owner_at(paths.private_directory, owned);
+            inspect_private_lease_transaction_entries(paths.private_directory, paths);
+            const auto pair_result =
+                run_transaction_locked(paths, lock, nullptr, false, nullptr, nullptr, {});
+            if (!pair_result.transaction_terminal()) {
+                return pair_result;
+            }
+        }
+        if (preactive_pair_rollback) {
+            const auto rolled_back =
+                rollback_owned_preactive_pair_locked(paths, owned, lock, hooks);
+            if (!rolled_back.completed()) {
+                return rolled_back;
+            }
+        } else {
+            try {
+                require_pair_namespace_reusable_locked(paths);
+            } catch (const Failure& failure) {
+                if (failure.status == OOCCleanupStatus::NamespaceConflict) {
+                    return OOCCleanupResult{
+                        .status = OOCCleanupStatus::RecoveryRequired,
+                        .stage = OOCCleanupStage::None,
+                        .native_error = failure.error,
+                    };
+                }
+                throw;
+            }
+
+            const auto entries = inspect_private_lease_control_entries(paths.private_directory);
+            if (entries.owner != owner_present) {
+                fail(OOCCleanupStatus::IntentConflict, OOCCleanupStage::None, protocol_error());
+            }
+            invoke_with_stable_base_lock(lock, [&] {
+                remove_owner_marker_durable_locked(paths.private_directory, owned, true);
+            });
+            if (invoke_with_stable_base_lock(lock, [&] {
+                    return should_interrupt_private_lease(
+                        hooks, OOCPrivateLeaseFaultPoint::OwnerRemovedDurable);
+                })) {
+                return private_lease_interrupted();
+            }
+            invoke_with_stable_base_lock(lock, [&] {
+                remove_empty_directory_durable_locked(paths.private_directory,
+                                                      owned.directory_identity);
+            });
+            if (invoke_with_stable_base_lock(lock, [&] {
+                    return should_interrupt_private_lease(
+                        hooks, OOCPrivateLeaseFaultPoint::FinalDirectoryRemovedDurable);
+                })) {
+                return private_lease_interrupted();
+            }
+        }
+    } else {
+        invoke_with_stable_base_lock(lock, [&] {
+            sync_parent_directory(paths.private_directory.parent_path(), OOCCleanupStage::None);
+        });
+    }
+
+    if (loaded_reserved) {
+        invoke_with_stable_base_lock(lock, [&] {
+            remove_private_lease_marker_durable(paths.lease_reserved_path, loaded_reserved->record,
+                                                loaded_reserved->identity);
+        });
+        if (invoke_with_stable_base_lock(lock, [&] {
+                return should_interrupt_private_lease(
+                    hooks, OOCPrivateLeaseFaultPoint::ReservedRemovedDurable);
+            })) {
+            return private_lease_interrupted();
+        }
+    }
+    invoke_with_stable_base_lock(lock, [&] {
+        remove_private_lease_marker_durable(paths.lease_owned_path, owned, loaded_owned.identity);
+    });
+    if (invoke_with_stable_base_lock(lock, [&] {
+            return should_interrupt_private_lease(hooks,
+                                                  OOCPrivateLeaseFaultPoint::OwnedRemovedDurable);
+        })) {
+        return private_lease_interrupted();
+    }
+    lock.require_stable();
+    return private_lease_completed();
+"""
 PRIVATE_HANDOFF_ROLLBACK_RECOVERY_TYPED_CALL_FRAGMENT = (
     "recovered=recover_private_handoff_rollback_generation_locked("
     "state->paths,lock,rollback_retained.generation.parent_identity,"
@@ -2084,9 +2265,9 @@ def _compact_cpp_tokens(text: str) -> str:
 
 
 def _contains_conditional_preprocessor_directive(text: str) -> bool:
-    masked = _mask_cpp_comments_and_literals(text)
-    if re.search(r"\\\r?\n", masked) is not None:
+    if re.search(r"\\\r?\n", text) is not None:
         return True
+    masked = _mask_cpp_comments_and_literals(text)
     logical_lines = re.sub(r"\\\r?\n", "", masked)
     return (
         re.search(
@@ -3473,6 +3654,40 @@ class Checks:
                 self.fail(relative, line, generic_error)
             if generic_body is not None:
                 generic_tokens = _compact_cpp_tokens(generic_body)
+                generic_uses = find_code_identifier_uses(
+                    text, PRIVATE_LEASE_GENERIC_RECOVERY_IDENTIFIER
+                )
+                generic_calls = find_call_identifier_uses(
+                    text, PRIVATE_LEASE_GENERIC_RECOVERY_IDENTIFIER
+                )
+                generic_definitions = []
+                for generic_use in generic_uses:
+                    terminator = _function_declarator_terminator(
+                        text,
+                        generic_use,
+                        PRIVATE_LEASE_GENERIC_RECOVERY_IDENTIFIER,
+                    )
+                    if (
+                        terminator is not None
+                        and terminator < len(text)
+                        and text[terminator] == "{"
+                    ):
+                        generic_definitions.append((generic_use, terminator))
+                generic_shape_matches = False
+                if len(generic_definitions) == 1:
+                    definition_use, terminator = generic_definitions[0]
+                    definition_scope = _active_brace_stack(
+                        text, definition_use.offset
+                    )
+                    definition_start = _statement_start_at_scope(
+                        text, definition_use.offset, definition_scope
+                    )
+                    generic_shape_matches = (
+                        _compact_cpp_tokens(text[definition_start:terminator])
+                        == _compact_cpp_tokens(
+                            PRIVATE_LEASE_GENERIC_RECOVERY_DEFINITION_SHAPE
+                        )
+                    )
                 generic_rollback_uses = find_code_identifier_uses(
                     generic_body, PRIVATE_LEASE_PREACTIVE_ROLLBACK_IDENTIFIER
                 )
@@ -3483,7 +3698,13 @@ class Checks:
                     generic_body, PRIVATE_LEASE_PREACTIVE_SCANNER_IDENTIFIER
                 )
                 if (
-                    len(generic_rollback_uses) != 2
+                    len(generic_uses) != 1
+                    or len(generic_calls) != 1
+                    or len(generic_definitions) != 1
+                    or not generic_shape_matches
+                    or generic_tokens
+                    != _compact_cpp_tokens(PRIVATE_LEASE_GENERIC_RECOVERY_BODY)
+                    or len(generic_rollback_uses) != 2
                     or len(generic_rollback_calls) != 2
                     or len(generic_scanner_calls) != 1
                     or generic_tokens.count(
@@ -3501,15 +3722,15 @@ class Checks:
                     self.fail(
                         relative,
                         generic_line_offset + 1,
-                        "shared preactive rollback executor escaped the closed "
-                        "generic-plus-typed call-site allowlist",
+                        "generic private-lease recovery core must retain its exact "
+                        "validation, rollback, and marker-tail contract",
                     )
             else:
                 self.fail(
                     relative,
                     1,
-                    "shared preactive rollback executor escaped the closed "
-                    "generic-plus-typed call-site allowlist",
+                    "generic private-lease recovery core must retain its exact "
+                    "validation, rollback, and marker-tail contract",
                 )
             return
 
@@ -7461,57 +7682,10 @@ reconcile_private_handoff_publication_for_resume_v1(
         + "{\n"
         + PRIVATE_LEASE_PREACTIVE_ROLLBACK_BODY
         + "}\n"
-        + r"""
-OOCCleanupResult recover_owned_private_lease_locked(
-    const OOCCleanupPaths& paths, const BaseLock& lock,
-    const std::array<std::uint64_t, 3>& parent_identity,
-    const LoadedPrivateLeaseMarker& loaded_owned,
-    const std::optional<LoadedPrivateLeaseMarker>& loaded_reserved,
-    const OOCPrivateLeaseTestHooks& hooks) {
-    const auto& owned = loaded_owned.record;
-    const bool preactive_pair_rollback = loaded_reserved.has_value();
-    const auto staging_path = private_lease_staging_path(paths, owned.lease_id);
-    const auto staging_identity = inspect_directory_identity_locked(staging_path);
-    const auto final_identity = inspect_directory_identity_locked(paths.private_directory);
-    if (staging_identity) {
-        if (preactive_pair_rollback) {
-            (void)inspect_private_lease_preactive_entries(staging_path, paths);
-        } else {
-            (void)inspect_private_lease_control_entries(staging_path);
-        }
-    }
-    if (staging_identity) {
-        if (!loaded_reserved) {
-            fail(OOCCleanupStatus::IntentConflict, OOCCleanupStage::None, protocol_error());
-        }
-        if (preactive_pair_rollback) {
-            const auto rolled_back =
-                rollback_owned_preactive_pair_locked(paths, owned, lock, hooks);
-            if (!rolled_back.completed()) {
-                return rolled_back;
-            }
-        } else {
-            const auto entries = inspect_private_lease_control_entries(staging_path);
-            (void)entries;
-        }
-    } else if (final_identity) {
-        if (preactive_pair_rollback) {
-            const auto rolled_back =
-                rollback_owned_preactive_pair_locked(paths, owned, lock, hooks);
-            if (!rolled_back.completed()) {
-                return rolled_back;
-            }
-        } else {
-            try {
-                require_pair_namespace_reusable_locked(paths);
-            } catch (...) {
-                return private_lease_interrupted();
-            }
-        }
-    }
-    return private_lease_completed();
-}
-"""
+        + PRIVATE_LEASE_GENERIC_RECOVERY_DEFINITION_SHAPE
+        + "{\n"
+        + PRIVATE_LEASE_GENERIC_RECOVERY_BODY
+        + "}\n"
     )
     exact_private_lease_preactive_rollback_core_checks = Checks(Path("."))
     exact_private_lease_preactive_rollback_core_checks.validate_private_handoff_publication_resume_boundary(
@@ -7613,12 +7787,38 @@ OOCCleanupResult decoy_generic_private_lease_rollback_two() {
     )
     expect(
         any(
-            "shared preactive rollback executor escaped the closed "
-            "generic-plus-typed call-site allowlist" in error
+            "generic private-lease recovery core must retain its exact "
+            "validation, rollback, and marker-tail contract" in error
             for error in relocated_generic_private_lease_rollback_checks.errors
         ),
         "generic rollback calls escaped their real executor into inactive decoys: "
         f"{relocated_generic_private_lease_rollback_checks.errors}",
+    )
+
+    early_success_generic_private_lease_core_checks = Checks(Path("."))
+    early_success_generic_private_lease_core_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_LEASE_PREACTIVE_ROLLBACK_CORE_FILE,
+        valid_private_lease_preactive_rollback_core.replace(
+            PRIVATE_LEASE_GENERIC_RECOVERY_DEFINITION_SHAPE
+            + "{\n"
+            + "\n"
+            + "    lock.require_stable();\n",
+            PRIVATE_LEASE_GENERIC_RECOVERY_DEFINITION_SHAPE
+            + "{\n"
+            + "\n"
+            + "    return private_lease_completed();\n"
+            + "    lock.require_stable();\n",
+            1,
+        ),
+    )
+    expect(
+        any(
+            "generic private-lease recovery core must retain its exact "
+            "validation, rollback, and marker-tail contract" in error
+            for error in early_success_generic_private_lease_core_checks.errors
+        ),
+        "generic private-lease core accepted a pre-validation terminal success: "
+        f"{early_success_generic_private_lease_core_checks.errors}",
     )
 
     generic_typed_private_handoff_rollback_checks = Checks(Path("."))
@@ -7880,6 +8080,37 @@ OOCCleanupResult unused_removal_call_site() {
         ),
         "pre-admission recovery success escaped exact scope closure: "
         f"{early_success_private_lease_recovery_checks.errors}",
+    )
+
+    handoff_guard_with_spliced_comment = (
+        """    if (handoff.state != OOCPrivateHandoffState::None) {
+        // phase-two splice """
+        + "\\"
+        + "\n"
+        + """        return handoff.result;
+    }
+"""
+    )
+    spliced_comment_private_lease_guard_checks = Checks(Path("."))
+    spliced_comment_private_lease_guard_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_IMPLEMENTATION_FILE,
+        valid_private_handoff_resume_implementation.replace(
+            """    if (handoff.state != OOCPrivateHandoffState::None) {
+        return handoff.result;
+    }
+""",
+            handoff_guard_with_spliced_comment,
+            1,
+        ),
+    )
+    expect(
+        any(
+            "recover_private_lease_locked must retain cleanup-union admission"
+            in error
+            for error in spliced_comment_private_lease_guard_checks.errors
+        ),
+        "line-comment phase-2 splice escaped protected recovery scope closure: "
+        f"{spliced_comment_private_lease_guard_checks.errors}",
     )
 
     ignored_private_lease_admission_blocker_checks = Checks(Path("."))

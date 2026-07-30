@@ -2675,7 +2675,9 @@ outer layer alone retains the tombstone witness and removes the matching
 `RESERVED` and `OWNED` tail. The policy checker freezes the shared
 owner/index/data-only scanner, the complete shared mutation core, its two
 generic call branches, its one typed call site, and a default deny rule for
-every other source. The generic `recover_private_lease` and
+every other source. It also freezes the complete generic recovery core so
+validation, rollback, and marker-tail cleanup cannot be made unreachable by
+an earlier terminal return. The generic `recover_private_lease` and
 `remove_private_lease` scopes retain exact cleanup-union admission before
 their shared-core call, so a rollback tombstone remains a foreign namespace
 blocker. Their protected bodies reject conditional-preprocessor, line-splice,

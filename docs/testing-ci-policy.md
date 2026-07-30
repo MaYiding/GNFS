@@ -741,10 +741,13 @@ marker tail but delegates pair, owner, and directory mutation to the shared
 preactive rollback core. The policy checker freezes that core, its
 owner/index/data-only scanner, the two branches in
 `recover_owned_private_lease_locked`, its sole typed call site, and a
-repository-wide default deny for other callers. It also freezes the complete
+repository-wide default deny for other callers. The complete generic recovery
+core is exact-frozen so an earlier terminal return cannot bypass validation,
+rollback, or marker-tail cleanup. The checker also freezes the complete
 code-token bodies of the ordinary `recover_private_lease` and
-`remove_private_lease` scopes. Both must pass cleanup-union admission before
-the generic executor can run, and a rollback tombstone remains foreign.
+`remove_private_lease` scopes and rejects raw physical-line splices before
+comment or literal masking. Both scopes must pass cleanup-union admission
+before the generic executor can run, and a rollback tombstone remains foreign.
 Generic and typed rollback use the same preactive fault-point matrix. The
 typed runtime matrix inserts both an unknown child and a syntactically valid
 cleanup intent after tombstone durability; both must fail before the shared
