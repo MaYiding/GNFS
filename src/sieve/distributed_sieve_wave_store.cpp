@@ -1,3 +1,4 @@
+#include "../relation/ooc_private_cleanup_union_internal.hpp"
 #include "../relation/ooc_private_lease_recovery_protocol_internal.hpp"
 #include "../relation/ooc_private_lease_reservation_protocol_internal.hpp"
 #include "distributed_sieve_bound_work_internal.hpp"
@@ -34,7 +35,6 @@
 #include <sys/file.h>
 #include <sys/stat.h>
 #if defined(__APPLE__)
-#include <stdio.h>
 #include <sys/acl.h>
 #elif defined(__linux__)
 #include <sys/syscall.h>
@@ -44,6 +44,19 @@
 #endif
 
 namespace gnfs::sieve::distributed_sieve_resume_detail {
+
+class WorkerHandoffTypedValidatorAuthorityV1 final {
+public:
+    [[nodiscard]] static gnfs::relation::ooc_cleanup_detail::
+        PrivateHandoffPublicationTypedValidatorV1
+        bind(gnfs::relation::ooc_cleanup_detail::PrivateHandoffPublicationTypedValidatorV1::Validate
+                 validate,
+             void* context) noexcept {
+        return gnfs::relation::ooc_cleanup_detail::PrivateHandoffPublicationTypedValidatorV1(
+            validate, context);
+    }
+};
+
 namespace {
 
 namespace durable_record = gnfs::util::durable_immutable_record;
@@ -113,6 +126,90 @@ static_assert([] {
     }
     return true;
 }());
+static_assert(
+    static_cast<std::size_t>(
+        DistributedSieveWorkerHandoffResumeObservationPointV1::AfterExpectedPrefixValidated) ==
+    static_cast<std::size_t>(private_lease::PrivateHandoffPublicationResumeObservationPointV1::
+                                 AfterExpectedPrefixValidated));
+static_assert(
+    static_cast<std::size_t>(DistributedSieveWorkerHandoffResumeObservationPointV1::
+                                 BeforePendingRollbackSourceDirectorySync) ==
+    static_cast<std::size_t>(private_lease::PrivateHandoffPublicationResumeObservationPointV1::
+                                 BeforePendingRollbackSourceDirectorySync));
+static_assert(
+    static_cast<std::size_t>(DistributedSieveWorkerHandoffResumeObservationPointV1::
+                                 AfterPendingRollbackSourceDirectoryDurable) ==
+    static_cast<std::size_t>(private_lease::PrivateHandoffPublicationResumeObservationPointV1::
+                                 AfterPendingRollbackSourceDirectoryDurable));
+static_assert(
+    static_cast<std::size_t>(DistributedSieveWorkerHandoffResumeObservationPointV1::
+                                 BeforePendingRollbackDestinationDirectorySync) ==
+    static_cast<std::size_t>(private_lease::PrivateHandoffPublicationResumeObservationPointV1::
+                                 BeforePendingRollbackDestinationDirectorySync));
+static_assert(
+    static_cast<std::size_t>(DistributedSieveWorkerHandoffResumeObservationPointV1::
+                                 AfterPendingRollbackDestinationDirectoryDurable) ==
+    static_cast<std::size_t>(private_lease::PrivateHandoffPublicationResumeObservationPointV1::
+                                 AfterPendingRollbackDestinationDirectoryDurable));
+static_assert(
+    static_cast<std::size_t>(DistributedSieveWorkerHandoffResumeObservationPointV1::
+                                 AfterPendingRollbackPreactiveDirectoryQuarantinedDurable) ==
+    static_cast<std::size_t>(private_lease::PrivateHandoffPublicationResumeObservationPointV1::
+                                 AfterPendingRollbackPreactiveDirectoryQuarantinedDurable));
+static_assert(
+    static_cast<std::size_t>(DistributedSieveWorkerHandoffResumeObservationPointV1::
+                                 AfterPendingRollbackPreactiveDataRemovedDurable) ==
+    static_cast<std::size_t>(private_lease::PrivateHandoffPublicationResumeObservationPointV1::
+                                 AfterPendingRollbackPreactiveDataRemovedDurable));
+static_assert(
+    static_cast<std::size_t>(DistributedSieveWorkerHandoffResumeObservationPointV1::
+                                 AfterPendingRollbackPreactiveIndexRemovedDurable) ==
+    static_cast<std::size_t>(private_lease::PrivateHandoffPublicationResumeObservationPointV1::
+                                 AfterPendingRollbackPreactiveIndexRemovedDurable));
+static_assert(
+    static_cast<std::size_t>(DistributedSieveWorkerHandoffResumeObservationPointV1::
+                                 AfterPendingRollbackOwnerRemovedDurable) ==
+    static_cast<std::size_t>(private_lease::PrivateHandoffPublicationResumeObservationPointV1::
+                                 AfterPendingRollbackOwnerRemovedDurable));
+static_assert(
+    static_cast<std::size_t>(DistributedSieveWorkerHandoffResumeObservationPointV1::
+                                 AfterPendingRollbackLeaseDirectoryRemovedDurable) ==
+    static_cast<std::size_t>(private_lease::PrivateHandoffPublicationResumeObservationPointV1::
+                                 AfterPendingRollbackLeaseDirectoryRemovedDurable));
+static_assert(
+    static_cast<std::size_t>(DistributedSieveWorkerHandoffResumeObservationPointV1::
+                                 AfterPendingRollbackReservedRemovedDurable) ==
+    static_cast<std::size_t>(private_lease::PrivateHandoffPublicationResumeObservationPointV1::
+                                 AfterPendingRollbackReservedRemovedDurable));
+static_assert(
+    static_cast<std::size_t>(DistributedSieveWorkerHandoffResumeObservationPointV1::
+                                 AfterPendingRollbackOwnedRemovedDurable) ==
+    static_cast<std::size_t>(private_lease::PrivateHandoffPublicationResumeObservationPointV1::
+                                 AfterPendingRollbackOwnedRemovedDurable));
+static_assert(
+    static_cast<std::size_t>(DistributedSieveWorkerHandoffResumeObservationPointV1::
+                                 BeforePendingRollbackTombstoneRemovalValidated) ==
+    static_cast<std::size_t>(private_lease::PrivateHandoffPublicationResumeObservationPointV1::
+                                 BeforePendingRollbackTombstoneRemovalValidated));
+static_assert(
+    static_cast<std::size_t>(DistributedSieveWorkerHandoffResumeObservationPointV1::
+                                 AfterPendingRollbackTombstoneRemovedDurable) ==
+    static_cast<std::size_t>(private_lease::PrivateHandoffPublicationResumeObservationPointV1::
+                                 AfterPendingRollbackTombstoneRemovedDurable));
+static_assert(
+    static_cast<std::size_t>(
+        DistributedSieveWorkerHandoffResumeObservationPointV1::AfterCanonicalConfirmedDurable) ==
+    static_cast<std::size_t>(private_lease::PrivateHandoffPublicationResumeObservationPointV1::
+                                 AfterCanonicalConfirmedDurable));
+static_assert(
+    static_cast<std::size_t>(
+        DistributedSieveWorkerHandoffResumeObservationPointV1::AfterReservedRevokedDurable) ==
+    static_cast<std::size_t>(private_lease::PrivateHandoffPublicationResumeObservationPointV1::
+                                 AfterReservedRevokedDurable));
+static_assert(
+    static_cast<std::size_t>(DistributedSieveWorkerHandoffResumeObservationPointV1::Count) ==
+    static_cast<std::size_t>(
+        private_lease::PrivateHandoffPublicationResumeObservationPointV1::Count));
 
 inline constexpr char LOCK_LEAF[] = ".gnfs-wave-v1.lock";
 inline constexpr char MANIFEST_LEAF[] = ".gnfs-wave-v1.manifest";
@@ -1014,7 +1111,7 @@ struct NamespaceInventoryResult final {
         }
         constexpr std::size_t max_protocol_leaf_count =
             static_cast<std::size_t>(DISTRIBUTED_SIEVE_PROTOCOL_MAX_CHUNKS) *
-            DISTRIBUTED_SIEVE_PROTOCOL_MAX_ATTEMPTS * 6U;
+            DISTRIBUTED_SIEVE_PROTOCOL_MAX_ATTEMPTS * 7U;
         if (inventory.private_lease_protocol_leaves.size() >= max_protocol_leaf_count) {
             return {std::nullopt, diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
                                              protocol_error())};
@@ -1041,6 +1138,10 @@ struct NamespaceInventoryResult final {
 struct ManifestWorkerAttemptCoordinate final {
     std::uint32_t chunk_id = 0;
     std::uint32_t attempt_ordinal = 0;
+
+    [[nodiscard]] friend constexpr bool
+    operator==(const ManifestWorkerAttemptCoordinate&,
+               const ManifestWorkerAttemptCoordinate&) noexcept = default;
 };
 
 [[nodiscard]] std::optional<ManifestWorkerAttemptCoordinate>
@@ -1226,6 +1327,7 @@ enum class PrivateLeaseProtocolLeafRole : std::uint8_t {
     reserved_pending,
     owned,
     owned_pending,
+    rollback_handoff,
     staging_directory,
     final_directory,
 };
@@ -1348,6 +1450,11 @@ parse_manifest_bound_private_lease_protocol_leaf(const WaveManifestV1& manifest,
     if (auto parsed = parse_fixed(DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNED_SUFFIX,
                                   PrivateLeaseProtocolLeafRole::owned,
                                   &DistributedSieveWorkerAttemptNamesV1::owned_leaf)) {
+        return parsed;
+    }
+    if (auto parsed = parse_fixed(DISTRIBUTED_SIEVE_PRIVATE_HANDOFF_ROLLBACK_SUFFIX,
+                                  PrivateLeaseProtocolLeafRole::rollback_handoff,
+                                  &DistributedSieveWorkerAttemptNamesV1::rollback_handoff_leaf)) {
         return parsed;
     }
     if (auto parsed = parse_fixed(DISTRIBUTED_SIEVE_PRIVATE_LEASE_DIRECTORY_SUFFIX,
@@ -1675,11 +1782,14 @@ inspect_private_lease_directory_at(int root_fd, const std::string& leaf,
 
 struct PrivateLeaseAttemptInventory final {
     DistributedSieveWorkerAttemptNamesV1 names;
+    ManifestWorkerAttemptCoordinate coordinate;
+    std::size_t manifest_chunk_order = 0;
     NativeIdentityV1 base_lock_identity{};
     bool reserved = false;
     bool reserved_pending = false;
     bool owned = false;
     bool owned_pending = false;
+    bool rollback_handoff = false;
     bool final_directory = false;
     std::optional<std::string> staging_directory_leaf;
     std::optional<std::array<std::uint64_t, 2>> staging_lease_id;
@@ -1751,10 +1861,15 @@ worker_handoff_inspection_failure(const gnfs::relation::OOCCleanupResult& lower)
     return diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure, protocol_error());
 }
 
-[[nodiscard]] WorkerHandoffInventoryValidationResult validate_worker_handoff_inventory(
-    const std::filesystem::path& absolute_root, const PrivateLeaseAttemptInventory& attempt,
-    const WaveManifestV1& manifest, const NativeIdentityV1& directory_identity,
-    std::uint64_t creator_process_id) noexcept {
+[[nodiscard]] WorkerHandoffInventoryValidationResult
+validate_worker_handoff_envelope(const PrivateLeaseAttemptInventory& attempt,
+                                 const WaveManifestV1& manifest,
+                                 const NativeIdentityV1& directory_identity,
+                                 const gnfs::relation::OOCPrivateHandoffRecordV1& envelope,
+                                 const durable_record::RecordSnapshot& handoff_snapshot,
+                                 const durable_record::RecordSnapshot& index_snapshot,
+                                 const durable_record::RecordSnapshot& data_snapshot,
+                                 std::uint64_t creator_process_id) noexcept {
     const auto fail_with = [](DistributedSieveWaveStoreDiagnostic failure) {
         return WorkerHandoffInventoryValidationResult{std::nullopt, std::move(failure)};
     };
@@ -1783,14 +1898,6 @@ worker_handoff_inspection_failure(const gnfs::relation::OOCCleanupResult& lower)
             return conflict();
         }
 
-        const std::filesystem::path base_path =
-            absolute_root / attempt.names.private_directory_leaf / "corpus";
-        auto adopted = gnfs::relation::OOCCleanupTransaction::adopt_private_handoff(base_path);
-        if (!adopted.adopted() || !adopted.adoption.has_value()) {
-            return fail_with(worker_handoff_inspection_failure(adopted.result));
-        }
-        const auto& receipt = *adopted.adoption;
-        const auto& envelope = receipt.record();
         if (envelope.payload_kind !=
                 static_cast<std::uint32_t>(DistributedSieveRecordKindV1::worker_handoff) ||
             envelope.payload_version != manifest.handoff_version ||
@@ -1837,9 +1944,9 @@ worker_handoff_inspection_failure(const gnfs::relation::OOCCleanupResult& lower)
                 .handoff = std::move(*handoff),
                 .envelope_digest = envelope.self_digest,
                 .owned_marker_identity = protocol_identity(envelope.owned_marker_identity),
-                .handoff_snapshot = receipt.handoff_snapshot(),
-                .index_snapshot = receipt.index_snapshot(),
-                .data_snapshot = receipt.data_snapshot(),
+                .handoff_snapshot = handoff_snapshot,
+                .index_snapshot = index_snapshot,
+                .data_snapshot = data_snapshot,
             },
             {},
         };
@@ -1848,6 +1955,36 @@ worker_handoff_inspection_failure(const gnfs::relation::OOCCleanupResult& lower)
                                     std::make_error_code(std::errc::not_enough_memory)));
     } catch (...) {
         return conflict();
+    }
+}
+
+[[nodiscard]] WorkerHandoffInventoryValidationResult validate_worker_handoff_inventory(
+    const std::filesystem::path& absolute_root, const PrivateLeaseAttemptInventory& attempt,
+    const WaveManifestV1& manifest, const NativeIdentityV1& directory_identity,
+    std::uint64_t creator_process_id) noexcept {
+    const auto fail_with = [](DistributedSieveWaveStoreDiagnostic failure) {
+        return WorkerHandoffInventoryValidationResult{std::nullopt, std::move(failure)};
+    };
+    if (!process_matches(creator_process_id)) {
+        return fail_with(process_mismatch());
+    }
+    try {
+        const std::filesystem::path base_path =
+            absolute_root / attempt.names.private_directory_leaf / "corpus";
+        auto adopted = gnfs::relation::OOCCleanupTransaction::adopt_private_handoff(base_path);
+        if (!adopted.adopted() || !adopted.adoption.has_value()) {
+            return fail_with(worker_handoff_inspection_failure(adopted.result));
+        }
+        const auto& receipt = *adopted.adoption;
+        return validate_worker_handoff_envelope(
+            attempt, manifest, directory_identity, receipt.record(), receipt.handoff_snapshot(),
+            receipt.index_snapshot(), receipt.data_snapshot(), creator_process_id);
+    } catch (const std::bad_alloc&) {
+        return fail_with(diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
+                                    std::make_error_code(std::errc::not_enough_memory)));
+    } catch (...) {
+        return fail_with(
+            diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error()));
     }
 }
 
@@ -2039,7 +2176,7 @@ validate_private_lease_attempt_inventory(int root_fd, const std::filesystem::pat
         };
         const bool any_root_protocol = attempt.reserved || attempt.reserved_pending ||
                                        attempt.owned || attempt.owned_pending ||
-                                       attempt.final_directory ||
+                                       attempt.rollback_handoff || attempt.final_directory ||
                                        attempt.staging_directory_leaf.has_value();
         if (!any_root_protocol) {
             return {std::move(witness), {}};
@@ -2335,30 +2472,40 @@ struct PrivateLeaseProtocolInventoryValidationResult final {
     }
 };
 
-[[nodiscard]] PrivateLeaseProtocolInventoryValidationResult
-validate_private_lease_protocol_inventory(int root_fd, const std::filesystem::path& absolute_root,
-                                          const NamespaceInventory& inventory,
-                                          const WaveManifestV1& manifest,
-                                          std::span<const NativeIdentityV1> base_lock_identities,
-                                          std::uint64_t creator_process_id) noexcept {
-    if (inventory.private_lease_base_lock_leaves.size() != base_lock_identities.size()) {
-        return {std::nullopt,
-                diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure, protocol_error())};
+struct PrivateLeaseAttemptInventoryParseResult final {
+    std::optional<std::vector<PrivateLeaseAttemptInventory>> attempts;
+    DistributedSieveWaveStoreDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return attempts.has_value() && diagnostic.status == DistributedSieveWaveStoreStatus::ready;
     }
+};
+
+[[nodiscard]] PrivateLeaseAttemptInventoryParseResult parse_private_lease_attempt_inventory(
+    const NamespaceInventory& inventory, const WaveManifestV1& manifest,
+    std::span<const NativeIdentityV1> base_lock_identities) noexcept {
     const auto fail_with = [](DistributedSieveWaveStoreDiagnostic failure) {
-        return PrivateLeaseProtocolInventoryValidationResult{std::nullopt, std::move(failure)};
+        return PrivateLeaseAttemptInventoryParseResult{std::nullopt, std::move(failure)};
     };
     const auto conflict = [&] {
         return fail_with(
             diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error()));
     };
+    if (inventory.private_lease_base_lock_leaves.size() != base_lock_identities.size()) {
+        return fail_with(
+            diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure, protocol_error()));
+    }
+
     std::vector<PrivateLeaseAttemptInventory> attempts;
     try {
         attempts.reserve(inventory.private_lease_base_lock_leaves.size());
         for (std::size_t index = 0; index < inventory.private_lease_base_lock_leaves.size();
              ++index) {
             const auto& base_lock_leaf = inventory.private_lease_base_lock_leaves[index];
-            if (!base_lock_leaf.ends_with(DISTRIBUTED_SIEVE_PRIVATE_LEASE_BASE_LOCK_SUFFIX)) {
+            const auto coordinate = manifest_worker_attempt_coordinate_from_private_lease_base_lock(
+                manifest, base_lock_leaf);
+            if (!coordinate.has_value() ||
+                !base_lock_leaf.ends_with(DISTRIBUTED_SIEVE_PRIVATE_LEASE_BASE_LOCK_SUFFIX)) {
                 return conflict();
             }
             const auto relative_stem =
@@ -2369,8 +2516,18 @@ validate_private_lease_protocol_inventory(int root_fd, const std::filesystem::pa
             if (!names.has_value() || names->base_lock_leaf != base_lock_leaf) {
                 return conflict();
             }
+            const auto chunk = std::find_if(manifest.chunks.begin(), manifest.chunks.end(),
+                                            [&](const ChunkPlanV1& candidate) {
+                                                return candidate.chunk_id == coordinate->chunk_id;
+                                            });
+            if (chunk == manifest.chunks.end()) {
+                return conflict();
+            }
             attempts.push_back(PrivateLeaseAttemptInventory{
                 .names = std::move(*names),
+                .coordinate = *coordinate,
+                .manifest_chunk_order =
+                    static_cast<std::size_t>(std::distance(manifest.chunks.begin(), chunk)),
                 .base_lock_identity = base_lock_identities[index],
             });
         }
@@ -2414,6 +2571,12 @@ validate_private_lease_protocol_inventory(int root_fd, const std::filesystem::pa
                 }
                 position->owned_pending = true;
                 break;
+            case PrivateLeaseProtocolLeafRole::rollback_handoff:
+                if (position->rollback_handoff) {
+                    return conflict();
+                }
+                position->rollback_handoff = true;
+                break;
             case PrivateLeaseProtocolLeafRole::staging_directory:
                 if (position->staging_directory_leaf.has_value() ||
                     !parsed->staging_lease_id.has_value()) {
@@ -2430,17 +2593,37 @@ validate_private_lease_protocol_inventory(int root_fd, const std::filesystem::pa
                 break;
             }
         }
+        return {std::move(attempts), {}};
     } catch (const std::bad_alloc&) {
         return fail_with(diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
                                     std::make_error_code(std::errc::not_enough_memory)));
     } catch (...) {
         return fail_with(diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
                                     std::make_error_code(std::errc::io_error)));
+    }
+}
+
+[[nodiscard]] PrivateLeaseProtocolInventoryValidationResult
+validate_private_lease_protocol_inventory(int root_fd, const std::filesystem::path& absolute_root,
+                                          const NamespaceInventory& inventory,
+                                          const WaveManifestV1& manifest,
+                                          std::span<const NativeIdentityV1> base_lock_identities,
+                                          std::uint64_t creator_process_id) noexcept {
+    if (inventory.private_lease_base_lock_leaves.size() != base_lock_identities.size()) {
+        return {std::nullopt,
+                diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure, protocol_error())};
+    }
+    const auto fail_with = [](DistributedSieveWaveStoreDiagnostic failure) {
+        return PrivateLeaseProtocolInventoryValidationResult{std::nullopt, std::move(failure)};
+    };
+    auto parsed = parse_private_lease_attempt_inventory(inventory, manifest, base_lock_identities);
+    if (!parsed) {
+        return fail_with(std::move(parsed.diagnostic));
     }
 
     std::vector<PrivateLeaseReservationWitness> witnesses;
     try {
-        witnesses.reserve(attempts.size());
+        witnesses.reserve(parsed.attempts->size());
     } catch (const std::bad_alloc&) {
         return fail_with(diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
                                     std::make_error_code(std::errc::not_enough_memory)));
@@ -2448,7 +2631,7 @@ validate_private_lease_protocol_inventory(int root_fd, const std::filesystem::pa
         return fail_with(diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
                                     std::make_error_code(std::errc::io_error)));
     }
-    for (const auto& attempt : attempts) {
+    for (const auto& attempt : *parsed.attempts) {
         auto validated = validate_private_lease_attempt_inventory(root_fd, absolute_root, attempt,
                                                                   manifest, creator_process_id);
         if (!validated) {
@@ -2863,6 +3046,641 @@ struct WorkerAttemptRecordInventoryValidationResult final {
         }
     }
     return {std::move(records), {}};
+}
+
+[[nodiscard]] NativeIdentityV1
+protocol_identity_words(const std::array<std::uint64_t, 3>& identity) noexcept {
+    return {
+        .volume = identity[0],
+        .object = identity[1],
+        .generation = identity[2],
+    };
+}
+
+struct ExactCanonicalWorkerAttemptResult final {
+    std::optional<DistributedSieveWorkerAttemptRecordInventoryWitness> witness;
+    DistributedSieveWaveStoreDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return witness.has_value() && diagnostic.status == DistributedSieveWaveStoreStatus::ready;
+    }
+};
+
+[[nodiscard]] DistributedSieveWaveStoreDiagnostic revalidate_exact_canonical_worker_attempt(
+    int root_fd, const DistributedSieveWorkerAttemptNamesV1& names,
+    const DistributedSieveWorkerAttemptRecordInventoryWitness& expected,
+    std::uint64_t creator_process_id) noexcept;
+
+[[nodiscard]] ExactCanonicalWorkerAttemptResult
+load_exact_canonical_worker_attempt(int root_fd, const PrivateLeaseAttemptInventory& attempt,
+                                    const WaveManifestV1& manifest,
+                                    std::uint64_t creator_process_id) noexcept {
+    const auto fail_with = [](DistributedSieveWaveStoreDiagnostic failure) {
+        return ExactCanonicalWorkerAttemptResult{std::nullopt, std::move(failure)};
+    };
+    const auto conflict = [&] {
+        return fail_with(
+            diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error()));
+    };
+    if (!process_matches(creator_process_id)) {
+        return fail_with(process_mismatch());
+    }
+    try {
+        const auto chunk = std::find_if(
+            manifest.chunks.begin(), manifest.chunks.end(), [&](const auto& candidate) {
+                return candidate.chunk_id == attempt.coordinate.chunk_id;
+            });
+        if (chunk == manifest.chunks.end() || chunk->sq_begin >= chunk->sq_end) {
+            return conflict();
+        }
+        auto canonical = read_immutable_protocol_record_leaf(
+            root_fd, attempt.names.canonical_record_leaf.c_str(), creator_process_id,
+            DistributedSieveWaveStoreStatus::namespace_conflict,
+            DistributedSieveWaveStoreStatus::namespace_conflict);
+        if (!canonical) {
+            return fail_with(std::move(canonical.diagnostic));
+        }
+        struct stat pending{};
+        if (fstatat_retrying_eintr(root_fd, attempt.names.pending_record_leaf.c_str(), pending) ==
+            0) {
+            return conflict();
+        }
+        if (errno != ENOENT) {
+            return fail_with(diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
+                                        posix_error(errno)));
+        }
+        auto decoded = decode_distributed_sieve_record(*canonical.bytes);
+        if (!decoded) {
+            auto failure =
+                diagnostic(decoded.status.error == DistributedSieveProtocolError::resource_exhausted
+                               ? DistributedSieveWaveStoreStatus::resource_exhausted
+                               : DistributedSieveWaveStoreStatus::namespace_conflict,
+                           protocol_error());
+            failure.protocol_status = decoded.status;
+            return fail_with(std::move(failure));
+        }
+        auto* record = std::get_if<AttemptStartedV1>(&*decoded.value);
+        if (record == nullptr || record->manifest_digest != manifest.self_digest ||
+            record->chunk_id != attempt.coordinate.chunk_id ||
+            record->attempt_ordinal != attempt.coordinate.attempt_ordinal ||
+            record->sq_begin != chunk->sq_begin || record->sq_end != chunk->sq_end ||
+            record->retry_policy_version != manifest.retry_policy_version ||
+            record->lease.relative_stem != attempt.names.relative_lease_stem) {
+            return conflict();
+        }
+        return {
+            DistributedSieveWorkerAttemptRecordInventoryWitness{
+                .chunk_id = record->chunk_id,
+                .attempt_ordinal = record->attempt_ordinal,
+                .record = std::move(*record),
+                .bytes = std::move(*canonical.bytes),
+                .canonical_snapshot = *canonical.snapshot,
+                .pending_snapshot = std::nullopt,
+            },
+            {},
+        };
+    } catch (const std::bad_alloc&) {
+        return fail_with(diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
+                                    std::make_error_code(std::errc::not_enough_memory)));
+    } catch (...) {
+        return fail_with(diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                                    std::make_error_code(std::errc::io_error)));
+    }
+}
+
+struct WorkerHandoffPublicationPrefixCandidate final {
+    std::size_t attempt_index = 0;
+    private_lease::PrivateHandoffPublicationPrefixStateV1 expected_state =
+        private_lease::PrivateHandoffPublicationPrefixStateV1::Count;
+    DistributedSieveWorkerAttemptRecordInventoryWitness attempt_record;
+};
+
+struct RetainedWorkerHandoffPublicationPrefix final {
+    std::size_t attempt_index = 0;
+    DistributedSieveWorkerAttemptNamesV1 names;
+    ManifestWorkerAttemptCoordinate coordinate;
+    private_lease::PrivateHandoffPublicationPrefixWitnessV1 witness;
+    DistributedSieveWorkerHandoffInventoryWitnessV1 typed_handoff;
+    PrivateLeaseReservationWitness provisional_lease;
+    DistributedSieveWorkerAttemptRecordInventoryWitness attempt_record;
+    private_lease::PrivateHandoffPublicationValidatedPermitV1 permit;
+    bool consumed = false;
+};
+
+/// LIFO destruction is part of the lock-order contract. Prefix BaseLocks are
+/// acquired in manifest-chunk/attempt order and released or consumed in the
+/// exact reverse order.
+class RetainedWorkerHandoffPublicationPrefixStack final {
+public:
+    RetainedWorkerHandoffPublicationPrefixStack() = default;
+    RetainedWorkerHandoffPublicationPrefixStack(
+        const RetainedWorkerHandoffPublicationPrefixStack&) = delete;
+    RetainedWorkerHandoffPublicationPrefixStack&
+    operator=(const RetainedWorkerHandoffPublicationPrefixStack&) = delete;
+    RetainedWorkerHandoffPublicationPrefixStack(
+        RetainedWorkerHandoffPublicationPrefixStack&& other) noexcept
+        : entries(std::move(other.entries)) {}
+    RetainedWorkerHandoffPublicationPrefixStack&
+    operator=(RetainedWorkerHandoffPublicationPrefixStack&&) = delete;
+
+    ~RetainedWorkerHandoffPublicationPrefixStack() {
+        while (!entries.empty()) {
+            entries.pop_back();
+        }
+    }
+
+    std::vector<RetainedWorkerHandoffPublicationPrefix> entries;
+};
+
+struct WorkerHandoffPublicationAggregateWitness final {
+    std::size_t attempt_index = 0;
+    DistributedSieveWorkerAttemptNamesV1 names;
+    ManifestWorkerAttemptCoordinate coordinate;
+    private_lease::PrivateHandoffPublicationPrefixWitnessV1 prefix;
+    DistributedSieveWorkerHandoffInventoryWitnessV1 typed_handoff;
+    DistributedSieveWorkerAttemptRecordInventoryWitness attempt_record;
+
+    [[nodiscard]] friend bool operator==(const WorkerHandoffPublicationAggregateWitness&,
+                                         const WorkerHandoffPublicationAggregateWitness&) = default;
+};
+
+struct RecoverableWorkerHandoffInventoryWitness final {
+    NamespaceInventory inventory;
+    std::vector<NativeIdentityV1> base_lock_identities;
+    std::vector<PrivateLeaseReservationWitness> private_leases;
+    std::vector<DistributedSieveWorkerAttemptRecordInventoryWitness> worker_attempt_records;
+    std::vector<WorkerHandoffPublicationAggregateWitness> prefixes;
+
+    [[nodiscard]] friend bool operator==(const RecoverableWorkerHandoffInventoryWitness&,
+                                         const RecoverableWorkerHandoffInventoryWitness&) = default;
+};
+
+struct RecoverableWorkerHandoffInventoryResult final {
+    std::optional<RecoverableWorkerHandoffInventoryWitness> witness;
+    RetainedWorkerHandoffPublicationPrefixStack retained;
+    DistributedSieveWaveStoreDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return witness.has_value() && diagnostic.status == DistributedSieveWaveStoreStatus::ready;
+    }
+};
+
+struct WorkerHandoffTypedValidationContext final {
+    const PrivateLeaseAttemptInventory* attempt = nullptr;
+    const WaveManifestV1* manifest = nullptr;
+    const DistributedSieveWorkerAttemptRecordInventoryWitness* attempt_record = nullptr;
+    int root_fd = -1;
+    NativeIdentityV1 expected_directory_identity;
+    std::uint64_t creator_process_id = 0;
+    std::optional<DistributedSieveWorkerHandoffInventoryWitnessV1> typed_handoff;
+    DistributedSieveWaveStoreDiagnostic diagnostic;
+};
+
+[[nodiscard]] bool validate_worker_handoff_prefix_type(
+    const private_lease::PrivateHandoffPublicationPrefixWitnessV1& prefix, void* opaque) noexcept {
+    auto* context = static_cast<WorkerHandoffTypedValidationContext*>(opaque);
+    if (context == nullptr || context->root_fd < 0 || context->attempt == nullptr ||
+        context->manifest == nullptr || context->attempt_record == nullptr ||
+        !context->attempt_record->canonical_snapshot.has_value() ||
+        context->attempt_record->pending_snapshot.has_value()) {
+        return false;
+    }
+    if (const auto exact = revalidate_exact_canonical_worker_attempt(
+            context->root_fd, context->attempt->names, *context->attempt_record,
+            context->creator_process_id);
+        exact.status != DistributedSieveWaveStoreStatus::ready) {
+        context->diagnostic = exact;
+        return false;
+    }
+    const durable_record::RecordSnapshot* handoff_snapshot = nullptr;
+    switch (prefix.state) {
+    case private_lease::PrivateHandoffPublicationPrefixStateV1::PendingOnly:
+        if (prefix.canonical_snapshot.has_value() || !prefix.pending_snapshot.has_value() ||
+            prefix.rollback_snapshot.has_value()) {
+            return false;
+        }
+        handoff_snapshot = &*prefix.pending_snapshot;
+        break;
+    case private_lease::PrivateHandoffPublicationPrefixStateV1::PendingRollback:
+        if (prefix.canonical_snapshot.has_value() || prefix.pending_snapshot.has_value() ||
+            !prefix.rollback_snapshot.has_value()) {
+            return false;
+        }
+        handoff_snapshot = &*prefix.rollback_snapshot;
+        break;
+    case private_lease::PrivateHandoffPublicationPrefixStateV1::Canonical:
+        if (!prefix.canonical_snapshot.has_value() || prefix.pending_snapshot.has_value() ||
+            prefix.rollback_snapshot.has_value()) {
+            return false;
+        }
+        handoff_snapshot = &*prefix.canonical_snapshot;
+        break;
+    case private_lease::PrivateHandoffPublicationPrefixStateV1::IdenticalDual:
+        if (!prefix.canonical_snapshot.has_value() || !prefix.pending_snapshot.has_value() ||
+            prefix.rollback_snapshot.has_value()) {
+            return false;
+        }
+        handoff_snapshot = &*prefix.canonical_snapshot;
+        break;
+    case private_lease::PrivateHandoffPublicationPrefixStateV1::Count:
+        return false;
+    }
+    const durable_record::RecordSnapshot index_snapshot{
+        .identity = prefix.record.index.identity,
+        .size = prefix.record.index.extent,
+    };
+    const durable_record::RecordSnapshot data_snapshot{
+        .identity = prefix.record.data.identity,
+        .size = prefix.record.data.extent,
+    };
+    auto typed = validate_worker_handoff_envelope(
+        *context->attempt, *context->manifest, context->expected_directory_identity, prefix.record,
+        *handoff_snapshot, index_snapshot, data_snapshot, context->creator_process_id);
+    if (!typed) {
+        context->diagnostic = std::move(typed.diagnostic);
+        return false;
+    }
+    const auto& handoff = typed.witness->handoff;
+    const auto& started = context->attempt_record->record;
+    if (handoff.attempt_started_digest != started.self_digest || handoff.lease != started.lease ||
+        handoff.chunk_id != context->attempt->coordinate.chunk_id ||
+        handoff.attempt_ordinal != context->attempt->coordinate.attempt_ordinal) {
+        context->diagnostic =
+            diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error());
+        return false;
+    }
+    context->typed_handoff = std::move(*typed.witness);
+    return true;
+}
+
+[[nodiscard]] bool worker_handoff_publication_prefix_marker_chain_matches(
+    const private_lease::PrivateHandoffPublicationPrefixWitnessV1& prefix,
+    const NativeIdentityV1& expected_wave_root_identity,
+    const PrivateLeaseAttemptInventory& attempt,
+    const NativeIdentityV1& expected_directory_identity) noexcept {
+    using Capability = private_lease::PrivateLeaseCapability;
+    using Phase = private_lease::PrivateLeasePhase;
+    const auto& record = prefix.record;
+    if (prefix.parent_identity != relation_identity(expected_wave_root_identity) ||
+        prefix.lock_identity != relation_identity(attempt.base_lock_identity) ||
+        prefix.directory_identity != relation_identity(expected_directory_identity) ||
+        protocol_identity(record.lock_identity) != attempt.base_lock_identity ||
+        protocol_identity(record.directory_identity) != expected_directory_identity ||
+        attempt.rollback_handoff != prefix.rollback_armed() ||
+        attempt.reserved != prefix.reserved.has_value() ||
+        attempt.owned != prefix.owned.has_value()) {
+        return false;
+    }
+    if (prefix.owner.has_value()) {
+        const auto& owner = *prefix.owner;
+        if (protocol_identity(record.owner_marker_identity) !=
+                protocol_identity_words(owner.identity) ||
+            record.lease_id != owner.record.lease_id || owner.record.phase != Phase::Owner ||
+            owner.record.capability != Capability::RemoveOwnerAndEmptyLease) {
+            return false;
+        }
+    }
+    if (prefix.owned.has_value()) {
+        const auto& owned = *prefix.owned;
+        if (protocol_identity(record.owned_marker_identity) !=
+                protocol_identity_words(owned.identity) ||
+            record.lease_id != owned.record.lease_id || owned.record.phase != Phase::Owned ||
+            owned.record.capability != Capability::RollbackPreactivePairAndLease ||
+            owned.record.parent_identity != prefix.parent_identity ||
+            owned.record.lock_identity != prefix.lock_identity ||
+            owned.record.directory_identity != prefix.directory_identity) {
+            return false;
+        }
+    }
+    if (prefix.owner.has_value() && prefix.owned.has_value() &&
+        (prefix.owner->record != private_lease::owner_record_for(prefix.owned->record) ||
+         prefix.owned->record.owner_identity != prefix.owner->identity)) {
+        return false;
+    }
+    if (!prefix.rollback_armed() &&
+        (!prefix.owner.has_value() || !prefix.owned.has_value() || !attempt.final_directory)) {
+        return false;
+    }
+    if (!prefix.reserved.has_value()) {
+        return true;
+    }
+    const auto& reserved = *prefix.reserved;
+    return reserved.record.phase == Phase::Reserved &&
+           reserved.record.capability == Capability::RollbackStagingOnly &&
+           reserved.record.lease_id == record.lease_id &&
+           reserved.record.parent_identity == prefix.parent_identity &&
+           reserved.record.lock_identity == prefix.lock_identity &&
+           reserved.record.directory_identity == std::array<std::uint64_t, 3>{} &&
+           reserved.record.owner_identity == std::array<std::uint64_t, 3>{};
+}
+
+[[nodiscard]] bool private_lease_attempt_may_be_handoff_publication_prefix(
+    int root_fd, const PrivateLeaseAttemptInventory& attempt, const WaveManifestV1& manifest,
+    std::uint64_t creator_process_id,
+    std::optional<WorkerHandoffPublicationPrefixCandidate>& candidate,
+    DistributedSieveWaveStoreDiagnostic& failure) noexcept {
+    candidate.reset();
+    if (attempt.rollback_handoff) {
+        auto record =
+            load_exact_canonical_worker_attempt(root_fd, attempt, manifest, creator_process_id);
+        if (!record) {
+            failure = std::move(record.diagnostic);
+            return false;
+        }
+        candidate = WorkerHandoffPublicationPrefixCandidate{
+            .expected_state =
+                private_lease::PrivateHandoffPublicationPrefixStateV1::PendingRollback,
+            .attempt_record = std::move(*record.witness),
+        };
+        return true;
+    }
+    const bool possible_root_shape = !attempt.reserved_pending && attempt.owned &&
+                                     !attempt.owned_pending && attempt.final_directory &&
+                                     !attempt.staging_directory_leaf.has_value();
+    if (!possible_root_shape) {
+        return true;
+    }
+    auto directory = inspect_private_lease_directory_at(
+        root_fd, attempt.names.private_directory_leaf, creator_process_id);
+    if (!directory) {
+        failure = std::move(directory.diagnostic);
+        return false;
+    }
+    const auto& entries = *directory.inventory;
+    if (!entries.worker_handoff && !entries.worker_handoff_pending) {
+        return true;
+    }
+    const bool exact_handoff_shape = entries.owner && !entries.owner_pending &&
+                                     !entries.work_package_residue && entries.corpus_index &&
+                                     entries.corpus_data;
+    if (!exact_handoff_shape) {
+        return true;
+    }
+    auto record =
+        load_exact_canonical_worker_attempt(root_fd, attempt, manifest, creator_process_id);
+    if (!record) {
+        failure = std::move(record.diagnostic);
+        return false;
+    }
+    const auto state = entries.worker_handoff && entries.worker_handoff_pending
+                           ? private_lease::PrivateHandoffPublicationPrefixStateV1::IdenticalDual
+                       : entries.worker_handoff
+                           ? private_lease::PrivateHandoffPublicationPrefixStateV1::Canonical
+                           : private_lease::PrivateHandoffPublicationPrefixStateV1::PendingOnly;
+    candidate = WorkerHandoffPublicationPrefixCandidate{
+        .expected_state = state,
+        .attempt_record = std::move(*record.witness),
+    };
+    return true;
+}
+
+[[nodiscard]] RecoverableWorkerHandoffInventoryResult capture_recoverable_worker_handoff_inventory(
+    int root_fd, const std::filesystem::path& absolute_root, const NamespaceInventory& inventory,
+    const WaveManifestV1& manifest, const NativeIdentityV1& expected_wave_root_identity,
+    std::uint64_t creator_process_id) noexcept {
+    const auto fail_with = [](DistributedSieveWaveStoreDiagnostic failure) {
+        return RecoverableWorkerHandoffInventoryResult{
+            .witness = std::nullopt,
+            .retained = {},
+            .diagnostic = std::move(failure),
+        };
+    };
+    const auto conflict = [&] {
+        return fail_with(
+            diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error()));
+    };
+    if (!process_matches(creator_process_id)) {
+        return fail_with(process_mismatch());
+    }
+    if (!inventory.lock || !inventory.manifest || inventory.pending) {
+        return conflict();
+    }
+
+    auto base_locks = validate_private_lease_base_lock_inventory(root_fd, inventory, manifest,
+                                                                 creator_process_id);
+    if (!base_locks) {
+        return fail_with(std::move(base_locks.diagnostic));
+    }
+    auto parsed =
+        parse_private_lease_attempt_inventory(inventory, manifest, *base_locks.identities);
+    if (!parsed) {
+        return fail_with(std::move(parsed.diagnostic));
+    }
+
+    std::vector<std::optional<PrivateLeaseReservationWitness>> lease_slots;
+    std::vector<WorkerHandoffPublicationPrefixCandidate> candidates;
+    try {
+        lease_slots.resize(parsed.attempts->size());
+        candidates.reserve(parsed.attempts->size());
+    } catch (const std::bad_alloc&) {
+        return fail_with(diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
+                                    std::make_error_code(std::errc::not_enough_memory)));
+    } catch (...) {
+        return fail_with(diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                                    std::make_error_code(std::errc::io_error)));
+    }
+
+    for (std::size_t index = 0; index < parsed.attempts->size(); ++index) {
+        const auto& attempt = (*parsed.attempts)[index];
+        std::optional<WorkerHandoffPublicationPrefixCandidate> candidate;
+        DistributedSieveWaveStoreDiagnostic candidate_failure;
+        if (!private_lease_attempt_may_be_handoff_publication_prefix(
+                root_fd, attempt, manifest, creator_process_id, candidate, candidate_failure)) {
+            return fail_with(std::move(candidate_failure));
+        }
+        if (candidate.has_value()) {
+            candidate->attempt_index = index;
+            try {
+                candidates.push_back(std::move(*candidate));
+            } catch (const std::bad_alloc&) {
+                return fail_with(diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
+                                            std::make_error_code(std::errc::not_enough_memory)));
+            } catch (...) {
+                return fail_with(diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                                            std::make_error_code(std::errc::io_error)));
+            }
+            continue;
+        }
+        auto validated = validate_private_lease_attempt_inventory(root_fd, absolute_root, attempt,
+                                                                  manifest, creator_process_id);
+        if (!validated) {
+            return fail_with(std::move(validated.diagnostic));
+        }
+        lease_slots[index] = std::move(*validated.witness);
+    }
+
+    std::sort(candidates.begin(), candidates.end(),
+              [&](const WorkerHandoffPublicationPrefixCandidate& left,
+                  const WorkerHandoffPublicationPrefixCandidate& right) {
+                  const auto& left_attempt = (*parsed.attempts)[left.attempt_index];
+                  const auto& right_attempt = (*parsed.attempts)[right.attempt_index];
+                  return std::pair{left_attempt.manifest_chunk_order,
+                                   left_attempt.coordinate.attempt_ordinal} <
+                         std::pair{right_attempt.manifest_chunk_order,
+                                   right_attempt.coordinate.attempt_ordinal};
+              });
+
+    RetainedWorkerHandoffPublicationPrefixStack retained;
+    std::vector<WorkerHandoffPublicationAggregateWitness> prefix_witnesses;
+    try {
+        retained.entries.reserve(candidates.size());
+        prefix_witnesses.reserve(candidates.size());
+        for (const auto& candidate : candidates) {
+            const auto& attempt = (*parsed.attempts)[candidate.attempt_index];
+            const auto expected_directory_identity =
+                candidate.attempt_record.record.lease.directory;
+            const auto base_path = absolute_root / attempt.names.private_directory_leaf / "corpus";
+            const auto paths = gnfs::relation::OOCCleanupTransaction::paths_for(base_path);
+            auto admission = private_lease::acquire_private_handoff_publication_resume_v1(
+                paths, relation_identity(expected_directory_identity));
+            if (!admission.acquired() || !admission.observed.has_value()) {
+                return fail_with(worker_handoff_inspection_failure(admission.result));
+            }
+            const auto* prefix = admission.observed->witness();
+            if (prefix == nullptr || prefix->state != candidate.expected_state ||
+                !worker_handoff_publication_prefix_marker_chain_matches(
+                    *prefix, expected_wave_root_identity, attempt, expected_directory_identity)) {
+                return conflict();
+            }
+            const auto observed_prefix = *prefix;
+            if (const auto exact = revalidate_exact_canonical_worker_attempt(
+                    root_fd, attempt.names, candidate.attempt_record, creator_process_id);
+                exact.status != DistributedSieveWaveStoreStatus::ready) {
+                return fail_with(exact);
+            }
+            WorkerHandoffTypedValidationContext typed_context{
+                .attempt = &attempt,
+                .manifest = &manifest,
+                .attempt_record = &candidate.attempt_record,
+                .root_fd = root_fd,
+                .expected_directory_identity = expected_directory_identity,
+                .creator_process_id = creator_process_id,
+            };
+            auto validation = private_lease::validate_private_handoff_publication_resume_v1(
+                std::move(*admission.observed),
+                WorkerHandoffTypedValidatorAuthorityV1::bind(validate_worker_handoff_prefix_type,
+                                                             &typed_context));
+            if (!validation.validated() || !validation.permit.has_value() ||
+                !typed_context.typed_handoff.has_value()) {
+                if (typed_context.diagnostic.status != DistributedSieveWaveStoreStatus::ready) {
+                    return fail_with(std::move(typed_context.diagnostic));
+                }
+                return fail_with(worker_handoff_inspection_failure(validation.result));
+            }
+            const auto typed_handoff = *typed_context.typed_handoff;
+
+            PrivateLeaseReservationWitness provisional{
+                .base_lock_leaf = attempt.names.base_lock_leaf,
+                .boundary = DistributedSievePrivateLeaseReservationBoundary::FinalDirectoryDurable,
+                .lease_id = observed_prefix.record.lease_id,
+                .reserved_marker_identity =
+                    observed_prefix.reserved.has_value()
+                        ? std::optional<NativeIdentityV1>(
+                              protocol_identity_words(observed_prefix.reserved->identity))
+                        : std::nullopt,
+                .directory_identity = expected_directory_identity,
+                .owner_marker_identity =
+                    protocol_identity(observed_prefix.record.owner_marker_identity),
+                .owned_marker_identity =
+                    protocol_identity(observed_prefix.record.owned_marker_identity),
+                .worker_handoff = typed_handoff,
+            };
+            lease_slots[candidate.attempt_index] = provisional;
+            prefix_witnesses.push_back(WorkerHandoffPublicationAggregateWitness{
+                .attempt_index = candidate.attempt_index,
+                .names = attempt.names,
+                .coordinate = attempt.coordinate,
+                .prefix = observed_prefix,
+                .typed_handoff = typed_handoff,
+                .attempt_record = candidate.attempt_record,
+            });
+            retained.entries.push_back(RetainedWorkerHandoffPublicationPrefix{
+                .attempt_index = candidate.attempt_index,
+                .names = attempt.names,
+                .coordinate = attempt.coordinate,
+                .witness = observed_prefix,
+                .typed_handoff = typed_handoff,
+                .provisional_lease = std::move(provisional),
+                .attempt_record = candidate.attempt_record,
+                .permit = std::move(*validation.permit),
+            });
+        }
+    } catch (const private_lease::Failure& failure) {
+        return fail_with(worker_handoff_inspection_failure(gnfs::relation::OOCCleanupResult{
+            .status = failure.status,
+            .stage = failure.stage,
+            .native_error = failure.error,
+        }));
+    } catch (const std::bad_alloc&) {
+        return fail_with(diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
+                                    std::make_error_code(std::errc::not_enough_memory)));
+    } catch (...) {
+        return fail_with(diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                                    std::make_error_code(std::errc::io_error)));
+    }
+
+    std::vector<PrivateLeaseReservationWitness> private_leases;
+    try {
+        private_leases.reserve(lease_slots.size());
+        for (auto& lease : lease_slots) {
+            if (!lease.has_value()) {
+                return conflict();
+            }
+            private_leases.push_back(std::move(*lease));
+        }
+    } catch (const std::bad_alloc&) {
+        return fail_with(diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
+                                    std::make_error_code(std::errc::not_enough_memory)));
+    } catch (...) {
+        return fail_with(diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                                    std::make_error_code(std::errc::io_error)));
+    }
+
+    auto worker_attempts = validate_worker_attempt_record_inventory(
+        root_fd, inventory, manifest, *base_locks.identities, private_leases, creator_process_id);
+    if (!worker_attempts) {
+        return fail_with(std::move(worker_attempts.diagnostic));
+    }
+    for (auto& prefix : retained.entries) {
+        const auto record =
+            std::find_if(worker_attempts.witnesses->begin(), worker_attempts.witnesses->end(),
+                         [&](const DistributedSieveWorkerAttemptRecordInventoryWitness& candidate) {
+                             return candidate.chunk_id == prefix.coordinate.chunk_id &&
+                                    candidate.attempt_ordinal == prefix.coordinate.attempt_ordinal;
+                         });
+        if (record == worker_attempts.witnesses->end() || !record->canonical_snapshot.has_value() ||
+            record->pending_snapshot.has_value() || *record != prefix.attempt_record ||
+            prefix.typed_handoff.handoff.attempt_started_digest != record->record.self_digest ||
+            prefix.typed_handoff.handoff.lease != record->record.lease ||
+            prefix.typed_handoff.handoff.chunk_id != prefix.coordinate.chunk_id ||
+            prefix.typed_handoff.handoff.attempt_ordinal != prefix.coordinate.attempt_ordinal) {
+            return conflict();
+        }
+        for (const auto& lease : private_leases) {
+            const auto coordinate = manifest_worker_attempt_coordinate_from_private_lease_base_lock(
+                manifest, lease.base_lock_leaf);
+            if (!coordinate.has_value() ||
+                (coordinate->chunk_id == prefix.coordinate.chunk_id &&
+                 coordinate->attempt_ordinal > prefix.coordinate.attempt_ordinal)) {
+                return conflict();
+            }
+        }
+    }
+
+    auto witnessed_inventory = inventory;
+    witnessed_inventory.worker_attempt_records = *worker_attempts.witnesses;
+    RecoverableWorkerHandoffInventoryWitness witness{
+        .inventory = std::move(witnessed_inventory),
+        .base_lock_identities = *base_locks.identities,
+        .private_leases = private_leases,
+        .worker_attempt_records = *worker_attempts.witnesses,
+        .prefixes = std::move(prefix_witnesses),
+    };
+    return {
+        .witness = std::move(witness),
+        .retained = std::move(retained),
+        .diagnostic = {},
+    };
 }
 
 struct ManifestBoundInventoryValidationResult final {
@@ -3416,6 +4234,347 @@ require_manifest_pending_missing(int root_fd, std::uint64_t creator_process_id) 
         return process_mismatch();
     }
     return {};
+}
+
+[[nodiscard]] DistributedSieveWaveStoreDiagnostic validate_held_wave_store_manifest_authority(
+    int parent_fd, const std::vector<std::string>& parent_components, int root_fd,
+    const std::filesystem::path& root_leaf, const NativeIdentityV1& root_identity, int lock_fd,
+    const NativeIdentityV1& lock_identity, std::span<const std::byte> expected_manifest_bytes,
+    const durable_record::RecordSnapshot& expected_manifest_snapshot,
+    std::uint64_t creator_process_id) noexcept {
+    if (const auto root_validated = validate_root_binding(
+            parent_fd, parent_components, root_fd, root_leaf, creator_process_id, root_identity);
+        root_validated.status != DistributedSieveWaveStoreStatus::ready) {
+        return root_validated;
+    }
+    if (const auto lock_validated =
+            validate_lock_binding(root_fd, lock_fd, creator_process_id, lock_identity);
+        lock_validated.status != DistributedSieveWaveStoreStatus::ready) {
+        return lock_validated;
+    }
+    if (const auto pending = require_manifest_pending_missing(root_fd, creator_process_id);
+        pending.status != DistributedSieveWaveStoreStatus::ready) {
+        return pending;
+    }
+    auto canonical = read_manifest_leaf(root_fd, MANIFEST_LEAF, creator_process_id);
+    if (!canonical) {
+        return canonical.diagnostic;
+    }
+    if (canonical.bytes->size() != expected_manifest_bytes.size() ||
+        !std::equal(canonical.bytes->begin(), canonical.bytes->end(),
+                    expected_manifest_bytes.begin()) ||
+        *canonical.snapshot != expected_manifest_snapshot) {
+        return diagnostic(DistributedSieveWaveStoreStatus::manifest_conflict, protocol_error());
+    }
+    if (const auto root_validated = validate_root_binding(
+            parent_fd, parent_components, root_fd, root_leaf, creator_process_id, root_identity);
+        root_validated.status != DistributedSieveWaveStoreStatus::ready) {
+        return root_validated;
+    }
+    if (const auto lock_validated =
+            validate_lock_binding(root_fd, lock_fd, creator_process_id, lock_identity);
+        lock_validated.status != DistributedSieveWaveStoreStatus::ready) {
+        return lock_validated;
+    }
+    if (!process_matches(creator_process_id)) {
+        return process_mismatch();
+    }
+    return {};
+}
+
+[[nodiscard]] DistributedSieveWaveStoreDiagnostic revalidate_exact_canonical_worker_attempt(
+    int root_fd, const DistributedSieveWorkerAttemptNamesV1& names,
+    const DistributedSieveWorkerAttemptRecordInventoryWitness& expected,
+    std::uint64_t creator_process_id) noexcept {
+    auto canonical = read_immutable_protocol_record_leaf(
+        root_fd, names.canonical_record_leaf.c_str(), creator_process_id,
+        DistributedSieveWaveStoreStatus::namespace_conflict,
+        DistributedSieveWaveStoreStatus::namespace_conflict);
+    if (!canonical) {
+        return canonical.diagnostic;
+    }
+    struct stat pending{};
+    if (fstatat_retrying_eintr(root_fd, names.pending_record_leaf.c_str(), pending) == 0) {
+        return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error());
+    }
+    const int saved_errno = errno;
+    if (saved_errno != ENOENT) {
+        return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
+                          posix_error(saved_errno));
+    }
+    if (!expected.canonical_snapshot.has_value() || expected.pending_snapshot.has_value() ||
+        expected.bytes != *canonical.bytes || *expected.canonical_snapshot != *canonical.snapshot) {
+        return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error());
+    }
+    return {};
+}
+
+[[nodiscard]] std::string
+private_lease_staging_directory_leaf(const DistributedSieveWorkerAttemptNamesV1& names,
+                                     const std::array<std::uint64_t, 2>& lease_id);
+
+void set_worker_handoff_protocol_leaf_presence(NamespaceInventory& inventory,
+                                               const std::string& leaf, bool present) {
+    auto& leaves = inventory.private_lease_protocol_leaves;
+    const auto position = std::lower_bound(leaves.begin(), leaves.end(), leaf);
+    const bool found = position != leaves.end() && *position == leaf;
+    if (present && !found) {
+        leaves.insert(position, leaf);
+    } else if (!present && found) {
+        leaves.erase(position);
+    }
+}
+
+[[nodiscard]] bool project_selected_worker_handoff_protocol_state(
+    NamespaceInventory& inventory, const RetainedWorkerHandoffPublicationPrefix& selected,
+    DistributedSieveWorkerHandoffResumeObservationPointV1 point) {
+    using Point = DistributedSieveWorkerHandoffResumeObservationPointV1;
+    if (point == Point::AfterExpectedPrefixValidated ||
+        point == Point::AfterCanonicalConfirmedDurable) {
+        return true;
+    }
+
+    const auto staging_leaf =
+        private_lease_staging_directory_leaf(selected.names, selected.witness.record.lease_id);
+    bool reserved = false;
+    bool owned = false;
+    bool final_directory = false;
+    bool staging_directory = false;
+    bool rollback_handoff = false;
+    switch (point) {
+    case Point::BeforePendingRollbackSourceDirectorySync:
+    case Point::AfterPendingRollbackSourceDirectoryDurable:
+    case Point::BeforePendingRollbackDestinationDirectorySync:
+    case Point::AfterPendingRollbackDestinationDirectoryDurable:
+        reserved = true;
+        owned = true;
+        final_directory = true;
+        rollback_handoff = true;
+        break;
+    case Point::AfterPendingRollbackPreactiveDirectoryQuarantinedDurable:
+    case Point::AfterPendingRollbackPreactiveDataRemovedDurable:
+    case Point::AfterPendingRollbackPreactiveIndexRemovedDurable:
+    case Point::AfterPendingRollbackOwnerRemovedDurable:
+        reserved = true;
+        owned = true;
+        staging_directory = true;
+        rollback_handoff = true;
+        break;
+    case Point::AfterPendingRollbackLeaseDirectoryRemovedDurable:
+        reserved = true;
+        owned = true;
+        rollback_handoff = true;
+        break;
+    case Point::AfterPendingRollbackReservedRemovedDurable:
+        owned = true;
+        rollback_handoff = true;
+        break;
+    case Point::AfterPendingRollbackOwnedRemovedDurable:
+    case Point::BeforePendingRollbackTombstoneRemovalValidated:
+        rollback_handoff = true;
+        break;
+    case Point::AfterPendingRollbackTombstoneRemovedDurable:
+        break;
+    case Point::AfterReservedRevokedDurable:
+        owned = true;
+        final_directory = true;
+        break;
+    case Point::AfterExpectedPrefixValidated:
+    case Point::AfterCanonicalConfirmedDurable:
+        return true;
+    case Point::Count:
+        return false;
+    }
+
+    set_worker_handoff_protocol_leaf_presence(inventory, selected.names.reserved_leaf, reserved);
+    set_worker_handoff_protocol_leaf_presence(inventory, selected.names.owned_leaf, owned);
+    set_worker_handoff_protocol_leaf_presence(inventory, selected.names.private_directory_leaf,
+                                              final_directory);
+    set_worker_handoff_protocol_leaf_presence(inventory, staging_leaf, staging_directory);
+    set_worker_handoff_protocol_leaf_presence(inventory, selected.names.rollback_handoff_leaf,
+                                              rollback_handoff);
+    return true;
+}
+
+[[nodiscard]] DistributedSieveWaveStoreDiagnostic revalidate_worker_handoff_aggregate_projection(
+    int root_fd, const std::filesystem::path& absolute_root, const WaveManifestV1& manifest,
+    const RecoverableWorkerHandoffInventoryWitness& expected,
+    const RetainedWorkerHandoffPublicationPrefixStack& retained, std::size_t current_attempt_index,
+    std::uint64_t creator_process_id,
+    std::optional<DistributedSieveWorkerHandoffResumeObservationPointV1> observation_point =
+        std::nullopt) noexcept {
+    const auto current = inspect_namespace(root_fd);
+    if (!current) {
+        return current.diagnostic;
+    }
+    auto expected_inventory = expected.inventory;
+    auto current_inventory = *current.inventory;
+    const auto selected = std::find_if(retained.entries.begin(), retained.entries.end(),
+                                       [&](const RetainedWorkerHandoffPublicationPrefix& prefix) {
+                                           return prefix.attempt_index == current_attempt_index;
+                                       });
+    if (selected == retained.entries.end() || selected->consumed || !selected->permit.held()) {
+        return diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure, protocol_error());
+    }
+    try {
+        if (observation_point.has_value() &&
+            !project_selected_worker_handoff_protocol_state(expected_inventory, *selected,
+                                                            *observation_point)) {
+            return diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                              protocol_error());
+        }
+    } catch (const std::bad_alloc&) {
+        return diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
+                          std::make_error_code(std::errc::not_enough_memory));
+    } catch (...) {
+        return diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                          std::make_error_code(std::errc::io_error));
+    }
+    expected_inventory.worker_attempt_records.clear();
+    current_inventory.worker_attempt_records.clear();
+    if (current_inventory != expected_inventory) {
+        return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error());
+    }
+
+    auto base_locks = validate_private_lease_base_lock_inventory(root_fd, current_inventory,
+                                                                 manifest, creator_process_id);
+    if (!base_locks) {
+        return base_locks.diagnostic;
+    }
+    if (*base_locks.identities != expected.base_lock_identities) {
+        return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error());
+    }
+
+    auto parsed =
+        parse_private_lease_attempt_inventory(current_inventory, manifest, *base_locks.identities);
+    if (!parsed) {
+        return parsed.diagnostic;
+    }
+    if (parsed.attempts->size() != expected.private_leases.size()) {
+        return diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure, protocol_error());
+    }
+    for (std::size_t index = 0; index < parsed.attempts->size(); ++index) {
+        if (index == current_attempt_index) {
+            continue;
+        }
+        const auto held = std::find_if(retained.entries.begin(), retained.entries.end(),
+                                       [&](const RetainedWorkerHandoffPublicationPrefix& prefix) {
+                                           return prefix.attempt_index == index;
+                                       });
+        if (held != retained.entries.end()) {
+            if (held->consumed || !held->permit.valid() || !held->permit.held()) {
+                return diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                                  protocol_error());
+            }
+            const auto exact =
+                private_lease::revalidate_private_handoff_publication_resume_v1(held->permit);
+            if (!exact.revalidated() || !exact.witness.has_value()) {
+                return worker_handoff_inspection_failure(exact.result);
+            }
+            if (*exact.witness != held->witness ||
+                expected.private_leases[index] != held->provisional_lease) {
+                return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
+                                  protocol_error());
+            }
+            continue;
+        }
+        auto lease = validate_private_lease_attempt_inventory(
+            root_fd, absolute_root, (*parsed.attempts)[index], manifest, creator_process_id);
+        if (!lease) {
+            return lease.diagnostic;
+        }
+        if (*lease.witness != expected.private_leases[index]) {
+            return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
+                              protocol_error());
+        }
+    }
+
+    auto attempts = validate_worker_attempt_record_inventory(
+        root_fd, current_inventory, manifest, *base_locks.identities, expected.private_leases,
+        creator_process_id);
+    if (!attempts) {
+        return attempts.diagnostic;
+    }
+    if (*attempts.witnesses != expected.worker_attempt_records) {
+        return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error());
+    }
+    return {};
+}
+
+struct WorkerHandoffResumeBridgeContext final {
+    DistributedSieveWorkerHandoffResumeTestHooksV1 user_hooks;
+    int parent_fd = -1;
+    const std::vector<std::string>* parent_components = nullptr;
+    int root_fd = -1;
+    const std::filesystem::path* root_leaf = nullptr;
+    NativeIdentityV1 root_identity;
+    int lock_fd = -1;
+    NativeIdentityV1 lock_identity;
+    const std::vector<std::byte>* manifest_bytes = nullptr;
+    durable_record::RecordSnapshot manifest_snapshot;
+    const std::filesystem::path* absolute_root = nullptr;
+    const WaveManifestV1* manifest = nullptr;
+    const RecoverableWorkerHandoffInventoryWitness* aggregate = nullptr;
+    const RetainedWorkerHandoffPublicationPrefixStack* retained = nullptr;
+    std::size_t current_attempt_index = 0;
+    const DistributedSieveWorkerAttemptNamesV1* attempt_names = nullptr;
+    const DistributedSieveWorkerAttemptRecordInventoryWitness* attempt_record = nullptr;
+    std::uint64_t creator_process_id = 0;
+    bool revalidation_failed = false;
+    DistributedSieveWaveStoreDiagnostic revalidation_diagnostic;
+};
+
+[[nodiscard]] bool bridge_worker_handoff_resume_observation(
+    private_lease::PrivateHandoffPublicationResumeObservationPointV1 point, void* opaque) noexcept {
+    auto* context = static_cast<WorkerHandoffResumeBridgeContext*>(opaque);
+    if (context == nullptr) {
+        return true;
+    }
+    const auto wave_point =
+        static_cast<DistributedSieveWorkerHandoffResumeObservationPointV1>(point);
+    const bool user_requested_stop =
+        context->user_hooks.stop_after != nullptr &&
+        context->user_hooks.stop_after(wave_point, context->user_hooks.context);
+    if (context->parent_components == nullptr || context->root_leaf == nullptr ||
+        context->manifest_bytes == nullptr || context->absolute_root == nullptr ||
+        context->manifest == nullptr || context->aggregate == nullptr ||
+        context->retained == nullptr || context->attempt_names == nullptr ||
+        context->attempt_record == nullptr) {
+        context->revalidation_failed = true;
+        context->revalidation_diagnostic =
+            diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure, protocol_error());
+        return true;
+    }
+    auto revalidated = validate_held_wave_store_manifest_authority(
+        context->parent_fd, *context->parent_components, context->root_fd, *context->root_leaf,
+        context->root_identity, context->lock_fd, context->lock_identity, *context->manifest_bytes,
+        context->manifest_snapshot, context->creator_process_id);
+    if (revalidated.status == DistributedSieveWaveStoreStatus::ready) {
+        revalidated = revalidate_worker_handoff_aggregate_projection(
+            context->root_fd, *context->absolute_root, *context->manifest, *context->aggregate,
+            *context->retained, context->current_attempt_index, context->creator_process_id,
+            wave_point);
+    }
+    if (revalidated.status == DistributedSieveWaveStoreStatus::ready) {
+        revalidated = revalidate_exact_canonical_worker_attempt(
+            context->root_fd, *context->attempt_names, *context->attempt_record,
+            context->creator_process_id);
+    }
+    if (revalidated.status == DistributedSieveWaveStoreStatus::ready) {
+        return user_requested_stop;
+    }
+    context->revalidation_failed = true;
+    context->revalidation_diagnostic = std::move(revalidated);
+    return true;
+}
+
+[[nodiscard]] private_lease::PrivateHandoffPublicationResumeTestHooksV1
+relation_worker_handoff_resume_hooks(WorkerHandoffResumeBridgeContext& context) noexcept {
+    return {
+        .stop_after = bridge_worker_handoff_resume_observation,
+        .fail_before = nullptr,
+        .context = &context,
+    };
 }
 
 struct DecodedManifestResult final {
@@ -4545,6 +5704,8 @@ distributed_sieve_worker_attempt_names_v1(std::string_view chunk_relative_artifa
     names.owned_leaf.append(DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNED_SUFFIX);
     names.owned_pending_leaf = names.relative_lease_stem;
     names.owned_pending_leaf.append(DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNED_PENDING_SUFFIX);
+    names.rollback_handoff_leaf = names.relative_lease_stem;
+    names.rollback_handoff_leaf.append(DISTRIBUTED_SIEVE_PRIVATE_HANDOFF_ROLLBACK_SUFFIX);
 
     names.canonical_record_leaf.reserve(
         DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_PREFIX.size() +
@@ -7902,6 +9063,148 @@ DistributedSieveWaveStore::open(const std::filesystem::path& absolute_root,
             return open_failure(
                 diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error()));
         }
+
+        if (inventory.inventory->manifest && !inventory.inventory->pending) {
+            auto resume_manifest =
+                read_manifest_leaf(root.root.get(), MANIFEST_LEAF, creator_process_id);
+            if (!resume_manifest) {
+                return open_failure(std::move(resume_manifest.diagnostic));
+            }
+            if (*resume_manifest.bytes != *existing.bytes) {
+                return open_failure(diagnostic(DistributedSieveWaveStoreStatus::manifest_conflict,
+                                               protocol_error()));
+            }
+            if (const auto authority = validate_held_wave_store_manifest_authority(
+                    root.parent.get(), frozen->parent_components, root.root.get(), frozen->leaf,
+                    root.root_identity, lock.lock.get(), lock.lock_identity, *existing.bytes,
+                    *resume_manifest.snapshot, creator_process_id);
+                authority.status != DistributedSieveWaveStoreStatus::ready) {
+                return open_failure(authority);
+            }
+
+            const std::size_t maximum_resume_rounds =
+                existing.manifest->chunks.size() *
+                static_cast<std::size_t>(existing.manifest->max_worker_attempts);
+            std::size_t resume_round = 0;
+            while (true) {
+                if (const auto authority = validate_held_wave_store_manifest_authority(
+                        root.parent.get(), frozen->parent_components, root.root.get(), frozen->leaf,
+                        root.root_identity, lock.lock.get(), lock.lock_identity, *existing.bytes,
+                        *resume_manifest.snapshot, creator_process_id);
+                    authority.status != DistributedSieveWaveStoreStatus::ready) {
+                    return open_failure(authority);
+                }
+                auto recoverable = capture_recoverable_worker_handoff_inventory(
+                    root.root.get(), frozen->absolute, *inventory.inventory, *existing.manifest,
+                    root.root_identity, creator_process_id);
+                if (!recoverable) {
+                    return open_failure(std::move(recoverable.diagnostic));
+                }
+                const auto selected = std::find_if(
+                    recoverable.retained.entries.rbegin(), recoverable.retained.entries.rend(),
+                    [](const RetainedWorkerHandoffPublicationPrefix& prefix) {
+                        return !prefix.witness.canonical_terminal();
+                    });
+                if (selected == recoverable.retained.entries.rend()) {
+                    break;
+                }
+                if (resume_round >= maximum_resume_rounds) {
+                    return open_failure(diagnostic(
+                        DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error()));
+                }
+                if (const auto projection = revalidate_worker_handoff_aggregate_projection(
+                        root.root.get(), frozen->absolute, *existing.manifest, *recoverable.witness,
+                        recoverable.retained, selected->attempt_index, creator_process_id);
+                    projection.status != DistributedSieveWaveStoreStatus::ready) {
+                    return open_failure(projection);
+                }
+
+                auto& prefix = *selected;
+                if (const auto attempt = revalidate_exact_canonical_worker_attempt(
+                        root.root.get(), prefix.names, prefix.attempt_record, creator_process_id);
+                    attempt.status != DistributedSieveWaveStoreStatus::ready) {
+                    return open_failure(attempt);
+                }
+                if (const auto authority = validate_held_wave_store_manifest_authority(
+                        root.parent.get(), frozen->parent_components, root.root.get(), frozen->leaf,
+                        root.root_identity, lock.lock.get(), lock.lock_identity, *existing.bytes,
+                        *resume_manifest.snapshot, creator_process_id);
+                    authority.status != DistributedSieveWaveStoreStatus::ready) {
+                    return open_failure(authority);
+                }
+
+                const auto expected_prefix = prefix.witness;
+                const auto expected_disposition =
+                    expected_prefix.pending_only() || expected_prefix.rollback_armed()
+                        ? private_lease::PrivateHandoffPublicationResumeDispositionV1::
+                              PendingRolledBack
+                        : private_lease::PrivateHandoffPublicationResumeDispositionV1::
+                              CanonicalConverged;
+                WorkerHandoffResumeBridgeContext resume_bridge{
+                    .user_hooks = hooks.worker_handoff_resume,
+                    .parent_fd = root.parent.get(),
+                    .parent_components = &frozen->parent_components,
+                    .root_fd = root.root.get(),
+                    .root_leaf = &frozen->leaf,
+                    .root_identity = root.root_identity,
+                    .lock_fd = lock.lock.get(),
+                    .lock_identity = lock.lock_identity,
+                    .manifest_bytes = &*existing.bytes,
+                    .manifest_snapshot = *resume_manifest.snapshot,
+                    .absolute_root = &frozen->absolute,
+                    .manifest = &*existing.manifest,
+                    .aggregate = &*recoverable.witness,
+                    .retained = &recoverable.retained,
+                    .current_attempt_index = prefix.attempt_index,
+                    .attempt_names = &prefix.names,
+                    .attempt_record = &prefix.attempt_record,
+                    .creator_process_id = creator_process_id,
+                };
+                auto converged = private_lease::reconcile_private_handoff_publication_for_resume_v1(
+                    prefix.permit, relation_worker_handoff_resume_hooks(resume_bridge));
+                if (resume_bridge.revalidation_failed) {
+                    return open_failure(std::move(resume_bridge.revalidation_diagnostic));
+                }
+                if (!converged.converged()) {
+                    return open_failure(worker_handoff_inspection_failure(converged.result));
+                }
+                if (converged.disposition != expected_disposition ||
+                    !converged.expected_prefix.has_value() ||
+                    *converged.expected_prefix != expected_prefix) {
+                    return open_failure(diagnostic(
+                        DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error()));
+                }
+                if (!prefix.permit.held() || prefix.permit.valid()) {
+                    return open_failure(diagnostic(
+                        DistributedSieveWaveStoreStatus::unexpected_failure, protocol_error()));
+                }
+                prefix.consumed = true;
+                while (!recoverable.retained.entries.empty()) {
+                    recoverable.retained.entries.pop_back();
+                }
+                if (hooks.worker_handoff_resume.after_round_locks_released != nullptr) {
+                    hooks.worker_handoff_resume.after_round_locks_released(
+                        hooks.worker_handoff_resume.context);
+                    if (!process_matches(creator_process_id)) {
+                        return open_failure(process_mismatch());
+                    }
+                }
+                ++resume_round;
+
+                if (const auto authority = validate_held_wave_store_manifest_authority(
+                        root.parent.get(), frozen->parent_components, root.root.get(), frozen->leaf,
+                        root.root_identity, lock.lock.get(), lock.lock_identity, *existing.bytes,
+                        *resume_manifest.snapshot, creator_process_id);
+                    authority.status != DistributedSieveWaveStoreStatus::ready) {
+                    return open_failure(authority);
+                }
+                inventory = inspect_namespace(root.root.get());
+                if (!inventory) {
+                    return open_failure(std::move(inventory.diagnostic));
+                }
+            }
+        }
+
         const auto inventory_validated = validate_private_lease_base_lock_inventory(
             root.root.get(), *inventory.inventory, *existing.manifest, creator_process_id);
         if (!inventory_validated) {
@@ -8158,6 +9461,62 @@ DistributedSieveWaveStoreDiagnostic DistributedSieveWaveStore::revalidate(
     const auto inventory = inspect_namespace(state_->root_fd);
     if (!inventory) {
         return inventory.diagnostic;
+    }
+    auto recoverable = capture_recoverable_worker_handoff_inventory(
+        state_->root_fd, state_->absolute_root, *inventory.inventory, state_->manifest,
+        state_->root_identity, state_->creator_process_id);
+    if (!recoverable) {
+        return recoverable.diagnostic;
+    }
+    if (!recoverable.retained.entries.empty()) {
+        auto first_witness = std::move(*recoverable.witness);
+        const bool reconciliation_required =
+            std::any_of(first_witness.prefixes.begin(), first_witness.prefixes.end(),
+                        [](const WorkerHandoffPublicationAggregateWitness& prefix) {
+                            return !prefix.prefix.canonical_terminal();
+                        });
+        const std::size_t retained_count = recoverable.retained.entries.size();
+        if (hooks.observe_reservation_witnesses != nullptr) {
+            hooks.observe_reservation_witnesses(first_witness.private_leases, hooks.context);
+        }
+        while (!recoverable.retained.entries.empty()) {
+            recoverable.retained.entries.pop_back();
+        }
+        if (hooks.after_first_validation != nullptr) {
+            hooks.after_first_validation(hooks.context);
+        }
+        if (const auto authority = revalidate_authority();
+            authority.status != DistributedSieveWaveStoreStatus::ready) {
+            return authority;
+        }
+        const auto final_inventory = inspect_namespace(state_->root_fd);
+        if (!final_inventory) {
+            return final_inventory.diagnostic;
+        }
+        auto final_recoverable = capture_recoverable_worker_handoff_inventory(
+            state_->root_fd, state_->absolute_root, *final_inventory.inventory, state_->manifest,
+            state_->root_identity, state_->creator_process_id);
+        if (!final_recoverable) {
+            return final_recoverable.diagnostic;
+        }
+        const bool stable = final_recoverable.witness.has_value() &&
+                            *final_recoverable.witness == first_witness &&
+                            final_recoverable.retained.entries.size() == retained_count;
+        while (!final_recoverable.retained.entries.empty()) {
+            final_recoverable.retained.entries.pop_back();
+        }
+        if (!stable) {
+            return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
+                              protocol_error());
+        }
+        if (const auto authority = revalidate_authority();
+            authority.status != DistributedSieveWaveStoreStatus::ready) {
+            return authority;
+        }
+        return reconciliation_required
+                   ? diagnostic(DistributedSieveWaveStoreStatus::reconciliation_required,
+                                protocol_error())
+                   : DistributedSieveWaveStoreDiagnostic{};
     }
     const auto validated = validate_manifest_bound_inventory(state_->root_fd, state_->absolute_root,
                                                              *inventory.inventory, state_->manifest,

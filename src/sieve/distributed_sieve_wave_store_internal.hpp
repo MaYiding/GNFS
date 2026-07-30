@@ -61,6 +61,8 @@ inline constexpr std::string_view DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNED_SUFFIX =
     ".gnfs-sink-lease.gnfs-private-lease-v1.owned";
 inline constexpr std::string_view DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNED_PENDING_SUFFIX =
     ".gnfs-sink-lease.gnfs-private-lease-v1.owned.pending";
+inline constexpr std::string_view DISTRIBUTED_SIEVE_PRIVATE_HANDOFF_ROLLBACK_SUFFIX =
+    ".gnfs-sink-lease.gnfs-ooc-private-handoff-v1.rollback";
 inline constexpr std::string_view DISTRIBUTED_SIEVE_PRIVATE_LEASE_STAGING_TAG =
     ".gnfs-sink-lease.gnfs-private-lease-v1.stage-";
 inline constexpr std::string_view DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_LEAF =
@@ -77,6 +79,7 @@ struct DistributedSieveWorkerAttemptNamesV1 final {
     std::string reserved_pending_leaf;
     std::string owned_leaf;
     std::string owned_pending_leaf;
+    std::string rollback_handoff_leaf;
     std::string canonical_record_leaf;
     std::string pending_record_leaf;
 
@@ -193,10 +196,44 @@ enum class DistributedSieveWaveStoreFaultPoint : std::uint8_t {
     Count,
 };
 
+/// Trusted test-only observation boundaries forwarded while `open()` consumes
+/// one exact relation-layer handoff-publication resume permit. Durable points
+/// are emitted only after the named mutation and durability barrier.
+enum class DistributedSieveWorkerHandoffResumeObservationPointV1 : std::uint8_t {
+    AfterExpectedPrefixValidated,
+    BeforePendingRollbackSourceDirectorySync,
+    AfterPendingRollbackSourceDirectoryDurable,
+    BeforePendingRollbackDestinationDirectorySync,
+    AfterPendingRollbackDestinationDirectoryDurable,
+    AfterPendingRollbackPreactiveDirectoryQuarantinedDurable,
+    AfterPendingRollbackPreactiveDataRemovedDurable,
+    AfterPendingRollbackPreactiveIndexRemovedDurable,
+    AfterPendingRollbackOwnerRemovedDurable,
+    AfterPendingRollbackLeaseDirectoryRemovedDurable,
+    AfterPendingRollbackReservedRemovedDurable,
+    AfterPendingRollbackOwnedRemovedDurable,
+    BeforePendingRollbackTombstoneRemovalValidated,
+    AfterPendingRollbackTombstoneRemovedDurable,
+    AfterCanonicalConfirmedDurable,
+    AfterReservedRevokedDurable,
+    Count,
+};
+
+struct DistributedSieveWorkerHandoffResumeTestHooksV1 final {
+    using StopAfter = bool (*)(DistributedSieveWorkerHandoffResumeObservationPointV1 point,
+                               void* context) noexcept;
+    using AfterRoundLocksReleased = void (*)(void* context) noexcept;
+
+    StopAfter stop_after = nullptr;
+    AfterRoundLocksReleased after_round_locks_released = nullptr;
+    void* context = nullptr;
+};
+
 struct DistributedSieveWaveStoreTestHooks final {
     using StopAfter = bool (*)(DistributedSieveWaveStoreFaultPoint point, void* context) noexcept;
 
     StopAfter stop_after = nullptr;
+    DistributedSieveWorkerHandoffResumeTestHooksV1 worker_handoff_resume;
     void* context = nullptr;
 };
 

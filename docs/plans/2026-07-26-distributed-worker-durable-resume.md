@@ -2627,10 +2627,109 @@ older worker while it holds its attempt `BaseLock`, proves that the next
 attempt returns lock-busy without namespace mutation, then lets the older
 handoff win and reopens the terminal chain.
 
-M3a-2c.1 does not add the production CLI dispatcher or the exact-missing
-coordinator. It also does not classify adopted versus executed chunks. Those
-tasks remain in M3a-2c.2, together with pending-handoff convergence and the
-fresh, all-adopted, and mixed-wave exit matrix.
+### M3a-2c.2A Worker Handoff Cold-Open Reconciliation Status
+
+M3a-2c.2A implements worker-handoff publication reconciliation during a cold
+`DistributedSieveWaveStore::open()`. A `PendingOnly` prefix first moves the
+exact pending handoff, without replacement, from the private directory to a
+deterministic wave-root rollback tombstone. The Apple implementation
+synchronizes both participating directories and relies on the documented
+Apple `rename` crash contract; other platforms do not claim this evidence.
+The tombstone retains the complete `WorkerHandoffV1` envelope while the exact
+preactive pair, owner, private directory, `RESERVED`, and `OWNED` generation
+are rolled back. It is removed only after that rollback is terminal. A cold
+open can therefore resume either the original `PendingOnly` prefix or every
+legal partial `PendingRollback` prefix. Absence of both records is never
+interpreted as rollback authority because it is indistinguishable from a
+normal active P8 attempt.
+
+A canonical or identical-dual prefix instead converges the exact canonical
+publication, removes an identical pending duplicate when present, and revokes
+only the matching `RESERVED` generation. The finalized pair, `OWNED`, and
+canonical typed handoff remain protected and adoptable. A live
+`DistributedSieveWaveStore::revalidate()` remains read-only: it performs two
+fresh complete observations and returns `reconciliation_required` only when a
+stable legal prefix still needs mutation. A terminal canonical prefix is
+ready without cold-open convergence.
+
+The relation-layer authority chain is
+`PrivateHandoffPublicationObservedPermitV1` -> private-constructor typed
+validator -> `PrivateHandoffPublicationValidatedPermitV1`. Only the
+WaveStore-local friend authority, plus a separately frozen test authority, can
+bind the validator callback. The relation layer fresh-captures the complete
+prefix under its retained `BaseLock`, invokes the typed callback on that exact
+witness, and captures it again before minting the validated permit. The
+callback must decode `WorkerHandoffV1` and bind its attempt digest, lease,
+chunk, and ordinal to the exact canonical `AttemptStartedV1`. The validator
+and observed permit are consumed on every success or failure path.
+Acquisition opens its own non-creating `BaseLock`; it accepts no caller lock
+reference or inherited open-file-description. Permits are
+creator-process-bound, and a forked child cannot validate, reconcile, or
+release the parent's logical action claim.
+
+The validated `PendingRollback` path enters a source-private outer executor
+that accepts only its retained `RollbackPreactivePairAndLease` generation and
+exact marker identities. Pair, owner, and directory mutation then delegates to
+the same shared preactive rollback core used by ordinary recovery; the typed
+outer layer alone retains the tombstone witness and removes the matching
+`RESERVED` and `OWNED` tail. The policy checker freezes the shared
+owner/index/data-only scanner, the complete shared mutation core, its two
+generic call branches, its one typed call site, and a default deny rule for
+every other source. The generic `recover_private_lease` and
+`remove_private_lease` scopes retain exact cleanup-union admission before
+their shared-core call, so a rollback tombstone remains a foreign namespace
+blocker. Their protected bodies reject conditional-preprocessor, line-splice,
+and literal-decoy drift. This separation prevents legacy recovery or
+deferred-cleanup paths from acquiring tombstone deletion authority while the
+typed cold-open state machine can finish its own armed rollback. Generic and
+typed crash tests use the same preactive fault-point matrix.
+
+WaveStore puts terminal and recoverable handoff prefixes in one stack, sorted
+by manifest chunk order and attempt ordinal. It acquires every fresh
+`BaseLock` in ascending order, selects the highest nonterminal prefix, and
+reconciles it in place. A consumed permit retains its lock and logical action
+claim until all higher entries and then all lower entries are popped in exact
+LIFO order. Each round mutates at most one prefix, releases the complete stack,
+and rebuilds the manifest-bound namespace before another round. A test-only
+post-release seam proves that a same-byte, new-inode lower prefix is accepted
+only through the next round's fresh observation rather than a stale retained
+witness.
+
+Every relation mutation boundary enters the WaveStore authority bridge. This
+includes the pending-to-tombstone directory barriers; the quarantined
+directory, data, index, owner, lease-directory, `RESERVED`, and `OWNED`
+rollback barriers; the tombstone unlink sandwich; and the canonical
+confirmation and reservation-revocation barriers. The bridge revalidates the
+wave root, permanent lock, manifest, exact canonical attempt records, all
+ordinary lease witnesses, and every other retained handoff permit. It projects
+only the selected attempt's exact phase-appropriate root leaves. The relation
+layer independently fresh-captures the selected tombstone, pair, and marker
+shape before allowing the next mutation.
+
+The native restart matrix terminates real writer and reconciliation children
+with `_exit()` at publication, tombstone, and inner rollback durability
+boundaries. Fresh WaveStore instances recover the legal prefixes, including
+identical-dual canonical variants and every partial tombstone state. Negative
+cases preserve missing or residual markers, a syntactically valid cleanup
+intent injected before the first shared-core rename, nonidentical duals, pair
+identity or extent mismatches, wrong attempt digests, and same-byte inode
+replacements. Multi-prefix cases prove all locks are held together, one prefix
+is reconciled per round, reverse release is complete, and the next round
+re-inspects new identities. Root, permanent-lock, manifest, current-attempt,
+and lower-attempt replacement attacks stop at the bridge without authorizing
+the following relation mutation.
+
+macOS is the authoritative implementation because the generic handoff
+observer and reconciler retain the required bounded native handles and ACL
+policy. On every non-Apple platform, the resume acquisition returns
+`PlatformUnsupported` after pure request validation but before it opens a
+lock, claims an action, or observes the filesystem. The portability regression
+proves zero namespace mutation and immediate subsequent normal lock and claim
+acquisition.
+
+Only the missing-only coordinator and its adopted/executed dispositions
+remain in M3a-2c.2. Their fresh, all-adopted, and mixed-wave exit matrix remains
+part of that work.
 
 ### M3: Worker Handoff and Adoption
 

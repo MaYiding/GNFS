@@ -595,6 +595,7 @@ struct OOCCleanupPaths final {
     std::filesystem::path lease_owned_pending_path;
     std::filesystem::path private_handoff_path;
     std::filesystem::path private_handoff_pending_path;
+    std::filesystem::path private_handoff_rollback_path;
     std::filesystem::path quarantine_index_path;
     std::filesystem::path quarantine_data_path;
 };
@@ -664,10 +665,10 @@ struct Failure final {
 path_leaf_uses_reserved_cleanup_suffix(const std::filesystem::path& leaf) noexcept {
     using Character = std::filesystem::path::value_type;
     const auto& native = leaf.native();
-    const auto reserved = std::filesystem::path(".gnfs-ooc-cleanup-v1").native();
-    if (native.size() < reserved.size()) {
-        return false;
-    }
+    const std::array reserved_suffixes{
+        std::filesystem::path(".gnfs-ooc-cleanup-v1").native(),
+        std::filesystem::path(".gnfs-ooc-private-handoff-v1.rollback").native(),
+    };
     const auto fold_ascii = [](Character value) noexcept {
         const Character upper_a = static_cast<Character>('A');
         const Character upper_z = static_cast<Character>('Z');
@@ -675,13 +676,20 @@ path_leaf_uses_reserved_cleanup_suffix(const std::filesystem::path& leaf) noexce
         return value >= upper_a && value <= upper_z ? static_cast<Character>(value + case_delta)
                                                     : value;
     };
-    const std::size_t offset = native.size() - reserved.size();
-    for (std::size_t index = 0; index < reserved.size(); ++index) {
-        if (fold_ascii(native[offset + index]) != fold_ascii(reserved[index])) {
-            return false;
+    for (const auto& reserved : reserved_suffixes) {
+        if (native.size() < reserved.size()) {
+            continue;
+        }
+        const std::size_t offset = native.size() - reserved.size();
+        bool matches = true;
+        for (std::size_t index = 0; index < reserved.size(); ++index) {
+            matches = matches && fold_ascii(native[offset + index]) == fold_ascii(reserved[index]);
+        }
+        if (matches) {
+            return true;
         }
     }
-    return true;
+    return false;
 }
 
 [[nodiscard]] inline bool path_leaf_equals_ascii(const std::filesystem::path& leaf,
@@ -833,6 +841,11 @@ path_leaf_uses_reserved_cleanup_suffix(const std::filesystem::path& leaf) noexce
             append_leaf_suffix(artifact_parent, leaf, ".gnfs-ooc-private-handoff-v1"),
         .private_handoff_pending_path =
             append_leaf_suffix(artifact_parent, leaf, ".gnfs-ooc-private-handoff-v1.pending"),
+        .private_handoff_rollback_path =
+            private_directory.empty()
+                ? std::filesystem::path{}
+                : append_leaf_suffix(private_directory.parent_path(), private_directory.filename(),
+                                     ".gnfs-ooc-private-handoff-v1.rollback"),
         .quarantine_index_path =
             append_leaf_suffix(artifact_parent, leaf, ".gnfs-ooc-cleanup-v1.relidx"),
         .quarantine_data_path =
@@ -3903,7 +3916,7 @@ run_transaction_locked(const OOCCleanupPaths& paths, const BaseLock& held_lock,
 /// matching BaseLock. The persistent regular lock leaf itself is intentionally
 /// outside this set.
 inline void require_pair_namespace_reusable_locked(const OOCCleanupPaths& paths) {
-    const std::array<const std::filesystem::path*, 10> leaves{
+    const std::array<const std::filesystem::path*, 11> leaves{
         &paths.index_path,
         &paths.data_path,
         &paths.intent_path,
@@ -3912,10 +3925,14 @@ inline void require_pair_namespace_reusable_locked(const OOCCleanupPaths& paths)
         &paths.staged_pending_path,
         &paths.private_handoff_path,
         &paths.private_handoff_pending_path,
+        &paths.private_handoff_rollback_path,
         &paths.quarantine_index_path,
         &paths.quarantine_data_path,
     };
     for (const auto* leaf : leaves) {
+        if (leaf->empty()) {
+            continue;
+        }
         const auto inspected = inspect_file(*leaf, 0, false);
         if (inspected.kind == InspectKind::Error) {
             fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, inspected.error);
@@ -5024,6 +5041,16 @@ observe_private_handoff_locked(const OOCCleanupPaths& paths, const BaseLock& loc
 /// Authority-free projection used by every observation-only caller.
 [[nodiscard]] inline OOCPrivateHandoffInspectResult
 classify_private_handoff_locked(const OOCCleanupPaths& paths, const BaseLock& lock) {
+    if (!paths.private_handoff_rollback_path.empty()) {
+        const auto rollback = inspect_file(paths.private_handoff_rollback_path, 0, false);
+        if (rollback.kind == InspectKind::Error) {
+            fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, rollback.error);
+        }
+        if (rollback.kind != InspectKind::Missing) {
+            return handoff_failure(OOCCleanupStatus::NamespaceConflict,
+                                   OOCPrivateHandoffState::TaintedPreserved, protocol_error());
+        }
+    }
     auto observed = observe_private_handoff_locked(paths, lock);
     return std::move(observed.inspection);
 }
@@ -5062,10 +5089,13 @@ private_protocol_artifact_exists_without_lock(const OOCCleanupPaths& paths) {
     if (!parent_identity) {
         return false;
     }
-    const std::array<std::filesystem::path, 5> fixed_leaves{
-        paths.private_directory.filename(),           paths.lease_reserved_path.filename(),
-        paths.lease_reserved_pending_path.filename(), paths.lease_owned_path.filename(),
+    const std::array<std::filesystem::path, 6> fixed_leaves{
+        paths.private_directory.filename(),
+        paths.lease_reserved_path.filename(),
+        paths.lease_reserved_pending_path.filename(),
+        paths.lease_owned_path.filename(),
         paths.lease_owned_pending_path.filename(),
+        paths.private_handoff_rollback_path.filename(),
     };
 
     bool found = false;
@@ -5936,6 +5966,16 @@ public:
             }
             auto& lock = *lease.live_lock_;
             lock.require_stable();
+            const auto rollback =
+                ooc_cleanup_detail::inspect_file(paths.private_handoff_rollback_path, 0, false);
+            if (rollback.kind == ooc_cleanup_detail::InspectKind::Error) {
+                ooc_cleanup_detail::fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None,
+                                         rollback.error);
+            }
+            if (rollback.kind != ooc_cleanup_detail::InspectKind::Missing) {
+                ooc_cleanup_detail::fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
+                                         ooc_cleanup_detail::protocol_error());
+            }
             const auto directory_identity =
                 ooc_cleanup_detail::capture_directory_identity_locked(paths.private_directory);
             if (directory_identity != lease.directory_identity_) {

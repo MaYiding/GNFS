@@ -242,26 +242,29 @@ prove its exact receipt generation is bound before C1 mutation, pre-mutation
 interruption is namespace-neutral and retryable, a post-acquisition handoff
 insertion is preserved on every platform, a macOS byte-identical pending
 replacement is rejected, and a matching pending leaf is reconciled
-successfully. The proof also binds both external lease-pending siblings; tests
-cover pre-existing foreign siblings and a post-acquisition byte-identical inode
-replacement before C1. Two macOS stale-generation cases preserve the full
-new-generation snapshot for pending-only and canonical-plus-duplicate C1
-states. Malformed cleanup-marker precedence remains `IntentCorrupt`, and only
-successful completion consumes the lease receipt. The blocker-precedence test
-pairs that malformed marker with deliberately mismatched generation inputs, so
-generation validation cannot mask the retained union result. `RunLegacyCleanup`
-now has a separate source-private permit for public begin and resume. Its first
-C1 consumer is observation-only, and only an absent retained C1 state may
-advance to a first-mutation gate. The gate revalidates the retained witness and
-binds every authorization to the creator process, frozen paths, and exact
-`BaseLock`; wrong consumers, cross-executor reuse, and failed revalidation are
-sticky. Direct tests cover repeat use, wrong-action consumption, path/lock
-confusion, and parent-authorized fork-child rejection. Public tests cover
-pre-mutation interruption, post-permit and post-operation C1 insertion, exact
-intent/staged pending markers, marker-rename failure and receipt retry,
-delete-authorized and staged-only tails, empty-pair receipt commitment, unspent
-begin receipts, and macOS byte-identical C1 replacement. The Linux and Windows
-policy branch shares canonical/pending
+successfully. An exact pending-to-rollback-tombstone fixture separately proves
+that `remove_private_lease` returns `ForeignReplacementPreserved`, leaves its
+receipt unspent, and changes no namespace leaf. The proof also binds both
+external lease-pending siblings; tests cover pre-existing foreign siblings and
+a post-acquisition byte-identical inode replacement before C1. Two macOS
+stale-generation cases preserve the full new-generation snapshot for
+pending-only and canonical-plus-duplicate C1 states. Malformed cleanup-marker
+precedence remains `IntentCorrupt`, and only successful completion consumes
+the lease receipt. The blocker-precedence test pairs that malformed marker
+with deliberately mismatched generation inputs, so generation validation
+cannot mask the retained union result. `RunLegacyCleanup` now has a separate
+source-private permit for public begin and resume. Its first C1 consumer is
+observation-only, and only an absent retained C1 state may advance to a
+first-mutation gate. The gate revalidates the retained witness and binds every
+authorization to the creator process, frozen paths, and exact `BaseLock`;
+wrong consumers, cross-executor reuse, and failed revalidation are sticky.
+Direct tests cover repeat use, wrong-action consumption, path/lock confusion,
+and parent-authorized fork-child rejection. Public tests cover pre-mutation
+interruption, post-permit and post-operation C1 insertion, exact intent/staged
+pending markers, marker-rename failure and receipt retry, delete-authorized
+and staged-only tails, empty-pair receipt commitment, unspent begin receipts,
+and macOS byte-identical C1 replacement. The Linux and Windows policy branch
+shares canonical/pending
 begin and resume coverage. Nested Recover/Remove execution and the deferred
 writer's publication-only path remain under their distinct action contracts.
 Publication now mints a source-private permit only after the pair is durably
@@ -340,6 +343,30 @@ filesystem. The broader
 integration target is `fast`: it repeatedly
 creates and removes durable OOC leases, so its Debug single-run cost includes
 the required file and parent-directory barriers.
+
+The same binary freezes the source-private handoff-publication resume
+authority. A raw `PrivateHandoffPublicationObservedPermitV1` cannot construct
+`PrivateHandoffPublicationValidatedPermitV1` or enter reconciliation. The
+move-only typed validator has no public constructor; validation consumes it on
+every path, invokes it only on a fresh exact relation witness, and recaptures
+that witness before minting the validated permit. macOS tests reject same-byte
+pending replacement both before and after validation and reject tombstone
+replacement after validation. They exercise the complete pending-to-tombstone
+directory-sync matrix and terminate child reconcilers at every inner pair,
+directory, and marker durability boundary. Each parent then proves fresh
+`PendingRollback` acquisition, exact replay, and last-step tombstone removal.
+Replacement and residual-marker cases preserve the attacked namespace without
+permitting the next deletion.
+
+Fork tests cover acquisition before and after process creation. The child
+cannot use an inherited permit, clear the parent's logical action claim, or
+reacquire through an inherited open-file-description. Resource-failure policy
+also freezes the order in which a fully constructed permit state takes the
+sole lock and then disarms the action-claim guard. Non-Apple tests require
+`PlatformUnsupported` before lock creation or filesystem observation,
+preserve a complete namespace snapshot, and then prove that a normal lock and
+action claim can be acquired and released. They do not claim evidence for the
+Apple cross-directory rename durability contract.
 
 Windows Release also runs a native sharing-violation retry branch; non-Windows
 execution cannot substitute for that platform evidence.
@@ -570,9 +597,11 @@ pipeline, and relation paths isolated.
 B2 itself does not grant worker execution or publication authority. The M3a-1
 entry boundary below rehydrates descriptors `3..6` into a read-only typed
 token, M3a-2a consumes that token into exact-directory append/finalize
-authority, and M3a-2b publishes the no-delete handoff. M3a-2c.1 now performs
-one exact durable worker chunk through those capabilities. Missing-only
-coordination and adopted/executed disposition reporting remain in M3a-2c.2.
+authority, and M3a-2b publishes the no-delete handoff. M3a-2c.1 performs one
+exact durable worker chunk through those capabilities. M3a-2c.2A now
+reconciles exact worker-handoff publication prefixes during a cold
+`DistributedSieveWaveStore::open()`. Only missing-only coordination and
+adopted/executed disposition reporting remain in M3a-2c.2.
 
 `test_distributed_sieve_worker_entry` is the `fast` source-private M3a-1
 exec-image rehydration contract. On supported macOS and Linux hosts, the
@@ -672,6 +701,63 @@ launched executable bytes. Linux reaches the documented terminal-handoff
 unsupported boundary before corpus mutation; Windows and other unsupported
 hosts stop at worker entry. Those fallback cases assert fail-early behavior
 and do not claim native end-to-end coverage.
+
+`test_distributed_sieve_worker_writer_authority` is the authoritative
+writer-to-cold-open entry contract for M3a-2c.2A on macOS. Real writer children
+terminate with `_exit()` at pending and canonical publication boundaries. A
+fresh WaveStore arms the exact pending handoff as a wave-root rollback
+tombstone or converges a canonical or identical-dual prefix. Missing
+`RESERVED`, nonidentical duals, pair identity or extent mismatches, and
+same-byte pending or canonical replacements remain preserved. A live attempt
+`BaseLock` blocks cold open without mutation until release.
+
+`test_ooc_cleanup_transaction` owns the pending-to-tombstone directory-sync
+matrix, every inner pair, owner, directory, and marker crash prefix, residual
+marker rejection, and same-byte tombstone replacement. It retains the
+tombstone through every partial rollback state. The fresh-open tests below own
+wrong `AttemptStartedV1` digests, same-byte attempt-record replacement, and
+partial-tombstone reopen. Together the three fast binaries prove that only the
+matching preactive pair and lease can roll back, while a canonical handoff
+revokes only its exact `RESERVED` generation.
+
+`test_distributed_sieve_resume` freezes the complementary live-store and
+multi-prefix rules. `revalidate()` observes a stable legal publication prefix
+twice, releases all temporary permits, and changes no namespace leaf. It
+returns `reconciliation_required` only for a prefix that still needs
+mutation; a stable terminal canonical prefix is ready. Cold `open()` is the
+authorized convergence path. It acquires terminal and recoverable attempt
+`BaseLock` objects in ascending manifest-chunk and attempt order, retains the
+entire set while reconciling the highest nonterminal prefix, releases in LIFO
+order, and rebuilds the complete global attempt chain before the next round.
+The dual-chunk case observes both locks as busy in each round, observes both
+as reacquirable at the round boundary, replaces a lower pending record with a
+same-byte new inode, and proves that only a fresh next-round observation can
+continue.
+
+The typed worker envelope must bind the exact canonical attempt digest, lease,
+chunk, and ordinal before the relation layer can upgrade an observed permit.
+The dedicated generation-bound outer executor retains the tombstone and exact
+marker tail but delegates pair, owner, and directory mutation to the shared
+preactive rollback core. The policy checker freezes that core, its
+owner/index/data-only scanner, the two branches in
+`recover_owned_private_lease_locked`, its sole typed call site, and a
+repository-wide default deny for other callers. It also freezes the complete
+code-token bodies of the ordinary `recover_private_lease` and
+`remove_private_lease` scopes. Both must pass cleanup-union admission before
+the generic executor can run, and a rollback tombstone remains foreign.
+Generic and typed rollback use the same preactive fault-point matrix. The
+typed runtime matrix inserts both an unknown child and a syntactically valid
+cleanup intent after tombstone durability; both must fail before the shared
+core's first rename and preserve the complete injected snapshot.
+At each relation mutation boundary, the WaveStore bridge revalidates the held
+root, permanent lock, manifest, all exact attempt records, ordinary lease
+witnesses, and non-current retained handoff permits. Phase-specific inventory
+projection removes no unrelated pending, staging, or other-attempt leaf. Root,
+lock, manifest, current-attempt, and lower-attempt replacement matrices prove
+that the bridge diagnostic takes precedence over a generic interruption and
+that no following relation mutation occurs. Non-Apple hosts fail resume
+acquisition before lock or filesystem observation and do not claim native
+convergence or rename-durability coverage.
 
 `test_local_sieve_thread_budget` is the `instant` contract for balanced lane
 allocation, invalid limits, and a bounded property grid. The 64-special-Q probe

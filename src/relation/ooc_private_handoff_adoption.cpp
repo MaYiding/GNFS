@@ -729,7 +729,8 @@ OOCCleanupTransaction::adopt_private_handoff(const std::filesystem::path& base_p
                 parent->leaf_exists(paths.lease_reserved_path.filename()) ||
                 parent->leaf_exists(paths.lease_reserved_pending_path.filename()) ||
                 parent->leaf_exists(paths.lease_owned_path.filename()) ||
-                parent->leaf_exists(paths.lease_owned_pending_path.filename());
+                parent->leaf_exists(paths.lease_owned_pending_path.filename()) ||
+                parent->leaf_exists(paths.private_handoff_rollback_path.filename());
             return assign(protocol_artifact
                               ? adoption_failure(OOCCleanupStatus::NamespaceConflict,
                                                  OOCPrivateHandoffState::TaintedPreserved)
@@ -740,6 +741,11 @@ OOCCleanupTransaction::adopt_private_handoff(const std::filesystem::path& base_p
         auto lock = std::make_shared<ooc_cleanup_detail::BaseLock>(paths.lock_path, false);
         lock->require_stable();
         parent->require_lock_binding(paths.lock_path.filename(), *lock);
+        if (parent->leaf_exists(paths.private_handoff_rollback_path.filename())) {
+            return assign(adoption_failure(OOCCleanupStatus::NamespaceConflict,
+                                           OOCPrivateHandoffState::TaintedPreserved,
+                                           ooc_cleanup_detail::protocol_error()));
+        }
         const auto directory_identity =
             parent->child_directory_identity(paths.private_directory.filename());
         if (!directory_identity) {
@@ -747,7 +753,8 @@ OOCCleanupTransaction::adopt_private_handoff(const std::filesystem::path& base_p
                 parent->leaf_exists(paths.lease_reserved_path.filename()) ||
                 parent->leaf_exists(paths.lease_reserved_pending_path.filename()) ||
                 parent->leaf_exists(paths.lease_owned_path.filename()) ||
-                parent->leaf_exists(paths.lease_owned_pending_path.filename());
+                parent->leaf_exists(paths.lease_owned_pending_path.filename()) ||
+                parent->leaf_exists(paths.private_handoff_rollback_path.filename());
             return assign(external_protocol_artifact
                               ? adoption_failure(OOCCleanupStatus::NamespaceConflict,
                                                  OOCPrivateHandoffState::TaintedPreserved)

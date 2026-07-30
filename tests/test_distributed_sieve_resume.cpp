@@ -1,6 +1,8 @@
 #include <gnfs/core/polynomial_context.hpp>
 #include <gnfs/factor_base/factor_base.hpp>
 #include <gnfs/relation/ooc_cleanup_transaction.hpp>
+#include <gnfs/relation/ooc_relation_store.hpp>
+#include <gnfs/relation/relation_corpus_sha256.hpp>
 #include <gnfs/sieve/distributed_sieve_protocol.hpp>
 
 #include "distributed_sieve_bound_work_internal.hpp"
@@ -5956,6 +5958,1106 @@ publish_worker_launch_receipt(wave_detail::DistributedSieveWaveStore& store, std
         fail(context, __LINE__, wave_diagnostic_detail(started.diagnostic));
     }
     return std::move(*started.receipt);
+}
+
+[[nodiscard]] sieve::NativeIdentityV1
+wave_native_identity(const WaveRootEntrySnapshot& snapshot) noexcept {
+    return {
+        .volume = snapshot.device,
+        .object = snapshot.inode,
+        .generation = 0,
+    };
+}
+
+[[nodiscard]] gnfs::relation::OOCPrivateHandoffPairDescriptorV1
+private_handoff_pair_descriptor(const gnfs::relation::OOCSnapshotDescriptor& descriptor) noexcept {
+    return {
+        .format_version = descriptor.format_version,
+        .store_id = descriptor.store_id,
+        .generation = descriptor.generation,
+        .count = descriptor.count,
+        .index_extent = gnfs::relation::OOCRelationWriter::index_size_for_count(descriptor.count),
+        .data_extent = descriptor.data_end,
+    };
+}
+
+[[nodiscard]] bool stop_private_handoff_at(gnfs::relation::OOCPrivateHandoffFaultPoint point,
+                                           void* opaque) noexcept {
+    return point == *static_cast<const gnfs::relation::OOCPrivateHandoffFaultPoint*>(opaque);
+}
+
+struct PublishedWorkerHandoffPrefix final {
+    wave_detail::DistributedSieveWorkerAttemptNamesV1 names;
+    gnfs::relation::OOCCleanupPaths paths;
+    sieve::AttemptStartedV1 attempt;
+};
+
+struct WorkerHandoffPrefixFixtureOptions final {
+    bool wrong_attempt_started_digest = false;
+    bool create_private_lease_root = true;
+};
+
+[[nodiscard]] PublishedWorkerHandoffPrefix
+publish_worker_handoff_prefix(wave_detail::DistributedSieveWaveStore& store,
+                              const std::filesystem::path& root, const sieve::ChunkPlanV1& chunk,
+                              gnfs::relation::OOCPrivateHandoffFaultPoint fault_point,
+                              WorkerHandoffPrefixFixtureOptions options = {}) {
+    const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        chunk.relative_artifact_stem, chunk.chunk_id, 0);
+    CHECK(names.has_value());
+    if (options.create_private_lease_root) {
+        create_wave_attempt_p0(store, chunk.chunk_id, 0, "create worker-handoff prefix P0");
+    }
+
+    const auto base = root / names->private_directory_leaf / "corpus";
+    const auto paths = gnfs::relation::OOCCleanupTransaction::paths_for(base);
+    auto reservation = gnfs::relation::OOCCleanupTransaction::reserve_private_lease(base);
+    CHECK(reservation.completed());
+    CHECK(reservation.ownership.has_value());
+
+    const auto reserved =
+        cleanup_detail::parse_private_lease_marker(read_file_bytes(paths.lease_reserved_path));
+    const auto directory_snapshot = capture_wave_root_entry_snapshot(
+        paths.private_directory, paths.private_directory.filename().string());
+    const auto owner_path = cleanup_detail::private_lease_owner_path(paths.private_directory);
+    const auto owner_snapshot =
+        capture_wave_root_entry_snapshot(owner_path, owner_path.filename().string());
+    sieve::LeaseIdentityV1 lease;
+    lease.lease_id.limbs = reserved.lease_id;
+    lease.owner_marker = wave_native_identity(owner_snapshot);
+    lease.directory = wave_native_identity(directory_snapshot);
+    lease.relative_stem = names->relative_lease_stem;
+    const auto attempt = make_wave_attempt_started(store.manifest(), chunk, 0,
+                                                   store.manifest_digest(), std::move(lease));
+    publish_wave_attempt_canonical_record(root, *names, attempt,
+                                          "publish worker-handoff prefix AttemptStarted");
+
+    gnfs::relation::OOCRelationWriter writer(
+        base.string(), std::move(*reservation.ownership),
+        gnfs::relation::OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
+    const auto descriptor = writer.finalize();
+    auto pair_ownership = writer.take_cleanup_ownership_receipt();
+    auto lease_ownership = writer.take_deferred_private_lease_ownership();
+
+    const auto index_snapshot =
+        capture_wave_root_entry_snapshot(paths.index_path, paths.index_path.filename().string());
+    const auto data_snapshot =
+        capture_wave_root_entry_snapshot(paths.data_path, paths.data_path.filename().string());
+    const std::vector<gnfs::core::Relation> relations;
+    const auto sequence = gnfs::relation::relation_sequence_receipt(relations);
+    const auto corpus = gnfs::relation::relation_corpus_sha256_v1(relations);
+    CHECK(corpus.has_value());
+
+    sieve::WorkerHandoffV1 handoff{
+        .manifest_digest = store.manifest().self_digest,
+        .work_digest = store.manifest().work_sha256,
+        .wave_id = store.manifest().wave_id,
+        .chunk_id = attempt.chunk_id,
+        .sq_begin = attempt.sq_begin,
+        .sq_end = attempt.sq_end,
+        .attempt_ordinal = attempt.attempt_ordinal,
+        .attempt_started_digest = options.wrong_attempt_started_digest
+                                      ? digest_with_seed(static_cast<std::uint8_t>(0xf3U))
+                                      : attempt.self_digest,
+        .lease = attempt.lease,
+        .artifact =
+            {
+                .descriptor =
+                    {
+                        .format_version = descriptor.format_version,
+                        .store_id = descriptor.store_id,
+                        .generation = descriptor.generation,
+                        .relation_count = descriptor.count,
+                        .data_end = descriptor.data_end,
+                    },
+                .index_file =
+                    {
+                        .identity = wave_native_identity(index_snapshot),
+                        .extent = index_snapshot.size,
+                    },
+                .data_file =
+                    {
+                        .identity = wave_native_identity(data_snapshot),
+                        .extent = data_snapshot.size,
+                    },
+                .sequence_receipt =
+                    {
+                        .relation_count = sequence.relation_count,
+                        .low = sequence.low,
+                        .high = sequence.high,
+                    },
+                .corpus_sha256 = *corpus,
+            },
+        .processed_sq_count = static_cast<std::uint64_t>(attempt.sq_end - attempt.sq_begin),
+        .next_sq_index = attempt.sq_end,
+        .completion_reason = sieve::WorkerCompletionReasonV1::zero_relations,
+        .relation_count = 0,
+        .cleanup_intent_absent = true,
+    };
+    CHECK(!options.wrong_attempt_started_digest ||
+          handoff.attempt_started_digest != attempt.self_digest);
+    handoff = seal_value(std::move(handoff));
+    const auto payload = encode_or_fail(Record{handoff});
+    auto target = fault_point;
+    const auto publication = gnfs::relation::OOCCleanupTransaction::publish_private_handoff(
+        pair_ownership, lease_ownership, private_handoff_pair_descriptor(descriptor),
+        static_cast<std::uint32_t>(sieve::DistributedSieveRecordKindV1::worker_handoff),
+        store.manifest().handoff_version, payload,
+        gnfs::relation::OOCPrivateHandoffTestHooks{
+            .stop_after = stop_private_handoff_at,
+            .context = &target,
+        });
+    CHECK(publication.result.status == gnfs::relation::OOCCleanupStatus::Interrupted);
+    return {
+        .names = *names,
+        .paths = paths,
+        .attempt = attempt,
+    };
+}
+
+[[nodiscard]] bool replace_worker_attempt_after_expected_handoff_prefix(
+    wave_detail::DistributedSieveWorkerHandoffResumeObservationPointV1 point,
+    void* opaque) noexcept {
+    if (point != wave_detail::DistributedSieveWorkerHandoffResumeObservationPointV1::
+                     AfterExpectedPrefixValidated) {
+        return false;
+    }
+    replace_marker_with_same_bytes_after_first_inventory(opaque);
+    return false;
+}
+
+struct WorkerHandoffObservationTrace final {
+    std::array<std::size_t,
+               static_cast<std::size_t>(
+                   wave_detail::DistributedSieveWorkerHandoffResumeObservationPointV1::Count)>
+        counts{};
+};
+
+[[nodiscard]] bool observe_worker_handoff_resume_point(
+    wave_detail::DistributedSieveWorkerHandoffResumeObservationPointV1 point,
+    void* opaque) noexcept {
+    auto& trace = *static_cast<WorkerHandoffObservationTrace*>(opaque);
+    const auto index = static_cast<std::size_t>(point);
+    if (index < trace.counts.size()) {
+        ++trace.counts[index];
+    }
+    return false;
+}
+
+void test_wave_store_worker_handoff_resume_inventory_and_open() {
+    constexpr std::array fault_points{
+        gnfs::relation::OOCPrivateHandoffFaultPoint::PendingDurable,
+        gnfs::relation::OOCPrivateHandoffFaultPoint::CanonicalDurable,
+    };
+    for (const auto fault_point : fault_points) {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / ("worker-handoff-resume-" +
+                                         std::to_string(static_cast<std::uint32_t>(fault_point)));
+        auto draft = wave_manifest_draft();
+        draft.ooc_format_version = gnfs::relation::OOCRelationWriter::FORMAT_VERSION;
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, std::move(draft));
+        auto& store = require_wave_ready(created, "create worker-handoff resume fixture");
+        const auto manifest_digest = store.manifest_digest();
+        const auto& chunk = store.manifest().chunks.front();
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(names.has_value());
+        create_wave_attempt_p0(store, chunk.chunk_id, 0, "create resume fixture P0");
+
+        const auto base = root / names->private_directory_leaf / "corpus";
+        const auto paths = gnfs::relation::OOCCleanupTransaction::paths_for(base);
+        {
+            auto reservation = gnfs::relation::OOCCleanupTransaction::reserve_private_lease(base);
+            CHECK(reservation.completed());
+            CHECK(reservation.ownership.has_value());
+
+            const auto reserved = cleanup_detail::parse_private_lease_marker(
+                read_file_bytes(paths.lease_reserved_path));
+            const auto directory_snapshot = capture_wave_root_entry_snapshot(
+                paths.private_directory, paths.private_directory.filename().string());
+            const auto owner_path =
+                cleanup_detail::private_lease_owner_path(paths.private_directory);
+            const auto owner_snapshot =
+                capture_wave_root_entry_snapshot(owner_path, owner_path.filename().string());
+            sieve::LeaseIdentityV1 lease;
+            lease.lease_id.limbs = reserved.lease_id;
+            lease.owner_marker = wave_native_identity(owner_snapshot);
+            lease.directory = wave_native_identity(directory_snapshot);
+            lease.relative_stem = names->relative_lease_stem;
+            const auto attempt = make_wave_attempt_started(store.manifest(), chunk, 0,
+                                                           manifest_digest, std::move(lease));
+            publish_wave_attempt_canonical_record(
+                root, *names, attempt, "publish canonical resume fixture AttemptStarted");
+
+            gnfs::relation::OOCRelationWriter writer(
+                base.string(), std::move(*reservation.ownership),
+                gnfs::relation::OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
+            const auto descriptor = writer.finalize();
+            auto pair_ownership = writer.take_cleanup_ownership_receipt();
+            auto lease_ownership = writer.take_deferred_private_lease_ownership();
+
+            const auto index_snapshot = capture_wave_root_entry_snapshot(
+                paths.index_path, paths.index_path.filename().string());
+            const auto data_snapshot = capture_wave_root_entry_snapshot(
+                paths.data_path, paths.data_path.filename().string());
+            const std::vector<gnfs::core::Relation> relations;
+            const auto sequence = gnfs::relation::relation_sequence_receipt(relations);
+            const auto corpus = gnfs::relation::relation_corpus_sha256_v1(relations);
+            CHECK(corpus.has_value());
+
+            sieve::WorkerHandoffV1 handoff{
+                .manifest_digest = store.manifest().self_digest,
+                .work_digest = store.manifest().work_sha256,
+                .wave_id = store.manifest().wave_id,
+                .chunk_id = attempt.chunk_id,
+                .sq_begin = attempt.sq_begin,
+                .sq_end = attempt.sq_end,
+                .attempt_ordinal = attempt.attempt_ordinal,
+                .attempt_started_digest = attempt.self_digest,
+                .lease = attempt.lease,
+                .artifact =
+                    {
+                        .descriptor =
+                            {
+                                .format_version = descriptor.format_version,
+                                .store_id = descriptor.store_id,
+                                .generation = descriptor.generation,
+                                .relation_count = descriptor.count,
+                                .data_end = descriptor.data_end,
+                            },
+                        .index_file =
+                            {
+                                .identity = wave_native_identity(index_snapshot),
+                                .extent = index_snapshot.size,
+                            },
+                        .data_file =
+                            {
+                                .identity = wave_native_identity(data_snapshot),
+                                .extent = data_snapshot.size,
+                            },
+                        .sequence_receipt =
+                            {
+                                .relation_count = sequence.relation_count,
+                                .low = sequence.low,
+                                .high = sequence.high,
+                            },
+                        .corpus_sha256 = *corpus,
+                    },
+                .processed_sq_count = static_cast<std::uint64_t>(attempt.sq_end - attempt.sq_begin),
+                .next_sq_index = attempt.sq_end,
+                .completion_reason = sieve::WorkerCompletionReasonV1::zero_relations,
+                .relation_count = 0,
+                .cleanup_intent_absent = true,
+            };
+            handoff = seal_value(std::move(handoff));
+            const auto payload = encode_or_fail(Record{handoff});
+            auto target = fault_point;
+            const auto publication = gnfs::relation::OOCCleanupTransaction::publish_private_handoff(
+                pair_ownership, lease_ownership, private_handoff_pair_descriptor(descriptor),
+                static_cast<std::uint32_t>(sieve::DistributedSieveRecordKindV1::worker_handoff),
+                store.manifest().handoff_version, payload,
+                gnfs::relation::OOCPrivateHandoffTestHooks{
+                    .stop_after = stop_private_handoff_at,
+                    .context = &target,
+                });
+            CHECK(publication.result.status == gnfs::relation::OOCCleanupStatus::Interrupted);
+        }
+
+        const auto before_revalidate = capture_wave_root_snapshot(root);
+        const auto visible_handoff =
+            fault_point == gnfs::relation::OOCPrivateHandoffFaultPoint::PendingDurable
+                ? paths.private_handoff_pending_path
+                : paths.private_handoff_path;
+        const auto handoff_before =
+            capture_wave_root_entry_snapshot(visible_handoff, visible_handoff.filename().string());
+        require_wave_status(store.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::reconciliation_required,
+                            "live WaveStore classifies legal handoff prefix without mutation");
+        CHECK(capture_wave_root_snapshot(root) == before_revalidate);
+        CHECK(capture_wave_root_entry_snapshot(
+                  visible_handoff, visible_handoff.filename().string()) == handoff_before);
+
+        created.store.reset();
+        if (fault_point == gnfs::relation::OOCPrivateHandoffFaultPoint::CanonicalDurable) {
+            const auto attempt_path = root / names->canonical_record_leaf;
+            const auto original_attempt =
+                capture_wave_root_entry_snapshot(attempt_path, names->canonical_record_leaf);
+            const auto root_before_attack = capture_wave_root_snapshot(root);
+            const auto owner_path =
+                cleanup_detail::private_lease_owner_path(paths.private_directory);
+            const std::array protected_paths{
+                paths.private_handoff_path,
+                paths.index_path,
+                paths.data_path,
+                owner_path,
+            };
+            std::vector<WaveRootEntrySnapshot> protected_before;
+            protected_before.reserve(protected_paths.size());
+            for (const auto& protected_path : protected_paths) {
+                protected_before.push_back(capture_wave_root_entry_snapshot(
+                    protected_path, protected_path.filename().string()));
+            }
+
+            WaveSameBytesReplacementContext replacement{
+                .canonical = attempt_path,
+                .displaced = temp.path() / "worker-handoff-resume-displaced-attempt",
+                .bytes = original_attempt.bytes,
+            };
+            auto attacked = wave_detail::DistributedSieveWaveStore::open(
+                root, manifest_digest,
+                wave_detail::DistributedSieveWaveStoreTestHooks{
+                    .worker_handoff_resume =
+                        {
+                            .stop_after = replace_worker_attempt_after_expected_handoff_prefix,
+                            .context = &replacement,
+                        },
+                });
+            CHECK(!attacked);
+            CHECK(attacked.store == nullptr);
+            require_wave_status(
+                attacked.diagnostic,
+                wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                "post-prefix AttemptStarted replacement stops before relation mutation");
+            CHECK(replacement.invoked);
+            CHECK(replacement.replaced);
+            CHECK(replacement.native_error == 0);
+
+            const auto replacement_attempt =
+                capture_wave_root_entry_snapshot(attempt_path, names->canonical_record_leaf);
+            CHECK(replacement_attempt.bytes == original_attempt.bytes);
+            CHECK(replacement_attempt.device != original_attempt.device ||
+                  replacement_attempt.inode != original_attempt.inode);
+            CHECK(capture_wave_root_entry_snapshot(
+                      replacement.displaced, names->canonical_record_leaf) == original_attempt);
+
+            auto root_after_attack = capture_wave_root_snapshot(root);
+            const auto erase_attempt = [&](WaveRootSnapshot& snapshot) {
+                const auto removed =
+                    std::erase_if(snapshot, [&](const WaveRootEntrySnapshot& entry) {
+                        return entry.leaf == names->canonical_record_leaf;
+                    });
+                CHECK(removed == 1);
+            };
+            auto root_without_attempt = root_before_attack;
+            erase_attempt(root_without_attempt);
+            erase_attempt(root_after_attack);
+            CHECK(root_after_attack == root_without_attempt);
+            for (std::size_t index = 0; index < protected_paths.size(); ++index) {
+                CHECK(capture_wave_root_entry_snapshot(
+                          protected_paths[index], protected_paths[index].filename().string()) ==
+                      protected_before[index]);
+            }
+        }
+
+        WorkerHandoffObservationTrace trace;
+        auto reopened = wave_detail::DistributedSieveWaveStore::open(
+            root, manifest_digest,
+            wave_detail::DistributedSieveWaveStoreTestHooks{
+                .worker_handoff_resume =
+                    {
+                        .stop_after = observe_worker_handoff_resume_point,
+                        .context = &trace,
+                    },
+            });
+        if (!reopened || reopened.store == nullptr) {
+            std::string context = "open converges legal worker-handoff prefix after observations";
+            for (const auto count : trace.counts) {
+                context.append("-");
+                context.append(std::to_string(count));
+            }
+            fail(context, __LINE__, wave_diagnostic_detail(reopened.diagnostic));
+        }
+        auto& resumed = *reopened.store;
+        CHECK(trace.counts[static_cast<std::size_t>(
+                  wave_detail::DistributedSieveWorkerHandoffResumeObservationPointV1::
+                      AfterExpectedPrefixValidated)] == 1U);
+        require_wave_status(resumed.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "resumed worker-handoff inventory is strict");
+        CHECK(entry_exists_no_follow(root / names->canonical_record_leaf));
+        CHECK(entry_exists_no_follow(root / names->base_lock_leaf));
+        CHECK(!entry_exists_no_follow(root / names->reserved_leaf));
+        if (fault_point == gnfs::relation::OOCPrivateHandoffFaultPoint::PendingDurable) {
+            using Point = wave_detail::DistributedSieveWorkerHandoffResumeObservationPointV1;
+            constexpr std::array rollback_points{
+                Point::AfterPendingRollbackSourceDirectoryDurable,
+                Point::AfterPendingRollbackDestinationDirectoryDurable,
+                Point::AfterPendingRollbackPreactiveDirectoryQuarantinedDurable,
+                Point::AfterPendingRollbackPreactiveDataRemovedDurable,
+                Point::AfterPendingRollbackPreactiveIndexRemovedDurable,
+                Point::AfterPendingRollbackOwnerRemovedDurable,
+                Point::AfterPendingRollbackLeaseDirectoryRemovedDurable,
+                Point::AfterPendingRollbackReservedRemovedDurable,
+                Point::AfterPendingRollbackOwnedRemovedDurable,
+                Point::BeforePendingRollbackTombstoneRemovalValidated,
+                Point::AfterPendingRollbackTombstoneRemovedDurable,
+            };
+            for (const auto point : rollback_points) {
+                CHECK(trace.counts[static_cast<std::size_t>(point)] == 1U);
+            }
+            CHECK(!entry_exists_no_follow(root / names->private_directory_leaf));
+            CHECK(!entry_exists_no_follow(root / names->owned_leaf));
+        } else {
+            CHECK(trace.counts[static_cast<std::size_t>(
+                      wave_detail::DistributedSieveWorkerHandoffResumeObservationPointV1::
+                          AfterCanonicalConfirmedDurable)] == 1U);
+            CHECK(trace.counts[static_cast<std::size_t>(
+                      wave_detail::DistributedSieveWorkerHandoffResumeObservationPointV1::
+                          AfterReservedRevokedDurable)] == 1U);
+            CHECK(entry_exists_no_follow(root / names->private_directory_leaf));
+            CHECK(entry_exists_no_follow(root / names->owned_leaf));
+            CHECK(entry_exists_no_follow(paths.private_handoff_path));
+            CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
+        }
+    }
+}
+
+void test_wave_store_worker_handoff_rejects_resealed_wrong_attempt_digest_without_mutation() {
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "worker-handoff-wrong-attempt-digest";
+    auto draft = wave_manifest_draft();
+    draft.ooc_format_version = gnfs::relation::OOCRelationWriter::FORMAT_VERSION;
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, std::move(draft));
+    auto& store = require_wave_ready(created, "create wrong-digest handoff fixture");
+    const auto manifest_digest = store.manifest_digest();
+    const auto prefix =
+        publish_worker_handoff_prefix(store, root, store.manifest().chunks.front(),
+                                      gnfs::relation::OOCPrivateHandoffFaultPoint::PendingDurable,
+                                      {
+                                          .wrong_attempt_started_digest = true,
+                                      });
+
+    const auto before = capture_wave_root_snapshot(root);
+    require_wave_status(store.revalidate(),
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "typed worker handoff rejects resealed wrong AttemptStarted digest");
+    CHECK(capture_wave_root_snapshot(root) == before);
+
+    created.store.reset();
+    auto reopened = wave_detail::DistributedSieveWaveStore::open(root, manifest_digest);
+    CHECK(!reopened);
+    CHECK(reopened.store == nullptr);
+    require_wave_status(
+        reopened.diagnostic, wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+        "open rejects resealed wrong AttemptStarted digest before minting authority");
+    CHECK(capture_wave_root_snapshot(root) == before);
+    CHECK(entry_exists_no_follow(prefix.paths.private_handoff_pending_path));
+    CHECK(entry_exists_no_follow(root / prefix.names.reserved_leaf));
+}
+
+struct WorkerHandoffRoundStopContext final {
+    std::array<std::filesystem::path, 2> base_locks;
+    WaveSameBytesReplacementContext low_pending_replacement;
+    std::array<std::array<bool, 2>, 2> locks_busy_at_round{};
+    std::array<bool, 2> locks_reacquirable_at_release{};
+    std::size_t expected_prefix_observations = 0;
+    std::size_t release_observations = 0;
+    bool inspection_failed = false;
+};
+
+[[nodiscard]] bool stop_on_second_worker_handoff_round(
+    wave_detail::DistributedSieveWorkerHandoffResumeObservationPointV1 point,
+    void* opaque) noexcept {
+    auto& context = *static_cast<WorkerHandoffRoundStopContext*>(opaque);
+    if (point != wave_detail::DistributedSieveWorkerHandoffResumeObservationPointV1::
+                     AfterExpectedPrefixValidated) {
+        return false;
+    }
+    const std::size_t round = context.expected_prefix_observations;
+    if (round >= context.locks_busy_at_round.size()) {
+        context.inspection_failed = true;
+        return true;
+    }
+    try {
+        for (std::size_t index = 0; index < context.base_locks.size(); ++index) {
+            context.locks_busy_at_round[round][index] =
+                relation_base_lock_reports_busy(context.base_locks[index]);
+        }
+    } catch (...) {
+        context.inspection_failed = true;
+        return true;
+    }
+    ++context.expected_prefix_observations;
+    return context.expected_prefix_observations == 2U;
+}
+
+void replace_lower_pending_after_round_locks_released(void* opaque) noexcept {
+    auto& context = *static_cast<WorkerHandoffRoundStopContext*>(opaque);
+    if (context.release_observations != 0U) {
+        context.inspection_failed = true;
+        return;
+    }
+    ++context.release_observations;
+    try {
+        for (std::size_t index = 0; index < context.base_locks.size(); ++index) {
+            context.locks_reacquirable_at_release[index] =
+                !relation_base_lock_reports_busy(context.base_locks[index]);
+        }
+    } catch (...) {
+        context.inspection_failed = true;
+        return;
+    }
+    replace_marker_with_same_bytes_after_first_inventory(&context.low_pending_replacement);
+}
+
+void test_wave_store_worker_handoff_dual_chunk_order_and_fresh_rounds() {
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "worker-handoff-dual-chunk-rounds";
+    auto draft = wave_manifest_draft();
+    draft.ooc_format_version = gnfs::relation::OOCRelationWriter::FORMAT_VERSION;
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, std::move(draft));
+    auto& store = require_wave_ready(created, "create dual-chunk handoff fixture");
+    const auto manifest_digest = store.manifest_digest();
+    CHECK(store.manifest().chunks.size() >= 2U);
+    create_wave_attempt_p0(store, store.manifest().chunks[0].chunk_id, 0,
+                           "create lower worker-handoff prefix P0");
+    create_wave_attempt_p0(store, store.manifest().chunks[1].chunk_id, 0,
+                           "create higher worker-handoff prefix P0");
+    const auto low =
+        publish_worker_handoff_prefix(store, root, store.manifest().chunks[0],
+                                      gnfs::relation::OOCPrivateHandoffFaultPoint::PendingDurable,
+                                      {
+                                          .create_private_lease_root = false,
+                                      });
+    const auto high =
+        publish_worker_handoff_prefix(store, root, store.manifest().chunks[1],
+                                      gnfs::relation::OOCPrivateHandoffFaultPoint::CanonicalDurable,
+                                      {
+                                          .create_private_lease_root = false,
+                                      });
+    const auto low_pending_before = capture_wave_root_entry_snapshot(
+        low.paths.private_handoff_pending_path,
+        low.paths.private_handoff_pending_path.filename().string());
+    created.store.reset();
+
+    WorkerHandoffRoundStopContext stop{
+        .base_locks =
+            {
+                root / low.names.base_lock_leaf,
+                root / high.names.base_lock_leaf,
+            },
+        .low_pending_replacement =
+            {
+                .canonical = low.paths.private_handoff_pending_path,
+                .displaced = temp.path() / "displaced-low-pending-between-rounds",
+                .bytes = low_pending_before.bytes,
+            },
+    };
+    auto interrupted = wave_detail::DistributedSieveWaveStore::open(
+        root, manifest_digest,
+        wave_detail::DistributedSieveWaveStoreTestHooks{
+            .worker_handoff_resume =
+                {
+                    .stop_after = stop_on_second_worker_handoff_round,
+                    .after_round_locks_released = replace_lower_pending_after_round_locks_released,
+                    .context = &stop,
+                },
+        });
+    CHECK(!interrupted);
+    CHECK(interrupted.store == nullptr);
+    require_wave_status(interrupted.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::interrupted,
+                        "dual-chunk resume stops in freshly reobserved second round");
+    CHECK(!stop.inspection_failed);
+    CHECK(stop.expected_prefix_observations == 2U);
+    CHECK(stop.release_observations == 1U);
+    CHECK(stop.locks_busy_at_round[0][0]);
+    CHECK(stop.locks_busy_at_round[0][1]);
+    CHECK(stop.locks_busy_at_round[1][0]);
+    CHECK(stop.locks_busy_at_round[1][1]);
+    CHECK(stop.locks_reacquirable_at_release[0]);
+    CHECK(stop.locks_reacquirable_at_release[1]);
+    CHECK(stop.low_pending_replacement.invoked);
+    CHECK(stop.low_pending_replacement.replaced);
+    CHECK(stop.low_pending_replacement.native_error == 0);
+
+    CHECK(entry_exists_no_follow(high.paths.private_handoff_path));
+    CHECK(!entry_exists_no_follow(root / high.names.reserved_leaf));
+    CHECK(entry_exists_no_follow(low.paths.private_handoff_pending_path));
+    CHECK(entry_exists_no_follow(root / low.names.reserved_leaf));
+    const auto low_pending_after = capture_wave_root_entry_snapshot(
+        low.paths.private_handoff_pending_path,
+        low.paths.private_handoff_pending_path.filename().string());
+    CHECK(low_pending_after.bytes == low_pending_before.bytes);
+    CHECK(low_pending_after.device != low_pending_before.device ||
+          low_pending_after.inode != low_pending_before.inode);
+    CHECK(capture_wave_root_entry_snapshot(
+              stop.low_pending_replacement.displaced,
+              low.paths.private_handoff_pending_path.filename().string()) == low_pending_before);
+    CHECK(!relation_base_lock_reports_busy(root / low.names.base_lock_leaf));
+    CHECK(!relation_base_lock_reports_busy(root / high.names.base_lock_leaf));
+
+    auto reopened = wave_detail::DistributedSieveWaveStore::open(root, manifest_digest);
+    auto& resumed = require_wave_ready(reopened, "resume lower prefix under retained terminal");
+    require_wave_status(resumed.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "dual-chunk resume converges one recoverable prefix per round");
+    CHECK(entry_exists_no_follow(high.paths.private_handoff_path));
+    CHECK(!entry_exists_no_follow(low.paths.private_handoff_pending_path));
+    CHECK(!entry_exists_no_follow(root / low.names.private_directory_leaf));
+    CHECK(!relation_base_lock_reports_busy(root / low.names.base_lock_leaf));
+    CHECK(!relation_base_lock_reports_busy(root / high.names.base_lock_leaf));
+}
+
+struct WorkerHandoffRollbackStopContext final {
+    wave_detail::DistributedSieveWorkerHandoffResumeObservationPointV1 target =
+        wave_detail::DistributedSieveWorkerHandoffResumeObservationPointV1::
+            AfterPendingRollbackSourceDirectoryDurable;
+    bool observed = false;
+};
+
+[[nodiscard]] bool stop_at_worker_handoff_rollback_durability(
+    wave_detail::DistributedSieveWorkerHandoffResumeObservationPointV1 point,
+    void* opaque) noexcept {
+    auto& context = *static_cast<WorkerHandoffRollbackStopContext*>(opaque);
+    if (point != context.target) {
+        return false;
+    }
+    context.observed = true;
+    return true;
+}
+
+void test_wave_store_worker_handoff_rollback_tombstone_reopens() {
+    using Point = wave_detail::DistributedSieveWorkerHandoffResumeObservationPointV1;
+    constexpr std::array points{
+        Point::AfterPendingRollbackSourceDirectoryDurable,
+        Point::AfterPendingRollbackDestinationDirectoryDurable,
+        Point::AfterPendingRollbackPreactiveDirectoryQuarantinedDurable,
+        Point::AfterPendingRollbackPreactiveDataRemovedDurable,
+        Point::AfterPendingRollbackPreactiveIndexRemovedDurable,
+        Point::AfterPendingRollbackOwnerRemovedDurable,
+        Point::AfterPendingRollbackLeaseDirectoryRemovedDurable,
+        Point::AfterPendingRollbackReservedRemovedDurable,
+        Point::AfterPendingRollbackOwnedRemovedDurable,
+        Point::BeforePendingRollbackTombstoneRemovalValidated,
+        Point::AfterPendingRollbackTombstoneRemovedDurable,
+    };
+    for (const auto point : points) {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / ("worker-handoff-rollback-reopen-" +
+                                         std::to_string(static_cast<std::uint32_t>(point)));
+        auto draft = wave_manifest_draft();
+        draft.ooc_format_version = gnfs::relation::OOCRelationWriter::FORMAT_VERSION;
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, std::move(draft));
+        auto& store = require_wave_ready(created, "create rollback tombstone fixture");
+        const auto manifest_digest = store.manifest_digest();
+        const auto prefix = publish_worker_handoff_prefix(
+            store, root, store.manifest().chunks.front(),
+            gnfs::relation::OOCPrivateHandoffFaultPoint::PendingDurable);
+        created.store.reset();
+
+        WorkerHandoffRollbackStopContext stop{
+            .target = point,
+        };
+        auto interrupted = wave_detail::DistributedSieveWaveStore::open(
+            root, manifest_digest,
+            wave_detail::DistributedSieveWaveStoreTestHooks{
+                .worker_handoff_resume =
+                    {
+                        .stop_after = stop_at_worker_handoff_rollback_durability,
+                        .context = &stop,
+                    },
+            });
+        CHECK(!interrupted);
+        CHECK(interrupted.store == nullptr);
+        require_wave_status(interrupted.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::interrupted,
+                            "rollback durability boundary interrupts before lease recovery");
+        CHECK(stop.observed);
+        const bool tombstone_present = point != Point::AfterPendingRollbackTombstoneRemovedDurable;
+        const bool reserved_present =
+            point != Point::AfterPendingRollbackReservedRemovedDurable &&
+            point != Point::AfterPendingRollbackOwnedRemovedDurable &&
+            point != Point::BeforePendingRollbackTombstoneRemovalValidated &&
+            point != Point::AfterPendingRollbackTombstoneRemovedDurable;
+        const bool owned_present = point != Point::AfterPendingRollbackOwnedRemovedDurable &&
+                                   point != Point::BeforePendingRollbackTombstoneRemovalValidated &&
+                                   point != Point::AfterPendingRollbackTombstoneRemovedDurable;
+        const bool final_directory_present =
+            point == Point::AfterPendingRollbackSourceDirectoryDurable ||
+            point == Point::AfterPendingRollbackDestinationDirectoryDurable;
+        const bool staging_directory_present =
+            point == Point::AfterPendingRollbackPreactiveDirectoryQuarantinedDurable ||
+            point == Point::AfterPendingRollbackPreactiveDataRemovedDurable ||
+            point == Point::AfterPendingRollbackPreactiveIndexRemovedDurable ||
+            point == Point::AfterPendingRollbackOwnerRemovedDurable;
+        const auto staging_leaf =
+            prefix.names.relative_lease_stem +
+            std::string(wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_STAGING_TAG) +
+            cleanup_detail::private_lease_id_hex(prefix.attempt.lease.lease_id.limbs);
+        CHECK(entry_exists_no_follow(root / prefix.names.rollback_handoff_leaf) ==
+              tombstone_present);
+        CHECK(!entry_exists_no_follow(prefix.paths.private_handoff_pending_path));
+        CHECK(entry_exists_no_follow(root / prefix.names.reserved_leaf) == reserved_present);
+        CHECK(entry_exists_no_follow(root / prefix.names.owned_leaf) == owned_present);
+        CHECK(entry_exists_no_follow(root / prefix.names.private_directory_leaf) ==
+              final_directory_present);
+        CHECK(entry_exists_no_follow(root / staging_leaf) == staging_directory_present);
+
+        auto reopened = wave_detail::DistributedSieveWaveStore::open(root, manifest_digest);
+        auto& resumed = require_wave_ready(reopened, "fresh open consumes root rollback tombstone");
+        require_wave_status(resumed.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "rollback tombstone restart converges to strict inventory");
+        CHECK(!entry_exists_no_follow(root / prefix.names.rollback_handoff_leaf));
+        CHECK(!entry_exists_no_follow(root / prefix.names.reserved_leaf));
+        CHECK(!entry_exists_no_follow(root / prefix.names.owned_leaf));
+        CHECK(!entry_exists_no_follow(root / prefix.names.private_directory_leaf));
+    }
+}
+
+struct WorkerHandoffAggregateAttackContext final {
+    wave_detail::DistributedSieveWorkerHandoffResumeObservationPointV1 target = wave_detail::
+        DistributedSieveWorkerHandoffResumeObservationPointV1::AfterExpectedPrefixValidated;
+    WaveSameBytesReplacementContext replacement;
+};
+
+[[nodiscard]] bool replace_lower_attempt_at_worker_handoff_observation(
+    wave_detail::DistributedSieveWorkerHandoffResumeObservationPointV1 point,
+    void* opaque) noexcept {
+    auto& context = *static_cast<WorkerHandoffAggregateAttackContext*>(opaque);
+    if (point == context.target && !context.replacement.invoked) {
+        replace_marker_with_same_bytes_after_first_inventory(&context.replacement);
+    }
+    return false;
+}
+
+void test_wave_store_worker_handoff_aggregate_authority_attack_matrix() {
+    using Point = wave_detail::DistributedSieveWorkerHandoffResumeObservationPointV1;
+    constexpr std::array attack_points{
+        Point::AfterExpectedPrefixValidated,
+        Point::AfterPendingRollbackSourceDirectoryDurable,
+        Point::AfterPendingRollbackDestinationDirectoryDurable,
+        Point::AfterPendingRollbackPreactiveDirectoryQuarantinedDurable,
+        Point::AfterPendingRollbackPreactiveDataRemovedDurable,
+        Point::AfterPendingRollbackPreactiveIndexRemovedDurable,
+        Point::AfterPendingRollbackOwnerRemovedDurable,
+        Point::AfterPendingRollbackLeaseDirectoryRemovedDurable,
+        Point::AfterPendingRollbackReservedRemovedDurable,
+        Point::AfterPendingRollbackOwnedRemovedDurable,
+        Point::BeforePendingRollbackTombstoneRemovalValidated,
+        Point::AfterPendingRollbackTombstoneRemovedDurable,
+        Point::AfterCanonicalConfirmedDurable,
+        Point::AfterReservedRevokedDurable,
+    };
+    for (const auto point : attack_points) {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / ("worker-handoff-aggregate-attack-" +
+                                         std::to_string(static_cast<std::uint32_t>(point)));
+        auto draft = wave_manifest_draft();
+        draft.ooc_format_version = gnfs::relation::OOCRelationWriter::FORMAT_VERSION;
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, std::move(draft));
+        auto& store = require_wave_ready(created, "create aggregate-attack fixture");
+        const auto manifest_digest = store.manifest_digest();
+        CHECK(store.manifest().chunks.size() >= 2U);
+        const bool pending_current = point != Point::AfterExpectedPrefixValidated &&
+                                     point != Point::AfterCanonicalConfirmedDurable &&
+                                     point != Point::AfterReservedRevokedDurable;
+        create_wave_attempt_p0(store, store.manifest().chunks[0].chunk_id, 0,
+                               "create lower aggregate-attack P0");
+        create_wave_attempt_p0(store, store.manifest().chunks[1].chunk_id, 0,
+                               "create higher aggregate-attack P0");
+        const auto low = publish_worker_handoff_prefix(
+            store, root, store.manifest().chunks[0],
+            pending_current ? gnfs::relation::OOCPrivateHandoffFaultPoint::CanonicalDurable
+                            : gnfs::relation::OOCPrivateHandoffFaultPoint::PendingDurable,
+            {
+                .create_private_lease_root = false,
+            });
+        const auto high = publish_worker_handoff_prefix(
+            store, root, store.manifest().chunks[1],
+            pending_current ? gnfs::relation::OOCPrivateHandoffFaultPoint::PendingDurable
+                            : gnfs::relation::OOCPrivateHandoffFaultPoint::CanonicalDurable,
+            {
+                .create_private_lease_root = false,
+            });
+        (void)high;
+        const auto low_visible_handoff = pending_current ? low.paths.private_handoff_path
+                                                         : low.paths.private_handoff_pending_path;
+        const std::array protected_low_paths{
+            low_visible_handoff,
+            low.paths.index_path,
+            low.paths.data_path,
+            low.paths.private_directory,
+            root / low.names.reserved_leaf,
+            root / low.names.owned_leaf,
+            root / low.names.base_lock_leaf,
+        };
+        std::vector<WaveRootEntrySnapshot> protected_low_before;
+        protected_low_before.reserve(protected_low_paths.size());
+        for (const auto& path : protected_low_paths) {
+            protected_low_before.push_back(
+                capture_wave_root_entry_snapshot(path, path.filename().string()));
+        }
+        const auto low_attempt_path = root / low.names.canonical_record_leaf;
+        const auto low_attempt_before =
+            capture_wave_root_entry_snapshot(low_attempt_path, low.names.canonical_record_leaf);
+        created.store.reset();
+
+        WorkerHandoffAggregateAttackContext attack{
+            .target = point,
+            .replacement =
+                {
+                    .canonical = low_attempt_path,
+                    .displaced = temp.path() / ("displaced-lower-attempt-" +
+                                                std::to_string(static_cast<std::uint32_t>(point))),
+                    .bytes = low_attempt_before.bytes,
+                },
+        };
+        auto attacked = wave_detail::DistributedSieveWaveStore::open(
+            root, manifest_digest,
+            wave_detail::DistributedSieveWaveStoreTestHooks{
+                .worker_handoff_resume =
+                    {
+                        .stop_after = replace_lower_attempt_at_worker_handoff_observation,
+                        .context = &attack,
+                    },
+            });
+        CHECK(!attacked);
+        CHECK(attacked.store == nullptr);
+        require_wave_status(attacked.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "aggregate bridge rejects lower AttemptStarted replacement");
+        CHECK(attack.replacement.invoked);
+        CHECK(attack.replacement.replaced);
+        CHECK(attack.replacement.native_error == 0);
+        for (std::size_t index = 0; index < protected_low_paths.size(); ++index) {
+            CHECK(capture_wave_root_entry_snapshot(
+                      protected_low_paths[index], protected_low_paths[index].filename().string()) ==
+                  protected_low_before[index]);
+        }
+    }
+}
+
+enum class WorkerHandoffWaveAuthorityAttackKind : std::uint8_t {
+    root,
+    lock,
+    manifest,
+    attempt_started,
+};
+
+struct WorkerHandoffWaveAuthorityAttackContext final {
+    wave_detail::DistributedSieveWorkerHandoffResumeObservationPointV1 target = wave_detail::
+        DistributedSieveWorkerHandoffResumeObservationPointV1::AfterExpectedPrefixValidated;
+    WorkerHandoffWaveAuthorityAttackKind kind = WorkerHandoffWaveAuthorityAttackKind::root;
+    WaveRootReplacementContext root;
+    WaveSameBytesReplacementContext leaf;
+};
+
+[[nodiscard]] bool replace_wave_authority_at_worker_handoff_observation(
+    wave_detail::DistributedSieveWorkerHandoffResumeObservationPointV1 point,
+    void* opaque) noexcept {
+    auto& context = *static_cast<WorkerHandoffWaveAuthorityAttackContext*>(opaque);
+    if (point != context.target) {
+        return false;
+    }
+    if (context.kind == WorkerHandoffWaveAuthorityAttackKind::root) {
+        replace_wave_root_after_attempt_phase(&context.root);
+    } else {
+        replace_marker_with_same_bytes_after_first_inventory(&context.leaf);
+    }
+    // Ask the generic layer to interrupt as well. Wave authority drift must
+    // still win diagnostic precedence over that lower-layer interruption.
+    return true;
+}
+
+void test_wave_store_worker_handoff_wave_authority_attack_matrix() {
+    using Point = wave_detail::DistributedSieveWorkerHandoffResumeObservationPointV1;
+    using Status = wave_detail::DistributedSieveWaveStoreStatus;
+    struct Case final {
+        Point point;
+        WorkerHandoffWaveAuthorityAttackKind kind;
+        bool pending_current = false;
+        Status expected_status = Status::namespace_conflict;
+    };
+    constexpr std::array cases{
+        Case{
+            .point = Point::AfterExpectedPrefixValidated,
+            .kind = WorkerHandoffWaveAuthorityAttackKind::root,
+            .expected_status = Status::root_invalid,
+        },
+        Case{
+            .point = Point::AfterPendingRollbackDestinationDirectoryDurable,
+            .kind = WorkerHandoffWaveAuthorityAttackKind::lock,
+            .pending_current = true,
+            .expected_status = Status::lock_invalid,
+        },
+        Case{
+            .point = Point::AfterPendingRollbackPreactiveDataRemovedDurable,
+            .kind = WorkerHandoffWaveAuthorityAttackKind::lock,
+            .pending_current = true,
+            .expected_status = Status::lock_invalid,
+        },
+        Case{
+            .point = Point::BeforePendingRollbackTombstoneRemovalValidated,
+            .kind = WorkerHandoffWaveAuthorityAttackKind::manifest,
+            .pending_current = true,
+            .expected_status = Status::manifest_conflict,
+        },
+        Case{
+            .point = Point::AfterCanonicalConfirmedDurable,
+            .kind = WorkerHandoffWaveAuthorityAttackKind::manifest,
+            .expected_status = Status::manifest_conflict,
+        },
+        Case{
+            .point = Point::AfterReservedRevokedDurable,
+            .kind = WorkerHandoffWaveAuthorityAttackKind::attempt_started,
+            .expected_status = Status::namespace_conflict,
+        },
+    };
+
+    for (const auto& test_case : cases) {
+        WaveStoreTempDirectory temp;
+        const auto root =
+            temp.path() / ("worker-handoff-wave-authority-" +
+                           std::to_string(static_cast<std::uint32_t>(test_case.point)));
+        auto draft = wave_manifest_draft();
+        draft.ooc_format_version = gnfs::relation::OOCRelationWriter::FORMAT_VERSION;
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, std::move(draft));
+        auto& store = require_wave_ready(created, "create wave-authority attack fixture");
+        const auto manifest_digest = store.manifest_digest();
+        const auto prefix = publish_worker_handoff_prefix(
+            store, root, store.manifest().chunks.front(),
+            test_case.pending_current
+                ? gnfs::relation::OOCPrivateHandoffFaultPoint::PendingDurable
+                : gnfs::relation::OOCPrivateHandoffFaultPoint::CanonicalDurable);
+        const auto handoff_path = test_case.pending_current
+                                      ? prefix.paths.private_handoff_pending_path
+                                      : prefix.paths.private_handoff_path;
+        const auto handoff_before =
+            capture_wave_root_entry_snapshot(handoff_path, handoff_path.filename().string());
+        const auto reserved_path = root / prefix.names.reserved_leaf;
+        const auto reserved_before =
+            capture_wave_root_entry_snapshot(reserved_path, prefix.names.reserved_leaf);
+        const auto owned_path = root / prefix.names.owned_leaf;
+        const auto owned_before =
+            capture_wave_root_entry_snapshot(owned_path, prefix.names.owned_leaf);
+        const auto index_before = capture_wave_root_entry_snapshot(
+            prefix.paths.index_path, prefix.paths.index_path.filename().string());
+        const auto data_before = capture_wave_root_entry_snapshot(
+            prefix.paths.data_path, prefix.paths.data_path.filename().string());
+
+        WorkerHandoffWaveAuthorityAttackContext attack{
+            .target = test_case.point,
+            .kind = test_case.kind,
+        };
+        switch (test_case.kind) {
+        case WorkerHandoffWaveAuthorityAttackKind::root:
+            attack.root = WaveRootReplacementContext{
+                .canonical = root,
+                .displaced = temp.path() / "displaced-wave-root",
+            };
+            break;
+        case WorkerHandoffWaveAuthorityAttackKind::lock:
+            attack.leaf = WaveSameBytesReplacementContext{
+                .canonical = wave_lock_path(root),
+                .displaced = temp.path() / "displaced-wave-lock",
+                .bytes = read_file_bytes(wave_lock_path(root)),
+            };
+            break;
+        case WorkerHandoffWaveAuthorityAttackKind::manifest:
+            attack.leaf = WaveSameBytesReplacementContext{
+                .canonical = wave_manifest_path(root),
+                .displaced = temp.path() / "displaced-wave-manifest",
+                .bytes = read_file_bytes(wave_manifest_path(root)),
+            };
+            break;
+        case WorkerHandoffWaveAuthorityAttackKind::attempt_started:
+            attack.leaf = WaveSameBytesReplacementContext{
+                .canonical = root / prefix.names.canonical_record_leaf,
+                .displaced = temp.path() / "displaced-current-attempt",
+                .bytes = read_file_bytes(root / prefix.names.canonical_record_leaf),
+            };
+            break;
+        }
+        created.store.reset();
+
+        auto attacked = wave_detail::DistributedSieveWaveStore::open(
+            root, manifest_digest,
+            wave_detail::DistributedSieveWaveStoreTestHooks{
+                .worker_handoff_resume =
+                    {
+                        .stop_after = replace_wave_authority_at_worker_handoff_observation,
+                        .context = &attack,
+                    },
+            });
+        CHECK(!attacked);
+        CHECK(attacked.store == nullptr);
+        require_wave_status(attacked.diagnostic, test_case.expected_status,
+                            "worker-handoff bridge rejects replaced Wave authority");
+
+        if (test_case.kind == WorkerHandoffWaveAuthorityAttackKind::root) {
+            CHECK(attack.root.invoked);
+            CHECK(attack.root.replaced);
+            CHECK(attack.root.native_error == 0);
+            const auto replacement_root = capture_wave_root_snapshot(root);
+            CHECK(replacement_root.size() == 1U);
+            CHECK(replacement_root.front().leaf == ".");
+            const auto displaced_handoff = attack.root.displaced /
+                                           prefix.names.private_directory_leaf /
+                                           handoff_path.filename();
+            CHECK(capture_wave_root_entry_snapshot(
+                      displaced_handoff, handoff_path.filename().string()) == handoff_before);
+            CHECK(
+                capture_wave_root_entry_snapshot(attack.root.displaced / prefix.names.reserved_leaf,
+                                                 prefix.names.reserved_leaf) == reserved_before);
+            continue;
+        }
+
+        CHECK(attack.leaf.invoked);
+        CHECK(attack.leaf.replaced);
+        CHECK(attack.leaf.native_error == 0);
+        const auto replaced_leaf = capture_wave_root_entry_snapshot(
+            attack.leaf.canonical, attack.leaf.canonical.filename().string());
+        const auto displaced_leaf = capture_wave_root_entry_snapshot(
+            attack.leaf.displaced, attack.leaf.canonical.filename().string());
+        CHECK(replaced_leaf.bytes == displaced_leaf.bytes);
+        CHECK(replaced_leaf.device != displaced_leaf.device ||
+              replaced_leaf.inode != displaced_leaf.inode);
+
+        if (test_case.kind == WorkerHandoffWaveAuthorityAttackKind::lock) {
+            CHECK(entry_exists_no_follow(root / prefix.names.rollback_handoff_leaf));
+            CHECK(!entry_exists_no_follow(prefix.paths.private_handoff_pending_path));
+            CHECK(capture_wave_root_entry_snapshot(reserved_path, prefix.names.reserved_leaf) ==
+                  reserved_before);
+            CHECK(capture_wave_root_entry_snapshot(owned_path, prefix.names.owned_leaf) ==
+                  owned_before);
+            if (test_case.point == Point::AfterPendingRollbackDestinationDirectoryDurable) {
+                CHECK(capture_wave_root_entry_snapshot(
+                          prefix.paths.index_path, prefix.paths.index_path.filename().string()) ==
+                      index_before);
+                CHECK(capture_wave_root_entry_snapshot(
+                          prefix.paths.data_path, prefix.paths.data_path.filename().string()) ==
+                      data_before);
+            } else {
+                const auto staging =
+                    root /
+                    (prefix.names.relative_lease_stem +
+                     std::string(wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_STAGING_TAG) +
+                     cleanup_detail::private_lease_id_hex(prefix.attempt.lease.lease_id.limbs));
+                CHECK(!entry_exists_no_follow(staging / prefix.paths.data_path.filename()));
+                CHECK(capture_wave_root_entry_snapshot(
+                          staging / prefix.paths.index_path.filename(),
+                          prefix.paths.index_path.filename().string()) == index_before);
+            }
+        } else if (test_case.kind == WorkerHandoffWaveAuthorityAttackKind::manifest) {
+            if (test_case.point == Point::AfterCanonicalConfirmedDurable) {
+                CHECK(capture_wave_root_entry_snapshot(
+                          handoff_path, handoff_path.filename().string()) == handoff_before);
+                CHECK(capture_wave_root_entry_snapshot(reserved_path, prefix.names.reserved_leaf) ==
+                      reserved_before);
+            } else {
+                CHECK(entry_exists_no_follow(root / prefix.names.rollback_handoff_leaf));
+                CHECK(!entry_exists_no_follow(prefix.paths.private_handoff_pending_path));
+                CHECK(!entry_exists_no_follow(root / prefix.names.private_directory_leaf));
+                CHECK(!entry_exists_no_follow(reserved_path));
+                CHECK(!entry_exists_no_follow(owned_path));
+            }
+        } else {
+            CHECK(capture_wave_root_entry_snapshot(
+                      handoff_path, handoff_path.filename().string()) == handoff_before);
+            CHECK(!entry_exists_no_follow(reserved_path));
+        }
+    }
 }
 
 [[nodiscard]] durable_record::RecordSnapshot
@@ -15782,7 +16884,7 @@ void run_wave_store_suite() {
     };
 
 #if !defined(_WIN32)
-    const std::array<std::pair<std::string_view, TestFunction>, 74> common_tests = {{
+    const std::array<std::pair<std::string_view, TestFunction>, 80> common_tests = {{
         {"create, open, revalidate, and exact manifest",
          test_wave_store_create_open_revalidate_and_exact_manifest},
         {"store-owned draft fields", test_wave_store_rejects_non_draft_store_owned_fields},
@@ -15904,6 +17006,18 @@ void run_wave_store_suite() {
          test_wave_store_bound_attempt_claim_rejects_same_byte_record_replacement},
         {"attempt-record invalid chains and bindings",
          test_wave_store_attempt_record_inventory_rejects_invalid_chains_and_bindings},
+        {"worker-handoff resume inventory and open convergence",
+         test_wave_store_worker_handoff_resume_inventory_and_open},
+        {"worker-handoff resealed wrong attempt digest is non-mutating",
+         test_wave_store_worker_handoff_rejects_resealed_wrong_attempt_digest_without_mutation},
+        {"worker-handoff dual-chunk order and fresh rounds",
+         test_wave_store_worker_handoff_dual_chunk_order_and_fresh_rounds},
+        {"worker-handoff rollback tombstone reopen",
+         test_wave_store_worker_handoff_rollback_tombstone_reopens},
+        {"worker-handoff aggregate authority attack matrix",
+         test_wave_store_worker_handoff_aggregate_authority_attack_matrix},
+        {"worker-handoff Wave authority attack matrix",
+         test_wave_store_worker_handoff_wave_authority_attack_matrix},
         {"worker package residue restart, legacy barrier, and reconcile",
          test_wave_store_worker_package_residue_restart_legacy_barrier_and_reconcile},
         {"worker package residue cleanup faults replay",

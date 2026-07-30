@@ -27,6 +27,10 @@
 #include <set>
 #include <signal.h>
 
+#if !defined(_WIN32)
+#include <sys/file.h>
+#endif
+
 #if defined(__APPLE__)
 #include <sys/param.h>
 #endif
@@ -390,6 +394,39 @@ void require_positive_execution_relation(const gnfs::core::PolynomialContext& po
     return replace_regular_at_bytes(directory, leaf, displaced_leaf, replacement);
 }
 
+[[nodiscard]] std::vector<std::byte>
+make_valid_nonidentical_worker_handoff_bytes(std::span<const std::byte> original) {
+    auto outer = gnfs::relation::decode_ooc_private_handoff_record(original);
+    CHECK(outer);
+    CHECK(outer.value.has_value());
+
+    auto payload = sieve::decode_distributed_sieve_record(outer.value->opaque_payload);
+    CHECK(payload);
+    CHECK(payload.value.has_value());
+    auto* handoff = std::get_if<sieve::WorkerHandoffV1>(&*payload.value);
+    CHECK(handoff != nullptr);
+    CHECK(handoff->processed_sq_count == 1);
+    CHECK(handoff->sq_end - handoff->sq_begin >= 2);
+    handoff->processed_sq_count = 2;
+    handoff->self_digest = {};
+    CHECK(sieve::seal_distributed_sieve_record(*payload.value));
+    const auto encoded_payload = sieve::encode_distributed_sieve_record(*payload.value);
+    CHECK(encoded_payload);
+    CHECK(encoded_payload.bytes.has_value());
+
+    outer.value->opaque_payload = *encoded_payload.bytes;
+    outer.value->payload_digest = {};
+    outer.value->self_digest = {};
+    CHECK(gnfs::relation::seal_ooc_private_handoff_record(*outer.value));
+    const auto encoded_outer = gnfs::relation::encode_ooc_private_handoff_record(*outer.value);
+    CHECK(encoded_outer);
+    CHECK(encoded_outer.bytes.has_value());
+    CHECK(encoded_outer.bytes->size() == original.size());
+    CHECK(!std::equal(encoded_outer.bytes->begin(), encoded_outer.bytes->end(), original.begin(),
+                      original.end()));
+    return std::move(*encoded_outer.bytes);
+}
+
 [[nodiscard]] WriterCompletion successful_completion(const WriterAuthority& authority) {
     return {
         .processed_sq_count = 1,
@@ -447,7 +484,10 @@ enum class WriterChildScenario : std::uint32_t {
 };
 
 inline constexpr std::string_view WRITER_CHILD_ARGUMENT = "--worker-writer-authority-child";
+inline constexpr std::string_view WRITER_COLD_CRASH_CHILD_ARGUMENT =
+    "--worker-writer-authority-cold-crash-child";
 inline constexpr std::uint32_t WRITER_CHILD_REPORT_MAGIC = 0x47575731U;
+inline constexpr int WRITER_HANDOFF_CRASH_EXIT_BASE = 180;
 
 inline constexpr std::uint32_t WRITER_FLAG_ENTRY_ADOPTED = 1U << 0U;
 inline constexpr std::uint32_t WRITER_FLAG_FIXED_FDS_CLOSED = 1U << 1U;
@@ -585,6 +625,7 @@ handoff_fault_point(WriterChildScenario scenario) {
 struct WorkerHandoffStopContext final {
     gnfs::relation::OOCPrivateHandoffFaultPoint target =
         gnfs::relation::OOCPrivateHandoffFaultPoint::PendingDurable;
+    bool terminate_process = false;
     bool invoked = false;
 };
 
@@ -595,6 +636,9 @@ struct WorkerHandoffStopContext final {
         return false;
     }
     context.invoked = true;
+    if (context.terminate_process) {
+        ::_exit(WRITER_HANDOFF_CRASH_EXIT_BASE + static_cast<int>(point));
+    }
     return true;
 }
 
@@ -791,6 +835,109 @@ using NamespaceSnapshot = std::map<std::string, NamespaceNode>;
     }
     if (::close(directory) != 0 && failure == 0) {
         failure = errno;
+    }
+    return failure;
+}
+
+inline constexpr std::string_view WORKER_HANDOFF_CANONICAL_LEAF =
+    "corpus.gnfs-ooc-private-handoff-v1";
+inline constexpr std::string_view WORKER_HANDOFF_PENDING_LEAF =
+    "corpus.gnfs-ooc-private-handoff-v1.pending";
+
+[[nodiscard]] int synchronize_descriptor(int descriptor) noexcept {
+    int synchronized = -1;
+    do {
+        synchronized = ::fsync(descriptor);
+    } while (synchronized != 0 && errno == EINTR);
+    return synchronized == 0 ? 0 : errno;
+}
+
+[[nodiscard]] int synchronize_regular_at(int directory, std::string_view leaf) noexcept {
+    int file = -1;
+    do {
+        file = ::openat(directory, std::string(leaf).c_str(),
+                        O_RDWR | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
+    } while (file < 0 && errno == EINTR);
+    if (file < 0) {
+        return errno;
+    }
+    struct stat metadata{};
+    int failure = 0;
+    if (::fstat(file, &metadata) != 0) {
+        failure = errno;
+    } else if (!S_ISREG(metadata.st_mode)) {
+        failure = EINVAL;
+    } else {
+        failure = synchronize_descriptor(file);
+    }
+    if (::close(file) != 0 && failure == 0) {
+        failure = errno;
+    }
+    return failure;
+}
+
+[[nodiscard]] int copy_regular_at_same_bytes_durable(int directory, std::string_view source_leaf,
+                                                     std::string_view destination_leaf) noexcept {
+    int failure = copy_regular_at_same_bytes(directory, source_leaf, destination_leaf);
+    if (failure == 0) {
+        failure = synchronize_regular_at(directory, destination_leaf);
+    }
+    if (failure == 0) {
+        failure = synchronize_descriptor(directory);
+    }
+    return failure;
+}
+
+[[nodiscard]] int unlink_regular_at_durable(int directory, std::string_view leaf) noexcept {
+    struct stat metadata{};
+    if (::fstatat(directory, std::string(leaf).c_str(), &metadata, AT_SYMLINK_NOFOLLOW) != 0) {
+        return errno;
+    }
+    if (!S_ISREG(metadata.st_mode)) {
+        return EINVAL;
+    }
+    int unlinked = -1;
+    do {
+        unlinked = ::unlinkat(directory, std::string(leaf).c_str(), 0);
+    } while (unlinked != 0 && errno == EINTR);
+    if (unlinked != 0) {
+        return errno;
+    }
+    return synchronize_descriptor(directory);
+}
+
+[[nodiscard]] int replace_regular_at_same_bytes_durable(int directory, std::string_view leaf,
+                                                        std::string_view displaced_leaf) noexcept {
+    int failure = replace_regular_at_same_bytes(directory, leaf, displaced_leaf);
+    if (failure == 0) {
+        failure = synchronize_regular_at(directory, leaf);
+    }
+    if (failure == 0) {
+        failure = unlink_regular_at_durable(directory, displaced_leaf);
+    }
+    return failure;
+}
+
+[[nodiscard]] int append_byte_at_durable(int directory, std::string_view leaf) noexcept {
+    int file = -1;
+    do {
+        file = ::openat(directory, std::string(leaf).c_str(),
+                        O_WRONLY | O_APPEND | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
+    } while (file < 0 && errno == EINTR);
+    if (file < 0) {
+        return errno;
+    }
+    const std::byte byte{0xa5};
+    ssize_t written = -1;
+    do {
+        written = ::write(file, &byte, 1);
+    } while (written < 0 && errno == EINTR);
+    int failure = written == 1 ? synchronize_descriptor(file) : (written < 0 ? errno : EIO);
+    if (::close(file) != 0 && failure == 0) {
+        failure = errno;
+    }
+    if (failure == 0) {
+        failure = synchronize_descriptor(directory);
     }
     return failure;
 }
@@ -1072,7 +1219,8 @@ struct ConstructionFailureHookContext final {
     return invalid && write_rejected && finalize_rejected ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
-[[nodiscard]] int run_writer_child(WriterChildScenario scenario) noexcept {
+[[nodiscard]] int run_writer_child(WriterChildScenario scenario,
+                                   bool crash_at_handoff_fault = false) noexcept {
     WriterChildReport report;
     report.scenario = static_cast<std::uint32_t>(scenario);
     try {
@@ -1352,6 +1500,7 @@ struct ConstructionFailureHookContext final {
                 const auto completion = successful_completion(authority);
                 WorkerHandoffStopContext stop{
                     .target = handoff_fault_point(scenario),
+                    .terminate_process = crash_at_handoff_fault,
                 };
                 bool interrupted = false;
                 try {
@@ -1687,6 +1836,253 @@ void require_construction_failure(const WriterChildReport& report, WriterRollbac
 }
 
 #if defined(__APPLE__)
+struct CrashedWriterHandoffCaseResult final {
+    sieve::AttemptStartedV1 record;
+    NamespaceSnapshot crashed_namespace;
+};
+
+[[nodiscard]] CrashedWriterHandoffCaseResult
+launch_writer_handoff_crash(WorkerEntryFixture& fixture, const std::filesystem::path& executable,
+                            WriterChildScenario scenario) {
+    CHECK(is_handoff_fault(scenario));
+    auto receipt = fixture.start_receipt();
+    const auto record = receipt.record();
+
+    std::vector<launcher::DistributedSieveWorkerLaunchSlotV1> slots;
+    slots.emplace_back(std::move(receipt), std::vector<std::string>{
+                                               std::string(WRITER_COLD_CRASH_CHILD_ARGUMENT),
+                                               std::to_string(static_cast<std::uint32_t>(scenario)),
+                                           });
+    launcher::DistributedSieveWorkerLaunchRequestV1 request(executable.string(), std::move(slots));
+    auto launched = fixture.store().launch_worker_process_batch_v1(
+        std::move(request), fixture.identity, fixture.frozen, fixture.polynomial,
+        fixture.factor_base);
+    CHECK(launched);
+    CHECK(launched.children.size() == 1);
+    CHECK(launched.children[0]);
+    CHECK(launched.children[0].worker.has_value());
+    auto& worker = *launched.children[0].worker;
+    const auto waited = worker.wait_terminal();
+    CHECK(waited.reaped);
+    CHECK(!waited.success);
+    CHECK(waited.exit_status ==
+          WRITER_HANDOFF_CRASH_EXIT_BASE + static_cast<int>(handoff_fault_point(scenario)));
+    CHECK(waited.signal == 0);
+    CHECK(waited.native_error == 0);
+
+    const int report_descriptor = worker.release_report_descriptor();
+    CHECK(report_descriptor >= 0);
+    std::byte trailing{};
+    ssize_t received = -1;
+    do {
+        received = ::read(report_descriptor, &trailing, 1);
+    } while (received < 0 && errno == EINTR);
+    CHECK(received == 0);
+    CHECK(::close(report_descriptor) == 0);
+
+    int root_descriptor = -1;
+    do {
+        root_descriptor = ::open(fixture.root.c_str(),
+                                 O_RDONLY | O_NONBLOCK | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    } while (root_descriptor < 0 && errno == EINTR);
+    CHECK(root_descriptor >= 0);
+    const auto names = wave::distributed_sieve_worker_attempt_names_v1("entry_chunk_0", 0, 0);
+    CHECK(names.has_value());
+    const auto prefix = observe_worker_handoff_prefix(root_descriptor, *names, scenario);
+    CHECK(::close(root_descriptor) == 0);
+    CHECK(prefix.error == 0);
+    CHECK(prefix.exact_shape);
+    CHECK(prefix.no_cleanup_artifact);
+
+    return {
+        .record = record,
+        .crashed_namespace = snapshot_namespace(fixture.root),
+    };
+}
+
+template <typename Fixture>
+void fresh_reopen_worker_handoff(Fixture& fixture, const Digest& manifest_digest,
+                                 wave::DistributedSieveWaveStoreTestHooks hooks = {}) {
+    // Keep the cold-recovery production dependency at this one boundary. When
+    // WaveStore forwards the relation-layer retained-prefix sandwich hook, the
+    // test-only adapter belongs here rather than in individual cases.
+    fixture.opened.store.reset();
+    fixture.opened = wave::DistributedSieveWaveStore::open(fixture.root, manifest_digest, hooks);
+}
+
+template <typename Fixture>
+void fresh_reopen_worker_handoff(Fixture& fixture,
+                                 wave::DistributedSieveWaveStoreTestHooks hooks = {}) {
+    const Digest manifest_digest = fixture.store().manifest_digest();
+    fresh_reopen_worker_handoff(fixture, manifest_digest, hooks);
+}
+
+struct ColdHandoffSameByteReplacementContext final {
+    std::filesystem::path private_directory;
+    std::string leaf;
+    std::string displaced_leaf;
+    bool invoked = false;
+    int error = 0;
+    LeafFingerprint replacement;
+};
+
+[[nodiscard]] bool replace_cold_handoff_after_expected_prefix_validation(
+    wave::DistributedSieveWorkerHandoffResumeObservationPointV1 point, void* opaque) noexcept {
+    if (point !=
+        wave::DistributedSieveWorkerHandoffResumeObservationPointV1::AfterExpectedPrefixValidated) {
+        return false;
+    }
+    auto& context = *static_cast<ColdHandoffSameByteReplacementContext*>(opaque);
+    context.invoked = true;
+    int directory = -1;
+    do {
+        directory = ::open(context.private_directory.c_str(),
+                           O_RDONLY | O_NONBLOCK | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    } while (directory < 0 && errno == EINTR);
+    if (directory < 0) {
+        context.error = errno;
+        return false;
+    }
+    context.error =
+        replace_regular_at_same_bytes_durable(directory, context.leaf, context.displaced_leaf);
+    if (context.error == 0) {
+        int fingerprint_error = 0;
+        if (!regular_leaf_state_at(directory, context.leaf, true, fingerprint_error,
+                                   &context.replacement)) {
+            context.error = fingerprint_error != 0 ? fingerprint_error : EPROTO;
+        }
+    }
+    if (::close(directory) != 0 && context.error == 0) {
+        context.error = errno;
+    }
+    return false;
+}
+
+class LiveBaseLockHolder final {
+public:
+    LiveBaseLockHolder() = default;
+    LiveBaseLockHolder(pid_t process_id, int release_descriptor) noexcept
+        : process_id_(process_id), release_descriptor_(release_descriptor) {}
+    LiveBaseLockHolder(const LiveBaseLockHolder&) = delete;
+    LiveBaseLockHolder& operator=(const LiveBaseLockHolder&) = delete;
+    LiveBaseLockHolder(LiveBaseLockHolder&& other) noexcept
+        : process_id_(std::exchange(other.process_id_, -1)),
+          release_descriptor_(std::exchange(other.release_descriptor_, -1)) {}
+    LiveBaseLockHolder& operator=(LiveBaseLockHolder&&) = delete;
+
+    ~LiveBaseLockHolder() noexcept {
+        release_without_checks();
+    }
+
+    void release_and_wait() {
+        CHECK(process_id_ > 0);
+        CHECK(release_descriptor_ >= 0);
+        const std::byte release{0x1};
+        CHECK(write_exact(release_descriptor_, &release, 1));
+        CHECK(::close(release_descriptor_) == 0);
+        release_descriptor_ = -1;
+
+        int status = 0;
+        pid_t waited = -1;
+        do {
+            waited = ::waitpid(process_id_, &status, 0);
+        } while (waited < 0 && errno == EINTR);
+        CHECK(waited == process_id_);
+        CHECK(WIFEXITED(status));
+        CHECK(WEXITSTATUS(status) == 0);
+        process_id_ = -1;
+    }
+
+private:
+    void release_without_checks() noexcept {
+        if (release_descriptor_ >= 0) {
+            (void)::close(release_descriptor_);
+            release_descriptor_ = -1;
+        }
+        if (process_id_ <= 0) {
+            return;
+        }
+        (void)::kill(process_id_, SIGTERM);
+        int status = 0;
+        pid_t waited = -1;
+        do {
+            waited = ::waitpid(process_id_, &status, 0);
+        } while (waited < 0 && errno == EINTR);
+        if (waited != process_id_) {
+            (void)::kill(process_id_, SIGKILL);
+            do {
+                waited = ::waitpid(process_id_, &status, 0);
+            } while (waited < 0 && errno == EINTR);
+        }
+        process_id_ = -1;
+    }
+
+    pid_t process_id_ = -1;
+    int release_descriptor_ = -1;
+};
+
+[[nodiscard]] LiveBaseLockHolder
+hold_base_lock_in_clean_child(const std::filesystem::path& base_lock_path) {
+    std::array<int, 2> release_pipe{-1, -1};
+    std::array<int, 2> ready_pipe{-1, -1};
+    CHECK(::pipe(release_pipe.data()) == 0);
+    CHECK(::pipe(ready_pipe.data()) == 0);
+
+    const pid_t child = ::fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        (void)::close(release_pipe[1]);
+        (void)::close(ready_pipe[0]);
+        if (::dup2(release_pipe[0], STDIN_FILENO) < 0 || ::dup2(ready_pipe[1], STDOUT_FILENO) < 0) {
+            ::_exit(92);
+        }
+        const long maximum = ::sysconf(_SC_OPEN_MAX);
+        const int last = maximum > 3 && maximum <= std::numeric_limits<int>::max()
+                             ? static_cast<int>(maximum)
+                             : 4096;
+        for (int descriptor = 3; descriptor < last; ++descriptor) {
+            (void)::close(descriptor);
+        }
+
+        int base_lock = -1;
+        do {
+            base_lock =
+                ::open(base_lock_path.c_str(), O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
+        } while (base_lock < 0 && errno == EINTR);
+        int failure = base_lock < 0 ? errno : 0;
+        if (failure == 0 && ::flock(base_lock, LOCK_EX | LOCK_NB) != 0) {
+            failure = errno;
+        }
+        if (!write_exact(STDOUT_FILENO, &failure, sizeof(failure)) || failure != 0) {
+            ::_exit(93);
+        }
+        std::byte release{};
+        const bool released = read_exact(STDIN_FILENO, &release, 1);
+        if (base_lock >= 0) {
+            (void)::close(base_lock);
+        }
+        ::_exit(released ? 0 : 94);
+    }
+
+    CHECK(::close(release_pipe[0]) == 0);
+    CHECK(::close(ready_pipe[1]) == 0);
+    int child_failure = 0;
+    const bool ready = read_exact(ready_pipe[0], &child_failure, sizeof(child_failure));
+    CHECK(::close(ready_pipe[0]) == 0);
+    if (!ready || child_failure != 0) {
+        (void)::close(release_pipe[1]);
+        int status = 0;
+        pid_t waited = -1;
+        do {
+            waited = ::waitpid(child, &status, 0);
+        } while (waited < 0 && errno == EINTR);
+        fail("acquire live attempt BaseLock in clean child", __LINE__,
+             ready ? std::generic_category().message(child_failure)
+                   : "child readiness report truncated");
+    }
+    return LiveBaseLockHolder(child, release_pipe[1]);
+}
+
 void test_retry_creation_serializes_with_predecessor_handoff(
     const std::filesystem::path& executable) {
     WorkerEntryFixture fixture("writer-predecessor-handoff-interleaving");
@@ -2364,6 +2760,358 @@ void test_worker_handoff_durable_prefix_retries(const std::filesystem::path& exe
         require_no_cleanup_publication(fixture);
     }
 }
+
+[[nodiscard]] int open_test_directory(const std::filesystem::path& path) noexcept {
+    int directory = -1;
+    do {
+        directory =
+            ::open(path.c_str(), O_RDONLY | O_NONBLOCK | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    } while (directory < 0 && errno == EINTR);
+    return directory;
+}
+
+[[nodiscard]] NamespaceSnapshot
+expected_pending_rollback_namespace(NamespaceSnapshot crashed,
+                                    const wave::DistributedSieveWorkerAttemptNamesV1& names) {
+    crashed.erase(names.reserved_leaf);
+    crashed.erase(names.reserved_pending_leaf);
+    crashed.erase(names.owned_leaf);
+    crashed.erase(names.owned_pending_leaf);
+    const std::string private_prefix = names.private_directory_leaf + "/";
+    for (auto item = crashed.begin(); item != crashed.end();) {
+        if (item->first == names.private_directory_leaf ||
+            std::string_view(item->first).starts_with(private_prefix)) {
+            item = crashed.erase(item);
+        } else {
+            ++item;
+        }
+    }
+    return crashed;
+}
+
+void require_fresh_handoff_reopen_ready(WorkerEntryFixture& fixture, std::string_view label) {
+    fresh_reopen_worker_handoff(fixture);
+    if (!fixture.opened) {
+        fail(label, __LINE__, wave_diagnostic_detail(fixture.opened.diagnostic));
+    }
+    require_wave_ready(fixture.store().revalidate(), label);
+}
+
+void require_fresh_handoff_reopen_rejected_without_mutation(WorkerEntryFixture& fixture,
+                                                            std::string_view label) {
+    const auto attacked_namespace = snapshot_namespace(fixture.root);
+    fresh_reopen_worker_handoff(fixture);
+    if (fixture.opened || fixture.opened.diagnostic.status !=
+                              wave::DistributedSieveWaveStoreStatus::namespace_conflict) {
+        fail(label, __LINE__, wave_diagnostic_detail(fixture.opened.diagnostic));
+    }
+    CHECK(fixture.opened.store == nullptr);
+    CHECK(same_namespace_snapshot(attacked_namespace, snapshot_namespace(fixture.root)));
+}
+
+void require_cold_terminal_handoff_adoptable(
+    WorkerEntryFixture& fixture, const wave::DistributedSieveWorkerAttemptNamesV1& names) {
+    const auto base = fixture.root / names.private_directory_leaf / "corpus";
+    const auto inspected = gnfs::relation::OOCCleanupTransaction::inspect_private_handoff(base);
+    CHECK(inspected.canonical());
+    CHECK(inspected.record.has_value());
+    const auto decoded = sieve::decode_distributed_sieve_record(inspected.record->opaque_payload);
+    CHECK(decoded);
+    CHECK(decoded.value.has_value());
+    const auto* handoff = std::get_if<sieve::WorkerHandoffV1>(&*decoded.value);
+    CHECK(handoff != nullptr);
+    CHECK(handoff->attempt_ordinal == 0);
+    CHECK(handoff->relation_count == 2);
+
+    auto adoption = gnfs::relation::OOCCleanupTransaction::adopt_private_handoff(base);
+    CHECK(adoption.adopted());
+    CHECK(adoption.adoption.has_value());
+    gnfs::relation::OOCPrivateHandoffReader reader(std::move(*adoption.adoption));
+    CHECK(reader.valid());
+    CHECK(reader.reader().count() == 2);
+    CHECK(writer_relation_equal(reader.reader().read(0), make_writer_relation(31, 7, 10)));
+    CHECK(writer_relation_equal(reader.reader().read(1), make_writer_relation(32, 8, 11)));
+}
+
+void test_worker_handoff_cold_restart_recovers_durable_prefixes(
+    const std::filesystem::path& executable) {
+    constexpr std::array scenarios{
+        WriterChildScenario::handoff_pending_durable,
+        WriterChildScenario::handoff_canonical_promoted,
+        WriterChildScenario::handoff_canonical_durable,
+        WriterChildScenario::handoff_reserved_revoked_durable,
+    };
+    for (const auto scenario : scenarios) {
+        WorkerEntryFixture fixture("writer-handoff-cold-prefix-" +
+                                   std::to_string(static_cast<std::uint32_t>(scenario)));
+        const auto crashed = launch_writer_handoff_crash(fixture, executable, scenario);
+        CHECK(same_namespace_snapshot(crashed.crashed_namespace, snapshot_namespace(fixture.root)));
+
+        const auto names = wave::distributed_sieve_worker_attempt_names_v1("entry_chunk_0", 0, 0);
+        CHECK(names.has_value());
+        const auto attempt_record_before =
+            crashed.crashed_namespace.find(names->canonical_record_leaf);
+        CHECK(attempt_record_before != crashed.crashed_namespace.end());
+        CHECK(crashed.crashed_namespace.contains(names->base_lock_leaf));
+
+        if (scenario == WriterChildScenario::handoff_pending_durable) {
+            const auto expected =
+                expected_pending_rollback_namespace(crashed.crashed_namespace, *names);
+            require_fresh_handoff_reopen_ready(
+                fixture, "fresh reopen recovers PendingDurable handoff prefix");
+            CHECK(same_namespace_snapshot(expected, snapshot_namespace(fixture.root)));
+            CHECK(std::filesystem::is_regular_file(fixture.root / names->canonical_record_leaf));
+            CHECK(!std::filesystem::exists(fixture.root / names->pending_record_leaf));
+            CHECK(std::filesystem::is_regular_file(fixture.root / names->base_lock_leaf));
+            CHECK(!std::filesystem::exists(fixture.root / names->reserved_leaf));
+            CHECK(!std::filesystem::exists(fixture.root / names->owned_leaf));
+            CHECK(!std::filesystem::exists(fixture.root / names->private_directory_leaf));
+
+            const auto before_rejected_same_ordinal = snapshot_namespace(fixture.root);
+            auto same_ordinal = fixture.store().create_worker_attempt_private_lease_root(0, 0);
+            CHECK(!same_ordinal);
+            CHECK(same_ordinal.claim == nullptr);
+            CHECK(same_ordinal.diagnostic.status ==
+                  wave::DistributedSieveWaveStoreStatus::namespace_conflict);
+            CHECK(same_namespace_snapshot(before_rejected_same_ordinal,
+                                          snapshot_namespace(fixture.root)));
+
+            auto next_claim = fixture.store().create_worker_attempt_private_lease_root(0, 1);
+            if (!next_claim || next_claim.claim == nullptr) {
+                fail("create ordinal N+1 after PendingDurable rollback", __LINE__,
+                     wave_diagnostic_detail(next_claim.diagnostic));
+            }
+            auto next_reservation =
+                wave::reserve_worker_attempt_private_lease(std::move(next_claim));
+            if (!next_reservation || !next_reservation.receipt.has_value()) {
+                fail("reserve ordinal N+1 after PendingDurable rollback", __LINE__,
+                     wave_diagnostic_detail(next_reservation.diagnostic));
+            }
+            auto next_start =
+                wave::publish_worker_attempt_started(std::move(*next_reservation.receipt));
+            if (!next_start || !next_start.receipt.has_value()) {
+                fail("publish ordinal N+1 after PendingDurable rollback", __LINE__,
+                     wave_diagnostic_detail(next_start.diagnostic));
+            }
+            CHECK(next_start.receipt->record().attempt_ordinal == 1);
+            CHECK(next_start.receipt->record().predecessor_digest == crashed.record.self_digest);
+            continue;
+        }
+
+        NamespaceSnapshot expected = crashed.crashed_namespace;
+        if (scenario != WriterChildScenario::handoff_reserved_revoked_durable) {
+            CHECK(expected.erase(names->reserved_leaf) == 1);
+        }
+        require_fresh_handoff_reopen_ready(fixture,
+                                           "fresh reopen converges canonical handoff prefix");
+        CHECK(same_namespace_snapshot(expected, snapshot_namespace(fixture.root)));
+        CHECK(std::filesystem::is_regular_file(fixture.root / names->private_directory_leaf /
+                                               std::string(WORKER_HANDOFF_CANONICAL_LEAF)));
+        CHECK(!std::filesystem::exists(fixture.root / names->private_directory_leaf /
+                                       std::string(WORKER_HANDOFF_PENDING_LEAF)));
+        CHECK(!std::filesystem::exists(fixture.root / names->reserved_leaf));
+        CHECK(std::filesystem::is_regular_file(fixture.root / names->owned_leaf));
+        require_cold_terminal_handoff_adoptable(fixture, *names);
+        require_no_cleanup_publication(fixture);
+    }
+}
+
+void test_worker_handoff_cold_restart_converges_identical_dual(
+    const std::filesystem::path& executable) {
+    constexpr std::array scenarios{
+        WriterChildScenario::handoff_canonical_promoted,
+        WriterChildScenario::handoff_canonical_durable,
+        WriterChildScenario::handoff_reserved_revoked_durable,
+    };
+    for (const auto scenario : scenarios) {
+        WorkerEntryFixture fixture("writer-handoff-cold-identical-dual-" +
+                                   std::to_string(static_cast<std::uint32_t>(scenario)));
+        (void)launch_writer_handoff_crash(fixture, executable, scenario);
+        const auto names = wave::distributed_sieve_worker_attempt_names_v1("entry_chunk_0", 0, 0);
+        CHECK(names.has_value());
+        const auto private_directory = fixture.root / names->private_directory_leaf;
+        const int directory = open_test_directory(private_directory);
+        CHECK(directory >= 0);
+        CHECK(copy_regular_at_same_bytes_durable(directory, WORKER_HANDOFF_CANONICAL_LEAF,
+                                                 WORKER_HANDOFF_PENDING_LEAF) == 0);
+        CHECK(::close(directory) == 0);
+
+        NamespaceSnapshot expected = snapshot_namespace(fixture.root);
+        const std::string pending_path =
+            names->private_directory_leaf + "/" + std::string(WORKER_HANDOFF_PENDING_LEAF);
+        CHECK(expected.erase(pending_path) == 1);
+        if (scenario != WriterChildScenario::handoff_reserved_revoked_durable) {
+            CHECK(expected.erase(names->reserved_leaf) == 1);
+        }
+
+        require_fresh_handoff_reopen_ready(fixture,
+                                           "fresh reopen converges identical dual handoff");
+        CHECK(same_namespace_snapshot(expected, snapshot_namespace(fixture.root)));
+        require_cold_terminal_handoff_adoptable(fixture, *names);
+    }
+}
+
+void test_worker_handoff_cold_restart_rejects_invalid_prefixes(
+    const std::filesystem::path& executable) {
+    {
+        WorkerEntryFixture fixture("writer-handoff-cold-missing-reserved");
+        (void)launch_writer_handoff_crash(fixture, executable,
+                                          WriterChildScenario::handoff_pending_durable);
+        const auto names = wave::distributed_sieve_worker_attempt_names_v1("entry_chunk_0", 0, 0);
+        CHECK(names.has_value());
+        const int root = open_test_directory(fixture.root);
+        CHECK(root >= 0);
+        CHECK(unlink_regular_at_durable(root, names->reserved_leaf) == 0);
+        CHECK(::close(root) == 0);
+        require_fresh_handoff_reopen_rejected_without_mutation(
+            fixture, "PendingDurable without exact RESERVED fails closed");
+    }
+
+    {
+        WorkerEntryFixture fixture("writer-handoff-cold-nonidentical-dual");
+        (void)launch_writer_handoff_crash(fixture, executable,
+                                          WriterChildScenario::handoff_pending_durable);
+        const auto names = wave::distributed_sieve_worker_attempt_names_v1("entry_chunk_0", 0, 0);
+        CHECK(names.has_value());
+        const int directory = open_test_directory(fixture.root / names->private_directory_leaf);
+        CHECK(directory >= 0);
+        CHECK(copy_regular_at_same_bytes_durable(directory, WORKER_HANDOFF_PENDING_LEAF,
+                                                 WORKER_HANDOFF_CANONICAL_LEAF) == 0);
+        std::vector<std::byte> pending_bytes;
+        mode_t mode = 0;
+        CHECK(read_regular_at(directory, WORKER_HANDOFF_PENDING_LEAF, pending_bytes, mode) == 0);
+        const auto canonical_bytes = make_valid_nonidentical_worker_handoff_bytes(pending_bytes);
+        CHECK(write_regular_in_place_at(directory, WORKER_HANDOFF_CANONICAL_LEAF,
+                                        canonical_bytes) == 0);
+        CHECK(synchronize_descriptor(directory) == 0);
+        CHECK(::close(directory) == 0);
+        require_fresh_handoff_reopen_rejected_without_mutation(
+            fixture, "nonidentical canonical and pending handoff fails closed");
+    }
+
+    {
+        WorkerEntryFixture fixture("writer-handoff-cold-pair-identity-mismatch");
+        (void)launch_writer_handoff_crash(fixture, executable,
+                                          WriterChildScenario::handoff_pending_durable);
+        const auto names = wave::distributed_sieve_worker_attempt_names_v1("entry_chunk_0", 0, 0);
+        CHECK(names.has_value());
+        const int directory = open_test_directory(fixture.root / names->private_directory_leaf);
+        CHECK(directory >= 0);
+        CHECK(replace_regular_at_same_bytes_durable(
+                  directory, "corpus.relidx", ".gnfs-test-cold-recovery-displaced-index") == 0);
+        CHECK(::close(directory) == 0);
+        require_fresh_handoff_reopen_rejected_without_mutation(
+            fixture, "PendingDurable pair identity mismatch fails closed");
+    }
+
+    {
+        WorkerEntryFixture fixture("writer-handoff-cold-pair-extent-mismatch");
+        (void)launch_writer_handoff_crash(fixture, executable,
+                                          WriterChildScenario::handoff_pending_durable);
+        const auto names = wave::distributed_sieve_worker_attempt_names_v1("entry_chunk_0", 0, 0);
+        CHECK(names.has_value());
+        const int directory = open_test_directory(fixture.root / names->private_directory_leaf);
+        CHECK(directory >= 0);
+        CHECK(append_byte_at_durable(directory, "corpus.reldata") == 0);
+        CHECK(::close(directory) == 0);
+        require_fresh_handoff_reopen_rejected_without_mutation(
+            fixture, "PendingDurable pair extent mismatch fails closed");
+    }
+}
+
+void test_worker_handoff_cold_restart_rejects_same_byte_replacement_sandwiches(
+    const std::filesystem::path& executable) {
+    struct Case final {
+        WriterChildScenario scenario;
+        std::string_view leaf;
+        std::string_view label;
+    };
+    constexpr std::array cases{
+        Case{
+            .scenario = WriterChildScenario::handoff_pending_durable,
+            .leaf = WORKER_HANDOFF_PENDING_LEAF,
+            .label = "pending",
+        },
+        Case{
+            .scenario = WriterChildScenario::handoff_canonical_durable,
+            .leaf = WORKER_HANDOFF_CANONICAL_LEAF,
+            .label = "canonical",
+        },
+    };
+
+    for (const auto& test_case : cases) {
+        WorkerEntryFixture fixture("writer-handoff-cold-same-byte-" + std::string(test_case.label));
+        (void)launch_writer_handoff_crash(fixture, executable, test_case.scenario);
+        const auto names = wave::distributed_sieve_worker_attempt_names_v1("entry_chunk_0", 0, 0);
+        CHECK(names.has_value());
+        ColdHandoffSameByteReplacementContext replacement{
+            .private_directory = fixture.root / names->private_directory_leaf,
+            .leaf = std::string(test_case.leaf),
+            .displaced_leaf = ".gnfs-test-cold-recovery-displaced-" + std::string(test_case.label),
+        };
+        const auto before_attack = snapshot_namespace(fixture.root);
+        const std::string attacked_path =
+            names->private_directory_leaf + "/" + std::string(test_case.leaf);
+        const auto original = before_attack.find(attacked_path);
+        CHECK(original != before_attack.end());
+
+        fresh_reopen_worker_handoff(
+            fixture,
+            wave::DistributedSieveWaveStoreTestHooks{
+                .worker_handoff_resume =
+                    {
+                        .stop_after = replace_cold_handoff_after_expected_prefix_validation,
+                        .context = &replacement,
+                    },
+            });
+        CHECK(!fixture.opened);
+        CHECK(fixture.opened.store == nullptr);
+        CHECK(fixture.opened.diagnostic.status ==
+              wave::DistributedSieveWaveStoreStatus::namespace_conflict);
+        CHECK(replacement.invoked);
+        CHECK(replacement.error == 0);
+        CHECK(replacement.replacement.present);
+        CHECK(replacement.replacement.device != original->second.device ||
+              replacement.replacement.inode != original->second.inode);
+        CHECK(replacement.replacement.size == original->second.bytes.size());
+
+        NamespaceSnapshot expected = before_attack;
+        auto attacked = expected.find(attacked_path);
+        CHECK(attacked != expected.end());
+        attacked->second.device = replacement.replacement.device;
+        attacked->second.inode = replacement.replacement.inode;
+        CHECK(same_namespace_snapshot(expected, snapshot_namespace(fixture.root)));
+    }
+}
+
+void test_worker_handoff_cold_restart_respects_live_base_lock(
+    const std::filesystem::path& executable) {
+    WorkerEntryFixture fixture("writer-handoff-cold-live-base-lock");
+    const auto crashed = launch_writer_handoff_crash(fixture, executable,
+                                                     WriterChildScenario::handoff_pending_durable);
+    const auto names = wave::distributed_sieve_worker_attempt_names_v1("entry_chunk_0", 0, 0);
+    CHECK(names.has_value());
+    const Digest manifest_digest = fixture.store().manifest_digest();
+    auto live_lock = hold_base_lock_in_clean_child(fixture.root / names->base_lock_leaf);
+
+    const auto locked_namespace = snapshot_namespace(fixture.root);
+    fresh_reopen_worker_handoff(fixture, manifest_digest);
+    CHECK(!fixture.opened);
+    CHECK(fixture.opened.store == nullptr);
+    CHECK(fixture.opened.diagnostic.status ==
+          wave::DistributedSieveWaveStoreStatus::private_lease_lock_busy);
+    CHECK(same_namespace_snapshot(locked_namespace, snapshot_namespace(fixture.root)));
+
+    live_lock.release_and_wait();
+    fresh_reopen_worker_handoff(fixture, manifest_digest);
+    if (!fixture.opened) {
+        fail("fresh reopen after live BaseLock release", __LINE__,
+             wave_diagnostic_detail(fixture.opened.diagnostic));
+    }
+    require_wave_ready(fixture.store().revalidate(), "revalidate after live BaseLock release");
+    const auto expected = expected_pending_rollback_namespace(crashed.crashed_namespace, *names);
+    CHECK(same_namespace_snapshot(expected, snapshot_namespace(fixture.root)));
+}
 #endif
 
 void test_writer_replacement_sandwiches(const std::filesystem::path& executable) {
@@ -2562,9 +3310,11 @@ int main(int argc, char** argv) {
                      "unsupported on this platform\n";
         return 0;
 #else
-        if (argc == 3 && std::string_view(argv[1]) == WRITER_CHILD_ARGUMENT) {
+        if (argc == 3 && (std::string_view(argv[1]) == WRITER_CHILD_ARGUMENT ||
+                          std::string_view(argv[1]) == WRITER_COLD_CRASH_CHILD_ARGUMENT)) {
             const auto scenario = parse_writer_child_scenario(argv[2]);
-            return scenario.has_value() ? run_writer_child(*scenario) : 94;
+            const bool cold_crash = std::string_view(argv[1]) == WRITER_COLD_CRASH_CHILD_ARGUMENT;
+            return scenario.has_value() ? run_writer_child(*scenario, cold_crash) : 94;
         }
 
         CHECK(argc >= 1);
@@ -2578,6 +3328,11 @@ int main(int argc, char** argv) {
         test_worker_handoff_inventory_rejects_foreign_state(executable);
         test_worker_handoff_cache_commit_failure_retry(executable);
         test_worker_handoff_durable_prefix_retries(executable);
+        test_worker_handoff_cold_restart_recovers_durable_prefixes(executable);
+        test_worker_handoff_cold_restart_converges_identical_dual(executable);
+        test_worker_handoff_cold_restart_rejects_invalid_prefixes(executable);
+        test_worker_handoff_cold_restart_rejects_same_byte_replacement_sandwiches(executable);
+        test_worker_handoff_cold_restart_respects_live_base_lock(executable);
 #endif
         test_writer_replacement_sandwiches(executable);
         test_writer_wrong_consistent_base_digest(executable);

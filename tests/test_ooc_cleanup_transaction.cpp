@@ -53,6 +53,18 @@
 #include <unistd.h>
 #endif
 
+namespace gnfs::relation::ooc_cleanup_detail {
+
+class PrivateHandoffPublicationTypedValidatorTestAuthorityV1 final {
+public:
+    [[nodiscard]] static PrivateHandoffPublicationTypedValidatorV1
+    make(PrivateHandoffPublicationTypedValidatorV1::Validate validate, void* context) noexcept {
+        return PrivateHandoffPublicationTypedValidatorV1(validate, context);
+    }
+};
+
+} // namespace gnfs::relation::ooc_cleanup_detail
+
 namespace {
 
 using gnfs::core::Relation;
@@ -87,6 +99,7 @@ using gnfs::relation::OOCRelationReader;
 using gnfs::relation::OOCRelationStoreFormat;
 using gnfs::relation::OOCRelationWriter;
 using gnfs::relation::OOCSnapshotDescriptor;
+using gnfs::relation::ooc_cleanup_detail::acquire_private_handoff_publication_resume_v1;
 using gnfs::relation::ooc_cleanup_detail::admit_private_cleanup_action_locked;
 using gnfs::relation::ooc_cleanup_detail::admit_private_lease_removal_locked;
 using gnfs::relation::ooc_cleanup_detail::authorize_private_cleanup_mutation;
@@ -107,6 +120,15 @@ using gnfs::relation::ooc_cleanup_detail::PrivateCleanupUnionObservationTestHook
 using gnfs::relation::ooc_cleanup_detail::PrivateCleanupUnionRawObservation;
 using gnfs::relation::ooc_cleanup_detail::PrivateHandoffLeafObservationKind;
 using gnfs::relation::ooc_cleanup_detail::PrivateHandoffLeafSlot;
+using gnfs::relation::ooc_cleanup_detail::PrivateHandoffPublicationObservedPermitV1;
+using gnfs::relation::ooc_cleanup_detail::PrivateHandoffPublicationPrefixStateV1;
+using gnfs::relation::ooc_cleanup_detail::PrivateHandoffPublicationResumeAdmissionV1;
+using gnfs::relation::ooc_cleanup_detail::PrivateHandoffPublicationResumeDispositionV1;
+using gnfs::relation::ooc_cleanup_detail::PrivateHandoffPublicationResumeObservationPointV1;
+using gnfs::relation::ooc_cleanup_detail::PrivateHandoffPublicationResumeTestHooksV1;
+using gnfs::relation::ooc_cleanup_detail::PrivateHandoffPublicationTypedValidatorTestAuthorityV1;
+using gnfs::relation::ooc_cleanup_detail::PrivateHandoffPublicationTypedValidatorV1;
+using gnfs::relation::ooc_cleanup_detail::PrivateHandoffPublicationValidatedPermitV1;
 using gnfs::relation::ooc_cleanup_detail::PrivateLeaseRecoveryAction;
 using gnfs::relation::ooc_cleanup_detail::PrivateLeaseRecoveryRunResult;
 using gnfs::relation::ooc_cleanup_detail::PrivateLeaseRecoveryTransition;
@@ -117,6 +139,9 @@ using gnfs::relation::ooc_cleanup_detail::PrivateLeaseReservationRunResult;
 using gnfs::relation::ooc_cleanup_detail::PrivateNamespaceAction;
 using gnfs::relation::ooc_cleanup_detail::PrivateNamespaceActionDisposition;
 using gnfs::relation::ooc_cleanup_detail::reconcile_private_handoff_from_permit;
+using gnfs::relation::ooc_cleanup_detail::reconcile_private_handoff_publication_for_resume_v1;
+using gnfs::relation::ooc_cleanup_detail::revalidate_private_handoff_publication_resume_v1;
+using gnfs::relation::ooc_cleanup_detail::validate_private_handoff_publication_resume_v1;
 
 static_assert(std::is_constructible_v<
               OOCRelationWriter, const std::string&, OOCPrivateLeaseOwnershipReceipt&&,
@@ -143,6 +168,23 @@ static_assert(!std::is_default_constructible_v<OOCPrivateHandoffReader>);
 static_assert(!std::is_copy_constructible_v<OOCPrivateHandoffReader>);
 static_assert(std::is_nothrow_move_constructible_v<OOCPrivateHandoffReader>);
 static_assert(!std::is_move_assignable_v<OOCPrivateHandoffReader>);
+static_assert(!std::is_default_constructible_v<PrivateHandoffPublicationObservedPermitV1>);
+static_assert(!std::is_copy_constructible_v<PrivateHandoffPublicationObservedPermitV1>);
+static_assert(!std::is_copy_assignable_v<PrivateHandoffPublicationObservedPermitV1>);
+static_assert(std::is_nothrow_move_constructible_v<PrivateHandoffPublicationObservedPermitV1>);
+static_assert(!std::is_move_assignable_v<PrivateHandoffPublicationObservedPermitV1>);
+static_assert(!std::is_default_constructible_v<PrivateHandoffPublicationValidatedPermitV1>);
+static_assert(!std::is_copy_constructible_v<PrivateHandoffPublicationValidatedPermitV1>);
+static_assert(!std::is_copy_assignable_v<PrivateHandoffPublicationValidatedPermitV1>);
+static_assert(std::is_nothrow_move_constructible_v<PrivateHandoffPublicationValidatedPermitV1>);
+static_assert(!std::is_move_assignable_v<PrivateHandoffPublicationValidatedPermitV1>);
+static_assert(!std::is_constructible_v<PrivateHandoffPublicationValidatedPermitV1,
+                                       PrivateHandoffPublicationObservedPermitV1&&>);
+static_assert(!std::is_default_constructible_v<PrivateHandoffPublicationTypedValidatorV1>);
+static_assert(!std::is_copy_constructible_v<PrivateHandoffPublicationTypedValidatorV1>);
+static_assert(std::is_nothrow_move_constructible_v<PrivateHandoffPublicationTypedValidatorV1>);
+static_assert(!std::is_constructible_v<PrivateHandoffPublicationTypedValidatorV1,
+                                       PrivateHandoffPublicationTypedValidatorV1::Validate, void*>);
 static_assert(!std::is_default_constructible_v<PrivateCleanupActionPermit>);
 static_assert(!std::is_copy_constructible_v<PrivateCleanupActionPermit>);
 static_assert(!std::is_copy_assignable_v<PrivateCleanupActionPermit>);
@@ -2217,10 +2259,13 @@ publish_private_handoff(PreparedPrivateHandoff& prepared, OOCPrivateHandoffTestH
             }
             std::_Exit(0);
         }
-        if (operation == "publish-pending-exit" || operation == "publish-canonical-exit") {
+        if (operation == "publish-pending-exit" || operation == "publish-promoted-exit" ||
+            operation == "publish-canonical-exit") {
             auto prepared = prepare_private_handoff(base);
             auto target = operation == "publish-pending-exit"
                               ? OOCPrivateHandoffFaultPoint::PendingDurable
+                          : operation == "publish-promoted-exit"
+                              ? OOCPrivateHandoffFaultPoint::CanonicalPromoted
                               : OOCPrivateHandoffFaultPoint::CanonicalDurable;
             const auto exit_at_target = [](OOCPrivateHandoffFaultPoint point,
                                            void* opaque) noexcept {
@@ -6151,6 +6196,42 @@ void test_private_handoff_unsupported_publish_is_non_mutating() {
     CHECK(!entry_exists_no_follow(paths.private_directory));
 }
 
+void test_private_handoff_publication_resume_unsupported_is_non_observing() {
+    TempDirectory temp;
+    const auto base = temp.path() / "unsupported-private-handoff-resume.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    const auto before = capture_namespace_tree(temp.path());
+
+    constexpr std::array<std::uint64_t, 3> arbitrary_directory_identity{1, 2, 3};
+    for (std::size_t attempt = 0; attempt < 2; ++attempt) {
+        const auto unsupported =
+            acquire_private_handoff_publication_resume_v1(paths, arbitrary_directory_identity);
+        CHECK(unsupported.result.status == OOCCleanupStatus::PlatformUnsupported);
+        CHECK(!unsupported.acquired());
+        CHECK(!unsupported.observed.has_value());
+        CHECK(capture_namespace_tree(temp.path()) == before);
+        CHECK(!entry_exists_no_follow(paths.lock_path));
+    }
+
+    const auto invalid = acquire_private_handoff_publication_resume_v1(
+        OOCCleanupPaths{}, arbitrary_directory_identity);
+    CHECK(invalid.result.status == OOCCleanupStatus::InvalidRequest);
+    CHECK(!invalid.acquired());
+    CHECK(!invalid.observed.has_value());
+    CHECK(capture_namespace_tree(temp.path()) == before);
+
+    {
+        BaseLock lock(paths.lock_path, true);
+        CHECK(gnfs::relation::ooc_cleanup_detail::try_claim_private_cleanup_action(lock));
+        gnfs::relation::ooc_cleanup_detail::release_private_cleanup_action(lock);
+    }
+    {
+        BaseLock reopened(paths.lock_path, false);
+        CHECK(gnfs::relation::ooc_cleanup_detail::try_claim_private_cleanup_action(reopened));
+        gnfs::relation::ooc_cleanup_detail::release_private_cleanup_action(reopened);
+    }
+}
+
 struct UnsupportedAdoptionHookContext final {
     std::size_t observations = 0;
 };
@@ -8965,6 +9046,1273 @@ void test_private_handoff_adoption_publication_prefixes(const std::string& execu
     }
 }
 
+[[nodiscard]] std::array<std::uint64_t, 3>
+require_private_directory_identity(const OOCCleanupPaths& paths) {
+    const auto identity = gnfs::relation::ooc_cleanup_detail::inspect_directory_identity_locked(
+        paths.private_directory);
+    if (!identity) {
+        throw std::runtime_error("private handoff directory is missing");
+    }
+    return *identity;
+}
+
+void check_private_handoff_resume_publisher(const std::string& executable,
+                                            std::string_view operation,
+                                            const std::filesystem::path& base) {
+    const auto publisher = gnfs::test::run_child_process(
+        executable, {"--private-handoff-adoption-child", std::string(operation), base.string()});
+    CHECK(publisher.exited);
+    CHECK(!publisher.signaled);
+    CHECK(publisher.exit_code == 0);
+}
+
+struct PrivateHandoffTypedValidationContext final {
+    bool accept = true;
+    bool called = false;
+    std::optional<gnfs::relation::ooc_cleanup_detail::PrivateHandoffPublicationPrefixWitnessV1>
+        witness;
+};
+
+[[nodiscard]] bool validate_private_handoff_typed_for_test(
+    const gnfs::relation::ooc_cleanup_detail::PrivateHandoffPublicationPrefixWitnessV1& witness,
+    void* opaque) noexcept {
+    auto& context = *static_cast<PrivateHandoffTypedValidationContext*>(opaque);
+    context.called = true;
+    context.witness = witness;
+    return context.accept;
+}
+
+[[nodiscard]] PrivateHandoffPublicationValidatedPermitV1
+take_private_handoff_resume_permit(PrivateHandoffPublicationResumeAdmissionV1& admission) {
+    if (!admission.observed || !admission.observed->valid()) {
+        throw std::runtime_error("private handoff resume admission did not retain an observation");
+    }
+    const auto* witness = admission.observed->witness();
+    if (witness == nullptr) {
+        throw std::runtime_error("private handoff resume observation did not expose a witness");
+    }
+    const auto expected_witness = *witness;
+    PrivateHandoffTypedValidationContext typed;
+    auto validator = PrivateHandoffPublicationTypedValidatorTestAuthorityV1::make(
+        validate_private_handoff_typed_for_test, &typed);
+    auto validated = validate_private_handoff_publication_resume_v1(std::move(*admission.observed),
+                                                                    std::move(validator));
+    admission.observed.reset();
+    if (!typed.called || typed.witness != expected_witness || !validated.validated() ||
+        !validated.permit.has_value()) {
+        throw std::runtime_error("private handoff resume observation did not validate");
+    }
+    auto permit = std::move(*validated.permit);
+    validated.permit.reset();
+    return permit;
+}
+
+[[nodiscard]] gnfs::relation::ooc_cleanup_detail::PrivateHandoffPublicationResumeResultV1
+reconcile_private_handoff_resume_admission(PrivateHandoffPublicationResumeAdmissionV1& admission,
+                                           PrivateHandoffPublicationResumeTestHooksV1 hooks = {}) {
+    auto permit = take_private_handoff_resume_permit(admission);
+    const auto exact = revalidate_private_handoff_publication_resume_v1(permit);
+    CHECK(exact.revalidated());
+    auto result = reconcile_private_handoff_publication_for_resume_v1(permit, hooks);
+    CHECK(permit.held());
+    CHECK(!permit.valid());
+    const auto consumed = revalidate_private_handoff_publication_resume_v1(permit);
+    CHECK(!consumed.revalidated());
+    CHECK(consumed.result.status == OOCCleanupStatus::InvalidRequest);
+    return result;
+}
+
+enum class PrivateHandoffResumeSandwichMutation : std::uint8_t {
+    Handoff,
+    Reserved,
+    Directory,
+    Pair,
+    Owner,
+    Owned,
+};
+
+struct PrivateHandoffResumeSandwichContext final {
+    PrivateHandoffPublicationResumeObservationPointV1 expected_point =
+        PrivateHandoffPublicationResumeObservationPointV1::AfterExpectedPrefixValidated;
+    PrivateHandoffResumeSandwichMutation mutation = PrivateHandoffResumeSandwichMutation::Handoff;
+    OOCCleanupPaths paths;
+    std::filesystem::path root;
+    std::filesystem::path saved_directory;
+    std::filesystem::path replacement_directory;
+    std::optional<NamespaceTreeSnapshot> expected_after_hook;
+    bool invoked = false;
+    bool failed = false;
+};
+
+[[nodiscard]] bool
+mutate_private_handoff_resume_sandwich(PrivateHandoffPublicationResumeObservationPointV1 point,
+                                       void* opaque) noexcept {
+    auto& context = *static_cast<PrivateHandoffResumeSandwichContext*>(opaque);
+    if (context.invoked || point != context.expected_point) {
+        return false;
+    }
+    context.invoked = true;
+    try {
+        switch (context.mutation) {
+        case PrivateHandoffResumeSandwichMutation::Handoff:
+            if (!replace_private_control_leaf_same_bytes(context.paths.private_handoff_path)) {
+                context.failed = true;
+            }
+            break;
+        case PrivateHandoffResumeSandwichMutation::Reserved:
+            if (!replace_private_control_leaf_same_bytes(context.paths.lease_reserved_path)) {
+                context.failed = true;
+            }
+            break;
+        case PrivateHandoffResumeSandwichMutation::Directory: {
+            std::error_code error;
+            std::filesystem::rename(context.paths.private_directory, context.saved_directory,
+                                    error);
+            if (!error) {
+                std::filesystem::rename(context.replacement_directory,
+                                        context.paths.private_directory, error);
+            }
+            if (error) {
+                context.failed = true;
+            }
+            break;
+        }
+        case PrivateHandoffResumeSandwichMutation::Pair:
+            if (!replace_private_control_leaf_same_bytes(context.paths.index_path)) {
+                context.failed = true;
+            }
+            break;
+        case PrivateHandoffResumeSandwichMutation::Owner:
+            if (!replace_private_control_leaf_same_bytes(
+                    gnfs::relation::ooc_cleanup_detail::private_lease_owner_path(
+                        context.paths.private_directory))) {
+                context.failed = true;
+            }
+            break;
+        case PrivateHandoffResumeSandwichMutation::Owned:
+            if (!replace_private_control_leaf_same_bytes(context.paths.lease_owned_path)) {
+                context.failed = true;
+            }
+            break;
+        }
+        context.expected_after_hook = capture_namespace_tree(context.root);
+    } catch (...) {
+        context.failed = true;
+    }
+    return false;
+}
+
+void test_private_handoff_publication_resume_requires_exact_typed_projection(
+    const std::string& executable) {
+    TempDirectory temp;
+    const auto base = temp.path() / "resume-typed-projection.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    check_private_handoff_resume_publisher(executable, "publish-canonical-exit", base);
+    auto admission = acquire_private_handoff_publication_resume_v1(
+        paths, require_private_directory_identity(paths));
+    CHECK(admission.acquired());
+    const auto* witness = admission.observed ? admission.observed->witness() : nullptr;
+    CHECK(witness != nullptr);
+    if (witness == nullptr || !admission.observed) {
+        return;
+    }
+
+    PrivateHandoffTypedValidationContext typed{.accept = false};
+    auto validator = PrivateHandoffPublicationTypedValidatorTestAuthorityV1::make(
+        validate_private_handoff_typed_for_test, &typed);
+    const auto before = capture_namespace_tree(temp.path());
+    const auto rejected = validate_private_handoff_publication_resume_v1(
+        std::move(*admission.observed), std::move(validator));
+    admission.observed.reset();
+    CHECK(typed.called);
+    CHECK(!rejected.validated());
+    CHECK(!rejected.permit.has_value());
+    CHECK(rejected.result.status == OOCCleanupStatus::ForeignReplacementPreserved);
+    CHECK(capture_namespace_tree(temp.path()) == before);
+}
+
+void test_private_handoff_publication_resume_rejects_pending_replacement(
+    const std::string& executable) {
+    TempDirectory temp;
+
+    {
+        const auto base =
+            temp.path() / "resume-pending-replaced-before-validation.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        check_private_handoff_resume_publisher(executable, "publish-pending-exit", base);
+        const auto directory_identity = require_private_directory_identity(paths);
+        auto admission = acquire_private_handoff_publication_resume_v1(paths, directory_identity);
+        CHECK(admission.acquired());
+        const auto* witness = admission.observed ? admission.observed->witness() : nullptr;
+        CHECK(witness != nullptr);
+        if (witness == nullptr || !admission.observed) {
+            return;
+        }
+        PrivateHandoffTypedValidationContext typed;
+        auto validator = PrivateHandoffPublicationTypedValidatorTestAuthorityV1::make(
+            validate_private_handoff_typed_for_test, &typed);
+        CHECK(replace_private_control_leaf_same_bytes(paths.private_handoff_pending_path));
+        const auto after_replacement = capture_namespace_tree(temp.path());
+
+        const auto rejected = validate_private_handoff_publication_resume_v1(
+            std::move(*admission.observed), std::move(validator));
+        admission.observed.reset();
+        CHECK(!rejected.validated());
+        CHECK(!rejected.permit.has_value());
+        CHECK(rejected.result.status == OOCCleanupStatus::ForeignReplacementPreserved);
+        CHECK(!typed.called);
+        CHECK(capture_namespace_tree(temp.path()) == after_replacement);
+
+        auto retry = acquire_private_handoff_publication_resume_v1(paths, directory_identity);
+        CHECK(retry.acquired());
+        CHECK(retry.observed.has_value());
+        if (retry.observed) {
+            const auto reused = validate_private_handoff_publication_resume_v1(
+                std::move(*retry.observed), std::move(validator));
+            retry.observed.reset();
+            CHECK(!reused.validated());
+            CHECK(!reused.permit.has_value());
+            CHECK(reused.result.status == OOCCleanupStatus::InvalidRequest);
+        }
+    }
+
+    {
+        const auto base =
+            temp.path() / "resume-pending-replaced-after-validation.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        check_private_handoff_resume_publisher(executable, "publish-pending-exit", base);
+        const auto directory_identity = require_private_directory_identity(paths);
+        auto admission = acquire_private_handoff_publication_resume_v1(paths, directory_identity);
+        CHECK(admission.acquired());
+        const auto* witness = admission.observed ? admission.observed->witness() : nullptr;
+        CHECK(witness != nullptr);
+        if (witness == nullptr || !admission.observed) {
+            return;
+        }
+        PrivateHandoffTypedValidationContext typed;
+        auto validator = PrivateHandoffPublicationTypedValidatorTestAuthorityV1::make(
+            validate_private_handoff_typed_for_test, &typed);
+        auto validated = validate_private_handoff_publication_resume_v1(
+            std::move(*admission.observed), std::move(validator));
+        admission.observed.reset();
+        CHECK(validated.validated());
+        CHECK(validated.permit.has_value());
+        if (!validated.permit) {
+            return;
+        }
+        CHECK(replace_private_control_leaf_same_bytes(paths.private_handoff_pending_path));
+        const auto after_replacement = capture_namespace_tree(temp.path());
+
+        const auto rejected =
+            reconcile_private_handoff_publication_for_resume_v1(*validated.permit);
+        CHECK(validated.permit->held());
+        CHECK(!validated.permit->valid());
+        validated.permit.reset();
+        CHECK(!rejected.converged());
+        CHECK(rejected.result.status == OOCCleanupStatus::ForeignReplacementPreserved);
+        CHECK(capture_namespace_tree(temp.path()) == after_replacement);
+    }
+}
+
+void test_private_handoff_publication_resume_rejects_inherited_base_lock(
+    const std::string& executable) {
+    TempDirectory temp;
+
+    {
+        const auto base = temp.path() / "resume-fork-before-acquire.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        check_private_handoff_resume_publisher(executable, "publish-pending-exit", base);
+        const auto directory_identity = require_private_directory_identity(paths);
+        {
+            BaseLock inherited(paths.lock_path, false);
+            (void)inherited;
+            const pid_t child = ::fork();
+            CHECK(child >= 0);
+            if (child < 0) {
+                return;
+            }
+            if (child == 0) {
+                const auto denied =
+                    acquire_private_handoff_publication_resume_v1(paths, directory_identity);
+                ::_exit(!denied.acquired() && !denied.observed.has_value() &&
+                                denied.result.status == OOCCleanupStatus::Busy
+                            ? 0
+                            : 81);
+            }
+            int status = 0;
+            CHECK(::waitpid(child, &status, 0) == child);
+            CHECK(WIFEXITED(status));
+            CHECK(WEXITSTATUS(status) == 0);
+        }
+
+        auto admission = acquire_private_handoff_publication_resume_v1(paths, directory_identity);
+        CHECK(admission.acquired());
+        const auto reconciled = reconcile_private_handoff_resume_admission(admission);
+        CHECK(reconciled.converged());
+    }
+
+    {
+        const auto base = temp.path() / "resume-fork-after-acquire.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        check_private_handoff_resume_publisher(executable, "publish-pending-exit", base);
+        const auto directory_identity = require_private_directory_identity(paths);
+        auto admission = acquire_private_handoff_publication_resume_v1(paths, directory_identity);
+        CHECK(admission.acquired());
+        CHECK(admission.observed.has_value());
+        if (!admission.observed) {
+            return;
+        }
+
+        const pid_t child = ::fork();
+        CHECK(child >= 0);
+        if (child < 0) {
+            return;
+        }
+        if (child == 0) {
+            const bool inherited_invalid =
+                !admission.observed->valid() && admission.observed->witness() == nullptr;
+            admission.observed.reset();
+            const auto denied =
+                acquire_private_handoff_publication_resume_v1(paths, directory_identity);
+            ::_exit(inherited_invalid && !denied.acquired() && !denied.observed.has_value() &&
+                            denied.result.status == OOCCleanupStatus::Busy
+                        ? 0
+                        : 82);
+        }
+        int status = 0;
+        CHECK(::waitpid(child, &status, 0) == child);
+        CHECK(WIFEXITED(status));
+        CHECK(WEXITSTATUS(status) == 0);
+        CHECK(admission.observed.has_value());
+        CHECK(admission.observed && admission.observed->valid());
+
+        const auto reconciled = reconcile_private_handoff_resume_admission(admission);
+        CHECK(reconciled.converged());
+    }
+}
+
+void test_private_handoff_publication_resume_prefixes(const std::string& executable) {
+    TempDirectory temp;
+
+    {
+        const auto base = temp.path() / "resume-pending-prefix.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        check_private_handoff_resume_publisher(executable, "publish-pending-exit", base);
+        const auto before = capture_namespace_tree(temp.path());
+        auto admission = acquire_private_handoff_publication_resume_v1(
+            paths, require_private_directory_identity(paths));
+        CHECK(admission.acquired());
+        CHECK(admission.result.status == OOCCleanupStatus::RecoveryRequired);
+        CHECK(capture_namespace_tree(temp.path()) == before);
+        const auto* witness = admission.observed ? admission.observed->witness() : nullptr;
+        CHECK(witness != nullptr);
+        if (witness != nullptr) {
+            CHECK(witness->state == PrivateHandoffPublicationPrefixStateV1::PendingOnly);
+            CHECK(!witness->canonical_snapshot.has_value());
+            CHECK(witness->pending_snapshot.has_value());
+            CHECK(witness->reserved.has_value());
+        }
+
+        auto reconciled = reconcile_private_handoff_resume_admission(admission);
+        CHECK(reconciled.converged());
+        CHECK(reconciled.result.completed());
+        CHECK(reconciled.disposition ==
+              PrivateHandoffPublicationResumeDispositionV1::PendingRolledBack);
+        CHECK(reconciled.expected_prefix.has_value());
+        CHECK(!reconciled.terminal_prefix.has_value());
+        CHECK(!admission.observed.has_value());
+        CHECK(!entry_exists_no_follow(paths.private_handoff_path));
+        CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
+        CHECK(!entry_exists_no_follow(paths.index_path));
+        CHECK(!entry_exists_no_follow(paths.data_path));
+        CHECK(!entry_exists_no_follow(paths.private_directory));
+        CHECK(!entry_exists_no_follow(paths.lease_reserved_path));
+        CHECK(!entry_exists_no_follow(paths.lease_owned_path));
+        CHECK(entry_exists_no_follow(paths.lock_path));
+    }
+
+    {
+        const auto base = temp.path() / "resume-canonical-prefix.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        check_private_handoff_resume_publisher(executable, "publish-canonical-exit", base);
+        const auto canonical = read_test_bytes(paths.private_handoff_path);
+        const auto index = read_test_bytes(paths.index_path);
+        const auto data = read_test_bytes(paths.data_path);
+        auto admission = acquire_private_handoff_publication_resume_v1(
+            paths, require_private_directory_identity(paths));
+        CHECK(admission.acquired());
+        const auto* witness = admission.observed ? admission.observed->witness() : nullptr;
+        CHECK(witness != nullptr);
+        if (witness != nullptr) {
+            CHECK(witness->state == PrivateHandoffPublicationPrefixStateV1::Canonical);
+            CHECK(witness->canonical_snapshot.has_value());
+            CHECK(!witness->pending_snapshot.has_value());
+            CHECK(witness->reserved.has_value());
+        }
+
+        auto reconciled = reconcile_private_handoff_resume_admission(admission);
+        CHECK(reconciled.converged());
+        CHECK(reconciled.result.status == OOCCleanupStatus::HandoffPresent);
+        CHECK(reconciled.disposition ==
+              PrivateHandoffPublicationResumeDispositionV1::CanonicalConverged);
+        CHECK(reconciled.terminal_prefix.has_value());
+        if (reconciled.terminal_prefix) {
+            CHECK(reconciled.terminal_prefix->canonical_terminal());
+            CHECK(!reconciled.terminal_prefix->pending_snapshot.has_value());
+            CHECK(!reconciled.terminal_prefix->reserved.has_value());
+        }
+        check_test_bytes_preserved(paths.private_handoff_path, canonical);
+        check_test_bytes_preserved(paths.index_path, index);
+        check_test_bytes_preserved(paths.data_path, data);
+        CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
+        CHECK(!entry_exists_no_follow(paths.lease_reserved_path));
+        CHECK(entry_exists_no_follow(paths.lease_owned_path));
+    }
+
+    {
+        const auto base = temp.path() / "resume-identical-dual.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        check_private_handoff_resume_publisher(executable, "publish-canonical-exit", base);
+        const auto canonical = read_test_bytes(paths.private_handoff_path);
+        write_private_control_bytes(paths.private_handoff_pending_path, canonical);
+        auto admission = acquire_private_handoff_publication_resume_v1(
+            paths, require_private_directory_identity(paths));
+        CHECK(admission.acquired());
+        const auto* witness = admission.observed ? admission.observed->witness() : nullptr;
+        CHECK(witness != nullptr);
+        if (witness != nullptr) {
+            CHECK(witness->state == PrivateHandoffPublicationPrefixStateV1::IdenticalDual);
+            CHECK(witness->canonical_snapshot.has_value());
+            CHECK(witness->pending_snapshot.has_value());
+            CHECK(witness->reserved.has_value());
+        }
+
+        auto reconciled = reconcile_private_handoff_resume_admission(admission);
+        CHECK(reconciled.converged());
+        CHECK(reconciled.disposition ==
+              PrivateHandoffPublicationResumeDispositionV1::CanonicalConverged);
+        CHECK(reconciled.terminal_prefix.has_value());
+        if (reconciled.terminal_prefix) {
+            CHECK(reconciled.terminal_prefix->canonical_terminal());
+        }
+        check_test_bytes_preserved(paths.private_handoff_path, canonical);
+        CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
+        CHECK(!entry_exists_no_follow(paths.lease_reserved_path));
+    }
+
+    {
+        const auto base = temp.path() / "resume-promoted-prefix.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        check_private_handoff_resume_publisher(executable, "publish-promoted-exit", base);
+        CHECK(entry_exists_no_follow(paths.private_handoff_path));
+        CHECK(entry_exists_no_follow(paths.lease_reserved_path));
+        auto admission = acquire_private_handoff_publication_resume_v1(
+            paths, require_private_directory_identity(paths));
+        CHECK(admission.acquired());
+        const auto* witness = admission.observed ? admission.observed->witness() : nullptr;
+        CHECK(witness != nullptr);
+        if (witness != nullptr) {
+            CHECK(witness->state == PrivateHandoffPublicationPrefixStateV1::Canonical);
+            CHECK(witness->reserved.has_value());
+        }
+        const auto reconciled = reconcile_private_handoff_resume_admission(admission);
+        CHECK(reconciled.converged());
+        CHECK(reconciled.disposition ==
+              PrivateHandoffPublicationResumeDispositionV1::CanonicalConverged);
+        CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
+        CHECK(!entry_exists_no_follow(paths.lease_reserved_path));
+    }
+
+    {
+        const auto base = temp.path() / "resume-terminal-canonical.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        check_private_handoff_resume_publisher(executable, "publish-exit", base);
+        auto admission = acquire_private_handoff_publication_resume_v1(
+            paths, require_private_directory_identity(paths));
+        CHECK(admission.acquired());
+        const auto* witness = admission.observed ? admission.observed->witness() : nullptr;
+        CHECK(witness != nullptr);
+        if (witness != nullptr) {
+            CHECK(witness->canonical_terminal());
+        }
+        const auto before = capture_namespace_tree(temp.path());
+
+        auto reconciled = reconcile_private_handoff_resume_admission(admission);
+        CHECK(reconciled.converged());
+        CHECK(reconciled.disposition ==
+              PrivateHandoffPublicationResumeDispositionV1::CanonicalTerminal);
+        CHECK(reconciled.expected_prefix == reconciled.terminal_prefix);
+        CHECK(capture_namespace_tree(temp.path()) == before);
+    }
+}
+
+void test_private_handoff_publication_resume_rejects_invalid_prefixes(
+    const std::string& executable) {
+    TempDirectory temp;
+
+    {
+        const auto base = temp.path() / "resume-unreserved-pending.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        check_private_handoff_resume_publisher(executable, "publish-pending-exit", base);
+        std::error_code error;
+        CHECK(std::filesystem::remove(paths.lease_reserved_path, error));
+        CHECK(!error);
+        const auto before = capture_namespace_tree(temp.path());
+        const auto rejected = acquire_private_handoff_publication_resume_v1(
+            paths, require_private_directory_identity(paths));
+        CHECK(!rejected.acquired());
+        CHECK(!rejected.observed.has_value());
+        CHECK(rejected.result.status == OOCCleanupStatus::ForeignReplacementPreserved);
+        CHECK(capture_namespace_tree(temp.path()) == before);
+        CHECK(entry_exists_no_follow(paths.private_handoff_pending_path));
+        CHECK(entry_exists_no_follow(paths.index_path));
+        CHECK(entry_exists_no_follow(paths.data_path));
+        CHECK(entry_exists_no_follow(paths.lease_owned_path));
+    }
+
+    {
+        const auto base = temp.path() / "resume-nonidentical-dual.gnfs-sink-lease" / "corpus";
+        const auto foreign_base =
+            temp.path() / "resume-nonidentical-dual-source.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        const auto foreign_paths = OOCCleanupTransaction::paths_for(foreign_base);
+        check_private_handoff_resume_publisher(executable, "publish-canonical-exit", base);
+        check_private_handoff_resume_publisher(executable, "publish-exit", foreign_base);
+        write_private_control_bytes(paths.private_handoff_pending_path,
+                                    read_test_bytes(foreign_paths.private_handoff_path));
+        const auto before = capture_namespace_tree(temp.path());
+        const auto rejected = acquire_private_handoff_publication_resume_v1(
+            paths, require_private_directory_identity(paths));
+        CHECK(!rejected.acquired());
+        CHECK(!rejected.observed.has_value());
+        CHECK(rejected.result.status == OOCCleanupStatus::ForeignReplacementPreserved);
+        CHECK(capture_namespace_tree(temp.path()) == before);
+        CHECK(entry_exists_no_follow(paths.private_handoff_path));
+        CHECK(entry_exists_no_follow(paths.private_handoff_pending_path));
+        CHECK(entry_exists_no_follow(paths.lease_reserved_path));
+    }
+}
+
+void test_private_handoff_publication_resume_revalidates_sandwich(const std::string& executable) {
+    TempDirectory temp;
+    constexpr std::array mutations{
+        PrivateHandoffResumeSandwichMutation::Handoff,
+        PrivateHandoffResumeSandwichMutation::Reserved,
+        PrivateHandoffResumeSandwichMutation::Directory,
+        PrivateHandoffResumeSandwichMutation::Pair,
+    };
+
+    for (std::size_t index = 0; index < mutations.size(); ++index) {
+        const auto base = temp.path() /
+                          ("resume-sandwich-" + std::to_string(index) + ".gnfs-sink-lease") /
+                          "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        check_private_handoff_resume_publisher(executable, "publish-canonical-exit", base);
+
+        PrivateHandoffResumeSandwichContext context{
+            .mutation = mutations[index],
+            .paths = paths,
+            .root = temp.path(),
+            .saved_directory = temp.path() / ("resume-saved-directory-" + std::to_string(index)),
+            .replacement_directory =
+                temp.path() / ("resume-replacement-directory-" + std::to_string(index)),
+        };
+        if (mutations[index] == PrivateHandoffResumeSandwichMutation::Directory) {
+            std::error_code error;
+            std::filesystem::copy(paths.private_directory, context.replacement_directory,
+                                  std::filesystem::copy_options::recursive, error);
+            CHECK(!error);
+        }
+
+        const auto before = capture_namespace_tree(temp.path());
+        auto admission = acquire_private_handoff_publication_resume_v1(
+            paths, require_private_directory_identity(paths));
+        CHECK(admission.acquired());
+        CHECK(capture_namespace_tree(temp.path()) == before);
+        const auto* acquired_witness = admission.observed ? admission.observed->witness() : nullptr;
+        CHECK(acquired_witness != nullptr);
+        const auto expected = acquired_witness
+                                  ? std::optional(*acquired_witness)
+                                  : std::optional<gnfs::relation::ooc_cleanup_detail::
+                                                      PrivateHandoffPublicationPrefixWitnessV1>{};
+
+        auto rejected = reconcile_private_handoff_resume_admission(
+            admission, PrivateHandoffPublicationResumeTestHooksV1{
+                           .stop_after = mutate_private_handoff_resume_sandwich,
+                           .context = &context,
+                       });
+        CHECK(context.invoked);
+        CHECK(!context.failed);
+        CHECK(context.expected_after_hook.has_value());
+        CHECK(!rejected.converged());
+        CHECK(rejected.disposition == PrivateHandoffPublicationResumeDispositionV1::Failed);
+        CHECK(rejected.result.status == OOCCleanupStatus::ForeignReplacementPreserved ||
+              rejected.result.status == OOCCleanupStatus::NamespaceConflict);
+        CHECK(rejected.expected_prefix == expected);
+        CHECK(!rejected.terminal_prefix.has_value());
+        if (context.expected_after_hook) {
+            CHECK(capture_namespace_tree(temp.path()) == *context.expected_after_hook);
+        }
+    }
+}
+
+void test_private_handoff_publication_resume_revalidates_before_reserved_revoke(
+    const std::string& executable) {
+    TempDirectory temp;
+    constexpr std::array mutations{
+        PrivateHandoffResumeSandwichMutation::Pair,
+        PrivateHandoffResumeSandwichMutation::Owner,
+        PrivateHandoffResumeSandwichMutation::Owned,
+        PrivateHandoffResumeSandwichMutation::Reserved,
+    };
+
+    for (std::size_t index = 0; index < mutations.size(); ++index) {
+        const auto base = temp.path() /
+                          ("resume-post-canonical-" + std::to_string(index) + ".gnfs-sink-lease") /
+                          "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        check_private_handoff_resume_publisher(executable, "publish-canonical-exit", base);
+        PrivateHandoffResumeSandwichContext context{
+            .expected_point =
+                PrivateHandoffPublicationResumeObservationPointV1::AfterCanonicalConfirmedDurable,
+            .mutation = mutations[index],
+            .paths = paths,
+            .root = temp.path(),
+        };
+
+        auto admission = acquire_private_handoff_publication_resume_v1(
+            paths, require_private_directory_identity(paths));
+        CHECK(admission.acquired());
+        const auto* acquired_witness = admission.observed ? admission.observed->witness() : nullptr;
+        CHECK(acquired_witness != nullptr);
+        const auto expected = acquired_witness
+                                  ? std::optional(*acquired_witness)
+                                  : std::optional<gnfs::relation::ooc_cleanup_detail::
+                                                      PrivateHandoffPublicationPrefixWitnessV1>{};
+
+        auto rejected = reconcile_private_handoff_resume_admission(
+            admission, PrivateHandoffPublicationResumeTestHooksV1{
+                           .stop_after = mutate_private_handoff_resume_sandwich,
+                           .context = &context,
+                       });
+        CHECK(context.invoked);
+        CHECK(!context.failed);
+        CHECK(context.expected_after_hook.has_value());
+        CHECK(!rejected.converged());
+        CHECK(rejected.disposition == PrivateHandoffPublicationResumeDispositionV1::Failed);
+        CHECK(rejected.result.status == OOCCleanupStatus::ForeignReplacementPreserved ||
+              rejected.result.status == OOCCleanupStatus::NamespaceConflict);
+        CHECK(rejected.expected_prefix == expected);
+        CHECK(!rejected.terminal_prefix.has_value());
+        CHECK(entry_exists_no_follow(paths.lease_reserved_path));
+        CHECK(entry_exists_no_follow(paths.private_handoff_path));
+        if (context.expected_after_hook) {
+            CHECK(capture_namespace_tree(temp.path()) == *context.expected_after_hook);
+        }
+    }
+}
+
+struct PrivateHandoffResumeStopContext final {
+    PrivateHandoffPublicationResumeObservationPointV1 target =
+        PrivateHandoffPublicationResumeObservationPointV1::
+            AfterPendingRollbackDestinationDirectoryDurable;
+    bool stopped = false;
+};
+
+[[nodiscard]] bool
+stop_private_handoff_publication_resume(PrivateHandoffPublicationResumeObservationPointV1 point,
+                                        void* opaque) noexcept {
+    auto& context = *static_cast<PrivateHandoffResumeStopContext*>(opaque);
+    if (!context.stopped && point == context.target) {
+        context.stopped = true;
+        return true;
+    }
+    return false;
+}
+
+struct PrivateHandoffResumeFailContext final {
+    PrivateHandoffPublicationResumeObservationPointV1 target =
+        PrivateHandoffPublicationResumeObservationPointV1::
+            BeforePendingRollbackDestinationDirectorySync;
+    bool failed = false;
+};
+
+[[nodiscard]] bool
+fail_private_handoff_publication_resume(PrivateHandoffPublicationResumeObservationPointV1 point,
+                                        void* opaque) noexcept {
+    auto& context = *static_cast<PrivateHandoffResumeFailContext*>(opaque);
+    if (!context.failed && point == context.target) {
+        context.failed = true;
+        return true;
+    }
+    return false;
+}
+
+constexpr int PRIVATE_HANDOFF_RESUME_CRASH_EXIT_BASE = 200;
+
+struct PrivateHandoffResumeCrashContext final {
+    PrivateHandoffPublicationResumeObservationPointV1 target =
+        PrivateHandoffPublicationResumeObservationPointV1::
+            AfterPendingRollbackSourceDirectoryDurable;
+};
+
+[[nodiscard]] bool
+crash_private_handoff_publication_resume(PrivateHandoffPublicationResumeObservationPointV1 point,
+                                         void* opaque) noexcept {
+    const auto& context = *static_cast<const PrivateHandoffResumeCrashContext*>(opaque);
+    if (point == context.target) {
+        ::_exit(PRIVATE_HANDOFF_RESUME_CRASH_EXIT_BASE + static_cast<int>(point));
+    }
+    return false;
+}
+
+void check_private_handoff_resume_child_crash(
+    const OOCCleanupPaths& paths, const std::array<std::uint64_t, 3>& expected_directory_identity,
+    PrivateHandoffPublicationResumeObservationPointV1 target) {
+    const pid_t child = ::fork();
+    CHECK(child >= 0);
+    if (child < 0) {
+        return;
+    }
+    if (child == 0) {
+        try {
+            auto admission =
+                acquire_private_handoff_publication_resume_v1(paths, expected_directory_identity);
+            if (!admission.acquired()) {
+                ::_exit(240);
+            }
+            PrivateHandoffResumeCrashContext context{
+                .target = target,
+            };
+            (void)reconcile_private_handoff_resume_admission(
+                admission, PrivateHandoffPublicationResumeTestHooksV1{
+                               .stop_after = crash_private_handoff_publication_resume,
+                               .context = &context,
+                           });
+            ::_exit(241);
+        } catch (...) {
+            ::_exit(242);
+        }
+    }
+
+    int status = 0;
+    CHECK(::waitpid(child, &status, 0) == child);
+    CHECK(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == PRIVATE_HANDOFF_RESUME_CRASH_EXIT_BASE + static_cast<int>(target));
+}
+
+[[nodiscard]] constexpr PrivateHandoffPublicationResumeObservationPointV1
+private_handoff_resume_point_for_lease_recovery(OOCPrivateLeaseFaultPoint point) noexcept {
+    using Point = PrivateHandoffPublicationResumeObservationPointV1;
+    switch (point) {
+    case OOCPrivateLeaseFaultPoint::PreactiveDirectoryQuarantinedDurable:
+        return Point::AfterPendingRollbackPreactiveDirectoryQuarantinedDurable;
+    case OOCPrivateLeaseFaultPoint::PreactiveDataRemovedDurable:
+        return Point::AfterPendingRollbackPreactiveDataRemovedDurable;
+    case OOCPrivateLeaseFaultPoint::PreactiveIndexRemovedDurable:
+        return Point::AfterPendingRollbackPreactiveIndexRemovedDurable;
+    case OOCPrivateLeaseFaultPoint::OwnerRemovedDurable:
+        return Point::AfterPendingRollbackOwnerRemovedDurable;
+    case OOCPrivateLeaseFaultPoint::FinalDirectoryRemovedDurable:
+        return Point::AfterPendingRollbackLeaseDirectoryRemovedDurable;
+    case OOCPrivateLeaseFaultPoint::ReservedRemovedDurable:
+        return Point::AfterPendingRollbackReservedRemovedDurable;
+    case OOCPrivateLeaseFaultPoint::OwnedRemovedDurable:
+        return Point::AfterPendingRollbackOwnedRemovedDurable;
+    default:
+        return Point::Count;
+    }
+}
+
+struct PrivateHandoffResumePostRemovalInsertionContext final {
+    std::filesystem::path path;
+    bool invoked = false;
+    bool failed = false;
+};
+
+struct PrivateHandoffResumeInnerReplacementContext final {
+    PrivateHandoffPublicationResumeObservationPointV1 target =
+        PrivateHandoffPublicationResumeObservationPointV1::
+            AfterPendingRollbackPreactiveDirectoryQuarantinedDurable;
+    std::filesystem::path tombstone_path;
+    std::filesystem::path snapshot_root;
+    std::optional<NamespaceTreeSnapshot> expected_after_hook;
+    bool invoked = false;
+    bool failed = false;
+};
+
+struct PrivateHandoffResumePreactiveInsertionContext final {
+    std::filesystem::path path;
+    std::filesystem::path snapshot_root;
+    std::vector<std::byte> bytes;
+    std::optional<NamespaceTreeSnapshot> expected_after_hook;
+    bool invoked = false;
+    bool failed = false;
+};
+
+[[nodiscard]] bool insert_private_handoff_preactive_blocker_after_tombstone(
+    PrivateHandoffPublicationResumeObservationPointV1 point, void* opaque) noexcept {
+    auto& context = *static_cast<PrivateHandoffResumePreactiveInsertionContext*>(opaque);
+    if (context.invoked || point != PrivateHandoffPublicationResumeObservationPointV1::
+                                        AfterPendingRollbackDestinationDirectoryDurable) {
+        return false;
+    }
+    context.invoked = true;
+    try {
+        write_private_control_bytes(context.path, context.bytes);
+        context.expected_after_hook = capture_namespace_tree(context.snapshot_root);
+    } catch (...) {
+        context.failed = true;
+    }
+    return false;
+}
+
+[[nodiscard]] bool replace_private_handoff_tombstone_during_lease_recovery(
+    PrivateHandoffPublicationResumeObservationPointV1 point, void* opaque) noexcept {
+    auto& context = *static_cast<PrivateHandoffResumeInnerReplacementContext*>(opaque);
+    if (context.invoked || point != context.target) {
+        return false;
+    }
+    context.invoked = true;
+    try {
+        if (!replace_private_control_leaf_same_bytes(context.tombstone_path)) {
+            context.failed = true;
+        }
+        context.expected_after_hook = capture_namespace_tree(context.snapshot_root);
+    } catch (...) {
+        context.failed = true;
+    }
+    return false;
+}
+
+[[nodiscard]] bool insert_foreign_private_handoff_after_tombstone_removal(
+    PrivateHandoffPublicationResumeObservationPointV1 point, void* opaque) noexcept {
+    auto& context = *static_cast<PrivateHandoffResumePostRemovalInsertionContext*>(opaque);
+    if (context.invoked || point != PrivateHandoffPublicationResumeObservationPointV1::
+                                        AfterPendingRollbackTombstoneRemovedDurable) {
+        return false;
+    }
+    context.invoked = true;
+    try {
+        write_private_control_bytes(context.path, PRIVATE_HANDOFF_PAYLOAD);
+    } catch (...) {
+        context.failed = true;
+    }
+    return false;
+}
+
+void test_private_handoff_publication_resume_durable_prefixes(const std::string& executable) {
+    TempDirectory temp;
+
+    // This matrix is compiled and run only in the Apple suite. It is evidence
+    // for the macOS rename(2)/renameatx_np crash contract, not for other
+    // platforms' cross-directory rename durability.
+    constexpr std::array rollback_sync_points{
+        PrivateHandoffPublicationResumeObservationPointV1::BeforePendingRollbackSourceDirectorySync,
+        PrivateHandoffPublicationResumeObservationPointV1::
+            AfterPendingRollbackSourceDirectoryDurable,
+        PrivateHandoffPublicationResumeObservationPointV1::
+            BeforePendingRollbackDestinationDirectorySync,
+        PrivateHandoffPublicationResumeObservationPointV1::
+            AfterPendingRollbackDestinationDirectoryDurable,
+    };
+    for (std::size_t index = 0; index < rollback_sync_points.size(); ++index) {
+        const auto base = temp.path() /
+                          ("resume-rollback-sync-" + std::to_string(index) + ".gnfs-sink-lease") /
+                          "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        check_private_handoff_resume_publisher(executable, "publish-pending-exit", base);
+        const auto directory_identity = require_private_directory_identity(paths);
+        const bool fail_before_sync = index == 0 || index == 2;
+        if (fail_before_sync) {
+            auto admission =
+                acquire_private_handoff_publication_resume_v1(paths, directory_identity);
+            CHECK(admission.acquired());
+            PrivateHandoffResumeFailContext failure{
+                .target = rollback_sync_points[index],
+            };
+            const auto interrupted = reconcile_private_handoff_resume_admission(
+                admission, PrivateHandoffPublicationResumeTestHooksV1{
+                               .fail_before = fail_private_handoff_publication_resume,
+                               .context = &failure,
+                           });
+            CHECK(failure.failed);
+            CHECK(interrupted.result.status == OOCCleanupStatus::DurabilityFailure);
+        } else {
+            check_private_handoff_resume_child_crash(paths, directory_identity,
+                                                     rollback_sync_points[index]);
+        }
+        CHECK(entry_exists_no_follow(paths.private_handoff_rollback_path));
+        CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
+
+        auto retry = acquire_private_handoff_publication_resume_v1(paths, directory_identity);
+        CHECK(retry.acquired());
+        const auto* retry_witness = retry.observed ? retry.observed->witness() : nullptr;
+        CHECK(retry_witness != nullptr);
+        if (retry_witness != nullptr) {
+            CHECK(retry_witness->state == PrivateHandoffPublicationPrefixStateV1::PendingRollback);
+        }
+        const auto completed = reconcile_private_handoff_resume_admission(retry);
+        CHECK(completed.converged());
+        CHECK(completed.disposition ==
+              PrivateHandoffPublicationResumeDispositionV1::PendingRolledBack);
+        CHECK(!entry_exists_no_follow(paths.private_handoff_rollback_path));
+        CHECK(!entry_exists_no_follow(paths.private_directory));
+    }
+
+    for (std::size_t index = 0; index < 2U; ++index) {
+        const auto base =
+            temp.path() /
+            ("resume-rollback-preactive-blocker-" + std::to_string(index) + ".gnfs-sink-lease") /
+            "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        check_private_handoff_resume_publisher(executable, "publish-pending-exit", base);
+        auto admission = acquire_private_handoff_publication_resume_v1(
+            paths, require_private_directory_identity(paths));
+        CHECK(admission.acquired());
+        PrivateHandoffResumePreactiveInsertionContext insertion{
+            .path =
+                index == 0U ? paths.private_directory / "foreign-control-leaf" : paths.intent_path,
+            .snapshot_root = temp.path(),
+            .bytes = index == 0U ? std::vector<std::byte>(PRIVATE_HANDOFF_PAYLOAD.begin(),
+                                                          PRIVATE_HANDOFF_PAYLOAD.end())
+                                 : authorized_cleanup_v2_marker_bytes(
+                                       OOCAuthorizedCleanupMarkerKindV2::intent),
+        };
+        const auto rejected = reconcile_private_handoff_resume_admission(
+            admission, PrivateHandoffPublicationResumeTestHooksV1{
+                           .stop_after = insert_private_handoff_preactive_blocker_after_tombstone,
+                           .context = &insertion,
+                       });
+        CHECK(insertion.invoked);
+        CHECK(!insertion.failed);
+        CHECK(insertion.expected_after_hook.has_value());
+        CHECK(!rejected.converged());
+        CHECK(rejected.disposition == PrivateHandoffPublicationResumeDispositionV1::Failed);
+        CHECK(rejected.result.status == OOCCleanupStatus::NamespaceConflict);
+        CHECK(entry_exists_no_follow(paths.private_handoff_rollback_path));
+        CHECK(entry_exists_no_follow(paths.private_directory));
+        CHECK(entry_exists_no_follow(paths.index_path));
+        CHECK(entry_exists_no_follow(paths.data_path));
+        CHECK(entry_exists_no_follow(paths.lease_reserved_path));
+        CHECK(entry_exists_no_follow(paths.lease_owned_path));
+        if (insertion.expected_after_hook) {
+            CHECK(capture_namespace_tree(temp.path()) == *insertion.expected_after_hook);
+        }
+    }
+
+    for (std::size_t index = 0; index < PRIVATE_PREACTIVE_RECOVERY_FAULT_POINTS.size(); ++index) {
+        const auto base = temp.path() /
+                          ("resume-rollback-lease-" + std::to_string(index) + ".gnfs-sink-lease") /
+                          "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        check_private_handoff_resume_publisher(executable, "publish-pending-exit", base);
+        const auto directory_identity = require_private_directory_identity(paths);
+        const auto target = private_handoff_resume_point_for_lease_recovery(
+            PRIVATE_PREACTIVE_RECOVERY_FAULT_POINTS[index]);
+        CHECK(target != PrivateHandoffPublicationResumeObservationPointV1::Count);
+        check_private_handoff_resume_child_crash(paths, directory_identity, target);
+        CHECK(entry_exists_no_follow(paths.private_handoff_rollback_path));
+        CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
+
+        auto retry = acquire_private_handoff_publication_resume_v1(paths, directory_identity);
+        CHECK(retry.acquired());
+        const auto* retry_witness = retry.observed ? retry.observed->witness() : nullptr;
+        CHECK(retry_witness != nullptr);
+        if (retry_witness != nullptr) {
+            CHECK(retry_witness->state == PrivateHandoffPublicationPrefixStateV1::PendingRollback);
+            CHECK(retry_witness->rollback_snapshot.has_value());
+            CHECK(!retry_witness->pending_snapshot.has_value());
+        }
+        CHECK(entry_exists_no_follow(paths.private_handoff_rollback_path));
+        const auto completed = reconcile_private_handoff_resume_admission(retry);
+        CHECK(completed.converged());
+        CHECK(completed.disposition ==
+              PrivateHandoffPublicationResumeDispositionV1::PendingRolledBack);
+        CHECK(!entry_exists_no_follow(paths.private_handoff_rollback_path));
+        CHECK(!entry_exists_no_follow(paths.private_directory));
+        CHECK(!entry_exists_no_follow(paths.lease_reserved_path));
+        CHECK(!entry_exists_no_follow(paths.lease_owned_path));
+    }
+
+    for (std::size_t index = 0; index < PRIVATE_PREACTIVE_RECOVERY_FAULT_POINTS.size(); ++index) {
+        const auto base =
+            temp.path() /
+            ("resume-rollback-inner-replacement-" + std::to_string(index) + ".gnfs-sink-lease") /
+            "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        check_private_handoff_resume_publisher(executable, "publish-pending-exit", base);
+        const auto directory_identity = require_private_directory_identity(paths);
+        auto admission = acquire_private_handoff_publication_resume_v1(paths, directory_identity);
+        CHECK(admission.acquired());
+        const auto target = private_handoff_resume_point_for_lease_recovery(
+            PRIVATE_PREACTIVE_RECOVERY_FAULT_POINTS[index]);
+        CHECK(target != PrivateHandoffPublicationResumeObservationPointV1::Count);
+        PrivateHandoffResumeInnerReplacementContext replacement{
+            .target = target,
+            .tombstone_path = paths.private_handoff_rollback_path,
+            .snapshot_root = temp.path(),
+        };
+        const auto rejected = reconcile_private_handoff_resume_admission(
+            admission, PrivateHandoffPublicationResumeTestHooksV1{
+                           .stop_after = replace_private_handoff_tombstone_during_lease_recovery,
+                           .context = &replacement,
+                       });
+        CHECK(replacement.invoked);
+        CHECK(!replacement.failed);
+        CHECK(replacement.expected_after_hook.has_value());
+        CHECK(!rejected.converged());
+        CHECK(rejected.disposition == PrivateHandoffPublicationResumeDispositionV1::Failed);
+        CHECK(rejected.result.status == OOCCleanupStatus::ForeignReplacementPreserved);
+        CHECK(entry_exists_no_follow(paths.private_handoff_rollback_path));
+        if (replacement.expected_after_hook) {
+            CHECK(capture_namespace_tree(temp.path()) == *replacement.expected_after_hook);
+        }
+    }
+
+    {
+        const auto base =
+            temp.path() / "resume-rollback-before-tombstone-remove.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        check_private_handoff_resume_publisher(executable, "publish-pending-exit", base);
+        const auto directory_identity = require_private_directory_identity(paths);
+        check_private_handoff_resume_child_crash(
+            paths, directory_identity,
+            PrivateHandoffPublicationResumeObservationPointV1::
+                BeforePendingRollbackTombstoneRemovalValidated);
+        CHECK(entry_exists_no_follow(paths.private_handoff_rollback_path));
+        auto retry = acquire_private_handoff_publication_resume_v1(paths, directory_identity);
+        CHECK(retry.acquired());
+        const auto* retry_witness = retry.observed ? retry.observed->witness() : nullptr;
+        CHECK(retry_witness != nullptr);
+        if (retry_witness != nullptr) {
+            CHECK(retry_witness->state == PrivateHandoffPublicationPrefixStateV1::PendingRollback);
+        }
+        const auto completed = reconcile_private_handoff_resume_admission(retry);
+        CHECK(completed.converged());
+        CHECK(completed.disposition ==
+              PrivateHandoffPublicationResumeDispositionV1::PendingRolledBack);
+        CHECK(!entry_exists_no_follow(paths.private_handoff_rollback_path));
+    }
+
+    {
+        const auto base =
+            temp.path() / "resume-rollback-after-tombstone-remove.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        check_private_handoff_resume_publisher(executable, "publish-pending-exit", base);
+        const auto directory_identity = require_private_directory_identity(paths);
+        check_private_handoff_resume_child_crash(paths, directory_identity,
+                                                 PrivateHandoffPublicationResumeObservationPointV1::
+                                                     AfterPendingRollbackTombstoneRemovedDurable);
+        CHECK(!entry_exists_no_follow(paths.private_handoff_rollback_path));
+        CHECK(!entry_exists_no_follow(paths.private_directory));
+        CHECK(!entry_exists_no_follow(paths.lease_reserved_path));
+        CHECK(!entry_exists_no_follow(paths.lease_owned_path));
+        const auto terminal =
+            acquire_private_handoff_publication_resume_v1(paths, directory_identity);
+        CHECK(!terminal.acquired());
+        CHECK(terminal.result.status == OOCCleanupStatus::NoTransaction);
+        CHECK(terminal.result.stage == OOCCleanupStage::None);
+        CHECK(!terminal.result.native_error);
+    }
+
+    {
+        const auto base =
+            temp.path() / "resume-rollback-post-remove-insertion.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        check_private_handoff_resume_publisher(executable, "publish-pending-exit", base);
+        const auto directory_identity = require_private_directory_identity(paths);
+        auto admission = acquire_private_handoff_publication_resume_v1(paths, directory_identity);
+        CHECK(admission.acquired());
+        PrivateHandoffResumePostRemovalInsertionContext insertion{
+            .path = paths.private_handoff_rollback_path,
+        };
+        const auto rejected = reconcile_private_handoff_resume_admission(
+            admission, PrivateHandoffPublicationResumeTestHooksV1{
+                           .stop_after = insert_foreign_private_handoff_after_tombstone_removal,
+                           .context = &insertion,
+                       });
+        CHECK(insertion.invoked);
+        CHECK(!insertion.failed);
+        CHECK(!rejected.converged());
+        CHECK(rejected.disposition == PrivateHandoffPublicationResumeDispositionV1::Failed);
+        CHECK(rejected.result.status == OOCCleanupStatus::ForeignReplacementPreserved);
+        CHECK(entry_exists_no_follow(paths.private_handoff_rollback_path));
+        CHECK(
+            read_test_bytes(paths.private_handoff_rollback_path) ==
+            std::vector<std::byte>(PRIVATE_HANDOFF_PAYLOAD.begin(), PRIVATE_HANDOFF_PAYLOAD.end()));
+    }
+
+    {
+        const auto base = temp.path() / "resume-stop-pending.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        check_private_handoff_resume_publisher(executable, "publish-pending-exit", base);
+        const auto directory_identity = require_private_directory_identity(paths);
+        auto admission = acquire_private_handoff_publication_resume_v1(paths, directory_identity);
+        CHECK(admission.acquired());
+        PrivateHandoffResumeStopContext stop;
+        const auto interrupted = reconcile_private_handoff_resume_admission(
+            admission, PrivateHandoffPublicationResumeTestHooksV1{
+                           .stop_after = stop_private_handoff_publication_resume,
+                           .context = &stop,
+                       });
+        CHECK(stop.stopped);
+        CHECK(interrupted.result.status == OOCCleanupStatus::Interrupted);
+        CHECK(!interrupted.converged());
+        CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
+        CHECK(!entry_exists_no_follow(paths.private_handoff_path));
+        CHECK(entry_exists_no_follow(paths.private_handoff_rollback_path));
+        CHECK(entry_exists_no_follow(paths.index_path));
+        CHECK(entry_exists_no_follow(paths.data_path));
+        CHECK(entry_exists_no_follow(paths.lease_reserved_path));
+        CHECK(entry_exists_no_follow(paths.lease_owned_path));
+        const auto legacy_blocked = OOCCleanupTransaction::recover_private_lease(base);
+        CHECK(legacy_blocked.status == OOCCleanupStatus::ForeignReplacementPreserved);
+        const auto inspected = OOCCleanupTransaction::inspect_private_handoff(base);
+        CHECK(inspected.state == OOCPrivateHandoffState::TaintedPreserved);
+        CHECK(inspected.result.status == OOCCleanupStatus::NamespaceConflict);
+        const auto adoption = OOCCleanupTransaction::adopt_private_handoff(base);
+        CHECK(!adoption.adopted());
+        CHECK(adoption.state == OOCPrivateHandoffState::TaintedPreserved);
+        CHECK(adoption.result.status == OOCCleanupStatus::NamespaceConflict);
+        auto retry = acquire_private_handoff_publication_resume_v1(paths, directory_identity);
+        CHECK(retry.acquired());
+        const auto* retry_witness = retry.observed ? retry.observed->witness() : nullptr;
+        CHECK(retry_witness != nullptr);
+        if (retry_witness != nullptr) {
+            CHECK(retry_witness->state == PrivateHandoffPublicationPrefixStateV1::PendingRollback);
+            CHECK(retry_witness->rollback_snapshot.has_value());
+            CHECK(!retry_witness->pending_snapshot.has_value());
+        }
+        const auto completed = reconcile_private_handoff_resume_admission(retry);
+        CHECK(completed.converged());
+        CHECK(completed.disposition ==
+              PrivateHandoffPublicationResumeDispositionV1::PendingRolledBack);
+        CHECK(!entry_exists_no_follow(paths.private_directory));
+        CHECK(!entry_exists_no_follow(paths.private_handoff_rollback_path));
+        CHECK(!entry_exists_no_follow(paths.lease_reserved_path));
+        CHECK(!entry_exists_no_follow(paths.lease_owned_path));
+    }
+
+    {
+        const auto base = temp.path() / "resume-stop-canonical-confirm.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        check_private_handoff_resume_publisher(executable, "publish-canonical-exit", base);
+        const auto canonical = read_test_bytes(paths.private_handoff_path);
+        write_private_control_bytes(paths.private_handoff_pending_path, canonical);
+        auto admission = acquire_private_handoff_publication_resume_v1(
+            paths, require_private_directory_identity(paths));
+        CHECK(admission.acquired());
+        PrivateHandoffResumeStopContext stop{
+            .target =
+                PrivateHandoffPublicationResumeObservationPointV1::AfterCanonicalConfirmedDurable,
+        };
+        const auto interrupted = reconcile_private_handoff_resume_admission(
+            admission, PrivateHandoffPublicationResumeTestHooksV1{
+                           .stop_after = stop_private_handoff_publication_resume,
+                           .context = &stop,
+                       });
+        CHECK(stop.stopped);
+        CHECK(interrupted.result.status == OOCCleanupStatus::Interrupted);
+        CHECK(entry_exists_no_follow(paths.private_handoff_path));
+        CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
+        CHECK(entry_exists_no_follow(paths.lease_reserved_path));
+        auto retry = acquire_private_handoff_publication_resume_v1(
+            paths, require_private_directory_identity(paths));
+        CHECK(retry.acquired());
+        const auto completed = reconcile_private_handoff_resume_admission(retry);
+        CHECK(completed.converged());
+        CHECK(completed.disposition ==
+              PrivateHandoffPublicationResumeDispositionV1::CanonicalConverged);
+        CHECK(!entry_exists_no_follow(paths.lease_reserved_path));
+    }
+
+    {
+        const auto base = temp.path() / "resume-stop-reserved-revoke.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        check_private_handoff_resume_publisher(executable, "publish-canonical-exit", base);
+        auto admission = acquire_private_handoff_publication_resume_v1(
+            paths, require_private_directory_identity(paths));
+        CHECK(admission.acquired());
+        PrivateHandoffResumeStopContext stop{
+            .target =
+                PrivateHandoffPublicationResumeObservationPointV1::AfterReservedRevokedDurable,
+        };
+        const auto interrupted = reconcile_private_handoff_resume_admission(
+            admission, PrivateHandoffPublicationResumeTestHooksV1{
+                           .stop_after = stop_private_handoff_publication_resume,
+                           .context = &stop,
+                       });
+        CHECK(stop.stopped);
+        CHECK(interrupted.result.status == OOCCleanupStatus::Interrupted);
+        CHECK(entry_exists_no_follow(paths.private_handoff_path));
+        CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
+        CHECK(!entry_exists_no_follow(paths.lease_reserved_path));
+        auto retry = acquire_private_handoff_publication_resume_v1(
+            paths, require_private_directory_identity(paths));
+        CHECK(retry.acquired());
+        const auto before = capture_namespace_tree(temp.path());
+        const auto completed = reconcile_private_handoff_resume_admission(retry);
+        CHECK(completed.converged());
+        CHECK(completed.disposition ==
+              PrivateHandoffPublicationResumeDispositionV1::CanonicalTerminal);
+        CHECK(capture_namespace_tree(temp.path()) == before);
+    }
+
+    {
+        const auto base =
+            temp.path() / "resume-rollback-marker-residual.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        check_private_handoff_resume_publisher(executable, "publish-pending-exit", base);
+        const auto directory_identity = require_private_directory_identity(paths);
+        auto admission = acquire_private_handoff_publication_resume_v1(paths, directory_identity);
+        PrivateHandoffResumeStopContext stop;
+        const auto armed = reconcile_private_handoff_resume_admission(
+            admission, PrivateHandoffPublicationResumeTestHooksV1{
+                           .stop_after = stop_private_handoff_publication_resume,
+                           .context = &stop,
+                       });
+        CHECK(armed.result.status == OOCCleanupStatus::Interrupted);
+        std::error_code error;
+        CHECK(std::filesystem::remove(paths.lease_owned_path, error));
+        CHECK(!error);
+        const auto before = capture_namespace_tree(temp.path());
+        const auto rejected =
+            acquire_private_handoff_publication_resume_v1(paths, directory_identity);
+        CHECK(!rejected.acquired());
+        CHECK(rejected.result.status == OOCCleanupStatus::NamespaceConflict ||
+              rejected.result.status == OOCCleanupStatus::ForeignReplacementPreserved);
+        CHECK(capture_namespace_tree(temp.path()) == before);
+        CHECK(entry_exists_no_follow(paths.lease_reserved_path));
+        CHECK(entry_exists_no_follow(paths.private_handoff_rollback_path));
+    }
+
+    {
+        const auto base = temp.path() / "resume-rollback-replacement.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        check_private_handoff_resume_publisher(executable, "publish-pending-exit", base);
+        const auto directory_identity = require_private_directory_identity(paths);
+        auto admission = acquire_private_handoff_publication_resume_v1(paths, directory_identity);
+        PrivateHandoffResumeStopContext stop;
+        const auto armed = reconcile_private_handoff_resume_admission(
+            admission, PrivateHandoffPublicationResumeTestHooksV1{
+                           .stop_after = stop_private_handoff_publication_resume,
+                           .context = &stop,
+                       });
+        CHECK(armed.result.status == OOCCleanupStatus::Interrupted);
+        auto retry = acquire_private_handoff_publication_resume_v1(paths, directory_identity);
+        CHECK(retry.acquired());
+        auto permit = take_private_handoff_resume_permit(retry);
+        CHECK(replace_private_control_leaf_same_bytes(paths.private_handoff_rollback_path));
+        const auto before = capture_namespace_tree(temp.path());
+        const auto rejected = reconcile_private_handoff_publication_for_resume_v1(permit);
+        CHECK(permit.held());
+        CHECK(!rejected.converged());
+        CHECK(rejected.result.status == OOCCleanupStatus::ForeignReplacementPreserved);
+        CHECK(capture_namespace_tree(temp.path()) == before);
+    }
+}
+
 constexpr std::array PRIVATE_HANDOFF_ADOPTION_FAULT_POINTS{
     OOCPrivateHandoffAdoptionFaultPoint::CanonicalClassified,
     OOCPrivateHandoffAdoptionFaultPoint::IndexInitialValidationComplete,
@@ -10091,6 +11439,35 @@ void test_private_lease_removal_reconciles_matching_pending_handoff() {
     CHECK(!entry_exists_no_follow(paths.lease_reserved_path));
     CHECK(!entry_exists_no_follow(paths.lease_owned_path));
     CHECK(entry_exists_no_follow(paths.lock_path));
+}
+
+void test_private_lease_removal_rejects_rollback_tombstone() {
+    TempDirectory temp;
+    const auto base = temp.path() / "removal-rollback-tombstone.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    auto prepared = prepare_private_handoff(base);
+    PrivateHandoffStopContext stop{
+        .target = OOCPrivateHandoffFaultPoint::PendingDurable,
+    };
+    const auto interrupted = publish_private_handoff(prepared, private_handoff_stop_hooks(stop));
+    CHECK(stop.stopped);
+    CHECK(interrupted.result.status == OOCCleanupStatus::Interrupted);
+    CHECK(interrupted.state == OOCPrivateHandoffState::PendingOnly);
+    CHECK(!prepared.lease_ownership.spent());
+
+    const auto pending_bytes = read_test_bytes(paths.private_handoff_pending_path);
+    std::error_code error;
+    std::filesystem::rename(paths.private_handoff_pending_path, paths.private_handoff_rollback_path,
+                            error);
+    CHECK(!error);
+    CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
+    check_test_bytes_preserved(paths.private_handoff_rollback_path, pending_bytes);
+    const auto before = capture_namespace_tree(temp.path());
+
+    const auto rejected = OOCCleanupTransaction::remove_private_lease(prepared.lease_ownership);
+    CHECK(rejected.status == OOCCleanupStatus::ForeignReplacementPreserved);
+    CHECK(!prepared.lease_ownership.spent());
+    CHECK(capture_namespace_tree(temp.path()) == before);
 }
 
 void test_private_lease_removal_preserves_foreign_lease_pending_siblings() {
@@ -11481,6 +12858,7 @@ void run_private_lease_crash_suite(const std::string& executable) {
     test_private_lease_removal_admission_projects_union_blocker_first();
 #if !defined(__APPLE__)
     test_private_handoff_unsupported_publish_is_non_mutating();
+    test_private_handoff_publication_resume_unsupported_is_non_observing();
 #endif
 #if !defined(_WIN32)
     test_private_cleanup_intent_rejects_replaced_held_lock();
@@ -11494,6 +12872,14 @@ void run_private_lease_crash_suite(const std::string& executable) {
     test_private_handoff_adopter_owner_death(executable);
     test_private_handoff_zero_row_adoption(executable);
     test_private_handoff_adoption_publication_prefixes(executable);
+    test_private_handoff_publication_resume_requires_exact_typed_projection(executable);
+    test_private_handoff_publication_resume_rejects_pending_replacement(executable);
+    test_private_handoff_publication_resume_rejects_inherited_base_lock(executable);
+    test_private_handoff_publication_resume_prefixes(executable);
+    test_private_handoff_publication_resume_rejects_invalid_prefixes(executable);
+    test_private_handoff_publication_resume_revalidates_sandwich(executable);
+    test_private_handoff_publication_resume_revalidates_before_reserved_revoke(executable);
+    test_private_handoff_publication_resume_durable_prefixes(executable);
     test_private_handoff_adoption_interruptions(executable);
     test_private_handoff_adoption_rejects_namespace_drift(executable);
     test_private_handoff_publish_rejects_replaced_held_lock();
@@ -11504,6 +12890,7 @@ void run_private_lease_crash_suite(const std::string& executable) {
     test_recovery_permit_rejects_byte_identical_pending_replacement();
     test_removal_permit_rejects_byte_identical_pending_replacement();
     test_private_lease_removal_reconciles_matching_pending_handoff();
+    test_private_lease_removal_rejects_rollback_tombstone();
     test_private_lease_removal_preserves_foreign_lease_pending_siblings();
     test_removal_permit_rejects_byte_identical_owned_pending_replacement();
     test_stale_private_lease_receipt_cannot_mutate_new_handoff_generation(executable);

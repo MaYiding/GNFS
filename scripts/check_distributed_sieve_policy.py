@@ -332,6 +332,1048 @@ WORKER_HANDOFF_PUBLICATION_FUNCTION = "finalize_and_publish_handoff_impl"
 WORKER_HANDOFF_TYPED_BUILDER_IDENTIFIER = (
     "finalize_and_publish_private_handoff_built"
 )
+PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_INTERFACE_FILE = (
+    "src/relation/ooc_private_cleanup_union_internal.hpp"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_IMPLEMENTATION_FILE = (
+    "src/relation/ooc_private_cleanup_union.cpp"
+)
+PRIVATE_LEASE_PREACTIVE_ROLLBACK_CORE_FILE = (
+    "include/gnfs/relation/ooc_cleanup_transaction.hpp"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE = (
+    "src/sieve/distributed_sieve_wave_store.cpp"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_INTERFACE_FILE = (
+    "src/sieve/distributed_sieve_wave_store_internal.hpp"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_ADOPTION_FILE = (
+    "src/relation/ooc_private_handoff_adoption.cpp"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_TEST_FILE = (
+    "tests/test_ooc_cleanup_transaction.cpp"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_USE_SITE_ALLOWLIST = {
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_INTERFACE_FILE,
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_IMPLEMENTATION_FILE,
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_TEST_FILE,
+}
+PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER = (
+    "acquire_private_handoff_publication_resume_v1"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_VALIDATE_IDENTIFIER = (
+    "validate_private_handoff_publication_resume_v1"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_REVALIDATE_IDENTIFIER = (
+    "revalidate_private_handoff_publication_resume_v1"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_RECONCILE_IDENTIFIER = (
+    "reconcile_private_handoff_publication_for_resume_v1"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_DIRECT_CALL_IDENTIFIERS = (
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER,
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_VALIDATE_IDENTIFIER,
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_REVALIDATE_IDENTIFIER,
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_RECONCILE_IDENTIFIER,
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_USE_SITE_IDENTIFIERS = (
+    "PrivateHandoffPublicationPrefixStateV1",
+    "PrivateHandoffPublicationLeaseMarkerWitnessV1",
+    "PrivateHandoffPublicationPrefixWitnessV1",
+    "PrivateHandoffPublicationObservedPermitV1",
+    "PrivateHandoffPublicationValidatedPermitV1",
+    "PrivateHandoffPublicationResumeAdmissionV1",
+    "PrivateHandoffPublicationResumeValidationV1",
+    "PrivateHandoffPublicationResumeRevalidationV1",
+    "PrivateHandoffPublicationResumeObservationPointV1",
+    "PrivateHandoffPublicationResumeTestHooksV1",
+    "PrivateHandoffPublicationTypedValidatorV1",
+    "PrivateHandoffPublicationTypedValidatorTestAuthorityV1",
+    "PrivateHandoffPublicationResumeDispositionV1",
+    "PrivateHandoffPublicationResumeResultV1",
+) + PRIVATE_HANDOFF_PUBLICATION_RESUME_DIRECT_CALL_IDENTIFIERS
+PRIVATE_HANDOFF_PUBLICATION_WORKER_VALIDATOR_AUTHORITY_IDENTIFIER = (
+    "WorkerHandoffTypedValidatorAuthorityV1"
+)
+PRIVATE_HANDOFF_PUBLICATION_WORKER_VALIDATOR_AUTHORITY_ALLOWLIST = {
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_INTERFACE_FILE,
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+}
+PRIVATE_HANDOFF_PUBLICATION_TEST_VALIDATOR_AUTHORITY_IDENTIFIER = (
+    "PrivateHandoffPublicationTypedValidatorTestAuthorityV1"
+)
+PRIVATE_HANDOFF_PUBLICATION_TEST_VALIDATOR_AUTHORITY_ALLOWLIST = {
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_INTERFACE_FILE,
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_TEST_FILE,
+}
+PRIVATE_HANDOFF_PUBLICATION_RESUME_CAPTURE_FUNCTION = (
+    "capture_recoverable_worker_handoff_inventory"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_OPEN_FUNCTION = (
+    "DistributedSieveWaveStore::open"
+)
+PRIVATE_HANDOFF_PUBLICATION_TYPED_VALIDATOR_IDENTIFIER = (
+    "validate_worker_handoff_envelope"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_INTERFACE_DECLARATION_COUNTS = {
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER: 2,
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_VALIDATE_IDENTIFIER: 4,
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_REVALIDATE_IDENTIFIER: 2,
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_RECONCILE_IDENTIFIER: 2,
+}
+PRIVATE_HANDOFF_PUBLICATION_RESUME_IMPLEMENTATION_DEFINITION_COUNTS = {
+    identifier: 1
+    for identifier in PRIVATE_HANDOFF_PUBLICATION_RESUME_DIRECT_CALL_IDENTIFIERS
+}
+PRIVATE_HANDOFF_PUBLICATION_RESUME_INTERFACE_CLASS_SCOPES = {
+    "PrivateHandoffPublicationTypedValidatorV1": {
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER: 0,
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_VALIDATE_IDENTIFIER: 1,
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_REVALIDATE_IDENTIFIER: 0,
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RECONCILE_IDENTIFIER: 0,
+    },
+    "PrivateHandoffPublicationObservedPermitV1": {
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER: 1,
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_VALIDATE_IDENTIFIER: 1,
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_REVALIDATE_IDENTIFIER: 0,
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RECONCILE_IDENTIFIER: 0,
+    },
+    "PrivateHandoffPublicationValidatedPermitV1": {
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER: 0,
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_VALIDATE_IDENTIFIER: 1,
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_REVALIDATE_IDENTIFIER: 1,
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RECONCILE_IDENTIFIER: 1,
+    },
+}
+PRIVATE_HANDOFF_PUBLICATION_RESUME_INTERFACE_CLASS_FRIEND_COUNTS = {
+    "PrivateHandoffPublicationTypedValidatorV1": 3,
+    "PrivateHandoffPublicationObservedPermitV1": 3,
+    "PrivateHandoffPublicationValidatedPermitV1": 3,
+}
+PRIVATE_HANDOFF_PUBLICATION_RESUME_INTERFACE_CLASS_FRIEND_CLASSES = {
+    "PrivateHandoffPublicationTypedValidatorV1": (
+        "PrivateHandoffPublicationTypedValidatorTestAuthorityV1",
+        "gnfs::sieve::distributed_sieve_resume_detail::"
+        "WorkerHandoffTypedValidatorAuthorityV1",
+    ),
+    "PrivateHandoffPublicationObservedPermitV1": (
+        "PrivateHandoffPublicationValidatedPermitV1",
+    ),
+    "PrivateHandoffPublicationValidatedPermitV1": (),
+}
+PRIVATE_HANDOFF_PUBLICATION_RESUME_INTERFACE_DECLARATION_SHAPES = {
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER: (
+        "friendPrivateHandoffPublicationResumeAdmissionV1"
+        "acquire_private_handoff_publication_resume_v1("
+        "constOOCCleanupPaths&paths,"
+        "conststd::array<std::uint64_t,3>&expected_directory_identity)noexcept;",
+        "[[nodiscard]]PrivateHandoffPublicationResumeAdmissionV1"
+        "acquire_private_handoff_publication_resume_v1("
+        "constOOCCleanupPaths&paths,"
+        "conststd::array<std::uint64_t,3>&expected_directory_identity)noexcept;",
+    ),
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_VALIDATE_IDENTIFIER: (
+        "friendPrivateHandoffPublicationResumeValidationV1"
+        "validate_private_handoff_publication_resume_v1("
+        "PrivateHandoffPublicationObservedPermitV1&&observed,"
+        "PrivateHandoffPublicationTypedValidatorV1&&validator)noexcept;",
+        "friendPrivateHandoffPublicationResumeValidationV1"
+        "validate_private_handoff_publication_resume_v1("
+        "PrivateHandoffPublicationObservedPermitV1&&observed,"
+        "PrivateHandoffPublicationTypedValidatorV1&&validator)noexcept;",
+        "friendPrivateHandoffPublicationResumeValidationV1"
+        "validate_private_handoff_publication_resume_v1("
+        "PrivateHandoffPublicationObservedPermitV1&&observed,"
+        "PrivateHandoffPublicationTypedValidatorV1&&validator)noexcept;",
+        "[[nodiscard]]PrivateHandoffPublicationResumeValidationV1"
+        "validate_private_handoff_publication_resume_v1("
+        "PrivateHandoffPublicationObservedPermitV1&&observed,"
+        "PrivateHandoffPublicationTypedValidatorV1&&validator)noexcept;",
+    ),
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_REVALIDATE_IDENTIFIER: (
+        "friendPrivateHandoffPublicationResumeRevalidationV1"
+        "revalidate_private_handoff_publication_resume_v1("
+        "constPrivateHandoffPublicationValidatedPermitV1&permit)noexcept;",
+        "[[nodiscard]]PrivateHandoffPublicationResumeRevalidationV1"
+        "revalidate_private_handoff_publication_resume_v1("
+        "constPrivateHandoffPublicationValidatedPermitV1&permit)noexcept;",
+    ),
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_RECONCILE_IDENTIFIER: (
+        "friendPrivateHandoffPublicationResumeResultV1"
+        "reconcile_private_handoff_publication_for_resume_v1("
+        "PrivateHandoffPublicationValidatedPermitV1&permit,"
+        "PrivateHandoffPublicationResumeTestHooksV1hooks)noexcept;",
+        "[[nodiscard]]PrivateHandoffPublicationResumeResultV1"
+        "reconcile_private_handoff_publication_for_resume_v1("
+        "PrivateHandoffPublicationValidatedPermitV1&permit,"
+        "PrivateHandoffPublicationResumeTestHooksV1hooks={})noexcept;",
+    ),
+}
+PRIVATE_HANDOFF_PUBLICATION_RESUME_IMPLEMENTATION_DEFINITION_SHAPES = {
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER:
+        "PrivateHandoffPublicationResumeAdmissionV1"
+        "acquire_private_handoff_publication_resume_v1("
+        "constOOCCleanupPaths&paths,"
+        "conststd::array<std::uint64_t,3>&expected_directory_identity)noexcept",
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_VALIDATE_IDENTIFIER:
+        "PrivateHandoffPublicationResumeValidationV1"
+        "validate_private_handoff_publication_resume_v1("
+        "PrivateHandoffPublicationObservedPermitV1&&observed,"
+        "PrivateHandoffPublicationTypedValidatorV1&&validator)noexcept",
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_REVALIDATE_IDENTIFIER:
+        "PrivateHandoffPublicationResumeRevalidationV1"
+        "revalidate_private_handoff_publication_resume_v1("
+        "constPrivateHandoffPublicationValidatedPermitV1&permit)noexcept",
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_RECONCILE_IDENTIFIER:
+        "PrivateHandoffPublicationResumeResultV1"
+        "reconcile_private_handoff_publication_for_resume_v1("
+        "PrivateHandoffPublicationValidatedPermitV1&permit,"
+        "PrivateHandoffPublicationResumeTestHooksV1hooks)noexcept",
+}
+PRIVATE_HANDOFF_PUBLICATION_RESUME_OBSERVATION_POINTS = (
+    "AfterExpectedPrefixValidated",
+    "BeforePendingRollbackSourceDirectorySync",
+    "AfterPendingRollbackSourceDirectoryDurable",
+    "BeforePendingRollbackDestinationDirectorySync",
+    "AfterPendingRollbackDestinationDirectoryDurable",
+    "AfterPendingRollbackPreactiveDirectoryQuarantinedDurable",
+    "AfterPendingRollbackPreactiveDataRemovedDurable",
+    "AfterPendingRollbackPreactiveIndexRemovedDurable",
+    "AfterPendingRollbackOwnerRemovedDurable",
+    "AfterPendingRollbackLeaseDirectoryRemovedDurable",
+    "AfterPendingRollbackReservedRemovedDurable",
+    "AfterPendingRollbackOwnedRemovedDurable",
+    "BeforePendingRollbackTombstoneRemovalValidated",
+    "AfterPendingRollbackTombstoneRemovedDurable",
+    "AfterCanonicalConfirmedDurable",
+    "AfterReservedRevokedDurable",
+    "Count",
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_OBSERVATION_ENUM_BODY = "".join(
+    f"{point}," for point in PRIVATE_HANDOFF_PUBLICATION_RESUME_OBSERVATION_POINTS
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_TEST_HOOKS_BODY = (
+    "usingStopAfter=bool(*)(PrivateHandoffPublicationResumeObservationPointV1point,"
+    "void*context)noexcept;"
+    "usingFailBefore=bool(*)(PrivateHandoffPublicationResumeObservationPointV1point,"
+    "void*context)noexcept;"
+    "StopAfterstop_after=nullptr;"
+    "FailBeforefail_before=nullptr;"
+    "void*context=nullptr;"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_OBSERVATION_ENUM = (
+    "DistributedSieveWorkerHandoffResumeObservationPointV1"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_TEST_HOOKS = (
+    "DistributedSieveWorkerHandoffResumeTestHooksV1"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_ROUND_RELEASE_IDENTIFIER = (
+    "after_round_locks_released"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_OBSERVATION_ENUM_BODY = "".join(
+    f"{point}," for point in PRIVATE_HANDOFF_PUBLICATION_RESUME_OBSERVATION_POINTS
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_TEST_HOOKS_BODY = (
+    "usingStopAfter=bool(*)("
+    "DistributedSieveWorkerHandoffResumeObservationPointV1point,"
+    "void*context)noexcept;"
+    "usingAfterRoundLocksReleased=void(*)(void*context)noexcept;"
+    "StopAfterstop_after=nullptr;"
+    "AfterRoundLocksReleasedafter_round_locks_released=nullptr;"
+    "void*context=nullptr;"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_EXCEPTION_SAFETY_FRAGMENT = (
+    "autostate=std::make_unique<"
+    "PrivateHandoffPublicationObservedPermitV1::State>("
+    "paths,expected_directory_identity,std::move(*captured.retained));"
+    "state->lock=std::move(lock);"
+    "claim.transfer_to_permit();"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_VALIDATE_CONSUME_PREFIX = (
+    "autostate=std::move(observed.state_);"
+    "constautotyped_validate=std::exchange(validator.validate_,nullptr);"
+    "void*consttyped_context=std::exchange(validator.context_,nullptr);"
+    "constautotyped_creator_process_id="
+    "std::exchange(validator.creator_process_id_,0);"
+    "try{"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_LEASE_ADAPTER = (
+    "PrivateHandoffLeaseRecoveryObservationAdapterV1"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_LEASE_ADAPTER_BODY = (
+    "constPrivateHandoffPublicationResumeTestHooksV1*outer=nullptr;"
+    "constOOCCleanupPaths*paths=nullptr;"
+    "constBaseLock*lock=nullptr;"
+    "conststd::array<std::uint64_t,3>*expected_directory_identity=nullptr;"
+    "constPrivateHandoffPublicationPrefixWitnessV1*initial=nullptr;"
+    "std::optional<OOCCleanupResult>exact_failure;"
+    "boolunknown_point=false;"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_LEASE_MAP_FUNCTION = (
+    "map_private_handoff_lease_recovery_observation"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_LEASE_MAP_BODY = (
+    "usingOuterPoint=PrivateHandoffPublicationResumeObservationPointV1;"
+    "switch(point){"
+    "caseOOCPrivateLeaseFaultPoint::PreactiveDirectoryQuarantinedDurable:"
+    "returnOuterPoint::AfterPendingRollbackPreactiveDirectoryQuarantinedDurable;"
+    "caseOOCPrivateLeaseFaultPoint::PreactiveDataRemovedDurable:"
+    "returnOuterPoint::AfterPendingRollbackPreactiveDataRemovedDurable;"
+    "caseOOCPrivateLeaseFaultPoint::PreactiveIndexRemovedDurable:"
+    "returnOuterPoint::AfterPendingRollbackPreactiveIndexRemovedDurable;"
+    "caseOOCPrivateLeaseFaultPoint::OwnerRemovedDurable:"
+    "returnOuterPoint::AfterPendingRollbackOwnerRemovedDurable;"
+    "caseOOCPrivateLeaseFaultPoint::FinalDirectoryRemovedDurable:"
+    "returnOuterPoint::AfterPendingRollbackLeaseDirectoryRemovedDurable;"
+    "caseOOCPrivateLeaseFaultPoint::ReservedRemovedDurable:"
+    "returnOuterPoint::AfterPendingRollbackReservedRemovedDurable;"
+    "caseOOCPrivateLeaseFaultPoint::OwnedRemovedDurable:"
+    "returnOuterPoint::AfterPendingRollbackOwnedRemovedDurable;"
+    "default:returnstd::nullopt;}"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_LEASE_STAGE_FUNCTION = (
+    "private_handoff_lease_recovery_stage_matches"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_LEASE_STAGE_BODY = (
+    "constboolfinal_directory="
+    "current.generation.final_directory_identity.has_value();"
+    "constboolstaging_directory="
+    "current.generation.staging_directory_identity.has_value();"
+    "constboolowner=current.witness.owner.has_value();"
+    "constboolowned=current.witness.owned.has_value();"
+    "constboolreserved=current.witness.reserved.has_value();"
+    "constboolindex=current.rollback_index_present;"
+    "constbooldata=current.rollback_data_present;"
+    "switch(point){"
+    "caseOOCPrivateLeaseFaultPoint::PreactiveDirectoryQuarantinedDurable:"
+    "return!final_directory&&staging_directory&&owner&&owned&&reserved&&index&&data;"
+    "caseOOCPrivateLeaseFaultPoint::PreactiveDataRemovedDurable:"
+    "return!final_directory&&staging_directory&&owner&&owned&&reserved&&index&&!data;"
+    "caseOOCPrivateLeaseFaultPoint::PreactiveIndexRemovedDurable:"
+    "return!final_directory&&staging_directory&&owner&&owned&&reserved&&!index&&!data;"
+    "caseOOCPrivateLeaseFaultPoint::OwnerRemovedDurable:"
+    "return!final_directory&&staging_directory&&!owner&&owned&&reserved&&!index&&!data;"
+    "caseOOCPrivateLeaseFaultPoint::FinalDirectoryRemovedDurable:"
+    "return!final_directory&&!staging_directory&&!owner&&owned&&reserved&&!index&&!data;"
+    "caseOOCPrivateLeaseFaultPoint::ReservedRemovedDurable:"
+    "return!final_directory&&!staging_directory&&!owner&&owned&&!reserved&&!index&&!data;"
+    "caseOOCPrivateLeaseFaultPoint::OwnedRemovedDurable:"
+    "return!final_directory&&!staging_directory&&!owner&&!owned&&!reserved&&!index&&!data;"
+    "default:returnfalse;}"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_LEASE_OBSERVER_FUNCTION = (
+    "observe_private_handoff_lease_recovery"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_LEASE_OBSERVER_BODY = (
+    "auto&adapter=*static_cast<"
+    "PrivateHandoffLeaseRecoveryObservationAdapterV1*>(opaque);"
+    "constautomapped=map_private_handoff_lease_recovery_observation(point);"
+    "if(!mapped){adapter.unknown_point=true;returntrue;}"
+    "if(adapter.outer!=nullptr&&adapter.outer->stop_after!=nullptr&&"
+    "adapter.outer->stop_after(*mapped,adapter.outer->context)){returntrue;}"
+    "try{"
+    "if(adapter.paths==nullptr||adapter.lock==nullptr||"
+    "adapter.expected_directory_identity==nullptr||adapter.initial==nullptr){"
+    "adapter.exact_failure=resume_unexpected_result(protocol_error());returntrue;}"
+    "autocurrent=capture_private_handoff_publication_prefix_v1_locked("
+    "*adapter.paths,*adapter.lock,*adapter.expected_directory_identity);"
+    "constauto&initial=*adapter.initial;"
+    "constautoremaining_marker_matches_initial=[]("
+    "conststd::optional<PrivateHandoffPublicationLeaseMarkerWitnessV1>&observed,"
+    "conststd::optional<PrivateHandoffPublicationLeaseMarkerWitnessV1>&expected){"
+    "return!observed||(expected&&*observed==*expected);};"
+    "if(!current.retained||"
+    "initial.state!=PrivateHandoffPublicationPrefixStateV1::PendingRollback||"
+    "initial.canonical_snapshot||initial.pending_snapshot||"
+    "!initial.rollback_snapshot||"
+    "current.retained->witness.state!="
+    "PrivateHandoffPublicationPrefixStateV1::PendingRollback||"
+    "current.retained->witness.record!=initial.record||"
+    "current.retained->witness.canonical_snapshot||"
+    "current.retained->witness.pending_snapshot||"
+    "!current.retained->witness.rollback_snapshot||"
+    "current.retained->witness.rollback_snapshot!=initial.rollback_snapshot||"
+    "current.retained->witness.parent_identity!=initial.parent_identity||"
+    "current.retained->witness.lock_identity!=initial.lock_identity||"
+    "current.retained->witness.directory_identity!=initial.directory_identity||"
+    "!remaining_marker_matches_initial("
+    "current.retained->witness.owner,initial.owner)||"
+    "!remaining_marker_matches_initial("
+    "current.retained->witness.owned,initial.owned)||"
+    "!remaining_marker_matches_initial("
+    "current.retained->witness.reserved,initial.reserved)||"
+    "!private_handoff_lease_recovery_stage_matches(point,*current.retained)){"
+    "adapter.exact_failure="
+    "current.retained?resume_foreign_replacement():current.result;"
+    "if(adapter.exact_failure->status==OOCCleanupStatus::NoTransaction){"
+    "adapter.exact_failure=resume_foreign_replacement();}"
+    "returntrue;}"
+    "adapter.lock->require_stable();returnfalse;}"
+    "catch(constFailure&failure){"
+    "adapter.exact_failure=resume_failure_result(failure);}"
+    "catch(conststd::bad_alloc&){"
+    "adapter.exact_failure=resume_unexpected_result("
+    "std::make_error_code(std::errc::not_enough_memory));}"
+    "catch(conststd::system_error&error){"
+    "adapter.exact_failure=resume_unexpected_result(error.code());}"
+    "catch(...){adapter.exact_failure=resume_unexpected_result();}"
+    "returntrue;"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_LEASE_BINDING_FRAGMENT = (
+    "PrivateHandoffLeaseRecoveryObservationAdapterV1lease_adapter{"
+    ".outer=&hooks,"
+    ".paths=&state->paths,"
+    ".lock=&lock,"
+    ".expected_directory_identity=&state->expected_directory_identity,"
+    ".initial=&rollback_retained.witness,};"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_LEASE_UNKNOWN_FAILURE_FRAGMENT = (
+    ".stop_after=observe_private_handoff_lease_recovery,"
+    ".context=&lease_adapter,});"
+    "if(lease_adapter.exact_failure){"
+    "returnresume_failed(*lease_adapter.exact_failure,expected);}"
+    "if(lease_adapter.unknown_point){"
+    "returnresume_failed(resume_unexpected_result(protocol_error()),expected);}"
+    "if(!recovered.completed())"
+)
+PRIVATE_HANDOFF_ROLLBACK_RECOVERY_IDENTIFIER = (
+    "recover_private_handoff_rollback_generation_locked"
+)
+PRIVATE_LEASE_GENERIC_RECOVERY_IDENTIFIER = "recover_owned_private_lease_locked"
+PRIVATE_HANDOFF_ROLLBACK_RECOVERY_DEFINITION_SHAPE = r"""
+[[nodiscard]] OOCCleanupResult recover_private_handoff_rollback_generation_locked(
+    const OOCCleanupPaths& paths, const BaseLock& lock,
+    const std::array<std::uint64_t, 3>& parent_identity,
+    const LoadedPrivateLeaseMarker& loaded_owned,
+    const std::optional<LoadedPrivateLeaseMarker>& loaded_reserved,
+    const OOCPrivateLeaseTestHooks& hooks)
+"""
+PRIVATE_HANDOFF_ROLLBACK_RECOVERY_BODY = r"""
+    lock.require_stable();
+    const auto& owned = loaded_owned.record;
+    validate_private_lease_record_context(owned, paths, parent_identity, lock.identity());
+    if (owned.phase != PrivateLeasePhase::Owned ||
+        owned.capability != PrivateLeaseCapability::RollbackPreactivePairAndLease) {
+        fail(OOCCleanupStatus::IntentConflict, OOCCleanupStage::None, protocol_error());
+    }
+    confirm_private_lease_marker(paths.lease_owned_path, owned, loaded_owned.identity);
+
+    if (loaded_reserved) {
+        validate_private_lease_record_context(loaded_reserved->record, paths, parent_identity,
+                                              lock.identity());
+        validate_private_lease_record_chain(loaded_reserved->record, owned);
+        confirm_private_lease_marker(paths.lease_reserved_path, loaded_reserved->record,
+                                     loaded_reserved->identity);
+    }
+
+    const auto staging_path = private_lease_staging_path(paths, owned.lease_id);
+    const auto staging_identity = inspect_directory_identity_locked(staging_path);
+    const auto final_identity = inspect_directory_identity_locked(paths.private_directory);
+    if ((staging_identity && final_identity) ||
+        (staging_identity && *staging_identity != owned.directory_identity) ||
+        (final_identity && *final_identity != owned.directory_identity) ||
+        (!loaded_reserved && (staging_identity || final_identity))) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+    }
+
+    if (staging_identity || final_identity) {
+        const auto rolled_back = rollback_owned_preactive_pair_locked(paths, owned, lock, hooks);
+        if (!rolled_back.completed()) {
+            return rolled_back;
+        }
+    } else {
+        invoke_with_stable_base_lock(lock, [&] {
+            sync_parent_directory(paths.private_directory.parent_path(), OOCCleanupStage::None);
+        });
+    }
+
+    if (loaded_reserved) {
+        invoke_with_stable_base_lock(lock, [&] {
+            remove_private_lease_marker_durable(paths.lease_reserved_path, loaded_reserved->record,
+                                                loaded_reserved->identity);
+        });
+        if (invoke_with_stable_base_lock(lock, [&] {
+                return should_interrupt_private_lease(
+                    hooks, OOCPrivateLeaseFaultPoint::ReservedRemovedDurable);
+            })) {
+            return private_lease_interrupted();
+        }
+    }
+    invoke_with_stable_base_lock(lock, [&] {
+        remove_private_lease_marker_durable(paths.lease_owned_path, owned, loaded_owned.identity);
+    });
+    if (invoke_with_stable_base_lock(lock, [&] {
+            return should_interrupt_private_lease(hooks,
+                                                  OOCPrivateLeaseFaultPoint::OwnedRemovedDurable);
+        })) {
+        return private_lease_interrupted();
+    }
+    lock.require_stable();
+    return private_lease_completed();
+"""
+PRIVATE_HANDOFF_ROLLBACK_RECOVERY_TYPED_CALL_FRAGMENT = (
+    "recovered=recover_private_handoff_rollback_generation_locked("
+    "state->paths,lock,rollback_retained.generation.parent_identity,"
+    "*rollback_retained.generation.owned,rollback_retained.generation.reserved,"
+    "OOCPrivateLeaseTestHooks{"
+    ".stop_after=observe_private_handoff_lease_recovery,"
+    ".context=&lease_adapter,});"
+)
+PRIVATE_LEASE_GENERIC_RECOVERY_CALL_FRAGMENTS = (
+    "returnrecover_owned_private_lease_locked("
+    "paths,held_lock,parent_identity,*owned,reserved,hooks);",
+    "returnooc_cleanup_detail::recover_owned_private_lease_locked("
+    "paths,retained_lock,generation.parent_identity,*generation.owned,"
+    "generation.reserved,hooks);",
+)
+PRIVATE_LEASE_GENERIC_RECOVERY_SCOPES = {
+    "recover_private_lease_locked": (
+        "autoadmission=admit_private_cleanup_action_locked("
+        "paths,std::move(lock),PrivateNamespaceAction::RecoverPrivateLease);"
+        "if(admission.blocked){return*admission.blocked;}",
+        "constautohandoff=reconcile_private_handoff_from_permit("
+        "permit,PrivateNamespaceAction::RecoverPrivateLease);"
+        "if(handoff.state!=OOCPrivateHandoffState::None){returnhandoff.result;}",
+        PRIVATE_LEASE_GENERIC_RECOVERY_CALL_FRAGMENTS[0],
+    ),
+    "OOCCleanupTransaction::remove_private_lease": (
+        "autoadmission=ooc_cleanup_detail::admit_private_lease_removal_locked("
+        "paths,held_lock,ownership.lease_id_,ownership.directory_identity_,"
+        "ownership.owner_identity_,ownership.owned_identity_);"
+        "if(admission.blocked){return*admission.blocked;}",
+        "constautohandoff="
+        "ooc_cleanup_detail::reconcile_private_handoff_from_permit("
+        "permit,ooc_cleanup_detail::PrivateNamespaceAction::RemovePrivateLease);"
+        "if(handoff.state!=OOCPrivateHandoffState::None){returnhandoff.result;}",
+        PRIVATE_LEASE_GENERIC_RECOVERY_CALL_FRAGMENTS[1],
+    ),
+}
+PRIVATE_LEASE_GENERIC_RECOVERY_DEFINITION_SHAPES = {
+    "recover_private_lease_locked": r"""
+OOCCleanupResult recover_private_lease_locked(const OOCCleanupPaths& paths,
+                                              std::shared_ptr<BaseLock> lock,
+                                              const OOCPrivateLeaseTestHooks& hooks)
+""",
+    "OOCCleanupTransaction::remove_private_lease": r"""
+OOCCleanupResult
+OOCCleanupTransaction::remove_private_lease(OOCPrivateLeaseOwnershipReceipt& ownership,
+                                            OOCPrivateLeaseTestHooks hooks) noexcept
+""",
+}
+PRIVATE_LEASE_GENERIC_RECOVERY_BODIES = {
+    "recover_private_lease_locked": r"""
+    if (paths.private_directory.empty() || !lock || !lock->matches(paths.lock_path)) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+
+    auto admission = admit_private_cleanup_action_locked(
+        paths, std::move(lock), PrivateNamespaceAction::RecoverPrivateLease);
+    if (admission.blocked) {
+        return *admission.blocked;
+    }
+    if (!admission.permit) {
+        fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None, protocol_error());
+    }
+    auto permit = std::move(*admission.permit);
+    admission.permit.reset();
+    const auto& held_lock =
+        begin_private_cleanup_action(permit, paths, PrivateNamespaceAction::RecoverPrivateLease);
+    if (invoke_with_stable_base_lock(held_lock, [&] {
+            return should_interrupt_private_lease(
+                hooks, OOCPrivateLeaseFaultPoint::RecoveryPermitAcquired);
+        })) {
+        return private_lease_interrupted();
+    }
+
+    const auto handoff =
+        reconcile_private_handoff_from_permit(permit, PrivateNamespaceAction::RecoverPrivateLease);
+    if (handoff.state != OOCPrivateHandoffState::None) {
+        return handoff.result;
+    }
+    const auto parent = paths.private_directory.parent_path();
+    sync_parent_directory(parent, OOCCleanupStage::None);
+    const auto parent_identity = capture_directory_identity_locked(parent);
+
+    auto reserved = load_optional_private_lease_marker(paths.lease_reserved_path);
+    if (!reserved) {
+        const auto pending = load_optional_private_lease_marker(paths.lease_reserved_pending_path);
+        if (pending) {
+            validate_private_lease_record_context(pending->record, paths, parent_identity,
+                                                  held_lock.identity());
+            if (pending->record.phase != PrivateLeasePhase::Reserved) {
+                fail(OOCCleanupStatus::IntentConflict, OOCCleanupStage::None, protocol_error());
+            }
+
+            const auto staging_path = private_lease_staging_path(paths, pending->record.lease_id);
+            if (inspect_directory_identity_locked(staging_path) ||
+                inspect_directory_identity_locked(paths.private_directory) ||
+                load_optional_private_lease_marker(paths.lease_owned_path) ||
+                load_optional_private_lease_marker(paths.lease_owned_pending_path)) {
+                return OOCCleanupResult{
+                    .status = OOCCleanupStatus::RecoveryRequired,
+                    .stage = OOCCleanupStage::None,
+                    .native_error = protocol_error(),
+                };
+            }
+            invoke_with_stable_base_lock(held_lock, [&] {
+                remove_matching_private_lease_pending(paths.lease_reserved_pending_path,
+                                                      pending->record);
+            });
+            return private_lease_completed();
+        }
+    }
+
+    auto owned = load_optional_private_lease_marker(paths.lease_owned_path);
+    if (owned) {
+        return recover_owned_private_lease_locked(paths, held_lock, parent_identity, *owned,
+                                                  reserved, hooks);
+    }
+
+    if (reserved) {
+        rollback_reserved_staging_locked(paths, held_lock, parent_identity, *reserved);
+        held_lock.require_stable();
+        return private_lease_completed();
+    }
+
+    const auto owned_pending = load_optional_private_lease_marker(paths.lease_owned_pending_path);
+    if (owned_pending || inspect_directory_identity_locked(paths.private_directory)) {
+        fail(OOCCleanupStatus::RecoveryRequired, OOCCleanupStage::None, protocol_error());
+    }
+    held_lock.require_stable();
+    return private_lease_no_transaction();
+""",
+    "OOCCleanupTransaction::remove_private_lease": r"""
+    if (ownership.spent_ || ownership.base_path_.empty() || ownership.private_directory_.empty() ||
+        ownership.lock_path_.empty() ||
+        ownership.owner_process_id_ != static_cast<std::uint64_t>(gnfs::util::process_id())) {
+        return OOCCleanupResult{
+            .status = OOCCleanupStatus::InvalidRequest,
+            .stage = OOCCleanupStage::None,
+            .native_error = ooc_cleanup_detail::invalid_argument_error(),
+        };
+    }
+
+    const auto result = invoke([&] {
+        const auto paths = ooc_cleanup_detail::freeze_paths(ownership.base_path_);
+        if (paths.private_directory.empty() || paths.base_path != ownership.base_path_ ||
+            paths.private_directory != ownership.private_directory_ ||
+            paths.lock_path != ownership.lock_path_) {
+            ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                                     ooc_cleanup_detail::invalid_argument_error());
+        }
+        std::shared_ptr<ooc_cleanup_detail::BaseLock> held_lock = ownership.live_lock_;
+        if (!held_lock) {
+            held_lock = std::make_shared<ooc_cleanup_detail::BaseLock>(paths.lock_path, false);
+        }
+        if (!held_lock->matches(paths.lock_path)) {
+            ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                                     ooc_cleanup_detail::invalid_argument_error());
+        }
+
+        auto admission = ooc_cleanup_detail::admit_private_lease_removal_locked(
+            paths, held_lock, ownership.lease_id_, ownership.directory_identity_,
+            ownership.owner_identity_, ownership.owned_identity_);
+        if (admission.blocked) {
+            return *admission.blocked;
+        }
+        if (!admission.permit || !admission.generation) {
+            ooc_cleanup_detail::fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None,
+                                     ooc_cleanup_detail::protocol_error());
+        }
+        auto generation = std::move(*admission.generation);
+        admission.generation.reset();
+        auto permit = std::move(*admission.permit);
+        admission.permit.reset();
+        const auto& retained_lock = ooc_cleanup_detail::begin_private_cleanup_action(
+            permit, paths, ooc_cleanup_detail::PrivateNamespaceAction::RemovePrivateLease);
+        ooc_cleanup_detail::bind_private_lease_removal_generation(permit, generation);
+        if (ooc_cleanup_detail::invoke_with_stable_base_lock(retained_lock, [&] {
+                return ooc_cleanup_detail::should_interrupt_private_lease(
+                    hooks, OOCPrivateLeaseFaultPoint::RemovalPermitAcquired);
+            })) {
+            return ooc_cleanup_detail::private_lease_interrupted();
+        }
+
+        const auto handoff = ooc_cleanup_detail::reconcile_private_handoff_from_permit(
+            permit, ooc_cleanup_detail::PrivateNamespaceAction::RemovePrivateLease);
+        if (handoff.state != OOCPrivateHandoffState::None) {
+            return handoff.result;
+        }
+        if (!generation.owned) {
+            ooc_cleanup_detail::invoke_with_stable_base_lock(retained_lock, [&] {
+                ooc_cleanup_detail::sync_parent_directory(paths.private_directory.parent_path(),
+                                                          OOCCleanupStage::None);
+            });
+            return ooc_cleanup_detail::private_lease_completed();
+        }
+
+        return ooc_cleanup_detail::recover_owned_private_lease_locked(
+            paths, retained_lock, generation.parent_identity, *generation.owned,
+            generation.reserved, hooks);
+    });
+    if (result.completed()) {
+        ownership.spent_ = true;
+        ownership.live_lock_.reset();
+    }
+    return result;
+""",
+}
+PRIVATE_LEASE_PREACTIVE_SCANNER_IDENTIFIER = (
+    "inspect_private_lease_preactive_entries"
+)
+PRIVATE_LEASE_PREACTIVE_SCANNER_DEFINITION_SHAPE = r"""
+[[nodiscard]] inline PrivateLeasePreactiveEntries
+inspect_private_lease_preactive_entries(const std::filesystem::path& directory_path,
+                                        const OOCCleanupPaths& paths)
+"""
+PRIVATE_LEASE_PREACTIVE_SCANNER_BODY = r"""
+    PrivateLeasePreactiveEntries entries;
+    std::error_code error;
+    std::filesystem::directory_iterator cursor(directory_path, error);
+    if (error) {
+        fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, error);
+    }
+    for (const auto& entry : cursor) {
+        const auto leaf = entry.path().filename();
+        if (path_leaf_equals_ascii(leaf, ".gnfs-private-lease-v1.owner")) {
+            if (entries.owner) {
+                fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+            }
+            entries.owner = true;
+            continue;
+        }
+        if (path_leaf_equals(leaf, paths.index_path.filename())) {
+            if (entries.index) {
+                fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+            }
+            entries.index = true;
+            continue;
+        }
+        if (path_leaf_equals(leaf, paths.data_path.filename())) {
+            if (entries.data) {
+                fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+            }
+            entries.data = true;
+            continue;
+        }
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+    }
+    return entries;
+"""
+PRIVATE_LEASE_PREACTIVE_ROLLBACK_IDENTIFIER = (
+    "rollback_owned_preactive_pair_locked"
+)
+PRIVATE_LEASE_PREACTIVE_ROLLBACK_DEFINITION_SHAPE = r"""
+[[nodiscard]] inline OOCCleanupResult
+rollback_owned_preactive_pair_locked(const OOCCleanupPaths& paths,
+                                     const PrivateLeaseRecord& owned,
+                                     const BaseLock& lock,
+                                     const OOCPrivateLeaseTestHooks& hooks)
+"""
+PRIVATE_LEASE_PREACTIVE_ROLLBACK_BODY = r"""
+    if (owned.capability != PrivateLeaseCapability::RollbackPreactivePairAndLease) {
+        fail(OOCCleanupStatus::RecoveryRequired, OOCCleanupStage::None, protocol_error());
+    }
+
+    const auto staging_path = private_lease_staging_path(paths, owned.lease_id);
+    auto staging_identity = inspect_directory_identity_locked(staging_path);
+    auto final_identity = inspect_directory_identity_locked(paths.private_directory);
+    if (staging_identity && final_identity) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+    }
+    if (staging_identity && *staging_identity != owned.directory_identity) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+    }
+    if (final_identity && *final_identity != owned.directory_identity) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+    }
+
+    if (final_identity) {
+        const auto entries =
+            inspect_private_lease_preactive_entries(paths.private_directory, paths);
+        if (!entries.owner) {
+            fail(OOCCleanupStatus::IntentConflict, OOCCleanupStage::None, protocol_error());
+        }
+        validate_private_lease_owner_at(paths.private_directory, owned);
+        validate_preactive_pair_leaf_before_quarantine(paths.index_path, entries.index);
+        validate_preactive_pair_leaf_before_quarantine(paths.data_path, entries.data);
+
+        const auto renamed = invoke_with_stable_base_lock(
+            lock, [&] { return rename_no_replace(paths.private_directory, staging_path); });
+        switch (renamed.result) {
+        case RenameResult::Succeeded:
+            invoke_with_stable_base_lock(lock, [&] {
+                sync_parent_directory(staging_path.parent_path(), OOCCleanupStage::None);
+            });
+            break;
+        case RenameResult::DestinationExists:
+            fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, renamed.error);
+        case RenameResult::Unsupported:
+            fail(OOCCleanupStatus::PlatformUnsupported, OOCCleanupStage::None, renamed.error);
+        case RenameResult::Failed:
+            fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, renamed.error);
+        }
+        if (inspect_directory_identity_locked(paths.private_directory)) {
+            fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+        }
+        staging_identity = inspect_directory_identity_locked(staging_path);
+        if (!staging_identity || *staging_identity != owned.directory_identity) {
+            fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+        }
+        if (invoke_with_stable_base_lock(lock, [&] {
+                return should_interrupt_private_lease(
+                    hooks, OOCPrivateLeaseFaultPoint::PreactiveDirectoryQuarantinedDurable);
+            })) {
+            return private_lease_interrupted();
+        }
+    }
+
+    if (staging_identity) {
+        const auto entries = inspect_private_lease_preactive_entries(staging_path, paths);
+        if (entries.owner) {
+            validate_private_lease_owner_at(staging_path, owned);
+        } else if (entries.index || entries.data) {
+            fail(OOCCleanupStatus::IntentConflict, OOCCleanupStage::None, protocol_error());
+        }
+
+        const auto staged_data = staging_path / paths.data_path.filename();
+        if (entries.data && invoke_with_stable_base_lock(lock, [&] {
+                return remove_preactive_pair_leaf_durable_locked(
+                    staged_data, staging_path,
+                    OOCPrivateLeaseFaultPoint::PreactiveDataRemovedDurable, hooks);
+            })) {
+            return private_lease_interrupted();
+        }
+        const auto staged_index = staging_path / paths.index_path.filename();
+        if (entries.index && invoke_with_stable_base_lock(lock, [&] {
+                return remove_preactive_pair_leaf_durable_locked(
+                    staged_index, staging_path,
+                    OOCPrivateLeaseFaultPoint::PreactiveIndexRemovedDurable, hooks);
+            })) {
+            return private_lease_interrupted();
+        }
+
+        invoke_with_stable_base_lock(
+            lock, [&] { remove_owner_marker_durable_locked(staging_path, owned, true); });
+        if (invoke_with_stable_base_lock(lock, [&] {
+                return should_interrupt_private_lease(
+                    hooks, OOCPrivateLeaseFaultPoint::OwnerRemovedDurable);
+            })) {
+            return private_lease_interrupted();
+        }
+        invoke_with_stable_base_lock(lock, [&] {
+            remove_empty_directory_durable_locked(staging_path, owned.directory_identity);
+        });
+        if (invoke_with_stable_base_lock(lock, [&] {
+                return should_interrupt_private_lease(
+                    hooks, OOCPrivateLeaseFaultPoint::FinalDirectoryRemovedDurable);
+            })) {
+            return private_lease_interrupted();
+        }
+    } else {
+        invoke_with_stable_base_lock(lock, [&] {
+            sync_parent_directory(paths.private_directory.parent_path(), OOCCleanupStage::None);
+        });
+    }
+    lock.require_stable();
+    return private_lease_completed();
+"""
+PRIVATE_LEASE_GENERIC_PREACTIVE_SCAN_FRAGMENT = (
+    "if(staging_identity){if(preactive_pair_rollback){"
+    "(void)inspect_private_lease_preactive_entries(staging_path,paths);"
+    "}else{(void)inspect_private_lease_control_entries(staging_path);}}"
+)
+PRIVATE_LEASE_GENERIC_PREACTIVE_ROLLBACK_FRAGMENTS = (
+    "if(staging_identity){"
+    "if(!loaded_reserved){"
+    "fail(OOCCleanupStatus::IntentConflict,OOCCleanupStage::None,"
+    "protocol_error());}"
+    "if(preactive_pair_rollback){"
+    "constautorolled_back="
+    "rollback_owned_preactive_pair_locked(paths,owned,lock,hooks);"
+    "if(!rolled_back.completed()){returnrolled_back;}}"
+    "else{constautoentries="
+    "inspect_private_lease_control_entries(staging_path);",
+    "if(preactive_pair_rollback){"
+    "constautorolled_back="
+    "rollback_owned_preactive_pair_locked(paths,owned,lock,hooks);"
+    "if(!rolled_back.completed()){returnrolled_back;}}"
+    "else{try{require_pair_namespace_reusable_locked(paths);",
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_FINAL_ABSENCE_FRAGMENT = (
+    "autoabsent=capture_private_handoff_publication_prefix_v1_locked("
+    "state->paths,lock,state->expected_directory_identity);"
+    "if(absent.retained||"
+    "absent.result.status!=OOCCleanupStatus::NoTransaction||"
+    "absent.result.stage!=OOCCleanupStage::None||"
+    "absent.result.native_error){"
+    "returnresume_failed("
+    "absent.retained?resume_foreign_replacement():absent.result,expected);}"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_ADOPTION_FUNCTION = (
+    "OOCCleanupTransaction::adopt_private_handoff"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_ADOPTION_ROLLBACK_BLOCKER = (
+    "parent->require_lock_binding(paths.lock_path.filename(),*lock);"
+    "if(parent->leaf_exists(paths.private_handoff_rollback_path.filename())){"
+    "returnassign(adoption_failure("
+    "OOCCleanupStatus::NamespaceConflict,"
+    "OOCPrivateHandoffState::TaintedPreserved,"
+    "ooc_cleanup_detail::protocol_error()));}"
+    "constautodirectory_identity="
+    "parent->child_directory_identity(paths.private_directory.filename());"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_ROUND_RELEASE_FRAGMENT = (
+    "while(!recoverable.retained.entries.empty()){"
+    "recoverable.retained.entries.pop_back();}"
+    "if(hooks.worker_handoff_resume.after_round_locks_released!=nullptr){"
+    "hooks.worker_handoff_resume.after_round_locks_released("
+    "hooks.worker_handoff_resume.context);"
+    "if(!process_matches(creator_process_id)){"
+    "returnopen_failure(process_mismatch());}}"
+    "++resume_round;"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_BRIDGE_FUNCTION = (
+    "bridge_worker_handoff_resume_observation"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_BRIDGE_BODY = (
+    "auto*context=static_cast<WorkerHandoffResumeBridgeContext*>(opaque);"
+    "if(context==nullptr){returntrue;}"
+    "constautowave_point=static_cast<"
+    "DistributedSieveWorkerHandoffResumeObservationPointV1>(point);"
+    "constbooluser_requested_stop="
+    "context->user_hooks.stop_after!=nullptr&&"
+    "context->user_hooks.stop_after(wave_point,context->user_hooks.context);"
+    "if(context->parent_components==nullptr||context->root_leaf==nullptr||"
+    "context->manifest_bytes==nullptr||context->absolute_root==nullptr||"
+    "context->manifest==nullptr||context->aggregate==nullptr||"
+    "context->retained==nullptr||context->attempt_names==nullptr||"
+    "context->attempt_record==nullptr){"
+    "context->revalidation_failed=true;"
+    "context->revalidation_diagnostic=diagnostic("
+    "DistributedSieveWaveStoreStatus::unexpected_failure,protocol_error());"
+    "returntrue;}"
+    "autorevalidated=validate_held_wave_store_manifest_authority("
+    "context->parent_fd,*context->parent_components,context->root_fd,"
+    "*context->root_leaf,context->root_identity,context->lock_fd,"
+    "context->lock_identity,*context->manifest_bytes,"
+    "context->manifest_snapshot,context->creator_process_id);"
+    "if(revalidated.status==DistributedSieveWaveStoreStatus::ready){"
+    "revalidated=revalidate_worker_handoff_aggregate_projection("
+    "context->root_fd,*context->absolute_root,*context->manifest,"
+    "*context->aggregate,*context->retained,context->current_attempt_index,"
+    "context->creator_process_id,wave_point);}"
+    "if(revalidated.status==DistributedSieveWaveStoreStatus::ready){"
+    "revalidated=revalidate_exact_canonical_worker_attempt("
+    "context->root_fd,*context->attempt_names,*context->attempt_record,"
+    "context->creator_process_id);}"
+    "if(revalidated.status==DistributedSieveWaveStoreStatus::ready){"
+    "returnuser_requested_stop;}"
+    "context->revalidation_failed=true;"
+    "context->revalidation_diagnostic=std::move(revalidated);"
+    "returntrue;"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_BRIDGE_FACTORY_FUNCTION = (
+    "relation_worker_handoff_resume_hooks"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_BRIDGE_FACTORY_BODY = (
+    "return{.stop_after=bridge_worker_handoff_resume_observation,"
+    ".fail_before=nullptr,.context=&context,};"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_ASSIGNMENT_PREFIX = (
+    "autoadmission=private_lease::acquire_private_handoff_publication_resume_v1("
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_TYPED_CALLBACK_FUNCTION = (
+    "validate_worker_handoff_prefix_type"
+)
+PRIVATE_HANDOFF_PUBLICATION_WORKER_VALIDATOR_AUTHORITY_BODY = (
+    "public:[[nodiscard]]staticgnfs::relation::ooc_cleanup_detail::"
+    "PrivateHandoffPublicationTypedValidatorV1bind("
+    "gnfs::relation::ooc_cleanup_detail::"
+    "PrivateHandoffPublicationTypedValidatorV1::Validatevalidate,"
+    "void*context)noexcept{returngnfs::relation::ooc_cleanup_detail::"
+    "PrivateHandoffPublicationTypedValidatorV1(validate,context);}"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_TYPED_CALLBACK_BODY = (
+    "auto*context=static_cast<WorkerHandoffTypedValidationContext*>(opaque);"
+    "if(context==nullptr||context->root_fd<0||context->attempt==nullptr||"
+    "context->manifest==nullptr||"
+    "context->attempt_record==nullptr||"
+    "!context->attempt_record->canonical_snapshot.has_value()||"
+    "context->attempt_record->pending_snapshot.has_value()){returnfalse;}"
+    "if(constautoexact=revalidate_exact_canonical_worker_attempt("
+    "context->root_fd,context->attempt->names,*context->attempt_record,"
+    "context->creator_process_id);"
+    "exact.status!=DistributedSieveWaveStoreStatus::ready){"
+    "context->diagnostic=exact;returnfalse;}"
+    "constdurable_record::RecordSnapshot*handoff_snapshot=nullptr;"
+    "switch(prefix.state){"
+    "caseprivate_lease::PrivateHandoffPublicationPrefixStateV1::PendingOnly:"
+    "if(prefix.canonical_snapshot.has_value()||"
+    "!prefix.pending_snapshot.has_value()||"
+    "prefix.rollback_snapshot.has_value()){returnfalse;}"
+    "handoff_snapshot=&*prefix.pending_snapshot;break;"
+    "caseprivate_lease::PrivateHandoffPublicationPrefixStateV1::PendingRollback:"
+    "if(prefix.canonical_snapshot.has_value()||"
+    "prefix.pending_snapshot.has_value()||"
+    "!prefix.rollback_snapshot.has_value()){returnfalse;}"
+    "handoff_snapshot=&*prefix.rollback_snapshot;break;"
+    "caseprivate_lease::PrivateHandoffPublicationPrefixStateV1::Canonical:"
+    "if(!prefix.canonical_snapshot.has_value()||"
+    "prefix.pending_snapshot.has_value()||"
+    "prefix.rollback_snapshot.has_value()){returnfalse;}"
+    "handoff_snapshot=&*prefix.canonical_snapshot;break;"
+    "caseprivate_lease::PrivateHandoffPublicationPrefixStateV1::IdenticalDual:"
+    "if(!prefix.canonical_snapshot.has_value()||"
+    "!prefix.pending_snapshot.has_value()||"
+    "prefix.rollback_snapshot.has_value()){returnfalse;}"
+    "handoff_snapshot=&*prefix.canonical_snapshot;break;"
+    "caseprivate_lease::PrivateHandoffPublicationPrefixStateV1::Count:returnfalse;}"
+    "constdurable_record::RecordSnapshotindex_snapshot{"
+    ".identity=prefix.record.index.identity,"
+    ".size=prefix.record.index.extent,};"
+    "constdurable_record::RecordSnapshotdata_snapshot{"
+    ".identity=prefix.record.data.identity,"
+    ".size=prefix.record.data.extent,};"
+    "autotyped=validate_worker_handoff_envelope("
+    "*context->attempt,*context->manifest,"
+    "context->expected_directory_identity,prefix.record,*handoff_snapshot,"
+    "index_snapshot,data_snapshot,context->creator_process_id);"
+    "if(!typed){context->diagnostic=std::move(typed.diagnostic);returnfalse;}"
+    "constauto&handoff=typed.witness->handoff;"
+    "constauto&started=context->attempt_record->record;"
+    "if(handoff.attempt_started_digest!=started.self_digest||"
+    "handoff.lease!=started.lease||"
+    "handoff.chunk_id!=context->attempt->coordinate.chunk_id||"
+    "handoff.attempt_ordinal!=context->attempt->coordinate.attempt_ordinal){"
+    "context->diagnostic=diagnostic("
+    "DistributedSieveWaveStoreStatus::namespace_conflict,protocol_error());"
+    "returnfalse;}"
+    "context->typed_handoff=std::move(*typed.witness);returntrue;"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_CAPTURE_TYPED_VALIDATION_FRAGMENT = (
+    "WorkerHandoffTypedValidationContexttyped_context{"
+    ".attempt=&attempt,"
+    ".manifest=&manifest,"
+    ".attempt_record=&candidate.attempt_record,"
+    ".root_fd=root_fd,"
+    ".expected_directory_identity=expected_directory_identity,"
+    ".creator_process_id=creator_process_id,};"
+    "autovalidation=private_lease::validate_private_handoff_publication_resume_v1("
+    "std::move(*admission.observed),"
+    "WorkerHandoffTypedValidatorAuthorityV1::bind("
+    "validate_worker_handoff_prefix_type,&typed_context));"
+)
+PRIVATE_HANDOFF_PUBLICATION_RESUME_CAPTURE_TYPED_SUCCESS_FRAGMENT = (
+    "if(!validation.validated()||!validation.permit.has_value()||"
+    "!typed_context.typed_handoff.has_value()){"
+    "if(typed_context.diagnostic.status!="
+    "DistributedSieveWaveStoreStatus::ready){"
+    "returnfail_with(std::move(typed_context.diagnostic));}"
+    "returnfail_with(worker_handoff_inspection_failure(validation.result));}"
+    "constautotyped_handoff=*typed_context.typed_handoff;"
+)
 WORKER_PROCESS_LEGACY_FILE = "src/sieve/distributed_sieve.cpp"
 WORKER_PROCESS_POLICY_PREFIXES = (
     "include/gnfs/sieve/",
@@ -987,6 +2029,233 @@ def _matching_brace(text: str, opening: int) -> int | None:
             if depth == 0:
                 return cursor
         cursor += 1
+    return None
+
+
+def _compact_cpp_code(text: str) -> str:
+    """Remove C++ trivia while preserving quoted tokens."""
+
+    compact: list[str] = []
+    cursor = 0
+    while cursor < len(text):
+        raw_end = _skip_raw_string(text, cursor)
+        if raw_end is not None:
+            compact.append(text[cursor:raw_end])
+            cursor = raw_end
+            continue
+        if text[cursor] in {'"', "'"}:
+            quoted_end = _skip_quoted(text, cursor, text[cursor])
+            compact.append(text[cursor:quoted_end])
+            cursor = quoted_end
+            continue
+        if text.startswith("//", cursor) or text.startswith("/*", cursor):
+            skipped = _skip_non_code(text, cursor)
+            cursor = len(text) if skipped is None else skipped
+            continue
+        if text[cursor].isspace():
+            cursor += 1
+            continue
+        compact.append(text[cursor])
+        cursor += 1
+    return "".join(compact)
+
+
+def _mask_cpp_comments_and_literals(text: str) -> str:
+    """Preserve source layout while blanking comments and quoted tokens."""
+
+    masked = list(text)
+    cursor = 0
+    while cursor < len(text):
+        skipped = _skip_non_code(text, cursor)
+        if skipped is None:
+            cursor += 1
+            continue
+        for index in range(cursor, skipped):
+            if masked[index] not in {"\n", "\r"}:
+                masked[index] = " "
+        cursor = skipped
+    return "".join(masked)
+
+
+def _compact_cpp_tokens(text: str) -> str:
+    """Remove trivia and literal payloads, retaining only active-looking tokens."""
+
+    return _compact_cpp_code(_mask_cpp_comments_and_literals(text))
+
+
+def _contains_conditional_preprocessor_directive(text: str) -> bool:
+    masked = _mask_cpp_comments_and_literals(text)
+    if re.search(r"\\\r?\n", masked) is not None:
+        return True
+    logical_lines = re.sub(r"\\\r?\n", "", masked)
+    return (
+        re.search(
+            r"(?m)^[ \t]*#[ \t]*(?:if|ifdef|ifndef|elif|else|endif)\b",
+            logical_lines,
+        )
+        is not None
+    )
+
+
+def _active_brace_stack(text: str, offset: int) -> tuple[int, ...]:
+    stack: list[int] = []
+    cursor = 0
+    limit = min(max(offset, 0), len(text))
+    while cursor < limit:
+        skipped = _skip_non_code(text, cursor)
+        if skipped is not None:
+            cursor = min(skipped, limit)
+            continue
+        if text[cursor] == "{":
+            stack.append(cursor)
+        elif text[cursor] == "}" and stack:
+            stack.pop()
+        cursor += 1
+    return tuple(stack)
+
+
+def _statement_start_at_scope(
+    text: str, offset: int, target_stack: tuple[int, ...] | None = None
+) -> int:
+    """Find the current statement start at one exact lexical brace scope."""
+
+    if target_stack is None:
+        target_stack = _active_brace_stack(text, offset)
+    stack: list[int] = []
+    parentheses = 0
+    brackets = 0
+    boundary = target_stack[-1] + 1 if target_stack else 0
+    cursor = 0
+    limit = min(max(offset, 0), len(text))
+    while cursor < limit:
+        skipped = _skip_non_code(text, cursor)
+        if skipped is not None:
+            cursor = min(skipped, limit)
+            continue
+        char = text[cursor]
+        if char == "{":
+            stack.append(cursor)
+            if tuple(stack) == target_stack:
+                boundary = cursor + 1
+        elif char == "}":
+            if stack:
+                stack.pop()
+            if tuple(stack) == target_stack and parentheses == 0 and brackets == 0:
+                boundary = cursor + 1
+        elif char == "(":
+            parentheses += 1
+        elif char == ")" and parentheses > 0:
+            parentheses -= 1
+        elif char == "[":
+            brackets += 1
+        elif char == "]" and brackets > 0:
+            brackets -= 1
+        elif (
+            char == ";"
+            and tuple(stack) == target_stack
+            and parentheses == 0
+            and brackets == 0
+        ):
+            boundary = cursor + 1
+        cursor += 1
+    return boundary
+
+
+def _call_parentheses(
+    text: str, use: CodeIdentifierUse, identifier: str
+) -> tuple[int, int] | None:
+    opening = _skip_call_trivia(text, use.offset + len(identifier))
+    if opening >= len(text) or text[opening] != "(":
+        return None
+    closing = _matching_parenthesis(text, opening)
+    if closing is None:
+        return None
+    return opening, closing
+
+
+def _direct_call_statement_end(
+    text: str, use: CodeIdentifierUse, identifier: str
+) -> int | None:
+    parentheses = _call_parentheses(text, use, identifier)
+    if parentheses is None:
+        return None
+    _, closing = parentheses
+    semicolon = _skip_call_trivia(text, closing + 1)
+    if semicolon >= len(text) or text[semicolon] != ";":
+        return None
+    return semicolon + 1
+
+
+def _function_declarator_terminator(
+    text: str, use: CodeIdentifierUse, identifier: str
+) -> int | None:
+    parentheses = _call_parentheses(text, use, identifier)
+    if parentheses is None:
+        return None
+    _, closing = parentheses
+    cursor = _skip_call_trivia(text, closing + 1)
+    if text.startswith("noexcept", cursor):
+        after = cursor + len("noexcept")
+        boundary = text[after] if after < len(text) else ""
+        if boundary.isalnum() or boundary == "_":
+            return None
+        cursor = _skip_call_trivia(text, after)
+        if cursor < len(text) and text[cursor] == "(":
+            noexcept_closing = _matching_parenthesis(text, cursor)
+            if noexcept_closing is None:
+                return None
+            cursor = _skip_call_trivia(text, noexcept_closing + 1)
+    return cursor
+
+
+def _class_definition_body_span(
+    text: str, class_name: str
+) -> tuple[int, int] | None:
+    pattern = re.compile(
+        rf"\b(?:class|struct)\s+{re.escape(class_name)}\b[^;{{]*{{",
+        re.MULTILINE,
+    )
+    matches = list(pattern.finditer(text))
+    if len(matches) != 1:
+        return None
+    opening = matches[0].end() - 1
+    closing = _matching_brace(text, opening)
+    if closing is None:
+        return None
+    return opening + 1, closing
+
+
+def _enum_class_definition_body_span(
+    text: str, enum_name: str
+) -> tuple[int, int] | None:
+    pattern = re.compile(
+        rf"\benum\s+class\s+{re.escape(enum_name)}\b[^;{{]*{{",
+        re.MULTILINE,
+    )
+    matches = list(pattern.finditer(text))
+    if len(matches) != 1:
+        return None
+    opening = matches[0].end() - 1
+    closing = _matching_brace(text, opening)
+    if closing is None:
+        return None
+    return opening + 1, closing
+
+
+def _forbidden_control_scope_introducer(text: str, opening: int) -> str | None:
+    parent_stack = _active_brace_stack(text, opening)
+    start = _statement_start_at_scope(text, opening, parent_stack)
+    introducer = _compact_cpp_code(text[start:opening])
+    if re.search(
+        r"(?:^|[=(:,?])\[[^\]]*\]"
+        r"(?:\([^{}]*\))?(?:mutable)?(?:noexcept(?:\([^{}]*\))?)?"
+        r"(?:->[A-Za-z_][^{}]*)?$",
+        introducer,
+    ):
+        return "lambda"
+    for keyword in ("if(", "ifconstexpr(", "switch(", "while(", "catch(", "else", "do"):
+        if introducer.startswith(keyword):
+            return keyword.rstrip("(")
     return None
 
 
@@ -2047,6 +3316,1131 @@ class Checks:
                     f"{identifier} authority",
                 )
 
+    def validate_private_handoff_publication_resume_boundary(
+        self, relative: str, text: str
+    ) -> None:
+        if relative not in {
+            PRIVATE_LEASE_PREACTIVE_ROLLBACK_CORE_FILE,
+            PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_IMPLEMENTATION_FILE,
+        }:
+            for use in find_code_identifier_uses(
+                text, PRIVATE_LEASE_PREACTIVE_ROLLBACK_IDENTIFIER
+            ):
+                self.fail(
+                    relative,
+                    use.line,
+                    "shared preactive rollback executor escaped the closed "
+                    "generic-plus-typed call-site allowlist",
+                )
+
+        if (
+            relative
+            == PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_INTERFACE_FILE
+        ):
+            enum_span = _enum_class_definition_body_span(
+                text, PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_OBSERVATION_ENUM
+            )
+            if (
+                enum_span is None
+                or _compact_cpp_code(text[enum_span[0] : enum_span[1]])
+                != PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_OBSERVATION_ENUM_BODY
+            ):
+                self.fail(
+                    relative,
+                    1 if enum_span is None else text.count("\n", 0, enum_span[0]) + 1,
+                    "WaveStore worker-handoff resume observation enum must remain "
+                    "the exact ordered durable-boundary mirror",
+                )
+            hooks_span = _class_definition_body_span(
+                text, PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_TEST_HOOKS
+            )
+            if (
+                hooks_span is None
+                or _compact_cpp_code(text[hooks_span[0] : hooks_span[1]])
+                != PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_TEST_HOOKS_BODY
+            ):
+                self.fail(
+                    relative,
+                    1
+                    if hooks_span is None
+                    else text.count("\n", 0, hooks_span[0]) + 1,
+                    "WaveStore worker-handoff resume test hooks must remain the "
+                    "exact closed test-only seam",
+                )
+            return
+
+        if relative == PRIVATE_HANDOFF_PUBLICATION_RESUME_ADOPTION_FILE:
+            body, body_line_offset, body_errors = find_function_definition_body(
+                text, PRIVATE_HANDOFF_PUBLICATION_RESUME_ADOPTION_FUNCTION
+            )
+            for line, error in body_errors:
+                self.fail(relative, line, error)
+            if body is not None:
+                compact_body = _compact_cpp_code(body)
+                if (
+                    compact_body.count("private_handoff_rollback_path") != 3
+                    or compact_body.count(
+                        PRIVATE_HANDOFF_PUBLICATION_RESUME_ADOPTION_ROLLBACK_BLOCKER
+                    )
+                    != 1
+                ):
+                    self.fail(
+                        relative,
+                        body_line_offset + 1,
+                        "private-handoff adoption must reject the exact rollback "
+                        "tombstone after lock binding and before directory adoption",
+                    )
+            return
+
+        if relative == PRIVATE_LEASE_PREACTIVE_ROLLBACK_CORE_FILE:
+            protected_helpers = (
+                (
+                    PRIVATE_LEASE_PREACTIVE_SCANNER_IDENTIFIER,
+                    PRIVATE_LEASE_PREACTIVE_SCANNER_DEFINITION_SHAPE,
+                    PRIVATE_LEASE_PREACTIVE_SCANNER_BODY,
+                    4,
+                    "preactive rollback directory scanner must retain the exact "
+                    "owner/index/data-only allowlist",
+                ),
+                (
+                    PRIVATE_LEASE_PREACTIVE_ROLLBACK_IDENTIFIER,
+                    PRIVATE_LEASE_PREACTIVE_ROLLBACK_DEFINITION_SHAPE,
+                    PRIVATE_LEASE_PREACTIVE_ROLLBACK_BODY,
+                    3,
+                    "shared preactive rollback executor must retain its exact "
+                    "capability, identity, quarantine, re-scan, and ordered-delete "
+                    "contract",
+                ),
+            )
+            for (
+                identifier,
+                expected_shape,
+                expected_body,
+                expected_use_count,
+                error,
+            ) in protected_helpers:
+                body, body_line_offset, body_errors = find_function_definition_body(
+                    text, identifier
+                )
+                for line, body_error in body_errors:
+                    self.fail(relative, line, body_error)
+                uses = find_code_identifier_uses(text, identifier)
+                calls = find_call_identifier_uses(text, identifier)
+                definitions = []
+                for use in uses:
+                    terminator = _function_declarator_terminator(
+                        text, use, identifier
+                    )
+                    if (
+                        terminator is not None
+                        and terminator < len(text)
+                        and text[terminator] == "{"
+                    ):
+                        definitions.append((use, terminator))
+                valid = (
+                    body is not None
+                    and len(uses) == expected_use_count
+                    and len(calls) == expected_use_count
+                    and len(definitions) == 1
+                    and not _contains_conditional_preprocessor_directive(body)
+                    and _compact_cpp_code(body)
+                    == _compact_cpp_code(expected_body)
+                )
+                if len(definitions) == 1:
+                    definition_use, terminator = definitions[0]
+                    scope = _active_brace_stack(text, definition_use.offset)
+                    start = _statement_start_at_scope(
+                        text, definition_use.offset, scope
+                    )
+                    valid = (
+                        valid
+                        and _compact_cpp_code(text[start:terminator])
+                        == _compact_cpp_code(expected_shape)
+                    )
+                if not valid:
+                    self.fail(
+                        relative,
+                        body_line_offset + 1 if body is not None else 1,
+                        error,
+                    )
+
+            generic_body, generic_line_offset, generic_errors = (
+                find_function_definition_body(
+                    text, PRIVATE_LEASE_GENERIC_RECOVERY_IDENTIFIER
+                )
+            )
+            for line, generic_error in generic_errors:
+                self.fail(relative, line, generic_error)
+            if generic_body is not None:
+                generic_tokens = _compact_cpp_tokens(generic_body)
+                generic_rollback_uses = find_code_identifier_uses(
+                    generic_body, PRIVATE_LEASE_PREACTIVE_ROLLBACK_IDENTIFIER
+                )
+                generic_rollback_calls = find_call_identifier_uses(
+                    generic_body, PRIVATE_LEASE_PREACTIVE_ROLLBACK_IDENTIFIER
+                )
+                generic_scanner_calls = find_call_identifier_uses(
+                    generic_body, PRIVATE_LEASE_PREACTIVE_SCANNER_IDENTIFIER
+                )
+                if (
+                    len(generic_rollback_uses) != 2
+                    or len(generic_rollback_calls) != 2
+                    or len(generic_scanner_calls) != 1
+                    or generic_tokens.count(
+                        PRIVATE_LEASE_GENERIC_PREACTIVE_SCAN_FRAGMENT
+                    )
+                    != 1
+                    or any(
+                        generic_tokens.count(fragment) != 1
+                        for fragment in (
+                            PRIVATE_LEASE_GENERIC_PREACTIVE_ROLLBACK_FRAGMENTS
+                        )
+                    )
+                    or _contains_conditional_preprocessor_directive(generic_body)
+                ):
+                    self.fail(
+                        relative,
+                        generic_line_offset + 1,
+                        "shared preactive rollback executor escaped the closed "
+                        "generic-plus-typed call-site allowlist",
+                    )
+            else:
+                self.fail(
+                    relative,
+                    1,
+                    "shared preactive rollback executor escaped the closed "
+                    "generic-plus-typed call-site allowlist",
+                )
+            return
+
+        if (
+            relative
+            not in PRIVATE_HANDOFF_PUBLICATION_WORKER_VALIDATOR_AUTHORITY_ALLOWLIST
+        ):
+            for use in find_code_identifier_uses(
+                text,
+                PRIVATE_HANDOFF_PUBLICATION_WORKER_VALIDATOR_AUTHORITY_IDENTIFIER,
+            ):
+                self.fail(
+                    relative,
+                    use.line,
+                    "worker-handoff typed-validator mint authority is not allowlisted",
+                )
+        if (
+            relative
+            not in PRIVATE_HANDOFF_PUBLICATION_TEST_VALIDATOR_AUTHORITY_ALLOWLIST
+        ):
+            for use in find_code_identifier_uses(
+                text,
+                PRIVATE_HANDOFF_PUBLICATION_TEST_VALIDATOR_AUTHORITY_IDENTIFIER,
+            ):
+                self.fail(
+                    relative,
+                    use.line,
+                    "test-only private-handoff typed-validator mint authority is not "
+                    "allowlisted",
+                )
+
+        if relative not in PRIVATE_HANDOFF_PUBLICATION_RESUME_USE_SITE_ALLOWLIST:
+            present_identifiers = (
+                identifier
+                for identifier in PRIVATE_HANDOFF_PUBLICATION_RESUME_USE_SITE_IDENTIFIERS
+                if identifier in text
+            )
+            for identifier in present_identifiers:
+                for use in find_code_identifier_uses(text, identifier):
+                    self.fail(
+                        relative,
+                        use.line,
+                        "private-handoff publication resume use site is not "
+                        f"allowlisted: {identifier}",
+                    )
+            return
+
+        if relative == PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_INTERFACE_FILE:
+            enum_name = "PrivateHandoffPublicationResumeObservationPointV1"
+            enum_span = _enum_class_definition_body_span(text, enum_name)
+            if (
+                enum_span is None
+                or _compact_cpp_code(text[enum_span[0] : enum_span[1]])
+                != PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_OBSERVATION_ENUM_BODY
+            ):
+                self.fail(
+                    relative,
+                    1 if enum_span is None else text.count("\n", 0, enum_span[0]) + 1,
+                    "relation private-handoff resume observation enum must remain "
+                    "the exact ordered durable-boundary authority",
+                )
+            hooks_name = "PrivateHandoffPublicationResumeTestHooksV1"
+            hooks_span = _class_definition_body_span(text, hooks_name)
+            if (
+                hooks_span is None
+                or _compact_cpp_code(text[hooks_span[0] : hooks_span[1]])
+                != PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_TEST_HOOKS_BODY
+            ):
+                self.fail(
+                    relative,
+                    1
+                    if hooks_span is None
+                    else text.count("\n", 0, hooks_span[0]) + 1,
+                    "relation private-handoff resume test hooks must remain the "
+                    "exact closed test-only seam",
+                )
+
+            authority_identifier = (
+                PRIVATE_HANDOFF_PUBLICATION_WORKER_VALIDATOR_AUTHORITY_IDENTIFIER
+            )
+            authority_uses = find_code_identifier_uses(text, authority_identifier)
+            authority_forward_declarations = list(
+                re.finditer(
+                    rf"\bclass\s+{re.escape(authority_identifier)}\s*;",
+                    text,
+                )
+            )
+            authority_friend_declarations = list(
+                re.finditer(
+                    rf"\bfriend\s+class\s+gnfs::sieve::"
+                    rf"distributed_sieve_resume_detail::\s*"
+                    rf"{re.escape(authority_identifier)}\s*;",
+                    text,
+                )
+            )
+            authority_allowed_offsets = {
+                match.start() + match.group(0).rfind(authority_identifier)
+                for match in (
+                    *authority_forward_declarations,
+                    *authority_friend_declarations,
+                )
+            }
+            if (
+                len(authority_uses) != 2
+                or len(authority_forward_declarations) != 1
+                or len(authority_friend_declarations) != 1
+                or {use.offset for use in authority_uses}
+                != authority_allowed_offsets
+            ):
+                self.fail(
+                    relative,
+                    authority_uses[0].line if authority_uses else 1,
+                    "relation resume interface must expose worker typed-validator "
+                    "mint authority as exactly one forward declaration and one "
+                    "qualified friend declaration",
+                )
+
+            class_spans: dict[str, tuple[int, int]] = {}
+            for class_name in PRIVATE_HANDOFF_PUBLICATION_RESUME_INTERFACE_CLASS_SCOPES:
+                span = _class_definition_body_span(text, class_name)
+                if span is None:
+                    self.fail(
+                        relative,
+                        1,
+                        "private-handoff resume interface must contain exactly one "
+                        f"{class_name} definition",
+                    )
+                    continue
+                class_spans[class_name] = span
+
+            for identifier, expected_count in (
+                PRIVATE_HANDOFF_PUBLICATION_RESUME_INTERFACE_DECLARATION_COUNTS.items()
+            ):
+                uses = find_code_identifier_uses(text, identifier)
+                calls = find_call_identifier_uses(text, identifier)
+                if len(uses) != expected_count or len(calls) != expected_count:
+                    self.fail(
+                        relative,
+                        1,
+                        "private-handoff resume interface must contain exactly "
+                        f"{expected_count} declaration-shaped {identifier} identifiers, "
+                        f"found {len(uses)} identifiers and {len(calls)} call-shaped uses",
+                    )
+
+                observed_shapes: list[str] = []
+                for use in uses:
+                    terminator = _function_declarator_terminator(text, use, identifier)
+                    if (
+                        terminator is None
+                        or terminator >= len(text)
+                        or text[terminator] != ";"
+                    ):
+                        self.fail(
+                            relative,
+                            use.line,
+                            "private-handoff resume interface permits declarations only; "
+                            f"inline {identifier} definitions and aliases are forbidden",
+                        )
+                        continue
+                    scope = _active_brace_stack(text, use.offset)
+                    start = _statement_start_at_scope(text, use.offset, scope)
+                    observed_shapes.append(
+                        _compact_cpp_code(text[start : terminator + 1])
+                    )
+                expected_shapes = (
+                    PRIVATE_HANDOFF_PUBLICATION_RESUME_INTERFACE_DECLARATION_SHAPES[
+                        identifier
+                    ]
+                )
+                if sorted(observed_shapes) != sorted(expected_shapes):
+                    self.fail(
+                        relative,
+                        uses[0].line if uses else 1,
+                        "private-handoff resume interface declaration shape changed for "
+                        f"{identifier}",
+                    )
+
+            for class_name, expected_scope_counts in (
+                PRIVATE_HANDOFF_PUBLICATION_RESUME_INTERFACE_CLASS_SCOPES.items()
+            ):
+                span = class_spans.get(class_name)
+                if span is None:
+                    continue
+                body = text[span[0] : span[1]]
+                friend_count = len(find_code_identifier_uses(body, "friend"))
+                expected_friend_count = (
+                    PRIVATE_HANDOFF_PUBLICATION_RESUME_INTERFACE_CLASS_FRIEND_COUNTS[
+                        class_name
+                    ]
+                )
+                observed_friend_classes = tuple(
+                    sorted(
+                        re.findall(
+                            r"friendclass([A-Za-z_][A-Za-z0-9_:]*);",
+                            _compact_cpp_code(body),
+                        )
+                    )
+                )
+                expected_friend_classes = tuple(
+                    sorted(
+                        PRIVATE_HANDOFF_PUBLICATION_RESUME_INTERFACE_CLASS_FRIEND_CLASSES[
+                            class_name
+                        ]
+                    )
+                )
+                if (
+                    friend_count != expected_friend_count
+                    or observed_friend_classes != expected_friend_classes
+                ):
+                    self.fail(
+                        relative,
+                        text.count("\n", 0, span[0]) + 1,
+                        f"{class_name} friend authority must remain exactly closed; "
+                        f"found {friend_count} friend declarations and "
+                        f"{observed_friend_classes}",
+                    )
+                for identifier, expected_count in expected_scope_counts.items():
+                    observed_count = len(find_code_identifier_uses(body, identifier))
+                    if observed_count != expected_count:
+                        self.fail(
+                            relative,
+                            text.count("\n", 0, span[0]) + 1,
+                            f"{class_name} must contain exactly {expected_count} "
+                            f"{identifier} friend declarations, found {observed_count}",
+                        )
+            return
+
+        if relative == PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_IMPLEMENTATION_FILE:
+            rollback_uses = find_code_identifier_uses(
+                text, PRIVATE_LEASE_PREACTIVE_ROLLBACK_IDENTIFIER
+            )
+            rollback_calls = find_call_identifier_uses(
+                text, PRIVATE_LEASE_PREACTIVE_ROLLBACK_IDENTIFIER
+            )
+            if len(rollback_uses) != 1 or len(rollback_calls) != 1:
+                self.fail(
+                    relative,
+                    rollback_uses[0].line if rollback_uses else 1,
+                    "shared preactive rollback executor escaped the closed "
+                    "generic-plus-typed call-site allowlist",
+                )
+            for identifier, expected_count in (
+                PRIVATE_HANDOFF_PUBLICATION_RESUME_IMPLEMENTATION_DEFINITION_COUNTS.items()
+            ):
+                body, _, body_errors = find_function_definition_body(text, identifier)
+                for line, error in body_errors:
+                    self.fail(relative, line, error)
+                uses = find_code_identifier_uses(text, identifier)
+                calls = find_call_identifier_uses(text, identifier)
+                if len(uses) != expected_count or len(calls) != expected_count:
+                    self.fail(
+                        relative,
+                        1,
+                        "private-handoff resume implementation must contain only the "
+                        f"exact {identifier} definition, found {len(uses)} identifiers "
+                        f"and {len(calls)} call-shaped uses",
+                    )
+                if body is None or len(uses) != 1:
+                    continue
+                use = uses[0]
+                terminator = _function_declarator_terminator(text, use, identifier)
+                if (
+                    terminator is None
+                    or terminator >= len(text)
+                    or text[terminator] != "{"
+                ):
+                    self.fail(
+                        relative,
+                        use.line,
+                        f"{identifier} must remain one out-of-line definition",
+                    )
+                    continue
+                scope = _active_brace_stack(text, use.offset)
+                start = _statement_start_at_scope(text, use.offset, scope)
+                observed_shape = _compact_cpp_code(text[start:terminator])
+                expected_shape = (
+                    PRIVATE_HANDOFF_PUBLICATION_RESUME_IMPLEMENTATION_DEFINITION_SHAPES[
+                        identifier
+                    ]
+                )
+                if observed_shape != expected_shape:
+                    self.fail(
+                        relative,
+                        use.line,
+                        "private-handoff resume implementation definition shape changed "
+                        f"for {identifier}",
+                    )
+
+                compact_body = _compact_cpp_code(body)
+                if identifier == PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER:
+                    if (
+                        compact_body.count("std::make_unique<") != 2
+                        or compact_body.count(
+                            "claim.transfer_to_permit();"
+                        )
+                        != 1
+                        or compact_body.count("state->lock=std::move(lock);") != 1
+                        or compact_body.count(
+                            PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_EXCEPTION_SAFETY_FRAGMENT
+                        )
+                        != 1
+                    ):
+                        self.fail(
+                            relative,
+                            use.line,
+                            "private-handoff resume acquisition must finish all "
+                            "throwing State construction before noexcept lock "
+                            "adoption and action-claim transfer",
+                        )
+                elif identifier == PRIVATE_HANDOFF_PUBLICATION_RESUME_VALIDATE_IDENTIFIER:
+                    validator_member_uses = (
+                        "validator.validate_",
+                        "validator.context_",
+                        "validator.creator_process_id_",
+                    )
+                    if (
+                        not compact_body.startswith(
+                            PRIVATE_HANDOFF_PUBLICATION_RESUME_VALIDATE_CONSUME_PREFIX
+                        )
+                        or any(
+                            compact_body.count(member) != 1
+                            for member in validator_member_uses
+                        )
+                    ):
+                        self.fail(
+                            relative,
+                            use.line,
+                            "private-handoff typed validator must be consumed exactly "
+                            "once at validation entry before every early return",
+                        )
+
+            adapter_span = _class_definition_body_span(
+                text, PRIVATE_HANDOFF_PUBLICATION_RESUME_LEASE_ADAPTER
+            )
+            adapter_uses = find_code_identifier_uses(
+                text, PRIVATE_HANDOFF_PUBLICATION_RESUME_LEASE_ADAPTER
+            )
+            if (
+                adapter_span is None
+                or len(adapter_uses) != 3
+                or _compact_cpp_code(text[adapter_span[0] : adapter_span[1]])
+                != PRIVATE_HANDOFF_PUBLICATION_RESUME_LEASE_ADAPTER_BODY
+            ):
+                self.fail(
+                    relative,
+                    adapter_uses[0].line if adapter_uses else 1,
+                    "private-handoff lease-recovery adapter state must remain "
+                    "exactly closed",
+                )
+
+            lease_bridge_functions = (
+                (
+                    PRIVATE_HANDOFF_PUBLICATION_RESUME_LEASE_MAP_FUNCTION,
+                    PRIVATE_HANDOFF_PUBLICATION_RESUME_LEASE_MAP_BODY,
+                    2,
+                    2,
+                ),
+                (
+                    PRIVATE_HANDOFF_PUBLICATION_RESUME_LEASE_STAGE_FUNCTION,
+                    PRIVATE_HANDOFF_PUBLICATION_RESUME_LEASE_STAGE_BODY,
+                    2,
+                    2,
+                ),
+                (
+                    PRIVATE_HANDOFF_PUBLICATION_RESUME_LEASE_OBSERVER_FUNCTION,
+                    PRIVATE_HANDOFF_PUBLICATION_RESUME_LEASE_OBSERVER_BODY,
+                    2,
+                    1,
+                ),
+            )
+            for function_name, expected_body, expected_uses, expected_calls in (
+                lease_bridge_functions
+            ):
+                bridge_body, bridge_line_offset, bridge_errors = (
+                    find_function_definition_body(text, function_name)
+                )
+                for line, error in bridge_errors:
+                    self.fail(relative, line, error)
+                bridge_uses = find_code_identifier_uses(text, function_name)
+                bridge_calls = find_call_identifier_uses(text, function_name)
+                if (
+                    bridge_body is None
+                    or len(bridge_uses) != expected_uses
+                    or len(bridge_calls) != expected_calls
+                    or _compact_cpp_code(bridge_body) != expected_body
+                ):
+                    self.fail(
+                        relative,
+                        bridge_line_offset + 1,
+                        f"{function_name} must remain the exact seven-point "
+                        "lease-recovery adapter with unknown points interrupting "
+                        "fail closed",
+                    )
+
+            rollback_body, rollback_line_offset, rollback_errors = (
+                find_function_definition_body(
+                    text, PRIVATE_HANDOFF_ROLLBACK_RECOVERY_IDENTIFIER
+                )
+            )
+            for line, error in rollback_errors:
+                self.fail(relative, line, error)
+            rollback_uses = find_code_identifier_uses(
+                text, PRIVATE_HANDOFF_ROLLBACK_RECOVERY_IDENTIFIER
+            )
+            rollback_calls = find_call_identifier_uses(
+                text, PRIVATE_HANDOFF_ROLLBACK_RECOVERY_IDENTIFIER
+            )
+            rollback_shape = None
+            if rollback_uses:
+                rollback_use = rollback_uses[0]
+                rollback_terminator = _function_declarator_terminator(
+                    text,
+                    rollback_use,
+                    PRIVATE_HANDOFF_ROLLBACK_RECOVERY_IDENTIFIER,
+                )
+                if (
+                    rollback_terminator is not None
+                    and rollback_terminator < len(text)
+                    and text[rollback_terminator] == "{"
+                ):
+                    rollback_scope = _active_brace_stack(text, rollback_use.offset)
+                    rollback_start = _statement_start_at_scope(
+                        text, rollback_use.offset, rollback_scope
+                    )
+                    rollback_shape = _compact_cpp_code(
+                        text[rollback_start:rollback_terminator]
+                    )
+            if (
+                rollback_body is None
+                or len(rollback_uses) != 2
+                or len(rollback_calls) != 2
+                or rollback_shape
+                != _compact_cpp_code(
+                    PRIVATE_HANDOFF_ROLLBACK_RECOVERY_DEFINITION_SHAPE
+                )
+                or _compact_cpp_code(rollback_body)
+                != _compact_cpp_code(PRIVATE_HANDOFF_ROLLBACK_RECOVERY_BODY)
+            ):
+                self.fail(
+                    relative,
+                    rollback_line_offset + 1,
+                    "dedicated private-handoff rollback executor must retain its "
+                    "exact typed-only signature, body, and single call site",
+                )
+
+            generic_uses = find_code_identifier_uses(
+                text, PRIVATE_LEASE_GENERIC_RECOVERY_IDENTIFIER
+            )
+            generic_calls = find_call_identifier_uses(
+                text, PRIVATE_LEASE_GENERIC_RECOVERY_IDENTIFIER
+            )
+            compact_implementation = _compact_cpp_code(text)
+            if (
+                len(generic_uses) != 2
+                or len(generic_calls) != 2
+                or any(
+                    compact_implementation.count(fragment) != 1
+                    for fragment in PRIVATE_LEASE_GENERIC_RECOVERY_CALL_FRAGMENTS
+                )
+            ):
+                self.fail(
+                    relative,
+                    generic_uses[0].line if generic_uses else 1,
+                    "ordinary private-lease recovery must remain on the exact two "
+                    "generic executor call sites",
+                )
+            for scope_name, ordered_fragments in (
+                PRIVATE_LEASE_GENERIC_RECOVERY_SCOPES.items()
+            ):
+                scope_body, scope_line_offset, scope_errors = (
+                    find_function_definition_body(text, scope_name)
+                )
+                for line, error in scope_errors:
+                    self.fail(relative, line, error)
+                if scope_body is None:
+                    continue
+                scope_compact = _compact_cpp_tokens(scope_body)
+                scope_generic_uses = find_code_identifier_uses(
+                    scope_body, PRIVATE_LEASE_GENERIC_RECOVERY_IDENTIFIER
+                )
+                scope_generic_calls = find_call_identifier_uses(
+                    scope_body, PRIVATE_LEASE_GENERIC_RECOVERY_IDENTIFIER
+                )
+                positions = [
+                    scope_compact.find(fragment) for fragment in ordered_fragments
+                ]
+                scope_uses = find_code_identifier_uses(text, scope_name)
+                scope_definitions = []
+                for scope_use in scope_uses:
+                    terminator = _function_declarator_terminator(
+                        text, scope_use, scope_name
+                    )
+                    if (
+                        terminator is not None
+                        and terminator < len(text)
+                        and text[terminator] == "{"
+                    ):
+                        scope_definitions.append((scope_use, terminator))
+                definition_matches = False
+                if len(scope_definitions) == 1:
+                    definition_use, terminator = scope_definitions[0]
+                    definition_scope = _active_brace_stack(
+                        text, definition_use.offset
+                    )
+                    definition_start = _statement_start_at_scope(
+                        text, definition_use.offset, definition_scope
+                    )
+                    definition_matches = (
+                        _compact_cpp_tokens(text[definition_start:terminator])
+                        == _compact_cpp_tokens(
+                            PRIVATE_LEASE_GENERIC_RECOVERY_DEFINITION_SHAPES[
+                                scope_name
+                            ]
+                        )
+                    )
+                if (
+                    len(scope_generic_uses) != 1
+                    or len(scope_generic_calls) != 1
+                    or len(scope_definitions) != 1
+                    or not definition_matches
+                    or any(
+                        scope_compact.count(fragment) != 1
+                        for fragment in ordered_fragments
+                    )
+                    or positions != sorted(positions)
+                    or any(position < 0 for position in positions)
+                    or _contains_conditional_preprocessor_directive(scope_body)
+                    or scope_compact
+                    != _compact_cpp_tokens(
+                        PRIVATE_LEASE_GENERIC_RECOVERY_BODIES[scope_name]
+                    )
+                ):
+                    self.fail(
+                        relative,
+                        scope_line_offset + 1,
+                        f"{scope_name} must retain cleanup-union admission, handoff "
+                        "preflight, and one unconditional exact generic executor "
+                        "return in that order",
+                    )
+
+            reconcile_body, reconcile_line_offset, reconcile_errors = (
+                find_function_definition_body(
+                    text,
+                    PRIVATE_HANDOFF_PUBLICATION_RESUME_RECONCILE_IDENTIFIER,
+                )
+            )
+            for line, error in reconcile_errors:
+                self.fail(relative, line, error)
+            if reconcile_body is not None:
+                reconcile_compact = _compact_cpp_code(reconcile_body)
+                reconcile_rollback_calls = find_call_identifier_uses(
+                    reconcile_body, PRIVATE_HANDOFF_ROLLBACK_RECOVERY_IDENTIFIER
+                )
+                reconcile_generic_uses = find_code_identifier_uses(
+                    reconcile_body, PRIVATE_LEASE_GENERIC_RECOVERY_IDENTIFIER
+                )
+                if (
+                    len(reconcile_rollback_calls) != 1
+                    or reconcile_generic_uses
+                    or reconcile_compact.count(
+                        PRIVATE_HANDOFF_ROLLBACK_RECOVERY_TYPED_CALL_FRAGMENT
+                    )
+                    != 1
+                ):
+                    self.fail(
+                        relative,
+                        reconcile_line_offset + 1,
+                        "typed private-handoff rollback must call only the dedicated "
+                        "generation-bound executor with the retained permit inputs",
+                    )
+                if (
+                    reconcile_compact.count(
+                        PRIVATE_HANDOFF_PUBLICATION_RESUME_LEASE_BINDING_FRAGMENT
+                    )
+                    != 1
+                    or
+                    reconcile_compact.count(
+                        PRIVATE_HANDOFF_PUBLICATION_RESUME_LEASE_UNKNOWN_FAILURE_FRAGMENT
+                    )
+                    != 1
+                ):
+                    self.fail(
+                        relative,
+                        reconcile_line_offset + 1,
+                        "private-handoff resume must bind the exact fresh-capture "
+                        "lease context and return exact_failure before unknown "
+                        "nested observation/interruption results",
+                    )
+                if (
+                    reconcile_compact.count(
+                        PRIVATE_HANDOFF_PUBLICATION_RESUME_FINAL_ABSENCE_FRAGMENT
+                    )
+                    != 1
+                ):
+                    self.fail(
+                        relative,
+                        reconcile_line_offset + 1,
+                        "private-handoff rollback completion must prove exact "
+                        "NoTransaction absence before returning success",
+                    )
+            return
+
+        if relative == PRIVATE_HANDOFF_PUBLICATION_RESUME_TEST_FILE:
+            return
+
+        if relative != PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE:
+            return
+
+        compact_text = _compact_cpp_code(text)
+        for point in PRIVATE_HANDOFF_PUBLICATION_RESUME_OBSERVATION_POINTS:
+            mirror_assertion = (
+                "static_assert(static_cast<std::size_t>("
+                "DistributedSieveWorkerHandoffResumeObservationPointV1::"
+                f"{point})==static_cast<std::size_t>("
+                "private_lease::"
+                "PrivateHandoffPublicationResumeObservationPointV1::"
+                f"{point}));"
+            )
+            if compact_text.count(mirror_assertion) != 1:
+                self.fail(
+                    relative,
+                    1,
+                    "WaveStore worker-handoff resume observation mirror must "
+                    f"statically bind exact ordinal {point}",
+                )
+
+        for identifier in PRIVATE_HANDOFF_PUBLICATION_RESUME_DIRECT_CALL_IDENTIFIERS:
+            uses = find_code_identifier_uses(text, identifier)
+            calls = find_call_identifier_uses(text, identifier)
+            for use in find_non_call_identifier_uses(text, identifier):
+                self.fail(
+                    relative,
+                    use.line,
+                    f"{identifier} must be used only as a direct call; aliases "
+                    "and function-pointer references are forbidden",
+                )
+            if len(uses) != 1 or len(calls) != 1:
+                self.fail(
+                    relative,
+                    1,
+                    "production WaveStore must contain exactly 1 direct "
+                    f"{identifier} call, found {len(uses)} identifiers and "
+                    f"{len(calls)} calls",
+                )
+
+        authority_identifier = (
+            PRIVATE_HANDOFF_PUBLICATION_WORKER_VALIDATOR_AUTHORITY_IDENTIFIER
+        )
+        authority_uses = find_code_identifier_uses(text, authority_identifier)
+        authority_span = _class_definition_body_span(text, authority_identifier)
+        if len(authority_uses) != 2 or authority_span is None:
+            self.fail(
+                relative,
+                authority_uses[0].line if authority_uses else 1,
+                "production WaveStore must contain exactly one worker typed-validator "
+                "authority definition and one bound use",
+            )
+        elif (
+            _compact_cpp_code(text[authority_span[0] : authority_span[1]])
+            != PRIVATE_HANDOFF_PUBLICATION_WORKER_VALIDATOR_AUTHORITY_BODY
+        ):
+            self.fail(
+                relative,
+                text.count("\n", 0, authority_span[0]) + 1,
+                "worker typed-validator authority definition shape changed",
+            )
+
+        bridge_function_shapes = (
+            (
+                PRIVATE_HANDOFF_PUBLICATION_RESUME_BRIDGE_FUNCTION,
+                PRIVATE_HANDOFF_PUBLICATION_RESUME_BRIDGE_BODY,
+                2,
+                1,
+            ),
+            (
+                PRIVATE_HANDOFF_PUBLICATION_RESUME_BRIDGE_FACTORY_FUNCTION,
+                PRIVATE_HANDOFF_PUBLICATION_RESUME_BRIDGE_FACTORY_BODY,
+                2,
+                2,
+            ),
+        )
+        for function_name, expected_body, expected_uses, expected_calls in (
+            bridge_function_shapes
+        ):
+            bridge_body, bridge_line_offset, bridge_errors = (
+                find_function_definition_body(text, function_name)
+            )
+            for line, error in bridge_errors:
+                self.fail(relative, line, error)
+            bridge_uses = find_code_identifier_uses(text, function_name)
+            bridge_calls = find_call_identifier_uses(text, function_name)
+            if (
+                bridge_body is None
+                or len(bridge_uses) != expected_uses
+                or len(bridge_calls) != expected_calls
+                or _compact_cpp_code(bridge_body) != expected_body
+            ):
+                self.fail(
+                    relative,
+                    bridge_line_offset + 1,
+                    f"{function_name} must remain the exact fail-closed "
+                    "observation, revalidation, and relation-hook bridge",
+                )
+
+        typed_body, typed_body_line_offset, typed_body_errors = (
+            find_function_definition_body(
+                text, PRIVATE_HANDOFF_PUBLICATION_RESUME_TYPED_CALLBACK_FUNCTION
+            )
+        )
+        for line, error in typed_body_errors:
+            self.fail(relative, line, error)
+        if typed_body is not None:
+            typed_identifier = PRIVATE_HANDOFF_PUBLICATION_TYPED_VALIDATOR_IDENTIFIER
+            typed_uses = find_code_identifier_uses(typed_body, typed_identifier)
+            typed_calls = find_call_identifier_uses(typed_body, typed_identifier)
+            if len(typed_uses) != 1 or len(typed_calls) != 1:
+                self.fail(
+                    relative,
+                    typed_body_line_offset + 1,
+                    f"{PRIVATE_HANDOFF_PUBLICATION_RESUME_TYPED_CALLBACK_FUNCTION} "
+                    f"must contain exactly 1 direct {typed_identifier} call, found "
+                    f"{len(typed_uses)} identifiers and {len(typed_calls)} calls",
+                )
+            else:
+                typed_use = typed_calls[0]
+                if (
+                    _compact_cpp_code(typed_body)
+                    != PRIVATE_HANDOFF_PUBLICATION_RESUME_TYPED_CALLBACK_BODY
+                ):
+                    self.fail(
+                        relative,
+                        typed_body_line_offset + typed_use.line,
+                        f"{PRIVATE_HANDOFF_PUBLICATION_RESUME_TYPED_CALLBACK_FUNCTION} "
+                        "must keep the exact typed failure guard, AttemptStarted "
+                        "binding, witness transfer, and sole true return in one "
+                        "unconditional scope",
+                    )
+
+        body, body_line_offset, body_errors = find_function_definition_body(
+            text, PRIVATE_HANDOFF_PUBLICATION_RESUME_CAPTURE_FUNCTION
+        )
+        for line, error in body_errors:
+            self.fail(relative, line, error)
+        if body is None:
+            return
+
+        capture_call_identifiers = (
+            PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER,
+            PRIVATE_HANDOFF_PUBLICATION_RESUME_VALIDATE_IDENTIFIER,
+        )
+        capture_calls: dict[str, CodeIdentifierUse] = {}
+        for identifier in capture_call_identifiers:
+            uses = find_code_identifier_uses(body, identifier)
+            calls = find_call_identifier_uses(body, identifier)
+            if len(uses) != 1 or len(calls) != 1:
+                self.fail(
+                    relative,
+                    body_line_offset + 1,
+                    f"{PRIVATE_HANDOFF_PUBLICATION_RESUME_CAPTURE_FUNCTION} must "
+                    f"contain exactly 1 direct {identifier} call, found "
+                    f"{len(uses)} identifiers and {len(calls)} calls",
+                )
+                continue
+            capture_calls[identifier] = calls[0]
+
+        context_identifier = "WorkerHandoffTypedValidationContext"
+        context_uses = find_code_identifier_uses(body, context_identifier)
+        if len(context_uses) != 1:
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                f"{PRIVATE_HANDOFF_PUBLICATION_RESUME_CAPTURE_FUNCTION} must "
+                "construct exactly one worker typed-validation context",
+            )
+
+        if (
+            len(capture_calls) == len(capture_call_identifiers)
+            and len(context_uses) == 1
+        ):
+            acquire_use = capture_calls[
+                PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER
+            ]
+            validation_use = capture_calls[
+                PRIVATE_HANDOFF_PUBLICATION_RESUME_VALIDATE_IDENTIFIER
+            ]
+            context_use = context_uses[0]
+            scoped_uses = (acquire_use, context_use, validation_use)
+            scopes = tuple(
+                _active_brace_stack(body, use.offset) for use in scoped_uses
+            )
+            if len(set(scopes)) != 1:
+                self.fail(
+                    relative,
+                    body_line_offset + 1,
+                    f"{PRIVATE_HANDOFF_PUBLICATION_RESUME_CAPTURE_FUNCTION} must keep "
+                    "resume acquisition, typed-validator context binding, and relation "
+                    "validation inside one lexical control scope",
+                )
+            else:
+                control_scope = scopes[0]
+                for opening in control_scope:
+                    forbidden = _forbidden_control_scope_introducer(body, opening)
+                    if forbidden is None:
+                        continue
+                    self.fail(
+                        relative,
+                        body_line_offset + body.count("\n", 0, opening) + 1,
+                        f"{PRIVATE_HANDOFF_PUBLICATION_RESUME_CAPTURE_FUNCTION} forbids "
+                        f"{forbidden} control around the resume authority chain",
+                    )
+
+            if not (
+                acquire_use.offset < context_use.offset < validation_use.offset
+            ):
+                self.fail(
+                    relative,
+                    body_line_offset + 1,
+                    f"{PRIVATE_HANDOFF_PUBLICATION_RESUME_CAPTURE_FUNCTION} must "
+                    "order resume acquisition, typed-validator context binding, and "
+                    "relation validation",
+                )
+
+            acquire_start = _statement_start_at_scope(
+                body, acquire_use.offset, scopes[0]
+            )
+            acquire_end = _direct_call_statement_end(
+                body,
+                acquire_use,
+                PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER,
+            )
+            acquire_statement = (
+                ""
+                if acquire_end is None
+                else _compact_cpp_code(body[acquire_start:acquire_end])
+            )
+            if not acquire_statement.startswith(
+                PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_ASSIGNMENT_PREFIX
+            ):
+                self.fail(
+                    relative,
+                    body_line_offset + acquire_use.line,
+                    f"{PRIVATE_HANDOFF_PUBLICATION_RESUME_CAPTURE_FUNCTION} must bind "
+                    "the resume acquisition directly to auto admission",
+                )
+
+            context_start = _statement_start_at_scope(
+                body, context_use.offset, scopes[1]
+            )
+            validation_end = _direct_call_statement_end(
+                body,
+                validation_use,
+                PRIVATE_HANDOFF_PUBLICATION_RESUME_VALIDATE_IDENTIFIER,
+            )
+            typed_validation_fragment = (
+                ""
+                if validation_end is None
+                else _compact_cpp_code(body[context_start:validation_end])
+            )
+            if (
+                typed_validation_fragment
+                != PRIVATE_HANDOFF_PUBLICATION_RESUME_CAPTURE_TYPED_VALIDATION_FRAGMENT
+            ):
+                self.fail(
+                    relative,
+                    body_line_offset + context_use.line,
+                    f"{PRIVATE_HANDOFF_PUBLICATION_RESUME_CAPTURE_FUNCTION} must pass "
+                    "the exact empty typed context through the sole worker validator "
+                    "authority bind into relation validation",
+                )
+
+            typed_success_fragment = (
+                ""
+                if validation_end is None
+                else _compact_cpp_code(body[validation_end:])
+            )
+            if not typed_success_fragment.startswith(
+                PRIVATE_HANDOFF_PUBLICATION_RESUME_CAPTURE_TYPED_SUCCESS_FRAGMENT
+            ):
+                self.fail(
+                    relative,
+                    body_line_offset + validation_use.line,
+                    f"{PRIVATE_HANDOFF_PUBLICATION_RESUME_CAPTURE_FUNCTION} must "
+                    "explicitly reject missing validated permit or typed witness before "
+                    "consuming the callback-produced handoff",
+                )
+
+        open_body, open_body_line_offset, open_body_errors = (
+            find_function_definition_body(
+                text, PRIVATE_HANDOFF_PUBLICATION_RESUME_OPEN_FUNCTION
+            )
+        )
+        for line, error in open_body_errors:
+            self.fail(relative, line, error)
+        if open_body is None:
+            return
+
+        reconciler = PRIVATE_HANDOFF_PUBLICATION_RESUME_RECONCILE_IDENTIFIER
+        open_uses = find_code_identifier_uses(open_body, reconciler)
+        open_calls = find_call_identifier_uses(open_body, reconciler)
+        if len(open_uses) != 1 or len(open_calls) != 1:
+            self.fail(
+                relative,
+                open_body_line_offset + 1,
+                f"{PRIVATE_HANDOFF_PUBLICATION_RESUME_OPEN_FUNCTION} must contain "
+                f"the only direct {reconciler} call, found {len(open_uses)} "
+                f"identifiers and {len(open_calls)} calls",
+            )
+
+        open_compact = _compact_cpp_code(open_body)
+        release_identifier = (
+            PRIVATE_HANDOFF_PUBLICATION_RESUME_ROUND_RELEASE_IDENTIFIER
+        )
+        all_release_uses = find_code_identifier_uses(text, release_identifier)
+        open_release_uses = find_code_identifier_uses(open_body, release_identifier)
+        if (
+            len(all_release_uses) != 2
+            or len(open_release_uses) != 2
+            or open_compact.count(
+                PRIVATE_HANDOFF_PUBLICATION_RESUME_ROUND_RELEASE_FRAGMENT
+            )
+            != 1
+        ):
+            self.fail(
+                relative,
+                open_body_line_offset + 1,
+                f"{PRIVATE_HANDOFF_PUBLICATION_RESUME_OPEN_FUNCTION} must invoke the "
+                "test-only round-release hook exactly once after the retained "
+                "LIFO stack is empty, immediately recheck process identity, and "
+                "only then advance the resume round",
+            )
+
     def validate_worker_launcher_use_site(self, relative: str, text: str) -> None:
         if relative in WORKER_LAUNCHER_USE_SITE_ALLOWLIST:
             return
@@ -2501,6 +4895,9 @@ class Checks:
                 relative, text
             )
             self.validate_worker_handoff_publication_boundary(relative, text)
+            self.validate_private_handoff_publication_resume_boundary(
+                relative, text
+            )
             self.validate_worker_launcher_use_site(relative, text)
 
         for entry, count in self.legacy_counts.items():
@@ -4537,6 +6934,1862 @@ WorkerHandoffV1 finalize_and_publish_handoff_impl(Completion completion) {
             for error in missing_typed_worker_handoff_checks.errors
         ),
         "worker handoff typed-builder call count is not closed",
+    )
+
+    private_handoff_resume_use_site_snippet = r"""
+PrivateHandoffPublicationObservedPermitV1* observed = nullptr;
+PrivateHandoffPublicationValidatedPermitV1* validated = nullptr;
+auto admission =
+    acquire_private_handoff_publication_resume_v1(paths, directory_identity);
+"""
+    untrusted_private_handoff_resume_checks = Checks(Path("."))
+    untrusted_private_handoff_resume_checks.validate_private_handoff_publication_resume_boundary(
+        "src/sieve/untrusted_private_handoff_resume.cpp",
+        private_handoff_resume_use_site_snippet,
+    )
+    expect(
+        len(untrusted_private_handoff_resume_checks.errors) == 3
+        and all(
+            "private-handoff publication resume use site is not allowlisted"
+            in error
+            for error in untrusted_private_handoff_resume_checks.errors
+        ),
+        "private-handoff publication resume repo-wide use-site gate is not "
+        f"enforced: {untrusted_private_handoff_resume_checks.errors}",
+    )
+    expect(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_USE_SITE_ALLOWLIST
+        == {
+            "src/relation/ooc_private_cleanup_union_internal.hpp",
+            "src/relation/ooc_private_cleanup_union.cpp",
+            "src/sieve/distributed_sieve_wave_store.cpp",
+            "tests/test_ooc_cleanup_transaction.cpp",
+        },
+        "private-handoff publication resume allowlist is not exact",
+    )
+    expect(
+        PRIVATE_HANDOFF_PUBLICATION_WORKER_VALIDATOR_AUTHORITY_ALLOWLIST
+        == {
+            PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_INTERFACE_FILE,
+            PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        }
+        and PRIVATE_HANDOFF_PUBLICATION_TEST_VALIDATOR_AUTHORITY_ALLOWLIST
+        == {
+            PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_INTERFACE_FILE,
+            PRIVATE_HANDOFF_PUBLICATION_RESUME_TEST_FILE,
+        },
+        "private-handoff production and test validator mint authority allowlists "
+        "are not exact",
+    )
+    untrusted_private_handoff_validator_authority_checks = Checks(Path("."))
+    untrusted_private_handoff_validator_authority_checks.validate_private_handoff_publication_resume_boundary(
+        "src/sieve/untrusted_private_handoff_validator.cpp",
+        "WorkerHandoffTypedValidatorAuthorityV1* production = nullptr;\n"
+        "PrivateHandoffPublicationTypedValidatorTestAuthorityV1* test = nullptr;\n",
+    )
+    expect(
+        any(
+            "worker-handoff typed-validator mint authority is not allowlisted"
+            in error
+            for error in untrusted_private_handoff_validator_authority_checks.errors
+        )
+        and any(
+            "test-only private-handoff typed-validator mint authority is not "
+            "allowlisted"
+            in error
+            for error in untrusted_private_handoff_validator_authority_checks.errors
+        ),
+        "production or test private-handoff validator mint authority escaped its "
+        f"closed allowlist: {untrusted_private_handoff_validator_authority_checks.errors}",
+    )
+    allowed_private_handoff_resume_test_checks = Checks(Path("."))
+    allowed_private_handoff_resume_test_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_TEST_FILE,
+        private_handoff_resume_use_site_snippet,
+    )
+    expect(
+        not allowed_private_handoff_resume_test_checks.errors,
+        "dedicated private-handoff publication resume test use was rejected: "
+        f"{allowed_private_handoff_resume_test_checks.errors}",
+    )
+
+    valid_private_handoff_resume_interface = r"""
+namespace gnfs::sieve::distributed_sieve_resume_detail {
+class WorkerHandoffTypedValidatorAuthorityV1;
+}
+enum class PrivateHandoffPublicationResumeObservationPointV1 : std::uint8_t {
+    AfterExpectedPrefixValidated,
+    BeforePendingRollbackSourceDirectorySync,
+    AfterPendingRollbackSourceDirectoryDurable,
+    BeforePendingRollbackDestinationDirectorySync,
+    AfterPendingRollbackDestinationDirectoryDurable,
+    AfterPendingRollbackPreactiveDirectoryQuarantinedDurable,
+    AfterPendingRollbackPreactiveDataRemovedDurable,
+    AfterPendingRollbackPreactiveIndexRemovedDurable,
+    AfterPendingRollbackOwnerRemovedDurable,
+    AfterPendingRollbackLeaseDirectoryRemovedDurable,
+    AfterPendingRollbackReservedRemovedDurable,
+    AfterPendingRollbackOwnedRemovedDurable,
+    BeforePendingRollbackTombstoneRemovalValidated,
+    AfterPendingRollbackTombstoneRemovedDurable,
+    AfterCanonicalConfirmedDurable,
+    AfterReservedRevokedDurable,
+    Count,
+};
+struct PrivateHandoffPublicationResumeTestHooksV1 final {
+    using StopAfter = bool (*)(PrivateHandoffPublicationResumeObservationPointV1 point,
+                               void* context) noexcept;
+    using FailBefore = bool (*)(PrivateHandoffPublicationResumeObservationPointV1 point,
+                                void* context) noexcept;
+    StopAfter stop_after = nullptr;
+    FailBefore fail_before = nullptr;
+    void* context = nullptr;
+};
+class PrivateHandoffPublicationTypedValidatorV1 final {
+private:
+    int state;
+    friend class gnfs::sieve::distributed_sieve_resume_detail::
+        WorkerHandoffTypedValidatorAuthorityV1;
+    friend class PrivateHandoffPublicationTypedValidatorTestAuthorityV1;
+    friend PrivateHandoffPublicationResumeValidationV1
+    validate_private_handoff_publication_resume_v1(
+        PrivateHandoffPublicationObservedPermitV1&& observed,
+        PrivateHandoffPublicationTypedValidatorV1&& validator) noexcept;
+};
+class PrivateHandoffPublicationObservedPermitV1 final {
+private:
+    int state;
+    friend PrivateHandoffPublicationResumeAdmissionV1
+    acquire_private_handoff_publication_resume_v1(
+        const OOCCleanupPaths& paths,
+        const std::array<std::uint64_t, 3>& expected_directory_identity) noexcept;
+    friend PrivateHandoffPublicationResumeValidationV1
+    validate_private_handoff_publication_resume_v1(
+        PrivateHandoffPublicationObservedPermitV1&& observed,
+        PrivateHandoffPublicationTypedValidatorV1&& validator) noexcept;
+    friend class PrivateHandoffPublicationValidatedPermitV1;
+};
+class PrivateHandoffPublicationValidatedPermitV1 final {
+private:
+    int state;
+    friend PrivateHandoffPublicationResumeValidationV1
+    validate_private_handoff_publication_resume_v1(
+        PrivateHandoffPublicationObservedPermitV1&& observed,
+        PrivateHandoffPublicationTypedValidatorV1&& validator) noexcept;
+    friend PrivateHandoffPublicationResumeRevalidationV1
+    revalidate_private_handoff_publication_resume_v1(
+        const PrivateHandoffPublicationValidatedPermitV1& permit) noexcept;
+    friend PrivateHandoffPublicationResumeResultV1
+    reconcile_private_handoff_publication_for_resume_v1(
+        PrivateHandoffPublicationValidatedPermitV1& permit,
+        PrivateHandoffPublicationResumeTestHooksV1 hooks) noexcept;
+};
+[[nodiscard]] PrivateHandoffPublicationResumeAdmissionV1
+acquire_private_handoff_publication_resume_v1(
+    const OOCCleanupPaths& paths,
+    const std::array<std::uint64_t, 3>& expected_directory_identity) noexcept;
+[[nodiscard]] PrivateHandoffPublicationResumeValidationV1
+validate_private_handoff_publication_resume_v1(
+    PrivateHandoffPublicationObservedPermitV1&& observed,
+    PrivateHandoffPublicationTypedValidatorV1&& validator) noexcept;
+[[nodiscard]] PrivateHandoffPublicationResumeRevalidationV1
+revalidate_private_handoff_publication_resume_v1(
+    const PrivateHandoffPublicationValidatedPermitV1& permit) noexcept;
+[[nodiscard]] PrivateHandoffPublicationResumeResultV1
+reconcile_private_handoff_publication_for_resume_v1(
+    PrivateHandoffPublicationValidatedPermitV1& permit,
+    PrivateHandoffPublicationResumeTestHooksV1 hooks = {}) noexcept;
+"""
+    exact_private_handoff_resume_interface_checks = Checks(Path("."))
+    exact_private_handoff_resume_interface_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_INTERFACE_FILE,
+        valid_private_handoff_resume_interface,
+    )
+    expect(
+        not exact_private_handoff_resume_interface_checks.errors,
+        "exact private-handoff resume interface declarations were rejected: "
+        f"{exact_private_handoff_resume_interface_checks.errors}",
+    )
+
+    renamed_private_handoff_resume_observation_checks = Checks(Path("."))
+    renamed_private_handoff_resume_observation_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_INTERFACE_FILE,
+        valid_private_handoff_resume_interface.replace(
+            "AfterPendingRollbackLeaseDirectoryRemovedDurable",
+            "AfterPendingRollbackFinalDirectoryRemovedDurable",
+        ),
+    )
+    expect(
+        any(
+            "observation enum must remain the exact ordered durable-boundary "
+            "authority"
+            in error
+            for error in renamed_private_handoff_resume_observation_checks.errors
+        ),
+        "renamed relation private-handoff observation escaped enum closure: "
+        f"{renamed_private_handoff_resume_observation_checks.errors}",
+    )
+
+    extra_private_handoff_resume_hook_checks = Checks(Path("."))
+    extra_private_handoff_resume_hook_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_INTERFACE_FILE,
+        valid_private_handoff_resume_interface.replace(
+            "    void* context = nullptr;\n};\n"
+            "class PrivateHandoffPublicationTypedValidatorV1",
+            "    void* context = nullptr;\n"
+            "    bool unchecked = false;\n};\n"
+            "class PrivateHandoffPublicationTypedValidatorV1",
+        ),
+    )
+    expect(
+        any(
+            "resume test hooks must remain the exact closed test-only seam"
+            in error
+            for error in extra_private_handoff_resume_hook_checks.errors
+        ),
+        "extra relation private-handoff test-hook state escaped field closure: "
+        f"{extra_private_handoff_resume_hook_checks.errors}",
+    )
+
+    extra_private_handoff_resume_friend_checks = Checks(Path("."))
+    extra_private_handoff_resume_friend_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_INTERFACE_FILE,
+        valid_private_handoff_resume_interface.replace(
+            "    friend class PrivateHandoffPublicationTypedValidatorTestAuthorityV1;\n",
+            "    friend class PrivateHandoffPublicationTypedValidatorTestAuthorityV1;\n"
+            "    friend class EscapedTypedValidatorAuthority;\n",
+        ),
+    )
+    expect(
+        any(
+            "PrivateHandoffPublicationTypedValidatorV1 friend authority must remain "
+            "exactly closed"
+            in error
+            for error in extra_private_handoff_resume_friend_checks.errors
+        ),
+        "additional relation-header typed-validator friend escaped authority "
+        f"closure: {extra_private_handoff_resume_friend_checks.errors}",
+    )
+
+    private_handoff_resume_interface_wrapper_checks = Checks(Path("."))
+    private_handoff_resume_interface_wrapper_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_INTERFACE_FILE,
+        valid_private_handoff_resume_interface
+        + r"""
+inline auto resume_wrapper(auto&& observed, const auto& projection) {
+    return validate_private_handoff_publication_resume_v1(
+        std::move(observed), projection);
+}
+""",
+    )
+    expect(
+        any(
+            "interface must contain exactly 4 declaration-shaped "
+            "validate_private_handoff_publication_resume_v1 identifiers"
+            in error
+            for error in private_handoff_resume_interface_wrapper_checks.errors
+        ),
+        "inline relation-header private-handoff resume wrapper escaped identifier "
+        f"count closure: {private_handoff_resume_interface_wrapper_checks.errors}",
+    )
+
+    valid_private_handoff_resume_implementation = (
+        PRIVATE_HANDOFF_ROLLBACK_RECOVERY_DEFINITION_SHAPE
+        + "{\n"
+        + PRIVATE_HANDOFF_ROLLBACK_RECOVERY_BODY
+        + "}\n"
+        + r"""
+struct PrivateHandoffLeaseRecoveryObservationAdapterV1 final {
+    const PrivateHandoffPublicationResumeTestHooksV1* outer = nullptr;
+    const OOCCleanupPaths* paths = nullptr;
+    const BaseLock* lock = nullptr;
+    const std::array<std::uint64_t, 3>* expected_directory_identity = nullptr;
+    const PrivateHandoffPublicationPrefixWitnessV1* initial = nullptr;
+    std::optional<OOCCleanupResult> exact_failure;
+    bool unknown_point = false;
+};
+std::optional<PrivateHandoffPublicationResumeObservationPointV1>
+map_private_handoff_lease_recovery_observation(
+    OOCPrivateLeaseFaultPoint point) noexcept {
+    using OuterPoint = PrivateHandoffPublicationResumeObservationPointV1;
+    switch (point) {
+    case OOCPrivateLeaseFaultPoint::PreactiveDirectoryQuarantinedDurable:
+        return OuterPoint::AfterPendingRollbackPreactiveDirectoryQuarantinedDurable;
+    case OOCPrivateLeaseFaultPoint::PreactiveDataRemovedDurable:
+        return OuterPoint::AfterPendingRollbackPreactiveDataRemovedDurable;
+    case OOCPrivateLeaseFaultPoint::PreactiveIndexRemovedDurable:
+        return OuterPoint::AfterPendingRollbackPreactiveIndexRemovedDurable;
+    case OOCPrivateLeaseFaultPoint::OwnerRemovedDurable:
+        return OuterPoint::AfterPendingRollbackOwnerRemovedDurable;
+    case OOCPrivateLeaseFaultPoint::FinalDirectoryRemovedDurable:
+        return OuterPoint::AfterPendingRollbackLeaseDirectoryRemovedDurable;
+    case OOCPrivateLeaseFaultPoint::ReservedRemovedDurable:
+        return OuterPoint::AfterPendingRollbackReservedRemovedDurable;
+    case OOCPrivateLeaseFaultPoint::OwnedRemovedDurable:
+        return OuterPoint::AfterPendingRollbackOwnedRemovedDurable;
+    default:
+        return std::nullopt;
+    }
+}
+bool private_handoff_lease_recovery_stage_matches(
+    OOCPrivateLeaseFaultPoint point,
+    const RetainedPrivateHandoffPublicationPrefixV1& current) noexcept {
+    const bool final_directory =
+        current.generation.final_directory_identity.has_value();
+    const bool staging_directory =
+        current.generation.staging_directory_identity.has_value();
+    const bool owner = current.witness.owner.has_value();
+    const bool owned = current.witness.owned.has_value();
+    const bool reserved = current.witness.reserved.has_value();
+    const bool index = current.rollback_index_present;
+    const bool data = current.rollback_data_present;
+    switch (point) {
+    case OOCPrivateLeaseFaultPoint::PreactiveDirectoryQuarantinedDurable:
+        return !final_directory && staging_directory && owner && owned &&
+               reserved && index && data;
+    case OOCPrivateLeaseFaultPoint::PreactiveDataRemovedDurable:
+        return !final_directory && staging_directory && owner && owned &&
+               reserved && index && !data;
+    case OOCPrivateLeaseFaultPoint::PreactiveIndexRemovedDurable:
+        return !final_directory && staging_directory && owner && owned &&
+               reserved && !index && !data;
+    case OOCPrivateLeaseFaultPoint::OwnerRemovedDurable:
+        return !final_directory && staging_directory && !owner && owned &&
+               reserved && !index && !data;
+    case OOCPrivateLeaseFaultPoint::FinalDirectoryRemovedDurable:
+        return !final_directory && !staging_directory && !owner && owned &&
+               reserved && !index && !data;
+    case OOCPrivateLeaseFaultPoint::ReservedRemovedDurable:
+        return !final_directory && !staging_directory && !owner && owned &&
+               !reserved && !index && !data;
+    case OOCPrivateLeaseFaultPoint::OwnedRemovedDurable:
+        return !final_directory && !staging_directory && !owner && !owned &&
+               !reserved && !index && !data;
+    default:
+        return false;
+    }
+}
+bool observe_private_handoff_lease_recovery(
+    OOCPrivateLeaseFaultPoint point, void* opaque) noexcept {
+    auto& adapter =
+        *static_cast<PrivateHandoffLeaseRecoveryObservationAdapterV1*>(opaque);
+    const auto mapped = map_private_handoff_lease_recovery_observation(point);
+    if (!mapped) {
+        adapter.unknown_point = true;
+        return true;
+    }
+    if (adapter.outer != nullptr && adapter.outer->stop_after != nullptr &&
+        adapter.outer->stop_after(*mapped, adapter.outer->context)) {
+        return true;
+    }
+    try {
+        if (adapter.paths == nullptr || adapter.lock == nullptr ||
+            adapter.expected_directory_identity == nullptr ||
+            adapter.initial == nullptr) {
+            adapter.exact_failure =
+                resume_unexpected_result(protocol_error());
+            return true;
+        }
+        auto current = capture_private_handoff_publication_prefix_v1_locked(
+            *adapter.paths, *adapter.lock,
+            *adapter.expected_directory_identity);
+        const auto& initial = *adapter.initial;
+        const auto remaining_marker_matches_initial =
+            [](const std::optional<
+                   PrivateHandoffPublicationLeaseMarkerWitnessV1>& observed,
+               const std::optional<
+                   PrivateHandoffPublicationLeaseMarkerWitnessV1>& expected) {
+                return !observed || (expected && *observed == *expected);
+            };
+        if (!current.retained ||
+            initial.state !=
+                PrivateHandoffPublicationPrefixStateV1::PendingRollback ||
+            initial.canonical_snapshot || initial.pending_snapshot ||
+            !initial.rollback_snapshot ||
+            current.retained->witness.state !=
+                PrivateHandoffPublicationPrefixStateV1::PendingRollback ||
+            current.retained->witness.record != initial.record ||
+            current.retained->witness.canonical_snapshot ||
+            current.retained->witness.pending_snapshot ||
+            !current.retained->witness.rollback_snapshot ||
+            current.retained->witness.rollback_snapshot !=
+                initial.rollback_snapshot ||
+            current.retained->witness.parent_identity !=
+                initial.parent_identity ||
+            current.retained->witness.lock_identity !=
+                initial.lock_identity ||
+            current.retained->witness.directory_identity !=
+                initial.directory_identity ||
+            !remaining_marker_matches_initial(
+                current.retained->witness.owner, initial.owner) ||
+            !remaining_marker_matches_initial(
+                current.retained->witness.owned, initial.owned) ||
+            !remaining_marker_matches_initial(
+                current.retained->witness.reserved, initial.reserved) ||
+            !private_handoff_lease_recovery_stage_matches(
+                point, *current.retained)) {
+            adapter.exact_failure = current.retained
+                                        ? resume_foreign_replacement()
+                                        : current.result;
+            if (adapter.exact_failure->status ==
+                OOCCleanupStatus::NoTransaction) {
+                adapter.exact_failure = resume_foreign_replacement();
+            }
+            return true;
+        }
+        adapter.lock->require_stable();
+        return false;
+    } catch (const Failure& failure) {
+        adapter.exact_failure = resume_failure_result(failure);
+    } catch (const std::bad_alloc&) {
+        adapter.exact_failure = resume_unexpected_result(
+            std::make_error_code(std::errc::not_enough_memory));
+    } catch (const std::system_error& error) {
+        adapter.exact_failure = resume_unexpected_result(error.code());
+    } catch (...) {
+        adapter.exact_failure = resume_unexpected_result();
+    }
+    return true;
+}
+PrivateHandoffPublicationResumeAdmissionV1
+acquire_private_handoff_publication_resume_v1(
+    const OOCCleanupPaths& paths,
+    const std::array<std::uint64_t, 3>& expected_directory_identity) noexcept {
+    auto lock = std::make_unique<BaseLock>(paths.lock_path, false);
+    auto state = std::make_unique<PrivateHandoffPublicationObservedPermitV1::State>(
+        paths, expected_directory_identity, std::move(*captured.retained));
+    state->lock = std::move(lock);
+    claim.transfer_to_permit();
+    return {};
+}
+PrivateHandoffPublicationResumeValidationV1
+validate_private_handoff_publication_resume_v1(
+    PrivateHandoffPublicationObservedPermitV1&& observed,
+    PrivateHandoffPublicationTypedValidatorV1&& validator) noexcept {
+    auto state = std::move(observed.state_);
+    const auto typed_validate = std::exchange(validator.validate_, nullptr);
+    void* const typed_context = std::exchange(validator.context_, nullptr);
+    const auto typed_creator_process_id =
+        std::exchange(validator.creator_process_id_, 0);
+    try {
+        return {};
+    } catch (...) {
+        return {};
+    }
+}
+PrivateHandoffPublicationResumeRevalidationV1
+revalidate_private_handoff_publication_resume_v1(
+    const PrivateHandoffPublicationValidatedPermitV1& permit) noexcept {
+    return {};
+}
+"""
+        + PRIVATE_LEASE_GENERIC_RECOVERY_DEFINITION_SHAPES[
+            "recover_private_lease_locked"
+        ]
+        + "{\n"
+        + PRIVATE_LEASE_GENERIC_RECOVERY_BODIES["recover_private_lease_locked"]
+        + "}\n"
+        + PRIVATE_LEASE_GENERIC_RECOVERY_DEFINITION_SHAPES[
+            "OOCCleanupTransaction::remove_private_lease"
+        ]
+        + "{\n"
+        + PRIVATE_LEASE_GENERIC_RECOVERY_BODIES[
+            "OOCCleanupTransaction::remove_private_lease"
+        ]
+        + "}\n"
+        + r"""
+PrivateHandoffPublicationResumeResultV1
+reconcile_private_handoff_publication_for_resume_v1(
+    PrivateHandoffPublicationValidatedPermitV1& permit,
+    PrivateHandoffPublicationResumeTestHooksV1 hooks) noexcept {
+    PrivateHandoffLeaseRecoveryObservationAdapterV1 lease_adapter{
+        .outer = &hooks,
+        .paths = &state->paths,
+        .lock = &lock,
+        .expected_directory_identity =
+            &state->expected_directory_identity,
+        .initial = &rollback_retained.witness,
+    };
+    recovered = recover_private_handoff_rollback_generation_locked(
+        state->paths, lock, rollback_retained.generation.parent_identity,
+        *rollback_retained.generation.owned, rollback_retained.generation.reserved,
+        OOCPrivateLeaseTestHooks{
+            .stop_after = observe_private_handoff_lease_recovery,
+            .context = &lease_adapter,
+        });
+    if (lease_adapter.exact_failure) {
+        return resume_failed(*lease_adapter.exact_failure, expected);
+    }
+    if (lease_adapter.unknown_point) {
+        return resume_failed(
+            resume_unexpected_result(protocol_error()), expected);
+    }
+    if (!recovered.completed()) {
+        return {};
+    }
+    auto absent = capture_private_handoff_publication_prefix_v1_locked(
+        state->paths, lock, state->expected_directory_identity);
+    if (absent.retained ||
+        absent.result.status != OOCCleanupStatus::NoTransaction ||
+        absent.result.stage != OOCCleanupStage::None ||
+        absent.result.native_error) {
+        return resume_failed(
+            absent.retained ? resume_foreign_replacement() : absent.result,
+            expected);
+    }
+    return {};
+}
+"""
+    )
+    exact_private_handoff_resume_implementation_checks = Checks(Path("."))
+    exact_private_handoff_resume_implementation_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_IMPLEMENTATION_FILE,
+        valid_private_handoff_resume_implementation,
+    )
+    expect(
+        not exact_private_handoff_resume_implementation_checks.errors,
+        "exact private-handoff resume implementation definitions were rejected: "
+        f"{exact_private_handoff_resume_implementation_checks.errors}",
+    )
+
+    valid_private_lease_preactive_rollback_core = (
+        PRIVATE_LEASE_PREACTIVE_SCANNER_DEFINITION_SHAPE
+        + "{\n"
+        + PRIVATE_LEASE_PREACTIVE_SCANNER_BODY
+        + "}\n"
+        + PRIVATE_LEASE_PREACTIVE_ROLLBACK_DEFINITION_SHAPE
+        + "{\n"
+        + PRIVATE_LEASE_PREACTIVE_ROLLBACK_BODY
+        + "}\n"
+        + r"""
+OOCCleanupResult recover_owned_private_lease_locked(
+    const OOCCleanupPaths& paths, const BaseLock& lock,
+    const std::array<std::uint64_t, 3>& parent_identity,
+    const LoadedPrivateLeaseMarker& loaded_owned,
+    const std::optional<LoadedPrivateLeaseMarker>& loaded_reserved,
+    const OOCPrivateLeaseTestHooks& hooks) {
+    const auto& owned = loaded_owned.record;
+    const bool preactive_pair_rollback = loaded_reserved.has_value();
+    const auto staging_path = private_lease_staging_path(paths, owned.lease_id);
+    const auto staging_identity = inspect_directory_identity_locked(staging_path);
+    const auto final_identity = inspect_directory_identity_locked(paths.private_directory);
+    if (staging_identity) {
+        if (preactive_pair_rollback) {
+            (void)inspect_private_lease_preactive_entries(staging_path, paths);
+        } else {
+            (void)inspect_private_lease_control_entries(staging_path);
+        }
+    }
+    if (staging_identity) {
+        if (!loaded_reserved) {
+            fail(OOCCleanupStatus::IntentConflict, OOCCleanupStage::None, protocol_error());
+        }
+        if (preactive_pair_rollback) {
+            const auto rolled_back =
+                rollback_owned_preactive_pair_locked(paths, owned, lock, hooks);
+            if (!rolled_back.completed()) {
+                return rolled_back;
+            }
+        } else {
+            const auto entries = inspect_private_lease_control_entries(staging_path);
+            (void)entries;
+        }
+    } else if (final_identity) {
+        if (preactive_pair_rollback) {
+            const auto rolled_back =
+                rollback_owned_preactive_pair_locked(paths, owned, lock, hooks);
+            if (!rolled_back.completed()) {
+                return rolled_back;
+            }
+        } else {
+            try {
+                require_pair_namespace_reusable_locked(paths);
+            } catch (...) {
+                return private_lease_interrupted();
+            }
+        }
+    }
+    return private_lease_completed();
+}
+"""
+    )
+    exact_private_lease_preactive_rollback_core_checks = Checks(Path("."))
+    exact_private_lease_preactive_rollback_core_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_LEASE_PREACTIVE_ROLLBACK_CORE_FILE,
+        valid_private_lease_preactive_rollback_core,
+    )
+    expect(
+        not exact_private_lease_preactive_rollback_core_checks.errors,
+        "exact shared preactive rollback core was rejected: "
+        f"{exact_private_lease_preactive_rollback_core_checks.errors}",
+    )
+
+    weakened_private_lease_preactive_scanner_checks = Checks(Path("."))
+    weakened_private_lease_preactive_scanner_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_LEASE_PREACTIVE_ROLLBACK_CORE_FILE,
+        valid_private_lease_preactive_rollback_core.replace(
+            """        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+    }
+    return entries;
+""",
+            """        continue;
+    }
+    return entries;
+""",
+            1,
+        ),
+    )
+    expect(
+        any(
+            "preactive rollback directory scanner must retain the exact "
+            "owner/index/data-only allowlist" in error
+            for error in weakened_private_lease_preactive_scanner_checks.errors
+        ),
+        "preactive scanner accepted an unknown child after allowlist drift: "
+        f"{weakened_private_lease_preactive_scanner_checks.errors}",
+    )
+
+    tombstone_aware_shared_private_lease_rollback_checks = Checks(Path("."))
+    tombstone_aware_shared_private_lease_rollback_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_LEASE_PREACTIVE_ROLLBACK_CORE_FILE,
+        valid_private_lease_preactive_rollback_core.replace(
+            """    if (owned.capability != PrivateLeaseCapability::RollbackPreactivePairAndLease) {
+""",
+            """    if (std::filesystem::exists(paths.private_handoff_rollback_path)) {
+        return private_lease_completed();
+    }
+    if (owned.capability != PrivateLeaseCapability::RollbackPreactivePairAndLease) {
+""",
+            1,
+        ),
+    )
+    expect(
+        any(
+            "shared preactive rollback executor must retain its exact capability"
+            in error
+            for error in tombstone_aware_shared_private_lease_rollback_checks.errors
+        ),
+        "shared preactive rollback accepted a tombstone-conditioned early success: "
+        f"{tombstone_aware_shared_private_lease_rollback_checks.errors}",
+    )
+
+    unscanned_quarantine_private_lease_rollback_checks = Checks(Path("."))
+    unscanned_quarantine_private_lease_rollback_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_LEASE_PREACTIVE_ROLLBACK_CORE_FILE,
+        valid_private_lease_preactive_rollback_core.replace(
+            "inspect_private_lease_preactive_entries(staging_path, paths);",
+            "inspect_private_lease_control_entries(staging_path, paths);",
+            1,
+        ),
+    )
+    expect(
+        any(
+            "shared preactive rollback executor must retain its exact capability"
+            in error
+            for error in unscanned_quarantine_private_lease_rollback_checks.errors
+        ),
+        "shared preactive rollback lost its post-quarantine preactive re-scan: "
+        f"{unscanned_quarantine_private_lease_rollback_checks.errors}",
+    )
+
+    relocated_generic_private_lease_rollback_checks = Checks(Path("."))
+    relocated_generic_private_lease_rollback_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_LEASE_PREACTIVE_ROLLBACK_CORE_FILE,
+        valid_private_lease_preactive_rollback_core.replace(
+            "rollback_owned_preactive_pair_locked(paths, owned, lock, hooks);",
+            "private_lease_completed();",
+            2,
+        )
+        + r"""
+#if 0
+OOCCleanupResult decoy_generic_private_lease_rollback_one() {
+    return rollback_owned_preactive_pair_locked(paths, owned, lock, hooks);
+}
+OOCCleanupResult decoy_generic_private_lease_rollback_two() {
+    return rollback_owned_preactive_pair_locked(paths, owned, lock, hooks);
+}
+#endif
+""",
+    )
+    expect(
+        any(
+            "shared preactive rollback executor escaped the closed "
+            "generic-plus-typed call-site allowlist" in error
+            for error in relocated_generic_private_lease_rollback_checks.errors
+        ),
+        "generic rollback calls escaped their real executor into inactive decoys: "
+        f"{relocated_generic_private_lease_rollback_checks.errors}",
+    )
+
+    generic_typed_private_handoff_rollback_checks = Checks(Path("."))
+    generic_typed_private_handoff_rollback_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_IMPLEMENTATION_FILE,
+        valid_private_handoff_resume_implementation.replace(
+            "    recovered = recover_private_handoff_rollback_generation_locked(\n",
+            "    recovered = recover_owned_private_lease_locked(\n",
+            1,
+        ),
+    )
+    expect(
+        any(
+            "typed private-handoff rollback must call only the dedicated" in error
+            for error in generic_typed_private_handoff_rollback_checks.errors
+        ),
+        "typed rollback escaped onto the generic cleanup-union executor: "
+        f"{generic_typed_private_handoff_rollback_checks.errors}",
+    )
+
+    escaped_shared_private_lease_rollback_checks = Checks(Path("."))
+    escaped_shared_private_lease_rollback_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_IMPLEMENTATION_FILE,
+        valid_private_handoff_resume_implementation
+        + r"""
+OOCCleanupResult escaped_shared_private_lease_rollback() {
+    return rollback_owned_preactive_pair_locked(paths, owned, lock, hooks);
+}
+""",
+    )
+    expect(
+        any(
+            "shared preactive rollback executor escaped the closed "
+            "generic-plus-typed call-site allowlist" in error
+            for error in escaped_shared_private_lease_rollback_checks.errors
+        ),
+        "shared preactive rollback escaped to a fourth production caller: "
+        f"{escaped_shared_private_lease_rollback_checks.errors}",
+    )
+
+    escaped_file_private_lease_rollback_checks = Checks(Path("."))
+    escaped_file_private_lease_rollback_checks.validate_private_handoff_publication_resume_boundary(
+        "src/relation/escaped_preactive_rollback.cpp",
+        r"""
+OOCCleanupResult escaped_file_private_lease_rollback() {
+    return rollback_owned_preactive_pair_locked(paths, owned, lock, hooks);
+}
+""",
+    )
+    expect(
+        any(
+            "shared preactive rollback executor escaped the closed "
+            "generic-plus-typed call-site allowlist" in error
+            for error in escaped_file_private_lease_rollback_checks.errors
+        ),
+        "shared preactive rollback escaped into a new production file: "
+        f"{escaped_file_private_lease_rollback_checks.errors}",
+    )
+
+    narrow_ordinary_private_lease_recovery_checks = Checks(Path("."))
+    narrow_ordinary_private_lease_recovery_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_IMPLEMENTATION_FILE,
+        valid_private_handoff_resume_implementation.replace(
+            "        return recover_owned_private_lease_locked("
+            "paths, held_lock, parent_identity, *owned,\n"
+            "                                                  reserved, hooks);\n",
+            "        return recover_private_handoff_rollback_generation_locked("
+            "paths, held_lock, parent_identity, *owned,\n"
+            "                                                  reserved, hooks);\n",
+            1,
+        ),
+    )
+    expect(
+        any(
+            "ordinary private-lease recovery must remain on the exact two generic" in error
+            for error in narrow_ordinary_private_lease_recovery_checks.errors
+        ),
+        "ordinary cleanup escaped onto the tombstone-authorized narrow executor: "
+        f"{narrow_ordinary_private_lease_recovery_checks.errors}",
+    )
+
+    relocated_recovery_generic_call = (
+        valid_private_handoff_resume_implementation.replace(
+            """        return recover_owned_private_lease_locked(paths, held_lock, parent_identity, *owned,
+                                                  reserved, hooks);
+""",
+            "        return private_lease_completed();\n",
+            1,
+        )
+        + r"""
+#if 0
+OOCCleanupResult unused_recovery_call_site() {
+    return recover_owned_private_lease_locked(
+        paths, held_lock, parent_identity, *owned, reserved, hooks);
+}
+#endif
+"""
+    )
+    relocated_recovery_generic_call_checks = Checks(Path("."))
+    relocated_recovery_generic_call_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_IMPLEMENTATION_FILE,
+        relocated_recovery_generic_call,
+    )
+    expect(
+        any(
+            "recover_private_lease_locked must retain cleanup-union admission" in error
+            for error in relocated_recovery_generic_call_checks.errors
+        ),
+        "recover-private-lease generic call escaped into an unused scope: "
+        f"{relocated_recovery_generic_call_checks.errors}",
+    )
+
+    relocated_removal_generic_call = (
+        valid_private_handoff_resume_implementation.replace(
+            """        return ooc_cleanup_detail::recover_owned_private_lease_locked(
+            paths, retained_lock, generation.parent_identity, *generation.owned,
+            generation.reserved, hooks);
+""",
+            "        return ooc_cleanup_detail::private_lease_completed();\n",
+            1,
+        )
+        + r"""
+OOCCleanupResult unused_removal_call_site() {
+    return ooc_cleanup_detail::recover_owned_private_lease_locked(
+        paths, retained_lock, generation.parent_identity, *generation.owned,
+        generation.reserved, hooks);
+}
+"""
+    )
+    relocated_removal_generic_call_checks = Checks(Path("."))
+    relocated_removal_generic_call_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_IMPLEMENTATION_FILE,
+        relocated_removal_generic_call,
+    )
+    expect(
+        any(
+            "OOCCleanupTransaction::remove_private_lease must retain cleanup-union "
+            "admission" in error
+            for error in relocated_removal_generic_call_checks.errors
+        ),
+        "remove-private-lease generic call escaped into an unused scope: "
+        f"{relocated_removal_generic_call_checks.errors}",
+    )
+
+    inactive_removal_generic_call_checks = Checks(Path("."))
+    inactive_removal_generic_call_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_IMPLEMENTATION_FILE,
+        valid_private_handoff_resume_implementation.replace(
+            """        return ooc_cleanup_detail::recover_owned_private_lease_locked(
+            paths, retained_lock, generation.parent_identity, *generation.owned,
+            generation.reserved, hooks);
+""",
+            """#if 0
+        return ooc_cleanup_detail::recover_owned_private_lease_locked(
+            paths, retained_lock, generation.parent_identity, *generation.owned,
+            generation.reserved, hooks);
+#endif
+        return ooc_cleanup_detail::private_lease_completed();
+""",
+            1,
+        ),
+    )
+    expect(
+        any(
+            "OOCCleanupTransaction::remove_private_lease must retain cleanup-union "
+            "admission" in error
+            for error in inactive_removal_generic_call_checks.errors
+        ),
+        "inactive remove-private-lease generic return escaped scope closure: "
+        f"{inactive_removal_generic_call_checks.errors}",
+    )
+
+    spliced_inactive_removal_replacement = (
+        "#i"
+        + "\\"
+        + "\n"
+        + "f 0\n"
+        + """        return ooc_cleanup_detail::recover_owned_private_lease_locked(
+            paths, retained_lock, generation.parent_identity, *generation.owned,
+            generation.reserved, hooks);
+"""
+        + "#en"
+        + "\\"
+        + "\n"
+        + "dif\n"
+        + "        return ooc_cleanup_detail::private_lease_completed();\n"
+    )
+    spliced_inactive_removal_generic_call_checks = Checks(Path("."))
+    spliced_inactive_removal_generic_call_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_IMPLEMENTATION_FILE,
+        valid_private_handoff_resume_implementation.replace(
+            """        return ooc_cleanup_detail::recover_owned_private_lease_locked(
+            paths, retained_lock, generation.parent_identity, *generation.owned,
+            generation.reserved, hooks);
+""",
+            spliced_inactive_removal_replacement,
+            1,
+        ),
+    )
+    expect(
+        any(
+            "OOCCleanupTransaction::remove_private_lease must retain cleanup-union "
+            "admission" in error
+            for error in spliced_inactive_removal_generic_call_checks.errors
+        ),
+        "phase-2 line-spliced inactive generic return escaped scope closure: "
+        f"{spliced_inactive_removal_generic_call_checks.errors}",
+    )
+
+    recover_admission_block = """    if (admission.blocked) {
+        return *admission.blocked;
+    }
+"""
+    recover_admission_decoy = (
+        "    (void)admission.blocked;\n"
+        '    const char* decoy = R"GNFS('
+        + PRIVATE_LEASE_GENERIC_RECOVERY_SCOPES[
+            "recover_private_lease_locked"
+        ][0]
+        + ')GNFS";\n'
+        "    (void)decoy;\n"
+    )
+    literal_decoy_private_lease_admission_checks = Checks(Path("."))
+    literal_decoy_private_lease_admission_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_IMPLEMENTATION_FILE,
+        valid_private_handoff_resume_implementation.replace(
+            recover_admission_block,
+            recover_admission_decoy,
+            1,
+        ),
+    )
+    expect(
+        any(
+            "recover_private_lease_locked must retain cleanup-union admission"
+            in error
+            for error in literal_decoy_private_lease_admission_checks.errors
+        ),
+        "raw-string admission decoy escaped code-token scope closure: "
+        f"{literal_decoy_private_lease_admission_checks.errors}",
+    )
+
+    early_success_private_lease_recovery_checks = Checks(Path("."))
+    early_success_private_lease_recovery_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_IMPLEMENTATION_FILE,
+        valid_private_handoff_resume_implementation.replace(
+            """    auto admission = admit_private_cleanup_action_locked(
+""",
+            """    return private_lease_completed();
+    auto admission = admit_private_cleanup_action_locked(
+""",
+            1,
+        ),
+    )
+    expect(
+        any(
+            "recover_private_lease_locked must retain cleanup-union admission"
+            in error
+            for error in early_success_private_lease_recovery_checks.errors
+        ),
+        "pre-admission recovery success escaped exact scope closure: "
+        f"{early_success_private_lease_recovery_checks.errors}",
+    )
+
+    ignored_private_lease_admission_blocker_checks = Checks(Path("."))
+    ignored_private_lease_admission_blocker_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_IMPLEMENTATION_FILE,
+        valid_private_handoff_resume_implementation.replace(
+            """    if (admission.blocked) {
+        return *admission.blocked;
+    }
+""",
+            "    (void)admission.blocked;\n",
+            1,
+        ),
+    )
+    expect(
+        any(
+            "recover_private_lease_locked must retain cleanup-union admission"
+            in error
+            for error in ignored_private_lease_admission_blocker_checks.errors
+        ),
+        "recover-private-lease ignored its cleanup-union blocker: "
+        f"{ignored_private_lease_admission_blocker_checks.errors}",
+    )
+
+    weakened_private_handoff_rollback_executor_checks = Checks(Path("."))
+    weakened_private_handoff_rollback_executor_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_IMPLEMENTATION_FILE,
+        valid_private_handoff_resume_implementation.replace(
+            "owned.capability != "
+            "PrivateLeaseCapability::RollbackPreactivePairAndLease",
+            "owned.capability == "
+            "PrivateLeaseCapability::RollbackPreactivePairAndLease",
+            1,
+        ),
+    )
+    expect(
+        any(
+            "dedicated private-handoff rollback executor must retain its exact" in error
+            for error in weakened_private_handoff_rollback_executor_checks.errors
+        ),
+        "weakened tombstone rollback executor escaped exact-body closure: "
+        f"{weakened_private_handoff_rollback_executor_checks.errors}",
+    )
+
+    drifted_private_handoff_rollback_binding_checks = Checks(Path("."))
+    drifted_private_handoff_rollback_binding_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_IMPLEMENTATION_FILE,
+        valid_private_handoff_resume_implementation.replace(
+            "state->paths, lock, rollback_retained.generation.parent_identity,",
+            "state->paths, lock, rollback_retained.witness.parent_identity,",
+            1,
+        ),
+    )
+    expect(
+        any(
+            "typed private-handoff rollback must call only the dedicated" in error
+            for error in drifted_private_handoff_rollback_binding_checks.errors
+        ),
+        "typed rollback escaped retained generation identity binding: "
+        f"{drifted_private_handoff_rollback_binding_checks.errors}",
+    )
+
+    open_private_handoff_lease_adapter_checks = Checks(Path("."))
+    open_private_handoff_lease_adapter_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_IMPLEMENTATION_FILE,
+        valid_private_handoff_resume_implementation.replace(
+            """    if (!mapped) {
+        adapter.unknown_point = true;
+        return true;
+    }
+""",
+            """    if (!mapped) {
+        return false;
+    }
+""",
+        ),
+    )
+    expect(
+        any(
+            "seven-point lease-recovery adapter with unknown points interrupting "
+            "fail closed"
+            in error
+            for error in open_private_handoff_lease_adapter_checks.errors
+        ),
+        "unknown nested lease-recovery point escaped fail-closed adapter: "
+        f"{open_private_handoff_lease_adapter_checks.errors}",
+    )
+
+    forged_private_handoff_lease_capture_checks = Checks(Path("."))
+    forged_private_handoff_lease_capture_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_IMPLEMENTATION_FILE,
+        valid_private_handoff_resume_implementation.replace(
+            """        auto current = capture_private_handoff_publication_prefix_v1_locked(
+            *adapter.paths, *adapter.lock,
+            *adapter.expected_directory_identity);
+""",
+            "        auto current = forged_current;\n",
+        ),
+    )
+    expect(
+        any(
+            "observe_private_handoff_lease_recovery must remain the exact "
+            "seven-point lease-recovery adapter"
+            in error
+            for error in forged_private_handoff_lease_capture_checks.errors
+        ),
+        "forged post-callback relation prefix escaped fresh-capture sandwich: "
+        f"{forged_private_handoff_lease_capture_checks.errors}",
+    )
+
+    weakened_private_handoff_lease_stage_checks = Checks(Path("."))
+    weakened_private_handoff_lease_stage_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_IMPLEMENTATION_FILE,
+        valid_private_handoff_resume_implementation.replace(
+            "reserved && index && data;",
+            "reserved && index;",
+            1,
+        ),
+    )
+    expect(
+        any(
+            "private_handoff_lease_recovery_stage_matches must remain the exact "
+            "seven-point lease-recovery adapter"
+            in error
+            for error in weakened_private_handoff_lease_stage_checks.errors
+        ),
+        "weakened point-specific rollback phase escaped seven-point matrix: "
+        f"{weakened_private_handoff_lease_stage_checks.errors}",
+    )
+
+    late_private_handoff_exact_failure_checks = Checks(Path("."))
+    late_private_handoff_exact_failure_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_IMPLEMENTATION_FILE,
+        valid_private_handoff_resume_implementation.replace(
+            """    if (lease_adapter.exact_failure) {
+        return resume_failed(*lease_adapter.exact_failure, expected);
+    }
+    if (lease_adapter.unknown_point) {
+        return resume_failed(
+            resume_unexpected_result(protocol_error()), expected);
+    }
+""",
+            """    if (lease_adapter.unknown_point) {
+        return resume_failed(
+            resume_unexpected_result(protocol_error()), expected);
+    }
+    if (lease_adapter.exact_failure) {
+        return resume_failed(*lease_adapter.exact_failure, expected);
+    }
+""",
+        ),
+    )
+    expect(
+        any(
+            "return exact_failure before unknown nested observation" in error
+            for error in late_private_handoff_exact_failure_checks.errors
+        ),
+        "generic interruption result dominated exact relation failure: "
+        f"{late_private_handoff_exact_failure_checks.errors}",
+    )
+
+    inexact_private_handoff_final_absence_checks = Checks(Path("."))
+    inexact_private_handoff_final_absence_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_IMPLEMENTATION_FILE,
+        valid_private_handoff_resume_implementation.replace(
+            "absent.result.status != OOCCleanupStatus::NoTransaction",
+            "absent.result.status != OOCCleanupStatus::HandoffPresent",
+        ),
+    )
+    expect(
+        any(
+            "must prove exact NoTransaction absence" in error
+            for error in inexact_private_handoff_final_absence_checks.errors
+        ),
+        "non-absent terminal relation prefix escaped exact NoTransaction gate: "
+        f"{inexact_private_handoff_final_absence_checks.errors}",
+    )
+
+    unsafe_private_handoff_acquire_checks = Checks(Path("."))
+    unsafe_private_handoff_acquire_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_IMPLEMENTATION_FILE,
+        valid_private_handoff_resume_implementation.replace(
+            """    auto state = std::make_unique<PrivateHandoffPublicationObservedPermitV1::State>(
+        paths, expected_directory_identity, std::move(*captured.retained));
+    state->lock = std::move(lock);
+    claim.transfer_to_permit();
+""",
+            """    claim.transfer_to_permit();
+    auto state = std::make_unique<PrivateHandoffPublicationObservedPermitV1::State>(
+        paths, expected_directory_identity, std::move(*captured.retained));
+    state->lock = std::move(lock);
+""",
+        ),
+    )
+    expect(
+        any(
+            "must finish all throwing State construction before noexcept lock "
+            "adoption and action-claim transfer"
+            in error
+            for error in unsafe_private_handoff_acquire_checks.errors
+        ),
+        "claim transfer before throwing State construction escaped acquisition "
+        f"exception-safety closure: {unsafe_private_handoff_acquire_checks.errors}",
+    )
+
+    late_private_handoff_validator_consume_checks = Checks(Path("."))
+    late_private_handoff_validator_consume_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_IMPLEMENTATION_FILE,
+        valid_private_handoff_resume_implementation.replace(
+            """    auto state = std::move(observed.state_);
+    const auto typed_validate = std::exchange(validator.validate_, nullptr);
+""",
+            """    if (early_failure) {
+        return {};
+    }
+    auto state = std::move(observed.state_);
+    const auto typed_validate = std::exchange(validator.validate_, nullptr);
+""",
+        ),
+    )
+    expect(
+        any(
+            "typed validator must be consumed exactly once at validation entry"
+            in error
+            for error in late_private_handoff_validator_consume_checks.errors
+        ),
+        "early return before typed-validator consumption escaped entry closure: "
+        f"{late_private_handoff_validator_consume_checks.errors}",
+    )
+
+    private_handoff_resume_implementation_wrapper_checks = Checks(Path("."))
+    private_handoff_resume_implementation_wrapper_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_IMPLEMENTATION_FILE,
+        valid_private_handoff_resume_implementation
+        + r"""
+auto resume_wrapper(auto&& permit, const auto& hooks) {
+    return reconcile_private_handoff_publication_for_resume_v1(
+        std::move(permit), hooks);
+}
+""",
+    )
+    expect(
+        any(
+            "implementation must contain only the exact "
+            "reconcile_private_handoff_publication_for_resume_v1 definition"
+            in error
+            for error in private_handoff_resume_implementation_wrapper_checks.errors
+        ),
+        "relation-implementation private-handoff resume wrapper escaped identifier "
+        f"count closure: {private_handoff_resume_implementation_wrapper_checks.errors}",
+    )
+
+    valid_private_handoff_resume_wave_interface = (
+        "enum class DistributedSieveWorkerHandoffResumeObservationPointV1 "
+        ": std::uint8_t {\n"
+        + "\n".join(
+            f"    {point},"
+            for point in PRIVATE_HANDOFF_PUBLICATION_RESUME_OBSERVATION_POINTS
+        )
+        + r"""
+};
+struct DistributedSieveWorkerHandoffResumeTestHooksV1 final {
+    using StopAfter = bool (*)(
+        DistributedSieveWorkerHandoffResumeObservationPointV1 point,
+        void* context) noexcept;
+    using AfterRoundLocksReleased = void (*)(void* context) noexcept;
+    StopAfter stop_after = nullptr;
+    AfterRoundLocksReleased after_round_locks_released = nullptr;
+    void* context = nullptr;
+};
+"""
+    )
+    exact_private_handoff_resume_wave_interface_checks = Checks(Path("."))
+    exact_private_handoff_resume_wave_interface_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_INTERFACE_FILE,
+        valid_private_handoff_resume_wave_interface,
+    )
+    expect(
+        not exact_private_handoff_resume_wave_interface_checks.errors,
+        "exact WaveStore private-handoff observation/hook interface was rejected: "
+        f"{exact_private_handoff_resume_wave_interface_checks.errors}",
+    )
+
+    extra_private_handoff_resume_wave_hook_checks = Checks(Path("."))
+    extra_private_handoff_resume_wave_hook_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_INTERFACE_FILE,
+        valid_private_handoff_resume_wave_interface.replace(
+            "    void* context = nullptr;\n};",
+            "    void* context = nullptr;\n    bool unchecked = false;\n};",
+        ),
+    )
+    expect(
+        any(
+            "WaveStore worker-handoff resume test hooks must remain the exact "
+            "closed test-only seam"
+            in error
+            for error in extra_private_handoff_resume_wave_hook_checks.errors
+        ),
+        "extra WaveStore round-release hook state escaped field closure: "
+        f"{extra_private_handoff_resume_wave_hook_checks.errors}",
+    )
+
+    valid_private_handoff_adoption = r"""
+auto OOCCleanupTransaction::adopt_private_handoff() noexcept {
+    const auto first = paths.private_handoff_rollback_path;
+    parent->require_lock_binding(paths.lock_path.filename(), *lock);
+    if (parent->leaf_exists(paths.private_handoff_rollback_path.filename())) {
+        return assign(adoption_failure(
+            OOCCleanupStatus::NamespaceConflict,
+            OOCPrivateHandoffState::TaintedPreserved,
+            ooc_cleanup_detail::protocol_error()));
+    }
+    const auto directory_identity =
+        parent->child_directory_identity(paths.private_directory.filename());
+    const auto last = paths.private_handoff_rollback_path;
+    return ready;
+}
+"""
+    exact_private_handoff_adoption_checks = Checks(Path("."))
+    exact_private_handoff_adoption_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_ADOPTION_FILE,
+        valid_private_handoff_adoption,
+    )
+    expect(
+        not exact_private_handoff_adoption_checks.errors,
+        "exact private-handoff adoption rollback-tombstone blocker was rejected: "
+        f"{exact_private_handoff_adoption_checks.errors}",
+    )
+
+    unchecked_private_handoff_adoption_checks = Checks(Path("."))
+    unchecked_private_handoff_adoption_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_ADOPTION_FILE,
+        valid_private_handoff_adoption.replace(
+            """    if (parent->leaf_exists(paths.private_handoff_rollback_path.filename())) {
+        return assign(adoption_failure(
+            OOCCleanupStatus::NamespaceConflict,
+            OOCPrivateHandoffState::TaintedPreserved,
+            ooc_cleanup_detail::protocol_error()));
+    }
+""",
+            "",
+        ),
+    )
+    expect(
+        any(
+            "must reject the exact rollback tombstone after lock binding"
+            in error
+            for error in unchecked_private_handoff_adoption_checks.errors
+        ),
+        "unchecked rollback tombstone escaped private-handoff adoption closure: "
+        f"{unchecked_private_handoff_adoption_checks.errors}",
+    )
+
+    private_handoff_resume_wave_mirror = "\n".join(
+        "static_assert(static_cast<std::size_t>("
+        "DistributedSieveWorkerHandoffResumeObservationPointV1::"
+        f"{point}) == static_cast<std::size_t>("
+        "private_lease::PrivateHandoffPublicationResumeObservationPointV1::"
+        f"{point}));"
+        for point in PRIVATE_HANDOFF_PUBLICATION_RESUME_OBSERVATION_POINTS
+    )
+    private_handoff_resume_wave_authority_and_callback = (
+        private_handoff_resume_wave_mirror
+        + r"""
+class WorkerHandoffTypedValidatorAuthorityV1 final {
+public:
+    [[nodiscard]] static
+        gnfs::relation::ooc_cleanup_detail::PrivateHandoffPublicationTypedValidatorV1
+        bind(gnfs::relation::ooc_cleanup_detail::PrivateHandoffPublicationTypedValidatorV1::
+                 Validate validate,
+             void* context) noexcept {
+        return gnfs::relation::ooc_cleanup_detail::PrivateHandoffPublicationTypedValidatorV1(
+            validate, context);
+    }
+};
+[[nodiscard]] bool validate_worker_handoff_prefix_type(
+    const private_lease::PrivateHandoffPublicationPrefixWitnessV1& prefix,
+    void* opaque) noexcept {
+    auto* context = static_cast<WorkerHandoffTypedValidationContext*>(opaque);
+    if (context == nullptr || context->root_fd < 0 || context->attempt == nullptr ||
+        context->manifest == nullptr || context->attempt_record == nullptr ||
+        !context->attempt_record->canonical_snapshot.has_value() ||
+        context->attempt_record->pending_snapshot.has_value()) {
+        return false;
+    }
+    if (const auto exact = revalidate_exact_canonical_worker_attempt(
+            context->root_fd, context->attempt->names, *context->attempt_record,
+            context->creator_process_id);
+        exact.status != DistributedSieveWaveStoreStatus::ready) {
+        context->diagnostic = exact;
+        return false;
+    }
+    const durable_record::RecordSnapshot* handoff_snapshot = nullptr;
+    switch (prefix.state) {
+    case private_lease::PrivateHandoffPublicationPrefixStateV1::PendingOnly:
+        if (prefix.canonical_snapshot.has_value() ||
+            !prefix.pending_snapshot.has_value() ||
+            prefix.rollback_snapshot.has_value()) {
+            return false;
+        }
+        handoff_snapshot = &*prefix.pending_snapshot;
+        break;
+    case private_lease::PrivateHandoffPublicationPrefixStateV1::PendingRollback:
+        if (prefix.canonical_snapshot.has_value() ||
+            prefix.pending_snapshot.has_value() ||
+            !prefix.rollback_snapshot.has_value()) {
+            return false;
+        }
+        handoff_snapshot = &*prefix.rollback_snapshot;
+        break;
+    case private_lease::PrivateHandoffPublicationPrefixStateV1::Canonical:
+        if (!prefix.canonical_snapshot.has_value() ||
+            prefix.pending_snapshot.has_value() ||
+            prefix.rollback_snapshot.has_value()) {
+            return false;
+        }
+        handoff_snapshot = &*prefix.canonical_snapshot;
+        break;
+    case private_lease::PrivateHandoffPublicationPrefixStateV1::IdenticalDual:
+        if (!prefix.canonical_snapshot.has_value() ||
+            !prefix.pending_snapshot.has_value() ||
+            prefix.rollback_snapshot.has_value()) {
+            return false;
+        }
+        handoff_snapshot = &*prefix.canonical_snapshot;
+        break;
+    case private_lease::PrivateHandoffPublicationPrefixStateV1::Count:
+        return false;
+    }
+    const durable_record::RecordSnapshot index_snapshot{
+        .identity = prefix.record.index.identity,
+        .size = prefix.record.index.extent,
+    };
+    const durable_record::RecordSnapshot data_snapshot{
+        .identity = prefix.record.data.identity,
+        .size = prefix.record.data.extent,
+    };
+    auto typed = validate_worker_handoff_envelope(
+        *context->attempt, *context->manifest, context->expected_directory_identity,
+        prefix.record, *handoff_snapshot, index_snapshot, data_snapshot,
+        context->creator_process_id);
+    if (!typed) {
+        context->diagnostic = std::move(typed.diagnostic);
+        return false;
+    }
+    const auto& handoff = typed.witness->handoff;
+    const auto& started = context->attempt_record->record;
+    if (handoff.attempt_started_digest != started.self_digest ||
+        handoff.lease != started.lease ||
+        handoff.chunk_id != context->attempt->coordinate.chunk_id ||
+        handoff.attempt_ordinal != context->attempt->coordinate.attempt_ordinal) {
+        context->diagnostic =
+            diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
+                       protocol_error());
+        return false;
+    }
+    context->typed_handoff = std::move(*typed.witness);
+    return true;
+}
+[[nodiscard]] bool bridge_worker_handoff_resume_observation(
+    private_lease::PrivateHandoffPublicationResumeObservationPointV1 point,
+    void* opaque) noexcept {
+    auto* context = static_cast<WorkerHandoffResumeBridgeContext*>(opaque);
+    if (context == nullptr) {
+        return true;
+    }
+    const auto wave_point =
+        static_cast<DistributedSieveWorkerHandoffResumeObservationPointV1>(point);
+    const bool user_requested_stop =
+        context->user_hooks.stop_after != nullptr &&
+        context->user_hooks.stop_after(
+            wave_point, context->user_hooks.context);
+    if (context->parent_components == nullptr ||
+        context->root_leaf == nullptr ||
+        context->manifest_bytes == nullptr ||
+        context->absolute_root == nullptr ||
+        context->manifest == nullptr ||
+        context->aggregate == nullptr ||
+        context->retained == nullptr ||
+        context->attempt_names == nullptr ||
+        context->attempt_record == nullptr) {
+        context->revalidation_failed = true;
+        context->revalidation_diagnostic =
+            diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                       protocol_error());
+        return true;
+    }
+    auto revalidated = validate_held_wave_store_manifest_authority(
+        context->parent_fd, *context->parent_components, context->root_fd,
+        *context->root_leaf, context->root_identity, context->lock_fd,
+        context->lock_identity, *context->manifest_bytes,
+        context->manifest_snapshot, context->creator_process_id);
+    if (revalidated.status == DistributedSieveWaveStoreStatus::ready) {
+        revalidated = revalidate_worker_handoff_aggregate_projection(
+            context->root_fd, *context->absolute_root, *context->manifest,
+            *context->aggregate, *context->retained,
+            context->current_attempt_index, context->creator_process_id,
+            wave_point);
+    }
+    if (revalidated.status == DistributedSieveWaveStoreStatus::ready) {
+        revalidated = revalidate_exact_canonical_worker_attempt(
+            context->root_fd, *context->attempt_names,
+            *context->attempt_record, context->creator_process_id);
+    }
+    if (revalidated.status == DistributedSieveWaveStoreStatus::ready) {
+        return user_requested_stop;
+    }
+    context->revalidation_failed = true;
+    context->revalidation_diagnostic = std::move(revalidated);
+    return true;
+}
+[[nodiscard]] private_lease::PrivateHandoffPublicationResumeTestHooksV1
+relation_worker_handoff_resume_hooks(
+    WorkerHandoffResumeBridgeContext& context) noexcept {
+    return {
+        .stop_after = bridge_worker_handoff_resume_observation,
+        .fail_before = nullptr,
+        .context = &context,
+    };
+}
+"""
+    )
+    private_handoff_resume_capture_chain = r"""
+    auto admission =
+        private_lease::acquire_private_handoff_publication_resume_v1(
+            paths, directory_identity);
+    WorkerHandoffTypedValidationContext typed_context{
+        .attempt = &attempt,
+        .manifest = &manifest,
+        .attempt_record = &candidate.attempt_record,
+        .root_fd = root_fd,
+        .expected_directory_identity = expected_directory_identity,
+        .creator_process_id = creator_process_id,
+    };
+    auto validation =
+        private_lease::validate_private_handoff_publication_resume_v1(
+            std::move(*admission.observed),
+            WorkerHandoffTypedValidatorAuthorityV1::bind(
+                validate_worker_handoff_prefix_type, &typed_context));
+    if (!validation.validated() || !validation.permit.has_value() ||
+        !typed_context.typed_handoff.has_value()) {
+        if (typed_context.diagnostic.status !=
+            DistributedSieveWaveStoreStatus::ready) {
+            return fail_with(std::move(typed_context.diagnostic));
+        }
+        return fail_with(worker_handoff_inspection_failure(validation.result));
+    }
+    const auto typed_handoff = *typed_context.typed_handoff;
+    return validation;
+"""
+    private_handoff_resume_wave_store_suffix = r"""
+auto revalidate_held_private_handoff() noexcept {
+    return private_lease::revalidate_private_handoff_publication_resume_v1(permit);
+}
+auto DistributedSieveWaveStore::open() noexcept {
+    auto result = private_lease::reconcile_private_handoff_publication_for_resume_v1(
+        permit, relation_worker_handoff_resume_hooks(resume_bridge));
+    while (!recoverable.retained.entries.empty()) {
+        recoverable.retained.entries.pop_back();
+    }
+    if (hooks.worker_handoff_resume.after_round_locks_released != nullptr) {
+        hooks.worker_handoff_resume.after_round_locks_released(
+            hooks.worker_handoff_resume.context);
+        if (!process_matches(creator_process_id)) {
+            return open_failure(process_mismatch());
+        }
+    }
+    ++resume_round;
+    return result;
+}
+"""
+    valid_private_handoff_resume_wave_store = (
+        private_handoff_resume_wave_authority_and_callback
+        + "\nauto capture_recoverable_worker_handoff_inventory() noexcept {\n"
+        + private_handoff_resume_capture_chain
+        + "}\n"
+        + private_handoff_resume_wave_store_suffix
+    )
+    exact_private_handoff_resume_checks = Checks(Path("."))
+    exact_private_handoff_resume_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        valid_private_handoff_resume_wave_store,
+    )
+    expect(
+        not exact_private_handoff_resume_checks.errors,
+        "exact WaveStore private-handoff resume composition was rejected: "
+        f"{exact_private_handoff_resume_checks.errors}",
+    )
+
+    unmirrored_private_handoff_resume_checks = Checks(Path("."))
+    unmirrored_private_handoff_resume_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        valid_private_handoff_resume_wave_store.replace(
+            "private_lease::PrivateHandoffPublicationResumeObservationPointV1::"
+            "AfterPendingRollbackLeaseDirectoryRemovedDurable));",
+            "private_lease::PrivateHandoffPublicationResumeObservationPointV1::"
+            "AfterPendingRollbackOwnedRemovedDurable));",
+        ),
+    )
+    expect(
+        any(
+            "must statically bind exact ordinal "
+            "AfterPendingRollbackLeaseDirectoryRemovedDurable"
+            in error
+            for error in unmirrored_private_handoff_resume_checks.errors
+        ),
+        "WaveStore/relation observation ordinal drift escaped static mirror closure: "
+        f"{unmirrored_private_handoff_resume_checks.errors}",
+    )
+
+    early_private_handoff_bridge_return_checks = Checks(Path("."))
+    early_private_handoff_bridge_return_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        valid_private_handoff_resume_wave_store.replace(
+            """    if (revalidated.status == DistributedSieveWaveStoreStatus::ready) {
+        return user_requested_stop;
+    }
+    context->revalidation_failed = true;
+""",
+            """    return user_requested_stop;
+    context->revalidation_failed = true;
+""",
+        ),
+    )
+    expect(
+        any(
+            "bridge_worker_handoff_resume_observation must remain the exact "
+            "fail-closed observation, revalidation, and relation-hook bridge"
+            in error
+            for error in early_private_handoff_bridge_return_checks.errors
+        ),
+        "user stop result before complete WaveStore authority revalidation escaped "
+        f"bridge closure: {early_private_handoff_bridge_return_checks.errors}",
+    )
+
+    early_private_handoff_round_release_checks = Checks(Path("."))
+    early_private_handoff_round_release_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        valid_private_handoff_resume_wave_store.replace(
+            """    while (!recoverable.retained.entries.empty()) {
+        recoverable.retained.entries.pop_back();
+    }
+    if (hooks.worker_handoff_resume.after_round_locks_released != nullptr) {
+        hooks.worker_handoff_resume.after_round_locks_released(
+            hooks.worker_handoff_resume.context);
+        if (!process_matches(creator_process_id)) {
+            return open_failure(process_mismatch());
+        }
+    }
+""",
+            """    if (hooks.worker_handoff_resume.after_round_locks_released != nullptr) {
+        hooks.worker_handoff_resume.after_round_locks_released(
+            hooks.worker_handoff_resume.context);
+        if (!process_matches(creator_process_id)) {
+            return open_failure(process_mismatch());
+        }
+    }
+    while (!recoverable.retained.entries.empty()) {
+        recoverable.retained.entries.pop_back();
+    }
+""",
+        ),
+    )
+    expect(
+        any(
+            "must invoke the test-only round-release hook exactly once after "
+            "the retained LIFO stack is empty"
+            in error
+            for error in early_private_handoff_round_release_checks.errors
+        ),
+        "round-release test seam before LIFO permit release escaped ordering gate: "
+        f"{early_private_handoff_round_release_checks.errors}",
+    )
+
+    unchecked_private_handoff_resume_wave_store = (
+        valid_private_handoff_resume_wave_store.replace(
+            """    if (!typed) {
+        context->diagnostic = std::move(typed.diagnostic);
+        return false;
+    }
+""",
+            """    if (!typed) {
+        context->diagnostic = std::move(typed.diagnostic);
+    }
+""",
+        )
+    )
+    unchecked_private_handoff_resume_checks = Checks(Path("."))
+    unchecked_private_handoff_resume_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        unchecked_private_handoff_resume_wave_store,
+    )
+    expect(
+        any(
+            "must keep the exact typed failure guard" in error
+            for error in unchecked_private_handoff_resume_checks.errors
+        ),
+        "unchecked WaveStore typed handoff validation escaped the dominance gate: "
+        f"{unchecked_private_handoff_resume_checks.errors}",
+    )
+
+    forged_private_handoff_validator_checks = Checks(Path("."))
+    forged_private_handoff_validator_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        valid_private_handoff_resume_wave_store.replace(
+            """WorkerHandoffTypedValidatorAuthorityV1::bind(
+                validate_worker_handoff_prefix_type, &typed_context)""",
+            "std::move(forged_validator)",
+        ),
+    )
+    expect(
+        any(
+            "must pass the exact empty typed context through the sole worker "
+            "validator authority bind"
+            in error
+            for error in forged_private_handoff_validator_checks.errors
+        ),
+        "forged relation typed-validator argument escaped the capability dataflow "
+        f"gate: {forged_private_handoff_validator_checks.errors}",
+    )
+
+    forged_private_handoff_receipt_checks = Checks(Path("."))
+    forged_private_handoff_receipt_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        valid_private_handoff_resume_wave_store.replace(
+            "    context->typed_handoff = std::move(*typed.witness);\n",
+            "    context->typed_handoff = forged_handoff;\n",
+        ),
+    )
+    expect(
+        any(
+            "must keep the exact typed failure guard, AttemptStarted binding, "
+            "witness transfer"
+            in error
+            for error in forged_private_handoff_receipt_checks.errors
+        ),
+        "forged worker-handoff typed receipt escaped callback dataflow closure: "
+        f"{forged_private_handoff_receipt_checks.errors}",
+    )
+
+    unchecked_private_handoff_success_checks = Checks(Path("."))
+    unchecked_private_handoff_success_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        valid_private_handoff_resume_wave_store.replace(
+            """    if (!validation.validated() || !validation.permit.has_value() ||
+        !typed_context.typed_handoff.has_value()) {
+        if (typed_context.diagnostic.status !=
+            DistributedSieveWaveStoreStatus::ready) {
+            return fail_with(std::move(typed_context.diagnostic));
+        }
+        return fail_with(worker_handoff_inspection_failure(validation.result));
+    }
+""",
+            "",
+        ),
+    )
+    expect(
+        any(
+            "must explicitly reject missing validated permit or typed witness"
+            in error
+            for error in unchecked_private_handoff_success_checks.errors
+        ),
+        "unchecked relation permit/typed witness success escaped the dominance gate: "
+        f"{unchecked_private_handoff_success_checks.errors}",
+    )
+
+    lambda_private_handoff_resume_wave_store = (
+        private_handoff_resume_wave_authority_and_callback
+        + "\nauto capture_recoverable_worker_handoff_inventory() noexcept {\n"
+        + "    auto deferred = [&] {\n"
+        + private_handoff_resume_capture_chain
+        + "    };\n    return deferred();\n}\n"
+        + private_handoff_resume_wave_store_suffix
+    )
+    lambda_private_handoff_resume_checks = Checks(Path("."))
+    lambda_private_handoff_resume_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        lambda_private_handoff_resume_wave_store,
+    )
+    expect(
+        any(
+            "forbids lambda control around the resume authority chain" in error
+            for error in lambda_private_handoff_resume_checks.errors
+        ),
+        "lambda-deferred WaveStore resume authority chain escaped the control-scope "
+        f"gate: {lambda_private_handoff_resume_checks.errors}",
+    )
+
+    unreachable_private_handoff_resume_wave_store = (
+        private_handoff_resume_wave_authority_and_callback
+        + "\nauto capture_recoverable_worker_handoff_inventory() noexcept {\n"
+        + "    if (false) {\n"
+        + private_handoff_resume_capture_chain
+        + "    }\n    return conflict();\n}\n"
+        + private_handoff_resume_wave_store_suffix
+    )
+    unreachable_private_handoff_resume_checks = Checks(Path("."))
+    unreachable_private_handoff_resume_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        unreachable_private_handoff_resume_wave_store,
+    )
+    expect(
+        any(
+            "forbids if control around the resume authority chain" in error
+            for error in unreachable_private_handoff_resume_checks.errors
+        ),
+        "unreachable conditional WaveStore resume authority chain escaped the "
+        f"control-scope gate: {unreachable_private_handoff_resume_checks.errors}",
+    )
+
+    for identifier in PRIVATE_HANDOFF_PUBLICATION_RESUME_DIRECT_CALL_IDENTIFIERS:
+        duplicate_private_handoff_resume_checks = Checks(Path("."))
+        duplicate_private_handoff_resume_checks.validate_private_handoff_publication_resume_boundary(
+            PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+            valid_private_handoff_resume_wave_store
+            + f"\nauto duplicate = private_lease::{identifier}(arguments);\n",
+        )
+        expect(
+            any(
+                f"exactly 1 direct {identifier} call" in error
+                and "found 2 identifiers and 2 calls" in error
+                for error in duplicate_private_handoff_resume_checks.errors
+            ),
+            f"duplicate WaveStore {identifier} call escaped count closure: "
+            f"{duplicate_private_handoff_resume_checks.errors}",
+        )
+
+    for identifier in PRIVATE_HANDOFF_PUBLICATION_RESUME_DIRECT_CALL_IDENTIFIERS:
+        indirect_private_handoff_resume_checks = Checks(Path("."))
+        indirect_private_handoff_resume_checks.validate_private_handoff_publication_resume_boundary(
+            PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+            valid_private_handoff_resume_wave_store
+            + f"\nauto escaped = &private_lease::{identifier};\n",
+        )
+        expect(
+            any(
+                f"{identifier} must be used only as a direct call" in error
+                and "function-pointer references are forbidden" in error
+                for error in indirect_private_handoff_resume_checks.errors
+            ),
+            f"indirect WaveStore {identifier} authority escaped the direct-call "
+            f"rule: {indirect_private_handoff_resume_checks.errors}",
+        )
+
+    reordered_private_handoff_resume_wave_store = (
+        valid_private_handoff_resume_wave_store.replace(
+            """    auto admission =
+        private_lease::acquire_private_handoff_publication_resume_v1(
+            paths, directory_identity);
+    WorkerHandoffTypedValidationContext typed_context{""",
+            """    WorkerHandoffTypedValidationContext typed_context{""",
+        ).replace(
+            """    auto validation =
+        private_lease::validate_private_handoff_publication_resume_v1(""",
+            """    auto admission =
+        private_lease::acquire_private_handoff_publication_resume_v1(
+            paths, directory_identity);
+    auto validation =
+        private_lease::validate_private_handoff_publication_resume_v1(""",
+        )
+    )
+    reordered_private_handoff_resume_checks = Checks(Path("."))
+    reordered_private_handoff_resume_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        reordered_private_handoff_resume_wave_store,
+    )
+    expect(
+        any(
+            "must order resume acquisition, typed-validator context binding, and "
+            "relation validation"
+            in error
+            for error in reordered_private_handoff_resume_checks.errors
+        ),
+        "WaveStore typed-validator context before resume acquisition was not "
+        f"rejected: {reordered_private_handoff_resume_checks.errors}",
+    )
+
+    reconcile_outside_open_private_handoff_resume_wave_store = (
+        private_handoff_resume_wave_authority_and_callback
+        + "\nauto capture_recoverable_worker_handoff_inventory() noexcept {\n"
+        + private_handoff_resume_capture_chain
+        + "}\n"
+        + r"""
+auto revalidate_held_private_handoff() noexcept {
+    return private_lease::revalidate_private_handoff_publication_resume_v1(permit);
+}
+auto DistributedSieveWaveStore::open() noexcept {
+    return ready;
+}
+auto reconcile_helper() noexcept {
+    return private_lease::reconcile_private_handoff_publication_for_resume_v1(
+        permit, hooks);
+}
+"""
+    )
+    reconcile_outside_open_private_handoff_resume_checks = Checks(Path("."))
+    reconcile_outside_open_private_handoff_resume_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        reconcile_outside_open_private_handoff_resume_wave_store,
+    )
+    expect(
+        any(
+            f"{PRIVATE_HANDOFF_PUBLICATION_RESUME_OPEN_FUNCTION} must contain "
+            "the only direct "
+            "reconcile_private_handoff_publication_for_resume_v1 call"
+            in error
+            for error in reconcile_outside_open_private_handoff_resume_checks.errors
+        ),
+        "WaveStore reconcile authority outside open escaped the body boundary: "
+        f"{reconcile_outside_open_private_handoff_resume_checks.errors}",
     )
 
     launcher_use_site_snippet = r"""
