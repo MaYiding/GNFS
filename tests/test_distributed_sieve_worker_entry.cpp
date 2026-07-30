@@ -247,11 +247,12 @@ make_identity(const policy::DistributedSieveFrozenExecutionPolicyV1& frozen) {
 }
 
 [[nodiscard]] sieve::WaveManifestV1
-make_manifest_draft(const sieve::DistributedSieveWorkIdentityV1& identity) {
+make_manifest_draft(const sieve::DistributedSieveWorkIdentityV1& identity,
+                    Digest executable_sha256 = digest_with_seed(2)) {
     sieve::WaveManifestV1 manifest;
     manifest.wave_id = wave_id_with_seed(1);
     manifest.execution_contract_version = 1;
-    manifest.executable_sha256 = digest_with_seed(2);
+    manifest.executable_sha256 = executable_sha256;
     manifest.work_sha256 = work_digest(identity);
     manifest.effective_sq_begin = identity.distributed.chunks.front().sq_begin;
     manifest.effective_sq_end = identity.distributed.chunks.back().sq_end;
@@ -277,11 +278,13 @@ make_manifest_draft(const sieve::DistributedSieveWorkIdentityV1& identity) {
 
 class WorkerEntryFixture final {
 public:
-    explicit WorkerEntryFixture(std::string_view label)
+    explicit WorkerEntryFixture(std::string_view label,
+                                Digest executable_sha256 = digest_with_seed(2))
         : frozen(make_frozen_policy()), identity(make_identity(frozen)),
           polynomial(make_polynomial()), factor_base(make_factor_base()),
           root(temp.path() / std::string(label)),
-          opened(wave::DistributedSieveWaveStore::create(root, make_manifest_draft(identity))) {
+          opened(wave::DistributedSieveWaveStore::create(
+              root, make_manifest_draft(identity, executable_sha256))) {
         if (!opened || opened.store == nullptr) {
             fail("create worker-entry WaveStore", __LINE__,
                  wave_diagnostic_detail(opened.diagnostic));

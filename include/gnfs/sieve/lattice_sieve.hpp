@@ -15,13 +15,16 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <cstdint>
+#include <exception>
 #include <functional>
 #include <numeric>
 #include <optional>
 #include <stdexcept>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -86,14 +89,11 @@ inline bool tiny_simd_enabled() noexcept {
 /// the writes are not contiguous (NEON has no scatter store on ARMv8.0).
 /// When `GNFS_SIEVE_NO_TINY_SIMD=1` the function delegates to the scalar
 /// reference for byte-for-byte parity validation.
-inline void apply_log_p_stride(uint16_t* arr,
-                               size_t start,
-                               size_t end,
-                               size_t stride,
-                               uint16_t lp) noexcept {
+inline void apply_log_p_stride(uint16_t* arr, size_t start, size_t end, size_t stride, uint16_t lp,
+                               bool enable_tiny_simd) noexcept {
     if (start >= end || stride == 0) return;
 
-    if (!tiny_simd_enabled()) {
+    if (!enable_tiny_simd) {
         for (size_t idx = start; idx < end; idx += stride) {
             arr[idx] += lp;
         }
@@ -119,6 +119,12 @@ inline void apply_log_p_stride(uint16_t* arr,
     for (; idx < end; idx += stride) {
         arr[idx] = static_cast<uint16_t>(arr[idx] + lp);
     }
+}
+
+/// Legacy overload retaining the ambient ENV gate.
+inline void apply_log_p_stride(uint16_t* arr, size_t start, size_t end, size_t stride,
+                               uint16_t lp) noexcept {
+    apply_log_p_stride(arr, start, end, stride, lp, tiny_simd_enabled());
 }
 
 /// Scalar reference for `apply_log_p_stride` — exposed for parity tests.
@@ -157,11 +163,22 @@ struct SieveParams {
     }
 };
 
-/// Explicit execution policy for lattice-basis selection and adaptive retries.
-/// Supplying this config prevents these two policies from consulting ENV.
+/// Explicit execution policy for deterministic lattice-sieve execution.
+///
+/// Supplying this config prevents lattice basis selection, adaptive retries,
+/// thread-count fallback, E-core selection, tiny-prime SIMD, and bucket
+/// prefetch from consulting ENV or host hardware state. The legacy constructor
+/// retains the historical ambient behavior.
 struct LatticeSieveExecutionConfig {
     LatticeBasisReductionConfig lattice_basis;
     AdaptiveLatticeConfig adaptive_lattice;
+    /// Used only when neither the call nor set_max_threads() supplied a count.
+    /// Zero is normalized to one instead of consulting hardware_concurrency().
+    size_t fallback_thread_count = 1;
+    /// Requested E-core/QoS worker count, clamped to thread_count - 1.
+    size_t ecore_thread_count = 0;
+    bool enable_tiny_simd = true;
+    bool enable_bucket_prefetch = bucket_prefetch_supported();
 };
 
 /// 筛候选点
@@ -220,10 +237,11 @@ public:
         return sieve_array_.capacity() * sizeof(uint16_t);
     }
 
-    /// 设置最大线程数（0 = auto, 1 = single-threaded）
+    /// 设置最大线程数。Legacy 的 0 = hardware auto；显式配置的 0 使用其
+    /// deterministic fallback_thread_count。
     void set_max_threads(size_t n) { max_threads_ = n; }
 
-    /// Return the configured cap. Zero means the standalone auto mode.
+    /// Return the configured cap. Zero delegates to the constructor policy.
     [[nodiscard]] size_t configured_max_threads() const noexcept {
         return max_threads_;
     }
@@ -232,6 +250,12 @@ public:
     /// 默认 false: 当 large_primes.size() >= 100 走 bucket region。
     /// 仅测试代码使用,production 路径请保持默认。
     void set_force_row_major(bool force) { force_row_major_ = force; }
+
+    /// Test hook: fail after this many successful parallel thread launches.
+    /// This models a std::thread construction failure.
+    void set_sieve_parallel_launch_failure_after_for_testing(size_t successful_launches) noexcept {
+        sieve_parallel_launch_failure_after_for_testing_ = successful_launches;
+    }
 
     /// 设置关系回调
     void set_relation_callback(RelationCallback callback) {
@@ -429,8 +453,8 @@ public:
             size_t num_threads = 0) {
 
         if (num_threads == 0) {
-            num_threads = std::thread::hardware_concurrency();
-            if (num_threads == 0) num_threads = 4;
+            num_threads = execution_config_.has_value() ? resolve_internal_thread_count_()
+                                                        : legacy_hardware_thread_count_();
         }
 
         std::vector<SieveResult> all_results(special_qs.size());
@@ -438,7 +462,7 @@ public:
 
         // BACKLOG #4: optional E-core threads via GNFS_SIEVE_ECORE_THREADS=N.
         // SQ-level work-stealing — each SQ ~independent, faster cores grab more.
-        const size_t ecore_count = resolve_ecore_thread_count(num_threads);
+        const size_t ecore_count = resolve_ecore_thread_count_(num_threads);
 
         // Adaptive: share the host's manager across worker copies so telemetry
         // aggregates. When the manager is OFF (default), worker copies see
@@ -463,25 +487,43 @@ public:
         // Construct each branch directly: AdaptiveBasisManager contains
         // non-movable atomics, so a conditional temporary is not viable.
         // No mutex needed: each thread writes to a unique all_results[idx].
-        auto worker = [&](gnfs::util::QoSClass qos) {
-            gnfs::util::set_current_thread_qos(qos);
-            if (execution_config_.has_value()) {
-                LatticeSieve local_sieve(ctx_, fb_, params_, *execution_config_);
-                process_special_qs(local_sieve);
-            } else {
-                LatticeSieve local_sieve(ctx_, fb_, params_);
-                process_special_qs(local_sieve);
+        std::vector<std::exception_ptr> worker_failures(num_threads);
+        auto worker = [&](size_t worker_index, gnfs::util::QoSClass qos) noexcept {
+            try {
+                gnfs::util::set_current_thread_qos(qos);
+                if (execution_config_.has_value()) {
+                    LatticeSieve local_sieve(ctx_, fb_, params_, *execution_config_);
+                    process_special_qs(local_sieve);
+                } else {
+                    LatticeSieve local_sieve(ctx_, fb_, params_);
+                    process_special_qs(local_sieve);
+                }
+            } catch (...) {
+                worker_failures[worker_index] = std::current_exception();
             }
         };
 
-        // Launch threads
-        std::vector<std::thread> threads;
-        for (size_t t = 0; t < num_threads; ++t) {
-            const auto qos = qos_for_sieve_thread(t, num_threads, ecore_count);
-            threads.emplace_back(worker, qos);
+        {
+            // jthread joins every successfully launched worker, including
+            // while unwinding a later thread-construction failure.
+            std::vector<std::jthread> threads;
+            threads.reserve(num_threads);
+            for (size_t t = 0; t < num_threads; ++t) {
+                if (sieve_parallel_launch_failure_after_for_testing_.has_value() &&
+                    threads.size() >= *sieve_parallel_launch_failure_after_for_testing_) {
+                    throw std::system_error(
+                        std::make_error_code(std::errc::resource_unavailable_try_again),
+                        "LatticeSieve test hook: parallel thread launch failed");
+                }
+                const auto qos = qos_for_sieve_thread(t, num_threads, ecore_count);
+                threads.emplace_back(worker, t, qos);
+            }
         }
-        for (auto& t : threads) {
-            t.join();
+
+        for (const auto& failure : worker_failures) {
+            if (failure != nullptr) {
+                std::rethrow_exception(failure);
+            }
         }
 
         return all_results;
@@ -495,14 +537,15 @@ private:
 
     std::vector<uint16_t> sieve_array_;  // 加法筛：累积 log_p 值
     uint16_t last_init_val_ = 0;         // 当前 SQ 的初始 log 估计值
-    size_t max_threads_ = 0;             // 0 = auto (hardware_concurrency)
+    size_t max_threads_ = 0;             // 0 delegates to the constructor policy
     bool force_row_major_ = false;       // 测试钩子: 强制大素数走 row_major
+    std::optional<size_t> sieve_parallel_launch_failure_after_for_testing_;
 
     RelationCallback relation_callback_;
     ProgressCallback progress_callback_;
 
     // Present only for the explicit constructor. The legacy constructor leaves
-    // this empty so basis selection continues to read ambient ENV for every SQ.
+    // this empty so execution continues to use the historical ENV/host policy.
     std::optional<LatticeSieveExecutionConfig> execution_config_;
 
     // Adaptive lattice manager. By default each instance gets its own internal
@@ -511,6 +554,41 @@ private:
     // When manager.config().enabled is false (default), zero-overhead path.
     AdaptiveBasisManager adaptive_internal_{};
     AdaptiveBasisManager* adaptive_external_ = nullptr;
+
+    [[nodiscard]] static size_t legacy_hardware_thread_count_() noexcept {
+        size_t count = std::thread::hardware_concurrency();
+        return count == 0 ? 4 : count;
+    }
+
+    [[nodiscard]] size_t resolve_internal_thread_count_() const noexcept {
+        if (max_threads_ > 0) {
+            return max_threads_;
+        }
+        if (execution_config_.has_value()) {
+            return std::max<size_t>(1, execution_config_->fallback_thread_count);
+        }
+        return legacy_hardware_thread_count_();
+    }
+
+    [[nodiscard]] size_t resolve_ecore_thread_count_(size_t num_threads) const noexcept {
+        if (!execution_config_.has_value()) {
+            return resolve_ecore_thread_count(num_threads);
+        }
+        if (num_threads <= 1) {
+            return 0;
+        }
+        return std::min(execution_config_->ecore_thread_count, num_threads - 1);
+    }
+
+    [[nodiscard]] bool tiny_simd_enabled_() const noexcept {
+        return execution_config_.has_value() ? execution_config_->enable_tiny_simd
+                                             : detail::tiny_simd_enabled();
+    }
+
+    [[nodiscard]] bool bucket_prefetch_enabled_() const noexcept {
+        return execution_config_.has_value() ? execution_config_->enable_bucket_prefetch
+                                             : gnfs::sieve::bucket_prefetch_enabled();
+    }
 
     void ensure_sieve_array_storage_() {
         const size_t required_size = region_.size();
@@ -771,8 +849,7 @@ private:
                 medium_prime_indices.push_back(pi);
         }
 
-        size_t scatter_threads = (max_threads_ > 0) ? max_threads_ : std::thread::hardware_concurrency();
-        if (scatter_threads == 0) scatter_threads = 4;
+        size_t scatter_threads = resolve_internal_thread_count_();
         if (medium_prime_indices.size() < 100) scatter_threads = 1;
 
         // Thread-local per-region bucket vectors (used by both serial and parallel paths)
@@ -793,7 +870,7 @@ private:
             // BACKLOG #4: optional E-core threads via GNFS_SIEVE_ECORE_THREADS=N.
             // Chunked scatter — fixed per-thread work, mixed P+E hurts under
             // slowest-core barrier unless ENV opts in.
-            const size_t scatter_ecore_count = resolve_ecore_thread_count(scatter_threads);
+            const size_t scatter_ecore_count = resolve_ecore_thread_count_(scatter_threads);
 
             for (size_t t = 0; t < scatter_threads; ++t) {
                 size_t start = t * chunk;
@@ -811,7 +888,7 @@ private:
                     // it never changes mid-scatter and we want the inner
                     // bodies to branch on a stack-local boolean rather than
                     // re-issuing an atomic load per iteration.
-                    const bool prefetch_on = bucket_prefetch_enabled();
+                    const bool prefetch_on = bucket_prefetch_enabled_();
                     const size_t prefetch_step =
                         kBucketPrefetchDistance;
                     for (size_t pi_idx = start; pi_idx < end_idx; ++pi_idx) {
@@ -905,7 +982,8 @@ private:
             // target `kBucketPrefetchDistance` entries ahead overlaps the
             // pointer-chase latency with the current XOR-add. Prefetch is a
             // hint only — bit-for-bit identical output regardless of state.
-            const bool prefetch_on = bucket_prefetch_enabled();
+            const bool prefetch_on = bucket_prefetch_enabled_();
+            const bool tiny_simd_on = tiny_simd_enabled_();
             for (size_t t = 0; t < scatter_threads; ++t) {
                 const auto& vec = thread_buckets[t].per_region[r];
                 const size_t n_entries = vec.size();
@@ -981,8 +1059,8 @@ private:
                         size_t skip = (eff_start - idx + stride - 1) / stride;
                         idx += skip * stride;
                     }
-                    detail::apply_log_p_stride(
-                        sieve_array_.data(), idx, eff_end, stride, tp.log_p);
+                    detail::apply_log_p_stride(sieve_array_.data(), idx, eff_end, stride, tp.log_p,
+                                               tiny_simd_on);
 
                     int32_t new_mod = static_cast<int32_t>(tp.i_mod) + static_cast<int32_t>(tp.delta);
                     int32_t p32 = static_cast<int32_t>(tp.p);
@@ -993,8 +1071,7 @@ private:
         };
 
         // Dispatch regions in parallel using std::thread (no lock needed — disjoint writes)
-        size_t num_threads = (max_threads_ > 0) ? max_threads_ : std::thread::hardware_concurrency();
-        if (num_threads == 0) num_threads = 4;
+        size_t num_threads = resolve_internal_thread_count_();
         if (num_regions < 4) num_threads = 1;  // Not enough regions to parallelize
 
         if (num_threads <= 1) {
@@ -1003,7 +1080,7 @@ private:
             // BACKLOG #4: optional E-core threads via GNFS_SIEVE_ECORE_THREADS=N.
             // Work-stealing (atomic fetch_add over region index) makes mixed P+E
             // robust to slowest-core barrier — faster cores grab more regions.
-            const size_t ecore_count = resolve_ecore_thread_count(num_threads);
+            const size_t ecore_count = resolve_ecore_thread_count_(num_threads);
 
             std::vector<std::thread> threads;
             threads.reserve(num_threads);
@@ -1105,8 +1182,7 @@ private:
         const int32_t total_rows = j_max - j_min + 1;
         const int32_t i_min = region_.i_min;
 
-        size_t num_threads = (max_threads_ > 0) ? max_threads_ : std::thread::hardware_concurrency();
-        if (num_threads == 0) num_threads = 4;
+        size_t num_threads = resolve_internal_thread_count_();
         if (total_rows < 500) num_threads = 1;
 
         if (num_threads <= 1) {
@@ -1137,7 +1213,7 @@ private:
         // BACKLOG #4: optional E-core threads via GNFS_SIEVE_ECORE_THREADS=N.
         // Static row-chunk dispatch — mixed P+E hurts unless ENV opts in (slowest
         // chunk barrier). Convert method-pointer style to lambda to inject QoS.
-        const size_t row_ecore_count = resolve_ecore_thread_count(num_threads);
+        const size_t row_ecore_count = resolve_ecore_thread_count_(num_threads);
 
         for (size_t t = 0; t < num_threads; ++t) {
             int32_t chunk_start_t = chunk_starts[t];
@@ -1162,7 +1238,8 @@ private:
     }
 
     /// 紧凑小素数条目（16 bytes vs PrimeEntry 36 bytes → 2.25× cache 效率）
-    /// INVARIANT: bucket_threshold must be <= INT16_MAX (32767) for int16_t fields.
+    /// INVARIANT: bucket_threshold must be <= INT16_MAX + 1 because stored
+    /// values are < p.
     struct CompactSmallPrime {
         uint32_t p;
         uint16_t log_p;
@@ -1262,7 +1339,7 @@ private:
                          const std::vector<int16_t>* initial_imods = nullptr) {
 
         // Copy pre-separated small primes, compute per-chunk i_mod
-        assert(bucket_threshold <= INT16_MAX &&
+        assert(bucket_threshold <= static_cast<uint32_t>(INT16_MAX) + 1U &&
                "bucket_threshold exceeds int16_t range for CompactSmallPrime");
         auto small_primes = pre.small;  // shallow copy (only i_mod differs)
         const auto& v_primes = pre.v;
@@ -1292,7 +1369,8 @@ private:
         // Resolve the prefetch gate once per chunk: bucket apply runs
         // many times per row but the gate is process-global, so the
         // atomic load is hoisted to the chunk entry.
-        const bool prefetch_on = bucket_prefetch_enabled();
+        const bool prefetch_on = bucket_prefetch_enabled_();
+        const bool tiny_simd_on = tiny_simd_enabled_();
 
         for (int32_t j = j_start; j <= j_end; ++j) {
             size_t row_base = static_cast<size_t>(j - region_.j_min) * w;
@@ -1320,8 +1398,8 @@ private:
 
                 const size_t idx = row_base + static_cast<size_t>(offset);
                 const size_t stride = static_cast<size_t>(sp.p);
-                detail::apply_log_p_stride(
-                    sieve_array_.data(), idx, row_end, stride, sp.log_p);
+                detail::apply_log_p_stride(sieve_array_.data(), idx, row_end, stride, sp.log_p,
+                                           tiny_simd_on);
 
                 // Advance carry-forward
                 int32_t new_mod = static_cast<int32_t>(sp.i_mod) + static_cast<int32_t>(sp.delta);

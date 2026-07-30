@@ -6,6 +6,7 @@
 #include <limits>
 #include <new>
 #include <utility>
+#include <vector>
 
 namespace gnfs::sieve::distributed_sieve_execution_policy_detail {
 namespace {
@@ -14,6 +15,58 @@ namespace {
 binding_failure(std::uint32_t element_index = DISTRIBUTED_SIEVE_PROTOCOL_NO_INDEX) noexcept {
     return {DistributedSieveProtocolError::invalid_value, DISTRIBUTED_SIEVE_PROTOCOL_NO_OFFSET,
             element_index};
+}
+
+[[nodiscard]] bool
+lattice_sieve_region_is_runtime_safe(const SieveRegionWorkIdentityV1& region) noexcept {
+    using WideUnsigned = std::uintmax_t;
+
+    // The protocol validator runs before this worker-runtime check. Repeat the
+    // endpoint/order facts here so the widened subtractions below remain safe
+    // if this helper is ever reused independently.
+    if (region.i_min < std::numeric_limits<std::int32_t>::min() ||
+        region.i_max > std::numeric_limits<std::int32_t>::max() ||
+        region.j_min < std::numeric_limits<std::int32_t>::min() ||
+        region.j_max > std::numeric_limits<std::int32_t>::max() || region.i_max < region.i_min ||
+        region.j_max < region.j_min) {
+        return false;
+    }
+
+    const auto width = static_cast<WideUnsigned>(region.i_max - region.i_min) + WideUnsigned{1};
+    const auto height = static_cast<WideUnsigned>(region.j_max - region.j_min) + WideUnsigned{1};
+
+    // Row-major CompactSmallPrime stores values in [0, p) as int16_t for
+    // every p < width. Width 32768 is therefore the exact inclusive boundary:
+    // the largest possible stored value is still INT16_MAX.
+    constexpr WideUnsigned maximum_compact_width =
+        static_cast<WideUnsigned>(std::numeric_limits<std::int16_t>::max()) + WideUnsigned{1};
+    if (width == 0 || width > maximum_compact_width || height == 0 ||
+        height > static_cast<WideUnsigned>(std::numeric_limits<std::int32_t>::max())) {
+        return false;
+    }
+
+    // LatticeSieve uses inclusive int32_t row loops and computes
+    // j_min + height - 1. The final increment and that intermediate both need
+    // one representable value above j_max.
+    if (region.j_max == std::numeric_limits<std::int32_t>::max()) {
+        return false;
+    }
+
+    // estimate_initial_log() currently forms this midpoint sum in int32_t.
+    const std::int64_t j_midpoint_sum = region.j_min + region.j_max;
+    if (j_midpoint_sum < std::numeric_limits<std::int32_t>::min() ||
+        j_midpoint_sum > std::numeric_limits<std::int32_t>::max()) {
+        return false;
+    }
+
+    // Width and height are now tightly bounded, so their product fits
+    // uintmax_t. Check both the platform index type and the exact container
+    // used by LatticeSieve::set_region() before SieveRegion::size() is called.
+    const WideUnsigned area = width * height;
+    if (area > static_cast<WideUnsigned>(std::numeric_limits<std::size_t>::max())) {
+        return false;
+    }
+    return static_cast<std::size_t>(area) <= std::vector<std::uint16_t>{}.max_size();
 }
 
 [[nodiscard]] bool same_canonical_policy(const DistributedSieveExecutionPolicyV1& left,
@@ -130,6 +183,9 @@ bind_distributed_sieve_work_v1(const DistributedSieveWorkIdentityV1& identity,
     }
     if (!same_semantic_versions(identity.semantic_versions,
                                 DISTRIBUTED_SIEVE_BOUND_WORK_VERSIONS_V1)) {
+        return {std::nullopt, binding_failure()};
+    }
+    if (!lattice_sieve_region_is_runtime_safe(identity.region)) {
         return {std::nullopt, binding_failure()};
     }
 

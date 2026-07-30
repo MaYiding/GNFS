@@ -206,6 +206,23 @@ FrozenPolicy freeze_checked(const Snapshot& snapshot) {
     return std::move(*result.policy);
 }
 
+FrozenPolicy rehydrate_checked(const sieve::DistributedSieveExecutionPolicyV1& canonical) {
+    auto result = policy_detail::rehydrate_distributed_sieve_execution_policy_v1(canonical);
+    CHECK(result);
+    CHECK(result.policy.has_value());
+    CHECK(policy_detail::validate_distributed_sieve_frozen_execution_policy_v1(*result.policy));
+    CHECK(!result.policy->diagnostics.cofactor_timing_enabled);
+    CHECK(same_canonical_policy(result.policy->canonical, canonical));
+    return std::move(*result.policy);
+}
+
+void expect_rehydrate_rejected(const sieve::DistributedSieveExecutionPolicyV1& canonical) {
+    const auto result = policy_detail::rehydrate_distributed_sieve_execution_policy_v1(canonical);
+    CHECK(!result);
+    CHECK(!result.policy.has_value());
+    CHECK(!result.status);
+}
+
 LatticeRuntimeConfig map_lattice_runtime_checked(const FrozenPolicy& frozen) {
     auto result = policy_detail::map_distributed_sieve_lattice_runtime_config_v1(frozen);
     CHECK(result);
@@ -317,6 +334,10 @@ bool same_lattice_runtime_config(const LatticeRuntimeConfig& lhs,
                rhs.sieve.adaptive_lattice.density_threshold &&
            lhs.sieve.adaptive_lattice.max_retries == rhs.sieve.adaptive_lattice.max_retries &&
            lhs.sieve.adaptive_lattice.perturb_seed == rhs.sieve.adaptive_lattice.perturb_seed &&
+           lhs.sieve.fallback_thread_count == rhs.sieve.fallback_thread_count &&
+           lhs.sieve.ecore_thread_count == rhs.sieve.ecore_thread_count &&
+           lhs.sieve.enable_tiny_simd == rhs.sieve.enable_tiny_simd &&
+           lhs.sieve.enable_bucket_prefetch == rhs.sieve.enable_bucket_prefetch &&
            lhs.lattice_basis_parallel_threads == rhs.lattice_basis_parallel_threads;
 }
 
@@ -397,6 +418,172 @@ void test_all_unset_exact_policy() {
     }
 }
 
+void test_rehydrate_decodes_every_canonical_setting() {
+    struct RehydrateCase final {
+        Key key;
+        std::string_view raw;
+        bool enable_ecm_brent_suyama = false;
+    };
+
+    constexpr std::array<RehydrateCase, sieve::DISTRIBUTED_SIEVE_EXECUTION_POLICY_SETTING_COUNT_V1>
+        CASES{{
+            {Key::lattice_lll, "0"},
+            {Key::lattice_skew, "1"},
+            {Key::adaptive_lattice, "1"},
+            {Key::adaptive_lattice_threshold, "0.75"},
+            {Key::adaptive_lattice_max_retries, "5"},
+            {Key::adaptive_lattice_seed, "42"},
+            {Key::survival_filter, "1"},
+            {Key::survival_threshold, "0.25"},
+            {Key::cofactor_brent, "1"},
+            {Key::ecm_brent_suyama, "1"},
+            {Key::ecm_bs_degree, "30", true},
+            {Key::ecm_sigma_pool_size, "8"},
+            {Key::ecm_curve_pool, "8"},
+            {Key::ecm_batch_inv, "1"},
+            {Key::cofactor_batch_size, "16"},
+            {Key::brent_pollard_rho_threads, "5"},
+            {Key::ecm_b1_cache_size, "7"},
+            {Key::ecm_stage1_parallel_threads, "5"},
+            {Key::ecm_stage2_parallel, "5"},
+            {Key::cofactor_result_cache_size, "64"},
+            {Key::trial_div_simd, "0"},
+            {Key::lattice_basis_parallel_threads, "5"},
+            {Key::lattice_coords_simd, "0"},
+            {Key::sieve_apply_tile_threads, "5"},
+            {Key::bucket_prefetch, "0"},
+            {Key::sieve_ecore_threads, "3"},
+            {Key::sieve_no_tiny_simd, "1"},
+            {Key::sieve_norm_tile_bits, "4"},
+            {Key::sieve_region_tile_bits, "4"},
+            {Key::sieve_saturated_sub_simd, "0"},
+            {Key::sieve_count_above_threshold_simd, "0"},
+        }};
+
+    std::array<bool, sieve::DISTRIBUTED_SIEVE_EXECUTION_POLICY_SETTING_COUNT_V1> seen{};
+    for (const auto& test_case : CASES) {
+        auto snapshot = unset_snapshot(8);
+        snapshot.cofactor_timing = "1";
+        if (test_case.enable_ecm_brent_suyama) {
+            set_raw(snapshot, Key::ecm_brent_suyama, "1");
+        }
+        set_raw(snapshot, test_case.key, test_case.raw);
+
+        const auto source = freeze_checked(snapshot);
+        CHECK(source.diagnostics.cofactor_timing_enabled);
+        CHECK(bits(source, test_case.key) !=
+              EXPECTED_DESCRIPTORS[policy_index(test_case.key)].all_unset_bits);
+
+        const auto rehydrated = rehydrate_checked(source.canonical);
+        CHECK(rehydrated.sieve == source.sieve);
+        CHECK(rehydrated.cofactor == source.cofactor);
+        CHECK(!rehydrated.diagnostics.cofactor_timing_enabled);
+
+        CHECK(!seen[policy_index(test_case.key)]);
+        seen[policy_index(test_case.key)] = true;
+    }
+    CHECK(std::all_of(seen.begin(), seen.end(), [](bool value) { return value; }));
+}
+
+void test_rehydrate_derives_minimum_host_witness_without_ambient_inputs() {
+    const auto source = freeze_checked(unset_snapshot(64));
+    const auto baseline = rehydrate_checked(source.canonical);
+    CHECK(baseline.bound_hardware_concurrency == 1);
+
+    {
+        auto canonical = source.canonical;
+        canonical.settings[policy_index(Key::lattice_basis_parallel_threads)].canonical_bits = 5;
+        const auto rehydrated = rehydrate_checked(canonical);
+        CHECK(rehydrated.bound_hardware_concurrency == 3);
+        CHECK(rehydrated.sieve.lattice_basis_parallel_threads == 5);
+    }
+    {
+        auto canonical = source.canonical;
+        canonical.settings[policy_index(Key::sieve_ecore_threads)].canonical_bits = 3;
+        const auto rehydrated = rehydrate_checked(canonical);
+        CHECK(rehydrated.bound_hardware_concurrency == 4);
+        CHECK(rehydrated.sieve.sieve_ecore_threads == 3);
+    }
+    {
+        auto canonical = source.canonical;
+        canonical.settings[policy_index(Key::brent_pollard_rho_threads)].canonical_bits =
+            std::numeric_limits<std::uint32_t>::max();
+        const auto rehydrated = rehydrate_checked(canonical);
+        CHECK(rehydrated.bound_hardware_concurrency == UINT32_C(1) << 31U);
+        CHECK(rehydrated.cofactor.brent_pollard_rho_threads ==
+              std::numeric_limits<std::uint32_t>::max());
+    }
+    {
+        auto canonical = source.canonical;
+        canonical.settings[policy_index(Key::brent_pollard_rho_threads)].canonical_bits =
+            std::numeric_limits<std::uint32_t>::max();
+        canonical.settings[policy_index(Key::sieve_ecore_threads)].canonical_bits =
+            std::numeric_limits<std::uint32_t>::max() - 1U;
+        const auto rehydrated = rehydrate_checked(canonical);
+        CHECK(rehydrated.bound_hardware_concurrency == std::numeric_limits<std::uint32_t>::max());
+    }
+
+    ScopedEnvironmentVariable ambient_lll("GNFS_LATTICE_LLL", "0");
+    ScopedEnvironmentVariable ambient_parallel_threads("GNFS_LATTICE_BASIS_PARALLEL_THREADS",
+                                                       "999");
+    ScopedEnvironmentVariable ambient_timing("GNFS_COFACTOR_TIMING_ENABLE", "1");
+    const auto under_changed_environment = rehydrate_checked(source.canonical);
+    CHECK(under_changed_environment.sieve == baseline.sieve);
+    CHECK(under_changed_environment.cofactor == baseline.cofactor);
+    CHECK(under_changed_environment.bound_hardware_concurrency ==
+          baseline.bound_hardware_concurrency);
+    CHECK(!under_changed_environment.diagnostics.cofactor_timing_enabled);
+}
+
+void test_rehydrate_rejects_invalid_canonical_shapes_and_combinations() {
+    const auto source = freeze_checked(unset_snapshot(8));
+
+    {
+        auto canonical = source.canonical;
+        ++canonical.schema_version;
+        expect_rehydrate_rejected(canonical);
+    }
+    {
+        auto canonical = source.canonical;
+        canonical.settings.pop_back();
+        expect_rehydrate_rejected(canonical);
+    }
+    {
+        auto canonical = source.canonical;
+        std::swap(canonical.settings[0], canonical.settings[1]);
+        expect_rehydrate_rejected(canonical);
+    }
+    {
+        auto canonical = source.canonical;
+        canonical.settings[policy_index(Key::lattice_skew)].kind = Kind::unsigned_integer;
+        expect_rehydrate_rejected(canonical);
+    }
+    {
+        auto canonical = source.canonical;
+        canonical.settings[policy_index(Key::lattice_skew)].canonical_bits = 2;
+        expect_rehydrate_rejected(canonical);
+    }
+    {
+        auto canonical = source.canonical;
+        canonical.settings[policy_index(Key::ecm_bs_degree)].canonical_bits = 12;
+        CHECK(sieve::validate_distributed_sieve_execution_policy(canonical));
+        expect_rehydrate_rejected(canonical);
+    }
+    {
+        auto canonical = source.canonical;
+        canonical.settings[policy_index(Key::ecm_brent_suyama)].canonical_bits = 1;
+        CHECK(sieve::validate_distributed_sieve_execution_policy(canonical));
+        expect_rehydrate_rejected(canonical);
+    }
+    {
+        auto canonical = source.canonical;
+        canonical.settings[policy_index(Key::sieve_ecore_threads)].canonical_bits =
+            std::numeric_limits<std::uint32_t>::max();
+        CHECK(sieve::validate_distributed_sieve_execution_policy(canonical));
+        expect_rehydrate_rejected(canonical);
+    }
+}
+
 void test_lattice_reduction_and_boolean_normalization() {
     using LatticeReduction = policy_detail::DistributedSieveCanonicalLatticeReductionV1;
     static_assert(static_cast<std::uint8_t>(LatticeReduction::gauss) == 1);
@@ -466,12 +653,26 @@ void test_lattice_runtime_config_exact_mapping() {
     CHECK(all_unset.sieve.adaptive_lattice.density_threshold == 0.5);
     CHECK(all_unset.sieve.adaptive_lattice.max_retries == 2);
     CHECK(all_unset.sieve.adaptive_lattice.perturb_seed == 0);
+    CHECK(all_unset.sieve.fallback_thread_count == 1);
+    CHECK(all_unset.sieve.ecore_thread_count == 0);
+    CHECK(all_unset.sieve.enable_tiny_simd);
+    CHECK(all_unset.sieve.enable_bucket_prefetch == sieve::bucket_prefetch_supported());
     CHECK(all_unset.lattice_basis_parallel_threads == 1);
 
-    auto snapshot = unset_snapshot();
+    auto snapshot = unset_snapshot(8);
+    set_raw(snapshot, Key::sieve_ecore_threads, "3");
+    set_raw(snapshot, Key::sieve_no_tiny_simd, "1");
+    set_raw(snapshot, Key::bucket_prefetch, "0");
+    auto mapped = map_lattice_runtime_checked(freeze_checked(snapshot));
+    CHECK(mapped.sieve.fallback_thread_count == 1);
+    CHECK(mapped.sieve.ecore_thread_count == 3);
+    CHECK(!mapped.sieve.enable_tiny_simd);
+    CHECK(!mapped.sieve.enable_bucket_prefetch);
+
+    snapshot = unset_snapshot();
     set_raw(snapshot, Key::lattice_lll, "0");
     set_raw(snapshot, Key::lattice_skew, "1");
-    auto mapped = map_lattice_runtime_checked(freeze_checked(snapshot));
+    mapped = map_lattice_runtime_checked(freeze_checked(snapshot));
     CHECK(mapped.sieve.lattice_basis.base_method == sieve::LatticeReductionMethod::Gauss);
     CHECK(mapped.sieve.lattice_basis.skew_enabled);
 
@@ -1187,6 +1388,88 @@ void test_bound_work_derives_every_small_runtime_input() {
     CHECK(same_canonical_policy(bound.frozen_policy.canonical, frozen.canonical));
 }
 
+void test_bound_work_enforces_lattice_sieve_region_bounds() {
+    const auto frozen = freeze_checked(unset_snapshot());
+    const auto polynomial = make_live_polynomial();
+    const auto factor_base = make_live_factor_base();
+
+    const auto expect_region_rejected = [&](const sieve::SieveRegionWorkIdentityV1& region) {
+        auto identity = make_runtime_identity(frozen);
+        identity.region = region;
+        CHECK(sieve::validate_distributed_sieve_work_identity(identity));
+        expect_work_binding_rejected(identity, frozen, polynomial, factor_base);
+    };
+
+    // CompactSmallPrime stores values in [0, p) for p < width. Thus 32768 is
+    // the exact accepted threshold and 32769 is the first unsafe width.
+    {
+        auto identity = make_runtime_identity(frozen);
+        identity.region = {-16'384, 16'383, 1, 1};
+        CHECK(sieve::validate_distributed_sieve_work_identity(identity));
+        const auto bound = bind_work_checked(identity, frozen, polynomial, factor_base);
+        CHECK(bound.sieve_region.i_width() == 32'768);
+        CHECK(bound.sieve_region.size() == 32'768);
+
+        sieve::LatticeSieve lattice_sieve(polynomial, factor_base, bound.sieve_parameters,
+                                          bound.lattice.sieve);
+        lattice_sieve.set_region(bound.sieve_region);
+        lattice_sieve.set_max_threads(1);
+        const auto result = lattice_sieve.sieve_special_q({7, 1, 0});
+        CHECK(result.sieved_positions == 32'768);
+    }
+    expect_region_rejected({-16'384, 16'384, 1, 1});
+
+    // SieveRegion::j_height() and row offsets are int32_t.
+    expect_region_rejected({0, 0, std::numeric_limits<std::int32_t>::min(), 0});
+
+    // Inclusive row loops increment once after the last row, so INT32_MAX
+    // cannot itself be a j endpoint even for a one-row region.
+    expect_region_rejected(
+        {0, 0, std::numeric_limits<std::int32_t>::max(), std::numeric_limits<std::int32_t>::max()});
+
+    // estimate_initial_log() forms j_min + j_max in int32_t.
+    expect_region_rejected({0, 0, std::numeric_limits<std::int32_t>::max() - 2,
+                            std::numeric_limits<std::int32_t>::max() - 1});
+    expect_region_rejected({0, 0, std::numeric_limits<std::int32_t>::min(),
+                            std::numeric_limits<std::int32_t>::min() + 1});
+
+    // Exercise the widest/tallest representable product without allocating
+    // it. On a platform whose vector limit is smaller, the same identity must
+    // instead fail closed at bind time.
+    constexpr std::int64_t maximum_height = std::numeric_limits<std::int32_t>::max();
+    constexpr std::int64_t centered_j_min = -(maximum_height / 2) - 1;
+    constexpr std::int64_t centered_j_max = centered_j_min + maximum_height - 1;
+    auto maximum_area_identity = make_runtime_identity(frozen);
+    maximum_area_identity.region = {-16'384, 16'383, centered_j_min, centered_j_max};
+    CHECK(sieve::validate_distributed_sieve_work_identity(maximum_area_identity));
+
+    constexpr std::uintmax_t maximum_region_area =
+        std::uintmax_t{32'768} * static_cast<std::uintmax_t>(maximum_height);
+    const auto maximum_vector_area =
+        static_cast<std::uintmax_t>(std::vector<std::uint16_t>{}.max_size());
+    if (maximum_region_area <= maximum_vector_area &&
+        maximum_region_area <=
+            static_cast<std::uintmax_t>(std::numeric_limits<std::size_t>::max())) {
+        const auto bound =
+            bind_work_checked(maximum_area_identity, frozen, polynomial, factor_base);
+        CHECK(static_cast<std::uintmax_t>(bound.sieve_region.i_width()) *
+                  static_cast<std::uintmax_t>(bound.sieve_region.j_height()) ==
+              maximum_region_area);
+    } else {
+        expect_work_binding_rejected(maximum_area_identity, frozen, polynomial, factor_base);
+    }
+
+    // Where the platform allocation bound is reachable inside the region
+    // dimension limits, cross it by exactly one row and require rejection.
+    const std::uintmax_t first_oversized_height = maximum_vector_area / 32'768U + 1U;
+    if (first_oversized_height <=
+        static_cast<std::uintmax_t>(std::numeric_limits<std::int32_t>::max())) {
+        const auto j_min = -static_cast<std::int64_t>(first_oversized_height / 2U);
+        const auto j_max = j_min + static_cast<std::int64_t>(first_oversized_height) - 1;
+        expect_region_rejected({-16'384, 16'383, j_min, j_max});
+    }
+}
+
 void test_bound_work_rejects_every_live_polynomial_drift() {
     const auto frozen = freeze_checked(unset_snapshot());
     const auto identity = make_runtime_identity(frozen);
@@ -1401,6 +1684,9 @@ int main() {
     try {
         test_descriptor_inventory();
         test_all_unset_exact_policy();
+        test_rehydrate_decodes_every_canonical_setting();
+        test_rehydrate_derives_minimum_host_witness_without_ambient_inputs();
+        test_rehydrate_rejects_invalid_canonical_shapes_and_combinations();
         test_lattice_reduction_and_boolean_normalization();
         test_floating_and_adaptive_integer_normalization();
         test_lattice_runtime_config_exact_mapping();
@@ -1416,6 +1702,7 @@ int main() {
         test_capture_is_single_read_and_owned();
         test_lattice_runtime_mapping_uses_only_frozen_policy();
         test_bound_work_derives_every_small_runtime_input();
+        test_bound_work_enforces_lattice_sieve_region_bounds();
         test_bound_work_rejects_every_live_polynomial_drift();
         test_bound_work_rejects_every_live_factor_base_drift();
         test_bound_work_rejects_policy_version_and_mapper_drift();

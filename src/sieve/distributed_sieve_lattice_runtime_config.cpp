@@ -37,6 +37,20 @@ DistributedSieveLatticeRuntimeConfigMapResultV1 map_distributed_sieve_lattice_ru
     config.sieve.adaptive_lattice.max_retries =
         static_cast<int>(policy.sieve.adaptive_lattice_max_retries);
     config.sieve.adaptive_lattice.perturb_seed = policy.sieve.adaptive_lattice_seed;
+    config.sieve.fallback_thread_count = 1;
+    config.sieve.ecore_thread_count = policy.sieve.sieve_ecore_threads;
+    config.sieve.enable_tiny_simd = !policy.sieve.sieve_no_tiny_simd;
+    switch (policy.sieve.bucket_prefetch) {
+    case DistributedSieveCanonicalTernaryModeV1::automatic:
+    case DistributedSieveCanonicalTernaryModeV1::force_on:
+        config.sieve.enable_bucket_prefetch = bucket_prefetch_supported();
+        break;
+    case DistributedSieveCanonicalTernaryModeV1::force_off:
+        config.sieve.enable_bucket_prefetch = false;
+        break;
+    default:
+        return {std::nullopt, runtime_config_failure(DistributedSieveProtocolError::unknown_enum)};
+    }
     config.lattice_basis_parallel_threads = policy.sieve.lattice_basis_parallel_threads;
     return {config, {}};
 }

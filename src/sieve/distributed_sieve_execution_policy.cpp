@@ -440,6 +440,23 @@ host_bounds_are_valid(const DistributedSieveFrozenExecutionPolicyV1& policy) noe
     return policy.sieve.sieve_ecore_threads <= host - 1U;
 }
 
+[[nodiscard]] std::optional<std::uint32_t> minimum_bound_hardware_concurrency_witness(
+    const DistributedSieveFrozenSievePolicyV1& sieve,
+    const DistributedSieveFrozenCofactorPolicyV1& cofactor) noexcept {
+    const std::uint32_t maximum_thread_count =
+        std::max({cofactor.brent_pollard_rho_threads, cofactor.ecm_stage1_parallel_threads,
+                  cofactor.ecm_stage2_parallel, sieve.lattice_basis_parallel_threads,
+                  sieve.sieve_apply_tile_threads});
+    const std::uint64_t thread_witness =
+        (static_cast<std::uint64_t>(maximum_thread_count) + 1U) / 2U;
+    const std::uint64_t ecore_witness = static_cast<std::uint64_t>(sieve.sieve_ecore_threads) + 1U;
+    const std::uint64_t witness = std::max<std::uint64_t>({1U, thread_witness, ecore_witness});
+    if (witness > std::numeric_limits<std::uint32_t>::max()) {
+        return std::nullopt;
+    }
+    return static_cast<std::uint32_t>(witness);
+}
+
 } // namespace
 
 std::span<const DistributedSieveExecutionPolicyDescriptorV1>
@@ -468,7 +485,7 @@ capture_distributed_sieve_execution_policy_environment_v1(
     } catch (const std::bad_alloc&) {
         return {std::nullopt, failure(DistributedSieveProtocolError::resource_exhausted)};
     } catch (...) {
-        return {std::nullopt, failure(DistributedSieveProtocolError::resource_exhausted)};
+        return {std::nullopt, failure(DistributedSieveProtocolError::invalid_value)};
     }
 }
 
@@ -696,6 +713,156 @@ DistributedSieveExecutionPolicyFreezeResultV1 freeze_distributed_sieve_execution
             return {std::nullopt, projected.status};
         }
         frozen.canonical = std::move(*projected.policy);
+        const auto status = validate_distributed_sieve_frozen_execution_policy_v1(frozen);
+        if (!status) {
+            return {std::nullopt, status};
+        }
+        return {std::move(frozen), {}};
+    } catch (const std::bad_alloc&) {
+        return {std::nullopt, failure(DistributedSieveProtocolError::resource_exhausted)};
+    } catch (...) {
+        return {std::nullopt, failure(DistributedSieveProtocolError::resource_exhausted)};
+    }
+}
+
+DistributedSieveExecutionPolicyRehydrateResultV1 rehydrate_distributed_sieve_execution_policy_v1(
+    const DistributedSieveExecutionPolicyV1& canonical) noexcept {
+    if (const auto status = validate_distributed_sieve_execution_policy(canonical); !status) {
+        return {std::nullopt, status};
+    }
+
+    try {
+        DistributedSieveFrozenExecutionPolicyV1 frozen;
+        frozen.canonical = canonical;
+        frozen.diagnostics.cofactor_timing_enabled = false;
+
+        for (const auto& setting : canonical.settings) {
+            switch (setting.key) {
+            case ExecutionPolicyKeyV1::lattice_lll:
+                frozen.sieve.lattice_lll = static_cast<DistributedSieveCanonicalLatticeReductionV1>(
+                    setting.canonical_bits);
+                break;
+            case ExecutionPolicyKeyV1::lattice_skew:
+                frozen.sieve.lattice_skew = setting.canonical_bits != 0;
+                break;
+            case ExecutionPolicyKeyV1::adaptive_lattice:
+                frozen.sieve.adaptive_lattice = setting.canonical_bits != 0;
+                break;
+            case ExecutionPolicyKeyV1::adaptive_lattice_threshold:
+                frozen.sieve.adaptive_lattice_threshold =
+                    std::bit_cast<double>(setting.canonical_bits);
+                break;
+            case ExecutionPolicyKeyV1::adaptive_lattice_max_retries:
+                frozen.sieve.adaptive_lattice_max_retries =
+                    static_cast<std::uint32_t>(setting.canonical_bits);
+                break;
+            case ExecutionPolicyKeyV1::adaptive_lattice_seed:
+                frozen.sieve.adaptive_lattice_seed = setting.canonical_bits;
+                break;
+            case ExecutionPolicyKeyV1::survival_filter:
+                frozen.cofactor.survival_filter = setting.canonical_bits != 0;
+                break;
+            case ExecutionPolicyKeyV1::survival_threshold:
+                frozen.cofactor.survival_threshold = std::bit_cast<double>(setting.canonical_bits);
+                break;
+            case ExecutionPolicyKeyV1::cofactor_brent:
+                frozen.cofactor.cofactor_brent = setting.canonical_bits != 0;
+                break;
+            case ExecutionPolicyKeyV1::ecm_brent_suyama:
+                frozen.cofactor.ecm_brent_suyama = setting.canonical_bits != 0;
+                break;
+            case ExecutionPolicyKeyV1::ecm_bs_degree:
+                frozen.cofactor.ecm_bs_degree = static_cast<std::uint32_t>(setting.canonical_bits);
+                break;
+            case ExecutionPolicyKeyV1::ecm_sigma_pool_size:
+                frozen.cofactor.ecm_sigma_pool_size =
+                    static_cast<std::uint32_t>(setting.canonical_bits);
+                break;
+            case ExecutionPolicyKeyV1::ecm_curve_pool:
+                frozen.cofactor.ecm_curve_pool = static_cast<std::uint32_t>(setting.canonical_bits);
+                break;
+            case ExecutionPolicyKeyV1::ecm_batch_inv:
+                frozen.cofactor.ecm_batch_inv = setting.canonical_bits != 0;
+                break;
+            case ExecutionPolicyKeyV1::cofactor_batch_size:
+                frozen.cofactor.cofactor_batch_size =
+                    static_cast<std::uint32_t>(setting.canonical_bits);
+                break;
+            case ExecutionPolicyKeyV1::brent_pollard_rho_threads:
+                frozen.cofactor.brent_pollard_rho_threads =
+                    static_cast<std::uint32_t>(setting.canonical_bits);
+                break;
+            case ExecutionPolicyKeyV1::ecm_b1_cache_size:
+                frozen.cofactor.ecm_b1_cache_size =
+                    static_cast<std::uint32_t>(setting.canonical_bits);
+                break;
+            case ExecutionPolicyKeyV1::ecm_stage1_parallel_threads:
+                frozen.cofactor.ecm_stage1_parallel_threads =
+                    static_cast<std::uint32_t>(setting.canonical_bits);
+                break;
+            case ExecutionPolicyKeyV1::ecm_stage2_parallel:
+                frozen.cofactor.ecm_stage2_parallel =
+                    static_cast<std::uint32_t>(setting.canonical_bits);
+                break;
+            case ExecutionPolicyKeyV1::cofactor_result_cache_size:
+                frozen.cofactor.cofactor_result_cache_size =
+                    static_cast<std::uint32_t>(setting.canonical_bits);
+                break;
+            case ExecutionPolicyKeyV1::trial_div_simd:
+                frozen.cofactor.trial_div_simd =
+                    static_cast<DistributedSieveCanonicalTernaryModeV1>(setting.canonical_bits);
+                break;
+            case ExecutionPolicyKeyV1::lattice_basis_parallel_threads:
+                frozen.sieve.lattice_basis_parallel_threads =
+                    static_cast<std::uint32_t>(setting.canonical_bits);
+                break;
+            case ExecutionPolicyKeyV1::lattice_coords_simd:
+                frozen.sieve.lattice_coords_simd =
+                    static_cast<DistributedSieveCanonicalTernaryModeV1>(setting.canonical_bits);
+                break;
+            case ExecutionPolicyKeyV1::sieve_apply_tile_threads:
+                frozen.sieve.sieve_apply_tile_threads =
+                    static_cast<std::uint32_t>(setting.canonical_bits);
+                break;
+            case ExecutionPolicyKeyV1::bucket_prefetch:
+                frozen.sieve.bucket_prefetch =
+                    static_cast<DistributedSieveCanonicalTernaryModeV1>(setting.canonical_bits);
+                break;
+            case ExecutionPolicyKeyV1::sieve_ecore_threads:
+                frozen.sieve.sieve_ecore_threads =
+                    static_cast<std::uint32_t>(setting.canonical_bits);
+                break;
+            case ExecutionPolicyKeyV1::sieve_no_tiny_simd:
+                frozen.sieve.sieve_no_tiny_simd = setting.canonical_bits != 0;
+                break;
+            case ExecutionPolicyKeyV1::sieve_norm_tile_bits:
+                frozen.sieve.sieve_norm_tile_bits =
+                    static_cast<std::uint32_t>(setting.canonical_bits);
+                break;
+            case ExecutionPolicyKeyV1::sieve_region_tile_bits:
+                frozen.sieve.sieve_region_tile_bits =
+                    static_cast<std::uint32_t>(setting.canonical_bits);
+                break;
+            case ExecutionPolicyKeyV1::sieve_saturated_sub_simd:
+                frozen.sieve.sieve_saturated_sub_simd =
+                    static_cast<DistributedSieveCanonicalTernaryModeV1>(setting.canonical_bits);
+                break;
+            case ExecutionPolicyKeyV1::sieve_count_above_threshold_simd:
+                frozen.sieve.sieve_count_above_threshold_simd =
+                    static_cast<DistributedSieveCanonicalTernaryModeV1>(setting.canonical_bits);
+                break;
+            }
+        }
+
+        const auto witness =
+            minimum_bound_hardware_concurrency_witness(frozen.sieve, frozen.cofactor);
+        if (!witness.has_value()) {
+            return {std::nullopt, failure(DistributedSieveProtocolError::invalid_value,
+                                          static_cast<std::uint32_t>(policy_index(
+                                              ExecutionPolicyKeyV1::sieve_ecore_threads)))};
+        }
+        frozen.bound_hardware_concurrency = *witness;
+
         const auto status = validate_distributed_sieve_frozen_execution_policy_v1(frozen);
         if (!status) {
             return {std::nullopt, status};

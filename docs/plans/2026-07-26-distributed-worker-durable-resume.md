@@ -2399,15 +2399,16 @@ the same executable object authenticated by the manifest. M3a-1 consumes
 descriptors `3..6` in that worker image into read-only, process-bound facts.
 M3a-2a can consume that token once to mint only append/finalize authority for
 the exact inherited P8 directory. M3a-2b converts that authority into one
-typed, no-delete handoff after exact-handle finalization. It still does not run
-the actual sieve. Restart cleanup is instead the separate M2j-B transition
-below. Fixed-capability launch also fails closed before process preparation
-when the host cannot atomically close every unmapped descriptor at spawn. The
-policy checker makes the launcher function body the first production allowlist
-expansion for bound work, carrier creation, package-reader access, and fixed
-capabilities. It separately confines the M3a-1 entry API and M3a-2 writer and
-handoff APIs to their source-private implementations, interfaces, and
-dedicated self-exec test, and keeps the legacy seeded runner isolated.
+typed, no-delete handoff after exact-handle finalization. M3a-2c.1 now runs the
+actual chunk through a source-private execution facade. Restart cleanup remains
+the separate M2j-B transition below. Fixed-capability launch also fails closed
+before process preparation when the host cannot atomically close every
+unmapped descriptor at spawn. The policy checker makes the launcher function
+body the first production allowlist expansion for bound work, carrier
+creation, package-reader access, and fixed capabilities. It separately
+confines the M3a-1 entry API and M3a-2 writer, execution, and handoff APIs to
+their source-private implementations, interfaces, and dedicated self-exec
+tests, and keeps the legacy seeded runner isolated.
 
 The launcher test matrix has ten cases. The close-all-unavailable pre-gate
 case runs on every non-Windows host: a supported host uses the trusted
@@ -2548,7 +2549,88 @@ captured first, followed by same-extent corrupt named-file replacement; a
 path-based reader rejects the replacements while the adopted reader still
 returns the original rows from its frozen handles. Linux exercises the terminal
 fail-early boundary; other unsupported hosts exercise the earlier worker-entry
-platform gate. Actual worker-side sieve execution remains pending.
+platform gate.
+
+M3a-2c.1 worker execution is implemented as an internal facade. The worker
+rehydrates all 31 canonical execution-policy settings without reading the
+environment or current-host topology. It reconstructs the exact
+`PolynomialContext` and `FactorBase`, reruns the complete bound-work adapter,
+and prepares `SpecialQGenerator`, `LatticeSieve`, `Cofactorizer`, and the
+relation admission state before it consumes writer authority. The explicit
+lattice configuration closes the reachable tiny-prime SIMD, bucket-prefetch,
+E-core, and thread-fallback reads. This version sets the per-process sieve
+thread cap to one, so worker topology cannot re-enter the standalone hardware
+fallback.
+
+Chunk execution preserves full special-Q boundaries. It checks the
+special-Q cap before the soft relation cap, never truncates one special-Q,
+normalizes exhausted cursors across trailing projective entries, and emits the
+typed completion facts expected by handoff publication. A path-free admission
+layer enforces `b > 0`, `gcd(a,b) = 1`, and `gcd(a-bm,N) = 1`, then applies
+deterministic first-AB-wins deduplication. A rejected append rolls back only
+that in-memory dedup reservation. It never creates `RelationCollector`,
+cleanup intent, path-based writer authority, or generic publication authority.
+
+The facade hashes the current loaded image path and compares it with the
+manifest before entry-to-writer conversion. This check detects wrong binaries
+and ordinary deployment drift. It follows the symlink preserved by
+`_NSGetExecutablePath`, so a worker launched through a legitimate symlink
+still authenticates the executable bytes; the self-exec test covers this
+case. macOS still lacks an exact-file-object exec backend in this transport,
+so hostile same-user path replacement remains outside the claim. Linux fails
+before sieve or corpus mutation because typed terminal handoff publication
+remains unsupported there.
+
+Worker binding rejects regions that the current lattice implementation cannot
+represent safely. Widened checks cover inclusive width and height, row-loop
+endpoints, midpoint arithmetic, compact `int16_t` state, and the
+`vector<uint16_t>` area limit. A width of 32768 is the exact accepted compact
+boundary; 32769 is rejected. The explicit parallel lattice API also joins
+every started thread before propagating a worker or thread-construction
+exception, so neither path can terminate the process through a joinable thread
+destructor.
+
+WaveStore inventory now recognizes one exact successful worker terminal shape:
+canonical `OWNED`, revoked `RESERVED`, the finalized index/data pair, and the
+canonical typed handoff under the matching attempt `BaseLock`. It decodes and
+binds the handoff to the manifest, chunk, attempt chain, lease, native
+identities, extents, progress, and completion facts. Unknown leaves,
+cleanup-intent siblings, pending-only handoffs, foreign attempts, and named
+inode replacements still fail closed. The same store can revalidate after
+publication, and a new store instance can reopen the terminal wave without
+deleting any worker artifact. A successful handoff is absorbing for its chunk:
+the store rejects a later attempt before any persistent mutation, and
+inventory rejects externally injected higher-attempt leases, including a
+recordless `BaseLock`. Attempt creation joins handoff publication's lock
+domain before its final inventory observation: while holding the same-State
+root claim, it acquires every existing same-chunk predecessor `BaseLock` in
+increasing attempt order with nonblocking locks, revalidates the closed
+inventory, and only then creates the target `BaseLock` with `O_EXCL`. A busy or
+drifted predecessor returns without creating the target, so an older worker
+cannot publish a successful handoff across the former final-observation to
+target-creation window.
+
+The calibrated execution test processes three special-Q entries and produces
+12 relations. Repeated runs match by row order, sequence receipt, and semantic
+corpus SHA-256. It also covers both cap types and their priority, admission
+rejection and rollback, sink failure, trailing projective cursor
+normalization, and executable hashing. The self-exec test covers the full
+Entry-to-Writer-to-handoff route with both zero-row and calibrated positive-row
+chunks, including a 72-row, one-special-Q corpus from a nondegenerate cubic
+polynomial. It reopens the WaveStore, adopts the frozen OOC handles, validates
+every row independently against both norms, exact factor products, prime
+ideals, special-Q, coprimality, and admission invariants, and then reproduces
+both the sequence receipt and semantic corpus SHA-256. Executable mismatch
+creates no corpus. Cap coverage also includes a resumable projective hole
+between affine special-Q entries. A controlled self-exec interleaving stops an
+older worker while it holds its attempt `BaseLock`, proves that the next
+attempt returns lock-busy without namespace mutation, then lets the older
+handoff win and reopens the terminal chain.
+
+M3a-2c.1 does not add the production CLI dispatcher or the exact-missing
+coordinator. It also does not classify adopted versus executed chunks. Those
+tasks remain in M3a-2c.2, together with pending-handoff convergence and the
+fresh, all-adopted, and mixed-wave exit matrix.
 
 ### M3: Worker Handoff and Adoption
 
@@ -2561,6 +2643,8 @@ platform gate. Actual worker-side sieve execution remains pending.
 - [x] Reconcile handoffs under the same private lock before any recovery or new
   lease reservation.
 - [x] Read adopted OOC pairs through frozen native handles.
+- [x] Rehydrate canonical worker inputs and run one exact chunk into a typed
+  terminal handoff without cleanup authority.
 - [ ] Run only exact missing chunks.
 - [ ] Emit dispositions, deterministic relation receipts, and preserve every
   worker artifact.

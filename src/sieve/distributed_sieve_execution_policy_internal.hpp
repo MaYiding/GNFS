@@ -155,7 +155,8 @@ struct DistributedSieveFrozenExecutionPolicyV1 final {
     DistributedSieveFrozenCofactorPolicyV1 cofactor;
     DistributedSieveFrozenDiagnosticsV1 diagnostics;
     /// Effective host parallelism used to bind every canonical thread-count
-    /// setting. A captured zero is normalized to four.
+    /// setting. A captured zero is normalized to four. Rehydration derives the
+    /// smallest deterministic witness that satisfies every canonical bound.
     std::uint32_t bound_hardware_concurrency = 4;
 };
 
@@ -188,5 +189,21 @@ struct DistributedSieveExecutionPolicyFreezeResultV1 final {
 [[nodiscard]] DistributedSieveExecutionPolicyFreezeResultV1
 freeze_distributed_sieve_execution_policy_v1(
     const DistributedSieveExecutionPolicyEnvironmentSnapshotV1& snapshot) noexcept;
+
+struct DistributedSieveExecutionPolicyRehydrateResultV1 final {
+    std::optional<DistributedSieveFrozenExecutionPolicyV1> policy;
+    DistributedSieveProtocolStatus status;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return policy.has_value() && static_cast<bool>(status);
+    }
+};
+
+/// Reconstruct the complete typed policy from its canonical wire form without
+/// consulting process environment or current-host topology. Diagnostic policy
+/// is intentionally reset because it is not part of the canonical identity.
+[[nodiscard]] DistributedSieveExecutionPolicyRehydrateResultV1
+rehydrate_distributed_sieve_execution_policy_v1(
+    const DistributedSieveExecutionPolicyV1& canonical) noexcept;
 
 } // namespace gnfs::sieve::distributed_sieve_execution_policy_detail

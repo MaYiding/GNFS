@@ -94,6 +94,38 @@ EXECUTION_POLICY_ENVIRONMENT_CAPTURE = (
 )
 EXECUTION_POLICY_HOST_CONCURRENCY_IDENTIFIER = "std::thread::hardware_concurrency"
 
+WORKER_EXECUTOR_IMPLEMENTATION_FILE = (
+    "src/sieve/distributed_sieve_worker_execution.cpp"
+)
+WORKER_EXECUTOR_INTERFACE_FILE = (
+    "src/sieve/distributed_sieve_worker_execution_internal.hpp"
+)
+WORKER_EXECUTOR_TEST_FILE = "tests/test_distributed_sieve_worker_execution.cpp"
+WORKER_EXECUTOR_RUNTIME_FILES = {
+    "src/sieve/distributed_sieve_worker_runtime.cpp",
+    "src/sieve/distributed_sieve_worker_runtime_internal.hpp",
+}
+WORKER_EXECUTOR_CHUNK_FILES = {
+    "src/sieve/distributed_sieve_worker_chunk.cpp",
+    "src/sieve/distributed_sieve_worker_chunk_internal.hpp",
+}
+WORKER_EXECUTOR_CAPABILITY_USE_SITE_FILES = {
+    WORKER_EXECUTOR_IMPLEMENTATION_FILE,
+    WORKER_EXECUTOR_INTERFACE_FILE,
+    WORKER_EXECUTOR_TEST_FILE,
+}
+WORKER_EXECUTOR_DURABLE_FILES = (
+    WORKER_EXECUTOR_RUNTIME_FILES
+    | WORKER_EXECUTOR_CHUNK_FILES
+    | {
+        WORKER_EXECUTOR_IMPLEMENTATION_FILE,
+        WORKER_EXECUTOR_INTERFACE_FILE,
+    }
+)
+WORKER_EXECUTOR_BOUND_WORK_USE_SITE_FILES = (
+    WORKER_EXECUTOR_RUNTIME_FILES | WORKER_EXECUTOR_CHUNK_FILES
+)
+
 # These implementation units are the environment-free side of the planned
 # freeze boundary. Legacy parsing remains outside them.
 DURABLE_ENVIRONMENT_FREE_FILES = {
@@ -128,7 +160,7 @@ DURABLE_ENVIRONMENT_FREE_FILES = {
     "src/sieve/distributed_sieve_worker_process.cpp",
     "src/sieve/distributed_sieve_worker_process_internal.hpp",
     "include/gnfs/sieve/distributed_sieve_seed_v2.hpp",
-}
+} | WORKER_EXECUTOR_DURABLE_FILES
 
 WORKER_LAUNCHER_IMPLEMENTATION_FILE = "src/sieve/distributed_sieve_wave_store.cpp"
 WORKER_LAUNCHER_INTERFACE_FILES = {
@@ -208,7 +240,7 @@ WORKER_ENTRY_USE_SITE_ALLOWLIST = {
     WORKER_WRITER_IMPLEMENTATION_FILE,
     WORKER_WRITER_INTERFACE_FILE,
     WORKER_WRITER_TEST_FILE,
-}
+} | WORKER_EXECUTOR_CAPABILITY_USE_SITE_FILES
 WORKER_WRITER_USE_SITE_IDENTIFIERS = (
     "DistributedSieveWorkerCompletionFactsV1",
     "DistributedSieveWorkerWriterAuthorityV1",
@@ -231,7 +263,30 @@ WORKER_WRITER_USE_SITE_ALLOWLIST = {
     WORKER_WRITER_IMPLEMENTATION_FILE,
     WORKER_WRITER_INTERFACE_FILE,
     WORKER_WRITER_TEST_FILE,
+} | WORKER_EXECUTOR_CAPABILITY_USE_SITE_FILES
+WORKER_EXECUTOR_COMPOSITION_FUNCTION = (
+    "execute_distributed_sieve_worker_entry_v1"
+)
+WORKER_EXECUTOR_COMPOSITION_CALL_ORDER = (
+    "rehydrate_distributed_sieve_worker_runtime_v1",
+    "prepare_distributed_sieve_worker_chunk_v1",
+    "consume_distributed_sieve_worker_writer_v1",
+    "finalize_and_publish_handoff",
+)
+WORKER_EXECUTOR_COMPOSITION_USE_COUNTS = {
+    identifier: 1 for identifier in WORKER_EXECUTOR_COMPOSITION_CALL_ORDER
 }
+WORKER_EXECUTOR_COMPOSITION_FORBIDDEN_IDENTIFIERS = (
+    "RelationCollector",
+    "finalize_and_publish_handoff_impl",
+    "finalize_and_publish_distributed_sieve_worker_handoff_v1_with_hooks",
+    "finalize_and_publish_private_handoff",
+    "finalize_and_publish_private_handoff_built",
+    "getenv",
+    "hardware_concurrency",
+)
+WORKER_EXECUTOR_COMPOSITION_FORBIDDEN_PREFIXES = ("run_distributed_sieve",)
+WORKER_EXECUTOR_COMPOSITION_FORBIDDEN_FRAGMENTS = ("cleanup",)
 WORKER_WRITER_IDENTIFIER_EXCEPTIONS = {
     WORKER_WRITER_AUTHORITY_IDENTIFIER: {
         WORKER_WRITER_AUTHORITY_EXCEPTION_FILE,
@@ -371,7 +426,7 @@ BOUND_WORK_USE_SITE_ALLOWLIST = {
     "src/sieve/distributed_sieve_bound_work_internal.hpp",
     "tests/test_distributed_sieve_execution_policy.cpp",
     WORKER_LAUNCHER_IMPLEMENTATION_FILE,
-}
+} | WORKER_EXECUTOR_BOUND_WORK_USE_SITE_FILES
 WORK_PACKAGE_CARRIER_USE_SITE_IDENTIFIERS = (
     "DistributedSieveWorkerWorkPackageFileV1",
     "create_distributed_sieve_worker_work_package_file_v1",
@@ -726,6 +781,37 @@ class ClassifiedRead:
 class CodeIdentifierUse:
     line: int
     offset: int
+
+
+def find_code_identifier_tokens(
+    text: str,
+) -> list[tuple[str, CodeIdentifierUse]]:
+    tokens: list[tuple[str, CodeIdentifierUse]] = []
+    cursor = 0
+    while cursor < len(text):
+        skipped = _skip_non_code(text, cursor)
+        if skipped is not None:
+            cursor = skipped
+            continue
+        if text[cursor].isalpha() or text[cursor] == "_":
+            start = cursor
+            cursor += 1
+            while cursor < len(text) and (
+                text[cursor].isalnum() or text[cursor] == "_"
+            ):
+                cursor += 1
+            tokens.append(
+                (
+                    text[start:cursor],
+                    CodeIdentifierUse(
+                        line=text.count("\n", 0, start) + 1,
+                        offset=start,
+                    ),
+                )
+            )
+            continue
+        cursor += 1
+    return tokens
 
 
 def _skip_quoted(text: str, start: int, quote: str) -> int:
@@ -1973,6 +2059,83 @@ class Checks:
                     f"allowlisted: {identifier}",
                 )
 
+    def validate_worker_executor_composition_body(
+        self, relative: str, text: str
+    ) -> None:
+        if relative != WORKER_EXECUTOR_IMPLEMENTATION_FILE:
+            return
+
+        body, body_line_offset, body_errors = find_function_body(
+            text, WORKER_EXECUTOR_COMPOSITION_FUNCTION
+        )
+        for line, error in body_errors:
+            self.fail(relative, line, error)
+        if body is None:
+            return
+
+        call_offsets: dict[str, int] = {}
+        for identifier, expected in WORKER_EXECUTOR_COMPOSITION_USE_COUNTS.items():
+            all_uses = find_code_identifier_uses(text, identifier)
+            body_uses = find_code_identifier_uses(body, identifier)
+            body_calls = find_call_identifier_uses(body, identifier)
+            if len(all_uses) != len(body_uses):
+                self.fail(
+                    relative,
+                    1,
+                    f"all {identifier} executor authority must remain inside "
+                    f"{WORKER_EXECUTOR_COMPOSITION_FUNCTION}",
+                )
+            if len(body_uses) != expected or len(body_calls) != expected:
+                self.fail(
+                    relative,
+                    body_line_offset + 1,
+                    f"{WORKER_EXECUTOR_COMPOSITION_FUNCTION} must contain exactly "
+                    f"{expected} direct {identifier} call, found "
+                    f"{len(body_uses)} identifiers and {len(body_calls)} calls",
+                )
+            elif expected == 1:
+                call_offsets[identifier] = body_calls[0].offset
+
+        if len(call_offsets) == len(WORKER_EXECUTOR_COMPOSITION_CALL_ORDER):
+            observed_order = tuple(
+                identifier
+                for identifier, _ in sorted(
+                    call_offsets.items(), key=lambda item: item[1]
+                )
+            )
+            if observed_order != WORKER_EXECUTOR_COMPOSITION_CALL_ORDER:
+                self.fail(
+                    relative,
+                    body_line_offset + 1,
+                    f"{WORKER_EXECUTOR_COMPOSITION_FUNCTION} must order runtime "
+                    "rehydration, chunk preparation, entry-to-writer consumption, "
+                    "and typed handoff publication",
+                )
+
+        forbidden_exact = set(
+            WORKER_EXECUTOR_COMPOSITION_FORBIDDEN_IDENTIFIERS
+        )
+        for token, use in find_code_identifier_tokens(text):
+            if token in forbidden_exact:
+                reason = "forbidden executor identifier"
+            elif any(
+                token.startswith(prefix)
+                for prefix in WORKER_EXECUTOR_COMPOSITION_FORBIDDEN_PREFIXES
+            ):
+                reason = "legacy distributed-sieve runner identifier"
+            elif any(
+                fragment in token.lower()
+                for fragment in WORKER_EXECUTOR_COMPOSITION_FORBIDDEN_FRAGMENTS
+            ):
+                reason = "cleanup identifier"
+            else:
+                continue
+            self.fail(
+                relative,
+                use.line,
+                f"{WORKER_EXECUTOR_COMPOSITION_FUNCTION} forbids {reason} {token}",
+            )
+
     def validate_worker_launcher_composition_body(
         self, relative: str, text: str
     ) -> None:
@@ -2292,6 +2455,7 @@ class Checks:
             self.validate_getenv_identifier_uses(relative, text, calls)
             self.validate_durable_ambient_api_uses(relative, text)
             self.validate_worker_process_transport_boundary(relative, text)
+            self.validate_worker_executor_composition_body(relative, text)
             self.validate_worker_launcher_composition_body(relative, text)
             self.validate_work_package_residue_inspection_body(relative, text)
             self.validate_work_package_residue_reconciliation_body(relative, text)
@@ -2748,6 +2912,25 @@ int random_device_suffix = 0;
     expect(
         len(identifier_uses) == 1 and identifier_uses[0].line == 4,
         f"random_device code-token scan failed: {identifier_uses}",
+    )
+
+    expect(
+        WORKER_EXECUTOR_DURABLE_FILES
+        == {
+            "src/sieve/distributed_sieve_worker_runtime.cpp",
+            "src/sieve/distributed_sieve_worker_runtime_internal.hpp",
+            "src/sieve/distributed_sieve_worker_chunk.cpp",
+            "src/sieve/distributed_sieve_worker_chunk_internal.hpp",
+            WORKER_EXECUTOR_IMPLEMENTATION_FILE,
+            WORKER_EXECUTOR_INTERFACE_FILE,
+        }
+        and WORKER_EXECUTOR_DURABLE_FILES <= DURABLE_ENVIRONMENT_FREE_FILES,
+        "worker executor runtime/chunk/execution durable inventory is not exact",
+    )
+    expect(
+        BOUND_WORK_USE_SITE_ALLOWLIST & WORKER_EXECUTOR_DURABLE_FILES
+        == WORKER_EXECUTOR_BOUND_WORK_USE_SITE_FILES,
+        "worker executor bound-work allowlist is not exactly the runtime/chunk boundary",
     )
 
     durable_checks = Checks(Path("."))
@@ -3907,9 +4090,12 @@ auto hooked = adopt_distributed_sieve_worker_entry_v1_with_hooks(hooks);
             WORKER_WRITER_IMPLEMENTATION_FILE,
             WORKER_WRITER_INTERFACE_FILE,
             WORKER_WRITER_TEST_FILE,
+            WORKER_EXECUTOR_IMPLEMENTATION_FILE,
+            WORKER_EXECUTOR_INTERFACE_FILE,
+            WORKER_EXECUTOR_TEST_FILE,
         },
-        "worker-entry allowlist is not the exact entry/writer implementation, interface, "
-        "and test boundary",
+        "worker-entry allowlist is not the exact entry/writer/executor "
+        "implementation, interface, and dedicated test boundary",
     )
 
     worker_writer_use_site_snippet = r"""
@@ -3958,9 +4144,143 @@ auto hooked_handoff =
             WORKER_WRITER_IMPLEMENTATION_FILE,
             WORKER_WRITER_INTERFACE_FILE,
             WORKER_WRITER_TEST_FILE,
+            WORKER_EXECUTOR_IMPLEMENTATION_FILE,
+            WORKER_EXECUTOR_INTERFACE_FILE,
+            WORKER_EXECUTOR_TEST_FILE,
         },
-        "worker-writer allowlist is not the exact entry conversion, writer, and test boundary",
+        "worker-writer allowlist is not the exact entry conversion, writer, "
+        "executor, and dedicated test boundary",
     )
+
+    valid_executor_composition = r"""
+DistributedSieveWorkerExecutionResultV1
+execute_distributed_sieve_worker_entry_v1(Entry&& entry) noexcept {
+    // run_distributed_sieve(), RelationCollector, cleanup(), and getenv()
+    // in comments or strings are not code authority.
+    const char* ignored = "hardware_concurrency finalize_and_publish_private_handoff";
+    auto runtime = rehydrate_distributed_sieve_worker_runtime_v1(entry.identity());
+    auto prepared = prepare_distributed_sieve_worker_chunk_v1(
+        runtime.polynomial, runtime.factor_base, runtime.bound_work, entry.chunk());
+    auto adopted =
+        consume_distributed_sieve_worker_writer_v1(std::move(entry));
+    auto handoff = adopted.writer->finalize_and_publish_handoff(completion);
+    return {handoff};
+}
+"""
+    exact_executor_composition_checks = Checks(Path("."))
+    exact_executor_composition_checks.validate_worker_executor_composition_body(
+        WORKER_EXECUTOR_IMPLEMENTATION_FILE, valid_executor_composition
+    )
+    expect(
+        WORKER_EXECUTOR_COMPOSITION_USE_COUNTS
+        == {
+            "rehydrate_distributed_sieve_worker_runtime_v1": 1,
+            "prepare_distributed_sieve_worker_chunk_v1": 1,
+            "consume_distributed_sieve_worker_writer_v1": 1,
+            "finalize_and_publish_handoff": 1,
+        }
+        and WORKER_EXECUTOR_COMPOSITION_CALL_ORDER
+        == tuple(WORKER_EXECUTOR_COMPOSITION_USE_COUNTS)
+        and not exact_executor_composition_checks.errors,
+        "exact worker-executor composition was rejected: "
+        f"{exact_executor_composition_checks.errors}",
+    )
+
+    duplicate_executor_call = valid_executor_composition.replace(
+        "    auto runtime = rehydrate_distributed_sieve_worker_runtime_v1"
+        "(entry.identity());\n",
+        "    auto runtime = rehydrate_distributed_sieve_worker_runtime_v1"
+        "(entry.identity());\n"
+        "    auto duplicate_runtime = rehydrate_distributed_sieve_worker_runtime_v1"
+        "(entry.identity());\n",
+    )
+    duplicate_executor_call_checks = Checks(Path("."))
+    duplicate_executor_call_checks.validate_worker_executor_composition_body(
+        WORKER_EXECUTOR_IMPLEMENTATION_FILE, duplicate_executor_call
+    )
+    expect(
+        len(duplicate_executor_call_checks.errors) == 1
+        and "exactly 1 direct rehydrate_distributed_sieve_worker_runtime_v1 call"
+        in duplicate_executor_call_checks.errors[0],
+        "worker-executor one-shot runtime rehydration count is not closed: "
+        f"{duplicate_executor_call_checks.errors}",
+    )
+
+    outside_executor_composition = (
+        valid_executor_composition
+        + "\nauto escaped_runtime = "
+        "rehydrate_distributed_sieve_worker_runtime_v1(identity);\n"
+    )
+    outside_executor_composition_checks = Checks(Path("."))
+    outside_executor_composition_checks.validate_worker_executor_composition_body(
+        WORKER_EXECUTOR_IMPLEMENTATION_FILE, outside_executor_composition
+    )
+    expect(
+        len(outside_executor_composition_checks.errors) == 1
+        and "executor authority must remain inside "
+        f"{WORKER_EXECUTOR_COMPOSITION_FUNCTION}"
+        in outside_executor_composition_checks.errors[0],
+        "same-file outside-function worker-executor authority escaped: "
+        f"{outside_executor_composition_checks.errors}",
+    )
+
+    reordered_executor_composition = valid_executor_composition.replace(
+        "    auto runtime = rehydrate_distributed_sieve_worker_runtime_v1"
+        "(entry.identity());\n"
+        "    auto prepared = prepare_distributed_sieve_worker_chunk_v1(\n"
+        "        runtime.polynomial, runtime.factor_base, runtime.bound_work, "
+        "entry.chunk());\n",
+        "    auto prepared = prepare_distributed_sieve_worker_chunk_v1(\n"
+        "        runtime.polynomial, runtime.factor_base, runtime.bound_work, "
+        "entry.chunk());\n"
+        "    auto runtime = rehydrate_distributed_sieve_worker_runtime_v1"
+        "(entry.identity());\n",
+    )
+    reordered_executor_composition_checks = Checks(Path("."))
+    reordered_executor_composition_checks.validate_worker_executor_composition_body(
+        WORKER_EXECUTOR_IMPLEMENTATION_FILE, reordered_executor_composition
+    )
+    expect(
+        len(reordered_executor_composition_checks.errors) == 1
+        and "must order runtime rehydration" in reordered_executor_composition_checks.errors[0],
+        "worker-executor authority ordering is not closed: "
+        f"{reordered_executor_composition_checks.errors}",
+    )
+
+    forbidden_executor_composition = valid_executor_composition.replace(
+        "    return {handoff};\n",
+        "    RelationCollector collector;\n"
+        "    run_distributed_sieve_impl();\n"
+        "    cleanup_worker_artifacts();\n"
+        "    finalize_and_publish_handoff_impl();\n"
+        "    finalize_and_publish_distributed_sieve_worker_handoff_v1_with_hooks();\n"
+        "    finalize_and_publish_private_handoff();\n"
+        "    finalize_and_publish_private_handoff_built();\n"
+        "    auto getter = getenv;\n"
+        "    auto host = hardware_concurrency();\n"
+        "    return {handoff};\n",
+    )
+    forbidden_executor_composition_checks = Checks(Path("."))
+    forbidden_executor_composition_checks.validate_worker_executor_composition_body(
+        WORKER_EXECUTOR_IMPLEMENTATION_FILE, forbidden_executor_composition
+    )
+    expected_forbidden_executor_tokens = set(
+        WORKER_EXECUTOR_COMPOSITION_FORBIDDEN_IDENTIFIERS
+    ) | {
+        "run_distributed_sieve_impl",
+        "cleanup_worker_artifacts",
+    }
+    expect(
+        len(forbidden_executor_composition_checks.errors)
+        == len(expected_forbidden_executor_tokens)
+        and all(
+            any(token in error for error in forbidden_executor_composition_checks.errors)
+            for token in expected_forbidden_executor_tokens
+        ),
+        "worker-executor legacy/cleanup/generic-publish/ambient bans are not closed: "
+        f"{forbidden_executor_composition_checks.errors}",
+    )
+
     relation_friend_snippet = r"""
 namespace gnfs::sieve::distributed_sieve_worker_entry_detail {
 class DistributedSieveWorkerWriterAuthorityV1;

@@ -36,6 +36,8 @@
 #include <iostream>
 #include <optional>
 #include <set>
+#include <stdexcept>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -164,6 +166,9 @@ void clear_explicit_policy_env() {
     clear_env();
     unsetenv("GNFS_LATTICE_LLL");
     unsetenv("GNFS_LATTICE_SKEW");
+    unsetenv("GNFS_SIEVE_NO_TINY_SIMD");
+    unsetenv("GNFS_BUCKET_PREFETCH");
+    unsetenv("GNFS_SIEVE_ECORE_THREADS");
 }
 
 }  // namespace
@@ -178,6 +183,20 @@ void test_config_default_off() {
     assert(cfg.density_threshold == 0.5);
     assert(cfg.max_retries == 2);
     assert(cfg.perturb_seed == 0);
+    std::cout << "PASS\n";
+}
+
+void test_explicit_sieve_execution_config_defaults() {
+    std::cout << "test_explicit_sieve_execution_config_defaults ... ";
+    const LatticeSieveExecutionConfig config{};
+    check(config.fallback_thread_count == 1,
+          "explicit execution config must default to one deterministic thread");
+    check(config.ecore_thread_count == 0,
+          "explicit execution config must default to no E-core workers");
+    check(config.enable_tiny_simd,
+          "explicit execution config must preserve the unset tiny-SIMD default");
+    check(config.enable_bucket_prefetch == bucket_prefetch_supported(),
+          "explicit execution config must preserve the unset bucket-prefetch default");
     std::cout << "PASS\n";
 }
 
@@ -866,6 +885,9 @@ void test_explicit_sieve_parallel_preserves_execution_config() {
     setenv("GNFS_ADAPTIVE_LATTICE_THRESHOLD", "0.001", 1);
     setenv("GNFS_ADAPTIVE_LATTICE_MAX_RETRIES", "0", 1);
     setenv("GNFS_ADAPTIVE_LATTICE_SEED", "999", 1);
+    setenv("GNFS_SIEVE_NO_TINY_SIMD", "1", 1);
+    setenv("GNFS_BUCKET_PREFETCH", "0", 1);
+    setenv("GNFS_SIEVE_ECORE_THREADS", "99", 1);
 
     Integer n("1000036000099");
     const auto poly_result = BaseMSelector::select(n, 3);
@@ -908,11 +930,17 @@ void test_explicit_sieve_parallel_preserves_execution_config() {
           "explicit parallel fixture did not produce eight special-Q values");
 
     const LatticeSieveExecutionConfig explicit_config{
-        LatticeBasisReductionConfig{LatticeReductionMethod::LLL, true},
-        AdaptiveLatticeConfig{true, 100.0, 2, 0}};
+        .lattice_basis = LatticeBasisReductionConfig{LatticeReductionMethod::LLL, true},
+        .adaptive_lattice = AdaptiveLatticeConfig{true, 100.0, 2, 0},
+        .fallback_thread_count = 3,
+        .ecore_thread_count = 1,
+        .enable_tiny_simd = true,
+        .enable_bucket_prefetch = bucket_prefetch_supported(),
+    };
 
     LatticeSieve sequential_sieve(ctx, fb, sieve_params, explicit_config);
     sequential_sieve.set_region(region);
+    sequential_sieve.set_max_threads(1);
     std::vector<SieveResult> sequential_results;
     sequential_results.reserve(special_qs.size());
     for (const auto& sq : special_qs) {
@@ -923,8 +951,7 @@ void test_explicit_sieve_parallel_preserves_execution_config() {
 
     LatticeSieve parallel_sieve(ctx, fb, sieve_params, explicit_config);
     parallel_sieve.set_region(region);
-    const auto parallel_results =
-        parallel_sieve.sieve_parallel(special_qs, 4);
+    const auto parallel_results = parallel_sieve.sieve_parallel(special_qs);
     const auto parallel_stats =
         parallel_sieve.adaptive_manager().stats().snapshot();
 
@@ -962,6 +989,61 @@ void test_explicit_sieve_parallel_preserves_execution_config() {
     check(parallel_stats.total_cells == sequential_stats.total_cells,
           "parallel and sequential cell telemetry differs");
 
+    {
+        auto throwing_special_qs = special_qs;
+        throwing_special_qs.back().q = 1;
+
+        LatticeSieve throwing_sieve(ctx, fb, sieve_params, explicit_config);
+        throwing_sieve.set_region(region);
+        bool caught_worker_exception = false;
+        try {
+            (void)throwing_sieve.sieve_parallel(throwing_special_qs, 4);
+        } catch (const std::invalid_argument&) {
+            caught_worker_exception = true;
+        }
+        check(caught_worker_exception,
+              "parallel worker exceptions must be rethrown after all workers "
+              "join");
+    }
+
+    {
+        LatticeSieve launch_failure_sieve(ctx, fb, sieve_params, explicit_config);
+        launch_failure_sieve.set_region(region);
+        launch_failure_sieve.set_sieve_parallel_launch_failure_after_for_testing(1);
+
+        bool caught_launch_failure = false;
+        try {
+            (void)launch_failure_sieve.sieve_parallel(special_qs, 4);
+        } catch (const std::system_error& ex) {
+            caught_launch_failure = true;
+            check(ex.code() == std::make_error_code(std::errc::resource_unavailable_try_again),
+                  "parallel launch failure must preserve the construction error");
+        }
+        check(caught_launch_failure, "parallel launch failure must join started workers before "
+                                     "rethrowing");
+    }
+
+    // Flip every ambient runtime gate and select the opposite explicit values.
+    // The explicit constructor must keep using its captured values; the gates
+    // are performance-only, so the exact candidate payload/order remains equal.
+    setenv("GNFS_SIEVE_NO_TINY_SIMD", "0", 1);
+    setenv("GNFS_BUCKET_PREFETCH", "1", 1);
+    setenv("GNFS_SIEVE_ECORE_THREADS", "0", 1);
+    auto scalar_config = explicit_config;
+    // Zero must clamp to one instead of falling back to host concurrency.
+    scalar_config.fallback_thread_count = 0;
+    scalar_config.ecore_thread_count = 0;
+    scalar_config.enable_tiny_simd = false;
+    scalar_config.enable_bucket_prefetch = false;
+    LatticeSieve scalar_sieve(ctx, fb, sieve_params, scalar_config);
+    scalar_sieve.set_region(region);
+    const std::vector<SpecialQ> scalar_probe{special_qs.front()};
+    const auto scalar_results = scalar_sieve.sieve_parallel(scalar_probe);
+    check(scalar_results.size() == 1,
+          "explicit scalar runtime-gate probe returned the wrong result count");
+    check(sieve_result_equal(sequential_results.front(), scalar_results.front()),
+          "explicit runtime-gate overrides changed candidate fields/order");
+
     // Prove this fixture observes a dropped execution config: a legacy sieve
     // under the opposite ambient basis policy, but with the same explicit
     // adaptive manager injected, must differ for at least one SQ.
@@ -993,6 +1075,7 @@ int main() {
     std::cout << "===========================================" << std::endl;
 
     test_config_default_off();
+    test_explicit_sieve_execution_config_defaults();
     test_config_env_on();
     test_config_custom_threshold();
     test_config_custom_retries_and_seed();

@@ -567,11 +567,12 @@ duplicates, forbids both `_with_ops` seams in WaveStore, confines fixed-leaf
 unlink authority to the carrier, and keeps the legacy runner, launcher,
 pipeline, and relation paths isolated.
 
-B2 does not grant worker execution or publication authority. The M3a-1 entry
-boundary below rehydrates descriptors `3..6` into a read-only typed token, and
-M3a-2a consumes that token into exact-directory append/finalize authority.
-Actual sieve execution and no-delete handoff publication remain the next
-worker-execution frontier.
+B2 itself does not grant worker execution or publication authority. The M3a-1
+entry boundary below rehydrates descriptors `3..6` into a read-only typed
+token, M3a-2a consumes that token into exact-directory append/finalize
+authority, and M3a-2b publishes the no-delete handoff. M3a-2c.1 now performs
+one exact durable worker chunk through those capabilities. Missing-only
+coordination and adopted/executed disposition reporting remain in M3a-2c.2.
 
 `test_distributed_sieve_worker_entry` is the `fast` source-private M3a-1
 exec-image rehydration contract. On supported macOS and Linux hosts, the
@@ -647,6 +648,30 @@ terminal handoff before finalization or state mutation, preserving append
 authority and every namespace leaf. Windows and other unsupported hosts reject
 the earlier worker-entry platform gate. Neither fallback claims native
 publication coverage.
+
+`test_distributed_sieve_worker_execution` is the `fast`, source-private
+M3a-2c.1 runtime-rehydration and real-chunk contract. Its 180-second timeout
+covers a bounded real lattice-sieve/cofactorization probe and a self-exec
+executable-digest check; it is deterministic and contains no benchmark or
+unbounded search. The test rehydrates all canonical execution settings,
+reconstructs the polynomial and factor base, and verifies a three-special-Q,
+12-relation result twice by row order, sequence receipt, and semantic corpus
+digest. It also covers special-Q and soft-relation cap priority, admission
+rejection and deduplication rollback, sink failure, projective cursor
+normalization, and a resumable projective hole.
+
+The paired `test_distributed_sieve_worker_writer_authority` self-exec case
+drives the complete entry-to-writer-to-handoff facade for both zero-row and
+positive-row chunks. On macOS it reopens the WaveStore, adopts frozen native
+OOC handles, and reads a 72-row corpus produced from one affine special-Q of a
+nondegenerate cubic polynomial. Every row is checked independently for the
+rational value, algebraic norm, exact factor products, prime-ideal roots,
+special-Q divisibility and recording, coprimality, and admission invariants
+before both receipts are reproduced. A launch through a symlink hashes the
+launched executable bytes. Linux reaches the documented terminal-handoff
+unsupported boundary before corpus mutation; Windows and other unsupported
+hosts stop at worker entry. Those fallback cases assert fail-early behavior
+and do not claim native end-to-end coverage.
 
 `test_local_sieve_thread_budget` is the `instant` contract for balanced lane
 allocation, invalid limits, and a bounded property grid. The 64-special-Q probe

@@ -331,6 +331,48 @@ struct DistributedSieveWorkerWorkPackageResidueInventoryWitnessV1 final {
                const DistributedSieveWorkerWorkPackageResidueInventoryWitnessV1&) = default;
 };
 
+/// Exact no-delete terminal handoff observed under its persistent BaseLock.
+///
+/// The generic envelope binds the three immutable named leaves and the retained
+/// lease markers. The decoded worker record additionally binds those native
+/// facts to one exact manifest chunk and durable attempt.
+struct DistributedSieveWorkerHandoffInventoryWitnessV1 final {
+    WorkerHandoffV1 handoff;
+    util::Sha256Digest envelope_digest;
+    NativeIdentityV1 owned_marker_identity;
+    util::durable_immutable_record::RecordSnapshot handoff_snapshot;
+    util::durable_immutable_record::RecordSnapshot index_snapshot;
+    util::durable_immutable_record::RecordSnapshot data_snapshot;
+
+    [[nodiscard]] friend bool
+    operator==(const DistributedSieveWorkerHandoffInventoryWitnessV1& left,
+               const DistributedSieveWorkerHandoffInventoryWitnessV1& right) noexcept {
+        const auto& left_handoff = left.handoff;
+        const auto& right_handoff = right.handoff;
+        return left_handoff.manifest_digest == right_handoff.manifest_digest &&
+               left_handoff.work_digest == right_handoff.work_digest &&
+               left_handoff.wave_id == right_handoff.wave_id &&
+               left_handoff.chunk_id == right_handoff.chunk_id &&
+               left_handoff.sq_begin == right_handoff.sq_begin &&
+               left_handoff.sq_end == right_handoff.sq_end &&
+               left_handoff.attempt_ordinal == right_handoff.attempt_ordinal &&
+               left_handoff.attempt_started_digest == right_handoff.attempt_started_digest &&
+               left_handoff.lease == right_handoff.lease &&
+               left_handoff.artifact == right_handoff.artifact &&
+               left_handoff.processed_sq_count == right_handoff.processed_sq_count &&
+               left_handoff.next_sq_index == right_handoff.next_sq_index &&
+               left_handoff.completion_reason == right_handoff.completion_reason &&
+               left_handoff.relation_count == right_handoff.relation_count &&
+               left_handoff.cleanup_intent_absent == right_handoff.cleanup_intent_absent &&
+               left_handoff.self_digest == right_handoff.self_digest &&
+               left.envelope_digest == right.envelope_digest &&
+               left.owned_marker_identity == right.owned_marker_identity &&
+               left.handoff_snapshot == right.handoff_snapshot &&
+               left.index_snapshot == right.index_snapshot &&
+               left.data_snapshot == right.data_snapshot;
+    }
+};
+
 struct DistributedSievePrivateLeaseReservationInventoryWitness final {
     std::string base_lock_leaf;
     DistributedSievePrivateLeaseReservationBoundary boundary =
@@ -341,6 +383,7 @@ struct DistributedSievePrivateLeaseReservationInventoryWitness final {
     std::optional<NativeIdentityV1> owner_marker_identity;
     std::optional<NativeIdentityV1> owned_marker_identity;
     std::optional<DistributedSieveWorkerWorkPackageResidueInventoryWitnessV1> work_package_residue;
+    std::optional<DistributedSieveWorkerHandoffInventoryWitnessV1> worker_handoff;
 
     [[nodiscard]] friend bool
     operator==(const DistributedSievePrivateLeaseReservationInventoryWitness&,
