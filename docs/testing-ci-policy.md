@@ -735,9 +735,10 @@ same-byte new inode, and proves that only a fresh next-round observation can
 continue.
 
 `DistributedSieveWorkerCoordinator` is the `fast`, 180-second M3a-2c.2
-missing-only ownership contract. The coordinator consumes one WaveStore,
-retains its whole-round claim, and derives chunk and attempt coordinates from
-the frozen manifest. Before reserving an attempt, one pure
+execution and bounded-retry ownership contract. The coordinator consumes one
+WaveStore, retains its whole-round claim, and derives chunk and attempt
+coordinates from the frozen manifest. Before reconciling or reserving an
+attempt, one pure
 `bind_distributed_sieve_work_v1()` call validates the supplied runtime objects
 against the manifest work digest. Production reaches process creation only
 through one source-private call site to the sealed
@@ -756,15 +757,54 @@ The positive coordinator matrix is:
 | Mixed wave | The batch contains only exact missing nonempty chunks | Existing chunks are `adopted`; new terminal chunks are `executed` | Both old and new handoffs remain |
 | More chunks than special-Q values | Zero-length chunks never enter the launch batch | Each zero-length chunk is `empty` in its manifest slot | No empty-chunk artifact is created |
 | Nonempty zero-row handoff | Zero relaunches for that chunk | The terminal chunk is `adopted` with a zero-row receipt | The zero-row handoff remains readable |
+| Failed attempt after cold reopen | The exact quiescent `AttemptStartedV1` is reconciled before one successor enters the batch | The successor is `executed` at ordinal `k+1` | The successor predecessor is the reconciled `A_k` digest |
+| Live attempt `BaseLock` | Zero launch calls and no successor namespace | The round returns `retry_busy` for the exact manifest slot | The busy attempt is unchanged; earlier manifest-order attempts may already be normalized idempotently |
+| Handoff published after initial observation | The second durable observation converts the exact `A_k` to adoption before any reconcile or launch | The chunk is `adopted` | No `reconciled_attempt` fact or `A_{k+1}` namespace exists |
+| Handoff published after retry observation | The typed reconciler observes the terminal witness while holding the exact old-attempt `BaseLock` | Expected same-handle adoption replaces retry | Native marker and artifact snapshots still match; no successor exists |
+| Retry budget exhausted | Reconciliation returns no next ordinal, so no chunk enters the batch, including otherwise missing chunks | The round returns `retry_exhausted` | Reopening and repeating preserves the normalized P0 namespace byte-for-byte |
 
 The launch ledger must match every `executed` result by chunk, attempt ordinal,
-and `AttemptStartedV1` digest. A successful wait or child report without the
-matching durable handoff is a failure, not `executed`. The policy checker keeps
-the coordinator API source-private, count-closes the single sealed launcher
-call site, and rejects lower transport, cleanup, unlink, legacy entry, or
-public-header use. Its `DistributedSievePolicyInventory` CTest is classified
-as `slow` because the closed repository scan and self-test matrix take about
-five minutes in the measured Debug checkout and exceed the `fast` budget.
+lease, and the complete `AttemptStartedV1` record. A successful wait or child
+report without the matching durable handoff is a failure, not `executed`.
+Child exit alone never grants retry authority. A retry requires a fresh
+durable observation, nonblocking acquisition of the exact old-attempt
+`BaseLock`, and `reconcile_worker_attempt_started()` returning either the
+immutable record plus its manifest-bounded next ordinal or an exact terminal
+handoff witness. The terminal witness includes native marker and artifact
+snapshots and can be consumed only by expected same-handle adoption. The
+result's `reconciled_attempt` is read-only evidence and grants no launch,
+cleanup, or publication capability.
+
+Inventory validation performed while an attempt `BaseLock` is already held
+must remain in that open-file-description domain. The source-private relation
+bridge accepts one non-exportable borrowed-lock token, validates the parent,
+named lock, retained descriptor, identity, ownership, and mode, and duplicates
+the descriptor with `F_DUPFD_CLOEXEC`. The adoption receipt receives that
+same-open-file-description duplicate and releases it by `close()` only; it
+must neither acquire a second independent `flock` nor issue `LOCK_UN`.
+
+Attempt claim permits at most one exact incomplete-to-terminal refresh. A
+pre-lock observation may consume it, or the first inventory witness after
+target-lock acquisition may consume it. After the post-lock fault boundary,
+authority is revalidated and a second held inventory witness must match the
+accepted successor exactly; it cannot refresh the baseline again. The
+coordinator matrix includes same-byte terminal replacement after target-lock
+acquisition and requires `namespace_conflict`, so inode replacement cannot be
+laundered as the allowed terminal transition.
+
+The policy checker keeps the coordinator API source-private, count-closes the
+single exact attempt-open call, typed reconciler call, and sealed launcher call
+site, and fixes their order after bound-work validation. It rejects the generic
+lease-recovery shortcut, premature `ChunkTerminalFailureV1` use, lower
+transport, cleanup, unlink, legacy entry, or public-header use. Its
+`DistributedSievePolicyInventory` CTest is classified as `slow` because the
+closed repository scan and self-test matrix take about five minutes in the
+measured Debug checkout and exceed the `fast` budget.
+
+`retry_exhausted` is a replayable coordinator-round diagnostic, not durable
+terminal-wave evidence. A future milestone must add a typed WaveStore
+publisher for `ChunkTerminalFailureV1` before exhaustion can become a
+canonical terminal record.
 
 Same-handle adoption also sandwiches the full corpus read with final exact
 checks for both the nested `OWNER` marker and root-level `OWNED` marker. The

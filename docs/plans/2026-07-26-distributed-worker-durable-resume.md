@@ -2729,9 +2729,23 @@ lock, claims an action, or observes the filesystem. The portability regression
 proves zero namespace mutation and immediate subsequent normal lock and claim
 acquisition.
 
-Only the missing-only coordinator and its adopted/executed dispositions
-remain in M3a-2c.2. Their fresh, all-adopted, and mixed-wave exit matrix remains
-part of that work.
+M3a-2c.2 now has a source-private coordinator for fresh, all-adopted, mixed,
+and bounded-retry waves. A quiescent failed `AttemptStartedV1` is opened under
+its exact `BaseLock`, reconciled to a read-only fact, and may authorize only
+the returned next ordinal. A second durable observation gives an exact late
+handoff priority over retry. If the handoff lands after that observation but
+before attempt recovery, the typed reconciler returns the terminal native
+witness under the exact old-attempt `BaseLock`; only expected same-handle
+adoption may consume it. Held-lock inventory validation duplicates the
+retained descriptor into the relation receipt, preserving the same POSIX
+open-file description and close-only release instead of self-conflicting on a
+second `flock`. The claim accepts one exact incomplete-to-terminal transition
+before or immediately after target-lock acquisition, then requires an exact
+second held witness after the post-lock seam; same-byte replacement cannot
+refresh the baseline twice. Busy attempts, exhausted budgets, namespace
+drift, and reconciliation failures start no unauthorized successor. Durable
+`ChunkTerminalFailureV1` publication remains separate future work; the
+current `retry_exhausted` result is only a replayable round diagnostic.
 
 ### M3: Worker Handoff and Adoption
 
@@ -2746,13 +2760,18 @@ part of that work.
 - [x] Read adopted OOC pairs through frozen native handles.
 - [x] Rehydrate canonical worker inputs and run one exact chunk into a typed
   terminal handoff without cleanup authority.
-- [ ] Run only exact missing chunks.
-- [ ] Emit dispositions, deterministic relation receipts, and preserve every
+- [x] Run only exact missing or reconciler-authorized retry chunks.
+- [x] Emit dispositions, deterministic relation receipts, and preserve every
   worker artifact.
+- [x] Reconcile quiescent failed attempts, honor exact late handoffs, and
+  launch only the manifest-bounded successor ordinal.
+- [ ] Publish retry exhaustion through a typed WaveStore
+  `ChunkTerminalFailureV1` transaction.
 
 Exit criterion: fresh, all-adopted, and mixed waves match the uninterrupted
-durable-policy baseline exactly with worker-launch ledger evidence. The route
-remains internal and cannot clean workers until M4 lands.
+durable-policy baseline exactly with worker-launch ledger evidence. Failed
+attempts retry only after exact reconciliation, and exhausted rounds stay
+nonterminal until the typed terminal-failure publication chain lands.
 
 ### M4: Durable Merge Commit
 

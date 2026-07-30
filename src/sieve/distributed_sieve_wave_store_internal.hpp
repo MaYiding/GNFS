@@ -31,6 +31,7 @@ class FactorBase;
 }
 
 namespace gnfs::relation {
+struct OOCPrivateHandoffAdoptionResult;
 class OOCPrivateHandoffReader;
 class OOCRelationReader;
 } // namespace gnfs::relation
@@ -850,6 +851,14 @@ public:
         std::uint32_t chunk_id,
         DistributedSieveWorkerHandoffAdoptionTestHooksV1 hooks = {}) const noexcept;
 
+    /// Adopt only the exact canonical handoff witness captured while the old
+    /// attempt BaseLock was held by the typed reconciler. Native marker and
+    /// artifact snapshots must still match before the same-handle reader is
+    /// returned.
+    [[nodiscard]] DistributedSieveWorkerHandoffAdoptionResultV1 adopt_expected_worker_handoff_v1(
+        const DistributedSieveWorkerHandoffInventoryWitnessV1& expected,
+        DistributedSieveWorkerHandoffAdoptionTestHooksV1 hooks = {}) const noexcept;
+
     /// Claim the whole-round source-private worker-coordinator gate. The
     /// process-bound claim retains the WaveStore state and releases only on
     /// destruction. It grants no root action, launch, retry, or cleanup
@@ -912,6 +921,9 @@ private:
         std::uint32_t chunk_id, std::uint32_t attempt_ordinal,
         AttemptBaseLockExpectation expectation,
         DistributedSievePrivateLeaseBaseLockTestHooks hooks) const noexcept;
+    [[nodiscard]] DistributedSieveWorkerHandoffAdoptionResultV1 adopt_worker_handoff_impl_v1(
+        std::uint32_t chunk_id, const DistributedSieveWorkerHandoffInventoryWitnessV1* expected,
+        DistributedSieveWorkerHandoffAdoptionTestHooksV1 hooks) const noexcept;
 
     std::shared_ptr<const State> state_;
 
@@ -1063,19 +1075,25 @@ public:
     operator=(DistributedSievePrivateLeaseBaseLockAt&&) = delete;
     ~DistributedSievePrivateLeaseBaseLockAt() noexcept;
 
+    /// Validate one exact terminal handoff through a duplicated descriptor
+    /// that shares this already-held BaseLock open-file description.
+    [[nodiscard]] gnfs::relation::OOCPrivateHandoffAdoptionResult
+    adopt_exact_private_handoff(const std::filesystem::path& base_path) const noexcept;
+    [[nodiscard]] bool matches_exact_binding(
+        std::string_view base_lock_leaf,
+        const NativeIdentityV1& expected_identity) const noexcept;
+
 private:
     DistributedSievePrivateLeaseBaseLockAt(int root_fd, std::string leaf,
                                            std::uint64_t creator_process_id) noexcept;
 
     [[nodiscard]] static std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt>
     create_new_locked(int root_fd, std::string leaf, std::uint64_t creator_process_id,
-                      DistributedSievePrivateLeaseBaseLockTestHooks hooks,
                       DistributedSieveWaveStoreDiagnostic& outcome) noexcept;
 
     [[nodiscard]] static std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt>
     open_existing_locked(int root_fd, std::string leaf, const NativeIdentityV1& expected_identity,
                          std::uint64_t creator_process_id,
-                         DistributedSievePrivateLeaseBaseLockTestHooks hooks,
                          DistributedSieveWaveStoreDiagnostic& outcome) noexcept;
 
     [[nodiscard]] DistributedSieveWaveStoreDiagnostic revalidate() const noexcept;
@@ -1339,6 +1357,11 @@ struct DistributedSieveReconciledWorkerAttemptV1 final {
 struct DistributedSieveWorkerAttemptReconcileResult final {
     std::optional<DistributedSieveReconciledWorkerAttemptV1> reconciled;
     DistributedSieveWaveStoreDiagnostic diagnostic;
+    /// Present only when the exact attempt became a canonical handoff before
+    /// the reconciler obtained its BaseLock. This is immutable continuity
+    /// evidence for expected same-handle adoption, not cleanup or launch
+    /// authority.
+    std::optional<DistributedSieveWorkerHandoffInventoryWitnessV1> terminal_handoff;
 
     [[nodiscard]] explicit operator bool() const noexcept {
         return reconciled.has_value() &&

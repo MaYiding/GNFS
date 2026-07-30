@@ -40,7 +40,6 @@
 #include <string>
 #include <string_view>
 #include <system_error>
-#include <thread>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -472,6 +471,8 @@ inline constexpr std::string_view WORKER_LAUNCH_FAKE_CHILD_CLOSE_BASE_LOCK_AND_W
     "--close-base-lock-and-wait";
 inline constexpr std::string_view WORKER_COORDINATOR_REAL_CHILD_ARGUMENT =
     "--worker-coordinator-real-child";
+inline constexpr std::string_view WORKER_COORDINATOR_FAIL_CHILD_ARGUMENT =
+    "--worker-coordinator-fail-child";
 inline constexpr std::uint32_t WORKER_LAUNCH_FAKE_CHILD_REPORT_MAGIC = 0x474c4352U;
 inline constexpr std::size_t WORKER_LAUNCH_FAKE_CHILD_INPUT_LIMIT = 1024U * 1024U;
 inline constexpr int WORKER_LAUNCH_FAKE_CHILD_DESCRIPTOR_SCAN_LIMIT = 4096;
@@ -786,6 +787,10 @@ static_assert(std::is_trivially_copyable_v<WorkerLaunchFakeChildReport>);
     const auto executed = worker_execution_detail::execute_distributed_sieve_worker_entry_v1(
         std::move(*adopted.entry));
     return executed ? 0 : 222;
+}
+
+[[nodiscard]] int run_worker_coordinator_fail_child() noexcept {
+    return 223;
 }
 
 #endif
@@ -15722,7 +15727,8 @@ worker_coordinator_sq_begin(const gnfs::factor_base::FactorBase& factor_base) {
 [[nodiscard]] sieve::DistributedSieveWorkIdentityV1 worker_coordinator_work_identity(
     const execution_policy_detail::DistributedSieveFrozenExecutionPolicyV1& frozen,
     const gnfs::core::PolynomialContext& polynomial,
-    const gnfs::factor_base::FactorBase& factor_base, std::uint32_t begin) {
+    const gnfs::factor_base::FactorBase& factor_base, std::uint32_t begin,
+    std::uint32_t max_worker_attempts = 2) {
     sieve::DistributedSieveWorkIdentityV1 identity;
     identity.polynomial.n.decimal = polynomial.n().to_string();
     identity.polynomial.m.decimal = polynomial.m().to_string();
@@ -15781,7 +15787,7 @@ worker_coordinator_sq_begin(const gnfs::factor_base::FactorBase& factor_base) {
         {1, static_cast<std::uint32_t>(begin + 1U), end, "coordinator_chunk_1"},
         {2, end, end, "coordinator_chunk_2"},
     };
-    identity.distributed.max_worker_attempts = 2;
+    identity.distributed.max_worker_attempts = max_worker_attempts;
     identity.distributed.max_merge_build_attempts = 2;
     identity.distributed.max_consumption_attempts = 2;
     identity.execution_policy = frozen.canonical;
@@ -15804,11 +15810,12 @@ worker_coordinator_manifest_draft(const sieve::DistributedSieveWorkIdentityV1& i
 
 class WorkerCoordinatorFixture final {
 public:
-    explicit WorkerCoordinatorFixture(std::string_view label)
+    explicit WorkerCoordinatorFixture(std::string_view label, std::uint32_t max_worker_attempts = 2)
         : frozen(worker_coordinator_frozen_policy()), polynomial(worker_coordinator_polynomial()),
           factor_base(worker_coordinator_factor_base(polynomial)),
           sq_begin(worker_coordinator_sq_begin(factor_base)),
-          identity(worker_coordinator_work_identity(frozen, polynomial, factor_base, sq_begin)),
+          identity(worker_coordinator_work_identity(frozen, polynomial, factor_base, sq_begin,
+                                                    max_worker_attempts)),
           root(temp.path() / std::string(label)),
           opened(wave_detail::DistributedSieveWaveStore::create(
               root, worker_coordinator_manifest_draft(identity))) {}
@@ -15850,12 +15857,14 @@ struct WorkerCoordinatorLaunchLedger final {
 }
 
 [[nodiscard]] worker_coordinator_detail::DistributedSieveWorkerCoordinatorRequestV1
-make_worker_coordinator_request(std::unique_ptr<wave_detail::DistributedSieveWaveStore> store,
-                                WorkerCoordinatorLaunchLedger& ledger) {
+make_worker_coordinator_request(
+    std::unique_ptr<wave_detail::DistributedSieveWaveStore> store,
+    WorkerCoordinatorLaunchLedger& ledger,
+    std::string_view child_argument = WORKER_COORDINATOR_REAL_CHILD_ARGUMENT) {
     worker_coordinator_detail::DistributedSieveWorkerCoordinatorRequestV1 request;
     request.store = std::move(store);
     request.executable_path = worker_launch_test_executable;
-    request.worker_arguments = {std::string(WORKER_COORDINATOR_REAL_CHILD_ARGUMENT)};
+    request.worker_arguments = {std::string(child_argument)};
     request.launcher_hooks = {
         .before_spawn = record_worker_coordinator_spawn,
         .context = &ledger,
@@ -15919,10 +15928,11 @@ struct WorkerCoordinatorCorpusFacts final {
     };
 }
 
-void require_worker_coordinator_empty_has_no_attempt(const std::filesystem::path& root,
-                                                     const sieve::ChunkPlanV1& chunk) {
+void require_worker_coordinator_attempt_namespace_absent(const std::filesystem::path& root,
+                                                         const sieve::ChunkPlanV1& chunk,
+                                                         std::uint32_t attempt_ordinal) {
     const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
-        chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        chunk.relative_artifact_stem, chunk.chunk_id, attempt_ordinal);
     CHECK(names.has_value());
     CHECK(!entry_exists_no_follow(root / names->private_directory_leaf));
     CHECK(!entry_exists_no_follow(root / names->base_lock_leaf));
@@ -15933,6 +15943,11 @@ void require_worker_coordinator_empty_has_no_attempt(const std::filesystem::path
     CHECK(!entry_exists_no_follow(root / names->rollback_handoff_leaf));
     CHECK(!entry_exists_no_follow(root / names->canonical_record_leaf));
     CHECK(!entry_exists_no_follow(root / names->pending_record_leaf));
+}
+
+void require_worker_coordinator_empty_has_no_attempt(const std::filesystem::path& root,
+                                                     const sieve::ChunkPlanV1& chunk) {
+    require_worker_coordinator_attempt_namespace_absent(root, chunk, 0);
 }
 
 [[nodiscard]] std::array<WorkerCoordinatorCorpusFacts, 2> require_worker_coordinator_matrix(
@@ -15958,6 +15973,7 @@ void require_worker_coordinator_empty_has_no_attempt(const std::filesystem::path
             worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::empty) {
             CHECK(index == 2);
             CHECK(!coordinated.launched_attempt.has_value());
+            CHECK(!coordinated.reconciled_attempt.has_value());
             CHECK(!coordinated.wait_facts.has_value());
             CHECK(!coordinated.adopted.has_value());
             require_worker_coordinator_empty_has_no_attempt(root, coordinated.chunk);
@@ -15980,6 +15996,7 @@ void require_worker_coordinator_empty_has_no_attempt(const std::filesystem::path
             CHECK(coordinated.wait_facts->native_error == 0);
         } else {
             CHECK(!coordinated.launched_attempt.has_value());
+            CHECK(!coordinated.reconciled_attempt.has_value());
             CHECK(!coordinated.wait_facts.has_value());
         }
     }
@@ -16026,6 +16043,203 @@ execute_worker_coordinator_fixture_chunk(WorkerCoordinatorFixture& fixture,
     CHECK(observed.chunks[2].state ==
           wave_detail::DistributedSieveWorkerChunkDurableStateV1::empty);
     return attempt;
+}
+
+void require_worker_coordinator_attempt_exact(const sieve::AttemptStartedV1& observed,
+                                              const sieve::AttemptStartedV1& expected) {
+    CHECK(encode_or_fail(Record{observed}) == encode_or_fail(Record{expected}));
+}
+
+[[nodiscard]] wave_detail::DistributedSieveWorkerHandoffInventoryWitnessV1
+require_worker_terminal_handoff_witness(
+    wave_detail::DistributedSieveWaveStore& store, const sieve::AttemptStartedV1& attempt,
+    std::string_view context,
+    wave_detail::DistributedSievePrivateLeaseBaseLockTestHooks hooks = {}) {
+    auto opened = store.open_worker_attempt_private_lease_root(attempt.chunk_id,
+                                                               attempt.attempt_ordinal, hooks);
+    auto& claim = require_private_lease_root_claim_ready(opened, context);
+    require_wave_status(claim.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        context);
+    auto terminal = wave_detail::reconcile_worker_attempt_started(std::move(opened));
+    CHECK(opened.claim == nullptr);
+    CHECK(!terminal);
+    CHECK(!terminal.reconciled.has_value());
+    CHECK(terminal.terminal_handoff.has_value());
+    require_wave_status(terminal.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::reconciliation_required,
+                        context);
+    CHECK(terminal.terminal_handoff->handoff.chunk_id == attempt.chunk_id);
+    CHECK(terminal.terminal_handoff->handoff.attempt_ordinal == attempt.attempt_ordinal);
+    CHECK(terminal.terminal_handoff->handoff.attempt_started_digest == attempt.self_digest);
+    CHECK(terminal.terminal_handoff->handoff.lease == attempt.lease);
+    return std::move(*terminal.terminal_handoff);
+}
+
+struct WorkerCoordinatorLateHandoffContext final {
+    WorkerCoordinatorLateHandoffContext(
+        wave_detail::DistributedSieveWaveStore& store_value,
+        const sieve::DistributedSieveWorkIdentityV1& identity_value,
+        const execution_policy_detail::DistributedSieveFrozenExecutionPolicyV1& frozen_value,
+        const gnfs::core::PolynomialContext& polynomial_value,
+        const gnfs::factor_base::FactorBase& factor_base_value,
+        WorkerAttemptStartReceipt&& receipt_value)
+        : store(&store_value), identity(&identity_value), frozen(&frozen_value),
+          polynomial(&polynomial_value), factor_base(&factor_base_value),
+          receipt(std::move(receipt_value)) {}
+
+    wave_detail::DistributedSieveWaveStore* store = nullptr;
+    const sieve::DistributedSieveWorkIdentityV1* identity = nullptr;
+    const execution_policy_detail::DistributedSieveFrozenExecutionPolicyV1* frozen = nullptr;
+    const gnfs::core::PolynomialContext* polynomial = nullptr;
+    const gnfs::factor_base::FactorBase* factor_base = nullptr;
+    std::optional<WorkerAttemptStartReceipt> receipt;
+    bool invoked = false;
+    bool succeeded = false;
+    bool threw = false;
+    bool retry_busy_observation_invoked = false;
+    std::optional<WaveSameBytesReplacementContext> after_target_replacement;
+    int report_descriptor = -1;
+    worker_process_detail::DistributedSieveWorkerProcessWaitResult wait;
+};
+
+void complete_worker_coordinator_late_handoff(void* opaque) noexcept {
+    auto& context = *static_cast<WorkerCoordinatorLateHandoffContext*>(opaque);
+    context.invoked = true;
+    try {
+        if (context.store == nullptr || context.identity == nullptr || context.frozen == nullptr ||
+            context.polynomial == nullptr || context.factor_base == nullptr ||
+            !context.receipt.has_value()) {
+            return;
+        }
+
+        std::vector<worker_launcher_detail::DistributedSieveWorkerLaunchSlotV1> slots;
+        slots.emplace_back(
+            std::move(*context.receipt),
+            std::vector<std::string>{std::string(WORKER_COORDINATOR_REAL_CHILD_ARGUMENT)});
+        context.receipt.reset();
+        worker_launcher_detail::DistributedSieveWorkerLaunchRequestV1 request(
+            worker_launch_test_executable, std::move(slots));
+        auto launched = context.store->launch_worker_process_batch_v1(
+            std::move(request), *context.identity, *context.frozen, *context.polynomial,
+            *context.factor_base);
+        if (!launched || launched.children.size() != 1U || !launched.children.front() ||
+            !launched.children.front().worker.has_value()) {
+            return;
+        }
+
+        auto& worker = *launched.children.front().worker;
+        context.wait = worker.wait_terminal();
+        context.report_descriptor = worker.release_report_descriptor();
+        if (context.report_descriptor >= 0) {
+            WaveSnapshotFd report(context.report_descriptor);
+            context.report_descriptor = -1;
+        }
+        launched.children.front().worker.reset();
+        context.succeeded = context.wait.reaped && context.wait.success &&
+                            context.wait.exit_status == 0 && context.wait.signal == 0 &&
+                            context.wait.native_error == 0;
+    } catch (...) {
+        context.threw = true;
+    }
+}
+
+void mark_worker_coordinator_retry_busy_observation(void* opaque) noexcept {
+    auto& context = *static_cast<WorkerCoordinatorLateHandoffContext*>(opaque);
+    context.retry_busy_observation_invoked = true;
+}
+
+void replace_worker_coordinator_handoff_after_target_lock(void* opaque) noexcept {
+    auto& context = *static_cast<WorkerCoordinatorLateHandoffContext*>(opaque);
+    if (!context.after_target_replacement.has_value()) {
+        context.threw = true;
+        return;
+    }
+    try {
+        context.after_target_replacement->bytes =
+            read_file_bytes(context.after_target_replacement->canonical);
+        replace_marker_with_same_bytes_after_first_inventory(
+            &*context.after_target_replacement);
+    } catch (...) {
+        context.threw = true;
+    }
+}
+
+struct WorkerCoordinatorBusyLateHandoffContext final {
+    WorkerCoordinatorBusyLateHandoffContext(
+        wave_detail::DistributedSieveWaveStore& store_value,
+        const sieve::DistributedSieveWorkIdentityV1& identity_value,
+        const execution_policy_detail::DistributedSieveFrozenExecutionPolicyV1& frozen_value,
+        const gnfs::core::PolynomialContext& polynomial_value,
+        const gnfs::factor_base::FactorBase& factor_base_value,
+        WorkerAttemptStartReceipt&& receipt_value)
+        : store(&store_value), identity(&identity_value), frozen(&frozen_value),
+          polynomial(&polynomial_value), factor_base(&factor_base_value),
+          receipt(std::move(receipt_value)) {}
+
+    wave_detail::DistributedSieveWaveStore* store = nullptr;
+    const sieve::DistributedSieveWorkIdentityV1* identity = nullptr;
+    const execution_policy_detail::DistributedSieveFrozenExecutionPolicyV1* frozen = nullptr;
+    const gnfs::core::PolynomialContext* polynomial = nullptr;
+    const gnfs::factor_base::FactorBase* factor_base = nullptr;
+    std::optional<WorkerAttemptStartReceipt> receipt;
+    std::optional<worker_launcher_detail::DistributedSieveWorkerLaunchBatchResultV1> launched;
+    bool launch_invoked = false;
+    bool launch_ready = false;
+    bool finish_invoked = false;
+    bool succeeded = false;
+    bool threw = false;
+};
+
+void launch_worker_coordinator_busy_late_handoff(void* opaque) noexcept {
+    auto& context = *static_cast<WorkerCoordinatorBusyLateHandoffContext*>(opaque);
+    context.launch_invoked = true;
+    try {
+        if (context.store == nullptr || context.identity == nullptr || context.frozen == nullptr ||
+            context.polynomial == nullptr || context.factor_base == nullptr ||
+            !context.receipt.has_value()) {
+            return;
+        }
+
+        std::vector<worker_launcher_detail::DistributedSieveWorkerLaunchSlotV1> slots;
+        slots.emplace_back(
+            std::move(*context.receipt),
+            std::vector<std::string>{std::string(WORKER_COORDINATOR_REAL_CHILD_ARGUMENT)});
+        context.receipt.reset();
+        worker_launcher_detail::DistributedSieveWorkerLaunchRequestV1 request(
+            worker_launch_test_executable, std::move(slots));
+        auto launched = context.store->launch_worker_process_batch_v1(
+            std::move(request), *context.identity, *context.frozen, *context.polynomial,
+            *context.factor_base);
+        context.launched.emplace(std::move(launched));
+        context.launch_ready = static_cast<bool>(*context.launched) &&
+                               context.launched->children.size() == 1U &&
+                               context.launched->children.front() &&
+                               context.launched->children.front().worker.has_value();
+    } catch (...) {
+        context.threw = true;
+    }
+}
+
+void finish_worker_coordinator_busy_late_handoff(void* opaque) noexcept {
+    auto& context = *static_cast<WorkerCoordinatorBusyLateHandoffContext*>(opaque);
+    context.finish_invoked = true;
+    try {
+        if (!context.launch_ready || !context.launched.has_value() ||
+            !context.launched->children.front().worker.has_value()) {
+            return;
+        }
+        auto& worker = *context.launched->children.front().worker;
+        const auto waited = worker.wait_terminal();
+        const int report_descriptor = worker.release_report_descriptor();
+        if (report_descriptor >= 0) {
+            WaveSnapshotFd report(report_descriptor);
+        }
+        context.launched->children.front().worker.reset();
+        context.succeeded = waited.reaped && waited.success && waited.exit_status == 0 &&
+                            waited.signal == 0 && waited.native_error == 0;
+    } catch (...) {
+        context.threw = true;
+    }
 }
 
 void test_worker_coordinator_fresh_repeat_and_empty_matrix() {
@@ -16097,10 +16311,437 @@ void test_worker_coordinator_mixed_launches_only_missing_chunk() {
     CHECK(result.chunks[1].launched_attempt->chunk_id == 1);
 }
 
+void test_worker_coordinator_reconciles_failed_attempt_and_retries_next_ordinal() {
+    WorkerCoordinatorFixture fixture("worker-coordinator-retry-failed-attempt");
+    (void)execute_worker_coordinator_fixture_chunk(fixture, 0);
+    const auto manifest_digest = fixture.store().manifest_digest();
+    sieve::AttemptStartedV1 failed_attempt;
+
+    {
+        WorkerCoordinatorLaunchLedger failed_ledger;
+        auto failed = worker_coordinator_detail::coordinate_missing_distributed_sieve_workers_v1(
+            make_worker_coordinator_request(fixture.take_store(), failed_ledger,
+                                            WORKER_COORDINATOR_FAIL_CHILD_ARGUMENT),
+            fixture.identity, fixture.frozen, fixture.polynomial, fixture.factor_base);
+        CHECK(!failed);
+        CHECK(
+            failed.diagnostic.phase ==
+            worker_coordinator_detail::DistributedSieveWorkerCoordinatorPhaseV1::final_observation);
+        CHECK(failed.diagnostic.status ==
+              worker_coordinator_detail::DistributedSieveWorkerCoordinatorStatusV1::
+                  incomplete_attempt);
+        CHECK(failed.diagnostic.manifest_slot == 1U);
+        CHECK(failed.chunks.size() == 3U);
+        CHECK(failed.chunks[1].launched_attempt.has_value());
+        CHECK(!failed.chunks[1].reconciled_attempt.has_value());
+        CHECK(failed.chunks[1].wait_facts.has_value());
+        CHECK(failed.chunks[1].launched_attempt->attempt_ordinal == 0U);
+        CHECK(failed.chunks[1].launched_attempt->predecessor_digest == manifest_digest);
+        CHECK(failed.chunks[1].wait_facts->kind == sieve::WorkerWaitFactKindV1::exited);
+        CHECK(failed.chunks[1].wait_facts->exit_code == 223);
+        failed_attempt = *failed.chunks[1].launched_attempt;
+        CHECK(!failed_ledger.overflow);
+        CHECK(failed_ledger.count == 1U);
+        require_worker_coordinator_attempt_namespace_absent(
+            fixture.root, fixture.identity.distributed.chunks[1], 1U);
+    }
+
+    std::array<WorkerCoordinatorCorpusFacts, 2> retried_facts{};
+    {
+        auto reopened = wave_detail::DistributedSieveWaveStore::open(fixture.root, manifest_digest);
+        (void)require_wave_ready(reopened, "reopen failed worker-coordinator attempt");
+        WorkerCoordinatorLaunchLedger retry_ledger;
+        auto retried = worker_coordinator_detail::coordinate_missing_distributed_sieve_workers_v1(
+            make_worker_coordinator_request(std::move(reopened.store), retry_ledger),
+            fixture.identity, fixture.frozen, fixture.polynomial, fixture.factor_base);
+        retried_facts = require_worker_coordinator_matrix(
+            retried, fixture.identity,
+            {
+                worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::adopted,
+                worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::
+                    executed,
+                worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::empty,
+            },
+            fixture.root);
+        CHECK(!retry_ledger.overflow);
+        CHECK(retry_ledger.count == 1U);
+        CHECK(retried.chunks[1].reconciled_attempt.has_value());
+        const auto& reconciled = *retried.chunks[1].reconciled_attempt;
+        require_worker_coordinator_attempt_exact(reconciled.record, failed_attempt);
+        CHECK(reconciled.next_attempt_ordinal == std::optional<std::uint32_t>{1U});
+        CHECK(retried.chunks[1].launched_attempt.has_value());
+        CHECK(retried.chunks[1].launched_attempt->attempt_ordinal == 1U);
+        CHECK(retried.chunks[1].launched_attempt->predecessor_digest == failed_attempt.self_digest);
+        CHECK(retried.chunks[1].launched_attempt->retry_policy_version ==
+              retried.store->manifest().retry_policy_version);
+        CHECK(retried.chunks[1].adopted->handoff().attempt_ordinal == 1U);
+        CHECK(retried.chunks[1].adopted->handoff().attempt_started_digest ==
+              retried.chunks[1].launched_attempt->self_digest);
+        CHECK(retried.chunks[1].adopted->handoff().lease ==
+              retried.chunks[1].launched_attempt->lease);
+    }
+
+    auto repeated_open =
+        wave_detail::DistributedSieveWaveStore::open(fixture.root, manifest_digest);
+    (void)require_wave_ready(repeated_open, "reopen retried worker-coordinator attempt");
+    WorkerCoordinatorLaunchLedger repeated_ledger;
+    auto repeated = worker_coordinator_detail::coordinate_missing_distributed_sieve_workers_v1(
+        make_worker_coordinator_request(std::move(repeated_open.store), repeated_ledger),
+        fixture.identity, fixture.frozen, fixture.polynomial, fixture.factor_base);
+    const auto repeated_facts = require_worker_coordinator_matrix(
+        repeated, fixture.identity,
+        {
+            worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::adopted,
+            worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::adopted,
+            worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::empty,
+        },
+        fixture.root);
+    CHECK(!repeated_ledger.overflow);
+    CHECK(repeated_ledger.count == 0U);
+    CHECK(repeated_facts == retried_facts);
+}
+
+void test_worker_coordinator_busy_attempt_does_not_retry() {
+    WorkerCoordinatorFixture fixture("worker-coordinator-retry-busy");
+    (void)execute_worker_coordinator_fixture_chunk(fixture, 0);
+    auto receipt =
+        publish_worker_launch_receipt(fixture.store(), 1, "publish busy coordinator attempt");
+    const auto& chunk = fixture.identity.distributed.chunks[1];
+    const auto before = capture_wave_root_snapshot(fixture.root);
+
+    WorkerCoordinatorLaunchLedger ledger;
+    auto result = worker_coordinator_detail::coordinate_missing_distributed_sieve_workers_v1(
+        make_worker_coordinator_request(fixture.take_store(), ledger), fixture.identity,
+        fixture.frozen, fixture.polynomial, fixture.factor_base);
+    CHECK(!result);
+    CHECK(result.diagnostic.phase ==
+          worker_coordinator_detail::DistributedSieveWorkerCoordinatorPhaseV1::
+              attempt_reconciliation);
+    CHECK(result.diagnostic.status ==
+          worker_coordinator_detail::DistributedSieveWorkerCoordinatorStatusV1::retry_busy);
+    CHECK(result.diagnostic.manifest_slot == 1U);
+    require_wave_status(result.diagnostic.wave_store,
+                        wave_detail::DistributedSieveWaveStoreStatus::private_lease_lock_busy,
+                        "worker-coordinator retry observes live BaseLock");
+    CHECK(!ledger.overflow);
+    CHECK(ledger.count == 0U);
+    CHECK(result.chunks.size() == 3U);
+    CHECK(!result.chunks[1].reconciled_attempt.has_value());
+    CHECK(!result.chunks[1].launched_attempt.has_value());
+    CHECK(receipt.owned_by_current_process());
+    require_wave_status(receipt.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "busy worker attempt receipt remains authoritative");
+    require_worker_coordinator_attempt_namespace_absent(fixture.root, chunk, 1U);
+    CHECK(capture_wave_root_snapshot(fixture.root) == before);
+}
+
+void test_worker_coordinator_late_handoff_precedes_retry() {
+    WorkerCoordinatorFixture fixture("worker-coordinator-late-handoff");
+    (void)execute_worker_coordinator_fixture_chunk(fixture, 0);
+    auto receipt =
+        publish_worker_launch_receipt(fixture.store(), 1, "publish late coordinator attempt");
+    const auto late_attempt = receipt.record();
+    WorkerCoordinatorLateHandoffContext late_context(fixture.store(), fixture.identity,
+                                                     fixture.frozen, fixture.polynomial,
+                                                     fixture.factor_base, std::move(receipt));
+
+    WorkerCoordinatorLaunchLedger ledger;
+    auto request = make_worker_coordinator_request(fixture.take_store(), ledger);
+    request.coordinator_hooks = {
+        .after_initial_observation = complete_worker_coordinator_late_handoff,
+        .context = &late_context,
+    };
+    auto result = worker_coordinator_detail::coordinate_missing_distributed_sieve_workers_v1(
+        std::move(request), fixture.identity, fixture.frozen, fixture.polynomial,
+        fixture.factor_base);
+    const auto facts = require_worker_coordinator_matrix(
+        result, fixture.identity,
+        {
+            worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::adopted,
+            worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::adopted,
+            worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::empty,
+        },
+        fixture.root);
+    CHECK(late_context.invoked);
+    CHECK(late_context.succeeded);
+    CHECK(!late_context.threw);
+    CHECK(!late_context.receipt.has_value());
+    CHECK(late_context.report_descriptor == -1);
+    CHECK(!ledger.overflow);
+    CHECK(ledger.count == 0U);
+    CHECK(!result.chunks[1].reconciled_attempt.has_value());
+    CHECK(!result.chunks[1].launched_attempt.has_value());
+    CHECK(facts[1].attempt_started_digest == late_attempt.self_digest);
+    CHECK(result.chunks[1].adopted->handoff().attempt_ordinal == 0U);
+    CHECK(result.chunks[1].adopted->handoff().lease == late_attempt.lease);
+    require_worker_coordinator_attempt_namespace_absent(fixture.root,
+                                                        fixture.identity.distributed.chunks[1], 1U);
+}
+
+void test_worker_coordinator_handoff_after_retry_observation_precedes_reconcile() {
+    WorkerCoordinatorFixture fixture("worker-coordinator-post-retry-observation-handoff");
+    (void)execute_worker_coordinator_fixture_chunk(fixture, 0);
+    auto receipt = publish_worker_launch_receipt(
+        fixture.store(), 1, "publish post-retry-observation coordinator attempt");
+    const auto late_attempt = receipt.record();
+    WorkerCoordinatorLateHandoffContext late_context(fixture.store(), fixture.identity,
+                                                     fixture.frozen, fixture.polynomial,
+                                                     fixture.factor_base, std::move(receipt));
+
+    WorkerCoordinatorLaunchLedger ledger;
+    auto request = make_worker_coordinator_request(fixture.take_store(), ledger);
+    request.coordinator_hooks = {
+        .after_retry_observation = complete_worker_coordinator_late_handoff,
+        .before_retry_busy_observation = mark_worker_coordinator_retry_busy_observation,
+        .context = &late_context,
+    };
+    auto result = worker_coordinator_detail::coordinate_missing_distributed_sieve_workers_v1(
+        std::move(request), fixture.identity, fixture.frozen, fixture.polynomial,
+        fixture.factor_base);
+    const auto facts = require_worker_coordinator_matrix(
+        result, fixture.identity,
+        {
+            worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::adopted,
+            worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::adopted,
+            worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::empty,
+        },
+        fixture.root);
+    CHECK(late_context.invoked);
+    CHECK(late_context.succeeded);
+    CHECK(!late_context.threw);
+    CHECK(!late_context.receipt.has_value());
+    CHECK(late_context.report_descriptor == -1);
+    CHECK(!late_context.retry_busy_observation_invoked);
+    CHECK(!ledger.overflow);
+    CHECK(ledger.count == 0U);
+    CHECK(!result.chunks[1].reconciled_attempt.has_value());
+    CHECK(!result.chunks[1].launched_attempt.has_value());
+    CHECK(facts[1].attempt_started_digest == late_attempt.self_digest);
+    CHECK(result.chunks[1].adopted->handoff().attempt_ordinal == 0U);
+    CHECK(result.chunks[1].adopted->handoff().lease == late_attempt.lease);
+    require_worker_coordinator_attempt_namespace_absent(fixture.root,
+                                                        fixture.identity.distributed.chunks[1], 1U);
+}
+
+void test_worker_attempt_open_terminal_transition_requires_expected_adoption() {
+    WorkerCoordinatorFixture fixture("worker-attempt-open-terminal-transition");
+    auto receipt = publish_worker_launch_receipt(
+        fixture.store(), 1, "publish worker attempt before internal open transition");
+    const auto late_attempt = receipt.record();
+    WorkerCoordinatorLateHandoffContext late_context(fixture.store(), fixture.identity,
+                                                     fixture.frozen, fixture.polynomial,
+                                                     fixture.factor_base, std::move(receipt));
+    auto opened = fixture.store().open_worker_attempt_private_lease_root(
+        late_attempt.chunk_id, late_attempt.attempt_ordinal,
+        wave_detail::DistributedSievePrivateLeaseBaseLockTestHooks{
+            .after_initial_phase_validation = complete_worker_coordinator_late_handoff,
+            .context = &late_context,
+        });
+    CHECK(late_context.invoked);
+    CHECK(late_context.succeeded);
+    CHECK(!late_context.threw);
+    CHECK(!late_context.receipt.has_value());
+    CHECK(late_context.report_descriptor == -1);
+    auto& claim = require_private_lease_root_claim_ready(
+        opened, "open exact terminal transition under old-attempt BaseLock");
+    require_wave_status(
+        claim.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+        "revalidate exact terminal transition under old-attempt BaseLock");
+    auto reconciled = wave_detail::reconcile_worker_attempt_started(std::move(opened));
+    CHECK(opened.claim == nullptr);
+    CHECK(!reconciled);
+    CHECK(!reconciled.reconciled.has_value());
+    CHECK(reconciled.terminal_handoff.has_value());
+    require_wave_status(reconciled.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::reconciliation_required,
+                        "reconcile exact terminal transition under old-attempt BaseLock");
+    const auto terminal = std::move(*reconciled.terminal_handoff);
+    CHECK(terminal.handoff.chunk_id == late_attempt.chunk_id);
+    CHECK(terminal.handoff.attempt_ordinal == late_attempt.attempt_ordinal);
+    CHECK(terminal.handoff.attempt_started_digest == late_attempt.self_digest);
+    CHECK(terminal.handoff.lease == late_attempt.lease);
+
+    auto tampered = terminal;
+    tampered.envelope_digest.bytes[0] ^= std::byte{1};
+    const auto before_rejection = capture_wave_root_snapshot(fixture.root);
+    auto rejected = fixture.store().adopt_expected_worker_handoff_v1(tampered);
+    CHECK(!rejected);
+    CHECK(!rejected.adopted.has_value());
+    require_wave_status(rejected.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "expected adoption rejects a tampered terminal witness");
+    CHECK(capture_wave_root_snapshot(fixture.root) == before_rejection);
+
+    auto adopted = fixture.store().adopt_expected_worker_handoff_v1(terminal);
+    CHECK(adopted);
+    CHECK(adopted.adopted.has_value());
+    CHECK(adopted.adopted->valid());
+    CHECK(encode_or_fail(Record{adopted.adopted->handoff()}) ==
+          encode_or_fail(Record{terminal.handoff}));
+    require_worker_coordinator_attempt_namespace_absent(fixture.root,
+                                                        fixture.identity.distributed.chunks[1], 1U);
+}
+
+void test_worker_attempt_open_rejects_post_lock_terminal_replacement() {
+    WorkerCoordinatorFixture fixture("worker-attempt-post-lock-terminal-replacement");
+    auto receipt = publish_worker_launch_receipt(
+        fixture.store(), 1, "publish worker attempt before post-lock terminal replacement");
+    const auto late_attempt = receipt.record();
+    WorkerCoordinatorLateHandoffContext late_context(fixture.store(), fixture.identity,
+                                                     fixture.frozen, fixture.polynomial,
+                                                     fixture.factor_base, std::move(receipt));
+    const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        fixture.identity.distributed.chunks[1].relative_artifact_stem, late_attempt.chunk_id,
+        late_attempt.attempt_ordinal);
+    CHECK(names.has_value());
+    const auto paths = gnfs::relation::OOCCleanupTransaction::paths_for(
+        fixture.root / names->private_directory_leaf / "corpus");
+    late_context.after_target_replacement.emplace(WaveSameBytesReplacementContext{
+        .canonical = paths.private_handoff_path,
+        .displaced = fixture.temp.path() / "displaced-post-lock-worker-handoff",
+    });
+
+    auto opened = fixture.store().open_worker_attempt_private_lease_root(
+        late_attempt.chunk_id, late_attempt.attempt_ordinal,
+        wave_detail::DistributedSievePrivateLeaseBaseLockTestHooks{
+            .after_initial_phase_validation = complete_worker_coordinator_late_handoff,
+            .after_target_lock_acquired = replace_worker_coordinator_handoff_after_target_lock,
+            .context = &late_context,
+        });
+    CHECK(late_context.invoked);
+    CHECK(late_context.succeeded);
+    CHECK(!late_context.threw);
+    CHECK(!late_context.receipt.has_value());
+    CHECK(late_context.report_descriptor == -1);
+    CHECK(late_context.after_target_replacement.has_value());
+    CHECK(late_context.after_target_replacement->invoked);
+    CHECK(late_context.after_target_replacement->replaced);
+    CHECK(late_context.after_target_replacement->native_error == 0);
+    CHECK(!opened);
+    CHECK(opened.claim == nullptr);
+    require_wave_status(
+        opened.diagnostic, wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+        "post-lock terminal replacement is rejected after held-target adjudication");
+    CHECK(entry_exists_no_follow(paths.private_handoff_path));
+    CHECK(entry_exists_no_follow(late_context.after_target_replacement->displaced));
+}
+
+void test_worker_coordinator_busy_late_handoff_precedes_retry() {
+    WorkerCoordinatorFixture fixture("worker-coordinator-busy-late-handoff");
+    (void)execute_worker_coordinator_fixture_chunk(fixture, 0);
+    auto receipt = publish_worker_launch_receipt(fixture.store(), 1,
+                                                 "publish busy late-handoff coordinator attempt");
+    const auto late_attempt = receipt.record();
+    WorkerCoordinatorBusyLateHandoffContext late_context(fixture.store(), fixture.identity,
+                                                         fixture.frozen, fixture.polynomial,
+                                                         fixture.factor_base, std::move(receipt));
+
+    WorkerCoordinatorLaunchLedger ledger;
+    auto request = make_worker_coordinator_request(fixture.take_store(), ledger);
+    request.coordinator_hooks = {
+        .after_retry_observation = launch_worker_coordinator_busy_late_handoff,
+        .before_retry_busy_observation = finish_worker_coordinator_busy_late_handoff,
+        .context = &late_context,
+    };
+    auto result = worker_coordinator_detail::coordinate_missing_distributed_sieve_workers_v1(
+        std::move(request), fixture.identity, fixture.frozen, fixture.polynomial,
+        fixture.factor_base);
+    const auto facts = require_worker_coordinator_matrix(
+        result, fixture.identity,
+        {
+            worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::adopted,
+            worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::adopted,
+            worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::empty,
+        },
+        fixture.root);
+    CHECK(late_context.launch_invoked);
+    CHECK(late_context.launch_ready);
+    CHECK(late_context.finish_invoked);
+    CHECK(late_context.succeeded);
+    CHECK(!late_context.threw);
+    CHECK(!late_context.receipt.has_value());
+    CHECK(!late_context.launched->children.front().worker.has_value());
+    CHECK(!ledger.overflow);
+    CHECK(ledger.count == 0U);
+    CHECK(!result.chunks[1].reconciled_attempt.has_value());
+    CHECK(!result.chunks[1].launched_attempt.has_value());
+    CHECK(facts[1].attempt_started_digest == late_attempt.self_digest);
+    CHECK(result.chunks[1].adopted->handoff().attempt_ordinal == 0U);
+    CHECK(result.chunks[1].adopted->handoff().lease == late_attempt.lease);
+    require_worker_coordinator_attempt_namespace_absent(fixture.root,
+                                                        fixture.identity.distributed.chunks[1], 1U);
+}
+
+void test_worker_coordinator_retry_exhaustion_starts_no_other_chunk() {
+    WorkerCoordinatorFixture fixture("worker-coordinator-retry-exhausted", 1U);
+    const auto manifest_digest = fixture.store().manifest_digest();
+    sieve::AttemptStartedV1 exhausted_attempt;
+    {
+        auto receipt = publish_worker_launch_receipt(
+            fixture.store(), 0, "publish exhausted worker-coordinator attempt");
+        exhausted_attempt = receipt.record();
+    }
+    const auto before = capture_wave_root_snapshot(fixture.root);
+
+    WaveRootSnapshot normalized;
+    {
+        WorkerCoordinatorLaunchLedger first_ledger;
+        auto first = worker_coordinator_detail::coordinate_missing_distributed_sieve_workers_v1(
+            make_worker_coordinator_request(fixture.take_store(), first_ledger), fixture.identity,
+            fixture.frozen, fixture.polynomial, fixture.factor_base);
+        CHECK(!first);
+        CHECK(first.diagnostic.phase ==
+              worker_coordinator_detail::DistributedSieveWorkerCoordinatorPhaseV1::
+                  attempt_reconciliation);
+        CHECK(
+            first.diagnostic.status ==
+            worker_coordinator_detail::DistributedSieveWorkerCoordinatorStatusV1::retry_exhausted);
+        CHECK(first.diagnostic.manifest_slot == 0U);
+        CHECK(!first_ledger.overflow);
+        CHECK(first_ledger.count == 0U);
+        CHECK(first.chunks.size() == 3U);
+        CHECK(first.chunks[0].reconciled_attempt.has_value());
+        require_worker_coordinator_attempt_exact(first.chunks[0].reconciled_attempt->record,
+                                                 exhausted_attempt);
+        CHECK(!first.chunks[0].reconciled_attempt->next_attempt_ordinal.has_value());
+        CHECK(!first.chunks[0].launched_attempt.has_value());
+        CHECK(!first.chunks[1].launched_attempt.has_value());
+        require_worker_coordinator_attempt_namespace_absent(
+            fixture.root, fixture.identity.distributed.chunks[0], 1U);
+        require_worker_coordinator_attempt_namespace_absent(
+            fixture.root, fixture.identity.distributed.chunks[1], 0U);
+        normalized = capture_wave_root_snapshot(fixture.root);
+        CHECK(normalized != before);
+    }
+
+    auto reopened = wave_detail::DistributedSieveWaveStore::open(fixture.root, manifest_digest);
+    (void)require_wave_ready(reopened, "reopen exhausted worker-coordinator attempt");
+    WorkerCoordinatorLaunchLedger repeated_ledger;
+    auto repeated = worker_coordinator_detail::coordinate_missing_distributed_sieve_workers_v1(
+        make_worker_coordinator_request(std::move(reopened.store), repeated_ledger),
+        fixture.identity, fixture.frozen, fixture.polynomial, fixture.factor_base);
+    CHECK(!repeated);
+    CHECK(repeated.diagnostic.phase ==
+          worker_coordinator_detail::DistributedSieveWorkerCoordinatorPhaseV1::
+              attempt_reconciliation);
+    CHECK(repeated.diagnostic.status ==
+          worker_coordinator_detail::DistributedSieveWorkerCoordinatorStatusV1::retry_exhausted);
+    CHECK(repeated.diagnostic.manifest_slot == 0U);
+    CHECK(!repeated_ledger.overflow);
+    CHECK(repeated_ledger.count == 0U);
+    CHECK(repeated.chunks[0].reconciled_attempt.has_value());
+    require_worker_coordinator_attempt_exact(repeated.chunks[0].reconciled_attempt->record,
+                                             exhausted_attempt);
+    CHECK(!repeated.chunks[0].reconciled_attempt->next_attempt_ordinal.has_value());
+    CHECK(capture_wave_root_snapshot(fixture.root) == normalized);
+}
+
 void test_worker_handoff_adoption_rejects_final_marker_replacement() {
     const auto run_case = [](std::string_view label, bool replace_nested_owner) {
         WorkerCoordinatorFixture fixture(label);
-        (void)execute_worker_coordinator_fixture_chunk(fixture, 0);
+        const auto attempt = execute_worker_coordinator_fixture_chunk(fixture, 0);
+        const auto terminal = require_worker_terminal_handoff_witness(
+            fixture.store(), attempt, "capture terminal witness before marker replacement");
         const auto& chunk = fixture.identity.distributed.chunks.front();
         const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
             chunk.relative_artifact_stem, chunk.chunk_id, 0);
@@ -16118,12 +16759,12 @@ void test_worker_handoff_adoption_rejects_final_marker_replacement() {
             .displaced = displaced,
             .bytes = read_file_bytes(canonical),
         };
-        auto rejected = fixture.store().adopt_worker_handoff_v1(
-            chunk.chunk_id, wave_detail::DistributedSieveWorkerHandoffAdoptionTestHooksV1{
-                                .before_final_namespace_revalidation =
-                                    replace_marker_with_same_bytes_after_first_inventory,
-                                .context = &replacement,
-                            });
+        auto rejected = fixture.store().adopt_expected_worker_handoff_v1(
+            terminal, wave_detail::DistributedSieveWorkerHandoffAdoptionTestHooksV1{
+                          .before_final_namespace_revalidation =
+                              replace_marker_with_same_bytes_after_first_inventory,
+                          .context = &replacement,
+                      });
         CHECK(!rejected);
         CHECK(!rejected.adopted.has_value());
         require_wave_status(rejected.diagnostic,
@@ -17603,11 +18244,25 @@ void run_coordinator_suite() {
 #if defined(__APPLE__)
     if (worker_process_detail::
             distributed_sieve_worker_process_fixed_capability_close_all_supported()) {
-        const std::array<std::pair<std::string_view, TestFunction>, 3> tests = {{
+        const std::array<std::pair<std::string_view, TestFunction>, 11> tests = {{
             {"fresh, all-adopted repeat, and empty slot",
              test_worker_coordinator_fresh_repeat_and_empty_matrix},
             {"mixed wave launches only the missing chunk",
              test_worker_coordinator_mixed_launches_only_missing_chunk},
+            {"failed attempt reconciles and retries next ordinal",
+             test_worker_coordinator_reconciles_failed_attempt_and_retries_next_ordinal},
+            {"busy attempt starts no retry", test_worker_coordinator_busy_attempt_does_not_retry},
+            {"late handoff precedes retry", test_worker_coordinator_late_handoff_precedes_retry},
+            {"handoff after retry observation precedes reconcile",
+             test_worker_coordinator_handoff_after_retry_observation_precedes_reconcile},
+            {"attempt open terminal transition requires expected adoption",
+             test_worker_attempt_open_terminal_transition_requires_expected_adoption},
+            {"attempt open rejects post-lock terminal replacement",
+             test_worker_attempt_open_rejects_post_lock_terminal_replacement},
+            {"busy late handoff precedes retry",
+             test_worker_coordinator_busy_late_handoff_precedes_retry},
+            {"retry exhaustion starts no other chunk",
+             test_worker_coordinator_retry_exhaustion_starts_no_other_chunk},
             {"handoff adoption final marker replacement",
              test_worker_handoff_adoption_rejects_final_marker_replacement},
         }};
@@ -17631,6 +18286,9 @@ void run_coordinator_suite() {
 int main(int argc, char** argv) {
     try {
 #if !defined(_WIN32)
+        if (argc == 2 && std::string_view(argv[1]) == WORKER_COORDINATOR_FAIL_CHILD_ARGUMENT) {
+            return run_worker_coordinator_fail_child();
+        }
         if (argc == 2 && std::string_view(argv[1]) == WORKER_COORDINATOR_REAL_CHILD_ARGUMENT) {
             return run_worker_coordinator_real_child();
         }

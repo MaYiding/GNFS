@@ -1,11 +1,13 @@
 #pragma once
 
-// Source-private missing-only coordinator for one durable sieve wave.
+// Source-private execution and bounded-retry coordinator for one durable sieve
+// wave.
 //
 // The coordinator consumes exclusive ownership of a WaveStore, claims its
-// whole-round gate, classifies every manifest chunk, starts one fixed batch
-// containing only genuinely missing nonempty chunks, reaps every known child,
-// and finally adopts all canonical handoffs through same-handle readers.
+// whole-round gate, classifies every manifest chunk, reconciles quiescent
+// incomplete attempts, starts one fixed batch containing only missing or
+// authorized retry chunks, reaps every known child, and finally adopts all
+// canonical handoffs through same-handle readers.
 
 #include "distributed_sieve_wave_store_internal.hpp"
 #include "distributed_sieve_worker_launcher_internal.hpp"
@@ -31,6 +33,9 @@ enum class DistributedSieveWorkerCoordinatorPhaseV1 : std::uint8_t {
     request_validation,
     coordinator_claim,
     initial_observation,
+    retry_observation,
+    attempt_reconciliation,
+    post_reconciliation_observation,
     attempt_reservation,
     attempt_start,
     batch_launch,
@@ -45,6 +50,9 @@ enum class DistributedSieveWorkerCoordinatorStatusV1 : std::uint8_t {
     coordinator_busy,
     observation_failed,
     incomplete_attempt,
+    retry_busy,
+    retry_exhausted,
+    attempt_reconciliation_failed,
     attempt_preparation_failed,
     launch_failed,
     wait_uncertain,
@@ -64,11 +72,23 @@ struct DistributedSieveWorkerCoordinatorDiagnosticV1 final {
     std::optional<WorkerWaitFactsV1> wait_facts;
 };
 
+/// Trusted test-only coordinator observation boundary. Production callers
+/// leave the callback empty.
+struct DistributedSieveWorkerCoordinatorTestHooksV1 final {
+    using ObservationBoundary = void (*)(void* context) noexcept;
+
+    ObservationBoundary after_initial_observation = nullptr;
+    ObservationBoundary after_retry_observation = nullptr;
+    ObservationBoundary before_retry_busy_observation = nullptr;
+    void* context = nullptr;
+};
+
 /// Complete owned request for one coordinator round.
 ///
-/// Arguments exclude argv[0] and are copied into every genuinely missing
-/// launch slot. The request never accepts descriptors, paths below the frozen
-/// wave root, attempt records, or caller-selected ordinals.
+/// Arguments exclude argv[0] and are copied into every missing or
+/// reconciler-authorized retry launch slot. The request never accepts
+/// descriptors, paths below the frozen wave root, attempt records, or
+/// caller-selected ordinals.
 struct DistributedSieveWorkerCoordinatorRequestV1 final {
     std::unique_ptr<distributed_sieve_resume_detail::DistributedSieveWaveStore> store;
     std::string executable_path;
@@ -76,6 +96,7 @@ struct DistributedSieveWorkerCoordinatorRequestV1 final {
     distributed_sieve_worker_launcher_detail::DistributedSieveWorkerLauncherTestHooksV1
         launcher_hooks;
     distributed_sieve_worker_process_detail::DistributedSieveWorkerProcessWaitTestHooks wait_hooks;
+    DistributedSieveWorkerCoordinatorTestHooksV1 coordinator_hooks;
 };
 
 /// One terminal manifest-ordered chunk result.
@@ -87,6 +108,8 @@ struct DistributedSieveWorkerCoordinatedChunkV1 final {
     DistributedSieveWorkerCoordinationDispositionV1 disposition =
         DistributedSieveWorkerCoordinationDispositionV1::empty;
     std::optional<AttemptStartedV1> launched_attempt;
+    std::optional<distributed_sieve_resume_detail::DistributedSieveReconciledWorkerAttemptV1>
+        reconciled_attempt;
     std::optional<WorkerWaitFactsV1> wait_facts;
     std::optional<distributed_sieve_resume_detail::DistributedSieveAdoptedWorkerChunkV1> adopted;
 

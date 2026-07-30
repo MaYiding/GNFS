@@ -63,6 +63,8 @@ struct OOCCleanupPaths;
 namespace ooc_cleanup_detail {
 class AdoptionParentDirectoryHandle;
 class BaseLock;
+class OOCPrivateHandoffAdoptionBuilderV1;
+class OOCPrivateHandoffBorrowedBaseLockV1;
 class PrivateCleanupActionPermit;
 class PrivateCleanupMutationGate;
 class PrivateDirectoryHandle;
@@ -564,6 +566,7 @@ private:
     bool spent_ = false;
 
     friend class OOCCleanupTransaction;
+    friend class ooc_cleanup_detail::OOCPrivateHandoffAdoptionBuilderV1;
     friend class OOCPrivateHandoffReader;
 };
 
@@ -2100,6 +2103,7 @@ private:
 
     friend bool try_claim_private_cleanup_action(BaseLock& lock) noexcept;
     friend void release_private_cleanup_action(BaseLock& lock) noexcept;
+    friend class OOCPrivateHandoffBorrowedBaseLockV1;
     friend class ::gnfs::sieve::distributed_sieve_worker_entry_detail::
         distributed_sieve_worker_writer_detail::OOCInheritedP8WriterMintV1;
 
@@ -5713,6 +5717,7 @@ recover_owned_private_lease_locked(const OOCCleanupPaths& paths, const BaseLock&
 class OOCCleanupTransaction final {
 private:
     friend class ooc_cleanup_detail::PathPrivateLeaseReservationTarget;
+    friend class ooc_cleanup_detail::OOCPrivateHandoffAdoptionBuilderV1;
 
     struct PrivateLeaseActionAdmission final {
         OOCCleanupResult result;

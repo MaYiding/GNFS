@@ -1,4 +1,4 @@
-#include "gnfs/relation/ooc_cleanup_transaction.hpp"
+#include "ooc_private_handoff_adoption_internal.hpp"
 
 #include <algorithm>
 #include <array>
@@ -160,9 +160,105 @@ private:
 
 #endif
 
+OOCPrivateHandoffBorrowedBaseLockV1::OOCPrivateHandoffBorrowedBaseLockV1(
+    int parent_descriptor, int lock_descriptor, std::string_view lock_leaf,
+    std::array<std::uint64_t, 3> lock_identity,
+    std::uint64_t creator_process_id) noexcept
+    : parent_descriptor_(parent_descriptor), lock_descriptor_(lock_descriptor),
+      lock_leaf_(lock_leaf), lock_identity_(lock_identity),
+      creator_process_id_(creator_process_id) {}
+
+OOCPrivateHandoffBorrowedBaseLockV1::OOCPrivateHandoffBorrowedBaseLockV1(
+    OOCPrivateHandoffBorrowedBaseLockV1&& other) noexcept
+    : parent_descriptor_(std::exchange(other.parent_descriptor_, -1)),
+      lock_descriptor_(std::exchange(other.lock_descriptor_, -1)),
+      lock_leaf_(std::exchange(other.lock_leaf_, {})), lock_identity_(other.lock_identity_),
+      creator_process_id_(std::exchange(other.creator_process_id_, 0)),
+      consumed_(std::exchange(other.consumed_, true)) {}
+
+std::shared_ptr<BaseLock> OOCPrivateHandoffBorrowedBaseLockV1::consume(
+    const OOCCleanupPaths& paths, AdoptionParentDirectoryHandle& parent) {
+#if !defined(__APPLE__)
+    (void)paths;
+    (void)parent;
+    fail(OOCCleanupStatus::PlatformUnsupported, OOCCleanupStage::None,
+         std::make_error_code(std::errc::operation_not_supported));
+#else
+    if (consumed_ || parent_descriptor_ < 0 || lock_descriptor_ < 0 || lock_leaf_.empty() ||
+        creator_process_id_ == 0 ||
+        creator_process_id_ != static_cast<std::uint64_t>(gnfs::util::process_id())) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+    consumed_ = true;
+
+    const auto expected_leaf = paths.lock_path.filename().string();
+    if (paths.private_directory.empty() || lock_leaf_ != expected_leaf) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+    }
+
+    struct stat held_parent{};
+    struct stat held_lock{};
+    struct stat named_lock{};
+    if (::fstat(parent_descriptor_, &held_parent) != 0 ||
+        ::fstat(lock_descriptor_, &held_lock) != 0 ||
+        ::fstatat(parent_descriptor_, expected_leaf.c_str(), &named_lock, AT_SYMLINK_NOFOLLOW) !=
+            0) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
+             posix_error(errno == 0 ? EACCES : errno));
+    }
+    const auto held_parent_identity = stable_identity(posix_identity(held_parent));
+    const auto held_lock_identity = stable_identity(posix_identity(held_lock));
+    const auto named_lock_identity = stable_identity(posix_identity(named_lock));
+    if (!S_ISDIR(held_parent.st_mode) || parent.identity() != held_parent_identity ||
+        !S_ISREG(held_lock.st_mode) || held_lock.st_nlink != 1 ||
+        !S_ISREG(named_lock.st_mode) || named_lock.st_nlink != 1 ||
+        held_lock_identity != lock_identity_ || named_lock_identity != lock_identity_ ||
+        held_lock.st_dev != named_lock.st_dev || held_lock.st_ino != named_lock.st_ino) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+    }
+
+    std::string retained_leaf(lock_leaf_);
+    int duplicated = -1;
+    do {
+        duplicated = ::fcntl(lock_descriptor_, F_DUPFD_CLOEXEC, 0);
+    } while (duplicated < 0 && errno == EINTR);
+    if (duplicated < 0) {
+        fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, posix_error(errno));
+    }
+
+    try {
+        auto adopted = std::unique_ptr<BaseLock>(new BaseLock(
+            paths.lock_path, duplicated, static_cast<int>(parent.native_handle()),
+            std::move(retained_leaf), held_parent_identity, lock_identity_,
+            BaseLock::AdoptInheritedOpenFileDescription{}));
+        duplicated = -1;
+        return std::shared_ptr<BaseLock>(std::move(adopted));
+    } catch (...) {
+        if (duplicated >= 0) {
+            (void)::close(duplicated);
+        }
+        throw;
+    }
+#endif
+}
+
 } // namespace gnfs::relation::ooc_cleanup_detail
 
 namespace gnfs::relation {
+
+class ooc_cleanup_detail::OOCPrivateHandoffAdoptionBuilderV1 final {
+public:
+    template <typename Operation>
+    [[nodiscard]] static OOCCleanupResult invoke(Operation&& operation) noexcept {
+        return OOCCleanupTransaction::invoke(std::forward<Operation>(operation));
+    }
+
+    template <typename... Arguments>
+    [[nodiscard]] static OOCPrivateHandoffAdoptionReceipt
+    make_receipt(Arguments&&... arguments) {
+        return OOCPrivateHandoffAdoptionReceipt(std::forward<Arguments>(arguments)...);
+    }
+};
 
 namespace {
 
@@ -691,9 +787,14 @@ artifact_snapshot(const OOCPrivateHandoffArtifactBindingV1& binding) noexcept {
 
 } // namespace
 
+namespace {
+
+template <typename AcquireLock>
 OOCPrivateHandoffAdoptionResult
-OOCCleanupTransaction::adopt_private_handoff(const std::filesystem::path& base_path,
-                                             OOCPrivateHandoffAdoptionTestHooks hooks) noexcept {
+adopt_private_handoff_impl(const std::filesystem::path& base_path,
+                           OOCPrivateHandoffAdoptionTestHooks hooks,
+                           bool require_existing_lock_binding,
+                           AcquireLock&& acquire_lock) noexcept {
     if (base_path.empty() || ooc_cleanup_detail::path_contains_nul(base_path)) {
         return adoption_failure(OOCCleanupStatus::InvalidRequest,
                                 OOCPrivateHandoffState::TaintedPreserved,
@@ -702,6 +803,8 @@ OOCCleanupTransaction::adopt_private_handoff(const std::filesystem::path& base_p
 
 #if !defined(__APPLE__)
     (void)hooks;
+    (void)require_existing_lock_binding;
+    (void)acquire_lock;
     return adoption_failure(OOCCleanupStatus::PlatformUnsupported,
                             OOCPrivateHandoffState::TaintedPreserved,
                             std::make_error_code(std::errc::operation_not_supported));
@@ -714,7 +817,7 @@ OOCCleanupTransaction::adopt_private_handoff(const std::filesystem::path& base_p
         assigned = true;
         return adoption->result;
     };
-    const auto result = invoke([&] {
+    const auto result = ooc_cleanup_detail::OOCPrivateHandoffAdoptionBuilderV1::invoke([&] {
         const auto paths = ooc_cleanup_detail::freeze_paths(base_path);
         if (paths.private_directory.empty()) {
             ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
@@ -724,6 +827,11 @@ OOCCleanupTransaction::adopt_private_handoff(const std::filesystem::path& base_p
         auto parent = std::make_shared<ooc_cleanup_detail::AdoptionParentDirectoryHandle>(
             paths.private_directory.parent_path());
         if (!parent->leaf_exists(paths.lock_path.filename())) {
+            if (require_existing_lock_binding) {
+                return assign(adoption_failure(OOCCleanupStatus::NamespaceConflict,
+                                               OOCPrivateHandoffState::TaintedPreserved,
+                                               ooc_cleanup_detail::protocol_error()));
+            }
             const bool protocol_artifact =
                 parent->leaf_exists(paths.private_directory.filename()) ||
                 parent->leaf_exists(paths.lease_reserved_path.filename()) ||
@@ -738,7 +846,7 @@ OOCCleanupTransaction::adopt_private_handoff(const std::filesystem::path& base_p
                                                  OOCPrivateHandoffState::None, {}));
         }
 
-        auto lock = std::make_shared<ooc_cleanup_detail::BaseLock>(paths.lock_path, false);
+        auto lock = std::forward<AcquireLock>(acquire_lock)(paths, *parent);
         lock->require_stable();
         parent->require_lock_binding(paths.lock_path.filename(), *lock);
         if (parent->leaf_exists(paths.private_handoff_rollback_path.filename())) {
@@ -841,7 +949,8 @@ OOCCleanupTransaction::adopt_private_handoff(const std::filesystem::path& base_p
             classified.witness->pending
                 ? std::optional<RecordSnapshot>(classified.witness->pending->snapshot)
                 : std::nullopt;
-        OOCPrivateHandoffAdoptionReceipt receipt(
+        auto receipt =
+            ooc_cleanup_detail::OOCPrivateHandoffAdoptionBuilderV1::make_receipt(
             paths.base_path, paths.private_directory, paths.lock_path, classified.witness->record,
             classified.witness->canonical.snapshot, pending_handoff_snapshot, std::move(index),
             std::move(data), std::move(lock), std::move(parent), std::move(directory),
@@ -863,6 +972,31 @@ OOCCleanupTransaction::adopt_private_handoff(const std::filesystem::path& base_p
     }
     return std::move(*adoption);
 #endif
+}
+
+} // namespace
+
+OOCPrivateHandoffAdoptionResult
+OOCCleanupTransaction::adopt_private_handoff(const std::filesystem::path& base_path,
+                                             OOCPrivateHandoffAdoptionTestHooks hooks) noexcept {
+    return adopt_private_handoff_impl(
+        base_path, hooks, false,
+        [](const OOCCleanupPaths& paths,
+           ooc_cleanup_detail::AdoptionParentDirectoryHandle&) {
+            return std::make_shared<ooc_cleanup_detail::BaseLock>(paths.lock_path, false);
+        });
+}
+
+OOCPrivateHandoffAdoptionResult
+ooc_cleanup_detail::adopt_private_handoff_with_borrowed_base_lock_v1(
+    const std::filesystem::path& base_path,
+    OOCPrivateHandoffBorrowedBaseLockV1&& borrowed,
+    OOCPrivateHandoffAdoptionTestHooks hooks) noexcept {
+    return adopt_private_handoff_impl(
+        base_path, hooks, true,
+        [&](const OOCCleanupPaths& paths, AdoptionParentDirectoryHandle& parent) {
+            return borrowed.consume(paths, parent);
+        });
 }
 
 } // namespace gnfs::relation

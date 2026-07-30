@@ -178,12 +178,68 @@ WORKER_COORDINATOR_PRODUCTION_FILES = {
 WORKER_COORDINATOR_USE_SITE_ALLOWLIST = (
     WORKER_COORDINATOR_PRODUCTION_FILES | {WORKER_COORDINATOR_TEST_FILE}
 )
+WORKER_ATTEMPT_WAVE_STORE_IMPLEMENTATION_FILE = (
+    "src/sieve/distributed_sieve_wave_store.cpp"
+)
+WORKER_ATTEMPT_TERMINAL_TRANSITION_FUNCTION = (
+    "claim_worker_attempt_private_lease_root"
+)
+WORKER_ATTEMPT_TERMINAL_TRANSITION_HELPER = (
+    "exact_worker_attempt_terminal_transition"
+)
+WORKER_ATTEMPT_TERMINAL_REFRESH_IDENTIFIER = (
+    "refresh_exact_terminal_transition"
+)
+WORKER_ATTEMPT_TERMINAL_HELPER_CALL_FRAGMENT = (
+    "exact_worker_attempt_terminal_transition("
+    "before,observed,state_->manifest,*claim.worker_attempt_names_,"
+    "chunk_id,attempt_ordinal,target_index)"
+)
+WORKER_ATTEMPT_TERMINAL_REFRESH_GUARD_FRAGMENT = (
+    "if(terminal_transition_refreshed||"
+    "expectation!=AttemptBaseLockExpectation::present"
+)
+WORKER_ATTEMPT_TERMINAL_REFRESH_SET_FRAGMENT = (
+    "terminal_transition_refreshed=true"
+)
+WORKER_ATTEMPT_IMMEDIATE_REFRESH_FRAGMENT = (
+    "refresh_exact_terminal_transition(immediately_before)"
+)
+WORKER_ATTEMPT_TARGET_CREATE_FRAGMENT = (
+    "target=DistributedSievePrivateLeaseBaseLockAt::create_new_locked("
+)
+WORKER_ATTEMPT_TARGET_OPEN_FRAGMENT = (
+    "target=DistributedSievePrivateLeaseBaseLockAt::open_existing_locked("
+)
+WORKER_ATTEMPT_HELD_REFRESH_FRAGMENT = (
+    "refresh_exact_terminal_transition(held_target)"
+)
+WORKER_ATTEMPT_HELD_CAPTURE_FRAGMENT = (
+    "autoheld_target=capture_manifest_bound_inventory_witness("
+    "state_->root_fd,state_->manifest,state_->absolute_root,"
+    "state_->creator_process_id,held_inventory())"
+)
+WORKER_ATTEMPT_HELD_CONFIRM_CAPTURE_FRAGMENT = (
+    "autoheld_target_confirmed=capture_manifest_bound_inventory_witness("
+    "state_->root_fd,state_->manifest,state_->absolute_root,"
+    "state_->creator_process_id,held_inventory())"
+)
+WORKER_ATTEMPT_HELD_CONFIRM_MATCH_FRAGMENT = (
+    "!held_target_confirmed||!expected_successor_matches(held_target_confirmed)"
+)
+WORKER_ATTEMPT_AFTER_TARGET_HOOK_FRAGMENT = (
+    "hooks.after_target_lock_acquired,hooks.context,state_->creator_process_id"
+)
+WORKER_ATTEMPT_TARGET_TRANSFER_FRAGMENT = (
+    "claim.base_lock_at_=std::move(target)"
+)
 WORKER_COORDINATOR_USE_SITE_IDENTIFIERS = (
     "distributed_sieve_worker_coordinator_detail",
     "DistributedSieveWorkerCoordinationDispositionV1",
     "DistributedSieveWorkerCoordinatorPhaseV1",
     "DistributedSieveWorkerCoordinatorStatusV1",
     "DistributedSieveWorkerCoordinatorDiagnosticV1",
+    "DistributedSieveWorkerCoordinatorTestHooksV1",
     "DistributedSieveWorkerCoordinatorRequestV1",
     "DistributedSieveWorkerCoordinatedChunkV1",
     "DistributedSieveWorkerCoordinatorResultV1",
@@ -198,6 +254,41 @@ WORKER_COORDINATOR_SEALED_LAUNCHER_IDENTIFIER = (
 )
 WORKER_COORDINATOR_SEALED_LAUNCHER_FRAGMENT = (
     "result.store->launch_worker_process_batch_v1("
+)
+WORKER_COORDINATOR_ATTEMPT_OPEN_IDENTIFIER = (
+    "open_worker_attempt_private_lease_root"
+)
+WORKER_COORDINATOR_ATTEMPT_OPEN_FRAGMENT = (
+    "result.store->open_worker_attempt_private_lease_root("
+    "initial_attempt.chunk_id,initial_attempt.attempt_ordinal)"
+)
+WORKER_COORDINATOR_ATTEMPT_RECONCILE_IDENTIFIER = (
+    "reconcile_worker_attempt_started"
+)
+WORKER_COORDINATOR_ATTEMPT_RECONCILE_FRAGMENT = (
+    "resume::reconcile_worker_attempt_started(std::move(opened))"
+)
+WORKER_COORDINATOR_EXPECTED_ADOPTION_IDENTIFIER = (
+    "adopt_expected_worker_handoff_v1"
+)
+WORKER_COORDINATOR_ORDINARY_ADOPTION_IDENTIFIER = (
+    "adopt_worker_handoff_v1"
+)
+WORKER_COORDINATOR_EXPECTED_ADOPTION_FRAGMENT = (
+    "result.store->adopt_expected_worker_handoff_v1("
+    "*expected_adopted_witnesses[index])"
+)
+WORKER_COORDINATOR_TERMINAL_BINDING_FRAGMENT = (
+    "constauto&terminal=*reconciled.terminal_handoff"
+)
+WORKER_COORDINATOR_TERMINAL_WITNESS_STORE_FRAGMENT = (
+    "expected_adopted_witnesses[manifest_slot]=terminal"
+)
+WORKER_COORDINATOR_TERMINAL_ADOPTION_DISPATCH_FRAGMENT = (
+    "autoadoption=expected_adopted_witnesses[index].has_value()"
+    "?result.store->adopt_expected_worker_handoff_v1("
+    "*expected_adopted_witnesses[index])"
+    ":result.store->adopt_worker_handoff_v1(manifest.chunks[index].chunk_id)"
 )
 ALTERNATE_PROCESS_EXECUTION_IDENTIFIERS = (
     "system",
@@ -249,6 +340,8 @@ WORKER_COORDINATOR_FORBIDDEN_IDENTIFIERS = {
     "wait3",
     "wait4",
     "spawn_distributed_sieve_worker_process_batch_with_capabilities",
+    "recover_worker_attempt_private_lease",
+    "ChunkTerminalFailureV1",
     "run_distributed_sieve",
     "DistributedSieveWorkerResult",
 } | set(ALTERNATE_PROCESS_EXECUTION_IDENTIFIERS)
@@ -413,6 +506,146 @@ WORKER_WRITER_BRIDGE_ALLOWLIST = {
     WORKER_WRITER_IMPLEMENTATION_FILE,
     WORKER_WRITER_INTERFACE_FILE,
 }
+WORKER_WRITER_BRIDGE_IDENTIFIER_EXCEPTIONS = {
+    "AdoptInheritedOpenFileDescription": {
+        "src/relation/ooc_private_handoff_adoption.cpp",
+    },
+}
+BORROWED_BASE_LOCK_BRIDGE_IMPLEMENTATION_FILE = (
+    "src/relation/ooc_private_handoff_adoption.cpp"
+)
+BORROWED_BASE_LOCK_BRIDGE_INTERFACE_FILE = (
+    "src/relation/ooc_private_handoff_adoption_internal.hpp"
+)
+BORROWED_BASE_LOCK_BRIDGE_WAVE_STORE_FILE = (
+    "src/sieve/distributed_sieve_wave_store.cpp"
+)
+BORROWED_BASE_LOCK_BRIDGE_CLEANUP_HEADER = (
+    "include/gnfs/relation/ooc_cleanup_transaction.hpp"
+)
+BORROWED_BASE_LOCK_BRIDGE_IDENTIFIER_ALLOWLISTS = {
+    "OOCPrivateHandoffBorrowedBaseLockV1": {
+        BORROWED_BASE_LOCK_BRIDGE_IMPLEMENTATION_FILE,
+        BORROWED_BASE_LOCK_BRIDGE_INTERFACE_FILE,
+        BORROWED_BASE_LOCK_BRIDGE_WAVE_STORE_FILE,
+        BORROWED_BASE_LOCK_BRIDGE_CLEANUP_HEADER,
+    },
+    "adopt_private_handoff_with_borrowed_base_lock_v1": {
+        BORROWED_BASE_LOCK_BRIDGE_IMPLEMENTATION_FILE,
+        BORROWED_BASE_LOCK_BRIDGE_INTERFACE_FILE,
+        BORROWED_BASE_LOCK_BRIDGE_WAVE_STORE_FILE,
+    },
+    "OOCPrivateHandoffAdoptionBuilderV1": {
+        BORROWED_BASE_LOCK_BRIDGE_IMPLEMENTATION_FILE,
+        BORROWED_BASE_LOCK_BRIDGE_CLEANUP_HEADER,
+    },
+}
+BORROWED_BASE_LOCK_BRIDGE_IDENTIFIER_USE_COUNTS = {
+    "OOCPrivateHandoffBorrowedBaseLockV1": {
+        BORROWED_BASE_LOCK_BRIDGE_IMPLEMENTATION_FILE: 7,
+        BORROWED_BASE_LOCK_BRIDGE_INTERFACE_FILE: 14,
+        BORROWED_BASE_LOCK_BRIDGE_WAVE_STORE_FILE: 1,
+        BORROWED_BASE_LOCK_BRIDGE_CLEANUP_HEADER: 2,
+    },
+    "adopt_private_handoff_with_borrowed_base_lock_v1": {
+        BORROWED_BASE_LOCK_BRIDGE_IMPLEMENTATION_FILE: 1,
+        BORROWED_BASE_LOCK_BRIDGE_INTERFACE_FILE: 2,
+        BORROWED_BASE_LOCK_BRIDGE_WAVE_STORE_FILE: 1,
+    },
+    "OOCPrivateHandoffAdoptionBuilderV1": {
+        BORROWED_BASE_LOCK_BRIDGE_IMPLEMENTATION_FILE: 3,
+        BORROWED_BASE_LOCK_BRIDGE_CLEANUP_HEADER: 3,
+    },
+}
+BORROWED_BASE_LOCK_CONSUME_FUNCTION = (
+    "OOCPrivateHandoffBorrowedBaseLockV1::consume"
+)
+BORROWED_BASE_LOCK_ADOPTION_FUNCTION = (
+    "adopt_private_handoff_with_borrowed_base_lock_v1"
+)
+BORROWED_BASE_LOCK_CONSTRUCTION_CHAIN_FRAGMENT = (
+    "std::stringretained_leaf(lock_leaf_);"
+    "intduplicated=-1;"
+    "do{duplicated=::fcntl(lock_descriptor_,F_DUPFD_CLOEXEC,0);}"
+    "while(duplicated<0&&errno==EINTR);"
+    "if(duplicated<0){"
+    "fail(OOCCleanupStatus::IoFailure,OOCCleanupStage::None,posix_error(errno));}"
+    "try{"
+    "autoadopted=std::unique_ptr<BaseLock>(newBaseLock("
+    "paths.lock_path,duplicated,static_cast<int>(parent.native_handle()),"
+    "std::move(retained_leaf),held_parent_identity,lock_identity_,"
+    "BaseLock::AdoptInheritedOpenFileDescription{}));"
+    "duplicated=-1;"
+    "returnstd::shared_ptr<BaseLock>(std::move(adopted));"
+    "}catch(...){"
+    "if(duplicated>=0){(void)::close(duplicated);}"
+    "throw;}"
+)
+BORROWED_BASE_LOCK_ADOPTION_BODY = (
+    "returnadopt_private_handoff_impl("
+    "base_path,hooks,true,"
+    "[&](constOOCCleanupPaths&paths,AdoptionParentDirectoryHandle&parent){"
+    "returnborrowed.consume(paths,parent);});"
+)
+BORROWED_BASE_LOCK_RELEASE_FUNCTION = "release_noexcept"
+BORROWED_BASE_LOCK_RELEASE_BODY = (
+    "#ifdef_WIN32"
+    "if(handle_!=INVALID_HANDLE_VALUE){"
+    "(void)::CloseHandle(handle_);handle_=INVALID_HANDLE_VALUE;}"
+    "#else"
+    "if(descriptor_>=0){(void)::close(descriptor_);descriptor_=-1;}"
+    "#endif"
+)
+BORROWED_BASE_LOCK_RETAINED_FLOCK_FRAGMENT = (
+    "do{retained_result=::flock(descriptor,LOCK_EX|LOCK_NB);}"
+    "while(retained_result!=0&&errno==EINTR);"
+    "if(retained_result!=0){"
+    "fail(OOCCleanupStatus::NamespaceConflict,OOCCleanupStage::None,"
+    "posix_error(errno));}"
+)
+BORROWED_BASE_LOCK_WAVE_MINT_FUNCTION = (
+    "DistributedSievePrivateLeaseBaseLockAt::adopt_exact_private_handoff"
+)
+BORROWED_BASE_LOCK_WAVE_MINT_BODY = (
+    "constboolowned=owned_by_current_process();"
+    "returnprivate_lease::adopt_private_handoff_with_borrowed_base_lock_v1("
+    "base_path,private_lease::OOCPrivateHandoffBorrowedBaseLockV1("
+    "owned?root_fd_:-1,owned?lock_fd_:-1,leaf_,relation_identity(identity_),"
+    "owned?creator_process_id_:0));"
+)
+BORROWED_BASE_LOCK_TOKEN_CLASS_BODY = (
+    "public:"
+    "OOCPrivateHandoffBorrowedBaseLockV1()=delete;"
+    "OOCPrivateHandoffBorrowedBaseLockV1("
+    "constOOCPrivateHandoffBorrowedBaseLockV1&)=delete;"
+    "OOCPrivateHandoffBorrowedBaseLockV1&operator=("
+    "constOOCPrivateHandoffBorrowedBaseLockV1&)=delete;"
+    "OOCPrivateHandoffBorrowedBaseLockV1("
+    "OOCPrivateHandoffBorrowedBaseLockV1&&other)noexcept;"
+    "OOCPrivateHandoffBorrowedBaseLockV1&operator=("
+    "OOCPrivateHandoffBorrowedBaseLockV1&&)=delete;"
+    "~OOCPrivateHandoffBorrowedBaseLockV1()=default;"
+    "private:"
+    "OOCPrivateHandoffBorrowedBaseLockV1("
+    "intparent_descriptor,intlock_descriptor,std::string_viewlock_leaf,"
+    "std::array<std::uint64_t,3>lock_identity,"
+    "std::uint64_tcreator_process_id)noexcept;"
+    "[[nodiscard]]std::shared_ptr<BaseLock>consume("
+    "constOOCCleanupPaths&paths,AdoptionParentDirectoryHandle&parent);"
+    "intparent_descriptor_=-1;"
+    "intlock_descriptor_=-1;"
+    "std::string_viewlock_leaf_;"
+    "std::array<std::uint64_t,3>lock_identity_{};"
+    "std::uint64_tcreator_process_id_=0;"
+    "boolconsumed_=false;"
+    "friendclass::gnfs::sieve::distributed_sieve_resume_detail::"
+    "DistributedSievePrivateLeaseBaseLockAt;"
+    "friendOOCPrivateHandoffAdoptionResult"
+    "adopt_private_handoff_with_borrowed_base_lock_v1("
+    "conststd::filesystem::path&base_path,"
+    "OOCPrivateHandoffBorrowedBaseLockV1&&borrowed,"
+    "OOCPrivateHandoffAdoptionTestHookshooks)noexcept;"
+)
 WORKER_HANDOFF_BRIDGE_IDENTIFIERS = (
     "OOCFinalizedCorpusEvidenceV1",
     "OOCPrivateHandoffPayloadV1",
@@ -1495,7 +1728,7 @@ PRIVATE_HANDOFF_PUBLICATION_RESUME_FINAL_ABSENCE_FRAGMENT = (
     "absent.retained?resume_foreign_replacement():absent.result,expected);}"
 )
 PRIVATE_HANDOFF_PUBLICATION_RESUME_ADOPTION_FUNCTION = (
-    "OOCCleanupTransaction::adopt_private_handoff"
+    "adopt_private_handoff_impl"
 )
 PRIVATE_HANDOFF_PUBLICATION_RESUME_ADOPTION_ROLLBACK_BLOCKER = (
     "parent->require_lock_binding(paths.lock_path.filename(),*lock);"
@@ -2615,6 +2848,27 @@ def find_function_definition_body(
         if closing is None:
             continue
         cursor = _skip_call_trivia(text, closing + 1)
+        while True:
+            matched_qualifier = False
+            for qualifier in ("const", "volatile"):
+                if not text.startswith(qualifier, cursor):
+                    continue
+                after = cursor + len(qualifier)
+                boundary = text[after] if after < len(text) else ""
+                if boundary.isalnum() or boundary == "_":
+                    continue
+                cursor = _skip_call_trivia(text, after)
+                matched_qualifier = True
+                break
+            if matched_qualifier:
+                continue
+            if text.startswith("&&", cursor):
+                cursor = _skip_call_trivia(text, cursor + 2)
+                continue
+            if cursor < len(text) and text[cursor] == "&":
+                cursor = _skip_call_trivia(text, cursor + 1)
+                continue
+            break
         if text.startswith("noexcept", cursor):
             after = cursor + len("noexcept")
             boundary = text[after] if after < len(text) else ""
@@ -3497,6 +3751,10 @@ class Checks:
                     )
         if relative not in WORKER_WRITER_BRIDGE_ALLOWLIST:
             for identifier in WORKER_WRITER_BRIDGE_IDENTIFIERS:
+                if relative in WORKER_WRITER_BRIDGE_IDENTIFIER_EXCEPTIONS.get(
+                    identifier, set()
+                ):
+                    continue
                 for use in find_code_identifier_uses(text, identifier):
                     self.fail(
                         relative,
@@ -3521,6 +3779,216 @@ class Checks:
                     relative,
                     use.line,
                     "raw private-handoff publisher use is not allowlisted",
+                )
+
+    def validate_borrowed_base_lock_bridge(
+        self, relative: str, text: str
+    ) -> None:
+        for identifier, expected_by_file in (
+            BORROWED_BASE_LOCK_BRIDGE_IDENTIFIER_USE_COUNTS.items()
+        ):
+            uses = find_code_identifier_uses(text, identifier)
+            expected = expected_by_file.get(relative, 0)
+            if len(uses) != expected:
+                line = uses[0].line if uses else 1
+                self.fail(
+                    relative,
+                    line,
+                    "borrowed BaseLock bridge identifier count is not closed: "
+                    f"{identifier} expected {expected}, found {len(uses)}",
+                )
+
+        if relative == BORROWED_BASE_LOCK_BRIDGE_CLEANUP_HEADER:
+            token = "OOCPrivateHandoffBorrowedBaseLockV1"
+            token_uses = find_code_identifier_uses(text, token)
+            token_forward = list(
+                re.finditer(
+                    rf"(?m)^\s*class\s+{re.escape(token)}\s*;",
+                    text,
+                )
+            )
+            token_friend = list(
+                re.finditer(
+                    rf"\bfriend\s+class\s+{re.escape(token)}\s*;",
+                    text,
+                )
+            )
+            token_allowed_offsets = {
+                match.start() + match.group(0).rfind(token)
+                for match in (*token_forward, *token_friend)
+            }
+            if (
+                len(token_uses) != 2
+                or len(token_forward) != 1
+                or len(token_friend) != 1
+                or {use.offset for use in token_uses} != token_allowed_offsets
+            ):
+                self.fail(
+                    relative,
+                    token_uses[0].line if token_uses else 1,
+                    "public cleanup header may expose borrowed BaseLock authority "
+                    "only as one forward declaration and one private friend",
+                )
+
+            builder = "OOCPrivateHandoffAdoptionBuilderV1"
+            builder_uses = find_code_identifier_uses(text, builder)
+            builder_forward = list(
+                re.finditer(
+                    rf"(?m)^\s*class\s+{re.escape(builder)}\s*;",
+                    text,
+                )
+            )
+            builder_friends = list(
+                re.finditer(
+                    rf"\bfriend\s+class\s+ooc_cleanup_detail::"
+                    rf"{re.escape(builder)}\s*;",
+                    text,
+                )
+            )
+            builder_allowed_offsets = {
+                match.start() + match.group(0).rfind(builder)
+                for match in (*builder_forward, *builder_friends)
+            }
+            if (
+                len(builder_uses) != 3
+                or len(builder_forward) != 1
+                or len(builder_friends) != 2
+                or {use.offset for use in builder_uses} != builder_allowed_offsets
+            ):
+                self.fail(
+                    relative,
+                    builder_uses[0].line if builder_uses else 1,
+                    "private-handoff adoption builder must remain one forward "
+                    "declaration and two exact private friends",
+                )
+
+            release_body, release_line_offset, release_errors = (
+                find_function_definition_body(
+                    text, BORROWED_BASE_LOCK_RELEASE_FUNCTION
+                )
+            )
+            for line, error in release_errors:
+                self.fail(relative, line, error)
+            compact_text = _compact_cpp_code(text)
+            if (
+                release_body is None
+                or _compact_cpp_code(release_body)
+                != BORROWED_BASE_LOCK_RELEASE_BODY
+                or compact_text.count(BORROWED_BASE_LOCK_RETAINED_FLOCK_FRAGMENT)
+                != 1
+                or compact_text.count("::flock(descriptor,") != 1
+                or compact_text.count(
+                    "identity_=expected_lock_identity;descriptor_=descriptor;"
+                )
+                != 1
+                or len(
+                    find_code_identifier_uses(
+                        text, "AdoptInheritedOpenFileDescription"
+                    )
+                )
+                != 2
+                or find_code_identifier_uses(text, "LOCK_UN")
+            ):
+                self.fail(
+                    relative,
+                    release_line_offset + 1,
+                    "inherited BaseLock must prove the retained same-OFD lock "
+                    "exactly once and retain an exact close-only destructor",
+                )
+            return
+
+        if relative == BORROWED_BASE_LOCK_BRIDGE_INTERFACE_FILE:
+            class_span = _class_definition_body_span(
+                text, "OOCPrivateHandoffBorrowedBaseLockV1"
+            )
+            compact_text = _compact_cpp_code(text)
+            declaration = (
+                "[[nodiscard]]OOCPrivateHandoffAdoptionResult"
+                "adopt_private_handoff_with_borrowed_base_lock_v1("
+                "conststd::filesystem::path&base_path,"
+                "OOCPrivateHandoffBorrowedBaseLockV1&&borrowed,"
+                "OOCPrivateHandoffAdoptionTestHookshooks={})noexcept;"
+            )
+            if (
+                class_span is None
+                or _compact_cpp_code(text[class_span[0] : class_span[1]])
+                != BORROWED_BASE_LOCK_TOKEN_CLASS_BODY
+                or compact_text.count(declaration) != 1
+            ):
+                self.fail(
+                    relative,
+                    1 if class_span is None else text.count("\n", 0, class_span[0]) + 1,
+                    "borrowed BaseLock token interface must remain the exact "
+                    "private one-shot class and source-private adoption declaration",
+                )
+            return
+
+        if relative == BORROWED_BASE_LOCK_BRIDGE_WAVE_STORE_FILE:
+            mint_body, mint_line_offset, mint_errors = (
+                find_function_definition_body(
+                    text, BORROWED_BASE_LOCK_WAVE_MINT_FUNCTION
+                )
+            )
+            for line, error in mint_errors:
+                self.fail(relative, line, error)
+            if (
+                mint_body is None
+                or _compact_cpp_code(mint_body)
+                != BORROWED_BASE_LOCK_WAVE_MINT_BODY
+            ):
+                self.fail(
+                    relative,
+                    mint_line_offset + 1,
+                    "WaveStore must mint the borrowed BaseLock token only in "
+                    "the exact owned-process adoption method",
+                )
+            return
+
+        if relative != BORROWED_BASE_LOCK_BRIDGE_IMPLEMENTATION_FILE:
+            return
+
+        consume_body, consume_line_offset, consume_errors = (
+            find_function_definition_body(text, BORROWED_BASE_LOCK_CONSUME_FUNCTION)
+        )
+        for line, error in consume_errors:
+            self.fail(relative, line, error)
+        if consume_body is not None:
+            compact_consume = _compact_cpp_code(consume_body)
+            if (
+                compact_consume.count(
+                    BORROWED_BASE_LOCK_CONSTRUCTION_CHAIN_FRAGMENT
+                )
+                != 1
+                or not compact_consume.endswith(
+                    BORROWED_BASE_LOCK_CONSTRUCTION_CHAIN_FRAGMENT + "#endif"
+                )
+                or compact_consume.count("return") != 1
+                or find_code_identifier_uses(consume_body, "flock")
+                or find_code_identifier_uses(consume_body, "LOCK_UN")
+            ):
+                self.fail(
+                    relative,
+                    consume_line_offset + 1,
+                    "borrowed BaseLock consumption must duplicate exactly one "
+                    "close-on-exec descriptor into inherited-OFD construction "
+                    "without flock or LOCK_UN",
+                )
+
+        adoption_body, adoption_line_offset, adoption_errors = (
+            find_function_definition_body(
+                text, BORROWED_BASE_LOCK_ADOPTION_FUNCTION
+            )
+        )
+        for line, error in adoption_errors:
+            self.fail(relative, line, error)
+        if adoption_body is not None:
+            compact_adoption = _compact_cpp_code(adoption_body)
+            if compact_adoption != BORROWED_BASE_LOCK_ADOPTION_BODY:
+                self.fail(
+                    relative,
+                    adoption_line_offset + 1,
+                    "borrowed BaseLock adoption must consume the exact one-shot "
+                    "token once inside the common adoption path",
                 )
 
     def validate_worker_writer_identifier_exception_boundary(
@@ -4884,6 +5352,259 @@ class Checks:
                 f"{WORKER_COORDINATOR_COMPOSITION_FUNCTION}",
             )
 
+        open_identifier = WORKER_COORDINATOR_ATTEMPT_OPEN_IDENTIFIER
+        all_open_uses = find_code_identifier_uses(text, open_identifier)
+        all_open_calls = find_call_identifier_uses(text, open_identifier)
+        body_open_uses = find_code_identifier_uses(body, open_identifier)
+        body_open_calls = find_call_identifier_uses(body, open_identifier)
+        for use in find_non_call_identifier_uses(text, open_identifier):
+            self.fail(
+                relative,
+                use.line,
+                "worker-attempt retry open authority must be used only as a direct call",
+            )
+        if len(all_open_uses) != 1 or len(all_open_calls) != 1:
+            self.fail(
+                relative,
+                1,
+                "worker coordinator must contain exactly one direct "
+                f"{open_identifier} call, found {len(all_open_uses)} identifiers "
+                f"and {len(all_open_calls)} calls",
+            )
+        if len(body_open_uses) != 1 or len(body_open_calls) != 1:
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                f"the only direct {open_identifier} call must remain inside "
+                f"{WORKER_COORDINATOR_COMPOSITION_FUNCTION}",
+            )
+
+        reconcile_identifier = WORKER_COORDINATOR_ATTEMPT_RECONCILE_IDENTIFIER
+        all_reconcile_uses = find_code_identifier_uses(text, reconcile_identifier)
+        all_reconcile_calls = find_call_identifier_uses(text, reconcile_identifier)
+        body_reconcile_uses = find_code_identifier_uses(body, reconcile_identifier)
+        body_reconcile_calls = find_call_identifier_uses(body, reconcile_identifier)
+        for use in find_non_call_identifier_uses(text, reconcile_identifier):
+            self.fail(
+                relative,
+                use.line,
+                "worker-attempt reconciler must be used only as a direct call",
+            )
+        if len(all_reconcile_uses) != 1 or len(all_reconcile_calls) != 1:
+            self.fail(
+                relative,
+                1,
+                "worker coordinator must contain exactly one direct "
+                f"{reconcile_identifier} call, found {len(all_reconcile_uses)} identifiers "
+                f"and {len(all_reconcile_calls)} calls",
+            )
+        if len(body_reconcile_uses) != 1 or len(body_reconcile_calls) != 1:
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                f"the only direct {reconcile_identifier} call must remain inside "
+                f"{WORKER_COORDINATOR_COMPOSITION_FUNCTION}",
+            )
+
+        expected_adoption_identifier = (
+            WORKER_COORDINATOR_EXPECTED_ADOPTION_IDENTIFIER
+        )
+        all_expected_adoption_uses = find_code_identifier_uses(
+            text, expected_adoption_identifier
+        )
+        all_expected_adoption_calls = find_call_identifier_uses(
+            text, expected_adoption_identifier
+        )
+        body_expected_adoption_uses = find_code_identifier_uses(
+            body, expected_adoption_identifier
+        )
+        body_expected_adoption_calls = find_call_identifier_uses(
+            body, expected_adoption_identifier
+        )
+        for use in find_non_call_identifier_uses(text, expected_adoption_identifier):
+            self.fail(
+                relative,
+                use.line,
+                "terminal-witness adoption must be used only as a direct call",
+            )
+        if (
+            len(all_expected_adoption_uses) != 1
+            or len(all_expected_adoption_calls) != 1
+        ):
+            self.fail(
+                relative,
+                1,
+                "worker coordinator must contain exactly one direct "
+                f"{expected_adoption_identifier} call, found "
+                f"{len(all_expected_adoption_uses)} identifiers and "
+                f"{len(all_expected_adoption_calls)} calls",
+            )
+        if (
+            len(body_expected_adoption_uses) != 1
+            or len(body_expected_adoption_calls) != 1
+        ):
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                f"the only direct {expected_adoption_identifier} call must remain inside "
+                f"{WORKER_COORDINATOR_COMPOSITION_FUNCTION}",
+            )
+
+        ordinary_adoption_identifier = (
+            WORKER_COORDINATOR_ORDINARY_ADOPTION_IDENTIFIER
+        )
+        all_ordinary_adoption_uses = find_code_identifier_uses(
+            text, ordinary_adoption_identifier
+        )
+        all_ordinary_adoption_calls = find_call_identifier_uses(
+            text, ordinary_adoption_identifier
+        )
+        body_ordinary_adoption_uses = find_code_identifier_uses(
+            body, ordinary_adoption_identifier
+        )
+        body_ordinary_adoption_calls = find_call_identifier_uses(
+            body, ordinary_adoption_identifier
+        )
+        for use in find_non_call_identifier_uses(text, ordinary_adoption_identifier):
+            self.fail(
+                relative,
+                use.line,
+                "ordinary handoff adoption must be used only as the direct "
+                "fallback branch of terminal-witness dispatch",
+            )
+        if (
+            len(all_ordinary_adoption_uses) != 1
+            or len(all_ordinary_adoption_calls) != 1
+            or len(body_ordinary_adoption_uses) != 1
+            or len(body_ordinary_adoption_calls) != 1
+        ):
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                "worker coordinator must contain exactly one direct ordinary "
+                "handoff adoption fallback inside the coordinator",
+            )
+
+        compact_body = _compact_cpp_tokens(body)
+        if re.search(
+            r"(?:if|while)(?:constexpr)?\((?:false|0)(?:\)|&&)",
+            compact_body,
+        ):
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                "worker coordinator forbids constant-dead control flow around "
+                "retry and adoption authority",
+            )
+        if compact_body.count(WORKER_COORDINATOR_ATTEMPT_OPEN_FRAGMENT) != 1:
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                "worker coordinator must open the exact initial worker attempt exactly "
+                "once through result.store",
+            )
+        if compact_body.count(WORKER_COORDINATOR_ATTEMPT_RECONCILE_FRAGMENT) != 1:
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                "worker coordinator must consume the exact opened attempt once through "
+                "the typed reconciler",
+            )
+        if compact_body.count(WORKER_COORDINATOR_EXPECTED_ADOPTION_FRAGMENT) != 1:
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                "worker coordinator must consume the exact reconciler terminal witness "
+                "once through expected same-handle adoption",
+            )
+        if (
+            compact_body.count(WORKER_COORDINATOR_TERMINAL_BINDING_FRAGMENT) != 1
+            or compact_body.count(
+                WORKER_COORDINATOR_TERMINAL_WITNESS_STORE_FRAGMENT
+            )
+            != 1
+            or compact_body.count("expected_adopted_witnesses[") != 3
+            or compact_body.count(
+                "expected_adopted_witnesses[manifest_slot]"
+            )
+            != 1
+            or compact_body.count("expected_adopted_witnesses[index]") != 2
+        ):
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                "worker coordinator must bind the exact reconciler terminal witness "
+                "and preserve the exact one-write/two-read manifest-slot flow",
+            )
+        if (
+            compact_body.count(
+                WORKER_COORDINATOR_TERMINAL_ADOPTION_DISPATCH_FRAGMENT
+            )
+            != 1
+        ):
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                "worker coordinator must dispatch witnessed terminal handoffs through "
+                "expected adoption and all other handoffs through ordinary adoption",
+            )
+        if (
+            len(body_bound_calls) == 1
+            and len(body_open_calls) == 1
+            and body_bound_calls[0].offset >= body_open_calls[0].offset
+        ):
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                "worker coordinator must validate bound work before opening a retry attempt",
+            )
+        if (
+            len(body_open_calls) == 1
+            and len(body_reconcile_calls) == 1
+            and body_open_calls[0].offset >= body_reconcile_calls[0].offset
+        ):
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                "worker coordinator must open the exact attempt before reconciling it",
+            )
+        if (
+            len(body_reconcile_calls) == 1
+            and len(body_expected_adoption_calls) == 1
+            and body_reconcile_calls[0].offset
+            >= body_expected_adoption_calls[0].offset
+        ):
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                "worker coordinator must capture a terminal witness before expected "
+                "same-handle adoption",
+            )
+        terminal_binding_offset = compact_body.find(
+            WORKER_COORDINATOR_TERMINAL_BINDING_FRAGMENT
+        )
+        terminal_store_offset = compact_body.find(
+            WORKER_COORDINATOR_TERMINAL_WITNESS_STORE_FRAGMENT
+        )
+        expected_adoption_offset = compact_body.find(
+            WORKER_COORDINATOR_EXPECTED_ADOPTION_FRAGMENT
+        )
+        reconcile_fragment_offset = compact_body.find(
+            WORKER_COORDINATOR_ATTEMPT_RECONCILE_FRAGMENT
+        )
+        if not (
+            reconcile_fragment_offset >= 0
+            and terminal_binding_offset > reconcile_fragment_offset
+            and terminal_store_offset > terminal_binding_offset
+            and expected_adoption_offset > terminal_store_offset
+        ):
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                "worker coordinator must preserve reconcile -> terminal binding -> "
+                "manifest-slot witness -> expected adoption provenance",
+            )
+
         identifier = WORKER_COORDINATOR_SEALED_LAUNCHER_IDENTIFIER
         all_uses = find_code_identifier_uses(text, identifier)
         all_calls = find_call_identifier_uses(text, identifier)
@@ -4910,7 +5631,6 @@ class Checks:
                 f"the only direct {identifier} call must remain inside "
                 f"{WORKER_COORDINATOR_COMPOSITION_FUNCTION}",
             )
-        compact_body = _compact_cpp_tokens(body)
         if compact_body.count(WORKER_COORDINATOR_SEALED_LAUNCHER_FRAGMENT) != 1:
             self.fail(
                 relative,
@@ -4928,6 +5648,206 @@ class Checks:
                 body_line_offset + 1,
                 "worker coordinator must validate bound work before invoking the "
                 "sealed WaveStore launcher",
+            )
+        if (
+            len(body_reconcile_calls) == 1
+            and len(body_calls) == 1
+            and body_reconcile_calls[0].offset >= body_calls[0].offset
+        ):
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                "worker coordinator must reconcile retry state before invoking the "
+                "sealed WaveStore launcher",
+            )
+
+    def validate_worker_attempt_terminal_transition_boundary(
+        self, relative: str, text: str
+    ) -> None:
+        if relative != WORKER_ATTEMPT_WAVE_STORE_IMPLEMENTATION_FILE:
+            return
+
+        body, body_line_offset, body_errors = find_function_definition_body(
+            text, WORKER_ATTEMPT_TERMINAL_TRANSITION_FUNCTION
+        )
+        for line, error in body_errors:
+            self.fail(relative, line, error)
+        if body is None:
+            return
+
+        helper_uses = find_code_identifier_uses(
+            text, WORKER_ATTEMPT_TERMINAL_TRANSITION_HELPER
+        )
+        helper_calls = find_call_identifier_uses(
+            text, WORKER_ATTEMPT_TERMINAL_TRANSITION_HELPER
+        )
+        body_helper_uses = find_code_identifier_uses(
+            body, WORKER_ATTEMPT_TERMINAL_TRANSITION_HELPER
+        )
+        body_helper_calls = find_call_identifier_uses(
+            body, WORKER_ATTEMPT_TERMINAL_TRANSITION_HELPER
+        )
+        if (
+            len(helper_uses) != 2
+            or len(helper_calls) != 2
+            or len(body_helper_uses) != 1
+            or len(body_helper_calls) != 1
+        ):
+            self.fail(
+                relative,
+                1,
+                "exact worker-attempt terminal-transition helper must have one "
+                "definition and one direct call inside the claim boundary",
+            )
+
+        refresh_uses = find_code_identifier_uses(
+            body, WORKER_ATTEMPT_TERMINAL_REFRESH_IDENTIFIER
+        )
+        refresh_calls = find_call_identifier_uses(
+            body, WORKER_ATTEMPT_TERMINAL_REFRESH_IDENTIFIER
+        )
+        if len(refresh_uses) != 3 or len(refresh_calls) != 2:
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                "terminal-transition refresh must remain one local adjudicator with "
+                "exactly two direct call sites",
+            )
+
+        compact_body = _compact_cpp_tokens(body)
+        if re.search(
+            r"(?:if|while)(?:constexpr)?\((?:false|0)(?:\)|&&)",
+            compact_body,
+        ):
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                "worker-attempt claim forbids constant-dead control flow around "
+                "held-target adjudication and capability transfer",
+            )
+        required_once = (
+            (
+                "boolterminal_transition_refreshed=false",
+                "terminal-transition single-use state",
+            ),
+            (
+                WORKER_ATTEMPT_TERMINAL_HELPER_CALL_FRAGMENT,
+                "terminal-transition exact helper operands",
+            ),
+            (
+                WORKER_ATTEMPT_TERMINAL_REFRESH_GUARD_FRAGMENT,
+                "terminal-transition single-use guard",
+            ),
+            (
+                WORKER_ATTEMPT_TERMINAL_REFRESH_SET_FRAGMENT,
+                "terminal-transition single-use commit",
+            ),
+            (
+                WORKER_ATTEMPT_IMMEDIATE_REFRESH_FRAGMENT,
+                "pre-lock transition adjudication",
+            ),
+            (
+                WORKER_ATTEMPT_TARGET_CREATE_FRAGMENT,
+                "new target-lock acquisition",
+            ),
+            (
+                WORKER_ATTEMPT_TARGET_OPEN_FRAGMENT,
+                "existing target-lock acquisition",
+            ),
+            (
+                WORKER_ATTEMPT_HELD_REFRESH_FRAGMENT,
+                "first held-target transition adjudication",
+            ),
+            (
+                WORKER_ATTEMPT_HELD_CAPTURE_FRAGMENT,
+                "first held-target inventory witness",
+            ),
+            (
+                WORKER_ATTEMPT_HELD_CONFIRM_CAPTURE_FRAGMENT,
+                "confirmed held-target inventory witness",
+            ),
+            (
+                WORKER_ATTEMPT_HELD_CONFIRM_MATCH_FRAGMENT,
+                "confirmed held-target exact match",
+            ),
+            (
+                WORKER_ATTEMPT_AFTER_TARGET_HOOK_FRAGMENT,
+                "post-held-target test seam",
+            ),
+            (
+                WORKER_ATTEMPT_TARGET_TRANSFER_FRAGMENT,
+                "validated target-lock capability transfer",
+            ),
+        )
+        for fragment, description in required_once:
+            if compact_body.count(fragment) != 1:
+                self.fail(
+                    relative,
+                    body_line_offset + 1,
+                    f"{description} must appear exactly once",
+                )
+        if compact_body.count("terminal_transition_refreshed") != 3:
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                "terminal-transition single-use state may appear only in its "
+                "declaration, guard, and successful commit",
+            )
+        if (
+            compact_body.count("claim.base_lock_at_=") != 1
+            or compact_body.count("std::move(target)") != 1
+        ):
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                "worker-attempt claim must transfer only the exact validated "
+                "target lock exactly once",
+            )
+
+        immediate_offset = compact_body.find(
+            WORKER_ATTEMPT_IMMEDIATE_REFRESH_FRAGMENT
+        )
+        create_offset = compact_body.find(WORKER_ATTEMPT_TARGET_CREATE_FRAGMENT)
+        open_offset = compact_body.find(WORKER_ATTEMPT_TARGET_OPEN_FRAGMENT)
+        held_offset = compact_body.find(WORKER_ATTEMPT_HELD_CAPTURE_FRAGMENT)
+        held_refresh_offset = compact_body.find(
+            WORKER_ATTEMPT_HELD_REFRESH_FRAGMENT
+        )
+        hook_offset = compact_body.find(
+            WORKER_ATTEMPT_AFTER_TARGET_HOOK_FRAGMENT
+        )
+        post_hook_revalidation_offset = compact_body.find(
+            "revalidate_higher_priority_bindings()", hook_offset
+        )
+        confirmed_offset = compact_body.find(
+            WORKER_ATTEMPT_HELD_CONFIRM_CAPTURE_FRAGMENT
+        )
+        confirmed_match_offset = compact_body.find(
+            WORKER_ATTEMPT_HELD_CONFIRM_MATCH_FRAGMENT
+        )
+        closed_successor_offset = compact_body.find(
+            "constautorevalidate_closed_successor="
+        )
+        transfer_offset = compact_body.find(WORKER_ATTEMPT_TARGET_TRANSFER_FRAGMENT)
+        if not (
+            immediate_offset >= 0
+            and create_offset > immediate_offset
+            and open_offset > immediate_offset
+            and held_offset > max(create_offset, open_offset)
+            and held_refresh_offset > held_offset
+            and hook_offset > held_refresh_offset
+            and post_hook_revalidation_offset > hook_offset
+            and confirmed_offset > post_hook_revalidation_offset
+            and confirmed_match_offset > confirmed_offset
+            and closed_successor_offset > confirmed_match_offset
+            and transfer_offset > closed_successor_offset
+        ):
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                "worker-attempt terminal transition must order pre-lock adjudication, "
+                "target acquisition, first held witness, post-held hook, authority "
+                "revalidation, exact confirmation, closed successor, and transfer",
             )
 
     def validate_worker_launcher_use_site(self, relative: str, text: str) -> None:
@@ -5348,6 +6268,7 @@ class Checks:
             self.validate_worker_executor_composition_body(relative, text)
             self.validate_worker_launcher_composition_body(relative, text)
             self.validate_worker_coordinator_boundary(relative, text)
+            self.validate_worker_attempt_terminal_transition_boundary(relative, text)
             self.validate_work_package_residue_inspection_body(relative, text)
             self.validate_work_package_residue_reconciliation_body(relative, text)
             if relative == EXECUTION_POLICY_ENVIRONMENT_ADAPTER:
@@ -5388,6 +6309,7 @@ class Checks:
             self.validate_worker_process_fixed_capability_use_site(relative, text)
             self.validate_worker_entry_use_site(relative, text)
             self.validate_worker_writer_use_site(relative, text)
+            self.validate_borrowed_base_lock_bridge(relative, text)
             self.validate_worker_writer_identifier_exception_boundary(
                 relative, text
             )
@@ -7290,6 +8212,389 @@ discard_inherited_post_fork_child_noexcept();
         },
         "worker-writer private bridge allowlist is not exact",
     )
+    expect(
+        WORKER_WRITER_BRIDGE_IDENTIFIER_EXCEPTIONS
+        == {
+            "AdoptInheritedOpenFileDescription": {
+                "src/relation/ooc_private_handoff_adoption.cpp",
+            },
+        },
+        "worker-writer private bridge identifier exception is not exact",
+    )
+    inherited_lock_exception_checks = Checks(Path("."))
+    inherited_lock_exception_checks.validate_worker_writer_use_site(
+        "src/relation/ooc_private_handoff_adoption.cpp",
+        "AdoptInheritedOpenFileDescription adopted;\n",
+    )
+    expect(
+        not inherited_lock_exception_checks.errors,
+        "private-handoff adoption inherited-lock exception was rejected: "
+        f"{inherited_lock_exception_checks.errors}",
+    )
+    inherited_lock_exception_overreach_checks = Checks(Path("."))
+    inherited_lock_exception_overreach_checks.validate_worker_writer_use_site(
+        "src/relation/ooc_private_handoff_adoption.cpp",
+        "AdoptInheritedOpenFileDescription adopted;\n"
+        "DistributedSieveWorkerWriterLifetimeGuardV1* guard = nullptr;\n",
+    )
+    expect(
+        len(inherited_lock_exception_overreach_checks.errors) == 1
+        and "DistributedSieveWorkerWriterLifetimeGuardV1"
+        in inherited_lock_exception_overreach_checks.errors[0],
+        "private-handoff adoption inherited-lock exception admitted another "
+        "writer bridge: "
+        f"{inherited_lock_exception_overreach_checks.errors}",
+    )
+    expect(
+        BORROWED_BASE_LOCK_BRIDGE_IDENTIFIER_ALLOWLISTS
+        == {
+            "OOCPrivateHandoffBorrowedBaseLockV1": {
+                "src/relation/ooc_private_handoff_adoption.cpp",
+                "src/relation/ooc_private_handoff_adoption_internal.hpp",
+                "src/sieve/distributed_sieve_wave_store.cpp",
+                "include/gnfs/relation/ooc_cleanup_transaction.hpp",
+            },
+            "adopt_private_handoff_with_borrowed_base_lock_v1": {
+                "src/relation/ooc_private_handoff_adoption.cpp",
+                "src/relation/ooc_private_handoff_adoption_internal.hpp",
+                "src/sieve/distributed_sieve_wave_store.cpp",
+            },
+            "OOCPrivateHandoffAdoptionBuilderV1": {
+                "src/relation/ooc_private_handoff_adoption.cpp",
+                "include/gnfs/relation/ooc_cleanup_transaction.hpp",
+            },
+        },
+        "borrowed BaseLock bridge identifier allowlists are not exact",
+    )
+    expect(
+        BORROWED_BASE_LOCK_BRIDGE_IDENTIFIER_USE_COUNTS
+        == {
+            "OOCPrivateHandoffBorrowedBaseLockV1": {
+                BORROWED_BASE_LOCK_BRIDGE_IMPLEMENTATION_FILE: 7,
+                BORROWED_BASE_LOCK_BRIDGE_INTERFACE_FILE: 14,
+                BORROWED_BASE_LOCK_BRIDGE_WAVE_STORE_FILE: 1,
+                BORROWED_BASE_LOCK_BRIDGE_CLEANUP_HEADER: 2,
+            },
+            "adopt_private_handoff_with_borrowed_base_lock_v1": {
+                BORROWED_BASE_LOCK_BRIDGE_IMPLEMENTATION_FILE: 1,
+                BORROWED_BASE_LOCK_BRIDGE_INTERFACE_FILE: 2,
+                BORROWED_BASE_LOCK_BRIDGE_WAVE_STORE_FILE: 1,
+            },
+            "OOCPrivateHandoffAdoptionBuilderV1": {
+                BORROWED_BASE_LOCK_BRIDGE_IMPLEMENTATION_FILE: 3,
+                BORROWED_BASE_LOCK_BRIDGE_CLEANUP_HEADER: 3,
+            },
+        },
+        "borrowed BaseLock bridge identifier use counts are not exact",
+    )
+    untrusted_borrowed_base_lock_bridge = r"""
+OOCPrivateHandoffBorrowedBaseLockV1* borrowed = nullptr;
+adopt_private_handoff_with_borrowed_base_lock_v1();
+OOCPrivateHandoffAdoptionBuilderV1* builder = nullptr;
+"""
+    untrusted_borrowed_base_lock_checks = Checks(Path("."))
+    untrusted_borrowed_base_lock_checks.validate_borrowed_base_lock_bridge(
+        "src/relation/untrusted_borrowed_base_lock.cpp",
+        untrusted_borrowed_base_lock_bridge,
+    )
+    expect(
+        len(untrusted_borrowed_base_lock_checks.errors)
+        == len(BORROWED_BASE_LOCK_BRIDGE_IDENTIFIER_ALLOWLISTS)
+        and all(
+            "borrowed BaseLock bridge identifier count is not closed" in error
+            for error in untrusted_borrowed_base_lock_checks.errors
+        ),
+        "borrowed BaseLock bridge repo-wide use-site gate is not enforced: "
+        f"{untrusted_borrowed_base_lock_checks.errors}",
+    )
+
+    valid_borrowed_base_lock_bridge = r"""
+class ooc_cleanup_detail::OOCPrivateHandoffAdoptionBuilderV1 {};
+void ooc_cleanup_detail::OOCPrivateHandoffAdoptionBuilderV1::invoke() {}
+void ooc_cleanup_detail::OOCPrivateHandoffAdoptionBuilderV1::make_receipt() {}
+
+OOCPrivateHandoffBorrowedBaseLockV1::OOCPrivateHandoffBorrowedBaseLockV1(
+    int, int, std::string_view, std::array<std::uint64_t, 3>,
+    std::uint64_t) noexcept {}
+OOCPrivateHandoffBorrowedBaseLockV1::OOCPrivateHandoffBorrowedBaseLockV1(
+    OOCPrivateHandoffBorrowedBaseLockV1&& other) noexcept {}
+
+std::shared_ptr<BaseLock> OOCPrivateHandoffBorrowedBaseLockV1::consume(
+    const OOCCleanupPaths& paths, AdoptionParentDirectoryHandle& parent) {
+#if !defined(__APPLE__)
+    fail();
+#else
+    std::string retained_leaf(lock_leaf_);
+    int duplicated = -1;
+    do {
+        duplicated = ::fcntl(lock_descriptor_, F_DUPFD_CLOEXEC, 0);
+    } while (duplicated < 0 && errno == EINTR);
+    if (duplicated < 0) {
+        fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None,
+             posix_error(errno));
+    }
+    try {
+        auto adopted = std::unique_ptr<BaseLock>(new BaseLock(
+            paths.lock_path, duplicated,
+            static_cast<int>(parent.native_handle()),
+            std::move(retained_leaf), held_parent_identity, lock_identity_,
+            BaseLock::AdoptInheritedOpenFileDescription{}));
+        duplicated = -1;
+        return std::shared_ptr<BaseLock>(std::move(adopted));
+    } catch (...) {
+        if (duplicated >= 0) {
+            (void)::close(duplicated);
+        }
+        throw;
+    }
+#endif
+}
+
+OOCPrivateHandoffAdoptionResult
+adopt_private_handoff_with_borrowed_base_lock_v1(
+    const std::filesystem::path& base_path,
+    OOCPrivateHandoffBorrowedBaseLockV1&& borrowed,
+    OOCPrivateHandoffAdoptionTestHooks hooks) noexcept {
+    return adopt_private_handoff_impl(
+        base_path, hooks, true,
+        [&](const OOCCleanupPaths& paths,
+            AdoptionParentDirectoryHandle& parent) {
+            return borrowed.consume(paths, parent);
+        });
+}
+"""
+    exact_borrowed_base_lock_checks = Checks(Path("."))
+    exact_borrowed_base_lock_checks.validate_borrowed_base_lock_bridge(
+        BORROWED_BASE_LOCK_BRIDGE_IMPLEMENTATION_FILE,
+        valid_borrowed_base_lock_bridge,
+    )
+    expect(
+        not exact_borrowed_base_lock_checks.errors,
+        "exact borrowed BaseLock bridge was rejected: "
+        f"{exact_borrowed_base_lock_checks.errors}",
+    )
+    independent_borrowed_lock_duplicate = valid_borrowed_base_lock_bridge.replace(
+        "F_DUPFD_CLOEXEC", "F_DUPFD"
+    )
+    independent_borrowed_lock_checks = Checks(Path("."))
+    independent_borrowed_lock_checks.validate_borrowed_base_lock_bridge(
+        BORROWED_BASE_LOCK_BRIDGE_IMPLEMENTATION_FILE,
+        independent_borrowed_lock_duplicate,
+    )
+    expect(
+        any(
+            "must duplicate exactly one close-on-exec descriptor" in error
+            for error in independent_borrowed_lock_checks.errors
+        ),
+        "borrowed BaseLock bridge accepted a non-CLOEXEC duplicate: "
+        f"{independent_borrowed_lock_checks.errors}",
+    )
+    unlocking_borrowed_base_lock = valid_borrowed_base_lock_bridge.replace(
+        "        duplicated = -1;\n",
+        "        (void)::flock(duplicated, LOCK_UN);\n"
+        "        duplicated = -1;\n",
+    )
+    unlocking_borrowed_base_lock_checks = Checks(Path("."))
+    unlocking_borrowed_base_lock_checks.validate_borrowed_base_lock_bridge(
+        BORROWED_BASE_LOCK_BRIDGE_IMPLEMENTATION_FILE,
+        unlocking_borrowed_base_lock,
+    )
+    expect(
+        any(
+            "without flock or LOCK_UN" in error
+            for error in unlocking_borrowed_base_lock_checks.errors
+        ),
+        "borrowed BaseLock bridge accepted explicit unlock authority: "
+        f"{unlocking_borrowed_base_lock_checks.errors}",
+    )
+    unbound_borrowed_base_lock_consumption = valid_borrowed_base_lock_bridge.replace(
+        "borrowed.consume(paths, parent)",
+        "unbound.consume(paths, parent)",
+    )
+    unbound_borrowed_base_lock_consumption_checks = Checks(Path("."))
+    unbound_borrowed_base_lock_consumption_checks.validate_borrowed_base_lock_bridge(
+        BORROWED_BASE_LOCK_BRIDGE_IMPLEMENTATION_FILE,
+        unbound_borrowed_base_lock_consumption,
+    )
+    expect(
+        any(
+            "must consume the exact one-shot token once" in error
+            for error in unbound_borrowed_base_lock_consumption_checks.errors
+        ),
+        "borrowed BaseLock adoption accepted an unbound token: "
+        f"{unbound_borrowed_base_lock_consumption_checks.errors}",
+    )
+    dead_borrowed_base_lock_construction = valid_borrowed_base_lock_bridge.replace(
+        "    std::string retained_leaf(lock_leaf_);\n",
+        "    if (false) {\n"
+        "    std::string retained_leaf(lock_leaf_);\n",
+    ).replace(
+        "    } catch (...) {\n"
+        "        if (duplicated >= 0) {\n"
+        "            (void)::close(duplicated);\n"
+        "        }\n"
+        "        throw;\n"
+        "    }\n"
+        "#endif\n",
+        "    } catch (...) {\n"
+        "        if (duplicated >= 0) {\n"
+        "            (void)::close(duplicated);\n"
+        "        }\n"
+        "        throw;\n"
+        "    }\n"
+        "    }\n"
+        "    return {};\n"
+        "#endif\n",
+        1,
+    )
+    dead_borrowed_base_lock_construction_checks = Checks(Path("."))
+    dead_borrowed_base_lock_construction_checks.validate_borrowed_base_lock_bridge(
+        BORROWED_BASE_LOCK_BRIDGE_IMPLEMENTATION_FILE,
+        dead_borrowed_base_lock_construction,
+    )
+    expect(
+        any(
+            "must duplicate exactly one close-on-exec descriptor" in error
+            for error in dead_borrowed_base_lock_construction_checks.errors
+        ),
+        "borrowed BaseLock bridge accepted a dead duplicated-fd construction "
+        "plus live unrelated return: "
+        f"{dead_borrowed_base_lock_construction_checks.errors}",
+    )
+
+    valid_borrowed_base_lock_cleanup_header = r"""
+class OOCPrivateHandoffBorrowedBaseLockV1;
+namespace ooc_cleanup_detail {
+class OOCPrivateHandoffAdoptionBuilderV1;
+}
+class BaseLock {
+private:
+    struct AdoptInheritedOpenFileDescription final {};
+    BaseLock(int descriptor,
+             const std::array<std::uint64_t, 3>& expected_lock_identity,
+             AdoptInheritedOpenFileDescription) {
+#ifndef _WIN32
+        int retained_result = -1;
+        do {
+            retained_result = ::flock(descriptor, LOCK_EX | LOCK_NB);
+        } while (retained_result != 0 && errno == EINTR);
+        if (retained_result != 0) {
+            fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
+                 posix_error(errno));
+        }
+        identity_ = expected_lock_identity;
+        descriptor_ = descriptor;
+#endif
+    }
+    friend class OOCPrivateHandoffBorrowedBaseLockV1;
+    friend class ooc_cleanup_detail::OOCPrivateHandoffAdoptionBuilderV1;
+    void release_noexcept() noexcept {
+#ifdef _WIN32
+        if (handle_ != INVALID_HANDLE_VALUE) {
+            (void)::CloseHandle(handle_);
+            handle_ = INVALID_HANDLE_VALUE;
+        }
+#else
+        if (descriptor_ >= 0) {
+            (void)::close(descriptor_);
+            descriptor_ = -1;
+        }
+#endif
+    }
+};
+class OOCPrivateHandoffAdoptionReceipt {
+    friend class ooc_cleanup_detail::OOCPrivateHandoffAdoptionBuilderV1;
+};
+"""
+    exact_borrowed_cleanup_checks = Checks(Path("."))
+    exact_borrowed_cleanup_checks.validate_borrowed_base_lock_bridge(
+        BORROWED_BASE_LOCK_BRIDGE_CLEANUP_HEADER,
+        valid_borrowed_base_lock_cleanup_header,
+    )
+    expect(
+        not exact_borrowed_cleanup_checks.errors,
+        "exact close-only inherited BaseLock boundary was rejected: "
+        f"{exact_borrowed_cleanup_checks.errors}",
+    )
+    unlocking_borrowed_cleanup_header = (
+        valid_borrowed_base_lock_cleanup_header.replace(
+            "            (void)::close(descriptor_);\n",
+            "            (void)::flock(descriptor_, LOCK_UN);\n"
+            "            (void)::close(descriptor_);\n",
+        )
+    )
+    unlocking_borrowed_cleanup_checks = Checks(Path("."))
+    unlocking_borrowed_cleanup_checks.validate_borrowed_base_lock_bridge(
+        BORROWED_BASE_LOCK_BRIDGE_CLEANUP_HEADER,
+        unlocking_borrowed_cleanup_header,
+    )
+    expect(
+        any(
+            "retain an exact close-only destructor" in error
+            for error in unlocking_borrowed_cleanup_checks.errors
+        ),
+        "borrowed BaseLock cleanup boundary accepted LOCK_UN: "
+        f"{unlocking_borrowed_cleanup_checks.errors}",
+    )
+    expanded_borrowed_cleanup_header = (
+        valid_borrowed_base_lock_cleanup_header
+        + "\nOOCPrivateHandoffBorrowedBaseLockV1* escaped = nullptr;\n"
+    )
+    expanded_borrowed_cleanup_checks = Checks(Path("."))
+    expanded_borrowed_cleanup_checks.validate_borrowed_base_lock_bridge(
+        BORROWED_BASE_LOCK_BRIDGE_CLEANUP_HEADER,
+        expanded_borrowed_cleanup_header,
+    )
+    expect(
+        any(
+            "identifier count is not closed" in error
+            or "only as one forward declaration and one private friend" in error
+            for error in expanded_borrowed_cleanup_checks.errors
+        ),
+        "public cleanup header accepted an extra borrowed BaseLock token use: "
+        f"{expanded_borrowed_cleanup_checks.errors}",
+    )
+
+    valid_borrowed_wave_mint = r"""
+auto DistributedSievePrivateLeaseBaseLockAt::adopt_exact_private_handoff(
+    const std::filesystem::path& base_path) const {
+    const bool owned = owned_by_current_process();
+    return private_lease::adopt_private_handoff_with_borrowed_base_lock_v1(
+        base_path,
+        private_lease::OOCPrivateHandoffBorrowedBaseLockV1(
+            owned ? root_fd_ : -1, owned ? lock_fd_ : -1, leaf_,
+            relation_identity(identity_),
+            owned ? creator_process_id_ : 0));
+}
+"""
+    exact_borrowed_wave_mint_checks = Checks(Path("."))
+    exact_borrowed_wave_mint_checks.validate_borrowed_base_lock_bridge(
+        BORROWED_BASE_LOCK_BRIDGE_WAVE_STORE_FILE,
+        valid_borrowed_wave_mint,
+    )
+    expect(
+        not exact_borrowed_wave_mint_checks.errors,
+        "exact WaveStore borrowed BaseLock mint was rejected: "
+        f"{exact_borrowed_wave_mint_checks.errors}",
+    )
+    expanded_borrowed_wave_mint = (
+        valid_borrowed_wave_mint
+        + "\nvoid escaped() { "
+        "private_lease::OOCPrivateHandoffBorrowedBaseLockV1* token; }\n"
+    )
+    expanded_borrowed_wave_mint_checks = Checks(Path("."))
+    expanded_borrowed_wave_mint_checks.validate_borrowed_base_lock_bridge(
+        BORROWED_BASE_LOCK_BRIDGE_WAVE_STORE_FILE,
+        expanded_borrowed_wave_mint,
+    )
+    expect(
+        any(
+            "identifier count is not closed" in error
+            for error in expanded_borrowed_wave_mint_checks.errors
+        ),
+        "WaveStore accepted a second borrowed BaseLock mint authority use: "
+        f"{expanded_borrowed_wave_mint_checks.errors}",
+    )
 
     worker_handoff_bridge_snippet = r"""
 OOCFinalizedCorpusEvidenceV1 evidence;
@@ -8700,7 +10005,7 @@ struct DistributedSieveWorkerHandoffResumeTestHooksV1 final {
     )
 
     valid_private_handoff_adoption = r"""
-auto OOCCleanupTransaction::adopt_private_handoff() noexcept {
+auto adopt_private_handoff_impl() noexcept {
     const auto first = paths.private_handoff_rollback_path;
     parent->require_lock_binding(paths.lock_path.filename(), *lock);
     if (parent->leaf_exists(paths.private_handoff_rollback_path.filename())) {
@@ -9389,8 +10694,21 @@ coordinate_missing_distributed_sieve_workers_v1() noexcept {
     }
     auto bound = bind_distributed_sieve_work_v1(
         identity, frozen_policy, polynomial, factor_base);
+    auto opened = result.store->open_worker_attempt_private_lease_root(
+        initial_attempt.chunk_id, initial_attempt.attempt_ordinal);
+    auto reconciled =
+        resume::reconcile_worker_attempt_started(std::move(opened));
+    if (reconciled.terminal_handoff.has_value()) {
+        const auto& terminal = *reconciled.terminal_handoff;
+        expected_adopted_witnesses[manifest_slot] = terminal;
+    }
     auto launched = result.store->launch_worker_process_batch_v1(
         std::move(launch_request), identity, frozen_policy, polynomial, factor_base);
+    auto adoption =
+        expected_adopted_witnesses[index].has_value()
+            ? result.store->adopt_expected_worker_handoff_v1(
+                  *expected_adopted_witnesses[index])
+            : result.store->adopt_worker_handoff_v1(manifest.chunks[index].chunk_id);
     return result;
 }
 """
@@ -9445,19 +10763,570 @@ coordinate_missing_distributed_sieve_workers_v1() noexcept {
         f"{duplicate_coordinator_bound_work_checks.errors}",
     )
 
-    reordered_coordinator_calls = valid_coordinator_composition.replace(
-        "    auto bound = bind_distributed_sieve_work_v1(\n"
-        "        identity, frozen_policy, polynomial, factor_base);\n",
-        "",
-    ).replace(
-        "    auto launched = result.store->launch_worker_process_batch_v1(\n"
-        "        std::move(launch_request), identity, frozen_policy, polynomial, factor_base);\n"
-        "    return result;\n",
-        "    auto launched = result.store->launch_worker_process_batch_v1(\n"
-        "        std::move(launch_request), identity, frozen_policy, polynomial, factor_base);\n"
+    coordinator_open_call = (
+        "    auto opened = result.store->open_worker_attempt_private_lease_root(\n"
+        "        initial_attempt.chunk_id, initial_attempt.attempt_ordinal);\n"
+    )
+    coordinator_reconcile_call = (
+        "    auto reconciled =\n"
+        "        resume::reconcile_worker_attempt_started(std::move(opened));\n"
+    )
+    missing_coordinator_retry_open = valid_coordinator_composition.replace(
+        coordinator_open_call, ""
+    )
+    missing_coordinator_retry_open_checks = Checks(Path("."))
+    missing_coordinator_retry_open_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE, missing_coordinator_retry_open
+    )
+    expect(
+        any(
+            "must contain exactly one direct open_worker_attempt_private_lease_root call"
+            in error
+            for error in missing_coordinator_retry_open_checks.errors
+        ),
+        "worker coordinator without the typed retry open was accepted: "
+        f"{missing_coordinator_retry_open_checks.errors}",
+    )
+
+    wrong_coordinate_coordinator_retry_open = valid_coordinator_composition.replace(
+        coordinator_open_call,
+        "    auto opened = result.store->open_worker_attempt_private_lease_root(\n"
+        "        manifest.chunks.front().chunk_id, 0U);\n",
+    )
+    wrong_coordinate_coordinator_retry_open_checks = Checks(Path("."))
+    wrong_coordinate_coordinator_retry_open_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        wrong_coordinate_coordinator_retry_open,
+    )
+    expect(
+        any(
+            "must open the exact initial worker attempt exactly once" in error
+            for error in wrong_coordinate_coordinator_retry_open_checks.errors
+        ),
+        "worker coordinator accepted caller-selected retry coordinates: "
+        f"{wrong_coordinate_coordinator_retry_open_checks.errors}",
+    )
+
+    duplicate_coordinator_retry_open = valid_coordinator_composition.replace(
+        coordinator_open_call,
+        coordinator_open_call
+        + "    auto duplicate_opened = "
+        "result.store->open_worker_attempt_private_lease_root(\n"
+        "        initial_attempt.chunk_id, initial_attempt.attempt_ordinal);\n",
+    )
+    duplicate_coordinator_retry_open_checks = Checks(Path("."))
+    duplicate_coordinator_retry_open_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        duplicate_coordinator_retry_open,
+    )
+    expect(
+        any(
+            "must contain exactly one direct open_worker_attempt_private_lease_root call"
+            in error
+            for error in duplicate_coordinator_retry_open_checks.errors
+        ),
+        "worker coordinator with duplicate retry opens was accepted: "
+        f"{duplicate_coordinator_retry_open_checks.errors}",
+    )
+
+    aliased_coordinator_retry_open = valid_coordinator_composition.replace(
+        coordinator_open_call,
+        "    auto opener = "
+        "&DistributedSieveWaveStore::open_worker_attempt_private_lease_root;\n"
+        "    auto opened = (result.store.get()->*opener)(\n"
+        "        initial_attempt.chunk_id, initial_attempt.attempt_ordinal);\n",
+    )
+    aliased_coordinator_retry_open_checks = Checks(Path("."))
+    aliased_coordinator_retry_open_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        aliased_coordinator_retry_open,
+    )
+    expect(
+        any(
+            "worker-attempt retry open authority must be used only as a direct call"
+            in error
+            for error in aliased_coordinator_retry_open_checks.errors
+        ),
+        "worker coordinator accepted aliased retry-open authority: "
+        f"{aliased_coordinator_retry_open_checks.errors}",
+    )
+
+    outside_coordinator_retry_open = (
+        valid_coordinator_composition
+        + "\nauto outside_opened = "
+        "result.store->open_worker_attempt_private_lease_root(\n"
+        "    initial_attempt.chunk_id, initial_attempt.attempt_ordinal);\n"
+    )
+    outside_coordinator_retry_open_checks = Checks(Path("."))
+    outside_coordinator_retry_open_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        outside_coordinator_retry_open,
+    )
+    expect(
+        any(
+            "must contain exactly one direct open_worker_attempt_private_lease_root call"
+            in error
+            for error in outside_coordinator_retry_open_checks.errors
+        ),
+        "worker coordinator retry-open authority escaped its entry function: "
+        f"{outside_coordinator_retry_open_checks.errors}",
+    )
+
+    wrong_receiver_coordinator_retry_open = valid_coordinator_composition.replace(
+        "result.store->open_worker_attempt_private_lease_root(",
+        "raw_store->open_worker_attempt_private_lease_root(",
+    )
+    wrong_receiver_coordinator_retry_open_checks = Checks(Path("."))
+    wrong_receiver_coordinator_retry_open_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        wrong_receiver_coordinator_retry_open,
+    )
+    expect(
+        any(
+            "must open the exact initial worker attempt exactly once" in error
+            for error in wrong_receiver_coordinator_retry_open_checks.errors
+        ),
+        "worker coordinator accepted an unsealed retry-open receiver: "
+        f"{wrong_receiver_coordinator_retry_open_checks.errors}",
+    )
+
+    missing_coordinator_reconciler = valid_coordinator_composition.replace(
+        coordinator_reconcile_call, ""
+    )
+    missing_coordinator_reconciler_checks = Checks(Path("."))
+    missing_coordinator_reconciler_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE, missing_coordinator_reconciler
+    )
+    expect(
+        any(
+            "must contain exactly one direct reconcile_worker_attempt_started call"
+            in error
+            for error in missing_coordinator_reconciler_checks.errors
+        ),
+        "worker coordinator without the typed attempt reconciler was accepted: "
+        f"{missing_coordinator_reconciler_checks.errors}",
+    )
+
+    duplicate_coordinator_reconciler = valid_coordinator_composition.replace(
+        coordinator_reconcile_call,
+        coordinator_reconcile_call
+        + "    auto duplicate_reconciled =\n"
+        "        resume::reconcile_worker_attempt_started(std::move(other_opened));\n",
+    )
+    duplicate_coordinator_reconciler_checks = Checks(Path("."))
+    duplicate_coordinator_reconciler_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE, duplicate_coordinator_reconciler
+    )
+    expect(
+        any(
+            "must contain exactly one direct reconcile_worker_attempt_started call"
+            in error
+            for error in duplicate_coordinator_reconciler_checks.errors
+        ),
+        "worker coordinator with duplicate attempt reconciliation was accepted: "
+        f"{duplicate_coordinator_reconciler_checks.errors}",
+    )
+
+    wrong_operand_coordinator_reconciler = valid_coordinator_composition.replace(
+        "resume::reconcile_worker_attempt_started(std::move(opened))",
+        "resume::reconcile_worker_attempt_started(std::move(other_opened))",
+    )
+    wrong_operand_coordinator_reconciler_checks = Checks(Path("."))
+    wrong_operand_coordinator_reconciler_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        wrong_operand_coordinator_reconciler,
+    )
+    expect(
+        any(
+            "must consume the exact opened attempt once" in error
+            for error in wrong_operand_coordinator_reconciler_checks.errors
+        ),
+        "worker coordinator accepted reconciliation of an unbound open result: "
+        f"{wrong_operand_coordinator_reconciler_checks.errors}",
+    )
+
+    reordered_coordinator_retry = valid_coordinator_composition.replace(
+        coordinator_open_call + coordinator_reconcile_call,
+        coordinator_reconcile_call + coordinator_open_call,
+    )
+    reordered_coordinator_retry_checks = Checks(Path("."))
+    reordered_coordinator_retry_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE, reordered_coordinator_retry
+    )
+    expect(
+        any(
+            "must open the exact attempt before reconciling it" in error
+            for error in reordered_coordinator_retry_checks.errors
+        ),
+        "worker coordinator accepted attempt reconciliation before exact open: "
+        f"{reordered_coordinator_retry_checks.errors}",
+    )
+
+    coordinator_bound_call = (
         "    auto bound = bind_distributed_sieve_work_v1(\n"
         "        identity, frozen_policy, polynomial, factor_base);\n"
-        "    return result;\n",
+    )
+    reordered_coordinator_bound_open = valid_coordinator_composition.replace(
+        coordinator_bound_call + coordinator_open_call,
+        coordinator_open_call + coordinator_bound_call,
+    )
+    reordered_coordinator_bound_open_checks = Checks(Path("."))
+    reordered_coordinator_bound_open_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        reordered_coordinator_bound_open,
+    )
+    expect(
+        any(
+            "must validate bound work before opening a retry attempt" in error
+            for error in reordered_coordinator_bound_open_checks.errors
+        ),
+        "worker coordinator accepted retry open before bound-work validation: "
+        f"{reordered_coordinator_bound_open_checks.errors}",
+    )
+
+    coordinator_launcher_call = (
+        "    auto launched = result.store->launch_worker_process_batch_v1(\n"
+        "        std::move(launch_request), identity, frozen_policy, polynomial, factor_base);\n"
+    )
+    reordered_coordinator_reconcile_launcher = valid_coordinator_composition.replace(
+        coordinator_reconcile_call, ""
+    ).replace(
+        coordinator_launcher_call,
+        coordinator_launcher_call + coordinator_reconcile_call,
+    )
+    reordered_coordinator_reconcile_launcher_checks = Checks(Path("."))
+    reordered_coordinator_reconcile_launcher_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        reordered_coordinator_reconcile_launcher,
+    )
+    expect(
+        any(
+            "must reconcile retry state before invoking the sealed WaveStore launcher"
+            in error
+            for error in reordered_coordinator_reconcile_launcher_checks.errors
+        ),
+        "worker coordinator accepted launch before retry reconciliation: "
+        f"{reordered_coordinator_reconcile_launcher_checks.errors}",
+    )
+
+    aliased_coordinator_reconciler = valid_coordinator_composition.replace(
+        coordinator_reconcile_call,
+        "    auto reconciler = resume::reconcile_worker_attempt_started;\n"
+        "    auto reconciled = reconciler(std::move(opened));\n",
+    )
+    aliased_coordinator_reconciler_checks = Checks(Path("."))
+    aliased_coordinator_reconciler_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE, aliased_coordinator_reconciler
+    )
+    expect(
+        any(
+            "worker-attempt reconciler must be used only as a direct call" in error
+            for error in aliased_coordinator_reconciler_checks.errors
+        ),
+        "worker coordinator accepted aliased attempt reconciliation: "
+        f"{aliased_coordinator_reconciler_checks.errors}",
+    )
+
+    outside_coordinator_reconciler = (
+        valid_coordinator_composition
+        + "\nauto outside_reconciled =\n"
+        "    resume::reconcile_worker_attempt_started(std::move(outside_opened));\n"
+    )
+    outside_coordinator_reconciler_checks = Checks(Path("."))
+    outside_coordinator_reconciler_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE, outside_coordinator_reconciler
+    )
+    expect(
+        any(
+            "must contain exactly one direct reconcile_worker_attempt_started call"
+            in error
+            for error in outside_coordinator_reconciler_checks.errors
+        ),
+        "worker coordinator reconciler authority escaped its entry function: "
+        f"{outside_coordinator_reconciler_checks.errors}",
+    )
+
+    coordinator_expected_adoption_call = (
+        "    auto adoption =\n"
+        "        expected_adopted_witnesses[index].has_value()\n"
+        "            ? result.store->adopt_expected_worker_handoff_v1(\n"
+        "                  *expected_adopted_witnesses[index])\n"
+        "            : result.store->adopt_worker_handoff_v1("
+        "manifest.chunks[index].chunk_id);\n"
+    )
+    ordinary_coordinator_terminal_adoption = valid_coordinator_composition.replace(
+        coordinator_expected_adoption_call,
+        "    auto adoption = result.store->adopt_worker_handoff_v1(\n"
+        "        manifest.chunks[index].chunk_id);\n",
+    )
+    ordinary_coordinator_terminal_adoption_checks = Checks(Path("."))
+    ordinary_coordinator_terminal_adoption_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        ordinary_coordinator_terminal_adoption,
+    )
+    expect(
+        any(
+            "must contain exactly one direct adopt_expected_worker_handoff_v1 call"
+            in error
+            for error in ordinary_coordinator_terminal_adoption_checks.errors
+        ),
+        "worker coordinator silently degraded terminal-witness adoption to ordinary "
+        f"adoption: {ordinary_coordinator_terminal_adoption_checks.errors}",
+    )
+
+    wrong_witness_coordinator_terminal_adoption = (
+        valid_coordinator_composition.replace(
+            coordinator_expected_adoption_call,
+            "    auto adoption = "
+            "result.store->adopt_expected_worker_handoff_v1(\n"
+            "        *unbound_witnesses[index]);\n",
+        )
+    )
+    wrong_witness_coordinator_terminal_adoption_checks = Checks(Path("."))
+    wrong_witness_coordinator_terminal_adoption_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        wrong_witness_coordinator_terminal_adoption,
+    )
+    expect(
+        any(
+            "must consume the exact reconciler terminal witness once" in error
+            for error in wrong_witness_coordinator_terminal_adoption_checks.errors
+        ),
+        "worker coordinator accepted an unbound terminal witness: "
+        f"{wrong_witness_coordinator_terminal_adoption_checks.errors}",
+    )
+
+    duplicate_coordinator_terminal_adoption = valid_coordinator_composition.replace(
+        coordinator_expected_adoption_call,
+        coordinator_expected_adoption_call
+        + "    auto duplicate_expected_adoption = "
+        "result.store->adopt_expected_worker_handoff_v1(\n"
+        "        *expected_adopted_witnesses[index]);\n",
+    )
+    duplicate_coordinator_terminal_adoption_checks = Checks(Path("."))
+    duplicate_coordinator_terminal_adoption_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        duplicate_coordinator_terminal_adoption,
+    )
+    expect(
+        any(
+            "must contain exactly one direct adopt_expected_worker_handoff_v1 call"
+            in error
+            for error in duplicate_coordinator_terminal_adoption_checks.errors
+        ),
+        "worker coordinator accepted duplicate terminal-witness adoption: "
+        f"{duplicate_coordinator_terminal_adoption_checks.errors}",
+    )
+
+    aliased_coordinator_terminal_adoption = valid_coordinator_composition.replace(
+        coordinator_expected_adoption_call,
+        "    auto adopter = "
+        "&DistributedSieveWaveStore::adopt_expected_worker_handoff_v1;\n"
+        "    auto adoption = (result.store.get()->*adopter)(\n"
+        "        *expected_adopted_witnesses[index]);\n",
+    )
+    aliased_coordinator_terminal_adoption_checks = Checks(Path("."))
+    aliased_coordinator_terminal_adoption_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        aliased_coordinator_terminal_adoption,
+    )
+    expect(
+        any(
+            "terminal-witness adoption must be used only as a direct call" in error
+            for error in aliased_coordinator_terminal_adoption_checks.errors
+        ),
+        "worker coordinator accepted aliased terminal-witness adoption: "
+        f"{aliased_coordinator_terminal_adoption_checks.errors}",
+    )
+
+    outside_coordinator_terminal_adoption = (
+        valid_coordinator_composition
+        + "\nauto outside_expected_adoption = "
+        "result.store->adopt_expected_worker_handoff_v1(\n"
+        "    *expected_adopted_witnesses[index]);\n"
+    )
+    outside_coordinator_terminal_adoption_checks = Checks(Path("."))
+    outside_coordinator_terminal_adoption_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        outside_coordinator_terminal_adoption,
+    )
+    expect(
+        any(
+            "must contain exactly one direct adopt_expected_worker_handoff_v1 call"
+            in error
+            for error in outside_coordinator_terminal_adoption_checks.errors
+        ),
+        "terminal-witness adoption escaped the coordinator entry function: "
+        f"{outside_coordinator_terminal_adoption_checks.errors}",
+    )
+
+    wrong_receiver_coordinator_terminal_adoption = (
+        valid_coordinator_composition.replace(
+            "result.store->adopt_expected_worker_handoff_v1(",
+            "raw_store->adopt_expected_worker_handoff_v1(",
+        )
+    )
+    wrong_receiver_coordinator_terminal_adoption_checks = Checks(Path("."))
+    wrong_receiver_coordinator_terminal_adoption_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        wrong_receiver_coordinator_terminal_adoption,
+    )
+    expect(
+        any(
+            "must consume the exact reconciler terminal witness once" in error
+            for error in wrong_receiver_coordinator_terminal_adoption_checks.errors
+        ),
+        "worker coordinator accepted an unsealed terminal-witness adoption receiver: "
+        f"{wrong_receiver_coordinator_terminal_adoption_checks.errors}",
+    )
+
+    reordered_coordinator_terminal_adoption = valid_coordinator_composition.replace(
+        coordinator_expected_adoption_call, ""
+    ).replace(
+        coordinator_reconcile_call,
+        coordinator_expected_adoption_call + coordinator_reconcile_call,
+    )
+    reordered_coordinator_terminal_adoption_checks = Checks(Path("."))
+    reordered_coordinator_terminal_adoption_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        reordered_coordinator_terminal_adoption,
+    )
+    expect(
+        any(
+            "must capture a terminal witness before expected same-handle adoption"
+            in error
+            for error in reordered_coordinator_terminal_adoption_checks.errors
+        ),
+        "worker coordinator accepted expected adoption before terminal-witness capture: "
+        f"{reordered_coordinator_terminal_adoption_checks.errors}",
+    )
+
+    wrong_terminal_witness_provenance = valid_coordinator_composition.replace(
+        "expected_adopted_witnesses[manifest_slot] = terminal;",
+        "expected_adopted_witnesses[manifest_slot] = unbound_terminal;",
+    )
+    wrong_terminal_witness_provenance_checks = Checks(Path("."))
+    wrong_terminal_witness_provenance_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        wrong_terminal_witness_provenance,
+    )
+    expect(
+        any(
+            "bind the exact reconciler terminal witness" in error
+            or "must preserve reconcile -> terminal binding" in error
+            for error in wrong_terminal_witness_provenance_checks.errors
+        ),
+        "worker coordinator accepted an unbound terminal witness source: "
+        f"{wrong_terminal_witness_provenance_checks.errors}",
+    )
+
+    dead_expected_adoption = valid_coordinator_composition.replace(
+        coordinator_expected_adoption_call,
+        "    if (false) {\n"
+        "        auto ignored = result.store->adopt_expected_worker_handoff_v1(\n"
+        "            *expected_adopted_witnesses[index]);\n"
+        "    }\n"
+        "    auto adoption = result.store->adopt_worker_handoff_v1(\n"
+        "        manifest.chunks[index].chunk_id);\n",
+    )
+    dead_expected_adoption_checks = Checks(Path("."))
+    dead_expected_adoption_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        dead_expected_adoption,
+    )
+    expect(
+        any(
+            "must dispatch witnessed terminal handoffs" in error
+            for error in dead_expected_adoption_checks.errors
+        ),
+        "dead expected-adoption code hid an ordinary live branch: "
+        f"{dead_expected_adoption_checks.errors}",
+    )
+    full_dead_expected_dispatch = valid_coordinator_composition.replace(
+        coordinator_expected_adoption_call,
+        "    if (false) {\n"
+        + coordinator_expected_adoption_call
+        + "    }\n"
+        "    auto live_adoption = result.store->adopt_worker_handoff_v1(\n"
+        "        manifest.chunks[index].chunk_id);\n",
+    )
+    full_dead_expected_dispatch_checks = Checks(Path("."))
+    full_dead_expected_dispatch_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        full_dead_expected_dispatch,
+    )
+    expect(
+        any(
+            "forbids constant-dead control flow" in error
+            for error in full_dead_expected_dispatch_checks.errors
+        )
+        and any(
+            "exactly one direct ordinary handoff adoption fallback" in error
+            for error in full_dead_expected_dispatch_checks.errors
+        ),
+        "complete dead terminal dispatch hid an extra live ordinary adoption: "
+        f"{full_dead_expected_dispatch_checks.errors}",
+    )
+
+    coordinator_terminal_provenance = (
+        "    if (reconciled.terminal_handoff.has_value()) {\n"
+        "        const auto& terminal = *reconciled.terminal_handoff;\n"
+        "        expected_adopted_witnesses[manifest_slot] = terminal;\n"
+        "    }\n"
+    )
+    full_dead_terminal_provenance = valid_coordinator_composition.replace(
+        coordinator_terminal_provenance,
+        "    if (false) {\n"
+        + coordinator_terminal_provenance
+        + "    }\n"
+        "    expected_adopted_witnesses[manifest_slot] = unbound_terminal;\n",
+    )
+    full_dead_terminal_provenance_checks = Checks(Path("."))
+    full_dead_terminal_provenance_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        full_dead_terminal_provenance,
+    )
+    expect(
+        any(
+            "forbids constant-dead control flow" in error
+            for error in full_dead_terminal_provenance_checks.errors
+        )
+        and any(
+            "exact one-write/two-read manifest-slot flow" in error
+            for error in full_dead_terminal_provenance_checks.errors
+        ),
+        "complete dead reconciler provenance hid an unbound live terminal store: "
+        f"{full_dead_terminal_provenance_checks.errors}",
+    )
+
+    reversed_terminal_adoption_dispatch = valid_coordinator_composition.replace(
+        coordinator_expected_adoption_call,
+        "    auto adoption =\n"
+        "        expected_adopted_witnesses[index].has_value()\n"
+        "            ? result.store->adopt_worker_handoff_v1(\n"
+        "                  manifest.chunks[index].chunk_id)\n"
+        "            : result.store->adopt_expected_worker_handoff_v1(\n"
+        "                  *expected_adopted_witnesses[index]);\n",
+    )
+    reversed_terminal_adoption_dispatch_checks = Checks(Path("."))
+    reversed_terminal_adoption_dispatch_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        reversed_terminal_adoption_dispatch,
+    )
+    expect(
+        any(
+            "must dispatch witnessed terminal handoffs" in error
+            for error in reversed_terminal_adoption_dispatch_checks.errors
+        ),
+        "worker coordinator accepted reversed terminal-adoption dispatch: "
+        f"{reversed_terminal_adoption_dispatch_checks.errors}",
+    )
+
+    reordered_coordinator_calls = valid_coordinator_composition.replace(
+        coordinator_bound_call, ""
+    ).replace(
+        coordinator_launcher_call,
+        coordinator_launcher_call + coordinator_bound_call,
     )
     reordered_coordinator_calls_checks = Checks(Path("."))
     reordered_coordinator_calls_checks.validate_worker_coordinator_boundary(
@@ -9553,6 +11422,8 @@ coordinate_missing_distributed_sieve_workers_v1() noexcept {
         "    auto waited = waitpid(pid, &status, 0);\n"
         "    auto shelled = system(command);\n"
         "    auto replaced = execve(path, argv, envp);\n"
+        "    auto recovered = recover_worker_attempt_private_lease(std::move(claimed));\n"
+        "    ChunkTerminalFailureV1 terminal_failure;\n"
         "    cleanup_worker_artifacts();\n"
         "    unlink_worker_handoff();\n"
         "    run_distributed_sieve(config);\n"
@@ -9571,6 +11442,8 @@ coordinate_missing_distributed_sieve_workers_v1() noexcept {
                 "waitpid",
                 "system",
                 "execve",
+                "recover_worker_attempt_private_lease",
+                "ChunkTerminalFailureV1",
                 "cleanup_worker_artifacts",
                 "unlink_worker_handoff",
                 "run_distributed_sieve",
@@ -10037,6 +11910,206 @@ auto bound = bind_distributed_sieve_work_v1(identity, frozen, context, factor_ba
             "found 'descriptor.environment_name'"
         ],
         "dynamic environment-adapter getenv argument was not rejected",
+    )
+
+    valid_terminal_transition_boundary = r"""
+bool exact_worker_attempt_terminal_transition() {
+    return true;
+}
+
+Result DistributedSieveWaveStore::claim_worker_attempt_private_lease_root() const noexcept {
+    bool terminal_transition_refreshed = false;
+    const auto refresh_exact_terminal_transition = [&](const auto& observed) {
+        if (terminal_transition_refreshed ||
+            expectation != AttemptBaseLockExpectation::present ||
+            !exact_worker_attempt_terminal_transition(
+                before, observed, state_->manifest,
+                *claim.worker_attempt_names_, chunk_id, attempt_ordinal,
+                target_index)) {
+            return false;
+        }
+        terminal_transition_refreshed = true;
+        return true;
+    };
+    auto immediately_before = capture_manifest_bound_inventory_witness();
+    if (!expected_successor_matches(immediately_before) &&
+        !refresh_exact_terminal_transition(immediately_before)) {
+        return {};
+    }
+    target = DistributedSievePrivateLeaseBaseLockAt::create_new_locked();
+    target = DistributedSievePrivateLeaseBaseLockAt::open_existing_locked();
+    auto held_target = capture_manifest_bound_inventory_witness(
+        state_->root_fd, state_->manifest, state_->absolute_root,
+        state_->creator_process_id, held_inventory());
+    if (!expected_successor_matches(held_target) &&
+        !refresh_exact_terminal_transition(held_target)) {
+        return {};
+    }
+    invoke_private_lease_base_lock_hook(
+        hooks.after_target_lock_acquired, hooks.context,
+        state_->creator_process_id);
+    revalidate_higher_priority_bindings();
+    auto held_target_confirmed = capture_manifest_bound_inventory_witness(
+        state_->root_fd, state_->manifest, state_->absolute_root,
+        state_->creator_process_id, held_inventory());
+    if (!held_target_confirmed ||
+        !expected_successor_matches(held_target_confirmed)) {
+        return {};
+    }
+    const auto revalidate_closed_successor = [&] { return Result{}; };
+    revalidate_closed_successor();
+    claim.base_lock_at_ = std::move(target);
+    return {};
+}
+"""
+    exact_terminal_transition_checks = Checks(Path("."))
+    exact_terminal_transition_checks.validate_worker_attempt_terminal_transition_boundary(
+        WORKER_ATTEMPT_WAVE_STORE_IMPLEMENTATION_FILE,
+        valid_terminal_transition_boundary,
+    )
+    expect(
+        not exact_terminal_transition_checks.errors,
+        "exact held-target terminal-transition boundary was rejected: "
+        f"{exact_terminal_transition_checks.errors}",
+    )
+
+    reusable_terminal_transition = valid_terminal_transition_boundary.replace(
+        "terminal_transition_refreshed ||\n            ", ""
+    )
+    reusable_terminal_transition_checks = Checks(Path("."))
+    reusable_terminal_transition_checks.validate_worker_attempt_terminal_transition_boundary(
+        WORKER_ATTEMPT_WAVE_STORE_IMPLEMENTATION_FILE,
+        reusable_terminal_transition,
+    )
+    expect(
+        any(
+            "single-use guard must appear exactly once" in error
+            for error in reusable_terminal_transition_checks.errors
+        ),
+        "reusable terminal-transition adjudication was accepted: "
+        f"{reusable_terminal_transition_checks.errors}",
+    )
+
+    confirmation_refresh = valid_terminal_transition_boundary.replace(
+        "if (!held_target_confirmed ||\n"
+        "        !expected_successor_matches(held_target_confirmed)) {",
+        "if (!expected_successor_matches(held_target_confirmed) &&\n"
+        "        !refresh_exact_terminal_transition(held_target_confirmed)) {",
+    )
+    confirmation_refresh_checks = Checks(Path("."))
+    confirmation_refresh_checks.validate_worker_attempt_terminal_transition_boundary(
+        WORKER_ATTEMPT_WAVE_STORE_IMPLEMENTATION_FILE,
+        confirmation_refresh,
+    )
+    expect(
+        any(
+            "exactly two direct call sites" in error
+            or "confirmed held-target exact match must appear exactly once" in error
+            for error in confirmation_refresh_checks.errors
+        ),
+        "terminal confirmation was allowed to refresh its baseline: "
+        f"{confirmation_refresh_checks.errors}",
+    )
+
+    held_capture_source = (
+        "    auto held_target = capture_manifest_bound_inventory_witness(\n"
+        "        state_->root_fd, state_->manifest, state_->absolute_root,\n"
+        "        state_->creator_process_id, held_inventory());\n"
+    )
+    post_held_hook_source = (
+        "    invoke_private_lease_base_lock_hook(\n"
+        "        hooks.after_target_lock_acquired, hooks.context,\n"
+        "        state_->creator_process_id);\n"
+    )
+    early_post_target_hook = valid_terminal_transition_boundary.replace(
+        post_held_hook_source, ""
+    ).replace(
+        held_capture_source,
+        post_held_hook_source + held_capture_source,
+    )
+    early_post_target_hook_checks = Checks(Path("."))
+    early_post_target_hook_checks.validate_worker_attempt_terminal_transition_boundary(
+        WORKER_ATTEMPT_WAVE_STORE_IMPLEMENTATION_FILE,
+        early_post_target_hook,
+    )
+    expect(
+        any(
+            "must order pre-lock adjudication" in error
+            for error in early_post_target_hook_checks.errors
+        ),
+        "post-target seam before the first held witness was accepted: "
+        f"{early_post_target_hook_checks.errors}",
+    )
+    wrong_terminal_helper_operand = valid_terminal_transition_boundary.replace(
+        "before, observed, state_->manifest,\n"
+        "                *claim.worker_attempt_names_, chunk_id, attempt_ordinal,\n"
+        "                target_index",
+        "before, observed, unbound_manifest,\n"
+        "                *claim.worker_attempt_names_, chunk_id, attempt_ordinal,\n"
+        "                target_index",
+    )
+    wrong_terminal_helper_operand_checks = Checks(Path("."))
+    wrong_terminal_helper_operand_checks.validate_worker_attempt_terminal_transition_boundary(
+        WORKER_ATTEMPT_WAVE_STORE_IMPLEMENTATION_FILE,
+        wrong_terminal_helper_operand,
+    )
+    expect(
+        any(
+            "exact helper operands must appear exactly once" in error
+            for error in wrong_terminal_helper_operand_checks.errors
+        ),
+        "worker-attempt transition accepted an unbound manifest helper operand: "
+        f"{wrong_terminal_helper_operand_checks.errors}",
+    )
+
+    unheld_inventory_capture = valid_terminal_transition_boundary.replace(
+        held_capture_source,
+        held_capture_source.replace("held_inventory()", "unheld_inventory()"),
+        1,
+    )
+    unheld_inventory_capture_checks = Checks(Path("."))
+    unheld_inventory_capture_checks.validate_worker_attempt_terminal_transition_boundary(
+        WORKER_ATTEMPT_WAVE_STORE_IMPLEMENTATION_FILE,
+        unheld_inventory_capture,
+    )
+    expect(
+        any(
+            "first held-target inventory witness must appear exactly once" in error
+            for error in unheld_inventory_capture_checks.errors
+        ),
+        "worker-attempt transition accepted a first witness without the held "
+        "lock inventory: "
+        f"{unheld_inventory_capture_checks.errors}",
+    )
+
+    dead_held_target_chain = valid_terminal_transition_boundary.replace(
+        held_capture_source,
+        "    if (false) {\n" + held_capture_source,
+        1,
+    ).replace(
+        "    claim.base_lock_at_ = std::move(target);\n",
+        "    claim.base_lock_at_ = std::move(target);\n"
+        "    }\n"
+        "    claim.base_lock_at_ = std::move(unvalidated_target);\n",
+        1,
+    )
+    dead_held_target_chain_checks = Checks(Path("."))
+    dead_held_target_chain_checks.validate_worker_attempt_terminal_transition_boundary(
+        WORKER_ATTEMPT_WAVE_STORE_IMPLEMENTATION_FILE,
+        dead_held_target_chain,
+    )
+    expect(
+        any(
+            "forbids constant-dead control flow" in error
+            for error in dead_held_target_chain_checks.errors
+        )
+        and any(
+            "transfer only the exact validated target lock exactly once" in error
+            for error in dead_held_target_chain_checks.errors
+        ),
+        "worker-attempt transition accepted a dead validated chain plus live "
+        "unvalidated capability transfer: "
+        f"{dead_held_target_chain_checks.errors}",
     )
     return errors
 
