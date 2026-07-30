@@ -268,6 +268,13 @@ WORKER_COORDINATOR_ATTEMPT_RECONCILE_IDENTIFIER = (
 WORKER_COORDINATOR_ATTEMPT_RECONCILE_FRAGMENT = (
     "resume::reconcile_worker_attempt_started(std::move(opened))"
 )
+WORKER_COORDINATOR_TERMINAL_FAILURE_PUBLISH_IDENTIFIER = (
+    "publish_chunk_terminal_failure_v1"
+)
+WORKER_COORDINATOR_TERMINAL_FAILURE_PUBLISH_FRAGMENT = (
+    "resume::publish_chunk_terminal_failure_v1("
+    "std::move(*reconciled.terminal_failure_admission))"
+)
 WORKER_COORDINATOR_EXPECTED_ADOPTION_IDENTIFIER = (
     "adopt_expected_worker_handoff_v1"
 )
@@ -342,6 +349,7 @@ WORKER_COORDINATOR_FORBIDDEN_IDENTIFIERS = {
     "spawn_distributed_sieve_worker_process_batch_with_capabilities",
     "recover_worker_attempt_private_lease",
     "ChunkTerminalFailureV1",
+    "publish_at",
     "run_distributed_sieve",
     "DistributedSieveWorkerResult",
 } | set(ALTERNATE_PROCESS_EXECUTION_IDENTIFIERS)
@@ -5406,6 +5414,52 @@ class Checks:
                 f"{WORKER_COORDINATOR_COMPOSITION_FUNCTION}",
             )
 
+        terminal_failure_publish_identifier = (
+            WORKER_COORDINATOR_TERMINAL_FAILURE_PUBLISH_IDENTIFIER
+        )
+        all_terminal_failure_publish_uses = find_code_identifier_uses(
+            text, terminal_failure_publish_identifier
+        )
+        all_terminal_failure_publish_calls = find_call_identifier_uses(
+            text, terminal_failure_publish_identifier
+        )
+        body_terminal_failure_publish_uses = find_code_identifier_uses(
+            body, terminal_failure_publish_identifier
+        )
+        body_terminal_failure_publish_calls = find_call_identifier_uses(
+            body, terminal_failure_publish_identifier
+        )
+        for use in find_non_call_identifier_uses(
+            text, terminal_failure_publish_identifier
+        ):
+            self.fail(
+                relative,
+                use.line,
+                "terminal-failure publisher must be used only as a direct call",
+            )
+        if (
+            len(all_terminal_failure_publish_uses) != 1
+            or len(all_terminal_failure_publish_calls) != 1
+        ):
+            self.fail(
+                relative,
+                1,
+                "worker coordinator must contain exactly one direct "
+                f"{terminal_failure_publish_identifier} call, found "
+                f"{len(all_terminal_failure_publish_uses)} identifiers and "
+                f"{len(all_terminal_failure_publish_calls)} calls",
+            )
+        if (
+            len(body_terminal_failure_publish_uses) != 1
+            or len(body_terminal_failure_publish_calls) != 1
+        ):
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                f"the only direct {terminal_failure_publish_identifier} call must "
+                f"remain inside {WORKER_COORDINATOR_COMPOSITION_FUNCTION}",
+            )
+
         expected_adoption_identifier = (
             WORKER_COORDINATOR_EXPECTED_ADOPTION_IDENTIFIER
         )
@@ -5494,7 +5548,7 @@ class Checks:
                 relative,
                 body_line_offset + 1,
                 "worker coordinator forbids constant-dead control flow around "
-                "retry and adoption authority",
+                "retry, terminal publication, and adoption authority",
             )
         if compact_body.count(WORKER_COORDINATOR_ATTEMPT_OPEN_FRAGMENT) != 1:
             self.fail(
@@ -5509,6 +5563,18 @@ class Checks:
                 body_line_offset + 1,
                 "worker coordinator must consume the exact opened attempt once through "
                 "the typed reconciler",
+            )
+        if (
+            compact_body.count(
+                WORKER_COORDINATOR_TERMINAL_FAILURE_PUBLISH_FRAGMENT
+            )
+            != 1
+        ):
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                "worker coordinator must consume the exact reconciler terminal-failure "
+                "admission once through the typed publisher",
             )
         if compact_body.count(WORKER_COORDINATOR_EXPECTED_ADOPTION_FRAGMENT) != 1:
             self.fail(
@@ -5567,6 +5633,18 @@ class Checks:
                 relative,
                 body_line_offset + 1,
                 "worker coordinator must open the exact attempt before reconciling it",
+            )
+        if (
+            len(body_reconcile_calls) == 1
+            and len(body_terminal_failure_publish_calls) == 1
+            and body_reconcile_calls[0].offset
+            >= body_terminal_failure_publish_calls[0].offset
+        ):
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                "worker coordinator must reconcile retry state before publishing "
+                "terminal failure",
             )
         if (
             len(body_reconcile_calls) == 1
@@ -5659,6 +5737,19 @@ class Checks:
                 body_line_offset + 1,
                 "worker coordinator must reconcile retry state before invoking the "
                 "sealed WaveStore launcher",
+            )
+        if (
+            len(body_terminal_failure_publish_calls) == 1
+            and any(
+                body_terminal_failure_publish_calls[0].offset >= call.offset
+                for call in body_calls
+            )
+        ):
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                "worker coordinator must publish terminal failure before invoking "
+                "any sealed WaveStore launcher",
             )
 
     def validate_worker_attempt_terminal_transition_boundary(
@@ -10698,6 +10789,9 @@ coordinate_missing_distributed_sieve_workers_v1() noexcept {
         initial_attempt.chunk_id, initial_attempt.attempt_ordinal);
     auto reconciled =
         resume::reconcile_worker_attempt_started(std::move(opened));
+    auto terminal_failure =
+        resume::publish_chunk_terminal_failure_v1(
+            std::move(*reconciled.terminal_failure_admission));
     if (reconciled.terminal_handoff.has_value()) {
         const auto& terminal = *reconciled.terminal_handoff;
         expected_adopted_witnesses[manifest_slot] = terminal;
@@ -10770,6 +10864,11 @@ coordinate_missing_distributed_sieve_workers_v1() noexcept {
     coordinator_reconcile_call = (
         "    auto reconciled =\n"
         "        resume::reconcile_worker_attempt_started(std::move(opened));\n"
+    )
+    coordinator_terminal_failure_publish_call = (
+        "    auto terminal_failure =\n"
+        "        resume::publish_chunk_terminal_failure_v1(\n"
+        "            std::move(*reconciled.terminal_failure_admission));\n"
     )
     missing_coordinator_retry_open = valid_coordinator_composition.replace(
         coordinator_open_call, ""
@@ -11044,6 +11143,214 @@ coordinate_missing_distributed_sieve_workers_v1() noexcept {
         ),
         "worker coordinator reconciler authority escaped its entry function: "
         f"{outside_coordinator_reconciler_checks.errors}",
+    )
+
+    missing_coordinator_terminal_failure_publisher = (
+        valid_coordinator_composition.replace(
+            coordinator_terminal_failure_publish_call, ""
+        )
+    )
+    missing_coordinator_terminal_failure_publisher_checks = Checks(Path("."))
+    missing_coordinator_terminal_failure_publisher_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        missing_coordinator_terminal_failure_publisher,
+    )
+    expect(
+        any(
+            "must contain exactly one direct publish_chunk_terminal_failure_v1 call"
+            in error
+            for error in missing_coordinator_terminal_failure_publisher_checks.errors
+        ),
+        "worker coordinator without the typed terminal-failure publisher was accepted: "
+        f"{missing_coordinator_terminal_failure_publisher_checks.errors}",
+    )
+
+    duplicate_coordinator_terminal_failure_publisher = (
+        valid_coordinator_composition.replace(
+            coordinator_terminal_failure_publish_call,
+            coordinator_terminal_failure_publish_call
+            + "    auto duplicate_terminal_failure =\n"
+            "        resume::publish_chunk_terminal_failure_v1(\n"
+            "            std::move(*reconciled.terminal_failure_admission));\n",
+        )
+    )
+    duplicate_coordinator_terminal_failure_publisher_checks = Checks(Path("."))
+    duplicate_coordinator_terminal_failure_publisher_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        duplicate_coordinator_terminal_failure_publisher,
+    )
+    expect(
+        any(
+            "must contain exactly one direct publish_chunk_terminal_failure_v1 call"
+            in error
+            for error in duplicate_coordinator_terminal_failure_publisher_checks.errors
+        ),
+        "worker coordinator with duplicate terminal-failure publication was accepted: "
+        f"{duplicate_coordinator_terminal_failure_publisher_checks.errors}",
+    )
+
+    aliased_coordinator_terminal_failure_publisher = (
+        valid_coordinator_composition.replace(
+            coordinator_terminal_failure_publish_call,
+            "    auto terminal_failure_publisher =\n"
+            "        &resume::publish_chunk_terminal_failure_v1;\n"
+            "    auto terminal_failure = terminal_failure_publisher(\n"
+            "        std::move(*reconciled.terminal_failure_admission));\n",
+        )
+    )
+    aliased_coordinator_terminal_failure_publisher_checks = Checks(Path("."))
+    aliased_coordinator_terminal_failure_publisher_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        aliased_coordinator_terminal_failure_publisher,
+    )
+    expect(
+        any(
+            "terminal-failure publisher must be used only as a direct call" in error
+            for error in aliased_coordinator_terminal_failure_publisher_checks.errors
+        ),
+        "worker coordinator accepted aliased terminal-failure publication authority: "
+        f"{aliased_coordinator_terminal_failure_publisher_checks.errors}",
+    )
+
+    wrong_receiver_coordinator_terminal_failure_publisher = (
+        valid_coordinator_composition.replace(
+            "resume::publish_chunk_terminal_failure_v1(",
+            "other::publish_chunk_terminal_failure_v1(",
+        )
+    )
+    wrong_receiver_coordinator_terminal_failure_publisher_checks = Checks(Path("."))
+    wrong_receiver_coordinator_terminal_failure_publisher_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        wrong_receiver_coordinator_terminal_failure_publisher,
+    )
+    expect(
+        any(
+            "must consume the exact reconciler terminal-failure admission once"
+            in error
+            for error in wrong_receiver_coordinator_terminal_failure_publisher_checks.errors
+        ),
+        "worker coordinator accepted an alternate terminal-failure publisher receiver: "
+        f"{wrong_receiver_coordinator_terminal_failure_publisher_checks.errors}",
+    )
+
+    wrong_operand_coordinator_terminal_failure_publisher = (
+        valid_coordinator_composition.replace(
+            "std::move(*reconciled.terminal_failure_admission)",
+            "std::move(*other_reconciled.terminal_failure_admission)",
+        )
+    )
+    wrong_operand_coordinator_terminal_failure_publisher_checks = Checks(Path("."))
+    wrong_operand_coordinator_terminal_failure_publisher_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        wrong_operand_coordinator_terminal_failure_publisher,
+    )
+    expect(
+        any(
+            "must consume the exact reconciler terminal-failure admission once"
+            in error
+            for error in wrong_operand_coordinator_terminal_failure_publisher_checks.errors
+        ),
+        "worker coordinator accepted an unbound terminal-failure admission: "
+        f"{wrong_operand_coordinator_terminal_failure_publisher_checks.errors}",
+    )
+
+    outside_coordinator_terminal_failure_publisher = (
+        valid_coordinator_composition
+        + "\nauto outside_terminal_failure =\n"
+        "    resume::publish_chunk_terminal_failure_v1(\n"
+        "        std::move(*outside_reconciled.terminal_failure_admission));\n"
+    )
+    outside_coordinator_terminal_failure_publisher_checks = Checks(Path("."))
+    outside_coordinator_terminal_failure_publisher_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        outside_coordinator_terminal_failure_publisher,
+    )
+    expect(
+        any(
+            "must contain exactly one direct publish_chunk_terminal_failure_v1 call"
+            in error
+            for error in outside_coordinator_terminal_failure_publisher_checks.errors
+        ),
+        "terminal-failure publication authority escaped the coordinator entry function: "
+        f"{outside_coordinator_terminal_failure_publisher_checks.errors}",
+    )
+
+    reordered_coordinator_terminal_failure_before_reconcile = (
+        valid_coordinator_composition.replace(
+            coordinator_reconcile_call
+            + coordinator_terminal_failure_publish_call,
+            coordinator_terminal_failure_publish_call
+            + coordinator_reconcile_call,
+        )
+    )
+    reordered_coordinator_terminal_failure_before_reconcile_checks = Checks(
+        Path(".")
+    )
+    reordered_coordinator_terminal_failure_before_reconcile_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        reordered_coordinator_terminal_failure_before_reconcile,
+    )
+    expect(
+        any(
+            "must reconcile retry state before publishing terminal failure" in error
+            for error in (
+                reordered_coordinator_terminal_failure_before_reconcile_checks.errors
+            )
+        ),
+        "worker coordinator accepted terminal-failure publication before reconciliation: "
+        f"{reordered_coordinator_terminal_failure_before_reconcile_checks.errors}",
+    )
+
+    reordered_coordinator_terminal_failure_after_launcher = (
+        valid_coordinator_composition.replace(
+            coordinator_terminal_failure_publish_call, ""
+        ).replace(
+            coordinator_launcher_call,
+            coordinator_launcher_call + coordinator_terminal_failure_publish_call,
+        )
+    )
+    reordered_coordinator_terminal_failure_after_launcher_checks = Checks(
+        Path(".")
+    )
+    reordered_coordinator_terminal_failure_after_launcher_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        reordered_coordinator_terminal_failure_after_launcher,
+    )
+    expect(
+        any(
+            "must publish terminal failure before invoking any sealed WaveStore launcher"
+            in error
+            for error in (
+                reordered_coordinator_terminal_failure_after_launcher_checks.errors
+            )
+        ),
+        "worker coordinator accepted terminal-failure publication after launch: "
+        f"{reordered_coordinator_terminal_failure_after_launcher_checks.errors}",
+    )
+
+    dead_coordinator_terminal_failure_publisher = (
+        valid_coordinator_composition.replace(
+            coordinator_terminal_failure_publish_call,
+            "    if (false) {\n"
+            "        auto terminal_failure =\n"
+            "            resume::publish_chunk_terminal_failure_v1(\n"
+            "                std::move("
+            "*reconciled.terminal_failure_admission));\n"
+            "    }\n",
+        )
+    )
+    dead_coordinator_terminal_failure_publisher_checks = Checks(Path("."))
+    dead_coordinator_terminal_failure_publisher_checks.validate_worker_coordinator_boundary(
+        WORKER_COORDINATOR_IMPLEMENTATION_FILE,
+        dead_coordinator_terminal_failure_publisher,
+    )
+    expect(
+        any(
+            "forbids constant-dead control flow" in error
+            for error in dead_coordinator_terminal_failure_publisher_checks.errors
+        ),
+        "worker coordinator accepted constant-dead terminal-failure publication: "
+        f"{dead_coordinator_terminal_failure_publisher_checks.errors}",
     )
 
     coordinator_expected_adoption_call = (
@@ -11424,6 +11731,8 @@ coordinate_missing_distributed_sieve_workers_v1() noexcept {
         "    auto replaced = execve(path, argv, envp);\n"
         "    auto recovered = recover_worker_attempt_private_lease(std::move(claimed));\n"
         "    ChunkTerminalFailureV1 terminal_failure;\n"
+        "    auto raw_published = durable_record::publish_at(\n"
+        "        parent, pending, canonical, bytes);\n"
         "    cleanup_worker_artifacts();\n"
         "    unlink_worker_handoff();\n"
         "    run_distributed_sieve(config);\n"
@@ -11444,6 +11753,7 @@ coordinate_missing_distributed_sieve_workers_v1() noexcept {
                 "execve",
                 "recover_worker_attempt_private_lease",
                 "ChunkTerminalFailureV1",
+                "publish_at",
                 "cleanup_worker_artifacts",
                 "unlink_worker_handoff",
                 "run_distributed_sieve",

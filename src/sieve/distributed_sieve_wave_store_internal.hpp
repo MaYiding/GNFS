@@ -55,6 +55,10 @@ inline constexpr std::string_view DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_PREFIX
 inline constexpr std::string_view DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_ORDINAL_SEPARATOR = "-a";
 inline constexpr std::string_view DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_PENDING_SUFFIX =
     ".pending";
+inline constexpr std::string_view DISTRIBUTED_SIEVE_CHUNK_TERMINAL_FAILURE_RECORD_PREFIX =
+    ".gnfs-wave-v1.chunk-terminal-failure-c";
+inline constexpr std::string_view DISTRIBUTED_SIEVE_CHUNK_TERMINAL_FAILURE_RECORD_PENDING_SUFFIX =
+    ".pending";
 inline constexpr std::string_view DISTRIBUTED_SIEVE_PRIVATE_LEASE_DIRECTORY_SUFFIX =
     ".gnfs-sink-lease";
 inline constexpr std::string_view DISTRIBUTED_SIEVE_PRIVATE_LEASE_BASE_LOCK_SUFFIX =
@@ -103,6 +107,24 @@ struct DistributedSieveParsedWorkerAttemptLeafV1 final {
                const DistributedSieveParsedWorkerAttemptLeafV1&) noexcept = default;
 };
 
+struct DistributedSieveChunkTerminalFailureNamesV1 final {
+    std::string canonical_record_leaf;
+    std::string pending_record_leaf;
+
+    [[nodiscard]] friend bool
+    operator==(const DistributedSieveChunkTerminalFailureNamesV1&,
+               const DistributedSieveChunkTerminalFailureNamesV1&) = default;
+};
+
+struct DistributedSieveParsedChunkTerminalFailureLeafV1 final {
+    std::uint32_t chunk_id = 0;
+    bool pending = false;
+
+    [[nodiscard]] friend constexpr bool
+    operator==(const DistributedSieveParsedChunkTerminalFailureLeafV1&,
+               const DistributedSieveParsedChunkTerminalFailureLeafV1&) noexcept = default;
+};
+
 /// Derive the exact V1 lease stem, private directory, permanent BaseLock, and
 /// immutable record leaves for one bounded worker attempt. This is naming only
 /// and grants no filesystem authority.
@@ -116,6 +138,18 @@ distributed_sieve_worker_attempt_names_v1(std::string_view chunk_relative_artifa
 /// in. No other leaf is normalized or accepted as an alias.
 [[nodiscard]] std::optional<DistributedSieveParsedWorkerAttemptLeafV1>
 parse_distributed_sieve_worker_attempt_leaf_v1(std::string_view leaf) noexcept;
+
+/// Derive the exact root-level canonical and pending leaves for one terminal
+/// chunk failure. This pure naming helper grants no record-publication or
+/// namespace authority.
+[[nodiscard]] std::optional<DistributedSieveChunkTerminalFailureNamesV1>
+distributed_sieve_chunk_terminal_failure_names_v1(std::uint32_t chunk_id);
+
+/// Parse only the exact lowercase, fixed-width V1 canonical or pending
+/// terminal-failure leaf. No variable-width, suffixed, or case-folded alias is
+/// accepted.
+[[nodiscard]] std::optional<DistributedSieveParsedChunkTerminalFailureLeafV1>
+parse_distributed_sieve_chunk_terminal_failure_leaf_v1(std::string_view leaf) noexcept;
 
 enum class DistributedSieveWaveStoreStatus : std::uint8_t {
     ready,
@@ -282,6 +316,18 @@ enum class DistributedSieveWorkerAttemptReconcileFaultPoint : std::uint8_t {
     CanonicalPromoted,
     CanonicalDurable,
     RecordNormalized,
+    Count,
+};
+
+/// Durable immutable-record boundaries for one chunk-terminal-failure
+/// transaction. `CanonicalPromoted` precedes the root-directory durability
+/// barrier. The no-replace rename has already made the prefix canonical-only,
+/// but a successful retry must still confirm that exact record and complete
+/// the parent-directory durability barrier.
+enum class DistributedSieveChunkTerminalFailureFaultPoint : std::uint8_t {
+    PendingDurable,
+    CanonicalPromoted,
+    CanonicalDurable,
     Count,
 };
 
@@ -458,6 +504,28 @@ struct DistributedSieveWorkerAttemptRecordInventoryWitness final {
     }
 };
 
+/// Exact manifest-bound observation of one root-level
+/// ChunkTerminalFailureV1 prefix.
+///
+/// The sealed bytes are shared by canonical and optional duplicate-pending
+/// leaves. Native snapshots make same-byte inode replacement visible to every
+/// retained root-claim baseline.
+struct DistributedSieveChunkTerminalFailureRecordInventoryWitnessV1 final {
+    std::uint32_t chunk_id = 0;
+    ChunkTerminalFailureV1 record;
+    std::vector<std::byte> bytes;
+    std::optional<util::durable_immutable_record::RecordSnapshot> canonical_snapshot;
+    std::optional<util::durable_immutable_record::RecordSnapshot> pending_snapshot;
+
+    [[nodiscard]] friend bool
+    operator==(const DistributedSieveChunkTerminalFailureRecordInventoryWitnessV1& left,
+               const DistributedSieveChunkTerminalFailureRecordInventoryWitnessV1& right) noexcept {
+        return left.chunk_id == right.chunk_id && left.bytes == right.bytes &&
+               left.canonical_snapshot == right.canonical_snapshot &&
+               left.pending_snapshot == right.pending_snapshot;
+    }
+};
+
 struct DistributedSieveWaveStoreInventoryTestHooks final {
     using ObserveReservationWitnesses =
         void (*)(std::span<const DistributedSievePrivateLeaseReservationInventoryWitness> witnesses,
@@ -532,6 +600,25 @@ struct DistributedSieveWorkerAttemptStartTestHooks final {
 
     /// Runs after the first exact canonical-successor observation and before
     /// its mandatory authority and inventory confirmation.
+    Boundary after_first_successor_validation = nullptr;
+    void* context = nullptr;
+};
+
+/// Trusted test-only boundaries for the retained-admission terminal publisher.
+/// Production callers leave every callback empty.
+struct DistributedSieveChunkTerminalFailureTestHooksV1 final {
+    using Boundary = void (*)(void* context) noexcept;
+    using StopAfter = bool (*)(DistributedSieveChunkTerminalFailureFaultPoint point,
+                               void* context) noexcept;
+
+    /// Runs with the original root claim and final-attempt BaseLock still held,
+    /// after the exact P0 predecessor and complete attempt chain have been
+    /// established.
+    Boundary before_record_publication = nullptr;
+    StopAfter stop_after = nullptr;
+
+    /// Runs after the first exact canonical-only successor observation and
+    /// before mandatory same-lock authority and inventory confirmation.
     Boundary after_first_successor_validation = nullptr;
     void* context = nullptr;
 };
@@ -733,6 +820,8 @@ struct DistributedSieveWaveStoreDiagnostic final {
         last_worker_attempt_start_fault_point;
     std::optional<DistributedSieveWorkerAttemptReconcileFaultPoint>
         last_worker_attempt_reconcile_fault_point;
+    std::optional<DistributedSieveChunkTerminalFailureFaultPoint>
+        last_chunk_terminal_failure_fault_point;
     std::optional<DistributedSieveWorkerWorkPackageResidueReconciliationFaultPoint>
         last_worker_work_package_residue_reconciliation_fault_point;
     std::optional<DistributedSievePrivateLeaseBaseLockSyncPoint>
@@ -751,6 +840,7 @@ struct DistributedSievePrivateLeaseRootClaimResult;
 struct DistributedSievePrivateLeaseReservationResult;
 struct DistributedSieveWorkerAttemptStartResult;
 struct DistributedSieveWorkerAttemptReconcileResult;
+struct DistributedSieveChunkTerminalFailurePublicationResultV1;
 struct DistributedSieveWorkerChunkInventoryResultV1;
 struct DistributedSieveWorkerHandoffAdoptionResultV1;
 struct DistributedSieveWorkerCoordinatorClaimResultV1;
@@ -760,6 +850,7 @@ class DistributedSievePrivateLeaseRootClaim;
 class DistributedSievePrivateLeaseBaseLockAt;
 class DistributedSievePrivateLeaseReservationReceipt;
 class DistributedSieveWorkerAttemptStartReceipt;
+class DistributedSieveChunkTerminalFailureAdmissionV1;
 class DistributedSieveFdPrivateLeaseReservationTarget;
 class DistributedSieveFdPrivateLeaseRecoveryTarget;
 
@@ -785,11 +876,23 @@ publish_worker_attempt_started(DistributedSievePrivateLeaseReservationReceipt&& 
 
 /// Consume only an open-existing attempt claim, normalize its immutable
 /// AttemptStartedV1 to one canonical record, and roll the exact record-bound
-/// private lease back to P0. The result carries read-only facts only; it never
-/// returns a claim, lock, cleanup admission, or worker-start authority.
+/// private lease back to P0. Ordinary reconciled facts are read-only and grant
+/// no filesystem authority. When the final allowed attempt reaches P0, the
+/// result may additionally return one move-only terminal admission that
+/// retains the root claim and same-open-file-description BaseLock solely for
+/// the typed terminal publisher. It never grants cleanup or worker-start
+/// authority.
 [[nodiscard]] DistributedSieveWorkerAttemptReconcileResult reconcile_worker_attempt_started(
     DistributedSievePrivateLeaseRootClaimResult&& claimed,
     DistributedSieveWorkerAttemptReconcileTestHooks hooks = {}) noexcept;
+
+/// Consume the same-lock admission minted only when the final durable attempt
+/// has converged to P0, then create or normalize the exact root-level terminal
+/// record. The caller supplies no record fields, path, reason, or digest.
+[[nodiscard]] DistributedSieveChunkTerminalFailurePublicationResultV1
+publish_chunk_terminal_failure_v1(
+    DistributedSieveChunkTerminalFailureAdmissionV1&& admission,
+    DistributedSieveChunkTerminalFailureTestHooksV1 hooks = {}) noexcept;
 
 /// A process-bound lease on one frozen wave root and its permanent lock.
 ///
@@ -935,31 +1038,44 @@ private:
     friend class DistributedSievePrivateLeaseRootClaim;
     friend class DistributedSievePrivateLeaseReservationReceipt;
     friend class DistributedSieveWorkerAttemptStartReceipt;
+    friend class DistributedSieveChunkTerminalFailureAdmissionV1;
     friend DistributedSieveWorkerAttemptStartResult
     publish_worker_attempt_started(DistributedSievePrivateLeaseReservationReceipt&& reservation,
                                    DistributedSieveWorkerAttemptStartTestHooks hooks) noexcept;
     friend DistributedSieveWorkerAttemptReconcileResult reconcile_worker_attempt_started(
         DistributedSievePrivateLeaseRootClaimResult&& claimed,
         DistributedSieveWorkerAttemptReconcileTestHooks hooks) noexcept;
+    friend DistributedSieveChunkTerminalFailurePublicationResultV1
+    publish_chunk_terminal_failure_v1(
+        DistributedSieveChunkTerminalFailureAdmissionV1&& admission,
+        DistributedSieveChunkTerminalFailureTestHooksV1 hooks) noexcept;
 };
 
 enum class DistributedSieveWorkerChunkDurableStateV1 : std::uint8_t {
     empty,
     missing,
     incomplete_attempt,
+    terminal_failure_pending,
+    terminal_failure,
     handoff,
 };
 
 /// Stable read-only classification of one manifest chunk.
 ///
-/// `latest_attempt` is present for incomplete and terminal attempt chains.
-/// `handoff` is present only for a fully validated canonical handoff. Neither
-/// value carries a live BaseLock or relation-reader capability.
+/// Every raw terminal prefix, including canonical-only, is reported as
+/// `terminal_failure_pending` until the same-lock typed publisher has
+/// idempotently completed the current parent-directory durability barrier.
+/// `terminal_failure` is reserved for the in-process fact built from that
+/// successful publisher result and is never minted by raw observation.
+/// `latest_attempt` is present for incomplete and terminal attempt chains;
+/// `handoff` is present only for a fully validated canonical handoff. None of
+/// these values carries a live BaseLock or relation-reader capability.
 struct DistributedSieveWorkerChunkInventoryV1 final {
     ChunkPlanV1 chunk;
     DistributedSieveWorkerChunkDurableStateV1 state =
         DistributedSieveWorkerChunkDurableStateV1::missing;
     std::optional<AttemptStartedV1> latest_attempt;
+    std::optional<ChunkTerminalFailureV1> terminal_failure;
     std::optional<WorkerHandoffV1> handoff;
 };
 
@@ -1079,9 +1195,9 @@ public:
     /// that shares this already-held BaseLock open-file description.
     [[nodiscard]] gnfs::relation::OOCPrivateHandoffAdoptionResult
     adopt_exact_private_handoff(const std::filesystem::path& base_path) const noexcept;
-    [[nodiscard]] bool matches_exact_binding(
-        std::string_view base_lock_leaf,
-        const NativeIdentityV1& expected_identity) const noexcept;
+    [[nodiscard]] bool
+    matches_exact_binding(std::string_view base_lock_leaf,
+                          const NativeIdentityV1& expected_identity) const noexcept;
 
 private:
     DistributedSievePrivateLeaseBaseLockAt(int root_fd, std::string leaf,
@@ -1182,11 +1298,14 @@ private:
         expected_private_lease_reservation_witnesses_;
     std::optional<std::vector<DistributedSieveWorkerAttemptRecordInventoryWitness>>
         expected_worker_attempt_record_witnesses_;
+    std::optional<std::vector<DistributedSieveChunkTerminalFailureRecordInventoryWitnessV1>>
+        expected_chunk_terminal_failure_record_witnesses_;
     std::optional<BaseLockAcquisition> base_lock_acquisition_;
     std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt> base_lock_at_;
 
     friend class DistributedSieveFdPrivateLeaseRecoveryTarget;
     friend class DistributedSieveFdPrivateLeaseReservationTarget;
+    friend class DistributedSieveChunkTerminalFailureAdmissionV1;
     friend class DistributedSieveWaveStore;
     friend DistributedSievePrivateLeaseRootClaimResult recover_worker_attempt_private_lease(
         DistributedSievePrivateLeaseRootClaimResult&& claimed,
@@ -1200,6 +1319,10 @@ private:
     friend DistributedSieveWorkerAttemptReconcileResult reconcile_worker_attempt_started(
         DistributedSievePrivateLeaseRootClaimResult&& claimed,
         DistributedSieveWorkerAttemptReconcileTestHooks hooks) noexcept;
+    friend DistributedSieveChunkTerminalFailurePublicationResultV1
+    publish_chunk_terminal_failure_v1(
+        DistributedSieveChunkTerminalFailureAdmissionV1&& admission,
+        DistributedSieveChunkTerminalFailureTestHooksV1 hooks) noexcept;
 };
 
 struct DistributedSievePrivateLeaseRootClaimResult final {
@@ -1343,6 +1466,42 @@ struct DistributedSieveWorkerAttemptStartResult final {
     }
 };
 
+/// Move-only continuation of the exact final-attempt recovery transaction.
+///
+/// The opaque state retains the same root claim, final BaseLock open-file
+/// description, pinned AttemptStarted record, complete chain, and exact P0
+/// inventory baseline. It exposes no record constructor, path, descriptor, or
+/// cleanup operation and can be consumed only by the typed terminal publisher.
+class DistributedSieveChunkTerminalFailureAdmissionV1 final {
+public:
+    DistributedSieveChunkTerminalFailureAdmissionV1() = delete;
+    DistributedSieveChunkTerminalFailureAdmissionV1(
+        const DistributedSieveChunkTerminalFailureAdmissionV1&) = delete;
+    DistributedSieveChunkTerminalFailureAdmissionV1&
+    operator=(const DistributedSieveChunkTerminalFailureAdmissionV1&) = delete;
+    DistributedSieveChunkTerminalFailureAdmissionV1(
+        DistributedSieveChunkTerminalFailureAdmissionV1&&) noexcept;
+    DistributedSieveChunkTerminalFailureAdmissionV1&
+    operator=(DistributedSieveChunkTerminalFailureAdmissionV1&&) = delete;
+    ~DistributedSieveChunkTerminalFailureAdmissionV1();
+
+    [[nodiscard]] bool owned_by_current_process() const noexcept;
+
+private:
+    struct State;
+    explicit DistributedSieveChunkTerminalFailureAdmissionV1(std::unique_ptr<State> state) noexcept;
+
+    std::unique_ptr<State> state_;
+
+    friend DistributedSieveWorkerAttemptReconcileResult reconcile_worker_attempt_started(
+        DistributedSievePrivateLeaseRootClaimResult&& claimed,
+        DistributedSieveWorkerAttemptReconcileTestHooks hooks) noexcept;
+    friend DistributedSieveChunkTerminalFailurePublicationResultV1
+    publish_chunk_terminal_failure_v1(
+        DistributedSieveChunkTerminalFailureAdmissionV1&& admission,
+        DistributedSieveChunkTerminalFailureTestHooksV1 hooks) noexcept;
+};
+
 /// Read-only reconciliation facts for one immutable worker-attempt record.
 ///
 /// `next_attempt_ordinal` is empty when the manifest retry budget is exhausted.
@@ -1362,9 +1521,24 @@ struct DistributedSieveWorkerAttemptReconcileResult final {
     /// evidence for expected same-handle adoption, not cleanup or launch
     /// authority.
     std::optional<DistributedSieveWorkerHandoffInventoryWitnessV1> terminal_handoff;
+    /// Present only when the reconciled record consumed the manifest's final
+    /// attempt ordinal. This move-only authority retains the exact cleanup
+    /// transaction and is deliberately separate from the read-only facts.
+    std::optional<DistributedSieveChunkTerminalFailureAdmissionV1> terminal_failure_admission;
 
     [[nodiscard]] explicit operator bool() const noexcept {
         return reconciled.has_value() &&
+               diagnostic.status == DistributedSieveWaveStoreStatus::ready;
+    }
+};
+
+struct DistributedSieveChunkTerminalFailurePublicationResultV1 final {
+    std::optional<ChunkTerminalFailureV1> terminal_failure;
+    std::optional<util::durable_immutable_record::RecordSnapshot> canonical_snapshot;
+    DistributedSieveWaveStoreDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return terminal_failure.has_value() && canonical_snapshot.has_value() &&
                diagnostic.status == DistributedSieveWaveStoreStatus::ready;
     }
 };

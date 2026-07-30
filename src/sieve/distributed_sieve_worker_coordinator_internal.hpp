@@ -7,7 +7,9 @@
 // whole-round gate, classifies every manifest chunk, reconciles quiescent
 // incomplete attempts, starts one fixed batch containing only missing or
 // authorized retry chunks, reaps every known child, and finally adopts all
-// canonical handoffs through same-handle readers.
+// canonical handoffs through same-handle readers. An observed terminal-failure
+// prefix has whole-wave priority and returns through typed confirmation before
+// executable binding, launch, or adoption.
 
 #include "distributed_sieve_wave_store_internal.hpp"
 #include "distributed_sieve_worker_launcher_internal.hpp"
@@ -25,6 +27,7 @@ namespace gnfs::sieve::distributed_sieve_worker_coordinator_detail {
 enum class DistributedSieveWorkerCoordinationDispositionV1 : std::uint8_t {
     adopted,
     executed,
+    terminal_failed,
     empty,
 };
 
@@ -35,6 +38,7 @@ enum class DistributedSieveWorkerCoordinatorPhaseV1 : std::uint8_t {
     initial_observation,
     retry_observation,
     attempt_reconciliation,
+    terminal_failure_publication,
     post_reconciliation_observation,
     attempt_reservation,
     attempt_start,
@@ -52,6 +56,7 @@ enum class DistributedSieveWorkerCoordinatorStatusV1 : std::uint8_t {
     incomplete_attempt,
     retry_busy,
     retry_exhausted,
+    terminal_failure_publication_failed,
     attempt_reconciliation_failed,
     attempt_preparation_failed,
     launch_failed,
@@ -99,10 +104,13 @@ struct DistributedSieveWorkerCoordinatorRequestV1 final {
     DistributedSieveWorkerCoordinatorTestHooksV1 coordinator_hooks;
 };
 
-/// One terminal manifest-ordered chunk result.
+/// One manifest-ordered chunk result.
 ///
 /// `executed` is used only when the final adopted handoff matches the exact
 /// AttemptStartedV1 digest placed in this invocation's launch ledger.
+/// `terminal_failed` is emitted only after the typed terminal publisher
+/// returns durable success. It carries the immutable WaveStore inventory for
+/// the one absorbing failed chunk, with no publication or cleanup authority.
 struct DistributedSieveWorkerCoordinatedChunkV1 final {
     ChunkPlanV1 chunk;
     DistributedSieveWorkerCoordinationDispositionV1 disposition =
@@ -110,6 +118,8 @@ struct DistributedSieveWorkerCoordinatedChunkV1 final {
     std::optional<AttemptStartedV1> launched_attempt;
     std::optional<distributed_sieve_resume_detail::DistributedSieveReconciledWorkerAttemptV1>
         reconciled_attempt;
+    std::optional<distributed_sieve_resume_detail::DistributedSieveWorkerChunkInventoryV1>
+        terminal_failure;
     std::optional<WorkerWaitFactsV1> wait_facts;
     std::optional<distributed_sieve_resume_detail::DistributedSieveAdoptedWorkerChunkV1> adopted;
 

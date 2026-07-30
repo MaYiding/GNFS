@@ -85,6 +85,7 @@ using PrivateLeaseBaseLockAt = wave_detail::DistributedSievePrivateLeaseBaseLock
 using PrivateLeaseReservationReceipt = wave_detail::DistributedSievePrivateLeaseReservationReceipt;
 using PrivateLeaseRecoveryEdge = wave_detail::DistributedSievePrivateLeaseRecoveryEdge;
 using WorkerAttemptStartReceipt = wave_detail::DistributedSieveWorkerAttemptStartReceipt;
+using ChunkTerminalFailureAdmission = wave_detail::DistributedSieveChunkTerminalFailureAdmissionV1;
 
 std::string worker_launch_test_executable;
 
@@ -106,6 +107,15 @@ static_assert(
     !std::is_constructible_v<WorkerAttemptStartReceipt, PrivateLeaseReservationReceipt&&>);
 static_assert(!std::is_constructible_v<WorkerAttemptStartReceipt, std::filesystem::path>);
 static_assert(!std::is_constructible_v<WorkerAttemptStartReceipt, Digest>);
+static_assert(!std::is_default_constructible_v<ChunkTerminalFailureAdmission>);
+static_assert(!std::is_copy_constructible_v<ChunkTerminalFailureAdmission>);
+static_assert(!std::is_copy_assignable_v<ChunkTerminalFailureAdmission>);
+static_assert(std::is_nothrow_move_constructible_v<ChunkTerminalFailureAdmission>);
+static_assert(!std::is_move_assignable_v<ChunkTerminalFailureAdmission>);
+static_assert(
+    !std::is_constructible_v<ChunkTerminalFailureAdmission, sieve::ChunkTerminalFailureV1>);
+static_assert(!std::is_constructible_v<ChunkTerminalFailureAdmission, std::filesystem::path>);
+static_assert(!std::is_constructible_v<WorkerAttemptStartReceipt, ChunkTerminalFailureAdmission&&>);
 static_assert(
     !std::is_default_constructible_v<worker_launcher_detail::DistributedSieveWorkerLaunchSlotV1>);
 static_assert(
@@ -2124,6 +2134,110 @@ void test_worker_attempt_naming_contract() {
     wrong_naming_version.canonical_naming_version = 0;
     require_failed(validate_value(wrong_naming_version, false),
                    "manifest rejects zero canonical naming version");
+}
+
+void test_chunk_terminal_failure_naming_contract() {
+    const auto two_digits = [](uint32_t value) {
+        std::string digits(2, '0');
+        digits[0] = static_cast<char>('0' + value / 10U);
+        digits[1] = static_cast<char>('0' + value % 10U);
+        return digits;
+    };
+    const auto ascii_casefold = [](std::string value) {
+        for (char& character : value) {
+            if (character >= 'A' && character <= 'Z') {
+                character = static_cast<char>(character + ('a' - 'A'));
+            }
+        }
+        return value;
+    };
+    const auto require_unique = [](std::vector<std::string> values) {
+        std::sort(values.begin(), values.end());
+        CHECK(std::adjacent_find(values.begin(), values.end()) == values.end());
+    };
+
+    std::vector<std::string> leaves;
+    leaves.reserve(2U * sieve::DISTRIBUTED_SIEVE_PROTOCOL_MAX_CHUNKS);
+    for (uint32_t chunk_id = 0; chunk_id < sieve::DISTRIBUTED_SIEVE_PROTOCOL_MAX_CHUNKS;
+         ++chunk_id) {
+        const std::string digits = two_digits(chunk_id);
+        const auto names = wave_detail::distributed_sieve_chunk_terminal_failure_names_v1(chunk_id);
+        CHECK(names.has_value());
+        CHECK(names->canonical_record_leaf == ".gnfs-wave-v1.chunk-terminal-failure-c" + digits);
+        CHECK(names->pending_record_leaf == names->canonical_record_leaf + ".pending");
+        CHECK(names->canonical_record_leaf != names->pending_record_leaf);
+
+        const auto canonical = wave_detail::parse_distributed_sieve_chunk_terminal_failure_leaf_v1(
+            names->canonical_record_leaf);
+        const auto pending = wave_detail::parse_distributed_sieve_chunk_terminal_failure_leaf_v1(
+            names->pending_record_leaf);
+        CHECK(canonical.has_value());
+        CHECK(pending.has_value());
+        CHECK(canonical->chunk_id == chunk_id);
+        CHECK(!canonical->pending);
+        CHECK(pending->chunk_id == chunk_id);
+        CHECK(pending->pending);
+
+        leaves.push_back(names->canonical_record_leaf);
+        leaves.push_back(names->pending_record_leaf);
+    }
+
+    require_unique(leaves);
+    for (std::string& leaf : leaves) {
+        leaf = ascii_casefold(std::move(leaf));
+    }
+    require_unique(std::move(leaves));
+
+    const auto lower_bound = wave_detail::distributed_sieve_chunk_terminal_failure_names_v1(0);
+    const auto upper_bound = wave_detail::distributed_sieve_chunk_terminal_failure_names_v1(
+        sieve::DISTRIBUTED_SIEVE_PROTOCOL_MAX_CHUNKS - 1U);
+    CHECK(lower_bound.has_value());
+    CHECK(upper_bound.has_value());
+    CHECK(lower_bound->canonical_record_leaf == ".gnfs-wave-v1.chunk-terminal-failure-c00");
+    CHECK(lower_bound->pending_record_leaf == ".gnfs-wave-v1.chunk-terminal-failure-c00.pending");
+    CHECK(upper_bound->canonical_record_leaf == ".gnfs-wave-v1.chunk-terminal-failure-c63");
+    CHECK(upper_bound->pending_record_leaf == ".gnfs-wave-v1.chunk-terminal-failure-c63.pending");
+    CHECK(!wave_detail::distributed_sieve_chunk_terminal_failure_names_v1(
+        sieve::DISTRIBUTED_SIEVE_PROTOCOL_MAX_CHUNKS));
+    CHECK(!wave_detail::distributed_sieve_chunk_terminal_failure_names_v1(
+        std::numeric_limits<uint32_t>::max()));
+
+    constexpr std::array<std::string_view, 21> INVALID_LEAVES = {
+        "",
+        ".gnfs-wave-v1.chunk-terminal-failure-c7",
+        ".gnfs-wave-v1.chunk-terminal-failure-c007",
+        ".GNFS-wave-v1.chunk-terminal-failure-c07",
+        ".gnfs-WAVE-v1.chunk-terminal-failure-c07",
+        ".gnfs-wave-v1.CHUNK-terminal-failure-c07",
+        ".gnfs-wave-v1.chunk-TERMINAL-failure-c07",
+        ".gnfs-wave-v1.chunk-terminal-FAILURE-c07",
+        ".gnfs-wave-v1.chunk-terminal-failure-C07",
+        ".gnfs-wave-v1.chunk-terminal-failure-c+7",
+        ".gnfs-wave-v1.chunk-terminal-failure-c-7",
+        ".gnfs-wave-v1.chunk-terminal-failure-c07.PENDING",
+        ".gnfs-wave-v1.chunk-terminal-failure-c07.pending.pending",
+        ".gnfs-wave-v1.chunk-terminal-failure-c07.tmp",
+        ".gnfs-wave-v1.chunk-terminal-failure-c07.trailing",
+        ".gnfs-wave-v1.chunk-terminal-failure-c64",
+        ".gnfs-wave-v1.chunk-terminal-failure-c99",
+        "gnfs-wave-v1.chunk-terminal-failure-c07",
+        ".gnfs-wave-v1.attempt-c07-a00",
+        ".gnfs-wave-v1.lock",
+        ".gnfs-wave-v1.manifest",
+    };
+    for (const auto leaf : INVALID_LEAVES) {
+        CHECK(!wave_detail::parse_distributed_sieve_chunk_terminal_failure_leaf_v1(leaf));
+    }
+    CHECK(!wave_detail::parse_distributed_sieve_chunk_terminal_failure_leaf_v1(
+        wave_detail::DISTRIBUTED_SIEVE_WAVE_MANIFEST_PENDING_LEAF));
+
+    std::string nul_terminated_alias = ".gnfs-wave-v1.chunk-terminal-failure-c07";
+    nul_terminated_alias.push_back('\0');
+    CHECK(
+        !wave_detail::parse_distributed_sieve_chunk_terminal_failure_leaf_v1(nul_terminated_alias));
+    nul_terminated_alias += ".pending";
+    CHECK(
+        !wave_detail::parse_distributed_sieve_chunk_terminal_failure_leaf_v1(nul_terminated_alias));
 }
 
 void test_worker_completion_reason_closure() {
@@ -7580,6 +7694,12 @@ void require_worker_attempt_reconcile_success(
     CHECK(opened.claim == nullptr);
     CHECK(reconciled);
     CHECK(reconciled.reconciled.has_value());
+    CHECK(!reconciled.terminal_handoff.has_value());
+    CHECK(reconciled.terminal_failure_admission.has_value() ==
+          !expected_next_attempt_ordinal.has_value());
+    if (reconciled.terminal_failure_admission.has_value()) {
+        CHECK(reconciled.terminal_failure_admission->owned_by_current_process());
+    }
     require_wave_status(reconciled.diagnostic, wave_detail::DistributedSieveWaveStoreStatus::ready,
                         context);
     CHECK(reconciled.diagnostic.publication_status == durable_record::RecordPublishStatus::durable);
@@ -7598,8 +7718,226 @@ void require_worker_attempt_reconcile_success(
     CHECK(wave_record_snapshot(capture_wave_root_entry_snapshot(
               canonical_path, fixture.names.canonical_record_leaf)) ==
           fixture.expected_canonical_snapshot);
+    if (reconciled.terminal_failure_admission.has_value()) {
+        CHECK(relation_base_lock_reports_busy(root / fixture.names.base_lock_leaf));
+        reconciled.terminal_failure_admission.reset();
+    }
     require_worker_attempt_reconcile_inventory_and_locks_released(
         store, root, fixture, Boundary::PermitAcquired, context);
+}
+
+enum class ChunkTerminalFailureInjectedPrefix : std::uint8_t {
+    pending_only,
+    identical_dual,
+};
+
+struct ChunkTerminalFailureFixture final {
+    std::vector<WorkerAttemptReconcileFixture> attempts;
+    sieve::ChunkTerminalFailureV1 expected;
+    std::vector<std::byte> bytes;
+    std::optional<ChunkTerminalFailureAdmission> admission;
+};
+
+struct ChunkTerminalFailureStopContext final {
+    wave_detail::DistributedSieveChunkTerminalFailureFaultPoint target =
+        wave_detail::DistributedSieveChunkTerminalFailureFaultPoint::PendingDurable;
+    std::array<bool, static_cast<std::size_t>(
+                         wave_detail::DistributedSieveChunkTerminalFailureFaultPoint::Count)>
+        observed{};
+};
+
+[[nodiscard]] bool stop_at_chunk_terminal_failure_fault(
+    wave_detail::DistributedSieveChunkTerminalFailureFaultPoint point, void* opaque) noexcept {
+    auto& context = *static_cast<ChunkTerminalFailureStopContext*>(opaque);
+    const auto index = static_cast<std::size_t>(point);
+    if (index < context.observed.size()) {
+        context.observed[index] = true;
+    }
+    return point == context.target;
+}
+
+[[nodiscard]] sieve::ChunkTerminalFailureV1
+make_expected_chunk_terminal_failure(const sieve::WaveManifestV1& manifest,
+                                     const std::vector<WorkerAttemptReconcileFixture>& attempts) {
+    CHECK(!attempts.empty());
+    CHECK(attempts.size() == manifest.max_worker_attempts);
+    std::vector<sieve::AttemptStartedV1> chain;
+    chain.reserve(attempts.size());
+    for (const auto& attempt : attempts) {
+        chain.push_back(attempt.record);
+    }
+    const auto chain_digest =
+        sieve::distributed_sieve_attempt_chain_digest(manifest.self_digest, chain);
+    CHECK(chain_digest);
+    CHECK(chain_digest.digest.has_value());
+
+    const auto& chunk = manifest.chunks.at(attempts.back().record.chunk_id);
+    sieve::ChunkTerminalFailureV1 terminal{
+        .manifest_digest = manifest.self_digest,
+        .chunk_id = chunk.chunk_id,
+        .sq_begin = chunk.sq_begin,
+        .sq_end = chunk.sq_end,
+        .exhausted_attempt_count = static_cast<std::uint32_t>(attempts.size()),
+        .last_attempt_digest = attempts.back().record.self_digest,
+        .predecessor_chain_digest = *chain_digest.digest,
+        .reason = sieve::ChunkTerminalFailureReasonV1::attempt_budget_exhausted,
+        .wait_facts =
+            {
+                .kind = sieve::WorkerWaitFactKindV1::unavailable,
+            },
+        .no_canonical_handoff_confirmed = true,
+        .exact_attempt_lease_absent_confirmed = true,
+        .next_sq_index = chunk.sq_begin,
+        .processed_sq_count = 0,
+        .statistics = {},
+    };
+    terminal = seal_value(std::move(terminal));
+    require_ok(
+        sieve::validate_worker_attempt_chain(manifest, chunk.chunk_id, chain, nullptr, &terminal),
+        "expected terminal failure closes the complete attempt chain");
+    return terminal;
+}
+
+[[nodiscard]] wave_detail::DistributedSieveWorkerAttemptReconcileResult
+reconcile_final_attempt_for_terminal_admission(wave_detail::DistributedSieveWaveStore& store,
+                                               const std::filesystem::path& root,
+                                               const WorkerAttemptReconcileFixture& final_attempt,
+                                               std::string_view context) {
+    auto opened = store.open_worker_attempt_private_lease_root(
+        final_attempt.record.chunk_id, final_attempt.record.attempt_ordinal);
+    auto& claim = require_private_lease_root_claim_ready(opened, context);
+    require_wave_status(claim.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        context);
+    CHECK(relation_base_lock_reports_busy(root / final_attempt.names.base_lock_leaf));
+
+    auto reconciled = wave_detail::reconcile_worker_attempt_started(std::move(opened));
+    CHECK(opened.claim == nullptr);
+    CHECK(reconciled);
+    CHECK(reconciled.reconciled.has_value());
+    CHECK(!reconciled.terminal_handoff.has_value());
+    CHECK(reconciled.terminal_failure_admission.has_value());
+    CHECK(reconciled.terminal_failure_admission->owned_by_current_process());
+    require_wave_status(reconciled.diagnostic, wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        context);
+    CHECK(reconciled.diagnostic.publication_status == durable_record::RecordPublishStatus::durable);
+    CHECK(reconciled.diagnostic.publication_disposition ==
+          durable_record::RecordPublishDisposition::confirmed_existing);
+    CHECK(encode_or_fail(Record{reconciled.reconciled->record}) == final_attempt.bytes);
+    CHECK(!reconciled.reconciled->next_attempt_ordinal.has_value());
+    CHECK(entry_exists_no_follow(root / final_attempt.names.canonical_record_leaf));
+    CHECK(!entry_exists_no_follow(root / final_attempt.names.pending_record_leaf));
+    CHECK(!entry_exists_no_follow(root / final_attempt.names.private_directory_leaf));
+    CHECK(relation_base_lock_reports_busy(root / final_attempt.names.base_lock_leaf));
+    return reconciled;
+}
+
+[[nodiscard]] ChunkTerminalFailureFixture
+prepare_chunk_terminal_failure_fixture(wave_detail::DistributedSieveWaveStore& store,
+                                       const std::filesystem::path& root,
+                                       std::string_view context) {
+    using Boundary = wave_detail::DistributedSievePrivateLeaseReservationBoundary;
+
+    const auto manifest = store.manifest();
+    CHECK(manifest.max_worker_attempts > 0U);
+    std::vector<WorkerAttemptReconcileFixture> attempts;
+    attempts.reserve(manifest.max_worker_attempts);
+    std::optional<Digest> predecessor_digest;
+    for (std::uint32_t ordinal = 0; ordinal < manifest.max_worker_attempts; ++ordinal) {
+        const bool final = ordinal + 1U == manifest.max_worker_attempts;
+        attempts.push_back(prepare_worker_attempt_reconcile_fixture(
+            store, root, final ? Boundary::FinalDirectoryDurable : Boundary::PermitAcquired,
+            WorkerAttemptReconcileRecordShape::canonical_only, ordinal, predecessor_digest));
+        predecessor_digest = attempts.back().record.self_digest;
+    }
+
+    auto expected = make_expected_chunk_terminal_failure(manifest, attempts);
+    auto bytes = encode_or_fail(Record{expected});
+    auto reconciled =
+        reconcile_final_attempt_for_terminal_admission(store, root, attempts.back(), context);
+    std::optional<ChunkTerminalFailureAdmission> admission;
+    admission.emplace(std::move(*reconciled.terminal_failure_admission));
+    CHECK(admission->owned_by_current_process());
+    return {
+        .attempts = std::move(attempts),
+        .expected = std::move(expected),
+        .bytes = std::move(bytes),
+        .admission = std::move(admission),
+    };
+}
+
+void publish_chunk_terminal_failure_fixture_prefix(
+    const std::filesystem::path& root,
+    const wave_detail::DistributedSieveChunkTerminalFailureNamesV1& names,
+    std::span<const std::byte> bytes, ChunkTerminalFailureInjectedPrefix shape,
+    std::string_view context) {
+    constexpr std::string_view first_source =
+        ".gnfs-wave-v1.test-terminal-failure-fixture-a.pending";
+    constexpr std::string_view second_source =
+        ".gnfs-wave-v1.test-terminal-failure-fixture-b.pending";
+    if (shape == ChunkTerminalFailureInjectedPrefix::identical_dual) {
+        require_wave_attempt_fixture_publish(root, first_source, names.canonical_record_leaf, bytes,
+                                             context);
+    }
+    require_wave_attempt_fixture_publish(root, second_source, names.pending_record_leaf, bytes,
+                                         context);
+}
+
+void require_chunk_terminal_failure_observation(
+    wave_detail::DistributedSieveWaveStore& store, const ChunkTerminalFailureFixture& fixture,
+    wave_detail::DistributedSieveWorkerChunkDurableStateV1 expected_state,
+    std::string_view context) {
+    const auto observed = store.observe_worker_chunks_v1();
+    CHECK(observed);
+    require_wave_status(observed.diagnostic, wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        context);
+    const auto chunk_id = fixture.expected.chunk_id;
+    const auto chunk = std::ranges::find_if(observed.chunks, [&](const auto& candidate) {
+        return candidate.chunk.chunk_id == chunk_id;
+    });
+    CHECK(chunk != observed.chunks.end());
+    CHECK(chunk->state == expected_state);
+    CHECK(chunk->latest_attempt.has_value());
+    CHECK(chunk->terminal_failure.has_value());
+    CHECK(!chunk->handoff.has_value());
+    CHECK(encode_or_fail(Record{*chunk->latest_attempt}) == fixture.attempts.back().bytes);
+    CHECK(encode_or_fail(Record{*chunk->terminal_failure}) == fixture.bytes);
+}
+
+void require_chunk_terminal_failure_publication_success(
+    wave_detail::DistributedSieveWaveStore& store, const std::filesystem::path& root,
+    const ChunkTerminalFailureFixture& fixture,
+    const wave_detail::DistributedSieveChunkTerminalFailurePublicationResultV1& published,
+    durable_record::RecordPublishDisposition expected_disposition, std::string_view context) {
+    const auto names =
+        wave_detail::distributed_sieve_chunk_terminal_failure_names_v1(fixture.expected.chunk_id);
+    CHECK(names.has_value());
+    CHECK(published);
+    CHECK(published.terminal_failure.has_value());
+    CHECK(published.canonical_snapshot.has_value());
+    require_wave_status(published.diagnostic, wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        context);
+    CHECK(published.diagnostic.publication_status == durable_record::RecordPublishStatus::durable);
+    CHECK(published.diagnostic.publication_disposition == expected_disposition);
+    CHECK(encode_or_fail(Record{*published.terminal_failure}) == fixture.bytes);
+    CHECK(entry_exists_no_follow(root / names->canonical_record_leaf));
+    CHECK(!entry_exists_no_follow(root / names->pending_record_leaf));
+    CHECK(read_file_bytes(root / names->canonical_record_leaf) == fixture.bytes);
+    CHECK(wave_record_snapshot(capture_wave_root_entry_snapshot(root / names->canonical_record_leaf,
+                                                                names->canonical_record_leaf)) ==
+          *published.canonical_snapshot);
+    CHECK(!relation_base_lock_reports_busy(root / fixture.attempts.back().names.base_lock_leaf));
+
+    std::vector<sieve::AttemptStartedV1> chain;
+    chain.reserve(fixture.attempts.size());
+    for (const auto& attempt : fixture.attempts) {
+        chain.push_back(attempt.record);
+    }
+    require_ok(sieve::validate_worker_attempt_chain(store.manifest(), fixture.expected.chunk_id,
+                                                    chain, nullptr, &*published.terminal_failure),
+               context);
+    require_chunk_terminal_failure_observation(
+        store, fixture,
+        wave_detail::DistributedSieveWorkerChunkDurableStateV1::terminal_failure_pending, context);
 }
 
 template <typename Reconcile>
@@ -8312,6 +8650,341 @@ void test_wave_store_worker_attempt_reconcile_fork_seams_are_process_bound() {
         require_worker_attempt_reconcile_inventory_and_locks_released(
             store, root, fixture, Boundary::PermitAcquired,
             "forked reconcile hook leaves parent canonical-only P0 result authoritative");
+    }
+}
+
+void test_wave_store_chunk_terminal_failure_publish_and_absorb() {
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "chunk-terminal-failure-publish";
+    auto draft = wave_manifest_draft();
+    draft.max_worker_attempts = 2U;
+    auto created = wave_detail::DistributedSieveWaveStore::create(root, std::move(draft));
+    auto& store = require_wave_ready(created, "create terminal-failure publication fixture");
+    const auto manifest_digest = store.manifest_digest();
+    auto fixture = prepare_chunk_terminal_failure_fixture(
+        store, root, "prepare complete two-attempt terminal-failure admission");
+    CHECK(fixture.attempts.size() == 2U);
+    CHECK(fixture.admission.has_value());
+    CHECK(fixture.admission->owned_by_current_process());
+    const auto names =
+        wave_detail::distributed_sieve_chunk_terminal_failure_names_v1(fixture.expected.chunk_id);
+    CHECK(names.has_value());
+    const auto before = capture_wave_root_snapshot(root);
+
+    auto published = wave_detail::publish_chunk_terminal_failure_v1(std::move(*fixture.admission));
+    CHECK(!fixture.admission->owned_by_current_process());
+    require_chunk_terminal_failure_publication_success(
+        store, root, fixture, published, durable_record::RecordPublishDisposition::created,
+        "fresh terminal-failure publication is durable");
+    auto after = capture_wave_root_snapshot(root);
+    erase_wave_root_snapshot_leaf(after, names->canonical_record_leaf);
+    CHECK(after == before);
+
+    const auto canonical_snapshot = capture_wave_root_snapshot(root);
+    created.store.reset();
+    auto reopened = wave_detail::DistributedSieveWaveStore::open(root, manifest_digest);
+    auto& reopened_store =
+        require_wave_ready(reopened, "cold-open canonical terminal-failure wave");
+    require_chunk_terminal_failure_observation(
+        reopened_store, fixture,
+        wave_detail::DistributedSieveWorkerChunkDurableStateV1::terminal_failure_pending,
+        "cold-open observes canonical terminal prefix without inferring publication authority");
+    CHECK(capture_wave_root_snapshot(root) == canonical_snapshot);
+
+    auto replayed = reconcile_final_attempt_for_terminal_admission(
+        reopened_store, root, fixture.attempts.back(),
+        "cold-reconcile final attempt after canonical publication");
+    std::optional<ChunkTerminalFailureAdmission> replay_admission;
+    replay_admission.emplace(std::move(*replayed.terminal_failure_admission));
+    auto confirmed = wave_detail::publish_chunk_terminal_failure_v1(std::move(*replay_admission));
+    CHECK(!replay_admission->owned_by_current_process());
+    require_chunk_terminal_failure_publication_success(
+        reopened_store, root, fixture, confirmed,
+        durable_record::RecordPublishDisposition::confirmed_existing,
+        "cold replay confirms canonical terminal publication");
+    CHECK(capture_wave_root_snapshot(root) == canonical_snapshot);
+
+    const auto before_rejections = capture_wave_root_snapshot(root);
+    const auto missing_chunk = reopened_store.manifest().chunks.at(1).chunk_id;
+    auto blocked_fresh = reopened_store.create_worker_attempt_private_lease_root(missing_chunk, 0U);
+    CHECK(!blocked_fresh);
+    CHECK(blocked_fresh.claim == nullptr);
+    require_wave_status(blocked_fresh.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "canonical terminal blocks another chunk reservation");
+
+    auto blocked_adoption = reopened_store.adopt_worker_handoff_v1(fixture.expected.chunk_id);
+    CHECK(!blocked_adoption);
+    CHECK(!blocked_adoption.adopted.has_value());
+    require_wave_status(blocked_adoption.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "canonical terminal blocks handoff adoption");
+    CHECK(capture_wave_root_snapshot(root) == before_rejections);
+}
+
+void test_wave_store_chunk_terminal_failure_normalizes_pending_and_dual() {
+    constexpr std::array shapes{
+        ChunkTerminalFailureInjectedPrefix::pending_only,
+        ChunkTerminalFailureInjectedPrefix::identical_dual,
+    };
+
+    for (const auto shape : shapes) {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / ("chunk-terminal-failure-normalize-" +
+                                         std::to_string(static_cast<std::size_t>(shape)));
+        auto draft = wave_manifest_draft();
+        draft.max_worker_attempts = 1U;
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, std::move(draft));
+        auto& store = require_wave_ready(created, "create terminal-prefix normalization fixture");
+        auto fixture = prepare_chunk_terminal_failure_fixture(
+            store, root, "prepare terminal-prefix normalization admission");
+        const auto names = wave_detail::distributed_sieve_chunk_terminal_failure_names_v1(
+            fixture.expected.chunk_id);
+        CHECK(names.has_value());
+
+        fixture.admission.reset();
+        CHECK(
+            !relation_base_lock_reports_busy(root / fixture.attempts.back().names.base_lock_leaf));
+        publish_chunk_terminal_failure_fixture_prefix(
+            root, *names, fixture.bytes, shape, "publish exact terminal-failure fixture prefix");
+        const bool dual = shape == ChunkTerminalFailureInjectedPrefix::identical_dual;
+        CHECK(entry_exists_no_follow(root / names->canonical_record_leaf) == dual);
+        CHECK(entry_exists_no_follow(root / names->pending_record_leaf));
+        CHECK(read_file_bytes(root / names->pending_record_leaf) == fixture.bytes);
+        if (dual) {
+            CHECK(read_file_bytes(root / names->canonical_record_leaf) == fixture.bytes);
+            require_distinct_entry_identities(
+                root / names->canonical_record_leaf, root / names->pending_record_leaf,
+                "identical terminal dual uses distinct immutable-record identities");
+        }
+        require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "exact terminal prefix is manifest-bound and closed");
+        require_chunk_terminal_failure_observation(
+            store, fixture,
+            wave_detail::DistributedSieveWorkerChunkDurableStateV1::terminal_failure_pending,
+            "pending terminal prefix remains nonabsorbing before normalization");
+
+        auto reconciled = reconcile_final_attempt_for_terminal_admission(
+            store, root, fixture.attempts.back(),
+            "reconcile final attempt under exact terminal prefix");
+        std::optional<ChunkTerminalFailureAdmission> admission;
+        admission.emplace(std::move(*reconciled.terminal_failure_admission));
+        auto normalized = wave_detail::publish_chunk_terminal_failure_v1(std::move(*admission));
+        CHECK(!admission->owned_by_current_process());
+        require_chunk_terminal_failure_publication_success(
+            store, root, fixture, normalized,
+            dual ? durable_record::RecordPublishDisposition::confirmed_existing
+                 : durable_record::RecordPublishDisposition::recovered_pending,
+            dual ? "normalize exact canonical-pending terminal dual"
+                 : "promote exact pending-only terminal prefix");
+    }
+}
+
+void test_wave_store_chunk_terminal_failure_fault_prefixes_replay() {
+    using Fault = wave_detail::DistributedSieveChunkTerminalFailureFaultPoint;
+    constexpr std::array fault_points{
+        Fault::PendingDurable,
+        Fault::CanonicalPromoted,
+        Fault::CanonicalDurable,
+    };
+
+    for (const auto point : fault_points) {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / ("chunk-terminal-failure-fault-" +
+                                         std::to_string(static_cast<std::size_t>(point)));
+        auto draft = wave_manifest_draft();
+        draft.max_worker_attempts = 1U;
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, std::move(draft));
+        auto& store = require_wave_ready(created, "create terminal publication-fault fixture");
+        const auto manifest_digest = store.manifest_digest();
+        auto fixture = prepare_chunk_terminal_failure_fixture(
+            store, root, "prepare terminal publication-fault admission");
+        const auto names = wave_detail::distributed_sieve_chunk_terminal_failure_names_v1(
+            fixture.expected.chunk_id);
+        CHECK(names.has_value());
+        ChunkTerminalFailureStopContext stop{
+            .target = point,
+        };
+
+        auto interrupted = wave_detail::publish_chunk_terminal_failure_v1(
+            std::move(*fixture.admission),
+            wave_detail::DistributedSieveChunkTerminalFailureTestHooksV1{
+                .stop_after = stop_at_chunk_terminal_failure_fault,
+                .context = &stop,
+            });
+        CHECK(!fixture.admission->owned_by_current_process());
+        CHECK(!interrupted);
+        CHECK(!interrupted.terminal_failure.has_value());
+        require_wave_status(interrupted.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::interrupted,
+                            "terminal publication fault returns interrupted");
+        CHECK(interrupted.diagnostic.publication_status ==
+              durable_record::RecordPublishStatus::interrupted);
+        CHECK(interrupted.diagnostic.publication_disposition ==
+              durable_record::RecordPublishDisposition::created);
+        CHECK(interrupted.diagnostic.last_chunk_terminal_failure_fault_point == point);
+        CHECK(stop.observed[static_cast<std::size_t>(point)]);
+
+        const bool pending_only = point == Fault::PendingDurable;
+        CHECK(entry_exists_no_follow(root / names->pending_record_leaf) == pending_only);
+        CHECK(entry_exists_no_follow(root / names->canonical_record_leaf) == !pending_only);
+        const auto visible =
+            root / (pending_only ? names->pending_record_leaf : names->canonical_record_leaf);
+        CHECK(read_file_bytes(visible) == fixture.bytes);
+        require_chunk_terminal_failure_observation(
+            store, fixture,
+            wave_detail::DistributedSieveWorkerChunkDurableStateV1::terminal_failure_pending,
+            "raw fault prefix remains pending until typed publication is confirmed");
+        const auto interrupted_snapshot = capture_wave_root_snapshot(root);
+
+        created.store.reset();
+        auto reopened = wave_detail::DistributedSieveWaveStore::open(root, manifest_digest);
+        auto& reopened_store =
+            require_wave_ready(reopened, "cold-open terminal publication-fault prefix");
+        CHECK(capture_wave_root_snapshot(root) == interrupted_snapshot);
+        auto reconciled = reconcile_final_attempt_for_terminal_admission(
+            reopened_store, root, fixture.attempts.back(),
+            "cold-reconcile final attempt after terminal publication interruption");
+        std::optional<ChunkTerminalFailureAdmission> admission;
+        admission.emplace(std::move(*reconciled.terminal_failure_admission));
+        auto recovered = wave_detail::publish_chunk_terminal_failure_v1(std::move(*admission));
+        CHECK(!admission->owned_by_current_process());
+        require_chunk_terminal_failure_publication_success(
+            reopened_store, root, fixture, recovered,
+            pending_only ? durable_record::RecordPublishDisposition::recovered_pending
+                         : durable_record::RecordPublishDisposition::confirmed_existing,
+            pending_only ? "cold retry promotes pending terminal prefix"
+                         : "cold retry confirms canonical terminal prefix");
+        const auto normalized_snapshot = capture_wave_root_snapshot(root);
+
+        const auto missing_chunk = reopened_store.manifest().chunks.at(1).chunk_id;
+        auto blocked_fresh =
+            reopened_store.create_worker_attempt_private_lease_root(missing_chunk, 0U);
+        CHECK(!blocked_fresh);
+        CHECK(blocked_fresh.claim == nullptr);
+        require_wave_status(blocked_fresh.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "confirmed terminal prefix blocks another chunk reservation");
+        auto blocked_adoption = reopened_store.adopt_worker_handoff_v1(fixture.expected.chunk_id);
+        CHECK(!blocked_adoption);
+        CHECK(!blocked_adoption.adopted.has_value());
+        require_wave_status(blocked_adoption.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "confirmed terminal prefix blocks handoff adoption");
+        CHECK(capture_wave_root_snapshot(root) == normalized_snapshot);
+    }
+}
+
+void test_wave_store_chunk_terminal_failure_rejects_tamper_and_replacement() {
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "chunk-terminal-failure-byte-tamper";
+        auto draft = wave_manifest_draft();
+        draft.max_worker_attempts = 1U;
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, std::move(draft));
+        auto& store = require_wave_ready(created, "create terminal byte-tamper fixture");
+        auto fixture = prepare_chunk_terminal_failure_fixture(
+            store, root, "prepare terminal byte-tamper admission");
+        const auto names = wave_detail::distributed_sieve_chunk_terminal_failure_names_v1(
+            fixture.expected.chunk_id);
+        CHECK(names.has_value());
+        auto corrupted = fixture.bytes;
+        CHECK(!corrupted.empty());
+        corrupted.back() ^= std::byte{1};
+
+        const int root_fd =
+            ::open(root.c_str(), O_RDONLY | O_NONBLOCK | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        CHECK(root_fd >= 0);
+        WaveSnapshotFd held_root(root_fd);
+        WorkerAttemptStartPublicationInjectionContext injection{
+            .shape = WorkerAttemptStartInjectedPrefix::canonical_only,
+            .root_fd = held_root.get(),
+            .first_source_leaf =
+                std::filesystem::path{".gnfs-wave-v1.test-terminal-tamper.pending"},
+            .second_source_leaf =
+                std::filesystem::path{".gnfs-wave-v1.test-terminal-unused.pending"},
+            .pending_leaf = std::filesystem::path{names->pending_record_leaf},
+            .canonical_leaf = std::filesystem::path{names->canonical_record_leaf},
+            .bytes = corrupted,
+        };
+        auto rejected = wave_detail::publish_chunk_terminal_failure_v1(
+            std::move(*fixture.admission),
+            wave_detail::DistributedSieveChunkTerminalFailureTestHooksV1{
+                .before_record_publication = inject_worker_attempt_start_publication_prefix,
+                .context = &injection,
+            });
+        CHECK(!fixture.admission->owned_by_current_process());
+        CHECK(injection.invoked);
+        CHECK(injection.first.status == durable_record::RecordPublishStatus::durable);
+        CHECK(injection.first.disposition == durable_record::RecordPublishDisposition::created);
+        CHECK(!rejected);
+        CHECK(!rejected.terminal_failure.has_value());
+        require_wave_status(rejected.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "terminal publisher rejects byte-tampered successor");
+        CHECK(!rejected.diagnostic.publication_status.has_value());
+        CHECK(!rejected.diagnostic.publication_disposition.has_value());
+        CHECK(read_file_bytes(root / names->canonical_record_leaf) == corrupted);
+        CHECK(!entry_exists_no_follow(root / names->pending_record_leaf));
+        const auto attacked = capture_wave_root_snapshot(root);
+        require_wave_status(store.revalidate(),
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "byte-tampered terminal record remains preserved");
+        CHECK(capture_wave_root_snapshot(root) == attacked);
+        CHECK(
+            !relation_base_lock_reports_busy(root / fixture.attempts.back().names.base_lock_leaf));
+    }
+
+    {
+        WaveStoreTempDirectory temp;
+        const auto root = temp.path() / "chunk-terminal-failure-identity-replacement";
+        auto draft = wave_manifest_draft();
+        draft.max_worker_attempts = 1U;
+        auto created = wave_detail::DistributedSieveWaveStore::create(root, std::move(draft));
+        auto& store = require_wave_ready(created, "create terminal identity-replacement fixture");
+        auto fixture = prepare_chunk_terminal_failure_fixture(
+            store, root, "prepare terminal identity-replacement admission");
+        const auto names = wave_detail::distributed_sieve_chunk_terminal_failure_names_v1(
+            fixture.expected.chunk_id);
+        CHECK(names.has_value());
+        WaveSameBytesReplacementContext replacement{
+            .canonical = root / names->canonical_record_leaf,
+            .displaced = temp.path() / "displaced-terminal-failure",
+            .bytes = fixture.bytes,
+        };
+
+        auto rejected = wave_detail::publish_chunk_terminal_failure_v1(
+            std::move(*fixture.admission),
+            wave_detail::DistributedSieveChunkTerminalFailureTestHooksV1{
+                .after_first_successor_validation =
+                    replace_marker_with_same_bytes_after_first_inventory,
+                .context = &replacement,
+            });
+        CHECK(!fixture.admission->owned_by_current_process());
+        CHECK(replacement.invoked);
+        CHECK(replacement.replaced);
+        CHECK(replacement.native_error == 0);
+        CHECK(!rejected);
+        CHECK(!rejected.terminal_failure.has_value());
+        require_wave_status(rejected.diagnostic,
+                            wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "terminal publisher rejects same-byte canonical replacement");
+        CHECK(rejected.diagnostic.publication_status ==
+              durable_record::RecordPublishStatus::durable);
+        CHECK(rejected.diagnostic.publication_disposition ==
+              durable_record::RecordPublishDisposition::created);
+        CHECK(read_file_bytes(replacement.canonical) == fixture.bytes);
+        CHECK(read_file_bytes(replacement.displaced) == fixture.bytes);
+        require_distinct_entry_identities(replacement.canonical, replacement.displaced,
+                                          "terminal canonical replacement uses a distinct inode");
+        require_wave_status(store.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            "replacement terminal is independently canonical");
+        require_chunk_terminal_failure_observation(
+            store, fixture,
+            wave_detail::DistributedSieveWorkerChunkDurableStateV1::terminal_failure_pending,
+            "replacement canonical remains a valid raw terminal prefix");
+        CHECK(
+            !relation_base_lock_reports_busy(root / fixture.attempts.back().names.base_lock_leaf));
     }
 }
 
@@ -16157,8 +16830,7 @@ void replace_worker_coordinator_handoff_after_target_lock(void* opaque) noexcept
     try {
         context.after_target_replacement->bytes =
             read_file_bytes(context.after_target_replacement->canonical);
-        replace_marker_with_same_bytes_after_first_inventory(
-            &*context.after_target_replacement);
+        replace_marker_with_same_bytes_after_first_inventory(&*context.after_target_replacement);
     } catch (...) {
         context.threw = true;
     }
@@ -16524,10 +17196,15 @@ void test_worker_coordinator_handoff_after_retry_observation_precedes_reconcile(
 }
 
 void test_worker_attempt_open_terminal_transition_requires_expected_adoption() {
-    WorkerCoordinatorFixture fixture("worker-attempt-open-terminal-transition");
+    WorkerCoordinatorFixture fixture("worker-attempt-open-terminal-transition", 1U);
     auto receipt = publish_worker_launch_receipt(
         fixture.store(), 1, "publish worker attempt before internal open transition");
     const auto late_attempt = receipt.record();
+    const auto terminal_names =
+        wave_detail::distributed_sieve_chunk_terminal_failure_names_v1(late_attempt.chunk_id);
+    CHECK(terminal_names.has_value());
+    CHECK(!entry_exists_no_follow(fixture.root / terminal_names->canonical_record_leaf));
+    CHECK(!entry_exists_no_follow(fixture.root / terminal_names->pending_record_leaf));
     WorkerCoordinatorLateHandoffContext late_context(fixture.store(), fixture.identity,
                                                      fixture.frozen, fixture.polynomial,
                                                      fixture.factor_base, std::move(receipt));
@@ -16544,14 +17221,14 @@ void test_worker_attempt_open_terminal_transition_requires_expected_adoption() {
     CHECK(late_context.report_descriptor == -1);
     auto& claim = require_private_lease_root_claim_ready(
         opened, "open exact terminal transition under old-attempt BaseLock");
-    require_wave_status(
-        claim.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
-        "revalidate exact terminal transition under old-attempt BaseLock");
+    require_wave_status(claim.revalidate(), wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "revalidate exact terminal transition under old-attempt BaseLock");
     auto reconciled = wave_detail::reconcile_worker_attempt_started(std::move(opened));
     CHECK(opened.claim == nullptr);
     CHECK(!reconciled);
     CHECK(!reconciled.reconciled.has_value());
     CHECK(reconciled.terminal_handoff.has_value());
+    CHECK(!reconciled.terminal_failure_admission.has_value());
     require_wave_status(reconciled.diagnostic,
                         wave_detail::DistributedSieveWaveStoreStatus::reconciliation_required,
                         "reconcile exact terminal transition under old-attempt BaseLock");
@@ -16560,6 +17237,8 @@ void test_worker_attempt_open_terminal_transition_requires_expected_adoption() {
     CHECK(terminal.handoff.attempt_ordinal == late_attempt.attempt_ordinal);
     CHECK(terminal.handoff.attempt_started_digest == late_attempt.self_digest);
     CHECK(terminal.handoff.lease == late_attempt.lease);
+    CHECK(!entry_exists_no_follow(fixture.root / terminal_names->canonical_record_leaf));
+    CHECK(!entry_exists_no_follow(fixture.root / terminal_names->pending_record_leaf));
 
     auto tampered = terminal;
     tampered.envelope_digest.bytes[0] ^= std::byte{1};
@@ -16578,6 +17257,8 @@ void test_worker_attempt_open_terminal_transition_requires_expected_adoption() {
     CHECK(adopted.adopted->valid());
     CHECK(encode_or_fail(Record{adopted.adopted->handoff()}) ==
           encode_or_fail(Record{terminal.handoff}));
+    CHECK(!entry_exists_no_follow(fixture.root / terminal_names->canonical_record_leaf));
+    CHECK(!entry_exists_no_follow(fixture.root / terminal_names->pending_record_leaf));
     require_worker_coordinator_attempt_namespace_absent(fixture.root,
                                                         fixture.identity.distributed.chunks[1], 1U);
 }
@@ -16675,13 +17356,95 @@ void test_worker_coordinator_busy_late_handoff_precedes_retry() {
 void test_worker_coordinator_retry_exhaustion_starts_no_other_chunk() {
     WorkerCoordinatorFixture fixture("worker-coordinator-retry-exhausted", 1U);
     const auto manifest_digest = fixture.store().manifest_digest();
+    const auto manifest = fixture.store().manifest();
     sieve::AttemptStartedV1 exhausted_attempt;
     {
         auto receipt = publish_worker_launch_receipt(
             fixture.store(), 0, "publish exhausted worker-coordinator attempt");
         exhausted_attempt = receipt.record();
     }
+    std::vector<sieve::AttemptStartedV1> exhausted_chain{exhausted_attempt};
+    const auto chain_digest =
+        sieve::distributed_sieve_attempt_chain_digest(manifest_digest, exhausted_chain);
+    CHECK(chain_digest);
+    CHECK(chain_digest.digest.has_value());
+    const auto& exhausted_chunk = manifest.chunks.front();
+    sieve::ChunkTerminalFailureV1 expected_terminal{
+        .manifest_digest = manifest_digest,
+        .chunk_id = exhausted_chunk.chunk_id,
+        .sq_begin = exhausted_chunk.sq_begin,
+        .sq_end = exhausted_chunk.sq_end,
+        .exhausted_attempt_count = 1U,
+        .last_attempt_digest = exhausted_attempt.self_digest,
+        .predecessor_chain_digest = *chain_digest.digest,
+        .reason = sieve::ChunkTerminalFailureReasonV1::attempt_budget_exhausted,
+        .wait_facts =
+            {
+                .kind = sieve::WorkerWaitFactKindV1::unavailable,
+            },
+        .no_canonical_handoff_confirmed = true,
+        .exact_attempt_lease_absent_confirmed = true,
+        .next_sq_index = exhausted_chunk.sq_begin,
+        .processed_sq_count = 0U,
+        .statistics = {},
+    };
+    expected_terminal = seal_value(std::move(expected_terminal));
+    require_ok(sieve::validate_worker_attempt_chain(manifest, exhausted_chunk.chunk_id,
+                                                    exhausted_chain, nullptr, &expected_terminal),
+               "expected coordinator terminal failure closes exhausted chain");
+    const auto expected_terminal_bytes = encode_or_fail(Record{expected_terminal});
+    const auto terminal_names =
+        wave_detail::distributed_sieve_chunk_terminal_failure_names_v1(exhausted_chunk.chunk_id);
+    CHECK(terminal_names.has_value());
+    const auto exhausted_attempt_names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        exhausted_chunk.relative_artifact_stem, exhausted_chunk.chunk_id,
+        exhausted_attempt.attempt_ordinal);
+    CHECK(exhausted_attempt_names.has_value());
     const auto before = capture_wave_root_snapshot(fixture.root);
+
+    const auto require_terminal_result =
+        [&](const worker_coordinator_detail::DistributedSieveWorkerCoordinatorResultV1& result) {
+            CHECK(!result);
+            CHECK(result.diagnostic.phase ==
+                  worker_coordinator_detail::DistributedSieveWorkerCoordinatorPhaseV1::
+                      terminal_failure_publication);
+            CHECK(result.diagnostic.status ==
+                  worker_coordinator_detail::DistributedSieveWorkerCoordinatorStatusV1::
+                      retry_exhausted);
+            CHECK(result.diagnostic.manifest_slot == 0U);
+            CHECK(result.chunks.size() == manifest.chunks.size());
+            const auto& coordinated = result.chunks[0];
+            CHECK(coordinated.chunk == exhausted_chunk);
+            CHECK(coordinated.disposition ==
+                  worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::
+                      terminal_failed);
+            CHECK(!coordinated.launched_attempt.has_value());
+            CHECK(coordinated.reconciled_attempt.has_value());
+            require_worker_coordinator_attempt_exact(coordinated.reconciled_attempt->record,
+                                                     exhausted_attempt);
+            CHECK(!coordinated.reconciled_attempt->next_attempt_ordinal.has_value());
+            CHECK(coordinated.terminal_failure.has_value());
+            CHECK(!coordinated.wait_facts.has_value());
+            CHECK(!coordinated.adopted.has_value());
+
+            const auto& terminal = *coordinated.terminal_failure;
+            CHECK(terminal.chunk == exhausted_chunk);
+            CHECK(terminal.state ==
+                  wave_detail::DistributedSieveWorkerChunkDurableStateV1::terminal_failure);
+            CHECK(terminal.latest_attempt.has_value());
+            CHECK(terminal.terminal_failure.has_value());
+            CHECK(!terminal.handoff.has_value());
+            require_worker_coordinator_attempt_exact(*terminal.latest_attempt, exhausted_attempt);
+            CHECK(encode_or_fail(Record{*terminal.terminal_failure}) == expected_terminal_bytes);
+
+            for (std::size_t index = 1; index < result.chunks.size(); ++index) {
+                CHECK(!result.chunks[index].launched_attempt.has_value());
+                CHECK(!result.chunks[index].reconciled_attempt.has_value());
+                CHECK(!result.chunks[index].terminal_failure.has_value());
+                CHECK(!result.chunks[index].wait_facts.has_value());
+                CHECK(!result.chunks[index].adopted.has_value());
+            }
+        };
 
     WaveRootSnapshot normalized;
     {
@@ -16689,29 +17452,42 @@ void test_worker_coordinator_retry_exhaustion_starts_no_other_chunk() {
         auto first = worker_coordinator_detail::coordinate_missing_distributed_sieve_workers_v1(
             make_worker_coordinator_request(fixture.take_store(), first_ledger), fixture.identity,
             fixture.frozen, fixture.polynomial, fixture.factor_base);
-        CHECK(!first);
-        CHECK(first.diagnostic.phase ==
-              worker_coordinator_detail::DistributedSieveWorkerCoordinatorPhaseV1::
-                  attempt_reconciliation);
-        CHECK(
-            first.diagnostic.status ==
-            worker_coordinator_detail::DistributedSieveWorkerCoordinatorStatusV1::retry_exhausted);
-        CHECK(first.diagnostic.manifest_slot == 0U);
+        require_terminal_result(first);
         CHECK(!first_ledger.overflow);
         CHECK(first_ledger.count == 0U);
-        CHECK(first.chunks.size() == 3U);
-        CHECK(first.chunks[0].reconciled_attempt.has_value());
-        require_worker_coordinator_attempt_exact(first.chunks[0].reconciled_attempt->record,
-                                                 exhausted_attempt);
-        CHECK(!first.chunks[0].reconciled_attempt->next_attempt_ordinal.has_value());
-        CHECK(!first.chunks[0].launched_attempt.has_value());
-        CHECK(!first.chunks[1].launched_attempt.has_value());
         require_worker_coordinator_attempt_namespace_absent(
             fixture.root, fixture.identity.distributed.chunks[0], 1U);
         require_worker_coordinator_attempt_namespace_absent(
             fixture.root, fixture.identity.distributed.chunks[1], 0U);
         normalized = capture_wave_root_snapshot(fixture.root);
         CHECK(normalized != before);
+        CHECK(entry_exists_no_follow(fixture.root / terminal_names->canonical_record_leaf));
+        CHECK(!entry_exists_no_follow(fixture.root / terminal_names->pending_record_leaf));
+        CHECK(read_file_bytes(fixture.root / terminal_names->canonical_record_leaf) ==
+              expected_terminal_bytes);
+        CHECK(
+            entry_exists_no_follow(fixture.root / exhausted_attempt_names->canonical_record_leaf));
+        CHECK(!entry_exists_no_follow(fixture.root / exhausted_attempt_names->pending_record_leaf));
+        CHECK(!entry_exists_no_follow(fixture.root /
+                                      exhausted_attempt_names->private_directory_leaf));
+        CHECK(!entry_exists_no_follow(fixture.root / exhausted_attempt_names->reserved_leaf));
+        CHECK(
+            !entry_exists_no_follow(fixture.root / exhausted_attempt_names->reserved_pending_leaf));
+        CHECK(!entry_exists_no_follow(fixture.root / exhausted_attempt_names->owned_leaf));
+        CHECK(!entry_exists_no_follow(fixture.root / exhausted_attempt_names->owned_pending_leaf));
+        CHECK(
+            !entry_exists_no_follow(fixture.root / exhausted_attempt_names->rollback_handoff_leaf));
+        CHECK(!relation_base_lock_reports_busy(fixture.root /
+                                               exhausted_attempt_names->base_lock_leaf));
+
+        const auto raw = first.store->observe_worker_chunks_v1();
+        CHECK(raw);
+        CHECK(raw.chunks.size() == manifest.chunks.size());
+        CHECK(raw.chunks[0].state ==
+              wave_detail::DistributedSieveWorkerChunkDurableStateV1::terminal_failure_pending);
+        CHECK(raw.chunks[0].terminal_failure.has_value());
+        CHECK(encode_or_fail(Record{*raw.chunks[0].terminal_failure}) == expected_terminal_bytes);
+        CHECK(capture_wave_root_snapshot(fixture.root) == normalized);
     }
 
     auto reopened = wave_detail::DistributedSieveWaveStore::open(fixture.root, manifest_digest);
@@ -16720,19 +17496,9 @@ void test_worker_coordinator_retry_exhaustion_starts_no_other_chunk() {
     auto repeated = worker_coordinator_detail::coordinate_missing_distributed_sieve_workers_v1(
         make_worker_coordinator_request(std::move(reopened.store), repeated_ledger),
         fixture.identity, fixture.frozen, fixture.polynomial, fixture.factor_base);
-    CHECK(!repeated);
-    CHECK(repeated.diagnostic.phase ==
-          worker_coordinator_detail::DistributedSieveWorkerCoordinatorPhaseV1::
-              attempt_reconciliation);
-    CHECK(repeated.diagnostic.status ==
-          worker_coordinator_detail::DistributedSieveWorkerCoordinatorStatusV1::retry_exhausted);
-    CHECK(repeated.diagnostic.manifest_slot == 0U);
+    require_terminal_result(repeated);
     CHECK(!repeated_ledger.overflow);
     CHECK(repeated_ledger.count == 0U);
-    CHECK(repeated.chunks[0].reconciled_attempt.has_value());
-    require_worker_coordinator_attempt_exact(repeated.chunks[0].reconciled_attempt->record,
-                                             exhausted_attempt);
-    CHECK(!repeated.chunks[0].reconciled_attempt->next_attempt_ordinal.has_value());
     CHECK(capture_wave_root_snapshot(fixture.root) == normalized);
 }
 
@@ -18010,12 +18776,13 @@ void test_wave_store_platform_fail_closed() {
 using TestFunction = void (*)();
 
 void run_core_suite() {
-    const std::array<std::pair<std::string_view, TestFunction>, 13> tests = {{
+    const std::array<std::pair<std::string_view, TestFunction>, 14> tests = {{
         {"closed names and kinds", test_closed_names_and_record_kinds},
         {"record round trips and self digests", test_all_record_round_trips_and_self_digests},
         {"exact framing and tamper", test_exact_framing_and_wire_tamper},
         {"manifest canonical order and limits", test_manifest_canonical_order_and_limits},
         {"worker attempt naming contract", test_worker_attempt_naming_contract},
+        {"chunk terminal failure naming contract", test_chunk_terminal_failure_naming_contract},
         {"worker completion reason closure", test_worker_completion_reason_closure},
         {"terminal failure normalization", test_terminal_failure_reason_normalization},
         {"execution-policy field drift", test_execution_policy_closed_inventory_and_field_drift},
@@ -18044,7 +18811,7 @@ void run_wave_store_suite() {
     };
 
 #if !defined(_WIN32)
-    const std::array<std::pair<std::string_view, TestFunction>, 80> common_tests = {{
+    const std::array<std::pair<std::string_view, TestFunction>, 84> common_tests = {{
         {"create, open, revalidate, and exact manifest",
          test_wave_store_create_open_revalidate_and_exact_manifest},
         {"store-owned draft fields", test_wave_store_rejects_non_draft_store_owned_fields},
@@ -18160,6 +18927,14 @@ void run_wave_store_suite() {
          test_wave_store_worker_attempt_reconcile_p3_revalidates_canonical_pin_before_remove},
         {"worker-attempt reconciliation fork seams",
          test_wave_store_worker_attempt_reconcile_fork_seams_are_process_bound},
+        {"chunk terminal failure publish and absorb",
+         test_wave_store_chunk_terminal_failure_publish_and_absorb},
+        {"chunk terminal failure prefix normalization",
+         test_wave_store_chunk_terminal_failure_normalizes_pending_and_dual},
+        {"chunk terminal failure fault-prefix replay",
+         test_wave_store_chunk_terminal_failure_fault_prefixes_replay},
+        {"chunk terminal failure tamper and replacement",
+         test_wave_store_chunk_terminal_failure_rejects_tamper_and_replacement},
         {"attempt-record same-byte inode replacement",
          test_wave_store_attempt_record_rejects_same_byte_inode_replacement},
         {"bound attempt claim same-byte record replacement",

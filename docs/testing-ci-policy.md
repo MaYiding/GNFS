@@ -724,7 +724,9 @@ revokes only its exact `RESERVED` generation.
 multi-prefix rules. `revalidate()` observes a stable legal publication prefix
 twice, releases all temporary permits, and changes no namespace leaf. It
 returns `reconciliation_required` only for a prefix that still needs
-mutation; a stable terminal canonical prefix is ready. Cold `open()` is the
+mutation. A worker-handoff canonical prefix is ready, but every
+chunk-terminal-failure prefix remains `terminal_failure_pending` until the
+same-lock typed publisher confirms its durability. Cold `open()` is the
 authorized convergence path. It acquires terminal and recoverable attempt
 `BaseLock` objects in ascending manifest-chunk and attempt order, retains the
 entire set while reconciling the highest nonterminal prefix, releases in LIFO
@@ -761,7 +763,7 @@ The positive coordinator matrix is:
 | Live attempt `BaseLock` | Zero launch calls and no successor namespace | The round returns `retry_busy` for the exact manifest slot | The busy attempt is unchanged; earlier manifest-order attempts may already be normalized idempotently |
 | Handoff published after initial observation | The second durable observation converts the exact `A_k` to adoption before any reconcile or launch | The chunk is `adopted` | No `reconciled_attempt` fact or `A_{k+1}` namespace exists |
 | Handoff published after retry observation | The typed reconciler observes the terminal witness while holding the exact old-attempt `BaseLock` | Expected same-handle adoption replaces retry | Native marker and artifact snapshots still match; no successor exists |
-| Retry budget exhausted | Reconciliation returns no next ordinal, so no chunk enters the batch, including otherwise missing chunks | The round returns `retry_exhausted` | Reopening and repeating preserves the normalized P0 namespace byte-for-byte |
+| Retry budget exhausted | Reconciliation retains the final `BaseLock`, publishes or confirms the terminal record, and starts no chunk, including otherwise missing chunks | The round returns `retry_exhausted` with one `terminal_failed` disposition | Reopening reacquires the exact final admission and confirms the canonical record without launch or adoption |
 
 The launch ledger must match every `executed` result by chunk, attempt ordinal,
 lease, and the complete `AttemptStartedV1` record. A successful wait or child
@@ -801,10 +803,37 @@ transport, cleanup, unlink, legacy entry, or public-header use. Its
 closed repository scan and self-test matrix take about five minutes in the
 measured Debug checkout and exceed the `fast` budget.
 
-`retry_exhausted` is a replayable coordinator-round diagnostic, not durable
-terminal-wave evidence. A future milestone must add a typed WaveStore
-publisher for `ChunkTerminalFailureV1` before exhaustion can become a
-canonical terminal record.
+`retry_exhausted` remains the coordinator-round diagnostic, while its
+`terminal_failed` chunk disposition carries the durable terminal-wave
+evidence. The typed WaveStore publisher retains the reconciler's root claim
+and same-open-file-description final-attempt `BaseLock` after P0, then
+consumes that move-only admission. It accepts no caller-built terminal record,
+reason, digest, confirmation boolean, coordinate, or range. The publisher
+internally emits only `attempt_budget_exhausted` with unavailable wait facts.
+
+The canonical root leaf is
+`.gnfs-wave-v1.chunk-terminal-failure-cCC`; the pending leaf appends
+`.pending`. The wave permits at most one terminal coordinate. Pending-only and
+canonical-only prefixes, as well as exact same-coordinate dual prefixes,
+require the same retained-admission normalizer. Raw observation treats every
+such prefix as structurally valid but unconfirmed because a canonical rename
+may be visible before its parent-directory durability barrier. The coordinator
+gives the prefix whole-wave priority and stops before process launch or
+handoff adoption, but reports the absorbing terminal state only after the
+publisher creates, recovers, or confirms the canonical record durably.
+
+The acceptance matrix is:
+
+| Scenario | Required oracle |
+|---|---|
+| Pending-only recovery | The retained-admission normalizer promotes the exact existing bytes; it does not recompute reason or digest |
+| Exact canonical/pending dual | The same normalizer confirms the canonical identity and removes only the exact redundant pending identity |
+| Same-byte terminal inode replacement | Replacement after the accepted held witness returns `namespace_conflict`; it cannot refresh the admission baseline |
+| Late canonical handoff | Handoff wins under the retained final-attempt `BaseLock`; no terminal leaf is published |
+| Busy final-attempt `BaseLock` | Coordinator recovery returns `retry_busy` before publication with zero terminal namespace mutation |
+| Second terminal coordinate | Inventory validation preserves both leaves and returns `namespace_conflict` |
+| Canonical-only terminal reopen | The coordinator reacquires the exact final admission, confirms the existing record, and returns the terminal wave error with zero launch and zero handoff-adoption calls |
+| Initial reason normalization | The sealed record contains `attempt_budget_exhausted` and unavailable wait facts, independent of caller diagnostics |
 
 Same-handle adoption also sandwiches the full corpus read with final exact
 checks for both the nested `OWNER` marker and root-level `OWNED` marker. The

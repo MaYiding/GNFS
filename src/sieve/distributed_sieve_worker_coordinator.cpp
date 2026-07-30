@@ -187,6 +187,12 @@ retry_claim_is_busy(const resume::DistributedSieveWaveStoreDiagnostic& diagnosti
            diagnostic.status == resume::DistributedSieveWaveStoreStatus::private_lease_lock_busy;
 }
 
+[[nodiscard]] bool
+terminal_failure_prefix(resume::DistributedSieveWorkerChunkDurableStateV1 state) noexcept {
+    return state == resume::DistributedSieveWorkerChunkDurableStateV1::terminal_failure_pending ||
+           state == resume::DistributedSieveWorkerChunkDurableStateV1::terminal_failure;
+}
+
 void set_resource_exhausted(DistributedSieveWorkerCoordinatorResultV1& result,
                             DistributedSieveWorkerCoordinatorPhaseV1 phase,
                             std::size_t manifest_slot) noexcept {
@@ -262,17 +268,6 @@ DistributedSieveWorkerCoordinatorResultV1 coordinate_missing_distributed_sieve_w
         }
 
         result.chunks.reserve(manifest.chunks.size());
-        std::vector<PlannedChunkAction> actions;
-        actions.reserve(manifest.chunks.size());
-        std::vector<std::size_t> recovery_slots;
-        recovery_slots.reserve(manifest.chunks.size());
-        std::vector<std::optional<std::uint32_t>> launch_ordinals(manifest.chunks.size());
-        std::vector<std::optional<WorkerHandoffV1>> expected_adopted_handoffs(
-            manifest.chunks.size());
-        std::vector<std::optional<resume::DistributedSieveWorkerHandoffInventoryWitnessV1>>
-            expected_adopted_witnesses(manifest.chunks.size());
-
-        bool all_empty = true;
         for (std::size_t index = 0; index < manifest.chunks.size(); ++index) {
             active_slot = index;
             const auto& chunk = manifest.chunks[index];
@@ -288,11 +283,39 @@ DistributedSieveWorkerCoordinatorResultV1 coordinate_missing_distributed_sieve_w
             DistributedSieveWorkerCoordinatedChunkV1 coordinated;
             coordinated.chunk = chunk;
             result.chunks.push_back(std::move(coordinated));
+        }
 
+        const auto finish_terminal_failure =
+            [&](DistributedSieveWorkerCoordinatorPhaseV1 phase, std::size_t manifest_slot,
+                resume::DistributedSieveWorkerChunkInventoryV1 terminal) {
+                result.chunks[manifest_slot].disposition =
+                    DistributedSieveWorkerCoordinationDispositionV1::terminal_failed;
+                result.chunks[manifest_slot].terminal_failure.emplace(std::move(terminal));
+                set_failure(result, phase,
+                            DistributedSieveWorkerCoordinatorStatusV1::retry_exhausted,
+                            manifest_slot);
+            };
+
+        std::vector<PlannedChunkAction> actions;
+        actions.reserve(manifest.chunks.size());
+        std::vector<std::size_t> recovery_slots;
+        recovery_slots.reserve(manifest.chunks.size());
+        std::vector<std::optional<std::uint32_t>> launch_ordinals(manifest.chunks.size());
+        std::vector<std::optional<WorkerHandoffV1>> expected_adopted_handoffs(
+            manifest.chunks.size());
+        std::vector<std::optional<resume::DistributedSieveWorkerHandoffInventoryWitnessV1>>
+            expected_adopted_witnesses(manifest.chunks.size());
+
+        std::optional<std::size_t> terminal_recovery_slot;
+        bool all_empty = true;
+        for (std::size_t index = 0; index < manifest.chunks.size(); ++index) {
+            active_slot = index;
+            const auto& chunk = manifest.chunks[index];
+            const auto& observed = initial.chunks[index];
             switch (observed.state) {
             case resume::DistributedSieveWorkerChunkDurableStateV1::empty:
                 if (chunk.sq_begin != chunk.sq_end || observed.latest_attempt.has_value() ||
-                    observed.handoff.has_value()) {
+                    observed.terminal_failure.has_value() || observed.handoff.has_value()) {
                     result.diagnostic.wave_store.status =
                         resume::DistributedSieveWaveStoreStatus::namespace_conflict;
                     set_failure(result, active_phase,
@@ -306,7 +329,7 @@ DistributedSieveWorkerCoordinatorResultV1 coordinate_missing_distributed_sieve_w
                 break;
             case resume::DistributedSieveWorkerChunkDurableStateV1::missing:
                 if (chunk.sq_begin == chunk.sq_end || observed.latest_attempt.has_value() ||
-                    observed.handoff.has_value()) {
+                    observed.terminal_failure.has_value() || observed.handoff.has_value()) {
                     result.diagnostic.wave_store.status =
                         resume::DistributedSieveWaveStoreStatus::namespace_conflict;
                     set_failure(result, active_phase,
@@ -321,7 +344,7 @@ DistributedSieveWorkerCoordinatorResultV1 coordinate_missing_distributed_sieve_w
             case resume::DistributedSieveWorkerChunkDurableStateV1::incomplete_attempt:
                 all_empty = false;
                 if (chunk.sq_begin == chunk.sq_end || !observed.latest_attempt.has_value() ||
-                    observed.handoff.has_value() ||
+                    observed.terminal_failure.has_value() || observed.handoff.has_value() ||
                     !attempt_matches_chunk(*observed.latest_attempt, chunk,
                                            result.store->manifest_digest(),
                                            observed.latest_attempt->attempt_ordinal)) {
@@ -333,9 +356,39 @@ DistributedSieveWorkerCoordinatorResultV1 coordinate_missing_distributed_sieve_w
                 actions.push_back(PlannedChunkAction::recover);
                 recovery_slots.push_back(index);
                 break;
+            case resume::DistributedSieveWorkerChunkDurableStateV1::terminal_failure_pending:
+            case resume::DistributedSieveWorkerChunkDurableStateV1::terminal_failure:
+                all_empty = false;
+                if (chunk.sq_begin == chunk.sq_end || !observed.latest_attempt.has_value() ||
+                    !observed.terminal_failure.has_value() || observed.handoff.has_value() ||
+                    !attempt_matches_chunk(*observed.latest_attempt, chunk,
+                                           result.store->manifest_digest(),
+                                           observed.latest_attempt->attempt_ordinal) ||
+                    observed.latest_attempt->attempt_ordinal + 1U != manifest.max_worker_attempts ||
+                    observed.terminal_failure->last_attempt_digest !=
+                        observed.latest_attempt->self_digest) {
+                    result.diagnostic.wave_store.status =
+                        resume::DistributedSieveWaveStoreStatus::namespace_conflict;
+                    set_failure(result, active_phase,
+                                DistributedSieveWorkerCoordinatorStatusV1::observation_failed,
+                                index);
+                    return result;
+                }
+                if (terminal_recovery_slot.has_value()) {
+                    result.diagnostic.wave_store.status =
+                        resume::DistributedSieveWaveStoreStatus::namespace_conflict;
+                    set_failure(result, active_phase,
+                                DistributedSieveWorkerCoordinatorStatusV1::observation_failed,
+                                index);
+                    return result;
+                }
+                terminal_recovery_slot = index;
+                actions.push_back(PlannedChunkAction::recover);
+                recovery_slots.push_back(index);
+                break;
             case resume::DistributedSieveWorkerChunkDurableStateV1::handoff:
                 if (chunk.sq_begin == chunk.sq_end || !observed.latest_attempt.has_value() ||
-                    !observed.handoff.has_value() ||
+                    observed.terminal_failure.has_value() || !observed.handoff.has_value() ||
                     observed.latest_attempt->self_digest !=
                         observed.handoff->attempt_started_digest ||
                     observed.latest_attempt->attempt_ordinal != observed.handoff->attempt_ordinal ||
@@ -356,6 +409,11 @@ DistributedSieveWorkerCoordinatorResultV1 coordinate_missing_distributed_sieve_w
             }
         }
 
+        if (terminal_recovery_slot.has_value()) {
+            recovery_slots.clear();
+            recovery_slots.push_back(*terminal_recovery_slot);
+        }
+
         if (all_empty) {
             result.diagnostic = {};
             result.diagnostic.status = DistributedSieveWorkerCoordinatorStatusV1::succeeded;
@@ -363,6 +421,7 @@ DistributedSieveWorkerCoordinatorResultV1 coordinate_missing_distributed_sieve_w
         }
 
         const bool execution_may_be_required =
+            !terminal_recovery_slot.has_value() &&
             std::any_of(actions.begin(), actions.end(), [](PlannedChunkAction action) {
                 return action == PlannedChunkAction::launch ||
                        action == PlannedChunkAction::recover;
@@ -436,14 +495,39 @@ DistributedSieveWorkerCoordinatorResultV1 coordinate_missing_distributed_sieve_w
                             manifest_slot);
                 return LateHandoffObservation::failed;
             }
-            if (candidate.state ==
+            const bool initial_terminal_prefix =
+                terminal_failure_prefix(initial.chunks[manifest_slot].state);
+            if (terminal_failure_prefix(candidate.state)) {
+                if (!candidate.latest_attempt.has_value() ||
+                    !candidate.terminal_failure.has_value() || candidate.handoff.has_value() ||
+                    !attempts_equal(*candidate.latest_attempt, *initial_attempt)) {
+                    result.diagnostic.wave_store.status =
+                        resume::DistributedSieveWaveStoreStatus::namespace_conflict;
+                    set_failure(result, active_phase,
+                                DistributedSieveWorkerCoordinatorStatusV1::observation_failed,
+                                manifest_slot);
+                    return LateHandoffObservation::failed;
+                }
+                result.diagnostic.wave_store.status =
+                    resume::DistributedSieveWaveStoreStatus::reconciliation_required;
+                set_failure(
+                    result, active_phase,
+                    DistributedSieveWorkerCoordinatorStatusV1::attempt_reconciliation_failed,
+                    manifest_slot);
+                return LateHandoffObservation::failed;
+            }
+            if (!initial_terminal_prefix &&
+                candidate.state ==
                     resume::DistributedSieveWorkerChunkDurableStateV1::incomplete_attempt &&
                 candidate.latest_attempt.has_value() && !candidate.handoff.has_value() &&
+                !candidate.terminal_failure.has_value() &&
                 attempts_equal(*candidate.latest_attempt, *initial_attempt)) {
                 return LateHandoffObservation::exact_incomplete;
             }
-            if (candidate.state != resume::DistributedSieveWorkerChunkDurableStateV1::handoff ||
+            if (initial_terminal_prefix ||
+                candidate.state != resume::DistributedSieveWorkerChunkDurableStateV1::handoff ||
                 !candidate.latest_attempt.has_value() || !candidate.handoff.has_value() ||
+                candidate.terminal_failure.has_value() ||
                 !attempts_equal(*candidate.latest_attempt, *initial_attempt) ||
                 candidate.handoff->attempt_started_digest != initial_attempt->self_digest ||
                 candidate.handoff->attempt_ordinal != initial_attempt->attempt_ordinal ||
@@ -495,8 +579,33 @@ DistributedSieveWorkerCoordinatorResultV1 coordinate_missing_distributed_sieve_w
                                 manifest_slot);
                     return result;
                 }
+                const bool initial_terminal_prefix =
+                    terminal_failure_prefix(initial.chunks[manifest_slot].state);
+                if (terminal_failure_prefix(observed.state)) {
+                    if (!observed.latest_attempt.has_value() ||
+                        !observed.terminal_failure.has_value() || observed.handoff.has_value() ||
+                        !attempts_equal(*observed.latest_attempt, *initial_attempt)) {
+                        result.diagnostic.wave_store.status =
+                            resume::DistributedSieveWaveStoreStatus::namespace_conflict;
+                        set_failure(result, active_phase,
+                                    DistributedSieveWorkerCoordinatorStatusV1::observation_failed,
+                                    manifest_slot);
+                        return result;
+                    }
+                    if (!initial_terminal_prefix) {
+                        result.diagnostic.wave_store.status =
+                            resume::DistributedSieveWaveStoreStatus::reconciliation_required;
+                        set_failure(result, active_phase,
+                                    DistributedSieveWorkerCoordinatorStatusV1::
+                                        attempt_reconciliation_failed,
+                                    manifest_slot);
+                        return result;
+                    }
+                    continue;
+                }
                 if (observed.state == resume::DistributedSieveWorkerChunkDurableStateV1::handoff) {
-                    if (!observed.latest_attempt.has_value() || !observed.handoff.has_value() ||
+                    if (initial_terminal_prefix || !observed.latest_attempt.has_value() ||
+                        !observed.handoff.has_value() || observed.terminal_failure.has_value() ||
                         !attempts_equal(*observed.latest_attempt, *initial_attempt) ||
                         observed.handoff->attempt_started_digest != initial_attempt->self_digest ||
                         observed.handoff->attempt_ordinal != initial_attempt->attempt_ordinal ||
@@ -514,9 +623,11 @@ DistributedSieveWorkerCoordinatorResultV1 coordinate_missing_distributed_sieve_w
                     expected_adopted_handoffs[manifest_slot] = *observed.handoff;
                     continue;
                 }
-                if (observed.state !=
+                if (initial_terminal_prefix ||
+                    observed.state !=
                         resume::DistributedSieveWorkerChunkDurableStateV1::incomplete_attempt ||
                     !observed.latest_attempt.has_value() || observed.handoff.has_value() ||
+                    observed.terminal_failure.has_value() ||
                     !attempts_equal(*observed.latest_attempt, *initial_attempt)) {
                     result.diagnostic.wave_store.status =
                         resume::DistributedSieveWaveStoreStatus::namespace_conflict;
@@ -575,7 +686,8 @@ DistributedSieveWorkerCoordinatorResultV1 coordinate_missing_distributed_sieve_w
                 if (!reconciled) {
                     if (reconciled.terminal_handoff.has_value()) {
                         const auto& terminal = *reconciled.terminal_handoff;
-                        if (reconciled.diagnostic.status !=
+                        if (terminal_failure_prefix(initial.chunks[manifest_slot].state) ||
+                            reconciled.diagnostic.status !=
                                 resume::DistributedSieveWaveStoreStatus::reconciliation_required ||
                             terminal.handoff.chunk_id != initial_attempt.chunk_id ||
                             terminal.handoff.attempt_ordinal != initial_attempt.attempt_ordinal ||
@@ -627,8 +739,11 @@ DistributedSieveWorkerCoordinatorResultV1 coordinate_missing_distributed_sieve_w
                     expected_next >= static_cast<std::uint64_t>(manifest.max_worker_attempts);
                 if ((!retry_budget_exhausted &&
                      (!next_ordinal.has_value() ||
-                      static_cast<std::uint64_t>(*next_ordinal) != expected_next)) ||
-                    (retry_budget_exhausted && next_ordinal.has_value())) {
+                      static_cast<std::uint64_t>(*next_ordinal) != expected_next ||
+                      reconciled.terminal_failure_admission.has_value())) ||
+                    (retry_budget_exhausted &&
+                     (next_ordinal.has_value() ||
+                      !reconciled.terminal_failure_admission.has_value()))) {
                     result.diagnostic.wave_store.status =
                         resume::DistributedSieveWaveStoreStatus::namespace_conflict;
                     set_failure(
@@ -638,9 +753,27 @@ DistributedSieveWorkerCoordinatorResultV1 coordinate_missing_distributed_sieve_w
                     return result;
                 }
                 if (!next_ordinal.has_value()) {
-                    set_failure(result, active_phase,
-                                DistributedSieveWorkerCoordinatorStatusV1::retry_exhausted,
-                                manifest_slot);
+                    active_phase =
+                        DistributedSieveWorkerCoordinatorPhaseV1::terminal_failure_publication;
+                    auto published = resume::publish_chunk_terminal_failure_v1(
+                        std::move(*reconciled.terminal_failure_admission));
+                    if (!published) {
+                        result.diagnostic.wave_store = published.diagnostic;
+                        set_failure(result, active_phase,
+                                    wave_failure_status(published.diagnostic,
+                                                        DistributedSieveWorkerCoordinatorStatusV1::
+                                                            terminal_failure_publication_failed),
+                                    manifest_slot);
+                        return result;
+                    }
+                    resume::DistributedSieveWorkerChunkInventoryV1 terminal{
+                        .chunk = manifest.chunks[manifest_slot],
+                        .state =
+                            resume::DistributedSieveWorkerChunkDurableStateV1::terminal_failure,
+                        .latest_attempt = result.chunks[manifest_slot].reconciled_attempt->record,
+                        .terminal_failure = std::move(published.terminal_failure),
+                    };
+                    finish_terminal_failure(active_phase, manifest_slot, std::move(terminal));
                     return result;
                 }
                 launch_ordinals[manifest_slot] = *next_ordinal;
@@ -681,7 +814,8 @@ DistributedSieveWorkerCoordinatorResultV1 coordinate_missing_distributed_sieve_w
                     if (!reconciled.has_value() || !launch_ordinals[index].has_value() ||
                         observed.state !=
                             resume::DistributedSieveWorkerChunkDurableStateV1::incomplete_attempt ||
-                        !observed.latest_attempt.has_value() || observed.handoff.has_value() ||
+                        !observed.latest_attempt.has_value() ||
+                        observed.terminal_failure.has_value() || observed.handoff.has_value() ||
                         !attempts_equal(*observed.latest_attempt, reconciled->record)) {
                         result.diagnostic.wave_store.status =
                             resume::DistributedSieveWaveStoreStatus::namespace_conflict;
@@ -696,7 +830,7 @@ DistributedSieveWorkerCoordinatorResultV1 coordinate_missing_distributed_sieve_w
                 if (actions[index] == PlannedChunkAction::adopt) {
                     if (observed.state !=
                             resume::DistributedSieveWorkerChunkDurableStateV1::handoff ||
-                        !observed.handoff.has_value() ||
+                        observed.terminal_failure.has_value() || !observed.handoff.has_value() ||
                         !expected_adopted_handoffs[index].has_value() ||
                         !handoffs_equal(*observed.handoff, *expected_adopted_handoffs[index])) {
                         result.diagnostic.wave_store.status =
@@ -711,7 +845,8 @@ DistributedSieveWorkerCoordinatorResultV1 coordinate_missing_distributed_sieve_w
                 if (actions[index] == PlannedChunkAction::launch) {
                     if (observed.state !=
                             resume::DistributedSieveWorkerChunkDurableStateV1::missing ||
-                        observed.latest_attempt.has_value() || observed.handoff.has_value()) {
+                        observed.latest_attempt.has_value() ||
+                        observed.terminal_failure.has_value() || observed.handoff.has_value()) {
                         result.diagnostic.wave_store.status =
                             resume::DistributedSieveWaveStoreStatus::namespace_conflict;
                         set_failure(result, active_phase,
@@ -722,7 +857,8 @@ DistributedSieveWorkerCoordinatorResultV1 coordinate_missing_distributed_sieve_w
                     continue;
                 }
                 if (observed.state != resume::DistributedSieveWorkerChunkDurableStateV1::empty ||
-                    observed.latest_attempt.has_value() || observed.handoff.has_value()) {
+                    observed.latest_attempt.has_value() || observed.terminal_failure.has_value() ||
+                    observed.handoff.has_value()) {
                     result.diagnostic.wave_store.status =
                         resume::DistributedSieveWaveStoreStatus::namespace_conflict;
                     set_failure(result, active_phase,
@@ -945,6 +1081,40 @@ DistributedSieveWorkerCoordinatorResultV1 coordinate_missing_distributed_sieve_w
             return result;
         }
 
+        // A terminal prefix observed without this invocation's retained
+        // admission is not yet a durable absorbing result. Stop before
+        // adoption and let the next round reacquire the final attempt and run
+        // the typed normalizer.
+        for (std::size_t index = 0; index < manifest.chunks.size(); ++index) {
+            active_slot = index;
+            const auto& observed = final_observation.chunks[index];
+            if (observed.chunk != manifest.chunks[index]) {
+                result.diagnostic.wave_store.status =
+                    resume::DistributedSieveWaveStoreStatus::namespace_conflict;
+                set_failure(result, active_phase,
+                            DistributedSieveWorkerCoordinatorStatusV1::final_observation_failed,
+                            index);
+                return result;
+            }
+            if (!terminal_failure_prefix(observed.state)) {
+                continue;
+            }
+            if (!observed.latest_attempt.has_value() || !observed.terminal_failure.has_value() ||
+                observed.handoff.has_value()) {
+                result.diagnostic.wave_store.status =
+                    resume::DistributedSieveWaveStoreStatus::namespace_conflict;
+                set_failure(result, active_phase,
+                            DistributedSieveWorkerCoordinatorStatusV1::final_observation_failed,
+                            index);
+                return result;
+            }
+            result.diagnostic.wave_store.status =
+                resume::DistributedSieveWaveStoreStatus::reconciliation_required;
+            set_failure(result, active_phase,
+                        DistributedSieveWorkerCoordinatorStatusV1::final_observation_failed, index);
+            return result;
+        }
+
         for (std::size_t index = 0; index < manifest.chunks.size(); ++index) {
             active_slot = index;
             const auto& observed = final_observation.chunks[index];
@@ -962,10 +1132,10 @@ DistributedSieveWorkerCoordinatorResultV1 coordinate_missing_distributed_sieve_w
                             DistributedSieveWorkerCoordinatorStatusV1::incomplete_attempt, index);
                 return result;
             }
-
             if (actions[index] == PlannedChunkAction::empty) {
                 if (observed.state != resume::DistributedSieveWorkerChunkDurableStateV1::empty ||
-                    observed.latest_attempt.has_value() || observed.handoff.has_value()) {
+                    observed.latest_attempt.has_value() || observed.terminal_failure.has_value() ||
+                    observed.handoff.has_value()) {
                     result.diagnostic.wave_store.status =
                         resume::DistributedSieveWaveStoreStatus::namespace_conflict;
                     set_failure(result, active_phase,
@@ -977,7 +1147,8 @@ DistributedSieveWorkerCoordinatorResultV1 coordinate_missing_distributed_sieve_w
             }
 
             if (observed.state != resume::DistributedSieveWorkerChunkDurableStateV1::handoff ||
-                !observed.latest_attempt.has_value() || !observed.handoff.has_value() ||
+                !observed.latest_attempt.has_value() || observed.terminal_failure.has_value() ||
+                !observed.handoff.has_value() ||
                 observed.latest_attempt->self_digest != observed.handoff->attempt_started_digest ||
                 !handoff_matches_chunk(*observed.handoff, manifest.chunks[index],
                                        result.store->manifest_digest())) {

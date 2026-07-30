@@ -416,6 +416,16 @@ The terminal record binds:
   `processed_sq_count = 0`) and zero-row statistics; and
 - record digest.
 
+The terminal-publication design reserves one fixed-width root-relative
+coordinate per chunk. Its canonical leaf is
+`.gnfs-wave-v1.chunk-terminal-failure-cCC`, and its pending leaf appends
+`.pending`. `CC` is the exact two-digit chunk coordinate. Variable-width,
+case-variant, extra-zero, and unrecognized-suffix leaves are foreign, not
+aliases. The whole wave may contain at most one terminal coordinate. An exact
+same-coordinate canonical/pending dual is the only permitted dual prefix; a
+second coordinate or byte-mismatched dual is preserved as a namespace
+conflict.
+
 It may be published only while holding the wave lock, after the last attempt is
 quiescent, after predecessor durability is reconfirmed, and after exact cleanup
 has completed. An uncertain wait becomes the normalized
@@ -423,6 +433,30 @@ has completed. An uncertain wait becomes the normalized
 acquired the inherited wave lock. A present, ambiguous, or failed-cleanup lease
 blocks terminal publication. Uncommitted partial files, pipe reports, or
 current-parent diagnostics never contribute rows or semantic progress.
+
+The reconciler must retain its root claim and the same-open-file-description
+`BaseLock` when the final attempt reaches P0. It moves that authority into one
+source-private, move-only admission instead of reducing it to the read-only
+reconciliation fact. The terminal publisher consumes that admission and
+internally derives the record. It does not accept a caller-built
+`ChunkTerminalFailureV1`, reason, digest, confirmation boolean, chunk
+coordinate, or range.
+
+Pending-only and exact dual prefixes use the same retained-admission
+normalizer. The normalizer validates the existing bytes and identity before it
+recovers the canonical leaf or removes the exact redundant pending leaf. It
+does not recompute bytes from a later diagnostic. Raw observation treats every
+terminal prefix, including canonical-only, as structurally valid but
+unconfirmed: rename may already be visible before the parent-directory
+durability barrier. Only a durable typed-publisher result turns that prefix
+into the whole-wave absorbing state. No later attempt launch, handoff adoption,
+merge, ACK, successful-artifact cleanup, or completed-success publication is
+then permitted.
+
+The first implementation slice intentionally mints only
+`AttemptBudgetExhausted` with `WorkerWaitFactsV1::Unavailable`. The wider
+protocol reason set remains reserved for later typed quiescence evidence.
+Uncertain waits do not authorize this initial publisher.
 
 ### `WorkerHandoffV1`
 
@@ -2742,10 +2776,23 @@ open-file description and close-only release instead of self-conflicting on a
 second `flock`. The claim accepts one exact incomplete-to-terminal transition
 before or immediately after target-lock acquisition, then requires an exact
 second held witness after the post-lock seam; same-byte replacement cannot
-refresh the baseline twice. Busy attempts, exhausted budgets, namespace
-drift, and reconciliation failures start no unauthorized successor. Durable
-`ChunkTerminalFailureV1` publication remains separate future work; the
-current `retry_exhausted` result is only a replayable round diagnostic.
+refresh the baseline twice. Busy attempts, namespace drift, and reconciliation
+failures start no unauthorized successor.
+
+M3a-2c.3 implements durable `ChunkTerminalFailureV1` publication. When the
+final allowed attempt reaches P0, the reconciler retains the root claim and
+exact same-open-file-description `BaseLock` in a move-only terminal admission.
+The typed WaveStore publisher consumes that admission, normalizes the exact
+`.gnfs-wave-v1.chunk-terminal-failure-cCC[.pending]` prefix, and permits at
+most one terminal coordinate for the wave. Pending-only, canonical-only, and
+exact dual prefixes all pass through this admission-bearing normalizer; raw
+canonical observation alone is not durability authority. The coordinator
+gives an observed terminal prefix whole-wave priority, skips executable
+binding, launch, and adoption, and returns `terminal_failed` only after the
+publisher durably creates, recovers, or confirms the exact record. The first
+publisher internally mints only `AttemptBudgetExhausted` with unavailable wait
+facts; callers cannot supply the record, reason, digests, confirmation
+booleans, coordinate, or range.
 
 ### M3: Worker Handoff and Adoption
 
@@ -2765,13 +2812,14 @@ current `retry_exhausted` result is only a replayable round diagnostic.
   worker artifact.
 - [x] Reconcile quiescent failed attempts, honor exact late handoffs, and
   launch only the manifest-bounded successor ordinal.
-- [ ] Publish retry exhaustion through a typed WaveStore
+- [x] Publish retry exhaustion through a typed WaveStore
   `ChunkTerminalFailureV1` transaction.
 
 Exit criterion: fresh, all-adopted, and mixed waves match the uninterrupted
 durable-policy baseline exactly with worker-launch ledger evidence. Failed
-attempts retry only after exact reconciliation, and exhausted rounds stay
-nonterminal until the typed terminal-failure publication chain lands.
+attempts retry only after exact reconciliation. Exhausted rounds become
+terminal only after the same-lock publication chain lands, and cold replay
+reconfirms raw canonical prefixes without launch or adoption.
 
 ### M4: Durable Merge Commit
 
