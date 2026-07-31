@@ -63,6 +63,12 @@ class DistributedSieveMergeStartedWriterMintV1;
 
 namespace gnfs::relation {
 
+class OOCPrivateHandoffReader;
+
+namespace ooc_cleanup_detail {
+class OOCPrivateHandoffCleanupIntentConversionExecutorV2;
+} // namespace ooc_cleanup_detail
+
 enum class OOCWriterState {
     Open,
     Suspended,
@@ -3333,6 +3339,32 @@ public:
     }
 
 private:
+    [[nodiscard]] bool cleanup_intent_conversion_ready() const noexcept {
+        return adoption_.live_lock_ != nullptr && adoption_.parent_directory_ != nullptr &&
+               adoption_.private_directory_handle_ != nullptr &&
+               adoption_.owned_by_current_process() && !adoption_.spent_ &&
+               (reader_.valid() || cleanup_intent_conversion_ready_);
+    }
+
+    void close_reader_views_for_cleanup_intent_conversion() noexcept {
+        reader_ = OOCRelationReader{};
+        cleanup_intent_conversion_ready_ = true;
+    }
+
+    void commit_cleanup_intent_conversion() noexcept {
+        adoption_.spent_ = true;
+        cleanup_intent_conversion_ready_ = false;
+    }
+
+    void release_cleanup_intent_conversion_authority() noexcept {
+        reader_ = OOCRelationReader{};
+        adoption_.private_directory_handle_.reset();
+        adoption_.parent_directory_.reset();
+        adoption_.live_lock_.reset();
+        adoption_.retains_private_cleanup_action_claim_ = false;
+        cleanup_intent_conversion_ready_ = false;
+    }
+
     struct CommittedAdoption final {
         OOCPrivateHandoffAdoptionReceipt adoption;
         OOCSnapshotDescriptor descriptor;
@@ -3376,6 +3408,9 @@ private:
     // both reader mappings before releasing the adoption receipt's BaseLock.
     OOCPrivateHandoffAdoptionReceipt adoption_;
     OOCRelationReader reader_;
+    bool cleanup_intent_conversion_ready_ = false;
+
+    friend class ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentConversionExecutorV2;
 };
 
 /// Trusted reader for a single flushed prefix of an otherwise incomplete OOC

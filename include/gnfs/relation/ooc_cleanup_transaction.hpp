@@ -69,6 +69,7 @@ class AdoptionParentDirectoryHandle;
 class BaseLock;
 class OOCPrivateHandoffAdoptionBuilderV1;
 class OOCPrivateHandoffBorrowedBaseLockV1;
+class OOCPrivateHandoffCleanupIntentConversionExecutorV2;
 class OOCPrivateLeaseRecoveryBorrowedBaseLockV1;
 class OOCPrivateLeaseRecoveryBuilderV1;
 class PrivateCleanupActionPermit;
@@ -500,6 +501,8 @@ public:
           private_directory_handle_(std::move(other.private_directory_handle_)),
           index_(std::move(other.index_)), data_(std::move(other.data_)),
           adopter_process_id_(other.adopter_process_id_),
+          retains_private_cleanup_action_claim_(
+              std::exchange(other.retains_private_cleanup_action_claim_, false)),
           spent_(std::exchange(other.spent_, true)) {
         other.base_path_.clear();
         other.private_directory_.clear();
@@ -551,13 +554,14 @@ private:
         std::shared_ptr<ooc_cleanup_detail::BaseLock> live_lock,
         std::shared_ptr<ooc_cleanup_detail::AdoptionParentDirectoryHandle> parent_directory,
         std::shared_ptr<ooc_cleanup_detail::PrivateDirectoryHandle> private_directory_handle,
-        std::uint64_t adopter_process_id) noexcept
+        std::uint64_t adopter_process_id, bool retains_private_cleanup_action_claim) noexcept
         : base_path_(std::move(base_path)), private_directory_(std::move(private_directory)),
           lock_path_(std::move(lock_path)), record_(std::move(record)),
           handoff_snapshot_(handoff_snapshot), pending_handoff_snapshot_(pending_handoff_snapshot),
           live_lock_(std::move(live_lock)), parent_directory_(std::move(parent_directory)),
           private_directory_handle_(std::move(private_directory_handle)), index_(std::move(index)),
-          data_(std::move(data)), adopter_process_id_(adopter_process_id) {}
+          data_(std::move(data)), adopter_process_id_(adopter_process_id),
+          retains_private_cleanup_action_claim_(retains_private_cleanup_action_claim) {}
 
     std::filesystem::path base_path_;
     std::filesystem::path private_directory_;
@@ -571,10 +575,12 @@ private:
     util::durable_immutable_record::OpenedOwnedFile index_;
     util::durable_immutable_record::OpenedOwnedFile data_;
     std::uint64_t adopter_process_id_ = 0;
+    bool retains_private_cleanup_action_claim_ = false;
     bool spent_ = false;
 
     friend class OOCCleanupTransaction;
     friend class ooc_cleanup_detail::OOCPrivateHandoffAdoptionBuilderV1;
+    friend class ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentConversionExecutorV2;
     friend class OOCPrivateHandoffReader;
 };
 
