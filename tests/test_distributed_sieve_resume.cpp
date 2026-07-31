@@ -1455,14 +1455,22 @@ struct ProtocolFixture final {
         cleanup_authorizations[0].artifact_kind = sieve::CleanupArtifactKindV1::worker;
         cleanup_authorizations[0].manifest_order_ordinal = 0;
         cleanup_authorizations[0].lease = handoff.lease;
+        cleanup_authorizations[0].base_lock_identity = native_identity(5000);
+        cleanup_authorizations[0].owned_marker_identity = native_identity(5010);
         cleanup_authorizations[0].handoff_digest = handoff.self_digest;
+        cleanup_authorizations[0].private_handoff_digest = digest_with_seed(210);
+        cleanup_authorizations[0].private_handoff_record = {native_identity(5020), 1024};
         cleanup_authorizations[0].artifact = handoff.artifact;
         cleanup_authorizations[0] = seal_value(std::move(cleanup_authorizations[0]));
 
         cleanup_authorizations[1] = cleanup_authorizations[0];
         cleanup_authorizations[1].manifest_order_ordinal = 1;
         cleanup_authorizations[1].lease = handoff_1.lease;
+        cleanup_authorizations[1].base_lock_identity = native_identity(5100);
+        cleanup_authorizations[1].owned_marker_identity = native_identity(5110);
         cleanup_authorizations[1].handoff_digest = handoff_1.self_digest;
+        cleanup_authorizations[1].private_handoff_digest = digest_with_seed(211);
+        cleanup_authorizations[1].private_handoff_record = {native_identity(5120), 2048};
         cleanup_authorizations[1].artifact = handoff_1.artifact;
         cleanup_authorizations[1] = reseal(std::move(cleanup_authorizations[1]));
 
@@ -1513,7 +1521,11 @@ struct ProtocolFixture final {
         cleanup_authorizations[2].artifact_kind = sieve::CleanupArtifactKindV1::merged;
         cleanup_authorizations[2].manifest_order_ordinal = 0;
         cleanup_authorizations[2].lease = merge_commit.merged_lease;
+        cleanup_authorizations[2].base_lock_identity = native_identity(5200);
+        cleanup_authorizations[2].owned_marker_identity = native_identity(5210);
         cleanup_authorizations[2].handoff_digest = merge_prepared.self_digest;
+        cleanup_authorizations[2].private_handoff_digest = digest_with_seed(212);
+        cleanup_authorizations[2].private_handoff_record = {native_identity(5220), 3072};
         cleanup_authorizations[2].artifact = merge_commit.merged_artifact;
         cleanup_authorizations[2] = seal_value(std::move(cleanup_authorizations[2]));
 
@@ -1704,6 +1716,27 @@ void test_closed_names_and_record_kinds() {
     invalid_cleanup.artifact_kind = static_cast<sieve::CleanupArtifactKindV1>(0);
     require_failed(validate_value(invalid_cleanup, false), "unknown cleanup artifact kind");
 
+    invalid_cleanup = fixture.cleanup_authorizations[0];
+    invalid_cleanup.base_lock_identity = {};
+    require_reseal_failed(std::move(invalid_cleanup),
+                          "cleanup authorization requires base-lock identity");
+    invalid_cleanup = fixture.cleanup_authorizations[0];
+    invalid_cleanup.owned_marker_identity = {};
+    require_reseal_failed(std::move(invalid_cleanup),
+                          "cleanup authorization requires owned-marker identity");
+    invalid_cleanup = fixture.cleanup_authorizations[0];
+    invalid_cleanup.private_handoff_digest = {};
+    require_reseal_failed(std::move(invalid_cleanup),
+                          "cleanup authorization requires private-handoff digest");
+    invalid_cleanup = fixture.cleanup_authorizations[0];
+    invalid_cleanup.private_handoff_record.identity = {};
+    require_reseal_failed(std::move(invalid_cleanup),
+                          "cleanup authorization requires private-handoff record identity");
+    invalid_cleanup = fixture.cleanup_authorizations[0];
+    invalid_cleanup.private_handoff_record.extent = 0;
+    require_reseal_failed(std::move(invalid_cleanup),
+                          "cleanup authorization requires private-handoff record extent");
+
     auto invalid_consumer = fixture.consumption_started;
     invalid_consumer.consumer_kind = static_cast<sieve::ConsumerKindV1>(0);
     require_failed(validate_value(invalid_consumer, false), "unknown consumer kind");
@@ -1739,6 +1772,19 @@ void test_all_record_round_trips_and_self_digests() {
         require_ok(sieve::seal_distributed_sieve_record(changed), "reseal semantic mutation");
         CHECK(self_digest(changed) != self_digest(record));
         require_ok(sieve::validate_distributed_sieve_record(changed), "resealed semantic mutation");
+    }
+
+    for (const auto& authorization : fixture.cleanup_authorizations) {
+        const auto decoded =
+            sieve::decode_distributed_sieve_record(encode_or_fail(Record{authorization}));
+        CHECK(decoded);
+        const auto* round_trip = std::get_if<sieve::ArtifactCleanupAuthorizedV1>(&*decoded.value);
+        CHECK(round_trip != nullptr);
+        CHECK(round_trip->base_lock_identity == authorization.base_lock_identity);
+        CHECK(round_trip->owned_marker_identity == authorization.owned_marker_identity);
+        CHECK(round_trip->private_handoff_digest == authorization.private_handoff_digest);
+        CHECK(round_trip->private_handoff_record == authorization.private_handoff_record);
+        CHECK(round_trip->self_digest == authorization.self_digest);
     }
 
     auto high_limb_drift = fixture.attempt;
@@ -4003,6 +4049,50 @@ void test_predecessor_and_dependency_closure() {
     require_reseal_failed(std::move(cleanup_bundle_alias),
                           "cleanup authorization rejects bundle-native alias");
 
+    using CleanupPrivateBindingMutation =
+        std::pair<std::string_view, std::function<void(sieve::ArtifactCleanupAuthorizedV1&)>>;
+    const std::vector<CleanupPrivateBindingMutation> private_binding_alias_mutations = {
+        {"base lock aliases lease directory",
+         [](auto& value) { value.base_lock_identity = value.lease.directory; }},
+        {"base lock aliases lease owner",
+         [](auto& value) { value.base_lock_identity = value.lease.owner_marker; }},
+        {"base lock aliases owned marker",
+         [](auto& value) { value.base_lock_identity = value.owned_marker_identity; }},
+        {"base lock aliases index",
+         [](auto& value) { value.base_lock_identity = value.artifact.index_file.identity; }},
+        {"base lock aliases data",
+         [](auto& value) { value.base_lock_identity = value.artifact.data_file.identity; }},
+        {"base lock aliases private handoff record",
+         [](auto& value) { value.base_lock_identity = value.private_handoff_record.identity; }},
+        {"owned marker aliases lease directory",
+         [](auto& value) { value.owned_marker_identity = value.lease.directory; }},
+        {"owned marker aliases lease owner",
+         [](auto& value) { value.owned_marker_identity = value.lease.owner_marker; }},
+        {"owned marker aliases index",
+         [](auto& value) { value.owned_marker_identity = value.artifact.index_file.identity; }},
+        {"owned marker aliases data",
+         [](auto& value) { value.owned_marker_identity = value.artifact.data_file.identity; }},
+        {"owned marker aliases private handoff record",
+         [](auto& value) { value.owned_marker_identity = value.private_handoff_record.identity; }},
+        {"private handoff record aliases lease directory",
+         [](auto& value) { value.private_handoff_record.identity = value.lease.directory; }},
+        {"private handoff record aliases lease owner",
+         [](auto& value) { value.private_handoff_record.identity = value.lease.owner_marker; }},
+        {"private handoff record aliases index",
+         [](auto& value) {
+             value.private_handoff_record.identity = value.artifact.index_file.identity;
+         }},
+        {"private handoff record aliases data",
+         [](auto& value) {
+             value.private_handoff_record.identity = value.artifact.data_file.identity;
+         }},
+    };
+    for (const auto& [name, mutate] : private_binding_alias_mutations) {
+        auto aliased = fixture.cleanup_authorizations[0];
+        mutate(aliased);
+        require_reseal_failed(std::move(aliased), name);
+    }
+
     auto cleanup_intent_alias = fixture.cleanup_completions[0];
     cleanup_intent_alias.cleanup_intent_identity =
         fixture.cleanup_authorizations[0].lease.owner_marker;
@@ -4017,6 +4107,80 @@ void test_predecessor_and_dependency_closure() {
     require_failed(sieve::validate_artifact_cleanup_completion_dependency(
                        fixture.cleanup_authorizations[0], cleanup_intent_alias),
                    "cleanup recovery rejects intent alias with authorized artifact");
+    const std::array<std::pair<std::string_view, sieve::NativeIdentityV1>, 3>
+        private_binding_identities = {{
+            {"base lock", fixture.cleanup_authorizations[0].base_lock_identity},
+            {"owned marker", fixture.cleanup_authorizations[0].owned_marker_identity},
+            {"private handoff record",
+             fixture.cleanup_authorizations[0].private_handoff_record.identity},
+        }};
+    for (const auto& [name, identity] : private_binding_identities) {
+        cleanup_intent_alias = fixture.cleanup_completions[0];
+        cleanup_intent_alias.cleanup_intent_identity = identity;
+        cleanup_intent_alias = reseal(std::move(cleanup_intent_alias));
+        const auto status = sieve::validate_artifact_cleanup_completion_dependency(
+            fixture.cleanup_authorizations[0], cleanup_intent_alias);
+        if (status) {
+            fail(name, __LINE__, "cleanup intent aliases private handoff binding");
+        }
+    }
+
+    const std::vector<CleanupPrivateBindingMutation> private_binding_field_mutations = {
+        {"base lock identity",
+         [](auto& value) { value.base_lock_identity = native_identity(5300); }},
+        {"owned marker identity",
+         [](auto& value) { value.owned_marker_identity = native_identity(5310); }},
+        {"private handoff digest",
+         [](auto& value) { perturb_digest(value.private_handoff_digest); }},
+        {"private handoff record identity",
+         [](auto& value) { value.private_handoff_record.identity = native_identity(5320); }},
+        {"private handoff record extent",
+         [](auto& value) { ++value.private_handoff_record.extent; }},
+    };
+    for (const auto& [name, mutate] : private_binding_field_mutations) {
+        auto changed = fixture.cleanup_authorizations[0];
+        mutate(changed);
+        require_ok(validate_value(changed, false), "private binding field remains structural");
+        const auto stale_digest = validate_value(changed, true);
+        if (stale_digest ||
+            stale_digest.error != sieve::DistributedSieveProtocolError::digest_mismatch) {
+            fail(name, __LINE__, "private binding field drift escaped authorization digest");
+        }
+        changed = reseal(std::move(changed));
+        const auto completion_status = sieve::validate_artifact_cleanup_completion_dependency(
+            changed, fixture.cleanup_completions[0]);
+        if (completion_status) {
+            fail(name, __LINE__, "private binding drift escaped completion dependency");
+        }
+    }
+
+    using CleanupPrivateIdentityMutation =
+        std::pair<std::string_view, std::function<void(sieve::ArtifactCleanupAuthorizedV1&,
+                                                       const sieve::NativeIdentityV1&)>>;
+    const std::array<CleanupPrivateIdentityMutation, 3> private_identity_mutations = {{
+        {"base lock",
+         [](auto& value, const auto& identity) { value.base_lock_identity = identity; }},
+        {"owned marker",
+         [](auto& value, const auto& identity) { value.owned_marker_identity = identity; }},
+        {"private handoff record",
+         [](auto& value, const auto& identity) {
+             value.private_handoff_record.identity = identity;
+         }},
+    }};
+    for (const auto& [control_name, control_identity] : manifest_control_identities) {
+        for (const auto& [field_name, mutate] : private_identity_mutations) {
+            auto aliased = fixture.cleanup_authorizations[0];
+            mutate(aliased, control_identity);
+            aliased = reseal(std::move(aliased));
+            const auto status =
+                validate_worker_authorization(fixture.merge_commit, aliased, &fixture.handoff);
+            if (status) {
+                const std::string context =
+                    std::string(field_name) + " aliases " + std::string(control_name);
+                fail(context, __LINE__, "cleanup dependency accepted manifest-control alias");
+            }
+        }
+    }
 
     const auto make_worker_authorization_for_case = [&](const MergeAliasCase& value) {
         auto authorization = fixture.cleanup_authorizations[1];
@@ -4317,6 +4481,49 @@ void test_predecessor_and_dependency_closure() {
                    fixture.consumption_ack, consumption_starts, fixture.cleanup_authorizations,
                    fixture.cleanup_completions, fixture.completed),
                "valid completion dependency closure");
+
+    const auto require_cross_authorization_binding_rejected = [&](std::string_view name,
+                                                                  const auto& mutate) {
+        auto authorizations = fixture.cleanup_authorizations;
+        mutate(authorizations[1]);
+        authorizations[1] = reseal(std::move(authorizations[1]));
+        auto completions = fixture.cleanup_completions;
+        completions[1].authorization_digest = authorizations[1].self_digest;
+        completions[1] = reseal(std::move(completions[1]));
+        auto completed = fixture.completed;
+        completed.cleanup_confirmations[1].authorization_digest = authorizations[1].self_digest;
+        completed.cleanup_confirmations[1].completion_digest = completions[1].self_digest;
+        completed = reseal(std::move(completed));
+        const auto status = sieve::validate_wave_completion_dependencies(
+            fixture.manifest, fixture.merge_commit, fixture.successor_prepared,
+            fixture.consumption_ack, consumption_starts, authorizations, completions, completed);
+        if (status) {
+            fail(name, __LINE__, "final closure accepted cross-authorization binding alias");
+        }
+    };
+    const std::array<std::pair<std::string_view, sieve::NativeIdentityV1>, 7>
+        first_authorization_identities = {{
+            {"base lock", fixture.cleanup_authorizations[0].base_lock_identity},
+            {"lease directory", fixture.cleanup_authorizations[0].lease.directory},
+            {"lease owner", fixture.cleanup_authorizations[0].lease.owner_marker},
+            {"owned marker", fixture.cleanup_authorizations[0].owned_marker_identity},
+            {"index", fixture.cleanup_authorizations[0].artifact.index_file.identity},
+            {"data", fixture.cleanup_authorizations[0].artifact.data_file.identity},
+            {"private handoff record",
+             fixture.cleanup_authorizations[0].private_handoff_record.identity},
+        }};
+    for (const auto& [field_name, mutate] : private_identity_mutations) {
+        for (const auto& [target_name, target_identity] : first_authorization_identities) {
+            const std::string context =
+                std::string(field_name) + " aliases prior " + std::string(target_name);
+            require_cross_authorization_binding_rejected(
+                context, [&](auto& value) { mutate(value, target_identity); });
+        }
+    }
+    require_cross_authorization_binding_rejected(
+        "private handoff digest aliases prior authorization", [&](auto& value) {
+            value.private_handoff_digest = fixture.cleanup_authorizations[0].private_handoff_digest;
+        });
 
     auto final_high_limb_authorizations = fixture.cleanup_authorizations;
     ++final_high_limb_authorizations[0].lease.lease_id.limbs[1];

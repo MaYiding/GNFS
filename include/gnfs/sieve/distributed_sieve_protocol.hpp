@@ -439,7 +439,13 @@ struct ArtifactCleanupAuthorizedV1 final {
     CleanupArtifactKindV1 artifact_kind = CleanupArtifactKindV1::worker;
     uint32_t manifest_order_ordinal = 0;
     LeaseIdentityV1 lease;
+    /// `manifest.wave_root_identity` supplies the parent identity needed to
+    /// remint this exact relation-layer private-handoff binding after restart.
+    NativeIdentityV1 base_lock_identity;
+    NativeIdentityV1 owned_marker_identity;
     util::Sha256Digest handoff_digest;
+    util::Sha256Digest private_handoff_digest;
+    NativeFileExtentV1 private_handoff_record;
     CorpusArtifactV1 artifact;
     util::Sha256Digest self_digest;
 };
@@ -859,7 +865,7 @@ struct ChunkTerminalEvidenceViewV1 final {
 /// must supply a value decoded by the wave store from its retained external
 /// authorization record; first publication is legal only through the strong
 /// mint validator above. A cleanup-intent native identity may not alias any
-/// native object in the authorized bundle.
+/// native object in the exact authorized private-handoff binding.
 [[nodiscard]] DistributedSieveProtocolStatus validate_artifact_cleanup_completion_dependency(
     const ArtifactCleanupAuthorizedV1& authorization,
     const ArtifactCleanupCompletedV1& completion) noexcept;

@@ -773,6 +773,57 @@ lease_and_artifact_conflict(const LeaseIdentityV1& lease,
            artifact_contains_native_identity(artifact, lease.directory);
 }
 
+[[nodiscard]] DistributedSieveProtocolStatus validate_cleanup_authorization_identities(
+    const ArtifactCleanupAuthorizedV1& authorization) noexcept {
+    const std::array<NativeIdentityV1, 7> identities{
+        authorization.base_lock_identity,
+        authorization.lease.directory,
+        authorization.lease.owner_marker,
+        authorization.owned_marker_identity,
+        authorization.artifact.index_file.identity,
+        authorization.artifact.data_file.identity,
+        authorization.private_handoff_record.identity,
+    };
+    for (std::size_t left = 0; left < identities.size(); ++left) {
+        if (!native_identity_is_valid(identities[left])) {
+            return failure(DistributedSieveProtocolError::invalid_value);
+        }
+        for (std::size_t right = left + 1; right < identities.size(); ++right) {
+            if (identities[left] == identities[right]) {
+                return failure(DistributedSieveProtocolError::duplicate_entry);
+            }
+        }
+    }
+    return {};
+}
+
+[[nodiscard]] constexpr bool
+cleanup_authorization_contains_native_identity(const ArtifactCleanupAuthorizedV1& authorization,
+                                               const NativeIdentityV1& identity) noexcept {
+    return authorization.base_lock_identity == identity ||
+           authorization.lease.directory == identity ||
+           authorization.lease.owner_marker == identity ||
+           authorization.owned_marker_identity == identity ||
+           artifact_contains_native_identity(authorization.artifact, identity) ||
+           authorization.private_handoff_record.identity == identity;
+}
+
+[[nodiscard]] constexpr bool
+cleanup_authorization_bindings_conflict(const ArtifactCleanupAuthorizedV1& left,
+                                        const ArtifactCleanupAuthorizedV1& right) noexcept {
+    return cleanup_authorization_contains_native_identity(right, left.base_lock_identity) ||
+           cleanup_authorization_contains_native_identity(right, left.lease.directory) ||
+           cleanup_authorization_contains_native_identity(right, left.lease.owner_marker) ||
+           cleanup_authorization_contains_native_identity(right, left.owned_marker_identity) ||
+           cleanup_authorization_contains_native_identity(right,
+                                                          left.artifact.index_file.identity) ||
+           cleanup_authorization_contains_native_identity(right,
+                                                          left.artifact.data_file.identity) ||
+           cleanup_authorization_contains_native_identity(right,
+                                                          left.private_handoff_record.identity) ||
+           left.private_handoff_digest == right.private_handoff_digest;
+}
+
 [[nodiscard]] constexpr bool artifacts_conflict(const CorpusArtifactV1& left,
                                                 const CorpusArtifactV1& right) noexcept {
     const bool store_identity_reused = left.descriptor.store_id == right.descriptor.store_id;
@@ -817,6 +868,16 @@ manifest_control_conflicts_with_bundle(const WaveManifestV1& manifest, const Lea
                                        const CorpusArtifactV1& artifact) noexcept {
     return manifest_control_conflicts_with_lease(manifest, lease) ||
            manifest_control_conflicts_with_artifact(manifest, artifact);
+}
+
+[[nodiscard]] constexpr bool manifest_control_conflicts_with_cleanup_authorization(
+    const WaveManifestV1& manifest, const ArtifactCleanupAuthorizedV1& authorization) noexcept {
+    return manifest_control_conflicts_with_bundle(manifest, authorization.lease,
+                                                  authorization.artifact) ||
+           manifest_control_contains_identity(manifest, authorization.base_lock_identity) ||
+           manifest_control_contains_identity(manifest, authorization.owned_marker_identity) ||
+           manifest_control_contains_identity(manifest,
+                                              authorization.private_handoff_record.identity);
 }
 
 [[nodiscard]] DistributedSieveProtocolStatus
@@ -1334,9 +1395,10 @@ validate_value(const ArtifactCleanupAuthorizedV1& value) noexcept {
     if (const auto status = validate_artifact(value.artifact); !status) {
         return status;
     }
-    return lease_and_artifact_conflict(value.lease, value.artifact)
-               ? failure(DistributedSieveProtocolError::duplicate_entry)
-               : DistributedSieveProtocolStatus{};
+    if (digest_is_zero(value.private_handoff_digest) || value.private_handoff_record.extent == 0) {
+        return failure(DistributedSieveProtocolError::invalid_value);
+    }
+    return validate_cleanup_authorization_identities(value);
 }
 
 [[nodiscard]] DistributedSieveProtocolStatus
@@ -1571,7 +1633,11 @@ void write_payload(Writer& writer, const ArtifactCleanupAuthorizedV1& value) {
     write_enum(writer, value.artifact_kind);
     writer.put_u32(value.manifest_order_ordinal);
     write_lease_identity(writer, value.lease);
+    write_native_identity(writer, value.base_lock_identity);
+    write_native_identity(writer, value.owned_marker_identity);
     writer.put_digest(value.handoff_digest);
+    writer.put_digest(value.private_handoff_digest);
+    write_file_extent(writer, value.private_handoff_record);
     write_corpus_artifact(writer, value.artifact);
 }
 
@@ -1744,7 +1810,12 @@ void write_payload(Writer& writer, const WaveCompletedV1& value) {
            read_closed_enum(reader, value.artifact_kind,
                             {CleanupArtifactKindV1::worker, CleanupArtifactKindV1::merged}) &&
            reader.get_u32(value.manifest_order_ordinal) &&
-           read_lease_identity(reader, value.lease) && reader.get_digest(value.handoff_digest) &&
+           read_lease_identity(reader, value.lease) &&
+           read_native_identity(reader, value.base_lock_identity) &&
+           read_native_identity(reader, value.owned_marker_identity) &&
+           reader.get_digest(value.handoff_digest) &&
+           reader.get_digest(value.private_handoff_digest) &&
+           read_file_extent(reader, value.private_handoff_record) &&
            read_corpus_artifact(reader, value.artifact);
 }
 
@@ -3299,8 +3370,7 @@ DistributedSieveProtocolStatus validate_artifact_cleanup_dependencies(
     }
     if (manifest_control_conflicts_with_bundle(manifest, commit.merged_lease,
                                                commit.merged_artifact) ||
-        manifest_control_conflicts_with_bundle(manifest, authorization.lease,
-                                               authorization.artifact)) {
+        manifest_control_conflicts_with_cleanup_authorization(manifest, authorization)) {
         return failure(DistributedSieveProtocolError::duplicate_entry);
     }
 
@@ -3398,10 +3468,8 @@ DistributedSieveProtocolStatus validate_artifact_cleanup_completion_dependency(
         return failure(DistributedSieveProtocolError::invalid_value);
     }
     if (completion.cleanup_intent_identity.has_value() &&
-        (*completion.cleanup_intent_identity == authorization.lease.owner_marker ||
-         *completion.cleanup_intent_identity == authorization.lease.directory ||
-         artifact_contains_native_identity(authorization.artifact,
-                                           *completion.cleanup_intent_identity))) {
+        cleanup_authorization_contains_native_identity(authorization,
+                                                       *completion.cleanup_intent_identity)) {
         return failure(DistributedSieveProtocolError::duplicate_entry);
     }
     return {};
@@ -3436,8 +3504,7 @@ DistributedSieveProtocolStatus validate_wave_completion_dependencies(
             !status) {
             return failure(status.error, status.byte_offset, index);
         }
-        if (manifest_control_conflicts_with_bundle(manifest, authorization.lease,
-                                                   authorization.artifact) ||
+        if (manifest_control_conflicts_with_cleanup_authorization(manifest, authorization) ||
             (cleanup.cleanup_intent_identity.has_value() &&
              manifest_control_contains_identity(manifest, *cleanup.cleanup_intent_identity))) {
             return failure(DistributedSieveProtocolError::duplicate_entry,
@@ -3445,7 +3512,9 @@ DistributedSieveProtocolStatus validate_wave_completion_dependencies(
         }
         for (uint32_t previous = 0; previous < index; ++previous) {
             if (authorization.self_digest == cleanup_authorizations[previous].self_digest ||
-                cleanup.self_digest == cleanup_completions[previous].self_digest) {
+                cleanup.self_digest == cleanup_completions[previous].self_digest ||
+                cleanup_authorization_bindings_conflict(authorization,
+                                                        cleanup_authorizations[previous])) {
                 return failure(DistributedSieveProtocolError::duplicate_entry,
                                DISTRIBUTED_SIEVE_PROTOCOL_NO_OFFSET, index);
             }
