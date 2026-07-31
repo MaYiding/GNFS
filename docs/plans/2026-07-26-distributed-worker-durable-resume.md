@@ -1,7 +1,8 @@
 # Distributed Sieve Durable Wave Resume
 
-Status: implementation in progress (M0 complete; M1 cleanup conversion and M2
-durable launcher integration underway)
+Status: implementation in progress (durable worker/retry path complete; M4
+prepared admission and raw-writer recovery complete; merge commit and exact
+worker cleanup next)
 
 Branch: `codex/parallel-structured-filter`
 
@@ -598,6 +599,103 @@ worker summary. Normal cleanup still requires its external
 authorization/completion chain; unexplained absence blocks further mutation and
 completion but never makes the already committed merged result unreadable.
 Worker cleanup is therefore idempotent at every authorized prefix.
+
+#### Frozen M4 commit and worker-cleanup continuation
+
+Fresh preparation and cold recovery converge on one move-only
+`DistributedSieveMergePreparedAdmissionV1`. The next transition consumes that
+admission through a source-private origin vtable into one origin-neutral commit
+context. The context retains the WaveLock, coordinator claim, manifest-order
+worker readers and BaseLocks, merged reader and BaseLock, prepared record, and
+the exact WaveStore record-publication authority. It exposes no path, file
+descriptor, raw `void*`, generic cleanup operation, or caller-selected record
+payload. A failure before any canonical commit publication leaves the
+admission retryable. Once commit publication is durable or its outcome is
+uncertain, the in-memory admission is spent and recovery proceeds only from the
+root namespace.
+
+`NormalizedDiagnosticV1` in the V1 commit is a canonical durable projection,
+not a copy of process-local wait facts. Every V1 `ChunkCommitSummaryV1` uses
+`{kind = none, code = 0}`. The dependency validator rejects any other value.
+Exit, signal, and "observed before this invocation" facts remain runtime
+diagnostics and are not serialized into `WaveMergeCommitV1`. This rule makes a
+fresh commit and a commit reconstructed from the same prepared state
+byte-identical without widening `MergePreparedV1`.
+
+The wave-root leaves are fixed and closed under exact parsing:
+
+```text
+.gnfs-wave-v1.merge-commit[.pending]
+.gnfs-wave-v1.cleanup-authorized-worker-cNN[.pending]
+.gnfs-wave-v1.cleanup-completed-worker-cNN[.pending]
+.gnfs-wave-v1.cleanup-authorized-merged[.pending]
+.gnfs-wave-v1.cleanup-completed-merged[.pending]
+```
+
+`NN` is the existing two-digit canonical manifest ordinal and is bounded by
+`DISTRIBUTED_SIEVE_PROTOCOL_MAX_CHUNKS`. The root admits at most one
+canonical/pending commit pair and at most one authorization/completion pair per
+nonempty worker ordinal. Empty chunks never receive cleanup records. The
+merged leaves are reserved now for M5 and remain invalid until a matching ACK
+chain exists. Any suffix, width, case, duplicate coordinate, or record/leaf
+role mismatch is a namespace conflict.
+
+The root classifier has three absorbing authority branches:
+
+```text
+prepared only
+  -> prepared admission
+
+commit prefix or canonical commit
+  -> normalize only byte-identical pending/canonical commit
+  -> committed-tail admission
+  -> continue exact worker cleanup
+
+worker absence
+  -> valid only with its exact canonical authorization and completion chain
+```
+
+A committed-tail admission retains the merged corpus throughout worker
+cleanup. It never grants merged cleanup authority. Commit publication first
+reopens and validates the canonical bytes with
+`validate_merge_dependency_chain()`. Only then may the WaveStore publish one
+manifest-order `ArtifactCleanupAuthorizedV1`, validate it with
+`validate_artifact_cleanup_dependencies()`, retain its canonical bytes,
+snapshot, digest, and exact artifact binding, and mint the corresponding
+one-shot relation capability. The recovery-only completion validator is never
+used to mint first-use deletion authority.
+
+The relation conversion consumes the already-held
+`OOCPrivateHandoffReader` and the exact WaveStore authorization receipt under
+the same BaseLock open-file description. It closes mappings and read handles
+before mutation but does not call `open`, `flock`, `F_DUPFD*`, or `LOCK_UN`, and
+does not reacquire a lower-order lock. It publishes canonical V2 intent inside
+an exact held/named revalidation sandwich. Before that canonical boundary both
+capabilities remain retryable and no deletion is authorized; afterward the V2
+intent is the sole cross-process recovery authority and both live capabilities
+are spent. Completion may be published only after exact namespace absence and
+parent-directory durability are revalidated.
+
+The lock order is permanent `WaveLock`, coordinator claim, every worker
+BaseLock in manifest/attempt order, merged target BaseLock, then the current
+worker's in-memory relation action claim. No OS lock is acquired after the
+merged target. Destruction releases the merged target first, workers in reverse
+manifest order, the coordinator claim, and finally the WaveLock. Positive
+filesystem mutation for this continuation remains macOS-only; Linux and
+Windows fail before spending the admission or creating a pending root record.
+
+Implementation is staged behind one eventual top-level consumer:
+
+1. M4b-P2c: origin-neutral commit context, root naming/inventory, canonical
+   commit publication/reopen, committed-tail admission, and deterministic
+   `none/0` diagnostics.
+2. M4b-P3: relation-layer two-capability V2 intent executor and every
+   intra-lease crash/replacement recovery boundary.
+3. M4b-P4: manifest-order worker authorization, cleanup, completion, and
+   fresh/cold-open integration while retaining the merged corpus.
+
+Consumption ACK, merged cleanup, `WaveCompletedV1`, multi-wave metadata
+garbage collection, and non-macOS positive mutation remain M5 or later.
 
 The caller-facing result receives only a same-handle, descriptor-bound
 `ReadOnlyRelationCorpusView`. It carries no fresh-writer receipt, adoption
@@ -2823,12 +2921,12 @@ reconfirms raw canonical prefixes without launch or adoption.
 
 ### M4: Durable Merge Commit
 
-- [ ] Reserve a deferred merged lease, publish/recover the bounded
+- [x] Reserve a deferred merged lease, publish/recover the bounded
   predecessor-linked `MergeStartedV1` chain, and stream manifest-order inputs
   into its exact generation.
-- [ ] Bind sequence, corpus, descriptor, native identity, and dedup receipts.
-- [ ] Publish/recover protected `MergePreparedV1` and a self-contained
-  `WaveMergeCommitV1`.
+- [x] Bind sequence, corpus, descriptor, native identity, and dedup receipts.
+- [x] Publish/recover protected `MergePreparedV1`.
+- [ ] Publish/recover a self-contained `WaveMergeCommitV1`.
 - [ ] Return only a non-armable descriptor/handle-bound result view.
 - [ ] Publish per-worker cleanup authorization/completion and convert commit
   authority into exact intra-lease cleanup intent.
@@ -2840,8 +2938,12 @@ M4b restart recovery is split into explicit authority milestones:
 - [x] M4b-P2b-P0b converts a terminal canonical prepared generation into the
   common read-only prepared admission without reopening its `BaseLock`.
 - [x] M4b-P2b-P1 rolls back an exact raw writer residue that has no handoff.
-- [ ] A later `WaveMergeCommitV1` transition consumes the common prepared
-  admission and completes exact worker cleanup.
+- [ ] M4b-P2c consumes the common admission into canonical
+  `WaveMergeCommitV1` and a committed-tail admission.
+- [ ] M4b-P3 converts exact external authorization plus the already-held
+  relation reader into the sole recoverable V2 cleanup intent.
+- [ ] M4b-P4 completes manifest-order worker authorization, cleanup, and
+  completion while retaining the merged corpus.
 
 M4a completes the source-private merge-generation namespace, exact P0-P8
 reservation, bounded `MergeStartedV1` publication and normalization, reverse
@@ -2981,10 +3083,10 @@ Fresh publication and cold recovery now converge on the same move-only
 `DistributedSieveMergePreparedAdmissionV1`. Its origin-specific lifetime stays
 behind a process-bound shared anchor, while the common surface exposes only the
 stable `MergePreparedV1` record and validity check. This completes
-M4b-P2b-P0b, but it does not complete M4b-P2b-P1 or durable merge commit. Exact
-raw writer residue without a handoff still needs rollback, and no current
-consumer turns the common admission into `WaveMergeCommitV1` or worker cleanup
-authority.
+M4b-P2b-P0b. M4b-P2b-P1 now also recovers exact raw writer residue without a
+handoff. No current consumer yet turns the common admission into
+`WaveMergeCommitV1` or worker cleanup authority; that continuation is the
+M4b-P2c/P3/P4 sequence frozen above.
 
 M4b-P2b-P1 keeps cold open read-only for an unprepared `MergeStartedV1`
 generation. The loader may admit only one typed raw-writer or rollback-stage
@@ -3084,22 +3186,26 @@ Synthesized from CEO and engineering review findings.
   - Surfaced by: security/test review, environment and retry-randomness closure.
   - Files: protocol header/source and core tests.
   - Verify: `./scripts/test.sh run test_distributed_sieve_resume --suite core`.
-- [ ] **T2 (P1, human: ~3 days / agent: ~5h)** — Relation storage — Add the rollback-revoking handoff phase, same-handle adoption/read-only view, and typed authorized-cleanup conversion.
-  - Surfaced by: cleanup-before-adoption, stale receipt, path-following, and authority-bridge risks.
-  - Files: OOC handoff, cleanup transaction, mmap/reader/corpus, relation crash tests.
-  - Verify: relation lease-crash suite and `./scripts/test.sh changed --deep`.
-- [ ] **T3 (P1, human: ~2 days / agent: ~3h)** — Wave ownership — Add stable root/lock identity, inherited descriptor hygiene, and lease-first bounded attempt chain.
+- [ ] **T2 (P1, human: ~2 days / agent: ~4h)** — Relation storage — Activate the two-capability V2 authorized-cleanup executor on an already-held same-OFD reader.
+  - Surfaced by: cleanup-before-adoption, stale receipt, path-following, and authority-bridge risks; the rollback-revoking handoff and same-handle reader now exist.
+  - Files: OOC cleanup union, authorized intent, private handoff reader seam, relation crash tests.
+  - Verify: V2 authority-conversion prefix and replacement suites plus `./scripts/test.sh changed --deep`.
+- [x] **T3 (P1, human: ~2 days / agent: ~3h)** — Wave ownership — Add stable root/lock identity, inherited descriptor hygiene, and lease-first bounded attempt chain.
   - Surfaced by: live-child, replaced-lock, dual-master, and retry-reset failure modes.
   - Files: resume store, distributed config, resume crash tests.
   - Verify: live-child and concurrent-resumer self-exec cases.
-- [ ] **T4 (P1, human: ~2 days / agent: ~3h)** — Adoption — Add an internal-only worker handoff route and missing-only deterministic execution.
+- [x] **T4 (P1, human: ~2 days / agent: ~3h)** — Adoption — Add an internal-only worker handoff route and missing-only deterministic execution.
   - Surfaced by: master-crash adoption objective.
   - Files: distributed worker orchestration, resume store, integration tests.
   - Verify: fresh/all-adopted/mixed parity and launch ledger.
-- [ ] **T5 (P1, human: ~3 days / agent: ~5h)** — Merge — Add merge start/prepared/commit, non-armable result, and external worker cleanup authorization/completion.
-  - Surfaced by: merge receipt without data, provisional orphan, caller-arm, and cleanup-prefix ambiguity.
-  - Files: resume store, `RelationCorpus` integration, crash tests.
-  - Verify: every merge/cleanup crash prefix.
+- [ ] **T5a (P1, human: ~1 day / agent: ~2h)** — Merge commit — Consume fresh/recovered prepared admission into the same canonical commit and committed-tail admission.
+  - Surfaced by: absent runtime commit consumer, unknown root leaves, and nondeterministic process-local diagnostics.
+  - Files: prepared admission, merge commit authority, WaveStore inventory/classifier, commit crash tests.
+  - Verify: fresh/cold byte parity, three immutable-publication prefixes, replay, replacement, Busy, and platform fail-closed.
+- [ ] **T5b (P1, human: ~2 days / agent: ~4h)** — Worker cleanup — Publish exact per-worker authorization/completion and drive T2 in manifest order while retaining merged output.
+  - Surfaced by: cleanup-prefix ambiguity, unexplained absence, and caller-arm risks.
+  - Files: merge commit authority, WaveStore cleanup tail, result view, end-to-end crash tests.
+  - Verify: every authorization, intra-lease, removal, and completion prefix with multi-worker ordering.
 - [ ] **T6 (P1, human: ~3 days / agent: ~5h)** — Succession — Add consumption start/prepared/ACK, ACK-gated merged cleanup, and completed classification.
   - Surfaced by: ACK-over-RAM, pre-ACK successor, final-cleanup, and metadata-anchor risks.
   - Files: distributed result API, pipeline, structured reduction resume path.
@@ -3278,6 +3384,10 @@ the fsync and SHA cost; cross-size evidence decides promotion.
 | 18 | Completion | Retain lock and immutable metadata after `WaveCompletedV1` | Recoverability | Final classification survives every artifact-GC prefix | Metadata deletion in V1 |
 | 19 | Repeated builds | Use bounded predecessor-linked merge/consumption start chains | Convergence | Old generations remain valid audit leaves while exact new generations can progress | Singleton start file and “latest wins” |
 | 20 | Exhaustion | Treat worker retry exhaustion as terminal wave error | Correctness first | Every successful result contains all nonempty chunks and preserves payload parity | Zero-row partial-success merge |
+| 21 | Commit diagnostics | Canonicalize every V1 chunk diagnostic to `none/0` | Reproducibility | Fresh and cold prepared state produce identical bytes without guessing process-local wait facts | Persisting transient exit/signal observations only on the fresh path |
+| 22 | Prepared continuation | Consume the origin-neutral admission through a sealed private vtable | Least authority | Fresh and recovered layouts converge without exposing type-erased internals or a second mutable WaveStore | Public anchor access and origin-specific commit consumers |
+| 23 | Root coordinates | Reserve exact commit and worker/merged cleanup leaves | Fail closed | Typed inventory can normalize crash prefixes and reject aliases before mutation | Treating new records as generic protocol leaves |
+| 24 | Cleanup conversion | Consume the already-held reader and exact canonical authorization on the same BaseLock OFD | TOCTOU closure | No lower-order lock reacquisition or path-derived deletion authority exists | Reopen/reflock/dup-based cleanup factory |
 
 ## Completion Summaries
 
@@ -3321,6 +3431,78 @@ Parallelization: 4 lanes, 3 parallelizable and 2 ordered integration phases
 Unresolved decisions: 0
 ```
 
+## M4 Continuation Review: 2026-08-01
+
+Three independent read-only passes reviewed the prepared-to-commit
+continuation: merge architecture, deletion authority/security, and the real
+filesystem test matrix. Scope is accepted as a three-stage implementation
+rather than one indivisible mutation. This preserves one eventual top-level
+consumer while giving each durable authority ladder an independently testable
+landing point.
+
+### What already exists
+
+- Protocol values, codecs, `validate_merge_dependency_chain()`, exact cleanup
+  dependency validators, and immutable record publication are reused.
+- Fresh and cold paths already converge on a move-only prepared admission.
+- Same-handle handoff adoption, retained BaseLocks, V2 intent codec, private
+  action claim, and the V1 cleanup mutation engine are extended rather than
+  replaced.
+- Merge-start, streaming/dedup, protected prepared publication, raw-writer
+  recovery, worker retry/adoption, and their regression shards are complete.
+
+### NOT in scope
+
+- Consumption ACK, merged cleanup, and `WaveCompletedV1`: require a durable
+  structured successor and remain M5.
+- Multi-wave campaign metadata garbage collection: requires the completed
+  record chain and remains post-M5.
+- Positive Linux or Windows mutation: current ACL, lock, and crash evidence is
+  macOS-specific, so unsupported platforms remain zero-mutation failures.
+- Persisting process-local exit/signal diagnostics: they are not replayable
+  from prepared state and are deliberately excluded from V1 commit bytes.
+- Public cleanup factories or path/fd accessors: they would widen authority
+  beyond the exact WaveStore-to-relation bridge.
+
+### Failure-mode closure
+
+| New path | Production failure | Test | Handling | Visible result |
+|---|---|---|---|---|
+| admission -> commit | crash after rename before root sync | commit-crash self-exec | normalize exact prefix only | interrupted/recovery-required |
+| commit replay | canonical leaf or inode replaced | protection replacement | preserve evidence, no rewrite | namespace conflict |
+| authorization mint | wrong ordinal, generation, handoff, or artifact | dependency negatives | no receipt minted | protocol failure |
+| V2 conversion | handoff/pair replacement inside sandwich | relation replacement hooks | spend neither capability, mutate nothing | tainted/conflict |
+| worker cleanup | crash at any rename/unlink/marker boundary | two cleanup crash shards | canonical V2 resumes exact tail | interrupted then convergence |
+| cleanup completion | absence without parent durability | completion fault seam | completion publication forbidden | recovery required |
+| concurrent cleanup | another process holds current BaseLock | fork/pipe Busy case | no later ordinal advances | lock busy |
+| unsupported platform | consumer invoked before any record exists | platform snapshot case | pre-mutation platform gate | platform unsupported |
+
+No path is permitted to fail silently. The critical gaps found by the reviewers
+are resolved as plan requirements and remain P1 implementation tasks T2, T5a,
+and T5b.
+
+### Parallel implementation lanes
+
+| Step | Modules touched | Depends on |
+|---|---|---|
+| T5a commit persistence | `src/sieve`, protocol tests | frozen continuation |
+| T2 V2 executor | `src/relation`, relation tests | frozen receipt/reader contract |
+| merge test harness | `tests`, CMake/test runner | frozen public test seams |
+| T5b worker tail | `src/sieve`, result integration | T5a + T2 |
+
+Lane A implements T5a. Lane B implements T2. Lane C builds the test harness and
+commit crash/protection suites. A, B, and C may start in parallel because their
+primary modules differ; T5b starts only after A and B integrate. CMake,
+`scripts/test.sh`, the policy checker, and this plan are single-owner
+integration files and are serialized to avoid manufactured merge conflicts.
+
+The first landing is T5a only: worker handoffs remain intact. Its minimum gate
+is the new `core`, `commit-crash`, and commit-focused `protection` shards; the
+existing resume core and merge-prepared-protection shards; the merge-writer
+authority binary; the distributed-sieve policy checker; test catalog; and
+`git diff --check`. T2 then lands its relation-only crash matrix. T5b enables
+the two cleanup shards and finishes with `changed --deep` plus the project gate.
+
 ## Unresolved Decisions
 
 None. Every implementation-affecting choice is frozen above. Measured promotion
@@ -3328,11 +3510,19 @@ after M6 is a future evidence decision, not an implementation ambiguity.
 
 ## GSTACK REVIEW REPORT
 
-- CEO review: clean; 15 scope/architecture findings incorporated.
-- Engineering review: clean; 18 findings incorporated, 0 critical gaps.
-- External adversarial review: 11 findings incorporated, 0 unresolved.
-- Independent second-pass review: clean; no remaining P0, P1, or P2.
-- Review mode: selective expansion with full engineering and outside-voice
-  validation.
+| Review | Trigger | Why | Runs | Status | Findings |
+|---|---|---|---:|---|---|
+| CEO Review | `/plan-ceo-review` | Scope and strategy | 2 | CLEAR | bounded-wave scope retained; M5+ deferrals unchanged |
+| Codex Review | `/codex review` | Independent second opinion | 1 | INFORMATIONAL | prior findings incorporated; no new outside-voice recommendation applied |
+| Eng Review | `/plan-eng-review` | Architecture and tests | 3 | CLEAR | 4 M4 continuation gaps converted into frozen requirements, 0 unresolved |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | SKIPPED | no UI scope |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | SKIPPED | internal storage/process protocol |
+
+**CROSS-MODEL:** architecture, security, and test reviews agree on the sealed
+prepared continuation, deterministic commit bytes, typed root inventory, and
+same-OFD two-capability cleanup boundary.
+
+**VERDICT:** CEO + ENG CLEARED — implement T5a, T2, then T5b in the frozen
+parallel lanes.
 
 NO UNRESOLVED DECISIONS
