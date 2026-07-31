@@ -330,6 +330,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/distributed_sieve_wave_store.cp
         src/sieve/distributed_sieve_merge_writer_internal.cpp
         src/sieve/distributed_sieve_merge_writer_codec_internal.cpp
         src/sieve/distributed_sieve_merge_writer_authority.cpp
+        src/sieve/distributed_sieve_merge_commit_authority.cpp
     )
 endif()
 
@@ -1156,6 +1157,48 @@ if(GNFS_BUILD_TESTS)
         DistributedSieveMergeWriterAuthority
         PROPERTIES LABELS "fast" TIMEOUT 120
     )
+
+    add_executable(test_distributed_sieve_wave_merge_commit
+        tests/test_distributed_sieve_wave_merge_commit.cpp
+    )
+    target_include_directories(test_distributed_sieve_wave_merge_commit PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/relation
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sieve
+    )
+    target_link_libraries(test_distributed_sieve_wave_merge_commit PRIVATE
+        gnfs_core Threads::Threads)
+    if(APPLE)
+        add_test(
+            NAME DistributedSieveWaveMergeCommitCore
+            COMMAND test_distributed_sieve_wave_merge_commit --suite core
+        )
+        add_test(
+            NAME DistributedSieveWaveMergeCommitCrash
+            COMMAND test_distributed_sieve_wave_merge_commit --suite commit-crash
+        )
+        add_test(
+            NAME DistributedSieveWaveMergeCommitProtection
+            COMMAND test_distributed_sieve_wave_merge_commit --suite protection
+        )
+        set_tests_properties(
+            DistributedSieveWaveMergeCommitCore
+            DistributedSieveWaveMergeCommitCrash
+            PROPERTIES LABELS "slow" TIMEOUT 60
+        )
+        set_tests_properties(
+            DistributedSieveWaveMergeCommitProtection
+            PROPERTIES LABELS "slow" TIMEOUT 90
+        )
+    else()
+        add_test(
+            NAME DistributedSieveWaveMergeCommitPlatform
+            COMMAND test_distributed_sieve_wave_merge_commit --suite platform
+        )
+        set_tests_properties(
+            DistributedSieveWaveMergeCommitPlatform
+            PROPERTIES LABELS "instant" TIMEOUT 10
+        )
+    endif()
 
     add_executable(test_distributed_sieve_worker_work_package_file
         tests/test_distributed_sieve_worker_work_package_file.cpp

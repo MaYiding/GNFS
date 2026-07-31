@@ -576,9 +576,40 @@ admission through durable `OWNED` removal. Each prefix must cold-reopen and
 converge to P0. Same-byte index and data inode replacements must fail as
 `namespace_conflict` without deleting either the replacement or displaced
 object. A competing process must observe `lock_busy`; after it exits, cold
-reopen and recovery must succeed. The later `WaveMergeCommitV1` consumer
-remains unimplemented and has no positive completion claim in routine test
-selection.
+reopen and recovery must succeed. This authority binary stops at the common
+prepared admission. The separately cataloged merge-commit test owns every
+positive `WaveMergeCommitV1` consumer claim.
+
+`test_distributed_sieve_wave_merge_commit` is the dedicated real-filesystem
+contract for the first `WaveMergeCommitV1` consumer slice. On macOS, its `core`
+suite first commits a fresh prepared admission, then byte-compares that commit
+with a cold reopen of the resulting committed tail. A separate case cold-opens
+and consumes a canonical prepared admission. Both paths use a three-slot wave
+containing an ordinary handoff, a zero-row handoff, and an empty chunk, and
+prove that commit publication never removes worker artifacts. The suite also
+rejects a moved admission replay without rewriting the canonical commit. The
+`commit-crash` suite re-executes after pending durability, canonical promotion,
+and canonical durability, then requires cold recovery to reopen the exact same
+commit and merged corpus without repeating merge work. The `protection` suite
+replaces the canonical commit with a byte-identical new inode between its first
+and final successor validation and requires fail-closed rejection. It repeats
+the replacement after a committed-tail admission exists and requires that live
+tail to become invalid. The suite also rejects a competing permanent wave-lock
+owner without mutation. Unsupported platforms register only the `platform`
+suite.
+That suite freezes the inaccessible admission and committed-tail type surface
+and confirms that its compile-time-only probe leaves a candidate namespace
+absent. It does not forge a prepared admission or call the consumer, so this
+suite makes no runtime consumer claim. The repository policy checker separately
+freezes the consumer order: admission validation, the non-Apple pre-mutation
+return, then Apple-only context construction and publication.
+
+The macOS suites start as `slow` entries until isolated Debug measurements
+justify a narrower tier. Their timeouts bound each logical shard rather than
+classify its expected duration. CTest does not register the aggregate because
+that would duplicate the complete matrix. The script runner catalogs the
+physical no-argument binary as `slow` with a five-minute timeout; the aggregate
+runs all supported-host shards for direct changed-file validation.
 
 `test_distributed_sieve_resume` is also the dedicated M2j-A receipt-gated
 launcher contract.

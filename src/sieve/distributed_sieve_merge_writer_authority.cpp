@@ -201,11 +201,16 @@ primary_error(const ooc_store::OOCExactFreshConstructionFailure& failure_value,
 /// Declaration order is intentional. Reverse destruction closes the writer
 /// first, then drops borrowed views, then the WaveStore mint/receipt, and only
 /// then releases adopted worker readers and the coordinator/WaveLock roots.
-struct DistributedSieveMergeWriterAuthorityStateV1 final {
+struct DistributedSieveMergeWriterAuthorityStateV1 final : DistributedSieveMergePreparedOriginV1 {
     DistributedSieveMergeWriterAuthorityStateV1(
         worker::DistributedSieveWorkerCoordinatorResultV1&& worker_result_value,
         resume::DistributedSieveMergeStartedWriterMintV1&& mint_value) noexcept
-        : worker_result(std::move(worker_result_value)), mint(std::move(mint_value)) {}
+        : worker_result(std::move(worker_result_value)), mint(std::move(mint_value)) {
+        const int process_id = gnfs::util::process_id();
+        if (process_id > 0) {
+            creator_process_id = static_cast<std::uint64_t>(process_id);
+        }
+    }
 
     ~DistributedSieveMergeWriterAuthorityStateV1() noexcept {
         if (writer != nullptr && (writer->state() == gnfs::relation::OOCWriterState::Open ||
@@ -225,8 +230,61 @@ struct DistributedSieveMergeWriterAuthorityStateV1 final {
     codec::DistributedSieveMergePreparedPayloadBuildDiagnosticV1 codec_diagnostic;
     std::optional<MergePreparedV1> prepared_record;
     std::vector<std::byte> prepared_payload;
+    std::optional<DistributedSieveMergeCommitPredecessorSnapshotsV1> predecessor_snapshots;
     bool handoff_published = false;
     std::unique_ptr<gnfs::relation::OOCRelationWriter> writer;
+    std::uint64_t creator_process_id = 0;
+
+private:
+    [[nodiscard]] bool
+    prepared_origin_valid(const MergePreparedV1* stable_record,
+                          std::uint64_t expected_creator_process_id) const noexcept override {
+        const int process_id = gnfs::util::process_id();
+        if (writer == nullptr || manifest == nullptr || merge_started_chain.empty() ||
+            !stream_receipt.has_value() || !prepared_record.has_value() ||
+            prepared_payload.empty() || !predecessor_snapshots.has_value() || !handoff_published ||
+            !worker_result || stable_record == nullptr ||
+            stable_record != std::addressof(*prepared_record) || creator_process_id == 0 ||
+            expected_creator_process_id != creator_process_id || process_id <= 0 ||
+            creator_process_id != static_cast<std::uint64_t>(process_id) ||
+            writer->state() != gnfs::relation::OOCWriterState::Finalized ||
+            !cached_prepared_payload_is_exact(*this)) {
+            return false;
+        }
+        for (const auto& coordinated : worker_result.chunks) {
+            if (coordinated.adopted.has_value() && !coordinated.adopted->valid()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    [[nodiscard]] resume::DistributedSieveWaveStore* retained_wave_store() noexcept override {
+        return worker_result.store.get();
+    }
+
+    [[nodiscard]] std::span<const MergeStartedV1>
+    retained_merge_started_chain() const noexcept override {
+        return merge_started_chain;
+    }
+
+    [[nodiscard]] const DistributedSieveMergeCommitPredecessorSnapshotsV1*
+    retained_predecessor_snapshots() const noexcept override {
+        return predecessor_snapshots ? std::addressof(*predecessor_snapshots) : nullptr;
+    }
+
+    [[nodiscard]] std::size_t retained_manifest_slot_count() const noexcept override {
+        return worker_result.chunks.size();
+    }
+
+    [[nodiscard]] const WorkerHandoffV1*
+    retained_worker_handoff(std::size_t manifest_slot) const noexcept override {
+        if (manifest_slot >= worker_result.chunks.size()) {
+            return nullptr;
+        }
+        const auto& adopted = worker_result.chunks[manifest_slot].adopted;
+        return adopted.has_value() ? std::addressof(adopted->handoff()) : nullptr;
+    }
 };
 
 namespace {
@@ -414,31 +472,8 @@ bool DistributedSieveMergeWriterAuthorityV1::state_lifetime_stable(
 bool DistributedSieveMergeWriterAuthorityV1::state_process_owned(
     const DistributedSieveMergeWriterAuthorityStateV1& state) noexcept {
     const int process_id = gnfs::util::process_id();
-    return state.mint.creator_process_id_ != 0 && process_id > 0 &&
-           state.mint.creator_process_id_ == static_cast<std::uint64_t>(process_id);
-}
-
-bool DistributedSieveMergeWriterAuthorityV1::validate_prepared_admission_origin(
-    const void* lifetime_anchor, const MergePreparedV1* stable_record,
-    std::uint64_t creator_process_id) noexcept {
-    const auto* state =
-        static_cast<const DistributedSieveMergeWriterAuthorityStateV1*>(lifetime_anchor);
-    if (state == nullptr || state->writer == nullptr || state->manifest == nullptr ||
-        state->merge_started_chain.empty() || !state->stream_receipt.has_value() ||
-        !state->prepared_record.has_value() || state->prepared_payload.empty() ||
-        !state->handoff_published || !state->worker_result || stable_record == nullptr ||
-        stable_record != std::addressof(*state->prepared_record) ||
-        creator_process_id != state->mint.creator_process_id_ || !state_process_owned(*state) ||
-        state->writer->state() != gnfs::relation::OOCWriterState::Finalized ||
-        !cached_prepared_payload_is_exact(*state)) {
-        return false;
-    }
-    for (const auto& coordinated : state->worker_result.chunks) {
-        if (coordinated.adopted.has_value() && !coordinated.adopted->valid()) {
-            return false;
-        }
-    }
-    return true;
+    return state.creator_process_id != 0 && process_id > 0 &&
+           state.creator_process_id == static_cast<std::uint64_t>(process_id);
 }
 
 void DistributedSieveMergeWriterAuthorityV1::close_state_noexcept(
@@ -633,17 +668,39 @@ DistributedSieveMergePreparedResultV1 DistributedSieveMergeWriterAuthorityV1::pu
             close_state_noexcept(state);
             return {.admission = std::nullopt, .diagnostic = std::move(diagnostic)};
         }
+        std::vector<const WorkerHandoffV1*> handoffs;
+        handoffs.reserve(state->worker_result.chunks.size());
+        for (const auto& coordinated : state->worker_result.chunks) {
+            handoffs.push_back(coordinated.adopted.has_value()
+                                   ? std::addressof(coordinated.adopted->handoff())
+                                   : nullptr);
+        }
+        DistributedSieveMergeCommitPredecessorSnapshotsV1 predecessor_snapshots;
+        const auto captured =
+            state->worker_result.store->capture_merge_commit_predecessor_snapshots_v1(
+                *state->prepared_record, state->merge_started_chain, handoffs, nullptr,
+                predecessor_snapshots);
+        if (captured.status != resume::DistributedSieveWaveStoreStatus::ready) {
+            auto diagnostic =
+                failure(AuthorityPhase::handoff_publication,
+                        AuthorityStatus::handoff_publication_failed, captured.native_error, true);
+            diagnostic.wave_store = captured;
+            diagnostic.stream = state->stream_diagnostic;
+            diagnostic.codec = state->codec_diagnostic;
+            close_state_noexcept(state);
+            return {.admission = std::nullopt, .diagnostic = std::move(diagnostic)};
+        }
+        state->predecessor_snapshots.emplace(std::move(predecessor_snapshots));
         state->handoff_published = true;
 
         auto diagnostic = failure(AuthorityPhase::complete, AuthorityStatus::ready);
         diagnostic.stream = state->stream_diagnostic;
         diagnostic.codec = state->codec_diagnostic;
         const auto* stable_record = std::addressof(*state->prepared_record);
-        const std::uint64_t creator_process_id = state->mint.creator_process_id_;
-        std::shared_ptr<const void> lifetime_anchor(std::move(state));
-        DistributedSieveMergePreparedAdmissionV1 admission(
-            std::move(lifetime_anchor), stable_record, creator_process_id,
-            &DistributedSieveMergeWriterAuthorityV1::validate_prepared_admission_origin);
+        const std::uint64_t creator_process_id = state->creator_process_id;
+        std::shared_ptr<DistributedSieveMergePreparedOriginV1> origin(std::move(state));
+        DistributedSieveMergePreparedAdmissionV1 admission(std::move(origin), stable_record,
+                                                           creator_process_id);
         return {
             .admission =
                 std::optional<DistributedSieveMergePreparedAdmissionV1>(std::move(admission)),

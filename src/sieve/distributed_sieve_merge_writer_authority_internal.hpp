@@ -177,10 +177,6 @@ private:
     state_lifetime_stable(const DistributedSieveMergeWriterAuthorityStateV1& state) noexcept;
     [[nodiscard]] static bool
     state_process_owned(const DistributedSieveMergeWriterAuthorityStateV1& state) noexcept;
-    [[nodiscard]] static bool
-    validate_prepared_admission_origin(const void* lifetime_anchor,
-                                       const MergePreparedV1* stable_record,
-                                       std::uint64_t creator_process_id) noexcept;
     static void close_state_noexcept(
         std::unique_ptr<DistributedSieveMergeWriterAuthorityStateV1>& state) noexcept;
 

@@ -1,8 +1,8 @@
 # Distributed Sieve Durable Wave Resume
 
-Status: implementation in progress (durable worker/retry path complete; M4
-prepared admission and raw-writer recovery complete; merge commit and exact
-worker cleanup next)
+Status: implementation in progress (durable worker/retry path, M4 prepared
+admission, raw-writer recovery, merge commit, and relation cleanup-intent
+conversion complete; exact worker cleanup next)
 
 Branch: `codex/parallel-structured-filter`
 
@@ -2926,7 +2926,7 @@ reconfirms raw canonical prefixes without launch or adoption.
   into its exact generation.
 - [x] Bind sequence, corpus, descriptor, native identity, and dedup receipts.
 - [x] Publish/recover protected `MergePreparedV1`.
-- [ ] Publish/recover a self-contained `WaveMergeCommitV1`.
+- [x] Publish/recover a self-contained `WaveMergeCommitV1`.
 - [ ] Return only a non-armable descriptor/handle-bound result view.
 - [ ] Publish per-worker cleanup authorization/completion and convert commit
   authority into exact intra-lease cleanup intent.
@@ -2938,10 +2938,12 @@ M4b restart recovery is split into explicit authority milestones:
 - [x] M4b-P2b-P0b converts a terminal canonical prepared generation into the
   common read-only prepared admission without reopening its `BaseLock`.
 - [x] M4b-P2b-P1 rolls back an exact raw writer residue that has no handoff.
-- [ ] M4b-P2c consumes the common admission into canonical
+- [x] M4b-P2c consumes the common admission into canonical
   `WaveMergeCommitV1` and a committed-tail admission.
-- [ ] M4b-P3 converts exact external authorization plus the already-held
-  relation reader into the sole recoverable V2 cleanup intent.
+- [x] M4b-P3a converts exact external authorization plus the already-held
+  relation reader into canonical V2 cleanup intent without deleting artifacts.
+- [ ] M4b-P3b cold-classifies canonical/staged intent and executes the exact
+  intra-lease deletion tail through durable namespace absence.
 - [ ] M4b-P4 completes manifest-order worker authorization, cleanup, and
   completion while retaining the merged corpus.
 
@@ -3186,10 +3188,20 @@ Synthesized from CEO and engineering review findings.
   - Surfaced by: security/test review, environment and retry-randomness closure.
   - Files: protocol header/source and core tests.
   - Verify: `./scripts/test.sh run test_distributed_sieve_resume --suite core`.
-- [ ] **T2 (P1, human: ~2 days / agent: ~4h)** — Relation storage — Activate the two-capability V2 authorized-cleanup executor on an already-held same-OFD reader.
+- [ ] **T2 (P1, human: ~2 days / agent: ~4h)** — Relation storage —
+  Complete the two-capability V2 authorized-cleanup transaction through durable
+  namespace absence.
   - Surfaced by: cleanup-before-adoption, stale receipt, path-following, and authority-bridge risks; the rollback-revoking handoff and same-handle reader now exist.
   - Files: OOC cleanup union, authorized intent, private handoff reader seam, relation crash tests.
   - Verify: V2 authority-conversion prefix and replacement suites plus `./scripts/test.sh changed --deep`.
+- [x] **T2a** — Convert one exact same-OFD reader plus matching external
+  authorization into canonical V2 cleanup intent. Pre-canonical failures retain
+  both capabilities; canonical-visible outcomes spend both and return either
+  durable evidence or reconciliation-only disposition. This slice deletes
+  nothing.
+- [ ] **T2b** — Cold-classify and resume canonical/staged V2 intent, consume the
+  generic handoff, isolate/delete the exact artifacts, remove lease markers and
+  the private directory, and publish parent-durable absence evidence.
 - [x] **T3 (P1, human: ~2 days / agent: ~3h)** — Wave ownership — Add stable root/lock identity, inherited descriptor hygiene, and lease-first bounded attempt chain.
   - Surfaced by: live-child, replaced-lock, dual-master, and retry-reset failure modes.
   - Files: resume store, distributed config, resume crash tests.
@@ -3198,10 +3210,12 @@ Synthesized from CEO and engineering review findings.
   - Surfaced by: master-crash adoption objective.
   - Files: distributed worker orchestration, resume store, integration tests.
   - Verify: fresh/all-adopted/mixed parity and launch ledger.
-- [ ] **T5a (P1, human: ~1 day / agent: ~2h)** — Merge commit — Consume fresh/recovered prepared admission into the same canonical commit and committed-tail admission.
+- [x] **T5a (P1, human: ~1 day / agent: ~2h)** — Merge commit — Consume
+  fresh/recovered prepared admission into the same canonical commit and
+  committed-tail admission.
   - Surfaced by: absent runtime commit consumer, unknown root leaves, and nondeterministic process-local diagnostics.
   - Files: prepared admission, merge commit authority, WaveStore inventory/classifier, commit crash tests.
-  - Verify: fresh/cold byte parity, three immutable-publication prefixes, replay, replacement, Busy, and platform fail-closed.
+  - Verify: fresh commit/cold committed-tail byte parity, separate cold prepared admission, three immutable-publication prefixes, replay, replacement, Busy, compile-only unsupported-platform surface, and checker-enforced pre-mutation platform order.
 - [ ] **T5b (P1, human: ~2 days / agent: ~4h)** — Worker cleanup — Publish exact per-worker authorization/completion and drive T2 in manifest order while retaining merged output.
   - Surfaced by: cleanup-prefix ambiguity, unexplained absence, and caller-arm risks.
   - Files: merge commit authority, WaveStore cleanup tail, result view, end-to-end crash tests.
@@ -3475,11 +3489,11 @@ landing point.
 | worker cleanup | crash at any rename/unlink/marker boundary | two cleanup crash shards | canonical V2 resumes exact tail | interrupted then convergence |
 | cleanup completion | absence without parent durability | completion fault seam | completion publication forbidden | recovery required |
 | concurrent cleanup | another process holds current BaseLock | fork/pipe Busy case | no later ordinal advances | lock busy |
-| unsupported platform | consumer invoked before any record exists | platform snapshot case | pre-mutation platform gate | platform unsupported |
+| unsupported platform | no production admission can be forged by the platform test | compile-only surface plus checker mutation | retain inaccessible API and statically freeze the pre-mutation platform gate | no runtime consumer claim |
 
 No path is permitted to fail silently. The critical gaps found by the reviewers
-are resolved as plan requirements and remain P1 implementation tasks T2, T5a,
-and T5b.
+are resolved as plan requirements. T5a and the non-deleting T2a conversion are
+complete; the remaining P1 implementation tasks are T2b and T5b.
 
 ### Parallel implementation lanes
 
@@ -3522,7 +3536,48 @@ after M6 is a future evidence decision, not an implementation ambiguity.
 prepared continuation, deterministic commit bytes, typed root inventory, and
 same-OFD two-capability cleanup boundary.
 
-**VERDICT:** CEO + ENG CLEARED — implement T5a, T2, then T5b in the frozen
-parallel lanes.
+**VERDICT:** CEO + ENG CLEARED — T5a and T2a are complete; implement T2b, then
+T5b in the frozen continuation order.
 
 NO UNRESOLVED DECISIONS
+
+## M4b-P2c and P3a Implementation Report: 2026-08-01
+
+T5a now consumes either fresh or recovered prepared admission into one
+deterministic canonical `WaveMergeCommitV1`. Cold open returns exactly one of
+the ordinary store, prepared admission, or committed-tail admission. The tail
+retains the merged corpus and every worker reader/lock but grants no cleanup
+operation. Canonical commit publication and tail validity both use repeated
+authority, byte, inode snapshot, inventory, and full dependency-chain
+observations. Worker artifacts are unchanged in this slice.
+
+T2a now converts one already-held same-OFD private-handoff reader plus one
+matching external authorization receipt into canonical V2 cleanup intent.
+Failures before canonical visibility retain both capabilities. Any outcome
+where canonical intent may be visible spends both capabilities and releases
+reader, directory, parent, and BaseLock aliases; the result contains durable
+intent evidence or requires cold reconciliation. T2a performs no artifact,
+handoff, lease-marker, or directory deletion.
+
+Validation completed on macOS arm64:
+
+- Debug build: passed.
+- Merge-commit `core`, `commit-crash`, and `protection`: passed, including late
+  same-byte/new-inode invalidation of an existing committed tail.
+- OOC `authority-observer`: passed.
+- Existing merge-writer authority and prepared-resume focused regressions:
+  passed.
+- Distributed-sieve policy checker with self-test: passed.
+- Test catalog: passed with 237 physical binaries.
+- `changed --deep`: 103/103 passed, including API, sieve, relation, linalg,
+  schema contracts, API deep contract, and GNFS E2E.
+- Project gate: 182/182 passed, including smoke 181/181 and the
+  17/27/40/81-bit regression gate.
+- `clang-format --dry-run --Werror` on changed C++ and `git diff --check`:
+  passed.
+
+The next ordered effort is T2b, then T5b. T2b must cold-classify and complete
+the V2 intent deletion transaction through parent-durable namespace absence.
+T5b must mint per-worker authorization in manifest order, drive that exact
+relation tail, and publish worker cleanup completion while retaining the
+merged corpus. ACK, merged cleanup, and `WaveCompletedV1` remain M5 work.

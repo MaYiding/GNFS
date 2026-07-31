@@ -1043,6 +1043,9 @@ struct NamespaceInventory final {
     std::vector<std::string> chunk_terminal_failure_record_leaves;
     std::vector<DistributedSieveChunkTerminalFailureRecordInventoryWitnessV1>
         chunk_terminal_failure_records;
+    std::vector<std::string> wave_merge_commit_record_leaves;
+    std::vector<DistributedSieveWaveMergeCommitRecordInventoryWitnessV1> wave_merge_commit_records;
+    std::vector<std::string> cleanup_record_leaves;
 
     [[nodiscard]] friend constexpr bool operator==(const NamespaceInventory&,
                                                    const NamespaceInventory&) noexcept = default;
@@ -1053,7 +1056,9 @@ has_pre_manifest_private_lease_candidate(const NamespaceInventory& inventory) no
     return !inventory.manifest && (!inventory.private_lease_protocol_leaves.empty() ||
                                    !inventory.worker_attempt_record_leaves.empty() ||
                                    !inventory.merge_started_record_leaves.empty() ||
-                                   !inventory.chunk_terminal_failure_record_leaves.empty());
+                                   !inventory.chunk_terminal_failure_record_leaves.empty() ||
+                                   !inventory.wave_merge_commit_record_leaves.empty() ||
+                                   !inventory.cleanup_record_leaves.empty());
 }
 
 struct NamespaceInventoryResult final {
@@ -1215,6 +1220,46 @@ struct NamespaceInventoryResult final {
             }
             continue;
         }
+        if (parse_distributed_sieve_wave_merge_commit_leaf_v1(leaf).has_value()) {
+            if (inventory.wave_merge_commit_record_leaves.size() >= 2U) {
+                return {std::nullopt,
+                        diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
+                                   protocol_error())};
+            }
+            try {
+                inventory.wave_merge_commit_record_leaves.emplace_back(leaf);
+            } catch (const std::bad_alloc&) {
+                return {std::nullopt,
+                        diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
+                                   std::make_error_code(std::errc::not_enough_memory))};
+            } catch (...) {
+                return {std::nullopt,
+                        diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                                   std::make_error_code(std::errc::io_error))};
+            }
+            continue;
+        }
+        if (parse_distributed_sieve_cleanup_record_leaf_v1(leaf).has_value()) {
+            constexpr std::size_t max_cleanup_record_leaf_count =
+                static_cast<std::size_t>(DISTRIBUTED_SIEVE_PROTOCOL_MAX_CHUNKS) * 4U + 4U;
+            if (inventory.cleanup_record_leaves.size() >= max_cleanup_record_leaf_count) {
+                return {std::nullopt,
+                        diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
+                                   protocol_error())};
+            }
+            try {
+                inventory.cleanup_record_leaves.emplace_back(leaf);
+            } catch (const std::bad_alloc&) {
+                return {std::nullopt,
+                        diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
+                                   std::make_error_code(std::errc::not_enough_memory))};
+            } catch (...) {
+                return {std::nullopt,
+                        diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                                   std::make_error_code(std::errc::io_error))};
+            }
+            continue;
+        }
         constexpr std::size_t max_protocol_leaf_count =
             static_cast<std::size_t>(DISTRIBUTED_SIEVE_PROTOCOL_MAX_CHUNKS) *
             DISTRIBUTED_SIEVE_PROTOCOL_MAX_ATTEMPTS * 7U;
@@ -1242,6 +1287,9 @@ struct NamespaceInventoryResult final {
               inventory.merge_started_record_leaves.end());
     std::sort(inventory.chunk_terminal_failure_record_leaves.begin(),
               inventory.chunk_terminal_failure_record_leaves.end());
+    std::sort(inventory.wave_merge_commit_record_leaves.begin(),
+              inventory.wave_merge_commit_record_leaves.end());
+    std::sort(inventory.cleanup_record_leaves.begin(), inventory.cleanup_record_leaves.end());
     return {std::move(inventory), {}};
 }
 
@@ -4154,6 +4202,100 @@ struct WorkerAttemptRecordInventoryValidationResult final {
     return {std::move(records), {}};
 }
 
+struct WaveMergeCommitRecordInventoryValidationResult final {
+    std::optional<std::vector<DistributedSieveWaveMergeCommitRecordInventoryWitnessV1>> witnesses;
+    DistributedSieveWaveStoreDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return witnesses.has_value() && diagnostic.status == DistributedSieveWaveStoreStatus::ready;
+    }
+};
+
+[[nodiscard]] WaveMergeCommitRecordInventoryValidationResult
+validate_wave_merge_commit_record_inventory(int root_fd, const NamespaceInventory& inventory,
+                                            const WaveManifestV1& manifest,
+                                            std::uint64_t creator_process_id) noexcept {
+    const auto fail_with = [](DistributedSieveWaveStoreDiagnostic failure) {
+        return WaveMergeCommitRecordInventoryValidationResult{std::nullopt, std::move(failure)};
+    };
+    const auto conflict = [&] {
+        return fail_with(
+            diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error()));
+    };
+    const auto protocol_conflict = [&](DistributedSieveProtocolStatus status) {
+        auto failure =
+            diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error());
+        failure.protocol_status = status;
+        return fail_with(std::move(failure));
+    };
+
+    std::vector<DistributedSieveWaveMergeCommitRecordInventoryWitnessV1> records;
+    try {
+        records.reserve(1U);
+        const auto names = distributed_sieve_wave_merge_commit_names_v1();
+        for (const auto& leaf : inventory.wave_merge_commit_record_leaves) {
+            const auto parsed = parse_distributed_sieve_wave_merge_commit_leaf_v1(leaf);
+            if (!parsed.has_value() || leaf != (parsed->pending ? names.pending_record_leaf
+                                                                : names.canonical_record_leaf)) {
+                return conflict();
+            }
+            auto loaded = read_immutable_protocol_record_leaf(
+                root_fd, leaf.c_str(), creator_process_id,
+                DistributedSieveWaveStoreStatus::namespace_conflict,
+                DistributedSieveWaveStoreStatus::namespace_conflict);
+            if (!loaded) {
+                return fail_with(std::move(loaded.diagnostic));
+            }
+            auto decoded = decode_distributed_sieve_record(*loaded.bytes);
+            if (!decoded) {
+                return protocol_conflict(decoded.status);
+            }
+            auto* commit = std::get_if<WaveMergeCommitV1>(&*decoded.value);
+            if (commit == nullptr || commit->manifest_digest != manifest.self_digest ||
+                commit->work_digest != manifest.work_sha256 ||
+                commit->merge_policy_version != manifest.merge_policy_version) {
+                return conflict();
+            }
+            if (records.empty()) {
+                DistributedSieveWaveMergeCommitRecordInventoryWitnessV1 witness{
+                    .record = std::move(*commit),
+                    .bytes = std::move(*loaded.bytes),
+                };
+                if (parsed->pending) {
+                    witness.pending_snapshot = *loaded.snapshot;
+                } else {
+                    witness.canonical_snapshot = *loaded.snapshot;
+                }
+                records.push_back(std::move(witness));
+                continue;
+            }
+            auto& witness = records.front();
+            if (witness.bytes != *loaded.bytes ||
+                (parsed->pending ? witness.pending_snapshot.has_value()
+                                 : witness.canonical_snapshot.has_value())) {
+                return conflict();
+            }
+            if (parsed->pending) {
+                witness.pending_snapshot = *loaded.snapshot;
+            } else {
+                witness.canonical_snapshot = *loaded.snapshot;
+            }
+        }
+        if (records.size() > 1U ||
+            records.size() !=
+                static_cast<std::size_t>(!inventory.wave_merge_commit_record_leaves.empty())) {
+            return conflict();
+        }
+        return {std::move(records), {}};
+    } catch (const std::bad_alloc&) {
+        return fail_with(diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
+                                    std::make_error_code(std::errc::not_enough_memory)));
+    } catch (...) {
+        return fail_with(diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                                    std::make_error_code(std::errc::io_error)));
+    }
+}
+
 struct MergeStartedRecordInventoryValidationResult final {
     std::optional<std::vector<DistributedSieveMergeStartedRecordInventoryWitnessV1>> witnesses;
     DistributedSieveWaveStoreDiagnostic diagnostic;
@@ -4168,7 +4310,7 @@ struct MergeStartedRecordInventoryValidationResult final {
     std::span<const NativeIdentityV1> base_lock_identities,
     std::span<const DistributedSievePrivateLeaseReservationInventoryWitness> private_leases,
     std::span<const DistributedSieveWorkerAttemptRecordInventoryWitness> worker_attempts,
-    std::uint64_t creator_process_id) noexcept {
+    std::uint64_t creator_process_id, const WaveMergeCommitV1* commit = nullptr) noexcept {
     const auto fail_with = [](DistributedSieveWaveStoreDiagnostic failure) {
         return MergeStartedRecordInventoryValidationResult{std::nullopt, std::move(failure)};
     };
@@ -4338,11 +4480,11 @@ struct MergeStartedRecordInventoryValidationResult final {
             prepared_witness = std::addressof(*lease.merge_prepared);
             prepared_ordinal = *ordinal;
         }
-        if (!observed_chain.empty() || prepared_witness != nullptr) {
+        if (!observed_chain.empty() || prepared_witness != nullptr || commit != nullptr) {
             const auto dependency = validate_merge_dependency_chain(
                 manifest, evidence, observed_chain,
                 prepared_witness != nullptr ? std::addressof(prepared_witness->prepared) : nullptr,
-                nullptr);
+                commit);
             if (!dependency) {
                 return protocol_conflict(dependency);
             }
@@ -5184,6 +5326,7 @@ struct MergePreparedPublicationAggregateWitness final {
     std::vector<DistributedSieveMergeStartedRecordInventoryWitnessV1> merge_started_records;
     std::vector<DistributedSieveChunkTerminalFailureRecordInventoryWitnessV1>
         chunk_terminal_failure_records;
+    std::vector<DistributedSieveWaveMergeCommitRecordInventoryWitnessV1> wave_merge_commit_records;
     std::size_t attempt_index = 0;
     DistributedSieveMergeGenerationNamesV1 names;
     private_lease::PrivateHandoffPublicationPrefixWitnessV1 prefix;
@@ -5465,6 +5608,9 @@ classify_merge_prepared_publication_prefix_v1(
         if (!initial) {
             return fail_with(std::move(initial.diagnostic));
         }
+        if (!initial.inventory->cleanup_record_leaves.empty()) {
+            return conflict();
+        }
         auto base_locks = validate_private_lease_base_lock_inventory(root_fd, *initial.inventory,
                                                                      manifest, creator_process_id);
         if (!base_locks) {
@@ -5702,6 +5848,11 @@ classify_merge_prepared_publication_prefix_v1(
         if (!worker_attempts) {
             return fail_with(std::move(worker_attempts.diagnostic));
         }
+        auto merge_commit = validate_wave_merge_commit_record_inventory(
+            root_fd, *initial.inventory, manifest, creator_process_id);
+        if (!merge_commit) {
+            return fail_with(std::move(merge_commit.diagnostic));
+        }
         auto merge_starts = validate_merge_started_record_inventory(
             root_fd, *initial.inventory, manifest, *base_locks.identities, private_leases,
             *worker_attempts.witnesses, creator_process_id);
@@ -5788,7 +5939,10 @@ classify_merge_prepared_publication_prefix_v1(
 
         auto prepared_bound_starts = validate_merge_started_record_inventory(
             root_fd, *initial.inventory, manifest, *base_locks.identities, private_leases,
-            *worker_attempts.witnesses, creator_process_id);
+            *worker_attempts.witnesses, creator_process_id,
+            merge_commit.witnesses->empty()
+                ? nullptr
+                : std::addressof(merge_commit.witnesses->front().record));
         if (!prepared_bound_starts) {
             return fail_with(std::move(prepared_bound_starts.diagnostic));
         }
@@ -5843,6 +5997,7 @@ classify_merge_prepared_publication_prefix_v1(
         witnessed_inventory.worker_attempt_records = *worker_attempts.witnesses;
         witnessed_inventory.merge_started_records = *prepared_bound_starts.witnesses;
         witnessed_inventory.chunk_terminal_failure_records = *terminal_failures.witnesses;
+        witnessed_inventory.wave_merge_commit_records = *merge_commit.witnesses;
         const auto typed_prepared = *typed_context.typed_prepared;
         const auto start_record = prepared_bound_starts.witnesses->back();
         const auto names = *target_attempt.merge_generation_names;
@@ -5854,6 +6009,7 @@ classify_merge_prepared_publication_prefix_v1(
             .worker_attempt_records = *worker_attempts.witnesses,
             .merge_started_records = *prepared_bound_starts.witnesses,
             .chunk_terminal_failure_records = *terminal_failures.witnesses,
+            .wave_merge_commit_records = *merge_commit.witnesses,
             .attempt_index = candidate->attempt_index,
             .names = names,
             .prefix = observed_prefix,
@@ -5964,7 +6120,9 @@ classify_merge_prepared_publication_prefix_v1(
     }
     if (!inventory.lock || !inventory.manifest || inventory.pending ||
         !inventory.chunk_terminal_failure_record_leaves.empty() ||
-        !inventory.merge_started_record_leaves.empty()) {
+        !inventory.merge_started_record_leaves.empty() ||
+        !inventory.wave_merge_commit_record_leaves.empty() ||
+        !inventory.cleanup_record_leaves.empty()) {
         return conflict();
     }
 
@@ -6221,12 +6379,15 @@ struct ManifestBoundInventoryValidationResult final {
         merge_started_records;
     std::optional<std::vector<DistributedSieveChunkTerminalFailureRecordInventoryWitnessV1>>
         chunk_terminal_failure_records;
+    std::optional<std::vector<DistributedSieveWaveMergeCommitRecordInventoryWitnessV1>>
+        wave_merge_commit_records;
     DistributedSieveWaveStoreDiagnostic diagnostic;
 
     [[nodiscard]] explicit operator bool() const noexcept {
         return base_lock_identities.has_value() && private_lease_witnesses.has_value() &&
                worker_attempt_records.has_value() && merge_started_records.has_value() &&
                chunk_terminal_failure_records.has_value() &&
+               wave_merge_commit_records.has_value() &&
                diagnostic.status == DistributedSieveWaveStoreStatus::ready;
     }
 };
@@ -6240,6 +6401,10 @@ struct ManifestBoundInventoryValidationResult final {
                                           ? inventory.manifest && !inventory.pending
                                           : inventory.manifest || inventory.pending;
     if (!inventory.lock || !manifest_shape_valid) {
+        return {.diagnostic = diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
+                                         protocol_error())};
+    }
+    if (!inventory.cleanup_record_leaves.empty()) {
         return {.diagnostic = diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
                                          protocol_error())};
     }
@@ -6260,9 +6425,17 @@ struct ManifestBoundInventoryValidationResult final {
     if (!worker_attempts) {
         return {.diagnostic = std::move(worker_attempts.diagnostic)};
     }
+    auto merge_commit = validate_wave_merge_commit_record_inventory(root_fd, inventory, manifest,
+                                                                    creator_process_id);
+    if (!merge_commit) {
+        return {.diagnostic = std::move(merge_commit.diagnostic)};
+    }
+    const WaveMergeCommitV1* commit = merge_commit.witnesses->empty()
+                                          ? nullptr
+                                          : std::addressof(merge_commit.witnesses->front().record);
     auto merge_starts = validate_merge_started_record_inventory(
         root_fd, inventory, manifest, *base_locks.identities, *private_leases.witnesses,
-        *worker_attempts.witnesses, creator_process_id);
+        *worker_attempts.witnesses, creator_process_id, commit);
     if (!merge_starts) {
         return {.diagnostic = std::move(merge_starts.diagnostic)};
     }
@@ -6278,6 +6451,7 @@ struct ManifestBoundInventoryValidationResult final {
         .worker_attempt_records = std::move(worker_attempts.witnesses),
         .merge_started_records = std::move(merge_starts.witnesses),
         .chunk_terminal_failure_records = std::move(terminal_failures.witnesses),
+        .wave_merge_commit_records = std::move(merge_commit.witnesses),
         .diagnostic = {},
     };
 }
@@ -6317,6 +6491,8 @@ struct ManifestBoundInventoryWitnessResult final {
     inventory.inventory->merge_started_records = std::move(*validated.merge_started_records);
     inventory.inventory->chunk_terminal_failure_records =
         std::move(*validated.chunk_terminal_failure_records);
+    inventory.inventory->wave_merge_commit_records =
+        std::move(*validated.wave_merge_commit_records);
     return {
         std::move(inventory.inventory),
         std::move(validated.base_lock_identities),
@@ -7785,6 +7961,13 @@ struct MergeStartHookBridgeV1 final {
     std::optional<DistributedSieveMergeStartFaultPointV1> last_fault_point;
 };
 
+struct WaveMergeCommitHookBridgeV1 final {
+    DistributedSieveWaveMergeCommitTestHooksV1 hooks;
+    std::uint64_t creator_process_id = 0;
+    bool process_changed = false;
+    std::optional<DistributedSieveWaveMergeCommitFaultPointV1> last_fault_point;
+};
+
 struct WorkerAttemptReconcileHookBridge final {
     DistributedSieveWorkerAttemptReconcileTestHooks hooks;
     std::uint64_t creator_process_id = 0;
@@ -7852,6 +8035,39 @@ struct ChunkTerminalFailureHookBridge final {
         break;
     }
     if (mapped == DistributedSieveMergeStartFaultPointV1::Count) {
+        return true;
+    }
+    context.last_fault_point = mapped;
+    const bool interrupted = context.hooks.stop_after != nullptr &&
+                             context.hooks.stop_after(mapped, context.hooks.context);
+    if (!process_matches(context.creator_process_id)) {
+        context.process_changed = true;
+        return true;
+    }
+    return interrupted;
+}
+
+[[nodiscard]] bool bridge_wave_merge_commit_hook_v1(durable_record::RecordFaultPoint point,
+                                                    void* raw_context) noexcept {
+    auto& context = *static_cast<WaveMergeCommitHookBridgeV1*>(raw_context);
+    if (!process_matches(context.creator_process_id)) {
+        context.process_changed = true;
+        return true;
+    }
+    DistributedSieveWaveMergeCommitFaultPointV1 mapped =
+        DistributedSieveWaveMergeCommitFaultPointV1::Count;
+    switch (point) {
+    case durable_record::RecordFaultPoint::PendingDurable:
+        mapped = DistributedSieveWaveMergeCommitFaultPointV1::PendingDurable;
+        break;
+    case durable_record::RecordFaultPoint::CanonicalPromoted:
+        mapped = DistributedSieveWaveMergeCommitFaultPointV1::CanonicalPromoted;
+        break;
+    case durable_record::RecordFaultPoint::CanonicalDurable:
+        mapped = DistributedSieveWaveMergeCommitFaultPointV1::CanonicalDurable;
+        break;
+    }
+    if (mapped == DistributedSieveWaveMergeCommitFaultPointV1::Count) {
         return true;
     }
     context.last_fault_point = mapped;
@@ -7991,6 +8207,19 @@ merge_start_publication_diagnostic_v1(const durable_record::RecordPublishResult&
                    });
     outcome.last_worker_attempt_start_fault_point.reset();
     outcome.last_merge_start_fault_point = bridge.last_fault_point;
+    return outcome;
+}
+
+[[nodiscard]] DistributedSieveWaveStoreDiagnostic
+wave_merge_commit_publication_diagnostic_v1(const durable_record::RecordPublishResult& published,
+                                            const WaveMergeCommitHookBridgeV1& bridge) noexcept {
+    auto outcome = worker_attempt_start_publication_diagnostic(
+        published, WorkerAttemptStartHookBridge{
+                       .creator_process_id = bridge.creator_process_id,
+                       .process_changed = bridge.process_changed,
+                   });
+    outcome.last_worker_attempt_start_fault_point.reset();
+    outcome.last_wave_merge_commit_fault_point = bridge.last_fault_point;
     return outcome;
 }
 
@@ -9077,6 +9306,85 @@ parse_distributed_sieve_chunk_terminal_failure_leaf_v1(std::string_view leaf) no
         .chunk_id = chunk_id,
         .pending = pending,
     };
+}
+
+DistributedSieveWaveMergeCommitNamesV1 distributed_sieve_wave_merge_commit_names_v1() {
+    return {
+        .canonical_record_leaf = std::string(DISTRIBUTED_SIEVE_WAVE_MERGE_COMMIT_RECORD_LEAF),
+        .pending_record_leaf = std::string(DISTRIBUTED_SIEVE_WAVE_MERGE_COMMIT_RECORD_PENDING_LEAF),
+    };
+}
+
+std::optional<DistributedSieveParsedWaveMergeCommitLeafV1>
+parse_distributed_sieve_wave_merge_commit_leaf_v1(std::string_view leaf) noexcept {
+    if (leaf == DISTRIBUTED_SIEVE_WAVE_MERGE_COMMIT_RECORD_LEAF) {
+        return DistributedSieveParsedWaveMergeCommitLeafV1{.pending = false};
+    }
+    if (leaf == DISTRIBUTED_SIEVE_WAVE_MERGE_COMMIT_RECORD_PENDING_LEAF) {
+        return DistributedSieveParsedWaveMergeCommitLeafV1{.pending = true};
+    }
+    return std::nullopt;
+}
+
+std::optional<DistributedSieveParsedCleanupRecordLeafV1>
+parse_distributed_sieve_cleanup_record_leaf_v1(std::string_view leaf) noexcept {
+    bool pending = false;
+    if (leaf.ends_with(DISTRIBUTED_SIEVE_ROOT_RECORD_PENDING_SUFFIX)) {
+        pending = true;
+        leaf.remove_suffix(DISTRIBUTED_SIEVE_ROOT_RECORD_PENDING_SUFFIX.size());
+    }
+
+    const auto parse_worker = [&](std::string_view prefix,
+                                  DistributedSieveCleanupRecordCoordinateKindV1 kind)
+        -> std::optional<DistributedSieveParsedCleanupRecordLeafV1> {
+        const std::size_t expected_size =
+            prefix.size() + DISTRIBUTED_SIEVE_WORKER_ATTEMPT_DECIMAL_WIDTH_V1;
+        if (leaf.size() != expected_size || !leaf.starts_with(prefix)) {
+            return std::nullopt;
+        }
+        const std::size_t cursor = prefix.size();
+        if (leaf[cursor] < '0' || leaf[cursor] > '9' || leaf[cursor + 1U] < '0' ||
+            leaf[cursor + 1U] > '9') {
+            return std::nullopt;
+        }
+        const std::uint32_t ordinal = static_cast<std::uint32_t>(leaf[cursor] - '0') * 10U +
+                                      static_cast<std::uint32_t>(leaf[cursor + 1U] - '0');
+        if (ordinal >= DISTRIBUTED_SIEVE_PROTOCOL_MAX_CHUNKS) {
+            return std::nullopt;
+        }
+        return DistributedSieveParsedCleanupRecordLeafV1{
+            .kind = kind,
+            .manifest_order_ordinal = ordinal,
+            .pending = pending,
+        };
+    };
+
+    if (auto parsed =
+            parse_worker(DISTRIBUTED_SIEVE_CLEANUP_AUTHORIZED_WORKER_RECORD_PREFIX,
+                         DistributedSieveCleanupRecordCoordinateKindV1::authorized_worker);
+        parsed.has_value()) {
+        return parsed;
+    }
+    if (auto parsed = parse_worker(DISTRIBUTED_SIEVE_CLEANUP_COMPLETED_WORKER_RECORD_PREFIX,
+                                   DistributedSieveCleanupRecordCoordinateKindV1::completed_worker);
+        parsed.has_value()) {
+        return parsed;
+    }
+    if (leaf == DISTRIBUTED_SIEVE_CLEANUP_AUTHORIZED_MERGED_RECORD_LEAF) {
+        return DistributedSieveParsedCleanupRecordLeafV1{
+            .kind = DistributedSieveCleanupRecordCoordinateKindV1::authorized_merged,
+            .manifest_order_ordinal = std::nullopt,
+            .pending = pending,
+        };
+    }
+    if (leaf == DISTRIBUTED_SIEVE_CLEANUP_COMPLETED_MERGED_RECORD_LEAF) {
+        return DistributedSieveParsedCleanupRecordLeafV1{
+            .kind = DistributedSieveCleanupRecordCoordinateKindV1::completed_merged,
+            .manifest_order_ordinal = std::nullopt,
+            .pending = pending,
+        };
+    }
+    return std::nullopt;
 }
 
 struct DistributedSieveWaveStore::State final {
@@ -12712,12 +13020,14 @@ namespace {
         observed.inventory->merge_started_records = *validated.merge_started_records;
         observed.inventory->chunk_terminal_failure_records =
             *validated.chunk_terminal_failure_records;
+        observed.inventory->wave_merge_commit_records = *validated.wave_merge_commit_records;
         if (*observed.inventory != expected.inventory ||
             *validated.base_lock_identities != expected.base_lock_identities ||
             *validated.private_lease_witnesses != expected.private_leases ||
             *validated.worker_attempt_records != expected.worker_attempt_records ||
             *validated.merge_started_records != expected.merge_started_records ||
-            *validated.chunk_terminal_failure_records != expected.chunk_terminal_failure_records) {
+            *validated.chunk_terminal_failure_records != expected.chunk_terminal_failure_records ||
+            *validated.wave_merge_commit_records != expected.wave_merge_commit_records) {
             return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
                               protocol_error());
         }
@@ -12831,13 +13141,52 @@ public:
 /// Declaration order is the recovered-admission lock-release contract.
 /// Reverse destruction closes the merged reader, then worker readers in
 /// reverse manifest order, then the coordinator gate, and finally WaveLock.
-struct RecoveredMergePreparedAdmissionStateV1 final {
+struct RecoveredMergePreparedAdmissionStateV1 final
+    : distributed_sieve_merge_writer_authority_detail::DistributedSieveMergePreparedOriginV1 {
     std::unique_ptr<DistributedSieveWaveStore> store;
     std::unique_ptr<DistributedSieveWorkerCoordinatorClaimV1> coordinator_claim;
     RecoveredMergePreparedWorkerReaderStackV1 worker_readers;
     std::unique_ptr<gnfs::relation::OOCPrivateHandoffReader> merged_reader;
+    std::vector<MergeStartedV1> merge_started_chain;
+    std::vector<std::optional<WorkerHandoffV1>> worker_handoffs;
+    std::optional<distributed_sieve_merge_writer_authority_detail::
+                      DistributedSieveMergeCommitPredecessorSnapshotsV1>
+        predecessor_snapshots;
     MergePreparedV1 prepared_record;
     std::uint64_t creator_process_id = 0;
+
+private:
+    [[nodiscard]] bool
+    prepared_origin_valid(const MergePreparedV1* stable_record,
+                          std::uint64_t expected_creator_process_id) const noexcept override;
+
+    [[nodiscard]] DistributedSieveWaveStore* retained_wave_store() noexcept override {
+        return store.get();
+    }
+
+    [[nodiscard]] std::span<const MergeStartedV1>
+    retained_merge_started_chain() const noexcept override {
+        return merge_started_chain;
+    }
+
+    [[nodiscard]] const distributed_sieve_merge_writer_authority_detail::
+        DistributedSieveMergeCommitPredecessorSnapshotsV1*
+        retained_predecessor_snapshots() const noexcept override {
+        return predecessor_snapshots ? std::addressof(*predecessor_snapshots) : nullptr;
+    }
+
+    [[nodiscard]] std::size_t retained_manifest_slot_count() const noexcept override {
+        return worker_handoffs.size();
+    }
+
+    [[nodiscard]] const WorkerHandoffV1*
+    retained_worker_handoff(std::size_t manifest_slot) const noexcept override {
+        if (manifest_slot >= worker_handoffs.size() ||
+            !worker_handoffs[manifest_slot].has_value()) {
+            return nullptr;
+        }
+        return std::addressof(*worker_handoffs[manifest_slot]);
+    }
 };
 
 [[nodiscard]] bool
@@ -12852,7 +13201,8 @@ recovered_merge_prepared_admission_state_valid(const void* opaque,
             !process_matches(creator_process_id) || state->store == nullptr ||
             state->coordinator_claim == nullptr ||
             !state->coordinator_claim->owned_by_current_process() ||
-            state->merged_reader == nullptr || !state->merged_reader->valid() ||
+            !state->predecessor_snapshots.has_value() || state->merged_reader == nullptr ||
+            !state->merged_reader->valid() ||
             state->store->manifest_digest() != state->prepared_record.manifest_digest ||
             state->merged_reader->reader().count() !=
                 state->prepared_record.output_relation_count) {
@@ -12867,6 +13217,183 @@ recovered_merge_prepared_admission_state_valid(const void* opaque,
         return true;
     } catch (...) {
         return false;
+    }
+}
+
+bool RecoveredMergePreparedAdmissionStateV1::prepared_origin_valid(
+    const MergePreparedV1* stable_record,
+    std::uint64_t expected_creator_process_id) const noexcept {
+    return recovered_merge_prepared_admission_state_valid(this, stable_record,
+                                                          expected_creator_process_id);
+}
+
+using MergeCommitPredecessorSnapshots = distributed_sieve_merge_writer_authority_detail::
+    DistributedSieveMergeCommitPredecessorSnapshotsV1;
+
+struct WaveMergeCommitDependencySnapshotValidationResult final {
+    std::optional<MergeCommitPredecessorSnapshots> snapshots;
+    DistributedSieveWaveStoreDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return snapshots.has_value() && diagnostic.status == DistributedSieveWaveStoreStatus::ready;
+    }
+};
+
+[[nodiscard]] WaveMergeCommitDependencySnapshotValidationResult
+validate_wave_merge_commit_dependency_snapshot(
+    int root_fd, const NamespaceInventory& inventory, const WaveManifestV1& manifest,
+    const MergePreparedV1& prepared, std::span<const MergeStartedV1> retained_starts,
+    std::span<const WorkerHandoffV1* const> retained_handoffs, const WaveMergeCommitV1* commit,
+    std::uint64_t creator_process_id,
+    const MergeCommitPredecessorSnapshots* expected_snapshots = nullptr) noexcept {
+    const auto conflict = [] {
+        return WaveMergeCommitDependencySnapshotValidationResult{
+            .snapshots = std::nullopt,
+            .diagnostic =
+                diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error()),
+        };
+    };
+    const auto protocol_conflict = [&](DistributedSieveProtocolStatus status) {
+        auto failure = conflict();
+        failure.diagnostic.protocol_status = status;
+        return failure;
+    };
+    if (!process_matches(creator_process_id)) {
+        return {.snapshots = std::nullopt, .diagnostic = process_mismatch()};
+    }
+    if (prepared.ordered_inputs.size() != manifest.chunks.size() ||
+        prepared.per_chunk_retained_counts.size() != manifest.chunks.size() ||
+        retained_handoffs.size() != manifest.chunks.size() || retained_starts.empty() ||
+        !inventory.chunk_terminal_failure_record_leaves.empty() ||
+        !inventory.cleanup_record_leaves.empty()) {
+        return conflict();
+    }
+
+    try {
+        MergeCommitPredecessorSnapshots observed_snapshots;
+        std::size_t worker_attempt_count = 0;
+        for (const auto& input : prepared.ordered_inputs) {
+            if (input.durable_attempt_count >
+                std::numeric_limits<std::size_t>::max() - worker_attempt_count) {
+                return protocol_conflict(DistributedSieveProtocolStatus{
+                    .error = DistributedSieveProtocolError::integer_out_of_range,
+                });
+            }
+            worker_attempt_count += input.durable_attempt_count;
+        }
+        observed_snapshots.worker_attempts.reserve(worker_attempt_count);
+        observed_snapshots.merge_starts.reserve(retained_starts.size());
+        std::vector<std::vector<AttemptStartedV1>> attempt_chains(manifest.chunks.size());
+        std::vector<std::string> expected_attempt_leaves;
+        for (std::size_t slot = 0; slot < manifest.chunks.size(); ++slot) {
+            const auto& plan = manifest.chunks[slot];
+            const auto& input = prepared.ordered_inputs[slot];
+            if (input.chunk_id != plan.chunk_id || input.sq_begin != plan.sq_begin ||
+                input.sq_end != plan.sq_end ||
+                (input.disposition == ChunkDispositionV1::handoff) !=
+                    (retained_handoffs[slot] != nullptr)) {
+                return conflict();
+            }
+            auto& chain = attempt_chains[slot];
+            chain.reserve(input.durable_attempt_count);
+            for (std::uint32_t ordinal = 0; ordinal < input.durable_attempt_count; ++ordinal) {
+                const auto names = distributed_sieve_worker_attempt_names_v1(
+                    plan.relative_artifact_stem, plan.chunk_id, ordinal);
+                if (!names.has_value()) {
+                    return conflict();
+                }
+                expected_attempt_leaves.push_back(names->canonical_record_leaf);
+                auto loaded = read_immutable_protocol_record_leaf(
+                    root_fd, names->canonical_record_leaf.c_str(), creator_process_id,
+                    DistributedSieveWaveStoreStatus::namespace_conflict,
+                    DistributedSieveWaveStoreStatus::namespace_conflict);
+                if (!loaded) {
+                    return {.snapshots = std::nullopt, .diagnostic = std::move(loaded.diagnostic)};
+                }
+                auto decoded = decode_distributed_sieve_record(*loaded.bytes);
+                if (!decoded) {
+                    return protocol_conflict(decoded.status);
+                }
+                auto* attempt = std::get_if<AttemptStartedV1>(&*decoded.value);
+                if (attempt == nullptr || attempt->manifest_digest != manifest.self_digest ||
+                    attempt->chunk_id != plan.chunk_id || attempt->sq_begin != plan.sq_begin ||
+                    attempt->sq_end != plan.sq_end || attempt->attempt_ordinal != ordinal) {
+                    return conflict();
+                }
+                observed_snapshots.worker_attempts.push_back(*loaded.snapshot);
+                chain.push_back(std::move(*attempt));
+            }
+        }
+        std::sort(expected_attempt_leaves.begin(), expected_attempt_leaves.end());
+        if (expected_attempt_leaves != inventory.worker_attempt_record_leaves) {
+            return conflict();
+        }
+
+        std::vector<MergeStartedV1> observed_starts;
+        std::vector<std::string> expected_start_leaves;
+        observed_starts.reserve(retained_starts.size());
+        expected_start_leaves.reserve(retained_starts.size());
+        for (std::size_t ordinal = 0; ordinal < retained_starts.size(); ++ordinal) {
+            const auto names =
+                distributed_sieve_merge_generation_names_v1(static_cast<std::uint32_t>(ordinal));
+            if (!names.has_value()) {
+                return conflict();
+            }
+            expected_start_leaves.push_back(names->canonical_record_leaf);
+            auto loaded = read_immutable_protocol_record_leaf(
+                root_fd, names->canonical_record_leaf.c_str(), creator_process_id,
+                DistributedSieveWaveStoreStatus::namespace_conflict,
+                DistributedSieveWaveStoreStatus::namespace_conflict);
+            if (!loaded) {
+                return {.snapshots = std::nullopt, .diagnostic = std::move(loaded.diagnostic)};
+            }
+            auto decoded = decode_distributed_sieve_record(*loaded.bytes);
+            if (!decoded) {
+                return protocol_conflict(decoded.status);
+            }
+            auto* start = std::get_if<MergeStartedV1>(&*decoded.value);
+            if (start == nullptr) {
+                return conflict();
+            }
+            DistributedSieveProtocolRecordV1 retained_record(retained_starts[ordinal]);
+            auto retained_encoded = encode_distributed_sieve_record(retained_record);
+            if (!retained_encoded || !retained_encoded.bytes.has_value() ||
+                *retained_encoded.bytes != *loaded.bytes) {
+                return retained_encoded ? conflict() : protocol_conflict(retained_encoded.status);
+            }
+            observed_snapshots.merge_starts.push_back(*loaded.snapshot);
+            observed_starts.push_back(std::move(*start));
+        }
+        std::sort(expected_start_leaves.begin(), expected_start_leaves.end());
+        if (expected_start_leaves != inventory.merge_started_record_leaves) {
+            return conflict();
+        }
+
+        std::vector<ChunkTerminalEvidenceViewV1> evidence;
+        evidence.reserve(manifest.chunks.size());
+        for (std::size_t slot = 0; slot < manifest.chunks.size(); ++slot) {
+            evidence.push_back(ChunkTerminalEvidenceViewV1{
+                .attempts = attempt_chains[slot],
+                .handoff = retained_handoffs[slot],
+            });
+        }
+        const auto dependency = validate_merge_dependency_chain(manifest, evidence, observed_starts,
+                                                                std::addressof(prepared), commit);
+        if (!dependency) {
+            return protocol_conflict(dependency);
+        }
+        if (expected_snapshots != nullptr && observed_snapshots != *expected_snapshots) {
+            return conflict();
+        }
+        return {.snapshots = std::move(observed_snapshots), .diagnostic = {}};
+    } catch (const std::bad_alloc&) {
+        return {.snapshots = std::nullopt,
+                .diagnostic = diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
+                                         std::make_error_code(std::errc::not_enough_memory))};
+    } catch (...) {
+        return {.snapshots = std::nullopt,
+                .diagnostic = diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                                         std::make_error_code(std::errc::io_error))};
     }
 }
 
@@ -13543,7 +14070,9 @@ DistributedSieveWaveStore::open(const std::filesystem::path& absolute_root,
             *after_read_inventory_validated.merge_started_records !=
                 *inventory_validated.merge_started_records ||
             *after_read_inventory_validated.chunk_terminal_failure_records !=
-                *inventory_validated.chunk_terminal_failure_records) {
+                *inventory_validated.chunk_terminal_failure_records ||
+            *after_read_inventory_validated.wave_merge_commit_records !=
+                *inventory_validated.wave_merge_commit_records) {
             return open_failure(
                 diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error()));
         }
@@ -13603,6 +14132,10 @@ DistributedSieveWaveStore::open(const std::filesystem::path& absolute_root,
                 after_read.inventory->merge_started_record_leaves ||
             final_inventory.inventory->chunk_terminal_failure_record_leaves !=
                 after_read.inventory->chunk_terminal_failure_record_leaves ||
+            final_inventory.inventory->wave_merge_commit_record_leaves !=
+                after_read.inventory->wave_merge_commit_record_leaves ||
+            final_inventory.inventory->cleanup_record_leaves !=
+                after_read.inventory->cleanup_record_leaves ||
             *final_inventory_validated.base_lock_identities !=
                 *after_read_inventory_validated.base_lock_identities ||
             *final_inventory_validated.private_lease_witnesses !=
@@ -13612,7 +14145,9 @@ DistributedSieveWaveStore::open(const std::filesystem::path& absolute_root,
             *final_inventory_validated.merge_started_records !=
                 *after_read_inventory_validated.merge_started_records ||
             *final_inventory_validated.chunk_terminal_failure_records !=
-                *after_read_inventory_validated.chunk_terminal_failure_records) {
+                *after_read_inventory_validated.chunk_terminal_failure_records ||
+            *final_inventory_validated.wave_merge_commit_records !=
+                *after_read_inventory_validated.wave_merge_commit_records) {
             return open_failure(
                 diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error()));
         }
@@ -13622,6 +14157,8 @@ DistributedSieveWaveStore::open(const std::filesystem::path& absolute_root,
 
         std::optional<std::size_t> merge_prepared_lease_index;
         std::optional<std::size_t> merge_raw_recovery_lease_index;
+        const bool wave_merge_commit_prefix_present =
+            !final_inventory_validated.wave_merge_commit_records->empty();
         std::size_t retained_worker_reader_count = 0;
         for (std::size_t index = 0;
              index < final_inventory_validated.private_lease_witnesses->size(); ++index) {
@@ -13653,6 +14190,10 @@ DistributedSieveWaveStore::open(const std::filesystem::path& absolute_root,
             }
             merge_prepared_lease_index = index;
         }
+        if (wave_merge_commit_prefix_present && !merge_prepared_lease_index.has_value()) {
+            return open_failure(
+                diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error()));
+        }
 
         std::optional<NamespaceInventory> final_witnessed_inventory;
         std::shared_ptr<RecoveredMergePreparedAdmissionStateV1> recovered_prepared_state;
@@ -13666,6 +14207,16 @@ DistributedSieveWaveStore::open(const std::filesystem::path& absolute_root,
             }
             recovered_prepared_state = std::make_shared<RecoveredMergePreparedAdmissionStateV1>();
             recovered_prepared_state->worker_readers.entries.resize(retained_worker_reader_count);
+            recovered_prepared_state->worker_handoffs.resize(existing.manifest->chunks.size());
+            recovered_prepared_state->merge_started_chain.reserve(
+                final_inventory_validated.merge_started_records->size());
+            for (const auto& start : *final_inventory_validated.merge_started_records) {
+                if (!start.canonical_snapshot.has_value() || start.pending_snapshot.has_value()) {
+                    return open_failure(diagnostic(
+                        DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error()));
+                }
+                recovered_prepared_state->merge_started_chain.push_back(start.record);
+            }
             recovered_prepared_state->prepared_record = prepared_lease.merge_prepared->prepared;
             recovered_prepared_state->creator_process_id = creator_process_id;
             held_publications.reserve(retained_worker_reader_count + 1U);
@@ -13676,6 +14227,8 @@ DistributedSieveWaveStore::open(const std::filesystem::path& absolute_root,
                 *final_inventory_validated.merge_started_records;
             final_witnessed_inventory->chunk_terminal_failure_records =
                 *final_inventory_validated.chunk_terminal_failure_records;
+            final_witnessed_inventory->wave_merge_commit_records =
+                *final_inventory_validated.wave_merge_commit_records;
         }
 
         auto state = std::make_shared<State>();
@@ -13695,6 +14248,8 @@ DistributedSieveWaveStore::open(const std::filesystem::path& absolute_root,
                 *final_inventory_validated.merge_started_records;
             anchored_inventory.chunk_terminal_failure_records =
                 *final_inventory_validated.chunk_terminal_failure_records;
+            anchored_inventory.wave_merge_commit_records =
+                *final_inventory_validated.wave_merge_commit_records;
             state->merge_raw_recovery_open_anchor.emplace(ManifestBoundInventoryWitnessResult{
                 .inventory = std::move(anchored_inventory),
                 .base_lock_identities = *final_inventory_validated.base_lock_identities,
@@ -13749,6 +14304,8 @@ DistributedSieveWaveStore::open(const std::filesystem::path& absolute_root,
             aggregate.merge_started_records != *final_inventory_validated.merge_started_records ||
             aggregate.chunk_terminal_failure_records !=
                 *final_inventory_validated.chunk_terminal_failure_records ||
+            aggregate.wave_merge_commit_records !=
+                *final_inventory_validated.wave_merge_commit_records ||
             aggregate.attempt_index != *merge_prepared_lease_index ||
             aggregate.attempt_index >= aggregate.private_leases.size() ||
             aggregate.typed_prepared != *expected_prepared_lease.merge_prepared ||
@@ -13790,6 +14347,8 @@ DistributedSieveWaveStore::open(const std::filesystem::path& absolute_root,
             }
             recovered_prepared_state->worker_readers.entries[index].expected_relation_count =
                 worker.typed_handoff.handoff.relation_count;
+            recovered_prepared_state->worker_handoffs[worker.manifest_slot] =
+                worker.typed_handoff.handoff;
             held_publications.push_back(HeldCanonicalPublicationInventoryEntryV1{
                 .base_lock_leaf = worker.names.base_lock_leaf,
                 .base_lock_identity = aggregate.base_lock_identities[worker.attempt_index],
@@ -13918,6 +14477,26 @@ DistributedSieveWaveStore::open(const std::filesystem::path& absolute_root,
                 std::move(aggregate.retained_workers.entries[index].reader);
         }
         recovered_prepared_state->merged_reader = std::move(retained_target.reader);
+        std::vector<const WorkerHandoffV1*> retained_handoffs;
+        retained_handoffs.reserve(recovered_prepared_state->worker_handoffs.size());
+        for (const auto& handoff : recovered_prepared_state->worker_handoffs) {
+            retained_handoffs.push_back(handoff.has_value() ? std::addressof(*handoff) : nullptr);
+        }
+        const WaveMergeCommitV1* existing_commit =
+            wave_merge_commit_prefix_present
+                ? std::addressof(
+                      final_inventory_validated.wave_merge_commit_records->front().record)
+                : nullptr;
+        MergeCommitPredecessorSnapshots predecessor_snapshots;
+        const auto captured =
+            recovered_prepared_state->store->capture_merge_commit_predecessor_snapshots_v1(
+                recovered_prepared_state->prepared_record,
+                recovered_prepared_state->merge_started_chain, retained_handoffs, existing_commit,
+                predecessor_snapshots);
+        if (captured.status != DistributedSieveWaveStoreStatus::ready) {
+            return open_failure(captured);
+        }
+        recovered_prepared_state->predecessor_snapshots.emplace(std::move(predecessor_snapshots));
         if (!recovered_merge_prepared_admission_state_valid(
                 recovered_prepared_state.get(),
                 std::addressof(recovered_prepared_state->prepared_record), creator_process_id)) {
@@ -13925,19 +14504,50 @@ DistributedSieveWaveStore::open(const std::filesystem::path& absolute_root,
                 diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure, protocol_error()));
         }
 
+        if (wave_merge_commit_prefix_present) {
+            auto tail_predecessor_snapshots = *recovered_prepared_state->predecessor_snapshots;
+            auto committed = recovered_prepared_state->store->publish_wave_merge_commit_v1(
+                recovered_prepared_state->prepared_record,
+                recovered_prepared_state->merge_started_chain, retained_handoffs,
+                tail_predecessor_snapshots, hooks.wave_merge_commit);
+            if (!committed || !committed.admission_spent) {
+                return open_failure(std::move(committed.diagnostic));
+            }
+
+            using CommittedTail = distributed_sieve_merge_writer_authority_detail::
+                DistributedSieveCommittedTailAdmissionV1;
+            std::shared_ptr<distributed_sieve_merge_writer_authority_detail::
+                                DistributedSieveMergePreparedOriginV1>
+                committed_origin = recovered_prepared_state;
+            CommittedTail tail(std::move(committed_origin),
+                               std::addressof(recovered_prepared_state->prepared_record),
+                               std::move(*committed.commit), std::move(tail_predecessor_snapshots),
+                               *committed.canonical_snapshot, creator_process_id);
+            if (!tail.valid()) {
+                return open_failure(diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
+                                               protocol_error()));
+            }
+            std::optional<CommittedTail> committed_result;
+            committed_result.emplace(std::move(tail));
+            return {nullptr, std::nullopt, std::move(committed_result),
+                    std::move(committed.diagnostic)};
+        }
+
         using PreparedAdmission = distributed_sieve_merge_writer_authority_detail::
             DistributedSieveMergePreparedAdmissionV1;
-        std::shared_ptr<const void> lifetime_anchor = recovered_prepared_state;
+        std::shared_ptr<
+            distributed_sieve_merge_writer_authority_detail::DistributedSieveMergePreparedOriginV1>
+            origin = recovered_prepared_state;
         PreparedAdmission prepared_admission(
-            std::move(lifetime_anchor), std::addressof(recovered_prepared_state->prepared_record),
-            creator_process_id, recovered_merge_prepared_admission_state_valid);
+            std::move(origin), std::addressof(recovered_prepared_state->prepared_record),
+            creator_process_id);
         if (!prepared_admission.valid()) {
             return open_failure(
                 diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure, protocol_error()));
         }
         std::optional<PreparedAdmission> prepared_result;
         prepared_result.emplace(std::move(prepared_admission));
-        return {nullptr, std::move(prepared_result), std::move(published.diagnostic)};
+        return {nullptr, std::move(prepared_result), std::nullopt, std::move(published.diagnostic)};
 #endif
     } catch (const std::bad_alloc&) {
         return open_failure(diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
@@ -14040,6 +14650,506 @@ DistributedSieveWaveStore::revalidate_authority() const noexcept {
         return process_mismatch();
     }
     return {};
+#endif
+}
+
+DistributedSieveWaveStoreDiagnostic
+DistributedSieveWaveStore::capture_merge_commit_predecessor_snapshots_v1(
+    const MergePreparedV1& prepared, std::span<const MergeStartedV1> merge_started_chain,
+    std::span<const WorkerHandoffV1* const> worker_handoffs,
+    const WaveMergeCommitV1* existing_commit,
+    MergeCommitPredecessorSnapshots& snapshots) const noexcept {
+    if (state_ == nullptr) {
+        return diagnostic(DistributedSieveWaveStoreStatus::invalid_request,
+                          invalid_argument_error());
+    }
+#if !defined(__APPLE__)
+    (void)prepared;
+    (void)merge_started_chain;
+    (void)worker_handoffs;
+    (void)existing_commit;
+    (void)snapshots;
+    return diagnostic(DistributedSieveWaveStoreStatus::platform_unsupported, unsupported_error());
+#else
+    try {
+        std::optional<std::vector<std::byte>> existing_commit_bytes;
+        if (existing_commit != nullptr) {
+            DistributedSieveProtocolRecordV1 typed_commit(*existing_commit);
+            auto encoded = encode_distributed_sieve_record(typed_commit);
+            if (!encoded || !encoded.bytes.has_value()) {
+                auto failure = diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
+                                          protocol_error());
+                failure.protocol_status = encoded.status;
+                return failure;
+            }
+            existing_commit_bytes.emplace(std::move(*encoded.bytes));
+        }
+        struct ExactPredecessorObservation final {
+            NamespaceInventory inventory;
+            MergeCommitPredecessorSnapshots snapshots;
+        };
+        const auto observe = [&]() -> std::pair<std::optional<ExactPredecessorObservation>,
+                                                DistributedSieveWaveStoreDiagnostic> {
+            auto observed = inspect_namespace(state_->root_fd);
+            if (!observed) {
+                return {std::nullopt, std::move(observed.diagnostic)};
+            }
+            if (!observed.inventory->cleanup_record_leaves.empty()) {
+                return {std::nullopt,
+                        diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
+                                   protocol_error())};
+            }
+            auto commit_inventory = validate_wave_merge_commit_record_inventory(
+                state_->root_fd, *observed.inventory, state_->manifest, state_->creator_process_id);
+            if (!commit_inventory) {
+                return {std::nullopt, std::move(commit_inventory.diagnostic)};
+            }
+            const bool exact_commit_prefix =
+                existing_commit == nullptr
+                    ? commit_inventory.witnesses->empty()
+                    : commit_inventory.witnesses->size() == 1U &&
+                          existing_commit_bytes.has_value() &&
+                          commit_inventory.witnesses->front().bytes == *existing_commit_bytes;
+            if (!exact_commit_prefix) {
+                return {std::nullopt,
+                        diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
+                                   protocol_error())};
+            }
+            observed.inventory->wave_merge_commit_records = *commit_inventory.witnesses;
+            auto dependency = validate_wave_merge_commit_dependency_snapshot(
+                state_->root_fd, *observed.inventory, state_->manifest, prepared,
+                merge_started_chain, worker_handoffs, existing_commit, state_->creator_process_id);
+            if (!dependency) {
+                return {std::nullopt, std::move(dependency.diagnostic)};
+            }
+            return {ExactPredecessorObservation{
+                        .inventory = std::move(*observed.inventory),
+                        .snapshots = std::move(*dependency.snapshots),
+                    },
+                    {}};
+        };
+
+        if (const auto authority = revalidate_authority();
+            authority.status != DistributedSieveWaveStoreStatus::ready) {
+            return authority;
+        }
+        auto [first, first_failure] = observe();
+        if (!first.has_value()) {
+            return first_failure;
+        }
+        if (const auto authority = revalidate_authority();
+            authority.status != DistributedSieveWaveStoreStatus::ready) {
+            return authority;
+        }
+        auto [confirmed, confirmed_failure] = observe();
+        if (!confirmed.has_value()) {
+            return confirmed_failure;
+        }
+        if (confirmed->inventory != first->inventory || confirmed->snapshots != first->snapshots) {
+            return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
+                              protocol_error());
+        }
+        if (const auto authority = revalidate_authority();
+            authority.status != DistributedSieveWaveStoreStatus::ready) {
+            return authority;
+        }
+        snapshots = std::move(confirmed->snapshots);
+        return {};
+    } catch (const std::bad_alloc&) {
+        return diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
+                          std::make_error_code(std::errc::not_enough_memory));
+    } catch (...) {
+        return diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                          std::make_error_code(std::errc::io_error));
+    }
+#endif
+}
+
+bool DistributedSieveWaveStore::revalidate_committed_tail_v1(
+    const MergePreparedV1& prepared, std::span<const MergeStartedV1> merge_started_chain,
+    std::span<const WorkerHandoffV1* const> worker_handoffs,
+    const MergeCommitPredecessorSnapshots& predecessor_snapshots, const WaveMergeCommitV1& commit,
+    const durable_record::RecordSnapshot& canonical_snapshot) const noexcept {
+    if (state_ == nullptr) {
+        return false;
+    }
+#if !defined(__APPLE__)
+    (void)prepared;
+    (void)merge_started_chain;
+    (void)worker_handoffs;
+    (void)predecessor_snapshots;
+    (void)commit;
+    (void)canonical_snapshot;
+    return false;
+#else
+    try {
+        DistributedSieveProtocolRecordV1 typed_commit(commit);
+        if (const auto valid = validate_distributed_sieve_record(typed_commit, true); !valid) {
+            return false;
+        }
+        const auto encoded = encode_distributed_sieve_record(typed_commit);
+        if (!encoded || !encoded.bytes.has_value()) {
+            return false;
+        }
+
+        const auto names = distributed_sieve_wave_merge_commit_names_v1();
+        struct ExactCommitObservation final {
+            NamespaceInventory inventory;
+            DistributedSieveWaveMergeCommitRecordInventoryWitnessV1 witness;
+            MergeCommitPredecessorSnapshots predecessor_snapshots;
+        };
+        const auto observe_exact_commit = [&]() -> std::optional<ExactCommitObservation> {
+            auto observed = inspect_namespace(state_->root_fd);
+            if (!observed || !observed.inventory->cleanup_record_leaves.empty() ||
+                observed.inventory->wave_merge_commit_record_leaves !=
+                    std::vector<std::string>{names.canonical_record_leaf}) {
+                return std::nullopt;
+            }
+            auto loaded = validate_wave_merge_commit_record_inventory(
+                state_->root_fd, *observed.inventory, state_->manifest, state_->creator_process_id);
+            if (!loaded || loaded.witnesses->size() != 1U) {
+                return std::nullopt;
+            }
+            auto witness = std::move(loaded.witnesses->front());
+            if (witness.bytes != *encoded.bytes || !witness.canonical_snapshot.has_value() ||
+                witness.pending_snapshot.has_value() ||
+                *witness.canonical_snapshot != canonical_snapshot) {
+                return std::nullopt;
+            }
+            observed.inventory->wave_merge_commit_records = {witness};
+            auto dependency = validate_wave_merge_commit_dependency_snapshot(
+                state_->root_fd, *observed.inventory, state_->manifest, prepared,
+                merge_started_chain, worker_handoffs, std::addressof(witness.record),
+                state_->creator_process_id, std::addressof(predecessor_snapshots));
+            if (!dependency) {
+                return std::nullopt;
+            }
+            return ExactCommitObservation{
+                .inventory = std::move(*observed.inventory),
+                .witness = std::move(witness),
+                .predecessor_snapshots = std::move(*dependency.snapshots),
+            };
+        };
+
+        if (const auto authority = revalidate_authority();
+            authority.status != DistributedSieveWaveStoreStatus::ready) {
+            return false;
+        }
+        auto first = observe_exact_commit();
+        if (!first.has_value()) {
+            return false;
+        }
+        if (const auto authority = revalidate_authority();
+            authority.status != DistributedSieveWaveStoreStatus::ready) {
+            return false;
+        }
+        auto confirmed = observe_exact_commit();
+        if (!confirmed.has_value() || confirmed->inventory != first->inventory ||
+            confirmed->witness != first->witness ||
+            confirmed->predecessor_snapshots != first->predecessor_snapshots) {
+            return false;
+        }
+        return revalidate_authority().status == DistributedSieveWaveStoreStatus::ready;
+    } catch (...) {
+        return false;
+    }
+#endif
+}
+
+DistributedSieveWaveMergeCommitPublicationResultV1
+DistributedSieveWaveStore::publish_wave_merge_commit_v1(
+    const MergePreparedV1& prepared, std::span<const MergeStartedV1> merge_started_chain,
+    std::span<const WorkerHandoffV1* const> worker_handoffs,
+    const MergeCommitPredecessorSnapshots& predecessor_snapshots,
+    DistributedSieveWaveMergeCommitTestHooksV1 hooks) const noexcept {
+    const auto fail_with = [](DistributedSieveWaveStoreDiagnostic failure,
+                              bool admission_spent = false) {
+        return DistributedSieveWaveMergeCommitPublicationResultV1{
+            .commit = std::nullopt,
+            .canonical_snapshot = std::nullopt,
+            .diagnostic = std::move(failure),
+            .admission_spent = admission_spent,
+        };
+    };
+    if (state_ == nullptr) {
+        return fail_with(
+            diagnostic(DistributedSieveWaveStoreStatus::invalid_request, invalid_argument_error()));
+    }
+
+#if !defined(__APPLE__)
+    (void)prepared;
+    (void)merge_started_chain;
+    (void)worker_handoffs;
+    (void)predecessor_snapshots;
+    (void)hooks;
+    return fail_with(
+        diagnostic(DistributedSieveWaveStoreStatus::platform_unsupported, unsupported_error()));
+#else
+    if (const auto authority = revalidate_authority();
+        authority.status != DistributedSieveWaveStoreStatus::ready) {
+        return fail_with(authority);
+    }
+    bool admission_spent = false;
+    try {
+        if (prepared.manifest_digest != state_->manifest.self_digest ||
+            prepared.work_digest != state_->manifest.work_sha256 ||
+            prepared.merge_policy_version != state_->manifest.merge_policy_version ||
+            prepared.ordered_inputs.size() != state_->manifest.chunks.size() ||
+            prepared.per_chunk_retained_counts.size() != state_->manifest.chunks.size() ||
+            worker_handoffs.size() != state_->manifest.chunks.size() ||
+            merge_started_chain.empty()) {
+            return fail_with(diagnostic(DistributedSieveWaveStoreStatus::invalid_request,
+                                        invalid_argument_error()));
+        }
+
+        WaveMergeCommitV1 commit{
+            .manifest_digest = prepared.manifest_digest,
+            .work_digest = prepared.work_digest,
+            .merge_policy_version = prepared.merge_policy_version,
+            .input_relation_count = prepared.input_relation_count,
+            .duplicate_relation_count = prepared.duplicate_relation_count,
+            .output_relation_count = prepared.output_relation_count,
+            .merge_prepared_digest = prepared.self_digest,
+            .merged_lease = prepared.merged_lease,
+            .merged_artifact = prepared.merged_artifact,
+        };
+        commit.chunks.reserve(prepared.ordered_inputs.size());
+        for (std::size_t slot = 0; slot < prepared.ordered_inputs.size(); ++slot) {
+            if (prepared.per_chunk_retained_counts[slot].chunk_id !=
+                prepared.ordered_inputs[slot].chunk_id) {
+                return fail_with(diagnostic(DistributedSieveWaveStoreStatus::invalid_request,
+                                            invalid_argument_error()));
+            }
+            commit.chunks.push_back(ChunkCommitSummaryV1{
+                .input = prepared.ordered_inputs[slot],
+                .retained_relation_count =
+                    prepared.per_chunk_retained_counts[slot].retained_relation_count,
+                .diagnostic =
+                    NormalizedDiagnosticV1{
+                        .kind = NormalizedDiagnosticKindV1::none,
+                        .code = 0,
+                    },
+            });
+        }
+        DistributedSieveProtocolRecordV1 typed_commit(std::move(commit));
+        if (const auto sealed = seal_distributed_sieve_record(typed_commit); !sealed) {
+            auto failure =
+                diagnostic(DistributedSieveWaveStoreStatus::invalid_request, protocol_error());
+            failure.protocol_status = sealed;
+            return fail_with(std::move(failure));
+        }
+        auto encoded = encode_distributed_sieve_record(typed_commit);
+        if (!encoded || !encoded.bytes.has_value()) {
+            auto failure =
+                diagnostic(DistributedSieveWaveStoreStatus::invalid_request, protocol_error());
+            failure.protocol_status = encoded.status;
+            return fail_with(std::move(failure));
+        }
+        commit = std::get<WaveMergeCommitV1>(std::move(typed_commit));
+
+        auto initial = inspect_namespace(state_->root_fd);
+        if (!initial) {
+            return fail_with(std::move(initial.diagnostic));
+        }
+        const bool existing_prefix = !initial.inventory->wave_merge_commit_record_leaves.empty();
+        admission_spent = existing_prefix;
+        if (!initial.inventory->cleanup_record_leaves.empty()) {
+            return fail_with(
+                diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error()),
+                existing_prefix);
+        }
+        auto initial_commit = validate_wave_merge_commit_record_inventory(
+            state_->root_fd, *initial.inventory, state_->manifest, state_->creator_process_id);
+        if (!initial_commit) {
+            return fail_with(std::move(initial_commit.diagnostic), existing_prefix);
+        }
+        if (!initial_commit.witnesses->empty() &&
+            initial_commit.witnesses->front().bytes != *encoded.bytes) {
+            return fail_with(
+                diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error()),
+                true);
+        }
+        auto initial_dependency = validate_wave_merge_commit_dependency_snapshot(
+            state_->root_fd, *initial.inventory, state_->manifest, prepared, merge_started_chain,
+            worker_handoffs, std::addressof(commit), state_->creator_process_id,
+            std::addressof(predecessor_snapshots));
+        if (!initial_dependency) {
+            return fail_with(std::move(initial_dependency.diagnostic), existing_prefix);
+        }
+        if (const auto authority = revalidate_authority();
+            authority.status != DistributedSieveWaveStoreStatus::ready) {
+            return fail_with(authority, existing_prefix);
+        }
+        if (hooks.before_record_publication != nullptr) {
+            hooks.before_record_publication(hooks.context);
+            if (!process_matches(state_->creator_process_id)) {
+                return fail_with(process_mismatch(), existing_prefix);
+            }
+        }
+        if (const auto authority = revalidate_authority();
+            authority.status != DistributedSieveWaveStoreStatus::ready) {
+            return fail_with(authority, existing_prefix);
+        }
+        auto confirmed_predecessor = inspect_namespace(state_->root_fd);
+        if (!confirmed_predecessor) {
+            return fail_with(std::move(confirmed_predecessor.diagnostic), existing_prefix);
+        }
+        if (*confirmed_predecessor.inventory != *initial.inventory) {
+            const bool commit_now_visible =
+                !confirmed_predecessor.inventory->wave_merge_commit_record_leaves.empty();
+            return fail_with(
+                diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error()),
+                existing_prefix || commit_now_visible);
+        }
+        auto confirmed_commit = validate_wave_merge_commit_record_inventory(
+            state_->root_fd, *confirmed_predecessor.inventory, state_->manifest,
+            state_->creator_process_id);
+        if (!confirmed_commit) {
+            return fail_with(std::move(confirmed_commit.diagnostic), existing_prefix);
+        }
+        if (*confirmed_commit.witnesses != *initial_commit.witnesses) {
+            return fail_with(
+                diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error()),
+                existing_prefix);
+        }
+        auto confirmed_dependency = validate_wave_merge_commit_dependency_snapshot(
+            state_->root_fd, *confirmed_predecessor.inventory, state_->manifest, prepared,
+            merge_started_chain, worker_handoffs, std::addressof(commit),
+            state_->creator_process_id, std::addressof(predecessor_snapshots));
+        if (!confirmed_dependency) {
+            return fail_with(std::move(confirmed_dependency.diagnostic), existing_prefix);
+        }
+        if (*confirmed_dependency.snapshots != *initial_dependency.snapshots) {
+            return fail_with(
+                diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error()),
+                existing_prefix);
+        }
+
+        const auto names = distributed_sieve_wave_merge_commit_names_v1();
+        WaveMergeCommitHookBridgeV1 bridge{
+            .hooks = hooks,
+            .creator_process_id = state_->creator_process_id,
+        };
+        admission_spent = true;
+        const auto published = durable_record::publish_at(
+            static_cast<durable_record::NativeHandle>(state_->root_fd), names.pending_record_leaf,
+            names.canonical_record_leaf, *encoded.bytes,
+            durable_record::RecordTestHooks{
+                .stop_after = bridge_wave_merge_commit_hook_v1,
+                .context = &bridge,
+            });
+        auto publication = wave_merge_commit_publication_diagnostic_v1(published, bridge);
+        const auto attach_publication = [&](DistributedSieveWaveStoreDiagnostic higher) {
+            higher.publication_status = publication.publication_status;
+            higher.publication_disposition = publication.publication_disposition;
+            higher.last_wave_merge_commit_fault_point =
+                publication.last_wave_merge_commit_fault_point;
+            return higher;
+        };
+        if (published.status() != durable_record::RecordPublishStatus::durable ||
+            !published.canonical_snapshot().has_value()) {
+            return fail_with(std::move(publication), true);
+        }
+
+        struct ExactCommitObservation final {
+            NamespaceInventory inventory;
+            DistributedSieveWaveMergeCommitRecordInventoryWitnessV1 witness;
+            MergeCommitPredecessorSnapshots predecessor_snapshots;
+        };
+        const auto observe_exact_successor =
+            [&]() -> std::pair<std::optional<ExactCommitObservation>,
+                               DistributedSieveWaveStoreDiagnostic> {
+            auto observed = inspect_namespace(state_->root_fd);
+            if (!observed) {
+                return {std::nullopt, attach_publication(std::move(observed.diagnostic))};
+            }
+            auto loaded = validate_wave_merge_commit_record_inventory(
+                state_->root_fd, *observed.inventory, state_->manifest, state_->creator_process_id);
+            if (!loaded) {
+                return {std::nullopt, attach_publication(std::move(loaded.diagnostic))};
+            }
+            if (!observed.inventory->cleanup_record_leaves.empty() ||
+                observed.inventory->wave_merge_commit_record_leaves !=
+                    std::vector<std::string>{names.canonical_record_leaf} ||
+                loaded.witnesses->size() != 1U) {
+                return {std::nullopt, attach_publication(diagnostic(
+                                          DistributedSieveWaveStoreStatus::namespace_conflict,
+                                          protocol_error()))};
+            }
+            auto witness = std::move(loaded.witnesses->front());
+            if (witness.bytes != *encoded.bytes || !witness.canonical_snapshot.has_value() ||
+                witness.pending_snapshot.has_value() ||
+                witness.canonical_snapshot != published.canonical_snapshot()) {
+                return {std::nullopt, attach_publication(diagnostic(
+                                          DistributedSieveWaveStoreStatus::namespace_conflict,
+                                          protocol_error()))};
+            }
+            observed.inventory->wave_merge_commit_records = {witness};
+            auto dependency = validate_wave_merge_commit_dependency_snapshot(
+                state_->root_fd, *observed.inventory, state_->manifest, prepared,
+                merge_started_chain, worker_handoffs, std::addressof(witness.record),
+                state_->creator_process_id, std::addressof(predecessor_snapshots));
+            if (!dependency) {
+                return {std::nullopt, attach_publication(std::move(dependency.diagnostic))};
+            }
+            return {ExactCommitObservation{
+                        .inventory = std::move(*observed.inventory),
+                        .witness = std::move(witness),
+                        .predecessor_snapshots = std::move(*dependency.snapshots),
+                    },
+                    {}};
+        };
+
+        if (const auto authority = revalidate_authority();
+            authority.status != DistributedSieveWaveStoreStatus::ready) {
+            return fail_with(attach_publication(authority), true);
+        }
+        auto [first_successor, first_failure] = observe_exact_successor();
+        if (!first_successor.has_value()) {
+            return fail_with(std::move(first_failure), true);
+        }
+        if (hooks.after_first_successor_validation != nullptr) {
+            hooks.after_first_successor_validation(hooks.context);
+            if (!process_matches(state_->creator_process_id)) {
+                return fail_with(attach_publication(process_mismatch()), true);
+            }
+        }
+        if (const auto authority = revalidate_authority();
+            authority.status != DistributedSieveWaveStoreStatus::ready) {
+            return fail_with(attach_publication(authority), true);
+        }
+        auto [confirmed_successor, confirmed_failure] = observe_exact_successor();
+        if (!confirmed_successor.has_value()) {
+            return fail_with(std::move(confirmed_failure), true);
+        }
+        if (confirmed_successor->inventory != first_successor->inventory ||
+            confirmed_successor->witness != first_successor->witness ||
+            confirmed_successor->predecessor_snapshots != first_successor->predecessor_snapshots) {
+            return fail_with(
+                attach_publication(diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
+                                              protocol_error())),
+                true);
+        }
+        if (const auto authority = revalidate_authority();
+            authority.status != DistributedSieveWaveStoreStatus::ready) {
+            return fail_with(attach_publication(authority), true);
+        }
+        publication.status = DistributedSieveWaveStoreStatus::ready;
+        return {
+            .commit = std::move(confirmed_successor->witness.record),
+            .canonical_snapshot = *confirmed_successor->witness.canonical_snapshot,
+            .diagnostic = std::move(publication),
+            .admission_spent = true,
+        };
+    } catch (const std::bad_alloc&) {
+        return fail_with(diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
+                                    std::make_error_code(std::errc::not_enough_memory)),
+                         admission_spent);
+    } catch (...) {
+        return fail_with(diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                                    std::make_error_code(std::errc::io_error)),
+                         admission_spent);
+    }
 #endif
 }
 
@@ -14150,7 +15260,8 @@ DistributedSieveWaveStoreDiagnostic DistributedSieveWaveStore::revalidate(
         *final_validated.worker_attempt_records != *validated.worker_attempt_records ||
         *final_validated.merge_started_records != *validated.merge_started_records ||
         *final_validated.chunk_terminal_failure_records !=
-            *validated.chunk_terminal_failure_records) {
+            *validated.chunk_terminal_failure_records ||
+        *final_validated.wave_merge_commit_records != *validated.wave_merge_commit_records) {
         return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error());
     }
     if (!process_matches(state_->creator_process_id)) {

@@ -146,6 +146,100 @@ MERGE_WRITER_AUTHORITY_INTERFACE_FILE = (
 MERGE_WRITER_AUTHORITY_TEST_FILE = (
     "tests/test_distributed_sieve_merge_writer_authority.cpp"
 )
+MERGE_COMMIT_AUTHORITY_IMPLEMENTATION_FILE = (
+    "src/sieve/distributed_sieve_merge_commit_authority.cpp"
+)
+MERGE_COMMIT_AUTHORITY_INTERFACE_FILE = (
+    "src/sieve/distributed_sieve_merge_commit_authority_internal.hpp"
+)
+MERGE_COMMIT_AUTHORITY_TEST_FILE = (
+    "tests/test_distributed_sieve_wave_merge_commit.cpp"
+)
+MERGE_COMMIT_AUTHORITY_TEST_FIXTURE_FILE = (
+    "tests/support/distributed_sieve_wave_merge_commit_fixture.hpp"
+)
+MERGE_COMMIT_AUTHORITY_PRODUCTION_FILES = {
+    MERGE_COMMIT_AUTHORITY_IMPLEMENTATION_FILE,
+    MERGE_COMMIT_AUTHORITY_INTERFACE_FILE,
+}
+MERGE_COMMIT_AUTHORITY_ADMISSION_INTERFACE_FILE = (
+    "src/sieve/distributed_sieve_merge_prepared_admission_internal.hpp"
+)
+MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE = (
+    "src/sieve/distributed_sieve_wave_store.cpp"
+)
+MERGE_COMMIT_AUTHORITY_WAVE_STORE_INTERFACE_FILE = (
+    "src/sieve/distributed_sieve_wave_store_internal.hpp"
+)
+MERGE_COMMIT_AUTHORITY_INTERFACE_INCLUDE = (
+    "distributed_sieve_merge_commit_authority_internal.hpp"
+)
+MERGE_COMMIT_AUTHORITY_API_IDENTIFIER_ALLOWLISTS = {
+    "DistributedSieveWaveMergeCommitAuthorityV1": (
+        MERGE_COMMIT_AUTHORITY_PRODUCTION_FILES
+        | {
+            MERGE_COMMIT_AUTHORITY_ADMISSION_INTERFACE_FILE,
+            MERGE_COMMIT_AUTHORITY_WAVE_STORE_INTERFACE_FILE,
+        }
+    ),
+    "DistributedSieveWaveMergeCommitResultV1": (
+        MERGE_COMMIT_AUTHORITY_PRODUCTION_FILES
+        | {MERGE_COMMIT_AUTHORITY_TEST_FILE}
+    ),
+    "consume_distributed_sieve_merge_prepared_v1": (
+        MERGE_COMMIT_AUTHORITY_PRODUCTION_FILES
+        | {MERGE_COMMIT_AUTHORITY_TEST_FILE}
+    ),
+    "DistributedSieveMergePreparedCommitContextV1": {
+        MERGE_COMMIT_AUTHORITY_ADMISSION_INTERFACE_FILE,
+        MERGE_COMMIT_AUTHORITY_IMPLEMENTATION_FILE,
+    },
+    "DistributedSieveCommittedTailAdmissionV1": (
+        MERGE_COMMIT_AUTHORITY_PRODUCTION_FILES
+        | {
+            MERGE_COMMIT_AUTHORITY_ADMISSION_INTERFACE_FILE,
+            MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE,
+            MERGE_COMMIT_AUTHORITY_WAVE_STORE_INTERFACE_FILE,
+            MERGE_COMMIT_AUTHORITY_TEST_FILE,
+        }
+    ),
+    "publish_wave_merge_commit_v1": {
+        MERGE_COMMIT_AUTHORITY_IMPLEMENTATION_FILE,
+        MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE,
+        MERGE_COMMIT_AUTHORITY_WAVE_STORE_INTERFACE_FILE,
+    },
+    "revalidate_committed_tail_v1": {
+        MERGE_COMMIT_AUTHORITY_IMPLEMENTATION_FILE,
+        MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE,
+        MERGE_COMMIT_AUTHORITY_WAVE_STORE_INTERFACE_FILE,
+    },
+}
+MERGE_COMMIT_AUTHORITY_INTERFACE_INCLUDE_ALLOWLIST = {
+    MERGE_COMMIT_AUTHORITY_IMPLEMENTATION_FILE,
+    MERGE_COMMIT_AUTHORITY_TEST_FILE,
+}
+MERGE_COMMIT_AUTHORITY_TRUSTED_HOOK_IDENTIFIER_ALLOWLISTS = {
+    "DistributedSieveWaveMergeCommitFaultPointV1": (
+        MERGE_COMMIT_AUTHORITY_PRODUCTION_FILES
+        | {
+            MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE,
+            MERGE_COMMIT_AUTHORITY_WAVE_STORE_INTERFACE_FILE,
+            MERGE_COMMIT_AUTHORITY_TEST_FILE,
+        }
+    ),
+    "DistributedSieveWaveMergeCommitTestHooksV1": (
+        MERGE_COMMIT_AUTHORITY_PRODUCTION_FILES
+        | {
+            MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE,
+            MERGE_COMMIT_AUTHORITY_WAVE_STORE_INTERFACE_FILE,
+            MERGE_COMMIT_AUTHORITY_TEST_FILE,
+        }
+    ),
+    "consume_distributed_sieve_merge_prepared_v1_with_hooks": (
+        MERGE_COMMIT_AUTHORITY_PRODUCTION_FILES
+        | {MERGE_COMMIT_AUTHORITY_TEST_FILE}
+    ),
+}
 MERGE_WRITER_AUTHORITY_PRODUCTION_FILES = {
     MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
     MERGE_WRITER_AUTHORITY_INTERFACE_FILE,
@@ -242,6 +336,9 @@ DURABLE_ENVIRONMENT_FREE_FILES = {
     "src/sieve/distributed_sieve_merge_writer_codec_internal.hpp",
     MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
     MERGE_WRITER_AUTHORITY_INTERFACE_FILE,
+    "src/sieve/distributed_sieve_merge_prepared_admission_internal.hpp",
+    MERGE_COMMIT_AUTHORITY_IMPLEMENTATION_FILE,
+    MERGE_COMMIT_AUTHORITY_INTERFACE_FILE,
     "src/sieve/distributed_sieve_wave_store.cpp",
     "src/sieve/distributed_sieve_wave_store_internal.hpp",
     "src/sieve/distributed_sieve_worker_coordinator.cpp",
@@ -275,7 +372,11 @@ WORKER_COORDINATOR_USE_SITE_ALLOWLIST = (
     WORKER_COORDINATOR_PRODUCTION_FILES
     | MERGE_COORDINATOR_PRODUCTION_FILES
     | MERGE_WRITER_AUTHORITY_PRODUCTION_FILES
-    | {WORKER_COORDINATOR_TEST_FILE, MERGE_WRITER_AUTHORITY_TEST_FILE}
+    | {
+        WORKER_COORDINATOR_TEST_FILE,
+        MERGE_WRITER_AUTHORITY_TEST_FILE,
+        MERGE_COMMIT_AUTHORITY_TEST_FIXTURE_FILE,
+    }
 )
 WORKER_ATTEMPT_WAVE_STORE_IMPLEMENTATION_FILE = (
     "src/sieve/distributed_sieve_wave_store.cpp"
@@ -465,7 +566,11 @@ PUBLIC_SIEVE_HEADER_PREFIX = "include/gnfs/sieve/"
 MERGE_COORDINATOR_USE_SITE_ALLOWLIST = (
     MERGE_COORDINATOR_PRODUCTION_FILES
     | MERGE_WRITER_AUTHORITY_PRODUCTION_FILES
-    | {MERGE_COORDINATOR_TEST_FILE, MERGE_WRITER_AUTHORITY_TEST_FILE}
+    | {
+        MERGE_COORDINATOR_TEST_FILE,
+        MERGE_WRITER_AUTHORITY_TEST_FILE,
+        MERGE_COMMIT_AUTHORITY_TEST_FIXTURE_FILE,
+    }
 )
 MERGE_COORDINATOR_USE_SITE_IDENTIFIERS = (
     "distributed_sieve_merge_coordinator_detail",
@@ -1067,7 +1172,7 @@ MERGE_PREPARED_ADMISSION_IDENTIFIER = (
 )
 MERGE_PREPARED_ADMISSION_FRESH_PUBLISH_FUNCTION = "publish_impl"
 MERGE_PREPARED_ADMISSION_FRESH_VALIDATOR = (
-    "validate_prepared_admission_origin"
+    "prepared_origin_valid"
 )
 MERGE_PREPARED_ADMISSION_RECOVERED_VALIDATOR = (
     "recovered_merge_prepared_admission_state_valid"
@@ -1513,37 +1618,112 @@ CONSUMED_CANONICAL_READER_ADOPTION_COMMIT_TAIL = (
     "adopted.result,adopted.state,std::move(reader));"
     "#endif"
 )
+MERGE_COMMIT_COMMITTED_TAIL_PUBLIC_SURFACE = (
+    "DistributedSieveCommittedTailAdmissionV1()=delete;"
+    "DistributedSieveCommittedTailAdmissionV1("
+    "constDistributedSieveCommittedTailAdmissionV1&)=delete;"
+    "DistributedSieveCommittedTailAdmissionV1&operator=("
+    "constDistributedSieveCommittedTailAdmissionV1&)=delete;"
+    "DistributedSieveCommittedTailAdmissionV1("
+    "DistributedSieveCommittedTailAdmissionV1&&)noexcept=default;"
+    "DistributedSieveCommittedTailAdmissionV1&operator=("
+    "DistributedSieveCommittedTailAdmissionV1&&)=delete;"
+    "~DistributedSieveCommittedTailAdmissionV1()noexcept=default;"
+    "[[nodiscard]]boolvalid()constnoexcept;"
+    "[[nodiscard]]constWaveMergeCommitV1&record()constnoexcept{returncommit_;}"
+    "[[nodiscard]]constutil::durable_immutable_record::RecordSnapshot&"
+    "canonical_snapshot()constnoexcept{returncanonical_snapshot_;}"
+)
+MERGE_COMMIT_RESULT_SURFACE = (
+    "std::optional<DistributedSieveMergePreparedAdmissionV1>retryable_prepared;"
+    "std::optional<DistributedSieveCommittedTailAdmissionV1>committed_tail;"
+    "DistributedSieveWaveMergeCommitDiagnosticV1diagnostic;"
+    "[[nodiscard]]explicitoperatorbool()constnoexcept{"
+    "constboolretryable=retryable_prepared.has_value()&&"
+    "retryable_prepared->valid()&&!committed_tail.has_value();"
+    "constboolcommitted=!retryable_prepared.has_value()&&"
+    "committed_tail.has_value()&&committed_tail->valid();"
+    "returnstatic_cast<bool>(diagnostic)&&committed&&!retryable;}"
+)
+MERGE_COMMIT_AUTHORITY_CLASS_SURFACE = (
+    "public:DistributedSieveWaveMergeCommitAuthorityV1()=delete;"
+    "private:[[nodiscard]]staticDistributedSieveWaveMergeCommitResultV1consume("
+    "DistributedSieveMergePreparedAdmissionV1&&admission,"
+    "DistributedSieveWaveMergeCommitTestHooksV1hooks)noexcept;"
+    "friendDistributedSieveWaveMergeCommitResultV1"
+    "consume_distributed_sieve_merge_prepared_v1("
+    "DistributedSieveMergePreparedAdmissionV1&&admission)noexcept;"
+    "friendDistributedSieveWaveMergeCommitResultV1trusted_test::"
+    "consume_distributed_sieve_merge_prepared_v1_with_hooks("
+    "DistributedSieveMergePreparedAdmissionV1&&admission,"
+    "DistributedSieveWaveMergeCommitTestHooksV1hooks)noexcept;"
+)
+MERGE_COMMIT_COMMITTED_TAIL_MINT_FRIENDS = (
+    "friendclass::gnfs::sieve::distributed_sieve_resume_detail::"
+    "DistributedSieveWaveStore;",
+    "friendclass::gnfs::sieve::distributed_sieve_merge_commit_authority_detail::"
+    "DistributedSieveWaveMergeCommitAuthorityV1;",
+)
+MERGE_COMMIT_ADMISSION_VALIDATION_FRAGMENT = (
+    "if(!admission.valid()){return{.retryable_prepared=std::nullopt,"
+    ".committed_tail=std::nullopt,.diagnostic=failure("
+    "Phase::admission_validation,Status::invalid_admission),};}"
+)
+MERGE_COMMIT_UNSUPPORTED_PLATFORM_BRANCH = (
+    "#if!defined(__APPLE__)"
+    "(void)hooks;"
+    "std::optional<DistributedSieveMergePreparedAdmissionV1>retryable;"
+    "retryable.emplace(std::move(admission));"
+    "return{.retryable_prepared=std::move(retryable),"
+    ".committed_tail=std::nullopt,.diagnostic=failure("
+    "Phase::platform_gate,Status::platform_unsupported,false,false,"
+    "std::make_error_code(std::errc::operation_not_supported)),};"
+    "#else"
+)
+MERGE_COMMIT_SUPPORTED_CONTEXT_FRAGMENT = (
+    "writer::DistributedSieveMergePreparedCommitContextV1context("
+    "std::move(admission.origin_),std::exchange(admission.record_,nullptr),"
+    "std::exchange(admission.creator_process_id_,0));"
+)
 MERGE_PREPARED_ADMISSION_VALID_BODY = (
-    "if(lifetime_anchor_==nullptr||record_==nullptr||creator_process_id_==0||"
-    "origin_validator_==nullptr){returnfalse;}"
+    "if(origin_==nullptr||record_==nullptr||creator_process_id_==0){returnfalse;}"
     "constintprocess_id=gnfs::util::process_id();"
     "returnprocess_id>0&&"
     "creator_process_id_==static_cast<std::uint64_t>(process_id)&&"
-    "origin_validator_(lifetime_anchor_.get(),record_,creator_process_id_);"
+    "origin_->prepared_origin_valid(record_,creator_process_id_);"
 )
 MERGE_PREPARED_ADMISSION_FRESH_PUBLISH_FRAGMENT = (
     "constauto*stable_record=std::addressof(*state->prepared_record);"
-    "conststd::uint64_tcreator_process_id=state->mint.creator_process_id_;"
-    "std::shared_ptr<constvoid>lifetime_anchor(std::move(state));"
+    "conststd::uint64_tcreator_process_id=state->creator_process_id;"
+    "std::shared_ptr<DistributedSieveMergePreparedOriginV1>origin(std::move(state));"
     "DistributedSieveMergePreparedAdmissionV1admission("
-    "std::move(lifetime_anchor),stable_record,creator_process_id,"
-    "&DistributedSieveMergeWriterAuthorityV1::"
-    "validate_prepared_admission_origin);"
+    "std::move(origin),stable_record,creator_process_id);"
+)
+MERGE_PREPARED_ADMISSION_FRESH_PREDECESSOR_CAPTURE_FRAGMENT = (
+    "DistributedSieveMergeCommitPredecessorSnapshotsV1predecessor_snapshots;"
+    "constautocaptured="
+    "state->worker_result.store->capture_merge_commit_predecessor_snapshots_v1("
+    "*state->prepared_record,state->merge_started_chain,handoffs,nullptr,"
+    "predecessor_snapshots);"
+)
+MERGE_PREPARED_ADMISSION_FRESH_PREDECESSOR_COMMIT_FRAGMENT = (
+    "state->predecessor_snapshots.emplace(std::move(predecessor_snapshots));"
+    "state->handoff_published=true;"
 )
 MERGE_PREPARED_ADMISSION_FRESH_VALIDATOR_BODY = r"""
-    const auto* state =
-        static_cast<const DistributedSieveMergeWriterAuthorityStateV1*>(lifetime_anchor);
-    if (state == nullptr || state->writer == nullptr || state->manifest == nullptr ||
-        state->merge_started_chain.empty() || !state->stream_receipt.has_value() ||
-        !state->prepared_record.has_value() || state->prepared_payload.empty() ||
-        !state->handoff_published || !state->worker_result || stable_record == nullptr ||
-        stable_record != std::addressof(*state->prepared_record) ||
-        creator_process_id != state->mint.creator_process_id_ || !state_process_owned(*state) ||
-        state->writer->state() != gnfs::relation::OOCWriterState::Finalized ||
-        !cached_prepared_payload_is_exact(*state)) {
+    const int process_id = gnfs::util::process_id();
+    if (writer == nullptr || manifest == nullptr || merge_started_chain.empty() ||
+        !stream_receipt.has_value() || !prepared_record.has_value() ||
+        prepared_payload.empty() || !predecessor_snapshots.has_value() || !handoff_published ||
+        !worker_result || stable_record == nullptr ||
+        stable_record != std::addressof(*prepared_record) || creator_process_id == 0 ||
+        expected_creator_process_id != creator_process_id || process_id <= 0 ||
+        creator_process_id != static_cast<std::uint64_t>(process_id) ||
+        writer->state() != gnfs::relation::OOCWriterState::Finalized ||
+        !cached_prepared_payload_is_exact(*this)) {
         return false;
     }
-    for (const auto& coordinated : state->worker_result.chunks) {
+    for (const auto& coordinated : worker_result.chunks) {
         if (coordinated.adopted.has_value() && !coordinated.adopted->valid()) {
             return false;
         }
@@ -1551,11 +1731,15 @@ MERGE_PREPARED_ADMISSION_FRESH_VALIDATOR_BODY = r"""
     return true;
 """
 MERGE_PREPARED_ADMISSION_OPEN_RESULT_BOOL_BODY = (
-    "constboolstore_ready=store!=nullptr&&!prepared_admission.has_value();"
+    "constboolstore_ready=store!=nullptr&&!prepared_admission.has_value()&&"
+    "!committed_tail_admission.has_value();"
     "constboolprepared_ready=store==nullptr&&prepared_admission.has_value()&&"
-    "prepared_admission->valid();"
+    "!committed_tail_admission.has_value()&&prepared_admission->valid();"
+    "constboolcommitted_ready=store==nullptr&&!prepared_admission.has_value()&&"
+    "committed_tail_admission.has_value()&&committed_tail_admission->valid();"
     "returndiagnostic.status==DistributedSieveWaveStoreStatus::ready&&"
-    "store_ready!=prepared_ready;"
+    "static_cast<unsigned>(store_ready)+static_cast<unsigned>(prepared_ready)+"
+    "static_cast<unsigned>(committed_ready)==1U;"
 )
 MERGE_PREPARED_ADMISSION_COLD_CLAIM_FRAGMENT = (
     "autocoordinator=store->claim_worker_coordinator_v1();"
@@ -1572,16 +1756,57 @@ MERGE_PREPARED_ADMISSION_COLD_CLASSIFIER_FRAGMENT = (
 MERGE_PREPARED_ADMISSION_RECOVERED_MINT_FRAGMENT = (
     "usingPreparedAdmission=distributed_sieve_merge_writer_authority_detail::"
     "DistributedSieveMergePreparedAdmissionV1;"
-    "std::shared_ptr<constvoid>lifetime_anchor=recovered_prepared_state;"
+    "std::shared_ptr<distributed_sieve_merge_writer_authority_detail::"
+    "DistributedSieveMergePreparedOriginV1>origin=recovered_prepared_state;"
     "PreparedAdmissionprepared_admission("
-    "std::move(lifetime_anchor),"
+    "std::move(origin),"
     "std::addressof(recovered_prepared_state->prepared_record),"
-    "creator_process_id,recovered_merge_prepared_admission_state_valid);"
+    "creator_process_id);"
 )
 MERGE_PREPARED_ADMISSION_RECOVERED_SUCCESS_FRAGMENT = (
     "std::optional<PreparedAdmission>prepared_result;"
     "prepared_result.emplace(std::move(prepared_admission));"
-    "return{nullptr,std::move(prepared_result),std::move(published.diagnostic)};"
+    "return{nullptr,std::move(prepared_result),std::nullopt,"
+    "std::move(published.diagnostic)};"
+)
+MERGE_PREPARED_ADMISSION_RECOVERED_PREDECESSOR_CAPTURE_FRAGMENT = (
+    "constWaveMergeCommitV1*existing_commit=wave_merge_commit_prefix_present?"
+    "std::addressof("
+    "final_inventory_validated.wave_merge_commit_records->front().record):nullptr;"
+    "MergeCommitPredecessorSnapshotspredecessor_snapshots;"
+    "constautocaptured="
+    "recovered_prepared_state->store->capture_merge_commit_predecessor_snapshots_v1("
+    "recovered_prepared_state->prepared_record,"
+    "recovered_prepared_state->merge_started_chain,retained_handoffs,"
+    "existing_commit,predecessor_snapshots);"
+    "if(captured.status!=DistributedSieveWaveStoreStatus::ready){"
+    "returnopen_failure(captured);}"
+    "recovered_prepared_state->predecessor_snapshots.emplace("
+    "std::move(predecessor_snapshots));"
+)
+MERGE_PREPARED_ADMISSION_RECOVERED_VALIDATION_FRAGMENT = (
+    "if(!recovered_merge_prepared_admission_state_valid("
+    "recovered_prepared_state.get(),"
+    "std::addressof(recovered_prepared_state->prepared_record),"
+    "creator_process_id)){"
+    "returnopen_failure(diagnostic("
+    "DistributedSieveWaveStoreStatus::unexpected_failure,protocol_error()));}"
+)
+MERGE_PREPARED_ADMISSION_RECOVERED_COMMIT_FRAGMENT = (
+    "if(wave_merge_commit_prefix_present){"
+    "autotail_predecessor_snapshots="
+    "*recovered_prepared_state->predecessor_snapshots;"
+    "autocommitted="
+    "recovered_prepared_state->store->publish_wave_merge_commit_v1("
+    "recovered_prepared_state->prepared_record,"
+    "recovered_prepared_state->merge_started_chain,retained_handoffs,"
+    "tail_predecessor_snapshots,hooks.wave_merge_commit);"
+)
+MERGE_PREPARED_ADMISSION_RECOVERED_COMMITTED_SUCCESS_FRAGMENT = (
+    "std::optional<CommittedTail>committed_result;"
+    "committed_result.emplace(std::move(tail));"
+    "return{nullptr,std::nullopt,std::move(committed_result),"
+    "std::move(committed.diagnostic)};"
 )
 MERGE_PREPARED_RECOVERED_TEST_FILE = "tests/test_distributed_sieve_resume.cpp"
 MERGE_PREPARED_RECOVERED_SUBJECT_ENUM = (
@@ -6876,6 +7101,207 @@ class Checks:
                 "consumed-publication BaseLock bridge",
             )
 
+    def validate_merge_commit_authority_use_site(
+        self, relative: str, text: str
+    ) -> None:
+        relevant_identifiers = (
+            tuple(MERGE_COMMIT_AUTHORITY_API_IDENTIFIER_ALLOWLISTS)
+            + tuple(MERGE_COMMIT_AUTHORITY_TRUSTED_HOOK_IDENTIFIER_ALLOWLISTS)
+        )
+        if (
+            MERGE_COMMIT_AUTHORITY_INTERFACE_INCLUDE not in text
+            and not any(identifier in text for identifier in relevant_identifiers)
+        ):
+            return
+
+        include_pattern = re.compile(
+            rf'(?m)^[ \t]*#[ \t]*include[ \t]*["<]'
+            rf'{re.escape(MERGE_COMMIT_AUTHORITY_INTERFACE_INCLUDE)}[">]'
+        )
+        include_matches = list(include_pattern.finditer(text))
+        if relative in MERGE_COMMIT_AUTHORITY_INTERFACE_INCLUDE_ALLOWLIST:
+            if len(include_matches) != 1:
+                self.fail(
+                    relative,
+                    1,
+                    "merge-commit authority interface must be included exactly once "
+                    "by its implementation and dedicated test",
+                )
+        else:
+            for match in include_matches:
+                self.fail(
+                    relative,
+                    text.count("\n", 0, match.start()) + 1,
+                    "merge-commit authority interface include is not allowlisted",
+                )
+
+        for identifier, allowlist in MERGE_COMMIT_AUTHORITY_API_IDENTIFIER_ALLOWLISTS.items():
+            if relative in allowlist:
+                continue
+            for use in find_code_identifier_uses(text, identifier):
+                self.fail(
+                    relative,
+                    use.line,
+                    "merge-commit authority API use site is not allowlisted: "
+                    f"{identifier}",
+                )
+
+        for identifier, allowlist in (
+            MERGE_COMMIT_AUTHORITY_TRUSTED_HOOK_IDENTIFIER_ALLOWLISTS.items()
+        ):
+            if relative in allowlist:
+                continue
+            for use in find_code_identifier_uses(text, identifier):
+                self.fail(
+                    relative,
+                    use.line,
+                    "merge-commit trusted-test hook use is not allowlisted: "
+                    f"{identifier}",
+                )
+
+    def validate_merge_commit_authority_contract(
+        self, relative: str, text: str
+    ) -> None:
+        if relative == MERGE_COMMIT_AUTHORITY_INTERFACE_FILE:
+            result_span = _class_definition_body_span(
+                text, "DistributedSieveWaveMergeCommitResultV1"
+            )
+            authority_span = _class_definition_body_span(
+                text, "DistributedSieveWaveMergeCommitAuthorityV1"
+            )
+            if result_span is None or authority_span is None:
+                self.fail(
+                    relative,
+                    1,
+                    "merge-commit result and authority classes must remain source-private",
+                )
+                return
+            result_body = _compact_cpp_code(text[result_span[0] : result_span[1]])
+            authority_body = _compact_cpp_code(
+                text[authority_span[0] : authority_span[1]]
+            )
+            if result_body != MERGE_COMMIT_RESULT_SURFACE:
+                self.fail(
+                    relative,
+                    text.count("\n", 0, result_span[0]) + 1,
+                    "merge-commit result must remain committed-tail-only on success "
+                    "and retryable-prepared-only before publication",
+                )
+            if authority_body != MERGE_COMMIT_AUTHORITY_CLASS_SURFACE:
+                self.fail(
+                    relative,
+                    text.count("\n", 0, authority_span[0]) + 1,
+                    "merge-commit authority must remain a deleted-constructor private "
+                    "consumer with only production and trusted-test entry friends",
+                )
+            if (
+                len(
+                    find_code_identifier_uses(
+                        text, "consume_distributed_sieve_merge_prepared_v1"
+                    )
+                )
+                != 2
+                or len(
+                    find_code_identifier_uses(
+                        text,
+                        "consume_distributed_sieve_merge_prepared_v1_with_hooks",
+                    )
+                )
+                != 2
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    "merge-commit interface must expose exactly one production entry "
+                    "and one source-private trusted-test entry",
+                )
+            return
+
+        if relative == MERGE_COMMIT_AUTHORITY_ADMISSION_INTERFACE_FILE:
+            tail_span = _class_definition_body_span(
+                text, "DistributedSieveCommittedTailAdmissionV1"
+            )
+            if tail_span is None:
+                self.fail(relative, 1, "committed-tail admission class is missing")
+                return
+            tail_source = text[tail_span[0] : tail_span[1]]
+            public_offset = tail_source.find("public:")
+            private_offset = tail_source.find("private:")
+            if not (0 <= public_offset < private_offset):
+                self.fail(
+                    relative,
+                    text.count("\n", 0, tail_span[0]) + 1,
+                    "committed-tail admission must retain one closed public/private surface",
+                )
+                return
+            public_source = tail_source[
+                public_offset + len("public:") : private_offset
+            ]
+            compact_public = _compact_cpp_code(public_source)
+            compact_tail = _compact_cpp_code(tail_source)
+            if compact_public != MERGE_COMMIT_COMMITTED_TAIL_PUBLIC_SURFACE:
+                self.fail(
+                    relative,
+                    text.count("\n", 0, tail_span[0]) + 1,
+                    "committed-tail admission may expose only move-only validity, "
+                    "record, and canonical-snapshot views; no cleanup or writer API",
+                )
+            if (
+                any(
+                    compact_tail.count(friend) != 1
+                    for friend in MERGE_COMMIT_COMMITTED_TAIL_MINT_FRIENDS
+                )
+                or compact_tail.count("friendclass") != 2
+            ):
+                self.fail(
+                    relative,
+                    text.count("\n", 0, tail_span[0]) + 1,
+                    "committed-tail admission mint authority must remain confined to "
+                    "WaveStore and the merge-commit authority",
+                )
+            return
+
+        if relative != MERGE_COMMIT_AUTHORITY_IMPLEMENTATION_FILE:
+            return
+
+        consume_body, consume_line_offset, consume_errors = (
+            find_function_definition_body(text, "consume")
+        )
+        for line, error in consume_errors:
+            self.fail(relative, line, error)
+        if consume_body is None:
+            return
+        compact_consume = _compact_cpp_code(consume_body)
+        admission_offset = compact_consume.find(
+            MERGE_COMMIT_ADMISSION_VALIDATION_FRAGMENT
+        )
+        platform_offset = compact_consume.find(
+            MERGE_COMMIT_UNSUPPORTED_PLATFORM_BRANCH
+        )
+        context_offset = compact_consume.find(MERGE_COMMIT_SUPPORTED_CONTEXT_FRAGMENT)
+        publication_offset = compact_consume.find("publish_wave_merge_commit_v1(")
+        final_endif_offset = compact_consume.rfind("#endif")
+        if (
+            compact_consume.count(MERGE_COMMIT_ADMISSION_VALIDATION_FRAGMENT) != 1
+            or compact_consume.count(MERGE_COMMIT_UNSUPPORTED_PLATFORM_BRANCH) != 1
+            or compact_consume.count(MERGE_COMMIT_SUPPORTED_CONTEXT_FRAGMENT) != 1
+            or not (
+                0
+                <= admission_offset
+                < platform_offset
+                < context_offset
+                < publication_offset
+                < final_endif_offset
+            )
+        ):
+            self.fail(
+                relative,
+                consume_line_offset + 1,
+                "merge-commit consumer must validate admission, return the same "
+                "retryable admission from the exact non-Apple pre-mutation gate, "
+                "then construct context and publish only on Apple",
+            )
+
     def validate_merge_prepared_admission_boundary(
         self, relative: str, text: str
     ) -> None:
@@ -6906,6 +7332,7 @@ class Checks:
             }
             expected_project_includes = {
                 "gnfs/sieve/distributed_sieve_protocol.hpp",
+                "gnfs/util/durable_immutable_record.hpp",
                 "gnfs/util/process.hpp",
             }
             if project_includes != expected_project_includes:
@@ -6925,31 +7352,49 @@ class Checks:
             class_source = text[class_span[0] : class_span[1]]
             class_body = _compact_cpp_code(class_source)
             required_fragments = (
-                "private:usingOriginValidatorV1=bool(*)("
-                "constvoid*lifetime_anchor,constMergePreparedV1*stable_record,"
-                "std::uint64_tcreator_process_id)noexcept;",
                 "explicitDistributedSieveMergePreparedAdmissionV1("
-                "std::shared_ptr<constvoid>lifetime_anchor,"
+                "std::shared_ptr<DistributedSieveMergePreparedOriginV1>origin,"
                 "constMergePreparedV1*stable_record,"
-                "std::uint64_tcreator_process_id,"
-                "OriginValidatorV1origin_validator)noexcept",
-                "std::shared_ptr<constvoid>lifetime_anchor_;"
+                "std::uint64_tcreator_process_id)noexcept",
+                "std::shared_ptr<DistributedSieveMergePreparedOriginV1>origin_;"
                 "constMergePreparedV1*record_=nullptr;"
-                "std::uint64_tcreator_process_id_=0;"
-                "OriginValidatorV1origin_validator_=nullptr;",
+                "std::uint64_tcreator_process_id_=0;",
                 "friendclassDistributedSieveMergeWriterAuthorityV1;",
                 "friendclass::gnfs::sieve::distributed_sieve_resume_detail::"
                 "DistributedSieveWaveStore;",
+                "friendclass::gnfs::sieve::distributed_sieve_merge_commit_authority_detail::"
+                "DistributedSieveWaveMergeCommitAuthorityV1;",
+            )
+            origin_span = _class_definition_body_span(
+                text, "DistributedSieveMergePreparedOriginV1"
+            )
+            origin_body = (
+                ""
+                if origin_span is None
+                else _compact_cpp_code(text[origin_span[0] : origin_span[1]])
+            )
+            origin_methods = (
+                "prepared_origin_valid(",
+                "retained_wave_store()",
+                "retained_merge_started_chain()",
+                "retained_predecessor_snapshots()",
+                "retained_manifest_slot_count()",
+                "retained_worker_handoff(",
             )
             if (
                 any(class_body.count(fragment) != 1 for fragment in required_fragments)
-                or class_body.count("friendclass") != 2
+                or class_body.count("friendclass") != 3
+                or origin_span is None
+                or any(origin_body.count(method) != 1 for method in origin_methods)
+                or origin_body.count("=0;") != 6
+                or origin_body.count("friendclass") != 4
             ):
                 self.fail(
                     relative,
                     text.count("\n", 0, class_span[0]) + 1,
-                    "common MergePrepared admission must retain one private "
-                    "type-erased anchor and exactly the fresh/WaveStore mint friends",
+                    "common MergePrepared admission must retain one private typed "
+                    "origin with predecessor snapshots and exactly the "
+                    "fresh/WaveStore/commit mint friends",
                 )
             valid_body, valid_line_offset, valid_errors = (
                 find_function_definition_body(class_source, "valid")
@@ -6966,8 +7411,8 @@ class Checks:
                 self.fail(
                     relative,
                     text.count("\n", 0, class_span[0]) + valid_line_offset + 1,
-                    "common MergePrepared admission valid() must gate the shared "
-                    "anchor, stable record, creator PID, and private origin validator",
+                    "common MergePrepared admission valid() must gate the typed "
+                    "origin, stable record, creator PID, and private origin validator",
                 )
             return
 
@@ -6981,18 +7426,14 @@ class Checks:
                     text, MERGE_PREPARED_ADMISSION_IDENTIFIER
                 )
                 is not None
-                or compact_text.count(
-                    "validate_prepared_admission_origin("
-                    "constvoid*lifetime_anchor,constMergePreparedV1*stable_record,"
-                    "std::uint64_tcreator_process_id)noexcept;"
-                )
-                != 1
+                or "validate_prepared_admission_origin" in compact_text
+                or "std::shared_ptr<constvoid>" in compact_text
             ):
                 self.fail(
                     relative,
                     1,
                     "fresh writer authority must import the common admission and "
-                    "declare only its private origin validator",
+                    "must not declare an alternate type-erased origin validator",
                 )
             return
 
@@ -7004,12 +7445,38 @@ class Checks:
             )
             for line, error in publish_errors:
                 self.fail(relative, line, error)
+            compact_publish = "" if publish_body is None else _compact_cpp_code(
+                publish_body
+            )
+            capture_offset = compact_publish.find(
+                MERGE_PREPARED_ADMISSION_FRESH_PREDECESSOR_CAPTURE_FRAGMENT
+            )
+            predecessor_commit_offset = compact_publish.find(
+                MERGE_PREPARED_ADMISSION_FRESH_PREDECESSOR_COMMIT_FRAGMENT
+            )
+            admission_mint_offset = compact_publish.find(
+                MERGE_PREPARED_ADMISSION_FRESH_PUBLISH_FRAGMENT
+            )
             if (
                 publish_body is None
-                or _compact_cpp_code(publish_body).count(
+                or compact_publish.count(
                     MERGE_PREPARED_ADMISSION_FRESH_PUBLISH_FRAGMENT
                 )
                 != 1
+                or compact_publish.count(
+                    MERGE_PREPARED_ADMISSION_FRESH_PREDECESSOR_CAPTURE_FRAGMENT
+                )
+                != 1
+                or compact_publish.count(
+                    MERGE_PREPARED_ADMISSION_FRESH_PREDECESSOR_COMMIT_FRAGMENT
+                )
+                != 1
+                or not (
+                    0
+                    <= capture_offset
+                    < predecessor_commit_offset
+                    < admission_mint_offset
+                )
                 or len(
                     find_code_identifier_uses(
                         text, MERGE_PREPARED_ADMISSION_IDENTIFIER
@@ -7021,7 +7488,8 @@ class Checks:
                     relative,
                     publish_line_offset + 1,
                     "fresh publication must mint exactly one common admission by "
-                    "moving the unique writer State into a shared lifetime anchor",
+                    "capturing exact predecessor snapshots before moving the unique "
+                    "writer State into its typed origin anchor",
                 )
             validator_body, validator_line_offset, validator_errors = (
                 find_function_definition_body(
@@ -7037,7 +7505,8 @@ class Checks:
                     relative,
                     validator_line_offset + 1,
                     "fresh common admission validator must preserve every prior "
-                    "writer, record, payload, process, and adopted-input validity check",
+                    "writer, record, payload, predecessor-snapshot, process, and "
+                    "adopted-input validity check",
                 )
             return
 
@@ -7112,13 +7581,20 @@ class Checks:
                         text, MERGE_PREPARED_ADMISSION_IDENTIFIER
                     )
                 )
-                != 2
+                != 3
                 or result_body.count("std::unique_ptr<DistributedSieveWaveStore>store;")
                 != 1
                 or result_body.count(
                     "std::optional<"
                     "distributed_sieve_merge_writer_authority_detail::"
                     "DistributedSieveMergePreparedAdmissionV1>prepared_admission;"
+                )
+                != 1
+                or result_body.count(
+                    "std::optional<"
+                    "distributed_sieve_merge_writer_authority_detail::"
+                    "DistributedSieveCommittedTailAdmissionV1>"
+                    "committed_tail_admission;"
                 )
                 != 1
                 or bool_body is None
@@ -7129,7 +7605,7 @@ class Checks:
                     relative,
                     text.count("\n", 0, result_span[0]) + bool_line_offset + 1,
                     "successful WaveStore OpenResult must enforce exact "
-                    "store/prepared-admission XOR with admission validity",
+                    "store/prepared/committed-tail one-of-three validity",
                 )
             return
 
@@ -7157,16 +7633,37 @@ class Checks:
         success_offset = compact_open.find(
             MERGE_PREPARED_ADMISSION_RECOVERED_SUCCESS_FRAGMENT
         )
+        committed_offset = compact_open.find(
+            MERGE_PREPARED_ADMISSION_RECOVERED_COMMIT_FRAGMENT
+        )
+        predecessor_capture_offset = compact_open.find(
+            MERGE_PREPARED_ADMISSION_RECOVERED_PREDECESSOR_CAPTURE_FRAGMENT
+        )
+        recovered_validation_offset = compact_open.find(
+            MERGE_PREPARED_ADMISSION_RECOVERED_VALIDATION_FRAGMENT
+        )
+        committed_success_offset = compact_open.find(
+            MERGE_PREPARED_ADMISSION_RECOVERED_COMMITTED_SUCCESS_FRAGMENT
+        )
         if not (
-            0 <= claim_offset < classifier_offset < recovered_owner_offset < mint_offset
+            0
+            <= claim_offset
+            < classifier_offset
+            < recovered_owner_offset
+            < predecessor_capture_offset
+            < recovered_validation_offset
+            < committed_offset
+            < committed_success_offset
+            < mint_offset
             < success_offset
         ):
             self.fail(
                 relative,
                 open_line_offset + 1,
                 "terminal cold-open must claim the coordinator before its final "
-                "classifier, retain the store in the recovered anchor, and only "
-                "then mint/return the admission",
+                "classifier, retain the store, capture and validate exact predecessor "
+                "snapshots, route an existing commit to committed-tail, and "
+                "otherwise return prepared",
             )
         if (
             compact_open.count(MERGE_PREPARED_ADMISSION_COLD_CLAIM_FRAGMENT) != 1
@@ -7176,9 +7673,24 @@ class Checks:
             != 1
             or compact_open.count(MERGE_PREPARED_ADMISSION_RECOVERED_SUCCESS_FRAGMENT)
             != 1
+            or compact_open.count(MERGE_PREPARED_ADMISSION_RECOVERED_COMMIT_FRAGMENT)
+            != 1
+            or compact_open.count(
+                MERGE_PREPARED_ADMISSION_RECOVERED_PREDECESSOR_CAPTURE_FRAGMENT
+            )
+            != 1
+            or compact_open.count(
+                MERGE_PREPARED_ADMISSION_RECOVERED_VALIDATION_FRAGMENT
+            )
+            != 1
+            or compact_open.count(
+                MERGE_PREPARED_ADMISSION_RECOVERED_COMMITTED_SUCCESS_FRAGMENT
+            )
+            != 1
             or len(find_code_identifier_uses(text, MERGE_PREPARED_ADMISSION_IDENTIFIER))
             != 1
             or len(find_code_identifier_uses(text, "PreparedAdmission")) != 3
+            or len(find_code_identifier_uses(text, "CommittedTail")) != 3
             or (
                 claim_offset >= 0
                 and "return{std::move(store),std::nullopt"
@@ -7188,8 +7700,9 @@ class Checks:
             self.fail(
                 relative,
                 open_line_offset + 1,
-                "WaveStore must be the sole recovered admission mint and terminal "
-                "success must return admission-only",
+                "WaveStore must capture exact predecessor snapshots before its sole "
+                "recovered prepared/committed-tail mint, and terminal success must "
+                "return exactly one continuation",
             )
         trusted_reader_call = (
             "private_lease::adopt_consumed_canonical_private_handoff_reader_v1("
@@ -10937,6 +11450,8 @@ class Checks:
                 relative, text
             )
             self.validate_consumed_canonical_adoption_bridge(relative, text)
+            self.validate_merge_commit_authority_use_site(relative, text)
+            self.validate_merge_commit_authority_contract(relative, text)
             self.validate_merge_prepared_admission_boundary(relative, text)
             self.validate_worker_writer_identifier_exception_boundary(
                 relative, text
@@ -13851,22 +14366,36 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
         MERGE_PREPARED_ADMISSION_INTERFACE_FILE,
         "    friend class DistributedSieveMergeWriterAuthorityV1;\n",
         "    friend class ForgedMergePreparedAdmissionAuthorityV1;\n",
-        "exactly the fresh/WaveStore mint friends",
+        "exactly the fresh/WaveStore/commit mint friends",
         "a third-party replacement for the fresh mint friend",
     )
     expect_merge_prepared_admission_mutation(
         MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
-        "        std::shared_ptr<const void> lifetime_anchor(std::move(state));\n",
-        "        std::shared_ptr<const void> lifetime_anchor(state.get());\n",
-        "moving the unique writer State into a shared lifetime anchor",
-        "a non-owning fresh lifetime anchor",
+        "        std::shared_ptr<DistributedSieveMergePreparedOriginV1> origin(std::move(state));\n",
+        "        std::shared_ptr<DistributedSieveMergePreparedOriginV1> origin(state.get());\n",
+        "moving the unique writer State into its typed origin anchor",
+        "a non-owning fresh typed origin anchor",
+    )
+    expect_merge_prepared_admission_mutation(
+        MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+        "            prepared_payload.empty() || !predecessor_snapshots.has_value() || !handoff_published ||\n",
+        "            prepared_payload.empty() || !handoff_published ||\n",
+        "predecessor-snapshot",
+        "a fresh admission validator that ignores predecessor snapshots",
+    )
+    expect_merge_prepared_admission_mutation(
+        MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+        "        state->predecessor_snapshots.emplace(std::move(predecessor_snapshots));\n",
+        "        state->predecessor_snapshots.reset();\n",
+        "capturing exact predecessor snapshots",
+        "a fresh admission minted without retained predecessor snapshots",
     )
     expect_merge_prepared_admission_mutation(
         MERGE_PREPARED_ADMISSION_WAVE_STORE_INTERFACE_FILE,
-        "               store_ready != prepared_ready;\n",
-        "               store_ready || prepared_ready;\n",
-        "store/prepared-admission XOR",
-        "a non-XOR successful OpenResult",
+        "                   1U;\n",
+        "                   2U;\n",
+        "store/prepared/committed-tail one-of-three validity",
+        "a multi-continuation successful OpenResult",
     )
     expect_merge_prepared_admission_mutation(
         MERGE_PREPARED_ADMISSION_WAVE_STORE_FILE,
@@ -13877,10 +14406,16 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
     )
     expect_merge_prepared_admission_mutation(
         MERGE_PREPARED_ADMISSION_WAVE_STORE_FILE,
-        "        return {nullptr, std::move(prepared_result), std::move(published.diagnostic)};\n",
-        "        return {std::move(store), std::move(prepared_result),\n"
-        "                std::move(published.diagnostic)};\n",
-        "terminal success must return admission-only",
+        "        recovered_prepared_state->predecessor_snapshots.emplace(std::move(predecessor_snapshots));\n",
+        "        recovered_prepared_state->predecessor_snapshots.reset();\n",
+        "capture exact predecessor snapshots",
+        "a recovered admission minted without retained predecessor snapshots",
+    )
+    expect_merge_prepared_admission_mutation(
+        MERGE_PREPARED_ADMISSION_WAVE_STORE_FILE,
+        "        return {nullptr, std::move(prepared_result), std::nullopt, std::move(published.diagnostic)};\n",
+        "        return {std::move(store), std::move(prepared_result), std::nullopt, std::move(published.diagnostic)};\n",
+        "terminal success must return exactly one continuation",
         "terminal cold-open returning both store and admission",
     )
     expect_merge_prepared_admission_mutation(
@@ -13920,6 +14455,220 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
         ),
         "recovered MergePrepared test seam escaped its source-private allowlist: "
         f"{escaped_recovered_seam_checks.errors}",
+    )
+
+    expect(
+        MERGE_COMMIT_AUTHORITY_PRODUCTION_FILES
+        == {
+            MERGE_COMMIT_AUTHORITY_IMPLEMENTATION_FILE,
+            MERGE_COMMIT_AUTHORITY_INTERFACE_FILE,
+        },
+        "merge-commit authority production-file set is not exact",
+    )
+    expect(
+        MERGE_COMMIT_AUTHORITY_INTERFACE_INCLUDE_ALLOWLIST
+        == {
+            MERGE_COMMIT_AUTHORITY_IMPLEMENTATION_FILE,
+            MERGE_COMMIT_AUTHORITY_TEST_FILE,
+        },
+        "merge-commit authority interface include allowlist is not exact",
+    )
+    expect(
+        MERGE_COMMIT_AUTHORITY_API_IDENTIFIER_ALLOWLISTS
+        == {
+            "DistributedSieveWaveMergeCommitAuthorityV1": (
+                MERGE_COMMIT_AUTHORITY_PRODUCTION_FILES
+                | {
+                    MERGE_COMMIT_AUTHORITY_ADMISSION_INTERFACE_FILE,
+                    MERGE_COMMIT_AUTHORITY_WAVE_STORE_INTERFACE_FILE,
+                }
+            ),
+            "DistributedSieveWaveMergeCommitResultV1": (
+                MERGE_COMMIT_AUTHORITY_PRODUCTION_FILES
+                | {MERGE_COMMIT_AUTHORITY_TEST_FILE}
+            ),
+            "consume_distributed_sieve_merge_prepared_v1": (
+                MERGE_COMMIT_AUTHORITY_PRODUCTION_FILES
+                | {MERGE_COMMIT_AUTHORITY_TEST_FILE}
+            ),
+            "DistributedSieveMergePreparedCommitContextV1": {
+                MERGE_COMMIT_AUTHORITY_ADMISSION_INTERFACE_FILE,
+                MERGE_COMMIT_AUTHORITY_IMPLEMENTATION_FILE,
+            },
+            "DistributedSieveCommittedTailAdmissionV1": (
+                MERGE_COMMIT_AUTHORITY_PRODUCTION_FILES
+                | {
+                    MERGE_COMMIT_AUTHORITY_ADMISSION_INTERFACE_FILE,
+                    MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE,
+                    MERGE_COMMIT_AUTHORITY_WAVE_STORE_INTERFACE_FILE,
+                    MERGE_COMMIT_AUTHORITY_TEST_FILE,
+                }
+            ),
+            "publish_wave_merge_commit_v1": {
+                MERGE_COMMIT_AUTHORITY_IMPLEMENTATION_FILE,
+                MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE,
+                MERGE_COMMIT_AUTHORITY_WAVE_STORE_INTERFACE_FILE,
+            },
+            "revalidate_committed_tail_v1": {
+                MERGE_COMMIT_AUTHORITY_IMPLEMENTATION_FILE,
+                MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE,
+                MERGE_COMMIT_AUTHORITY_WAVE_STORE_INTERFACE_FILE,
+            },
+        },
+        "merge-commit authority API use-site allowlists are not exact",
+    )
+    expect(
+        MERGE_COMMIT_AUTHORITY_TRUSTED_HOOK_IDENTIFIER_ALLOWLISTS
+        == {
+            "DistributedSieveWaveMergeCommitFaultPointV1": (
+                MERGE_COMMIT_AUTHORITY_PRODUCTION_FILES
+                | {
+                    MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE,
+                    MERGE_COMMIT_AUTHORITY_WAVE_STORE_INTERFACE_FILE,
+                    MERGE_COMMIT_AUTHORITY_TEST_FILE,
+                }
+            ),
+            "DistributedSieveWaveMergeCommitTestHooksV1": (
+                MERGE_COMMIT_AUTHORITY_PRODUCTION_FILES
+                | {
+                    MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE,
+                    MERGE_COMMIT_AUTHORITY_WAVE_STORE_INTERFACE_FILE,
+                    MERGE_COMMIT_AUTHORITY_TEST_FILE,
+                }
+            ),
+            "consume_distributed_sieve_merge_prepared_v1_with_hooks": (
+                MERGE_COMMIT_AUTHORITY_PRODUCTION_FILES
+                | {MERGE_COMMIT_AUTHORITY_TEST_FILE}
+            ),
+        },
+        "merge-commit trusted-hook use-site allowlists are not exact",
+    )
+
+    merge_commit_authority_sources = {
+        relative: (Path(__file__).resolve().parents[1] / relative).read_text(
+            encoding="utf-8"
+        )
+        for relative in (
+            MERGE_COMMIT_AUTHORITY_PRODUCTION_FILES
+            | MERGE_COMMIT_AUTHORITY_INTERFACE_INCLUDE_ALLOWLIST
+            | {
+                MERGE_COMMIT_AUTHORITY_ADMISSION_INTERFACE_FILE,
+                MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE,
+                MERGE_COMMIT_AUTHORITY_WAVE_STORE_INTERFACE_FILE,
+            }
+        )
+    }
+    exact_merge_commit_authority_checks = Checks(Path("."))
+    for relative, source in merge_commit_authority_sources.items():
+        exact_merge_commit_authority_checks.validate_merge_commit_authority_use_site(
+            relative, source
+        )
+        exact_merge_commit_authority_checks.validate_merge_commit_authority_contract(
+            relative, source
+        )
+    expect(
+        not exact_merge_commit_authority_checks.errors,
+        "exact merge-commit authority boundary was rejected: "
+        f"{exact_merge_commit_authority_checks.errors}",
+    )
+
+    def expect_merge_commit_authority_mutation(
+        relative: str,
+        old: str,
+        new: str,
+        expected_error: str,
+        description: str,
+    ) -> None:
+        source = merge_commit_authority_sources[relative]
+        expect(old in source, f"self-test mutation anchor is missing: {description}")
+        mutated = source.replace(old, new, 1)
+        mutation_checks = Checks(Path("."))
+        mutation_checks.validate_merge_commit_authority_use_site(relative, mutated)
+        mutation_checks.validate_merge_commit_authority_contract(relative, mutated)
+        expect(
+            any(expected_error in error for error in mutation_checks.errors),
+            f"merge-commit authority gate accepted {description}: "
+            f"{mutation_checks.errors}",
+        )
+
+    expect_merge_commit_authority_mutation(
+        MERGE_COMMIT_AUTHORITY_INTERFACE_FILE,
+        "consume_distributed_sieve_merge_prepared_v1(\n"
+        "    DistributedSieveMergePreparedAdmissionV1&& admission) noexcept;",
+        "consume_distributed_sieve_merge_prepared_v1_unchecked(\n"
+        "    DistributedSieveMergePreparedAdmissionV1&& admission) noexcept;",
+        "exactly one production entry",
+        "a renamed production entry declaration",
+    )
+    expect_merge_commit_authority_mutation(
+        MERGE_COMMIT_AUTHORITY_ADMISSION_INTERFACE_FILE,
+        "    [[nodiscard]] bool valid() const noexcept;\n",
+        "    [[nodiscard]] bool valid() const noexcept;\n"
+        "    void cleanup() noexcept;\n",
+        "no cleanup or writer API",
+        "a committed-tail cleanup method",
+    )
+
+    untrusted_merge_commit_api_checks = Checks(Path("."))
+    untrusted_merge_commit_api_checks.validate_merge_commit_authority_use_site(
+        "src/sieve/untrusted_merge_commit_consumer.cpp",
+        "consume_distributed_sieve_merge_prepared_v1(std::move(admission));\n",
+    )
+    expect(
+        any(
+            "merge-commit authority API use site is not allowlisted" in error
+            for error in untrusted_merge_commit_api_checks.errors
+        ),
+        "merge-commit production entry escaped its use-site allowlist: "
+        f"{untrusted_merge_commit_api_checks.errors}",
+    )
+
+    untrusted_merge_commit_hook_checks = Checks(Path("."))
+    untrusted_merge_commit_hook_checks.validate_merge_commit_authority_use_site(
+        "src/sieve/untrusted_merge_commit_hook.cpp",
+        "DistributedSieveWaveMergeCommitTestHooksV1 hooks;\n",
+    )
+    expect(
+        any(
+            "merge-commit trusted-test hook use is not allowlisted" in error
+            for error in untrusted_merge_commit_hook_checks.errors
+        ),
+        "merge-commit trusted hook escaped its use-site allowlist: "
+        f"{untrusted_merge_commit_hook_checks.errors}",
+    )
+
+    merge_commit_implementation = merge_commit_authority_sources[
+        MERGE_COMMIT_AUTHORITY_IMPLEMENTATION_FILE
+    ]
+    platform_gate_anchor = "#if !defined(__APPLE__)"
+    supported_context_anchor = (
+        "    writer::DistributedSieveMergePreparedCommitContextV1 context(\n"
+        "        std::move(admission.origin_), std::exchange(admission.record_, nullptr),\n"
+        "        std::exchange(admission.creator_process_id_, 0));\n"
+    )
+    expect(
+        platform_gate_anchor in merge_commit_implementation
+        and supported_context_anchor in merge_commit_implementation,
+        "self-test mutation anchor is missing: merge-commit platform-gate order",
+    )
+    reordered_merge_commit = merge_commit_implementation.replace(
+        supported_context_anchor, "", 1
+    ).replace(
+        platform_gate_anchor,
+        supported_context_anchor + platform_gate_anchor,
+        1,
+    )
+    reordered_merge_commit_checks = Checks(Path("."))
+    reordered_merge_commit_checks.validate_merge_commit_authority_contract(
+        MERGE_COMMIT_AUTHORITY_IMPLEMENTATION_FILE, reordered_merge_commit
+    )
+    expect(
+        any(
+            "exact non-Apple pre-mutation gate" in error
+            for error in reordered_merge_commit_checks.errors
+        ),
+        "merge-commit platform gate accepted context construction before the "
+        f"unsupported-platform return: {reordered_merge_commit_checks.errors}",
     )
 
     worker_handoff_bridge_snippet = r"""
@@ -17331,6 +18080,7 @@ DistributedSieveMergeGenerationAdmissionV1(
             | {
                 "tests/test_distributed_sieve_resume.cpp",
                 "tests/test_distributed_sieve_merge_writer_authority.cpp",
+                "tests/support/distributed_sieve_wave_merge_commit_fixture.hpp",
             }
         )
         and (
@@ -17407,6 +18157,7 @@ auto result = coordinate_missing_distributed_sieve_workers_v1(
             | {
                 "tests/test_distributed_sieve_resume.cpp",
                 "tests/test_distributed_sieve_merge_writer_authority.cpp",
+                "tests/support/distributed_sieve_wave_merge_commit_fixture.hpp",
             }
         )
         and WORKER_COORDINATOR_AUTHORITY_FREE_CLEANUP_FACTS

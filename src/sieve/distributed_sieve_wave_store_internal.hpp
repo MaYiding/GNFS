@@ -74,6 +74,19 @@ inline constexpr std::string_view DISTRIBUTED_SIEVE_CHUNK_TERMINAL_FAILURE_RECOR
     ".gnfs-wave-v1.chunk-terminal-failure-c";
 inline constexpr std::string_view DISTRIBUTED_SIEVE_CHUNK_TERMINAL_FAILURE_RECORD_PENDING_SUFFIX =
     ".pending";
+inline constexpr std::string_view DISTRIBUTED_SIEVE_WAVE_MERGE_COMMIT_RECORD_LEAF =
+    ".gnfs-wave-v1.merge-commit";
+inline constexpr std::string_view DISTRIBUTED_SIEVE_WAVE_MERGE_COMMIT_RECORD_PENDING_LEAF =
+    ".gnfs-wave-v1.merge-commit.pending";
+inline constexpr std::string_view DISTRIBUTED_SIEVE_CLEANUP_AUTHORIZED_WORKER_RECORD_PREFIX =
+    ".gnfs-wave-v1.cleanup-authorized-worker-c";
+inline constexpr std::string_view DISTRIBUTED_SIEVE_CLEANUP_COMPLETED_WORKER_RECORD_PREFIX =
+    ".gnfs-wave-v1.cleanup-completed-worker-c";
+inline constexpr std::string_view DISTRIBUTED_SIEVE_CLEANUP_AUTHORIZED_MERGED_RECORD_LEAF =
+    ".gnfs-wave-v1.cleanup-authorized-merged";
+inline constexpr std::string_view DISTRIBUTED_SIEVE_CLEANUP_COMPLETED_MERGED_RECORD_LEAF =
+    ".gnfs-wave-v1.cleanup-completed-merged";
+inline constexpr std::string_view DISTRIBUTED_SIEVE_ROOT_RECORD_PENDING_SUFFIX = ".pending";
 inline constexpr std::string_view DISTRIBUTED_SIEVE_PRIVATE_LEASE_DIRECTORY_SUFFIX =
     ".gnfs-sink-lease";
 inline constexpr std::string_view DISTRIBUTED_SIEVE_PRIVATE_LEASE_BASE_LOCK_SUFFIX =
@@ -163,6 +176,40 @@ struct DistributedSieveParsedChunkTerminalFailureLeafV1 final {
                const DistributedSieveParsedChunkTerminalFailureLeafV1&) noexcept = default;
 };
 
+struct DistributedSieveWaveMergeCommitNamesV1 final {
+    std::string canonical_record_leaf;
+    std::string pending_record_leaf;
+
+    [[nodiscard]] friend bool operator==(const DistributedSieveWaveMergeCommitNamesV1&,
+                                         const DistributedSieveWaveMergeCommitNamesV1&) = default;
+};
+
+struct DistributedSieveParsedWaveMergeCommitLeafV1 final {
+    bool pending = false;
+
+    [[nodiscard]] friend constexpr bool
+    operator==(const DistributedSieveParsedWaveMergeCommitLeafV1&,
+               const DistributedSieveParsedWaveMergeCommitLeafV1&) noexcept = default;
+};
+
+enum class DistributedSieveCleanupRecordCoordinateKindV1 : std::uint8_t {
+    authorized_worker,
+    completed_worker,
+    authorized_merged,
+    completed_merged,
+};
+
+struct DistributedSieveParsedCleanupRecordLeafV1 final {
+    DistributedSieveCleanupRecordCoordinateKindV1 kind =
+        DistributedSieveCleanupRecordCoordinateKindV1::authorized_worker;
+    std::optional<std::uint32_t> manifest_order_ordinal;
+    bool pending = false;
+
+    [[nodiscard]] friend constexpr bool
+    operator==(const DistributedSieveParsedCleanupRecordLeafV1&,
+               const DistributedSieveParsedCleanupRecordLeafV1&) noexcept = default;
+};
+
 /// Derive the exact V1 lease stem, private directory, permanent BaseLock, and
 /// immutable record leaves for one bounded worker attempt. This is naming only
 /// and grants no filesystem authority.
@@ -200,6 +247,18 @@ distributed_sieve_chunk_terminal_failure_names_v1(std::uint32_t chunk_id);
 /// accepted.
 [[nodiscard]] std::optional<DistributedSieveParsedChunkTerminalFailureLeafV1>
 parse_distributed_sieve_chunk_terminal_failure_leaf_v1(std::string_view leaf) noexcept;
+
+/// Return the sole exact root coordinate for WaveMergeCommitV1.
+[[nodiscard]] DistributedSieveWaveMergeCommitNamesV1 distributed_sieve_wave_merge_commit_names_v1();
+
+/// Parse only `.gnfs-wave-v1.merge-commit[.pending]`.
+[[nodiscard]] std::optional<DistributedSieveParsedWaveMergeCommitLeafV1>
+parse_distributed_sieve_wave_merge_commit_leaf_v1(std::string_view leaf) noexcept;
+
+/// Reserve the exact fixed-width worker and singleton merged cleanup
+/// coordinates. This parser grants no cleanup or record-publication authority.
+[[nodiscard]] std::optional<DistributedSieveParsedCleanupRecordLeafV1>
+parse_distributed_sieve_cleanup_record_leaf_v1(std::string_view leaf) noexcept;
 
 enum class DistributedSieveWaveStoreStatus : std::uint8_t {
     ready,
@@ -383,15 +442,6 @@ struct DistributedSieveMergePreparedResumeTestHooksV1 final {
     void* context = nullptr;
 };
 
-struct DistributedSieveWaveStoreTestHooks final {
-    using StopAfter = bool (*)(DistributedSieveWaveStoreFaultPoint point, void* context) noexcept;
-
-    StopAfter stop_after = nullptr;
-    DistributedSieveMergePreparedResumeTestHooksV1 merge_prepared_resume;
-    DistributedSieveWorkerHandoffResumeTestHooksV1 worker_handoff_resume;
-    void* context = nullptr;
-};
-
 enum class DistributedSievePrivateLeaseBaseLockSyncPoint : std::uint8_t {
     TargetInitial,
     RootDirectory,
@@ -422,6 +472,16 @@ enum class DistributedSieveWorkerAttemptStartDisposition : std::uint8_t {
 /// `CanonicalPromoted` intentionally precedes the following wave-root
 /// directory durability barrier.
 enum class DistributedSieveMergeStartFaultPointV1 : std::uint8_t {
+    PendingDurable,
+    CanonicalPromoted,
+    CanonicalDurable,
+    Count,
+};
+
+/// Durable immutable-record boundaries for the singleton wave merge commit.
+/// A continuation is spent once publication is attempted, including an
+/// interruption at any of these boundaries.
+enum class DistributedSieveWaveMergeCommitFaultPointV1 : std::uint8_t {
     PendingDurable,
     CanonicalPromoted,
     CanonicalDurable,
@@ -766,6 +826,22 @@ struct DistributedSieveChunkTerminalFailureRecordInventoryWitnessV1 final {
     }
 };
 
+/// Exact root-level WaveMergeCommitV1 prefix. Canonical and optional duplicate
+/// pending leaves must carry the same sealed bytes.
+struct DistributedSieveWaveMergeCommitRecordInventoryWitnessV1 final {
+    WaveMergeCommitV1 record;
+    std::vector<std::byte> bytes;
+    std::optional<util::durable_immutable_record::RecordSnapshot> canonical_snapshot;
+    std::optional<util::durable_immutable_record::RecordSnapshot> pending_snapshot;
+
+    [[nodiscard]] friend bool
+    operator==(const DistributedSieveWaveMergeCommitRecordInventoryWitnessV1& left,
+               const DistributedSieveWaveMergeCommitRecordInventoryWitnessV1& right) noexcept {
+        return left.bytes == right.bytes && left.canonical_snapshot == right.canonical_snapshot &&
+               left.pending_snapshot == right.pending_snapshot;
+    }
+};
+
 struct DistributedSieveWaveStoreInventoryTestHooks final {
     using ObserveReservationWitnesses =
         void (*)(std::span<const DistributedSievePrivateLeaseReservationInventoryWitness> witnesses,
@@ -867,6 +943,29 @@ struct DistributedSieveMergeStartTestHooksV1 final {
     /// Runs after the first exact canonical successor observation and before
     /// its mandatory authority and inventory confirmation.
     Boundary after_first_successor_validation = nullptr;
+    void* context = nullptr;
+};
+
+/// Trusted test-only boundaries for the singleton WaveMergeCommitV1
+/// publisher. No callback receives a path, descriptor, or record payload.
+struct DistributedSieveWaveMergeCommitTestHooksV1 final {
+    using Boundary = void (*)(void* context) noexcept;
+    using StopAfter = bool (*)(DistributedSieveWaveMergeCommitFaultPointV1 point,
+                               void* context) noexcept;
+
+    Boundary before_record_publication = nullptr;
+    StopAfter stop_after = nullptr;
+    Boundary after_first_successor_validation = nullptr;
+    void* context = nullptr;
+};
+
+struct DistributedSieveWaveStoreTestHooks final {
+    using StopAfter = bool (*)(DistributedSieveWaveStoreFaultPoint point, void* context) noexcept;
+
+    StopAfter stop_after = nullptr;
+    DistributedSieveMergePreparedResumeTestHooksV1 merge_prepared_resume;
+    DistributedSieveWorkerHandoffResumeTestHooksV1 worker_handoff_resume;
+    DistributedSieveWaveMergeCommitTestHooksV1 wave_merge_commit;
     void* context = nullptr;
 };
 
@@ -1118,6 +1217,7 @@ struct DistributedSieveWaveStoreDiagnostic final {
     std::optional<DistributedSieveWorkerAttemptStartFaultPoint>
         last_worker_attempt_start_fault_point;
     std::optional<DistributedSieveMergeStartFaultPointV1> last_merge_start_fault_point;
+    std::optional<DistributedSieveWaveMergeCommitFaultPointV1> last_wave_merge_commit_fault_point;
     std::optional<DistributedSieveWorkerAttemptReconcileFaultPoint>
         last_worker_attempt_reconcile_fault_point;
     std::optional<DistributedSieveChunkTerminalFailureFaultPoint>
@@ -1148,6 +1248,7 @@ struct DistributedSieveMergeStartedReconcileResultV1;
 struct DistributedSieveMergeGenerationCursorResultV1;
 struct DistributedSieveWorkerAttemptReconcileResult;
 struct DistributedSieveChunkTerminalFailurePublicationResultV1;
+struct DistributedSieveWaveMergeCommitPublicationResultV1;
 struct DistributedSieveWorkerChunkInventoryResultV1;
 struct DistributedSieveWorkerHandoffAdoptionResultV1;
 struct DistributedSieveWorkerCoordinatorClaimResultV1;
@@ -1416,6 +1517,25 @@ private:
     [[nodiscard]] DistributedSieveWorkerHandoffAdoptionResultV1 adopt_worker_handoff_impl_v1(
         std::uint32_t chunk_id, const DistributedSieveWorkerHandoffInventoryWitnessV1* expected,
         DistributedSieveWorkerHandoffAdoptionTestHooksV1 hooks) const noexcept;
+    [[nodiscard]] DistributedSieveWaveStoreDiagnostic capture_merge_commit_predecessor_snapshots_v1(
+        const MergePreparedV1& prepared, std::span<const MergeStartedV1> merge_started_chain,
+        std::span<const WorkerHandoffV1* const> worker_handoffs,
+        const WaveMergeCommitV1* existing_commit,
+        distributed_sieve_merge_writer_authority_detail::
+            DistributedSieveMergeCommitPredecessorSnapshotsV1& snapshots) const noexcept;
+    [[nodiscard]] DistributedSieveWaveMergeCommitPublicationResultV1 publish_wave_merge_commit_v1(
+        const MergePreparedV1& prepared, std::span<const MergeStartedV1> merge_started_chain,
+        std::span<const WorkerHandoffV1* const> worker_handoffs,
+        const distributed_sieve_merge_writer_authority_detail::
+            DistributedSieveMergeCommitPredecessorSnapshotsV1& predecessor_snapshots,
+        DistributedSieveWaveMergeCommitTestHooksV1 hooks) const noexcept;
+    [[nodiscard]] bool revalidate_committed_tail_v1(
+        const MergePreparedV1& prepared, std::span<const MergeStartedV1> merge_started_chain,
+        std::span<const WorkerHandoffV1* const> worker_handoffs,
+        const distributed_sieve_merge_writer_authority_detail::
+            DistributedSieveMergeCommitPredecessorSnapshotsV1& predecessor_snapshots,
+        const WaveMergeCommitV1& commit,
+        const util::durable_immutable_record::RecordSnapshot& canonical_snapshot) const noexcept;
 
     std::shared_ptr<const State> state_;
 
@@ -1432,6 +1552,12 @@ private:
     friend class DistributedSieveMergeStartedWriterMintV1;
     friend class DistributedSieveChunkTerminalFailureAdmissionV1;
     friend class MergePreparedAdmissionRevalidatorAuthorityV1;
+    friend class ::gnfs::sieve::distributed_sieve_merge_commit_authority_detail::
+        DistributedSieveWaveMergeCommitAuthorityV1;
+    friend class ::gnfs::sieve::distributed_sieve_merge_writer_authority_detail::
+        DistributedSieveMergeWriterAuthorityV1;
+    friend class ::gnfs::sieve::distributed_sieve_merge_writer_authority_detail::
+        DistributedSieveCommittedTailAdmissionV1;
     friend DistributedSieveWorkerAttemptStartResult
     publish_worker_attempt_started(DistributedSievePrivateLeaseReservationReceipt&& reservation,
                                    DistributedSieveWorkerAttemptStartTestHooks hooks) noexcept;
@@ -2258,6 +2384,21 @@ struct DistributedSieveChunkTerminalFailurePublicationResultV1 final {
     }
 };
 
+/// Internal result of the singleton merge-commit publisher. `admission_spent`
+/// becomes true before the first durable-record operation, or when an existing
+/// commit prefix is observed and therefore requires cold-open normalization.
+struct DistributedSieveWaveMergeCommitPublicationResultV1 final {
+    std::optional<WaveMergeCommitV1> commit;
+    std::optional<util::durable_immutable_record::RecordSnapshot> canonical_snapshot;
+    DistributedSieveWaveStoreDiagnostic diagnostic;
+    bool admission_spent = false;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return commit.has_value() && canonical_snapshot.has_value() && admission_spent &&
+               diagnostic.status == DistributedSieveWaveStoreStatus::ready;
+    }
+};
+
 /// Source-private lifetime anchor for one future external cleanup
 /// authorization.
 ///
@@ -2305,7 +2446,20 @@ struct DistributedSieveWaveStoreOpenResult final {
                           DistributedSieveMergePreparedAdmissionV1>
             prepared_admission_value,
         DistributedSieveWaveStoreDiagnostic diagnostic_value) noexcept
+        : DistributedSieveWaveStoreOpenResult(std::move(store_value),
+                                              std::move(prepared_admission_value), std::nullopt,
+                                              std::move(diagnostic_value)) {}
+    DistributedSieveWaveStoreOpenResult(
+        std::unique_ptr<DistributedSieveWaveStore> store_value,
+        std::optional<distributed_sieve_merge_writer_authority_detail::
+                          DistributedSieveMergePreparedAdmissionV1>
+            prepared_admission_value,
+        std::optional<distributed_sieve_merge_writer_authority_detail::
+                          DistributedSieveCommittedTailAdmissionV1>
+            committed_tail_admission_value,
+        DistributedSieveWaveStoreDiagnostic diagnostic_value) noexcept
         : store(std::move(store_value)), prepared_admission(std::move(prepared_admission_value)),
+          committed_tail_admission(std::move(committed_tail_admission_value)),
           diagnostic(std::move(diagnostic_value)) {}
     DistributedSieveWaveStoreOpenResult(const DistributedSieveWaveStoreOpenResult&) = delete;
     DistributedSieveWaveStoreOpenResult&
@@ -2322,6 +2476,11 @@ struct DistributedSieveWaveStoreOpenResult final {
             prepared_admission.emplace(std::move(*other.prepared_admission));
             other.prepared_admission.reset();
         }
+        committed_tail_admission.reset();
+        if (other.committed_tail_admission.has_value()) {
+            committed_tail_admission.emplace(std::move(*other.committed_tail_admission));
+            other.committed_tail_admission.reset();
+        }
         diagnostic = std::move(other.diagnostic);
         return *this;
     }
@@ -2330,14 +2489,24 @@ struct DistributedSieveWaveStoreOpenResult final {
     std::optional<
         distributed_sieve_merge_writer_authority_detail::DistributedSieveMergePreparedAdmissionV1>
         prepared_admission;
+    std::optional<
+        distributed_sieve_merge_writer_authority_detail::DistributedSieveCommittedTailAdmissionV1>
+        committed_tail_admission;
     DistributedSieveWaveStoreDiagnostic diagnostic;
 
     [[nodiscard]] explicit operator bool() const noexcept {
-        const bool store_ready = store != nullptr && !prepared_admission.has_value();
-        const bool prepared_ready =
-            store == nullptr && prepared_admission.has_value() && prepared_admission->valid();
+        const bool store_ready = store != nullptr && !prepared_admission.has_value() &&
+                                 !committed_tail_admission.has_value();
+        const bool prepared_ready = store == nullptr && prepared_admission.has_value() &&
+                                    !committed_tail_admission.has_value() &&
+                                    prepared_admission->valid();
+        const bool committed_ready = store == nullptr && !prepared_admission.has_value() &&
+                                     committed_tail_admission.has_value() &&
+                                     committed_tail_admission->valid();
         return diagnostic.status == DistributedSieveWaveStoreStatus::ready &&
-               store_ready != prepared_ready;
+               static_cast<unsigned>(store_ready) + static_cast<unsigned>(prepared_ready) +
+                       static_cast<unsigned>(committed_ready) ==
+                   1U;
     }
 };
 

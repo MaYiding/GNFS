@@ -3119,6 +3119,15 @@ DistributedSieveProtocolStatus validate_merge_dependency_chain(
         !status) {
         return status;
     }
+    if (commit != nullptr) {
+        for (std::uint32_t index = 0; index < commit->chunks.size(); ++index) {
+            const auto& diagnostic = commit->chunks[index].diagnostic;
+            if (diagnostic.kind != NormalizedDiagnosticKindV1::none || diagnostic.code != 0) {
+                return failure(DistributedSieveProtocolError::invalid_value,
+                               DISTRIBUTED_SIEVE_PROTOCOL_NO_OFFSET, index);
+            }
+        }
+    }
     if (starts.front().ordered_inputs.size() != terminal_evidence.size()) {
         return failure(DistributedSieveProtocolError::invalid_value);
     }
