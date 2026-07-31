@@ -1344,6 +1344,17 @@ struct DistributedSieveWorkerCleanupPrefixClassificationResultV1 final {
     }
 };
 
+/// Trusted observation seam for the source-private worker-cleanup cold open.
+/// Production callers leave the callback empty. The callback runs only after
+/// the first complete immutable observation has released every temporary
+/// worker/merged BaseLock and before the mandatory second observation.
+struct DistributedSieveWorkerCleanupRootOpenTestHooksV1 final {
+    using Boundary = void (*)(void* context) noexcept;
+
+    Boundary after_first_observation = nullptr;
+    void* context = nullptr;
+};
+
 /// Read and decode exactly one reserved worker cleanup leaf. Merged
 /// coordinates, malformed aliases, role mismatches, and record replacement
 /// during the held/named observation fail closed.
@@ -1364,6 +1375,7 @@ classify_distributed_sieve_worker_cleanup_prefix_v1(
     std::span<const DistributedSieveWorkerCleanupRecordLeafWitnessV1> records) noexcept;
 
 struct DistributedSieveWaveStoreOpenResult;
+struct DistributedSieveWorkerCleanupRootOpenResultV1;
 struct DistributedSievePrivateLeaseRootClaimResult;
 struct DistributedSievePrivateLeaseReservationResult;
 struct DistributedSieveWorkerAttemptStartResult;
@@ -1381,6 +1393,7 @@ struct DistributedSieveWorkerCoordinatorClaimResultV1;
 class DistributedSieveAdoptedWorkerChunkV1;
 class DistributedSieveWorkerCoordinatorClaimV1;
 class DistributedSieveWaveStore;
+class DistributedSieveWorkerCleanupRootAdmissionV1;
 class DistributedSievePrivateLeaseRootClaim;
 class DistributedSievePrivateLeaseBaseLockAt;
 class DistributedSievePrivateLeaseReservationReceipt;
@@ -1392,6 +1405,7 @@ class DistributedSieveChunkTerminalFailureAdmissionV1;
 class DistributedSieveFdPrivateLeaseReservationTarget;
 class DistributedSieveFdPrivateLeaseRecoveryTarget;
 class MergePreparedAdmissionRevalidatorAuthorityV1;
+class WorkerCleanupRootRevalidatorAuthorityV1;
 
 [[nodiscard]] DistributedSieveMergeStartedWriterMintResultV1
 consume_distributed_sieve_merge_started_writer_v1(
@@ -1678,6 +1692,11 @@ private:
     friend class DistributedSieveMergeStartedWriterMintV1;
     friend class DistributedSieveChunkTerminalFailureAdmissionV1;
     friend class MergePreparedAdmissionRevalidatorAuthorityV1;
+    friend class WorkerCleanupRootRevalidatorAuthorityV1;
+    friend DistributedSieveWorkerCleanupRootOpenResultV1
+    open_worker_cleanup_root_v1(const std::filesystem::path& absolute_root,
+                                const util::Sha256Digest& expected_manifest_digest,
+                                DistributedSieveWorkerCleanupRootOpenTestHooksV1 hooks) noexcept;
     friend class ::gnfs::sieve::distributed_sieve_merge_commit_authority_detail::
         DistributedSieveWaveMergeCommitAuthorityV1;
     friend class ::gnfs::sieve::distributed_sieve_merge_writer_authority_detail::
@@ -1717,6 +1736,80 @@ private:
         DistributedSieveChunkTerminalFailureAdmissionV1&& admission,
         DistributedSieveChunkTerminalFailureTestHooksV1 hooks) noexcept;
 };
+
+/// Move-only cold-open authority for a committed worker-cleanup root.
+///
+/// The admission retains the exclusive WaveLock and one stable, same-handle
+/// read-only view of the merged relation corpus. All temporary worker and
+/// merged BaseLocks, action claims, private-directory handles, and coordinator
+/// authority are released before construction succeeds. It proves the exact
+/// root/commit/dependency/cleanup-record chain; for a canonical worker cleanup
+/// authorization the relation namespace may be live, partial, or absent, but
+/// this admission does not assert that a live/partial T2b prefix is legal. The
+/// authorization-bound relation executor must revalidate that exact prefix
+/// before any mutation.
+class DistributedSieveWorkerCleanupRootAdmissionV1 final {
+public:
+    DistributedSieveWorkerCleanupRootAdmissionV1() = delete;
+    DistributedSieveWorkerCleanupRootAdmissionV1(
+        const DistributedSieveWorkerCleanupRootAdmissionV1&) = delete;
+    DistributedSieveWorkerCleanupRootAdmissionV1&
+    operator=(const DistributedSieveWorkerCleanupRootAdmissionV1&) = delete;
+    DistributedSieveWorkerCleanupRootAdmissionV1(
+        DistributedSieveWorkerCleanupRootAdmissionV1&&) noexcept;
+    DistributedSieveWorkerCleanupRootAdmissionV1&
+    operator=(DistributedSieveWorkerCleanupRootAdmissionV1&&) noexcept;
+    ~DistributedSieveWorkerCleanupRootAdmissionV1();
+
+    [[nodiscard]] bool valid() const noexcept;
+    [[nodiscard]] const WaveMergeCommitV1& commit() const;
+    [[nodiscard]] const DistributedSieveWorkerCleanupPrefixWitnessV1& cleanup_prefix() const;
+    [[nodiscard]] const relation::OOCRelationReader& reader() const;
+
+private:
+    struct State;
+    explicit DistributedSieveWorkerCleanupRootAdmissionV1(std::unique_ptr<State> state) noexcept;
+
+    std::unique_ptr<State> state_;
+
+    friend DistributedSieveWorkerCleanupRootOpenResultV1
+    open_worker_cleanup_root_v1(const std::filesystem::path& absolute_root,
+                                const util::Sha256Digest& expected_manifest_digest,
+                                DistributedSieveWorkerCleanupRootOpenTestHooksV1 hooks) noexcept;
+};
+
+struct DistributedSieveWorkerCleanupRootOpenResultV1 final {
+    DistributedSieveWorkerCleanupRootOpenResultV1() = default;
+    DistributedSieveWorkerCleanupRootOpenResultV1(
+        std::optional<DistributedSieveWorkerCleanupRootAdmissionV1> admission_value,
+        DistributedSieveWaveStoreDiagnostic diagnostic_value) noexcept
+        : admission(std::move(admission_value)), diagnostic(std::move(diagnostic_value)) {}
+    DistributedSieveWorkerCleanupRootOpenResultV1(
+        const DistributedSieveWorkerCleanupRootOpenResultV1&) = delete;
+    DistributedSieveWorkerCleanupRootOpenResultV1&
+    operator=(const DistributedSieveWorkerCleanupRootOpenResultV1&) = delete;
+    DistributedSieveWorkerCleanupRootOpenResultV1(
+        DistributedSieveWorkerCleanupRootOpenResultV1&&) noexcept = default;
+    DistributedSieveWorkerCleanupRootOpenResultV1&
+    operator=(DistributedSieveWorkerCleanupRootOpenResultV1&&) noexcept = default;
+
+    std::optional<DistributedSieveWorkerCleanupRootAdmissionV1> admission;
+    DistributedSieveWaveStoreDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return diagnostic.status == DistributedSieveWaveStoreStatus::ready &&
+               admission.has_value() && admission->valid();
+    }
+};
+
+/// Open only a committed worker-cleanup root. This entry point validates root
+/// cleanup records but deliberately does not classify authorization-bound
+/// relation T2b prefixes. It never repairs, publishes, resumes, or removes a
+/// record and is separate from ordinary `DistributedSieveWaveStore::open()`.
+[[nodiscard]] DistributedSieveWorkerCleanupRootOpenResultV1
+open_worker_cleanup_root_v1(const std::filesystem::path& absolute_root,
+                            const util::Sha256Digest& expected_manifest_digest,
+                            DistributedSieveWorkerCleanupRootOpenTestHooksV1 hooks = {}) noexcept;
 
 enum class DistributedSieveWorkerChunkDurableStateV1 : std::uint8_t {
     empty,

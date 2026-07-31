@@ -54,6 +54,7 @@ using CommitResult = commit_authority::DistributedSieveWaveMergeCommitResultV1;
 using CommittedTail = commit_authority::DistributedSieveCommittedTailAdmissionV1;
 using Digest = gnfs::util::Sha256Digest;
 using PreparedAdmission = writer_authority::DistributedSieveMergePreparedAdmissionV1;
+using WorkerCleanupRootAdmission = wave::DistributedSieveWorkerCleanupRootAdmissionV1;
 
 template <typename T>
 concept HasCleanupMember = requires(T& value) { value.cleanup(); };
@@ -72,6 +73,12 @@ static_assert(!std::is_copy_constructible_v<CommittedTail>);
 static_assert(std::is_nothrow_move_constructible_v<CommittedTail>);
 static_assert(!HasCleanupMember<CommittedTail>);
 static_assert(!HasWriterMember<CommittedTail>);
+static_assert(std::is_final_v<WorkerCleanupRootAdmission>);
+static_assert(!std::is_default_constructible_v<WorkerCleanupRootAdmission>);
+static_assert(!std::is_copy_constructible_v<WorkerCleanupRootAdmission>);
+static_assert(std::is_nothrow_move_constructible_v<WorkerCleanupRootAdmission>);
+static_assert(!HasCleanupMember<WorkerCleanupRootAdmission>);
+static_assert(!HasWriterMember<WorkerCleanupRootAdmission>);
 static_assert(noexcept(commit_authority::consume_distributed_sieve_merge_prepared_v1(
     std::declval<PreparedAdmission&&>())));
 static_assert(std::is_same_v<decltype(commit_authority::consume_distributed_sieve_merge_prepared_v1(
@@ -421,6 +428,41 @@ void clear_cleanup_test_leaves(const std::filesystem::path& root) {
     }
 }
 
+void remove_worker_private_namespace(const std::filesystem::path& root,
+                                     const WorkerSnapshot& snapshot) {
+    for (std::size_t index = 2; index < snapshot.leaves.size(); ++index) {
+        std::error_code error;
+        if (!std::filesystem::remove(snapshot.leaves[index].path, error) || error) {
+            throw std::filesystem::filesystem_error("remove worker private leaf",
+                                                    snapshot.leaves[index].path, error);
+        }
+    }
+    const auto private_directory = snapshot.leaves[2].path.parent_path();
+    std::error_code directory_error;
+    if (!std::filesystem::remove(private_directory, directory_error) || directory_error) {
+        throw std::filesystem::filesystem_error("remove worker private directory",
+                                                private_directory, directory_error);
+    }
+    std::error_code owned_error;
+    if (!std::filesystem::remove(snapshot.leaves[1].path, owned_error) || owned_error) {
+        throw std::filesystem::filesystem_error("remove worker OWNED marker",
+                                                snapshot.leaves[1].path, owned_error);
+    }
+    int root_descriptor = -1;
+    do {
+        root_descriptor = ::open(root.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    } while (root_descriptor < 0 && errno == EINTR);
+    if (root_descriptor < 0) {
+        throw std::system_error(errno, std::generic_category(), "open worker cleanup root");
+    }
+    const int sync_result = ::fsync(root_descriptor);
+    const int sync_error = errno;
+    (void)::close(root_descriptor);
+    if (sync_result != 0) {
+        throw std::system_error(sync_error, std::generic_category(), "sync worker cleanup root");
+    }
+}
+
 struct WorkerCleanupSource final {
     sieve::WorkerHandoffV1 handoff;
     sieve::NativeIdentityV1 base_lock_identity;
@@ -646,6 +688,232 @@ void test_cold_prepared_admission_commits_without_worker_cleanup() {
         std::move(*opened.prepared_admission));
     auto tail = take_committed_tail(std::move(result), "consume cold prepared admission");
     (void)require_committed_tail(prepared, prepared_record, worker_snapshots, tail);
+}
+
+void test_worker_cleanup_root_cold_open_retains_only_read_authority() {
+    fixture::PreparedWaveFixture prepared("worker-cleanup-cold-open");
+    auto publication = prepared.prepare_fresh();
+    CHECK(publication.admission.has_value());
+    auto committed = commit_authority::consume_distributed_sieve_merge_prepared_v1(
+        std::move(*publication.admission));
+    auto tail = take_committed_tail(std::move(committed), "commit before cleanup cold open");
+    const auto expected_commit = tail.record();
+    std::optional<CommittedTail> held(std::move(tail));
+    held.reset();
+
+    auto opened = wave::open_worker_cleanup_root_v1(prepared.root(), prepared.manifest_digest());
+    if (!opened || !opened.admission.has_value()) {
+        fail("open committed worker-cleanup root", __LINE__,
+             wave_diagnostic_detail(opened.diagnostic));
+    }
+    CHECK(opened.admission->valid());
+    CHECK(opened.admission->commit().self_digest == expected_commit.self_digest);
+    CHECK(opened.admission->cleanup_prefix().coordinates.empty());
+    CHECK(opened.admission->reader().count() == prepared.expected_rows().size());
+    CHECK(fixture::relation_vectors_equal(opened.admission->reader().read_all(),
+                                          prepared.expected_rows()));
+
+    auto busy = wave::DistributedSieveWaveStore::open(prepared.root(), prepared.manifest_digest());
+    CHECK(!busy);
+    CHECK(busy.diagnostic.status == wave::DistributedSieveWaveStoreStatus::lock_busy);
+
+    opened.admission.reset();
+    auto reopened =
+        wave::DistributedSieveWaveStore::open(prepared.root(), prepared.manifest_digest());
+    if (!reopened || !reopened.committed_tail_admission.has_value()) {
+        fail("ordinary open after cleanup-root admission release", __LINE__,
+             wave_diagnostic_detail(reopened.diagnostic));
+    }
+}
+
+void test_worker_cleanup_root_opens_completed_prefix_and_live_frontier() {
+    fixture::PreparedWaveFixture prepared("worker-cleanup-completed-frontier");
+    auto publication = prepared.prepare_fresh();
+    CHECK(publication.admission.has_value());
+    const auto worker_snapshots = capture_worker_snapshots(prepared);
+    auto committed = commit_authority::consume_distributed_sieve_merge_prepared_v1(
+        std::move(*publication.admission));
+    auto tail = take_committed_tail(std::move(committed), "commit before completed cleanup prefix");
+    const auto commit = tail.record();
+    const std::array sources{
+        worker_cleanup_source(worker_snapshots[0]),
+        worker_cleanup_source(worker_snapshots[1]),
+    };
+    const auto authorization_0 =
+        make_worker_cleanup_authorization(prepared.manifest(), commit, sources[0], 0);
+    const auto authorization_1 =
+        make_worker_cleanup_authorization(prepared.manifest(), commit, sources[1], 1);
+    const auto completion_0 = make_worker_cleanup_completion(authorization_0);
+    const auto names_0 = wave::distributed_sieve_worker_cleanup_record_names_v1(0);
+    const auto names_1 = wave::distributed_sieve_worker_cleanup_record_names_v1(1);
+    CHECK(names_0.has_value());
+    CHECK(names_1.has_value());
+    std::optional<CommittedTail> held(std::move(tail));
+    held.reset();
+
+    write_cleanup_record_prefix(
+        prepared.root(), names_0->authorization_canonical_record_leaf,
+        names_0->authorization_pending_record_leaf,
+        fixture::encode_record(sieve::DistributedSieveProtocolRecordV1{authorization_0}), true,
+        false);
+    remove_worker_private_namespace(prepared.root(), worker_snapshots[0]);
+    write_cleanup_record_prefix(
+        prepared.root(), names_0->completion_canonical_record_leaf,
+        names_0->completion_pending_record_leaf,
+        fixture::encode_record(sieve::DistributedSieveProtocolRecordV1{completion_0}), true, false);
+    write_cleanup_record_prefix(
+        prepared.root(), names_1->authorization_canonical_record_leaf,
+        names_1->authorization_pending_record_leaf,
+        fixture::encode_record(sieve::DistributedSieveProtocolRecordV1{authorization_1}), false,
+        true);
+
+    auto opened = wave::open_worker_cleanup_root_v1(prepared.root(), prepared.manifest_digest());
+    if (!opened || !opened.admission.has_value()) {
+        fail("open completed worker prefix plus live frontier", __LINE__,
+             wave_diagnostic_detail(opened.diagnostic));
+    }
+    CHECK(opened.admission->valid());
+    CHECK(opened.admission->cleanup_prefix().completed_worker_count == 1U);
+    CHECK(opened.admission->cleanup_prefix().frontier_manifest_order_ordinal == 1U);
+    CHECK(opened.admission->cleanup_prefix().active_manifest_order_ordinal == 1U);
+    CHECK(opened.admission->reader().count() == prepared.expected_rows().size());
+    CHECK(!std::filesystem::exists(worker_snapshots[0].leaves[1].path));
+    CHECK(!std::filesystem::exists(worker_snapshots[0].leaves[2].path.parent_path()));
+    CHECK(std::filesystem::exists(worker_snapshots[0].leaves[0].path));
+}
+
+void test_worker_cleanup_root_opens_completed_prefix_and_future_live_handoff() {
+    fixture::PreparedWaveFixture prepared("worker-cleanup-completed-future-live");
+    auto publication = prepared.prepare_fresh();
+    CHECK(publication.admission.has_value());
+    const auto worker_snapshots = capture_worker_snapshots(prepared);
+    auto committed = commit_authority::consume_distributed_sieve_merge_prepared_v1(
+        std::move(*publication.admission));
+    auto tail =
+        take_committed_tail(std::move(committed), "commit before future-live cleanup prefix");
+    const auto source = worker_cleanup_source(worker_snapshots[0]);
+    const auto authorization =
+        make_worker_cleanup_authorization(prepared.manifest(), tail.record(), source, 0);
+    const auto completion = make_worker_cleanup_completion(authorization);
+    const auto names = wave::distributed_sieve_worker_cleanup_record_names_v1(0);
+    CHECK(names.has_value());
+    std::optional<CommittedTail> held(std::move(tail));
+    held.reset();
+
+    write_cleanup_record_prefix(
+        prepared.root(), names->authorization_canonical_record_leaf,
+        names->authorization_pending_record_leaf,
+        fixture::encode_record(sieve::DistributedSieveProtocolRecordV1{authorization}), true,
+        false);
+    remove_worker_private_namespace(prepared.root(), worker_snapshots[0]);
+    write_cleanup_record_prefix(
+        prepared.root(), names->completion_canonical_record_leaf,
+        names->completion_pending_record_leaf,
+        fixture::encode_record(sieve::DistributedSieveProtocolRecordV1{completion}), true, false);
+
+    auto opened = wave::open_worker_cleanup_root_v1(prepared.root(), prepared.manifest_digest());
+    if (!opened || !opened.admission.has_value()) {
+        fail("open completed prefix plus future live handoff", __LINE__,
+             wave_diagnostic_detail(opened.diagnostic));
+    }
+    CHECK(opened.admission->valid());
+    CHECK(opened.admission->cleanup_prefix().completed_worker_count == 1U);
+    CHECK(opened.admission->cleanup_prefix().frontier_manifest_order_ordinal == 1U);
+    CHECK(!opened.admission->cleanup_prefix().active_manifest_order_ordinal.has_value());
+    CHECK(opened.admission->reader().count() == prepared.expected_rows().size());
+    CHECK(std::filesystem::exists(worker_snapshots[1].leaves[1].path));
+    CHECK(std::filesystem::exists(worker_snapshots[1].leaves[2].path.parent_path()));
+}
+
+void test_worker_cleanup_root_rejects_same_byte_commit_replacement() {
+    fixture::PreparedWaveFixture prepared("worker-cleanup-cold-replacement");
+    auto publication = prepared.prepare_fresh();
+    CHECK(publication.admission.has_value());
+    auto committed = commit_authority::consume_distributed_sieve_merge_prepared_v1(
+        std::move(*publication.admission));
+    auto tail = take_committed_tail(std::move(committed), "commit before cleanup replacement");
+    const auto commit_bytes = fixture::read_file_bytes(commit_path(prepared.root()));
+    std::optional<CommittedTail> held(std::move(tail));
+    held.reset();
+
+    SameByteReplacementContext replacement{
+        .root = prepared.root(),
+        .canonical = commit_path(prepared.root()),
+        .saved = prepared.root().parent_path() /
+                 (prepared.root().filename().string() + ".saved-cleanup-commit"),
+        .bytes = commit_bytes,
+    };
+    auto opened =
+        wave::open_worker_cleanup_root_v1(prepared.root(), prepared.manifest_digest(),
+                                          wave::DistributedSieveWorkerCleanupRootOpenTestHooksV1{
+                                              .after_first_observation = replace_leaf_at_boundary,
+                                              .context = &replacement,
+                                          });
+    CHECK(replacement.invoked);
+    if (replacement.failure != nullptr) {
+        std::rethrow_exception(replacement.failure);
+    }
+    CHECK(!opened);
+    CHECK(!opened.admission.has_value());
+    CHECK(opened.diagnostic.status == wave::DistributedSieveWaveStoreStatus::namespace_conflict);
+    std::error_code remove_error;
+    CHECK(std::filesystem::remove(replacement.saved, remove_error));
+    CHECK(!remove_error);
+}
+
+void test_worker_cleanup_root_rejects_same_byte_cleanup_authorization_replacement() {
+    fixture::PreparedWaveFixture prepared("worker-cleanup-auth-replacement");
+    auto publication = prepared.prepare_fresh();
+    CHECK(publication.admission.has_value());
+    const auto worker_snapshots = capture_worker_snapshots(prepared);
+    auto committed = commit_authority::consume_distributed_sieve_merge_prepared_v1(
+        std::move(*publication.admission));
+    auto tail = take_committed_tail(std::move(committed),
+                                    "commit before cleanup authorization replacement");
+    const auto source = worker_cleanup_source(worker_snapshots[0]);
+    const auto authorization =
+        make_worker_cleanup_authorization(prepared.manifest(), tail.record(), source, 0);
+    const auto completion = make_worker_cleanup_completion(authorization);
+    const auto names = wave::distributed_sieve_worker_cleanup_record_names_v1(0);
+    CHECK(names.has_value());
+    const auto authorization_bytes =
+        fixture::encode_record(sieve::DistributedSieveProtocolRecordV1{authorization});
+    const auto completion_bytes =
+        fixture::encode_record(sieve::DistributedSieveProtocolRecordV1{completion});
+    std::optional<CommittedTail> held(std::move(tail));
+    held.reset();
+
+    write_cleanup_record_prefix(prepared.root(), names->authorization_canonical_record_leaf,
+                                names->authorization_pending_record_leaf, authorization_bytes, true,
+                                false);
+    remove_worker_private_namespace(prepared.root(), worker_snapshots[0]);
+    write_cleanup_record_prefix(prepared.root(), names->completion_canonical_record_leaf,
+                                names->completion_pending_record_leaf, completion_bytes, true,
+                                false);
+
+    SameByteReplacementContext replacement{
+        .root = prepared.root(),
+        .canonical = prepared.root() / names->authorization_canonical_record_leaf,
+        .saved = prepared.root().parent_path() /
+                 (prepared.root().filename().string() + ".saved-cleanup-authorization"),
+        .bytes = authorization_bytes,
+    };
+    auto opened =
+        wave::open_worker_cleanup_root_v1(prepared.root(), prepared.manifest_digest(),
+                                          wave::DistributedSieveWorkerCleanupRootOpenTestHooksV1{
+                                              .after_first_observation = replace_leaf_at_boundary,
+                                              .context = &replacement,
+                                          });
+    CHECK(replacement.invoked);
+    if (replacement.failure != nullptr) {
+        std::rethrow_exception(replacement.failure);
+    }
+    CHECK(!opened);
+    CHECK(!opened.admission.has_value());
+    CHECK(opened.diagnostic.status == wave::DistributedSieveWaveStoreStatus::namespace_conflict);
+    std::error_code remove_error;
+    CHECK(std::filesystem::remove(replacement.saved, remove_error));
+    CHECK(!remove_error);
 }
 
 void test_worker_cleanup_root_names_and_parser_are_exact() {
@@ -1322,6 +1590,16 @@ void run_core_suite() {
     std::cout << "  fresh commit and cold reopen byte parity: PASS\n";
     test_cold_prepared_admission_commits_without_worker_cleanup();
     std::cout << "  cold prepared admission and three-slot worker preservation: PASS\n";
+    test_worker_cleanup_root_cold_open_retains_only_read_authority();
+    std::cout << "  worker-cleanup cold open, merged reader, and WaveLock Busy: PASS\n";
+    test_worker_cleanup_root_opens_completed_prefix_and_live_frontier();
+    std::cout << "  worker-cleanup completed prefix plus live frontier: PASS\n";
+    test_worker_cleanup_root_opens_completed_prefix_and_future_live_handoff();
+    std::cout << "  worker-cleanup completed prefix plus future live handoff: PASS\n";
+    test_worker_cleanup_root_rejects_same_byte_commit_replacement();
+    std::cout << "  worker-cleanup cold-open same-byte replacement: PASS\n";
+    test_worker_cleanup_root_rejects_same_byte_cleanup_authorization_replacement();
+    std::cout << "  worker-cleanup cleanup-auth same-byte replacement: PASS\n";
     test_moved_admission_replay_is_rejected_without_mutation();
     std::cout << "  moved admission replay: PASS\n";
 #else
