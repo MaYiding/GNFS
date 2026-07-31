@@ -524,6 +524,46 @@ struct DistributedSieveWorkerHandoffInventoryWitnessV1 final {
     }
 };
 
+/// Exact no-delete merged-corpus handoff observed under its persistent
+/// BaseLock.
+///
+/// The generic envelope binds the three immutable named leaves and retained
+/// lease markers. The decoded MergePreparedV1 additionally binds those native
+/// facts to one exact MergeStarted generation. This witness is deliberately
+/// read-only: observing a canonical prepared corpus is never rollback or
+/// rebuild authority.
+struct DistributedSieveMergePreparedInventoryWitnessV1 final {
+    MergePreparedV1 prepared;
+    util::Sha256Digest envelope_digest;
+    NativeIdentityV1 owned_marker_identity;
+    util::durable_immutable_record::RecordSnapshot handoff_snapshot;
+    util::durable_immutable_record::RecordSnapshot index_snapshot;
+    util::durable_immutable_record::RecordSnapshot data_snapshot;
+
+    [[nodiscard]] friend bool
+    operator==(const DistributedSieveMergePreparedInventoryWitnessV1& left,
+               const DistributedSieveMergePreparedInventoryWitnessV1& right) noexcept {
+        return left.prepared.manifest_digest == right.prepared.manifest_digest &&
+               left.prepared.work_digest == right.prepared.work_digest &&
+               left.prepared.merge_policy_version == right.prepared.merge_policy_version &&
+               left.prepared.merge_started_digest == right.prepared.merge_started_digest &&
+               left.prepared.ordered_inputs == right.prepared.ordered_inputs &&
+               left.prepared.input_relation_count == right.prepared.input_relation_count &&
+               left.prepared.duplicate_relation_count == right.prepared.duplicate_relation_count &&
+               left.prepared.output_relation_count == right.prepared.output_relation_count &&
+               left.prepared.per_chunk_retained_counts ==
+                   right.prepared.per_chunk_retained_counts &&
+               left.prepared.merged_artifact == right.prepared.merged_artifact &&
+               left.prepared.merged_lease == right.prepared.merged_lease &&
+               left.prepared.self_digest == right.prepared.self_digest &&
+               left.envelope_digest == right.envelope_digest &&
+               left.owned_marker_identity == right.owned_marker_identity &&
+               left.handoff_snapshot == right.handoff_snapshot &&
+               left.index_snapshot == right.index_snapshot &&
+               left.data_snapshot == right.data_snapshot;
+    }
+};
+
 struct DistributedSievePrivateLeaseReservationInventoryWitness final {
     std::string base_lock_leaf;
     DistributedSievePrivateLeaseReservationBoundary boundary =
@@ -535,6 +575,7 @@ struct DistributedSievePrivateLeaseReservationInventoryWitness final {
     std::optional<NativeIdentityV1> owned_marker_identity;
     std::optional<DistributedSieveWorkerWorkPackageResidueInventoryWitnessV1> work_package_residue;
     std::optional<DistributedSieveWorkerHandoffInventoryWitnessV1> worker_handoff;
+    std::optional<DistributedSieveMergePreparedInventoryWitnessV1> merge_prepared;
 
     [[nodiscard]] friend bool
     operator==(const DistributedSievePrivateLeaseReservationInventoryWitness&,

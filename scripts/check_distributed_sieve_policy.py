@@ -160,6 +160,8 @@ DURABLE_ENVIRONMENT_FREE_FILES = {
     "src/sieve/distributed_sieve_work_package_codec_internal.hpp",
     MERGE_COORDINATOR_IMPLEMENTATION_FILE,
     MERGE_COORDINATOR_INTERFACE_FILE,
+    "src/sieve/distributed_sieve_merge_writer_codec_internal.cpp",
+    "src/sieve/distributed_sieve_merge_writer_codec_internal.hpp",
     "src/sieve/distributed_sieve_wave_store.cpp",
     "src/sieve/distributed_sieve_wave_store_internal.hpp",
     "src/sieve/distributed_sieve_worker_coordinator.cpp",
@@ -728,9 +730,33 @@ WORKER_HANDOFF_BRIDGE_IDENTIFIERS = (
     "capture_finalized_corpus_evidence",
     "finalize_and_publish_private_handoff_built",
 )
-WORKER_HANDOFF_BRIDGE_ALLOWLIST = {
-    "include/gnfs/relation/ooc_relation_store.hpp",
-    WORKER_WRITER_IMPLEMENTATION_FILE,
+WORKER_HANDOFF_EVIDENCE_ONLY_FILES = {
+    "src/sieve/distributed_sieve_merge_writer_codec_internal.cpp",
+    "src/sieve/distributed_sieve_merge_writer_codec_internal.hpp",
+    "tests/test_distributed_sieve_merge_writer_codec.cpp",
+}
+WORKER_HANDOFF_BRIDGE_IDENTIFIER_ALLOWLISTS = {
+    "OOCFinalizedCorpusEvidenceV1": {
+        "include/gnfs/relation/ooc_relation_store.hpp",
+        WORKER_WRITER_IMPLEMENTATION_FILE,
+    }
+    | WORKER_HANDOFF_EVIDENCE_ONLY_FILES,
+    "OOCPrivateHandoffPayloadV1": {
+        "include/gnfs/relation/ooc_relation_store.hpp",
+        WORKER_WRITER_IMPLEMENTATION_FILE,
+    },
+    "OOCPrivateHandoffPayloadBuilderV1": {
+        "include/gnfs/relation/ooc_relation_store.hpp",
+        WORKER_WRITER_IMPLEMENTATION_FILE,
+    },
+    "capture_finalized_corpus_evidence": {
+        "include/gnfs/relation/ooc_relation_store.hpp",
+        WORKER_WRITER_IMPLEMENTATION_FILE,
+    },
+    "finalize_and_publish_private_handoff_built": {
+        "include/gnfs/relation/ooc_relation_store.hpp",
+        WORKER_WRITER_IMPLEMENTATION_FILE,
+    },
 }
 RAW_PRIVATE_HANDOFF_PUBLISHER_IDENTIFIER = "finalize_and_publish_private_handoff"
 RAW_PRIVATE_HANDOFF_PUBLISHER_ALLOWLIST = {
@@ -787,6 +813,12 @@ PRIVATE_HANDOFF_PUBLICATION_RESUME_DIRECT_CALL_IDENTIFIERS = (
     PRIVATE_HANDOFF_PUBLICATION_RESUME_REVALIDATE_IDENTIFIER,
     PRIVATE_HANDOFF_PUBLICATION_RESUME_RECONCILE_IDENTIFIER,
 )
+PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_DIRECT_CALL_COUNTS = {
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER: 2,
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_VALIDATE_IDENTIFIER: 2,
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_REVALIDATE_IDENTIFIER: 2,
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_RECONCILE_IDENTIFIER: 1,
+}
 PRIVATE_HANDOFF_PUBLICATION_RESUME_USE_SITE_IDENTIFIERS = (
     "PrivateHandoffPublicationPrefixStateV1",
     "PrivateHandoffPublicationLeaseMarkerWitnessV1",
@@ -819,6 +851,12 @@ PRIVATE_HANDOFF_PUBLICATION_TEST_VALIDATOR_AUTHORITY_ALLOWLIST = {
 }
 PRIVATE_HANDOFF_PUBLICATION_RESUME_CAPTURE_FUNCTION = (
     "capture_recoverable_worker_handoff_inventory"
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_CLASSIFIER_FUNCTION = (
+    "classify_merge_prepared_publication_prefix_v1"
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_TYPED_CALLBACK_FUNCTION = (
+    "validate_merge_prepared_prefix_type"
 )
 PRIVATE_HANDOFF_PUBLICATION_RESUME_OPEN_FUNCTION = (
     "DistributedSieveWaveStore::open"
@@ -1969,6 +2007,209 @@ PRIVATE_HANDOFF_PUBLICATION_RESUME_CAPTURE_TYPED_SUCCESS_FRAGMENT = (
     "returnfail_with(worker_handoff_inspection_failure(validation.result));}"
     "constautotyped_handoff=*typed_context.typed_handoff;"
 )
+PRIVATE_HANDOFF_PUBLICATION_MERGE_ACQUIRE_STATEMENT = (
+    "autoadmission=private_lease::"
+    "acquire_private_handoff_publication_resume_v1("
+    "paths,relation_identity(expected_directory_identity));"
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_TYPED_VALIDATION_FRAGMENT = (
+    "MergePreparedTypedValidationContexttyped_context{"
+    ".attempt=&target_attempt,"
+    ".manifest=&manifest,"
+    ".start_record=&marker_bound_starts.witnesses->back(),"
+    ".worker_attempts=&*worker_attempts.witnesses,"
+    ".private_leases=&private_leases,"
+    ".merge_starts=&*marker_bound_starts.witnesses,"
+    ".root_fd=root_fd,"
+    ".expected_directory_identity=expected_directory_identity,"
+    ".creator_process_id=creator_process_id,};"
+    "autovalidation=private_lease::"
+    "validate_private_handoff_publication_resume_v1("
+    "std::move(*admission.observed),"
+    "WorkerHandoffTypedValidatorAuthorityV1::bind("
+    "validate_merge_prepared_prefix_type,&typed_context));"
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_REVALIDATE_STATEMENT = (
+    "constautorevalidated=private_lease::"
+    "revalidate_private_handoff_publication_resume_v1(*validation.permit);"
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_CLOSED_BINDING_IDENTIFIERS = (
+    "closed_merge_started_revalidator_v1",
+    "closed_merge_prepared_envelope_validator_v1",
+    "closed_merge_prepared_dependency_validator_v1",
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_CLOSED_BINDINGS_SOURCE = r"""
+using MergePreparedStartedRevalidatorV1 = DistributedSieveWaveStoreDiagnostic (*)(
+    int, const DistributedSieveMergeGenerationNamesV1&,
+    const DistributedSieveMergeStartedRecordInventoryWitnessV1&, std::uint64_t) noexcept;
+using MergePreparedEnvelopeValidatorV1 = MergePreparedInventoryValidationResult (*)(
+    const PrivateLeaseAttemptInventory&, const WaveManifestV1&, const NativeIdentityV1&,
+    const gnfs::relation::OOCPrivateHandoffRecordV1&,
+    const durable_record::RecordSnapshot&, const durable_record::RecordSnapshot&,
+    const durable_record::RecordSnapshot&, std::uint64_t) noexcept;
+using MergePreparedDependencyValidatorV1 = DistributedSieveProtocolStatus (*)(
+    const WaveManifestV1&,
+    std::span<const DistributedSieveWorkerAttemptRecordInventoryWitness>,
+    std::span<const PrivateLeaseReservationWitness>,
+    std::span<const DistributedSieveMergeStartedRecordInventoryWitnessV1>,
+    const MergePreparedV1&) noexcept;
+
+constexpr MergePreparedStartedRevalidatorV1 closed_merge_started_revalidator_v1 =
+    &revalidate_exact_canonical_merge_started;
+constexpr MergePreparedEnvelopeValidatorV1 closed_merge_prepared_envelope_validator_v1 =
+    &validate_merge_prepared_envelope;
+constexpr MergePreparedDependencyValidatorV1 closed_merge_prepared_dependency_validator_v1 =
+    &validate_merge_prepared_dependency_projection;
+"""
+PRIVATE_HANDOFF_PUBLICATION_MERGE_TYPED_CALLBACK_REQUIRED_CALLS = (
+    PRIVATE_HANDOFF_PUBLICATION_MERGE_CLOSED_BINDING_IDENTIFIERS
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_TYPED_CALLBACK_REQUIRED_FRAGMENTS = (
+    (
+        "auto*context=static_cast<MergePreparedTypedValidationContext*>(opaque);"
+        "if(context==nullptr||context->attempt==nullptr||context->manifest==nullptr||"
+        "context->start_record==nullptr||context->worker_attempts==nullptr||"
+        "context->private_leases==nullptr||context->merge_starts==nullptr||"
+        "context->root_fd<0||"
+        "!context->attempt->merge_generation_names.has_value()||"
+        "!context->attempt->merge_attempt_ordinal.has_value()||"
+        "!context->start_record->canonical_snapshot.has_value()||"
+        "context->start_record->pending_snapshot.has_value()){returnfalse;}"
+    ),
+    (
+        "if(constautoexact=closed_merge_started_revalidator_v1("
+        "context->root_fd,*context->attempt->merge_generation_names,"
+        "*context->start_record,context->creator_process_id);"
+        "exact.status!=DistributedSieveWaveStoreStatus::ready){"
+        "context->diagnostic=exact;returnfalse;}"
+    ),
+    (
+        "autotyped=closed_merge_prepared_envelope_validator_v1("
+        "*context->attempt,*context->manifest,"
+        "context->expected_directory_identity,prefix.record,*handoff_snapshot,"
+        "index_snapshot,data_snapshot,context->creator_process_id);"
+        "if(!typed){context->diagnostic=std::move(typed.diagnostic);returnfalse;}"
+    ),
+    (
+        "constauto&prepared=typed.witness->prepared;"
+        "constauto&started=context->start_record->record;"
+        "if(prepared.merge_started_digest!=started.self_digest||"
+        "prepared.merged_lease!=started.merged_lease||"
+        "prepared.ordered_inputs!=started.ordered_inputs||"
+        "*context->attempt->merge_attempt_ordinal!="
+        "started.merge_attempt_ordinal){"
+        "context->diagnostic=diagnostic("
+        "DistributedSieveWaveStoreStatus::namespace_conflict,protocol_error());"
+        "returnfalse;}"
+    ),
+    (
+        "constautodependency=closed_merge_prepared_dependency_validator_v1("
+        "*context->manifest,*context->worker_attempts,*context->private_leases,"
+        "*context->merge_starts,prepared);"
+        "if(!dependency){"
+        "context->diagnostic=diagnostic("
+        "dependency.error==DistributedSieveProtocolError::resource_exhausted?"
+        "DistributedSieveWaveStoreStatus::resource_exhausted:"
+        "DistributedSieveWaveStoreStatus::namespace_conflict,protocol_error());"
+        "context->diagnostic.protocol_status=dependency;returnfalse;}"
+    ),
+    "context->typed_prepared=std::move(*typed.witness);returntrue;",
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_TYPED_CALLBACK_PREFIX_STATE_FRAGMENT = (
+    "constdurable_record::RecordSnapshot*handoff_snapshot=nullptr;"
+    "switch(prefix.state){"
+    "caseprivate_lease::PrivateHandoffPublicationPrefixStateV1::PendingOnly:"
+    "if(prefix.canonical_snapshot.has_value()||"
+    "!prefix.pending_snapshot.has_value()||"
+    "prefix.rollback_snapshot.has_value()){returnfalse;}"
+    "handoff_snapshot=&*prefix.pending_snapshot;break;"
+    "caseprivate_lease::PrivateHandoffPublicationPrefixStateV1::PendingRollback:"
+    "if(prefix.canonical_snapshot.has_value()||"
+    "prefix.pending_snapshot.has_value()||"
+    "!prefix.rollback_snapshot.has_value()){returnfalse;}"
+    "handoff_snapshot=&*prefix.rollback_snapshot;break;"
+    "caseprivate_lease::PrivateHandoffPublicationPrefixStateV1::Canonical:"
+    "if(!prefix.canonical_snapshot.has_value()||"
+    "prefix.pending_snapshot.has_value()||"
+    "prefix.rollback_snapshot.has_value()){returnfalse;}"
+    "handoff_snapshot=&*prefix.canonical_snapshot;break;"
+    "caseprivate_lease::PrivateHandoffPublicationPrefixStateV1::IdenticalDual:"
+    "if(!prefix.canonical_snapshot.has_value()||"
+    "!prefix.pending_snapshot.has_value()||"
+    "prefix.rollback_snapshot.has_value()){returnfalse;}"
+    "handoff_snapshot=&*prefix.canonical_snapshot;break;"
+    "caseprivate_lease::PrivateHandoffPublicationPrefixStateV1::Count:"
+    "returnfalse;}"
+    "constdurable_record::RecordSnapshotindex_snapshot{"
+    ".identity=prefix.record.index.identity,"
+    ".size=prefix.record.index.extent,};"
+    "constdurable_record::RecordSnapshotdata_snapshot{"
+    ".identity=prefix.record.data.identity,"
+    ".size=prefix.record.data.extent,};"
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_TYPED_CALLBACK_CATCH_FRAGMENT = (
+    "}catch(conststd::bad_alloc&){"
+    "context->diagnostic=diagnostic("
+    "DistributedSieveWaveStoreStatus::resource_exhausted,"
+    "std::make_error_code(std::errc::not_enough_memory));"
+    "returnfalse;}catch(...){"
+    "context->diagnostic=diagnostic("
+    "DistributedSieveWaveStoreStatus::unexpected_failure,"
+    "std::make_error_code(std::errc::io_error));returnfalse;}"
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_TYPED_CALLBACK_BODY = (
+    PRIVATE_HANDOFF_PUBLICATION_MERGE_TYPED_CALLBACK_REQUIRED_FRAGMENTS[0]
+    + "try{"
+    + PRIVATE_HANDOFF_PUBLICATION_MERGE_TYPED_CALLBACK_REQUIRED_FRAGMENTS[1]
+    + PRIVATE_HANDOFF_PUBLICATION_MERGE_TYPED_CALLBACK_PREFIX_STATE_FRAGMENT
+    + PRIVATE_HANDOFF_PUBLICATION_MERGE_TYPED_CALLBACK_REQUIRED_FRAGMENTS[2]
+    + PRIVATE_HANDOFF_PUBLICATION_MERGE_TYPED_CALLBACK_REQUIRED_FRAGMENTS[3]
+    + PRIVATE_HANDOFF_PUBLICATION_MERGE_TYPED_CALLBACK_REQUIRED_FRAGMENTS[4]
+    + PRIVATE_HANDOFF_PUBLICATION_MERGE_TYPED_CALLBACK_REQUIRED_FRAGMENTS[5]
+    + PRIVATE_HANDOFF_PUBLICATION_MERGE_TYPED_CALLBACK_CATCH_FRAGMENT
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_CLOSED_MACRO_IDENTIFIERS = (
+    PRIVATE_HANDOFF_PUBLICATION_MERGE_CLASSIFIER_FUNCTION,
+    PRIVATE_HANDOFF_PUBLICATION_MERGE_TYPED_CALLBACK_FUNCTION,
+    "revalidate_exact_canonical_merge_started",
+    "validate_merge_prepared_envelope",
+    "validate_merge_prepared_dependency_projection",
+    *PRIVATE_HANDOFF_PUBLICATION_MERGE_CLOSED_BINDING_IDENTIFIERS,
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER,
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_VALIDATE_IDENTIFIER,
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_REVALIDATE_IDENTIFIER,
+    PRIVATE_HANDOFF_PUBLICATION_WORKER_VALIDATOR_AUTHORITY_IDENTIFIER,
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_MACRO_GUARD_ERROR = (
+    "MergePrepared authority identifiers must not be preprocessor macros"
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_MACRO_GUARD_SOURCE = (
+    "#if defined("
+    + PRIVATE_HANDOFF_PUBLICATION_MERGE_CLOSED_MACRO_IDENTIFIERS[0]
+    + ") || \\\n"
+    + "".join(
+        f"    defined({identifier}) || \\\n"
+        for identifier in (
+            PRIVATE_HANDOFF_PUBLICATION_MERGE_CLOSED_MACRO_IDENTIFIERS[1:-1]
+        )
+    )
+    + "    defined("
+    + PRIVATE_HANDOFF_PUBLICATION_MERGE_CLOSED_MACRO_IDENTIFIERS[-1]
+    + ")\n"
+    + '#error "'
+    + PRIVATE_HANDOFF_PUBLICATION_MERGE_MACRO_GUARD_ERROR
+    + '"\n#endif'
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_CALLBACK_DECLARATION = (
+    "[[nodiscard]] bool validate_merge_prepared_prefix_type("
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_PROTECTED_DEFINITION_IDENTIFIERS = (
+    "validate_merge_prepared_envelope",
+    "validate_merge_prepared_dependency_projection",
+    PRIVATE_HANDOFF_PUBLICATION_MERGE_TYPED_CALLBACK_FUNCTION,
+    PRIVATE_HANDOFF_PUBLICATION_MERGE_CLASSIFIER_FUNCTION,
+    "revalidate_exact_canonical_merge_started",
+)
 WORKER_PROCESS_LEGACY_FILE = "src/sieve/distributed_sieve.cpp"
 WORKER_PROCESS_POLICY_PREFIXES = (
     "include/gnfs/sieve/",
@@ -2676,6 +2917,126 @@ def _mask_cpp_comments_and_literals(text: str) -> str:
     return "".join(masked)
 
 
+def _logical_preprocessor_text(text: str) -> str:
+    """Expose active-looking directives after translation-phase line splicing."""
+
+    return re.sub(r"\\\r?\n", "", _mask_cpp_comments_and_literals(text))
+
+
+def _preprocessor_macro_records(
+    text: str,
+) -> list[tuple[str, str, str, int]]:
+    logical = _logical_preprocessor_text(text)
+    directives: list[tuple[str, str, str, int]] = []
+    for match in re.finditer(
+        r"(?m)^[ \t]*(?:#|%:)[ \t]*(define|undef)\b"
+        r"[ \t]+([A-Za-z_][A-Za-z0-9_]*)([^\n]*)",
+        logical,
+    ):
+        directives.append(
+            (
+                match.group(1),
+                match.group(2),
+                match.group(3),
+                logical.count("\n", 0, match.start()) + 1,
+            )
+        )
+    return directives
+
+
+def _preprocessor_macro_directives(
+    text: str,
+) -> list[tuple[str, str, int]]:
+    return [
+        (directive, identifier, line)
+        for directive, identifier, _, line in _preprocessor_macro_records(text)
+    ]
+
+
+def _preprocessor_conditional_directives(
+    text: str,
+) -> list[tuple[str, int]]:
+    logical = _logical_preprocessor_text(text)
+    return [
+        (
+            match.group(1),
+            logical.count("\n", 0, match.start()) + 1,
+        )
+        for match in re.finditer(
+            r"(?m)^[ \t]*(?:#|%:)[ \t]*"
+            r"(if|ifdef|ifndef|elif|else|endif)\b",
+            logical,
+        )
+    ]
+
+
+def _preprocessor_directives(text: str) -> list[tuple[str, int]]:
+    logical = _logical_preprocessor_text(text)
+    return [
+        (
+            match.group(1),
+            logical.count("\n", 0, match.start()) + 1,
+        )
+        for match in re.finditer(
+            r"(?m)^[ \t]*(?:#|%:)[ \t]*"
+            r"([A-Za-z_][A-Za-z0-9_]*)\b",
+            logical,
+        )
+    ]
+
+
+def _preprocessor_conditional_depth_at(text: str, offset: int) -> int:
+    return len(_preprocessor_conditional_stack_at(text, offset))
+
+
+def _preprocessor_conditional_stack_at(
+    text: str, offset: int
+) -> tuple[str, ...]:
+    logical = _logical_preprocessor_text(text[:offset])
+    stack: list[str] = []
+    for match in re.finditer(
+        r"(?m)^[ \t]*(?:#|%:)[ \t]*"
+        r"(if|ifdef|ifndef|elif|else|endif)\b([^\n]*)",
+        logical,
+    ):
+        directive = match.group(1)
+        suffix = _compact_cpp_code(match.group(2))
+        if directive in {"if", "ifdef", "ifndef"}:
+            stack.append(directive + suffix)
+        elif directive in {"elif", "else"}:
+            if not stack:
+                stack.append("<conditional-underflow>")
+            else:
+                opening = stack[-1].split("|", 1)[0]
+                stack[-1] = opening + "|" + directive + suffix
+        elif stack:
+            stack.pop()
+        else:
+            stack.append("<conditional-underflow>")
+    return tuple(stack)
+
+
+def _merge_prepared_macro_guard_matches(text: str) -> list[re.Match[str]]:
+    defined_expression = (
+        rf"defined[ \t]*\([ \t]*"
+        rf"{re.escape(PRIVATE_HANDOFF_PUBLICATION_MERGE_CLOSED_MACRO_IDENTIFIERS[0])}"
+        rf"[ \t]*\)"
+    )
+    for identifier in PRIVATE_HANDOFF_PUBLICATION_MERGE_CLOSED_MACRO_IDENTIFIERS[1:]:
+        defined_expression += (
+            rf"[ \t]*\|\|[ \t]*\\\r?\n[ \t]*"
+            rf"defined[ \t]*\([ \t]*{re.escape(identifier)}[ \t]*\)"
+        )
+    pattern = re.compile(
+        rf"(?m)^[ \t]*#[ \t]*if[ \t]+{defined_expression}[ \t]*\r?\n"
+        rf"[ \t]*#[ \t]*error[ \t]+"
+        rf'"{re.escape(PRIVATE_HANDOFF_PUBLICATION_MERGE_MACRO_GUARD_ERROR)}"'
+        rf"[ \t]*\r?\n"
+        rf"[ \t]*#[ \t]*endif[ \t]*$"
+    )
+    return list(pattern.finditer(text))
+
+
 def _compact_cpp_tokens(text: str) -> str:
     """Remove trivia and literal payloads, retaining only active-looking tokens."""
 
@@ -2685,15 +3046,7 @@ def _compact_cpp_tokens(text: str) -> str:
 def _contains_conditional_preprocessor_directive(text: str) -> bool:
     if re.search(r"\\\r?\n", text) is not None:
         return True
-    masked = _mask_cpp_comments_and_literals(text)
-    logical_lines = re.sub(r"\\\r?\n", "", masked)
-    return (
-        re.search(
-            r"(?m)^[ \t]*#[ \t]*(?:if|ifdef|ifndef|elif|else|endif)\b",
-            logical_lines,
-        )
-        is not None
-    )
+    return bool(_preprocessor_conditional_directives(text))
 
 
 def _active_brace_stack(text: str, offset: int) -> tuple[int, ...]:
@@ -2807,6 +3160,47 @@ def _function_declarator_terminator(
     return cursor
 
 
+def _function_definition_spans(
+    text: str, identifier: str
+) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for use in find_code_identifier_uses(text, identifier):
+        opening = _function_declarator_terminator(text, use, identifier)
+        if opening is None or opening >= len(text) or text[opening] != "{":
+            continue
+        closing = _matching_brace(text, opening)
+        if closing is not None:
+            spans.append((use.offset, closing + 1))
+    return spans
+
+
+def _merge_prepared_protected_interval(
+    text: str,
+) -> tuple[int, int] | None:
+    definition_spans = [
+        _function_definition_spans(text, identifier)
+        for identifier in (
+            PRIVATE_HANDOFF_PUBLICATION_MERGE_PROTECTED_DEFINITION_IDENTIFIERS
+        )
+    ]
+    if any(len(spans) != 1 for spans in definition_spans):
+        return None
+    ordered_spans = [spans[0] for spans in definition_spans]
+    if [span[0] for span in ordered_spans] != sorted(
+        span[0] for span in ordered_spans
+    ):
+        return None
+    return ordered_spans[0][0], ordered_spans[-1][1]
+
+
+def _merge_prepared_protected_code_tokens(text: str) -> set[str]:
+    interval = _merge_prepared_protected_interval(text)
+    if interval is None:
+        return set()
+    protected = _mask_cpp_comments_and_literals(text[interval[0] : interval[1]])
+    return set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", protected))
+
+
 def _class_definition_body_span(
     text: str, class_name: str
 ) -> tuple[int, int] | None:
@@ -2841,7 +3235,9 @@ def _enum_class_definition_body_span(
     return opening + 1, closing
 
 
-def _forbidden_control_scope_introducer(text: str, opening: int) -> str | None:
+def _forbidden_control_scope_introducer(
+    text: str, opening: int, *, forbid_for: bool = False
+) -> str | None:
     parent_stack = _active_brace_stack(text, opening)
     start = _statement_start_at_scope(text, opening, parent_stack)
     introducer = _compact_cpp_code(text[start:opening])
@@ -2852,7 +3248,16 @@ def _forbidden_control_scope_introducer(text: str, opening: int) -> str | None:
         introducer,
     ):
         return "lambda"
-    for keyword in ("if(", "ifconstexpr(", "switch(", "while(", "catch(", "else", "do"):
+    keywords = (
+        "if(",
+        "ifconstexpr(",
+        "switch(",
+        "while(",
+        "catch(",
+        "else",
+        "do",
+    ) + (("for(",) if forbid_for else ())
+    for keyword in keywords:
         if introducer.startswith(keyword):
             return keyword.rstrip("(")
     return None
@@ -3067,6 +3472,7 @@ class Checks:
         self.worker_process_call_counts = {
             key: 0 for key in WORKER_PROCESS_REQUIRED_DIRECT_CALLS
         }
+        self.merge_prepared_protected_tokens: set[str] = set()
 
     def fail(self, relative: str, line: int, message: str) -> None:
         self.errors.append(f"{relative}:{line}: {message}")
@@ -3841,8 +4247,10 @@ class Checks:
                         "worker-writer private bridge use site is not "
                         f"allowlisted: {identifier}",
                     )
-        if relative not in WORKER_HANDOFF_BRIDGE_ALLOWLIST:
-            for identifier in WORKER_HANDOFF_BRIDGE_IDENTIFIERS:
+        for identifier in WORKER_HANDOFF_BRIDGE_IDENTIFIERS:
+            if relative not in WORKER_HANDOFF_BRIDGE_IDENTIFIER_ALLOWLISTS[
+                identifier
+            ]:
                 for use in find_code_identifier_uses(text, identifier):
                     self.fail(
                         relative,
@@ -4148,6 +4556,67 @@ class Checks:
                     body_line_offset + 1,
                     f"{WORKER_HANDOFF_PUBLICATION_FUNCTION} forbids indirect "
                     f"{identifier} authority",
+                )
+
+    def validate_merge_prepared_macro_alias_boundary(
+        self, relative: str, text: str
+    ) -> None:
+        closed_identifiers = set(
+            PRIVATE_HANDOFF_PUBLICATION_MERGE_CLOSED_MACRO_IDENTIFIERS
+        )
+        logical = _logical_preprocessor_text(text)
+        for pragma in re.finditer(
+            r"(?m)^[ \t]*(?:#|%:)[ \t]*pragma[ \t]+"
+            r"(?:push_macro|pop_macro)\b",
+            logical,
+        ):
+            self.fail(
+                relative,
+                logical.count("\n", 0, pragma.start()) + 1,
+                "push_macro/pop_macro pragmas cannot reach the "
+                "MergePrepared protected interval",
+            )
+        for pragma_identifier in ("_Pragma", "__pragma"):
+            for use in find_code_identifier_uses(text, pragma_identifier):
+                self.fail(
+                    relative,
+                    use.line,
+                    "pragma operators cannot reach the MergePrepared "
+                    f"protected interval: {pragma_identifier}",
+                )
+        for directive, identifier, replacement, line in (
+            _preprocessor_macro_records(text)
+        ):
+            if identifier in closed_identifiers:
+                self.fail(
+                    relative,
+                    line,
+                    "MergePrepared closed authority identifier cannot be a "
+                    f"preprocessor macro target: #{directive} {identifier}",
+                )
+            elif identifier in self.merge_prepared_protected_tokens:
+                self.fail(
+                    relative,
+                    line,
+                    "preprocessor macro target collides with a token in the "
+                    f"MergePrepared protected interval: {identifier}",
+                )
+            else:
+                if directive != "define":
+                    continue
+                mentioned = tuple(
+                    closed
+                    for closed in closed_identifiers
+                    if find_code_identifier_uses(replacement, closed)
+                )
+                if not mentioned:
+                    continue
+                self.fail(
+                    relative,
+                    line,
+                    "preprocessor macro replacement cannot mention "
+                    "MergePrepared closed authority identifiers: "
+                    + ", ".join(sorted(mentioned)),
                 )
 
     def validate_private_handoff_publication_resume_boundary(
@@ -4992,7 +5461,175 @@ class Checks:
         if relative != PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE:
             return
 
+        wave_store_text = text
+        protected_tokens = _merge_prepared_protected_code_tokens(
+            wave_store_text
+        )
+        if not protected_tokens:
+            self.fail(
+                relative,
+                1,
+                "MergePrepared protected token inventory is empty",
+            )
+        else:
+            self.merge_prepared_protected_tokens = protected_tokens
+        guard_matches = _merge_prepared_macro_guard_matches(text)
+        if len(guard_matches) != 1:
+            self.fail(
+                relative,
+                1,
+                "production WaveStore must contain exactly one exact "
+                "MergePrepared preprocessor macro guard",
+            )
+        else:
+            guard = guard_matches[0]
+            expected_callback_prefix = (
+                "\n\n"
+                + PRIVATE_HANDOFF_PUBLICATION_MERGE_CALLBACK_DECLARATION
+            )
+            if not text[guard.end() :].startswith(expected_callback_prefix):
+                self.fail(
+                    relative,
+                    text.count("\n", 0, guard.start()) + 1,
+                    "MergePrepared preprocessor macro guard must be immediately "
+                    "adjacent to the closed typed callback",
+                )
+            logical_tail = _logical_preprocessor_text(text[guard.end() :])
+            if re.search(
+                r"(?m)^[ \t]*(?:#|%:)[ \t]*include\b", logical_tail
+            ):
+                self.fail(
+                    relative,
+                    text.count("\n", 0, guard.end()) + 1,
+                    "production WaveStore must not include headers after the "
+                    "MergePrepared preprocessor macro guard",
+                )
+            definition_spans = {
+                identifier: _function_definition_spans(
+                    wave_store_text, identifier
+                )
+                for identifier in (
+                    PRIVATE_HANDOFF_PUBLICATION_MERGE_PROTECTED_DEFINITION_IDENTIFIERS
+                )
+            }
+            if any(len(spans) != 1 for spans in definition_spans.values()):
+                self.fail(
+                    relative,
+                    1,
+                    "MergePrepared protected definitions must each have exactly "
+                    "one source definition",
+                )
+            else:
+                ordered_spans = [
+                    definition_spans[identifier][0]
+                    for identifier in (
+                        PRIVATE_HANDOFF_PUBLICATION_MERGE_PROTECTED_DEFINITION_IDENTIFIERS
+                    )
+                ]
+                if [span[0] for span in ordered_spans] != sorted(
+                    span[0] for span in ordered_spans
+                ):
+                    self.fail(
+                        relative,
+                        1,
+                        "MergePrepared protected definitions must retain their "
+                        "closed source order",
+                    )
+                protected_start = ordered_spans[0][0]
+                protected_end = ordered_spans[-1][1]
+                protected_offsets = (
+                    guard.start(),
+                    *(span[0] for span in ordered_spans),
+                )
+                if any(
+                    _preprocessor_conditional_stack_at(
+                        wave_store_text, offset
+                    )
+                    != ("if!defined(_WIN32)",)
+                    for offset in protected_offsets
+                ):
+                    self.fail(
+                        relative,
+                        1,
+                        "MergePrepared guard and protected definitions must be "
+                        "in the exact active POSIX preprocessing scope",
+                    )
+                if not (
+                    protected_start < guard.start() < guard.end() < protected_end
+                ):
+                    self.fail(
+                        relative,
+                        1,
+                        "MergePrepared macro guard must remain inside the closed "
+                        "protected definition interval",
+                    )
+                else:
+                    protected = wave_store_text[
+                        protected_start:protected_end
+                    ]
+                    guard_start = guard.start() - protected_start
+                    guard_end = guard.end() - protected_start
+                    protected_without_guard = (
+                        protected[:guard_start]
+                        + "".join(
+                            character
+                            if character in {"\n", "\r"}
+                            else " "
+                            for character in protected[guard_start:guard_end]
+                        )
+                        + protected[guard_end:]
+                    )
+                    if _preprocessor_directives(protected_without_guard):
+                        self.fail(
+                            relative,
+                            text.count("\n", 0, protected_start) + 1,
+                            "MergePrepared protected definition interval must "
+                            "contain no preprocessing directives outside the "
+                            "exact macro guard",
+                        )
+            masked_guard = "".join(
+                character if character in {"\n", "\r"} else " "
+                for character in text[guard.start() : guard.end()]
+            )
+            text = (
+                text[: guard.start()]
+                + masked_guard
+                + text[guard.end() :]
+            )
+
+        for directive, _, line in _preprocessor_macro_directives(text):
+            self.fail(
+                relative,
+                line,
+                "production WaveStore must not contain preprocessor macro "
+                "definitions or undefinitions that can alias closed authority "
+                f"(#{directive})",
+            )
+
         compact_text = _compact_cpp_code(text)
+        closed_bindings = _compact_cpp_code(
+            PRIVATE_HANDOFF_PUBLICATION_MERGE_CLOSED_BINDINGS_SOURCE
+        )
+        if compact_text.count(closed_bindings) != 1:
+            self.fail(
+                relative,
+                1,
+                "MergePrepared typed callback callees must retain the exact "
+                "closed function-pointer bindings",
+            )
+        for identifier in (
+            PRIVATE_HANDOFF_PUBLICATION_MERGE_CLOSED_BINDING_IDENTIFIERS
+        ):
+            uses = find_code_identifier_uses(text, identifier)
+            calls = find_call_identifier_uses(text, identifier)
+            non_calls = find_non_call_identifier_uses(text, identifier)
+            if len(uses) != 2 or len(calls) != 1 or len(non_calls) != 1:
+                self.fail(
+                    relative,
+                    uses[0].line if uses else 1,
+                    "MergePrepared closed function-pointer binding must have "
+                    f"one definition and one direct call: {identifier}",
+                )
         for point in PRIVATE_HANDOFF_PUBLICATION_RESUME_OBSERVATION_POINTS:
             mirror_assertion = (
                 "static_assert(static_cast<std::size_t>("
@@ -5013,6 +5650,9 @@ class Checks:
         for identifier in PRIVATE_HANDOFF_PUBLICATION_RESUME_DIRECT_CALL_IDENTIFIERS:
             uses = find_code_identifier_uses(text, identifier)
             calls = find_call_identifier_uses(text, identifier)
+            expected = PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_DIRECT_CALL_COUNTS[
+                identifier
+            ]
             for use in find_non_call_identifier_uses(text, identifier):
                 self.fail(
                     relative,
@@ -5020,11 +5660,11 @@ class Checks:
                     f"{identifier} must be used only as a direct call; aliases "
                     "and function-pointer references are forbidden",
                 )
-            if len(uses) != 1 or len(calls) != 1:
+            if len(uses) != expected or len(calls) != expected:
                 self.fail(
                     relative,
                     1,
-                    "production WaveStore must contain exactly 1 direct "
+                    f"production WaveStore must contain exactly {expected} direct "
                     f"{identifier} call, found {len(uses)} identifiers and "
                     f"{len(calls)} calls",
                 )
@@ -5034,12 +5674,12 @@ class Checks:
         )
         authority_uses = find_code_identifier_uses(text, authority_identifier)
         authority_span = _class_definition_body_span(text, authority_identifier)
-        if len(authority_uses) != 2 or authority_span is None:
+        if len(authority_uses) != 3 or authority_span is None:
             self.fail(
                 relative,
                 authority_uses[0].line if authority_uses else 1,
-                "production WaveStore must contain exactly one worker typed-validator "
-                "authority definition and one bound use",
+                "production WaveStore must contain exactly one typed-validator "
+                "authority definition and two bound uses",
             )
         elif (
             _compact_cpp_code(text[authority_span[0] : authority_span[1]])
@@ -5050,6 +5690,242 @@ class Checks:
                 text.count("\n", 0, authority_span[0]) + 1,
                 "worker typed-validator authority definition shape changed",
             )
+
+        merge_body, merge_body_line_offset, merge_body_errors = (
+            find_function_definition_body(
+                text, PRIVATE_HANDOFF_PUBLICATION_MERGE_CLASSIFIER_FUNCTION
+            )
+        )
+        for line, error in merge_body_errors:
+            self.fail(relative, line, error)
+        if merge_body is not None:
+            merge_call_counts = {
+                PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER: 1,
+                PRIVATE_HANDOFF_PUBLICATION_RESUME_VALIDATE_IDENTIFIER: 1,
+                PRIVATE_HANDOFF_PUBLICATION_RESUME_REVALIDATE_IDENTIFIER: 1,
+                PRIVATE_HANDOFF_PUBLICATION_RESUME_RECONCILE_IDENTIFIER: 0,
+            }
+            merge_calls: dict[str, CodeIdentifierUse] = {}
+            for identifier, expected in merge_call_counts.items():
+                uses = find_code_identifier_uses(merge_body, identifier)
+                calls = find_call_identifier_uses(merge_body, identifier)
+                if len(uses) != expected or len(calls) != expected:
+                    self.fail(
+                        relative,
+                        merge_body_line_offset + 1,
+                        f"{PRIVATE_HANDOFF_PUBLICATION_MERGE_CLASSIFIER_FUNCTION} "
+                        f"must contain exactly {expected} direct {identifier} call, "
+                        f"found {len(uses)} identifiers and {len(calls)} calls",
+                    )
+                    continue
+                if calls:
+                    merge_calls[identifier] = calls[0]
+            merge_context_identifier = "MergePreparedTypedValidationContext"
+            merge_context_uses = find_code_identifier_uses(
+                merge_body, merge_context_identifier
+            )
+            if len(merge_context_uses) != 1:
+                self.fail(
+                    relative,
+                    merge_body_line_offset + 1,
+                    f"{PRIVATE_HANDOFF_PUBLICATION_MERGE_CLASSIFIER_FUNCTION} "
+                    "must construct exactly one MergePrepared typed-validation "
+                    "context",
+                )
+            ordered_identifiers = (
+                PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER,
+                PRIVATE_HANDOFF_PUBLICATION_RESUME_VALIDATE_IDENTIFIER,
+                PRIVATE_HANDOFF_PUBLICATION_RESUME_REVALIDATE_IDENTIFIER,
+            )
+            if (
+                len(merge_calls) == len(ordered_identifiers)
+                and len(merge_context_uses) == 1
+            ):
+                acquire_use = merge_calls[
+                    PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER
+                ]
+                validation_use = merge_calls[
+                    PRIVATE_HANDOFF_PUBLICATION_RESUME_VALIDATE_IDENTIFIER
+                ]
+                revalidation_use = merge_calls[
+                    PRIVATE_HANDOFF_PUBLICATION_RESUME_REVALIDATE_IDENTIFIER
+                ]
+                context_use = merge_context_uses[0]
+                scoped_uses = (
+                    acquire_use,
+                    context_use,
+                    validation_use,
+                    revalidation_use,
+                )
+                scopes = tuple(
+                    _active_brace_stack(merge_body, use.offset)
+                    for use in scoped_uses
+                )
+                if len(set(scopes)) != 1:
+                    self.fail(
+                        relative,
+                        merge_body_line_offset + 1,
+                        f"{PRIVATE_HANDOFF_PUBLICATION_MERGE_CLASSIFIER_FUNCTION} "
+                        "must keep acquisition, typed context, validation, and "
+                        "permit revalidation inside one lexical control scope",
+                    )
+                else:
+                    for opening in scopes[0]:
+                        forbidden = _forbidden_control_scope_introducer(
+                            merge_body, opening, forbid_for=True
+                        )
+                        if forbidden is None:
+                            continue
+                        self.fail(
+                            relative,
+                            merge_body_line_offset
+                            + merge_body.count("\n", 0, opening)
+                            + 1,
+                            f"{PRIVATE_HANDOFF_PUBLICATION_MERGE_CLASSIFIER_FUNCTION} "
+                            f"forbids {forbidden} control around the retained "
+                            "permit chain",
+                        )
+
+                ordered_offsets = tuple(use.offset for use in scoped_uses)
+                if ordered_offsets != tuple(sorted(ordered_offsets)):
+                    self.fail(
+                        relative,
+                        merge_body_line_offset + 1,
+                        f"{PRIVATE_HANDOFF_PUBLICATION_MERGE_CLASSIFIER_FUNCTION} "
+                        "must acquire, construct the typed context, type-validate, "
+                        "then revalidate the retained publication permit in order",
+                    )
+
+                acquire_start = _statement_start_at_scope(
+                    merge_body, acquire_use.offset, scopes[0]
+                )
+                acquire_end = _direct_call_statement_end(
+                    merge_body,
+                    acquire_use,
+                    PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER,
+                )
+                acquire_statement = (
+                    ""
+                    if acquire_end is None
+                    else _compact_cpp_code(
+                        merge_body[acquire_start:acquire_end]
+                    )
+                )
+                if (
+                    acquire_statement
+                    != PRIVATE_HANDOFF_PUBLICATION_MERGE_ACQUIRE_STATEMENT
+                ):
+                    self.fail(
+                        relative,
+                        merge_body_line_offset + acquire_use.line,
+                        f"{PRIVATE_HANDOFF_PUBLICATION_MERGE_CLASSIFIER_FUNCTION} "
+                        "must bind the exact directory-scoped acquisition directly "
+                        "to admission",
+                    )
+
+                context_start = _statement_start_at_scope(
+                    merge_body, context_use.offset, scopes[1]
+                )
+                validation_end = _direct_call_statement_end(
+                    merge_body,
+                    validation_use,
+                    PRIVATE_HANDOFF_PUBLICATION_RESUME_VALIDATE_IDENTIFIER,
+                )
+                typed_validation_fragment = (
+                    ""
+                    if validation_end is None
+                    else _compact_cpp_code(
+                        merge_body[context_start:validation_end]
+                    )
+                )
+                if (
+                    typed_validation_fragment
+                    != PRIVATE_HANDOFF_PUBLICATION_MERGE_TYPED_VALIDATION_FRAGMENT
+                ):
+                    self.fail(
+                        relative,
+                        merge_body_line_offset + context_use.line,
+                        f"{PRIVATE_HANDOFF_PUBLICATION_MERGE_CLASSIFIER_FUNCTION} "
+                        "must consume admission.observed through the exact "
+                        "MergePrepared context and closed validator bind",
+                    )
+
+                revalidation_start = _statement_start_at_scope(
+                    merge_body, revalidation_use.offset, scopes[3]
+                )
+                revalidation_end = _direct_call_statement_end(
+                    merge_body,
+                    revalidation_use,
+                    PRIVATE_HANDOFF_PUBLICATION_RESUME_REVALIDATE_IDENTIFIER,
+                )
+                revalidation_statement = (
+                    ""
+                    if revalidation_end is None
+                    else _compact_cpp_code(
+                        merge_body[revalidation_start:revalidation_end]
+                    )
+                )
+                if (
+                    revalidation_statement
+                    != PRIVATE_HANDOFF_PUBLICATION_MERGE_REVALIDATE_STATEMENT
+                ):
+                    self.fail(
+                        relative,
+                        merge_body_line_offset + revalidation_use.line,
+                        f"{PRIVATE_HANDOFF_PUBLICATION_MERGE_CLASSIFIER_FUNCTION} "
+                        "must revalidate exactly validation.permit",
+                    )
+
+        merge_typed_body, merge_typed_line_offset, merge_typed_errors = (
+            find_function_definition_body(
+                text, PRIVATE_HANDOFF_PUBLICATION_MERGE_TYPED_CALLBACK_FUNCTION
+            )
+        )
+        for line, error in merge_typed_errors:
+            self.fail(relative, line, error)
+        if merge_typed_body is not None:
+            compact_merge_typed = _compact_cpp_code(merge_typed_body)
+            if (
+                compact_merge_typed
+                != PRIVATE_HANDOFF_PUBLICATION_MERGE_TYPED_CALLBACK_BODY
+            ):
+                self.fail(
+                    relative,
+                    merge_typed_line_offset + 1,
+                    f"{PRIVATE_HANDOFF_PUBLICATION_MERGE_TYPED_CALLBACK_FUNCTION} "
+                    "must remain the exact fail-closed callback body with no "
+                    "interposed mutation or control flow",
+                )
+            for identifier in (
+                PRIVATE_HANDOFF_PUBLICATION_MERGE_TYPED_CALLBACK_REQUIRED_CALLS
+            ):
+                uses = find_code_identifier_uses(merge_typed_body, identifier)
+                calls = find_call_identifier_uses(merge_typed_body, identifier)
+                if len(uses) != 1 or len(calls) != 1:
+                    self.fail(
+                        relative,
+                        merge_typed_line_offset + 1,
+                        f"{PRIVATE_HANDOFF_PUBLICATION_MERGE_TYPED_CALLBACK_FUNCTION} "
+                        f"must contain exactly one direct {identifier} call",
+                    )
+            for fragment in (
+                PRIVATE_HANDOFF_PUBLICATION_MERGE_TYPED_CALLBACK_REQUIRED_FRAGMENTS
+            ):
+                if compact_merge_typed.count(fragment) != 1:
+                    self.fail(
+                        relative,
+                        merge_typed_line_offset + 1,
+                        f"{PRIVATE_HANDOFF_PUBLICATION_MERGE_TYPED_CALLBACK_FUNCTION} "
+                        "must retain every exact typed guard, dependency binding, "
+                        "and witness-transfer fragment",
+                    )
+            if compact_merge_typed.count("returntrue;") != 1:
+                self.fail(
+                    relative,
+                    merge_typed_line_offset + 1,
+                    f"{PRIVATE_HANDOFF_PUBLICATION_MERGE_TYPED_CALLBACK_FUNCTION} "
+                    "must contain one sole successful return after witness transfer",
+                )
 
         bridge_function_shapes = (
             (
@@ -6896,7 +7772,30 @@ class Checks:
         else:
             self.validate_legacy_pipeline_boundary(pipeline_text)
 
-        for relative, path in self.bound_work_source_files():
+        bound_work_files = self.bound_work_source_files()
+        wave_store_path = (
+            self.root / PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE
+        )
+        try:
+            wave_store_text = wave_store_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            self.fail(
+                PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+                1,
+                f"cannot read MergePrepared protected token inventory: {exc}",
+            )
+        else:
+            self.merge_prepared_protected_tokens = (
+                _merge_prepared_protected_code_tokens(wave_store_text)
+            )
+            if not self.merge_prepared_protected_tokens:
+                self.fail(
+                    PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+                    1,
+                    "MergePrepared protected token inventory is empty",
+                )
+
+        for relative, path in bound_work_files:
             try:
                 text = path.read_text(encoding="utf-8")
             except (OSError, UnicodeError) as exc:
@@ -6923,6 +7822,7 @@ class Checks:
                 relative, text
             )
             self.validate_worker_handoff_publication_boundary(relative, text)
+            self.validate_merge_prepared_macro_alias_boundary(relative, text)
             self.validate_private_handoff_publication_resume_boundary(
                 relative, text
             )
@@ -9214,6 +10114,19 @@ OOCPrivateHandoffPayloadBuilderV1 builder = nullptr;
 capture_finalized_corpus_evidence(descriptor);
 finalize_and_publish_private_handoff_built(builder, nullptr);
 """
+    worker_handoff_bridge_identifier_snippets = {
+        "OOCFinalizedCorpusEvidenceV1": "OOCFinalizedCorpusEvidenceV1 evidence;\n",
+        "OOCPrivateHandoffPayloadV1": "OOCPrivateHandoffPayloadV1 payload;\n",
+        "OOCPrivateHandoffPayloadBuilderV1": (
+            "OOCPrivateHandoffPayloadBuilderV1 builder = nullptr;\n"
+        ),
+        "capture_finalized_corpus_evidence": (
+            "capture_finalized_corpus_evidence(descriptor);\n"
+        ),
+        "finalize_and_publish_private_handoff_built": (
+            "finalize_and_publish_private_handoff_built(builder, nullptr);\n"
+        ),
+    }
     worker_handoff_bridge_checks = Checks(Path("."))
     worker_handoff_bridge_checks.validate_worker_writer_use_site(
         "src/relation/untrusted_worker_handoff_bridge.cpp",
@@ -9228,23 +10141,68 @@ finalize_and_publish_private_handoff_built(builder, nullptr);
         ),
         "worker-handoff evidence bridge repo-wide use-site gate is not enforced",
     )
-    for relative in sorted(WORKER_HANDOFF_BRIDGE_ALLOWLIST):
-        allowed_worker_handoff_bridge_checks = Checks(Path("."))
-        allowed_worker_handoff_bridge_checks.validate_worker_writer_use_site(
-            relative, worker_handoff_bridge_snippet
+    for identifier, allowlist in sorted(
+        WORKER_HANDOFF_BRIDGE_IDENTIFIER_ALLOWLISTS.items()
+    ):
+        for relative in sorted(allowlist):
+            allowed_worker_handoff_bridge_checks = Checks(Path("."))
+            allowed_worker_handoff_bridge_checks.validate_worker_writer_use_site(
+                relative, worker_handoff_bridge_identifier_snippets[identifier]
+            )
+            expect(
+                not allowed_worker_handoff_bridge_checks.errors,
+                f"allowlisted worker-handoff {identifier} use was rejected in "
+                f"{relative}: {allowed_worker_handoff_bridge_checks.errors}",
+            )
+    worker_handoff_privileged_snippet = (
+        worker_handoff_bridge_identifier_snippets[
+            "OOCPrivateHandoffPayloadBuilderV1"
+        ]
+        + worker_handoff_bridge_identifier_snippets[
+            "finalize_and_publish_private_handoff_built"
+        ]
+    )
+    for relative in sorted(WORKER_HANDOFF_EVIDENCE_ONLY_FILES):
+        evidence_only_checks = Checks(Path("."))
+        evidence_only_checks.validate_worker_writer_use_site(
+            relative, worker_handoff_privileged_snippet
         )
         expect(
-            not allowed_worker_handoff_bridge_checks.errors,
-            f"allowlisted worker-handoff evidence bridge use was rejected in "
-            f"{relative}: {allowed_worker_handoff_bridge_checks.errors}",
+            len(evidence_only_checks.errors) == 2
+            and all(
+                "worker-handoff evidence bridge use site is not allowlisted"
+                in error
+                for error in evidence_only_checks.errors
+            ),
+            f"evidence-only merge codec file gained private-handoff publisher "
+            f"authority in {relative}: {evidence_only_checks.errors}",
         )
     expect(
-        WORKER_HANDOFF_BRIDGE_ALLOWLIST
+        WORKER_HANDOFF_BRIDGE_IDENTIFIER_ALLOWLISTS
         == {
-            "include/gnfs/relation/ooc_relation_store.hpp",
-            WORKER_WRITER_IMPLEMENTATION_FILE,
+            "OOCFinalizedCorpusEvidenceV1": {
+                "include/gnfs/relation/ooc_relation_store.hpp",
+                WORKER_WRITER_IMPLEMENTATION_FILE,
+            }
+            | WORKER_HANDOFF_EVIDENCE_ONLY_FILES,
+            "OOCPrivateHandoffPayloadV1": {
+                "include/gnfs/relation/ooc_relation_store.hpp",
+                WORKER_WRITER_IMPLEMENTATION_FILE,
+            },
+            "OOCPrivateHandoffPayloadBuilderV1": {
+                "include/gnfs/relation/ooc_relation_store.hpp",
+                WORKER_WRITER_IMPLEMENTATION_FILE,
+            },
+            "capture_finalized_corpus_evidence": {
+                "include/gnfs/relation/ooc_relation_store.hpp",
+                WORKER_WRITER_IMPLEMENTATION_FILE,
+            },
+            "finalize_and_publish_private_handoff_built": {
+                "include/gnfs/relation/ooc_relation_store.hpp",
+                WORKER_WRITER_IMPLEMENTATION_FILE,
+            },
         },
-        "worker-handoff evidence bridge allowlist is not exact",
+        "worker-handoff evidence bridge identifier allowlists are not exact",
     )
 
     raw_private_handoff_checks = Checks(Path("."))
@@ -10677,6 +11635,15 @@ auto adopt_private_handoff_impl() noexcept {
     private_handoff_resume_wave_authority_and_callback = (
         private_handoff_resume_wave_mirror
         + r"""
+auto validate_merge_prepared_envelope() noexcept {
+    return true;
+}
+auto validate_merge_prepared_dependency_projection() noexcept {
+    return true;
+}
+"""
+        + PRIVATE_HANDOFF_PUBLICATION_MERGE_CLOSED_BINDINGS_SOURCE
+        + r"""
 class WorkerHandoffTypedValidatorAuthorityV1 final {
 public:
     [[nodiscard]] static
@@ -10688,6 +11655,45 @@ public:
             validate, context);
     }
 };
+"""
+        + PRIVATE_HANDOFF_PUBLICATION_MERGE_MACRO_GUARD_SOURCE
+        + r"""
+
+[[nodiscard]] bool validate_merge_prepared_prefix_type(
+    const private_lease::PrivateHandoffPublicationPrefixWitnessV1& prefix,
+    void* opaque) noexcept {
+"""
+        + PRIVATE_HANDOFF_PUBLICATION_MERGE_TYPED_CALLBACK_BODY
+        + r"""
+}
+auto classify_merge_prepared_publication_prefix_v1() noexcept {
+    auto admission =
+        private_lease::acquire_private_handoff_publication_resume_v1(
+            paths, relation_identity(expected_directory_identity));
+    MergePreparedTypedValidationContext typed_context{
+        .attempt = &target_attempt,
+        .manifest = &manifest,
+        .start_record = &marker_bound_starts.witnesses->back(),
+        .worker_attempts = &*worker_attempts.witnesses,
+        .private_leases = &private_leases,
+        .merge_starts = &*marker_bound_starts.witnesses,
+        .root_fd = root_fd,
+        .expected_directory_identity = expected_directory_identity,
+        .creator_process_id = creator_process_id,
+    };
+    auto validation =
+        private_lease::validate_private_handoff_publication_resume_v1(
+            std::move(*admission.observed),
+            WorkerHandoffTypedValidatorAuthorityV1::bind(
+                validate_merge_prepared_prefix_type, &typed_context));
+    const auto revalidated =
+        private_lease::revalidate_private_handoff_publication_resume_v1(
+            *validation.permit);
+    return revalidated;
+}
+auto revalidate_exact_canonical_merge_started() noexcept {
+    return true;
+}
 [[nodiscard]] bool validate_worker_handoff_prefix_type(
     const private_lease::PrivateHandoffPublicationPrefixWitnessV1& prefix,
     void* opaque) noexcept {
@@ -10889,11 +11895,13 @@ auto DistributedSieveWaveStore::open() noexcept {
 }
 """
     valid_private_handoff_resume_wave_store = (
-        private_handoff_resume_wave_authority_and_callback
+        "#if !defined(_WIN32)\n"
+        + private_handoff_resume_wave_authority_and_callback
         + "\nauto capture_recoverable_worker_handoff_inventory() noexcept {\n"
         + private_handoff_resume_capture_chain
         + "}\n"
         + private_handoff_resume_wave_store_suffix
+        + "\n#endif\n"
     )
     exact_private_handoff_resume_checks = Checks(Path("."))
     exact_private_handoff_resume_checks.validate_private_handoff_publication_resume_boundary(
@@ -10904,6 +11912,356 @@ auto DistributedSieveWaveStore::open() noexcept {
         not exact_private_handoff_resume_checks.errors,
         "exact WaveStore private-handoff resume composition was rejected: "
         f"{exact_private_handoff_resume_checks.errors}",
+    )
+
+    macro_aliased_merge_callback_checks = Checks(Path("."))
+    macro_aliased_merge_callback_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        "#define validate_merge_prepared_envelope "
+        "forged_validate_merge_prepared_envelope\n"
+        + valid_private_handoff_resume_wave_store,
+    )
+    expect(
+        any(
+            "must not contain preprocessor macro definitions or undefinitions"
+            in error
+            for error in macro_aliased_merge_callback_checks.errors
+        ),
+        "preprocessor alias redirected the exact MergePrepared callback: "
+        f"{macro_aliased_merge_callback_checks.errors}",
+    )
+
+    for forged_header in (
+        "#define validate_merge_prepared_envelope "
+        "forged_validate_merge_prepared_envelope\n",
+        "%:def\\\nine validate_merge_prepared_envelope "
+        "forged_validate_merge_prepared_envelope\n",
+    ):
+        forged_merge_header_checks = Checks(Path("."))
+        forged_merge_header_checks.validate_merge_prepared_macro_alias_boundary(
+            "include/forged_merge_alias.hpp", forged_header
+        )
+        expect(
+            any(
+                "closed authority identifier cannot be a preprocessor macro target"
+                in error
+                for error in forged_merge_header_checks.errors
+            ),
+            "repository header macro redirected the exact MergePrepared callback: "
+            f"{forged_merge_header_checks.errors}",
+        )
+
+    generic_merge_overload_header_checks = Checks(Path("."))
+    generic_merge_overload_header_checks.validate_merge_prepared_macro_alias_boundary(
+        "include/generic_merge_overload.hpp",
+        "#define GNFS_MERGE_ENVELOPE_OVERLOAD "
+        "template<class... Args> auto validate_merge_prepared_envelope"
+        "(Args&&... args)\n",
+    )
+    expect(
+        any(
+            "macro replacement cannot mention MergePrepared closed authority"
+            in error
+            for error in generic_merge_overload_header_checks.errors
+        ),
+        "generic macro replacement emitted a MergePrepared overload: "
+        f"{generic_merge_overload_header_checks.errors}",
+    )
+
+    protected_keyword_macro_checks = Checks(Path("."))
+    protected_keyword_macro_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        valid_private_handoff_resume_wave_store,
+    )
+    protected_keyword_macro_checks.validate_merge_prepared_macro_alias_boundary(
+        "include/protected_keyword_macro.hpp",
+        '#pragma push_macro("if")\n'
+        "#define if(...) if(false)\n"
+        '#pragma pop_macro("if")\n',
+    )
+    expect(
+        any(
+            "push_macro/pop_macro pragmas cannot reach" in error
+            for error in protected_keyword_macro_checks.errors
+        )
+        and any(
+            "macro target collides with a token in the MergePrepared protected interval"
+            in error
+            for error in protected_keyword_macro_checks.errors
+        ),
+        "keyword macro changed the compiled MergePrepared protected interval: "
+        f"{protected_keyword_macro_checks.errors}",
+    )
+
+    dynamic_macro_use_wave_store = (
+        valid_private_handoff_resume_wave_store.replace(
+            "auto validate_merge_prepared_dependency_projection() noexcept {",
+            "GNFS_MERGE_PROTECTED_HELPER\n"
+            "auto validate_merge_prepared_dependency_projection() noexcept {",
+            1,
+        )
+    )
+    dynamic_macro_target_checks = Checks(Path("."))
+    dynamic_macro_target_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        dynamic_macro_use_wave_store,
+    )
+    dynamic_macro_target_checks.validate_merge_prepared_macro_alias_boundary(
+        "include/dynamic_merge_helper.hpp",
+        "#define GNFS_MERGE_PROTECTED_HELPER static_assert(true);\n",
+    )
+    expect(
+        any(
+            "macro target collides with a token in the MergePrepared protected interval"
+            in error
+            for error in dynamic_macro_target_checks.errors
+        ),
+        "new macro invocation escaped the dynamic MergePrepared token inventory: "
+        f"{dynamic_macro_target_checks.errors}",
+    )
+
+    late_merge_header_checks = Checks(Path("."))
+    late_merge_header_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        valid_private_handoff_resume_wave_store.replace(
+            PRIVATE_HANDOFF_PUBLICATION_MERGE_MACRO_GUARD_SOURCE,
+            PRIVATE_HANDOFF_PUBLICATION_MERGE_MACRO_GUARD_SOURCE
+            + '\n#include "forged_merge_alias.hpp"',
+            1,
+        ),
+    )
+    expect(
+        any(
+            "must not include headers after the MergePrepared preprocessor macro guard"
+            in error
+            for error in late_merge_header_checks.errors
+        ),
+        "post-guard include reopened the exact MergePrepared callback: "
+        f"{late_merge_header_checks.errors}",
+    )
+
+    missing_merge_macro_guard_checks = Checks(Path("."))
+    missing_merge_macro_guard_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        valid_private_handoff_resume_wave_store.replace(
+            PRIVATE_HANDOFF_PUBLICATION_MERGE_MACRO_GUARD_SOURCE + "\n\n",
+            "",
+            1,
+        ),
+    )
+    expect(
+        any(
+            "must contain exactly one exact MergePrepared preprocessor macro guard"
+            in error
+            for error in missing_merge_macro_guard_checks.errors
+        ),
+        "missing MergePrepared preprocessor guard escaped closure: "
+        f"{missing_merge_macro_guard_checks.errors}",
+    )
+
+    altered_merge_macro_guard_checks = Checks(Path("."))
+    altered_merge_macro_guard_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        valid_private_handoff_resume_wave_store.replace(
+            "    defined(validate_merge_prepared_envelope) || \\\n",
+            "",
+            1,
+        ),
+    )
+    expect(
+        any(
+            "must contain exactly one exact MergePrepared preprocessor macro guard"
+            in error
+            for error in altered_merge_macro_guard_checks.errors
+        ),
+        "incomplete MergePrepared preprocessor guard escaped closure: "
+        f"{altered_merge_macro_guard_checks.errors}",
+    )
+
+    inactive_merge_callback = valid_private_handoff_resume_wave_store.replace(
+        PRIVATE_HANDOFF_PUBLICATION_MERGE_MACRO_GUARD_SOURCE,
+        '#include "merge_callback_factory.hpp"\n#if 0\n'
+        + PRIVATE_HANDOFF_PUBLICATION_MERGE_MACRO_GUARD_SOURCE,
+        1,
+    ).replace(
+        "\n}\nauto classify_merge_prepared_publication_prefix_v1() noexcept {",
+        "\n}\n#else\nGNFS_MERGE_CALLBACK_FACTORY\n#endif\n"
+        "auto classify_merge_prepared_publication_prefix_v1() noexcept {",
+        1,
+    )
+    inactive_merge_callback_checks = Checks(Path("."))
+    inactive_merge_callback_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        inactive_merge_callback,
+    )
+    expect(
+        any(
+            "must be in the exact active POSIX preprocessing scope" in error
+            or "must contain no preprocessing directives" in error
+            for error in inactive_merge_callback_checks.errors
+        ),
+        "inactive canonical MergePrepared callback plus macro-generated "
+        "alternative escaped preprocessing-scope closure: "
+        f"{inactive_merge_callback_checks.errors}",
+    )
+
+    redirected_closed_binding_checks = Checks(Path("."))
+    redirected_closed_binding_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        valid_private_handoff_resume_wave_store.replace(
+            "&validate_merge_prepared_envelope;",
+            "&forged_merge_prepared_envelope;",
+            1,
+        ),
+    )
+    expect(
+        any(
+            "must retain the exact closed function-pointer bindings" in error
+            for error in redirected_closed_binding_checks.errors
+        ),
+        "MergePrepared callback accepted a redirected closed function pointer: "
+        f"{redirected_closed_binding_checks.errors}",
+    )
+
+    forged_merge_observed_checks = Checks(Path("."))
+    forged_merge_observed_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        valid_private_handoff_resume_wave_store.replace(
+            """            std::move(*admission.observed),
+            WorkerHandoffTypedValidatorAuthorityV1::bind(
+                validate_merge_prepared_prefix_type, &typed_context));""",
+            """            std::move(*forged.observed),
+            WorkerHandoffTypedValidatorAuthorityV1::bind(
+                validate_merge_prepared_prefix_type, &typed_context));""",
+        ),
+    )
+    expect(
+        any(
+            "must consume admission.observed through the exact MergePrepared "
+            "context"
+            in error
+            for error in forged_merge_observed_checks.errors
+        ),
+        "forged MergePrepared observed permit escaped classifier dataflow "
+        f"closure: {forged_merge_observed_checks.errors}",
+    )
+
+    forged_merge_validated_checks = Checks(Path("."))
+    forged_merge_validated_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        valid_private_handoff_resume_wave_store.replace(
+            """    const auto revalidated =
+        private_lease::revalidate_private_handoff_publication_resume_v1(
+            *validation.permit);""",
+            """    const auto revalidated =
+        private_lease::revalidate_private_handoff_publication_resume_v1(
+            *forged.permit);""",
+        ),
+    )
+    expect(
+        any(
+            "must revalidate exactly validation.permit" in error
+            for error in forged_merge_validated_checks.errors
+        ),
+        "forged MergePrepared validated permit escaped classifier dataflow "
+        f"closure: {forged_merge_validated_checks.errors}",
+    )
+
+    weakened_merge_typed_callback_checks = Checks(Path("."))
+    weakened_merge_typed_callback_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        valid_private_handoff_resume_wave_store.replace(
+            "context->typed_prepared=std::move(*typed.witness);returntrue;",
+            "returntrue;",
+            1,
+        ),
+    )
+    expect(
+        any(
+            "must retain every exact typed guard, dependency binding, and "
+            "witness-transfer fragment"
+            in error
+            for error in weakened_merge_typed_callback_checks.errors
+        ),
+        "unconditional MergePrepared typed success escaped callback dataflow "
+        f"closure: {weakened_merge_typed_callback_checks.errors}",
+    )
+
+    conditional_merge_permit_chain = valid_private_handoff_resume_wave_store.replace(
+        """auto classify_merge_prepared_publication_prefix_v1() noexcept {
+    auto admission =""",
+        """auto classify_merge_prepared_publication_prefix_v1() noexcept {
+    if (false) {
+    auto admission =""",
+    ).replace(
+        """    return revalidated;
+}
+auto revalidate_exact_canonical_merge_started() noexcept {""",
+        """    }
+    return revalidated;
+}
+auto revalidate_exact_canonical_merge_started() noexcept {""",
+    )
+    conditional_merge_permit_checks = Checks(Path("."))
+    conditional_merge_permit_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        conditional_merge_permit_chain,
+    )
+    expect(
+        any(
+            "forbids if control around the retained permit chain" in error
+            for error in conditional_merge_permit_checks.errors
+        ),
+        "conditionally unreachable MergePrepared permit chain escaped lexical "
+        f"closure: {conditional_merge_permit_checks.errors}",
+    )
+
+    looped_merge_permit_chain = valid_private_handoff_resume_wave_store.replace(
+        """auto classify_merge_prepared_publication_prefix_v1() noexcept {
+    auto admission =""",
+        """auto classify_merge_prepared_publication_prefix_v1() noexcept {
+    for (; false;) {
+    auto admission =""",
+    ).replace(
+        """    return revalidated;
+}
+auto revalidate_exact_canonical_merge_started() noexcept {""",
+        """    }
+    return revalidated;
+}
+auto revalidate_exact_canonical_merge_started() noexcept {""",
+    )
+    looped_merge_permit_checks = Checks(Path("."))
+    looped_merge_permit_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        looped_merge_permit_chain,
+    )
+    expect(
+        any(
+            "forbids for control around the retained permit chain" in error
+            for error in looped_merge_permit_checks.errors
+        ),
+        "zero-iteration MergePrepared permit chain escaped lexical closure: "
+        f"{looped_merge_permit_checks.errors}",
+    )
+
+    spliced_merge_typed_callback_checks = Checks(Path("."))
+    spliced_merge_typed_callback_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        valid_private_handoff_resume_wave_store.replace(
+            "context->typed_prepared=std::move(*typed.witness);returntrue;",
+            "typed.witness->prepared.merge_started_digest={};"
+            "context->typed_prepared=std::move(*typed.witness);returntrue;",
+            1,
+        ),
+    )
+    expect(
+        any(
+            "must remain the exact fail-closed callback body" in error
+            for error in spliced_merge_typed_callback_checks.errors
+        ),
+        "interposed MergePrepared witness mutation escaped exact callback "
+        f"closure: {spliced_merge_typed_callback_checks.errors}",
     )
 
     unmirrored_private_handoff_resume_checks = Checks(Path("."))
@@ -11128,6 +12486,9 @@ auto DistributedSieveWaveStore::open() noexcept {
     )
 
     for identifier in PRIVATE_HANDOFF_PUBLICATION_RESUME_DIRECT_CALL_IDENTIFIERS:
+        expected = PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_DIRECT_CALL_COUNTS[
+            identifier
+        ]
         duplicate_private_handoff_resume_checks = Checks(Path("."))
         duplicate_private_handoff_resume_checks.validate_private_handoff_publication_resume_boundary(
             PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
@@ -11136,8 +12497,9 @@ auto DistributedSieveWaveStore::open() noexcept {
         )
         expect(
             any(
-                f"exactly 1 direct {identifier} call" in error
-                and "found 2 identifiers and 2 calls" in error
+                f"exactly {expected} direct {identifier} call" in error
+                and f"found {expected + 1} identifiers and {expected + 1} calls"
+                in error
                 for error in duplicate_private_handoff_resume_checks.errors
             ),
             f"duplicate WaveStore {identifier} call escaped count closure: "

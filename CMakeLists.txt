@@ -327,6 +327,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/distributed_sieve_wave_store.cp
         src/sieve/distributed_sieve_wave_store.cpp
         src/sieve/distributed_sieve_worker_coordinator.cpp
         src/sieve/distributed_sieve_merge_coordinator.cpp
+        src/sieve/distributed_sieve_merge_writer_codec_internal.cpp
     )
 endif()
 
@@ -1105,6 +1106,22 @@ if(GNFS_BUILD_TESTS)
         PROPERTIES LABELS "instant" TIMEOUT 10
     )
 
+    add_executable(test_distributed_sieve_merge_writer_codec
+        tests/test_distributed_sieve_merge_writer_codec.cpp
+    )
+    target_include_directories(test_distributed_sieve_merge_writer_codec PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sieve
+    )
+    target_link_libraries(test_distributed_sieve_merge_writer_codec PRIVATE gnfs_core)
+    add_test(
+        NAME DistributedSieveMergeWriterCodec
+        COMMAND test_distributed_sieve_merge_writer_codec
+    )
+    set_tests_properties(
+        DistributedSieveMergeWriterCodec
+        PROPERTIES LABELS "instant" TIMEOUT 10
+    )
+
     add_executable(test_distributed_sieve_worker_work_package_file
         tests/test_distributed_sieve_worker_work_package_file.cpp
     )
@@ -1176,6 +1193,14 @@ if(GNFS_BUILD_TESTS)
     set_tests_properties(
         DistributedSieveWorkerCoordinator
         PROPERTIES LABELS "fast" TIMEOUT 180
+    )
+    add_test(
+        NAME DistributedSieveMergePreparedProtection
+        COMMAND test_distributed_sieve_resume --suite merge-prepared-protection
+    )
+    set_tests_properties(
+        DistributedSieveMergePreparedProtection
+        PROPERTIES LABELS "fast" TIMEOUT 60
     )
 
     add_executable(test_poly_checkpoint

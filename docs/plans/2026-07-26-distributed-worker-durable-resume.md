@@ -2848,6 +2848,22 @@ regression suite, invalid borrowed-span permutations, two merge generations
 with worker, predecessor, and target locks held together, the distributed
 sieve policy checker, and an independent P0/P1 authority review.
 
+M4b-P0 protects the prepared boundary before enabling a merge writer. Cold
+open and the live private-root claim now recognize pending-only, canonical,
+identical-dual, and pending-rollback `MergePreparedV1` publication prefixes
+before any older worker recovery or lease reconciliation can mutate the
+namespace. A valid prefix returns `reconciliation_required` without mutation;
+an incorrect payload kind, start digest, lease, input order, or generation
+fails closed as `namespace_conflict`. Fully canonical inventory produces a
+typed read-only witness, while a source-private, authority-free codec validates
+count conservation and finalized OOC evidence before sealing and round-trip
+checking the payload. Dedicated codec and zero-mutation prefix suites, plus an
+exact policy gate for the second acquire -> typed validate -> revalidate chain,
+cover this foundation. This slice does not yet publish or reconcile a prepared
+handoff. The next M4b slice streams manifest-order worker inputs through the
+versioned first-`ABPair` policy, then publishes and crash-recovers the typed
+prepared record from the same held merge-generation authority.
+
 Exit criterion: a restart after any worker-cleanup prefix reopens the same
 merged corpus without worker execution or repeated merge, including when all
 worker leases are absent. This is the first milestone allowed to expose the

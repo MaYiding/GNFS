@@ -465,6 +465,15 @@ separation, concurrent exclusion, and inherited-open-description lock
 lifetime. The binary catalog is therefore `fast`; its no-argument form runs
 the core, WaveStore, and coordinator sub-suites.
 
+`DistributedSieveMergePreparedProtection` is a separate `fast` entry from the
+same binary. It creates real finalized private OOC generations and exercises
+both cold open and live root-claim classification for every legal prepared
+publication prefix. Each case compares the complete wave-root and private
+directory snapshot before and after classification. Malformed kind and
+predecessor bindings must fail closed, while valid crash prefixes stop for
+reconciliation without mutation. The suite is filesystem integration rather
+than an `instant` helper contract.
+
 The same binary is the dedicated M2j-A receipt-gated launcher contract.
 macOS and supported Linux/glibc hosts run its positive launcher matrix. Every
 non-Windows host runs the close-all-unavailable case: supported hosts use the
