@@ -2950,11 +2950,32 @@ M4b-P2b-P1 must still roll back exact raw writer residues with no handoff.
 Together those slices must prove that cold resume never repeats a confirmed
 merge.
 
+The relation-layer half of M4b-P2b-P0b now consumes only a successfully
+reconciled canonical publication permit. Reconciliation first enters a
+nonterminal consumed phase; it commits the canonical phase only after the full
+terminal witness and result have been retained. The adoption bridge then
+shares that permit `State` and aliases its original `BaseLock` into the ordinary
+read-only handoff receipt. It does not duplicate a descriptor, construct a
+second lock object, reacquire a path, or create another logical-action claim.
+Initial classification and receipt-commit revalidation must both match the
+retained record, owner and owned markers, canonical artifact snapshot,
+directory identities, and lock identity exactly. Pending, rolled-back,
+interrupted, failed, moved-from, and fork-inherited permits cannot mint
+adoption authority; byte-identical late replacement is preserved as foreign
+state.
+
+This relation primitive is not yet a recovered prepared admission. The
+WaveStore half must retain ordinary manifest validation under the wave lock,
+acquire all final worker and target permits in the fixed order, consume those
+same lock objects into readers, and hold the complete common admission State.
+Only that integration closes P0b and proves restart uses the confirmed merged
+corpus without a lock gap or repeated merge.
+
 The broad WaveStore filesystem matrix now exceeds the Debug `fast` target and
-is temporarily classified as `slow` with a bounded timeout. Before completing
-P2b, split that matrix into independently bounded `fast` shards so durable
-resume coverage returns to the cross-platform pull-request lanes without
-weakening any case.
+is now split into independently bounded `fast` CTest shards. The physical
+binary remains a bounded aggregate for direct and script-runner use, while the
+parallel shard matrix keeps durable resume coverage in the cross-platform
+pull-request lanes without weakening any case.
 
 Exit criterion: a restart after any worker-cleanup prefix reopens the same
 merged corpus without worker execution or repeated merge, including when all

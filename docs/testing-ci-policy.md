@@ -368,6 +368,18 @@ preserve a complete namespace snapshot, and then prove that a normal lock and
 action claim can be acquired and released. They do not claim evidence for the
 Apple cross-directory rename durability contract.
 
+The macOS lease-crash branch also freezes consumed-canonical handoff adoption.
+Only a validated permit whose reconciliation committed a complete canonical
+terminal witness may enter the bridge. The returned reader retains the
+original permit `State` and aliases its exact `BaseLock`; no descriptor
+duplication, lock-path reopen, second lock object, or second logical-action
+claim is permitted. Tests cover canonical-terminal and identical-dual
+convergence, lock lifetime through reader destruction, unreconciled,
+rolled-back, interrupted, failed, moved-from, and fork-inherited permits, and
+a byte-identical canonical replacement immediately before receipt commit.
+The last case must return `ForeignReplacementPreserved` without changing the
+attacked namespace.
+
 Windows Release also runs a native sharing-violation retry branch; non-Windows
 execution cannot substitute for that platform evidence.
 
@@ -525,7 +537,8 @@ API contract checks and skips the runtime transaction; production returns
 protect interrupted typed prefixes with `reconciliation_required`. Cold open
 now rolls back exact pending prepared prefixes and converges canonical or
 identical-dual prefixes before ordinary manifest validation.
-Same-open-file-description prepared adoption and raw writer-residue rollback
+The relation-layer same-object adoption primitive is covered by the lease-crash
+suite. WaveStore recovered-prepared admission and raw writer-residue rollback
 remain separate recovery slices.
 
 `test_distributed_sieve_resume` is also the dedicated M2j-A receipt-gated

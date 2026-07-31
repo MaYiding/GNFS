@@ -437,6 +437,9 @@ private:
     reconcile_private_handoff_publication_for_resume_v1(
         PrivateHandoffPublicationValidatedPermitV1& permit,
         PrivateHandoffPublicationResumeTestHooksV1 hooks) noexcept;
+    friend OOCPrivateHandoffAdoptionResult adopt_consumed_canonical_private_handoff_publication_v1(
+        PrivateHandoffPublicationValidatedPermitV1&& permit,
+        OOCPrivateHandoffAdoptionTestHooks hooks) noexcept;
 };
 
 /// Typed, non-throwing acquisition result. A successful permit may describe a
@@ -536,5 +539,15 @@ revalidate_private_handoff_publication_resume_v1(
 reconcile_private_handoff_publication_for_resume_v1(
     PrivateHandoffPublicationValidatedPermitV1& permit,
     PrivateHandoffPublicationResumeTestHooksV1 hooks = {}) noexcept;
+
+/// Consume a successfully reconciled canonical permit and adopt the exact
+/// retained handoff without duplicating or reacquiring its BaseLock. Failed,
+/// interrupted, and pending-rollback reconciliation results never mint this
+/// authority. The returned receipt retains the original lock object and its
+/// source-private action claim until the receipt is destroyed.
+[[nodiscard]] OOCPrivateHandoffAdoptionResult
+adopt_consumed_canonical_private_handoff_publication_v1(
+    PrivateHandoffPublicationValidatedPermitV1&& permit,
+    OOCPrivateHandoffAdoptionTestHooks hooks = {}) noexcept;
 
 } // namespace gnfs::relation::ooc_cleanup_detail

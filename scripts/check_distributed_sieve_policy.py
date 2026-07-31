@@ -747,7 +747,7 @@ BORROWED_BASE_LOCK_ADOPTION_BODY = (
     "returnadopt_private_handoff_impl("
     "base_path,hooks,true,"
     "[&](constOOCCleanupPaths&paths,AdoptionParentDirectoryHandle&parent){"
-    "returnborrowed.consume(paths,parent);});"
+    "returnborrowed.consume(paths,parent);},nullptr);"
 )
 BORROWED_BASE_LOCK_RELEASE_FUNCTION = "release_noexcept"
 BORROWED_BASE_LOCK_RELEASE_BODY = (
@@ -807,6 +807,353 @@ BORROWED_BASE_LOCK_TOKEN_CLASS_BODY = (
     "conststd::filesystem::path&base_path,"
     "OOCPrivateHandoffBorrowedBaseLockV1&&borrowed,"
     "OOCPrivateHandoffAdoptionTestHookshooks)noexcept;"
+)
+CONSUMED_CANONICAL_ADOPTION_RELATION_IMPLEMENTATION_FILE = (
+    "src/relation/ooc_private_cleanup_union.cpp"
+)
+CONSUMED_CANONICAL_ADOPTION_RELATION_INTERFACE_FILE = (
+    "src/relation/ooc_private_cleanup_union_internal.hpp"
+)
+CONSUMED_CANONICAL_ADOPTION_IMPLEMENTATION_FILE = (
+    "src/relation/ooc_private_handoff_adoption.cpp"
+)
+CONSUMED_CANONICAL_ADOPTION_INTERFACE_FILE = (
+    "src/relation/ooc_private_handoff_adoption_internal.hpp"
+)
+CONSUMED_CANONICAL_ADOPTION_TEST_FILE = (
+    "tests/test_ooc_cleanup_transaction.cpp"
+)
+CONSUMED_CANONICAL_ADOPTION_TOKEN = (
+    "OOCPrivateHandoffConsumedPublicationBaseLockV1"
+)
+CONSUMED_CANONICAL_ADOPTION_BRIDGE = (
+    "adopt_private_handoff_with_consumed_publication_base_lock_v1"
+)
+CONSUMED_CANONICAL_ADOPTION_ENTRY = (
+    "adopt_consumed_canonical_private_handoff_publication_v1"
+)
+CONSUMED_CANONICAL_ADOPTION_COMMIT = "commit_canonical_publication_terminal"
+CONSUMED_CANONICAL_ADOPTION_SHAPE_MATCHER = (
+    "publication_terminal_shape_valid_for_adoption"
+)
+CONSUMED_CANONICAL_ADOPTION_TERMINAL_MATCHER = (
+    "require_publication_terminal_match"
+)
+CONSUMED_CANONICAL_ADOPTION_IDENTIFIER_USE_COUNTS = {
+    CONSUMED_CANONICAL_ADOPTION_TOKEN: {
+        CONSUMED_CANONICAL_ADOPTION_RELATION_IMPLEMENTATION_FILE: 1,
+        CONSUMED_CANONICAL_ADOPTION_IMPLEMENTATION_FILE: 11,
+        CONSUMED_CANONICAL_ADOPTION_INTERFACE_FILE: 14,
+    },
+    CONSUMED_CANONICAL_ADOPTION_BRIDGE: {
+        CONSUMED_CANONICAL_ADOPTION_RELATION_IMPLEMENTATION_FILE: 1,
+        CONSUMED_CANONICAL_ADOPTION_IMPLEMENTATION_FILE: 1,
+        CONSUMED_CANONICAL_ADOPTION_INTERFACE_FILE: 2,
+    },
+    CONSUMED_CANONICAL_ADOPTION_ENTRY: {
+        CONSUMED_CANONICAL_ADOPTION_RELATION_IMPLEMENTATION_FILE: 1,
+        CONSUMED_CANONICAL_ADOPTION_RELATION_INTERFACE_FILE: 2,
+        CONSUMED_CANONICAL_ADOPTION_INTERFACE_FILE: 1,
+        CONSUMED_CANONICAL_ADOPTION_TEST_FILE: 12,
+    },
+    CONSUMED_CANONICAL_ADOPTION_COMMIT: {
+        CONSUMED_CANONICAL_ADOPTION_RELATION_IMPLEMENTATION_FILE: 3,
+    },
+    CONSUMED_CANONICAL_ADOPTION_SHAPE_MATCHER: {
+        CONSUMED_CANONICAL_ADOPTION_IMPLEMENTATION_FILE: 2,
+    },
+    CONSUMED_CANONICAL_ADOPTION_TERMINAL_MATCHER: {
+        CONSUMED_CANONICAL_ADOPTION_IMPLEMENTATION_FILE: 3,
+    },
+    "ConsumedCanonical": {
+        CONSUMED_CANONICAL_ADOPTION_RELATION_IMPLEMENTATION_FILE: 3,
+    },
+}
+CONSUMED_CANONICAL_ADOPTION_PUBLIC_IDENTIFIERS = tuple(
+    CONSUMED_CANONICAL_ADOPTION_IDENTIFIER_USE_COUNTS
+)
+CONSUMED_CANONICAL_ADOPTION_RELATION_DECLARATION = (
+    "[[nodiscard]]OOCPrivateHandoffAdoptionResult"
+    "adopt_consumed_canonical_private_handoff_publication_v1("
+    "PrivateHandoffPublicationValidatedPermitV1&&permit,"
+    "OOCPrivateHandoffAdoptionTestHookshooks={})noexcept;"
+)
+CONSUMED_CANONICAL_ADOPTION_RELATION_FRIEND = (
+    "friendOOCPrivateHandoffAdoptionResult"
+    "adopt_consumed_canonical_private_handoff_publication_v1("
+    "PrivateHandoffPublicationValidatedPermitV1&&permit,"
+    "OOCPrivateHandoffAdoptionTestHookshooks)noexcept;"
+)
+CONSUMED_CANONICAL_ADOPTION_BRIDGE_DECLARATION = (
+    "[[nodiscard]]OOCPrivateHandoffAdoptionResult"
+    "adopt_private_handoff_with_consumed_publication_base_lock_v1("
+    "conststd::filesystem::path&base_path,"
+    "OOCPrivateHandoffConsumedPublicationBaseLockV1&&authority,"
+    "OOCPrivateHandoffAdoptionTestHookshooks={})noexcept;"
+)
+CONSUMED_CANONICAL_ADOPTION_TOKEN_CLASS_BODY = r"""
+public:
+    OOCPrivateHandoffConsumedPublicationBaseLockV1() = delete;
+    OOCPrivateHandoffConsumedPublicationBaseLockV1(
+        const OOCPrivateHandoffConsumedPublicationBaseLockV1&) = delete;
+    OOCPrivateHandoffConsumedPublicationBaseLockV1&
+    operator=(const OOCPrivateHandoffConsumedPublicationBaseLockV1&) = delete;
+
+    OOCPrivateHandoffConsumedPublicationBaseLockV1(
+        OOCPrivateHandoffConsumedPublicationBaseLockV1&& other) noexcept;
+    OOCPrivateHandoffConsumedPublicationBaseLockV1&
+    operator=(OOCPrivateHandoffConsumedPublicationBaseLockV1&&) = delete;
+    ~OOCPrivateHandoffConsumedPublicationBaseLockV1() = default;
+
+private:
+    OOCPrivateHandoffConsumedPublicationBaseLockV1(
+        std::shared_ptr<BaseLock> live_lock,
+        std::shared_ptr<const PrivateHandoffPublicationPrefixWitnessV1> terminal,
+        std::uint64_t creator_process_id) noexcept;
+
+    std::shared_ptr<BaseLock> live_lock_;
+    std::shared_ptr<const PrivateHandoffPublicationPrefixWitnessV1> terminal_;
+    std::uint64_t creator_process_id_ = 0;
+    bool consumed_ = false;
+
+    friend OOCPrivateHandoffAdoptionResult
+    adopt_consumed_canonical_private_handoff_publication_v1(
+        PrivateHandoffPublicationValidatedPermitV1&& permit,
+        OOCPrivateHandoffAdoptionTestHooks hooks) noexcept;
+    friend OOCPrivateHandoffAdoptionResult
+    adopt_private_handoff_with_consumed_publication_base_lock_v1(
+        const std::filesystem::path& base_path,
+        OOCPrivateHandoffConsumedPublicationBaseLockV1&& authority,
+    OOCPrivateHandoffAdoptionTestHooks hooks) noexcept;
+"""
+CONSUMED_CANONICAL_ADOPTION_TOKEN_CONSTRUCTOR_FRAGMENT = (
+    "OOCPrivateHandoffConsumedPublicationBaseLockV1::"
+    "OOCPrivateHandoffConsumedPublicationBaseLockV1("
+    "std::shared_ptr<BaseLock>live_lock,"
+    "std::shared_ptr<constPrivateHandoffPublicationPrefixWitnessV1>terminal,"
+    "std::uint64_tcreator_process_id)noexcept:"
+    "live_lock_(std::move(live_lock)),terminal_(std::move(terminal)),"
+    "creator_process_id_(creator_process_id){}"
+)
+CONSUMED_CANONICAL_ADOPTION_TOKEN_MOVE_FRAGMENT = (
+    "OOCPrivateHandoffConsumedPublicationBaseLockV1::"
+    "OOCPrivateHandoffConsumedPublicationBaseLockV1("
+    "OOCPrivateHandoffConsumedPublicationBaseLockV1&&other)noexcept:"
+    "live_lock_(std::move(other.live_lock_)),"
+    "terminal_(std::move(other.terminal_)),"
+    "creator_process_id_(std::exchange(other.creator_process_id_,0)),"
+    "consumed_(std::exchange(other.consumed_,true)){}"
+)
+CONSUMED_CANONICAL_ADOPTION_TOKEN_ASSERT_FRAGMENT = (
+    "static_assert(!std::is_default_constructible_v<"
+    "OOCPrivateHandoffConsumedPublicationBaseLockV1>);"
+    "static_assert(!std::is_copy_constructible_v<"
+    "OOCPrivateHandoffConsumedPublicationBaseLockV1>);"
+    "static_assert(!std::is_copy_assignable_v<"
+    "OOCPrivateHandoffConsumedPublicationBaseLockV1>);"
+    "static_assert(std::is_nothrow_move_constructible_v<"
+    "OOCPrivateHandoffConsumedPublicationBaseLockV1>);"
+    "static_assert(!std::is_move_assignable_v<"
+    "OOCPrivateHandoffConsumedPublicationBaseLockV1>);"
+)
+CONSUMED_CANONICAL_ADOPTION_PHASE_BODY = r"""
+Observed,
+Validated,
+ConsumedNonTerminal,
+ConsumedCanonical,
+"""
+CONSUMED_CANONICAL_ADOPTION_COMMIT_BODY = r"""
+    const bool canonical_disposition =
+        completed.disposition == PrivateHandoffPublicationResumeDispositionV1::CanonicalTerminal ||
+        completed.disposition ==
+            PrivateHandoffPublicationResumeDispositionV1::CanonicalConverged;
+    if (state.phase !=
+            PrivateHandoffPublicationObservedPermitV1::State::Phase::ConsumedNonTerminal ||
+        state.canonical_terminal || !canonical_disposition || !completed.expected_prefix ||
+        !completed.terminal_prefix ||
+        completed.result.status != OOCCleanupStatus::HandoffPresent ||
+        completed.result.stage != OOCCleanupStage::None || completed.result.native_error ||
+        !canonical_publication_terminal_shape_valid(*completed.terminal_prefix)) {
+        fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None, protocol_error());
+    }
+
+    auto retained_terminal = *completed.terminal_prefix;
+    state.canonical_terminal.emplace(std::move(retained_terminal));
+    state.phase = PrivateHandoffPublicationObservedPermitV1::State::Phase::ConsumedCanonical;
+    return completed;
+"""
+CONSUMED_CANONICAL_ADOPTION_ENTRY_BODY = r"""
+    auto state = std::move(permit.state_);
+    try {
+        if (!state || !state->lock ||
+            state->phase !=
+                PrivateHandoffPublicationObservedPermitV1::State::Phase::ConsumedCanonical ||
+            state->creator_process_id != static_cast<std::uint64_t>(gnfs::util::process_id())) {
+            fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+        }
+        if (!state->canonical_terminal ||
+            !canonical_publication_terminal_shape_valid(*state->canonical_terminal) ||
+            state->expected_directory_identity != state->canonical_terminal->directory_identity ||
+            state->lock->identity() != state->canonical_terminal->lock_identity) {
+            fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None, protocol_error());
+        }
+
+        auto owner =
+            std::shared_ptr<PrivateHandoffPublicationObservedPermitV1::State>(std::move(state));
+        auto live_lock = std::shared_ptr<BaseLock>(owner, owner->lock.get());
+        auto terminal = std::shared_ptr<const PrivateHandoffPublicationPrefixWitnessV1>(
+            owner, std::addressof(*owner->canonical_terminal));
+        OOCPrivateHandoffConsumedPublicationBaseLockV1 authority(
+            std::move(live_lock), std::move(terminal), owner->creator_process_id);
+        return adopt_private_handoff_with_consumed_publication_base_lock_v1(
+            owner->paths.base_path, std::move(authority), hooks);
+    } catch (const Failure& failure) {
+        return consumed_publication_adoption_failure(failure.status, failure.error);
+    } catch (const std::bad_alloc&) {
+        return consumed_publication_adoption_failure(
+            OOCCleanupStatus::UnexpectedFailure,
+            std::make_error_code(std::errc::not_enough_memory));
+    } catch (const std::system_error& error) {
+        return consumed_publication_adoption_failure(OOCCleanupStatus::UnexpectedFailure,
+                                                     error.code());
+    } catch (...) {
+        return consumed_publication_adoption_failure(OOCCleanupStatus::UnexpectedFailure);
+    }
+"""
+CONSUMED_CANONICAL_ADOPTION_SHAPE_MATCHER_BODY = r"""
+    if (terminal.state != ooc_cleanup_detail::PrivateHandoffPublicationPrefixStateV1::Canonical ||
+        !terminal.canonical_snapshot || terminal.pending_snapshot || terminal.rollback_snapshot ||
+        !terminal.owner || !terminal.owned || terminal.reserved ||
+        !ooc_cleanup_detail::private_lease_record_shape_valid(terminal.owner->record) ||
+        !ooc_cleanup_detail::private_lease_record_shape_valid(terminal.owned->record)) {
+        return false;
+    }
+
+    const auto& owner = *terminal.owner;
+    const auto& owned = *terminal.owned;
+    return terminal.record.lock_identity ==
+               ooc_cleanup_detail::handoff_native_identity(terminal.lock_identity) &&
+           terminal.record.directory_identity ==
+               ooc_cleanup_detail::handoff_native_identity(terminal.directory_identity) &&
+           terminal.record.owner_marker_identity ==
+               ooc_cleanup_detail::handoff_native_identity(owner.identity) &&
+           terminal.record.owned_marker_identity ==
+               ooc_cleanup_detail::handoff_native_identity(owned.identity) &&
+           terminal.record.lease_id == owned.record.lease_id &&
+           owner.record == ooc_cleanup_detail::owner_record_for(owned.record) &&
+           owned.record.phase == ooc_cleanup_detail::PrivateLeasePhase::Owned &&
+           owned.record.capability ==
+               ooc_cleanup_detail::PrivateLeaseCapability::RollbackPreactivePairAndLease &&
+           owned.record.parent_identity == terminal.parent_identity &&
+           owned.record.lock_identity == terminal.lock_identity &&
+           owned.record.directory_identity == terminal.directory_identity &&
+           owned.record.owner_identity == owner.identity;
+"""
+CONSUMED_CANONICAL_ADOPTION_TERMINAL_MATCHER_BODY = r"""
+    if (!publication_terminal_shape_valid_for_adoption(terminal)) {
+        ooc_cleanup_detail::fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None,
+                                 ooc_cleanup_detail::protocol_error());
+    }
+
+    AdoptionDirectoryEntries expected_entries;
+    expected_entries.present[static_cast<std::size_t>(AdoptionEntry::Owner)] = true;
+    expected_entries.present[static_cast<std::size_t>(AdoptionEntry::Index)] = true;
+    expected_entries.present[static_cast<std::size_t>(AdoptionEntry::Data)] = true;
+    expected_entries.present[static_cast<std::size_t>(AdoptionEntry::Canonical)] = true;
+    const auto marker_matches = [](const RelativeLeaseMarker& observed,
+                                   const auto& expected) noexcept {
+        return observed.record == expected.record &&
+               observed.leaf.snapshot.identity ==
+                   ooc_cleanup_detail::handoff_native_identity(expected.identity);
+    };
+    if (current.record != terminal.record ||
+        current.canonical.snapshot != *terminal.canonical_snapshot || current.pending ||
+        current.control.entries != expected_entries || current.control.reserved ||
+        !marker_matches(current.control.owner, *terminal.owner) ||
+        !marker_matches(current.control.owned, *terminal.owned) ||
+        parent.identity() != terminal.parent_identity ||
+        lock.identity() != terminal.lock_identity ||
+        directory.identity() != terminal.directory_identity) {
+        ooc_cleanup_detail::fail(OOCCleanupStatus::ForeignReplacementPreserved,
+                                 OOCCleanupStage::None, ooc_cleanup_detail::protocol_error());
+    }
+"""
+CONSUMED_CANONICAL_ADOPTION_BRIDGE_BODY = r"""
+    const auto current_process_id = static_cast<std::uint64_t>(gnfs::util::process_id());
+    if (authority.consumed_ || !authority.live_lock_ || !authority.terminal_ ||
+        authority.creator_process_id_ == 0 || authority.creator_process_id_ != current_process_id) {
+        return adoption_failure(OOCCleanupStatus::InvalidRequest,
+                                OOCPrivateHandoffState::TaintedPreserved,
+                                ooc_cleanup_detail::invalid_argument_error());
+    }
+
+    auto terminal = authority.terminal_;
+    return adopt_private_handoff_impl(
+        base_path, hooks, true,
+        [&](const OOCCleanupPaths&, AdoptionParentDirectoryHandle&) {
+            if (authority.consumed_ || !authority.live_lock_) {
+                ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                                         ooc_cleanup_detail::invalid_argument_error());
+            }
+            authority.consumed_ = true;
+            return std::move(authority.live_lock_);
+        },
+        terminal.get());
+"""
+CONSUMED_CANONICAL_ADOPTION_INITIAL_MATCH_FRAGMENT = (
+    "if(expected_terminal!=nullptr){"
+    "require_publication_terminal_match("
+    "*classified.witness,*expected_terminal,*parent,*directory,*lock);}"
+    "observe_adoption_boundary(paths,*parent,*directory,*lock,hooks,"
+    "OOCPrivateHandoffAdoptionFaultPoint::CanonicalClassified);"
+)
+CONSUMED_CANONICAL_ADOPTION_REVALIDATION_MATCH_FRAGMENT = (
+    "if(*current.witness!=*classified.witness){"
+    "ooc_cleanup_detail::fail(OOCCleanupStatus::ForeignReplacementPreserved,"
+    "OOCCleanupStage::None,ooc_cleanup_detail::protocol_error());}"
+    "if(expected_terminal!=nullptr){"
+    "require_publication_terminal_match("
+    "*current.witness,*expected_terminal,*parent,*directory,*lock);}"
+    "autoindex_confirmation=open_private_leaf_exact("
+)
+CONSUMED_CANONICAL_ADOPTION_RECEIPT_ORDER_FRAGMENT = (
+    "revalidate_before_receipt();"
+    "observe_adoption_boundary(paths,*parent,*directory,*lock,hooks,"
+    "OOCPrivateHandoffAdoptionFaultPoint::BeforeReceiptCommitRevalidation);"
+    "revalidate_before_receipt();"
+    "constautopending_handoff_snapshot="
+)
+CONSUMED_CANONICAL_ADOPTION_ENTRY_ALIAS_FRAGMENT = (
+    "autoowner=std::shared_ptr<"
+    "PrivateHandoffPublicationObservedPermitV1::State>(std::move(state));"
+    "autolive_lock=std::shared_ptr<BaseLock>(owner,owner->lock.get());"
+    "autoterminal=std::shared_ptr<constPrivateHandoffPublicationPrefixWitnessV1>("
+    "owner,std::addressof(*owner->canonical_terminal));"
+)
+CONSUMED_CANONICAL_ADOPTION_FORBIDDEN_PRIMITIVES = (
+    "F_DUPFD",
+    "F_DUPFD_CLOEXEC",
+    "fcntl",
+    "flock",
+    "LOCK_EX",
+    "LOCK_NB",
+    "LOCK_UN",
+    "open",
+    "openat",
+    "CreateFileW",
+    "AdoptInheritedOpenFileDescription",
+    "acquire_private_handoff_publication_resume_v1",
+)
+CONSUMED_CANONICAL_ADOPTION_FORBIDDEN_ADOPTION_PATHS = (
+    "OOCPrivateHandoffBorrowedBaseLockV1",
+    "adopt_private_handoff_with_borrowed_base_lock_v1",
+    "OOCCleanupTransaction",
+    "adopt_private_handoff",
+)
+CONSUMED_CANONICAL_ADOPTION_FORBIDDEN_RELEASES = (
+    "release_private_cleanup_action",
+    "release_noexcept",
+    "unlock",
 )
 WORKER_HANDOFF_BRIDGE_IDENTIFIERS = (
     "OOCFinalizedCorpusEvidenceV1",
@@ -928,6 +1275,12 @@ PRIVATE_HANDOFF_PUBLICATION_RESUME_USE_SITE_IDENTIFIERS = (
     "PrivateHandoffPublicationResumeDispositionV1",
     "PrivateHandoffPublicationResumeResultV1",
 ) + PRIVATE_HANDOFF_PUBLICATION_RESUME_DIRECT_CALL_IDENTIFIERS
+PRIVATE_HANDOFF_PUBLICATION_RESUME_AUXILIARY_USE_SITE_COUNTS = {
+    CONSUMED_CANONICAL_ADOPTION_INTERFACE_FILE: {
+        "PrivateHandoffPublicationPrefixWitnessV1": 3,
+        "PrivateHandoffPublicationValidatedPermitV1": 2,
+    },
+}
 PRIVATE_HANDOFF_PUBLICATION_RESUME_NARROW_TEST_DIRECT_CALL_COUNTS = {
     PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_TEST_FILE: {
         PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER: 2,
@@ -1004,7 +1357,7 @@ PRIVATE_HANDOFF_PUBLICATION_RESUME_INTERFACE_CLASS_SCOPES = {
 PRIVATE_HANDOFF_PUBLICATION_RESUME_INTERFACE_CLASS_FRIEND_COUNTS = {
     "PrivateHandoffPublicationTypedValidatorV1": 3,
     "PrivateHandoffPublicationObservedPermitV1": 3,
-    "PrivateHandoffPublicationValidatedPermitV1": 3,
+    "PrivateHandoffPublicationValidatedPermitV1": 4,
 }
 PRIVATE_HANDOFF_PUBLICATION_RESUME_INTERFACE_CLASS_FRIEND_CLASSES = {
     "PrivateHandoffPublicationTypedValidatorV1": (
@@ -5131,6 +5484,390 @@ class Checks:
                     "token once inside the common adoption path",
                 )
 
+    def validate_consumed_canonical_adoption_bridge(
+        self, relative: str, text: str
+    ) -> None:
+        for identifier, expected_by_file in (
+            CONSUMED_CANONICAL_ADOPTION_IDENTIFIER_USE_COUNTS.items()
+        ):
+            uses = find_code_identifier_uses(text, identifier)
+            expected = expected_by_file.get(relative, 0)
+            if len(uses) != expected:
+                self.fail(
+                    relative,
+                    uses[0].line if uses else 1,
+                    "consumed-canonical adoption identifier count is not closed: "
+                    f"{identifier} expected {expected}, found {len(uses)}",
+                )
+
+        if relative.startswith("include/gnfs/"):
+            for identifier in CONSUMED_CANONICAL_ADOPTION_PUBLIC_IDENTIFIERS:
+                for use in find_code_identifier_uses(text, identifier):
+                    self.fail(
+                        relative,
+                        use.line,
+                        "consumed-canonical adoption authority must not leak into "
+                        f"public headers: {identifier}",
+                    )
+            return
+
+        compact_text = _compact_cpp_code(text)
+        if relative == CONSUMED_CANONICAL_ADOPTION_RELATION_INTERFACE_FILE:
+            if (
+                compact_text.count(
+                    CONSUMED_CANONICAL_ADOPTION_RELATION_DECLARATION
+                )
+                != 1
+                or compact_text.count(CONSUMED_CANONICAL_ADOPTION_RELATION_FRIEND)
+                != 1
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    "consumed-canonical adoption entry must retain its one exact "
+                    "rvalue-only source-private declaration and private friend",
+                )
+            return
+
+        if relative == CONSUMED_CANONICAL_ADOPTION_INTERFACE_FILE:
+            class_span = _class_definition_body_span(
+                text, CONSUMED_CANONICAL_ADOPTION_TOKEN
+            )
+            if (
+                class_span is None
+                or _compact_cpp_code(text[class_span[0] : class_span[1]])
+                != _compact_cpp_code(CONSUMED_CANONICAL_ADOPTION_TOKEN_CLASS_BODY)
+                or compact_text.count(
+                    CONSUMED_CANONICAL_ADOPTION_BRIDGE_DECLARATION
+                )
+                != 1
+            ):
+                self.fail(
+                    relative,
+                    1 if class_span is None else text.count("\n", 0, class_span[0]) + 1,
+                    "consumed-publication BaseLock authority must remain the exact "
+                    "private one-shot alias token and bridge declaration",
+                )
+            return
+
+        def validate_forbidden_bridge_body(
+            body: str, line_offset: int, bridge_name: str
+        ) -> None:
+            for identifier in CONSUMED_CANONICAL_ADOPTION_FORBIDDEN_PRIMITIVES:
+                for use in find_code_identifier_uses(body, identifier):
+                    self.fail(
+                        relative,
+                        line_offset + use.line,
+                        f"{bridge_name} must not duplicate, open, or relock BaseLock "
+                        f"authority: {identifier}",
+                    )
+            for identifier in CONSUMED_CANONICAL_ADOPTION_FORBIDDEN_ADOPTION_PATHS:
+                for use in find_code_identifier_uses(body, identifier):
+                    self.fail(
+                        relative,
+                        line_offset + use.line,
+                        f"{bridge_name} must not escape through borrowed or path "
+                        f"adoption: {identifier}",
+                    )
+            for identifier in CONSUMED_CANONICAL_ADOPTION_FORBIDDEN_RELEASES:
+                for use in find_code_identifier_uses(body, identifier):
+                    self.fail(
+                        relative,
+                        line_offset + use.line,
+                        f"{bridge_name} must not release the retained action claim "
+                        f"before receipt ownership: {identifier}",
+                    )
+            compact_body = _compact_cpp_code(body)
+            if (
+                re.search(
+                    r"(?:newBaseLock\(|(?:make_shared|make_unique)<"
+                    r"(?:ooc_cleanup_detail::)?BaseLock>)",
+                    compact_body,
+                )
+                is not None
+            ):
+                self.fail(
+                    relative,
+                    line_offset + 1,
+                    f"{bridge_name} must not construct a replacement BaseLock",
+                )
+            if (
+                re.search(
+                    r"(?:state|owner|live_lock|terminal|authority\.live_lock_)"
+                    r"(?:->|\.)?reset\(",
+                    compact_body,
+                )
+                is not None
+                or "std::move(owner->lock)" in compact_body
+            ):
+                self.fail(
+                    relative,
+                    line_offset + 1,
+                    f"{bridge_name} must not release or move out the retained "
+                    "action-claim owner before receipt ownership",
+                )
+
+        if relative == CONSUMED_CANONICAL_ADOPTION_RELATION_IMPLEMENTATION_FILE:
+            phase_span = _enum_class_definition_body_span(text, "Phase")
+            if (
+                phase_span is None
+                or _compact_cpp_code(text[phase_span[0] : phase_span[1]])
+                != _compact_cpp_code(CONSUMED_CANONICAL_ADOPTION_PHASE_BODY)
+            ):
+                self.fail(
+                    relative,
+                    1 if phase_span is None else text.count("\n", 0, phase_span[0]) + 1,
+                    "publication permit phase must distinguish only observed, "
+                    "validated, consumed-nonterminal, and consumed-canonical states",
+                )
+
+            commit_body, commit_line_offset, commit_errors = (
+                find_function_definition_body(
+                    text, CONSUMED_CANONICAL_ADOPTION_COMMIT
+                )
+            )
+            for line, error in commit_errors:
+                self.fail(relative, line, error)
+            if (
+                commit_body is not None
+                and _compact_cpp_code(commit_body)
+                != _compact_cpp_code(CONSUMED_CANONICAL_ADOPTION_COMMIT_BODY)
+            ):
+                self.fail(
+                    relative,
+                    commit_line_offset + 1,
+                    "only an exact successful canonical terminal result may mint "
+                    "ConsumedCanonical phase",
+                )
+
+            entry_body, entry_line_offset, entry_errors = (
+                find_function_definition_body(
+                    text, CONSUMED_CANONICAL_ADOPTION_ENTRY
+                )
+            )
+            for line, error in entry_errors:
+                self.fail(relative, line, error)
+            if entry_body is None:
+                return
+            compact_entry = _compact_cpp_code(entry_body)
+            entry_declarator = (
+                "OOCPrivateHandoffAdoptionResult"
+                "adopt_consumed_canonical_private_handoff_publication_v1("
+                "PrivateHandoffPublicationValidatedPermitV1&&permit,"
+                "OOCPrivateHandoffAdoptionTestHookshooks)noexcept{"
+            )
+            if compact_text.count(entry_declarator) != 1:
+                self.fail(
+                    relative,
+                    entry_line_offset + 1,
+                    "consumed-canonical adoption implementation must retain the "
+                    "exact rvalue permit entry signature",
+                )
+            if compact_entry != _compact_cpp_code(
+                CONSUMED_CANONICAL_ADOPTION_ENTRY_BODY
+            ):
+                self.fail(
+                    relative,
+                    entry_line_offset + 1,
+                    "consumed-canonical adoption entry must remain the exact "
+                    "relation-only authority bridge",
+                )
+            permit_move = "std::move(permit.state_)"
+            if (
+                not compact_entry.startswith("autostate=" + permit_move + ";")
+                or compact_entry.find("std::move(")
+                != compact_entry.find(permit_move)
+                or compact_entry.count(permit_move) != 1
+            ):
+                self.fail(
+                    relative,
+                    entry_line_offset + 1,
+                    "consumed-canonical adoption must make std::move(permit.state_) "
+                    "its first capability move",
+                )
+            if (
+                compact_entry.count(
+                    "PrivateHandoffPublicationObservedPermitV1::State::Phase::"
+                    "ConsumedCanonical"
+                )
+                != 1
+                or "Phase::ConsumedNonTerminal" in compact_entry
+            ):
+                self.fail(
+                    relative,
+                    entry_line_offset + 1,
+                    "consumed-canonical adoption entry must accept "
+                    "ConsumedCanonical phase only",
+                )
+            if (
+                compact_entry.count(
+                    CONSUMED_CANONICAL_ADOPTION_ENTRY_ALIAS_FRAGMENT
+                )
+                != 1
+            ):
+                self.fail(
+                    relative,
+                    entry_line_offset + 1,
+                    "consumed-canonical adoption must convert the moved State to "
+                    "one shared owner and create exact aliasing BaseLock and "
+                    "terminal shared_ptr values",
+                )
+            validate_forbidden_bridge_body(
+                entry_body,
+                entry_line_offset,
+                "consumed-canonical adoption entry",
+            )
+            return
+
+        if relative != CONSUMED_CANONICAL_ADOPTION_IMPLEMENTATION_FILE:
+            return
+
+        if (
+            compact_text.count(
+                CONSUMED_CANONICAL_ADOPTION_TOKEN_CONSTRUCTOR_FRAGMENT
+            )
+            != 1
+            or compact_text.count(CONSUMED_CANONICAL_ADOPTION_TOKEN_MOVE_FRAGMENT)
+            != 1
+            or compact_text.count(CONSUMED_CANONICAL_ADOPTION_TOKEN_ASSERT_FRAGMENT)
+            != 1
+        ):
+            self.fail(
+                relative,
+                1,
+                "consumed-publication alias token must retain exact move-only "
+                "construction and one-shot assertions",
+            )
+
+        shape_body, shape_line_offset, shape_errors = find_function_definition_body(
+            text, CONSUMED_CANONICAL_ADOPTION_SHAPE_MATCHER
+        )
+        for line, error in shape_errors:
+            self.fail(relative, line, error)
+        if (
+            shape_body is not None
+            and _compact_cpp_code(shape_body)
+            != _compact_cpp_code(CONSUMED_CANONICAL_ADOPTION_SHAPE_MATCHER_BODY)
+        ):
+            self.fail(
+                relative,
+                shape_line_offset + 1,
+                "consumed-canonical terminal shape matcher must remain exact",
+            )
+
+        matcher_body, matcher_line_offset, matcher_errors = (
+            find_function_definition_body(
+                text, CONSUMED_CANONICAL_ADOPTION_TERMINAL_MATCHER
+            )
+        )
+        for line, error in matcher_errors:
+            self.fail(relative, line, error)
+        if (
+            matcher_body is not None
+            and _compact_cpp_code(matcher_body)
+            != _compact_cpp_code(CONSUMED_CANONICAL_ADOPTION_TERMINAL_MATCHER_BODY)
+        ):
+            self.fail(
+                relative,
+                matcher_line_offset + 1,
+                "consumed-canonical terminal matcher must compare the exact "
+                "record, leaves, markers, parent, lock, and directory",
+            )
+
+        adoption_body, adoption_line_offset, adoption_errors = (
+            find_function_definition_body(text, "adopt_private_handoff_impl")
+        )
+        for line, error in adoption_errors:
+            self.fail(relative, line, error)
+        if adoption_body is not None:
+            compact_adoption = _compact_cpp_code(adoption_body)
+            if (
+                compact_adoption.count(
+                    CONSUMED_CANONICAL_ADOPTION_INITIAL_MATCH_FRAGMENT
+                )
+                != 1
+            ):
+                self.fail(
+                    relative,
+                    adoption_line_offset + 1,
+                    "consumed-canonical adoption requires its terminal matcher "
+                    "immediately after initial canonical classification",
+                )
+            if (
+                compact_adoption.count(
+                    CONSUMED_CANONICAL_ADOPTION_REVALIDATION_MATCH_FRAGMENT
+                )
+                != 1
+            ):
+                self.fail(
+                    relative,
+                    adoption_line_offset + 1,
+                    "consumed-canonical adoption requires its terminal matcher in "
+                    "the receipt revalidation closure",
+                )
+            if (
+                compact_adoption.count(
+                    CONSUMED_CANONICAL_ADOPTION_RECEIPT_ORDER_FRAGMENT
+                )
+                != 1
+                or compact_adoption.count("make_receipt(") != 1
+            ):
+                self.fail(
+                    relative,
+                    adoption_line_offset + 1,
+                    "receipt construction must follow the second terminal-aware "
+                    "revalidation with no earlier receipt commit",
+                )
+            matcher_uses = find_code_identifier_uses(
+                adoption_body, CONSUMED_CANONICAL_ADOPTION_TERMINAL_MATCHER
+            )
+            if len(matcher_uses) != 2:
+                self.fail(
+                    relative,
+                    adoption_line_offset + 1,
+                    "common adoption path must contain exactly the initial and "
+                    "pre-receipt terminal matcher call sites",
+                )
+
+        bridge_body, bridge_line_offset, bridge_errors = (
+            find_function_definition_body(
+                text, CONSUMED_CANONICAL_ADOPTION_BRIDGE
+            )
+        )
+        for line, error in bridge_errors:
+            self.fail(relative, line, error)
+        if bridge_body is None:
+            return
+        bridge_declarator = (
+            "OOCPrivateHandoffAdoptionResult"
+            "ooc_cleanup_detail::"
+            "adopt_private_handoff_with_consumed_publication_base_lock_v1("
+            "conststd::filesystem::path&base_path,"
+            "OOCPrivateHandoffConsumedPublicationBaseLockV1&&authority,"
+            "OOCPrivateHandoffAdoptionTestHookshooks)noexcept{"
+        )
+        if compact_text.count(bridge_declarator) != 1:
+            self.fail(
+                relative,
+                bridge_line_offset + 1,
+                "consumed-publication BaseLock bridge must retain its exact "
+                "rvalue-only source-private signature",
+            )
+        if _compact_cpp_code(bridge_body) != _compact_cpp_code(
+            CONSUMED_CANONICAL_ADOPTION_BRIDGE_BODY
+        ):
+            self.fail(
+                relative,
+                bridge_line_offset + 1,
+                "consumed-publication BaseLock bridge must move the exact alias "
+                "once into the terminal-aware common adoption path",
+            )
+        validate_forbidden_bridge_body(
+            bridge_body,
+            bridge_line_offset,
+            "consumed-publication BaseLock bridge",
+        )
+
     def validate_worker_writer_identifier_exception_boundary(
         self, relative: str, text: str
     ) -> None:
@@ -5631,6 +6368,25 @@ class Checks:
                     "test-only private-handoff typed-validator mint authority is not "
                     "allowlisted",
                 )
+
+        auxiliary_use_counts = (
+            PRIVATE_HANDOFF_PUBLICATION_RESUME_AUXILIARY_USE_SITE_COUNTS.get(
+                relative
+            )
+        )
+        if auxiliary_use_counts is not None:
+            for identifier in PRIVATE_HANDOFF_PUBLICATION_RESUME_USE_SITE_IDENTIFIERS:
+                uses = find_code_identifier_uses(text, identifier)
+                expected = auxiliary_use_counts.get(identifier, 0)
+                if len(uses) != expected:
+                    self.fail(
+                        relative,
+                        uses[0].line if uses else 1,
+                        "private-handoff publication resume auxiliary use site "
+                        f"must contain exactly {expected} {identifier} identifiers, "
+                        f"found {len(uses)}",
+                    )
+            return
 
         if relative not in PRIVATE_HANDOFF_PUBLICATION_RESUME_USE_SITE_ALLOWLIST:
             present_identifiers = (
@@ -8790,6 +9546,7 @@ class Checks:
             self.validate_worker_entry_use_site(relative, text)
             self.validate_worker_writer_use_site(relative, text)
             self.validate_borrowed_base_lock_bridge(relative, text)
+            self.validate_consumed_canonical_adoption_bridge(relative, text)
             self.validate_worker_writer_identifier_exception_boundary(
                 relative, text
             )
@@ -11009,7 +11766,8 @@ adopt_private_handoff_with_borrowed_base_lock_v1(
         [&](const OOCCleanupPaths& paths,
             AdoptionParentDirectoryHandle& parent) {
             return borrowed.consume(paths, parent);
-        });
+        },
+        nullptr);
 }
 """
     exact_borrowed_base_lock_checks = Checks(Path("."))
@@ -11243,6 +12001,185 @@ auto DistributedSievePrivateLeaseBaseLockAt::adopt_exact_private_handoff(
         ),
         "WaveStore accepted a second borrowed BaseLock mint authority use: "
         f"{expanded_borrowed_wave_mint_checks.errors}",
+    )
+
+    consumed_canonical_sources = {
+        relative: (
+            Path(__file__).resolve().parents[1] / relative
+        ).read_text(encoding="utf-8")
+        for relative in {
+            file
+            for expected_by_file in (
+                CONSUMED_CANONICAL_ADOPTION_IDENTIFIER_USE_COUNTS.values()
+            )
+            for file in expected_by_file
+        }
+    }
+    exact_consumed_canonical_checks = Checks(Path("."))
+    for relative, source in consumed_canonical_sources.items():
+        exact_consumed_canonical_checks.validate_consumed_canonical_adoption_bridge(
+            relative, source
+        )
+    expect(
+        not exact_consumed_canonical_checks.errors,
+        "exact consumed-canonical relation-only bridge was rejected: "
+        f"{exact_consumed_canonical_checks.errors}",
+    )
+
+    def expect_consumed_canonical_mutation(
+        relative: str,
+        old: str,
+        new: str,
+        expected_error: str,
+        description: str,
+    ) -> None:
+        source = consumed_canonical_sources[relative]
+        expect(old in source, f"self-test mutation anchor is missing: {description}")
+        mutated = source.replace(old, new, 1)
+        mutation_checks = Checks(Path("."))
+        mutation_checks.validate_consumed_canonical_adoption_bridge(
+            relative, mutated
+        )
+        expect(
+            any(expected_error in error for error in mutation_checks.errors),
+            f"consumed-canonical gate accepted {description}: "
+            f"{mutation_checks.errors}",
+        )
+
+    expect_consumed_canonical_mutation(
+        CONSUMED_CANONICAL_ADOPTION_RELATION_INTERFACE_FILE,
+        "PrivateHandoffPublicationValidatedPermitV1&& permit,",
+        "PrivateHandoffPublicationValidatedPermitV1& permit,",
+        "exact rvalue-only source-private declaration",
+        "an lvalue entry signature",
+    )
+    expect_consumed_canonical_mutation(
+        CONSUMED_CANONICAL_ADOPTION_RELATION_IMPLEMENTATION_FILE,
+        "State::Phase::ConsumedCanonical ||",
+        "State::Phase::ConsumedNonTerminal ||",
+        "must accept ConsumedCanonical phase only",
+        "a nonterminal consumed phase",
+    )
+    expect_consumed_canonical_mutation(
+        CONSUMED_CANONICAL_ADOPTION_RELATION_IMPLEMENTATION_FILE,
+        "    auto state = std::move(permit.state_);\n",
+        "    auto moved_hooks = std::move(hooks);\n"
+        "    auto state = std::move(permit.state_);\n",
+        "first capability move",
+        "an earlier capability move",
+    )
+    expect_consumed_canonical_mutation(
+        CONSUMED_CANONICAL_ADOPTION_RELATION_IMPLEMENTATION_FILE,
+        "std::shared_ptr<BaseLock>(owner, owner->lock.get())",
+        "std::shared_ptr<BaseLock>(std::move(owner->lock))",
+        "aliasing BaseLock",
+        "moving BaseLock out of State instead of aliasing it",
+    )
+    for forbidden_statement, expected_error in (
+        (
+            "auto replacement = std::make_shared<BaseLock>(path);",
+            "must not construct a replacement BaseLock",
+        ),
+        (
+            "(void)::fcntl(descriptor, F_DUPFD_CLOEXEC, 0);",
+            "must not duplicate, open, or relock BaseLock authority",
+        ),
+        (
+            "(void)::flock(descriptor, LOCK_EX | LOCK_NB);",
+            "must not duplicate, open, or relock BaseLock authority",
+        ),
+        (
+            "(void)::open(path, flags);",
+            "must not duplicate, open, or relock BaseLock authority",
+        ),
+        (
+            "adopt_private_handoff_with_borrowed_base_lock_v1(path, token);",
+            "must not escape through borrowed or path adoption",
+        ),
+        (
+            "OOCCleanupTransaction::adopt_private_handoff(path);",
+            "must not escape through borrowed or path adoption",
+        ),
+    ):
+        expect_consumed_canonical_mutation(
+            CONSUMED_CANONICAL_ADOPTION_RELATION_IMPLEMENTATION_FILE,
+            "    auto state = std::move(permit.state_);\n",
+            "    auto state = std::move(permit.state_);\n"
+            f"    {forbidden_statement}\n",
+            expected_error,
+            f"forbidden bridge statement {forbidden_statement}",
+        )
+    expect_consumed_canonical_mutation(
+        CONSUMED_CANONICAL_ADOPTION_RELATION_IMPLEMENTATION_FILE,
+        "        if (!state->canonical_terminal ||\n",
+        "        release_private_cleanup_action(*state->lock);\n"
+        "        if (!state->canonical_terminal ||\n",
+        "must not release the retained action claim",
+        "early action-claim release",
+    )
+    expect_consumed_canonical_mutation(
+        CONSUMED_CANONICAL_ADOPTION_INTERFACE_FILE,
+        "    std::shared_ptr<BaseLock> live_lock_;",
+        "    std::unique_ptr<BaseLock> live_lock_;",
+        "exact private one-shot alias token",
+        "a non-alias token lock owner",
+    )
+    expect_consumed_canonical_mutation(
+        CONSUMED_CANONICAL_ADOPTION_IMPLEMENTATION_FILE,
+        "        if (expected_terminal != nullptr) {\n"
+        "            require_publication_terminal_match(*classified.witness, *expected_terminal, *parent,\n"
+        "                                               *directory, *lock);\n"
+        "        }\n",
+        "",
+        "immediately after initial canonical classification",
+        "a missing initial terminal match",
+    )
+    expect_consumed_canonical_mutation(
+        CONSUMED_CANONICAL_ADOPTION_IMPLEMENTATION_FILE,
+        "            if (expected_terminal != nullptr) {\n"
+        "                require_publication_terminal_match(*current.witness, *expected_terminal, *parent,\n"
+        "                                                   *directory, *lock);\n"
+        "            }\n",
+        "",
+        "receipt revalidation closure",
+        "a missing receipt-time terminal match",
+    )
+    expect_consumed_canonical_mutation(
+        CONSUMED_CANONICAL_ADOPTION_IMPLEMENTATION_FILE,
+        "        revalidate_before_receipt();\n"
+        "        const auto pending_handoff_snapshot =",
+        "        const auto pending_handoff_snapshot =",
+        "second terminal-aware revalidation",
+        "receipt preparation before the second revalidation",
+    )
+
+    public_consumed_canonical_checks = Checks(Path("."))
+    public_consumed_canonical_checks.validate_consumed_canonical_adoption_bridge(
+        "include/gnfs/relation/escaped_consumed_authority.hpp",
+        "class OOCPrivateHandoffConsumedPublicationBaseLockV1;\n",
+    )
+    expect(
+        any(
+            "must not leak into public headers" in error
+            for error in public_consumed_canonical_checks.errors
+        ),
+        "public header accepted consumed-canonical adoption authority: "
+        f"{public_consumed_canonical_checks.errors}",
+    )
+
+    untrusted_consumed_canonical_checks = Checks(Path("."))
+    untrusted_consumed_canonical_checks.validate_consumed_canonical_adoption_bridge(
+        "src/relation/untrusted_consumed_canonical.cpp",
+        "adopt_consumed_canonical_private_handoff_publication_v1("
+        "std::move(permit));\n",
+    )
+    expect(
+        any(
+            "identifier count is not closed" in error
+            for error in untrusted_consumed_canonical_checks.errors
+        ),
+        "unallowlisted consumed-canonical entry call was accepted: "
+        f"{untrusted_consumed_canonical_checks.errors}",
     )
 
     worker_handoff_bridge_snippet = r"""
@@ -11492,6 +12429,50 @@ auto admission =
         "private-handoff publication resume allowlist is not exact",
     )
     expect(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_AUXILIARY_USE_SITE_COUNTS
+        == {
+            CONSUMED_CANONICAL_ADOPTION_INTERFACE_FILE: {
+                "PrivateHandoffPublicationPrefixWitnessV1": 3,
+                "PrivateHandoffPublicationValidatedPermitV1": 2,
+            },
+        },
+        "private-handoff publication resume auxiliary use-site counts are not "
+        "exact",
+    )
+    exact_consumed_adoption_resume_auxiliary = r"""
+struct PrivateHandoffPublicationPrefixWitnessV1;
+class PrivateHandoffPublicationValidatedPermitV1;
+std::shared_ptr<const PrivateHandoffPublicationPrefixWitnessV1> retained;
+const PrivateHandoffPublicationPrefixWitnessV1* expected = nullptr;
+void consume(PrivateHandoffPublicationValidatedPermitV1&& permit);
+"""
+    exact_consumed_adoption_resume_auxiliary_checks = Checks(Path("."))
+    exact_consumed_adoption_resume_auxiliary_checks.validate_private_handoff_publication_resume_boundary(
+        CONSUMED_CANONICAL_ADOPTION_INTERFACE_FILE,
+        exact_consumed_adoption_resume_auxiliary,
+    )
+    expect(
+        not exact_consumed_adoption_resume_auxiliary_checks.errors,
+        "exact consumed-adoption resume auxiliary use site was rejected: "
+        f"{exact_consumed_adoption_resume_auxiliary_checks.errors}",
+    )
+    expanded_consumed_adoption_resume_auxiliary_checks = Checks(Path("."))
+    expanded_consumed_adoption_resume_auxiliary_checks.validate_private_handoff_publication_resume_boundary(
+        CONSUMED_CANONICAL_ADOPTION_INTERFACE_FILE,
+        exact_consumed_adoption_resume_auxiliary
+        + "\nPrivateHandoffPublicationResumeResultV1 escaped;\n",
+    )
+    expect(
+        any(
+            "auxiliary use site must contain exactly 0 "
+            "PrivateHandoffPublicationResumeResultV1 identifiers, found 1"
+            in error
+            for error in expanded_consumed_adoption_resume_auxiliary_checks.errors
+        ),
+        "consumed-adoption auxiliary header accepted expanded resume authority: "
+        f"{expanded_consumed_adoption_resume_auxiliary_checks.errors}",
+    )
+    expect(
         PRIVATE_HANDOFF_PUBLICATION_RESUME_NARROW_TEST_DIRECT_CALL_COUNTS
         == {
             PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_TEST_FILE: {
@@ -11694,6 +12675,10 @@ private:
     reconcile_private_handoff_publication_for_resume_v1(
         PrivateHandoffPublicationValidatedPermitV1& permit,
         PrivateHandoffPublicationResumeTestHooksV1 hooks) noexcept;
+    friend OOCPrivateHandoffAdoptionResult
+    adopt_consumed_canonical_private_handoff_publication_v1(
+        PrivateHandoffPublicationValidatedPermitV1&& permit,
+        OOCPrivateHandoffAdoptionTestHooks hooks) noexcept;
 };
 [[nodiscard]] PrivateHandoffPublicationResumeAdmissionV1
 acquire_private_handoff_publication_resume_v1(

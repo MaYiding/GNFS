@@ -1,4 +1,5 @@
 #include "ooc_private_cleanup_action_permit_internal.hpp"
+#include "ooc_private_handoff_adoption_internal.hpp"
 #include "ooc_private_lease_reservation_protocol_internal.hpp"
 
 #include <gnfs/relation/ooc_authorized_cleanup_intent.hpp>
@@ -1620,6 +1621,51 @@ resume_failed(OOCCleanupResult result,
     };
 }
 
+[[nodiscard]] bool canonical_publication_terminal_shape_valid(
+    const PrivateHandoffPublicationPrefixWitnessV1& terminal) {
+    if (terminal.state != PrivateHandoffPublicationPrefixStateV1::Canonical ||
+        !terminal.canonical_snapshot || terminal.pending_snapshot || terminal.rollback_snapshot ||
+        !terminal.owner || !terminal.owned || terminal.reserved ||
+        !private_lease_record_shape_valid(terminal.owner->record) ||
+        !private_lease_record_shape_valid(terminal.owned->record)) {
+        return false;
+    }
+
+    const auto& owner = *terminal.owner;
+    const auto& owned = *terminal.owned;
+    return terminal.record.lock_identity == handoff_native_identity(terminal.lock_identity) &&
+           terminal.record.directory_identity ==
+               handoff_native_identity(terminal.directory_identity) &&
+           terminal.record.owner_marker_identity == handoff_native_identity(owner.identity) &&
+           terminal.record.owned_marker_identity == handoff_native_identity(owned.identity) &&
+           terminal.record.lease_id == owned.record.lease_id &&
+           owner.record == owner_record_for(owned.record) &&
+           owned.record.phase == PrivateLeasePhase::Owned &&
+           owned.record.capability == PrivateLeaseCapability::RollbackPreactivePairAndLease &&
+           owned.record.parent_identity == terminal.parent_identity &&
+           owned.record.lock_identity == terminal.lock_identity &&
+           owned.record.directory_identity == terminal.directory_identity &&
+           owned.record.owner_identity == owner.identity;
+}
+
+[[nodiscard]] OOCPrivateHandoffAdoptionResult
+consumed_publication_adoption_failure(OOCCleanupStatus status,
+                                      std::error_code error = {}) noexcept {
+    if (!error) {
+        error = protocol_error();
+    }
+    return {
+        .result =
+            {
+                .status = status,
+                .stage = OOCCleanupStage::None,
+                .native_error = error,
+            },
+        .state = OOCPrivateHandoffState::TaintedPreserved,
+        .adoption = std::nullopt,
+    };
+}
+
 #if defined(__APPLE__)
 [[nodiscard]] PrivateHandoffPublicationPrefixCaptureV1
 capture_private_handoff_publication_prefix_v1_locked(
@@ -2192,7 +2238,8 @@ struct PrivateHandoffPublicationObservedPermitV1::State final {
     enum class Phase : std::uint8_t {
         Observed,
         Validated,
-        Consumed,
+        ConsumedNonTerminal,
+        ConsumedCanonical,
     };
 
     State(OOCCleanupPaths frozen_paths, std::array<std::uint64_t, 3> expected_directory,
@@ -2213,7 +2260,36 @@ struct PrivateHandoffPublicationObservedPermitV1::State final {
     std::uint64_t creator_process_id = 0;
     Phase phase = Phase::Observed;
     RetainedPrivateHandoffPublicationPrefixV1 prefix;
+    std::optional<PrivateHandoffPublicationPrefixWitnessV1> canonical_terminal;
 };
+
+namespace {
+
+static_assert(std::is_nothrow_move_constructible_v<PrivateHandoffPublicationPrefixWitnessV1>);
+static_assert(std::is_nothrow_move_constructible_v<PrivateHandoffPublicationResumeResultV1>);
+
+[[nodiscard]] PrivateHandoffPublicationResumeResultV1
+commit_canonical_publication_terminal(PrivateHandoffPublicationObservedPermitV1::State& state,
+                                      PrivateHandoffPublicationResumeResultV1 completed) {
+    const bool canonical_disposition =
+        completed.disposition == PrivateHandoffPublicationResumeDispositionV1::CanonicalTerminal ||
+        completed.disposition == PrivateHandoffPublicationResumeDispositionV1::CanonicalConverged;
+    if (state.phase !=
+            PrivateHandoffPublicationObservedPermitV1::State::Phase::ConsumedNonTerminal ||
+        state.canonical_terminal || !canonical_disposition || !completed.expected_prefix ||
+        !completed.terminal_prefix || completed.result.status != OOCCleanupStatus::HandoffPresent ||
+        completed.result.stage != OOCCleanupStage::None || completed.result.native_error ||
+        !canonical_publication_terminal_shape_valid(*completed.terminal_prefix)) {
+        fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None, protocol_error());
+    }
+
+    auto retained_terminal = *completed.terminal_prefix;
+    state.canonical_terminal.emplace(std::move(retained_terminal));
+    state.phase = PrivateHandoffPublicationObservedPermitV1::State::Phase::ConsumedCanonical;
+    return completed;
+}
+
+} // namespace
 
 PrivateHandoffPublicationTypedValidatorV1::PrivateHandoffPublicationTypedValidatorV1(
     Validate validate, void* context) noexcept
@@ -2530,7 +2606,8 @@ PrivateHandoffPublicationResumeResultV1 reconcile_private_handoff_publication_fo
              hooks.context != nullptr)) {
             fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
         }
-        state->phase = PrivateHandoffPublicationObservedPermitV1::State::Phase::Consumed;
+        state->phase = PrivateHandoffPublicationObservedPermitV1::State::Phase::ConsumedNonTerminal;
+        state->canonical_terminal.reset();
         expected = state->prefix.witness;
         auto& lock = *state->lock;
         lock.require_stable();
@@ -2762,12 +2839,14 @@ PrivateHandoffPublicationResumeResultV1 reconcile_private_handoff_publication_fo
                 fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
                      protocol_error());
             }
-            return {
-                .result = retained.handoff->inspection.result,
-                .disposition = PrivateHandoffPublicationResumeDispositionV1::CanonicalTerminal,
-                .expected_prefix = expected,
-                .terminal_prefix = expected,
-            };
+            return commit_canonical_publication_terminal(
+                *state,
+                PrivateHandoffPublicationResumeResultV1{
+                    .result = retained.handoff->inspection.result,
+                    .disposition = PrivateHandoffPublicationResumeDispositionV1::CanonicalTerminal,
+                    .expected_prefix = expected,
+                    .terminal_prefix = expected,
+                });
         }
         if (!retained.handoff || !retained.handoff->directory || !retained.handoff->canonical ||
             !retained.handoff->canonical->snapshot || !retained.witness.canonical_snapshot) {
@@ -2856,12 +2935,14 @@ PrivateHandoffPublicationResumeResultV1 reconcile_private_handoff_publication_fo
         if (terminal.retained->witness != expected_terminal) {
             return resume_failed(resume_foreign_replacement(), expected);
         }
-        return {
-            .result = terminal.result,
-            .disposition = PrivateHandoffPublicationResumeDispositionV1::CanonicalConverged,
-            .expected_prefix = std::move(expected),
-            .terminal_prefix = std::move(terminal.retained->witness),
-        };
+        return commit_canonical_publication_terminal(
+            *state,
+            PrivateHandoffPublicationResumeResultV1{
+                .result = terminal.result,
+                .disposition = PrivateHandoffPublicationResumeDispositionV1::CanonicalConverged,
+                .expected_prefix = std::move(expected),
+                .terminal_prefix = std::move(terminal.retained->witness),
+            });
 #else
         (void)hooks;
         return resume_failed(
@@ -2882,6 +2963,47 @@ PrivateHandoffPublicationResumeResultV1 reconcile_private_handoff_publication_fo
         return resume_failed(resume_unexpected_result(error.code()), std::move(expected));
     } catch (...) {
         return resume_failed(resume_unexpected_result(), std::move(expected));
+    }
+}
+
+OOCPrivateHandoffAdoptionResult adopt_consumed_canonical_private_handoff_publication_v1(
+    PrivateHandoffPublicationValidatedPermitV1&& permit,
+    OOCPrivateHandoffAdoptionTestHooks hooks) noexcept {
+    auto state = std::move(permit.state_);
+    try {
+        if (!state || !state->lock ||
+            state->phase !=
+                PrivateHandoffPublicationObservedPermitV1::State::Phase::ConsumedCanonical ||
+            state->creator_process_id != static_cast<std::uint64_t>(gnfs::util::process_id())) {
+            fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+        }
+        if (!state->canonical_terminal ||
+            !canonical_publication_terminal_shape_valid(*state->canonical_terminal) ||
+            state->expected_directory_identity != state->canonical_terminal->directory_identity ||
+            state->lock->identity() != state->canonical_terminal->lock_identity) {
+            fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None, protocol_error());
+        }
+
+        auto owner =
+            std::shared_ptr<PrivateHandoffPublicationObservedPermitV1::State>(std::move(state));
+        auto live_lock = std::shared_ptr<BaseLock>(owner, owner->lock.get());
+        auto terminal = std::shared_ptr<const PrivateHandoffPublicationPrefixWitnessV1>(
+            owner, std::addressof(*owner->canonical_terminal));
+        OOCPrivateHandoffConsumedPublicationBaseLockV1 authority(
+            std::move(live_lock), std::move(terminal), owner->creator_process_id);
+        return adopt_private_handoff_with_consumed_publication_base_lock_v1(
+            owner->paths.base_path, std::move(authority), hooks);
+    } catch (const Failure& failure) {
+        return consumed_publication_adoption_failure(failure.status, failure.error);
+    } catch (const std::bad_alloc&) {
+        return consumed_publication_adoption_failure(
+            OOCCleanupStatus::UnexpectedFailure,
+            std::make_error_code(std::errc::not_enough_memory));
+    } catch (const std::system_error& error) {
+        return consumed_publication_adoption_failure(OOCCleanupStatus::UnexpectedFailure,
+                                                     error.code());
+    } catch (...) {
+        return consumed_publication_adoption_failure(OOCCleanupStatus::UnexpectedFailure);
     }
 }
 
