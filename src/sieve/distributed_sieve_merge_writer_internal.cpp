@@ -282,6 +282,13 @@ protocol_failure(DistributedSieveProtocolError error,
                 if (hooks.after_output_write != nullptr) {
                     hooks.after_output_write(input_slot, relation_ordinal, hooks.context);
                 }
+                if (hooks.stop_after_output_write != nullptr &&
+                    hooks.stop_after_output_write(input_slot, relation_ordinal, hooks.context)) {
+                    return failure(phase, MergeStatus::output_write_failed, artifacts_may_remain,
+                                   protocol_failure(DistributedSieveProtocolError::invalid_value,
+                                                    static_cast<std::uint32_t>(input_slot)),
+                                   input_slot, relation_ordinal);
+                }
             }
 
             phase = MergePhase::input_validation;

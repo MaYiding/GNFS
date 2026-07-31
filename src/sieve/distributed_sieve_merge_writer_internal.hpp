@@ -146,6 +146,11 @@ namespace trusted_test {
 struct DistributedSieveMergeWriterTestHooksV1 final {
     void (*after_output_write)(std::size_t input_slot, std::uint64_t relation_ordinal,
                                void* context) noexcept = nullptr;
+    /// Offered after the retained-output counters and the observer above have
+    /// both advanced. A true result returns the ordinary output-write failure,
+    /// leaving the caller-owned writer to its existing abort path.
+    bool (*stop_after_output_write)(std::size_t input_slot, std::uint64_t relation_ordinal,
+                                    void* context) noexcept = nullptr;
     void* context = nullptr;
 };
 

@@ -231,6 +231,13 @@ struct DistributedSieveMergeWriterAuthorityStateV1 final {
 
 namespace {
 
+struct MergePreparedPayloadBuildContextV1 final {
+    DistributedSieveMergeWriterAuthorityStateV1* state = nullptr;
+    trusted_test::DistributedSieveMergePreparedPublicationTestHooksV1::
+        StopAfterPayloadBuildBeforeHandoff stop_after_payload_build_before_handoff = nullptr;
+    void* test_context = nullptr;
+};
+
 bool bind_manifest_order_readers(DistributedSieveMergeWriterAuthorityStateV1& state,
                                  AuthorityDiagnostic& diagnostic) noexcept {
     try {
@@ -319,7 +326,11 @@ bool bind_manifest_order_readers(DistributedSieveMergeWriterAuthorityStateV1& st
 gnfs::relation::OOCPrivateHandoffPayloadV1
 build_merge_prepared_payload(const gnfs::relation::OOCFinalizedCorpusEvidenceV1& evidence,
                              void* context) {
-    auto& state = *static_cast<DistributedSieveMergeWriterAuthorityStateV1*>(context);
+    auto& build_context = *static_cast<MergePreparedPayloadBuildContextV1*>(context);
+    if (build_context.state == nullptr) {
+        throw MergePreparedPayloadBuildFailure{};
+    }
+    auto& state = *build_context.state;
     if (state.manifest == nullptr || state.merge_started_chain.empty() ||
         !state.stream_receipt.has_value()) {
         throw MergePreparedPayloadBuildFailure{};
@@ -337,6 +348,10 @@ build_merge_prepared_payload(const gnfs::relation::OOCFinalizedCorpusEvidenceV1&
     state.prepared_record.emplace(std::move(built.prepared->record));
     state.prepared_payload = std::move(built.prepared->opaque_payload);
     if (state.prepared_payload.empty()) {
+        throw MergePreparedPayloadBuildFailure{};
+    }
+    if (build_context.stop_after_payload_build_before_handoff != nullptr &&
+        build_context.stop_after_payload_build_before_handoff(build_context.test_context)) {
         throw MergePreparedPayloadBuildFailure{};
     }
     return {
@@ -539,7 +554,7 @@ DistributedSieveMergeWriterAuthorityV1::bind_inputs_create_writer_and_stream(
         streamed = [&] {
             auto batch = state_->writer->begin_exact_append_batch();
             auto result =
-                hooks.after_output_write == nullptr
+                hooks.after_output_write == nullptr && hooks.stop_after_output_write == nullptr
                     ? stream::stream_distributed_sieve_merge_inputs_v1(
                           *state_->manifest, state_->merge_started_chain, state_->input_readers,
                           *state_->writer)
@@ -584,7 +599,7 @@ DistributedSieveMergeWriterAuthorityV1::bind_inputs_create_writer_and_stream(
 }
 
 DistributedSieveMergePreparedResultV1 DistributedSieveMergeWriterAuthorityV1::publish_impl(
-    gnfs::relation::OOCPrivateHandoffTestHooks hooks) noexcept {
+    trusted_test::DistributedSieveMergePreparedPublicationTestHooksV1 hooks) noexcept {
     auto state = std::move(state_);
     if (state == nullptr || state->writer == nullptr || state->manifest == nullptr ||
         state->merge_started_chain.empty() || !state->stream_receipt.has_value() ||
@@ -599,8 +614,14 @@ DistributedSieveMergePreparedResultV1 DistributedSieveMergeWriterAuthorityV1::pu
     }
 
     try {
-        state->writer->finalize_and_publish_private_handoff_built(build_merge_prepared_payload,
-                                                                  state.get(), hooks);
+        MergePreparedPayloadBuildContextV1 build_context{
+            .state = state.get(),
+            .stop_after_payload_build_before_handoff =
+                hooks.stop_after_payload_build_before_handoff,
+            .test_context = hooks.payload_build_context,
+        };
+        state->writer->finalize_and_publish_private_handoff_built(
+            build_merge_prepared_payload, &build_context, hooks.private_handoff_hooks);
         if (!state_process_owned(*state) ||
             state->writer->state() != gnfs::relation::OOCWriterState::Finalized ||
             !cached_prepared_payload_is_exact(*state)) {
@@ -747,7 +768,7 @@ namespace trusted_test {
 DistributedSieveMergePreparedResultV1 publish_distributed_sieve_merge_prepared_v1_with_hooks(
     DistributedSieveMergeWriterAuthorityV1&& authority,
     DistributedSieveMergePreparedPublicationTestHooksV1 hooks) noexcept {
-    return authority.publish_impl(hooks.private_handoff_hooks);
+    return authority.publish_impl(hooks);
 }
 
 } // namespace trusted_test

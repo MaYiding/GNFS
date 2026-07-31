@@ -10,12 +10,14 @@
 #include <gnfs/sieve/distributed_sieve_protocol.hpp>
 #include <gnfs/util/durable_immutable_record.hpp>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -408,6 +410,22 @@ private:
         throw TestFailure("cannot read merge-writer-authority fixture record");
     }
     return bytes;
+}
+
+[[nodiscard]] std::uint64_t read_file_u64(const std::filesystem::path& path, std::uint64_t offset) {
+    CHECK(offset <= static_cast<std::uint64_t>(std::numeric_limits<std::streamoff>::max()));
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        throw std::filesystem::filesystem_error("open merge-writer-authority fixture integer", path,
+                                                std::make_error_code(std::errc::io_error));
+    }
+    input.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+    std::uint64_t value = 0;
+    input.read(reinterpret_cast<char*>(&value), static_cast<std::streamsize>(sizeof(value)));
+    if (!input) {
+        throw TestFailure("cannot read merge-writer-authority fixture integer");
+    }
+    return value;
 }
 
 void publish_canonical_record(const std::filesystem::path& root, std::string_view pending_leaf,
@@ -857,6 +875,904 @@ consume_merge_generation(coordinator::DistributedSieveMergeGenerationAdmissionV1
     return published;
 }
 
+enum class RawMergeWriterResidueShapeV1 : std::uint8_t {
+    empty_incomplete,
+    partial_incomplete,
+    complete_incomplete,
+    finalized_without_handoff,
+};
+
+[[nodiscard]] std::string_view
+raw_merge_writer_residue_label(RawMergeWriterResidueShapeV1 shape) noexcept {
+    switch (shape) {
+    case RawMergeWriterResidueShapeV1::empty_incomplete:
+        return "raw-empty-incomplete";
+    case RawMergeWriterResidueShapeV1::partial_incomplete:
+        return "raw-partial-incomplete";
+    case RawMergeWriterResidueShapeV1::complete_incomplete:
+        return "raw-complete-incomplete";
+    case RawMergeWriterResidueShapeV1::finalized_without_handoff:
+        return "raw-finalized-without-handoff";
+    }
+    return "raw-unknown";
+}
+
+[[nodiscard]] std::array<std::vector<Relation>, 2>
+raw_merge_writer_worker_rows(RawMergeWriterResidueShapeV1 shape) {
+    if (shape == RawMergeWriterResidueShapeV1::empty_incomplete) {
+        return {};
+    }
+    return nonempty_worker_rows();
+}
+
+[[nodiscard]] constexpr std::uint64_t
+raw_merge_writer_persisted_relation_count(RawMergeWriterResidueShapeV1 shape) noexcept {
+    switch (shape) {
+    case RawMergeWriterResidueShapeV1::empty_incomplete:
+        return 0;
+    case RawMergeWriterResidueShapeV1::partial_incomplete:
+        return 1;
+    case RawMergeWriterResidueShapeV1::complete_incomplete:
+    case RawMergeWriterResidueShapeV1::finalized_without_handoff:
+        return 4;
+    }
+    return 0;
+}
+
+struct StopAfterFirstOutputWriteContextV1 final {
+    std::size_t input_slot = std::numeric_limits<std::size_t>::max();
+    std::uint64_t relation_ordinal = std::numeric_limits<std::uint64_t>::max();
+    bool invoked = false;
+};
+
+[[nodiscard]] bool stop_after_first_output_write(std::size_t input_slot,
+                                                 std::uint64_t relation_ordinal,
+                                                 void* opaque) noexcept {
+    auto& context = *static_cast<StopAfterFirstOutputWriteContextV1*>(opaque);
+    if (context.invoked) {
+        return false;
+    }
+    context.input_slot = input_slot;
+    context.relation_ordinal = relation_ordinal;
+    context.invoked = true;
+    return true;
+}
+
+[[nodiscard]] bool stop_after_payload_build_before_handoff(void* opaque) noexcept {
+    auto& invoked = *static_cast<bool*>(opaque);
+    invoked = true;
+    return true;
+}
+
+struct RawMergeWriterResidueStateV1 final {
+    Digest manifest_digest;
+    sieve::MergeStartedV1 started;
+    wave::DistributedSieveMergeGenerationNamesV1 names;
+    relation::OOCCleanupPaths paths;
+    std::uint64_t persisted_relation_count = 0;
+    bool finalized = false;
+};
+
+[[nodiscard]] RawMergeWriterResidueStateV1
+materialize_raw_merge_writer_residue(MergeAuthorityFixture& fixture,
+                                     RawMergeWriterResidueShapeV1 shape) {
+    auto worker_result = fixture.take_worker_result();
+    CHECK(worker_result.store != nullptr);
+    const auto manifest_digest = worker_result.store->manifest_digest();
+    auto admission = begin_merge_generation(std::move(worker_result));
+    const auto started = admission.started_receipt()->record();
+    const auto names =
+        wave::distributed_sieve_merge_generation_names_v1(started.merge_attempt_ordinal);
+    CHECK(names.has_value());
+    const auto paths = relation::OOCCleanupTransaction::paths_for(
+        fixture.root() / names->private_directory_leaf / "corpus");
+
+    if (shape == RawMergeWriterResidueShapeV1::partial_incomplete) {
+        StopAfterFirstOutputWriteContextV1 stop;
+        auto interrupted =
+            authority::trusted_test::consume_distributed_sieve_merge_generation_v1_with_hooks(
+                std::move(admission),
+                WriterAdoptionTestHooks{
+                    .stream_hooks =
+                        {
+                            .stop_after_output_write = stop_after_first_output_write,
+                            .context = &stop,
+                        },
+                });
+        CHECK(stop.invoked);
+        CHECK(stop.input_slot == 0U);
+        CHECK(stop.relation_ordinal == 0U);
+        CHECK(!interrupted);
+        CHECK(!interrupted.authority.has_value());
+        CHECK(interrupted.diagnostic.phase ==
+              authority::DistributedSieveMergeWriterAuthorityPhaseV1::streaming);
+        CHECK(interrupted.diagnostic.status ==
+              authority::DistributedSieveMergeWriterAuthorityStatusV1::stream_failed);
+        CHECK(interrupted.diagnostic.stream.phase ==
+              gnfs::sieve::distributed_sieve_merge_writer_detail::
+                  DistributedSieveMergeWriterPhaseV1::output_write);
+        CHECK(interrupted.diagnostic.stream.status ==
+              gnfs::sieve::distributed_sieve_merge_writer_detail::
+                  DistributedSieveMergeWriterStatusV1::output_write_failed);
+        CHECK(interrupted.diagnostic.reconciliation_required);
+    } else {
+        auto adopted = consume_merge_generation(std::move(admission));
+        CHECK(adopted.authority.has_value());
+        if (shape == RawMergeWriterResidueShapeV1::finalized_without_handoff) {
+            bool stopped = false;
+            auto interrupted =
+                authority::trusted_test::publish_distributed_sieve_merge_prepared_v1_with_hooks(
+                    std::move(*adopted.authority),
+                    authority::trusted_test::DistributedSieveMergePreparedPublicationTestHooksV1{
+                        .private_handoff_hooks = {},
+                        .stop_after_payload_build_before_handoff =
+                            stop_after_payload_build_before_handoff,
+                        .payload_build_context = &stopped,
+                    });
+            CHECK(stopped);
+            CHECK(!interrupted);
+            CHECK(!interrupted.admission.has_value());
+            CHECK(interrupted.diagnostic.phase ==
+                  authority::DistributedSieveMergeWriterAuthorityPhaseV1::payload_build);
+            CHECK(interrupted.diagnostic.status ==
+                  authority::DistributedSieveMergeWriterAuthorityStatusV1::payload_build_failed);
+            CHECK(interrupted.diagnostic.reconciliation_required);
+            CHECK(!adopted.authority->valid());
+        } else {
+            adopted.authority.reset();
+        }
+    }
+
+    return {
+        .manifest_digest = manifest_digest,
+        .started = started,
+        .names = *names,
+        .paths = paths,
+        .persisted_relation_count = raw_merge_writer_persisted_relation_count(shape),
+        .finalized = shape == RawMergeWriterResidueShapeV1::finalized_without_handoff,
+    };
+}
+
+class RawMergeWriterResidueFixtureV1 final {
+public:
+    explicit RawMergeWriterResidueFixtureV1(RawMergeWriterResidueShapeV1 shape)
+        : source_(raw_merge_writer_residue_label(shape), raw_merge_writer_worker_rows(shape)),
+          shape_(shape), state_(materialize_raw_merge_writer_residue(source_, shape)) {}
+
+    RawMergeWriterResidueFixtureV1(const RawMergeWriterResidueFixtureV1&) = delete;
+    RawMergeWriterResidueFixtureV1& operator=(const RawMergeWriterResidueFixtureV1&) = delete;
+
+    [[nodiscard]] RawMergeWriterResidueShapeV1 shape() const noexcept {
+        return shape_;
+    }
+
+    [[nodiscard]] const std::filesystem::path& root() const noexcept {
+        return source_.root();
+    }
+
+    [[nodiscard]] const Digest& manifest_digest() const noexcept {
+        return state_.manifest_digest;
+    }
+
+    [[nodiscard]] const sieve::MergeStartedV1& started() const noexcept {
+        return state_.started;
+    }
+
+    [[nodiscard]] const wave::DistributedSieveMergeGenerationNamesV1& names() const noexcept {
+        return state_.names;
+    }
+
+    [[nodiscard]] const relation::OOCCleanupPaths& paths() const noexcept {
+        return state_.paths;
+    }
+
+    [[nodiscard]] std::uint64_t persisted_relation_count() const noexcept {
+        return state_.persisted_relation_count;
+    }
+
+    [[nodiscard]] bool finalized() const noexcept {
+        return state_.finalized;
+    }
+
+private:
+    MergeAuthorityFixture source_;
+    RawMergeWriterResidueShapeV1 shape_;
+    RawMergeWriterResidueStateV1 state_;
+};
+
+void require_raw_merge_writer_residue_shape(const RawMergeWriterResidueFixtureV1& fixture) {
+    const auto& paths = fixture.paths();
+    CHECK(fixture.manifest_digest() != Digest{});
+    CHECK(fixture.started().merge_attempt_ordinal == 0U);
+    CHECK(std::filesystem::exists(fixture.root() / fixture.names().base_lock_leaf));
+    CHECK(std::filesystem::exists(fixture.root() / fixture.names().canonical_record_leaf));
+    CHECK(!std::filesystem::exists(fixture.root() / fixture.names().pending_record_leaf));
+    CHECK(std::filesystem::exists(paths.lease_reserved_path));
+    CHECK(std::filesystem::exists(paths.lease_owned_path));
+    CHECK(std::filesystem::exists(paths.private_directory));
+    CHECK(std::filesystem::exists(paths.index_path));
+    CHECK(std::filesystem::exists(paths.data_path));
+    CHECK(!std::filesystem::exists(paths.private_handoff_path));
+    CHECK(!std::filesystem::exists(paths.private_handoff_pending_path));
+    CHECK(!std::filesystem::exists(paths.private_handoff_rollback_path));
+
+    const std::uint64_t expected_magic = fixture.finalized()
+                                             ? relation::OOCRelationWriter::MAGIC_V3_FINAL
+                                             : relation::OOCRelationWriter::MAGIC_V3_INCOMPLETE;
+    CHECK(read_file_u64(paths.index_path, 0) == expected_magic);
+    const std::uint64_t expected_header_count =
+        fixture.finalized() ? fixture.persisted_relation_count() : 0U;
+    CHECK(read_file_u64(paths.index_path, relation::OOCRelationWriter::INDEX_COUNT_OFFSET) ==
+          expected_header_count);
+
+    const std::uint64_t expected_index_extent =
+        relation::OOCRelationWriter::INDEX_HEADER_BYTES +
+        fixture.persisted_relation_count() * sizeof(std::uint64_t) +
+        (fixture.finalized() ? relation::OOCRelationWriter::INDEX_SENTINEL_BYTES : 0U);
+    CHECK(file_extent(paths.index_path) == expected_index_extent);
+    if (fixture.persisted_relation_count() == 0U) {
+        CHECK(file_extent(paths.data_path) == relation::OOCRelationWriter::DATA_HEADER_BYTES);
+    } else {
+        CHECK(file_extent(paths.data_path) > relation::OOCRelationWriter::DATA_HEADER_BYTES);
+    }
+}
+
+void require_raw_merge_writer_recovered_to_p0(const RawMergeWriterResidueFixtureV1& fixture) {
+    const auto& paths = fixture.paths();
+    CHECK(std::filesystem::exists(fixture.root() / fixture.names().base_lock_leaf));
+    CHECK(std::filesystem::exists(fixture.root() / fixture.names().canonical_record_leaf));
+    CHECK(!std::filesystem::exists(fixture.root() / fixture.names().pending_record_leaf));
+    CHECK(!std::filesystem::exists(fixture.root() / fixture.names().reserved_leaf));
+    CHECK(!std::filesystem::exists(fixture.root() / fixture.names().reserved_pending_leaf));
+    CHECK(!std::filesystem::exists(fixture.root() / fixture.names().owned_leaf));
+    CHECK(!std::filesystem::exists(fixture.root() / fixture.names().owned_pending_leaf));
+    CHECK(!std::filesystem::exists(fixture.root() / fixture.names().rollback_handoff_leaf));
+    CHECK(!std::filesystem::exists(paths.private_directory));
+    CHECK(!std::filesystem::exists(paths.index_path));
+    CHECK(!std::filesystem::exists(paths.data_path));
+    CHECK(!std::filesystem::exists(paths.private_handoff_path));
+    CHECK(!std::filesystem::exists(paths.private_handoff_pending_path));
+    CHECK(!std::filesystem::exists(paths.private_handoff_rollback_path));
+}
+
+void require_no_next_merge_generation(const RawMergeWriterResidueFixtureV1& fixture) {
+    const auto next_names = wave::distributed_sieve_merge_generation_names_v1(
+        fixture.started().merge_attempt_ordinal + 1U);
+    CHECK(next_names.has_value());
+    CHECK(!std::filesystem::exists(fixture.root() / next_names->base_lock_leaf));
+    CHECK(!std::filesystem::exists(fixture.root() / next_names->private_directory_leaf));
+    CHECK(!std::filesystem::exists(fixture.root() / next_names->canonical_record_leaf));
+    CHECK(!std::filesystem::exists(fixture.root() / next_names->pending_record_leaf));
+}
+
+struct RawMergeWriterStableFactsV1 final {
+    std::vector<std::byte> canonical_record_bytes;
+    sieve::NativeIdentityV1 canonical_record_identity;
+};
+
+[[nodiscard]] RawMergeWriterStableFactsV1
+capture_raw_merge_writer_stable_facts(const RawMergeWriterResidueFixtureV1& fixture) {
+    const auto canonical_path = fixture.root() / fixture.names().canonical_record_leaf;
+    auto canonical_record_bytes = read_file_bytes(canonical_path);
+    CHECK(canonical_record_bytes == encode_record(Record{fixture.started()}));
+    return {
+        .canonical_record_bytes = std::move(canonical_record_bytes),
+        .canonical_record_identity = native_identity(canonical_path),
+    };
+}
+
+void require_canonical_merge_started_unchanged(const RawMergeWriterResidueFixtureV1& fixture,
+                                               const RawMergeWriterStableFactsV1& expected) {
+    const auto canonical_path = fixture.root() / fixture.names().canonical_record_leaf;
+    CHECK(read_file_bytes(canonical_path) == expected.canonical_record_bytes);
+    CHECK(native_identity(canonical_path) == expected.canonical_record_identity);
+}
+
+void require_worker_inputs_observable(const RawMergeWriterResidueFixtureV1& fixture,
+                                      const wave::DistributedSieveWaveStore& store) {
+    const auto observed = store.observe_worker_chunks_v1();
+    if (!observed) {
+        fail("observe raw-recovery worker inputs", __LINE__,
+             wave_diagnostic_detail(observed.diagnostic));
+    }
+    const auto& inputs = fixture.started().ordered_inputs;
+    CHECK(observed.chunks.size() == inputs.size());
+    for (std::size_t index = 0; index < inputs.size(); ++index) {
+        const auto& input = inputs[index];
+        const auto& chunk = observed.chunks[index];
+        CHECK(chunk.chunk.chunk_id == input.chunk_id);
+        CHECK(chunk.chunk.sq_begin == input.sq_begin);
+        CHECK(chunk.chunk.sq_end == input.sq_end);
+        CHECK(!chunk.terminal_failure.has_value());
+
+        if (input.disposition == sieve::ChunkDispositionV1::empty) {
+            CHECK(chunk.state == wave::DistributedSieveWorkerChunkDurableStateV1::empty);
+            CHECK(!chunk.latest_attempt.has_value());
+            CHECK(!chunk.handoff.has_value());
+            continue;
+        }
+
+        CHECK(input.disposition == sieve::ChunkDispositionV1::handoff);
+        CHECK(chunk.state == wave::DistributedSieveWorkerChunkDurableStateV1::handoff);
+        CHECK(chunk.latest_attempt.has_value());
+        CHECK(chunk.handoff.has_value());
+        const auto& attempt = *chunk.latest_attempt;
+        const auto& handoff = *chunk.handoff;
+        CHECK(input.durable_attempt_count > 0U);
+        CHECK(attempt.manifest_digest == fixture.manifest_digest());
+        CHECK(attempt.chunk_id == input.chunk_id);
+        CHECK(attempt.sq_begin == input.sq_begin);
+        CHECK(attempt.sq_end == input.sq_end);
+        CHECK(attempt.attempt_ordinal == input.durable_attempt_count - 1U);
+        CHECK(attempt.self_digest == input.last_attempt_digest);
+        CHECK(attempt.lease.lease_id == input.lease_id);
+        CHECK(handoff.manifest_digest == fixture.manifest_digest());
+        CHECK(handoff.work_digest == fixture.started().work_digest);
+        CHECK(handoff.chunk_id == input.chunk_id);
+        CHECK(handoff.sq_begin == input.sq_begin);
+        CHECK(handoff.sq_end == input.sq_end);
+        CHECK(handoff.attempt_ordinal == attempt.attempt_ordinal);
+        CHECK(handoff.attempt_started_digest == attempt.self_digest);
+        CHECK(handoff.lease.lease_id == input.lease_id);
+        CHECK(handoff.next_sq_index == input.next_sq_index);
+        CHECK(handoff.processed_sq_count == input.processed_sq_count);
+        CHECK(handoff.completion_reason == input.completion_reason);
+        CHECK(handoff.relation_count == input.raw_relation_count);
+        CHECK(handoff.artifact.descriptor.relation_count == input.raw_relation_count);
+        CHECK(handoff.artifact.sequence_receipt == input.sequence_receipt);
+        CHECK(handoff.artifact.corpus_sha256 == input.corpus_sha256);
+        CHECK(handoff.self_digest == input.handoff_digest);
+        CHECK(handoff.cleanup_intent_absent);
+    }
+}
+
+void require_raw_merge_writer_stable_facts(const RawMergeWriterResidueFixtureV1& fixture,
+                                           const wave::DistributedSieveWaveStore& store,
+                                           const RawMergeWriterStableFactsV1& expected) {
+    require_canonical_merge_started_unchanged(fixture, expected);
+    require_worker_inputs_observable(fixture, store);
+    require_no_next_merge_generation(fixture);
+}
+
+void test_raw_merge_writer_residue_recovery_shapes() {
+    constexpr std::array shapes{
+        RawMergeWriterResidueShapeV1::empty_incomplete,
+        RawMergeWriterResidueShapeV1::partial_incomplete,
+        RawMergeWriterResidueShapeV1::complete_incomplete,
+        RawMergeWriterResidueShapeV1::finalized_without_handoff,
+    };
+    for (const auto shape : shapes) {
+        RawMergeWriterResidueFixtureV1 fixture(shape);
+        CHECK(fixture.shape() == shape);
+        require_raw_merge_writer_residue_shape(fixture);
+
+        const auto stable_facts = capture_raw_merge_writer_stable_facts(fixture);
+        const auto index_bytes = read_file_bytes(fixture.paths().index_path);
+        const auto data_bytes = read_file_bytes(fixture.paths().data_path);
+        const auto index_identity = native_identity(fixture.paths().index_path);
+        const auto data_identity = native_identity(fixture.paths().data_path);
+
+        auto reopened =
+            wave::DistributedSieveWaveStore::open(fixture.root(), fixture.manifest_digest());
+        CHECK(reopened);
+        CHECK(reopened.store != nullptr);
+        CHECK(!reopened.prepared_admission.has_value());
+        require_wave_status(reopened.diagnostic, wave::DistributedSieveWaveStoreStatus::ready,
+                            "cold open observes raw merge-writer residue");
+
+        // Cold open is deliberately read-only.  It retains an exact observation
+        // for the later prepare/reconcile authority path.
+        require_raw_merge_writer_residue_shape(fixture);
+        require_raw_merge_writer_stable_facts(fixture, *reopened.store, stable_facts);
+        CHECK(read_file_bytes(fixture.paths().index_path) == index_bytes);
+        CHECK(read_file_bytes(fixture.paths().data_path) == data_bytes);
+        CHECK(native_identity(fixture.paths().index_path) == index_identity);
+        CHECK(native_identity(fixture.paths().data_path) == data_identity);
+        require_no_next_merge_generation(fixture);
+
+        const auto cursor = wave::prepare_distributed_sieve_merge_generation_v1(*reopened.store);
+        if (!cursor) {
+            fail("prepare reconciles raw merge-writer residue", __LINE__,
+                 wave_diagnostic_detail(cursor.diagnostic));
+        }
+        CHECK(*cursor.merge_attempt_ordinal == fixture.started().merge_attempt_ordinal + 1U);
+        require_raw_merge_writer_recovered_to_p0(fixture);
+        require_raw_merge_writer_stable_facts(fixture, *reopened.store, stable_facts);
+
+        const auto repeated = wave::prepare_distributed_sieve_merge_generation_v1(*reopened.store);
+        if (!repeated) {
+            fail("repeated prepare remains idempotent after raw recovery", __LINE__,
+                 wave_diagnostic_detail(repeated.diagnostic));
+        }
+        CHECK(repeated.merge_attempt_ordinal == cursor.merge_attempt_ordinal);
+        require_raw_merge_writer_recovered_to_p0(fixture);
+        require_raw_merge_writer_stable_facts(fixture, *reopened.store, stable_facts);
+
+        reopened.store.reset();
+        auto idempotent =
+            wave::DistributedSieveWaveStore::open(fixture.root(), fixture.manifest_digest());
+        CHECK(idempotent);
+        CHECK(idempotent.store != nullptr);
+        CHECK(!idempotent.prepared_admission.has_value());
+        require_wave_status(idempotent.diagnostic, wave::DistributedSieveWaveStoreStatus::ready,
+                            "reopen after raw merge-writer recovery");
+        const auto reopened_cursor =
+            wave::prepare_distributed_sieve_merge_generation_v1(*idempotent.store);
+        if (!reopened_cursor) {
+            fail("prepare after raw-recovery reopen remains idempotent", __LINE__,
+                 wave_diagnostic_detail(reopened_cursor.diagnostic));
+        }
+        CHECK(reopened_cursor.merge_attempt_ordinal == cursor.merge_attempt_ordinal);
+        require_raw_merge_writer_recovered_to_p0(fixture);
+        require_raw_merge_writer_stable_facts(fixture, *idempotent.store, stable_facts);
+    }
+}
+
+enum class RawRecoveryNamespaceEntryKindV1 : std::uint8_t {
+    directory,
+    regular_file,
+};
+
+struct RawRecoveryNamespaceEntrySnapshotV1 final {
+    std::filesystem::path relative_path;
+    RawRecoveryNamespaceEntryKindV1 kind = RawRecoveryNamespaceEntryKindV1::regular_file;
+    sieve::NativeIdentityV1 identity;
+    std::uint64_t extent = 0;
+    std::uint64_t link_count = 0;
+    std::uint32_t mode = 0;
+    std::vector<std::byte> bytes;
+
+    [[nodiscard]] friend bool operator==(const RawRecoveryNamespaceEntrySnapshotV1&,
+                                         const RawRecoveryNamespaceEntrySnapshotV1&) = default;
+};
+
+struct RawRecoveryNamespaceSnapshotV1 final {
+    sieve::NativeIdentityV1 root_identity;
+    std::vector<RawRecoveryNamespaceEntrySnapshotV1> entries;
+
+    [[nodiscard]] friend bool operator==(const RawRecoveryNamespaceSnapshotV1&,
+                                         const RawRecoveryNamespaceSnapshotV1&) = default;
+};
+
+[[nodiscard]] RawRecoveryNamespaceSnapshotV1
+capture_raw_recovery_namespace_snapshot(const RawMergeWriterResidueFixtureV1& fixture) {
+    RawRecoveryNamespaceSnapshotV1 snapshot{
+        .root_identity = native_identity(fixture.root()),
+    };
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(fixture.root())) {
+        struct stat metadata{};
+        if (::lstat(entry.path().c_str(), &metadata) != 0) {
+            throw std::system_error(errno, std::generic_category(),
+                                    "inspect raw-recovery namespace snapshot entry");
+        }
+        const bool directory = S_ISDIR(metadata.st_mode);
+        const bool regular_file = S_ISREG(metadata.st_mode);
+        if (!directory && !regular_file) {
+            fail("raw-recovery namespace contains only directories and regular files", __LINE__);
+        }
+        if (regular_file && metadata.st_size < 0) {
+            fail("raw-recovery namespace metadata is nonnegative", __LINE__);
+        }
+        auto relative_path = entry.path().lexically_relative(fixture.root());
+        CHECK(!relative_path.empty());
+        snapshot.entries.push_back({
+            .relative_path = std::move(relative_path),
+            .kind = directory ? RawRecoveryNamespaceEntryKindV1::directory
+                              : RawRecoveryNamespaceEntryKindV1::regular_file,
+            .identity = native_identity(entry.path()),
+            .extent = regular_file ? static_cast<std::uint64_t>(metadata.st_size) : 0U,
+            .link_count = static_cast<std::uint64_t>(metadata.st_nlink),
+            .mode = static_cast<std::uint32_t>(metadata.st_mode),
+            .bytes = regular_file ? read_file_bytes(entry.path()) : std::vector<std::byte>{},
+        });
+        if (regular_file) {
+            CHECK(snapshot.entries.back().bytes.size() == snapshot.entries.back().extent);
+        }
+    }
+    std::sort(snapshot.entries.begin(), snapshot.entries.end(),
+              [](const RawRecoveryNamespaceEntrySnapshotV1& left,
+                 const RawRecoveryNamespaceEntrySnapshotV1& right) {
+                  return left.relative_path.generic_string() < right.relative_path.generic_string();
+              });
+    return snapshot;
+}
+
+void require_raw_recovery_fault_shape(
+    const RawMergeWriterResidueFixtureV1& fixture,
+    wave::DistributedSieveMergeRawWriterRecoveryFaultPointV1 point) {
+    const auto& paths = fixture.paths();
+    const auto staging_directory =
+        cleanup::private_lease_staging_path(paths, fixture.started().merged_lease.lease_id.limbs);
+    const auto staging_owner = cleanup::private_lease_owner_path(staging_directory);
+    const auto staging_owner_pending = cleanup::private_lease_owner_pending_path(staging_directory);
+    const auto staging_index = staging_directory / paths.index_path.filename();
+    const auto staging_data = staging_directory / paths.data_path.filename();
+    const auto staging_handoff = staging_directory / paths.private_handoff_path.filename();
+    const auto staging_handoff_pending =
+        staging_directory / paths.private_handoff_pending_path.filename();
+    const auto staging_quarantine_index =
+        staging_directory / paths.quarantine_index_path.filename();
+    const auto staging_quarantine_data = staging_directory / paths.quarantine_data_path.filename();
+
+    bool final_directory_present = false;
+    bool staging_directory_present = false;
+    bool owner_present = false;
+    bool index_present = false;
+    bool data_present = false;
+    bool reserved_present = false;
+    bool owned_present = false;
+    switch (point) {
+    case wave::DistributedSieveMergeRawWriterRecoveryFaultPointV1::RecoveryPermitAcquired:
+        final_directory_present = true;
+        owner_present = true;
+        index_present = true;
+        data_present = true;
+        reserved_present = true;
+        owned_present = true;
+        break;
+    case wave::DistributedSieveMergeRawWriterRecoveryFaultPointV1::
+        PreactiveDirectoryQuarantinedDurable:
+        staging_directory_present = true;
+        owner_present = true;
+        index_present = true;
+        data_present = true;
+        reserved_present = true;
+        owned_present = true;
+        break;
+    case wave::DistributedSieveMergeRawWriterRecoveryFaultPointV1::PreactiveDataRemovedDurable:
+        staging_directory_present = true;
+        owner_present = true;
+        index_present = true;
+        reserved_present = true;
+        owned_present = true;
+        break;
+    case wave::DistributedSieveMergeRawWriterRecoveryFaultPointV1::PreactiveIndexRemovedDurable:
+        staging_directory_present = true;
+        owner_present = true;
+        reserved_present = true;
+        owned_present = true;
+        break;
+    case wave::DistributedSieveMergeRawWriterRecoveryFaultPointV1::OwnerRemovedDurable:
+        staging_directory_present = true;
+        reserved_present = true;
+        owned_present = true;
+        break;
+    case wave::DistributedSieveMergeRawWriterRecoveryFaultPointV1::FinalDirectoryRemovedDurable:
+        reserved_present = true;
+        owned_present = true;
+        break;
+    case wave::DistributedSieveMergeRawWriterRecoveryFaultPointV1::ReservedRemovedDurable:
+        owned_present = true;
+        break;
+    case wave::DistributedSieveMergeRawWriterRecoveryFaultPointV1::OwnedRemovedDurable:
+        break;
+    case wave::DistributedSieveMergeRawWriterRecoveryFaultPointV1::Count:
+        fail("raw-recovery fault point is concrete", __LINE__);
+    }
+
+    CHECK(std::filesystem::is_directory(paths.private_directory) == final_directory_present);
+    CHECK(std::filesystem::is_directory(staging_directory) == staging_directory_present);
+    CHECK(std::filesystem::exists(paths.lease_reserved_path) == reserved_present);
+    CHECK(std::filesystem::exists(paths.lease_owned_path) == owned_present);
+    CHECK(!std::filesystem::exists(paths.lease_reserved_pending_path));
+    CHECK(!std::filesystem::exists(paths.lease_owned_pending_path));
+    CHECK(std::filesystem::exists(fixture.root() / fixture.names().base_lock_leaf));
+    CHECK(std::filesystem::exists(fixture.root() / fixture.names().canonical_record_leaf));
+    CHECK(!std::filesystem::exists(fixture.root() / fixture.names().pending_record_leaf));
+    CHECK(!std::filesystem::exists(fixture.root() / fixture.names().rollback_handoff_leaf));
+
+    const auto active_directory =
+        final_directory_present ? paths.private_directory : staging_directory;
+    const auto active_owner = cleanup::private_lease_owner_path(active_directory);
+    const auto active_owner_pending = cleanup::private_lease_owner_pending_path(active_directory);
+    const auto active_index = active_directory / paths.index_path.filename();
+    const auto active_data = active_directory / paths.data_path.filename();
+    CHECK(std::filesystem::exists(active_owner) == owner_present);
+    CHECK(!std::filesystem::exists(active_owner_pending));
+    CHECK(std::filesystem::exists(active_index) == index_present);
+    CHECK(std::filesystem::exists(active_data) == data_present);
+
+    CHECK(!std::filesystem::exists(paths.private_handoff_path));
+    CHECK(!std::filesystem::exists(paths.private_handoff_pending_path));
+    CHECK(!std::filesystem::exists(paths.private_handoff_rollback_path));
+    CHECK(!std::filesystem::exists(paths.quarantine_index_path));
+    CHECK(!std::filesystem::exists(paths.quarantine_data_path));
+    CHECK(!std::filesystem::exists(staging_owner_pending));
+    CHECK(!std::filesystem::exists(staging_handoff));
+    CHECK(!std::filesystem::exists(staging_handoff_pending));
+    CHECK(!std::filesystem::exists(staging_quarantine_index));
+    CHECK(!std::filesystem::exists(staging_quarantine_data));
+    if (!staging_directory_present) {
+        CHECK(!std::filesystem::exists(staging_owner));
+        CHECK(!std::filesystem::exists(staging_index));
+        CHECK(!std::filesystem::exists(staging_data));
+    }
+    require_no_next_merge_generation(fixture);
+}
+
+inline constexpr std::array RAW_MERGE_WRITER_RECOVERY_FAULT_POINTS_V1{
+    wave::DistributedSieveMergeRawWriterRecoveryFaultPointV1::RecoveryPermitAcquired,
+    wave::DistributedSieveMergeRawWriterRecoveryFaultPointV1::PreactiveDirectoryQuarantinedDurable,
+    wave::DistributedSieveMergeRawWriterRecoveryFaultPointV1::PreactiveDataRemovedDurable,
+    wave::DistributedSieveMergeRawWriterRecoveryFaultPointV1::PreactiveIndexRemovedDurable,
+    wave::DistributedSieveMergeRawWriterRecoveryFaultPointV1::OwnerRemovedDurable,
+    wave::DistributedSieveMergeRawWriterRecoveryFaultPointV1::FinalDirectoryRemovedDurable,
+    wave::DistributedSieveMergeRawWriterRecoveryFaultPointV1::ReservedRemovedDurable,
+    wave::DistributedSieveMergeRawWriterRecoveryFaultPointV1::OwnedRemovedDurable,
+};
+
+static_assert(
+    RAW_MERGE_WRITER_RECOVERY_FAULT_POINTS_V1.size() ==
+    static_cast<std::size_t>(wave::DistributedSieveMergeRawWriterRecoveryFaultPointV1::Count));
+
+struct RawMergeWriterRecoveryStopContextV1 final {
+    wave::DistributedSieveMergeRawWriterRecoveryFaultPointV1 target =
+        wave::DistributedSieveMergeRawWriterRecoveryFaultPointV1::Count;
+    bool invoked = false;
+};
+
+[[nodiscard]] bool stop_after_raw_merge_writer_recovery_fault_point(
+    wave::DistributedSieveMergeRawWriterRecoveryFaultPointV1 point, void* opaque) noexcept {
+    auto& context = *static_cast<RawMergeWriterRecoveryStopContextV1*>(opaque);
+    if (point != context.target) {
+        return false;
+    }
+    context.invoked = true;
+    return true;
+}
+
+void test_raw_merge_writer_recovery_fault_prefixes_retry() {
+    for (const auto point : RAW_MERGE_WRITER_RECOVERY_FAULT_POINTS_V1) {
+        RawMergeWriterResidueFixtureV1 fixture(RawMergeWriterResidueShapeV1::complete_incomplete);
+        require_raw_merge_writer_residue_shape(fixture);
+        const auto stable_facts = capture_raw_merge_writer_stable_facts(fixture);
+
+        auto opened =
+            wave::DistributedSieveWaveStore::open(fixture.root(), fixture.manifest_digest());
+        CHECK(opened);
+        CHECK(opened.store != nullptr);
+        CHECK(!opened.prepared_admission.has_value());
+        require_wave_status(opened.diagnostic, wave::DistributedSieveWaveStoreStatus::ready,
+                            "open raw merge-writer fault-prefix fixture");
+        require_raw_merge_writer_stable_facts(fixture, *opened.store, stable_facts);
+
+        RawMergeWriterRecoveryStopContextV1 stop{.target = point};
+        const auto interrupted = wave::reconcile_merge_started_generation_v1(
+            *opened.store, fixture.started().merge_attempt_ordinal,
+            wave::DistributedSieveMergeStartedReconcileTestHooksV1{
+                .raw_recovery_stop_after = stop_after_raw_merge_writer_recovery_fault_point,
+                .context = &stop,
+            });
+        CHECK(stop.invoked);
+        CHECK(!interrupted);
+        CHECK(!interrupted.reconciled.has_value());
+        require_wave_status(interrupted.diagnostic,
+                            wave::DistributedSieveWaveStoreStatus::interrupted,
+                            "interrupt raw merge-writer recovery at durable fault point");
+        CHECK(interrupted.diagnostic.last_merge_raw_writer_recovery_fault_point.has_value());
+        CHECK(*interrupted.diagnostic.last_merge_raw_writer_recovery_fault_point == point);
+        require_canonical_merge_started_unchanged(fixture, stable_facts);
+        require_raw_recovery_fault_shape(fixture, point);
+        const auto interrupted_namespace = capture_raw_recovery_namespace_snapshot(fixture);
+
+        opened.store.reset();
+        auto reopened =
+            wave::DistributedSieveWaveStore::open(fixture.root(), fixture.manifest_digest());
+        CHECK(reopened);
+        CHECK(reopened.store != nullptr);
+        CHECK(!reopened.prepared_admission.has_value());
+        require_wave_status(reopened.diagnostic, wave::DistributedSieveWaveStoreStatus::ready,
+                            "cold reopen interrupted raw merge-writer recovery prefix");
+        require_raw_merge_writer_stable_facts(fixture, *reopened.store, stable_facts);
+        require_raw_recovery_fault_shape(fixture, point);
+        CHECK(capture_raw_recovery_namespace_snapshot(fixture) == interrupted_namespace);
+
+        const auto cursor = wave::prepare_distributed_sieve_merge_generation_v1(*reopened.store);
+        if (!cursor) {
+            fail("retry raw merge-writer recovery prefix to P0", __LINE__,
+                 wave_diagnostic_detail(cursor.diagnostic));
+        }
+        CHECK(cursor.merge_attempt_ordinal == fixture.started().merge_attempt_ordinal + 1U);
+        require_raw_merge_writer_recovered_to_p0(fixture);
+        require_raw_merge_writer_stable_facts(fixture, *reopened.store, stable_facts);
+    }
+}
+
+struct SameByteRawLeafReplacementV1 final {
+    std::vector<std::byte> bytes;
+    sieve::NativeIdentityV1 original_identity;
+    sieve::NativeIdentityV1 replacement_identity;
+};
+
+[[nodiscard]] SameByteRawLeafReplacementV1
+replace_raw_leaf_with_same_bytes(const std::filesystem::path& path,
+                                 const std::filesystem::path& displaced_path) {
+    CHECK(!std::filesystem::exists(displaced_path));
+    const auto bytes = read_file_bytes(path);
+    const auto original_identity = native_identity(path);
+    struct stat metadata{};
+    CHECK(::lstat(path.c_str(), &metadata) == 0);
+    CHECK(S_ISREG(metadata.st_mode));
+    CHECK(::rename(path.c_str(), displaced_path.c_str()) == 0);
+
+    int descriptor = -1;
+    do {
+        descriptor = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+                            static_cast<mode_t>(metadata.st_mode & 0777));
+    } while (descriptor < 0 && errno == EINTR);
+    if (descriptor < 0) {
+        throw std::system_error(errno, std::generic_category(),
+                                "create same-byte raw merge-writer replacement");
+    }
+    UniqueFd replacement(descriptor);
+    int chmod_result = -1;
+    do {
+        chmod_result = ::fchmod(replacement.get(), static_cast<mode_t>(metadata.st_mode & 0777));
+    } while (chmod_result < 0 && errno == EINTR);
+    CHECK(chmod_result == 0);
+    CHECK(write_exact_fd(replacement.get(), bytes.data(), bytes.size()));
+    int sync_result = -1;
+    do {
+        sync_result = ::fsync(replacement.get());
+    } while (sync_result < 0 && errno == EINTR);
+    CHECK(sync_result == 0);
+
+    const auto replacement_identity = native_identity(path);
+    CHECK(replacement_identity != original_identity);
+    CHECK(native_identity(displaced_path) == original_identity);
+    CHECK(read_file_bytes(path) == bytes);
+    CHECK(read_file_bytes(displaced_path) == bytes);
+    return {
+        .bytes = bytes,
+        .original_identity = original_identity,
+        .replacement_identity = replacement_identity,
+    };
+}
+
+void test_raw_merge_writer_same_byte_replacement_fails_closed() {
+    constexpr std::array replace_index_cases{true, false};
+    for (const bool replace_index : replace_index_cases) {
+        RawMergeWriterResidueFixtureV1 fixture(RawMergeWriterResidueShapeV1::complete_incomplete);
+        require_raw_merge_writer_residue_shape(fixture);
+        const auto stable_facts = capture_raw_merge_writer_stable_facts(fixture);
+        const auto index_bytes = read_file_bytes(fixture.paths().index_path);
+        const auto data_bytes = read_file_bytes(fixture.paths().data_path);
+        const auto index_identity = native_identity(fixture.paths().index_path);
+        const auto data_identity = native_identity(fixture.paths().data_path);
+
+        auto opened =
+            wave::DistributedSieveWaveStore::open(fixture.root(), fixture.manifest_digest());
+        CHECK(opened);
+        CHECK(opened.store != nullptr);
+        CHECK(!opened.prepared_admission.has_value());
+        require_raw_merge_writer_stable_facts(fixture, *opened.store, stable_facts);
+
+        const auto& target_path =
+            replace_index ? fixture.paths().index_path : fixture.paths().data_path;
+        const auto& other_path =
+            replace_index ? fixture.paths().data_path : fixture.paths().index_path;
+        const auto displaced_path =
+            fixture.root().parent_path() /
+            (replace_index ? "raw-index-original.displaced" : "raw-data-original.displaced");
+        const auto replaced = replace_raw_leaf_with_same_bytes(target_path, displaced_path);
+
+        const auto cursor = wave::prepare_distributed_sieve_merge_generation_v1(*opened.store);
+        CHECK(!cursor);
+        CHECK(!cursor.merge_attempt_ordinal.has_value());
+        require_wave_status(cursor.diagnostic,
+                            wave::DistributedSieveWaveStoreStatus::namespace_conflict,
+                            "same-byte raw leaf replacement conflicts with observed identity");
+
+        require_canonical_merge_started_unchanged(fixture, stable_facts);
+        require_no_next_merge_generation(fixture);
+        require_raw_merge_writer_residue_shape(fixture);
+        CHECK(std::filesystem::exists(displaced_path));
+        CHECK(native_identity(target_path) == replaced.replacement_identity);
+        CHECK(native_identity(displaced_path) == replaced.original_identity);
+        CHECK(read_file_bytes(target_path) == replaced.bytes);
+        CHECK(read_file_bytes(displaced_path) == replaced.bytes);
+        if (replace_index) {
+            CHECK(replaced.bytes == index_bytes);
+            CHECK(replaced.original_identity == index_identity);
+            CHECK(native_identity(other_path) == data_identity);
+            CHECK(read_file_bytes(other_path) == data_bytes);
+        } else {
+            CHECK(replaced.bytes == data_bytes);
+            CHECK(replaced.original_identity == data_identity);
+            CHECK(native_identity(other_path) == index_identity);
+            CHECK(read_file_bytes(other_path) == index_bytes);
+        }
+    }
+}
+
+void test_raw_merge_writer_competing_cold_open_is_busy() {
+    RawMergeWriterResidueFixtureV1 fixture(RawMergeWriterResidueShapeV1::complete_incomplete);
+    require_raw_merge_writer_residue_shape(fixture);
+    const auto stable_facts = capture_raw_merge_writer_stable_facts(fixture);
+    const auto index_bytes = read_file_bytes(fixture.paths().index_path);
+    const auto data_bytes = read_file_bytes(fixture.paths().data_path);
+    const auto index_identity = native_identity(fixture.paths().index_path);
+    const auto data_identity = native_identity(fixture.paths().data_path);
+
+    auto baseline =
+        wave::DistributedSieveWaveStore::open(fixture.root(), fixture.manifest_digest());
+    CHECK(baseline);
+    CHECK(baseline.store != nullptr);
+    require_raw_merge_writer_stable_facts(fixture, *baseline.store, stable_facts);
+    baseline.store.reset();
+
+    std::array<int, 2> ready_pipe{-1, -1};
+    std::array<int, 2> release_pipe{-1, -1};
+    CHECK(::pipe(ready_pipe.data()) == 0);
+    CHECK(::pipe(release_pipe.data()) == 0);
+    const pid_t child = ::fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        (void)::close(ready_pipe[0]);
+        (void)::close(release_pipe[1]);
+        auto held =
+            wave::DistributedSieveWaveStore::open(fixture.root(), fixture.manifest_digest());
+        const char ready =
+            held && held.store != nullptr && !held.prepared_admission.has_value() ? 'r' : 'f';
+        const bool signalled = write_exact_fd(ready_pipe[1], &ready, sizeof(ready));
+        char release = '\0';
+        const bool released = read_exact_fd(release_pipe[0], &release, sizeof(release));
+        held.store.reset();
+        (void)::close(ready_pipe[1]);
+        (void)::close(release_pipe[0]);
+        ::_exit(signalled && released && ready == 'r' && release == 'x' ? EXIT_SUCCESS
+                                                                        : EXIT_FAILURE);
+    }
+
+    (void)::close(ready_pipe[1]);
+    (void)::close(release_pipe[0]);
+    char ready = '\0';
+    const bool received = read_exact_fd(ready_pipe[0], &ready, sizeof(ready));
+    auto busy = wave::DistributedSieveWaveStore::open(fixture.root(), fixture.manifest_digest());
+    const char release = 'x';
+    const bool released = write_exact_fd(release_pipe[1], &release, sizeof(release));
+    (void)::close(ready_pipe[0]);
+    (void)::close(release_pipe[1]);
+    int child_status = 0;
+    pid_t waited = -1;
+    do {
+        waited = ::waitpid(child, &child_status, 0);
+    } while (waited < 0 && errno == EINTR);
+
+    CHECK(received);
+    CHECK(ready == 'r');
+    CHECK(!busy);
+    CHECK(busy.store == nullptr);
+    CHECK(!busy.prepared_admission.has_value());
+    require_wave_status(busy.diagnostic, wave::DistributedSieveWaveStoreStatus::lock_busy,
+                        "competing process cannot cold-open raw merge-writer residue");
+    CHECK(released);
+    CHECK(waited == child);
+    CHECK(WIFEXITED(child_status));
+    CHECK(WEXITSTATUS(child_status) == EXIT_SUCCESS);
+    require_canonical_merge_started_unchanged(fixture, stable_facts);
+    require_no_next_merge_generation(fixture);
+    require_raw_merge_writer_residue_shape(fixture);
+    CHECK(read_file_bytes(fixture.paths().index_path) == index_bytes);
+    CHECK(read_file_bytes(fixture.paths().data_path) == data_bytes);
+    CHECK(native_identity(fixture.paths().index_path) == index_identity);
+    CHECK(native_identity(fixture.paths().data_path) == data_identity);
+
+    auto reopened =
+        wave::DistributedSieveWaveStore::open(fixture.root(), fixture.manifest_digest());
+    CHECK(reopened);
+    CHECK(reopened.store != nullptr);
+    require_raw_merge_writer_stable_facts(fixture, *reopened.store, stable_facts);
+    const auto cursor = wave::prepare_distributed_sieve_merge_generation_v1(*reopened.store);
+    if (!cursor) {
+        fail("prepare raw merge-writer residue after competing process exits", __LINE__,
+             wave_diagnostic_detail(cursor.diagnostic));
+    }
+    CHECK(cursor.merge_attempt_ordinal == fixture.started().merge_attempt_ordinal + 1U);
+    require_raw_merge_writer_recovered_to_p0(fixture);
+    require_raw_merge_writer_stable_facts(fixture, *reopened.store, stable_facts);
+}
+
 void test_real_nonempty_merge_end_to_end() {
     MergeAuthorityFixture fixture("nonempty", nonempty_worker_rows());
     auto worker_result = fixture.take_worker_result();
@@ -1292,6 +2208,10 @@ int main() {
         test_real_nonempty_merge_end_to_end();
         test_fork_child_exact_batch_does_not_flush_parent();
         test_real_zero_row_merge_end_to_end();
+        test_raw_merge_writer_residue_recovery_shapes();
+        test_raw_merge_writer_recovery_fault_prefixes_retry();
+        test_raw_merge_writer_same_byte_replacement_fails_closed();
+        test_raw_merge_writer_competing_cold_open_is_busy();
         test_invalid_admission_fails_closed();
         test_real_typed_publication_prefixes();
         std::cout << "Distributed sieve merge writer authority tests PASSED\n";

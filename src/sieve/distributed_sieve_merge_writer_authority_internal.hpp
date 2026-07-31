@@ -127,7 +127,13 @@ struct DistributedSieveMergeWriterAdoptionTestHooksV1 final {
 };
 
 struct DistributedSieveMergePreparedPublicationTestHooksV1 final {
+    using StopAfterPayloadBuildBeforeHandoff = bool (*)(void* context) noexcept;
+
     gnfs::relation::OOCPrivateHandoffTestHooks private_handoff_hooks;
+    /// Runs only after final corpus evidence and the typed payload are complete,
+    /// before the first private-handoff namespace mutation.
+    StopAfterPayloadBuildBeforeHandoff stop_after_payload_build_before_handoff = nullptr;
+    void* payload_build_context = nullptr;
 };
 
 [[nodiscard]] DistributedSieveMergeWriterAdoptionResultV1
@@ -165,7 +171,7 @@ private:
         distributed_sieve_merge_writer_detail::trusted_test::DistributedSieveMergeWriterTestHooksV1
             hooks = {}) noexcept;
     [[nodiscard]] DistributedSieveMergePreparedResultV1
-    publish_impl(gnfs::relation::OOCPrivateHandoffTestHooks hooks) noexcept;
+    publish_impl(trusted_test::DistributedSieveMergePreparedPublicationTestHooksV1 hooks) noexcept;
     void release_state_noexcept() noexcept;
     [[nodiscard]] static bool
     state_lifetime_stable(const DistributedSieveMergeWriterAuthorityStateV1& state) noexcept;

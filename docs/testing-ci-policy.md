@@ -563,9 +563,22 @@ interruption at a later worker's receipt callback must observe every target and
 worker lock held, unwind every partially adopted reader, leave no next-merge
 branch, and permit an exact hook-free retry.
 
-This evidence closes M4b-P2b-P0b only. M4b-P2b-P1 raw writer-residue rollback
-and the later `WaveMergeCommitV1` consumer remain unimplemented and therefore
-have no positive completion claim in routine test selection.
+This evidence closes M4b-P2b-P0b. M4b-P2b-P1 adds a second recovery boundary
+to `test_distributed_sieve_merge_writer_authority`. Cold open must observe four
+real no-handoff writer residues without mutating them: empty, partial, and
+complete `INCOMPLETE` pairs, plus a `FINAL` pair whose typed payload was built
+before handoff publication. Explicit merge preparation then rolls the exact
+latest canonical `MergeStartedV1` lease back to P0 while preserving the start
+record, worker inputs, and absent successor namespace.
+
+The same binary interrupts all eight raw-recovery boundaries from action-permit
+admission through durable `OWNED` removal. Each prefix must cold-reopen and
+converge to P0. Same-byte index and data inode replacements must fail as
+`namespace_conflict` without deleting either the replacement or displaced
+object. A competing process must observe `lock_busy`; after it exits, cold
+reopen and recovery must succeed. The later `WaveMergeCommitV1` consumer
+remains unimplemented and has no positive completion claim in routine test
+selection.
 
 `test_distributed_sieve_resume` is also the dedicated M2j-A receipt-gated
 launcher contract.

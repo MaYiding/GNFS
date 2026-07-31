@@ -179,6 +179,12 @@ MERGE_WRITER_TEST_HOOK_IDENTIFIER_ALLOWLISTS = {
         MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
         MERGE_WRITER_AUTHORITY_TEST_FILE,
     },
+    "stop_after_output_write": {
+        MERGE_WRITER_IMPLEMENTATION_FILE,
+        MERGE_WRITER_INTERFACE_FILE,
+        MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+        MERGE_WRITER_AUTHORITY_TEST_FILE,
+    },
     "DistributedSieveMergeWriterAdoptionTestHooksV1": {
         MERGE_COORDINATOR_INTERFACE_FILE,
         MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
@@ -187,6 +193,11 @@ MERGE_WRITER_TEST_HOOK_IDENTIFIER_ALLOWLISTS = {
     },
     "consume_distributed_sieve_merge_generation_v1_with_hooks": {
         MERGE_COORDINATOR_INTERFACE_FILE,
+        MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+        MERGE_WRITER_AUTHORITY_INTERFACE_FILE,
+        MERGE_WRITER_AUTHORITY_TEST_FILE,
+    },
+    "stop_after_payload_build_before_handoff": {
         MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
         MERGE_WRITER_AUTHORITY_INTERFACE_FILE,
         MERGE_WRITER_AUTHORITY_TEST_FILE,
@@ -808,6 +819,225 @@ BORROWED_BASE_LOCK_TOKEN_CLASS_BODY = (
     "OOCPrivateHandoffBorrowedBaseLockV1&&borrowed,"
     "OOCPrivateHandoffAdoptionTestHookshooks)noexcept;"
 )
+RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE = (
+    "src/relation/ooc_private_cleanup_union.cpp"
+)
+RAW_RECOVERY_BORROWED_BASE_LOCK_INTERFACE_FILE = (
+    "src/relation/ooc_private_lease_recovery_internal.hpp"
+)
+RAW_RECOVERY_BORROWED_BASE_LOCK_WAVE_STORE_FILE = (
+    "src/sieve/distributed_sieve_wave_store.cpp"
+)
+RAW_RECOVERY_BORROWED_BASE_LOCK_CLEANUP_HEADER = (
+    "include/gnfs/relation/ooc_cleanup_transaction.hpp"
+)
+RAW_RECOVERY_BORROWED_BASE_LOCK_IDENTIFIER_ALLOWLISTS = {
+    "OOCPrivateLeaseRecoveryBorrowedBaseLockV1": {
+        RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE,
+        RAW_RECOVERY_BORROWED_BASE_LOCK_INTERFACE_FILE,
+        RAW_RECOVERY_BORROWED_BASE_LOCK_WAVE_STORE_FILE,
+        RAW_RECOVERY_BORROWED_BASE_LOCK_CLEANUP_HEADER,
+    },
+    "recover_private_lease_with_borrowed_base_lock_v1": {
+        RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE,
+        RAW_RECOVERY_BORROWED_BASE_LOCK_INTERFACE_FILE,
+        RAW_RECOVERY_BORROWED_BASE_LOCK_WAVE_STORE_FILE,
+    },
+    "OOCPrivateLeaseRecoveryBuilderV1": {
+        RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE,
+        RAW_RECOVERY_BORROWED_BASE_LOCK_INTERFACE_FILE,
+        RAW_RECOVERY_BORROWED_BASE_LOCK_CLEANUP_HEADER,
+    },
+    "AdoptBorrowedLockedOpenFileDescription": {
+        RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE,
+        RAW_RECOVERY_BORROWED_BASE_LOCK_CLEANUP_HEADER,
+    },
+}
+RAW_RECOVERY_BORROWED_BASE_LOCK_IDENTIFIER_USE_COUNTS = {
+    "OOCPrivateLeaseRecoveryBorrowedBaseLockV1": {
+        RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE: 12,
+        RAW_RECOVERY_BORROWED_BASE_LOCK_INTERFACE_FILE: 14,
+        RAW_RECOVERY_BORROWED_BASE_LOCK_WAVE_STORE_FILE: 1,
+        RAW_RECOVERY_BORROWED_BASE_LOCK_CLEANUP_HEADER: 2,
+    },
+    "recover_private_lease_with_borrowed_base_lock_v1": {
+        RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE: 1,
+        RAW_RECOVERY_BORROWED_BASE_LOCK_INTERFACE_FILE: 2,
+        RAW_RECOVERY_BORROWED_BASE_LOCK_WAVE_STORE_FILE: 1,
+    },
+    "OOCPrivateLeaseRecoveryBuilderV1": {
+        RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE: 2,
+        RAW_RECOVERY_BORROWED_BASE_LOCK_INTERFACE_FILE: 1,
+        RAW_RECOVERY_BORROWED_BASE_LOCK_CLEANUP_HEADER: 2,
+    },
+    "AdoptBorrowedLockedOpenFileDescription": {
+        RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE: 1,
+        RAW_RECOVERY_BORROWED_BASE_LOCK_CLEANUP_HEADER: 2,
+    },
+}
+RAW_RECOVERY_BORROWED_BASE_LOCK_TOKEN_CLASS_BODY = (
+    "public:"
+    "OOCPrivateLeaseRecoveryBorrowedBaseLockV1()=delete;"
+    "OOCPrivateLeaseRecoveryBorrowedBaseLockV1("
+    "constOOCPrivateLeaseRecoveryBorrowedBaseLockV1&)=delete;"
+    "OOCPrivateLeaseRecoveryBorrowedBaseLockV1&operator=("
+    "constOOCPrivateLeaseRecoveryBorrowedBaseLockV1&)=delete;"
+    "OOCPrivateLeaseRecoveryBorrowedBaseLockV1("
+    "OOCPrivateLeaseRecoveryBorrowedBaseLockV1&&other)noexcept;"
+    "OOCPrivateLeaseRecoveryBorrowedBaseLockV1&operator=("
+    "OOCPrivateLeaseRecoveryBorrowedBaseLockV1&&)=delete;"
+    "~OOCPrivateLeaseRecoveryBorrowedBaseLockV1()=default;"
+    "private:"
+    "OOCPrivateLeaseRecoveryBorrowedBaseLockV1("
+    "intparent_descriptor,intlock_descriptor,std::string_viewlock_leaf,"
+    "std::array<std::uint64_t,3>lock_identity,"
+    "std::uint64_tcreator_process_id)noexcept;"
+    "[[nodiscard]]std::shared_ptr<BaseLock>consume("
+    "constOOCCleanupPaths&paths,intretained_parent_descriptor);"
+    "intparent_descriptor_=-1;"
+    "intlock_descriptor_=-1;"
+    "std::string_viewlock_leaf_;"
+    "std::array<std::uint64_t,3>lock_identity_{};"
+    "std::uint64_tcreator_process_id_=0;"
+    "boolconsumed_=false;"
+    "friendclass::gnfs::sieve::distributed_sieve_resume_detail::"
+    "DistributedSievePrivateLeaseBaseLockAt;"
+    "friendOOCCleanupResultrecover_private_lease_with_borrowed_base_lock_v1("
+    "conststd::filesystem::path&base_path,"
+    "OOCPrivateLeaseRecoveryBorrowedBaseLockV1&&borrowed,"
+    "OOCPreactiveLeaseRecoveryExpectationV1expectation,"
+    "OOCPrivateLeaseTestHookshooks)noexcept;"
+)
+RAW_RECOVERY_BORROWED_BASE_LOCK_DECLARATION = (
+    "[[nodiscard]]OOCCleanupResult"
+    "recover_private_lease_with_borrowed_base_lock_v1("
+    "conststd::filesystem::path&base_path,"
+    "OOCPrivateLeaseRecoveryBorrowedBaseLockV1&&borrowed,"
+    "OOCPreactiveLeaseRecoveryExpectationV1expectation,"
+    "OOCPrivateLeaseTestHookshooks={})noexcept;"
+)
+RAW_RECOVERY_PARENT_DUPLICATE_FRAGMENT = (
+    "do{descriptor_=::fcntl(source_descriptor,F_DUPFD_CLOEXEC,0);}"
+    "while(descriptor_<0&&errno==EINTR);"
+    "if(descriptor_<0){fail(OOCCleanupStatus::IoFailure,"
+    "OOCCleanupStage::None,posix_error(errno));}"
+    "try{require_initial_binding();}"
+    "catch(...){if(descriptor_>=0){(void)::close(descriptor_);"
+    "descriptor_=-1;}throw;}"
+)
+RAW_RECOVERY_LOCK_DUPLICATE_FRAGMENT = (
+    "do{duplicated=::fcntl(lock_descriptor_,F_DUPFD_CLOEXEC,0);}"
+    "while(duplicated<0&&errno==EINTR);"
+    "if(duplicated<0){fail(OOCCleanupStatus::IoFailure,"
+    "OOCCleanupStage::None,posix_error(errno));}"
+    "try{autoadopted=std::unique_ptr<BaseLock>(newBaseLock("
+    "paths.lock_path,duplicated,retained_parent_descriptor,expected_leaf,"
+    "retained_parent_identity,lock_identity_,"
+    "BaseLock::AdoptBorrowedLockedOpenFileDescription{}));"
+    "duplicated=-1;returnstd::shared_ptr<BaseLock>(std::move(adopted));}"
+    "catch(...){if(duplicated>=0){(void)::close(duplicated);}throw;}"
+)
+RAW_RECOVERY_BASE_LOCK_BINDING_FRAGMENT = (
+    "constautorequire_exact_binding=[&]{"
+    "structstatparent{};structstatheld{};structstatnamed{};"
+    "if(::fstat(named_parent_descriptor_,&parent)!=0||"
+    "::fstat(descriptor,&held)!=0||"
+    "::fstatat(named_parent_descriptor_,named_leaf_.c_str(),&named,"
+    "AT_SYMLINK_NOFOLLOW)!=0){"
+    "fail(OOCCleanupStatus::IoFailure,OOCCleanupStage::None,"
+    "posix_error(errno));}"
+    "if(!parent_policy(parent)||!lock_policy(held)||!lock_policy(named)||"
+    "identity_for(parent)!=expected_parent_identity||"
+    "identity_for(held)!=expected_lock_identity||"
+    "identity_for(named)!=expected_lock_identity||"
+    "held.st_dev!=named.st_dev||held.st_ino!=named.st_ino){"
+    "fail(OOCCleanupStatus::NamespaceConflict,OOCCleanupStage::None,"
+    "posix_error(EACCES));}};"
+    "require_exact_binding();require_exact_binding();"
+    "identity_=expected_lock_identity;descriptor_=descriptor;"
+)
+RAW_RECOVERY_PERMIT_SANDWICH_FRAGMENT = (
+    "if(opaque==nullptr){returntrue;}"
+    "auto&context=*static_cast<BorrowedRecoveryHookContextV1*>(opaque);"
+    "if(point==OOCPrivateLeaseFaultPoint::RecoveryPermitAcquired){"
+    "if(context.expectation_checked){"
+    "record_borrowed_recovery_expectation_failure("
+    "context,OOCCleanupStatus::InvalidRequest,invalid_argument_error());"
+    "returntrue;}"
+    "context.expectation_checked=true;"
+    "if(!validate_borrowed_recovery_expectation_noexcept(context)){"
+    "returntrue;}"
+    "constboolinterrupted=context.user_hooks.stop_after!=nullptr&&"
+    "context.user_hooks.stop_after(point,context.user_hooks.context);"
+    "if(!validate_borrowed_recovery_expectation_noexcept(context)){"
+    "returntrue;}"
+    "returninterrupted;}"
+)
+RAW_RECOVERY_BRIDGE_CORE_FRAGMENT = (
+    "OOCPrivateLeaseRecoveryParentHandleV1parent("
+    "borrowed.parent_descriptor_,paths.lock_path.parent_path());"
+    "autolock=borrowed.consume(paths,parent.descriptor());"
+)
+RAW_RECOVERY_INTERNAL_EXECUTOR_FRAGMENT = (
+    "constautorecovered=recover_private_lease_locked("
+    "paths,lock,OOCPrivateLeaseTestHooks{"
+    ".stop_after=borrowed_recovery_stop_after,.context=&context,});"
+)
+RAW_RECOVERY_WAVE_MINT_FUNCTION = (
+    "DistributedSievePrivateLeaseBaseLockAt::"
+    "recover_exact_merge_raw_writer_private_lease"
+)
+RAW_RECOVERY_WAVE_MINT_BODY = r"""
+    const auto lower_phase = [](DistributedSieveMergeRawWriterRecoveryPhaseV1 phase) noexcept {
+        using Upper = DistributedSieveMergeRawWriterRecoveryPhaseV1;
+        using Lower = private_lease::OOCPreactiveLeaseRecoveryPhaseV1;
+        switch (phase) {
+        case Upper::FinalDirectoryRawPair:
+            return Lower::FinalDirectoryRawPair;
+        case Upper::StagingDirectoryRawPair:
+            return Lower::StagingDirectoryRawPair;
+        case Upper::StagingDirectoryOwnerOnly:
+            return Lower::StagingDirectoryOwnerOnly;
+        case Upper::StagingDirectoryOwnerRemoved:
+            return Lower::StagingDirectoryOwnerRemoved;
+        case Upper::DirectoryAbsentReservedAndOwned:
+            return Lower::DirectoryAbsentReservedAndOwned;
+        case Upper::DirectoryAbsentOwnedOnly:
+            return Lower::DirectoryAbsentOwnedOnly;
+        case Upper::Count:
+            return Lower::Count;
+        }
+        return Lower::Count;
+    };
+    const auto lower_file = [](const DistributedSieveMergeRawWriterLeafInventoryWitnessV1& leaf) {
+        return private_lease::OOCPreactiveLeaseRecoveryFileExpectationV1{
+            .identity = relation_identity(leaf.identity),
+            .extent = leaf.extent,
+        };
+    };
+    private_lease::OOCPreactiveLeaseRecoveryExpectationV1 lower{
+        .phase = lower_phase(expected.phase),
+        .lease_id = expected.lease_id,
+        .directory_identity = relation_identity(expected.directory_identity),
+        .owner_marker_identity = relation_identity(expected.owner_marker_identity),
+        .owned_marker_identity = relation_identity(expected.owned_marker_identity),
+        .reserved_marker_identity =
+            expected.reserved_marker_identity.has_value()
+                ? std::optional{relation_identity(*expected.reserved_marker_identity)}
+                : std::nullopt,
+        .index =
+            expected.index.has_value() ? std::optional{lower_file(*expected.index)} : std::nullopt,
+        .data =
+            expected.data.has_value() ? std::optional{lower_file(*expected.data)} : std::nullopt,
+    };
+    const bool owned = owned_by_current_process();
+    return private_lease::recover_private_lease_with_borrowed_base_lock_v1(
+        base_path,
+        private_lease::OOCPrivateLeaseRecoveryBorrowedBaseLockV1(
+            owned ? root_fd_ : -1, owned ? lock_fd_ : -1, leaf_, relation_identity(identity_),
+            owned ? creator_process_id_ : 0),
+        std::move(lower), hooks);
+"""
 CONSUMED_CANONICAL_ADOPTION_RELATION_IMPLEMENTATION_FILE = (
     "src/relation/ooc_private_cleanup_union.cpp"
 )
@@ -3142,7 +3372,8 @@ for (std::size_t index = 0; index < parsed.attempts->size(); ++index) {
                                               !attempt.staging_directory_leaf.has_value();
     if (canonical_handoff_root_shape ||
         expected.private_leases[index].worker_handoff.has_value() ||
-        expected.private_leases[index].merge_prepared.has_value()) {
+        expected.private_leases[index].merge_prepared.has_value() ||
+        expected.private_leases[index].merge_raw_writer_recovery.has_value()) {
         return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
                           protocol_error());
     }
@@ -5664,6 +5895,12 @@ class Checks:
             for line, error in release_errors:
                 self.fail(relative, line, error)
             compact_text = _compact_cpp_code(text)
+            borrowed_recovery_tag_uses = find_code_identifier_uses(
+                text, "AdoptBorrowedLockedOpenFileDescription"
+            )
+            expected_binding_commits = (
+                2 if len(borrowed_recovery_tag_uses) == 2 else 1
+            )
             if (
                 release_body is None
                 or _compact_cpp_code(release_body)
@@ -5674,7 +5911,7 @@ class Checks:
                 or compact_text.count(
                     "identity_=expected_lock_identity;descriptor_=descriptor;"
                 )
-                != 1
+                != expected_binding_commits
                 or len(
                     find_code_identifier_uses(
                         text, "AdoptInheritedOpenFileDescription"
@@ -5783,6 +6020,319 @@ class Checks:
                     adoption_line_offset + 1,
                     "borrowed BaseLock adoption must consume the exact one-shot "
                     "token once inside the common adoption path",
+                )
+
+    def validate_raw_recovery_borrowed_base_lock_bridge(
+        self, relative: str, text: str
+    ) -> None:
+        for identifier, expected_by_file in (
+            RAW_RECOVERY_BORROWED_BASE_LOCK_IDENTIFIER_USE_COUNTS.items()
+        ):
+            expected = expected_by_file.get(relative, 0)
+            if expected == 0 and identifier not in text:
+                continue
+            uses = find_code_identifier_uses(text, identifier)
+            if len(uses) != expected:
+                self.fail(
+                    relative,
+                    uses[0].line if uses else 1,
+                    "raw-recovery borrowed BaseLock identifier count is not "
+                    f"closed: {identifier} expected {expected}, found {len(uses)}",
+                )
+
+        if relative == RAW_RECOVERY_BORROWED_BASE_LOCK_CLEANUP_HEADER:
+            token = "OOCPrivateLeaseRecoveryBorrowedBaseLockV1"
+            token_uses = find_code_identifier_uses(text, token)
+            token_forward = list(
+                re.finditer(rf"(?m)^\s*class\s+{re.escape(token)}\s*;", text)
+            )
+            token_friend = list(
+                re.finditer(rf"\bfriend\s+class\s+{re.escape(token)}\s*;", text)
+            )
+            token_allowed_offsets = {
+                match.start() + match.group(0).rfind(token)
+                for match in (*token_forward, *token_friend)
+            }
+
+            builder = "OOCPrivateLeaseRecoveryBuilderV1"
+            builder_uses = find_code_identifier_uses(text, builder)
+            builder_forward = list(
+                re.finditer(rf"(?m)^\s*class\s+{re.escape(builder)}\s*;", text)
+            )
+            builder_friend = list(
+                re.finditer(
+                    rf"\bfriend\s+class\s+ooc_cleanup_detail::"
+                    rf"{re.escape(builder)}\s*;",
+                    text,
+                )
+            )
+            builder_allowed_offsets = {
+                match.start() + match.group(0).rfind(builder)
+                for match in (*builder_forward, *builder_friend)
+            }
+
+            tag = "AdoptBorrowedLockedOpenFileDescription"
+            tag_uses = find_code_identifier_uses(text, tag)
+            tag_declarations = list(
+                re.finditer(
+                    rf"\bstruct\s+{re.escape(tag)}\s+final\s*\{{\s*\}}\s*;",
+                    text,
+                )
+            )
+            base_lock_span = _class_definition_body_span(text, "BaseLock")
+            transaction_span = _class_definition_body_span(
+                text, "OOCCleanupTransaction"
+            )
+
+            def private_at(span: tuple[int, int] | None, offset: int) -> bool:
+                if span is None or offset < span[0] or offset >= span[1]:
+                    return False
+                prefix = _mask_cpp_comments_and_literals(text[span[0] : offset])
+                access = list(
+                    re.finditer(r"\b(public|private|protected)\s*:", prefix)
+                )
+                return bool(access) and access[-1].group(1) == "private"
+
+            header_shape_valid = (
+                len(token_uses) == 2
+                and len(token_forward) == 1
+                and len(token_friend) == 1
+                and {use.offset for use in token_uses} == token_allowed_offsets
+                and private_at(base_lock_span, token_friend[0].start())
+                and len(builder_uses) == 2
+                and len(builder_forward) == 1
+                and len(builder_friend) == 1
+                and {use.offset for use in builder_uses} == builder_allowed_offsets
+                and private_at(transaction_span, builder_friend[0].start())
+                and len(tag_uses) == 2
+                and len(tag_declarations) == 1
+                and private_at(base_lock_span, tag_uses[0].offset)
+                and private_at(base_lock_span, tag_uses[1].offset)
+            )
+            if not header_shape_valid:
+                self.fail(
+                    relative,
+                    token_uses[0].line if token_uses else 1,
+                    "public cleanup header may retain raw-recovery authority only "
+                    "as exact private forwards, friends, tag, and constructor",
+                )
+
+            if base_lock_span is None or len(tag_uses) != 2:
+                return
+            constructor_start = text.rfind(
+                "BaseLock(", base_lock_span[0], tag_uses[1].offset
+            )
+            constructor_end = text.find(
+                "friend bool try_claim_private_cleanup_action",
+                tag_uses[1].offset,
+                base_lock_span[1],
+            )
+            if constructor_start < base_lock_span[0] or constructor_end < 0:
+                self.fail(
+                    relative,
+                    tag_uses[1].line,
+                    "borrowed BaseLock constructor boundary is not structurally closed",
+                )
+                return
+            constructor_text = text[constructor_start:constructor_end]
+            compact_constructor = _compact_cpp_code(constructor_text)
+            binding_calls = find_call_identifier_uses(
+                constructor_text, "require_exact_binding"
+            )
+            direct_binding_calls = (
+                len(binding_calls) == 2
+                and len({_active_brace_stack(constructor_text, use.offset) for use in binding_calls})
+                == 1
+                and len(_active_brace_stack(constructor_text, binding_calls[0].offset)) == 1
+            )
+            forbidden = (
+                "open",
+                "openat",
+                "flock",
+                "LOCK_UN",
+                "LOCK_EX",
+                "LOCK_NB",
+                "F_DUPFD",
+                "F_DUPFD_CLOEXEC",
+            )
+            if (
+                compact_constructor.count(
+                    RAW_RECOVERY_BASE_LOCK_BINDING_FRAGMENT
+                )
+                != 1
+                or not direct_binding_calls
+                or any(
+                    find_code_identifier_uses(constructor_text, identifier)
+                    for identifier in forbidden
+                )
+            ):
+                self.fail(
+                    relative,
+                    tag_uses[1].line,
+                    "borrowed BaseLock constructor must double-check the exact "
+                    "parent/lock binding without open, duplicate, flock, or unlock",
+                )
+            return
+
+        if relative == RAW_RECOVERY_BORROWED_BASE_LOCK_INTERFACE_FILE:
+            class_span = _class_definition_body_span(
+                text, "OOCPrivateLeaseRecoveryBorrowedBaseLockV1"
+            )
+            compact_text = _compact_cpp_code(text)
+            if (
+                class_span is None
+                or _compact_cpp_code(text[class_span[0] : class_span[1]])
+                != RAW_RECOVERY_BORROWED_BASE_LOCK_TOKEN_CLASS_BODY
+                or compact_text.count(RAW_RECOVERY_BORROWED_BASE_LOCK_DECLARATION)
+                != 1
+            ):
+                self.fail(
+                    relative,
+                    1 if class_span is None else text.count("\n", 0, class_span[0]) + 1,
+                    "raw-recovery token must remain the exact source-private "
+                    "one-shot interface and rvalue-only declaration",
+                )
+            return
+
+        if relative == RAW_RECOVERY_BORROWED_BASE_LOCK_WAVE_STORE_FILE:
+            mint_body, mint_line_offset, mint_errors = (
+                find_function_definition_body(text, RAW_RECOVERY_WAVE_MINT_FUNCTION)
+            )
+            for line, error in mint_errors:
+                self.fail(relative, line, error)
+            if (
+                mint_body is None
+                or _compact_cpp_code(mint_body)
+                != _compact_cpp_code(RAW_RECOVERY_WAVE_MINT_BODY)
+            ):
+                self.fail(
+                    relative,
+                    mint_line_offset + 1,
+                    "WaveStore must mint and consume raw-recovery authority only "
+                    "inside the exact owned-process recovery method",
+                )
+            return
+
+        if relative != RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE:
+            return
+
+        support_start = text.find(
+            "class ooc_cleanup_detail::OOCPrivateLeaseRecoveryBuilderV1 final"
+        )
+        support_end = text.find(
+            "static_assert(static_cast<std::size_t>(PrivateCleanupMarkerSlot::Count)",
+            support_start,
+        )
+        if support_start < 0 or support_end < 0:
+            self.fail(
+                relative,
+                1,
+                "raw-recovery relation support interval is not structurally closed",
+            )
+        else:
+            support = text[support_start:support_end]
+            compact_support = _compact_cpp_code(support)
+            forbidden = (
+                "open",
+                "openat",
+                "flock",
+                "LOCK_UN",
+                "LOCK_EX",
+                "LOCK_NB",
+                "F_DUPFD",
+            )
+            if (
+                len(find_call_identifier_uses(support, "fcntl")) != 2
+                or len(find_code_identifier_uses(support, "fcntl")) != 2
+                or len(find_code_identifier_uses(support, "F_DUPFD_CLOEXEC")) != 2
+                or compact_support.count(RAW_RECOVERY_PARENT_DUPLICATE_FRAGMENT)
+                != 1
+                or compact_support.count(RAW_RECOVERY_LOCK_DUPLICATE_FRAGMENT) != 1
+                or any(
+                    find_code_identifier_uses(support, identifier)
+                    for identifier in forbidden
+                )
+            ):
+                self.fail(
+                    relative,
+                    text.count("\n", 0, support_start) + 1,
+                    "raw-recovery relation bridge must duplicate only the token "
+                    "parent and lock with exact CLOEXEC same-OFD operations",
+                )
+
+        hook_body, hook_line_offset, hook_errors = find_function_definition_body(
+            text, "borrowed_recovery_stop_after"
+        )
+        for line, error in hook_errors:
+            self.fail(relative, line, error)
+        if hook_body is not None:
+            compact_hook = _compact_cpp_code(hook_body)
+            if (
+                not compact_hook.startswith(RAW_RECOVERY_PERMIT_SANDWICH_FRAGMENT)
+                or len(
+                    find_call_identifier_uses(
+                        hook_body,
+                        "validate_borrowed_recovery_expectation_noexcept",
+                    )
+                )
+                != 2
+            ):
+                self.fail(
+                    relative,
+                    hook_line_offset + 1,
+                    "RecoveryPermit must retain expectation -> user hook -> "
+                    "expectation validation before recovery mutation",
+                )
+
+        bridge_body, bridge_line_offset, bridge_errors = (
+            find_function_definition_body(
+                text, "recover_private_lease_with_borrowed_base_lock_v1"
+            )
+        )
+        for line, error in bridge_errors:
+            self.fail(relative, line, error)
+        if bridge_body is not None:
+            compact_bridge = _compact_cpp_code(bridge_body)
+            forbidden = (
+                "recover_private_lease",
+                "remove_private_lease",
+                "run_transaction",
+                "run_transaction_locked",
+                "open",
+                "openat",
+                "flock",
+                "LOCK_UN",
+                "LOCK_EX",
+                "LOCK_NB",
+                "F_DUPFD",
+                "F_DUPFD_CLOEXEC",
+            )
+            if (
+                compact_bridge.count(RAW_RECOVERY_BRIDGE_CORE_FRAGMENT) != 1
+                or compact_bridge.count(RAW_RECOVERY_INTERNAL_EXECUTOR_FRAGMENT)
+                != 1
+                or len(
+                    find_call_identifier_uses(
+                        bridge_body, "recover_private_lease_locked"
+                    )
+                )
+                != 1
+                or len(
+                    find_call_identifier_uses(
+                        bridge_body, "OOCPrivateLeaseRecoveryBuilderV1::invoke"
+                    )
+                )
+                != 1
+                or any(
+                    find_code_identifier_uses(bridge_body, identifier)
+                    for identifier in forbidden
+                )
+            ):
+                self.fail(
+                    relative,
+                    bridge_line_offset + 1,
+                    "raw-recovery bridge must consume the borrowed parent/lock "
+                    "once and reuse only recover_private_lease_locked",
                 )
 
     def validate_consumed_canonical_adoption_bridge(
@@ -10383,6 +10933,9 @@ class Checks:
             self.validate_worker_entry_use_site(relative, text)
             self.validate_worker_writer_use_site(relative, text)
             self.validate_borrowed_base_lock_bridge(relative, text)
+            self.validate_raw_recovery_borrowed_base_lock_bridge(
+                relative, text
+            )
             self.validate_consumed_canonical_adoption_bridge(relative, text)
             self.validate_merge_prepared_admission_boundary(relative, text)
             self.validate_worker_writer_identifier_exception_boundary(
@@ -12464,6 +13017,12 @@ discard_inherited_post_fork_child_noexcept();
                 MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
                 MERGE_WRITER_AUTHORITY_TEST_FILE,
             },
+            "stop_after_output_write": {
+                MERGE_WRITER_IMPLEMENTATION_FILE,
+                MERGE_WRITER_INTERFACE_FILE,
+                MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+                MERGE_WRITER_AUTHORITY_TEST_FILE,
+            },
             "DistributedSieveMergeWriterAdoptionTestHooksV1": {
                 MERGE_COORDINATOR_INTERFACE_FILE,
                 MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
@@ -12472,6 +13031,11 @@ discard_inherited_post_fork_child_noexcept();
             },
             "consume_distributed_sieve_merge_generation_v1_with_hooks": {
                 MERGE_COORDINATOR_INTERFACE_FILE,
+                MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+                MERGE_WRITER_AUTHORITY_INTERFACE_FILE,
+                MERGE_WRITER_AUTHORITY_TEST_FILE,
+            },
+            "stop_after_payload_build_before_handoff": {
                 MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
                 MERGE_WRITER_AUTHORITY_INTERFACE_FILE,
                 MERGE_WRITER_AUTHORITY_TEST_FILE,
@@ -12839,6 +13403,195 @@ auto DistributedSievePrivateLeaseBaseLockAt::adopt_exact_private_handoff(
         ),
         "WaveStore accepted a second borrowed BaseLock mint authority use: "
         f"{expanded_borrowed_wave_mint_checks.errors}",
+    )
+
+    expect(
+        RAW_RECOVERY_BORROWED_BASE_LOCK_IDENTIFIER_ALLOWLISTS
+        == {
+            "OOCPrivateLeaseRecoveryBorrowedBaseLockV1": {
+                RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE,
+                RAW_RECOVERY_BORROWED_BASE_LOCK_INTERFACE_FILE,
+                RAW_RECOVERY_BORROWED_BASE_LOCK_WAVE_STORE_FILE,
+                RAW_RECOVERY_BORROWED_BASE_LOCK_CLEANUP_HEADER,
+            },
+            "recover_private_lease_with_borrowed_base_lock_v1": {
+                RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE,
+                RAW_RECOVERY_BORROWED_BASE_LOCK_INTERFACE_FILE,
+                RAW_RECOVERY_BORROWED_BASE_LOCK_WAVE_STORE_FILE,
+            },
+            "OOCPrivateLeaseRecoveryBuilderV1": {
+                RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE,
+                RAW_RECOVERY_BORROWED_BASE_LOCK_INTERFACE_FILE,
+                RAW_RECOVERY_BORROWED_BASE_LOCK_CLEANUP_HEADER,
+            },
+            "AdoptBorrowedLockedOpenFileDescription": {
+                RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE,
+                RAW_RECOVERY_BORROWED_BASE_LOCK_CLEANUP_HEADER,
+            },
+        },
+        "raw-recovery borrowed BaseLock identifier allowlists are not exact",
+    )
+    expect(
+        RAW_RECOVERY_BORROWED_BASE_LOCK_IDENTIFIER_USE_COUNTS
+        == {
+            "OOCPrivateLeaseRecoveryBorrowedBaseLockV1": {
+                RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE: 12,
+                RAW_RECOVERY_BORROWED_BASE_LOCK_INTERFACE_FILE: 14,
+                RAW_RECOVERY_BORROWED_BASE_LOCK_WAVE_STORE_FILE: 1,
+                RAW_RECOVERY_BORROWED_BASE_LOCK_CLEANUP_HEADER: 2,
+            },
+            "recover_private_lease_with_borrowed_base_lock_v1": {
+                RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE: 1,
+                RAW_RECOVERY_BORROWED_BASE_LOCK_INTERFACE_FILE: 2,
+                RAW_RECOVERY_BORROWED_BASE_LOCK_WAVE_STORE_FILE: 1,
+            },
+            "OOCPrivateLeaseRecoveryBuilderV1": {
+                RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE: 2,
+                RAW_RECOVERY_BORROWED_BASE_LOCK_INTERFACE_FILE: 1,
+                RAW_RECOVERY_BORROWED_BASE_LOCK_CLEANUP_HEADER: 2,
+            },
+            "AdoptBorrowedLockedOpenFileDescription": {
+                RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE: 1,
+                RAW_RECOVERY_BORROWED_BASE_LOCK_CLEANUP_HEADER: 2,
+            },
+        },
+        "raw-recovery borrowed BaseLock identifier use counts are not exact",
+    )
+
+    untrusted_raw_recovery_bridge = r"""
+OOCPrivateLeaseRecoveryBorrowedBaseLockV1* borrowed = nullptr;
+recover_private_lease_with_borrowed_base_lock_v1();
+OOCPrivateLeaseRecoveryBuilderV1* builder = nullptr;
+AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
+"""
+    untrusted_raw_recovery_checks = Checks(Path("."))
+    untrusted_raw_recovery_checks.validate_raw_recovery_borrowed_base_lock_bridge(
+        "src/relation/untrusted_raw_recovery.cpp",
+        untrusted_raw_recovery_bridge,
+    )
+    expect(
+        len(untrusted_raw_recovery_checks.errors)
+        == len(RAW_RECOVERY_BORROWED_BASE_LOCK_IDENTIFIER_ALLOWLISTS)
+        and all(
+            "raw-recovery borrowed BaseLock identifier count is not closed"
+            in error
+            for error in untrusted_raw_recovery_checks.errors
+        ),
+        "raw-recovery borrowed BaseLock repo-wide use-site gate is not enforced: "
+        f"{untrusted_raw_recovery_checks.errors}",
+    )
+
+    raw_recovery_sources = {
+        relative: (Path(__file__).resolve().parents[1] / relative).read_text(
+            encoding="utf-8"
+        )
+        for relative in {
+            file
+            for expected_by_file in (
+                RAW_RECOVERY_BORROWED_BASE_LOCK_IDENTIFIER_USE_COUNTS.values()
+            )
+            for file in expected_by_file
+        }
+    }
+    exact_raw_recovery_checks = Checks(Path("."))
+    for relative, source in raw_recovery_sources.items():
+        exact_raw_recovery_checks.validate_raw_recovery_borrowed_base_lock_bridge(
+            relative, source
+        )
+    expect(
+        not exact_raw_recovery_checks.errors,
+        "exact raw-recovery borrowed BaseLock bridge was rejected: "
+        f"{exact_raw_recovery_checks.errors}",
+    )
+
+    def expect_raw_recovery_mutation(
+        relative: str,
+        old: str,
+        new: str,
+        expected_error: str,
+        description: str,
+    ) -> None:
+        source = raw_recovery_sources[relative]
+        expect(old in source, f"self-test mutation anchor is missing: {description}")
+        mutated = source.replace(old, new, 1)
+        mutation_checks = Checks(Path("."))
+        mutation_checks.validate_raw_recovery_borrowed_base_lock_bridge(
+            relative, mutated
+        )
+        expect(
+            any(expected_error in error for error in mutation_checks.errors),
+            f"raw-recovery borrowed BaseLock gate accepted {description}: "
+            f"{mutation_checks.errors}",
+        )
+
+    expect_raw_recovery_mutation(
+        RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE,
+        "descriptor_ = ::fcntl(source_descriptor, F_DUPFD_CLOEXEC, 0);",
+        "descriptor_ = ::fcntl(source_descriptor, F_DUPFD, 0);",
+        "duplicate only the token parent and lock",
+        "a non-CLOEXEC parent duplicate",
+    )
+    expect_raw_recovery_mutation(
+        RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE,
+        "        try {\n"
+        "            require_initial_binding();\n"
+        "        } catch (...) {\n"
+        "            if (descriptor_ >= 0) {\n"
+        "                (void)::close(descriptor_);\n"
+        "                descriptor_ = -1;\n"
+        "            }\n"
+        "            throw;\n"
+        "        }\n",
+        "        require_initial_binding();\n",
+        "duplicate only the token parent and lock",
+        "a parent-handle constructor without failure cleanup",
+    )
+    expect_raw_recovery_mutation(
+        RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE,
+        "duplicated = ::fcntl(lock_descriptor_, F_DUPFD_CLOEXEC, 0);",
+        "duplicated = ::open(lock_leaf_.data(), O_RDWR);",
+        "duplicate only the token parent and lock",
+        "a path-opened replacement lock",
+    )
+    expect_raw_recovery_mutation(
+        RAW_RECOVERY_BORROWED_BASE_LOCK_CLEANUP_HEADER,
+        "        require_exact_binding();\n        require_exact_binding();\n",
+        "        require_exact_binding();\n",
+        "must double-check the exact parent/lock binding",
+        "a single BaseLock binding check",
+    )
+    expect_raw_recovery_mutation(
+        RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE,
+        "        if (!validate_borrowed_recovery_expectation_noexcept(context)) {\n"
+        "            return true;\n"
+        "        }\n"
+        "        return interrupted;\n",
+        "        return interrupted;\n",
+        "expectation -> user hook -> expectation",
+        "a missing post-hook expectation check",
+    )
+    expect_raw_recovery_mutation(
+        RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE,
+        "            recover_private_lease_locked(paths, lock,",
+        "            OOCCleanupTransaction::recover_private_lease(paths.base_path,",
+        "reuse only recover_private_lease_locked",
+        "a public path-cleanup call",
+    )
+    expect_raw_recovery_mutation(
+        RAW_RECOVERY_BORROWED_BASE_LOCK_WAVE_STORE_FILE,
+        "    const bool owned = owned_by_current_process();\n"
+        "    return private_lease::recover_private_lease_with_borrowed_base_lock_v1(",
+        "    return private_lease::recover_private_lease_with_borrowed_base_lock_v1(",
+        "exact owned-process recovery method",
+        "a WaveStore mint without the owned-process gate",
+    )
+    expect_raw_recovery_mutation(
+        RAW_RECOVERY_BORROWED_BASE_LOCK_CLEANUP_HEADER,
+        "    friend class OOCPrivateLeaseRecoveryBorrowedBaseLockV1;\n",
+        "    friend class OOCPrivateLeaseRecoveryBorrowedBaseLockV1;\n"
+        "    OOCPrivateLeaseRecoveryBorrowedBaseLockV1* escaped = nullptr;\n",
+        "exact private forwards, friends, tag, and constructor",
+        "a public-header authority escape",
     )
 
     consumed_canonical_sources = {
@@ -15832,6 +16585,26 @@ try {
         ),
         "unretained canonical worker escaped fail-closed aggregate projection: "
         f"{adopted_unretained_canonical_worker_checks.errors}",
+    )
+
+    admitted_unretained_raw_recovery_checks = Checks(Path("."))
+    admitted_unretained_raw_recovery_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        valid_private_handoff_resume_wave_store.replace(
+            "        expected.private_leases[index].merge_prepared.has_value() ||\n"
+            "        expected.private_leases[index].merge_raw_writer_recovery.has_value()) {",
+            "        expected.private_leases[index].merge_prepared.has_value()) {",
+            1,
+        ),
+    )
+    expect(
+        any(
+            "reject every unretained canonical handoff before path validation"
+            in error
+            for error in admitted_unretained_raw_recovery_checks.errors
+        ),
+        "unretained raw-recovery witness escaped fail-closed aggregate projection: "
+        f"{admitted_unretained_raw_recovery_checks.errors}",
     )
 
     forward_retained_worker_release_checks = Checks(Path("."))

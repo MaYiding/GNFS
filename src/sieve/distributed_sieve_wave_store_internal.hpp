@@ -33,6 +33,8 @@ class FactorBase;
 }
 
 namespace gnfs::relation {
+struct OOCCleanupResult;
+struct OOCPrivateLeaseTestHooks;
 struct OOCPrivateHandoffAdoptionResult;
 class OOCPrivateHandoffReader;
 class OOCRelationReader;
@@ -633,6 +635,52 @@ struct DistributedSieveMergePreparedInventoryWitnessV1 final {
     }
 };
 
+/// Exact read-only observation of one raw relation-corpus leaf left by the
+/// merge writer before it could publish MergePreparedV1.  Contents are
+/// deliberately opaque at this boundary: native identity and extent are only
+/// TOCTOU/replacement detectors.  Deletion authority still comes from the
+/// exact RESERVED/OWNED marker chain and latest canonical MergeStarted
+/// aggregate.
+struct DistributedSieveMergeRawWriterLeafInventoryWitnessV1 final {
+    NativeIdentityV1 identity;
+    std::uint64_t extent = 0;
+
+    [[nodiscard]] friend bool
+    operator==(const DistributedSieveMergeRawWriterLeafInventoryWitnessV1&,
+               const DistributedSieveMergeRawWriterLeafInventoryWitnessV1&) = default;
+};
+
+/// Relation-layer preactive cleanup phases that are not all expressible by
+/// the ordinary P0-P8 reservation state machine.  Raw phases always contain
+/// the index leaf and may contain the data leaf.  The remaining phases contain
+/// neither leaf and retain the historical directory/owner identities from the
+/// canonical OWNED marker even after those names have been removed.
+enum class DistributedSieveMergeRawWriterRecoveryPhaseV1 : std::uint8_t {
+    FinalDirectoryRawPair,
+    StagingDirectoryRawPair,
+    StagingDirectoryOwnerOnly,
+    StagingDirectoryOwnerRemoved,
+    DirectoryAbsentReservedAndOwned,
+    DirectoryAbsentOwnedOnly,
+    Count,
+};
+
+struct DistributedSieveMergeRawWriterRecoveryInventoryWitnessV1 final {
+    DistributedSieveMergeRawWriterRecoveryPhaseV1 phase =
+        DistributedSieveMergeRawWriterRecoveryPhaseV1::Count;
+    std::array<std::uint64_t, 2> lease_id{};
+    NativeIdentityV1 directory_identity;
+    NativeIdentityV1 owner_marker_identity;
+    NativeIdentityV1 owned_marker_identity;
+    std::optional<NativeIdentityV1> reserved_marker_identity;
+    std::optional<DistributedSieveMergeRawWriterLeafInventoryWitnessV1> index;
+    std::optional<DistributedSieveMergeRawWriterLeafInventoryWitnessV1> data;
+
+    [[nodiscard]] friend bool
+    operator==(const DistributedSieveMergeRawWriterRecoveryInventoryWitnessV1&,
+               const DistributedSieveMergeRawWriterRecoveryInventoryWitnessV1&) = default;
+};
+
 struct DistributedSievePrivateLeaseReservationInventoryWitness final {
     std::string base_lock_leaf;
     DistributedSievePrivateLeaseReservationBoundary boundary =
@@ -645,6 +693,8 @@ struct DistributedSievePrivateLeaseReservationInventoryWitness final {
     std::optional<DistributedSieveWorkerWorkPackageResidueInventoryWitnessV1> work_package_residue;
     std::optional<DistributedSieveWorkerHandoffInventoryWitnessV1> worker_handoff;
     std::optional<DistributedSieveMergePreparedInventoryWitnessV1> merge_prepared;
+    std::optional<DistributedSieveMergeRawWriterRecoveryInventoryWitnessV1>
+        merge_raw_writer_recovery;
 
     [[nodiscard]] friend bool
     operator==(const DistributedSievePrivateLeaseReservationInventoryWitness&,
@@ -983,16 +1033,36 @@ struct DistributedSievePrivateLeaseRecoveryTestHooks final {
     void* context = nullptr;
 };
 
+/// Exact relation-layer checkpoints used only by typed recovery of an
+/// unsealed merge corpus.  The permit point is offered after relation has
+/// matched the complete expectation and before its first mutation; the
+/// remaining points follow their named durability barriers.
+enum class DistributedSieveMergeRawWriterRecoveryFaultPointV1 : std::uint8_t {
+    RecoveryPermitAcquired,
+    PreactiveDirectoryQuarantinedDurable,
+    PreactiveDataRemovedDurable,
+    PreactiveIndexRemovedDurable,
+    OwnerRemovedDurable,
+    FinalDirectoryRemovedDurable,
+    ReservedRemovedDurable,
+    OwnedRemovedDurable,
+    Count,
+};
+
 struct DistributedSieveMergeStartedReconcileTestHooksV1 final {
     using Boundary = void (*)(void* context) noexcept;
     using StopAfter = bool (*)(DistributedSieveMergeStartFaultPointV1 point,
                                void* context) noexcept;
+    using RawRecoveryStopAfter = bool (*)(DistributedSieveMergeRawWriterRecoveryFaultPointV1 point,
+                                          void* context) noexcept;
 
     DistributedSievePrivateLeaseBaseLockTestHooks base_lock;
     Boundary before_record_normalization = nullptr;
     StopAfter stop_after = nullptr;
     Boundary after_first_normalized_successor_validation = nullptr;
     DistributedSievePrivateLeaseRecoveryTestHooks recovery;
+    RawRecoveryStopAfter raw_recovery_stop_after = nullptr;
+    Boundary after_first_raw_recovery_successor_validation = nullptr;
     void* context = nullptr;
 };
 
@@ -1061,6 +1131,8 @@ struct DistributedSieveWaveStoreDiagnostic final {
     std::optional<DistributedSievePrivateLeaseReservationBoundary>
         last_private_lease_recovery_boundary;
     std::optional<DistributedSievePrivateLeaseRecoveryEdge> failed_private_lease_recovery_sync_edge;
+    std::optional<DistributedSieveMergeRawWriterRecoveryFaultPointV1>
+        last_merge_raw_writer_recovery_fault_point;
     std::optional<DistributedSievePrivateLeaseReservationSyncFailureSite>
         failed_private_lease_reservation_sync_site;
 };
@@ -1327,6 +1399,9 @@ private:
 
     explicit DistributedSieveWaveStore(std::shared_ptr<const State> state) noexcept;
     [[nodiscard]] DistributedSieveWaveStoreDiagnostic revalidate_authority() const noexcept;
+    [[nodiscard]] DistributedSievePrivateLeaseRootClaimResult claim_private_lease_root_impl(
+        std::span<const DistributedSieveAdoptedWorkerChunkV1* const> held_worker_handoffs,
+        bool allow_merge_raw_recovery_pending) const noexcept;
     [[nodiscard]] DistributedSievePrivateLeaseRootClaimResult
     claim_worker_attempt_private_lease_root(
         std::uint32_t chunk_id, std::uint32_t attempt_ordinal,
@@ -1336,8 +1411,8 @@ private:
     claim_merge_generation_private_lease_root(
         std::uint32_t merge_attempt_ordinal, AttemptBaseLockExpectation expectation,
         DistributedSievePrivateLeaseBaseLockTestHooks hooks,
-        std::span<const DistributedSieveAdoptedWorkerChunkV1* const> held_worker_handoffs = {})
-        const noexcept;
+        std::span<const DistributedSieveAdoptedWorkerChunkV1* const> held_worker_handoffs = {},
+        bool allow_merge_raw_recovery_pending = false) const noexcept;
     [[nodiscard]] DistributedSieveWorkerHandoffAdoptionResultV1 adopt_worker_handoff_impl_v1(
         std::uint32_t chunk_id, const DistributedSieveWorkerHandoffInventoryWitnessV1* expected,
         DistributedSieveWorkerHandoffAdoptionTestHooksV1 hooks) const noexcept;
@@ -1537,6 +1612,10 @@ public:
     /// that shares this already-held BaseLock open-file description.
     [[nodiscard]] gnfs::relation::OOCPrivateHandoffAdoptionResult
     adopt_exact_private_handoff(const std::filesystem::path& base_path) const noexcept;
+    [[nodiscard]] gnfs::relation::OOCCleanupResult recover_exact_merge_raw_writer_private_lease(
+        const std::filesystem::path& base_path,
+        const DistributedSieveMergeRawWriterRecoveryInventoryWitnessV1& expected,
+        gnfs::relation::OOCPrivateLeaseTestHooks hooks) const noexcept;
     [[nodiscard]] bool
     matches_exact_binding(std::string_view base_lock_leaf,
                           const NativeIdentityV1& expected_identity) const noexcept;

@@ -1,5 +1,6 @@
 #include "ooc_private_cleanup_action_permit_internal.hpp"
 #include "ooc_private_handoff_adoption_internal.hpp"
+#include "ooc_private_lease_recovery_internal.hpp"
 #include "ooc_private_lease_reservation_protocol_internal.hpp"
 
 #include <gnfs/relation/ooc_authorized_cleanup_intent.hpp>
@@ -14,6 +15,7 @@
 #include <new>
 #include <optional>
 #include <span>
+#include <string>
 #include <system_error>
 #include <type_traits>
 #include <utility>
@@ -27,7 +29,468 @@
 #include <dirent.h>
 #endif
 
+namespace gnfs::relation {
+
+class ooc_cleanup_detail::OOCPrivateLeaseRecoveryBuilderV1 final {
+public:
+    template <typename Operation>
+    [[nodiscard]] static OOCCleanupResult invoke(Operation&& operation) noexcept {
+        return OOCCleanupTransaction::invoke(std::forward<Operation>(operation));
+    }
+};
+
+} // namespace gnfs::relation
+
 namespace gnfs::relation::ooc_cleanup_detail {
+
+OOCPrivateLeaseRecoveryBorrowedBaseLockV1::OOCPrivateLeaseRecoveryBorrowedBaseLockV1(
+    int parent_descriptor, int lock_descriptor, std::string_view lock_leaf,
+    std::array<std::uint64_t, 3> lock_identity, std::uint64_t creator_process_id) noexcept
+    : parent_descriptor_(parent_descriptor), lock_descriptor_(lock_descriptor),
+      lock_leaf_(lock_leaf), lock_identity_(lock_identity),
+      creator_process_id_(creator_process_id) {}
+
+OOCPrivateLeaseRecoveryBorrowedBaseLockV1::OOCPrivateLeaseRecoveryBorrowedBaseLockV1(
+    OOCPrivateLeaseRecoveryBorrowedBaseLockV1&& other) noexcept
+    : parent_descriptor_(std::exchange(other.parent_descriptor_, -1)),
+      lock_descriptor_(std::exchange(other.lock_descriptor_, -1)),
+      lock_leaf_(std::exchange(other.lock_leaf_, {})), lock_identity_(other.lock_identity_),
+      creator_process_id_(std::exchange(other.creator_process_id_, 0)),
+      consumed_(std::exchange(other.consumed_, true)) {}
+
+static_assert(!std::is_default_constructible_v<OOCPrivateLeaseRecoveryBorrowedBaseLockV1>);
+static_assert(!std::is_copy_constructible_v<OOCPrivateLeaseRecoveryBorrowedBaseLockV1>);
+static_assert(!std::is_copy_assignable_v<OOCPrivateLeaseRecoveryBorrowedBaseLockV1>);
+static_assert(std::is_nothrow_move_constructible_v<OOCPrivateLeaseRecoveryBorrowedBaseLockV1>);
+static_assert(!std::is_move_assignable_v<OOCPrivateLeaseRecoveryBorrowedBaseLockV1>);
+
+namespace {
+
+#if !defined(_WIN32)
+
+class OOCPrivateLeaseRecoveryParentHandleV1 final {
+public:
+    OOCPrivateLeaseRecoveryParentHandleV1(const OOCPrivateLeaseRecoveryParentHandleV1&) = delete;
+    OOCPrivateLeaseRecoveryParentHandleV1&
+    operator=(const OOCPrivateLeaseRecoveryParentHandleV1&) = delete;
+    OOCPrivateLeaseRecoveryParentHandleV1(OOCPrivateLeaseRecoveryParentHandleV1&&) = delete;
+    OOCPrivateLeaseRecoveryParentHandleV1&
+    operator=(OOCPrivateLeaseRecoveryParentHandleV1&&) = delete;
+
+    OOCPrivateLeaseRecoveryParentHandleV1(int source_descriptor, const std::filesystem::path& path)
+        : path_(path) {
+        if (source_descriptor < 0) {
+            fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+        }
+        do {
+            descriptor_ = ::fcntl(source_descriptor, F_DUPFD_CLOEXEC, 0);
+        } while (descriptor_ < 0 && errno == EINTR);
+        if (descriptor_ < 0) {
+            fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, posix_error(errno));
+        }
+        try {
+            require_initial_binding();
+        } catch (...) {
+            if (descriptor_ >= 0) {
+                (void)::close(descriptor_);
+                descriptor_ = -1;
+            }
+            throw;
+        }
+    }
+
+    ~OOCPrivateLeaseRecoveryParentHandleV1() {
+        if (descriptor_ >= 0) {
+            (void)::close(descriptor_);
+        }
+    }
+
+    [[nodiscard]] int descriptor() const noexcept {
+        return descriptor_;
+    }
+
+    [[nodiscard]] const std::array<std::uint64_t, 3>& identity() const noexcept {
+        return identity_;
+    }
+
+    void require_stable() const {
+        struct stat held{};
+        struct stat named{};
+        if (::fstat(descriptor_, &held) != 0 || ::lstat(path_.c_str(), &named) != 0) {
+            fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
+                 posix_error(errno == 0 ? EACCES : errno));
+        }
+        if (!valid_parent(held) || !valid_parent(named) ||
+            stable_identity(posix_identity(held)) != identity_ ||
+            stable_identity(posix_identity(named)) != identity_ || held.st_dev != named.st_dev ||
+            held.st_ino != named.st_ino) {
+            fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+        }
+    }
+
+private:
+    [[nodiscard]] static bool valid_parent(const struct stat& metadata) noexcept {
+        return S_ISDIR(metadata.st_mode) &&
+               (metadata.st_mode & static_cast<mode_t>(07777)) == static_cast<mode_t>(0700) &&
+               metadata.st_uid == ::geteuid();
+    }
+
+    void require_initial_binding() {
+        struct stat held{};
+        struct stat named{};
+        if (::fstat(descriptor_, &held) != 0 || ::lstat(path_.c_str(), &named) != 0 ||
+            !valid_parent(held) || !valid_parent(named) || held.st_dev != named.st_dev ||
+            held.st_ino != named.st_ino) {
+            const int saved_errno = errno == 0 ? EACCES : errno;
+            (void)::close(descriptor_);
+            descriptor_ = -1;
+            fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
+                 posix_error(saved_errno));
+        }
+        identity_ = stable_identity(posix_identity(held));
+        require_stable();
+    }
+
+    int descriptor_ = -1;
+    std::filesystem::path path_;
+    std::array<std::uint64_t, 3> identity_{};
+};
+
+#endif
+
+[[nodiscard]] bool all_zero_words(const std::array<std::uint64_t, 2>& values) noexcept {
+    return values[0] == 0 && values[1] == 0;
+}
+
+template <std::size_t Size>
+[[nodiscard]] bool all_zero_words(const std::array<std::uint64_t, Size>& values) noexcept {
+    return std::all_of(values.begin(), values.end(),
+                       [](std::uint64_t value) { return value == 0; });
+}
+
+void require_recovery_file_expectation(
+    const std::filesystem::path& path,
+    const std::optional<OOCPreactiveLeaseRecoveryFileExpectationV1>& expected) {
+    const auto inspected = inspect_file(path, 0, false);
+    if (inspected.kind == InspectKind::Error) {
+        fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, inspected.error);
+    }
+    if (!expected) {
+        if (inspected.kind != InspectKind::Missing) {
+            fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                 protocol_error());
+        }
+        return;
+    }
+    if (inspected.kind != InspectKind::Present ||
+        stable_identity(inspected.identity) != expected->identity ||
+        inspected.identity.size != expected->extent) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             protocol_error());
+    }
+#if !defined(_WIN32)
+    struct stat named{};
+    if (::lstat(path.c_str(), &named) != 0 || !S_ISREG(named.st_mode) || named.st_nlink != 1 ||
+        named.st_size < 0 || stable_identity(posix_identity(named)) != expected->identity ||
+        static_cast<std::uint64_t>(named.st_size) != expected->extent ||
+        static_cast<std::uint64_t>(named.st_uid) != static_cast<std::uint64_t>(::geteuid()) ||
+        (named.st_mode & static_cast<mode_t>(07777)) != static_cast<mode_t>(0600)) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             errno == 0 ? protocol_error() : posix_error(errno));
+    }
+#endif
+    const auto confirmed = inspect_file(path, 0, false);
+    if (confirmed.kind != InspectKind::Present || confirmed.identity != inspected.identity) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             protocol_error());
+    }
+}
+
+void require_preactive_recovery_expectation(const OOCCleanupPaths& paths, const BaseLock& lock,
+                                            const OOCPreactiveLeaseRecoveryExpectationV1& expected
+#if !defined(_WIN32)
+                                            ,
+                                            const OOCPrivateLeaseRecoveryParentHandleV1& parent
+#endif
+) {
+    const bool raw_phase =
+        expected.phase == OOCPreactiveLeaseRecoveryPhaseV1::FinalDirectoryRawPair ||
+        expected.phase == OOCPreactiveLeaseRecoveryPhaseV1::StagingDirectoryRawPair;
+    const bool reserved_absent =
+        expected.phase == OOCPreactiveLeaseRecoveryPhaseV1::DirectoryAbsentOwnedOnly;
+    if (expected.phase == OOCPreactiveLeaseRecoveryPhaseV1::Count ||
+        all_zero_words(expected.lease_id) || all_zero_words(expected.directory_identity) ||
+        all_zero_words(expected.owner_marker_identity) ||
+        all_zero_words(expected.owned_marker_identity) ||
+        (expected.reserved_marker_identity.has_value() == reserved_absent) ||
+        (raw_phase ? !expected.index.has_value()
+                   : expected.index.has_value() || expected.data.has_value()) ||
+        (expected.data.has_value() && !expected.index.has_value()) ||
+        (expected.index && all_zero_words(expected.index->identity)) ||
+        (expected.data && all_zero_words(expected.data->identity))) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+
+#if !defined(_WIN32)
+    parent.require_stable();
+    if (parent.identity() !=
+        capture_directory_identity_locked(paths.private_directory.parent_path())) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             protocol_error());
+    }
+#endif
+    lock.require_stable();
+    auto generation = capture_private_lease_removal_generation_locked(
+        paths, lock, expected.lease_id, expected.directory_identity, expected.owner_marker_identity,
+        expected.owned_marker_identity);
+    if (!generation.owned || generation.owned_pending || generation.reserved_pending ||
+        generation.owned->record.capability !=
+            PrivateLeaseCapability::RollbackPreactivePairAndLease ||
+        generation.owned->identity != expected.owned_marker_identity ||
+        generation.owned->record.owner_identity != expected.owner_marker_identity ||
+        generation.owned->record.directory_identity != expected.directory_identity ||
+        generation.owned->record.lease_id != expected.lease_id ||
+        generation.reserved.has_value() != expected.reserved_marker_identity.has_value() ||
+        (generation.reserved &&
+         generation.reserved->identity != *expected.reserved_marker_identity)) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             protocol_error());
+    }
+
+    const bool final_present = generation.final_directory_identity.has_value();
+    const bool staging_present = generation.staging_directory_identity.has_value();
+    const bool directory_absent = !final_present && !staging_present;
+    const bool expect_final =
+        expected.phase == OOCPreactiveLeaseRecoveryPhaseV1::FinalDirectoryRawPair;
+    const bool expect_staging =
+        expected.phase == OOCPreactiveLeaseRecoveryPhaseV1::StagingDirectoryRawPair ||
+        expected.phase == OOCPreactiveLeaseRecoveryPhaseV1::StagingDirectoryOwnerOnly ||
+        expected.phase == OOCPreactiveLeaseRecoveryPhaseV1::StagingDirectoryOwnerRemoved;
+    const bool expect_owner =
+        expected.phase == OOCPreactiveLeaseRecoveryPhaseV1::FinalDirectoryRawPair ||
+        expected.phase == OOCPreactiveLeaseRecoveryPhaseV1::StagingDirectoryRawPair ||
+        expected.phase == OOCPreactiveLeaseRecoveryPhaseV1::StagingDirectoryOwnerOnly;
+    if (final_present != expect_final || staging_present != expect_staging ||
+        directory_absent != (!expect_final && !expect_staging) ||
+        generation.owner_present != expect_owner ||
+        (final_present && *generation.final_directory_identity != expected.directory_identity) ||
+        (staging_present &&
+         *generation.staging_directory_identity != expected.directory_identity)) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             protocol_error());
+    }
+
+    if (expect_final || expect_staging) {
+        const auto active_directory = expect_final
+                                          ? paths.private_directory
+                                          : private_lease_staging_path(paths, expected.lease_id);
+        const auto entries = inspect_private_lease_preactive_entries(active_directory, paths);
+        if (entries.owner != expect_owner || entries.index != expected.index.has_value() ||
+            entries.data != expected.data.has_value() || (entries.data && !entries.index)) {
+            fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                 protocol_error());
+        }
+        require_recovery_file_expectation(active_directory / paths.index_path.filename(),
+                                          expected.index);
+        require_recovery_file_expectation(active_directory / paths.data_path.filename(),
+                                          expected.data);
+    } else {
+        require_recovery_file_expectation(paths.index_path, std::nullopt);
+        require_recovery_file_expectation(paths.data_path, std::nullopt);
+    }
+    lock.require_stable();
+#if !defined(_WIN32)
+    parent.require_stable();
+#endif
+}
+
+struct BorrowedRecoveryHookContextV1 final {
+    const OOCCleanupPaths* paths = nullptr;
+    const BaseLock* lock = nullptr;
+    const OOCPreactiveLeaseRecoveryExpectationV1* expectation = nullptr;
+    OOCPrivateLeaseTestHooks user_hooks;
+#if !defined(_WIN32)
+    const OOCPrivateLeaseRecoveryParentHandleV1* parent = nullptr;
+#endif
+    bool expectation_checked = false;
+    std::optional<OOCCleanupResult> expectation_failure;
+};
+
+void record_borrowed_recovery_expectation_failure(BorrowedRecoveryHookContextV1& context,
+                                                  OOCCleanupStatus status,
+                                                  std::error_code error = {}) noexcept {
+    context.expectation_failure = OOCCleanupResult{
+        .status = status,
+        .stage = OOCCleanupStage::None,
+        .native_error = error ? error : protocol_error(),
+    };
+}
+
+[[nodiscard]] bool
+validate_borrowed_recovery_expectation_noexcept(BorrowedRecoveryHookContextV1& context) noexcept {
+    try {
+        if (context.paths == nullptr || context.lock == nullptr || context.expectation == nullptr
+#if !defined(_WIN32)
+            || context.parent == nullptr
+#endif
+        ) {
+            record_borrowed_recovery_expectation_failure(context, OOCCleanupStatus::InvalidRequest,
+                                                         invalid_argument_error());
+            return false;
+        }
+        require_preactive_recovery_expectation(*context.paths, *context.lock, *context.expectation
+#if !defined(_WIN32)
+                                               ,
+                                               *context.parent
+#endif
+        );
+        return true;
+    } catch (const Failure& failure) {
+        record_borrowed_recovery_expectation_failure(context, failure.status, failure.error);
+    } catch (const std::filesystem::filesystem_error& error) {
+        record_borrowed_recovery_expectation_failure(context, OOCCleanupStatus::IoFailure,
+                                                     error.code());
+    } catch (const std::system_error& error) {
+        record_borrowed_recovery_expectation_failure(context, OOCCleanupStatus::IoFailure,
+                                                     error.code());
+    } catch (...) {
+        record_borrowed_recovery_expectation_failure(context, OOCCleanupStatus::UnexpectedFailure);
+    }
+    return false;
+}
+
+[[nodiscard]] bool borrowed_recovery_stop_after(OOCPrivateLeaseFaultPoint point,
+                                                void* opaque) noexcept {
+    if (opaque == nullptr) {
+        return true;
+    }
+    auto& context = *static_cast<BorrowedRecoveryHookContextV1*>(opaque);
+    if (point == OOCPrivateLeaseFaultPoint::RecoveryPermitAcquired) {
+        if (context.expectation_checked) {
+            record_borrowed_recovery_expectation_failure(context, OOCCleanupStatus::InvalidRequest,
+                                                         invalid_argument_error());
+            return true;
+        }
+        context.expectation_checked = true;
+        if (!validate_borrowed_recovery_expectation_noexcept(context)) {
+            return true;
+        }
+        const bool interrupted = context.user_hooks.stop_after != nullptr &&
+                                 context.user_hooks.stop_after(point, context.user_hooks.context);
+        if (!validate_borrowed_recovery_expectation_noexcept(context)) {
+            return true;
+        }
+        return interrupted;
+    }
+#if !defined(_WIN32)
+    try {
+        if (context.parent == nullptr) {
+            record_borrowed_recovery_expectation_failure(context, OOCCleanupStatus::InvalidRequest,
+                                                         invalid_argument_error());
+            return true;
+        }
+        context.parent->require_stable();
+    } catch (const Failure& failure) {
+        record_borrowed_recovery_expectation_failure(context, failure.status, failure.error);
+        return true;
+    } catch (...) {
+        record_borrowed_recovery_expectation_failure(context, OOCCleanupStatus::UnexpectedFailure);
+        return true;
+    }
+#endif
+    const bool interrupted = context.user_hooks.stop_after != nullptr &&
+                             context.user_hooks.stop_after(point, context.user_hooks.context);
+#if !defined(_WIN32)
+    try {
+        context.parent->require_stable();
+    } catch (const Failure& failure) {
+        record_borrowed_recovery_expectation_failure(context, failure.status, failure.error);
+        return true;
+    } catch (...) {
+        record_borrowed_recovery_expectation_failure(context, OOCCleanupStatus::UnexpectedFailure);
+        return true;
+    }
+#endif
+    return interrupted;
+}
+
+} // namespace
+
+std::shared_ptr<BaseLock>
+OOCPrivateLeaseRecoveryBorrowedBaseLockV1::consume(const OOCCleanupPaths& paths,
+                                                   int retained_parent_descriptor) {
+#if defined(_WIN32)
+    (void)paths;
+    (void)retained_parent_descriptor;
+    fail(OOCCleanupStatus::PlatformUnsupported, OOCCleanupStage::None,
+         std::make_error_code(std::errc::operation_not_supported));
+#else
+    if (consumed_ || parent_descriptor_ < 0 || lock_descriptor_ < 0 ||
+        retained_parent_descriptor < 0 || lock_leaf_.empty() || creator_process_id_ == 0 ||
+        creator_process_id_ != static_cast<std::uint64_t>(gnfs::util::process_id())) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+    consumed_ = true;
+    const auto expected_leaf = paths.lock_path.filename().string();
+    if (paths.private_directory.empty() || lock_leaf_ != expected_leaf) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+    }
+
+    const auto valid_parent = [](const struct stat& metadata) noexcept {
+        return S_ISDIR(metadata.st_mode) &&
+               (metadata.st_mode & static_cast<mode_t>(07777)) == static_cast<mode_t>(0700) &&
+               metadata.st_uid == ::geteuid();
+    };
+    const auto valid_lock = [](const struct stat& metadata) noexcept {
+        return S_ISREG(metadata.st_mode) && metadata.st_nlink == 1 &&
+               (metadata.st_mode & static_cast<mode_t>(07777)) == static_cast<mode_t>(0600) &&
+               metadata.st_uid == ::geteuid();
+    };
+    struct stat source_parent{};
+    struct stat retained_parent{};
+    struct stat held_lock{};
+    struct stat named_lock{};
+    if (::fstat(parent_descriptor_, &source_parent) != 0 ||
+        ::fstat(retained_parent_descriptor, &retained_parent) != 0 ||
+        ::fstat(lock_descriptor_, &held_lock) != 0 ||
+        ::fstatat(retained_parent_descriptor, expected_leaf.c_str(), &named_lock,
+                  AT_SYMLINK_NOFOLLOW) != 0) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
+             posix_error(errno == 0 ? EACCES : errno));
+    }
+    const auto source_parent_identity = stable_identity(posix_identity(source_parent));
+    const auto retained_parent_identity = stable_identity(posix_identity(retained_parent));
+    const auto held_lock_identity = stable_identity(posix_identity(held_lock));
+    const auto named_lock_identity = stable_identity(posix_identity(named_lock));
+    if (!valid_parent(source_parent) || !valid_parent(retained_parent) || !valid_lock(held_lock) ||
+        !valid_lock(named_lock) || source_parent_identity != retained_parent_identity ||
+        held_lock_identity != lock_identity_ || named_lock_identity != lock_identity_ ||
+        held_lock.st_dev != named_lock.st_dev || held_lock.st_ino != named_lock.st_ino) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+    }
+
+    int duplicated = -1;
+    do {
+        duplicated = ::fcntl(lock_descriptor_, F_DUPFD_CLOEXEC, 0);
+    } while (duplicated < 0 && errno == EINTR);
+    if (duplicated < 0) {
+        fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, posix_error(errno));
+    }
+    try {
+        auto adopted = std::unique_ptr<BaseLock>(
+            new BaseLock(paths.lock_path, duplicated, retained_parent_descriptor, expected_leaf,
+                         retained_parent_identity, lock_identity_,
+                         BaseLock::AdoptBorrowedLockedOpenFileDescription{}));
+        duplicated = -1;
+        return std::shared_ptr<BaseLock>(std::move(adopted));
+    } catch (...) {
+        if (duplicated >= 0) {
+            (void)::close(duplicated);
+        }
+        throw;
+    }
+#endif
+}
 
 static_assert(static_cast<std::size_t>(PrivateCleanupMarkerSlot::Count) == 4);
 static_assert(static_cast<std::size_t>(PrivateHandoffLeafSlot::Count) == 2);
@@ -5039,6 +5502,58 @@ OOCCleanupResult recover_private_lease_locked(const OOCCleanupPaths& paths,
     }
     held_lock.require_stable();
     return private_lease_no_transaction();
+}
+
+OOCCleanupResult recover_private_lease_with_borrowed_base_lock_v1(
+    const std::filesystem::path& base_path, OOCPrivateLeaseRecoveryBorrowedBaseLockV1&& borrowed,
+    OOCPreactiveLeaseRecoveryExpectationV1 expectation, OOCPrivateLeaseTestHooks hooks) noexcept {
+    return OOCPrivateLeaseRecoveryBuilderV1::invoke([&] {
+#if defined(_WIN32)
+        (void)base_path;
+        (void)borrowed;
+        (void)expectation;
+        (void)hooks;
+        fail(OOCCleanupStatus::PlatformUnsupported, OOCCleanupStage::None,
+             std::make_error_code(std::errc::operation_not_supported));
+#else
+        const auto paths = freeze_paths(base_path);
+        if (paths.private_directory.empty()) {
+            fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+        }
+        // Retain the WaveStore root from the token itself. The path below is
+        // used only to prove that this inherited directory capability remains
+        // the named parent; it is never opened to acquire cleanup authority.
+        OOCPrivateLeaseRecoveryParentHandleV1 parent(borrowed.parent_descriptor_,
+                                                     paths.lock_path.parent_path());
+        auto lock = borrowed.consume(paths, parent.descriptor());
+        if (!lock || !lock->matches(paths.lock_path)) {
+            fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+        }
+        BorrowedRecoveryHookContextV1 context{
+            .paths = &paths,
+            .lock = lock.get(),
+            .expectation = &expectation,
+            .user_hooks = hooks,
+            .parent = &parent,
+        };
+        const auto recovered =
+            recover_private_lease_locked(paths, lock,
+                                         OOCPrivateLeaseTestHooks{
+                                             .stop_after = borrowed_recovery_stop_after,
+                                             .context = &context,
+                                         });
+        parent.require_stable();
+        lock->require_stable();
+        if (context.expectation_failure) {
+            return *context.expectation_failure;
+        }
+        if (!context.expectation_checked &&
+            (recovered.completed() || recovered.status == OOCCleanupStatus::Interrupted)) {
+            fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None, protocol_error());
+        }
+        return recovered;
+#endif
+    });
 }
 
 PrivateCleanupUnionRawObservation

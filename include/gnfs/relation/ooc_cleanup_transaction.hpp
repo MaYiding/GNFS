@@ -69,6 +69,8 @@ class AdoptionParentDirectoryHandle;
 class BaseLock;
 class OOCPrivateHandoffAdoptionBuilderV1;
 class OOCPrivateHandoffBorrowedBaseLockV1;
+class OOCPrivateLeaseRecoveryBorrowedBaseLockV1;
+class OOCPrivateLeaseRecoveryBuilderV1;
 class PrivateCleanupActionPermit;
 class PrivateCleanupMutationGate;
 class PrivateDirectoryHandle;
@@ -1989,6 +1991,7 @@ public:
 
 private:
     struct AdoptInheritedOpenFileDescription final {};
+    struct AdoptBorrowedLockedOpenFileDescription final {};
 
     BaseLock(std::filesystem::path path, int descriptor, int named_parent_descriptor,
              std::string named_leaf, const std::array<std::uint64_t, 3>& expected_parent_identity,
@@ -2107,9 +2110,84 @@ private:
 #endif
     }
 
+    /// Adopt a duplicate of an already-locked open-file description. Unlike the
+    /// historical handoff-adoption constructor, this path performs no `flock`
+    /// operation: the private recovery token is minted only by the WaveStore
+    /// capability that already owns the exact locked OFD.
+    BaseLock(std::filesystem::path path, int descriptor, int named_parent_descriptor,
+             std::string named_leaf, const std::array<std::uint64_t, 3>& expected_parent_identity,
+             const std::array<std::uint64_t, 3>& expected_lock_identity,
+             AdoptBorrowedLockedOpenFileDescription)
+        : path_(std::move(path)), named_parent_descriptor_(named_parent_descriptor),
+          named_leaf_(std::move(named_leaf)), named_parent_identity_(expected_parent_identity) {
+#ifdef _WIN32
+        (void)descriptor;
+        (void)expected_lock_identity;
+        fail(OOCCleanupStatus::PlatformUnsupported, OOCCleanupStage::None,
+             std::make_error_code(std::errc::operation_not_supported));
+#else
+        if (descriptor < 0 || named_parent_descriptor_ < 0 || named_leaf_.empty() ||
+            all_zero(expected_parent_identity) || all_zero(expected_lock_identity)) {
+            fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+        }
+
+        const int descriptor_flags = ::fcntl(descriptor, F_GETFD);
+        const int status_flags = ::fcntl(descriptor, F_GETFL);
+        const int parent_flags = ::fcntl(named_parent_descriptor_, F_GETFD);
+        if (descriptor_flags < 0 || status_flags < 0 || parent_flags < 0 ||
+            (descriptor_flags & FD_CLOEXEC) == 0 || (parent_flags & FD_CLOEXEC) == 0 ||
+            (status_flags & O_ACCMODE) != O_RDWR) {
+            fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
+                 posix_error(errno == 0 ? EACCES : errno));
+        }
+
+        const auto identity_for = [](const struct stat& metadata) noexcept {
+            return std::array<std::uint64_t, 3>{
+                static_cast<std::uint64_t>(metadata.st_dev),
+                static_cast<std::uint64_t>(metadata.st_ino),
+                0,
+            };
+        };
+        const auto lock_policy = [&](const struct stat& metadata) noexcept {
+            return S_ISREG(metadata.st_mode) && metadata.st_nlink == 1 &&
+                   (metadata.st_mode & static_cast<mode_t>(07777)) == 0600 &&
+                   metadata.st_uid == ::geteuid();
+        };
+        const auto parent_policy = [&](const struct stat& metadata) noexcept {
+            return S_ISDIR(metadata.st_mode) &&
+                   (metadata.st_mode & static_cast<mode_t>(07777)) == 0700 &&
+                   metadata.st_uid == ::geteuid();
+        };
+        const auto require_exact_binding = [&] {
+            struct stat parent{};
+            struct stat held{};
+            struct stat named{};
+            if (::fstat(named_parent_descriptor_, &parent) != 0 ||
+                ::fstat(descriptor, &held) != 0 ||
+                ::fstatat(named_parent_descriptor_, named_leaf_.c_str(), &named,
+                          AT_SYMLINK_NOFOLLOW) != 0) {
+                fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, posix_error(errno));
+            }
+            if (!parent_policy(parent) || !lock_policy(held) || !lock_policy(named) ||
+                identity_for(parent) != expected_parent_identity ||
+                identity_for(held) != expected_lock_identity ||
+                identity_for(named) != expected_lock_identity || held.st_dev != named.st_dev ||
+                held.st_ino != named.st_ino) {
+                fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
+                     posix_error(EACCES));
+            }
+        };
+        require_exact_binding();
+        require_exact_binding();
+        identity_ = expected_lock_identity;
+        descriptor_ = descriptor;
+#endif
+    }
+
     friend bool try_claim_private_cleanup_action(BaseLock& lock) noexcept;
     friend void release_private_cleanup_action(BaseLock& lock) noexcept;
     friend class OOCPrivateHandoffBorrowedBaseLockV1;
+    friend class OOCPrivateLeaseRecoveryBorrowedBaseLockV1;
     friend class ::gnfs::sieve::distributed_sieve_worker_entry_detail::
         distributed_sieve_worker_writer_detail::OOCInheritedP8WriterMintV1;
     friend class ::gnfs::sieve::distributed_sieve_resume_detail::
@@ -5726,6 +5804,7 @@ class OOCCleanupTransaction final {
 private:
     friend class ooc_cleanup_detail::PathPrivateLeaseReservationTarget;
     friend class ooc_cleanup_detail::OOCPrivateHandoffAdoptionBuilderV1;
+    friend class ooc_cleanup_detail::OOCPrivateLeaseRecoveryBuilderV1;
 
     struct PrivateLeaseActionAdmission final {
         OOCCleanupResult result;

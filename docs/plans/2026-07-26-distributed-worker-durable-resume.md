@@ -2839,7 +2839,7 @@ M4b restart recovery is split into explicit authority milestones:
 
 - [x] M4b-P2b-P0b converts a terminal canonical prepared generation into the
   common read-only prepared admission without reopening its `BaseLock`.
-- [ ] M4b-P2b-P1 rolls back an exact raw writer residue that has no handoff.
+- [x] M4b-P2b-P1 rolls back an exact raw writer residue that has no handoff.
 - [ ] A later `WaveMergeCommitV1` transition consumes the common prepared
   admission and completes exact worker cleanup.
 
@@ -2985,6 +2985,35 @@ M4b-P2b-P0b, but it does not complete M4b-P2b-P1 or durable merge commit. Exact
 raw writer residue without a handoff still needs rollback, and no current
 consumer turns the common admission into `WaveMergeCommitV1` or worker cleanup
 authority.
+
+M4b-P2b-P1 keeps cold open read-only for an unprepared `MergeStartedV1`
+generation. The loader may admit only one typed raw-writer or rollback-stage
+observation for the latest canonical-only start. That observation freezes every
+remaining marker and corpus leaf by presence, native identity, and extent, is
+retained only in the process-bound WaveStore state, and grants no cleanup
+authority. Index-only and index-plus-data raw prefixes are valid construction
+crash boundaries; data-only, historical-generation, worker-attempt,
+recordless-reservation, handoff-bearing, and successor-generation mixtures
+remain namespace conflicts.
+
+Cleanup remains an explicit `prepare -> reconcile` transition. Reconciliation
+first acquires worker, predecessor-generation, and target `BaseLock` capabilities
+in protocol order, pins the exact canonical `MergeStartedV1`, and reconfirms the
+complete WaveStore projection against the cold-open observation. A source-private
+one-shot bridge then duplicates the already-held target lock's open-file
+description without another `flock` and feeds the exact expectation into the
+relation preactive-recovery state machine. That state machine remains the sole
+carrier for directory quarantine, data and index removal, owner and directory
+removal, and `RESERVED` and `OWNED` revocation. The expectation narrows the
+durable lease capability; it does not replace it.
+
+The typed recovery phases include the final and staging raw-pair states,
+staging-owner-only, staging with the owner already removed, directory absent
+with both root markers, and `OWNED` only. Each durable boundary is restartable.
+Success preserves the permanent `BaseLock`, immutable start chain, and every
+worker handoff, reaches exact P0 for the target lease, and only then advances the
+merge cursor. Other WaveStore mutation routes stay closed while the retained
+raw-stage observation is pending.
 
 The broad WaveStore filesystem matrix now exceeds the Debug `fast` target and
 is now split into independently bounded `fast` CTest shards. The physical
