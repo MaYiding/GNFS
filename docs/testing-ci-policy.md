@@ -456,17 +456,30 @@ passkey and receipt traits. The passkey and receipt have no production or test
 mint route, so those checks freeze only the inaccessible capability surface
 and are not evidence of cleanup authority.
 
-`DistributedSieveWaveStore` is the `slow` durable ownership contract. It
-creates and reopens the source-private store, checks exact manifest identity
-injection and bytes, recovers every durable publication prefix, rejects
-noncanonical or symlinked ancestor paths, ACL and namespace drift, and
-native-identity replacement. Fork-and-pipe probes cover hook-time PID
-separation, concurrent exclusion, and inherited-open-description lock
-lifetime. Its complete Debug filesystem matrix exceeds the `fast` target, so
-the CTest entry uses the `slow` tier and a bounded five-minute timeout until
-the matrix is split further. The no-argument binary runs the core, WaveStore,
-coordinator, and MergePrepared-protection sub-suites; its script catalog is
-therefore also `slow`, with a bounded seven-minute timeout.
+The `DistributedSieveWaveStore*` CTest entries split the durable ownership
+contract into ordered `fast` shards. The shards create and reopen the
+source-private store, check exact manifest identity injection and bytes,
+recover every durable publication prefix, reject noncanonical or symlinked
+ancestor paths, detect ACL and namespace drift, and reject native-identity
+replacement. Fork-and-pipe probes cover hook-time PID separation, concurrent
+exclusion, and inherited-open-description lock lifetime. POSIX builds register
+21 shards. Merge reservation, start publication, the three reconciliation
+matrices, and cursor preparation use six separate shards so the combined
+merge-start matrix does not exceed the `fast` single-run target. The first 20
+shards use 60-second timeouts, and the process-launcher shard uses a 90-second
+timeout. Windows registers only the bounded
+`DistributedSieveWaveStoreOpenRecovery` platform contract as `instant` with a
+10-second timeout.
+
+The shard union preserves the original WaveStore case order. CTest does not
+register the aggregate because that would duplicate the complete matrix in
+routine test selection. The compatibility selector `--suite wave-store` still
+runs every WaveStore shard, and the no-argument binary still runs the core,
+WaveStore, coordinator, and MergePrepared-protection suites. The script runner
+continues to catalog that physical no-argument binary as `slow`, with a bounded
+seven-minute timeout. CTest therefore reports the isolated fast shards, while
+the script runner retains the single-process slow aggregate until it gains
+logical suite aliases.
 
 `DistributedSieveMergePreparedProtection` is a separate `fast` entry from the
 same binary. It creates real finalized private OOC generations and exercises

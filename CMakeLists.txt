@@ -1214,13 +1214,123 @@ if(GNFS_BUILD_TESTS)
         PROPERTIES LABELS "instant" TIMEOUT 20
     )
     add_test(
-        NAME DistributedSieveWaveStore
-        COMMAND test_distributed_sieve_resume --suite wave-store
+        NAME DistributedSieveWaveStoreOpenRecovery
+        COMMAND test_distributed_sieve_resume --suite wave-store-open-recovery
     )
-    set_tests_properties(
-        DistributedSieveWaveStore
-        PROPERTIES LABELS "slow" TIMEOUT 300
-    )
+    if(WIN32)
+        set_tests_properties(
+            DistributedSieveWaveStoreOpenRecovery
+            PROPERTIES LABELS "instant" TIMEOUT 10
+        )
+    else()
+        add_test(
+            NAME DistributedSieveWaveStoreNamespaceLocks
+            COMMAND test_distributed_sieve_resume --suite wave-store-namespace-locks
+        )
+        add_test(
+            NAME DistributedSieveWaveStorePrivateLeaseLifecycle
+            COMMAND test_distributed_sieve_resume --suite wave-store-private-lease-lifecycle
+        )
+        add_test(
+            NAME DistributedSieveWaveStorePrivateLeaseAdversarial
+            COMMAND test_distributed_sieve_resume --suite wave-store-private-lease-adversarial
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreAttemptLockLifecycle
+            COMMAND test_distributed_sieve_resume --suite wave-store-attempt-lock-lifecycle
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreAttemptLockAdversarial
+            COMMAND test_distributed_sieve_resume --suite wave-store-attempt-lock-adversarial
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreAttemptInventory
+            COMMAND test_distributed_sieve_resume --suite wave-store-attempt-inventory
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreAttemptStart
+            COMMAND test_distributed_sieve_resume --suite wave-store-attempt-start
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreMergeReservation
+            COMMAND test_distributed_sieve_resume --suite wave-store-merge-reservation
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreMergeStartPublication
+            COMMAND test_distributed_sieve_resume --suite wave-store-merge-start-publication
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreMergeStartReconcileP8
+            COMMAND test_distributed_sieve_resume --suite wave-store-merge-start-reconcile-p8
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreMergeStartReconcileCanonical
+            COMMAND test_distributed_sieve_resume --suite wave-store-merge-start-reconcile-canonical
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreMergeStartReconcileInvalid
+            COMMAND test_distributed_sieve_resume --suite wave-store-merge-start-reconcile-invalid
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreMergeCursor
+            COMMAND test_distributed_sieve_resume --suite wave-store-merge-cursor
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreAttemptReconcileReplay
+            COMMAND test_distributed_sieve_resume --suite wave-store-attempt-reconcile-replay
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreAttemptReconcileAuthority
+            COMMAND test_distributed_sieve_resume --suite wave-store-attempt-reconcile-authority
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreTerminalRecords
+            COMMAND test_distributed_sieve_resume --suite wave-store-terminal-records
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreWorkerHandoff
+            COMMAND test_distributed_sieve_resume --suite wave-store-worker-handoff
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreWorkerPackageReplay
+            COMMAND test_distributed_sieve_resume --suite wave-store-worker-package-replay
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreWorkerPackageValidation
+            COMMAND test_distributed_sieve_resume --suite wave-store-worker-package-validation
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreWorkerLauncher
+            COMMAND test_distributed_sieve_resume --suite wave-store-worker-launcher
+        )
+        set_tests_properties(
+            DistributedSieveWaveStoreOpenRecovery
+            DistributedSieveWaveStoreNamespaceLocks
+            DistributedSieveWaveStorePrivateLeaseLifecycle
+            DistributedSieveWaveStorePrivateLeaseAdversarial
+            DistributedSieveWaveStoreAttemptLockLifecycle
+            DistributedSieveWaveStoreAttemptLockAdversarial
+            DistributedSieveWaveStoreAttemptInventory
+            DistributedSieveWaveStoreAttemptStart
+            DistributedSieveWaveStoreMergeReservation
+            DistributedSieveWaveStoreMergeStartPublication
+            DistributedSieveWaveStoreMergeStartReconcileP8
+            DistributedSieveWaveStoreMergeStartReconcileCanonical
+            DistributedSieveWaveStoreMergeStartReconcileInvalid
+            DistributedSieveWaveStoreMergeCursor
+            DistributedSieveWaveStoreAttemptReconcileReplay
+            DistributedSieveWaveStoreAttemptReconcileAuthority
+            DistributedSieveWaveStoreTerminalRecords
+            DistributedSieveWaveStoreWorkerHandoff
+            DistributedSieveWaveStoreWorkerPackageReplay
+            DistributedSieveWaveStoreWorkerPackageValidation
+            PROPERTIES LABELS "fast" TIMEOUT 60
+        )
+        set_tests_properties(
+            DistributedSieveWaveStoreWorkerLauncher
+            PROPERTIES LABELS "fast" TIMEOUT 90
+        )
+    endif()
     add_test(
         NAME DistributedSieveWorkerCoordinator
         COMMAND test_distributed_sieve_resume --suite coordinator

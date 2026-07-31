@@ -16517,12 +16517,8 @@ void test_wave_store_merge_start_fault_prefixes() {
     }
 }
 
-void test_wave_store_merge_started_reconcile_state_contract() {
+void test_wave_store_merge_started_reconcile_p8_pending_shapes() {
     using Boundary = wave_detail::DistributedSievePrivateLeaseReservationBoundary;
-    constexpr auto& BOUNDARIES =
-        wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVATION_BOUNDARIES;
-    static_assert(BOUNDARIES.size() == 9U);
-
     constexpr std::array P8_PENDING_SHAPES{
         MergeStartedReconcileRecordShape::pending_only,
         MergeStartedReconcileRecordShape::identical_dual,
@@ -16547,6 +16543,12 @@ void test_wave_store_merge_started_reconcile_state_contract() {
         ++pending_p8_cases;
     }
     CHECK(pending_p8_cases == 2U);
+}
+
+void test_wave_store_merge_started_reconcile_canonical_prefixes_and_replay() {
+    constexpr auto& BOUNDARIES =
+        wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVATION_BOUNDARIES;
+    static_assert(BOUNDARIES.size() == 9U);
 
     std::size_t canonical_prefixes = 0;
     for (std::size_t index = 0; index < BOUNDARIES.size(); ++index) {
@@ -16574,6 +16576,16 @@ void test_wave_store_merge_started_reconcile_state_contract() {
         ++canonical_prefixes;
     }
     CHECK(canonical_prefixes == BOUNDARIES.size());
+}
+
+void test_wave_store_merge_started_reconcile_rejects_non_p8_pending_and_dual() {
+    constexpr auto& BOUNDARIES =
+        wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_RESERVATION_BOUNDARIES;
+    static_assert(BOUNDARIES.size() == 9U);
+    constexpr std::array P8_PENDING_SHAPES{
+        MergeStartedReconcileRecordShape::pending_only,
+        MergeStartedReconcileRecordShape::identical_dual,
+    };
 
     std::size_t rejected_pending_prefixes = 0;
     for (std::size_t index = 0; index + 1U < BOUNDARIES.size(); ++index) {
@@ -21308,6 +21320,59 @@ void test_wave_store_platform_fail_closed() {
 #endif
 
 using TestFunction = void (*)();
+using NamedTest = std::pair<std::string_view, TestFunction>;
+
+struct WaveStoreCommonShard final {
+    std::string_view name;
+    std::size_t offset;
+    std::size_t count;
+};
+
+constexpr std::array<WaveStoreCommonShard, 20> WAVE_STORE_COMMON_SHARDS = {{
+    {"wave-store-open-recovery", 0, 7},
+    {"wave-store-namespace-locks", 7, 7},
+    {"wave-store-private-lease-lifecycle", 14, 7},
+    {"wave-store-private-lease-adversarial", 21, 8},
+    {"wave-store-attempt-lock-lifecycle", 29, 5},
+    {"wave-store-attempt-lock-adversarial", 34, 5},
+    {"wave-store-attempt-inventory", 39, 4},
+    {"wave-store-attempt-start", 43, 10},
+    {"wave-store-merge-reservation", 53, 1},
+    {"wave-store-merge-start-publication", 54, 2},
+    {"wave-store-merge-start-reconcile-p8", 56, 1},
+    {"wave-store-merge-start-reconcile-canonical", 57, 1},
+    {"wave-store-merge-start-reconcile-invalid", 58, 1},
+    {"wave-store-merge-cursor", 59, 1},
+    {"wave-store-attempt-reconcile-replay", 60, 5},
+    {"wave-store-attempt-reconcile-authority", 65, 4},
+    {"wave-store-terminal-records", 69, 7},
+    {"wave-store-worker-handoff", 76, 6},
+    {"wave-store-worker-package-replay", 82, 4},
+    {"wave-store-worker-package-validation", 86, 5},
+}};
+
+constexpr std::string_view WAVE_STORE_WORKER_LAUNCHER_SHARD = "wave-store-worker-launcher";
+
+consteval bool wave_store_common_shards_are_contiguous() {
+    std::size_t next_offset = 0;
+    for (const auto& shard : WAVE_STORE_COMMON_SHARDS) {
+        if (shard.count == 0 || shard.offset != next_offset) {
+            return false;
+        }
+        next_offset += shard.count;
+    }
+    return next_offset == 91;
+}
+
+static_assert(wave_store_common_shards_are_contiguous());
+
+[[nodiscard]] bool is_wave_store_shard(std::string_view name) {
+    if (name == WAVE_STORE_WORKER_LAUNCHER_SHARD) {
+        return true;
+    }
+    return std::any_of(WAVE_STORE_COMMON_SHARDS.begin(), WAVE_STORE_COMMON_SHARDS.end(),
+                       [name](const WaveStoreCommonShard& shard) { return shard.name == name; });
+}
 
 void run_core_suite() {
     const std::array<std::pair<std::string_view, TestFunction>, 15> tests = {{
@@ -21336,7 +21401,7 @@ void run_core_suite() {
     std::cout << "===== Distributed Sieve Resume Core Tests PASSED =====\n";
 }
 
-void run_wave_store_suite() {
+void run_wave_store_suite(std::optional<std::string_view> selected_shard = std::nullopt) {
     std::cout << "===== Distributed Sieve Wave Store Tests =====\n";
     const auto run_tests = [](const auto& tests) {
         for (const auto& [name, function] : tests) {
@@ -21346,7 +21411,7 @@ void run_wave_store_suite() {
     };
 
 #if !defined(_WIN32)
-    const std::array<std::pair<std::string_view, TestFunction>, 89> common_tests = {{
+    const std::array<NamedTest, 91> common_tests = {{
         {"create, open, revalidate, and exact manifest",
          test_wave_store_create_open_revalidate_and_exact_manifest},
         {"store-owned draft fields", test_wave_store_rejects_non_draft_store_owned_fields},
@@ -21448,8 +21513,12 @@ void run_wave_store_suite() {
          test_wave_store_merge_reservation_prefixes_and_ordinal_neutrality},
         {"MergeStarted happy path and receipt", test_wave_store_merge_start_happy_path_and_receipt},
         {"MergeStarted durable prefixes", test_wave_store_merge_start_fault_prefixes},
-        {"MergeStarted reconcile state contract",
-         test_wave_store_merge_started_reconcile_state_contract},
+        {"MergeStarted reconcile P8 pending shapes",
+         test_wave_store_merge_started_reconcile_p8_pending_shapes},
+        {"MergeStarted reconcile canonical P0-P8 and replay",
+         test_wave_store_merge_started_reconcile_canonical_prefixes_and_replay},
+        {"MergeStarted reconcile rejects non-P8 pending and dual",
+         test_wave_store_merge_started_reconcile_rejects_non_p8_pending_and_dual},
         {"merge generation prepare cursor contract",
          test_wave_store_prepare_merge_generation_cursor_contract},
         {"worker-attempt reconciliation success matrix",
@@ -21515,50 +21584,79 @@ void run_wave_store_suite() {
         {"worker package residue identity replacement matrix",
          test_wave_store_worker_package_residue_identity_replacement_matrix},
     }};
-    run_tests(common_tests);
-
-    const std::array<std::pair<std::string_view, TestFunction>, 1> unavailable_launcher_tests = {{
-        {"worker launcher close-all unavailable before gate",
-         test_wave_store_worker_launcher_close_all_unavailable_fails_before_gate},
-    }};
-    run_tests(unavailable_launcher_tests);
-
-    if (worker_process_detail::
-            distributed_sieve_worker_process_fixed_capability_close_all_supported()) {
-        const std::array<std::pair<std::string_view, TestFunction>, 9> supported_launcher_tests = {{
-            {"worker launcher happy path", test_wave_store_worker_launcher_happy_path},
-            {"worker launcher binding mismatch zero spawn",
-             test_wave_store_worker_launcher_binding_mismatch_spawns_zero},
-            {"worker launcher invalid initial receipt zero spawn",
-             test_wave_store_worker_launcher_invalid_initial_receipt_spawns_zero},
-            {"worker launcher post-carrier residue stop",
-             test_wave_store_worker_launcher_post_carrier_residue_stops},
-            {"worker launcher cross-slot post-carrier residue",
-             test_wave_store_worker_launcher_later_slot_reopens_earlier_fixed_leaf},
-            {"worker launcher post-carrier directory replacement",
-             test_wave_store_worker_launcher_post_carrier_directory_replacement_requires_reconciliation},
-            {"worker launcher second-slot namespace conflict zero spawn",
-             test_wave_store_worker_launcher_second_slot_namespace_conflict_spawns_zero},
-            {"worker launcher partial spawn receipt ownership",
-             test_wave_store_worker_launcher_partial_spawn_keeps_only_success_receipts},
-            {"worker launcher abandoned composite quarantine",
-             test_wave_store_worker_launcher_abandoned_composite_quarantines_receipt},
+    const std::span<const NamedTest> common_test_span(common_tests);
+    const auto run_common_shard = [&](const WaveStoreCommonShard& shard) {
+        run_tests(common_test_span.subspan(shard.offset, shard.count));
+    };
+    const auto run_launcher_shard = [&] {
+        const std::array<NamedTest, 1> unavailable_launcher_tests = {{
+            {"worker launcher close-all unavailable before gate",
+             test_wave_store_worker_launcher_close_all_unavailable_fails_before_gate},
         }};
-        run_tests(supported_launcher_tests);
+        run_tests(unavailable_launcher_tests);
+
+        if (worker_process_detail::
+                distributed_sieve_worker_process_fixed_capability_close_all_supported()) {
+            const std::array<NamedTest, 9> supported_launcher_tests = {{
+                {"worker launcher happy path", test_wave_store_worker_launcher_happy_path},
+                {"worker launcher binding mismatch zero spawn",
+                 test_wave_store_worker_launcher_binding_mismatch_spawns_zero},
+                {"worker launcher invalid initial receipt zero spawn",
+                 test_wave_store_worker_launcher_invalid_initial_receipt_spawns_zero},
+                {"worker launcher post-carrier residue stop",
+                 test_wave_store_worker_launcher_post_carrier_residue_stops},
+                {"worker launcher cross-slot post-carrier residue",
+                 test_wave_store_worker_launcher_later_slot_reopens_earlier_fixed_leaf},
+                {"worker launcher post-carrier directory replacement",
+                 test_wave_store_worker_launcher_post_carrier_directory_replacement_requires_reconciliation},
+                {"worker launcher second-slot namespace conflict zero spawn",
+                 test_wave_store_worker_launcher_second_slot_namespace_conflict_spawns_zero},
+                {"worker launcher partial spawn receipt ownership",
+                 test_wave_store_worker_launcher_partial_spawn_keeps_only_success_receipts},
+                {"worker launcher abandoned composite quarantine",
+                 test_wave_store_worker_launcher_abandoned_composite_quarantines_receipt},
+            }};
+            run_tests(supported_launcher_tests);
 #if defined(__APPLE__)
-        const std::array<std::pair<std::string_view, TestFunction>, 1> borrowed_lock_tests = {{
-            {"borrowed worker BaseLock span contract",
-             test_wave_store_borrowed_worker_lock_span_contract},
-        }};
-        run_tests(borrowed_lock_tests);
+            const std::array<NamedTest, 1> borrowed_lock_tests = {{
+                {"borrowed worker BaseLock span contract",
+                 test_wave_store_borrowed_worker_lock_span_contract},
+            }};
+            run_tests(borrowed_lock_tests);
 #endif
+        }
+    };
+
+    if (selected_shard.has_value()) {
+        if (*selected_shard == WAVE_STORE_WORKER_LAUNCHER_SHARD) {
+            run_launcher_shard();
+        } else {
+            const auto shard =
+                std::find_if(WAVE_STORE_COMMON_SHARDS.begin(), WAVE_STORE_COMMON_SHARDS.end(),
+                             [&](const WaveStoreCommonShard& candidate) {
+                                 return candidate.name == *selected_shard;
+                             });
+            if (shard == WAVE_STORE_COMMON_SHARDS.end()) {
+                throw std::invalid_argument("unknown WaveStore shard");
+            }
+            run_common_shard(*shard);
+        }
+    } else {
+        for (const auto& shard : WAVE_STORE_COMMON_SHARDS) {
+            run_common_shard(shard);
+        }
+        run_launcher_shard();
     }
 #else
-    const std::array<std::pair<std::string_view, TestFunction>, 2> tests = {{
-        {"zero open digest", test_wave_store_rejects_zero_open_digest_without_observation},
-        {"unsupported platform fails closed", test_wave_store_platform_fail_closed},
-    }};
-    run_tests(tests);
+    if (!selected_shard.has_value() || *selected_shard == WAVE_STORE_COMMON_SHARDS.front().name) {
+        const std::array<NamedTest, 2> tests = {{
+            {"zero open digest", test_wave_store_rejects_zero_open_digest_without_observation},
+            {"unsupported platform fails closed", test_wave_store_platform_fail_closed},
+        }};
+        run_tests(tests);
+    } else {
+        std::cout << "  " << *selected_shard << ": SKIP (WaveStore runtime requires POSIX)\n";
+    }
 #endif
 
     std::cout << "===== Distributed Sieve Wave Store Tests PASSED =====\n";
@@ -21694,6 +21792,10 @@ int main(int argc, char** argv) {
             run_wave_store_suite();
             return 0;
         }
+        if (argc == 3 && std::string_view(argv[1]) == "--suite" && is_wave_store_shard(argv[2])) {
+            run_wave_store_suite(argv[2]);
+            return 0;
+        }
         if (argc == 3 && std::string_view(argv[1]) == "--suite" &&
             std::string_view(argv[2]) == "coordinator") {
             run_coordinator_suite();
@@ -21706,7 +21808,20 @@ int main(int argc, char** argv) {
         }
 
         std::cerr << "usage: " << argv[0]
-                  << " [--suite core|wave-store|coordinator|merge-prepared-protection]\n";
+                  << " [--suite core|wave-store|<wave-store-shard>|coordinator|"
+                     "merge-prepared-protection]\n"
+                  << "wave-store shards: wave-store-open-recovery, wave-store-namespace-locks, "
+                     "wave-store-private-lease-lifecycle, wave-store-private-lease-adversarial, "
+                     "wave-store-attempt-lock-lifecycle, wave-store-attempt-lock-adversarial, "
+                     "wave-store-attempt-inventory, wave-store-attempt-start, "
+                     "wave-store-merge-reservation, wave-store-merge-start-publication, "
+                     "wave-store-merge-start-reconcile-p8, "
+                     "wave-store-merge-start-reconcile-canonical, "
+                     "wave-store-merge-start-reconcile-invalid, wave-store-merge-cursor, "
+                     "wave-store-attempt-reconcile-replay, "
+                     "wave-store-attempt-reconcile-authority, wave-store-terminal-records, "
+                     "wave-store-worker-handoff, wave-store-worker-package-replay, "
+                     "wave-store-worker-package-validation, wave-store-worker-launcher\n";
         return 2;
     } catch (const std::exception& error) {
         std::cerr << "Distributed sieve resume test failure: " << error.what() << '\n';
