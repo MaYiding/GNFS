@@ -287,6 +287,37 @@ public:
     }
 };
 
+OOCRelationReader
+OOCPrivateHandoffReader::take_read_only_reader_and_release_adoption_authority() && {
+    if (!valid()) {
+        throw std::logic_error(
+            "OOCPrivateHandoffReader: cannot release invalid adoption authority");
+    }
+
+    OOCRelationReader detached(std::move(reader_));
+    if (adoption_.retains_private_cleanup_action_claim_ && adoption_.live_lock_) {
+        ooc_cleanup_detail::release_private_cleanup_action(*adoption_.live_lock_);
+    }
+    adoption_.retains_private_cleanup_action_claim_ = false;
+    adoption_.spent_ = true;
+    adoption_.private_directory_handle_.reset();
+    adoption_.parent_directory_.reset();
+    adoption_.live_lock_.reset();
+    adoption_.adopter_process_id_ = 0;
+    cleanup_intent_conversion_ready_ = false;
+    return detached;
+}
+
+class ooc_cleanup_detail::OOCPrivateHandoffReadOnlyReleaseExecutorV1 final {
+private:
+    [[nodiscard]] static OOCRelationReader run(OOCPrivateHandoffReader& reader) {
+        return std::move(reader).take_read_only_reader_and_release_adoption_authority();
+    }
+
+    friend OOCRelationReader
+    take_read_only_reader_and_release_adoption_authority(OOCPrivateHandoffReader&& reader);
+};
+
 namespace {
 
 template <typename Operation> class CleanupIntentConversionScopeExitV2 final {
@@ -1832,6 +1863,11 @@ convert_authorized_private_handoff_to_cleanup_intent_v2_for_trusted_test(
     OOCPrivateHandoffCleanupAuthorizationReceipt&& authorization,
     OOCPrivateHandoffCleanupIntentPublicationTestHooksV2 hooks) noexcept {
     return OOCPrivateHandoffCleanupIntentConversionExecutorV2::run(reader, authorization, hooks);
+}
+
+OOCRelationReader
+take_read_only_reader_and_release_adoption_authority(OOCPrivateHandoffReader&& reader) {
+    return OOCPrivateHandoffReadOnlyReleaseExecutorV1::run(reader);
 }
 
 } // namespace gnfs::relation::ooc_cleanup_detail

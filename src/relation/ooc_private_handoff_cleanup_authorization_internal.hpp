@@ -26,13 +26,19 @@ class DistributedSieveWaveStore;
 
 } // namespace gnfs::sieve::distributed_sieve_resume_detail
 
+namespace gnfs::relation {
+class OOCRelationReader;
+}
+
 namespace gnfs::relation::ooc_cleanup_detail {
 
 class OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2;
 class OOCPrivateHandoffCleanupIntentConversionExecutorV2;
+class OOCPrivateHandoffCleanupIntentReconciliationExecutorV2;
 class OOCPrivateHandoffCleanupIntentPublicationTestKeyV2;
 class OOCPrivateHandoffCleanupResumeExecutorV2;
 class OOCPrivateHandoffCleanupResumeTestKeyV2;
+class OOCPrivateHandoffReadOnlyReleaseExecutorV1;
 struct OOCPrivateHandoffCleanupIntentPublicationResultV2;
 struct OOCPrivateHandoffCleanupIntentPublicationTestHooksV2;
 
@@ -169,6 +175,7 @@ private:
     friend class gnfs::sieve::distributed_sieve_resume_detail::DistributedSieveWaveStore;
     friend class OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2;
     friend class OOCPrivateHandoffCleanupIntentConversionExecutorV2;
+    friend class OOCPrivateHandoffCleanupIntentReconciliationExecutorV2;
     friend class OOCPrivateHandoffCleanupResumeExecutorV2;
 };
 
@@ -286,6 +293,75 @@ convert_authorized_private_handoff_to_cleanup_intent_v2_for_trusted_test(
     OOCPrivateHandoffCleanupIntentPublicationTestKeyV2&&, OOCPrivateHandoffReader&& reader,
     OOCPrivateHandoffCleanupAuthorizationReceipt&& authorization,
     OOCPrivateHandoffCleanupIntentPublicationTestHooksV2 hooks) noexcept;
+
+enum class OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2 : std::uint8_t {
+    PendingReconfirmedDurable,
+    CanonicalPromotionReady,
+    CanonicalPromoted,
+    CanonicalDurable,
+    CanonicalBindingRevalidated,
+    Count,
+};
+
+struct OOCPrivateHandoffCleanupIntentReconciliationTestHooksV2 final {
+    using StopAfter = bool (*)(OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2 point,
+                               void* context) noexcept;
+
+    StopAfter stop_after = nullptr;
+    void* context = nullptr;
+};
+
+enum class OOCPrivateHandoffCleanupIntentReconciliationDispositionV2 : std::uint8_t {
+    Failed,
+    AuthorizationRetained,
+    ReconciliationRequired,
+    IntentCanonical,
+};
+
+struct OOCPrivateHandoffCleanupIntentReconciliationResultV2 final {
+    OOCCleanupResult result;
+    OOCPrivateHandoffCleanupIntentReconciliationDispositionV2 disposition =
+        OOCPrivateHandoffCleanupIntentReconciliationDispositionV2::Failed;
+    std::optional<OOCPrivateHandoffCleanupIntentPublicationEvidenceV2> evidence;
+
+    [[nodiscard]] bool intent_canonical() const noexcept {
+        return disposition ==
+                   OOCPrivateHandoffCleanupIntentReconciliationDispositionV2::IntentCanonical &&
+               evidence.has_value();
+    }
+
+    [[nodiscard]] bool authorization_retained() const noexcept {
+        return disposition ==
+               OOCPrivateHandoffCleanupIntentReconciliationDispositionV2::AuthorizationRetained;
+    }
+
+    [[nodiscard]] bool reconciliation_required() const noexcept {
+        return disposition ==
+               OOCPrivateHandoffCleanupIntentReconciliationDispositionV2::ReconciliationRequired;
+    }
+};
+
+/// Recovery-only T2a normalization. This opens one new non-creating BaseLock
+/// epoch and may only promote the exact already-existing pending V2 intent to
+/// its canonical name. It accepts no path or payload, never creates pending,
+/// and performs no artifact, marker, lease, or directory deletion.
+[[nodiscard]] OOCPrivateHandoffCleanupIntentReconciliationResultV2
+reconcile_authorized_private_handoff_cleanup_intent_v2(
+    OOCPrivateHandoffCleanupAuthorizationReceipt&& authorization) noexcept;
+
+/// Same recovery-only transition with deterministic crash boundaries. The
+/// ordinary intent-publication test key also gates this closely related seam.
+[[nodiscard]] OOCPrivateHandoffCleanupIntentReconciliationResultV2
+reconcile_authorized_private_handoff_cleanup_intent_v2_for_trusted_test(
+    OOCPrivateHandoffCleanupIntentPublicationTestKeyV2&&,
+    OOCPrivateHandoffCleanupAuthorizationReceipt&& authorization,
+    OOCPrivateHandoffCleanupIntentReconciliationTestHooksV2 hooks) noexcept;
+
+/// Source-private authority erasure for a same-handle adopted reader. The
+/// returned reader owns only the already-open read handles; all adoption,
+/// action-claim, directory, parent, and BaseLock authority is released.
+[[nodiscard]] OOCRelationReader
+take_read_only_reader_and_release_adoption_authority(OOCPrivateHandoffReader&& reader);
 
 enum class OOCPrivateHandoffCleanupResumeFaultPointV2 : std::uint8_t {
     RecoveryPermitAcquired,

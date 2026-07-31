@@ -67,6 +67,7 @@ class OOCPrivateHandoffReader;
 
 namespace ooc_cleanup_detail {
 class OOCPrivateHandoffCleanupIntentConversionExecutorV2;
+class OOCPrivateHandoffReadOnlyReleaseExecutorV1;
 } // namespace ooc_cleanup_detail
 
 enum class OOCWriterState {
@@ -3365,6 +3366,12 @@ private:
         cleanup_intent_conversion_ready_ = false;
     }
 
+    /// Source-private transition used after a committed merge has adopted the
+    /// exact merged corpus. The implementation moves the same-handle reader
+    /// out first, then releases every adoption/action-claim/namespace handle so
+    /// the returned value carries read authority only.
+    [[nodiscard]] OOCRelationReader take_read_only_reader_and_release_adoption_authority() &&;
+
     struct CommittedAdoption final {
         OOCPrivateHandoffAdoptionReceipt adoption;
         OOCSnapshotDescriptor descriptor;
@@ -3411,6 +3418,7 @@ private:
     bool cleanup_intent_conversion_ready_ = false;
 
     friend class ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentConversionExecutorV2;
+    friend class ooc_cleanup_detail::OOCPrivateHandoffReadOnlyReleaseExecutorV1;
 };
 
 /// Trusted reader for a single flushed prefix of an otherwise incomplete OOC
