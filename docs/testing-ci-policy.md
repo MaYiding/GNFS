@@ -509,6 +509,16 @@ releases locks. Malformed kind and predecessor bindings still fail closed with
 complete wave-root and private-directory snapshots unchanged. The suite is
 filesystem integration rather than an `instant` helper contract.
 
+The M4b-P2b-P0b recovery contract extends that cold-open matrix. A ready
+`DistributedSieveWaveStoreOpenResult` must satisfy a closed XOR: ordinary
+reopen returns only `store`, while a terminal canonical prepared generation
+returns only a valid `prepared_admission`. The terminal branch must retain the
+permanent `WaveLock`, coordinator claim, manifest-ordered worker readers, and
+merged target reader. Its release order is target, workers in reverse manifest
+order, coordinator, then WaveStore. Fresh and recovered paths must expose the
+same move-only `DistributedSieveMergePreparedAdmissionV1`, with no raw writer,
+path, descriptor, cleanup receipt, or root-action capability.
+
 `test_distributed_sieve_merge_writer` is the `instant` authority-free
 manifest-order merge contract. It streams small finalized OOC fixtures through
 the production first-`ABPair` writer, including an empty chunk and a valid
@@ -537,9 +547,25 @@ API contract checks and skips the runtime transaction; production returns
 protect interrupted typed prefixes with `reconciliation_required`. Cold open
 now rolls back exact pending prepared prefixes and converges canonical or
 identical-dual prefixes before ordinary manifest validation.
-The relation-layer same-object adoption primitive is covered by the lease-crash
-suite. WaveStore recovered-prepared admission and raw writer-residue rollback
-remain separate recovery slices.
+The relation-layer lease-crash suite also covers the lvalue transactional
+reader adoption used by recovered prepared admission. It requires three trusted
+aggregate callbacks: after the terminal match, inside the relation exact ->
+callback -> exact receipt sandwich, and after reader construction under a final
+exact sandwich. Callback rejection or a late injected interruption must leave
+the consumed permit held, keep a competing independent adoption busy, and allow
+an exact retry through that same permit. Fork-inherited and moved-from authority
+must remain unusable without weakening the parent lifetime.
+
+The MergePrepared protection shard exercises the aggregate boundary in the
+real WaveStore path. Same-byte `MergeStartedV1` replacement immediately before
+the target's final reader callback must fail as `namespace_conflict`. An
+interruption at a later worker's receipt callback must observe every target and
+worker lock held, unwind every partially adopted reader, leave no next-merge
+branch, and permit an exact hook-free retry.
+
+This evidence closes M4b-P2b-P0b only. M4b-P2b-P1 raw writer-residue rollback
+and the later `WaveMergeCommitV1` consumer remain unimplemented and therefore
+have no positive completion claim in routine test selection.
 
 `test_distributed_sieve_resume` is also the dedicated M2j-A receipt-gated
 launcher contract.

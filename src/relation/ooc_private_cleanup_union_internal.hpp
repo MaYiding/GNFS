@@ -13,8 +13,9 @@
 #include <optional>
 
 namespace gnfs::sieve::distributed_sieve_resume_detail {
+class MergePreparedAdmissionRevalidatorAuthorityV1;
 class WorkerHandoffTypedValidatorAuthorityV1;
-}
+} // namespace gnfs::sieve::distributed_sieve_resume_detail
 
 namespace gnfs::relation::ooc_cleanup_detail {
 
@@ -267,8 +268,12 @@ struct PrivateHandoffPublicationPrefixWitnessV1 final {
 
 class PrivateHandoffPublicationObservedPermitV1;
 class PrivateHandoffPublicationValidatedPermitV1;
+class PrivateHandoffPublicationAdoptionRevalidatorV1;
+class PrivateHandoffPublicationAdoptionRevalidatorTestAuthorityV1;
 class PrivateHandoffPublicationTypedValidatorV1;
 class PrivateHandoffPublicationTypedValidatorTestAuthorityV1;
+class OOCPrivateHandoffConsumedPublicationBaseLockV1;
+struct PrivateHandoffPublicationReaderAdoptionResultV1;
 struct PrivateHandoffPublicationResumeAdmissionV1;
 struct PrivateHandoffPublicationResumeValidationV1;
 struct PrivateHandoffPublicationResumeRevalidationV1;
@@ -358,6 +363,53 @@ private:
         PrivateHandoffPublicationTypedValidatorV1&& validator) noexcept;
 };
 
+/// Move-only source-private capability for aggregate adoption revalidation.
+///
+/// The callback runs while the consumed publication permit's exact BaseLock
+/// and action claim remain held. Before the reader exists it receives nullptr;
+/// the final invocation receives the fully constructed same-handle reader. A
+/// private constructor prevents an arbitrary source caller from substituting a
+/// caller-owned boolean for the WaveStore aggregate proof.
+class PrivateHandoffPublicationAdoptionRevalidatorV1 final {
+public:
+    using Validate = bool (*)(const OOCPrivateHandoffReader* current_reader,
+                              void* context) noexcept;
+
+    PrivateHandoffPublicationAdoptionRevalidatorV1() = delete;
+    PrivateHandoffPublicationAdoptionRevalidatorV1(
+        const PrivateHandoffPublicationAdoptionRevalidatorV1&) = delete;
+    PrivateHandoffPublicationAdoptionRevalidatorV1&
+    operator=(const PrivateHandoffPublicationAdoptionRevalidatorV1&) = delete;
+    PrivateHandoffPublicationAdoptionRevalidatorV1(
+        PrivateHandoffPublicationAdoptionRevalidatorV1&& other) noexcept;
+    PrivateHandoffPublicationAdoptionRevalidatorV1&
+    operator=(PrivateHandoffPublicationAdoptionRevalidatorV1&&) = delete;
+    ~PrivateHandoffPublicationAdoptionRevalidatorV1() = default;
+
+private:
+    explicit PrivateHandoffPublicationAdoptionRevalidatorV1(Validate validate,
+                                                            void* context) noexcept;
+
+    Validate validate_ = nullptr;
+    void* context_ = nullptr;
+    std::uint64_t creator_process_id_ = 0;
+
+    friend class gnfs::sieve::distributed_sieve_resume_detail::
+        MergePreparedAdmissionRevalidatorAuthorityV1;
+    friend class PrivateHandoffPublicationAdoptionRevalidatorTestAuthorityV1;
+    friend PrivateHandoffPublicationReaderAdoptionResultV1
+    adopt_consumed_canonical_private_handoff_reader_v1(
+        PrivateHandoffPublicationValidatedPermitV1& permit,
+        PrivateHandoffPublicationAdoptionRevalidatorV1&& revalidator,
+        OOCPrivateHandoffAdoptionTestHooks hooks) noexcept;
+    friend OOCPrivateHandoffAdoptionResult
+    adopt_private_handoff_with_consumed_publication_base_lock_v1(
+        const std::filesystem::path& base_path,
+        OOCPrivateHandoffConsumedPublicationBaseLockV1&& authority,
+        PrivateHandoffPublicationAdoptionRevalidatorV1& revalidator,
+        OOCPrivateHandoffAdoptionTestHooks hooks) noexcept;
+};
+
 /// Move-only source-private observation for one exact publication prefix.
 ///
 /// On supported platforms, acquisition opens a fresh, independent
@@ -385,9 +437,9 @@ public:
     [[nodiscard]] const PrivateHandoffPublicationPrefixWitnessV1* witness() const noexcept;
 
 private:
-    explicit PrivateHandoffPublicationObservedPermitV1(std::unique_ptr<State> state) noexcept;
+    explicit PrivateHandoffPublicationObservedPermitV1(std::shared_ptr<State> state) noexcept;
 
-    std::unique_ptr<State> state_;
+    std::shared_ptr<State> state_;
 
     friend PrivateHandoffPublicationResumeAdmissionV1 acquire_private_handoff_publication_resume_v1(
         const OOCCleanupPaths& paths,
@@ -422,9 +474,9 @@ public:
 
 private:
     explicit PrivateHandoffPublicationValidatedPermitV1(
-        std::unique_ptr<PrivateHandoffPublicationObservedPermitV1::State> state) noexcept;
+        std::shared_ptr<PrivateHandoffPublicationObservedPermitV1::State> state) noexcept;
 
-    std::unique_ptr<PrivateHandoffPublicationObservedPermitV1::State> state_;
+    std::shared_ptr<PrivateHandoffPublicationObservedPermitV1::State> state_;
 
     friend PrivateHandoffPublicationResumeValidationV1
     validate_private_handoff_publication_resume_v1(
@@ -440,6 +492,37 @@ private:
     friend OOCPrivateHandoffAdoptionResult adopt_consumed_canonical_private_handoff_publication_v1(
         PrivateHandoffPublicationValidatedPermitV1&& permit,
         OOCPrivateHandoffAdoptionTestHooks hooks) noexcept;
+    friend PrivateHandoffPublicationReaderAdoptionResultV1
+    adopt_consumed_canonical_private_handoff_reader_v1(
+        PrivateHandoffPublicationValidatedPermitV1& permit,
+        PrivateHandoffPublicationAdoptionRevalidatorV1&& revalidator,
+        OOCPrivateHandoffAdoptionTestHooks hooks) noexcept;
+};
+
+/// Transactional result for one consumed canonical publication reader.
+///
+/// Failure never consumes the caller's lvalue permit. Success owns the exact
+/// same-handle reader; its adoption receipt aliases the permit State and keeps
+/// the original BaseLock and action claim alive after the permit is reset.
+struct PrivateHandoffPublicationReaderAdoptionResultV1 final {
+    PrivateHandoffPublicationReaderAdoptionResultV1(
+        OOCCleanupResult cleanup_result, OOCPrivateHandoffState handoff_state,
+        std::unique_ptr<OOCPrivateHandoffReader> adopted_reader) noexcept;
+    PrivateHandoffPublicationReaderAdoptionResultV1(
+        const PrivateHandoffPublicationReaderAdoptionResultV1&) = delete;
+    PrivateHandoffPublicationReaderAdoptionResultV1&
+    operator=(const PrivateHandoffPublicationReaderAdoptionResultV1&) = delete;
+    PrivateHandoffPublicationReaderAdoptionResultV1(
+        PrivateHandoffPublicationReaderAdoptionResultV1&& other) noexcept;
+    PrivateHandoffPublicationReaderAdoptionResultV1&
+    operator=(PrivateHandoffPublicationReaderAdoptionResultV1&&) = delete;
+    ~PrivateHandoffPublicationReaderAdoptionResultV1();
+
+    [[nodiscard]] bool adopted() const noexcept;
+
+    OOCCleanupResult result;
+    OOCPrivateHandoffState state = OOCPrivateHandoffState::TaintedPreserved;
+    std::unique_ptr<OOCPrivateHandoffReader> reader;
 };
 
 /// Typed, non-throwing acquisition result. A successful permit may describe a
@@ -548,6 +631,18 @@ reconcile_private_handoff_publication_for_resume_v1(
 [[nodiscard]] OOCPrivateHandoffAdoptionResult
 adopt_consumed_canonical_private_handoff_publication_v1(
     PrivateHandoffPublicationValidatedPermitV1&& permit,
+    OOCPrivateHandoffAdoptionTestHooks hooks = {}) noexcept;
+
+/// Transactionally adopt a consumed canonical permit into a reader.
+///
+/// The permit remains held on every failure, including revalidator rejection,
+/// injected interruption, reader construction, allocation, and I/O failure.
+/// Only a fully constructed reader followed by the final trusted aggregate
+/// revalidation commits ownership and resets the permit.
+[[nodiscard]] PrivateHandoffPublicationReaderAdoptionResultV1
+adopt_consumed_canonical_private_handoff_reader_v1(
+    PrivateHandoffPublicationValidatedPermitV1& permit,
+    PrivateHandoffPublicationAdoptionRevalidatorV1&& revalidator,
     OOCPrivateHandoffAdoptionTestHooks hooks = {}) noexcept;
 
 } // namespace gnfs::relation::ooc_cleanup_detail

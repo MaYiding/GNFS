@@ -5,6 +5,7 @@
 // handles, lease receipts, cleanup authority, or the underlying OOC writer.
 
 #include "distributed_sieve_merge_coordinator.hpp"
+#include "distributed_sieve_merge_prepared_admission_internal.hpp"
 #include "distributed_sieve_merge_writer_codec_internal.hpp"
 #include "distributed_sieve_merge_writer_internal.hpp"
 
@@ -22,7 +23,6 @@ namespace gnfs::sieve::distributed_sieve_merge_writer_authority_detail {
 using distributed_sieve_merge_coordinator_detail::DistributedSieveMergeGenerationAdmissionV1;
 
 class DistributedSieveMergeWriterAuthorityV1;
-class DistributedSieveMergePreparedAdmissionV1;
 struct DistributedSieveMergeWriterAuthorityStateV1;
 struct DistributedSieveMergeWriterAdoptionResultV1;
 struct DistributedSieveMergePreparedResultV1;
@@ -171,6 +171,10 @@ private:
     state_lifetime_stable(const DistributedSieveMergeWriterAuthorityStateV1& state) noexcept;
     [[nodiscard]] static bool
     state_process_owned(const DistributedSieveMergeWriterAuthorityStateV1& state) noexcept;
+    [[nodiscard]] static bool
+    validate_prepared_admission_origin(const void* lifetime_anchor,
+                                       const MergePreparedV1* stable_record,
+                                       std::uint64_t creator_process_id) noexcept;
     static void close_state_noexcept(
         std::unique_ptr<DistributedSieveMergeWriterAuthorityStateV1>& state) noexcept;
 
@@ -189,35 +193,6 @@ private:
     trusted_test::consume_distributed_sieve_merge_generation_v1_with_hooks(
         DistributedSieveMergeGenerationAdmissionV1&& admission,
         trusted_test::DistributedSieveMergeWriterAdoptionTestHooksV1 hooks) noexcept;
-    friend class DistributedSieveMergePreparedAdmissionV1;
-};
-
-/// Read-only, move-only proof of canonical MergePrepared publication. It
-/// retains the complete generation authority and every adopted input lifetime
-/// for the next commit transition.
-class DistributedSieveMergePreparedAdmissionV1 final {
-public:
-    DistributedSieveMergePreparedAdmissionV1() = delete;
-    DistributedSieveMergePreparedAdmissionV1(const DistributedSieveMergePreparedAdmissionV1&) =
-        delete;
-    DistributedSieveMergePreparedAdmissionV1&
-    operator=(const DistributedSieveMergePreparedAdmissionV1&) = delete;
-    DistributedSieveMergePreparedAdmissionV1(
-        DistributedSieveMergePreparedAdmissionV1&& other) noexcept;
-    DistributedSieveMergePreparedAdmissionV1&
-    operator=(DistributedSieveMergePreparedAdmissionV1&&) = delete;
-    ~DistributedSieveMergePreparedAdmissionV1() noexcept;
-
-    [[nodiscard]] bool valid() const noexcept;
-    [[nodiscard]] const MergePreparedV1& record() const noexcept;
-
-private:
-    explicit DistributedSieveMergePreparedAdmissionV1(
-        std::unique_ptr<DistributedSieveMergeWriterAuthorityStateV1> state) noexcept;
-
-    std::unique_ptr<DistributedSieveMergeWriterAuthorityStateV1> state_;
-
-    friend class DistributedSieveMergeWriterAuthorityV1;
 };
 
 struct DistributedSieveMergeWriterAdoptionResultV1 final {

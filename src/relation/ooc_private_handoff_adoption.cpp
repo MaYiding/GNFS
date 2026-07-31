@@ -281,6 +281,14 @@ public:
 
 namespace {
 
+struct AdoptionAggregateRevalidatorV1 final {
+    using Validate = bool (*)(const OOCPrivateHandoffReader* current_reader,
+                              void* context) noexcept;
+
+    Validate validate = nullptr;
+    void* context = nullptr;
+};
+
 [[nodiscard]] OOCPrivateHandoffAdoptionResult
 adoption_failure(OOCCleanupStatus status, OOCPrivateHandoffState state,
                  std::error_code error = {}) noexcept {
@@ -355,6 +363,20 @@ decltype(auto) with_stable_adoption_authority(const OOCCleanupPaths& paths,
             decltype(auto) result = std::forward<Operation>(operation)();
             require_adoption_authority(paths, parent, directory, lock);
             return result;
+        }
+    });
+}
+
+void require_aggregate_revalidation(const OOCCleanupPaths& paths,
+                                    AdoptionParentDirectoryHandle& parent,
+                                    PrivateDirectoryHandle& directory, const BaseLock& lock,
+                                    const AdoptionAggregateRevalidatorV1& revalidator,
+                                    const OOCPrivateHandoffReader* current_reader) {
+    with_stable_adoption_authority(paths, parent, directory, lock, [&] {
+        if (revalidator.validate == nullptr ||
+            !revalidator.validate(current_reader, revalidator.context)) {
+            ooc_cleanup_detail::fail(OOCCleanupStatus::ForeignReplacementPreserved,
+                                     OOCCleanupStage::None, ooc_cleanup_detail::protocol_error());
         }
     });
 }
@@ -875,10 +897,12 @@ artifact_snapshot(const OOCPrivateHandoffArtifactBindingV1& binding) noexcept {
 namespace {
 
 template <typename AcquireLock>
-OOCPrivateHandoffAdoptionResult adopt_private_handoff_impl(
-    const std::filesystem::path& base_path, OOCPrivateHandoffAdoptionTestHooks hooks,
-    bool require_existing_lock_binding, AcquireLock&& acquire_lock,
-    const PrivateHandoffPublicationPrefixWitnessV1* expected_terminal) noexcept {
+OOCPrivateHandoffAdoptionResult
+adopt_private_handoff_impl(const std::filesystem::path& base_path,
+                           OOCPrivateHandoffAdoptionTestHooks hooks,
+                           bool require_existing_lock_binding, AcquireLock&& acquire_lock,
+                           const PrivateHandoffPublicationPrefixWitnessV1* expected_terminal,
+                           const AdoptionAggregateRevalidatorV1* aggregate_revalidator) noexcept {
     if (base_path.empty() || ooc_cleanup_detail::path_contains_nul(base_path)) {
         return adoption_failure(OOCCleanupStatus::InvalidRequest,
                                 OOCPrivateHandoffState::TaintedPreserved,
@@ -890,6 +914,7 @@ OOCPrivateHandoffAdoptionResult adopt_private_handoff_impl(
     (void)require_existing_lock_binding;
     (void)acquire_lock;
     (void)expected_terminal;
+    (void)aggregate_revalidator;
     return adoption_failure(OOCCleanupStatus::PlatformUnsupported,
                             OOCPrivateHandoffState::TaintedPreserved,
                             std::make_error_code(std::errc::operation_not_supported));
@@ -969,6 +994,10 @@ OOCPrivateHandoffAdoptionResult adopt_private_handoff_impl(
             require_publication_terminal_match(*classified.witness, *expected_terminal, *parent,
                                                *directory, *lock);
         }
+        if (aggregate_revalidator != nullptr) {
+            require_aggregate_revalidation(paths, *parent, *directory, *lock,
+                                           *aggregate_revalidator, nullptr);
+        }
 
         observe_adoption_boundary(paths, *parent, *directory, *lock, hooks,
                                   OOCPrivateHandoffAdoptionFaultPoint::CanonicalClassified);
@@ -1038,6 +1067,11 @@ OOCPrivateHandoffAdoptionResult adopt_private_handoff_impl(
             paths, *parent, *directory, *lock, hooks,
             OOCPrivateHandoffAdoptionFaultPoint::BeforeReceiptCommitRevalidation);
         revalidate_before_receipt();
+        if (aggregate_revalidator != nullptr) {
+            require_aggregate_revalidation(paths, *parent, *directory, *lock,
+                                           *aggregate_revalidator, nullptr);
+            revalidate_before_receipt();
+        }
         const auto pending_handoff_snapshot =
             classified.witness->pending
                 ? std::optional<RecordSnapshot>(classified.witness->pending->snapshot)
@@ -1076,7 +1110,7 @@ OOCCleanupTransaction::adopt_private_handoff(const std::filesystem::path& base_p
         [](const OOCCleanupPaths& paths, ooc_cleanup_detail::AdoptionParentDirectoryHandle&) {
             return std::make_shared<ooc_cleanup_detail::BaseLock>(paths.lock_path, false);
         },
-        nullptr);
+        nullptr, nullptr);
 }
 
 OOCPrivateHandoffAdoptionResult
@@ -1088,7 +1122,7 @@ ooc_cleanup_detail::adopt_private_handoff_with_borrowed_base_lock_v1(
         [&](const OOCCleanupPaths& paths, AdoptionParentDirectoryHandle& parent) {
             return borrowed.consume(paths, parent);
         },
-        nullptr);
+        nullptr, nullptr);
 }
 
 OOCPrivateHandoffAdoptionResult
@@ -1115,7 +1149,41 @@ ooc_cleanup_detail::adopt_private_handoff_with_consumed_publication_base_lock_v1
             authority.consumed_ = true;
             return std::move(authority.live_lock_);
         },
-        terminal.get());
+        terminal.get(), nullptr);
+}
+
+OOCPrivateHandoffAdoptionResult
+ooc_cleanup_detail::adopt_private_handoff_with_consumed_publication_base_lock_v1(
+    const std::filesystem::path& base_path,
+    OOCPrivateHandoffConsumedPublicationBaseLockV1&& authority,
+    PrivateHandoffPublicationAdoptionRevalidatorV1& revalidator,
+    OOCPrivateHandoffAdoptionTestHooks hooks) noexcept {
+    const auto current_process_id = static_cast<std::uint64_t>(gnfs::util::process_id());
+    if (authority.consumed_ || !authority.live_lock_ || !authority.terminal_ ||
+        authority.creator_process_id_ == 0 || authority.creator_process_id_ != current_process_id ||
+        revalidator.validate_ == nullptr || revalidator.creator_process_id_ == 0 ||
+        revalidator.creator_process_id_ != current_process_id) {
+        return adoption_failure(OOCCleanupStatus::InvalidRequest,
+                                OOCPrivateHandoffState::TaintedPreserved,
+                                ooc_cleanup_detail::invalid_argument_error());
+    }
+
+    auto terminal = authority.terminal_;
+    const AdoptionAggregateRevalidatorV1 aggregate_revalidator{
+        .validate = revalidator.validate_,
+        .context = revalidator.context_,
+    };
+    return adopt_private_handoff_impl(
+        base_path, hooks, true,
+        [&](const OOCCleanupPaths&, AdoptionParentDirectoryHandle&) {
+            if (authority.consumed_ || !authority.live_lock_) {
+                ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                                         ooc_cleanup_detail::invalid_argument_error());
+            }
+            authority.consumed_ = true;
+            return std::move(authority.live_lock_);
+        },
+        terminal.get(), &aggregate_revalidator);
 }
 
 } // namespace gnfs::relation

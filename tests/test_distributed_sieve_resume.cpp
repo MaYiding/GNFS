@@ -11,6 +11,7 @@
 #include "distributed_sieve_bound_work_internal.hpp"
 #include "distributed_sieve_execution_policy_internal.hpp"
 #include "distributed_sieve_merge_coordinator.hpp"
+#include "distributed_sieve_merge_prepared_admission_internal.hpp"
 #include "distributed_sieve_wave_store_internal.hpp"
 #include "distributed_sieve_work_package_codec_internal.hpp"
 #include "distributed_sieve_worker_coordinator_internal.hpp"
@@ -73,6 +74,7 @@ namespace work_package_file_detail = gnfs::sieve::distributed_sieve_worker_work_
 namespace worker_launcher_detail = gnfs::sieve::distributed_sieve_worker_launcher_detail;
 namespace worker_coordinator_detail = gnfs::sieve::distributed_sieve_worker_coordinator_detail;
 namespace merge_coordinator_detail = gnfs::sieve::distributed_sieve_merge_coordinator_detail;
+namespace merge_prepared_detail = gnfs::sieve::distributed_sieve_merge_writer_authority_detail;
 namespace worker_entry_detail = gnfs::sieve::distributed_sieve_worker_entry_detail;
 namespace worker_execution_detail = gnfs::sieve::distributed_sieve_worker_execution_detail;
 namespace worker_process_detail = gnfs::sieve::distributed_sieve_worker_process_detail;
@@ -92,6 +94,7 @@ using MergeLeaseReservationReceipt = wave_detail::DistributedSieveMergeLeaseRese
 using MergeStartedReceipt = wave_detail::DistributedSieveMergeStartedReceiptV1;
 using MergeCoordinatorAdmission =
     merge_coordinator_detail::DistributedSieveMergeGenerationAdmissionV1;
+using MergePreparedAdmission = merge_prepared_detail::DistributedSieveMergePreparedAdmissionV1;
 using WorkerCoordinatorResult =
     worker_coordinator_detail::DistributedSieveWorkerCoordinatorResultV1;
 using AdoptedWorkerChunk = wave_detail::DistributedSieveAdoptedWorkerChunkV1;
@@ -5026,6 +5029,16 @@ require_wave_ready(wave_detail::DistributedSieveWaveStoreOpenResult& result,
         fail(context, __LINE__, wave_diagnostic_detail(result.diagnostic));
     }
     return *result.store;
+}
+
+[[nodiscard]] MergePreparedAdmission&
+require_merge_prepared_admission_ready(wave_detail::DistributedSieveWaveStoreOpenResult& result,
+                                       std::string_view context) {
+    if (!result || result.store != nullptr || !result.prepared_admission.has_value() ||
+        !result.prepared_admission->valid()) {
+        fail(context, __LINE__, wave_diagnostic_detail(result.diagnostic));
+    }
+    return *result.prepared_admission;
 }
 
 [[nodiscard]] PrivateLeaseRootClaim& require_private_lease_root_claim_ready(
@@ -16882,6 +16895,28 @@ capture_merge_prepared_worker_private_snapshots(
     return snapshots;
 }
 
+[[nodiscard]] std::vector<std::filesystem::path> merge_prepared_worker_base_lock_paths(
+    const std::filesystem::path& root, const sieve::WaveManifestV1& manifest,
+    std::span<const sieve::TerminalChunkInputV1> terminal_inputs) {
+    std::vector<std::filesystem::path> base_locks(manifest.chunks.size());
+    for (const auto& input : terminal_inputs) {
+        CHECK(input.disposition == sieve::ChunkDispositionV1::handoff);
+        CHECK(input.durable_attempt_count > 0U);
+        const auto chunk =
+            std::ranges::find(manifest.chunks, input.chunk_id, &sieve::ChunkPlanV1::chunk_id);
+        CHECK(chunk != manifest.chunks.end());
+        const auto manifest_slot = static_cast<std::size_t>(chunk - manifest.chunks.begin());
+        CHECK(manifest_slot < base_locks.size());
+        CHECK(base_locks[manifest_slot].empty());
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk->relative_artifact_stem, input.chunk_id, input.durable_attempt_count - 1U);
+        CHECK(names.has_value());
+        base_locks[manifest_slot] = root / names->base_lock_leaf;
+    }
+    CHECK(std::ranges::none_of(base_locks, [](const auto& path) { return path.empty(); }));
+    return base_locks;
+}
+
 void require_merge_prepared_worker_private_snapshots(
     std::span<const MergePreparedWorkerPrivateSnapshot> expected) {
     for (const auto& worker : expected) {
@@ -16932,7 +16967,7 @@ void exercise_merge_prepared_cold_open_recovery(MergePreparedProtectionPrefixSha
         }
     }
 
-    const auto require_recovered_namespace = [&] {
+    const auto require_recovered_namespace = [&](bool prepared_admission_held) {
         auto observed_root = capture_wave_root_snapshot(root);
         if (shape == MergePreparedProtectionPrefixShape::identical_dual) {
             normalize_wave_root_snapshot_directory_extent(observed_root,
@@ -16953,7 +16988,8 @@ void exercise_merge_prepared_cold_open_recovery(MergePreparedProtectionPrefixSha
         CHECK(!entry_exists_no_follow(root / next_names->private_directory_leaf));
         CHECK(!entry_exists_no_follow(root / next_names->canonical_record_leaf));
         CHECK(!entry_exists_no_follow(root / next_names->pending_record_leaf));
-        CHECK(!relation_base_lock_reports_busy(root / prefix.names.base_lock_leaf));
+        CHECK(relation_base_lock_reports_busy(root / prefix.names.base_lock_leaf) ==
+              prepared_admission_held);
 
         if (shape == MergePreparedProtectionPrefixShape::pending_only) {
             CHECK(!entry_exists_no_follow(root / prefix.names.owned_leaf));
@@ -16984,48 +17020,68 @@ void exercise_merge_prepared_cold_open_recovery(MergePreparedProtectionPrefixSha
 
     const auto require_cursor_contract = [&](wave_detail::DistributedSieveWaveStore& reopened,
                                              std::string_view context) {
+        CHECK(shape == MergePreparedProtectionPrefixShape::pending_only);
         const auto before_cursor = capture_wave_root_snapshot(root);
         const auto cursor = wave_detail::prepare_distributed_sieve_merge_generation_v1(reopened);
-        if (shape == MergePreparedProtectionPrefixShape::pending_only) {
-            CHECK(cursor);
-            CHECK(cursor.merge_attempt_ordinal == next_ordinal);
-            require_wave_status(cursor.diagnostic,
-                                wave_detail::DistributedSieveWaveStoreStatus::ready, context);
-        } else {
-            CHECK(!cursor);
-            CHECK(!cursor.merge_attempt_ordinal.has_value());
-            require_wave_status(
-                cursor.diagnostic,
-                wave_detail::DistributedSieveWaveStoreStatus::reconciliation_required, context);
-        }
+        CHECK(cursor);
+        CHECK(cursor.merge_attempt_ordinal == next_ordinal);
+        require_wave_status(cursor.diagnostic, wave_detail::DistributedSieveWaveStoreStatus::ready,
+                            context);
         CHECK(capture_wave_root_snapshot(root) == before_cursor);
-        require_recovered_namespace();
+        require_recovered_namespace(false);
     };
+
+    const auto require_open_contract = [&](wave_detail::DistributedSieveWaveStoreOpenResult& opened,
+                                           std::string_view context) {
+        const bool store_branch = opened.store != nullptr;
+        const bool prepared_branch = opened.prepared_admission.has_value();
+        CHECK(store_branch != prepared_branch);
+        if (shape == MergePreparedProtectionPrefixShape::pending_only) {
+            auto& reopened = require_wave_ready(opened, context);
+            CHECK(!opened.prepared_admission.has_value());
+            require_recovered_namespace(false);
+            require_cursor_contract(reopened, context);
+            return;
+        }
+
+        auto& admission = require_merge_prepared_admission_ready(opened, context);
+        CHECK(opened.store == nullptr);
+        CHECK(admission.record().self_digest == prefix.prepared.self_digest);
+        CHECK(encode_or_fail(Record{admission.record()}) ==
+              encode_or_fail(Record{prefix.prepared}));
+        require_recovered_namespace(true);
+    };
+
+    const auto release_open_contract =
+        [&](wave_detail::DistributedSieveWaveStoreOpenResult& opened) {
+            if (shape == MergePreparedProtectionPrefixShape::pending_only) {
+                opened.store.reset();
+            } else {
+                opened.prepared_admission.reset();
+            }
+            require_recovered_namespace(false);
+        };
 
     terminal.opened.store.reset();
     CHECK(capture_wave_root_snapshot(root) == root_before);
 
     auto first_open = wave_detail::DistributedSieveWaveStore::open(root, manifest_digest);
-    auto& first_store = require_wave_ready(first_open, "first MergePrepared cold recovery");
-    require_recovered_namespace();
-    require_cursor_contract(first_store, "first recovered MergePrepared cursor contract");
+    require_open_contract(first_open, "first MergePrepared cold recovery");
     const auto normalized_root = capture_wave_root_snapshot(root);
     const auto normalized_private =
         expected_private.has_value()
             ? std::optional{capture_wave_root_snapshot(prefix.paths.private_directory)}
             : std::nullopt;
-    first_open.store.reset();
+    release_open_contract(first_open);
     CHECK(capture_wave_root_snapshot(root) == normalized_root);
 
     auto second_open = wave_detail::DistributedSieveWaveStore::open(root, manifest_digest);
-    auto& second_store = require_wave_ready(second_open, "second MergePrepared cold recovery");
+    require_open_contract(second_open, "second MergePrepared cold recovery");
     CHECK(capture_wave_root_snapshot(root) == normalized_root);
     if (normalized_private.has_value()) {
         CHECK(capture_wave_root_snapshot(prefix.paths.private_directory) == *normalized_private);
     }
-    require_recovered_namespace();
-    require_cursor_contract(second_store, "second recovered MergePrepared cursor contract");
-    second_open.store.reset();
+    release_open_contract(second_open);
     CHECK(capture_wave_root_snapshot(root) == normalized_root);
     CHECK(!relation_base_lock_reports_busy(root / prefix.names.base_lock_leaf));
 }
@@ -17175,6 +17231,297 @@ void test_merge_prepared_pending_rollback_tombstone_reopens() {
     return false;
 }
 
+inline constexpr std::size_t MERGE_PREPARED_AGGREGATE_PHASE_COUNT =
+    static_cast<std::size_t>(wave_detail::DistributedSieveRecoveredPreparedAggregatePhaseV1::Count);
+
+struct MergePreparedTargetFinalDriftContext final {
+    WaveSameBytesReplacementContext replacement;
+    std::filesystem::path target_base_lock;
+    std::vector<std::filesystem::path> worker_base_locks;
+    std::array<bool, MERGE_PREPARED_AGGREGATE_PHASE_COUNT> target_phases{};
+    std::vector<std::uint8_t> worker_busy;
+    std::size_t target_callbacks = 0;
+    std::size_t worker_callbacks = 0;
+    bool target_busy = false;
+    bool unexpected_callback = false;
+};
+
+[[nodiscard]] bool replace_merge_started_before_target_final_revalidation(
+    wave_detail::DistributedSieveRecoveredPreparedPublicationSubjectV1 subject,
+    std::size_t manifest_slot, wave_detail::DistributedSieveRecoveredPreparedAggregatePhaseV1 phase,
+    void* opaque) noexcept {
+    auto& context = *static_cast<MergePreparedTargetFinalDriftContext*>(opaque);
+    const auto phase_index = static_cast<std::size_t>(phase);
+    if (phase_index >= context.target_phases.size()) {
+        context.unexpected_callback = true;
+        return true;
+    }
+    if (subject != wave_detail::DistributedSieveRecoveredPreparedPublicationSubjectV1::Target) {
+        ++context.worker_callbacks;
+        context.unexpected_callback = true;
+        return true;
+    }
+    ++context.target_callbacks;
+    context.target_phases[phase_index] = true;
+    if (manifest_slot != static_cast<std::size_t>(sieve::DISTRIBUTED_SIEVE_PROTOCOL_NO_INDEX)) {
+        context.unexpected_callback = true;
+        return true;
+    }
+    if (phase != wave_detail::DistributedSieveRecoveredPreparedAggregatePhaseV1::LiveReaderFinal) {
+        return false;
+    }
+
+    context.target_busy = relation_base_lock_reports_busy(context.target_base_lock);
+    for (std::size_t index = 0; index < context.worker_base_locks.size(); ++index) {
+        context.worker_busy[index] = static_cast<std::uint8_t>(
+            relation_base_lock_reports_busy(context.worker_base_locks[index]));
+    }
+    replace_marker_with_same_bytes_after_first_inventory(&context.replacement);
+    return false;
+}
+
+void test_merge_prepared_recovered_target_final_callback_namespace_drift_fails_closed() {
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "merge-prepared-target-final-callback-drift";
+    auto terminal = make_merge_terminal_wave_fixture(
+        root, "create MergePrepared target-final callback-drift fixture");
+    auto& store =
+        require_wave_ready(terminal.opened, "open MergePrepared target-final callback fixture");
+    const auto manifest = store.manifest();
+    const auto manifest_digest = store.manifest_digest();
+    const auto prefix = publish_merge_prepared_protection_prefix(
+        store, root, terminal.terminal_inputs, MergePreparedProtectionPrefixShape::canonical_only);
+    const auto worker_base_locks =
+        merge_prepared_worker_base_lock_paths(root, manifest, terminal.terminal_inputs);
+    CHECK(!worker_base_locks.empty());
+
+    const auto started_path = root / prefix.names.canonical_record_leaf;
+    const auto started_before =
+        capture_wave_root_entry_snapshot(started_path, prefix.names.canonical_record_leaf);
+    const auto root_before = capture_wave_root_snapshot(root);
+    const auto target_private_before = capture_wave_root_snapshot(prefix.paths.private_directory);
+    const auto worker_before =
+        capture_merge_prepared_worker_private_snapshots(root, manifest, terminal.terminal_inputs);
+    const auto next_names = wave_detail::distributed_sieve_merge_generation_names_v1(
+        prefix.started.merge_attempt_ordinal + 1U);
+    CHECK(next_names.has_value());
+    terminal.opened.store.reset();
+
+    MergePreparedTargetFinalDriftContext drift{
+        .replacement =
+            {
+                .canonical = started_path,
+                .displaced = temp.path() / "merge-prepared-target-final-displaced-started",
+                .bytes = started_before.bytes,
+            },
+        .target_base_lock = root / prefix.names.base_lock_leaf,
+        .worker_base_locks = worker_base_locks,
+        .worker_busy = std::vector<std::uint8_t>(worker_base_locks.size()),
+    };
+    auto attacked = wave_detail::DistributedSieveWaveStore::open(
+        root, manifest_digest,
+        wave_detail::DistributedSieveWaveStoreTestHooks{
+            .merge_prepared_resume =
+                {
+                    .stop_before_recovered_aggregate_revalidation =
+                        replace_merge_started_before_target_final_revalidation,
+                    .context = &drift,
+                },
+        });
+    CHECK(!attacked);
+    CHECK(attacked.store == nullptr);
+    CHECK(!attacked.prepared_admission.has_value());
+    require_wave_status(attacked.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "target LiveReaderFinal callback drift fails closed");
+    CHECK(!drift.unexpected_callback);
+    CHECK(drift.target_callbacks == MERGE_PREPARED_AGGREGATE_PHASE_COUNT);
+    CHECK(drift.worker_callbacks == 0U);
+    CHECK(std::ranges::all_of(drift.target_phases, std::identity{}));
+    CHECK(drift.target_busy);
+    CHECK(std::ranges::all_of(drift.worker_busy, [](std::uint8_t busy) { return busy != 0U; }));
+    CHECK(drift.replacement.invoked);
+    CHECK(drift.replacement.replaced);
+    CHECK(drift.replacement.native_error == 0);
+
+    const auto replacement_started =
+        capture_wave_root_entry_snapshot(started_path, prefix.names.canonical_record_leaf);
+    CHECK(replacement_started.bytes == started_before.bytes);
+    CHECK(replacement_started.device != started_before.device ||
+          replacement_started.inode != started_before.inode);
+    CHECK(capture_wave_root_entry_snapshot(drift.replacement.displaced,
+                                           prefix.names.canonical_record_leaf) == started_before);
+
+    auto expected_root = root_before;
+    erase_wave_root_snapshot_leaf(expected_root, prefix.names.reserved_leaf);
+    erase_wave_root_snapshot_leaf(expected_root, prefix.names.canonical_record_leaf);
+    auto root_after = capture_wave_root_snapshot(root);
+    erase_wave_root_snapshot_leaf(root_after, prefix.names.canonical_record_leaf);
+    CHECK(root_after == expected_root);
+    CHECK(capture_wave_root_snapshot(prefix.paths.private_directory) == target_private_before);
+    require_merge_prepared_worker_private_snapshots(worker_before);
+    CHECK(!relation_base_lock_reports_busy(root / prefix.names.base_lock_leaf));
+    for (const auto& base_lock : worker_base_locks) {
+        CHECK(!relation_base_lock_reports_busy(base_lock));
+    }
+    CHECK(!entry_exists_no_follow(root / next_names->base_lock_leaf));
+    CHECK(!entry_exists_no_follow(root / next_names->private_directory_leaf));
+    CHECK(!entry_exists_no_follow(root / next_names->canonical_record_leaf));
+    CHECK(!entry_exists_no_follow(root / next_names->pending_record_leaf));
+}
+
+struct MergePreparedLaterWorkerInterruptContext final {
+    std::size_t failing_manifest_slot = 0;
+    std::filesystem::path target_base_lock;
+    std::vector<std::filesystem::path> worker_base_locks;
+    std::array<bool, MERGE_PREPARED_AGGREGATE_PHASE_COUNT> target_phases{};
+    std::vector<std::array<bool, MERGE_PREPARED_AGGREGATE_PHASE_COUNT>> worker_phases;
+    std::vector<std::uint8_t> worker_busy;
+    std::size_t failure_callbacks = 0;
+    bool target_busy = false;
+    bool unexpected_callback = false;
+};
+
+[[nodiscard]] bool stop_before_later_worker_receipt_commit_revalidation(
+    wave_detail::DistributedSieveRecoveredPreparedPublicationSubjectV1 subject,
+    std::size_t manifest_slot, wave_detail::DistributedSieveRecoveredPreparedAggregatePhaseV1 phase,
+    void* opaque) noexcept {
+    auto& context = *static_cast<MergePreparedLaterWorkerInterruptContext*>(opaque);
+    const auto phase_index = static_cast<std::size_t>(phase);
+    if (phase_index >= MERGE_PREPARED_AGGREGATE_PHASE_COUNT) {
+        context.unexpected_callback = true;
+        return true;
+    }
+    if (subject == wave_detail::DistributedSieveRecoveredPreparedPublicationSubjectV1::Target) {
+        if (manifest_slot != static_cast<std::size_t>(sieve::DISTRIBUTED_SIEVE_PROTOCOL_NO_INDEX)) {
+            context.unexpected_callback = true;
+            return true;
+        }
+        context.target_phases[phase_index] = true;
+        return false;
+    }
+    if (subject != wave_detail::DistributedSieveRecoveredPreparedPublicationSubjectV1::Worker ||
+        manifest_slot >= context.worker_phases.size()) {
+        context.unexpected_callback = true;
+        return true;
+    }
+    context.worker_phases[manifest_slot][phase_index] = true;
+    if (manifest_slot != context.failing_manifest_slot ||
+        phase != wave_detail::DistributedSieveRecoveredPreparedAggregatePhaseV1::
+                     ReceiptCommitNullReader) {
+        return false;
+    }
+
+    ++context.failure_callbacks;
+    context.target_busy = relation_base_lock_reports_busy(context.target_base_lock);
+    for (std::size_t index = 0; index < context.worker_base_locks.size(); ++index) {
+        context.worker_busy[index] = static_cast<std::uint8_t>(
+            relation_base_lock_reports_busy(context.worker_base_locks[index]));
+    }
+    return true;
+}
+
+void test_merge_prepared_recovered_later_worker_receipt_interrupt_unwinds_atomically() {
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "merge-prepared-later-worker-receipt-interrupt";
+    auto terminal = make_merge_terminal_wave_fixture(
+        root, "create MergePrepared later-worker receipt-interrupt fixture");
+    auto& store =
+        require_wave_ready(terminal.opened, "open MergePrepared later-worker receipt fixture");
+    const auto manifest = store.manifest();
+    const auto manifest_digest = store.manifest_digest();
+    const auto prefix = publish_merge_prepared_protection_prefix(
+        store, root, terminal.terminal_inputs, MergePreparedProtectionPrefixShape::canonical_only);
+    const auto worker_base_locks =
+        merge_prepared_worker_base_lock_paths(root, manifest, terminal.terminal_inputs);
+    CHECK(worker_base_locks.size() >= 2U);
+    const auto failing_manifest_slot = worker_base_locks.size() - 1U;
+
+    const auto root_before = capture_wave_root_snapshot(root);
+    const auto target_private_before = capture_wave_root_snapshot(prefix.paths.private_directory);
+    const auto worker_before =
+        capture_merge_prepared_worker_private_snapshots(root, manifest, terminal.terminal_inputs);
+    const auto next_names = wave_detail::distributed_sieve_merge_generation_names_v1(
+        prefix.started.merge_attempt_ordinal + 1U);
+    CHECK(next_names.has_value());
+    terminal.opened.store.reset();
+
+    MergePreparedLaterWorkerInterruptContext interruption{
+        .failing_manifest_slot = failing_manifest_slot,
+        .target_base_lock = root / prefix.names.base_lock_leaf,
+        .worker_base_locks = worker_base_locks,
+        .worker_phases = std::vector<std::array<bool, MERGE_PREPARED_AGGREGATE_PHASE_COUNT>>(
+            worker_base_locks.size()),
+        .worker_busy = std::vector<std::uint8_t>(worker_base_locks.size()),
+    };
+    auto stopped = wave_detail::DistributedSieveWaveStore::open(
+        root, manifest_digest,
+        wave_detail::DistributedSieveWaveStoreTestHooks{
+            .merge_prepared_resume =
+                {
+                    .stop_before_recovered_aggregate_revalidation =
+                        stop_before_later_worker_receipt_commit_revalidation,
+                    .context = &interruption,
+                },
+        });
+    CHECK(!stopped);
+    CHECK(stopped.store == nullptr);
+    CHECK(!stopped.prepared_admission.has_value());
+    require_wave_status(stopped.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::interrupted,
+                        "later worker ReceiptCommitNullReader interrupts atomically");
+    CHECK(!interruption.unexpected_callback);
+    CHECK(interruption.failure_callbacks == 1U);
+    CHECK(std::ranges::all_of(interruption.target_phases, std::identity{}));
+    for (std::size_t slot = 0; slot < failing_manifest_slot; ++slot) {
+        CHECK(std::ranges::all_of(interruption.worker_phases[slot], std::identity{}));
+    }
+    CHECK(interruption.worker_phases[failing_manifest_slot][static_cast<std::size_t>(
+        wave_detail::DistributedSieveRecoveredPreparedAggregatePhaseV1::InitialNullReader)]);
+    CHECK(interruption.worker_phases[failing_manifest_slot][static_cast<std::size_t>(
+        wave_detail::DistributedSieveRecoveredPreparedAggregatePhaseV1::ReceiptCommitNullReader)]);
+    CHECK(!interruption.worker_phases[failing_manifest_slot][static_cast<std::size_t>(
+        wave_detail::DistributedSieveRecoveredPreparedAggregatePhaseV1::LiveReaderFinal)]);
+    CHECK(interruption.target_busy);
+    CHECK(std::ranges::all_of(interruption.worker_busy,
+                              [](std::uint8_t busy) { return busy != 0U; }));
+
+    auto expected_root = root_before;
+    erase_wave_root_snapshot_leaf(expected_root, prefix.names.reserved_leaf);
+    CHECK(capture_wave_root_snapshot(root) == expected_root);
+    CHECK(capture_wave_root_snapshot(prefix.paths.private_directory) == target_private_before);
+    require_merge_prepared_worker_private_snapshots(worker_before);
+    CHECK(!relation_base_lock_reports_busy(root / prefix.names.base_lock_leaf));
+    for (const auto& base_lock : worker_base_locks) {
+        CHECK(!relation_base_lock_reports_busy(base_lock));
+    }
+    CHECK(!entry_exists_no_follow(root / next_names->base_lock_leaf));
+    CHECK(!entry_exists_no_follow(root / next_names->private_directory_leaf));
+    CHECK(!entry_exists_no_follow(root / next_names->canonical_record_leaf));
+    CHECK(!entry_exists_no_follow(root / next_names->pending_record_leaf));
+
+    const auto before_retry = capture_wave_root_snapshot(root);
+    auto retried = wave_detail::DistributedSieveWaveStore::open(root, manifest_digest);
+    auto& admission = require_merge_prepared_admission_ready(
+        retried, "retry later-worker ReceiptCommitNullReader interruption");
+    CHECK(retried.store == nullptr);
+    CHECK(admission.record().self_digest == prefix.prepared.self_digest);
+    CHECK(encode_or_fail(Record{admission.record()}) == encode_or_fail(Record{prefix.prepared}));
+    CHECK(capture_wave_root_snapshot(root) == before_retry);
+    CHECK(relation_base_lock_reports_busy(root / prefix.names.base_lock_leaf));
+    for (const auto& base_lock : worker_base_locks) {
+        CHECK(relation_base_lock_reports_busy(base_lock));
+    }
+    retried.prepared_admission.reset();
+    CHECK(!relation_base_lock_reports_busy(root / prefix.names.base_lock_leaf));
+    for (const auto& base_lock : worker_base_locks) {
+        CHECK(!relation_base_lock_reports_busy(base_lock));
+    }
+    CHECK(capture_wave_root_snapshot(root) == before_retry);
+    CHECK(capture_wave_root_snapshot(prefix.paths.private_directory) == target_private_before);
+    require_merge_prepared_worker_private_snapshots(worker_before);
+}
+
 void test_merge_prepared_resume_rejects_same_bytes_merge_started_replacement() {
     WaveStoreTempDirectory temp;
     const auto root = temp.path() / "merge-prepared-started-replacement";
@@ -17322,7 +17669,12 @@ void test_merge_prepared_resume_retains_worker_typed_permit_lock_closure() {
                     .context = &closure,
                 },
         });
-    auto& resumed = require_wave_ready(reopened, "MergePrepared worker lock closure resumes");
+    CHECK((reopened.store != nullptr) != reopened.prepared_admission.has_value());
+    auto& admission = require_merge_prepared_admission_ready(
+        reopened, "MergePrepared worker lock closure resumes");
+    CHECK(reopened.store == nullptr);
+    CHECK(admission.record().self_digest == prefix.prepared.self_digest);
+    CHECK(encode_or_fail(Record{admission.record()}) == encode_or_fail(Record{prefix.prepared}));
     CHECK(closure.invocations == 1U);
     CHECK(closure.acquire_status == gnfs::relation::OOCCleanupStatus::Busy);
     CHECK(!closure.acquired);
@@ -17337,17 +17689,21 @@ void test_merge_prepared_resume_retains_worker_typed_permit_lock_closure() {
     CHECK(!entry_exists_no_follow(prefix.paths.private_handoff_pending_path));
     CHECK(!entry_exists_no_follow(root / prefix.names.reserved_leaf));
     CHECK(entry_exists_no_follow(root / prefix.names.owned_leaf));
+    CHECK(relation_base_lock_reports_busy(worker_paths.lock_path));
+    CHECK(relation_base_lock_reports_busy(root / prefix.names.base_lock_leaf));
+    require_merge_prepared_worker_private_snapshots(worker_before);
+
+    const auto retained = cleanup_detail::acquire_private_handoff_publication_resume_v1(
+        worker_paths, *worker_directory_identity);
+    CHECK(retained.result.status == gnfs::relation::OOCCleanupStatus::Busy);
+    CHECK(!retained.acquired());
+    CHECK(!retained.observed.has_value());
+
+    reopened.prepared_admission.reset();
     CHECK(!relation_base_lock_reports_busy(worker_paths.lock_path));
     CHECK(!relation_base_lock_reports_busy(root / prefix.names.base_lock_leaf));
-
-    const auto before_cursor = capture_wave_root_snapshot(root);
-    const auto cursor = wave_detail::prepare_distributed_sieve_merge_generation_v1(resumed);
-    CHECK(!cursor);
-    CHECK(!cursor.merge_attempt_ordinal.has_value());
-    require_wave_status(cursor.diagnostic,
-                        wave_detail::DistributedSieveWaveStoreStatus::reconciliation_required,
-                        "prepared generation remains protected after worker lock-closure proof");
-    CHECK(capture_wave_root_snapshot(root) == before_cursor);
+    CHECK(capture_wave_root_snapshot(root) == expected_root);
+    CHECK(capture_wave_root_snapshot(prefix.paths.private_directory) == target_private_before);
     require_merge_prepared_worker_private_snapshots(worker_before);
 
     auto released = cleanup_detail::acquire_private_handoff_publication_resume_v1(
@@ -17357,6 +17713,7 @@ void test_merge_prepared_resume_retains_worker_typed_permit_lock_closure() {
     CHECK(relation_base_lock_reports_busy(worker_paths.lock_path));
     released.observed.reset();
     CHECK(!relation_base_lock_reports_busy(worker_paths.lock_path));
+    CHECK(!relation_base_lock_reports_busy(root / prefix.names.base_lock_leaf));
     require_merge_prepared_worker_private_snapshots(worker_before);
 }
 
@@ -21715,13 +22072,17 @@ void run_coordinator_suite() {
 void run_merge_prepared_protection_suite() {
     std::cout << "===== Distributed Sieve MergePrepared Protection Tests =====\n";
 #if defined(__APPLE__)
-    const std::array<std::pair<std::string_view, TestFunction>, 6> tests = {{
+    const std::array<std::pair<std::string_view, TestFunction>, 8> tests = {{
         {"valid pending, canonical, and identical-dual live cursors are protected",
          test_merge_prepared_protection_live_cursor_requires_reconciliation_without_mutation},
         {"valid pending, canonical, and identical-dual cold opens recover idempotently",
          test_merge_prepared_valid_prefixes_recover_on_cold_open_idempotently},
         {"pending rollback tombstone resumes after a fresh cold open",
          test_merge_prepared_pending_rollback_tombstone_reopens},
+        {"target final callback namespace drift fails closed",
+         test_merge_prepared_recovered_target_final_callback_namespace_drift_fails_closed},
+        {"later worker receipt callback interruption unwinds atomically",
+         test_merge_prepared_recovered_later_worker_receipt_interrupt_unwinds_atomically},
         {"MergeStarted replacement after expected-prefix validation fails closed",
          test_merge_prepared_resume_rejects_same_bytes_merge_started_replacement},
         {"MergePrepared recovery retains worker typed-permit lock closure",

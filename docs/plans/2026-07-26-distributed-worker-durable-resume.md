@@ -2835,6 +2835,14 @@ reconfirms raw canonical prefixes without launch or adoption.
 - [ ] Cover every merge, authority-conversion, intra-lease, completion, and
   worker-prefix crash.
 
+M4b restart recovery is split into explicit authority milestones:
+
+- [x] M4b-P2b-P0b converts a terminal canonical prepared generation into the
+  common read-only prepared admission without reopening its `BaseLock`.
+- [ ] M4b-P2b-P1 rolls back an exact raw writer residue that has no handoff.
+- [ ] A later `WaveMergeCommitV1` transition consumes the common prepared
+  admission and completes exact worker cleanup.
+
 M4a completes the source-private merge-generation namespace, exact P0-P8
 reservation, bounded `MergeStartedV1` publication and normalization, reverse
 lease recovery, and whole-worker-result admission. Every failure path retains
@@ -2943,33 +2951,40 @@ started generation or a terminal canonical prepared generation. A second cold
 open is mutation-free. Live root claims remain read-only and continue to return
 `reconciliation_required`.
 
-This sub-slice deliberately does not claim full restart completion.
-M4b-P2b-P0b must convert the consumed canonical permit into a
-same-open-file-description, read-only recovered prepared admission.
-M4b-P2b-P1 must still roll back exact raw writer residues with no handoff.
-Together those slices must prove that cold resume never repeats a confirmed
-merge.
+M4b-P2b-P0b now closes canonical prepared admission on macOS. A ready
+`DistributedSieveWaveStoreOpenResult` is a closed XOR: it contains either an
+ordinary `store` or one valid `prepared_admission`, never both. Cold open of a
+terminal canonical prepared generation is admission-only. The mutable
+WaveStore does not escape beside that admission, so a caller cannot bypass the
+retained coordinator claim through a second root-action route.
 
-The relation-layer half of M4b-P2b-P0b now consumes only a successfully
-reconciled canonical publication permit. Reconciliation first enters a
-nonterminal consumed phase; it commits the canonical phase only after the full
-terminal witness and result have been retained. The adoption bridge then
-shares that permit `State` and aliases its original `BaseLock` into the ordinary
-read-only handoff receipt. It does not duplicate a descriptor, construct a
-second lock object, reacquire a path, or create another logical-action claim.
-Initial classification and receipt-commit revalidation must both match the
-retained record, owner and owned markers, canonical artifact snapshot,
-directory identities, and lock identity exactly. Pending, rolled-back,
-interrupted, failed, moved-from, and fork-inherited permits cannot mint
-adoption authority; byte-identical late replacement is preserved as foreign
-state.
+The acquisition order is permanent `WaveLock`, worker-coordinator claim,
+canonical worker permits in manifest and attempt order, then the prepared
+target permit. The recovered admission owns the matching lifetime in the same
+order. Reverse destruction closes the merged target reader first, pops worker
+readers in reverse manifest order, releases the coordinator claim, and finally
+releases the WaveStore and permanent lock. Partial adoption failure follows the
+same unwind because every unconverted permit remains in its preallocated slot.
 
-This relation primitive is not yet a recovered prepared admission. The
-WaveStore half must retain ordinary manifest validation under the wave lock,
-acquire all final worker and target permits in the fixed order, consume those
-same lock objects into readers, and hold the complete common admission State.
-Only that integration closes P0b and proves restart uses the confirmed merged
-corpus without a lock gap or repeated merge.
+The relation-layer conversion is an lvalue transaction. It accepts only a
+successfully reconciled canonical permit whose `State` has been shared since
+acquisition. Failure during exact adoption, a hook, allocation, reader
+construction, I/O, or trusted callback does not move or reset the permit; its
+original `BaseLock` and logical action claim remain held. Success resets the
+permit only after constructing the same-handle reader and completing three
+trusted aggregate revalidations: after the initial terminal match, inside the
+relation exact -> callback -> exact receipt sandwich, and after reader
+construction under another exact sandwich. The conversion neither duplicates
+the lock descriptor nor creates a second `BaseLock`, `flock`, or action claim.
+
+Fresh publication and cold recovery now converge on the same move-only
+`DistributedSieveMergePreparedAdmissionV1`. Its origin-specific lifetime stays
+behind a process-bound shared anchor, while the common surface exposes only the
+stable `MergePreparedV1` record and validity check. This completes
+M4b-P2b-P0b, but it does not complete M4b-P2b-P1 or durable merge commit. Exact
+raw writer residue without a handoff still needs rollback, and no current
+consumer turns the common admission into `WaveMergeCommitV1` or worker cleanup
+authority.
 
 The broad WaveStore filesystem matrix now exceeds the Debug `fast` target and
 is now split into independently bounded `fast` CTest shards. The physical

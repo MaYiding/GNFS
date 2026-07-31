@@ -747,7 +747,7 @@ BORROWED_BASE_LOCK_ADOPTION_BODY = (
     "returnadopt_private_handoff_impl("
     "base_path,hooks,true,"
     "[&](constOOCCleanupPaths&paths,AdoptionParentDirectoryHandle&parent){"
-    "returnborrowed.consume(paths,parent);},nullptr);"
+    "returnborrowed.consume(paths,parent);},nullptr,nullptr);"
 )
 BORROWED_BASE_LOCK_RELEASE_FUNCTION = "release_noexcept"
 BORROWED_BASE_LOCK_RELEASE_BODY = (
@@ -823,6 +823,27 @@ CONSUMED_CANONICAL_ADOPTION_INTERFACE_FILE = (
 CONSUMED_CANONICAL_ADOPTION_TEST_FILE = (
     "tests/test_ooc_cleanup_transaction.cpp"
 )
+MERGE_PREPARED_ADMISSION_INTERFACE_FILE = (
+    "src/sieve/distributed_sieve_merge_prepared_admission_internal.hpp"
+)
+MERGE_PREPARED_ADMISSION_WAVE_STORE_FILE = (
+    "src/sieve/distributed_sieve_wave_store.cpp"
+)
+MERGE_PREPARED_ADMISSION_WAVE_STORE_INTERFACE_FILE = (
+    "src/sieve/distributed_sieve_wave_store_internal.hpp"
+)
+MERGE_PREPARED_ADMISSION_IDENTIFIER = (
+    "DistributedSieveMergePreparedAdmissionV1"
+)
+MERGE_PREPARED_ADMISSION_FRESH_PUBLISH_FUNCTION = "publish_impl"
+MERGE_PREPARED_ADMISSION_FRESH_VALIDATOR = (
+    "validate_prepared_admission_origin"
+)
+MERGE_PREPARED_ADMISSION_RECOVERED_VALIDATOR = (
+    "recovered_merge_prepared_admission_state_valid"
+)
+MERGE_PREPARED_ADMISSION_OPEN_RESULT = "DistributedSieveWaveStoreOpenResult"
+MERGE_PREPARED_ADMISSION_OPEN_FUNCTION = "DistributedSieveWaveStore::open"
 CONSUMED_CANONICAL_ADOPTION_TOKEN = (
     "OOCPrivateHandoffConsumedPublicationBaseLockV1"
 )
@@ -831,6 +852,18 @@ CONSUMED_CANONICAL_ADOPTION_BRIDGE = (
 )
 CONSUMED_CANONICAL_ADOPTION_ENTRY = (
     "adopt_consumed_canonical_private_handoff_publication_v1"
+)
+CONSUMED_CANONICAL_READER_ADOPTION_ENTRY = (
+    "adopt_consumed_canonical_private_handoff_reader_v1"
+)
+CONSUMED_CANONICAL_READER_ADOPTION_RESULT = (
+    "PrivateHandoffPublicationReaderAdoptionResultV1"
+)
+CONSUMED_CANONICAL_READER_REVALIDATOR = (
+    "PrivateHandoffPublicationAdoptionRevalidatorV1"
+)
+CONSUMED_CANONICAL_READER_TRUSTED_AUTHORITY = (
+    "MergePreparedAdmissionRevalidatorAuthorityV1"
 )
 CONSUMED_CANONICAL_ADOPTION_COMMIT = "commit_canonical_publication_terminal"
 CONSUMED_CANONICAL_ADOPTION_SHAPE_MATCHER = (
@@ -841,20 +874,39 @@ CONSUMED_CANONICAL_ADOPTION_TERMINAL_MATCHER = (
 )
 CONSUMED_CANONICAL_ADOPTION_IDENTIFIER_USE_COUNTS = {
     CONSUMED_CANONICAL_ADOPTION_TOKEN: {
-        CONSUMED_CANONICAL_ADOPTION_RELATION_IMPLEMENTATION_FILE: 1,
-        CONSUMED_CANONICAL_ADOPTION_IMPLEMENTATION_FILE: 11,
-        CONSUMED_CANONICAL_ADOPTION_INTERFACE_FILE: 14,
+        CONSUMED_CANONICAL_ADOPTION_RELATION_IMPLEMENTATION_FILE: 2,
+        CONSUMED_CANONICAL_ADOPTION_RELATION_INTERFACE_FILE: 2,
+        CONSUMED_CANONICAL_ADOPTION_IMPLEMENTATION_FILE: 12,
+        CONSUMED_CANONICAL_ADOPTION_INTERFACE_FILE: 16,
     },
     CONSUMED_CANONICAL_ADOPTION_BRIDGE: {
-        CONSUMED_CANONICAL_ADOPTION_RELATION_IMPLEMENTATION_FILE: 1,
-        CONSUMED_CANONICAL_ADOPTION_IMPLEMENTATION_FILE: 1,
-        CONSUMED_CANONICAL_ADOPTION_INTERFACE_FILE: 2,
+        CONSUMED_CANONICAL_ADOPTION_RELATION_IMPLEMENTATION_FILE: 2,
+        CONSUMED_CANONICAL_ADOPTION_RELATION_INTERFACE_FILE: 1,
+        CONSUMED_CANONICAL_ADOPTION_IMPLEMENTATION_FILE: 2,
+        CONSUMED_CANONICAL_ADOPTION_INTERFACE_FILE: 4,
     },
     CONSUMED_CANONICAL_ADOPTION_ENTRY: {
         CONSUMED_CANONICAL_ADOPTION_RELATION_IMPLEMENTATION_FILE: 1,
         CONSUMED_CANONICAL_ADOPTION_RELATION_INTERFACE_FILE: 2,
         CONSUMED_CANONICAL_ADOPTION_INTERFACE_FILE: 1,
-        CONSUMED_CANONICAL_ADOPTION_TEST_FILE: 12,
+    },
+    CONSUMED_CANONICAL_READER_ADOPTION_ENTRY: {
+        CONSUMED_CANONICAL_ADOPTION_RELATION_IMPLEMENTATION_FILE: 1,
+        CONSUMED_CANONICAL_ADOPTION_RELATION_INTERFACE_FILE: 3,
+        CONSUMED_CANONICAL_ADOPTION_INTERFACE_FILE: 1,
+        MERGE_PREPARED_ADMISSION_WAVE_STORE_FILE: 1,
+    },
+    CONSUMED_CANONICAL_READER_REVALIDATOR: {
+        CONSUMED_CANONICAL_ADOPTION_RELATION_IMPLEMENTATION_FILE: 11,
+        CONSUMED_CANONICAL_ADOPTION_RELATION_INTERFACE_FILE: 17,
+        CONSUMED_CANONICAL_ADOPTION_IMPLEMENTATION_FILE: 1,
+        CONSUMED_CANONICAL_ADOPTION_INTERFACE_FILE: 4,
+        MERGE_PREPARED_ADMISSION_WAVE_STORE_FILE: 3,
+    },
+    CONSUMED_CANONICAL_READER_TRUSTED_AUTHORITY: {
+        CONSUMED_CANONICAL_ADOPTION_RELATION_INTERFACE_FILE: 2,
+        MERGE_PREPARED_ADMISSION_WAVE_STORE_INTERFACE_FILE: 2,
+        MERGE_PREPARED_ADMISSION_WAVE_STORE_FILE: 13,
     },
     CONSUMED_CANONICAL_ADOPTION_COMMIT: {
         CONSUMED_CANONICAL_ADOPTION_RELATION_IMPLEMENTATION_FILE: 3,
@@ -866,7 +918,16 @@ CONSUMED_CANONICAL_ADOPTION_IDENTIFIER_USE_COUNTS = {
         CONSUMED_CANONICAL_ADOPTION_IMPLEMENTATION_FILE: 3,
     },
     "ConsumedCanonical": {
-        CONSUMED_CANONICAL_ADOPTION_RELATION_IMPLEMENTATION_FILE: 3,
+        CONSUMED_CANONICAL_ADOPTION_RELATION_IMPLEMENTATION_FILE: 4,
+    },
+}
+CONSUMED_CANONICAL_ADOPTION_FLEXIBLE_TEST_USES = {
+    CONSUMED_CANONICAL_ADOPTION_ENTRY: {CONSUMED_CANONICAL_ADOPTION_TEST_FILE},
+    CONSUMED_CANONICAL_READER_ADOPTION_ENTRY: {
+        CONSUMED_CANONICAL_ADOPTION_TEST_FILE
+    },
+    CONSUMED_CANONICAL_READER_REVALIDATOR: {
+        CONSUMED_CANONICAL_ADOPTION_TEST_FILE
     },
 }
 CONSUMED_CANONICAL_ADOPTION_PUBLIC_IDENTIFIERS = tuple(
@@ -884,11 +945,33 @@ CONSUMED_CANONICAL_ADOPTION_RELATION_FRIEND = (
     "PrivateHandoffPublicationValidatedPermitV1&&permit,"
     "OOCPrivateHandoffAdoptionTestHookshooks)noexcept;"
 )
+CONSUMED_CANONICAL_READER_ADOPTION_RELATION_DECLARATION = (
+    "[[nodiscard]]PrivateHandoffPublicationReaderAdoptionResultV1"
+    "adopt_consumed_canonical_private_handoff_reader_v1("
+    "PrivateHandoffPublicationValidatedPermitV1&permit,"
+    "PrivateHandoffPublicationAdoptionRevalidatorV1&&revalidator,"
+    "OOCPrivateHandoffAdoptionTestHookshooks={})noexcept;"
+)
+CONSUMED_CANONICAL_READER_ADOPTION_RELATION_FRIEND = (
+    "friendPrivateHandoffPublicationReaderAdoptionResultV1"
+    "adopt_consumed_canonical_private_handoff_reader_v1("
+    "PrivateHandoffPublicationValidatedPermitV1&permit,"
+    "PrivateHandoffPublicationAdoptionRevalidatorV1&&revalidator,"
+    "OOCPrivateHandoffAdoptionTestHookshooks)noexcept;"
+)
 CONSUMED_CANONICAL_ADOPTION_BRIDGE_DECLARATION = (
     "[[nodiscard]]OOCPrivateHandoffAdoptionResult"
     "adopt_private_handoff_with_consumed_publication_base_lock_v1("
     "conststd::filesystem::path&base_path,"
     "OOCPrivateHandoffConsumedPublicationBaseLockV1&&authority,"
+    "OOCPrivateHandoffAdoptionTestHookshooks={})noexcept;"
+)
+CONSUMED_CANONICAL_ADOPTION_REVALIDATING_BRIDGE_DECLARATION = (
+    "[[nodiscard]]OOCPrivateHandoffAdoptionResult"
+    "adopt_private_handoff_with_consumed_publication_base_lock_v1("
+    "conststd::filesystem::path&base_path,"
+    "OOCPrivateHandoffConsumedPublicationBaseLockV1&&authority,"
+    "PrivateHandoffPublicationAdoptionRevalidatorV1&revalidator,"
     "OOCPrivateHandoffAdoptionTestHookshooks={})noexcept;"
 )
 CONSUMED_CANONICAL_ADOPTION_TOKEN_CLASS_BODY = r"""
@@ -920,11 +1003,22 @@ private:
     adopt_consumed_canonical_private_handoff_publication_v1(
         PrivateHandoffPublicationValidatedPermitV1&& permit,
         OOCPrivateHandoffAdoptionTestHooks hooks) noexcept;
+    friend PrivateHandoffPublicationReaderAdoptionResultV1
+    adopt_consumed_canonical_private_handoff_reader_v1(
+        PrivateHandoffPublicationValidatedPermitV1& permit,
+        PrivateHandoffPublicationAdoptionRevalidatorV1&& revalidator,
+        OOCPrivateHandoffAdoptionTestHooks hooks) noexcept;
     friend OOCPrivateHandoffAdoptionResult
     adopt_private_handoff_with_consumed_publication_base_lock_v1(
         const std::filesystem::path& base_path,
         OOCPrivateHandoffConsumedPublicationBaseLockV1&& authority,
-    OOCPrivateHandoffAdoptionTestHooks hooks) noexcept;
+        OOCPrivateHandoffAdoptionTestHooks hooks) noexcept;
+    friend OOCPrivateHandoffAdoptionResult
+    adopt_private_handoff_with_consumed_publication_base_lock_v1(
+        const std::filesystem::path& base_path,
+        OOCPrivateHandoffConsumedPublicationBaseLockV1&& authority,
+        PrivateHandoffPublicationAdoptionRevalidatorV1& revalidator,
+        OOCPrivateHandoffAdoptionTestHooks hooks) noexcept;
 """
 CONSUMED_CANONICAL_ADOPTION_TOKEN_CONSTRUCTOR_FRAGMENT = (
     "OOCPrivateHandoffConsumedPublicationBaseLockV1::"
@@ -998,8 +1092,7 @@ CONSUMED_CANONICAL_ADOPTION_ENTRY_BODY = r"""
             fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None, protocol_error());
         }
 
-        auto owner =
-            std::shared_ptr<PrivateHandoffPublicationObservedPermitV1::State>(std::move(state));
+        auto owner = std::move(state);
         auto live_lock = std::shared_ptr<BaseLock>(owner, owner->lock.get());
         auto terminal = std::shared_ptr<const PrivateHandoffPublicationPrefixWitnessV1>(
             owner, std::addressof(*owner->canonical_terminal));
@@ -1098,12 +1191,43 @@ CONSUMED_CANONICAL_ADOPTION_BRIDGE_BODY = r"""
             authority.consumed_ = true;
             return std::move(authority.live_lock_);
         },
-        terminal.get());
+        terminal.get(), nullptr);
+"""
+CONSUMED_CANONICAL_ADOPTION_REVALIDATING_BRIDGE_BODY = r"""
+    const auto current_process_id = static_cast<std::uint64_t>(gnfs::util::process_id());
+    if (authority.consumed_ || !authority.live_lock_ || !authority.terminal_ ||
+        authority.creator_process_id_ == 0 || authority.creator_process_id_ != current_process_id ||
+        revalidator.validate_ == nullptr || revalidator.creator_process_id_ == 0 ||
+        revalidator.creator_process_id_ != current_process_id) {
+        return adoption_failure(OOCCleanupStatus::InvalidRequest,
+                                OOCPrivateHandoffState::TaintedPreserved,
+                                ooc_cleanup_detail::invalid_argument_error());
+    }
+
+    auto terminal = authority.terminal_;
+    const AdoptionAggregateRevalidatorV1 aggregate_revalidator{
+        .validate = revalidator.validate_,
+        .context = revalidator.context_,
+    };
+    return adopt_private_handoff_impl(
+        base_path, hooks, true,
+        [&](const OOCCleanupPaths&, AdoptionParentDirectoryHandle&) {
+            if (authority.consumed_ || !authority.live_lock_) {
+                ooc_cleanup_detail::fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                                         ooc_cleanup_detail::invalid_argument_error());
+            }
+            authority.consumed_ = true;
+            return std::move(authority.live_lock_);
+        },
+        terminal.get(), &aggregate_revalidator);
 """
 CONSUMED_CANONICAL_ADOPTION_INITIAL_MATCH_FRAGMENT = (
     "if(expected_terminal!=nullptr){"
     "require_publication_terminal_match("
     "*classified.witness,*expected_terminal,*parent,*directory,*lock);}"
+    "if(aggregate_revalidator!=nullptr){"
+    "require_aggregate_revalidation(paths,*parent,*directory,*lock,"
+    "*aggregate_revalidator,nullptr);}"
     "observe_adoption_boundary(paths,*parent,*directory,*lock,hooks,"
     "OOCPrivateHandoffAdoptionFaultPoint::CanonicalClassified);"
 )
@@ -1121,14 +1245,183 @@ CONSUMED_CANONICAL_ADOPTION_RECEIPT_ORDER_FRAGMENT = (
     "observe_adoption_boundary(paths,*parent,*directory,*lock,hooks,"
     "OOCPrivateHandoffAdoptionFaultPoint::BeforeReceiptCommitRevalidation);"
     "revalidate_before_receipt();"
+    "if(aggregate_revalidator!=nullptr){"
+    "require_aggregate_revalidation(paths,*parent,*directory,*lock,"
+    "*aggregate_revalidator,nullptr);"
+    "revalidate_before_receipt();}"
     "constautopending_handoff_snapshot="
 )
 CONSUMED_CANONICAL_ADOPTION_ENTRY_ALIAS_FRAGMENT = (
-    "autoowner=std::shared_ptr<"
-    "PrivateHandoffPublicationObservedPermitV1::State>(std::move(state));"
+    "autoowner=std::move(state);"
     "autolive_lock=std::shared_ptr<BaseLock>(owner,owner->lock.get());"
     "autoterminal=std::shared_ptr<constPrivateHandoffPublicationPrefixWitnessV1>("
     "owner,std::addressof(*owner->canonical_terminal));"
+)
+CONSUMED_CANONICAL_READER_ADOPTION_SUCCESS_ORDER = (
+    "autoreader=std::make_unique<OOCPrivateHandoffReader>(std::move(*adopted.adoption));"
+    "if(!reader->valid()){"
+    "fail(OOCCleanupStatus::UnexpectedFailure,OOCCleanupStage::None,protocol_error());}"
+    "#if!defined(__APPLE__)"
+    "returnconsumed_publication_reader_adoption_failure("
+    "OOCCleanupStatus::PlatformUnsupported,"
+    "std::make_error_code(std::errc::operation_not_supported));"
+    "#else"
+    "constautorequire_terminal="
+)
+CONSUMED_CANONICAL_READER_ADOPTION_COMMIT_TAIL = (
+    "require_terminal();"
+    "constboolaggregate_valid=invoke_with_stable_base_lock(*owner->lock,[&]{"
+    "returnretained_revalidator.validate_(reader.get(),retained_revalidator.context_);});"
+    "if(!aggregate_valid){"
+    "fail(OOCCleanupStatus::ForeignReplacementPreserved,OOCCleanupStage::None,"
+    "protocol_error());}"
+    "require_terminal();"
+    "if(!reader->valid()){"
+    "fail(OOCCleanupStatus::UnexpectedFailure,OOCCleanupStage::None,protocol_error());}"
+    "permit.state_.reset();"
+    "returnPrivateHandoffPublicationReaderAdoptionResultV1("
+    "adopted.result,adopted.state,std::move(reader));"
+    "#endif"
+)
+MERGE_PREPARED_ADMISSION_VALID_BODY = (
+    "if(lifetime_anchor_==nullptr||record_==nullptr||creator_process_id_==0||"
+    "origin_validator_==nullptr){returnfalse;}"
+    "constintprocess_id=gnfs::util::process_id();"
+    "returnprocess_id>0&&"
+    "creator_process_id_==static_cast<std::uint64_t>(process_id)&&"
+    "origin_validator_(lifetime_anchor_.get(),record_,creator_process_id_);"
+)
+MERGE_PREPARED_ADMISSION_FRESH_PUBLISH_FRAGMENT = (
+    "constauto*stable_record=std::addressof(*state->prepared_record);"
+    "conststd::uint64_tcreator_process_id=state->mint.creator_process_id_;"
+    "std::shared_ptr<constvoid>lifetime_anchor(std::move(state));"
+    "DistributedSieveMergePreparedAdmissionV1admission("
+    "std::move(lifetime_anchor),stable_record,creator_process_id,"
+    "&DistributedSieveMergeWriterAuthorityV1::"
+    "validate_prepared_admission_origin);"
+)
+MERGE_PREPARED_ADMISSION_FRESH_VALIDATOR_BODY = r"""
+    const auto* state =
+        static_cast<const DistributedSieveMergeWriterAuthorityStateV1*>(lifetime_anchor);
+    if (state == nullptr || state->writer == nullptr || state->manifest == nullptr ||
+        state->merge_started_chain.empty() || !state->stream_receipt.has_value() ||
+        !state->prepared_record.has_value() || state->prepared_payload.empty() ||
+        !state->handoff_published || !state->worker_result || stable_record == nullptr ||
+        stable_record != std::addressof(*state->prepared_record) ||
+        creator_process_id != state->mint.creator_process_id_ || !state_process_owned(*state) ||
+        state->writer->state() != gnfs::relation::OOCWriterState::Finalized ||
+        !cached_prepared_payload_is_exact(*state)) {
+        return false;
+    }
+    for (const auto& coordinated : state->worker_result.chunks) {
+        if (coordinated.adopted.has_value() && !coordinated.adopted->valid()) {
+            return false;
+        }
+    }
+    return true;
+"""
+MERGE_PREPARED_ADMISSION_OPEN_RESULT_BOOL_BODY = (
+    "constboolstore_ready=store!=nullptr&&!prepared_admission.has_value();"
+    "constboolprepared_ready=store==nullptr&&prepared_admission.has_value()&&"
+    "prepared_admission->valid();"
+    "returndiagnostic.status==DistributedSieveWaveStoreStatus::ready&&"
+    "store_ready!=prepared_ready;"
+)
+MERGE_PREPARED_ADMISSION_COLD_CLAIM_FRAGMENT = (
+    "autocoordinator=store->claim_worker_coordinator_v1();"
+    "if(!coordinator){"
+    "returnopen_failure(std::move(coordinator.diagnostic));}"
+)
+MERGE_PREPARED_ADMISSION_COLD_CLASSIFIER_FRAGMENT = (
+    "automerge_prepared=classify_merge_prepared_publication_prefix_v1("
+    "MergePreparedAdmissionRevalidatorAuthorityV1::root_fd(*store),"
+    "MergePreparedAdmissionRevalidatorAuthorityV1::absolute_root(*store),"
+    "MergePreparedAdmissionRevalidatorAuthorityV1::manifest(*store),"
+    "store->wave_root_identity(),creator_process_id);"
+)
+MERGE_PREPARED_ADMISSION_RECOVERED_MINT_FRAGMENT = (
+    "usingPreparedAdmission=distributed_sieve_merge_writer_authority_detail::"
+    "DistributedSieveMergePreparedAdmissionV1;"
+    "std::shared_ptr<constvoid>lifetime_anchor=recovered_prepared_state;"
+    "PreparedAdmissionprepared_admission("
+    "std::move(lifetime_anchor),"
+    "std::addressof(recovered_prepared_state->prepared_record),"
+    "creator_process_id,recovered_merge_prepared_admission_state_valid);"
+)
+MERGE_PREPARED_ADMISSION_RECOVERED_SUCCESS_FRAGMENT = (
+    "std::optional<PreparedAdmission>prepared_result;"
+    "prepared_result.emplace(std::move(prepared_admission));"
+    "return{nullptr,std::move(prepared_result),std::move(published.diagnostic)};"
+)
+MERGE_PREPARED_RECOVERED_TEST_FILE = "tests/test_distributed_sieve_resume.cpp"
+MERGE_PREPARED_RECOVERED_SUBJECT_ENUM = (
+    "DistributedSieveRecoveredPreparedPublicationSubjectV1"
+)
+MERGE_PREPARED_RECOVERED_PHASE_ENUM = (
+    "DistributedSieveRecoveredPreparedAggregatePhaseV1"
+)
+MERGE_PREPARED_RECOVERED_STOP_HOOK = (
+    "stop_before_recovered_aggregate_revalidation"
+)
+MERGE_PREPARED_RECOVERED_SEAM_ALLOWLIST = {
+    MERGE_PREPARED_ADMISSION_WAVE_STORE_FILE,
+    MERGE_PREPARED_ADMISSION_WAVE_STORE_INTERFACE_FILE,
+    MERGE_PREPARED_RECOVERED_TEST_FILE,
+}
+MERGE_PREPARED_RECOVERED_SUBJECT_ENUM_BODY = "Target,Worker,Count,"
+MERGE_PREPARED_RECOVERED_PHASE_ENUM_BODY = (
+    "InitialNullReader,ReceiptCommitNullReader,LiveReaderFinal,Count,"
+)
+MERGE_PREPARED_RECOVERED_STOP_HOOK_FRAGMENT = (
+    "if(context->hooks->stop_before_recovered_aggregate_revalidation!=nullptr&&"
+    "context->hooks->stop_before_recovered_aggregate_revalidation("
+    "context->subject,context->manifest_slot,phase,context->hooks->context)){"
+    "context->diagnostic=diagnostic(DistributedSieveWaveStoreStatus::interrupted,"
+    "std::make_error_code(std::errc::operation_canceled));"
+    "returnfalse;}"
+    "if(!process_matches("
+    "MergePreparedAdmissionRevalidatorAuthorityV1::creator_process_id("
+    "*context->store))){"
+    "context->diagnostic=process_mismatch();returnfalse;}"
+    "autoheld=context->held;"
+    "held.current_reader=current_reader;"
+    "context->diagnostic=revalidate_recovered_merge_prepared_projection("
+    "*context->store,*context->expected,held);"
+)
+MERGE_PREPARED_RECOVERED_PHASE_COUNTER_FRAGMENT = (
+    "context->aggregate_revalidation_count>="
+    "static_cast<std::size_t>("
+    "DistributedSieveRecoveredPreparedAggregatePhaseV1::Count)){returnfalse;}"
+    "constautophase=static_cast<"
+    "DistributedSieveRecoveredPreparedAggregatePhaseV1>("
+    "context->aggregate_revalidation_count++);"
+    "constboollive_reader_phase=phase=="
+    "DistributedSieveRecoveredPreparedAggregatePhaseV1::LiveReaderFinal;"
+    "if(live_reader_phase!=(current_reader!=nullptr)){"
+)
+MERGE_PREPARED_RECOVERED_COUNT_COMMIT_FRAGMENT = (
+    "if(context.aggregate_revalidation_count!="
+    "static_cast<std::size_t>("
+    "DistributedSieveRecoveredPreparedAggregatePhaseV1::Count)){"
+    "returndiagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,"
+    "protocol_error());}"
+)
+MERGE_PREPARED_RECOVERED_TARGET_CALL_FRAGMENT = (
+    "adopt_retained_publication("
+    "retained_target,held_publications.back(),"
+    "DistributedSieveRecoveredPreparedPublicationSubjectV1::Target,"
+    "static_cast<std::size_t>(DISTRIBUTED_SIEVE_PROTOCOL_NO_INDEX))"
+)
+MERGE_PREPARED_RECOVERED_WORKER_CALL_FRAGMENT = (
+    "adopt_retained_publication("
+    "worker,held_publications[index],"
+    "DistributedSieveRecoveredPreparedPublicationSubjectV1::Worker,"
+    "worker.manifest_slot)"
+)
+MERGE_PREPARED_RECOVERED_WORKER_SLOT_FRAGMENT = (
+    "worker.manifest_slot>=store->manifest().chunks.size()||"
+    "store->manifest().chunks[worker.manifest_slot].chunk_id!="
+    "worker.coordinate.chunk_id"
 )
 CONSUMED_CANONICAL_ADOPTION_FORBIDDEN_PRIMITIVES = (
     "F_DUPFD",
@@ -1256,8 +1549,8 @@ PRIVATE_HANDOFF_PUBLICATION_RESUME_DIRECT_CALL_IDENTIFIERS = (
 PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_DIRECT_CALL_COUNTS = {
     PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER: 3,
     PRIVATE_HANDOFF_PUBLICATION_RESUME_VALIDATE_IDENTIFIER: 3,
-    PRIVATE_HANDOFF_PUBLICATION_RESUME_REVALIDATE_IDENTIFIER: 4,
-    PRIVATE_HANDOFF_PUBLICATION_RESUME_RECONCILE_IDENTIFIER: 2,
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_REVALIDATE_IDENTIFIER: 5,
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_RECONCILE_IDENTIFIER: 3,
 }
 PRIVATE_HANDOFF_PUBLICATION_RESUME_USE_SITE_IDENTIFIERS = (
     "PrivateHandoffPublicationPrefixStateV1",
@@ -1278,12 +1571,12 @@ PRIVATE_HANDOFF_PUBLICATION_RESUME_USE_SITE_IDENTIFIERS = (
 PRIVATE_HANDOFF_PUBLICATION_RESUME_AUXILIARY_USE_SITE_COUNTS = {
     CONSUMED_CANONICAL_ADOPTION_INTERFACE_FILE: {
         "PrivateHandoffPublicationPrefixWitnessV1": 3,
-        "PrivateHandoffPublicationValidatedPermitV1": 2,
+        "PrivateHandoffPublicationValidatedPermitV1": 3,
     },
 }
-PRIVATE_HANDOFF_PUBLICATION_RESUME_NARROW_TEST_DIRECT_CALL_COUNTS = {
+PRIVATE_HANDOFF_PUBLICATION_RESUME_NARROW_TEST_DIRECT_CALL_IDENTIFIERS = {
     PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_TEST_FILE: {
-        PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER: 2,
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER,
     },
 }
 PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_USE_SITE_IDENTIFIERS = (
@@ -1357,7 +1650,7 @@ PRIVATE_HANDOFF_PUBLICATION_RESUME_INTERFACE_CLASS_SCOPES = {
 PRIVATE_HANDOFF_PUBLICATION_RESUME_INTERFACE_CLASS_FRIEND_COUNTS = {
     "PrivateHandoffPublicationTypedValidatorV1": 3,
     "PrivateHandoffPublicationObservedPermitV1": 3,
-    "PrivateHandoffPublicationValidatedPermitV1": 4,
+    "PrivateHandoffPublicationValidatedPermitV1": 5,
 }
 PRIVATE_HANDOFF_PUBLICATION_RESUME_INTERFACE_CLASS_FRIEND_CLASSES = {
     "PrivateHandoffPublicationTypedValidatorV1": (
@@ -1508,9 +1801,16 @@ PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_WAVE_TEST_HOOKS_BODY = (
     "DistributedSieveMergePreparedResumeObservationPointV1point,"
     "void*context)noexcept;"
     "usingAfterRoundLocksReleased=void(*)(void*context)noexcept;"
+    "usingStopBeforeRecoveredAggregateRevalidation=bool(*)("
+    "DistributedSieveRecoveredPreparedPublicationSubjectV1subject,"
+    "std::size_tmanifest_slot,"
+    "DistributedSieveRecoveredPreparedAggregatePhaseV1phase,"
+    "void*context)noexcept;"
     "StopAfterstop_after=nullptr;"
     "FailBeforefail_before=nullptr;"
     "AfterRoundLocksReleasedafter_round_locks_released=nullptr;"
+    "StopBeforeRecoveredAggregateRevalidation"
+    "stop_before_recovered_aggregate_revalidation=nullptr;"
     "void*context=nullptr;"
 )
 PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_WAVE_MIRROR_ASSERTION = (
@@ -1536,7 +1836,7 @@ PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_WAVE_MIRROR_ASSERTION = (
     "returntrue;}());"
 )
 PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_EXCEPTION_SAFETY_FRAGMENT = (
-    "autostate=std::make_unique<"
+    "autostate=std::make_shared<"
     "PrivateHandoffPublicationObservedPermitV1::State>("
     "paths,expected_directory_identity,std::move(*captured.retained));"
     "state->lock=std::move(lock);"
@@ -2702,6 +3002,7 @@ for (const auto& worker_candidate : worker_candidates) {
     lease_slots[worker_candidate.attempt_index] = provisional;
     retained_workers.entries.push_back(RetainedWorkerHandoffPublicationPrefix{
         .attempt_index = worker_candidate.attempt_index,
+        .manifest_slot = attempt.manifest_chunk_order,
         .names = *attempt.worker_attempt_names,
         .coordinate = *attempt.worker_coordinate,
         .witness = observed_prefix,
@@ -5490,6 +5791,10 @@ class Checks:
         for identifier, expected_by_file in (
             CONSUMED_CANONICAL_ADOPTION_IDENTIFIER_USE_COUNTS.items()
         ):
+            if relative in CONSUMED_CANONICAL_ADOPTION_FLEXIBLE_TEST_USES.get(
+                identifier, set()
+            ):
+                continue
             uses = find_code_identifier_uses(text, identifier)
             expected = expected_by_file.get(relative, 0)
             if len(uses) != expected:
@@ -5527,6 +5832,56 @@ class Checks:
                     "consumed-canonical adoption entry must retain its one exact "
                     "rvalue-only source-private declaration and private friend",
                 )
+            if (
+                compact_text.count(
+                    CONSUMED_CANONICAL_READER_ADOPTION_RELATION_DECLARATION
+                )
+                != 1
+                or compact_text.count(
+                    CONSUMED_CANONICAL_READER_ADOPTION_RELATION_FRIEND
+                )
+                != 2
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    "transactional reader adoption must retain one exact lvalue "
+                    "permit declaration and its two private friends",
+                )
+            revalidator_span = _class_definition_body_span(
+                text, CONSUMED_CANONICAL_READER_REVALIDATOR
+            )
+            if revalidator_span is None:
+                self.fail(
+                    relative,
+                    1,
+                    "transactional reader adoption requires its private trusted "
+                    "revalidator capability",
+                )
+            else:
+                revalidator_body = _compact_cpp_code(
+                    text[revalidator_span[0] : revalidator_span[1]]
+                )
+                required_revalidator_fragments = (
+                    "private:explicitPrivateHandoffPublicationAdoptionRevalidatorV1("
+                    "Validatevalidate,void*context)noexcept;",
+                    "Validatevalidate_=nullptr;void*context_=nullptr;"
+                    "std::uint64_tcreator_process_id_=0;",
+                    "friendclassgnfs::sieve::distributed_sieve_resume_detail::"
+                    "MergePreparedAdmissionRevalidatorAuthorityV1;",
+                    "friendclassPrivateHandoffPublicationAdoptionRevalidatorTestAuthorityV1;",
+                    CONSUMED_CANONICAL_READER_ADOPTION_RELATION_FRIEND,
+                )
+                if any(
+                    revalidator_body.count(fragment) != 1
+                    for fragment in required_revalidator_fragments
+                ) or revalidator_body.count("friendclass") != 2:
+                    self.fail(
+                        relative,
+                        text.count("\n", 0, revalidator_span[0]) + 1,
+                        "only the WaveStore trusted authority and test authority "
+                        "may mint the aggregate adoption revalidator",
+                    )
             return
 
         if relative == CONSUMED_CANONICAL_ADOPTION_INTERFACE_FILE:
@@ -5539,6 +5894,10 @@ class Checks:
                 != _compact_cpp_code(CONSUMED_CANONICAL_ADOPTION_TOKEN_CLASS_BODY)
                 or compact_text.count(
                     CONSUMED_CANONICAL_ADOPTION_BRIDGE_DECLARATION
+                )
+                != 1
+                or compact_text.count(
+                    CONSUMED_CANONICAL_ADOPTION_REVALIDATING_BRIDGE_DECLARATION
                 )
                 != 1
             ):
@@ -5717,6 +6076,66 @@ class Checks:
                 entry_line_offset,
                 "consumed-canonical adoption entry",
             )
+
+            reader_body, reader_line_offset, reader_errors = (
+                find_function_definition_body(
+                    text, CONSUMED_CANONICAL_READER_ADOPTION_ENTRY
+                )
+            )
+            for line, error in reader_errors:
+                self.fail(relative, line, error)
+            if reader_body is None:
+                return
+            compact_reader = _compact_cpp_code(reader_body)
+            reader_declarator = (
+                "PrivateHandoffPublicationReaderAdoptionResultV1"
+                "adopt_consumed_canonical_private_handoff_reader_v1("
+                "PrivateHandoffPublicationValidatedPermitV1&permit,"
+                "PrivateHandoffPublicationAdoptionRevalidatorV1&&revalidator,"
+                "OOCPrivateHandoffAdoptionTestHookshooks)noexcept{"
+            )
+            if compact_text.count(reader_declarator) != 1:
+                self.fail(
+                    relative,
+                    reader_line_offset + 1,
+                    "transactional reader adoption implementation must retain "
+                    "the exact lvalue permit and rvalue revalidator signature",
+                )
+            if not compact_reader.startswith(
+                "autoretained_revalidator=std::move(revalidator);"
+                "autoowner=permit.state_;try{"
+            ) or "std::move(permit.state_)" in compact_reader:
+                self.fail(
+                    relative,
+                    reader_line_offset + 1,
+                    "transactional reader adoption must retain the lvalue permit "
+                    "until the final commit",
+                )
+            if compact_reader.count(CONSUMED_CANONICAL_READER_ADOPTION_SUCCESS_ORDER) != 1:
+                self.fail(
+                    relative,
+                    reader_line_offset + 1,
+                    "transactional reader adoption must construct and validate "
+                    "the same-handle reader before aggregate commit checks",
+                )
+            if (
+                compact_reader.count(
+                    CONSUMED_CANONICAL_READER_ADOPTION_COMMIT_TAIL
+                )
+                != 1
+                or compact_reader.count("permit.state_.reset()") != 1
+            ):
+                self.fail(
+                    relative,
+                    reader_line_offset + 1,
+                    "transactional reader adoption may reset the permit only "
+                    "after both terminal checks and trusted final revalidation",
+                )
+            validate_forbidden_bridge_body(
+                reader_body,
+                reader_line_offset,
+                "transactional reader adoption entry",
+            )
             return
 
         if relative != CONSUMED_CANONICAL_ADOPTION_IMPLEMENTATION_FILE:
@@ -5829,15 +6248,6 @@ class Checks:
                     "pre-receipt terminal matcher call sites",
                 )
 
-        bridge_body, bridge_line_offset, bridge_errors = (
-            find_function_definition_body(
-                text, CONSUMED_CANONICAL_ADOPTION_BRIDGE
-            )
-        )
-        for line, error in bridge_errors:
-            self.fail(relative, line, error)
-        if bridge_body is None:
-            return
         bridge_declarator = (
             "OOCPrivateHandoffAdoptionResult"
             "ooc_cleanup_detail::"
@@ -5846,27 +6256,453 @@ class Checks:
             "OOCPrivateHandoffConsumedPublicationBaseLockV1&&authority,"
             "OOCPrivateHandoffAdoptionTestHookshooks)noexcept{"
         )
-        if compact_text.count(bridge_declarator) != 1:
-            self.fail(
-                relative,
-                bridge_line_offset + 1,
-                "consumed-publication BaseLock bridge must retain its exact "
-                "rvalue-only source-private signature",
-            )
-        if _compact_cpp_code(bridge_body) != _compact_cpp_code(
-            CONSUMED_CANONICAL_ADOPTION_BRIDGE_BODY
+        revalidating_bridge_declarator = (
+            "OOCPrivateHandoffAdoptionResult"
+            "ooc_cleanup_detail::"
+            "adopt_private_handoff_with_consumed_publication_base_lock_v1("
+            "conststd::filesystem::path&base_path,"
+            "OOCPrivateHandoffConsumedPublicationBaseLockV1&&authority,"
+            "PrivateHandoffPublicationAdoptionRevalidatorV1&revalidator,"
+            "OOCPrivateHandoffAdoptionTestHookshooks)noexcept{"
+        )
+        if (
+            compact_text.count(bridge_declarator) != 1
+            or compact_text.count(revalidating_bridge_declarator) != 1
         ):
             self.fail(
                 relative,
-                bridge_line_offset + 1,
-                "consumed-publication BaseLock bridge must move the exact alias "
-                "once into the terminal-aware common adoption path",
+                1,
+                "consumed-publication BaseLock bridges must retain their exact "
+                "plain and trusted-revalidator source-private signatures",
             )
-        validate_forbidden_bridge_body(
-            bridge_body,
-            bridge_line_offset,
-            "consumed-publication BaseLock bridge",
+
+        bridge_definitions: list[tuple[str, int, bool]] = []
+        for use in find_code_identifier_uses(
+            text, CONSUMED_CANONICAL_ADOPTION_BRIDGE
+        ):
+            opening = _function_declarator_terminator(
+                text, use, CONSUMED_CANONICAL_ADOPTION_BRIDGE
+            )
+            if opening is None or opening >= len(text) or text[opening] != "{":
+                continue
+            closing = _matching_brace(text, opening)
+            if closing is None:
+                self.fail(relative, use.line, "unterminated consumed-publication bridge")
+                continue
+            signature = _compact_cpp_code(text[use.offset:opening])
+            bridge_definitions.append(
+                (
+                    text[opening + 1 : closing],
+                    text.count("\n", 0, opening + 1),
+                    "PrivateHandoffPublicationAdoptionRevalidatorV1&revalidator"
+                    in signature,
+                )
+            )
+        if len(bridge_definitions) != 2 or sum(
+            1 for _, _, revalidating in bridge_definitions if revalidating
+        ) != 1:
+            self.fail(
+                relative,
+                1,
+                "consumed-publication adoption must define exactly one plain and "
+                "one trusted-revalidating bridge",
+            )
+        for bridge_body, bridge_line_offset, revalidating in bridge_definitions:
+            expected_body = (
+                CONSUMED_CANONICAL_ADOPTION_REVALIDATING_BRIDGE_BODY
+                if revalidating
+                else CONSUMED_CANONICAL_ADOPTION_BRIDGE_BODY
+            )
+            if _compact_cpp_code(bridge_body) != _compact_cpp_code(expected_body):
+                self.fail(
+                    relative,
+                    bridge_line_offset + 1,
+                    "consumed-publication BaseLock bridge must move the exact "
+                    "alias once into the terminal-aware common adoption path",
+                )
+            validate_forbidden_bridge_body(
+                bridge_body,
+                bridge_line_offset,
+                "consumed-publication BaseLock bridge",
+            )
+
+    def validate_merge_prepared_admission_boundary(
+        self, relative: str, text: str
+    ) -> None:
+        compact_text = _compact_cpp_code(text)
+
+        if relative not in MERGE_PREPARED_RECOVERED_SEAM_ALLOWLIST:
+            for identifier in (
+                MERGE_PREPARED_RECOVERED_SUBJECT_ENUM,
+                MERGE_PREPARED_RECOVERED_PHASE_ENUM,
+                MERGE_PREPARED_RECOVERED_STOP_HOOK,
+            ):
+                for use in find_code_identifier_uses(text, identifier):
+                    self.fail(
+                        relative,
+                        use.line,
+                        "recovered MergePrepared stop seam is source-private to "
+                        f"WaveStore and its one test: {identifier}",
+                    )
+
+        if relative == MERGE_PREPARED_ADMISSION_INTERFACE_FILE:
+            project_includes = {
+                match.group(1)
+                for match in re.finditer(
+                    r"(?m)^\s*#\s*include\s*[<\"]([^>\"]+)[>\"]", text
+                )
+                if match.group(1).startswith("gnfs/")
+                or match.group(1).startswith("distributed_sieve_")
+            }
+            expected_project_includes = {
+                "gnfs/sieve/distributed_sieve_protocol.hpp",
+                "gnfs/util/process.hpp",
+            }
+            if project_includes != expected_project_includes:
+                self.fail(
+                    relative,
+                    1,
+                    "common MergePrepared admission may depend only on protocol "
+                    "and process project headers",
+                )
+
+            class_span = _class_definition_body_span(
+                text, MERGE_PREPARED_ADMISSION_IDENTIFIER
+            )
+            if class_span is None:
+                self.fail(relative, 1, "common MergePrepared admission class is missing")
+                return
+            class_source = text[class_span[0] : class_span[1]]
+            class_body = _compact_cpp_code(class_source)
+            required_fragments = (
+                "private:usingOriginValidatorV1=bool(*)("
+                "constvoid*lifetime_anchor,constMergePreparedV1*stable_record,"
+                "std::uint64_tcreator_process_id)noexcept;",
+                "explicitDistributedSieveMergePreparedAdmissionV1("
+                "std::shared_ptr<constvoid>lifetime_anchor,"
+                "constMergePreparedV1*stable_record,"
+                "std::uint64_tcreator_process_id,"
+                "OriginValidatorV1origin_validator)noexcept",
+                "std::shared_ptr<constvoid>lifetime_anchor_;"
+                "constMergePreparedV1*record_=nullptr;"
+                "std::uint64_tcreator_process_id_=0;"
+                "OriginValidatorV1origin_validator_=nullptr;",
+                "friendclassDistributedSieveMergeWriterAuthorityV1;",
+                "friendclass::gnfs::sieve::distributed_sieve_resume_detail::"
+                "DistributedSieveWaveStore;",
+            )
+            if (
+                any(class_body.count(fragment) != 1 for fragment in required_fragments)
+                or class_body.count("friendclass") != 2
+            ):
+                self.fail(
+                    relative,
+                    text.count("\n", 0, class_span[0]) + 1,
+                    "common MergePrepared admission must retain one private "
+                    "type-erased anchor and exactly the fresh/WaveStore mint friends",
+                )
+            valid_body, valid_line_offset, valid_errors = (
+                find_function_definition_body(class_source, "valid")
+            )
+            for line, error in valid_errors:
+                self.fail(
+                    relative,
+                    text.count("\n", 0, class_span[0]) + line,
+                    error,
+                )
+            if valid_body is None or _compact_cpp_code(valid_body) != (
+                MERGE_PREPARED_ADMISSION_VALID_BODY
+            ):
+                self.fail(
+                    relative,
+                    text.count("\n", 0, class_span[0]) + valid_line_offset + 1,
+                    "common MergePrepared admission valid() must gate the shared "
+                    "anchor, stable record, creator PID, and private origin validator",
+                )
+            return
+
+        if relative == MERGE_WRITER_AUTHORITY_INTERFACE_FILE:
+            if (
+                compact_text.count(
+                    '#include"distributed_sieve_merge_prepared_admission_internal.hpp"'
+                )
+                != 1
+                or _class_definition_body_span(
+                    text, MERGE_PREPARED_ADMISSION_IDENTIFIER
+                )
+                is not None
+                or compact_text.count(
+                    "validate_prepared_admission_origin("
+                    "constvoid*lifetime_anchor,constMergePreparedV1*stable_record,"
+                    "std::uint64_tcreator_process_id)noexcept;"
+                )
+                != 1
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    "fresh writer authority must import the common admission and "
+                    "declare only its private origin validator",
+                )
+            return
+
+        if relative == MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE:
+            publish_body, publish_line_offset, publish_errors = (
+                find_function_definition_body(
+                    text, MERGE_PREPARED_ADMISSION_FRESH_PUBLISH_FUNCTION
+                )
+            )
+            for line, error in publish_errors:
+                self.fail(relative, line, error)
+            if (
+                publish_body is None
+                or _compact_cpp_code(publish_body).count(
+                    MERGE_PREPARED_ADMISSION_FRESH_PUBLISH_FRAGMENT
+                )
+                != 1
+                or len(
+                    find_code_identifier_uses(
+                        text, MERGE_PREPARED_ADMISSION_IDENTIFIER
+                    )
+                )
+                != 2
+            ):
+                self.fail(
+                    relative,
+                    publish_line_offset + 1,
+                    "fresh publication must mint exactly one common admission by "
+                    "moving the unique writer State into a shared lifetime anchor",
+                )
+            validator_body, validator_line_offset, validator_errors = (
+                find_function_definition_body(
+                    text, MERGE_PREPARED_ADMISSION_FRESH_VALIDATOR
+                )
+            )
+            for line, error in validator_errors:
+                self.fail(relative, line, error)
+            if validator_body is None or _compact_cpp_code(validator_body) != _compact_cpp_code(
+                MERGE_PREPARED_ADMISSION_FRESH_VALIDATOR_BODY
+            ):
+                self.fail(
+                    relative,
+                    validator_line_offset + 1,
+                    "fresh common admission validator must preserve every prior "
+                    "writer, record, payload, process, and adopted-input validity check",
+                )
+            return
+
+        if relative == MERGE_PREPARED_ADMISSION_WAVE_STORE_INTERFACE_FILE:
+            subject_span = _enum_class_definition_body_span(
+                text, MERGE_PREPARED_RECOVERED_SUBJECT_ENUM
+            )
+            phase_span = _enum_class_definition_body_span(
+                text, MERGE_PREPARED_RECOVERED_PHASE_ENUM
+            )
+            hooks_span = _class_definition_body_span(
+                text, "DistributedSieveMergePreparedResumeTestHooksV1"
+            )
+            hooks_body = (
+                "" if hooks_span is None else _compact_cpp_code(text[hooks_span[0] : hooks_span[1]])
+            )
+            hook_alias = (
+                "usingStopBeforeRecoveredAggregateRevalidation=bool(*)("
+                "DistributedSieveRecoveredPreparedPublicationSubjectV1subject,"
+                "std::size_tmanifest_slot,"
+                "DistributedSieveRecoveredPreparedAggregatePhaseV1phase,"
+                "void*context)noexcept;"
+            )
+            hook_member = (
+                "StopBeforeRecoveredAggregateRevalidation"
+                "stop_before_recovered_aggregate_revalidation=nullptr;"
+            )
+            if (
+                subject_span is None
+                or _compact_cpp_code(text[subject_span[0] : subject_span[1]])
+                != MERGE_PREPARED_RECOVERED_SUBJECT_ENUM_BODY
+                or phase_span is None
+                or _compact_cpp_code(text[phase_span[0] : phase_span[1]])
+                != MERGE_PREPARED_RECOVERED_PHASE_ENUM_BODY
+                or hooks_span is None
+                or hooks_body.count(hook_alias) != 1
+                or hooks_body.count(hook_member) != 1
+                or len(
+                    find_code_identifier_uses(
+                        text, MERGE_PREPARED_RECOVERED_STOP_HOOK
+                    )
+                )
+                != 1
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    "recovered MergePrepared test seam must expose only Target/Worker, "
+                    "the exact three phases, real manifest slot, and one callback",
+                )
+
+            result_span = _class_definition_body_span(
+                text, MERGE_PREPARED_ADMISSION_OPEN_RESULT
+            )
+            if result_span is None:
+                self.fail(relative, 1, "WaveStore OpenResult is missing")
+                return
+            result_source = text[result_span[0] : result_span[1]]
+            result_body = _compact_cpp_code(result_source)
+            bool_body, bool_line_offset, bool_errors = find_function_definition_body(
+                result_source, "operator bool"
+            )
+            for line, error in bool_errors:
+                self.fail(
+                    relative,
+                    text.count("\n", 0, result_span[0]) + line,
+                    error,
+                )
+            if (
+                len(
+                    find_code_identifier_uses(
+                        text, MERGE_PREPARED_ADMISSION_IDENTIFIER
+                    )
+                )
+                != 2
+                or result_body.count("std::unique_ptr<DistributedSieveWaveStore>store;")
+                != 1
+                or result_body.count(
+                    "std::optional<"
+                    "distributed_sieve_merge_writer_authority_detail::"
+                    "DistributedSieveMergePreparedAdmissionV1>prepared_admission;"
+                )
+                != 1
+                or bool_body is None
+                or _compact_cpp_code(bool_body)
+                != MERGE_PREPARED_ADMISSION_OPEN_RESULT_BOOL_BODY
+            ):
+                self.fail(
+                    relative,
+                    text.count("\n", 0, result_span[0]) + bool_line_offset + 1,
+                    "successful WaveStore OpenResult must enforce exact "
+                    "store/prepared-admission XOR with admission validity",
+                )
+            return
+
+        if relative != MERGE_PREPARED_ADMISSION_WAVE_STORE_FILE:
+            return
+
+        open_body, open_line_offset, open_errors = find_function_definition_body(
+            text, MERGE_PREPARED_ADMISSION_OPEN_FUNCTION
         )
+        for line, error in open_errors:
+            self.fail(relative, line, error)
+        if open_body is None:
+            return
+        compact_open = _compact_cpp_code(open_body)
+        claim_offset = compact_open.find(MERGE_PREPARED_ADMISSION_COLD_CLAIM_FRAGMENT)
+        classifier_offset = compact_open.find(
+            MERGE_PREPARED_ADMISSION_COLD_CLASSIFIER_FRAGMENT
+        )
+        recovered_owner_offset = compact_open.find(
+            "recovered_prepared_state->store=std::move(store);"
+        )
+        mint_offset = compact_open.find(
+            MERGE_PREPARED_ADMISSION_RECOVERED_MINT_FRAGMENT
+        )
+        success_offset = compact_open.find(
+            MERGE_PREPARED_ADMISSION_RECOVERED_SUCCESS_FRAGMENT
+        )
+        if not (
+            0 <= claim_offset < classifier_offset < recovered_owner_offset < mint_offset
+            < success_offset
+        ):
+            self.fail(
+                relative,
+                open_line_offset + 1,
+                "terminal cold-open must claim the coordinator before its final "
+                "classifier, retain the store in the recovered anchor, and only "
+                "then mint/return the admission",
+            )
+        if (
+            compact_open.count(MERGE_PREPARED_ADMISSION_COLD_CLAIM_FRAGMENT) != 1
+            or compact_open.count(MERGE_PREPARED_ADMISSION_COLD_CLASSIFIER_FRAGMENT)
+            != 1
+            or compact_open.count(MERGE_PREPARED_ADMISSION_RECOVERED_MINT_FRAGMENT)
+            != 1
+            or compact_open.count(MERGE_PREPARED_ADMISSION_RECOVERED_SUCCESS_FRAGMENT)
+            != 1
+            or len(find_code_identifier_uses(text, MERGE_PREPARED_ADMISSION_IDENTIFIER))
+            != 1
+            or len(find_code_identifier_uses(text, "PreparedAdmission")) != 3
+            or (
+                claim_offset >= 0
+                and "return{std::move(store),std::nullopt"
+                in compact_open[claim_offset:]
+            )
+        ):
+            self.fail(
+                relative,
+                open_line_offset + 1,
+                "WaveStore must be the sole recovered admission mint and terminal "
+                "success must return admission-only",
+            )
+        trusted_reader_call = (
+            "private_lease::adopt_consumed_canonical_private_handoff_reader_v1("
+            "retained.permit,"
+            "MergePreparedAdmissionRevalidatorAuthorityV1::bind("
+            "revalidate_merge_prepared_admission_for_relation,"
+            "std::addressof(context)))"
+        )
+        if compact_open.count(trusted_reader_call) != 1:
+            self.fail(
+                relative,
+                open_line_offset + 1,
+                "WaveStore recovered adoption must be the sole production lvalue "
+                "reader call and bind only its trusted aggregate revalidator",
+            )
+
+        callback_body, callback_line_offset, callback_errors = (
+            find_function_definition_body(
+                text, "revalidate_merge_prepared_admission_for_relation"
+            )
+        )
+        for line, error in callback_errors:
+            self.fail(relative, line, error)
+        compact_callback = "" if callback_body is None else _compact_cpp_code(callback_body)
+        if (
+            callback_body is None
+            or compact_callback.count(
+                MERGE_PREPARED_RECOVERED_PHASE_COUNTER_FRAGMENT
+            )
+            != 1
+            or compact_callback.count(MERGE_PREPARED_RECOVERED_STOP_HOOK_FRAGMENT)
+            != 1
+            or len(
+                find_code_identifier_uses(
+                    text, MERGE_PREPARED_RECOVERED_STOP_HOOK
+                )
+            )
+            != 2
+        ):
+            self.fail(
+                relative,
+                callback_line_offset + 1,
+                "recovered aggregate callback must offer exactly three ordered "
+                "phases; true injects interrupted, while false immediately runs "
+                "the production authority/projection revalidation",
+            )
+        if (
+            compact_open.count(MERGE_PREPARED_RECOVERED_COUNT_COMMIT_FRAGMENT)
+            != 1
+            or compact_open.count(MERGE_PREPARED_RECOVERED_TARGET_CALL_FRAGMENT)
+            != 1
+            or compact_open.count(MERGE_PREPARED_RECOVERED_WORKER_CALL_FRAGMENT)
+            != 1
+            or compact_open.count(MERGE_PREPARED_RECOVERED_WORKER_SLOT_FRAGMENT)
+            != 1
+        ):
+            self.fail(
+                relative,
+                open_line_offset + 1,
+                "each recovered target/worker publication must complete all three "
+                "callbacks using Target/NO_INDEX or Worker/real manifest_slot "
+                "before permit commit",
+            )
 
     def validate_worker_writer_identifier_exception_boundary(
         self, relative: str, text: str
@@ -6028,12 +6864,12 @@ class Checks:
                     )
 
         narrow_direct_calls = (
-            PRIVATE_HANDOFF_PUBLICATION_RESUME_NARROW_TEST_DIRECT_CALL_COUNTS.get(
+            PRIVATE_HANDOFF_PUBLICATION_RESUME_NARROW_TEST_DIRECT_CALL_IDENTIFIERS.get(
                 relative
             )
         )
         if narrow_direct_calls is not None:
-            for identifier, expected in narrow_direct_calls.items():
+            for identifier in narrow_direct_calls:
                 uses = find_code_identifier_uses(text, identifier)
                 calls = find_call_identifier_uses(text, identifier)
                 for use in find_non_call_identifier_uses(text, identifier):
@@ -6044,12 +6880,12 @@ class Checks:
                         f"aliases and function-pointer references are forbidden: "
                         f"{identifier}",
                     )
-                if len(uses) != expected or len(calls) != expected:
+                if len(uses) != len(calls):
                     self.fail(
                         relative,
                         1,
-                        "narrow resume test must contain exactly "
-                        f"{expected} direct {identifier} call, found "
+                        "narrow resume test authority must remain direct-call-only; "
+                        f"{identifier} has "
                         f"{len(uses)} identifiers and {len(calls)} calls",
                     )
             forbidden_identifiers = (
@@ -6648,7 +7484,8 @@ class Checks:
                 compact_body = _compact_cpp_code(body)
                 if identifier == PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER:
                     if (
-                        compact_body.count("std::make_unique<") != 2
+                        compact_body.count("std::make_unique<") != 1
+                        or compact_body.count("std::make_shared<") != 1
                         or compact_body.count(
                             "claim.transfer_to_permit();"
                         )
@@ -7859,12 +8696,12 @@ class Checks:
         reconciler = PRIVATE_HANDOFF_PUBLICATION_RESUME_RECONCILE_IDENTIFIER
         open_uses = find_code_identifier_uses(open_body, reconciler)
         open_calls = find_call_identifier_uses(open_body, reconciler)
-        if len(open_uses) != 2 or len(open_calls) != 2:
+        if len(open_uses) != 3 or len(open_calls) != 3:
             self.fail(
                 relative,
                 open_body_line_offset + 1,
                 f"{PRIVATE_HANDOFF_PUBLICATION_RESUME_OPEN_FUNCTION} must contain "
-                f"both direct {reconciler} calls, found {len(open_uses)} "
+                f"all three direct {reconciler} calls, found {len(open_uses)} "
                 f"identifiers and {len(open_calls)} calls",
             )
 
@@ -9547,6 +10384,7 @@ class Checks:
             self.validate_worker_writer_use_site(relative, text)
             self.validate_borrowed_base_lock_bridge(relative, text)
             self.validate_consumed_canonical_adoption_bridge(relative, text)
+            self.validate_merge_prepared_admission_boundary(relative, text)
             self.validate_worker_writer_identifier_exception_boundary(
                 relative, text
             )
@@ -11767,7 +12605,7 @@ adopt_private_handoff_with_borrowed_base_lock_v1(
             AdoptionParentDirectoryHandle& parent) {
             return borrowed.consume(paths, parent);
         },
-        nullptr);
+        nullptr, nullptr);
 }
 """
     exact_borrowed_base_lock_checks = Checks(Path("."))
@@ -12146,8 +12984,10 @@ auto DistributedSievePrivateLeaseBaseLockAt::adopt_exact_private_handoff(
     )
     expect_consumed_canonical_mutation(
         CONSUMED_CANONICAL_ADOPTION_IMPLEMENTATION_FILE,
-        "        revalidate_before_receipt();\n"
+        "            revalidate_before_receipt();\n"
+        "        }\n"
         "        const auto pending_handoff_snapshot =",
+        "        }\n"
         "        const auto pending_handoff_snapshot =",
         "second terminal-aware revalidation",
         "receipt preparation before the second revalidation",
@@ -12180,6 +13020,153 @@ auto DistributedSievePrivateLeaseBaseLockAt::adopt_exact_private_handoff(
         ),
         "unallowlisted consumed-canonical entry call was accepted: "
         f"{untrusted_consumed_canonical_checks.errors}",
+    )
+
+    expect_consumed_canonical_mutation(
+        CONSUMED_CANONICAL_ADOPTION_RELATION_IMPLEMENTATION_FILE,
+        "    auto owner = permit.state_;\n",
+        "    auto owner = std::move(permit.state_);\n",
+        "retain the lvalue permit until the final commit",
+        "transactional reader adoption consuming its lvalue permit early",
+    )
+    expect_consumed_canonical_mutation(
+        CONSUMED_CANONICAL_ADOPTION_RELATION_IMPLEMENTATION_FILE,
+        "    auto retained_revalidator = std::move(revalidator);\n",
+        "    auto retained_revalidator = std::move(revalidator);\n"
+        "    auto replacement = std::make_shared<BaseLock>(path);\n",
+        "must not construct a replacement BaseLock",
+        "transactional reader adoption constructing a replacement BaseLock",
+    )
+    expect_consumed_canonical_mutation(
+        CONSUMED_CANONICAL_ADOPTION_RELATION_IMPLEMENTATION_FILE,
+        "        require_terminal();\n"
+        "        if (!reader->valid()) {\n"
+        "            fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None, protocol_error());\n"
+        "        }\n\n"
+        "        permit.state_.reset();\n",
+        "        permit.state_.reset();\n"
+        "        require_terminal();\n"
+        "        if (!reader->valid()) {\n"
+        "            fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None, protocol_error());\n"
+        "        }\n\n",
+        "may reset the permit only after both terminal checks",
+        "transactional reader adoption resetting before its second terminal check",
+    )
+
+    merge_prepared_admission_sources = {
+        relative: (Path(__file__).resolve().parents[1] / relative).read_text(
+            encoding="utf-8"
+        )
+        for relative in {
+            MERGE_PREPARED_ADMISSION_INTERFACE_FILE,
+            MERGE_WRITER_AUTHORITY_INTERFACE_FILE,
+            MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+            MERGE_PREPARED_ADMISSION_WAVE_STORE_INTERFACE_FILE,
+            MERGE_PREPARED_ADMISSION_WAVE_STORE_FILE,
+        }
+    }
+    exact_merge_prepared_admission_checks = Checks(Path("."))
+    for relative, source in merge_prepared_admission_sources.items():
+        exact_merge_prepared_admission_checks.validate_merge_prepared_admission_boundary(
+            relative, source
+        )
+    expect(
+        not exact_merge_prepared_admission_checks.errors,
+        "exact common MergePrepared admission milestone was rejected: "
+        f"{exact_merge_prepared_admission_checks.errors}",
+    )
+
+    def expect_merge_prepared_admission_mutation(
+        relative: str,
+        old: str,
+        new: str,
+        expected_error: str,
+        description: str,
+    ) -> None:
+        source = merge_prepared_admission_sources[relative]
+        expect(old in source, f"self-test mutation anchor is missing: {description}")
+        mutated = source.replace(old, new, 1)
+        mutation_checks = Checks(Path("."))
+        mutation_checks.validate_merge_prepared_admission_boundary(relative, mutated)
+        expect(
+            any(expected_error in error for error in mutation_checks.errors),
+            f"common MergePrepared admission gate accepted {description}: "
+            f"{mutation_checks.errors}",
+        )
+
+    expect_merge_prepared_admission_mutation(
+        MERGE_PREPARED_ADMISSION_INTERFACE_FILE,
+        "    friend class DistributedSieveMergeWriterAuthorityV1;\n",
+        "    friend class ForgedMergePreparedAdmissionAuthorityV1;\n",
+        "exactly the fresh/WaveStore mint friends",
+        "a third-party replacement for the fresh mint friend",
+    )
+    expect_merge_prepared_admission_mutation(
+        MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+        "        std::shared_ptr<const void> lifetime_anchor(std::move(state));\n",
+        "        std::shared_ptr<const void> lifetime_anchor(state.get());\n",
+        "moving the unique writer State into a shared lifetime anchor",
+        "a non-owning fresh lifetime anchor",
+    )
+    expect_merge_prepared_admission_mutation(
+        MERGE_PREPARED_ADMISSION_WAVE_STORE_INTERFACE_FILE,
+        "               store_ready != prepared_ready;\n",
+        "               store_ready || prepared_ready;\n",
+        "store/prepared-admission XOR",
+        "a non-XOR successful OpenResult",
+    )
+    expect_merge_prepared_admission_mutation(
+        MERGE_PREPARED_ADMISSION_WAVE_STORE_FILE,
+        "        auto coordinator = store->claim_worker_coordinator_v1();\n",
+        "        auto coordinator = store->peek_worker_coordinator_v1();\n",
+        "claim the coordinator before its final classifier",
+        "terminal cold-open without coordinator claim",
+    )
+    expect_merge_prepared_admission_mutation(
+        MERGE_PREPARED_ADMISSION_WAVE_STORE_FILE,
+        "        return {nullptr, std::move(prepared_result), std::move(published.diagnostic)};\n",
+        "        return {std::move(store), std::move(prepared_result),\n"
+        "                std::move(published.diagnostic)};\n",
+        "terminal success must return admission-only",
+        "terminal cold-open returning both store and admission",
+    )
+    expect_merge_prepared_admission_mutation(
+        MERGE_PREPARED_ADMISSION_WAVE_STORE_FILE,
+        "    context->diagnostic =\n"
+        "        revalidate_recovered_merge_prepared_projection(*context->store, *context->expected, held);\n",
+        "    context->diagnostic = diagnostic(DistributedSieveWaveStoreStatus::ready);\n",
+        "false immediately runs the production authority/projection revalidation",
+        "a false test hook bypassing production projection revalidation",
+    )
+    expect_merge_prepared_admission_mutation(
+        MERGE_PREPARED_ADMISSION_WAVE_STORE_FILE,
+        "        context->diagnostic = diagnostic(DistributedSieveWaveStoreStatus::interrupted,\n",
+        "        context->diagnostic = diagnostic(DistributedSieveWaveStoreStatus::ready,\n",
+        "true injects interrupted",
+        "a true test hook reporting success",
+    )
+    expect_merge_prepared_admission_mutation(
+        MERGE_PREPARED_ADMISSION_WAVE_STORE_FILE,
+        "                    DistributedSieveRecoveredPreparedPublicationSubjectV1::Worker,\n"
+        "                    worker.manifest_slot);\n",
+        "                    DistributedSieveRecoveredPreparedPublicationSubjectV1::Worker,\n"
+        "                    index);\n",
+        "Worker/real manifest_slot",
+        "a worker callback using vector order instead of manifest_slot",
+    )
+
+    escaped_recovered_seam_checks = Checks(Path("."))
+    escaped_recovered_seam_checks.validate_merge_prepared_admission_boundary(
+        "src/sieve/untrusted_recovered_hook.cpp",
+        "hooks.stop_before_recovered_aggregate_revalidation = callback;\n",
+    )
+    expect(
+        any(
+            "source-private to WaveStore and its one test" in error
+            for error in escaped_recovered_seam_checks.errors
+        ),
+        "recovered MergePrepared test seam escaped its source-private allowlist: "
+        f"{escaped_recovered_seam_checks.errors}",
     )
 
     worker_handoff_bridge_snippet = r"""
@@ -12433,7 +13420,7 @@ auto admission =
         == {
             CONSUMED_CANONICAL_ADOPTION_INTERFACE_FILE: {
                 "PrivateHandoffPublicationPrefixWitnessV1": 3,
-                "PrivateHandoffPublicationValidatedPermitV1": 2,
+                "PrivateHandoffPublicationValidatedPermitV1": 3,
             },
         },
         "private-handoff publication resume auxiliary use-site counts are not "
@@ -12445,6 +13432,7 @@ class PrivateHandoffPublicationValidatedPermitV1;
 std::shared_ptr<const PrivateHandoffPublicationPrefixWitnessV1> retained;
 const PrivateHandoffPublicationPrefixWitnessV1* expected = nullptr;
 void consume(PrivateHandoffPublicationValidatedPermitV1&& permit);
+void read(PrivateHandoffPublicationValidatedPermitV1& permit);
 """
     exact_consumed_adoption_resume_auxiliary_checks = Checks(Path("."))
     exact_consumed_adoption_resume_auxiliary_checks.validate_private_handoff_publication_resume_boundary(
@@ -12473,10 +13461,10 @@ void consume(PrivateHandoffPublicationValidatedPermitV1&& permit);
         f"{expanded_consumed_adoption_resume_auxiliary_checks.errors}",
     )
     expect(
-        PRIVATE_HANDOFF_PUBLICATION_RESUME_NARROW_TEST_DIRECT_CALL_COUNTS
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_NARROW_TEST_DIRECT_CALL_IDENTIFIERS
         == {
             PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_TEST_FILE: {
-                PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER: 2,
+                PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER,
             },
         },
         "private-handoff publication resume narrow test mapping is not exact",
@@ -12507,14 +13495,8 @@ auto second = private_lease::acquire_private_handoff_publication_resume_v1(
         + "(third_paths, third_directory_identity);\n",
     )
     expect(
-        any(
-            "narrow resume test must contain exactly 2 direct "
-            "acquire_private_handoff_publication_resume_v1 call, found "
-            "3 identifiers and 3 calls"
-            in error
-            for error in third_narrow_resume_acquire_checks.errors
-        ),
-        "third narrow-test resume acquisition escaped exact count closure: "
+        not third_narrow_resume_acquire_checks.errors,
+        "third direct narrow-test resume acquisition was count-bound: "
         f"{third_narrow_resume_acquire_checks.errors}",
     )
 
@@ -12678,6 +13660,11 @@ private:
     friend OOCPrivateHandoffAdoptionResult
     adopt_consumed_canonical_private_handoff_publication_v1(
         PrivateHandoffPublicationValidatedPermitV1&& permit,
+        OOCPrivateHandoffAdoptionTestHooks hooks) noexcept;
+    friend PrivateHandoffPublicationReaderAdoptionResultV1
+    adopt_consumed_canonical_private_handoff_reader_v1(
+        PrivateHandoffPublicationValidatedPermitV1& permit,
+        PrivateHandoffPublicationAdoptionRevalidatorV1&& revalidator,
         OOCPrivateHandoffAdoptionTestHooks hooks) noexcept;
 };
 [[nodiscard]] PrivateHandoffPublicationResumeAdmissionV1
@@ -12952,7 +13939,7 @@ acquire_private_handoff_publication_resume_v1(
     const OOCCleanupPaths& paths,
     const std::array<std::uint64_t, 3>& expected_directory_identity) noexcept {
     auto lock = std::make_unique<BaseLock>(paths.lock_path, false);
-    auto state = std::make_unique<PrivateHandoffPublicationObservedPermitV1::State>(
+    auto state = std::make_shared<PrivateHandoffPublicationObservedPermitV1::State>(
         paths, expected_directory_identity, std::move(*captured.retained));
     state->lock = std::move(lock);
     claim.transfer_to_permit();
@@ -13668,13 +14655,13 @@ OOCCleanupResult unused_removal_call_site() {
     unsafe_private_handoff_acquire_checks.validate_private_handoff_publication_resume_boundary(
         PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_IMPLEMENTATION_FILE,
         valid_private_handoff_resume_implementation.replace(
-            """    auto state = std::make_unique<PrivateHandoffPublicationObservedPermitV1::State>(
+            """    auto state = std::make_shared<PrivateHandoffPublicationObservedPermitV1::State>(
         paths, expected_directory_identity, std::move(*captured.retained));
     state->lock = std::move(lock);
     claim.transfer_to_permit();
 """,
             """    claim.transfer_to_permit();
-    auto state = std::make_unique<PrivateHandoffPublicationObservedPermitV1::State>(
+    auto state = std::make_shared<PrivateHandoffPublicationObservedPermitV1::State>(
         paths, expected_directory_identity, std::move(*captured.retained));
     state->lock = std::move(lock);
 """,
@@ -13773,9 +14760,16 @@ struct DistributedSieveMergePreparedResumeTestHooksV1 final {
         DistributedSieveMergePreparedResumeObservationPointV1 point,
         void* context) noexcept;
     using AfterRoundLocksReleased = void (*)(void* context) noexcept;
+    using StopBeforeRecoveredAggregateRevalidation = bool (*)(
+        DistributedSieveRecoveredPreparedPublicationSubjectV1 subject,
+        std::size_t manifest_slot,
+        DistributedSieveRecoveredPreparedAggregatePhaseV1 phase,
+        void* context) noexcept;
     StopAfter stop_after = nullptr;
     FailBefore fail_before = nullptr;
     AfterRoundLocksReleased after_round_locks_released = nullptr;
+    StopBeforeRecoveredAggregateRevalidation
+        stop_before_recovered_aggregate_revalidation = nullptr;
     void* context = nullptr;
 };
 """
@@ -13937,6 +14931,10 @@ auto revalidate_merge_prepared_aggregate_projection() noexcept {
         + PRIVATE_HANDOFF_PUBLICATION_MERGE_AGGREGATE_RETAINED_REVALIDATION_SOURCE
         + r"""
     return DistributedSieveWaveStoreDiagnostic{};
+}
+auto revalidate_recovered_prepared_reader_permit() noexcept {
+    return private_lease::revalidate_private_handoff_publication_resume_v1(
+        recovered_reader_permit);
 }
 """
         + r"""
@@ -14269,6 +15267,8 @@ auto DistributedSieveWaveStore::open() noexcept {
 """
         + PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_OPEN_FRAGMENT
         + r"""
+    auto adopted = private_lease::reconcile_private_handoff_publication_for_resume_v1(
+        adopted_reader_permit);
     while (true) {
     auto result = private_lease::reconcile_private_handoff_publication_for_resume_v1(
         permit, relation_worker_handoff_resume_hooks(resume_bridge));
@@ -15082,13 +16082,13 @@ try {
     )
     expect(
         any(
-            "production WaveStore must contain exactly 2 direct "
+            "production WaveStore must contain exactly 3 direct "
             "reconcile_private_handoff_publication_for_resume_v1 call, "
-            "found 3 identifiers and 3 calls"
+            "found 4 identifiers and 4 calls"
             in error
             for error in third_merge_reconcile_checks.errors
         ),
-        "third WaveStore resume reconcile call escaped exact two-call closure: "
+        "fourth WaveStore resume reconcile call escaped exact three-call closure: "
         f"{third_merge_reconcile_checks.errors}",
     )
 
@@ -15155,6 +16155,10 @@ auto DistributedSieveWaveStore::open() noexcept {
     return ready;
 }
 auto reconcile_helper() noexcept {
+    auto first = private_lease::reconcile_private_handoff_publication_for_resume_v1(
+        first_permit, hooks);
+    auto second = private_lease::reconcile_private_handoff_publication_for_resume_v1(
+        second_permit, hooks);
     return private_lease::reconcile_private_handoff_publication_for_resume_v1(
         permit, hooks);
 }
@@ -15168,7 +16172,7 @@ auto reconcile_helper() noexcept {
     expect(
         any(
             f"{PRIVATE_HANDOFF_PUBLICATION_RESUME_OPEN_FUNCTION} must contain "
-            "both direct "
+            "all three direct "
             "reconcile_private_handoff_publication_for_resume_v1 call"
             in error
             for error in reconcile_outside_open_private_handoff_resume_checks.errors

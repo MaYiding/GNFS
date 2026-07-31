@@ -18,7 +18,9 @@ class DistributedSievePrivateLeaseBaseLockAt;
 namespace gnfs::relation::ooc_cleanup_detail {
 
 struct PrivateHandoffPublicationPrefixWitnessV1;
+class PrivateHandoffPublicationAdoptionRevalidatorV1;
 class PrivateHandoffPublicationValidatedPermitV1;
+struct PrivateHandoffPublicationReaderAdoptionResultV1;
 
 /// One-shot borrowed authority for the exact BaseLock already held by a
 /// WaveStore attempt claim. The bridge duplicates the retained descriptor so
@@ -99,10 +101,21 @@ private:
     friend OOCPrivateHandoffAdoptionResult adopt_consumed_canonical_private_handoff_publication_v1(
         PrivateHandoffPublicationValidatedPermitV1&& permit,
         OOCPrivateHandoffAdoptionTestHooks hooks) noexcept;
+    friend PrivateHandoffPublicationReaderAdoptionResultV1
+    adopt_consumed_canonical_private_handoff_reader_v1(
+        PrivateHandoffPublicationValidatedPermitV1& permit,
+        PrivateHandoffPublicationAdoptionRevalidatorV1&& revalidator,
+        OOCPrivateHandoffAdoptionTestHooks hooks) noexcept;
     friend OOCPrivateHandoffAdoptionResult
     adopt_private_handoff_with_consumed_publication_base_lock_v1(
         const std::filesystem::path& base_path,
         OOCPrivateHandoffConsumedPublicationBaseLockV1&& authority,
+        OOCPrivateHandoffAdoptionTestHooks hooks) noexcept;
+    friend OOCPrivateHandoffAdoptionResult
+    adopt_private_handoff_with_consumed_publication_base_lock_v1(
+        const std::filesystem::path& base_path,
+        OOCPrivateHandoffConsumedPublicationBaseLockV1&& authority,
+        PrivateHandoffPublicationAdoptionRevalidatorV1& revalidator,
         OOCPrivateHandoffAdoptionTestHooks hooks) noexcept;
 };
 
@@ -112,6 +125,16 @@ private:
 adopt_private_handoff_with_consumed_publication_base_lock_v1(
     const std::filesystem::path& base_path,
     OOCPrivateHandoffConsumedPublicationBaseLockV1&& authority,
+    OOCPrivateHandoffAdoptionTestHooks hooks = {}) noexcept;
+
+/// Revalidate the caller's aggregate around the exact relation receipt commit.
+/// The callback capability is retained by the transactional outer API so it
+/// can run once more after the reader has been fully constructed.
+[[nodiscard]] OOCPrivateHandoffAdoptionResult
+adopt_private_handoff_with_consumed_publication_base_lock_v1(
+    const std::filesystem::path& base_path,
+    OOCPrivateHandoffConsumedPublicationBaseLockV1&& authority,
+    PrivateHandoffPublicationAdoptionRevalidatorV1& revalidator,
     OOCPrivateHandoffAdoptionTestHooks hooks = {}) noexcept;
 
 } // namespace gnfs::relation::ooc_cleanup_detail

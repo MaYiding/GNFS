@@ -3,6 +3,7 @@
 #include "ooc_private_lease_reservation_protocol_internal.hpp"
 
 #include <gnfs/relation/ooc_authorized_cleanup_intent.hpp>
+#include <gnfs/relation/ooc_relation_store.hpp>
 
 #include <algorithm>
 #include <array>
@@ -1666,6 +1667,21 @@ consumed_publication_adoption_failure(OOCCleanupStatus status,
     };
 }
 
+[[nodiscard]] PrivateHandoffPublicationReaderAdoptionResultV1
+consumed_publication_reader_adoption_failure(OOCCleanupStatus status,
+                                             std::error_code error = {}) noexcept {
+    if (!error) {
+        error = protocol_error();
+    }
+    return PrivateHandoffPublicationReaderAdoptionResultV1(
+        OOCCleanupResult{
+            .status = status,
+            .stage = OOCCleanupStage::None,
+            .native_error = error,
+        },
+        OOCPrivateHandoffState::TaintedPreserved, nullptr);
+}
+
 #if defined(__APPLE__)
 [[nodiscard]] PrivateHandoffPublicationPrefixCaptureV1
 capture_private_handoff_publication_prefix_v1_locked(
@@ -2302,8 +2318,19 @@ PrivateHandoffPublicationTypedValidatorV1::PrivateHandoffPublicationTypedValidat
       context_(std::exchange(other.context_, nullptr)),
       creator_process_id_(std::exchange(other.creator_process_id_, 0)) {}
 
+PrivateHandoffPublicationAdoptionRevalidatorV1::PrivateHandoffPublicationAdoptionRevalidatorV1(
+    Validate validate, void* context) noexcept
+    : validate_(validate), context_(context),
+      creator_process_id_(static_cast<std::uint64_t>(gnfs::util::process_id())) {}
+
+PrivateHandoffPublicationAdoptionRevalidatorV1::PrivateHandoffPublicationAdoptionRevalidatorV1(
+    PrivateHandoffPublicationAdoptionRevalidatorV1&& other) noexcept
+    : validate_(std::exchange(other.validate_, nullptr)),
+      context_(std::exchange(other.context_, nullptr)),
+      creator_process_id_(std::exchange(other.creator_process_id_, 0)) {}
+
 PrivateHandoffPublicationObservedPermitV1::PrivateHandoffPublicationObservedPermitV1(
-    std::unique_ptr<State> state) noexcept
+    std::shared_ptr<State> state) noexcept
     : state_(std::move(state)) {}
 
 PrivateHandoffPublicationObservedPermitV1::PrivateHandoffPublicationObservedPermitV1(
@@ -2323,7 +2350,7 @@ PrivateHandoffPublicationObservedPermitV1::witness() const noexcept {
 }
 
 PrivateHandoffPublicationValidatedPermitV1::PrivateHandoffPublicationValidatedPermitV1(
-    std::unique_ptr<PrivateHandoffPublicationObservedPermitV1::State> state) noexcept
+    std::shared_ptr<PrivateHandoffPublicationObservedPermitV1::State> state) noexcept
     : state_(std::move(state)) {}
 
 PrivateHandoffPublicationValidatedPermitV1::PrivateHandoffPublicationValidatedPermitV1(
@@ -2343,11 +2370,33 @@ bool PrivateHandoffPublicationValidatedPermitV1::held() const noexcept {
            state_->creator_process_id == static_cast<std::uint64_t>(gnfs::util::process_id());
 }
 
+PrivateHandoffPublicationReaderAdoptionResultV1::PrivateHandoffPublicationReaderAdoptionResultV1(
+    OOCCleanupResult cleanup_result, OOCPrivateHandoffState handoff_state,
+    std::unique_ptr<OOCPrivateHandoffReader> adopted_reader) noexcept
+    : result(cleanup_result), state(handoff_state), reader(std::move(adopted_reader)) {}
+
+PrivateHandoffPublicationReaderAdoptionResultV1::PrivateHandoffPublicationReaderAdoptionResultV1(
+    PrivateHandoffPublicationReaderAdoptionResultV1&& other) noexcept
+    : result(other.result), state(other.state), reader(std::move(other.reader)) {}
+
+PrivateHandoffPublicationReaderAdoptionResultV1::
+    ~PrivateHandoffPublicationReaderAdoptionResultV1() = default;
+
+bool PrivateHandoffPublicationReaderAdoptionResultV1::adopted() const noexcept {
+    return result.status == OOCCleanupStatus::HandoffPresent &&
+           state == OOCPrivateHandoffState::Canonical && reader && reader->valid();
+}
+
 static_assert(!std::is_default_constructible_v<PrivateHandoffPublicationTypedValidatorV1>);
 static_assert(!std::is_copy_constructible_v<PrivateHandoffPublicationTypedValidatorV1>);
 static_assert(!std::is_copy_assignable_v<PrivateHandoffPublicationTypedValidatorV1>);
 static_assert(std::is_nothrow_move_constructible_v<PrivateHandoffPublicationTypedValidatorV1>);
 static_assert(!std::is_move_assignable_v<PrivateHandoffPublicationTypedValidatorV1>);
+static_assert(!std::is_default_constructible_v<PrivateHandoffPublicationAdoptionRevalidatorV1>);
+static_assert(!std::is_copy_constructible_v<PrivateHandoffPublicationAdoptionRevalidatorV1>);
+static_assert(!std::is_copy_assignable_v<PrivateHandoffPublicationAdoptionRevalidatorV1>);
+static_assert(std::is_nothrow_move_constructible_v<PrivateHandoffPublicationAdoptionRevalidatorV1>);
+static_assert(!std::is_move_assignable_v<PrivateHandoffPublicationAdoptionRevalidatorV1>);
 static_assert(!std::is_default_constructible_v<PrivateHandoffPublicationObservedPermitV1>);
 static_assert(!std::is_copy_constructible_v<PrivateHandoffPublicationObservedPermitV1>);
 static_assert(!std::is_copy_assignable_v<PrivateHandoffPublicationObservedPermitV1>);
@@ -2360,6 +2409,10 @@ static_assert(std::is_nothrow_move_constructible_v<PrivateHandoffPublicationVali
 static_assert(!std::is_move_assignable_v<PrivateHandoffPublicationValidatedPermitV1>);
 static_assert(!std::is_constructible_v<PrivateHandoffPublicationValidatedPermitV1,
                                        PrivateHandoffPublicationObservedPermitV1&&>);
+static_assert(!std::is_copy_constructible_v<PrivateHandoffPublicationReaderAdoptionResultV1>);
+static_assert(
+    std::is_nothrow_move_constructible_v<PrivateHandoffPublicationReaderAdoptionResultV1>);
+static_assert(!std::is_move_assignable_v<PrivateHandoffPublicationReaderAdoptionResultV1>);
 
 PrivateHandoffPublicationResumeAdmissionV1 acquire_private_handoff_publication_resume_v1(
     const OOCCleanupPaths& paths,
@@ -2407,11 +2460,11 @@ PrivateHandoffPublicationResumeAdmissionV1 acquire_private_handoff_publication_r
                 .observed = std::nullopt,
             };
         }
-        auto state = std::make_unique<PrivateHandoffPublicationObservedPermitV1::State>(
+        auto state = std::make_shared<PrivateHandoffPublicationObservedPermitV1::State>(
             paths, expected_directory_identity, std::move(*captured.retained));
         // All allocation, path copying, and retained-prefix construction
         // finishes before ownership of the BaseLock changes. The following
-        // unique_ptr move and guard disarm are noexcept, so the guard can never
+        // shared_ptr move and guard disarm are noexcept, so the guard can never
         // retain a pointer to a destroyed lock.
         state->lock = std::move(lock);
         claim.transfer_to_permit();
@@ -2984,8 +3037,7 @@ OOCPrivateHandoffAdoptionResult adopt_consumed_canonical_private_handoff_publica
             fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None, protocol_error());
         }
 
-        auto owner =
-            std::shared_ptr<PrivateHandoffPublicationObservedPermitV1::State>(std::move(state));
+        auto owner = std::move(state);
         auto live_lock = std::shared_ptr<BaseLock>(owner, owner->lock.get());
         auto terminal = std::shared_ptr<const PrivateHandoffPublicationPrefixWitnessV1>(
             owner, std::addressof(*owner->canonical_terminal));
@@ -3004,6 +3056,93 @@ OOCPrivateHandoffAdoptionResult adopt_consumed_canonical_private_handoff_publica
                                                      error.code());
     } catch (...) {
         return consumed_publication_adoption_failure(OOCCleanupStatus::UnexpectedFailure);
+    }
+}
+
+PrivateHandoffPublicationReaderAdoptionResultV1 adopt_consumed_canonical_private_handoff_reader_v1(
+    PrivateHandoffPublicationValidatedPermitV1& permit,
+    PrivateHandoffPublicationAdoptionRevalidatorV1&& revalidator,
+    OOCPrivateHandoffAdoptionTestHooks hooks) noexcept {
+    auto retained_revalidator = std::move(revalidator);
+    auto owner = permit.state_;
+    try {
+        const auto current_process_id = static_cast<std::uint64_t>(gnfs::util::process_id());
+        if (!owner || !owner->lock ||
+            owner->phase !=
+                PrivateHandoffPublicationObservedPermitV1::State::Phase::ConsumedCanonical ||
+            owner->creator_process_id != current_process_id ||
+            retained_revalidator.validate_ == nullptr ||
+            retained_revalidator.creator_process_id_ != current_process_id) {
+            fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+        }
+        if (!owner->canonical_terminal ||
+            !canonical_publication_terminal_shape_valid(*owner->canonical_terminal) ||
+            owner->expected_directory_identity != owner->canonical_terminal->directory_identity ||
+            owner->lock->identity() != owner->canonical_terminal->lock_identity) {
+            fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None, protocol_error());
+        }
+
+        auto live_lock = std::shared_ptr<BaseLock>(owner, owner->lock.get());
+        auto terminal = std::shared_ptr<const PrivateHandoffPublicationPrefixWitnessV1>(
+            owner, std::addressof(*owner->canonical_terminal));
+        OOCPrivateHandoffConsumedPublicationBaseLockV1 authority(
+            std::move(live_lock), std::move(terminal), owner->creator_process_id);
+        auto adopted = adopt_private_handoff_with_consumed_publication_base_lock_v1(
+            owner->paths.base_path, std::move(authority), retained_revalidator, hooks);
+        if (!adopted.adopted() || !adopted.adoption) {
+            return PrivateHandoffPublicationReaderAdoptionResultV1(adopted.result, adopted.state,
+                                                                   nullptr);
+        }
+
+        auto reader = std::make_unique<OOCPrivateHandoffReader>(std::move(*adopted.adoption));
+        if (!reader->valid()) {
+            fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None, protocol_error());
+        }
+
+#if !defined(__APPLE__)
+        return consumed_publication_reader_adoption_failure(
+            OOCCleanupStatus::PlatformUnsupported,
+            std::make_error_code(std::errc::operation_not_supported));
+#else
+        const auto require_terminal = [&] {
+            owner->lock->require_stable();
+            auto current = capture_private_handoff_publication_prefix_v1_locked(
+                owner->paths, *owner->lock, owner->expected_directory_identity);
+            if (!current.retained || current.retained->witness != *owner->canonical_terminal) {
+                const auto result =
+                    current.retained ? resume_foreign_replacement() : current.result;
+                fail(result.status, OOCCleanupStage::None,
+                     result.native_error ? result.native_error : protocol_error());
+            }
+        };
+        require_terminal();
+        const bool aggregate_valid = invoke_with_stable_base_lock(*owner->lock, [&] {
+            return retained_revalidator.validate_(reader.get(), retained_revalidator.context_);
+        });
+        if (!aggregate_valid) {
+            fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                 protocol_error());
+        }
+        require_terminal();
+        if (!reader->valid()) {
+            fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None, protocol_error());
+        }
+
+        permit.state_.reset();
+        return PrivateHandoffPublicationReaderAdoptionResultV1(adopted.result, adopted.state,
+                                                               std::move(reader));
+#endif
+    } catch (const Failure& failure) {
+        return consumed_publication_reader_adoption_failure(failure.status, failure.error);
+    } catch (const std::bad_alloc&) {
+        return consumed_publication_reader_adoption_failure(
+            OOCCleanupStatus::UnexpectedFailure,
+            std::make_error_code(std::errc::not_enough_memory));
+    } catch (const std::system_error& error) {
+        return consumed_publication_reader_adoption_failure(OOCCleanupStatus::UnexpectedFailure,
+                                                            error.code());
+    } catch (...) {
+        return consumed_publication_reader_adoption_failure(OOCCleanupStatus::UnexpectedFailure);
     }
 }
 

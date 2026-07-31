@@ -3,6 +3,7 @@
 // Source-private durable authority boundary for one distributed-sieve wave.
 // This file is intentionally not installed as public API.
 
+#include "distributed_sieve_merge_prepared_admission_internal.hpp"
 #include "distributed_sieve_worker_launcher_fwd_internal.hpp"
 
 #include <gnfs/sieve/distributed_sieve_protocol.hpp>
@@ -20,6 +21,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace gnfs::core {
@@ -341,16 +343,41 @@ enum class DistributedSieveMergePreparedResumeObservationPointV1 : std::uint8_t 
     Count,
 };
 
+enum class DistributedSieveRecoveredPreparedPublicationSubjectV1 : std::uint8_t {
+    Target,
+    Worker,
+    Count,
+};
+
+/// The trusted recovered-admission callback is offered exactly three times for
+/// each target or worker publication. The first two relation callbacks have no
+/// reader; the final callback runs only after the same-handle reader is fully
+/// constructed and before permit ownership commits.
+enum class DistributedSieveRecoveredPreparedAggregatePhaseV1 : std::uint8_t {
+    InitialNullReader,
+    ReceiptCommitNullReader,
+    LiveReaderFinal,
+    Count,
+};
+
 struct DistributedSieveMergePreparedResumeTestHooksV1 final {
     using StopAfter = bool (*)(DistributedSieveMergePreparedResumeObservationPointV1 point,
                                void* context) noexcept;
     using FailBefore = bool (*)(DistributedSieveMergePreparedResumeObservationPointV1 point,
                                 void* context) noexcept;
     using AfterRoundLocksReleased = void (*)(void* context) noexcept;
+    using StopBeforeRecoveredAggregateRevalidation = bool (*)(
+        DistributedSieveRecoveredPreparedPublicationSubjectV1 subject, std::size_t manifest_slot,
+        DistributedSieveRecoveredPreparedAggregatePhaseV1 phase, void* context) noexcept;
 
     StopAfter stop_after = nullptr;
     FailBefore fail_before = nullptr;
     AfterRoundLocksReleased after_round_locks_released = nullptr;
+    /// A true result injects interruption while the current publication and all
+    /// other recovered-admission locks remain held. A false result may mutate
+    /// the test namespace; the production aggregate revalidation still runs
+    /// immediately afterward and must detect any drift.
+    StopBeforeRecoveredAggregateRevalidation stop_before_recovered_aggregate_revalidation = nullptr;
     void* context = nullptr;
 };
 
@@ -1065,6 +1092,7 @@ class DistributedSieveMergeStartedWriterMintV1;
 class DistributedSieveChunkTerminalFailureAdmissionV1;
 class DistributedSieveFdPrivateLeaseReservationTarget;
 class DistributedSieveFdPrivateLeaseRecoveryTarget;
+class MergePreparedAdmissionRevalidatorAuthorityV1;
 
 [[nodiscard]] DistributedSieveMergeStartedWriterMintResultV1
 consume_distributed_sieve_merge_started_writer_v1(
@@ -1328,6 +1356,7 @@ private:
     friend class DistributedSieveMergeStartedReceiptV1;
     friend class DistributedSieveMergeStartedWriterMintV1;
     friend class DistributedSieveChunkTerminalFailureAdmissionV1;
+    friend class MergePreparedAdmissionRevalidatorAuthorityV1;
     friend DistributedSieveWorkerAttemptStartResult
     publish_worker_attempt_started(DistributedSievePrivateLeaseReservationReceipt&& reservation,
                                    DistributedSieveWorkerAttemptStartTestHooks hooks) noexcept;
@@ -2190,11 +2219,46 @@ private:
 };
 
 struct DistributedSieveWaveStoreOpenResult final {
+    DistributedSieveWaveStoreOpenResult() = default;
+    DistributedSieveWaveStoreOpenResult(
+        std::unique_ptr<DistributedSieveWaveStore> store_value,
+        std::optional<distributed_sieve_merge_writer_authority_detail::
+                          DistributedSieveMergePreparedAdmissionV1>
+            prepared_admission_value,
+        DistributedSieveWaveStoreDiagnostic diagnostic_value) noexcept
+        : store(std::move(store_value)), prepared_admission(std::move(prepared_admission_value)),
+          diagnostic(std::move(diagnostic_value)) {}
+    DistributedSieveWaveStoreOpenResult(const DistributedSieveWaveStoreOpenResult&) = delete;
+    DistributedSieveWaveStoreOpenResult&
+    operator=(const DistributedSieveWaveStoreOpenResult&) = delete;
+    DistributedSieveWaveStoreOpenResult(DistributedSieveWaveStoreOpenResult&&) noexcept = default;
+    DistributedSieveWaveStoreOpenResult&
+    operator=(DistributedSieveWaveStoreOpenResult&& other) noexcept {
+        if (this == std::addressof(other)) {
+            return *this;
+        }
+        store = std::move(other.store);
+        prepared_admission.reset();
+        if (other.prepared_admission.has_value()) {
+            prepared_admission.emplace(std::move(*other.prepared_admission));
+            other.prepared_admission.reset();
+        }
+        diagnostic = std::move(other.diagnostic);
+        return *this;
+    }
+
     std::unique_ptr<DistributedSieveWaveStore> store;
+    std::optional<
+        distributed_sieve_merge_writer_authority_detail::DistributedSieveMergePreparedAdmissionV1>
+        prepared_admission;
     DistributedSieveWaveStoreDiagnostic diagnostic;
 
     [[nodiscard]] explicit operator bool() const noexcept {
-        return store != nullptr && diagnostic.status == DistributedSieveWaveStoreStatus::ready;
+        const bool store_ready = store != nullptr && !prepared_admission.has_value();
+        const bool prepared_ready =
+            store == nullptr && prepared_admission.has_value() && prepared_admission->valid();
+        return diagnostic.status == DistributedSieveWaveStoreStatus::ready &&
+               store_ready != prepared_ready;
     }
 };
 

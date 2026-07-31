@@ -1224,9 +1224,21 @@ void test_real_typed_publication_prefix(MergePreparedPublicationPrefixShape shap
 
     auto reopened = wave::DistributedSieveWaveStore::open(fixture.root(), manifest_digest);
     CHECK(reopened);
-    CHECK(reopened.store != nullptr);
+    const bool reopened_store_branch = reopened.store != nullptr;
+    const bool reopened_prepared_branch = reopened.prepared_admission.has_value();
+    CHECK(reopened_store_branch != reopened_prepared_branch);
     require_wave_status(reopened.diagnostic, wave::DistributedSieveWaveStoreStatus::ready,
                         "cold open reconciles real typed MergePrepared prefix");
+    if (pending_only) {
+        CHECK(reopened.store != nullptr);
+        CHECK(!reopened.prepared_admission.has_value());
+    } else {
+        CHECK(reopened.store == nullptr);
+        CHECK(reopened.prepared_admission.has_value());
+        CHECK(reopened.prepared_admission->valid());
+        CHECK(encode_record(Record{reopened.prepared_admission->record()}) ==
+              encode_record(Record{prepared}));
+    }
     CHECK(!std::filesystem::exists(fixture.root() / names->reserved_leaf));
     CHECK(!std::filesystem::exists(fixture.root() / names->reserved_pending_leaf));
     CHECK(!std::filesystem::exists(fixture.root() / names->owned_pending_leaf));
@@ -1247,18 +1259,12 @@ void test_real_typed_publication_prefix(MergePreparedPublicationPrefixShape shap
     }
     require_no_next_merge();
 
-    const auto cursor = wave::prepare_distributed_sieve_merge_generation_v1(*reopened.store);
     if (pending_only) {
+        const auto cursor = wave::prepare_distributed_sieve_merge_generation_v1(*reopened.store);
         CHECK(cursor);
         CHECK(cursor.merge_attempt_ordinal == next_ordinal);
         require_wave_status(cursor.diagnostic, wave::DistributedSieveWaveStoreStatus::ready,
                             "rolled-back MergePrepared permits the next merge ordinal");
-    } else {
-        CHECK(!cursor);
-        CHECK(!cursor.merge_attempt_ordinal.has_value());
-        require_wave_status(cursor.diagnostic,
-                            wave::DistributedSieveWaveStoreStatus::reconciliation_required,
-                            "canonical MergePrepared does not start a duplicate merge");
     }
     require_no_next_merge();
 }

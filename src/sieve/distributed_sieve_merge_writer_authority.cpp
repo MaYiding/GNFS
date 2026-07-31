@@ -403,6 +403,29 @@ bool DistributedSieveMergeWriterAuthorityV1::state_process_owned(
            state.mint.creator_process_id_ == static_cast<std::uint64_t>(process_id);
 }
 
+bool DistributedSieveMergeWriterAuthorityV1::validate_prepared_admission_origin(
+    const void* lifetime_anchor, const MergePreparedV1* stable_record,
+    std::uint64_t creator_process_id) noexcept {
+    const auto* state =
+        static_cast<const DistributedSieveMergeWriterAuthorityStateV1*>(lifetime_anchor);
+    if (state == nullptr || state->writer == nullptr || state->manifest == nullptr ||
+        state->merge_started_chain.empty() || !state->stream_receipt.has_value() ||
+        !state->prepared_record.has_value() || state->prepared_payload.empty() ||
+        !state->handoff_published || !state->worker_result || stable_record == nullptr ||
+        stable_record != std::addressof(*state->prepared_record) ||
+        creator_process_id != state->mint.creator_process_id_ || !state_process_owned(*state) ||
+        state->writer->state() != gnfs::relation::OOCWriterState::Finalized ||
+        !cached_prepared_payload_is_exact(*state)) {
+        return false;
+    }
+    for (const auto& coordinated : state->worker_result.chunks) {
+        if (coordinated.adopted.has_value() && !coordinated.adopted->valid()) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void DistributedSieveMergeWriterAuthorityV1::close_state_noexcept(
     std::unique_ptr<DistributedSieveMergeWriterAuthorityStateV1>& state) noexcept {
     if (state == nullptr) {
@@ -594,7 +617,12 @@ DistributedSieveMergePreparedResultV1 DistributedSieveMergeWriterAuthorityV1::pu
         auto diagnostic = failure(AuthorityPhase::complete, AuthorityStatus::ready);
         diagnostic.stream = state->stream_diagnostic;
         diagnostic.codec = state->codec_diagnostic;
-        DistributedSieveMergePreparedAdmissionV1 admission(std::move(state));
+        const auto* stable_record = std::addressof(*state->prepared_record);
+        const std::uint64_t creator_process_id = state->mint.creator_process_id_;
+        std::shared_ptr<const void> lifetime_anchor(std::move(state));
+        DistributedSieveMergePreparedAdmissionV1 admission(
+            std::move(lifetime_anchor), stable_record, creator_process_id,
+            &DistributedSieveMergeWriterAuthorityV1::validate_prepared_admission_origin);
         return {
             .admission =
                 std::optional<DistributedSieveMergePreparedAdmissionV1>(std::move(admission)),
@@ -640,40 +668,6 @@ DistributedSieveMergePreparedResultV1 DistributedSieveMergeWriterAuthorityV1::pu
         close_state_noexcept(state);
         return {.admission = std::nullopt, .diagnostic = std::move(diagnostic)};
     }
-}
-
-DistributedSieveMergePreparedAdmissionV1::DistributedSieveMergePreparedAdmissionV1(
-    std::unique_ptr<DistributedSieveMergeWriterAuthorityStateV1> state) noexcept
-    : state_(std::move(state)) {}
-
-DistributedSieveMergePreparedAdmissionV1::DistributedSieveMergePreparedAdmissionV1(
-    DistributedSieveMergePreparedAdmissionV1&& other) noexcept
-    : state_(std::move(other.state_)) {}
-
-DistributedSieveMergePreparedAdmissionV1::~DistributedSieveMergePreparedAdmissionV1() noexcept {
-    DistributedSieveMergeWriterAuthorityV1::close_state_noexcept(state_);
-}
-
-bool DistributedSieveMergePreparedAdmissionV1::valid() const noexcept {
-    if (state_ == nullptr || state_->writer == nullptr || state_->manifest == nullptr ||
-        state_->merge_started_chain.empty() || !state_->stream_receipt.has_value() ||
-        !state_->prepared_record.has_value() || state_->prepared_payload.empty() ||
-        !state_->handoff_published || !state_->worker_result ||
-        !DistributedSieveMergeWriterAuthorityV1::state_process_owned(*state_) ||
-        state_->writer->state() != gnfs::relation::OOCWriterState::Finalized ||
-        !cached_prepared_payload_is_exact(*state_)) {
-        return false;
-    }
-    for (const auto& coordinated : state_->worker_result.chunks) {
-        if (coordinated.adopted.has_value() && !coordinated.adopted->valid()) {
-            return false;
-        }
-    }
-    return true;
-}
-
-const MergePreparedV1& DistributedSieveMergePreparedAdmissionV1::record() const noexcept {
-    return *state_->prepared_record;
 }
 
 DistributedSieveMergeWriterAdoptionResultV1
