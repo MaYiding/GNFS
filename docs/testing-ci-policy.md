@@ -150,7 +150,8 @@ versions, marker kinds, identities, extents, digests, truncation, trailing
 bytes, and V1/V2 reinterpretation. This target is a pure protocol test: it
 performs no filesystem mutation and grants no adoption or cleanup authority.
 
-`test_ooc_cleanup_transaction` is split into five CTest entries.
+`test_ooc_cleanup_transaction` has five cross-platform CTest entries and three
+additional macOS entries for the authorized V2 cleanup tail.
 `OOCCleanupTransactionCore` is an `instant` ownership and state-machine
 contract covering move-only receipt consumption, repairable pending
 publication, exact finalized expectations, a production writer/reader fixture,
@@ -210,6 +211,24 @@ and Windows retain the explicit path-limited adapter; nonempty deterministic
 observation hooks are unsupported there. The returned raw facts contain no
 handle or record snapshot, are accepted by no mutator, and are not an
 authority permit.
+
+The macOS-only `OOCAuthorizedV2CleanupCore` entry is an `instant` contract for
+the cold authorized-cleanup executor. It covers direct canonical completion,
+parent-durable absence evidence, the deliberately unspent pending-only
+conversion boundary, canonical-intent identity retention, markerless and
+staged cold tails, byte-identical inode replacement, foreign inventory, and
+exact-successor drift injected at both the unspent permit seam and a spent
+artifact seam. The two `fast` entries,
+`OOCAuthorizedV2CleanupArtifactCrash` and
+`OOCAuthorizedV2CleanupLeaseCrash`, partition the complete ordered fault-point
+catalog. Each entry checks in-process interruption and also forks a child that
+calls `_Exit` at every assigned durable boundary. The parent verifies the
+resulting legal prefix and completes cold recovery with a fresh process-local
+authorization receipt. Together they cover all durable intent, handoff,
+quarantine, staged publication, artifact unlink, owner, private-directory,
+external `OWNED`, parent-sync, and final evidence boundaries. Other platforms
+retain the explicit mutation-free unsupported contract until an equivalent
+held-handle implementation exists.
 
 The platform-limited metadata adapter is exercised directly for missing,
 policy-compatible regular, invalid-mode POSIX, directory, hard-link, and

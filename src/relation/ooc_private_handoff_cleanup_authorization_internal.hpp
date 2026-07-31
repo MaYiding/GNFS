@@ -31,6 +31,8 @@ namespace gnfs::relation::ooc_cleanup_detail {
 class OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2;
 class OOCPrivateHandoffCleanupIntentConversionExecutorV2;
 class OOCPrivateHandoffCleanupIntentPublicationTestKeyV2;
+class OOCPrivateHandoffCleanupResumeExecutorV2;
+class OOCPrivateHandoffCleanupResumeTestKeyV2;
 struct OOCPrivateHandoffCleanupIntentPublicationResultV2;
 struct OOCPrivateHandoffCleanupIntentPublicationTestHooksV2;
 
@@ -111,8 +113,7 @@ public:
     ~OOCPrivateHandoffCleanupAuthorizationReceipt() = default;
 
     [[nodiscard]] bool spent() const noexcept {
-        return spent_ || !live_authority_ || validate_live_authority_ == nullptr ||
-               !validate_live_authority_(live_authority_.get());
+        return spent_ || !live_authority_valid();
     }
 
 private:
@@ -155,6 +156,11 @@ private:
         spent_ = true;
     }
 
+    [[nodiscard]] bool live_authority_valid() const noexcept {
+        return live_authority_ && validate_live_authority_ != nullptr &&
+               validate_live_authority_(live_authority_.get());
+    }
+
     OOCPrivateHandoffCleanupAuthorizationBinding binding_;
     std::shared_ptr<const void> live_authority_;
     ValidateLiveAuthority validate_live_authority_ = nullptr;
@@ -163,6 +169,7 @@ private:
     friend class gnfs::sieve::distributed_sieve_resume_detail::DistributedSieveWaveStore;
     friend class OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2;
     friend class OOCPrivateHandoffCleanupIntentConversionExecutorV2;
+    friend class OOCPrivateHandoffCleanupResumeExecutorV2;
 };
 
 /// Unforgeable token preventing production/internal callers from arming the
@@ -180,6 +187,24 @@ public:
 
 private:
     OOCPrivateHandoffCleanupIntentPublicationTestKeyV2() noexcept = default;
+
+    friend class OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2;
+};
+
+/// Unforgeable token preventing production/internal callers from arming the
+/// destructive T2b crash seam.
+class OOCPrivateHandoffCleanupResumeTestKeyV2 final {
+public:
+    OOCPrivateHandoffCleanupResumeTestKeyV2(const OOCPrivateHandoffCleanupResumeTestKeyV2&) =
+        delete;
+    OOCPrivateHandoffCleanupResumeTestKeyV2&
+    operator=(const OOCPrivateHandoffCleanupResumeTestKeyV2&) = delete;
+    OOCPrivateHandoffCleanupResumeTestKeyV2(OOCPrivateHandoffCleanupResumeTestKeyV2&&) = delete;
+    OOCPrivateHandoffCleanupResumeTestKeyV2&
+    operator=(OOCPrivateHandoffCleanupResumeTestKeyV2&&) = delete;
+
+private:
+    OOCPrivateHandoffCleanupResumeTestKeyV2() noexcept = default;
 
     friend class OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2;
 };
@@ -261,5 +286,96 @@ convert_authorized_private_handoff_to_cleanup_intent_v2_for_trusted_test(
     OOCPrivateHandoffCleanupIntentPublicationTestKeyV2&&, OOCPrivateHandoffReader&& reader,
     OOCPrivateHandoffCleanupAuthorizationReceipt&& authorization,
     OOCPrivateHandoffCleanupIntentPublicationTestHooksV2 hooks) noexcept;
+
+enum class OOCPrivateHandoffCleanupResumeFaultPointV2 : std::uint8_t {
+    RecoveryPermitAcquired,
+    IntentCanonicalReconfirmedDurable,
+    IntentDuplicatePendingRemovedDurable,
+    HandoffRemovedDurable,
+    IndexQuarantinedDurable,
+    PairQuarantinedDurable,
+    StagedPendingDurable,
+    StagedCanonicalPromoted,
+    StagedCanonicalDurable,
+    StagedDuplicatePendingRemovedDurable,
+    DataRemovedDurable,
+    IndexRemovedDurable,
+    IntentRemovedDurable,
+    OwnerRemovedDurable,
+    StagedRemovedDurable,
+    PrivateDirectoryRemovedDurable,
+    OwnedRemovedDurable,
+    ParentAbsenceDurable,
+    AbsenceEvidenceReady,
+    Count,
+};
+
+struct OOCPrivateHandoffCleanupResumeTestHooksV2 final {
+    using StopAfter = bool (*)(OOCPrivateHandoffCleanupResumeFaultPointV2 point,
+                               void* context) noexcept;
+
+    StopAfter stop_after = nullptr;
+    void* context = nullptr;
+};
+
+enum class OOCPrivateHandoffCleanupResumeDispositionV2 : std::uint8_t {
+    Failed,
+    AuthorizationRetained,
+    IntentConversionRequired,
+    ReconciliationRequired,
+    NamespaceAbsent,
+};
+
+/// Parent-durable proof returned only after the exact authorized private
+/// namespace is absent. A process that observed the canonical intent retains
+/// its exact snapshot. Cold staged-only or markerless recovery cannot recreate
+/// the deleted inode and deliberately returns `cleanup_intent_snapshot == nullopt`.
+struct OOCPrivateHandoffCleanupAbsenceEvidenceV2 final {
+    util::Sha256Digest base_path_digest;
+    util::Sha256Digest external_authorization_digest;
+    std::array<std::uint64_t, 2> lease_id{};
+    std::optional<util::durable_immutable_record::RecordSnapshot> cleanup_intent_snapshot;
+    util::durable_immutable_record::NativeIdentity parent_directory_identity;
+    bool parent_directory_durability_confirmed = false;
+    bool expected_namespace_absent = false;
+};
+
+struct OOCPrivateHandoffCleanupResumeResultV2 final {
+    OOCCleanupResult result;
+    OOCPrivateHandoffCleanupResumeDispositionV2 disposition =
+        OOCPrivateHandoffCleanupResumeDispositionV2::Failed;
+    std::optional<OOCPrivateHandoffCleanupAbsenceEvidenceV2> evidence;
+
+    [[nodiscard]] bool namespace_absent() const noexcept {
+        return disposition == OOCPrivateHandoffCleanupResumeDispositionV2::NamespaceAbsent &&
+               evidence.has_value() && evidence->parent_directory_durability_confirmed &&
+               evidence->expected_namespace_absent;
+    }
+
+    [[nodiscard]] bool authorization_retained() const noexcept {
+        return disposition == OOCPrivateHandoffCleanupResumeDispositionV2::AuthorizationRetained ||
+               disposition == OOCPrivateHandoffCleanupResumeDispositionV2::IntentConversionRequired;
+    }
+
+    [[nodiscard]] bool reconciliation_required() const noexcept {
+        return disposition == OOCPrivateHandoffCleanupResumeDispositionV2::ReconciliationRequired;
+    }
+};
+
+/// Cold-resume one exact V2 cleanup generation. The executor opens one fresh,
+/// independent non-creating BaseLock and retains it for the complete call; it
+/// never accepts a borrowed/duplicated lock wrapper or reopens the lock. A
+/// pending-only intent remains a T2a conversion prefix and grants no deletion
+/// authority. Positive filesystem mutation is currently macOS-only.
+[[nodiscard]] OOCPrivateHandoffCleanupResumeResultV2 resume_authorized_private_handoff_cleanup_v2(
+    OOCPrivateHandoffCleanupAuthorizationReceipt&& authorization) noexcept;
+
+/// Same cold resume with deterministic crash boundaries. Only the trusted-test
+/// friend can construct the first argument.
+[[nodiscard]] OOCPrivateHandoffCleanupResumeResultV2
+resume_authorized_private_handoff_cleanup_v2_for_trusted_test(
+    OOCPrivateHandoffCleanupResumeTestKeyV2&&,
+    OOCPrivateHandoffCleanupAuthorizationReceipt&& authorization,
+    OOCPrivateHandoffCleanupResumeTestHooksV2 hooks) noexcept;
 
 } // namespace gnfs::relation::ooc_cleanup_detail

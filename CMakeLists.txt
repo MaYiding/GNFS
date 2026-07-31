@@ -878,6 +878,32 @@ if(GNFS_BUILD_TESTS)
         OOCCleanupAuthorityObserver
         PROPERTIES LABELS "instant" TIMEOUT 30
     )
+    if(APPLE)
+        add_test(
+            NAME OOCAuthorizedV2CleanupCore
+            COMMAND test_ooc_cleanup_transaction --suite authorized-v2-core
+        )
+        set_tests_properties(
+            OOCAuthorizedV2CleanupCore
+            PROPERTIES LABELS "instant" TIMEOUT 30
+        )
+        add_test(
+            NAME OOCAuthorizedV2CleanupArtifactCrash
+            COMMAND test_ooc_cleanup_transaction --suite authorized-v2-artifact-crash
+        )
+        set_tests_properties(
+            OOCAuthorizedV2CleanupArtifactCrash
+            PROPERTIES LABELS "fast" TIMEOUT 90
+        )
+        add_test(
+            NAME OOCAuthorizedV2CleanupLeaseCrash
+            COMMAND test_ooc_cleanup_transaction --suite authorized-v2-lease-crash
+        )
+        set_tests_properties(
+            OOCAuthorizedV2CleanupLeaseCrash
+            PROPERTIES LABELS "fast" TIMEOUT 90
+        )
+    endif()
     add_test(
         NAME OOCCleanupTransactionCore
         COMMAND test_ooc_cleanup_transaction --suite core

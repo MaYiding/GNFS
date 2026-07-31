@@ -1,5 +1,6 @@
 #include "ooc_private_cleanup_action_permit_internal.hpp"
 #include "ooc_private_handoff_adoption_internal.hpp"
+#include "ooc_private_handoff_cleanup_authorization_internal.hpp"
 #include "ooc_private_lease_recovery_internal.hpp"
 #include "ooc_private_lease_reservation_protocol_internal.hpp"
 
@@ -10,6 +11,7 @@
 #include <array>
 #include <cerrno>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <new>
@@ -19,6 +21,7 @@
 #include <system_error>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #if !defined(_WIN32)
 #include <fcntl.h>
@@ -26,7 +29,8 @@
 #include <unistd.h>
 #endif
 #if defined(__APPLE__)
-#include <dirent.h>
+#include <stdio.h>
+#include <sys/attr.h>
 #endif
 
 namespace gnfs::relation {
@@ -497,7 +501,7 @@ static_assert(static_cast<std::size_t>(PrivateHandoffLeafSlot::Count) == 2);
 static_assert(static_cast<std::uint8_t>(PrivateCleanupMarkerObservationKind::Count) == 7);
 static_assert(static_cast<std::uint8_t>(PrivateHandoffLeafObservationKind::Count) == 5);
 static_assert(static_cast<std::uint8_t>(PrivateCleanupUnionBlock::Count) == 6);
-static_assert(static_cast<std::uint8_t>(PrivateNamespaceAction::Count) == 11);
+static_assert(static_cast<std::uint8_t>(PrivateNamespaceAction::Count) == 12);
 static_assert(static_cast<std::uint8_t>(PrivateNamespaceActionDisposition::Count) == 5);
 
 PrivateCleanupUnionClassification
@@ -591,6 +595,34 @@ decide_private_namespace_action(const PrivateCleanupUnionRawObservation& observa
     case PrivateNamespaceAction::PublishPrivateHandoff:
     case PrivateNamespaceAction::ValidateFreshWriter:
     case PrivateNamespaceAction::ActivateFreshLease:
+        break;
+    case PrivateNamespaceAction::ResumeAuthorizedV2Cleanup:
+        // This source-private executor performs its own exact, role-bound V2
+        // reduction. It may inspect an already-completed markerless tail, but
+        // it never delegates a legacy or mixed namespace to the V2 runtime.
+        if (classification.block == PrivateCleanupUnionBlock::None &&
+            !classification.has_legacy_v1) {
+            return {
+                .classification = classification,
+                .action = action,
+                .disposition = PrivateNamespaceActionDisposition::DelegateExistingRuntime,
+            };
+        }
+        if (classification.block == PrivateCleanupUnionBlock::AuthorizedV2Present &&
+            !classification.has_legacy_v1) {
+            return {
+                .classification = classification,
+                .action = action,
+                .disposition = PrivateNamespaceActionDisposition::DelegateExistingRuntime,
+            };
+        }
+        if (classification.has_legacy_v1) {
+            return {
+                .classification = classification,
+                .action = action,
+                .disposition = PrivateNamespaceActionDisposition::RejectNamespaceConflict,
+            };
+        }
         break;
     case PrivateNamespaceAction::Count:
         return {
@@ -940,86 +972,149 @@ private_cleanup_union_allowed_leaves(const OOCCleanupPaths& paths) {
 scan_private_cleanup_union_directory(const OOCCleanupPaths& paths,
                                      const PrivateDirectoryHandle& directory) {
     directory.require_stable();
-    const int held_descriptor = static_cast<int>(directory.native_handle());
-    int scan_descriptor = -1;
+    const int descriptor = static_cast<int>(directory.native_handle());
+    off_t reset_result = -1;
     do {
-        scan_descriptor =
-            ::openat(held_descriptor, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-    } while (scan_descriptor < 0 && errno == EINTR);
-    if (scan_descriptor < 0) {
+        reset_result = ::lseek(descriptor, 0, SEEK_SET);
+    } while (reset_result < 0 && errno == EINTR);
+    if (reset_result < 0) {
         fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, posix_error(errno));
     }
 
-    struct stat scan_metadata{};
-    if (::fstat(scan_descriptor, &scan_metadata) != 0 ||
-        stable_identity(posix_identity(scan_metadata)) != directory.identity()) {
-        const int saved_errno = errno == 0 ? EACCES : errno;
-        (void)::close(scan_descriptor);
-        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, posix_error(saved_errno));
-    }
+    struct CursorReset final {
+        int descriptor = -1;
 
-    DIR* raw_stream = ::fdopendir(scan_descriptor);
-    if (raw_stream == nullptr) {
-        const int saved_errno = errno;
-        (void)::close(scan_descriptor);
-        fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, posix_error(saved_errno));
-    }
-    std::unique_ptr<DIR, decltype(&::closedir)> stream(raw_stream, &::closedir);
+        ~CursorReset() {
+            if (descriptor < 0) {
+                return;
+            }
+            off_t reset = -1;
+            do {
+                reset = ::lseek(descriptor, 0, SEEK_SET);
+            } while (reset < 0 && errno == EINTR);
+        }
+    } reset{descriptor};
+
     const auto allowed = private_cleanup_union_allowed_leaves(paths);
-
     PrivateCleanupUnionDirectoryInventory inventory;
-    errno = 0;
-    while (const auto* entry = ::readdir(stream.get())) {
-        const std::filesystem::path leaf(entry->d_name);
-        if (leaf == std::filesystem::path(".") || leaf == std::filesystem::path("..")) {
-            errno = 0;
-            continue;
-        }
 
-        std::size_t slot = allowed.size();
-        for (std::size_t index = 0; index < allowed.size(); ++index) {
-            if (path_leaf_equals(leaf, allowed[index])) {
-                slot = index;
-                break;
-            }
-        }
-        if (slot == allowed.size() || leaf.native() != allowed[slot].native() ||
-            inventory.leaves[slot]) {
-            inventory.foreign = true;
-            errno = 0;
-            continue;
-        }
-
-        struct stat metadata{};
-        int inspected = -1;
+    struct attrlist requested{};
+    requested.bitmapcount = ATTR_BIT_MAP_COUNT;
+    requested.commonattr = ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_NAME | ATTR_CMN_ERROR;
+    alignas(std::uint64_t) std::array<std::byte, 4096> buffer{};
+    for (;;) {
+        int entry_count = -1;
         do {
-            inspected = ::fstatat(held_descriptor, leaf.c_str(), &metadata, AT_SYMLINK_NOFOLLOW);
-        } while (inspected != 0 && errno == EINTR);
-        if (inspected != 0) {
-            if (errno == ENOENT) {
-                inventory.foreign = true;
-                errno = 0;
-                continue;
-            }
+            entry_count =
+                ::getattrlistbulk(descriptor, &requested, buffer.data(), buffer.size(), 0);
+        } while (entry_count < 0 && errno == EINTR);
+        if (entry_count < 0) {
             fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, posix_error(errno));
         }
-        inventory.leaves[slot] = private_cleanup_union_leaf_metadata(metadata);
-        errno = 0;
-    }
-    if (errno != 0) {
-        fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, posix_error(errno));
+        if (entry_count == 0) {
+            break;
+        }
+
+        std::size_t cursor = 0;
+        for (int entry_index = 0; entry_index < entry_count; ++entry_index) {
+            std::uint32_t record_length = 0;
+            if (cursor > buffer.size() || buffer.size() - cursor < sizeof(record_length)) {
+                fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+            }
+            std::memcpy(&record_length, buffer.data() + cursor, sizeof(record_length));
+            const std::size_t minimum_length =
+                sizeof(record_length) + sizeof(attribute_set_t) + sizeof(attrreference_t) + 1U;
+            if (record_length < minimum_length || record_length > buffer.size() - cursor) {
+                fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+            }
+            const std::size_t record_end = cursor + record_length;
+            std::size_t field = cursor + sizeof(record_length);
+
+            attribute_set_t returned{};
+            if (record_end - field < sizeof(returned)) {
+                fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+            }
+            std::memcpy(&returned, buffer.data() + field, sizeof(returned));
+            field += sizeof(returned);
+            if ((returned.commonattr & ATTR_CMN_ERROR) != 0U) {
+                std::uint32_t entry_error = 0;
+                if (record_end - field < sizeof(entry_error)) {
+                    fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
+                         protocol_error());
+                }
+                std::memcpy(&entry_error, buffer.data() + field, sizeof(entry_error));
+                field += sizeof(entry_error);
+                if (entry_error != 0U) {
+                    fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None,
+                         posix_error(static_cast<int>(entry_error)));
+                }
+            }
+            if ((returned.commonattr & ATTR_CMN_NAME) == 0U ||
+                record_end - field < sizeof(attrreference_t)) {
+                fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+            }
+
+            const std::size_t reference_offset = field;
+            attrreference_t reference{};
+            std::memcpy(&reference, buffer.data() + field, sizeof(reference));
+            if (reference.attr_dataoffset < 0) {
+                fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+            }
+            const auto data_offset = static_cast<std::uint32_t>(reference.attr_dataoffset);
+            if (data_offset > record_end - reference_offset) {
+                fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+            }
+            const std::size_t name_offset = reference_offset + data_offset;
+            if (reference.attr_length == 0U || reference.attr_length > record_end - name_offset) {
+                fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+            }
+            const auto* name = reinterpret_cast<const char*>(buffer.data() + name_offset);
+            const std::size_t name_size = reference.attr_length - 1U;
+            if (name[name_size] != '\0' || std::memchr(name, '\0', name_size) != nullptr) {
+                fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+            }
+            const std::filesystem::path leaf(std::string(name, name_size));
+            cursor = record_end;
+            if (path_leaf_equals_ascii(leaf, ".") || path_leaf_equals_ascii(leaf, "..")) {
+                continue;
+            }
+
+            std::size_t slot = allowed.size();
+            for (std::size_t index = 0; index < allowed.size(); ++index) {
+                if (path_leaf_equals(leaf, allowed[index])) {
+                    slot = index;
+                    break;
+                }
+            }
+            if (slot == allowed.size() || leaf.native() != allowed[slot].native() ||
+                inventory.leaves[slot]) {
+                inventory.foreign = true;
+                continue;
+            }
+
+            struct stat metadata{};
+            int inspected = -1;
+            do {
+                inspected = ::fstatat(descriptor, leaf.c_str(), &metadata, AT_SYMLINK_NOFOLLOW);
+            } while (inspected != 0 && errno == EINTR);
+            if (inspected != 0) {
+                if (errno == ENOENT) {
+                    inventory.foreign = true;
+                    continue;
+                }
+                fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, posix_error(errno));
+            }
+            inventory.leaves[slot] = private_cleanup_union_leaf_metadata(metadata);
+        }
     }
 
-    struct stat final_metadata{};
-    if (::fstat(::dirfd(stream.get()), &final_metadata) != 0 ||
-        stable_identity(posix_identity(final_metadata)) != directory.identity()) {
-        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
-             errno == 0 ? protocol_error() : posix_error(errno));
-    }
-    DIR* close_stream = stream.release();
-    if (::closedir(close_stream) != 0) {
+    do {
+        reset_result = ::lseek(descriptor, 0, SEEK_SET);
+    } while (reset_result < 0 && errno == EINTR);
+    if (reset_result < 0) {
         fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, posix_error(errno));
     }
+    reset.descriptor = -1;
     directory.require_stable();
     return inventory;
 }
@@ -5565,6 +5660,1438 @@ observe_private_cleanup_union_for_test(const std::filesystem::path& base_path,
     }
     BaseLock lock(paths.lock_path, false);
     return observe_private_cleanup_union_locked(paths, lock, hooks).raw;
+}
+
+namespace {
+
+#if defined(__APPLE__)
+
+class AuthorizedCleanupParentDirectoryHandleV2 final {
+public:
+    AuthorizedCleanupParentDirectoryHandleV2(const AuthorizedCleanupParentDirectoryHandleV2&) =
+        delete;
+    AuthorizedCleanupParentDirectoryHandleV2&
+    operator=(const AuthorizedCleanupParentDirectoryHandleV2&) = delete;
+
+    explicit AuthorizedCleanupParentDirectoryHandleV2(const std::filesystem::path& path)
+        : path_(path) {
+        do {
+            descriptor_ = ::open(path.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        } while (descriptor_ < 0 && errno == EINTR);
+        if (descriptor_ < 0) {
+            const int saved_errno = errno;
+            fail(saved_errno == ELOOP || saved_errno == ENOTDIR
+                     ? OOCCleanupStatus::NamespaceConflict
+                     : OOCCleanupStatus::IoFailure,
+                 OOCCleanupStage::None, posix_error(saved_errno));
+        }
+
+        struct stat held{};
+        struct stat named{};
+        if (::fstat(descriptor_, &held) != 0) {
+            const int saved_errno = errno;
+            release_noexcept();
+            fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, posix_error(saved_errno));
+        }
+        if (::lstat(path_.c_str(), &named) != 0 || !S_ISDIR(held.st_mode) ||
+            !S_ISDIR(named.st_mode) || held.st_dev != named.st_dev || held.st_ino != named.st_ino ||
+            static_cast<std::uint64_t>(held.st_uid) != static_cast<std::uint64_t>(::geteuid()) ||
+            (held.st_mode & static_cast<mode_t>(0022)) != 0) {
+            const int saved_errno = errno == 0 ? EACCES : errno;
+            release_noexcept();
+            fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
+                 posix_error(saved_errno));
+        }
+        identity_ = stable_identity(posix_identity(held));
+    }
+
+    ~AuthorizedCleanupParentDirectoryHandleV2() {
+        release_noexcept();
+    }
+
+    [[nodiscard]] util::durable_immutable_record::NativeHandle native_handle() const noexcept {
+        return static_cast<util::durable_immutable_record::NativeHandle>(descriptor_);
+    }
+
+    [[nodiscard]] const std::array<std::uint64_t, 3>& identity() const noexcept {
+        return identity_;
+    }
+
+    [[nodiscard]] std::optional<struct stat> inspect_leaf(const std::filesystem::path& leaf) const {
+        if (leaf.empty() || leaf.has_parent_path() || path_contains_nul(leaf)) {
+            fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+        }
+        struct stat metadata{};
+        int result = -1;
+        do {
+            result = ::fstatat(descriptor_, leaf.c_str(), &metadata, AT_SYMLINK_NOFOLLOW);
+        } while (result != 0 && errno == EINTR);
+        if (result == 0) {
+            return metadata;
+        }
+        const int saved_errno = errno;
+        if (saved_errno == ENOENT) {
+            return std::nullopt;
+        }
+        fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, posix_error(saved_errno));
+    }
+
+    void require_stable() const {
+        struct stat held{};
+        struct stat named{};
+        if (::fstat(descriptor_, &held) != 0) {
+            fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, posix_error(errno));
+        }
+        if (::lstat(path_.c_str(), &named) != 0 || !S_ISDIR(held.st_mode) ||
+            !S_ISDIR(named.st_mode) || held.st_dev != named.st_dev || held.st_ino != named.st_ino ||
+            stable_identity(posix_identity(held)) != identity_ ||
+            static_cast<std::uint64_t>(held.st_uid) != static_cast<std::uint64_t>(::geteuid()) ||
+            (held.st_mode & static_cast<mode_t>(0022)) != 0) {
+            fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
+                 errno == 0 ? protocol_error() : posix_error(errno));
+        }
+    }
+
+    void require_lock_binding(const std::filesystem::path& leaf, const BaseLock& lock) const {
+        const auto metadata = inspect_leaf(leaf);
+        if (!metadata || !S_ISREG(metadata->st_mode) || metadata->st_nlink != 1 ||
+            static_cast<std::uint64_t>(metadata->st_uid) !=
+                static_cast<std::uint64_t>(::geteuid()) ||
+            (metadata->st_mode & static_cast<mode_t>(07777)) != static_cast<mode_t>(0600) ||
+            stable_identity(posix_identity(*metadata)) != lock.identity()) {
+            fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+        }
+    }
+
+private:
+    void release_noexcept() noexcept {
+        if (descriptor_ >= 0) {
+            (void)::close(descriptor_);
+            descriptor_ = -1;
+        }
+    }
+
+    int descriptor_ = -1;
+    std::filesystem::path path_;
+    std::array<std::uint64_t, 3> identity_{};
+};
+
+[[nodiscard]] util::durable_immutable_record::NativeIdentity
+authorized_cleanup_native_identity_v2(const std::array<std::uint64_t, 3>& identity) noexcept {
+    return {
+        .first = identity[0],
+        .second = identity[1],
+        .third = identity[2],
+    };
+}
+
+[[nodiscard]] std::array<std::uint64_t, 3> authorized_cleanup_identity_words_v2(
+    const util::durable_immutable_record::NativeIdentity& identity) noexcept {
+    return {identity.first, identity.second, identity.third};
+}
+
+[[nodiscard]] util::durable_immutable_record::RecordSnapshot
+authorized_cleanup_snapshot_v2(const struct stat& metadata) {
+    if (metadata.st_size < 0) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             protocol_error());
+    }
+    return {
+        .identity = handoff_native_identity(stable_identity(posix_identity(metadata))),
+        .size = static_cast<std::uint64_t>(metadata.st_size),
+    };
+}
+
+[[nodiscard]] bool authorized_cleanup_regular_leaf_policy_v2(const struct stat& metadata) noexcept {
+    return S_ISREG(metadata.st_mode) && metadata.st_nlink == 1 && metadata.st_size >= 0 &&
+           static_cast<std::uint64_t>(metadata.st_uid) == static_cast<std::uint64_t>(::geteuid()) &&
+           (metadata.st_mode & static_cast<mode_t>(07777)) == static_cast<mode_t>(0600);
+}
+
+[[nodiscard]] std::optional<util::durable_immutable_record::RecordSnapshot>
+inspect_authorized_cleanup_leaf_v2(util::durable_immutable_record::NativeHandle directory_handle,
+                                   const std::filesystem::path& leaf) {
+    if (leaf.empty() || leaf.has_parent_path() || path_contains_nul(leaf)) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+    struct stat metadata{};
+    int result = -1;
+    do {
+        result = ::fstatat(static_cast<int>(directory_handle), leaf.c_str(), &metadata,
+                           AT_SYMLINK_NOFOLLOW);
+    } while (result != 0 && errno == EINTR);
+    if (result != 0) {
+        const int saved_errno = errno;
+        if (saved_errno == ENOENT) {
+            return std::nullopt;
+        }
+        fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, posix_error(saved_errno));
+    }
+    if (!authorized_cleanup_regular_leaf_policy_v2(metadata)) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             protocol_error());
+    }
+    return authorized_cleanup_snapshot_v2(metadata);
+}
+
+struct AuthorizedCleanupLoadedLeafV2 final {
+    std::vector<std::byte> bytes;
+    util::durable_immutable_record::RecordSnapshot snapshot;
+
+    friend bool operator==(const AuthorizedCleanupLoadedLeafV2&,
+                           const AuthorizedCleanupLoadedLeafV2&) = default;
+};
+
+[[nodiscard]] std::optional<AuthorizedCleanupLoadedLeafV2>
+read_authorized_cleanup_leaf_v2(util::durable_immutable_record::NativeHandle directory_handle,
+                                const std::filesystem::path& leaf, std::uint64_t maximum_bytes) {
+    using namespace util::durable_immutable_record;
+    const auto read = read_bounded_at(directory_handle, leaf, 0, maximum_bytes);
+    switch (read.state()) {
+    case BoundedReadState::missing:
+        return std::nullopt;
+    case BoundedReadState::exact:
+        if (!read.bytes() || !read.snapshot()) {
+            fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None, protocol_error());
+        }
+        return AuthorizedCleanupLoadedLeafV2{
+            .bytes = *read.bytes(),
+            .snapshot = *read.snapshot(),
+        };
+    case BoundedReadState::rejected:
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             read.native_error() ? read.native_error() : protocol_error());
+    case BoundedReadState::interrupted:
+        fail(OOCCleanupStatus::Interrupted, OOCCleanupStage::None, read.native_error());
+    case BoundedReadState::unsupported:
+        fail(OOCCleanupStatus::PlatformUnsupported, OOCCleanupStage::None, read.native_error());
+    case BoundedReadState::failed:
+        fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, read.native_error());
+    }
+    fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None, protocol_error());
+}
+
+void sync_authorized_cleanup_directory_v2(
+    util::durable_immutable_record::NativeHandle directory_handle, OOCCleanupStage stage) {
+    int result = -1;
+    do {
+        result = ::fcntl(static_cast<int>(directory_handle), F_FULLFSYNC);
+    } while (result != 0 && errno == EINTR);
+    if (result != 0) {
+        fail(OOCCleanupStatus::DurabilityFailure, stage, posix_error(errno));
+    }
+}
+
+void remove_exact_authorized_cleanup_leaf_v2(
+    util::durable_immutable_record::NativeHandle directory_handle,
+    const std::filesystem::path& leaf,
+    const util::durable_immutable_record::RecordSnapshot& expected, OOCCleanupStage stage) {
+    const auto before = inspect_authorized_cleanup_leaf_v2(directory_handle, leaf);
+    if (!before || *before != expected) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, stage, protocol_error());
+    }
+    int removed = -1;
+    do {
+        removed = ::unlinkat(static_cast<int>(directory_handle), leaf.c_str(), 0);
+    } while (removed != 0 && errno == EINTR);
+    if (removed != 0) {
+        const int saved_errno = errno;
+        fail(saved_errno == ENOENT ? OOCCleanupStatus::ForeignReplacementPreserved
+                                   : OOCCleanupStatus::IoFailure,
+             stage, posix_error(saved_errno));
+    }
+    sync_authorized_cleanup_directory_v2(directory_handle, stage);
+    if (inspect_authorized_cleanup_leaf_v2(directory_handle, leaf)) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, stage, protocol_error());
+    }
+}
+
+void rename_exact_authorized_cleanup_leaf_v2(
+    util::durable_immutable_record::NativeHandle directory_handle,
+    const std::filesystem::path& source_leaf, const std::filesystem::path& destination_leaf,
+    const util::durable_immutable_record::RecordSnapshot& expected, OOCCleanupStage stage) {
+    const auto source = inspect_authorized_cleanup_leaf_v2(directory_handle, source_leaf);
+    if (!source || *source != expected ||
+        inspect_authorized_cleanup_leaf_v2(directory_handle, destination_leaf)) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, stage, protocol_error());
+    }
+    int renamed = -1;
+    do {
+        renamed = ::renameatx_np(static_cast<int>(directory_handle), source_leaf.c_str(),
+                                 static_cast<int>(directory_handle), destination_leaf.c_str(),
+                                 RENAME_EXCL);
+    } while (renamed != 0 && errno == EINTR);
+    if (renamed != 0) {
+        const int saved_errno = errno;
+        fail(saved_errno == EEXIST || saved_errno == ENOENT
+                 ? OOCCleanupStatus::ForeignReplacementPreserved
+                 : OOCCleanupStatus::IoFailure,
+             stage, posix_error(saved_errno));
+    }
+    sync_authorized_cleanup_directory_v2(directory_handle, stage);
+    const auto destination = inspect_authorized_cleanup_leaf_v2(directory_handle, destination_leaf);
+    if (!destination || *destination != expected ||
+        inspect_authorized_cleanup_leaf_v2(directory_handle, source_leaf)) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, stage, protocol_error());
+    }
+}
+
+[[nodiscard]] util::Sha256Digest
+authorized_cleanup_base_path_digest_v2(const std::filesystem::path& path) noexcept {
+    util::Sha256Digest digest;
+    const auto words = frozen_path_digest(path);
+    for (std::size_t word = 0; word < words.size(); ++word) {
+        for (unsigned int shift = 0; shift < 64; shift += 8) {
+            digest.bytes[word * sizeof(std::uint64_t) + shift / 8] =
+                static_cast<std::byte>(static_cast<std::uint8_t>(words[word] >> shift));
+        }
+    }
+    return digest;
+}
+
+struct AuthorizedCleanupExpectedMarkersV2 final {
+    OOCAuthorizedCleanupIntentV2 intent;
+    OOCAuthorizedCleanupIntentV2 staged;
+    std::vector<std::byte> intent_bytes;
+    std::vector<std::byte> staged_bytes;
+};
+
+[[nodiscard]] AuthorizedCleanupExpectedMarkersV2 make_authorized_cleanup_expected_markers_v2(
+    const OOCPrivateHandoffCleanupAuthorizationBinding& binding, const OOCCleanupPaths& paths) {
+    if (paths.private_directory.empty() || paths.base_path != binding.base_path) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+    OOCAuthorizedCleanupIntentV2 intent;
+    intent.marker_kind = OOCAuthorizedCleanupMarkerKindV2::intent;
+    intent.base_path_digest = authorized_cleanup_base_path_digest_v2(paths.base_path);
+    intent.external_authorization_digest = binding.external_authorization_digest;
+    intent.generic_handoff_self_digest = binding.generic_handoff_self_digest;
+    intent.lease_id = binding.lease_id;
+    intent.parent_directory_identity = binding.parent_directory_identity;
+    intent.lock_identity = binding.lock_identity;
+    intent.directory_identity = binding.directory_identity;
+    intent.owner_marker_identity = binding.owner_marker_identity;
+    intent.owned_marker_identity = binding.owned_marker_identity;
+    intent.pair = binding.pair;
+    intent.handoff = binding.handoff;
+    intent.pending_handoff = std::nullopt;
+    intent.index = binding.index;
+    intent.data = binding.data;
+    if (!seal_ooc_authorized_cleanup_intent(intent)) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+    auto encoded_intent = encode_ooc_authorized_cleanup_intent(intent);
+    if (!encoded_intent || !encoded_intent.bytes) {
+        fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None, protocol_error());
+    }
+
+    auto staged = intent;
+    staged.marker_kind = OOCAuthorizedCleanupMarkerKindV2::staged;
+    if (!seal_ooc_authorized_cleanup_intent(staged)) {
+        fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None, protocol_error());
+    }
+    auto encoded_staged = encode_ooc_authorized_cleanup_intent(staged);
+    if (!encoded_staged || !encoded_staged.bytes) {
+        fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None, protocol_error());
+    }
+    return {
+        .intent = std::move(intent),
+        .staged = std::move(staged),
+        .intent_bytes = std::move(*encoded_intent.bytes),
+        .staged_bytes = std::move(*encoded_staged.bytes),
+    };
+}
+
+enum class AuthorizedCleanupNextStepV2 : std::uint8_t {
+    IntentConversionRequired,
+    ConfirmIntent,
+    RemoveIntentPending,
+    RemoveHandoff,
+    QuarantineIndex,
+    QuarantineData,
+    EnsureStaged,
+    RemoveStagedPending,
+    RemoveData,
+    RemoveIndex,
+    RemoveIntent,
+    RemoveOwner,
+    RemoveStaged,
+    RemoveDirectory,
+    RemoveOwned,
+    Complete,
+};
+
+struct AuthorizedCleanupPrefixV2 final {
+    AuthorizedCleanupNextStepV2 next = AuthorizedCleanupNextStepV2::Complete;
+    std::optional<AuthorizedCleanupLoadedLeafV2> intent;
+    std::optional<AuthorizedCleanupLoadedLeafV2> intent_pending;
+    std::optional<AuthorizedCleanupLoadedLeafV2> staged;
+    std::optional<AuthorizedCleanupLoadedLeafV2> staged_pending;
+    std::optional<AuthorizedCleanupLoadedLeafV2> handoff;
+    std::optional<AuthorizedCleanupLoadedLeafV2> owner;
+    std::optional<AuthorizedCleanupLoadedLeafV2> owned;
+    std::optional<util::durable_immutable_record::RecordSnapshot> index;
+    std::optional<util::durable_immutable_record::RecordSnapshot> data;
+    std::optional<util::durable_immutable_record::RecordSnapshot> quarantine_index;
+    std::optional<util::durable_immutable_record::RecordSnapshot> quarantine_data;
+    bool private_directory_present = false;
+
+    friend bool operator==(const AuthorizedCleanupPrefixV2&,
+                           const AuthorizedCleanupPrefixV2&) = default;
+};
+
+[[nodiscard]] bool authorized_cleanup_metadata_has_file_policy_v2(
+    const PrivateCleanupUnionLeafMetadata& metadata) noexcept {
+    return (metadata.mode & static_cast<std::uint64_t>(S_IFMT)) ==
+               static_cast<std::uint64_t>(S_IFREG) &&
+           metadata.link_count == 1 && metadata.owner == static_cast<std::uint64_t>(::geteuid()) &&
+           (metadata.mode & static_cast<std::uint64_t>(07777)) ==
+               static_cast<std::uint64_t>(0600) &&
+           metadata.size >= 0;
+}
+
+[[nodiscard]] util::durable_immutable_record::RecordSnapshot
+authorized_cleanup_inventory_snapshot_v2(const PrivateCleanupUnionLeafMetadata& metadata) {
+    if (!authorized_cleanup_metadata_has_file_policy_v2(metadata)) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             protocol_error());
+    }
+    return {
+        .identity =
+            {
+                .first = metadata.device,
+                .second = metadata.inode,
+                .third = 0,
+            },
+        .size = static_cast<std::uint64_t>(metadata.size),
+    };
+}
+
+[[nodiscard]] std::optional<util::durable_immutable_record::RecordSnapshot>
+authorized_cleanup_inventory_leaf_v2(const PrivateCleanupUnionDirectoryInventory& inventory,
+                                     PrivateCleanupUnionDirectoryEntry entry) {
+    const auto& metadata = inventory.leaves[static_cast<std::size_t>(entry)];
+    if (!metadata) {
+        return std::nullopt;
+    }
+    return authorized_cleanup_inventory_snapshot_v2(*metadata);
+}
+
+void require_authorized_cleanup_loaded_matches_inventory_v2(
+    const std::optional<AuthorizedCleanupLoadedLeafV2>& loaded,
+    const std::optional<util::durable_immutable_record::RecordSnapshot>& inventory) {
+    if (loaded.has_value() != inventory.has_value() || (loaded && loaded->snapshot != *inventory)) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             protocol_error());
+    }
+}
+
+[[nodiscard]] std::optional<AuthorizedCleanupLoadedLeafV2>
+read_expected_authorized_cleanup_marker_v2(
+    const PrivateDirectoryHandle& directory, const std::filesystem::path& leaf,
+    std::span<const std::byte> expected,
+    const std::optional<util::durable_immutable_record::RecordSnapshot>& inventory,
+    OOCAuthorizedCleanupMarkerKindV2 role) {
+    auto loaded = read_authorized_cleanup_leaf_v2(directory.native_handle(), leaf,
+                                                  OOC_AUTHORIZED_CLEANUP_INTENT_WIRE_BYTES_V2);
+    require_authorized_cleanup_loaded_matches_inventory_v2(loaded, inventory);
+    if (!loaded) {
+        return std::nullopt;
+    }
+    if (loaded->bytes.size() != OOC_AUTHORIZED_CLEANUP_INTENT_WIRE_BYTES_V2 ||
+        !std::equal(loaded->bytes.begin(), loaded->bytes.end(), expected.begin())) {
+        fail(OOCCleanupStatus::IntentCorrupt, OOCCleanupStage::None, protocol_error());
+    }
+    const auto decoded = decode_ooc_authorized_cleanup_intent(loaded->bytes, role);
+    if (!decoded || !decoded.value) {
+        fail(OOCCleanupStatus::IntentCorrupt, OOCCleanupStage::None, protocol_error());
+    }
+    return loaded;
+}
+
+[[nodiscard]] LoadedPrivateLeaseMarker validate_authorized_cleanup_owned_marker_v2(
+    const AuthorizedCleanupLoadedLeafV2& loaded,
+    const OOCPrivateHandoffCleanupAuthorizationBinding& binding, const OOCCleanupPaths& paths) {
+    if (loaded.bytes.size() != PRIVATE_LEASE_MARKER_BYTES ||
+        loaded.snapshot.identity != binding.owned_marker_identity) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             protocol_error());
+    }
+    const auto record = parse_private_lease_marker(loaded.bytes);
+    if (record.phase != PrivateLeasePhase::Owned ||
+        record.capability != PrivateLeaseCapability::RollbackPreactivePairAndLease ||
+        record.lease_id != binding.lease_id ||
+        record.base_path_digest != frozen_path_digest(paths.base_path) ||
+        record.parent_identity !=
+            authorized_cleanup_identity_words_v2(binding.parent_directory_identity) ||
+        record.lock_identity != authorized_cleanup_identity_words_v2(binding.lock_identity) ||
+        record.directory_identity !=
+            authorized_cleanup_identity_words_v2(binding.directory_identity) ||
+        record.owner_identity !=
+            authorized_cleanup_identity_words_v2(binding.owner_marker_identity)) {
+        fail(OOCCleanupStatus::IntentConflict, OOCCleanupStage::None, protocol_error());
+    }
+    return {
+        .record = record,
+        .identity = authorized_cleanup_identity_words_v2(loaded.snapshot.identity),
+    };
+}
+
+void require_authorized_cleanup_absent_parent_leaf_v2(
+    const AuthorizedCleanupParentDirectoryHandleV2& parent, const std::filesystem::path& leaf,
+    std::uint64_t maximum_bytes) {
+    if (read_authorized_cleanup_leaf_v2(parent.native_handle(), leaf, maximum_bytes)) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+    }
+}
+
+[[nodiscard]] bool authorized_cleanup_handoff_matches_binding_v2(
+    const OOCPrivateHandoffRecordV1& record,
+    const OOCPrivateHandoffCleanupAuthorizationBinding& binding) noexcept {
+    return record.self_digest == binding.generic_handoff_self_digest &&
+           record.lease_id == binding.lease_id && record.lock_identity == binding.lock_identity &&
+           record.directory_identity == binding.directory_identity &&
+           record.owner_marker_identity == binding.owner_marker_identity &&
+           record.owned_marker_identity == binding.owned_marker_identity &&
+           record.pair == binding.pair && record.index == binding.index &&
+           record.data == binding.data;
+}
+
+[[nodiscard]] AuthorizedCleanupPrefixV2
+classify_authorized_cleanup_prefix_v2(const OOCCleanupPaths& paths, const BaseLock& lock,
+                                      const AuthorizedCleanupParentDirectoryHandleV2& parent,
+                                      const PrivateDirectoryHandle* directory,
+                                      const OOCPrivateHandoffCleanupAuthorizationBinding& binding,
+                                      const AuthorizedCleanupExpectedMarkersV2& expected,
+                                      bool intent_confirmed, bool staged_confirmed) {
+    lock.require_stable();
+    parent.require_stable();
+    parent.require_lock_binding(paths.lock_path.filename(), lock);
+    if (authorized_cleanup_native_identity_v2(parent.identity()) !=
+            binding.parent_directory_identity ||
+        authorized_cleanup_native_identity_v2(lock.identity()) != binding.lock_identity) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+    }
+
+    require_authorized_cleanup_absent_parent_leaf_v2(parent, paths.lease_reserved_path.filename(),
+                                                     PRIVATE_LEASE_MARKER_BYTES);
+    require_authorized_cleanup_absent_parent_leaf_v2(
+        parent, paths.lease_reserved_pending_path.filename(), PRIVATE_LEASE_MARKER_BYTES);
+    require_authorized_cleanup_absent_parent_leaf_v2(
+        parent, paths.lease_owned_pending_path.filename(), PRIVATE_LEASE_MARKER_BYTES);
+    const auto staging_leaf = private_lease_staging_path(paths, binding.lease_id).filename();
+    if (parent.inspect_leaf(staging_leaf) ||
+        (!paths.private_handoff_rollback_path.empty() &&
+         parent.inspect_leaf(paths.private_handoff_rollback_path.filename()))) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+    }
+
+    AuthorizedCleanupPrefixV2 prefix;
+    prefix.owned = read_authorized_cleanup_leaf_v2(
+        parent.native_handle(), paths.lease_owned_path.filename(), PRIVATE_LEASE_MARKER_BYTES);
+    std::optional<LoadedPrivateLeaseMarker> loaded_owned;
+    if (prefix.owned) {
+        loaded_owned = validate_authorized_cleanup_owned_marker_v2(*prefix.owned, binding, paths);
+    }
+
+    const auto named_directory = parent.inspect_leaf(paths.private_directory.filename());
+    if (directory == nullptr) {
+        if (named_directory) {
+            fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+        }
+        if (prefix.owned) {
+            prefix.next = AuthorizedCleanupNextStepV2::RemoveOwned;
+        } else {
+            prefix.next = AuthorizedCleanupNextStepV2::Complete;
+        }
+        lock.require_stable();
+        parent.require_stable();
+        parent.require_lock_binding(paths.lock_path.filename(), lock);
+        return prefix;
+    }
+
+    if (!named_directory || !S_ISDIR(named_directory->st_mode) ||
+        stable_identity(posix_identity(*named_directory)) != directory->identity() ||
+        authorized_cleanup_native_identity_v2(directory->identity()) !=
+            binding.directory_identity ||
+        !loaded_owned) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+    }
+    prefix.private_directory_present = true;
+    directory->require_stable();
+    directory->require_private_policy();
+
+    const auto before = scan_private_cleanup_union_directory(paths, *directory);
+    if (before.foreign) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             protocol_error());
+    }
+    const auto inventory_leaf = [&](PrivateCleanupUnionDirectoryEntry entry) {
+        return authorized_cleanup_inventory_leaf_v2(before, entry);
+    };
+
+    const auto owner_inventory = inventory_leaf(PrivateCleanupUnionDirectoryEntry::Owner);
+    const auto index_inventory = inventory_leaf(PrivateCleanupUnionDirectoryEntry::Index);
+    const auto data_inventory = inventory_leaf(PrivateCleanupUnionDirectoryEntry::Data);
+    const auto handoff_inventory = inventory_leaf(PrivateCleanupUnionDirectoryEntry::Handoff);
+    const auto handoff_pending_inventory =
+        inventory_leaf(PrivateCleanupUnionDirectoryEntry::HandoffPending);
+    const auto intent_inventory = inventory_leaf(PrivateCleanupUnionDirectoryEntry::Intent);
+    const auto intent_pending_inventory =
+        inventory_leaf(PrivateCleanupUnionDirectoryEntry::IntentPending);
+    const auto staged_inventory = inventory_leaf(PrivateCleanupUnionDirectoryEntry::Staged);
+    const auto staged_pending_inventory =
+        inventory_leaf(PrivateCleanupUnionDirectoryEntry::StagedPending);
+    const auto quarantine_index_inventory =
+        inventory_leaf(PrivateCleanupUnionDirectoryEntry::QuarantineIndex);
+    const auto quarantine_data_inventory =
+        inventory_leaf(PrivateCleanupUnionDirectoryEntry::QuarantineData);
+
+    prefix.intent = read_expected_authorized_cleanup_marker_v2(
+        *directory, paths.intent_path.filename(), expected.intent_bytes, intent_inventory,
+        OOCAuthorizedCleanupMarkerKindV2::intent);
+    prefix.intent_pending = read_expected_authorized_cleanup_marker_v2(
+        *directory, paths.intent_pending_path.filename(), expected.intent_bytes,
+        intent_pending_inventory, OOCAuthorizedCleanupMarkerKindV2::intent);
+    prefix.staged = read_expected_authorized_cleanup_marker_v2(
+        *directory, paths.staged_path.filename(), expected.staged_bytes, staged_inventory,
+        OOCAuthorizedCleanupMarkerKindV2::staged);
+    prefix.staged_pending = read_expected_authorized_cleanup_marker_v2(
+        *directory, paths.staged_pending_path.filename(), expected.staged_bytes,
+        staged_pending_inventory, OOCAuthorizedCleanupMarkerKindV2::staged);
+
+    prefix.owner = read_authorized_cleanup_leaf_v2(
+        directory->native_handle(), private_lease_owner_path(paths.private_directory).filename(),
+        PRIVATE_LEASE_MARKER_BYTES);
+    require_authorized_cleanup_loaded_matches_inventory_v2(prefix.owner, owner_inventory);
+    if (prefix.owner) {
+        if (prefix.owner->bytes.size() != PRIVATE_LEASE_MARKER_BYTES ||
+            prefix.owner->snapshot.identity != binding.owner_marker_identity ||
+            parse_private_lease_marker(prefix.owner->bytes) !=
+                owner_record_for(loaded_owned->record)) {
+            fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                 protocol_error());
+        }
+    }
+
+    if (handoff_pending_inventory) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             protocol_error());
+    }
+    const auto loaded_handoff = read_private_handoff_leaf(directory->native_handle(),
+                                                          paths.private_handoff_path.filename());
+    if (loaded_handoff.state == PrivateHandoffLeafState::Rejected) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             protocol_error());
+    }
+    if (loaded_handoff.state == PrivateHandoffLeafState::Exact) {
+        if (!loaded_handoff.record || !loaded_handoff.snapshot || !handoff_inventory ||
+            *loaded_handoff.snapshot != *handoff_inventory ||
+            *loaded_handoff.snapshot !=
+                util::durable_immutable_record::RecordSnapshot{
+                    .identity = binding.handoff.identity,
+                    .size = binding.handoff.extent,
+                } ||
+            !authorized_cleanup_handoff_matches_binding_v2(*loaded_handoff.record, binding)) {
+            fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                 protocol_error());
+        }
+        prefix.handoff = AuthorizedCleanupLoadedLeafV2{
+            .bytes = loaded_handoff.bytes,
+            .snapshot = *loaded_handoff.snapshot,
+        };
+    } else if (handoff_inventory) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             protocol_error());
+    }
+
+    prefix.index = index_inventory;
+    prefix.data = data_inventory;
+    prefix.quarantine_index = quarantine_index_inventory;
+    prefix.quarantine_data = quarantine_data_inventory;
+    const auto expected_index = util::durable_immutable_record::RecordSnapshot{
+        .identity = binding.index.identity,
+        .size = binding.index.extent,
+    };
+    const auto expected_data = util::durable_immutable_record::RecordSnapshot{
+        .identity = binding.data.identity,
+        .size = binding.data.extent,
+    };
+    if ((prefix.index && *prefix.index != expected_index) ||
+        (prefix.quarantine_index && *prefix.quarantine_index != expected_index) ||
+        (prefix.data && *prefix.data != expected_data) ||
+        (prefix.quarantine_data && *prefix.quarantine_data != expected_data) ||
+        (prefix.index && prefix.quarantine_index) || (prefix.data && prefix.quarantine_data)) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             protocol_error());
+    }
+
+    const auto after = scan_private_cleanup_union_directory(paths, *directory);
+    if (after.foreign || before != after) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             protocol_error());
+    }
+    directory->require_stable();
+    directory->require_private_policy();
+    parent.require_stable();
+    parent.require_lock_binding(paths.lock_path.filename(), lock);
+    lock.require_stable();
+
+    PrivateCleanupUnionRawObservation raw;
+    const auto project_marker = [](bool present) {
+        return present ? PrivateCleanupMarkerObservationKind::AuthorizedV2
+                       : PrivateCleanupMarkerObservationKind::Missing;
+    };
+    raw.cleanup_markers[static_cast<std::size_t>(PrivateCleanupMarkerSlot::Intent)] =
+        project_marker(prefix.intent.has_value());
+    raw.cleanup_markers[static_cast<std::size_t>(PrivateCleanupMarkerSlot::IntentPending)] =
+        project_marker(prefix.intent_pending.has_value());
+    raw.cleanup_markers[static_cast<std::size_t>(PrivateCleanupMarkerSlot::Staged)] =
+        project_marker(prefix.staged.has_value());
+    raw.cleanup_markers[static_cast<std::size_t>(PrivateCleanupMarkerSlot::StagedPending)] =
+        project_marker(prefix.staged_pending.has_value());
+    raw.handoff_markers[static_cast<std::size_t>(PrivateHandoffLeafSlot::Canonical)] =
+        prefix.handoff ? PrivateHandoffLeafObservationKind::Exact
+                       : PrivateHandoffLeafObservationKind::Missing;
+    raw.handoff_markers[static_cast<std::size_t>(PrivateHandoffLeafSlot::Pending)] =
+        PrivateHandoffLeafObservationKind::Missing;
+    const auto decision =
+        decide_private_namespace_action(raw, PrivateNamespaceAction::ResumeAuthorizedV2Cleanup);
+    if (!decision_delegates_existing_runtime(decision)) {
+        const auto blocked = private_cleanup_union_blocked_result(decision);
+        if (blocked) {
+            fail(blocked->status, blocked->stage, blocked->native_error);
+        }
+        fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None, protocol_error());
+    }
+
+    const bool live_index = prefix.index.has_value();
+    const bool live_data = prefix.data.has_value();
+    const bool quarantined_index = prefix.quarantine_index.has_value();
+    const bool quarantined_data = prefix.quarantine_data.has_value();
+    const bool has_any_artifact = live_index || live_data || quarantined_index || quarantined_data;
+    const bool has_any_marker =
+        prefix.intent || prefix.intent_pending || prefix.staged || prefix.staged_pending;
+
+    if (!prefix.intent && prefix.intent_pending) {
+        if (prefix.staged || prefix.staged_pending || !prefix.handoff || !prefix.owner ||
+            !live_index || !live_data || quarantined_index || quarantined_data) {
+            fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+        }
+        prefix.next = AuthorizedCleanupNextStepV2::IntentConversionRequired;
+        return prefix;
+    }
+    if (prefix.intent) {
+        if (!prefix.owner) {
+            fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+        }
+        if (prefix.intent_pending &&
+            (prefix.staged || prefix.staged_pending || !prefix.handoff || !live_index ||
+             !live_data || quarantined_index || quarantined_data)) {
+            fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+        }
+        AuthorizedCleanupNextStepV2 validated_next = AuthorizedCleanupNextStepV2::Complete;
+        const bool has_staged_prefix = prefix.staged || prefix.staged_pending;
+        if (!has_staged_prefix) {
+            if (prefix.handoff) {
+                if (!live_index || !live_data || quarantined_index || quarantined_data) {
+                    fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
+                         protocol_error());
+                }
+                validated_next = AuthorizedCleanupNextStepV2::RemoveHandoff;
+            } else if (live_index && live_data && !quarantined_index && !quarantined_data) {
+                validated_next = AuthorizedCleanupNextStepV2::QuarantineIndex;
+            } else if (!live_index && live_data && quarantined_index && !quarantined_data) {
+                validated_next = AuthorizedCleanupNextStepV2::QuarantineData;
+            } else if (!live_index && !live_data && quarantined_index && quarantined_data) {
+                validated_next = AuthorizedCleanupNextStepV2::EnsureStaged;
+            } else {
+                fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+            }
+        } else {
+            if (prefix.handoff || live_index || live_data ||
+                (!quarantined_index && quarantined_data)) {
+                fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+            }
+            if (!prefix.staged) {
+                if (!quarantined_index || !quarantined_data || !prefix.staged_pending) {
+                    fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
+                         protocol_error());
+                }
+                validated_next = AuthorizedCleanupNextStepV2::EnsureStaged;
+            } else {
+                if (prefix.staged_pending && (!quarantined_index || !quarantined_data)) {
+                    fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
+                         protocol_error());
+                }
+                if (!staged_confirmed) {
+                    validated_next = AuthorizedCleanupNextStepV2::EnsureStaged;
+                } else if (prefix.staged_pending) {
+                    validated_next = AuthorizedCleanupNextStepV2::RemoveStagedPending;
+                } else if (quarantined_index && quarantined_data) {
+                    validated_next = AuthorizedCleanupNextStepV2::RemoveData;
+                } else if (quarantined_index && !quarantined_data) {
+                    validated_next = AuthorizedCleanupNextStepV2::RemoveIndex;
+                } else if (!quarantined_index && !quarantined_data) {
+                    validated_next = AuthorizedCleanupNextStepV2::RemoveIntent;
+                } else {
+                    fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
+                         protocol_error());
+                }
+            }
+        }
+        if (!intent_confirmed) {
+            prefix.next = AuthorizedCleanupNextStepV2::ConfirmIntent;
+        } else if (prefix.intent_pending) {
+            prefix.next = AuthorizedCleanupNextStepV2::RemoveIntentPending;
+        } else {
+            prefix.next = validated_next;
+        }
+        return prefix;
+    }
+
+    if (prefix.intent_pending) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+    }
+    if (prefix.staged_pending) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+    }
+    if (prefix.staged) {
+        if (prefix.handoff || has_any_artifact) {
+            fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+        }
+        if (!staged_confirmed || prefix.staged_pending) {
+            prefix.next = AuthorizedCleanupNextStepV2::EnsureStaged;
+            return prefix;
+        }
+        prefix.next = prefix.owner ? AuthorizedCleanupNextStepV2::RemoveOwner
+                                   : AuthorizedCleanupNextStepV2::RemoveStaged;
+        return prefix;
+    }
+
+    if (has_any_marker || prefix.handoff || has_any_artifact || prefix.owner) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+    }
+    prefix.next = AuthorizedCleanupNextStepV2::RemoveDirectory;
+    return prefix;
+}
+
+void confirm_exact_authorized_cleanup_leaf_durable_v2(
+    util::durable_immutable_record::NativeHandle directory_handle,
+    const std::filesystem::path& leaf,
+    const util::durable_immutable_record::RecordSnapshot& expected, OOCCleanupStage stage) {
+    const auto before = inspect_authorized_cleanup_leaf_v2(directory_handle, leaf);
+    if (!before || *before != expected) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, stage, protocol_error());
+    }
+    const auto confirmed = util::durable_immutable_file::confirm_durable_at(directory_handle, leaf);
+    if (!confirmed.is_durable()) {
+        fail(OOCCleanupStatus::DurabilityFailure, stage,
+             confirmed.native_error() ? confirmed.native_error() : protocol_error());
+    }
+    const auto after = inspect_authorized_cleanup_leaf_v2(directory_handle, leaf);
+    if (!after || *after != expected) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, stage, protocol_error());
+    }
+}
+
+[[nodiscard]] OOCCleanupStatus authorized_cleanup_publish_status_v2(
+    util::durable_immutable_record::RecordPublishStatus status) noexcept {
+    using Status = util::durable_immutable_record::RecordPublishStatus;
+    switch (status) {
+    case Status::invalid_request:
+    case Status::input_too_large:
+        return OOCCleanupStatus::InvalidRequest;
+    case Status::platform_unsupported:
+        return OOCCleanupStatus::PlatformUnsupported;
+    case Status::pending_conflict:
+    case Status::canonical_conflict:
+        return OOCCleanupStatus::ForeignReplacementPreserved;
+    case Status::parent_sync_failed:
+    case Status::canonical_confirm_failed:
+    case Status::pending_cleanup_failed:
+        return OOCCleanupStatus::DurabilityFailure;
+    case Status::pending_publish_failed:
+    case Status::promotion_failed:
+        return OOCCleanupStatus::IoFailure;
+    case Status::ops_contract_violation:
+    case Status::unexpected_failure:
+        return OOCCleanupStatus::UnexpectedFailure;
+    case Status::interrupted:
+        return OOCCleanupStatus::Interrupted;
+    case Status::durable:
+        return OOCCleanupStatus::RecoveryRequired;
+    }
+    return OOCCleanupStatus::UnexpectedFailure;
+}
+
+struct AuthorizedCleanupStagedPublishBridgeV2 final {
+    OOCPrivateHandoffCleanupResumeTestHooksV2 hooks;
+    bool pending_durable = false;
+    bool canonical_promoted = false;
+    bool canonical_durable = false;
+};
+
+[[nodiscard]] bool
+bridge_authorized_cleanup_staged_publish_v2(util::durable_immutable_record::RecordFaultPoint point,
+                                            void* opaque) noexcept {
+    auto& bridge = *static_cast<AuthorizedCleanupStagedPublishBridgeV2*>(opaque);
+    OOCPrivateHandoffCleanupResumeFaultPointV2 projected =
+        OOCPrivateHandoffCleanupResumeFaultPointV2::Count;
+    switch (point) {
+    case util::durable_immutable_record::RecordFaultPoint::PendingDurable:
+        bridge.pending_durable = true;
+        projected = OOCPrivateHandoffCleanupResumeFaultPointV2::StagedPendingDurable;
+        break;
+    case util::durable_immutable_record::RecordFaultPoint::CanonicalPromoted:
+        bridge.canonical_promoted = true;
+        projected = OOCPrivateHandoffCleanupResumeFaultPointV2::StagedCanonicalPromoted;
+        break;
+    case util::durable_immutable_record::RecordFaultPoint::CanonicalDurable:
+        bridge.canonical_durable = true;
+        projected = OOCPrivateHandoffCleanupResumeFaultPointV2::StagedCanonicalDurable;
+        break;
+    }
+    return bridge.hooks.stop_after != nullptr &&
+           bridge.hooks.stop_after(projected, bridge.hooks.context);
+}
+
+void remove_empty_authorized_cleanup_directory_v2(const OOCCleanupPaths& paths,
+                                                  const BaseLock& lock,
+                                                  AuthorizedCleanupParentDirectoryHandleV2& parent,
+                                                  PrivateDirectoryHandle& directory) {
+    lock.require_stable();
+    parent.require_stable();
+    parent.require_lock_binding(paths.lock_path.filename(), lock);
+    directory.require_stable();
+    directory.require_private_policy();
+    const auto inventory = scan_private_cleanup_union_directory(paths, directory);
+    if (inventory.foreign ||
+        std::any_of(inventory.leaves.begin(), inventory.leaves.end(),
+                    [](const auto& leaf) noexcept { return leaf.has_value(); })) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::IntentRemoved, protocol_error());
+    }
+    const auto named = parent.inspect_leaf(paths.private_directory.filename());
+    if (!named || !S_ISDIR(named->st_mode) ||
+        stable_identity(posix_identity(*named)) != directory.identity()) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::IntentRemoved, protocol_error());
+    }
+    int removed = -1;
+    do {
+        removed = ::unlinkat(static_cast<int>(parent.native_handle()),
+                             paths.private_directory.filename().c_str(), AT_REMOVEDIR);
+    } while (removed != 0 && errno == EINTR);
+    if (removed != 0) {
+        const int saved_errno = errno;
+        fail(saved_errno == ENOENT || saved_errno == ENOTEMPTY
+                 ? OOCCleanupStatus::ForeignReplacementPreserved
+                 : OOCCleanupStatus::IoFailure,
+             OOCCleanupStage::IntentRemoved, posix_error(saved_errno));
+    }
+    sync_authorized_cleanup_directory_v2(parent.native_handle(), OOCCleanupStage::IntentRemoved);
+    if (parent.inspect_leaf(paths.private_directory.filename())) {
+        fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::IntentRemoved, protocol_error());
+    }
+    lock.require_stable();
+    parent.require_stable();
+    parent.require_lock_binding(paths.lock_path.filename(), lock);
+}
+
+#endif
+
+} // namespace
+
+class OOCPrivateHandoffCleanupResumeExecutorV2 final {
+private:
+    [[nodiscard]] static OOCPrivateHandoffCleanupResumeResultV2 make_result(
+        OOCCleanupStatus status, OOCCleanupStage stage, std::error_code error,
+        OOCPrivateHandoffCleanupResumeDispositionV2 disposition,
+        std::optional<OOCPrivateHandoffCleanupAbsenceEvidenceV2> evidence = std::nullopt) noexcept {
+        return {
+            .result =
+                {
+                    .status = status,
+                    .stage = stage,
+                    .native_error = error,
+                },
+            .disposition = disposition,
+            .evidence = std::move(evidence),
+        };
+    }
+
+    [[nodiscard]] static OOCPrivateHandoffCleanupResumeResultV2
+    run(OOCPrivateHandoffCleanupAuthorizationReceipt& authorization,
+        OOCPrivateHandoffCleanupResumeTestHooksV2 hooks) noexcept {
+        const auto invalid = [&]() noexcept {
+            return make_result(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                               invalid_argument_error(),
+                               OOCPrivateHandoffCleanupResumeDispositionV2::Failed);
+        };
+        if (authorization.spent_ || !authorization.live_authority_valid()) {
+            return invalid();
+        }
+
+#if !defined(__APPLE__)
+        (void)hooks;
+        return make_result(OOCCleanupStatus::PlatformUnsupported, OOCCleanupStage::None,
+                           std::make_error_code(std::errc::operation_not_supported),
+                           OOCPrivateHandoffCleanupResumeDispositionV2::AuthorizationRetained);
+#else
+        const auto failed = [&](OOCCleanupStatus status, OOCCleanupStage stage,
+                                std::error_code error) noexcept {
+            if (!error && status != OOCCleanupStatus::Interrupted) {
+                error = protocol_error();
+            }
+            return make_result(
+                status, stage, error,
+                authorization.spent_
+                    ? OOCPrivateHandoffCleanupResumeDispositionV2::ReconciliationRequired
+                    : OOCPrivateHandoffCleanupResumeDispositionV2::AuthorizationRetained);
+        };
+        const auto interrupted = [&](OOCCleanupStage stage) noexcept {
+            return failed(OOCCleanupStatus::Interrupted, stage,
+                          std::make_error_code(std::errc::operation_canceled));
+        };
+        const auto stop_after = [&](OOCPrivateHandoffCleanupResumeFaultPointV2 point) noexcept {
+            return hooks.stop_after != nullptr && hooks.stop_after(point, hooks.context);
+        };
+        const auto require_live = [&] {
+            if (!authorization.live_authority_valid()) {
+                fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                     invalid_argument_error());
+            }
+        };
+
+        try {
+            const auto& binding = authorization.binding_;
+            const auto paths = freeze_paths(binding.base_path);
+            const auto expected = make_authorized_cleanup_expected_markers_v2(binding, paths);
+            AuthorizedCleanupParentDirectoryHandleV2 parent(paths.lock_path.parent_path());
+            BaseLock lock(paths.lock_path, false);
+            PrivateCleanupActionClaimGuard claim(lock);
+            if (!claim.acquired()) {
+                return failed(OOCCleanupStatus::Busy, OOCCleanupStage::None,
+                              std::make_error_code(std::errc::device_or_resource_busy));
+            }
+            lock.require_stable();
+            parent.require_stable();
+            parent.require_lock_binding(paths.lock_path.filename(), lock);
+            if (authorized_cleanup_native_identity_v2(parent.identity()) !=
+                    binding.parent_directory_identity ||
+                authorized_cleanup_native_identity_v2(lock.identity()) != binding.lock_identity) {
+                fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+            }
+
+            std::unique_ptr<PrivateDirectoryHandle> directory;
+            if (const auto named = parent.inspect_leaf(paths.private_directory.filename())) {
+                if (!S_ISDIR(named->st_mode) ||
+                    handoff_native_identity(stable_identity(posix_identity(*named))) !=
+                        binding.directory_identity) {
+                    fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
+                         protocol_error());
+                }
+                directory = std::make_unique<PrivateDirectoryHandle>(paths.private_directory);
+                if (handoff_native_identity(directory->identity()) != binding.directory_identity) {
+                    fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
+                         protocol_error());
+                }
+            }
+
+            bool recovery_permit_checked = false;
+            bool recovery_prefix_durable = false;
+            bool intent_confirmed = false;
+            bool staged_confirmed = false;
+            bool parent_absence_durable = false;
+            bool evidence_gate_checked = false;
+            std::optional<AuthorizedCleanupPrefixV2> recovery_prefix;
+            std::optional<AuthorizedCleanupPrefixV2> expected_prefix_after_hook;
+            std::optional<util::durable_immutable_record::RecordSnapshot> intent_snapshot;
+            std::optional<util::durable_immutable_record::RecordSnapshot> intent_pending_snapshot;
+            std::optional<util::durable_immutable_record::RecordSnapshot> staged_snapshot;
+            std::optional<util::durable_immutable_record::RecordSnapshot> staged_pending_snapshot;
+
+            const auto retain_snapshot = [](auto& baseline, const auto& loaded) {
+                if (!loaded) {
+                    return;
+                }
+                if (baseline && *baseline != loaded->snapshot) {
+                    fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                         protocol_error());
+                }
+                baseline = loaded->snapshot;
+            };
+
+            for (std::size_t iteration = 0; iteration < 64; ++iteration) {
+                require_live();
+                auto prefix = classify_authorized_cleanup_prefix_v2(
+                    paths, lock, parent, directory.get(), binding, expected, intent_confirmed,
+                    staged_confirmed);
+                if (expected_prefix_after_hook && prefix != *expected_prefix_after_hook) {
+                    fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                         protocol_error());
+                }
+                expected_prefix_after_hook.reset();
+                retain_snapshot(intent_snapshot, prefix.intent);
+                retain_snapshot(intent_pending_snapshot, prefix.intent_pending);
+                retain_snapshot(staged_snapshot, prefix.staged);
+                retain_snapshot(staged_pending_snapshot, prefix.staged_pending);
+
+                if (prefix.next == AuthorizedCleanupNextStepV2::IntentConversionRequired) {
+                    return make_result(
+                        OOCCleanupStatus::RecoveryRequired, OOCCleanupStage::None, protocol_error(),
+                        OOCPrivateHandoffCleanupResumeDispositionV2::IntentConversionRequired);
+                }
+
+                if (!recovery_permit_checked) {
+                    recovery_prefix = prefix;
+                    if (stop_after(
+                            OOCPrivateHandoffCleanupResumeFaultPointV2::RecoveryPermitAcquired)) {
+                        return interrupted(OOCCleanupStage::None);
+                    }
+                    recovery_permit_checked = true;
+                    continue;
+                }
+
+                if (!recovery_prefix_durable) {
+                    if (!recovery_prefix || prefix != *recovery_prefix) {
+                        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                             protocol_error());
+                    }
+                    require_live();
+                    if (directory) {
+                        sync_authorized_cleanup_directory_v2(directory->native_handle(),
+                                                             OOCCleanupStage::None);
+                    } else {
+                        sync_authorized_cleanup_directory_v2(parent.native_handle(),
+                                                             OOCCleanupStage::None);
+                    }
+                    const auto confirmed = classify_authorized_cleanup_prefix_v2(
+                        paths, lock, parent, directory.get(), binding, expected, intent_confirmed,
+                        staged_confirmed);
+                    if (confirmed != *recovery_prefix) {
+                        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+                             protocol_error());
+                    }
+                    recovery_prefix_durable = true;
+                    recovery_prefix.reset();
+                    continue;
+                }
+
+                const auto capture_successor = [&] {
+                    return classify_authorized_cleanup_prefix_v2(
+                        paths, lock, parent, directory.get(), binding, expected, intent_confirmed,
+                        staged_confirmed);
+                };
+                const auto stop_after_successor =
+                    [&](OOCPrivateHandoffCleanupResumeFaultPointV2 point) {
+                        auto successor = capture_successor();
+                        if (stop_after(point)) {
+                            return true;
+                        }
+                        expected_prefix_after_hook = std::move(successor);
+                        return false;
+                    };
+
+                if (prefix.next == AuthorizedCleanupNextStepV2::Complete) {
+                    if (!parent_absence_durable) {
+                        require_live();
+                        sync_authorized_cleanup_directory_v2(parent.native_handle(),
+                                                             OOCCleanupStage::Completed);
+                        lock.require_stable();
+                        parent.require_stable();
+                        parent.require_lock_binding(paths.lock_path.filename(), lock);
+                        const auto confirmed = classify_authorized_cleanup_prefix_v2(
+                            paths, lock, parent, directory.get(), binding, expected,
+                            intent_confirmed, staged_confirmed);
+                        if (confirmed != prefix ||
+                            confirmed.next != AuthorizedCleanupNextStepV2::Complete) {
+                            fail(OOCCleanupStatus::ForeignReplacementPreserved,
+                                 OOCCleanupStage::Completed, protocol_error());
+                        }
+                        require_live();
+                        if (!authorization.spent_) {
+                            authorization.commit_spend();
+                        }
+                        parent_absence_durable = true;
+                        if (stop_after_successor(
+                                OOCPrivateHandoffCleanupResumeFaultPointV2::ParentAbsenceDurable)) {
+                            return interrupted(OOCCleanupStage::Completed);
+                        }
+                        continue;
+                    }
+                    if (!evidence_gate_checked) {
+                        if (stop_after_successor(
+                                OOCPrivateHandoffCleanupResumeFaultPointV2::AbsenceEvidenceReady)) {
+                            return interrupted(OOCCleanupStage::Completed);
+                        }
+                        evidence_gate_checked = true;
+                        continue;
+                    }
+                    require_live();
+                    auto evidence = OOCPrivateHandoffCleanupAbsenceEvidenceV2{
+                        .base_path_digest = expected.intent.base_path_digest,
+                        .external_authorization_digest = binding.external_authorization_digest,
+                        .lease_id = binding.lease_id,
+                        .cleanup_intent_snapshot = intent_snapshot,
+                        .parent_directory_identity = binding.parent_directory_identity,
+                        .parent_directory_durability_confirmed = true,
+                        .expected_namespace_absent = true,
+                    };
+                    return make_result(OOCCleanupStatus::Completed, OOCCleanupStage::Completed, {},
+                                       OOCPrivateHandoffCleanupResumeDispositionV2::NamespaceAbsent,
+                                       std::move(evidence));
+                }
+
+                if (!authorization.spent_) {
+                    require_live();
+                    authorization.commit_spend();
+                }
+                require_live();
+                if (!directory) {
+                    if (prefix.next != AuthorizedCleanupNextStepV2::RemoveOwned) {
+                        fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None,
+                             protocol_error());
+                    }
+                } else {
+                    directory->require_stable();
+                    directory->require_private_policy();
+                }
+                lock.require_stable();
+                parent.require_stable();
+                parent.require_lock_binding(paths.lock_path.filename(), lock);
+
+                switch (prefix.next) {
+                case AuthorizedCleanupNextStepV2::ConfirmIntent: {
+                    if (!directory || !prefix.intent) {
+                        fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::IntentDurable,
+                             protocol_error());
+                    }
+                    confirm_exact_authorized_cleanup_leaf_durable_v2(
+                        directory->native_handle(), paths.intent_path.filename(),
+                        prefix.intent->snapshot, OOCCleanupStage::IntentDurable);
+                    intent_confirmed = true;
+                    if (stop_after_successor(OOCPrivateHandoffCleanupResumeFaultPointV2::
+                                                 IntentCanonicalReconfirmedDurable)) {
+                        return interrupted(OOCCleanupStage::IntentDurable);
+                    }
+                    break;
+                }
+                case AuthorizedCleanupNextStepV2::RemoveIntentPending: {
+                    if (!directory || !prefix.intent_pending) {
+                        fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::IntentDurable,
+                             protocol_error());
+                    }
+                    remove_exact_authorized_cleanup_leaf_v2(
+                        directory->native_handle(), paths.intent_pending_path.filename(),
+                        prefix.intent_pending->snapshot, OOCCleanupStage::IntentDurable);
+                    if (stop_after_successor(OOCPrivateHandoffCleanupResumeFaultPointV2::
+                                                 IntentDuplicatePendingRemovedDurable)) {
+                        return interrupted(OOCCleanupStage::IntentDurable);
+                    }
+                    break;
+                }
+                case AuthorizedCleanupNextStepV2::RemoveHandoff:
+                    remove_exact_authorized_cleanup_leaf_v2(
+                        directory->native_handle(), paths.private_handoff_path.filename(),
+                        prefix.handoff->snapshot, OOCCleanupStage::IntentDurable);
+                    if (stop_after_successor(
+                            OOCPrivateHandoffCleanupResumeFaultPointV2::HandoffRemovedDurable)) {
+                        return interrupted(OOCCleanupStage::IntentDurable);
+                    }
+                    break;
+                case AuthorizedCleanupNextStepV2::QuarantineIndex:
+                    rename_exact_authorized_cleanup_leaf_v2(
+                        directory->native_handle(), paths.index_path.filename(),
+                        paths.quarantine_index_path.filename(), *prefix.index,
+                        OOCCleanupStage::IndexQuarantined);
+                    if (stop_after_successor(
+                            OOCPrivateHandoffCleanupResumeFaultPointV2::IndexQuarantinedDurable)) {
+                        return interrupted(OOCCleanupStage::IndexQuarantined);
+                    }
+                    break;
+                case AuthorizedCleanupNextStepV2::QuarantineData:
+                    rename_exact_authorized_cleanup_leaf_v2(
+                        directory->native_handle(), paths.data_path.filename(),
+                        paths.quarantine_data_path.filename(), *prefix.data,
+                        OOCCleanupStage::PairQuarantined);
+                    if (stop_after_successor(
+                            OOCPrivateHandoffCleanupResumeFaultPointV2::PairQuarantinedDurable)) {
+                        return interrupted(OOCCleanupStage::PairQuarantined);
+                    }
+                    break;
+                case AuthorizedCleanupNextStepV2::EnsureStaged: {
+                    if (!directory) {
+                        fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::DeleteAuthorized,
+                             protocol_error());
+                    }
+                    if (prefix.staged) {
+                        confirm_exact_authorized_cleanup_leaf_durable_v2(
+                            directory->native_handle(), paths.staged_path.filename(),
+                            prefix.staged->snapshot, OOCCleanupStage::DeleteAuthorized);
+                        staged_confirmed = true;
+                        if (stop_after_successor(OOCPrivateHandoffCleanupResumeFaultPointV2::
+                                                     StagedCanonicalDurable)) {
+                            return interrupted(OOCCleanupStage::DeleteAuthorized);
+                        }
+                        break;
+                    }
+
+                    AuthorizedCleanupStagedPublishBridgeV2 bridge{.hooks = hooks};
+                    const auto published = util::durable_immutable_record::publish_at(
+                        directory->native_handle(), paths.staged_pending_path.filename(),
+                        paths.staged_path.filename(), expected.staged_bytes,
+                        util::durable_immutable_record::RecordTestHooks{
+                            .stop_after = bridge_authorized_cleanup_staged_publish_v2,
+                            .context = &bridge,
+                        });
+                    if (!published.is_durable() || !published.canonical_snapshot()) {
+                        return failed(authorized_cleanup_publish_status_v2(published.status()),
+                                      OOCCleanupStage::DeleteAuthorized, published.native_error());
+                    }
+                    if (prefix.staged_pending &&
+                        *published.canonical_snapshot() != prefix.staged_pending->snapshot) {
+                        fail(OOCCleanupStatus::ForeignReplacementPreserved,
+                             OOCCleanupStage::DeleteAuthorized, protocol_error());
+                    }
+                    staged_snapshot = *published.canonical_snapshot();
+                    staged_confirmed = true;
+                    if (!bridge.canonical_durable &&
+                        stop_after_successor(
+                            OOCPrivateHandoffCleanupResumeFaultPointV2::StagedCanonicalDurable)) {
+                        return interrupted(OOCCleanupStage::DeleteAuthorized);
+                    }
+                    if (bridge.canonical_durable) {
+                        expected_prefix_after_hook = capture_successor();
+                    }
+                    break;
+                }
+                case AuthorizedCleanupNextStepV2::RemoveStagedPending: {
+                    if (!directory || !prefix.staged_pending) {
+                        fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::DeleteAuthorized,
+                             protocol_error());
+                    }
+                    remove_exact_authorized_cleanup_leaf_v2(
+                        directory->native_handle(), paths.staged_pending_path.filename(),
+                        prefix.staged_pending->snapshot, OOCCleanupStage::DeleteAuthorized);
+                    if (stop_after_successor(OOCPrivateHandoffCleanupResumeFaultPointV2::
+                                                 StagedDuplicatePendingRemovedDurable)) {
+                        return interrupted(OOCCleanupStage::DeleteAuthorized);
+                    }
+                    break;
+                }
+                case AuthorizedCleanupNextStepV2::RemoveData:
+                    remove_exact_authorized_cleanup_leaf_v2(
+                        directory->native_handle(), paths.quarantine_data_path.filename(),
+                        *prefix.quarantine_data, OOCCleanupStage::DataRemoved);
+                    if (stop_after_successor(
+                            OOCPrivateHandoffCleanupResumeFaultPointV2::DataRemovedDurable)) {
+                        return interrupted(OOCCleanupStage::DataRemoved);
+                    }
+                    break;
+                case AuthorizedCleanupNextStepV2::RemoveIndex:
+                    remove_exact_authorized_cleanup_leaf_v2(
+                        directory->native_handle(), paths.quarantine_index_path.filename(),
+                        *prefix.quarantine_index, OOCCleanupStage::IndexRemoved);
+                    if (stop_after_successor(
+                            OOCPrivateHandoffCleanupResumeFaultPointV2::IndexRemovedDurable)) {
+                        return interrupted(OOCCleanupStage::IndexRemoved);
+                    }
+                    break;
+                case AuthorizedCleanupNextStepV2::RemoveIntent:
+                    remove_exact_authorized_cleanup_leaf_v2(
+                        directory->native_handle(), paths.intent_path.filename(),
+                        prefix.intent->snapshot, OOCCleanupStage::IntentRemoved);
+                    if (stop_after_successor(
+                            OOCPrivateHandoffCleanupResumeFaultPointV2::IntentRemovedDurable)) {
+                        return interrupted(OOCCleanupStage::IntentRemoved);
+                    }
+                    break;
+                case AuthorizedCleanupNextStepV2::RemoveOwner:
+                    remove_exact_authorized_cleanup_leaf_v2(
+                        directory->native_handle(),
+                        private_lease_owner_path(paths.private_directory).filename(),
+                        prefix.owner->snapshot, OOCCleanupStage::IntentRemoved);
+                    if (stop_after_successor(
+                            OOCPrivateHandoffCleanupResumeFaultPointV2::OwnerRemovedDurable)) {
+                        return interrupted(OOCCleanupStage::IntentRemoved);
+                    }
+                    break;
+                case AuthorizedCleanupNextStepV2::RemoveStaged:
+                    remove_exact_authorized_cleanup_leaf_v2(
+                        directory->native_handle(), paths.staged_path.filename(),
+                        prefix.staged->snapshot, OOCCleanupStage::IntentRemoved);
+                    if (stop_after_successor(
+                            OOCPrivateHandoffCleanupResumeFaultPointV2::StagedRemovedDurable)) {
+                        return interrupted(OOCCleanupStage::IntentRemoved);
+                    }
+                    break;
+                case AuthorizedCleanupNextStepV2::RemoveDirectory:
+                    remove_empty_authorized_cleanup_directory_v2(paths, lock, parent, *directory);
+                    directory.reset();
+                    if (stop_after_successor(OOCPrivateHandoffCleanupResumeFaultPointV2::
+                                                 PrivateDirectoryRemovedDurable)) {
+                        return interrupted(OOCCleanupStage::IntentRemoved);
+                    }
+                    break;
+                case AuthorizedCleanupNextStepV2::RemoveOwned:
+                    if (!prefix.owned) {
+                        fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::IntentRemoved,
+                             protocol_error());
+                    }
+                    remove_exact_authorized_cleanup_leaf_v2(
+                        parent.native_handle(), paths.lease_owned_path.filename(),
+                        prefix.owned->snapshot, OOCCleanupStage::IntentRemoved);
+                    if (stop_after_successor(
+                            OOCPrivateHandoffCleanupResumeFaultPointV2::OwnedRemovedDurable)) {
+                        return interrupted(OOCCleanupStage::IntentRemoved);
+                    }
+                    break;
+                case AuthorizedCleanupNextStepV2::IntentConversionRequired:
+                case AuthorizedCleanupNextStepV2::Complete:
+                    fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None,
+                         protocol_error());
+                }
+            }
+            fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None, protocol_error());
+        } catch (const Failure& failure) {
+            return failed(failure.status, failure.stage,
+                          failure.error ? failure.error : protocol_error());
+        } catch (const std::bad_alloc&) {
+            return failed(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None,
+                          std::make_error_code(std::errc::not_enough_memory));
+        } catch (const std::system_error& error) {
+            return failed(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None, error.code());
+        } catch (...) {
+            return failed(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None,
+                          protocol_error());
+        }
+#endif
+    }
+
+    friend OOCPrivateHandoffCleanupResumeResultV2 resume_authorized_private_handoff_cleanup_v2(
+        OOCPrivateHandoffCleanupAuthorizationReceipt&& authorization) noexcept;
+    friend OOCPrivateHandoffCleanupResumeResultV2
+    resume_authorized_private_handoff_cleanup_v2_for_trusted_test(
+        OOCPrivateHandoffCleanupResumeTestKeyV2&&,
+        OOCPrivateHandoffCleanupAuthorizationReceipt&& authorization,
+        OOCPrivateHandoffCleanupResumeTestHooksV2 hooks) noexcept;
+};
+
+static_assert(static_cast<std::uint8_t>(OOCPrivateHandoffCleanupResumeFaultPointV2::Count) == 19);
+static_assert(
+    static_cast<std::uint8_t>(OOCPrivateHandoffCleanupResumeDispositionV2::NamespaceAbsent) == 4);
+
+OOCPrivateHandoffCleanupResumeResultV2 resume_authorized_private_handoff_cleanup_v2(
+    OOCPrivateHandoffCleanupAuthorizationReceipt&& authorization) noexcept {
+    return OOCPrivateHandoffCleanupResumeExecutorV2::run(authorization, {});
+}
+
+OOCPrivateHandoffCleanupResumeResultV2
+resume_authorized_private_handoff_cleanup_v2_for_trusted_test(
+    OOCPrivateHandoffCleanupResumeTestKeyV2&&,
+    OOCPrivateHandoffCleanupAuthorizationReceipt&& authorization,
+    OOCPrivateHandoffCleanupResumeTestHooksV2 hooks) noexcept {
+    return OOCPrivateHandoffCleanupResumeExecutorV2::run(authorization, hooks);
 }
 
 OOCCleanupResult run_transaction(const std::filesystem::path& requested_base,

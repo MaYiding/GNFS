@@ -519,17 +519,76 @@ The authorization record is outside the lease being deleted and binds:
   OOC descriptor, native identities, and extents; and
 - record digest.
 
-The completion record binds the authorization digest, the exact cleanup-intent
-identity when one was published, parent-directory durability confirmation,
-expected namespace absence, and record digest. Per-worker authorization and
-completion records are published in manifest order. The merge commit remains
-valid after worker handoffs disappear because it is self-contained and each
-legitimate absence is explained by its external completion record.
+The completion record binds the authorization digest, an optional exact
+cleanup-intent identity, parent-directory durability confirmation, expected
+namespace absence, and record digest. A T2b invocation that observes the
+canonical intent retains its exact inode snapshot in the returned evidence.
+Cold staged-only or markerless recovery cannot reconstruct a deleted intent
+inode and returns `nullopt`; T5b must preserve that absence rather than invent
+an identity. Per-worker authorization and completion records are published in
+manifest order. The merge commit remains valid after worker handoffs disappear
+because it is self-contained and each legitimate absence is explained by its
+external completion record.
 
-Every intra-lease prefix is recoverable and tested: authorization canonical,
+T2b must recover and test every intra-lease prefix: authorization canonical,
 cleanup-intent pending/canonical, handoff present/consumed, index/data staging
 and removal, owner/lease-marker removal, private-directory removal, and
-external completion publication.
+parent-durable absence-evidence readiness. External completion publication is
+the T5b WaveStore responsibility.
+
+### T2b Cold-Resume Boundary
+
+T2a and T2b are separate lock epochs. T2a publishes or confirms the canonical
+V2 intent, spends both conversion capabilities after canonical visibility, and
+releases every reader, directory, parent, and same-open-file-description
+BaseLock alias before it returns. T2b starts afterward by opening one new,
+independent, non-creating BaseLock epoch. It never borrows, duplicates, or
+reacquires the T2a lock.
+
+The complete T2b invocation owns exactly one BaseLock, one parent directory
+descriptor, and at most one private-directory descriptor. The private
+descriptor may be closed after directory removal, but no replacement private
+descriptor may be opened during the same call. The executor retains the
+in-memory relation action claim until it has either returned durable absence
+evidence or stopped with reconciliation required.
+
+A pending-only V2 intent is a T2a publication prefix, not deletion authority.
+T2b returns `IntentConversionRequired` without spending external authorization
+or mutating the namespace. A canonical intent, canonical staged marker, or
+exact externally authorized markerless tail may admit cleanup after complete
+binding, inventory, inode, and held-handle revalidation. Once mutation is
+admitted, authorization spend is sticky; a later failure returns
+reconciliation required and never revives the receipt.
+
+The durable deletion order is fixed:
+
+1. consume the exact generic handoff;
+2. quarantine the exact index/data pair;
+3. publish and confirm the role-bound staged V2 marker;
+4. delete the quarantined data, then the quarantined index;
+5. remove the canonical intent;
+6. remove the owner marker;
+7. remove the staged marker;
+8. remove the empty private directory;
+9. remove the exact `OWNED` marker; and
+10. sync and revalidate the parent before returning durable absence evidence.
+
+Duplicate pending normalization belongs to its matching immutable-marker
+transition and does not change this authority order. Staged-only recovery may
+remove only already quarantined artifacts and the remaining tail; it can never
+delete a live pair. Every unlisted, replaced, foreign, mixed-role, or late
+pending prefix is preserved as a conflict.
+
+If the same T2b process observes the canonical intent, absence evidence binds
+that exact inode snapshot even after the intent is removed. A cold invocation
+that begins at staged-only or markerless state returns
+`cleanup_intent_snapshot == nullopt`. Both forms bind the base-path digest,
+external-authorization digest, lease ID, exact parent identity, confirmed
+parent durability, and expected namespace absence.
+
+Positive mutation remains macOS-only. Linux and Windows reject after pure
+authorization validation and before opening the cleanup namespace, spending
+the receipt, creating a pending marker, or performing any filesystem mutation.
 
 ### `MergeStartedV1`
 
@@ -676,11 +735,20 @@ intent is the sole cross-process recovery authority and both live capabilities
 are spent. Completion may be published only after exact namespace absence and
 parent-directory durability are revalidated.
 
-The lock order is permanent `WaveLock`, coordinator claim, every worker
-BaseLock in manifest/attempt order, merged target BaseLock, then the current
-worker's in-memory relation action claim. No OS lock is acquired after the
-merged target. Destruction releases the merged target first, workers in reverse
-manifest order, the coordinator claim, and finally the WaveLock. Positive
+That same-open-file-description rule ends at the T2a return boundary. T2b is a
+cold continuation in a new independent BaseLock epoch after every T2a alias is
+gone. The T2b call retains only its one fresh lock, one parent directory
+descriptor, at most one private-directory descriptor, and the final in-memory
+relation action claim. It does not reopen or duplicate any of them.
+
+The WaveStore epoch lock order is permanent `WaveLock`, coordinator claim,
+every worker BaseLock in manifest/attempt order, merged target BaseLock, then
+the current worker's in-memory relation action claim. No OS lock is acquired
+after the merged target. Destruction releases the merged target first, workers
+in reverse manifest order, the coordinator claim, and finally the WaveLock.
+T2b is not nested below a retained merged target or borrowed worker BaseLock.
+After the T2a aliases are gone, its independent relation epoch acquires only
+the exact target BaseLock and then its in-memory action claim. Positive
 filesystem mutation for this continuation remains macOS-only; Linux and
 Windows fail before spending the admission or creating a pending root record.
 
@@ -2942,8 +3010,10 @@ M4b restart recovery is split into explicit authority milestones:
   `WaveMergeCommitV1` and a committed-tail admission.
 - [x] M4b-P3a converts exact external authorization plus the already-held
   relation reader into canonical V2 cleanup intent without deleting artifacts.
-- [ ] M4b-P3b cold-classifies canonical/staged intent and executes the exact
-  intra-lease deletion tail through durable namespace absence.
+- [x] M4b-P3b cold-classifies canonical/staged intent in a new independent
+  BaseLock epoch and executes the exact intra-lease deletion tail through
+  durable namespace absence. Its dedicated crash, replacement, successor-drift,
+  and validation matrix is complete.
 - [ ] M4b-P4 completes manifest-order worker authorization, cleanup, and
   completion while retaining the merged corpus.
 
@@ -3188,7 +3258,7 @@ Synthesized from CEO and engineering review findings.
   - Surfaced by: security/test review, environment and retry-randomness closure.
   - Files: protocol header/source and core tests.
   - Verify: `./scripts/test.sh run test_distributed_sieve_resume --suite core`.
-- [ ] **T2 (P1, human: ~2 days / agent: ~4h)** — Relation storage —
+- [x] **T2 (P1, human: ~2 days / agent: ~4h)** — Relation storage —
   Complete the two-capability V2 authorized-cleanup transaction through durable
   namespace absence.
   - Surfaced by: cleanup-before-adoption, stale receipt, path-following, and authority-bridge risks; the rollback-revoking handoff and same-handle reader now exist.
@@ -3199,9 +3269,10 @@ Synthesized from CEO and engineering review findings.
   both capabilities; canonical-visible outcomes spend both and return either
   durable evidence or reconciliation-only disposition. This slice deletes
   nothing.
-- [ ] **T2b** — Cold-classify and resume canonical/staged V2 intent, consume the
+- [x] **T2b** — Cold-classify and resume
+  canonical/staged V2 intent in a new independent BaseLock epoch, consume the
   generic handoff, isolate/delete the exact artifacts, remove lease markers and
-  the private directory, and publish parent-durable absence evidence.
+  the private directory, and return parent-durable absence evidence.
 - [x] **T3 (P1, human: ~2 days / agent: ~3h)** — Wave ownership — Add stable root/lock identity, inherited descriptor hygiene, and lease-first bounded attempt chain.
   - Surfaced by: live-child, replaced-lock, dual-master, and retry-reset failure modes.
   - Files: resume store, distributed config, resume crash tests.
@@ -3493,7 +3564,8 @@ landing point.
 
 No path is permitted to fail silently. The critical gaps found by the reviewers
 are resolved as plan requirements. T5a and the non-deleting T2a conversion are
-complete; the remaining P1 implementation tasks are T2b and T5b.
+complete. T2b and its validation matrix are complete; T5b is the remaining P1
+completion work.
 
 ### Parallel implementation lanes
 
@@ -3533,11 +3605,11 @@ after M6 is a future evidence decision, not an implementation ambiguity.
 | DX Review | `/plan-devex-review` | Developer experience gaps | 0 | SKIPPED | internal storage/process protocol |
 
 **CROSS-MODEL:** architecture, security, and test reviews agree on the sealed
-prepared continuation, deterministic commit bytes, typed root inventory, and
-same-OFD two-capability cleanup boundary.
+prepared continuation, deterministic commit bytes, typed root inventory, the
+same-OFD T2a conversion boundary, and the independent T2b BaseLock epoch.
 
-**VERDICT:** CEO + ENG CLEARED — T5a and T2a are complete; implement T2b, then
-T5b in the frozen continuation order.
+**VERDICT:** CEO + ENG CLEARED: T5a, T2a, and T2b are complete. Implement T5b
+in the frozen continuation order.
 
 NO UNRESOLVED DECISIONS
 
@@ -3576,8 +3648,45 @@ Validation completed on macOS arm64:
 - `clang-format --dry-run --Werror` on changed C++ and `git diff --check`:
   passed.
 
-The next ordered effort is T2b, then T5b. T2b must cold-classify and complete
-the V2 intent deletion transaction through parent-durable namespace absence.
-T5b must mint per-worker authorization in manifest order, drive that exact
+That report handed off to T2b. The P3b report below records its completion. T5b
+must now mint per-worker authorization in manifest order, drive the completed
 relation tail, and publish worker cleanup completion while retaining the
 merged corpus. ACK, merged cleanup, and `WaveCompletedV1` remain M5 work.
+
+## M4b-P3b Implementation Report: 2026-08-01
+
+The current relation source contains the source-private
+`resume_authorized_private_handoff_cleanup_v2()` production entry and its
+trusted crash seam. It validates a live external authorization receipt before
+opening the cleanup namespace. On macOS it then opens one new, non-creating
+BaseLock, one parent directory descriptor, and at most one private-directory
+descriptor for the complete call. This is a new independent lock epoch after
+T2a has released every same-OFD alias.
+
+The implementation adds the sole `ResumeAuthorizedV2Cleanup` union action.
+Legacy actions continue to reject V2 markers. Its prefix reducer treats a
+pending-only intent as conversion required and implements the frozen durable
+order: handoff, quarantine pair, staged publication, data/index deletion,
+intent, owner, staged, private directory, `OWNED`, and parent-durable absence.
+It retains an exact canonical-intent snapshot only when the current invocation
+observes that inode. Cold staged-only and markerless entry therefore return
+`nullopt` in the absence evidence.
+
+Non-macOS builds return platform unsupported before opening the cleanup
+namespace, spending authorization, or mutating filesystem state. The current
+worktree also extends the union-policy matrix for the new action. This report
+records T2b as complete after the following validation:
+
+- Debug build and test catalog;
+- the authorized V2 core, artifact-crash, and lease-crash CTest entries;
+- the cleanup authority union and raw observer CTest entries;
+- the complete `test_ooc_cleanup_transaction` binary;
+- `./scripts/test.sh changed --deep` and `./scripts/test.sh gate`;
+- `clang-format --dry-run --Werror`, Markdown links, and `git diff --check`;
+  and
+- a final independent security review with no P0/P1 finding.
+
+The accepted residual boundary is the documented same-UID POSIX race between
+final directory identity validation and `unlinkat(..., AT_REMOVEDIR)`. It is
+outside the current threat model and is not reachable through a legal marker
+prefix. T5b is now the sole next P1 continuation milestone.

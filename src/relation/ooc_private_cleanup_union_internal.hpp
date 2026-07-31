@@ -156,8 +156,9 @@ struct PrivateCleanupUnionClassification final {
                                      const PrivateCleanupUnionClassification&) noexcept = default;
 };
 
-/// Every current entry group must name itself before it can consume the
-/// decision. V2 deliberately has no executor action.
+/// Every entry group must name itself before it can consume the decision. The
+/// sole V2 action is reserved for the source-private, externally authorized
+/// cold-resume executor; all legacy actions continue to reject V2 markers.
 enum class PrivateNamespaceAction : std::uint8_t {
     InspectHandoff,
     AdoptHandoff,
@@ -170,6 +171,7 @@ enum class PrivateNamespaceAction : std::uint8_t {
     PublishPrivateHandoff,
     ValidateFreshWriter,
     ActivateFreshLease,
+    ResumeAuthorizedV2Cleanup,
     Count,
 };
 

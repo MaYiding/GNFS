@@ -89,6 +89,10 @@ public:
     [[nodiscard]] static OOCPrivateHandoffCleanupIntentPublicationTestKeyV2 test_key() noexcept {
         return OOCPrivateHandoffCleanupIntentPublicationTestKeyV2();
     }
+
+    [[nodiscard]] static OOCPrivateHandoffCleanupResumeTestKeyV2 resume_test_key() noexcept {
+        return OOCPrivateHandoffCleanupResumeTestKeyV2();
+    }
 };
 
 } // namespace gnfs::relation::ooc_cleanup_detail
@@ -148,6 +152,10 @@ using gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupAuthorizationT
 using gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentPublicationDispositionV2;
 using gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentPublicationFaultPointV2;
 using gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentPublicationTestHooksV2;
+using gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupResumeDispositionV2;
+using gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupResumeFaultPointV2;
+using gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupResumeResultV2;
+using gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupResumeTestHooksV2;
 using gnfs::relation::ooc_cleanup_detail::PrivateCleanupActionAdmission;
 using gnfs::relation::ooc_cleanup_detail::PrivateCleanupActionPermit;
 using gnfs::relation::ooc_cleanup_detail::PrivateCleanupMarkerObservationKind;
@@ -184,8 +192,12 @@ using gnfs::relation::ooc_cleanup_detail::PrivateNamespaceAction;
 using gnfs::relation::ooc_cleanup_detail::PrivateNamespaceActionDisposition;
 using gnfs::relation::ooc_cleanup_detail::reconcile_private_handoff_from_permit;
 using gnfs::relation::ooc_cleanup_detail::reconcile_private_handoff_publication_for_resume_v1;
+using gnfs::relation::ooc_cleanup_detail::resume_authorized_private_handoff_cleanup_v2;
+using gnfs::relation::ooc_cleanup_detail::
+    resume_authorized_private_handoff_cleanup_v2_for_trusted_test;
 using gnfs::relation::ooc_cleanup_detail::revalidate_private_handoff_publication_resume_v1;
 using gnfs::relation::ooc_cleanup_detail::validate_private_handoff_publication_resume_v1;
+using gnfs::util::durable_immutable_record::RecordSnapshot;
 
 static_assert(std::is_constructible_v<OOCRelationWriter, const std::string&,
                                       OOCPrivateLeaseOwnershipReceipt&&,
@@ -217,6 +229,12 @@ static_assert(
 static_assert(
     !std::is_move_constructible_v<
         gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentPublicationTestKeyV2>);
+static_assert(!std::is_default_constructible_v<
+              gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupResumeTestKeyV2>);
+static_assert(!std::is_copy_constructible_v<
+              gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupResumeTestKeyV2>);
+static_assert(!std::is_move_constructible_v<
+              gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupResumeTestKeyV2>);
 static_assert(!std::is_default_constructible_v<OOCPrivateHandoffAdoptionReceipt>);
 static_assert(!std::is_copy_constructible_v<OOCPrivateHandoffAdoptionReceipt>);
 static_assert(!std::is_copy_assignable_v<OOCPrivateHandoffAdoptionReceipt>);
@@ -1004,7 +1022,18 @@ void test_private_lease_recovery_protocol_order_and_interruptions() {
 }
 
 [[nodiscard]] PrivateNamespaceActionDisposition
-expected_private_namespace_disposition(PrivateCleanupUnionBlock block) {
+expected_private_namespace_disposition(const PrivateCleanupUnionClassification& classification,
+                                       PrivateNamespaceAction action) {
+    if (action == PrivateNamespaceAction::ResumeAuthorizedV2Cleanup) {
+        if ((classification.block == PrivateCleanupUnionBlock::None ||
+             classification.block == PrivateCleanupUnionBlock::AuthorizedV2Present) &&
+            !classification.has_legacy_v1) {
+            return PrivateNamespaceActionDisposition::DelegateExistingRuntime;
+        }
+        if (classification.has_legacy_v1) {
+            return PrivateNamespaceActionDisposition::RejectNamespaceConflict;
+        }
+    }
     constexpr std::array dispositions{
         PrivateNamespaceActionDisposition::DelegateExistingRuntime,
         PrivateNamespaceActionDisposition::RejectForeignPreserved,
@@ -1014,7 +1043,7 @@ expected_private_namespace_disposition(PrivateCleanupUnionBlock block) {
         PrivateNamespaceActionDisposition::RejectNamespaceConflict,
     };
     static_assert(dispositions.size() == static_cast<std::size_t>(PrivateCleanupUnionBlock::Count));
-    return dispositions[static_cast<std::size_t>(block)];
+    return dispositions[static_cast<std::size_t>(classification.block)];
 }
 
 void test_private_cleanup_union_policy_exhaustive() {
@@ -1050,6 +1079,7 @@ void test_private_cleanup_union_policy_exhaustive() {
         PrivateNamespaceAction::PublishPrivateHandoff,
         PrivateNamespaceAction::ValidateFreshWriter,
         PrivateNamespaceAction::ActivateFreshLease,
+        PrivateNamespaceAction::ResumeAuthorizedV2Cleanup,
     };
     static_assert(actions.size() == static_cast<std::size_t>(PrivateNamespaceAction::Count));
 
@@ -1132,11 +1162,13 @@ void test_private_cleanup_union_policy_exhaustive() {
                                 CHECK(decision.classification == actual);
                                 CHECK(decision.action == action);
                                 CHECK(decision.disposition ==
-                                      expected_private_namespace_disposition(actual.block));
+                                      expected_private_namespace_disposition(actual, action));
                                 CHECK(gnfs::relation::ooc_cleanup_detail::
                                           decision_delegates_existing_runtime(decision) ==
-                                      (actual.block == PrivateCleanupUnionBlock::None));
-                                if (actual.has_v2_record) {
+                                      (expected_private_namespace_disposition(actual, action) ==
+                                       PrivateNamespaceActionDisposition::DelegateExistingRuntime));
+                                if (actual.has_v2_record &&
+                                    action != PrivateNamespaceAction::ResumeAuthorizedV2Cleanup) {
                                     CHECK(!gnfs::relation::ooc_cleanup_detail::
                                               decision_delegates_existing_runtime(decision));
                                 }
@@ -9097,6 +9129,849 @@ void test_authorized_cleanup_v2_conversion_rejects_precanonical_replacement() {
     }
 }
 
+struct AuthorizedCleanupResumeFixtureV2 final {
+    OOCCleanupPaths paths;
+    OOCPrivateHandoffCleanupAuthorizationBinding binding;
+    RecordSnapshot intent_snapshot;
+    OOCAuthorizedCleanupIntentV2 intent;
+};
+
+[[nodiscard]] OOCPrivateHandoffCleanupAuthorizationReceipt
+make_authorized_cleanup_resume_receipt_v2(
+    const OOCPrivateHandoffCleanupAuthorizationBinding& binding) {
+    auto live = std::make_shared<std::atomic_bool>(true);
+    return OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2::make(binding, live);
+}
+
+[[nodiscard]] AuthorizedCleanupResumeFixtureV2
+prepare_authorized_cleanup_resume_fixture_v2(const std::filesystem::path& base,
+                                             std::uint8_t digest_seed) {
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    auto prepared = prepare_private_handoff(base);
+    if (!publish_private_handoff(prepared).canonical()) {
+        throw std::runtime_error("could not publish authorized cleanup V2 fixture handoff");
+    }
+    auto adopted = OOCCleanupTransaction::adopt_private_handoff(base);
+    if (!adopted.adopted() || !adopted.adoption) {
+        throw std::runtime_error("could not adopt authorized cleanup V2 fixture handoff");
+    }
+    OOCPrivateHandoffReader reader(std::move(*adopted.adoption));
+    if (!reader.valid()) {
+        throw std::runtime_error("authorized cleanup V2 fixture reader is invalid");
+    }
+
+    auto binding = authorized_cleanup_binding_for_reader(
+        paths, reader, authorized_cleanup_test_digest(digest_seed));
+    auto authorization = make_authorized_cleanup_resume_receipt_v2(binding);
+    const auto converted = convert_authorized_private_handoff_to_cleanup_intent_v2(
+        std::move(reader), std::move(authorization));
+    if (!converted.intent_published() || !converted.evidence || !authorization.spent() ||
+        converted.result.status != OOCCleanupStatus::RecoveryRequired ||
+        !entry_exists_no_follow(paths.intent_path) ||
+        entry_exists_no_follow(paths.intent_pending_path)) {
+        throw std::runtime_error("could not publish canonical authorized cleanup V2 intent");
+    }
+
+    const auto intent_bytes = read_test_bytes(paths.intent_path);
+    const auto decoded = gnfs::relation::decode_ooc_authorized_cleanup_intent(
+        intent_bytes, OOCAuthorizedCleanupMarkerKindV2::intent);
+    if (!decoded || !decoded.value) {
+        throw std::runtime_error("could not decode canonical authorized cleanup V2 intent");
+    }
+    return {
+        .paths = paths,
+        .binding = std::move(binding),
+        .intent_snapshot = converted.evidence->intent_snapshot,
+        .intent = *decoded.value,
+    };
+}
+
+void check_authorized_cleanup_v2_namespace_absent(const AuthorizedCleanupResumeFixtureV2& fixture) {
+    const auto& paths = fixture.paths;
+    CHECK(entry_exists_no_follow(paths.lock_path));
+    if (entry_exists_no_follow(paths.lock_path)) {
+        CHECK(native_identity_for_test_path(paths.lock_path) == fixture.binding.lock_identity);
+    }
+    const std::array absent_paths{
+        paths.private_directory,
+        paths.index_path,
+        paths.data_path,
+        paths.intent_path,
+        paths.intent_pending_path,
+        paths.staged_path,
+        paths.staged_pending_path,
+        paths.lease_reserved_path,
+        paths.lease_reserved_pending_path,
+        paths.lease_owned_path,
+        paths.lease_owned_pending_path,
+        paths.private_handoff_path,
+        paths.private_handoff_pending_path,
+        paths.private_handoff_rollback_path,
+        paths.quarantine_index_path,
+        paths.quarantine_data_path,
+    };
+    for (const auto& path : absent_paths) {
+        CHECK(!entry_exists_no_follow(path));
+    }
+}
+
+void check_authorized_cleanup_v2_absence_evidence(
+    const OOCPrivateHandoffCleanupResumeResultV2& result,
+    const AuthorizedCleanupResumeFixtureV2& fixture,
+    const std::optional<RecordSnapshot>& expected_intent_snapshot) {
+    CHECK(result.result.status == OOCCleanupStatus::Completed);
+    CHECK(result.result.stage == OOCCleanupStage::Completed);
+    CHECK(!result.result.native_error);
+    CHECK(result.disposition == OOCPrivateHandoffCleanupResumeDispositionV2::NamespaceAbsent);
+    CHECK(result.namespace_absent());
+    CHECK(result.evidence.has_value());
+    if (result.evidence) {
+        CHECK(result.evidence->base_path_digest == fixture.intent.base_path_digest);
+        CHECK(result.evidence->external_authorization_digest ==
+              fixture.binding.external_authorization_digest);
+        CHECK(result.evidence->lease_id == fixture.binding.lease_id);
+        CHECK(result.evidence->cleanup_intent_snapshot == expected_intent_snapshot);
+        CHECK(result.evidence->parent_directory_identity ==
+              fixture.binding.parent_directory_identity);
+        CHECK(result.evidence->parent_directory_durability_confirmed);
+        CHECK(result.evidence->expected_namespace_absent);
+    }
+    check_authorized_cleanup_v2_namespace_absent(fixture);
+}
+
+struct AuthorizedCleanupPrefixExpectationV2 final {
+    bool private_directory = true;
+    bool owned = true;
+    bool owner = false;
+    bool handoff = false;
+    bool index = false;
+    bool data = false;
+    bool intent = false;
+    bool intent_pending = false;
+    bool staged = false;
+    bool staged_pending = false;
+    bool quarantine_index = false;
+    bool quarantine_data = false;
+};
+
+[[nodiscard]] AuthorizedCleanupPrefixExpectationV2
+authorized_cleanup_v2_fault_prefix(OOCPrivateHandoffCleanupResumeFaultPointV2 point) {
+    AuthorizedCleanupPrefixExpectationV2 expected;
+    switch (point) {
+    case OOCPrivateHandoffCleanupResumeFaultPointV2::RecoveryPermitAcquired:
+    case OOCPrivateHandoffCleanupResumeFaultPointV2::IntentCanonicalReconfirmedDurable:
+    case OOCPrivateHandoffCleanupResumeFaultPointV2::IntentDuplicatePendingRemovedDurable:
+        expected.owner = true;
+        expected.handoff = true;
+        expected.index = true;
+        expected.data = true;
+        expected.intent = true;
+        break;
+    case OOCPrivateHandoffCleanupResumeFaultPointV2::HandoffRemovedDurable:
+        expected.owner = true;
+        expected.index = true;
+        expected.data = true;
+        expected.intent = true;
+        break;
+    case OOCPrivateHandoffCleanupResumeFaultPointV2::IndexQuarantinedDurable:
+        expected.owner = true;
+        expected.data = true;
+        expected.intent = true;
+        expected.quarantine_index = true;
+        break;
+    case OOCPrivateHandoffCleanupResumeFaultPointV2::PairQuarantinedDurable:
+        expected.owner = true;
+        expected.intent = true;
+        expected.quarantine_index = true;
+        expected.quarantine_data = true;
+        break;
+    case OOCPrivateHandoffCleanupResumeFaultPointV2::StagedPendingDurable:
+        expected.owner = true;
+        expected.intent = true;
+        expected.staged_pending = true;
+        expected.quarantine_index = true;
+        expected.quarantine_data = true;
+        break;
+    case OOCPrivateHandoffCleanupResumeFaultPointV2::StagedCanonicalPromoted:
+    case OOCPrivateHandoffCleanupResumeFaultPointV2::StagedCanonicalDurable:
+    case OOCPrivateHandoffCleanupResumeFaultPointV2::StagedDuplicatePendingRemovedDurable:
+        expected.owner = true;
+        expected.intent = true;
+        expected.staged = true;
+        expected.quarantine_index = true;
+        expected.quarantine_data = true;
+        break;
+    case OOCPrivateHandoffCleanupResumeFaultPointV2::DataRemovedDurable:
+        expected.owner = true;
+        expected.intent = true;
+        expected.staged = true;
+        expected.quarantine_index = true;
+        break;
+    case OOCPrivateHandoffCleanupResumeFaultPointV2::IndexRemovedDurable:
+        expected.owner = true;
+        expected.intent = true;
+        expected.staged = true;
+        break;
+    case OOCPrivateHandoffCleanupResumeFaultPointV2::IntentRemovedDurable:
+        expected.owner = true;
+        expected.staged = true;
+        break;
+    case OOCPrivateHandoffCleanupResumeFaultPointV2::OwnerRemovedDurable:
+        expected.staged = true;
+        break;
+    case OOCPrivateHandoffCleanupResumeFaultPointV2::StagedRemovedDurable:
+        break;
+    case OOCPrivateHandoffCleanupResumeFaultPointV2::PrivateDirectoryRemovedDurable:
+        expected.private_directory = false;
+        break;
+    case OOCPrivateHandoffCleanupResumeFaultPointV2::OwnedRemovedDurable:
+    case OOCPrivateHandoffCleanupResumeFaultPointV2::ParentAbsenceDurable:
+    case OOCPrivateHandoffCleanupResumeFaultPointV2::AbsenceEvidenceReady:
+        expected.private_directory = false;
+        expected.owned = false;
+        break;
+    case OOCPrivateHandoffCleanupResumeFaultPointV2::Count:
+        throw std::runtime_error("invalid authorized cleanup V2 fault point");
+    }
+    return expected;
+}
+
+void check_authorized_cleanup_v2_fault_prefix(const OOCCleanupPaths& paths,
+                                              OOCPrivateHandoffCleanupResumeFaultPointV2 point) {
+    const auto expected = authorized_cleanup_v2_fault_prefix(point);
+    const auto owner_path =
+        gnfs::relation::ooc_cleanup_detail::private_lease_owner_path(paths.private_directory);
+    CHECK(entry_exists_no_follow(paths.lock_path));
+    CHECK(entry_exists_no_follow(paths.private_directory) == expected.private_directory);
+    CHECK(entry_exists_no_follow(paths.lease_owned_path) == expected.owned);
+    CHECK(entry_exists_no_follow(owner_path) == expected.owner);
+    CHECK(entry_exists_no_follow(paths.private_handoff_path) == expected.handoff);
+    CHECK(entry_exists_no_follow(paths.index_path) == expected.index);
+    CHECK(entry_exists_no_follow(paths.data_path) == expected.data);
+    CHECK(entry_exists_no_follow(paths.intent_path) == expected.intent);
+    CHECK(entry_exists_no_follow(paths.intent_pending_path) == expected.intent_pending);
+    CHECK(entry_exists_no_follow(paths.staged_path) == expected.staged);
+    CHECK(entry_exists_no_follow(paths.staged_pending_path) == expected.staged_pending);
+    CHECK(entry_exists_no_follow(paths.quarantine_index_path) == expected.quarantine_index);
+    CHECK(entry_exists_no_follow(paths.quarantine_data_path) == expected.quarantine_data);
+    CHECK(!entry_exists_no_follow(paths.lease_reserved_path));
+    CHECK(!entry_exists_no_follow(paths.lease_reserved_pending_path));
+    CHECK(!entry_exists_no_follow(paths.lease_owned_pending_path));
+    CHECK(!entry_exists_no_follow(paths.private_handoff_pending_path));
+    CHECK(!entry_exists_no_follow(paths.private_handoff_rollback_path));
+}
+
+constexpr std::array AUTHORIZED_CLEANUP_V2_ARTIFACT_FAULT_POINTS{
+    OOCPrivateHandoffCleanupResumeFaultPointV2::RecoveryPermitAcquired,
+    OOCPrivateHandoffCleanupResumeFaultPointV2::IntentCanonicalReconfirmedDurable,
+    OOCPrivateHandoffCleanupResumeFaultPointV2::IntentDuplicatePendingRemovedDurable,
+    OOCPrivateHandoffCleanupResumeFaultPointV2::HandoffRemovedDurable,
+    OOCPrivateHandoffCleanupResumeFaultPointV2::IndexQuarantinedDurable,
+    OOCPrivateHandoffCleanupResumeFaultPointV2::PairQuarantinedDurable,
+    OOCPrivateHandoffCleanupResumeFaultPointV2::StagedPendingDurable,
+    OOCPrivateHandoffCleanupResumeFaultPointV2::StagedCanonicalPromoted,
+    OOCPrivateHandoffCleanupResumeFaultPointV2::StagedCanonicalDurable,
+    OOCPrivateHandoffCleanupResumeFaultPointV2::StagedDuplicatePendingRemovedDurable,
+    OOCPrivateHandoffCleanupResumeFaultPointV2::DataRemovedDurable,
+    OOCPrivateHandoffCleanupResumeFaultPointV2::IndexRemovedDurable,
+};
+
+constexpr std::array AUTHORIZED_CLEANUP_V2_LEASE_FAULT_POINTS{
+    OOCPrivateHandoffCleanupResumeFaultPointV2::IntentRemovedDurable,
+    OOCPrivateHandoffCleanupResumeFaultPointV2::OwnerRemovedDurable,
+    OOCPrivateHandoffCleanupResumeFaultPointV2::StagedRemovedDurable,
+    OOCPrivateHandoffCleanupResumeFaultPointV2::PrivateDirectoryRemovedDurable,
+    OOCPrivateHandoffCleanupResumeFaultPointV2::OwnedRemovedDurable,
+    OOCPrivateHandoffCleanupResumeFaultPointV2::ParentAbsenceDurable,
+    OOCPrivateHandoffCleanupResumeFaultPointV2::AbsenceEvidenceReady,
+};
+
+[[nodiscard]] constexpr bool authorized_cleanup_v2_fault_points_are_closed() noexcept {
+    std::size_t expected = 0;
+    for (const auto point : AUTHORIZED_CLEANUP_V2_ARTIFACT_FAULT_POINTS) {
+        if (static_cast<std::size_t>(point) != expected++) {
+            return false;
+        }
+    }
+    for (const auto point : AUTHORIZED_CLEANUP_V2_LEASE_FAULT_POINTS) {
+        if (static_cast<std::size_t>(point) != expected++) {
+            return false;
+        }
+    }
+    return expected == static_cast<std::size_t>(OOCPrivateHandoffCleanupResumeFaultPointV2::Count);
+}
+
+static_assert(authorized_cleanup_v2_fault_points_are_closed());
+
+enum class AuthorizedCleanupResumeInjectionV2 : std::uint8_t {
+    None,
+    ReplaceIntentSameBytes,
+    CreateForeignLeaf,
+};
+
+struct AuthorizedCleanupResumeHookContextV2 final {
+    OOCPrivateHandoffCleanupResumeFaultPointV2 target =
+        OOCPrivateHandoffCleanupResumeFaultPointV2::Count;
+    AuthorizedCleanupResumeInjectionV2 injection = AuthorizedCleanupResumeInjectionV2::None;
+    std::filesystem::path mutation_path;
+    std::filesystem::path snapshot_root;
+    bool stop = true;
+    bool invoked = false;
+    bool injection_succeeded = false;
+    bool failed = false;
+    std::optional<NamespaceTreeSnapshot> after_injection;
+};
+
+[[nodiscard]] bool
+authorized_cleanup_resume_hook_v2(OOCPrivateHandoffCleanupResumeFaultPointV2 point,
+                                  void* opaque) noexcept {
+    auto& context = *static_cast<AuthorizedCleanupResumeHookContextV2*>(opaque);
+    if (point != context.target || context.invoked) {
+        return false;
+    }
+    context.invoked = true;
+    try {
+        switch (context.injection) {
+        case AuthorizedCleanupResumeInjectionV2::None:
+            context.injection_succeeded = true;
+            break;
+        case AuthorizedCleanupResumeInjectionV2::ReplaceIntentSameBytes:
+            context.injection_succeeded =
+                replace_private_control_leaf_same_bytes(context.mutation_path);
+            break;
+        case AuthorizedCleanupResumeInjectionV2::CreateForeignLeaf:
+            context.injection_succeeded =
+                create_test_leaf_noexcept(context.mutation_path, "foreign authorized cleanup leaf");
+            break;
+        }
+        if (!context.injection_succeeded) {
+            context.failed = true;
+        } else if (!context.snapshot_root.empty()) {
+            context.after_injection = capture_namespace_tree(context.snapshot_root);
+        }
+    } catch (...) {
+        context.failed = true;
+    }
+    return context.failed || context.stop;
+}
+
+void prepare_authorized_cleanup_v2_fault_specific_prefix(
+    const AuthorizedCleanupResumeFixtureV2& fixture,
+    OOCPrivateHandoffCleanupResumeFaultPointV2 point) {
+    if (point == OOCPrivateHandoffCleanupResumeFaultPointV2::IntentDuplicatePendingRemovedDurable) {
+        write_private_control_bytes(fixture.paths.intent_pending_path,
+                                    read_test_bytes(fixture.paths.intent_path));
+        return;
+    }
+    if (point != OOCPrivateHandoffCleanupResumeFaultPointV2::StagedDuplicatePendingRemovedDurable) {
+        return;
+    }
+
+    auto priming_authorization = make_authorized_cleanup_resume_receipt_v2(fixture.binding);
+    AuthorizedCleanupResumeHookContextV2 priming_context{
+        .target = OOCPrivateHandoffCleanupResumeFaultPointV2::StagedCanonicalDurable,
+    };
+    const auto primed = resume_authorized_private_handoff_cleanup_v2_for_trusted_test(
+        OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2::resume_test_key(),
+        std::move(priming_authorization),
+        OOCPrivateHandoffCleanupResumeTestHooksV2{
+            .stop_after = authorized_cleanup_resume_hook_v2,
+            .context = &priming_context,
+        });
+    if (!priming_context.invoked || priming_context.failed ||
+        primed.result.status != OOCCleanupStatus::Interrupted ||
+        !entry_exists_no_follow(fixture.paths.staged_path) ||
+        entry_exists_no_follow(fixture.paths.staged_pending_path)) {
+        throw std::runtime_error("could not prepare duplicate staged V2 prefix");
+    }
+    write_private_control_bytes(fixture.paths.staged_pending_path,
+                                read_test_bytes(fixture.paths.staged_path));
+}
+
+[[nodiscard]] bool authorized_cleanup_v2_fault_prefix_retains_intent(
+    OOCPrivateHandoffCleanupResumeFaultPointV2 point) noexcept {
+    return static_cast<std::size_t>(point) <=
+           static_cast<std::size_t>(
+               OOCPrivateHandoffCleanupResumeFaultPointV2::IndexRemovedDurable);
+}
+
+void test_authorized_cleanup_v2_canonical_completion_evidence() {
+    TempDirectory temp;
+    const auto fixture = prepare_authorized_cleanup_resume_fixture_v2(
+        temp.path() / "authorized-v2-canonical.gnfs-sink-lease" / "corpus", 0x31);
+    auto authorization = make_authorized_cleanup_resume_receipt_v2(fixture.binding);
+    const auto completed = resume_authorized_private_handoff_cleanup_v2(std::move(authorization));
+    CHECK(authorization.spent());
+    check_authorized_cleanup_v2_absence_evidence(
+        completed, fixture, std::optional<RecordSnapshot>{fixture.intent_snapshot});
+}
+
+void test_authorized_cleanup_v2_pending_only_requires_conversion() {
+    TempDirectory temp;
+    const auto base = temp.path() / "authorized-v2-pending-only.gnfs-sink-lease" / "corpus";
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    auto prepared = prepare_private_handoff(base);
+    CHECK(publish_private_handoff(prepared).canonical());
+    auto adopted = OOCCleanupTransaction::adopt_private_handoff(base);
+    if (!adopted.adopted() || !adopted.adoption) {
+        throw std::runtime_error("could not adopt pending-only authorized cleanup fixture");
+    }
+    auto binding = [&] {
+        OOCPrivateHandoffReader reader(std::move(*adopted.adoption));
+        auto current_binding = authorized_cleanup_binding_for_reader(
+            paths, reader, authorized_cleanup_test_digest(0x41));
+        auto conversion_authorization = make_authorized_cleanup_resume_receipt_v2(current_binding);
+        AuthorizedCleanupConversionHookContext conversion_context{
+            .target = OOCPrivateHandoffCleanupIntentPublicationFaultPointV2::IntentPendingDurable,
+        };
+        const auto interrupted =
+            convert_authorized_private_handoff_to_cleanup_intent_v2_for_trusted_test(
+                OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2::test_key(), std::move(reader),
+                std::move(conversion_authorization),
+                OOCPrivateHandoffCleanupIntentPublicationTestHooksV2{
+                    .stop_after = authorized_cleanup_conversion_hook,
+                    .context = &conversion_context,
+                });
+        CHECK(conversion_context.invoked);
+        CHECK(interrupted.result.status == OOCCleanupStatus::Interrupted);
+        CHECK(interrupted.capabilities_retained());
+        CHECK(!conversion_authorization.spent());
+        return current_binding;
+    }();
+    CHECK(!entry_exists_no_follow(paths.intent_path));
+    CHECK(entry_exists_no_follow(paths.intent_pending_path));
+
+    const auto before = capture_namespace_tree(temp.path());
+    auto authorization = make_authorized_cleanup_resume_receipt_v2(binding);
+    const auto conversion_required =
+        resume_authorized_private_handoff_cleanup_v2(std::move(authorization));
+    CHECK(conversion_required.result.status == OOCCleanupStatus::RecoveryRequired);
+    CHECK(conversion_required.disposition ==
+          OOCPrivateHandoffCleanupResumeDispositionV2::IntentConversionRequired);
+    CHECK(conversion_required.authorization_retained());
+    CHECK(!conversion_required.evidence.has_value());
+    CHECK(!authorization.spent());
+    CHECK(capture_namespace_tree(temp.path()) == before);
+}
+
+void test_authorized_cleanup_v2_fault_prefixes_and_cold_recovery(
+    std::span<const OOCPrivateHandoffCleanupResumeFaultPointV2> fault_points,
+    std::string_view fixture_prefix, std::uint8_t digest_seed) {
+    TempDirectory temp;
+    for (std::size_t index = 0; index < fault_points.size(); ++index) {
+        const auto point = fault_points[index];
+        const auto fixture = prepare_authorized_cleanup_resume_fixture_v2(
+            temp.path() /
+                (std::string(fixture_prefix) + "-" + std::to_string(index) + ".gnfs-sink-lease") /
+                "corpus",
+            static_cast<std::uint8_t>(digest_seed + index));
+        prepare_authorized_cleanup_v2_fault_specific_prefix(fixture, point);
+
+        auto interrupted_authorization = make_authorized_cleanup_resume_receipt_v2(fixture.binding);
+        AuthorizedCleanupResumeHookContextV2 context{
+            .target = point,
+        };
+        const auto interrupted = resume_authorized_private_handoff_cleanup_v2_for_trusted_test(
+            OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2::resume_test_key(),
+            std::move(interrupted_authorization),
+            OOCPrivateHandoffCleanupResumeTestHooksV2{
+                .stop_after = authorized_cleanup_resume_hook_v2,
+                .context = &context,
+            });
+        CHECK(context.invoked);
+        CHECK(!context.failed);
+        CHECK(interrupted.result.status == OOCCleanupStatus::Interrupted);
+        CHECK(!interrupted.evidence.has_value());
+        if (point == OOCPrivateHandoffCleanupResumeFaultPointV2::RecoveryPermitAcquired) {
+            CHECK(interrupted.authorization_retained());
+            CHECK(!interrupted_authorization.spent());
+        } else {
+            CHECK(interrupted.reconciliation_required());
+            CHECK(interrupted_authorization.spent());
+        }
+        check_authorized_cleanup_v2_fault_prefix(fixture.paths, point);
+
+        auto recovery_authorization = make_authorized_cleanup_resume_receipt_v2(fixture.binding);
+        const auto recovered =
+            resume_authorized_private_handoff_cleanup_v2(std::move(recovery_authorization));
+        CHECK(recovery_authorization.spent());
+        const auto expected_intent_snapshot =
+            authorized_cleanup_v2_fault_prefix_retains_intent(point)
+                ? std::optional<RecordSnapshot>{fixture.intent_snapshot}
+                : std::nullopt;
+        check_authorized_cleanup_v2_absence_evidence(recovered, fixture, expected_intent_snapshot);
+    }
+}
+
+constexpr int AUTHORIZED_CLEANUP_V2_CRASH_EXIT_CODE = 86;
+
+struct AuthorizedCleanupCrashContextV2 final {
+    OOCPrivateHandoffCleanupResumeFaultPointV2 target =
+        OOCPrivateHandoffCleanupResumeFaultPointV2::Count;
+};
+
+[[nodiscard]] bool
+crash_authorized_cleanup_resume_v2(OOCPrivateHandoffCleanupResumeFaultPointV2 point,
+                                   void* opaque) noexcept {
+    const auto& context = *static_cast<const AuthorizedCleanupCrashContextV2*>(opaque);
+    if (point == context.target) {
+        std::_Exit(AUTHORIZED_CLEANUP_V2_CRASH_EXIT_CODE);
+    }
+    return false;
+}
+
+void test_authorized_cleanup_v2_process_crash_prefixes_and_cold_recovery(
+    std::span<const OOCPrivateHandoffCleanupResumeFaultPointV2> fault_points,
+    std::string_view fixture_prefix, std::uint8_t digest_seed) {
+    TempDirectory temp;
+    for (std::size_t index = 0; index < fault_points.size(); ++index) {
+        const auto point = fault_points[index];
+        const auto fixture = prepare_authorized_cleanup_resume_fixture_v2(
+            temp.path() /
+                (std::string(fixture_prefix) + "-" + std::to_string(index) + ".gnfs-sink-lease") /
+                "corpus",
+            static_cast<std::uint8_t>(digest_seed + index));
+        prepare_authorized_cleanup_v2_fault_specific_prefix(fixture, point);
+
+        const pid_t child = ::fork();
+        if (child < 0) {
+            throw std::system_error(errno, std::generic_category(),
+                                    "fork authorized cleanup V2 crash child");
+        }
+        if (child == 0) {
+            try {
+                auto authorization = make_authorized_cleanup_resume_receipt_v2(fixture.binding);
+                AuthorizedCleanupCrashContextV2 context{
+                    .target = point,
+                };
+                (void)resume_authorized_private_handoff_cleanup_v2_for_trusted_test(
+                    OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2::resume_test_key(),
+                    std::move(authorization),
+                    OOCPrivateHandoffCleanupResumeTestHooksV2{
+                        .stop_after = crash_authorized_cleanup_resume_v2,
+                        .context = &context,
+                    });
+            } catch (...) {
+                std::_Exit(87);
+            }
+            std::_Exit(88);
+        }
+
+        int status = 0;
+        pid_t waited = -1;
+        do {
+            waited = ::waitpid(child, &status, 0);
+        } while (waited < 0 && errno == EINTR);
+        if (waited != child) {
+            throw std::system_error(errno == 0 ? ECHILD : errno, std::generic_category(),
+                                    "wait authorized cleanup V2 crash child");
+        }
+        CHECK(WIFEXITED(status));
+        if (WIFEXITED(status)) {
+            CHECK(WEXITSTATUS(status) == AUTHORIZED_CLEANUP_V2_CRASH_EXIT_CODE);
+        }
+        if (!WIFEXITED(status) || WEXITSTATUS(status) != AUTHORIZED_CLEANUP_V2_CRASH_EXIT_CODE) {
+            throw std::runtime_error("authorized cleanup V2 child missed crash hook");
+        }
+        check_authorized_cleanup_v2_fault_prefix(fixture.paths, point);
+
+        auto recovery_authorization = make_authorized_cleanup_resume_receipt_v2(fixture.binding);
+        const auto recovered =
+            resume_authorized_private_handoff_cleanup_v2(std::move(recovery_authorization));
+        CHECK(recovery_authorization.spent());
+        const auto expected_intent_snapshot =
+            authorized_cleanup_v2_fault_prefix_retains_intent(point)
+                ? std::optional<RecordSnapshot>{fixture.intent_snapshot}
+                : std::nullopt;
+        check_authorized_cleanup_v2_absence_evidence(recovered, fixture, expected_intent_snapshot);
+    }
+}
+
+void test_authorized_cleanup_v2_cold_tail_evidence_omits_intent_identity() {
+    TempDirectory temp;
+    constexpr std::array tail_points{
+        OOCPrivateHandoffCleanupResumeFaultPointV2::IntentRemovedDurable,
+        OOCPrivateHandoffCleanupResumeFaultPointV2::StagedRemovedDurable,
+    };
+    for (std::size_t index = 0; index < tail_points.size(); ++index) {
+        const auto fixture = prepare_authorized_cleanup_resume_fixture_v2(
+            temp.path() /
+                ("authorized-v2-cold-tail-" + std::to_string(index) + ".gnfs-sink-lease") /
+                "corpus",
+            static_cast<std::uint8_t>(0x61U + index));
+        auto interrupted_authorization = make_authorized_cleanup_resume_receipt_v2(fixture.binding);
+        AuthorizedCleanupResumeHookContextV2 context{
+            .target = tail_points[index],
+        };
+        const auto interrupted = resume_authorized_private_handoff_cleanup_v2_for_trusted_test(
+            OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2::resume_test_key(),
+            std::move(interrupted_authorization),
+            OOCPrivateHandoffCleanupResumeTestHooksV2{
+                .stop_after = authorized_cleanup_resume_hook_v2,
+                .context = &context,
+            });
+        CHECK(context.invoked);
+        CHECK(interrupted.result.status == OOCCleanupStatus::Interrupted);
+        check_authorized_cleanup_v2_fault_prefix(fixture.paths, tail_points[index]);
+
+        auto recovery_authorization = make_authorized_cleanup_resume_receipt_v2(fixture.binding);
+        const auto recovered =
+            resume_authorized_private_handoff_cleanup_v2(std::move(recovery_authorization));
+        check_authorized_cleanup_v2_absence_evidence(recovered, fixture, std::nullopt);
+    }
+}
+
+void test_authorized_cleanup_v2_rejects_same_byte_intent_replacement() {
+    TempDirectory temp;
+    const auto fixture = prepare_authorized_cleanup_resume_fixture_v2(
+        temp.path() / "authorized-v2-replaced-intent.gnfs-sink-lease" / "corpus", 0x71);
+    const auto intent_bytes = read_test_bytes(fixture.paths.intent_path);
+    const auto intent_identity = native_identity_for_test_path(fixture.paths.intent_path);
+    auto authorization = make_authorized_cleanup_resume_receipt_v2(fixture.binding);
+    AuthorizedCleanupResumeHookContextV2 context{
+        .target = OOCPrivateHandoffCleanupResumeFaultPointV2::RecoveryPermitAcquired,
+        .injection = AuthorizedCleanupResumeInjectionV2::ReplaceIntentSameBytes,
+        .mutation_path = fixture.paths.intent_path,
+        .snapshot_root = temp.path(),
+        .stop = false,
+    };
+    const auto rejected = resume_authorized_private_handoff_cleanup_v2_for_trusted_test(
+        OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2::resume_test_key(),
+        std::move(authorization),
+        OOCPrivateHandoffCleanupResumeTestHooksV2{
+            .stop_after = authorized_cleanup_resume_hook_v2,
+            .context = &context,
+        });
+    CHECK(context.invoked);
+    CHECK(context.injection_succeeded);
+    CHECK(!context.failed);
+    CHECK(context.after_injection.has_value());
+    CHECK(rejected.result.status == OOCCleanupStatus::ForeignReplacementPreserved);
+    CHECK(rejected.authorization_retained());
+    CHECK(!rejected.evidence.has_value());
+    CHECK(!authorization.spent());
+    CHECK(entry_exists_no_follow(fixture.paths.intent_path));
+    CHECK(read_test_bytes(fixture.paths.intent_path) == intent_bytes);
+    CHECK(native_identity_for_test_path(fixture.paths.intent_path) != intent_identity);
+    if (context.after_injection) {
+        CHECK(capture_namespace_tree(temp.path()) == *context.after_injection);
+    }
+    CHECK(entry_exists_no_follow(fixture.paths.private_handoff_path));
+    CHECK(entry_exists_no_follow(fixture.paths.index_path));
+    CHECK(entry_exists_no_follow(fixture.paths.data_path));
+}
+
+void test_authorized_cleanup_v2_rejects_foreign_leaf_without_overreach() {
+    TempDirectory temp;
+    const auto fixture = prepare_authorized_cleanup_resume_fixture_v2(
+        temp.path() / "authorized-v2-foreign-leaf.gnfs-sink-lease" / "corpus", 0x81);
+    const auto foreign_path = fixture.paths.private_directory / "foreign.authorized-cleanup-test";
+    auto authorization = make_authorized_cleanup_resume_receipt_v2(fixture.binding);
+    AuthorizedCleanupResumeHookContextV2 context{
+        .target = OOCPrivateHandoffCleanupResumeFaultPointV2::RecoveryPermitAcquired,
+        .injection = AuthorizedCleanupResumeInjectionV2::CreateForeignLeaf,
+        .mutation_path = foreign_path,
+        .snapshot_root = temp.path(),
+        .stop = false,
+    };
+    const auto rejected = resume_authorized_private_handoff_cleanup_v2_for_trusted_test(
+        OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2::resume_test_key(),
+        std::move(authorization),
+        OOCPrivateHandoffCleanupResumeTestHooksV2{
+            .stop_after = authorized_cleanup_resume_hook_v2,
+            .context = &context,
+        });
+    CHECK(context.invoked);
+    CHECK(context.injection_succeeded);
+    CHECK(!context.failed);
+    CHECK(context.after_injection.has_value());
+    CHECK(rejected.result.status == OOCCleanupStatus::ForeignReplacementPreserved);
+    CHECK(rejected.authorization_retained());
+    CHECK(!rejected.evidence.has_value());
+    CHECK(!authorization.spent());
+    CHECK(entry_exists_no_follow(foreign_path));
+    if (context.after_injection) {
+        CHECK(capture_namespace_tree(temp.path()) == *context.after_injection);
+    }
+    CHECK(entry_exists_no_follow(fixture.paths.intent_path));
+    CHECK(entry_exists_no_follow(fixture.paths.private_handoff_path));
+    CHECK(entry_exists_no_follow(fixture.paths.index_path));
+    CHECK(entry_exists_no_follow(fixture.paths.data_path));
+}
+
+struct AuthorizedCleanupSuccessorDriftContextV2 final {
+    OOCPrivateHandoffCleanupResumeFaultPointV2 target =
+        OOCPrivateHandoffCleanupResumeFaultPointV2::Count;
+    std::filesystem::path leaf;
+    std::vector<std::byte> exact_bytes;
+    std::filesystem::path snapshot_root;
+    bool invoked = false;
+    bool injection_succeeded = false;
+    bool failed = false;
+    std::optional<gnfs::util::durable_immutable_record::NativeIdentity> injected_identity;
+    std::optional<NamespaceTreeSnapshot> after_injection;
+};
+
+[[nodiscard]] bool
+inject_authorized_cleanup_successor_drift_v2(OOCPrivateHandoffCleanupResumeFaultPointV2 point,
+                                             void* opaque) noexcept {
+    auto& context = *static_cast<AuthorizedCleanupSuccessorDriftContextV2*>(opaque);
+    if (point != context.target || context.invoked) {
+        return false;
+    }
+    context.invoked = true;
+    try {
+        if (entry_exists_no_follow(context.leaf)) {
+            context.failed = true;
+            return true;
+        }
+        write_private_control_bytes(context.leaf, context.exact_bytes);
+        context.injection_succeeded = entry_exists_no_follow(context.leaf) &&
+                                      read_test_bytes(context.leaf) == context.exact_bytes;
+        if (!context.injection_succeeded) {
+            context.failed = true;
+            return true;
+        }
+        context.injected_identity = native_identity_for_test_path(context.leaf);
+        context.after_injection = capture_namespace_tree(context.snapshot_root);
+    } catch (...) {
+        context.failed = true;
+        return true;
+    }
+    return false;
+}
+
+[[nodiscard]] std::vector<std::byte>
+authorized_cleanup_staged_bytes_v2(const AuthorizedCleanupResumeFixtureV2& fixture) {
+    auto staged = fixture.intent;
+    staged.marker_kind = OOCAuthorizedCleanupMarkerKindV2::staged;
+    if (!gnfs::relation::seal_ooc_authorized_cleanup_intent(staged)) {
+        throw std::runtime_error("could not seal exact staged successor drift marker");
+    }
+    auto encoded = gnfs::relation::encode_ooc_authorized_cleanup_intent(staged);
+    if (!encoded || !encoded.bytes) {
+        throw std::runtime_error("could not encode exact staged successor drift marker");
+    }
+    return std::move(*encoded.bytes);
+}
+
+void test_authorized_cleanup_v2_rejects_hook_successor_drift() {
+    TempDirectory temp;
+
+    {
+        const auto fixture = prepare_authorized_cleanup_resume_fixture_v2(
+            temp.path() / "authorized-v2-pair-successor-drift.gnfs-sink-lease" / "corpus", 0xc1);
+        CHECK(!entry_exists_no_follow(fixture.paths.staged_pending_path));
+        auto authorization = make_authorized_cleanup_resume_receipt_v2(fixture.binding);
+        AuthorizedCleanupSuccessorDriftContextV2 context{
+            .target = OOCPrivateHandoffCleanupResumeFaultPointV2::PairQuarantinedDurable,
+            .leaf = fixture.paths.staged_pending_path,
+            .exact_bytes = authorized_cleanup_staged_bytes_v2(fixture),
+            .snapshot_root = temp.path(),
+        };
+        const auto rejected = resume_authorized_private_handoff_cleanup_v2_for_trusted_test(
+            OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2::resume_test_key(),
+            std::move(authorization),
+            OOCPrivateHandoffCleanupResumeTestHooksV2{
+                .stop_after = inject_authorized_cleanup_successor_drift_v2,
+                .context = &context,
+            });
+        CHECK(context.invoked);
+        CHECK(context.injection_succeeded);
+        CHECK(!context.failed);
+        CHECK(context.injected_identity.has_value());
+        CHECK(context.after_injection.has_value());
+        CHECK(rejected.result.status == OOCCleanupStatus::ForeignReplacementPreserved);
+        CHECK(rejected.reconciliation_required());
+        CHECK(!rejected.evidence.has_value());
+        CHECK(authorization.spent());
+        if (context.after_injection) {
+            CHECK(capture_namespace_tree(temp.path()) == *context.after_injection);
+        }
+        CHECK(entry_exists_no_follow(fixture.paths.intent_path));
+        CHECK(native_identity_for_test_path(fixture.paths.intent_path) ==
+              fixture.intent_snapshot.identity);
+        CHECK(!entry_exists_no_follow(fixture.paths.private_handoff_path));
+        CHECK(!entry_exists_no_follow(fixture.paths.index_path));
+        CHECK(!entry_exists_no_follow(fixture.paths.data_path));
+        CHECK(entry_exists_no_follow(fixture.paths.quarantine_index_path));
+        CHECK(native_identity_for_test_path(fixture.paths.quarantine_index_path) ==
+              fixture.binding.index.identity);
+        CHECK(entry_exists_no_follow(fixture.paths.quarantine_data_path));
+        CHECK(native_identity_for_test_path(fixture.paths.quarantine_data_path) ==
+              fixture.binding.data.identity);
+        CHECK(entry_exists_no_follow(fixture.paths.staged_pending_path));
+        CHECK(!entry_exists_no_follow(fixture.paths.staged_path));
+        CHECK(read_test_bytes(fixture.paths.staged_pending_path) == context.exact_bytes);
+        if (context.injected_identity) {
+            CHECK(native_identity_for_test_path(fixture.paths.staged_pending_path) ==
+                  *context.injected_identity);
+        }
+        const auto owner_path = gnfs::relation::ooc_cleanup_detail::private_lease_owner_path(
+            fixture.paths.private_directory);
+        CHECK(entry_exists_no_follow(owner_path));
+        CHECK(native_identity_for_test_path(owner_path) == fixture.binding.owner_marker_identity);
+        CHECK(entry_exists_no_follow(fixture.paths.lease_owned_path));
+        CHECK(native_identity_for_test_path(fixture.paths.lease_owned_path) ==
+              fixture.binding.owned_marker_identity);
+    }
+
+    {
+        const auto fixture = prepare_authorized_cleanup_resume_fixture_v2(
+            temp.path() / "authorized-v2-permit-successor-drift.gnfs-sink-lease" / "corpus", 0xd1);
+        CHECK(!entry_exists_no_follow(fixture.paths.intent_pending_path));
+        auto authorization = make_authorized_cleanup_resume_receipt_v2(fixture.binding);
+        AuthorizedCleanupSuccessorDriftContextV2 context{
+            .target = OOCPrivateHandoffCleanupResumeFaultPointV2::RecoveryPermitAcquired,
+            .leaf = fixture.paths.intent_pending_path,
+            .exact_bytes = read_test_bytes(fixture.paths.intent_path),
+            .snapshot_root = temp.path(),
+        };
+        const auto rejected = resume_authorized_private_handoff_cleanup_v2_for_trusted_test(
+            OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2::resume_test_key(),
+            std::move(authorization),
+            OOCPrivateHandoffCleanupResumeTestHooksV2{
+                .stop_after = inject_authorized_cleanup_successor_drift_v2,
+                .context = &context,
+            });
+        CHECK(context.invoked);
+        CHECK(context.injection_succeeded);
+        CHECK(!context.failed);
+        CHECK(context.injected_identity.has_value());
+        CHECK(context.after_injection.has_value());
+        CHECK(rejected.result.status == OOCCleanupStatus::ForeignReplacementPreserved);
+        CHECK(rejected.authorization_retained());
+        CHECK(!rejected.evidence.has_value());
+        CHECK(!authorization.spent());
+        if (context.after_injection) {
+            CHECK(capture_namespace_tree(temp.path()) == *context.after_injection);
+        }
+        CHECK(entry_exists_no_follow(fixture.paths.intent_path));
+        CHECK(native_identity_for_test_path(fixture.paths.intent_path) ==
+              fixture.intent_snapshot.identity);
+        CHECK(entry_exists_no_follow(fixture.paths.intent_pending_path));
+        CHECK(read_test_bytes(fixture.paths.intent_pending_path) == context.exact_bytes);
+        if (context.injected_identity) {
+            CHECK(native_identity_for_test_path(fixture.paths.intent_pending_path) ==
+                  *context.injected_identity);
+            CHECK(*context.injected_identity != fixture.intent_snapshot.identity);
+        }
+        CHECK(entry_exists_no_follow(fixture.paths.private_handoff_path));
+        CHECK(entry_exists_no_follow(fixture.paths.index_path));
+        CHECK(native_identity_for_test_path(fixture.paths.index_path) ==
+              fixture.binding.index.identity);
+        CHECK(entry_exists_no_follow(fixture.paths.data_path));
+        CHECK(native_identity_for_test_path(fixture.paths.data_path) ==
+              fixture.binding.data.identity);
+        CHECK(!entry_exists_no_follow(fixture.paths.quarantine_index_path));
+        CHECK(!entry_exists_no_follow(fixture.paths.quarantine_data_path));
+        const auto owner_path = gnfs::relation::ooc_cleanup_detail::private_lease_owner_path(
+            fixture.paths.private_directory);
+        CHECK(entry_exists_no_follow(owner_path));
+        CHECK(entry_exists_no_follow(fixture.paths.lease_owned_path));
+    }
+}
+
 void test_private_handoff_cross_process_adoption(const std::string& executable) {
     TempDirectory temp;
     const auto base = temp.path() / "cross-process-adoption.gnfs-sink-lease" / "corpus";
@@ -13620,6 +14495,31 @@ void run_authority_observer_suite() {
 #endif
 }
 
+#if defined(__APPLE__)
+void run_authorized_v2_core_suite() {
+    test_authorized_cleanup_v2_canonical_completion_evidence();
+    test_authorized_cleanup_v2_pending_only_requires_conversion();
+    test_authorized_cleanup_v2_cold_tail_evidence_omits_intent_identity();
+    test_authorized_cleanup_v2_rejects_same_byte_intent_replacement();
+    test_authorized_cleanup_v2_rejects_foreign_leaf_without_overreach();
+}
+
+void run_authorized_v2_artifact_crash_suite() {
+    test_authorized_cleanup_v2_fault_prefixes_and_cold_recovery(
+        AUTHORIZED_CLEANUP_V2_ARTIFACT_FAULT_POINTS, "authorized-v2-artifact-prefix", 0x91);
+    test_authorized_cleanup_v2_process_crash_prefixes_and_cold_recovery(
+        AUTHORIZED_CLEANUP_V2_ARTIFACT_FAULT_POINTS, "authorized-v2-artifact-crash", 0xa1);
+    test_authorized_cleanup_v2_rejects_hook_successor_drift();
+}
+
+void run_authorized_v2_lease_crash_suite() {
+    test_authorized_cleanup_v2_fault_prefixes_and_cold_recovery(
+        AUTHORIZED_CLEANUP_V2_LEASE_FAULT_POINTS, "authorized-v2-lease-prefix", 0xb1);
+    test_authorized_cleanup_v2_process_crash_prefixes_and_cold_recovery(
+        AUTHORIZED_CLEANUP_V2_LEASE_FAULT_POINTS, "authorized-v2-lease-crash", 0xc1);
+}
+#endif
+
 void run_private_lease_crash_suite(const std::string& executable) {
     test_private_lease_process_crash_recovery(executable);
     test_private_lease_preactive_rollback_crash_recovery(executable);
@@ -13808,6 +14708,11 @@ int main(int argc, char* argv[]) {
     bool run_private_lease_crash = argc == 1;
     bool run_authority_union = argc == 1;
     bool run_authority_observer = argc == 1;
+#if defined(__APPLE__)
+    bool run_authorized_v2_core = argc == 1;
+    bool run_authorized_v2_artifact_crash = argc == 1;
+    bool run_authorized_v2_lease_crash = argc == 1;
+#endif
     if (argc == 3 && std::string_view(argv[1]) == "--suite") {
         const std::string_view suite(argv[2]);
         run_core = suite == "core";
@@ -13815,14 +14720,29 @@ int main(int argc, char* argv[]) {
         run_private_lease_crash = suite == "lease-crash";
         run_authority_union = suite == "authority-union";
         run_authority_observer = suite == "authority-observer";
+#if defined(__APPLE__)
+        run_authorized_v2_core = suite == "authorized-v2-core";
+        run_authorized_v2_artifact_crash = suite == "authorized-v2-artifact-crash";
+        run_authorized_v2_lease_crash = suite == "authorized-v2-lease-crash";
+#endif
         if (!run_core && !run_crash && !run_private_lease_crash && !run_authority_union &&
-            !run_authority_observer) {
+            !run_authority_observer
+#if defined(__APPLE__)
+            && !run_authorized_v2_core && !run_authorized_v2_artifact_crash &&
+            !run_authorized_v2_lease_crash
+#endif
+        ) {
             std::cerr << "unknown suite: " << suite << '\n';
             return 64;
         }
     } else if (argc != 1) {
         std::cerr << "usage: " << argv[0]
-                  << " [--suite authority-observer|authority-union|core|crash|lease-crash]\n";
+                  << " [--suite authority-observer|authority-union|core|crash|lease-crash"
+#if defined(__APPLE__)
+                     "|authorized-v2-core|authorized-v2-artifact-crash|"
+                     "authorized-v2-lease-crash"
+#endif
+                     "]\n";
         return 64;
     }
 
@@ -13843,6 +14763,17 @@ int main(int argc, char* argv[]) {
         if (run_authority_observer) {
             run_authority_observer_suite();
         }
+#if defined(__APPLE__)
+        if (run_authorized_v2_core) {
+            run_authorized_v2_core_suite();
+        }
+        if (run_authorized_v2_artifact_crash) {
+            run_authorized_v2_artifact_crash_suite();
+        }
+        if (run_authorized_v2_lease_crash) {
+            run_authorized_v2_lease_crash_suite();
+        }
+#endif
     } catch (const std::exception& error) {
         ++checks_failed;
         std::cerr << "UNCAUGHT: " << error.what() << '\n';
