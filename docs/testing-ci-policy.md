@@ -456,23 +456,33 @@ passkey and receipt traits. The passkey and receipt have no production or test
 mint route, so those checks freeze only the inaccessible capability surface
 and are not evidence of cleanup authority.
 
-`DistributedSieveWaveStore` is the `fast` durable ownership contract. It
+`DistributedSieveWaveStore` is the `slow` durable ownership contract. It
 creates and reopens the source-private store, checks exact manifest identity
 injection and bytes, recovers every durable publication prefix, rejects
 noncanonical or symlinked ancestor paths, ACL and namespace drift, and
 native-identity replacement. Fork-and-pipe probes cover hook-time PID
 separation, concurrent exclusion, and inherited-open-description lock
-lifetime. The binary catalog is therefore `fast`; its no-argument form runs
-the core, WaveStore, and coordinator sub-suites.
+lifetime. Its complete Debug filesystem matrix exceeds the `fast` target, so
+the CTest entry uses the `slow` tier and a bounded five-minute timeout until
+the matrix is split further. The no-argument binary runs the core, WaveStore,
+coordinator, and MergePrepared-protection sub-suites; its script catalog is
+therefore also `slow`, with a bounded seven-minute timeout.
 
 `DistributedSieveMergePreparedProtection` is a separate `fast` entry from the
 same binary. It creates real finalized private OOC generations and exercises
 both cold open and live root-claim classification for every legal prepared
-publication prefix. Each case compares the complete wave-root and private
-directory snapshot before and after classification. Malformed kind and
-predecessor bindings must fail closed, while valid crash prefixes stop for
-reconciliation without mutation. The suite is filesystem integration rather
-than an `instant` helper contract.
+publication prefix. Live claims remain read-only and return
+`reconciliation_required`. Cold open rolls back an exact pending generation or
+converges canonical and identical-dual publication prefixes, then opens the
+strict manifest-bound store. The suite preserves the canonical
+`MergeStartedV1` and all worker handoffs, proves that a pending rollback
+advances to the next merge ordinal, proves that canonical prepared generations
+do not expose a repeat ordinal, and repeats cold open with no mutation. A
+bridge-hook lock probe must observe every canonical worker `BaseLock` as busy
+while the target permit is held and must acquire it after the recovery round
+releases locks. Malformed kind and predecessor bindings still fail closed with
+complete wave-root and private-directory snapshots unchanged. The suite is
+filesystem integration rather than an `instant` helper contract.
 
 `test_distributed_sieve_merge_writer` is the `instant` authority-free
 manifest-order merge contract. It streams small finalized OOC fixtures through
@@ -498,10 +508,12 @@ exact writer's stdio buffer: the child must fail on its next creator-process
 check without flushing inherited bytes, while the parent still publishes the
 exact expected corpus. On other platforms, the binary performs compile-time
 API contract checks and skips the runtime transaction; production returns
-`platform_unsupported` before minting or namespace mutation. Cold open must
-protect interrupted typed prefixes with
-`reconciliation_required`; prepared-prefix adoption and rollback remain a
-separate recovery suite.
+`platform_unsupported` before minting or namespace mutation. Live claims must
+protect interrupted typed prefixes with `reconciliation_required`. Cold open
+now rolls back exact pending prepared prefixes and converges canonical or
+identical-dual prefixes before ordinary manifest validation.
+Same-open-file-description prepared adoption and raw writer-residue rollback
+remain separate recovery slices.
 
 `test_distributed_sieve_resume` is also the dedicated M2j-A receipt-gated
 launcher contract.

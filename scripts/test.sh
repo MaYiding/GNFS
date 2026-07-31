@@ -792,7 +792,7 @@ TEST_TIMEOUT=(
     test_distributed_sieve_worker_work_package_file 20
     test_distributed_sieve_execution_policy 20
     test_distributed_sieve_seed_v2 10
-    test_distributed_sieve_resume 300
+    test_distributed_sieve_resume 420
     test_kleinjung           360
     test_kleinjung_large     600
     test_factor_with_kleinjung 900
@@ -1033,7 +1033,7 @@ TEST_TIER=(
     test_distributed_sieve_worker_work_package_file "instant"
     test_distributed_sieve_execution_policy "instant"
     test_distributed_sieve_seed_v2 "instant"
-    test_distributed_sieve_resume "fast"
+    test_distributed_sieve_resume "slow"
     test_kleinjung           "slow"
     test_kleinjung_large     "heavy"
     test_factor_with_kleinjung "slow"

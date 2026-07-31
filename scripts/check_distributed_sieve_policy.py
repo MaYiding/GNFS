@@ -879,6 +879,9 @@ PRIVATE_HANDOFF_PUBLICATION_RESUME_ADOPTION_FILE = (
 PRIVATE_HANDOFF_PUBLICATION_RESUME_TEST_FILE = (
     "tests/test_ooc_cleanup_transaction.cpp"
 )
+PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_TEST_FILE = (
+    "tests/test_distributed_sieve_resume.cpp"
+)
 PRIVATE_HANDOFF_PUBLICATION_RESUME_USE_SITE_ALLOWLIST = {
     PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_INTERFACE_FILE,
     PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_IMPLEMENTATION_FILE,
@@ -904,10 +907,10 @@ PRIVATE_HANDOFF_PUBLICATION_RESUME_DIRECT_CALL_IDENTIFIERS = (
     PRIVATE_HANDOFF_PUBLICATION_RESUME_RECONCILE_IDENTIFIER,
 )
 PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_DIRECT_CALL_COUNTS = {
-    PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER: 2,
-    PRIVATE_HANDOFF_PUBLICATION_RESUME_VALIDATE_IDENTIFIER: 2,
-    PRIVATE_HANDOFF_PUBLICATION_RESUME_REVALIDATE_IDENTIFIER: 2,
-    PRIVATE_HANDOFF_PUBLICATION_RESUME_RECONCILE_IDENTIFIER: 1,
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER: 3,
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_VALIDATE_IDENTIFIER: 3,
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_REVALIDATE_IDENTIFIER: 4,
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_RECONCILE_IDENTIFIER: 2,
 }
 PRIVATE_HANDOFF_PUBLICATION_RESUME_USE_SITE_IDENTIFIERS = (
     "PrivateHandoffPublicationPrefixStateV1",
@@ -925,6 +928,20 @@ PRIVATE_HANDOFF_PUBLICATION_RESUME_USE_SITE_IDENTIFIERS = (
     "PrivateHandoffPublicationResumeDispositionV1",
     "PrivateHandoffPublicationResumeResultV1",
 ) + PRIVATE_HANDOFF_PUBLICATION_RESUME_DIRECT_CALL_IDENTIFIERS
+PRIVATE_HANDOFF_PUBLICATION_RESUME_NARROW_TEST_DIRECT_CALL_COUNTS = {
+    PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_TEST_FILE: {
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER: 2,
+    },
+}
+PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_USE_SITE_IDENTIFIERS = (
+    "DistributedSieveMergePreparedResumeObservationPointV1",
+    "DistributedSieveMergePreparedResumeTestHooksV1",
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_USE_SITE_ALLOWLIST = {
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_INTERFACE_FILE,
+    PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+    PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_TEST_FILE,
+}
 PRIVATE_HANDOFF_PUBLICATION_WORKER_VALIDATOR_AUTHORITY_IDENTIFIER = (
     "WorkerHandoffTypedValidatorAuthorityV1"
 )
@@ -1120,6 +1137,50 @@ PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_TEST_HOOKS_BODY = (
     "StopAfterstop_after=nullptr;"
     "AfterRoundLocksReleasedafter_round_locks_released=nullptr;"
     "void*context=nullptr;"
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_WAVE_OBSERVATION_ENUM = (
+    "DistributedSieveMergePreparedResumeObservationPointV1"
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_WAVE_TEST_HOOKS = (
+    "DistributedSieveMergePreparedResumeTestHooksV1"
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_WAVE_OBSERVATION_ENUM_BODY = "".join(
+    f"{point}," for point in PRIVATE_HANDOFF_PUBLICATION_RESUME_OBSERVATION_POINTS
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_WAVE_TEST_HOOKS_BODY = (
+    "usingStopAfter=bool(*)("
+    "DistributedSieveMergePreparedResumeObservationPointV1point,"
+    "void*context)noexcept;"
+    "usingFailBefore=bool(*)("
+    "DistributedSieveMergePreparedResumeObservationPointV1point,"
+    "void*context)noexcept;"
+    "usingAfterRoundLocksReleased=void(*)(void*context)noexcept;"
+    "StopAfterstop_after=nullptr;"
+    "FailBeforefail_before=nullptr;"
+    "AfterRoundLocksReleasedafter_round_locks_released=nullptr;"
+    "void*context=nullptr;"
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_WAVE_MIRROR_ASSERTION = (
+    "static_assert([]{"
+    "usingMergePoint="
+    "DistributedSieveMergePreparedResumeObservationPointV1;"
+    "usingRelationPoint=private_lease::"
+    "PrivateHandoffPublicationResumeObservationPointV1;"
+    "constexprstd::arraywave{"
+    + "".join(
+        f"MergePoint::{point},"
+        for point in PRIVATE_HANDOFF_PUBLICATION_RESUME_OBSERVATION_POINTS
+    )
+    + "};constexprstd::arrayrelation{"
+    + "".join(
+        f"RelationPoint::{point},"
+        for point in PRIVATE_HANDOFF_PUBLICATION_RESUME_OBSERVATION_POINTS
+    )
+    + "};"
+    "for(std::size_tindex=0;index<wave.size();++index){"
+    "if(static_cast<std::size_t>(wave[index])!="
+    "static_cast<std::size_t>(relation[index])){returnfalse;}}"
+    "returntrue;}());"
 )
 PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_EXCEPTION_SAFETY_FRAGMENT = (
     "autostate=std::make_unique<"
@@ -1999,6 +2060,461 @@ PRIVATE_HANDOFF_PUBLICATION_RESUME_BRIDGE_FACTORY_FUNCTION = (
 PRIVATE_HANDOFF_PUBLICATION_RESUME_BRIDGE_FACTORY_BODY = (
     "return{.stop_after=bridge_worker_handoff_resume_observation,"
     ".fail_before=nullptr,.context=&context,};"
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_BRIDGE_FUNCTION = (
+    "bridge_merge_prepared_resume_observation"
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_BRIDGE_BODY = (
+    "auto*context=static_cast<MergePreparedResumeBridgeContext*>(opaque);"
+    "if(context==nullptr){returntrue;}"
+    "constautowave_point=static_cast<"
+    "DistributedSieveMergePreparedResumeObservationPointV1>(point);"
+    "constbooluser_requested_stop=fail_before?"
+    "context->user_hooks.fail_before!=nullptr&&"
+    "context->user_hooks.fail_before(wave_point,context->user_hooks.context):"
+    "context->user_hooks.stop_after!=nullptr&&"
+    "context->user_hooks.stop_after(wave_point,context->user_hooks.context);"
+    "if(context->parent_components==nullptr||context->root_leaf==nullptr||"
+    "context->manifest_bytes==nullptr||context->absolute_root==nullptr||"
+    "context->manifest==nullptr||context->aggregate==nullptr||"
+    "context->retained==nullptr){"
+    "context->revalidation_failed=true;"
+    "context->revalidation_diagnostic=diagnostic("
+    "DistributedSieveWaveStoreStatus::unexpected_failure,protocol_error());"
+    "returntrue;}"
+    "autorevalidated=validate_held_wave_store_manifest_authority("
+    "context->parent_fd,*context->parent_components,context->root_fd,"
+    "*context->root_leaf,context->root_identity,context->lock_fd,"
+    "context->lock_identity,*context->manifest_bytes,"
+    "context->manifest_snapshot,context->creator_process_id);"
+    "if(revalidated.status==DistributedSieveWaveStoreStatus::ready){"
+    "revalidated=revalidate_merge_prepared_aggregate_projection("
+    "context->root_fd,*context->absolute_root,*context->manifest,"
+    "*context->aggregate,*context->retained,context->creator_process_id,"
+    "wave_point);}"
+    "if(revalidated.status==DistributedSieveWaveStoreStatus::ready){"
+    "revalidated=revalidate_exact_canonical_merge_started("
+    "context->root_fd,context->retained->names,"
+    "context->retained->start_record,context->creator_process_id);}"
+    "if(revalidated.status==DistributedSieveWaveStoreStatus::ready){"
+    "returnuser_requested_stop;}"
+    "context->revalidation_failed=true;"
+    "context->revalidation_diagnostic=std::move(revalidated);"
+    "returntrue;"
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_STOP_BRIDGE_FUNCTION = (
+    "bridge_merge_prepared_resume_stop_after"
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_STOP_BRIDGE_BODY = (
+    "returnbridge_merge_prepared_resume_observation(point,opaque,false);"
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_FAIL_BRIDGE_FUNCTION = (
+    "bridge_merge_prepared_resume_fail_before"
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_FAIL_BRIDGE_BODY = (
+    "returnbridge_merge_prepared_resume_observation(point,opaque,true);"
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_BRIDGE_FACTORY_FUNCTION = (
+    "relation_merge_prepared_resume_hooks"
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_BRIDGE_FACTORY_BODY = (
+    "return{.stop_after=bridge_merge_prepared_resume_stop_after,"
+    ".fail_before=bridge_merge_prepared_resume_fail_before,"
+    ".context=&context,};"
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_OPEN_FRAGMENT = (
+    "constexprstd::size_tmaximum_merge_prepared_resume_rounds=1;"
+    "std::size_tmerge_prepared_resume_round=0;"
+    "while(true){"
+    "if(constautoauthority=validate_held_wave_store_manifest_authority("
+    "root.parent.get(),frozen->parent_components,root.root.get(),frozen->leaf,"
+    "root.root_identity,lock.lock.get(),lock.lock_identity,*existing.bytes,"
+    "*resume_manifest.snapshot,creator_process_id);"
+    "authority.status!=DistributedSieveWaveStoreStatus::ready){"
+    "returnopen_failure(authority);}"
+    "automerge_prepared_prefix=classify_merge_prepared_publication_prefix_v1("
+    "root.root.get(),frozen->absolute,*existing.manifest,root.root_identity,"
+    "creator_process_id);"
+    "if(!merge_prepared_prefix){"
+    "returnopen_failure(std::move(merge_prepared_prefix.diagnostic));}"
+    "if(!merge_prepared_prefix.prefix_present()){break;}"
+    "if(!merge_prepared_prefix.witness.has_value()||"
+    "!merge_prepared_prefix.retained.has_value()){"
+    "returnopen_failure(diagnostic("
+    "DistributedSieveWaveStoreStatus::unexpected_failure,protocol_error()));}"
+    "auto&aggregate=*merge_prepared_prefix.witness;"
+    "auto&retained=*merge_prepared_prefix.retained;"
+    "if(retained.witness.canonical_terminal()){"
+    "merge_prepared_prefix.retained.reset();"
+    "merge_prepared_prefix.witness.reset();break;}"
+    "if(merge_prepared_resume_round>=maximum_merge_prepared_resume_rounds){"
+    "returnopen_failure(diagnostic("
+    "DistributedSieveWaveStoreStatus::namespace_conflict,protocol_error()));}"
+    "if(constautoprojection=revalidate_merge_prepared_aggregate_projection("
+    "root.root.get(),frozen->absolute,*existing.manifest,aggregate,retained,"
+    "creator_process_id);"
+    "projection.status!=DistributedSieveWaveStoreStatus::ready){"
+    "returnopen_failure(projection);}"
+    "if(constautoexact=revalidate_exact_canonical_merge_started("
+    "root.root.get(),retained.names,retained.start_record,creator_process_id);"
+    "exact.status!=DistributedSieveWaveStoreStatus::ready){"
+    "returnopen_failure(exact);}"
+    "if(constautoauthority=validate_held_wave_store_manifest_authority("
+    "root.parent.get(),frozen->parent_components,root.root.get(),frozen->leaf,"
+    "root.root_identity,lock.lock.get(),lock.lock_identity,*existing.bytes,"
+    "*resume_manifest.snapshot,creator_process_id);"
+    "authority.status!=DistributedSieveWaveStoreStatus::ready){"
+    "returnopen_failure(authority);}"
+    "constautoexpected_prefix=retained.witness;"
+    "constautoexpected_disposition="
+    "expected_prefix.pending_only()||expected_prefix.rollback_armed()?"
+    "private_lease::PrivateHandoffPublicationResumeDispositionV1::"
+    "PendingRolledBack:"
+    "private_lease::PrivateHandoffPublicationResumeDispositionV1::"
+    "CanonicalConverged;"
+    "MergePreparedResumeBridgeContextresume_bridge{"
+    ".user_hooks=hooks.merge_prepared_resume,"
+    ".parent_fd=root.parent.get(),"
+    ".parent_components=&frozen->parent_components,"
+    ".root_fd=root.root.get(),"
+    ".root_leaf=&frozen->leaf,"
+    ".root_identity=root.root_identity,"
+    ".lock_fd=lock.lock.get(),"
+    ".lock_identity=lock.lock_identity,"
+    ".manifest_bytes=&*existing.bytes,"
+    ".manifest_snapshot=*resume_manifest.snapshot,"
+    ".absolute_root=&frozen->absolute,"
+    ".manifest=&*existing.manifest,"
+    ".aggregate=&aggregate,"
+    ".retained=&retained,"
+    ".creator_process_id=creator_process_id,};"
+    "autoconverged=private_lease::"
+    "reconcile_private_handoff_publication_for_resume_v1("
+    "retained.permit,relation_merge_prepared_resume_hooks(resume_bridge));"
+    "if(resume_bridge.revalidation_failed){"
+    "returnopen_failure(std::move("
+    "resume_bridge.revalidation_diagnostic));}"
+    "if(!converged.converged()){"
+    "returnopen_failure(worker_handoff_inspection_failure(converged.result));}"
+    "if(converged.disposition!=expected_disposition||"
+    "!converged.expected_prefix.has_value()||"
+    "*converged.expected_prefix!=expected_prefix){"
+    "returnopen_failure(diagnostic("
+    "DistributedSieveWaveStoreStatus::namespace_conflict,protocol_error()));}"
+    "if(expected_disposition==private_lease::"
+    "PrivateHandoffPublicationResumeDispositionV1::PendingRolledBack?"
+    "converged.terminal_prefix.has_value():"
+    "!converged.terminal_prefix.has_value()||"
+    "!converged.terminal_prefix->canonical_terminal()){"
+    "returnopen_failure(diagnostic("
+    "DistributedSieveWaveStoreStatus::namespace_conflict,protocol_error()));}"
+    "if(!retained.permit.held()||retained.permit.valid()){"
+    "returnopen_failure(diagnostic("
+    "DistributedSieveWaveStoreStatus::unexpected_failure,protocol_error()));}"
+    "retained.consumed=true;"
+    "merge_prepared_prefix.retained.reset();"
+    "merge_prepared_prefix.witness.reset();"
+    "if(hooks.merge_prepared_resume.after_round_locks_released!=nullptr){"
+    "hooks.merge_prepared_resume.after_round_locks_released("
+    "hooks.merge_prepared_resume.context);"
+    "if(!process_matches(creator_process_id)){"
+    "returnopen_failure(process_mismatch());}}"
+    "++merge_prepared_resume_round;"
+    "if(constautoauthority=validate_held_wave_store_manifest_authority("
+    "root.parent.get(),frozen->parent_components,root.root.get(),frozen->leaf,"
+    "root.root_identity,lock.lock.get(),lock.lock_identity,*existing.bytes,"
+    "*resume_manifest.snapshot,creator_process_id);"
+    "authority.status!=DistributedSieveWaveStoreStatus::ready){"
+    "returnopen_failure(authority);}"
+    "inventory=inspect_namespace(root.root.get());"
+    "if(!inventory){"
+    "returnopen_failure(std::move(inventory.diagnostic));}}"
+    "conststd::size_tmaximum_resume_rounds="
+    "existing.manifest->chunks.size()*static_cast<std::size_t>("
+    "existing.manifest->max_worker_attempts);"
+    "std::size_tresume_round=0;"
+)
+PRIVATE_HANDOFF_PUBLICATION_RETAINED_WORKER_STACK_SOURCE = r"""
+class RetainedWorkerHandoffPublicationPrefixStack final {
+public:
+    RetainedWorkerHandoffPublicationPrefixStack() = default;
+    RetainedWorkerHandoffPublicationPrefixStack(
+        const RetainedWorkerHandoffPublicationPrefixStack&) = delete;
+    RetainedWorkerHandoffPublicationPrefixStack&
+    operator=(const RetainedWorkerHandoffPublicationPrefixStack&) = delete;
+    RetainedWorkerHandoffPublicationPrefixStack(
+        RetainedWorkerHandoffPublicationPrefixStack&& other) noexcept
+        : entries(std::move(other.entries)) {}
+    RetainedWorkerHandoffPublicationPrefixStack&
+    operator=(RetainedWorkerHandoffPublicationPrefixStack&&) = delete;
+
+    ~RetainedWorkerHandoffPublicationPrefixStack() {
+        while (!entries.empty()) {
+            entries.pop_back();
+        }
+    }
+
+    std::vector<RetainedWorkerHandoffPublicationPrefix> entries;
+};
+"""
+PRIVATE_HANDOFF_PUBLICATION_MERGE_AGGREGATE_RETAINED_SUFFIX = (
+    "DistributedSieveMergeStartedRecordInventoryWitnessV1start_record;"
+    "RetainedWorkerHandoffPublicationPrefixStackretained_workers;"
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_CAPTURE_RESULT_SOURCE = r"""
+struct MergePreparedPublicationPrefixCaptureResult final {
+    std::optional<MergePreparedPublicationAggregateWitness> witness;
+    std::optional<RetainedMergePreparedPublicationPrefix> retained;
+    DistributedSieveWaveStoreDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return diagnostic.status == DistributedSieveWaveStoreStatus::ready;
+    }
+
+    [[nodiscard]] bool prefix_present() const noexcept {
+        return witness.has_value() || retained.has_value();
+    }
+};
+"""
+PRIVATE_HANDOFF_PUBLICATION_MERGE_RETAINED_WORKER_CAPTURE_SOURCE = r"""
+std::sort(worker_candidates.begin(), worker_candidates.end(),
+          [&](const WorkerHandoffPublicationPrefixCandidate& left,
+              const WorkerHandoffPublicationPrefixCandidate& right) {
+              const auto& left_attempt = (*parsed.attempts)[left.attempt_index];
+              const auto& right_attempt = (*parsed.attempts)[right.attempt_index];
+              return std::pair{left_attempt.manifest_chunk_order,
+                               left_attempt.worker_coordinate->attempt_ordinal} <
+                     std::pair{right_attempt.manifest_chunk_order,
+                               right_attempt.worker_coordinate->attempt_ordinal};
+          });
+
+RetainedWorkerHandoffPublicationPrefixStack retained_workers;
+retained_workers.entries.reserve(worker_candidates.size());
+for (const auto& worker_candidate : worker_candidates) {
+    const auto& attempt = (*parsed.attempts)[worker_candidate.attempt_index];
+    const auto expected_directory_identity =
+        worker_candidate.attempt_record.record.lease.directory;
+    const auto base_path = absolute_root / attempt.names.private_directory_leaf / "corpus";
+    const auto paths = gnfs::relation::OOCCleanupTransaction::paths_for(base_path);
+    auto admission = private_lease::acquire_private_handoff_publication_resume_v1(
+        paths, relation_identity(expected_directory_identity));
+    if (!admission.acquired() || !admission.observed.has_value()) {
+        return fail_with(worker_handoff_inspection_failure(admission.result));
+    }
+    const auto* observed = admission.observed->witness();
+    if (observed == nullptr || !observed->canonical_terminal() ||
+        observed->state != worker_candidate.expected_state ||
+        !worker_handoff_publication_prefix_marker_chain_matches(
+            *observed, expected_wave_root_identity, attempt, expected_directory_identity)) {
+        return conflict();
+    }
+    const auto observed_prefix = *observed;
+    if (const auto exact = revalidate_exact_canonical_worker_attempt(
+            root_fd, *attempt.worker_attempt_names, worker_candidate.attempt_record,
+            creator_process_id);
+        exact.status != DistributedSieveWaveStoreStatus::ready) {
+        return fail_with(exact);
+    }
+    WorkerHandoffTypedValidationContext typed_context{
+        .attempt = &attempt,
+        .manifest = &manifest,
+        .attempt_record = &worker_candidate.attempt_record,
+        .root_fd = root_fd,
+        .expected_directory_identity = expected_directory_identity,
+        .creator_process_id = creator_process_id,
+    };
+    auto validation = private_lease::validate_private_handoff_publication_resume_v1(
+        std::move(*admission.observed),
+        WorkerHandoffTypedValidatorAuthorityV1::bind(validate_worker_handoff_prefix_type,
+                                                     &typed_context));
+    if (!validation.validated() || !validation.permit.has_value() ||
+        !typed_context.typed_handoff.has_value()) {
+        if (typed_context.diagnostic.status != DistributedSieveWaveStoreStatus::ready) {
+            return fail_with(std::move(typed_context.diagnostic));
+        }
+        return fail_with(worker_handoff_inspection_failure(validation.result));
+    }
+    const auto typed_handoff = *typed_context.typed_handoff;
+    PrivateLeaseReservationWitness provisional{
+        .base_lock_leaf = attempt.names.base_lock_leaf,
+        .boundary = DistributedSievePrivateLeaseReservationBoundary::FinalDirectoryDurable,
+        .lease_id = observed_prefix.record.lease_id,
+        .directory_identity = expected_directory_identity,
+        .owner_marker_identity =
+            protocol_identity(observed_prefix.record.owner_marker_identity),
+        .owned_marker_identity =
+            protocol_identity(observed_prefix.record.owned_marker_identity),
+        .worker_handoff = typed_handoff,
+    };
+    lease_slots[worker_candidate.attempt_index] = provisional;
+    retained_workers.entries.push_back(RetainedWorkerHandoffPublicationPrefix{
+        .attempt_index = worker_candidate.attempt_index,
+        .names = *attempt.worker_attempt_names,
+        .coordinate = *attempt.worker_coordinate,
+        .witness = observed_prefix,
+        .typed_handoff = typed_handoff,
+        .provisional_lease = std::move(provisional),
+        .attempt_record = worker_candidate.attempt_record,
+        .permit = std::move(*validation.permit),
+    });
+}
+"""
+PRIVATE_HANDOFF_PUBLICATION_MERGE_RETAINED_WORKER_POST_TARGET_SOURCE = r"""
+for (const auto& worker : retained_workers.entries) {
+    if (worker.consumed || !worker.permit.valid() || !worker.permit.held() ||
+        worker.attempt_index >= private_leases.size() ||
+        private_leases[worker.attempt_index] != worker.provisional_lease) {
+        return conflict();
+    }
+    const auto exact_worker =
+        private_lease::revalidate_private_handoff_publication_resume_v1(worker.permit);
+    if (!exact_worker.revalidated() || !exact_worker.witness.has_value()) {
+        return fail_with(worker_handoff_inspection_failure(exact_worker.result));
+    }
+    if (*exact_worker.witness != worker.witness) {
+        return conflict();
+    }
+    if (const auto attempt_record = revalidate_exact_canonical_worker_attempt(
+            root_fd, worker.names, worker.attempt_record, creator_process_id);
+        attempt_record.status != DistributedSieveWaveStoreStatus::ready) {
+        return fail_with(attempt_record);
+    }
+}
+"""
+PRIVATE_HANDOFF_PUBLICATION_MERGE_RETAINED_WORKER_AGGREGATE_MOVE_FRAGMENT = (
+    ".start_record=start_record,"
+    ".retained_workers=std::move(retained_workers),"
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_AGGREGATE_REVALIDATION_FUNCTION = (
+    "revalidate_merge_prepared_aggregate_projection"
+)
+PRIVATE_HANDOFF_PUBLICATION_MERGE_AGGREGATE_COPY_EXCEPTION_SOURCE = r"""
+const auto current = inspect_namespace(root_fd);
+if (!current) {
+    return current.diagnostic;
+}
+try {
+    auto expected_inventory = expected.inventory;
+    auto current_inventory = *current.inventory;
+    if (observation_point.has_value() &&
+        !project_selected_merge_prepared_protocol_state(expected_inventory, retained,
+                                                        *observation_point)) {
+        return diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                          protocol_error());
+    }
+    expected_inventory.worker_attempt_records.clear();
+    expected_inventory.merge_started_records.clear();
+    expected_inventory.chunk_terminal_failure_records.clear();
+    current_inventory.worker_attempt_records.clear();
+    current_inventory.merge_started_records.clear();
+    current_inventory.chunk_terminal_failure_records.clear();
+    if (current_inventory != expected_inventory) {
+        return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
+                          protocol_error());
+    }
+} catch (const std::bad_alloc&) {
+    return diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
+                      std::make_error_code(std::errc::not_enough_memory));
+} catch (...) {
+    return diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                      std::make_error_code(std::errc::io_error));
+}
+"""
+PRIVATE_HANDOFF_PUBLICATION_MERGE_AGGREGATE_RETAINED_REVALIDATION_SOURCE = r"""
+std::size_t retained_worker_matches = 0;
+for (std::size_t index = 0; index < parsed.attempts->size(); ++index) {
+    const auto& attempt = (*parsed.attempts)[index];
+    if (index == retained.attempt_index) {
+        if (!attempt.merge_generation_names.has_value() ||
+            !attempt.merge_attempt_ordinal.has_value() ||
+            *attempt.merge_generation_names != retained.names ||
+            *attempt.merge_attempt_ordinal != retained.start_record.merge_attempt_ordinal) {
+            return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
+                              protocol_error());
+        }
+        continue;
+    }
+
+    const auto retained_worker = std::find_if(
+        expected.retained_workers.entries.begin(), expected.retained_workers.entries.end(),
+        [&](const RetainedWorkerHandoffPublicationPrefix& worker) {
+            return worker.attempt_index == index;
+        });
+    if (retained_worker != expected.retained_workers.entries.end()) {
+        ++retained_worker_matches;
+        const bool canonical_handoff_root_shape =
+            !attempt.reserved && !attempt.reserved_pending && attempt.owned &&
+            !attempt.owned_pending && attempt.final_directory &&
+            !attempt.staging_directory_leaf.has_value();
+        if (!canonical_handoff_root_shape || !attempt.worker_attempt_names.has_value() ||
+            !attempt.worker_coordinate.has_value() ||
+            *attempt.worker_attempt_names != retained_worker->names ||
+            *attempt.worker_coordinate != retained_worker->coordinate ||
+            retained_worker->consumed || !retained_worker->permit.valid() ||
+            !retained_worker->permit.held() ||
+            expected.private_leases[index] != retained_worker->provisional_lease ||
+            !expected.private_leases[index].worker_handoff.has_value() ||
+            *expected.private_leases[index].worker_handoff != retained_worker->typed_handoff ||
+            std::ranges::find(expected.worker_attempt_records,
+                              retained_worker->attempt_record) ==
+                expected.worker_attempt_records.end() ||
+            !worker_handoff_publication_prefix_marker_chain_matches(
+                retained_worker->witness, manifest.wave_root_identity, attempt,
+                retained_worker->typed_handoff.handoff.lease.directory)) {
+            return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
+                              protocol_error());
+        }
+        const auto exact = private_lease::revalidate_private_handoff_publication_resume_v1(
+            retained_worker->permit);
+        if (!exact.revalidated() || !exact.witness.has_value()) {
+            return worker_handoff_inspection_failure(exact.result);
+        }
+        if (*exact.witness != retained_worker->witness) {
+            return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
+                              protocol_error());
+        }
+        if (const auto attempt_record = revalidate_exact_canonical_worker_attempt(
+                root_fd, retained_worker->names, retained_worker->attempt_record,
+                creator_process_id);
+            attempt_record.status != DistributedSieveWaveStoreStatus::ready) {
+            return attempt_record;
+        }
+        continue;
+    }
+
+    const bool canonical_handoff_root_shape = !attempt.reserved && !attempt.reserved_pending &&
+                                              attempt.owned && !attempt.owned_pending &&
+                                              attempt.final_directory &&
+                                              !attempt.staging_directory_leaf.has_value();
+    if (canonical_handoff_root_shape ||
+        expected.private_leases[index].worker_handoff.has_value() ||
+        expected.private_leases[index].merge_prepared.has_value()) {
+        return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
+                          protocol_error());
+    }
+    auto lease = validate_private_lease_attempt_inventory(root_fd, absolute_root, attempt,
+                                                          manifest, creator_process_id);
+    if (!lease) {
+        return lease.diagnostic;
+    }
+    if (*lease.witness != expected.private_leases[index]) {
+        return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
+                          protocol_error());
+    }
+}
+if (retained_worker_matches != expected.retained_workers.entries.size()) {
+    return diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure, protocol_error());
+}
+"""
+PRIVATE_HANDOFF_PUBLICATION_MERGE_OPEN_RELEASE_ORDER_FRAGMENT = (
+    "retained.consumed=true;"
+    "merge_prepared_prefix.retained.reset();"
+    "merge_prepared_prefix.witness.reset();"
+    "if(hooks.merge_prepared_resume.after_round_locks_released!=nullptr){"
+    "hooks.merge_prepared_resume.after_round_locks_released("
+    "hooks.merge_prepared_resume.context);"
+    "if(!process_matches(creator_process_id)){"
+    "returnopen_failure(process_mismatch());}}"
 )
 PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_ASSIGNMENT_PREFIX = (
     "autoadmission=private_lease::acquire_private_handoff_publication_resume_v1("
@@ -4759,6 +5275,64 @@ class Checks:
     def validate_private_handoff_publication_resume_boundary(
         self, relative: str, text: str
     ) -> None:
+        if (
+            relative
+            not in PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_USE_SITE_ALLOWLIST
+        ):
+            for identifier in (
+                PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_USE_SITE_IDENTIFIERS
+            ):
+                for use in find_code_identifier_uses(text, identifier):
+                    self.fail(
+                        relative,
+                        use.line,
+                        "MergePrepared publication-resume WaveStore identifier "
+                        f"is not allowlisted: {identifier}",
+                    )
+
+        narrow_direct_calls = (
+            PRIVATE_HANDOFF_PUBLICATION_RESUME_NARROW_TEST_DIRECT_CALL_COUNTS.get(
+                relative
+            )
+        )
+        if narrow_direct_calls is not None:
+            for identifier, expected in narrow_direct_calls.items():
+                uses = find_code_identifier_uses(text, identifier)
+                calls = find_call_identifier_uses(text, identifier)
+                for use in find_non_call_identifier_uses(text, identifier):
+                    self.fail(
+                        relative,
+                        use.line,
+                        "narrow resume test authority is direct-call-only; "
+                        f"aliases and function-pointer references are forbidden: "
+                        f"{identifier}",
+                    )
+                if len(uses) != expected or len(calls) != expected:
+                    self.fail(
+                        relative,
+                        1,
+                        "narrow resume test must contain exactly "
+                        f"{expected} direct {identifier} call, found "
+                        f"{len(uses)} identifiers and {len(calls)} calls",
+                    )
+            forbidden_identifiers = (
+                set(PRIVATE_HANDOFF_PUBLICATION_RESUME_USE_SITE_IDENTIFIERS)
+                - set(narrow_direct_calls)
+            ) | {
+                PRIVATE_LEASE_PREACTIVE_ROLLBACK_IDENTIFIER,
+                PRIVATE_HANDOFF_PUBLICATION_WORKER_VALIDATOR_AUTHORITY_IDENTIFIER,
+                PRIVATE_HANDOFF_PUBLICATION_TEST_VALIDATOR_AUTHORITY_IDENTIFIER,
+            }
+            for identifier in sorted(forbidden_identifiers):
+                for use in find_code_identifier_uses(text, identifier):
+                    self.fail(
+                        relative,
+                        use.line,
+                        "narrow resume test use site forbids authority: "
+                        f"{identifier}",
+                    )
+            return
+
         if relative not in {
             PRIVATE_LEASE_PREACTIVE_ROLLBACK_CORE_FILE,
             PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_IMPLEMENTATION_FILE,
@@ -4806,6 +5380,43 @@ class Checks:
                     else text.count("\n", 0, hooks_span[0]) + 1,
                     "WaveStore worker-handoff resume test hooks must remain the "
                     "exact closed test-only seam",
+                )
+            merge_enum_span = _enum_class_definition_body_span(
+                text,
+                PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_WAVE_OBSERVATION_ENUM,
+            )
+            if (
+                merge_enum_span is None
+                or _compact_cpp_code(
+                    text[merge_enum_span[0] : merge_enum_span[1]]
+                )
+                != PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_WAVE_OBSERVATION_ENUM_BODY
+            ):
+                self.fail(
+                    relative,
+                    1
+                    if merge_enum_span is None
+                    else text.count("\n", 0, merge_enum_span[0]) + 1,
+                    "WaveStore MergePrepared resume observation enum must remain "
+                    "the exact ordered one-for-one durable-boundary mirror",
+                )
+            merge_hooks_span = _class_definition_body_span(
+                text, PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_WAVE_TEST_HOOKS
+            )
+            if (
+                merge_hooks_span is None
+                or _compact_cpp_code(
+                    text[merge_hooks_span[0] : merge_hooks_span[1]]
+                )
+                != PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_WAVE_TEST_HOOKS_BODY
+            ):
+                self.fail(
+                    relative,
+                    1
+                    if merge_hooks_span is None
+                    else text.count("\n", 0, merge_hooks_span[0]) + 1,
+                    "WaveStore MergePrepared resume test hooks must remain the "
+                    "exact closed stop/fail test-only seam",
                 )
             return
 
@@ -5783,6 +6394,18 @@ class Checks:
                     "WaveStore worker-handoff resume observation mirror must "
                     f"statically bind exact ordinal {point}",
                 )
+        if (
+            compact_text.count(
+                PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_WAVE_MIRROR_ASSERTION
+            )
+            != 1
+        ):
+            self.fail(
+                relative,
+                1,
+                "WaveStore MergePrepared resume observation mirror must retain "
+                "the exact one-for-one ordered relation mapping",
+            )
 
         for identifier in PRIVATE_HANDOFF_PUBLICATION_RESUME_DIRECT_CALL_IDENTIFIERS:
             uses = find_code_identifier_uses(text, identifier)
@@ -5811,12 +6434,12 @@ class Checks:
         )
         authority_uses = find_code_identifier_uses(text, authority_identifier)
         authority_span = _class_definition_body_span(text, authority_identifier)
-        if len(authority_uses) != 3 or authority_span is None:
+        if len(authority_uses) != 4 or authority_span is None:
             self.fail(
                 relative,
                 authority_uses[0].line if authority_uses else 1,
                 "production WaveStore must contain exactly one typed-validator "
-                "authority definition and two bound uses",
+                "authority definition and three bound uses",
             )
         elif (
             _compact_cpp_code(text[authority_span[0] : authority_span[1]])
@@ -5828,6 +6451,92 @@ class Checks:
                 "worker typed-validator authority definition shape changed",
             )
 
+        retained_stack_source = _compact_cpp_code(
+            PRIVATE_HANDOFF_PUBLICATION_RETAINED_WORKER_STACK_SOURCE
+        )
+        capture_result_source = _compact_cpp_code(
+            PRIVATE_HANDOFF_PUBLICATION_MERGE_CAPTURE_RESULT_SOURCE
+        )
+        aggregate_span = _class_definition_body_span(
+            text, "MergePreparedPublicationAggregateWitness"
+        )
+        aggregate_body = (
+            ""
+            if aggregate_span is None
+            else _compact_cpp_code(text[aggregate_span[0] : aggregate_span[1]])
+        )
+        if (
+            compact_text.count(retained_stack_source) != 1
+            or compact_text.count(capture_result_source) != 1
+            or aggregate_span is None
+            or not aggregate_body.endswith(
+                PRIVATE_HANDOFF_PUBLICATION_MERGE_AGGREGATE_RETAINED_SUFFIX
+            )
+            or aggregate_body.count(
+                "RetainedWorkerHandoffPublicationPrefixStackretained_workers;"
+            )
+            != 1
+        ):
+            self.fail(
+                relative,
+                1,
+                "MergePrepared retained-worker resource layout must keep the "
+                "exact reverse-order stack and witness-before-target member "
+                "ordering so target authority releases before worker LIFO release",
+            )
+
+        aggregate_revalidation_body, aggregate_revalidation_line_offset, (
+            aggregate_revalidation_errors
+        ) = find_function_definition_body(
+            text,
+            PRIVATE_HANDOFF_PUBLICATION_MERGE_AGGREGATE_REVALIDATION_FUNCTION,
+        )
+        for line, error in aggregate_revalidation_errors:
+            self.fail(relative, line, error)
+        if aggregate_revalidation_body is not None:
+            compact_aggregate_revalidation = _compact_cpp_code(
+                aggregate_revalidation_body
+            )
+            copy_exception_boundary = _compact_cpp_code(
+                PRIVATE_HANDOFF_PUBLICATION_MERGE_AGGREGATE_COPY_EXCEPTION_SOURCE
+            )
+            retained_revalidation = _compact_cpp_code(
+                PRIVATE_HANDOFF_PUBLICATION_MERGE_AGGREGATE_RETAINED_REVALIDATION_SOURCE
+            )
+            exact_revalidation_calls = find_call_identifier_uses(
+                aggregate_revalidation_body,
+                PRIVATE_HANDOFF_PUBLICATION_RESUME_REVALIDATE_IDENTIFIER,
+            )
+            forbidden_calls = tuple(
+                identifier
+                for identifier in (
+                    PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER,
+                    PRIVATE_HANDOFF_PUBLICATION_RESUME_VALIDATE_IDENTIFIER,
+                    PRIVATE_HANDOFF_PUBLICATION_RESUME_RECONCILE_IDENTIFIER,
+                )
+                if find_code_identifier_uses(
+                    aggregate_revalidation_body, identifier
+                )
+            )
+            if (
+                compact_aggregate_revalidation.count(copy_exception_boundary)
+                != 1
+                or compact_aggregate_revalidation.count(retained_revalidation)
+                != 1
+                or len(exact_revalidation_calls) != 1
+                or forbidden_calls
+            ):
+                self.fail(
+                    relative,
+                    aggregate_revalidation_line_offset + 1,
+                    f"{PRIVATE_HANDOFF_PUBLICATION_MERGE_AGGREGATE_REVALIDATION_FUNCTION} "
+                    "must keep throwing inventory copy/projection inside the "
+                    "exact noexcept exception boundary; it must exact-revalidate "
+                    "only already-retained worker permits, bind their typed/"
+                    "provisional/attempt evidence, and reject every unretained "
+                    "canonical handoff before path validation",
+                )
+
         merge_body, merge_body_line_offset, merge_body_errors = (
             find_function_definition_body(
                 text, PRIVATE_HANDOFF_PUBLICATION_MERGE_CLASSIFIER_FUNCTION
@@ -5837,9 +6546,9 @@ class Checks:
             self.fail(relative, line, error)
         if merge_body is not None:
             merge_call_counts = {
-                PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER: 1,
-                PRIVATE_HANDOFF_PUBLICATION_RESUME_VALIDATE_IDENTIFIER: 1,
-                PRIVATE_HANDOFF_PUBLICATION_RESUME_REVALIDATE_IDENTIFIER: 1,
+                PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER: 2,
+                PRIVATE_HANDOFF_PUBLICATION_RESUME_VALIDATE_IDENTIFIER: 2,
+                PRIVATE_HANDOFF_PUBLICATION_RESUME_REVALIDATE_IDENTIFIER: 2,
                 PRIVATE_HANDOFF_PUBLICATION_RESUME_RECONCILE_IDENTIFIER: 0,
             }
             merge_calls: dict[str, CodeIdentifierUse] = {}
@@ -5855,7 +6564,12 @@ class Checks:
                         f"found {len(uses)} identifiers and {len(calls)} calls",
                     )
                     continue
-                if calls:
+                if identifier in {
+                    PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER,
+                    PRIVATE_HANDOFF_PUBLICATION_RESUME_VALIDATE_IDENTIFIER,
+                }:
+                    merge_calls[identifier] = calls[-1]
+                elif identifier == PRIVATE_HANDOFF_PUBLICATION_RESUME_REVALIDATE_IDENTIFIER:
                     merge_calls[identifier] = calls[0]
             merge_context_identifier = "MergePreparedTypedValidationContext"
             merge_context_uses = find_code_identifier_uses(
@@ -6013,6 +6727,49 @@ class Checks:
                         "must revalidate exactly validation.permit",
                     )
 
+            compact_merge_body = _compact_cpp_code(merge_body)
+            retained_capture = _compact_cpp_code(
+                PRIVATE_HANDOFF_PUBLICATION_MERGE_RETAINED_WORKER_CAPTURE_SOURCE
+            )
+            retained_post_target = _compact_cpp_code(
+                PRIVATE_HANDOFF_PUBLICATION_MERGE_RETAINED_WORKER_POST_TARGET_SOURCE
+            )
+            retained_capture_offset = compact_merge_body.find(retained_capture)
+            target_acquire_offset = compact_merge_body.rfind(
+                PRIVATE_HANDOFF_PUBLICATION_MERGE_ACQUIRE_STATEMENT
+            )
+            retained_post_target_offset = compact_merge_body.find(
+                retained_post_target
+            )
+            aggregate_move_offset = compact_merge_body.find(
+                PRIVATE_HANDOFF_PUBLICATION_MERGE_RETAINED_WORKER_AGGREGATE_MOVE_FRAGMENT
+            )
+            retained_offsets = (
+                retained_capture_offset,
+                target_acquire_offset,
+                retained_post_target_offset,
+                aggregate_move_offset,
+            )
+            if (
+                compact_merge_body.count(retained_capture) != 1
+                or compact_merge_body.count(retained_post_target) != 1
+                or compact_merge_body.count(
+                    PRIVATE_HANDOFF_PUBLICATION_MERGE_RETAINED_WORKER_AGGREGATE_MOVE_FRAGMENT
+                )
+                != 1
+                or any(offset < 0 for offset in retained_offsets)
+                or retained_offsets != tuple(sorted(retained_offsets))
+            ):
+                self.fail(
+                    relative,
+                    merge_body_line_offset + 1,
+                    f"{PRIVATE_HANDOFF_PUBLICATION_MERGE_CLASSIFIER_FUNCTION} "
+                    "must sort worker predecessors by stable manifest/attempt "
+                    "order, acquire/validate/retain every worker permit before "
+                    "the target permit, exact-revalidate retained workers while "
+                    "the target is held, and move the stack into the aggregate",
+                )
+
         merge_typed_body, merge_typed_line_offset, merge_typed_errors = (
             find_function_definition_body(
                 text, PRIVATE_HANDOFF_PUBLICATION_MERGE_TYPED_CALLBACK_FUNCTION
@@ -6099,6 +6856,56 @@ class Checks:
                     bridge_line_offset + 1,
                     f"{function_name} must remain the exact fail-closed "
                     "observation, revalidation, and relation-hook bridge",
+                )
+
+        merge_bridge_function_shapes = (
+            (
+                PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_BRIDGE_FUNCTION,
+                PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_BRIDGE_BODY,
+                3,
+                3,
+            ),
+            (
+                PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_STOP_BRIDGE_FUNCTION,
+                PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_STOP_BRIDGE_BODY,
+                2,
+                1,
+            ),
+            (
+                PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_FAIL_BRIDGE_FUNCTION,
+                PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_FAIL_BRIDGE_BODY,
+                2,
+                1,
+            ),
+            (
+                PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_BRIDGE_FACTORY_FUNCTION,
+                PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_BRIDGE_FACTORY_BODY,
+                2,
+                2,
+            ),
+        )
+        for function_name, expected_body, expected_uses, expected_calls in (
+            merge_bridge_function_shapes
+        ):
+            bridge_body, bridge_line_offset, bridge_errors = (
+                find_function_definition_body(text, function_name)
+            )
+            for line, error in bridge_errors:
+                self.fail(relative, line, error)
+            bridge_uses = find_code_identifier_uses(text, function_name)
+            bridge_calls = find_call_identifier_uses(text, function_name)
+            if (
+                bridge_body is None
+                or len(bridge_uses) != expected_uses
+                or len(bridge_calls) != expected_calls
+                or _compact_cpp_code(bridge_body) != expected_body
+            ):
+                self.fail(
+                    relative,
+                    bridge_line_offset + 1,
+                    f"{function_name} must remain the exact stop/fail hook-first "
+                    "bridge with held Wave authority, aggregate projection, "
+                    "latest MergeStarted revalidation, and drift priority",
                 )
 
         typed_body, typed_body_line_offset, typed_body_errors = (
@@ -6296,24 +7103,52 @@ class Checks:
         reconciler = PRIVATE_HANDOFF_PUBLICATION_RESUME_RECONCILE_IDENTIFIER
         open_uses = find_code_identifier_uses(open_body, reconciler)
         open_calls = find_call_identifier_uses(open_body, reconciler)
-        if len(open_uses) != 1 or len(open_calls) != 1:
+        if len(open_uses) != 2 or len(open_calls) != 2:
             self.fail(
                 relative,
                 open_body_line_offset + 1,
                 f"{PRIVATE_HANDOFF_PUBLICATION_RESUME_OPEN_FUNCTION} must contain "
-                f"the only direct {reconciler} call, found {len(open_uses)} "
+                f"both direct {reconciler} calls, found {len(open_uses)} "
                 f"identifiers and {len(open_calls)} calls",
             )
 
         open_compact = _compact_cpp_code(open_body)
+        if (
+            open_compact.count(
+                PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_OPEN_FRAGMENT
+            )
+            != 1
+        ):
+            self.fail(
+                relative,
+                open_body_line_offset + 1,
+                f"{PRIVATE_HANDOFF_PUBLICATION_RESUME_OPEN_FUNCTION} must perform "
+                "the exact bounded single-round MergePrepared reconcile before "
+                "the worker loop, including expected disposition and terminal "
+                "checks, consumed held permit, and fresh authority/inventory rescan",
+            )
+        if (
+            open_compact.count(
+                PRIVATE_HANDOFF_PUBLICATION_MERGE_OPEN_RELEASE_ORDER_FRAGMENT
+            )
+            != 1
+        ):
+            self.fail(
+                relative,
+                open_body_line_offset + 1,
+                f"{PRIVATE_HANDOFF_PUBLICATION_RESUME_OPEN_FUNCTION} must reset "
+                "the consumed target permit before resetting the aggregate "
+                "worker stack, complete its LIFO release, and only then invoke "
+                "the round-release hook",
+            )
         release_identifier = (
             PRIVATE_HANDOFF_PUBLICATION_RESUME_ROUND_RELEASE_IDENTIFIER
         )
         all_release_uses = find_code_identifier_uses(text, release_identifier)
         open_release_uses = find_code_identifier_uses(open_body, release_identifier)
         if (
-            len(all_release_uses) != 2
-            or len(open_release_uses) != 2
+            len(all_release_uses) != 4
+            or len(open_release_uses) != 4
             or open_compact.count(
                 PRIVATE_HANDOFF_PUBLICATION_RESUME_ROUND_RELEASE_FRAGMENT
             )
@@ -10657,6 +11492,93 @@ auto admission =
         "private-handoff publication resume allowlist is not exact",
     )
     expect(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_NARROW_TEST_DIRECT_CALL_COUNTS
+        == {
+            PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_TEST_FILE: {
+                PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER: 2,
+            },
+        },
+        "private-handoff publication resume narrow test mapping is not exact",
+    )
+    narrow_resume_test_source = r"""
+auto first = private_lease::acquire_private_handoff_publication_resume_v1(
+    first_paths, first_directory_identity);
+auto second = private_lease::acquire_private_handoff_publication_resume_v1(
+    second_paths, second_directory_identity);
+"""
+    narrow_resume_test_checks = Checks(Path("."))
+    narrow_resume_test_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_TEST_FILE,
+        narrow_resume_test_source,
+    )
+    expect(
+        not narrow_resume_test_checks.errors,
+        "two direct narrow-test resume acquisitions were rejected: "
+        f"{narrow_resume_test_checks.errors}",
+    )
+
+    third_narrow_resume_acquire_checks = Checks(Path("."))
+    third_narrow_resume_acquire_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_TEST_FILE,
+        narrow_resume_test_source
+        + "\nauto third = private_lease::"
+        + PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER
+        + "(third_paths, third_directory_identity);\n",
+    )
+    expect(
+        any(
+            "narrow resume test must contain exactly 2 direct "
+            "acquire_private_handoff_publication_resume_v1 call, found "
+            "3 identifiers and 3 calls"
+            in error
+            for error in third_narrow_resume_acquire_checks.errors
+        ),
+        "third narrow-test resume acquisition escaped exact count closure: "
+        f"{third_narrow_resume_acquire_checks.errors}",
+    )
+
+    aliased_narrow_resume_acquire_checks = Checks(Path("."))
+    aliased_narrow_resume_acquire_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_TEST_FILE,
+        narrow_resume_test_source
+        + "\nauto acquire_alias = &private_lease::"
+        + PRIVATE_HANDOFF_PUBLICATION_RESUME_ACQUIRE_IDENTIFIER
+        + ";\n",
+    )
+    expect(
+        any(
+            "narrow resume test authority is direct-call-only; aliases and "
+            "function-pointer references are forbidden"
+            in error
+            for error in aliased_narrow_resume_acquire_checks.errors
+        ),
+        "narrow-test resume acquisition alias escaped direct-call closure: "
+        f"{aliased_narrow_resume_acquire_checks.errors}",
+    )
+
+    for escaped_identifier in (
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_VALIDATE_IDENTIFIER,
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_RECONCILE_IDENTIFIER,
+        PRIVATE_LEASE_PREACTIVE_ROLLBACK_IDENTIFIER,
+    ):
+        escaped_narrow_resume_authority_checks = Checks(Path("."))
+        escaped_narrow_resume_authority_checks.validate_private_handoff_publication_resume_boundary(
+            PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_TEST_FILE,
+            narrow_resume_test_source
+            + f"\nauto escaped = private_lease::{escaped_identifier}(arguments);\n",
+        )
+        expect(
+            any(
+                "narrow resume test use site forbids authority: "
+                f"{escaped_identifier}"
+                in error
+                for error in escaped_narrow_resume_authority_checks.errors
+            ),
+            f"narrow-test {escaped_identifier} authority escaped zero-use closure: "
+            f"{escaped_narrow_resume_authority_checks.errors}",
+        )
+
+    expect(
         PRIVATE_HANDOFF_PUBLICATION_WORKER_VALIDATOR_AUTHORITY_ALLOWLIST
         == {
             PRIVATE_HANDOFF_PUBLICATION_RESUME_RELATION_INTERFACE_FILE,
@@ -11850,6 +12772,28 @@ struct DistributedSieveWorkerHandoffResumeTestHooksV1 final {
     void* context = nullptr;
 };
 """
+        + "enum class DistributedSieveMergePreparedResumeObservationPointV1 "
+        ": std::uint8_t {\n"
+        + "\n".join(
+            f"    {point},"
+            for point in PRIVATE_HANDOFF_PUBLICATION_RESUME_OBSERVATION_POINTS
+        )
+        + r"""
+};
+struct DistributedSieveMergePreparedResumeTestHooksV1 final {
+    using StopAfter = bool (*)(
+        DistributedSieveMergePreparedResumeObservationPointV1 point,
+        void* context) noexcept;
+    using FailBefore = bool (*)(
+        DistributedSieveMergePreparedResumeObservationPointV1 point,
+        void* context) noexcept;
+    using AfterRoundLocksReleased = void (*)(void* context) noexcept;
+    StopAfter stop_after = nullptr;
+    FailBefore fail_before = nullptr;
+    AfterRoundLocksReleased after_round_locks_released = nullptr;
+    void* context = nullptr;
+};
+"""
     )
     exact_private_handoff_resume_wave_interface_checks = Checks(Path("."))
     exact_private_handoff_resume_wave_interface_checks.validate_private_handoff_publication_resume_boundary(
@@ -11860,6 +12804,23 @@ struct DistributedSieveWorkerHandoffResumeTestHooksV1 final {
         not exact_private_handoff_resume_wave_interface_checks.errors,
         "exact WaveStore private-handoff observation/hook interface was rejected: "
         f"{exact_private_handoff_resume_wave_interface_checks.errors}",
+    )
+
+    escaped_merge_resume_hook_checks = Checks(Path("."))
+    escaped_merge_resume_hook_checks.validate_private_handoff_publication_resume_boundary(
+        "src/sieve/untrusted_merge_resume_hook.cpp",
+        "DistributedSieveMergePreparedResumeTestHooksV1 escaped_hooks;\n",
+    )
+    expect(
+        any(
+            "MergePrepared publication-resume WaveStore identifier is not "
+            "allowlisted: DistributedSieveMergePreparedResumeTestHooksV1"
+            in error
+            for error in escaped_merge_resume_hook_checks.errors
+        ),
+        "MergePrepared resume hook identifier escaped its internal-header, "
+        "WaveStore, and resume-test use-site closure: "
+        f"{escaped_merge_resume_hook_checks.errors}",
     )
 
     extra_private_handoff_resume_wave_hook_checks = Checks(Path("."))
@@ -11940,8 +12901,59 @@ auto adopt_private_handoff_impl() noexcept {
         f"{point}));"
         for point in PRIVATE_HANDOFF_PUBLICATION_RESUME_OBSERVATION_POINTS
     )
+    private_handoff_merge_resume_wave_mirror = (
+        r"""
+static_assert([] {
+    using MergePoint =
+        DistributedSieveMergePreparedResumeObservationPointV1;
+    using RelationPoint =
+        private_lease::PrivateHandoffPublicationResumeObservationPointV1;
+    constexpr std::array wave{
+"""
+        + "\n".join(
+            f"        MergePoint::{point},"
+            for point in PRIVATE_HANDOFF_PUBLICATION_RESUME_OBSERVATION_POINTS
+        )
+        + r"""
+    };
+    constexpr std::array relation{
+"""
+        + "\n".join(
+            f"        RelationPoint::{point},"
+            for point in PRIVATE_HANDOFF_PUBLICATION_RESUME_OBSERVATION_POINTS
+        )
+        + r"""
+    };
+    for (std::size_t index = 0; index < wave.size(); ++index) {
+        if (static_cast<std::size_t>(wave[index]) !=
+            static_cast<std::size_t>(relation[index])) {
+            return false;
+        }
+    }
+    return true;
+}());
+"""
+    )
     private_handoff_resume_wave_authority_and_callback = (
         private_handoff_resume_wave_mirror
+        + private_handoff_merge_resume_wave_mirror
+        + PRIVATE_HANDOFF_PUBLICATION_RETAINED_WORKER_STACK_SOURCE
+        + r"""
+struct MergePreparedPublicationAggregateWitness final {
+    DistributedSieveMergeStartedRecordInventoryWitnessV1 start_record;
+    RetainedWorkerHandoffPublicationPrefixStack retained_workers;
+};
+"""
+        + PRIVATE_HANDOFF_PUBLICATION_MERGE_CAPTURE_RESULT_SOURCE
+        + r"""
+auto revalidate_merge_prepared_aggregate_projection() noexcept {
+"""
+        + PRIVATE_HANDOFF_PUBLICATION_MERGE_AGGREGATE_COPY_EXCEPTION_SOURCE
+        + PRIVATE_HANDOFF_PUBLICATION_MERGE_AGGREGATE_RETAINED_REVALIDATION_SOURCE
+        + r"""
+    return DistributedSieveWaveStoreDiagnostic{};
+}
+"""
         + r"""
 auto validate_merge_prepared_envelope() noexcept {
     return true;
@@ -11975,6 +12987,9 @@ public:
         + r"""
 }
 auto classify_merge_prepared_publication_prefix_v1() noexcept {
+"""
+        + PRIVATE_HANDOFF_PUBLICATION_MERGE_RETAINED_WORKER_CAPTURE_SOURCE
+        + r"""
     auto admission =
         private_lease::acquire_private_handoff_publication_resume_v1(
             paths, relation_identity(expected_directory_identity));
@@ -11997,6 +13012,13 @@ auto classify_merge_prepared_publication_prefix_v1() noexcept {
     const auto revalidated =
         private_lease::revalidate_private_handoff_publication_resume_v1(
             *validation.permit);
+"""
+        + PRIVATE_HANDOFF_PUBLICATION_MERGE_RETAINED_WORKER_POST_TARGET_SOURCE
+        + r"""
+    MergePreparedPublicationAggregateWitness aggregate{
+        .start_record = start_record,
+        .retained_workers = std::move(retained_workers),
+    };
     return revalidated;
 }
 auto revalidate_exact_canonical_merge_started() noexcept {
@@ -12151,6 +13173,78 @@ relation_worker_handoff_resume_hooks(
         .context = &context,
     };
 }
+[[nodiscard]] bool bridge_merge_prepared_resume_observation(
+    private_lease::PrivateHandoffPublicationResumeObservationPointV1 point,
+    void* opaque, bool fail_before) noexcept {
+    auto* context = static_cast<MergePreparedResumeBridgeContext*>(opaque);
+    if (context == nullptr) {
+        return true;
+    }
+    const auto wave_point =
+        static_cast<DistributedSieveMergePreparedResumeObservationPointV1>(point);
+    const bool user_requested_stop =
+        fail_before
+            ? context->user_hooks.fail_before != nullptr &&
+                  context->user_hooks.fail_before(
+                      wave_point, context->user_hooks.context)
+            : context->user_hooks.stop_after != nullptr &&
+                  context->user_hooks.stop_after(
+                      wave_point, context->user_hooks.context);
+    if (context->parent_components == nullptr ||
+        context->root_leaf == nullptr ||
+        context->manifest_bytes == nullptr ||
+        context->absolute_root == nullptr ||
+        context->manifest == nullptr ||
+        context->aggregate == nullptr ||
+        context->retained == nullptr) {
+        context->revalidation_failed = true;
+        context->revalidation_diagnostic =
+            diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                       protocol_error());
+        return true;
+    }
+    auto revalidated = validate_held_wave_store_manifest_authority(
+        context->parent_fd, *context->parent_components, context->root_fd,
+        *context->root_leaf, context->root_identity, context->lock_fd,
+        context->lock_identity, *context->manifest_bytes,
+        context->manifest_snapshot, context->creator_process_id);
+    if (revalidated.status == DistributedSieveWaveStoreStatus::ready) {
+        revalidated = revalidate_merge_prepared_aggregate_projection(
+            context->root_fd, *context->absolute_root, *context->manifest,
+            *context->aggregate, *context->retained,
+            context->creator_process_id, wave_point);
+    }
+    if (revalidated.status == DistributedSieveWaveStoreStatus::ready) {
+        revalidated = revalidate_exact_canonical_merge_started(
+            context->root_fd, context->retained->names,
+            context->retained->start_record, context->creator_process_id);
+    }
+    if (revalidated.status == DistributedSieveWaveStoreStatus::ready) {
+        return user_requested_stop;
+    }
+    context->revalidation_failed = true;
+    context->revalidation_diagnostic = std::move(revalidated);
+    return true;
+}
+[[nodiscard]] bool bridge_merge_prepared_resume_stop_after(
+    private_lease::PrivateHandoffPublicationResumeObservationPointV1 point,
+    void* opaque) noexcept {
+    return bridge_merge_prepared_resume_observation(point, opaque, false);
+}
+[[nodiscard]] bool bridge_merge_prepared_resume_fail_before(
+    private_lease::PrivateHandoffPublicationResumeObservationPointV1 point,
+    void* opaque) noexcept {
+    return bridge_merge_prepared_resume_observation(point, opaque, true);
+}
+[[nodiscard]] private_lease::PrivateHandoffPublicationResumeTestHooksV1
+relation_merge_prepared_resume_hooks(
+    MergePreparedResumeBridgeContext& context) noexcept {
+    return {
+        .stop_after = bridge_merge_prepared_resume_stop_after,
+        .fail_before = bridge_merge_prepared_resume_fail_before,
+        .context = &context,
+    };
+}
 """
     )
     private_handoff_resume_capture_chain = r"""
@@ -12181,11 +13275,16 @@ relation_worker_handoff_resume_hooks(
     const auto typed_handoff = *typed_context.typed_handoff;
     return validation;
 """
-    private_handoff_resume_wave_store_suffix = r"""
+    private_handoff_resume_wave_store_suffix = (
+        r"""
 auto revalidate_held_private_handoff() noexcept {
     return private_lease::revalidate_private_handoff_publication_resume_v1(permit);
 }
 auto DistributedSieveWaveStore::open() noexcept {
+"""
+        + PRIVATE_HANDOFF_PUBLICATION_MERGE_RESUME_OPEN_FRAGMENT
+        + r"""
+    while (true) {
     auto result = private_lease::reconcile_private_handoff_publication_for_resume_v1(
         permit, relation_worker_handoff_resume_hooks(resume_bridge));
     while (!recoverable.retained.entries.empty()) {
@@ -12201,7 +13300,9 @@ auto DistributedSieveWaveStore::open() noexcept {
     ++resume_round;
     return result;
 }
+}
 """
+    )
     valid_private_handoff_resume_wave_store = (
         "#if !defined(_WIN32)\n"
         + private_handoff_resume_wave_authority_and_callback
@@ -12496,11 +13597,15 @@ auto DistributedSieveWaveStore::open() noexcept {
     )
 
     conditional_merge_permit_chain = valid_private_handoff_resume_wave_store.replace(
-        """auto classify_merge_prepared_publication_prefix_v1() noexcept {
-    auto admission =""",
-        """auto classify_merge_prepared_publication_prefix_v1() noexcept {
-    if (false) {
-    auto admission =""",
+        """    auto admission =
+        private_lease::acquire_private_handoff_publication_resume_v1(
+            paths, relation_identity(expected_directory_identity));
+    MergePreparedTypedValidationContext typed_context{""",
+        """    if (false) {
+    auto admission =
+        private_lease::acquire_private_handoff_publication_resume_v1(
+            paths, relation_identity(expected_directory_identity));
+    MergePreparedTypedValidationContext typed_context{""",
     ).replace(
         """    return revalidated;
 }
@@ -12525,11 +13630,15 @@ auto revalidate_exact_canonical_merge_started() noexcept {""",
     )
 
     looped_merge_permit_chain = valid_private_handoff_resume_wave_store.replace(
-        """auto classify_merge_prepared_publication_prefix_v1() noexcept {
-    auto admission =""",
-        """auto classify_merge_prepared_publication_prefix_v1() noexcept {
-    for (; false;) {
-    auto admission =""",
+        """    auto admission =
+        private_lease::acquire_private_handoff_publication_resume_v1(
+            paths, relation_identity(expected_directory_identity));
+    MergePreparedTypedValidationContext typed_context{""",
+        """    for (; false;) {
+    auto admission =
+        private_lease::acquire_private_handoff_publication_resume_v1(
+            paths, relation_identity(expected_directory_identity));
+    MergePreparedTypedValidationContext typed_context{""",
     ).replace(
         """    return revalidated;
 }
@@ -12616,6 +13725,170 @@ auto revalidate_exact_canonical_merge_started() noexcept {""",
         ),
         "user stop result before complete WaveStore authority revalidation escaped "
         f"bridge closure: {early_private_handoff_bridge_return_checks.errors}",
+    )
+
+    missing_merge_resume_bridge_checks = Checks(Path("."))
+    missing_merge_resume_bridge_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        valid_private_handoff_resume_wave_store.replace(
+            "[[nodiscard]] bool bridge_merge_prepared_resume_observation(",
+            "[[nodiscard]] bool removed_merge_prepared_resume_observation(",
+            1,
+        ),
+    )
+    expect(
+        any(
+            "bridge_merge_prepared_resume_observation must remain the exact "
+            "stop/fail hook-first bridge"
+            in error
+            for error in missing_merge_resume_bridge_checks.errors
+        ),
+        "missing MergePrepared resume bridge escaped exact bridge closure: "
+        f"{missing_merge_resume_bridge_checks.errors}",
+    )
+
+    bypassed_merge_resume_projection_checks = Checks(Path("."))
+    bypassed_merge_resume_projection_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        valid_private_handoff_resume_wave_store.replace(
+            "revalidated = revalidate_merge_prepared_aggregate_projection(",
+            "revalidated = bypass_merge_prepared_aggregate_projection(",
+            1,
+        ),
+    )
+    expect(
+        any(
+            "bridge_merge_prepared_resume_observation must remain the exact "
+            "stop/fail hook-first bridge"
+            in error
+            for error in bypassed_merge_resume_projection_checks.errors
+        ),
+        "MergePrepared resume bridge bypassed aggregate projection revalidation: "
+        f"{bypassed_merge_resume_projection_checks.errors}",
+    )
+
+    unstable_retained_worker_order_checks = Checks(Path("."))
+    unstable_retained_worker_order_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        valid_private_handoff_resume_wave_store.replace(
+            "left_attempt.manifest_chunk_order",
+            "left.attempt_index",
+            1,
+        ),
+    )
+    expect(
+        any(
+            "must sort worker predecessors by stable manifest/attempt order"
+            in error
+            for error in unstable_retained_worker_order_checks.errors
+        ),
+        "unstable retained-worker acquisition order escaped classifier closure: "
+        f"{unstable_retained_worker_order_checks.errors}",
+    )
+
+    bypassed_retained_worker_permit_checks = Checks(Path("."))
+    bypassed_retained_worker_permit_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        valid_private_handoff_resume_wave_store.replace(
+            "retained_worker->permit);",
+            "forged_worker_permit);",
+            1,
+        ),
+    )
+    expect(
+        any(
+            "must exact-revalidate only already-retained worker permits"
+            in error
+            for error in bypassed_retained_worker_permit_checks.errors
+        ),
+        "aggregate bridge projection bypassed the retained worker permit: "
+        f"{bypassed_retained_worker_permit_checks.errors}",
+    )
+
+    unguarded_merge_inventory_copy_checks = Checks(Path("."))
+    unguarded_merge_inventory_copy_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        valid_private_handoff_resume_wave_store.replace(
+            """try {
+    auto expected_inventory = expected.inventory;
+    auto current_inventory = *current.inventory;""",
+            """auto expected_inventory = expected.inventory;
+try {
+    auto current_inventory = *current.inventory;""",
+            1,
+        ),
+    )
+    expect(
+        any(
+            "must keep throwing inventory copy/projection inside the exact "
+            "noexcept exception boundary"
+            in error
+            for error in unguarded_merge_inventory_copy_checks.errors
+        ),
+        "throwing MergePrepared inventory copy escaped the noexcept exception "
+        f"boundary: {unguarded_merge_inventory_copy_checks.errors}",
+    )
+
+    adopted_unretained_canonical_worker_checks = Checks(Path("."))
+    adopted_unretained_canonical_worker_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        valid_private_handoff_resume_wave_store.replace(
+            """    if (canonical_handoff_root_shape ||
+        expected.private_leases[index].worker_handoff.has_value() ||""",
+            """    if (expected.private_leases[index].worker_handoff.has_value() ||""",
+            1,
+        ),
+    )
+    expect(
+        any(
+            "reject every unretained canonical handoff before path validation"
+            in error
+            for error in adopted_unretained_canonical_worker_checks.errors
+        ),
+        "unretained canonical worker escaped fail-closed aggregate projection: "
+        f"{adopted_unretained_canonical_worker_checks.errors}",
+    )
+
+    forward_retained_worker_release_checks = Checks(Path("."))
+    forward_retained_worker_release_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        valid_private_handoff_resume_wave_store.replace(
+            "entries.pop_back();",
+            "entries.erase(entries.begin());",
+            1,
+        ),
+    )
+    expect(
+        any(
+            "must keep the exact reverse-order stack" in error
+            for error in forward_retained_worker_release_checks.errors
+        ),
+        "forward retained-worker permit release escaped LIFO resource closure: "
+        f"{forward_retained_worker_release_checks.errors}",
+    )
+
+    early_retained_worker_stack_release_checks = Checks(Path("."))
+    early_retained_worker_stack_release_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        valid_private_handoff_resume_wave_store.replace(
+            "retained.consumed=true;"
+            "merge_prepared_prefix.retained.reset();"
+            "merge_prepared_prefix.witness.reset();",
+            "retained.consumed=true;"
+            "merge_prepared_prefix.witness.reset();"
+            "merge_prepared_prefix.retained.reset();",
+            1,
+        ),
+    )
+    expect(
+        any(
+            "must reset the consumed target permit before resetting the "
+            "aggregate worker stack"
+            in error
+            for error in early_retained_worker_stack_release_checks.errors
+        ),
+        "aggregate worker stack released before target permit reset: "
+        f"{early_retained_worker_stack_release_checks.errors}",
     )
 
     early_private_handoff_round_release_checks = Checks(Path("."))
@@ -12814,6 +14087,26 @@ auto revalidate_exact_canonical_merge_started() noexcept {""",
             f"{duplicate_private_handoff_resume_checks.errors}",
         )
 
+    third_merge_reconcile_checks = Checks(Path("."))
+    third_merge_reconcile_checks.validate_private_handoff_publication_resume_boundary(
+        PRIVATE_HANDOFF_PUBLICATION_RESUME_WAVE_STORE_FILE,
+        valid_private_handoff_resume_wave_store
+        + "\nauto third_reconcile = private_lease::"
+        + PRIVATE_HANDOFF_PUBLICATION_RESUME_RECONCILE_IDENTIFIER
+        + "(permit, hooks);\n",
+    )
+    expect(
+        any(
+            "production WaveStore must contain exactly 2 direct "
+            "reconcile_private_handoff_publication_for_resume_v1 call, "
+            "found 3 identifiers and 3 calls"
+            in error
+            for error in third_merge_reconcile_checks.errors
+        ),
+        "third WaveStore resume reconcile call escaped exact two-call closure: "
+        f"{third_merge_reconcile_checks.errors}",
+    )
+
     for identifier in PRIVATE_HANDOFF_PUBLICATION_RESUME_DIRECT_CALL_IDENTIFIERS:
         indirect_private_handoff_resume_checks = Checks(Path("."))
         indirect_private_handoff_resume_checks.validate_private_handoff_publication_resume_boundary(
@@ -12890,7 +14183,7 @@ auto reconcile_helper() noexcept {
     expect(
         any(
             f"{PRIVATE_HANDOFF_PUBLICATION_RESUME_OPEN_FUNCTION} must contain "
-            "the only direct "
+            "both direct "
             "reconcile_private_handoff_publication_for_resume_v1 call"
             in error
             for error in reconcile_outside_open_private_handoff_resume_checks.errors

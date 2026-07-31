@@ -1140,8 +1140,14 @@ void test_invalid_admission_fails_closed() {
     return point == *static_cast<const relation::OOCPrivateHandoffFaultPoint*>(opaque);
 }
 
-void test_real_typed_publication_prefix(relation::OOCPrivateHandoffFaultPoint fault_point,
-                                        std::string_view label, bool expect_pending) {
+enum class MergePreparedPublicationPrefixShape : std::uint8_t {
+    pending_only,
+    canonical_only,
+    identical_dual,
+};
+
+void test_real_typed_publication_prefix(MergePreparedPublicationPrefixShape shape,
+                                        std::string_view label) {
     MergeAuthorityFixture fixture(label, nonempty_worker_rows());
     auto worker_result = fixture.take_worker_result();
     CHECK(worker_result.store != nullptr);
@@ -1152,7 +1158,10 @@ void test_real_typed_publication_prefix(relation::OOCPrivateHandoffFaultPoint fa
     auto adopted = consume_merge_generation(std::move(admission));
     CHECK(adopted.authority.has_value());
 
-    auto target = fault_point;
+    const bool pending_only = shape == MergePreparedPublicationPrefixShape::pending_only;
+    const bool identical_dual = shape == MergePreparedPublicationPrefixShape::identical_dual;
+    auto target = pending_only ? relation::OOCPrivateHandoffFaultPoint::PendingDurable
+                               : relation::OOCPrivateHandoffFaultPoint::CanonicalPromoted;
     auto interrupted =
         authority::trusted_test::publish_distributed_sieve_merge_prepared_v1_with_hooks(
             std::move(*adopted.authority),
@@ -1177,10 +1186,21 @@ void test_real_typed_publication_prefix(relation::OOCPrivateHandoffFaultPoint fa
     CHECK(names.has_value());
     const auto paths = relation::OOCCleanupTransaction::paths_for(
         fixture.root() / names->private_directory_leaf / "corpus");
-    CHECK(std::filesystem::exists(paths.private_handoff_pending_path) == expect_pending);
-    CHECK(std::filesystem::exists(paths.private_handoff_path) == !expect_pending);
+    if (identical_dual) {
+        constexpr std::string_view fixture_pending =
+            ".gnfs-wave-v1.test-merge-prepared-identical.pending";
+        publish_canonical_record(paths.private_directory, fixture_pending,
+                                 paths.private_handoff_pending_path.filename().string(),
+                                 read_file_bytes(paths.private_handoff_path));
+        CHECK(native_identity(paths.private_handoff_path) !=
+              native_identity(paths.private_handoff_pending_path));
+    }
+    CHECK(std::filesystem::exists(paths.private_handoff_path) == !pending_only);
+    CHECK(std::filesystem::exists(paths.private_handoff_pending_path) ==
+          (pending_only || identical_dual));
     const auto visible =
-        expect_pending ? paths.private_handoff_pending_path : paths.private_handoff_path;
+        pending_only ? paths.private_handoff_pending_path : paths.private_handoff_path;
+    const auto visible_bytes = read_file_bytes(visible);
     const auto prepared = read_typed_merge_prepared_handoff(visible, manifest.handoff_version);
     const auto expected_rows = expected_nonempty_merged_rows(fixture.rows());
     const std::array expected_retained{
@@ -1191,19 +1211,65 @@ void test_real_typed_publication_prefix(relation::OOCPrivateHandoffFaultPoint fa
     require_prepared_record(manifest, started, prepared, fixture.root(), expected_rows,
                             expected_retained, 5, 1);
 
+    const auto next_ordinal = started.merge_attempt_ordinal + 1U;
+    const auto next_names = wave::distributed_sieve_merge_generation_names_v1(next_ordinal);
+    CHECK(next_names.has_value());
+    const auto require_no_next_merge = [&] {
+        CHECK(!std::filesystem::exists(fixture.root() / next_names->base_lock_leaf));
+        CHECK(!std::filesystem::exists(fixture.root() / next_names->private_directory_leaf));
+        CHECK(!std::filesystem::exists(fixture.root() / next_names->canonical_record_leaf));
+        CHECK(!std::filesystem::exists(fixture.root() / next_names->pending_record_leaf));
+    };
+    require_no_next_merge();
+
     auto reopened = wave::DistributedSieveWaveStore::open(fixture.root(), manifest_digest);
-    CHECK(!reopened);
-    CHECK(reopened.store == nullptr);
-    require_wave_status(reopened.diagnostic,
-                        wave::DistributedSieveWaveStoreStatus::reconciliation_required,
-                        "cold open protects real typed MergePrepared prefix");
+    CHECK(reopened);
+    CHECK(reopened.store != nullptr);
+    require_wave_status(reopened.diagnostic, wave::DistributedSieveWaveStoreStatus::ready,
+                        "cold open reconciles real typed MergePrepared prefix");
+    CHECK(!std::filesystem::exists(fixture.root() / names->reserved_leaf));
+    CHECK(!std::filesystem::exists(fixture.root() / names->reserved_pending_leaf));
+    CHECK(!std::filesystem::exists(fixture.root() / names->owned_pending_leaf));
+    CHECK(!std::filesystem::exists(fixture.root() / names->rollback_handoff_leaf));
+    CHECK(std::filesystem::exists(fixture.root() / names->canonical_record_leaf));
+    CHECK(!std::filesystem::exists(fixture.root() / names->pending_record_leaf));
+    if (pending_only) {
+        CHECK(!std::filesystem::exists(fixture.root() / names->owned_leaf));
+        CHECK(!std::filesystem::exists(paths.private_directory));
+        CHECK(!std::filesystem::exists(paths.private_handoff_path));
+        CHECK(!std::filesystem::exists(paths.private_handoff_pending_path));
+    } else {
+        CHECK(std::filesystem::exists(fixture.root() / names->owned_leaf));
+        CHECK(std::filesystem::exists(paths.private_directory));
+        CHECK(std::filesystem::exists(paths.private_handoff_path));
+        CHECK(!std::filesystem::exists(paths.private_handoff_pending_path));
+        CHECK(read_file_bytes(paths.private_handoff_path) == visible_bytes);
+    }
+    require_no_next_merge();
+
+    const auto cursor = wave::prepare_distributed_sieve_merge_generation_v1(*reopened.store);
+    if (pending_only) {
+        CHECK(cursor);
+        CHECK(cursor.merge_attempt_ordinal == next_ordinal);
+        require_wave_status(cursor.diagnostic, wave::DistributedSieveWaveStoreStatus::ready,
+                            "rolled-back MergePrepared permits the next merge ordinal");
+    } else {
+        CHECK(!cursor);
+        CHECK(!cursor.merge_attempt_ordinal.has_value());
+        require_wave_status(cursor.diagnostic,
+                            wave::DistributedSieveWaveStoreStatus::reconciliation_required,
+                            "canonical MergePrepared does not start a duplicate merge");
+    }
+    require_no_next_merge();
 }
 
 void test_real_typed_publication_prefixes() {
-    test_real_typed_publication_prefix(relation::OOCPrivateHandoffFaultPoint::PendingDurable,
-                                       "prepared-pending", true);
-    test_real_typed_publication_prefix(relation::OOCPrivateHandoffFaultPoint::CanonicalPromoted,
-                                       "prepared-canonical-promoted", false);
+    test_real_typed_publication_prefix(MergePreparedPublicationPrefixShape::pending_only,
+                                       "prepared-pending");
+    test_real_typed_publication_prefix(MergePreparedPublicationPrefixShape::canonical_only,
+                                       "prepared-canonical-promoted");
+    test_real_typed_publication_prefix(MergePreparedPublicationPrefixShape::identical_dual,
+                                       "prepared-identical-dual");
 }
 
 #endif

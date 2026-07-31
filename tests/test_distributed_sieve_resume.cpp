@@ -16,6 +16,7 @@
 #include "distributed_sieve_worker_coordinator_internal.hpp"
 #include "distributed_sieve_worker_execution_internal.hpp"
 #include "distributed_sieve_worker_launcher_internal.hpp"
+#include "ooc_private_cleanup_union_internal.hpp"
 #include "ooc_private_handoff_cleanup_authorization_internal.hpp"
 
 #include <algorithm>
@@ -6221,6 +6222,16 @@ void erase_wave_root_snapshot_leaf(WaveRootSnapshot& snapshot, std::string_view 
         fail("snapshot contains expected wave-store leaf", __LINE__, leaf);
     }
     snapshot.erase(found);
+}
+
+void normalize_wave_root_snapshot_directory_extent(WaveRootSnapshot& snapshot,
+                                                   std::string_view leaf) {
+    const auto found = std::ranges::find(snapshot, leaf, &WaveRootEntrySnapshot::leaf);
+    if (found == snapshot.end()) {
+        fail("snapshot contains expected wave-store directory leaf", __LINE__, leaf);
+    }
+    found->link_count = 0;
+    found->size = 0;
 }
 
 [[nodiscard]] const WaveRootEntrySnapshot&
@@ -16817,23 +16828,524 @@ void exercise_merge_prepared_protection_prefix(
     CHECK(!relation_base_lock_reports_busy(root / prefix.names.base_lock_leaf));
 }
 
-void test_merge_prepared_protection_valid_prefixes_require_reconciliation_without_mutation() {
+void test_merge_prepared_protection_live_cursor_requires_reconciliation_without_mutation() {
     constexpr std::array shapes{
         MergePreparedProtectionPrefixShape::pending_only,
         MergePreparedProtectionPrefixShape::canonical_only,
         MergePreparedProtectionPrefixShape::identical_dual,
     };
-    constexpr std::array entries{
-        MergePreparedProtectionEntryPoint::live_cursor,
-        MergePreparedProtectionEntryPoint::cold_open,
-    };
     for (const auto shape : shapes) {
-        for (const auto entry : entries) {
-            exercise_merge_prepared_protection_prefix(
-                shape, entry,
-                wave_detail::DistributedSieveWaveStoreStatus::reconciliation_required);
+        exercise_merge_prepared_protection_prefix(
+            shape, MergePreparedProtectionEntryPoint::live_cursor,
+            wave_detail::DistributedSieveWaveStoreStatus::reconciliation_required);
+    }
+}
+
+struct MergePreparedWorkerPrivateSnapshot final {
+    std::filesystem::path private_directory;
+    WaveRootSnapshot snapshot;
+};
+
+[[nodiscard]] std::vector<MergePreparedWorkerPrivateSnapshot>
+capture_merge_prepared_worker_private_snapshots(
+    const std::filesystem::path& root, const sieve::WaveManifestV1& manifest,
+    std::span<const sieve::TerminalChunkInputV1> terminal_inputs) {
+    std::vector<MergePreparedWorkerPrivateSnapshot> snapshots;
+    snapshots.reserve(terminal_inputs.size());
+    for (const auto& input : terminal_inputs) {
+        CHECK(input.disposition == sieve::ChunkDispositionV1::handoff);
+        CHECK(input.durable_attempt_count > 0U);
+        const auto chunk =
+            std::ranges::find(manifest.chunks, input.chunk_id, &sieve::ChunkPlanV1::chunk_id);
+        CHECK(chunk != manifest.chunks.end());
+        const auto names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+            chunk->relative_artifact_stem, input.chunk_id, input.durable_attempt_count - 1U);
+        CHECK(names.has_value());
+        const auto private_directory = root / names->private_directory_leaf;
+        snapshots.push_back({
+            .private_directory = private_directory,
+            .snapshot = capture_wave_root_snapshot(private_directory),
+        });
+    }
+    return snapshots;
+}
+
+void require_merge_prepared_worker_private_snapshots(
+    std::span<const MergePreparedWorkerPrivateSnapshot> expected) {
+    for (const auto& worker : expected) {
+        CHECK(capture_wave_root_snapshot(worker.private_directory) == worker.snapshot);
+    }
+}
+
+void exercise_merge_prepared_cold_open_recovery(MergePreparedProtectionPrefixShape shape) {
+    CHECK(shape == MergePreparedProtectionPrefixShape::pending_only ||
+          shape == MergePreparedProtectionPrefixShape::canonical_only ||
+          shape == MergePreparedProtectionPrefixShape::identical_dual);
+    const std::string label =
+        "merge-prepared-cold-recovery-" + std::string(merge_prepared_protection_shape_name(shape));
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / label;
+    auto terminal =
+        make_merge_terminal_wave_fixture(root, "create MergePrepared cold-recovery fixture");
+    auto& store = require_wave_ready(terminal.opened, "open MergePrepared cold-recovery fixture");
+    const auto manifest = store.manifest();
+    const auto manifest_digest = store.manifest_digest();
+    const auto prefix =
+        publish_merge_prepared_protection_prefix(store, root, terminal.terminal_inputs, shape);
+    const auto next_ordinal = prefix.started.merge_attempt_ordinal + 1U;
+    const auto next_names = wave_detail::distributed_sieve_merge_generation_names_v1(next_ordinal);
+    CHECK(next_names.has_value());
+
+    const auto started_path = root / prefix.names.canonical_record_leaf;
+    const auto started_before =
+        capture_wave_root_entry_snapshot(started_path, prefix.names.canonical_record_leaf);
+    const auto worker_before =
+        capture_merge_prepared_worker_private_snapshots(root, manifest, terminal.terminal_inputs);
+    const auto root_before = capture_wave_root_snapshot(root);
+    const auto private_before = capture_wave_root_snapshot(prefix.paths.private_directory);
+
+    auto expected_root = root_before;
+    erase_wave_root_snapshot_leaf(expected_root, prefix.names.reserved_leaf);
+    std::optional<WaveRootSnapshot> expected_private;
+    if (shape == MergePreparedProtectionPrefixShape::pending_only) {
+        erase_wave_root_snapshot_leaf(expected_root, prefix.names.owned_leaf);
+        erase_wave_root_snapshot_leaf(expected_root, prefix.names.private_directory_leaf);
+    } else {
+        expected_private = private_before;
+        if (shape == MergePreparedProtectionPrefixShape::identical_dual) {
+            erase_wave_root_snapshot_leaf(
+                *expected_private, prefix.paths.private_handoff_pending_path.filename().string());
+            normalize_wave_root_snapshot_directory_extent(expected_root,
+                                                          prefix.names.private_directory_leaf);
         }
     }
+
+    const auto require_recovered_namespace = [&] {
+        auto observed_root = capture_wave_root_snapshot(root);
+        if (shape == MergePreparedProtectionPrefixShape::identical_dual) {
+            normalize_wave_root_snapshot_directory_extent(observed_root,
+                                                          prefix.names.private_directory_leaf);
+        }
+        CHECK(observed_root == expected_root);
+        CHECK(capture_wave_root_entry_snapshot(started_path, prefix.names.canonical_record_leaf) ==
+              started_before);
+        require_merge_prepared_worker_private_snapshots(worker_before);
+        CHECK(entry_exists_no_follow(root / prefix.names.base_lock_leaf));
+        CHECK(!entry_exists_no_follow(root / prefix.names.reserved_leaf));
+        CHECK(!entry_exists_no_follow(root / prefix.names.reserved_pending_leaf));
+        CHECK(!entry_exists_no_follow(root / prefix.names.owned_pending_leaf));
+        CHECK(!entry_exists_no_follow(root / prefix.names.rollback_handoff_leaf));
+        CHECK(entry_exists_no_follow(root / prefix.names.canonical_record_leaf));
+        CHECK(!entry_exists_no_follow(root / prefix.names.pending_record_leaf));
+        CHECK(!entry_exists_no_follow(root / next_names->base_lock_leaf));
+        CHECK(!entry_exists_no_follow(root / next_names->private_directory_leaf));
+        CHECK(!entry_exists_no_follow(root / next_names->canonical_record_leaf));
+        CHECK(!entry_exists_no_follow(root / next_names->pending_record_leaf));
+        CHECK(!relation_base_lock_reports_busy(root / prefix.names.base_lock_leaf));
+
+        if (shape == MergePreparedProtectionPrefixShape::pending_only) {
+            CHECK(!entry_exists_no_follow(root / prefix.names.owned_leaf));
+            CHECK(!entry_exists_no_follow(prefix.paths.private_directory));
+            CHECK(!entry_exists_no_follow(prefix.paths.index_path));
+            CHECK(!entry_exists_no_follow(prefix.paths.data_path));
+            CHECK(!entry_exists_no_follow(prefix.paths.private_handoff_path));
+            CHECK(!entry_exists_no_follow(prefix.paths.private_handoff_pending_path));
+        } else {
+            CHECK(entry_exists_no_follow(root / prefix.names.owned_leaf));
+            CHECK(entry_exists_no_follow(prefix.paths.private_directory));
+            CHECK(entry_exists_no_follow(prefix.paths.index_path));
+            CHECK(entry_exists_no_follow(prefix.paths.data_path));
+            CHECK(entry_exists_no_follow(prefix.paths.private_handoff_path));
+            CHECK(!entry_exists_no_follow(prefix.paths.private_handoff_pending_path));
+            CHECK(capture_wave_root_snapshot(prefix.paths.private_directory) == *expected_private);
+
+            const auto decoded = gnfs::relation::decode_ooc_private_handoff_record(
+                read_file_bytes(prefix.paths.private_handoff_path));
+            CHECK(decoded);
+            CHECK(decoded.value.has_value());
+            CHECK(decoded.value->payload_kind ==
+                  static_cast<std::uint32_t>(sieve::DistributedSieveRecordKindV1::merge_prepared));
+            CHECK(decoded.value->payload_version == manifest.handoff_version);
+            CHECK(decoded.value->opaque_payload == encode_or_fail(Record{prefix.prepared}));
+        }
+    };
+
+    const auto require_cursor_contract = [&](wave_detail::DistributedSieveWaveStore& reopened,
+                                             std::string_view context) {
+        const auto before_cursor = capture_wave_root_snapshot(root);
+        const auto cursor = wave_detail::prepare_distributed_sieve_merge_generation_v1(reopened);
+        if (shape == MergePreparedProtectionPrefixShape::pending_only) {
+            CHECK(cursor);
+            CHECK(cursor.merge_attempt_ordinal == next_ordinal);
+            require_wave_status(cursor.diagnostic,
+                                wave_detail::DistributedSieveWaveStoreStatus::ready, context);
+        } else {
+            CHECK(!cursor);
+            CHECK(!cursor.merge_attempt_ordinal.has_value());
+            require_wave_status(
+                cursor.diagnostic,
+                wave_detail::DistributedSieveWaveStoreStatus::reconciliation_required, context);
+        }
+        CHECK(capture_wave_root_snapshot(root) == before_cursor);
+        require_recovered_namespace();
+    };
+
+    terminal.opened.store.reset();
+    CHECK(capture_wave_root_snapshot(root) == root_before);
+
+    auto first_open = wave_detail::DistributedSieveWaveStore::open(root, manifest_digest);
+    auto& first_store = require_wave_ready(first_open, "first MergePrepared cold recovery");
+    require_recovered_namespace();
+    require_cursor_contract(first_store, "first recovered MergePrepared cursor contract");
+    const auto normalized_root = capture_wave_root_snapshot(root);
+    const auto normalized_private =
+        expected_private.has_value()
+            ? std::optional{capture_wave_root_snapshot(prefix.paths.private_directory)}
+            : std::nullopt;
+    first_open.store.reset();
+    CHECK(capture_wave_root_snapshot(root) == normalized_root);
+
+    auto second_open = wave_detail::DistributedSieveWaveStore::open(root, manifest_digest);
+    auto& second_store = require_wave_ready(second_open, "second MergePrepared cold recovery");
+    CHECK(capture_wave_root_snapshot(root) == normalized_root);
+    if (normalized_private.has_value()) {
+        CHECK(capture_wave_root_snapshot(prefix.paths.private_directory) == *normalized_private);
+    }
+    require_recovered_namespace();
+    require_cursor_contract(second_store, "second recovered MergePrepared cursor contract");
+    second_open.store.reset();
+    CHECK(capture_wave_root_snapshot(root) == normalized_root);
+    CHECK(!relation_base_lock_reports_busy(root / prefix.names.base_lock_leaf));
+}
+
+void test_merge_prepared_valid_prefixes_recover_on_cold_open_idempotently() {
+    constexpr std::array shapes{
+        MergePreparedProtectionPrefixShape::pending_only,
+        MergePreparedProtectionPrefixShape::canonical_only,
+        MergePreparedProtectionPrefixShape::identical_dual,
+    };
+    for (const auto shape : shapes) {
+        exercise_merge_prepared_cold_open_recovery(shape);
+    }
+}
+
+struct MergePreparedRollbackStopContext final {
+    wave_detail::DistributedSieveMergePreparedResumeObservationPointV1 target =
+        wave_detail::DistributedSieveMergePreparedResumeObservationPointV1::
+            AfterPendingRollbackDestinationDirectoryDurable;
+    bool observed = false;
+};
+
+[[nodiscard]] bool stop_at_merge_prepared_rollback_durability(
+    wave_detail::DistributedSieveMergePreparedResumeObservationPointV1 point,
+    void* opaque) noexcept {
+    auto& context = *static_cast<MergePreparedRollbackStopContext*>(opaque);
+    if (point != context.target) {
+        return false;
+    }
+    context.observed = true;
+    return true;
+}
+
+void test_merge_prepared_pending_rollback_tombstone_reopens() {
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "merge-prepared-pending-rollback-reopen";
+    auto terminal =
+        make_merge_terminal_wave_fixture(root, "create MergePrepared pending-rollback fixture");
+    auto& store =
+        require_wave_ready(terminal.opened, "open MergePrepared pending-rollback fixture");
+    const auto manifest = store.manifest();
+    const auto manifest_digest = store.manifest_digest();
+    const auto prefix = publish_merge_prepared_protection_prefix(
+        store, root, terminal.terminal_inputs, MergePreparedProtectionPrefixShape::pending_only);
+    const auto next_ordinal = prefix.started.merge_attempt_ordinal + 1U;
+
+    const auto started_path = root / prefix.names.canonical_record_leaf;
+    const auto started_before =
+        capture_wave_root_entry_snapshot(started_path, prefix.names.canonical_record_leaf);
+    const auto pending_before = capture_wave_root_entry_snapshot(
+        prefix.paths.private_handoff_pending_path,
+        prefix.paths.private_handoff_pending_path.filename().string());
+    const auto private_before = capture_wave_root_snapshot(prefix.paths.private_directory);
+    const auto root_before = capture_wave_root_snapshot(root);
+    const auto worker_before =
+        capture_merge_prepared_worker_private_snapshots(root, manifest, terminal.terminal_inputs);
+
+    terminal.opened.store.reset();
+    MergePreparedRollbackStopContext stop;
+    auto interrupted = wave_detail::DistributedSieveWaveStore::open(
+        root, manifest_digest,
+        wave_detail::DistributedSieveWaveStoreTestHooks{
+            .merge_prepared_resume =
+                {
+                    .stop_after = stop_at_merge_prepared_rollback_durability,
+                    .context = &stop,
+                },
+        });
+    CHECK(!interrupted);
+    CHECK(interrupted.store == nullptr);
+    require_wave_status(interrupted.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::interrupted,
+                        "MergePrepared pending rollback stops after destination durability");
+    CHECK(stop.observed);
+
+    const auto tombstone_path = root / prefix.names.rollback_handoff_leaf;
+    CHECK(entry_exists_no_follow(tombstone_path));
+    auto expected_tombstone = pending_before;
+    expected_tombstone.leaf = prefix.names.rollback_handoff_leaf;
+    CHECK(capture_wave_root_entry_snapshot(tombstone_path, prefix.names.rollback_handoff_leaf) ==
+          expected_tombstone);
+    CHECK(!entry_exists_no_follow(prefix.paths.private_handoff_pending_path));
+    CHECK(!entry_exists_no_follow(prefix.paths.private_handoff_path));
+    CHECK(entry_exists_no_follow(prefix.paths.private_directory));
+    CHECK(entry_exists_no_follow(prefix.paths.index_path));
+    CHECK(entry_exists_no_follow(prefix.paths.data_path));
+    CHECK(entry_exists_no_follow(root / prefix.names.reserved_leaf));
+    CHECK(entry_exists_no_follow(root / prefix.names.owned_leaf));
+    CHECK(entry_exists_no_follow(root / prefix.names.base_lock_leaf));
+
+    auto expected_private = private_before;
+    erase_wave_root_snapshot_leaf(expected_private,
+                                  prefix.paths.private_handoff_pending_path.filename().string());
+    CHECK(capture_wave_root_snapshot(prefix.paths.private_directory) == expected_private);
+
+    auto intermediate_expected = root_before;
+    auto intermediate_observed = capture_wave_root_snapshot(root);
+    erase_wave_root_snapshot_leaf(intermediate_observed, prefix.names.rollback_handoff_leaf);
+    normalize_wave_root_snapshot_directory_extent(intermediate_expected,
+                                                  prefix.names.private_directory_leaf);
+    normalize_wave_root_snapshot_directory_extent(intermediate_observed,
+                                                  prefix.names.private_directory_leaf);
+    CHECK(intermediate_observed == intermediate_expected);
+    CHECK(capture_wave_root_entry_snapshot(started_path, prefix.names.canonical_record_leaf) ==
+          started_before);
+    require_merge_prepared_worker_private_snapshots(worker_before);
+    CHECK(!relation_base_lock_reports_busy(root / prefix.names.base_lock_leaf));
+
+    auto reopened = wave_detail::DistributedSieveWaveStore::open(root, manifest_digest);
+    auto& resumed = require_wave_ready(reopened, "resume MergePrepared PendingRollback prefix");
+
+    auto expected_final = root_before;
+    erase_wave_root_snapshot_leaf(expected_final, prefix.names.reserved_leaf);
+    erase_wave_root_snapshot_leaf(expected_final, prefix.names.owned_leaf);
+    erase_wave_root_snapshot_leaf(expected_final, prefix.names.private_directory_leaf);
+    CHECK(capture_wave_root_snapshot(root) == expected_final);
+    CHECK(capture_wave_root_entry_snapshot(started_path, prefix.names.canonical_record_leaf) ==
+          started_before);
+    require_merge_prepared_worker_private_snapshots(worker_before);
+    CHECK(!entry_exists_no_follow(tombstone_path));
+    CHECK(!entry_exists_no_follow(root / prefix.names.reserved_leaf));
+    CHECK(!entry_exists_no_follow(root / prefix.names.owned_leaf));
+    CHECK(!entry_exists_no_follow(prefix.paths.private_directory));
+    CHECK(!entry_exists_no_follow(prefix.paths.index_path));
+    CHECK(!entry_exists_no_follow(prefix.paths.data_path));
+    CHECK(!relation_base_lock_reports_busy(root / prefix.names.base_lock_leaf));
+
+    const auto before_cursor = capture_wave_root_snapshot(root);
+    const auto cursor = wave_detail::prepare_distributed_sieve_merge_generation_v1(resumed);
+    CHECK(cursor);
+    CHECK(cursor.merge_attempt_ordinal.has_value());
+    CHECK(*cursor.merge_attempt_ordinal == next_ordinal);
+    require_wave_status(cursor.diagnostic, wave_detail::DistributedSieveWaveStoreStatus::ready,
+                        "PendingRollback restart advances the merge cursor");
+    CHECK(capture_wave_root_snapshot(root) == before_cursor);
+    require_merge_prepared_worker_private_snapshots(worker_before);
+}
+
+[[nodiscard]] bool replace_merge_started_after_expected_prepared_prefix(
+    wave_detail::DistributedSieveMergePreparedResumeObservationPointV1 point,
+    void* opaque) noexcept {
+    if (point != wave_detail::DistributedSieveMergePreparedResumeObservationPointV1::
+                     AfterExpectedPrefixValidated) {
+        return false;
+    }
+    replace_marker_with_same_bytes_after_first_inventory(opaque);
+    return false;
+}
+
+void test_merge_prepared_resume_rejects_same_bytes_merge_started_replacement() {
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "merge-prepared-started-replacement";
+    auto terminal = make_merge_terminal_wave_fixture(
+        root, "create MergePrepared MergeStarted-replacement fixture");
+    auto& store =
+        require_wave_ready(terminal.opened, "open MergePrepared MergeStarted-replacement fixture");
+    const auto manifest = store.manifest();
+    const auto manifest_digest = store.manifest_digest();
+    const auto prefix = publish_merge_prepared_protection_prefix(
+        store, root, terminal.terminal_inputs, MergePreparedProtectionPrefixShape::canonical_only);
+
+    const auto started_path = root / prefix.names.canonical_record_leaf;
+    const auto started_before =
+        capture_wave_root_entry_snapshot(started_path, prefix.names.canonical_record_leaf);
+    const auto root_before = capture_wave_root_snapshot(root);
+    const auto private_before = capture_wave_root_snapshot(prefix.paths.private_directory);
+    const auto worker_before =
+        capture_merge_prepared_worker_private_snapshots(root, manifest, terminal.terminal_inputs);
+    terminal.opened.store.reset();
+
+    WaveSameBytesReplacementContext replacement{
+        .canonical = started_path,
+        .displaced = temp.path() / "merge-prepared-displaced-started",
+        .bytes = started_before.bytes,
+    };
+    auto attacked = wave_detail::DistributedSieveWaveStore::open(
+        root, manifest_digest,
+        wave_detail::DistributedSieveWaveStoreTestHooks{
+            .merge_prepared_resume =
+                {
+                    .stop_after = replace_merge_started_after_expected_prepared_prefix,
+                    .context = &replacement,
+                },
+        });
+    CHECK(!attacked);
+    CHECK(attacked.store == nullptr);
+    require_wave_status(attacked.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::namespace_conflict,
+                        "post-prefix MergeStarted replacement stops before MergePrepared mutation");
+    CHECK(replacement.invoked);
+    CHECK(replacement.replaced);
+    CHECK(replacement.native_error == 0);
+
+    const auto replacement_started =
+        capture_wave_root_entry_snapshot(started_path, prefix.names.canonical_record_leaf);
+    CHECK(replacement_started.bytes == started_before.bytes);
+    CHECK(replacement_started.device != started_before.device ||
+          replacement_started.inode != started_before.inode);
+    CHECK(capture_wave_root_entry_snapshot(replacement.displaced,
+                                           prefix.names.canonical_record_leaf) == started_before);
+
+    auto root_after = capture_wave_root_snapshot(root);
+    auto root_without_started = root_before;
+    erase_wave_root_snapshot_leaf(root_without_started, prefix.names.canonical_record_leaf);
+    erase_wave_root_snapshot_leaf(root_after, prefix.names.canonical_record_leaf);
+    CHECK(root_after == root_without_started);
+    CHECK(capture_wave_root_snapshot(prefix.paths.private_directory) == private_before);
+    require_merge_prepared_worker_private_snapshots(worker_before);
+    CHECK(entry_exists_no_follow(prefix.paths.private_handoff_path));
+    CHECK(!entry_exists_no_follow(prefix.paths.private_handoff_pending_path));
+    CHECK(entry_exists_no_follow(prefix.paths.index_path));
+    CHECK(entry_exists_no_follow(prefix.paths.data_path));
+    CHECK(entry_exists_no_follow(root / prefix.names.reserved_leaf));
+    CHECK(entry_exists_no_follow(root / prefix.names.owned_leaf));
+    CHECK(!entry_exists_no_follow(root / prefix.names.rollback_handoff_leaf));
+    CHECK(!relation_base_lock_reports_busy(root / prefix.names.base_lock_leaf));
+}
+
+struct MergePreparedWorkerLockClosureContext final {
+    gnfs::relation::OOCCleanupPaths worker_paths;
+    std::array<std::uint64_t, 3> worker_directory_identity{};
+    gnfs::relation::OOCCleanupStatus acquire_status =
+        gnfs::relation::OOCCleanupStatus::UnexpectedFailure;
+    std::size_t invocations = 0;
+    bool acquired = false;
+    bool retained_observation = false;
+};
+
+[[nodiscard]] bool observe_merge_prepared_worker_lock_closure(
+    wave_detail::DistributedSieveMergePreparedResumeObservationPointV1 point,
+    void* opaque) noexcept {
+    if (point != wave_detail::DistributedSieveMergePreparedResumeObservationPointV1::
+                     AfterExpectedPrefixValidated) {
+        return false;
+    }
+    auto& context = *static_cast<MergePreparedWorkerLockClosureContext*>(opaque);
+    ++context.invocations;
+    const auto denied = cleanup_detail::acquire_private_handoff_publication_resume_v1(
+        context.worker_paths, context.worker_directory_identity);
+    context.acquire_status = denied.result.status;
+    context.acquired = denied.acquired();
+    context.retained_observation = denied.observed.has_value();
+    return false;
+}
+
+void test_merge_prepared_resume_retains_worker_typed_permit_lock_closure() {
+    WaveStoreTempDirectory temp;
+    const auto root = temp.path() / "merge-prepared-worker-lock-closure";
+    auto terminal =
+        make_merge_terminal_wave_fixture(root, "create MergePrepared worker-lock-closure fixture");
+    auto& store =
+        require_wave_ready(terminal.opened, "open MergePrepared worker-lock-closure fixture");
+    const auto manifest = store.manifest();
+    const auto manifest_digest = store.manifest_digest();
+    CHECK(!terminal.terminal_inputs.empty());
+
+    const auto& worker_input = terminal.terminal_inputs.front();
+    CHECK(worker_input.durable_attempt_count > 0U);
+    const auto worker_chunk =
+        std::ranges::find(manifest.chunks, worker_input.chunk_id, &sieve::ChunkPlanV1::chunk_id);
+    CHECK(worker_chunk != manifest.chunks.end());
+    const auto worker_names = wave_detail::distributed_sieve_worker_attempt_names_v1(
+        worker_chunk->relative_artifact_stem, worker_input.chunk_id,
+        worker_input.durable_attempt_count - 1U);
+    CHECK(worker_names.has_value());
+    const auto worker_base = root / worker_names->private_directory_leaf / "corpus";
+    const auto worker_paths = gnfs::relation::OOCCleanupTransaction::paths_for(worker_base);
+    const auto worker_directory_identity =
+        cleanup_detail::inspect_directory_identity_locked(worker_paths.private_directory);
+    CHECK(worker_directory_identity.has_value());
+    CHECK(entry_exists_no_follow(worker_paths.private_handoff_path));
+    CHECK(!entry_exists_no_follow(worker_paths.private_handoff_pending_path));
+    CHECK(!entry_exists_no_follow(worker_paths.lease_reserved_path));
+    CHECK(!relation_base_lock_reports_busy(worker_paths.lock_path));
+
+    const auto prefix = publish_merge_prepared_protection_prefix(
+        store, root, terminal.terminal_inputs, MergePreparedProtectionPrefixShape::canonical_only);
+    const auto worker_before =
+        capture_merge_prepared_worker_private_snapshots(root, manifest, terminal.terminal_inputs);
+    const auto target_private_before = capture_wave_root_snapshot(prefix.paths.private_directory);
+    const auto root_before = capture_wave_root_snapshot(root);
+    terminal.opened.store.reset();
+
+    MergePreparedWorkerLockClosureContext closure{
+        .worker_paths = worker_paths,
+        .worker_directory_identity = *worker_directory_identity,
+    };
+    auto reopened = wave_detail::DistributedSieveWaveStore::open(
+        root, manifest_digest,
+        wave_detail::DistributedSieveWaveStoreTestHooks{
+            .merge_prepared_resume =
+                {
+                    .stop_after = observe_merge_prepared_worker_lock_closure,
+                    .context = &closure,
+                },
+        });
+    auto& resumed = require_wave_ready(reopened, "MergePrepared worker lock closure resumes");
+    CHECK(closure.invocations == 1U);
+    CHECK(closure.acquire_status == gnfs::relation::OOCCleanupStatus::Busy);
+    CHECK(!closure.acquired);
+    CHECK(!closure.retained_observation);
+
+    auto expected_root = root_before;
+    erase_wave_root_snapshot_leaf(expected_root, prefix.names.reserved_leaf);
+    CHECK(capture_wave_root_snapshot(root) == expected_root);
+    CHECK(capture_wave_root_snapshot(prefix.paths.private_directory) == target_private_before);
+    require_merge_prepared_worker_private_snapshots(worker_before);
+    CHECK(entry_exists_no_follow(prefix.paths.private_handoff_path));
+    CHECK(!entry_exists_no_follow(prefix.paths.private_handoff_pending_path));
+    CHECK(!entry_exists_no_follow(root / prefix.names.reserved_leaf));
+    CHECK(entry_exists_no_follow(root / prefix.names.owned_leaf));
+    CHECK(!relation_base_lock_reports_busy(worker_paths.lock_path));
+    CHECK(!relation_base_lock_reports_busy(root / prefix.names.base_lock_leaf));
+
+    const auto before_cursor = capture_wave_root_snapshot(root);
+    const auto cursor = wave_detail::prepare_distributed_sieve_merge_generation_v1(resumed);
+    CHECK(!cursor);
+    CHECK(!cursor.merge_attempt_ordinal.has_value());
+    require_wave_status(cursor.diagnostic,
+                        wave_detail::DistributedSieveWaveStoreStatus::reconciliation_required,
+                        "prepared generation remains protected after worker lock-closure proof");
+    CHECK(capture_wave_root_snapshot(root) == before_cursor);
+    require_merge_prepared_worker_private_snapshots(worker_before);
+
+    auto released = cleanup_detail::acquire_private_handoff_publication_resume_v1(
+        worker_paths, *worker_directory_identity);
+    CHECK(released.acquired());
+    CHECK(released.observed.has_value());
+    CHECK(relation_base_lock_reports_busy(worker_paths.lock_path));
+    released.observed.reset();
+    CHECK(!relation_base_lock_reports_busy(worker_paths.lock_path));
+    require_merge_prepared_worker_private_snapshots(worker_before);
 }
 
 void test_merge_prepared_protection_invalid_prefixes_fail_closed_without_mutation() {
@@ -21105,9 +21617,17 @@ void run_coordinator_suite() {
 void run_merge_prepared_protection_suite() {
     std::cout << "===== Distributed Sieve MergePrepared Protection Tests =====\n";
 #if defined(__APPLE__)
-    const std::array<std::pair<std::string_view, TestFunction>, 2> tests = {{
-        {"valid pending, canonical, and identical-dual prefixes are protected",
-         test_merge_prepared_protection_valid_prefixes_require_reconciliation_without_mutation},
+    const std::array<std::pair<std::string_view, TestFunction>, 6> tests = {{
+        {"valid pending, canonical, and identical-dual live cursors are protected",
+         test_merge_prepared_protection_live_cursor_requires_reconciliation_without_mutation},
+        {"valid pending, canonical, and identical-dual cold opens recover idempotently",
+         test_merge_prepared_valid_prefixes_recover_on_cold_open_idempotently},
+        {"pending rollback tombstone resumes after a fresh cold open",
+         test_merge_prepared_pending_rollback_tombstone_reopens},
+        {"MergeStarted replacement after expected-prefix validation fails closed",
+         test_merge_prepared_resume_rejects_same_bytes_merge_started_replacement},
+        {"MergePrepared recovery retains worker typed-permit lock closure",
+         test_merge_prepared_resume_retains_worker_typed_permit_lock_closure},
         {"wrong kind and start digest fail closed",
          test_merge_prepared_protection_invalid_prefixes_fail_closed_without_mutation},
     }};

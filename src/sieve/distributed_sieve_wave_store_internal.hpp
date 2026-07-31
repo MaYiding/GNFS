@@ -318,10 +318,47 @@ struct DistributedSieveWorkerHandoffResumeTestHooksV1 final {
     void* context = nullptr;
 };
 
+/// Trusted test-only observation boundaries forwarded while cold `open()`
+/// consumes one exact MergePrepared publication-resume permit. The values are
+/// intentionally kept one-for-one with the relation-layer resume protocol.
+enum class DistributedSieveMergePreparedResumeObservationPointV1 : std::uint8_t {
+    AfterExpectedPrefixValidated,
+    BeforePendingRollbackSourceDirectorySync,
+    AfterPendingRollbackSourceDirectoryDurable,
+    BeforePendingRollbackDestinationDirectorySync,
+    AfterPendingRollbackDestinationDirectoryDurable,
+    AfterPendingRollbackPreactiveDirectoryQuarantinedDurable,
+    AfterPendingRollbackPreactiveDataRemovedDurable,
+    AfterPendingRollbackPreactiveIndexRemovedDurable,
+    AfterPendingRollbackOwnerRemovedDurable,
+    AfterPendingRollbackLeaseDirectoryRemovedDurable,
+    AfterPendingRollbackReservedRemovedDurable,
+    AfterPendingRollbackOwnedRemovedDurable,
+    BeforePendingRollbackTombstoneRemovalValidated,
+    AfterPendingRollbackTombstoneRemovedDurable,
+    AfterCanonicalConfirmedDurable,
+    AfterReservedRevokedDurable,
+    Count,
+};
+
+struct DistributedSieveMergePreparedResumeTestHooksV1 final {
+    using StopAfter = bool (*)(DistributedSieveMergePreparedResumeObservationPointV1 point,
+                               void* context) noexcept;
+    using FailBefore = bool (*)(DistributedSieveMergePreparedResumeObservationPointV1 point,
+                                void* context) noexcept;
+    using AfterRoundLocksReleased = void (*)(void* context) noexcept;
+
+    StopAfter stop_after = nullptr;
+    FailBefore fail_before = nullptr;
+    AfterRoundLocksReleased after_round_locks_released = nullptr;
+    void* context = nullptr;
+};
+
 struct DistributedSieveWaveStoreTestHooks final {
     using StopAfter = bool (*)(DistributedSieveWaveStoreFaultPoint point, void* context) noexcept;
 
     StopAfter stop_after = nullptr;
+    DistributedSieveMergePreparedResumeTestHooksV1 merge_prepared_resume;
     DistributedSieveWorkerHandoffResumeTestHooksV1 worker_handoff_resume;
     void* context = nullptr;
 };

@@ -2918,10 +2918,43 @@ Other platforms currently fail at the explicit platform gate before minting or
 namespace mutation; the positive filesystem transaction remains unimplemented
 there and must not be inferred from this slice.
 
-This slice deliberately does not claim restart completion: M4b-P2b must adopt
-canonical and identical-dual prepared generations, roll back pending or raw
-writer residues exactly, and prove that cold resume never repeats a confirmed
+M4b-P2b-P0a closes the publication-convergence half of restart recovery on
+macOS. Cold `open()` now retains the typed relation-layer permit captured for
+one exact latest `MergePreparedV1` prefix before any older worker recovery can
+run. Pending-only and already-armed rollback prefixes remove only their exact
+merged corpus and private lease while preserving the canonical
+`MergeStartedV1` chain and every worker handoff. Canonical prefixes revoke only
+their stale reservation, and identical-dual prefixes first converge the
+byte-identical pending record before revoking that reservation. A terminal
+canonical prepared corpus is absorbing and enters ordinary manifest-bound
+validation without another merge attempt.
+
+Every relation-layer observation crosses a source-private bridge that
+revalidates the held wave root, permanent lock, manifest, complete private
+lease and worker-attempt projection, latest canonical merge start, and retained
+permit phase. The bridge projects only the exact enumerated successor for the
+current durability boundary. Before acquiring the target permit, the
+classifier retains every canonical worker typed permit in manifest and attempt
+order. The bridge revalidates those same held permits instead of reopening a
+worker lock beneath the target lock. It releases the consumed target permit
+first, releases worker permits in reverse order, and only then allows a fresh
+namespace scan. One bounded mutation round must converge to either a clean
+started generation or a terminal canonical prepared generation. A second cold
+open is mutation-free. Live root claims remain read-only and continue to return
+`reconciliation_required`.
+
+This sub-slice deliberately does not claim full restart completion.
+M4b-P2b-P0b must convert the consumed canonical permit into a
+same-open-file-description, read-only recovered prepared admission.
+M4b-P2b-P1 must still roll back exact raw writer residues with no handoff.
+Together those slices must prove that cold resume never repeats a confirmed
 merge.
+
+The broad WaveStore filesystem matrix now exceeds the Debug `fast` target and
+is temporarily classified as `slow` with a bounded timeout. Before completing
+P2b, split that matrix into independently bounded `fast` shards so durable
+resume coverage returns to the cross-platform pull-request lanes without
+weakening any case.
 
 Exit criterion: a restart after any worker-cleanup prefix reopens the same
 merged corpus without worker execution or repeated merge, including when all

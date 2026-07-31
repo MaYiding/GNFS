@@ -1219,7 +1219,7 @@ if(GNFS_BUILD_TESTS)
     )
     set_tests_properties(
         DistributedSieveWaveStore
-        PROPERTIES LABELS "fast" TIMEOUT 60
+        PROPERTIES LABELS "slow" TIMEOUT 300
     )
     add_test(
         NAME DistributedSieveWorkerCoordinator
