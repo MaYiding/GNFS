@@ -9387,6 +9387,422 @@ parse_distributed_sieve_cleanup_record_leaf_v1(std::string_view leaf) noexcept {
     return std::nullopt;
 }
 
+std::optional<DistributedSieveWorkerCleanupRecordNamesV1>
+distributed_sieve_worker_cleanup_record_names_v1(std::uint32_t manifest_order_ordinal) {
+    if (manifest_order_ordinal >= DISTRIBUTED_SIEVE_PROTOCOL_MAX_CHUNKS) {
+        return std::nullopt;
+    }
+    const std::array digits{
+        decimal_digit(manifest_order_ordinal / 10U),
+        decimal_digit(manifest_order_ordinal % 10U),
+    };
+    const auto make_canonical = [&](std::string_view prefix) {
+        std::string leaf;
+        leaf.reserve(prefix.size() + digits.size());
+        leaf.append(prefix);
+        leaf.append(digits.data(), digits.size());
+        return leaf;
+    };
+
+    DistributedSieveWorkerCleanupRecordNamesV1 names;
+    names.authorization_canonical_record_leaf =
+        make_canonical(DISTRIBUTED_SIEVE_CLEANUP_AUTHORIZED_WORKER_RECORD_PREFIX);
+    names.authorization_pending_record_leaf = names.authorization_canonical_record_leaf;
+    names.authorization_pending_record_leaf.append(DISTRIBUTED_SIEVE_ROOT_RECORD_PENDING_SUFFIX);
+    names.completion_canonical_record_leaf =
+        make_canonical(DISTRIBUTED_SIEVE_CLEANUP_COMPLETED_WORKER_RECORD_PREFIX);
+    names.completion_pending_record_leaf = names.completion_canonical_record_leaf;
+    names.completion_pending_record_leaf.append(DISTRIBUTED_SIEVE_ROOT_RECORD_PENDING_SUFFIX);
+    return names;
+}
+
+DistributedSieveWorkerCleanupRecordLeafLoadResultV1
+load_distributed_sieve_worker_cleanup_record_leaf_v1(int wave_root_fd, std::string_view leaf,
+                                                     std::uint64_t creator_process_id) noexcept {
+    const auto fail_with = [](DistributedSieveWaveStoreDiagnostic failure) {
+        return DistributedSieveWorkerCleanupRecordLeafLoadResultV1{std::nullopt,
+                                                                   std::move(failure)};
+    };
+    const auto conflict = [&] {
+        return fail_with(
+            diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error()));
+    };
+    const auto protocol_conflict = [&](DistributedSieveProtocolStatus status) {
+        auto failure =
+            diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error());
+        failure.protocol_status = status;
+        return fail_with(std::move(failure));
+    };
+
+    try {
+        const auto parsed = parse_distributed_sieve_cleanup_record_leaf_v1(leaf);
+        if (!parsed.has_value() || !parsed->manifest_order_ordinal.has_value() ||
+            (parsed->kind != DistributedSieveCleanupRecordCoordinateKindV1::authorized_worker &&
+             parsed->kind != DistributedSieveCleanupRecordCoordinateKindV1::completed_worker)) {
+            return conflict();
+        }
+        const auto names =
+            distributed_sieve_worker_cleanup_record_names_v1(*parsed->manifest_order_ordinal);
+        if (!names.has_value()) {
+            return conflict();
+        }
+        const std::string* expected_leaf = nullptr;
+        switch (parsed->kind) {
+        case DistributedSieveCleanupRecordCoordinateKindV1::authorized_worker:
+            expected_leaf = parsed->pending ? &names->authorization_pending_record_leaf
+                                            : &names->authorization_canonical_record_leaf;
+            break;
+        case DistributedSieveCleanupRecordCoordinateKindV1::completed_worker:
+            expected_leaf = parsed->pending ? &names->completion_pending_record_leaf
+                                            : &names->completion_canonical_record_leaf;
+            break;
+        case DistributedSieveCleanupRecordCoordinateKindV1::authorized_merged:
+        case DistributedSieveCleanupRecordCoordinateKindV1::completed_merged:
+            return conflict();
+        }
+        if (expected_leaf == nullptr || leaf != *expected_leaf) {
+            return conflict();
+        }
+
+#if defined(_WIN32)
+        (void)wave_root_fd;
+        (void)creator_process_id;
+        return fail_with(
+            diagnostic(DistributedSieveWaveStoreStatus::platform_unsupported, unsupported_error()));
+#else
+        auto loaded = read_immutable_protocol_record_leaf(
+            wave_root_fd, expected_leaf->c_str(), creator_process_id,
+            DistributedSieveWaveStoreStatus::namespace_conflict,
+            DistributedSieveWaveStoreStatus::namespace_conflict);
+        if (!loaded) {
+            return fail_with(std::move(loaded.diagnostic));
+        }
+        auto decoded = decode_distributed_sieve_record(*loaded.bytes);
+        if (!decoded) {
+            return protocol_conflict(decoded.status);
+        }
+
+        DistributedSieveWorkerCleanupRecordLeafWitnessV1 witness{
+            .coordinate = *parsed,
+            .bytes = std::move(*loaded.bytes),
+            .snapshot = *loaded.snapshot,
+        };
+        switch (parsed->kind) {
+        case DistributedSieveCleanupRecordCoordinateKindV1::authorized_worker: {
+            auto* authorization = std::get_if<ArtifactCleanupAuthorizedV1>(&*decoded.value);
+            if (authorization == nullptr ||
+                authorization->authorizer != CleanupAuthorizerKindV1::merge_commit_worker ||
+                authorization->artifact_kind != CleanupArtifactKindV1::worker ||
+                authorization->manifest_order_ordinal != *parsed->manifest_order_ordinal) {
+                return conflict();
+            }
+            witness.record = std::move(*authorization);
+            break;
+        }
+        case DistributedSieveCleanupRecordCoordinateKindV1::completed_worker: {
+            auto* completion = std::get_if<ArtifactCleanupCompletedV1>(&*decoded.value);
+            if (completion == nullptr) {
+                return conflict();
+            }
+            witness.record = std::move(*completion);
+            break;
+        }
+        case DistributedSieveCleanupRecordCoordinateKindV1::authorized_merged:
+        case DistributedSieveCleanupRecordCoordinateKindV1::completed_merged:
+            return conflict();
+        }
+        return {std::move(witness), {}};
+#endif
+    } catch (const std::bad_alloc&) {
+        return fail_with(diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
+                                    std::make_error_code(std::errc::not_enough_memory)));
+    } catch (...) {
+        return fail_with(diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                                    std::make_error_code(std::errc::io_error)));
+    }
+}
+
+DistributedSieveWorkerCleanupPrefixClassificationResultV1
+classify_distributed_sieve_worker_cleanup_prefix_v1(
+    const WaveManifestV1& manifest, const WaveMergeCommitV1& commit,
+    std::span<const WorkerHandoffV1* const> worker_handoffs,
+    std::span<const DistributedSieveWorkerCleanupRecordLeafWitnessV1> records) noexcept {
+    const auto fail_with = [](DistributedSieveWaveStoreDiagnostic failure) {
+        return DistributedSieveWorkerCleanupPrefixClassificationResultV1{std::nullopt,
+                                                                         std::move(failure)};
+    };
+    const auto conflict = [&] {
+        return fail_with(
+            diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error()));
+    };
+    const auto protocol_conflict = [&](DistributedSieveProtocolStatus status) {
+        auto failure =
+            diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error());
+        failure.protocol_status = status;
+        return fail_with(std::move(failure));
+    };
+
+    struct MutableCoordinate final {
+        std::uint32_t ordinal = 0;
+        std::optional<ArtifactCleanupAuthorizedV1> authorization;
+        std::vector<std::byte> authorization_bytes;
+        std::optional<durable_record::RecordSnapshot> authorization_canonical_snapshot;
+        std::optional<durable_record::RecordSnapshot> authorization_pending_snapshot;
+        std::optional<ArtifactCleanupCompletedV1> completion;
+        std::vector<std::byte> completion_bytes;
+        std::optional<durable_record::RecordSnapshot> completion_canonical_snapshot;
+        std::optional<durable_record::RecordSnapshot> completion_pending_snapshot;
+    };
+
+    try {
+        const auto manifest_status =
+            validate_distributed_sieve_record(DistributedSieveProtocolRecordV1{manifest}, true);
+        if (!manifest_status) {
+            return protocol_conflict(manifest_status);
+        }
+        const auto commit_status =
+            validate_distributed_sieve_record(DistributedSieveProtocolRecordV1{commit}, true);
+        if (!commit_status) {
+            return protocol_conflict(commit_status);
+        }
+        if (manifest.chunks.size() != commit.chunks.size() ||
+            manifest.chunks.size() != worker_handoffs.size() ||
+            commit.manifest_digest != manifest.self_digest ||
+            commit.work_digest != manifest.work_sha256 ||
+            commit.merge_policy_version != manifest.merge_policy_version) {
+            return conflict();
+        }
+
+        for (std::size_t index = 0; index < manifest.chunks.size(); ++index) {
+            const auto& chunk = manifest.chunks[index];
+            const auto& summary = commit.chunks[index].input;
+            const WorkerHandoffV1* handoff = worker_handoffs[index];
+            if (chunk.chunk_id != index || summary.chunk_id != chunk.chunk_id ||
+                summary.sq_begin != chunk.sq_begin || summary.sq_end != chunk.sq_end) {
+                return conflict();
+            }
+            if (summary.disposition == ChunkDispositionV1::empty) {
+                if (chunk.sq_begin != chunk.sq_end || handoff != nullptr) {
+                    return conflict();
+                }
+                continue;
+            }
+            if (summary.disposition != ChunkDispositionV1::handoff ||
+                chunk.sq_begin >= chunk.sq_end || handoff == nullptr) {
+                return conflict();
+            }
+            const auto handoff_status =
+                validate_distributed_sieve_record(DistributedSieveProtocolRecordV1{*handoff}, true);
+            if (!handoff_status) {
+                return protocol_conflict(handoff_status);
+            }
+            if (handoff->self_digest != summary.handoff_digest ||
+                handoff->manifest_digest != manifest.self_digest ||
+                handoff->work_digest != manifest.work_sha256 ||
+                handoff->wave_id != manifest.wave_id || handoff->chunk_id != chunk.chunk_id ||
+                handoff->sq_begin != chunk.sq_begin || handoff->sq_end != chunk.sq_end ||
+                handoff->next_sq_index != summary.next_sq_index ||
+                handoff->processed_sq_count != summary.processed_sq_count ||
+                handoff->completion_reason != summary.completion_reason ||
+                handoff->attempt_ordinal + 1U != summary.durable_attempt_count ||
+                handoff->attempt_started_digest != summary.last_attempt_digest ||
+                handoff->lease.lease_id != summary.lease_id ||
+                handoff->artifact.descriptor.relation_count != summary.raw_relation_count ||
+                handoff->artifact.sequence_receipt != summary.sequence_receipt ||
+                handoff->artifact.corpus_sha256 != summary.corpus_sha256 ||
+                handoff->relation_count != summary.raw_relation_count) {
+                return conflict();
+            }
+        }
+
+        std::vector<MutableCoordinate> grouped;
+        grouped.reserve(records.size());
+        for (const auto& leaf : records) {
+            if (!leaf.coordinate.manifest_order_ordinal.has_value() ||
+                *leaf.coordinate.manifest_order_ordinal >= manifest.chunks.size() ||
+                (leaf.coordinate.kind !=
+                     DistributedSieveCleanupRecordCoordinateKindV1::authorized_worker &&
+                 leaf.coordinate.kind !=
+                     DistributedSieveCleanupRecordCoordinateKindV1::completed_worker)) {
+                return conflict();
+            }
+            const std::uint32_t ordinal = *leaf.coordinate.manifest_order_ordinal;
+            auto position =
+                std::lower_bound(grouped.begin(), grouped.end(), ordinal,
+                                 [](const MutableCoordinate& candidate, std::uint32_t value) {
+                                     return candidate.ordinal < value;
+                                 });
+            if (position == grouped.end() || position->ordinal != ordinal) {
+                position = grouped.insert(position, MutableCoordinate{.ordinal = ordinal});
+            }
+
+            if (leaf.coordinate.kind ==
+                DistributedSieveCleanupRecordCoordinateKindV1::authorized_worker) {
+                const auto* authorization = std::get_if<ArtifactCleanupAuthorizedV1>(&leaf.record);
+                auto& target_snapshot = leaf.coordinate.pending
+                                            ? position->authorization_pending_snapshot
+                                            : position->authorization_canonical_snapshot;
+                if (authorization == nullptr || target_snapshot.has_value() ||
+                    authorization->authorizer != CleanupAuthorizerKindV1::merge_commit_worker ||
+                    authorization->artifact_kind != CleanupArtifactKindV1::worker ||
+                    authorization->manifest_order_ordinal != ordinal) {
+                    return conflict();
+                }
+                if (position->authorization.has_value() &&
+                    position->authorization_bytes != leaf.bytes) {
+                    return conflict();
+                }
+                if (!position->authorization.has_value()) {
+                    position->authorization = *authorization;
+                    position->authorization_bytes = leaf.bytes;
+                }
+                target_snapshot = leaf.snapshot;
+                continue;
+            }
+
+            const auto* completion = std::get_if<ArtifactCleanupCompletedV1>(&leaf.record);
+            auto& target_snapshot = leaf.coordinate.pending
+                                        ? position->completion_pending_snapshot
+                                        : position->completion_canonical_snapshot;
+            if (completion == nullptr || target_snapshot.has_value()) {
+                return conflict();
+            }
+            if (position->completion.has_value() && position->completion_bytes != leaf.bytes) {
+                return conflict();
+            }
+            if (!position->completion.has_value()) {
+                position->completion = *completion;
+                position->completion_bytes = leaf.bytes;
+            }
+            target_snapshot = leaf.snapshot;
+        }
+
+        DistributedSieveWorkerCleanupPrefixWitnessV1 prefix;
+        prefix.coordinates.reserve(grouped.size());
+        for (auto& coordinate : grouped) {
+            if (!coordinate.authorization.has_value()) {
+                return conflict();
+            }
+            const std::size_t ordinal = coordinate.ordinal;
+            if (commit.chunks[ordinal].input.disposition != ChunkDispositionV1::handoff ||
+                worker_handoffs[ordinal] == nullptr) {
+                return conflict();
+            }
+            const auto authorization_status = validate_artifact_cleanup_dependencies(
+                manifest, commit, {}, nullptr, nullptr, *coordinate.authorization,
+                worker_handoffs[ordinal], nullptr);
+            if (!authorization_status) {
+                return protocol_conflict(authorization_status);
+            }
+
+            const bool authorization_canonical =
+                coordinate.authorization_canonical_snapshot.has_value();
+            const bool authorization_pending =
+                coordinate.authorization_pending_snapshot.has_value();
+            const bool completion_canonical = coordinate.completion_canonical_snapshot.has_value();
+            const bool completion_pending = coordinate.completion_pending_snapshot.has_value();
+            if ((!authorization_canonical && !authorization_pending) ||
+                (coordinate.completion.has_value() !=
+                 (completion_canonical || completion_pending))) {
+                return conflict();
+            }
+
+            DistributedSieveWorkerCleanupPrefixStateV1 state;
+            if (!coordinate.completion.has_value()) {
+                if (authorization_canonical && authorization_pending) {
+                    state =
+                        DistributedSieveWorkerCleanupPrefixStateV1::authorization_identical_dual;
+                } else if (authorization_canonical) {
+                    state =
+                        DistributedSieveWorkerCleanupPrefixStateV1::authorization_canonical_only;
+                } else {
+                    state = DistributedSieveWorkerCleanupPrefixStateV1::authorization_pending_only;
+                }
+            } else {
+                if (!authorization_canonical || authorization_pending) {
+                    return conflict();
+                }
+                const auto completion_status = validate_artifact_cleanup_completion_dependency(
+                    *coordinate.authorization, *coordinate.completion);
+                if (!completion_status) {
+                    return protocol_conflict(completion_status);
+                }
+                if (completion_canonical && completion_pending) {
+                    state = DistributedSieveWorkerCleanupPrefixStateV1::completion_identical_dual;
+                } else if (completion_canonical) {
+                    state = DistributedSieveWorkerCleanupPrefixStateV1::completed;
+                } else {
+                    state = DistributedSieveWorkerCleanupPrefixStateV1::completion_pending_only;
+                }
+            }
+
+            prefix.coordinates.push_back({
+                .manifest_order_ordinal = coordinate.ordinal,
+                .state = state,
+                .authorization = std::move(*coordinate.authorization),
+                .authorization_bytes = std::move(coordinate.authorization_bytes),
+                .authorization_canonical_snapshot = coordinate.authorization_canonical_snapshot,
+                .authorization_pending_snapshot = coordinate.authorization_pending_snapshot,
+                .completion = std::move(coordinate.completion),
+                .completion_bytes = std::move(coordinate.completion_bytes),
+                .completion_canonical_snapshot = coordinate.completion_canonical_snapshot,
+                .completion_pending_snapshot = coordinate.completion_pending_snapshot,
+            });
+        }
+
+        std::size_t coordinate_index = 0;
+        bool frontier_seen = false;
+        for (std::size_t manifest_slot = 0; manifest_slot < manifest.chunks.size();
+             ++manifest_slot) {
+            const bool has_coordinate =
+                coordinate_index < prefix.coordinates.size() &&
+                prefix.coordinates[coordinate_index].manifest_order_ordinal == manifest_slot;
+            const auto disposition = commit.chunks[manifest_slot].input.disposition;
+            if (disposition == ChunkDispositionV1::empty) {
+                if (has_coordinate) {
+                    return conflict();
+                }
+                continue;
+            }
+            if (disposition != ChunkDispositionV1::handoff) {
+                return conflict();
+            }
+
+            if (!has_coordinate) {
+                if (!frontier_seen) {
+                    prefix.frontier_manifest_order_ordinal =
+                        static_cast<std::uint32_t>(manifest_slot);
+                    frontier_seen = true;
+                }
+                continue;
+            }
+            const auto state = prefix.coordinates[coordinate_index].state;
+            if (frontier_seen) {
+                return conflict();
+            }
+            if (state == DistributedSieveWorkerCleanupPrefixStateV1::completed) {
+                ++prefix.completed_worker_count;
+                ++coordinate_index;
+                continue;
+            }
+            prefix.frontier_manifest_order_ordinal = static_cast<std::uint32_t>(manifest_slot);
+            prefix.active_manifest_order_ordinal = static_cast<std::uint32_t>(manifest_slot);
+            frontier_seen = true;
+            ++coordinate_index;
+        }
+        if (coordinate_index != prefix.coordinates.size()) {
+            return conflict();
+        }
+        return {std::move(prefix), {}};
+    } catch (const std::bad_alloc&) {
+        return fail_with(diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
+                                    std::make_error_code(std::errc::not_enough_memory)));
+    } catch (...) {
+        return fail_with(diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                                    std::make_error_code(std::errc::io_error)));
+    }
+}
+
 struct DistributedSieveWaveStore::State final {
     std::filesystem::path absolute_root;
     std::filesystem::path root_leaf;

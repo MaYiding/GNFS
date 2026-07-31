@@ -8,6 +8,7 @@
 #include "support/distributed_sieve_wave_merge_commit_fixture.hpp"
 #endif
 
+#include <gnfs/relation/ooc_durable_handoff.hpp>
 #include <gnfs/relation/ooc_relation_store.hpp>
 #include <gnfs/sieve/distributed_sieve_protocol.hpp>
 #include <gnfs/util/sha256.hpp>
@@ -378,6 +379,144 @@ void replace_leaf_with_same_bytes(const std::filesystem::path& root,
     }
 }
 
+void write_immutable_test_leaf(const std::filesystem::path& root, std::string_view leaf,
+                               std::span<const std::byte> bytes) {
+    const auto path = root / std::filesystem::path(leaf);
+    int descriptor = -1;
+    do {
+        descriptor =
+            ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    } while (descriptor < 0 && errno == EINTR);
+    if (descriptor < 0) {
+        throw std::system_error(errno, std::generic_category(), "create cleanup test leaf");
+    }
+    try {
+        if (::fchmod(descriptor, 0600) != 0) {
+            throw std::system_error(errno, std::generic_category(), "chmod cleanup test leaf");
+        }
+        write_all(descriptor, bytes);
+        if (::fsync(descriptor) != 0) {
+            throw std::system_error(errno, std::generic_category(), "sync cleanup test leaf");
+        }
+    } catch (...) {
+        (void)::close(descriptor);
+        throw;
+    }
+    if (::close(descriptor) != 0) {
+        throw std::system_error(errno, std::generic_category(), "close cleanup test leaf");
+    }
+}
+
+void clear_cleanup_test_leaves(const std::filesystem::path& root) {
+    for (const auto& entry : std::filesystem::directory_iterator(root)) {
+        if (!wave::parse_distributed_sieve_cleanup_record_leaf_v1(entry.path().filename().string())
+                 .has_value()) {
+            continue;
+        }
+        std::error_code error;
+        if (!std::filesystem::remove(entry.path(), error) || error) {
+            throw std::filesystem::filesystem_error("remove cleanup test leaf", entry.path(),
+                                                    error);
+        }
+    }
+}
+
+struct WorkerCleanupSource final {
+    sieve::WorkerHandoffV1 handoff;
+    sieve::NativeIdentityV1 base_lock_identity;
+    sieve::NativeIdentityV1 owned_marker_identity;
+    Digest private_handoff_digest;
+    sieve::NativeFileExtentV1 private_handoff_record;
+};
+
+[[nodiscard]] WorkerCleanupSource worker_cleanup_source(const WorkerSnapshot& snapshot) {
+    const auto decoded_private =
+        relation::decode_ooc_private_handoff_record(snapshot.leaves[3].bytes);
+    CHECK(decoded_private);
+    const auto decoded_payload =
+        sieve::decode_distributed_sieve_record(decoded_private.value->opaque_payload);
+    CHECK(decoded_payload);
+    const auto* handoff = std::get_if<sieve::WorkerHandoffV1>(&*decoded_payload.value);
+    CHECK(handoff != nullptr);
+    return {
+        .handoff = *handoff,
+        .base_lock_identity = snapshot.leaves[0].identity,
+        .owned_marker_identity = snapshot.leaves[1].identity,
+        .private_handoff_digest = decoded_private.value->self_digest,
+        .private_handoff_record =
+            {
+                .identity = snapshot.leaves[3].identity,
+                .extent = static_cast<std::uint64_t>(snapshot.leaves[3].bytes.size()),
+            },
+    };
+}
+
+[[nodiscard]] sieve::ArtifactCleanupAuthorizedV1 make_worker_cleanup_authorization(
+    const sieve::WaveManifestV1& manifest, const sieve::WaveMergeCommitV1& commit,
+    const WorkerCleanupSource& source, std::uint32_t manifest_order_ordinal) {
+    return fixture::seal_value(sieve::ArtifactCleanupAuthorizedV1{
+        .authorizer = sieve::CleanupAuthorizerKindV1::merge_commit_worker,
+        .manifest_digest = manifest.self_digest,
+        .authorizer_record_digest = commit.self_digest,
+        .artifact_kind = sieve::CleanupArtifactKindV1::worker,
+        .manifest_order_ordinal = manifest_order_ordinal,
+        .lease = source.handoff.lease,
+        .base_lock_identity = source.base_lock_identity,
+        .owned_marker_identity = source.owned_marker_identity,
+        .handoff_digest = source.handoff.self_digest,
+        .private_handoff_digest = source.private_handoff_digest,
+        .private_handoff_record = source.private_handoff_record,
+        .artifact = source.handoff.artifact,
+    });
+}
+
+[[nodiscard]] sieve::ArtifactCleanupCompletedV1
+make_worker_cleanup_completion(const sieve::ArtifactCleanupAuthorizedV1& authorization) {
+    return fixture::seal_value(sieve::ArtifactCleanupCompletedV1{
+        .authorization_digest = authorization.self_digest,
+        .cleanup_intent_identity = std::nullopt,
+        .parent_directory_durability_confirmed = true,
+        .expected_namespace_absent = true,
+    });
+}
+
+void write_cleanup_record_prefix(const std::filesystem::path& root,
+                                 const std::string& canonical_leaf, const std::string& pending_leaf,
+                                 std::span<const std::byte> bytes, bool canonical, bool pending) {
+    if (canonical) {
+        fixture::publish_canonical_record(root, pending_leaf, canonical_leaf, bytes);
+    }
+    if (pending) {
+        write_immutable_test_leaf(root, pending_leaf, bytes);
+    }
+}
+
+[[nodiscard]] std::vector<wave::DistributedSieveWorkerCleanupRecordLeafWitnessV1>
+load_cleanup_test_leaves(int root_fd, std::span<const std::string> leaves) {
+    std::vector<wave::DistributedSieveWorkerCleanupRecordLeafWitnessV1> loaded;
+    loaded.reserve(leaves.size());
+    for (const auto& leaf : leaves) {
+        auto result = wave::load_distributed_sieve_worker_cleanup_record_leaf_v1(
+            root_fd, leaf, static_cast<std::uint64_t>(::getpid()));
+        if (!result) {
+            fail("load worker cleanup test leaf", __LINE__,
+                 wave_diagnostic_detail(result.diagnostic));
+        }
+        loaded.push_back(std::move(*result.witness));
+    }
+    return loaded;
+}
+
+[[nodiscard]] wave::DistributedSieveWorkerCleanupPrefixClassificationResultV1
+classify_cleanup_test_leaves(int root_fd, std::span<const std::string> leaves,
+                             const sieve::WaveManifestV1& manifest,
+                             const sieve::WaveMergeCommitV1& commit,
+                             std::span<const sieve::WorkerHandoffV1* const> worker_handoffs) {
+    auto loaded = load_cleanup_test_leaves(root_fd, leaves);
+    return wave::classify_distributed_sieve_worker_cleanup_prefix_v1(manifest, commit,
+                                                                     worker_handoffs, loaded);
+}
+
 void replace_commit_with_same_bytes(const std::filesystem::path& root,
                                     const std::filesystem::path& saved,
                                     std::span<const std::byte> bytes) {
@@ -507,6 +646,341 @@ void test_cold_prepared_admission_commits_without_worker_cleanup() {
         std::move(*opened.prepared_admission));
     auto tail = take_committed_tail(std::move(result), "consume cold prepared admission");
     (void)require_committed_tail(prepared, prepared_record, worker_snapshots, tail);
+}
+
+void test_worker_cleanup_root_names_and_parser_are_exact() {
+    const auto names = wave::distributed_sieve_worker_cleanup_record_names_v1(0);
+    CHECK(names.has_value());
+    CHECK(names->authorization_canonical_record_leaf ==
+          ".gnfs-wave-v1.cleanup-authorized-worker-c00");
+    CHECK(names->authorization_pending_record_leaf ==
+          ".gnfs-wave-v1.cleanup-authorized-worker-c00.pending");
+    CHECK(names->completion_canonical_record_leaf == ".gnfs-wave-v1.cleanup-completed-worker-c00");
+    CHECK(names->completion_pending_record_leaf ==
+          ".gnfs-wave-v1.cleanup-completed-worker-c00.pending");
+    CHECK(!wave::distributed_sieve_worker_cleanup_record_names_v1(
+               sieve::DISTRIBUTED_SIEVE_PROTOCOL_MAX_CHUNKS)
+               .has_value());
+
+    const auto authorization = wave::parse_distributed_sieve_cleanup_record_leaf_v1(
+        names->authorization_pending_record_leaf);
+    CHECK(authorization.has_value());
+    CHECK(authorization->kind ==
+          wave::DistributedSieveCleanupRecordCoordinateKindV1::authorized_worker);
+    CHECK(authorization->manifest_order_ordinal == 0);
+    CHECK(authorization->pending);
+    const auto completion = wave::parse_distributed_sieve_cleanup_record_leaf_v1(
+        names->completion_canonical_record_leaf);
+    CHECK(completion.has_value());
+    CHECK(completion->kind ==
+          wave::DistributedSieveCleanupRecordCoordinateKindV1::completed_worker);
+    CHECK(completion->manifest_order_ordinal == 0);
+    CHECK(!completion->pending);
+    CHECK(!wave::parse_distributed_sieve_cleanup_record_leaf_v1(
+               ".gnfs-wave-v1.cleanup-authorized-worker-c0")
+               .has_value());
+    CHECK(!wave::parse_distributed_sieve_cleanup_record_leaf_v1(
+               ".gnfs-wave-v1.cleanup-authorized-worker-c00.PENDING")
+               .has_value());
+}
+
+void test_worker_cleanup_root_classifier_is_manifest_ordered_and_fail_closed() {
+    fixture::PreparedWaveFixture prepared("worker-cleanup-root-classifier");
+    auto publication = prepared.prepare_fresh();
+    CHECK(publication.admission.has_value());
+    const auto worker_snapshots = capture_worker_snapshots(prepared);
+    auto committed = commit_authority::consume_distributed_sieve_merge_prepared_v1(
+        std::move(*publication.admission));
+    auto tail = take_committed_tail(std::move(committed), "commit before cleanup classification");
+    CHECK(tail.valid());
+
+    const std::array sources{
+        worker_cleanup_source(worker_snapshots[0]),
+        worker_cleanup_source(worker_snapshots[1]),
+    };
+    const std::array<const sieve::WorkerHandoffV1*, 3> worker_handoffs{
+        &sources[0].handoff,
+        &sources[1].handoff,
+        nullptr,
+    };
+    const auto authorization_0 =
+        make_worker_cleanup_authorization(prepared.manifest(), tail.record(), sources[0], 0);
+    const auto authorization_1 =
+        make_worker_cleanup_authorization(prepared.manifest(), tail.record(), sources[1], 1);
+    const auto completion_0 = make_worker_cleanup_completion(authorization_0);
+    const auto authorization_0_bytes =
+        fixture::encode_record(sieve::DistributedSieveProtocolRecordV1{authorization_0});
+    const auto authorization_1_bytes =
+        fixture::encode_record(sieve::DistributedSieveProtocolRecordV1{authorization_1});
+    const auto completion_0_bytes =
+        fixture::encode_record(sieve::DistributedSieveProtocolRecordV1{completion_0});
+    const auto names_0 = wave::distributed_sieve_worker_cleanup_record_names_v1(0);
+    const auto names_1 = wave::distributed_sieve_worker_cleanup_record_names_v1(1);
+    const auto names_2 = wave::distributed_sieve_worker_cleanup_record_names_v1(2);
+    CHECK(names_0.has_value());
+    CHECK(names_1.has_value());
+    CHECK(names_2.has_value());
+
+    int root_descriptor = -1;
+    do {
+        root_descriptor =
+            ::open(prepared.root().c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    } while (root_descriptor < 0 && errno == EINTR);
+    if (root_descriptor < 0) {
+        throw std::system_error(errno, std::generic_category(), "open cleanup classifier root");
+    }
+    fixture::UniqueFd root_fd(root_descriptor);
+
+    {
+        const std::vector<std::string> leaves;
+        const auto classified = classify_cleanup_test_leaves(
+            root_fd.get(), leaves, prepared.manifest(), tail.record(), worker_handoffs);
+        CHECK(classified);
+        CHECK(classified.prefix->coordinates.empty());
+        CHECK(classified.prefix->completed_worker_count == 0);
+        CHECK(classified.prefix->frontier_manifest_order_ordinal == 0);
+        CHECK(!classified.prefix->active_manifest_order_ordinal.has_value());
+    }
+
+    write_cleanup_record_prefix(prepared.root(), names_0->authorization_canonical_record_leaf,
+                                names_0->authorization_pending_record_leaf, authorization_0_bytes,
+                                true, false);
+    write_cleanup_record_prefix(prepared.root(), names_0->completion_canonical_record_leaf,
+                                names_0->completion_pending_record_leaf, completion_0_bytes, true,
+                                false);
+    write_cleanup_record_prefix(prepared.root(), names_1->authorization_canonical_record_leaf,
+                                names_1->authorization_pending_record_leaf, authorization_1_bytes,
+                                false, true);
+    {
+        const std::vector<std::string> leaves{
+            names_1->authorization_pending_record_leaf,
+            names_0->completion_canonical_record_leaf,
+            names_0->authorization_canonical_record_leaf,
+        };
+        const auto classified = classify_cleanup_test_leaves(
+            root_fd.get(), leaves, prepared.manifest(), tail.record(), worker_handoffs);
+        if (!classified) {
+            fail("classify completed-prefix plus active frontier", __LINE__,
+                 wave_diagnostic_detail(classified.diagnostic));
+        }
+        CHECK(classified.prefix->coordinates.size() == 2);
+        CHECK(classified.prefix->coordinates[0].state ==
+              wave::DistributedSieveWorkerCleanupPrefixStateV1::completed);
+        CHECK(classified.prefix->coordinates[1].state ==
+              wave::DistributedSieveWorkerCleanupPrefixStateV1::authorization_pending_only);
+        CHECK(classified.prefix->completed_worker_count == 1);
+        CHECK(classified.prefix->frontier_manifest_order_ordinal == 1);
+        CHECK(classified.prefix->active_manifest_order_ordinal == 1);
+    }
+    clear_cleanup_test_leaves(prepared.root());
+
+    write_cleanup_record_prefix(prepared.root(), names_0->authorization_canonical_record_leaf,
+                                names_0->authorization_pending_record_leaf, authorization_0_bytes,
+                                true, true);
+    {
+        const std::vector<std::string> leaves{
+            names_0->authorization_pending_record_leaf,
+            names_0->authorization_canonical_record_leaf,
+        };
+        const auto classified = classify_cleanup_test_leaves(
+            root_fd.get(), leaves, prepared.manifest(), tail.record(), worker_handoffs);
+        CHECK(classified);
+        CHECK(classified.prefix->coordinates.size() == 1);
+        CHECK(classified.prefix->coordinates[0].state ==
+              wave::DistributedSieveWorkerCleanupPrefixStateV1::authorization_identical_dual);
+        CHECK(classified.prefix->frontier_manifest_order_ordinal == 0);
+        CHECK(classified.prefix->active_manifest_order_ordinal == 0);
+    }
+    clear_cleanup_test_leaves(prepared.root());
+
+    write_cleanup_record_prefix(prepared.root(), names_0->authorization_canonical_record_leaf,
+                                names_0->authorization_pending_record_leaf, authorization_0_bytes,
+                                true, false);
+    write_cleanup_record_prefix(prepared.root(), names_0->completion_canonical_record_leaf,
+                                names_0->completion_pending_record_leaf, completion_0_bytes, true,
+                                true);
+    {
+        const std::vector<std::string> leaves{
+            names_0->completion_pending_record_leaf,
+            names_0->authorization_canonical_record_leaf,
+            names_0->completion_canonical_record_leaf,
+        };
+        const auto classified = classify_cleanup_test_leaves(
+            root_fd.get(), leaves, prepared.manifest(), tail.record(), worker_handoffs);
+        CHECK(classified);
+        CHECK(classified.prefix->coordinates.size() == 1);
+        CHECK(classified.prefix->coordinates[0].state ==
+              wave::DistributedSieveWorkerCleanupPrefixStateV1::completion_identical_dual);
+        CHECK(classified.prefix->active_manifest_order_ordinal == 0);
+    }
+    clear_cleanup_test_leaves(prepared.root());
+
+    auto mismatched_completion = completion_0;
+    mismatched_completion.cleanup_intent_identity = sources[1].base_lock_identity;
+    mismatched_completion.self_digest = {};
+    mismatched_completion = fixture::seal_value(std::move(mismatched_completion));
+    const auto mismatched_completion_bytes =
+        fixture::encode_record(sieve::DistributedSieveProtocolRecordV1{mismatched_completion});
+    write_cleanup_record_prefix(prepared.root(), names_0->authorization_canonical_record_leaf,
+                                names_0->authorization_pending_record_leaf, authorization_0_bytes,
+                                true, false);
+    write_cleanup_record_prefix(prepared.root(), names_0->completion_canonical_record_leaf,
+                                names_0->completion_pending_record_leaf, completion_0_bytes, true,
+                                false);
+    write_immutable_test_leaf(prepared.root(), names_0->completion_pending_record_leaf,
+                              mismatched_completion_bytes);
+    {
+        const std::vector<std::string> leaves{
+            names_0->authorization_canonical_record_leaf,
+            names_0->completion_canonical_record_leaf,
+            names_0->completion_pending_record_leaf,
+        };
+        const auto classified = classify_cleanup_test_leaves(
+            root_fd.get(), leaves, prepared.manifest(), tail.record(), worker_handoffs);
+        CHECK(!classified);
+    }
+    clear_cleanup_test_leaves(prepared.root());
+
+    auto mismatched_authorization = authorization_0;
+    mismatched_authorization.private_handoff_digest = fixture::digest_with_seed(201);
+    mismatched_authorization.self_digest = {};
+    mismatched_authorization = fixture::seal_value(std::move(mismatched_authorization));
+    const auto mismatched_authorization_bytes =
+        fixture::encode_record(sieve::DistributedSieveProtocolRecordV1{mismatched_authorization});
+    write_cleanup_record_prefix(prepared.root(), names_0->authorization_canonical_record_leaf,
+                                names_0->authorization_pending_record_leaf, authorization_0_bytes,
+                                true, false);
+    write_immutable_test_leaf(prepared.root(), names_0->authorization_pending_record_leaf,
+                              mismatched_authorization_bytes);
+    {
+        const std::vector<std::string> leaves{
+            names_0->authorization_canonical_record_leaf,
+            names_0->authorization_pending_record_leaf,
+        };
+        const auto classified = classify_cleanup_test_leaves(
+            root_fd.get(), leaves, prepared.manifest(), tail.record(), worker_handoffs);
+        CHECK(!classified);
+        CHECK(classified.diagnostic.status ==
+              wave::DistributedSieveWaveStoreStatus::namespace_conflict);
+    }
+    clear_cleanup_test_leaves(prepared.root());
+
+    write_cleanup_record_prefix(prepared.root(), names_0->authorization_canonical_record_leaf,
+                                names_0->authorization_pending_record_leaf, authorization_0_bytes,
+                                false, true);
+    write_cleanup_record_prefix(prepared.root(), names_1->authorization_canonical_record_leaf,
+                                names_1->authorization_pending_record_leaf, authorization_1_bytes,
+                                true, false);
+    {
+        const std::vector<std::string> leaves{
+            names_0->authorization_pending_record_leaf,
+            names_1->authorization_canonical_record_leaf,
+        };
+        const auto classified = classify_cleanup_test_leaves(
+            root_fd.get(), leaves, prepared.manifest(), tail.record(), worker_handoffs);
+        CHECK(!classified);
+    }
+    clear_cleanup_test_leaves(prepared.root());
+
+    auto empty_authorization = authorization_0;
+    empty_authorization.manifest_order_ordinal = 2;
+    empty_authorization.self_digest = {};
+    empty_authorization = fixture::seal_value(std::move(empty_authorization));
+    const auto empty_authorization_bytes =
+        fixture::encode_record(sieve::DistributedSieveProtocolRecordV1{empty_authorization});
+    write_cleanup_record_prefix(prepared.root(), names_2->authorization_canonical_record_leaf,
+                                names_2->authorization_pending_record_leaf,
+                                empty_authorization_bytes, false, true);
+    {
+        const std::vector<std::string> leaves{names_2->authorization_pending_record_leaf};
+        const auto classified = classify_cleanup_test_leaves(
+            root_fd.get(), leaves, prepared.manifest(), tail.record(), worker_handoffs);
+        CHECK(!classified);
+    }
+    clear_cleanup_test_leaves(prepared.root());
+
+    auto wrong_completion = completion_0;
+    wrong_completion.authorization_digest = fixture::digest_with_seed(211);
+    wrong_completion.self_digest = {};
+    wrong_completion = fixture::seal_value(std::move(wrong_completion));
+    const auto wrong_completion_bytes =
+        fixture::encode_record(sieve::DistributedSieveProtocolRecordV1{wrong_completion});
+    write_cleanup_record_prefix(prepared.root(), names_0->authorization_canonical_record_leaf,
+                                names_0->authorization_pending_record_leaf, authorization_0_bytes,
+                                true, false);
+    write_cleanup_record_prefix(prepared.root(), names_0->completion_canonical_record_leaf,
+                                names_0->completion_pending_record_leaf, wrong_completion_bytes,
+                                true, false);
+    {
+        const std::vector<std::string> leaves{
+            names_0->authorization_canonical_record_leaf,
+            names_0->completion_canonical_record_leaf,
+        };
+        const auto classified = classify_cleanup_test_leaves(
+            root_fd.get(), leaves, prepared.manifest(), tail.record(), worker_handoffs);
+        CHECK(!classified);
+        CHECK(classified.diagnostic.protocol_status.has_value());
+    }
+    clear_cleanup_test_leaves(prepared.root());
+
+    for (const bool corrupt_manifest : {false, true}) {
+        auto wrong_authorization = authorization_0;
+        if (corrupt_manifest) {
+            wrong_authorization.manifest_digest = fixture::digest_with_seed(221);
+        } else {
+            wrong_authorization.authorizer_record_digest = fixture::digest_with_seed(231);
+        }
+        wrong_authorization.self_digest = {};
+        wrong_authorization = fixture::seal_value(std::move(wrong_authorization));
+        const auto wrong_authorization_bytes =
+            fixture::encode_record(sieve::DistributedSieveProtocolRecordV1{wrong_authorization});
+        write_cleanup_record_prefix(prepared.root(), names_0->authorization_canonical_record_leaf,
+                                    names_0->authorization_pending_record_leaf,
+                                    wrong_authorization_bytes, false, true);
+        const std::vector<std::string> leaves{names_0->authorization_pending_record_leaf};
+        const auto classified = classify_cleanup_test_leaves(
+            root_fd.get(), leaves, prepared.manifest(), tail.record(), worker_handoffs);
+        CHECK(!classified);
+        clear_cleanup_test_leaves(prepared.root());
+    }
+
+    write_immutable_test_leaf(prepared.root(), names_0->authorization_pending_record_leaf,
+                              completion_0_bytes);
+    {
+        auto role_mismatch = wave::load_distributed_sieve_worker_cleanup_record_leaf_v1(
+            root_fd.get(), names_0->authorization_pending_record_leaf,
+            static_cast<std::uint64_t>(::getpid()));
+        CHECK(!role_mismatch);
+        CHECK(role_mismatch.diagnostic.status ==
+              wave::DistributedSieveWaveStoreStatus::namespace_conflict);
+    }
+    clear_cleanup_test_leaves(prepared.root());
+
+    write_immutable_test_leaf(prepared.root(), names_0->authorization_pending_record_leaf,
+                              authorization_1_bytes);
+    {
+        auto ordinal_mismatch = wave::load_distributed_sieve_worker_cleanup_record_leaf_v1(
+            root_fd.get(), names_0->authorization_pending_record_leaf,
+            static_cast<std::uint64_t>(::getpid()));
+        CHECK(!ordinal_mismatch);
+    }
+    clear_cleanup_test_leaves(prepared.root());
+
+    constexpr std::array<std::string_view, 4> merged_leaves{
+        wave::DISTRIBUTED_SIEVE_CLEANUP_AUTHORIZED_MERGED_RECORD_LEAF,
+        wave::DISTRIBUTED_SIEVE_CLEANUP_COMPLETED_MERGED_RECORD_LEAF,
+        ".gnfs-wave-v1.cleanup-authorized-merged.pending",
+        ".gnfs-wave-v1.cleanup-completed-merged.pending",
+    };
+    for (const std::string_view leaf : merged_leaves) {
+        const auto rejected = wave::load_distributed_sieve_worker_cleanup_record_leaf_v1(
+            root_fd.get(), leaf, static_cast<std::uint64_t>(::getpid()));
+        CHECK(!rejected);
+        CHECK(rejected.diagnostic.status ==
+              wave::DistributedSieveWaveStoreStatus::namespace_conflict);
+    }
+
+    require_worker_snapshots(prepared, worker_snapshots);
 }
 
 void test_moved_admission_replay_is_rejected_without_mutation() {
@@ -840,6 +1314,10 @@ void test_committed_tail_retains_wave_lock_until_release() {
 
 void run_core_suite() {
 #if defined(__APPLE__)
+    test_worker_cleanup_root_names_and_parser_are_exact();
+    std::cout << "  worker cleanup root names and parser: PASS\n";
+    test_worker_cleanup_root_classifier_is_manifest_ordered_and_fail_closed();
+    std::cout << "  worker cleanup typed root classifier: PASS\n";
     test_fresh_commit_and_cold_reopen_are_byte_exact();
     std::cout << "  fresh commit and cold reopen byte parity: PASS\n";
     test_cold_prepared_admission_commits_without_worker_cleanup();

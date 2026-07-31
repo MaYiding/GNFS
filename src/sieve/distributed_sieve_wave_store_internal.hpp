@@ -22,6 +22,7 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace gnfs::core {
@@ -210,6 +211,17 @@ struct DistributedSieveParsedCleanupRecordLeafV1 final {
                const DistributedSieveParsedCleanupRecordLeafV1&) noexcept = default;
 };
 
+struct DistributedSieveWorkerCleanupRecordNamesV1 final {
+    std::string authorization_canonical_record_leaf;
+    std::string authorization_pending_record_leaf;
+    std::string completion_canonical_record_leaf;
+    std::string completion_pending_record_leaf;
+
+    [[nodiscard]] friend bool
+    operator==(const DistributedSieveWorkerCleanupRecordNamesV1&,
+               const DistributedSieveWorkerCleanupRecordNamesV1&) = default;
+};
+
 /// Derive the exact V1 lease stem, private directory, permanent BaseLock, and
 /// immutable record leaves for one bounded worker attempt. This is naming only
 /// and grants no filesystem authority.
@@ -259,6 +271,12 @@ parse_distributed_sieve_wave_merge_commit_leaf_v1(std::string_view leaf) noexcep
 /// coordinates. This parser grants no cleanup or record-publication authority.
 [[nodiscard]] std::optional<DistributedSieveParsedCleanupRecordLeafV1>
 parse_distributed_sieve_cleanup_record_leaf_v1(std::string_view leaf) noexcept;
+
+/// Derive the four exact root-level record leaves for one manifest-order
+/// worker cleanup coordinate. This is naming only and grants no record-read,
+/// publication, or cleanup authority.
+[[nodiscard]] std::optional<DistributedSieveWorkerCleanupRecordNamesV1>
+distributed_sieve_worker_cleanup_record_names_v1(std::uint32_t manifest_order_ordinal);
 
 enum class DistributedSieveWaveStoreStatus : std::uint8_t {
     ready,
@@ -1236,6 +1254,114 @@ struct DistributedSieveWaveStoreDiagnostic final {
     std::optional<DistributedSievePrivateLeaseReservationSyncFailureSite>
         failed_private_lease_reservation_sync_site;
 };
+
+/// One exact immutable worker-cleanup leaf read relative to an already-held
+/// wave-root descriptor. The decoded variant must agree with the reserved leaf
+/// role. This witness is observation only: it grants neither publication nor
+/// relation cleanup authority.
+struct DistributedSieveWorkerCleanupRecordLeafWitnessV1 final {
+    DistributedSieveParsedCleanupRecordLeafV1 coordinate;
+    std::variant<ArtifactCleanupAuthorizedV1, ArtifactCleanupCompletedV1> record;
+    std::vector<std::byte> bytes;
+    util::durable_immutable_record::RecordSnapshot snapshot;
+
+    [[nodiscard]] friend bool
+    operator==(const DistributedSieveWorkerCleanupRecordLeafWitnessV1& left,
+               const DistributedSieveWorkerCleanupRecordLeafWitnessV1& right) noexcept {
+        return left.coordinate == right.coordinate && left.bytes == right.bytes &&
+               left.snapshot == right.snapshot;
+    }
+};
+
+struct DistributedSieveWorkerCleanupRecordLeafLoadResultV1 final {
+    std::optional<DistributedSieveWorkerCleanupRecordLeafWitnessV1> witness;
+    DistributedSieveWaveStoreDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return witness.has_value() && diagnostic.status == DistributedSieveWaveStoreStatus::ready;
+    }
+};
+
+enum class DistributedSieveWorkerCleanupPrefixStateV1 : std::uint8_t {
+    authorization_pending_only,
+    authorization_canonical_only,
+    authorization_identical_dual,
+    completion_pending_only,
+    completion_identical_dual,
+    completed,
+};
+
+/// Exact canonical/pending root prefix for one nonempty manifest worker.
+/// `completed` requires canonical-only authorization and completion; every
+/// other state is the sole active cleanup frontier for the whole wave.
+struct DistributedSieveWorkerCleanupCoordinateWitnessV1 final {
+    std::uint32_t manifest_order_ordinal = 0;
+    DistributedSieveWorkerCleanupPrefixStateV1 state =
+        DistributedSieveWorkerCleanupPrefixStateV1::authorization_pending_only;
+    ArtifactCleanupAuthorizedV1 authorization;
+    std::vector<std::byte> authorization_bytes;
+    std::optional<util::durable_immutable_record::RecordSnapshot> authorization_canonical_snapshot;
+    std::optional<util::durable_immutable_record::RecordSnapshot> authorization_pending_snapshot;
+    std::optional<ArtifactCleanupCompletedV1> completion;
+    std::vector<std::byte> completion_bytes;
+    std::optional<util::durable_immutable_record::RecordSnapshot> completion_canonical_snapshot;
+    std::optional<util::durable_immutable_record::RecordSnapshot> completion_pending_snapshot;
+
+    [[nodiscard]] friend bool
+    operator==(const DistributedSieveWorkerCleanupCoordinateWitnessV1& left,
+               const DistributedSieveWorkerCleanupCoordinateWitnessV1& right) noexcept {
+        return left.manifest_order_ordinal == right.manifest_order_ordinal &&
+               left.state == right.state && left.authorization_bytes == right.authorization_bytes &&
+               left.authorization_canonical_snapshot == right.authorization_canonical_snapshot &&
+               left.authorization_pending_snapshot == right.authorization_pending_snapshot &&
+               left.completion_bytes == right.completion_bytes &&
+               left.completion_canonical_snapshot == right.completion_canonical_snapshot &&
+               left.completion_pending_snapshot == right.completion_pending_snapshot;
+    }
+};
+
+/// Strict manifest-order cleanup prefix. `frontier_manifest_order_ordinal` is
+/// the first nonempty worker not durably completed, even when it has no root
+/// record yet. `active_manifest_order_ordinal` is populated only when that
+/// frontier already has an authorization/completion prefix.
+struct DistributedSieveWorkerCleanupPrefixWitnessV1 final {
+    std::vector<DistributedSieveWorkerCleanupCoordinateWitnessV1> coordinates;
+    std::size_t completed_worker_count = 0;
+    std::optional<std::uint32_t> frontier_manifest_order_ordinal;
+    std::optional<std::uint32_t> active_manifest_order_ordinal;
+
+    [[nodiscard]] friend bool
+    operator==(const DistributedSieveWorkerCleanupPrefixWitnessV1&,
+               const DistributedSieveWorkerCleanupPrefixWitnessV1&) = default;
+};
+
+struct DistributedSieveWorkerCleanupPrefixClassificationResultV1 final {
+    std::optional<DistributedSieveWorkerCleanupPrefixWitnessV1> prefix;
+    DistributedSieveWaveStoreDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return prefix.has_value() && diagnostic.status == DistributedSieveWaveStoreStatus::ready;
+    }
+};
+
+/// Read and decode exactly one reserved worker cleanup leaf. Merged
+/// coordinates, malformed aliases, role mismatches, and record replacement
+/// during the held/named observation fail closed.
+[[nodiscard]] DistributedSieveWorkerCleanupRecordLeafLoadResultV1
+load_distributed_sieve_worker_cleanup_record_leaf_v1(int wave_root_fd, std::string_view leaf,
+                                                     std::uint64_t creator_process_id) noexcept;
+
+/// Validate a complete set of already-loaded cleanup leaves against one exact
+/// canonical manifest/merge commit and its manifest-slot worker handoffs.
+/// Empty chunks admit no records; completed workers form a canonical-only
+/// prefix; at most one non-completed coordinate may be active; all later
+/// worker coordinates must be absent. This recovery classifier never mints
+/// first-use cleanup authority.
+[[nodiscard]] DistributedSieveWorkerCleanupPrefixClassificationResultV1
+classify_distributed_sieve_worker_cleanup_prefix_v1(
+    const WaveManifestV1& manifest, const WaveMergeCommitV1& commit,
+    std::span<const WorkerHandoffV1* const> worker_handoffs,
+    std::span<const DistributedSieveWorkerCleanupRecordLeafWitnessV1> records) noexcept;
 
 struct DistributedSieveWaveStoreOpenResult;
 struct DistributedSievePrivateLeaseRootClaimResult;
