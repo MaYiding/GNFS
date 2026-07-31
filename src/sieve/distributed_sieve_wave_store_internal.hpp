@@ -55,6 +55,12 @@ inline constexpr std::string_view DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_PREFIX
 inline constexpr std::string_view DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_ORDINAL_SEPARATOR = "-a";
 inline constexpr std::string_view DISTRIBUTED_SIEVE_WORKER_ATTEMPT_RECORD_PENDING_SUFFIX =
     ".pending";
+inline constexpr std::string_view DISTRIBUTED_SIEVE_MERGE_GENERATION_STEM_PREFIX_V1 =
+    "gnfs-wave-v1-merge-a";
+inline constexpr std::string_view DISTRIBUTED_SIEVE_MERGE_STARTED_RECORD_PREFIX =
+    ".gnfs-wave-v1.merge-start-a";
+inline constexpr std::string_view DISTRIBUTED_SIEVE_MERGE_STARTED_RECORD_PENDING_SUFFIX =
+    ".pending";
 inline constexpr std::string_view DISTRIBUTED_SIEVE_CHUNK_TERMINAL_FAILURE_RECORD_PREFIX =
     ".gnfs-wave-v1.chunk-terminal-failure-c";
 inline constexpr std::string_view DISTRIBUTED_SIEVE_CHUNK_TERMINAL_FAILURE_RECORD_PENDING_SUFFIX =
@@ -81,7 +87,7 @@ inline constexpr std::string_view DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_PENDING_
     ".gnfs-private-lease-v1.owner.pending";
 inline constexpr std::uint32_t DISTRIBUTED_SIEVE_WAVE_LOCK_SEMANTICS_VERSION_V1 = 1;
 
-struct DistributedSieveWorkerAttemptNamesV1 final {
+struct DistributedSievePrivateLeaseNamesV1 {
     std::string relative_lease_stem;
     std::string private_directory_leaf;
     std::string base_lock_leaf;
@@ -90,11 +96,25 @@ struct DistributedSieveWorkerAttemptNamesV1 final {
     std::string owned_leaf;
     std::string owned_pending_leaf;
     std::string rollback_handoff_leaf;
+
+    [[nodiscard]] friend bool operator==(const DistributedSievePrivateLeaseNamesV1&,
+                                         const DistributedSievePrivateLeaseNamesV1&) = default;
+};
+
+struct DistributedSieveWorkerAttemptNamesV1 final : DistributedSievePrivateLeaseNamesV1 {
     std::string canonical_record_leaf;
     std::string pending_record_leaf;
 
     [[nodiscard]] friend bool operator==(const DistributedSieveWorkerAttemptNamesV1&,
                                          const DistributedSieveWorkerAttemptNamesV1&) = default;
+};
+
+struct DistributedSieveMergeGenerationNamesV1 final : DistributedSievePrivateLeaseNamesV1 {
+    std::string canonical_record_leaf;
+    std::string pending_record_leaf;
+
+    [[nodiscard]] friend bool operator==(const DistributedSieveMergeGenerationNamesV1&,
+                                         const DistributedSieveMergeGenerationNamesV1&) = default;
 };
 
 struct DistributedSieveParsedWorkerAttemptLeafV1 final {
@@ -105,6 +125,15 @@ struct DistributedSieveParsedWorkerAttemptLeafV1 final {
     [[nodiscard]] friend constexpr bool
     operator==(const DistributedSieveParsedWorkerAttemptLeafV1&,
                const DistributedSieveParsedWorkerAttemptLeafV1&) noexcept = default;
+};
+
+struct DistributedSieveParsedMergeStartedLeafV1 final {
+    std::uint32_t merge_attempt_ordinal = 0;
+    bool pending = false;
+
+    [[nodiscard]] friend constexpr bool
+    operator==(const DistributedSieveParsedMergeStartedLeafV1&,
+               const DistributedSieveParsedMergeStartedLeafV1&) noexcept = default;
 };
 
 struct DistributedSieveChunkTerminalFailureNamesV1 final {
@@ -138,6 +167,18 @@ distributed_sieve_worker_attempt_names_v1(std::string_view chunk_relative_artifa
 /// in. No other leaf is normalized or accepted as an alias.
 [[nodiscard]] std::optional<DistributedSieveParsedWorkerAttemptLeafV1>
 parse_distributed_sieve_worker_attempt_leaf_v1(std::string_view leaf) noexcept;
+
+/// Derive the exact fixed-width V1 private-lease and immutable start-record
+/// leaves for one bounded merged-build generation. This is naming only and
+/// grants no namespace, reservation, publication, or cleanup authority.
+[[nodiscard]] std::optional<DistributedSieveMergeGenerationNamesV1>
+distributed_sieve_merge_generation_names_v1(std::uint32_t merge_attempt_ordinal);
+
+/// Parse only the exact lowercase, fixed-width V1 canonical or pending
+/// MergeStarted leaf. No variable-width, suffixed, or case-folded alias is
+/// accepted.
+[[nodiscard]] std::optional<DistributedSieveParsedMergeStartedLeafV1>
+parse_distributed_sieve_merge_started_leaf_v1(std::string_view leaf) noexcept;
 
 /// Derive the exact root-level canonical and pending leaves for one terminal
 /// chunk failure. This pure naming helper grants no record-publication or
@@ -301,6 +342,24 @@ enum class DistributedSieveWorkerAttemptStartFaultPoint : std::uint8_t {
 /// non-fresh record is deliberately distinct from both failure and a freshly
 /// minted worker-start authority.
 enum class DistributedSieveWorkerAttemptStartDisposition : std::uint8_t {
+    failed,
+    fresh_start,
+    reconcile_required,
+};
+
+/// Durable immutable-record boundaries for one merge-generation start.
+/// `CanonicalPromoted` intentionally precedes the following wave-root
+/// directory durability barrier.
+enum class DistributedSieveMergeStartFaultPointV1 : std::uint8_t {
+    PendingDurable,
+    CanonicalPromoted,
+    CanonicalDurable,
+    Count,
+};
+
+/// Authorization outcome of one consumed merge-generation reservation.
+/// Only a fresh canonical publication retains the exact generation BaseLock.
+enum class DistributedSieveMergeStartDispositionV1 : std::uint8_t {
     failed,
     fresh_start,
     reconcile_required,
@@ -504,6 +563,27 @@ struct DistributedSieveWorkerAttemptRecordInventoryWitness final {
     }
 };
 
+/// Exact manifest-bound observation of one immutable MergeStartedV1 slot.
+///
+/// Canonical and optional duplicate-pending leaves must carry identical sealed
+/// bytes. Native snapshots keep same-byte inode replacement visible while the
+/// merged generation is reserved, built, or reconciled.
+struct DistributedSieveMergeStartedRecordInventoryWitnessV1 final {
+    std::uint32_t merge_attempt_ordinal = 0;
+    MergeStartedV1 record;
+    std::vector<std::byte> bytes;
+    std::optional<util::durable_immutable_record::RecordSnapshot> canonical_snapshot;
+    std::optional<util::durable_immutable_record::RecordSnapshot> pending_snapshot;
+
+    [[nodiscard]] friend bool
+    operator==(const DistributedSieveMergeStartedRecordInventoryWitnessV1& left,
+               const DistributedSieveMergeStartedRecordInventoryWitnessV1& right) noexcept {
+        return left.merge_attempt_ordinal == right.merge_attempt_ordinal &&
+               left.bytes == right.bytes && left.canonical_snapshot == right.canonical_snapshot &&
+               left.pending_snapshot == right.pending_snapshot;
+    }
+};
+
 /// Exact manifest-bound observation of one root-level
 /// ChunkTerminalFailureV1 prefix.
 ///
@@ -599,6 +679,32 @@ struct DistributedSieveWorkerAttemptStartTestHooks final {
     StopAfter stop_after = nullptr;
 
     /// Runs after the first exact canonical-successor observation and before
+    /// its mandatory authority and inventory confirmation.
+    Boundary after_first_successor_validation = nullptr;
+    void* context = nullptr;
+};
+
+/// Trusted test-only boundaries for the receipt-only MergeStarted publisher.
+/// Production callers leave every callback empty.
+struct DistributedSieveMergeStartTestHooksV1 final {
+    using Boundary = void (*)(void* context) noexcept;
+    using StopAfter = bool (*)(DistributedSieveMergeStartFaultPointV1 point,
+                               void* context) noexcept;
+
+    DistributedSievePrivateLeaseBaseLockTestHooks base_lock;
+
+    /// Runs with `root claim -> predecessor generation BaseLocks -> target
+    /// BaseLock` held after the exact receipt, P8 lease, terminal worker
+    /// evidence, and predecessor chain have been established.
+    Boundary after_locked_predecessor_validation = nullptr;
+
+    /// Runs after the final closed predecessor confirmation and immediately
+    /// before the immutable-record transaction.
+    Boundary before_record_publication = nullptr;
+
+    StopAfter stop_after = nullptr;
+
+    /// Runs after the first exact canonical successor observation and before
     /// its mandatory authority and inventory confirmation.
     Boundary after_first_successor_validation = nullptr;
     void* context = nullptr;
@@ -767,6 +873,19 @@ struct DistributedSievePrivateLeaseRecoveryTestHooks final {
     void* context = nullptr;
 };
 
+struct DistributedSieveMergeStartedReconcileTestHooksV1 final {
+    using Boundary = void (*)(void* context) noexcept;
+    using StopAfter = bool (*)(DistributedSieveMergeStartFaultPointV1 point,
+                               void* context) noexcept;
+
+    DistributedSievePrivateLeaseBaseLockTestHooks base_lock;
+    Boundary before_record_normalization = nullptr;
+    StopAfter stop_after = nullptr;
+    Boundary after_first_normalized_successor_validation = nullptr;
+    DistributedSievePrivateLeaseRecoveryTestHooks recovery;
+    void* context = nullptr;
+};
+
 /// Trusted test-only controls for normalization and cleanup of one already
 /// published AttemptStartedV1. Production callers leave every callback empty.
 struct DistributedSieveWorkerWorkPackageResidueReconciliationTestHooks final {
@@ -818,6 +937,7 @@ struct DistributedSieveWaveStoreDiagnostic final {
     std::optional<DistributedSieveWaveStoreFaultPoint> last_durable_fault_point;
     std::optional<DistributedSieveWorkerAttemptStartFaultPoint>
         last_worker_attempt_start_fault_point;
+    std::optional<DistributedSieveMergeStartFaultPointV1> last_merge_start_fault_point;
     std::optional<DistributedSieveWorkerAttemptReconcileFaultPoint>
         last_worker_attempt_reconcile_fault_point;
     std::optional<DistributedSieveChunkTerminalFailureFaultPoint>
@@ -839,6 +959,10 @@ struct DistributedSieveWaveStoreOpenResult;
 struct DistributedSievePrivateLeaseRootClaimResult;
 struct DistributedSievePrivateLeaseReservationResult;
 struct DistributedSieveWorkerAttemptStartResult;
+struct DistributedSieveMergeLeaseReservationResultV1;
+struct DistributedSieveMergeStartResultV1;
+struct DistributedSieveMergeStartedReconcileResultV1;
+struct DistributedSieveMergeGenerationCursorResultV1;
 struct DistributedSieveWorkerAttemptReconcileResult;
 struct DistributedSieveChunkTerminalFailurePublicationResultV1;
 struct DistributedSieveWorkerChunkInventoryResultV1;
@@ -846,10 +970,13 @@ struct DistributedSieveWorkerHandoffAdoptionResultV1;
 struct DistributedSieveWorkerCoordinatorClaimResultV1;
 class DistributedSieveAdoptedWorkerChunkV1;
 class DistributedSieveWorkerCoordinatorClaimV1;
+class DistributedSieveWaveStore;
 class DistributedSievePrivateLeaseRootClaim;
 class DistributedSievePrivateLeaseBaseLockAt;
 class DistributedSievePrivateLeaseReservationReceipt;
 class DistributedSieveWorkerAttemptStartReceipt;
+class DistributedSieveMergeLeaseReservationReceiptV1;
+class DistributedSieveMergeStartedReceiptV1;
 class DistributedSieveChunkTerminalFailureAdmissionV1;
 class DistributedSieveFdPrivateLeaseReservationTarget;
 class DistributedSieveFdPrivateLeaseRecoveryTarget;
@@ -866,6 +993,13 @@ class DistributedSieveFdPrivateLeaseRecoveryTarget;
     DistributedSievePrivateLeaseRootClaimResult&& claimed,
     DistributedSievePrivateLeaseRecoveryTestHooks hooks = {}) noexcept;
 
+/// Consume one open-existing recordless merge-generation claim and roll its
+/// exact reservation prefix back to P0. This helper never removes a
+/// MergeStarted record and is not cleanup authority for a started generation.
+[[nodiscard]] DistributedSievePrivateLeaseRootClaimResult recover_merge_generation_private_lease_v1(
+    DistributedSievePrivateLeaseRootClaimResult&& claimed,
+    DistributedSievePrivateLeaseRecoveryTestHooks hooks = {}) noexcept;
+
 /// Consume one creator-bound P8 reservation snapshot, reacquire
 /// `root claim -> target BaseLock`, and durably publish its internally derived
 /// AttemptStartedV1. Only a fresh canonical publication can mint the
@@ -873,6 +1007,46 @@ class DistributedSieveFdPrivateLeaseRecoveryTarget;
 [[nodiscard]] DistributedSieveWorkerAttemptStartResult
 publish_worker_attempt_started(DistributedSievePrivateLeaseReservationReceipt&& reservation,
                                DistributedSieveWorkerAttemptStartTestHooks hooks = {}) noexcept;
+
+/// Derive and reserve one exact merge-generation private lease through the
+/// retained WaveStore. The terminal projection and policy are copied into the
+/// move-only P8 receipt only after they match the complete durable worker
+/// evidence under `WaveLock -> root claim -> predecessor generation BaseLocks
+/// -> target BaseLock`.
+[[nodiscard]] DistributedSieveMergeLeaseReservationResultV1
+reserve_distributed_sieve_merge_generation_v1(
+    DistributedSieveWaveStore& store, std::uint32_t merge_attempt_ordinal,
+    std::span<const TerminalChunkInputV1> terminal_inputs, std::uint32_t merge_policy_version,
+    DistributedSievePrivateLeaseProtocolTestHooks hooks = {},
+    std::span<const DistributedSieveAdoptedWorkerChunkV1* const> held_worker_handoffs =
+        {}) noexcept;
+
+/// Consume one exact merge-generation P8 receipt and durably publish the
+/// internally derived MergeStartedV1. The repeated inputs and policy must
+/// exactly match the values frozen by reservation.
+[[nodiscard]] DistributedSieveMergeStartResultV1 publish_merge_started_v1(
+    DistributedSieveMergeLeaseReservationReceiptV1&& reservation,
+    std::span<const TerminalChunkInputV1> terminal_inputs, std::uint32_t merge_policy_version,
+    DistributedSieveMergeStartTestHooksV1 hooks = {},
+    std::span<const DistributedSieveAdoptedWorkerChunkV1* const> held_worker_handoffs =
+        {}) noexcept;
+
+/// Normalize one exact latest MergeStarted prefix, pin its canonical record
+/// under the same generation BaseLock, and roll only its unprepared private
+/// lease back to P0. The durable start remains as an audit/predecessor leaf.
+[[nodiscard]] DistributedSieveMergeStartedReconcileResultV1 reconcile_merge_started_generation_v1(
+    DistributedSieveWaveStore& store, std::uint32_t merge_attempt_ordinal,
+    DistributedSieveMergeStartedReconcileTestHooksV1 hooks = {},
+    std::span<const DistributedSieveAdoptedWorkerChunkV1* const> held_worker_handoffs =
+        {}) noexcept;
+
+/// Return the exact next merge ordinal after reconciling and cleaning an
+/// unprepared latest start when necessary. Reservation-only prefixes are left
+/// for the reservation transaction, which reuses the same ordinal.
+[[nodiscard]] DistributedSieveMergeGenerationCursorResultV1
+prepare_distributed_sieve_merge_generation_v1(
+    DistributedSieveWaveStore& store, std::span<const DistributedSieveAdoptedWorkerChunkV1* const>
+                                          held_worker_handoffs = {}) noexcept;
 
 /// Consume only an open-existing attempt claim, normalize its immutable
 /// AttemptStartedV1 to one canonical record, and roll the exact record-bound
@@ -972,9 +1146,13 @@ public:
     /// Exclusively claim this exact shared WaveStore state for one future
     /// private-lease root action. The claim is process-bound, keeps the
     /// permanent wave lock alive, and exposes no descriptor, path, or
-    /// caller-chosen namespace operation.
-    [[nodiscard]] DistributedSievePrivateLeaseRootClaimResult
-    claim_private_lease_root() const noexcept;
+    /// caller-chosen namespace operation. A nonempty held-handoff span must be
+    /// the complete manifest-ordered set of this same store's nonempty worker
+    /// chunks; their already-held BaseLock open-file descriptions are borrowed
+    /// only for closed inventory validation.
+    [[nodiscard]] DistributedSievePrivateLeaseRootClaimResult claim_private_lease_root(
+        std::span<const DistributedSieveAdoptedWorkerChunkV1* const> held_worker_handoffs = {})
+        const noexcept;
 
     /// Start a short-lived root transaction for an exact nonempty manifest
     /// chunk/attempt whose permanent BaseLock must not yet exist. The leaf is
@@ -991,6 +1169,19 @@ public:
     [[nodiscard]] DistributedSievePrivateLeaseRootClaimResult
     open_worker_attempt_private_lease_root(
         std::uint32_t chunk_id, std::uint32_t attempt_ordinal,
+        DistributedSievePrivateLeaseBaseLockTestHooks hooks = {}) const noexcept;
+
+    /// Start one merge-generation root transaction. The fixed-width lease and
+    /// BaseLock names are derived internally from the bounded ordinal. These
+    /// source-private entry points grant no writer, record-publication, or
+    /// cleanup authority by themselves.
+    [[nodiscard]] DistributedSievePrivateLeaseRootClaimResult
+    create_merge_generation_private_lease_root(
+        std::uint32_t merge_attempt_ordinal,
+        DistributedSievePrivateLeaseBaseLockTestHooks hooks = {}) const noexcept;
+    [[nodiscard]] DistributedSievePrivateLeaseRootClaimResult
+    open_merge_generation_private_lease_root(
+        std::uint32_t merge_attempt_ordinal,
         DistributedSievePrivateLeaseBaseLockTestHooks hooks = {}) const noexcept;
 
     /// Consume a complete fixed batch of fresh AttemptStartedV1 receipts and
@@ -1024,6 +1215,12 @@ private:
         std::uint32_t chunk_id, std::uint32_t attempt_ordinal,
         AttemptBaseLockExpectation expectation,
         DistributedSievePrivateLeaseBaseLockTestHooks hooks) const noexcept;
+    [[nodiscard]] DistributedSievePrivateLeaseRootClaimResult
+    claim_merge_generation_private_lease_root(
+        std::uint32_t merge_attempt_ordinal, AttemptBaseLockExpectation expectation,
+        DistributedSievePrivateLeaseBaseLockTestHooks hooks,
+        std::span<const DistributedSieveAdoptedWorkerChunkV1* const> held_worker_handoffs = {})
+        const noexcept;
     [[nodiscard]] DistributedSieveWorkerHandoffAdoptionResultV1 adopt_worker_handoff_impl_v1(
         std::uint32_t chunk_id, const DistributedSieveWorkerHandoffInventoryWitnessV1* expected,
         DistributedSieveWorkerHandoffAdoptionTestHooksV1 hooks) const noexcept;
@@ -1038,10 +1235,31 @@ private:
     friend class DistributedSievePrivateLeaseRootClaim;
     friend class DistributedSievePrivateLeaseReservationReceipt;
     friend class DistributedSieveWorkerAttemptStartReceipt;
+    friend class DistributedSieveMergeLeaseReservationReceiptV1;
+    friend class DistributedSieveMergeStartedReceiptV1;
     friend class DistributedSieveChunkTerminalFailureAdmissionV1;
     friend DistributedSieveWorkerAttemptStartResult
     publish_worker_attempt_started(DistributedSievePrivateLeaseReservationReceipt&& reservation,
                                    DistributedSieveWorkerAttemptStartTestHooks hooks) noexcept;
+    friend DistributedSieveMergeLeaseReservationResultV1
+    reserve_distributed_sieve_merge_generation_v1(
+        DistributedSieveWaveStore& store, std::uint32_t merge_attempt_ordinal,
+        std::span<const TerminalChunkInputV1> terminal_inputs, std::uint32_t merge_policy_version,
+        DistributedSievePrivateLeaseProtocolTestHooks hooks,
+        std::span<const DistributedSieveAdoptedWorkerChunkV1* const> held_worker_handoffs) noexcept;
+    friend DistributedSieveMergeStartResultV1 publish_merge_started_v1(
+        DistributedSieveMergeLeaseReservationReceiptV1&& reservation,
+        std::span<const TerminalChunkInputV1> terminal_inputs, std::uint32_t merge_policy_version,
+        DistributedSieveMergeStartTestHooksV1 hooks,
+        std::span<const DistributedSieveAdoptedWorkerChunkV1* const> held_worker_handoffs) noexcept;
+    friend DistributedSieveMergeStartedReconcileResultV1 reconcile_merge_started_generation_v1(
+        DistributedSieveWaveStore& store, std::uint32_t merge_attempt_ordinal,
+        DistributedSieveMergeStartedReconcileTestHooksV1 hooks,
+        std::span<const DistributedSieveAdoptedWorkerChunkV1* const> held_worker_handoffs) noexcept;
+    friend DistributedSieveMergeGenerationCursorResultV1
+    prepare_distributed_sieve_merge_generation_v1(
+        DistributedSieveWaveStore& store,
+        std::span<const DistributedSieveAdoptedWorkerChunkV1* const> held_worker_handoffs) noexcept;
     friend DistributedSieveWorkerAttemptReconcileResult reconcile_worker_attempt_started(
         DistributedSievePrivateLeaseRootClaimResult&& claimed,
         DistributedSieveWorkerAttemptReconcileTestHooks hooks) noexcept;
@@ -1109,13 +1327,15 @@ public:
     [[nodiscard]] const relation::OOCRelationReader& reader() const;
 
 private:
-    DistributedSieveAdoptedWorkerChunkV1(std::shared_ptr<const void> wave_store_state_anchor,
-                                         WorkerHandoffV1 handoff,
-                                         std::unique_ptr<relation::OOCPrivateHandoffReader> reader,
-                                         std::uint64_t creator_process_id) noexcept;
+    DistributedSieveAdoptedWorkerChunkV1(
+        std::shared_ptr<const void> wave_store_state_anchor, WorkerHandoffV1 handoff,
+        std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt> retained_base_lock,
+        std::unique_ptr<relation::OOCPrivateHandoffReader> reader,
+        std::uint64_t creator_process_id) noexcept;
 
     std::shared_ptr<const void> wave_store_state_anchor_;
     WorkerHandoffV1 handoff_;
+    std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt> retained_base_lock_;
     std::unique_ptr<relation::OOCPrivateHandoffReader> reader_;
     std::uint64_t creator_process_id_ = 0;
 
@@ -1212,6 +1432,9 @@ private:
                          std::uint64_t creator_process_id,
                          DistributedSieveWaveStoreDiagnostic& outcome) noexcept;
 
+    [[nodiscard]] std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt>
+    duplicate_same_open_file_description(
+        DistributedSieveWaveStoreDiagnostic& outcome) const noexcept;
     [[nodiscard]] DistributedSieveWaveStoreDiagnostic revalidate() const noexcept;
     [[nodiscard]] DistributedSieveWaveStoreDiagnostic
     synchronize(DistributedSievePrivateLeaseBaseLockTestHooks hooks) const noexcept;
@@ -1228,12 +1451,34 @@ private:
 
     friend class DistributedSieveFdPrivateLeaseRecoveryTarget;
     friend class DistributedSieveFdPrivateLeaseReservationTarget;
+    friend class DistributedSieveAdoptedWorkerChunkV1;
     friend class DistributedSieveWaveStore;
     friend class DistributedSievePrivateLeaseRootClaim;
     friend class DistributedSieveWorkerAttemptStartReceipt;
+    friend class DistributedSieveMergeLeaseReservationReceiptV1;
+    friend class DistributedSieveMergeStartedReceiptV1;
     friend DistributedSieveWorkerAttemptStartResult
     publish_worker_attempt_started(DistributedSievePrivateLeaseReservationReceipt&& reservation,
                                    DistributedSieveWorkerAttemptStartTestHooks hooks) noexcept;
+    friend DistributedSieveMergeStartResultV1 publish_merge_started_v1(
+        DistributedSieveMergeLeaseReservationReceiptV1&& reservation,
+        std::span<const TerminalChunkInputV1> terminal_inputs, std::uint32_t merge_policy_version,
+        DistributedSieveMergeStartTestHooksV1 hooks,
+        std::span<const DistributedSieveAdoptedWorkerChunkV1* const> held_worker_handoffs) noexcept;
+    friend DistributedSieveMergeLeaseReservationResultV1
+    reserve_distributed_sieve_merge_generation_v1(
+        DistributedSieveWaveStore& store, std::uint32_t merge_attempt_ordinal,
+        std::span<const TerminalChunkInputV1> terminal_inputs, std::uint32_t merge_policy_version,
+        DistributedSievePrivateLeaseProtocolTestHooks hooks,
+        std::span<const DistributedSieveAdoptedWorkerChunkV1* const> held_worker_handoffs) noexcept;
+    friend DistributedSieveMergeStartedReconcileResultV1 reconcile_merge_started_generation_v1(
+        DistributedSieveWaveStore& store, std::uint32_t merge_attempt_ordinal,
+        DistributedSieveMergeStartedReconcileTestHooksV1 hooks,
+        std::span<const DistributedSieveAdoptedWorkerChunkV1* const> held_worker_handoffs) noexcept;
+    friend DistributedSieveMergeGenerationCursorResultV1
+    prepare_distributed_sieve_merge_generation_v1(
+        DistributedSieveWaveStore& store,
+        std::span<const DistributedSieveAdoptedWorkerChunkV1* const> held_worker_handoffs) noexcept;
     friend DistributedSieveWorkerAttemptReconcileResult reconcile_worker_attempt_started(
         DistributedSievePrivateLeaseRootClaimResult&& claimed,
         DistributedSieveWorkerAttemptReconcileTestHooks hooks) noexcept;
@@ -1287,35 +1532,66 @@ private:
     };
 
     explicit DistributedSievePrivateLeaseRootClaim(
-        std::shared_ptr<const DistributedSieveWaveStore::State> wave_store_state) noexcept;
+        std::shared_ptr<const DistributedSieveWaveStore::State> wave_store_state,
+        std::vector<const DistributedSievePrivateLeaseBaseLockAt*>
+            borrowed_worker_base_locks) noexcept;
 
     std::shared_ptr<const DistributedSieveWaveStore::State> wave_store_state_;
     std::uint64_t creator_process_id_ = 0;
+    std::vector<const DistributedSievePrivateLeaseBaseLockAt*> borrowed_worker_base_locks_;
     std::optional<DistributedSieveWorkerAttemptNamesV1> worker_attempt_names_;
+    std::optional<DistributedSieveMergeGenerationNamesV1> merge_generation_names_;
     std::optional<std::vector<std::string>> expected_private_lease_base_lock_leaves_;
     std::optional<std::vector<NativeIdentityV1>> expected_private_lease_base_lock_identities_;
     std::optional<std::vector<DistributedSievePrivateLeaseReservationInventoryWitness>>
         expected_private_lease_reservation_witnesses_;
     std::optional<std::vector<DistributedSieveWorkerAttemptRecordInventoryWitness>>
         expected_worker_attempt_record_witnesses_;
+    std::optional<std::vector<DistributedSieveMergeStartedRecordInventoryWitnessV1>>
+        expected_merge_started_record_witnesses_;
     std::optional<std::vector<DistributedSieveChunkTerminalFailureRecordInventoryWitnessV1>>
         expected_chunk_terminal_failure_record_witnesses_;
     std::optional<BaseLockAcquisition> base_lock_acquisition_;
+    std::vector<std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt>> predecessor_base_locks_;
     std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt> base_lock_at_;
 
     friend class DistributedSieveFdPrivateLeaseRecoveryTarget;
     friend class DistributedSieveFdPrivateLeaseReservationTarget;
+    friend class DistributedSieveMergeLeaseReservationReceiptV1;
+    friend class DistributedSieveMergeStartedReceiptV1;
     friend class DistributedSieveChunkTerminalFailureAdmissionV1;
     friend class DistributedSieveWaveStore;
     friend DistributedSievePrivateLeaseRootClaimResult recover_worker_attempt_private_lease(
         DistributedSievePrivateLeaseRootClaimResult&& claimed,
         DistributedSievePrivateLeaseRecoveryTestHooks hooks) noexcept;
+    friend DistributedSievePrivateLeaseRootClaimResult recover_merge_generation_private_lease_v1(
+        DistributedSievePrivateLeaseRootClaimResult&& claimed,
+        DistributedSievePrivateLeaseRecoveryTestHooks hooks) noexcept;
     friend DistributedSievePrivateLeaseReservationResult reserve_worker_attempt_private_lease(
         DistributedSievePrivateLeaseRootClaimResult&& claimed,
         DistributedSievePrivateLeaseProtocolTestHooks hooks) noexcept;
+    friend DistributedSieveMergeLeaseReservationResultV1
+    reserve_distributed_sieve_merge_generation_v1(
+        DistributedSieveWaveStore& store, std::uint32_t merge_attempt_ordinal,
+        std::span<const TerminalChunkInputV1> terminal_inputs, std::uint32_t merge_policy_version,
+        DistributedSievePrivateLeaseProtocolTestHooks hooks,
+        std::span<const DistributedSieveAdoptedWorkerChunkV1* const> held_worker_handoffs) noexcept;
     friend DistributedSieveWorkerAttemptStartResult
     publish_worker_attempt_started(DistributedSievePrivateLeaseReservationReceipt&& reservation,
                                    DistributedSieveWorkerAttemptStartTestHooks hooks) noexcept;
+    friend DistributedSieveMergeStartResultV1 publish_merge_started_v1(
+        DistributedSieveMergeLeaseReservationReceiptV1&& reservation,
+        std::span<const TerminalChunkInputV1> terminal_inputs, std::uint32_t merge_policy_version,
+        DistributedSieveMergeStartTestHooksV1 hooks,
+        std::span<const DistributedSieveAdoptedWorkerChunkV1* const> held_worker_handoffs) noexcept;
+    friend DistributedSieveMergeStartedReconcileResultV1 reconcile_merge_started_generation_v1(
+        DistributedSieveWaveStore& store, std::uint32_t merge_attempt_ordinal,
+        DistributedSieveMergeStartedReconcileTestHooksV1 hooks,
+        std::span<const DistributedSieveAdoptedWorkerChunkV1* const> held_worker_handoffs) noexcept;
+    friend DistributedSieveMergeGenerationCursorResultV1
+    prepare_distributed_sieve_merge_generation_v1(
+        DistributedSieveWaveStore& store,
+        std::span<const DistributedSieveAdoptedWorkerChunkV1* const> held_worker_handoffs) noexcept;
     friend DistributedSieveWorkerAttemptReconcileResult reconcile_worker_attempt_started(
         DistributedSievePrivateLeaseRootClaimResult&& claimed,
         DistributedSieveWorkerAttemptReconcileTestHooks hooks) noexcept;
@@ -1463,6 +1739,168 @@ struct DistributedSieveWorkerAttemptStartResult final {
         return receipt.has_value() && diagnostic.status == DistributedSieveWaveStoreStatus::ready &&
                disposition == DistributedSieveWorkerAttemptStartDisposition::fresh_start &&
                receipt->owned_by_current_process();
+    }
+};
+
+/// Creator-bound, process-bound P8 snapshot for one merge generation.
+///
+/// The receipt retains neither the root claim nor the target flock. It does
+/// retain same-open-file-description duplicates of every adopted worker
+/// BaseLock so its inventory proof never depends on the adopted owners'
+/// lifetime. It binds the exact terminal projection and merge policy validated
+/// while the generation BaseLock was created, and exposes no path, descriptor,
+/// writer, recovery, or cleanup authority.
+class DistributedSieveMergeLeaseReservationReceiptV1 final {
+public:
+    DistributedSieveMergeLeaseReservationReceiptV1() = delete;
+    DistributedSieveMergeLeaseReservationReceiptV1(
+        const DistributedSieveMergeLeaseReservationReceiptV1&) = delete;
+    DistributedSieveMergeLeaseReservationReceiptV1&
+    operator=(const DistributedSieveMergeLeaseReservationReceiptV1&) = delete;
+    DistributedSieveMergeLeaseReservationReceiptV1(
+        DistributedSieveMergeLeaseReservationReceiptV1&&) noexcept = default;
+    DistributedSieveMergeLeaseReservationReceiptV1&
+    operator=(DistributedSieveMergeLeaseReservationReceiptV1&&) = delete;
+    ~DistributedSieveMergeLeaseReservationReceiptV1() = default;
+
+    [[nodiscard]] bool owned_by_current_process() const noexcept;
+    [[nodiscard]] DistributedSieveWaveStoreDiagnostic
+    revalidate(DistributedSievePrivateLeaseReservationReceiptTestHooks hooks = {}) const noexcept;
+    [[nodiscard]] std::uint32_t merge_attempt_ordinal() const noexcept;
+
+private:
+    DistributedSieveMergeLeaseReservationReceiptV1(
+        std::shared_ptr<const DistributedSieveWaveStore::State> wave_store_state,
+        DistributedSieveMergeGenerationNamesV1 merge_generation_names,
+        NativeIdentityV1 base_lock_identity,
+        DistributedSievePrivateLeaseReservationInventoryWitness final_witness,
+        std::vector<TerminalChunkInputV1> terminal_inputs, std::uint32_t merge_policy_version,
+        std::vector<std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt>>
+            retained_worker_base_locks,
+        std::vector<const DistributedSievePrivateLeaseBaseLockAt*> retained_worker_base_lock_views,
+        std::uint64_t creator_process_id) noexcept;
+
+    std::shared_ptr<const DistributedSieveWaveStore::State> wave_store_state_;
+    DistributedSieveMergeGenerationNamesV1 merge_generation_names_;
+    NativeIdentityV1 base_lock_identity_{};
+    DistributedSievePrivateLeaseReservationInventoryWitness final_witness_;
+    std::vector<TerminalChunkInputV1> terminal_inputs_;
+    std::uint32_t merge_policy_version_ = 0;
+    std::vector<std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt>>
+        retained_worker_base_locks_;
+    std::vector<const DistributedSievePrivateLeaseBaseLockAt*> retained_worker_base_lock_views_;
+    std::uint64_t creator_process_id_ = 0;
+
+    friend DistributedSieveMergeLeaseReservationResultV1
+    reserve_distributed_sieve_merge_generation_v1(
+        DistributedSieveWaveStore& store, std::uint32_t merge_attempt_ordinal,
+        std::span<const TerminalChunkInputV1> terminal_inputs, std::uint32_t merge_policy_version,
+        DistributedSievePrivateLeaseProtocolTestHooks hooks,
+        std::span<const DistributedSieveAdoptedWorkerChunkV1* const> held_worker_handoffs) noexcept;
+    friend DistributedSieveMergeStartResultV1 publish_merge_started_v1(
+        DistributedSieveMergeLeaseReservationReceiptV1&& reservation,
+        std::span<const TerminalChunkInputV1> terminal_inputs, std::uint32_t merge_policy_version,
+        DistributedSieveMergeStartTestHooksV1 hooks,
+        std::span<const DistributedSieveAdoptedWorkerChunkV1* const> held_worker_handoffs) noexcept;
+};
+
+struct DistributedSieveMergeLeaseReservationResultV1 final {
+    std::optional<DistributedSieveMergeLeaseReservationReceiptV1> receipt;
+    DistributedSieveWaveStoreDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return receipt.has_value() && diagnostic.status == DistributedSieveWaveStoreStatus::ready &&
+               receipt->owned_by_current_process();
+    }
+};
+
+/// Creator-bound proof that a freshly published MergeStartedV1 still retains
+/// the exact target generation BaseLock and independently owns the same-OFD
+/// worker BaseLock duplicates inherited from its P8 receipt.
+class DistributedSieveMergeStartedReceiptV1 final {
+public:
+    DistributedSieveMergeStartedReceiptV1() = delete;
+    DistributedSieveMergeStartedReceiptV1(const DistributedSieveMergeStartedReceiptV1&) = delete;
+    DistributedSieveMergeStartedReceiptV1&
+    operator=(const DistributedSieveMergeStartedReceiptV1&) = delete;
+    DistributedSieveMergeStartedReceiptV1(DistributedSieveMergeStartedReceiptV1&&) noexcept =
+        default;
+    DistributedSieveMergeStartedReceiptV1&
+    operator=(DistributedSieveMergeStartedReceiptV1&&) = delete;
+    ~DistributedSieveMergeStartedReceiptV1() = default;
+
+    [[nodiscard]] bool owned_by_current_process() const noexcept;
+    [[nodiscard]] DistributedSieveWaveStoreDiagnostic revalidate() const noexcept;
+    [[nodiscard]] const MergeStartedV1& record() const noexcept;
+    [[nodiscard]] const util::durable_immutable_record::RecordSnapshot&
+    canonical_snapshot() const noexcept;
+
+private:
+    DistributedSieveMergeStartedReceiptV1(
+        std::shared_ptr<const DistributedSieveWaveStore::State> wave_store_state,
+        DistributedSieveMergeGenerationNamesV1 merge_generation_names, MergeStartedV1 record,
+        util::durable_immutable_record::RecordSnapshot canonical_snapshot,
+        DistributedSievePrivateLeaseReservationInventoryWitness final_witness,
+        std::vector<std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt>>
+            retained_worker_base_locks,
+        std::vector<const DistributedSievePrivateLeaseBaseLockAt*> retained_worker_base_lock_views,
+        std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt> base_lock_at,
+        std::uint64_t creator_process_id) noexcept;
+
+    std::shared_ptr<const DistributedSieveWaveStore::State> wave_store_state_;
+    DistributedSieveMergeGenerationNamesV1 merge_generation_names_;
+    MergeStartedV1 record_;
+    util::durable_immutable_record::RecordSnapshot canonical_snapshot_;
+    DistributedSievePrivateLeaseReservationInventoryWitness final_witness_;
+    std::vector<std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt>>
+        retained_worker_base_locks_;
+    std::vector<const DistributedSievePrivateLeaseBaseLockAt*> retained_worker_base_lock_views_;
+    std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt> base_lock_at_;
+    std::uint64_t creator_process_id_ = 0;
+
+    friend DistributedSieveMergeStartResultV1 publish_merge_started_v1(
+        DistributedSieveMergeLeaseReservationReceiptV1&& reservation,
+        std::span<const TerminalChunkInputV1> terminal_inputs, std::uint32_t merge_policy_version,
+        DistributedSieveMergeStartTestHooksV1 hooks,
+        std::span<const DistributedSieveAdoptedWorkerChunkV1* const> held_worker_handoffs) noexcept;
+};
+
+struct DistributedSieveMergeStartResultV1 final {
+    std::optional<DistributedSieveMergeStartedReceiptV1> receipt;
+    DistributedSieveWaveStoreDiagnostic diagnostic;
+    DistributedSieveMergeStartDispositionV1 disposition =
+        DistributedSieveMergeStartDispositionV1::failed;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return receipt.has_value() && diagnostic.status == DistributedSieveWaveStoreStatus::ready &&
+               disposition == DistributedSieveMergeStartDispositionV1::fresh_start &&
+               receipt->owned_by_current_process();
+    }
+};
+
+struct DistributedSieveReconciledMergeStartedV1 final {
+    MergeStartedV1 record;
+    util::durable_immutable_record::RecordSnapshot canonical_snapshot;
+    std::optional<std::uint32_t> next_merge_attempt_ordinal;
+};
+
+struct DistributedSieveMergeStartedReconcileResultV1 final {
+    std::optional<DistributedSieveReconciledMergeStartedV1> reconciled;
+    DistributedSieveWaveStoreDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return reconciled.has_value() &&
+               diagnostic.status == DistributedSieveWaveStoreStatus::ready;
+    }
+};
+
+struct DistributedSieveMergeGenerationCursorResultV1 final {
+    std::optional<std::uint32_t> merge_attempt_ordinal;
+    DistributedSieveWaveStoreDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return merge_attempt_ordinal.has_value() &&
+               diagnostic.status == DistributedSieveWaveStoreStatus::ready;
     }
 };
 

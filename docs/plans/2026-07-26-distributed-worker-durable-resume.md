@@ -2835,6 +2835,19 @@ reconfirms raw canonical prefixes without launch or adoption.
 - [ ] Cover every merge, authority-conversion, intra-lease, completion, and
   worker-prefix crash.
 
+M4a completes the source-private merge-generation namespace, exact P0-P8
+reservation, bounded `MergeStartedV1` publication and normalization, reverse
+lease recovery, and whole-worker-result admission. Every failure path retains
+the worker handoffs and their lifetime roots. Before P8 mutation, the
+reservation duplicates each adopted worker `BaseLock` with `F_DUPFD_CLOEXEC`.
+The started receipt inherits those same-open-file-description duplicates, so
+its authority remains closed under independent moves and owner destruction.
+The first checklist item remains open until the streaming writer and prepared
+handoff are complete. Validation for this slice includes the full wave-store
+regression suite, invalid borrowed-span permutations, two merge generations
+with worker, predecessor, and target locks held together, the distributed
+sieve policy checker, and an independent P0/P1 authority review.
+
 Exit criterion: a restart after any worker-cleanup prefix reopens the same
 merged corpus without worker execution or repeated merge, including when all
 worker leases are absent. This is the first milestone allowed to expose the

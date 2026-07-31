@@ -326,6 +326,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/distributed_sieve_wave_store.cp
     target_sources(gnfs_core PRIVATE
         src/sieve/distributed_sieve_wave_store.cpp
         src/sieve/distributed_sieve_worker_coordinator.cpp
+        src/sieve/distributed_sieve_merge_coordinator.cpp
     )
 endif()
 

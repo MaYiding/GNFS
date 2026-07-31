@@ -126,6 +126,18 @@ WORKER_EXECUTOR_BOUND_WORK_USE_SITE_FILES = (
     WORKER_EXECUTOR_RUNTIME_FILES | WORKER_EXECUTOR_CHUNK_FILES
 )
 
+MERGE_COORDINATOR_IMPLEMENTATION_FILE = (
+    "src/sieve/distributed_sieve_merge_coordinator.cpp"
+)
+MERGE_COORDINATOR_INTERFACE_FILE = (
+    "src/sieve/distributed_sieve_merge_coordinator.hpp"
+)
+MERGE_COORDINATOR_TEST_FILE = "tests/test_distributed_sieve_resume.cpp"
+MERGE_COORDINATOR_PRODUCTION_FILES = {
+    MERGE_COORDINATOR_IMPLEMENTATION_FILE,
+    MERGE_COORDINATOR_INTERFACE_FILE,
+}
+
 # These implementation units are the environment-free side of the planned
 # freeze boundary. Legacy parsing remains outside them.
 DURABLE_ENVIRONMENT_FREE_FILES = {
@@ -146,6 +158,8 @@ DURABLE_ENVIRONMENT_FREE_FILES = {
     "src/sieve/distributed_sieve_work_identity_codec_internal.hpp",
     "src/sieve/distributed_sieve_work_package_codec.cpp",
     "src/sieve/distributed_sieve_work_package_codec_internal.hpp",
+    MERGE_COORDINATOR_IMPLEMENTATION_FILE,
+    MERGE_COORDINATOR_INTERFACE_FILE,
     "src/sieve/distributed_sieve_wave_store.cpp",
     "src/sieve/distributed_sieve_wave_store_internal.hpp",
     "src/sieve/distributed_sieve_worker_coordinator.cpp",
@@ -176,7 +190,9 @@ WORKER_COORDINATOR_PRODUCTION_FILES = {
     WORKER_COORDINATOR_INTERFACE_FILE,
 }
 WORKER_COORDINATOR_USE_SITE_ALLOWLIST = (
-    WORKER_COORDINATOR_PRODUCTION_FILES | {WORKER_COORDINATOR_TEST_FILE}
+    WORKER_COORDINATOR_PRODUCTION_FILES
+    | MERGE_COORDINATOR_PRODUCTION_FILES
+    | {WORKER_COORDINATOR_TEST_FILE}
 )
 WORKER_ATTEMPT_WAVE_STORE_IMPLEMENTATION_FILE = (
     "src/sieve/distributed_sieve_wave_store.cpp"
@@ -362,6 +378,57 @@ WORKER_COORDINATOR_AUTHORITY_FREE_CLEANUP_FACTS = {
 }
 WORKER_COORDINATOR_LEGACY_PUBLIC_HEADER = "gnfs/sieve/distributed_sieve.hpp"
 PUBLIC_SIEVE_HEADER_PREFIX = "include/gnfs/sieve/"
+
+MERGE_COORDINATOR_USE_SITE_ALLOWLIST = (
+    MERGE_COORDINATOR_PRODUCTION_FILES | {MERGE_COORDINATOR_TEST_FILE}
+)
+MERGE_COORDINATOR_USE_SITE_IDENTIFIERS = (
+    "distributed_sieve_merge_coordinator_detail",
+    "DistributedSieveMergeGenerationAdmissionV1",
+    "begin_or_resume_distributed_sieve_merge_generation_v1",
+)
+MERGE_COORDINATOR_COMPOSITION_FUNCTION = (
+    "begin_or_resume_distributed_sieve_merge_generation_v1"
+)
+MERGE_COORDINATOR_ADMISSION_IDENTIFIER = (
+    "DistributedSieveMergeGenerationAdmissionV1"
+)
+MERGE_COORDINATOR_WORKER_RESULT_IDENTIFIER = (
+    "DistributedSieveWorkerCoordinatorResultV1"
+)
+MERGE_COORDINATOR_WORKER_RESULT_PARAMETER = "worker_result"
+MERGE_COORDINATOR_RESERVE_IDENTIFIER = (
+    "reserve_distributed_sieve_merge_generation_v1"
+)
+MERGE_COORDINATOR_PUBLISH_IDENTIFIER = "publish_merge_started_v1"
+MERGE_GENERATION_AUTHORITY_USE_SITE_ALLOWLIST = {
+    "src/sieve/distributed_sieve_wave_store.cpp",
+    "src/sieve/distributed_sieve_wave_store_internal.hpp",
+    MERGE_COORDINATOR_IMPLEMENTATION_FILE,
+    MERGE_COORDINATOR_TEST_FILE,
+}
+MERGE_GENERATION_AUTHORITY_USE_SITE_IDENTIFIERS = (
+    MERGE_COORDINATOR_RESERVE_IDENTIFIER,
+    MERGE_COORDINATOR_PUBLISH_IDENTIFIER,
+)
+MERGE_COORDINATOR_FORBIDDEN_EXACT_IDENTIFIERS = {
+    "filesystem",
+    "path",
+    "u8path",
+    "unlink",
+    "unlinkat",
+    "remove",
+    "remove_all",
+    "rmdir",
+}
+MERGE_COORDINATOR_FORBIDDEN_IDENTIFIER_SEGMENTS = {
+    "cleanup",
+    "deletion",
+    "unlink",
+    "remove",
+    "removal",
+}
+MERGE_COORDINATOR_RECORD_IDENTIFIER = "MergeStartedV1"
 
 WORKER_LAUNCHER_IMPLEMENTATION_FILE = "src/sieve/distributed_sieve_wave_store.cpp"
 WORKER_LAUNCHER_INTERFACE_FILES = {
@@ -1824,10 +1891,13 @@ PRIVATE_HANDOFF_PUBLICATION_RESUME_TYPED_CALLBACK_BODY = (
     "if(context==nullptr||context->root_fd<0||context->attempt==nullptr||"
     "context->manifest==nullptr||"
     "context->attempt_record==nullptr||"
+    "!context->attempt->worker_attempt_names.has_value()||"
+    "!context->attempt->worker_coordinate.has_value()||"
     "!context->attempt_record->canonical_snapshot.has_value()||"
     "context->attempt_record->pending_snapshot.has_value()){returnfalse;}"
     "if(constautoexact=revalidate_exact_canonical_worker_attempt("
-    "context->root_fd,context->attempt->names,*context->attempt_record,"
+    "context->root_fd,*context->attempt->worker_attempt_names,"
+    "*context->attempt_record,"
     "context->creator_process_id);"
     "exact.status!=DistributedSieveWaveStoreStatus::ready){"
     "context->diagnostic=exact;returnfalse;}"
@@ -1869,8 +1939,9 @@ PRIVATE_HANDOFF_PUBLICATION_RESUME_TYPED_CALLBACK_BODY = (
     "constauto&started=context->attempt_record->record;"
     "if(handoff.attempt_started_digest!=started.self_digest||"
     "handoff.lease!=started.lease||"
-    "handoff.chunk_id!=context->attempt->coordinate.chunk_id||"
-    "handoff.attempt_ordinal!=context->attempt->coordinate.attempt_ordinal){"
+    "handoff.chunk_id!=context->attempt->worker_coordinate->chunk_id||"
+    "handoff.attempt_ordinal!="
+    "context->attempt->worker_coordinate->attempt_ordinal){"
     "context->diagnostic=diagnostic("
     "DistributedSieveWaveStoreStatus::namespace_conflict,protocol_error());"
     "returnfalse;}"
@@ -5244,6 +5315,452 @@ class Checks:
                 "only then advance the resume round",
             )
 
+    def validate_merge_generation_authority_use_site(
+        self, relative: str, text: str
+    ) -> None:
+        if relative in MERGE_GENERATION_AUTHORITY_USE_SITE_ALLOWLIST:
+            return
+        for identifier in MERGE_GENERATION_AUTHORITY_USE_SITE_IDENTIFIERS:
+            for use in find_code_identifier_uses(text, identifier):
+                self.fail(
+                    relative,
+                    use.line,
+                    "merge-generation reserve/publish authority use site is not "
+                    f"allowlisted: {identifier}",
+                )
+
+    def validate_merge_coordinator_use_site(
+        self, relative: str, text: str
+    ) -> None:
+        interface_leaf = MERGE_COORDINATOR_INTERFACE_FILE.rsplit("/", 1)[-1]
+        coordinator_header_includes = [
+            line_number
+            for line_number, line in enumerate(text.splitlines(), start=1)
+            if re.match(r"^[ \t]*#[ \t]*include\b", line)
+            and interface_leaf in line
+        ]
+        if relative not in MERGE_COORDINATOR_USE_SITE_ALLOWLIST:
+            for line_number in coordinator_header_includes:
+                self.fail(
+                    relative,
+                    line_number,
+                    "source-private merge-coordinator header include is not allowlisted",
+                )
+            for identifier in MERGE_COORDINATOR_USE_SITE_IDENTIFIERS:
+                for use in find_code_identifier_uses(text, identifier):
+                    self.fail(
+                        relative,
+                        use.line,
+                        "source-private merge-coordinator use site is not "
+                        f"allowlisted: {identifier}",
+                    )
+
+        if not relative.startswith(PUBLIC_SIEVE_HEADER_PREFIX):
+            return
+        for line_number in coordinator_header_includes:
+            self.fail(
+                relative,
+                line_number,
+                "source-private merge-coordinator header leaked into a public sieve header",
+            )
+        for identifier in MERGE_COORDINATOR_USE_SITE_IDENTIFIERS:
+            for use in find_code_identifier_uses(text, identifier):
+                self.fail(
+                    relative,
+                    use.line,
+                    "source-private merge-coordinator API leaked into a public sieve header: "
+                    f"{identifier}",
+                )
+
+    def validate_merge_coordinator_boundary(
+        self, relative: str, text: str
+    ) -> None:
+        if relative not in MERGE_COORDINATOR_PRODUCTION_FILES:
+            return
+
+        for token, use in find_code_identifier_tokens(text):
+            lowered = token.lower()
+            if token in MERGE_COORDINATOR_FORBIDDEN_EXACT_IDENTIFIERS:
+                reason = "filesystem-path or raw removal identifier"
+            elif (
+                set(lowered.split("_"))
+                & MERGE_COORDINATOR_FORBIDDEN_IDENTIFIER_SEGMENTS
+            ):
+                reason = "cleanup, unlink, or removal identifier"
+            elif (
+                lowered in {"arm", "armed", "arming", "armable"}
+                or lowered.startswith("arm_")
+                or lowered.endswith("_arm")
+                or "_arm_" in lowered
+                or "_armable" in lowered
+            ):
+                reason = "cleanup-arming identifier"
+            elif token == MERGE_COORDINATOR_RECORD_IDENTIFIER:
+                reason = "caller-side MergeStarted construction/type"
+            else:
+                continue
+            self.fail(
+                relative,
+                use.line,
+                f"merge coordinator forbids {reason} {token}",
+            )
+
+        if relative == MERGE_COORDINATOR_INTERFACE_FILE:
+            admission_span = _class_definition_body_span(
+                text, MERGE_COORDINATOR_ADMISSION_IDENTIFIER
+            )
+            if admission_span is None:
+                self.fail(
+                    relative,
+                    1,
+                    "merge coordinator must define exactly one move-only "
+                    f"{MERGE_COORDINATOR_ADMISSION_IDENTIFIER}",
+                )
+            else:
+                admission_source = text[admission_span[0] : admission_span[1]]
+                admission_body = _compact_cpp_tokens(admission_source)
+                admission = MERGE_COORDINATOR_ADMISSION_IDENTIFIER
+                required_move_only_fragments = (
+                    f"{admission}(const{admission}&)=delete;",
+                    f"{admission}&operator=(const{admission}&)=delete;",
+                    f"{admission}({admission}&&)noexcept=default;",
+                    f"{admission}&operator=({admission}&&)=delete;",
+                )
+                for fragment in required_move_only_fragments:
+                    if admission_body.count(fragment) != 1:
+                        self.fail(
+                            relative,
+                            text.count("\n", 0, admission_span[0]) + 1,
+                            "merge admission must be a one-owner move-only lifetime "
+                            f"root; missing exact fragment {fragment}",
+                        )
+
+                worker_result = MERGE_COORDINATOR_WORKER_RESULT_IDENTIFIER
+                worker_parameter = MERGE_COORDINATOR_WORKER_RESULT_PARAMETER
+                constructor_fragment = (
+                    f"{admission}({worker_result}&&{worker_parameter}"
+                )
+                member_fragment = f"{worker_result}{worker_parameter}_;"
+                friend_fragment = (
+                    f"friend{admission}{MERGE_COORDINATOR_COMPOSITION_FUNCTION}("
+                    f"{worker_result}&&{worker_parameter}"
+                )
+                private_offset = admission_body.find("private:")
+                constructor_offset = admission_body.find(constructor_fragment)
+                member_offset = admission_body.find(member_fragment)
+                friend_offset = admission_body.find(friend_fragment)
+                admission_result_uses = find_code_identifier_uses(
+                    admission_source, worker_result
+                )
+                if (
+                    private_offset < 0
+                    or constructor_offset <= private_offset
+                    or member_offset <= private_offset
+                    or friend_offset <= private_offset
+                    or admission_body.count(constructor_fragment) != 1
+                    or admission_body.count(member_fragment) != 1
+                    or admission_body.count(friend_fragment) != 1
+                    or len(admission_result_uses) != 3
+                ):
+                    self.fail(
+                        relative,
+                        text.count("\n", 0, admission_span[0]) + 1,
+                        "merge admission must privately consume, retain, and friend "
+                        "the complete worker coordinator result exactly once each",
+                    )
+
+            all_entry_uses = find_code_identifier_uses(
+                text, MERGE_COORDINATOR_COMPOSITION_FUNCTION
+            )
+            if admission_span is None:
+                admission_entry_uses: list[CodeIdentifierUse] = []
+                entry_uses = all_entry_uses
+            else:
+                admission_entry_uses = [
+                    use
+                    for use in all_entry_uses
+                    if admission_span[0] <= use.offset < admission_span[1]
+                ]
+                entry_uses = [
+                    use
+                    for use in all_entry_uses
+                    if not (admission_span[0] <= use.offset < admission_span[1])
+                ]
+            if len(entry_uses) != 1 or len(admission_entry_uses) != 1:
+                self.fail(
+                    relative,
+                    1,
+                    "merge coordinator interface must contain one private admission "
+                    "friend and one namespace-scope declaration for "
+                    f"{MERGE_COORDINATOR_COMPOSITION_FUNCTION}",
+                )
+                return
+            entry_use = entry_uses[0]
+            parentheses = _call_parentheses(
+                text, entry_use, MERGE_COORDINATOR_COMPOSITION_FUNCTION
+            )
+            terminator = _function_declarator_terminator(
+                text, entry_use, MERGE_COORDINATOR_COMPOSITION_FUNCTION
+            )
+            if (
+                parentheses is None
+                or terminator is None
+                or terminator >= len(text)
+                or text[terminator] != ";"
+            ):
+                self.fail(
+                    relative,
+                    entry_use.line,
+                    "merge coordinator interface entry must be declaration-only",
+                )
+                return
+            opening, closing = parentheses
+            parameters = _compact_cpp_tokens(text[opening + 1 : closing])
+            required_parameter = (
+                f"{MERGE_COORDINATOR_WORKER_RESULT_IDENTIFIER}&&"
+                f"{MERGE_COORDINATOR_WORKER_RESULT_PARAMETER}"
+            )
+            worker_result_uses = find_code_identifier_uses(
+                text, MERGE_COORDINATOR_WORKER_RESULT_IDENTIFIER
+            )
+            admission_result_use_count = (
+                0
+                if admission_span is None
+                else len(
+                    find_code_identifier_uses(
+                        text[admission_span[0] : admission_span[1]],
+                        MERGE_COORDINATOR_WORKER_RESULT_IDENTIFIER,
+                    )
+                )
+            )
+            parameter_result_uses = find_code_identifier_uses(
+                text[opening + 1 : closing],
+                MERGE_COORDINATOR_WORKER_RESULT_IDENTIFIER,
+            )
+            if not (
+                parameters == required_parameter
+                or parameters.startswith(required_parameter + ",")
+            ):
+                self.fail(
+                    relative,
+                    entry_use.line,
+                    f"{MERGE_COORDINATOR_COMPOSITION_FUNCTION} must consume the "
+                    "complete DistributedSieveWorkerCoordinatorResultV1&& as its "
+                    "first parameter",
+                )
+            if (
+                len(parameter_result_uses) != 1
+                or len(worker_result_uses) != admission_result_use_count + 1
+            ):
+                self.fail(
+                    relative,
+                    entry_use.line,
+                    "only the private admission constructor/member/friend and the "
+                    "merge entry declaration may name the complete worker result",
+                )
+            return
+
+        admission_constructor_definition_count = 0
+        body, body_line_offset, body_errors = find_function_definition_body(
+            text, MERGE_COORDINATOR_COMPOSITION_FUNCTION
+        )
+        for line, error in body_errors:
+            self.fail(relative, line, error)
+        if body is None:
+            return
+
+        entry_uses = find_code_identifier_uses(
+            text, MERGE_COORDINATOR_COMPOSITION_FUNCTION
+        )
+        if len(entry_uses) != 1:
+            self.fail(
+                relative,
+                1,
+                "merge coordinator implementation must contain only the one "
+                f"{MERGE_COORDINATOR_COMPOSITION_FUNCTION} definition",
+            )
+        else:
+            parentheses = _call_parentheses(
+                text, entry_uses[0], MERGE_COORDINATOR_COMPOSITION_FUNCTION
+            )
+            if parentheses is None:
+                self.fail(
+                    relative,
+                    entry_uses[0].line,
+                    "merge coordinator entry definition has no parameter list",
+                )
+            else:
+                opening, closing = parentheses
+                parameters = _compact_cpp_tokens(text[opening + 1 : closing])
+                required_parameter = (
+                    f"{MERGE_COORDINATOR_WORKER_RESULT_IDENTIFIER}&&"
+                    f"{MERGE_COORDINATOR_WORKER_RESULT_PARAMETER}"
+                )
+                worker_result_uses = find_code_identifier_uses(
+                    text, MERGE_COORDINATOR_WORKER_RESULT_IDENTIFIER
+                )
+                parameter_result_uses = find_code_identifier_uses(
+                    text[opening + 1 : closing],
+                    MERGE_COORDINATOR_WORKER_RESULT_IDENTIFIER,
+                )
+                compact_text = _compact_cpp_tokens(text)
+                admission_constructor_fragment = (
+                    f"{MERGE_COORDINATOR_ADMISSION_IDENTIFIER}::"
+                    f"{MERGE_COORDINATOR_ADMISSION_IDENTIFIER}("
+                    f"{MERGE_COORDINATOR_WORKER_RESULT_IDENTIFIER}&&"
+                    f"{MERGE_COORDINATOR_WORKER_RESULT_PARAMETER}"
+                )
+                admission_constructor_definition_count = compact_text.count(
+                    admission_constructor_fragment
+                )
+                if not (
+                    parameters == required_parameter
+                    or parameters.startswith(required_parameter + ",")
+                ):
+                    self.fail(
+                        relative,
+                        entry_uses[0].line,
+                        f"{MERGE_COORDINATOR_COMPOSITION_FUNCTION} definition must "
+                        "consume the complete worker coordinator result by rvalue reference",
+                    )
+                if (
+                    admission_constructor_definition_count > 1
+                    or len(parameter_result_uses) != 1
+                    or len(worker_result_uses)
+                    != 1 + admission_constructor_definition_count
+                ):
+                    self.fail(
+                        relative,
+                        entry_uses[0].line,
+                        "only the merge entry and the optional private admission "
+                        "constructor definition may name the complete worker result",
+                    )
+                admission_member_initializer = (
+                    f"{MERGE_COORDINATOR_WORKER_RESULT_PARAMETER}_("
+                    f"std::move({MERGE_COORDINATOR_WORKER_RESULT_PARAMETER}))"
+                )
+                if admission_constructor_definition_count != compact_text.count(
+                    admission_member_initializer
+                ):
+                    self.fail(
+                        relative,
+                        entry_uses[0].line,
+                        "an out-of-line merge admission constructor must move the "
+                        "complete worker result directly into worker_result_",
+                    )
+
+        call_offsets: dict[str, int] = {}
+        for identifier in MERGE_GENERATION_AUTHORITY_USE_SITE_IDENTIFIERS:
+            all_uses = find_code_identifier_uses(text, identifier)
+            all_calls = find_call_identifier_uses(text, identifier)
+            body_uses = find_code_identifier_uses(body, identifier)
+            body_calls = find_call_identifier_uses(body, identifier)
+            for use in find_non_call_identifier_uses(text, identifier):
+                self.fail(
+                    relative,
+                    use.line,
+                    f"{identifier} must be used only as a direct call; aliases "
+                    "and function-pointer references are forbidden",
+                )
+            if (
+                len(all_uses) != 1
+                or len(all_calls) != 1
+                or len(body_uses) != 1
+                or len(body_calls) != 1
+            ):
+                self.fail(
+                    relative,
+                    body_line_offset + 1,
+                    f"{MERGE_COORDINATOR_COMPOSITION_FUNCTION} must contain the "
+                    f"only direct {identifier} call, found {len(all_uses)} "
+                    f"file identifiers and {len(body_calls)} body calls",
+                )
+            else:
+                call_offsets[identifier] = body_calls[0].offset
+
+        if len(call_offsets) == len(MERGE_GENERATION_AUTHORITY_USE_SITE_IDENTIFIERS):
+            if (
+                call_offsets[MERGE_COORDINATOR_RESERVE_IDENTIFIER]
+                >= call_offsets[MERGE_COORDINATOR_PUBLISH_IDENTIFIER]
+            ):
+                self.fail(
+                    relative,
+                    body_line_offset + 1,
+                    "merge coordinator must reserve the exact merged generation "
+                    "before publishing MergeStarted",
+                )
+
+        compact_body = _compact_cpp_tokens(body)
+        reserve_fragment = (
+            f"{MERGE_COORDINATOR_RESERVE_IDENTIFIER}"
+            f"(*{MERGE_COORDINATOR_WORKER_RESULT_PARAMETER}.store,"
+        )
+        publish_fragment = (
+            f"{MERGE_COORDINATOR_PUBLISH_IDENTIFIER}("
+            "std::move(*reservation.receipt),"
+        )
+        complete_move = (
+            f"std::move({MERGE_COORDINATOR_WORKER_RESULT_PARAMETER})"
+        )
+        split_move = (
+            f"std::move({MERGE_COORDINATOR_WORKER_RESULT_PARAMETER}."
+        )
+        if compact_body.count(reserve_fragment) != 1:
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                "merge coordinator must reserve through the retained worker_result.store "
+                "without extracting the WaveStore",
+            )
+        if compact_body.count(publish_fragment) != 1:
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                "merge coordinator must consume the exact reservation when publishing "
+                "MergeStarted",
+            )
+        if compact_body.count(complete_move) != 1:
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                "merge coordinator must transfer the complete worker_result exactly "
+                "once into the admission lifetime root",
+            )
+        compact_text = _compact_cpp_tokens(text)
+        if (
+            compact_text.count(complete_move) - compact_body.count(complete_move)
+            != admission_constructor_definition_count
+        ):
+            self.fail(
+                relative,
+                1,
+                "complete worker_result consumption outside the merge entry is "
+                "allowed only in the private admission constructor",
+            )
+        if split_move in compact_body:
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                "merge coordinator must not split-move store, claims, chunks, or "
+                "diagnostics out of worker_result",
+            )
+
+        reserve_offset = compact_body.find(reserve_fragment)
+        publish_offset = compact_body.find(publish_fragment)
+        complete_move_offset = compact_body.find(complete_move)
+        if (
+            reserve_offset >= 0
+            and publish_offset >= 0
+            and complete_move_offset >= 0
+            and not reserve_offset < publish_offset < complete_move_offset
+        ):
+            self.fail(
+                relative,
+                body_line_offset + 1,
+                "merge coordinator must order reservation, MergeStarted publication, "
+                "then whole-result admission transfer",
+            )
+
     def validate_worker_coordinator_use_site(
         self, relative: str, text: str
     ) -> None:
@@ -6358,6 +6875,7 @@ class Checks:
             self.validate_worker_process_transport_boundary(relative, text)
             self.validate_worker_executor_composition_body(relative, text)
             self.validate_worker_launcher_composition_body(relative, text)
+            self.validate_merge_coordinator_boundary(relative, text)
             self.validate_worker_coordinator_boundary(relative, text)
             self.validate_worker_attempt_terminal_transition_boundary(relative, text)
             self.validate_work_package_residue_inspection_body(relative, text)
@@ -6408,6 +6926,8 @@ class Checks:
             self.validate_private_handoff_publication_resume_boundary(
                 relative, text
             )
+            self.validate_merge_generation_authority_use_site(relative, text)
+            self.validate_merge_coordinator_use_site(relative, text)
             self.validate_worker_coordinator_use_site(relative, text)
             self.validate_worker_launcher_use_site(relative, text)
 
@@ -10174,12 +10694,15 @@ public:
     auto* context = static_cast<WorkerHandoffTypedValidationContext*>(opaque);
     if (context == nullptr || context->root_fd < 0 || context->attempt == nullptr ||
         context->manifest == nullptr || context->attempt_record == nullptr ||
+        !context->attempt->worker_attempt_names.has_value() ||
+        !context->attempt->worker_coordinate.has_value() ||
         !context->attempt_record->canonical_snapshot.has_value() ||
         context->attempt_record->pending_snapshot.has_value()) {
         return false;
     }
     if (const auto exact = revalidate_exact_canonical_worker_attempt(
-            context->root_fd, context->attempt->names, *context->attempt_record,
+            context->root_fd, *context->attempt->worker_attempt_names,
+            *context->attempt_record,
             context->creator_process_id);
         exact.status != DistributedSieveWaveStoreStatus::ready) {
         context->diagnostic = exact;
@@ -10242,8 +10765,9 @@ public:
     const auto& started = context->attempt_record->record;
     if (handoff.attempt_started_digest != started.self_digest ||
         handoff.lease != started.lease ||
-        handoff.chunk_id != context->attempt->coordinate.chunk_id ||
-        handoff.attempt_ordinal != context->attempt->coordinate.attempt_ordinal) {
+        handoff.chunk_id != context->attempt->worker_coordinate->chunk_id ||
+        handoff.attempt_ordinal !=
+            context->attempt->worker_coordinate->attempt_ordinal) {
         context->diagnostic =
             diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
                        protocol_error());
@@ -10705,6 +11229,388 @@ auto reconcile_helper() noexcept {
         f"{reconcile_outside_open_private_handoff_resume_checks.errors}",
     )
 
+    merge_coordinator_use_site_snippet = r"""
+#include "distributed_sieve_merge_coordinator.hpp"
+auto admission = begin_or_resume_distributed_sieve_merge_generation_v1(
+    std::move(worker_result));
+"""
+    untrusted_merge_coordinator_checks = Checks(Path("."))
+    untrusted_merge_coordinator_checks.validate_merge_coordinator_use_site(
+        "src/sieve/untrusted_merge_coordinator.cpp",
+        merge_coordinator_use_site_snippet,
+    )
+    expect(
+        any(
+            "source-private merge-coordinator header include is not allowlisted"
+            in error
+            for error in untrusted_merge_coordinator_checks.errors
+        )
+        and any(
+            "source-private merge-coordinator use site is not allowlisted"
+            in error
+            for error in untrusted_merge_coordinator_checks.errors
+        ),
+        "merge-coordinator repo-wide source-private use-site gate is not enforced: "
+        f"{untrusted_merge_coordinator_checks.errors}",
+    )
+
+    public_merge_coordinator_checks = Checks(Path("."))
+    public_merge_coordinator_checks.validate_merge_coordinator_use_site(
+        "include/gnfs/sieve/merge_coordinator_leak.hpp",
+        merge_coordinator_use_site_snippet,
+    )
+    expect(
+        any(
+            "merge-coordinator header leaked into a public sieve header" in error
+            for error in public_merge_coordinator_checks.errors
+        )
+        and any(
+            "merge-coordinator API leaked into a public sieve header" in error
+            for error in public_merge_coordinator_checks.errors
+        ),
+        "source-private merge-coordinator public-header leak was not rejected: "
+        f"{public_merge_coordinator_checks.errors}",
+    )
+
+    for relative in sorted(MERGE_COORDINATOR_USE_SITE_ALLOWLIST):
+        allowed_merge_coordinator_checks = Checks(Path("."))
+        allowed_merge_coordinator_checks.validate_merge_coordinator_use_site(
+            relative, merge_coordinator_use_site_snippet
+        )
+        expect(
+            not allowed_merge_coordinator_checks.errors,
+            f"allowlisted merge-coordinator use was rejected in {relative}: "
+            f"{allowed_merge_coordinator_checks.errors}",
+        )
+
+    merge_authority_use_site_snippet = r"""
+auto reservation = reserve_distributed_sieve_merge_generation_v1(
+    *worker_result.store, ordinal, terminal_inputs);
+auto started = publish_merge_started_v1(
+    std::move(reservation), terminal_inputs, merge_policy);
+"""
+    untrusted_merge_authority_checks = Checks(Path("."))
+    untrusted_merge_authority_checks.validate_merge_generation_authority_use_site(
+        "src/sieve/untrusted_merge_authority.cpp",
+        merge_authority_use_site_snippet,
+    )
+    expect(
+        len(untrusted_merge_authority_checks.errors) == 2
+        and all(
+            "merge-generation reserve/publish authority use site is not allowlisted"
+            in error
+            for error in untrusted_merge_authority_checks.errors
+        ),
+        "merge reserve/publish authority escaped its exact use-site allowlist: "
+        f"{untrusted_merge_authority_checks.errors}",
+    )
+    for relative in sorted(MERGE_GENERATION_AUTHORITY_USE_SITE_ALLOWLIST):
+        allowed_merge_authority_checks = Checks(Path("."))
+        allowed_merge_authority_checks.validate_merge_generation_authority_use_site(
+            relative, merge_authority_use_site_snippet
+        )
+        expect(
+            not allowed_merge_authority_checks.errors,
+            f"allowlisted merge-generation authority use was rejected in {relative}: "
+            f"{allowed_merge_authority_checks.errors}",
+        )
+
+    valid_merge_coordinator_interface = r"""
+class DistributedSieveMergeGenerationAdmissionV1 final {
+public:
+    DistributedSieveMergeGenerationAdmissionV1(
+        const DistributedSieveMergeGenerationAdmissionV1&) = delete;
+    DistributedSieveMergeGenerationAdmissionV1&
+    operator=(const DistributedSieveMergeGenerationAdmissionV1&) = delete;
+    DistributedSieveMergeGenerationAdmissionV1(
+        DistributedSieveMergeGenerationAdmissionV1&&) noexcept = default;
+    DistributedSieveMergeGenerationAdmissionV1&
+    operator=(DistributedSieveMergeGenerationAdmissionV1&&) = delete;
+
+private:
+    explicit DistributedSieveMergeGenerationAdmissionV1(
+        DistributedSieveWorkerCoordinatorResultV1&& worker_result) noexcept;
+    DistributedSieveWorkerCoordinatorResultV1 worker_result_;
+
+    friend DistributedSieveMergeGenerationAdmissionV1
+    begin_or_resume_distributed_sieve_merge_generation_v1(
+        DistributedSieveWorkerCoordinatorResultV1&& worker_result) noexcept;
+};
+
+[[nodiscard]] DistributedSieveMergeGenerationAdmissionV1
+begin_or_resume_distributed_sieve_merge_generation_v1(
+    DistributedSieveWorkerCoordinatorResultV1&& worker_result) noexcept;
+"""
+    valid_merge_interface_checks = Checks(Path("."))
+    valid_merge_interface_checks.validate_merge_coordinator_boundary(
+        MERGE_COORDINATOR_INTERFACE_FILE, valid_merge_coordinator_interface
+    )
+    expect(
+        not valid_merge_interface_checks.errors,
+        "valid source-private move-only merge interface was rejected: "
+        f"{valid_merge_interface_checks.errors}",
+    )
+
+    copyable_merge_interface = valid_merge_coordinator_interface.replace(
+        "const DistributedSieveMergeGenerationAdmissionV1&) = delete;",
+        "const DistributedSieveMergeGenerationAdmissionV1&) = default;",
+        1,
+    )
+    copyable_merge_interface_checks = Checks(Path("."))
+    copyable_merge_interface_checks.validate_merge_coordinator_boundary(
+        MERGE_COORDINATOR_INTERFACE_FILE, copyable_merge_interface
+    )
+    expect(
+        any(
+            "merge admission must be a one-owner move-only lifetime root" in error
+            for error in copyable_merge_interface_checks.errors
+        ),
+        "copyable merge admission was not rejected: "
+        f"{copyable_merge_interface_checks.errors}",
+    )
+
+    nonretaining_merge_interface = valid_merge_coordinator_interface.replace(
+        "    DistributedSieveWorkerCoordinatorResultV1 worker_result_;\n",
+        "",
+    )
+    nonretaining_merge_interface_checks = Checks(Path("."))
+    nonretaining_merge_interface_checks.validate_merge_coordinator_boundary(
+        MERGE_COORDINATOR_INTERFACE_FILE, nonretaining_merge_interface
+    )
+    expect(
+        any(
+            "must privately consume, retain, and friend the complete worker "
+            "coordinator result"
+            in error
+            for error in nonretaining_merge_interface_checks.errors
+        ),
+        "merge admission without whole-result storage was not rejected: "
+        f"{nonretaining_merge_interface_checks.errors}",
+    )
+
+    lvalue_merge_interface = valid_merge_coordinator_interface.replace(
+        "DistributedSieveWorkerCoordinatorResultV1&& worker_result",
+        "DistributedSieveWorkerCoordinatorResultV1& worker_result",
+    )
+    lvalue_merge_interface_checks = Checks(Path("."))
+    lvalue_merge_interface_checks.validate_merge_coordinator_boundary(
+        MERGE_COORDINATOR_INTERFACE_FILE, lvalue_merge_interface
+    )
+    expect(
+        any(
+            "must consume the complete DistributedSieveWorkerCoordinatorResultV1&&"
+            in error
+            for error in lvalue_merge_interface_checks.errors
+        ),
+        "merge interface accepted a partial/lvalue worker result: "
+        f"{lvalue_merge_interface_checks.errors}",
+    )
+
+    duplicate_worker_result_consumer_interface = (
+        valid_merge_coordinator_interface
+        + "\nvoid consume_elsewhere("
+        "DistributedSieveWorkerCoordinatorResultV1&& worker_result);\n"
+    )
+    duplicate_worker_result_consumer_checks = Checks(Path("."))
+    duplicate_worker_result_consumer_checks.validate_merge_coordinator_boundary(
+        MERGE_COORDINATOR_INTERFACE_FILE,
+        duplicate_worker_result_consumer_interface,
+    )
+    expect(
+        any(
+            "only the private admission constructor/member/friend and the "
+            "merge entry declaration may name the complete worker result"
+            in error
+            for error in duplicate_worker_result_consumer_checks.errors
+        ),
+        "a second complete worker-result consumer escaped the sole entry boundary: "
+        f"{duplicate_worker_result_consumer_checks.errors}",
+    )
+
+    valid_merge_coordinator_composition = r"""
+DistributedSieveMergeGenerationAdmissionV1
+begin_or_resume_distributed_sieve_merge_generation_v1(
+    DistributedSieveWorkerCoordinatorResultV1&& worker_result) noexcept {
+    std::size_t duplicates_removed = 0;
+    (void)duplicates_removed;
+    auto reservation = reserve_distributed_sieve_merge_generation_v1(
+        *worker_result.store, ordinal, terminal_inputs, merge_policy);
+    auto started = publish_merge_started_v1(
+        std::move(*reservation.receipt), terminal_inputs, merge_policy);
+    return DistributedSieveMergeGenerationAdmissionV1(
+        std::move(worker_result), std::move(started));
+}
+"""
+    valid_merge_composition_checks = Checks(Path("."))
+    valid_merge_composition_checks.validate_merge_coordinator_boundary(
+        MERGE_COORDINATOR_IMPLEMENTATION_FILE,
+        valid_merge_coordinator_composition,
+    )
+    expect(
+        not valid_merge_composition_checks.errors,
+        "valid reserve-before-publish whole-result merge composition was rejected: "
+        f"{valid_merge_composition_checks.errors}",
+    )
+
+    valid_out_of_line_merge_admission = (
+        r"""
+DistributedSieveMergeGenerationAdmissionV1::
+DistributedSieveMergeGenerationAdmissionV1(
+    DistributedSieveWorkerCoordinatorResultV1&& worker_result) noexcept
+    : worker_result_(std::move(worker_result)) {}
+"""
+        + valid_merge_coordinator_composition
+    )
+    valid_out_of_line_merge_admission_checks = Checks(Path("."))
+    valid_out_of_line_merge_admission_checks.validate_merge_coordinator_boundary(
+        MERGE_COORDINATOR_IMPLEMENTATION_FILE,
+        valid_out_of_line_merge_admission,
+    )
+    expect(
+        not valid_out_of_line_merge_admission_checks.errors,
+        "private admission constructor/member whole-result retention was rejected: "
+        f"{valid_out_of_line_merge_admission_checks.errors}",
+    )
+
+    extra_merge_result_consumer = (
+        valid_merge_coordinator_composition
+        + "\nvoid consume_elsewhere("
+        "DistributedSieveWorkerCoordinatorResultV1&& other_result) {}\n"
+    )
+    extra_merge_result_consumer_checks = Checks(Path("."))
+    extra_merge_result_consumer_checks.validate_merge_coordinator_boundary(
+        MERGE_COORDINATOR_IMPLEMENTATION_FILE, extra_merge_result_consumer
+    )
+    expect(
+        any(
+            "only the merge entry and the optional private admission constructor "
+            "definition may name the complete worker result"
+            in error
+            for error in extra_merge_result_consumer_checks.errors
+        ),
+        "a second implementation-side worker-result consumer escaped the gate: "
+        f"{extra_merge_result_consumer_checks.errors}",
+    )
+
+    reordered_merge_composition = valid_merge_coordinator_composition.replace(
+        "    auto reservation = reserve_distributed_sieve_merge_generation_v1(\n"
+        "        *worker_result.store, ordinal, terminal_inputs, merge_policy);\n"
+        "    auto started = publish_merge_started_v1(\n"
+        "        std::move(*reservation.receipt), terminal_inputs, merge_policy);\n",
+        "    auto started = publish_merge_started_v1(\n"
+        "        std::move(*reservation.receipt), terminal_inputs, merge_policy);\n"
+        "    auto reservation = reserve_distributed_sieve_merge_generation_v1(\n"
+        "        *worker_result.store, ordinal, terminal_inputs, merge_policy);\n",
+    )
+    reordered_merge_composition_checks = Checks(Path("."))
+    reordered_merge_composition_checks.validate_merge_coordinator_boundary(
+        MERGE_COORDINATOR_IMPLEMENTATION_FILE, reordered_merge_composition
+    )
+    expect(
+        any(
+            "must reserve the exact merged generation before publishing MergeStarted"
+            in error
+            for error in reordered_merge_composition_checks.errors
+        )
+        and any(
+            "must order reservation, MergeStarted publication, then whole-result"
+            in error
+            for error in reordered_merge_composition_checks.errors
+        ),
+        "merge coordinator accepted publish-before-reserve ordering: "
+        f"{reordered_merge_composition_checks.errors}",
+    )
+
+    split_worker_result_composition = valid_merge_coordinator_composition.replace(
+        "    return DistributedSieveMergeGenerationAdmissionV1(\n",
+        "    auto detached_store = std::move(worker_result.store);\n"
+        "    return DistributedSieveMergeGenerationAdmissionV1(\n",
+    )
+    split_worker_result_checks = Checks(Path("."))
+    split_worker_result_checks.validate_merge_coordinator_boundary(
+        MERGE_COORDINATOR_IMPLEMENTATION_FILE, split_worker_result_composition
+    )
+    expect(
+        any(
+            "must not split-move store, claims, chunks, or diagnostics" in error
+            for error in split_worker_result_checks.errors
+        ),
+        "merge coordinator accepted extraction from the complete worker result: "
+        f"{split_worker_result_checks.errors}",
+    )
+
+    forbidden_merge_coordinator_composition = (
+        valid_merge_coordinator_composition.replace(
+            "    return DistributedSieveMergeGenerationAdmissionV1(\n",
+            "    std::filesystem::path artifact_path;\n"
+            "    unlink(raw_leaf);\n"
+            "    remove_all(artifact_path);\n"
+            "    remove_worker_artifacts();\n"
+            "    cleanup_worker_handoff();\n"
+            "    arm_cleanup_authority();\n"
+            "    MergeStartedV1 caller_built{};\n"
+            "    return DistributedSieveMergeGenerationAdmissionV1(\n",
+        )
+    )
+    forbidden_merge_coordinator_checks = Checks(Path("."))
+    forbidden_merge_coordinator_checks.validate_merge_coordinator_boundary(
+        MERGE_COORDINATOR_IMPLEMENTATION_FILE,
+        forbidden_merge_coordinator_composition,
+    )
+    expect(
+        all(
+            any(identifier in error for error in forbidden_merge_coordinator_checks.errors)
+            for identifier in (
+                "filesystem",
+                "path",
+                "unlink",
+                "remove_all",
+                "remove_worker_artifacts",
+                "cleanup_worker_handoff",
+                "arm_cleanup_authority",
+                "MergeStartedV1",
+            )
+        ),
+        "merge coordinator filesystem, removal, cleanup/arm, or caller-record bans "
+        f"are not closed: {forbidden_merge_coordinator_checks.errors}",
+    )
+
+    aliased_merge_reserve = valid_merge_coordinator_composition.replace(
+        "    auto reservation = reserve_distributed_sieve_merge_generation_v1(\n",
+        "    auto reserve = reserve_distributed_sieve_merge_generation_v1;\n"
+        "    auto reservation = reserve(\n",
+    )
+    aliased_merge_reserve_checks = Checks(Path("."))
+    aliased_merge_reserve_checks.validate_merge_coordinator_boundary(
+        MERGE_COORDINATOR_IMPLEMENTATION_FILE, aliased_merge_reserve
+    )
+    expect(
+        any(
+            "must be used only as a direct call" in error
+            for error in aliased_merge_reserve_checks.errors
+        ),
+        "merge coordinator accepted an aliased reserve authority: "
+        f"{aliased_merge_reserve_checks.errors}",
+    )
+
+    expect(
+        MERGE_COORDINATOR_PRODUCTION_FILES
+        == {
+            "src/sieve/distributed_sieve_merge_coordinator.cpp",
+            "src/sieve/distributed_sieve_merge_coordinator.hpp",
+        }
+        and MERGE_COORDINATOR_USE_SITE_ALLOWLIST
+        == (
+            MERGE_COORDINATOR_PRODUCTION_FILES
+            | {"tests/test_distributed_sieve_resume.cpp"}
+        )
+        and MERGE_COORDINATOR_PRODUCTION_FILES <= DURABLE_ENVIRONMENT_FREE_FILES
+        and MERGE_COORDINATOR_INTERFACE_FILE
+        not in MERGE_GENERATION_AUTHORITY_USE_SITE_ALLOWLIST,
+        "merge-coordinator inventory is not the exact source-private "
+        "implementation, interface, test, and lower-authority boundary",
+    )
+
     coordinator_use_site_snippet = r"""
 DistributedSieveWorkerCoordinatorRequestV1 request;
 auto result = coordinate_missing_distributed_sieve_workers_v1(
@@ -10763,6 +11669,7 @@ auto result = coordinate_missing_distributed_sieve_workers_v1(
         and WORKER_COORDINATOR_USE_SITE_ALLOWLIST
         == (
             WORKER_COORDINATOR_PRODUCTION_FILES
+            | MERGE_COORDINATOR_PRODUCTION_FILES
             | {"tests/test_distributed_sieve_resume.cpp"}
         )
         and WORKER_COORDINATOR_AUTHORITY_FREE_CLEANUP_FACTS
