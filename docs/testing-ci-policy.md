@@ -474,6 +474,18 @@ predecessor bindings must fail closed, while valid crash prefixes stop for
 reconciliation without mutation. The suite is filesystem integration rather
 than an `instant` helper contract.
 
+`test_distributed_sieve_merge_writer` is the `instant` authority-free
+manifest-order merge contract. It streams small finalized OOC fixtures through
+the production first-`ABPair` writer, including an empty chunk and a valid
+zero-row handoff, without constructing a WaveStore or private-lease
+capability. The suite freezes first-payload preservation, a historical
+packed-key collision, exact global and per-chunk receipts, and deterministic
+output sequence and corpus digests. Same-count reader substitution,
+sequence/corpus receipt drift, unsupported semantic versions, corrupt input,
+and nonfresh output writers must fail before a result receipt can escape.
+This test does not claim merge-generation finalization, prepared-record
+publication, recovery, or cleanup authority.
+
 The same binary is the dedicated M2j-A receipt-gated launcher contract.
 macOS and supported Linux/glibc hosts run its positive launcher matrix. Every
 non-Windows host runs the close-all-unavailable case: supported hosts use the

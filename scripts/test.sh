@@ -380,6 +380,7 @@ ALL_TEST_BINARIES=(
     test_distributed_sieve_work_identity_codec
     test_distributed_sieve_work_package_codec
     test_distributed_sieve_merge_writer_codec
+    test_distributed_sieve_merge_writer
     test_distributed_sieve_worker_work_package_file
     test_distributed_sieve_execution_policy
     test_distributed_sieve_seed_v2
@@ -444,7 +445,7 @@ MODULE_TESTS=(
     util           "test_small_vector test_sha256 test_thread_pool test_ordered_parallel_map test_fixed_slot_executor test_logger test_primes test_timer test_process_memory test_bounded_child_process test_durable_immutable_file test_durable_immutable_record test_mmap_file test_safe_math test_bit_intrin test_memory_pool test_integer_scratch_pool test_mpz_powm_parallel test_mpz_invert_parallel test_mpz_mod_parallel test_mpz_gcd_parallel test_mpz_mul_parallel"
     polynomial     "test_murphy test_root_property_cache test_int_polynomial test_half_gcd test_poly_karatsuba test_horner_batch_simd test_divrem_subquadratic test_poly_ntt test_poly_square test_poly_add_mod_simd test_poly_horner_mod_simd test_regressions test_polynomial_context test_base_m test_polynomial_optimizer test_resultant test_rotation_incremental test_bai_brent_poly test_poly_checkpoint"
     factor_base    "test_factor_base test_fb_checkpoint test_fb_roots_parallel"
-    sieve          "test_special_q test_sieve_basic test_sieve_checkpoint test_distributed_sieve test_distributed_sieve_worker_entry test_distributed_sieve_worker_writer_authority test_distributed_sieve_worker_execution test_distributed_sieve_worker_process test_distributed_sieve_work_identity_codec test_distributed_sieve_work_package_codec test_distributed_sieve_merge_writer_codec test_distributed_sieve_worker_work_package_file test_distributed_sieve_execution_policy test_distributed_sieve_seed_v2 test_distributed_sieve_resume test_bucket_sieve test_sieve_ecore_qos test_local_sieve_thread_budget test_lll_lattice test_adaptive_lattice test_sieve_tiny_simd test_bucket_prefetch test_sieve_region_tile test_sieve_norm_tile test_lattice_basis_parallel test_sieve_apply_tile_parallel test_lattice_coords_simd test_threshold_scan_simd test_saturated_sub_simd"
+    sieve          "test_special_q test_sieve_basic test_sieve_checkpoint test_distributed_sieve test_distributed_sieve_worker_entry test_distributed_sieve_worker_writer_authority test_distributed_sieve_worker_execution test_distributed_sieve_worker_process test_distributed_sieve_work_identity_codec test_distributed_sieve_work_package_codec test_distributed_sieve_merge_writer_codec test_distributed_sieve_merge_writer test_distributed_sieve_worker_work_package_file test_distributed_sieve_execution_policy test_distributed_sieve_seed_v2 test_distributed_sieve_resume test_bucket_sieve test_sieve_ecore_qos test_local_sieve_thread_budget test_lll_lattice test_adaptive_lattice test_sieve_tiny_simd test_bucket_prefetch test_sieve_region_tile test_sieve_norm_tile test_lattice_basis_parallel test_sieve_apply_tile_parallel test_lattice_coords_simd test_threshold_scan_simd test_saturated_sub_simd"
     cofactor       "test_cofactor test_cofactor_attempt_context test_cofactor_seed_provider test_candidate_chunk_plan test_candidate_batch test_squfof test_squfof_budget_corpus test_squfof_success_challenge_corpus test_squfof_success_challenge_oracle test_squfof_budget_oracle test_squfof_strategy_oracle test_brent_pollard_rho test_brent_pollard_rho_parallel test_survival_predictor test_batch_ecm test_ecm_curve_plan test_3lp_cofactor test_trial_wheel test_batch_trial test_ecm_curve_pool test_sigma_seed_pool test_ecm_stage2_parallel test_ecm_stage1_parallel test_batch_inversion test_trial_div_simd test_cofactor_stage_timing test_ecm_prime_cache test_cofactor_result_cache test_integration test_ecm_brent_suyama"
     relation       "test_relation_corpus_sha256 test_relation_collector test_relation_corpus test_relation_sink test_ooc_store_integrity test_ooc_durable_handoff test_ooc_cleanup_transaction test_filter test_lp_key_contract test_relation_identity test_relation_reduction_engine test_structured_filter test_structured_filter_policy test_structured_tree_basis test_structured_tree_basis_property test_structured_budgeted_driver test_structured_conflict_batch test_structured_parallel_prepare test_structured_batch_commit test_structured_parallel_driver test_structured_parallel_failures test_structured_incidence_builder test_structured_materialization test_filter_radix_sort test_lp_bloom test_lp_key_hash test_merger_parallel test_clique_merger test_clique_merger_50d_synthetic test_3lp_merge test_ooc_relations test_ooc_policy test_v0_bfs_policy test_integration test_relation_pool_integration"
     linalg         "test_linalg test_sge_batch_pivots test_block_wiedemann test_bw_rank_est test_matrix_diagnostics test_sge_streaming test_mmap_csr test_schirokauer_deg4 test_schirokauer_strip test_schirokauer_parallel test_edge_cases test_integration test_matrix_view_concept test_save_sparse_as_mmap test_linalg_mmap_policy test_bw_krylov_parallel test_metal_spmv test_spmv_simd test_transpose_blocked test_popcount_simd test_and_popcnt_simd test_xor_words_simd test_and_words_simd test_xor_popcnt_simd test_row_popcount_simd test_krylov_compress test_krylov_compression test_bl_checkpoint test_bl_resume_integration test_linalg_progress"
@@ -513,6 +514,7 @@ SMOKE_TESTS=(
     test_distributed_sieve_work_identity_codec
     test_distributed_sieve_work_package_codec
     test_distributed_sieve_merge_writer_codec
+    test_distributed_sieve_merge_writer
     test_distributed_sieve_worker_work_package_file
     test_distributed_sieve_seed_v2
     test_relation_collector
@@ -784,6 +786,7 @@ TEST_TIMEOUT=(
     test_distributed_sieve_work_identity_codec 10
     test_distributed_sieve_work_package_codec 10
     test_distributed_sieve_merge_writer_codec 10
+    test_distributed_sieve_merge_writer 10
     test_distributed_sieve_worker_work_package_file 20
     test_distributed_sieve_execution_policy 20
     test_distributed_sieve_seed_v2 10
@@ -1023,6 +1026,7 @@ TEST_TIER=(
     test_distributed_sieve_work_identity_codec "instant"
     test_distributed_sieve_work_package_codec "instant"
     test_distributed_sieve_merge_writer_codec "instant"
+    test_distributed_sieve_merge_writer "instant"
     test_distributed_sieve_worker_work_package_file "instant"
     test_distributed_sieve_execution_policy "instant"
     test_distributed_sieve_seed_v2 "instant"
@@ -1199,7 +1203,7 @@ path_to_module() {
         tests/test_structured*.cpp) echo "relation" ;;
         tests/test_api.cpp|*api/*) echo "api" ;;
         tests/test_siqs*.cpp|*siqs/*) echo "siqs" ;;
-        tests/test_sieve_checkpoint.cpp|tests/test_distributed_sieve.cpp|tests/test_distributed_sieve_worker_entry.cpp|tests/test_distributed_sieve_worker_writer_authority.cpp|tests/test_distributed_sieve_worker_execution.cpp|tests/test_distributed_sieve_worker_process.cpp|tests/test_distributed_sieve_work_identity_codec.cpp|tests/test_distributed_sieve_work_package_codec.cpp|tests/test_distributed_sieve_merge_writer_codec.cpp|tests/test_distributed_sieve_worker_work_package_file.cpp|tests/test_distributed_sieve_execution_policy.cpp|tests/test_distributed_sieve_seed_v2.cpp|tests/test_distributed_sieve_resume.cpp) echo "sieve" ;;
+        tests/test_sieve_checkpoint.cpp|tests/test_distributed_sieve.cpp|tests/test_distributed_sieve_worker_entry.cpp|tests/test_distributed_sieve_worker_writer_authority.cpp|tests/test_distributed_sieve_worker_execution.cpp|tests/test_distributed_sieve_worker_process.cpp|tests/test_distributed_sieve_work_identity_codec.cpp|tests/test_distributed_sieve_work_package_codec.cpp|tests/test_distributed_sieve_merge_writer_codec.cpp|tests/test_distributed_sieve_merge_writer.cpp|tests/test_distributed_sieve_worker_work_package_file.cpp|tests/test_distributed_sieve_execution_policy.cpp|tests/test_distributed_sieve_seed_v2.cpp|tests/test_distributed_sieve_resume.cpp) echo "sieve" ;;
         *core/*)       echo "core" ;;
         *util/*)       echo "util" ;;
         *polynomial/*) echo "polynomial" ;;

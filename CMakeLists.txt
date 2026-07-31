@@ -327,6 +327,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/distributed_sieve_wave_store.cp
         src/sieve/distributed_sieve_wave_store.cpp
         src/sieve/distributed_sieve_worker_coordinator.cpp
         src/sieve/distributed_sieve_merge_coordinator.cpp
+        src/sieve/distributed_sieve_merge_writer_internal.cpp
         src/sieve/distributed_sieve_merge_writer_codec_internal.cpp
     )
 endif()
@@ -1119,6 +1120,22 @@ if(GNFS_BUILD_TESTS)
     )
     set_tests_properties(
         DistributedSieveMergeWriterCodec
+        PROPERTIES LABELS "instant" TIMEOUT 10
+    )
+
+    add_executable(test_distributed_sieve_merge_writer
+        tests/test_distributed_sieve_merge_writer.cpp
+    )
+    target_include_directories(test_distributed_sieve_merge_writer PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sieve
+    )
+    target_link_libraries(test_distributed_sieve_merge_writer PRIVATE gnfs_core)
+    add_test(
+        NAME DistributedSieveMergeWriter
+        COMMAND test_distributed_sieve_merge_writer
+    )
+    set_tests_properties(
+        DistributedSieveMergeWriter
         PROPERTIES LABELS "instant" TIMEOUT 10
     )
 

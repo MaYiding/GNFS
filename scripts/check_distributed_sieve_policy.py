@@ -160,6 +160,8 @@ DURABLE_ENVIRONMENT_FREE_FILES = {
     "src/sieve/distributed_sieve_work_package_codec_internal.hpp",
     MERGE_COORDINATOR_IMPLEMENTATION_FILE,
     MERGE_COORDINATOR_INTERFACE_FILE,
+    "src/sieve/distributed_sieve_merge_writer_internal.cpp",
+    "src/sieve/distributed_sieve_merge_writer_internal.hpp",
     "src/sieve/distributed_sieve_merge_writer_codec_internal.cpp",
     "src/sieve/distributed_sieve_merge_writer_codec_internal.hpp",
     "src/sieve/distributed_sieve_wave_store.cpp",
@@ -2262,6 +2264,22 @@ DURABLE_BOUND_WORK_FILES = {
     "src/sieve/distributed_sieve_bound_work.cpp",
     "src/sieve/distributed_sieve_bound_work_internal.hpp",
 }
+MERGE_STREAM_WRITER_FILES = {
+    "src/sieve/distributed_sieve_merge_writer_internal.cpp",
+    "src/sieve/distributed_sieve_merge_writer_internal.hpp",
+}
+MERGE_STREAM_WRITER_FORBIDDEN_IDENTIFIERS = (
+    "read_all",
+    "read_range",
+    "OOCPrivateLease",
+    "OOCCleanupTransaction",
+    "OOCPrivateHandoffPayloadBuilderV1",
+    "capture_finalized_corpus_evidence",
+    "finalize_and_publish_private_handoff",
+    "finalize_and_publish_private_handoff_built",
+    "abort_and_remove_owned_fresh_artifacts_noexcept",
+    "remove_owned_artifacts_noexcept",
+)
 DURABLE_BOUND_WORK_FORBIDDEN_IDENTIFIERS = (
     "DistributedSieveWaveStore",
     "DistributedSieveWorkerAttemptStartReceipt",
@@ -3554,6 +3572,16 @@ class Checks:
                         relative,
                         use.line,
                         f"bound-work mapper must not use runtime/side-effect API {identifier}",
+                    )
+
+        if relative in MERGE_STREAM_WRITER_FILES:
+            for identifier in MERGE_STREAM_WRITER_FORBIDDEN_IDENTIFIERS:
+                for use in find_code_identifier_uses(text, identifier):
+                    self.fail(
+                        relative,
+                        use.line,
+                        f"streaming merge writer must not use authority/full-corpus API "
+                        f"{identifier}",
                     )
 
         if relative not in DURABLE_PURE_RUNTIME_MAPPER_FILES:
@@ -8268,6 +8296,10 @@ int random_device_suffix = 0;
         == WORKER_EXECUTOR_BOUND_WORK_USE_SITE_FILES,
         "worker executor bound-work allowlist is not exactly the runtime/chunk boundary",
     )
+    expect(
+        MERGE_STREAM_WRITER_FILES <= DURABLE_ENVIRONMENT_FREE_FILES,
+        "streaming merge writer files must remain in the durable environment-free inventory",
+    )
 
     durable_checks = Checks(Path("."))
     durable_relative = sorted(DURABLE_ENVIRONMENT_FREE_FILES)[0]
@@ -8291,6 +8323,33 @@ int random_device_suffix = 0;
         durable_checks.errors[-1] == f"{durable_relative}:37: "
         "durable protocol/execution-policy implementation must not use random_device",
         "durable-path random_device ban is not enforced",
+    )
+
+    merge_stream_checks = Checks(Path("."))
+    merge_stream_checks.validate_durable_ambient_api_uses(
+        "src/sieve/distributed_sieve_merge_writer_internal.cpp",
+        r"""
+auto all = reader.read_all();
+auto range = reader.read_range(0, 1);
+OOCPrivateLease lease;
+OOCCleanupTransaction cleanup;
+OOCPrivateHandoffPayloadBuilderV1 builder;
+auto evidence = capture_finalized_corpus_evidence(writer);
+writer.finalize_and_publish_private_handoff(payload);
+writer.finalize_and_publish_private_handoff_built(callback);
+writer.abort_and_remove_owned_fresh_artifacts_noexcept();
+writer.remove_owned_artifacts_noexcept();
+""",
+    )
+    expect(
+        len(merge_stream_checks.errors)
+        == len(MERGE_STREAM_WRITER_FORBIDDEN_IDENTIFIERS)
+        and all(
+            any(identifier in error for error in merge_stream_checks.errors)
+            for identifier in MERGE_STREAM_WRITER_FORBIDDEN_IDENTIFIERS
+        ),
+        f"streaming merge authority/full-corpus bans are not closed: "
+        f"{merge_stream_checks.errors}",
     )
 
     mapper_relative = sorted(DURABLE_PURE_RUNTIME_MAPPER_FILES)[0]

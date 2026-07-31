@@ -2864,6 +2864,29 @@ handoff. The next M4b slice streams manifest-order worker inputs through the
 versioned first-`ABPair` policy, then publishes and crash-recovers the typed
 prepared record from the same held merge-generation authority.
 
+M4b-P1 closes the authority-free streaming algorithm without widening merge
+authority. One source-private function accepts a complete validated
+`MergeStartedV1` chain, manifest-ordered borrowed OOC readers, and a fresh
+caller-owned writer. It validates every semantic version used by the stream
+before the first read or write, then reads each corpus by ordinal and retains
+only the full-width `ABPair` set, one relation, and per-chunk counts. The first
+matching `(a,b)` keeps its complete relation payload; later matches increment
+the duplicate receipt. In the same pass, each input recomputes its sequence
+receipt and corpus SHA-256 and binds them to the authenticated terminal input,
+so an equal-sized reader substitution cannot be sealed as valid output.
+Failures never finalize, publish, retry, or clean an artifact and conservatively
+report provisional output residue for the owning layer to reconcile.
+
+The dedicated real-OOC test covers manifest and ordinal ordering, zero-row and
+empty inputs, exact global and per-chunk conservation, the historical packed
+key collision, deterministic output evidence, same-count reader substitution,
+receipt and digest drift, corrupt reads, nonfresh writers, and every semantic
+version consumed by this layer. The policy checker keeps the implementation
+environment-free and bans full-corpus reads plus private handoff publication
+and cleanup APIs. This slice still does not create the exact merged-generation
+writer, finalize it through retained handles, or publish/recover
+`MergePreparedV1`; those same-authority operations remain the next M4b step.
+
 Exit criterion: a restart after any worker-cleanup prefix reopens the same
 merged corpus without worker execution or repeated merge, including when all
 worker leases are absent. This is the first milestone allowed to expose the
