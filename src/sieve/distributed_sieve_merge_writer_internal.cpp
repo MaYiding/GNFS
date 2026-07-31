@@ -79,10 +79,11 @@ protocol_failure(DistributedSieveProtocolError error,
 
 } // namespace
 
-DistributedSieveMergeWriterResultV1 stream_distributed_sieve_merge_inputs_v1(
+[[nodiscard]] DistributedSieveMergeWriterResultV1 stream_distributed_sieve_merge_inputs_impl_v1(
     const WaveManifestV1& manifest, std::span<const MergeStartedV1> merge_started_chain,
     std::span<const relation::OOCRelationReader* const> input_readers,
-    relation::OOCRelationWriter& output_writer) noexcept {
+    relation::OOCRelationWriter& output_writer,
+    trusted_test::DistributedSieveMergeWriterTestHooksV1 hooks) noexcept {
     MergePhase phase = MergePhase::request_validation;
     std::size_t input_slot = DISTRIBUTED_SIEVE_MERGE_WRITER_NO_INPUT_SLOT;
     std::uint64_t relation_ordinal = DISTRIBUTED_SIEVE_MERGE_WRITER_NO_RELATION_ORDINAL;
@@ -278,6 +279,9 @@ DistributedSieveMergeWriterResultV1 stream_distributed_sieve_merge_inputs_v1(
                                          static_cast<std::uint32_t>(input_slot)),
                         input_slot, relation_ordinal);
                 }
+                if (hooks.after_output_write != nullptr) {
+                    hooks.after_output_write(input_slot, relation_ordinal, hooks.context);
+                }
             }
 
             phase = MergePhase::input_validation;
@@ -349,5 +353,26 @@ DistributedSieveMergeWriterResultV1 stream_distributed_sieve_merge_inputs_v1(
                        relation_ordinal);
     }
 }
+
+DistributedSieveMergeWriterResultV1 stream_distributed_sieve_merge_inputs_v1(
+    const WaveManifestV1& manifest, std::span<const MergeStartedV1> merge_started_chain,
+    std::span<const relation::OOCRelationReader* const> input_readers,
+    relation::OOCRelationWriter& output_writer) noexcept {
+    return stream_distributed_sieve_merge_inputs_impl_v1(manifest, merge_started_chain,
+                                                         input_readers, output_writer, {});
+}
+
+namespace trusted_test {
+
+DistributedSieveMergeWriterResultV1 stream_distributed_sieve_merge_inputs_v1_with_hooks(
+    const WaveManifestV1& manifest, std::span<const MergeStartedV1> merge_started_chain,
+    std::span<const relation::OOCRelationReader* const> input_readers,
+    relation::OOCRelationWriter& output_writer,
+    DistributedSieveMergeWriterTestHooksV1 hooks) noexcept {
+    return stream_distributed_sieve_merge_inputs_impl_v1(manifest, merge_started_chain,
+                                                         input_readers, output_writer, hooks);
+}
+
+} // namespace trusted_test
 
 } // namespace gnfs::sieve::distributed_sieve_merge_writer_detail

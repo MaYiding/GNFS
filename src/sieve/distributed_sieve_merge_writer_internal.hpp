@@ -141,4 +141,21 @@ struct DistributedSieveMergeWriterResultV1 final {
     std::span<const relation::OOCRelationReader* const> input_readers,
     relation::OOCRelationWriter& output_writer) noexcept;
 
+namespace trusted_test {
+
+struct DistributedSieveMergeWriterTestHooksV1 final {
+    void (*after_output_write)(std::size_t input_slot, std::uint64_t relation_ordinal,
+                               void* context) noexcept = nullptr;
+    void* context = nullptr;
+};
+
+[[nodiscard]] DistributedSieveMergeWriterResultV1
+stream_distributed_sieve_merge_inputs_v1_with_hooks(
+    const WaveManifestV1& manifest, std::span<const MergeStartedV1> merge_started_chain,
+    std::span<const relation::OOCRelationReader* const> input_readers,
+    relation::OOCRelationWriter& output_writer,
+    DistributedSieveMergeWriterTestHooksV1 hooks) noexcept;
+
+} // namespace trusted_test
+
 } // namespace gnfs::sieve::distributed_sieve_merge_writer_detail

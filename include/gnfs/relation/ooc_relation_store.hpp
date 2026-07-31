@@ -53,6 +53,14 @@ namespace gnfs::sieve::distributed_sieve_worker_entry_detail {
 class DistributedSieveWorkerWriterAuthorityV1;
 }
 
+namespace gnfs::sieve::distributed_sieve_merge_writer_authority_detail {
+class DistributedSieveMergeWriterAuthorityV1;
+}
+
+namespace gnfs::sieve::distributed_sieve_resume_detail {
+class DistributedSieveMergeStartedWriterMintV1;
+}
+
 namespace gnfs::relation {
 
 enum class OOCWriterState {
@@ -517,6 +525,54 @@ private:
 
     private:
         OOCRelationWriter& owner_;
+    };
+
+    /// Source-private amortization boundary for one exact writer.
+    ///
+    /// The begin and commit barriers run the ordinary exact named-identity
+    /// and authority callback. Rows inside the batch still check the creator
+    /// process before and after mutation, but avoid repeating the complete
+    /// WaveStore inventory validation for every relation. Dropping an
+    /// uncommitted guard poisons and closes the writer.
+    class ExactAppendBatchGuard final {
+    public:
+        ExactAppendBatchGuard(const ExactAppendBatchGuard&) = delete;
+        ExactAppendBatchGuard& operator=(const ExactAppendBatchGuard&) = delete;
+        ExactAppendBatchGuard(ExactAppendBatchGuard&&) = delete;
+        ExactAppendBatchGuard& operator=(ExactAppendBatchGuard&&) = delete;
+
+        ~ExactAppendBatchGuard() noexcept {
+            if (owner_ == nullptr) {
+                return;
+            }
+            owner_->exact_append_batch_active_ = false;
+            owner_->fail_and_close_noexcept();
+        }
+
+        void commit() {
+            if (owner_ == nullptr || !owner_->exact_append_batch_active_) {
+                throw std::logic_error("OOCRelationWriter: exact append batch is not active");
+            }
+            OOCRelationWriter* owner = owner_;
+            try {
+                owner->require_state(OOCWriterState::Open, "exact append batch commit");
+                owner->require_store_named_identity("exact append batch commit");
+                owner->exact_append_batch_active_ = false;
+                owner_ = nullptr;
+            } catch (...) {
+                owner->exact_append_batch_active_ = false;
+                owner->fail_and_close_noexcept();
+                owner_ = nullptr;
+                throw;
+            }
+        }
+
+    private:
+        explicit ExactAppendBatchGuard(OOCRelationWriter& owner) noexcept : owner_(&owner) {}
+
+        OOCRelationWriter* owner_ = nullptr;
+
+        friend class OOCRelationWriter;
     };
 
 public:
@@ -1119,7 +1175,9 @@ public:
         rel.validate_persistence_limits();
 
         try {
-            if (exact_private_directory_) {
+            if (exact_append_batch_active_) {
+                require_exact_append_batch_process("write authority preflight");
+            } else if (exact_private_directory_) {
                 require_store_named_identity("write authority preflight");
             }
             const uint64_t offset = data_stream_.position("write data offset");
@@ -1127,7 +1185,9 @@ public:
             serialize(rel);
 
             ++count_;
-            if (exact_private_directory_) {
+            if (exact_append_batch_active_) {
+                require_exact_append_batch_process("write authority commit");
+            } else if (exact_private_directory_) {
                 require_store_named_identity("write authority commit");
             }
             return count_ - 1;
@@ -1337,6 +1397,11 @@ public:
     /// Finalized stores are immutable and remain finalized; Open or Suspended
     /// stores become Failed and all writer handles are closed.
     void abort() noexcept {
+        if (exact_writer_process_changed_noexcept()) {
+            discard_inherited_post_fork_child_noexcept();
+            return;
+        }
+        exact_append_batch_active_ = false;
         if (state_ == OOCWriterState::Finalized) {
             return;
         }
@@ -2571,6 +2636,10 @@ private:
     }
 
     void abort_close_noexcept() noexcept {
+        if (exact_writer_process_changed_noexcept()) {
+            discard_inherited_post_fork_child_noexcept();
+            return;
+        }
         if (data_stream_.is_open())
             data_stream_.close_noexcept();
         if (idx_stream_.is_open())
@@ -2583,9 +2652,20 @@ private:
     }
 
     void discard_inherited_post_fork_child_noexcept() noexcept {
+        exact_append_batch_active_ = false;
         state_ = OOCWriterState::Failed;
         data_stream_.discard_and_close_post_fork_child_noexcept();
         idx_stream_.discard_and_close_post_fork_child_noexcept();
+    }
+
+    [[nodiscard]] bool exact_writer_process_changed_noexcept() const noexcept {
+        if (!exact_private_directory_) {
+            return false;
+        }
+        const int process_id = gnfs::util::process_id();
+        return exact_private_directory_->creator_process_id == 0 || process_id <= 0 ||
+               exact_private_directory_->creator_process_id !=
+                   static_cast<std::uint64_t>(process_id);
     }
 
     void require_store_named_identity(const char* operation) const {
@@ -2600,6 +2680,32 @@ private:
         }
         data_stream_.require_named_identity(base_path_ + ".reldata", operation);
         idx_stream_.require_named_identity(base_path_ + ".relidx", operation);
+    }
+
+    [[nodiscard]] ExactAppendBatchGuard begin_exact_append_batch() {
+        require_state(OOCWriterState::Open, "begin exact append batch");
+        if (!exact_private_directory_ || exact_append_batch_active_) {
+            throw std::logic_error(
+                "OOCRelationWriter: exact append batch requires one inactive exact writer");
+        }
+        require_store_named_identity("exact append batch begin");
+        exact_append_batch_active_ = true;
+        return ExactAppendBatchGuard(*this);
+    }
+
+    void require_exact_append_batch_process(const char* operation) const {
+        if (!exact_private_directory_ || !exact_append_batch_active_) {
+            throw std::logic_error(std::string("OOCRelationWriter::") + operation +
+                                   ": exact append batch is not active");
+        }
+        const auto& exact = *exact_private_directory_;
+        const int process_id = gnfs::util::process_id();
+        if (exact.creator_process_id == 0 || process_id <= 0 ||
+            exact.creator_process_id != static_cast<std::uint64_t>(process_id)) {
+            throw std::system_error(std::make_error_code(std::errc::operation_not_permitted),
+                                    std::string("OOCRelationWriter::") + operation +
+                                        ": exact append batch process changed");
+        }
     }
 
     void sync_store_files_and_directory() {
@@ -2665,6 +2771,7 @@ private:
     bool fresh_artifacts_removed_ = false;
     std::optional<OOCCleanupOwnershipReceipt> cleanup_receipt_;
     bool deferred_private_lease_action_in_progress_ = false;
+    bool exact_append_batch_active_ = false;
     OOCWriterState state_ = OOCWriterState::Open;
     std::optional<OOCSnapshotDescriptor> suspended_descriptor_;
     std::optional<OOCSnapshotDescriptor> finalized_descriptor_;
@@ -2678,6 +2785,10 @@ private:
         DistributedSieveWorkerWriterAuthorityV1;
     friend class ::gnfs::sieve::distributed_sieve_worker_entry_detail::
         distributed_sieve_worker_writer_detail::OOCInheritedP8WriterMintV1;
+    friend class ::gnfs::sieve::distributed_sieve_merge_writer_authority_detail::
+        DistributedSieveMergeWriterAuthorityV1;
+    friend class ::gnfs::sieve::distributed_sieve_resume_detail::
+        DistributedSieveMergeStartedWriterMintV1;
 };
 
 /// Read-only mmap-based access to out-of-core relations.

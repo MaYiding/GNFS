@@ -486,7 +486,25 @@ and nonfresh output writers must fail before a result receipt can escape.
 This test does not claim merge-generation finalization, prepared-record
 publication, recovery, or cleanup authority.
 
-The same binary is the dedicated M2j-A receipt-gated launcher contract.
+On macOS, `test_distributed_sieve_merge_writer_authority` is the `fast`
+real-filesystem transaction contract for a fresh merge generation. It consumes
+a live coordinator admission once, creates only the exact deferred generation
+writer, streams authenticated worker readers, finalizes through retained
+handles, and publishes the typed `MergePreparedV1` payload. The suite covers
+cross-chunk deduplication, the historical packed-key collision, zero-row
+inputs, moved authority rejection, and real pending and canonical-promoted
+publication prefixes. It also forks after the first relation remains in the
+exact writer's stdio buffer: the child must fail on its next creator-process
+check without flushing inherited bytes, while the parent still publishes the
+exact expected corpus. On other platforms, the binary performs compile-time
+API contract checks and skips the runtime transaction; production returns
+`platform_unsupported` before minting or namespace mutation. Cold open must
+protect interrupted typed prefixes with
+`reconciliation_required`; prepared-prefix adoption and rollback remain a
+separate recovery suite.
+
+`test_distributed_sieve_resume` is also the dedicated M2j-A receipt-gated
+launcher contract.
 macOS and supported Linux/glibc hosts run its positive launcher matrix. Every
 non-Windows host runs the close-all-unavailable case: supported hosts use the
 trusted force-unavailable hook, while musl, older glibc, and other unsupported

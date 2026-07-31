@@ -54,6 +54,10 @@ namespace gnfs::sieve::distributed_sieve_worker_entry_detail::
 class OOCInheritedP8WriterMintV1;
 }
 
+namespace gnfs::sieve::distributed_sieve_resume_detail {
+class DistributedSieveMergeStartedWriterMintV1;
+}
+
 namespace gnfs::relation {
 
 class OOCRelationWriter;
@@ -276,6 +280,8 @@ private:
     friend class OOCCleanupTransaction;
     friend class ::gnfs::sieve::distributed_sieve_worker_entry_detail::
         distributed_sieve_worker_writer_detail::OOCInheritedP8WriterMintV1;
+    friend class ::gnfs::sieve::distributed_sieve_resume_detail::
+        DistributedSieveMergeStartedWriterMintV1;
 };
 
 struct OOCPrivateLeaseReservation final {
@@ -2106,6 +2112,8 @@ private:
     friend class OOCPrivateHandoffBorrowedBaseLockV1;
     friend class ::gnfs::sieve::distributed_sieve_worker_entry_detail::
         distributed_sieve_worker_writer_detail::OOCInheritedP8WriterMintV1;
+    friend class ::gnfs::sieve::distributed_sieve_resume_detail::
+        DistributedSieveMergeStartedWriterMintV1;
 
     void release_noexcept() noexcept {
 #ifdef _WIN32

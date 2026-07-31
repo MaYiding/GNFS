@@ -12,6 +12,29 @@
 #include <utility>
 
 namespace gnfs::sieve::distributed_sieve_merge_coordinator_detail {
+class DistributedSieveMergeGenerationAdmissionV1;
+}
+
+namespace gnfs::sieve::distributed_sieve_merge_writer_authority_detail {
+struct DistributedSieveMergeWriterAdoptionResultV1;
+
+[[nodiscard]] DistributedSieveMergeWriterAdoptionResultV1
+consume_distributed_sieve_merge_generation_v1(
+    distributed_sieve_merge_coordinator_detail::DistributedSieveMergeGenerationAdmissionV1&&
+        admission) noexcept;
+
+namespace trusted_test {
+struct DistributedSieveMergeWriterAdoptionTestHooksV1;
+
+[[nodiscard]] DistributedSieveMergeWriterAdoptionResultV1
+consume_distributed_sieve_merge_generation_v1_with_hooks(
+    distributed_sieve_merge_coordinator_detail::DistributedSieveMergeGenerationAdmissionV1&&
+        admission,
+    DistributedSieveMergeWriterAdoptionTestHooksV1 hooks) noexcept;
+} // namespace trusted_test
+} // namespace gnfs::sieve::distributed_sieve_merge_writer_authority_detail
+
+namespace gnfs::sieve::distributed_sieve_merge_coordinator_detail {
 
 using namespace distributed_sieve_worker_coordinator_detail;
 
@@ -76,6 +99,18 @@ private:
     friend DistributedSieveMergeGenerationAdmissionV1
     begin_or_resume_distributed_sieve_merge_generation_v1(
         DistributedSieveWorkerCoordinatorResultV1&& worker_result) noexcept;
+    friend distributed_sieve_merge_writer_authority_detail::
+        DistributedSieveMergeWriterAdoptionResultV1
+        distributed_sieve_merge_writer_authority_detail::
+            consume_distributed_sieve_merge_generation_v1(
+                DistributedSieveMergeGenerationAdmissionV1&& admission) noexcept;
+    friend distributed_sieve_merge_writer_authority_detail::
+        DistributedSieveMergeWriterAdoptionResultV1
+        distributed_sieve_merge_writer_authority_detail::trusted_test::
+            consume_distributed_sieve_merge_generation_v1_with_hooks(
+                DistributedSieveMergeGenerationAdmissionV1&& admission,
+                distributed_sieve_merge_writer_authority_detail::trusted_test::
+                    DistributedSieveMergeWriterAdoptionTestHooksV1 hooks) noexcept;
 };
 
 [[nodiscard]] DistributedSieveMergeGenerationAdmissionV1

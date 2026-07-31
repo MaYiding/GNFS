@@ -2887,6 +2887,42 @@ and cleanup APIs. This slice still does not create the exact merged-generation
 writer, finalize it through retained handles, or publish/recover
 `MergePreparedV1`; those same-authority operations remain the next M4b step.
 
+On macOS, M4b-P2a closes the fresh, same-authority merge transaction. A
+complete coordinator admission is consumed once into a process-bound authority
+that privately retains every adopted worker reader, the frozen
+`MergeStartedV1` predecessor chain, and same-open-file-description worker and
+target BaseLocks.
+The exact generation writer is created only after a phase-specific
+double-observation revalidation that permits the fixed corpus pair but no
+handoff or unknown directory leaf. The authority immediately streams the
+authenticated inputs and exposes no raw writer, path, descriptor, cleanup
+receipt, or per-relation append operation.
+Streaming runs inside one source-private exact-append batch. The batch performs
+the full WaveStore and named-object revalidation at both boundaries while each
+row retains creator-process checks before and after mutation. This removes a
+full namespace inventory from the per-row hot path without weakening the
+commit boundary. A post-fork child purges inherited stdio buffers instead of
+flushing them into the parent corpus.
+
+Finalization derives corpus evidence from the retained update handles, builds
+the typed payload through the authority-free codec, closes the update handles,
+and publishes only `MergePreparedV1` at the manifest handoff version. Success
+returns a read-only, move-only prepared admission that retains the complete
+generation lifetime for `WaveMergeCommit`. Any visible corpus or uncertain
+publication result consumes the write authority and requires reconciliation.
+Real-filesystem tests cover a nonempty multi-chunk merge, zero-row handoffs,
+moved authority rejection, a fork during an unflushed exact append batch, and
+typed pending and canonical-promoted prefixes.
+
+Other platforms currently fail at the explicit platform gate before minting or
+namespace mutation; the positive filesystem transaction remains unimplemented
+there and must not be inferred from this slice.
+
+This slice deliberately does not claim restart completion: M4b-P2b must adopt
+canonical and identical-dual prepared generations, roll back pending or raw
+writer residues exactly, and prove that cold resume never repeats a confirmed
+merge.
+
 Exit criterion: a restart after any worker-cleanup prefix reopens the same
 merged corpus without worker execution or repeated merge, including when all
 worker leases are absent. This is the first milestone allowed to expose the

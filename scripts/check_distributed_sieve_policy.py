@@ -137,6 +137,71 @@ MERGE_COORDINATOR_PRODUCTION_FILES = {
     MERGE_COORDINATOR_IMPLEMENTATION_FILE,
     MERGE_COORDINATOR_INTERFACE_FILE,
 }
+MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE = (
+    "src/sieve/distributed_sieve_merge_writer_authority.cpp"
+)
+MERGE_WRITER_AUTHORITY_INTERFACE_FILE = (
+    "src/sieve/distributed_sieve_merge_writer_authority_internal.hpp"
+)
+MERGE_WRITER_AUTHORITY_TEST_FILE = (
+    "tests/test_distributed_sieve_merge_writer_authority.cpp"
+)
+MERGE_WRITER_AUTHORITY_PRODUCTION_FILES = {
+    MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+    MERGE_WRITER_AUTHORITY_INTERFACE_FILE,
+}
+MERGE_WRITER_IMPLEMENTATION_FILE = (
+    "src/sieve/distributed_sieve_merge_writer_internal.cpp"
+)
+MERGE_WRITER_INTERFACE_FILE = (
+    "src/sieve/distributed_sieve_merge_writer_internal.hpp"
+)
+MERGE_WRITER_EXACT_APPEND_BATCH_IDENTIFIER = "begin_exact_append_batch"
+MERGE_WRITER_EXACT_APPEND_BATCH_ALLOWLIST = {
+    "include/gnfs/relation/ooc_relation_store.hpp",
+    MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+}
+MERGE_WRITER_TEST_HOOK_IDENTIFIER_ALLOWLISTS = {
+    "DistributedSieveMergeWriterTestHooksV1": {
+        MERGE_WRITER_IMPLEMENTATION_FILE,
+        MERGE_WRITER_INTERFACE_FILE,
+        MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+        MERGE_WRITER_AUTHORITY_INTERFACE_FILE,
+    },
+    "stream_distributed_sieve_merge_inputs_v1_with_hooks": {
+        MERGE_WRITER_IMPLEMENTATION_FILE,
+        MERGE_WRITER_INTERFACE_FILE,
+        MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+    },
+    "after_output_write": {
+        MERGE_WRITER_IMPLEMENTATION_FILE,
+        MERGE_WRITER_INTERFACE_FILE,
+        MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+        MERGE_WRITER_AUTHORITY_TEST_FILE,
+    },
+    "DistributedSieveMergeWriterAdoptionTestHooksV1": {
+        MERGE_COORDINATOR_INTERFACE_FILE,
+        MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+        MERGE_WRITER_AUTHORITY_INTERFACE_FILE,
+        MERGE_WRITER_AUTHORITY_TEST_FILE,
+    },
+    "consume_distributed_sieve_merge_generation_v1_with_hooks": {
+        MERGE_COORDINATOR_INTERFACE_FILE,
+        MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+        MERGE_WRITER_AUTHORITY_INTERFACE_FILE,
+        MERGE_WRITER_AUTHORITY_TEST_FILE,
+    },
+    "DistributedSieveMergePreparedPublicationTestHooksV1": {
+        MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+        MERGE_WRITER_AUTHORITY_INTERFACE_FILE,
+        MERGE_WRITER_AUTHORITY_TEST_FILE,
+    },
+    "publish_distributed_sieve_merge_prepared_v1_with_hooks": {
+        MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+        MERGE_WRITER_AUTHORITY_INTERFACE_FILE,
+        MERGE_WRITER_AUTHORITY_TEST_FILE,
+    },
+}
 
 # These implementation units are the environment-free side of the planned
 # freeze boundary. Legacy parsing remains outside them.
@@ -164,6 +229,8 @@ DURABLE_ENVIRONMENT_FREE_FILES = {
     "src/sieve/distributed_sieve_merge_writer_internal.hpp",
     "src/sieve/distributed_sieve_merge_writer_codec_internal.cpp",
     "src/sieve/distributed_sieve_merge_writer_codec_internal.hpp",
+    MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+    MERGE_WRITER_AUTHORITY_INTERFACE_FILE,
     "src/sieve/distributed_sieve_wave_store.cpp",
     "src/sieve/distributed_sieve_wave_store_internal.hpp",
     "src/sieve/distributed_sieve_worker_coordinator.cpp",
@@ -196,7 +263,8 @@ WORKER_COORDINATOR_PRODUCTION_FILES = {
 WORKER_COORDINATOR_USE_SITE_ALLOWLIST = (
     WORKER_COORDINATOR_PRODUCTION_FILES
     | MERGE_COORDINATOR_PRODUCTION_FILES
-    | {WORKER_COORDINATOR_TEST_FILE}
+    | MERGE_WRITER_AUTHORITY_PRODUCTION_FILES
+    | {WORKER_COORDINATOR_TEST_FILE, MERGE_WRITER_AUTHORITY_TEST_FILE}
 )
 WORKER_ATTEMPT_WAVE_STORE_IMPLEMENTATION_FILE = (
     "src/sieve/distributed_sieve_wave_store.cpp"
@@ -384,7 +452,9 @@ WORKER_COORDINATOR_LEGACY_PUBLIC_HEADER = "gnfs/sieve/distributed_sieve.hpp"
 PUBLIC_SIEVE_HEADER_PREFIX = "include/gnfs/sieve/"
 
 MERGE_COORDINATOR_USE_SITE_ALLOWLIST = (
-    MERGE_COORDINATOR_PRODUCTION_FILES | {MERGE_COORDINATOR_TEST_FILE}
+    MERGE_COORDINATOR_PRODUCTION_FILES
+    | MERGE_WRITER_AUTHORITY_PRODUCTION_FILES
+    | {MERGE_COORDINATOR_TEST_FILE, MERGE_WRITER_AUTHORITY_TEST_FILE}
 )
 MERGE_COORDINATOR_USE_SITE_IDENTIFIERS = (
     "distributed_sieve_merge_coordinator_detail",
@@ -586,8 +656,21 @@ WORKER_WRITER_BRIDGE_ALLOWLIST = {
     WORKER_WRITER_INTERFACE_FILE,
 }
 WORKER_WRITER_BRIDGE_IDENTIFIER_EXCEPTIONS = {
+    "OOCExactFreshConstructionFailure": {
+        MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+    },
     "AdoptInheritedOpenFileDescription": {
         "src/relation/ooc_private_handoff_adoption.cpp",
+        MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+    },
+    "ExactPrivateDirectoryBinding": {
+        MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+    },
+    "ExactPrivateDirectoryConstructionToken": {
+        MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+    },
+    "discard_inherited_post_fork_child_noexcept": {
+        MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
     },
 }
 BORROWED_BASE_LOCK_BRIDGE_IMPLEMENTATION_FILE = (
@@ -741,23 +824,28 @@ WORKER_HANDOFF_BRIDGE_IDENTIFIER_ALLOWLISTS = {
     "OOCFinalizedCorpusEvidenceV1": {
         "include/gnfs/relation/ooc_relation_store.hpp",
         WORKER_WRITER_IMPLEMENTATION_FILE,
+        MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
     }
     | WORKER_HANDOFF_EVIDENCE_ONLY_FILES,
     "OOCPrivateHandoffPayloadV1": {
         "include/gnfs/relation/ooc_relation_store.hpp",
         WORKER_WRITER_IMPLEMENTATION_FILE,
+        MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
     },
     "OOCPrivateHandoffPayloadBuilderV1": {
         "include/gnfs/relation/ooc_relation_store.hpp",
         WORKER_WRITER_IMPLEMENTATION_FILE,
+        MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
     },
     "capture_finalized_corpus_evidence": {
         "include/gnfs/relation/ooc_relation_store.hpp",
         WORKER_WRITER_IMPLEMENTATION_FILE,
+        MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
     },
     "finalize_and_publish_private_handoff_built": {
         "include/gnfs/relation/ooc_relation_store.hpp",
         WORKER_WRITER_IMPLEMENTATION_FILE,
+        MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
     },
 }
 RAW_PRIVATE_HANDOFF_PUBLISHER_IDENTIFIER = "finalize_and_publish_private_handoff"
@@ -2431,7 +2519,7 @@ WORK_PACKAGE_FIXED_LEAF_USE_SITE_ALLOWLIST = {
 WORK_PACKAGE_FIXED_LEAF_PRODUCTION_USE_COUNTS = {
     WORK_PACKAGE_RESIDUE_RECONCILER_INTERFACE_FILE: (1, 1),
     WORK_PACKAGE_RESIDUE_RECONCILER_IMPLEMENTATION_FILE: (4, 0),
-    WORKER_LAUNCHER_IMPLEMENTATION_FILE: (3, 0),
+    WORKER_LAUNCHER_IMPLEMENTATION_FILE: (4, 0),
 }
 WORK_PACKAGE_RESIDUE_INTERNAL_RUNNER = "run_residue_reconciliation"
 WORK_PACKAGE_RESIDUE_INTERNAL_RUNNER_CALL_FUNCTIONS = (
@@ -4294,6 +4382,27 @@ class Checks:
                     relative,
                     use.line,
                     "raw private-handoff publisher use is not allowlisted",
+                )
+        if relative not in MERGE_WRITER_EXACT_APPEND_BATCH_ALLOWLIST:
+            for use in find_code_identifier_uses(
+                text, MERGE_WRITER_EXACT_APPEND_BATCH_IDENTIFIER
+            ):
+                self.fail(
+                    relative,
+                    use.line,
+                    "merge-writer exact append batch use is not allowlisted",
+                )
+        for identifier, allowlist in (
+            MERGE_WRITER_TEST_HOOK_IDENTIFIER_ALLOWLISTS.items()
+        ):
+            if relative in allowlist:
+                continue
+            for use in find_code_identifier_uses(text, identifier):
+                self.fail(
+                    relative,
+                    use.line,
+                    "merge-writer trusted-test hook use is not allowlisted: "
+                    f"{identifier}",
                 )
 
     def validate_borrowed_base_lock_bridge(
@@ -9785,8 +9894,21 @@ discard_inherited_post_fork_child_noexcept();
     expect(
         WORKER_WRITER_BRIDGE_IDENTIFIER_EXCEPTIONS
         == {
+            "OOCExactFreshConstructionFailure": {
+                MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+            },
             "AdoptInheritedOpenFileDescription": {
                 "src/relation/ooc_private_handoff_adoption.cpp",
+                MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+            },
+            "ExactPrivateDirectoryBinding": {
+                MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+            },
+            "ExactPrivateDirectoryConstructionToken": {
+                MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+            },
+            "discard_inherited_post_fork_child_noexcept": {
+                MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
             },
         },
         "worker-writer private bridge identifier exception is not exact",
@@ -9814,6 +9936,128 @@ discard_inherited_post_fork_child_noexcept();
         "private-handoff adoption inherited-lock exception admitted another "
         "writer bridge: "
         f"{inherited_lock_exception_overreach_checks.errors}",
+    )
+    for identifier, exception_files in sorted(
+        WORKER_WRITER_BRIDGE_IDENTIFIER_EXCEPTIONS.items()
+    ):
+        for relative in sorted(exception_files):
+            allowed_bridge_exception_checks = Checks(Path("."))
+            allowed_bridge_exception_checks.validate_worker_writer_use_site(
+                relative, f"{identifier} privileged_use;\n"
+            )
+            expect(
+                not allowed_bridge_exception_checks.errors,
+                f"allowlisted worker-writer bridge exception was rejected for "
+                f"{identifier} in {relative}: "
+                f"{allowed_bridge_exception_checks.errors}",
+            )
+
+    exact_append_batch_checks = Checks(Path("."))
+    exact_append_batch_checks.validate_worker_writer_use_site(
+        "src/sieve/untrusted_merge_writer_batch.cpp",
+        "writer.begin_exact_append_batch();\n",
+    )
+    expect(
+        len(exact_append_batch_checks.errors) == 1
+        and "merge-writer exact append batch use is not allowlisted"
+        in exact_append_batch_checks.errors[0],
+        "merge-writer exact append batch repo-wide use-site gate is not enforced",
+    )
+    for relative in sorted(MERGE_WRITER_EXACT_APPEND_BATCH_ALLOWLIST):
+        allowed_exact_append_batch_checks = Checks(Path("."))
+        allowed_exact_append_batch_checks.validate_worker_writer_use_site(
+            relative, "writer.begin_exact_append_batch();\n"
+        )
+        expect(
+            not allowed_exact_append_batch_checks.errors,
+            f"allowlisted merge-writer exact append batch use was rejected in "
+            f"{relative}: {allowed_exact_append_batch_checks.errors}",
+        )
+    expect(
+        MERGE_WRITER_EXACT_APPEND_BATCH_ALLOWLIST
+        == {
+            "include/gnfs/relation/ooc_relation_store.hpp",
+            MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+        },
+        "merge-writer exact append batch allowlist is not exact",
+    )
+
+    merge_writer_test_hook_snippet = "\n".join(
+        f"{identifier} hook_use;"
+        for identifier in MERGE_WRITER_TEST_HOOK_IDENTIFIER_ALLOWLISTS
+    )
+    untrusted_merge_writer_test_hook_checks = Checks(Path("."))
+    untrusted_merge_writer_test_hook_checks.validate_worker_writer_use_site(
+        "src/sieve/untrusted_merge_writer_test_hook.cpp",
+        merge_writer_test_hook_snippet,
+    )
+    expect(
+        len(untrusted_merge_writer_test_hook_checks.errors)
+        == len(MERGE_WRITER_TEST_HOOK_IDENTIFIER_ALLOWLISTS)
+        and all(
+            "merge-writer trusted-test hook use is not allowlisted" in error
+            for error in untrusted_merge_writer_test_hook_checks.errors
+        ),
+        "merge-writer trusted-test hook repo-wide use-site gate is not enforced",
+    )
+    for identifier, allowlist in sorted(
+        MERGE_WRITER_TEST_HOOK_IDENTIFIER_ALLOWLISTS.items()
+    ):
+        for relative in sorted(allowlist):
+            allowed_merge_writer_test_hook_checks = Checks(Path("."))
+            allowed_merge_writer_test_hook_checks.validate_worker_writer_use_site(
+                relative, f"{identifier} hook_use;\n"
+            )
+            expect(
+                not allowed_merge_writer_test_hook_checks.errors,
+                f"allowlisted merge-writer trusted-test hook was rejected for "
+                f"{identifier} in {relative}: "
+                f"{allowed_merge_writer_test_hook_checks.errors}",
+            )
+    expect(
+        MERGE_WRITER_TEST_HOOK_IDENTIFIER_ALLOWLISTS
+        == {
+            "DistributedSieveMergeWriterTestHooksV1": {
+                MERGE_WRITER_IMPLEMENTATION_FILE,
+                MERGE_WRITER_INTERFACE_FILE,
+                MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+                MERGE_WRITER_AUTHORITY_INTERFACE_FILE,
+            },
+            "stream_distributed_sieve_merge_inputs_v1_with_hooks": {
+                MERGE_WRITER_IMPLEMENTATION_FILE,
+                MERGE_WRITER_INTERFACE_FILE,
+                MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+            },
+            "after_output_write": {
+                MERGE_WRITER_IMPLEMENTATION_FILE,
+                MERGE_WRITER_INTERFACE_FILE,
+                MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+                MERGE_WRITER_AUTHORITY_TEST_FILE,
+            },
+            "DistributedSieveMergeWriterAdoptionTestHooksV1": {
+                MERGE_COORDINATOR_INTERFACE_FILE,
+                MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+                MERGE_WRITER_AUTHORITY_INTERFACE_FILE,
+                MERGE_WRITER_AUTHORITY_TEST_FILE,
+            },
+            "consume_distributed_sieve_merge_generation_v1_with_hooks": {
+                MERGE_COORDINATOR_INTERFACE_FILE,
+                MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+                MERGE_WRITER_AUTHORITY_INTERFACE_FILE,
+                MERGE_WRITER_AUTHORITY_TEST_FILE,
+            },
+            "DistributedSieveMergePreparedPublicationTestHooksV1": {
+                MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+                MERGE_WRITER_AUTHORITY_INTERFACE_FILE,
+                MERGE_WRITER_AUTHORITY_TEST_FILE,
+            },
+            "publish_distributed_sieve_merge_prepared_v1_with_hooks": {
+                MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
+                MERGE_WRITER_AUTHORITY_INTERFACE_FILE,
+                MERGE_WRITER_AUTHORITY_TEST_FILE,
+            },
+        },
+        "merge-writer trusted-test hook identifier allowlists are not exact",
     )
     expect(
         BORROWED_BASE_LOCK_BRIDGE_IDENTIFIER_ALLOWLISTS
@@ -10242,23 +10486,28 @@ finalize_and_publish_private_handoff_built(builder, nullptr);
             "OOCFinalizedCorpusEvidenceV1": {
                 "include/gnfs/relation/ooc_relation_store.hpp",
                 WORKER_WRITER_IMPLEMENTATION_FILE,
+                MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
             }
             | WORKER_HANDOFF_EVIDENCE_ONLY_FILES,
             "OOCPrivateHandoffPayloadV1": {
                 "include/gnfs/relation/ooc_relation_store.hpp",
                 WORKER_WRITER_IMPLEMENTATION_FILE,
+                MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
             },
             "OOCPrivateHandoffPayloadBuilderV1": {
                 "include/gnfs/relation/ooc_relation_store.hpp",
                 WORKER_WRITER_IMPLEMENTATION_FILE,
+                MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
             },
             "capture_finalized_corpus_evidence": {
                 "include/gnfs/relation/ooc_relation_store.hpp",
                 WORKER_WRITER_IMPLEMENTATION_FILE,
+                MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
             },
             "finalize_and_publish_private_handoff_built": {
                 "include/gnfs/relation/ooc_relation_store.hpp",
                 WORKER_WRITER_IMPLEMENTATION_FILE,
+                MERGE_WRITER_AUTHORITY_IMPLEMENTATION_FILE,
             },
         },
         "worker-handoff evidence bridge identifier allowlists are not exact",
@@ -13023,9 +13272,17 @@ DistributedSieveMergeGenerationAdmissionV1(
         and MERGE_COORDINATOR_USE_SITE_ALLOWLIST
         == (
             MERGE_COORDINATOR_PRODUCTION_FILES
-            | {"tests/test_distributed_sieve_resume.cpp"}
+            | MERGE_WRITER_AUTHORITY_PRODUCTION_FILES
+            | {
+                "tests/test_distributed_sieve_resume.cpp",
+                "tests/test_distributed_sieve_merge_writer_authority.cpp",
+            }
         )
-        and MERGE_COORDINATOR_PRODUCTION_FILES <= DURABLE_ENVIRONMENT_FREE_FILES
+        and (
+            MERGE_COORDINATOR_PRODUCTION_FILES
+            | MERGE_WRITER_AUTHORITY_PRODUCTION_FILES
+        )
+        <= DURABLE_ENVIRONMENT_FREE_FILES
         and MERGE_COORDINATOR_INTERFACE_FILE
         not in MERGE_GENERATION_AUTHORITY_USE_SITE_ALLOWLIST,
         "merge-coordinator inventory is not the exact source-private "
@@ -13091,7 +13348,11 @@ auto result = coordinate_missing_distributed_sieve_workers_v1(
         == (
             WORKER_COORDINATOR_PRODUCTION_FILES
             | MERGE_COORDINATOR_PRODUCTION_FILES
-            | {"tests/test_distributed_sieve_resume.cpp"}
+            | MERGE_WRITER_AUTHORITY_PRODUCTION_FILES
+            | {
+                "tests/test_distributed_sieve_resume.cpp",
+                "tests/test_distributed_sieve_merge_writer_authority.cpp",
+            }
         )
         and WORKER_COORDINATOR_AUTHORITY_FREE_CLEANUP_FACTS
         == {"cleanup_intent_absent"}

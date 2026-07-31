@@ -34,10 +34,15 @@ namespace gnfs::relation {
 struct OOCPrivateHandoffAdoptionResult;
 class OOCPrivateHandoffReader;
 class OOCRelationReader;
+class OOCRelationWriter;
 } // namespace gnfs::relation
 
 namespace gnfs::sieve::distributed_sieve_execution_policy_detail {
 struct DistributedSieveFrozenExecutionPolicyV1;
+}
+
+namespace gnfs::sieve::distributed_sieve_merge_writer_authority_detail {
+class DistributedSieveMergeWriterAuthorityV1;
 }
 
 namespace gnfs::sieve::distributed_sieve_resume_detail {
@@ -1002,6 +1007,7 @@ struct DistributedSievePrivateLeaseReservationResult;
 struct DistributedSieveWorkerAttemptStartResult;
 struct DistributedSieveMergeLeaseReservationResultV1;
 struct DistributedSieveMergeStartResultV1;
+struct DistributedSieveMergeStartedWriterMintResultV1;
 struct DistributedSieveMergeStartedReconcileResultV1;
 struct DistributedSieveMergeGenerationCursorResultV1;
 struct DistributedSieveWorkerAttemptReconcileResult;
@@ -1018,9 +1024,14 @@ class DistributedSievePrivateLeaseReservationReceipt;
 class DistributedSieveWorkerAttemptStartReceipt;
 class DistributedSieveMergeLeaseReservationReceiptV1;
 class DistributedSieveMergeStartedReceiptV1;
+class DistributedSieveMergeStartedWriterMintV1;
 class DistributedSieveChunkTerminalFailureAdmissionV1;
 class DistributedSieveFdPrivateLeaseReservationTarget;
 class DistributedSieveFdPrivateLeaseRecoveryTarget;
+
+[[nodiscard]] DistributedSieveMergeStartedWriterMintResultV1
+consume_distributed_sieve_merge_started_writer_v1(
+    DistributedSieveMergeStartedReceiptV1&& receipt) noexcept;
 
 [[nodiscard]] DistributedSievePrivateLeaseReservationResult reserve_worker_attempt_private_lease(
     DistributedSievePrivateLeaseRootClaimResult&& claimed,
@@ -1278,6 +1289,7 @@ private:
     friend class DistributedSieveWorkerAttemptStartReceipt;
     friend class DistributedSieveMergeLeaseReservationReceiptV1;
     friend class DistributedSieveMergeStartedReceiptV1;
+    friend class DistributedSieveMergeStartedWriterMintV1;
     friend class DistributedSieveChunkTerminalFailureAdmissionV1;
     friend DistributedSieveWorkerAttemptStartResult
     publish_worker_attempt_started(DistributedSievePrivateLeaseReservationReceipt&& reservation,
@@ -1293,6 +1305,9 @@ private:
         std::span<const TerminalChunkInputV1> terminal_inputs, std::uint32_t merge_policy_version,
         DistributedSieveMergeStartTestHooksV1 hooks,
         std::span<const DistributedSieveAdoptedWorkerChunkV1* const> held_worker_handoffs) noexcept;
+    friend DistributedSieveMergeStartedWriterMintResultV1
+    consume_distributed_sieve_merge_started_writer_v1(
+        DistributedSieveMergeStartedReceiptV1&& receipt) noexcept;
     friend DistributedSieveMergeStartedReconcileResultV1 reconcile_merge_started_generation_v1(
         DistributedSieveWaveStore& store, std::uint32_t merge_attempt_ordinal,
         DistributedSieveMergeStartedReconcileTestHooksV1 hooks,
@@ -1498,6 +1513,7 @@ private:
     friend class DistributedSieveWorkerAttemptStartReceipt;
     friend class DistributedSieveMergeLeaseReservationReceiptV1;
     friend class DistributedSieveMergeStartedReceiptV1;
+    friend class DistributedSieveMergeStartedWriterMintV1;
     friend DistributedSieveWorkerAttemptStartResult
     publish_worker_attempt_started(DistributedSievePrivateLeaseReservationReceipt&& reservation,
                                    DistributedSieveWorkerAttemptStartTestHooks hooks) noexcept;
@@ -1506,6 +1522,9 @@ private:
         std::span<const TerminalChunkInputV1> terminal_inputs, std::uint32_t merge_policy_version,
         DistributedSieveMergeStartTestHooksV1 hooks,
         std::span<const DistributedSieveAdoptedWorkerChunkV1* const> held_worker_handoffs) noexcept;
+    friend DistributedSieveMergeStartedWriterMintResultV1
+    consume_distributed_sieve_merge_started_writer_v1(
+        DistributedSieveMergeStartedReceiptV1&& receipt) noexcept;
     friend DistributedSieveMergeLeaseReservationResultV1
     reserve_distributed_sieve_merge_generation_v1(
         DistributedSieveWaveStore& store, std::uint32_t merge_attempt_ordinal,
@@ -1857,7 +1876,8 @@ struct DistributedSieveMergeLeaseReservationResultV1 final {
 
 /// Creator-bound proof that a freshly published MergeStartedV1 still retains
 /// the exact target generation BaseLock and independently owns the same-OFD
-/// worker BaseLock duplicates inherited from its P8 receipt.
+/// worker BaseLock duplicates inherited from its P8 receipt. It also privately
+/// retains the complete validated merge-start predecessor chain.
 class DistributedSieveMergeStartedReceiptV1 final {
 public:
     DistributedSieveMergeStartedReceiptV1() = delete;
@@ -1880,6 +1900,7 @@ private:
     DistributedSieveMergeStartedReceiptV1(
         std::shared_ptr<const DistributedSieveWaveStore::State> wave_store_state,
         DistributedSieveMergeGenerationNamesV1 merge_generation_names, MergeStartedV1 record,
+        std::vector<MergeStartedV1> merge_started_chain,
         util::durable_immutable_record::RecordSnapshot canonical_snapshot,
         DistributedSievePrivateLeaseReservationInventoryWitness final_witness,
         std::vector<std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt>>
@@ -1887,10 +1908,13 @@ private:
         std::vector<const DistributedSievePrivateLeaseBaseLockAt*> retained_worker_base_lock_views,
         std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt> base_lock_at,
         std::uint64_t creator_process_id) noexcept;
+    [[nodiscard]] DistributedSieveWaveStoreDiagnostic
+    revalidate_for_merge_writer_lifetime(int directory_fd) const noexcept;
 
     std::shared_ptr<const DistributedSieveWaveStore::State> wave_store_state_;
     DistributedSieveMergeGenerationNamesV1 merge_generation_names_;
     MergeStartedV1 record_;
+    std::vector<MergeStartedV1> merge_started_chain_;
     util::durable_immutable_record::RecordSnapshot canonical_snapshot_;
     DistributedSievePrivateLeaseReservationInventoryWitness final_witness_;
     std::vector<std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt>>
@@ -1899,11 +1923,78 @@ private:
     std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt> base_lock_at_;
     std::uint64_t creator_process_id_ = 0;
 
+    friend class DistributedSieveMergeStartedWriterMintV1;
     friend DistributedSieveMergeStartResultV1 publish_merge_started_v1(
         DistributedSieveMergeLeaseReservationReceiptV1&& reservation,
         std::span<const TerminalChunkInputV1> terminal_inputs, std::uint32_t merge_policy_version,
         DistributedSieveMergeStartTestHooksV1 hooks,
         std::span<const DistributedSieveAdoptedWorkerChunkV1* const> held_worker_handoffs) noexcept;
+    friend DistributedSieveMergeStartedWriterMintResultV1
+    consume_distributed_sieve_merge_started_writer_v1(
+        DistributedSieveMergeStartedReceiptV1&& receipt) noexcept;
+};
+
+/// One-shot, source-private transfer from a fully revalidated merge-start
+/// receipt to the exact merged-corpus writer. The object exposes no path,
+/// descriptor, lock, marker, or generic relation-writer capability.
+class DistributedSieveMergeStartedWriterMintV1 final {
+public:
+    DistributedSieveMergeStartedWriterMintV1(const DistributedSieveMergeStartedWriterMintV1&) =
+        delete;
+    DistributedSieveMergeStartedWriterMintV1&
+    operator=(const DistributedSieveMergeStartedWriterMintV1&) = delete;
+    DistributedSieveMergeStartedWriterMintV1(
+        DistributedSieveMergeStartedWriterMintV1&& other) noexcept;
+    DistributedSieveMergeStartedWriterMintV1&
+    operator=(DistributedSieveMergeStartedWriterMintV1&&) = delete;
+    ~DistributedSieveMergeStartedWriterMintV1() noexcept;
+
+private:
+    DistributedSieveMergeStartedWriterMintV1(
+        DistributedSieveMergeStartedReceiptV1&& receipt,
+        std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt> target_base_lock_duplicate,
+        int root_fd, int directory_fd, std::filesystem::path base_path,
+        std::filesystem::path private_directory, std::filesystem::path lock_path,
+        std::array<std::uint64_t, 3> root_identity, std::array<std::uint64_t, 3> directory_identity,
+        std::array<std::uint64_t, 2> lease_id, std::array<std::uint64_t, 3> owner_marker_identity,
+        std::array<std::uint64_t, 3> owned_marker_identity,
+        std::uint64_t creator_process_id) noexcept;
+
+    [[nodiscard]] std::unique_ptr<gnfs::relation::OOCRelationWriter> create_exact_writer();
+    [[nodiscard]] const WaveManifestV1& manifest() const noexcept;
+    [[nodiscard]] std::span<const MergeStartedV1> merge_started_chain() const noexcept;
+    [[nodiscard]] bool writer_lifetime_stable() const noexcept;
+    void close_directory_noexcept() noexcept;
+
+    DistributedSieveMergeStartedReceiptV1 receipt_;
+    std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt> target_base_lock_duplicate_;
+    int root_fd_ = -1;
+    int directory_fd_ = -1;
+    std::filesystem::path base_path_;
+    std::filesystem::path private_directory_;
+    std::filesystem::path lock_path_;
+    std::array<std::uint64_t, 3> root_identity_{};
+    std::array<std::uint64_t, 3> directory_identity_{};
+    std::array<std::uint64_t, 2> lease_id_{};
+    std::array<std::uint64_t, 3> owner_marker_identity_{};
+    std::array<std::uint64_t, 3> owned_marker_identity_{};
+    std::uint64_t creator_process_id_ = 0;
+    bool consumed_ = false;
+
+    friend class ::gnfs::sieve::distributed_sieve_merge_writer_authority_detail::
+        DistributedSieveMergeWriterAuthorityV1;
+    friend DistributedSieveMergeStartedWriterMintResultV1
+    consume_distributed_sieve_merge_started_writer_v1(
+        DistributedSieveMergeStartedReceiptV1&& receipt) noexcept;
+};
+
+struct DistributedSieveMergeStartedWriterMintResultV1 final {
+    std::optional<DistributedSieveMergeStartedWriterMintV1> mint;
+    DistributedSieveWaveStoreDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return mint.has_value() && diagnostic.status == DistributedSieveWaveStoreStatus::ready;
+    }
 };
 
 struct DistributedSieveMergeStartResultV1 final {
