@@ -5923,6 +5923,38 @@ void remove_exact_authorized_cleanup_leaf_v2(
     }
 }
 
+void remove_exact_authorized_cleanup_reconciliation_pending_v2(
+    util::durable_immutable_record::NativeHandle directory_handle,
+    const std::filesystem::path& leaf,
+    const util::durable_immutable_record::RecordSnapshot& expected,
+    const OOCPrivateHandoffCleanupIntentReconciliationTestHooksV2& hooks) {
+    const auto before = inspect_authorized_cleanup_leaf_v2(directory_handle, leaf);
+    if (!before || *before != expected) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::IntentDurable,
+             protocol_error());
+    }
+    const auto removed = authorized_cleanup_raw_unlinkat_v2(directory_handle, leaf, 0);
+    if (removed.result != 0) {
+        const int saved_errno = removed.native_error;
+        fail(saved_errno == ENOENT ? OOCCleanupStatus::ForeignReplacementPreserved
+                                   : OOCCleanupStatus::IoFailure,
+             OOCCleanupStage::IntentDurable, posix_error(saved_errno));
+    }
+    if (hooks.fail_sync != nullptr) {
+        const auto error = hooks.fail_sync(
+            OOCPrivateHandoffCleanupIntentReconciliationSyncSiteV2::DuplicatePendingRemoval,
+            hooks.context);
+        if (error) {
+            fail(OOCCleanupStatus::DurabilityFailure, OOCCleanupStage::IntentDurable, error);
+        }
+    }
+    sync_authorized_cleanup_directory_v2(directory_handle, OOCCleanupStage::IntentDurable);
+    if (inspect_authorized_cleanup_leaf_v2(directory_handle, leaf)) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::IntentDurable,
+             protocol_error());
+    }
+}
+
 void rename_exact_authorized_cleanup_leaf_v2(
     util::durable_immutable_record::NativeHandle directory_handle,
     const std::filesystem::path& source_leaf, const std::filesystem::path& destination_leaf,
@@ -6670,7 +6702,7 @@ private:
                                          ReconciliationRequired
                                    : OOCPrivateHandoffCleanupIntentReconciliationDispositionV2::
                                          AuthorizationRetained,
-                               evidence);
+                               std::nullopt);
         };
         const auto interrupted = [&](OOCCleanupStage stage) noexcept {
             return failed(OOCCleanupStatus::Interrupted, stage,
@@ -6679,6 +6711,17 @@ private:
         const auto stop_after =
             [&](OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2 point) noexcept {
                 return hooks.stop_after != nullptr && hooks.stop_after(point, hooks.context);
+            };
+        const auto fail_sync_before =
+            [&](OOCPrivateHandoffCleanupIntentReconciliationSyncSiteV2 site) {
+                if (hooks.fail_sync == nullptr) {
+                    return;
+                }
+                const auto error = hooks.fail_sync(site, hooks.context);
+                if (error) {
+                    fail(OOCCleanupStatus::DurabilityFailure, OOCCleanupStage::IntentDurable,
+                         error);
+                }
             };
         const auto require_live = [&] {
             if (!authorization.live_authority_valid()) {
@@ -6718,19 +6761,171 @@ private:
                 fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
             }
 
+            const auto has_exact_live_shape = [](const AuthorizedCleanupPrefixV2& prefix) {
+                return prefix.handoff && prefix.owner && prefix.owned && prefix.index &&
+                       prefix.data && !prefix.staged && !prefix.staged_pending &&
+                       !prefix.quarantine_index && !prefix.quarantine_data;
+            };
             const auto exact_pending_prefix = [&] {
                 require_live();
                 auto prefix = classify_authorized_cleanup_prefix_v2(
                     paths, lock, parent, &directory, binding, expected, false, false);
                 if (prefix.next != AuthorizedCleanupNextStepV2::IntentConversionRequired ||
-                    prefix.intent || !prefix.intent_pending || !prefix.handoff || !prefix.owner ||
-                    !prefix.owned || !prefix.index || !prefix.data || prefix.staged ||
-                    prefix.staged_pending || prefix.quarantine_index || prefix.quarantine_data) {
+                    prefix.intent || !prefix.intent_pending || !has_exact_live_shape(prefix)) {
                     fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
                          protocol_error());
                 }
                 return prefix;
             };
+            const auto exact_canonical_prefix = [&](bool intent_confirmed, bool duplicate_pending) {
+                require_live();
+                auto prefix = classify_authorized_cleanup_prefix_v2(
+                    paths, lock, parent, &directory, binding, expected, intent_confirmed, false);
+                const auto expected_next =
+                    intent_confirmed
+                        ? (duplicate_pending ? AuthorizedCleanupNextStepV2::RemoveIntentPending
+                                             : AuthorizedCleanupNextStepV2::RemoveHandoff)
+                        : AuthorizedCleanupNextStepV2::ConfirmIntent;
+                if (prefix.next != expected_next || !prefix.intent ||
+                    prefix.intent_pending.has_value() != duplicate_pending ||
+                    !has_exact_live_shape(prefix) ||
+                    (duplicate_pending && prefix.intent->bytes != prefix.intent_pending->bytes)) {
+                    fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
+                         protocol_error());
+                }
+                return prefix;
+            };
+            const auto canonical_evidence = [&](const AuthorizedCleanupPrefixV2& prefix) {
+                return OOCPrivateHandoffCleanupIntentPublicationEvidenceV2{
+                    .external_authorization_digest = binding.external_authorization_digest,
+                    .intent_snapshot = prefix.intent->snapshot,
+                    .parent_directory_identity = binding.parent_directory_identity,
+                };
+            };
+
+            require_live();
+            auto initial_prefix = classify_authorized_cleanup_prefix_v2(
+                paths, lock, parent, &directory, binding, expected, false, false);
+            const bool pending_only =
+                initial_prefix.next == AuthorizedCleanupNextStepV2::IntentConversionRequired &&
+                !initial_prefix.intent && initial_prefix.intent_pending &&
+                has_exact_live_shape(initial_prefix);
+            const bool canonical_existing =
+                initial_prefix.next == AuthorizedCleanupNextStepV2::ConfirmIntent &&
+                initial_prefix.intent && has_exact_live_shape(initial_prefix);
+            if (!pending_only && !canonical_existing) {
+                fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+            }
+
+            if (canonical_existing) {
+                const bool duplicate_pending = initial_prefix.intent_pending.has_value();
+                if (duplicate_pending &&
+                    initial_prefix.intent->bytes != initial_prefix.intent_pending->bytes) {
+                    fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
+                         protocol_error());
+                }
+                const auto canonical_snapshot = initial_prefix.intent->snapshot;
+                const std::optional<util::durable_immutable_record::RecordSnapshot>
+                    pending_snapshot =
+                        duplicate_pending ? std::optional{initial_prefix.intent_pending->snapshot}
+                                          : std::nullopt;
+
+                if (stop_after(OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::
+                                   CanonicalExistingReady)) {
+                    return interrupted(OOCCleanupStage::IntentDurable);
+                }
+
+                require_live();
+                fail_sync_before(OOCPrivateHandoffCleanupIntentReconciliationSyncSiteV2::
+                                     CanonicalExistingConfirmation);
+                confirm_exact_authorized_cleanup_leaf_durable_v2(
+                    directory.native_handle(), paths.intent_path.filename(), canonical_snapshot,
+                    OOCCleanupStage::IntentDurable);
+                const auto durable_prefix = exact_canonical_prefix(false, duplicate_pending);
+                if (durable_prefix != initial_prefix ||
+                    durable_prefix.intent->snapshot != canonical_snapshot) {
+                    fail(OOCCleanupStatus::ForeignReplacementPreserved,
+                         OOCCleanupStage::IntentDurable, protocol_error());
+                }
+                const auto actionable_prefix = exact_canonical_prefix(true, duplicate_pending);
+                if (actionable_prefix.intent->snapshot != canonical_snapshot ||
+                    (duplicate_pending &&
+                     actionable_prefix.intent_pending->snapshot != *pending_snapshot)) {
+                    fail(OOCCleanupStatus::ForeignReplacementPreserved,
+                         OOCCleanupStage::IntentDurable, protocol_error());
+                }
+
+                if (stop_after(OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::
+                                   CanonicalExistingDurable)) {
+                    return interrupted(OOCCleanupStage::IntentDurable);
+                }
+                require_live();
+                const auto after_durable_hook = exact_canonical_prefix(true, duplicate_pending);
+                if (after_durable_hook != actionable_prefix ||
+                    (duplicate_pending &&
+                     after_durable_hook.intent_pending->snapshot != *pending_snapshot)) {
+                    fail(OOCCleanupStatus::ForeignReplacementPreserved,
+                         OOCCleanupStage::IntentDurable, protocol_error());
+                }
+                if (!duplicate_pending) {
+                    require_live();
+                    authorization.commit_spend();
+                    canonical_visibility_uncertain = true;
+                    auto existing_evidence = canonical_evidence(after_durable_hook);
+                    return make_result(
+                        OOCCleanupStatus::RecoveryRequired, OOCCleanupStage::IntentDurable,
+                        protocol_error(),
+                        OOCPrivateHandoffCleanupIntentReconciliationDispositionV2::IntentCanonical,
+                        std::move(existing_evidence));
+                }
+
+                const auto before_pending = inspect_authorized_cleanup_leaf_v2(
+                    directory.native_handle(), paths.intent_pending_path.filename());
+                if (!before_pending || *before_pending != *pending_snapshot) {
+                    fail(OOCCleanupStatus::ForeignReplacementPreserved,
+                         OOCCleanupStage::IntentDurable, protocol_error());
+                }
+                if (stop_after(OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::
+                                   DuplicatePendingRemovalReady)) {
+                    return interrupted(OOCCleanupStage::IntentDurable);
+                }
+                const auto after_removal_ready_hook = exact_canonical_prefix(true, true);
+                if (after_removal_ready_hook != after_durable_hook ||
+                    after_removal_ready_hook.intent_pending->snapshot != *pending_snapshot) {
+                    fail(OOCCleanupStatus::ForeignReplacementPreserved,
+                         OOCCleanupStage::IntentDurable, protocol_error());
+                }
+                require_live();
+                authorization.commit_spend();
+                canonical_visibility_uncertain = true;
+                remove_exact_authorized_cleanup_reconciliation_pending_v2(
+                    directory.native_handle(), paths.intent_pending_path.filename(),
+                    *pending_snapshot, hooks);
+                const auto canonical_only_prefix = exact_canonical_prefix(true, false);
+                if (canonical_only_prefix.intent->snapshot != canonical_snapshot) {
+                    fail(OOCCleanupStatus::ForeignReplacementPreserved,
+                         OOCCleanupStage::IntentDurable, protocol_error());
+                }
+                auto canonical_only_evidence = canonical_evidence(canonical_only_prefix);
+                if (stop_after(OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::
+                                   DuplicatePendingRemovedDurable)) {
+                    return make_result(
+                        OOCCleanupStatus::Interrupted, OOCCleanupStage::IntentDurable, {},
+                        OOCPrivateHandoffCleanupIntentReconciliationDispositionV2::IntentCanonical,
+                        std::move(canonical_only_evidence));
+                }
+                require_live();
+                const auto after_pending_hook = exact_canonical_prefix(true, false);
+                if (after_pending_hook != canonical_only_prefix) {
+                    fail(OOCCleanupStatus::ForeignReplacementPreserved,
+                         OOCCleanupStage::IntentDurable, protocol_error());
+                }
+                return make_result(
+                    OOCCleanupStatus::RecoveryRequired, OOCCleanupStage::IntentDurable,
+                    protocol_error(),
+                    OOCPrivateHandoffCleanupIntentReconciliationDispositionV2::IntentCanonical,
+                    std::move(canonical_only_evidence));
+            }
 
             auto prefix = exact_pending_prefix();
             const auto pending_snapshot = prefix.intent_pending->snapshot;
@@ -6757,21 +6952,19 @@ private:
             }
 
             require_live();
+            authorization.commit_spend();
+            canonical_visibility_uncertain = true;
             const int promoted = ::renameatx_np(static_cast<int>(directory.native_handle()),
                                                 paths.intent_pending_path.filename().c_str(),
                                                 static_cast<int>(directory.native_handle()),
                                                 paths.intent_path.filename().c_str(), RENAME_EXCL);
             if (promoted != 0) {
                 const int saved_errno = errno;
-                authorization.commit_spend();
-                canonical_visibility_uncertain = true;
                 fail(saved_errno == EEXIST || saved_errno == ENOENT
                          ? OOCCleanupStatus::ForeignReplacementPreserved
                          : OOCCleanupStatus::IoFailure,
                      OOCCleanupStage::IntentDurable, posix_error(saved_errno));
             }
-            authorization.commit_spend();
-            canonical_visibility_uncertain = true;
 
             if (stop_after(
                     OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::CanonicalPromoted)) {
@@ -6841,7 +7034,9 @@ private:
 };
 
 static_assert(static_cast<std::uint8_t>(
-                  OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::Count) == 5);
+                  OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::Count) == 9);
+static_assert(
+    static_cast<std::uint8_t>(OOCPrivateHandoffCleanupIntentReconciliationSyncSiteV2::Count) == 2);
 static_assert(static_cast<std::uint8_t>(
                   OOCPrivateHandoffCleanupIntentReconciliationDispositionV2::IntentCanonical) == 3);
 

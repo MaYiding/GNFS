@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -452,14 +453,29 @@ enum class OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2 : std::uint8
     CanonicalPromoted,
     CanonicalDurable,
     CanonicalBindingRevalidated,
+    CanonicalExistingReady,
+    CanonicalExistingDurable,
+    DuplicatePendingRemovalReady,
+    DuplicatePendingRemovedDurable,
+    Count,
+};
+
+enum class OOCPrivateHandoffCleanupIntentReconciliationSyncSiteV2 : std::uint8_t {
+    CanonicalExistingConfirmation,
+    DuplicatePendingRemoval,
     Count,
 };
 
 struct OOCPrivateHandoffCleanupIntentReconciliationTestHooksV2 final {
     using StopAfter = bool (*)(OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2 point,
                                void* context) noexcept;
+    using FailSync = std::error_code (*)(
+        OOCPrivateHandoffCleanupIntentReconciliationSyncSiteV2 site, void* context) noexcept;
 
     StopAfter stop_after = nullptr;
+    // Trusted tests may force a durability failure at a named barrier. A zero
+    // error never bypasses the real confirmation or directory sync.
+    FailSync fail_sync = nullptr;
     void* context = nullptr;
 };
 
@@ -494,15 +510,19 @@ struct OOCPrivateHandoffCleanupIntentReconciliationResultV2 final {
 };
 
 /// Recovery-only T2a normalization. This opens one new non-creating BaseLock
-/// epoch and may only promote the exact already-existing pending V2 intent to
-/// its canonical name. It accepts no path or payload, never creates pending,
-/// and performs no artifact, marker, lease, or directory deletion.
+/// epoch and accepts only an exact pending-only intent, an exact canonical-only
+/// intent, or canonical plus one exact duplicate pending intent. It may promote
+/// pending to canonical or remove only the proven duplicate pending leaf. It
+/// accepts no path or payload, never creates pending, and performs no handoff,
+/// artifact, staged, quarantine, lease, or directory deletion.
 [[nodiscard]] OOCPrivateHandoffCleanupIntentReconciliationResultV2
 reconcile_authorized_private_handoff_cleanup_intent_v2(
     OOCPrivateHandoffCleanupAuthorizationReceipt&& authorization) noexcept;
 
-/// Same recovery-only transition with deterministic crash boundaries. The
-/// ordinary intent-publication test key also gates this closely related seam.
+/// Same recovery-only transition with deterministic crash boundaries and a
+/// failure-only durability seam. Returning no error from `fail_sync` still
+/// executes the real confirmation or directory sync. The ordinary
+/// intent-publication test key also gates this closely related seam.
 [[nodiscard]] OOCPrivateHandoffCleanupIntentReconciliationResultV2
 reconcile_authorized_private_handoff_cleanup_intent_v2_for_trusted_test(
     OOCPrivateHandoffCleanupIntentPublicationTestKeyV2&&,

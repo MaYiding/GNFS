@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from bisect import bisect_right
+from collections.abc import Iterable
 from dataclasses import dataclass
 import hashlib
 from pathlib import Path
@@ -295,6 +296,40 @@ WORKER_CLEANUP_RECEIPT_OWNED_BRIDGE_IDENTIFIER = (
 WORKER_CLEANUP_RECEIPT_RELEASE_BRIDGE_IDENTIFIER = (
     "distributed_sieve_external_cleanup_authorization_state_release_receipt_claim"
 )
+WORKER_CLEANUP_RECONCILIATION_EXECUTOR_IDENTIFIER = (
+    "OOCPrivateHandoffCleanupIntentReconciliationExecutorV2"
+)
+WORKER_CLEANUP_RECONCILIATION_FAULT_POINT_IDENTIFIER = (
+    "OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2"
+)
+WORKER_CLEANUP_RECONCILIATION_SYNC_SITE_IDENTIFIER = (
+    "OOCPrivateHandoffCleanupIntentReconciliationSyncSiteV2"
+)
+WORKER_CLEANUP_RECONCILIATION_HOOKS_IDENTIFIER = (
+    "OOCPrivateHandoffCleanupIntentReconciliationTestHooksV2"
+)
+WORKER_CLEANUP_RECONCILIATION_DISPOSITION_IDENTIFIER = (
+    "OOCPrivateHandoffCleanupIntentReconciliationDispositionV2"
+)
+WORKER_CLEANUP_RECONCILIATION_RESULT_IDENTIFIER = (
+    "OOCPrivateHandoffCleanupIntentReconciliationResultV2"
+)
+WORKER_CLEANUP_RECONCILIATION_ENTRY_IDENTIFIER = (
+    "reconcile_authorized_private_handoff_cleanup_intent_v2"
+)
+WORKER_CLEANUP_RECONCILIATION_TRUSTED_ENTRY_IDENTIFIER = (
+    "reconcile_authorized_private_handoff_cleanup_intent_v2_for_trusted_test"
+)
+WORKER_CLEANUP_RECONCILIATION_REDUCER_IDENTIFIER = (
+    "remove_exact_authorized_cleanup_reconciliation_pending_v2"
+)
+WORKER_CLEANUP_RECONCILIATION_CALLEE_IDENTIFIERS = (
+    "sync_authorized_cleanup_directory_v2",
+    "confirm_exact_authorized_cleanup_leaf_durable_v2",
+    "inspect_authorized_cleanup_leaf_v2",
+    "authorized_cleanup_regular_leaf_policy_v2",
+    "authorized_cleanup_snapshot_v2",
+)
 WORKER_CLEANUP_RECEIPT_IDENTIFIER_ALLOWLISTS = {
     WORKER_CLEANUP_RECEIPT_MINT_AUTHORITY_IDENTIFIER: {
         WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
@@ -344,6 +379,52 @@ WORKER_CLEANUP_RECEIPT_IDENTIFIER_ALLOWLISTS = {
     "release_receipt_claim": {
         WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
         WORKER_CLEANUP_RECEIPT_WAVE_STORE_INTERFACE_FILE,
+    },
+    WORKER_CLEANUP_RECONCILIATION_EXECUTOR_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+    },
+    WORKER_CLEANUP_RECONCILIATION_FAULT_POINT_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+        WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE,
+    },
+    WORKER_CLEANUP_RECONCILIATION_SYNC_SITE_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+        WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE,
+    },
+    WORKER_CLEANUP_RECONCILIATION_HOOKS_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+        WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE,
+    },
+    WORKER_CLEANUP_RECONCILIATION_DISPOSITION_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+        WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE,
+    },
+    WORKER_CLEANUP_RECONCILIATION_RESULT_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+        WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE,
+    },
+    WORKER_CLEANUP_RECONCILIATION_ENTRY_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+        WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE,
+    },
+    WORKER_CLEANUP_RECONCILIATION_TRUSTED_ENTRY_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+        WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE,
+    },
+    WORKER_CLEANUP_RECONCILIATION_REDUCER_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+    },
+    **{
+        identifier: {WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE}
+        for identifier in WORKER_CLEANUP_RECONCILIATION_CALLEE_IDENTIFIERS
     },
 }
 WORKER_CLEANUP_RECEIPT_EXACT_USE_CONTEXTS = {
@@ -404,7 +485,7 @@ WORKER_CLEANUP_RECEIPT_EXACT_USE_CONTEXTS = {
     WORKER_CLEANUP_RECEIPT_IDENTIFIER: {
         WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE: (
             10,
-            "4c6d6b6fcfe2f16cf596bff07c11869a3315fd4d11c306d1c613e8a869ffc2f0",
+            "7fd8dde1d7f7b237ebf852a5e3a771b44d30c6baca7c4c3f3fabd5ab8722cbe2",
         ),
         WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE: (
             5,
@@ -412,7 +493,7 @@ WORKER_CLEANUP_RECEIPT_EXACT_USE_CONTEXTS = {
         ),
         WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE: (
             19,
-            "f1f8f1bd80b4903ca0497b14206e0d003fb2e0080587e692884233955fb3eefb",
+            "53791f8e32b01cd4fe435ed901a38a42af82183ab1abd933f43d288f1488fe0a",
         ),
         WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE: (
             2,
@@ -427,8 +508,8 @@ WORKER_CLEANUP_RECEIPT_EXACT_USE_CONTEXTS = {
             "2ec400b4ba93df585c3f42442a31a0901e925a44963faad26006be2f2168a486",
         ),
         WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE: (
-            9,
-            "b53f0c67807f13a6c270f5f20da2bf3b936fb6a05f2bdab03e776aca0bb8a172",
+            10,
+            "ee92142446c5cae82fa995566ceaa63abe5a285c4efa68b7bed52b45e8990b3c",
         ),
     },
     WORKER_CLEANUP_RECEIPT_OWNED_BRIDGE_IDENTIFIER: {
@@ -551,6 +632,150 @@ WORKER_CLEANUP_RECEIPT_EXACT_USE_CONTEXTS = {
         WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE: (
             2,
             "df17515d9d13a9e0ef1adb52e0af7b59fa3db17f7830b5f745199c93585d760a",
+        ),
+    },
+    WORKER_CLEANUP_RECONCILIATION_EXECUTOR_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE: (
+            2,
+            "b868d9492001265dede95a391adbe861fe81d618147d544037c0c5ef3c7ae447",
+        ),
+        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE: (
+            3,
+            "b24e7cf5d2803c53a37c26921f7cfe874febe3e2e3de2a28eda5b19f08aedb7b",
+        ),
+    },
+    WORKER_CLEANUP_RECONCILIATION_FAULT_POINT_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE: (
+            2,
+            "6b7e505495ca327c5f579b9f9afabd1b94b83ca34c967a5f5516f05d89e8ebab",
+        ),
+        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE: (
+            11,
+            "8b78fe80ce3710db5dfb3ee22b4810c938a4e9e3f63c34df51bd549c3d619ca3",
+        ),
+        WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE: (
+            46,
+            "b0d46e5c3a21b38c48685a502182e58ed61a45a1150dff35740ea923c5dc84e9",
+        ),
+    },
+    WORKER_CLEANUP_RECONCILIATION_SYNC_SITE_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE: (
+            2,
+            "67b4eed7e395955a91a595ccf8681c0f701761011ef0a8beaf7cd47527979ae0",
+        ),
+        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE: (
+            4,
+            "7f1d5b01823713350261eb04ee97662fae2500afd0bb6eef075c38c13b449973",
+        ),
+        WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE: (
+            8,
+            "2542d6c8b591175500540ea40904e1fbaef66b447f5266fed48005d088eb15d2",
+        ),
+    },
+    WORKER_CLEANUP_RECONCILIATION_HOOKS_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE: (
+            2,
+            "ae3234e6cb885a625bafc8d6e0f133343a3b8f4444e2a044a1d47328fa23268f",
+        ),
+        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE: (
+            4,
+            "a52f54a108db5e08cae498ec22e8510cb6ceedc6b7e689a9a22e9d66994cd1eb",
+        ),
+        WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE: (
+            14,
+            "6ef141c036f438c26d42c02a626b874272e59795b633d53551319d607cc5b797",
+        ),
+    },
+    WORKER_CLEANUP_RECONCILIATION_DISPOSITION_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE: (
+            6,
+            "36e8d0d874d20c2679714837a386a85a581e7a43e57a4772c2424396f4d153b5",
+        ),
+        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE: (
+            11,
+            "9f0e5f867ea90b05cf87ec52d55dbcc3e2077883ae83315c563482d7357272d8",
+        ),
+        WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE: (
+            6,
+            "1bf7da40db732da83ca510376093b2225946eb042e1d097e92823cb266dd6b46",
+        ),
+    },
+    WORKER_CLEANUP_RECONCILIATION_RESULT_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE: (
+            3,
+            "11b5ee14591ebbcbedd8a1575d8fc48de823bd6a928c5017ab155194c012ab71",
+        ),
+        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE: (
+            6,
+            "2c229bf0c26beab557cf6453946486b38ea820ec634bccdeb5763c9beb65ef50",
+        ),
+        WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE: (
+            5,
+            "ae50b2eb34b83c90f1163682d7a6b7bbb43868b4d800cc8af84c4e79b5dc37a4",
+        ),
+    },
+    WORKER_CLEANUP_RECONCILIATION_ENTRY_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE: (
+            1,
+            "bf494a8d9c08b893700465bd0d5e14e27ed0637c21c518b3e764451a0fcde520",
+        ),
+        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE: (
+            2,
+            "9d41cfce246ffba64df7839e69a658c800d5cc8f9e36626c584f716cba1942d4",
+        ),
+        WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE: (
+            12,
+            "e9eb214236479324b70838d89c81c581c046bda69f6cd09a0694f6111b896b48",
+        ),
+    },
+    WORKER_CLEANUP_RECONCILIATION_TRUSTED_ENTRY_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE: (
+            1,
+            "fc3d378bd12343f9d53f382b6da051a7df76e8f60184f94582f46fb3e2902cea",
+        ),
+        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE: (
+            2,
+            "b21017204de86aaa74784f9dc9475fe96f4461c5a808c898502ac2c7bad4ad0e",
+        ),
+        WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE: (
+            14,
+            "7c5a6ec00f1d262cee6e9b7b324d762fd5916ad6b4fba862f91caa5e6d74a67e",
+        ),
+    },
+    WORKER_CLEANUP_RECONCILIATION_REDUCER_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE: (
+            2,
+            "efafb5b207b4efbedffb15493420c12dd3eb0f54d75f7c2c5b219ed0f0052af4",
+        ),
+    },
+    "sync_authorized_cleanup_directory_v2": {
+        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE: (
+            9,
+            "07aec7bbab604ee33fd49380c8db9fc1c8a21c8e56c394b1ec0212bacc69af4d",
+        ),
+    },
+    "confirm_exact_authorized_cleanup_leaf_durable_v2": {
+        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE: (
+            5,
+            "be2e8ff86bfc538f43794445a42d659a4b92cd8412efa4e89014859ed4eb8c4c",
+        ),
+    },
+    "inspect_authorized_cleanup_leaf_v2": {
+        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE: (
+            12,
+            "1db3c091287c1a0e46e89391ee923950d7f09e6ccb24291e964c32eab9baffba",
+        ),
+    },
+    "authorized_cleanup_regular_leaf_policy_v2": {
+        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE: (
+            2,
+            "059354309c96b42af2c4dc9a71086dac9c8225ba2dd6a120ca5198939f531c8e",
+        ),
+    },
+    "authorized_cleanup_snapshot_v2": {
+        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE: (
+            2,
+            "e62cd532aa1432813b6c0c2b0dfeaa6dd94372da3ac9472176902e6d64ad5ce3",
         ),
     },
 }
@@ -909,7 +1134,7 @@ WORKER_CLEANUP_CAPSULE_EXACT_USE_CONTEXTS = {
     WORKER_CLEANUP_CAPSULE_TEST_KEY_IDENTIFIER: {
         WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE: (
             2,
-            "fe473dd66a08fa62f3f21a188d187b486ac4198a170f5b1c3573cbf7cd077c9e",
+            "78d24f3386e4d8612cf84ad1fb85ae2a226976cf6b1ce8cfff8b27983542a41e",
         ),
         WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE: (
             2,
@@ -1595,6 +1820,425 @@ WORKER_CLEANUP_RECEIPT_MINT_BODY_SHA256 = (
 WORKER_CLEANUP_RECEIPT_T2A_RUN_BODY_SHA256 = (
     "7171c929fc8bf094d8dd5cb991702e786e93060a425a18ff412359217f2c7346"
 )
+WORKER_CLEANUP_RECONCILIATION_ENUM_BODY_SHA256 = {
+    WORKER_CLEANUP_RECONCILIATION_FAULT_POINT_IDENTIFIER: (
+        "ad59f2a6ead5d608302cbbf08ff3c14b037c14c89f6f9fd1c6be8901b125115f"
+    ),
+    WORKER_CLEANUP_RECONCILIATION_SYNC_SITE_IDENTIFIER: (
+        "f29136fb81e5fcd3416d229fe05409858022e16fd5c54960a31aa78a9c0cce95"
+    ),
+    WORKER_CLEANUP_RECONCILIATION_DISPOSITION_IDENTIFIER: (
+        "6ac360c2736481c310aac3d95cc1003cbe312628a0e44a4c3b8c2f0ab9e37dee"
+    ),
+}
+WORKER_CLEANUP_RECONCILIATION_CLASS_BODY_SHA256 = {
+    WORKER_CLEANUP_RECONCILIATION_HOOKS_IDENTIFIER: (
+        "071131f686e330d1051f3db460832e1f2b6e85056991dbbb6a2598950f8df019"
+    ),
+    WORKER_CLEANUP_RECONCILIATION_RESULT_IDENTIFIER: (
+        "aad5177d8288ef8d51c47155ec3c6fd6ff93f99ee7c7108a0bf7a0fa6d63c768"
+    ),
+}
+WORKER_CLEANUP_RECONCILIATION_EXECUTOR_CLASS_BODY_SHA256 = (
+    "16dd0cdb1d1be2c96f6c2a2834fa104d19a8ebf737bb0943feed63cd85f5e2c3"
+)
+WORKER_CLEANUP_RECONCILIATION_RUN_BODY_SHA256 = (
+    "ab69a207399e519d4ce0a3d601f4f8124c4740b06872762458437465acda2f4d"
+)
+WORKER_CLEANUP_RECONCILIATION_REDUCER_BODY_SHA256 = (
+    "c3bc9c870f6e2bd69c58402b960b1c28948235587beccac03eaa57f0f7b41cd1"
+)
+WORKER_CLEANUP_RECONCILIATION_ENUM_SURFACES = {
+    WORKER_CLEANUP_RECONCILIATION_FAULT_POINT_IDENTIFIER: (
+        "PendingReconfirmedDurable,CanonicalPromotionReady,CanonicalPromoted,"
+        "CanonicalDurable,CanonicalBindingRevalidated,CanonicalExistingReady,"
+        "CanonicalExistingDurable,DuplicatePendingRemovalReady,"
+        "DuplicatePendingRemovedDurable,Count,"
+    ),
+    WORKER_CLEANUP_RECONCILIATION_SYNC_SITE_IDENTIFIER: (
+        "CanonicalExistingConfirmation,DuplicatePendingRemoval,Count,"
+    ),
+    WORKER_CLEANUP_RECONCILIATION_DISPOSITION_IDENTIFIER: (
+        "Failed,AuthorizationRetained,ReconciliationRequired,IntentCanonical,"
+    ),
+}
+WORKER_CLEANUP_RECONCILIATION_REQUIRED_RUN_FRAGMENTS = (
+    "returnmake_result(status,stage,error,canonical_visibility_uncertain?"
+    "OOCPrivateHandoffCleanupIntentReconciliationDispositionV2::"
+    "ReconciliationRequired:"
+    "OOCPrivateHandoffCleanupIntentReconciliationDispositionV2::"
+    "AuthorizationRetained,std::nullopt);",
+    "fail_sync_before("
+    "OOCPrivateHandoffCleanupIntentReconciliationSyncSiteV2::"
+    "CanonicalExistingConfirmation);"
+    "confirm_exact_authorized_cleanup_leaf_durable_v2(",
+    "if(stop_after("
+    "OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::"
+    "CanonicalExistingDurable)){"
+    "returninterrupted(OOCCleanupStage::IntentDurable);}"
+    "require_live();constautoafter_durable_hook="
+    "exact_canonical_prefix(true,duplicate_pending);",
+    "if(!duplicate_pending){require_live();authorization.commit_spend();"
+    "canonical_visibility_uncertain=true;autoexisting_evidence="
+    "canonical_evidence(after_durable_hook);returnmake_result(",
+    "if(stop_after("
+    "OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::"
+    "DuplicatePendingRemovalReady)){"
+    "returninterrupted(OOCCleanupStage::IntentDurable);}"
+    "constautoafter_removal_ready_hook=exact_canonical_prefix(true,true);",
+    "require_live();authorization.commit_spend();"
+    "canonical_visibility_uncertain=true;"
+    "remove_exact_authorized_cleanup_reconciliation_pending_v2("
+    "directory.native_handle(),paths.intent_pending_path.filename(),"
+    "*pending_snapshot,hooks);constautocanonical_only_prefix="
+    "exact_canonical_prefix(true,false);",
+    "if(stop_after("
+    "OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::"
+    "CanonicalPromotionReady)){"
+    "returninterrupted(OOCCleanupStage::IntentDurable);}"
+    "require_live();authorization.commit_spend();"
+    "canonical_visibility_uncertain=true;constintpromoted=::renameatx_np(",
+)
+WORKER_CLEANUP_RECONCILIATION_REQUIRED_REDUCER_FRAGMENTS = (
+    "constautobefore=inspect_authorized_cleanup_leaf_v2(directory_handle,leaf);"
+    "if(!before||*before!=expected){fail(",
+    "constautoremoved=authorized_cleanup_raw_unlinkat_v2("
+    "directory_handle,leaf,0);",
+    "if(hooks.fail_sync!=nullptr){constautoerror=hooks.fail_sync("
+    "OOCPrivateHandoffCleanupIntentReconciliationSyncSiteV2::"
+    "DuplicatePendingRemoval,hooks.context);if(error){fail("
+    "OOCCleanupStatus::DurabilityFailure,OOCCleanupStage::IntentDurable,error);}}"
+    "sync_authorized_cleanup_directory_v2(",
+    "sync_authorized_cleanup_directory_v2("
+    "directory_handle,OOCCleanupStage::IntentDurable);"
+    "if(inspect_authorized_cleanup_leaf_v2(directory_handle,leaf)){fail(",
+)
+WORKER_CLEANUP_RECONCILIATION_ENTRY_BODIES = {
+    WORKER_CLEANUP_RECONCILIATION_ENTRY_IDENTIFIER: (
+        "returnOOCPrivateHandoffCleanupIntentReconciliationExecutorV2::"
+        "run(authorization,{});"
+    ),
+    WORKER_CLEANUP_RECONCILIATION_TRUSTED_ENTRY_IDENTIFIER: (
+        "returnOOCPrivateHandoffCleanupIntentReconciliationExecutorV2::"
+        "run(authorization,hooks);"
+    ),
+}
+WORKER_CLEANUP_RECONCILIATION_CORE_TEST_FUNCTIONS = (
+    "test_authorized_cleanup_v2_pending_only_requires_conversion",
+    "test_authorized_cleanup_v2_reconciliation_never_creates_pending",
+    "test_authorized_cleanup_v2_existing_canonical_and_duplicate_pending_converge",
+    "test_authorized_cleanup_v2_existing_canonical_sync_failures_are_retryable",
+    "test_authorized_cleanup_v2_canonical_intent_conflicts_are_zero_mutation",
+    "test_authorized_cleanup_v2_intent_reconciliation_replacements",
+)
+WORKER_CLEANUP_RECONCILIATION_CRASH_TEST_FUNCTIONS = (
+    "test_authorized_cleanup_v2_intent_reconciliation_fault_prefixes",
+    "test_authorized_cleanup_v2_intent_reconciliation_process_crashes",
+    "test_authorized_cleanup_v2_canonical_intent_fault_boundaries",
+    "test_authorized_cleanup_v2_canonical_intent_process_crashes_and_cold_retry",
+    "test_authorized_cleanup_v2_duplicate_pending_sync_crash_and_cold_retry",
+)
+WORKER_CLEANUP_RECONCILIATION_TEST_FUNCTIONS = (
+    WORKER_CLEANUP_RECONCILIATION_CORE_TEST_FUNCTIONS
+    + WORKER_CLEANUP_RECONCILIATION_CRASH_TEST_FUNCTIONS
+)
+WORKER_CLEANUP_RECONCILIATION_TEST_BODY_SHA256 = {
+    "test_authorized_cleanup_v2_pending_only_requires_conversion": (
+        "fa16651ae047b73ae26faf7e3fd34bbbc7457f82a03e0bfd18a7257a4b6d05c1"
+    ),
+    "test_authorized_cleanup_v2_reconciliation_never_creates_pending": (
+        "2ad0e4d5a83d968c77bd6d45ee0dfc0ba37608de20d9aa2da7003babc6af1aef"
+    ),
+    "test_authorized_cleanup_v2_existing_canonical_and_duplicate_pending_converge": (
+        "dd6cbbfaefea3228f50b45bc0b474460288895e060063b225f7f3f81ac787a45"
+    ),
+    "test_authorized_cleanup_v2_existing_canonical_sync_failures_are_retryable": (
+        "dc82a57adf668fa080163728723b7946b2a36240f5c7976624e4059ccd104896"
+    ),
+    "test_authorized_cleanup_v2_canonical_intent_conflicts_are_zero_mutation": (
+        "1d7b0cae6e7c4789d0169f9d93bba821733f1fb9f563559cc39c6b48b426f4f5"
+    ),
+    "test_authorized_cleanup_v2_intent_reconciliation_replacements": (
+        "c7b0ae7c944a32a9f81e878ef9b7886f5077453b50e3ae43b208f99edb0a33c3"
+    ),
+    "test_authorized_cleanup_v2_intent_reconciliation_fault_prefixes": (
+        "58a901f78260aeb5e3134d5986a2ac412c85eb009b894fc089bc1ccf14a17536"
+    ),
+    "test_authorized_cleanup_v2_intent_reconciliation_process_crashes": (
+        "ab2c8679b4313648fafb5f9c16e429880f6e75aa68282503108611022c52dfe9"
+    ),
+    "test_authorized_cleanup_v2_canonical_intent_fault_boundaries": (
+        "8c311d126be4e33d6ebe8aeb14681fe32636809aad6204e2629df7643b560527"
+    ),
+    "test_authorized_cleanup_v2_canonical_intent_process_crashes_and_cold_retry": (
+        "38f56407d2d238aaf48a3358667ed8c250df495346b97ec0775806437eb49227"
+    ),
+    "test_authorized_cleanup_v2_duplicate_pending_sync_crash_and_cold_retry": (
+        "46df8ce8608502a0aec0b443fd856ddf080791367823526670a4cc035e4a8cea"
+    ),
+}
+WORKER_CLEANUP_RECONCILIATION_TEST_HELPER_BODY_SHA256 = {
+    "authorized_cleanup_intent_reconciliation_hook_v2": (
+        "bdc163d25b515102c36ecc678f550f9c32d65bbd84d9b031a39ea8b8b68fa422"
+    ),
+    "check_authorized_cleanup_intent_reconciliation_live_artifacts_v2": (
+        "fe59fedf124bac3008ae32cae14252e5784effc1ed587348cea51fe2bdf5c8d9"
+    ),
+    "check_authorized_cleanup_intent_reconciliation_base_lock_released_v2": (
+        "a8c28b90681dd9bb6787ffe34d96dd879e64edb741996414521e4885902b79e9"
+    ),
+    "check_authorized_cleanup_intent_reconciliation_evidence_v2": (
+        "713176878fb1e82d0755a212a19ffe6f284d7273940bed65e20657744b6ba2df"
+    ),
+    "check_spent_cleanup_intent_reconciliation_receipt_rejected_v2": (
+        "cfe3ed55fcd74176c80c6d553cbe636cd2fd83477515468089872c58c0ab124b"
+    ),
+    "prepare_authorized_cleanup_canonical_intent_fixture_v2": (
+        "6e30e52baf2dca08b6d075065172e000a854f3c66aa0265718e0db87245ad6a4"
+    ),
+    "check_authorized_cleanup_canonical_intent_prefix_v2": (
+        "39ee2c4de0f46a48a192bf4a5c3bdbbd26e4bfcf22c902641792a3a7034d550e"
+    ),
+    "check_authorized_cleanup_canonical_intent_success_v2": (
+        "a4d35e5545c4827eb62dc905246caca5d2b9615d862a6b42c765bb85b8434518"
+    ),
+    "fail_authorized_cleanup_intent_reconciliation_sync_v2": (
+        "8b7c7820ba946d9d4a038407c5ef02561c3ba6bec43f062c50a2fac564dc27fa"
+    ),
+    "crash_authorized_cleanup_duplicate_pending_sync_v2": (
+        "fd605a07dddd472ff4509e027d14038a9eb9fde9a776a3010f47817481a69d32"
+    ),
+    "check_authorized_cleanup_intent_reconciliation_sync_failure_v2": (
+        "e2ee0cf69dfd48b6c9214c1d163d7ef84f2141eb3ca2b387e87806a620ba32cb"
+    ),
+    "check_authorized_cleanup_canonical_intent_interruption_v2": (
+        "d5bc78bf7ef7beb659d0d6ecff9a2f48863674215ec8c78c7552007fcb1842d5"
+    ),
+    "crash_authorized_cleanup_canonical_intent_reconciliation_v2": (
+        "2c17903e63d74ea572cd744b397021442fe25a3b93f81e64723af99c88957992"
+    ),
+    "check_authorized_cleanup_intent_reconciliation_prefix_v2": (
+        "aa957be167a4bba2479cd4823b47dcca0cb348bca8fd6e849bda2a4c2e999a9c"
+    ),
+    "finish_authorized_cleanup_intent_reconciliation_fixture_v2": (
+        "6a744935d6e2b11ecfc004481aec93ee3ec30ccdc2699c0d0e3110424c2305a2"
+    ),
+    "crash_authorized_cleanup_intent_reconciliation_v2": (
+        "69a9f3773befc193be2409bc0507abf90f99d169395c41b7ebbc91dbad52eb28"
+    ),
+}
+WORKER_CLEANUP_RECONCILIATION_TEST_HELPER_USE_CONTEXTS = {
+    "authorized_cleanup_intent_reconciliation_hook_v2": (
+        9,
+        "ee1f23ca670c234dd65cfa2717f74c6715acefcc2326476fcc231ee3050625a1",
+    ),
+    "check_authorized_cleanup_intent_reconciliation_live_artifacts_v2": (
+        4,
+        "283b0bd1823bff8b09cdc6265662e9d982e5765e6f13c7b322e26e4d257199f1",
+    ),
+    "check_authorized_cleanup_intent_reconciliation_base_lock_released_v2": (
+        4,
+        "e7bc9073981b0be97366ed4189318cb78988060d9f30f12e2e5c07d54d467d29",
+    ),
+    "check_authorized_cleanup_intent_reconciliation_evidence_v2": (
+        3,
+        "f311b08153e1dae015b5022fe6ca66c6ec73d05991463a8e0972ac3f3ae21a5c",
+    ),
+    "check_spent_cleanup_intent_reconciliation_receipt_rejected_v2": (
+        11,
+        "eb8259330260dd6694e3891dacb94880fb0bcc73ffea2c48636ea4c4aae82b92",
+    ),
+    "prepare_authorized_cleanup_canonical_intent_fixture_v2": (
+        8,
+        "b51b383053eb41e8c2b6e0bd47e45fbdcfcb9f254488086c7d9678fb106b9c80",
+    ),
+    "check_authorized_cleanup_canonical_intent_prefix_v2": (
+        20,
+        "56540b0e6c9fab96be64953183d410b2e5e94703491cb1507fdd79350f71f906",
+    ),
+    "check_authorized_cleanup_canonical_intent_success_v2": (
+        8,
+        "dbd849d3a9da82fd33bcff3f3e7f9cd00976330aa1bd38d9d573e0038ae2632c",
+    ),
+    "fail_authorized_cleanup_intent_reconciliation_sync_v2": (
+        3,
+        "f412fd0e71e7a3f070bbd9442c1cfc7fdf228d19e6367a46e6722051824568a1",
+    ),
+    "crash_authorized_cleanup_duplicate_pending_sync_v2": (
+        2,
+        "0c7a5a2331bfff0b5995f0ebefc9349ce4890dd9887cea1efec2347ef388076c",
+    ),
+    "check_authorized_cleanup_intent_reconciliation_sync_failure_v2": (
+        3,
+        "feb1062e76e469f379a38453c0c382e67600947c37311bccd6bfc95a09d0b3bd",
+    ),
+    "check_authorized_cleanup_canonical_intent_interruption_v2": (
+        2,
+        "d894c86aa80705414ef9e435af14b1f7a4d1ecd38e687c7ebd0efdea360a0f58",
+    ),
+    "crash_authorized_cleanup_canonical_intent_reconciliation_v2": (
+        2,
+        "b96a68396535f5abbb6a86facd9bd70697c45d11a06692b9981f66cbaa3b243b",
+    ),
+    "check_authorized_cleanup_intent_reconciliation_prefix_v2": (
+        3,
+        "9f0ad163891d8279581b158bb260becfb23a65fac2763bd593916f785d0f1482",
+    ),
+    "finish_authorized_cleanup_intent_reconciliation_fixture_v2": (
+        3,
+        "67626258195ba6e5f9ac3c6539806a06a2f852f6a877ad53e543ab03c7728b99",
+    ),
+    "crash_authorized_cleanup_intent_reconciliation_v2": (
+        2,
+        "30dadc502a46f212bbeb41ad3931b6f16b7290777ada274753bfbf4e74dcfa64",
+    ),
+}
+WORKER_CLEANUP_RECONCILIATION_TEST_STRUCT_BODY_SHA256 = {
+    "AuthorizedCleanupIntentReconciliationHookContextV2": (
+        "688dda0dcd15975ba72635c8a06ba3b6a5348ddd10d8a901f276a027fcded9e5"
+    ),
+    "AuthorizedCleanupCanonicalIntentFixtureV2": (
+        "2561e2d56487e161279720cfab7ad585f25d111d4e47e9579b9a5fc3d62825be"
+    ),
+    "AuthorizedCleanupIntentReconciliationSyncFailureV2": (
+        "91e4ced0a4cf47c9dde4d39c58026674ae51fa94321b499bf076817c9f7bdfdd"
+    ),
+    "AuthorizedCleanupCanonicalIntentFaultScenarioV2": (
+        "5fb4a1aaa2fe81841c4c1cecf777be72e131b83f38364129032ef15bfa53d14a"
+    ),
+    "AuthorizedCleanupCanonicalIntentCrashContextV2": (
+        "e5a62a9912337908acb5f29bf84bbf6121f41d98e3e5e12bb2999b8ce7e455f2"
+    ),
+    "AuthorizedCleanupCanonicalIntentConflictScenarioV2": (
+        "e6f311861b1fb3d60f4610a33ee2630b00bb854d380be7971d94bcba601391d4"
+    ),
+    "AuthorizedCleanupIntentReconciliationCrashContextV2": (
+        "e5a62a9912337908acb5f29bf84bbf6121f41d98e3e5e12bb2999b8ce7e455f2"
+    ),
+}
+WORKER_CLEANUP_RECONCILIATION_TEST_ARRAY_BODY_SHA256 = {
+    "AUTHORIZED_CLEANUP_V2_PENDING_RECONCILIATION_FAULT_POINTS": (
+        "9befa3b170080b814b3d603905a44c0053c04b1219289c4595efdb7bb16cf51a"
+    ),
+    "AUTHORIZED_CLEANUP_V2_CANONICAL_RECONCILIATION_FAULT_POINTS": (
+        "474617381b150859d13564d3b9c879ebff9ef94874adb83916579ea35d252c27"
+    ),
+    "AUTHORIZED_CLEANUP_V2_CANONICAL_RECONCILIATION_FAULT_SCENARIOS": (
+        "346b7a610a63f7e5c84759ab7aea75c946a0315ac2dd0c33eebce74e594fa0f0"
+    ),
+    "AUTHORIZED_CLEANUP_V2_CANONICAL_RECONCILIATION_CONFLICT_SCENARIOS": (
+        "b072e7b79473028089884e85b01efe988c3e25d2029f4d4f84eefca6c599bec5"
+    ),
+}
+WORKER_CLEANUP_RECONCILIATION_REQUIRED_TEST_BODY_FRAGMENTS = {
+    "test_authorized_cleanup_v2_pending_only_requires_conversion": (
+        "CHECK(reconciled.intent_canonical());",
+        "CHECK(reconciliation_authorization.spent());",
+        "CHECK(!entry_exists_no_follow(paths.intent_pending_path));",
+        "CHECK(native_identity_for_test_path(paths.intent_path)=="
+        "fixture.pending_snapshot.identity);",
+    ),
+    "test_authorized_cleanup_v2_reconciliation_never_creates_pending": (
+        "CHECK(rejected.authorization_retained());",
+        "CHECK(!authorization.spent());",
+        "CHECK(!entry_exists_no_follow(paths.intent_path));",
+        "CHECK(capture_namespace_tree(temp.path())==before);",
+    ),
+    "test_authorized_cleanup_v2_existing_canonical_and_duplicate_pending_converge": (
+        "for(constboolduplicate_pending:{false,true}){",
+        "check_authorized_cleanup_canonical_intent_success_v2(reconciled,fixture);",
+        "CHECK(authorization.spent());",
+        "check_authorized_cleanup_canonical_intent_prefix_v2(fixture,false);",
+    ),
+    "test_authorized_cleanup_v2_existing_canonical_sync_failures_are_retryable": (
+        "OOCPrivateHandoffCleanupIntentReconciliationSyncSiteV2::"
+        "CanonicalExistingConfirmation,",
+        "OOCPrivateHandoffCleanupIntentReconciliationDispositionV2::"
+        "AuthorizationRetained);CHECK(failed.authorization_retained());"
+        "CHECK(!authorization.spent());",
+        "OOCPrivateHandoffCleanupIntentReconciliationSyncSiteV2::"
+        "DuplicatePendingRemoval,",
+        "OOCPrivateHandoffCleanupIntentReconciliationDispositionV2::"
+        "ReconciliationRequired);CHECK(failed.reconciliation_required());"
+        "CHECK(authorization.spent());",
+    ),
+    "test_authorized_cleanup_v2_canonical_intent_conflicts_are_zero_mutation": (
+        "CHECK(rejected.authorization_retained());",
+        "CHECK(!rejected.evidence.has_value());",
+        "CHECK(!authorization.spent());",
+        "CHECK(capture_namespace_tree(temp.path())==*context.after_injection);",
+    ),
+    "test_authorized_cleanup_v2_intent_reconciliation_replacements": (
+        "Injection::ReplacePendingSameBytes,",
+        "CHECK(rejected.authorization_retained());CHECK(!authorization.spent());",
+        "Injection::ReplaceCanonicalSameBytes,",
+        "CHECK(rejected.reconciliation_required());CHECK(authorization.spent());",
+        "CHECK(rejected.result.native_error.value()==EEXIST);",
+        "CHECK(rejected.result.native_error.value()==ENOENT);",
+    ),
+    "test_authorized_cleanup_v2_intent_reconciliation_fault_prefixes": (
+        "CHECK(interrupted.authorization_retained());CHECK(!authorization.spent());",
+        "CHECK(interrupted.intent_canonical());CHECK(authorization.spent());",
+        "CHECK(interrupted.reconciliation_required());CHECK(authorization.spent());",
+    ),
+    "test_authorized_cleanup_v2_intent_reconciliation_process_crashes": (
+        "constpid_tchild=::fork();",
+        "CHECK(WEXITSTATUS(status)=="
+        "AUTHORIZED_CLEANUP_V2_RECONCILIATION_CRASH_EXIT_CODE);",
+        "finish_authorized_cleanup_intent_reconciliation_fixture_v2(fixture);",
+    ),
+    "test_authorized_cleanup_v2_canonical_intent_fault_boundaries": (
+        "check_authorized_cleanup_canonical_intent_interruption_v2("
+        "interrupted,fixture,scenario);",
+        "CHECK(authorization.spent()==!scenario.authorization_retained);",
+        "constautosame_receipt_retry="
+        "reconcile_authorized_private_handoff_cleanup_intent_v2(",
+        "autofresh_authorization=make_authorized_cleanup_resume_receipt_v2(",
+    ),
+    "test_authorized_cleanup_v2_canonical_intent_process_crashes_and_cold_retry": (
+        "constpid_tchild=::fork();",
+        "CHECK(WEXITSTATUS(status)=="
+        "AUTHORIZED_CLEANUP_V2_CANONICAL_RECONCILIATION_CRASH_EXIT_CODE);",
+        "constautorecovered=reconcile_authorized_private_handoff_cleanup_intent_v2(",
+        "check_authorized_cleanup_canonical_intent_success_v2(recovered,fixture);",
+    ),
+    "test_authorized_cleanup_v2_duplicate_pending_sync_crash_and_cold_retry": (
+        ".fail_sync=crash_authorized_cleanup_duplicate_pending_sync_v2,",
+        "CHECK(WEXITSTATUS(status)=="
+        "AUTHORIZED_CLEANUP_V2_DUPLICATE_PENDING_SYNC_CRASH_EXIT_CODE);",
+        "check_authorized_cleanup_canonical_intent_prefix_v2(fixture,false);",
+        "check_authorized_cleanup_canonical_intent_success_v2(recovered,fixture);",
+    ),
+}
+WORKER_CLEANUP_RECONCILIATION_REQUIRED_HELPER_FRAGMENTS = {
+    "check_authorized_cleanup_intent_reconciliation_evidence_v2": (
+        "CHECK(result.intent_canonical());",
+        "CHECK(result.evidence.has_value());",
+        "CHECK(result.evidence->intent_snapshot==fixture.canonical_snapshot);",
+    ),
+    "check_spent_cleanup_intent_reconciliation_receipt_rejected_v2": (
+        "CHECK(authorization.spent());",
+        "OOCPrivateHandoffCleanupIntentReconciliationDispositionV2::Failed);",
+        "CHECK(!rejected.evidence.has_value());",
+    ),
+    "check_authorized_cleanup_intent_reconciliation_sync_failure_v2": (
+        "CHECK(failed.result.status==OOCCleanupStatus::DurabilityFailure);",
+        "CHECK(failed.disposition==expected_disposition);",
+        "CHECK(!failed.evidence.has_value());",
+        "CHECK(!failed.intent_canonical());",
+    ),
+    "check_authorized_cleanup_canonical_intent_interruption_v2": (
+        "CHECK(interrupted.authorization_retained()==scenario.authorization_retained);",
+        "CHECK(interrupted.intent_canonical()==scenario.intent_canonical);",
+        "CHECK(!interrupted.evidence.has_value());",
+        "check_authorized_cleanup_intent_reconciliation_evidence_v2(interrupted,fixture);",
+    ),
+    "crash_authorized_cleanup_duplicate_pending_sync_v2": (
+        "if(site==OOCPrivateHandoffCleanupIntentReconciliationSyncSiteV2::"
+        "DuplicatePendingRemoval){std::_Exit("
+        "AUTHORIZED_CLEANUP_V2_DUPLICATE_PENDING_SYNC_CRASH_EXIT_CODE);}return{};",
+    ),
+}
 WORKER_CLEANUP_RECEIPT_OWNED_BRIDGE_BODY = (
     "returnstate.live_for_current_process();"
 )
@@ -1621,6 +2265,7 @@ WORKER_CLEANUP_RECEIPT_TEST_RUNNER_FILE = "scripts/test.sh"
 WORKER_CLEANUP_RECEIPT_TEST_TARGET = (
     "test_distributed_sieve_worker_cleanup_tail"
 )
+WORKER_CLEANUP_RECONCILIATION_TEST_TARGET = "test_ooc_cleanup_transaction"
 WORKER_CLEANUP_RECEIPT_CTEST_NAME = "DistributedSieveWorkerCleanupTail"
 WORKER_CLEANUP_RECEIPT_TEST_CHECK_DEFINITION = (
     "(expression)check(static_cast<bool>(expression),#expression,__LINE__)"
@@ -1652,6 +2297,21 @@ WORKER_CLEANUP_RECEIPT_TIER_B_SAFE_MACROS = {
             "3b4e46873a02acccc7fee89491fa1ef743380298e5b83a8445e4f2b112ba1b5c",
         ),
     ),
+    (
+        WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE,
+        "CHECK",
+    ): (
+        '(condition)do{if(condition){++checks_passed;}else{++checks_failed;'
+        'std::cerr<<"FAIL: "#condition" at "<<__FILE__<<\':\'<<__LINE__<<\'\\n\';}'
+        '}while(false)',
+        (
+            3240,
+            "7f57c4adda92e5ad6b3172e33cdb86940b0ac6ed8d5393bc3caff11ca8a45284",
+        ),
+    ),
+}
+WORKER_CLEANUP_RECEIPT_TIER_B_SAFE_MACRO_UNDEF_COUNTS = {
+    (WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE, "CHECK"): 0,
 }
 WORKER_CLEANUP_RECEIPT_PASTE_MACRO_ALLOWLIST = {
     ("tests/test_i18n.cpp", "TEST"): (
@@ -1697,20 +2357,28 @@ WORKER_CLEANUP_RECEIPT_PASTE_MACRO_CODE_USE_CONTEXTS = {
 }
 WORKER_CLEANUP_RECEIPT_PROTECTED_UNIT_TARGETS = {
     WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE: {"gnfs_core"},
+    WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE: {"gnfs_core"},
     WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE: {
         "gnfs_core",
         WORKER_CLEANUP_RECEIPT_TEST_TARGET,
+        WORKER_CLEANUP_RECONCILIATION_TEST_TARGET,
     },
     WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE: {"gnfs_core"},
     WORKER_CLEANUP_RECEIPT_AUTHORITY_IMPLEMENTATION_FILE: {"gnfs_core"},
     WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE: {
         WORKER_CLEANUP_RECEIPT_TEST_TARGET
     },
+    WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE: {
+        WORKER_CLEANUP_RECONCILIATION_TEST_TARGET
+    },
 }
 WORKER_CLEANUP_RECEIPT_TARGET_DEPENDENCY_CLOSURES = {
     "gnfs_core": frozenset({"gnfs_core", "gnfs_util"}),
     WORKER_CLEANUP_RECEIPT_TEST_TARGET: frozenset(
         {WORKER_CLEANUP_RECEIPT_TEST_TARGET, "gnfs_core", "gnfs_util"}
+    ),
+    WORKER_CLEANUP_RECONCILIATION_TEST_TARGET: frozenset(
+        {WORKER_CLEANUP_RECONCILIATION_TEST_TARGET, "gnfs_core", "gnfs_util"}
     ),
 }
 WORKER_CLEANUP_RECEIPT_TARGET_INCLUDE_COMMANDS = {
@@ -1729,12 +2397,20 @@ WORKER_CLEANUP_RECEIPT_TARGET_INCLUDE_COMMANDS = {
         "${CMAKE_CURRENT_SOURCE_DIR}/src/relation"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve",
     ),
+    WORKER_CLEANUP_RECONCILIATION_TEST_TARGET: (
+        "test_ooc_cleanup_transactionPRIVATE"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/relation",
+    ),
 }
 WORKER_CLEANUP_RECEIPT_TARGET_INCLUDE_SEARCH = {
     "gnfs_core": ("include",),
     WORKER_CLEANUP_RECEIPT_TEST_TARGET: (
         "src/relation",
         "src/sieve",
+        "include",
+    ),
+    WORKER_CLEANUP_RECONCILIATION_TEST_TARGET: (
+        "src/relation",
         "include",
     ),
 }
@@ -5930,8 +6606,37 @@ WORK_PACKAGE_CARRIER_OPS_INTERFACE_FILE = (
 )
 AUTHORIZED_CLEANUP_RAW_UNLINK_FILE = "src/relation/ooc_private_cleanup_union.cpp"
 AUTHORIZED_CLEANUP_RAW_UNLINK_CARRIER = "authorized_cleanup_raw_unlinkat_v2"
+AUTHORIZED_CLEANUP_RAW_UNLINK_CARRIER_BODY_SHA256 = (
+    "a6e09b7e118a01a5b56da5886de1393685323cca09f743f0c99be18859e95899"
+)
+AUTHORIZED_CLEANUP_RAW_UNLINK_CARRIER_DEFINITION_SURFACE = (
+    "authorized_cleanup_raw_unlinkat_v2("
+    "util::durable_immutable_record::NativeHandledirectory_handle,"
+    "conststd::filesystem::path&leaf,intflags)noexcept{"
+    "intresult=-1;do{result=::unlinkat(static_cast<int>(directory_handle),"
+    "leaf.c_str(),flags);}while(result!=0&&errno==EINTR);return{"
+    ".result=result,.native_error=result==0?0:errno,};}"
+)
+AUTHORIZED_CLEANUP_RECONCILIATION_CALLEE_BODY_SHA256 = {
+    "sync_authorized_cleanup_directory_v2": (
+        "cb47e1c3522e9f5c5c0cc5c91072321c7f7870ff531ca8e175f363bdbb89d1df"
+    ),
+    "confirm_exact_authorized_cleanup_leaf_durable_v2": (
+        "859f7698d9b19565583d06e8ccae0fe5d534f300255c122c42c41ec211b9c150"
+    ),
+    "inspect_authorized_cleanup_leaf_v2": (
+        "247c9be4a683467b48e142fa08562999a839b9a71eb422e1c7497c53a4abf049"
+    ),
+    "authorized_cleanup_regular_leaf_policy_v2": (
+        "adf4ca0e3b006635a3c374868cde4e86b0271af1d065bb772433f54cced848c1"
+    ),
+    "authorized_cleanup_snapshot_v2": (
+        "442f3126e15b8e031f898f23171bf2b725958f7fcc21f993875f38a9ac486fa5"
+    ),
+}
 AUTHORIZED_CLEANUP_RAW_UNLINK_CALL_FUNCTIONS = (
     "remove_exact_authorized_cleanup_leaf_v2",
+    WORKER_CLEANUP_RECONCILIATION_REDUCER_IDENTIFIER,
     "remove_empty_authorized_cleanup_directory_v2",
 )
 PRODUCTION_RAW_UNLINKAT_FUNCTIONS = {
@@ -7268,21 +7973,40 @@ def _identifier_use_context_signature(
 ) -> tuple[int, str]:
     """Fingerprint every live lexical neighborhood for one identifier."""
 
+    return _identifier_use_context_signatures(
+        text, (identifier,), radius=radius
+    )[identifier]
+
+
+def _identifier_use_context_signatures(
+    text: str, identifiers: Iterable[str], *, radius: int = 32
+) -> dict[str, tuple[int, str]]:
+    """Fingerprint many identifier neighborhoods with one lexical pass."""
+
+    requested = set(identifiers)
+    if not requested:
+        return {}
     logical = _translation_phase_masked_cpp_code(text)
     tokens = list(_CPP_CONTEXT_TOKEN.finditer(logical))
-    token_index = {token.start(): index for index, token in enumerate(tokens)}
-    contexts: list[str] = []
-    uses = find_code_identifier_uses(logical, identifier)
-    for use in uses:
-        index = token_index.get(use.offset)
-        if index is None:
-            contexts.append("<unmapped>")
+    contexts = {identifier: [] for identifier in requested}
+    for index, token in enumerate(tokens):
+        identifier = token.group(0)
+        if identifier not in contexts:
             continue
         start = max(0, index - radius)
         end = min(len(tokens), index + radius + 1)
-        contexts.append("\x1f".join(token.group(0) for token in tokens[start:end]))
-    digest = hashlib.sha256("\x1e".join(contexts).encode("utf-8")).hexdigest()
-    return len(uses), digest
+        contexts[identifier].append(
+            "\x1f".join(item.group(0) for item in tokens[start:end])
+        )
+    return {
+        identifier: (
+            len(identifier_contexts),
+            hashlib.sha256(
+                "\x1e".join(identifier_contexts).encode("utf-8")
+            ).hexdigest(),
+        )
+        for identifier, identifier_contexts in contexts.items()
+    }
 
 
 def _preprocessor_macro_records_from_logical(
@@ -7690,12 +8414,14 @@ def _worker_cleanup_receipt_protected_unit_tokens(
     texts: dict[str, str] = {}
     required = {
         WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE,
+        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
         WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
         WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
         WORKER_CLEANUP_RECEIPT_WAVE_STORE_INTERFACE_FILE,
         WORKER_CLEANUP_RECEIPT_AUTHORITY_IMPLEMENTATION_FILE,
         WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE,
         WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
+        WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE,
     }
     for relative in required:
         try:
@@ -7828,6 +8554,163 @@ def _worker_cleanup_receipt_protected_unit_tokens(
         else:
             add_tokens(WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE, run_body)
 
+    relation_union = texts.get(
+        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE
+    )
+    if relation_union is not None:
+        carrier_spans = _function_definition_spans(
+            relation_union, AUTHORIZED_CLEANUP_RAW_UNLINK_CARRIER
+        )
+        carrier_body, carrier_line_offset, carrier_errors = (
+            find_function_definition_body(
+                relation_union, AUTHORIZED_CLEANUP_RAW_UNLINK_CARRIER
+            )
+        )
+        for line, error in carrier_errors:
+            errors.append(
+                (
+                    WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+                    line,
+                    error,
+                )
+            )
+        carrier_source = (
+            None
+            if len(carrier_spans) != 1
+            else relation_union[carrier_spans[0][0] : carrier_spans[0][1]]
+        )
+        if (
+            carrier_body is None
+            or carrier_source is None
+            or _compact_cpp_sha256(carrier_body)
+            != AUTHORIZED_CLEANUP_RAW_UNLINK_CARRIER_BODY_SHA256
+            or _compact_cpp_code(carrier_source)
+            != AUTHORIZED_CLEANUP_RAW_UNLINK_CARRIER_DEFINITION_SURFACE
+        ):
+            errors.append(
+                (
+                    WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+                    carrier_line_offset + 1,
+                    "cannot derive Tier-B tokens from unfrozen sole raw unlink carrier",
+                )
+            )
+        else:
+            add_tokens(
+                WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+                carrier_source,
+            )
+
+        callee_bodies = find_function_definition_bodies(
+            relation_union, AUTHORIZED_CLEANUP_RECONCILIATION_CALLEE_BODY_SHA256
+        )
+        for identifier, expected_hash in (
+            AUTHORIZED_CLEANUP_RECONCILIATION_CALLEE_BODY_SHA256.items()
+        ):
+            body, line_offset, body_errors = callee_bodies[identifier]
+            for line, error in body_errors:
+                errors.append(
+                    (
+                        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+                        line,
+                        error,
+                    )
+                )
+            if body is None or _compact_cpp_sha256(body) != expected_hash:
+                errors.append(
+                    (
+                        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+                        line_offset + 1,
+                        "cannot derive Tier-B tokens from unfrozen reconciliation "
+                        f"callee {identifier}",
+                    )
+                )
+            else:
+                add_tokens(
+                    WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+                    body,
+                )
+
+        executor_span = _class_definition_body_span(
+            relation_union, WORKER_CLEANUP_RECONCILIATION_EXECUTOR_IDENTIFIER
+        )
+        executor_source = (
+            None
+            if executor_span is None
+            else relation_union[executor_span[0] : executor_span[1]]
+        )
+        if (
+            executor_source is None
+            or _compact_cpp_sha256(executor_source)
+            != WORKER_CLEANUP_RECONCILIATION_EXECUTOR_CLASS_BODY_SHA256
+        ):
+            errors.append(
+                (
+                    WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+                    1,
+                    "cannot derive Tier-B tokens from unfrozen reconciliation executor",
+                )
+            )
+        else:
+            run_body, run_line_offset, run_errors = find_function_definition_body(
+                executor_source, "run"
+            )
+            for line, error in run_errors:
+                errors.append(
+                    (
+                        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+                        line,
+                        error,
+                    )
+                )
+            if (
+                run_body is None
+                or _compact_cpp_sha256(run_body)
+                != WORKER_CLEANUP_RECONCILIATION_RUN_BODY_SHA256
+            ):
+                errors.append(
+                    (
+                        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+                        run_line_offset + 1,
+                        "cannot derive Tier-B tokens from unfrozen reconciliation run",
+                    )
+                )
+            else:
+                add_tokens(
+                    WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+                    executor_source,
+                )
+
+        reducer_body, reducer_line_offset, reducer_errors = (
+            find_function_definition_body(
+                relation_union, WORKER_CLEANUP_RECONCILIATION_REDUCER_IDENTIFIER
+            )
+        )
+        for line, error in reducer_errors:
+            errors.append(
+                (
+                    WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+                    line,
+                    error,
+                )
+            )
+        if (
+            reducer_body is None
+            or _compact_cpp_sha256(reducer_body)
+            != WORKER_CLEANUP_RECONCILIATION_REDUCER_BODY_SHA256
+        ):
+            errors.append(
+                (
+                    WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+                    reducer_line_offset + 1,
+                    "cannot derive Tier-B tokens from unfrozen reconciliation reducer",
+                )
+            )
+        else:
+            add_tokens(
+                WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+                reducer_body,
+            )
+
     relation_header = texts.get(WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE)
     if relation_header is not None:
         for identifier, expected in (
@@ -7861,6 +8744,38 @@ def _worker_cleanup_receipt_protected_unit_tokens(
                 )
             else:
                 assert body is not None
+                add_tokens(WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE, body)
+        for identifier, expected_hash in (
+            WORKER_CLEANUP_RECONCILIATION_ENUM_BODY_SHA256.items()
+        ):
+            span = _enum_class_definition_body_span(relation_header, identifier)
+            body = None if span is None else relation_header[span[0] : span[1]]
+            if body is None or _compact_cpp_sha256(body) != expected_hash:
+                errors.append(
+                    (
+                        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+                        1,
+                        "cannot derive Tier-B tokens from unfrozen reconciliation "
+                        f"enum {identifier}",
+                    )
+                )
+            else:
+                add_tokens(WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE, body)
+        for identifier, expected_hash in (
+            WORKER_CLEANUP_RECONCILIATION_CLASS_BODY_SHA256.items()
+        ):
+            span = _class_definition_body_span(relation_header, identifier)
+            body = None if span is None else relation_header[span[0] : span[1]]
+            if body is None or _compact_cpp_sha256(body) != expected_hash:
+                errors.append(
+                    (
+                        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+                        1,
+                        "cannot derive Tier-B tokens from unfrozen reconciliation "
+                        f"class {identifier}",
+                    )
+                )
+            else:
                 add_tokens(WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE, body)
 
     authority_header = texts.get(WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE)
@@ -8088,6 +9003,69 @@ def _worker_cleanup_receipt_protected_unit_tokens(
             else:
                 add_tokens(WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE, body)
 
+    relation_test = texts.get(WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE)
+    if relation_test is not None:
+        definition_hashes = {
+            **WORKER_CLEANUP_RECONCILIATION_TEST_BODY_SHA256,
+            **WORKER_CLEANUP_RECONCILIATION_TEST_HELPER_BODY_SHA256,
+        }
+        definition_bodies = find_function_definition_bodies(
+            relation_test, definition_hashes
+        )
+        for identifier, expected_hash in definition_hashes.items():
+            body, line_offset, body_errors = definition_bodies[identifier]
+            for line, error in body_errors:
+                errors.append((WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE, line, error))
+            if body is None or _compact_cpp_sha256(body) != expected_hash:
+                errors.append(
+                    (
+                        WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE,
+                        line_offset + 1,
+                        "cannot derive Tier-B tokens from unfrozen reconciliation "
+                        f"test/helper {identifier}",
+                    )
+                )
+            else:
+                add_tokens(WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE, body)
+        struct_spans = _class_definition_body_spans(
+            relation_test, WORKER_CLEANUP_RECONCILIATION_TEST_STRUCT_BODY_SHA256
+        )
+        for identifier, expected_hash in (
+            WORKER_CLEANUP_RECONCILIATION_TEST_STRUCT_BODY_SHA256.items()
+        ):
+            span = struct_spans[identifier]
+            body = None if span is None else relation_test[span[0] : span[1]]
+            if body is None or _compact_cpp_sha256(body) != expected_hash:
+                errors.append(
+                    (
+                        WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE,
+                        1,
+                        "cannot derive Tier-B tokens from unfrozen reconciliation "
+                        f"test struct {identifier}",
+                    )
+                )
+            else:
+                add_tokens(WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE, body)
+        array_spans = _named_std_array_initializer_body_spans(
+            relation_test, WORKER_CLEANUP_RECONCILIATION_TEST_ARRAY_BODY_SHA256
+        )
+        for identifier, expected_hash in (
+            WORKER_CLEANUP_RECONCILIATION_TEST_ARRAY_BODY_SHA256.items()
+        ):
+            span = array_spans[identifier]
+            body = None if span is None else relation_test[span[0] : span[1]]
+            if body is None or _compact_cpp_sha256(body) != expected_hash:
+                errors.append(
+                    (
+                        WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE,
+                        1,
+                        "cannot derive Tier-B tokens from unfrozen reconciliation "
+                        f"test array {identifier}",
+                    )
+                )
+            else:
+                add_tokens(WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE, body)
+
     units[WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE].update(
         {
             "scan_worker_cleanup_root_control_inventory_v1",
@@ -8102,9 +9080,13 @@ def _worker_cleanup_receipt_protected_unit_tokens(
         {"execute", "valid"}
     )
     units[WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE].add("run")
+    units[WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE].update(
+        {"run", WORKER_CLEANUP_RECONCILIATION_REDUCER_IDENTIFIER}
+    )
     units[WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE].update(
         {"CHECK", "check", "fail"}
     )
+    units[WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE].add("CHECK")
     return units, errors
 
 
@@ -8612,6 +9594,35 @@ def _class_definition_body_span(
     return source_offsets[opening] + 1, source_offsets[closing]
 
 
+def _class_definition_body_spans(
+    text: str, class_names: Iterable[str]
+) -> dict[str, tuple[int, int] | None]:
+    """Find many class/struct bodies with one translation-phase scan."""
+
+    requested = tuple(dict.fromkeys(class_names))
+    if not requested:
+        return {}
+    masked, source_offsets = _translation_phase_masked_cpp_code_with_offsets(text)
+    spans: dict[str, tuple[int, int] | None] = {}
+    for class_name in requested:
+        pattern = re.compile(
+            rf"\b(?:class|struct)\s+{re.escape(class_name)}\b[^;{{]*{{",
+            re.MULTILINE,
+        )
+        matches = list(pattern.finditer(masked))
+        if len(matches) != 1:
+            spans[class_name] = None
+            continue
+        opening = matches[0].end() - 1
+        closing = _matching_brace(masked, opening)
+        spans[class_name] = (
+            None
+            if closing is None
+            else (source_offsets[opening] + 1, source_offsets[closing])
+        )
+    return spans
+
+
 def _enum_class_definition_body_span(
     text: str, enum_name: str
 ) -> tuple[int, int] | None:
@@ -8628,6 +9639,55 @@ def _enum_class_definition_body_span(
     if closing is None:
         return None
     return source_offsets[opening] + 1, source_offsets[closing]
+
+
+def _named_std_array_initializer_body_span(
+    text: str, identifier: str
+) -> tuple[int, int] | None:
+    masked, source_offsets = _translation_phase_masked_cpp_code_with_offsets(text)
+    pattern = re.compile(
+        rf"\bconstexpr\s+std\s*::\s*array(?:\s*<[^;{{}}]*>)?\s+"
+        rf"{re.escape(identifier)}\s*{{",
+        re.MULTILINE,
+    )
+    matches = list(pattern.finditer(masked))
+    if len(matches) != 1:
+        return None
+    opening = matches[0].end() - 1
+    closing = _matching_brace(masked, opening)
+    if closing is None:
+        return None
+    return source_offsets[opening] + 1, source_offsets[closing]
+
+
+def _named_std_array_initializer_body_spans(
+    text: str, identifiers: Iterable[str]
+) -> dict[str, tuple[int, int] | None]:
+    """Find many named std::array initializers with one translation scan."""
+
+    requested = tuple(dict.fromkeys(identifiers))
+    if not requested:
+        return {}
+    masked, source_offsets = _translation_phase_masked_cpp_code_with_offsets(text)
+    spans: dict[str, tuple[int, int] | None] = {}
+    for identifier in requested:
+        pattern = re.compile(
+            rf"\bconstexpr\s+std\s*::\s*array(?:\s*<[^;{{}}]*>)?\s+"
+            rf"{re.escape(identifier)}\s*{{",
+            re.MULTILINE,
+        )
+        matches = list(pattern.finditer(masked))
+        if len(matches) != 1:
+            spans[identifier] = None
+            continue
+        opening = matches[0].end() - 1
+        closing = _matching_brace(masked, opening)
+        spans[identifier] = (
+            None
+            if closing is None
+            else (source_offsets[opening] + 1, source_offsets[closing])
+        )
+    return spans
 
 
 def _forbidden_control_scope_introducer(
@@ -8713,13 +9773,13 @@ def find_function_body(
     return text[body_opening + 1 : body_closing], body_line_offset, errors
 
 
-def find_function_definition_body(
-    text: str, function_name: str
+def _function_definition_body_from_uses(
+    text: str,
+    function_name: str,
+    uses: Iterable[CodeIdentifierUse],
 ) -> tuple[str | None, int, list[tuple[int, str]]]:
-    """Find one definition while ignoring ordinary calls of the same identifier."""
-
     candidates: list[tuple[CodeIdentifierUse, int]] = []
-    for use in find_code_identifier_uses(text, function_name):
+    for use in uses:
         opening = _skip_call_trivia(text, use.offset + len(function_name))
         if opening >= len(text) or text[opening] != "(":
             continue
@@ -8798,6 +9858,47 @@ def find_function_definition_body(
         )
     body_line_offset = text.count("\n", 0, body_opening + 1)
     return text[body_opening + 1 : body_closing], body_line_offset, []
+
+
+def find_function_definition_body(
+    text: str, function_name: str
+) -> tuple[str | None, int, list[tuple[int, str]]]:
+    """Find one definition while ignoring ordinary calls of the same identifier."""
+
+    return _function_definition_body_from_uses(
+        text,
+        function_name,
+        find_code_identifier_uses(text, function_name),
+    )
+
+
+def find_function_definition_bodies(
+    text: str, function_names: Iterable[str]
+) -> dict[str, tuple[str | None, int, list[tuple[int, str]]]]:
+    """Find many definitions after one comment/literal-safe identifier scan."""
+
+    requested = tuple(dict.fromkeys(function_names))
+    if not requested:
+        return {}
+    masked = _mask_cpp_comments_and_literals(text)
+    pattern = re.compile(
+        r"\b(?:" + "|".join(re.escape(name) for name in requested) + r")\b"
+    )
+    newline_offsets = [match.start() for match in re.finditer("\n", text)]
+    uses_by_name: dict[str, list[CodeIdentifierUse]] = {
+        name: [] for name in requested
+    }
+    for match in pattern.finditer(masked):
+        uses_by_name[match.group(0)].append(
+            CodeIdentifierUse(
+                line=bisect_right(newline_offsets, match.start() - 1) + 1,
+                offset=match.start(),
+            )
+        )
+    return {
+        name: _function_definition_body_from_uses(text, name, uses_by_name[name])
+        for name in requested
+    }
 
 
 def find_getenv_calls(text: str) -> tuple[list[GetenvCall], list[tuple[int, str]]]:
@@ -9284,11 +10385,18 @@ class Checks:
                         "protected production source must attach literally to gnfs_core",
                     )
             if command.name == "add_executable" and source_hits:
-                if first != WORKER_CLEANUP_RECEIPT_TEST_TARGET:
+                mismatched_sources = {
+                    source
+                    for source in source_hits
+                    if first
+                    not in WORKER_CLEANUP_RECEIPT_PROTECTED_UNIT_TARGETS[source]
+                }
+                if mismatched_sources:
                     self.fail(
                         WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
                         command.line,
-                        "protected test source must attach literally to its exact target",
+                        "protected test source must attach literally to its frozen "
+                        "exact target: " + ", ".join(sorted(mismatched_sources)),
                     )
             for source in source_hits:
                 standalone = re.search(
@@ -9698,6 +10806,28 @@ class Checks:
             self.fail(relative, line, error)
         if body is None:
             return
+        if relative == AUTHORIZED_CLEANUP_RAW_UNLINK_FILE:
+            carrier_spans = _function_definition_spans(
+                text, AUTHORIZED_CLEANUP_RAW_UNLINK_CARRIER
+            )
+            carrier_source = (
+                None
+                if len(carrier_spans) != 1
+                else text[carrier_spans[0][0] : carrier_spans[0][1]]
+            )
+            if (
+                carrier_source is None
+                or _compact_cpp_sha256(body)
+                != AUTHORIZED_CLEANUP_RAW_UNLINK_CARRIER_BODY_SHA256
+                or _compact_cpp_code(carrier_source)
+                != AUTHORIZED_CLEANUP_RAW_UNLINK_CARRIER_DEFINITION_SURFACE
+            ):
+                self.fail(
+                    relative,
+                    body_line_offset + 1,
+                    "sole raw unlink carrier parameters, EINTR loop, leaf, flags, "
+                    "and errno result surface must remain exact",
+                )
         body_uses = find_code_identifier_uses(body, WAVE_STORE_RAW_UNLINK_IDENTIFIER)
         body_calls = find_call_identifier_uses(body, WAVE_STORE_RAW_UNLINK_IDENTIFIER)
         if len(raw_uses) != 1 or len(body_uses) != 1 or len(body_calls) != 1:
@@ -9744,7 +10874,8 @@ class Checks:
                 relative,
                 1,
                 f"all {AUTHORIZED_CLEANUP_RAW_UNLINK_CARRIER} calls must remain "
-                "inside the exact V2 leaf and empty-directory reducers",
+                "inside the exact V2 leaf, reconciliation-pending, and "
+                "empty-directory reducers",
             )
 
     def validate_work_package_carrier_unlink_authority(
@@ -12196,10 +13327,382 @@ class Checks:
                     f"{identifier}",
                 )
 
+    def validate_worker_cleanup_reconciliation_authority_use_site(
+        self, relative: str, text: str
+    ) -> None:
+        if relative == WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE:
+            for identifier, expected_hash in (
+                WORKER_CLEANUP_RECONCILIATION_ENUM_BODY_SHA256.items()
+            ):
+                spans = list(
+                    re.finditer(
+                        rf"\benum\s+class\s+{re.escape(identifier)}\b",
+                        _mask_cpp_comments_and_literals(text),
+                    )
+                )
+                span = _enum_class_definition_body_span(text, identifier)
+                body = None if span is None else text[span[0] : span[1]]
+                if (
+                    len(spans) != 1
+                    or body is None
+                    or _compact_cpp_sha256(body) != expected_hash
+                    or _compact_cpp_code(body)
+                    != WORKER_CLEANUP_RECONCILIATION_ENUM_SURFACES[identifier]
+                ):
+                    self.fail(
+                        relative,
+                        1 if span is None else text.count("\n", 0, span[0]) + 1,
+                        "cleanup-intent reconciliation enum order and surface "
+                        f"must remain exact: {identifier}",
+                    )
+            for identifier, expected_hash in (
+                WORKER_CLEANUP_RECONCILIATION_CLASS_BODY_SHA256.items()
+            ):
+                span = _class_definition_body_span(text, identifier)
+                body = None if span is None else text[span[0] : span[1]]
+                if body is None or _compact_cpp_sha256(body) != expected_hash:
+                    self.fail(
+                        relative,
+                        1 if span is None else text.count("\n", 0, span[0]) + 1,
+                        "cleanup-intent reconciliation hook/result surface "
+                        f"must remain exact: {identifier}",
+                    )
+
+            compact = _compact_cpp_code(text)
+            declarations = (
+                "[[nodiscard]]"
+                "OOCPrivateHandoffCleanupIntentReconciliationResultV2"
+                "reconcile_authorized_private_handoff_cleanup_intent_v2("
+                "OOCPrivateHandoffCleanupAuthorizationReceipt&&authorization)noexcept;",
+                "[[nodiscard]]"
+                "OOCPrivateHandoffCleanupIntentReconciliationResultV2"
+                "reconcile_authorized_private_handoff_cleanup_intent_v2_for_trusted_test("
+                "OOCPrivateHandoffCleanupIntentPublicationTestKeyV2&&,"
+                "OOCPrivateHandoffCleanupAuthorizationReceipt&&authorization,"
+                "OOCPrivateHandoffCleanupIntentReconciliationTestHooksV2hooks)noexcept;",
+            )
+            if any(compact.count(declaration) != 1 for declaration in declarations):
+                self.fail(
+                    relative,
+                    1,
+                    "cleanup-intent reconciliation entries must remain one ordinary "
+                    "rvalue-only declaration and one key-gated hook declaration",
+                )
+            return
+
+        if relative == WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE:
+            masked = _mask_cpp_comments_and_literals(text)
+            observed = [
+                identifier
+                for identifier in re.findall(
+                    r"\bvoid\s+(test_authorized_cleanup_v2_[A-Za-z0-9_]+)\s*\(",
+                    masked,
+                )
+                if re.match(
+                    r"test_authorized_cleanup_v2_(?:pending_only|reconciliation|"
+                    r"existing_canonical|canonical_intent|intent_reconciliation|"
+                    r"duplicate_pending_sync)",
+                    identifier,
+                )
+            ]
+            if (
+                len(observed) != len(WORKER_CLEANUP_RECONCILIATION_TEST_FUNCTIONS)
+                or set(observed) != set(WORKER_CLEANUP_RECONCILIATION_TEST_FUNCTIONS)
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    "cleanup-intent reconciliation dedicated test inventory is not exact",
+                )
+
+            definition_names = (
+                "run_authorized_v2_core_suite",
+                "run_authorized_v2_artifact_crash_suite",
+                *WORKER_CLEANUP_RECONCILIATION_TEST_FUNCTIONS,
+                *WORKER_CLEANUP_RECONCILIATION_TEST_HELPER_BODY_SHA256,
+            )
+            definitions = find_function_definition_bodies(text, definition_names)
+            core_body, core_offset, core_errors = definitions[
+                "run_authorized_v2_core_suite"
+            ]
+            crash_body, crash_offset, crash_errors = definitions[
+                "run_authorized_v2_artifact_crash_suite"
+            ]
+            for line, error in (*core_errors, *crash_errors):
+                self.fail(relative, line, error)
+            use_contexts = _identifier_use_context_signatures(
+                text,
+                (
+                    *WORKER_CLEANUP_RECONCILIATION_TEST_FUNCTIONS,
+                    *WORKER_CLEANUP_RECONCILIATION_TEST_HELPER_BODY_SHA256,
+                ),
+            )
+            for identifier in WORKER_CLEANUP_RECONCILIATION_TEST_FUNCTIONS:
+                body, line_offset, body_errors = definitions[identifier]
+                for line, error in body_errors:
+                    self.fail(relative, line, error)
+                expected_runner = (
+                    core_body
+                    if identifier in WORKER_CLEANUP_RECONCILIATION_CORE_TEST_FUNCTIONS
+                    else crash_body
+                )
+                other_runner = (
+                    crash_body
+                    if identifier in WORKER_CLEANUP_RECONCILIATION_CORE_TEST_FUNCTIONS
+                    else core_body
+                )
+                runner_calls = (
+                    []
+                    if expected_runner is None
+                    else find_call_identifier_uses(expected_runner, identifier)
+                )
+                other_calls = (
+                    []
+                    if other_runner is None
+                    else find_call_identifier_uses(other_runner, identifier)
+                )
+                compact_body = "" if body is None else _compact_cpp_code(body)
+                required = WORKER_CLEANUP_RECONCILIATION_REQUIRED_TEST_BODY_FRAGMENTS.get(
+                    identifier, ()
+                )
+                if (
+                    body is None
+                    or use_contexts[identifier][0] != 2
+                    or len(runner_calls) != 1
+                    or other_calls
+                    or _compact_cpp_sha256(body)
+                    != WORKER_CLEANUP_RECONCILIATION_TEST_BODY_SHA256.get(identifier)
+                    or not required
+                    or any(compact_body.count(fragment) < 1 for fragment in required)
+                ):
+                    self.fail(
+                        relative,
+                        line_offset + 1,
+                        "cleanup-intent reconciliation test body, runner, and "
+                        f"required assertions must remain exact: {identifier}",
+                    )
+
+            for identifier, expected_hash in (
+                WORKER_CLEANUP_RECONCILIATION_TEST_HELPER_BODY_SHA256.items()
+            ):
+                body, line_offset, body_errors = definitions[identifier]
+                for line, error in body_errors:
+                    self.fail(relative, line, error)
+                compact_body = "" if body is None else _compact_cpp_code(body)
+                required = WORKER_CLEANUP_RECONCILIATION_REQUIRED_HELPER_FRAGMENTS.get(
+                    identifier, ()
+                )
+                if (
+                    body is None
+                    or _compact_cpp_sha256(body) != expected_hash
+                    or use_contexts[identifier]
+                    != WORKER_CLEANUP_RECONCILIATION_TEST_HELPER_USE_CONTEXTS.get(
+                        identifier
+                    )
+                    or any(compact_body.count(fragment) < 1 for fragment in required)
+                ):
+                    self.fail(
+                        relative,
+                        line_offset + 1,
+                        "cleanup-intent reconciliation test helper and use surface "
+                        f"must remain exact: {identifier}",
+                    )
+
+            struct_spans = _class_definition_body_spans(
+                text, WORKER_CLEANUP_RECONCILIATION_TEST_STRUCT_BODY_SHA256
+            )
+            for identifier, expected_hash in (
+                WORKER_CLEANUP_RECONCILIATION_TEST_STRUCT_BODY_SHA256.items()
+            ):
+                span = struct_spans[identifier]
+                body = None if span is None else text[span[0] : span[1]]
+                if body is None or _compact_cpp_sha256(body) != expected_hash:
+                    self.fail(
+                        relative,
+                        1 if span is None else text.count("\n", 0, span[0]) + 1,
+                        "cleanup-intent reconciliation test fixture/scenario must "
+                        f"remain exact: {identifier}",
+                    )
+            array_spans = _named_std_array_initializer_body_spans(
+                text, WORKER_CLEANUP_RECONCILIATION_TEST_ARRAY_BODY_SHA256
+            )
+            for identifier, expected_hash in (
+                WORKER_CLEANUP_RECONCILIATION_TEST_ARRAY_BODY_SHA256.items()
+            ):
+                span = array_spans[identifier]
+                body = None if span is None else text[span[0] : span[1]]
+                if body is None or _compact_cpp_sha256(body) != expected_hash:
+                    self.fail(
+                        relative,
+                        1 if span is None else text.count("\n", 0, span[0]) + 1,
+                        "cleanup-intent reconciliation fault/scenario array must "
+                        f"remain exact: {identifier}",
+                    )
+            return
+
+        if relative != WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE:
+            return
+
+        # Reconciliation is the sole new caller allowed through the existing raw
+        # unlink carrier; keep that global sink check active in the receipt scan.
+        self.validate_production_raw_unlinkat_authority(relative, text)
+
+        callee_contexts = _identifier_use_context_signatures(
+            text, WORKER_CLEANUP_RECONCILIATION_CALLEE_IDENTIFIERS
+        )
+        for identifier, observed in callee_contexts.items():
+            expected = WORKER_CLEANUP_RECEIPT_EXACT_USE_CONTEXTS[identifier][
+                WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE
+            ]
+            if observed != expected:
+                self.fail(
+                    relative,
+                    1,
+                    "reconciliation callee definition signature and complete "
+                    f"call context must remain exact: {identifier}",
+                )
+
+        callee_bodies = find_function_definition_bodies(
+            text, AUTHORIZED_CLEANUP_RECONCILIATION_CALLEE_BODY_SHA256
+        )
+        for identifier, expected_hash in (
+            AUTHORIZED_CLEANUP_RECONCILIATION_CALLEE_BODY_SHA256.items()
+        ):
+            body, line_offset, body_errors = callee_bodies[identifier]
+            for line, error in body_errors:
+                self.fail(relative, line, error)
+            if body is None or _compact_cpp_sha256(body) != expected_hash:
+                self.fail(
+                    relative,
+                    line_offset + 1,
+                    "reconciliation durable sync/confirm/inspect policy callee "
+                    f"must remain exact: {identifier}",
+                )
+
+        reducer_body, reducer_line_offset, reducer_errors = (
+            find_function_definition_body(
+                text, WORKER_CLEANUP_RECONCILIATION_REDUCER_IDENTIFIER
+            )
+        )
+        for line, error in reducer_errors:
+            self.fail(relative, line, error)
+        reducer_uses = find_code_identifier_uses(
+            text, WORKER_CLEANUP_RECONCILIATION_REDUCER_IDENTIFIER
+        )
+        if reducer_body is not None:
+            compact_reducer = _compact_cpp_code(reducer_body)
+        else:
+            compact_reducer = ""
+        if (
+            reducer_body is None
+            or len(_function_definition_spans(
+                text, WORKER_CLEANUP_RECONCILIATION_REDUCER_IDENTIFIER
+            ))
+            != 1
+            or len(reducer_uses) != 2
+            or _compact_cpp_sha256(reducer_body)
+            != WORKER_CLEANUP_RECONCILIATION_REDUCER_BODY_SHA256
+            or any(
+                compact_reducer.count(fragment) != 1
+                for fragment in WORKER_CLEANUP_RECONCILIATION_REQUIRED_REDUCER_FRAGMENTS
+            )
+            or len(
+                find_call_identifier_uses(
+                    reducer_body, AUTHORIZED_CLEANUP_RAW_UNLINK_CARRIER
+                )
+            )
+            != 1
+        ):
+            self.fail(
+                relative,
+                reducer_uses[0].line if reducer_uses else reducer_line_offset + 1,
+                "reconciliation pending reducer must remain exact snapshot -> "
+                "sole unlink -> failure-only seam -> real sync -> absence",
+            )
+
+        executor_span = _class_definition_body_span(
+            text, WORKER_CLEANUP_RECONCILIATION_EXECUTOR_IDENTIFIER
+        )
+        executor_source = (
+            None if executor_span is None else text[executor_span[0] : executor_span[1]]
+        )
+        if (
+            executor_source is None
+            or _compact_cpp_sha256(executor_source)
+            != WORKER_CLEANUP_RECONCILIATION_EXECUTOR_CLASS_BODY_SHA256
+        ):
+            self.fail(
+                relative,
+                1
+                if executor_span is None
+                else text.count("\n", 0, executor_span[0]) + 1,
+                "cleanup-intent reconciliation executor class must remain exact",
+            )
+            return
+
+        run_body, run_line_offset, run_errors = find_function_definition_body(
+            executor_source, "run"
+        )
+        for line, error in run_errors:
+            self.fail(
+                relative,
+                line + text.count("\n", 0, executor_span[0]),
+                error,
+            )
+        if run_body is None:
+            return
+        compact_run = _compact_cpp_code(run_body)
+        if (
+            _compact_cpp_sha256(run_body)
+            != WORKER_CLEANUP_RECONCILIATION_RUN_BODY_SHA256
+            or any(
+                compact_run.count(fragment) != 1
+                for fragment in WORKER_CLEANUP_RECONCILIATION_REQUIRED_RUN_FRAGMENTS
+            )
+            or compact_run.count(
+                "authorization.commit_spend();canonical_visibility_uncertain=true;"
+            )
+            != 3
+            or len(find_call_identifier_uses(run_body, "commit_spend")) != 3
+            or len(find_call_identifier_uses(run_body, "renameatx_np")) != 1
+            or len(
+                find_call_identifier_uses(
+                    run_body, WORKER_CLEANUP_RECONCILIATION_REDUCER_IDENTIFIER
+                )
+            )
+            != 1
+            or find_code_identifier_uses(run_body, AUTHORIZED_CLEANUP_RAW_UNLINK_CARRIER)
+        ):
+            self.fail(
+                relative,
+                run_line_offset + text.count("\n", 0, executor_span[0]) + 1,
+                "cleanup-intent reconciliation P/C/CP spend, evidence, sync, "
+                "recheck, and direct-call order must remain exact",
+            )
+
+        for entry, expected_body in WORKER_CLEANUP_RECONCILIATION_ENTRY_BODIES.items():
+            body, line_offset, body_errors = find_function_definition_body(text, entry)
+            for line, error in body_errors:
+                self.fail(relative, line, error)
+            uses = find_code_identifier_uses(text, entry)
+            if (
+                body is None
+                or _compact_cpp_code(body) != expected_body
+                or len(_function_definition_spans(text, entry)) != 1
+                or len(uses) != 2
+            ):
+                self.fail(
+                    relative,
+                    uses[0].line if uses else line_offset + 1,
+                    "cleanup-intent reconciliation entry must remain one exact "
+                    f"ordinary-or-trusted pass-through: {entry}",
+                )
+
     def validate_worker_cleanup_receipt_authority_use_site(
         self, relative: str, text: str
     ) -> None:
         self.prepare_worker_cleanup_receipt_macro_closure()
+        self.validate_worker_cleanup_reconciliation_authority_use_site(relative, text)
         closed_identifier_contexts = {
             **WORKER_CLEANUP_RECEIPT_EXACT_USE_CONTEXTS,
             **WORKER_CLEANUP_CAPSULE_EXACT_USE_CONTEXTS,
@@ -12210,6 +13713,34 @@ class Checks:
         macro_records = _preprocessor_macro_records(text)
         pragma_targets = _receipt_macro_pragma_targets(text)
         tier_b_scopes = self.worker_cleanup_tier_b_scopes.get(relative, [])
+        context_identifiers = {
+            safe_name
+            for safe_relative, safe_name in WORKER_CLEANUP_RECEIPT_TIER_B_SAFE_MACROS
+            if safe_relative == relative
+        }
+        context_identifiers.update(
+            paste_name
+            for paste_relative, paste_name in (
+                WORKER_CLEANUP_RECEIPT_PASTE_MACRO_ALLOWLIST
+            )
+            if paste_relative == relative
+        )
+        context_identifiers.update(
+            identifier
+            for identifier, expected_by_file in closed_identifier_contexts.items()
+            if expected_by_file.get(relative) is not None or identifier in logical_text
+        )
+        identifier_contexts = _identifier_use_context_signatures(
+            text, context_identifiers
+        )
+        if relative == WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE:
+            active_logical = _mask_definitely_inactive_cpp(logical_text)
+            for match in re.finditer(r"<%|%>", active_logical):
+                self.fail(
+                    relative,
+                    active_logical.count("\n", 0, match.start()) + 1,
+                    "protected reconciliation union forbids active C++ brace digraph",
+                )
 
         if relative in self.worker_cleanup_macro_closure_files:
             for line in _non_preprocessor_line_splice_lines(text):
@@ -12422,18 +13953,22 @@ class Checks:
                 for directive, macro_identifier, replacement, _ in macro_records
                 if directive == "undef" and macro_identifier == safe_name
             ]
+            expected_undef_count = (
+                WORKER_CLEANUP_RECEIPT_TIER_B_SAFE_MACRO_UNDEF_COUNTS.get(
+                    (safe_relative, safe_name), 1
+                )
+            )
             if (
                 len(definitions) != 1
                 or _compact_cpp_code(definitions[0]) != expected_replacement
-                or len(undefs) != 1
-                or undefs[0].strip()
-                or _identifier_use_context_signature(text, safe_name)
-                != expected_context
+                or len(undefs) != expected_undef_count
+                or any(replacement.strip() for replacement in undefs)
+                or identifier_contexts[safe_name] != expected_context
             ):
                 self.fail(
                     relative,
                     1,
-                    "Tier-B safe macro definition, unique undef, and code-use "
+                    "Tier-B safe macro definition, exact undef count, and code-use "
                     f"surface are not exact: {safe_name}",
                 )
 
@@ -12456,7 +13991,7 @@ class Checks:
                     1,
                     f"paste-capable macro logical definition is not exact: {paste_name}",
                 )
-            observed_context = _identifier_use_context_signature(text, paste_name)
+            observed_context = identifier_contexts[paste_name]
             expected_context = (
                 WORKER_CLEANUP_RECEIPT_PASTE_MACRO_CODE_USE_CONTEXTS[
                     (paste_relative, paste_name)
@@ -12474,7 +14009,7 @@ class Checks:
             expected = expected_by_file.get(relative)
             if expected is None and identifier not in logical_text:
                 continue
-            observed = _identifier_use_context_signature(text, identifier)
+            observed = identifier_contexts[identifier]
             if expected is None and observed[0] == 0:
                 continue
             if expected != observed:
@@ -18360,6 +19895,409 @@ def run_worker_cleanup_capsule_self_test() -> list[str]:
     return errors
 
 
+def run_worker_cleanup_reconciliation_self_test() -> list[str]:
+    """Run the independent reconciliation mutation matrix in memory."""
+
+    errors: list[str] = []
+    mutations_run = 0
+
+    def expect(condition: bool, message: str) -> None:
+        if not condition:
+            errors.append(message)
+
+    root = Path(__file__).resolve().parents[1]
+    header_relative = WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE
+    union_relative = WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE
+    test_relative = WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE
+    header_source = (root / header_relative).read_text(encoding="utf-8")
+    union_source = (root / union_relative).read_text(encoding="utf-8")
+    test_source = (root / test_relative).read_text(encoding="utf-8")
+
+    expected_enums = {
+        WORKER_CLEANUP_RECONCILIATION_FAULT_POINT_IDENTIFIER,
+        WORKER_CLEANUP_RECONCILIATION_SYNC_SITE_IDENTIFIER,
+        WORKER_CLEANUP_RECONCILIATION_DISPOSITION_IDENTIFIER,
+    }
+    expect(
+        set(WORKER_CLEANUP_RECONCILIATION_ENUM_BODY_SHA256)
+        == expected_enums
+        == set(WORKER_CLEANUP_RECONCILIATION_ENUM_SURFACES),
+        "reconciliation enum body/surface key-set closure is not exact",
+    )
+    expect(
+        set(WORKER_CLEANUP_RECONCILIATION_CLASS_BODY_SHA256)
+        == {
+            WORKER_CLEANUP_RECONCILIATION_HOOKS_IDENTIFIER,
+            WORKER_CLEANUP_RECONCILIATION_RESULT_IDENTIFIER,
+        },
+        "reconciliation hook/result class body closure is not exact",
+    )
+    expected_tests = set(WORKER_CLEANUP_RECONCILIATION_TEST_FUNCTIONS)
+    expect(
+        expected_tests
+        == set(WORKER_CLEANUP_RECONCILIATION_TEST_BODY_SHA256)
+        == set(WORKER_CLEANUP_RECONCILIATION_REQUIRED_TEST_BODY_FRAGMENTS),
+        "reconciliation dedicated test body/fragment closure is not exact",
+    )
+    helper_names = set(WORKER_CLEANUP_RECONCILIATION_TEST_HELPER_BODY_SHA256)
+    expect(
+        helper_names
+        == set(WORKER_CLEANUP_RECONCILIATION_TEST_HELPER_USE_CONTEXTS)
+        and set(WORKER_CLEANUP_RECONCILIATION_REQUIRED_HELPER_FRAGMENTS)
+        <= helper_names,
+        "reconciliation helper body/context/fragment closure is not exact",
+    )
+    expect(
+        WORKER_CLEANUP_RECEIPT_PROTECTED_UNIT_TARGETS.get(union_relative)
+        == {"gnfs_core"}
+        and WORKER_CLEANUP_RECEIPT_PROTECTED_UNIT_TARGETS.get(test_relative)
+        == {WORKER_CLEANUP_RECONCILIATION_TEST_TARGET}
+        and WORKER_CLEANUP_RECEIPT_TARGET_DEPENDENCY_CLOSURES.get(
+            WORKER_CLEANUP_RECONCILIATION_TEST_TARGET
+        )
+        == frozenset(
+            {WORKER_CLEANUP_RECONCILIATION_TEST_TARGET, "gnfs_core", "gnfs_util"}
+        ),
+        "reconciliation protected-unit target closure is not exact",
+    )
+    expect(
+        WORKER_CLEANUP_RECEIPT_TIER_B_SAFE_MACRO_UNDEF_COUNTS
+        == {(test_relative, "CHECK"): 0},
+        "reconciliation test CHECK whole-translation-unit scope is not exact",
+    )
+    expect(
+        set(WORKER_CLEANUP_RECONCILIATION_CALLEE_IDENTIFIERS)
+        == set(AUTHORIZED_CLEANUP_RECONCILIATION_CALLEE_BODY_SHA256)
+        == {
+            "sync_authorized_cleanup_directory_v2",
+            "confirm_exact_authorized_cleanup_leaf_durable_v2",
+            "inspect_authorized_cleanup_leaf_v2",
+            "authorized_cleanup_regular_leaf_policy_v2",
+            "authorized_cleanup_snapshot_v2",
+        },
+        "reconciliation exact durable/identity callee body closure is not exact",
+    )
+    expect(
+        all(
+            WORKER_CLEANUP_RECEIPT_IDENTIFIER_ALLOWLISTS.get(identifier)
+            == {union_relative}
+            and WORKER_CLEANUP_RECEIPT_EXACT_USE_CONTEXTS.get(identifier)
+            == {
+                union_relative: WORKER_CLEANUP_RECEIPT_EXACT_USE_CONTEXTS[
+                    identifier
+                ][union_relative]
+            }
+            for identifier in WORKER_CLEANUP_RECONCILIATION_CALLEE_IDENTIFIERS
+        ),
+        "reconciliation callee Tier-A allowlist/use-context closure is not exact",
+    )
+    for relative, source in (
+        (header_relative, header_source),
+        (union_relative, union_source),
+        (test_relative, test_source),
+    ):
+        baseline = Checks(root)
+        baseline.validate_worker_cleanup_reconciliation_authority_use_site(
+            relative, source
+        )
+        expect(
+            not baseline.errors,
+            "reconciliation focused mutation baseline is not clean for "
+            f"{relative}: {baseline.errors}",
+        )
+
+    def replace_once(
+        relative: str,
+        source: str,
+        old: str,
+        new: str,
+        label: str,
+        *,
+        expected_count: int = 1,
+        occurrence: int = 1,
+    ) -> str | None:
+        observed_count = source.count(old)
+        if observed_count != expected_count or not 1 <= occurrence <= observed_count:
+            errors.append(
+                "reconciliation self-test mutation anchor is not exact "
+                f"({label}): {relative} found {observed_count}, "
+                f"expected {expected_count}"
+            )
+            return None
+        offset = -len(old)
+        for _ in range(occurrence):
+            offset = source.find(old, offset + len(old))
+        return source[:offset] + new + source[offset + len(old) :]
+
+    def run_case(
+        label: str,
+        relative: str,
+        source: str | None,
+        *,
+        needle: str | None = None,
+    ) -> None:
+        nonlocal mutations_run
+        if source is None:
+            return
+        mutations_run += 1
+        checks = Checks(root)
+        checks.validate_worker_cleanup_reconciliation_authority_use_site(
+            relative, source
+        )
+        expect(
+            bool(checks.errors)
+            and (needle is None or any(needle in error for error in checks.errors)),
+            f"reconciliation mutation was accepted ({label}): {checks.errors}",
+        )
+
+    run_case(
+        "pending promotion pre-attempt spend",
+        union_relative,
+        replace_once(
+            union_relative,
+            union_source,
+            "            require_live();\n"
+            "            authorization.commit_spend();\n"
+            "            canonical_visibility_uncertain = true;\n"
+            "            const int promoted = ::renameatx_np(",
+            "            require_live();\n"
+            "            canonical_visibility_uncertain = true;\n"
+            "            const int promoted = ::renameatx_np(",
+            "pending promotion pre-attempt spend",
+        ),
+        needle="reconciliation executor class",
+    )
+    run_case(
+        "canonical confirmation early spend",
+        union_relative,
+        replace_once(
+            union_relative,
+            union_source,
+            "                fail_sync_before("
+            "OOCPrivateHandoffCleanupIntentReconciliationSyncSiteV2::\n"
+            "                                     CanonicalExistingConfirmation);",
+            "                authorization.commit_spend();\n"
+            "                fail_sync_before("
+            "OOCPrivateHandoffCleanupIntentReconciliationSyncSiteV2::\n"
+            "                                     CanonicalExistingConfirmation);",
+            "canonical confirmation early spend",
+        ),
+        needle="reconciliation executor class",
+    )
+    run_case(
+        "duplicate pending early spend",
+        union_relative,
+        replace_once(
+            union_relative,
+            union_source,
+            "                if (stop_after("
+            "OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::\n"
+            "                                   DuplicatePendingRemovalReady)) {",
+            "                authorization.commit_spend();\n"
+            "                if (stop_after("
+            "OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::\n"
+            "                                   DuplicatePendingRemovalReady)) {",
+            "duplicate pending early spend",
+        ),
+        needle="reconciliation executor class",
+    )
+    run_case(
+        "failed result evidence leak",
+        union_relative,
+        replace_once(
+            union_relative,
+            union_source,
+            "                                         AuthorizationRetained,\n"
+            "                               std::nullopt);",
+            "                                         AuthorizationRetained,\n"
+            "                               evidence);",
+            "failed result evidence leak",
+        ),
+        needle="reconciliation executor class",
+    )
+    run_case(
+        "ordinary entry hook injection",
+        union_relative,
+        replace_once(
+            union_relative,
+            union_source,
+            "    return OOCPrivateHandoffCleanupIntentReconciliationExecutorV2::"
+            "run(authorization, {});",
+            "    return OOCPrivateHandoffCleanupIntentReconciliationExecutorV2::"
+            "run(authorization, {.context = &authorization});",
+            "ordinary entry hook injection",
+        ),
+        needle="entry must remain",
+    )
+    run_case(
+        "reducer snapshot weakening",
+        union_relative,
+        replace_once(
+            union_relative,
+            union_source,
+            "    const OOCPrivateHandoffCleanupIntentReconciliationTestHooksV2& hooks) {\n"
+            "    const auto before = inspect_authorized_cleanup_leaf_v2("
+            "directory_handle, leaf);\n"
+            "    if (!before || *before != expected) {",
+            "    const OOCPrivateHandoffCleanupIntentReconciliationTestHooksV2& hooks) {\n"
+            "    const auto before = inspect_authorized_cleanup_leaf_v2("
+            "directory_handle, leaf);\n"
+            "    if (!before) {",
+            "reducer snapshot weakening",
+        ),
+        needle="reconciliation pending reducer",
+    )
+    run_case(
+        "reducer real sync removal",
+        union_relative,
+        replace_once(
+            union_relative,
+            union_source,
+            "    sync_authorized_cleanup_directory_v2("
+            "directory_handle, OOCCleanupStage::IntentDurable);\n"
+            "    if (inspect_authorized_cleanup_leaf_v2(directory_handle, leaf)) {",
+            "    if (inspect_authorized_cleanup_leaf_v2(directory_handle, leaf)) {",
+            "reducer real sync removal",
+        ),
+        needle="reconciliation pending reducer",
+    )
+    run_case(
+        "reducer absence postcheck removal",
+        union_relative,
+        replace_once(
+            union_relative,
+            union_source,
+            "    if (inspect_authorized_cleanup_leaf_v2(directory_handle, leaf)) {",
+            "    if (false && inspect_authorized_cleanup_leaf_v2(directory_handle, leaf)) {",
+            "reducer absence postcheck removal",
+            expected_count=2,
+            occurrence=2,
+        ),
+        needle="reconciliation pending reducer",
+    )
+    run_case(
+        "failure seam zero bypass",
+        union_relative,
+        replace_once(
+            union_relative,
+            union_source,
+            "        const auto error = hooks.fail_sync(\n"
+            "            OOCPrivateHandoffCleanupIntentReconciliationSyncSiteV2::"
+            "DuplicatePendingRemoval,\n"
+            "            hooks.context);\n"
+            "        if (error) {",
+            "        const auto error = hooks.fail_sync(\n"
+            "            OOCPrivateHandoffCleanupIntentReconciliationSyncSiteV2::"
+            "DuplicatePendingRemoval,\n"
+            "            hooks.context);\n"
+            "        if (!error) { return; }\n"
+            "        if (error) {",
+            "failure seam zero bypass",
+        ),
+        needle="reconciliation pending reducer",
+    )
+    run_case(
+        "duplicate pending post-ready recheck",
+        union_relative,
+        replace_once(
+            union_relative,
+            union_source,
+            "                if (after_removal_ready_hook != after_durable_hook ||\n",
+            "                if (false ||\n",
+            "duplicate pending post-ready recheck",
+        ),
+        needle="reconciliation executor class",
+    )
+    run_case(
+        "raw carrier leaf and flags substitution",
+        union_relative,
+        replace_once(
+            union_relative,
+            union_source,
+            "        result = ::unlinkat(static_cast<int>(directory_handle), "
+            "leaf.c_str(), flags);\n",
+            "        result = ::unlinkat(static_cast<int>(directory_handle), "
+            "\".\", AT_REMOVEDIR);\n",
+            "raw carrier leaf and flags substitution",
+        ),
+        needle="sole raw unlink carrier parameters",
+    )
+    run_case(
+        "directory sync callee no-op",
+        union_relative,
+        replace_once(
+            union_relative,
+            union_source,
+            "        result = ::fcntl(static_cast<int>(directory_handle), "
+            "F_FULLFSYNC);\n",
+            "        result = 0;\n",
+            "directory sync callee no-op",
+        ),
+        needle="callee must remain exact: sync_authorized_cleanup_directory_v2",
+    )
+    run_case(
+        "durable confirmation failure bypass",
+        union_relative,
+        replace_once(
+            union_relative,
+            union_source,
+            "    if (!confirmed.is_durable()) {\n",
+            "    if (false) {\n",
+            "durable confirmation failure bypass",
+        ),
+        needle=(
+            "callee must remain exact: "
+            "confirm_exact_authorized_cleanup_leaf_durable_v2"
+        ),
+    )
+    run_case(
+        "inspect no-follow policy weakening",
+        union_relative,
+        replace_once(
+            union_relative,
+            union_source,
+            "        result = ::fstatat(static_cast<int>(directory_handle), "
+            "leaf.c_str(), &metadata,\n"
+            "                           AT_SYMLINK_NOFOLLOW);\n",
+            "        result = ::fstatat(static_cast<int>(directory_handle), "
+            "leaf.c_str(), &metadata, 0);\n",
+            "inspect no-follow policy weakening",
+        ),
+        needle="callee must remain exact: inspect_authorized_cleanup_leaf_v2",
+    )
+    run_case(
+        "digraph callee overload",
+        union_relative,
+        union_source
+        + "\nvoid inspect_authorized_cleanup_leaf_v2("
+        "util::durable_immutable_record::NativeHandle directory_handle) <%\n"
+        "    (void)directory_handle;\n"
+        "%>\n",
+        needle="callee definition signature and complete call context",
+    )
+    run_case(
+        "duplicate pending reconciliation-required assertion",
+        test_relative,
+        replace_once(
+            test_relative,
+            test_source,
+            "    CHECK(failed.reconciliation_required());\n"
+            "    CHECK(authorization.spent());\n",
+            "    CHECK(failed.authorization_retained());\n"
+            "    CHECK(!authorization.spent());\n",
+            "duplicate pending reconciliation-required assertion",
+        ),
+        needle="test body, runner",
+    )
+
+    expect(
+        mutations_run == 16,
+        "reconciliation focused mutation inventory drifted: "
+        f"ran {mutations_run}, expected 16",
+    )
+    return errors
+
+
 def run_self_test() -> list[str]:
     errors: list[str] = []
 
@@ -18368,6 +20306,7 @@ def run_self_test() -> list[str]:
             errors.append(message)
 
     errors.extend(run_worker_cleanup_capsule_self_test())
+    errors.extend(run_worker_cleanup_reconciliation_self_test())
 
     snippet = r"""
 // getenv("GNFS_NOT_A_REAL_READ")
@@ -19678,10 +21617,22 @@ auto read_private_lease_directory_inventory() {
     )
     allowed_global_raw_unlinkat_snippets = {
         AUTHORIZED_CLEANUP_RAW_UNLINK_FILE: r"""
-auto authorized_cleanup_raw_unlinkat_v2(int directory, const char* leaf, int flags) noexcept {
-    return ::unlinkat(directory, leaf, flags);
+auto authorized_cleanup_raw_unlinkat_v2(
+    util::durable_immutable_record::NativeHandle directory_handle,
+    const std::filesystem::path& leaf, int flags) noexcept {
+    int result = -1;
+    do {
+        result = ::unlinkat(static_cast<int>(directory_handle), leaf.c_str(), flags);
+    } while (result != 0 && errno == EINTR);
+    return {
+        .result = result,
+        .native_error = result == 0 ? 0 : errno,
+    };
 }
 auto remove_exact_authorized_cleanup_leaf_v2() {
+    return authorized_cleanup_raw_unlinkat_v2(directory, leaf, 0);
+}
+auto remove_exact_authorized_cleanup_reconciliation_pending_v2() {
     return authorized_cleanup_raw_unlinkat_v2(directory, leaf, 0);
 }
 auto remove_empty_authorized_cleanup_directory_v2() {
@@ -19756,9 +21707,12 @@ auto remove_path_if_same_identity_at_noexcept() noexcept {
     authorized_cleanup_second_raw_checks.validate_production_raw_unlinkat_authority(
         AUTHORIZED_CLEANUP_RAW_UNLINK_FILE,
         valid_authorized_cleanup_raw_unlink.replace(
-            "    return ::unlinkat(directory, leaf, flags);\n",
-            "    (void)::unlinkat(directory, leaf, flags);\n"
-            "    return ::unlinkat(directory, leaf, flags);\n",
+            "        result = ::unlinkat(static_cast<int>(directory_handle), "
+            "leaf.c_str(), flags);\n",
+            "        (void)::unlinkat(static_cast<int>(directory_handle), "
+            "leaf.c_str(), flags);\n"
+            "        result = ::unlinkat(static_cast<int>(directory_handle), "
+            "leaf.c_str(), flags);\n",
             1,
         ),
     )
@@ -21823,6 +23777,54 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
                 WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
                 WORKER_CLEANUP_RECEIPT_WAVE_STORE_INTERFACE_FILE,
             },
+            WORKER_CLEANUP_RECONCILIATION_EXECUTOR_IDENTIFIER: {
+                WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+                WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+            },
+            WORKER_CLEANUP_RECONCILIATION_FAULT_POINT_IDENTIFIER: {
+                WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+                WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+                WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE,
+            },
+            WORKER_CLEANUP_RECONCILIATION_SYNC_SITE_IDENTIFIER: {
+                WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+                WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+                WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE,
+            },
+            WORKER_CLEANUP_RECONCILIATION_HOOKS_IDENTIFIER: {
+                WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+                WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+                WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE,
+            },
+            WORKER_CLEANUP_RECONCILIATION_DISPOSITION_IDENTIFIER: {
+                WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+                WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+                WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE,
+            },
+            WORKER_CLEANUP_RECONCILIATION_RESULT_IDENTIFIER: {
+                WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+                WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+                WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE,
+            },
+            WORKER_CLEANUP_RECONCILIATION_ENTRY_IDENTIFIER: {
+                WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+                WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+                WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE,
+            },
+            WORKER_CLEANUP_RECONCILIATION_TRUSTED_ENTRY_IDENTIFIER: {
+                WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+                WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+                WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE,
+            },
+            WORKER_CLEANUP_RECONCILIATION_REDUCER_IDENTIFIER: {
+                WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+            },
+            **{
+                identifier: {
+                    WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE
+                }
+                for identifier in WORKER_CLEANUP_RECONCILIATION_CALLEE_IDENTIFIERS
+            },
         },
         "worker-cleanup receipt identifier allowlists are not exact",
     )
@@ -23208,7 +25210,7 @@ void escaped_cleanup_conversion_wrapper() {
         WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
         "#define CHECK(expression) check(static_cast<bool>(expression), #expression, __LINE__)\n",
         "#define CHECK(expression) ((void)0)\n",
-        "Tier-B safe macro definition, unique undef, and code-use surface are not exact",
+        "Tier-B safe macro definition, exact undef count, and code-use surface are not exact",
         "a no-op CHECK macro",
     )
     expect_worker_cleanup_receipt_mutation(

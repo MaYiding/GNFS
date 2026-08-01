@@ -167,6 +167,8 @@ using gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentPublicat
 using gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentPublicationTestHooksV2;
 using gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentReconciliationDispositionV2;
 using gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2;
+using gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentReconciliationResultV2;
+using gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentReconciliationSyncSiteV2;
 using gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentReconciliationTestHooksV2;
 using gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupPrefixStateV2;
 using gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupPrefixWitnessV2;
@@ -10204,7 +10206,7 @@ void test_private_handoff_reader_releases_adoption_authority_for_read_only_owner
     }
 }
 
-constexpr std::array AUTHORIZED_CLEANUP_V2_RECONCILIATION_FAULT_POINTS{
+constexpr std::array AUTHORIZED_CLEANUP_V2_PENDING_RECONCILIATION_FAULT_POINTS{
     OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::PendingReconfirmedDurable,
     OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::CanonicalPromotionReady,
     OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::CanonicalPromoted,
@@ -10213,14 +10215,34 @@ constexpr std::array AUTHORIZED_CLEANUP_V2_RECONCILIATION_FAULT_POINTS{
 };
 
 static_assert([] {
-    for (std::size_t index = 0; index < AUTHORIZED_CLEANUP_V2_RECONCILIATION_FAULT_POINTS.size();
-         ++index) {
-        if (static_cast<std::size_t>(AUTHORIZED_CLEANUP_V2_RECONCILIATION_FAULT_POINTS[index]) !=
-            index) {
+    for (std::size_t index = 0;
+         index < AUTHORIZED_CLEANUP_V2_PENDING_RECONCILIATION_FAULT_POINTS.size(); ++index) {
+        if (static_cast<std::size_t>(
+                AUTHORIZED_CLEANUP_V2_PENDING_RECONCILIATION_FAULT_POINTS[index]) != index) {
             return false;
         }
     }
-    return AUTHORIZED_CLEANUP_V2_RECONCILIATION_FAULT_POINTS.size() ==
+    return AUTHORIZED_CLEANUP_V2_PENDING_RECONCILIATION_FAULT_POINTS.size() == 5;
+}());
+
+constexpr std::array AUTHORIZED_CLEANUP_V2_CANONICAL_RECONCILIATION_FAULT_POINTS{
+    OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::CanonicalExistingReady,
+    OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::CanonicalExistingDurable,
+    OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::DuplicatePendingRemovalReady,
+    OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::DuplicatePendingRemovedDurable,
+};
+
+static_assert([] {
+    const auto offset = AUTHORIZED_CLEANUP_V2_PENDING_RECONCILIATION_FAULT_POINTS.size();
+    for (std::size_t index = 0;
+         index < AUTHORIZED_CLEANUP_V2_CANONICAL_RECONCILIATION_FAULT_POINTS.size(); ++index) {
+        if (static_cast<std::size_t>(
+                AUTHORIZED_CLEANUP_V2_CANONICAL_RECONCILIATION_FAULT_POINTS[index]) !=
+            offset + index) {
+            return false;
+        }
+    }
+    return offset + AUTHORIZED_CLEANUP_V2_CANONICAL_RECONCILIATION_FAULT_POINTS.size() ==
            static_cast<std::size_t>(
                OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::Count);
 }());
@@ -10232,6 +10254,8 @@ struct AuthorizedCleanupIntentReconciliationHookContextV2 final {
         ReplaceCanonicalSameBytes,
         CreateCanonicalBeforePromotion,
         MovePendingBeforePromotion,
+        MakeCanonicalMetadataConflict,
+        MakePendingMetadataConflict,
     };
 
     OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2 target =
@@ -10239,10 +10263,12 @@ struct AuthorizedCleanupIntentReconciliationHookContextV2 final {
     Injection injection = Injection::None;
     OOCCleanupPaths paths;
     std::filesystem::path saved_pending_path;
+    std::filesystem::path snapshot_root;
     bool stop = true;
     bool invoked = false;
     bool injection_succeeded = false;
     bool failed = false;
+    std::optional<NamespaceTreeSnapshot> after_injection;
 };
 
 [[nodiscard]] bool authorized_cleanup_intent_reconciliation_hook_v2(
@@ -10283,11 +10309,697 @@ struct AuthorizedCleanupIntentReconciliationHookContextV2 final {
                 entry_exists_no_follow(context.saved_pending_path);
             break;
         }
+        case AuthorizedCleanupIntentReconciliationHookContextV2::Injection::
+            MakeCanonicalMetadataConflict:
+        case AuthorizedCleanupIntentReconciliationHookContextV2::Injection::
+            MakePendingMetadataConflict: {
+            const auto& path = context.injection ==
+                                       AuthorizedCleanupIntentReconciliationHookContextV2::
+                                           Injection::MakeCanonicalMetadataConflict
+                                   ? context.paths.intent_path
+                                   : context.paths.intent_pending_path;
+            std::error_code error;
+            std::filesystem::permissions(path, std::filesystem::perms::owner_read,
+                                         std::filesystem::perm_options::replace, error);
+            context.injection_succeeded = !error;
+            break;
+        }
+        }
+        if (context.injection_succeeded && !context.snapshot_root.empty()) {
+            context.after_injection = capture_namespace_tree(context.snapshot_root);
         }
     } catch (...) {
         context.failed = true;
     }
     return context.failed || context.stop;
+}
+
+struct AuthorizedCleanupCanonicalIntentFixtureV2 final {
+    AuthorizedCleanupPendingIntentFixtureV2 source;
+    RecordSnapshot canonical_snapshot;
+    bool duplicate_pending = false;
+};
+
+void check_authorized_cleanup_intent_reconciliation_live_artifacts_v2(
+    const AuthorizedCleanupPendingIntentFixtureV2& fixture) {
+    const auto check_exact_identity = [](const std::filesystem::path& path, const auto& expected) {
+        const bool present = entry_exists_no_follow(path);
+        CHECK(present);
+        if (present) {
+            CHECK(native_identity_for_test_path(path) == expected);
+        }
+    };
+    check_exact_identity(fixture.paths.private_handoff_path, fixture.binding.handoff.identity);
+    check_exact_identity(fixture.paths.index_path, fixture.binding.index.identity);
+    check_exact_identity(fixture.paths.data_path, fixture.binding.data.identity);
+    check_exact_identity(gnfs::relation::ooc_cleanup_detail::private_lease_owner_path(
+                             fixture.paths.private_directory),
+                         fixture.binding.owner_marker_identity);
+    check_exact_identity(fixture.paths.lease_owned_path, fixture.binding.owned_marker_identity);
+    CHECK(!entry_exists_no_follow(fixture.paths.staged_path));
+    CHECK(!entry_exists_no_follow(fixture.paths.staged_pending_path));
+    CHECK(!entry_exists_no_follow(fixture.paths.quarantine_index_path));
+    CHECK(!entry_exists_no_follow(fixture.paths.quarantine_data_path));
+}
+
+void check_authorized_cleanup_intent_reconciliation_base_lock_released_v2(
+    const AuthorizedCleanupPendingIntentFixtureV2& fixture) {
+    BaseLock lock(fixture.paths.lock_path, false);
+    const bool claimed = gnfs::relation::ooc_cleanup_detail::try_claim_private_cleanup_action(lock);
+    CHECK(claimed);
+    if (claimed) {
+        gnfs::relation::ooc_cleanup_detail::release_private_cleanup_action(lock);
+    }
+}
+
+void check_authorized_cleanup_intent_reconciliation_evidence_v2(
+    const OOCPrivateHandoffCleanupIntentReconciliationResultV2& result,
+    const AuthorizedCleanupCanonicalIntentFixtureV2& fixture) {
+    CHECK(result.intent_canonical());
+    CHECK(result.disposition ==
+          OOCPrivateHandoffCleanupIntentReconciliationDispositionV2::IntentCanonical);
+    CHECK(result.evidence.has_value());
+    if (result.evidence) {
+        CHECK(result.evidence->external_authorization_digest ==
+              fixture.source.binding.external_authorization_digest);
+        CHECK(result.evidence->intent_snapshot == fixture.canonical_snapshot);
+        CHECK(result.evidence->parent_directory_identity ==
+              fixture.source.binding.parent_directory_identity);
+    }
+}
+
+void check_spent_cleanup_intent_reconciliation_receipt_rejected_v2(
+    OOCPrivateHandoffCleanupAuthorizationReceipt& authorization) {
+    CHECK(authorization.spent());
+    const auto rejected =
+        reconcile_authorized_private_handoff_cleanup_intent_v2(std::move(authorization));
+    CHECK(rejected.result.status == OOCCleanupStatus::InvalidRequest);
+    CHECK(rejected.result.stage == OOCCleanupStage::None);
+    CHECK(rejected.result.native_error == std::make_error_code(std::errc::invalid_argument));
+    CHECK(rejected.disposition ==
+          OOCPrivateHandoffCleanupIntentReconciliationDispositionV2::Failed);
+    CHECK(!rejected.evidence.has_value());
+    CHECK(authorization.spent());
+}
+
+[[nodiscard]] AuthorizedCleanupCanonicalIntentFixtureV2
+prepare_authorized_cleanup_canonical_intent_fixture_v2(const std::filesystem::path& base,
+                                                       std::uint8_t digest_seed,
+                                                       bool duplicate_pending) {
+    auto source = prepare_authorized_cleanup_pending_intent_fixture_v2(base, digest_seed);
+    auto authorization = make_authorized_cleanup_resume_receipt_v2(source.binding);
+    AuthorizedCleanupIntentReconciliationHookContextV2 context{
+        .target =
+            duplicate_pending
+                ? OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::CanonicalPromotionReady
+                : OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::CanonicalPromoted,
+        .injection = duplicate_pending
+                         ? AuthorizedCleanupIntentReconciliationHookContextV2::Injection::
+                               CreateCanonicalBeforePromotion
+                         : AuthorizedCleanupIntentReconciliationHookContextV2::Injection::None,
+        .paths = source.paths,
+        .stop = !duplicate_pending,
+    };
+    const auto primed = reconcile_authorized_private_handoff_cleanup_intent_v2_for_trusted_test(
+        OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2::test_key(), std::move(authorization),
+        OOCPrivateHandoffCleanupIntentReconciliationTestHooksV2{
+            .stop_after = authorized_cleanup_intent_reconciliation_hook_v2,
+            .context = &context,
+        });
+    CHECK(context.invoked);
+    CHECK(context.injection_succeeded);
+    CHECK(!context.failed);
+    CHECK(primed.result.stage == OOCCleanupStage::IntentDurable);
+    CHECK(primed.reconciliation_required());
+    CHECK(!primed.evidence.has_value());
+    CHECK(authorization.spent());
+    if (duplicate_pending) {
+        CHECK(primed.result.status == OOCCleanupStatus::ForeignReplacementPreserved);
+        CHECK(primed.result.native_error.value() == EEXIST);
+    } else {
+        CHECK(primed.result.status == OOCCleanupStatus::Interrupted);
+        CHECK(primed.result.native_error == std::make_error_code(std::errc::operation_canceled));
+    }
+    check_spent_cleanup_intent_reconciliation_receipt_rejected_v2(authorization);
+
+    CHECK(entry_exists_no_follow(source.paths.intent_path));
+    CHECK(entry_exists_no_follow(source.paths.intent_pending_path) == duplicate_pending);
+    CHECK(read_test_bytes(source.paths.intent_path) == source.pending_bytes);
+    if (duplicate_pending) {
+        CHECK(read_test_bytes(source.paths.intent_pending_path) == source.pending_bytes);
+    }
+    const auto canonical_snapshot = RecordSnapshot{
+        .identity = native_identity_for_test_path(source.paths.intent_path),
+        .size = static_cast<std::uint64_t>(source.pending_bytes.size()),
+    };
+    CHECK((canonical_snapshot.identity == source.pending_snapshot.identity) == !duplicate_pending);
+    check_authorized_cleanup_intent_reconciliation_live_artifacts_v2(source);
+    check_authorized_cleanup_intent_reconciliation_base_lock_released_v2(source);
+    return {
+        .source = std::move(source),
+        .canonical_snapshot = canonical_snapshot,
+        .duplicate_pending = duplicate_pending,
+    };
+}
+
+void check_authorized_cleanup_canonical_intent_prefix_v2(
+    const AuthorizedCleanupCanonicalIntentFixtureV2& fixture, bool duplicate_pending) {
+    CHECK(entry_exists_no_follow(fixture.source.paths.intent_path));
+    if (entry_exists_no_follow(fixture.source.paths.intent_path)) {
+        CHECK(read_test_bytes(fixture.source.paths.intent_path) == fixture.source.pending_bytes);
+        CHECK(native_identity_for_test_path(fixture.source.paths.intent_path) ==
+              fixture.canonical_snapshot.identity);
+    }
+    CHECK(entry_exists_no_follow(fixture.source.paths.intent_pending_path) == duplicate_pending);
+    if (duplicate_pending && entry_exists_no_follow(fixture.source.paths.intent_pending_path)) {
+        CHECK(read_test_bytes(fixture.source.paths.intent_pending_path) ==
+              fixture.source.pending_bytes);
+        CHECK(native_identity_for_test_path(fixture.source.paths.intent_pending_path) ==
+              fixture.source.pending_snapshot.identity);
+    }
+    check_authorized_cleanup_intent_reconciliation_live_artifacts_v2(fixture.source);
+    check_authorized_cleanup_intent_reconciliation_base_lock_released_v2(fixture.source);
+}
+
+void check_authorized_cleanup_canonical_intent_success_v2(
+    const OOCPrivateHandoffCleanupIntentReconciliationResultV2& result,
+    const AuthorizedCleanupCanonicalIntentFixtureV2& fixture) {
+    CHECK(result.result.status == OOCCleanupStatus::RecoveryRequired);
+    CHECK(result.result.stage == OOCCleanupStage::IntentDurable);
+    CHECK(result.result.native_error == std::make_error_code(std::errc::protocol_error));
+    CHECK(!result.authorization_retained());
+    CHECK(!result.reconciliation_required());
+    check_authorized_cleanup_intent_reconciliation_evidence_v2(result, fixture);
+}
+
+void test_authorized_cleanup_v2_existing_canonical_and_duplicate_pending_converge() {
+    TempDirectory temp;
+    for (const bool duplicate_pending : {false, true}) {
+        const auto fixture = prepare_authorized_cleanup_canonical_intent_fixture_v2(
+            temp.path() /
+                (std::string("authorized-v2-existing-canonical-") +
+                 (duplicate_pending ? "duplicate" : "only") + ".gnfs-sink-lease") /
+                "corpus",
+            duplicate_pending ? 0x6a : 0x69, duplicate_pending);
+        check_authorized_cleanup_canonical_intent_prefix_v2(fixture, duplicate_pending);
+
+        auto authorization = make_authorized_cleanup_resume_receipt_v2(fixture.source.binding);
+        const auto reconciled =
+            reconcile_authorized_private_handoff_cleanup_intent_v2(std::move(authorization));
+        check_authorized_cleanup_canonical_intent_success_v2(reconciled, fixture);
+        CHECK(authorization.spent());
+        check_authorized_cleanup_canonical_intent_prefix_v2(fixture, false);
+        check_spent_cleanup_intent_reconciliation_receipt_rejected_v2(authorization);
+        check_authorized_cleanup_canonical_intent_prefix_v2(fixture, false);
+    }
+}
+
+struct AuthorizedCleanupIntentReconciliationSyncFailureV2 final {
+    OOCPrivateHandoffCleanupIntentReconciliationSyncSiteV2 target =
+        OOCPrivateHandoffCleanupIntentReconciliationSyncSiteV2::Count;
+    std::error_code error = std::make_error_code(std::errc::io_error);
+    std::size_t calls = 0;
+};
+
+[[nodiscard]] std::error_code fail_authorized_cleanup_intent_reconciliation_sync_v2(
+    OOCPrivateHandoffCleanupIntentReconciliationSyncSiteV2 site, void* opaque) noexcept {
+    auto& failure = *static_cast<AuthorizedCleanupIntentReconciliationSyncFailureV2*>(opaque);
+    if (site != failure.target) {
+        return {};
+    }
+    ++failure.calls;
+    return failure.error;
+}
+
+void check_authorized_cleanup_intent_reconciliation_sync_failure_v2(
+    const OOCPrivateHandoffCleanupIntentReconciliationResultV2& failed,
+    const AuthorizedCleanupIntentReconciliationSyncFailureV2& injection,
+    OOCPrivateHandoffCleanupIntentReconciliationDispositionV2 expected_disposition) {
+    CHECK(injection.calls == 1);
+    CHECK(failed.result.status == OOCCleanupStatus::DurabilityFailure);
+    CHECK(failed.result.stage == OOCCleanupStage::IntentDurable);
+    CHECK(failed.result.native_error == injection.error);
+    CHECK(failed.disposition == expected_disposition);
+    CHECK(!failed.evidence.has_value());
+    CHECK(!failed.intent_canonical());
+}
+
+void test_authorized_cleanup_v2_existing_canonical_sync_failures_are_retryable() {
+    TempDirectory temp;
+
+    for (const bool duplicate_pending : {false, true}) {
+        const auto fixture = prepare_authorized_cleanup_canonical_intent_fixture_v2(
+            temp.path() /
+                (std::string("authorized-v2-existing-canonical-sync-") +
+                 (duplicate_pending ? "duplicate" : "only") + ".gnfs-sink-lease") /
+                "corpus",
+            duplicate_pending ? 0x6c : 0x6b, duplicate_pending);
+        auto authorization = make_authorized_cleanup_resume_receipt_v2(fixture.source.binding);
+        AuthorizedCleanupIntentReconciliationSyncFailureV2 injection{
+            .target = OOCPrivateHandoffCleanupIntentReconciliationSyncSiteV2::
+                CanonicalExistingConfirmation,
+        };
+        const auto failed = reconcile_authorized_private_handoff_cleanup_intent_v2_for_trusted_test(
+            OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2::test_key(),
+            std::move(authorization),
+            OOCPrivateHandoffCleanupIntentReconciliationTestHooksV2{
+                .fail_sync = fail_authorized_cleanup_intent_reconciliation_sync_v2,
+                .context = &injection,
+            });
+        check_authorized_cleanup_intent_reconciliation_sync_failure_v2(
+            failed, injection,
+            OOCPrivateHandoffCleanupIntentReconciliationDispositionV2::AuthorizationRetained);
+        CHECK(failed.authorization_retained());
+        CHECK(!authorization.spent());
+        check_authorized_cleanup_canonical_intent_prefix_v2(fixture, duplicate_pending);
+
+        const auto same_receipt_retry =
+            reconcile_authorized_private_handoff_cleanup_intent_v2(std::move(authorization));
+        check_authorized_cleanup_canonical_intent_success_v2(same_receipt_retry, fixture);
+        CHECK(authorization.spent());
+        check_authorized_cleanup_canonical_intent_prefix_v2(fixture, false);
+        check_spent_cleanup_intent_reconciliation_receipt_rejected_v2(authorization);
+        check_authorized_cleanup_canonical_intent_prefix_v2(fixture, false);
+    }
+
+    const auto fixture = prepare_authorized_cleanup_canonical_intent_fixture_v2(
+        temp.path() / "authorized-v2-duplicate-pending-sync.gnfs-sink-lease" / "corpus", 0x6d,
+        true);
+    auto authorization = make_authorized_cleanup_resume_receipt_v2(fixture.source.binding);
+    AuthorizedCleanupIntentReconciliationSyncFailureV2 injection{
+        .target = OOCPrivateHandoffCleanupIntentReconciliationSyncSiteV2::DuplicatePendingRemoval,
+    };
+    const auto failed = reconcile_authorized_private_handoff_cleanup_intent_v2_for_trusted_test(
+        OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2::test_key(), std::move(authorization),
+        OOCPrivateHandoffCleanupIntentReconciliationTestHooksV2{
+            .fail_sync = fail_authorized_cleanup_intent_reconciliation_sync_v2,
+            .context = &injection,
+        });
+    check_authorized_cleanup_intent_reconciliation_sync_failure_v2(
+        failed, injection,
+        OOCPrivateHandoffCleanupIntentReconciliationDispositionV2::ReconciliationRequired);
+    CHECK(failed.reconciliation_required());
+    CHECK(authorization.spent());
+    check_authorized_cleanup_canonical_intent_prefix_v2(fixture, false);
+    check_spent_cleanup_intent_reconciliation_receipt_rejected_v2(authorization);
+    check_authorized_cleanup_canonical_intent_prefix_v2(fixture, false);
+
+    auto fresh_authorization = make_authorized_cleanup_resume_receipt_v2(fixture.source.binding);
+    const auto fresh_retry =
+        reconcile_authorized_private_handoff_cleanup_intent_v2(std::move(fresh_authorization));
+    check_authorized_cleanup_canonical_intent_success_v2(fresh_retry, fixture);
+    CHECK(fresh_authorization.spent());
+    check_authorized_cleanup_canonical_intent_prefix_v2(fixture, false);
+    check_spent_cleanup_intent_reconciliation_receipt_rejected_v2(fresh_authorization);
+    check_authorized_cleanup_canonical_intent_prefix_v2(fixture, false);
+}
+
+struct AuthorizedCleanupCanonicalIntentFaultScenarioV2 final {
+    OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2 point =
+        OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::Count;
+    bool duplicate_pending = false;
+    bool pending_after_stop = false;
+    bool authorization_retained = false;
+    bool intent_canonical = false;
+};
+
+constexpr std::array AUTHORIZED_CLEANUP_V2_CANONICAL_RECONCILIATION_FAULT_SCENARIOS{
+    AuthorizedCleanupCanonicalIntentFaultScenarioV2{
+        .point = OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::CanonicalExistingReady,
+        .duplicate_pending = false,
+        .pending_after_stop = false,
+        .authorization_retained = true,
+    },
+    AuthorizedCleanupCanonicalIntentFaultScenarioV2{
+        .point = OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::CanonicalExistingDurable,
+        .duplicate_pending = false,
+        .pending_after_stop = false,
+        .authorization_retained = true,
+    },
+    AuthorizedCleanupCanonicalIntentFaultScenarioV2{
+        .point = OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::CanonicalExistingReady,
+        .duplicate_pending = true,
+        .pending_after_stop = true,
+        .authorization_retained = true,
+    },
+    AuthorizedCleanupCanonicalIntentFaultScenarioV2{
+        .point = OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::CanonicalExistingDurable,
+        .duplicate_pending = true,
+        .pending_after_stop = true,
+        .authorization_retained = true,
+    },
+    AuthorizedCleanupCanonicalIntentFaultScenarioV2{
+        .point =
+            OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::DuplicatePendingRemovalReady,
+        .duplicate_pending = true,
+        .pending_after_stop = true,
+        .authorization_retained = true,
+    },
+    AuthorizedCleanupCanonicalIntentFaultScenarioV2{
+        .point = OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::
+            DuplicatePendingRemovedDurable,
+        .duplicate_pending = true,
+        .pending_after_stop = false,
+        .intent_canonical = true,
+    },
+};
+
+void check_authorized_cleanup_canonical_intent_interruption_v2(
+    const OOCPrivateHandoffCleanupIntentReconciliationResultV2& interrupted,
+    const AuthorizedCleanupCanonicalIntentFixtureV2& fixture,
+    const AuthorizedCleanupCanonicalIntentFaultScenarioV2& scenario) {
+    CHECK(interrupted.result.status == OOCCleanupStatus::Interrupted);
+    CHECK(interrupted.result.stage == OOCCleanupStage::IntentDurable);
+    CHECK(interrupted.authorization_retained() == scenario.authorization_retained);
+    CHECK(interrupted.intent_canonical() == scenario.intent_canonical);
+    CHECK(!interrupted.reconciliation_required());
+    if (scenario.authorization_retained) {
+        CHECK(interrupted.result.native_error ==
+              std::make_error_code(std::errc::operation_canceled));
+        CHECK(!interrupted.evidence.has_value());
+    } else {
+        CHECK(!interrupted.result.native_error);
+        check_authorized_cleanup_intent_reconciliation_evidence_v2(interrupted, fixture);
+    }
+}
+
+void test_authorized_cleanup_v2_canonical_intent_fault_boundaries() {
+    TempDirectory temp;
+    for (std::size_t index = 0;
+         index < AUTHORIZED_CLEANUP_V2_CANONICAL_RECONCILIATION_FAULT_SCENARIOS.size(); ++index) {
+        const auto scenario = AUTHORIZED_CLEANUP_V2_CANONICAL_RECONCILIATION_FAULT_SCENARIOS[index];
+        const auto fixture = prepare_authorized_cleanup_canonical_intent_fixture_v2(
+            temp.path() /
+                ("authorized-v2-canonical-fault-" + std::to_string(index) + ".gnfs-sink-lease") /
+                "corpus",
+            static_cast<std::uint8_t>(0x70U + index), scenario.duplicate_pending);
+        auto authorization = make_authorized_cleanup_resume_receipt_v2(fixture.source.binding);
+        AuthorizedCleanupIntentReconciliationHookContextV2 context{
+            .target = scenario.point,
+            .paths = fixture.source.paths,
+        };
+        const auto interrupted =
+            reconcile_authorized_private_handoff_cleanup_intent_v2_for_trusted_test(
+                OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2::test_key(),
+                std::move(authorization),
+                OOCPrivateHandoffCleanupIntentReconciliationTestHooksV2{
+                    .stop_after = authorized_cleanup_intent_reconciliation_hook_v2,
+                    .context = &context,
+                });
+        CHECK(context.invoked);
+        CHECK(context.injection_succeeded);
+        CHECK(!context.failed);
+        check_authorized_cleanup_canonical_intent_interruption_v2(interrupted, fixture, scenario);
+        CHECK(authorization.spent() == !scenario.authorization_retained);
+        check_authorized_cleanup_canonical_intent_prefix_v2(fixture, scenario.pending_after_stop);
+
+        if (scenario.authorization_retained) {
+            const auto same_receipt_retry =
+                reconcile_authorized_private_handoff_cleanup_intent_v2(std::move(authorization));
+            check_authorized_cleanup_canonical_intent_success_v2(same_receipt_retry, fixture);
+            CHECK(authorization.spent());
+        } else {
+            check_spent_cleanup_intent_reconciliation_receipt_rejected_v2(authorization);
+            auto fresh_authorization =
+                make_authorized_cleanup_resume_receipt_v2(fixture.source.binding);
+            const auto fresh_retry = reconcile_authorized_private_handoff_cleanup_intent_v2(
+                std::move(fresh_authorization));
+            check_authorized_cleanup_canonical_intent_success_v2(fresh_retry, fixture);
+            CHECK(fresh_authorization.spent());
+            check_spent_cleanup_intent_reconciliation_receipt_rejected_v2(fresh_authorization);
+        }
+        check_authorized_cleanup_canonical_intent_prefix_v2(fixture, false);
+        check_spent_cleanup_intent_reconciliation_receipt_rejected_v2(authorization);
+        check_authorized_cleanup_canonical_intent_prefix_v2(fixture, false);
+    }
+}
+
+constexpr int AUTHORIZED_CLEANUP_V2_CANONICAL_RECONCILIATION_CRASH_EXIT_CODE = 94;
+
+struct AuthorizedCleanupCanonicalIntentCrashContextV2 final {
+    OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2 target =
+        OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::Count;
+};
+
+[[nodiscard]] bool crash_authorized_cleanup_canonical_intent_reconciliation_v2(
+    OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2 point, void* opaque) noexcept {
+    const auto& context =
+        *static_cast<const AuthorizedCleanupCanonicalIntentCrashContextV2*>(opaque);
+    if (point == context.target) {
+        std::_Exit(AUTHORIZED_CLEANUP_V2_CANONICAL_RECONCILIATION_CRASH_EXIT_CODE);
+    }
+    return false;
+}
+
+void test_authorized_cleanup_v2_canonical_intent_process_crashes_and_cold_retry() {
+    TempDirectory temp;
+    for (std::size_t index = 0;
+         index < AUTHORIZED_CLEANUP_V2_CANONICAL_RECONCILIATION_FAULT_SCENARIOS.size(); ++index) {
+        const auto scenario = AUTHORIZED_CLEANUP_V2_CANONICAL_RECONCILIATION_FAULT_SCENARIOS[index];
+        const auto fixture = prepare_authorized_cleanup_canonical_intent_fixture_v2(
+            temp.path() /
+                ("authorized-v2-canonical-crash-" + std::to_string(index) + ".gnfs-sink-lease") /
+                "corpus",
+            static_cast<std::uint8_t>(0x80U + index), scenario.duplicate_pending);
+        const pid_t child = ::fork();
+        if (child < 0) {
+            throw std::system_error(errno, std::generic_category(),
+                                    "fork canonical intent reconciliation crash child");
+        }
+        if (child == 0) {
+            try {
+                auto authorization =
+                    make_authorized_cleanup_resume_receipt_v2(fixture.source.binding);
+                AuthorizedCleanupCanonicalIntentCrashContextV2 context{
+                    .target = scenario.point,
+                };
+                (void)reconcile_authorized_private_handoff_cleanup_intent_v2_for_trusted_test(
+                    OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2::test_key(),
+                    std::move(authorization),
+                    OOCPrivateHandoffCleanupIntentReconciliationTestHooksV2{
+                        .stop_after = crash_authorized_cleanup_canonical_intent_reconciliation_v2,
+                        .context = &context,
+                    });
+            } catch (...) {
+                std::_Exit(92);
+            }
+            std::_Exit(93);
+        }
+
+        int status = 0;
+        pid_t waited = -1;
+        do {
+            waited = ::waitpid(child, &status, 0);
+        } while (waited < 0 && errno == EINTR);
+        if (waited != child) {
+            throw std::system_error(errno == 0 ? ECHILD : errno, std::generic_category(),
+                                    "wait canonical intent reconciliation crash child");
+        }
+        CHECK(WIFEXITED(status));
+        if (WIFEXITED(status)) {
+            CHECK(WEXITSTATUS(status) ==
+                  AUTHORIZED_CLEANUP_V2_CANONICAL_RECONCILIATION_CRASH_EXIT_CODE);
+        }
+        if (!WIFEXITED(status) ||
+            WEXITSTATUS(status) != AUTHORIZED_CLEANUP_V2_CANONICAL_RECONCILIATION_CRASH_EXIT_CODE) {
+            throw std::runtime_error("canonical intent reconciliation child missed crash hook");
+        }
+        check_authorized_cleanup_canonical_intent_prefix_v2(fixture, scenario.pending_after_stop);
+
+        auto recovery_authorization =
+            make_authorized_cleanup_resume_receipt_v2(fixture.source.binding);
+        const auto recovered = reconcile_authorized_private_handoff_cleanup_intent_v2(
+            std::move(recovery_authorization));
+        check_authorized_cleanup_canonical_intent_success_v2(recovered, fixture);
+        CHECK(recovery_authorization.spent());
+        check_authorized_cleanup_canonical_intent_prefix_v2(fixture, false);
+        check_spent_cleanup_intent_reconciliation_receipt_rejected_v2(recovery_authorization);
+        check_authorized_cleanup_canonical_intent_prefix_v2(fixture, false);
+    }
+}
+
+constexpr int AUTHORIZED_CLEANUP_V2_DUPLICATE_PENDING_SYNC_CRASH_EXIT_CODE = 95;
+
+[[nodiscard]] std::error_code crash_authorized_cleanup_duplicate_pending_sync_v2(
+    OOCPrivateHandoffCleanupIntentReconciliationSyncSiteV2 site, void*) noexcept {
+    if (site == OOCPrivateHandoffCleanupIntentReconciliationSyncSiteV2::DuplicatePendingRemoval) {
+        std::_Exit(AUTHORIZED_CLEANUP_V2_DUPLICATE_PENDING_SYNC_CRASH_EXIT_CODE);
+    }
+    return {};
+}
+
+void test_authorized_cleanup_v2_duplicate_pending_sync_crash_and_cold_retry() {
+    TempDirectory temp;
+    const auto fixture = prepare_authorized_cleanup_canonical_intent_fixture_v2(
+        temp.path() / "authorized-v2-duplicate-pending-sync-crash.gnfs-sink-lease" / "corpus", 0x8f,
+        true);
+    const pid_t child = ::fork();
+    if (child < 0) {
+        throw std::system_error(errno, std::generic_category(),
+                                "fork duplicate pending sync crash child");
+    }
+    if (child == 0) {
+        try {
+            auto authorization = make_authorized_cleanup_resume_receipt_v2(fixture.source.binding);
+            (void)reconcile_authorized_private_handoff_cleanup_intent_v2_for_trusted_test(
+                OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2::test_key(),
+                std::move(authorization),
+                OOCPrivateHandoffCleanupIntentReconciliationTestHooksV2{
+                    .fail_sync = crash_authorized_cleanup_duplicate_pending_sync_v2,
+                });
+        } catch (...) {
+            std::_Exit(96);
+        }
+        std::_Exit(97);
+    }
+
+    int status = 0;
+    pid_t waited = -1;
+    do {
+        waited = ::waitpid(child, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    if (waited != child) {
+        throw std::system_error(errno == 0 ? ECHILD : errno, std::generic_category(),
+                                "wait duplicate pending sync crash child");
+    }
+    CHECK(WIFEXITED(status));
+    if (WIFEXITED(status)) {
+        CHECK(WEXITSTATUS(status) == AUTHORIZED_CLEANUP_V2_DUPLICATE_PENDING_SYNC_CRASH_EXIT_CODE);
+    }
+    if (!WIFEXITED(status) ||
+        WEXITSTATUS(status) != AUTHORIZED_CLEANUP_V2_DUPLICATE_PENDING_SYNC_CRASH_EXIT_CODE) {
+        throw std::runtime_error("duplicate pending sync child missed crash callback");
+    }
+
+    // The sync callback is downstream of the exact unlink and upstream of the
+    // real directory durability barrier, so this cold prefix must be C-only.
+    check_authorized_cleanup_canonical_intent_prefix_v2(fixture, false);
+
+    auto recovery_authorization = make_authorized_cleanup_resume_receipt_v2(fixture.source.binding);
+    const auto recovered =
+        reconcile_authorized_private_handoff_cleanup_intent_v2(std::move(recovery_authorization));
+    check_authorized_cleanup_canonical_intent_success_v2(recovered, fixture);
+    CHECK(recovery_authorization.spent());
+    check_authorized_cleanup_canonical_intent_prefix_v2(fixture, false);
+    check_spent_cleanup_intent_reconciliation_receipt_rejected_v2(recovery_authorization);
+    check_authorized_cleanup_canonical_intent_prefix_v2(fixture, false);
+}
+
+struct AuthorizedCleanupCanonicalIntentConflictScenarioV2 final {
+    bool duplicate_pending = false;
+    AuthorizedCleanupIntentReconciliationHookContextV2::Injection injection =
+        AuthorizedCleanupIntentReconciliationHookContextV2::Injection::None;
+    OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2 point =
+        OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::Count;
+    OOCCleanupStage expected_stage = OOCCleanupStage::None;
+    bool same_byte_replacement = false;
+};
+
+constexpr std::array AUTHORIZED_CLEANUP_V2_CANONICAL_RECONCILIATION_CONFLICT_SCENARIOS{
+    AuthorizedCleanupCanonicalIntentConflictScenarioV2{
+        .duplicate_pending = false,
+        .injection = AuthorizedCleanupIntentReconciliationHookContextV2::Injection::
+            ReplaceCanonicalSameBytes,
+        .point = OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::CanonicalExistingDurable,
+        .expected_stage = OOCCleanupStage::IntentDurable,
+        .same_byte_replacement = true,
+    },
+    AuthorizedCleanupCanonicalIntentConflictScenarioV2{
+        .duplicate_pending = false,
+        .injection = AuthorizedCleanupIntentReconciliationHookContextV2::Injection::
+            MakeCanonicalMetadataConflict,
+        .point = OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::CanonicalExistingDurable,
+    },
+    AuthorizedCleanupCanonicalIntentConflictScenarioV2{
+        .duplicate_pending = true,
+        .injection =
+            AuthorizedCleanupIntentReconciliationHookContextV2::Injection::ReplacePendingSameBytes,
+        .point =
+            OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::DuplicatePendingRemovalReady,
+        .expected_stage = OOCCleanupStage::IntentDurable,
+        .same_byte_replacement = true,
+    },
+    AuthorizedCleanupCanonicalIntentConflictScenarioV2{
+        .duplicate_pending = true,
+        .injection = AuthorizedCleanupIntentReconciliationHookContextV2::Injection::
+            MakePendingMetadataConflict,
+        .point =
+            OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2::DuplicatePendingRemovalReady,
+    },
+};
+
+void test_authorized_cleanup_v2_canonical_intent_conflicts_are_zero_mutation() {
+    TempDirectory temp;
+    for (std::size_t index = 0;
+         index < AUTHORIZED_CLEANUP_V2_CANONICAL_RECONCILIATION_CONFLICT_SCENARIOS.size();
+         ++index) {
+        const auto scenario =
+            AUTHORIZED_CLEANUP_V2_CANONICAL_RECONCILIATION_CONFLICT_SCENARIOS[index];
+        const auto fixture = prepare_authorized_cleanup_canonical_intent_fixture_v2(
+            temp.path() /
+                ("authorized-v2-canonical-conflict-" + std::to_string(index) + ".gnfs-sink-lease") /
+                "corpus",
+            static_cast<std::uint8_t>(0x90U + index), scenario.duplicate_pending);
+        const auto& mutation_path = scenario.duplicate_pending
+                                        ? fixture.source.paths.intent_pending_path
+                                        : fixture.source.paths.intent_path;
+        const auto original_identity = native_identity_for_test_path(mutation_path);
+        auto authorization = make_authorized_cleanup_resume_receipt_v2(fixture.source.binding);
+        AuthorizedCleanupIntentReconciliationHookContextV2 context{
+            .target = scenario.point,
+            .injection = scenario.injection,
+            .paths = fixture.source.paths,
+            .snapshot_root = temp.path(),
+            .stop = false,
+        };
+        const auto rejected =
+            reconcile_authorized_private_handoff_cleanup_intent_v2_for_trusted_test(
+                OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2::test_key(),
+                std::move(authorization),
+                OOCPrivateHandoffCleanupIntentReconciliationTestHooksV2{
+                    .stop_after = authorized_cleanup_intent_reconciliation_hook_v2,
+                    .context = &context,
+                });
+        CHECK(context.invoked);
+        CHECK(context.injection_succeeded);
+        CHECK(!context.failed);
+        CHECK(context.after_injection.has_value());
+        CHECK(rejected.result.status == OOCCleanupStatus::ForeignReplacementPreserved);
+        CHECK(rejected.result.stage == scenario.expected_stage);
+        CHECK(rejected.result.native_error == std::make_error_code(std::errc::protocol_error));
+        CHECK(rejected.authorization_retained());
+        CHECK(!rejected.reconciliation_required());
+        CHECK(!rejected.intent_canonical());
+        CHECK(!rejected.evidence.has_value());
+        CHECK(!authorization.spent());
+        if (context.after_injection) {
+            CHECK(capture_namespace_tree(temp.path()) == *context.after_injection);
+        }
+
+        CHECK(entry_exists_no_follow(fixture.source.paths.intent_path));
+        CHECK(entry_exists_no_follow(fixture.source.paths.intent_pending_path) ==
+              scenario.duplicate_pending);
+        CHECK(read_test_bytes(mutation_path) == fixture.source.pending_bytes);
+        if (scenario.same_byte_replacement) {
+            CHECK(native_identity_for_test_path(mutation_path) != original_identity);
+        } else {
+            CHECK(native_identity_for_test_path(mutation_path) == original_identity);
+            struct stat metadata{};
+            CHECK(::lstat(mutation_path.c_str(), &metadata) == 0);
+            CHECK((metadata.st_mode & static_cast<mode_t>(07777)) == static_cast<mode_t>(0400));
+        }
+        const auto& untouched_path = scenario.duplicate_pending
+                                         ? fixture.source.paths.intent_path
+                                         : fixture.source.paths.intent_pending_path;
+        if (scenario.duplicate_pending) {
+            CHECK(native_identity_for_test_path(untouched_path) ==
+                  fixture.canonical_snapshot.identity);
+        } else {
+            CHECK(!entry_exists_no_follow(untouched_path));
+        }
+        check_authorized_cleanup_intent_reconciliation_live_artifacts_v2(fixture.source);
+        check_authorized_cleanup_intent_reconciliation_base_lock_released_v2(fixture.source);
+    }
 }
 
 void check_authorized_cleanup_intent_reconciliation_prefix_v2(
@@ -10338,9 +11050,9 @@ void finish_authorized_cleanup_intent_reconciliation_fixture_v2(
 
 void test_authorized_cleanup_v2_intent_reconciliation_fault_prefixes() {
     TempDirectory temp;
-    for (std::size_t index = 0; index < AUTHORIZED_CLEANUP_V2_RECONCILIATION_FAULT_POINTS.size();
-         ++index) {
-        const auto point = AUTHORIZED_CLEANUP_V2_RECONCILIATION_FAULT_POINTS[index];
+    for (std::size_t index = 0;
+         index < AUTHORIZED_CLEANUP_V2_PENDING_RECONCILIATION_FAULT_POINTS.size(); ++index) {
+        const auto point = AUTHORIZED_CLEANUP_V2_PENDING_RECONCILIATION_FAULT_POINTS[index];
         const auto fixture = prepare_authorized_cleanup_pending_intent_fixture_v2(
             temp.path() /
                 ("authorized-v2-intent-reconcile-prefix-" + std::to_string(index) +
@@ -10402,9 +11114,9 @@ struct AuthorizedCleanupIntentReconciliationCrashContextV2 final {
 
 void test_authorized_cleanup_v2_intent_reconciliation_process_crashes() {
     TempDirectory temp;
-    for (std::size_t index = 0; index < AUTHORIZED_CLEANUP_V2_RECONCILIATION_FAULT_POINTS.size();
-         ++index) {
-        const auto point = AUTHORIZED_CLEANUP_V2_RECONCILIATION_FAULT_POINTS[index];
+    for (std::size_t index = 0;
+         index < AUTHORIZED_CLEANUP_V2_PENDING_RECONCILIATION_FAULT_POINTS.size(); ++index) {
+        const auto point = AUTHORIZED_CLEANUP_V2_PENDING_RECONCILIATION_FAULT_POINTS[index];
         const auto fixture = prepare_authorized_cleanup_pending_intent_fixture_v2(
             temp.path() /
                 ("authorized-v2-intent-reconcile-crash-" + std::to_string(index) +
@@ -15557,6 +16269,9 @@ void run_authorized_v2_core_suite() {
     test_authorized_cleanup_v2_canonical_completion_evidence();
     test_authorized_cleanup_v2_pending_only_requires_conversion();
     test_authorized_cleanup_v2_reconciliation_never_creates_pending();
+    test_authorized_cleanup_v2_existing_canonical_and_duplicate_pending_converge();
+    test_authorized_cleanup_v2_existing_canonical_sync_failures_are_retryable();
+    test_authorized_cleanup_v2_canonical_intent_conflicts_are_zero_mutation();
     test_private_handoff_reader_releases_adoption_authority_for_read_only_owner();
     test_authorized_cleanup_v2_intent_reconciliation_replacements();
     test_authorized_cleanup_v2_cold_tail_evidence_omits_intent_identity();
@@ -15567,6 +16282,9 @@ void run_authorized_v2_core_suite() {
 void run_authorized_v2_artifact_crash_suite() {
     test_authorized_cleanup_v2_intent_reconciliation_fault_prefixes();
     test_authorized_cleanup_v2_intent_reconciliation_process_crashes();
+    test_authorized_cleanup_v2_canonical_intent_fault_boundaries();
+    test_authorized_cleanup_v2_canonical_intent_process_crashes_and_cold_retry();
+    test_authorized_cleanup_v2_duplicate_pending_sync_crash_and_cold_retry();
     test_authorized_cleanup_v2_fault_prefixes_and_cold_recovery(
         AUTHORIZED_CLEANUP_V2_ARTIFACT_FAULT_POINTS, "authorized-v2-artifact-prefix", 0x91);
     test_authorized_cleanup_v2_process_crash_prefixes_and_cold_recovery(

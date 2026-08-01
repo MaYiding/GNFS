@@ -1,8 +1,9 @@
 # Distributed Sieve Durable Wave Resume
 
 Status: implementation in progress (durable worker/retry path, M4 prepared
-admission, raw-writer recovery, merge commit, and relation cleanup-intent
-conversion complete; exact worker cleanup next)
+admission, raw-writer recovery, merge commit, worker-cleanup codec/root
+admission, and fresh/recovery relation-intent conversion complete;
+manifest-order authorization publication, cold cleanup, and completion next)
 
 Branch: `codex/parallel-structured-filter`
 
@@ -3014,8 +3015,16 @@ M4b restart recovery is split into explicit authority milestones:
   BaseLock epoch and executes the exact intra-lease deletion tail through
   durable namespace absence. Its dedicated crash, replacement, successor-drift,
   and validation matrix is complete.
-- [ ] M4b-P4 completes manifest-order worker authorization, cleanup, and
-  completion while retaining the merged corpus.
+- [x] M4b-P3c converges exact pending-only, canonical-only, and canonical plus
+  one byte-identical pending V2 intent without widening relation-layer deletion
+  authority.
+- [x] M4b-P4a freezes worker authorization/completion codecs and exact
+  cleanup-root inventory/cold admission.
+- [x] M4b-P4b mints one root-bound live receipt and seals the fresh same-OFD
+  T2a conversion bridge.
+- [ ] M4b-P4c publishes or recovers the next manifest-order authorization,
+  drives recovery-only T2a plus the independent T2b deletion epoch, publishes
+  exact completion, and retains the merged corpus.
 
 M4a completes the source-private merge-generation namespace, exact P0-P8
 reservation, bounded `MergeStartedV1` publication and normalization, reverse
@@ -3690,3 +3699,40 @@ The accepted residual boundary is the documented same-UID POSIX race between
 final directory identity validation and `unlinkat(..., AT_REMOVEDIR)`. It is
 outside the current threat model and is not reachable through a legal marker
 prefix. T5b is now the sole next P1 continuation milestone.
+
+## M4b-P3c Implementation Report: 2026-08-01
+
+The recovery-only T2a reconciler now accepts exactly three live prefixes:
+pending-only (P), canonical-only (C), and canonical plus one byte-identical
+pending record (CP). It never creates intent and never removes handoff,
+artifact, staged, quarantine, lease, or directory state. Every other prefix,
+including nonidentical duals and metadata or inode drift, remains a
+zero-additional-mutation conflict.
+
+P retains its receipt through pending confirmation and spends it immediately
+before the first canonical rename attempt. C confirms canonical durability and
+revalidates the exact live prefix while the receipt remains retryable. CP
+follows the same retained confirmation path and spends immediately before the
+exact duplicate-pending unlink. The CP path then performs the real directory
+sync and absence check before returning canonical evidence. Any uncertain
+outcome after a spend boundary requires a fresh cold receipt, and no
+non-`IntentCanonical` result carries evidence.
+
+Focused macOS validation covers all nine reconciliation stop points,
+canonical-confirmation and post-unlink sync failures, a process exit after
+unlink and before directory sync, receipt retry and spend behavior,
+same-byte/new-inode and metadata drift, live artifact preservation,
+BaseLock/action-claim release, and fresh-receipt cold convergence. The complete
+`test_ooc_cleanup_transaction` binary and the `OOCAuthorizedV2CleanupCore` and
+`OOCAuthorizedV2CleanupArtifactCrash` CTest entries pass. Broader validation
+also passes `./scripts/test.sh changed --deep` with 70/70 tests and
+`./scripts/test.sh gate` with 183/183 tests. The distributed-sieve policy
+checker also passes its complete mutation self-test, and an independent final
+review reports no P0/P1 finding.
+
+The accepted residual same-UID POSIX boundary above is unchanged. The next
+milestone is M4b-P4c/T5b: publish or recover the next manifest-order worker
+authorization, drive this P/C/CP reconciler and T2b from fresh independent lock
+epochs, publish exact cleanup completion from parent-durable absence evidence,
+advance the worker frontier, and retain the merged corpus. Consumption ACK,
+merged cleanup, and `WaveCompletedV1` remain M5 work.

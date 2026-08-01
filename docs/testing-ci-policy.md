@@ -219,20 +219,31 @@ authority permit.
 The macOS-only `OOCAuthorizedV2CleanupCore` entry is an `instant` contract for
 the cold authorized-cleanup executor. It covers direct canonical completion,
 parent-durable absence evidence, the deliberately unspent pending-only
-conversion boundary, canonical-intent identity retention, markerless and
-staged cold tails, byte-identical inode replacement, foreign inventory, and
-exact-successor drift injected at both the unspent permit seam and a spent
-artifact seam. The two `fast` entries,
+conversion boundary, and canonical-intent identity retention. Intent
+reconciliation accepts only pending-only, canonical-only, or canonical plus
+one exact duplicate pending record. Canonical confirmation failures retain the
+fresh receipt; the duplicate-pending unlink boundary spends it and requires a
+fresh cold receipt after any uncertain outcome. Failure-only hooks cover the
+canonical confirmation and post-unlink directory-sync barriers, while
+same-byte inode and metadata replacement tests prove zero additional mutation
+before either spend boundary. Core also covers markerless and staged cold
+tails, foreign inventory, and exact-successor drift injected at both the
+unspent permit seam and a spent artifact seam. The two `fast` entries,
 `OOCAuthorizedV2CleanupArtifactCrash` and
 `OOCAuthorizedV2CleanupLeaseCrash`, partition the complete ordered fault-point
 catalog. Each entry checks in-process interruption and also forks a child that
 calls `_Exit` at every assigned durable boundary. The parent verifies the
 resulting legal prefix and completes cold recovery with a fresh process-local
-authorization receipt. Together they cover all durable intent, handoff,
+authorization receipt. Artifact recovery also exits after exact duplicate
+pending removal but before its directory sync, then proves canonical-only cold
+convergence. Together the entries cover all durable intent, handoff,
 quarantine, staged publication, artifact unlink, owner, private-directory,
 external `OWNED`, parent-sync, and final evidence boundaries. Other platforms
 retain the explicit mutation-free unsupported contract until an equivalent
-held-handle implementation exists.
+held-handle implementation exists. Replacement sandwiches are deterministic
+checks inside the cooperating `BaseLock` domain; as elsewhere in the cleanup
+protocol, an adversarial same-UID mutator racing the final snapshot and the
+name-based `unlinkat` is outside the portable threat model.
 
 The platform-limited metadata adapter is exercised directly for missing,
 policy-compatible regular, invalid-mode POSIX, directory, hard-link, and
