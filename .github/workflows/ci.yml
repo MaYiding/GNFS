@@ -129,6 +129,7 @@ jobs:
           -DVCPKG_TARGET_TRIPLET=x64-windows
 
     - name: Build (POSIX)
+      id: build_posix
       if: runner.os != 'Windows'
       run: cmake --build build --parallel "$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
 
@@ -151,6 +152,19 @@ jobs:
           --parallel "${{ matrix.ctest_parallel }}" \
           --timeout 300 \
           --no-tests=error
+
+    - name: Run macOS worker cleanup tail
+      if: >-
+        ${{
+          !cancelled() &&
+          steps.build_posix.outcome == 'success' &&
+          matrix.os == 'macos-14' &&
+          matrix.build_type == 'Release'
+        }}
+      run: |
+        test -x build/test_distributed_sieve_worker_cleanup_tail
+        ./scripts/test.sh -t Release --no-build --no-color run \
+          test_distributed_sieve_worker_cleanup_tail
 
     # Windows: multi-config generator places binaries under build/<Config>/,
     # so we pass -C to ctest and use PowerShell parallel-count syntax.

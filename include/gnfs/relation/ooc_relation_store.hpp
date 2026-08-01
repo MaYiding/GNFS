@@ -61,6 +61,10 @@ namespace gnfs::sieve::distributed_sieve_resume_detail {
 class DistributedSieveMergeStartedWriterMintV1;
 }
 
+namespace gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail {
+class DistributedSieveWorkerCleanupIntentConversionAuthorityV1;
+}
+
 namespace gnfs::relation {
 
 class OOCPrivateHandoffReader;
@@ -3419,6 +3423,8 @@ private:
 
     friend class ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentConversionExecutorV2;
     friend class ooc_cleanup_detail::OOCPrivateHandoffReadOnlyReleaseExecutorV1;
+    friend class gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail::
+        DistributedSieveWorkerCleanupIntentConversionAuthorityV1;
 };
 
 /// Trusted reader for a single flushed prefix of an otherwise incomplete OOC

@@ -1,11 +1,14 @@
 #include "distributed_sieve_worker_cleanup_authority_internal.hpp"
 
+#include <gnfs/relation/ooc_relation_store.hpp>
 #include <gnfs/util/process.hpp>
 
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <new>
 #include <optional>
+#include <system_error>
 #include <utility>
 
 namespace gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail {
@@ -304,5 +307,114 @@ mint_distributed_sieve_worker_cleanup_authorization_receipt_v1(
     DistributedSieveWorkerCleanupRootAdmissionV1& admission) noexcept {
     return DistributedSieveWorkerCleanupReceiptMintAuthorityV1::mint(admission);
 }
+
+DistributedSieveWorkerCleanupIntentConversionExecuteResultV1
+DistributedSieveWorkerCleanupIntentConversionAuthorityV1::execute(
+    DistributedSieveWorkerCleanupIntentConversionCapsuleV1&& capsule,
+    relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentPublicationTestHooksV2 hooks,
+    bool trusted_test_hooks) noexcept {
+    auto retained_capsule = std::move(capsule);
+    namespace relation_cleanup = relation::ooc_cleanup_detail;
+    using Diagnostic = DistributedSieveWorkerCleanupIntentConversionExecuteDiagnosticV1;
+    using Phase = DistributedSieveWorkerCleanupIntentConversionExecutePhaseV1;
+    using Publication = relation_cleanup::OOCPrivateHandoffCleanupIntentPublicationResultV2;
+    using Result = DistributedSieveWorkerCleanupIntentConversionExecuteResultV1;
+    using Status = DistributedSieveWorkerCleanupIntentConversionExecuteStatusV1;
+
+    const auto failure = [](Phase phase, Status status, std::error_code native_error,
+                            bool cold_reopen_required) noexcept {
+        Diagnostic diagnostic;
+        diagnostic.phase = phase;
+        diagnostic.status = status;
+        diagnostic.native_error = native_error;
+        diagnostic.cold_reopen_required = cold_reopen_required;
+        return diagnostic;
+    };
+    const auto release_for_cold_reopen = [&]() noexcept {
+        retained_capsule.reader_.reset();
+        retained_capsule.receipt_.reset();
+        std::optional<DistributedSieveWorkerCleanupRootAdmissionV1> released_root;
+        released_root.emplace(std::move(retained_capsule.root_));
+        released_root.reset();
+    };
+
+    const int process_id = gnfs::util::process_id();
+    const bool process_mismatch = retained_capsule.creator_process_id_ != 0 &&
+                                  (process_id <= 0 || retained_capsule.creator_process_id_ !=
+                                                          static_cast<std::uint64_t>(process_id));
+    if (!valid(retained_capsule)) {
+        release_for_cold_reopen();
+        return Result(std::nullopt, std::nullopt, Publication{},
+                      failure(Phase::capsule_validation,
+                              process_mismatch ? Status::process_mismatch : Status::invalid_capsule,
+                              process_mismatch ? std::make_error_code(std::errc::no_such_process)
+                                               : std::make_error_code(std::errc::invalid_argument),
+                              true));
+    }
+
+    Publication publication =
+        trusted_test_hooks
+            ? relation_cleanup::
+                  convert_authorized_private_handoff_to_cleanup_intent_v2_for_trusted_test(
+                      relation_cleanup::OOCPrivateHandoffCleanupIntentPublicationTestKeyV2{},
+                      std::move(*retained_capsule.reader_), std::move(*retained_capsule.receipt_),
+                      hooks)
+            : relation_cleanup::convert_authorized_private_handoff_to_cleanup_intent_v2(
+                  std::move(*retained_capsule.reader_), std::move(*retained_capsule.receipt_));
+
+    if (publication.capabilities_retained()) {
+        std::optional<DistributedSieveWorkerCleanupIntentConversionCapsuleV1> retryable_capsule;
+        retryable_capsule.emplace(std::move(retained_capsule));
+        Diagnostic diagnostic;
+        diagnostic.phase = Phase::complete;
+        diagnostic.status = Status::capabilities_retained;
+        diagnostic.capsule_retained = true;
+        return Result(std::move(retryable_capsule), std::nullopt, std::move(publication),
+                      std::move(diagnostic));
+    }
+
+    if (publication.intent_published() || publication.canonical_reconciliation_required()) {
+        const bool reconciliation_required = publication.canonical_reconciliation_required();
+        retained_capsule.reader_.reset();
+        retained_capsule.receipt_.reset();
+        std::optional<DistributedSieveWorkerCleanupRootAdmissionV1> root_continuation;
+        root_continuation.emplace(std::move(retained_capsule.root_));
+        Diagnostic diagnostic;
+        diagnostic.phase = Phase::complete;
+        diagnostic.status = reconciliation_required ? Status::canonical_reconciliation_required
+                                                    : Status::intent_published;
+        diagnostic.root_continuation_retained = true;
+        return Result(std::nullopt, std::move(root_continuation), std::move(publication),
+                      std::move(diagnostic));
+    }
+
+    const std::error_code publication_error =
+        publication.result.native_error ? publication.result.native_error
+                                        : std::make_error_code(std::errc::state_not_recoverable);
+    release_for_cold_reopen();
+    return Result(
+        std::nullopt, std::nullopt, std::move(publication),
+        failure(Phase::intent_publication, Status::publication_failed, publication_error, true));
+}
+
+DistributedSieveWorkerCleanupIntentConversionExecuteResultV1
+execute_distributed_sieve_worker_cleanup_intent_conversion_v1(
+    DistributedSieveWorkerCleanupIntentConversionCapsuleV1&& capsule) noexcept {
+    return DistributedSieveWorkerCleanupIntentConversionAuthorityV1::execute(std::move(capsule), {},
+                                                                             false);
+}
+
+namespace trusted_test {
+
+DistributedSieveWorkerCleanupIntentConversionExecuteResultV1
+execute_distributed_sieve_worker_cleanup_intent_conversion_v1_with_hooks(
+    DistributedSieveWorkerCleanupIntentConversionCapsuleV1&& capsule,
+    relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentPublicationTestHooksV2
+        hooks) noexcept {
+    return DistributedSieveWorkerCleanupIntentConversionAuthorityV1::execute(std::move(capsule),
+                                                                             hooks, true);
+}
+
+} // namespace trusted_test
 
 } // namespace gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail

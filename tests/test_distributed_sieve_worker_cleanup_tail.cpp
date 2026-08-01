@@ -36,6 +36,7 @@
 #if defined(__APPLE__)
 #include <cerrno>
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -56,6 +57,16 @@ using CleanupResult = cleanup_authority::DistributedSieveWorkerCleanupTailResult
 using CleanupReceiptMinted = cleanup_authority::DistributedSieveWorkerCleanupReceiptMintedV1;
 using CleanupReceiptMintResult =
     cleanup_authority::DistributedSieveWorkerCleanupReceiptMintResultV1;
+using CleanupConversionCapsule =
+    cleanup_authority::DistributedSieveWorkerCleanupIntentConversionCapsuleV1;
+using CleanupConversionPrepareResult =
+    cleanup_authority::DistributedSieveWorkerCleanupIntentConversionPrepareResultV1;
+using CleanupConversionExecuteResult =
+    cleanup_authority::DistributedSieveWorkerCleanupIntentConversionExecuteResultV1;
+using CleanupConversionPrepareFunction =
+    decltype(&cleanup_authority::prepare_distributed_sieve_worker_cleanup_intent_conversion_v1);
+using CleanupConversionExecuteFunction =
+    decltype(&cleanup_authority::execute_distributed_sieve_worker_cleanup_intent_conversion_v1);
 
 static_assert(std::is_final_v<CleanupAdmission>);
 static_assert(!std::is_default_constructible_v<CleanupAdmission>);
@@ -68,9 +79,30 @@ static_assert(!std::is_copy_constructible_v<CleanupReceiptMinted>);
 static_assert(std::is_nothrow_move_constructible_v<CleanupReceiptMinted>);
 static_assert(!std::is_copy_constructible_v<CleanupReceiptMintResult>);
 static_assert(std::is_nothrow_move_constructible_v<CleanupReceiptMintResult>);
+static_assert(std::is_final_v<CleanupConversionCapsule>);
+static_assert(!std::is_default_constructible_v<CleanupConversionCapsule>);
+static_assert(!std::is_copy_constructible_v<CleanupConversionCapsule>);
+static_assert(std::is_nothrow_move_constructible_v<CleanupConversionCapsule>);
+static_assert(!std::is_copy_constructible_v<CleanupConversionPrepareResult>);
+static_assert(std::is_nothrow_move_constructible_v<CleanupConversionPrepareResult>);
+static_assert(!std::is_copy_constructible_v<CleanupConversionExecuteResult>);
+static_assert(std::is_nothrow_move_constructible_v<CleanupConversionExecuteResult>);
+static_assert(!std::is_invocable_v<CleanupConversionPrepareFunction, CleanupAdmission&>);
+static_assert(std::is_nothrow_invocable_r_v<CleanupConversionPrepareResult,
+                                            CleanupConversionPrepareFunction, CleanupAdmission&&>);
+static_assert(!std::is_invocable_v<CleanupConversionExecuteFunction, CleanupConversionCapsule&>);
+static_assert(
+    std::is_nothrow_invocable_r_v<CleanupConversionExecuteResult, CleanupConversionExecuteFunction,
+                                  CleanupConversionCapsule&&>);
 static_assert(
     noexcept(cleanup_authority::mint_distributed_sieve_worker_cleanup_authorization_receipt_v1(
         std::declval<CleanupAdmission&>())));
+static_assert(
+    noexcept(cleanup_authority::prepare_distributed_sieve_worker_cleanup_intent_conversion_v1(
+        std::declval<CleanupAdmission&&>())));
+static_assert(
+    noexcept(cleanup_authority::execute_distributed_sieve_worker_cleanup_intent_conversion_v1(
+        std::declval<CleanupConversionCapsule&&>())));
 static_assert(
     noexcept(cleanup_authority::consume_distributed_sieve_committed_tail_for_worker_cleanup_v1(
         std::declval<CommittedTail&&>())));
@@ -561,6 +593,14 @@ public:
         return *admission_;
     }
 
+    [[nodiscard]] CleanupAdmission take_admission() {
+        CHECK(admission_.has_value());
+        CleanupAdmission admission(std::move(*admission_));
+        admission_.reset();
+        CHECK(admission.valid());
+        return admission;
+    }
+
     [[nodiscard]] std::uint32_t active_ordinal() const noexcept {
         return active_ordinal_;
     }
@@ -641,6 +681,52 @@ private:
     }
     CHECK(minted.minted->manifest_order_ordinal == root.active_ordinal());
     return minted;
+}
+
+[[nodiscard]] CleanupReceiptMintResult mint_cleanup_receipt(CleanupAdmission& admission,
+                                                            std::uint32_t expected_ordinal) {
+    auto minted = cleanup_authority::mint_distributed_sieve_worker_cleanup_authorization_receipt_v1(
+        admission);
+    if (!minted || !minted.minted.has_value()) {
+        fail("mint worker-cleanup authorization receipt from continuation", __LINE__,
+             receipt_mint_diagnostic_detail(minted.diagnostic));
+    }
+    CHECK(minted.minted->manifest_order_ordinal == expected_ordinal);
+    return minted;
+}
+
+[[nodiscard]] CleanupConversionPrepareResult
+prepare_cleanup_conversion_capsule(CanonicalWorkerCleanupRoot& root) {
+    auto prepared =
+        cleanup_authority::prepare_distributed_sieve_worker_cleanup_intent_conversion_v1(
+            root.take_admission());
+    CHECK(!prepared.retryable_root.has_value());
+    CHECK(prepared.capsule.has_value());
+    CHECK(prepared.diagnostic.phase ==
+          cleanup_authority::DistributedSieveWorkerCleanupIntentConversionPreparePhaseV1::complete);
+    CHECK(prepared.diagnostic.status ==
+          cleanup_authority::DistributedSieveWorkerCleanupIntentConversionPrepareStatusV1::ready);
+    CHECK(prepared.capsule->valid());
+    CHECK(prepared.capsule->manifest_order_ordinal() == root.active_ordinal());
+    return prepared;
+}
+
+struct CleanupConversionStopContext final {
+    relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentPublicationFaultPointV2 target =
+        relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentPublicationFaultPointV2::
+            ReaderViewsClosed;
+    bool invoked = false;
+};
+
+[[nodiscard]] bool stop_cleanup_conversion_after(
+    relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentPublicationFaultPointV2 point,
+    void* opaque) noexcept {
+    auto& context = *static_cast<CleanupConversionStopContext*>(opaque);
+    if (point != context.target) {
+        return false;
+    }
+    context.invoked = true;
+    return true;
 }
 
 [[nodiscard]] CommittedTail cold_open_tail(const std::filesystem::path& root,
@@ -726,6 +812,27 @@ void require_no_cleanup_records(const std::filesystem::path& root) {
     return BASE_LOCKS_FREE_EXIT;
 }
 
+[[nodiscard]] int direct_base_lock_probe_child(const std::filesystem::path& lock_path) noexcept {
+    int descriptor = -1;
+    do {
+        descriptor = ::open(lock_path.c_str(), O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
+    } while (descriptor < 0 && errno == EINTR);
+    if (descriptor < 0) {
+        return EXIT_FAILURE;
+    }
+
+    int locked = -1;
+    do {
+        locked = ::flock(descriptor, LOCK_EX | LOCK_NB);
+    } while (locked != 0 && errno == EINTR);
+    const int lock_error = errno;
+    (void)::close(descriptor);
+    if (locked == 0) {
+        return BASE_LOCKS_FREE_EXIT;
+    }
+    return lock_error == EWOULDBLOCK ? BASE_LOCK_HELD_EXIT : EXIT_FAILURE;
+}
+
 [[nodiscard]] int wave_lock_probe_child(const std::filesystem::path& root,
                                         const Digest& manifest_digest) {
     auto opened = wave::DistributedSieveWaveStore::open(root, manifest_digest);
@@ -740,6 +847,73 @@ void require_no_cleanup_records(const std::filesystem::path& root) {
 run_base_lock_probe(const std::array<std::filesystem::path, 3>& bases) {
     return gnfs::test::run_child_process(test_executable, {"--probe-base-locks", bases[0].string(),
                                                            bases[1].string(), bases[2].string()});
+}
+
+[[nodiscard]] gnfs::test::ChildProcessResult
+run_direct_base_lock_probe(const std::filesystem::path& base) {
+    const auto lock_path = relation::OOCCleanupTransaction::paths_for(base).lock_path;
+    return gnfs::test::run_child_process(test_executable,
+                                         {"--probe-base-lock-file", lock_path.string()});
+}
+
+[[nodiscard]] std::size_t count_open_descriptors_for_path(const std::filesystem::path& path) {
+    struct stat expected{};
+    int inspected = -1;
+    do {
+        inspected = ::stat(path.c_str(), &expected);
+    } while (inspected != 0 && errno == EINTR);
+    if (inspected != 0) {
+        throw std::system_error(errno, std::generic_category(),
+                                "stat worker BaseLock for descriptor count");
+    }
+    const int descriptor_limit = ::getdtablesize();
+    CHECK(descriptor_limit > 0);
+    std::size_t count = 0;
+    for (int descriptor = 0; descriptor < descriptor_limit; ++descriptor) {
+        struct stat actual{};
+        int result = -1;
+        do {
+            result = ::fstat(descriptor, &actual);
+        } while (result != 0 && errno == EINTR);
+        if (result == 0 && actual.st_dev == expected.st_dev && actual.st_ino == expected.st_ino) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+void require_exact_active_worker_base_lock(const std::array<std::filesystem::path, 3>& bases,
+                                           std::uint32_t active_ordinal) {
+    CHECK(active_ordinal < 2U);
+    for (std::size_t ordinal = 0; ordinal < bases.size(); ++ordinal) {
+        const auto probe = run_direct_base_lock_probe(bases[ordinal]);
+        CHECK(probe.exited);
+        CHECK(!probe.signaled);
+        CHECK(probe.exit_code ==
+              (ordinal == active_ordinal ? BASE_LOCK_HELD_EXIT : BASE_LOCKS_FREE_EXIT));
+        const auto lock_path = relation::OOCCleanupTransaction::paths_for(bases[ordinal]).lock_path;
+        CHECK(count_open_descriptors_for_path(lock_path) == (ordinal == active_ordinal ? 1U : 0U));
+    }
+}
+
+void require_wave_lock_busy(const fixture::PreparedWaveFixture& prepared) {
+    const auto wave_probe = gnfs::test::run_child_process(
+        test_executable,
+        {"--probe-wave-lock", prepared.root().string(), digest_hex(prepared.manifest_digest())});
+    CHECK(wave_probe.exited);
+    CHECK(!wave_probe.signaled);
+    CHECK(wave_probe.exit_code == WAVE_LOCK_BUSY_EXIT);
+}
+
+void require_all_base_locks_free(const std::array<std::filesystem::path, 3>& bases) {
+    for (const auto& base : bases) {
+        const auto probe = run_direct_base_lock_probe(base);
+        CHECK(probe.exited);
+        CHECK(!probe.signaled);
+        CHECK(probe.exit_code == BASE_LOCKS_FREE_EXIT);
+        const auto lock_path = relation::OOCCleanupTransaction::paths_for(base).lock_path;
+        CHECK(count_open_descriptors_for_path(lock_path) == 0U);
+    }
 }
 
 void require_cleanup_admission(
@@ -771,12 +945,7 @@ void require_free_base_locks_and_busy_new_wave_lock(
     CHECK(!base_probe.signaled);
     CHECK(base_probe.exit_code == BASE_LOCKS_FREE_EXIT);
 
-    const auto wave_probe = gnfs::test::run_child_process(
-        test_executable,
-        {"--probe-wave-lock", prepared.root().string(), digest_hex(prepared.manifest_digest())});
-    CHECK(wave_probe.exited);
-    CHECK(!wave_probe.signaled);
-    CHECK(wave_probe.exit_code == WAVE_LOCK_BUSY_EXIT);
+    require_wave_lock_busy(prepared);
 }
 
 void test_fresh_tail_crosses_one_lock_generation_without_mutation() {
@@ -1281,6 +1450,276 @@ void test_cleanup_receipt_sticky_invalidates_added_cleanup_leaf() {
     sync_directory(root.prepared().root());
 }
 
+void test_cleanup_capsule_prepare_returns_retryable_root_while_receipt_is_live() {
+    CanonicalWorkerCleanupRoot root("worker-cleanup-capsule-live-receipt");
+    auto competing = mint_cleanup_receipt(root);
+
+    auto blocked = cleanup_authority::prepare_distributed_sieve_worker_cleanup_intent_conversion_v1(
+        root.take_admission());
+    CHECK(!blocked.capsule.has_value());
+    CHECK(blocked.retryable_root.has_value());
+    CHECK(blocked.retryable_root->valid());
+    CHECK(blocked.diagnostic.phase ==
+          cleanup_authority::DistributedSieveWorkerCleanupIntentConversionPreparePhaseV1::
+              receipt_mint);
+    CHECK(blocked.diagnostic.status ==
+          cleanup_authority::DistributedSieveWorkerCleanupIntentConversionPrepareStatusV1::
+              receipt_mint_failed);
+    CHECK(
+        blocked.diagnostic.receipt_mint.status ==
+        cleanup_authority::DistributedSieveWorkerCleanupReceiptMintStatusV1::receipt_already_live);
+
+    competing.minted.reset();
+    auto retried = cleanup_authority::prepare_distributed_sieve_worker_cleanup_intent_conversion_v1(
+        std::move(*blocked.retryable_root));
+    CHECK(!retried.retryable_root.has_value());
+    CHECK(retried.capsule.has_value());
+    CHECK(retried.diagnostic.phase ==
+          cleanup_authority::DistributedSieveWorkerCleanupIntentConversionPreparePhaseV1::complete);
+    CHECK(retried.diagnostic.status ==
+          cleanup_authority::DistributedSieveWorkerCleanupIntentConversionPrepareStatusV1::ready);
+    CHECK(retried.capsule->valid());
+}
+
+void test_cleanup_capsule_selects_active_ordinal_and_retains_one_base_lock_fd() {
+    CanonicalWorkerCleanupRoot root("worker-cleanup-capsule-active-ordinal", 1);
+    const auto bases = private_handoff_bases(root.prepared());
+    auto prepared = prepare_cleanup_conversion_capsule(root);
+
+    CHECK(prepared.capsule->manifest_order_ordinal() == 1U);
+    require_exact_active_worker_base_lock(bases, 1U);
+    require_wave_lock_busy(root.prepared());
+    CHECK(prepared.capsule->valid());
+}
+
+void test_cleanup_capsule_reader_views_closed_retries_in_place() {
+    CanonicalWorkerCleanupRoot root("worker-cleanup-capsule-reader-views-closed");
+    const auto bases = private_handoff_bases(root.prepared());
+    auto prepared = prepare_cleanup_conversion_capsule(root);
+    CleanupConversionStopContext context{
+        .target = relation::ooc_cleanup_detail::
+            OOCPrivateHandoffCleanupIntentPublicationFaultPointV2::ReaderViewsClosed,
+    };
+
+    auto interrupted = cleanup_authority::trusted_test::
+        execute_distributed_sieve_worker_cleanup_intent_conversion_v1_with_hooks(
+            std::move(*prepared.capsule),
+            relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentPublicationTestHooksV2{
+                .stop_after = stop_cleanup_conversion_after,
+                .context = &context,
+            });
+    CHECK(context.invoked);
+    CHECK(interrupted);
+    CHECK(interrupted.retryable_capsule.has_value());
+    CHECK(!interrupted.root_continuation.has_value());
+    CHECK(interrupted.publication.capabilities_retained());
+    CHECK(interrupted.publication.result.status == relation::OOCCleanupStatus::Interrupted);
+    CHECK(interrupted.publication.result.stage == relation::OOCCleanupStage::None);
+    CHECK(!interrupted.publication.result.native_error);
+    CHECK(interrupted.retryable_capsule->valid());
+    CHECK(interrupted.diagnostic.phase ==
+          cleanup_authority::DistributedSieveWorkerCleanupIntentConversionExecutePhaseV1::complete);
+    CHECK(interrupted.diagnostic.status ==
+          cleanup_authority::DistributedSieveWorkerCleanupIntentConversionExecuteStatusV1::
+              capabilities_retained);
+    CHECK(interrupted.diagnostic.capsule_retained);
+    CHECK(!interrupted.diagnostic.root_continuation_retained);
+    CHECK(!interrupted.diagnostic.cold_reopen_required);
+    require_exact_active_worker_base_lock(bases, 0U);
+    require_wave_lock_busy(root.prepared());
+
+    auto resumed = cleanup_authority::execute_distributed_sieve_worker_cleanup_intent_conversion_v1(
+        std::move(*interrupted.retryable_capsule));
+    CHECK(resumed);
+    CHECK(!resumed.retryable_capsule.has_value());
+    CHECK(resumed.root_continuation.has_value());
+    CHECK(resumed.publication.intent_published());
+    CHECK(resumed.publication.result.status == relation::OOCCleanupStatus::RecoveryRequired);
+    CHECK(resumed.publication.result.stage == relation::OOCCleanupStage::IntentDurable);
+    CHECK(resumed.publication.result.native_error ==
+          std::make_error_code(std::errc::protocol_error));
+    CHECK(resumed.diagnostic.phase ==
+          cleanup_authority::DistributedSieveWorkerCleanupIntentConversionExecutePhaseV1::complete);
+    CHECK(resumed.diagnostic.status ==
+          cleanup_authority::DistributedSieveWorkerCleanupIntentConversionExecuteStatusV1::
+              intent_published);
+    CHECK(!resumed.diagnostic.capsule_retained);
+    CHECK(resumed.diagnostic.root_continuation_retained);
+    CHECK(!resumed.diagnostic.cold_reopen_required);
+    require_all_base_locks_free(bases);
+    require_wave_lock_busy(root.prepared());
+
+    auto reminted = mint_cleanup_receipt(*resumed.root_continuation, 0U);
+    CHECK(!reminted.minted->receipt.spent());
+    require_all_base_locks_free(bases);
+    require_wave_lock_busy(root.prepared());
+}
+
+void test_cleanup_capsule_intent_publication_returns_root_and_releases_base_lock() {
+    CanonicalWorkerCleanupRoot root("worker-cleanup-capsule-intent-published");
+    const auto bases = private_handoff_bases(root.prepared());
+    const auto paths = relation::OOCCleanupTransaction::paths_for(bases[0]);
+    auto prepared = prepare_cleanup_conversion_capsule(root);
+
+    auto published =
+        cleanup_authority::execute_distributed_sieve_worker_cleanup_intent_conversion_v1(
+            std::move(*prepared.capsule));
+    CHECK(published);
+    CHECK(!published.retryable_capsule.has_value());
+    CHECK(published.root_continuation.has_value());
+    CHECK(published.root_continuation->valid());
+    CHECK(published.publication.intent_published());
+    CHECK(published.publication.result.status == relation::OOCCleanupStatus::RecoveryRequired);
+    CHECK(published.publication.result.stage == relation::OOCCleanupStage::IntentDurable);
+    CHECK(published.publication.result.native_error ==
+          std::make_error_code(std::errc::protocol_error));
+    CHECK(published.diagnostic.phase ==
+          cleanup_authority::DistributedSieveWorkerCleanupIntentConversionExecutePhaseV1::complete);
+    CHECK(published.diagnostic.status ==
+          cleanup_authority::DistributedSieveWorkerCleanupIntentConversionExecuteStatusV1::
+              intent_published);
+    CHECK(!published.diagnostic.capsule_retained);
+    CHECK(published.diagnostic.root_continuation_retained);
+    CHECK(!published.diagnostic.cold_reopen_required);
+    CHECK(std::filesystem::exists(paths.intent_path));
+    CHECK(!std::filesystem::exists(paths.intent_pending_path));
+    require_all_base_locks_free(bases);
+    require_wave_lock_busy(root.prepared());
+
+    auto reminted = mint_cleanup_receipt(*published.root_continuation, 0U);
+    CHECK(!reminted.minted->receipt.spent());
+    require_all_base_locks_free(bases);
+    require_wave_lock_busy(root.prepared());
+}
+
+void test_cleanup_capsule_canonical_promotion_returns_reconciliation_root() {
+    CanonicalWorkerCleanupRoot root("worker-cleanup-capsule-canonical-promoted");
+    const auto bases = private_handoff_bases(root.prepared());
+    const auto paths = relation::OOCCleanupTransaction::paths_for(bases[0]);
+    auto prepared = prepare_cleanup_conversion_capsule(root);
+    CleanupConversionStopContext context{
+        .target = relation::ooc_cleanup_detail::
+            OOCPrivateHandoffCleanupIntentPublicationFaultPointV2::IntentCanonicalPromoted,
+    };
+
+    auto interrupted = cleanup_authority::trusted_test::
+        execute_distributed_sieve_worker_cleanup_intent_conversion_v1_with_hooks(
+            std::move(*prepared.capsule),
+            relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentPublicationTestHooksV2{
+                .stop_after = stop_cleanup_conversion_after,
+                .context = &context,
+            });
+    CHECK(context.invoked);
+    CHECK(interrupted);
+    CHECK(!interrupted.retryable_capsule.has_value());
+    CHECK(interrupted.root_continuation.has_value());
+    CHECK(interrupted.root_continuation->valid());
+    CHECK(interrupted.publication.canonical_reconciliation_required());
+    CHECK(interrupted.publication.result.status == relation::OOCCleanupStatus::Interrupted);
+    CHECK(interrupted.publication.result.stage == relation::OOCCleanupStage::None);
+    CHECK(interrupted.publication.result.native_error ==
+          std::make_error_code(std::errc::operation_canceled));
+    CHECK(interrupted.diagnostic.phase ==
+          cleanup_authority::DistributedSieveWorkerCleanupIntentConversionExecutePhaseV1::complete);
+    CHECK(interrupted.diagnostic.status ==
+          cleanup_authority::DistributedSieveWorkerCleanupIntentConversionExecuteStatusV1::
+              canonical_reconciliation_required);
+    CHECK(!interrupted.diagnostic.capsule_retained);
+    CHECK(interrupted.diagnostic.root_continuation_retained);
+    CHECK(!interrupted.diagnostic.cold_reopen_required);
+    CHECK(std::filesystem::exists(paths.intent_path));
+    CHECK(!std::filesystem::exists(paths.intent_pending_path));
+    require_all_base_locks_free(bases);
+    require_wave_lock_busy(root.prepared());
+
+    auto reminted = mint_cleanup_receipt(*interrupted.root_continuation, 0U);
+    CHECK(!reminted.minted->receipt.spent());
+    CHECK(std::filesystem::exists(paths.intent_path));
+    CHECK(!std::filesystem::exists(paths.intent_pending_path));
+    require_all_base_locks_free(bases);
+    require_wave_lock_busy(root.prepared());
+}
+
+void test_forked_cleanup_capsule_destruction_preserves_parent_authority() {
+    CanonicalWorkerCleanupRoot root("worker-cleanup-capsule-fork");
+    const auto bases = private_handoff_bases(root.prepared());
+    auto prepared = prepare_cleanup_conversion_capsule(root);
+
+    const pid_t child = ::fork();
+    if (child < 0) {
+        throw std::system_error(errno, std::generic_category(), "fork worker-cleanup capsule test");
+    }
+    if (child == 0) {
+        bool rejected = false;
+        {
+            auto result =
+                cleanup_authority::execute_distributed_sieve_worker_cleanup_intent_conversion_v1(
+                    std::move(*prepared.capsule));
+            rejected =
+                !result && !result.retryable_capsule.has_value() &&
+                !result.root_continuation.has_value() &&
+                result.diagnostic.phase ==
+                    cleanup_authority::DistributedSieveWorkerCleanupIntentConversionExecutePhaseV1::
+                        capsule_validation &&
+                result.diagnostic.status ==
+                    cleanup_authority::
+                        DistributedSieveWorkerCleanupIntentConversionExecuteStatusV1::
+                            process_mismatch &&
+                result.diagnostic.native_error ==
+                    std::make_error_code(std::errc::no_such_process) &&
+                !result.diagnostic.capsule_retained &&
+                !result.diagnostic.root_continuation_retained &&
+                result.diagnostic.cold_reopen_required &&
+                result.publication.result.status == relation::OOCCleanupStatus::UnexpectedFailure &&
+                result.publication.result.stage == relation::OOCCleanupStage::None &&
+                !result.publication.result.native_error &&
+                result.publication.disposition ==
+                    relation::ooc_cleanup_detail::
+                        OOCPrivateHandoffCleanupIntentPublicationDispositionV2::Failed &&
+                !result.publication.evidence.has_value() &&
+                !result.publication.intent_published() &&
+                !result.publication.capabilities_retained() &&
+                !result.publication.canonical_reconciliation_required() &&
+                !result.publication.capabilities_spent();
+        }
+        prepared.capsule.reset();
+        ::_exit(rejected ? FORK_REJECTED_EXIT : EXIT_FAILURE);
+    }
+    int status = 0;
+    pid_t waited = -1;
+    do {
+        waited = ::waitpid(child, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    if (waited < 0) {
+        throw std::system_error(errno, std::generic_category(),
+                                "wait for worker-cleanup capsule child");
+    }
+    CHECK(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == FORK_REJECTED_EXIT);
+    CHECK(prepared.capsule->valid());
+    require_exact_active_worker_base_lock(bases, 0U);
+    require_wave_lock_busy(root.prepared());
+
+    auto published =
+        cleanup_authority::execute_distributed_sieve_worker_cleanup_intent_conversion_v1(
+            std::move(*prepared.capsule));
+    CHECK(published);
+    CHECK(published.root_continuation.has_value());
+    CHECK(published.publication.intent_published());
+    CHECK(published.publication.result.status == relation::OOCCleanupStatus::RecoveryRequired);
+    CHECK(published.publication.result.stage == relation::OOCCleanupStage::IntentDurable);
+    CHECK(published.publication.result.native_error ==
+          std::make_error_code(std::errc::protocol_error));
+    CHECK(published.diagnostic.phase ==
+          cleanup_authority::DistributedSieveWorkerCleanupIntentConversionExecutePhaseV1::complete);
+    CHECK(published.diagnostic.status ==
+          cleanup_authority::DistributedSieveWorkerCleanupIntentConversionExecuteStatusV1::
+              intent_published);
+    CHECK(!published.diagnostic.capsule_retained);
+    CHECK(published.diagnostic.root_continuation_retained);
+    CHECK(!published.diagnostic.cold_reopen_required);
+}
+
 void run_apple_tests() {
     test_fresh_tail_crosses_one_lock_generation_without_mutation();
     std::cout << "  fresh tail lock-generation bridge and moved replay: PASS\n";
@@ -1306,6 +1745,18 @@ void run_apple_tests() {
     std::cout << "  cleanup receipt complete prefix anchoring: PASS\n";
     test_cleanup_receipt_sticky_invalidates_added_cleanup_leaf();
     std::cout << "  cleanup receipt added root leaf sticky invalidation: PASS\n";
+    test_cleanup_capsule_prepare_returns_retryable_root_while_receipt_is_live();
+    std::cout << "  cleanup capsule retryable root after competing receipt: PASS\n";
+    test_cleanup_capsule_selects_active_ordinal_and_retains_one_base_lock_fd();
+    std::cout << "  cleanup capsule exact active ordinal and one BaseLock fd: PASS\n";
+    test_cleanup_capsule_reader_views_closed_retries_in_place();
+    std::cout << "  cleanup capsule ReaderViewsClosed retry in place: PASS\n";
+    test_cleanup_capsule_intent_publication_returns_root_and_releases_base_lock();
+    std::cout << "  cleanup capsule intent publication root continuation: PASS\n";
+    test_cleanup_capsule_canonical_promotion_returns_reconciliation_root();
+    std::cout << "  cleanup capsule canonical promotion reconciliation: PASS\n";
+    test_forked_cleanup_capsule_destruction_preserves_parent_authority();
+    std::cout << "  fork-invalid cleanup capsule preserves parent authority: PASS\n";
 }
 
 #endif
@@ -1358,6 +1809,9 @@ int main(int argc, char** argv) {
                 return EXIT_FAILURE;
             }
             return wave_lock_probe_child(std::filesystem::path(argv[2]), *digest);
+        }
+        if (argc == 3 && std::string_view(argv[1]) == "--probe-base-lock-file") {
+            return direct_base_lock_probe_child(std::filesystem::path(argv[2]));
         }
 #endif
 

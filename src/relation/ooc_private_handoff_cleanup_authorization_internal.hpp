@@ -31,6 +31,7 @@ void distributed_sieve_external_cleanup_authorization_state_release_receipt_clai
 
 namespace gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail {
 
+class DistributedSieveWorkerCleanupIntentConversionAuthorityV1;
 class DistributedSieveWorkerCleanupReceiptMintAuthorityV1;
 
 } // namespace gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail
@@ -345,6 +346,8 @@ private:
     OOCPrivateHandoffCleanupIntentPublicationTestKeyV2() noexcept = default;
 
     friend class OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2;
+    friend class gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail::
+        DistributedSieveWorkerCleanupIntentConversionAuthorityV1;
 };
 
 /// Unforgeable token preventing production/internal callers from arming the

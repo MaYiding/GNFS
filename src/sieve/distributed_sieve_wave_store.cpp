@@ -10730,6 +10730,15 @@ DistributedSieveAdoptedWorkerChunkV1::DistributedSieveAdoptedWorkerChunkV1(
 
 DistributedSieveAdoptedWorkerChunkV1::~DistributedSieveAdoptedWorkerChunkV1() = default;
 
+std::unique_ptr<relation::OOCPrivateHandoffReader>
+DistributedSieveAdoptedWorkerChunkV1::take_cleanup_intent_conversion_reader_v1() && noexcept {
+    auto reader = std::move(reader_);
+    creator_process_id_ = 0;
+    retained_base_lock_.reset();
+    wave_store_state_anchor_.reset();
+    return reader;
+}
+
 bool DistributedSieveAdoptedWorkerChunkV1::valid() const noexcept {
     if (wave_store_state_anchor_ == nullptr || retained_base_lock_ == nullptr ||
         reader_ == nullptr || !reader_->valid() || creator_process_id_ == 0 ||
@@ -24197,6 +24206,207 @@ using MintDiagnostic = DistributedSieveWorkerCleanupReceiptMintDiagnosticV1;
 }
 
 } // namespace
+
+DistributedSieveWorkerCleanupIntentConversionCapsuleV1::
+    DistributedSieveWorkerCleanupIntentConversionCapsuleV1(
+        std::uint32_t manifest_order_ordinal, std::uint64_t creator_process_id,
+        DistributedSieveWorkerCleanupRootAdmissionV1&& root,
+        relation_cleanup::OOCPrivateHandoffCleanupAuthorizationReceipt&& receipt,
+        std::unique_ptr<relation::OOCPrivateHandoffReader> reader) noexcept
+    : manifest_order_ordinal_(manifest_order_ordinal), creator_process_id_(creator_process_id),
+      root_(std::move(root)), receipt_(std::in_place, std::move(receipt)),
+      reader_(std::move(reader)) {}
+
+DistributedSieveWorkerCleanupIntentConversionCapsuleV1::
+    DistributedSieveWorkerCleanupIntentConversionCapsuleV1(
+        DistributedSieveWorkerCleanupIntentConversionCapsuleV1&&) noexcept = default;
+
+DistributedSieveWorkerCleanupIntentConversionCapsuleV1::
+    ~DistributedSieveWorkerCleanupIntentConversionCapsuleV1() noexcept = default;
+
+bool DistributedSieveWorkerCleanupIntentConversionCapsuleV1::valid() const noexcept {
+    return DistributedSieveWorkerCleanupIntentConversionAuthorityV1::valid(*this);
+}
+
+bool DistributedSieveWorkerCleanupIntentConversionAuthorityV1::valid(
+    const DistributedSieveWorkerCleanupIntentConversionCapsuleV1& capsule) noexcept {
+    const int process_id = gnfs::util::process_id();
+    if (process_id <= 0 || capsule.creator_process_id_ == 0 ||
+        capsule.creator_process_id_ != static_cast<std::uint64_t>(process_id) ||
+        capsule.root_.state_ == nullptr || capsule.root_.state_->store == nullptr ||
+        capsule.root_.state_->merged_reader == nullptr ||
+        !capsule.root_.state_->merged_reader->valid() ||
+        capsule.root_.state_->active_cleanup_authorization == nullptr ||
+        capsule.root_.state_->creator_process_id != capsule.creator_process_id_ ||
+        capsule.reader_ == nullptr || !capsule.reader_->cleanup_intent_conversion_ready() ||
+        !capsule.receipt_.has_value()) {
+        return false;
+    }
+
+    const auto& prefix = capsule.root_.state_->observation.cleanup_prefix;
+    if (!prefix.frontier_manifest_order_ordinal.has_value() ||
+        !prefix.active_manifest_order_ordinal.has_value() ||
+        *prefix.frontier_manifest_order_ordinal != capsule.manifest_order_ordinal_ ||
+        *prefix.active_manifest_order_ordinal != capsule.manifest_order_ordinal_) {
+        return false;
+    }
+    const auto& recovered = capsule.root_.state_->observation.cleanup_recovered_workers;
+    if (std::count_if(recovered.begin(), recovered.end(), [&](const auto& worker) {
+            return worker.manifest_slot == capsule.manifest_order_ordinal_;
+        }) != 1) {
+        return false;
+    }
+
+    // This is the capsule's only filesystem liveness operation. The receipt
+    // performs the root-only sticky scan and deliberately ignores all relation
+    // and BaseLock namespaces retained by the same-OFD reader.
+    return !capsule.receipt_->spent();
+}
+
+DistributedSieveWorkerCleanupIntentConversionPrepareResultV1
+DistributedSieveWorkerCleanupIntentConversionAuthorityV1::prepare(
+    DistributedSieveWorkerCleanupRootAdmissionV1&& root) noexcept {
+    auto retained_root = std::move(root);
+    using Diagnostic = DistributedSieveWorkerCleanupIntentConversionPrepareDiagnosticV1;
+    using Phase = DistributedSieveWorkerCleanupIntentConversionPreparePhaseV1;
+    using Result = DistributedSieveWorkerCleanupIntentConversionPrepareResultV1;
+    using Status = DistributedSieveWorkerCleanupIntentConversionPrepareStatusV1;
+
+    const auto failure = [](Phase phase, Status status, std::error_code native_error = {},
+                            bool cold_reopen_required = false) noexcept {
+        Diagnostic diagnostic;
+        diagnostic.phase = phase;
+        diagnostic.status = status;
+        diagnostic.native_error = native_error;
+        diagnostic.cold_reopen_required = cold_reopen_required;
+        return diagnostic;
+    };
+    const auto retryable = [](DistributedSieveWorkerCleanupRootAdmissionV1&& retained,
+                              Diagnostic diagnostic) noexcept {
+        diagnostic.root_retained = true;
+        std::optional<DistributedSieveWorkerCleanupRootAdmissionV1> retryable_root;
+        retryable_root.emplace(std::move(retained));
+        return Result(std::move(retryable_root), std::nullopt, std::move(diagnostic));
+    };
+
+    const int process_id = gnfs::util::process_id();
+    const bool process_mismatch = retained_root.state_ != nullptr &&
+                                  retained_root.state_->creator_process_id != 0 &&
+                                  (process_id <= 0 || retained_root.state_->creator_process_id !=
+                                                          static_cast<std::uint64_t>(process_id));
+    if (retained_root.state_ == nullptr || retained_root.state_->store == nullptr ||
+        retained_root.state_->merged_reader == nullptr ||
+        !retained_root.state_->merged_reader->valid() ||
+        retained_root.state_->active_cleanup_authorization == nullptr ||
+        retained_root.state_->creator_process_id == 0 || process_mismatch) {
+        return Result(
+            std::nullopt, std::nullopt,
+            failure(Phase::admission_validation,
+                    process_mismatch ? Status::process_mismatch : Status::invalid_admission,
+                    process_mismatch ? std::make_error_code(std::errc::no_such_process)
+                                     : std::make_error_code(std::errc::invalid_argument),
+                    true));
+    }
+
+    auto minted = mint_distributed_sieve_worker_cleanup_authorization_receipt_v1(retained_root);
+    if (!minted || !minted.minted.has_value()) {
+        Diagnostic diagnostic =
+            failure(Phase::receipt_mint,
+                    minted.diagnostic.status == MintStatus::process_mismatch
+                        ? Status::process_mismatch
+                        : (minted.diagnostic.status == MintStatus::resource_exhausted
+                               ? Status::resource_exhausted
+                               : Status::receipt_mint_failed),
+                    minted.diagnostic.native_error, minted.diagnostic.cold_reopen_required);
+        diagnostic.receipt_mint = std::move(minted.diagnostic);
+        if (!diagnostic.cold_reopen_required && diagnostic.status != Status::process_mismatch) {
+            return retryable(std::move(retained_root), std::move(diagnostic));
+        }
+        return Result(std::nullopt, std::nullopt, std::move(diagnostic));
+    }
+
+    auto minted_authority = std::move(*minted.minted);
+    const std::uint32_t active_ordinal = minted_authority.manifest_order_ordinal;
+    const std::uint64_t creator_process_id = retained_root.state_->creator_process_id;
+    const auto& recovered = retained_root.state_->observation.cleanup_recovered_workers;
+    const auto active = std::find_if(recovered.begin(), recovered.end(), [&](const auto& worker) {
+        return worker.manifest_slot == active_ordinal;
+    });
+    if (active == recovered.end()) {
+        Diagnostic diagnostic =
+            failure(Phase::active_worker_selection, Status::active_worker_missing,
+                    std::make_error_code(std::errc::no_such_file_or_directory));
+        diagnostic.receipt_mint = std::move(minted.diagnostic);
+        if (!minted_authority.receipt.spent()) {
+            return retryable(std::move(retained_root), std::move(diagnostic));
+        }
+        diagnostic.cold_reopen_required = true;
+        return Result(std::nullopt, std::nullopt, std::move(diagnostic));
+    }
+    if (std::find_if(std::next(active), recovered.end(), [&](const auto& worker) {
+            return worker.manifest_slot == active_ordinal;
+        }) != recovered.end()) {
+        Diagnostic diagnostic =
+            failure(Phase::active_worker_selection, Status::active_worker_ambiguous,
+                    std::make_error_code(std::errc::state_not_recoverable));
+        diagnostic.receipt_mint = std::move(minted.diagnostic);
+        if (!minted_authority.receipt.spent()) {
+            return retryable(std::move(retained_root), std::move(diagnostic));
+        }
+        diagnostic.cold_reopen_required = true;
+        return Result(std::nullopt, std::nullopt, std::move(diagnostic));
+    }
+
+    auto adopted =
+        retained_root.state_->store->adopt_expected_worker_handoff_v1(active->typed_handoff);
+    if (!adopted || !adopted.adopted.has_value()) {
+        Diagnostic diagnostic = failure(
+            Phase::worker_adoption,
+            adopted.diagnostic.status == wave::DistributedSieveWaveStoreStatus::resource_exhausted
+                ? Status::resource_exhausted
+                : Status::worker_adoption_failed,
+            adopted.diagnostic.native_error);
+        diagnostic.receipt_mint = std::move(minted.diagnostic);
+        diagnostic.wave_store = std::move(adopted.diagnostic);
+        if (!minted_authority.receipt.spent()) {
+            return retryable(std::move(retained_root), std::move(diagnostic));
+        }
+        diagnostic.cold_reopen_required = true;
+        return Result(std::nullopt, std::nullopt, std::move(diagnostic));
+    }
+
+    auto reader = std::move(*adopted.adopted).take_cleanup_intent_conversion_reader_v1();
+    const bool receipt_spent = minted_authority.receipt.spent();
+    if (reader == nullptr || !reader->cleanup_intent_conversion_ready() || receipt_spent) {
+        Diagnostic diagnostic = failure(Phase::capsule_construction, Status::unexpected_failure,
+                                        std::make_error_code(std::errc::state_not_recoverable));
+        diagnostic.receipt_mint = std::move(minted.diagnostic);
+        diagnostic.wave_store = std::move(adopted.diagnostic);
+        diagnostic.cold_reopen_required = receipt_spent;
+        if (!diagnostic.cold_reopen_required) {
+            return retryable(std::move(retained_root), std::move(diagnostic));
+        }
+        return Result(std::nullopt, std::nullopt, std::move(diagnostic));
+    }
+
+    std::optional<DistributedSieveWorkerCleanupIntentConversionCapsuleV1> capsule;
+    DistributedSieveWorkerCleanupIntentConversionCapsuleV1 sealed(
+        active_ordinal, creator_process_id, std::move(retained_root),
+        std::move(minted_authority.receipt), std::move(reader));
+    capsule.emplace(std::move(sealed));
+    Diagnostic diagnostic;
+    diagnostic.phase = Phase::complete;
+    diagnostic.status = Status::ready;
+    diagnostic.receipt_mint = std::move(minted.diagnostic);
+    diagnostic.wave_store = std::move(adopted.diagnostic);
+    return Result(std::nullopt, std::move(capsule), std::move(diagnostic));
+}
+
+DistributedSieveWorkerCleanupIntentConversionPrepareResultV1
+prepare_distributed_sieve_worker_cleanup_intent_conversion_v1(
+    DistributedSieveWorkerCleanupRootAdmissionV1&& root) noexcept {
+    return DistributedSieveWorkerCleanupIntentConversionAuthorityV1::prepare(std::move(root));
+}
 
 DistributedSieveWorkerCleanupReceiptMintResultV1
 DistributedSieveWorkerCleanupReceiptMintAuthorityV1::mint(

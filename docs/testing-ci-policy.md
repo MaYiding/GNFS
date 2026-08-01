@@ -38,7 +38,7 @@ Longest measured enabled tests:
 | `instant` | Isolated unit or helper correctness tests. Single-run target is under 5s on Debug. | Cross-platform PR matrix, ASan/UBSan, coverage; selected concurrency tests under TSan |
 | `fast` | Medium integration or resource-sensitive helper tests. Single-run target is under 30s on Debug. | Release PR matrix on Linux and macOS |
 | `gate` | Multi-size correctness gate, especially 17/27/40/81-bit pipeline coverage. | Linux Release deep gate |
-| `slow` | Real GNFS or API pipeline tests. Debug may take 30s to 5min. | Linux Release deep gate, nightly, local pre-merge |
+| `slow` | Real GNFS or API pipeline tests. Debug may take 30s to 5min. | Linux Release deep gate, targeted platform-specific PR lanes, nightly, local pre-merge |
 | `heavy` | Long algorithmic or size-sensitive tests. | Manual, nightly candidate, never required PR |
 | `bench` | Informational benchmark tests. | Benchmark workflow only, non-blocking |
 | `stress` | 50/60-digit stress tests. | Manual or dedicated long-run workflow only |
@@ -52,7 +52,11 @@ The PR CI intentionally has three layers:
 1. Cross-platform quick matrix:
    - Linux Release runs `instant|fast`.
    - Linux Debug runs `instant`.
-   - macOS Release runs `instant|fast`.
+   - macOS Release runs `instant|fast` and the targeted
+     `test_distributed_sieve_worker_cleanup_tail` slow contract. That extra
+     invocation is the CI witness for the Apple-only same-OFD lock, fork
+     rejection, and cleanup-intent conversion path; unsupported hosts execute
+     only the platform stub.
    - Windows Release runs `instant`.
    - Linux arm64 runs `instant` as an experimental public-runner signal.
    - Required glibc Linux rows set `GNFS_TEST_REQUIRE_AUTHENTICATED_LINUX=1`, so the sealed-image, same-object, descriptor-closure, and parent-death tests cannot silently skip a disabled authenticated transport.

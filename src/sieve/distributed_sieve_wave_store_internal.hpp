@@ -51,8 +51,9 @@ class DistributedSieveMergeWriterAuthorityV1;
 }
 
 namespace gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail {
+class DistributedSieveWorkerCleanupIntentConversionAuthorityV1;
 class DistributedSieveWorkerCleanupReceiptMintAuthorityV1;
-}
+} // namespace gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail
 
 namespace gnfs::sieve::distributed_sieve_resume_detail {
 
@@ -1821,6 +1822,8 @@ private:
         DistributedSieveWorkerCleanupRootOpenTestHooksV1 hooks,
         const DistributedSieveWorkerCleanupRootExactAnchorV1* expected_anchor) noexcept;
     friend class ::gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail::
+        DistributedSieveWorkerCleanupIntentConversionAuthorityV1;
+    friend class ::gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail::
         DistributedSieveWorkerCleanupReceiptMintAuthorityV1;
 };
 
@@ -1921,6 +1924,12 @@ private:
         std::unique_ptr<relation::OOCPrivateHandoffReader> reader,
         std::uint64_t creator_process_id) noexcept;
 
+    /// Transfer the inner relation adoption while preserving its duplicated
+    /// BaseLock open-file description. The outer lock descriptor and WaveStore
+    /// lifetime anchor are released only after the reader has been detached.
+    [[nodiscard]] std::unique_ptr<relation::OOCPrivateHandoffReader>
+    take_cleanup_intent_conversion_reader_v1() && noexcept;
+
     std::shared_ptr<const void> wave_store_state_anchor_;
     WorkerHandoffV1 handoff_;
     std::unique_ptr<DistributedSievePrivateLeaseBaseLockAt> retained_base_lock_;
@@ -1928,6 +1937,8 @@ private:
     std::uint64_t creator_process_id_ = 0;
 
     friend class DistributedSieveWaveStore;
+    friend class ::gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail::
+        DistributedSieveWorkerCleanupIntentConversionAuthorityV1;
 };
 
 struct DistributedSieveWorkerHandoffAdoptionResultV1 final {

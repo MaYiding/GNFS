@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string_view>
 #include <system_error>
@@ -141,6 +142,299 @@ private:
     friend DistributedSieveWorkerCleanupReceiptMintResultV1
     mint_distributed_sieve_worker_cleanup_authorization_receipt_v1(
         DistributedSieveWorkerCleanupRootAdmissionV1& admission) noexcept;
+};
+
+class DistributedSieveWorkerCleanupIntentConversionAuthorityV1;
+
+/// Sealed, process-bound T2a authority capsule for one active cleanup worker.
+///
+/// The retained root keeps WaveLock and the merged read-only corpus alive. The
+/// receipt owns the root-only liveness claim, while the relation reader owns
+/// the duplicated descriptor for the exact adopted worker BaseLock. Member
+/// order is intentional: reverse destruction closes the worker reader before
+/// releasing its receipt claim and finally the cleanup-root WaveLock.
+class DistributedSieveWorkerCleanupIntentConversionCapsuleV1 final {
+public:
+    DistributedSieveWorkerCleanupIntentConversionCapsuleV1() = delete;
+    DistributedSieveWorkerCleanupIntentConversionCapsuleV1(
+        const DistributedSieveWorkerCleanupIntentConversionCapsuleV1&) = delete;
+    DistributedSieveWorkerCleanupIntentConversionCapsuleV1&
+    operator=(const DistributedSieveWorkerCleanupIntentConversionCapsuleV1&) = delete;
+    DistributedSieveWorkerCleanupIntentConversionCapsuleV1(
+        DistributedSieveWorkerCleanupIntentConversionCapsuleV1&&) noexcept;
+    DistributedSieveWorkerCleanupIntentConversionCapsuleV1&
+    operator=(DistributedSieveWorkerCleanupIntentConversionCapsuleV1&&) = delete;
+    ~DistributedSieveWorkerCleanupIntentConversionCapsuleV1() noexcept;
+
+    /// Local held-state validation plus the receipt's root-control-only sticky
+    /// scan. This never calls RootAdmission::valid(), performs a full cleanup-
+    /// root observation, or enters a worker relation/BaseLock namespace. The
+    /// receipt may open and re-read root control leaves through the retained
+    /// root handle and sticky-invalidate on drift; it never duplicates or
+    /// flocks the retained reader/BaseLock open-file description.
+    [[nodiscard]] bool valid() const noexcept;
+    [[nodiscard]] std::uint32_t manifest_order_ordinal() const noexcept {
+        return manifest_order_ordinal_;
+    }
+
+private:
+    DistributedSieveWorkerCleanupIntentConversionCapsuleV1(
+        std::uint32_t manifest_order_ordinal, std::uint64_t creator_process_id,
+        DistributedSieveWorkerCleanupRootAdmissionV1&& root,
+        relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupAuthorizationReceipt&& receipt,
+        std::unique_ptr<relation::OOCPrivateHandoffReader> reader) noexcept;
+
+    std::uint32_t manifest_order_ordinal_ = 0;
+    std::uint64_t creator_process_id_ = 0;
+    DistributedSieveWorkerCleanupRootAdmissionV1 root_;
+    std::optional<relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupAuthorizationReceipt>
+        receipt_;
+    std::unique_ptr<relation::OOCPrivateHandoffReader> reader_;
+
+    friend class DistributedSieveWorkerCleanupIntentConversionAuthorityV1;
+};
+
+enum class DistributedSieveWorkerCleanupIntentConversionPreparePhaseV1 : std::uint8_t {
+    admission_validation,
+    receipt_mint,
+    active_worker_selection,
+    worker_adoption,
+    capsule_construction,
+    complete,
+};
+
+enum class DistributedSieveWorkerCleanupIntentConversionPrepareStatusV1 : std::uint8_t {
+    ready,
+    invalid_admission,
+    process_mismatch,
+    receipt_mint_failed,
+    active_worker_missing,
+    active_worker_ambiguous,
+    worker_adoption_failed,
+    resource_exhausted,
+    unexpected_failure,
+};
+
+[[nodiscard]] constexpr std::string_view
+distributed_sieve_worker_cleanup_intent_conversion_prepare_status_name(
+    DistributedSieveWorkerCleanupIntentConversionPrepareStatusV1 status) noexcept {
+    switch (status) {
+    case DistributedSieveWorkerCleanupIntentConversionPrepareStatusV1::ready:
+        return "ready";
+    case DistributedSieveWorkerCleanupIntentConversionPrepareStatusV1::invalid_admission:
+        return "invalid_admission";
+    case DistributedSieveWorkerCleanupIntentConversionPrepareStatusV1::process_mismatch:
+        return "process_mismatch";
+    case DistributedSieveWorkerCleanupIntentConversionPrepareStatusV1::receipt_mint_failed:
+        return "receipt_mint_failed";
+    case DistributedSieveWorkerCleanupIntentConversionPrepareStatusV1::active_worker_missing:
+        return "active_worker_missing";
+    case DistributedSieveWorkerCleanupIntentConversionPrepareStatusV1::active_worker_ambiguous:
+        return "active_worker_ambiguous";
+    case DistributedSieveWorkerCleanupIntentConversionPrepareStatusV1::worker_adoption_failed:
+        return "worker_adoption_failed";
+    case DistributedSieveWorkerCleanupIntentConversionPrepareStatusV1::resource_exhausted:
+        return "resource_exhausted";
+    case DistributedSieveWorkerCleanupIntentConversionPrepareStatusV1::unexpected_failure:
+        return "unexpected_failure";
+    }
+    return "unknown";
+}
+
+struct DistributedSieveWorkerCleanupIntentConversionPrepareDiagnosticV1 final {
+    DistributedSieveWorkerCleanupIntentConversionPreparePhaseV1 phase =
+        DistributedSieveWorkerCleanupIntentConversionPreparePhaseV1::admission_validation;
+    DistributedSieveWorkerCleanupIntentConversionPrepareStatusV1 status =
+        DistributedSieveWorkerCleanupIntentConversionPrepareStatusV1::unexpected_failure;
+    DistributedSieveWorkerCleanupReceiptMintDiagnosticV1 receipt_mint;
+    distributed_sieve_resume_detail::DistributedSieveWaveStoreDiagnostic wave_store;
+    std::error_code native_error;
+    bool root_retained = false;
+    bool cold_reopen_required = false;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return phase == DistributedSieveWorkerCleanupIntentConversionPreparePhaseV1::complete &&
+               status == DistributedSieveWorkerCleanupIntentConversionPrepareStatusV1::ready &&
+               !native_error && !root_retained && !cold_reopen_required;
+    }
+};
+
+struct DistributedSieveWorkerCleanupIntentConversionPrepareResultV1 final {
+    DistributedSieveWorkerCleanupIntentConversionPrepareResultV1() = default;
+    DistributedSieveWorkerCleanupIntentConversionPrepareResultV1(
+        std::optional<DistributedSieveWorkerCleanupRootAdmissionV1> retryable_root_value,
+        std::optional<DistributedSieveWorkerCleanupIntentConversionCapsuleV1> capsule_value,
+        DistributedSieveWorkerCleanupIntentConversionPrepareDiagnosticV1 diagnostic_value) noexcept
+        : retryable_root(std::move(retryable_root_value)), capsule(std::move(capsule_value)),
+          diagnostic(std::move(diagnostic_value)) {}
+    DistributedSieveWorkerCleanupIntentConversionPrepareResultV1(
+        const DistributedSieveWorkerCleanupIntentConversionPrepareResultV1&) = delete;
+    DistributedSieveWorkerCleanupIntentConversionPrepareResultV1&
+    operator=(const DistributedSieveWorkerCleanupIntentConversionPrepareResultV1&) = delete;
+    DistributedSieveWorkerCleanupIntentConversionPrepareResultV1(
+        DistributedSieveWorkerCleanupIntentConversionPrepareResultV1&&) noexcept = default;
+    DistributedSieveWorkerCleanupIntentConversionPrepareResultV1&
+    operator=(DistributedSieveWorkerCleanupIntentConversionPrepareResultV1&&) = delete;
+
+    std::optional<DistributedSieveWorkerCleanupRootAdmissionV1> retryable_root;
+    std::optional<DistributedSieveWorkerCleanupIntentConversionCapsuleV1> capsule;
+    DistributedSieveWorkerCleanupIntentConversionPrepareDiagnosticV1 diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return static_cast<bool>(diagnostic) && !retryable_root.has_value() &&
+               capsule.has_value() && capsule->valid();
+    }
+};
+
+enum class DistributedSieveWorkerCleanupIntentConversionExecutePhaseV1 : std::uint8_t {
+    capsule_validation,
+    intent_publication,
+    capability_release,
+    complete,
+};
+
+enum class DistributedSieveWorkerCleanupIntentConversionExecuteStatusV1 : std::uint8_t {
+    capabilities_retained,
+    intent_published,
+    canonical_reconciliation_required,
+    invalid_capsule,
+    process_mismatch,
+    publication_failed,
+    unexpected_failure,
+};
+
+[[nodiscard]] constexpr std::string_view
+distributed_sieve_worker_cleanup_intent_conversion_execute_status_name(
+    DistributedSieveWorkerCleanupIntentConversionExecuteStatusV1 status) noexcept {
+    switch (status) {
+    case DistributedSieveWorkerCleanupIntentConversionExecuteStatusV1::capabilities_retained:
+        return "capabilities_retained";
+    case DistributedSieveWorkerCleanupIntentConversionExecuteStatusV1::intent_published:
+        return "intent_published";
+    case DistributedSieveWorkerCleanupIntentConversionExecuteStatusV1::
+        canonical_reconciliation_required:
+        return "canonical_reconciliation_required";
+    case DistributedSieveWorkerCleanupIntentConversionExecuteStatusV1::invalid_capsule:
+        return "invalid_capsule";
+    case DistributedSieveWorkerCleanupIntentConversionExecuteStatusV1::process_mismatch:
+        return "process_mismatch";
+    case DistributedSieveWorkerCleanupIntentConversionExecuteStatusV1::publication_failed:
+        return "publication_failed";
+    case DistributedSieveWorkerCleanupIntentConversionExecuteStatusV1::unexpected_failure:
+        return "unexpected_failure";
+    }
+    return "unknown";
+}
+
+struct DistributedSieveWorkerCleanupIntentConversionExecuteDiagnosticV1 final {
+    DistributedSieveWorkerCleanupIntentConversionExecutePhaseV1 phase =
+        DistributedSieveWorkerCleanupIntentConversionExecutePhaseV1::capsule_validation;
+    DistributedSieveWorkerCleanupIntentConversionExecuteStatusV1 status =
+        DistributedSieveWorkerCleanupIntentConversionExecuteStatusV1::unexpected_failure;
+    std::error_code native_error;
+    bool capsule_retained = false;
+    bool root_continuation_retained = false;
+    bool cold_reopen_required = false;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        if (phase != DistributedSieveWorkerCleanupIntentConversionExecutePhaseV1::complete ||
+            native_error || cold_reopen_required) {
+            return false;
+        }
+        switch (status) {
+        case DistributedSieveWorkerCleanupIntentConversionExecuteStatusV1::capabilities_retained:
+            return capsule_retained && !root_continuation_retained;
+        case DistributedSieveWorkerCleanupIntentConversionExecuteStatusV1::intent_published:
+        case DistributedSieveWorkerCleanupIntentConversionExecuteStatusV1::
+            canonical_reconciliation_required:
+            return !capsule_retained && root_continuation_retained;
+        default:
+            return false;
+        }
+    }
+};
+
+struct DistributedSieveWorkerCleanupIntentConversionExecuteResultV1 final {
+    DistributedSieveWorkerCleanupIntentConversionExecuteResultV1() = default;
+    DistributedSieveWorkerCleanupIntentConversionExecuteResultV1(
+        std::optional<DistributedSieveWorkerCleanupIntentConversionCapsuleV1>
+            retryable_capsule_value,
+        std::optional<DistributedSieveWorkerCleanupRootAdmissionV1> root_continuation_value,
+        relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentPublicationResultV2
+            publication_value,
+        DistributedSieveWorkerCleanupIntentConversionExecuteDiagnosticV1 diagnostic_value) noexcept
+        : retryable_capsule(std::move(retryable_capsule_value)),
+          root_continuation(std::move(root_continuation_value)),
+          publication(std::move(publication_value)), diagnostic(std::move(diagnostic_value)) {}
+    DistributedSieveWorkerCleanupIntentConversionExecuteResultV1(
+        const DistributedSieveWorkerCleanupIntentConversionExecuteResultV1&) = delete;
+    DistributedSieveWorkerCleanupIntentConversionExecuteResultV1&
+    operator=(const DistributedSieveWorkerCleanupIntentConversionExecuteResultV1&) = delete;
+    DistributedSieveWorkerCleanupIntentConversionExecuteResultV1(
+        DistributedSieveWorkerCleanupIntentConversionExecuteResultV1&&) noexcept = default;
+    DistributedSieveWorkerCleanupIntentConversionExecuteResultV1&
+    operator=(DistributedSieveWorkerCleanupIntentConversionExecuteResultV1&&) = delete;
+
+    std::optional<DistributedSieveWorkerCleanupIntentConversionCapsuleV1> retryable_capsule;
+    std::optional<DistributedSieveWorkerCleanupRootAdmissionV1> root_continuation;
+    relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentPublicationResultV2 publication;
+    DistributedSieveWorkerCleanupIntentConversionExecuteDiagnosticV1 diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        if (!static_cast<bool>(diagnostic)) {
+            return false;
+        }
+        if (diagnostic.capsule_retained) {
+            return retryable_capsule.has_value() && !root_continuation.has_value();
+        }
+        return !retryable_capsule.has_value() && root_continuation.has_value();
+    }
+};
+
+[[nodiscard]] DistributedSieveWorkerCleanupIntentConversionPrepareResultV1
+prepare_distributed_sieve_worker_cleanup_intent_conversion_v1(
+    DistributedSieveWorkerCleanupRootAdmissionV1&& root) noexcept;
+
+[[nodiscard]] DistributedSieveWorkerCleanupIntentConversionExecuteResultV1
+execute_distributed_sieve_worker_cleanup_intent_conversion_v1(
+    DistributedSieveWorkerCleanupIntentConversionCapsuleV1&& capsule) noexcept;
+
+namespace trusted_test {
+
+[[nodiscard]] DistributedSieveWorkerCleanupIntentConversionExecuteResultV1
+execute_distributed_sieve_worker_cleanup_intent_conversion_v1_with_hooks(
+    DistributedSieveWorkerCleanupIntentConversionCapsuleV1&& capsule,
+    relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentPublicationTestHooksV2
+        hooks) noexcept;
+
+} // namespace trusted_test
+
+class DistributedSieveWorkerCleanupIntentConversionAuthorityV1 final {
+public:
+    DistributedSieveWorkerCleanupIntentConversionAuthorityV1() = delete;
+
+private:
+    [[nodiscard]] static bool
+    valid(const DistributedSieveWorkerCleanupIntentConversionCapsuleV1& capsule) noexcept;
+    [[nodiscard]] static DistributedSieveWorkerCleanupIntentConversionPrepareResultV1
+    prepare(DistributedSieveWorkerCleanupRootAdmissionV1&& root) noexcept;
+    [[nodiscard]] static DistributedSieveWorkerCleanupIntentConversionExecuteResultV1 execute(
+        DistributedSieveWorkerCleanupIntentConversionCapsuleV1&& capsule,
+        relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentPublicationTestHooksV2 hooks,
+        bool trusted_test_hooks) noexcept;
+
+    friend class DistributedSieveWorkerCleanupIntentConversionCapsuleV1;
+    friend DistributedSieveWorkerCleanupIntentConversionPrepareResultV1
+    prepare_distributed_sieve_worker_cleanup_intent_conversion_v1(
+        DistributedSieveWorkerCleanupRootAdmissionV1&& root) noexcept;
+    friend DistributedSieveWorkerCleanupIntentConversionExecuteResultV1
+    execute_distributed_sieve_worker_cleanup_intent_conversion_v1(
+        DistributedSieveWorkerCleanupIntentConversionCapsuleV1&& capsule) noexcept;
+    friend DistributedSieveWorkerCleanupIntentConversionExecuteResultV1
+    trusted_test::execute_distributed_sieve_worker_cleanup_intent_conversion_v1_with_hooks(
+        DistributedSieveWorkerCleanupIntentConversionCapsuleV1&& capsule,
+        relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentPublicationTestHooksV2
+            hooks) noexcept;
 };
 
 /// Pure-data result of the committed tail's rvalue-only lock-generation
