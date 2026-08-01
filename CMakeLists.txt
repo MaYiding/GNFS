@@ -1270,6 +1270,50 @@ if(GNFS_BUILD_TESTS)
         )
     endif()
 
+    add_executable(test_distributed_sieve_worker_cleanup_authorization_publisher
+        tests/test_distributed_sieve_worker_cleanup_authorization_publisher.cpp
+    )
+    target_include_directories(
+        test_distributed_sieve_worker_cleanup_authorization_publisher PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/relation
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sieve
+    )
+    target_link_libraries(
+        test_distributed_sieve_worker_cleanup_authorization_publisher PRIVATE
+        gnfs_core Threads::Threads
+    )
+    if(APPLE)
+        add_test(
+            NAME DistributedSieveWorkerCleanupAuthorizationPublisherCore
+            COMMAND test_distributed_sieve_worker_cleanup_authorization_publisher --suite core
+        )
+        add_test(
+            NAME DistributedSieveWorkerCleanupAuthorizationPublisherPublicationCrash
+            COMMAND test_distributed_sieve_worker_cleanup_authorization_publisher
+                --suite publication-crash
+        )
+        add_test(
+            NAME DistributedSieveWorkerCleanupAuthorizationPublisherProtection
+            COMMAND test_distributed_sieve_worker_cleanup_authorization_publisher
+                --suite protection
+        )
+        set_tests_properties(
+            DistributedSieveWorkerCleanupAuthorizationPublisherCore
+            DistributedSieveWorkerCleanupAuthorizationPublisherPublicationCrash
+            DistributedSieveWorkerCleanupAuthorizationPublisherProtection
+            PROPERTIES LABELS "slow" TIMEOUT 120
+        )
+    else()
+        add_test(
+            NAME DistributedSieveWorkerCleanupAuthorizationPublisherPlatform
+            COMMAND test_distributed_sieve_worker_cleanup_authorization_publisher --suite platform
+        )
+        set_tests_properties(
+            DistributedSieveWorkerCleanupAuthorizationPublisherPlatform
+            PROPERTIES LABELS "instant" TIMEOUT 10
+        )
+    endif()
+
     add_executable(test_distributed_sieve_worker_work_package_file
         tests/test_distributed_sieve_worker_work_package_file.cpp
     )

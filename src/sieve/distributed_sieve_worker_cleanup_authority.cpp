@@ -614,6 +614,19 @@ bool DistributedSieveWorkerCleanupCompletionPreparationAuthorityV1::valid(
 
 DistributedSieveWorkerCleanupCompletionPreparationResultV1
 DistributedSieveWorkerCleanupCompletionPreparationAuthorityV1::drive(
+    DistributedSieveWorkerCleanupAuthorizationPublishedContinuationV1&& authorization) noexcept {
+    if (!authorization.valid()) {
+        return cold_reopen(
+            completion_diagnostic(CompletionPhase::authorization_validation,
+                                  CompletionStatus::authorization_not_canonical,
+                                  CompletionDisposition::cold_reopen_required,
+                                  std::make_error_code(std::errc::invalid_argument)));
+    }
+    return drive_with_root(std::move(authorization.root_));
+}
+
+DistributedSieveWorkerCleanupCompletionPreparationResultV1
+DistributedSieveWorkerCleanupCompletionPreparationAuthorityV1::drive_with_root(
     DistributedSieveWorkerCleanupRootAdmissionV1&& root) noexcept {
     auto retained_root = std::move(root);
     try {
@@ -955,8 +968,20 @@ DistributedSieveWorkerCleanupCompletionPreparationAuthorityV1::drive(
 
 DistributedSieveWorkerCleanupCompletionPreparationResultV1
 drive_distributed_sieve_worker_cleanup_to_completion_ready_v1(
-    DistributedSieveWorkerCleanupRootAdmissionV1&& root) noexcept {
-    return DistributedSieveWorkerCleanupCompletionPreparationAuthorityV1::drive(std::move(root));
+    DistributedSieveWorkerCleanupAuthorizationPublishedContinuationV1&& authorization) noexcept {
+    return DistributedSieveWorkerCleanupCompletionPreparationAuthorityV1::drive(
+        std::move(authorization));
 }
+
+namespace trusted_test {
+
+DistributedSieveWorkerCleanupCompletionPreparationResultV1
+drive_distributed_sieve_worker_cleanup_to_completion_ready_v1_with_root(
+    DistributedSieveWorkerCleanupRootAdmissionV1&& root) noexcept {
+    return DistributedSieveWorkerCleanupCompletionPreparationAuthorityV1::drive_with_root(
+        std::move(root));
+}
+
+} // namespace trusted_test
 
 } // namespace gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail

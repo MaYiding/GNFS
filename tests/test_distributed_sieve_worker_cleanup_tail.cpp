@@ -74,7 +74,8 @@ using CleanupCompletionReadyCapsule =
 using CleanupCompletionPreparationResult =
     cleanup_authority::DistributedSieveWorkerCleanupCompletionPreparationResultV1;
 using CleanupCompletionDriveFunction =
-    decltype(&cleanup_authority::drive_distributed_sieve_worker_cleanup_to_completion_ready_v1);
+    decltype(&cleanup_authority::trusted_test::
+                 drive_distributed_sieve_worker_cleanup_to_completion_ready_v1_with_root);
 using CleanupCompletionPublishedContinuation =
     cleanup_authority::DistributedSieveWorkerCleanupCompletionPublishedContinuationV1;
 using CleanupCompletionPublicationResult =
@@ -877,8 +878,9 @@ publish_canonical_cleanup_intent_with_duplicate_pending(CanonicalWorkerCleanupRo
 
 [[nodiscard]] CleanupCompletionPreparationResult
 drive_cleanup_to_completion_ready(CleanupAdmission&& admission, std::uint32_t expected_ordinal) {
-    auto driven = cleanup_authority::drive_distributed_sieve_worker_cleanup_to_completion_ready_v1(
-        std::move(admission));
+    auto driven = cleanup_authority::trusted_test::
+        drive_distributed_sieve_worker_cleanup_to_completion_ready_v1_with_root(
+            std::move(admission));
     CHECK(driven);
     CHECK(!driven.retryable_root.has_value());
     CHECK(!driven.retryable_intent_conversion.has_value());
@@ -2082,8 +2084,9 @@ void test_cleanup_relation_route_busy_observer_returns_retryable_root() {
     competing_reader.emplace(std::move(*adopted.adoption));
     CHECK(competing_reader->valid());
 
-    auto blocked = cleanup_authority::drive_distributed_sieve_worker_cleanup_to_completion_ready_v1(
-        root.take_admission());
+    auto blocked = cleanup_authority::trusted_test::
+        drive_distributed_sieve_worker_cleanup_to_completion_ready_v1_with_root(
+            root.take_admission());
 
     CHECK(blocked);
     CHECK(blocked.retryable_root.has_value());

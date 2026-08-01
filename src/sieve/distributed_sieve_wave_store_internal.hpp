@@ -51,6 +51,7 @@ class DistributedSieveMergeWriterAuthorityV1;
 }
 
 namespace gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail {
+class DistributedSieveWorkerCleanupAuthorizationPublicationAuthorityV1;
 class DistributedSieveWorkerCleanupCompletionPublicationAuthorityV1;
 class DistributedSieveWorkerCleanupIntentConversionAuthorityV1;
 class DistributedSieveWorkerCleanupReceiptMintAuthorityV1;
@@ -1748,6 +1749,8 @@ private:
         DistributedSieveMergeWriterAuthorityV1;
     friend class ::gnfs::sieve::distributed_sieve_merge_writer_authority_detail::
         DistributedSieveCommittedTailAdmissionV1;
+    friend class ::gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail::
+        DistributedSieveWorkerCleanupAuthorizationPublicationAuthorityV1;
     friend DistributedSieveWorkerAttemptStartResult
     publish_worker_attempt_started(DistributedSievePrivateLeaseReservationReceipt&& reservation,
                                    DistributedSieveWorkerAttemptStartTestHooks hooks) noexcept;
@@ -1828,6 +1831,8 @@ private:
         DistributedSieveWorkerCleanupReceiptMintAuthorityV1;
     friend class ::gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail::
         DistributedSieveWorkerCleanupCompletionPublicationAuthorityV1;
+    friend class ::gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail::
+        DistributedSieveWorkerCleanupAuthorizationPublicationAuthorityV1;
 };
 
 struct DistributedSieveWorkerCleanupRootOpenResultV1 final {
@@ -2753,6 +2758,8 @@ private:
         const DistributedSieveWorkerCleanupRootExactAnchorV1* expected_anchor) noexcept;
     friend class ::gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail::
         DistributedSieveWorkerCleanupReceiptMintAuthorityV1;
+    friend class ::gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail::
+        DistributedSieveWorkerCleanupAuthorizationPublicationAuthorityV1;
     friend bool distributed_sieve_external_cleanup_authorization_state_owned_by_current_process(
         const DistributedSieveExternalCleanupAuthorizationState& state) noexcept;
     friend void distributed_sieve_external_cleanup_authorization_state_release_receipt_claim(

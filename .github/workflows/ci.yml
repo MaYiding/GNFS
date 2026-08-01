@@ -166,6 +166,19 @@ jobs:
         ./scripts/test.sh -t Release --no-build --no-color run \
           test_distributed_sieve_worker_cleanup_tail
 
+    - name: Run macOS worker cleanup authorization publisher
+      if: >-
+        ${{
+          !cancelled() &&
+          steps.build_posix.outcome == 'success' &&
+          matrix.os == 'macos-14' &&
+          matrix.build_type == 'Release'
+        }}
+      run: |
+        test -x build/test_distributed_sieve_worker_cleanup_authorization_publisher
+        ./scripts/test.sh -t Release --no-build --no-color run \
+          test_distributed_sieve_worker_cleanup_authorization_publisher
+
     # Windows: multi-config generator places binaries under build/<Config>/,
     # so we pass -C to ctest and use PowerShell parallel-count syntax.
     - name: Run selected tests (Windows)

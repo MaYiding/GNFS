@@ -34,6 +34,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -25437,6 +25438,1323 @@ DistributedSieveWorkerCleanupCompletionPublicationAuthorityV1::drive(
         diagnostic.native_error = error.code();
     } catch (...) {
         diagnostic.status = CompletionPublicationStatus::unexpected_failure;
+        diagnostic.native_error = std::make_error_code(std::errc::io_error);
+    }
+    diagnostic.authority_spent = diagnostic.authority_spent || authority_spent;
+    return diagnostic.authority_spent || diagnostic.publication_started
+               ? cold_reopen(std::move(diagnostic))
+               : retry_input_or_cold(std::move(diagnostic));
+}
+
+namespace {
+
+using AuthorizationPublicationContinuation =
+    DistributedSieveWorkerCleanupAuthorizationPublishedContinuationV1;
+using AuthorizationPublicationDiagnostic =
+    DistributedSieveWorkerCleanupAuthorizationPublicationDiagnosticV1;
+using AuthorizationPublicationDisposition =
+    DistributedSieveWorkerCleanupAuthorizationPublicationDispositionV1;
+using AuthorizationPublicationFault =
+    trusted_test::DistributedSieveWorkerCleanupAuthorizationPublicationFaultPointV1;
+using AuthorizationPublicationHooks =
+    trusted_test::DistributedSieveWorkerCleanupAuthorizationPublicationTestHooksV1;
+using AuthorizationPublicationPhase = DistributedSieveWorkerCleanupAuthorizationPublicationPhaseV1;
+using AuthorizationPublicationResult =
+    DistributedSieveWorkerCleanupAuthorizationPublicationResultV1;
+using AuthorizationPublicationStatus =
+    DistributedSieveWorkerCleanupAuthorizationPublicationStatusV1;
+using AuthorizationPublicationTargetShape =
+    DistributedSieveWorkerCleanupAuthorizationPublicationTargetShapeV1;
+using AuthorizationCompletionContinuation =
+    DistributedSieveWorkerCleanupCompletionPublishedContinuationV1;
+using AuthorizationRoot = DistributedSieveWorkerCleanupRootAdmissionV1;
+using AllWorkersCompletedContinuation =
+    DistributedSieveWorkerCleanupAllWorkersCompletedContinuationV1;
+
+[[nodiscard]] std::uint64_t authorization_publication_process_id() noexcept {
+    const int process_id = gnfs::util::process_id();
+    return process_id > 0 ? static_cast<std::uint64_t>(process_id) : 0;
+}
+
+[[nodiscard]] bool
+authorization_publication_process_matches(std::uint64_t expected_process_id) noexcept {
+    return expected_process_id != 0 &&
+           authorization_publication_process_id() == expected_process_id;
+}
+
+[[nodiscard]] AuthorizationPublicationDiagnostic
+authorization_publication_diagnostic(AuthorizationPublicationPhase phase,
+                                     AuthorizationPublicationStatus status,
+                                     std::error_code native_error = {}) noexcept {
+    AuthorizationPublicationDiagnostic diagnostic;
+    diagnostic.phase = phase;
+    diagnostic.status = status;
+    diagnostic.native_error = native_error;
+    return diagnostic;
+}
+
+[[nodiscard]] bool
+authorization_publication_snapshot_is_exact(const durable_record::RecordSnapshot& snapshot,
+                                            std::span<const std::byte> bytes) noexcept {
+    return snapshot.identity != durable_record::NativeIdentity{} && !bytes.empty() &&
+           snapshot.size == static_cast<std::uint64_t>(bytes.size());
+}
+
+[[maybe_unused, nodiscard]] bool
+invoke_authorization_publication_hook(AuthorizationPublicationHooks hooks,
+                                      AuthorizationPublicationFault point,
+                                      AuthorizationPublicationDiagnostic& diagnostic) noexcept {
+    if (hooks.stop_after == nullptr) {
+        return false;
+    }
+    diagnostic.last_fault_point = point;
+    return hooks.stop_after(point, hooks.context);
+}
+
+struct AuthorizationPublicationDurableHookContext final {
+    AuthorizationPublicationHooks hooks;
+    AuthorizationPublicationDiagnostic* diagnostic = nullptr;
+};
+
+[[maybe_unused, nodiscard]] bool
+authorization_publication_durable_stop_after(durable_record::RecordFaultPoint point,
+                                             void* opaque) noexcept {
+    auto* context = static_cast<AuthorizationPublicationDurableHookContext*>(opaque);
+    if (context == nullptr || context->diagnostic == nullptr) {
+        return false;
+    }
+    AuthorizationPublicationFault mapped;
+    switch (point) {
+    case durable_record::RecordFaultPoint::PendingDurable:
+        mapped = AuthorizationPublicationFault::PendingDurable;
+        break;
+    case durable_record::RecordFaultPoint::CanonicalPromoted:
+        mapped = AuthorizationPublicationFault::CanonicalPromoted;
+        break;
+    case durable_record::RecordFaultPoint::CanonicalDurable:
+        mapped = AuthorizationPublicationFault::CanonicalDurable;
+        break;
+    }
+    return invoke_authorization_publication_hook(context->hooks, mapped, *context->diagnostic);
+}
+
+} // namespace
+
+DistributedSieveWorkerCleanupAuthorizationPublishedContinuationV1::
+    DistributedSieveWorkerCleanupAuthorizationPublishedContinuationV1(
+        std::uint32_t manifest_order_ordinal, std::uint64_t creator_process_id,
+        DistributedSieveWorkerCleanupRootAdmissionV1&& root,
+        std::vector<std::byte>&& authorization_bytes,
+        util::durable_immutable_record::RecordSnapshot authorization_snapshot,
+        util::Sha256Digest authorization_digest) noexcept
+    : manifest_order_ordinal_(manifest_order_ordinal), creator_process_id_(creator_process_id),
+      root_(std::move(root)), authorization_bytes_(std::move(authorization_bytes)),
+      authorization_snapshot_(authorization_snapshot), authorization_digest_(authorization_digest) {
+}
+
+DistributedSieveWorkerCleanupAuthorizationPublishedContinuationV1::
+    DistributedSieveWorkerCleanupAuthorizationPublishedContinuationV1(
+        DistributedSieveWorkerCleanupAuthorizationPublishedContinuationV1&&) noexcept = default;
+
+DistributedSieveWorkerCleanupAuthorizationPublishedContinuationV1::
+    ~DistributedSieveWorkerCleanupAuthorizationPublishedContinuationV1() noexcept = default;
+
+bool DistributedSieveWorkerCleanupAuthorizationPublishedContinuationV1::valid() const noexcept {
+    return DistributedSieveWorkerCleanupAuthorizationPublicationAuthorityV1::valid(*this);
+}
+
+DistributedSieveWorkerCleanupAllWorkersCompletedContinuationV1::
+    DistributedSieveWorkerCleanupAllWorkersCompletedContinuationV1(
+        std::size_t completed_worker_count, std::uint64_t creator_process_id,
+        DistributedSieveWorkerCleanupRootAdmissionV1&& root) noexcept
+    : completed_worker_count_(completed_worker_count), creator_process_id_(creator_process_id),
+      root_(std::move(root)) {}
+
+DistributedSieveWorkerCleanupAllWorkersCompletedContinuationV1::
+    DistributedSieveWorkerCleanupAllWorkersCompletedContinuationV1(
+        DistributedSieveWorkerCleanupAllWorkersCompletedContinuationV1&&) noexcept = default;
+
+DistributedSieveWorkerCleanupAllWorkersCompletedContinuationV1::
+    ~DistributedSieveWorkerCleanupAllWorkersCompletedContinuationV1() noexcept = default;
+
+bool DistributedSieveWorkerCleanupAllWorkersCompletedContinuationV1::valid() const noexcept {
+    return DistributedSieveWorkerCleanupAuthorizationPublicationAuthorityV1::valid(*this);
+}
+
+DistributedSieveWorkerCleanupAuthorizationPublicationResultV1::operator bool() const noexcept {
+    const bool only_retryable_completion =
+        retryable_completion_continuation.has_value() && !retryable_recovery_root.has_value() &&
+        !completion_reconciliation_root.has_value() && !authorization_published.has_value() &&
+        !all_workers_completed.has_value();
+    const bool only_retryable_root =
+        !retryable_completion_continuation.has_value() && retryable_recovery_root.has_value() &&
+        !completion_reconciliation_root.has_value() && !authorization_published.has_value() &&
+        !all_workers_completed.has_value();
+    const bool only_reconciliation_root =
+        !retryable_completion_continuation.has_value() && !retryable_recovery_root.has_value() &&
+        completion_reconciliation_root.has_value() && !authorization_published.has_value() &&
+        !all_workers_completed.has_value();
+    const bool only_authorization =
+        !retryable_completion_continuation.has_value() && !retryable_recovery_root.has_value() &&
+        !completion_reconciliation_root.has_value() && authorization_published.has_value() &&
+        !all_workers_completed.has_value();
+    const bool only_terminal =
+        !retryable_completion_continuation.has_value() && !retryable_recovery_root.has_value() &&
+        !completion_reconciliation_root.has_value() && !authorization_published.has_value() &&
+        all_workers_completed.has_value();
+
+    switch (diagnostic.disposition) {
+    case AuthorizationPublicationDisposition::retryable_completion_continuation:
+        return only_retryable_completion && retryable_completion_continuation->valid();
+    case AuthorizationPublicationDisposition::retryable_recovery_root:
+        return only_retryable_root && retryable_recovery_root->valid();
+    case AuthorizationPublicationDisposition::completion_reconciliation_required:
+        return only_reconciliation_root && completion_reconciliation_root->valid() &&
+               static_cast<bool>(diagnostic);
+    case AuthorizationPublicationDisposition::authorization_published:
+        return only_authorization && authorization_published->valid() &&
+               static_cast<bool>(diagnostic);
+    case AuthorizationPublicationDisposition::all_workers_completed:
+        return only_terminal && all_workers_completed->valid() && static_cast<bool>(diagnostic);
+    case AuthorizationPublicationDisposition::cold_reopen_required:
+        return false;
+    }
+    return false;
+}
+
+bool DistributedSieveWorkerCleanupAuthorizationPublicationAuthorityV1::valid(
+    const DistributedSieveWorkerCleanupAuthorizationPublishedContinuationV1&
+        continuation) noexcept {
+    try {
+        if (!authorization_publication_process_matches(continuation.creator_process_id_) ||
+            continuation.root_.state_ == nullptr || continuation.root_.state_->store == nullptr ||
+            continuation.root_.state_->merged_reader == nullptr ||
+            continuation.root_.state_->creator_process_id != continuation.creator_process_id_ ||
+            continuation.root_.state_->active_cleanup_authorization == nullptr ||
+            continuation.authorization_digest_ == util::Sha256Digest{} ||
+            !authorization_publication_snapshot_is_exact(continuation.authorization_snapshot_,
+                                                         continuation.authorization_bytes_) ||
+            !continuation.root_.valid()) {
+            return false;
+        }
+        const auto& prefix = continuation.root_.state_->observation.cleanup_prefix;
+        if (!prefix.frontier_manifest_order_ordinal.has_value() ||
+            !prefix.active_manifest_order_ordinal.has_value() ||
+            *prefix.frontier_manifest_order_ordinal != continuation.manifest_order_ordinal_ ||
+            *prefix.active_manifest_order_ordinal != continuation.manifest_order_ordinal_) {
+            return false;
+        }
+        const auto position = std::find_if(
+            prefix.coordinates.begin(), prefix.coordinates.end(),
+            [&](const wave::DistributedSieveWorkerCleanupCoordinateWitnessV1& coordinate) {
+                return coordinate.manifest_order_ordinal == continuation.manifest_order_ordinal_;
+            });
+        if (position == prefix.coordinates.end() ||
+            position != std::prev(prefix.coordinates.end()) ||
+            position->state !=
+                wave::DistributedSieveWorkerCleanupPrefixStateV1::authorization_canonical_only ||
+            position->completion.has_value() ||
+            position->authorization.self_digest != continuation.authorization_digest_ ||
+            position->authorization_bytes != continuation.authorization_bytes_ ||
+            position->authorization_canonical_snapshot != continuation.authorization_snapshot_ ||
+            position->authorization_pending_snapshot.has_value()) {
+            return false;
+        }
+        const auto& active = continuation.root_.state_->active_cleanup_authorization;
+        return active->wave_store_state_ == continuation.root_.state_->store->state_ &&
+               active->creator_process_id_ == continuation.creator_process_id_ &&
+               active->active_manifest_order_ordinal_ == continuation.manifest_order_ordinal_ &&
+               active->authorization_.self_digest == continuation.authorization_digest_ &&
+               !active->invalidated_.load(std::memory_order_acquire) &&
+               !active->receipt_claimed_.load(std::memory_order_acquire) &&
+               active->revalidate_root_only_sticky(false).status ==
+                   wave::DistributedSieveWaveStoreStatus::ready;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool DistributedSieveWorkerCleanupAuthorizationPublicationAuthorityV1::valid(
+    const DistributedSieveWorkerCleanupAllWorkersCompletedContinuationV1& continuation) noexcept {
+    try {
+        if (!authorization_publication_process_matches(continuation.creator_process_id_) ||
+            continuation.root_.state_ == nullptr || continuation.root_.state_->store == nullptr ||
+            continuation.root_.state_->merged_reader == nullptr ||
+            continuation.root_.state_->creator_process_id != continuation.creator_process_id_ ||
+            continuation.root_.state_->active_cleanup_authorization != nullptr ||
+            !continuation.root_.valid()) {
+            return false;
+        }
+        const auto& state = continuation.root_.state_->observation;
+        const auto& prefix = state.cleanup_prefix;
+        const auto& commit = state.commit_record.record;
+        const std::size_t expected_workers = static_cast<std::size_t>(
+            std::count_if(commit.chunks.begin(), commit.chunks.end(),
+                          [](const sieve::ChunkCommitSummaryV1& chunk) {
+                              return chunk.input.disposition != sieve::ChunkDispositionV1::empty;
+                          }));
+        if (prefix.frontier_manifest_order_ordinal.has_value() ||
+            prefix.active_manifest_order_ordinal.has_value() ||
+            prefix.completed_worker_count != expected_workers ||
+            continuation.completed_worker_count_ != expected_workers ||
+            prefix.coordinates.size() != expected_workers ||
+            state.cleanup_recovered_workers.size() != expected_workers ||
+            !state.worker_prefixes.empty()) {
+            return false;
+        }
+        return std::all_of(
+            prefix.coordinates.begin(), prefix.coordinates.end(),
+            [](const wave::DistributedSieveWorkerCleanupCoordinateWitnessV1& coordinate) {
+                return coordinate.state ==
+                           wave::DistributedSieveWorkerCleanupPrefixStateV1::completed &&
+                       coordinate.authorization_canonical_snapshot.has_value() &&
+                       !coordinate.authorization_pending_snapshot.has_value() &&
+                       coordinate.completion.has_value() &&
+                       coordinate.completion_canonical_snapshot.has_value() &&
+                       !coordinate.completion_pending_snapshot.has_value() &&
+                       authorization_publication_snapshot_is_exact(
+                           *coordinate.authorization_canonical_snapshot,
+                           coordinate.authorization_bytes) &&
+                       authorization_publication_snapshot_is_exact(
+                           *coordinate.completion_canonical_snapshot, coordinate.completion_bytes);
+            });
+    } catch (...) {
+        return false;
+    }
+}
+
+DistributedSieveWorkerCleanupAuthorizationPublicationResultV1
+advance_distributed_sieve_worker_cleanup_authorization_v1(
+    DistributedSieveWorkerCleanupCompletionPublishedContinuationV1&& completion) noexcept {
+    return DistributedSieveWorkerCleanupAuthorizationPublicationAuthorityV1::advance(
+        std::move(completion), {});
+}
+
+DistributedSieveWorkerCleanupAuthorizationPublicationResultV1
+resume_distributed_sieve_worker_cleanup_authorization_v1(
+    DistributedSieveWorkerCleanupRootAdmissionV1&& root) noexcept {
+    return DistributedSieveWorkerCleanupAuthorizationPublicationAuthorityV1::resume(std::move(root),
+                                                                                    {});
+}
+
+namespace trusted_test {
+
+DistributedSieveWorkerCleanupAuthorizationPublicationResultV1
+advance_distributed_sieve_worker_cleanup_authorization_v1_with_hooks(
+    DistributedSieveWorkerCleanupCompletionPublishedContinuationV1&& completion,
+    DistributedSieveWorkerCleanupAuthorizationPublicationTestHooksV1 hooks) noexcept {
+    return DistributedSieveWorkerCleanupAuthorizationPublicationAuthorityV1::advance(
+        std::move(completion), hooks);
+}
+
+DistributedSieveWorkerCleanupAuthorizationPublicationResultV1
+resume_distributed_sieve_worker_cleanup_authorization_v1_with_hooks(
+    DistributedSieveWorkerCleanupRootAdmissionV1&& root,
+    DistributedSieveWorkerCleanupAuthorizationPublicationTestHooksV1 hooks) noexcept {
+    return DistributedSieveWorkerCleanupAuthorizationPublicationAuthorityV1::resume(std::move(root),
+                                                                                    hooks);
+}
+
+} // namespace trusted_test
+
+DistributedSieveWorkerCleanupAuthorizationPublicationResultV1
+DistributedSieveWorkerCleanupAuthorizationPublicationAuthorityV1::advance(
+    DistributedSieveWorkerCleanupCompletionPublishedContinuationV1&& completion,
+    AuthorizationPublicationHooks hooks) noexcept {
+    std::optional<AuthorizationCompletionContinuation> fresh;
+    fresh.emplace(std::move(completion));
+    return drive(std::move(fresh), std::nullopt, hooks);
+}
+
+DistributedSieveWorkerCleanupAuthorizationPublicationResultV1
+DistributedSieveWorkerCleanupAuthorizationPublicationAuthorityV1::resume(
+    DistributedSieveWorkerCleanupRootAdmissionV1&& root,
+    AuthorizationPublicationHooks hooks) noexcept {
+    std::optional<AuthorizationRoot> recovery;
+    recovery.emplace(std::move(root));
+    return drive(std::nullopt, std::move(recovery), hooks);
+}
+
+DistributedSieveWorkerCleanupAuthorizationPublicationResultV1
+DistributedSieveWorkerCleanupAuthorizationPublicationAuthorityV1::drive(
+    std::optional<DistributedSieveWorkerCleanupCompletionPublishedContinuationV1>&& fresh,
+    std::optional<DistributedSieveWorkerCleanupRootAdmissionV1>&& recovery,
+    AuthorizationPublicationHooks hooks) noexcept {
+    AuthorizationPublicationDiagnostic diagnostic =
+        authorization_publication_diagnostic(AuthorizationPublicationPhase::input_validation,
+                                             AuthorizationPublicationStatus::unexpected_failure);
+
+    const auto cold_reopen = [&](AuthorizationPublicationDiagnostic outcome) noexcept {
+        outcome.disposition = AuthorizationPublicationDisposition::cold_reopen_required;
+        if (!outcome.native_error) {
+            outcome.native_error = std::make_error_code(std::errc::state_not_recoverable);
+        }
+        return AuthorizationPublicationResult(std::nullopt, std::nullopt, std::nullopt,
+                                              std::nullopt, std::nullopt, std::move(outcome));
+    };
+    const auto retry_input_or_cold = [&](AuthorizationPublicationDiagnostic outcome) noexcept {
+        if (!outcome.authority_spent && !outcome.publication_started && fresh.has_value() &&
+            !recovery.has_value() && fresh->valid()) {
+            outcome.disposition =
+                AuthorizationPublicationDisposition::retryable_completion_continuation;
+            return AuthorizationPublicationResult(std::move(fresh), std::nullopt, std::nullopt,
+                                                  std::nullopt, std::nullopt, std::move(outcome));
+        }
+        if (!outcome.authority_spent && !outcome.publication_started && !fresh.has_value() &&
+            recovery.has_value() && recovery->valid()) {
+            outcome.disposition = AuthorizationPublicationDisposition::retryable_recovery_root;
+            return AuthorizationPublicationResult(std::nullopt, std::move(recovery), std::nullopt,
+                                                  std::nullopt, std::nullopt, std::move(outcome));
+        }
+        return cold_reopen(std::move(outcome));
+    };
+    const auto fail_wave =
+        [&](AuthorizationPublicationPhase phase, AuthorizationPublicationStatus fallback,
+            wave::DistributedSieveWaveStoreDiagnostic wave_failure, bool retryable) noexcept {
+            diagnostic.phase = phase;
+            switch (wave_failure.status) {
+            case wave::DistributedSieveWaveStoreStatus::platform_unsupported:
+                diagnostic.status = AuthorizationPublicationStatus::platform_unsupported;
+                break;
+            case wave::DistributedSieveWaveStoreStatus::resource_exhausted:
+                diagnostic.status = AuthorizationPublicationStatus::resource_exhausted;
+                break;
+            case wave::DistributedSieveWaveStoreStatus::unexpected_failure:
+                diagnostic.status = AuthorizationPublicationStatus::unexpected_failure;
+                break;
+            default:
+                diagnostic.status = fallback;
+                break;
+            }
+            diagnostic.native_error = wave_failure.native_error
+                                          ? wave_failure.native_error
+                                          : std::make_error_code(std::errc::state_not_recoverable);
+            diagnostic.wave_store = std::move(wave_failure);
+            return retryable ? retry_input_or_cold(std::move(diagnostic))
+                             : cold_reopen(std::move(diagnostic));
+        };
+    const auto input_retry_status = [&]() noexcept {
+        return fresh.has_value() ? AuthorizationPublicationStatus::retryable_completion_continuation
+                                 : AuthorizationPublicationStatus::retryable_recovery_root;
+    };
+
+    bool authority_spent = false;
+    try {
+        const bool fresh_path = fresh.has_value() && !recovery.has_value();
+        const bool recovery_path = !fresh.has_value() && recovery.has_value();
+        if (!fresh_path && !recovery_path) {
+            diagnostic.status = AuthorizationPublicationStatus::invalid_input;
+            diagnostic.native_error = std::make_error_code(std::errc::invalid_argument);
+            return cold_reopen(std::move(diagnostic));
+        }
+
+        const std::uint64_t expected_process_id =
+            fresh_path ? fresh->creator_process_id_
+                       : (recovery->state_ != nullptr ? recovery->state_->creator_process_id : 0U);
+        if (!authorization_publication_process_matches(expected_process_id)) {
+            diagnostic.status = AuthorizationPublicationStatus::process_mismatch;
+            diagnostic.native_error = std::make_error_code(std::errc::no_such_process);
+            return cold_reopen(std::move(diagnostic));
+        }
+        if ((fresh_path && !fresh->valid()) || (recovery_path && !recovery->valid())) {
+            diagnostic.status = AuthorizationPublicationStatus::invalid_input;
+            diagnostic.native_error = std::make_error_code(std::errc::invalid_argument);
+            return cold_reopen(std::move(diagnostic));
+        }
+
+        AuthorizationRoot* retained_root =
+            fresh_path ? std::addressof(fresh->root_) : std::addressof(*recovery);
+        if (retained_root->state_ == nullptr || retained_root->state_->store == nullptr ||
+            retained_root->state_->merged_reader == nullptr ||
+            retained_root->state_->creator_process_id != expected_process_id ||
+            !retained_root->state_->merged_reader->valid()) {
+            diagnostic.status = AuthorizationPublicationStatus::invalid_input;
+            diagnostic.native_error = std::make_error_code(std::errc::invalid_argument);
+            return cold_reopen(std::move(diagnostic));
+        }
+
+        auto& retained_state = *retained_root->state_;
+        auto& retained_store = *retained_state.store;
+        const auto& initial_observation = retained_state.observation;
+        const auto& initial_prefix = initial_observation.cleanup_prefix;
+        const auto& manifest = retained_store.manifest();
+        const auto& commit = initial_observation.commit_record.record;
+        if (manifest.chunks.size() != commit.chunks.size()) {
+            diagnostic.status = AuthorizationPublicationStatus::authorization_target_invalid;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return retry_input_or_cold(std::move(diagnostic));
+        }
+
+        const std::size_t expected_worker_count = static_cast<std::size_t>(
+            std::count_if(commit.chunks.begin(), commit.chunks.end(), [](const auto& chunk) {
+                return chunk.input.disposition != sieve::ChunkDispositionV1::empty;
+            }));
+        diagnostic.phase = AuthorizationPublicationPhase::recovery_target_selection;
+        std::optional<std::uint32_t> target_ordinal =
+            initial_prefix.frontier_manifest_order_ordinal;
+        const wave::DistributedSieveWorkerCleanupCoordinateWitnessV1* initial_target = nullptr;
+
+        if (!target_ordinal.has_value()) {
+            const bool terminal =
+                !initial_prefix.active_manifest_order_ordinal.has_value() &&
+                initial_prefix.completed_worker_count == expected_worker_count &&
+                initial_prefix.coordinates.size() == expected_worker_count &&
+                std::all_of(initial_prefix.coordinates.begin(), initial_prefix.coordinates.end(),
+                            [](const auto& item) {
+                                return item.state ==
+                                       wave::DistributedSieveWorkerCleanupPrefixStateV1::completed;
+                            });
+            if (!terminal) {
+                diagnostic.status = AuthorizationPublicationStatus::authorization_target_missing;
+                diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+                return retry_input_or_cold(std::move(diagnostic));
+            }
+            diagnostic.target_shape = AuthorizationPublicationTargetShape::all_workers_completed;
+        } else {
+            if (*target_ordinal >= manifest.chunks.size() ||
+                commit.chunks[*target_ordinal].input.disposition !=
+                    sieve::ChunkDispositionV1::handoff) {
+                diagnostic.status = AuthorizationPublicationStatus::authorization_target_invalid;
+                diagnostic.native_error = std::make_error_code(std::errc::invalid_argument);
+                return retry_input_or_cold(std::move(diagnostic));
+            }
+            diagnostic.manifest_order_ordinal = target_ordinal;
+            if (!initial_prefix.active_manifest_order_ordinal.has_value()) {
+                if (std::any_of(initial_prefix.coordinates.begin(),
+                                initial_prefix.coordinates.end(),
+                                [&](const auto& coordinate) {
+                                    return coordinate.manifest_order_ordinal == *target_ordinal;
+                                }) ||
+                    initial_prefix.completed_worker_count != initial_prefix.coordinates.size()) {
+                    diagnostic.status =
+                        AuthorizationPublicationStatus::authorization_target_invalid;
+                    diagnostic.native_error =
+                        std::make_error_code(std::errc::state_not_recoverable);
+                    return retry_input_or_cold(std::move(diagnostic));
+                }
+                diagnostic.target_shape = AuthorizationPublicationTargetShape::absent;
+            } else {
+                if (*initial_prefix.active_manifest_order_ordinal != *target_ordinal) {
+                    diagnostic.status =
+                        AuthorizationPublicationStatus::authorization_target_invalid;
+                    diagnostic.native_error =
+                        std::make_error_code(std::errc::state_not_recoverable);
+                    return retry_input_or_cold(std::move(diagnostic));
+                }
+                const auto position =
+                    std::find_if(initial_prefix.coordinates.begin(),
+                                 initial_prefix.coordinates.end(), [&](const auto& coordinate) {
+                                     return coordinate.manifest_order_ordinal == *target_ordinal;
+                                 });
+                if (position == initial_prefix.coordinates.end() ||
+                    position != std::prev(initial_prefix.coordinates.end()) ||
+                    std::find_if(std::next(position), initial_prefix.coordinates.end(),
+                                 [&](const auto& coordinate) {
+                                     return coordinate.manifest_order_ordinal == *target_ordinal;
+                                 }) != initial_prefix.coordinates.end()) {
+                    diagnostic.status =
+                        AuthorizationPublicationStatus::authorization_target_invalid;
+                    diagnostic.native_error =
+                        std::make_error_code(std::errc::state_not_recoverable);
+                    return retry_input_or_cold(std::move(diagnostic));
+                }
+                initial_target = std::addressof(*position);
+                switch (position->state) {
+                case wave::DistributedSieveWorkerCleanupPrefixStateV1::authorization_pending_only:
+                    diagnostic.target_shape =
+                        AuthorizationPublicationTargetShape::authorization_pending_only;
+                    break;
+                case wave::DistributedSieveWorkerCleanupPrefixStateV1::authorization_canonical_only:
+                    diagnostic.target_shape =
+                        AuthorizationPublicationTargetShape::authorization_canonical_only;
+                    break;
+                case wave::DistributedSieveWorkerCleanupPrefixStateV1::authorization_identical_dual:
+                    diagnostic.target_shape =
+                        AuthorizationPublicationTargetShape::authorization_identical_dual;
+                    break;
+                case wave::DistributedSieveWorkerCleanupPrefixStateV1::completion_pending_only:
+                    diagnostic.target_shape =
+                        AuthorizationPublicationTargetShape::completion_pending_only;
+                    break;
+                case wave::DistributedSieveWorkerCleanupPrefixStateV1::completion_identical_dual:
+                    diagnostic.target_shape =
+                        AuthorizationPublicationTargetShape::completion_identical_dual;
+                    break;
+                case wave::DistributedSieveWorkerCleanupPrefixStateV1::completed:
+                    diagnostic.status =
+                        AuthorizationPublicationStatus::authorization_target_invalid;
+                    diagnostic.native_error =
+                        std::make_error_code(std::errc::state_not_recoverable);
+                    return retry_input_or_cold(std::move(diagnostic));
+                }
+            }
+        }
+
+        const bool terminal_shape =
+            diagnostic.target_shape == AuthorizationPublicationTargetShape::all_workers_completed;
+        const bool completion_shape =
+            diagnostic.target_shape ==
+                AuthorizationPublicationTargetShape::completion_pending_only ||
+            diagnostic.target_shape ==
+                AuthorizationPublicationTargetShape::completion_identical_dual;
+        const bool live_source_shape =
+            diagnostic.target_shape == AuthorizationPublicationTargetShape::absent ||
+            diagnostic.target_shape ==
+                AuthorizationPublicationTargetShape::authorization_pending_only;
+
+        std::optional<sieve::ArtifactCleanupAuthorizedV1> authorization_record;
+        std::vector<std::byte> authorization_bytes;
+        std::optional<durable_record::RecordSnapshot> expected_existing_snapshot;
+        durable_record::RecordPublishDisposition expected_publication_disposition =
+            durable_record::RecordPublishDisposition::none;
+        using RecoveredWorker = std::remove_cvref_t<
+            decltype(initial_observation.cleanup_recovered_workers)>::value_type;
+        std::optional<RecoveredWorker> recovered_from_live;
+
+        if (!terminal_shape && target_ordinal.has_value()) {
+            if (live_source_shape) {
+                const auto& plan = manifest.chunks[*target_ordinal];
+                const auto live_matches = [&](const auto& worker) {
+                    const auto& handoff = worker.typed_handoff.handoff;
+                    return handoff.chunk_id == plan.chunk_id && handoff.sq_begin == plan.sq_begin &&
+                           handoff.sq_end == plan.sq_end;
+                };
+                if (std::count_if(initial_observation.worker_prefixes.begin(),
+                                  initial_observation.worker_prefixes.end(), live_matches) != 1) {
+                    diagnostic.status =
+                        AuthorizationPublicationStatus::authorization_target_invalid;
+                    diagnostic.native_error =
+                        std::make_error_code(std::errc::no_such_file_or_directory);
+                    return retry_input_or_cold(std::move(diagnostic));
+                }
+                const auto live =
+                    std::find_if(initial_observation.worker_prefixes.begin(),
+                                 initial_observation.worker_prefixes.end(), live_matches);
+                const auto expected_names = wave::distributed_sieve_worker_attempt_names_v1(
+                    plan.relative_artifact_stem, plan.chunk_id,
+                    live->typed_handoff.handoff.attempt_ordinal);
+                if (!expected_names.has_value() || live->names != *expected_names ||
+                    !live->prefix.canonical_terminal() ||
+                    !live->prefix.canonical_snapshot.has_value() ||
+                    live->typed_handoff.handoff_snapshot != *live->prefix.canonical_snapshot) {
+                    diagnostic.status =
+                        AuthorizationPublicationStatus::authorization_target_invalid;
+                    diagnostic.native_error =
+                        std::make_error_code(std::errc::state_not_recoverable);
+                    return retry_input_or_cold(std::move(diagnostic));
+                }
+                const auto base_leaf = std::lower_bound(
+                    initial_observation.inventory.private_lease_base_lock_leaves.begin(),
+                    initial_observation.inventory.private_lease_base_lock_leaves.end(),
+                    live->names.base_lock_leaf);
+                if (base_leaf ==
+                        initial_observation.inventory.private_lease_base_lock_leaves.end() ||
+                    *base_leaf != live->names.base_lock_leaf) {
+                    diagnostic.status =
+                        AuthorizationPublicationStatus::authorization_target_invalid;
+                    diagnostic.native_error =
+                        std::make_error_code(std::errc::state_not_recoverable);
+                    return retry_input_or_cold(std::move(diagnostic));
+                }
+                const auto base_index = static_cast<std::size_t>(std::distance(
+                    initial_observation.inventory.private_lease_base_lock_leaves.begin(),
+                    base_leaf));
+                if (base_index >= initial_observation.base_lock_identities.size()) {
+                    diagnostic.status =
+                        AuthorizationPublicationStatus::authorization_target_invalid;
+                    diagnostic.native_error =
+                        std::make_error_code(std::errc::state_not_recoverable);
+                    return retry_input_or_cold(std::move(diagnostic));
+                }
+                const auto lease_matches = [&](const auto& lease) {
+                    return lease.base_lock_leaf == live->names.base_lock_leaf;
+                };
+                if (std::count_if(initial_observation.private_leases.begin(),
+                                  initial_observation.private_leases.end(), lease_matches) != 1) {
+                    diagnostic.status =
+                        AuthorizationPublicationStatus::authorization_target_invalid;
+                    diagnostic.native_error =
+                        std::make_error_code(std::errc::state_not_recoverable);
+                    return retry_input_or_cold(std::move(diagnostic));
+                }
+                const auto lease =
+                    std::find_if(initial_observation.private_leases.begin(),
+                                 initial_observation.private_leases.end(), lease_matches);
+                if (lease->boundary != wave::DistributedSievePrivateLeaseReservationBoundary::
+                                           FinalDirectoryDurable ||
+                    !lease->worker_handoff.has_value() ||
+                    *lease->worker_handoff != live->typed_handoff) {
+                    diagnostic.status =
+                        AuthorizationPublicationStatus::authorization_target_invalid;
+                    diagnostic.native_error =
+                        std::make_error_code(std::errc::state_not_recoverable);
+                    return retry_input_or_cold(std::move(diagnostic));
+                }
+
+                diagnostic.phase = AuthorizationPublicationPhase::authorization_build;
+                auto built = cleanup_codec::build_distributed_sieve_worker_cleanup_authorization_v1(
+                    manifest, commit, *target_ordinal, live->typed_handoff.handoff,
+                    live->prefix.record, initial_observation.base_lock_identities[base_index],
+                    live->typed_handoff.owned_marker_identity, *live->prefix.canonical_snapshot);
+                diagnostic.codec = built.diagnostic;
+                if (!built || !built.authorization.has_value() ||
+                    built.authorization->canonical_bytes.empty()) {
+                    diagnostic.status = AuthorizationPublicationStatus::authorization_build_failed;
+                    diagnostic.native_error =
+                        built.diagnostic.status ==
+                                cleanup_codec::DistributedSieveWorkerCleanupCodecStatusV1::
+                                    resource_exhausted
+                            ? std::make_error_code(std::errc::not_enough_memory)
+                            : std::make_error_code(std::errc::invalid_argument);
+                    return retry_input_or_cold(std::move(diagnostic));
+                }
+                authorization_record.emplace(std::move(built.authorization->record));
+                authorization_bytes = std::move(built.authorization->canonical_bytes);
+                recovered_from_live.emplace(RecoveredWorker{
+                    .manifest_slot = *target_ordinal,
+                    .base_lock_identity = initial_observation.base_lock_identities[base_index],
+                    .typed_handoff = live->typed_handoff,
+                    .provisional_lease = *lease,
+                });
+                if (diagnostic.target_shape == AuthorizationPublicationTargetShape::absent) {
+                    expected_publication_disposition =
+                        durable_record::RecordPublishDisposition::created;
+                } else {
+                    if (initial_target == nullptr ||
+                        initial_target->authorization_bytes != authorization_bytes ||
+                        initial_target->authorization.self_digest !=
+                            authorization_record->self_digest ||
+                        initial_target->authorization_canonical_snapshot.has_value() ||
+                        !initial_target->authorization_pending_snapshot.has_value()) {
+                        diagnostic.status =
+                            AuthorizationPublicationStatus::authorization_target_invalid;
+                        diagnostic.native_error =
+                            std::make_error_code(std::errc::state_not_recoverable);
+                        return retry_input_or_cold(std::move(diagnostic));
+                    }
+                    expected_existing_snapshot = initial_target->authorization_pending_snapshot;
+                    expected_publication_disposition =
+                        durable_record::RecordPublishDisposition::recovered_pending;
+                }
+            } else {
+                if (initial_target == nullptr || initial_target->authorization_bytes.empty() ||
+                    !initial_target->authorization_canonical_snapshot.has_value() ||
+                    initial_target->authorization_pending_snapshot.has_value() !=
+                        (diagnostic.target_shape ==
+                         AuthorizationPublicationTargetShape::authorization_identical_dual)) {
+                    diagnostic.status =
+                        AuthorizationPublicationStatus::authorization_target_invalid;
+                    diagnostic.native_error =
+                        std::make_error_code(std::errc::state_not_recoverable);
+                    return retry_input_or_cold(std::move(diagnostic));
+                }
+                const auto recovered_matches = [&](const auto& worker) {
+                    return worker.manifest_slot == *target_ordinal;
+                };
+                if (std::count_if(initial_observation.cleanup_recovered_workers.begin(),
+                                  initial_observation.cleanup_recovered_workers.end(),
+                                  recovered_matches) != 1) {
+                    diagnostic.status =
+                        AuthorizationPublicationStatus::authorization_target_invalid;
+                    diagnostic.native_error =
+                        std::make_error_code(std::errc::state_not_recoverable);
+                    return retry_input_or_cold(std::move(diagnostic));
+                }
+                const auto recovered = std::find_if(
+                    initial_observation.cleanup_recovered_workers.begin(),
+                    initial_observation.cleanup_recovered_workers.end(), recovered_matches);
+                auto projected = cleanup_codec::project_distributed_sieve_worker_cleanup_handoff_v1(
+                    manifest, commit, initial_target->authorization);
+                diagnostic.codec = projected.diagnostic;
+                if (!projected || !projected.worker_handoff.has_value() ||
+                    projected.worker_handoff->self_digest !=
+                        recovered->typed_handoff.handoff.self_digest ||
+                    recovered->base_lock_identity !=
+                        initial_target->authorization.base_lock_identity ||
+                    recovered->typed_handoff.envelope_digest !=
+                        initial_target->authorization.private_handoff_digest ||
+                    recovered->typed_handoff.owned_marker_identity !=
+                        initial_target->authorization.owned_marker_identity) {
+                    diagnostic.status =
+                        AuthorizationPublicationStatus::authorization_target_invalid;
+                    diagnostic.native_error =
+                        std::make_error_code(std::errc::state_not_recoverable);
+                    return retry_input_or_cold(std::move(diagnostic));
+                }
+                authorization_record = initial_target->authorization;
+                authorization_bytes = initial_target->authorization_bytes;
+                expected_existing_snapshot = initial_target->authorization_canonical_snapshot;
+                expected_publication_disposition =
+                    durable_record::RecordPublishDisposition::confirmed_existing;
+            }
+        }
+
+        diagnostic.phase = AuthorizationPublicationPhase::baseline_observation;
+        const auto authority_valid = [&]() noexcept {
+            return wave::WorkerCleanupRootRevalidatorAuthorityV1::revalidate_authority(
+                retained_store);
+        };
+        const auto observe = [&]() noexcept {
+            return wave::observe_cleanup_root_v1(
+                wave::WorkerCleanupRootRevalidatorAuthorityV1::root_fd(retained_store),
+                wave::WorkerCleanupRootRevalidatorAuthorityV1::absolute_root(retained_store),
+                wave::WorkerCleanupRootRevalidatorAuthorityV1::manifest(retained_store),
+                retained_store.wave_root_identity(), expected_process_id);
+        };
+        if (auto checked = authority_valid();
+            checked.status != wave::DistributedSieveWaveStoreStatus::ready) {
+            return fail_wave(AuthorizationPublicationPhase::baseline_observation,
+                             AuthorizationPublicationStatus::baseline_observation_failed,
+                             std::move(checked), true);
+        }
+        auto first = observe();
+        if (!first || !first.observation.has_value()) {
+            return fail_wave(AuthorizationPublicationPhase::baseline_observation,
+                             AuthorizationPublicationStatus::baseline_observation_failed,
+                             std::move(first.diagnostic), true);
+        }
+        if (*first.observation != initial_observation) {
+            diagnostic.status = AuthorizationPublicationStatus::baseline_changed;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return retry_input_or_cold(std::move(diagnostic));
+        }
+        if (invoke_authorization_publication_hook(
+                hooks, AuthorizationPublicationFault::AfterFirstBaselineObservation, diagnostic)) {
+            diagnostic.status = input_retry_status();
+            diagnostic.native_error.clear();
+            return retry_input_or_cold(std::move(diagnostic));
+        }
+        if (auto checked = authority_valid();
+            checked.status != wave::DistributedSieveWaveStoreStatus::ready) {
+            return fail_wave(AuthorizationPublicationPhase::baseline_observation,
+                             AuthorizationPublicationStatus::baseline_changed, std::move(checked),
+                             true);
+        }
+        auto second = observe();
+        if (!second || !second.observation.has_value()) {
+            return fail_wave(AuthorizationPublicationPhase::baseline_observation,
+                             AuthorizationPublicationStatus::baseline_observation_failed,
+                             std::move(second.diagnostic), true);
+        }
+        if (*first.observation != *second.observation ||
+            *second.observation != initial_observation) {
+            diagnostic.status = AuthorizationPublicationStatus::baseline_changed;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return retry_input_or_cold(std::move(diagnostic));
+        }
+        if (auto checked = authority_valid();
+            checked.status != wave::DistributedSieveWaveStoreStatus::ready) {
+            return fail_wave(AuthorizationPublicationPhase::baseline_observation,
+                             AuthorizationPublicationStatus::baseline_changed, std::move(checked),
+                             true);
+        }
+
+        if (completion_shape) {
+            if (!recovery_path) {
+                diagnostic.status = AuthorizationPublicationStatus::invalid_input;
+                diagnostic.native_error = std::make_error_code(std::errc::invalid_argument);
+                return cold_reopen(std::move(diagnostic));
+            }
+            std::optional<AuthorizationRoot> reconciliation_root;
+            reconciliation_root.emplace(std::move(*recovery));
+            diagnostic.phase = AuthorizationPublicationPhase::complete;
+            diagnostic.status = AuthorizationPublicationStatus::completion_reconciliation_required;
+            diagnostic.disposition =
+                AuthorizationPublicationDisposition::completion_reconciliation_required;
+            diagnostic.native_error.clear();
+            diagnostic.wave_store = {};
+            return AuthorizationPublicationResult(std::nullopt, std::nullopt,
+                                                  std::move(reconciliation_root), std::nullopt,
+                                                  std::nullopt, std::move(diagnostic));
+        }
+
+        if (terminal_shape) {
+            diagnostic.phase = AuthorizationPublicationPhase::authority_spend;
+            const auto before_spend = fresh_path
+                                          ? AuthorizationPublicationFault::FreshBeforeAuthoritySpend
+                                          : AuthorizationPublicationFault::ColdBeforeAuthoritySpend;
+            if (invoke_authorization_publication_hook(hooks, before_spend, diagnostic)) {
+                diagnostic.status = input_retry_status();
+                diagnostic.native_error.clear();
+                return retry_input_or_cold(std::move(diagnostic));
+            }
+            if ((fresh_path && !fresh->valid()) || (recovery_path && !recovery->valid())) {
+                diagnostic.status = AuthorizationPublicationStatus::baseline_changed;
+                diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+                return retry_input_or_cold(std::move(diagnostic));
+            }
+            if (auto checked = authority_valid();
+                checked.status != wave::DistributedSieveWaveStoreStatus::ready) {
+                return fail_wave(AuthorizationPublicationPhase::authority_spend,
+                                 AuthorizationPublicationStatus::baseline_changed,
+                                 std::move(checked), true);
+            }
+            std::optional<AuthorizationRoot> spent_root;
+            if (fresh_path) {
+                spent_root.emplace(std::move(fresh->root_));
+            } else {
+                spent_root.emplace(std::move(*recovery));
+            }
+            authority_spent = true;
+            diagnostic.authority_spent = true;
+            if (fresh_path &&
+                invoke_authorization_publication_hook(
+                    hooks, AuthorizationPublicationFault::FreshAfterAuthoritySpend, diagnostic)) {
+                diagnostic.status = AuthorizationPublicationStatus::test_interrupted;
+                diagnostic.native_error = std::make_error_code(std::errc::operation_canceled);
+                return cold_reopen(std::move(diagnostic));
+            }
+            AllWorkersCompletedContinuation sealed(expected_worker_count, expected_process_id,
+                                                   std::move(*spent_root));
+            if (!sealed.valid()) {
+                diagnostic.status = AuthorizationPublicationStatus::root_refresh_failed;
+                diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+                return cold_reopen(std::move(diagnostic));
+            }
+            std::optional<AllWorkersCompletedContinuation> terminal;
+            terminal.emplace(std::move(sealed));
+            diagnostic.phase = AuthorizationPublicationPhase::complete;
+            diagnostic.status = AuthorizationPublicationStatus::all_workers_completed;
+            diagnostic.disposition = AuthorizationPublicationDisposition::all_workers_completed;
+            diagnostic.native_error.clear();
+            diagnostic.wave_store = {};
+            return AuthorizationPublicationResult(std::nullopt, std::nullopt, std::nullopt,
+                                                  std::nullopt, std::move(terminal),
+                                                  std::move(diagnostic));
+        }
+
+        if (!target_ordinal.has_value() || !authorization_record.has_value() ||
+            authorization_bytes.empty()) {
+            diagnostic.status = AuthorizationPublicationStatus::authorization_target_invalid;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return retry_input_or_cold(std::move(diagnostic));
+        }
+
+        diagnostic.phase = AuthorizationPublicationPhase::successor_preparation;
+        const auto names = wave::distributed_sieve_worker_cleanup_record_names_v1(*target_ordinal);
+        if (!names.has_value()) {
+            diagnostic.status = AuthorizationPublicationStatus::authorization_target_invalid;
+            diagnostic.native_error = std::make_error_code(std::errc::invalid_argument);
+            return retry_input_or_cold(std::move(diagnostic));
+        }
+        auto successor_state = std::make_unique<AuthorizationRoot::State>();
+        successor_state->observation = *second.observation;
+        successor_state->creator_process_id = expected_process_id;
+        successor_state->active_cleanup_authorization.reset();
+        auto continuation_bytes = authorization_bytes;
+        const util::Sha256Digest authorization_digest = authorization_record->self_digest;
+        auto& successor_prefix = successor_state->observation.cleanup_prefix;
+        auto& cleanup_leaves = successor_state->observation.inventory.cleanup_record_leaves;
+        const auto leaf_count = [&](const std::string& leaf) {
+            return static_cast<std::size_t>(
+                std::count(cleanup_leaves.begin(), cleanup_leaves.end(), leaf));
+        };
+
+        if (diagnostic.target_shape == AuthorizationPublicationTargetShape::absent) {
+            if (leaf_count(names->authorization_canonical_record_leaf) != 0U ||
+                leaf_count(names->authorization_pending_record_leaf) != 0U ||
+                !recovered_from_live.has_value()) {
+                diagnostic.status = AuthorizationPublicationStatus::authorization_target_invalid;
+                diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+                return retry_input_or_cold(std::move(diagnostic));
+            }
+            cleanup_leaves.push_back(names->authorization_canonical_record_leaf);
+            successor_prefix.coordinates.push_back({
+                .manifest_order_ordinal = *target_ordinal,
+                .state =
+                    wave::DistributedSieveWorkerCleanupPrefixStateV1::authorization_canonical_only,
+                .authorization = *authorization_record,
+                .authorization_bytes = authorization_bytes,
+            });
+        } else {
+            auto successor_target =
+                std::find_if(successor_prefix.coordinates.begin(),
+                             successor_prefix.coordinates.end(), [&](const auto& coordinate) {
+                                 return coordinate.manifest_order_ordinal == *target_ordinal;
+                             });
+            if (successor_target == successor_prefix.coordinates.end() ||
+                successor_target != std::prev(successor_prefix.coordinates.end())) {
+                diagnostic.status = AuthorizationPublicationStatus::authorization_target_invalid;
+                diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+                return retry_input_or_cold(std::move(diagnostic));
+            }
+            if (diagnostic.target_shape ==
+                AuthorizationPublicationTargetShape::authorization_pending_only) {
+                if (leaf_count(names->authorization_canonical_record_leaf) != 0U ||
+                    leaf_count(names->authorization_pending_record_leaf) != 1U ||
+                    !recovered_from_live.has_value()) {
+                    diagnostic.status =
+                        AuthorizationPublicationStatus::authorization_target_invalid;
+                    diagnostic.native_error =
+                        std::make_error_code(std::errc::state_not_recoverable);
+                    return retry_input_or_cold(std::move(diagnostic));
+                }
+                *std::find(cleanup_leaves.begin(), cleanup_leaves.end(),
+                           names->authorization_pending_record_leaf) =
+                    names->authorization_canonical_record_leaf;
+            } else if (diagnostic.target_shape ==
+                       AuthorizationPublicationTargetShape::authorization_identical_dual) {
+                if (leaf_count(names->authorization_canonical_record_leaf) != 1U ||
+                    leaf_count(names->authorization_pending_record_leaf) != 1U) {
+                    diagnostic.status =
+                        AuthorizationPublicationStatus::authorization_target_invalid;
+                    diagnostic.native_error =
+                        std::make_error_code(std::errc::state_not_recoverable);
+                    return retry_input_or_cold(std::move(diagnostic));
+                }
+                cleanup_leaves.erase(std::find(cleanup_leaves.begin(), cleanup_leaves.end(),
+                                               names->authorization_pending_record_leaf));
+            } else if (leaf_count(names->authorization_canonical_record_leaf) != 1U ||
+                       leaf_count(names->authorization_pending_record_leaf) != 0U) {
+                diagnostic.status = AuthorizationPublicationStatus::authorization_target_invalid;
+                diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+                return retry_input_or_cold(std::move(diagnostic));
+            }
+            successor_target->state =
+                wave::DistributedSieveWorkerCleanupPrefixStateV1::authorization_canonical_only;
+            successor_target->authorization = *authorization_record;
+            successor_target->authorization_bytes = authorization_bytes;
+            successor_target->authorization_canonical_snapshot = expected_existing_snapshot;
+            successor_target->authorization_pending_snapshot.reset();
+        }
+        std::sort(cleanup_leaves.begin(), cleanup_leaves.end());
+        successor_prefix.frontier_manifest_order_ordinal = target_ordinal;
+        successor_prefix.active_manifest_order_ordinal = target_ordinal;
+
+        if (recovered_from_live.has_value()) {
+            const auto& target_handoff = recovered_from_live->typed_handoff.handoff;
+            auto& live_workers = successor_state->observation.worker_prefixes;
+            const auto live =
+                std::find_if(live_workers.begin(), live_workers.end(), [&](const auto& worker) {
+                    return worker.typed_handoff.handoff.self_digest == target_handoff.self_digest;
+                });
+            if (live == live_workers.end()) {
+                diagnostic.status = AuthorizationPublicationStatus::authorization_target_invalid;
+                diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+                return retry_input_or_cold(std::move(diagnostic));
+            }
+            live_workers.erase(live);
+            auto& recovered_workers = successor_state->observation.cleanup_recovered_workers;
+            recovered_workers.push_back(std::move(*recovered_from_live));
+            std::sort(recovered_workers.begin(), recovered_workers.end(),
+                      [](const auto& left, const auto& right) {
+                          return left.manifest_slot < right.manifest_slot;
+                      });
+        }
+
+        const auto successor_target =
+            std::find_if(successor_prefix.coordinates.begin(), successor_prefix.coordinates.end(),
+                         [&](const auto& coordinate) {
+                             return coordinate.manifest_order_ordinal == *target_ordinal;
+                         });
+        if (successor_target == successor_prefix.coordinates.end() ||
+            successor_target != std::prev(successor_prefix.coordinates.end()) ||
+            successor_target->state !=
+                wave::DistributedSieveWorkerCleanupPrefixStateV1::authorization_canonical_only ||
+            successor_target->completion.has_value() ||
+            std::any_of(successor_prefix.coordinates.begin(), successor_target,
+                        [](const auto& coordinate) {
+                            return coordinate.state !=
+                                   wave::DistributedSieveWorkerCleanupPrefixStateV1::completed;
+                        })) {
+            diagnostic.status = AuthorizationPublicationStatus::authorization_target_invalid;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return retry_input_or_cold(std::move(diagnostic));
+        }
+
+        using ActiveAuthorizationState = wave::DistributedSieveExternalCleanupAuthorizationState;
+        std::vector<ActiveAuthorizationState::ExactRootLeafV1> cleanup_prefix_records;
+        cleanup_prefix_records.reserve(successor_prefix.coordinates.size() * 2U);
+        std::size_t target_placeholder_count = 0;
+        for (const auto& coordinate : successor_prefix.coordinates) {
+            const auto coordinate_names = wave::distributed_sieve_worker_cleanup_record_names_v1(
+                coordinate.manifest_order_ordinal);
+            const bool target_coordinate = coordinate.manifest_order_ordinal == *target_ordinal;
+            const bool authorization_snapshot_exact =
+                coordinate.authorization_canonical_snapshot.has_value() &&
+                authorization_publication_snapshot_is_exact(
+                    *coordinate.authorization_canonical_snapshot, coordinate.authorization_bytes);
+            if (!coordinate_names.has_value() || coordinate.authorization_bytes.empty() ||
+                coordinate.authorization_pending_snapshot.has_value() ||
+                (!target_coordinate &&
+                 (coordinate.state != wave::DistributedSieveWorkerCleanupPrefixStateV1::completed ||
+                  !authorization_snapshot_exact)) ||
+                (target_coordinate &&
+                 (coordinate.state != wave::DistributedSieveWorkerCleanupPrefixStateV1::
+                                          authorization_canonical_only ||
+                  coordinate.completion.has_value() ||
+                  (!authorization_snapshot_exact &&
+                   diagnostic.target_shape != AuthorizationPublicationTargetShape::absent)))) {
+                diagnostic.status = AuthorizationPublicationStatus::authorization_target_invalid;
+                diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+                return retry_input_or_cold(std::move(diagnostic));
+            }
+            if (target_coordinate && !authorization_snapshot_exact) {
+                ++target_placeholder_count;
+            }
+            cleanup_prefix_records.push_back({
+                .leaf = coordinate_names->authorization_canonical_record_leaf,
+                .bytes = coordinate.authorization_bytes,
+                .snapshot = coordinate.authorization_canonical_snapshot.value_or(
+                    durable_record::RecordSnapshot{}),
+            });
+            if (target_coordinate) {
+                continue;
+            }
+            if (!coordinate.completion.has_value() || coordinate.completion_bytes.empty() ||
+                !coordinate.completion_canonical_snapshot.has_value() ||
+                coordinate.completion_pending_snapshot.has_value() ||
+                !authorization_publication_snapshot_is_exact(
+                    *coordinate.completion_canonical_snapshot, coordinate.completion_bytes)) {
+                diagnostic.status = AuthorizationPublicationStatus::authorization_target_invalid;
+                diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+                return retry_input_or_cold(std::move(diagnostic));
+            }
+            cleanup_prefix_records.push_back({
+                .leaf = coordinate_names->completion_canonical_record_leaf,
+                .bytes = coordinate.completion_bytes,
+                .snapshot = *coordinate.completion_canonical_snapshot,
+            });
+        }
+        std::sort(cleanup_prefix_records.begin(), cleanup_prefix_records.end(),
+                  [](const auto& left, const auto& right) { return left.leaf < right.leaf; });
+        const std::size_t expected_placeholder_count =
+            diagnostic.target_shape == AuthorizationPublicationTargetShape::absent ? 1U : 0U;
+        if (cleanup_prefix_records.size() != cleanup_leaves.size() ||
+            target_placeholder_count != expected_placeholder_count) {
+            diagnostic.status = AuthorizationPublicationStatus::authorization_target_invalid;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return retry_input_or_cold(std::move(diagnostic));
+        }
+        for (std::size_t index = 0; index < cleanup_prefix_records.size(); ++index) {
+            if (cleanup_prefix_records[index].leaf != cleanup_leaves[index]) {
+                diagnostic.status = AuthorizationPublicationStatus::authorization_target_invalid;
+                diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+                return retry_input_or_cold(std::move(diagnostic));
+            }
+        }
+        const auto& commit_record = successor_state->observation.commit_record;
+        if (!commit_record.canonical_snapshot.has_value() ||
+            commit_record.pending_snapshot.has_value() || commit_record.bytes.empty() ||
+            !authorization_publication_snapshot_is_exact(*commit_record.canonical_snapshot,
+                                                         commit_record.bytes)) {
+            diagnostic.status = AuthorizationPublicationStatus::authorization_target_invalid;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return retry_input_or_cold(std::move(diagnostic));
+        }
+        auto preallocated_active =
+            std::shared_ptr<ActiveAuthorizationState>(new ActiveAuthorizationState(
+                retained_store.state_, commit_record.bytes, *commit_record.canonical_snapshot,
+                commit_record.record.self_digest, *target_ordinal, *authorization_record,
+                std::move(cleanup_prefix_records)));
+        successor_state->active_cleanup_authorization = preallocated_active;
+
+        diagnostic.phase = AuthorizationPublicationPhase::authority_spend;
+        const auto before_spend = fresh_path
+                                      ? AuthorizationPublicationFault::FreshBeforeAuthoritySpend
+                                      : AuthorizationPublicationFault::ColdBeforeAuthoritySpend;
+        if (invoke_authorization_publication_hook(hooks, before_spend, diagnostic)) {
+            diagnostic.status = input_retry_status();
+            diagnostic.native_error.clear();
+            return retry_input_or_cold(std::move(diagnostic));
+        }
+        if ((fresh_path && !fresh->valid()) || (recovery_path && !recovery->valid())) {
+            diagnostic.status = AuthorizationPublicationStatus::baseline_changed;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return retry_input_or_cold(std::move(diagnostic));
+        }
+        if (auto checked = authority_valid();
+            checked.status != wave::DistributedSieveWaveStoreStatus::ready) {
+            return fail_wave(AuthorizationPublicationPhase::authority_spend,
+                             AuthorizationPublicationStatus::baseline_changed, std::move(checked),
+                             true);
+        }
+
+        auto* const expected_store = retained_state.store.get();
+        auto* const expected_reader = retained_state.merged_reader.get();
+        std::optional<AuthorizationRoot> spent_root;
+        if (fresh_path) {
+            spent_root.emplace(std::move(fresh->root_));
+        } else {
+            spent_root.emplace(std::move(*recovery));
+        }
+        authority_spent = true;
+        diagnostic.authority_spent = true;
+        if (fresh_path &&
+            invoke_authorization_publication_hook(
+                hooks, AuthorizationPublicationFault::FreshAfterAuthoritySpend, diagnostic)) {
+            diagnostic.status = AuthorizationPublicationStatus::test_interrupted;
+            diagnostic.native_error = std::make_error_code(std::errc::operation_canceled);
+            return cold_reopen(std::move(diagnostic));
+        }
+
+        diagnostic.phase = AuthorizationPublicationPhase::record_publication;
+        diagnostic.publication_started = true;
+        AuthorizationPublicationDurableHookContext durable_hook_context{
+            .hooks = hooks,
+            .diagnostic = std::addressof(diagnostic),
+        };
+        const auto published = durable_record::publish_at(
+            wave::WorkerCleanupRootRevalidatorAuthorityV1::root_fd(retained_store),
+            names->authorization_pending_record_leaf, names->authorization_canonical_record_leaf,
+            authorization_bytes,
+            durable_record::RecordTestHooks{
+                .stop_after = authorization_publication_durable_stop_after,
+                .context = std::addressof(durable_hook_context),
+            });
+        diagnostic.publication_status = published.status();
+        diagnostic.publication_disposition = published.disposition();
+        diagnostic.native_error = published.native_error();
+        if (!published.is_durable()) {
+            if (published.status() == durable_record::RecordPublishStatus::interrupted) {
+                diagnostic.status = AuthorizationPublicationStatus::test_interrupted;
+                if (!diagnostic.native_error) {
+                    diagnostic.native_error = std::make_error_code(std::errc::operation_canceled);
+                }
+            } else if (published.status() ==
+                       durable_record::RecordPublishStatus::platform_unsupported) {
+                diagnostic.status = AuthorizationPublicationStatus::platform_unsupported;
+            } else if (published.native_error() ==
+                       std::make_error_code(std::errc::not_enough_memory)) {
+                diagnostic.status = AuthorizationPublicationStatus::resource_exhausted;
+            } else if (published.status() ==
+                       durable_record::RecordPublishStatus::unexpected_failure) {
+                diagnostic.status = AuthorizationPublicationStatus::unexpected_failure;
+            } else {
+                diagnostic.status = AuthorizationPublicationStatus::publication_failed;
+            }
+            return cold_reopen(std::move(diagnostic));
+        }
+        if (published.disposition() != expected_publication_disposition ||
+            !published.canonical_snapshot().has_value() ||
+            !authorization_publication_snapshot_is_exact(*published.canonical_snapshot(),
+                                                         authorization_bytes) ||
+            (expected_existing_snapshot.has_value() &&
+             *published.canonical_snapshot() != *expected_existing_snapshot)) {
+            diagnostic.status = AuthorizationPublicationStatus::publication_disposition_mismatch;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return cold_reopen(std::move(diagnostic));
+        }
+        const durable_record::RecordSnapshot canonical_snapshot = *published.canonical_snapshot();
+        successor_target->authorization_canonical_snapshot = canonical_snapshot;
+        const auto active_target_count = static_cast<std::size_t>(std::count_if(
+            preallocated_active->cleanup_prefix_records_.begin(),
+            preallocated_active->cleanup_prefix_records_.end(), [&](const auto& record) {
+                return record.leaf == names->authorization_canonical_record_leaf;
+            }));
+        const auto active_target = std::find_if(
+            preallocated_active->cleanup_prefix_records_.begin(),
+            preallocated_active->cleanup_prefix_records_.end(), [&](const auto& record) {
+                return record.leaf == names->authorization_canonical_record_leaf;
+            });
+        if (active_target_count != 1U ||
+            active_target == preallocated_active->cleanup_prefix_records_.end() ||
+            active_target->bytes != authorization_bytes ||
+            (expected_existing_snapshot.has_value() &&
+             active_target->snapshot != *expected_existing_snapshot)) {
+            diagnostic.status = AuthorizationPublicationStatus::successor_mismatch;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return cold_reopen(std::move(diagnostic));
+        }
+        active_target->snapshot = canonical_snapshot;
+
+        diagnostic.phase = AuthorizationPublicationPhase::successor_observation;
+        if (auto checked = authority_valid();
+            checked.status != wave::DistributedSieveWaveStoreStatus::ready) {
+            return fail_wave(AuthorizationPublicationPhase::successor_observation,
+                             AuthorizationPublicationStatus::successor_observation_failed,
+                             std::move(checked), false);
+        }
+        auto first_successor = observe();
+        if (!first_successor || !first_successor.observation.has_value()) {
+            return fail_wave(AuthorizationPublicationPhase::successor_observation,
+                             AuthorizationPublicationStatus::successor_observation_failed,
+                             std::move(first_successor.diagnostic), false);
+        }
+        if (*first_successor.observation != successor_state->observation) {
+            diagnostic.status = AuthorizationPublicationStatus::successor_mismatch;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return cold_reopen(std::move(diagnostic));
+        }
+        if (invoke_authorization_publication_hook(
+                hooks, AuthorizationPublicationFault::AfterFirstSuccessorObservation, diagnostic)) {
+            diagnostic.status = AuthorizationPublicationStatus::test_interrupted;
+            diagnostic.native_error = std::make_error_code(std::errc::operation_canceled);
+            return cold_reopen(std::move(diagnostic));
+        }
+        if (auto checked = authority_valid();
+            checked.status != wave::DistributedSieveWaveStoreStatus::ready) {
+            return fail_wave(AuthorizationPublicationPhase::successor_observation,
+                             AuthorizationPublicationStatus::successor_observation_failed,
+                             std::move(checked), false);
+        }
+        auto second_successor = observe();
+        if (!second_successor || !second_successor.observation.has_value()) {
+            return fail_wave(AuthorizationPublicationPhase::successor_observation,
+                             AuthorizationPublicationStatus::successor_observation_failed,
+                             std::move(second_successor.diagnostic), false);
+        }
+        if (*first_successor.observation != *second_successor.observation ||
+            *second_successor.observation != successor_state->observation) {
+            diagnostic.status = AuthorizationPublicationStatus::successor_mismatch;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return cold_reopen(std::move(diagnostic));
+        }
+        if (auto checked = authority_valid();
+            checked.status != wave::DistributedSieveWaveStoreStatus::ready) {
+            return fail_wave(AuthorizationPublicationPhase::successor_observation,
+                             AuthorizationPublicationStatus::successor_observation_failed,
+                             std::move(checked), false);
+        }
+        if (!retained_state.merged_reader->valid()) {
+            diagnostic.status = AuthorizationPublicationStatus::successor_mismatch;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return cold_reopen(std::move(diagnostic));
+        }
+
+        diagnostic.phase = AuthorizationPublicationPhase::root_refresh;
+        successor_state->store = std::move(retained_state.store);
+        successor_state->merged_reader = std::move(retained_state.merged_reader);
+        if (successor_state->store.get() != expected_store ||
+            successor_state->merged_reader.get() != expected_reader) {
+            diagnostic.status = AuthorizationPublicationStatus::root_refresh_failed;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return cold_reopen(std::move(diagnostic));
+        }
+        AuthorizationRoot refreshed_root(std::move(successor_state));
+        if (!refreshed_root.valid()) {
+            diagnostic.status = AuthorizationPublicationStatus::root_refresh_failed;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return cold_reopen(std::move(diagnostic));
+        }
+
+        diagnostic.phase = AuthorizationPublicationPhase::continuation_construction;
+        AuthorizationPublicationContinuation sealed(
+            *target_ordinal, expected_process_id, std::move(refreshed_root),
+            std::move(continuation_bytes), canonical_snapshot, authorization_digest);
+        if (!sealed.valid()) {
+            diagnostic.status = AuthorizationPublicationStatus::root_refresh_failed;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return cold_reopen(std::move(diagnostic));
+        }
+        std::optional<AuthorizationPublicationContinuation> continuation;
+        continuation.emplace(std::move(sealed));
+        diagnostic.phase = AuthorizationPublicationPhase::complete;
+        diagnostic.status = AuthorizationPublicationStatus::authorization_published;
+        diagnostic.disposition = AuthorizationPublicationDisposition::authorization_published;
+        diagnostic.native_error.clear();
+        diagnostic.wave_store = {};
+        return AuthorizationPublicationResult(std::nullopt, std::nullopt, std::nullopt,
+                                              std::move(continuation), std::nullopt,
+                                              std::move(diagnostic));
+    } catch (const std::bad_alloc&) {
+        diagnostic.status = AuthorizationPublicationStatus::resource_exhausted;
+        diagnostic.native_error = std::make_error_code(std::errc::not_enough_memory);
+    } catch (const std::filesystem::filesystem_error& error) {
+        diagnostic.status = AuthorizationPublicationStatus::unexpected_failure;
+        diagnostic.native_error = error.code();
+    } catch (...) {
+        diagnostic.status = AuthorizationPublicationStatus::unexpected_failure;
         diagnostic.native_error = std::make_error_code(std::errc::io_error);
     }
     diagnostic.authority_spent = diagnostic.authority_spent || authority_spent;

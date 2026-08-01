@@ -320,20 +320,47 @@ inline void publish_canonical_record(const std::filesystem::path& root,
     GNFS_WAVE_COMMIT_FIXTURE_CHECK(published.canonical_snapshot().has_value());
 }
 
-[[nodiscard]] inline sieve::WaveManifestV1 manifest_draft() {
+enum class PreparedWaveChunkLayoutV1 : std::uint8_t {
+    nonempty_nonempty_empty,
+    nonempty_empty_nonempty_empty,
+    nonempty_empty_nonempty_nonempty_empty,
+};
+
+[[nodiscard]] inline std::vector<std::pair<std::uint32_t, std::uint32_t>>
+prepared_wave_chunk_ranges(PreparedWaveChunkLayoutV1 layout) {
+    switch (layout) {
+    case PreparedWaveChunkLayoutV1::nonempty_nonempty_empty:
+        return {{2, 3}, {3, 4}, {4, 4}};
+    case PreparedWaveChunkLayoutV1::nonempty_empty_nonempty_empty:
+        return {{2, 3}, {3, 3}, {3, 4}, {4, 4}};
+    case PreparedWaveChunkLayoutV1::nonempty_empty_nonempty_nonempty_empty:
+        return {{2, 3}, {3, 3}, {3, 4}, {4, 5}, {5, 5}};
+    }
+    throw FixtureFailure("unknown prepared-wave chunk layout");
+}
+
+[[nodiscard]] inline sieve::WaveManifestV1 manifest_draft(PreparedWaveChunkLayoutV1 layout) {
     sieve::WaveManifestV1 manifest;
     manifest.wave_id = wave_id_with_seed(1);
     manifest.execution_contract_version = 1;
     manifest.executable_sha256 = digest_with_seed(2);
     manifest.work_sha256 = digest_with_seed(3);
-    manifest.effective_sq_begin = 2;
-    manifest.effective_sq_end = 4;
-    manifest.worker_count = 3;
-    manifest.chunks = {
-        sieve::ChunkPlanV1{0, 2, 3, "commit_chunk_0"},
-        sieve::ChunkPlanV1{1, 3, 4, "commit_chunk_1"},
-        sieve::ChunkPlanV1{2, 4, 4, "commit_chunk_2"},
-    };
+    const auto ranges = prepared_wave_chunk_ranges(layout);
+    GNFS_WAVE_COMMIT_FIXTURE_CHECK(!ranges.empty());
+    manifest.effective_sq_begin = ranges.front().first;
+    manifest.effective_sq_end = ranges.back().second;
+    manifest.worker_count = static_cast<std::uint32_t>(ranges.size());
+    manifest.chunks.reserve(ranges.size());
+    for (std::size_t index = 0; index < ranges.size(); ++index) {
+        GNFS_WAVE_COMMIT_FIXTURE_CHECK(
+            index <= static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()));
+        manifest.chunks.push_back(sieve::ChunkPlanV1{
+            static_cast<std::uint32_t>(index),
+            ranges[index].first,
+            ranges[index].second,
+            "commit_chunk_" + std::to_string(index),
+        });
+    }
     manifest.sq_cap_per_worker = 10;
     manifest.relation_cap_per_worker = 100;
     manifest.max_worker_attempts = 2;
@@ -349,6 +376,24 @@ inline void publish_canonical_record(const std::filesystem::path& root,
     manifest.digest_version = 1;
     manifest.merge_policy_version = 1;
     return manifest;
+}
+
+[[nodiscard]] inline sieve::WaveManifestV1 manifest_draft() {
+    return manifest_draft(PreparedWaveChunkLayoutV1::nonempty_nonempty_empty);
+}
+
+[[nodiscard]] inline std::vector<std::vector<Relation>>
+worker_rows_for_layout(PreparedWaveChunkLayoutV1 layout) {
+    const auto manifest = manifest_draft(layout);
+    std::vector<std::vector<Relation>> rows(manifest.chunks.size());
+    GNFS_WAVE_COMMIT_FIXTURE_CHECK(!manifest.chunks.empty());
+    GNFS_WAVE_COMMIT_FIXTURE_CHECK(manifest.chunks.front().sq_begin <
+                                   manifest.chunks.front().sq_end);
+    rows.front() = {
+        make_relation(11, 13, 10),
+        make_relation(-41, 43, 40),
+    };
+    return rows;
 }
 
 [[nodiscard]] inline sieve::LeaseIdentityV1
@@ -521,10 +566,11 @@ struct WorkerArtifactSnapshot final {
 class PreparedWaveFixture final {
 public:
     explicit PreparedWaveFixture(std::string_view label)
-        : root_(temp_.path() / std::string(label)),
-          worker_rows_{std::vector<Relation>{make_relation(11, 13, 10), make_relation(-41, 43, 40)},
-                       std::vector<Relation>{}},
-          opened_(wave::DistributedSieveWaveStore::create(root_, manifest_draft())) {
+        : PreparedWaveFixture(label, PreparedWaveChunkLayoutV1::nonempty_nonempty_empty) {}
+
+    PreparedWaveFixture(std::string_view label, PreparedWaveChunkLayoutV1 layout)
+        : root_(temp_.path() / std::string(label)), worker_rows_(worker_rows_for_layout(layout)),
+          opened_(wave::DistributedSieveWaveStore::create(root_, manifest_draft(layout))) {
         if (!opened_ || opened_.store == nullptr) {
             fail("create WaveMergeCommit WaveStore", __LINE__,
                  wave_diagnostic_detail(opened_.diagnostic));
@@ -569,17 +615,23 @@ public:
         }
         GNFS_WAVE_COMMIT_FIXTURE_CHECK(merge_admission.started_receipt() != nullptr);
         merge_started_ = merge_admission.started_receipt()->record();
-        GNFS_WAVE_COMMIT_FIXTURE_CHECK(merge_started_->ordered_inputs.size() == 3U);
-        GNFS_WAVE_COMMIT_FIXTURE_CHECK(merge_started_->ordered_inputs[0].disposition ==
-                                       sieve::ChunkDispositionV1::handoff);
-        GNFS_WAVE_COMMIT_FIXTURE_CHECK(merge_started_->ordered_inputs[0].raw_relation_count ==
-                                       worker_rows_[0].size());
-        GNFS_WAVE_COMMIT_FIXTURE_CHECK(merge_started_->ordered_inputs[1].disposition ==
-                                       sieve::ChunkDispositionV1::handoff);
-        GNFS_WAVE_COMMIT_FIXTURE_CHECK(merge_started_->ordered_inputs[1].completion_reason ==
-                                       sieve::WorkerCompletionReasonV1::zero_relations);
-        GNFS_WAVE_COMMIT_FIXTURE_CHECK(merge_started_->ordered_inputs[2].disposition ==
-                                       sieve::ChunkDispositionV1::empty);
+        GNFS_WAVE_COMMIT_FIXTURE_CHECK(merge_started_->ordered_inputs.size() ==
+                                       worker_rows_.size());
+        for (std::size_t index = 0; index < manifest_->chunks.size(); ++index) {
+            const auto& chunk = manifest_->chunks[index];
+            const auto& input = merge_started_->ordered_inputs[index];
+            if (chunk.sq_begin == chunk.sq_end) {
+                GNFS_WAVE_COMMIT_FIXTURE_CHECK(input.disposition ==
+                                               sieve::ChunkDispositionV1::empty);
+                continue;
+            }
+            GNFS_WAVE_COMMIT_FIXTURE_CHECK(input.disposition == sieve::ChunkDispositionV1::handoff);
+            GNFS_WAVE_COMMIT_FIXTURE_CHECK(input.raw_relation_count == worker_rows_[index].size());
+            GNFS_WAVE_COMMIT_FIXTURE_CHECK(
+                input.completion_reason ==
+                (worker_rows_[index].empty() ? sieve::WorkerCompletionReasonV1::zero_relations
+                                             : sieve::WorkerCompletionReasonV1::range_exhausted));
+        }
 
         auto adopted =
             authority::consume_distributed_sieve_merge_generation_v1(std::move(merge_admission));
@@ -595,18 +647,19 @@ public:
         }
         GNFS_WAVE_COMMIT_FIXTURE_CHECK(published.admission->valid());
         GNFS_WAVE_COMMIT_FIXTURE_CHECK(published.admission->record().input_relation_count ==
-                                       worker_rows_[0].size());
+                                       expected_rows().size());
         GNFS_WAVE_COMMIT_FIXTURE_CHECK(published.admission->record().duplicate_relation_count ==
                                        0U);
         GNFS_WAVE_COMMIT_FIXTURE_CHECK(published.admission->record().output_relation_count ==
-                                       worker_rows_[0].size());
+                                       expected_rows().size());
         return published;
     }
 
     [[nodiscard]] WorkerArtifactSnapshot worker_snapshot(std::size_t index) const {
         GNFS_WAVE_COMMIT_FIXTURE_CHECK(manifest_.has_value());
-        GNFS_WAVE_COMMIT_FIXTURE_CHECK(index < 2U);
+        GNFS_WAVE_COMMIT_FIXTURE_CHECK(index < manifest_->chunks.size());
         const auto& chunk = manifest_->chunks[index];
+        GNFS_WAVE_COMMIT_FIXTURE_CHECK(chunk.sq_begin < chunk.sq_end);
         const auto names = wave::distributed_sieve_worker_attempt_names_v1(
             chunk.relative_artifact_stem, chunk.chunk_id, 0);
         GNFS_WAVE_COMMIT_FIXTURE_CHECK(names.has_value());
@@ -636,12 +689,21 @@ private:
     [[nodiscard]] CoordinatorResult take_worker_result() {
         GNFS_WAVE_COMMIT_FIXTURE_CHECK(opened_.store != nullptr);
         auto& store = *opened_.store;
-        std::array<std::optional<wave::DistributedSieveAdoptedWorkerChunkV1>, 2> adopted;
+        std::vector<std::optional<wave::DistributedSieveAdoptedWorkerChunkV1>> adopted(
+            store.manifest().chunks.size());
         for (std::size_t index = 0; index < adopted.size(); ++index) {
+            const auto& chunk = store.manifest().chunks[index];
+            if (chunk.sq_begin == chunk.sq_end) {
+                continue;
+            }
             publish_worker_handoff(store, root_, store.manifest().chunks[index],
                                    worker_rows_[index]);
         }
         for (std::size_t index = 0; index < adopted.size(); ++index) {
+            const auto& chunk = store.manifest().chunks[index];
+            if (chunk.sq_begin == chunk.sq_end) {
+                continue;
+            }
             auto result = store.adopt_worker_handoff_v1(store.manifest().chunks[index].chunk_id);
             if (!result || !result.adopted.has_value()) {
                 fail("adopt real worker handoff", __LINE__,
@@ -664,7 +726,7 @@ private:
             result.chunks.emplace_back();
             auto& coordinated = result.chunks.back();
             coordinated.chunk = store.manifest().chunks[index];
-            if (index == adopted.size()) {
+            if (!adopted[index].has_value()) {
                 GNFS_WAVE_COMMIT_FIXTURE_CHECK(coordinated.chunk.sq_begin ==
                                                coordinated.chunk.sq_end);
                 coordinated.disposition =
@@ -685,7 +747,7 @@ private:
 
     TempDirectory temp_;
     std::filesystem::path root_;
-    std::array<std::vector<Relation>, 2> worker_rows_;
+    std::vector<std::vector<Relation>> worker_rows_;
     wave::DistributedSieveWaveStoreOpenResult opened_;
     std::optional<sieve::WaveManifestV1> manifest_;
     std::optional<sieve::MergeStartedV1> merge_started_;

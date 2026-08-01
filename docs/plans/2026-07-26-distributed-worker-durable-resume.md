@@ -3029,6 +3029,11 @@ M4b restart recovery is split into explicit authority milestones:
   corpus.
 - [x] M4b-P4c-R2 publishes or recovers the exact completion, refreshes the
   cleanup-root admission, and advances at most one manifest-order frontier.
+- [x] M4b-P4c-R3 publishes or recovers exactly one classifier-selected worker
+  authorization and seals either an R1-ready or all-workers-complete
+  continuation.
+- [ ] M4b-P4c-R4 composes the typed R3 -> R1 -> R2 transitions without adding
+  mutation authority and exposes only a retained, non-armable merged result.
 
 M4a completes the source-private merge-generation namespace, exact P0-P8
 reservation, bounded `MergeStartedV1` publication and normalization, reverse
@@ -3900,3 +3905,142 @@ SHA-256 is
 `clang-format --dry-run --Werror`, the Harness checker, the Markdown-link
 checker, Python bytecode compilation, `git diff --check`, and the added-line
 machine-path and credential scans also pass.
+
+## M4b-P4c-R3 Execution Plan: 2026-08-01
+
+R3 advances worker cleanup by exactly one authorization boundary. It neither
+loops over workers nor publishes a completion. The fresh entry consumes the
+whole R2 completion-published continuation; the cold entry consumes one
+cleanup-root admission. Both are rvalue-only. A pre-publication failure may
+return the original typed input, while any failure after logical spend or the
+first immutable-record operation owns no old authority and requires a cold
+reopen.
+
+The result is a closed ownership union. A successful nonterminal step returns
+one sealed authorization-published continuation. It privately owns the
+refreshed root admission, exact authorization ordinal, digest, bytes, and
+canonical snapshot, and publicly exposes only validity and immutable identity
+facts. Production R1 must consume that whole continuation; its current raw
+root entry becomes a trusted-test seam. A terminal step returns a separate
+sealed all-workers-complete continuation that retains the same store, merged
+reader, and `WaveLock` but exposes no reader, path, descriptor, receipt, or
+cleanup operation.
+
+The allowed cold-state matrix is exact:
+
+- no active coordinate plus a classifier frontier creates its authorization
+  and accepts only `created`;
+- authorization pending-only accepts only `recovered_pending`;
+- authorization canonical-only or identical dual accepts only
+  `confirmed_existing`;
+- completion pending-only or identical dual performs zero mutation and returns
+  the cold root for R2 reconciliation;
+- no active coordinate and no frontier seals the terminal continuation only
+  when every nonempty worker is canonically completed.
+
+Cold creation is required both for the first worker and for a crash after one
+completion becomes durable but before the next authorization is published.
+The target ordinal always comes directly from
+`frontier_manifest_order_ordinal`; R3 never derives `previous + 1` and never
+scans around the classifier, so intermediate and trailing empty chunks retain
+their existing manifest semantics.
+
+For an absent or pending authorization, the exact live source is the unique
+retained worker prefix at the frontier. R3 reuses the existing authorization
+codec with its typed handoff, private-handoff record and canonical snapshot,
+BaseLock identity, and OWNED-marker identity. For a canonical or identical
+dual authorization, it instead validates the exact active coordinate and the
+recovered-worker projection because the generic live handoff may already be
+gone. No new protocol schema or caller-built authorization is introduced.
+
+The single-step transaction double-observes the baseline under the retained
+`WaveLock`, prepares all successor state before spend, performs exactly one
+immutable authorization publication, and double-observes the exact successor.
+The only permitted successor changes are normalization of the target
+authorization, movement of that worker from the live to recovered projection,
+and setting `active == frontier == target`; the completed-worker count and all
+other root, worker, merge, manifest, and merged-corpus witnesses remain exact.
+The refreshed root moves the same store and merged reader, then reconstructs
+the source-private active-authorization state from the complete sorted cleanup
+prefix. Missing even one predecessor authorization or completion leaf is a
+closed failure because R1's future root-only receipt must freeze the whole
+generation.
+
+The shared real merge fixture gains an explicit chunk-range layout overload
+while preserving its current `[nonempty, nonempty, empty]` default byte for
+byte. R3 receives a separate slow test binary with `core`,
+`publication-crash`, and `protection` shards. Its route cases include
+`[nonempty, empty, nonempty, empty]` and
+`[nonempty, empty, nonempty, nonempty, empty]`; crash cases cover all three
+durable record stops and cold replay; protection covers replacement, baseline
+and successor drift, fork, moved authority, continuous `WaveLock`, released
+BaseLocks, and zero second-frontier publication. The binary is registered in
+CMake, the project test catalog, changed-module routing, and the macOS
+targeted CI step, but not in smoke.
+
+The R3 policy checker starts with twelve focused mutations. It freezes both
+rvalue-only entries, the absent/P/C/CP disposition map, returned canonical
+snapshots, classifier-only target selection, exactly one builder and one
+publisher call, complete active-state prefix reconstruction, same
+store/reader/`WaveLock` refresh, and the no-old-authority post-spend rule. It
+also rejects any completion publication, merged cleanup, consumption ACK,
+successor preparation, worker launch, or `WaveCompletedV1` symbol in the R3
+transaction. Multi-worker orchestration and the retained public relation view
+remain R4; every M5 record and cleanup arm remains outside both slices.
+
+## M4b-P4c-R3 Implementation Report: 2026-08-02
+
+R3 now advances exactly one classifier-selected worker authorization from
+either the sealed R2 completion-published continuation or a cold cleanup-root
+admission. An absent target accepts only `created`, pending-only accepts only
+`recovered_pending`, and canonical-only or an identical dual accepts only
+`confirmed_existing`. Completion pending-only and identical dual are
+zero-mutation routes to R2 reconciliation, while a root with no remaining
+frontier seals the all-workers-complete continuation without publishing a
+record.
+
+Both success continuations retain the same WaveStore, merged reader, and
+`WaveLock`. The nonterminal continuation also freezes the exact authorization
+ordinal, digest, bytes, snapshot, and complete sorted cleanup prefix. Production
+R1 consumes that whole value; its raw-root entry remains a trusted-test seam.
+All potentially throwing successor construction precedes logical spend, and a
+post-spend failure returns no old authority. R3 neither launches a worker nor
+publishes a completion, successor, ACK, merged cleanup record, or
+`WaveCompletedV1`.
+
+The shared fixture now supports explicit chunk layouts without changing its
+existing default. The dedicated R3 binary covers `[N,E,N,E]` and
+`[N,E,N,N,E]`, all three authorization publication prefixes and durable crash
+stops, intermediate and trailing empty chunks, cold replay, same-byte
+replacement, baseline and successor drift, process binding, moved authority,
+continuous `WaveLock`, released worker `BaseLock` descriptions, exact merged
+corpus preservation, and zero second-frontier publication. Its `core`,
+`publication-crash`, and `protection` shards pass 3/3, 2/2, and 2/2; the
+aggregate passes 1/1. The prior worker-cleanup-tail aggregate also remains
+green.
+
+`./scripts/test.sh -t Release --no-color changed --deep` passes 76/76,
+including API deep-contract and GNFS E2E coverage, and
+`./scripts/test.sh -t Release --no-color gate` passes 183/183. The live test
+catalog includes the new slow target and its three 240-second shards. The R3
+policy focus rejects all twelve mutations; the legacy capsule and R1/R2/R3
+focused suites pass, the complete parser/table mutation self-test plus normal
+scan exits successfully, and an independent plain normal scan also exits
+successfully. The frozen checker SHA-256 is
+`b35560688b4e398269d3a8544668fe5380e48cd98dc5308b9caa1ad21982c730`.
+
+An independent authority review reports no P0/P1 finding and no actionable new
+P2. The accepted residual boundary remains a hostile same-UID actor rebuilding
+the namespace after final validation and before caller consumption. Existing
+continuation and R1 revalidation fail closed; fully closing that interval would
+require a retained private namespace action claim or `BaseLock` across the
+return boundary, which conflicts with the released-lock R3 contract and is not
+addressed by another read-only observation.
+
+`clang-format --dry-run --Werror`, Python bytecode compilation, the Harness
+checker, the Markdown-link checker, `git diff --check`, and added-line
+machine-path and credential scans pass. R4 will compose the sealed R3 -> R1 ->
+R2 transitions with a bounded, rvalue-only retry continuation and retain the
+terminal merged reader behind a non-armable read-only view. Public
+`DistributedSieveWaveResult`, consumption ACK, merged cleanup, and
+`WaveCompletedV1` remain later work.
