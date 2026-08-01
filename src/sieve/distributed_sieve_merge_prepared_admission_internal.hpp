@@ -28,6 +28,12 @@ class DistributedSieveWaveMergeCommitAuthorityV1;
 
 } // namespace gnfs::sieve::distributed_sieve_merge_commit_authority_detail
 
+namespace gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail {
+
+struct DistributedSieveCommittedTailCleanupTransitionV1;
+
+} // namespace gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail
+
 namespace gnfs::sieve::distributed_sieve_merge_writer_authority_detail {
 
 class DistributedSieveMergeWriterAuthorityV1;
@@ -196,6 +202,14 @@ public:
     canonical_snapshot() const noexcept {
         return canonical_snapshot_;
     }
+
+    /// Freeze every exact predecessor-generation root/record anchor, then
+    /// irreversibly release the old lock generation. A pre-release failure
+    /// leaves this tail untouched and retryable only while its authority still
+    /// validates; a failed final revalidation explicitly spends it.
+    [[nodiscard]] distributed_sieve_worker_cleanup_authority_detail::
+        DistributedSieveCommittedTailCleanupTransitionV1
+        release_for_worker_cleanup_cold_open_v1() && noexcept;
 
 private:
     DistributedSieveCommittedTailAdmissionV1(

@@ -1355,6 +1355,34 @@ struct DistributedSieveWorkerCleanupRootOpenTestHooksV1 final {
     void* context = nullptr;
 };
 
+/// Exact predecessor-generation anchor accepted only by the committed-tail
+/// cleanup bridge. The ordinary cleanup-root cold open deliberately supplies
+/// no anchor. Every identity and byte vector is copied before the old lock
+/// generation is released, then compared while the new WaveLock is held.
+struct DistributedSieveWorkerCleanupRootExactAnchorV1 final {
+    NativeIdentityV1 wave_root_identity;
+    NativeIdentityV1 permanent_lock_identity;
+    util::durable_immutable_record::RecordSnapshot manifest_snapshot;
+    std::vector<std::byte> manifest_bytes;
+    util::Sha256Digest manifest_digest;
+    util::durable_immutable_record::RecordSnapshot merge_commit_snapshot;
+    std::vector<std::byte> merge_commit_bytes;
+    util::Sha256Digest merge_commit_digest;
+
+    [[nodiscard]] friend bool
+    operator==(const DistributedSieveWorkerCleanupRootExactAnchorV1&,
+               const DistributedSieveWorkerCleanupRootExactAnchorV1&) = default;
+};
+
+struct DistributedSieveWorkerCleanupRootExactAnchorCaptureResultV1 final {
+    std::optional<DistributedSieveWorkerCleanupRootExactAnchorV1> anchor;
+    DistributedSieveWaveStoreDiagnostic diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return anchor.has_value() && diagnostic.status == DistributedSieveWaveStoreStatus::ready;
+    }
+};
+
 /// Read and decode exactly one reserved worker cleanup leaf. Merged
 /// coordinates, malformed aliases, role mismatches, and record replacement
 /// during the held/named observation fail closed.
@@ -1536,6 +1564,14 @@ public:
     [[nodiscard]] const util::durable_immutable_record::RecordSnapshot&
     manifest_snapshot() const noexcept;
 
+    /// Re-read and freeze the exact canonical manifest and WaveMergeCommit
+    /// leaves while this store still owns the predecessor WaveLock. The
+    /// returned value contains no descriptor or namespace capability.
+    [[nodiscard]] DistributedSieveWorkerCleanupRootExactAnchorCaptureResultV1
+    freeze_worker_cleanup_exact_anchor_v1(const WaveMergeCommitV1& expected_commit,
+                                          const util::durable_immutable_record::RecordSnapshot&
+                                              expected_commit_snapshot) const noexcept;
+
     /// Re-establish every held/named identity and immutable manifest binding.
     /// This operation never repairs or mutates the namespace. The optional
     /// source-private test hook runs between the two inventory snapshots.
@@ -1693,10 +1729,11 @@ private:
     friend class DistributedSieveChunkTerminalFailureAdmissionV1;
     friend class MergePreparedAdmissionRevalidatorAuthorityV1;
     friend class WorkerCleanupRootRevalidatorAuthorityV1;
-    friend DistributedSieveWorkerCleanupRootOpenResultV1
-    open_worker_cleanup_root_v1(const std::filesystem::path& absolute_root,
-                                const util::Sha256Digest& expected_manifest_digest,
-                                DistributedSieveWorkerCleanupRootOpenTestHooksV1 hooks) noexcept;
+    friend DistributedSieveWorkerCleanupRootOpenResultV1 open_worker_cleanup_root_v1(
+        const std::filesystem::path& absolute_root,
+        const util::Sha256Digest& expected_manifest_digest,
+        DistributedSieveWorkerCleanupRootOpenTestHooksV1 hooks,
+        const DistributedSieveWorkerCleanupRootExactAnchorV1* expected_anchor) noexcept;
     friend class ::gnfs::sieve::distributed_sieve_merge_commit_authority_detail::
         DistributedSieveWaveMergeCommitAuthorityV1;
     friend class ::gnfs::sieve::distributed_sieve_merge_writer_authority_detail::
@@ -1772,10 +1809,11 @@ private:
 
     std::unique_ptr<State> state_;
 
-    friend DistributedSieveWorkerCleanupRootOpenResultV1
-    open_worker_cleanup_root_v1(const std::filesystem::path& absolute_root,
-                                const util::Sha256Digest& expected_manifest_digest,
-                                DistributedSieveWorkerCleanupRootOpenTestHooksV1 hooks) noexcept;
+    friend DistributedSieveWorkerCleanupRootOpenResultV1 open_worker_cleanup_root_v1(
+        const std::filesystem::path& absolute_root,
+        const util::Sha256Digest& expected_manifest_digest,
+        DistributedSieveWorkerCleanupRootOpenTestHooksV1 hooks,
+        const DistributedSieveWorkerCleanupRootExactAnchorV1* expected_anchor) noexcept;
 };
 
 struct DistributedSieveWorkerCleanupRootOpenResultV1 final {
@@ -1806,10 +1844,10 @@ struct DistributedSieveWorkerCleanupRootOpenResultV1 final {
 /// cleanup records but deliberately does not classify authorization-bound
 /// relation T2b prefixes. It never repairs, publishes, resumes, or removes a
 /// record and is separate from ordinary `DistributedSieveWaveStore::open()`.
-[[nodiscard]] DistributedSieveWorkerCleanupRootOpenResultV1
-open_worker_cleanup_root_v1(const std::filesystem::path& absolute_root,
-                            const util::Sha256Digest& expected_manifest_digest,
-                            DistributedSieveWorkerCleanupRootOpenTestHooksV1 hooks = {}) noexcept;
+[[nodiscard]] DistributedSieveWorkerCleanupRootOpenResultV1 open_worker_cleanup_root_v1(
+    const std::filesystem::path& absolute_root, const util::Sha256Digest& expected_manifest_digest,
+    DistributedSieveWorkerCleanupRootOpenTestHooksV1 hooks = {},
+    const DistributedSieveWorkerCleanupRootExactAnchorV1* expected_anchor = nullptr) noexcept;
 
 enum class DistributedSieveWorkerChunkDurableStateV1 : std::uint8_t {
     empty,

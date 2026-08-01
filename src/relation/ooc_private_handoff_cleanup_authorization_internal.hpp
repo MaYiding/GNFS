@@ -11,11 +11,13 @@
 
 #include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>
 #include <utility>
+#include <vector>
 
 namespace gnfs::sieve::distributed_sieve_resume_detail {
 
@@ -36,6 +38,7 @@ class OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2;
 class OOCPrivateHandoffCleanupIntentConversionExecutorV2;
 class OOCPrivateHandoffCleanupIntentReconciliationExecutorV2;
 class OOCPrivateHandoffCleanupIntentPublicationTestKeyV2;
+class OOCPrivateLeaseRecoveryBorrowedBaseLockV1;
 class OOCPrivateHandoffCleanupResumeExecutorV2;
 class OOCPrivateHandoffCleanupResumeTestKeyV2;
 class OOCPrivateHandoffReadOnlyReleaseExecutorV1;
@@ -72,6 +75,104 @@ struct OOCPrivateHandoffCleanupAuthorizationBinding final {
     operator==(const OOCPrivateHandoffCleanupAuthorizationBinding&,
                const OOCPrivateHandoffCleanupAuthorizationBinding&) = default;
 };
+
+/// Complete structural state of one exact authorized-cleanup V2 prefix.
+///
+/// Every enumerator closes the presence/absence of every reserved marker,
+/// handoff, live artifact, and quarantined artifact covered by the witness.
+enum class OOCPrivateHandoffCleanupPrefixStateV2 : std::uint8_t {
+    LiveUnconverted,
+    IntentPendingOnly,
+    IntentCanonicalAndPending,
+    IntentCanonicalWithHandoff,
+    IntentCanonicalWithLivePair,
+    IntentCanonicalWithQuarantinedIndex,
+    IntentCanonicalWithQuarantinedPair,
+    IntentCanonicalWithStagedPending,
+    IntentCanonicalWithStagedAndPending,
+    IntentCanonicalWithStagedPair,
+    IntentCanonicalWithStagedIndex,
+    IntentCanonicalWithStagedOnly,
+    StagedWithOwner,
+    StagedOnly,
+    EmptyPrivateDirectory,
+    OwnedOnly,
+    Absent,
+    Count,
+};
+
+/// Exact immutable bytes and native snapshot of one validated control leaf.
+struct OOCPrivateHandoffCleanupPrefixLeafWitnessV2 final {
+    std::vector<std::byte> bytes;
+    util::durable_immutable_record::RecordSnapshot snapshot;
+
+    [[nodiscard]] friend bool
+    operator==(const OOCPrivateHandoffCleanupPrefixLeafWitnessV2&,
+               const OOCPrivateHandoffCleanupPrefixLeafWitnessV2&) = default;
+};
+
+/// Authority-free, comparable observation of one exact V2 cleanup prefix.
+///
+/// This is pure data: it owns no descriptor, handle, receipt, action claim, or
+/// callable path operation. `Absent` is emitted only after the strict
+/// classifier proves the private directory and OWNED leaf absent while the
+/// exact named parent and non-creating BaseLock binding remain stable. The
+/// retained binding carries the historical deleted generations needed for a
+/// later independent comparison.
+struct OOCPrivateHandoffCleanupPrefixWitnessV2 final {
+    OOCPrivateHandoffCleanupPrefixStateV2 state = OOCPrivateHandoffCleanupPrefixStateV2::Count;
+    OOCPrivateHandoffCleanupAuthorizationBinding binding;
+    util::durable_immutable_record::NativeIdentity parent_directory_identity;
+    util::durable_immutable_record::NativeIdentity base_lock_identity;
+    std::optional<util::durable_immutable_record::NativeIdentity> private_directory_identity;
+    std::optional<OOCPrivateHandoffCleanupPrefixLeafWitnessV2> intent;
+    std::optional<OOCPrivateHandoffCleanupPrefixLeafWitnessV2> intent_pending;
+    std::optional<OOCPrivateHandoffCleanupPrefixLeafWitnessV2> staged;
+    std::optional<OOCPrivateHandoffCleanupPrefixLeafWitnessV2> staged_pending;
+    std::optional<OOCPrivateHandoffCleanupPrefixLeafWitnessV2> handoff;
+    std::optional<OOCPrivateHandoffCleanupPrefixLeafWitnessV2> owner;
+    std::optional<OOCPrivateHandoffCleanupPrefixLeafWitnessV2> owned;
+    std::optional<util::durable_immutable_record::RecordSnapshot> index;
+    std::optional<util::durable_immutable_record::RecordSnapshot> data;
+    std::optional<util::durable_immutable_record::RecordSnapshot> quarantine_index;
+    std::optional<util::durable_immutable_record::RecordSnapshot> quarantine_data;
+
+    [[nodiscard]] friend bool operator==(const OOCPrivateHandoffCleanupPrefixWitnessV2&,
+                                         const OOCPrivateHandoffCleanupPrefixWitnessV2&) = default;
+};
+
+/// Non-throwing result for an exact, read-only cleanup-prefix observation.
+struct OOCPrivateHandoffCleanupPrefixObservationResultV2 final {
+    OOCCleanupResult result;
+    std::optional<OOCPrivateHandoffCleanupPrefixWitnessV2> witness;
+
+    [[nodiscard]] bool observed() const noexcept {
+        return result.status == OOCCleanupStatus::Completed && witness.has_value();
+    }
+
+    [[nodiscard]] friend bool
+    operator==(const OOCPrivateHandoffCleanupPrefixObservationResultV2& lhs,
+               const OOCPrivateHandoffCleanupPrefixObservationResultV2& rhs) noexcept {
+        return lhs.result.status == rhs.result.status && lhs.result.stage == rhs.result.stage &&
+               lhs.result.native_error == rhs.result.native_error && lhs.witness == rhs.witness;
+    }
+};
+
+/// Observe one exact V2 prefix under a new non-creating BaseLock epoch. This
+/// function performs no create, rename, delete, durability sync, or authority
+/// mint and never turns the returned data into cleanup authority.
+[[nodiscard]] OOCPrivateHandoffCleanupPrefixObservationResultV2
+observe_authorized_private_handoff_cleanup_prefix_v2(
+    const OOCPrivateHandoffCleanupAuthorizationBinding& binding) noexcept;
+
+/// Observe under the caller's already-held BaseLock open-file description.
+/// The one-shot carrier is duplicated and adopted close-only: no competing
+/// open/flock is issued and returning the witness cannot release the caller's
+/// remaining descriptor or lock epoch.
+[[nodiscard]] OOCPrivateHandoffCleanupPrefixObservationResultV2
+observe_authorized_private_handoff_cleanup_prefix_v2(
+    const OOCPrivateHandoffCleanupAuthorizationBinding& binding,
+    OOCPrivateLeaseRecoveryBorrowedBaseLockV1&& borrowed) noexcept;
 
 /// Unforgeable constructor token. Only the source-private wave store may create
 /// one after it holds the wave lock and confirms the canonical external

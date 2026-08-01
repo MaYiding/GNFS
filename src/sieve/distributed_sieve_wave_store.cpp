@@ -15596,10 +15596,10 @@ DistributedSieveWaveStore::open(const std::filesystem::path& absolute_root,
     }
 }
 
-DistributedSieveWorkerCleanupRootOpenResultV1
-open_worker_cleanup_root_v1(const std::filesystem::path& absolute_root,
-                            const util::Sha256Digest& expected_manifest_digest,
-                            DistributedSieveWorkerCleanupRootOpenTestHooksV1 hooks) noexcept {
+DistributedSieveWorkerCleanupRootOpenResultV1 open_worker_cleanup_root_v1(
+    const std::filesystem::path& absolute_root, const util::Sha256Digest& expected_manifest_digest,
+    DistributedSieveWorkerCleanupRootOpenTestHooksV1 hooks,
+    const DistributedSieveWorkerCleanupRootExactAnchorV1* expected_anchor) noexcept {
     const auto fail_with = [](DistributedSieveWaveStoreDiagnostic failure) {
         return DistributedSieveWorkerCleanupRootOpenResultV1{std::nullopt, std::move(failure)};
     };
@@ -15609,7 +15609,50 @@ open_worker_cleanup_root_v1(const std::filesystem::path& absolute_root,
     };
     try {
         auto frozen = freeze_absolute_root(absolute_root);
-        if (!frozen.has_value() || nil_digest(expected_manifest_digest)) {
+        const auto anchor_request_valid = [&]() {
+            if (expected_anchor == nullptr) {
+                return true;
+            }
+            if (nil_identity(expected_anchor->wave_root_identity) ||
+                nil_identity(expected_anchor->permanent_lock_identity) ||
+                expected_anchor->wave_root_identity == expected_anchor->permanent_lock_identity ||
+                expected_anchor->manifest_snapshot.identity == durable_record::NativeIdentity{} ||
+                expected_anchor->manifest_snapshot.size == 0 ||
+                expected_anchor->manifest_bytes.empty() ||
+                expected_anchor->manifest_snapshot.size !=
+                    static_cast<std::uint64_t>(expected_anchor->manifest_bytes.size()) ||
+                nil_digest(expected_anchor->manifest_digest) ||
+                expected_anchor->manifest_digest != expected_manifest_digest ||
+                expected_anchor->merge_commit_snapshot.identity ==
+                    durable_record::NativeIdentity{} ||
+                expected_anchor->merge_commit_snapshot.size == 0 ||
+                expected_anchor->merge_commit_bytes.empty() ||
+                expected_anchor->merge_commit_snapshot.size !=
+                    static_cast<std::uint64_t>(expected_anchor->merge_commit_bytes.size()) ||
+                nil_digest(expected_anchor->merge_commit_digest)) {
+                return false;
+            }
+            auto decoded_manifest =
+                decode_distributed_sieve_record(expected_anchor->manifest_bytes);
+            auto decoded_commit =
+                decode_distributed_sieve_record(expected_anchor->merge_commit_bytes);
+            const auto* manifest =
+                decoded_manifest && decoded_manifest.value.has_value()
+                    ? std::get_if<WaveManifestV1>(std::addressof(*decoded_manifest.value))
+                    : nullptr;
+            const auto* commit =
+                decoded_commit && decoded_commit.value.has_value()
+                    ? std::get_if<WaveMergeCommitV1>(std::addressof(*decoded_commit.value))
+                    : nullptr;
+            return manifest != nullptr && commit != nullptr &&
+                   manifest->self_digest == expected_anchor->manifest_digest &&
+                   manifest->wave_root_identity == expected_anchor->wave_root_identity &&
+                   manifest->permanent_lock_identity == expected_anchor->permanent_lock_identity &&
+                   commit->manifest_digest == expected_anchor->manifest_digest &&
+                   commit->self_digest == expected_anchor->merge_commit_digest;
+        };
+        if (!frozen.has_value() || nil_digest(expected_manifest_digest) ||
+            !anchor_request_valid()) {
             return fail_with(diagnostic(DistributedSieveWaveStoreStatus::invalid_request,
                                         invalid_argument_error()));
         }
@@ -15669,6 +15712,28 @@ open_worker_cleanup_root_v1(const std::filesystem::path& absolute_root,
         if (*canonical_manifest.bytes != *existing.bytes) {
             return conflict();
         }
+        const auto manifest_anchor_exact = [&]() noexcept {
+            return expected_anchor == nullptr ||
+                   (root.root_identity == expected_anchor->wave_root_identity &&
+                    lock.lock_identity == expected_anchor->permanent_lock_identity &&
+                    *canonical_manifest.snapshot == expected_anchor->manifest_snapshot &&
+                    *canonical_manifest.bytes == expected_anchor->manifest_bytes &&
+                    *existing.bytes == expected_anchor->manifest_bytes &&
+                    existing.manifest->self_digest == expected_anchor->manifest_digest);
+        };
+        const auto observation_anchor_exact =
+            [&](const WorkerCleanupRootCommittedObservationV1& observation) noexcept {
+                if (expected_anchor == nullptr) {
+                    return true;
+                }
+                const auto& commit = observation.commit_record;
+                return manifest_anchor_exact() &&
+                       commit.record.self_digest == expected_anchor->merge_commit_digest &&
+                       commit.bytes == expected_anchor->merge_commit_bytes &&
+                       commit.canonical_snapshot.has_value() &&
+                       *commit.canonical_snapshot == expected_anchor->merge_commit_snapshot &&
+                       !commit.pending_snapshot.has_value();
+            };
         const auto validate_authority = [&]() noexcept {
             return validate_held_wave_store_manifest_authority(
                 root.parent.get(), frozen->parent_components, root.root.get(), frozen->leaf,
@@ -15679,11 +15744,17 @@ open_worker_cleanup_root_v1(const std::filesystem::path& absolute_root,
             authority.status != DistributedSieveWaveStoreStatus::ready) {
             return fail_with(authority);
         }
+        if (!manifest_anchor_exact()) {
+            return conflict();
+        }
 
         auto first = observe_cleanup_root_v1(root.root.get(), frozen->absolute, *existing.manifest,
                                              root.root_identity, creator_process_id);
         if (!first) {
             return fail_with(std::move(first.diagnostic));
+        }
+        if (!observation_anchor_exact(*first.observation)) {
+            return conflict();
         }
         if (hooks.after_first_observation != nullptr) {
             hooks.after_first_observation(hooks.context);
@@ -15695,12 +15766,16 @@ open_worker_cleanup_root_v1(const std::filesystem::path& absolute_root,
             authority.status != DistributedSieveWaveStoreStatus::ready) {
             return fail_with(authority);
         }
+        if (!manifest_anchor_exact() || !observation_anchor_exact(*first.observation)) {
+            return conflict();
+        }
         auto second = observe_cleanup_root_v1(root.root.get(), frozen->absolute, *existing.manifest,
                                               root.root_identity, creator_process_id);
         if (!second) {
             return fail_with(std::move(second.diagnostic));
         }
-        if (*first.observation != *second.observation) {
+        if (*first.observation != *second.observation ||
+            !observation_anchor_exact(*second.observation)) {
             return conflict();
         }
 
@@ -15721,6 +15796,14 @@ open_worker_cleanup_root_v1(const std::filesystem::path& absolute_root,
             new DistributedSieveWaveStore(std::move(wave_state)));
         if (WorkerCleanupRootRevalidatorAuthorityV1::revalidate_authority(*store).status !=
             DistributedSieveWaveStoreStatus::ready) {
+            return conflict();
+        }
+        if (expected_anchor != nullptr &&
+            (store->wave_root_identity() != expected_anchor->wave_root_identity ||
+             store->permanent_lock_identity() != expected_anchor->permanent_lock_identity ||
+             store->manifest_snapshot() != expected_anchor->manifest_snapshot ||
+             store->manifest_digest() != expected_anchor->manifest_digest ||
+             !observation_anchor_exact(*second.observation))) {
             return conflict();
         }
 
@@ -15765,6 +15848,14 @@ open_worker_cleanup_root_v1(const std::filesystem::path& absolute_root,
             WorkerCleanupRootRevalidatorAuthorityV1::revalidate_authority(*store).status !=
                 DistributedSieveWaveStoreStatus::ready) {
             return confirmed ? conflict() : fail_with(std::move(confirmed.diagnostic));
+        }
+        if (!observation_anchor_exact(*confirmed.observation) ||
+            (expected_anchor != nullptr &&
+             (store->wave_root_identity() != expected_anchor->wave_root_identity ||
+              store->permanent_lock_identity() != expected_anchor->permanent_lock_identity ||
+              store->manifest_snapshot() != expected_anchor->manifest_snapshot ||
+              store->manifest_digest() != expected_anchor->manifest_digest))) {
+            return conflict();
         }
 
         auto admission_state =
@@ -15812,6 +15903,128 @@ const NativeIdentityV1& DistributedSieveWaveStore::permanent_lock_identity() con
 const durable_record::RecordSnapshot&
 DistributedSieveWaveStore::manifest_snapshot() const noexcept {
     return state_->manifest_snapshot;
+}
+
+DistributedSieveWorkerCleanupRootExactAnchorCaptureResultV1
+DistributedSieveWaveStore::freeze_worker_cleanup_exact_anchor_v1(
+    const WaveMergeCommitV1& expected_commit,
+    const durable_record::RecordSnapshot& expected_commit_snapshot) const noexcept {
+    const auto fail_with = [](DistributedSieveWaveStoreDiagnostic failure) {
+        return DistributedSieveWorkerCleanupRootExactAnchorCaptureResultV1{
+            std::nullopt,
+            std::move(failure),
+        };
+    };
+    const auto conflict = [&] {
+        return fail_with(
+            diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error()));
+    };
+    try {
+        if (state_ == nullptr || !process_matches(state_->creator_process_id) ||
+            expected_commit_snapshot.identity == durable_record::NativeIdentity{} ||
+            expected_commit_snapshot.size == 0 ||
+            expected_commit.manifest_digest != state_->manifest.self_digest ||
+            nil_digest(expected_commit.self_digest)) {
+            return fail_with(diagnostic(DistributedSieveWaveStoreStatus::invalid_request,
+                                        invalid_argument_error()));
+        }
+        auto encoded_commit =
+            encode_distributed_sieve_record(DistributedSieveProtocolRecordV1{expected_commit});
+        if (!encoded_commit || !encoded_commit.bytes.has_value() || encoded_commit.bytes->empty() ||
+            expected_commit_snapshot.size !=
+                static_cast<std::uint64_t>(encoded_commit.bytes->size())) {
+            auto failure = diagnostic(DistributedSieveWaveStoreStatus::invalid_request,
+                                      invalid_argument_error());
+            if (!encoded_commit) {
+                failure.protocol_status = encoded_commit.status;
+            }
+            return fail_with(std::move(failure));
+        }
+        if (const auto authority = revalidate_authority();
+            authority.status != DistributedSieveWaveStoreStatus::ready) {
+            return fail_with(authority);
+        }
+
+        const auto capture_once = [&]() {
+            auto inventory = inspect_namespace(state_->root_fd);
+            if (!inventory) {
+                return fail_with(std::move(inventory.diagnostic));
+            }
+            if (!inventory.inventory->manifest || inventory.inventory->pending ||
+                !inventory.inventory->cleanup_record_leaves.empty() ||
+                inventory.inventory->wave_merge_commit_record_leaves.size() != 1U ||
+                inventory.inventory->wave_merge_commit_record_leaves.front() !=
+                    DISTRIBUTED_SIEVE_WAVE_MERGE_COMMIT_RECORD_LEAF) {
+                return conflict();
+            }
+            auto manifest =
+                read_manifest_leaf(state_->root_fd, MANIFEST_LEAF, state_->creator_process_id);
+            if (!manifest) {
+                return fail_with(std::move(manifest.diagnostic));
+            }
+            if (*manifest.snapshot != state_->manifest_snapshot ||
+                *manifest.bytes != state_->manifest_bytes || manifest.bytes->empty()) {
+                return conflict();
+            }
+            auto commits = validate_wave_merge_commit_record_inventory(
+                state_->root_fd, *inventory.inventory, state_->manifest,
+                state_->creator_process_id);
+            if (!commits || !commits.witnesses.has_value() || commits.witnesses->size() != 1U) {
+                return commits ? conflict() : fail_with(std::move(commits.diagnostic));
+            }
+            const auto& commit = commits.witnesses->front();
+            if (!commit.canonical_snapshot.has_value() || commit.pending_snapshot.has_value() ||
+                *commit.canonical_snapshot != expected_commit_snapshot ||
+                commit.bytes != *encoded_commit.bytes ||
+                commit.record.self_digest != expected_commit.self_digest) {
+                return conflict();
+            }
+            DistributedSieveWorkerCleanupRootExactAnchorV1 anchor{
+                .wave_root_identity = state_->root_identity,
+                .permanent_lock_identity = state_->lock_identity,
+                .manifest_snapshot = *manifest.snapshot,
+                .manifest_bytes = *manifest.bytes,
+                .manifest_digest = state_->manifest.self_digest,
+                .merge_commit_snapshot = *commit.canonical_snapshot,
+                .merge_commit_bytes = commit.bytes,
+                .merge_commit_digest = commit.record.self_digest,
+            };
+            return DistributedSieveWorkerCleanupRootExactAnchorCaptureResultV1{
+                std::optional<DistributedSieveWorkerCleanupRootExactAnchorV1>(std::move(anchor)),
+                {},
+            };
+        };
+
+        auto first = capture_once();
+        if (!first) {
+            return first;
+        }
+        if (const auto authority = revalidate_authority();
+            authority.status != DistributedSieveWaveStoreStatus::ready) {
+            return fail_with(authority);
+        }
+        auto second = capture_once();
+        if (!second) {
+            return second;
+        }
+        if (*first.anchor != *second.anchor) {
+            return conflict();
+        }
+        if (const auto authority = revalidate_authority();
+            authority.status != DistributedSieveWaveStoreStatus::ready) {
+            return fail_with(authority);
+        }
+        return first;
+    } catch (const std::bad_alloc&) {
+        return fail_with(diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
+                                    std::make_error_code(std::errc::not_enough_memory)));
+    } catch (const std::filesystem::filesystem_error& error) {
+        return fail_with(
+            diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure, error.code()));
+    } catch (...) {
+        return fail_with(diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                                    std::make_error_code(std::errc::io_error)));
+    }
 }
 
 DistributedSieveWaveStoreDiagnostic

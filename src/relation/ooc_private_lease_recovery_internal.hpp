@@ -18,6 +18,9 @@ class DistributedSievePrivateLeaseBaseLockAt;
 
 namespace gnfs::relation::ooc_cleanup_detail {
 
+struct OOCPrivateHandoffCleanupAuthorizationBinding;
+struct OOCPrivateHandoffCleanupPrefixObservationResultV2;
+class OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2;
 class OOCPrivateLeaseRecoveryBuilderV1;
 
 enum class OOCPreactiveLeaseRecoveryPhaseV1 : std::uint8_t {
@@ -95,6 +98,11 @@ private:
 
     friend class ::gnfs::sieve::distributed_sieve_resume_detail::
         DistributedSievePrivateLeaseBaseLockAt;
+    friend class OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2;
+    friend OOCPrivateHandoffCleanupPrefixObservationResultV2
+    observe_authorized_private_handoff_cleanup_prefix_v2(
+        const OOCPrivateHandoffCleanupAuthorizationBinding& binding,
+        OOCPrivateLeaseRecoveryBorrowedBaseLockV1&& borrowed) noexcept;
     friend OOCCleanupResult recover_private_lease_with_borrowed_base_lock_v1(
         const std::filesystem::path& base_path,
         OOCPrivateLeaseRecoveryBorrowedBaseLockV1&& borrowed,

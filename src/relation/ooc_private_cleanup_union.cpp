@@ -5871,6 +5871,26 @@ read_authorized_cleanup_leaf_v2(util::durable_immutable_record::NativeHandle dir
     fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None, protocol_error());
 }
 
+struct AuthorizedCleanupRawUnlinkAtResultV2 final {
+    int result = -1;
+    int native_error = 0;
+};
+
+/// Sole raw unlink carrier for the exact V2 cleanup reducer. Callers retain
+/// all role, identity, absence, durability, and postcondition checks.
+[[nodiscard]] AuthorizedCleanupRawUnlinkAtResultV2
+authorized_cleanup_raw_unlinkat_v2(util::durable_immutable_record::NativeHandle directory_handle,
+                                   const std::filesystem::path& leaf, int flags) noexcept {
+    int result = -1;
+    do {
+        result = ::unlinkat(static_cast<int>(directory_handle), leaf.c_str(), flags);
+    } while (result != 0 && errno == EINTR);
+    return {
+        .result = result,
+        .native_error = result == 0 ? 0 : errno,
+    };
+}
+
 void sync_authorized_cleanup_directory_v2(
     util::durable_immutable_record::NativeHandle directory_handle, OOCCleanupStage stage) {
     int result = -1;
@@ -5890,12 +5910,9 @@ void remove_exact_authorized_cleanup_leaf_v2(
     if (!before || *before != expected) {
         fail(OOCCleanupStatus::ForeignReplacementPreserved, stage, protocol_error());
     }
-    int removed = -1;
-    do {
-        removed = ::unlinkat(static_cast<int>(directory_handle), leaf.c_str(), 0);
-    } while (removed != 0 && errno == EINTR);
-    if (removed != 0) {
-        const int saved_errno = errno;
+    const auto removed = authorized_cleanup_raw_unlinkat_v2(directory_handle, leaf, 0);
+    if (removed.result != 0) {
+        const int saved_errno = removed.native_error;
         fail(saved_errno == ENOENT ? OOCCleanupStatus::ForeignReplacementPreserved
                                    : OOCCleanupStatus::IoFailure,
              stage, posix_error(saved_errno));
@@ -6157,13 +6174,12 @@ void require_authorized_cleanup_absent_parent_leaf_v2(
            record.data == binding.data;
 }
 
-[[nodiscard]] AuthorizedCleanupPrefixV2
-classify_authorized_cleanup_prefix_v2(const OOCCleanupPaths& paths, const BaseLock& lock,
-                                      const AuthorizedCleanupParentDirectoryHandleV2& parent,
-                                      const PrivateDirectoryHandle* directory,
-                                      const OOCPrivateHandoffCleanupAuthorizationBinding& binding,
-                                      const AuthorizedCleanupExpectedMarkersV2& expected,
-                                      bool intent_confirmed, bool staged_confirmed) {
+[[nodiscard]] AuthorizedCleanupPrefixV2 classify_authorized_cleanup_prefix_v2(
+    const OOCCleanupPaths& paths, const BaseLock& lock,
+    const AuthorizedCleanupParentDirectoryHandleV2& parent, const PrivateDirectoryHandle* directory,
+    const OOCPrivateHandoffCleanupAuthorizationBinding& binding,
+    const AuthorizedCleanupExpectedMarkersV2& expected, bool intent_confirmed,
+    bool staged_confirmed, bool allow_unconverted_handoff = false) {
     lock.require_stable();
     parent.require_stable();
     parent.require_lock_binding(paths.lock_path.filename(), lock);
@@ -6381,6 +6397,11 @@ classify_authorized_cleanup_prefix_v2(const OOCCleanupPaths& paths, const BaseLo
         prefix.next = AuthorizedCleanupNextStepV2::IntentConversionRequired;
         return prefix;
     }
+    if (allow_unconverted_handoff && !has_any_marker && prefix.handoff && prefix.owner &&
+        prefix.owned && live_index && live_data && !quarantined_index && !quarantined_data) {
+        prefix.next = AuthorizedCleanupNextStepV2::IntentConversionRequired;
+        return prefix;
+    }
     if (prefix.intent) {
         if (!prefix.owner) {
             fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
@@ -6576,13 +6597,10 @@ void remove_empty_authorized_cleanup_directory_v2(const OOCCleanupPaths& paths,
         stable_identity(posix_identity(*named)) != directory.identity()) {
         fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::IntentRemoved, protocol_error());
     }
-    int removed = -1;
-    do {
-        removed = ::unlinkat(static_cast<int>(parent.native_handle()),
-                             paths.private_directory.filename().c_str(), AT_REMOVEDIR);
-    } while (removed != 0 && errno == EINTR);
-    if (removed != 0) {
-        const int saved_errno = errno;
+    const auto removed = authorized_cleanup_raw_unlinkat_v2(
+        parent.native_handle(), paths.private_directory.filename(), AT_REMOVEDIR);
+    if (removed.result != 0) {
+        const int saved_errno = removed.native_error;
         fail(saved_errno == ENOENT || saved_errno == ENOTEMPTY
                  ? OOCCleanupStatus::ForeignReplacementPreserved
                  : OOCCleanupStatus::IoFailure,
@@ -7724,6 +7742,305 @@ private:
     std::optional<PrivateLeaseRecord> owned_;
     std::optional<std::array<std::uint64_t, 3>> owned_identity_;
 };
+
+namespace {
+
+[[nodiscard]] OOCPrivateHandoffCleanupPrefixObservationResultV2
+authorized_cleanup_prefix_observation_failed_v2(OOCCleanupStatus status, OOCCleanupStage stage,
+                                                std::error_code error) noexcept {
+    return {
+        .result =
+            {
+                .status = status,
+                .stage = stage,
+                .native_error = error,
+            },
+        .witness = std::nullopt,
+    };
+}
+
+template <typename Operation>
+[[nodiscard]] OOCPrivateHandoffCleanupPrefixObservationResultV2
+invoke_authorized_cleanup_prefix_observation_v2(Operation&& operation) noexcept {
+    try {
+        return std::forward<Operation>(operation)();
+    } catch (const Failure& failure) {
+        return authorized_cleanup_prefix_observation_failed_v2(
+            failure.status, failure.stage, failure.error ? failure.error : protocol_error());
+    } catch (const std::bad_alloc&) {
+        return authorized_cleanup_prefix_observation_failed_v2(
+            OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None,
+            std::make_error_code(std::errc::not_enough_memory));
+    } catch (const std::system_error& error) {
+        return authorized_cleanup_prefix_observation_failed_v2(OOCCleanupStatus::UnexpectedFailure,
+                                                               OOCCleanupStage::None, error.code());
+    } catch (...) {
+        return authorized_cleanup_prefix_observation_failed_v2(
+            OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None, protocol_error());
+    }
+}
+
+#if defined(__APPLE__)
+
+[[nodiscard]] OOCPrivateHandoffCleanupPrefixStateV2
+project_authorized_cleanup_prefix_state_v2(const AuthorizedCleanupPrefixV2& prefix) {
+    enum Presence : std::uint32_t {
+        Intent = 1U << 0U,
+        IntentPending = 1U << 1U,
+        Staged = 1U << 2U,
+        StagedPending = 1U << 3U,
+        Handoff = 1U << 4U,
+        Owner = 1U << 5U,
+        Owned = 1U << 6U,
+        Index = 1U << 7U,
+        Data = 1U << 8U,
+        QuarantineIndex = 1U << 9U,
+        QuarantineData = 1U << 10U,
+        PrivateDirectory = 1U << 11U,
+    };
+    const std::uint32_t presence =
+        (prefix.intent ? Intent : 0U) | (prefix.intent_pending ? IntentPending : 0U) |
+        (prefix.staged ? Staged : 0U) | (prefix.staged_pending ? StagedPending : 0U) |
+        (prefix.handoff ? Handoff : 0U) | (prefix.owner ? Owner : 0U) |
+        (prefix.owned ? Owned : 0U) | (prefix.index ? Index : 0U) | (prefix.data ? Data : 0U) |
+        (prefix.quarantine_index ? QuarantineIndex : 0U) |
+        (prefix.quarantine_data ? QuarantineData : 0U) |
+        (prefix.private_directory_present ? PrivateDirectory : 0U);
+
+    using State = OOCPrivateHandoffCleanupPrefixStateV2;
+    switch (prefix.next) {
+    case AuthorizedCleanupNextStepV2::IntentConversionRequired:
+        if (presence == (Handoff | Owner | Owned | Index | Data | PrivateDirectory)) {
+            return State::LiveUnconverted;
+        }
+        if (presence ==
+            (IntentPending | Handoff | Owner | Owned | Index | Data | PrivateDirectory)) {
+            return State::IntentPendingOnly;
+        }
+        break;
+    case AuthorizedCleanupNextStepV2::RemoveIntentPending:
+        if (presence ==
+            (Intent | IntentPending | Handoff | Owner | Owned | Index | Data | PrivateDirectory)) {
+            return State::IntentCanonicalAndPending;
+        }
+        break;
+    case AuthorizedCleanupNextStepV2::RemoveHandoff:
+        if (presence == (Intent | Handoff | Owner | Owned | Index | Data | PrivateDirectory)) {
+            return State::IntentCanonicalWithHandoff;
+        }
+        break;
+    case AuthorizedCleanupNextStepV2::QuarantineIndex:
+        if (presence == (Intent | Owner | Owned | Index | Data | PrivateDirectory)) {
+            return State::IntentCanonicalWithLivePair;
+        }
+        break;
+    case AuthorizedCleanupNextStepV2::QuarantineData:
+        if (presence == (Intent | Owner | Owned | Data | QuarantineIndex | PrivateDirectory)) {
+            return State::IntentCanonicalWithQuarantinedIndex;
+        }
+        break;
+    case AuthorizedCleanupNextStepV2::EnsureStaged:
+        if (presence ==
+            (Intent | Owner | Owned | QuarantineIndex | QuarantineData | PrivateDirectory)) {
+            return State::IntentCanonicalWithQuarantinedPair;
+        }
+        if (presence == (Intent | StagedPending | Owner | Owned | QuarantineIndex | QuarantineData |
+                         PrivateDirectory)) {
+            return State::IntentCanonicalWithStagedPending;
+        }
+        break;
+    case AuthorizedCleanupNextStepV2::RemoveStagedPending:
+        if (presence == (Intent | Staged | StagedPending | Owner | Owned | QuarantineIndex |
+                         QuarantineData | PrivateDirectory)) {
+            return State::IntentCanonicalWithStagedAndPending;
+        }
+        break;
+    case AuthorizedCleanupNextStepV2::RemoveData:
+        if (presence == (Intent | Staged | Owner | Owned | QuarantineIndex | QuarantineData |
+                         PrivateDirectory)) {
+            return State::IntentCanonicalWithStagedPair;
+        }
+        break;
+    case AuthorizedCleanupNextStepV2::RemoveIndex:
+        if (presence == (Intent | Staged | Owner | Owned | QuarantineIndex | PrivateDirectory)) {
+            return State::IntentCanonicalWithStagedIndex;
+        }
+        break;
+    case AuthorizedCleanupNextStepV2::RemoveIntent:
+        if (presence == (Intent | Staged | Owner | Owned | PrivateDirectory)) {
+            return State::IntentCanonicalWithStagedOnly;
+        }
+        break;
+    case AuthorizedCleanupNextStepV2::RemoveOwner:
+        if (presence == (Staged | Owner | Owned | PrivateDirectory)) {
+            return State::StagedWithOwner;
+        }
+        break;
+    case AuthorizedCleanupNextStepV2::RemoveStaged:
+        if (presence == (Staged | Owned | PrivateDirectory)) {
+            return State::StagedOnly;
+        }
+        break;
+    case AuthorizedCleanupNextStepV2::RemoveDirectory:
+        if (presence == (Owned | PrivateDirectory)) {
+            return State::EmptyPrivateDirectory;
+        }
+        break;
+    case AuthorizedCleanupNextStepV2::RemoveOwned:
+        if (presence == Owned) {
+            return State::OwnedOnly;
+        }
+        break;
+    case AuthorizedCleanupNextStepV2::Complete:
+        if (presence == 0U) {
+            return State::Absent;
+        }
+        break;
+    case AuthorizedCleanupNextStepV2::ConfirmIntent:
+        break;
+    }
+    fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None, protocol_error());
+}
+
+[[nodiscard]] std::optional<OOCPrivateHandoffCleanupPrefixLeafWitnessV2>
+project_authorized_cleanup_loaded_leaf_v2(
+    const std::optional<AuthorizedCleanupLoadedLeafV2>& loaded) {
+    if (!loaded) {
+        return std::nullopt;
+    }
+    return OOCPrivateHandoffCleanupPrefixLeafWitnessV2{
+        .bytes = loaded->bytes,
+        .snapshot = loaded->snapshot,
+    };
+}
+
+[[nodiscard]] OOCPrivateHandoffCleanupPrefixWitnessV2 project_authorized_cleanup_prefix_witness_v2(
+    const OOCPrivateHandoffCleanupAuthorizationBinding& binding,
+    const AuthorizedCleanupPrefixV2& prefix, const AuthorizedCleanupParentDirectoryHandleV2& parent,
+    const BaseLock& lock, const PrivateDirectoryHandle* directory) {
+    return {
+        .state = project_authorized_cleanup_prefix_state_v2(prefix),
+        .binding = binding,
+        .parent_directory_identity = authorized_cleanup_native_identity_v2(parent.identity()),
+        .base_lock_identity = authorized_cleanup_native_identity_v2(lock.identity()),
+        .private_directory_identity =
+            directory != nullptr
+                ? std::optional{authorized_cleanup_native_identity_v2(directory->identity())}
+                : std::nullopt,
+        .intent = project_authorized_cleanup_loaded_leaf_v2(prefix.intent),
+        .intent_pending = project_authorized_cleanup_loaded_leaf_v2(prefix.intent_pending),
+        .staged = project_authorized_cleanup_loaded_leaf_v2(prefix.staged),
+        .staged_pending = project_authorized_cleanup_loaded_leaf_v2(prefix.staged_pending),
+        .handoff = project_authorized_cleanup_loaded_leaf_v2(prefix.handoff),
+        .owner = project_authorized_cleanup_loaded_leaf_v2(prefix.owner),
+        .owned = project_authorized_cleanup_loaded_leaf_v2(prefix.owned),
+        .index = prefix.index,
+        .data = prefix.data,
+        .quarantine_index = prefix.quarantine_index,
+        .quarantine_data = prefix.quarantine_data,
+    };
+}
+
+[[nodiscard]] OOCPrivateHandoffCleanupPrefixObservationResultV2
+observe_authorized_private_handoff_cleanup_prefix_locked_v2(
+    const OOCPrivateHandoffCleanupAuthorizationBinding& binding, const OOCCleanupPaths& paths,
+    AuthorizedCleanupParentDirectoryHandleV2& parent, BaseLock& lock) {
+    if (!lock.matches(paths.lock_path)) {
+        fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+    }
+    const auto expected = make_authorized_cleanup_expected_markers_v2(binding, paths);
+    lock.require_stable();
+    parent.require_stable();
+    parent.require_lock_binding(paths.lock_path.filename(), lock);
+
+    std::unique_ptr<PrivateDirectoryHandle> directory;
+    if (const auto named = parent.inspect_leaf(paths.private_directory.filename())) {
+        if (!S_ISDIR(named->st_mode) ||
+            handoff_native_identity(stable_identity(posix_identity(*named))) !=
+                binding.directory_identity) {
+            fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+        }
+        directory = std::make_unique<PrivateDirectoryHandle>(paths.private_directory);
+        if (authorized_cleanup_native_identity_v2(directory->identity()) !=
+            binding.directory_identity) {
+            fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
+        }
+    }
+
+    const auto prefix = classify_authorized_cleanup_prefix_v2(paths, lock, parent, directory.get(),
+                                                              binding, expected, true, true, true);
+    auto witness = project_authorized_cleanup_prefix_witness_v2(binding, prefix, parent, lock,
+                                                                directory.get());
+    const auto confirmed = classify_authorized_cleanup_prefix_v2(
+        paths, lock, parent, directory.get(), binding, expected, true, true, true);
+    if (confirmed != prefix) {
+        fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
+             protocol_error());
+    }
+    if (directory) {
+        directory->require_stable();
+        directory->require_private_policy();
+    }
+    parent.require_stable();
+    parent.require_lock_binding(paths.lock_path.filename(), lock);
+    lock.require_stable();
+    return {
+        .result =
+            {
+                .status = OOCCleanupStatus::Completed,
+                .stage = OOCCleanupStage::None,
+                .native_error = {},
+            },
+        .witness = std::move(witness),
+    };
+}
+
+#endif
+
+} // namespace
+
+OOCPrivateHandoffCleanupPrefixObservationResultV2
+observe_authorized_private_handoff_cleanup_prefix_v2(
+    const OOCPrivateHandoffCleanupAuthorizationBinding& binding) noexcept {
+#if !defined(__APPLE__)
+    (void)binding;
+    return authorized_cleanup_prefix_observation_failed_v2(
+        OOCCleanupStatus::PlatformUnsupported, OOCCleanupStage::None,
+        std::make_error_code(std::errc::operation_not_supported));
+#else
+    return invoke_authorized_cleanup_prefix_observation_v2([&] {
+        const auto paths = freeze_paths(binding.base_path);
+        AuthorizedCleanupParentDirectoryHandleV2 parent(paths.lock_path.parent_path());
+        BaseLock lock(paths.lock_path, false);
+        return observe_authorized_private_handoff_cleanup_prefix_locked_v2(binding, paths, parent,
+                                                                           lock);
+    });
+#endif
+}
+
+OOCPrivateHandoffCleanupPrefixObservationResultV2
+observe_authorized_private_handoff_cleanup_prefix_v2(
+    const OOCPrivateHandoffCleanupAuthorizationBinding& binding,
+    OOCPrivateLeaseRecoveryBorrowedBaseLockV1&& borrowed) noexcept {
+#if !defined(__APPLE__)
+    (void)binding;
+    (void)borrowed;
+    return authorized_cleanup_prefix_observation_failed_v2(
+        OOCCleanupStatus::PlatformUnsupported, OOCCleanupStage::None,
+        std::make_error_code(std::errc::operation_not_supported));
+#else
+    return invoke_authorized_cleanup_prefix_observation_v2([&] {
+        const auto paths = freeze_paths(binding.base_path);
+        AuthorizedCleanupParentDirectoryHandleV2 parent(paths.lock_path.parent_path());
+        auto lock = borrowed.consume(paths, static_cast<int>(parent.native_handle()));
+        if (!lock || !lock->matches(paths.lock_path)) {
+            fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
+        }
+        return observe_authorized_private_handoff_cleanup_prefix_locked_v2(binding, paths, parent,
+                                                                           *lock);
+    });
+#endif
+}
 
 } // namespace gnfs::relation::ooc_cleanup_detail
 

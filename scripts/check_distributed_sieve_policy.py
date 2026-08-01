@@ -171,6 +171,73 @@ MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE = (
 MERGE_COMMIT_AUTHORITY_WAVE_STORE_INTERFACE_FILE = (
     "src/sieve/distributed_sieve_wave_store_internal.hpp"
 )
+WORKER_CLEANUP_TAIL_AUTHORITY_IMPLEMENTATION_FILE = (
+    "src/sieve/distributed_sieve_worker_cleanup_authority.cpp"
+)
+WORKER_CLEANUP_TAIL_AUTHORITY_INTERFACE_FILE = (
+    "src/sieve/distributed_sieve_worker_cleanup_authority_internal.hpp"
+)
+WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE = (
+    "tests/test_distributed_sieve_worker_cleanup_tail.cpp"
+)
+WORKER_CLEANUP_TAIL_AUTHORITY_INTERFACE_INCLUDE = (
+    "distributed_sieve_worker_cleanup_authority_internal.hpp"
+)
+WORKER_CLEANUP_TAIL_AUTHORITY_FILES = {
+    WORKER_CLEANUP_TAIL_AUTHORITY_IMPLEMENTATION_FILE,
+    WORKER_CLEANUP_TAIL_AUTHORITY_INTERFACE_FILE,
+}
+WORKER_CLEANUP_TAIL_AUTHORITY_INCLUDE_ALLOWLIST = {
+    WORKER_CLEANUP_TAIL_AUTHORITY_IMPLEMENTATION_FILE,
+    WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
+}
+WORKER_CLEANUP_TAIL_AUTHORITY_IDENTIFIER_ALLOWLISTS = {
+    "DistributedSieveCommittedTailCleanupTransitionV1": {
+        MERGE_COMMIT_AUTHORITY_ADMISSION_INTERFACE_FILE,
+        WORKER_CLEANUP_TAIL_AUTHORITY_IMPLEMENTATION_FILE,
+        WORKER_CLEANUP_TAIL_AUTHORITY_INTERFACE_FILE,
+    },
+    "release_for_worker_cleanup_cold_open_v1": {
+        MERGE_COMMIT_AUTHORITY_ADMISSION_INTERFACE_FILE,
+        WORKER_CLEANUP_TAIL_AUTHORITY_IMPLEMENTATION_FILE,
+    },
+    "DistributedSieveWorkerCleanupTailAuthorityV1":
+        WORKER_CLEANUP_TAIL_AUTHORITY_FILES,
+    "consume_distributed_sieve_committed_tail_for_worker_cleanup_v1": (
+        WORKER_CLEANUP_TAIL_AUTHORITY_FILES
+        | {WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE}
+    ),
+    "consume_distributed_sieve_committed_tail_for_worker_cleanup_v1_with_hooks": (
+        WORKER_CLEANUP_TAIL_AUTHORITY_FILES
+        | {WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE}
+    ),
+    "DistributedSieveWorkerCleanupTailTestHooksV1": (
+        WORKER_CLEANUP_TAIL_AUTHORITY_FILES
+        | {WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE}
+    ),
+}
+WORKER_CLEANUP_EXACT_ANCHOR_IDENTIFIER_ALLOWLISTS = {
+    "DistributedSieveWorkerCleanupRootExactAnchorV1": {
+        MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE,
+        MERGE_COMMIT_AUTHORITY_WAVE_STORE_INTERFACE_FILE,
+        WORKER_CLEANUP_TAIL_AUTHORITY_INTERFACE_FILE,
+    },
+    "DistributedSieveWorkerCleanupRootExactAnchorCaptureResultV1": {
+        MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE,
+        MERGE_COMMIT_AUTHORITY_WAVE_STORE_INTERFACE_FILE,
+    },
+    "freeze_worker_cleanup_exact_anchor_v1": {
+        MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE,
+        MERGE_COMMIT_AUTHORITY_WAVE_STORE_INTERFACE_FILE,
+        WORKER_CLEANUP_TAIL_AUTHORITY_IMPLEMENTATION_FILE,
+    },
+    "open_worker_cleanup_root_v1": {
+        MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE,
+        MERGE_COMMIT_AUTHORITY_WAVE_STORE_INTERFACE_FILE,
+        WORKER_CLEANUP_TAIL_AUTHORITY_IMPLEMENTATION_FILE,
+        MERGE_COMMIT_AUTHORITY_TEST_FILE,
+    },
+}
 MERGE_COMMIT_AUTHORITY_INTERFACE_INCLUDE = (
     "distributed_sieve_merge_commit_authority_internal.hpp"
 )
@@ -188,7 +255,10 @@ MERGE_COMMIT_AUTHORITY_API_IDENTIFIER_ALLOWLISTS = {
     ),
     "consume_distributed_sieve_merge_prepared_v1": (
         MERGE_COMMIT_AUTHORITY_PRODUCTION_FILES
-        | {MERGE_COMMIT_AUTHORITY_TEST_FILE}
+        | {
+            MERGE_COMMIT_AUTHORITY_TEST_FILE,
+            WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
+        }
     ),
     "DistributedSieveMergePreparedCommitContextV1": {
         MERGE_COMMIT_AUTHORITY_ADMISSION_INTERFACE_FILE,
@@ -201,6 +271,9 @@ MERGE_COMMIT_AUTHORITY_API_IDENTIFIER_ALLOWLISTS = {
             MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE,
             MERGE_COMMIT_AUTHORITY_WAVE_STORE_INTERFACE_FILE,
             MERGE_COMMIT_AUTHORITY_TEST_FILE,
+            WORKER_CLEANUP_TAIL_AUTHORITY_IMPLEMENTATION_FILE,
+            WORKER_CLEANUP_TAIL_AUTHORITY_INTERFACE_FILE,
+            WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
         }
     ),
     "publish_wave_merge_commit_v1": {
@@ -217,6 +290,7 @@ MERGE_COMMIT_AUTHORITY_API_IDENTIFIER_ALLOWLISTS = {
 MERGE_COMMIT_AUTHORITY_INTERFACE_INCLUDE_ALLOWLIST = {
     MERGE_COMMIT_AUTHORITY_IMPLEMENTATION_FILE,
     MERGE_COMMIT_AUTHORITY_TEST_FILE,
+    WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
 }
 MERGE_COMMIT_AUTHORITY_TRUSTED_HOOK_IDENTIFIER_ALLOWLISTS = {
     "DistributedSieveWaveMergeCommitFaultPointV1": (
@@ -936,12 +1010,20 @@ RAW_RECOVERY_BORROWED_BASE_LOCK_WAVE_STORE_FILE = (
 RAW_RECOVERY_BORROWED_BASE_LOCK_CLEANUP_HEADER = (
     "include/gnfs/relation/ooc_cleanup_transaction.hpp"
 )
+RAW_RECOVERY_BORROWED_BASE_LOCK_OBSERVER_INTERFACE_FILE = (
+    "src/relation/ooc_private_handoff_cleanup_authorization_internal.hpp"
+)
+RAW_RECOVERY_BORROWED_BASE_LOCK_TEST_FILE = (
+    "tests/test_ooc_cleanup_transaction.cpp"
+)
 RAW_RECOVERY_BORROWED_BASE_LOCK_IDENTIFIER_ALLOWLISTS = {
     "OOCPrivateLeaseRecoveryBorrowedBaseLockV1": {
         RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE,
         RAW_RECOVERY_BORROWED_BASE_LOCK_INTERFACE_FILE,
         RAW_RECOVERY_BORROWED_BASE_LOCK_WAVE_STORE_FILE,
         RAW_RECOVERY_BORROWED_BASE_LOCK_CLEANUP_HEADER,
+        RAW_RECOVERY_BORROWED_BASE_LOCK_OBSERVER_INTERFACE_FILE,
+        RAW_RECOVERY_BORROWED_BASE_LOCK_TEST_FILE,
     },
     "recover_private_lease_with_borrowed_base_lock_v1": {
         RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE,
@@ -960,10 +1042,12 @@ RAW_RECOVERY_BORROWED_BASE_LOCK_IDENTIFIER_ALLOWLISTS = {
 }
 RAW_RECOVERY_BORROWED_BASE_LOCK_IDENTIFIER_USE_COUNTS = {
     "OOCPrivateLeaseRecoveryBorrowedBaseLockV1": {
-        RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE: 12,
-        RAW_RECOVERY_BORROWED_BASE_LOCK_INTERFACE_FILE: 14,
+        RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE: 13,
+        RAW_RECOVERY_BORROWED_BASE_LOCK_INTERFACE_FILE: 15,
         RAW_RECOVERY_BORROWED_BASE_LOCK_WAVE_STORE_FILE: 1,
         RAW_RECOVERY_BORROWED_BASE_LOCK_CLEANUP_HEADER: 2,
+        RAW_RECOVERY_BORROWED_BASE_LOCK_OBSERVER_INTERFACE_FILE: 2,
+        RAW_RECOVERY_BORROWED_BASE_LOCK_TEST_FILE: 2,
     },
     "recover_private_lease_with_borrowed_base_lock_v1": {
         RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE: 1,
@@ -1007,6 +1091,11 @@ RAW_RECOVERY_BORROWED_BASE_LOCK_TOKEN_CLASS_BODY = (
     "boolconsumed_=false;"
     "friendclass::gnfs::sieve::distributed_sieve_resume_detail::"
     "DistributedSievePrivateLeaseBaseLockAt;"
+    "friendclassOOCPrivateHandoffCleanupAuthorizationTestAuthorityV2;"
+    "friendOOCPrivateHandoffCleanupPrefixObservationResultV2"
+    "observe_authorized_private_handoff_cleanup_prefix_v2("
+    "constOOCPrivateHandoffCleanupAuthorizationBinding&binding,"
+    "OOCPrivateLeaseRecoveryBorrowedBaseLockV1&&borrowed)noexcept;"
     "friendOOCCleanupResultrecover_private_lease_with_borrowed_base_lock_v1("
     "conststd::filesystem::path&base_path,"
     "OOCPrivateLeaseRecoveryBorrowedBaseLockV1&&borrowed,"
@@ -1633,6 +1722,9 @@ MERGE_COMMIT_COMMITTED_TAIL_PUBLIC_SURFACE = (
     "[[nodiscard]]constWaveMergeCommitV1&record()constnoexcept{returncommit_;}"
     "[[nodiscard]]constutil::durable_immutable_record::RecordSnapshot&"
     "canonical_snapshot()constnoexcept{returncanonical_snapshot_;}"
+    "[[nodiscard]]distributed_sieve_worker_cleanup_authority_detail::"
+    "DistributedSieveCommittedTailCleanupTransitionV1"
+    "release_for_worker_cleanup_cold_open_v1()&&noexcept;"
 )
 MERGE_COMMIT_RESULT_SURFACE = (
     "std::optional<DistributedSieveMergePreparedAdmissionV1>retryable_prepared;"
@@ -1657,6 +1749,19 @@ MERGE_COMMIT_AUTHORITY_CLASS_SURFACE = (
     "consume_distributed_sieve_merge_prepared_v1_with_hooks("
     "DistributedSieveMergePreparedAdmissionV1&&admission,"
     "DistributedSieveWaveMergeCommitTestHooksV1hooks)noexcept;"
+)
+WORKER_CLEANUP_TAIL_AUTHORITY_CLASS_SURFACE = (
+    "public:DistributedSieveWorkerCleanupTailAuthorityV1()=delete;"
+    "private:[[nodiscard]]staticDistributedSieveWorkerCleanupTailResultV1consume("
+    "DistributedSieveCommittedTailAdmissionV1&&tail,"
+    "trusted_test::DistributedSieveWorkerCleanupTailTestHooksV1hooks)noexcept;"
+    "friendDistributedSieveWorkerCleanupTailResultV1"
+    "consume_distributed_sieve_committed_tail_for_worker_cleanup_v1("
+    "DistributedSieveCommittedTailAdmissionV1&&tail)noexcept;"
+    "friendDistributedSieveWorkerCleanupTailResultV1trusted_test::"
+    "consume_distributed_sieve_committed_tail_for_worker_cleanup_v1_with_hooks("
+    "DistributedSieveCommittedTailAdmissionV1&&tail,"
+    "trusted_test::DistributedSieveWorkerCleanupTailTestHooksV1hooks)noexcept;"
 )
 MERGE_COMMIT_COMMITTED_TAIL_MINT_FRIENDS = (
     "friendclass::gnfs::sieve::distributed_sieve_resume_detail::"
@@ -4159,7 +4264,14 @@ WORK_PACKAGE_CARRIER_UNLINK_CALL_FUNCTIONS = (
 WORK_PACKAGE_CARRIER_OPS_INTERFACE_FILE = (
     "src/sieve/distributed_sieve_worker_work_package_file_ops_internal.hpp"
 )
+AUTHORIZED_CLEANUP_RAW_UNLINK_FILE = "src/relation/ooc_private_cleanup_union.cpp"
+AUTHORIZED_CLEANUP_RAW_UNLINK_CARRIER = "authorized_cleanup_raw_unlinkat_v2"
+AUTHORIZED_CLEANUP_RAW_UNLINK_CALL_FUNCTIONS = (
+    "remove_exact_authorized_cleanup_leaf_v2",
+    "remove_empty_authorized_cleanup_directory_v2",
+)
 PRODUCTION_RAW_UNLINKAT_FUNCTIONS = {
+    AUTHORIZED_CLEANUP_RAW_UNLINK_FILE: AUTHORIZED_CLEANUP_RAW_UNLINK_CARRIER,
     WORK_PACKAGE_RESIDUE_RECONCILER_IMPLEMENTATION_FILE: "unlink_at",
     WORKER_LAUNCHER_IMPLEMENTATION_FILE: WAVE_STORE_PRIVATE_LEASE_UNLINK_HELPER,
     "src/util/durable_immutable_record.cpp": "remove_exact_at",
@@ -5614,6 +5726,43 @@ class Checks:
                 f"{WAVE_STORE_RAW_UNLINK_IDENTIFIER} call, found "
                 f"{len(raw_uses)} file identifiers, {len(body_uses)} body "
                 f"identifiers, and {len(body_calls)} body calls",
+            )
+        if relative != AUTHORIZED_CLEANUP_RAW_UNLINK_FILE:
+            return
+
+        carrier_uses = find_code_identifier_uses(
+            text, AUTHORIZED_CLEANUP_RAW_UNLINK_CARRIER
+        )
+        allowed_caller_uses = 0
+        for function_name in AUTHORIZED_CLEANUP_RAW_UNLINK_CALL_FUNCTIONS:
+            caller_body, caller_line_offset, caller_errors = (
+                find_function_definition_body(text, function_name)
+            )
+            for line, error in caller_errors:
+                self.fail(relative, line, error)
+            if caller_body is None:
+                continue
+            caller_uses = find_code_identifier_uses(
+                caller_body, AUTHORIZED_CLEANUP_RAW_UNLINK_CARRIER
+            )
+            caller_calls = find_call_identifier_uses(
+                caller_body, AUTHORIZED_CLEANUP_RAW_UNLINK_CARRIER
+            )
+            allowed_caller_uses += len(caller_uses)
+            if len(caller_uses) != 1 or len(caller_calls) != 1:
+                self.fail(
+                    relative,
+                    caller_line_offset + 1,
+                    f"{function_name} must contain exactly 1 direct "
+                    f"{AUTHORIZED_CLEANUP_RAW_UNLINK_CARRIER} call, found "
+                    f"{len(caller_uses)} identifiers and {len(caller_calls)} calls",
+                )
+        if len(carrier_uses) != allowed_caller_uses + 1:
+            self.fail(
+                relative,
+                1,
+                f"all {AUTHORIZED_CLEANUP_RAW_UNLINK_CARRIER} calls must remain "
+                "inside the exact V2 leaf and empty-directory reducers",
             )
 
     def validate_work_package_carrier_unlink_authority(
@@ -7158,6 +7307,148 @@ class Checks:
                     "merge-commit trusted-test hook use is not allowlisted: "
                     f"{identifier}",
                 )
+
+    def validate_worker_cleanup_tail_authority_use_site(
+        self, relative: str, text: str
+    ) -> None:
+        relevant_identifiers = (
+            tuple(WORKER_CLEANUP_TAIL_AUTHORITY_IDENTIFIER_ALLOWLISTS)
+            + tuple(WORKER_CLEANUP_EXACT_ANCHOR_IDENTIFIER_ALLOWLISTS)
+        )
+        if (
+            WORKER_CLEANUP_TAIL_AUTHORITY_INTERFACE_INCLUDE not in text
+            and not any(identifier in text for identifier in relevant_identifiers)
+        ):
+            return
+
+        include_pattern = re.compile(
+            rf'(?m)^[ \t]*#[ \t]*include[ \t]*["<]'
+            rf'{re.escape(WORKER_CLEANUP_TAIL_AUTHORITY_INTERFACE_INCLUDE)}[">]'
+        )
+        include_matches = list(include_pattern.finditer(text))
+        if relative in WORKER_CLEANUP_TAIL_AUTHORITY_INCLUDE_ALLOWLIST:
+            if len(include_matches) != 1:
+                self.fail(
+                    relative,
+                    1,
+                    "worker-cleanup tail authority interface must be included "
+                    "exactly once by its implementation and dedicated test",
+                )
+        else:
+            for match in include_matches:
+                self.fail(
+                    relative,
+                    text.count("\n", 0, match.start()) + 1,
+                    "worker-cleanup tail authority interface include is not allowlisted",
+                )
+
+        for identifier, allowlist in (
+            WORKER_CLEANUP_TAIL_AUTHORITY_IDENTIFIER_ALLOWLISTS.items()
+        ):
+            if relative in allowlist:
+                continue
+            for use in find_code_identifier_uses(text, identifier):
+                self.fail(
+                    relative,
+                    use.line,
+                    "worker-cleanup tail authority API use site is not allowlisted: "
+                    f"{identifier}",
+                )
+
+        for identifier, allowlist in (
+            WORKER_CLEANUP_EXACT_ANCHOR_IDENTIFIER_ALLOWLISTS.items()
+        ):
+            if relative in allowlist:
+                continue
+            for use in find_code_identifier_uses(text, identifier):
+                self.fail(
+                    relative,
+                    use.line,
+                    "worker-cleanup exact-anchor/cold-open use site is not "
+                    f"allowlisted: {identifier}",
+                )
+
+        if relative == WORKER_CLEANUP_TAIL_AUTHORITY_INTERFACE_FILE:
+            authority_span = _class_definition_body_span(
+                text, "DistributedSieveWorkerCleanupTailAuthorityV1"
+            )
+            if authority_span is None:
+                self.fail(
+                    relative,
+                    1,
+                    "worker-cleanup tail authority class must remain source-private",
+                )
+                return
+            authority_body = _compact_cpp_code(
+                text[authority_span[0] : authority_span[1]]
+            )
+            if authority_body != WORKER_CLEANUP_TAIL_AUTHORITY_CLASS_SURFACE:
+                self.fail(
+                    relative,
+                    text.count("\n", 0, authority_span[0]) + 1,
+                    "worker-cleanup tail authority must remain a deleted-constructor "
+                    "private consumer with only production and trusted-test entry friends",
+                )
+            for identifier in (
+                "consume_distributed_sieve_committed_tail_for_worker_cleanup_v1",
+                "consume_distributed_sieve_committed_tail_for_worker_cleanup_v1_with_hooks",
+            ):
+                if len(find_code_identifier_uses(text, identifier)) != 2:
+                    self.fail(
+                        relative,
+                        1,
+                        "worker-cleanup tail interface must expose exactly one "
+                        f"source-private entry declaration and friend for {identifier}",
+                    )
+            return
+
+        if relative != WORKER_CLEANUP_TAIL_AUTHORITY_IMPLEMENTATION_FILE:
+            return
+
+        release_identifier = "release_for_worker_cleanup_cold_open_v1"
+        release_body, release_line_offset, release_errors = (
+            find_function_definition_body(text, release_identifier)
+        )
+        for line, error in release_errors:
+            self.fail(relative, line, error)
+        consume_body, consume_line_offset, consume_errors = (
+            find_function_definition_body(text, "consume")
+        )
+        for line, error in consume_errors:
+            self.fail(relative, line, error)
+        if release_body is None or consume_body is None:
+            return
+
+        release_uses = find_code_identifier_uses(text, release_identifier)
+        consume_release_uses = find_code_identifier_uses(
+            consume_body, release_identifier
+        )
+        consume_release_calls = find_call_identifier_uses(
+            consume_body, release_identifier
+        )
+        freeze_identifier = "freeze_worker_cleanup_exact_anchor_v1"
+        open_identifier = "open_worker_cleanup_root_v1"
+        release_freeze_calls = find_call_identifier_uses(
+            release_body, freeze_identifier
+        )
+        consume_open_calls = find_call_identifier_uses(consume_body, open_identifier)
+        if (
+            len(release_uses) != 2
+            or len(consume_release_uses) != 1
+            or len(consume_release_calls) != 1
+            or len(find_code_identifier_uses(text, freeze_identifier)) != 1
+            or len(release_freeze_calls) != 1
+            or find_code_identifier_uses(consume_body, freeze_identifier)
+            or len(find_code_identifier_uses(text, open_identifier)) != 1
+            or len(consume_open_calls) != 1
+            or find_code_identifier_uses(release_body, open_identifier)
+        ):
+            self.fail(
+                relative,
+                min(release_line_offset, consume_line_offset) + 1,
+                "worker-cleanup tail must release exactly once through the exact "
+                "anchor freezer, then cold-open exactly once only inside its private consumer",
+            )
 
     def validate_merge_commit_authority_contract(
         self, relative: str, text: str
@@ -11451,6 +11742,7 @@ class Checks:
             )
             self.validate_consumed_canonical_adoption_bridge(relative, text)
             self.validate_merge_commit_authority_use_site(relative, text)
+            self.validate_worker_cleanup_tail_authority_use_site(relative, text)
             self.validate_merge_commit_authority_contract(relative, text)
             self.validate_merge_prepared_admission_boundary(relative, text)
             self.validate_worker_writer_identifier_exception_boundary(
@@ -12843,6 +13135,17 @@ auto read_private_lease_directory_inventory() {
         f"{existing_derived_alias_caller_checks.errors}",
     )
     allowed_global_raw_unlinkat_snippets = {
+        AUTHORIZED_CLEANUP_RAW_UNLINK_FILE: r"""
+auto authorized_cleanup_raw_unlinkat_v2(int directory, const char* leaf, int flags) noexcept {
+    return ::unlinkat(directory, leaf, flags);
+}
+auto remove_exact_authorized_cleanup_leaf_v2() {
+    return authorized_cleanup_raw_unlinkat_v2(directory, leaf, 0);
+}
+auto remove_empty_authorized_cleanup_directory_v2() {
+    return authorized_cleanup_raw_unlinkat_v2(directory, leaf, AT_REMOVEDIR);
+}
+""",
         WORK_PACKAGE_RESIDUE_RECONCILER_IMPLEMENTATION_FILE: valid_carrier_unlink_authority,
         WORKER_LAUNCHER_IMPLEMENTATION_FILE: valid_wave_store_unlink_authority,
         "src/util/durable_immutable_record.cpp": r"""
@@ -12889,6 +13192,56 @@ auto remove_path_if_same_identity_at_noexcept() noexcept {
         in allowed_file_raw_alias_checks.errors[0],
         "allowlisted production file raw unlinkat alias escaped count closure: "
         f"{allowed_file_raw_alias_checks.errors}",
+    )
+    valid_authorized_cleanup_raw_unlink = allowed_global_raw_unlinkat_snippets[
+        AUTHORIZED_CLEANUP_RAW_UNLINK_FILE
+    ]
+    authorized_cleanup_raw_outside_checks = Checks(Path("."))
+    authorized_cleanup_raw_outside_checks.validate_production_raw_unlinkat_authority(
+        AUTHORIZED_CLEANUP_RAW_UNLINK_FILE,
+        valid_authorized_cleanup_raw_unlink
+        + "\nauto escaped_raw_unlink() { return ::unlinkat(directory, leaf, 0); }\n",
+    )
+    expect(
+        any(
+            "must own the sole direct production unlinkat call" in error
+            for error in authorized_cleanup_raw_outside_checks.errors
+        ),
+        "authorized-cleanup raw unlinkat escaped its sole carrier: "
+        f"{authorized_cleanup_raw_outside_checks.errors}",
+    )
+    authorized_cleanup_second_raw_checks = Checks(Path("."))
+    authorized_cleanup_second_raw_checks.validate_production_raw_unlinkat_authority(
+        AUTHORIZED_CLEANUP_RAW_UNLINK_FILE,
+        valid_authorized_cleanup_raw_unlink.replace(
+            "    return ::unlinkat(directory, leaf, flags);\n",
+            "    (void)::unlinkat(directory, leaf, flags);\n"
+            "    return ::unlinkat(directory, leaf, flags);\n",
+            1,
+        ),
+    )
+    expect(
+        any(
+            "must own the sole direct production unlinkat call" in error
+            for error in authorized_cleanup_second_raw_checks.errors
+        ),
+        "authorized-cleanup carrier accepted a second raw unlinkat call: "
+        f"{authorized_cleanup_second_raw_checks.errors}",
+    )
+    authorized_cleanup_extra_caller_checks = Checks(Path("."))
+    authorized_cleanup_extra_caller_checks.validate_production_raw_unlinkat_authority(
+        AUTHORIZED_CLEANUP_RAW_UNLINK_FILE,
+        valid_authorized_cleanup_raw_unlink
+        + "\nauto escaped_caller() { return authorized_cleanup_raw_unlinkat_v2("
+        "directory, leaf, 0); }\n",
+    )
+    expect(
+        any(
+            "all authorized_cleanup_raw_unlinkat_v2 calls must remain" in error
+            for error in authorized_cleanup_extra_caller_checks.errors
+        ),
+        "authorized-cleanup raw carrier accepted an unregistered higher caller: "
+        f"{authorized_cleanup_extra_caller_checks.errors}",
     )
     cross_file_fixed_leaf_caller_checks = Checks(Path("."))
     cross_file_fixed_leaf_caller = r"""
@@ -13928,6 +14281,8 @@ auto DistributedSievePrivateLeaseBaseLockAt::adopt_exact_private_handoff(
                 RAW_RECOVERY_BORROWED_BASE_LOCK_INTERFACE_FILE,
                 RAW_RECOVERY_BORROWED_BASE_LOCK_WAVE_STORE_FILE,
                 RAW_RECOVERY_BORROWED_BASE_LOCK_CLEANUP_HEADER,
+                RAW_RECOVERY_BORROWED_BASE_LOCK_OBSERVER_INTERFACE_FILE,
+                RAW_RECOVERY_BORROWED_BASE_LOCK_TEST_FILE,
             },
             "recover_private_lease_with_borrowed_base_lock_v1": {
                 RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE,
@@ -13950,10 +14305,12 @@ auto DistributedSievePrivateLeaseBaseLockAt::adopt_exact_private_handoff(
         RAW_RECOVERY_BORROWED_BASE_LOCK_IDENTIFIER_USE_COUNTS
         == {
             "OOCPrivateLeaseRecoveryBorrowedBaseLockV1": {
-                RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE: 12,
-                RAW_RECOVERY_BORROWED_BASE_LOCK_INTERFACE_FILE: 14,
+                RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE: 13,
+                RAW_RECOVERY_BORROWED_BASE_LOCK_INTERFACE_FILE: 15,
                 RAW_RECOVERY_BORROWED_BASE_LOCK_WAVE_STORE_FILE: 1,
                 RAW_RECOVERY_BORROWED_BASE_LOCK_CLEANUP_HEADER: 2,
+                RAW_RECOVERY_BORROWED_BASE_LOCK_OBSERVER_INTERFACE_FILE: 2,
+                RAW_RECOVERY_BORROWED_BASE_LOCK_TEST_FILE: 2,
             },
             "recover_private_lease_with_borrowed_base_lock_v1": {
                 RAW_RECOVERY_BORROWED_BASE_LOCK_IMPLEMENTATION_FILE: 1,
@@ -14470,6 +14827,7 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
         == {
             MERGE_COMMIT_AUTHORITY_IMPLEMENTATION_FILE,
             MERGE_COMMIT_AUTHORITY_TEST_FILE,
+            WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
         },
         "merge-commit authority interface include allowlist is not exact",
     )
@@ -14489,7 +14847,10 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
             ),
             "consume_distributed_sieve_merge_prepared_v1": (
                 MERGE_COMMIT_AUTHORITY_PRODUCTION_FILES
-                | {MERGE_COMMIT_AUTHORITY_TEST_FILE}
+                | {
+                    MERGE_COMMIT_AUTHORITY_TEST_FILE,
+                    WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
+                }
             ),
             "DistributedSieveMergePreparedCommitContextV1": {
                 MERGE_COMMIT_AUTHORITY_ADMISSION_INTERFACE_FILE,
@@ -14502,6 +14863,9 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
                     MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE,
                     MERGE_COMMIT_AUTHORITY_WAVE_STORE_INTERFACE_FILE,
                     MERGE_COMMIT_AUTHORITY_TEST_FILE,
+                    WORKER_CLEANUP_TAIL_AUTHORITY_IMPLEMENTATION_FILE,
+                    WORKER_CLEANUP_TAIL_AUTHORITY_INTERFACE_FILE,
+                    WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
                 }
             ),
             "publish_wave_merge_commit_v1": {
@@ -14608,6 +14972,24 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
         "no cleanup or writer API",
         "a committed-tail cleanup method",
     )
+    expect_merge_commit_authority_mutation(
+        MERGE_COMMIT_AUTHORITY_ADMISSION_INTERFACE_FILE,
+        "    std::uint64_t creator_process_id_ = 0;\n\n"
+        "    friend class ::gnfs::sieve::distributed_sieve_resume_detail::"
+        "DistributedSieveWaveStore;\n"
+        "    friend class ::gnfs::sieve::distributed_sieve_merge_commit_authority_detail::\n"
+        "        DistributedSieveWaveMergeCommitAuthorityV1;\n",
+        "    std::uint64_t creator_process_id_ = 0;\n\n"
+        "    friend class ::gnfs::sieve::distributed_sieve_resume_detail::"
+        "DistributedSieveWaveStore;\n"
+        "    friend class ::gnfs::sieve::distributed_sieve_merge_commit_authority_detail::\n"
+        "        DistributedSieveWaveMergeCommitAuthorityV1;\n"
+        "    friend class ::gnfs::sieve::"
+        "distributed_sieve_worker_cleanup_authority_detail::"
+        "DistributedSieveWorkerCleanupTailAuthorityV1;\n",
+        "mint authority must remain confined",
+        "a worker-cleanup tail authority mint friend",
+    )
 
     untrusted_merge_commit_api_checks = Checks(Path("."))
     untrusted_merge_commit_api_checks.validate_merge_commit_authority_use_site(
@@ -14669,6 +15051,180 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
         ),
         "merge-commit platform gate accepted context construction before the "
         f"unsupported-platform return: {reordered_merge_commit_checks.errors}",
+    )
+
+    expect(
+        WORKER_CLEANUP_TAIL_AUTHORITY_FILES
+        == {
+            WORKER_CLEANUP_TAIL_AUTHORITY_IMPLEMENTATION_FILE,
+            WORKER_CLEANUP_TAIL_AUTHORITY_INTERFACE_FILE,
+        },
+        "worker-cleanup tail authority production-file set is not exact",
+    )
+    expect(
+        WORKER_CLEANUP_TAIL_AUTHORITY_INCLUDE_ALLOWLIST
+        == {
+            WORKER_CLEANUP_TAIL_AUTHORITY_IMPLEMENTATION_FILE,
+            WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
+        },
+        "worker-cleanup tail authority include allowlist is not exact",
+    )
+    expect(
+        WORKER_CLEANUP_TAIL_AUTHORITY_IDENTIFIER_ALLOWLISTS
+        == {
+            "DistributedSieveCommittedTailCleanupTransitionV1": {
+                MERGE_COMMIT_AUTHORITY_ADMISSION_INTERFACE_FILE,
+                WORKER_CLEANUP_TAIL_AUTHORITY_IMPLEMENTATION_FILE,
+                WORKER_CLEANUP_TAIL_AUTHORITY_INTERFACE_FILE,
+            },
+            "release_for_worker_cleanup_cold_open_v1": {
+                MERGE_COMMIT_AUTHORITY_ADMISSION_INTERFACE_FILE,
+                WORKER_CLEANUP_TAIL_AUTHORITY_IMPLEMENTATION_FILE,
+            },
+            "DistributedSieveWorkerCleanupTailAuthorityV1": (
+                WORKER_CLEANUP_TAIL_AUTHORITY_FILES
+            ),
+            "consume_distributed_sieve_committed_tail_for_worker_cleanup_v1": (
+                WORKER_CLEANUP_TAIL_AUTHORITY_FILES
+                | {WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE}
+            ),
+            "consume_distributed_sieve_committed_tail_for_worker_cleanup_v1_with_hooks": (
+                WORKER_CLEANUP_TAIL_AUTHORITY_FILES
+                | {WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE}
+            ),
+            "DistributedSieveWorkerCleanupTailTestHooksV1": (
+                WORKER_CLEANUP_TAIL_AUTHORITY_FILES
+                | {WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE}
+            ),
+        },
+        "worker-cleanup tail authority identifier allowlists are not exact",
+    )
+    expect(
+        WORKER_CLEANUP_EXACT_ANCHOR_IDENTIFIER_ALLOWLISTS
+        == {
+            "DistributedSieveWorkerCleanupRootExactAnchorV1": {
+                MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE,
+                MERGE_COMMIT_AUTHORITY_WAVE_STORE_INTERFACE_FILE,
+                WORKER_CLEANUP_TAIL_AUTHORITY_INTERFACE_FILE,
+            },
+            "DistributedSieveWorkerCleanupRootExactAnchorCaptureResultV1": {
+                MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE,
+                MERGE_COMMIT_AUTHORITY_WAVE_STORE_INTERFACE_FILE,
+            },
+            "freeze_worker_cleanup_exact_anchor_v1": {
+                MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE,
+                MERGE_COMMIT_AUTHORITY_WAVE_STORE_INTERFACE_FILE,
+                WORKER_CLEANUP_TAIL_AUTHORITY_IMPLEMENTATION_FILE,
+            },
+            "open_worker_cleanup_root_v1": {
+                MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE,
+                MERGE_COMMIT_AUTHORITY_WAVE_STORE_INTERFACE_FILE,
+                WORKER_CLEANUP_TAIL_AUTHORITY_IMPLEMENTATION_FILE,
+                MERGE_COMMIT_AUTHORITY_TEST_FILE,
+            },
+        },
+        "worker-cleanup exact-anchor/cold-open allowlists are not exact",
+    )
+
+    worker_cleanup_tail_source_files = (
+        WORKER_CLEANUP_TAIL_AUTHORITY_INCLUDE_ALLOWLIST
+        | {
+            relative
+            for allowlist in (
+                *WORKER_CLEANUP_TAIL_AUTHORITY_IDENTIFIER_ALLOWLISTS.values(),
+                *WORKER_CLEANUP_EXACT_ANCHOR_IDENTIFIER_ALLOWLISTS.values(),
+            )
+            for relative in allowlist
+        }
+    )
+    worker_cleanup_tail_sources = {
+        relative: (Path(__file__).resolve().parents[1] / relative).read_text(
+            encoding="utf-8"
+        )
+        for relative in worker_cleanup_tail_source_files
+    }
+    exact_worker_cleanup_tail_checks = Checks(Path("."))
+    for relative, source in worker_cleanup_tail_sources.items():
+        exact_worker_cleanup_tail_checks.validate_worker_cleanup_tail_authority_use_site(
+            relative, source
+        )
+    expect(
+        not exact_worker_cleanup_tail_checks.errors,
+        "exact worker-cleanup tail authority boundary was rejected: "
+        f"{exact_worker_cleanup_tail_checks.errors}",
+    )
+
+    untrusted_worker_cleanup_tail_checks = Checks(Path("."))
+    untrusted_worker_cleanup_tail_checks.validate_worker_cleanup_tail_authority_use_site(
+        "src/sieve/untrusted_worker_cleanup_tail.cpp",
+        "consume_distributed_sieve_committed_tail_for_worker_cleanup_v1("
+        "std::move(tail));\n",
+    )
+    expect(
+        any(
+            "worker-cleanup tail authority API use site is not allowlisted" in error
+            for error in untrusted_worker_cleanup_tail_checks.errors
+        ),
+        "worker-cleanup tail production entry escaped its use-site gate: "
+        f"{untrusted_worker_cleanup_tail_checks.errors}",
+    )
+    untrusted_worker_cleanup_include_checks = Checks(Path("."))
+    untrusted_worker_cleanup_include_checks.validate_worker_cleanup_tail_authority_use_site(
+        "src/sieve/untrusted_worker_cleanup_tail.cpp",
+        '#include "distributed_sieve_worker_cleanup_authority_internal.hpp"\n',
+    )
+    expect(
+        any(
+            "worker-cleanup tail authority interface include is not allowlisted" in error
+            for error in untrusted_worker_cleanup_include_checks.errors
+        ),
+        "worker-cleanup tail interface escaped its include gate: "
+        f"{untrusted_worker_cleanup_include_checks.errors}",
+    )
+    untrusted_worker_cleanup_anchor_checks = Checks(Path("."))
+    untrusted_worker_cleanup_anchor_checks.validate_worker_cleanup_tail_authority_use_site(
+        "src/sieve/untrusted_worker_cleanup_anchor.cpp",
+        "open_worker_cleanup_root_v1(root, manifest_digest);\n",
+    )
+    expect(
+        any(
+            "worker-cleanup exact-anchor/cold-open use site is not allowlisted"
+            in error
+            for error in untrusted_worker_cleanup_anchor_checks.errors
+        ),
+        "worker-cleanup cold-open entry escaped its use-site gate: "
+        f"{untrusted_worker_cleanup_anchor_checks.errors}",
+    )
+
+    worker_cleanup_implementation = worker_cleanup_tail_sources[
+        WORKER_CLEANUP_TAIL_AUTHORITY_IMPLEMENTATION_FILE
+    ]
+    release_call_anchor = (
+        "        return std::move(tail)."
+        "release_for_worker_cleanup_cold_open_v1();\n"
+    )
+    expect(
+        release_call_anchor in worker_cleanup_implementation,
+        "self-test mutation anchor is missing: worker-cleanup tail release call",
+    )
+    duplicated_release = worker_cleanup_implementation.replace(
+        release_call_anchor,
+        "        (void)std::move(tail)."
+        "release_for_worker_cleanup_cold_open_v1();\n"
+        + release_call_anchor,
+        1,
+    )
+    duplicated_release_checks = Checks(Path("."))
+    duplicated_release_checks.validate_worker_cleanup_tail_authority_use_site(
+        WORKER_CLEANUP_TAIL_AUTHORITY_IMPLEMENTATION_FILE, duplicated_release
+    )
+    expect(
+        any(
+            "must release exactly once through the exact anchor freezer" in error
+            for error in duplicated_release_checks.errors
+        ),
+        "worker-cleanup tail accepted a second committed-tail release: "
+        f"{duplicated_release_checks.errors}",
     )
 
     worker_handoff_bridge_snippet = r"""

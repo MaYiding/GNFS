@@ -7,6 +7,7 @@
 
 #include <ooc_private_cleanup_action_permit_internal.hpp>
 #include <ooc_private_handoff_cleanup_authorization_internal.hpp>
+#include <ooc_private_lease_recovery_internal.hpp>
 #include <ooc_private_lease_recovery_protocol_internal.hpp>
 #include <ooc_private_lease_reservation_protocol_internal.hpp>
 
@@ -93,6 +94,15 @@ public:
     [[nodiscard]] static OOCPrivateHandoffCleanupResumeTestKeyV2 resume_test_key() noexcept {
         return OOCPrivateHandoffCleanupResumeTestKeyV2();
     }
+
+    [[nodiscard]] static OOCPrivateLeaseRecoveryBorrowedBaseLockV1 borrowed_base_lock(
+        int parent_descriptor, int lock_descriptor, std::string_view lock_leaf,
+        const util::durable_immutable_record::NativeIdentity& lock_identity) noexcept {
+        return OOCPrivateLeaseRecoveryBorrowedBaseLockV1(
+            parent_descriptor, lock_descriptor, lock_leaf,
+            {lock_identity.first, lock_identity.second, lock_identity.third},
+            static_cast<std::uint64_t>(gnfs::util::process_id()));
+    }
 };
 
 } // namespace gnfs::relation::ooc_cleanup_detail
@@ -146,6 +156,7 @@ using gnfs::relation::ooc_cleanup_detail::convert_authorized_private_handoff_to_
 using gnfs::relation::ooc_cleanup_detail::
     convert_authorized_private_handoff_to_cleanup_intent_v2_for_trusted_test;
 using gnfs::relation::ooc_cleanup_detail::inspect_private_handoff_from_permit;
+using gnfs::relation::ooc_cleanup_detail::observe_authorized_private_handoff_cleanup_prefix_v2;
 using gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupAuthorizationBinding;
 using gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupAuthorizationReceipt;
 using gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2;
@@ -155,6 +166,8 @@ using gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentPublicat
 using gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentReconciliationDispositionV2;
 using gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentReconciliationFaultPointV2;
 using gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentReconciliationTestHooksV2;
+using gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupPrefixStateV2;
+using gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupPrefixWitnessV2;
 using gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupResumeDispositionV2;
 using gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupResumeFaultPointV2;
 using gnfs::relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupResumeResultV2;
@@ -9143,6 +9156,36 @@ struct AuthorizedCleanupResumeFixtureV2 final {
     OOCAuthorizedCleanupIntentV2 intent;
 };
 
+struct AuthorizedCleanupLiveFixtureV2 final {
+    OOCCleanupPaths paths;
+    OOCPrivateHandoffCleanupAuthorizationBinding binding;
+};
+
+[[nodiscard]] AuthorizedCleanupLiveFixtureV2
+prepare_authorized_cleanup_live_fixture_v2(const std::filesystem::path& base,
+                                           std::uint8_t digest_seed) {
+    const auto paths = OOCCleanupTransaction::paths_for(base);
+    auto prepared = prepare_private_handoff(base);
+    if (!publish_private_handoff(prepared).canonical()) {
+        throw std::runtime_error("could not publish live cleanup-prefix fixture handoff");
+    }
+    auto adopted = OOCCleanupTransaction::adopt_private_handoff(base);
+    if (!adopted.adopted() || !adopted.adoption) {
+        throw std::runtime_error("could not adopt live cleanup-prefix fixture handoff");
+    }
+    OOCPrivateHandoffReader reader(std::move(*adopted.adoption));
+    auto binding = authorized_cleanup_binding_for_reader(
+        paths, reader, authorized_cleanup_test_digest(digest_seed));
+    auto detached = take_read_only_reader_and_release_adoption_authority(std::move(reader));
+    if (!detached.valid() || reader.valid()) {
+        throw std::runtime_error("could not erase live fixture adoption authority");
+    }
+    return {
+        .paths = paths,
+        .binding = std::move(binding),
+    };
+}
+
 [[nodiscard]] OOCPrivateHandoffCleanupAuthorizationReceipt
 make_authorized_cleanup_resume_receipt_v2(
     const OOCPrivateHandoffCleanupAuthorizationBinding& binding) {
@@ -9546,6 +9589,352 @@ void prepare_authorized_cleanup_v2_fault_specific_prefix(
     }
     write_private_control_bytes(fixture.paths.staged_pending_path,
                                 read_test_bytes(fixture.paths.staged_path));
+}
+
+void test_authorized_cleanup_v2_exact_prefix_observer() {
+    TempDirectory temp;
+
+    {
+        const auto fixture = prepare_authorized_cleanup_live_fixture_v2(
+            temp.path() / "authorized-v2-observe-live.gnfs-sink-lease" / "corpus", 0x71);
+        const auto before = capture_namespace_tree(temp.path());
+        const auto first = observe_authorized_private_handoff_cleanup_prefix_v2(fixture.binding);
+        const auto second = observe_authorized_private_handoff_cleanup_prefix_v2(fixture.binding);
+        CHECK(first.observed());
+        CHECK(second.observed());
+        CHECK(first == second);
+        CHECK(capture_namespace_tree(temp.path()) == before);
+        if (first.witness) {
+            const auto& witness = *first.witness;
+            CHECK(witness.state == OOCPrivateHandoffCleanupPrefixStateV2::LiveUnconverted);
+            CHECK(witness.binding == fixture.binding);
+            CHECK(witness.parent_directory_identity == fixture.binding.parent_directory_identity);
+            CHECK(witness.base_lock_identity == fixture.binding.lock_identity);
+            CHECK(witness.private_directory_identity ==
+                  std::optional{fixture.binding.directory_identity});
+            CHECK(!witness.intent.has_value());
+            CHECK(!witness.intent_pending.has_value());
+            CHECK(!witness.staged.has_value());
+            CHECK(!witness.staged_pending.has_value());
+            CHECK(witness.handoff.has_value());
+            CHECK(witness.owner.has_value());
+            CHECK(witness.owned.has_value());
+            const RecordSnapshot expected_index{
+                .identity = fixture.binding.index.identity,
+                .size = fixture.binding.index.extent,
+            };
+            const RecordSnapshot expected_data{
+                .identity = fixture.binding.data.identity,
+                .size = fixture.binding.data.extent,
+            };
+            CHECK(witness.index == std::optional<RecordSnapshot>{expected_index});
+            CHECK(witness.data == std::optional<RecordSnapshot>{expected_data});
+            CHECK(!witness.quarantine_index.has_value());
+            CHECK(!witness.quarantine_data.has_value());
+            if (witness.handoff) {
+                CHECK(witness.handoff->bytes ==
+                      read_test_bytes(fixture.paths.private_handoff_path));
+                CHECK(witness.handoff->snapshot.identity == fixture.binding.handoff.identity);
+                CHECK(witness.handoff->snapshot.size == fixture.binding.handoff.extent);
+            }
+        }
+
+        auto wrong_lock = fixture.binding;
+        ++wrong_lock.lock_identity.first;
+        const auto rejected_lock = observe_authorized_private_handoff_cleanup_prefix_v2(wrong_lock);
+        CHECK(!rejected_lock.observed());
+        CHECK(rejected_lock.result.status == OOCCleanupStatus::NamespaceConflict);
+        CHECK(capture_namespace_tree(temp.path()) == before);
+
+        auto wrong_artifact = fixture.binding;
+        ++wrong_artifact.index.extent;
+        const auto rejected_artifact =
+            observe_authorized_private_handoff_cleanup_prefix_v2(wrong_artifact);
+        CHECK(!rejected_artifact.observed());
+        CHECK(rejected_artifact.result.status == OOCCleanupStatus::InvalidRequest);
+        CHECK(capture_namespace_tree(temp.path()) == before);
+    }
+
+    {
+        const auto fixture = prepare_authorized_cleanup_pending_intent_fixture_v2(
+            temp.path() / "authorized-v2-observe-pending.gnfs-sink-lease" / "corpus", 0x72);
+        const auto before = capture_namespace_tree(temp.path());
+        const auto observed = observe_authorized_private_handoff_cleanup_prefix_v2(fixture.binding);
+        CHECK(observed.observed());
+        CHECK(capture_namespace_tree(temp.path()) == before);
+        if (observed.witness) {
+            CHECK(observed.witness->state ==
+                  OOCPrivateHandoffCleanupPrefixStateV2::IntentPendingOnly);
+            CHECK(!observed.witness->intent.has_value());
+            CHECK(observed.witness->intent_pending.has_value());
+            if (observed.witness->intent_pending) {
+                CHECK(observed.witness->intent_pending->bytes == fixture.pending_bytes);
+                CHECK(observed.witness->intent_pending->snapshot == fixture.pending_snapshot);
+            }
+        }
+    }
+
+    {
+        const auto fixture = prepare_authorized_cleanup_resume_fixture_v2(
+            temp.path() / "authorized-v2-observe-replacement.gnfs-sink-lease" / "corpus", 0x73);
+        const auto first = observe_authorized_private_handoff_cleanup_prefix_v2(fixture.binding);
+        CHECK(first.observed());
+        CHECK(first.witness &&
+              first.witness->state ==
+                  OOCPrivateHandoffCleanupPrefixStateV2::IntentCanonicalWithHandoff);
+        CHECK(first.witness && first.witness->intent.has_value());
+        CHECK(replace_private_control_leaf_same_bytes(fixture.paths.intent_path));
+        const auto after_replacement = capture_namespace_tree(temp.path());
+        const auto second = observe_authorized_private_handoff_cleanup_prefix_v2(fixture.binding);
+        CHECK(second.observed());
+        CHECK(capture_namespace_tree(temp.path()) == after_replacement);
+        CHECK(first.witness != second.witness);
+        if (first.witness && first.witness->intent && second.witness && second.witness->intent) {
+            CHECK(first.witness->intent->bytes == second.witness->intent->bytes);
+            CHECK(first.witness->intent->snapshot != second.witness->intent->snapshot);
+        }
+    }
+
+    {
+        const auto fixture = prepare_authorized_cleanup_resume_fixture_v2(
+            temp.path() / "authorized-v2-observe-intent-dual.gnfs-sink-lease" / "corpus", 0x74);
+        write_private_control_bytes(fixture.paths.intent_pending_path,
+                                    read_test_bytes(fixture.paths.intent_path));
+        const auto before = capture_namespace_tree(temp.path());
+        const auto observed = observe_authorized_private_handoff_cleanup_prefix_v2(fixture.binding);
+        CHECK(observed.observed());
+        CHECK(observed.witness &&
+              observed.witness->state ==
+                  OOCPrivateHandoffCleanupPrefixStateV2::IntentCanonicalAndPending);
+        CHECK(capture_namespace_tree(temp.path()) == before);
+    }
+
+    {
+        const auto fixture = prepare_authorized_cleanup_resume_fixture_v2(
+            temp.path() / "authorized-v2-observe-staged-dual.gnfs-sink-lease" / "corpus", 0x75);
+        prepare_authorized_cleanup_v2_fault_specific_prefix(
+            fixture,
+            OOCPrivateHandoffCleanupResumeFaultPointV2::StagedDuplicatePendingRemovedDurable);
+        const auto before = capture_namespace_tree(temp.path());
+        const auto observed = observe_authorized_private_handoff_cleanup_prefix_v2(fixture.binding);
+        CHECK(observed.observed());
+        CHECK(observed.witness &&
+              observed.witness->state ==
+                  OOCPrivateHandoffCleanupPrefixStateV2::IntentCanonicalWithStagedAndPending);
+        CHECK(capture_namespace_tree(temp.path()) == before);
+    }
+
+    {
+        struct PrefixCase final {
+            OOCPrivateHandoffCleanupResumeFaultPointV2 point;
+            OOCPrivateHandoffCleanupPrefixStateV2 expected;
+            std::string_view label;
+        };
+        constexpr std::array cases{
+            PrefixCase{
+                .point = OOCPrivateHandoffCleanupResumeFaultPointV2::RecoveryPermitAcquired,
+                .expected = OOCPrivateHandoffCleanupPrefixStateV2::IntentCanonicalWithHandoff,
+                .label = "handoff",
+            },
+            PrefixCase{
+                .point = OOCPrivateHandoffCleanupResumeFaultPointV2::HandoffRemovedDurable,
+                .expected = OOCPrivateHandoffCleanupPrefixStateV2::IntentCanonicalWithLivePair,
+                .label = "live-pair",
+            },
+            PrefixCase{
+                .point = OOCPrivateHandoffCleanupResumeFaultPointV2::IndexQuarantinedDurable,
+                .expected =
+                    OOCPrivateHandoffCleanupPrefixStateV2::IntentCanonicalWithQuarantinedIndex,
+                .label = "quarantined-index",
+            },
+            PrefixCase{
+                .point = OOCPrivateHandoffCleanupResumeFaultPointV2::PairQuarantinedDurable,
+                .expected =
+                    OOCPrivateHandoffCleanupPrefixStateV2::IntentCanonicalWithQuarantinedPair,
+                .label = "quarantined-pair",
+            },
+            PrefixCase{
+                .point = OOCPrivateHandoffCleanupResumeFaultPointV2::StagedPendingDurable,
+                .expected = OOCPrivateHandoffCleanupPrefixStateV2::IntentCanonicalWithStagedPending,
+                .label = "staged-pending",
+            },
+            PrefixCase{
+                .point = OOCPrivateHandoffCleanupResumeFaultPointV2::StagedCanonicalDurable,
+                .expected = OOCPrivateHandoffCleanupPrefixStateV2::IntentCanonicalWithStagedPair,
+                .label = "staged-pair",
+            },
+            PrefixCase{
+                .point = OOCPrivateHandoffCleanupResumeFaultPointV2::DataRemovedDurable,
+                .expected = OOCPrivateHandoffCleanupPrefixStateV2::IntentCanonicalWithStagedIndex,
+                .label = "staged-index",
+            },
+            PrefixCase{
+                .point = OOCPrivateHandoffCleanupResumeFaultPointV2::IndexRemovedDurable,
+                .expected = OOCPrivateHandoffCleanupPrefixStateV2::IntentCanonicalWithStagedOnly,
+                .label = "intent-staged-only",
+            },
+            PrefixCase{
+                .point = OOCPrivateHandoffCleanupResumeFaultPointV2::IntentRemovedDurable,
+                .expected = OOCPrivateHandoffCleanupPrefixStateV2::StagedWithOwner,
+                .label = "staged-owner",
+            },
+            PrefixCase{
+                .point = OOCPrivateHandoffCleanupResumeFaultPointV2::OwnerRemovedDurable,
+                .expected = OOCPrivateHandoffCleanupPrefixStateV2::StagedOnly,
+                .label = "staged-only",
+            },
+            PrefixCase{
+                .point = OOCPrivateHandoffCleanupResumeFaultPointV2::StagedRemovedDurable,
+                .expected = OOCPrivateHandoffCleanupPrefixStateV2::EmptyPrivateDirectory,
+                .label = "empty-directory",
+            },
+            PrefixCase{
+                .point = OOCPrivateHandoffCleanupResumeFaultPointV2::PrivateDirectoryRemovedDurable,
+                .expected = OOCPrivateHandoffCleanupPrefixStateV2::OwnedOnly,
+                .label = "owned-only",
+            },
+            PrefixCase{
+                .point = OOCPrivateHandoffCleanupResumeFaultPointV2::OwnedRemovedDurable,
+                .expected = OOCPrivateHandoffCleanupPrefixStateV2::Absent,
+                .label = "absent",
+            },
+        };
+
+        for (std::size_t index = 0; index < cases.size(); ++index) {
+            const auto& test_case = cases[index];
+            const auto fixture = prepare_authorized_cleanup_resume_fixture_v2(
+                temp.path() /
+                    ("authorized-v2-observe-" + std::string(test_case.label) + ".gnfs-sink-lease") /
+                    "corpus",
+                static_cast<std::uint8_t>(0x80U + index));
+            prepare_authorized_cleanup_v2_fault_specific_prefix(fixture, test_case.point);
+            auto authorization = make_authorized_cleanup_resume_receipt_v2(fixture.binding);
+            AuthorizedCleanupResumeHookContextV2 context{
+                .target = test_case.point,
+            };
+            const auto interrupted = resume_authorized_private_handoff_cleanup_v2_for_trusted_test(
+                OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2::resume_test_key(),
+                std::move(authorization),
+                OOCPrivateHandoffCleanupResumeTestHooksV2{
+                    .stop_after = authorized_cleanup_resume_hook_v2,
+                    .context = &context,
+                });
+            CHECK(context.invoked);
+            CHECK(!context.failed);
+            CHECK(interrupted.result.status == OOCCleanupStatus::Interrupted);
+            check_authorized_cleanup_v2_fault_prefix(fixture.paths, test_case.point);
+
+            const auto before = capture_namespace_tree(temp.path());
+            const auto observed =
+                observe_authorized_private_handoff_cleanup_prefix_v2(fixture.binding);
+            CHECK(observed.observed());
+            CHECK(observed.witness && observed.witness->state == test_case.expected);
+            CHECK(capture_namespace_tree(temp.path()) == before);
+        }
+    }
+
+    {
+        const auto fixture = prepare_authorized_cleanup_resume_fixture_v2(
+            temp.path() / "authorized-v2-observe-completed.gnfs-sink-lease" / "corpus", 0x90);
+        auto authorization = make_authorized_cleanup_resume_receipt_v2(fixture.binding);
+        const auto completed =
+            resume_authorized_private_handoff_cleanup_v2(std::move(authorization));
+        CHECK(completed.namespace_absent());
+        const auto absent_before = capture_namespace_tree(temp.path());
+        const auto observed_absent =
+            observe_authorized_private_handoff_cleanup_prefix_v2(fixture.binding);
+        CHECK(observed_absent.observed());
+        CHECK(observed_absent.witness &&
+              observed_absent.witness->state == OOCPrivateHandoffCleanupPrefixStateV2::Absent);
+        CHECK(observed_absent.witness && !observed_absent.witness->owned.has_value());
+        CHECK(observed_absent.witness &&
+              !observed_absent.witness->private_directory_identity.has_value());
+        CHECK(capture_namespace_tree(temp.path()) == absent_before);
+
+        CHECK(::unlink(fixture.paths.lock_path.c_str()) == 0);
+        const auto missing_lock_before = capture_namespace_tree(temp.path());
+        const auto missing_lock =
+            observe_authorized_private_handoff_cleanup_prefix_v2(fixture.binding);
+        CHECK(!missing_lock.observed());
+        CHECK(missing_lock.result.status == OOCCleanupStatus::NamespaceConflict);
+        CHECK(!entry_exists_no_follow(fixture.paths.lock_path));
+        CHECK(capture_namespace_tree(temp.path()) == missing_lock_before);
+    }
+
+    {
+        const auto fixture = prepare_authorized_cleanup_live_fixture_v2(
+            temp.path() / "authorized-v2-observe-borrowed.gnfs-sink-lease" / "corpus", 0x91);
+        CHECK(::chmod(fixture.paths.lock_path.parent_path().c_str(), 0700) == 0);
+        const auto before = capture_namespace_tree(temp.path());
+        const auto lock_leaf = fixture.paths.lock_path.filename().string();
+        int parent_descriptor = -1;
+        do {
+            parent_descriptor = ::open(fixture.paths.lock_path.parent_path().c_str(),
+                                       O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        } while (parent_descriptor < 0 && errno == EINTR);
+        if (parent_descriptor < 0) {
+            throw std::system_error(errno, std::generic_category(),
+                                    "open borrowed observer parent");
+        }
+        int lock_descriptor = -1;
+        do {
+            lock_descriptor =
+                ::openat(parent_descriptor, lock_leaf.c_str(), O_RDWR | O_NOFOLLOW | O_CLOEXEC);
+        } while (lock_descriptor < 0 && errno == EINTR);
+        if (lock_descriptor < 0) {
+            const int saved_errno = errno;
+            (void)::close(parent_descriptor);
+            throw std::system_error(saved_errno, std::generic_category(),
+                                    "open borrowed observer lock");
+        }
+        int locked = -1;
+        do {
+            locked = ::flock(lock_descriptor, LOCK_EX | LOCK_NB);
+        } while (locked != 0 && errno == EINTR);
+        if (locked != 0) {
+            const int saved_errno = errno;
+            (void)::close(lock_descriptor);
+            (void)::close(parent_descriptor);
+            throw std::system_error(saved_errno, std::generic_category(),
+                                    "flock borrowed observer lock");
+        }
+        const auto borrowed = observe_authorized_private_handoff_cleanup_prefix_v2(
+            fixture.binding,
+            OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2::borrowed_base_lock(
+                parent_descriptor, lock_descriptor, lock_leaf, fixture.binding.lock_identity));
+        CHECK(borrowed.observed());
+        CHECK(borrowed.witness &&
+              borrowed.witness->state == OOCPrivateHandoffCleanupPrefixStateV2::LiveUnconverted);
+
+        const pid_t contender = ::fork();
+        if (contender < 0) {
+            const int saved_errno = errno;
+            (void)::close(lock_descriptor);
+            (void)::close(parent_descriptor);
+            throw std::system_error(saved_errno, std::generic_category(),
+                                    "fork borrowed observer contender");
+        }
+        if (contender == 0) {
+            (void)::close(lock_descriptor);
+            (void)::close(parent_descriptor);
+            const auto denied =
+                observe_authorized_private_handoff_cleanup_prefix_v2(fixture.binding);
+            std::_Exit(!denied.observed() && denied.result.status == OOCCleanupStatus::Busy ? 0
+                                                                                            : 91);
+        }
+        int contender_status = 0;
+        CHECK(::waitpid(contender, &contender_status, 0) == contender);
+        CHECK(WIFEXITED(contender_status));
+        CHECK(WIFEXITED(contender_status) && WEXITSTATUS(contender_status) == 0);
+        CHECK(::close(lock_descriptor) == 0);
+        CHECK(::close(parent_descriptor) == 0);
+
+        const auto after_release =
+            observe_authorized_private_handoff_cleanup_prefix_v2(fixture.binding);
+        CHECK(after_release.observed());
+        CHECK(after_release.witness == borrowed.witness);
+        CHECK(capture_namespace_tree(temp.path()) == before);
+    }
 }
 
 [[nodiscard]] bool authorized_cleanup_v2_fault_prefix_retains_intent(
@@ -15039,6 +15428,7 @@ void run_authority_observer_suite() {
 
 #if defined(__APPLE__)
 void run_authorized_v2_core_suite() {
+    test_authorized_cleanup_v2_exact_prefix_observer();
     test_authorized_cleanup_v2_canonical_completion_evidence();
     test_authorized_cleanup_v2_pending_only_requires_conversion();
     test_authorized_cleanup_v2_reconciliation_never_creates_pending();
