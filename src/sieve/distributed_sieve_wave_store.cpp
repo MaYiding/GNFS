@@ -24489,6 +24489,9 @@ DistributedSieveWorkerCleanupReceiptMintAuthorityV1::mint(
             return {std::nullopt, std::move(diagnostic)};
         }
 
+        auto receipt_binding = relation_binding.relation_binding->binding;
+        auto observer_binding = std::move(relation_binding.relation_binding->binding);
+
         auto claimed = live_state->try_claim_receipt();
         if (claimed.result != wave::DistributedSieveExternalCleanupAuthorizationState::
                                   ReceiptClaimResultV1::acquired) {
@@ -24516,9 +24519,10 @@ DistributedSieveWorkerCleanupReceiptMintAuthorityV1::mint(
 
         relation_cleanup::OOCPrivateHandoffCleanupAuthorizationMintKey mint_key;
         relation_cleanup::OOCPrivateHandoffCleanupAuthorizationReceipt receipt(
-            std::move(mint_key), std::move(relation_binding.relation_binding->binding), live_state);
+            std::move(mint_key), std::move(receipt_binding), live_state);
         claim_owned = false;
-        DistributedSieveWorkerCleanupReceiptMintedV1 minted(active_ordinal, std::move(receipt));
+        DistributedSieveWorkerCleanupReceiptMintedV1 minted(
+            active_ordinal, std::move(observer_binding), std::move(receipt));
         std::optional<DistributedSieveWorkerCleanupReceiptMintedV1> result;
         result.emplace(std::move(minted));
         MintDiagnostic diagnostic;

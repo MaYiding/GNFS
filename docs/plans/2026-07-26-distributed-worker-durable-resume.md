@@ -2,8 +2,9 @@
 
 Status: implementation in progress (durable worker/retry path, M4 prepared
 admission, raw-writer recovery, merge commit, worker-cleanup codec/root
-admission, and fresh/recovery relation-intent conversion complete;
-manifest-order authorization publication, cold cleanup, and completion next)
+admission, fresh/recovery relation-intent conversion, and canonical-root
+relation cleanup routing complete; root record publication and frontier
+advance next)
 
 Branch: `codex/parallel-structured-filter`
 
@@ -3022,9 +3023,12 @@ M4b restart recovery is split into explicit authority milestones:
   cleanup-root inventory/cold admission.
 - [x] M4b-P4b mints one root-bound live receipt and seals the fresh same-OFD
   T2a conversion bridge.
-- [ ] M4b-P4c publishes or recovers the next manifest-order authorization,
-  drives recovery-only T2a plus the independent T2b deletion epoch, publishes
-  exact completion, and retains the merged corpus.
+- [x] M4b-P4c-R1 drives one canonical root authorization through read-only
+  relation classification, recovery-only T2a, and the independent T2b deletion
+  epoch into a sealed completion-ready capsule while retaining the merged
+  corpus.
+- [ ] M4b-P4c-R2 publishes or recovers the exact completion, refreshes the
+  cleanup-root admission, and advances at most one manifest-order frontier.
 
 M4a completes the source-private merge-generation namespace, exact P0-P8
 reservation, bounded `MergeStartedV1` publication and normalization, reverse
@@ -3736,3 +3740,63 @@ authorization, drive this P/C/CP reconciler and T2b from fresh independent lock
 epochs, publish exact cleanup completion from parent-durable absence evidence,
 advance the worker frontier, and retain the merged corpus. Consumption ACK,
 merged cleanup, and `WaveCompletedV1` remain M5 work.
+
+## M4b-P4c-R1 Implementation Report: 2026-08-01
+
+P4c begins with a source-private relation-routing transaction whose sole input
+is a move-only cleanup-root admission with one canonical-only active worker
+authorization. This first slice does not publish or normalize any root record.
+It closes the authority chain only through parent-durable relation namespace
+absence and returns one sealed completion-ready capsule.
+
+The driver first mints the unique root-bound receipt and obtains its
+authority-free relation binding. Two complete read-only observations, with a
+root revalidation between them, must agree before routing. A live unconverted
+prefix uses the existing same-OFD T2a capsule. Pending-only, canonical-only,
+and exact canonical-plus-pending intent prefixes use the recovery-only P3c
+reconciler. Every later legal prefix, including markerless absence, uses the
+independent T2b cleanup epoch. Each mutator reclassifies the namespace under
+its own newly opened `BaseLock`; the observations grant no mutation authority.
+
+Receipt ownership follows the durable spend boundaries rather than status
+names. A retained receipt is released before a retryable root is returned. A
+spent or successful T2a/P3c receipt is destroyed before a fresh receipt is
+minted for T2b. After T2b proves parent-durable absence, its spent receipt is
+destroyed and one final fresh root-only receipt is minted. The resulting
+capsule owns that receipt, the exact absence evidence, the cleanup-root
+admission, the merged read-only corpus, and `WaveLock`. It exposes no path,
+record bytes, standalone evidence, or deletion capability.
+
+R1 success deliberately stops before building or publishing
+`ArtifactCleanupCompletedV1`. P4c-R2 will consume the whole capsule in a typed
+completion publisher, refresh the root admission under the same `WaveLock`,
+and advance at most one manifest-order frontier. Authorization publication,
+multi-worker iteration, merged-corpus cleanup, consumption ACK, and
+`WaveCompletedV1` are outside R1.
+
+The R1 validation gate is the focused worker-cleanup-tail binary, production
+and test static type checks, the policy checker and its focused mutation
+matrix, `changed --deep`, the project gate, formatting, Harness and Markdown
+checks, machine-path and secret scans, and an independent security review.
+
+The production driver and capsule now implement this plan. Focused validation
+covers live, canonical, pending-only, exact duplicate-pending, and markerless
+absent prefixes; a nonzero active ordinal with a completed predecessor; merged
+corpus and root-record preservation; full `BaseLock` release; retained
+`WaveLock`; process-bound capsule validation; and a competing-`BaseLock` Busy
+retry with zero mutation. `./scripts/test.sh changed --deep` passes 74/74 tests,
+including API deep and GNFS E2E, and `./scripts/test.sh gate` passes 183/183.
+An independent authority review reports no P0/P1 finding. Its remaining P2
+items are diagnostic preservation for unsupported platforms, per-state wrapper
+coverage beyond the frozen 17-state switch, explicit child-side capsule
+destruction after `fork()`, and the already accepted hostile same-UID POSIX
+namespace-recreation boundary; none widens R1 authority or permits completion
+publication.
+
+The distributed-sieve policy checker rejects all eight focused R1 mutations,
+its complete parser/table mutation self-test reports zero errors, and the full
+repository baseline exits successfully. The frozen checker SHA-256 is
+`bb5a47e3f3023e655858ddea3a3772e15e2fc046c7e4cb07967227b961ff20a3`.
+`clang-format --dry-run --Werror`, the Harness checker, the Markdown-link
+checker, `git diff --check`, and the added-line machine-path and secret scans
+also pass.

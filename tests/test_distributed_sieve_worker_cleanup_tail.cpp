@@ -67,6 +67,12 @@ using CleanupConversionPrepareFunction =
     decltype(&cleanup_authority::prepare_distributed_sieve_worker_cleanup_intent_conversion_v1);
 using CleanupConversionExecuteFunction =
     decltype(&cleanup_authority::execute_distributed_sieve_worker_cleanup_intent_conversion_v1);
+using CleanupCompletionReadyCapsule =
+    cleanup_authority::DistributedSieveWorkerCleanupCompletionReadyCapsuleV1;
+using CleanupCompletionPreparationResult =
+    cleanup_authority::DistributedSieveWorkerCleanupCompletionPreparationResultV1;
+using CleanupCompletionDriveFunction =
+    decltype(&cleanup_authority::drive_distributed_sieve_worker_cleanup_to_completion_ready_v1);
 
 static_assert(std::is_final_v<CleanupAdmission>);
 static_assert(!std::is_default_constructible_v<CleanupAdmission>);
@@ -94,6 +100,15 @@ static_assert(!std::is_invocable_v<CleanupConversionExecuteFunction, CleanupConv
 static_assert(
     std::is_nothrow_invocable_r_v<CleanupConversionExecuteResult, CleanupConversionExecuteFunction,
                                   CleanupConversionCapsule&&>);
+static_assert(std::is_final_v<CleanupCompletionReadyCapsule>);
+static_assert(!std::is_default_constructible_v<CleanupCompletionReadyCapsule>);
+static_assert(!std::is_copy_constructible_v<CleanupCompletionReadyCapsule>);
+static_assert(std::is_nothrow_move_constructible_v<CleanupCompletionReadyCapsule>);
+static_assert(!std::is_copy_constructible_v<CleanupCompletionPreparationResult>);
+static_assert(std::is_nothrow_move_constructible_v<CleanupCompletionPreparationResult>);
+static_assert(!std::is_invocable_v<CleanupCompletionDriveFunction, CleanupAdmission&>);
+static_assert(std::is_nothrow_invocable_r_v<CleanupCompletionPreparationResult,
+                                            CleanupCompletionDriveFunction, CleanupAdmission&&>);
 static_assert(
     noexcept(cleanup_authority::mint_distributed_sieve_worker_cleanup_authorization_receipt_v1(
         std::declval<CleanupAdmission&>())));
@@ -148,6 +163,7 @@ inline constexpr int BASE_LOCKS_FREE_EXIT = 71;
 inline constexpr int BASE_LOCK_HELD_EXIT = 72;
 inline constexpr int WAVE_LOCK_BUSY_EXIT = 73;
 inline constexpr int FORK_REJECTED_EXIT = 74;
+inline constexpr int COMPLETION_READY_FORK_REJECTED_EXIT = 75;
 
 std::string test_executable;
 
@@ -727,6 +743,122 @@ struct CleanupConversionStopContext final {
     }
     context.invoked = true;
     return true;
+}
+
+[[nodiscard]] wave::DistributedSieveWorkerCleanupRecordNamesV1
+active_cleanup_record_names(const CanonicalWorkerCleanupRoot& root) {
+    const auto names =
+        wave::distributed_sieve_worker_cleanup_record_names_v1(root.active_ordinal());
+    CHECK(names.has_value());
+    return *names;
+}
+
+void require_active_cleanup_completion_absent(CanonicalWorkerCleanupRoot& root) {
+    const auto names = active_cleanup_record_names(root);
+    CHECK(!std::filesystem::exists(root.prepared().root() / names.completion_pending_record_leaf));
+    CHECK(
+        !std::filesystem::exists(root.prepared().root() / names.completion_canonical_record_leaf));
+}
+
+void require_worker_cleanup_namespace_absent(const std::filesystem::path& base) {
+    const auto paths = relation::OOCCleanupTransaction::paths_for(base);
+    CHECK(std::filesystem::exists(paths.lock_path));
+    const std::array absent_paths{
+        paths.private_directory,
+        paths.index_path,
+        paths.data_path,
+        paths.intent_path,
+        paths.intent_pending_path,
+        paths.staged_path,
+        paths.staged_pending_path,
+        paths.lease_reserved_path,
+        paths.lease_reserved_pending_path,
+        paths.lease_owned_path,
+        paths.lease_owned_pending_path,
+        paths.private_handoff_path,
+        paths.private_handoff_pending_path,
+        paths.private_handoff_rollback_path,
+        paths.quarantine_index_path,
+        paths.quarantine_data_path,
+    };
+    for (const auto& path : absent_paths) {
+        CHECK(!std::filesystem::exists(path));
+    }
+}
+
+[[nodiscard]] CleanupAdmission publish_canonical_cleanup_intent(CanonicalWorkerCleanupRoot& root) {
+    auto prepared = prepare_cleanup_conversion_capsule(root);
+    auto published =
+        cleanup_authority::execute_distributed_sieve_worker_cleanup_intent_conversion_v1(
+            std::move(*prepared.capsule));
+    CHECK(published);
+    CHECK(!published.retryable_capsule.has_value());
+    CHECK(published.root_continuation.has_value());
+    CHECK(published.publication.intent_published());
+    CHECK(published.root_continuation->valid());
+    return std::move(*published.root_continuation);
+}
+
+void materialize_pending_cleanup_intent_and_cold_reopen(CanonicalWorkerCleanupRoot& root) {
+    const auto paths = relation::OOCCleanupTransaction::paths_for(root.worker_base());
+    auto prepared = prepare_cleanup_conversion_capsule(root);
+    CleanupConversionStopContext context{
+        .target = relation::ooc_cleanup_detail::
+            OOCPrivateHandoffCleanupIntentPublicationFaultPointV2::IntentPendingDurable,
+    };
+    auto interrupted = cleanup_authority::trusted_test::
+        execute_distributed_sieve_worker_cleanup_intent_conversion_v1_with_hooks(
+            std::move(*prepared.capsule),
+            relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentPublicationTestHooksV2{
+                .stop_after = stop_cleanup_conversion_after,
+                .context = &context,
+            });
+    CHECK(context.invoked);
+    CHECK(interrupted);
+    CHECK(interrupted.retryable_capsule.has_value());
+    CHECK(!interrupted.root_continuation.has_value());
+    CHECK(interrupted.publication.capabilities_retained());
+    CHECK(!std::filesystem::exists(paths.intent_path));
+    CHECK(std::filesystem::exists(paths.intent_pending_path));
+
+    interrupted.retryable_capsule.reset();
+    root.release_and_cold_reopen();
+}
+
+[[nodiscard]] CleanupAdmission
+publish_canonical_cleanup_intent_with_duplicate_pending(CanonicalWorkerCleanupRoot& root) {
+    auto continuation = publish_canonical_cleanup_intent(root);
+    const auto paths = relation::OOCCleanupTransaction::paths_for(root.worker_base());
+    CHECK(std::filesystem::exists(paths.intent_path));
+    CHECK(!std::filesystem::exists(paths.intent_pending_path));
+    write_immutable_test_leaf(paths.intent_pending_path,
+                              fixture::read_file_bytes(paths.intent_path));
+    CHECK(std::filesystem::exists(paths.intent_pending_path));
+    return continuation;
+}
+
+[[nodiscard]] CleanupCompletionPreparationResult
+drive_cleanup_to_completion_ready(CleanupAdmission&& admission, std::uint32_t expected_ordinal) {
+    auto driven = cleanup_authority::drive_distributed_sieve_worker_cleanup_to_completion_ready_v1(
+        std::move(admission));
+    CHECK(driven);
+    CHECK(!driven.retryable_root.has_value());
+    CHECK(!driven.retryable_intent_conversion.has_value());
+    CHECK(driven.completion_ready.has_value());
+    CHECK(driven.diagnostic.phase ==
+          cleanup_authority::DistributedSieveWorkerCleanupCompletionPreparationPhaseV1::complete);
+    CHECK(driven.diagnostic.status ==
+          cleanup_authority::DistributedSieveWorkerCleanupCompletionPreparationStatusV1::ready);
+    CHECK(driven.diagnostic.disposition ==
+          cleanup_authority::DistributedSieveWorkerCleanupCompletionPreparationDispositionV1::
+              completion_ready);
+    CHECK(!driven.diagnostic.native_error);
+    CHECK(driven.diagnostic.cleanup_disposition ==
+          std::optional{relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupResumeDispositionV2::
+                            NamespaceAbsent});
+    CHECK(driven.completion_ready->valid());
+    CHECK(driven.completion_ready->manifest_order_ordinal() == expected_ordinal);
+    return driven;
 }
 
 [[nodiscard]] CommittedTail cold_open_tail(const std::filesystem::path& root,
@@ -1720,6 +1852,252 @@ void test_forked_cleanup_capsule_destruction_preserves_parent_authority() {
     CHECK(!published.diagnostic.cold_reopen_required);
 }
 
+void test_cleanup_relation_route_live_unconverted_reaches_completion_ready() {
+    CanonicalWorkerCleanupRoot root("worker-cleanup-route-live");
+    const auto bases = private_handoff_bases(root.prepared());
+    const auto merged_snapshot = capture_merged_corpus(bases[2]);
+    const auto authorization_snapshot = fixture::snapshot_leaf(root.authorization_path());
+    require_active_cleanup_completion_absent(root);
+
+    auto driven = drive_cleanup_to_completion_ready(root.take_admission(), 0U);
+
+    CHECK(driven.completion_ready->valid());
+    CHECK(
+        driven.diagnostic.observed_prefix ==
+        std::optional{
+            relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupPrefixStateV2::LiveUnconverted});
+    require_worker_cleanup_namespace_absent(bases[0]);
+    CHECK(fixture::snapshot_leaf(root.authorization_path()) == authorization_snapshot);
+    require_active_cleanup_completion_absent(root);
+    require_merged_corpus(bases[2], merged_snapshot);
+    require_all_base_locks_free(bases);
+    require_wave_lock_busy(root.prepared());
+}
+
+void test_cleanup_relation_route_busy_observer_returns_retryable_root() {
+    CanonicalWorkerCleanupRoot root("worker-cleanup-route-busy-observer");
+    const auto bases = private_handoff_bases(root.prepared());
+    const auto worker_snapshots = capture_worker_snapshots(root.prepared());
+    const auto merged_snapshot = capture_merged_corpus(bases[2]);
+    const auto authorization_snapshot = fixture::snapshot_leaf(root.authorization_path());
+    const auto paths = relation::OOCCleanupTransaction::paths_for(bases[0]);
+    require_active_cleanup_completion_absent(root);
+
+    auto adopted = relation::OOCCleanupTransaction::adopt_private_handoff(bases[0]);
+    CHECK(adopted.adopted());
+    CHECK(adopted.adoption.has_value());
+    std::optional<relation::OOCPrivateHandoffReader> competing_reader;
+    competing_reader.emplace(std::move(*adopted.adoption));
+    CHECK(competing_reader->valid());
+
+    auto blocked = cleanup_authority::drive_distributed_sieve_worker_cleanup_to_completion_ready_v1(
+        root.take_admission());
+
+    CHECK(blocked);
+    CHECK(blocked.retryable_root.has_value());
+    CHECK(!blocked.retryable_intent_conversion.has_value());
+    CHECK(!blocked.completion_ready.has_value());
+    CHECK(blocked.retryable_root->valid());
+    CHECK(blocked.diagnostic.disposition ==
+          cleanup_authority::DistributedSieveWorkerCleanupCompletionPreparationDispositionV1::
+              retryable_root);
+    CHECK(blocked.diagnostic.status ==
+          cleanup_authority::DistributedSieveWorkerCleanupCompletionPreparationStatusV1::
+              retryable_root);
+    CHECK(blocked.diagnostic.phase ==
+          cleanup_authority::DistributedSieveWorkerCleanupCompletionPreparationPhaseV1::
+              relation_prefix_observation);
+    CHECK(blocked.diagnostic.relation.status == relation::OOCCleanupStatus::Busy);
+    CHECK(!blocked.diagnostic.observed_prefix.has_value());
+    CHECK(competing_reader->valid());
+    CHECK(!std::filesystem::exists(paths.intent_path));
+    CHECK(!std::filesystem::exists(paths.intent_pending_path));
+    CHECK(!std::filesystem::exists(paths.staged_path));
+    CHECK(!std::filesystem::exists(paths.staged_pending_path));
+    require_worker_snapshots(root.prepared(), worker_snapshots);
+    CHECK(fixture::snapshot_leaf(root.authorization_path()) == authorization_snapshot);
+    require_active_cleanup_completion_absent(root);
+    require_merged_corpus(bases[2], merged_snapshot);
+    require_exact_active_worker_base_lock(bases, 0U);
+    require_wave_lock_busy(root.prepared());
+
+    competing_reader.reset();
+    require_all_base_locks_free(bases);
+    auto completed = drive_cleanup_to_completion_ready(std::move(*blocked.retryable_root), 0U);
+
+    CHECK(completed.completion_ready->valid());
+    CHECK(
+        completed.diagnostic.observed_prefix ==
+        std::optional{
+            relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupPrefixStateV2::LiveUnconverted});
+    require_worker_cleanup_namespace_absent(bases[0]);
+    CHECK(fixture::snapshot_leaf(root.authorization_path()) == authorization_snapshot);
+    require_active_cleanup_completion_absent(root);
+    require_merged_corpus(bases[2], merged_snapshot);
+    require_all_base_locks_free(bases);
+    require_wave_lock_busy(root.prepared());
+}
+
+void test_cleanup_relation_route_existing_canonical_intent_reaches_completion_ready() {
+    CanonicalWorkerCleanupRoot root("worker-cleanup-route-canonical");
+    const auto bases = private_handoff_bases(root.prepared());
+    const auto merged_snapshot = capture_merged_corpus(bases[2]);
+    const auto authorization_snapshot = fixture::snapshot_leaf(root.authorization_path());
+    const auto paths = relation::OOCCleanupTransaction::paths_for(bases[0]);
+    auto continuation = publish_canonical_cleanup_intent(root);
+    CHECK(std::filesystem::exists(paths.intent_path));
+    CHECK(!std::filesystem::exists(paths.intent_pending_path));
+
+    auto driven = drive_cleanup_to_completion_ready(std::move(continuation), 0U);
+
+    CHECK(driven.completion_ready->valid());
+    CHECK(driven.diagnostic.observed_prefix ==
+          std::optional{relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupPrefixStateV2::
+                            IntentCanonicalWithHandoff});
+    require_worker_cleanup_namespace_absent(bases[0]);
+    CHECK(fixture::snapshot_leaf(root.authorization_path()) == authorization_snapshot);
+    require_active_cleanup_completion_absent(root);
+    require_merged_corpus(bases[2], merged_snapshot);
+    require_all_base_locks_free(bases);
+    require_wave_lock_busy(root.prepared());
+}
+
+void test_cleanup_relation_route_pending_and_duplicate_pending_reach_completion_ready() {
+    {
+        CanonicalWorkerCleanupRoot root("worker-cleanup-route-pending");
+        const auto bases = private_handoff_bases(root.prepared());
+        const auto merged_snapshot = capture_merged_corpus(bases[2]);
+        const auto authorization_snapshot = fixture::snapshot_leaf(root.authorization_path());
+        const auto paths = relation::OOCCleanupTransaction::paths_for(bases[0]);
+        materialize_pending_cleanup_intent_and_cold_reopen(root);
+        CHECK(!std::filesystem::exists(paths.intent_path));
+        CHECK(std::filesystem::exists(paths.intent_pending_path));
+
+        auto driven = drive_cleanup_to_completion_ready(root.take_admission(), 0U);
+
+        CHECK(driven.completion_ready->valid());
+        CHECK(driven.diagnostic.observed_prefix ==
+              std::optional{relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupPrefixStateV2::
+                                IntentPendingOnly});
+        require_worker_cleanup_namespace_absent(bases[0]);
+        CHECK(fixture::snapshot_leaf(root.authorization_path()) == authorization_snapshot);
+        require_active_cleanup_completion_absent(root);
+        require_merged_corpus(bases[2], merged_snapshot);
+        require_all_base_locks_free(bases);
+        require_wave_lock_busy(root.prepared());
+    }
+
+    {
+        CanonicalWorkerCleanupRoot root("worker-cleanup-route-duplicate-pending");
+        const auto bases = private_handoff_bases(root.prepared());
+        const auto merged_snapshot = capture_merged_corpus(bases[2]);
+        const auto authorization_snapshot = fixture::snapshot_leaf(root.authorization_path());
+        const auto paths = relation::OOCCleanupTransaction::paths_for(bases[0]);
+        auto continuation = publish_canonical_cleanup_intent_with_duplicate_pending(root);
+        CHECK(fixture::read_file_bytes(paths.intent_path) ==
+              fixture::read_file_bytes(paths.intent_pending_path));
+        CHECK(fixture::snapshot_leaf(paths.intent_path).identity !=
+              fixture::snapshot_leaf(paths.intent_pending_path).identity);
+
+        auto driven = drive_cleanup_to_completion_ready(std::move(continuation), 0U);
+
+        CHECK(driven.completion_ready->valid());
+        CHECK(driven.diagnostic.observed_prefix ==
+              std::optional{relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupPrefixStateV2::
+                                IntentCanonicalAndPending});
+        require_worker_cleanup_namespace_absent(bases[0]);
+        CHECK(fixture::snapshot_leaf(root.authorization_path()) == authorization_snapshot);
+        require_active_cleanup_completion_absent(root);
+        require_merged_corpus(bases[2], merged_snapshot);
+        require_all_base_locks_free(bases);
+        require_wave_lock_busy(root.prepared());
+    }
+}
+
+void test_cleanup_relation_route_markerless_absence_reaches_completion_ready() {
+    CanonicalWorkerCleanupRoot root("worker-cleanup-route-markerless-absent");
+    const auto bases = private_handoff_bases(root.prepared());
+    const auto merged_snapshot = capture_merged_corpus(bases[2]);
+    const auto authorization_snapshot = fixture::snapshot_leaf(root.authorization_path());
+    const auto worker_snapshot = root.prepared().worker_snapshot(0);
+    remove_worker_private_namespace(root.prepared().root(), worker_snapshot);
+    require_worker_cleanup_namespace_absent(bases[0]);
+    require_active_cleanup_completion_absent(root);
+    root.release_and_cold_reopen();
+
+    auto driven = drive_cleanup_to_completion_ready(root.take_admission(), 0U);
+
+    CHECK(driven.completion_ready->valid());
+    CHECK(
+        driven.diagnostic.observed_prefix ==
+        std::optional{relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupPrefixStateV2::Absent});
+    require_worker_cleanup_namespace_absent(bases[0]);
+    CHECK(fixture::snapshot_leaf(root.authorization_path()) == authorization_snapshot);
+    require_active_cleanup_completion_absent(root);
+    require_merged_corpus(bases[2], merged_snapshot);
+    require_all_base_locks_free(bases);
+    require_wave_lock_busy(root.prepared());
+}
+
+void test_cleanup_relation_route_active_ordinal_retains_prefix_and_merged_corpus() {
+    CanonicalWorkerCleanupRoot root("worker-cleanup-route-active-ordinal", 1);
+    const auto bases = private_handoff_bases(root.prepared());
+    const auto merged_snapshot = capture_merged_corpus(bases[2]);
+    const auto authorization_snapshot = fixture::snapshot_leaf(root.authorization_path());
+    const auto prior_completion_snapshot = fixture::snapshot_leaf(root.completion_path(0));
+    require_active_cleanup_completion_absent(root);
+
+    auto driven = drive_cleanup_to_completion_ready(root.take_admission(), 1U);
+
+    CHECK(driven.completion_ready->valid());
+    CHECK(
+        driven.diagnostic.observed_prefix ==
+        std::optional{
+            relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupPrefixStateV2::LiveUnconverted});
+    CHECK(driven.completion_ready->manifest_order_ordinal() == 1U);
+    require_worker_cleanup_namespace_absent(bases[0]);
+    require_worker_cleanup_namespace_absent(bases[1]);
+    CHECK(fixture::snapshot_leaf(root.authorization_path()) == authorization_snapshot);
+    CHECK(fixture::snapshot_leaf(root.completion_path(0)) == prior_completion_snapshot);
+    require_active_cleanup_completion_absent(root);
+    require_merged_corpus(bases[2], merged_snapshot);
+    require_all_base_locks_free(bases);
+    require_wave_lock_busy(root.prepared());
+}
+
+void test_completion_ready_capsule_is_process_bound_across_fork() {
+    CanonicalWorkerCleanupRoot root("worker-cleanup-route-completion-ready-fork");
+    const auto bases = private_handoff_bases(root.prepared());
+    auto driven = drive_cleanup_to_completion_ready(root.take_admission(), 0U);
+    CHECK(driven.completion_ready->valid());
+
+    const pid_t child = ::fork();
+    if (child < 0) {
+        throw std::system_error(errno, std::generic_category(),
+                                "fork worker-cleanup completion-ready capsule test");
+    }
+    if (child == 0) {
+        ::_exit(!driven.completion_ready->valid() ? COMPLETION_READY_FORK_REJECTED_EXIT
+                                                  : EXIT_FAILURE);
+    }
+
+    int status = 0;
+    pid_t waited = -1;
+    do {
+        waited = ::waitpid(child, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    if (waited < 0) {
+        throw std::system_error(errno, std::generic_category(),
+                                "wait for worker-cleanup completion-ready capsule child");
+    }
+    CHECK(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == COMPLETION_READY_FORK_REJECTED_EXIT);
+    CHECK(driven.completion_ready->valid());
+    require_worker_cleanup_namespace_absent(bases[0]);
+    require_all_base_locks_free(bases);
+    require_wave_lock_busy(root.prepared());
+}
+
 void run_apple_tests() {
     test_fresh_tail_crosses_one_lock_generation_without_mutation();
     std::cout << "  fresh tail lock-generation bridge and moved replay: PASS\n";
@@ -1757,6 +2135,20 @@ void run_apple_tests() {
     std::cout << "  cleanup capsule canonical promotion reconciliation: PASS\n";
     test_forked_cleanup_capsule_destruction_preserves_parent_authority();
     std::cout << "  fork-invalid cleanup capsule preserves parent authority: PASS\n";
+    test_cleanup_relation_route_live_unconverted_reaches_completion_ready();
+    std::cout << "  cleanup relation route live prefix to completion-ready: PASS\n";
+    test_cleanup_relation_route_busy_observer_returns_retryable_root();
+    std::cout << "  cleanup relation route Busy retryable root: PASS\n";
+    test_cleanup_relation_route_existing_canonical_intent_reaches_completion_ready();
+    std::cout << "  cleanup relation route canonical intent to completion-ready: PASS\n";
+    test_cleanup_relation_route_pending_and_duplicate_pending_reach_completion_ready();
+    std::cout << "  cleanup relation route pending and duplicate pending: PASS\n";
+    test_cleanup_relation_route_markerless_absence_reaches_completion_ready();
+    std::cout << "  cleanup relation route markerless absence: PASS\n";
+    test_cleanup_relation_route_active_ordinal_retains_prefix_and_merged_corpus();
+    std::cout << "  cleanup relation route active ordinal and merged retention: PASS\n";
+    test_completion_ready_capsule_is_process_bound_across_fork();
+    std::cout << "  cleanup completion-ready capsule fork boundary: PASS\n";
 }
 
 #endif

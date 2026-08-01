@@ -2,12 +2,17 @@
 
 #include <gnfs/relation/ooc_relation_store.hpp>
 #include <gnfs/util/process.hpp>
+#include <gnfs/util/sha256.hpp>
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <iterator>
 #include <memory>
 #include <new>
 #include <optional>
+#include <span>
 #include <system_error>
 #include <utility>
 
@@ -416,5 +421,542 @@ execute_distributed_sieve_worker_cleanup_intent_conversion_v1_with_hooks(
 }
 
 } // namespace trusted_test
+
+DistributedSieveWorkerCleanupCompletionReadyCapsuleV1::
+    DistributedSieveWorkerCleanupCompletionReadyCapsuleV1(
+        std::uint32_t manifest_order_ordinal, std::uint64_t creator_process_id,
+        DistributedSieveWorkerCleanupRootAdmissionV1&& root,
+        relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupAuthorizationBinding&&
+            relation_binding,
+        relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupAuthorizationReceipt&&
+            completion_receipt,
+        relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupAbsenceEvidenceV2&&
+            absence_evidence) noexcept
+    : manifest_order_ordinal_(manifest_order_ordinal), creator_process_id_(creator_process_id),
+      root_(std::move(root)), relation_binding_(std::move(relation_binding)),
+      completion_receipt_(std::move(completion_receipt)),
+      absence_evidence_(std::move(absence_evidence)) {}
+
+DistributedSieveWorkerCleanupCompletionReadyCapsuleV1::
+    DistributedSieveWorkerCleanupCompletionReadyCapsuleV1(
+        DistributedSieveWorkerCleanupCompletionReadyCapsuleV1&&) noexcept = default;
+
+DistributedSieveWorkerCleanupCompletionReadyCapsuleV1::
+    ~DistributedSieveWorkerCleanupCompletionReadyCapsuleV1() noexcept = default;
+
+bool DistributedSieveWorkerCleanupCompletionReadyCapsuleV1::valid() const noexcept {
+    return DistributedSieveWorkerCleanupCompletionPreparationAuthorityV1::valid(*this);
+}
+
+DistributedSieveWorkerCleanupCompletionPreparationResultV1::operator bool() const noexcept {
+    using Disposition = DistributedSieveWorkerCleanupCompletionPreparationDispositionV1;
+    switch (diagnostic.disposition) {
+    case Disposition::retryable_root:
+        return retryable_root.has_value() && retryable_root->valid() &&
+               !retryable_intent_conversion.has_value() && !completion_ready.has_value();
+    case Disposition::retryable_intent_conversion:
+        return !retryable_root.has_value() && retryable_intent_conversion.has_value() &&
+               retryable_intent_conversion->valid() && !completion_ready.has_value();
+    case Disposition::completion_ready:
+        return !retryable_root.has_value() && !retryable_intent_conversion.has_value() &&
+               completion_ready.has_value() && completion_ready->valid();
+    case Disposition::cold_reopen_required:
+        return false;
+    }
+    return false;
+}
+
+namespace {
+
+namespace relation_cleanup = relation::ooc_cleanup_detail;
+
+using CompletionCapsule = DistributedSieveWorkerCleanupCompletionReadyCapsuleV1;
+using CompletionDiagnostic = DistributedSieveWorkerCleanupCompletionPreparationDiagnosticV1;
+using CompletionDisposition = DistributedSieveWorkerCleanupCompletionPreparationDispositionV1;
+using CompletionPhase = DistributedSieveWorkerCleanupCompletionPreparationPhaseV1;
+using CompletionResult = DistributedSieveWorkerCleanupCompletionPreparationResultV1;
+using CompletionStatus = DistributedSieveWorkerCleanupCompletionPreparationStatusV1;
+using ConversionCapsule = DistributedSieveWorkerCleanupIntentConversionCapsuleV1;
+using Minted = DistributedSieveWorkerCleanupReceiptMintedV1;
+using RootAdmission = DistributedSieveWorkerCleanupRootAdmissionV1;
+
+[[nodiscard]] CompletionDiagnostic completion_diagnostic(
+    CompletionPhase phase, CompletionStatus status,
+    CompletionDisposition disposition = CompletionDisposition::cold_reopen_required,
+    std::error_code native_error = {}) noexcept {
+    CompletionDiagnostic diagnostic;
+    diagnostic.phase = phase;
+    diagnostic.status = status;
+    diagnostic.disposition = disposition;
+    diagnostic.native_error = native_error;
+    return diagnostic;
+}
+
+[[nodiscard]] CompletionResult cold_reopen(CompletionDiagnostic diagnostic) noexcept {
+    diagnostic.disposition = CompletionDisposition::cold_reopen_required;
+    if (!diagnostic.native_error) {
+        diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+    }
+    return {std::nullopt, std::nullopt, std::nullopt, std::move(diagnostic)};
+}
+
+[[nodiscard]] CompletionResult retryable_root_or_cold(RootAdmission&& root,
+                                                      CompletionDiagnostic diagnostic) noexcept {
+    if (!root.valid()) {
+        return cold_reopen(std::move(diagnostic));
+    }
+    std::optional<RootAdmission> retryable_root;
+    retryable_root.emplace(std::move(root));
+    diagnostic.status = CompletionStatus::retryable_root;
+    diagnostic.disposition = CompletionDisposition::retryable_root;
+    return {std::move(retryable_root), std::nullopt, std::nullopt, std::move(diagnostic)};
+}
+
+[[nodiscard]] CompletionResult
+retryable_conversion_or_cold(ConversionCapsule&& capsule,
+                             CompletionDiagnostic diagnostic) noexcept {
+    if (!capsule.valid()) {
+        return cold_reopen(std::move(diagnostic));
+    }
+    std::optional<ConversionCapsule> retryable_conversion;
+    retryable_conversion.emplace(std::move(capsule));
+    diagnostic.status = CompletionStatus::retryable_intent_conversion;
+    diagnostic.disposition = CompletionDisposition::retryable_intent_conversion;
+    return {std::nullopt, std::move(retryable_conversion), std::nullopt, std::move(diagnostic)};
+}
+
+[[nodiscard]] CompletionStatus
+mint_failure_status(DistributedSieveWorkerCleanupReceiptMintStatusV1 status) noexcept {
+    switch (status) {
+    case DistributedSieveWorkerCleanupReceiptMintStatusV1::process_mismatch:
+        return CompletionStatus::process_mismatch;
+    case DistributedSieveWorkerCleanupReceiptMintStatusV1::authorization_not_canonical:
+        return CompletionStatus::authorization_not_canonical;
+    case DistributedSieveWorkerCleanupReceiptMintStatusV1::resource_exhausted:
+        return CompletionStatus::resource_exhausted;
+    default:
+        return CompletionStatus::receipt_mint_failed;
+    }
+}
+
+[[nodiscard]] CompletionStatus relation_failure_status(const relation::OOCCleanupResult& result,
+                                                       CompletionStatus fallback) noexcept {
+    if (result.status == relation::OOCCleanupStatus::PlatformUnsupported) {
+        return CompletionStatus::platform_unsupported;
+    }
+    if (result.native_error == std::make_error_code(std::errc::not_enough_memory)) {
+        return CompletionStatus::resource_exhausted;
+    }
+    return fallback;
+}
+
+[[nodiscard]] bool absence_evidence_matches(
+    const relation_cleanup::OOCPrivateHandoffCleanupAuthorizationBinding& binding,
+    const relation_cleanup::OOCPrivateHandoffCleanupAbsenceEvidenceV2& evidence) noexcept {
+    const auto& native = binding.base_path.native();
+    const auto characters =
+        std::span<const std::filesystem::path::value_type>(native.data(), native.size());
+    const auto base_path_digest = gnfs::util::sha256(std::as_bytes(characters));
+    return base_path_digest.has_value() && evidence.base_path_digest == *base_path_digest &&
+           evidence.external_authorization_digest == binding.external_authorization_digest &&
+           evidence.lease_id == binding.lease_id &&
+           evidence.parent_directory_identity == binding.parent_directory_identity &&
+           evidence.parent_directory_durability_confirmed && evidence.expected_namespace_absent;
+}
+
+} // namespace
+
+bool DistributedSieveWorkerCleanupCompletionPreparationAuthorityV1::valid(
+    const DistributedSieveWorkerCleanupCompletionReadyCapsuleV1& capsule) noexcept {
+    try {
+        const int process_id = gnfs::util::process_id();
+        if (process_id <= 0 || capsule.creator_process_id_ == 0 ||
+            capsule.creator_process_id_ != static_cast<std::uint64_t>(process_id) ||
+            capsule.completion_receipt_.spent() || !capsule.root_.reader().valid() ||
+            !absence_evidence_matches(capsule.relation_binding_, capsule.absence_evidence_)) {
+            return false;
+        }
+
+        const auto& prefix = capsule.root_.cleanup_prefix();
+        if (!prefix.frontier_manifest_order_ordinal.has_value() ||
+            !prefix.active_manifest_order_ordinal.has_value() ||
+            *prefix.frontier_manifest_order_ordinal != capsule.manifest_order_ordinal_ ||
+            *prefix.active_manifest_order_ordinal != capsule.manifest_order_ordinal_) {
+            return false;
+        }
+        const auto active = std::find_if(
+            prefix.coordinates.begin(), prefix.coordinates.end(),
+            [&](const distributed_sieve_resume_detail::
+                    DistributedSieveWorkerCleanupCoordinateWitnessV1& coordinate) {
+                return coordinate.manifest_order_ordinal == capsule.manifest_order_ordinal_;
+            });
+        if (active == prefix.coordinates.end() ||
+            std::find_if(std::next(active), prefix.coordinates.end(),
+                         [&](const distributed_sieve_resume_detail::
+                                 DistributedSieveWorkerCleanupCoordinateWitnessV1& coordinate) {
+                             return coordinate.manifest_order_ordinal ==
+                                    capsule.manifest_order_ordinal_;
+                         }) != prefix.coordinates.end() ||
+            active->state !=
+                distributed_sieve_resume_detail::DistributedSieveWorkerCleanupPrefixStateV1::
+                    authorization_canonical_only ||
+            active->completion.has_value() ||
+            active->authorization.self_digest !=
+                capsule.relation_binding_.external_authorization_digest ||
+            active->authorization.lease.lease_id.limbs != capsule.relation_binding_.lease_id) {
+            return false;
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+DistributedSieveWorkerCleanupCompletionPreparationResultV1
+DistributedSieveWorkerCleanupCompletionPreparationAuthorityV1::drive(
+    DistributedSieveWorkerCleanupRootAdmissionV1&& root) noexcept {
+    auto retained_root = std::move(root);
+    try {
+        const int process_id = gnfs::util::process_id();
+        if (process_id <= 0 || !retained_root.valid()) {
+            return cold_reopen(completion_diagnostic(
+                CompletionPhase::admission_validation,
+                process_id <= 0 ? CompletionStatus::process_mismatch
+                                : CompletionStatus::invalid_admission,
+                CompletionDisposition::cold_reopen_required,
+                process_id <= 0 ? std::make_error_code(std::errc::no_such_process)
+                                : std::make_error_code(std::errc::invalid_argument)));
+        }
+
+        const auto& prefix = retained_root.cleanup_prefix();
+        if (!prefix.frontier_manifest_order_ordinal.has_value() ||
+            !prefix.active_manifest_order_ordinal.has_value() ||
+            *prefix.frontier_manifest_order_ordinal != *prefix.active_manifest_order_ordinal) {
+            return retryable_root_or_cold(
+                std::move(retained_root),
+                completion_diagnostic(CompletionPhase::authorization_validation,
+                                      CompletionStatus::authorization_not_canonical));
+        }
+        const std::uint32_t active_ordinal = *prefix.active_manifest_order_ordinal;
+        const auto active =
+            std::find_if(prefix.coordinates.begin(), prefix.coordinates.end(),
+                         [&](const distributed_sieve_resume_detail::
+                                 DistributedSieveWorkerCleanupCoordinateWitnessV1& coordinate) {
+                             return coordinate.manifest_order_ordinal == active_ordinal;
+                         });
+        if (active == prefix.coordinates.end() ||
+            std::find_if(std::next(active), prefix.coordinates.end(),
+                         [&](const distributed_sieve_resume_detail::
+                                 DistributedSieveWorkerCleanupCoordinateWitnessV1& coordinate) {
+                             return coordinate.manifest_order_ordinal == active_ordinal;
+                         }) != prefix.coordinates.end() ||
+            active->state !=
+                distributed_sieve_resume_detail::DistributedSieveWorkerCleanupPrefixStateV1::
+                    authorization_canonical_only ||
+            active->completion.has_value()) {
+            return retryable_root_or_cold(
+                std::move(retained_root),
+                completion_diagnostic(CompletionPhase::authorization_validation,
+                                      CompletionStatus::authorization_not_canonical));
+        }
+
+        CompletionDiagnostic diagnostic = completion_diagnostic(
+            CompletionPhase::initial_receipt_mint, CompletionStatus::unexpected_failure);
+        std::optional<Minted> active_minted;
+        const auto mint_receipt = [&](CompletionPhase phase) -> std::optional<CompletionResult> {
+            auto minted =
+                mint_distributed_sieve_worker_cleanup_authorization_receipt_v1(retained_root);
+            diagnostic.phase = phase;
+            const auto mint_status = minted.diagnostic.status;
+            const bool cold_required = minted.diagnostic.cold_reopen_required;
+            const auto native_error = minted.diagnostic.native_error;
+            diagnostic.receipt_mint = std::move(minted.diagnostic);
+            if (!minted || !minted.minted.has_value()) {
+                diagnostic.status = mint_failure_status(mint_status);
+                diagnostic.native_error = native_error;
+                if (cold_required ||
+                    mint_status ==
+                        DistributedSieveWorkerCleanupReceiptMintStatusV1::process_mismatch ||
+                    mint_status ==
+                        DistributedSieveWorkerCleanupReceiptMintStatusV1::root_authority_invalid ||
+                    mint_status == DistributedSieveWorkerCleanupReceiptMintStatusV1::
+                                       relation_binding_invalid ||
+                    mint_status ==
+                        DistributedSieveWorkerCleanupReceiptMintStatusV1::invalid_admission ||
+                    mint_status == DistributedSieveWorkerCleanupReceiptMintStatusV1::
+                                       authorization_not_canonical) {
+                    return cold_reopen(std::move(diagnostic));
+                }
+                return retryable_root_or_cold(std::move(retained_root), std::move(diagnostic));
+            }
+
+            auto retained_minted = std::move(*minted.minted);
+            if (retained_minted.manifest_order_ordinal != active_ordinal ||
+                retained_minted.receipt.spent()) {
+                diagnostic.status = CompletionStatus::receipt_mint_failed;
+                diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+                return cold_reopen(std::move(diagnostic));
+            }
+            active_minted.emplace(std::move(retained_minted));
+            return std::nullopt;
+        };
+
+        if (auto failed = mint_receipt(CompletionPhase::initial_receipt_mint)) {
+            return std::move(*failed);
+        }
+
+        const auto observe_prefix = [&] {
+            return relation_cleanup::observe_authorized_private_handoff_cleanup_prefix_v2(
+                active_minted->relation_binding);
+        };
+        auto first_observation = observe_prefix();
+        diagnostic.phase = CompletionPhase::relation_prefix_observation;
+        diagnostic.relation = first_observation.result;
+        if (!first_observation.observed()) {
+            diagnostic.status = relation_failure_status(
+                first_observation.result, CompletionStatus::relation_observation_failed);
+            diagnostic.native_error = first_observation.result.native_error;
+            const bool retryable =
+                first_observation.result.retryable() ||
+                first_observation.result.status == relation::OOCCleanupStatus::PlatformUnsupported;
+            active_minted.reset();
+            if (retryable) {
+                return retryable_root_or_cold(std::move(retained_root), std::move(diagnostic));
+            }
+            return cold_reopen(std::move(diagnostic));
+        }
+        if (active_minted->receipt.spent() || !retained_root.valid()) {
+            active_minted.reset();
+            diagnostic.status = CompletionStatus::relation_observation_changed;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return cold_reopen(std::move(diagnostic));
+        }
+        auto second_observation = observe_prefix();
+        diagnostic.relation = second_observation.result;
+        if (!second_observation.observed() || second_observation != first_observation ||
+            active_minted->receipt.spent()) {
+            diagnostic.status =
+                second_observation.observed()
+                    ? CompletionStatus::relation_observation_changed
+                    : relation_failure_status(second_observation.result,
+                                              CompletionStatus::relation_observation_failed);
+            diagnostic.native_error = second_observation.result.native_error
+                                          ? second_observation.result.native_error
+                                          : std::make_error_code(std::errc::state_not_recoverable);
+            active_minted.reset();
+            return cold_reopen(std::move(diagnostic));
+        }
+
+        const auto observed_state = first_observation.witness->state;
+        diagnostic.observed_prefix = observed_state;
+        enum class NextAction : std::uint8_t {
+            intent_conversion,
+            intent_reconciliation,
+            cleanup_resume,
+        };
+        NextAction next_action;
+        switch (observed_state) {
+        case relation_cleanup::OOCPrivateHandoffCleanupPrefixStateV2::LiveUnconverted:
+            next_action = NextAction::intent_conversion;
+            break;
+        case relation_cleanup::OOCPrivateHandoffCleanupPrefixStateV2::IntentPendingOnly:
+        case relation_cleanup::OOCPrivateHandoffCleanupPrefixStateV2::IntentCanonicalAndPending:
+        case relation_cleanup::OOCPrivateHandoffCleanupPrefixStateV2::IntentCanonicalWithHandoff:
+            next_action = NextAction::intent_reconciliation;
+            break;
+        case relation_cleanup::OOCPrivateHandoffCleanupPrefixStateV2::IntentCanonicalWithLivePair:
+        case relation_cleanup::OOCPrivateHandoffCleanupPrefixStateV2::
+            IntentCanonicalWithQuarantinedIndex:
+        case relation_cleanup::OOCPrivateHandoffCleanupPrefixStateV2::
+            IntentCanonicalWithQuarantinedPair:
+        case relation_cleanup::OOCPrivateHandoffCleanupPrefixStateV2::
+            IntentCanonicalWithStagedPending:
+        case relation_cleanup::OOCPrivateHandoffCleanupPrefixStateV2::
+            IntentCanonicalWithStagedAndPending:
+        case relation_cleanup::OOCPrivateHandoffCleanupPrefixStateV2::IntentCanonicalWithStagedPair:
+        case relation_cleanup::OOCPrivateHandoffCleanupPrefixStateV2::
+            IntentCanonicalWithStagedIndex:
+        case relation_cleanup::OOCPrivateHandoffCleanupPrefixStateV2::IntentCanonicalWithStagedOnly:
+        case relation_cleanup::OOCPrivateHandoffCleanupPrefixStateV2::StagedWithOwner:
+        case relation_cleanup::OOCPrivateHandoffCleanupPrefixStateV2::StagedOnly:
+        case relation_cleanup::OOCPrivateHandoffCleanupPrefixStateV2::EmptyPrivateDirectory:
+        case relation_cleanup::OOCPrivateHandoffCleanupPrefixStateV2::OwnedOnly:
+        case relation_cleanup::OOCPrivateHandoffCleanupPrefixStateV2::Absent:
+            next_action = NextAction::cleanup_resume;
+            break;
+        case relation_cleanup::OOCPrivateHandoffCleanupPrefixStateV2::Count:
+            active_minted.reset();
+            diagnostic.status = CompletionStatus::relation_observation_failed;
+            diagnostic.native_error = std::make_error_code(std::errc::protocol_error);
+            return cold_reopen(std::move(diagnostic));
+        }
+
+        for (std::size_t transition = 0; transition < 4; ++transition) {
+            if (next_action == NextAction::intent_conversion) {
+                active_minted.reset();
+                auto prepared = prepare_distributed_sieve_worker_cleanup_intent_conversion_v1(
+                    std::move(retained_root));
+                diagnostic.phase = CompletionPhase::intent_conversion_prepare;
+                diagnostic.intent_prepare = std::move(prepared.diagnostic);
+                if (prepared.retryable_root.has_value()) {
+                    auto retryable = std::move(*prepared.retryable_root);
+                    diagnostic.native_error = diagnostic.intent_prepare.native_error;
+                    return retryable_root_or_cold(std::move(retryable), std::move(diagnostic));
+                }
+                if (!prepared.capsule.has_value()) {
+                    diagnostic.status = CompletionStatus::intent_conversion_failed;
+                    diagnostic.native_error = diagnostic.intent_prepare.native_error;
+                    return cold_reopen(std::move(diagnostic));
+                }
+
+                auto conversion = execute_distributed_sieve_worker_cleanup_intent_conversion_v1(
+                    std::move(*prepared.capsule));
+                diagnostic.phase = CompletionPhase::intent_conversion_execute;
+                diagnostic.intent_execute = std::move(conversion.diagnostic);
+                if (conversion.retryable_capsule.has_value()) {
+                    auto retryable = std::move(*conversion.retryable_capsule);
+                    diagnostic.native_error = diagnostic.intent_execute.native_error;
+                    return retryable_conversion_or_cold(std::move(retryable),
+                                                        std::move(diagnostic));
+                }
+                if (!conversion.root_continuation.has_value()) {
+                    diagnostic.status = CompletionStatus::intent_conversion_failed;
+                    diagnostic.native_error = diagnostic.intent_execute.native_error;
+                    return cold_reopen(std::move(diagnostic));
+                }
+
+                const bool intent_published = conversion.publication.intent_published();
+                const bool reconciliation_required =
+                    conversion.publication.canonical_reconciliation_required();
+                retained_root = std::move(*conversion.root_continuation);
+                if (!intent_published && !reconciliation_required) {
+                    diagnostic.status = CompletionStatus::intent_conversion_failed;
+                    diagnostic.native_error =
+                        std::make_error_code(std::errc::state_not_recoverable);
+                    return cold_reopen(std::move(diagnostic));
+                }
+                if (auto failed = mint_receipt(CompletionPhase::continuation_receipt_mint)) {
+                    return std::move(*failed);
+                }
+                next_action = reconciliation_required ? NextAction::intent_reconciliation
+                                                      : NextAction::cleanup_resume;
+                continue;
+            }
+
+            if (next_action == NextAction::intent_reconciliation) {
+                auto reconciled =
+                    relation_cleanup::reconcile_authorized_private_handoff_cleanup_intent_v2(
+                        std::move(active_minted->receipt));
+                diagnostic.phase = CompletionPhase::intent_reconciliation;
+                diagnostic.relation = reconciled.result;
+                diagnostic.reconciliation_disposition = reconciled.disposition;
+                if (reconciled.intent_canonical()) {
+                    active_minted.reset();
+                    if (auto failed = mint_receipt(CompletionPhase::continuation_receipt_mint)) {
+                        return std::move(*failed);
+                    }
+                    next_action = NextAction::cleanup_resume;
+                    continue;
+                }
+
+                diagnostic.status = relation_failure_status(
+                    reconciled.result, CompletionStatus::intent_reconciliation_failed);
+                diagnostic.native_error = reconciled.result.native_error;
+                const bool may_retry_root =
+                    reconciled.authorization_retained() || reconciled.reconciliation_required();
+                active_minted.reset();
+                if (may_retry_root) {
+                    return retryable_root_or_cold(std::move(retained_root), std::move(diagnostic));
+                }
+                return cold_reopen(std::move(diagnostic));
+            }
+
+            auto resumed = relation_cleanup::resume_authorized_private_handoff_cleanup_v2(
+                std::move(active_minted->receipt));
+            diagnostic.phase = CompletionPhase::cleanup_resume;
+            diagnostic.relation = resumed.result;
+            diagnostic.cleanup_disposition = resumed.disposition;
+            if (resumed.namespace_absent()) {
+                auto evidence = std::move(*resumed.evidence);
+                auto cleanup_binding = std::move(active_minted->relation_binding);
+                if (!absence_evidence_matches(cleanup_binding, evidence)) {
+                    active_minted.reset();
+                    diagnostic.status = CompletionStatus::absence_evidence_invalid;
+                    diagnostic.native_error = std::make_error_code(std::errc::protocol_error);
+                    return cold_reopen(std::move(diagnostic));
+                }
+                active_minted.reset();
+                if (auto failed = mint_receipt(CompletionPhase::completion_receipt_mint)) {
+                    return std::move(*failed);
+                }
+
+                auto completion_minted = std::move(*active_minted);
+                active_minted.reset();
+                if (completion_minted.manifest_order_ordinal != active_ordinal ||
+                    completion_minted.relation_binding != cleanup_binding) {
+                    diagnostic.status = CompletionStatus::absence_evidence_invalid;
+                    diagnostic.native_error =
+                        std::make_error_code(std::errc::state_not_recoverable);
+                    return cold_reopen(std::move(diagnostic));
+                }
+                diagnostic.phase = CompletionPhase::completion_capsule_construction;
+                CompletionCapsule sealed(active_ordinal, static_cast<std::uint64_t>(process_id),
+                                         std::move(retained_root),
+                                         std::move(completion_minted.relation_binding),
+                                         std::move(completion_minted.receipt), std::move(evidence));
+                if (!sealed.valid()) {
+                    diagnostic.status = CompletionStatus::absence_evidence_invalid;
+                    diagnostic.native_error =
+                        std::make_error_code(std::errc::state_not_recoverable);
+                    return cold_reopen(std::move(diagnostic));
+                }
+                std::optional<CompletionCapsule> completion_ready;
+                completion_ready.emplace(std::move(sealed));
+                diagnostic.phase = CompletionPhase::complete;
+                diagnostic.status = CompletionStatus::ready;
+                diagnostic.disposition = CompletionDisposition::completion_ready;
+                diagnostic.native_error.clear();
+                return {std::nullopt, std::nullopt, std::move(completion_ready),
+                        std::move(diagnostic)};
+            }
+
+            diagnostic.status =
+                relation_failure_status(resumed.result, CompletionStatus::cleanup_resume_failed);
+            diagnostic.native_error = resumed.result.native_error;
+            const bool may_retry_root =
+                resumed.authorization_retained() || resumed.reconciliation_required();
+            active_minted.reset();
+            if (may_retry_root) {
+                return retryable_root_or_cold(std::move(retained_root), std::move(diagnostic));
+            }
+            return cold_reopen(std::move(diagnostic));
+        }
+
+        active_minted.reset();
+        diagnostic.status = CompletionStatus::unexpected_failure;
+        diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+        return cold_reopen(std::move(diagnostic));
+    } catch (const std::bad_alloc&) {
+        return cold_reopen(completion_diagnostic(
+            CompletionPhase::completion_capsule_construction, CompletionStatus::resource_exhausted,
+            CompletionDisposition::cold_reopen_required,
+            std::make_error_code(std::errc::not_enough_memory)));
+    } catch (const std::filesystem::filesystem_error& error) {
+        return cold_reopen(completion_diagnostic(
+            CompletionPhase::completion_capsule_construction, CompletionStatus::unexpected_failure,
+            CompletionDisposition::cold_reopen_required, error.code()));
+    } catch (...) {
+        return cold_reopen(completion_diagnostic(CompletionPhase::completion_capsule_construction,
+                                                 CompletionStatus::unexpected_failure,
+                                                 CompletionDisposition::cold_reopen_required,
+                                                 std::make_error_code(std::errc::io_error)));
+    }
+}
+
+DistributedSieveWorkerCleanupCompletionPreparationResultV1
+drive_distributed_sieve_worker_cleanup_to_completion_ready_v1(
+    DistributedSieveWorkerCleanupRootAdmissionV1&& root) noexcept {
+    return DistributedSieveWorkerCleanupCompletionPreparationAuthorityV1::drive(std::move(root));
+}
 
 } // namespace gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail
