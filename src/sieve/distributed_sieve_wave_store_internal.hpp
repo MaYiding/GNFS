@@ -51,6 +51,7 @@ class DistributedSieveMergeWriterAuthorityV1;
 }
 
 namespace gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail {
+class DistributedSieveWorkerCleanupCompletionPublicationAuthorityV1;
 class DistributedSieveWorkerCleanupIntentConversionAuthorityV1;
 class DistributedSieveWorkerCleanupReceiptMintAuthorityV1;
 } // namespace gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail
@@ -1825,6 +1826,8 @@ private:
         DistributedSieveWorkerCleanupIntentConversionAuthorityV1;
     friend class ::gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail::
         DistributedSieveWorkerCleanupReceiptMintAuthorityV1;
+    friend class ::gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail::
+        DistributedSieveWorkerCleanupCompletionPublicationAuthorityV1;
 };
 
 struct DistributedSieveWorkerCleanupRootOpenResultV1 final {

@@ -33,6 +33,7 @@ void distributed_sieve_external_cleanup_authorization_state_release_receipt_clai
 namespace gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail {
 
 class DistributedSieveWorkerCleanupIntentConversionAuthorityV1;
+class DistributedSieveWorkerCleanupCompletionPublicationAuthorityV1;
 class DistributedSieveWorkerCleanupReceiptMintAuthorityV1;
 
 } // namespace gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail
@@ -324,6 +325,8 @@ private:
 
     friend class gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail::
         DistributedSieveWorkerCleanupReceiptMintAuthorityV1;
+    friend class gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail::
+        DistributedSieveWorkerCleanupCompletionPublicationAuthorityV1;
     friend class OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2;
     friend class OOCPrivateHandoffCleanupIntentConversionExecutorV2;
     friend class OOCPrivateHandoffCleanupIntentReconciliationExecutorV2;

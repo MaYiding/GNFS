@@ -24560,6 +24560,891 @@ DistributedSieveWorkerCleanupReceiptMintAuthorityV1::mint(
     }
 }
 
+namespace {
+
+namespace durable_record = util::durable_immutable_record;
+
+using CompletionPublicationDiagnostic =
+    DistributedSieveWorkerCleanupCompletionPublicationDiagnosticV1;
+using CompletionPublicationDisposition =
+    DistributedSieveWorkerCleanupCompletionPublicationDispositionV1;
+using CompletionPublicationFault =
+    trusted_test::DistributedSieveWorkerCleanupCompletionPublicationFaultPointV1;
+using CompletionPublicationHooks =
+    trusted_test::DistributedSieveWorkerCleanupCompletionPublicationTestHooksV1;
+using CompletionPublicationPhase = DistributedSieveWorkerCleanupCompletionPublicationPhaseV1;
+using CompletionPublicationResult = DistributedSieveWorkerCleanupCompletionPublicationResultV1;
+using CompletionPublicationStatus = DistributedSieveWorkerCleanupCompletionPublicationStatusV1;
+using CompletionReady = DistributedSieveWorkerCleanupCompletionReadyCapsuleV1;
+using CompletionRoot = DistributedSieveWorkerCleanupRootAdmissionV1;
+
+[[nodiscard]] std::uint64_t completion_publication_process_id() noexcept {
+    const int process_id = gnfs::util::process_id();
+    return process_id > 0 ? static_cast<std::uint64_t>(process_id) : 0;
+}
+
+[[nodiscard]] bool
+completion_publication_process_matches(std::uint64_t expected_process_id) noexcept {
+    return expected_process_id != 0 && completion_publication_process_id() == expected_process_id;
+}
+
+[[nodiscard]] CompletionPublicationDiagnostic
+completion_publication_diagnostic(CompletionPublicationPhase phase,
+                                  CompletionPublicationStatus status,
+                                  std::error_code native_error = {}) noexcept {
+    CompletionPublicationDiagnostic diagnostic;
+    diagnostic.phase = phase;
+    diagnostic.status = status;
+    diagnostic.native_error = native_error;
+    return diagnostic;
+}
+
+[[nodiscard]] CompletionPublicationStatus
+completion_publication_wave_status(wave::DistributedSieveWaveStoreStatus status,
+                                   CompletionPublicationStatus fallback) noexcept {
+    switch (status) {
+    case wave::DistributedSieveWaveStoreStatus::platform_unsupported:
+        return CompletionPublicationStatus::platform_unsupported;
+    case wave::DistributedSieveWaveStoreStatus::resource_exhausted:
+        return CompletionPublicationStatus::resource_exhausted;
+    case wave::DistributedSieveWaveStoreStatus::unexpected_failure:
+        return CompletionPublicationStatus::unexpected_failure;
+    default:
+        return fallback;
+    }
+}
+
+[[nodiscard]] CompletionPublicationStatus
+completion_publication_record_status(durable_record::RecordPublishStatus status,
+                                     const std::error_code& native_error) noexcept {
+    if (status == durable_record::RecordPublishStatus::interrupted) {
+        return CompletionPublicationStatus::test_interrupted;
+    }
+    if (status == durable_record::RecordPublishStatus::platform_unsupported) {
+        return CompletionPublicationStatus::platform_unsupported;
+    }
+    if (native_error == std::make_error_code(std::errc::not_enough_memory)) {
+        return CompletionPublicationStatus::resource_exhausted;
+    }
+    if (status == durable_record::RecordPublishStatus::unexpected_failure) {
+        return CompletionPublicationStatus::unexpected_failure;
+    }
+    return CompletionPublicationStatus::publication_failed;
+}
+
+[[nodiscard]] bool
+invoke_completion_publication_hook(CompletionPublicationHooks hooks,
+                                   CompletionPublicationFault point,
+                                   CompletionPublicationDiagnostic& diagnostic) noexcept {
+    if (hooks.stop_after == nullptr) {
+        return false;
+    }
+    diagnostic.last_fault_point = point;
+    return hooks.stop_after(point, hooks.context);
+}
+
+struct CompletionPublicationDurableHookContext final {
+    CompletionPublicationHooks hooks;
+    CompletionPublicationDiagnostic* diagnostic = nullptr;
+};
+
+[[nodiscard]] bool completion_publication_durable_stop_after(durable_record::RecordFaultPoint point,
+                                                             void* opaque) noexcept {
+    auto* context = static_cast<CompletionPublicationDurableHookContext*>(opaque);
+    if (context == nullptr || context->diagnostic == nullptr) {
+        return false;
+    }
+    CompletionPublicationFault mapped;
+    switch (point) {
+    case durable_record::RecordFaultPoint::PendingDurable:
+        mapped = CompletionPublicationFault::PendingDurable;
+        break;
+    case durable_record::RecordFaultPoint::CanonicalPromoted:
+        mapped = CompletionPublicationFault::CanonicalPromoted;
+        break;
+    case durable_record::RecordFaultPoint::CanonicalDurable:
+        mapped = CompletionPublicationFault::CanonicalDurable;
+        break;
+    }
+    return invoke_completion_publication_hook(context->hooks, mapped, *context->diagnostic);
+}
+
+[[nodiscard]] bool
+completion_publication_snapshot_is_exact(const durable_record::RecordSnapshot& snapshot,
+                                         std::span<const std::byte> bytes) noexcept {
+    return snapshot.identity != durable_record::NativeIdentity{} && !bytes.empty() &&
+           snapshot.size == static_cast<std::uint64_t>(bytes.size());
+}
+
+} // namespace
+
+DistributedSieveWorkerCleanupCompletionPublishedContinuationV1::
+    DistributedSieveWorkerCleanupCompletionPublishedContinuationV1(
+        std::uint32_t manifest_order_ordinal, std::uint64_t creator_process_id,
+        DistributedSieveWorkerCleanupRootAdmissionV1&& root,
+        std::vector<std::byte>&& completion_bytes,
+        util::durable_immutable_record::RecordSnapshot completion_snapshot,
+        util::Sha256Digest completion_digest) noexcept
+    : manifest_order_ordinal_(manifest_order_ordinal), creator_process_id_(creator_process_id),
+      root_(std::move(root)), completion_bytes_(std::move(completion_bytes)),
+      completion_snapshot_(completion_snapshot), completion_digest_(completion_digest) {}
+
+DistributedSieveWorkerCleanupCompletionPublishedContinuationV1::
+    DistributedSieveWorkerCleanupCompletionPublishedContinuationV1(
+        DistributedSieveWorkerCleanupCompletionPublishedContinuationV1&&) noexcept = default;
+
+DistributedSieveWorkerCleanupCompletionPublishedContinuationV1::
+    ~DistributedSieveWorkerCleanupCompletionPublishedContinuationV1() noexcept = default;
+
+bool DistributedSieveWorkerCleanupCompletionPublishedContinuationV1::valid() const noexcept {
+    return DistributedSieveWorkerCleanupCompletionPublicationAuthorityV1::valid(*this);
+}
+
+DistributedSieveWorkerCleanupCompletionPublicationResultV1::operator bool() const noexcept {
+    switch (diagnostic.disposition) {
+    case CompletionPublicationDisposition::retryable_completion_ready:
+        return retryable_completion_ready.has_value() && retryable_completion_ready->valid() &&
+               !retryable_recovery_root.has_value() && !published_continuation.has_value();
+    case CompletionPublicationDisposition::retryable_recovery_root:
+        return !retryable_completion_ready.has_value() && retryable_recovery_root.has_value() &&
+               retryable_recovery_root->valid() && !published_continuation.has_value();
+    case CompletionPublicationDisposition::completion_published:
+        return !retryable_completion_ready.has_value() && !retryable_recovery_root.has_value() &&
+               published_continuation.has_value() && published_continuation->valid() &&
+               static_cast<bool>(diagnostic);
+    case CompletionPublicationDisposition::cold_reopen_required:
+        return false;
+    }
+    return false;
+}
+
+bool DistributedSieveWorkerCleanupCompletionPublicationAuthorityV1::valid(
+    const DistributedSieveWorkerCleanupCompletionPublishedContinuationV1& continuation) noexcept {
+    try {
+        if (!completion_publication_process_matches(continuation.creator_process_id_) ||
+            continuation.root_.state_ == nullptr || continuation.root_.state_->store == nullptr ||
+            continuation.root_.state_->merged_reader == nullptr ||
+            continuation.root_.state_->creator_process_id != continuation.creator_process_id_ ||
+            continuation.root_.state_->active_cleanup_authorization != nullptr ||
+            continuation.completion_digest_ == util::Sha256Digest{} ||
+            !completion_publication_snapshot_is_exact(continuation.completion_snapshot_,
+                                                      continuation.completion_bytes_) ||
+            !continuation.root_.valid()) {
+            return false;
+        }
+        const auto& prefix = continuation.root_.state_->observation.cleanup_prefix;
+        const auto position = std::find_if(
+            prefix.coordinates.begin(), prefix.coordinates.end(),
+            [&](const wave::DistributedSieveWorkerCleanupCoordinateWitnessV1& coordinate) {
+                return coordinate.manifest_order_ordinal == continuation.manifest_order_ordinal_;
+            });
+        return position != prefix.coordinates.end() &&
+               std::find_if(
+                   std::next(position), prefix.coordinates.end(),
+                   [&](const wave::DistributedSieveWorkerCleanupCoordinateWitnessV1& coordinate) {
+                       return coordinate.manifest_order_ordinal ==
+                              continuation.manifest_order_ordinal_;
+                   }) == prefix.coordinates.end() &&
+               position->state == wave::DistributedSieveWorkerCleanupPrefixStateV1::completed &&
+               position->completion.has_value() &&
+               position->completion->self_digest == continuation.completion_digest_ &&
+               position->completion_bytes == continuation.completion_bytes_ &&
+               position->completion_canonical_snapshot == continuation.completion_snapshot_ &&
+               !position->completion_pending_snapshot.has_value();
+    } catch (...) {
+        return false;
+    }
+}
+
+DistributedSieveWorkerCleanupCompletionPublicationResultV1
+publish_distributed_sieve_worker_cleanup_completion_v1(
+    DistributedSieveWorkerCleanupCompletionReadyCapsuleV1&& completion_ready) noexcept {
+    return DistributedSieveWorkerCleanupCompletionPublicationAuthorityV1::publish(
+        std::move(completion_ready), {});
+}
+
+DistributedSieveWorkerCleanupCompletionPublicationResultV1
+reconcile_distributed_sieve_worker_cleanup_completion_v1(
+    DistributedSieveWorkerCleanupRootAdmissionV1&& root) noexcept {
+    return DistributedSieveWorkerCleanupCompletionPublicationAuthorityV1::reconcile(std::move(root),
+                                                                                    {});
+}
+
+namespace trusted_test {
+
+DistributedSieveWorkerCleanupCompletionPublicationResultV1
+publish_distributed_sieve_worker_cleanup_completion_v1_with_hooks(
+    DistributedSieveWorkerCleanupCompletionReadyCapsuleV1&& completion_ready,
+    DistributedSieveWorkerCleanupCompletionPublicationTestHooksV1 hooks) noexcept {
+    return DistributedSieveWorkerCleanupCompletionPublicationAuthorityV1::publish(
+        std::move(completion_ready), hooks);
+}
+
+DistributedSieveWorkerCleanupCompletionPublicationResultV1
+reconcile_distributed_sieve_worker_cleanup_completion_v1_with_hooks(
+    DistributedSieveWorkerCleanupRootAdmissionV1&& root,
+    DistributedSieveWorkerCleanupCompletionPublicationTestHooksV1 hooks) noexcept {
+    return DistributedSieveWorkerCleanupCompletionPublicationAuthorityV1::reconcile(std::move(root),
+                                                                                    hooks);
+}
+
+} // namespace trusted_test
+
+DistributedSieveWorkerCleanupCompletionPublicationResultV1
+DistributedSieveWorkerCleanupCompletionPublicationAuthorityV1::publish(
+    DistributedSieveWorkerCleanupCompletionReadyCapsuleV1&& completion_ready,
+    CompletionPublicationHooks hooks) noexcept {
+    std::optional<CompletionReady> fresh;
+    fresh.emplace(std::move(completion_ready));
+    return drive(std::move(fresh), std::nullopt, hooks);
+}
+
+DistributedSieveWorkerCleanupCompletionPublicationResultV1
+DistributedSieveWorkerCleanupCompletionPublicationAuthorityV1::reconcile(
+    DistributedSieveWorkerCleanupRootAdmissionV1&& root,
+    CompletionPublicationHooks hooks) noexcept {
+    std::optional<CompletionRoot> recovery;
+    recovery.emplace(std::move(root));
+    return drive(std::nullopt, std::move(recovery), hooks);
+}
+
+DistributedSieveWorkerCleanupCompletionPublicationResultV1
+DistributedSieveWorkerCleanupCompletionPublicationAuthorityV1::drive(
+    std::optional<CompletionReady>&& fresh, std::optional<CompletionRoot>&& recovery,
+    CompletionPublicationHooks hooks) noexcept {
+    CompletionPublicationDiagnostic diagnostic =
+        completion_publication_diagnostic(CompletionPublicationPhase::input_validation,
+                                          CompletionPublicationStatus::unexpected_failure);
+
+    const auto cold_reopen = [&](CompletionPublicationDiagnostic outcome) noexcept {
+        outcome.disposition = CompletionPublicationDisposition::cold_reopen_required;
+        if (!outcome.native_error) {
+            outcome.native_error = std::make_error_code(std::errc::state_not_recoverable);
+        }
+        return CompletionPublicationResult(std::nullopt, std::nullopt, std::nullopt,
+                                           std::move(outcome));
+    };
+    const auto retry_input_or_cold = [&](CompletionPublicationDiagnostic outcome) noexcept {
+        if (!outcome.authority_spent && !outcome.publication_started && fresh.has_value() &&
+            !recovery.has_value() && fresh->valid()) {
+            outcome.disposition = CompletionPublicationDisposition::retryable_completion_ready;
+            return CompletionPublicationResult(std::move(fresh), std::nullopt, std::nullopt,
+                                               std::move(outcome));
+        }
+        if (!outcome.authority_spent && !outcome.publication_started && !fresh.has_value() &&
+            recovery.has_value() && recovery->valid()) {
+            outcome.disposition = CompletionPublicationDisposition::retryable_recovery_root;
+            return CompletionPublicationResult(std::nullopt, std::move(recovery), std::nullopt,
+                                               std::move(outcome));
+        }
+        return cold_reopen(std::move(outcome));
+    };
+    const auto fail_wave =
+        [&](CompletionPublicationPhase phase, CompletionPublicationStatus fallback,
+            wave::DistributedSieveWaveStoreDiagnostic wave_failure, bool retryable) noexcept {
+            diagnostic.phase = phase;
+            diagnostic.status = completion_publication_wave_status(wave_failure.status, fallback);
+            diagnostic.native_error = wave_failure.native_error
+                                          ? wave_failure.native_error
+                                          : std::make_error_code(std::errc::state_not_recoverable);
+            diagnostic.wave_store = std::move(wave_failure);
+            return retryable ? retry_input_or_cold(std::move(diagnostic))
+                             : cold_reopen(std::move(diagnostic));
+        };
+
+    bool authority_spent = false;
+    try {
+        const bool fresh_path = fresh.has_value() && !recovery.has_value();
+        const bool recovery_path = !fresh.has_value() && recovery.has_value();
+        if (!fresh_path && !recovery_path) {
+            diagnostic.status = CompletionPublicationStatus::invalid_input;
+            diagnostic.native_error = std::make_error_code(std::errc::invalid_argument);
+            return cold_reopen(std::move(diagnostic));
+        }
+
+        const std::uint64_t expected_process_id =
+            fresh_path ? fresh->creator_process_id_
+                       : (recovery->state_ != nullptr ? recovery->state_->creator_process_id : 0U);
+        if (!completion_publication_process_matches(expected_process_id)) {
+            diagnostic.status = CompletionPublicationStatus::process_mismatch;
+            diagnostic.native_error = std::make_error_code(std::errc::no_such_process);
+            return cold_reopen(std::move(diagnostic));
+        }
+        if ((fresh_path && !fresh->valid()) || (recovery_path && !recovery->valid())) {
+            diagnostic.status = CompletionPublicationStatus::invalid_input;
+            diagnostic.native_error = std::make_error_code(std::errc::invalid_argument);
+            return cold_reopen(std::move(diagnostic));
+        }
+
+        CompletionRoot* retained_root =
+            fresh_path ? std::addressof(fresh->root_) : std::addressof(*recovery);
+        if (retained_root->state_ == nullptr || retained_root->state_->store == nullptr ||
+            retained_root->state_->merged_reader == nullptr ||
+            retained_root->state_->creator_process_id != expected_process_id ||
+            !retained_root->state_->merged_reader->valid()) {
+            diagnostic.status = CompletionPublicationStatus::invalid_input;
+            diagnostic.native_error = std::make_error_code(std::errc::invalid_argument);
+            return cold_reopen(std::move(diagnostic));
+        }
+
+        auto& retained_state = *retained_root->state_;
+        auto& retained_store = *retained_state.store;
+        const auto& initial_prefix = retained_state.observation.cleanup_prefix;
+        const auto& manifest = retained_store.manifest();
+        const auto& commit = retained_state.observation.commit_record.record;
+        if (manifest.chunks.size() != commit.chunks.size()) {
+            diagnostic.status = CompletionPublicationStatus::completion_target_invalid;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return retry_input_or_cold(std::move(diagnostic));
+        }
+
+        enum class InitialTargetShape : std::uint8_t {
+            fresh_absent,
+            pending_only,
+            identical_dual,
+            canonical_only,
+        };
+        std::optional<std::uint32_t> target_ordinal;
+        std::optional<InitialTargetShape> target_shape;
+
+        diagnostic.phase = CompletionPublicationPhase::recovery_target_selection;
+        if (fresh_path) {
+            target_ordinal = fresh->manifest_order_ordinal_;
+            target_shape = InitialTargetShape::fresh_absent;
+        } else if (initial_prefix.active_manifest_order_ordinal.has_value()) {
+            target_ordinal = *initial_prefix.active_manifest_order_ordinal;
+            const auto position = std::find_if(
+                initial_prefix.coordinates.begin(), initial_prefix.coordinates.end(),
+                [&](const wave::DistributedSieveWorkerCleanupCoordinateWitnessV1& coordinate) {
+                    return coordinate.manifest_order_ordinal == *target_ordinal;
+                });
+            if (position == initial_prefix.coordinates.end()) {
+                diagnostic.status = CompletionPublicationStatus::completion_target_invalid;
+                diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+                return retry_input_or_cold(std::move(diagnostic));
+            }
+            switch (position->state) {
+            case wave::DistributedSieveWorkerCleanupPrefixStateV1::completion_pending_only:
+                target_shape = InitialTargetShape::pending_only;
+                break;
+            case wave::DistributedSieveWorkerCleanupPrefixStateV1::completion_identical_dual:
+                target_shape = InitialTargetShape::identical_dual;
+                break;
+            case wave::DistributedSieveWorkerCleanupPrefixStateV1::authorization_canonical_only:
+                diagnostic.status = CompletionPublicationStatus::completion_target_missing;
+                diagnostic.manifest_order_ordinal = target_ordinal;
+                return retry_input_or_cold(std::move(diagnostic));
+            default:
+                diagnostic.status = CompletionPublicationStatus::completion_target_invalid;
+                diagnostic.manifest_order_ordinal = target_ordinal;
+                diagnostic.native_error = std::make_error_code(std::errc::operation_not_permitted);
+                return retry_input_or_cold(std::move(diagnostic));
+            }
+        } else if (!initial_prefix.coordinates.empty()) {
+            target_ordinal = initial_prefix.coordinates.back().manifest_order_ordinal;
+            if (initial_prefix.coordinates.back().state !=
+                wave::DistributedSieveWorkerCleanupPrefixStateV1::completed) {
+                diagnostic.status = CompletionPublicationStatus::completion_target_invalid;
+                diagnostic.manifest_order_ordinal = target_ordinal;
+                diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+                return retry_input_or_cold(std::move(diagnostic));
+            }
+            target_shape = InitialTargetShape::canonical_only;
+        } else {
+            diagnostic.status = CompletionPublicationStatus::completion_target_missing;
+            return retry_input_or_cold(std::move(diagnostic));
+        }
+
+        if (!target_ordinal.has_value() || !target_shape.has_value() ||
+            *target_ordinal >= manifest.chunks.size()) {
+            diagnostic.status = CompletionPublicationStatus::completion_target_invalid;
+            diagnostic.native_error = std::make_error_code(std::errc::invalid_argument);
+            return retry_input_or_cold(std::move(diagnostic));
+        }
+        diagnostic.manifest_order_ordinal = target_ordinal;
+
+        const auto initial_target = std::find_if(
+            initial_prefix.coordinates.begin(), initial_prefix.coordinates.end(),
+            [&](const wave::DistributedSieveWorkerCleanupCoordinateWitnessV1& coordinate) {
+                return coordinate.manifest_order_ordinal == *target_ordinal;
+            });
+        if (initial_target == initial_prefix.coordinates.end() ||
+            std::find_if(
+                std::next(initial_target), initial_prefix.coordinates.end(),
+                [&](const wave::DistributedSieveWorkerCleanupCoordinateWitnessV1& coordinate) {
+                    return coordinate.manifest_order_ordinal == *target_ordinal;
+                }) != initial_prefix.coordinates.end() ||
+            initial_target != std::prev(initial_prefix.coordinates.end()) ||
+            !initial_target->authorization_canonical_snapshot.has_value() ||
+            initial_target->authorization_pending_snapshot.has_value()) {
+            diagnostic.status = CompletionPublicationStatus::completion_target_invalid;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return retry_input_or_cold(std::move(diagnostic));
+        }
+
+        std::optional<sieve::ArtifactCleanupCompletedV1> completion_record;
+        std::vector<std::byte> completion_bytes;
+        durable_record::RecordPublishDisposition expected_publication_disposition =
+            durable_record::RecordPublishDisposition::none;
+
+        if (fresh_path) {
+            if (initial_target->state != wave::DistributedSieveWorkerCleanupPrefixStateV1::
+                                             authorization_canonical_only ||
+                initial_target->completion.has_value() ||
+                !initial_target->completion_bytes.empty() ||
+                initial_target->completion_canonical_snapshot.has_value() ||
+                initial_target->completion_pending_snapshot.has_value() ||
+                !initial_prefix.frontier_manifest_order_ordinal.has_value() ||
+                !initial_prefix.active_manifest_order_ordinal.has_value() ||
+                *initial_prefix.frontier_manifest_order_ordinal != *target_ordinal ||
+                *initial_prefix.active_manifest_order_ordinal != *target_ordinal) {
+                diagnostic.status = CompletionPublicationStatus::completion_target_invalid;
+                diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+                return retry_input_or_cold(std::move(diagnostic));
+            }
+
+            diagnostic.phase = CompletionPublicationPhase::completion_build;
+            auto relation_binding =
+                cleanup_codec::build_distributed_sieve_worker_cleanup_relation_binding_v1(
+                    retained_store.absolute_root(), manifest, initial_target->authorization);
+            diagnostic.codec = relation_binding.diagnostic;
+            if (!relation_binding || !relation_binding.relation_binding.has_value() ||
+                relation_binding.relation_binding->binding != fresh->relation_binding_) {
+                diagnostic.status = CompletionPublicationStatus::completion_build_failed;
+                diagnostic.native_error =
+                    relation_binding.diagnostic.status ==
+                            cleanup_codec::DistributedSieveWorkerCleanupCodecStatusV1::
+                                resource_exhausted
+                        ? std::make_error_code(std::errc::not_enough_memory)
+                        : std::make_error_code(std::errc::invalid_argument);
+                return retry_input_or_cold(std::move(diagnostic));
+            }
+            auto built = cleanup_codec::build_distributed_sieve_worker_cleanup_completion_v1(
+                retained_store.absolute_root(), manifest, initial_target->authorization,
+                fresh->absence_evidence_);
+            diagnostic.codec = built.diagnostic;
+            if (!built || !built.completion.has_value() ||
+                built.completion->canonical_bytes.empty()) {
+                diagnostic.status = CompletionPublicationStatus::completion_build_failed;
+                diagnostic.native_error =
+                    built.diagnostic.status ==
+                            cleanup_codec::DistributedSieveWorkerCleanupCodecStatusV1::
+                                resource_exhausted
+                        ? std::make_error_code(std::errc::not_enough_memory)
+                        : std::make_error_code(std::errc::invalid_argument);
+                return retry_input_or_cold(std::move(diagnostic));
+            }
+            completion_record.emplace(std::move(built.completion->record));
+            completion_bytes = std::move(built.completion->canonical_bytes);
+            expected_publication_disposition = durable_record::RecordPublishDisposition::created;
+        } else {
+            if (!initial_target->completion.has_value() ||
+                initial_target->completion_bytes.empty()) {
+                diagnostic.status = CompletionPublicationStatus::completion_target_invalid;
+                diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+                return retry_input_or_cold(std::move(diagnostic));
+            }
+            const bool exact_shape =
+                (*target_shape == InitialTargetShape::pending_only &&
+                 initial_target->state ==
+                     wave::DistributedSieveWorkerCleanupPrefixStateV1::completion_pending_only &&
+                 !initial_target->completion_canonical_snapshot.has_value() &&
+                 initial_target->completion_pending_snapshot.has_value()) ||
+                (*target_shape == InitialTargetShape::identical_dual &&
+                 initial_target->state ==
+                     wave::DistributedSieveWorkerCleanupPrefixStateV1::completion_identical_dual &&
+                 initial_target->completion_canonical_snapshot.has_value() &&
+                 initial_target->completion_pending_snapshot.has_value()) ||
+                (*target_shape == InitialTargetShape::canonical_only &&
+                 initial_target->state ==
+                     wave::DistributedSieveWorkerCleanupPrefixStateV1::completed &&
+                 initial_target->completion_canonical_snapshot.has_value() &&
+                 !initial_target->completion_pending_snapshot.has_value());
+            if (!exact_shape) {
+                diagnostic.status = CompletionPublicationStatus::completion_target_invalid;
+                diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+                return retry_input_or_cold(std::move(diagnostic));
+            }
+            completion_record = initial_target->completion;
+            completion_bytes = initial_target->completion_bytes;
+            expected_publication_disposition =
+                *target_shape == InitialTargetShape::pending_only
+                    ? durable_record::RecordPublishDisposition::recovered_pending
+                    : durable_record::RecordPublishDisposition::confirmed_existing;
+        }
+
+        if (!completion_record.has_value() ||
+            completion_record->self_digest == util::Sha256Digest{} ||
+            completion_record->authorization_digest != initial_target->authorization.self_digest) {
+            diagnostic.status = CompletionPublicationStatus::completion_target_invalid;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return retry_input_or_cold(std::move(diagnostic));
+        }
+
+        diagnostic.phase = CompletionPublicationPhase::baseline_observation;
+        const auto authority_valid = [&]() noexcept {
+            return wave::WorkerCleanupRootRevalidatorAuthorityV1::revalidate_authority(
+                retained_store);
+        };
+        const auto observe = [&]() noexcept {
+            return wave::observe_cleanup_root_v1(
+                wave::WorkerCleanupRootRevalidatorAuthorityV1::root_fd(retained_store),
+                wave::WorkerCleanupRootRevalidatorAuthorityV1::absolute_root(retained_store),
+                wave::WorkerCleanupRootRevalidatorAuthorityV1::manifest(retained_store),
+                retained_store.wave_root_identity(), expected_process_id);
+        };
+        if (auto checked = authority_valid();
+            checked.status != wave::DistributedSieveWaveStoreStatus::ready) {
+            return fail_wave(CompletionPublicationPhase::baseline_observation,
+                             CompletionPublicationStatus::baseline_observation_failed,
+                             std::move(checked), true);
+        }
+        auto first = observe();
+        if (!first || !first.observation.has_value()) {
+            return fail_wave(CompletionPublicationPhase::baseline_observation,
+                             CompletionPublicationStatus::baseline_observation_failed,
+                             std::move(first.diagnostic), true);
+        }
+        if (recovery_path && *first.observation != retained_state.observation) {
+            diagnostic.status = CompletionPublicationStatus::baseline_changed;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return retry_input_or_cold(std::move(diagnostic));
+        }
+        if (auto checked = authority_valid();
+            checked.status != wave::DistributedSieveWaveStoreStatus::ready) {
+            return fail_wave(CompletionPublicationPhase::baseline_observation,
+                             CompletionPublicationStatus::baseline_changed, std::move(checked),
+                             true);
+        }
+        auto second = observe();
+        if (!second || !second.observation.has_value()) {
+            return fail_wave(CompletionPublicationPhase::baseline_observation,
+                             CompletionPublicationStatus::baseline_observation_failed,
+                             std::move(second.diagnostic), true);
+        }
+        if (*first.observation != *second.observation ||
+            (recovery_path && *second.observation != retained_state.observation)) {
+            diagnostic.status = CompletionPublicationStatus::baseline_changed;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return retry_input_or_cold(std::move(diagnostic));
+        }
+        if (auto checked = authority_valid();
+            checked.status != wave::DistributedSieveWaveStoreStatus::ready) {
+            return fail_wave(CompletionPublicationPhase::baseline_observation,
+                             CompletionPublicationStatus::baseline_changed, std::move(checked),
+                             true);
+        }
+
+        const auto& baseline_prefix = second.observation->cleanup_prefix;
+        const auto baseline_target = std::find_if(
+            baseline_prefix.coordinates.begin(), baseline_prefix.coordinates.end(),
+            [&](const wave::DistributedSieveWorkerCleanupCoordinateWitnessV1& coordinate) {
+                return coordinate.manifest_order_ordinal == *target_ordinal;
+            });
+        if (baseline_target == baseline_prefix.coordinates.end() ||
+            baseline_target != std::prev(baseline_prefix.coordinates.end()) ||
+            baseline_target->authorization_bytes != initial_target->authorization_bytes ||
+            baseline_target->authorization_canonical_snapshot !=
+                initial_target->authorization_canonical_snapshot ||
+            baseline_target->authorization_pending_snapshot !=
+                initial_target->authorization_pending_snapshot ||
+            baseline_target->authorization.self_digest !=
+                initial_target->authorization.self_digest ||
+            (fresh_path &&
+             (baseline_target->state !=
+                  wave::DistributedSieveWorkerCleanupPrefixStateV1::authorization_canonical_only ||
+              baseline_target->completion.has_value())) ||
+            (recovery_path && (baseline_target->state != initial_target->state ||
+                               baseline_target->completion_bytes != completion_bytes ||
+                               baseline_target->completion_canonical_snapshot !=
+                                   initial_target->completion_canonical_snapshot ||
+                               baseline_target->completion_pending_snapshot !=
+                                   initial_target->completion_pending_snapshot))) {
+            diagnostic.status = CompletionPublicationStatus::baseline_changed;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return retry_input_or_cold(std::move(diagnostic));
+        }
+
+        diagnostic.phase = CompletionPublicationPhase::successor_preparation;
+        const auto names = wave::distributed_sieve_worker_cleanup_record_names_v1(*target_ordinal);
+        if (!names.has_value()) {
+            diagnostic.status = CompletionPublicationStatus::completion_target_invalid;
+            diagnostic.native_error = std::make_error_code(std::errc::invalid_argument);
+            return retry_input_or_cold(std::move(diagnostic));
+        }
+        auto successor_state = std::make_unique<CompletionRoot::State>();
+        successor_state->observation = *second.observation;
+        successor_state->creator_process_id = expected_process_id;
+        successor_state->active_cleanup_authorization.reset();
+        auto continuation_bytes = completion_bytes;
+        const util::Sha256Digest completion_digest = completion_record->self_digest;
+
+        auto& successor_prefix = successor_state->observation.cleanup_prefix;
+        auto successor_target = std::find_if(
+            successor_prefix.coordinates.begin(), successor_prefix.coordinates.end(),
+            [&](const wave::DistributedSieveWorkerCleanupCoordinateWitnessV1& coordinate) {
+                return coordinate.manifest_order_ordinal == *target_ordinal;
+            });
+        if (successor_target == successor_prefix.coordinates.end() ||
+            successor_target != std::prev(successor_prefix.coordinates.end())) {
+            diagnostic.status = CompletionPublicationStatus::completion_target_invalid;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return retry_input_or_cold(std::move(diagnostic));
+        }
+
+        auto& cleanup_leaves = successor_state->observation.inventory.cleanup_record_leaves;
+        const auto leaf_count = [&](const std::string& leaf) {
+            return static_cast<std::size_t>(
+                std::count(cleanup_leaves.begin(), cleanup_leaves.end(), leaf));
+        };
+        if (*target_shape == InitialTargetShape::fresh_absent) {
+            if (leaf_count(names->completion_canonical_record_leaf) != 0U ||
+                leaf_count(names->completion_pending_record_leaf) != 0U) {
+                diagnostic.status = CompletionPublicationStatus::completion_target_invalid;
+                diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+                return retry_input_or_cold(std::move(diagnostic));
+            }
+            cleanup_leaves.push_back(names->completion_canonical_record_leaf);
+            std::sort(cleanup_leaves.begin(), cleanup_leaves.end());
+        } else if (*target_shape == InitialTargetShape::pending_only) {
+            if (leaf_count(names->completion_canonical_record_leaf) != 0U ||
+                leaf_count(names->completion_pending_record_leaf) != 1U) {
+                diagnostic.status = CompletionPublicationStatus::completion_target_invalid;
+                diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+                return retry_input_or_cold(std::move(diagnostic));
+            }
+            auto pending = std::find(cleanup_leaves.begin(), cleanup_leaves.end(),
+                                     names->completion_pending_record_leaf);
+            *pending = names->completion_canonical_record_leaf;
+            std::sort(cleanup_leaves.begin(), cleanup_leaves.end());
+        } else if (*target_shape == InitialTargetShape::identical_dual) {
+            if (leaf_count(names->completion_canonical_record_leaf) != 1U ||
+                leaf_count(names->completion_pending_record_leaf) != 1U) {
+                diagnostic.status = CompletionPublicationStatus::completion_target_invalid;
+                diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+                return retry_input_or_cold(std::move(diagnostic));
+            }
+            cleanup_leaves.erase(std::find(cleanup_leaves.begin(), cleanup_leaves.end(),
+                                           names->completion_pending_record_leaf));
+        } else if (leaf_count(names->completion_canonical_record_leaf) != 1U ||
+                   leaf_count(names->completion_pending_record_leaf) != 0U) {
+            diagnostic.status = CompletionPublicationStatus::completion_target_invalid;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return retry_input_or_cold(std::move(diagnostic));
+        }
+
+        std::optional<durable_record::RecordSnapshot> expected_existing_snapshot;
+        if (*target_shape == InitialTargetShape::pending_only) {
+            expected_existing_snapshot = baseline_target->completion_pending_snapshot;
+        } else if (*target_shape == InitialTargetShape::identical_dual ||
+                   *target_shape == InitialTargetShape::canonical_only) {
+            expected_existing_snapshot = baseline_target->completion_canonical_snapshot;
+        }
+        successor_target->state = wave::DistributedSieveWorkerCleanupPrefixStateV1::completed;
+        successor_target->completion = *completion_record;
+        successor_target->completion_bytes = completion_bytes;
+        successor_target->completion_canonical_snapshot = expected_existing_snapshot;
+        successor_target->completion_pending_snapshot.reset();
+        successor_prefix.completed_worker_count = successor_prefix.coordinates.size();
+        successor_prefix.active_manifest_order_ordinal.reset();
+        successor_prefix.frontier_manifest_order_ordinal.reset();
+        for (std::size_t slot = static_cast<std::size_t>(*target_ordinal) + 1U;
+             slot < manifest.chunks.size(); ++slot) {
+            if (commit.chunks[slot].input.disposition != sieve::ChunkDispositionV1::empty) {
+                successor_prefix.frontier_manifest_order_ordinal = static_cast<std::uint32_t>(slot);
+                break;
+            }
+        }
+        if (std::any_of(
+                successor_prefix.coordinates.begin(), successor_prefix.coordinates.end(),
+                [](const wave::DistributedSieveWorkerCleanupCoordinateWitnessV1& coordinate) {
+                    return coordinate.state !=
+                           wave::DistributedSieveWorkerCleanupPrefixStateV1::completed;
+                })) {
+            diagnostic.status = CompletionPublicationStatus::completion_target_invalid;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return retry_input_or_cold(std::move(diagnostic));
+        }
+
+        diagnostic.phase = CompletionPublicationPhase::authority_spend;
+        if (fresh_path &&
+            invoke_completion_publication_hook(
+                hooks, CompletionPublicationFault::FreshBeforeReceiptSpend, diagnostic)) {
+            diagnostic.status = CompletionPublicationStatus::retryable_completion_ready;
+            diagnostic.native_error.clear();
+            return retry_input_or_cold(std::move(diagnostic));
+        }
+        if (recovery_path &&
+            invoke_completion_publication_hook(
+                hooks, CompletionPublicationFault::RecoveryBeforePublication, diagnostic)) {
+            diagnostic.status = CompletionPublicationStatus::retryable_recovery_root;
+            diagnostic.native_error.clear();
+            return retry_input_or_cold(std::move(diagnostic));
+        }
+
+        const bool final_input_valid = fresh_path ? fresh->valid() : recovery->valid();
+        if (!final_input_valid) {
+            diagnostic.status = CompletionPublicationStatus::baseline_changed;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return retry_input_or_cold(std::move(diagnostic));
+        }
+        if (auto checked = authority_valid();
+            checked.status != wave::DistributedSieveWaveStoreStatus::ready) {
+            return fail_wave(CompletionPublicationPhase::authority_spend,
+                             CompletionPublicationStatus::baseline_changed, std::move(checked),
+                             true);
+        }
+
+        if (fresh_path) {
+            fresh->completion_receipt_.commit_spend();
+        }
+        authority_spent = true;
+        diagnostic.authority_spent = true;
+        if (fresh_path &&
+            invoke_completion_publication_hook(
+                hooks, CompletionPublicationFault::FreshAfterReceiptSpend, diagnostic)) {
+            diagnostic.status = CompletionPublicationStatus::test_interrupted;
+            diagnostic.native_error = std::make_error_code(std::errc::operation_canceled);
+            return cold_reopen(std::move(diagnostic));
+        }
+
+        diagnostic.phase = CompletionPublicationPhase::record_publication;
+        diagnostic.publication_started = true;
+        CompletionPublicationDurableHookContext durable_hook_context{
+            .hooks = hooks,
+            .diagnostic = std::addressof(diagnostic),
+        };
+        const auto published = durable_record::publish_at(
+            wave::WorkerCleanupRootRevalidatorAuthorityV1::root_fd(retained_store),
+            names->completion_pending_record_leaf, names->completion_canonical_record_leaf,
+            completion_bytes,
+            durable_record::RecordTestHooks{
+                .stop_after = completion_publication_durable_stop_after,
+                .context = std::addressof(durable_hook_context),
+            });
+        diagnostic.publication_status = published.status();
+        diagnostic.publication_disposition = published.disposition();
+        diagnostic.native_error = published.native_error();
+        if (!published.is_durable()) {
+            diagnostic.status =
+                completion_publication_record_status(published.status(), published.native_error());
+            if (!diagnostic.native_error &&
+                diagnostic.status == CompletionPublicationStatus::test_interrupted) {
+                diagnostic.native_error = std::make_error_code(std::errc::operation_canceled);
+            }
+            return cold_reopen(std::move(diagnostic));
+        }
+        if (published.disposition() != expected_publication_disposition ||
+            !published.canonical_snapshot().has_value() ||
+            !completion_publication_snapshot_is_exact(*published.canonical_snapshot(),
+                                                      completion_bytes) ||
+            (expected_existing_snapshot.has_value() &&
+             *published.canonical_snapshot() != *expected_existing_snapshot)) {
+            diagnostic.status = CompletionPublicationStatus::publication_disposition_mismatch;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return cold_reopen(std::move(diagnostic));
+        }
+        const durable_record::RecordSnapshot canonical_snapshot = *published.canonical_snapshot();
+        successor_target->completion_canonical_snapshot = canonical_snapshot;
+
+        diagnostic.phase = CompletionPublicationPhase::successor_observation;
+        if (auto checked = authority_valid();
+            checked.status != wave::DistributedSieveWaveStoreStatus::ready) {
+            return fail_wave(CompletionPublicationPhase::successor_observation,
+                             CompletionPublicationStatus::successor_observation_failed,
+                             std::move(checked), false);
+        }
+        auto first_successor = observe();
+        if (!first_successor || !first_successor.observation.has_value()) {
+            return fail_wave(CompletionPublicationPhase::successor_observation,
+                             CompletionPublicationStatus::successor_observation_failed,
+                             std::move(first_successor.diagnostic), false);
+        }
+        if (*first_successor.observation != successor_state->observation) {
+            diagnostic.status = CompletionPublicationStatus::successor_mismatch;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return cold_reopen(std::move(diagnostic));
+        }
+        if (invoke_completion_publication_hook(
+                hooks, CompletionPublicationFault::AfterFirstSuccessorObservation, diagnostic)) {
+            diagnostic.status = CompletionPublicationStatus::test_interrupted;
+            diagnostic.native_error = std::make_error_code(std::errc::operation_canceled);
+            return cold_reopen(std::move(diagnostic));
+        }
+        if (auto checked = authority_valid();
+            checked.status != wave::DistributedSieveWaveStoreStatus::ready) {
+            return fail_wave(CompletionPublicationPhase::successor_observation,
+                             CompletionPublicationStatus::successor_observation_failed,
+                             std::move(checked), false);
+        }
+        auto second_successor = observe();
+        if (!second_successor || !second_successor.observation.has_value()) {
+            return fail_wave(CompletionPublicationPhase::successor_observation,
+                             CompletionPublicationStatus::successor_observation_failed,
+                             std::move(second_successor.diagnostic), false);
+        }
+        if (*first_successor.observation != *second_successor.observation ||
+            *second_successor.observation != successor_state->observation) {
+            diagnostic.status = CompletionPublicationStatus::successor_mismatch;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return cold_reopen(std::move(diagnostic));
+        }
+        if (auto checked = authority_valid();
+            checked.status != wave::DistributedSieveWaveStoreStatus::ready) {
+            return fail_wave(CompletionPublicationPhase::successor_observation,
+                             CompletionPublicationStatus::successor_observation_failed,
+                             std::move(checked), false);
+        }
+        if (!retained_state.merged_reader->valid()) {
+            diagnostic.status = CompletionPublicationStatus::successor_mismatch;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return cold_reopen(std::move(diagnostic));
+        }
+
+        diagnostic.phase = CompletionPublicationPhase::root_refresh;
+        successor_state->store = std::move(retained_state.store);
+        successor_state->merged_reader = std::move(retained_state.merged_reader);
+        CompletionRoot refreshed_root(std::move(successor_state));
+        if (!refreshed_root.valid()) {
+            diagnostic.status = CompletionPublicationStatus::root_refresh_failed;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return cold_reopen(std::move(diagnostic));
+        }
+
+        diagnostic.phase = CompletionPublicationPhase::continuation_construction;
+        DistributedSieveWorkerCleanupCompletionPublishedContinuationV1 sealed(
+            *target_ordinal, expected_process_id, std::move(refreshed_root),
+            std::move(continuation_bytes), canonical_snapshot, completion_digest);
+        if (!sealed.valid()) {
+            diagnostic.status = CompletionPublicationStatus::root_refresh_failed;
+            diagnostic.native_error = std::make_error_code(std::errc::state_not_recoverable);
+            return cold_reopen(std::move(diagnostic));
+        }
+        std::optional<DistributedSieveWorkerCleanupCompletionPublishedContinuationV1> continuation;
+        continuation.emplace(std::move(sealed));
+        diagnostic.phase = CompletionPublicationPhase::complete;
+        diagnostic.status = CompletionPublicationStatus::published;
+        diagnostic.disposition = CompletionPublicationDisposition::completion_published;
+        diagnostic.native_error.clear();
+        diagnostic.wave_store = {};
+        return CompletionPublicationResult(std::nullopt, std::nullopt, std::move(continuation),
+                                           std::move(diagnostic));
+    } catch (const std::bad_alloc&) {
+        diagnostic.status = CompletionPublicationStatus::resource_exhausted;
+        diagnostic.native_error = std::make_error_code(std::errc::not_enough_memory);
+    } catch (const std::filesystem::filesystem_error& error) {
+        diagnostic.status = CompletionPublicationStatus::unexpected_failure;
+        diagnostic.native_error = error.code();
+    } catch (...) {
+        diagnostic.status = CompletionPublicationStatus::unexpected_failure;
+        diagnostic.native_error = std::make_error_code(std::errc::io_error);
+    }
+    diagnostic.authority_spent = diagnostic.authority_spent || authority_spent;
+    return diagnostic.authority_spent || diagnostic.publication_started
+               ? cold_reopen(std::move(diagnostic))
+               : retry_input_or_cold(std::move(diagnostic));
+}
+
 } // namespace gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail
 
 namespace gnfs::sieve::distributed_sieve_worker_launcher_detail {

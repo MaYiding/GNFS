@@ -8,6 +8,7 @@
 #include "distributed_sieve_wave_store_internal.hpp"
 #include "distributed_sieve_worker_cleanup_codec_internal.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -15,6 +16,7 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 namespace gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail {
 
@@ -645,6 +647,282 @@ private:
     friend DistributedSieveWorkerCleanupCompletionPreparationResultV1
     drive_distributed_sieve_worker_cleanup_to_completion_ready_v1(
         DistributedSieveWorkerCleanupRootAdmissionV1&& root) noexcept;
+};
+
+/// Sealed R2 continuation proving that one exact worker cleanup completion is
+/// canonical-durable and that the retained WaveLock/merged reader have been
+/// refreshed to the exact one-record successor. The underlying cleanup-root
+/// admission is intentionally not exposed as a standalone continuation.
+class DistributedSieveWorkerCleanupCompletionPublishedContinuationV1 final {
+public:
+    DistributedSieveWorkerCleanupCompletionPublishedContinuationV1() = delete;
+    DistributedSieveWorkerCleanupCompletionPublishedContinuationV1(
+        const DistributedSieveWorkerCleanupCompletionPublishedContinuationV1&) = delete;
+    DistributedSieveWorkerCleanupCompletionPublishedContinuationV1&
+    operator=(const DistributedSieveWorkerCleanupCompletionPublishedContinuationV1&) = delete;
+    DistributedSieveWorkerCleanupCompletionPublishedContinuationV1(
+        DistributedSieveWorkerCleanupCompletionPublishedContinuationV1&&) noexcept;
+    DistributedSieveWorkerCleanupCompletionPublishedContinuationV1&
+    operator=(DistributedSieveWorkerCleanupCompletionPublishedContinuationV1&&) = delete;
+    ~DistributedSieveWorkerCleanupCompletionPublishedContinuationV1() noexcept;
+
+    [[nodiscard]] bool valid() const noexcept;
+    [[nodiscard]] std::uint32_t manifest_order_ordinal() const noexcept {
+        return manifest_order_ordinal_;
+    }
+    [[nodiscard]] const util::Sha256Digest& completion_digest() const noexcept {
+        return completion_digest_;
+    }
+
+private:
+    DistributedSieveWorkerCleanupCompletionPublishedContinuationV1(
+        std::uint32_t manifest_order_ordinal, std::uint64_t creator_process_id,
+        DistributedSieveWorkerCleanupRootAdmissionV1&& root,
+        std::vector<std::byte>&& completion_bytes,
+        util::durable_immutable_record::RecordSnapshot completion_snapshot,
+        util::Sha256Digest completion_digest) noexcept;
+
+    std::uint32_t manifest_order_ordinal_ = 0;
+    std::uint64_t creator_process_id_ = 0;
+    // Reverse destruction releases pure completion material before WaveLock.
+    DistributedSieveWorkerCleanupRootAdmissionV1 root_;
+    std::vector<std::byte> completion_bytes_;
+    util::durable_immutable_record::RecordSnapshot completion_snapshot_;
+    util::Sha256Digest completion_digest_;
+
+    friend class DistributedSieveWorkerCleanupCompletionPublicationAuthorityV1;
+};
+
+namespace trusted_test {
+
+enum class DistributedSieveWorkerCleanupCompletionPublicationFaultPointV1 : std::uint8_t {
+    FreshBeforeReceiptSpend,
+    FreshAfterReceiptSpend,
+    RecoveryBeforePublication,
+    PendingDurable,
+    CanonicalPromoted,
+    CanonicalDurable,
+    AfterFirstSuccessorObservation,
+    Count,
+};
+
+struct DistributedSieveWorkerCleanupCompletionPublicationTestHooksV1 final {
+    using StopAfter = bool (*)(DistributedSieveWorkerCleanupCompletionPublicationFaultPointV1 point,
+                               void* context) noexcept;
+
+    StopAfter stop_after = nullptr;
+    void* context = nullptr;
+};
+
+} // namespace trusted_test
+
+enum class DistributedSieveWorkerCleanupCompletionPublicationPhaseV1 : std::uint8_t {
+    input_validation,
+    recovery_target_selection,
+    completion_build,
+    baseline_observation,
+    successor_preparation,
+    authority_spend,
+    record_publication,
+    successor_observation,
+    root_refresh,
+    continuation_construction,
+    complete,
+};
+
+enum class DistributedSieveWorkerCleanupCompletionPublicationStatusV1 : std::uint8_t {
+    published,
+    retryable_completion_ready,
+    retryable_recovery_root,
+    invalid_input,
+    process_mismatch,
+    completion_build_failed,
+    completion_target_missing,
+    completion_target_invalid,
+    baseline_observation_failed,
+    baseline_changed,
+    test_interrupted,
+    publication_failed,
+    publication_disposition_mismatch,
+    successor_observation_failed,
+    successor_mismatch,
+    root_refresh_failed,
+    platform_unsupported,
+    resource_exhausted,
+    unexpected_failure,
+};
+
+[[nodiscard]] constexpr std::string_view
+distributed_sieve_worker_cleanup_completion_publication_status_name(
+    DistributedSieveWorkerCleanupCompletionPublicationStatusV1 status) noexcept {
+    switch (status) {
+    case DistributedSieveWorkerCleanupCompletionPublicationStatusV1::published:
+        return "published";
+    case DistributedSieveWorkerCleanupCompletionPublicationStatusV1::retryable_completion_ready:
+        return "retryable_completion_ready";
+    case DistributedSieveWorkerCleanupCompletionPublicationStatusV1::retryable_recovery_root:
+        return "retryable_recovery_root";
+    case DistributedSieveWorkerCleanupCompletionPublicationStatusV1::invalid_input:
+        return "invalid_input";
+    case DistributedSieveWorkerCleanupCompletionPublicationStatusV1::process_mismatch:
+        return "process_mismatch";
+    case DistributedSieveWorkerCleanupCompletionPublicationStatusV1::completion_build_failed:
+        return "completion_build_failed";
+    case DistributedSieveWorkerCleanupCompletionPublicationStatusV1::completion_target_missing:
+        return "completion_target_missing";
+    case DistributedSieveWorkerCleanupCompletionPublicationStatusV1::completion_target_invalid:
+        return "completion_target_invalid";
+    case DistributedSieveWorkerCleanupCompletionPublicationStatusV1::baseline_observation_failed:
+        return "baseline_observation_failed";
+    case DistributedSieveWorkerCleanupCompletionPublicationStatusV1::baseline_changed:
+        return "baseline_changed";
+    case DistributedSieveWorkerCleanupCompletionPublicationStatusV1::test_interrupted:
+        return "test_interrupted";
+    case DistributedSieveWorkerCleanupCompletionPublicationStatusV1::publication_failed:
+        return "publication_failed";
+    case DistributedSieveWorkerCleanupCompletionPublicationStatusV1::
+        publication_disposition_mismatch:
+        return "publication_disposition_mismatch";
+    case DistributedSieveWorkerCleanupCompletionPublicationStatusV1::successor_observation_failed:
+        return "successor_observation_failed";
+    case DistributedSieveWorkerCleanupCompletionPublicationStatusV1::successor_mismatch:
+        return "successor_mismatch";
+    case DistributedSieveWorkerCleanupCompletionPublicationStatusV1::root_refresh_failed:
+        return "root_refresh_failed";
+    case DistributedSieveWorkerCleanupCompletionPublicationStatusV1::platform_unsupported:
+        return "platform_unsupported";
+    case DistributedSieveWorkerCleanupCompletionPublicationStatusV1::resource_exhausted:
+        return "resource_exhausted";
+    case DistributedSieveWorkerCleanupCompletionPublicationStatusV1::unexpected_failure:
+        return "unexpected_failure";
+    }
+    return "unknown";
+}
+
+enum class DistributedSieveWorkerCleanupCompletionPublicationDispositionV1 : std::uint8_t {
+    retryable_completion_ready,
+    retryable_recovery_root,
+    completion_published,
+    cold_reopen_required,
+};
+
+struct DistributedSieveWorkerCleanupCompletionPublicationDiagnosticV1 final {
+    DistributedSieveWorkerCleanupCompletionPublicationPhaseV1 phase =
+        DistributedSieveWorkerCleanupCompletionPublicationPhaseV1::input_validation;
+    DistributedSieveWorkerCleanupCompletionPublicationStatusV1 status =
+        DistributedSieveWorkerCleanupCompletionPublicationStatusV1::unexpected_failure;
+    DistributedSieveWorkerCleanupCompletionPublicationDispositionV1 disposition =
+        DistributedSieveWorkerCleanupCompletionPublicationDispositionV1::cold_reopen_required;
+    std::optional<std::uint32_t> manifest_order_ordinal;
+    distributed_sieve_worker_cleanup_codec_detail::DistributedSieveWorkerCleanupCodecDiagnosticV1
+        codec;
+    distributed_sieve_resume_detail::DistributedSieveWaveStoreDiagnostic wave_store;
+    std::optional<util::durable_immutable_record::RecordPublishStatus> publication_status;
+    std::optional<util::durable_immutable_record::RecordPublishDisposition> publication_disposition;
+    std::optional<trusted_test::DistributedSieveWorkerCleanupCompletionPublicationFaultPointV1>
+        last_fault_point;
+    std::error_code native_error;
+    bool authority_spent = false;
+    bool publication_started = false;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return phase == DistributedSieveWorkerCleanupCompletionPublicationPhaseV1::complete &&
+               status == DistributedSieveWorkerCleanupCompletionPublicationStatusV1::published &&
+               disposition == DistributedSieveWorkerCleanupCompletionPublicationDispositionV1::
+                                  completion_published &&
+               publication_status == util::durable_immutable_record::RecordPublishStatus::durable &&
+               publication_disposition.has_value() && authority_spent && publication_started &&
+               !native_error;
+    }
+};
+
+struct DistributedSieveWorkerCleanupCompletionPublicationResultV1 final {
+    DistributedSieveWorkerCleanupCompletionPublicationResultV1() = default;
+    DistributedSieveWorkerCleanupCompletionPublicationResultV1(
+        std::optional<DistributedSieveWorkerCleanupCompletionReadyCapsuleV1>
+            retryable_completion_ready_value,
+        std::optional<DistributedSieveWorkerCleanupRootAdmissionV1> retryable_recovery_root_value,
+        std::optional<DistributedSieveWorkerCleanupCompletionPublishedContinuationV1>
+            published_continuation_value,
+        DistributedSieveWorkerCleanupCompletionPublicationDiagnosticV1 diagnostic_value) noexcept
+        : retryable_completion_ready(std::move(retryable_completion_ready_value)),
+          retryable_recovery_root(std::move(retryable_recovery_root_value)),
+          published_continuation(std::move(published_continuation_value)),
+          diagnostic(std::move(diagnostic_value)) {}
+    DistributedSieveWorkerCleanupCompletionPublicationResultV1(
+        const DistributedSieveWorkerCleanupCompletionPublicationResultV1&) = delete;
+    DistributedSieveWorkerCleanupCompletionPublicationResultV1&
+    operator=(const DistributedSieveWorkerCleanupCompletionPublicationResultV1&) = delete;
+    DistributedSieveWorkerCleanupCompletionPublicationResultV1(
+        DistributedSieveWorkerCleanupCompletionPublicationResultV1&&) noexcept = default;
+    DistributedSieveWorkerCleanupCompletionPublicationResultV1&
+    operator=(DistributedSieveWorkerCleanupCompletionPublicationResultV1&&) = delete;
+
+    std::optional<DistributedSieveWorkerCleanupCompletionReadyCapsuleV1> retryable_completion_ready;
+    std::optional<DistributedSieveWorkerCleanupRootAdmissionV1> retryable_recovery_root;
+    std::optional<DistributedSieveWorkerCleanupCompletionPublishedContinuationV1>
+        published_continuation;
+    DistributedSieveWorkerCleanupCompletionPublicationDiagnosticV1 diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept;
+};
+
+[[nodiscard]] DistributedSieveWorkerCleanupCompletionPublicationResultV1
+publish_distributed_sieve_worker_cleanup_completion_v1(
+    DistributedSieveWorkerCleanupCompletionReadyCapsuleV1&& completion_ready) noexcept;
+
+[[nodiscard]] DistributedSieveWorkerCleanupCompletionPublicationResultV1
+reconcile_distributed_sieve_worker_cleanup_completion_v1(
+    DistributedSieveWorkerCleanupRootAdmissionV1&& root) noexcept;
+
+namespace trusted_test {
+
+[[nodiscard]] DistributedSieveWorkerCleanupCompletionPublicationResultV1
+publish_distributed_sieve_worker_cleanup_completion_v1_with_hooks(
+    DistributedSieveWorkerCleanupCompletionReadyCapsuleV1&& completion_ready,
+    DistributedSieveWorkerCleanupCompletionPublicationTestHooksV1 hooks) noexcept;
+
+[[nodiscard]] DistributedSieveWorkerCleanupCompletionPublicationResultV1
+reconcile_distributed_sieve_worker_cleanup_completion_v1_with_hooks(
+    DistributedSieveWorkerCleanupRootAdmissionV1&& root,
+    DistributedSieveWorkerCleanupCompletionPublicationTestHooksV1 hooks) noexcept;
+
+} // namespace trusted_test
+
+class DistributedSieveWorkerCleanupCompletionPublicationAuthorityV1 final {
+public:
+    DistributedSieveWorkerCleanupCompletionPublicationAuthorityV1() = delete;
+
+private:
+    [[nodiscard]] static bool
+    valid(const DistributedSieveWorkerCleanupCompletionPublishedContinuationV1&
+              continuation) noexcept;
+    [[nodiscard]] static DistributedSieveWorkerCleanupCompletionPublicationResultV1 publish(
+        DistributedSieveWorkerCleanupCompletionReadyCapsuleV1&& completion_ready,
+        trusted_test::DistributedSieveWorkerCleanupCompletionPublicationTestHooksV1 hooks) noexcept;
+    [[nodiscard]] static DistributedSieveWorkerCleanupCompletionPublicationResultV1 reconcile(
+        DistributedSieveWorkerCleanupRootAdmissionV1&& root,
+        trusted_test::DistributedSieveWorkerCleanupCompletionPublicationTestHooksV1 hooks) noexcept;
+    [[nodiscard]] static DistributedSieveWorkerCleanupCompletionPublicationResultV1 drive(
+        std::optional<DistributedSieveWorkerCleanupCompletionReadyCapsuleV1>&& fresh,
+        std::optional<DistributedSieveWorkerCleanupRootAdmissionV1>&& recovery,
+        trusted_test::DistributedSieveWorkerCleanupCompletionPublicationTestHooksV1 hooks) noexcept;
+
+    friend class DistributedSieveWorkerCleanupCompletionPublishedContinuationV1;
+    friend DistributedSieveWorkerCleanupCompletionPublicationResultV1
+    publish_distributed_sieve_worker_cleanup_completion_v1(
+        DistributedSieveWorkerCleanupCompletionReadyCapsuleV1&& completion_ready) noexcept;
+    friend DistributedSieveWorkerCleanupCompletionPublicationResultV1
+    reconcile_distributed_sieve_worker_cleanup_completion_v1(
+        DistributedSieveWorkerCleanupRootAdmissionV1&& root) noexcept;
+    friend DistributedSieveWorkerCleanupCompletionPublicationResultV1
+    trusted_test::publish_distributed_sieve_worker_cleanup_completion_v1_with_hooks(
+        DistributedSieveWorkerCleanupCompletionReadyCapsuleV1&& completion_ready,
+        trusted_test::DistributedSieveWorkerCleanupCompletionPublicationTestHooksV1 hooks) noexcept;
+    friend DistributedSieveWorkerCleanupCompletionPublicationResultV1
+    trusted_test::reconcile_distributed_sieve_worker_cleanup_completion_v1_with_hooks(
+        DistributedSieveWorkerCleanupRootAdmissionV1&& root,
+        trusted_test::DistributedSieveWorkerCleanupCompletionPublicationTestHooksV1 hooks) noexcept;
 };
 
 /// Pure-data result of the committed tail's rvalue-only lock-generation

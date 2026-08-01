@@ -13,6 +13,7 @@
 #include <gnfs/relation/ooc_cleanup_transaction.hpp>
 #include <gnfs/relation/ooc_relation_store.hpp>
 #include <gnfs/sieve/distributed_sieve_protocol.hpp>
+#include <gnfs/util/durable_immutable_record.hpp>
 #include <gnfs/util/sha256.hpp>
 
 #include <array>
@@ -47,6 +48,7 @@ namespace {
 
 namespace cleanup_authority = gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail;
 namespace commit_authority = gnfs::sieve::distributed_sieve_merge_commit_authority_detail;
+namespace durable_record = gnfs::util::durable_immutable_record;
 namespace relation = gnfs::relation;
 namespace sieve = gnfs::sieve;
 namespace wave = gnfs::sieve::distributed_sieve_resume_detail;
@@ -73,6 +75,18 @@ using CleanupCompletionPreparationResult =
     cleanup_authority::DistributedSieveWorkerCleanupCompletionPreparationResultV1;
 using CleanupCompletionDriveFunction =
     decltype(&cleanup_authority::drive_distributed_sieve_worker_cleanup_to_completion_ready_v1);
+using CleanupCompletionPublishedContinuation =
+    cleanup_authority::DistributedSieveWorkerCleanupCompletionPublishedContinuationV1;
+using CleanupCompletionPublicationResult =
+    cleanup_authority::DistributedSieveWorkerCleanupCompletionPublicationResultV1;
+using CleanupCompletionPublishFunction =
+    decltype(&cleanup_authority::publish_distributed_sieve_worker_cleanup_completion_v1);
+using CleanupCompletionReconcileFunction =
+    decltype(&cleanup_authority::reconcile_distributed_sieve_worker_cleanup_completion_v1);
+using CleanupCompletionPublicationFault =
+    cleanup_authority::trusted_test::DistributedSieveWorkerCleanupCompletionPublicationFaultPointV1;
+using CleanupCompletionPublicationHooks =
+    cleanup_authority::trusted_test::DistributedSieveWorkerCleanupCompletionPublicationTestHooksV1;
 
 static_assert(std::is_final_v<CleanupAdmission>);
 static_assert(!std::is_default_constructible_v<CleanupAdmission>);
@@ -109,6 +123,21 @@ static_assert(std::is_nothrow_move_constructible_v<CleanupCompletionPreparationR
 static_assert(!std::is_invocable_v<CleanupCompletionDriveFunction, CleanupAdmission&>);
 static_assert(std::is_nothrow_invocable_r_v<CleanupCompletionPreparationResult,
                                             CleanupCompletionDriveFunction, CleanupAdmission&&>);
+static_assert(std::is_final_v<CleanupCompletionPublishedContinuation>);
+static_assert(!std::is_default_constructible_v<CleanupCompletionPublishedContinuation>);
+static_assert(!std::is_copy_constructible_v<CleanupCompletionPublishedContinuation>);
+static_assert(std::is_nothrow_move_constructible_v<CleanupCompletionPublishedContinuation>);
+static_assert(!std::is_copy_constructible_v<CleanupCompletionPublicationResult>);
+static_assert(std::is_nothrow_move_constructible_v<CleanupCompletionPublicationResult>);
+static_assert(
+    !std::is_invocable_v<CleanupCompletionPublishFunction, CleanupCompletionReadyCapsule&>);
+static_assert(std::is_nothrow_invocable_r_v<CleanupCompletionPublicationResult,
+                                            CleanupCompletionPublishFunction,
+                                            CleanupCompletionReadyCapsule&&>);
+static_assert(!std::is_invocable_v<CleanupCompletionReconcileFunction, CleanupAdmission&>);
+static_assert(
+    std::is_nothrow_invocable_r_v<CleanupCompletionPublicationResult,
+                                  CleanupCompletionReconcileFunction, CleanupAdmission&&>);
 static_assert(
     noexcept(cleanup_authority::mint_distributed_sieve_worker_cleanup_authorization_receipt_v1(
         std::declval<CleanupAdmission&>())));
@@ -164,6 +193,7 @@ inline constexpr int BASE_LOCK_HELD_EXIT = 72;
 inline constexpr int WAVE_LOCK_BUSY_EXIT = 73;
 inline constexpr int FORK_REJECTED_EXIT = 74;
 inline constexpr int COMPLETION_READY_FORK_REJECTED_EXIT = 75;
+inline constexpr int COMPLETION_PUBLICATION_FORK_REJECTED_EXIT = 76;
 
 std::string test_executable;
 
@@ -571,12 +601,10 @@ public:
                 names_[ordinal].emplace(*names);
                 authorization_bytes_[ordinal] = fixture::encode_record(
                     sieve::DistributedSieveProtocolRecordV1{*authorizations_[ordinal]});
-                if (ordinal < active_ordinal_) {
-                    completions_[ordinal].emplace(
-                        make_worker_cleanup_completion(*authorizations_[ordinal]));
-                    completion_bytes_[ordinal] = fixture::encode_record(
-                        sieve::DistributedSieveProtocolRecordV1{*completions_[ordinal]});
-                }
+                completions_[ordinal].emplace(
+                    make_worker_cleanup_completion(*authorizations_[ordinal]));
+                completion_bytes_[ordinal] = fixture::encode_record(
+                    sieve::DistributedSieveProtocolRecordV1{*completions_[ordinal]});
             }
         }
 
@@ -626,7 +654,12 @@ public:
     }
 
     [[nodiscard]] std::filesystem::path authorization_path() const {
-        return prepared_.root() / names_[active_ordinal_]->authorization_canonical_record_leaf;
+        return authorization_path(active_ordinal_);
+    }
+
+    [[nodiscard]] std::filesystem::path authorization_path(std::uint32_t ordinal) const {
+        CHECK(ordinal <= active_ordinal_);
+        return prepared_.root() / names_[ordinal]->authorization_canonical_record_leaf;
     }
 
     [[nodiscard]] std::filesystem::path authorization_pending_path() const {
@@ -634,13 +667,18 @@ public:
     }
 
     [[nodiscard]] const std::vector<std::byte>& completion_bytes(std::uint32_t ordinal) const {
-        CHECK(ordinal < active_ordinal_);
+        CHECK(ordinal <= active_ordinal_);
         return completion_bytes_[ordinal];
     }
 
     [[nodiscard]] std::filesystem::path completion_path(std::uint32_t ordinal) const {
-        CHECK(ordinal < active_ordinal_);
+        CHECK(ordinal <= active_ordinal_);
         return prepared_.root() / names_[ordinal]->completion_canonical_record_leaf;
+    }
+
+    [[nodiscard]] std::filesystem::path completion_pending_path(std::uint32_t ordinal) const {
+        CHECK(ordinal <= active_ordinal_);
+        return prepared_.root() / names_[ordinal]->completion_pending_record_leaf;
     }
 
     [[nodiscard]] std::filesystem::path worker_base() const {
@@ -859,6 +897,160 @@ drive_cleanup_to_completion_ready(CleanupAdmission&& admission, std::uint32_t ex
     CHECK(driven.completion_ready->valid());
     CHECK(driven.completion_ready->manifest_order_ordinal() == expected_ordinal);
     return driven;
+}
+
+enum class InjectedCompletionPrefix : std::uint8_t {
+    pending_only,
+    canonical_only,
+    identical_dual,
+};
+
+struct InjectedCompletionSnapshots final {
+    std::optional<fixture::LeafSnapshot> canonical;
+    std::optional<fixture::LeafSnapshot> pending;
+};
+
+[[nodiscard]] InjectedCompletionSnapshots
+inject_active_completion_prefix(CanonicalWorkerCleanupRoot& root, InjectedCompletionPrefix shape) {
+    const auto ordinal = root.active_ordinal();
+    const auto& bytes = root.completion_bytes(ordinal);
+    const auto canonical = root.completion_path(ordinal);
+    const auto pending = root.completion_pending_path(ordinal);
+    if (shape != InjectedCompletionPrefix::pending_only) {
+        fixture::publish_canonical_record(root.prepared().root(), pending.filename().string(),
+                                          canonical.filename().string(), bytes);
+    }
+    if (shape != InjectedCompletionPrefix::canonical_only) {
+        write_immutable_test_leaf(pending, bytes);
+    }
+    return {
+        .canonical = std::filesystem::exists(canonical)
+                         ? std::optional{fixture::snapshot_leaf(canonical)}
+                         : std::nullopt,
+        .pending = std::filesystem::exists(pending) ? std::optional{fixture::snapshot_leaf(pending)}
+                                                    : std::nullopt,
+    };
+}
+
+[[nodiscard]] CleanupAdmission open_cleanup_root(const fixture::PreparedWaveFixture& prepared,
+                                                 std::string_view context) {
+    auto opened = wave::open_worker_cleanup_root_v1(prepared.root(), prepared.manifest_digest());
+    if (!opened || !opened.admission.has_value()) {
+        fail(context, __LINE__, wave_diagnostic_detail(opened.diagnostic));
+    }
+    CHECK(opened.admission->valid());
+    return std::move(*opened.admission);
+}
+
+[[nodiscard]] std::vector<std::string> capture_root_entry_names(const std::filesystem::path& root) {
+    std::vector<std::string> names;
+    for (const auto& entry : std::filesystem::directory_iterator(root)) {
+        names.push_back(entry.path().filename().string());
+    }
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+[[nodiscard]] sieve::ArtifactCleanupCompletedV1
+read_cleanup_completion(const std::filesystem::path& path) {
+    const auto decoded = sieve::decode_distributed_sieve_record(fixture::read_file_bytes(path));
+    CHECK(decoded);
+    CHECK(decoded.value.has_value());
+    const auto* completion = std::get_if<sieve::ArtifactCleanupCompletedV1>(&*decoded.value);
+    CHECK(completion != nullptr);
+    return *completion;
+}
+
+void require_completion_publication_success(
+    CleanupCompletionPublicationResult& result, std::uint32_t expected_ordinal,
+    durable_record::RecordPublishDisposition expected_publication_disposition) {
+    using Phase = cleanup_authority::DistributedSieveWorkerCleanupCompletionPublicationPhaseV1;
+    using Status = cleanup_authority::DistributedSieveWorkerCleanupCompletionPublicationStatusV1;
+    using Disposition =
+        cleanup_authority::DistributedSieveWorkerCleanupCompletionPublicationDispositionV1;
+
+    CHECK(result);
+    CHECK(!result.retryable_completion_ready.has_value());
+    CHECK(!result.retryable_recovery_root.has_value());
+    CHECK(result.published_continuation.has_value());
+    CHECK(result.published_continuation->valid());
+    CHECK(result.published_continuation->manifest_order_ordinal() == expected_ordinal);
+    CHECK(result.diagnostic.phase == Phase::complete);
+    CHECK(result.diagnostic.status == Status::published);
+    CHECK(result.diagnostic.disposition == Disposition::completion_published);
+    CHECK(result.diagnostic.manifest_order_ordinal == expected_ordinal);
+    CHECK(result.diagnostic.publication_status == durable_record::RecordPublishStatus::durable);
+    CHECK(result.diagnostic.publication_disposition == expected_publication_disposition);
+    CHECK(result.diagnostic.authority_spent);
+    CHECK(result.diagnostic.publication_started);
+    CHECK(!result.diagnostic.native_error);
+}
+
+void require_completed_cleanup_prefix(const CleanupAdmission& admission,
+                                      std::size_t expected_completed,
+                                      std::optional<std::uint32_t> expected_frontier) {
+    const auto& prefix = admission.cleanup_prefix();
+    CHECK(prefix.completed_worker_count == expected_completed);
+    CHECK(prefix.frontier_manifest_order_ordinal == expected_frontier);
+    CHECK(!prefix.active_manifest_order_ordinal.has_value());
+    CHECK(prefix.coordinates.size() == expected_completed);
+    for (const auto& coordinate : prefix.coordinates) {
+        CHECK(coordinate.state == wave::DistributedSieveWorkerCleanupPrefixStateV1::completed);
+        CHECK(coordinate.authorization_canonical_snapshot.has_value());
+        CHECK(!coordinate.authorization_pending_snapshot.has_value());
+        CHECK(coordinate.completion.has_value());
+        CHECK(coordinate.completion_canonical_snapshot.has_value());
+        CHECK(!coordinate.completion_pending_snapshot.has_value());
+    }
+}
+
+struct CompletionPublicationStopContext final {
+    CleanupCompletionPublicationFault target = CleanupCompletionPublicationFault::PendingDurable;
+    std::array<bool, static_cast<std::size_t>(CleanupCompletionPublicationFault::Count)> observed{};
+};
+
+[[nodiscard]] bool stop_completion_publication_after(CleanupCompletionPublicationFault point,
+                                                     void* opaque) noexcept {
+    auto& context = *static_cast<CompletionPublicationStopContext*>(opaque);
+    const auto index = static_cast<std::size_t>(point);
+    if (index < context.observed.size()) {
+        context.observed[index] = true;
+    }
+    return point == context.target;
+}
+
+enum class CompletionSuccessorMutation : std::uint8_t {
+    replace_canonical,
+    add_identical_pending,
+};
+
+struct CompletionSuccessorMutationContext final {
+    CompletionSuccessorMutation mutation = CompletionSuccessorMutation::replace_canonical;
+    std::filesystem::path canonical;
+    std::filesystem::path pending;
+    std::filesystem::path saved;
+    bool invoked = false;
+    std::exception_ptr failure;
+};
+
+[[nodiscard]] bool mutate_completion_successor(CleanupCompletionPublicationFault point,
+                                               void* opaque) noexcept {
+    auto& context = *static_cast<CompletionSuccessorMutationContext*>(opaque);
+    if (point != CleanupCompletionPublicationFault::AfterFirstSuccessorObservation) {
+        return false;
+    }
+    context.invoked = true;
+    try {
+        const auto bytes = fixture::read_file_bytes(context.canonical);
+        if (context.mutation == CompletionSuccessorMutation::replace_canonical) {
+            replace_file_with_same_bytes(context.canonical, context.saved, bytes);
+        } else {
+            write_immutable_test_leaf(context.pending, bytes);
+        }
+    } catch (...) {
+        context.failure = std::current_exception();
+    }
+    return false;
 }
 
 [[nodiscard]] CommittedTail cold_open_tail(const std::filesystem::path& root,
@@ -2098,6 +2290,524 @@ void test_completion_ready_capsule_is_process_bound_across_fork() {
     require_wave_lock_busy(root.prepared());
 }
 
+void test_completion_publication_creates_and_advances_one_frontier() {
+    CanonicalWorkerCleanupRoot root("worker-cleanup-completion-publish-fresh");
+    const auto bases = private_handoff_bases(root.prepared());
+    const auto merged_snapshot = capture_merged_corpus(bases[2]);
+    const auto authorization_snapshot = fixture::snapshot_leaf(root.authorization_path());
+    const auto next_names = wave::distributed_sieve_worker_cleanup_record_names_v1(1U);
+    CHECK(next_names.has_value());
+    auto driven = drive_cleanup_to_completion_ready(root.take_admission(), 0U);
+    const auto root_entries_before = capture_root_entry_names(root.prepared().root());
+    require_active_cleanup_completion_absent(root);
+    require_wave_lock_busy(root.prepared());
+
+    auto published = cleanup_authority::publish_distributed_sieve_worker_cleanup_completion_v1(
+        std::move(*driven.completion_ready));
+
+    require_completion_publication_success(published, 0U,
+                                           durable_record::RecordPublishDisposition::created);
+    CHECK(std::filesystem::exists(root.completion_path(0U)));
+    CHECK(!std::filesystem::exists(root.completion_pending_path(0U)));
+    const auto completion = read_cleanup_completion(root.completion_path(0U));
+    CHECK(completion.self_digest == published.published_continuation->completion_digest());
+    CHECK(fixture::snapshot_leaf(root.authorization_path()) == authorization_snapshot);
+    CHECK(!std::filesystem::exists(root.prepared().root() /
+                                   next_names->authorization_canonical_record_leaf));
+    CHECK(!std::filesystem::exists(root.prepared().root() /
+                                   next_names->authorization_pending_record_leaf));
+    CHECK(!std::filesystem::exists(root.prepared().root() /
+                                   next_names->completion_canonical_record_leaf));
+    CHECK(!std::filesystem::exists(root.prepared().root() /
+                                   next_names->completion_pending_record_leaf));
+    auto expected_root_entries = root_entries_before;
+    expected_root_entries.push_back(root.completion_path(0U).filename().string());
+    std::sort(expected_root_entries.begin(), expected_root_entries.end());
+    CHECK(capture_root_entry_names(root.prepared().root()) == expected_root_entries);
+    require_merged_corpus(bases[2], merged_snapshot);
+    require_all_base_locks_free(bases);
+    require_wave_lock_busy(root.prepared());
+
+    published.published_continuation.reset();
+    auto reopened = open_cleanup_root(root.prepared(), "cold-open fresh completion successor");
+    require_completed_cleanup_prefix(reopened, 1U, 1U);
+    CHECK(reopened.reader().count() == root.prepared().expected_rows().size());
+    auto remint =
+        cleanup_authority::mint_distributed_sieve_worker_cleanup_authorization_receipt_v1(reopened);
+    CHECK(!remint);
+    CHECK(!remint.minted.has_value());
+    CHECK(remint.diagnostic.status ==
+          cleanup_authority::DistributedSieveWorkerCleanupReceiptMintStatusV1::
+              authorization_not_canonical);
+    require_wave_lock_busy(root.prepared());
+}
+
+void test_completion_publication_recovers_pending_canonical_and_identical_dual() {
+    struct Case final {
+        InjectedCompletionPrefix shape;
+        std::string_view label;
+        durable_record::RecordPublishDisposition expected_disposition;
+    };
+    constexpr std::array cases{
+        Case{InjectedCompletionPrefix::pending_only, "pending",
+             durable_record::RecordPublishDisposition::recovered_pending},
+        Case{InjectedCompletionPrefix::canonical_only, "canonical",
+             durable_record::RecordPublishDisposition::confirmed_existing},
+        Case{InjectedCompletionPrefix::identical_dual, "dual",
+             durable_record::RecordPublishDisposition::confirmed_existing},
+    };
+
+    for (const auto& test_case : cases) {
+        CanonicalWorkerCleanupRoot root(std::string("worker-cleanup-completion-recover-") +
+                                        std::string(test_case.label));
+        const auto bases = private_handoff_bases(root.prepared());
+        const auto merged_snapshot = capture_merged_corpus(bases[2]);
+        const auto authorization_snapshot = fixture::snapshot_leaf(root.authorization_path());
+        const auto worker_snapshot = root.prepared().worker_snapshot(0U);
+        {
+            auto released = root.take_admission();
+            CHECK(released.valid());
+        }
+        remove_worker_private_namespace(root.prepared().root(), worker_snapshot);
+        require_worker_cleanup_namespace_absent(bases[0]);
+        const auto injected = inject_active_completion_prefix(root, test_case.shape);
+        CHECK(injected.pending.has_value() ==
+              (test_case.shape != InjectedCompletionPrefix::canonical_only));
+        CHECK(injected.canonical.has_value() ==
+              (test_case.shape != InjectedCompletionPrefix::pending_only));
+        auto recovery_root =
+            open_cleanup_root(root.prepared(), "cold-open injected completion prefix");
+
+        auto recovered =
+            cleanup_authority::reconcile_distributed_sieve_worker_cleanup_completion_v1(
+                std::move(recovery_root));
+
+        require_completion_publication_success(recovered, 0U, test_case.expected_disposition);
+        const auto final_canonical = fixture::snapshot_leaf(root.completion_path(0U));
+        CHECK(!std::filesystem::exists(root.completion_pending_path(0U)));
+        if (test_case.shape == InjectedCompletionPrefix::pending_only) {
+            CHECK(final_canonical.identity == injected.pending->identity);
+            CHECK(final_canonical.bytes == injected.pending->bytes);
+        } else {
+            CHECK(final_canonical == *injected.canonical);
+        }
+        const auto completion = read_cleanup_completion(root.completion_path(0U));
+        CHECK(completion.self_digest == recovered.published_continuation->completion_digest());
+        CHECK(fixture::snapshot_leaf(root.authorization_path()) == authorization_snapshot);
+        require_merged_corpus(bases[2], merged_snapshot);
+        require_all_base_locks_free(bases);
+        require_wave_lock_busy(root.prepared());
+
+        recovered.published_continuation.reset();
+        auto reopened = open_cleanup_root(root.prepared(), "cold-open recovered completion");
+        require_completed_cleanup_prefix(reopened, 1U, 1U);
+        CHECK(reopened.reader().count() == root.prepared().expected_rows().size());
+    }
+}
+
+void test_completion_publication_fault_prefixes_cold_replay() {
+    constexpr std::array fresh_faults{
+        CleanupCompletionPublicationFault::PendingDurable,
+        CleanupCompletionPublicationFault::CanonicalPromoted,
+        CleanupCompletionPublicationFault::CanonicalDurable,
+    };
+    using Status = cleanup_authority::DistributedSieveWorkerCleanupCompletionPublicationStatusV1;
+    using Disposition =
+        cleanup_authority::DistributedSieveWorkerCleanupCompletionPublicationDispositionV1;
+
+    {
+        CanonicalWorkerCleanupRoot root("worker-cleanup-completion-before-spend");
+        const auto bases = private_handoff_bases(root.prepared());
+        const auto merged_snapshot = capture_merged_corpus(bases[2]);
+        const auto authorization_snapshot = fixture::snapshot_leaf(root.authorization_path());
+        auto driven = drive_cleanup_to_completion_ready(root.take_admission(), 0U);
+        CompletionPublicationStopContext context{
+            .target = CleanupCompletionPublicationFault::FreshBeforeReceiptSpend,
+        };
+
+        auto retryable = cleanup_authority::trusted_test::
+            publish_distributed_sieve_worker_cleanup_completion_v1_with_hooks(
+                std::move(*driven.completion_ready),
+                CleanupCompletionPublicationHooks{
+                    .stop_after = stop_completion_publication_after,
+                    .context = &context,
+                });
+
+        CHECK(retryable);
+        CHECK(retryable.retryable_completion_ready.has_value());
+        CHECK(retryable.retryable_completion_ready->valid());
+        CHECK(!retryable.retryable_recovery_root.has_value());
+        CHECK(!retryable.published_continuation.has_value());
+        CHECK(retryable.diagnostic.status == Status::retryable_completion_ready);
+        CHECK(retryable.diagnostic.disposition == Disposition::retryable_completion_ready);
+        CHECK(retryable.diagnostic.last_fault_point ==
+              CleanupCompletionPublicationFault::FreshBeforeReceiptSpend);
+        CHECK(!retryable.diagnostic.authority_spent);
+        CHECK(!retryable.diagnostic.publication_started);
+        CHECK(!retryable.diagnostic.publication_status.has_value());
+        CHECK(!retryable.diagnostic.publication_disposition.has_value());
+        require_active_cleanup_completion_absent(root);
+        CHECK(fixture::snapshot_leaf(root.authorization_path()) == authorization_snapshot);
+        require_merged_corpus(bases[2], merged_snapshot);
+        require_all_base_locks_free(bases);
+        require_wave_lock_busy(root.prepared());
+
+        auto published = cleanup_authority::publish_distributed_sieve_worker_cleanup_completion_v1(
+            std::move(*retryable.retryable_completion_ready));
+        require_completion_publication_success(published, 0U,
+                                               durable_record::RecordPublishDisposition::created);
+        require_merged_corpus(bases[2], merged_snapshot);
+    }
+
+    {
+        CanonicalWorkerCleanupRoot root("worker-cleanup-completion-after-spend");
+        const auto bases = private_handoff_bases(root.prepared());
+        const auto merged_snapshot = capture_merged_corpus(bases[2]);
+        const auto authorization_snapshot = fixture::snapshot_leaf(root.authorization_path());
+        auto driven = drive_cleanup_to_completion_ready(root.take_admission(), 0U);
+        CompletionPublicationStopContext context{
+            .target = CleanupCompletionPublicationFault::FreshAfterReceiptSpend,
+        };
+
+        auto interrupted = cleanup_authority::trusted_test::
+            publish_distributed_sieve_worker_cleanup_completion_v1_with_hooks(
+                std::move(*driven.completion_ready),
+                CleanupCompletionPublicationHooks{
+                    .stop_after = stop_completion_publication_after,
+                    .context = &context,
+                });
+
+        CHECK(!interrupted);
+        CHECK(!interrupted.retryable_completion_ready.has_value());
+        CHECK(!interrupted.retryable_recovery_root.has_value());
+        CHECK(!interrupted.published_continuation.has_value());
+        CHECK(interrupted.diagnostic.status == Status::test_interrupted);
+        CHECK(interrupted.diagnostic.disposition == Disposition::cold_reopen_required);
+        CHECK(interrupted.diagnostic.last_fault_point ==
+              CleanupCompletionPublicationFault::FreshAfterReceiptSpend);
+        CHECK(interrupted.diagnostic.authority_spent);
+        CHECK(!interrupted.diagnostic.publication_started);
+        CHECK(!interrupted.diagnostic.publication_status.has_value());
+        CHECK(!interrupted.diagnostic.publication_disposition.has_value());
+        require_active_cleanup_completion_absent(root);
+        CHECK(fixture::snapshot_leaf(root.authorization_path()) == authorization_snapshot);
+        require_merged_corpus(bases[2], merged_snapshot);
+        require_all_base_locks_free(bases);
+
+        const auto root_entries_before_reconcile = capture_root_entry_names(root.prepared().root());
+        auto reopened = open_cleanup_root(root.prepared(), "cold-open post-spend A-only root");
+        CompletionPublicationStopContext recovery_context{
+            .target = CleanupCompletionPublicationFault::RecoveryBeforePublication,
+        };
+        auto rejected = cleanup_authority::trusted_test::
+            reconcile_distributed_sieve_worker_cleanup_completion_v1_with_hooks(
+                std::move(reopened), CleanupCompletionPublicationHooks{
+                                         .stop_after = stop_completion_publication_after,
+                                         .context = &recovery_context,
+                                     });
+        CHECK(rejected);
+        CHECK(!rejected.retryable_completion_ready.has_value());
+        CHECK(rejected.retryable_recovery_root.has_value());
+        CHECK(rejected.retryable_recovery_root->valid());
+        CHECK(!rejected.published_continuation.has_value());
+        CHECK(rejected.diagnostic.status == Status::completion_target_missing);
+        CHECK(rejected.diagnostic.disposition == Disposition::retryable_recovery_root);
+        CHECK(!rejected.diagnostic.authority_spent);
+        CHECK(!rejected.diagnostic.publication_started);
+        CHECK(!rejected.diagnostic.publication_status.has_value());
+        CHECK(!rejected.diagnostic.publication_disposition.has_value());
+        CHECK(!rejected.diagnostic.last_fault_point.has_value());
+        CHECK(std::none_of(recovery_context.observed.begin(), recovery_context.observed.end(),
+                           [](bool observed) { return observed; }));
+        CHECK(capture_root_entry_names(root.prepared().root()) == root_entries_before_reconcile);
+        require_active_cleanup_completion_absent(root);
+        CHECK(fixture::snapshot_leaf(root.authorization_path()) == authorization_snapshot);
+        require_merged_corpus(bases[2], merged_snapshot);
+        require_all_base_locks_free(bases);
+        require_wave_lock_busy(root.prepared());
+
+        auto redriven =
+            drive_cleanup_to_completion_ready(std::move(*rejected.retryable_recovery_root), 0U);
+        CHECK(redriven.diagnostic.observed_prefix ==
+              std::optional{
+                  relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupPrefixStateV2::Absent});
+        auto published = cleanup_authority::publish_distributed_sieve_worker_cleanup_completion_v1(
+            std::move(*redriven.completion_ready));
+        require_completion_publication_success(published, 0U,
+                                               durable_record::RecordPublishDisposition::created);
+        require_merged_corpus(bases[2], merged_snapshot);
+    }
+
+    for (const auto fault : fresh_faults) {
+        CanonicalWorkerCleanupRoot root("worker-cleanup-completion-fault-" +
+                                        std::to_string(static_cast<std::size_t>(fault)));
+        const auto bases = private_handoff_bases(root.prepared());
+        const auto merged_snapshot = capture_merged_corpus(bases[2]);
+        auto driven = drive_cleanup_to_completion_ready(root.take_admission(), 0U);
+        CompletionPublicationStopContext context{.target = fault};
+
+        auto interrupted = cleanup_authority::trusted_test::
+            publish_distributed_sieve_worker_cleanup_completion_v1_with_hooks(
+                std::move(*driven.completion_ready),
+                CleanupCompletionPublicationHooks{
+                    .stop_after = stop_completion_publication_after,
+                    .context = &context,
+                });
+
+        CHECK(!interrupted);
+        CHECK(!interrupted.retryable_completion_ready.has_value());
+        CHECK(!interrupted.retryable_recovery_root.has_value());
+        CHECK(!interrupted.published_continuation.has_value());
+        CHECK(interrupted.diagnostic.status == Status::test_interrupted);
+        CHECK(interrupted.diagnostic.disposition == Disposition::cold_reopen_required);
+        CHECK(interrupted.diagnostic.publication_status ==
+              durable_record::RecordPublishStatus::interrupted);
+        CHECK(interrupted.diagnostic.publication_disposition ==
+              durable_record::RecordPublishDisposition::created);
+        CHECK(interrupted.diagnostic.last_fault_point == fault);
+        CHECK(interrupted.diagnostic.authority_spent);
+        CHECK(interrupted.diagnostic.publication_started);
+        CHECK(context.observed[static_cast<std::size_t>(fault)]);
+        const bool pending_only = fault == CleanupCompletionPublicationFault::PendingDurable;
+        CHECK(std::filesystem::exists(root.completion_pending_path(0U)) == pending_only);
+        CHECK(std::filesystem::exists(root.completion_path(0U)) == !pending_only);
+        require_merged_corpus(bases[2], merged_snapshot);
+        require_all_base_locks_free(bases);
+
+        auto recovery_root =
+            open_cleanup_root(root.prepared(), "cold-open durable completion fault prefix");
+        auto recovered =
+            cleanup_authority::reconcile_distributed_sieve_worker_cleanup_completion_v1(
+                std::move(recovery_root));
+        require_completion_publication_success(
+            recovered, 0U,
+            pending_only ? durable_record::RecordPublishDisposition::recovered_pending
+                         : durable_record::RecordPublishDisposition::confirmed_existing);
+        CHECK(!std::filesystem::exists(root.completion_pending_path(0U)));
+        require_merged_corpus(bases[2], merged_snapshot);
+    }
+
+    CanonicalWorkerCleanupRoot dual_root("worker-cleanup-completion-fault-dual");
+    const auto dual_bases = private_handoff_bases(dual_root.prepared());
+    const auto dual_merged_snapshot = capture_merged_corpus(dual_bases[2]);
+    const auto worker_snapshot = dual_root.prepared().worker_snapshot(0U);
+    {
+        auto released = dual_root.take_admission();
+        CHECK(released.valid());
+    }
+    remove_worker_private_namespace(dual_root.prepared().root(), worker_snapshot);
+    const auto injected =
+        inject_active_completion_prefix(dual_root, InjectedCompletionPrefix::identical_dual);
+    auto recovery_root = open_cleanup_root(dual_root.prepared(), "cold-open dual fault prefix");
+    CompletionPublicationStopContext context{
+        .target = CleanupCompletionPublicationFault::CanonicalDurable,
+    };
+    auto interrupted = cleanup_authority::trusted_test::
+        reconcile_distributed_sieve_worker_cleanup_completion_v1_with_hooks(
+            std::move(recovery_root), CleanupCompletionPublicationHooks{
+                                          .stop_after = stop_completion_publication_after,
+                                          .context = &context,
+                                      });
+    CHECK(!interrupted);
+    CHECK(interrupted.diagnostic.status == Status::test_interrupted);
+    CHECK(interrupted.diagnostic.disposition == Disposition::cold_reopen_required);
+    CHECK(interrupted.diagnostic.publication_status ==
+          durable_record::RecordPublishStatus::interrupted);
+    CHECK(interrupted.diagnostic.publication_disposition ==
+          durable_record::RecordPublishDisposition::confirmed_existing);
+    CHECK(std::filesystem::exists(dual_root.completion_path(0U)));
+    CHECK(std::filesystem::exists(dual_root.completion_pending_path(0U)));
+    CHECK(fixture::snapshot_leaf(dual_root.completion_path(0U)) == *injected.canonical);
+    CHECK(fixture::snapshot_leaf(dual_root.completion_pending_path(0U)) == *injected.pending);
+
+    auto replay_root = open_cleanup_root(dual_root.prepared(), "cold-replay dual fault prefix");
+    auto replayed = cleanup_authority::reconcile_distributed_sieve_worker_cleanup_completion_v1(
+        std::move(replay_root));
+    require_completion_publication_success(
+        replayed, 0U, durable_record::RecordPublishDisposition::confirmed_existing);
+    CHECK(!std::filesystem::exists(dual_root.completion_pending_path(0U)));
+    require_merged_corpus(dual_bases[2], dual_merged_snapshot);
+}
+
+void test_completion_publication_rejects_replacement_and_successor_drift() {
+    constexpr std::array mutations{
+        CompletionSuccessorMutation::replace_canonical,
+        CompletionSuccessorMutation::add_identical_pending,
+    };
+    using Status = cleanup_authority::DistributedSieveWorkerCleanupCompletionPublicationStatusV1;
+    using Disposition =
+        cleanup_authority::DistributedSieveWorkerCleanupCompletionPublicationDispositionV1;
+
+    for (const auto mutation : mutations) {
+        CanonicalWorkerCleanupRoot root("worker-cleanup-completion-successor-mutation-" +
+                                        std::to_string(static_cast<std::size_t>(mutation)));
+        const auto bases = private_handoff_bases(root.prepared());
+        const auto merged_snapshot = capture_merged_corpus(bases[2]);
+        const auto authorization_snapshot = fixture::snapshot_leaf(root.authorization_path());
+        auto driven = drive_cleanup_to_completion_ready(root.take_admission(), 0U);
+        CompletionSuccessorMutationContext context{
+            .mutation = mutation,
+            .canonical = root.completion_path(0U),
+            .pending = root.completion_pending_path(0U),
+            .saved = root.prepared().root().parent_path() /
+                     (root.prepared().root().filename().string() + "-saved-completion"),
+        };
+
+        auto rejected = cleanup_authority::trusted_test::
+            publish_distributed_sieve_worker_cleanup_completion_v1_with_hooks(
+                std::move(*driven.completion_ready), CleanupCompletionPublicationHooks{
+                                                         .stop_after = mutate_completion_successor,
+                                                         .context = &context,
+                                                     });
+
+        CHECK(context.invoked);
+        CHECK(!context.failure);
+        CHECK(!rejected);
+        CHECK(!rejected.retryable_completion_ready.has_value());
+        CHECK(!rejected.retryable_recovery_root.has_value());
+        CHECK(!rejected.published_continuation.has_value());
+        CHECK(rejected.diagnostic.status == Status::successor_mismatch);
+        CHECK(rejected.diagnostic.disposition == Disposition::cold_reopen_required);
+        CHECK(rejected.diagnostic.publication_status ==
+              durable_record::RecordPublishStatus::durable);
+        CHECK(rejected.diagnostic.publication_disposition ==
+              durable_record::RecordPublishDisposition::created);
+        CHECK(rejected.diagnostic.authority_spent);
+        CHECK(rejected.diagnostic.publication_started);
+        CHECK(fixture::snapshot_leaf(root.authorization_path()) == authorization_snapshot);
+        require_merged_corpus(bases[2], merged_snapshot);
+        require_all_base_locks_free(bases);
+        if (mutation == CompletionSuccessorMutation::replace_canonical) {
+            CHECK(std::filesystem::exists(context.saved));
+            CHECK(fixture::read_file_bytes(context.saved) ==
+                  fixture::read_file_bytes(context.canonical));
+            CHECK(fixture::native_identity(context.saved) !=
+                  fixture::native_identity(context.canonical));
+            CHECK(!std::filesystem::exists(context.pending));
+        } else {
+            CHECK(std::filesystem::exists(context.pending));
+            CHECK(fixture::read_file_bytes(context.pending) ==
+                  fixture::read_file_bytes(context.canonical));
+            CHECK(fixture::native_identity(context.pending) !=
+                  fixture::native_identity(context.canonical));
+        }
+
+        auto recovery_root =
+            open_cleanup_root(root.prepared(), "cold-open stable successor mutation");
+        auto recovered =
+            cleanup_authority::reconcile_distributed_sieve_worker_cleanup_completion_v1(
+                std::move(recovery_root));
+        require_completion_publication_success(
+            recovered, 0U, durable_record::RecordPublishDisposition::confirmed_existing);
+        CHECK(!std::filesystem::exists(context.pending));
+        require_merged_corpus(bases[2], merged_snapshot);
+    }
+}
+
+void test_completion_publication_is_process_bound_across_fork() {
+    CanonicalWorkerCleanupRoot root("worker-cleanup-completion-publisher-fork");
+    const auto bases = private_handoff_bases(root.prepared());
+    const auto merged_snapshot = capture_merged_corpus(bases[2]);
+    const auto authorization_snapshot = fixture::snapshot_leaf(root.authorization_path());
+    auto driven = drive_cleanup_to_completion_ready(root.take_admission(), 0U);
+    CHECK(driven.completion_ready->valid());
+    require_active_cleanup_completion_absent(root);
+
+    const pid_t child = ::fork();
+    if (child < 0) {
+        throw std::system_error(errno, std::generic_category(),
+                                "fork worker-cleanup completion publisher test");
+    }
+    if (child == 0) {
+        using Phase = cleanup_authority::DistributedSieveWorkerCleanupCompletionPublicationPhaseV1;
+        using Status =
+            cleanup_authority::DistributedSieveWorkerCleanupCompletionPublicationStatusV1;
+        using Disposition =
+            cleanup_authority::DistributedSieveWorkerCleanupCompletionPublicationDispositionV1;
+        auto rejected = cleanup_authority::publish_distributed_sieve_worker_cleanup_completion_v1(
+            std::move(*driven.completion_ready));
+        const bool correct =
+            !rejected && !rejected.retryable_completion_ready.has_value() &&
+            !rejected.retryable_recovery_root.has_value() &&
+            !rejected.published_continuation.has_value() &&
+            rejected.diagnostic.phase == Phase::input_validation &&
+            rejected.diagnostic.status == Status::process_mismatch &&
+            rejected.diagnostic.disposition == Disposition::cold_reopen_required &&
+            rejected.diagnostic.native_error == std::make_error_code(std::errc::no_such_process) &&
+            !rejected.diagnostic.authority_spent && !rejected.diagnostic.publication_started &&
+            !rejected.diagnostic.publication_status.has_value() &&
+            !rejected.diagnostic.publication_disposition.has_value() &&
+            !std::filesystem::exists(root.completion_path(0U)) &&
+            !std::filesystem::exists(root.completion_pending_path(0U));
+        driven.completion_ready.reset();
+        ::_exit(correct ? COMPLETION_PUBLICATION_FORK_REJECTED_EXIT : EXIT_FAILURE);
+    }
+
+    int status = 0;
+    pid_t waited = -1;
+    do {
+        waited = ::waitpid(child, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    if (waited < 0) {
+        throw std::system_error(errno, std::generic_category(),
+                                "wait for worker-cleanup completion publisher child");
+    }
+    CHECK(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == COMPLETION_PUBLICATION_FORK_REJECTED_EXIT);
+    CHECK(driven.completion_ready->valid());
+    require_active_cleanup_completion_absent(root);
+    CHECK(fixture::snapshot_leaf(root.authorization_path()) == authorization_snapshot);
+    require_merged_corpus(bases[2], merged_snapshot);
+    require_all_base_locks_free(bases);
+    require_wave_lock_busy(root.prepared());
+
+    auto published = cleanup_authority::publish_distributed_sieve_worker_cleanup_completion_v1(
+        std::move(*driven.completion_ready));
+    require_completion_publication_success(published, 0U,
+                                           durable_record::RecordPublishDisposition::created);
+    require_merged_corpus(bases[2], merged_snapshot);
+}
+
+void test_completion_publication_nonzero_last_worker_stops_before_m5() {
+    CanonicalWorkerCleanupRoot root("worker-cleanup-completion-last-worker", 1U);
+    const auto bases = private_handoff_bases(root.prepared());
+    const auto merged_snapshot = capture_merged_corpus(bases[2]);
+    const auto authorization_0_snapshot = fixture::snapshot_leaf(root.authorization_path(0U));
+    const auto completion_0_snapshot = fixture::snapshot_leaf(root.completion_path(0U));
+    const auto authorization_1_snapshot = fixture::snapshot_leaf(root.authorization_path(1U));
+    auto driven = drive_cleanup_to_completion_ready(root.take_admission(), 1U);
+    const auto root_entries_before = capture_root_entry_names(root.prepared().root());
+
+    auto published = cleanup_authority::publish_distributed_sieve_worker_cleanup_completion_v1(
+        std::move(*driven.completion_ready));
+
+    require_completion_publication_success(published, 1U,
+                                           durable_record::RecordPublishDisposition::created);
+    CHECK(fixture::snapshot_leaf(root.authorization_path(0U)) == authorization_0_snapshot);
+    CHECK(fixture::snapshot_leaf(root.completion_path(0U)) == completion_0_snapshot);
+    CHECK(fixture::snapshot_leaf(root.authorization_path(1U)) == authorization_1_snapshot);
+    CHECK(std::filesystem::exists(root.completion_path(1U)));
+    CHECK(!std::filesystem::exists(root.completion_pending_path(1U)));
+    const auto completion = read_cleanup_completion(root.completion_path(1U));
+    CHECK(completion.self_digest == published.published_continuation->completion_digest());
+    auto expected_root_entries = root_entries_before;
+    expected_root_entries.push_back(root.completion_path(1U).filename().string());
+    std::sort(expected_root_entries.begin(), expected_root_entries.end());
+    CHECK(capture_root_entry_names(root.prepared().root()) == expected_root_entries);
+    require_worker_cleanup_namespace_absent(bases[0]);
+    require_worker_cleanup_namespace_absent(bases[1]);
+    require_merged_corpus(bases[2], merged_snapshot);
+    require_all_base_locks_free(bases);
+    require_wave_lock_busy(root.prepared());
+
+    published.published_continuation.reset();
+    auto reopened = open_cleanup_root(root.prepared(), "cold-open last worker completion");
+    require_completed_cleanup_prefix(reopened, 2U, std::nullopt);
+    CHECK(reopened.reader().count() == root.prepared().expected_rows().size());
+    require_merged_corpus(bases[2], merged_snapshot);
+    require_wave_lock_busy(root.prepared());
+}
+
 void run_apple_tests() {
     test_fresh_tail_crosses_one_lock_generation_without_mutation();
     std::cout << "  fresh tail lock-generation bridge and moved replay: PASS\n";
@@ -2149,6 +2859,18 @@ void run_apple_tests() {
     std::cout << "  cleanup relation route active ordinal and merged retention: PASS\n";
     test_completion_ready_capsule_is_process_bound_across_fork();
     std::cout << "  cleanup completion-ready capsule fork boundary: PASS\n";
+    test_completion_publication_creates_and_advances_one_frontier();
+    std::cout << "  cleanup completion publication advances one frontier: PASS\n";
+    test_completion_publication_recovers_pending_canonical_and_identical_dual();
+    std::cout << "  cleanup completion P/C/CP recovery: PASS\n";
+    test_completion_publication_fault_prefixes_cold_replay();
+    std::cout << "  cleanup completion durable fault replay: PASS\n";
+    test_completion_publication_rejects_replacement_and_successor_drift();
+    std::cout << "  cleanup completion successor replacement and drift rejection: PASS\n";
+    test_completion_publication_is_process_bound_across_fork();
+    std::cout << "  cleanup completion publisher fork boundary: PASS\n";
+    test_completion_publication_nonzero_last_worker_stops_before_m5();
+    std::cout << "  cleanup completion last worker stops before M5: PASS\n";
 }
 
 #endif

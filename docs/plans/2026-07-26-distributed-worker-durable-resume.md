@@ -3027,7 +3027,7 @@ M4b restart recovery is split into explicit authority milestones:
   relation classification, recovery-only T2a, and the independent T2b deletion
   epoch into a sealed completion-ready capsule while retaining the merged
   corpus.
-- [ ] M4b-P4c-R2 publishes or recovers the exact completion, refreshes the
+- [x] M4b-P4c-R2 publishes or recovers the exact completion, refreshes the
   cleanup-root admission, and advances at most one manifest-order frontier.
 
 M4a completes the source-private merge-generation namespace, exact P0-P8
@@ -3800,3 +3800,103 @@ repository baseline exits successfully. The frozen checker SHA-256 is
 `clang-format --dry-run --Werror`, the Harness checker, the Markdown-link
 checker, `git diff --check`, and the added-line machine-path and secret scans
 also pass.
+
+## M4b-P4c-R2 Execution Plan: 2026-08-01
+
+R2 closes completion durability without widening the R1 relation authority.
+It has two distinct rvalue-only entries. The live entry consumes the whole R1
+completion-ready capsule and is the only entry allowed to build a new
+`ArtifactCleanupCompletedV1`. The cold entry consumes a cleanup-root admission
+and may only normalize an already visible completion pending-only,
+canonical-only, or identical canonical-plus-pending prefix. Cold recovery
+never reconstructs relation absence evidence and never creates a completion
+from an authorization-only root.
+
+The live entry derives the ordinal, authorization, leaf names, manifest, exact
+relation binding, and completion bytes from the private capsule state. It
+double-observes the fresh post-relation-cleanup authorization-only root under
+the retained `WaveLock`. All potentially allocating successor state is
+prepared before the final receipt revalidation. The receipt is then
+commit-spent immediately before the first durable root mutation, but retains
+its live claim until publication, canonical durability, two exact successor
+observations, and refreshed admission construction have all completed. A
+post-spend failure cannot return the old capsule or root.
+
+The durable prefix mapping is closed:
+
+- an absent completion plus the whole live capsule accepts only `created`;
+- completion pending-only accepts only `recovered_pending`;
+- canonical-only and identical dual accept only `confirmed_existing`.
+
+Success removes any pending completion, preserves the exact canonical bytes
+and snapshot, and seals a completion-published continuation. That continuation
+owns the refreshed admission, the same store, merged reader, and `WaveLock`,
+plus the exact completion ordinal and durable canonical witness. It exposes no
+root, path, bytes, absence evidence, receipt, or native handle. Future worker
+authorization publication must consume the whole continuation; it cannot use
+a bare refreshed root to bypass completion durability.
+
+Relative to the double-observed baseline, the successor may change only the
+target coordinate to canonical completion. Prior cleanup records, all worker
+and merge witnesses, manifest and commit records, merged-corpus identity and
+contents, and every future coordinate remain exact. The existing classifier
+computes the next frontier from the manifest and may cross empty chunks, but
+R2 publishes no next authorization and advances at most one nonempty worker.
+The final worker yields no frontier. Merged cleanup, consumption ACK, and
+`WaveCompletedV1` remain M5 work.
+
+The minimum R2 matrix covers fresh creation, P/C/CP normalization, all three
+durable publication fault points followed by cold replay, same-byte/new-inode
+replacement, successor drift between observations, a child process attempting
+the real publisher, a nonzero final worker, exact merged-corpus preservation,
+and continuous `WaveLock` ownership. The policy checker will freeze the two
+entries, receipt-spend ordering, exact disposition mapping, full-byte and
+snapshot comparisons, same-lock refresh, single-frontier boundary, sealed
+continuation, and the absence of next-authorization or M5 calls.
+
+## M4b-P4c-R2 Implementation Report: 2026-08-01
+
+The R2 publisher now consumes either the whole fresh R1 completion-ready
+capsule or one cold cleanup-root admission. Only the fresh path can construct a
+new completion from retained parent-durable relation absence. Cold recovery
+normalizes only a completion already visible as pending-only, canonical-only,
+or an identical canonical-plus-pending pair. An authorization-only cold root
+returns a retryable root with `completion_target_missing` and performs no
+mutation.
+
+The durable result mapping is exact: absent becomes `created`, pending-only
+becomes `recovered_pending`, and canonical-only or identical dual becomes
+`confirmed_existing`. The live receipt is commit-spent immediately before the
+first publication operation, then retains its claim through canonical
+durability, two exact successor observations, and refreshed-admission
+construction. Every post-spend failure drops the old capability. Success
+seals the refreshed root, unchanged merged reader and same `WaveLock`, exact
+completion witness, and at most one classifier-derived next frontier inside a
+completion-published continuation. The final worker has no frontier, and R2
+still publishes no next authorization or M5 record.
+
+Focused validation covers fresh creation, all three recovery prefixes, all
+durable publication stops with cold replay, the authorization-only cold retry,
+same-byte replacement, baseline and successor drift, a real child process,
+and a nonzero final worker. The focused binary passes 1/1,
+`./scripts/test.sh changed --deep` passes 104/104 including API deep and GNFS
+E2E, and `./scripts/test.sh gate` passes 183/183. The policy checker rejects
+all twelve focused R2 mutations, and its complete parser/table mutation
+self-test reports zero errors.
+
+An independent final authority review reports no P0/P1 finding. Its sole P2
+is the accepted hostile same-UID POSIX namespace-recreation boundary: a peer
+can recreate the relation namespace while a fresh capsule is retained. The
+publisher still fails closed after its first successor observation and
+returns no old authority, but durable completion may already exist. Closing
+that boundary requires reacquiring and retaining a private noncreating
+`BaseLock` or action claim across the spend and first successor observation;
+one additional read-only check would leave the same TOCTOU window and is not
+treated as a fix.
+
+The final repository policy scan exits successfully. The frozen checker
+SHA-256 is
+`50176db4e73a5501b66d9cdb2104299b79eb2d114ed790fd24f3989bfe318b13`.
+`clang-format --dry-run --Werror`, the Harness checker, the Markdown-link
+checker, Python bytecode compilation, `git diff --check`, and the added-line
+machine-path and credential scans also pass.
