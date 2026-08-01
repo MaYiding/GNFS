@@ -1675,6 +1675,12 @@ private:
                 }
                 require_stable_authority();
             };
+            const auto require_live_authority = [&] {
+                if (!authorization.live_authority_valid()) {
+                    fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None,
+                         invalid_argument_error());
+                }
+            };
 
             require_exact_binding();
             reader.close_reader_views_for_cleanup_intent_conversion();
@@ -1748,6 +1754,9 @@ private:
             };
 
             require_exact_binding();
+            // Close the last authority-loss window after every possibly
+            // throwing payload preparation and immediately before publish_at.
+            require_live_authority();
             const auto published = util::durable_immutable_record::publish_at(
                 directory.native_handle(), paths.intent_pending_path.filename(),
                 paths.intent_path.filename(), *encoded.bytes,
@@ -1784,7 +1793,9 @@ private:
                 // replacement discovered here cannot resurrect either live
                 // capability, even when publication returned an uncertain
                 // canonical-visible prefix.
+                require_live_authority();
                 require_exact_binding();
+                require_live_authority();
             }
 
             if (!published.is_durable()) {

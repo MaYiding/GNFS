@@ -1,6 +1,7 @@
 #include "distributed_sieve_merge_commit_authority_internal.hpp"
 #include "distributed_sieve_wave_store_internal.hpp"
 #include "distributed_sieve_worker_cleanup_authority_internal.hpp"
+#include "ooc_private_handoff_cleanup_authorization_internal.hpp"
 
 #include "support/child_process.hpp"
 
@@ -10,6 +11,7 @@
 
 #include <gnfs/core/relation.hpp>
 #include <gnfs/relation/ooc_cleanup_transaction.hpp>
+#include <gnfs/relation/ooc_relation_store.hpp>
 #include <gnfs/sieve/distributed_sieve_protocol.hpp>
 #include <gnfs/util/sha256.hpp>
 
@@ -28,6 +30,7 @@
 #include <system_error>
 #include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #if defined(__APPLE__)
@@ -50,6 +53,9 @@ namespace wave = gnfs::sieve::distributed_sieve_resume_detail;
 using CommittedTail = cleanup_authority::DistributedSieveCommittedTailAdmissionV1;
 using CleanupAdmission = cleanup_authority::DistributedSieveWorkerCleanupRootAdmissionV1;
 using CleanupResult = cleanup_authority::DistributedSieveWorkerCleanupTailResultV1;
+using CleanupReceiptMinted = cleanup_authority::DistributedSieveWorkerCleanupReceiptMintedV1;
+using CleanupReceiptMintResult =
+    cleanup_authority::DistributedSieveWorkerCleanupReceiptMintResultV1;
 
 static_assert(std::is_final_v<CleanupAdmission>);
 static_assert(!std::is_default_constructible_v<CleanupAdmission>);
@@ -57,6 +63,14 @@ static_assert(!std::is_copy_constructible_v<CleanupAdmission>);
 static_assert(std::is_nothrow_move_constructible_v<CleanupAdmission>);
 static_assert(std::is_final_v<CommittedTail>);
 static_assert(!std::is_copy_constructible_v<CommittedTail>);
+static_assert(!std::is_default_constructible_v<CleanupReceiptMinted>);
+static_assert(!std::is_copy_constructible_v<CleanupReceiptMinted>);
+static_assert(std::is_nothrow_move_constructible_v<CleanupReceiptMinted>);
+static_assert(!std::is_copy_constructible_v<CleanupReceiptMintResult>);
+static_assert(std::is_nothrow_move_constructible_v<CleanupReceiptMintResult>);
+static_assert(
+    noexcept(cleanup_authority::mint_distributed_sieve_worker_cleanup_authorization_receipt_v1(
+        std::declval<CleanupAdmission&>())));
 static_assert(
     noexcept(cleanup_authority::consume_distributed_sieve_committed_tail_for_worker_cleanup_v1(
         std::declval<CommittedTail&&>())));
@@ -174,6 +188,52 @@ void replace_file_with_same_bytes(const std::filesystem::path& canonical,
     if (::close(descriptor) != 0) {
         throw std::system_error(errno, std::generic_category(),
                                 "close cleanup-tail replacement leaf");
+    }
+    sync_directory(canonical.parent_path());
+}
+
+void write_immutable_test_leaf(const std::filesystem::path& path,
+                               std::span<const std::byte> bytes) {
+    int descriptor = -1;
+    do {
+        descriptor =
+            ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    } while (descriptor < 0 && errno == EINTR);
+    if (descriptor < 0) {
+        throw std::system_error(errno, std::generic_category(),
+                                "create cleanup-tail immutable leaf");
+    }
+    try {
+        if (::fchmod(descriptor, 0600) != 0) {
+            throw std::system_error(errno, std::generic_category(),
+                                    "chmod cleanup-tail immutable leaf");
+        }
+        write_all(descriptor, bytes);
+        if (::fsync(descriptor) != 0) {
+            throw std::system_error(errno, std::generic_category(),
+                                    "sync cleanup-tail immutable leaf");
+        }
+    } catch (...) {
+        (void)::close(descriptor);
+        throw;
+    }
+    if (::close(descriptor) != 0) {
+        throw std::system_error(errno, std::generic_category(),
+                                "close cleanup-tail immutable leaf");
+    }
+    sync_directory(path.parent_path());
+}
+
+void restore_replaced_file(const std::filesystem::path& canonical,
+                           const std::filesystem::path& saved) {
+    std::error_code remove_error;
+    if (!std::filesystem::remove(canonical, remove_error) || remove_error) {
+        throw std::filesystem::filesystem_error("remove cleanup-tail replacement leaf", canonical,
+                                                remove_error);
+    }
+    if (::rename(saved.c_str(), canonical.c_str()) != 0) {
+        throw std::system_error(errno, std::generic_category(),
+                                "restore cleanup-tail anchored leaf");
     }
     sync_directory(canonical.parent_path());
 }
@@ -345,6 +405,242 @@ wave_diagnostic_detail(const wave::DistributedSieveWaveStoreDiagnostic& diagnost
     }
     CHECK(!committed.retryable_prepared.has_value());
     return std::move(*committed.committed_tail);
+}
+
+struct WorkerCleanupSource final {
+    sieve::WorkerHandoffV1 handoff;
+    sieve::NativeIdentityV1 base_lock_identity;
+    sieve::NativeIdentityV1 owned_marker_identity;
+    Digest private_handoff_digest;
+    sieve::NativeFileExtentV1 private_handoff_record;
+};
+
+[[nodiscard]] WorkerCleanupSource worker_cleanup_source(const WorkerSnapshot& snapshot) {
+    const auto decoded_private =
+        relation::decode_ooc_private_handoff_record(snapshot.leaves[3].bytes);
+    CHECK(decoded_private);
+    const auto decoded_payload =
+        sieve::decode_distributed_sieve_record(decoded_private.value->opaque_payload);
+    CHECK(decoded_payload);
+    const auto* handoff = std::get_if<sieve::WorkerHandoffV1>(&*decoded_payload.value);
+    CHECK(handoff != nullptr);
+    return {
+        .handoff = *handoff,
+        .base_lock_identity = snapshot.leaves[0].identity,
+        .owned_marker_identity = snapshot.leaves[1].identity,
+        .private_handoff_digest = decoded_private.value->self_digest,
+        .private_handoff_record =
+            {
+                .identity = snapshot.leaves[3].identity,
+                .extent = static_cast<std::uint64_t>(snapshot.leaves[3].bytes.size()),
+            },
+    };
+}
+
+[[nodiscard]] sieve::ArtifactCleanupAuthorizedV1 make_worker_cleanup_authorization(
+    const sieve::WaveManifestV1& manifest, const sieve::WaveMergeCommitV1& commit,
+    const WorkerCleanupSource& source, std::uint32_t manifest_order_ordinal) {
+    return fixture::seal_value(sieve::ArtifactCleanupAuthorizedV1{
+        .authorizer = sieve::CleanupAuthorizerKindV1::merge_commit_worker,
+        .manifest_digest = manifest.self_digest,
+        .authorizer_record_digest = commit.self_digest,
+        .artifact_kind = sieve::CleanupArtifactKindV1::worker,
+        .manifest_order_ordinal = manifest_order_ordinal,
+        .lease = source.handoff.lease,
+        .base_lock_identity = source.base_lock_identity,
+        .owned_marker_identity = source.owned_marker_identity,
+        .handoff_digest = source.handoff.self_digest,
+        .private_handoff_digest = source.private_handoff_digest,
+        .private_handoff_record = source.private_handoff_record,
+        .artifact = source.handoff.artifact,
+    });
+}
+
+[[nodiscard]] sieve::ArtifactCleanupCompletedV1
+make_worker_cleanup_completion(const sieve::ArtifactCleanupAuthorizedV1& authorization) {
+    return fixture::seal_value(sieve::ArtifactCleanupCompletedV1{
+        .authorization_digest = authorization.self_digest,
+        .cleanup_intent_identity = std::nullopt,
+        .parent_directory_durability_confirmed = true,
+        .expected_namespace_absent = true,
+    });
+}
+
+void remove_worker_private_namespace(const std::filesystem::path& root,
+                                     const WorkerSnapshot& snapshot) {
+    for (std::size_t index = 2; index < snapshot.leaves.size(); ++index) {
+        std::error_code error;
+        if (!std::filesystem::remove(snapshot.leaves[index].path, error) || error) {
+            throw std::filesystem::filesystem_error("remove cleanup-tail worker private leaf",
+                                                    snapshot.leaves[index].path, error);
+        }
+    }
+    const auto private_directory = snapshot.leaves[2].path.parent_path();
+    std::error_code directory_error;
+    if (!std::filesystem::remove(private_directory, directory_error) || directory_error) {
+        throw std::filesystem::filesystem_error("remove cleanup-tail worker private directory",
+                                                private_directory, directory_error);
+    }
+    std::error_code owned_error;
+    if (!std::filesystem::remove(snapshot.leaves[1].path, owned_error) || owned_error) {
+        throw std::filesystem::filesystem_error("remove cleanup-tail worker OWNED marker",
+                                                snapshot.leaves[1].path, owned_error);
+    }
+    sync_directory(root);
+}
+
+[[nodiscard]] std::string receipt_mint_diagnostic_detail(
+    const cleanup_authority::DistributedSieveWorkerCleanupReceiptMintDiagnosticV1& diagnostic) {
+    std::string detail(cleanup_authority::distributed_sieve_worker_cleanup_receipt_mint_status_name(
+        diagnostic.status));
+    detail.append(" phase=");
+    detail.append(std::to_string(static_cast<unsigned>(diagnostic.phase)));
+    if (diagnostic.native_error) {
+        detail.append(": ");
+        detail.append(diagnostic.native_error.message());
+    }
+    if (diagnostic.wave_store.status != wave::DistributedSieveWaveStoreStatus::ready) {
+        detail.append(" wave=");
+        detail.append(wave_diagnostic_detail(diagnostic.wave_store));
+    }
+    return detail;
+}
+
+class CanonicalWorkerCleanupRoot final {
+public:
+    explicit CanonicalWorkerCleanupRoot(std::string_view label, std::uint32_t active_ordinal = 0)
+        : prepared_(label), active_ordinal_(active_ordinal) {
+        CHECK(active_ordinal_ < worker_snapshots_.size());
+        {
+            auto tail = commit_fresh(prepared_);
+            for (std::uint32_t ordinal = 0; ordinal <= active_ordinal_; ++ordinal) {
+                worker_snapshots_[ordinal].emplace(prepared_.worker_snapshot(ordinal));
+                const auto source = worker_cleanup_source(*worker_snapshots_[ordinal]);
+                authorizations_[ordinal].emplace(make_worker_cleanup_authorization(
+                    prepared_.manifest(), tail.record(), source, ordinal));
+                const auto names = wave::distributed_sieve_worker_cleanup_record_names_v1(ordinal);
+                CHECK(names.has_value());
+                names_[ordinal].emplace(*names);
+                authorization_bytes_[ordinal] = fixture::encode_record(
+                    sieve::DistributedSieveProtocolRecordV1{*authorizations_[ordinal]});
+                if (ordinal < active_ordinal_) {
+                    completions_[ordinal].emplace(
+                        make_worker_cleanup_completion(*authorizations_[ordinal]));
+                    completion_bytes_[ordinal] = fixture::encode_record(
+                        sieve::DistributedSieveProtocolRecordV1{*completions_[ordinal]});
+                }
+            }
+        }
+
+        for (std::uint32_t ordinal = 0; ordinal < active_ordinal_; ++ordinal) {
+            fixture::publish_canonical_record(prepared_.root(),
+                                              names_[ordinal]->authorization_pending_record_leaf,
+                                              names_[ordinal]->authorization_canonical_record_leaf,
+                                              authorization_bytes_[ordinal]);
+            remove_worker_private_namespace(prepared_.root(), *worker_snapshots_[ordinal]);
+            fixture::publish_canonical_record(
+                prepared_.root(), names_[ordinal]->completion_pending_record_leaf,
+                names_[ordinal]->completion_canonical_record_leaf, completion_bytes_[ordinal]);
+        }
+        fixture::publish_canonical_record(
+            prepared_.root(), names_[active_ordinal_]->authorization_pending_record_leaf,
+            names_[active_ordinal_]->authorization_canonical_record_leaf,
+            authorization_bytes_[active_ordinal_]);
+        open();
+    }
+
+    CanonicalWorkerCleanupRoot(const CanonicalWorkerCleanupRoot&) = delete;
+    CanonicalWorkerCleanupRoot& operator=(const CanonicalWorkerCleanupRoot&) = delete;
+
+    [[nodiscard]] fixture::PreparedWaveFixture& prepared() noexcept {
+        return prepared_;
+    }
+
+    [[nodiscard]] CleanupAdmission& admission() {
+        CHECK(admission_.has_value());
+        return *admission_;
+    }
+
+    [[nodiscard]] std::uint32_t active_ordinal() const noexcept {
+        return active_ordinal_;
+    }
+
+    [[nodiscard]] const std::vector<std::byte>& authorization_bytes() const noexcept {
+        return authorization_bytes_[active_ordinal_];
+    }
+
+    [[nodiscard]] std::filesystem::path authorization_path() const {
+        return prepared_.root() / names_[active_ordinal_]->authorization_canonical_record_leaf;
+    }
+
+    [[nodiscard]] std::filesystem::path authorization_pending_path() const {
+        return prepared_.root() / names_[active_ordinal_]->authorization_pending_record_leaf;
+    }
+
+    [[nodiscard]] const std::vector<std::byte>& completion_bytes(std::uint32_t ordinal) const {
+        CHECK(ordinal < active_ordinal_);
+        return completion_bytes_[ordinal];
+    }
+
+    [[nodiscard]] std::filesystem::path completion_path(std::uint32_t ordinal) const {
+        CHECK(ordinal < active_ordinal_);
+        return prepared_.root() / names_[ordinal]->completion_canonical_record_leaf;
+    }
+
+    [[nodiscard]] std::filesystem::path worker_base() const {
+        const auto& chunk = prepared_.manifest().chunks[active_ordinal_];
+        const auto attempt_names = wave::distributed_sieve_worker_attempt_names_v1(
+            chunk.relative_artifact_stem, chunk.chunk_id, 0);
+        CHECK(attempt_names.has_value());
+        return prepared_.root() / attempt_names->private_directory_leaf / "corpus";
+    }
+
+    void release_and_cold_reopen() {
+        admission_.reset();
+        open();
+    }
+
+private:
+    void open() {
+        auto opened =
+            wave::open_worker_cleanup_root_v1(prepared_.root(), prepared_.manifest_digest());
+        if (!opened || !opened.admission.has_value()) {
+            fail("open canonical worker-cleanup root", __LINE__,
+                 wave_diagnostic_detail(opened.diagnostic));
+        }
+        CHECK(opened.admission->valid());
+        const auto& prefix = opened.admission->cleanup_prefix();
+        CHECK(prefix.completed_worker_count == active_ordinal_);
+        CHECK(prefix.frontier_manifest_order_ordinal ==
+              std::optional<std::uint32_t>{active_ordinal_});
+        CHECK(prefix.active_manifest_order_ordinal ==
+              std::optional<std::uint32_t>{active_ordinal_});
+        CHECK(prefix.coordinates.size() == static_cast<std::size_t>(active_ordinal_) + 1U);
+        CHECK(prefix.coordinates.back().state ==
+              wave::DistributedSieveWorkerCleanupPrefixStateV1::authorization_canonical_only);
+        admission_.emplace(std::move(*opened.admission));
+    }
+
+    fixture::PreparedWaveFixture prepared_;
+    std::uint32_t active_ordinal_ = 0;
+    std::array<std::optional<WorkerSnapshot>, 2> worker_snapshots_;
+    std::array<std::optional<sieve::ArtifactCleanupAuthorizedV1>, 2> authorizations_;
+    std::array<std::optional<sieve::ArtifactCleanupCompletedV1>, 2> completions_;
+    std::array<std::optional<wave::DistributedSieveWorkerCleanupRecordNamesV1>, 2> names_;
+    std::array<std::vector<std::byte>, 2> authorization_bytes_;
+    std::array<std::vector<std::byte>, 2> completion_bytes_;
+    std::optional<CleanupAdmission> admission_;
+};
+
+[[nodiscard]] CleanupReceiptMintResult mint_cleanup_receipt(CanonicalWorkerCleanupRoot& root) {
+    auto minted = cleanup_authority::mint_distributed_sieve_worker_cleanup_authorization_receipt_v1(
+        root.admission());
+    if (!minted || !minted.minted.has_value()) {
+        fail("mint worker-cleanup authorization receipt", __LINE__,
+             receipt_mint_diagnostic_detail(minted.diagnostic));
+    }
+    CHECK(minted.minted->manifest_order_ordinal == root.active_ordinal());
+    return minted;
 }
 
 [[nodiscard]] CommittedTail cold_open_tail(const std::filesystem::path& root,
@@ -776,6 +1072,215 @@ void test_forked_tail_is_rejected_and_parent_remains_authoritative() {
     require_cleanup_admission(transitioned, expected_commit, prepared.expected_rows());
 }
 
+void test_cleanup_receipt_requires_one_canonical_active_frontier() {
+    fixture::PreparedWaveFixture prepared("worker-cleanup-receipt-no-authorization");
+    auto tail = commit_fresh(prepared);
+    const auto expected_commit = tail.record();
+    auto transitioned =
+        cleanup_authority::consume_distributed_sieve_committed_tail_for_worker_cleanup_v1(
+            std::move(tail));
+    require_cleanup_admission(transitioned, expected_commit, prepared.expected_rows());
+
+    auto rejected =
+        cleanup_authority::mint_distributed_sieve_worker_cleanup_authorization_receipt_v1(
+            *transitioned.admission);
+    CHECK(!rejected);
+    CHECK(!rejected.minted.has_value());
+    CHECK(rejected.diagnostic.phase ==
+          cleanup_authority::DistributedSieveWorkerCleanupReceiptMintPhaseV1::admission_validation);
+    CHECK(rejected.diagnostic.status ==
+          cleanup_authority::DistributedSieveWorkerCleanupReceiptMintStatusV1::
+              authorization_not_canonical);
+    CHECK(!rejected.diagnostic.cold_reopen_required);
+}
+
+void test_cleanup_receipt_single_live_move_release_base_lock_and_fork() {
+    CanonicalWorkerCleanupRoot root("worker-cleanup-receipt-lifecycle");
+    auto first = mint_cleanup_receipt(root);
+    CHECK(!first.minted->receipt.spent());
+
+    auto duplicate =
+        cleanup_authority::mint_distributed_sieve_worker_cleanup_authorization_receipt_v1(
+            root.admission());
+    CHECK(!duplicate);
+    CHECK(!duplicate.minted.has_value());
+    CHECK(duplicate.diagnostic.phase ==
+          cleanup_authority::DistributedSieveWorkerCleanupReceiptMintPhaseV1::live_claim);
+    CHECK(
+        duplicate.diagnostic.status ==
+        cleanup_authority::DistributedSieveWorkerCleanupReceiptMintStatusV1::receipt_already_live);
+    CHECK(!duplicate.diagnostic.cold_reopen_required);
+    CHECK(!first.minted->receipt.spent());
+
+    std::optional<CleanupReceiptMinted> moved_owner;
+    moved_owner.emplace(std::move(*first.minted));
+    first.minted.reset();
+    auto still_claimed =
+        cleanup_authority::mint_distributed_sieve_worker_cleanup_authorization_receipt_v1(
+            root.admission());
+    CHECK(!still_claimed);
+    CHECK(
+        still_claimed.diagnostic.status ==
+        cleanup_authority::DistributedSieveWorkerCleanupReceiptMintStatusV1::receipt_already_live);
+
+    {
+        auto adopted = relation::OOCCleanupTransaction::adopt_private_handoff(root.worker_base());
+        CHECK(adopted.adopted());
+        CHECK(adopted.adoption.has_value());
+        relation::OOCPrivateHandoffReader reader(std::move(*adopted.adoption));
+        CHECK(reader.valid());
+        CHECK(!moved_owner->receipt.spent());
+
+        const pid_t child = ::fork();
+        if (child < 0) {
+            throw std::system_error(errno, std::generic_category(),
+                                    "fork worker-cleanup receipt test");
+        }
+        if (child == 0) {
+            ::_exit(moved_owner->receipt.spent() ? FORK_REJECTED_EXIT : EXIT_FAILURE);
+        }
+        int status = 0;
+        pid_t waited = -1;
+        do {
+            waited = ::waitpid(child, &status, 0);
+        } while (waited < 0 && errno == EINTR);
+        if (waited < 0) {
+            throw std::system_error(errno, std::generic_category(),
+                                    "wait for worker-cleanup receipt child");
+        }
+        CHECK(WIFEXITED(status));
+        CHECK(WEXITSTATUS(status) == FORK_REJECTED_EXIT);
+        CHECK(!moved_owner->receipt.spent());
+    }
+
+    moved_owner.reset();
+    auto reminted = mint_cleanup_receipt(root);
+    CHECK(!reminted.minted->receipt.spent());
+}
+
+void test_cleanup_receipt_spend_retains_claim_and_ignores_private_relation_changes() {
+    CanonicalWorkerCleanupRoot root("worker-cleanup-receipt-private-change");
+    auto minted = mint_cleanup_receipt(root);
+    auto adopted = relation::OOCCleanupTransaction::adopt_private_handoff(root.worker_base());
+    CHECK(adopted.adopted());
+    CHECK(adopted.adoption.has_value());
+    relation::OOCPrivateHandoffReader reader(std::move(*adopted.adoption));
+    CHECK(reader.valid());
+    CHECK(!minted.minted->receipt.spent());
+
+    const auto paths = relation::OOCCleanupTransaction::paths_for(root.worker_base());
+    const auto converted =
+        relation::ooc_cleanup_detail::convert_authorized_private_handoff_to_cleanup_intent_v2(
+            std::move(reader), std::move(minted.minted->receipt));
+    CHECK(converted.intent_published());
+    CHECK(converted.capabilities_spent());
+    CHECK(std::filesystem::exists(paths.intent_path));
+    CHECK(minted.minted->receipt.spent());
+
+    auto blocked =
+        cleanup_authority::mint_distributed_sieve_worker_cleanup_authorization_receipt_v1(
+            root.admission());
+    CHECK(!blocked);
+    CHECK(
+        blocked.diagnostic.status ==
+        cleanup_authority::DistributedSieveWorkerCleanupReceiptMintStatusV1::receipt_already_live);
+
+    minted.minted.reset();
+    auto reminted = mint_cleanup_receipt(root);
+    CHECK(!reminted.minted->receipt.spent());
+}
+
+void test_cleanup_receipt_sticky_invalidates_same_byte_authorization_replacement() {
+    CanonicalWorkerCleanupRoot root("worker-cleanup-receipt-replacement");
+    auto minted = mint_cleanup_receipt(root);
+    const auto canonical = root.authorization_path();
+    const auto saved = root.prepared().root().parent_path() /
+                       (root.prepared().root().filename().string() + ".saved-live-authorization");
+    const auto original_identity = fixture::native_identity(canonical);
+    replace_file_with_same_bytes(canonical, saved, root.authorization_bytes());
+    CHECK(fixture::native_identity(canonical) != original_identity);
+    CHECK(minted.minted->receipt.spent());
+
+    restore_replaced_file(canonical, saved);
+    CHECK(fixture::native_identity(canonical) == original_identity);
+    CHECK(root.admission().valid());
+    CHECK(minted.minted->receipt.spent());
+    auto rejected =
+        cleanup_authority::mint_distributed_sieve_worker_cleanup_authorization_receipt_v1(
+            root.admission());
+    CHECK(!rejected);
+    CHECK(rejected.diagnostic.status ==
+          cleanup_authority::DistributedSieveWorkerCleanupReceiptMintStatusV1::
+              root_authority_invalid);
+    CHECK(rejected.diagnostic.cold_reopen_required);
+
+    minted.minted.reset();
+    root.release_and_cold_reopen();
+    auto recovered = mint_cleanup_receipt(root);
+    CHECK(!recovered.minted->receipt.spent());
+}
+
+void test_cleanup_receipt_anchors_the_complete_completed_prefix() {
+    CanonicalWorkerCleanupRoot root("worker-cleanup-receipt-complete-prefix", 1);
+    auto minted = mint_cleanup_receipt(root);
+    CHECK(minted.minted->manifest_order_ordinal == 1U);
+    const auto canonical = root.completion_path(0);
+    const auto saved = root.prepared().root().parent_path() /
+                       (root.prepared().root().filename().string() + ".saved-prior-completion");
+    const auto original_identity = fixture::native_identity(canonical);
+    replace_file_with_same_bytes(canonical, saved, root.completion_bytes(0));
+    CHECK(fixture::native_identity(canonical) != original_identity);
+    CHECK(minted.minted->receipt.spent());
+
+    restore_replaced_file(canonical, saved);
+    CHECK(fixture::native_identity(canonical) == original_identity);
+    CHECK(root.admission().valid());
+    CHECK(minted.minted->receipt.spent());
+}
+
+void test_cleanup_receipt_sticky_invalidates_added_cleanup_leaf() {
+    CanonicalWorkerCleanupRoot root("worker-cleanup-receipt-added-leaf");
+    auto minted = mint_cleanup_receipt(root);
+    const auto pending = root.authorization_pending_path();
+    write_immutable_test_leaf(pending, root.authorization_bytes());
+    CHECK(minted.minted->receipt.spent());
+
+    std::error_code remove_error;
+    CHECK(std::filesystem::remove(pending, remove_error));
+    CHECK(!remove_error);
+    sync_directory(root.prepared().root());
+    CHECK(root.admission().valid());
+    CHECK(minted.minted->receipt.spent());
+    auto rejected =
+        cleanup_authority::mint_distributed_sieve_worker_cleanup_authorization_receipt_v1(
+            root.admission());
+    CHECK(!rejected);
+    CHECK(rejected.diagnostic.status ==
+          cleanup_authority::DistributedSieveWorkerCleanupReceiptMintStatusV1::
+              root_authority_invalid);
+    CHECK(rejected.diagnostic.cold_reopen_required);
+
+    minted.minted.reset();
+    root.release_and_cold_reopen();
+    write_immutable_test_leaf(pending, root.authorization_bytes());
+    auto directly_revalidated =
+        cleanup_authority::mint_distributed_sieve_worker_cleanup_authorization_receipt_v1(
+            root.admission());
+    CHECK(!directly_revalidated);
+    CHECK(directly_revalidated.diagnostic.status ==
+          cleanup_authority::DistributedSieveWorkerCleanupReceiptMintStatusV1::
+              root_authority_invalid);
+    CHECK(directly_revalidated.diagnostic.wave_store.status ==
+          wave::DistributedSieveWaveStoreStatus::namespace_conflict);
+    CHECK(directly_revalidated.diagnostic.wave_store.native_error);
+    CHECK(directly_revalidated.diagnostic.native_error ==
+          directly_revalidated.diagnostic.wave_store.native_error);
+    std::error_code final_remove_error;
+    CHECK(std::filesystem::remove(pending, final_remove_error));
+    CHECK(!final_remove_error);
+    sync_directory(root.prepared().root());
+}
+
 void run_apple_tests() {
     test_fresh_tail_crosses_one_lock_generation_without_mutation();
     std::cout << "  fresh tail lock-generation bridge and moved replay: PASS\n";
@@ -789,6 +1294,18 @@ void run_apple_tests() {
     std::cout << "  root, lock, manifest, and commit generation-gap replacements: PASS\n";
     test_forked_tail_is_rejected_and_parent_remains_authoritative();
     std::cout << "  fork-invalid tail and parent continuity: PASS\n";
+    test_cleanup_receipt_requires_one_canonical_active_frontier();
+    std::cout << "  cleanup receipt requires canonical active frontier: PASS\n";
+    test_cleanup_receipt_single_live_move_release_base_lock_and_fork();
+    std::cout << "  cleanup receipt single-live lifecycle, BaseLock, and fork: PASS\n";
+    test_cleanup_receipt_spend_retains_claim_and_ignores_private_relation_changes();
+    std::cout << "  cleanup receipt spent claim and private relation changes: PASS\n";
+    test_cleanup_receipt_sticky_invalidates_same_byte_authorization_replacement();
+    std::cout << "  cleanup receipt same-byte replacement sticky invalidation: PASS\n";
+    test_cleanup_receipt_anchors_the_complete_completed_prefix();
+    std::cout << "  cleanup receipt complete prefix anchoring: PASS\n";
+    test_cleanup_receipt_sticky_invalidates_added_cleanup_leaf();
+    std::cout << "  cleanup receipt added root leaf sticky invalidation: PASS\n";
 }
 
 #endif

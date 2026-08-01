@@ -4,10 +4,20 @@
 from __future__ import annotations
 
 import argparse
+from bisect import bisect_right
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
+
+
+CPP_PREPROCESSOR_HSPACE = r"[ \t\v\f]"
+CPP_PREPROCESSOR_LINE_START = r"(?:\A|(?<=[\r\n]))"
+CPP_PHYSICAL_NEWLINE = r"(?:\r\n|\r|\n)"
 
 
 SOURCE_ROOTS = (
@@ -190,6 +200,7 @@ WORKER_CLEANUP_TAIL_AUTHORITY_FILES = {
 WORKER_CLEANUP_TAIL_AUTHORITY_INCLUDE_ALLOWLIST = {
     WORKER_CLEANUP_TAIL_AUTHORITY_IMPLEMENTATION_FILE,
     WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
+    MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE,
 }
 WORKER_CLEANUP_TAIL_AUTHORITY_IDENTIFIER_ALLOWLISTS = {
     "DistributedSieveCommittedTailCleanupTransitionV1": {
@@ -235,9 +246,755 @@ WORKER_CLEANUP_EXACT_ANCHOR_IDENTIFIER_ALLOWLISTS = {
         MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE,
         MERGE_COMMIT_AUTHORITY_WAVE_STORE_INTERFACE_FILE,
         WORKER_CLEANUP_TAIL_AUTHORITY_IMPLEMENTATION_FILE,
+        WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
         MERGE_COMMIT_AUTHORITY_TEST_FILE,
     },
 }
+WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE = (
+    "src/relation/ooc_private_handoff_adoption.cpp"
+)
+WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE = (
+    "src/relation/ooc_private_handoff_cleanup_authorization_internal.hpp"
+)
+WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE = (
+    "src/relation/ooc_private_cleanup_union.cpp"
+)
+WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE = (
+    "tests/test_ooc_cleanup_transaction.cpp"
+)
+WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE = (
+    "src/sieve/distributed_sieve_wave_store.cpp"
+)
+WORKER_CLEANUP_RECEIPT_WAVE_STORE_INTERFACE_FILE = (
+    "src/sieve/distributed_sieve_wave_store_internal.hpp"
+)
+WORKER_CLEANUP_RECEIPT_AUTHORITY_IMPLEMENTATION_FILE = (
+    "src/sieve/distributed_sieve_worker_cleanup_authority.cpp"
+)
+WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE = (
+    "src/sieve/distributed_sieve_worker_cleanup_authority_internal.hpp"
+)
+WORKER_CLEANUP_RECEIPT_LEGACY_SURFACE_TEST_FILE = (
+    "tests/test_distributed_sieve_resume.cpp"
+)
+WORKER_CLEANUP_RECEIPT_MINT_AUTHORITY_IDENTIFIER = (
+    "DistributedSieveWorkerCleanupReceiptMintAuthorityV1"
+)
+WORKER_CLEANUP_RECEIPT_MINT_ENTRY_IDENTIFIER = (
+    "mint_distributed_sieve_worker_cleanup_authorization_receipt_v1"
+)
+WORKER_CLEANUP_RECEIPT_MINT_KEY_IDENTIFIER = (
+    "OOCPrivateHandoffCleanupAuthorizationMintKey"
+)
+WORKER_CLEANUP_RECEIPT_IDENTIFIER = (
+    "OOCPrivateHandoffCleanupAuthorizationReceipt"
+)
+WORKER_CLEANUP_RECEIPT_OWNED_BRIDGE_IDENTIFIER = (
+    "distributed_sieve_external_cleanup_authorization_state_owned_by_current_process"
+)
+WORKER_CLEANUP_RECEIPT_RELEASE_BRIDGE_IDENTIFIER = (
+    "distributed_sieve_external_cleanup_authorization_state_release_receipt_claim"
+)
+WORKER_CLEANUP_RECEIPT_IDENTIFIER_ALLOWLISTS = {
+    WORKER_CLEANUP_RECEIPT_MINT_AUTHORITY_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_INTERFACE_FILE,
+        WORKER_CLEANUP_RECEIPT_AUTHORITY_IMPLEMENTATION_FILE,
+        WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE,
+    },
+    WORKER_CLEANUP_RECEIPT_MINT_ENTRY_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_AUTHORITY_IMPLEMENTATION_FILE,
+        WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE,
+        WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
+    },
+    WORKER_CLEANUP_RECEIPT_MINT_KEY_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+        WORKER_CLEANUP_RECEIPT_LEGACY_SURFACE_TEST_FILE,
+    },
+    WORKER_CLEANUP_RECEIPT_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE,
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+        WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE,
+        WORKER_CLEANUP_RECEIPT_LEGACY_SURFACE_TEST_FILE,
+        WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE,
+    },
+    WORKER_CLEANUP_RECEIPT_OWNED_BRIDGE_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_INTERFACE_FILE,
+    },
+    WORKER_CLEANUP_RECEIPT_RELEASE_BRIDGE_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_INTERFACE_FILE,
+    },
+    "revalidate_root_only_sticky": {
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_INTERFACE_FILE,
+    },
+    "try_claim_receipt": {
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_INTERFACE_FILE,
+    },
+    "release_receipt_claim": {
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_INTERFACE_FILE,
+    },
+}
+WORKER_CLEANUP_RECEIPT_EXACT_USE_CONTEXTS = {
+    WORKER_CLEANUP_RECEIPT_MINT_AUTHORITY_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE: (
+            3,
+            "b6ce4e21eb203291ed05a67d2c6391cb3f8de5dadd952d002b9ff8c482a34dc3",
+        ),
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE: (
+            1,
+            "56bdbbc574cad8066b7920456d7041563e9e9f14ff098144d3df459456828d1a",
+        ),
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_INTERFACE_FILE: (
+            3,
+            "d88c7461538b03d8b647ab03f110a0e7decde26b297146054bbdc63e19141b4b",
+        ),
+        WORKER_CLEANUP_RECEIPT_AUTHORITY_IMPLEMENTATION_FILE: (
+            1,
+            "5caa325d52f219665cea785d1ea2938b259f0dfe6736d021f3365a4df59b01af",
+        ),
+        WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE: (
+            2,
+            "0ae183ec0ac83b774a5f4cef6b3d6e870b61afd1b138ca83c661fdfe9e7ef4ee",
+        ),
+    },
+    WORKER_CLEANUP_RECEIPT_MINT_ENTRY_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_AUTHORITY_IMPLEMENTATION_FILE: (
+            1,
+            "39d6c3cc6d04a4a24bae43ae47933bcc37ab8c30f219711ded656a73ab546786",
+        ),
+        WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE: (
+            2,
+            "ff7f8d88417743ed5dd5656bad0e0e2886211e8ad705b4c83b2b384a3a48a1ab",
+        ),
+        WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE: (
+            9,
+            "0bdf58eae345e1dec51c5f7cded46a7ece87ba3b1f37316c5c0221540fa86c71",
+        ),
+    },
+    WORKER_CLEANUP_RECEIPT_MINT_KEY_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE: (
+            12,
+            "8cc9691a8a68c7171e4f70a683e773f98a16f4515a83e895b3463a0b9b352f3c",
+        ),
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE: (
+            1,
+            "372688a6e9d5f49d2ee1328de69a440eb7cec29a158b46a80591240a581af2cc",
+        ),
+        WORKER_CLEANUP_RECEIPT_LEGACY_SURFACE_TEST_FILE: (
+            6,
+            "32aa9fcb279bcb074bb545c1faecb92ac72123d8d01bf84f5aa8991f20cebf35",
+        ),
+    },
+    WORKER_CLEANUP_RECEIPT_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE: (
+            10,
+            "4c6d6b6fcfe2f16cf596bff07c11869a3315fd4d11c306d1c613e8a869ffc2f0",
+        ),
+        WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE: (
+            5,
+            "3f103266cdf9aa5319b1710a3b8b7592b45d30cce6ee36e0825d7070f83c5f2c",
+        ),
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE: (
+            19,
+            "f1f8f1bd80b4903ca0497b14206e0d003fb2e0080587e692884233955fb3eefb",
+        ),
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE: (
+            1,
+            "9966c03cd4598dde3a05bc006c1a303ca53a2d47b4e21a1730fc4eaf50d0bbd7",
+        ),
+        WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE: (
+            2,
+            "d02e8456a128882c9a53ca80e8e9dcb4fca4c5b38c9c11eeb8a39af6f42362e1",
+        ),
+        WORKER_CLEANUP_RECEIPT_LEGACY_SURFACE_TEST_FILE: (
+            15,
+            "2ec400b4ba93df585c3f42442a31a0901e925a44963faad26006be2f2168a486",
+        ),
+        WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE: (
+            9,
+            "b53f0c67807f13a6c270f5f20da2bf3b936fb6a05f2bdab03e776aca0bb8a172",
+        ),
+    },
+    WORKER_CLEANUP_RECEIPT_OWNED_BRIDGE_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE: (
+            2,
+            "0d16c46d075a2da43daa00251135b18e42757eead1bfd070c2cbbe1e0bf3218b",
+        ),
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE: (
+            1,
+            "5782d0a7b6682954b8d0b612f8c8fe9bb28a58ad5a45552aea068d4f5bac7a04",
+        ),
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_INTERFACE_FILE: (
+            2,
+            "0f5ae170968ce800a31e3105c6f01451260b22f95ca3bc434d685f69baa164fb",
+        ),
+    },
+    WORKER_CLEANUP_RECEIPT_RELEASE_BRIDGE_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE: (
+            2,
+            "b3f08b37ef6982adecc0e8065af4c5c8014726933acc50c8af0eeb21c2f97dfa",
+        ),
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE: (
+            1,
+            "f895e6ecbb0da5f92a7cc0fc31975c3f07e4c8a7809b1fa446be6541ce906a27",
+        ),
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_INTERFACE_FILE: (
+            2,
+            "62fe61b52557c0eb82dc22feb75bd09d4b40463a65ef6589c85a265254ae437a",
+        ),
+    },
+    "revalidate_root_only_sticky": {
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE: (
+            3,
+            "ef25e850e2a7a631df6c8d8003189f2d9d41f1c57d4ebc03be787502204c59ca",
+        ),
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_INTERFACE_FILE: (
+            1,
+            "bd05e449435df9684e1e900327233fbc64fcc1c5648a7944ba9a8b03b829c9fc",
+        ),
+    },
+    "try_claim_receipt": {
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE: (
+            2,
+            "f0ab701a6ddaa7df54fb0bbba75fbe6fa11f12f22abac4b0a8e7287d6d65a7da",
+        ),
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_INTERFACE_FILE: (
+            1,
+            "e0fe12c13f379f8f894b581c5241172dd1c84973bb6bd83e3c09cc6e3756d53f",
+        ),
+    },
+    "release_receipt_claim": {
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE: (
+            5,
+            "fd254a311d25d8d4ec806b2fbb8bbd8a1a5c2f6035971726db8669a54c824cc3",
+        ),
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_INTERFACE_FILE: (
+            1,
+            "ecd8bf8ba5cc1d83b31327d4ed3794129b71278ffa19c43a61c07c98d94ff1d8",
+        ),
+    },
+    "scan_worker_cleanup_root_control_inventory_v1": {
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE: (
+            2,
+            "b8af9d8194698754c3c59111e619c1cf66247eed0847c6d5d4f7e904b792e3fa",
+        ),
+    },
+    "convert_authorized_private_handoff_to_cleanup_intent_v2": {
+        WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE: (
+            2,
+            "759e442c97362db0f898c3d93499e4f04d15a4e050ec5460c33ce10e1b224e04",
+        ),
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE: (
+            1,
+            "d473f704be42f5882500b65d6bd5bb93a0e9707474327b8965e381fc16153059",
+        ),
+        WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE: (
+            1,
+            "ca9349f09f0a12efada656288ddc5e3460d5b34b58164a43770fdb6bab9b39b3",
+        ),
+        WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE: (
+            6,
+            "95b47f6a549a820365cd082b5b2c04590d42a96b15c1801e07b153764b584d5d",
+        ),
+    },
+    "convert_authorized_private_handoff_to_cleanup_intent_v2_for_trusted_test": {
+        WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE: (
+            2,
+            "2c74806975d767add007b43d0948f0bad969d81fb16252b846724a8dc1c53da6",
+        ),
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE: (
+            1,
+            "d07f9fefccf66c3ac1ed3be290ea9343a579f22840438aded83f34b4ee1c8870",
+        ),
+        WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE: (
+            6,
+            "45396e04f629ddb20eee858d60606225fd798199ee1e8578048e60943baa9216",
+        ),
+    },
+    "OOCPrivateHandoffCleanupIntentConversionExecutorV2": {
+        "include/gnfs/relation/ooc_cleanup_transaction.hpp": (
+            2,
+            "34aff8b52033b2cb5453a20afcbe4d2591bab3ee48ee93ff4cae9f09c2ef9a18",
+        ),
+        "include/gnfs/relation/ooc_relation_store.hpp": (
+            2,
+            "5700325e8fe54157a1a4e4c13264908e2d13a486ba5df8fc3dae174f44de3521",
+        ),
+        WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE: (
+            3,
+            "fd9d3f0761b626834f1b4d0145e996763df15d57d1efdb0e07ebbd027b9dcae0",
+        ),
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE: (
+            2,
+            "77a156ae0c48670993546e71ea659903ca5619926f41675182eb07113e24fff6",
+        ),
+    },
+}
+WORKER_CLEANUP_RECEIPT_TIER_A_MACRO_TARGETS = (
+    set(WORKER_CLEANUP_RECEIPT_IDENTIFIER_ALLOWLISTS)
+    | {
+        "scan_worker_cleanup_root_control_inventory_v1",
+        "convert_authorized_private_handoff_to_cleanup_intent_v2",
+        "convert_authorized_private_handoff_to_cleanup_intent_v2_for_trusted_test",
+        "OOCPrivateHandoffCleanupIntentConversionExecutorV2",
+        "public",
+        "private",
+        "protected",
+        "friend",
+        "delete",
+        "default",
+    }
+)
+WORKER_CLEANUP_RECEIPT_PROTECTED_FILES = {
+    relative
+    for paths in WORKER_CLEANUP_RECEIPT_IDENTIFIER_ALLOWLISTS.values()
+    for relative in paths
+} | {
+    WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE,
+}
+WORKER_CLEANUP_RECEIPT_MINT_AUTHORITY_CLASS_SURFACE = (
+    "public:DistributedSieveWorkerCleanupReceiptMintAuthorityV1()=delete;"
+    "private:[[nodiscard]]staticDistributedSieveWorkerCleanupReceiptMintResultV1mint("
+    "DistributedSieveWorkerCleanupRootAdmissionV1&admission)noexcept;"
+    "friendDistributedSieveWorkerCleanupReceiptMintResultV1"
+    "mint_distributed_sieve_worker_cleanup_authorization_receipt_v1("
+    "DistributedSieveWorkerCleanupRootAdmissionV1&admission)noexcept;"
+)
+WORKER_CLEANUP_RECEIPT_MINT_KEY_CLASS_SURFACE = (
+    "public:OOCPrivateHandoffCleanupAuthorizationMintKey("
+    "constOOCPrivateHandoffCleanupAuthorizationMintKey&)=delete;"
+    "OOCPrivateHandoffCleanupAuthorizationMintKey&operator=("
+    "constOOCPrivateHandoffCleanupAuthorizationMintKey&)=delete;"
+    "OOCPrivateHandoffCleanupAuthorizationMintKey("
+    "OOCPrivateHandoffCleanupAuthorizationMintKey&&)=delete;"
+    "OOCPrivateHandoffCleanupAuthorizationMintKey&operator=("
+    "OOCPrivateHandoffCleanupAuthorizationMintKey&&)=delete;"
+    "~OOCPrivateHandoffCleanupAuthorizationMintKey()=default;"
+    "private:OOCPrivateHandoffCleanupAuthorizationMintKey()noexcept=default;"
+    "friendclassgnfs::sieve::distributed_sieve_worker_cleanup_authority_detail::"
+    "DistributedSieveWorkerCleanupReceiptMintAuthorityV1;"
+)
+WORKER_CLEANUP_RECEIPT_EXPECTED_FRIEND_CLASSES = {
+    "gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail::"
+    "DistributedSieveWorkerCleanupReceiptMintAuthorityV1",
+    "OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2",
+    "OOCPrivateHandoffCleanupIntentConversionExecutorV2",
+    "OOCPrivateHandoffCleanupIntentReconciliationExecutorV2",
+    "OOCPrivateHandoffCleanupResumeExecutorV2",
+}
+WORKER_CLEANUP_RECEIPT_CLASS_BODY_SHA256 = (
+    "15a83edbdf33f367735cd01b7d07764cb5dc78cd594fddb8e03afdb42eac4855"
+)
+WORKER_CLEANUP_RECEIPT_ROOT_ONLY_FUNCTIONS = (
+    "scan_worker_cleanup_root_control_inventory_v1",
+    "DistributedSieveExternalCleanupAuthorizationState::revalidate_root_only_sticky",
+)
+WORKER_CLEANUP_RECEIPT_ROOT_ONLY_FORBIDDEN_IDENTIFIERS = (
+    "valid",
+    "observe_cleanup_root_v1",
+    "load_worker_cleanup_root_prelude_v1",
+    "capture_manifest_bound_inventory_witness",
+    "observe_authorized_private_handoff_cleanup_prefix_v2",
+    "validate_private_lease_base_lock_binding",
+    "validate_private_lease_base_lock_inventory",
+    "flock",
+    "LOCK_EX",
+    "LOCK_SH",
+    "LOCK_NB",
+    "LOCK_UN",
+)
+WORKER_CLEANUP_RECEIPT_ROOT_ONLY_FORBIDDEN_TOKEN_FRAGMENTS = (
+    "BaseLock",
+    "base_lock",
+)
+WORKER_CLEANUP_RECEIPT_REVALIDATE_DECLARATION = (
+    "[[nodiscard]]DistributedSieveWaveStoreDiagnostic"
+    "revalidate_root_only_sticky(boolrequire_live_claim)constnoexcept;"
+)
+WORKER_CLEANUP_RECEIPT_REVALIDATE_DEFINITION = (
+    "DistributedSieveWaveStoreDiagnostic"
+    "DistributedSieveExternalCleanupAuthorizationState::"
+    "revalidate_root_only_sticky(boolrequire_live_claim)constnoexcept"
+)
+WORKER_CLEANUP_RECEIPT_LIVE_WRAPPER_BODY = (
+    "returnrevalidate_root_only_sticky(true).status=="
+    "DistributedSieveWaveStoreStatus::ready;"
+)
+WORKER_CLEANUP_RECEIPT_REVALIDATE_INVALIDATOR = (
+    "constautoinvalidate=[&](DistributedSieveWaveStoreDiagnosticfailure)noexcept{"
+    "invalidated_.store(true,std::memory_order_release);returnfailure;};"
+)
+WORKER_CLEANUP_RECEIPT_REVALIDATE_DIAGNOSTIC_RETURNS = (
+    "if(!observed){returnobserved.diagnostic;}",
+    "if(!commit){returncommit.diagnostic;}",
+    "if(!loaded){returnloaded.diagnostic;}",
+    "returnprocess_matches(creator_process_id_)?"
+    "DistributedSieveWaveStoreDiagnostic{}:process_mismatch();",
+    "returninvalidate(diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,"
+    "std::make_error_code(std::errc::not_enough_memory)));",
+    "returninvalidate(diagnostic(DistributedSieveWaveStoreStatus::io_failed,error.code()));",
+    "returninvalidate(diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,"
+    "std::make_error_code(std::errc::io_error)));",
+)
+WORKER_CLEANUP_RECEIPT_ROOT_ONLY_BODY_SHA256 = {
+    "scan_worker_cleanup_root_control_inventory_v1": (
+        "d2e27a87408c362f75bab050ef03caef7f276c007d494d713787ef9c5e57495d"
+    ),
+    "DistributedSieveExternalCleanupAuthorizationState::"
+    "revalidate_root_only_sticky": (
+        "536d4b7dec23f620c8ccfe4267462719e0060ce69b5274ab8d0e8d9bba07bcb2"
+    ),
+}
+WORKER_CLEANUP_RECEIPT_CLAIM_DIAGNOSTIC_PROPAGATION = (
+    "autorevalidated=revalidate_root_only_sticky(true);"
+    "if(revalidated.status!=DistributedSieveWaveStoreStatus::ready){"
+    "receipt_claimed_.store(false,std::memory_order_release);"
+    "return{.result=ReceiptClaimResultV1::invalidated,"
+    ".diagnostic=std::move(revalidated),};}"
+)
+WORKER_CLEANUP_RECEIPT_TRY_CLAIM_BODY_SHA256 = (
+    "31c3f3db3fef25ea9ecfac7cad7776ddb914d45fef5ffce25ba048b00f877d2f"
+)
+WORKER_CLEANUP_RECEIPT_MINT_PROCESS_CLASSIFICATION = (
+    "constboolprocess_mismatch=!mint_process_matches("
+    "live_state->creator_process_id_);"
+)
+WORKER_CLEANUP_RECEIPT_MINT_RESOURCE_CLASSIFICATION = (
+    "constboolresource_exhausted=claimed.diagnostic.status=="
+    "wave::DistributedSieveWaveStoreStatus::resource_exhausted;"
+)
+WORKER_CLEANUP_RECEIPT_MINT_FAILURE_CLASSIFICATION = (
+    "already_live?MintStatus::receipt_already_live:"
+    "(process_mismatch?MintStatus::process_mismatch:"
+    "(resource_exhausted?MintStatus::resource_exhausted:"
+    "MintStatus::root_authority_invalid)),claimed.diagnostic.native_error,"
+    "!already_live&&!process_mismatch);"
+    "diagnostic.wave_store=std::move(claimed.diagnostic);"
+)
+WORKER_CLEANUP_RECEIPT_MINT_BODY_SHA256 = (
+    "a2ee557cafda0388fe5467503e63d7eb271ddd2d2800ab94aa440b9cceef5c58"
+)
+WORKER_CLEANUP_RECEIPT_T2A_RUN_BODY_SHA256 = (
+    "7171c929fc8bf094d8dd5cb991702e786e93060a425a18ff412359217f2c7346"
+)
+WORKER_CLEANUP_RECEIPT_OWNED_BRIDGE_BODY = (
+    "returnstate.live_for_current_process();"
+)
+WORKER_CLEANUP_RECEIPT_RELEASE_BRIDGE_BODY = (
+    "state.release_receipt_claim();"
+)
+WORKER_CLEANUP_RECEIPT_RELEASE_MEMBER_BODY = (
+    "if(!receipt_claimed_.exchange(false,std::memory_order_acq_rel)){"
+    "invalidated_.store(true,std::memory_order_release);}"
+)
+WORKER_CLEANUP_RECEIPT_CMAKE_FILE = "CMakeLists.txt"
+WORKER_CLEANUP_RECEIPT_CMAKE_COMMENT_MASKED_SHA256 = (
+    "138c84111d040f7fb497b2f3d764a647182b51d4b5c5b9495a6d5fb51a45d683"
+)
+WORKER_CLEANUP_RECEIPT_CMAKE_PRESETS_FILE = "CMakePresets.json"
+WORKER_CLEANUP_RECEIPT_CMAKE_PRESETS_SHA256 = (
+    "1ee7b09596994f18a3d070cc4ccbef7f91bac4bef86b9579ff0dae4ab81ff2b7"
+)
+WORKER_CLEANUP_RECEIPT_REPO_BUILD_FILES = frozenset({"CMakeLists.txt"})
+WORKER_CLEANUP_RECEIPT_CONTROL_PLANE_POLICY_FILE = (
+    "scripts/check_distributed_sieve_policy.py"
+)
+WORKER_CLEANUP_RECEIPT_TEST_RUNNER_FILE = "scripts/test.sh"
+WORKER_CLEANUP_RECEIPT_TEST_TARGET = (
+    "test_distributed_sieve_worker_cleanup_tail"
+)
+WORKER_CLEANUP_RECEIPT_CTEST_NAME = "DistributedSieveWorkerCleanupTail"
+WORKER_CLEANUP_RECEIPT_TEST_CHECK_DEFINITION = (
+    "(expression)check(static_cast<bool>(expression),#expression,__LINE__)"
+)
+WORKER_CLEANUP_RECEIPT_TEST_CHECK_CODE_USE_CONTEXT = (
+    165,
+    "e128f0b8df5eeeb2f1e1c18139c3fa29bdb6cc9b2b6b9c728f8687f1a996e26d",
+)
+WORKER_CLEANUP_RECEIPT_TEST_HELPER_BODY_SHA256 = {
+    "fail": "63f51c4b90e668bf38c20c860350facf940e08e73b32bf1d3440fab4f1a38cd5",
+    "check": "617dd7b0badb9d7c9558d9f3e7b7dceceefc8b04c488ea61f4786d934bac8653",
+}
+WORKER_CLEANUP_RECEIPT_TIER_B_SAFE_MACROS = {
+    (
+        WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
+        "CHECK",
+    ): (
+        WORKER_CLEANUP_RECEIPT_TEST_CHECK_DEFINITION,
+        WORKER_CLEANUP_RECEIPT_TEST_CHECK_CODE_USE_CONTEXT,
+    ),
+    (
+        "tests/support/distributed_sieve_wave_merge_commit_fixture.hpp",
+        "GNFS_WAVE_COMMIT_FIXTURE_CHECK",
+    ): (
+        "(expression)::gnfs::test::distributed_sieve_wave_merge_commit_fixture::"
+        "check(static_cast<bool>(expression),#expression,__LINE__)",
+        (
+            32,
+            "3b4e46873a02acccc7fee89491fa1ef743380298e5b83a8445e4f2b112ba1b5c",
+        ),
+    ),
+}
+WORKER_CLEANUP_RECEIPT_PASTE_MACRO_ALLOWLIST = {
+    ("tests/test_i18n.cpp", "TEST"): (
+        '(name)std::cout<<"  "<<#name<<"... "<<std::flush;'
+        'if(test_##name()){++pass_count;std::cout<<"OK\\n";}'
+        'else{++fail_count;std::cout<<"FAILED\\n";}'
+    ),
+    ("tests/test_method_selection.cpp", "TEST"): (
+        '(name)std::cout<<"  "<<#name<<"... "<<std::flush;'
+        'if(test_##name()){++pass_count;std::cout<<"OK\\n";}'
+        'else{++fail_count;std::cout<<"FAILED\\n";}'
+    ),
+    ("tests/test_api.cpp", "TEST"): (
+        '(name)std::cout<<"  "<<#name<<"... "<<std::flush;'
+        'if(test_##name()){++pass_count;std::cout<<"OK\\n";}'
+        'else{++fail_count;std::cout<<"FAILED\\n";}'
+    ),
+    ("tests/test_full_resume.cpp", "RUN_TEST"): (
+        '(name)do{std::cout<<"  "<<#name<<"... "<<std::flush;boolok=false;'
+        'try{ok=test_##name();}catch(conststd::exception&e){'
+        'std::cout<<"EXCEPTION: "<<e.what()<<" ";}'
+        'if(ok){++pass_count;std::cout<<"OK\\n";}'
+        'else{++fail_count;std::cout<<"FAILED\\n";}}while(0)'
+    ),
+}
+WORKER_CLEANUP_RECEIPT_PASTE_MACRO_CODE_USE_CONTEXTS = {
+    ("tests/test_i18n.cpp", "TEST"): (
+        13,
+        "c9363d2bcc4ac3c5eec16b03a3ec6f2e16fcfbb9a88171b66c744d058c0385f2",
+    ),
+    ("tests/test_method_selection.cpp", "TEST"): (
+        39,
+        "470d0973f63d32e9af3a85a485ba14b2c2eba9e516190d32a86a0ca37aa57a26",
+    ),
+    ("tests/test_api.cpp", "TEST"): (
+        56,
+        "949ce78dc4e0d35832343f9acd33331701d2cc26f8a96ac2b6f5b1ad35e5a4f7",
+    ),
+    ("tests/test_full_resume.cpp", "RUN_TEST"): (
+        6,
+        "8e5705ece15e9d9f5d7f21245d093c6e77c5aac0385bfa07941e3398d138985e",
+    ),
+}
+WORKER_CLEANUP_RECEIPT_PROTECTED_UNIT_TARGETS = {
+    WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE: {"gnfs_core"},
+    WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE: {
+        "gnfs_core",
+        WORKER_CLEANUP_RECEIPT_TEST_TARGET,
+    },
+    WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE: {"gnfs_core"},
+    WORKER_CLEANUP_RECEIPT_AUTHORITY_IMPLEMENTATION_FILE: {"gnfs_core"},
+    WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE: {
+        WORKER_CLEANUP_RECEIPT_TEST_TARGET
+    },
+}
+WORKER_CLEANUP_RECEIPT_TARGET_DEPENDENCY_CLOSURES = {
+    "gnfs_core": frozenset({"gnfs_core", "gnfs_util"}),
+    WORKER_CLEANUP_RECEIPT_TEST_TARGET: frozenset(
+        {WORKER_CLEANUP_RECEIPT_TEST_TARGET, "gnfs_core", "gnfs_util"}
+    ),
+}
+WORKER_CLEANUP_RECEIPT_TARGET_INCLUDE_COMMANDS = {
+    "gnfs_util": (
+        "gnfs_utilPUBLIC$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+        "$<INSTALL_INTERFACE:include>",
+    ),
+    "gnfs_core": (
+        "gnfs_corePUBLIC$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+        "$<INSTALL_INTERFACE:include>",
+        "gnfs_coreSYSTEMPUBLIC${GMP_INCLUDE_DIR}",
+        "gnfs_coreSYSTEMPUBLIC${NTL_INCLUDE_DIR}",
+    ),
+    WORKER_CLEANUP_RECEIPT_TEST_TARGET: (
+        "test_distributed_sieve_worker_cleanup_tailPRIVATE"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/relation"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve",
+    ),
+}
+WORKER_CLEANUP_RECEIPT_TARGET_INCLUDE_SEARCH = {
+    "gnfs_core": ("include",),
+    WORKER_CLEANUP_RECEIPT_TEST_TARGET: (
+        "src/relation",
+        "src/sieve",
+        "include",
+    ),
+}
+WORKER_CLEANUP_RECEIPT_EXTERNAL_INCLUDE_ALLOWLIST = frozenset(
+    {
+        "algorithm",
+        "arm_neon.h",
+        "array",
+        "atomic",
+        "bit",
+        "cassert",
+        "cerrno",
+        "chrono",
+        "cmath",
+        "concepts",
+        "condition_variable",
+        "cstddef",
+        "cstdint",
+        "cstdio",
+        "cstdlib",
+        "cstring",
+        "dirent.h",
+        "exception",
+        "fcntl.h",
+        "filesystem",
+        "fstream",
+        "functional",
+        "future",
+        "gmp.h",
+        "intrin.h",
+        "io.h",
+        "iosfwd",
+        "iostream",
+        "istream",
+        "iterator",
+        "limits",
+        "limits.h",
+        "memory",
+        "mutex",
+        "new",
+        "numeric",
+        "optional",
+        "ostream",
+        "process.h",
+        "pthread.h",
+        "queue",
+        "random",
+        "span",
+        "stdexcept",
+        "stdio.h",
+        "stdio_ext.h",
+        "string",
+        "string_view",
+        "sys/acl.h",
+        "sys/attr.h",
+        "sys/file.h",
+        "sys/mman.h",
+        "sys/qos.h",
+        "sys/stat.h",
+        "sys/syscall.h",
+        "sys/types.h",
+        "sys/unistd.h",
+        "sys/wait.h",
+        "sys/xattr.h",
+        "system_error",
+        "thread",
+        "type_traits",
+        "unistd.h",
+        "unordered_map",
+        "unordered_set",
+        "utility",
+        "variant",
+        "vector",
+        "windows.h",
+    }
+)
+WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_INCLUDE = (
+    "ooc_private_handoff_cleanup_authorization_internal.hpp"
+)
+WORKER_CLEANUP_RECEIPT_DEDICATED_TEST_FUNCTIONS = (
+    "test_cleanup_receipt_requires_one_canonical_active_frontier",
+    "test_cleanup_receipt_single_live_move_release_base_lock_and_fork",
+    "test_cleanup_receipt_spend_retains_claim_and_ignores_private_relation_changes",
+    "test_cleanup_receipt_sticky_invalidates_same_byte_authorization_replacement",
+    "test_cleanup_receipt_anchors_the_complete_completed_prefix",
+    "test_cleanup_receipt_sticky_invalidates_added_cleanup_leaf",
+)
+WORKER_CLEANUP_RECEIPT_DEDICATED_TEST_BODY_SHA256 = {
+    "test_cleanup_receipt_requires_one_canonical_active_frontier": (
+        "0d857543d64f261ee33f708e0eefbc848f114e0eeadf02c55e6e76f8333c72cb"
+    ),
+    "test_cleanup_receipt_single_live_move_release_base_lock_and_fork": (
+        "d468494c09abf424d3544ab88ce23db494089278f95416218374f525cd0cd176"
+    ),
+    "test_cleanup_receipt_spend_retains_claim_and_ignores_private_relation_changes": (
+        "c73c4985c1c2f4091039f6b3cef8e4fad407fd05b51d86fb4b87bba9a9e40b33"
+    ),
+    "test_cleanup_receipt_sticky_invalidates_same_byte_authorization_replacement": (
+        "ab9d1f74b5aaa6ca3d7159211500cc5ba8c8a0dc5fb0751a0ef51df57941db48"
+    ),
+    "test_cleanup_receipt_anchors_the_complete_completed_prefix": (
+        "833600a48a658ef23d89c0692b287c37f234c47499cf837100c64c2a141618ab"
+    ),
+    "test_cleanup_receipt_sticky_invalidates_added_cleanup_leaf": (
+        "e9f07d03f056e7abfe1a4269338de3a9a00f5ec2e99133b30f3a1510ec5d2798"
+    ),
+}
+WORKER_CLEANUP_RECEIPT_REQUIRED_TEST_BODY_FRAGMENTS = {
+    "test_cleanup_receipt_requires_one_canonical_active_frontier": (
+        "CHECK(!rejected);",
+        "CHECK(!rejected.minted.has_value());",
+        "authorization_not_canonical);",
+        "CHECK(!rejected.diagnostic.cold_reopen_required);",
+    ),
+    "test_cleanup_receipt_single_live_move_release_base_lock_and_fork": (
+        "receipt_already_live);",
+        "constpid_tchild=::fork();",
+        "CHECK(WEXITSTATUS(status)==FORK_REJECTED_EXIT);",
+        "moved_owner.reset();",
+    ),
+    "test_cleanup_receipt_spend_retains_claim_and_ignores_private_relation_changes": (
+        "CHECK(converted.intent_published());",
+        "CHECK(converted.capabilities_spent());",
+        "CHECK(minted.minted->receipt.spent());",
+        "receipt_already_live);",
+    ),
+    "test_cleanup_receipt_sticky_invalidates_same_byte_authorization_replacement": (
+        "replace_file_with_same_bytes(canonical,saved,root.authorization_bytes());",
+        "CHECK(minted.minted->receipt.spent());",
+        "root_authority_invalid);",
+        "CHECK(rejected.diagnostic.cold_reopen_required);",
+        "root.release_and_cold_reopen();",
+    ),
+    "test_cleanup_receipt_anchors_the_complete_completed_prefix": (
+        'CanonicalWorkerCleanupRootroot("worker-cleanup-receipt-complete-prefix",1);',
+        "CHECK(minted.minted->manifest_order_ordinal==1U);",
+        "constautocanonical=root.completion_path(0);",
+        "replace_file_with_same_bytes(canonical,saved,root.completion_bytes(0));",
+        "CHECK(minted.minted->receipt.spent());",
+    ),
+    "test_cleanup_receipt_sticky_invalidates_added_cleanup_leaf": (
+        "write_immutable_test_leaf(pending,root.authorization_bytes());",
+        "CHECK(minted.minted->receipt.spent());",
+        "root_authority_invalid);",
+        "wave::DistributedSieveWaveStoreStatus::namespace_conflict);",
+        "CHECK(directly_revalidated.diagnostic.native_error=="
+        "directly_revalidated.diagnostic.wave_store.native_error);",
+    ),
+}
+WORKER_CLEANUP_RECEIPT_CMAKE_CATALOG_BLOCK = (
+    "add_executable(test_distributed_sieve_worker_cleanup_tail"
+    "tests/test_distributed_sieve_worker_cleanup_tail.cpp)"
+    "target_include_directories(test_distributed_sieve_worker_cleanup_tailPRIVATE"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/relation"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve)"
+    "target_link_libraries(test_distributed_sieve_worker_cleanup_tailPRIVATE"
+    "gnfs_coreThreads::Threads)"
+    "add_test(NAMEDistributedSieveWorkerCleanupTail"
+    "COMMANDtest_distributed_sieve_worker_cleanup_tail)"
+    "if(APPLE)"
+    "set_tests_properties(DistributedSieveWorkerCleanupTail"
+    "PROPERTIESLABELS\"slow\"TIMEOUT120)"
+    "else()"
+    "set_tests_properties(DistributedSieveWorkerCleanupTail"
+    "PROPERTIESLABELS\"instant\"TIMEOUT10)"
+    "endif()"
+)
 MERGE_COMMIT_AUTHORITY_INTERFACE_INCLUDE = (
     "distributed_sieve_merge_commit_authority_internal.hpp"
 )
@@ -4540,6 +5297,31 @@ def find_code_identifier_tokens(
     return tokens
 
 
+def _split_crlf_lines(text: str, *, keepends: bool = False) -> list[str]:
+    """Split only on C/C++ CR/LF line endings, never on VT or FF."""
+
+    lines: list[str] = []
+    start = 0
+    cursor = 0
+    while cursor < len(text):
+        if text[cursor] not in {"\r", "\n"}:
+            cursor += 1
+            continue
+        ending = cursor + 1
+        if text[cursor] == "\r" and ending < len(text) and text[ending] == "\n":
+            ending += 1
+        lines.append(text[start:ending] if keepends else text[start:cursor])
+        start = ending
+        cursor = ending
+    if start < len(text):
+        lines.append(text[start:])
+    return lines
+
+
+def _source_line_number(text: str, offset: int) -> int:
+    return 1 + len(re.findall(CPP_PHYSICAL_NEWLINE, text[:offset]))
+
+
 def _skip_quoted(text: str, start: int, quote: str) -> int:
     cursor = start + 1
     while cursor < len(text):
@@ -4566,15 +5348,42 @@ def _skip_raw_string(text: str, start: int) -> int | None:
     return len(text) if end < 0 else end + len(terminator)
 
 
+def _is_cpp_digit_separator(text: str, cursor: int) -> bool:
+    if (
+        text[cursor] != "'"
+        or cursor == 0
+        or cursor + 1 >= len(text)
+        or not text[cursor - 1].isalnum()
+        or not text[cursor + 1].isalnum()
+    ):
+        return False
+    token_start = cursor - 1
+    while token_start > 0 and (
+        text[token_start - 1].isalnum() or text[token_start - 1] == "_"
+    ):
+        token_start -= 1
+    prefix = text[token_start:cursor]
+    return prefix not in {"L", "u", "U", "u8"}
+
+
 def _skip_non_code(text: str, cursor: int) -> int | None:
     raw_end = _skip_raw_string(text, cursor)
     if raw_end is not None:
         return raw_end
+    if text[cursor] == "'" and _is_cpp_digit_separator(text, cursor):
+        return None
     if text[cursor] in {'"', "'"}:
         return _skip_quoted(text, cursor, text[cursor])
     if text.startswith("//", cursor):
-        newline = text.find("\n", cursor + 2)
-        return len(text) if newline < 0 else newline
+        newline_candidates = [
+            candidate
+            for candidate in (
+                text.find("\r", cursor + 2),
+                text.find("\n", cursor + 2),
+            )
+            if candidate >= 0
+        ]
+        return len(text) if not newline_candidates else min(newline_candidates)
     if text.startswith("/*", cursor):
         end = text.find("*/", cursor + 2)
         return len(text) if end < 0 else end + 2
@@ -4671,6 +5480,9 @@ def find_exact_string_literal_uses(text: str, literal: str) -> list[CodeIdentifi
                 )
             cursor = end
             continue
+        if text[cursor] == "'" and _is_cpp_digit_separator(text, cursor):
+            cursor += 1
+            continue
         if text[cursor] == "'":
             cursor = _skip_quoted(text, cursor, "'")
             continue
@@ -4727,6 +5539,10 @@ def _compact_cpp_code(text: str) -> str:
             compact.append(text[cursor:raw_end])
             cursor = raw_end
             continue
+        if text[cursor] == "'" and _is_cpp_digit_separator(text, cursor):
+            compact.append(text[cursor])
+            cursor += 1
+            continue
         if text[cursor] in {'"', "'"}:
             quoted_end = _skip_quoted(text, cursor, text[cursor])
             compact.append(text[cursor:quoted_end])
@@ -4742,6 +5558,10 @@ def _compact_cpp_code(text: str) -> str:
         compact.append(text[cursor])
         cursor += 1
     return "".join(compact)
+
+
+def _compact_cpp_sha256(text: str) -> str:
+    return hashlib.sha256(_compact_cpp_code(text).encode("utf-8")).hexdigest()
 
 
 def _mask_cpp_comments_and_literals(text: str) -> str:
@@ -4761,31 +5581,835 @@ def _mask_cpp_comments_and_literals(text: str) -> str:
     return "".join(masked)
 
 
+def _mask_cpp_comments_preserving_literals(text: str) -> str:
+    masked = list(text)
+    cursor = 0
+    while cursor < len(text):
+        raw_end = _skip_raw_string(text, cursor)
+        if raw_end is not None:
+            cursor = raw_end
+            continue
+        if text[cursor] == "'" and _is_cpp_digit_separator(text, cursor):
+            cursor += 1
+            continue
+        if text[cursor] in {'"', "'"}:
+            cursor = _skip_quoted(text, cursor, text[cursor])
+            continue
+        if not (text.startswith("//", cursor) or text.startswith("/*", cursor)):
+            cursor += 1
+            continue
+        skipped = _skip_non_code(text, cursor)
+        if skipped is None:
+            skipped = len(text)
+        for index in range(cursor, skipped):
+            if masked[index] not in {"\n", "\r"}:
+                masked[index] = " "
+        cursor = skipped
+    return "".join(masked)
+
+
+def _mask_cmake_comments(text: str) -> str:
+    """Preserve CMake layout while blanking line and bracket comments."""
+
+    masked = list(text)
+    cursor = 0
+    while cursor < len(text):
+        if text[cursor] == '"':
+            cursor = _skip_quoted(text, cursor, '"')
+            continue
+
+        bracket = re.match(r"\[(=*)\[", text[cursor:])
+        if bracket is not None:
+            closing = "]" + bracket.group(1) + "]"
+            closing_at = text.find(closing, cursor + len(bracket.group(0)))
+            cursor = (
+                len(text)
+                if closing_at < 0
+                else closing_at + len(closing)
+            )
+            continue
+
+        if text[cursor] != "#":
+            cursor += 1
+            continue
+
+        bracket_comment = re.match(r"#\[(=*)\[", text[cursor:])
+        if bracket_comment is not None:
+            closing = "]" + bracket_comment.group(1) + "]"
+            skipped = text.find(
+                closing, cursor + len(bracket_comment.group(0))
+            )
+            skipped = len(text) if skipped < 0 else skipped + len(closing)
+        else:
+            newline = text.find("\n", cursor)
+            skipped = len(text) if newline < 0 else newline
+        for index in range(cursor, skipped):
+            if masked[index] not in {"\n", "\r"}:
+                masked[index] = " "
+        cursor = skipped
+    return "".join(masked)
+
+
+def _cmake_bracket_end(text: str, cursor: int) -> int | None:
+    opening = re.match(r"\[(=*)\[", text[cursor:])
+    if opening is None:
+        return None
+    closing = "]" + opening.group(1) + "]"
+    closing_at = text.find(closing, cursor + len(opening.group(0)))
+    return len(text) if closing_at < 0 else closing_at + len(closing)
+
+
+def _mask_cmake_comments_and_literals(text: str) -> str:
+    """Blank CMake comments and literal payloads while retaining layout."""
+
+    visible = _mask_cmake_comments(text)
+    masked = list(visible)
+    cursor = 0
+    while cursor < len(visible):
+        if visible[cursor] == '"':
+            skipped = _skip_quoted(visible, cursor, '"')
+        else:
+            bracket_end = _cmake_bracket_end(visible, cursor)
+            if bracket_end is None:
+                cursor += 1
+                continue
+            skipped = bracket_end
+        for index in range(cursor, skipped):
+            if masked[index] not in {"\n", "\r"}:
+                masked[index] = " "
+        cursor = skipped
+    return "".join(masked)
+
+
+@dataclass(frozen=True)
+class CMakeCommandRecord:
+    name: str
+    body: str
+    start: int
+    end: int
+    line: int
+
+
+def _cmake_command_records(text: str) -> list[CMakeCommandRecord]:
+    """Parse top-level CMake commands with balanced, literal-aware parens."""
+
+    visible = _mask_cmake_comments(text)
+    newline_offsets = [index for index, char in enumerate(visible) if char == "\n"]
+    commands: list[CMakeCommandRecord] = []
+    cursor = 0
+    while cursor < len(visible):
+        if visible[cursor] == '"':
+            cursor = _skip_quoted(visible, cursor, '"')
+            continue
+        bracket_end = _cmake_bracket_end(visible, cursor)
+        if bracket_end is not None:
+            cursor = bracket_end
+            continue
+        identifier = re.match(r"[A-Za-z_][A-Za-z0-9_]*", visible[cursor:])
+        if identifier is None:
+            cursor += 1
+            continue
+        name = identifier.group(0)
+        opening = cursor + len(name)
+        while opening < len(visible) and visible[opening].isspace():
+            opening += 1
+        if opening >= len(visible) or visible[opening] != "(":
+            cursor += len(name)
+            continue
+        depth = 1
+        closing = opening + 1
+        while closing < len(visible) and depth:
+            if visible[closing] == '"':
+                closing = _skip_quoted(visible, closing, '"')
+                continue
+            bracket_end = _cmake_bracket_end(visible, closing)
+            if bracket_end is not None:
+                closing = bracket_end
+                continue
+            if visible[closing] == "(":
+                depth += 1
+            elif visible[closing] == ")":
+                depth -= 1
+            closing += 1
+        if depth:
+            cursor = opening + 1
+            continue
+        commands.append(
+            CMakeCommandRecord(
+                name=name.lower(),
+                body=visible[opening + 1 : closing - 1],
+                start=cursor,
+                end=closing,
+                line=bisect_right(newline_offsets, cursor) + 1,
+            )
+        )
+        cursor = closing
+    return commands
+
+
+def _cmake_literal_false(body: str) -> bool:
+    normalized = re.sub(r"[ \t\r\n()]", "", body).upper()
+    return normalized in {"0", "FALSE", "OFF", "NO", "IGNORE", "NOTFOUND", '"FALSE"'}
+
+
+def _mask_definitely_inactive_cmake(text: str) -> str:
+    """Blank commands proven inactive by literal ``if(FALSE/0)`` blocks."""
+
+    commands = _cmake_command_records(text)
+    masked = list(text)
+    active = True
+    # (parent active, opening condition was definitely false)
+    stack: list[tuple[bool, bool]] = []
+    rejected_spans: list[tuple[int, int]] = []
+    for command in commands:
+        active_before = active
+        if command.name == "if":
+            definitely_false = _cmake_literal_false(command.body)
+            stack.append((active, definitely_false))
+            active = active and not definitely_false
+            if definitely_false:
+                rejected_spans.append((command.start, command.end))
+        elif command.name == "elseif" and stack:
+            parent_active, definitely_false = stack[-1]
+            if definitely_false and _cmake_literal_false(command.body):
+                active = False
+                rejected_spans.append((command.start, command.end))
+            else:
+                stack[-1] = (parent_active, False)
+                active = parent_active
+        elif command.name == "else" and stack:
+            parent_active, definitely_false = stack[-1]
+            active = parent_active
+            if definitely_false:
+                rejected_spans.append((command.start, command.end))
+            stack[-1] = (parent_active, False)
+        elif command.name == "endif" and stack:
+            parent_active, definitely_false = stack.pop()
+            if definitely_false or not active_before:
+                rejected_spans.append((command.start, command.end))
+            active = parent_active
+        elif not active_before:
+            rejected_spans.append((command.start, command.end))
+
+    for start, end in rejected_spans:
+        for index in range(start, end):
+            if masked[index] not in {"\n", "\r"}:
+                masked[index] = " "
+    return "".join(masked)
+
+
+_CMAKE_COMPILE_SCOPE_WORDS = {
+    "PUBLIC",
+    "PRIVATE",
+    "INTERFACE",
+    "BEFORE",
+    "AFTER",
+    "APPEND",
+    "APPEND_STRING",
+    "PROPERTY",
+    "PROPERTIES",
+    "TARGET",
+    "TARGETS",
+    "SOURCE",
+    "SOURCES",
+}
+
+
+def _cmake_first_argument(body: str) -> str | None:
+    match = re.match(r"\s*([^\s()]+)", body)
+    return None if match is None else match.group(1)
+
+
+def _cmake_definition_names(body: str) -> set[str]:
+    """Conservatively extract literal macro names from definition arguments."""
+
+    visible = _mask_cmake_comments(body)
+    names = set(
+        re.findall(
+            r"(?<![A-Za-z0-9_])(?:-D|/D)?"
+            r"([A-Za-z_][A-Za-z0-9_]*)(?=\s*=|[;\s)>\"]|$)",
+            visible,
+        )
+    )
+    return {name for name in names if name not in _CMAKE_COMPILE_SCOPE_WORDS}
+
+
+def _cmake_option_macro_names(body: str) -> set[str]:
+    return set(
+        re.findall(
+            r"(?<!\S)(?:-D|-U|/D|/U)\s*([A-Za-z_][A-Za-z0-9_]*)",
+            body,
+        )
+    )
+
+
+def _cmake_forced_include_arguments(body: str) -> list[str]:
+    visible = list(body)
+    arguments: list[str] = []
+    for match in re.finditer(
+        r"(?<!\S)-Xclang\s+-include\s+-Xclang\s+([^\s)]+)", body
+    ):
+        arguments.append(match.group(1))
+        for index in range(match.start(), match.end()):
+            if visible[index] not in {"\n", "\r"}:
+                visible[index] = " "
+    remaining = "".join(visible)
+    arguments += re.findall(r"(?<!\S)/FI\s*([^\s)]+)", remaining)
+    arguments += re.findall(
+        r"(?<!\S)-(?:include|imacros)(?:=|\s+)\s*([^\s)]+)", remaining
+    )
+    return [argument.strip('"') for argument in arguments]
+
+
+def _cmake_local_target_dependencies(
+    commands: list[CMakeCommandRecord],
+) -> dict[str, set[str]]:
+    """Return a conservative graph of literal in-tree target dependencies."""
+
+    declared: set[str] = set()
+    for command in commands:
+        if command.name not in {"add_executable", "add_library"}:
+            continue
+        target = _cmake_first_argument(command.body)
+        if target is not None and "$" not in target:
+            declared.add(target)
+
+    dependencies = {target: set() for target in declared}
+    ignored = {
+        "PUBLIC",
+        "PRIVATE",
+        "INTERFACE",
+        "LINK_PUBLIC",
+        "LINK_PRIVATE",
+        "LINK_INTERFACE_LIBRARIES",
+        "debug",
+        "optimized",
+        "general",
+    }
+    for command in commands:
+        if command.name != "target_link_libraries":
+            continue
+        target = _cmake_first_argument(command.body)
+        if target not in declared:
+            continue
+        payload = command.body[len(target) :]
+        for argument in re.findall(r"[^\s()]+", payload):
+            if argument in ignored or argument not in declared:
+                continue
+            dependencies[target].add(argument)
+    return dependencies
+
+
+def _cmake_target_dependency_closure(
+    unit_targets: set[str],
+    dependencies: dict[str, set[str]],
+) -> set[str]:
+    closure = set(unit_targets)
+    pending = list(unit_targets)
+    while pending:
+        target = pending.pop()
+        for dependency in dependencies.get(target, set()):
+            if dependency in closure:
+                continue
+            closure.add(dependency)
+            pending.append(dependency)
+    return closure
+
+
+def _compact_cmake_command_body(body: str) -> str:
+    return re.sub(r"\s+", "", _mask_cmake_comments(body))
+
+
+def _cmake_worker_cleanup_include_searches(
+    root: Path,
+    cmake_text: str,
+    unit_targets: set[str],
+    commands: list[CMakeCommandRecord] | None = None,
+) -> tuple[list[tuple[str, ...]], list[tuple[int, str]]]:
+    """Freeze committed repo-local include search for protected targets."""
+
+    if commands is None:
+        active = _mask_definitely_inactive_cmake(cmake_text)
+        commands = _cmake_command_records(active)
+    dependencies = _cmake_local_target_dependencies(commands)
+    errors: list[tuple[int, str]] = []
+
+    for command in commands:
+        if command.name == "include_directories":
+            errors.append(
+                (
+                    command.line,
+                    "protected build units forbid mutable directory-wide "
+                    "include_directories search provenance",
+                )
+            )
+        if command.name == "set" and re.search(
+            r"\bCMAKE_INCLUDE_(?:CURRENT_DIR|PATH)\b",
+            command.body,
+            re.IGNORECASE,
+        ):
+            errors.append(
+                (
+                    command.line,
+                    "protected build units forbid CMAKE include-search mutation",
+                )
+            )
+
+    searches: list[tuple[str, ...]] = []
+    for target in sorted(unit_targets):
+        expected_closure = WORKER_CLEANUP_RECEIPT_TARGET_DEPENDENCY_CLOSURES.get(
+            target
+        )
+        expected_search = WORKER_CLEANUP_RECEIPT_TARGET_INCLUDE_SEARCH.get(target)
+        if expected_closure is None or expected_search is None:
+            errors.append(
+                (
+                    1,
+                    f"protected target has no frozen include-search baseline: {target}",
+                )
+            )
+            continue
+        observed_closure = _cmake_target_dependency_closure(
+            {target}, dependencies
+        )
+        if observed_closure != set(expected_closure):
+            errors.append(
+                (
+                    1,
+                    "protected target local dependency closure is not exact for "
+                    f"{target}: expected {sorted(expected_closure)}, found "
+                    f"{sorted(observed_closure)}",
+                )
+            )
+
+        for dependency in sorted(expected_closure):
+            expected_commands = (
+                WORKER_CLEANUP_RECEIPT_TARGET_INCLUDE_COMMANDS.get(dependency)
+            )
+            if expected_commands is None:
+                errors.append(
+                    (
+                        1,
+                        "protected target dependency has no frozen include command "
+                        f"surface: {dependency}",
+                    )
+                )
+                continue
+            observed_commands = tuple(
+                _compact_cmake_command_body(command.body)
+                for command in commands
+                if command.name == "target_include_directories"
+                and _cmake_first_argument(command.body) == dependency
+            )
+            if observed_commands != expected_commands:
+                line = next(
+                    (
+                        command.line
+                        for command in commands
+                        if command.name == "target_include_directories"
+                        and _cmake_first_argument(command.body) == dependency
+                    ),
+                    1,
+                )
+                errors.append(
+                    (
+                        line,
+                        "protected target include_directories command/order is not "
+                        f"exact for {dependency}",
+                    )
+                )
+
+        for relative in expected_search:
+            candidate = (root / relative).resolve()
+            try:
+                candidate.relative_to(root.resolve())
+            except (OSError, ValueError):
+                errors.append(
+                    (1, f"protected include search escapes repository: {relative}")
+                )
+                continue
+            if not candidate.is_dir():
+                errors.append(
+                    (1, f"protected include search directory is missing: {relative}")
+                )
+        searches.append(expected_search)
+
+    return searches, errors
+
+
+def _resolve_cmake_repo_path(root: Path, argument: str) -> str | None:
+    expanded = argument.strip('<>"')
+    for variable in (
+        "${CMAKE_CURRENT_SOURCE_DIR}",
+        "${CMAKE_SOURCE_DIR}",
+        "${PROJECT_SOURCE_DIR}",
+    ):
+        expanded = expanded.replace(variable, root.as_posix())
+    if "$" in expanded or "$<" in expanded:
+        return None
+    candidate = Path(expanded)
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    try:
+        resolved = candidate.resolve()
+        relative = resolved.relative_to(root.resolve())
+    except (OSError, ValueError):
+        return None
+    if not resolved.is_file():
+        return None
+    return relative.as_posix()
+
+
+def _mask_shell_comments(text: str) -> str:
+    """Preserve shell layout while blanking comments outside quoted words."""
+
+    masked = list(text)
+    cursor = 0
+    quote: str | None = None
+    while cursor < len(text):
+        current = text[cursor]
+        if quote == "'":
+            if current == "'":
+                quote = None
+            cursor += 1
+            continue
+        if quote == '"':
+            if current == "\\" and cursor + 1 < len(text):
+                cursor += 2
+                continue
+            if current == '"':
+                quote = None
+            cursor += 1
+            continue
+        if current in {"'", '"'}:
+            quote = current
+            cursor += 1
+            continue
+        if current == "\\" and cursor + 1 < len(text):
+            cursor += 2
+            continue
+        starts_comment = current == "#" and (
+            cursor == 0
+            or text[cursor - 1].isspace()
+            or text[cursor - 1] in ";|&()"
+        )
+        if not starts_comment:
+            cursor += 1
+            continue
+        newline = text.find("\n", cursor)
+        skipped = len(text) if newline < 0 else newline
+        for index in range(cursor, skipped):
+            if masked[index] not in {"\n", "\r"}:
+                masked[index] = " "
+        cursor = skipped
+    return "".join(masked)
+
+
+def _mask_definitely_inactive_cpp(logical: str) -> str:
+    """Blank only branches proven inactive by a literal ``#if 0``."""
+
+    masked = list(logical)
+    directive_visible = _mask_cpp_comments_and_literals(logical)
+    active = True
+    # (parent active, condition was a still-definite false branch)
+    stack: list[tuple[bool, bool]] = []
+    offset = 0
+    logical_lines = _split_crlf_lines(logical, keepends=True)
+    directive_lines = _split_crlf_lines(directive_visible, keepends=True)
+    for line, directive_line in zip(logical_lines, directive_lines):
+        directive = re.match(
+            rf"^{CPP_PREPROCESSOR_HSPACE}*(?:#|%:)"
+            rf"{CPP_PREPROCESSOR_HSPACE}*"
+            r"(if|ifdef|ifndef|elif|else|endif)\b([^\r\n]*)",
+            directive_line,
+        )
+        active_before = active
+        if directive is not None:
+            kind = directive.group(1)
+            expression = directive.group(2).strip()
+            literal_false = bool(
+                re.fullmatch(
+                    rf"\(?{CPP_PREPROCESSOR_HSPACE}*0[uUlL]*"
+                    rf"{CPP_PREPROCESSOR_HSPACE}*\)?",
+                    expression,
+                )
+            )
+            if kind in {"if", "ifdef", "ifndef"}:
+                parent_active = active
+                definitely_false = kind == "if" and literal_false
+                stack.append((parent_active, definitely_false))
+                active = parent_active and not definitely_false
+            elif kind == "elif" and stack:
+                parent_active, definitely_false = stack[-1]
+                if definitely_false and literal_false:
+                    active = False
+                else:
+                    # Unknown conditions stay live so platform branches are
+                    # scanned conservatively.
+                    stack[-1] = (parent_active, False)
+                    active = parent_active
+            elif kind == "else" and stack:
+                parent_active, definitely_false = stack[-1]
+                active = parent_active
+                stack[-1] = (parent_active, False)
+                if not definitely_false:
+                    # The opening condition was unknown; both alternatives
+                    # remain live to a static source policy.
+                    active = parent_active
+            elif kind == "endif" and stack:
+                parent_active, _ = stack.pop()
+                active = parent_active
+
+            # Conditional directives are policy scaffolding, not C++ tokens.
+            for index in range(offset, offset + len(line)):
+                if masked[index] not in {"\n", "\r"}:
+                    masked[index] = " "
+        elif not active_before:
+            for index in range(offset, offset + len(line)):
+                if masked[index] not in {"\n", "\r"}:
+                    masked[index] = " "
+        offset += len(line)
+    return "".join(masked)
+
+
+def _mask_preprocessor_directive_lines(logical: str) -> str:
+    """Blank live logical directives so code-use counts cannot be balanced."""
+
+    masked = list(logical)
+    offset = 0
+    for line in _split_crlf_lines(logical, keepends=True):
+        if re.match(
+            rf"^{CPP_PREPROCESSOR_HSPACE}*(?:#|%:)", line
+        ):
+            for index in range(offset, offset + len(line)):
+                if masked[index] not in {"\n", "\r"}:
+                    masked[index] = " "
+        offset += len(line)
+    return "".join(masked)
+
+
 def _logical_preprocessor_text(text: str) -> str:
     """Expose active-looking directives after translation-phase line splicing."""
 
-    return re.sub(r"\\\r?\n", "", _mask_cpp_comments_and_literals(text))
+    return re.sub(
+        rf"\\{CPP_PHYSICAL_NEWLINE}",
+        "",
+        _mask_cpp_comments_and_literals(text),
+    )
 
 
-def _preprocessor_macro_records(
+def _translation_phase_masked_cpp_code(text: str) -> str:
+    """Apply phase-2 splicing, trivia masking, and literal-0 inactivity."""
+
+    logical = _mask_cpp_comments_and_literals(
+        re.sub(rf"\\{CPP_PHYSICAL_NEWLINE}", "", text)
+    )
+    active = _mask_definitely_inactive_cpp(logical)
+    return _mask_preprocessor_directive_lines(active)
+
+
+def _translation_phase_macro_views(text: str) -> tuple[str, str]:
+    """Return equal-layout directive-control and replacement-payload views."""
+
+    phase_two = re.sub(rf"\\{CPP_PHYSICAL_NEWLINE}", "", text)
+    payload = _mask_cpp_comments_preserving_literals(phase_two)
+    active_payload = _mask_definitely_inactive_cpp(payload)
+    control = _mask_cpp_comments_and_literals(active_payload)
+    return control, active_payload
+
+
+def _translation_phase_macro_code(text: str) -> str:
+    """Expose live macro payload while retaining quoted replacement tokens."""
+
+    return _translation_phase_macro_views(text)[1]
+
+
+def _non_preprocessor_line_splice_lines(text: str) -> list[int]:
+    """Report phase-2 continuations not owned by a preprocessor directive."""
+
+    rejected: list[int] = []
+    directive_continuation = False
+    for line_number, line in enumerate(
+        _split_crlf_lines(text, keepends=True), start=1
+    ):
+        directive_line = directive_continuation or bool(
+            re.match(rf"^{CPP_PREPROCESSOR_HSPACE}*(?:#|%:)", line)
+        )
+        continued = bool(re.search(rf"\\{CPP_PHYSICAL_NEWLINE}$", line))
+        if continued and not directive_line:
+            rejected.append(line_number)
+        directive_continuation = directive_line and continued
+    return rejected
+
+
+def _translation_phase_masked_cpp_code_with_offsets(
     text: str,
+) -> tuple[str, list[int]]:
+    logical: list[str] = []
+    source_offsets: list[int] = []
+    cursor = 0
+    while cursor < len(text):
+        if text.startswith("\\\r\n", cursor):
+            cursor += 3
+            continue
+        if text.startswith("\\\n", cursor):
+            cursor += 2
+            continue
+        if text.startswith("\\\r", cursor):
+            cursor += 2
+            continue
+        logical.append(text[cursor])
+        source_offsets.append(cursor)
+        cursor += 1
+    masked = _mask_cpp_comments_and_literals("".join(logical))
+    active = _mask_definitely_inactive_cpp(masked)
+    return _mask_preprocessor_directive_lines(active), source_offsets
+
+
+def _receipt_macro_pragma_targets(text: str) -> list[tuple[str, int]]:
+    control, payload = _translation_phase_macro_views(text)
+    patterns = (
+        rf'{CPP_PREPROCESSOR_LINE_START}{CPP_PREPROCESSOR_HSPACE}*'
+        rf'(?:#|%:){CPP_PREPROCESSOR_HSPACE}*pragma'
+        rf'{CPP_PREPROCESSOR_HSPACE}+(?:push_macro|pop_macro)'
+        rf'{CPP_PREPROCESSOR_HSPACE}*\({CPP_PREPROCESSOR_HSPACE}*'
+        r'"([A-Za-z_][A-Za-z0-9_]*)"'
+        rf'{CPP_PREPROCESSOR_HSPACE}*\)',
+        rf'\b_Pragma{CPP_PREPROCESSOR_HSPACE}*\('
+        rf'{CPP_PREPROCESSOR_HSPACE}*"(?:push_macro|pop_macro)'
+        rf'{CPP_PREPROCESSOR_HSPACE}*\({CPP_PREPROCESSOR_HSPACE}*\\"'
+        r'([A-Za-z_][A-Za-z0-9_]*)'
+        rf'\\"{CPP_PREPROCESSOR_HSPACE}*\)"'
+        rf'{CPP_PREPROCESSOR_HSPACE}*\)',
+        rf'\b__pragma{CPP_PREPROCESSOR_HSPACE}*\('
+        rf'{CPP_PREPROCESSOR_HSPACE}*(?:push_macro|pop_macro)'
+        rf'{CPP_PREPROCESSOR_HSPACE}*\({CPP_PREPROCESSOR_HSPACE}*"'
+        r'([A-Za-z_][A-Za-z0-9_]*)"'
+        rf'{CPP_PREPROCESSOR_HSPACE}*\){CPP_PREPROCESSOR_HSPACE}*\)',
+    )
+    targets: list[tuple[str, int]] = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, payload):
+            if not (
+                re.match(
+                    rf"{CPP_PREPROCESSOR_HSPACE}*(?:#|%:)"
+                    rf"{CPP_PREPROCESSOR_HSPACE}*pragma\b",
+                    control[match.start() :],
+                )
+                or control[match.start() :].startswith("_Pragma")
+                or control[match.start() :].startswith("__pragma")
+            ):
+                continue
+            targets.append(
+                (
+                    match.group(1),
+                    _source_line_number(payload, match.start()),
+                )
+            )
+    return targets
+
+
+def _constructed_identifier_lines(text: str, identifier: str) -> list[int]:
+    """Find closed tokens assembled by an actual token-paste replacement."""
+
+    control, payload = _translation_phase_macro_views(text)
+    logical = _translation_phase_masked_cpp_code(text)
+    lines: set[int] = set()
+    paste_macros: set[str] = set()
+    for directive, macro_identifier, replacement, line in (
+        _preprocessor_macro_records_from_logical(control, payload)
+    ):
+        if directive != "define" or not (
+            "##" in replacement or "%:%:" in replacement
+        ):
+            continue
+        paste_macros.add(macro_identifier)
+        collapsed_replacement = re.sub(
+            r"[^A-Za-z0-9_]", "", replacement
+        )
+        if identifier in collapsed_replacement and not any(
+            identifier in token
+            for token, _ in find_code_identifier_tokens(replacement)
+        ):
+            lines.add(line)
+
+    for macro_identifier in paste_macros:
+        for use in find_call_identifier_uses(logical, macro_identifier):
+            parentheses = _call_parentheses(logical, use, macro_identifier)
+            if parentheses is None:
+                continue
+            opening, closing = parentheses
+            arguments = logical[opening + 1 : closing]
+            collapsed_arguments = re.sub(
+                r"[^A-Za-z0-9_]", "", arguments
+            )
+            if identifier not in collapsed_arguments:
+                continue
+            lines.add(use.line)
+    return sorted(lines)
+
+
+_CPP_CONTEXT_TOKEN = re.compile(
+    r"[A-Za-z_][A-Za-z0-9_]*|"
+    r"::|->\*|->|\.\*|<=>|<<=|>>=|==|!=|<=|>=|&&|\|\||"
+    r"\+\+|--|<<|>>|\+=|-=|\*=|/=|%=|&=|\|=|\^=|\.\.\.|\S"
+)
+
+
+def _identifier_use_context_signature(
+    text: str, identifier: str, *, radius: int = 32
+) -> tuple[int, str]:
+    """Fingerprint every live lexical neighborhood for one identifier."""
+
+    logical = _translation_phase_masked_cpp_code(text)
+    tokens = list(_CPP_CONTEXT_TOKEN.finditer(logical))
+    token_index = {token.start(): index for index, token in enumerate(tokens)}
+    contexts: list[str] = []
+    uses = find_code_identifier_uses(logical, identifier)
+    for use in uses:
+        index = token_index.get(use.offset)
+        if index is None:
+            contexts.append("<unmapped>")
+            continue
+        start = max(0, index - radius)
+        end = min(len(tokens), index + radius + 1)
+        contexts.append("\x1f".join(token.group(0) for token in tokens[start:end]))
+    digest = hashlib.sha256("\x1e".join(contexts).encode("utf-8")).hexdigest()
+    return len(uses), digest
+
+
+def _preprocessor_macro_records_from_logical(
+    logical: str,
+    payload: str | None = None,
 ) -> list[tuple[str, str, str, int]]:
-    logical = _logical_preprocessor_text(text)
+    if payload is None:
+        payload = logical
+    if len(payload) != len(logical):
+        return []
     directives: list[tuple[str, str, str, int]] = []
     for match in re.finditer(
-        r"(?m)^[ \t]*(?:#|%:)[ \t]*(define|undef)\b"
-        r"[ \t]+([A-Za-z_][A-Za-z0-9_]*)([^\n]*)",
+        rf"{CPP_PREPROCESSOR_LINE_START}{CPP_PREPROCESSOR_HSPACE}*"
+        rf"(?:#|%:){CPP_PREPROCESSOR_HSPACE}*(define|undef)\b"
+        rf"{CPP_PREPROCESSOR_HSPACE}+"
+        r"([A-Za-z_][A-Za-z0-9_]*)([^\r\n]*)",
         logical,
     ):
         directives.append(
             (
                 match.group(1),
                 match.group(2),
-                match.group(3),
-                logical.count("\n", 0, match.start()) + 1,
+                payload[match.start(3) : match.end(3)],
+                _source_line_number(logical, match.start()),
             )
         )
     return directives
+
+
+def _preprocessor_macro_records(
+    text: str,
+) -> list[tuple[str, str, str, int]]:
+    control, payload = _translation_phase_macro_views(text)
+    return _preprocessor_macro_records_from_logical(control, payload)
 
 
 def _preprocessor_macro_directives(
@@ -4797,6 +6421,798 @@ def _preprocessor_macro_directives(
     ]
 
 
+@dataclass(frozen=True)
+class CppIncludeRecord:
+    directive: str
+    spelling: str | None
+    quoted: bool
+    line: int
+
+
+def _cpp_include_records(text: str) -> list[CppIncludeRecord]:
+    control, payload = _translation_phase_macro_views(text)
+    records: list[CppIncludeRecord] = []
+    for match in re.finditer(
+        rf"{CPP_PREPROCESSOR_LINE_START}{CPP_PREPROCESSOR_HSPACE}*"
+        rf"(?:#|%:){CPP_PREPROCESSOR_HSPACE}*"
+        r"(include_next|include|import)\b([^\r\n]*)",
+        control,
+    ):
+        suffix = payload[match.start(2) : match.end(2)].strip()
+        literal = re.fullmatch(r'"([^"\n]+)"|<([^>\n]+)>', suffix)
+        records.append(
+            CppIncludeRecord(
+                directive=match.group(1),
+                spelling=(
+                    None
+                    if literal is None
+                    else literal.group(1) or literal.group(2)
+                ),
+                quoted=literal is not None and literal.group(1) is not None,
+                line=_source_line_number(control, match.start()),
+            )
+        )
+    return records
+
+
+@dataclass(frozen=True)
+class GitIndexedTextInventory:
+    regular_files: tuple[str, ...]
+    text_regular_files: tuple[str, ...]
+    symlink_files: tuple[str, ...]
+    errors: tuple[tuple[str, str], ...]
+
+
+def _git_indexed_text_inventory(root: Path) -> GitIndexedTextInventory:
+    """Inventory Git-indexed regular/text files without extension exclusions."""
+
+    root = root.resolve()
+    try:
+        completed = subprocess.run(
+            ["git", "ls-files", "--stage", "-z"],
+            cwd=root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError as exc:
+        return GitIndexedTextInventory((), (), (), ((".git/index", str(exc)),))
+    if completed.returncode != 0:
+        diagnostic = completed.stderr.decode("utf-8", errors="replace").strip()
+        return GitIndexedTextInventory(
+            (),
+            (),
+            (),
+            ((".git/index", diagnostic or "git ls-files failed"),),
+        )
+
+    regular: list[str] = []
+    text_regular: list[str] = []
+    symlinks: list[str] = []
+    errors: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for raw_record in completed.stdout.split(b"\0"):
+        if not raw_record:
+            continue
+        try:
+            metadata, raw_path = raw_record.split(b"\t", 1)
+            mode, _, stage = metadata.split(b" ", 2)
+            relative = raw_path.decode("utf-8", errors="surrogateescape")
+        except ValueError:
+            errors.append((".git/index", "cannot parse git ls-files --stage record"))
+            continue
+        if stage != b"0":
+            errors.append((relative, "unmerged Git index entry is not scan-stable"))
+            continue
+        if relative in seen:
+            errors.append((relative, "duplicate Git index entry is not scan-stable"))
+            continue
+        seen.add(relative)
+        if mode == b"120000":
+            symlinks.append(relative)
+            continue
+        if mode not in {b"100644", b"100755"}:
+            continue
+        path = root / relative
+        try:
+            if path.is_symlink() or not path.is_file():
+                errors.append((relative, "indexed regular file is missing or a symlink"))
+                continue
+            data = path.read_bytes()
+        except OSError as exc:
+            errors.append((relative, f"cannot read indexed regular file: {exc}"))
+            continue
+        regular.append(relative)
+        if b"\0" not in data:
+            text_regular.append(relative)
+    return GitIndexedTextInventory(
+        tuple(sorted(regular)),
+        tuple(sorted(text_regular)),
+        tuple(sorted(symlinks)),
+        tuple(errors),
+    )
+
+
+def _worker_cleanup_receipt_repo_build_inventory_errors(
+    repo_inventory: GitIndexedTextInventory,
+) -> tuple[tuple[str, str], ...]:
+    """Require the exact committed repo build and preset-file inventory."""
+
+    errors: list[tuple[str, str]] = []
+    observed_build_files = {
+        relative
+        for relative in repo_inventory.regular_files
+        if Path(relative).name == "CMakeLists.txt"
+        or Path(relative).suffix.lower() == ".cmake"
+    }
+    if observed_build_files != set(WORKER_CLEANUP_RECEIPT_REPO_BUILD_FILES):
+        errors.append(
+            (
+                WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
+                "worker-cleanup receipt requires one exact repo CMake build file: "
+                f"expected {sorted(WORKER_CLEANUP_RECEIPT_REPO_BUILD_FILES)}, "
+                f"found {sorted(observed_build_files)}",
+            )
+        )
+    observed_preset_files = {
+        relative
+        for relative in repo_inventory.regular_files
+        if Path(relative).name in {"CMakePresets.json", "CMakeUserPresets.json"}
+    }
+    if observed_preset_files != {WORKER_CLEANUP_RECEIPT_CMAKE_PRESETS_FILE}:
+        errors.append(
+            (
+                WORKER_CLEANUP_RECEIPT_CMAKE_PRESETS_FILE,
+                "worker-cleanup receipt requires one exact repo CMake preset file",
+            )
+        )
+    return tuple(errors)
+
+
+def _worker_cleanup_receipt_control_plane_closure_error(
+    closure_files: set[str],
+) -> str | None:
+    if WORKER_CLEANUP_RECEIPT_CONTROL_PLANE_POLICY_FILE not in closure_files:
+        return None
+    return (
+        "trusted control-plane policy cannot enter a protected C++ "
+        "translation-unit/CMake include closure"
+    )
+
+
+def _resolve_repo_local_include(
+    root: Path,
+    relative: str,
+    record: CppIncludeRecord,
+    include_directories: tuple[str, ...],
+    repo_inventory: GitIndexedTextInventory | None = None,
+) -> tuple[str | None, tuple[str, ...], tuple[str, ...]]:
+    if record.spelling is None:
+        return None, (), ()
+    if repo_inventory is None:
+        repo_inventory = _git_indexed_text_inventory(root)
+    spelling = record.spelling
+    root = root.resolve()
+    current = root / relative
+    candidates: list[Path] = []
+    if record.quoted:
+        candidates.append(current.parent / spelling)
+    candidates.extend(root / directory / spelling for directory in include_directories)
+    matches: list[str] = []
+    rejected: list[str] = []
+    for candidate in candidates:
+        try:
+            lexical_relative = candidate.absolute().relative_to(root)
+        except ValueError:
+            rejected.append(f"{candidate}: lexically outside repository")
+            continue
+        cursor = root
+        symlink_component: Path | None = None
+        for component in lexical_relative.parts:
+            cursor /= component
+            if cursor.is_symlink():
+                symlink_component = cursor
+                break
+        if symlink_component is not None:
+            rejected.append(
+                f"{candidate}: traverses symlink component {symlink_component}"
+            )
+            continue
+        try:
+            resolved = candidate.resolve()
+            relative_path = resolved.relative_to(root)
+        except OSError as exc:
+            rejected.append(f"{candidate}: {exc}")
+            continue
+        except ValueError:
+            rejected.append(f"{candidate}: resolves outside repository")
+            continue
+        if resolved.is_file():
+            match = relative_path.as_posix()
+            if match in repo_inventory.symlink_files or candidate.is_symlink():
+                rejected.append(f"{match}: symlink include candidate")
+                continue
+            if match not in repo_inventory.regular_files:
+                rejected.append(f"{match}: include candidate is not Git-indexed regular")
+                continue
+            if match not in matches:
+                matches.append(match)
+    if not record.quoted:
+        normalized_spelling = Path(spelling).as_posix().lstrip("./")
+        for repo_relative in repo_inventory.regular_files:
+            if repo_relative == normalized_spelling or repo_relative.endswith(
+                "/" + normalized_spelling
+            ):
+                if repo_relative not in matches:
+                    matches.append(repo_relative)
+        for repo_relative in repo_inventory.symlink_files:
+            if repo_relative == normalized_spelling or repo_relative.endswith(
+                "/" + normalized_spelling
+            ):
+                rejected.append(f"{repo_relative}: symlink include candidate")
+    return (
+        matches[0] if matches else None,
+        tuple(matches),
+        tuple(sorted(set(rejected))),
+    )
+
+
+def _repo_local_include_closure(
+    root: Path,
+    entry: str,
+    include_directories: tuple[str, ...] = ("include",),
+    repo_inventory: GitIndexedTextInventory | None = None,
+) -> tuple[set[str], list[tuple[str, int, str]]]:
+    """Close committed repo-local includes; system headers remain out of scope."""
+
+    closure: set[str] = set()
+    errors: list[tuple[str, int, str]] = []
+    if repo_inventory is None:
+        repo_inventory = _git_indexed_text_inventory(root)
+    for inventory_relative, error in repo_inventory.errors:
+        errors.append((inventory_relative, 1, error))
+    pending = [entry]
+    while pending:
+        relative = pending.pop()
+        if relative in closure:
+            continue
+        if relative in repo_inventory.symlink_files:
+            errors.append(
+                (relative, 1, "protected include closure forbids indexed symlink")
+            )
+            continue
+        if relative not in repo_inventory.regular_files:
+            errors.append(
+                (
+                    relative,
+                    1,
+                    "protected include closure requires a Git-indexed regular file",
+                )
+            )
+            continue
+        if relative not in repo_inventory.text_regular_files:
+            errors.append(
+                (
+                    relative,
+                    1,
+                    "protected include closure requires an indexed text regular file",
+                )
+            )
+            continue
+        path = root / relative
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            errors.append((relative, 1, f"cannot read protected include: {exc}"))
+            continue
+        closure.add(relative)
+        for record in _cpp_include_records(text):
+            if record.directive != "include":
+                errors.append(
+                    (
+                        relative,
+                        record.line,
+                        "protected include closure forbids active "
+                        f"#{record.directive}",
+                    )
+                )
+                continue
+            if record.spelling is None:
+                errors.append(
+                    (
+                        relative,
+                        record.line,
+                        "protected include closure forbids macro-form #include",
+                    )
+                )
+                continue
+            resolved, matches, rejected = _resolve_repo_local_include(
+                root,
+                relative,
+                record,
+                include_directories,
+                repo_inventory,
+            )
+            if rejected:
+                errors.append(
+                    (
+                        relative,
+                        record.line,
+                        "protected include candidate is unsafe: "
+                        + "; ".join(rejected),
+                    )
+                )
+            if len(matches) > 1:
+                errors.append(
+                    (
+                        relative,
+                        record.line,
+                        "protected literal include is not unique in frozen "
+                        f"search order: {record.spelling} -> {', '.join(matches)}",
+                    )
+                )
+            if resolved is not None:
+                pending.append(resolved)
+            elif record.quoted:
+                errors.append(
+                    (
+                        relative,
+                        record.line,
+                        "protected include closure cannot resolve quoted include "
+                        f"{record.spelling}",
+                    )
+                )
+            elif record.spelling not in WORKER_CLEANUP_RECEIPT_EXTERNAL_INCLUDE_ALLOWLIST:
+                errors.append(
+                    (
+                        relative,
+                        record.line,
+                        "protected include closure cannot resolve or allowlist angle "
+                        f"include {record.spelling}",
+                    )
+                )
+    return closure, errors
+
+
+def _worker_cleanup_receipt_protected_unit_tokens(
+    root: Path,
+) -> tuple[dict[str, set[str]], list[tuple[str, int, str]]]:
+    """Derive Tier-B tokens only from already hash-pinned production spans."""
+
+    errors: list[tuple[str, int, str]] = []
+    texts: dict[str, str] = {}
+    required = {
+        WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE,
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+        WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE,
+        WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
+    }
+    for relative in required:
+        try:
+            texts[relative] = (root / relative).read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            errors.append((relative, 1, f"cannot read protected span: {exc}"))
+
+    units = {
+        relative: set()
+        for relative in WORKER_CLEANUP_RECEIPT_PROTECTED_UNIT_TARGETS
+    }
+
+    def add_tokens(unit: str, source: str) -> None:
+        active = _translation_phase_masked_cpp_code(source)
+        units[unit].update(token for token, _ in find_code_identifier_tokens(active))
+
+    wave = texts.get(WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE)
+    if wave is not None:
+        expected_wave_hashes = {
+            **WORKER_CLEANUP_RECEIPT_ROOT_ONLY_BODY_SHA256,
+            "DistributedSieveExternalCleanupAuthorizationState::try_claim_receipt": (
+                WORKER_CLEANUP_RECEIPT_TRY_CLAIM_BODY_SHA256
+            ),
+            "DistributedSieveWorkerCleanupReceiptMintAuthorityV1::mint": (
+                WORKER_CLEANUP_RECEIPT_MINT_BODY_SHA256
+            ),
+        }
+        for identifier, expected_hash in expected_wave_hashes.items():
+            body, line_offset, body_errors = find_function_definition_body(
+                wave, identifier
+            )
+            for line, error in body_errors:
+                errors.append(
+                    (
+                        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+                        line,
+                        error,
+                    )
+                )
+            if body is None or _compact_cpp_sha256(body) != expected_hash:
+                errors.append(
+                    (
+                        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+                        line_offset + 1,
+                        f"cannot derive Tier-B tokens from unfrozen body {identifier}",
+                    )
+                )
+                continue
+            add_tokens(WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE, body)
+
+    relation = texts.get(WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE)
+    if relation is not None:
+        executor_span = _class_definition_body_span(
+            relation, "OOCPrivateHandoffCleanupIntentConversionExecutorV2"
+        )
+        executor_source = (
+            None
+            if executor_span is None
+            else relation[executor_span[0] : executor_span[1]]
+        )
+        run_body: str | None = None
+        run_line_offset = 0
+        if executor_source is not None:
+            run_body, run_line_offset, run_errors = find_function_definition_body(
+                executor_source, "run"
+            )
+            for line, error in run_errors:
+                errors.append(
+                    (
+                        WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE,
+                        line,
+                        error,
+                    )
+                )
+        if (
+            run_body is None
+            or _compact_cpp_sha256(run_body)
+            != WORKER_CLEANUP_RECEIPT_T2A_RUN_BODY_SHA256
+        ):
+            errors.append(
+                (
+                    WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE,
+                    run_line_offset + 1,
+                    "cannot derive Tier-B tokens from unfrozen T2a run body",
+                )
+            )
+        else:
+            add_tokens(WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE, run_body)
+
+    relation_header = texts.get(WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE)
+    if relation_header is not None:
+        for identifier, expected in (
+            (
+                WORKER_CLEANUP_RECEIPT_IDENTIFIER,
+                WORKER_CLEANUP_RECEIPT_CLASS_BODY_SHA256,
+            ),
+            (
+                WORKER_CLEANUP_RECEIPT_MINT_KEY_IDENTIFIER,
+                None,
+            ),
+        ):
+            span = _class_definition_body_span(relation_header, identifier)
+            body = None if span is None else relation_header[span[0] : span[1]]
+            exact = (
+                body is not None
+                and (
+                    _compact_cpp_sha256(body) == expected
+                    if expected is not None
+                    else _compact_cpp_code(body)
+                    == WORKER_CLEANUP_RECEIPT_MINT_KEY_CLASS_SURFACE
+                )
+            )
+            if not exact:
+                errors.append(
+                    (
+                        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+                        1,
+                        f"cannot derive Tier-B tokens from unfrozen class {identifier}",
+                    )
+                )
+            else:
+                assert body is not None
+                add_tokens(WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE, body)
+
+    authority_header = texts.get(WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE)
+    if authority_header is not None:
+        span = _class_definition_body_span(
+            authority_header, WORKER_CLEANUP_RECEIPT_MINT_AUTHORITY_IDENTIFIER
+        )
+        body = None if span is None else authority_header[span[0] : span[1]]
+        if (
+            body is None
+            or _compact_cpp_code(body)
+            != WORKER_CLEANUP_RECEIPT_MINT_AUTHORITY_CLASS_SURFACE
+        ):
+            errors.append(
+                (
+                    WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE,
+                    1,
+                    "cannot derive Tier-B tokens from unfrozen mint authority class",
+                )
+            )
+        else:
+            add_tokens(WORKER_CLEANUP_RECEIPT_AUTHORITY_IMPLEMENTATION_FILE, body)
+
+    tail = texts.get(WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE)
+    if tail is not None:
+        check_definitions = [
+            record
+            for record in _preprocessor_macro_records(tail)
+            if record[0] == "define" and record[1] == "CHECK"
+        ]
+        if (
+            len(check_definitions) != 1
+            or _compact_cpp_code(check_definitions[0][2])
+            != WORKER_CLEANUP_RECEIPT_TEST_CHECK_DEFINITION
+        ):
+            errors.append(
+                (
+                    WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
+                    1,
+                    "cannot derive Tier-B tokens from unfrozen CHECK replacement",
+                )
+            )
+        else:
+            add_tokens(
+                WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
+                check_definitions[0][2],
+            )
+        for identifier, expected_hash in (
+            WORKER_CLEANUP_RECEIPT_TEST_HELPER_BODY_SHA256.items()
+        ):
+            body, line_offset, body_errors = find_function_definition_body(
+                tail, identifier
+            )
+            for line, error in body_errors:
+                errors.append(
+                    (WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE, line, error)
+                )
+            if body is None or _compact_cpp_sha256(body) != expected_hash:
+                errors.append(
+                    (
+                        WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
+                        line_offset + 1,
+                        f"cannot derive Tier-B tokens from unfrozen helper {identifier}",
+                    )
+                )
+            else:
+                add_tokens(WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE, body)
+        for identifier, expected_hash in (
+            WORKER_CLEANUP_RECEIPT_DEDICATED_TEST_BODY_SHA256.items()
+        ):
+            body, line_offset, body_errors = find_function_definition_body(
+                tail, identifier
+            )
+            for line, error in body_errors:
+                errors.append(
+                    (WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE, line, error)
+                )
+            if body is None or _compact_cpp_sha256(body) != expected_hash:
+                errors.append(
+                    (
+                        WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
+                        line_offset + 1,
+                        "cannot derive Tier-B tokens from unfrozen exact test body "
+                        f"{identifier}",
+                    )
+                )
+            else:
+                add_tokens(WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE, body)
+
+    units[WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE].update(
+        {"scan_worker_cleanup_root_control_inventory_v1", "try_claim_receipt", "mint"}
+    )
+    units[WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE].add("run")
+    units[WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE].update(
+        {"CHECK", "check", "fail"}
+    )
+    return units, errors
+
+
+def _cmake_worker_cleanup_unit_provenance(
+    root: Path,
+    cmake_text: str,
+    unit_targets: set[str],
+    protected_sources: set[str],
+    commands: list[CMakeCommandRecord] | None = None,
+) -> tuple[
+    list[tuple[str, int, str]],
+    set[str],
+    list[tuple[int, str]],
+]:
+    """Close committed CMake macro injection for one protected build unit.
+
+    External ad-hoc compiler flags and system-header versions are deliberately
+    outside this source policy's threat boundary.
+    """
+
+    if commands is None:
+        active_cmake = _mask_definitely_inactive_cmake(cmake_text)
+        commands = _cmake_command_records(active_cmake)
+    dependencies = _cmake_local_target_dependencies(commands)
+    applicable_targets = _cmake_target_dependency_closure(
+        unit_targets, dependencies
+    )
+    macros: list[tuple[str, int, str]] = []
+    forced_headers: set[str] = set()
+    errors: list[tuple[int, str]] = []
+
+    def target_applies(argument: str | None) -> bool:
+        if argument is None:
+            return False
+        return argument in applicable_targets or "$" in argument
+
+    def source_applies(body: str) -> bool:
+        return any(source in body for source in protected_sources) or (
+            "$" in body and bool(re.search(r"\bSOURCES?\b", body, re.IGNORECASE))
+        )
+
+    def add_macros(names: set[str], command: CMakeCommandRecord) -> None:
+        for name in sorted(names):
+            macros.append((name, command.line, command.name))
+
+    def add_forced(arguments: list[str], command: CMakeCommandRecord) -> None:
+        for argument in arguments:
+            resolved = _resolve_cmake_repo_path(root, argument)
+            if resolved is None:
+                errors.append(
+                    (
+                        command.line,
+                        "protected build unit has unresolved forced macro/include "
+                        f"in {command.name}: {argument}",
+                    )
+                )
+            else:
+                forced_headers.add(resolved)
+
+    def reject_response_file(body: str, command: CMakeCommandRecord) -> None:
+        if re.search(r"(?<!\S)@[^\s)]+", body):
+            errors.append(
+                (
+                    command.line,
+                    "protected build unit has unresolved response-file compile "
+                    f"option in {command.name}",
+                )
+            )
+
+    for command in commands:
+        name = command.name
+        body = command.body
+        first = _cmake_first_argument(body)
+
+        if name == "add_compile_definitions":
+            add_macros(_cmake_definition_names(body), command)
+            continue
+        if name in {"add_compile_options", "add_definitions", "remove_definitions"}:
+            add_macros(_cmake_option_macro_names(body), command)
+            add_forced(_cmake_forced_include_arguments(body), command)
+            reject_response_file(body, command)
+            continue
+        if name in {"target_compile_definitions", "target_compile_options"}:
+            if not target_applies(first):
+                continue
+            payload = body[len(first) :] if first is not None else body
+            if name == "target_compile_definitions":
+                add_macros(_cmake_definition_names(payload), command)
+            else:
+                add_macros(_cmake_option_macro_names(payload), command)
+                add_forced(_cmake_forced_include_arguments(payload), command)
+                reject_response_file(payload, command)
+            continue
+        if name == "target_precompile_headers" and target_applies(first):
+            errors.append(
+                (
+                    command.line,
+                    "protected build unit forbids target_precompile_headers macro provenance",
+                )
+            )
+            continue
+
+        upper_body = body.upper()
+        applies = False
+        property_payload = body
+        if name == "set_property":
+            property_match = re.search(r"\bPROPERTY\b", body, re.IGNORECASE)
+            subjects = body if property_match is None else body[: property_match.start()]
+            target_match = re.search(
+                r"\bTARGETS?\s+(.+)", subjects, re.IGNORECASE | re.DOTALL
+            )
+            source_match = re.search(
+                r"\bSOURCES?\s+(.+)", subjects, re.IGNORECASE | re.DOTALL
+            )
+            target_arguments = (
+                []
+                if target_match is None
+                else re.findall(r"[^\s()]+", target_match.group(1))
+            )
+            applies = any(target_applies(argument) for argument in target_arguments) or (
+                source_match is not None and source_applies(source_match.group(1))
+            )
+        elif name == "set_target_properties":
+            properties = re.search(r"\bPROPERTIES\b", body, re.IGNORECASE)
+            targets_body = body if properties is None else body[: properties.start()]
+            applies = any(
+                target in re.findall(r"[^\s()]+", targets_body)
+                for target in unit_targets
+            ) or "$" in targets_body
+            property_payload = body if properties is None else body[properties.end() :]
+        elif name == "set_source_files_properties":
+            applies = source_applies(body)
+            properties = re.search(r"\bPROPERTIES\b", body, re.IGNORECASE)
+            property_payload = body if properties is None else body[properties.end() :]
+
+        if applies:
+            if re.search(r"\bINCLUDE_DIRECTORIES\b", upper_body):
+                errors.append(
+                    (
+                        command.line,
+                        "protected build unit forbids property-based include-search "
+                        "provenance",
+                    )
+                )
+            if "UNITY_BUILD" in upper_body and not re.search(
+                r"\bUNITY_BUILD\s+(?:OFF|FALSE|NO|0)\b",
+                upper_body,
+            ):
+                errors.append(
+                    (
+                        command.line,
+                        "protected build unit forbids UNITY_BUILD macro leakage",
+                    )
+                )
+            if "PRECOMPILE_HEADERS" in upper_body:
+                errors.append(
+                    (
+                        command.line,
+                        "protected build unit forbids PRECOMPILE_HEADERS macro provenance",
+                    )
+                )
+            definition_property = re.search(
+                r"\bCOMPILE_DEFINITIONS(?:_[A-Z0-9_]+)?\b",
+                property_payload,
+                re.IGNORECASE,
+            )
+            if definition_property is not None:
+                add_macros(
+                    _cmake_definition_names(
+                        property_payload[definition_property.end() :]
+                    ),
+                    command,
+                )
+            option_property = re.search(
+                r"\b(?:COMPILE_OPTIONS|COMPILE_FLAGS)\b",
+                property_payload,
+                re.IGNORECASE,
+            )
+            if option_property is not None:
+                options = property_payload[option_property.end() :]
+                add_macros(_cmake_option_macro_names(options), command)
+                add_forced(_cmake_forced_include_arguments(options), command)
+                reject_response_file(options, command)
+            continue
+
+        if name == "set" and first is not None:
+            upper_first = first.upper()
+            payload = body[len(first) :]
+            if upper_first == "CMAKE_UNITY_BUILD" and not _cmake_literal_false(payload):
+                errors.append(
+                    (command.line, "protected build units forbid global CMAKE_UNITY_BUILD")
+                )
+            if re.fullmatch(r"CMAKE_(?:C|CXX)_FLAGS(?:_[A-Z0-9_]+)?", upper_first):
+                add_macros(_cmake_option_macro_names(payload), command)
+                add_forced(_cmake_forced_include_arguments(payload), command)
+                reject_response_file(payload, command)
+            continue
+        if name == "string" and re.search(
+            r"\bCMAKE_(?:C|CXX)_FLAGS(?:_[A-Z0-9_]+)?\b",
+            upper_body,
+        ):
+            add_macros(_cmake_option_macro_names(body), command)
+            add_forced(_cmake_forced_include_arguments(body), command)
+            reject_response_file(body, command)
+
+    return macros, forced_headers, errors
+
+
 def _preprocessor_conditional_directives(
     text: str,
 ) -> list[tuple[str, int]]:
@@ -4804,10 +7220,11 @@ def _preprocessor_conditional_directives(
     return [
         (
             match.group(1),
-            logical.count("\n", 0, match.start()) + 1,
+            _source_line_number(logical, match.start()),
         )
         for match in re.finditer(
-            r"(?m)^[ \t]*(?:#|%:)[ \t]*"
+            rf"{CPP_PREPROCESSOR_LINE_START}{CPP_PREPROCESSOR_HSPACE}*"
+            rf"(?:#|%:){CPP_PREPROCESSOR_HSPACE}*"
             r"(if|ifdef|ifndef|elif|else|endif)\b",
             logical,
         )
@@ -4819,10 +7236,11 @@ def _preprocessor_directives(text: str) -> list[tuple[str, int]]:
     return [
         (
             match.group(1),
-            logical.count("\n", 0, match.start()) + 1,
+            _source_line_number(logical, match.start()),
         )
         for match in re.finditer(
-            r"(?m)^[ \t]*(?:#|%:)[ \t]*"
+            rf"{CPP_PREPROCESSOR_LINE_START}{CPP_PREPROCESSOR_HSPACE}*"
+            rf"(?:#|%:){CPP_PREPROCESSOR_HSPACE}*"
             r"([A-Za-z_][A-Za-z0-9_]*)\b",
             logical,
         )
@@ -4839,8 +7257,9 @@ def _preprocessor_conditional_stack_at(
     logical = _logical_preprocessor_text(text[:offset])
     stack: list[str] = []
     for match in re.finditer(
-        r"(?m)^[ \t]*(?:#|%:)[ \t]*"
-        r"(if|ifdef|ifndef|elif|else|endif)\b([^\n]*)",
+        rf"{CPP_PREPROCESSOR_LINE_START}{CPP_PREPROCESSOR_HSPACE}*"
+        rf"(?:#|%:){CPP_PREPROCESSOR_HSPACE}*"
+        r"(if|ifdef|ifndef|elif|else|endif)\b([^\r\n]*)",
         logical,
     ):
         directive = match.group(1)
@@ -4862,23 +7281,53 @@ def _preprocessor_conditional_stack_at(
 
 def _merge_prepared_macro_guard_matches(text: str) -> list[re.Match[str]]:
     defined_expression = (
-        rf"defined[ \t]*\([ \t]*"
+        rf"defined{CPP_PREPROCESSOR_HSPACE}*\("
+        rf"{CPP_PREPROCESSOR_HSPACE}*"
         rf"{re.escape(PRIVATE_HANDOFF_PUBLICATION_MERGE_CLOSED_MACRO_IDENTIFIERS[0])}"
-        rf"[ \t]*\)"
+        rf"{CPP_PREPROCESSOR_HSPACE}*\)"
     )
     for identifier in PRIVATE_HANDOFF_PUBLICATION_MERGE_CLOSED_MACRO_IDENTIFIERS[1:]:
         defined_expression += (
-            rf"[ \t]*\|\|[ \t]*\\\r?\n[ \t]*"
-            rf"defined[ \t]*\([ \t]*{re.escape(identifier)}[ \t]*\)"
+            rf"{CPP_PREPROCESSOR_HSPACE}*\|\|"
+            rf"{CPP_PREPROCESSOR_HSPACE}*\\{CPP_PHYSICAL_NEWLINE}"
+            rf"{CPP_PREPROCESSOR_HSPACE}*defined"
+            rf"{CPP_PREPROCESSOR_HSPACE}*\("
+            rf"{CPP_PREPROCESSOR_HSPACE}*{re.escape(identifier)}"
+            rf"{CPP_PREPROCESSOR_HSPACE}*\)"
         )
     pattern = re.compile(
-        rf"(?m)^[ \t]*#[ \t]*if[ \t]+{defined_expression}[ \t]*\r?\n"
-        rf"[ \t]*#[ \t]*error[ \t]+"
+        rf"{CPP_PREPROCESSOR_LINE_START}{CPP_PREPROCESSOR_HSPACE}*(?:#|%:)"
+        rf"{CPP_PREPROCESSOR_HSPACE}*if{CPP_PREPROCESSOR_HSPACE}+"
+        rf"{defined_expression}{CPP_PREPROCESSOR_HSPACE}*{CPP_PHYSICAL_NEWLINE}"
+        rf"{CPP_PREPROCESSOR_HSPACE}*(?:#|%:)"
+        rf"{CPP_PREPROCESSOR_HSPACE}*error"
+        rf"{CPP_PREPROCESSOR_HSPACE}+"
         rf'"{re.escape(PRIVATE_HANDOFF_PUBLICATION_MERGE_MACRO_GUARD_ERROR)}"'
-        rf"[ \t]*\r?\n"
-        rf"[ \t]*#[ \t]*endif[ \t]*$"
+        rf"{CPP_PREPROCESSOR_HSPACE}*{CPP_PHYSICAL_NEWLINE}"
+        rf"{CPP_PREPROCESSOR_HSPACE}*(?:#|%:)"
+        rf"{CPP_PREPROCESSOR_HSPACE}*endif"
+        rf"{CPP_PREPROCESSOR_HSPACE}*(?:\Z|(?=[\r\n]))"
     )
-    return list(pattern.finditer(text))
+    active_control = _mask_definitely_inactive_cpp(
+        _mask_cpp_comments_and_literals(text)
+    )
+    matches: list[re.Match[str]] = []
+    for match in pattern.finditer(text):
+        error_marker = re.search(
+            rf"{CPP_PREPROCESSOR_LINE_START}{CPP_PREPROCESSOR_HSPACE}*"
+            rf"(?:#|%:){CPP_PREPROCESSOR_HSPACE}*error\b",
+            match.group(0),
+        )
+        if error_marker is None:
+            continue
+        error_offset = match.start() + error_marker.start()
+        if re.match(
+            rf"{CPP_PREPROCESSOR_HSPACE}*(?:#|%:)"
+            rf"{CPP_PREPROCESSOR_HSPACE}*error\b",
+            active_control[error_offset:],
+        ):
+            matches.append(match)
+    return matches
 
 
 def _compact_cpp_tokens(text: str) -> str:
@@ -4888,7 +7337,7 @@ def _compact_cpp_tokens(text: str) -> str:
 
 
 def _contains_conditional_preprocessor_directive(text: str) -> bool:
-    if re.search(r"\\\r?\n", text) is not None:
+    if re.search(rf"\\{CPP_PHYSICAL_NEWLINE}", text) is not None:
         return True
     return bool(_preprocessor_conditional_directives(text))
 
@@ -5048,35 +7497,37 @@ def _merge_prepared_protected_code_tokens(text: str) -> set[str]:
 def _class_definition_body_span(
     text: str, class_name: str
 ) -> tuple[int, int] | None:
+    masked, source_offsets = _translation_phase_masked_cpp_code_with_offsets(text)
     pattern = re.compile(
         rf"\b(?:class|struct)\s+{re.escape(class_name)}\b[^;{{]*{{",
         re.MULTILINE,
     )
-    matches = list(pattern.finditer(text))
+    matches = list(pattern.finditer(masked))
     if len(matches) != 1:
         return None
     opening = matches[0].end() - 1
-    closing = _matching_brace(text, opening)
+    closing = _matching_brace(masked, opening)
     if closing is None:
         return None
-    return opening + 1, closing
+    return source_offsets[opening] + 1, source_offsets[closing]
 
 
 def _enum_class_definition_body_span(
     text: str, enum_name: str
 ) -> tuple[int, int] | None:
+    masked, source_offsets = _translation_phase_masked_cpp_code_with_offsets(text)
     pattern = re.compile(
         rf"\benum\s+class\s+{re.escape(enum_name)}\b[^;{{]*{{",
         re.MULTILINE,
     )
-    matches = list(pattern.finditer(text))
+    matches = list(pattern.finditer(masked))
     if len(matches) != 1:
         return None
     opening = matches[0].end() - 1
-    closing = _matching_brace(text, opening)
+    closing = _matching_brace(masked, opening)
     if closing is None:
         return None
-    return opening + 1, closing
+    return source_offsets[opening] + 1, source_offsets[closing]
 
 
 def _forbidden_control_scope_introducer(
@@ -5297,6 +7748,22 @@ def build_flag_categories() -> tuple[dict[str, str], list[str]]:
     return result, errors
 
 
+_WORKER_CLEANUP_PREPARE_CACHE: dict[str, dict[str, object]] = {}
+
+
+def _worker_cleanup_prepare_file_signature(
+    root: Path, files: set[str]
+) -> tuple[tuple[str, int, int], ...] | None:
+    signature: list[tuple[str, int, int]] = []
+    try:
+        for relative in sorted(files):
+            stat = (root / relative).stat()
+            signature.append((relative, stat.st_size, stat.st_mtime_ns))
+    except OSError:
+        return None
+    return tuple(signature)
+
+
 class Checks:
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -5317,6 +7784,15 @@ class Checks:
             key: 0 for key in WORKER_PROCESS_REQUIRED_DIRECT_CALLS
         }
         self.merge_prepared_protected_tokens: set[str] = set()
+        self.worker_cleanup_macro_closure_prepared = False
+        self.worker_cleanup_tier_b_scopes: dict[
+            str, list[tuple[str, frozenset[str]]]
+        ] = {}
+        self.worker_cleanup_macro_closure_files: set[str] = set()
+        self.worker_cleanup_include_searches: dict[
+            str, set[tuple[str, ...]]
+        ] = {}
+        self.worker_cleanup_repo_inventory: GitIndexedTextInventory | None = None
 
     def fail(self, relative: str, line: int, message: str) -> None:
         self.errors.append(f"{relative}:{line}: {message}")
@@ -5350,6 +7826,412 @@ class Checks:
                 continue
             files.append((relative_path.as_posix(), path))
         return sorted(files)
+
+    def prepare_worker_cleanup_receipt_macro_closure(self) -> None:
+        if self.worker_cleanup_macro_closure_prepared:
+            return
+        self.worker_cleanup_macro_closure_prepared = True
+        prepare_error_start = len(self.errors)
+        root_key = self.root.resolve().as_posix()
+        repo_inventory = _git_indexed_text_inventory(self.root)
+        self.worker_cleanup_repo_inventory = repo_inventory
+        cached = _WORKER_CLEANUP_PREPARE_CACHE.get(root_key)
+        if cached is not None:
+            tracked_files = set(cached["tracked_files"])
+            if (
+                repo_inventory == cached["repo_inventory"]
+                and _worker_cleanup_prepare_file_signature(
+                    self.root, tracked_files
+                )
+                == cached["signature"]
+            ):
+                self.worker_cleanup_tier_b_scopes = {
+                    relative: list(scopes)
+                    for relative, scopes in cached["tier_b_scopes"].items()
+                }
+                self.worker_cleanup_macro_closure_files = set(
+                    cached["closure_files"]
+                )
+                self.worker_cleanup_include_searches = {
+                    relative: set(searches)
+                    for relative, searches in cached["include_searches"].items()
+                }
+                self.errors.extend(cached["errors"])
+                return
+        for relative, error in repo_inventory.errors:
+            self.fail(relative, 1, f"cannot close Git-indexed receipt scan: {error}")
+        if (
+            WORKER_CLEANUP_RECEIPT_CONTROL_PLANE_POLICY_FILE
+            not in repo_inventory.regular_files
+            or WORKER_CLEANUP_RECEIPT_CONTROL_PLANE_POLICY_FILE
+            not in repo_inventory.text_regular_files
+        ):
+            self.fail(
+                WORKER_CLEANUP_RECEIPT_CONTROL_PLANE_POLICY_FILE,
+                1,
+                "the sole C++-semantic scan exception must remain a Git-indexed "
+                "text regular control-plane file",
+            )
+        for relative, error in _worker_cleanup_receipt_repo_build_inventory_errors(
+            repo_inventory
+        ):
+            self.fail(relative, 1, error)
+        try:
+            preset_bytes = (
+                self.root / WORKER_CLEANUP_RECEIPT_CMAKE_PRESETS_FILE
+            ).read_bytes()
+        except OSError as exc:
+            self.fail(
+                WORKER_CLEANUP_RECEIPT_CMAKE_PRESETS_FILE,
+                1,
+                f"cannot read committed CMake preset provenance: {exc}",
+            )
+        else:
+            self.validate_worker_cleanup_committed_cmake_presets_surface(
+                preset_bytes
+            )
+        unit_tokens, token_errors = _worker_cleanup_receipt_protected_unit_tokens(
+            self.root
+        )
+        for relative, line, error in token_errors:
+            self.fail(relative, line, error)
+
+        try:
+            cmake_text = (
+                self.root / WORKER_CLEANUP_RECEIPT_CMAKE_FILE
+            ).read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            self.fail(
+                WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
+                1,
+                f"cannot read committed CMake macro provenance: {exc}",
+            )
+            cmake_text = ""
+
+        cmake_commands: list[CMakeCommandRecord] = []
+        if cmake_text:
+            cmake_commands = _cmake_command_records(
+                _mask_definitely_inactive_cmake(cmake_text)
+            )
+            self.validate_worker_cleanup_committed_cmake_surface(
+                cmake_text, cmake_commands
+            )
+
+        cmake_failures: set[tuple[int, str]] = set()
+        for unit, targets in WORKER_CLEANUP_RECEIPT_PROTECTED_UNIT_TARGETS.items():
+            tokens = frozenset(
+                unit_tokens.get(unit, set())
+                | WORKER_CLEANUP_RECEIPT_TIER_A_MACRO_TARGETS
+            )
+            include_searches, include_search_errors = (
+                _cmake_worker_cleanup_include_searches(
+                    self.root, cmake_text, set(targets), cmake_commands
+                )
+            )
+            for line, error in include_search_errors:
+                cmake_failures.add((line, error))
+            if not include_searches:
+                include_searches = [("include",)]
+
+            closure: set[str] = set()
+            include_failures: set[tuple[str, int, str]] = set()
+            for include_search in include_searches:
+                search_closure, include_errors = _repo_local_include_closure(
+                    self.root, unit, include_search, repo_inventory
+                )
+                closure.update(search_closure)
+                include_failures.update(include_errors)
+                for relative in search_closure:
+                    self.worker_cleanup_include_searches.setdefault(
+                        relative, set()
+                    ).add(include_search)
+            for relative, line, error in sorted(include_failures):
+                self.fail(relative, line, error)
+
+            macros, forced_headers, provenance_errors = (
+                _cmake_worker_cleanup_unit_provenance(
+                    self.root,
+                    cmake_text,
+                    set(targets),
+                    {unit},
+                    cmake_commands,
+                )
+            )
+            for line, error in provenance_errors:
+                cmake_failures.add((line, error))
+            for macro_name, line, command in macros:
+                if macro_name in tokens:
+                    cmake_failures.add(
+                        (
+                            line,
+                            "committed CMake macro provenance targets protected "
+                            f"token {macro_name} for {unit} via {command}",
+                        )
+                    )
+
+            for forced_header in forced_headers:
+                for include_search in include_searches:
+                    forced_closure, forced_errors = _repo_local_include_closure(
+                        self.root,
+                        forced_header,
+                        include_search,
+                        repo_inventory,
+                    )
+                    closure.update(forced_closure)
+                    for relative in forced_closure:
+                        self.worker_cleanup_include_searches.setdefault(
+                            relative, set()
+                        ).add(include_search)
+                    for relative, line, error in forced_errors:
+                        include_failures.add((relative, line, error))
+
+            for relative, line, error in sorted(include_failures):
+                rendered = f"{relative}:{line}: {error}"
+                if rendered not in self.errors:
+                    self.fail(relative, line, error)
+
+            for relative in closure:
+                self.worker_cleanup_tier_b_scopes.setdefault(relative, []).append(
+                    (unit, tokens)
+                )
+            self.worker_cleanup_macro_closure_files.update(closure)
+
+        control_plane_closure_error = (
+            _worker_cleanup_receipt_control_plane_closure_error(
+                self.worker_cleanup_macro_closure_files
+            )
+        )
+        if control_plane_closure_error is not None:
+            self.fail(
+                WORKER_CLEANUP_RECEIPT_CONTROL_PLANE_POLICY_FILE,
+                1,
+                control_plane_closure_error,
+            )
+        for line, error in sorted(cmake_failures):
+            self.fail(WORKER_CLEANUP_RECEIPT_CMAKE_FILE, line, error)
+
+        tracked_files = set(repo_inventory.regular_files)
+        signature = _worker_cleanup_prepare_file_signature(self.root, tracked_files)
+        if signature is not None:
+            _WORKER_CLEANUP_PREPARE_CACHE[root_key] = {
+                "tracked_files": frozenset(tracked_files),
+                "signature": signature,
+                "repo_inventory": repo_inventory,
+                "tier_b_scopes": {
+                    relative: tuple(scopes)
+                    for relative, scopes in self.worker_cleanup_tier_b_scopes.items()
+                },
+                "closure_files": frozenset(
+                    self.worker_cleanup_macro_closure_files
+                ),
+                "include_searches": {
+                    relative: frozenset(searches)
+                    for relative, searches in self.worker_cleanup_include_searches.items()
+                },
+                "errors": tuple(self.errors[prepare_error_start:]),
+            }
+
+    def validate_worker_cleanup_committed_cmake_presets_surface(
+        self, preset_bytes: bytes
+    ) -> None:
+        if (
+            hashlib.sha256(preset_bytes).hexdigest()
+            != WORKER_CLEANUP_RECEIPT_CMAKE_PRESETS_SHA256
+        ):
+            self.fail(
+                WORKER_CLEANUP_RECEIPT_CMAKE_PRESETS_FILE,
+                1,
+                "committed CMake preset semantic surface is not exact",
+            )
+
+    def validate_worker_cleanup_receipt_git_indexed_text_inventory(self) -> None:
+        """Scan indexed text as C++, except this policy's exact control-plane file.
+
+        The exception remains in the Git inventory, build-file inventory, and
+        prepare-cache signature; it is not a protected C++ translation unit or
+        a file reachable from the frozen CMake include closure.
+        """
+
+        self.prepare_worker_cleanup_receipt_macro_closure()
+        repo_inventory = self.worker_cleanup_repo_inventory
+        assert repo_inventory is not None
+        for relative in repo_inventory.text_regular_files:
+            if (
+                relative == WORKER_CLEANUP_RECEIPT_CONTROL_PLANE_POLICY_FILE
+                and relative not in self.worker_cleanup_macro_closure_files
+            ):
+                continue
+            path = self.root / relative
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeError) as exc:
+                self.fail(
+                    relative,
+                    1,
+                    f"cannot read Git-indexed receipt scan file: {exc}",
+                )
+                continue
+            self.validate_worker_cleanup_receipt_authority_use_site(relative, text)
+
+    def validate_worker_cleanup_committed_cmake_surface(
+        self,
+        cmake_text: str,
+        commands: list[CMakeCommandRecord] | None = None,
+    ) -> None:
+        """Keep protected target/source construction literal and command-closed."""
+
+        if (
+            hashlib.sha256(
+                _mask_cmake_comments(cmake_text).encode("utf-8")
+            ).hexdigest()
+            != WORKER_CLEANUP_RECEIPT_CMAKE_COMMENT_MASKED_SHA256
+        ):
+            self.fail(
+                WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
+                1,
+                "entire layout-preserving comment-masked CMake surface is not exact",
+            )
+        if commands is None:
+            active = _mask_definitely_inactive_cmake(cmake_text)
+            commands = _cmake_command_records(active)
+        protected_targets = {
+            target
+            for targets in WORKER_CLEANUP_RECEIPT_PROTECTED_UNIT_TARGETS.values()
+            for target in targets
+        }
+        protected_sources = set(WORKER_CLEANUP_RECEIPT_PROTECTED_UNIT_TARGETS)
+        inert_commands = {
+            "message",
+            "if",
+            "elseif",
+            "add_dependencies",
+            "add_test",
+            "set_tests_properties",
+            "install",
+        }
+        approved_commands = {
+            "add_executable",
+            "add_library",
+            "target_sources",
+            "target_include_directories",
+            "target_link_libraries",
+            "target_compile_definitions",
+            "target_compile_options",
+            "target_precompile_headers",
+            "set_property",
+            "set_target_properties",
+            "set_source_files_properties",
+        }
+        target_first_commands = {
+            "target_sources",
+            "target_include_directories",
+            "target_link_libraries",
+            "target_compile_definitions",
+            "target_compile_options",
+            "target_precompile_headers",
+        }
+        recognized_properties = {
+            "COMPILE_DEFINITIONS",
+            "COMPILE_OPTIONS",
+            "COMPILE_FLAGS",
+            "PRECOMPILE_HEADERS",
+            "UNITY_BUILD",
+        }
+
+        for command in commands:
+            body = command.body
+            target_hits = {target for target in protected_targets if target in body}
+            source_hits = {source for source in protected_sources if source in body}
+            if not target_hits and not source_hits:
+                continue
+            if command.name in inert_commands:
+                continue
+            if command.name not in approved_commands:
+                self.fail(
+                    WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
+                    command.line,
+                    "protected worker-cleanup target/source appears in "
+                    f"unapproved semantic CMake command {command.name}",
+                )
+                continue
+
+            first = _cmake_first_argument(body)
+            first_target_hits = {
+                target
+                for target in protected_targets
+                if first is not None and target in first
+            }
+            if command.name in {"add_executable", "add_library"} and first_target_hits:
+                if first not in protected_targets:
+                    self.fail(
+                        WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
+                        command.line,
+                        "protected build target must be a literal first argument",
+                    )
+            if command.name in target_first_commands and first_target_hits:
+                if first not in protected_targets:
+                    self.fail(
+                        WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
+                        command.line,
+                        "protected target must be the literal first argument of "
+                        f"{command.name}",
+                    )
+            if command.name == "target_sources" and source_hits:
+                if first != "gnfs_core":
+                    self.fail(
+                        WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
+                        command.line,
+                        "protected production source must attach literally to gnfs_core",
+                    )
+            if command.name == "add_executable" and source_hits:
+                if first != WORKER_CLEANUP_RECEIPT_TEST_TARGET:
+                    self.fail(
+                        WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
+                        command.line,
+                        "protected test source must attach literally to its exact target",
+                    )
+            for source in source_hits:
+                standalone = re.search(
+                    rf"(?<![A-Za-z0-9_/$<>{{}}]){re.escape(source)}"
+                    rf"(?![A-Za-z0-9_/$<>{{}}])",
+                    body,
+                )
+                if standalone is None:
+                    self.fail(
+                        WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
+                        command.line,
+                        "protected source path cannot be built from a variable or "
+                        f"generator expression: {source}",
+                    )
+
+            if command.name in {
+                "set_property",
+                "set_target_properties",
+                "set_source_files_properties",
+            }:
+                property_at = re.search(r"\bPROPERT(?:Y|IES)\b", body, re.IGNORECASE)
+                subject_body = (
+                    body if property_at is None else body[: property_at.start()]
+                )
+                subject_target_hits = {
+                    target for target in protected_targets if target in subject_body
+                }
+                subject_source_hits = {
+                    source for source in protected_sources if source in subject_body
+                }
+                if not subject_target_hits and not subject_source_hits:
+                    continue
+                properties = {
+                    name
+                    for name in recognized_properties
+                    if re.search(rf"\b{re.escape(name)}\b", body, re.IGNORECASE)
+                }
+                if not properties:
+                    self.fail(
+                        WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
+                        command.line,
+                        "protected target/source forbids unrecognized CMake property mutation",
+                    )
 
     def validate_getenv_identifier_uses(
         self, relative: str, text: str, calls: list[GetenvCall]
@@ -7263,11 +10145,12 @@ class Checks:
         ):
             return
 
-        include_pattern = re.compile(
-            rf'(?m)^[ \t]*#[ \t]*include[ \t]*["<]'
-            rf'{re.escape(MERGE_COMMIT_AUTHORITY_INTERFACE_INCLUDE)}[">]'
-        )
-        include_matches = list(include_pattern.finditer(text))
+        include_matches = [
+            record
+            for record in _cpp_include_records(text)
+            if record.directive == "include"
+            and record.spelling == MERGE_COMMIT_AUTHORITY_INTERFACE_INCLUDE
+        ]
         if relative in MERGE_COMMIT_AUTHORITY_INTERFACE_INCLUDE_ALLOWLIST:
             if len(include_matches) != 1:
                 self.fail(
@@ -7277,10 +10160,10 @@ class Checks:
                     "by its implementation and dedicated test",
                 )
         else:
-            for match in include_matches:
+            for record in include_matches:
                 self.fail(
                     relative,
-                    text.count("\n", 0, match.start()) + 1,
+                    record.line,
                     "merge-commit authority interface include is not allowlisted",
                 )
 
@@ -7321,11 +10204,13 @@ class Checks:
         ):
             return
 
-        include_pattern = re.compile(
-            rf'(?m)^[ \t]*#[ \t]*include[ \t]*["<]'
-            rf'{re.escape(WORKER_CLEANUP_TAIL_AUTHORITY_INTERFACE_INCLUDE)}[">]'
-        )
-        include_matches = list(include_pattern.finditer(text))
+        include_matches = [
+            record
+            for record in _cpp_include_records(text)
+            if record.directive == "include"
+            and record.spelling
+            == WORKER_CLEANUP_TAIL_AUTHORITY_INTERFACE_INCLUDE
+        ]
         if relative in WORKER_CLEANUP_TAIL_AUTHORITY_INCLUDE_ALLOWLIST:
             if len(include_matches) != 1:
                 self.fail(
@@ -7335,10 +10220,10 @@ class Checks:
                     "exactly once by its implementation and dedicated test",
                 )
         else:
-            for match in include_matches:
+            for record in include_matches:
                 self.fail(
                     relative,
-                    text.count("\n", 0, match.start()) + 1,
+                    record.line,
                     "worker-cleanup tail authority interface include is not allowlisted",
                 )
 
@@ -7448,6 +10333,1272 @@ class Checks:
                 min(release_line_offset, consume_line_offset) + 1,
                 "worker-cleanup tail must release exactly once through the exact "
                 "anchor freezer, then cold-open exactly once only inside its private consumer",
+            )
+
+    def validate_worker_cleanup_receipt_authority_use_site(
+        self, relative: str, text: str
+    ) -> None:
+        self.prepare_worker_cleanup_receipt_macro_closure()
+        closed_identifiers = tuple(WORKER_CLEANUP_RECEIPT_EXACT_USE_CONTEXTS)
+        logical_text = _translation_phase_masked_cpp_code(text)
+        macro_records = _preprocessor_macro_records(text)
+        pragma_targets = _receipt_macro_pragma_targets(text)
+        tier_b_scopes = self.worker_cleanup_tier_b_scopes.get(relative, [])
+
+        if relative in self.worker_cleanup_macro_closure_files:
+            for line in _non_preprocessor_line_splice_lines(text):
+                self.fail(
+                    relative,
+                    line,
+                    "worker-cleanup protected file forbids non-preprocessor "
+                    "phase-2 line continuation",
+                )
+
+        include_searches = self.worker_cleanup_include_searches.get(relative, set())
+        if include_searches:
+            repo_inventory = self.worker_cleanup_repo_inventory
+            assert repo_inventory is not None
+            for record in _cpp_include_records(text):
+                if record.directive != "include":
+                    self.fail(
+                        relative,
+                        record.line,
+                        "protected include closure forbids active "
+                        f"#{record.directive}",
+                    )
+                    continue
+                if record.spelling is None:
+                    self.fail(
+                        relative,
+                        record.line,
+                        "protected include closure forbids macro-form #include",
+                    )
+                    continue
+                for include_search in sorted(include_searches):
+                    resolved, matches, rejected = _resolve_repo_local_include(
+                        self.root,
+                        relative,
+                        record,
+                        include_search,
+                        repo_inventory,
+                    )
+                    if rejected:
+                        self.fail(
+                            relative,
+                            record.line,
+                            "protected include candidate is unsafe: "
+                            + "; ".join(rejected),
+                        )
+                    elif len(matches) > 1:
+                        self.fail(
+                            relative,
+                            record.line,
+                            "protected literal include is not unique in frozen "
+                            f"search order: {record.spelling}",
+                        )
+                    elif resolved is None and record.quoted:
+                        self.fail(
+                            relative,
+                            record.line,
+                            "protected include closure cannot resolve quoted include "
+                            f"{record.spelling}",
+                        )
+                    elif (
+                        resolved is None
+                        and record.spelling
+                        not in WORKER_CLEANUP_RECEIPT_EXTERNAL_INCLUDE_ALLOWLIST
+                    ):
+                        self.fail(
+                            relative,
+                            record.line,
+                            "protected include closure cannot resolve or allowlist "
+                            f"angle include {record.spelling}",
+                        )
+
+        for pragma_target, line in pragma_targets:
+            if pragma_target in WORKER_CLEANUP_RECEIPT_TIER_A_MACRO_TARGETS:
+                self.fail(
+                    relative,
+                    line,
+                    "push_macro/pop_macro cannot target worker-cleanup Tier-A "
+                    f"token: {pragma_target}",
+                )
+            for unit, tokens in tier_b_scopes:
+                if pragma_target in tokens:
+                    self.fail(
+                        relative,
+                        line,
+                        "push_macro/pop_macro targets Tier-B token "
+                        f"{pragma_target} in protected unit {unit}",
+                    )
+
+        paste_names = {
+            name for _, name in WORKER_CLEANUP_RECEIPT_PASTE_MACRO_ALLOWLIST
+        }
+        for directive, macro_identifier, replacement, line in macro_records:
+            replacement_tokens = {
+                token
+                for token, _ in find_code_identifier_tokens(
+                    _mask_cpp_comments_and_literals(replacement)
+                )
+            }
+            if macro_identifier in WORKER_CLEANUP_RECEIPT_TIER_A_MACRO_TARGETS:
+                self.fail(
+                    relative,
+                    line,
+                    "worker-cleanup Tier-A token cannot have macro provenance: "
+                    f"#{directive} {macro_identifier}",
+                )
+            tier_a_mentions = sorted(
+                replacement_tokens
+                & WORKER_CLEANUP_RECEIPT_TIER_A_MACRO_TARGETS
+            )
+            if directive == "define" and tier_a_mentions:
+                self.fail(
+                    relative,
+                    line,
+                    "worker-cleanup macro replacement cannot mention Tier-A "
+                    "tokens: " + ", ".join(tier_a_mentions),
+                )
+
+            safe_macro = WORKER_CLEANUP_RECEIPT_TIER_B_SAFE_MACROS.get(
+                (relative, macro_identifier)
+            )
+            safe_tier_b_record = safe_macro is not None and (
+                (
+                    directive == "define"
+                    and _compact_cpp_code(replacement) == safe_macro[0]
+                )
+                or (directive == "undef" and not replacement.strip())
+            )
+            for unit, tokens in tier_b_scopes:
+                if macro_identifier in tokens and not safe_tier_b_record:
+                    self.fail(
+                        relative,
+                        line,
+                        "macro provenance targets Tier-B token "
+                        f"{macro_identifier} in protected unit {unit}",
+                    )
+                tier_b_mentions = sorted(replacement_tokens & tokens)
+                if (
+                    directive == "define"
+                    and tier_b_mentions
+                    and not safe_tier_b_record
+                ):
+                    self.fail(
+                        relative,
+                        line,
+                        "macro replacement mentions Tier-B tokens in protected "
+                        f"unit {unit}: " + ", ".join(tier_b_mentions),
+                    )
+                if directive == "define" and not safe_tier_b_record and (
+                    "##" in replacement or "%:%:" in replacement
+                ):
+                    self.fail(
+                        relative,
+                        line,
+                        "protected include closure forbids token-paste macro "
+                        f"{macro_identifier} for {unit}",
+                    )
+
+            paste_key = (relative, macro_identifier)
+            contains_paste = "##" in replacement or "%:%:" in replacement
+            if contains_paste:
+                expected_replacement = (
+                    WORKER_CLEANUP_RECEIPT_PASTE_MACRO_ALLOWLIST.get(paste_key)
+                )
+                if (
+                    directive != "define"
+                    or expected_replacement is None
+                    or _compact_cpp_code(replacement) != expected_replacement
+                ):
+                    self.fail(
+                        relative,
+                        line,
+                        "token-paste macro definition is not one of the four "
+                        f"exact test-only definitions: {macro_identifier}",
+                    )
+            if macro_identifier in paste_names and (
+                paste_key not in WORKER_CLEANUP_RECEIPT_PASTE_MACRO_ALLOWLIST
+                or directive != "define"
+            ):
+                self.fail(
+                    relative,
+                    line,
+                    "paste-capable macro name has unapproved define/undef "
+                    f"provenance: {macro_identifier}",
+                )
+            if directive == "define" and paste_key not in (
+                WORKER_CLEANUP_RECEIPT_PASTE_MACRO_ALLOWLIST
+            ):
+                referenced_paste = sorted(replacement_tokens & paste_names)
+                if referenced_paste:
+                    self.fail(
+                        relative,
+                        line,
+                        "macro replacement enters the paste-capable reference "
+                        "graph: " + ", ".join(referenced_paste),
+                    )
+
+        for (safe_relative, safe_name), (
+            expected_replacement,
+            expected_context,
+        ) in WORKER_CLEANUP_RECEIPT_TIER_B_SAFE_MACROS.items():
+            if relative != safe_relative:
+                continue
+            definitions = [
+                replacement
+                for directive, macro_identifier, replacement, _ in macro_records
+                if directive == "define" and macro_identifier == safe_name
+            ]
+            undefs = [
+                replacement
+                for directive, macro_identifier, replacement, _ in macro_records
+                if directive == "undef" and macro_identifier == safe_name
+            ]
+            if (
+                len(definitions) != 1
+                or _compact_cpp_code(definitions[0]) != expected_replacement
+                or len(undefs) != 1
+                or undefs[0].strip()
+                or _identifier_use_context_signature(text, safe_name)
+                != expected_context
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    "Tier-B safe macro definition, unique undef, and code-use "
+                    f"surface are not exact: {safe_name}",
+                )
+
+        for (paste_relative, paste_name), expected_replacement in (
+            WORKER_CLEANUP_RECEIPT_PASTE_MACRO_ALLOWLIST.items()
+        ):
+            if relative != paste_relative:
+                continue
+            definitions = [
+                replacement
+                for directive, macro_identifier, replacement, _ in macro_records
+                if directive == "define" and macro_identifier == paste_name
+            ]
+            if (
+                len(definitions) != 1
+                or _compact_cpp_code(definitions[0]) != expected_replacement
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    f"paste-capable macro logical definition is not exact: {paste_name}",
+                )
+            observed_context = _identifier_use_context_signature(text, paste_name)
+            expected_context = (
+                WORKER_CLEANUP_RECEIPT_PASTE_MACRO_CODE_USE_CONTEXTS[
+                    (paste_relative, paste_name)
+                ]
+            )
+            if observed_context != expected_context:
+                self.fail(
+                    relative,
+                    1,
+                    "paste-capable macro code-use count/context is not exact: "
+                    f"{paste_name}",
+                )
+
+        for identifier, expected_by_file in (
+            WORKER_CLEANUP_RECEIPT_EXACT_USE_CONTEXTS.items()
+        ):
+            expected = expected_by_file.get(relative)
+            if expected is None and identifier not in logical_text:
+                continue
+            observed = _identifier_use_context_signature(text, identifier)
+            if expected is None and observed[0] == 0:
+                continue
+            if expected != observed:
+                uses = find_code_identifier_uses(logical_text, identifier)
+                self.fail(
+                    relative,
+                    uses[0].line if uses else 1,
+                    "worker-cleanup closed identifier code-use count/context "
+                    f"is not exact for {identifier}: expected {expected}, "
+                    f"found {observed}",
+                )
+
+        if relative == WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE:
+            authority_span = _class_definition_body_span(
+                text, WORKER_CLEANUP_RECEIPT_MINT_AUTHORITY_IDENTIFIER
+            )
+            if authority_span is None:
+                self.fail(
+                    relative,
+                    1,
+                    "worker-cleanup receipt mint authority class must remain "
+                    "source-private",
+                )
+                return
+            authority_body = _compact_cpp_code(
+                text[authority_span[0] : authority_span[1]]
+            )
+            if authority_body != WORKER_CLEANUP_RECEIPT_MINT_AUTHORITY_CLASS_SURFACE:
+                self.fail(
+                    relative,
+                    text.count("\n", 0, authority_span[0]) + 1,
+                    "worker-cleanup receipt mint authority must remain a "
+                    "deleted-constructor private minter with one production entry friend",
+                )
+            if (
+                len(
+                    find_code_identifier_uses(
+                        text, WORKER_CLEANUP_RECEIPT_MINT_ENTRY_IDENTIFIER
+                    )
+                )
+                != 2
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    "worker-cleanup receipt interface must expose exactly one "
+                    "mint declaration and its matching private friend",
+                )
+            return
+
+        if relative == WORKER_CLEANUP_RECEIPT_AUTHORITY_IMPLEMENTATION_FILE:
+            bridge_body, bridge_line_offset, bridge_errors = (
+                find_function_definition_body(
+                    text, WORKER_CLEANUP_RECEIPT_MINT_ENTRY_IDENTIFIER
+                )
+            )
+            for line, error in bridge_errors:
+                self.fail(relative, line, error)
+            expected = (
+                "returnDistributedSieveWorkerCleanupReceiptMintAuthorityV1::"
+                "mint(admission);"
+            )
+            if bridge_body is None or _compact_cpp_code(bridge_body) != expected:
+                self.fail(
+                    relative,
+                    bridge_line_offset + 1,
+                    "worker-cleanup receipt production entry must delegate "
+                    "exactly once to the narrow mint authority",
+                )
+            entry_uses = find_code_identifier_uses(
+                logical_text, WORKER_CLEANUP_RECEIPT_MINT_ENTRY_IDENTIFIER
+            )
+            authority_uses = find_code_identifier_uses(
+                logical_text, WORKER_CLEANUP_RECEIPT_MINT_AUTHORITY_IDENTIFIER
+            )
+            if (
+                len(entry_uses) != 1
+                or len(
+                    _function_definition_spans(
+                        text, WORKER_CLEANUP_RECEIPT_MINT_ENTRY_IDENTIFIER
+                    )
+                )
+                != 1
+                or len(authority_uses) != 1
+            ):
+                self.fail(
+                    relative,
+                    entry_uses[0].line if entry_uses else 1,
+                    "worker-cleanup receipt authority implementation must "
+                    "contain only the one exact public-entry-to-private-mint bridge",
+                )
+            return
+
+        if relative == WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE:
+            key_span = _class_definition_body_span(
+                text, WORKER_CLEANUP_RECEIPT_MINT_KEY_IDENTIFIER
+            )
+            receipt_span = _class_definition_body_span(
+                text, WORKER_CLEANUP_RECEIPT_IDENTIFIER
+            )
+            if key_span is None or receipt_span is None:
+                self.fail(
+                    relative,
+                    1,
+                    "worker-cleanup receipt and its mint key must remain "
+                    "source-private exact classes",
+                )
+                return
+
+            key_body = _compact_cpp_code(text[key_span[0] : key_span[1]])
+            if key_body != WORKER_CLEANUP_RECEIPT_MINT_KEY_CLASS_SURFACE:
+                self.fail(
+                    relative,
+                    text.count("\n", 0, key_span[0]) + 1,
+                    "worker-cleanup receipt mint key must remain non-forgeable "
+                    "with the narrow mint authority as its sole friend",
+                )
+
+            receipt_source = text[receipt_span[0] : receipt_span[1]]
+            compact_receipt = _compact_cpp_code(receipt_source)
+            masked_receipt = _mask_cpp_comments_and_literals(receipt_source)
+            access_sections = re.findall(
+                r"\b(public|private|protected)\s*:", masked_receipt
+            )
+            if (
+                access_sections != ["public", "private"]
+                or _compact_cpp_sha256(receipt_source)
+                != WORKER_CLEANUP_RECEIPT_CLASS_BODY_SHA256
+            ):
+                self.fail(
+                    relative,
+                    text.count("\n", 0, receipt_span[0]) + 1,
+                    "worker-cleanup receipt whole class, public/private access "
+                    "surface, and fixed validate/release callbacks must remain exact",
+                )
+            friend_classes = [
+                _compact_cpp_code(match.group(1))
+                for match in re.finditer(
+                    r"\bfriend\s+class\s+([^;]+);", masked_receipt
+                )
+            ]
+            expected_friends = {
+                _compact_cpp_code(friend)
+                for friend in WORKER_CLEANUP_RECEIPT_EXPECTED_FRIEND_CLASSES
+            }
+            if (
+                len(friend_classes) != len(expected_friends)
+                or set(friend_classes) != expected_friends
+            ):
+                self.fail(
+                    relative,
+                    text.count("\n", 0, receipt_span[0]) + 1,
+                    "worker-cleanup receipt friend surface is not exactly closed",
+                )
+
+            production_constructor = (
+                "OOCPrivateHandoffCleanupAuthorizationReceipt("
+                "OOCPrivateHandoffCleanupAuthorizationMintKey&&,"
+                "OOCPrivateHandoffCleanupAuthorizationBindingbinding,"
+                "std::shared_ptr<constgnfs::sieve::distributed_sieve_resume_detail::"
+                "DistributedSieveExternalCleanupAuthorizationState>"
+                "live_wave_authority)noexcept"
+            )
+            move_release_transfer = (
+                "release_live_authority_(std::exchange("
+                "other.release_live_authority_,nullptr))"
+            )
+            if (
+                compact_receipt.count(production_constructor) != 1
+                or compact_receipt.count(move_release_transfer) != 1
+                or compact_receipt.count(
+                    "usingReleaseLiveAuthority=void(*)(constvoid*authority)noexcept;"
+                )
+                != 1
+                or compact_receipt.count(
+                    "ReleaseLiveAuthorityrelease_live_authority_=nullptr;"
+                )
+                != 1
+            ):
+                self.fail(
+                    relative,
+                    text.count("\n", 0, receipt_span[0]) + 1,
+                    "worker-cleanup receipt must retain one private production "
+                    "constructor and transfer one release callback on move",
+                )
+
+            destructor_body, destructor_line_offset, destructor_errors = (
+                find_function_definition_body(
+                    receipt_source,
+                    "~OOCPrivateHandoffCleanupAuthorizationReceipt",
+                )
+            )
+            for line, error in destructor_errors:
+                self.fail(
+                    relative,
+                    line + text.count("\n", 0, receipt_span[0]),
+                    error,
+                )
+            release_body, release_line_offset, release_errors = (
+                find_function_definition_body(receipt_source, "release_live_authority")
+            )
+            for line, error in release_errors:
+                self.fail(
+                    relative,
+                    line + text.count("\n", 0, receipt_span[0]),
+                    error,
+                )
+            if (
+                destructor_body is None
+                or _compact_cpp_code(destructor_body) != "release_live_authority();"
+                or release_body is None
+                or _compact_cpp_code(release_body)
+                != (
+                    "constautorelease=std::exchange(release_live_authority_,nullptr);"
+                    "if(release!=nullptr&&live_authority_){"
+                    "release(live_authority_.get());}"
+                )
+            ):
+                self.fail(
+                    relative,
+                    max(destructor_line_offset, release_line_offset)
+                    + text.count("\n", 0, receipt_span[0])
+                    + 1,
+                    "worker-cleanup receipt destruction must consume and invoke "
+                    "its release callback exactly once",
+                )
+
+            for identifier in (
+                WORKER_CLEANUP_RECEIPT_OWNED_BRIDGE_IDENTIFIER,
+                WORKER_CLEANUP_RECEIPT_RELEASE_BRIDGE_IDENTIFIER,
+            ):
+                uses = find_code_identifier_uses(text, identifier)
+                if len(uses) != 2 or len(find_call_identifier_uses(text, identifier)) != 2:
+                    self.fail(
+                        relative,
+                        uses[0].line if uses else 1,
+                        "worker-cleanup receipt must install exactly one fixed "
+                        f"production callback for {identifier}",
+                    )
+            return
+
+        if relative == WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE:
+            executor_span = _class_definition_body_span(
+                text, "OOCPrivateHandoffCleanupIntentConversionExecutorV2"
+            )
+            if executor_span is None:
+                self.fail(
+                    relative,
+                    1,
+                    "authorized cleanup conversion executor is missing",
+                )
+                return
+            executor_source = text[executor_span[0] : executor_span[1]]
+            run_body, run_line_offset, run_errors = find_function_definition_body(
+                executor_source, "run"
+            )
+            for line, error in run_errors:
+                self.fail(
+                    relative,
+                    line + text.count("\n", 0, executor_span[0]),
+                    error,
+                )
+            if run_body is None:
+                return
+            compact_run = _compact_cpp_code(run_body)
+            if (
+                _compact_cpp_sha256(run_body)
+                != WORKER_CLEANUP_RECEIPT_T2A_RUN_BODY_SHA256
+            ):
+                self.fail(
+                    relative,
+                    run_line_offset
+                    + text.count("\n", 0, executor_span[0])
+                    + 1,
+                    "authorized cleanup conversion T2a whole run body and "
+                    "direct-call surface must remain exact",
+                )
+            live_uses = find_code_identifier_uses(run_body, "require_live_authority")
+            live_calls = find_call_identifier_uses(run_body, "require_live_authority")
+            publish_calls = find_call_identifier_uses(run_body, "publish_at")
+            executor_publish_calls = find_call_identifier_uses(
+                executor_source, "publish_at"
+            )
+            spend_calls = find_call_identifier_uses(run_body, "commit_spend")
+            before_publish = (
+                "require_exact_binding();require_live_authority();"
+                "constautopublished=util::durable_immutable_record::publish_at("
+            )
+            after_spend = (
+                "authorization.commit_spend();"
+                "reader.commit_cleanup_intent_conversion();"
+                "canonical_boundary_crossed=true;"
+                "require_live_authority();require_exact_binding();"
+                "require_live_authority();"
+            )
+            if (
+                len(live_uses) != 4
+                or len(live_calls) != 3
+                or len(publish_calls) != 1
+                or len(executor_publish_calls) != 1
+                or len(spend_calls) != 1
+                or compact_run.count(before_publish) != 1
+                or compact_run.count(after_spend) != 1
+            ):
+                self.fail(
+                    relative,
+                    run_line_offset
+                    + text.count("\n", 0, executor_span[0])
+                    + 1,
+                    "authorized cleanup conversion must recheck live receipt "
+                    "once immediately before its sole publish_at call and "
+                    "sandwich the exact post-spend binding check",
+                )
+            translation_unit_publish_uses = find_code_identifier_uses(
+                text, "publish_at"
+            )
+            translation_unit_publish_calls = find_call_identifier_uses(
+                text, "publish_at"
+            )
+            executor_uses = find_code_identifier_uses(
+                text, "OOCPrivateHandoffCleanupIntentConversionExecutorV2"
+            )
+            if (
+                len(translation_unit_publish_uses) != 1
+                or len(translation_unit_publish_calls) != 1
+                or len(executor_uses) != 3
+            ):
+                self.fail(
+                    relative,
+                    run_line_offset + 1,
+                    "authorized cleanup conversion translation unit must "
+                    "contain one direct publish_at and only its two exact run pass-throughs",
+                )
+            entry_bodies = {
+                "convert_authorized_private_handoff_to_cleanup_intent_v2": (
+                    "returnOOCPrivateHandoffCleanupIntentConversionExecutorV2::"
+                    "run(reader,authorization,{});"
+                ),
+                "convert_authorized_private_handoff_to_cleanup_intent_v2_for_trusted_test": (
+                    "returnOOCPrivateHandoffCleanupIntentConversionExecutorV2::"
+                    "run(reader,authorization,hooks);"
+                ),
+            }
+            for entry, expected_body in entry_bodies.items():
+                body, line_offset, body_errors = find_function_definition_body(
+                    text, entry
+                )
+                for line, error in body_errors:
+                    self.fail(relative, line, error)
+                uses = find_code_identifier_uses(text, entry)
+                if (
+                    body is None
+                    or _compact_cpp_code(body) != expected_body
+                    or len(uses) != 2
+                    or len(_function_definition_spans(text, entry)) != 1
+                ):
+                    self.fail(
+                        relative,
+                        uses[0].line if uses else line_offset + 1,
+                        "authorized cleanup conversion entry must remain one "
+                        f"friend declaration and one exact run pass-through: {entry}",
+                    )
+            return
+
+        if relative == WORKER_CLEANUP_RECEIPT_WAVE_STORE_INTERFACE_FILE:
+            expected_counts = {
+                WORKER_CLEANUP_RECEIPT_OWNED_BRIDGE_IDENTIFIER: 2,
+                WORKER_CLEANUP_RECEIPT_RELEASE_BRIDGE_IDENTIFIER: 2,
+                "revalidate_root_only_sticky": 1,
+                "try_claim_receipt": 1,
+                "release_receipt_claim": 1,
+                WORKER_CLEANUP_RECEIPT_MINT_AUTHORITY_IDENTIFIER: 3,
+            }
+            for identifier, expected in expected_counts.items():
+                uses = find_code_identifier_uses(text, identifier)
+                if len(uses) != expected:
+                    self.fail(
+                        relative,
+                        uses[0].line if uses else 1,
+                        "worker-cleanup WaveStore receipt surface is not "
+                        f"count-closed: {identifier} expected {expected}, found {len(uses)}",
+                    )
+            compact_interface = _compact_cpp_code(text)
+            if (
+                compact_interface.count(
+                    WORKER_CLEANUP_RECEIPT_REVALIDATE_DECLARATION
+                )
+                != 1
+                or "[[nodiscard]]boolrevalidate_root_only_sticky(" in compact_interface
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    "worker-cleanup root-only revalidation must expose exactly "
+                    "one typed diagnostic declaration",
+                )
+            return
+
+        if relative == WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE:
+            include_matches = [
+                record
+                for record in _cpp_include_records(text)
+                if record.directive == "include"
+                and record.spelling
+                == WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_INCLUDE
+            ]
+            if len(include_matches) != 1:
+                self.fail(
+                    relative,
+                    1,
+                    "worker-cleanup receipt test must include its private "
+                    "relation authority interface exactly once",
+                )
+            for helper, expected_hash in (
+                WORKER_CLEANUP_RECEIPT_TEST_HELPER_BODY_SHA256.items()
+            ):
+                helper_body, helper_line_offset, helper_errors = (
+                    find_function_definition_body(text, helper)
+                )
+                for line, error in helper_errors:
+                    self.fail(relative, line, error)
+                if (
+                    helper_body is None
+                    or _compact_cpp_sha256(helper_body) != expected_hash
+                ):
+                    self.fail(
+                        relative,
+                        helper_line_offset + 1,
+                        "worker-cleanup receipt CHECK helper body must remain "
+                        f"exact: {helper}",
+                    )
+            run_body, run_line_offset, run_errors = find_function_definition_body(
+                text, "run_apple_tests"
+            )
+            for line, error in run_errors:
+                self.fail(relative, line, error)
+            masked_test = _mask_cpp_comments_and_literals(text)
+            observed_tests = re.findall(
+                r"\bvoid\s+(test_cleanup_receipt_[A-Za-z0-9_]+)\s*\(",
+                masked_test,
+            )
+            if (
+                len(observed_tests)
+                != len(WORKER_CLEANUP_RECEIPT_DEDICATED_TEST_FUNCTIONS)
+                or set(observed_tests)
+                != set(WORKER_CLEANUP_RECEIPT_DEDICATED_TEST_FUNCTIONS)
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    "worker-cleanup receipt dedicated test function inventory "
+                    "is not exact",
+                )
+            for identifier in WORKER_CLEANUP_RECEIPT_DEDICATED_TEST_FUNCTIONS:
+                definitions = _function_definition_spans(text, identifier)
+                uses = find_code_identifier_uses(text, identifier)
+                run_calls = (
+                    []
+                    if run_body is None
+                    else find_call_identifier_uses(run_body, identifier)
+                )
+                if (
+                    len(definitions) != 1
+                    or len(uses) != 2
+                    or len(run_calls) != 1
+                ):
+                    self.fail(
+                        relative,
+                        uses[0].line if uses else run_line_offset + 1,
+                        "worker-cleanup receipt dedicated test catalog is not "
+                        f"exact for {identifier}",
+                    )
+                test_body, test_line_offset, test_errors = (
+                    find_function_definition_body(text, identifier)
+                )
+                for line, error in test_errors:
+                    self.fail(relative, line, error)
+                if test_body is None:
+                    continue
+                compact_test_body = _compact_cpp_code(test_body)
+                required_fragments = (
+                    WORKER_CLEANUP_RECEIPT_REQUIRED_TEST_BODY_FRAGMENTS[
+                        identifier
+                    ]
+                )
+                if (
+                    _compact_cpp_sha256(test_body)
+                    != WORKER_CLEANUP_RECEIPT_DEDICATED_TEST_BODY_SHA256[
+                        identifier
+                    ]
+                    or any(
+                        compact_test_body.count(fragment) < 1
+                        for fragment in required_fragments
+                    )
+                ):
+                    self.fail(
+                        relative,
+                        test_line_offset + 1,
+                        "worker-cleanup receipt dedicated test body and required "
+                        f"assertions must remain exact: {identifier}",
+                    )
+            return
+
+        if relative != WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE:
+            return
+
+        implementation_counts = {
+            WORKER_CLEANUP_RECEIPT_OWNED_BRIDGE_IDENTIFIER: 1,
+            WORKER_CLEANUP_RECEIPT_RELEASE_BRIDGE_IDENTIFIER: 1,
+            "revalidate_root_only_sticky": 3,
+            "try_claim_receipt": 2,
+            "release_receipt_claim": 5,
+            WORKER_CLEANUP_RECEIPT_MINT_AUTHORITY_IDENTIFIER: 1,
+        }
+        for identifier, expected in implementation_counts.items():
+            uses = find_code_identifier_uses(text, identifier)
+            if len(uses) != expected:
+                self.fail(
+                    relative,
+                    uses[0].line if uses else 1,
+                    "worker-cleanup WaveStore receipt production chain is not "
+                    f"count-closed: {identifier} expected {expected}, found {len(uses)}",
+                )
+
+        compact_text = _compact_cpp_code(text)
+        if compact_text.count(WORKER_CLEANUP_RECEIPT_REVALIDATE_DEFINITION) != 1:
+            self.fail(
+                relative,
+                1,
+                "worker-cleanup root-only revalidation definition must return "
+                "its typed diagnostic exactly once",
+            )
+
+        def function_body(identifier: str) -> tuple[str | None, int]:
+            body, line_offset, body_errors = find_function_definition_body(
+                text, identifier
+            )
+            for line, error in body_errors:
+                self.fail(relative, line, error)
+            return body, line_offset
+
+        root_only_bodies: dict[str, tuple[str, int]] = {}
+        for identifier in WORKER_CLEANUP_RECEIPT_ROOT_ONLY_FUNCTIONS:
+            body, line_offset = function_body(identifier)
+            if body is not None:
+                root_only_bodies[identifier] = (body, line_offset)
+                expected_digest = WORKER_CLEANUP_RECEIPT_ROOT_ONLY_BODY_SHA256[
+                    identifier
+                ]
+                if _compact_cpp_sha256(body) != expected_digest:
+                    self.fail(
+                        relative,
+                        line_offset + 1,
+                        "root-only cleanup receipt liveness body and direct-call "
+                        f"surface must remain exact: {identifier}",
+                    )
+                for forbidden in WORKER_CLEANUP_RECEIPT_ROOT_ONLY_FORBIDDEN_IDENTIFIERS:
+                    uses = (
+                        find_call_identifier_uses(body, forbidden)
+                        if forbidden == "valid"
+                        else find_code_identifier_uses(body, forbidden)
+                    )
+                    for use in uses:
+                        self.fail(
+                            relative,
+                            use.line + line_offset,
+                            f"root-only cleanup receipt liveness forbids {forbidden}",
+                        )
+                for token, use in find_code_identifier_tokens(body):
+                    if any(
+                        fragment in token
+                        for fragment in (
+                            WORKER_CLEANUP_RECEIPT_ROOT_ONLY_FORBIDDEN_TOKEN_FRAGMENTS
+                        )
+                    ):
+                        self.fail(
+                            relative,
+                            use.line + line_offset,
+                            "root-only cleanup receipt liveness forbids BaseLock "
+                            f"authority token {token}",
+                        )
+
+        scanner = root_only_bodies.get(
+            "scan_worker_cleanup_root_control_inventory_v1"
+        )
+        if scanner is not None:
+            body, line_offset = scanner
+            compact_scanner = _compact_cpp_code(body)
+            positive_leaf_checks = (
+                "if(leaf==LOCK_LEAF)",
+                "if(leaf==MANIFEST_LEAF)",
+                "if(leaf==MANIFEST_PENDING_LEAF)",
+            )
+            positive_parsers = (
+                "parse_distributed_sieve_wave_merge_commit_leaf_v1",
+                "parse_distributed_sieve_cleanup_record_leaf_v1",
+            )
+            if (
+                any(
+                    compact_scanner.count(check) != 1
+                    for check in positive_leaf_checks
+                )
+                or any(
+                    len(find_call_identifier_uses(body, parser)) != 1
+                    for parser in positive_parsers
+                )
+            ):
+                self.fail(
+                    relative,
+                    line_offset + 1,
+                    "root-only cleanup receipt scanner must retain exactly the "
+                    "lock/manifest leaves and merge-commit/cleanup parsers",
+                )
+
+        revalidate = root_only_bodies.get(
+            "DistributedSieveExternalCleanupAuthorizationState::"
+            "revalidate_root_only_sticky"
+        )
+        if revalidate is not None:
+            body, line_offset = revalidate
+            compact_revalidate = _compact_cpp_code(body)
+            expected_calls = {
+                "validate_held_wave_store_manifest_authority": 1,
+                "scan_worker_cleanup_root_control_inventory_v1": 1,
+                "read_immutable_protocol_record_leaf": 2,
+                "root_authority": 3,
+                "capture_exact_root_control": 2,
+            }
+            for identifier, expected in expected_calls.items():
+                calls = find_call_identifier_uses(body, identifier)
+                if len(calls) != expected:
+                    self.fail(
+                        relative,
+                        line_offset + 1,
+                        "root-only cleanup receipt liveness call chain is not "
+                        f"closed: {identifier} expected {expected}, found {len(calls)}",
+                    )
+            if (
+                compact_revalidate.count(
+                    WORKER_CLEANUP_RECEIPT_REVALIDATE_INVALIDATOR
+                )
+                != 1
+                or compact_revalidate.count(
+                    "returninvalidate(std::move(validated));"
+                )
+                != 5
+                or any(
+                    compact_revalidate.count(expected) != 1
+                    for expected in (
+                        WORKER_CLEANUP_RECEIPT_REVALIDATE_DIAGNOSTIC_RETURNS
+                    )
+                )
+            ):
+                self.fail(
+                    relative,
+                    line_offset + 1,
+                    "root-only cleanup receipt revalidation must preserve each "
+                    "typed root, control, process, resource, and I/O diagnostic",
+                )
+
+        live_body, live_line_offset = function_body(
+            "DistributedSieveExternalCleanupAuthorizationState::"
+            "live_for_current_process"
+        )
+        if (
+            live_body is None
+            or _compact_cpp_code(live_body)
+            != WORKER_CLEANUP_RECEIPT_LIVE_WRAPPER_BODY
+        ):
+            self.fail(
+                relative,
+                live_line_offset + 1,
+                "worker-cleanup receipt liveness bridge must call only the "
+                "root-only sticky validator with a live claim",
+            )
+
+        try_claim_body, try_claim_line_offset = function_body(
+            "DistributedSieveExternalCleanupAuthorizationState::try_claim_receipt"
+        )
+        if try_claim_body is not None:
+            compact_try_claim = _compact_cpp_code(try_claim_body)
+            if (
+                _compact_cpp_sha256(try_claim_body)
+                != WORKER_CLEANUP_RECEIPT_TRY_CLAIM_BODY_SHA256
+            ):
+                self.fail(
+                    relative,
+                    try_claim_line_offset + 1,
+                    "worker-cleanup receipt try-claim entire control flow must "
+                    "remain exact with acquired reachable only after the CAS "
+                    "and typed root revalidation",
+                )
+            cas = (
+                "receipt_claimed_.compare_exchange_strong(expected,true,"
+                "std::memory_order_acq_rel,std::memory_order_acquire)"
+            )
+            rollback = "receipt_claimed_.store(false,std::memory_order_release);"
+            if (
+                compact_try_claim.count(cas) != 1
+                or compact_try_claim.count(rollback) != 1
+                or compact_try_claim.count(
+                    WORKER_CLEANUP_RECEIPT_CLAIM_DIAGNOSTIC_PROPAGATION
+                )
+                != 1
+                or len(
+                    find_call_identifier_uses(
+                        try_claim_body, "revalidate_root_only_sticky"
+                    )
+                )
+                != 1
+                or find_code_identifier_uses(try_claim_body, "compare_exchange_weak")
+            ):
+                self.fail(
+                    relative,
+                    try_claim_line_offset + 1,
+                    "worker-cleanup receipt claim must use one strong CAS, one "
+                    "root-only revalidation with its typed diagnostic, and one "
+                    "failed-claim rollback",
+                )
+
+        release_body, release_line_offset = function_body(
+            "DistributedSieveExternalCleanupAuthorizationState::release_receipt_claim"
+        )
+        if (
+            release_body is None
+            or _compact_cpp_code(release_body)
+            != WORKER_CLEANUP_RECEIPT_RELEASE_MEMBER_BODY
+        ):
+            self.fail(
+                relative,
+                release_line_offset + 1,
+                "worker-cleanup receipt claim release must be the exact "
+                "single-live exchange with sticky double-release invalidation",
+            )
+
+        for identifier, expected_body in (
+            (
+                WORKER_CLEANUP_RECEIPT_OWNED_BRIDGE_IDENTIFIER,
+                WORKER_CLEANUP_RECEIPT_OWNED_BRIDGE_BODY,
+            ),
+            (
+                WORKER_CLEANUP_RECEIPT_RELEASE_BRIDGE_IDENTIFIER,
+                WORKER_CLEANUP_RECEIPT_RELEASE_BRIDGE_BODY,
+            ),
+        ):
+            body, line_offset = function_body(identifier)
+            if body is None or _compact_cpp_code(body) != expected_body:
+                self.fail(
+                    relative,
+                    line_offset + 1,
+                    f"worker-cleanup receipt bridge must remain exact: {identifier}",
+                )
+
+        mint_body, mint_line_offset = function_body(
+            "DistributedSieveWorkerCleanupReceiptMintAuthorityV1::mint"
+        )
+        if mint_body is None:
+            return
+        if (
+            _compact_cpp_sha256(mint_body)
+            != WORKER_CLEANUP_RECEIPT_MINT_BODY_SHA256
+        ):
+            self.fail(
+                relative,
+                mint_line_offset + 1,
+                "worker-cleanup receipt mint whole control flow, direct-call "
+                "surface, typed diagnostics, and resource mapping must remain exact",
+            )
+
+        compact_mint = _compact_cpp_code(mint_body)
+        success_chain = (
+            "claimed_state=live_state;claim_owned=true;"
+            "relation_cleanup::OOCPrivateHandoffCleanupAuthorizationMintKeymint_key;"
+            "relation_cleanup::OOCPrivateHandoffCleanupAuthorizationReceiptreceipt("
+            "std::move(mint_key),"
+            "std::move(relation_binding.relation_binding->binding),live_state);"
+            "claim_owned=false;"
+        )
+        guarded_rollback = (
+            "if(claim_owned&&claimed_state!=nullptr){"
+            "claimed_state->release_receipt_claim();}"
+        )
+        if (
+            len(find_call_identifier_uses(mint_body, "try_claim_receipt")) != 1
+            or compact_mint.count(
+                WORKER_CLEANUP_RECEIPT_MINT_PROCESS_CLASSIFICATION
+            )
+            != 1
+            or compact_mint.count(
+                WORKER_CLEANUP_RECEIPT_MINT_RESOURCE_CLASSIFICATION
+            )
+            != 1
+            or compact_mint.count(
+                WORKER_CLEANUP_RECEIPT_MINT_FAILURE_CLASSIFICATION
+            )
+            != 1
+            or re.search(
+                r"(?:claimed\.diagnostic\.native_error(?:==|!=)|"
+                r"(?:==|!=)claimed\.diagnostic\.native_error)",
+                compact_mint,
+            )
+            or len(
+                find_code_identifier_uses(
+                    mint_body, WORKER_CLEANUP_RECEIPT_MINT_KEY_IDENTIFIER
+                )
+            )
+            != 1
+            or len(
+                find_code_identifier_uses(mint_body, WORKER_CLEANUP_RECEIPT_IDENTIFIER)
+            )
+            != 1
+            or compact_mint.count(success_chain) != 1
+            or compact_mint.count(guarded_rollback) != 3
+        ):
+            self.fail(
+                relative,
+                mint_line_offset + 1,
+                "worker-cleanup receipt mint must be the sole claim-to-key-to-"
+                "receipt construction chain, classify process mismatch from "
+                "the live creator PID, preserve lower resource exhaustion, "
+                "and guard rollback on every exception",
+            )
+
+        if (
+            compact_text.count(
+                "receipt_claimed_.compare_exchange_strong(expected,true,"
+                "std::memory_order_acq_rel,std::memory_order_acquire)"
+            )
+            != 1
+            or len(
+                find_code_identifier_uses(
+                    text, WORKER_CLEANUP_RECEIPT_MINT_KEY_IDENTIFIER
+                )
+            )
+            != 1
+            or len(
+                find_code_identifier_uses(text, WORKER_CLEANUP_RECEIPT_IDENTIFIER)
+            )
+            != 1
+        ):
+            self.fail(
+                relative,
+                mint_line_offset + 1,
+                "WaveStore must contain exactly one receipt CAS and one private "
+                "production receipt construction use site",
+            )
+
+    def validate_worker_cleanup_receipt_test_catalog(
+        self, cmake_text: str, test_runner_text: str
+    ) -> None:
+        target = WORKER_CLEANUP_RECEIPT_TEST_TARGET
+        active_cmake = _mask_definitely_inactive_cmake(cmake_text)
+        cmake_code = _mask_cmake_comments(active_cmake)
+        cmake_count_code = _mask_cmake_comments_and_literals(active_cmake)
+        cmake_commands = _cmake_command_records(active_cmake)
+        test_runner_code = _mask_shell_comments(test_runner_text)
+        target_commands = [
+            command
+            for command in cmake_commands
+            if command.name == "add_executable"
+            and _cmake_first_argument(command.body) == target
+        ]
+        if len(target_commands) != 1:
+            self.fail(
+                WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
+                1,
+                "worker-cleanup receipt dedicated CMake target must occur "
+                f"exactly once, found {len(target_commands)}",
+            )
+        else:
+            start = target_commands[0].start
+            following = next(
+                (
+                    command
+                    for command in cmake_commands
+                    if command.name == "add_executable" and command.start > start
+                ),
+                None,
+            )
+            end = len(cmake_code) if following is None else following.start
+            observed = _compact_cpp_code(cmake_code[start:end])
+            if observed != WORKER_CLEANUP_RECEIPT_CMAKE_CATALOG_BLOCK:
+                self.fail(
+                    WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
+                    cmake_text.count("\n", 0, start) + 1,
+                    "worker-cleanup receipt dedicated target must retain its "
+                    "exact source, linkage, CTest name, labels, and timeouts",
+                )
+
+        if (
+            len(
+                re.findall(
+                    rf"(?<![A-Za-z0-9_]){re.escape(target)}(?![A-Za-z0-9_])",
+                    cmake_count_code,
+                )
+            )
+            != 5
+            or len(
+                re.findall(
+                    rf"(?<![A-Za-z0-9_])"
+                    rf"{re.escape(WORKER_CLEANUP_RECEIPT_CTEST_NAME)}"
+                    rf"(?![A-Za-z0-9_])",
+                    cmake_count_code,
+                )
+            )
+            != 3
+            or cmake_count_code.count(WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE)
+            != 1
+        ):
+            self.fail(
+                WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
+                1,
+                "worker-cleanup receipt CMake target/name/source counts are not closed",
+            )
+
+        def array_body(name: str) -> str | None:
+            match = re.search(
+                rf"(?ms)^{re.escape(name)}=\(\s*\n(.*?)^\)\s*$",
+                test_runner_code,
+            )
+            return None if match is None else match.group(1)
+
+        all_tests = array_body("ALL_TEST_BINARIES")
+        module_tests = array_body("MODULE_TESTS")
+        test_timeouts = array_body("TEST_TIMEOUT")
+        test_tiers = array_body("TEST_TIER")
+        for name, body in (
+            ("ALL_TEST_BINARIES", all_tests),
+            ("MODULE_TESTS", module_tests),
+            ("TEST_TIMEOUT", test_timeouts),
+            ("TEST_TIER", test_tiers),
+        ):
+            if body is None:
+                self.fail(
+                    WORKER_CLEANUP_RECEIPT_TEST_RUNNER_FILE,
+                    1,
+                    f"worker-cleanup receipt test catalog cannot locate {name}",
+                )
+        if any(
+            body is None
+            for body in (all_tests, module_tests, test_timeouts, test_tiers)
+        ):
+            return
+
+        assert all_tests is not None
+        assert module_tests is not None
+        assert test_timeouts is not None
+        assert test_tiers is not None
+        all_test_entries = re.findall(
+            rf"(?m)^\s*{re.escape(target)}\s*$", all_tests
+        )
+        timeout_entries = re.findall(
+            rf"(?m)^\s*{re.escape(target)}\s+180\s*$", test_timeouts
+        )
+        tier_entries = re.findall(
+            rf'(?m)^\s*{re.escape(target)}\s+"slow"\s*$', test_tiers
+        )
+        sieve_module = re.search(r'(?m)^\s*sieve\s+"([^"]*)"\s*$', module_tests)
+        module_count = (
+            0
+            if sieve_module is None
+            else sieve_module.group(1).split().count(target)
+        )
+        source = re.escape(WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE)
+        path_mapping = re.findall(
+            rf'(?m)^\s*[^\n]*{source}[^\n]*\)\s*echo\s+"sieve"\s*;;\s*$',
+            test_runner_code,
+        )
+        total_target_uses = len(
+            re.findall(
+                rf"(?<![A-Za-z0-9_]){re.escape(target)}(?![A-Za-z0-9_])",
+                test_runner_code,
+            )
+        )
+        if (
+            len(all_test_entries) != 1
+            or len(timeout_entries) != 1
+            or len(tier_entries) != 1
+            or module_count != 1
+            or len(path_mapping) != 1
+            or total_target_uses != 5
+        ):
+            self.fail(
+                WORKER_CLEANUP_RECEIPT_TEST_RUNNER_FILE,
+                1,
+                "worker-cleanup receipt dedicated test must appear exactly "
+                "once in the binary, sieve-module, 180-second timeout, slow-tier, "
+                "and path-to-module catalogs",
             )
 
     def validate_merge_commit_authority_contract(
@@ -7614,12 +11765,14 @@ class Checks:
 
         if relative == MERGE_PREPARED_ADMISSION_INTERFACE_FILE:
             project_includes = {
-                match.group(1)
-                for match in re.finditer(
-                    r"(?m)^\s*#\s*include\s*[<\"]([^>\"]+)[>\"]", text
+                record.spelling
+                for record in _cpp_include_records(text)
+                if record.directive == "include"
+                and record.spelling is not None
+                and (
+                    record.spelling.startswith("gnfs/")
+                    or record.spelling.startswith("distributed_sieve_")
                 )
-                if match.group(1).startswith("gnfs/")
-                or match.group(1).startswith("distributed_sieve_")
             }
             expected_project_includes = {
                 "gnfs/sieve/distributed_sieve_protocol.hpp",
@@ -8146,13 +12299,15 @@ class Checks:
         )
         logical = _logical_preprocessor_text(text)
         for pragma in re.finditer(
-            r"(?m)^[ \t]*(?:#|%:)[ \t]*pragma[ \t]+"
+            rf"{CPP_PREPROCESSOR_LINE_START}{CPP_PREPROCESSOR_HSPACE}*"
+            rf"(?:#|%:){CPP_PREPROCESSOR_HSPACE}*pragma"
+            rf"{CPP_PREPROCESSOR_HSPACE}+"
             r"(?:push_macro|pop_macro)\b",
             logical,
         ):
             self.fail(
                 relative,
-                logical.count("\n", 0, pragma.start()) + 1,
+                _source_line_number(logical, pragma.start()),
                 "push_macro/pop_macro pragmas cannot reach the "
                 "MergePrepared protected interval",
             )
@@ -9191,7 +13346,9 @@ class Checks:
                 )
             logical_tail = _logical_preprocessor_text(text[guard.end() :])
             if re.search(
-                r"(?m)^[ \t]*(?:#|%:)[ \t]*include\b", logical_tail
+                rf"{CPP_PREPROCESSOR_LINE_START}{CPP_PREPROCESSOR_HSPACE}*"
+                rf"(?:#|%:){CPP_PREPROCESSOR_HSPACE}*include\b",
+                logical_tail,
             ):
                 self.fail(
                     relative,
@@ -10129,10 +14286,11 @@ class Checks:
     ) -> None:
         interface_leaf = MERGE_COORDINATOR_INTERFACE_FILE.rsplit("/", 1)[-1]
         coordinator_header_includes = [
-            line_number
-            for line_number, line in enumerate(text.splitlines(), start=1)
-            if re.match(r"^[ \t]*#[ \t]*include\b", line)
-            and interface_leaf in line
+            record.line
+            for record in _cpp_include_records(text)
+            if record.directive == "include"
+            and record.spelling is not None
+            and interface_leaf in record.spelling
         ]
         if relative not in MERGE_COORDINATOR_USE_SITE_ALLOWLIST:
             for line_number in coordinator_header_includes:
@@ -10560,10 +14718,12 @@ class Checks:
         self, relative: str, text: str
     ) -> None:
         coordinator_header_includes = [
-            line_number
-            for line_number, line in enumerate(text.splitlines(), start=1)
-            if re.match(r"^[ \t]*#[ \t]*include\b", line)
-            and WORKER_COORDINATOR_INTERFACE_FILE.rsplit("/", 1)[-1] in line
+            record.line
+            for record in _cpp_include_records(text)
+            if record.directive == "include"
+            and record.spelling is not None
+            and WORKER_COORDINATOR_INTERFACE_FILE.rsplit("/", 1)[-1]
+            in record.spelling
         ]
         if relative not in WORKER_COORDINATOR_USE_SITE_ALLOWLIST:
             for line_number in coordinator_header_includes:
@@ -10604,14 +14764,15 @@ class Checks:
         if relative not in WORKER_COORDINATOR_PRODUCTION_FILES:
             return
 
-        for line_number, line in enumerate(text.splitlines(), start=1):
+        for record in _cpp_include_records(text):
             if (
-                re.match(r"^[ \t]*#[ \t]*include\b", line)
-                and WORKER_COORDINATOR_LEGACY_PUBLIC_HEADER in line
+                record.directive == "include"
+                and record.spelling is not None
+                and WORKER_COORDINATOR_LEGACY_PUBLIC_HEADER in record.spelling
             ):
                 self.fail(
                     relative,
-                    line_number,
+                    record.line,
                     "worker coordinator must not include the legacy public "
                     "distributed-sieve header",
                 )
@@ -11655,6 +15816,29 @@ class Checks:
                     1,
                     "worker-coordinator production inventory file is missing",
                 )
+
+        receipt_catalog_texts: dict[str, str] = {}
+        for relative in (
+            WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
+            WORKER_CLEANUP_RECEIPT_TEST_RUNNER_FILE,
+        ):
+            try:
+                receipt_catalog_texts[relative] = (self.root / relative).read_text(
+                    encoding="utf-8"
+                )
+            except (OSError, UnicodeError) as exc:
+                self.fail(
+                    relative,
+                    1,
+                    f"cannot read worker-cleanup receipt test catalog: {exc}",
+                )
+        if len(receipt_catalog_texts) == 2:
+            self.validate_worker_cleanup_receipt_test_catalog(
+                receipt_catalog_texts[WORKER_CLEANUP_RECEIPT_CMAKE_FILE],
+                receipt_catalog_texts[WORKER_CLEANUP_RECEIPT_TEST_RUNNER_FILE],
+            )
+
+        self.validate_worker_cleanup_receipt_git_indexed_text_inventory()
 
         for relative, path in self.source_files():
             try:
@@ -15066,6 +19250,7 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
         == {
             WORKER_CLEANUP_TAIL_AUTHORITY_IMPLEMENTATION_FILE,
             WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
+            MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE,
         },
         "worker-cleanup tail authority include allowlist is not exact",
     )
@@ -15120,6 +19305,7 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
                 MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE,
                 MERGE_COMMIT_AUTHORITY_WAVE_STORE_INTERFACE_FILE,
                 WORKER_CLEANUP_TAIL_AUTHORITY_IMPLEMENTATION_FILE,
+                WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
                 MERGE_COMMIT_AUTHORITY_TEST_FILE,
             },
         },
@@ -15225,6 +19411,1803 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
         ),
         "worker-cleanup tail accepted a second committed-tail release: "
         f"{duplicated_release_checks.errors}",
+    )
+
+    expect(
+        WORKER_CLEANUP_RECEIPT_IDENTIFIER_ALLOWLISTS
+        == {
+            WORKER_CLEANUP_RECEIPT_MINT_AUTHORITY_IDENTIFIER: {
+                WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+                WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+                WORKER_CLEANUP_RECEIPT_WAVE_STORE_INTERFACE_FILE,
+                WORKER_CLEANUP_RECEIPT_AUTHORITY_IMPLEMENTATION_FILE,
+                WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE,
+            },
+            WORKER_CLEANUP_RECEIPT_MINT_ENTRY_IDENTIFIER: {
+                WORKER_CLEANUP_RECEIPT_AUTHORITY_IMPLEMENTATION_FILE,
+                WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE,
+                WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
+            },
+            WORKER_CLEANUP_RECEIPT_MINT_KEY_IDENTIFIER: {
+                WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+                WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+                WORKER_CLEANUP_RECEIPT_LEGACY_SURFACE_TEST_FILE,
+            },
+            WORKER_CLEANUP_RECEIPT_IDENTIFIER: {
+                WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE,
+                WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+                WORKER_CLEANUP_RECEIPT_RELATION_UNION_IMPLEMENTATION_FILE,
+                WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+                WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE,
+                WORKER_CLEANUP_RECEIPT_LEGACY_SURFACE_TEST_FILE,
+                WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE,
+            },
+            WORKER_CLEANUP_RECEIPT_OWNED_BRIDGE_IDENTIFIER: {
+                WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+                WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+                WORKER_CLEANUP_RECEIPT_WAVE_STORE_INTERFACE_FILE,
+            },
+            WORKER_CLEANUP_RECEIPT_RELEASE_BRIDGE_IDENTIFIER: {
+                WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+                WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+                WORKER_CLEANUP_RECEIPT_WAVE_STORE_INTERFACE_FILE,
+            },
+            "revalidate_root_only_sticky": {
+                WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+                WORKER_CLEANUP_RECEIPT_WAVE_STORE_INTERFACE_FILE,
+            },
+            "try_claim_receipt": {
+                WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+                WORKER_CLEANUP_RECEIPT_WAVE_STORE_INTERFACE_FILE,
+            },
+            "release_receipt_claim": {
+                WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+                WORKER_CLEANUP_RECEIPT_WAVE_STORE_INTERFACE_FILE,
+            },
+        },
+        "worker-cleanup receipt identifier allowlists are not exact",
+    )
+    expect(
+        WORKER_CLEANUP_RECEIPT_DEDICATED_TEST_FUNCTIONS
+        == (
+            "test_cleanup_receipt_requires_one_canonical_active_frontier",
+            "test_cleanup_receipt_single_live_move_release_base_lock_and_fork",
+            "test_cleanup_receipt_spend_retains_claim_and_ignores_private_relation_changes",
+            "test_cleanup_receipt_sticky_invalidates_same_byte_authorization_replacement",
+            "test_cleanup_receipt_anchors_the_complete_completed_prefix",
+            "test_cleanup_receipt_sticky_invalidates_added_cleanup_leaf",
+        ),
+        "worker-cleanup receipt dedicated test inventory is not exact",
+    )
+    expect(
+        set(WORKER_CLEANUP_RECEIPT_DEDICATED_TEST_BODY_SHA256)
+        == set(WORKER_CLEANUP_RECEIPT_DEDICATED_TEST_FUNCTIONS)
+        == set(WORKER_CLEANUP_RECEIPT_REQUIRED_TEST_BODY_FRAGMENTS),
+        "worker-cleanup receipt dedicated test body closure is not exact",
+    )
+
+    worker_cleanup_receipt_source_files = {
+        WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE,
+        *(
+            relative
+            for allowlist in WORKER_CLEANUP_RECEIPT_IDENTIFIER_ALLOWLISTS.values()
+            for relative in allowlist
+        ),
+    }
+    worker_cleanup_receipt_sources = {
+        relative: (Path(__file__).resolve().parents[1] / relative).read_text(
+            encoding="utf-8"
+        )
+        for relative in worker_cleanup_receipt_source_files
+    }
+    exact_worker_cleanup_receipt_checks = Checks(Path("."))
+    for relative, source in worker_cleanup_receipt_sources.items():
+        exact_worker_cleanup_receipt_checks.validate_worker_cleanup_receipt_authority_use_site(
+            relative, source
+        )
+    expect(
+        not exact_worker_cleanup_receipt_checks.errors,
+        "exact worker-cleanup receipt boundary was rejected: "
+        f"{exact_worker_cleanup_receipt_checks.errors}",
+    )
+    receipt_class_decoy_source = (
+        'constexpr auto receipt_class_decoy = R"GNFS('
+        "class OOCPrivateHandoffCleanupAuthorizationReceipt final { public: };"
+        ')GNFS";\n'
+        + worker_cleanup_receipt_sources[
+            WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE
+        ]
+    )
+    receipt_class_decoy_checks = Checks(Path("."))
+    receipt_class_decoy_checks.validate_worker_cleanup_receipt_authority_use_site(
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+        receipt_class_decoy_source,
+    )
+    receipt_class_decoy_span = _class_definition_body_span(
+        receipt_class_decoy_source, WORKER_CLEANUP_RECEIPT_IDENTIFIER
+    )
+    expect(
+        receipt_class_decoy_span is not None
+        and _compact_cpp_sha256(
+            receipt_class_decoy_source[
+                receipt_class_decoy_span[0] : receipt_class_decoy_span[1]
+            ]
+        )
+        == WORKER_CLEANUP_RECEIPT_CLASS_BODY_SHA256
+        and not any(
+            "receipt and its mint key must remain source-private exact classes"
+            in error
+            or "receipt whole class, public/private access surface" in error
+            for error in receipt_class_decoy_checks.errors
+        ),
+        "raw literal class decoy confused the receipt class-span parser: "
+        f"{receipt_class_decoy_checks.errors}",
+    )
+    inactive_receipt_class_checks = Checks(Path("."))
+    inactive_receipt_class_checks.validate_worker_cleanup_receipt_authority_use_site(
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+        "#if 0\n"
+        "class OOCPrivateHandoffCleanupAuthorizationReceipt final {};\n"
+        "#endif\n"
+        + worker_cleanup_receipt_sources[
+            WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE
+        ],
+    )
+    expect(
+        not inactive_receipt_class_checks.errors,
+        "literal #if 0 class decoy confused the receipt class span: "
+        f"{inactive_receipt_class_checks.errors}",
+    )
+
+    untrusted_worker_cleanup_receipt_checks = Checks(Path("."))
+    untrusted_worker_cleanup_receipt_checks.validate_worker_cleanup_receipt_authority_use_site(
+        "src/sieve/untrusted_worker_cleanup_receipt.cpp",
+        "DistributedSieveWorkerCleanupReceiptMintAuthorityV1 authority;\n",
+    )
+    expect(
+        any(
+            "closed identifier code-use count/context is not exact for "
+            "DistributedSieveWorkerCleanupReceiptMintAuthorityV1"
+            in error
+            for error in untrusted_worker_cleanup_receipt_checks.errors
+        ),
+        "worker-cleanup receipt mint authority escaped its use-site gate: "
+        f"{untrusted_worker_cleanup_receipt_checks.errors}",
+    )
+    untrusted_receipt_value_checks = Checks(Path("."))
+    untrusted_receipt_value_checks.validate_worker_cleanup_receipt_authority_use_site(
+        "src/sieve/untrusted_worker_cleanup_receipt.cpp",
+        "OOCPrivateHandoffCleanupAuthorizationReceipt* receipt = nullptr;\n",
+    )
+    expect(
+        any(
+            "closed identifier code-use count/context is not exact for "
+            "OOCPrivateHandoffCleanupAuthorizationReceipt"
+            in error
+            for error in untrusted_receipt_value_checks.errors
+        ),
+        "worker-cleanup receipt value escaped its repo-wide use-site gate: "
+        f"{untrusted_receipt_value_checks.errors}",
+    )
+    for newline_name, physical_newline in (
+        ("LF", "\n"),
+        ("CRLF", "\r\n"),
+        ("CR", "\r"),
+    ):
+        for introducer in ("#", "%:"):
+            line_spliced_receipt_checks = Checks(Path("."))
+            line_spliced_receipt_checks.validate_worker_cleanup_receipt_authority_use_site(
+                "src/sieve/untrusted_worker_cleanup_receipt.cpp",
+                f"{introducer}\vdefine GNFS_UNRELATED_SPLICE 1"
+                + physical_newline
+                + "OOCPrivateHandoffCleanupAuthorizationRece\\"
+                + physical_newline
+                + "ipt* receipt;"
+                + physical_newline,
+            )
+            expect(
+                any(
+                    "closed identifier code-use count/context is not exact for "
+                    "OOCPrivateHandoffCleanupAuthorizationReceipt"
+                    in error
+                    for error in line_spliced_receipt_checks.errors
+                ),
+                "translation-phase line splicing escaped the receipt use-site "
+                f"gate for {newline_name}/{introducer}: "
+                f"{line_spliced_receipt_checks.errors}",
+            )
+    macro_receipt_checks = Checks(Path("."))
+    macro_receipt_checks.validate_worker_cleanup_receipt_authority_use_site(
+        WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE,
+        "#define CLEANUP_RECEIPT_ALIAS "
+        "OOCPrivateHandoffCleanupAuthorizationReceipt\n",
+    )
+    expect(
+        any(
+            "macro replacement cannot mention Tier-A tokens"
+            in error
+            for error in macro_receipt_checks.errors
+        ),
+        "a macro alias escaped the receipt closed-identifier gate: "
+        f"{macro_receipt_checks.errors}",
+    )
+    macro_target_receipt_checks = Checks(Path("."))
+    macro_target_receipt_checks.validate_worker_cleanup_receipt_authority_use_site(
+        WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE,
+        "#define OOCPrivateHandoffCleanupAuthorizationReceipt forged_receipt\n",
+    )
+    expect(
+        any(
+            "Tier-A token cannot have macro provenance" in error
+            for error in macro_target_receipt_checks.errors
+        ),
+        "a protected receipt macro target escaped closure: "
+        f"{macro_target_receipt_checks.errors}",
+    )
+    pragma_receipt_checks = Checks(Path("."))
+    pragma_receipt_checks.validate_worker_cleanup_receipt_authority_use_site(
+        WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE,
+        '_Pragma("push_macro(\\"OOCPrivateHandoffCleanupAuthorizationReceipt\\")")\n',
+    )
+    expect(
+        any(
+            "push_macro/pop_macro cannot target worker-cleanup Tier-A token"
+            in error
+            for error in pragma_receipt_checks.errors
+        ),
+        "a receipt push-macro pragma escaped closure: "
+        f"{pragma_receipt_checks.errors}",
+    )
+    unrelated_pragma_checks = Checks(Path("."))
+    unrelated_pragma_checks.validate_worker_cleanup_receipt_authority_use_site(
+        "src/sieve/untrusted_worker_cleanup_receipt.cpp",
+        '#pragma push_macro("UNRELATED_TEST_MACRO")\n'
+        '_Pragma("GCC diagnostic push")\n',
+    )
+    expect(
+        not unrelated_pragma_checks.errors,
+        "unrelated pragma was rejected by the receipt macro gate: "
+        f"{unrelated_pragma_checks.errors}",
+    )
+    token_pasted_receipt_checks = Checks(Path("."))
+    token_pasted_receipt_checks.validate_worker_cleanup_receipt_authority_use_site(
+        "src/sieve/untrusted_worker_cleanup_receipt.cpp",
+        "#define GNFS_RECEIPT_JOIN(left, right) left##right\n"
+        "GNFS_RECEIPT_JOIN(\n"
+        "    OOCPrivateHandoffCleanupAuthorization,\n"
+        "    Receipt)* receipt;\n",
+    )
+    expect(
+        any(
+            "token-paste macro definition is not one of the four" in error
+            for error in token_pasted_receipt_checks.errors
+        ),
+        "token pasting escaped the receipt closed-identifier gate: "
+        f"{token_pasted_receipt_checks.errors}",
+    )
+    receipt_literal_decoy_checks = Checks(Path("."))
+    receipt_literal_decoy_checks.validate_worker_cleanup_receipt_authority_use_site(
+        "src/sieve/untrusted_worker_cleanup_receipt.cpp",
+        "// OOCPrivateHandoffCleanupAuthorizationReceipt\n"
+        "// OOCPrivateHandoffCleanupAuthorizationRece"
+        + "\\\n"
+        + "ipt remains in the phase-2 line comment\n"
+        'const char* decoy = R"GNFS(OOCPrivateHandoffCleanupAuthorizationReceipt)GNFS";\n',
+    )
+    expect(
+        not receipt_literal_decoy_checks.errors,
+        "receipt use-site parsing did not mask comments and literals: "
+        f"{receipt_literal_decoy_checks.errors}",
+    )
+    punctuation_decoy_checks = Checks(Path("."))
+    punctuation_decoy_checks.validate_worker_cleanup_receipt_authority_use_site(
+        "src/sieve/untrusted_worker_cleanup_receipt.cpp",
+        "const auto release_receipt_ = claim();\n",
+    )
+    expect(
+        not punctuation_decoy_checks.errors,
+        "ordinary punctuation was misclassified as receipt token paste: "
+        f"{punctuation_decoy_checks.errors}",
+    )
+    tier_a_replacement_checks = Checks(Path("."))
+    tier_a_replacement_checks.validate_worker_cleanup_receipt_authority_use_site(
+        "src/sieve/untrusted_worker_cleanup_receipt.cpp",
+        "#define GNFS_ACCESS_ALIAS private\n",
+    )
+    expect(
+        any(
+            "macro replacement cannot mention Tier-A tokens" in error
+            for error in tier_a_replacement_checks.errors
+        ),
+        "a repo-wide Tier-A access-token alias escaped macro closure: "
+        f"{tier_a_replacement_checks.errors}",
+    )
+    unrelated_macro_checks = Checks(Path("."))
+    unrelated_macro_checks.validate_worker_cleanup_receipt_authority_use_site(
+        "src/sieve/untrusted_worker_cleanup_receipt.cpp",
+        "#define GNFS_UNRELATED_VALUE 17\n#undef GNFS_UNRELATED_VALUE\n",
+    )
+    expect(
+        not unrelated_macro_checks.errors,
+        "an unrelated macro was rejected by receipt macro closure: "
+        f"{unrelated_macro_checks.errors}",
+    )
+    protected_shared_header = "include/gnfs/core/types.hpp"
+    protected_shared_source = (
+        Path(__file__).resolve().parents[1] / protected_shared_header
+    ).read_text(encoding="utf-8")
+    tier_b_header_checks = Checks(Path("."))
+    tier_b_header_checks.validate_worker_cleanup_receipt_authority_use_site(
+        protected_shared_header,
+        "#define claimed_state forged_state\n" + protected_shared_source,
+    )
+    expect(
+        any(
+            "macro provenance targets Tier-B token claimed_state" in error
+            for error in tier_b_header_checks.errors
+        ),
+        "a Tier-B macro in a recursive protected header escaped closure: "
+        f"{tier_b_header_checks.errors}",
+    )
+    dedicated_body_tier_b_header_checks = Checks(Path("."))
+    dedicated_body_tier_b_header_checks.validate_worker_cleanup_receipt_authority_use_site(
+        protected_shared_header,
+        "#define manifest_order_ordinal forged_ordinal\n"
+        + protected_shared_source,
+    )
+    expect(
+        any(
+            "macro provenance targets Tier-B token manifest_order_ordinal" in error
+            for error in dedicated_body_tier_b_header_checks.errors
+        ),
+        "a dedicated-test-body Tier-B token escaped recursive header closure: "
+        f"{dedicated_body_tier_b_header_checks.errors}",
+    )
+    unrelated_tier_b_checks = Checks(Path("."))
+    unrelated_tier_b_checks.validate_worker_cleanup_receipt_authority_use_site(
+        "src/util/untrusted_receipt_decoy.cpp",
+        "#define claimed_state harmless_outside_the_protected_units\n",
+    )
+    expect(
+        not unrelated_tier_b_checks.errors,
+        "a unit-scoped Tier-B token was incorrectly banned repo-wide: "
+        f"{unrelated_tier_b_checks.errors}",
+    )
+    inactive_receipt_macro_checks = Checks(Path("."))
+    inactive_receipt_macro_checks.validate_worker_cleanup_receipt_authority_use_site(
+        "src/sieve/untrusted_worker_cleanup_receipt.cpp",
+        "#if 0\n"
+        "#define private public\n"
+        "#define GNFS_INACTIVE_JOIN(left, right) left##right\n"
+        "OOCPrivateHandoffCleanupAuthorizationReceipt inactive_receipt;\n"
+        "#endif\n"
+        "int active_unrelated_value = 0;\n",
+    )
+    expect(
+        not inactive_receipt_macro_checks.errors,
+        "literal #if 0 receipt/macro decoys were treated as live: "
+        f"{inactive_receipt_macro_checks.errors}",
+    )
+    unknown_receipt_macro_checks = Checks(Path("."))
+    unknown_receipt_macro_checks.validate_worker_cleanup_receipt_authority_use_site(
+        "src/sieve/untrusted_worker_cleanup_receipt.cpp",
+        "#if GNFS_UNKNOWN_PLATFORM_BRANCH\n#define private public\n#endif\n",
+    )
+    expect(
+        any(
+            "Tier-A token cannot have macro provenance" in error
+            for error in unknown_receipt_macro_checks.errors
+        ),
+        "an unknown platform branch was incorrectly treated as inactive: "
+        f"{unknown_receipt_macro_checks.errors}",
+    )
+    raw_if0_escape_checks = Checks(Path("."))
+    raw_if0_escape_checks.validate_worker_cleanup_receipt_authority_use_site(
+        "src/sieve/untrusted_worker_cleanup_receipt.cpp",
+        'const char* decoy = R"GNFS(\n#if 0\n)GNFS";\n'
+        "#define private public\n",
+    )
+    expect(
+        any(
+            "Tier-A token cannot have macro provenance" in error
+            for error in raw_if0_escape_checks.errors
+        ),
+        "a raw-string #if 0 decoy hid a later live protected macro: "
+        f"{raw_if0_escape_checks.errors}",
+    )
+    raw_directive_decoy = (
+        'const char* decoy = R"GNFS(\n'
+        '#define private public\n'
+        '#pragma push_macro("private")\n'
+        '#include_next <gnfs/core/types.hpp>\n'
+        ')GNFS";\n'
+    )
+    raw_directive_decoy_checks = Checks(Path("."))
+    raw_directive_decoy_checks.validate_worker_cleanup_receipt_authority_use_site(
+        "src/sieve/untrusted_worker_cleanup_receipt.cpp",
+        raw_directive_decoy,
+    )
+    expect(
+        not raw_directive_decoy_checks.errors,
+        "raw-string macro/pragma/include decoys were treated as directives: "
+        f"{raw_directive_decoy_checks.errors}",
+    )
+    horizontal_whitespace_source = (
+        "#\vdefine private public\r\n"
+        "#\fundef private\r\n"
+        "#\vinclude <gnfs/not_indexed_vt.tokens>\r\n"
+        "#\finclude_next <gnfs/core/types.hpp>\r\n"
+        "#\vimport <gnfs/core/types.hpp>\r\n"
+        '#\fpragma push_macro("private")\r\n'
+    )
+    expect(
+        [
+            (directive, identifier, line)
+            for directive, identifier, _, line in _preprocessor_macro_records(
+                horizontal_whitespace_source
+            )
+        ]
+        == [("define", "private", 1), ("undef", "private", 2)],
+        "VT/FF macro directives or CRLF line numbers escaped helper parsing: "
+        f"{_preprocessor_macro_records(horizontal_whitespace_source)}",
+    )
+    expect(
+        [
+            (record.directive, record.spelling, record.line)
+            for record in _cpp_include_records(horizontal_whitespace_source)
+        ]
+        == [
+            ("include", "gnfs/not_indexed_vt.tokens", 3),
+            ("include_next", "gnfs/core/types.hpp", 4),
+            ("import", "gnfs/core/types.hpp", 5),
+        ]
+        and _receipt_macro_pragma_targets(horizontal_whitespace_source)
+        == [("private", 6)],
+        "VT/FF include/import/pragma directives escaped CRLF-safe helpers",
+    )
+    inactive_horizontal_whitespace = (
+        "#\vif 0\r\n"
+        "#\fdefine private public\r\n"
+        "#\vendif\r\n"
+        "#\fdefine protected public\r\n"
+    )
+    expect(
+        [
+            (directive, identifier, line)
+            for directive, identifier, _, line in _preprocessor_macro_records(
+                inactive_horizontal_whitespace
+            )
+        ]
+        == [("define", "protected", 4)],
+        "VT/FF conditional masking split horizontal whitespace as a line break: "
+        f"{_preprocessor_macro_records(inactive_horizontal_whitespace)}",
+    )
+
+    horizontal_macro_checks = Checks(Path("."))
+    horizontal_macro_checks.validate_worker_cleanup_receipt_authority_use_site(
+        "src/sieve/untrusted_worker_cleanup_receipt.cpp",
+        "#\vdefine private public\r\n"
+        "#\fundef protected\r\n"
+        '#\vpragma push_macro("private")\r\n',
+    )
+    expect(
+        any("#define private" in error for error in horizontal_macro_checks.errors)
+        and any(
+            "#undef protected" in error
+            for error in horizontal_macro_checks.errors
+        )
+        and any(
+            "push_macro/pop_macro" in error
+            for error in horizontal_macro_checks.errors
+        ),
+        "VT/FF macro/pragma directives escaped authority validation: "
+        f"{horizontal_macro_checks.errors}",
+    )
+    relation_source_for_horizontal_whitespace = worker_cleanup_receipt_sources[
+        WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE
+    ]
+    for whitespace_name, horizontal_whitespace in (("VT", "\v"), ("FF", "\f")):
+        for directive, spelling, expected_error in (
+            (
+                "include",
+                "gnfs/not_indexed_horizontal_whitespace.tokens",
+                "cannot resolve or allowlist angle include",
+            ),
+            (
+                "include_next",
+                "gnfs/core/types.hpp",
+                "forbids active #include_next",
+            ),
+            (
+                "import",
+                "gnfs/core/types.hpp",
+                "forbids active #import",
+            ),
+        ):
+            horizontal_include_checks = Checks(Path("."))
+            horizontal_include_checks.validate_worker_cleanup_receipt_authority_use_site(
+                WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE,
+                f"#{horizontal_whitespace}{directive} <{spelling}>\r\n"
+                + relation_source_for_horizontal_whitespace,
+            )
+            expect(
+                any(
+                    expected_error in error
+                    for error in horizontal_include_checks.errors
+                ),
+                f"{whitespace_name} #{directive} escaped protected include "
+                f"validation: {horizontal_include_checks.errors}",
+            )
+
+    raw_horizontal_whitespace_decoy = (
+        'const char* decoy = R"GNFS(\n'
+        "#\vdefine private public\n"
+        '#\fpragma push_macro("private")\n'
+        "#\vinclude_next <gnfs/core/types.hpp>\n"
+        ')GNFS";\n'
+    )
+    expect(
+        not _preprocessor_macro_records(raw_horizontal_whitespace_decoy)
+        and not _cpp_include_records(raw_horizontal_whitespace_decoy)
+        and not _receipt_macro_pragma_targets(raw_horizontal_whitespace_decoy),
+        "raw-string VT/FF directive decoys were treated as live",
+    )
+    clangxx = shutil.which("clang++")
+    if clangxx is not None:
+        for whitespace_name, horizontal_whitespace in (
+            ("VT", "\v"),
+            ("FF", "\f"),
+        ):
+            clang_source = (
+                f"#{horizontal_whitespace}define private public\nprivate int x;\n"
+            )
+            clang_preprocess = subprocess.run(
+                [clangxx, "-E", "-P", "-x", "c++", "-"],
+                input=clang_source.encode("utf-8"),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            expect(
+                clang_preprocess.returncode == 0
+                and b"public int x;" in clang_preprocess.stdout
+                and any(
+                    directive == "define" and identifier == "private"
+                    for directive, identifier, _, _ in _preprocessor_macro_records(
+                        clang_source
+                    )
+                ),
+                f"clang/checker disagreed on {whitespace_name} directive "
+                "whitespace: "
+                + clang_preprocess.stderr.decode("utf-8", errors="replace"),
+            )
+
+    include_validator_matrix = (
+        (
+            "merge-commit use-site",
+            "validate_merge_commit_authority_use_site",
+            "src/sieve/untrusted_digraph_include.cpp",
+            MERGE_COMMIT_AUTHORITY_INTERFACE_INCLUDE,
+            "merge-commit authority interface include is not allowlisted",
+        ),
+        (
+            "worker-cleanup-tail use-site",
+            "validate_worker_cleanup_tail_authority_use_site",
+            "src/sieve/untrusted_digraph_include.cpp",
+            WORKER_CLEANUP_TAIL_AUTHORITY_INTERFACE_INCLUDE,
+            "worker-cleanup tail authority interface include is not allowlisted",
+        ),
+        (
+            "merge-coordinator use-site",
+            "validate_merge_coordinator_use_site",
+            "src/sieve/untrusted_digraph_include.cpp",
+            MERGE_COORDINATOR_INTERFACE_FILE.rsplit("/", 1)[-1],
+            "source-private merge-coordinator header include is not allowlisted",
+        ),
+        (
+            "worker-coordinator use-site",
+            "validate_worker_coordinator_use_site",
+            "src/sieve/untrusted_digraph_include.cpp",
+            WORKER_COORDINATOR_INTERFACE_FILE.rsplit("/", 1)[-1],
+            "source-private worker-coordinator header include is not allowlisted",
+        ),
+        (
+            "worker-coordinator production legacy include",
+            "validate_worker_coordinator_boundary",
+            "src/sieve/distributed_sieve_worker_coordinator.cpp",
+            WORKER_COORDINATOR_LEGACY_PUBLIC_HEADER,
+            "worker coordinator must not include the legacy public "
+            "distributed-sieve header",
+        ),
+    )
+    for (
+        validator_name,
+        validator_method,
+        validator_relative,
+        include_spelling,
+        expected_error,
+    ) in include_validator_matrix:
+        observed_errors: list[list[str]] = []
+        for introducer in ("#", "%:"):
+            validator_checks = Checks(Path("."))
+            getattr(validator_checks, validator_method)(
+                validator_relative,
+                f'{introducer}\vinclude\f"{include_spelling}"\r',
+            )
+            expect(
+                any(expected_error in error for error in validator_checks.errors),
+                f"{validator_name} missed {introducer} VT/FF/CR include: "
+                f"{validator_checks.errors}",
+            )
+            observed_errors.append(validator_checks.errors)
+        expect(
+            observed_errors[0] == observed_errors[1],
+            f"{validator_name} treated # and %: include differently: "
+            f"{observed_errors}",
+        )
+
+        for decoy in (
+            "%:\vif 0\r"
+            f'%:\vinclude\f"{include_spelling}"\r'
+            "%:\vendif\r",
+            'const char* decoy = R"GNFS('
+            f'%:\vinclude\f"{include_spelling}"'
+            ')GNFS";\r',
+        ):
+            decoy_checks = Checks(Path("."))
+            getattr(decoy_checks, validator_method)(validator_relative, decoy)
+            expect(
+                not any(expected_error in error for error in decoy_checks.errors),
+                f"{validator_name} treated inactive/raw digraph include as live: "
+                f"{decoy_checks.errors}",
+            )
+
+    if clangxx is not None:
+        with tempfile.TemporaryDirectory(
+            prefix="gnfs-digraph-include-clang-"
+        ) as clang_include_directory:
+            clang_include_root = Path(clang_include_directory)
+            (clang_include_root / "probe.hpp").write_text(
+                "inline constexpr int digraph_probe = 17;\n", encoding="utf-8"
+            )
+            for introducer in ("#", "%:"):
+                clang_include_source = (
+                    f'{introducer}\vinclude\f"probe.hpp"\r'
+                    "int observed = digraph_probe;\r"
+                )
+                clang_include = subprocess.run(
+                    [
+                        clangxx,
+                        "-E",
+                        "-P",
+                        "-x",
+                        "c++",
+                        "-I",
+                        clang_include_root.as_posix(),
+                        "-",
+                    ],
+                    input=clang_include_source.encode("utf-8"),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                )
+                expect(
+                    clang_include.returncode == 0
+                    and b"digraph_probe" in clang_include.stdout
+                    and [
+                        (record.directive, record.spelling, record.line)
+                        for record in _cpp_include_records(clang_include_source)
+                    ]
+                    == [("include", "probe.hpp", 1)],
+                    f"clang/checker disagreed on {introducer} VT/FF/CR include: "
+                    + clang_include.stderr.decode("utf-8", errors="replace"),
+                )
+
+    exact_guard_variants: list[str] = []
+    for introducer in ("#", "%:"):
+        exact_guard = PRIVATE_HANDOFF_PUBLICATION_MERGE_MACRO_GUARD_SOURCE
+        exact_guard = exact_guard.replace(
+            "#if ", f"{introducer}\vif\f", 1
+        ).replace(
+            "#error ", f"{introducer}\verror\f", 1
+        ).replace(
+            "#endif", f"{introducer}\vendif", 1
+        ).replace(
+            "\n", "\r"
+        )
+        exact_guard_variants.append(exact_guard)
+        expect(
+            len(_merge_prepared_macro_guard_matches(exact_guard)) == 1,
+            f"exact MergePrepared guard rejected {introducer} VT/FF/CR directives",
+        )
+    expect(
+        len(_merge_prepared_macro_guard_matches(exact_guard_variants[0]))
+        == len(_merge_prepared_macro_guard_matches(exact_guard_variants[1])),
+        "exact MergePrepared guard treated # and %: directives differently",
+    )
+    raw_guard_decoy = (
+        'const char* decoy = R"GNFS(\r'
+        + exact_guard_variants[1]
+        + '\r)GNFS";\r'
+    )
+    inactive_guard_decoy = (
+        "%:\vif 0\r"
+        + exact_guard_variants[1]
+        + "\r%:\vendif\r"
+    )
+    expect(
+        not _merge_prepared_macro_guard_matches(raw_guard_decoy)
+        and not _merge_prepared_macro_guard_matches(inactive_guard_decoy),
+        "raw/inactive exact MergePrepared guard decoy was treated as live",
+    )
+    paste_reference_graph_checks = Checks(Path("."))
+    paste_reference_graph_checks.validate_worker_cleanup_receipt_authority_use_site(
+        "src/sieve/untrusted_worker_cleanup_receipt.cpp",
+        "#define GNFS_TEST_WRAPPER TEST\n",
+    )
+    expect(
+        any(
+            "macro replacement enters the paste-capable reference graph" in error
+            for error in paste_reference_graph_checks.errors
+        ),
+        "an alias entered the exact paste-capable macro graph: "
+        f"{paste_reference_graph_checks.errors}",
+    )
+    paste_context_source = (
+        Path(__file__).resolve().parents[1] / "tests/test_i18n.cpp"
+    ).read_text(encoding="utf-8")
+    paste_context_checks = Checks(Path("."))
+    paste_context_checks.validate_worker_cleanup_receipt_authority_use_site(
+        "tests/test_i18n.cpp", paste_context_source + "\nTEST(extra_context);\n"
+    )
+    expect(
+        any(
+            "paste-capable macro code-use count/context is not exact" in error
+            for error in paste_context_checks.errors
+        ),
+        "an extra use escaped the paste-capable macro context fingerprint: "
+        f"{paste_context_checks.errors}",
+    )
+    macro_form_include_checks = Checks(Path("."))
+    macro_form_include_checks.validate_worker_cleanup_receipt_authority_use_site(
+        WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE,
+        "#define GNFS_EVIL_HEADER <gnfs/core/types.hpp>\n"
+        "#include GNFS_EVIL_HEADER\n"
+        + worker_cleanup_receipt_sources[
+            WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE
+        ],
+    )
+    expect(
+        any(
+            "protected include closure forbids macro-form #include" in error
+            for error in macro_form_include_checks.errors
+        ),
+        "a macro-form include escaped the protected translation-unit closure: "
+        f"{macro_form_include_checks.errors}",
+    )
+    for forbidden_directive in ("include_next", "import"):
+        forbidden_include_checks = Checks(Path("."))
+        forbidden_include_checks.validate_worker_cleanup_receipt_authority_use_site(
+            WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE,
+            f"#{forbidden_directive} <gnfs/core/types.hpp>\n"
+            + worker_cleanup_receipt_sources[
+                WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE
+            ],
+        )
+        expect(
+            any(
+                f"forbids active #{forbidden_directive}" in error
+                for error in forbidden_include_checks.errors
+            ),
+            f"active #{forbidden_directive} escaped protected include closure: "
+            f"{forbidden_include_checks.errors}",
+        )
+    unresolved_angle_include_checks = Checks(Path("."))
+    unresolved_angle_include_checks.validate_worker_cleanup_receipt_authority_use_site(
+        WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE,
+        "#include <gnfs/not_indexed_receipt_payload.tokens>\n"
+        + worker_cleanup_receipt_sources[
+            WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE
+        ],
+    )
+    expect(
+        any(
+            "cannot resolve or allowlist angle include" in error
+            for error in unresolved_angle_include_checks.errors
+        ),
+        "an unresolved protected angle include escaped fail-closed resolution: "
+        f"{unresolved_angle_include_checks.errors}",
+    )
+    with tempfile.TemporaryDirectory(
+        prefix="gnfs-receipt-policy-fixture-"
+    ) as temporary_directory:
+        fixture_root = Path(temporary_directory) / "repo"
+        for directory in (
+            ".hidden",
+            "cmake",
+            "include/dup",
+            "scripts",
+            "src",
+            "vendor/dup",
+        ):
+            (fixture_root / directory).mkdir(parents=True, exist_ok=True)
+        fixture_files = {
+            "CMakeLists.txt": "cmake_minimum_required(VERSION 3.20)\n",
+            "CMakePresets.json": "{}\n",
+            ".hidden/receipt.custom": "#define private public\n",
+            "cmake/extra.cmake": "# injected build surface\n",
+            "src/entry.cpp": '#include "payload.tokens"\n',
+            "src/payload.tokens": "inline int custom_extension_payload = 1;\n",
+            "src/angle.cpp": "#include <dup/receipt.tokens>\n",
+            "include/dup/receipt.tokens": "inline int include_copy = 1;\n",
+            "vendor/dup/receipt.tokens": "inline int vendor_copy = 1;\n",
+            "src/symlink.cpp": "#include <escape.tokens>\n",
+            WORKER_CLEANUP_RECEIPT_CONTROL_PLANE_POLICY_FILE: (
+                "#define private public\n"
+            ),
+            "scripts/other.py": "#define protected public\n",
+        }
+        for relative, contents in fixture_files.items():
+            (fixture_root / relative).write_text(contents, encoding="utf-8")
+        outside_payload = Path(temporary_directory) / "outside.tokens"
+        outside_payload.write_text("inline int outside = 1;\n", encoding="utf-8")
+        (fixture_root / "include/escape.tokens").symlink_to(outside_payload)
+        git_init = subprocess.run(
+            ["git", "init", "-q"],
+            cwd=fixture_root,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        git_add = subprocess.run(
+            ["git", "add", "--", "."],
+            cwd=fixture_root,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        expect(
+            git_init.returncode == 0 and git_add.returncode == 0,
+            "cannot construct temporary Git-index policy fixture: "
+            + git_init.stderr.decode("utf-8", errors="replace")
+            + git_add.stderr.decode("utf-8", errors="replace"),
+        )
+        fixture_inventory = _git_indexed_text_inventory(fixture_root)
+        expect(
+            not fixture_inventory.errors
+            and ".hidden/receipt.custom" in fixture_inventory.text_regular_files
+            and "src/payload.tokens" in fixture_inventory.text_regular_files
+            and WORKER_CLEANUP_RECEIPT_CONTROL_PLANE_POLICY_FILE
+            in fixture_inventory.text_regular_files,
+            "hidden/custom-extension Git-indexed text files escaped inventory: "
+            f"{fixture_inventory}",
+        )
+        expect(
+            _worker_cleanup_receipt_control_plane_closure_error(set()) is None
+            and _worker_cleanup_receipt_control_plane_closure_error(
+                {"scripts/other.py"}
+            )
+            is None
+            and _worker_cleanup_receipt_control_plane_closure_error(
+                {WORKER_CLEANUP_RECEIPT_CONTROL_PLANE_POLICY_FILE}
+            )
+            == (
+                "trusted control-plane policy cannot enter a protected C++ "
+                "translation-unit/CMake include closure"
+            ),
+            "the exact control-plane exception was not locked out of protected "
+            "include closure",
+        )
+
+        custom_closure, custom_closure_errors = _repo_local_include_closure(
+            fixture_root,
+            "src/entry.cpp",
+            ("include",),
+            fixture_inventory,
+        )
+        expect(
+            custom_closure == {"src/entry.cpp", "src/payload.tokens"}
+            and not custom_closure_errors,
+            "a Git-indexed custom-extension include did not enter closure: "
+            f"closure={custom_closure}, errors={custom_closure_errors}",
+        )
+        _, nonunique_angle_errors = _repo_local_include_closure(
+            fixture_root,
+            "src/angle.cpp",
+            ("include",),
+            fixture_inventory,
+        )
+        expect(
+            any(
+                "protected literal include is not unique" in error
+                for _, _, error in nonunique_angle_errors
+            ),
+            "duplicate repo-local angle include candidates escaped uniqueness: "
+            f"{nonunique_angle_errors}",
+        )
+        _, symlink_include_errors = _repo_local_include_closure(
+            fixture_root,
+            "src/symlink.cpp",
+            ("include",),
+            fixture_inventory,
+        )
+        expect(
+            any(
+                "protected include candidate is unsafe" in error
+                and "symlink" in error
+                for _, _, error in symlink_include_errors
+            ),
+            "a symlink include escape did not fail closed: "
+            f"{symlink_include_errors}",
+        )
+
+        baseline_inventory = GitIndexedTextInventory(
+            tuple(
+                relative
+                for relative in fixture_inventory.regular_files
+                if relative != "cmake/extra.cmake"
+            ),
+            tuple(
+                relative
+                for relative in fixture_inventory.text_regular_files
+                if relative != "cmake/extra.cmake"
+            ),
+            fixture_inventory.symlink_files,
+            fixture_inventory.errors,
+        )
+        expect(
+            not _worker_cleanup_receipt_repo_build_inventory_errors(
+                baseline_inventory
+            ),
+            "the exact one-file CMake/preset inventory was rejected",
+        )
+        extra_build_errors = _worker_cleanup_receipt_repo_build_inventory_errors(
+            fixture_inventory
+        )
+        expect(
+            any(
+                "requires one exact repo CMake build file" in error
+                for _, error in extra_build_errors
+            ),
+            "an additional Git-indexed .cmake build surface escaped inventory: "
+            f"{extra_build_errors}",
+        )
+
+        hidden_inventory_checks = Checks(fixture_root)
+        hidden_inventory_checks.worker_cleanup_macro_closure_prepared = True
+        hidden_inventory_checks.worker_cleanup_repo_inventory = fixture_inventory
+        hidden_inventory_checks.validate_worker_cleanup_receipt_git_indexed_text_inventory()
+        expect(
+            any(
+                error.startswith(".hidden/receipt.custom:1:")
+                and "Tier-A token cannot have macro provenance" in error
+                for error in hidden_inventory_checks.errors
+            )
+            and any(
+                error.startswith("scripts/other.py:1:")
+                and "Tier-A token cannot have macro provenance" in error
+                for error in hidden_inventory_checks.errors
+            )
+            and not any(
+                error.startswith(
+                    WORKER_CLEANUP_RECEIPT_CONTROL_PLANE_POLICY_FILE + ":"
+                )
+                for error in hidden_inventory_checks.errors
+            ),
+            "the exact checker exception widened beyond its one control-plane "
+            "file or hid a hidden/custom Git-indexed Tier-A macro: "
+            f"{hidden_inventory_checks.errors}",
+        )
+        protected_control_plane_checks = Checks(fixture_root)
+        protected_control_plane_checks.worker_cleanup_macro_closure_prepared = True
+        protected_control_plane_checks.worker_cleanup_repo_inventory = fixture_inventory
+        protected_control_plane_checks.worker_cleanup_macro_closure_files.add(
+            WORKER_CLEANUP_RECEIPT_CONTROL_PLANE_POLICY_FILE
+        )
+        protected_control_plane_checks.validate_worker_cleanup_receipt_git_indexed_text_inventory()
+        expect(
+            any(
+                error.startswith(
+                    WORKER_CLEANUP_RECEIPT_CONTROL_PLANE_POLICY_FILE + ":1:"
+                )
+                and "Tier-A token cannot have macro provenance" in error
+                for error in protected_control_plane_checks.errors
+            ),
+            "the control-plane exception incorrectly skipped Tier-A/B semantics "
+            "after entering protected include closure: "
+            f"{protected_control_plane_checks.errors}",
+        )
+    spliced_protected_source = worker_cleanup_receipt_sources[
+        WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE
+    ] + "\nint gnfs_receipt_spliced_\\\ntoken = 0;\n"
+    spliced_protected_checks = Checks(Path("."))
+    spliced_protected_checks.validate_worker_cleanup_receipt_authority_use_site(
+        WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE,
+        spliced_protected_source,
+    )
+    expect(
+        any(
+            "forbids non-preprocessor phase-2 line continuation" in error
+            for error in spliced_protected_checks.errors
+        ),
+        "a non-preprocessor splice escaped protected-file diagnostics: "
+        f"{spliced_protected_checks.errors}",
+    )
+    authority_header_source = worker_cleanup_receipt_sources[
+        WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE
+    ]
+    laundering_header = authority_header_source + (
+        "\ninline auto launder_worker_cleanup_receipt_header(auto& admission) {\n"
+        "    return mint_distributed_sieve_worker_cleanup_authorization_receipt_v1("
+        "admission);\n}\n"
+    )
+    laundering_header_checks = Checks(Path("."))
+    laundering_header_checks.validate_worker_cleanup_receipt_authority_use_site(
+        WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE,
+        laundering_header,
+    )
+    expect(
+        any(
+            "interface must expose exactly one mint declaration" in error
+            for error in laundering_header_checks.errors
+        ),
+        "an allowlisted authority-header wrapper laundered the mint entry: "
+        f"{laundering_header_checks.errors}",
+    )
+    authority_implementation_source = worker_cleanup_receipt_sources[
+        WORKER_CLEANUP_RECEIPT_AUTHORITY_IMPLEMENTATION_FILE
+    ]
+    laundering_implementation = authority_implementation_source + (
+        "\nauto launder_worker_cleanup_receipt_implementation(auto& admission) {\n"
+        "    return mint_distributed_sieve_worker_cleanup_authorization_receipt_v1("
+        "admission);\n}\n"
+    )
+    laundering_implementation_checks = Checks(Path("."))
+    laundering_implementation_checks.validate_worker_cleanup_receipt_authority_use_site(
+        WORKER_CLEANUP_RECEIPT_AUTHORITY_IMPLEMENTATION_FILE,
+        laundering_implementation,
+    )
+    expect(
+        any(
+            "only the one exact public-entry-to-private-mint bridge" in error
+            for error in laundering_implementation_checks.errors
+        ),
+        "an allowlisted authority implementation wrapper laundered the mint entry: "
+        f"{laundering_implementation_checks.errors}",
+    )
+
+    def expect_worker_cleanup_receipt_mutation(
+        relative: str,
+        old: str,
+        new: str,
+        expected_error: str,
+        description: str,
+    ) -> None:
+        source = worker_cleanup_receipt_sources[relative]
+        expect(old in source, f"self-test mutation anchor is missing: {description}")
+        mutated = source.replace(old, new, 1)
+        mutation_checks = Checks(Path("."))
+        mutation_checks.validate_worker_cleanup_receipt_authority_use_site(
+            relative, mutated
+        )
+        expect(
+            any(expected_error in error for error in mutation_checks.errors),
+            f"worker-cleanup receipt gate accepted {description}: "
+            f"{mutation_checks.errors}",
+        )
+
+    expect_worker_cleanup_receipt_mutation(
+        WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
+        "void test_cleanup_receipt_requires_one_canonical_active_frontier() {\n",
+        "void test_cleanup_receipt_unregistered_extra() {}\n\n"
+        "void test_cleanup_receipt_requires_one_canonical_active_frontier() {\n",
+        "dedicated test function inventory is not exact",
+        "an extra unregistered worker-cleanup receipt test function",
+    )
+    expect_worker_cleanup_receipt_mutation(
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+        "    OOCPrivateHandoffCleanupAuthorizationReceipt(\n"
+        "        OOCPrivateHandoffCleanupAuthorizationBinding binding,\n",
+        "public:\n"
+        "    OOCPrivateHandoffCleanupAuthorizationReceipt(\n"
+        "        OOCPrivateHandoffCleanupAuthorizationBinding binding,\n",
+        "whole class, public/private access surface",
+        "a public test-liveness receipt constructor",
+    )
+    relation_macro_source = worker_cleanup_receipt_sources[
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE
+    ]
+    receipt_class_start = (
+        "class OOCPrivateHandoffCleanupAuthorizationReceipt final {\n"
+    )
+    receipt_class_end = (
+        "    friend class OOCPrivateHandoffCleanupResumeExecutorV2;\n"
+        "};\n\n/// Unforgeable token preventing production/internal callers"
+    )
+    expect(
+        receipt_class_start in relation_macro_source
+        and receipt_class_end in relation_macro_source,
+        "self-test mutation anchor is missing: receipt access macro",
+    )
+    reopened_receipt_access = relation_macro_source.replace(
+        receipt_class_start,
+        "#define private public\n" + receipt_class_start,
+        1,
+    ).replace(
+        receipt_class_end,
+        "    friend class OOCPrivateHandoffCleanupResumeExecutorV2;\n"
+        "};\n#undef private\n\n"
+        "/// Unforgeable token preventing production/internal callers",
+        1,
+    )
+    reopened_receipt_access_checks = Checks(Path("."))
+    reopened_receipt_access_checks.validate_worker_cleanup_receipt_authority_use_site(
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+        reopened_receipt_access,
+    )
+    expect(
+        any(
+            "Tier-A token cannot have macro provenance" in error
+            for error in reopened_receipt_access_checks.errors
+        ),
+        "preprocessor private-to-public remapping reopened the receipt constructor: "
+        f"{reopened_receipt_access_checks.errors}",
+    )
+    expect_worker_cleanup_receipt_mutation(
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+        "          release_live_authority_(std::exchange(other.release_live_authority_, nullptr)),\n",
+        "          release_live_authority_(other.release_live_authority_),\n",
+        "transfer one release callback on move",
+        "a receipt move that aliases rather than transfers its release callback",
+    )
+    expect_worker_cleanup_receipt_mutation(
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+        "        release_live_authority();\n",
+        "        (void)live_authority_;\n",
+        "destruction must consume and invoke",
+        "a receipt destructor that leaks its live claim",
+    )
+    relation_receipt_source = worker_cleanup_receipt_sources[
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE
+    ]
+    owned_callback = (
+        "                  "
+        "distributed_sieve_external_cleanup_authorization_state_owned_by_current_process(\n"
+    )
+    release_callback = (
+        "                  "
+        "distributed_sieve_external_cleanup_authorization_state_release_receipt_claim(\n"
+    )
+    expect(
+        owned_callback in relation_receipt_source
+        and release_callback in relation_receipt_source,
+        "self-test mutation anchor is missing: swapped receipt callbacks",
+    )
+    swapped_receipt_callbacks = relation_receipt_source.replace(
+        owned_callback, "__GNFS_RECEIPT_CALLBACK_SWAP__", 1
+    )
+    swapped_receipt_callbacks = swapped_receipt_callbacks.replace(
+        release_callback, owned_callback, 1
+    ).replace("__GNFS_RECEIPT_CALLBACK_SWAP__", release_callback, 1)
+    swapped_callback_checks = Checks(Path("."))
+    swapped_callback_checks.validate_worker_cleanup_receipt_authority_use_site(
+        WORKER_CLEANUP_RECEIPT_RELATION_INTERFACE_FILE,
+        swapped_receipt_callbacks,
+    )
+    expect(
+        any(
+            "whole class, public/private access surface" in error
+            for error in swapped_callback_checks.errors
+        ),
+        "receipt validator accepted count-preserving swapped validate/release callbacks: "
+        f"{swapped_callback_checks.errors}",
+    )
+    expect_worker_cleanup_receipt_mutation(
+        WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE,
+        "            require_live_authority();\n"
+        "            const auto published = util::durable_immutable_record::publish_at(\n",
+        "            const auto published = util::durable_immutable_record::publish_at(\n",
+        "must recheck live receipt once immediately before its sole publish_at call",
+        "a T2a publish without the final pre-publish liveness check",
+    )
+    expect_worker_cleanup_receipt_mutation(
+        WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE,
+        "            require_live_authority();\n"
+        "            const auto published = util::durable_immutable_record::publish_at(\n",
+        "            require_live_authority();\n"
+        "            (void)util::durable_immutable_record::publish_at();\n"
+        "            const auto published = util::durable_immutable_record::publish_at(\n",
+        "sole publish_at call",
+        "a second unguarded T2a publication path",
+    )
+    t2a_source = worker_cleanup_receipt_sources[
+        WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE
+    ]
+    external_t2a_wrapper = t2a_source + """
+void escaped_cleanup_conversion_wrapper() {
+    (void)util::durable_immutable_record::publish_at();
+    (void)OOCPrivateHandoffCleanupIntentConversionExecutorV2::run(
+        reader, authorization, {});
+}
+"""
+    external_t2a_wrapper_checks = Checks(Path("."))
+    external_t2a_wrapper_checks.validate_worker_cleanup_receipt_authority_use_site(
+        WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE,
+        external_t2a_wrapper,
+    )
+    expect(
+        any(
+            "translation unit must contain one direct publish_at" in error
+            for error in external_t2a_wrapper_checks.errors
+        ),
+        "a class-external publish/run wrapper escaped T2a translation-unit closure: "
+        f"{external_t2a_wrapper_checks.errors}",
+    )
+    t2a_neutral_anchor = (
+        "        OOCPrivateHandoffCleanupIntentPublicationTestHooksV2 hooks) noexcept {\n"
+        "        const auto retained = [&]() noexcept {\n"
+    )
+    expect(
+        t2a_neutral_anchor in t2a_source,
+        "self-test mutation anchor is missing: T2a whole-run fingerprint",
+    )
+    t2a_neutral_mutation = t2a_source.replace(
+        t2a_neutral_anchor,
+        "        OOCPrivateHandoffCleanupIntentPublicationTestHooksV2 hooks) noexcept {\n"
+        "        (void)sizeof(hooks);\n"
+        "        const auto retained = [&]() noexcept {\n",
+        1,
+    )
+    t2a_neutral_checks = Checks(Path("."))
+    t2a_neutral_checks.validate_worker_cleanup_receipt_authority_use_site(
+        WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE,
+        t2a_neutral_mutation,
+    )
+    expect(
+        any(
+            "T2a whole run body and direct-call surface must remain exact" in error
+            for error in t2a_neutral_checks.errors
+        ),
+        "a call-count-neutral T2a run mutation escaped whole-body closure: "
+        f"{t2a_neutral_checks.errors}",
+    )
+    cross_tu_t2a_checks = Checks(Path("."))
+    cross_tu_t2a_checks.validate_worker_cleanup_receipt_authority_use_site(
+        "src/relation/untrusted_cleanup_conversion.cpp",
+        "auto convert_authorized_private_handoff_to_cleanup_intent_v2() {\n"
+        "    return util::durable_immutable_record::publish_at();\n"
+        "}\n",
+    )
+    expect(
+        any(
+            "closed identifier code-use count/context is not exact for "
+            "convert_authorized_private_handoff_to_cleanup_intent_v2" in error
+            for error in cross_tu_t2a_checks.errors
+        ),
+        "a second translation unit escaped the closed T2a entry surface: "
+        f"{cross_tu_t2a_checks.errors}",
+    )
+    expect_worker_cleanup_receipt_mutation(
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+        "DistributedSieveWaveStoreDiagnostic\n"
+        "DistributedSieveExternalCleanupAuthorizationState::revalidate_root_only_sticky(\n"
+        "    bool require_live_claim) const noexcept {\n",
+        "DistributedSieveWaveStoreDiagnostic\n"
+        "DistributedSieveExternalCleanupAuthorizationState::revalidate_root_only_sticky(\n"
+        "    bool require_live_claim) const noexcept {\n"
+        "    (void)observe_cleanup_root_v1();\n",
+        "root-only cleanup receipt liveness forbids observe_cleanup_root_v1",
+        "a root-only liveness path that invokes the full cleanup observer",
+    )
+    expect_worker_cleanup_receipt_mutation(
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+        "DistributedSieveWaveStoreDiagnostic\n"
+        "DistributedSieveExternalCleanupAuthorizationState::revalidate_root_only_sticky(\n"
+        "    bool require_live_claim) const noexcept {\n",
+        "DistributedSieveWaveStoreDiagnostic\n"
+        "DistributedSieveExternalCleanupAuthorizationState::revalidate_root_only_sticky(\n"
+        "    bool require_live_claim) const noexcept {\n"
+        "    (void)inspect_namespace();\n",
+        "body and direct-call surface must remain exact",
+        "a root-only liveness path that invokes the broad namespace inspector",
+    )
+    wave_receipt_source = worker_cleanup_receipt_sources[
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE
+    ]
+    cleanup_parser_anchor = (
+        "        if (parse_distributed_sieve_cleanup_record_leaf_v1(leaf).has_value()) {\n"
+    )
+    cleanup_parser_offsets = [
+        match.start()
+        for match in re.finditer(
+            re.escape(cleanup_parser_anchor), wave_receipt_source
+        )
+    ]
+    expect(
+        len(cleanup_parser_offsets) == 2,
+        "self-test mutation anchor is missing: root-only cleanup parser",
+    )
+    root_cleanup_parser_offset = cleanup_parser_offsets[1]
+    mutated_root_cleanup_parser = (
+        wave_receipt_source[:root_cleanup_parser_offset]
+        + "        if (parse_distributed_sieve_private_lease_base_lock_leaf_v1(leaf).has_value()) {\n"
+        + wave_receipt_source[
+            root_cleanup_parser_offset + len(cleanup_parser_anchor) :
+        ]
+    )
+    root_cleanup_parser_checks = Checks(Path("."))
+    root_cleanup_parser_checks.validate_worker_cleanup_receipt_authority_use_site(
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+        mutated_root_cleanup_parser,
+    )
+    expect(
+        any(
+            "lock/manifest leaves and merge-commit/cleanup parsers" in error
+            for error in root_cleanup_parser_checks.errors
+        ),
+        "root-only scanner accepted a private-lease BaseLock parser: "
+        f"{root_cleanup_parser_checks.errors}",
+    )
+    expect_worker_cleanup_receipt_mutation(
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_INTERFACE_FILE,
+        "    [[nodiscard]] DistributedSieveWaveStoreDiagnostic\n"
+        "    revalidate_root_only_sticky(bool require_live_claim) const noexcept;\n",
+        "    [[nodiscard]] bool\n"
+        "    revalidate_root_only_sticky(bool require_live_claim) const noexcept;\n",
+        "must expose exactly one typed diagnostic declaration",
+        "a boolean root-only revalidation declaration that discards failure kind",
+    )
+    expect_worker_cleanup_receipt_mutation(
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+        "                return observed.diagnostic;\n",
+        "                return diagnostic(\n"
+        "                    DistributedSieveWaveStoreStatus::namespace_conflict,\n"
+        "                    std::make_error_code(std::errc::state_not_recoverable));\n",
+        "must preserve each typed root, control, process, resource, and I/O diagnostic",
+        "a root-control scan failure collapsed into a generic sticky diagnostic",
+    )
+    expect_worker_cleanup_receipt_mutation(
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+        "            .diagnostic = std::move(revalidated),\n",
+        "            .diagnostic = diagnostic(\n"
+        "                DistributedSieveWaveStoreStatus::namespace_conflict,\n"
+        "                std::make_error_code(std::errc::state_not_recoverable)),\n",
+        "root-only revalidation with its typed diagnostic",
+        "a failed claim that drops the typed root revalidation diagnostic",
+    )
+    expect_worker_cleanup_receipt_mutation(
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+        "receipt_claimed_.compare_exchange_strong(expected, true, std::memory_order_acq_rel,\n"
+        "                                                  std::memory_order_acquire)",
+        "receipt_claimed_.compare_exchange_weak(expected, true, std::memory_order_acq_rel,\n"
+        "                                                std::memory_order_acquire)",
+        "must use one strong CAS",
+        "a weak-CAS single-live receipt claim",
+    )
+    expect_worker_cleanup_receipt_mutation(
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+        "            .result = ReceiptClaimResultV1::already_live,\n",
+        "            .result = ReceiptClaimResultV1::acquired,\n",
+        "try-claim entire control flow must remain exact",
+        "a CAS-failure branch that reports an acquired receipt claim",
+    )
+    expect_worker_cleanup_receipt_mutation(
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+        "            const bool process_mismatch = !mint_process_matches(live_state->creator_process_id_);\n",
+        "            const bool process_mismatch =\n"
+        "                claimed.diagnostic.native_error ==\n"
+        "                std::make_error_code(std::errc::no_such_process);\n",
+        "classify process mismatch from the live creator PID",
+        "mint failure classification inferred from a lower native error code",
+    )
+    expect_worker_cleanup_receipt_mutation(
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+        "        const auto live_state = admission.state_->active_cleanup_authorization;\n",
+        "        const auto live_state = admission.state_->active_cleanup_authorization;\n"
+        "        (void)inspect_namespace(live_state->wave_store_state_->root_fd);\n",
+        "mint whole control flow, direct-call surface",
+        "a mint path that invokes the broad namespace inspector",
+    )
+    expect_worker_cleanup_receipt_mutation(
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+        "                                    : (resource_exhausted ? MintStatus::resource_exhausted\n"
+        "                                                          : MintStatus::root_authority_invalid)),\n",
+        "                                    : MintStatus::root_authority_invalid),\n",
+        "preserve lower resource exhaustion",
+        "mint failure classification that collapses lower resource exhaustion",
+    )
+    expect_worker_cleanup_receipt_mutation(
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+        "            diagnostic.wave_store = std::move(claimed.diagnostic);\n",
+        "            diagnostic.wave_store = std::move(claimed.diagnostic);\n"
+        "            diagnostic.status = MintStatus::ready;\n"
+        "            diagnostic.native_error = {};\n",
+        "typed diagnostics, and resource mapping must remain exact",
+        "a mint path that overwrites the typed lower failure after classification",
+    )
+    expect_worker_cleanup_receipt_mutation(
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+        "        relation_cleanup::OOCPrivateHandoffCleanupAuthorizationMintKey mint_key;\n",
+        "        relation_cleanup::OOCPrivateHandoffCleanupAuthorizationMintKey mint_key;\n"
+        "        relation_cleanup::OOCPrivateHandoffCleanupAuthorizationMintKey second_key;\n",
+        "sole claim-to-key-to-receipt construction chain",
+        "a second production receipt mint key",
+    )
+    expect_worker_cleanup_receipt_mutation(
+        WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
+        "    state.release_receipt_claim();\n",
+        "    (void)state;\n",
+        "receipt bridge must remain exact",
+        "a release bridge that drops the callback",
+    )
+    expect_worker_cleanup_receipt_mutation(
+        WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
+        "#define CHECK(expression) check(static_cast<bool>(expression), #expression, __LINE__)\n",
+        "#define CHECK(expression) ((void)0)\n",
+        "Tier-B safe macro definition, unique undef, and code-use surface are not exact",
+        "a no-op CHECK macro",
+    )
+    expect_worker_cleanup_receipt_mutation(
+        WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
+        "        fail(expression, line);\n",
+        "        (void)expression;\n        (void)line;\n",
+        "CHECK helper body must remain exact: check",
+        "a CHECK helper that no longer fails",
+    )
+    expect_worker_cleanup_receipt_mutation(
+        WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
+        "    CHECK(minted.minted->manifest_order_ordinal == 1U);\n",
+        "    CHECK(minted.minted->manifest_order_ordinal == 0U);\n",
+        "dedicated test body and required assertions must remain exact",
+        "a completed-prefix receipt test that no longer proves ordinal one",
+    )
+    expect_worker_cleanup_receipt_mutation(
+        WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
+        "    CHECK(directly_revalidated.diagnostic.native_error ==\n"
+        "          directly_revalidated.diagnostic.wave_store.native_error);\n",
+        "    CHECK(directly_revalidated.diagnostic.native_error);\n",
+        "dedicated test body and required assertions must remain exact",
+        "a lower-diagnostic receipt test that drops native-error propagation",
+    )
+    expect_worker_cleanup_receipt_mutation(
+        WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
+        "    test_cleanup_receipt_sticky_invalidates_added_cleanup_leaf();\n",
+        "",
+        "dedicated test catalog is not exact",
+        "an unregistered sticky-root receipt test",
+    )
+
+    worker_cleanup_receipt_cmake = (
+        Path(__file__).resolve().parents[1] / WORKER_CLEANUP_RECEIPT_CMAKE_FILE
+    ).read_text(encoding="utf-8")
+    worker_cleanup_receipt_test_runner = (
+        Path(__file__).resolve().parents[1]
+        / WORKER_CLEANUP_RECEIPT_TEST_RUNNER_FILE
+    ).read_text(encoding="utf-8")
+    exact_worker_cleanup_receipt_catalog_checks = Checks(Path("."))
+    exact_worker_cleanup_receipt_catalog_checks.validate_worker_cleanup_receipt_test_catalog(
+        worker_cleanup_receipt_cmake, worker_cleanup_receipt_test_runner
+    )
+    expect(
+        not exact_worker_cleanup_receipt_catalog_checks.errors,
+        "exact worker-cleanup receipt test catalog was rejected: "
+        f"{exact_worker_cleanup_receipt_catalog_checks.errors}",
+    )
+    mutated_worker_cleanup_receipt_cmake = worker_cleanup_receipt_cmake.replace(
+        '            PROPERTIES LABELS "slow" TIMEOUT 120\n',
+        '            PROPERTIES LABELS "slow" TIMEOUT 121\n',
+        1,
+    )
+    expect(
+        mutated_worker_cleanup_receipt_cmake != worker_cleanup_receipt_cmake,
+        "self-test mutation anchor is missing: worker-cleanup receipt CMake timeout",
+    )
+    mutated_cmake_catalog_checks = Checks(Path("."))
+    mutated_cmake_catalog_checks.validate_worker_cleanup_receipt_test_catalog(
+        mutated_worker_cleanup_receipt_cmake, worker_cleanup_receipt_test_runner
+    )
+    expect(
+        any(
+            "exact source, linkage, CTest name, labels, and timeouts" in error
+            for error in mutated_cmake_catalog_checks.errors
+        ),
+        "worker-cleanup receipt catalog accepted a changed CMake timeout: "
+        f"{mutated_cmake_catalog_checks.errors}",
+    )
+    commented_cmake_source = worker_cleanup_receipt_cmake.replace(
+        "        tests/test_distributed_sieve_worker_cleanup_tail.cpp\n",
+        "        # tests/test_distributed_sieve_worker_cleanup_tail.cpp\n",
+        1,
+    )
+    expect(
+        commented_cmake_source != worker_cleanup_receipt_cmake,
+        "self-test mutation anchor is missing: commented CMake receipt source",
+    )
+    commented_cmake_source_checks = Checks(Path("."))
+    commented_cmake_source_checks.validate_worker_cleanup_receipt_test_catalog(
+        commented_cmake_source, worker_cleanup_receipt_test_runner
+    )
+    expect(
+        any(
+            "exact source, linkage, CTest name, labels, and timeouts" in error
+            or "target/name/source counts are not closed" in error
+            for error in commented_cmake_source_checks.errors
+        ),
+        "worker-cleanup receipt catalog accepted a commented CMake source: "
+        f"{commented_cmake_source_checks.errors}",
+    )
+    mutated_worker_cleanup_receipt_test_runner = (
+        worker_cleanup_receipt_test_runner.replace(
+            "    test_distributed_sieve_worker_cleanup_tail 180\n",
+            "    test_distributed_sieve_worker_cleanup_tail 181\n",
+            1,
+        )
+    )
+    expect(
+        mutated_worker_cleanup_receipt_test_runner
+        != worker_cleanup_receipt_test_runner,
+        "self-test mutation anchor is missing: worker-cleanup receipt runner timeout",
+    )
+    mutated_runner_catalog_checks = Checks(Path("."))
+    mutated_runner_catalog_checks.validate_worker_cleanup_receipt_test_catalog(
+        worker_cleanup_receipt_cmake,
+        mutated_worker_cleanup_receipt_test_runner,
+    )
+    expect(
+        any(
+            "180-second timeout" in error
+            for error in mutated_runner_catalog_checks.errors
+        ),
+        "worker-cleanup receipt catalog accepted a changed runner timeout: "
+        f"{mutated_runner_catalog_checks.errors}",
+    )
+    receipt_path_mapping_lines = [
+        line
+        for line in worker_cleanup_receipt_test_runner.splitlines(keepends=True)
+        if WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE in line
+        and 'echo "sieve"' in line
+    ]
+    expect(
+        len(receipt_path_mapping_lines) == 1,
+        "self-test mutation anchor is missing: receipt path mapping",
+    )
+    if receipt_path_mapping_lines:
+        mapping_line = receipt_path_mapping_lines[0]
+        commented_mapping_runner = worker_cleanup_receipt_test_runner.replace(
+            mapping_line, "        # " + mapping_line.lstrip(), 1
+        )
+        commented_mapping_checks = Checks(Path("."))
+        commented_mapping_checks.validate_worker_cleanup_receipt_test_catalog(
+            worker_cleanup_receipt_cmake, commented_mapping_runner
+        )
+        expect(
+            any(
+                "path-to-module catalogs" in error
+                for error in commented_mapping_checks.errors
+            ),
+            "worker-cleanup receipt catalog accepted a commented path mapping: "
+            f"{commented_mapping_checks.errors}",
+        )
+
+    commented_catalog_decoys = Checks(Path("."))
+    commented_catalog_decoys.validate_worker_cleanup_receipt_test_catalog(
+        worker_cleanup_receipt_cmake
+        + "\n# add_executable(test_distributed_sieve_worker_cleanup_tail decoy.cpp)\n",
+        worker_cleanup_receipt_test_runner
+        + "\n# test_distributed_sieve_worker_cleanup_tail\n",
+    )
+    expect(
+        not commented_catalog_decoys.errors,
+        "commented worker-cleanup receipt catalog decoys were counted: "
+        f"{commented_catalog_decoys.errors}",
+    )
+
+    literal_and_inactive_cmake_decoys = worker_cleanup_receipt_cmake + (
+        "\nmessage(\"add_executable(test_distributed_sieve_worker_cleanup_tail "
+        "tests/test_distributed_sieve_worker_cleanup_tail.cpp)\")\n"
+        "message([=[target_link_libraries("
+        "test_distributed_sieve_worker_cleanup_tail PRIVATE forged_target)]=])\n"
+        "if(FALSE)\n"
+        "  add_executable(test_distributed_sieve_worker_cleanup_tail "
+        "tests/test_distributed_sieve_worker_cleanup_tail.cpp)\n"
+        "  add_compile_definitions(private=public)\n"
+        "endif()\n"
+    )
+    literal_and_inactive_cmake_catalog_checks = Checks(Path("."))
+    literal_and_inactive_cmake_catalog_checks.validate_worker_cleanup_receipt_test_catalog(
+        literal_and_inactive_cmake_decoys,
+        worker_cleanup_receipt_test_runner,
+    )
+    expect(
+        not literal_and_inactive_cmake_catalog_checks.errors,
+        "CMake catalog parser treated string/bracket/if(FALSE) decoys as live: "
+        f"{literal_and_inactive_cmake_catalog_checks.errors}",
+    )
+    literal_and_inactive_cmake_surface_checks = Checks(Path("."))
+    literal_and_inactive_cmake_surface_checks.validate_worker_cleanup_committed_cmake_surface(
+        literal_and_inactive_cmake_decoys
+    )
+    expect(
+        any(
+            "entire layout-preserving comment-masked CMake surface is not exact"
+            in error
+            for error in literal_and_inactive_cmake_surface_checks.errors
+        ),
+        "whole-file CMake hash did not close inert/string command injection: "
+        f"{literal_and_inactive_cmake_surface_checks.errors}",
+    )
+    exact_cmake_surface_checks = Checks(Path("."))
+    exact_cmake_surface_checks.validate_worker_cleanup_committed_cmake_surface(
+        worker_cleanup_receipt_cmake
+    )
+    expect(
+        not exact_cmake_surface_checks.errors,
+        "exact whole-file CMake surface was rejected: "
+        f"{exact_cmake_surface_checks.errors}",
+    )
+    cmake_string_mutation = worker_cleanup_receipt_cmake.replace(
+        "Industrial-grade General Number Field Sieve implementation",
+        "Industrial-grade General Number Field Sieve implementatioN",
+        1,
+    )
+    cmake_string_checks = Checks(Path("."))
+    cmake_string_checks.validate_worker_cleanup_committed_cmake_surface(
+        cmake_string_mutation
+    )
+    expect(
+        any(
+            "entire layout-preserving comment-masked CMake surface is not exact"
+            in error
+            for error in cmake_string_checks.errors
+        ),
+        "a CMake literal-string mutation escaped the whole-file hash: "
+        f"{cmake_string_checks.errors}",
+    )
+    cmake_preset_bytes = (
+        Path(__file__).resolve().parents[1]
+        / WORKER_CLEANUP_RECEIPT_CMAKE_PRESETS_FILE
+    ).read_bytes()
+    exact_cmake_preset_checks = Checks(Path("."))
+    exact_cmake_preset_checks.validate_worker_cleanup_committed_cmake_presets_surface(
+        cmake_preset_bytes
+    )
+    expect(
+        not exact_cmake_preset_checks.errors,
+        "exact CMake preset surface was rejected: "
+        f"{exact_cmake_preset_checks.errors}",
+    )
+    mutated_cmake_preset_checks = Checks(Path("."))
+    mutated_cmake_preset_checks.validate_worker_cleanup_committed_cmake_presets_surface(
+        cmake_preset_bytes.replace(b'"jobs": 12', b'"jobs": 13', 1)
+    )
+    expect(
+        any(
+            "CMake preset semantic surface is not exact" in error
+            for error in mutated_cmake_preset_checks.errors
+        ),
+        "a CMake preset build mutation escaped exact hashing: "
+        f"{mutated_cmake_preset_checks.errors}",
+    )
+
+    cmake_root = Path(__file__).resolve().parents[1]
+    cmake_macro_injection = worker_cleanup_receipt_cmake + (
+        "\nadd_compile_definitions(private=public)\n"
+    )
+    injected_macros, _, injection_errors = _cmake_worker_cleanup_unit_provenance(
+        cmake_root,
+        cmake_macro_injection,
+        {"gnfs_core"},
+        {WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE},
+    )
+    expect(
+        any(name == "private" for name, _, _ in injected_macros)
+        and not injection_errors,
+        "global CMake compile-definition injection was not attributed to the "
+        f"protected target: macros={injected_macros}, errors={injection_errors}",
+    )
+    cmake_property_injection = worker_cleanup_receipt_cmake + (
+        "\nset_property(TARGET gnfs_core PROPERTY "
+        "COMPILE_DEFINITIONS private=public)\n"
+    )
+    property_macros, _, property_errors = _cmake_worker_cleanup_unit_provenance(
+        cmake_root,
+        cmake_property_injection,
+        {"gnfs_core"},
+        {WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE},
+    )
+    expect(
+        any(name == "private" for name, _, _ in property_macros)
+        and not property_errors,
+        "set_property compile-definition injection was not attributed to the "
+        f"protected target: macros={property_macros}, errors={property_errors}",
+    )
+    semantic_property_checks = Checks(Path("."))
+    semantic_property_checks.validate_worker_cleanup_committed_cmake_surface(
+        worker_cleanup_receipt_cmake
+        + "\nset_property(TARGET gnfs_core PROPERTY RULE_LAUNCH_COMPILE evil)\n"
+    )
+    expect(
+        any(
+            "forbids unrecognized CMake property mutation" in error
+            for error in semantic_property_checks.errors
+        ),
+        "an unrecognized semantic property mutation escaped CMake closure: "
+        f"{semantic_property_checks.errors}",
+    )
+    include_search_mutation = worker_cleanup_receipt_cmake + (
+        "\ntarget_include_directories(gnfs_core BEFORE PRIVATE "
+        "${CMAKE_SOURCE_DIR}/evil)\n"
+    )
+    _, include_search_errors = _cmake_worker_cleanup_include_searches(
+        cmake_root,
+        include_search_mutation,
+        {"gnfs_core"},
+    )
+    expect(
+        any(
+            "include_directories command/order is not exact" in error
+            for _, error in include_search_errors
+        ),
+        "a repo-local BEFORE include shadow escaped frozen search order: "
+        f"{include_search_errors}",
+    )
+    pch_mutation = worker_cleanup_receipt_cmake + (
+        "\ntarget_precompile_headers(gnfs_core PRIVATE evil.hpp)\n"
+    )
+    _, _, pch_errors = _cmake_worker_cleanup_unit_provenance(
+        cmake_root,
+        pch_mutation,
+        {"gnfs_core"},
+        {WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE},
+    )
+    expect(
+        any("forbids target_precompile_headers" in error for _, error in pch_errors),
+        "target PCH macro provenance escaped protected CMake closure: "
+        f"{pch_errors}",
+    )
+    unity_mutation = worker_cleanup_receipt_cmake + (
+        "\nset_property(TARGET gnfs_core PROPERTY UNITY_BUILD ON)\n"
+    )
+    _, _, unity_errors = _cmake_worker_cleanup_unit_provenance(
+        cmake_root,
+        unity_mutation,
+        {"gnfs_core"},
+        {WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE},
+    )
+    expect(
+        any("forbids UNITY_BUILD" in error for _, error in unity_errors),
+        "UNITY_BUILD macro provenance escaped protected CMake closure: "
+        f"{unity_errors}",
+    )
+    response_mutation = worker_cleanup_receipt_cmake + (
+        "\ntarget_compile_options(gnfs_core PRIVATE @evil-response.rsp)\n"
+    )
+    _, _, response_errors = _cmake_worker_cleanup_unit_provenance(
+        cmake_root,
+        response_mutation,
+        {"gnfs_core"},
+        {WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE},
+    )
+    expect(
+        any("unresolved response-file" in error for _, error in response_errors),
+        "a response-file compile option escaped protected CMake closure: "
+        f"{response_errors}",
+    )
+    xclang_include_mutation = worker_cleanup_receipt_cmake + (
+        "\ntarget_compile_options(gnfs_core PRIVATE -Xclang -include -Xclang "
+        "${CMAKE_SOURCE_DIR}/include/gnfs/util/msvc_compat.hpp)\n"
+    )
+    _, xclang_forced, xclang_errors = _cmake_worker_cleanup_unit_provenance(
+        cmake_root,
+        xclang_include_mutation,
+        {"gnfs_core"},
+        {WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE},
+    )
+    expect(
+        "include/gnfs/util/msvc_compat.hpp" in xclang_forced
+        and not xclang_errors,
+        "-Xclang -include forced-header provenance was not closed: "
+        f"headers={xclang_forced}, errors={xclang_errors}",
     )
 
     worker_handoff_bridge_snippet = r"""
@@ -17550,6 +23533,8 @@ auto DistributedSieveWaveStore::open() noexcept {
         any(
             "must be in the exact active POSIX preprocessing scope" in error
             or "must contain no preprocessing directives" in error
+            or "must contain exactly one exact MergePrepared preprocessor macro guard"
+            in error
             for error in inactive_merge_callback_checks.errors
         ),
         "inactive canonical MergePrepared callback plus macro-generated "

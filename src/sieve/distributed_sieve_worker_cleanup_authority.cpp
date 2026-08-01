@@ -299,4 +299,10 @@ consume_distributed_sieve_committed_tail_for_worker_cleanup_v1_with_hooks(
 
 } // namespace trusted_test
 
+DistributedSieveWorkerCleanupReceiptMintResultV1
+mint_distributed_sieve_worker_cleanup_authorization_receipt_v1(
+    DistributedSieveWorkerCleanupRootAdmissionV1& admission) noexcept {
+    return DistributedSieveWorkerCleanupReceiptMintAuthorityV1::mint(admission);
+}
+
 } // namespace gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail

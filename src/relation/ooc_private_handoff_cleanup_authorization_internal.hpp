@@ -22,11 +22,18 @@
 namespace gnfs::sieve::distributed_sieve_resume_detail {
 
 class DistributedSieveExternalCleanupAuthorizationState;
-class DistributedSieveWaveStore;
 [[nodiscard]] bool distributed_sieve_external_cleanup_authorization_state_owned_by_current_process(
+    const DistributedSieveExternalCleanupAuthorizationState& state) noexcept;
+void distributed_sieve_external_cleanup_authorization_state_release_receipt_claim(
     const DistributedSieveExternalCleanupAuthorizationState& state) noexcept;
 
 } // namespace gnfs::sieve::distributed_sieve_resume_detail
+
+namespace gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail {
+
+class DistributedSieveWorkerCleanupReceiptMintAuthorityV1;
+
+} // namespace gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail
 
 namespace gnfs::relation {
 class OOCRelationReader;
@@ -45,12 +52,13 @@ class OOCPrivateHandoffReadOnlyReleaseExecutorV1;
 struct OOCPrivateHandoffCleanupIntentPublicationResultV2;
 struct OOCPrivateHandoffCleanupIntentPublicationTestHooksV2;
 
-/// Data-only trusted-test liveness anchor. It carries no mint or cleanup
-/// authority; the receipt constructor remains private to the exact test
-/// authority friend and always installs the fixed validator below.
+/// Data-only trusted-test liveness anchor. It carries no production state,
+/// mint, cleanup, or claim-release authority; the optional counter observes
+/// only the receipt's fixed test-only destructor callback.
 struct OOCPrivateHandoffCleanupAuthorizationTestLivenessV2 final {
     std::uint64_t creator_process_id = 0;
     std::shared_ptr<std::atomic_bool> live;
+    std::shared_ptr<std::atomic<std::size_t>> release_count;
 };
 
 /// Authority-free projection of the exact application and relation bindings
@@ -174,9 +182,9 @@ observe_authorized_private_handoff_cleanup_prefix_v2(
     const OOCPrivateHandoffCleanupAuthorizationBinding& binding,
     OOCPrivateLeaseRecoveryBorrowedBaseLockV1&& borrowed) noexcept;
 
-/// Unforgeable constructor token. Only the source-private wave store may create
-/// one after it holds the wave lock and confirms the canonical external
-/// authorization record.
+/// Unforgeable constructor token. Only the source-private worker-cleanup mint
+/// authority may create one after it holds the root claim and confirms the
+/// canonical external authorization record.
 class OOCPrivateHandoffCleanupAuthorizationMintKey final {
 public:
     OOCPrivateHandoffCleanupAuthorizationMintKey(
@@ -192,15 +200,18 @@ public:
 private:
     OOCPrivateHandoffCleanupAuthorizationMintKey() noexcept = default;
 
-    friend class gnfs::sieve::distributed_sieve_resume_detail::DistributedSieveWaveStore;
+    friend class gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail::
+        DistributedSieveWorkerCleanupReceiptMintAuthorityV1;
 };
 
 /// Current-process application authority for one exact generic handoff.
 ///
-/// The opaque lifetime must retain the wave lock and canonical external-record
-/// binding. The value remains unusable without a separately acquired matching
-/// adoption receipt. Neither this type nor its pure binding exposes a public
-/// factory, path accessor, native handle, or namespace operation.
+/// The opaque lifetime must retain the claimed cleanup root and canonical
+/// external-record binding. Exactly one live receipt owns the type-erased
+/// release callback; moves transfer that responsibility and destruction
+/// releases it. The value remains unusable without a separately acquired
+/// matching adoption receipt. Neither this type nor its pure binding exposes a
+/// public factory, path accessor, native handle, or namespace operation.
 class OOCPrivateHandoffCleanupAuthorizationReceipt final {
 public:
     OOCPrivateHandoffCleanupAuthorizationReceipt() = delete;
@@ -213,11 +224,14 @@ public:
         OOCPrivateHandoffCleanupAuthorizationReceipt&& other) noexcept
         : binding_(std::move(other.binding_)), live_authority_(std::move(other.live_authority_)),
           validate_live_authority_(std::exchange(other.validate_live_authority_, nullptr)),
+          release_live_authority_(std::exchange(other.release_live_authority_, nullptr)),
           spent_(std::exchange(other.spent_, true)) {}
 
     OOCPrivateHandoffCleanupAuthorizationReceipt&
     operator=(OOCPrivateHandoffCleanupAuthorizationReceipt&&) = delete;
-    ~OOCPrivateHandoffCleanupAuthorizationReceipt() = default;
+    ~OOCPrivateHandoffCleanupAuthorizationReceipt() noexcept {
+        release_live_authority();
+    }
 
     [[nodiscard]] bool spent() const noexcept {
         return spent_ || !live_authority_valid();
@@ -225,6 +239,7 @@ public:
 
 private:
     using ValidateLiveAuthority = bool (*)(const void* authority) noexcept;
+    using ReleaseLiveAuthority = void (*)(const void* authority) noexcept;
 
     OOCPrivateHandoffCleanupAuthorizationReceipt(
         OOCPrivateHandoffCleanupAuthorizationMintKey&&,
@@ -239,6 +254,16 @@ private:
               }
               return gnfs::sieve::distributed_sieve_resume_detail::
                   distributed_sieve_external_cleanup_authorization_state_owned_by_current_process(
+                      *static_cast<const gnfs::sieve::distributed_sieve_resume_detail::
+                                       DistributedSieveExternalCleanupAuthorizationState*>(
+                          authority));
+          }),
+          release_live_authority_([](const void* authority) noexcept {
+              if (authority == nullptr) {
+                  return;
+              }
+              gnfs::sieve::distributed_sieve_resume_detail::
+                  distributed_sieve_external_cleanup_authorization_state_release_receipt_claim(
                       *static_cast<const gnfs::sieve::distributed_sieve_resume_detail::
                                        DistributedSieveExternalCleanupAuthorizationState*>(
                           authority));
@@ -257,6 +282,20 @@ private:
                      state->creator_process_id ==
                          static_cast<std::uint64_t>(gnfs::util::process_id()) &&
                      state->live->load(std::memory_order_acquire);
+          }),
+          release_live_authority_([](const void* authority) noexcept {
+              const auto* state =
+                  static_cast<const OOCPrivateHandoffCleanupAuthorizationTestLivenessV2*>(
+                      authority);
+              if (state == nullptr) {
+                  return;
+              }
+              if (state->live) {
+                  state->live->store(false, std::memory_order_release);
+              }
+              if (state->release_count) {
+                  state->release_count->fetch_add(1, std::memory_order_acq_rel);
+              }
           }) {}
 
     void commit_spend() noexcept {
@@ -268,12 +307,21 @@ private:
                validate_live_authority_(live_authority_.get());
     }
 
+    void release_live_authority() noexcept {
+        const auto release = std::exchange(release_live_authority_, nullptr);
+        if (release != nullptr && live_authority_) {
+            release(live_authority_.get());
+        }
+    }
+
     OOCPrivateHandoffCleanupAuthorizationBinding binding_;
     std::shared_ptr<const void> live_authority_;
     ValidateLiveAuthority validate_live_authority_ = nullptr;
+    ReleaseLiveAuthority release_live_authority_ = nullptr;
     bool spent_ = false;
 
-    friend class gnfs::sieve::distributed_sieve_resume_detail::DistributedSieveWaveStore;
+    friend class gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail::
+        DistributedSieveWorkerCleanupReceiptMintAuthorityV1;
     friend class OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2;
     friend class OOCPrivateHandoffCleanupIntentConversionExecutorV2;
     friend class OOCPrivateHandoffCleanupIntentReconciliationExecutorV2;

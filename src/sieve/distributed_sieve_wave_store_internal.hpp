@@ -50,10 +50,16 @@ namespace gnfs::sieve::distributed_sieve_merge_writer_authority_detail {
 class DistributedSieveMergeWriterAuthorityV1;
 }
 
+namespace gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail {
+class DistributedSieveWorkerCleanupReceiptMintAuthorityV1;
+}
+
 namespace gnfs::sieve::distributed_sieve_resume_detail {
 
 class DistributedSieveExternalCleanupAuthorizationState;
 [[nodiscard]] bool distributed_sieve_external_cleanup_authorization_state_owned_by_current_process(
+    const DistributedSieveExternalCleanupAuthorizationState& state) noexcept;
+void distributed_sieve_external_cleanup_authorization_state_release_receipt_claim(
     const DistributedSieveExternalCleanupAuthorizationState& state) noexcept;
 
 inline constexpr std::string_view DISTRIBUTED_SIEVE_WAVE_LOCK_LEAF = ".gnfs-wave-v1.lock";
@@ -1814,6 +1820,8 @@ private:
         const util::Sha256Digest& expected_manifest_digest,
         DistributedSieveWorkerCleanupRootOpenTestHooksV1 hooks,
         const DistributedSieveWorkerCleanupRootExactAnchorV1* expected_anchor) noexcept;
+    friend class ::gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail::
+        DistributedSieveWorkerCleanupReceiptMintAuthorityV1;
 };
 
 struct DistributedSieveWorkerCleanupRootOpenResultV1 final {
@@ -2659,12 +2667,12 @@ struct DistributedSieveWaveMergeCommitPublicationResultV1 final {
 /// Source-private lifetime anchor for one future external cleanup
 /// authorization.
 ///
-/// This type deliberately has no factory, mint route, record accessor, or
-/// namespace operation. Its only future constructor authority is the WaveStore,
-/// and retaining it keeps the exact shared WaveStore backing state (including
-/// the permanent wave lock) alive. The creator PID makes an inherited
-/// post-fork copy invalid even though its descriptors still refer to the same
-/// open file descriptions.
+/// Retaining this state keeps the exact shared WaveStore backing state,
+/// including the permanent wave lock, alive. It also freezes the complete
+/// canonical root cleanup prefix that admitted one active worker. Relation
+/// cleanup may change only the private-lease namespace; any root-control drift
+/// sticky-invalidates this generation. The creator PID makes an inherited
+/// post-fork copy invalid without changing the parent's generation.
 class DistributedSieveExternalCleanupAuthorizationState final {
 public:
     DistributedSieveExternalCleanupAuthorizationState() = delete;
@@ -2679,19 +2687,61 @@ public:
     ~DistributedSieveExternalCleanupAuthorizationState() = default;
 
 private:
-    DistributedSieveExternalCleanupAuthorizationState(
-        std::shared_ptr<const DistributedSieveWaveStore::State> wave_store_state) noexcept;
+    struct ExactRootLeafV1 final {
+        std::string leaf;
+        std::vector<std::byte> bytes;
+        util::durable_immutable_record::RecordSnapshot snapshot;
 
-    [[nodiscard]] bool owned_by_current_process() const noexcept {
-        return wave_store_state_ != nullptr && creator_process_id_ != 0 &&
-               creator_process_id_ == static_cast<std::uint64_t>(gnfs::util::process_id());
-    }
+        [[nodiscard]] friend bool operator==(const ExactRootLeafV1&,
+                                             const ExactRootLeafV1&) = default;
+    };
+
+    enum class ReceiptClaimResultV1 : std::uint8_t {
+        acquired,
+        already_live,
+        invalidated,
+    };
+
+    struct ReceiptClaimAttemptV1 final {
+        ReceiptClaimResultV1 result = ReceiptClaimResultV1::invalidated;
+        DistributedSieveWaveStoreDiagnostic diagnostic;
+    };
+
+    DistributedSieveExternalCleanupAuthorizationState(
+        std::shared_ptr<const DistributedSieveWaveStore::State> wave_store_state,
+        std::vector<std::byte> merge_commit_bytes,
+        util::durable_immutable_record::RecordSnapshot merge_commit_snapshot,
+        util::Sha256Digest merge_commit_digest, std::uint32_t active_manifest_order_ordinal,
+        ArtifactCleanupAuthorizedV1 authorization,
+        std::vector<ExactRootLeafV1> cleanup_prefix_records) noexcept;
+
+    [[nodiscard]] bool live_for_current_process() const noexcept;
+    [[nodiscard]] ReceiptClaimAttemptV1 try_claim_receipt() const noexcept;
+    [[nodiscard]] DistributedSieveWaveStoreDiagnostic
+    revalidate_root_only_sticky(bool require_live_claim) const noexcept;
+    void release_receipt_claim() const noexcept;
 
     std::shared_ptr<const DistributedSieveWaveStore::State> wave_store_state_;
+    std::vector<std::byte> merge_commit_bytes_;
+    util::durable_immutable_record::RecordSnapshot merge_commit_snapshot_;
+    util::Sha256Digest merge_commit_digest_;
+    std::uint32_t active_manifest_order_ordinal_ = 0;
+    ArtifactCleanupAuthorizedV1 authorization_;
+    std::vector<ExactRootLeafV1> cleanup_prefix_records_;
     std::uint64_t creator_process_id_ = 0;
+    mutable std::atomic_bool invalidated_ = false;
+    mutable std::atomic_bool receipt_claimed_ = false;
 
-    friend class DistributedSieveWaveStore;
+    friend DistributedSieveWorkerCleanupRootOpenResultV1 open_worker_cleanup_root_v1(
+        const std::filesystem::path& absolute_root,
+        const util::Sha256Digest& expected_manifest_digest,
+        DistributedSieveWorkerCleanupRootOpenTestHooksV1 hooks,
+        const DistributedSieveWorkerCleanupRootExactAnchorV1* expected_anchor) noexcept;
+    friend class ::gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail::
+        DistributedSieveWorkerCleanupReceiptMintAuthorityV1;
     friend bool distributed_sieve_external_cleanup_authorization_state_owned_by_current_process(
+        const DistributedSieveExternalCleanupAuthorizationState& state) noexcept;
+    friend void distributed_sieve_external_cleanup_authorization_state_release_receipt_claim(
         const DistributedSieveExternalCleanupAuthorizationState& state) noexcept;
 };
 

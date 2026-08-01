@@ -6,6 +6,7 @@
 
 #include "distributed_sieve_merge_prepared_admission_internal.hpp"
 #include "distributed_sieve_wave_store_internal.hpp"
+#include "distributed_sieve_worker_cleanup_codec_internal.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -18,6 +19,129 @@ namespace gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail {
 
 using distributed_sieve_merge_writer_authority_detail::DistributedSieveCommittedTailAdmissionV1;
 using distributed_sieve_resume_detail::DistributedSieveWorkerCleanupRootAdmissionV1;
+
+enum class DistributedSieveWorkerCleanupReceiptMintPhaseV1 : std::uint8_t {
+    admission_validation,
+    relation_binding_projection,
+    live_claim,
+    root_revalidation,
+    receipt_construction,
+    complete,
+};
+
+enum class DistributedSieveWorkerCleanupReceiptMintStatusV1 : std::uint8_t {
+    ready,
+    invalid_admission,
+    authorization_not_canonical,
+    relation_binding_invalid,
+    receipt_already_live,
+    root_authority_invalid,
+    process_mismatch,
+    resource_exhausted,
+    unexpected_failure,
+};
+
+[[nodiscard]] constexpr std::string_view distributed_sieve_worker_cleanup_receipt_mint_status_name(
+    DistributedSieveWorkerCleanupReceiptMintStatusV1 status) noexcept {
+    switch (status) {
+    case DistributedSieveWorkerCleanupReceiptMintStatusV1::ready:
+        return "ready";
+    case DistributedSieveWorkerCleanupReceiptMintStatusV1::invalid_admission:
+        return "invalid_admission";
+    case DistributedSieveWorkerCleanupReceiptMintStatusV1::authorization_not_canonical:
+        return "authorization_not_canonical";
+    case DistributedSieveWorkerCleanupReceiptMintStatusV1::relation_binding_invalid:
+        return "relation_binding_invalid";
+    case DistributedSieveWorkerCleanupReceiptMintStatusV1::receipt_already_live:
+        return "receipt_already_live";
+    case DistributedSieveWorkerCleanupReceiptMintStatusV1::root_authority_invalid:
+        return "root_authority_invalid";
+    case DistributedSieveWorkerCleanupReceiptMintStatusV1::process_mismatch:
+        return "process_mismatch";
+    case DistributedSieveWorkerCleanupReceiptMintStatusV1::resource_exhausted:
+        return "resource_exhausted";
+    case DistributedSieveWorkerCleanupReceiptMintStatusV1::unexpected_failure:
+        return "unexpected_failure";
+    }
+    return "unknown";
+}
+
+struct DistributedSieveWorkerCleanupReceiptMintDiagnosticV1 final {
+    DistributedSieveWorkerCleanupReceiptMintPhaseV1 phase =
+        DistributedSieveWorkerCleanupReceiptMintPhaseV1::admission_validation;
+    DistributedSieveWorkerCleanupReceiptMintStatusV1 status =
+        DistributedSieveWorkerCleanupReceiptMintStatusV1::unexpected_failure;
+    distributed_sieve_resume_detail::DistributedSieveWaveStoreDiagnostic wave_store;
+    distributed_sieve_worker_cleanup_codec_detail::DistributedSieveWorkerCleanupCodecDiagnosticV1
+        codec;
+    std::error_code native_error;
+    bool cold_reopen_required = false;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return phase == DistributedSieveWorkerCleanupReceiptMintPhaseV1::complete &&
+               status == DistributedSieveWorkerCleanupReceiptMintStatusV1::ready && !native_error &&
+               !cold_reopen_required;
+    }
+};
+
+struct DistributedSieveWorkerCleanupReceiptMintedV1 final {
+    DistributedSieveWorkerCleanupReceiptMintedV1(
+        std::uint32_t ordinal,
+        relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupAuthorizationReceipt&&
+            receipt_value) noexcept
+        : manifest_order_ordinal(ordinal), receipt(std::move(receipt_value)) {}
+    DistributedSieveWorkerCleanupReceiptMintedV1(
+        const DistributedSieveWorkerCleanupReceiptMintedV1&) = delete;
+    DistributedSieveWorkerCleanupReceiptMintedV1&
+    operator=(const DistributedSieveWorkerCleanupReceiptMintedV1&) = delete;
+    DistributedSieveWorkerCleanupReceiptMintedV1(
+        DistributedSieveWorkerCleanupReceiptMintedV1&&) noexcept = default;
+    DistributedSieveWorkerCleanupReceiptMintedV1&
+    operator=(DistributedSieveWorkerCleanupReceiptMintedV1&&) = delete;
+
+    std::uint32_t manifest_order_ordinal = 0;
+    relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupAuthorizationReceipt receipt;
+};
+
+struct DistributedSieveWorkerCleanupReceiptMintResultV1 final {
+    DistributedSieveWorkerCleanupReceiptMintResultV1() = default;
+    DistributedSieveWorkerCleanupReceiptMintResultV1(
+        std::optional<DistributedSieveWorkerCleanupReceiptMintedV1> minted_value,
+        DistributedSieveWorkerCleanupReceiptMintDiagnosticV1 diagnostic_value) noexcept
+        : minted(std::move(minted_value)), diagnostic(std::move(diagnostic_value)) {}
+    DistributedSieveWorkerCleanupReceiptMintResultV1(
+        const DistributedSieveWorkerCleanupReceiptMintResultV1&) = delete;
+    DistributedSieveWorkerCleanupReceiptMintResultV1&
+    operator=(const DistributedSieveWorkerCleanupReceiptMintResultV1&) = delete;
+    DistributedSieveWorkerCleanupReceiptMintResultV1(
+        DistributedSieveWorkerCleanupReceiptMintResultV1&&) noexcept = default;
+    DistributedSieveWorkerCleanupReceiptMintResultV1&
+    operator=(DistributedSieveWorkerCleanupReceiptMintResultV1&&) = delete;
+
+    std::optional<DistributedSieveWorkerCleanupReceiptMintedV1> minted;
+    DistributedSieveWorkerCleanupReceiptMintDiagnosticV1 diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return minted.has_value() && static_cast<bool>(diagnostic);
+    }
+};
+
+[[nodiscard]] DistributedSieveWorkerCleanupReceiptMintResultV1
+mint_distributed_sieve_worker_cleanup_authorization_receipt_v1(
+    DistributedSieveWorkerCleanupRootAdmissionV1& admission) noexcept;
+
+class DistributedSieveWorkerCleanupReceiptMintAuthorityV1 final {
+public:
+    DistributedSieveWorkerCleanupReceiptMintAuthorityV1() = delete;
+
+private:
+    [[nodiscard]] static DistributedSieveWorkerCleanupReceiptMintResultV1
+    mint(DistributedSieveWorkerCleanupRootAdmissionV1& admission) noexcept;
+
+    friend DistributedSieveWorkerCleanupReceiptMintResultV1
+    mint_distributed_sieve_worker_cleanup_authorization_receipt_v1(
+        DistributedSieveWorkerCleanupRootAdmissionV1& admission) noexcept;
+};
 
 /// Pure-data result of the committed tail's rvalue-only lock-generation
 /// release. No descriptor, path mutation, publication, or cleanup capability

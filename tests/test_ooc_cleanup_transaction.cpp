@@ -78,11 +78,13 @@ class OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2 final {
 public:
     [[nodiscard]] static OOCPrivateHandoffCleanupAuthorizationReceipt
     make(OOCPrivateHandoffCleanupAuthorizationBinding binding,
-         const std::shared_ptr<std::atomic_bool>& live) {
+         const std::shared_ptr<std::atomic_bool>& live,
+         std::shared_ptr<std::atomic<std::size_t>> release_count = {}) {
         auto state = std::make_shared<OOCPrivateHandoffCleanupAuthorizationTestLivenessV2>(
             OOCPrivateHandoffCleanupAuthorizationTestLivenessV2{
                 .creator_process_id = static_cast<std::uint64_t>(gnfs::util::process_id()),
                 .live = live,
+                .release_count = std::move(release_count),
             });
         return OOCPrivateHandoffCleanupAuthorizationReceipt(std::move(binding), std::move(state));
     }
@@ -8942,6 +8944,7 @@ struct AuthorizedCleanupConversionHookContext final {
     OOCPrivateHandoffCleanupIntentPublicationFaultPointV2 target =
         OOCPrivateHandoffCleanupIntentPublicationFaultPointV2::Count;
     std::filesystem::path replace_leaf;
+    std::shared_ptr<std::atomic_bool> revoke_live;
     bool stop = true;
     bool invoked = false;
     bool replacement_succeeded = false;
@@ -8959,7 +8962,37 @@ authorized_cleanup_conversion_hook(OOCPrivateHandoffCleanupIntentPublicationFaul
         context.replacement_succeeded =
             replace_private_control_leaf_same_bytes(context.replace_leaf);
     }
+    if (context.revoke_live) {
+        context.revoke_live->store(false, std::memory_order_release);
+    }
     return context.stop;
+}
+
+void test_authorized_cleanup_v2_receipt_release_is_single_owner() {
+    auto live = std::make_shared<std::atomic_bool>(true);
+    auto release_count = std::make_shared<std::atomic<std::size_t>>(0);
+    {
+        auto first = OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2::make(
+            OOCPrivateHandoffCleanupAuthorizationBinding{}, live, release_count);
+        CHECK(!first.spent());
+        CHECK(release_count->load(std::memory_order_acquire) == 0);
+        {
+            auto second = std::move(first);
+            CHECK(first.spent());
+            CHECK(!second.spent());
+            CHECK(release_count->load(std::memory_order_acquire) == 0);
+            {
+                auto third = std::move(second);
+                CHECK(second.spent());
+                CHECK(!third.spent());
+                CHECK(release_count->load(std::memory_order_acquire) == 0);
+            }
+            CHECK(release_count->load(std::memory_order_acquire) == 1);
+            CHECK(!live->load(std::memory_order_acquire));
+        }
+        CHECK(release_count->load(std::memory_order_acquire) == 1);
+    }
+    CHECK(release_count->load(std::memory_order_acquire) == 1);
 }
 
 void test_authorized_cleanup_v2_conversion_capability_guards() {
@@ -9003,6 +9036,96 @@ void test_authorized_cleanup_v2_conversion_capability_guards() {
     CHECK(reader.valid());
     CHECK(!entry_exists_no_follow(paths.intent_path));
     CHECK(!entry_exists_no_follow(paths.intent_pending_path));
+}
+
+void test_authorized_cleanup_v2_conversion_rechecks_live_authority() {
+    TempDirectory temp;
+
+    {
+        const auto base =
+            temp.path() / "authorized-conversion-live-before-publish.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto prepared = prepare_private_handoff(base);
+        CHECK(publish_private_handoff(prepared).canonical());
+        auto adopted = OOCCleanupTransaction::adopt_private_handoff(base);
+        CHECK(adopted.adopted());
+        OOCPrivateHandoffReader reader(std::move(*adopted.adoption));
+        auto binding = authorized_cleanup_binding_for_reader(paths, reader,
+                                                             authorized_cleanup_test_digest(0xc2));
+        auto live = std::make_shared<std::atomic_bool>(true);
+        auto authorization =
+            OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2::make(std::move(binding), live);
+        AuthorizedCleanupConversionHookContext context{
+            .target = OOCPrivateHandoffCleanupIntentPublicationFaultPointV2::BindingRevalidated,
+            .revoke_live = live,
+            .stop = false,
+        };
+        const auto rejected =
+            convert_authorized_private_handoff_to_cleanup_intent_v2_for_trusted_test(
+                OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2::test_key(), std::move(reader),
+                std::move(authorization),
+                OOCPrivateHandoffCleanupIntentPublicationTestHooksV2{
+                    .stop_after = authorized_cleanup_conversion_hook,
+                    .context = &context,
+                });
+        CHECK(context.invoked);
+        CHECK(!live->load(std::memory_order_acquire));
+        CHECK(rejected.result.status == OOCCleanupStatus::InvalidRequest);
+        CHECK(rejected.disposition ==
+              OOCPrivateHandoffCleanupIntentPublicationDispositionV2::Failed);
+        CHECK(!rejected.capabilities_retained());
+        CHECK(!rejected.capabilities_spent());
+        CHECK(!rejected.intent_published());
+        CHECK(authorization.spent());
+        CHECK(!reader.valid());
+        CHECK(!entry_exists_no_follow(paths.intent_path));
+        CHECK(!entry_exists_no_follow(paths.intent_pending_path));
+        CHECK(entry_exists_no_follow(paths.private_handoff_path));
+        CHECK(entry_exists_no_follow(paths.index_path));
+        CHECK(entry_exists_no_follow(paths.data_path));
+    }
+
+    {
+        const auto base =
+            temp.path() / "authorized-conversion-live-after-spend.gnfs-sink-lease" / "corpus";
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        auto prepared = prepare_private_handoff(base);
+        CHECK(publish_private_handoff(prepared).canonical());
+        auto adopted = OOCCleanupTransaction::adopt_private_handoff(base);
+        CHECK(adopted.adopted());
+        OOCPrivateHandoffReader reader(std::move(*adopted.adoption));
+        auto binding = authorized_cleanup_binding_for_reader(paths, reader,
+                                                             authorized_cleanup_test_digest(0xc3));
+        auto live = std::make_shared<std::atomic_bool>(true);
+        auto authorization =
+            OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2::make(std::move(binding), live);
+        AuthorizedCleanupConversionHookContext context{
+            .target =
+                OOCPrivateHandoffCleanupIntentPublicationFaultPointV2::IntentCanonicalPromoted,
+            .revoke_live = live,
+        };
+        const auto rejected =
+            convert_authorized_private_handoff_to_cleanup_intent_v2_for_trusted_test(
+                OOCPrivateHandoffCleanupAuthorizationTestAuthorityV2::test_key(), std::move(reader),
+                std::move(authorization),
+                OOCPrivateHandoffCleanupIntentPublicationTestHooksV2{
+                    .stop_after = authorized_cleanup_conversion_hook,
+                    .context = &context,
+                });
+        CHECK(context.invoked);
+        CHECK(!live->load(std::memory_order_acquire));
+        CHECK(rejected.result.status == OOCCleanupStatus::InvalidRequest);
+        CHECK(rejected.canonical_reconciliation_required());
+        CHECK(rejected.capabilities_spent());
+        CHECK(!rejected.capabilities_retained());
+        CHECK(!rejected.intent_published());
+        CHECK(authorization.spent());
+        CHECK(!reader.valid());
+        CHECK(entry_exists_no_follow(paths.intent_path));
+        CHECK(entry_exists_no_follow(paths.private_handoff_path));
+        CHECK(entry_exists_no_follow(paths.index_path));
+        CHECK(entry_exists_no_follow(paths.data_path));
+    }
 }
 
 void test_authorized_cleanup_v2_conversion_prefixes() {
@@ -15428,6 +15551,8 @@ void run_authority_observer_suite() {
 
 #if defined(__APPLE__)
 void run_authorized_v2_core_suite() {
+    test_authorized_cleanup_v2_receipt_release_is_single_owner();
+    test_authorized_cleanup_v2_conversion_rechecks_live_authority();
     test_authorized_cleanup_v2_exact_prefix_observer();
     test_authorized_cleanup_v2_canonical_completion_evidence();
     test_authorized_cleanup_v2_pending_only_requires_conversion();
