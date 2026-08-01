@@ -3032,7 +3032,7 @@ M4b restart recovery is split into explicit authority milestones:
 - [x] M4b-P4c-R3 publishes or recovers exactly one classifier-selected worker
   authorization and seals either an R1-ready or all-workers-complete
   continuation.
-- [ ] M4b-P4c-R4 composes the typed R3 -> R1 -> R2 transitions without adding
+- [x] M4b-P4c-R4 composes the typed R3 -> R1 -> R2 transitions without adding
   mutation authority and exposes only a retained, non-armable merged result.
 
 M4a completes the source-private merge-generation namespace, exact P0-P8
@@ -4044,3 +4044,125 @@ R2 transitions with a bounded, rvalue-only retry continuation and retain the
 terminal merged reader behind a non-armable read-only view. Public
 `DistributedSieveWaveResult`, consumption ACK, merged cleanup, and
 `WaveCompletedV1` remain later work.
+
+## M4b-P4c-R4 Execution Plan: 2026-08-02
+
+R4 is an internal orchestration and least-authority result slice. It does not
+introduce the public `DistributedSieveWaveResult` reserved for M5. Its fresh
+entry consumes one cleanup-root admission and its resume entry consumes one
+sealed R4 continuation; both are rvalue-only. No R4 value exposes a raw root,
+R1/R2/R3 capsule, path, descriptor, native handle, receipt, cleanup operation,
+or worker-launch operation.
+
+The retry continuation privately carries exactly one of four existing
+capabilities: an authorization-recovery root, an R1 intent-conversion capsule,
+an R2 completion-ready capsule, or an R3 completion-published continuation.
+Wrapper alternatives distinguish the two authorization routes without
+weakening their underlying types. The continuation publishes only validity
+and a pure stage enum. A root from any source is always returned to the
+production R3 classifier; R4 never calls the trusted-test raw-root R1 seam and
+never infers whether a root belongs to R1, R2, or R3 from a status code.
+
+One invocation follows the typed success chain:
+
+1. classify a root or advance a completion through R3;
+2. drive an authorization continuation through R1;
+3. publish or reconcile a completion through R2; and
+4. return the R2 continuation to R3 until the classifier seals terminal state.
+
+An R1 intent-conversion retry resumes through the production conversion entry.
+If conversion succeeds, its returned root re-enters R3 in the same invocation.
+Any child result that retains a retry capability is sealed unchanged and
+returned to the caller instead of being retried in a tight loop. A post-spend
+or structurally invalid child result returns no capability and requires a cold
+reopen. R4 validates the child closed unions rather than guessing ownership
+from status names.
+
+The internal loop has a checked bound derived from the committed nonempty
+worker count and carries that count across retries. This bound is intentionally
+larger than the exact R3 -> R1 -> R2 transition count but finite; exceeding it
+is a protocol error and returns cold. Each successful transition must either
+move to the next typed phase, durably advance one worker coordinate, or reach
+terminal state.
+
+Terminal success moves the whole all-workers-complete continuation into a
+move-only retained-result state. That state constructs one
+`ReadOnlyRelationCorpusView` from the already retained merged reader and keeps
+the terminal continuation alive at a stable address behind a `unique_ptr`.
+The view is destroyed before the terminal root and `WaveLock`. The public
+surface of this internal result is limited to validity, completed-worker count,
+and an lvalue-only const reference to the non-armable view. Moving the result
+does not rebind the reader; destroying it releases locks but preserves the
+merged artifact.
+
+The dedicated test binary uses a thin wrapper over the real prepared-wave
+fixture and three independent suites. `core` covers two and three nonempty
+workers separated by intermediate/trailing empty chunks, typed retry resume,
+and cold terminal zero mutation. `fault-propagation` covers each R3, R1
+intent-conversion, and R2 retry arm plus representative post-spend cold
+outcomes. `protection` freezes the move-only and lvalue-only API, exact relation
+order and merged bytes, retained `WaveLock`, released worker `BaseLock`
+descriptions, PID binding, and the absence of M5 records. The intended shard
+split is 3/3/2 with 240-second Apple timeouts, a 360-second aggregate, and one
+bounded non-Apple fail-closed case.
+
+The policy checker will freeze the two entries, the four private retry arms,
+unique ownership mapping, checked progress bound, root-to-R3 rule, seven
+allowed operations consisting of the six named production transitions and the
+private terminal-to-view handoff, terminal reader identity, stable result state,
+and negative API surface. Focused mutations will attempt lvalue/copy
+entry, raw-root R1 use, removal or misrouting of each retry arm, post-spend
+authority return, unbounded progress, reader reopen/replacement, cleanup arm,
+worker launch, and M5 publication. R4 must leave all R1/R2/R3 exact intervals
+and focused suites green.
+
+## M4b-P4c-R4 Implementation Report: 2026-08-02
+
+R4 now composes the sealed R3 -> R1 -> R2 worker-cleanup transitions into one
+source-private driver. Its four retry arms retain exactly one authorization
+recovery root, R1 intent-conversion capsule, R2 completion-ready capsule, or R3
+completion-published continuation. Every raw root re-enters the production R3
+classifier, child results must satisfy their exact ownership union, and each
+invocation is bounded by the checked `4 * worker_count + 4` transition budget.
+
+Terminal success moves the complete R3 continuation behind a move-only pimpl
+and exposes only the completed-worker count plus an lvalue-only
+`ReadOnlyRelationCorpusView`. The view remains bound to the retained merged
+reader across result moves and is destroyed before the terminal root and
+`WaveLock`. R4 exposes no raw root, cleanup arm, worker-launch authority, M5
+record, or public `DistributedSieveWaveResult`. The only child change is a
+sealed trusted-test R1 entry that drives the already-existing T2a publication
+fault seam; production behavior remains on the original entry.
+
+The dedicated test binary covers two- and three-worker layouts with
+intermediate and trailing empty chunks, exact merged bytes and relation order,
+typed retry and cold-terminal recovery, all R3/R1/R2 retry arms, representative
+post-spend cold outcomes, cross-process rejection, move-only API constraints,
+continuous `WaveLock`, released worker `BaseLock` descriptions, and absence of
+M5 artifacts. Its `core`, `fault-propagation`, and `protection` shards pass 3/3,
+3/3, and 2/2; the aggregate passes 1/1. The prior R3 publisher aggregate and
+R1/R2 worker-cleanup-tail aggregate also remain green.
+
+`./scripts/test.sh -t Release --no-color changed --deep` passes 77/77 in
+6 minutes 37 seconds, including API deep-contract and GNFS E2E coverage.
+`./scripts/test.sh list` accepts the catalog, and live CTest metadata reports
+the three Apple shards as `slow` with 240-second timeouts; the project runner
+reports the aggregate as `slow` with a 360-second timeout.
+
+The R4 policy focus rejects all twelve mutations, the legacy capsule and
+R1/R2/R3 focused suites pass, and the complete parser/table mutation self-test
+plus normal repository scan exits successfully. The frozen checker SHA-256 is
+`82bd86f7158b832e53f048c34dcc969c4f1454c22e07280f34216baeb0a9a4c1`.
+
+Parallel architecture, relation-route, and final authority reviews report no
+P0, P1, or actionable P2 finding. The accepted residual boundary remains a
+hostile same-UID actor rebuilding the namespace after final validation and
+before caller consumption; closing it requires a retained private namespace
+action claim or a `BaseLock` across the return boundary and is not introduced
+by R4. M5 remains the next milestone for the public wave result, consumption
+ACK, merged cleanup, and `WaveCompletedV1` publication.
+
+`clang-format --dry-run --Werror`, Python bytecode compilation, the Harness
+checker, the Markdown-link checker, shell and CI YAML syntax checks,
+`git diff --check`, added-line machine-path and credential scans, and a no-op
+`gnfs_core` rebuild all pass.

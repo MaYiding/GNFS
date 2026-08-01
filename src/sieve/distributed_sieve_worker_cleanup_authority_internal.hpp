@@ -446,6 +446,7 @@ private:
 class DistributedSieveWorkerCleanupCompletionPreparationAuthorityV1;
 class DistributedSieveWorkerCleanupCompletionPublicationAuthorityV1;
 class DistributedSieveWorkerCleanupAuthorizationPublicationAuthorityV1;
+class DistributedSieveWorkerCleanupOrchestrationAuthorityV1;
 class DistributedSieveWorkerCleanupAuthorizationPublishedContinuationV1;
 
 /// Sealed R1 result proving that one canonical root authorization has reached
@@ -637,6 +638,14 @@ drive_distributed_sieve_worker_cleanup_to_completion_ready_v1(
 
 namespace trusted_test {
 
+/// Test-only sealed R1 entry. It differs from production only at the existing
+/// T2a intent-publication fault seam and never exposes the retained root.
+[[nodiscard]] DistributedSieveWorkerCleanupCompletionPreparationResultV1
+drive_distributed_sieve_worker_cleanup_to_completion_ready_v1_with_hooks(
+    DistributedSieveWorkerCleanupAuthorizationPublishedContinuationV1&& authorization,
+    relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentPublicationTestHooksV2
+        hooks) noexcept;
+
 /// Compatibility seam for the existing focused R1 tests. Production must enter
 /// R1 only through the sealed authorization-published continuation above.
 [[nodiscard]] DistributedSieveWorkerCleanupCompletionPreparationResultV1
@@ -652,16 +661,25 @@ public:
 private:
     [[nodiscard]] static bool
     valid(const DistributedSieveWorkerCleanupCompletionReadyCapsuleV1& capsule) noexcept;
-    [[nodiscard]] static DistributedSieveWorkerCleanupCompletionPreparationResultV1 drive(
-        DistributedSieveWorkerCleanupAuthorizationPublishedContinuationV1&& authorization) noexcept;
     [[nodiscard]] static DistributedSieveWorkerCleanupCompletionPreparationResultV1
-    drive_with_root(DistributedSieveWorkerCleanupRootAdmissionV1&& root) noexcept;
+    drive(DistributedSieveWorkerCleanupAuthorizationPublishedContinuationV1&& authorization,
+          relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentPublicationTestHooksV2 hooks,
+          bool trusted_test_hooks) noexcept;
+    [[nodiscard]] static DistributedSieveWorkerCleanupCompletionPreparationResultV1 drive_with_root(
+        DistributedSieveWorkerCleanupRootAdmissionV1&& root,
+        relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentPublicationTestHooksV2 hooks,
+        bool trusted_test_hooks) noexcept;
 
     friend class DistributedSieveWorkerCleanupCompletionReadyCapsuleV1;
     friend class DistributedSieveWorkerCleanupAuthorizationPublishedContinuationV1;
     friend DistributedSieveWorkerCleanupCompletionPreparationResultV1
     drive_distributed_sieve_worker_cleanup_to_completion_ready_v1(
         DistributedSieveWorkerCleanupAuthorizationPublishedContinuationV1&& authorization) noexcept;
+    friend DistributedSieveWorkerCleanupCompletionPreparationResultV1
+    trusted_test::drive_distributed_sieve_worker_cleanup_to_completion_ready_v1_with_hooks(
+        DistributedSieveWorkerCleanupAuthorizationPublishedContinuationV1&& authorization,
+        relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentPublicationTestHooksV2
+            hooks) noexcept;
     friend DistributedSieveWorkerCleanupCompletionPreparationResultV1
     trusted_test::drive_distributed_sieve_worker_cleanup_to_completion_ready_v1_with_root(
         DistributedSieveWorkerCleanupRootAdmissionV1&& root) noexcept;
@@ -1021,6 +1039,7 @@ private:
     DistributedSieveWorkerCleanupRootAdmissionV1 root_;
 
     friend class DistributedSieveWorkerCleanupAuthorizationPublicationAuthorityV1;
+    friend class DistributedSieveWorkerCleanupOrchestrationAuthorityV1;
 };
 
 namespace trusted_test {

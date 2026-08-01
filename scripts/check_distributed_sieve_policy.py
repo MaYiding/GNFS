@@ -194,6 +194,20 @@ WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE = (
 WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_FILE = (
     "tests/test_distributed_sieve_worker_cleanup_authorization_publisher.cpp"
 )
+WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE = (
+    "src/sieve/distributed_sieve_worker_cleanup_orchestrator.cpp"
+)
+WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE = (
+    "src/sieve/distributed_sieve_worker_cleanup_orchestrator_internal.hpp"
+)
+WORKER_CLEANUP_ORCHESTRATION_TEST_FILE = (
+    "tests/test_distributed_sieve_worker_cleanup_orchestrator.cpp"
+)
+WORKER_CLEANUP_ORCHESTRATION_FILES = {
+    WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE,
+    WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE,
+    WORKER_CLEANUP_ORCHESTRATION_TEST_FILE,
+}
 WORKER_CLEANUP_TAIL_AUTHORITY_INTERFACE_INCLUDE = (
     "distributed_sieve_worker_cleanup_authority_internal.hpp"
 )
@@ -205,6 +219,8 @@ WORKER_CLEANUP_TAIL_AUTHORITY_INCLUDE_ALLOWLIST = {
     WORKER_CLEANUP_TAIL_AUTHORITY_IMPLEMENTATION_FILE,
     WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
     WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_FILE,
+    WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE,
+    WORKER_CLEANUP_ORCHESTRATION_TEST_FILE,
     MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE,
 }
 WORKER_CLEANUP_TAIL_AUTHORITY_IDENTIFIER_ALLOWLISTS = {
@@ -224,6 +240,7 @@ WORKER_CLEANUP_TAIL_AUTHORITY_IDENTIFIER_ALLOWLISTS = {
         | {
             WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
             WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_FILE,
+            WORKER_CLEANUP_ORCHESTRATION_TEST_FILE,
         }
     ),
     "consume_distributed_sieve_committed_tail_for_worker_cleanup_v1_with_hooks": (
@@ -256,6 +273,7 @@ WORKER_CLEANUP_EXACT_ANCHOR_IDENTIFIER_ALLOWLISTS = {
         WORKER_CLEANUP_TAIL_AUTHORITY_IMPLEMENTATION_FILE,
         WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
         WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_FILE,
+        WORKER_CLEANUP_ORCHESTRATION_TEST_FILE,
         MERGE_COMMIT_AUTHORITY_TEST_FILE,
     },
 }
@@ -954,7 +972,7 @@ WORKER_CLEANUP_CAPSULE_EXACT_USE_CONTEXTS = {
         ),
         WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE: (
             25,
-            "3348d861d3907119e5dec06ca4338f5b4e053e040e8c82fa3c3a94ce5ada4808",
+            "b84fa1f6cc6c1f59951411d1593f61e05b46ab60aa2354fb19de4d1955158fb5",
         ),
         WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE: (
             1,
@@ -1114,7 +1132,7 @@ WORKER_CLEANUP_CAPSULE_EXACT_USE_CONTEXTS = {
         ),
         WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE: (
             16,
-            "2c7b54a95eb835b18818fc02c60ed91e92c39e9f2b097fc19ac7eb23e0e29e75",
+            "0e7f8e14f8dce766d6698fe9e214b6ff13bdc8709f374f4c76417cb4808ae692",
         ),
         WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE: (
             1,
@@ -1124,7 +1142,7 @@ WORKER_CLEANUP_CAPSULE_EXACT_USE_CONTEXTS = {
     WORKER_CLEANUP_CAPSULE_EXECUTE_ENTRY_IDENTIFIER: {
         WORKER_CLEANUP_RECEIPT_AUTHORITY_IMPLEMENTATION_FILE: (
             2,
-            "8127ecc1d46d018ac610c4e8dee2c368d0b713c68ebbbe591df6e72cd252bfd9",
+            "70fc2cf402607928b3e1e98c2af5d2923521a837b0b7dc82b109e04a12fa78ee",
         ),
         WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE: (
             2,
@@ -1137,12 +1155,12 @@ WORKER_CLEANUP_CAPSULE_EXACT_USE_CONTEXTS = {
     },
     WORKER_CLEANUP_CAPSULE_TRUSTED_EXECUTE_ENTRY_IDENTIFIER: {
         WORKER_CLEANUP_RECEIPT_AUTHORITY_IMPLEMENTATION_FILE: (
-            1,
-            "f1cbf600d71c03d7c859898022c4c26c566b415c57e92100d07459ce5a12784d",
+            2,
+            "4cca55efcce69a69d65e886fb919e7499a997ace2ccfb54ba77c4ff7e19fb25a",
         ),
         WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE: (
             2,
-            "a2faa5cd48d401d3fee9593ad6d5dae0dce330fdff1fcb0c9f2e95bdf66c8907",
+            "4096aabf5b4e829c0c80f1d6df55cb5a43bbe5be9787827bbb3180e9b536db0d",
         ),
         WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE: (
             3,
@@ -1721,6 +1739,9 @@ WORKER_CLEANUP_COMPLETION_RESULT_IDENTIFIER = (
 WORKER_CLEANUP_COMPLETION_ENTRY_IDENTIFIER = (
     "drive_distributed_sieve_worker_cleanup_to_completion_ready_v1"
 )
+WORKER_CLEANUP_COMPLETION_TEST_ENTRY_IDENTIFIER = (
+    "drive_distributed_sieve_worker_cleanup_to_completion_ready_v1_with_hooks"
+)
 WORKER_CLEANUP_COMPLETION_IDENTIFIER_ALLOWLISTS = {
     WORKER_CLEANUP_COMPLETION_CAPSULE_IDENTIFIER: {
         WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE,
@@ -1770,6 +1791,11 @@ WORKER_CLEANUP_COMPLETION_IDENTIFIER_ALLOWLISTS = {
         WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE,
         WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
     },
+    WORKER_CLEANUP_COMPLETION_TEST_ENTRY_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_AUTHORITY_IMPLEMENTATION_FILE,
+        WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE,
+        WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE,
+    },
 }
 WORKER_CLEANUP_COMPLETION_EXACT_USE_CONTEXTS = {
     WORKER_CLEANUP_COMPLETION_CAPSULE_IDENTIFIER: {
@@ -1779,7 +1805,7 @@ WORKER_CLEANUP_COMPLETION_EXACT_USE_CONTEXTS = {
         ),
         WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE: (
             24,
-            "60055ea628e1b2de0892f9cf5f8682bf720f6ef33ae5e961ce3233911c7daffb",
+            "0651e206e34952157adb2e4d8047b8df3d9bcc1b1db9fdaf353e88a9ace77b60",
         ),
         WORKER_CLEANUP_RECEIPT_AUTHORITY_IMPLEMENTATION_FILE: (
             10,
@@ -1793,11 +1819,11 @@ WORKER_CLEANUP_COMPLETION_EXACT_USE_CONTEXTS = {
     WORKER_CLEANUP_COMPLETION_AUTHORITY_IDENTIFIER: {
         WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE: (
             5,
-            "35097b8d4913c83fa410070a062370a2b44cc735c09f70642854400a4fd180a0",
+            "744f8caabbde044e09a17a7483fed85d8ac75e46c2c762361c68c9fafb717af7",
         ),
         WORKER_CLEANUP_RECEIPT_AUTHORITY_IMPLEMENTATION_FILE: (
-            6,
-            "2faf6bf89296ad5711be2079fae535813a0d8a522658cb0c7e2e6f2fd00b6c84",
+            7,
+            "a96eb70ed3873eaedd7006f19ca61dc977976ddd87940061e7cc9cd9b214ead7",
         ),
     },
     WORKER_CLEANUP_COMPLETION_PUBLICATION_AUTHORITY_IDENTIFIER: {
@@ -1811,7 +1837,7 @@ WORKER_CLEANUP_COMPLETION_EXACT_USE_CONTEXTS = {
         ),
         WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE: (
             5,
-            "e7018548812da2cd9c649f8649831334c580d4b30256d0ed0d07a1a33584ba35",
+            "2734204d3178825d127b555e809f2c3546fa6861f41a2d54491d1ba221aeefd2",
         ),
         WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE: (
             9,
@@ -1878,12 +1904,12 @@ WORKER_CLEANUP_COMPLETION_EXACT_USE_CONTEXTS = {
     },
     WORKER_CLEANUP_COMPLETION_RESULT_IDENTIFIER: {
         WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE: (
-            17,
-            "cf3c5b22e8a6bf938a7895070ffaaff493d9e1311528af5963fbdb9c74a706af",
+            19,
+            "a7141d169e2493e98766eb2a0ed6bcd01111dab7b469062d260355b10eee6468",
         ),
         WORKER_CLEANUP_RECEIPT_AUTHORITY_IMPLEMENTATION_FILE: (
-            6,
-            "897a24ffbf56ba82b91942c8e9e88c57bce88af46857149ee0459aed98b1d1d5",
+            7,
+            "89693bc5d6d3c23c0f0711dec81e0fd330e146482610f97f19b9f2c4e25d96a3",
         ),
         WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE: (
             1,
@@ -1893,15 +1919,29 @@ WORKER_CLEANUP_COMPLETION_EXACT_USE_CONTEXTS = {
     WORKER_CLEANUP_COMPLETION_ENTRY_IDENTIFIER: {
         WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE: (
             2,
-            "398c841cd0a6ad6fabe9a7f15582f0d256fee7f9e4bcdb0f5541d6a309062f5c",
+            "35fa01f23d50b68a2b7a493b494f8687e965d20eefeb87f9e93eecc1f3359257",
         ),
         WORKER_CLEANUP_RECEIPT_AUTHORITY_IMPLEMENTATION_FILE: (
             1,
-            "872a56d8dc07497e100735d7390272e066bf818279079bb83b0e0a839299355a",
+            "b3a4ae92ca0e22af01528e43103ef6694a0fc78534accd68c71244235d5eab2b",
         ),
         WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE: (
             0,
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        ),
+    },
+    WORKER_CLEANUP_COMPLETION_TEST_ENTRY_IDENTIFIER: {
+        WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE: (
+            2,
+            "c570c019ade34ea4698b09c59af244bd5e4545bd7cd016a85a9cd8d79ee69b04",
+        ),
+        WORKER_CLEANUP_RECEIPT_AUTHORITY_IMPLEMENTATION_FILE: (
+            1,
+            "aca80d487792e777912a08a9558118d13c706fa5ba7d0477c32d868c675f05ce",
+        ),
+        WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (
+            1,
+            "23a5ea004678666bcbd27c6eb9092a2e2a318aa7dec9dc62a0eb5ca698198599",
         ),
     },
 }
@@ -1916,7 +1956,7 @@ WORKER_CLEANUP_COMPLETION_CLASS_BODY_SHA256 = {
         "8d87d4d222efdc94f3ae9a56377b0083d75f0056b291e375a8398bde3e426e81"
     ),
     WORKER_CLEANUP_COMPLETION_AUTHORITY_IDENTIFIER: (
-        "cd59eccf664fe9d7d593850748b8bfe010c6fadb9f5afce145fb7481df98161e"
+        "d9ccb5c13fd61b75dbbe2ff3dd59686deb466c8d90a6db0024fe364702336b01"
     ),
 }
 WORKER_CLEANUP_COMPLETION_ENUM_BODY_SHA256 = {
@@ -1947,23 +1987,26 @@ WORKER_CLEANUP_COMPLETION_FUNCTION_BODY_SHA256 = {
         "47b0f8250e2e02d39f27882016c3121acb9a9300fd68059381e3cb26e46f889e"
     ),
     "DistributedSieveWorkerCleanupCompletionPreparationAuthorityV1::drive": (
-        "41024b22a9059343ae3e755ed28af2a94607ac99c9b0640bfff0376c6e261e77"
+        "6a67da02731c26f3931ce96ed09b51dbb282a96fa63067d1755e3ca9b92e8820"
     ),
     "DistributedSieveWorkerCleanupCompletionPreparationAuthorityV1::drive_with_root": (
-        "4c7beee30e932d9426efa4776770e170ec4ddf8d18fe934391e023daccb71c5e"
+        "19f6593b3e9a2c61c9b282ba7237e2cc6a9ffa32ee705ee554f4d057236ecf9a"
     ),
     WORKER_CLEANUP_COMPLETION_ENTRY_IDENTIFIER: (
-        "1d23d706a6e0d30bc8c48a65766d48c84093a3e383c6d07a2c6781bd85d782c8"
+        "b93bfb38377db0fb6ce4df7d8898078fab860765279e349e3571e7cf367245bb"
+    ),
+    WORKER_CLEANUP_COMPLETION_TEST_ENTRY_IDENTIFIER: (
+        "676c206b68010d8d32dbb1cb0ced0199656aaf48029bff9f302d0654c10dfab7"
     ),
     "drive_distributed_sieve_worker_cleanup_to_completion_ready_v1_with_root": (
-        "67010f24c2a2a38fd75a01eb8d1b48965cbd524ae6e6722a6d847a53e1ade4fd"
+        "8814dcd7186aba25afa74a6d10485404fecb0e272176bf4fd33c39e1ede58c75"
     ),
 }
 WORKER_CLEANUP_COMPLETION_HEADER_INTERVAL_SHA256 = (
-    "9d5dc9133305f6b3c92c9c05d258a9edbb21257b9d21a677dfb453b1627dffcc"
+    "19a0897bf810ed843112eac9ec702e8020b8ce38b22ff9237123d43777082c96"
 )
 WORKER_CLEANUP_COMPLETION_IMPLEMENTATION_INTERVAL_SHA256 = (
-    "a28fcfbb9f1cc7afe30f0c3af67aa7a614f7fb35b6983f223b796926a53dec87"
+    "80613f1593e4b0b5e7ca1c6c10bd6a29c744fbcb66456bf3c1fc093a88e67a83"
 )
 WORKER_CLEANUP_COMPLETION_ROUTE_SWITCH = (
     "switch(observed_state){"
@@ -2259,7 +2302,7 @@ WORKER_CLEANUP_COMPLETION_PUBLICATION_EXACT_USE_CONTEXTS = {
     WORKER_CLEANUP_COMPLETION_PUBLICATION_CONTINUATION_IDENTIFIER: {
         WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE: (
             24,
-            "ba2eee46cac98a086f5b4029d6c656161e63ee6d041c20c101c23ebb851bea40",
+            "0da930e9fbeffc50cee26bc8160484508e2ba595b09366ef9fdf0be34388e0f1",
         ),
         WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE: (
             16,
@@ -2975,12 +3018,12 @@ WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_IDENTIFIER_ALLOWLISTS = {
 WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_EXACT_USE_CONTEXTS = {
     WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_CONTINUATION_IDENTIFIER: {
         WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE: (
-            21,
-            "53cca7c50c8235bfe44b93c3963d7d2810d99375dd5975064b2aed442e33d947",
+            23,
+            "1bdd97e4f487242c7ebd45ea801a17a1695bc6a17cc3ae0f590d0ecf98739e01",
         ),
         WORKER_CLEANUP_RECEIPT_AUTHORITY_IMPLEMENTATION_FILE: (
-            2,
-            "5ec24d0deadafb12b5d5b4432bb3b595e1b4872a7fe5acaa683bc8dcb97ae633",
+            3,
+            "0faf3f1aa9bd0f662e5b43ec6430a134c4bf46eb9223091901da9001beaaaf78",
         ),
         WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE: (
             10,
@@ -3094,7 +3137,7 @@ WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_EXACT_USE_CONTEXTS = {
     WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_AUTHORITY_IDENTIFIER: {
         WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE: (
             6,
-            "7570aabed21116f9f81d50fce46d79def3d55036d2e57207e90c70b0844853c8",
+            "4d2078018a02558f67afbc9c5052cb17d6ca25c566cd54b3cdc8c2cd94b32b1e",
         ),
         WORKER_CLEANUP_RECEIPT_WAVE_STORE_INTERFACE_FILE: (
             4,
@@ -3108,7 +3151,7 @@ WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_EXACT_USE_CONTEXTS = {
     WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_FAULT_POINT_IDENTIFIER: {
         WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE: (
             3,
-            "6754d43b62a80aaf81e8a5b930df47985a3c699029b5878b94b609464f64f416",
+            "6a85ea7b0b25f769a200f81ec11957beb4b1bedcb1f8c7d8147998c236e49c7f",
         ),
         WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE: (
             1,
@@ -3192,7 +3235,7 @@ WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_EXACT_USE_CONTEXTS = {
     WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_R1_ROOT_TEST_SEAM_IDENTIFIER: {
         WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE: (
             2,
-            "23b2a54b821e298c1451158f6d0e2ab78f99e89a73e7557c64fa3e259b488c4d",
+            "49ab3113bf1e548e03ed7b14c065655455336c6e47aef554e4a7fcb67cb8c53c",
         ),
         WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE: (
             3,
@@ -3200,12 +3243,12 @@ WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_EXACT_USE_CONTEXTS = {
         ),
         WORKER_CLEANUP_RECEIPT_AUTHORITY_IMPLEMENTATION_FILE: (
             1,
-            "ab1337f960229dde1ff08818fdf4da448284695d02926d9a701043283322a2df",
+            "33ddb1d056627d014a5c0cb01a9bc2c36ada92f440c8fde5c2f9c9f1e8fa1603",
         ),
     },
 }
 WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_HEADER_INTERVAL_SHA256: str | None = (
-    "e307437d977e030490ede856937a485685991c228b6d6dad77388115226838b6"
+    "68768b067480cd634ccc919eea3d61476c2cc929073849cca1bede14d699d771"
 )
 WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_IMPLEMENTATION_INTERVAL_SHA256: str | None = (
     "a22eca7dbfe06ec90953b37992600e11b829938393c23f616a4b47a293f3b9a8"
@@ -3218,7 +3261,7 @@ WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_CLASS_BODY_SHA256 = {
         "b9a257157d6625855c8f3b08fa463b950056344482afe928fe600ef4c9576b24"
     ),
     WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_COMPLETE_CONTINUATION_IDENTIFIER: (
-        "c3dacf1eddff0d410cfc86573e4142815415c0f206dd989af94d4ff2ff226647"
+        "e129a7c45e1409385f4e5165190ff51f96b774fd3624571577c343ac9b6a9d44"
     ),
     WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_DIAGNOSTIC_IDENTIFIER: (
         "870fa374f620a5dd07e3c18836091f2b57bd96e346167e26c9f965d772ca9f44"
@@ -3329,6 +3372,11 @@ WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_R1_RVALUE_DECLARATIONS = (
     "drive_distributed_sieve_worker_cleanup_to_completion_ready_v1("
     "DistributedSieveWorkerCleanupAuthorizationPublishedContinuationV1&&"
     "authorization)noexcept;",
+    "[[nodiscard]]DistributedSieveWorkerCleanupCompletionPreparationResultV1"
+    "drive_distributed_sieve_worker_cleanup_to_completion_ready_v1_with_hooks("
+    "DistributedSieveWorkerCleanupAuthorizationPublishedContinuationV1&&"
+    "authorization,relation::ooc_cleanup_detail::"
+    "OOCPrivateHandoffCleanupIntentPublicationTestHooksV2hooks)noexcept;",
     "[[nodiscard]]DistributedSieveWorkerCleanupCompletionPreparationResultV1"
     "drive_distributed_sieve_worker_cleanup_to_completion_ready_v1_with_root("
     "DistributedSieveWorkerCleanupRootAdmissionV1&&root)noexcept;",
@@ -3657,6 +3705,697 @@ WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_SURFACE_FRAGMENTS = (
     "static_assert(!std::is_invocable_v<CleanupAuthorizationResumeFunction,CleanupAdmission&>);",
     "static_assert(std::is_nothrow_invocable_r_v<CleanupAuthorizationPublicationResult,CleanupAuthorizationResumeFunction,CleanupAdmission&&>);",
 )
+
+# P4c-R4 closes the complete worker-cleanup control loop. The exact contexts
+# below deliberately include the private declaration, implementation, one
+# focused test translation unit, and the exact terminal R3 friend edge; no
+# other file may name an R4 authority type or entry point.
+WORKER_CLEANUP_ORCHESTRATION_STAGE_IDENTIFIER = (
+    "DistributedSieveWorkerCleanupOrchestrationStageV1"
+)
+WORKER_CLEANUP_ORCHESTRATION_STAGE_NAME_IDENTIFIER = (
+    "distributed_sieve_worker_cleanup_orchestration_stage_name"
+)
+WORKER_CLEANUP_ORCHESTRATION_CONTINUATION_IDENTIFIER = (
+    "DistributedSieveWorkerCleanupOrchestrationContinuationV1"
+)
+WORKER_CLEANUP_ORCHESTRATION_RETAINED_IDENTIFIER = (
+    "DistributedSieveWorkerCleanupRetainedMergedResultV1"
+)
+WORKER_CLEANUP_ORCHESTRATION_PHASE_IDENTIFIER = (
+    "DistributedSieveWorkerCleanupOrchestrationPhaseV1"
+)
+WORKER_CLEANUP_ORCHESTRATION_STATUS_IDENTIFIER = (
+    "DistributedSieveWorkerCleanupOrchestrationStatusV1"
+)
+WORKER_CLEANUP_ORCHESTRATION_DISPOSITION_IDENTIFIER = (
+    "DistributedSieveWorkerCleanupOrchestrationDispositionV1"
+)
+WORKER_CLEANUP_ORCHESTRATION_DIAGNOSTIC_IDENTIFIER = (
+    "DistributedSieveWorkerCleanupOrchestrationDiagnosticV1"
+)
+WORKER_CLEANUP_ORCHESTRATION_RESULT_IDENTIFIER = (
+    "DistributedSieveWorkerCleanupOrchestrationResultV1"
+)
+WORKER_CLEANUP_ORCHESTRATION_TEST_HOOKS_IDENTIFIER = (
+    "DistributedSieveWorkerCleanupOrchestrationTestHooksV1"
+)
+WORKER_CLEANUP_ORCHESTRATION_AUTHORITY_IDENTIFIER = (
+    "DistributedSieveWorkerCleanupOrchestrationAuthorityV1"
+)
+WORKER_CLEANUP_ORCHESTRATION_DRIVE_IDENTIFIER = (
+    "drive_distributed_sieve_worker_cleanup_to_retained_merged_v1"
+)
+WORKER_CLEANUP_ORCHESTRATION_RESUME_IDENTIFIER = (
+    "resume_distributed_sieve_worker_cleanup_to_retained_merged_v1"
+)
+WORKER_CLEANUP_ORCHESTRATION_TEST_DRIVE_IDENTIFIER = (
+    "drive_distributed_sieve_worker_cleanup_to_retained_merged_v1_with_hooks"
+)
+WORKER_CLEANUP_ORCHESTRATION_IDENTIFIERS = (
+    WORKER_CLEANUP_ORCHESTRATION_STAGE_IDENTIFIER,
+    WORKER_CLEANUP_ORCHESTRATION_STAGE_NAME_IDENTIFIER,
+    WORKER_CLEANUP_ORCHESTRATION_CONTINUATION_IDENTIFIER,
+    WORKER_CLEANUP_ORCHESTRATION_RETAINED_IDENTIFIER,
+    WORKER_CLEANUP_ORCHESTRATION_PHASE_IDENTIFIER,
+    WORKER_CLEANUP_ORCHESTRATION_STATUS_IDENTIFIER,
+    WORKER_CLEANUP_ORCHESTRATION_DISPOSITION_IDENTIFIER,
+    WORKER_CLEANUP_ORCHESTRATION_DIAGNOSTIC_IDENTIFIER,
+    WORKER_CLEANUP_ORCHESTRATION_RESULT_IDENTIFIER,
+    WORKER_CLEANUP_ORCHESTRATION_TEST_HOOKS_IDENTIFIER,
+    WORKER_CLEANUP_ORCHESTRATION_AUTHORITY_IDENTIFIER,
+    WORKER_CLEANUP_ORCHESTRATION_DRIVE_IDENTIFIER,
+    WORKER_CLEANUP_ORCHESTRATION_RESUME_IDENTIFIER,
+    WORKER_CLEANUP_ORCHESTRATION_TEST_DRIVE_IDENTIFIER,
+)
+WORKER_CLEANUP_ORCHESTRATION_EXACT_USE_CONTEXTS = {
+    WORKER_CLEANUP_ORCHESTRATION_STAGE_IDENTIFIER: {
+        WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (
+            8,
+            "c5120ad52014e8e2874c1421dae22655d7f231215ada5787b834f58b91306d9c",
+        ),
+        WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (
+            2,
+            "b41270b864e889d75fe26014d821b2f211a762bf688e7916c07bb98e7e6b88d0",
+        ),
+        WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: (
+            1,
+            "f423b09824988e7d62eda1d350f3631d7096230931782e7765990abec1e627a9",
+        ),
+    },
+    WORKER_CLEANUP_ORCHESTRATION_STAGE_NAME_IDENTIFIER: {
+        WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (
+            1,
+            "0ef7eb9dc32acac34ca28f209ddd91ef93b4bbf8d26e39b4d8ec5b339afe7815",
+        ),
+    },
+    WORKER_CLEANUP_ORCHESTRATION_CONTINUATION_IDENTIFIER: {
+        WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (
+            21,
+            "427fe7bc033b4f99346e9082854b30d6d8bf1cee5f3da7724148a3c962e05509",
+        ),
+        WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (
+            19,
+            "e7ac1878340df613313ad84f15bc7f20d40d69b796331881044caeca99b6758f",
+        ),
+        WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: (
+            1,
+            "ab065e0a96e41a7181e084b7ff82f084593887456f4bb5d0da84fbee9c889d2a",
+        ),
+    },
+    WORKER_CLEANUP_ORCHESTRATION_RETAINED_IDENTIFIER: {
+        WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (
+            14,
+            "62555421fc61c5cf42eedb9567ffa01a61d367fd68a1f532d08efd6e0ef359e2",
+        ),
+        WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (
+            12,
+            "43940078d99c14390f23fbc9d563df2aa9f49165883b878ad8d0e9e31499efb4",
+        ),
+        WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: (
+            1,
+            "140bbdd7b6cda2f73eb1e0013ece2eabbfc1bae784397c35efaf7aff3b65c102",
+        ),
+    },
+    WORKER_CLEANUP_ORCHESTRATION_PHASE_IDENTIFIER: {
+        WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (
+            3,
+            "9734dd5b6ff75bdc1f3dc4f95310e3257337c4ff970f16f436946dc647e5143b",
+        ),
+        WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (
+            1,
+            "e68b9361b7b1f737903a6cf7213b3758a9d0f3b51613abc07656e483cfb7c514",
+        ),
+        WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: (
+            1,
+            "79dd34ac8bd19ca0a812b22c8593ea609a7733d8a4892990033ffb18317c63df",
+        ),
+    },
+    WORKER_CLEANUP_ORCHESTRATION_STATUS_IDENTIFIER: {
+        WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (
+            3,
+            "d5757b2204146d0ef493c92086f8ffd3ae0cfcee7e0a7a186eaa8760f7f9c6e3",
+        ),
+        WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (
+            1,
+            "3f30397a9a3e8a6374d744d41339e58509f01e25fa9303cd4e4c77122e1d3424",
+        ),
+        WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: (
+            1,
+            "4ce4d9a1c1e4d52ef8a4657b5a095c927fda7d0f35cbbbaabdd1681994a6076a",
+        ),
+    },
+    WORKER_CLEANUP_ORCHESTRATION_DISPOSITION_IDENTIFIER: {
+        WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (
+            3,
+            "1c8be0ff6e98559a8f52fd790298ded9a24a2d56e2077e630be3927588945dcf",
+        ),
+        WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (
+            1,
+            "802eb93222430f70ebcb0bd94fd9ba6bfcd680c2058162c9b2f3cfd470ed8065",
+        ),
+        WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: (
+            1,
+            "413986446612cebc8e4943a34582fc55497208e6ff1272d9b17034c348521ef2",
+        ),
+    },
+    WORKER_CLEANUP_ORCHESTRATION_DIAGNOSTIC_IDENTIFIER: {
+        WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (
+            3,
+            "989f9e60e7815c782105b37a6d084c2c65dc3785f2ee8b9eea33acd843bf07b1",
+        ),
+        WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (
+            1,
+            "bc85d6b2ea6ac57bb347b2b95d8ab9be47d7dbaf2e69553bbba4704ed2851a1b",
+        ),
+    },
+    WORKER_CLEANUP_ORCHESTRATION_RESULT_IDENTIFIER: {
+        WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (
+            22,
+            "4df72c6958f908558599f85054da2c62158c71c2f760f76fba187af9ad8057d2",
+        ),
+        WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (
+            10,
+            "3b030f121bf7c8aec5d2ac86dbbfb839f66fd8ac16648c07a3e57739d36bf52f",
+        ),
+        WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: (
+            1,
+            "49a204aedaf088d64e36e188d12edf82cba9b28ba93bd8927308b34428014235",
+        ),
+    },
+    WORKER_CLEANUP_ORCHESTRATION_TEST_HOOKS_IDENTIFIER: {
+        WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (
+            4,
+            "b071b8ccac25aed7d63ca37ce4562226d7cf35a2b568f78f0fc44c50a97dc37d",
+        ),
+        WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (
+            3,
+            "e19e0cab8c80af4d686149acedc5e75649692d8fe53836062fdf393732a2f585",
+        ),
+        WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: (
+            1,
+            "d0f3b4884043fa2048440c95095bb34d51f5a4711c49bdbabf391a89c0fcf5da",
+        ),
+    },
+    WORKER_CLEANUP_ORCHESTRATION_AUTHORITY_IDENTIFIER: {
+        WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (
+            5,
+            "d39c174850eef1f3b2629fd126fc8a6dc15d097bfd4766028606f4deeb01f4ff",
+        ),
+        WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (
+            9,
+            "6d7c3241929efaca5bcd5635e808684b46d9c3fb49d860a93e7d45a5ce6a9219",
+        ),
+        WORKER_CLEANUP_TAIL_AUTHORITY_INTERFACE_FILE: (
+            2,
+            "93ef2964e449545b36623a2456d17543f6341920fba1a68c60768999e707de89",
+        ),
+    },
+    WORKER_CLEANUP_ORCHESTRATION_DRIVE_IDENTIFIER: {
+        WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (
+            2,
+            "1baca3d8b8a07dfb1c3f04aa32319ca312517b3354c0b84abd37e0810636906f",
+        ),
+        WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (
+            1,
+            "3851aa88360ef4d84cb5ae5fd2d7f412d2071a448854e70ddd2c8bf56a39a9d7",
+        ),
+        WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: (
+            8,
+            "eb9d3a3ca4d84b16111a2c59096fb9a123b4df0f6728a6eb984174b09a760788",
+        ),
+    },
+    WORKER_CLEANUP_ORCHESTRATION_RESUME_IDENTIFIER: {
+        WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (
+            2,
+            "a248667d15db6cea3d5d2c861e1b88a81e87d0c516f560f1320152bf00b2258d",
+        ),
+        WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (
+            1,
+            "74d4607c5431d7447103ef23b2a8022b07df07b82158c459c207c3b09e901bdf",
+        ),
+        WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: (
+            7,
+            "9de8a2a10c48e2047086b27434ec3b23be40411ecbe8d1bec3c9673569967247",
+        ),
+    },
+    WORKER_CLEANUP_ORCHESTRATION_TEST_DRIVE_IDENTIFIER: {
+        WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (
+            2,
+            "429c096e2d8506cb995402d304563b72867b90f4c60192d12244e83f54797581",
+        ),
+        WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (
+            1,
+            "4b69a4a57be033084ee10a926b66d60671964cd0d20c2b9297e393a43c055286",
+        ),
+        WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: (
+            8,
+            "37dc32cc124de2058b14c05239d18b3465f73ad8e4e8547d2d360af82dcbd6d2",
+        ),
+    },
+}
+WORKER_CLEANUP_ORCHESTRATION_IDENTIFIER_ALLOWLISTS = {
+    identifier: set(contexts)
+    for identifier, contexts in WORKER_CLEANUP_ORCHESTRATION_EXACT_USE_CONTEXTS.items()
+}
+WORKER_CLEANUP_ORCHESTRATION_HEADER_INTERVAL_SHA256 = (
+    "c6b67ee709f3fadda24ed9018b8e4277de0decb7f50a295db2814714af12f388"
+)
+WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_INTERVAL_SHA256 = (
+    "7b8e9f1316454184200d10199ed0459feb428d67b655f95d0a323c2be6526c8a"
+)
+WORKER_CLEANUP_ORCHESTRATION_TEST_INTERVAL_SHA256 = (
+    "5856e518b842727bb6a02ed3a4c8d4f3747d63569a2c7d1d089a46c4c38cc07f"
+)
+WORKER_CLEANUP_ORCHESTRATION_CLASS_BODY_SHA256 = {
+    WORKER_CLEANUP_ORCHESTRATION_CONTINUATION_IDENTIFIER:
+        "60abdb8129624c4caf60dbacc8b52d54e2cee5d2d8c5c0230381080ca60da12d",
+    WORKER_CLEANUP_ORCHESTRATION_RETAINED_IDENTIFIER:
+        "9d4ed7be8e8894cfabe632613015ffdbeb6817aac7c8e7f205d8015178f2a2be",
+    WORKER_CLEANUP_ORCHESTRATION_DIAGNOSTIC_IDENTIFIER:
+        "ebfab999bed1943e91892fb0f0c2723a3fd07ee97b2529cf7367b141fc7d23f5",
+    WORKER_CLEANUP_ORCHESTRATION_RESULT_IDENTIFIER:
+        "f860e5dbd6aa4f5a0a0b70defb5e8b9ea3db7f523ccee1aa9711ad7efbfad255",
+    WORKER_CLEANUP_ORCHESTRATION_TEST_HOOKS_IDENTIFIER:
+        "857d8c7b58de220a3b9ec8861b282539d3338b068bde1129738fca8db60c5c10",
+    WORKER_CLEANUP_ORCHESTRATION_AUTHORITY_IDENTIFIER:
+        "9574230cb69f238d3ca7594bb1b958d4ae3dde8d681ce91de44b3aba5bc80d24",
+}
+WORKER_CLEANUP_ORCHESTRATION_ENUM_BODY_SHA256 = {
+    WORKER_CLEANUP_ORCHESTRATION_STAGE_IDENTIFIER:
+        "e36a9e66e738285a4c6bb3b9ade9aac14266256eb4adefeaa73a232b8b726579",
+    WORKER_CLEANUP_ORCHESTRATION_PHASE_IDENTIFIER:
+        "ba0a27dc686760923d561b50b7fea1a1f4802acac34964c6c74f8fa7622353d7",
+    WORKER_CLEANUP_ORCHESTRATION_STATUS_IDENTIFIER:
+        "36813ad16931f829d8f31d6d8512afcda3af974bcbb5a50c41c7444d6a808ab6",
+    WORKER_CLEANUP_ORCHESTRATION_DISPOSITION_IDENTIFIER:
+        "8ba56e0ec518f735169df68d2cc158bdfe0504a226332600058bddd5cd63da75",
+}
+WORKER_CLEANUP_ORCHESTRATION_HEADER_FUNCTION_BODY_SHA256 = {
+    WORKER_CLEANUP_ORCHESTRATION_STAGE_NAME_IDENTIFIER:
+        "ecdbbbbb065eee03e3934bcdd7b90722adaf186676179352eb2394277584b62b",
+}
+WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_CLASS_BODY_SHA256 = {
+    "AuthorizationRecoveryState":
+        "a31268cfa40841045d8cadb2501f22eb39b70cc7eb7e768ca327467b4a64a171",
+    "IntentConversionState":
+        "a0bc0e10243c53352ea9b25b5f58a1129c63dbce014b8dfcd03c0fa2efe9b0e5",
+    "CompletionPublicationFreshState":
+        "43bc1b9d076093262abe5d02a74c6a5ce0812c409d9752a011d18ce0601189fb",
+    "AuthorizationAdvanceState":
+        "daf70c9b50a03f78922e9840618eea1ecee5a3023eaa1b5514b7c6f5a8d442cc",
+    "CompletionPreparationState":
+        "e07f23456bdec54fc6b1c351f751f71fe65532b9705f3923c4f1e58033cd3467",
+    "CompletionPublicationRecoveryState":
+        "a4e53e9296f8c8beb096be5416fa0f9982546b32e610b0bc140eac3f7136f611",
+    "TerminalRetentionState":
+        "1f55481ed530cc708f8b76b56498057a2751c04f75d716b952432fb2a4fc8365",
+    "DistributedSieveWorkerCleanupRetainedMergedResultV1::State":
+        "fabd60dd22c96b87497a88b19076b02cf78d69e5f43e2ccd5037cc75900a0da2",
+    "DistributedSieveWorkerCleanupOrchestrationAuthorityV1::ChildOperations":
+        "f8c06505d51af23953ecd18373bccce2533bf06154b1306ba9d45754d924a12e",
+}
+WORKER_CLEANUP_ORCHESTRATION_FUNCTION_BODY_SHA256 = {
+    "diagnostic": "f800992b4cffe1d35e3c6d4e286173d25ee90ae6bc0ca6051cf5b79f6a32c7b6",
+    "cold_reopen": "7ad655c7549abf3e90dac940ce1125e043ab9f3035a5bebb45339a0c10733530",
+    "retryable": "e7b0a428dd8f1ef35a4dfa802bdc26dc052ddf7a686ad1ecf3e4f7bbd1b254b9",
+    "transition_budget_for": "2d5852be5850ba18cb320ddd09793c17075e16a73188b559b81a917748df500c",
+    "expected_worker_count": "a124be8495724f6ce185485aa67e68d8c100bb49b6b60245010c0abec0229ce0",
+    "DistributedSieveWorkerCleanupOrchestrationContinuationV1::valid":
+        "ae9ff5383ec86b7ccf5d2eb1974bea82d8651c0acccb36ed89f4e010692e4a63",
+    "DistributedSieveWorkerCleanupOrchestrationContinuationV1::stage":
+        "f4673606181c969a85dc4c054368042607f3e88ebca11e16c9bde6ac38ee60c0",
+    "DistributedSieveWorkerCleanupRetainedMergedResultV1::valid":
+        "c526bdf8668d11e5625644d75a633aa2105774f68d71a7a2338dccb08bbe3ccb",
+    "DistributedSieveWorkerCleanupRetainedMergedResultV1::completed_worker_count":
+        "f74c61a650f3a42281a82e0983eac25e051dc39fdd7c9f3116ae82a7d0183c24",
+    "DistributedSieveWorkerCleanupRetainedMergedResultV1::merged_relations":
+        "0414436e928db6af799085df368275142c6019ce946fa587c6746e12d1147b4b",
+    "DistributedSieveWorkerCleanupOrchestrationResultV1::operator bool":
+        "425ead2ce34a6d70059e771f6ff823103ccd42fe8de14df4c16ac37e36cb293c",
+    "DistributedSieveWorkerCleanupOrchestrationAuthorityV1::drive_with_operations":
+        "9acb31b192df5ec4411d0cf02b3c4cab43c260722a22e5ddacbab181cb8c835f",
+    "DistributedSieveWorkerCleanupOrchestrationAuthorityV1::start":
+        "a03f47e9e59041f0bda085ebee69fdabfea36c9d7317a6cd94cda70ba5c02a9b",
+    "DistributedSieveWorkerCleanupOrchestrationAuthorityV1::drive":
+        "d4bd707159311047dcca5ed835577392cc7e0ffb4b742eb567a8b9c367dd63ce",
+    "DistributedSieveWorkerCleanupOrchestrationAuthorityV1::start_with_hooks":
+        "9ff7f7cfd3ed4101d4b0a06db0d9c3a33f232c6cf77dc71a24549201830854c1",
+    "DistributedSieveWorkerCleanupOrchestrationAuthorityV1::start_with_operations":
+        "0b06fa0dcadddbefa63a93b88fabc7a3feaef3bb78b74b3ece7520237f409072",
+    WORKER_CLEANUP_ORCHESTRATION_DRIVE_IDENTIFIER:
+        "cfb6b3a16914dae8bb62d184769b5bc3dd2d8994e79eb5378ab8439305b3567e",
+    WORKER_CLEANUP_ORCHESTRATION_RESUME_IDENTIFIER:
+        "b5f05a621780f311e3725c0c78803b3da2452434e4c97605621af5ea9c9cbc14",
+    WORKER_CLEANUP_ORCHESTRATION_TEST_DRIVE_IDENTIFIER:
+        "979477c36bb00b68b5670a22e1afede5017e7da4caccc3dad7afe2a4d0792b22",
+}
+WORKER_CLEANUP_ORCHESTRATION_DEDICATED_TEST_FUNCTIONS = (
+    "test_orchestrator_routes_two_workers_across_empty_chunks",
+    "test_orchestrator_routes_three_workers_and_keeps_exact_relation_order",
+    "test_orchestrator_cold_terminal_is_zero_mutation",
+    "test_orchestrator_propagates_r3_retry_and_post_spend_cold",
+    "test_orchestrator_propagates_r1_intent_retry_and_rejects_cross_process_resume",
+    "test_orchestrator_propagates_r2_retry_and_post_spend_cold",
+    "test_orchestrator_result_is_move_only_and_preserves_merged_bytes",
+    "test_orchestrator_is_process_bound_and_preserves_authority_boundaries",
+)
+WORKER_CLEANUP_ORCHESTRATION_CORE_TEST_FUNCTIONS = (
+    *WORKER_CLEANUP_ORCHESTRATION_DEDICATED_TEST_FUNCTIONS[:3],
+)
+WORKER_CLEANUP_ORCHESTRATION_FAULT_TEST_FUNCTIONS = (
+    *WORKER_CLEANUP_ORCHESTRATION_DEDICATED_TEST_FUNCTIONS[3:6],
+)
+WORKER_CLEANUP_ORCHESTRATION_PROTECTION_TEST_FUNCTIONS = (
+    *WORKER_CLEANUP_ORCHESTRATION_DEDICATED_TEST_FUNCTIONS[6:],
+)
+WORKER_CLEANUP_ORCHESTRATION_TEST_BODY_SHA256 = {
+    "test_orchestrator_routes_two_workers_across_empty_chunks":
+        "d37e8655f6c19ce5f1da61f514739dafc9c329baf1316cc2fe0b4d52814561b8",
+    "test_orchestrator_routes_three_workers_and_keeps_exact_relation_order":
+        "a8ad44452678a6266aa6f1077ffed9e0d0fcb58234f4913a93744f976e93394e",
+    "test_orchestrator_cold_terminal_is_zero_mutation":
+        "c46e765dd93b4cb3089eee4c62c1e0b194cd93a987cec367699dc13176d3b85f",
+    "test_orchestrator_propagates_r3_retry_and_post_spend_cold":
+        "28cd1cdcbe20553de4ccafc447f10c4a8fbb6b300874b6c5eb35c6dd38c95e5c",
+    "test_orchestrator_propagates_r1_intent_retry_and_rejects_cross_process_resume":
+        "8df4f3a6cb76f5e01b938348162f7d761e9ec521f12b6e793843ac03fd1d06bf",
+    "test_orchestrator_propagates_r2_retry_and_post_spend_cold":
+        "dc4debbc340ab73896d6dfc1b32c359328884283ad74b8635e7b833fbf3a8a59",
+    "test_orchestrator_result_is_move_only_and_preserves_merged_bytes":
+        "b84dd3dda97599885ebcb41d541690946deff0dba3da11460ab4404544b74b88",
+    "test_orchestrator_is_process_bound_and_preserves_authority_boundaries":
+        "136d8828a3d59962f8c5e91c5a1cdf366a25e67c00b2bcf5f5dbe2de2707ad3e",
+}
+WORKER_CLEANUP_ORCHESTRATION_RUNNER_BODY_SHA256 = {
+    "run_core_suite": "d3ab15f4dd25fdf3de311a1f579e821d379a97c5f698b0c2ee8787c9acca5595",
+    "run_fault_propagation_suite":
+        "a6a625d548d95d50bf46e3687ad1e7723594838ce4fe876a676ebd3355d45de1",
+    "run_protection_suite":
+        "c7ab87ca517166649bdd325b9b17ac8d402239324f07ffd5bfdf4ee84782fa75",
+    "run_platform_suite":
+        "21bf5d952b08922c84ba9a077e97896e9998e5269af868aeaed22c26750c5014",
+}
+WORKER_CLEANUP_ORCHESTRATION_RVALUE_DECLARATIONS = (
+    "[[nodiscard]]DistributedSieveWorkerCleanupOrchestrationResultV1"
+    "drive_distributed_sieve_worker_cleanup_to_retained_merged_v1("
+    "DistributedSieveWorkerCleanupRootAdmissionV1&&root)noexcept;",
+    "[[nodiscard]]DistributedSieveWorkerCleanupOrchestrationResultV1"
+    "resume_distributed_sieve_worker_cleanup_to_retained_merged_v1("
+    "DistributedSieveWorkerCleanupOrchestrationContinuationV1&&continuation)noexcept;",
+    "[[nodiscard]]DistributedSieveWorkerCleanupOrchestrationResultV1"
+    "drive_distributed_sieve_worker_cleanup_to_retained_merged_v1_with_hooks("
+    "DistributedSieveWorkerCleanupRootAdmissionV1&&root,"
+    "DistributedSieveWorkerCleanupOrchestrationTestHooksV1hooks)noexcept;",
+)
+WORKER_CLEANUP_ORCHESTRATION_RETRY_MAPPING_COUNTS = {
+    "OrchestrationContinuationretry(std::move(*child.retryable_recovery_root),"
+    "worker_count);": 3,
+    "OrchestrationContinuationretry(std::move(*child.retryable_intent_conversion),"
+    "worker_count);": 1,
+    "OrchestrationContinuationretry(std::move(*child.retryable_capsule),"
+    "worker_count);": 1,
+    "OrchestrationContinuationretry(std::move(*child.retryable_completion_ready),"
+    "worker_count);": 1,
+    "OrchestrationContinuationretry(std::move(*child.retryable_completion_continuation),"
+    "worker_count);": 2,
+}
+WORKER_CLEANUP_ORCHESTRATION_PRODUCTION_CHILD_CALLS = (
+    WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_COLD_ENTRY_IDENTIFIER,
+    WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_FRESH_ENTRY_IDENTIFIER,
+    WORKER_CLEANUP_COMPLETION_ENTRY_IDENTIFIER,
+    WORKER_CLEANUP_CAPSULE_EXECUTE_ENTRY_IDENTIFIER,
+    WORKER_CLEANUP_COMPLETION_PUBLICATION_FRESH_ENTRY_IDENTIFIER,
+    WORKER_CLEANUP_COMPLETION_PUBLICATION_RECOVERY_ENTRY_IDENTIFIER,
+)
+WORKER_CLEANUP_ORCHESTRATION_TRUSTED_CHILD_CALLS = (
+    WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_COLD_TEST_ENTRY_IDENTIFIER,
+    WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_FRESH_TEST_ENTRY_IDENTIFIER,
+    WORKER_CLEANUP_COMPLETION_TEST_ENTRY_IDENTIFIER,
+    WORKER_CLEANUP_CAPSULE_TRUSTED_EXECUTE_ENTRY_IDENTIFIER,
+    WORKER_CLEANUP_COMPLETION_PUBLICATION_FRESH_TEST_ENTRY_IDENTIFIER,
+    WORKER_CLEANUP_COMPLETION_PUBLICATION_RECOVERY_TEST_ENTRY_IDENTIFIER,
+)
+WORKER_CLEANUP_ORCHESTRATION_FORBIDDEN_PRODUCTION_IDENTIFIERS = (
+    WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_R1_ROOT_TEST_SEAM_IDENTIFIER,
+    "arm_ooc_cleanup",
+    "launch_worker_process_batch_v1",
+    "launch_worker",
+    "WaveCompletedV1",
+    "DistributedSieveWaveResult",
+    "WaveConsumptionAckV1",
+    "DISTRIBUTED_SIEVE_CLEANUP_AUTHORIZED_MERGED_RECORD_LEAF",
+    "DISTRIBUTED_SIEVE_CLEANUP_COMPLETED_MERGED_RECORD_LEAF",
+)
+WORKER_CLEANUP_ORCHESTRATION_TEST_SURFACE_FRAGMENTS = (
+    "static_assert(std::is_final_v<OrchestrationContinuation>);",
+    "static_assert(!std::is_default_constructible_v<OrchestrationContinuation>);",
+    "static_assert(!std::is_copy_constructible_v<OrchestrationContinuation>);",
+    "static_assert(std::is_nothrow_move_constructible_v<OrchestrationContinuation>);",
+    "static_assert(!std::is_move_assignable_v<OrchestrationContinuation>);",
+    "static_assert(std::is_final_v<RetainedMergedResult>);",
+    "static_assert(!std::is_default_constructible_v<RetainedMergedResult>);",
+    "static_assert(!std::is_copy_constructible_v<RetainedMergedResult>);",
+    "static_assert(std::is_nothrow_move_constructible_v<RetainedMergedResult>);",
+    "static_assert(!std::is_move_assignable_v<RetainedMergedResult>);",
+    "static_assert(!std::is_invocable_v<DriveFunction,CleanupAdmission&>);",
+    "static_assert(std::is_nothrow_invocable_r_v<OrchestrationResult,DriveFunction,"
+    "CleanupAdmission&&>);",
+    "static_assert(!std::is_invocable_v<ResumeFunction,OrchestrationContinuation&>);",
+    "static_assert(std::is_nothrow_invocable_r_v<OrchestrationResult,ResumeFunction,"
+    "OrchestrationContinuation&&>);",
+    "static_assert(HasMergedRelationsOnConstLvalue<RetainedMergedResult>);",
+    "static_assert(!HasMergedRelationsOnRvalue<RetainedMergedResult>);",
+    "static_assert(!HasCleanupArm<RetainedMergedResult>);",
+    "static_assert(!HasWorkerLaunch<OrchestrationContinuation>);",
+    "static_assert(!HasWorkerLaunch<RetainedMergedResult>);",
+)
+WORKER_CLEANUP_ORCHESTRATION_TEST_TARGET = (
+    "test_distributed_sieve_worker_cleanup_orchestrator"
+)
+WORKER_CLEANUP_ORCHESTRATION_CMAKE_BLOCK_SHA256 = (
+    "68e22a5b9c0f019240688ced73c309a43c2c4fd26990954af5c79e7a6c4cfd98"
+)
+WORKER_CLEANUP_ORCHESTRATION_CI_FILE = ".github/workflows/ci.yml"
+WORKER_CLEANUP_ORCHESTRATION_CI_BLOCK_SHA256 = (
+    "83454d81eb547fce318a7af622de5e1ec0bced19f585be879300434d75c00f2d"
+)
+
+# R4 is a consumer of the already-frozen T2a/R1/R2/R3 capabilities. Extend
+# their exact use-site tables only by the observed R4 files; the original file
+# sets and hashes remain otherwise unchanged.
+WORKER_CLEANUP_ORCHESTRATION_LEGACY_CONTEXT_EXTENSIONS = (
+    (
+        WORKER_CLEANUP_CAPSULE_IDENTIFIER_ALLOWLISTS,
+        WORKER_CLEANUP_CAPSULE_EXACT_USE_CONTEXTS,
+        {
+            WORKER_CLEANUP_CAPSULE_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (3, "61c8c44afc4f8e36a245151d8dcef83923067d480d6f9024ec121a1fc2a506e1"),
+                WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (2, "b03a2f1b17fbb68f473b7be7b019ca2acb6775ff93ba804fe807aed63da15c7c"),
+            },
+            WORKER_CLEANUP_CAPSULE_EXECUTE_STATUS_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: (1, "480f50e4fd2684c31aae0f2570bc6a9221d0c7ad2f01373c4e4477c852e70191"),
+            },
+            WORKER_CLEANUP_CAPSULE_EXECUTE_DIAGNOSTIC_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (1, "9321eda347e825a227c08ad1f390203c8946eb7737b6d7df82641d16b8601852"),
+            },
+            WORKER_CLEANUP_CAPSULE_EXECUTE_RESULT_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (1, "afefa1737d4da7479a5922e1edcecd6bc7e62374caec13fb6deff44ecf017298"),
+            },
+            WORKER_CLEANUP_CAPSULE_EXECUTE_ENTRY_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (1, "bf270a93cca18f79477ba884dbcdc6520ec75fcd1fdc0294a088f83180d79ab8"),
+            },
+            WORKER_CLEANUP_CAPSULE_TRUSTED_EXECUTE_ENTRY_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (1, "ef7f3c9275c969be3a5fbc6a7a7a4710f6a29ee825ba438672a815d661d0cb93"),
+            },
+        },
+    ),
+    (
+        WORKER_CLEANUP_COMPLETION_IDENTIFIER_ALLOWLISTS,
+        WORKER_CLEANUP_COMPLETION_EXACT_USE_CONTEXTS,
+        {
+            WORKER_CLEANUP_COMPLETION_CAPSULE_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (3, "1b65cb5c20817b7eebc141aa215774587b0e14cc14efb5bb048c12ce80f16960"),
+                WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (2, "ec478cf114a63b21b48bcc74de27217939180e263d67ba549aed2c8373d180e2"),
+            },
+            WORKER_CLEANUP_COMPLETION_DISPOSITION_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (1, "00930d4d19d84e2f5980463110a56866f544d1462303bd56474b0d1c9c6a0ef0"),
+            },
+            WORKER_CLEANUP_COMPLETION_DIAGNOSTIC_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (1, "56ab05ac6d693bd172732eec9f7b42693db0e93ee1bb0fc32f03894f974f6ccf"),
+            },
+            WORKER_CLEANUP_COMPLETION_RESULT_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (1, "4048f95f629bc74050d1879247c7d68c89a89ffa8298f510b7c405d3d86ee24b"),
+            },
+            WORKER_CLEANUP_COMPLETION_ENTRY_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (1, "8d5c655ef89419f7c7148e7b74b99652c6bc9a1a4d6a0432dc5648a3297718f8"),
+            },
+        },
+    ),
+    (
+        WORKER_CLEANUP_COMPLETION_PUBLICATION_IDENTIFIER_ALLOWLISTS,
+        WORKER_CLEANUP_COMPLETION_PUBLICATION_EXACT_USE_CONTEXTS,
+        {
+            WORKER_CLEANUP_COMPLETION_PUBLICATION_CONTINUATION_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (3, "73a0833a793281939b420352043ef8e57e7cffe4e095fba5590fb302c6ccb460"),
+                WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (2, "61ccfca1afbc81d698fc15a491f03e6d4288197625af89ca2aaa863c75a0c6ae"),
+            },
+            WORKER_CLEANUP_COMPLETION_PUBLICATION_DISPOSITION_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (1, "62c9b8f33feac3039c85fd6a28c0d2219761b8f9b61f8ce4908b4c37b45f981e"),
+            },
+            WORKER_CLEANUP_COMPLETION_PUBLICATION_DIAGNOSTIC_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (1, "eb37b32a3d87283e4bde434996c1815a9e5c34d7721245743708da47a39a77a2"),
+            },
+            WORKER_CLEANUP_COMPLETION_PUBLICATION_RESULT_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (1, "5d068d96e2f95347e5cf7407e0efedc8f85544a66188c5cef35b51244630479c"),
+            },
+            WORKER_CLEANUP_COMPLETION_PUBLICATION_FAULT_POINT_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: (1, "c73d2ae788f38874d6a81ec901b86826f0ce1cbfc94f3907c43e0bd346a2ca5a"),
+            },
+            WORKER_CLEANUP_COMPLETION_PUBLICATION_TEST_HOOKS_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (1, "ec1065dd176530252237e612e683a1265e131a3117ab7bddf21e87f7122b0a7f"),
+                WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: (1, "40dd6fde9ea3759ec2f129bd712b70c766ca1d1939ded3a580793e595efcbf1c"),
+            },
+            WORKER_CLEANUP_COMPLETION_PUBLICATION_FRESH_ENTRY_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (1, "5d42aaadc148592bfa94e0b12a8ebda6fa6bdca3c71a00e3758c826f781be95b"),
+            },
+            WORKER_CLEANUP_COMPLETION_PUBLICATION_RECOVERY_ENTRY_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (1, "c7dfe53310c10551a81078fcffcb403b84305fd2281e9522aaeb04558ff33623"),
+            },
+            WORKER_CLEANUP_COMPLETION_PUBLICATION_FRESH_TEST_ENTRY_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (1, "6d20a834d8769670a1dec58b9766d229a323ed26a1c0ca82c0cf690f3ae4bdec"),
+            },
+            WORKER_CLEANUP_COMPLETION_PUBLICATION_RECOVERY_TEST_ENTRY_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (1, "0c14c722bc06f7ceb3a9181fdd623064e8b9703fc5c5e30a11e385fec6a19d35"),
+            },
+        },
+    ),
+    (
+        WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_IDENTIFIER_ALLOWLISTS,
+        WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_EXACT_USE_CONTEXTS,
+        {
+            WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_CONTINUATION_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (1, "03f66bef45f7e5cf4fe123dae9a9e079bd58a13ee3ff576d089b8892d4881e94"),
+            },
+            WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_COMPLETE_CONTINUATION_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (1, "0f2f61cb657ece99edfefb54b202f57d4d666ce98935d663b948d65702600bfd"),
+            },
+            WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_DISPOSITION_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (1, "d66f4d7997d04dae62a37b995f7be4df16069733502ce0941506c0b07abc6b8e"),
+            },
+            WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_DIAGNOSTIC_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (1, "2c59303952f90116761bb21428fc2811515c56968623bf6a2871bb225ed065d9"),
+            },
+            WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_RESULT_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (1, "435911f58c50dfb6c280c0fd78292c302c9efa0b685cba541836bfd9d76b8d79"),
+            },
+            WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_FAULT_POINT_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: (1, "e2d2183a459c5c0d497fa84dc5eff17ded53cc52a62ddddab63fc17dceb404c4"),
+            },
+            WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_HOOKS_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (1, "e7902018aa76c69fe7e127dd42e06eafce07eb6ce8c5c2a15c91067f25677e39"),
+                WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: (1, "815cd8cda77bafa5b2d887599f54c46aadf2976f65dbe51f1e6e74146be44580"),
+            },
+            WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_FRESH_ENTRY_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (1, "43fac75d57745d2fa92da67cfd1b43469a5cfedf7c9756fbcddf9602090d98a5"),
+            },
+            WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_COLD_ENTRY_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (1, "ecf9194dd8a58a5ca36d859a92c051d147f79ce1008ec2861e45475594652c04"),
+            },
+            WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_FRESH_TEST_ENTRY_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (1, "e0defa8d197a473225014d46455bb76a51b8744c5916047a9f9a2e7e68e145e3"),
+            },
+            WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_COLD_TEST_ENTRY_IDENTIFIER: {
+                WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (1, "e371ae91bead10a1db8c89461d1e6efb654d27c8a519024b1c75a90a55d8d962"),
+            },
+        },
+    ),
+    (
+        WORKER_CLEANUP_CAPSULE_TEST_AUTHORITY_IDENTIFIER_ALLOWLISTS,
+        WORKER_CLEANUP_CAPSULE_TEST_AUTHORITY_EXACT_USE_CONTEXTS,
+        {
+            "cleanup_authority": {
+                WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: (
+                    40,
+                    "880958910572991b6d3026f8e14a5dd8267a69d195274179a73b052f1ab710b7",
+                ),
+            },
+            "CleanupAdmission": {
+                WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: (
+                    9,
+                    "0ca2c9c666ad0c95d2ec803f0a5fa2444e38e94e836b0e3b13a398a8f5de6b80",
+                ),
+            },
+            "take_admission": {
+                WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: (
+                    16,
+                    "8d06ce6cdceb6f38d05d1db816afd6a005cece93f0a4be682c2f4d6a8cd7ae04",
+                ),
+            },
+            "direct_base_lock_probe_child": {
+                WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: (
+                    2,
+                    "2748de8778f3ab995df0c71fbba748303c7062e5aa09b468dc0e7cc87ad209c3",
+                ),
+            },
+            "run_direct_base_lock_probe": {
+                WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: (
+                    3,
+                    "d5689d963907527f94cc04208aa6e51984c1edde52681130d306ad7fb34cbf3d",
+                ),
+            },
+            "require_wave_lock_busy": {
+                WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: (
+                    18,
+                    "568693886a663da92671173cffaca12c5e8cf342737129508e53fa2c84c1b4c8",
+                ),
+            },
+            "require_all_base_locks_free": {
+                WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: (
+                    19,
+                    "09781bf6d0f877c46a9b74ba65a9319aff9d5444226c6db0cc13112093aba763",
+                ),
+            },
+        },
+    ),
+    (
+        WORKER_CLEANUP_COMPLETION_PUBLICATION_TEST_IDENTIFIER_ALLOWLISTS,
+        WORKER_CLEANUP_COMPLETION_PUBLICATION_TEST_EXACT_USE_CONTEXTS,
+        {
+            "capture_root_entry_names": {
+                WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: (
+                    2,
+                    "bd4e17fd95b8f4f7a94de7d2f4ef6e85b2192e2ae3c930be7d6b12f17fe549f1",
+                ),
+            },
+            "stop_completion_publication_after": {
+                WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: (
+                    5,
+                    "d4637b5fd3198e9b1f930069e7b6747a301f1e634e54c3c1e01bee14bad2711c",
+                ),
+            },
+        },
+    ),
+    (
+        WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_IDENTIFIER_ALLOWLISTS,
+        WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_EXACT_USE_CONTEXTS,
+        {
+            "stop_authorization_publication_after": {
+                WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: (
+                    4,
+                    "a32da2055aad5bdcd0d868d28673aaaaf04d06e42fb7d3b54cd1c1ef4038d7fc",
+                ),
+            },
+        },
+    ),
+)
+for _r4_allowlists, _r4_contexts, _r4_extensions in (
+    WORKER_CLEANUP_ORCHESTRATION_LEGACY_CONTEXT_EXTENSIONS
+):
+    for _r4_identifier, _r4_by_file in _r4_extensions.items():
+        _r4_allowlists[_r4_identifier].update(_r4_by_file)
+        _r4_contexts[_r4_identifier].update(_r4_by_file)
+
 WORKER_CLEANUP_RECEIPT_TIER_A_MACRO_TARGETS = (
     set(WORKER_CLEANUP_RECEIPT_IDENTIFIER_ALLOWLISTS)
     | set(WORKER_CLEANUP_CAPSULE_IDENTIFIER_ALLOWLISTS)
@@ -3665,6 +4404,7 @@ WORKER_CLEANUP_RECEIPT_TIER_A_MACRO_TARGETS = (
     | set(WORKER_CLEANUP_COMPLETION_TEST_IDENTIFIER_ALLOWLISTS)
     | set(WORKER_CLEANUP_COMPLETION_PUBLICATION_IDENTIFIERS)
     | set(WORKER_CLEANUP_COMPLETION_PUBLICATION_TEST_IDENTIFIER_ALLOWLISTS)
+    | set(WORKER_CLEANUP_ORCHESTRATION_IDENTIFIERS)
     | set(WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_IDENTIFIERS)
     | set(WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_IDENTIFIER_ALLOWLISTS)
     | {
@@ -4281,7 +5021,7 @@ WORKER_CLEANUP_RECEIPT_RELEASE_MEMBER_BODY = (
 )
 WORKER_CLEANUP_RECEIPT_CMAKE_FILE = "CMakeLists.txt"
 WORKER_CLEANUP_RECEIPT_CMAKE_COMMENT_MASKED_SHA256 = (
-    "8dcd057f0adfcf56ca3c804f76d31fb6d2c3cd116c47237089c7fd088d60ae4e"
+    "d827463bd13698a2db1956cc96626ef4b53b86c34efbb1da773e23c2046fb01d"
 )
 WORKER_CLEANUP_RECEIPT_CMAKE_PRESETS_FILE = "CMakePresets.json"
 WORKER_CLEANUP_RECEIPT_CMAKE_PRESETS_SHA256 = (
@@ -4327,6 +5067,16 @@ WORKER_CLEANUP_RECEIPT_TIER_B_SAFE_MACROS = {
         (
             290,
             "6c3893331f015ba26ac98aaa589d73da0452909c3912b36801bf095de0a07f4d",
+        ),
+    ),
+    (
+        WORKER_CLEANUP_ORCHESTRATION_TEST_FILE,
+        "CHECK",
+    ): (
+        WORKER_CLEANUP_RECEIPT_TEST_CHECK_DEFINITION,
+        (
+            128,
+            "060e613d6a9c6e49348cba9962627faf5ff05cf3a908b5d2aafa97ed0e384b45",
         ),
     ),
     (
@@ -4409,11 +5159,19 @@ WORKER_CLEANUP_RECEIPT_PROTECTED_UNIT_TARGETS = {
     },
     WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE: {"gnfs_core"},
     WORKER_CLEANUP_RECEIPT_AUTHORITY_IMPLEMENTATION_FILE: {"gnfs_core"},
+    WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: {"gnfs_core"},
+    WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: {
+        "gnfs_core",
+        WORKER_CLEANUP_ORCHESTRATION_TEST_TARGET,
+    },
     WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE: {
         WORKER_CLEANUP_RECEIPT_TEST_TARGET
     },
     WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_FILE: {
         WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_TARGET
+    },
+    WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: {
+        WORKER_CLEANUP_ORCHESTRATION_TEST_TARGET
     },
     WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE: {
         WORKER_CLEANUP_RECONCILIATION_TEST_TARGET
@@ -4427,6 +5185,13 @@ WORKER_CLEANUP_RECEIPT_TARGET_DEPENDENCY_CLOSURES = {
     WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_TARGET: frozenset(
         {
             WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_TARGET,
+            "gnfs_core",
+            "gnfs_util",
+        }
+    ),
+    WORKER_CLEANUP_ORCHESTRATION_TEST_TARGET: frozenset(
+        {
+            WORKER_CLEANUP_ORCHESTRATION_TEST_TARGET,
             "gnfs_core",
             "gnfs_util",
         }
@@ -4456,6 +5221,11 @@ WORKER_CLEANUP_RECEIPT_TARGET_INCLUDE_COMMANDS = {
         "${CMAKE_CURRENT_SOURCE_DIR}/src/relation"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve",
     ),
+    WORKER_CLEANUP_ORCHESTRATION_TEST_TARGET: (
+        "test_distributed_sieve_worker_cleanup_orchestratorPRIVATE"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/relation"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve",
+    ),
     WORKER_CLEANUP_RECONCILIATION_TEST_TARGET: (
         "test_ooc_cleanup_transactionPRIVATE"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/relation",
@@ -4469,6 +5239,11 @@ WORKER_CLEANUP_RECEIPT_TARGET_INCLUDE_SEARCH = {
         "include",
     ),
     WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_TARGET: (
+        "src/relation",
+        "src/sieve",
+        "include",
+    ),
+    WORKER_CLEANUP_ORCHESTRATION_TEST_TARGET: (
         "src/relation",
         "src/sieve",
         "include",
@@ -4663,6 +5438,7 @@ MERGE_COMMIT_AUTHORITY_API_IDENTIFIER_ALLOWLISTS = {
             MERGE_COMMIT_AUTHORITY_TEST_FILE,
             WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
             WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_FILE,
+            WORKER_CLEANUP_ORCHESTRATION_TEST_FILE,
         }
     ),
     "DistributedSieveMergePreparedCommitContextV1": {
@@ -4680,6 +5456,7 @@ MERGE_COMMIT_AUTHORITY_API_IDENTIFIER_ALLOWLISTS = {
             WORKER_CLEANUP_TAIL_AUTHORITY_INTERFACE_FILE,
             WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
             WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_FILE,
+            WORKER_CLEANUP_ORCHESTRATION_TEST_FILE,
         }
     ),
     "publish_wave_merge_commit_v1": {
@@ -4698,6 +5475,7 @@ MERGE_COMMIT_AUTHORITY_INTERFACE_INCLUDE_ALLOWLIST = {
     MERGE_COMMIT_AUTHORITY_TEST_FILE,
     WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
     WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_FILE,
+    WORKER_CLEANUP_ORCHESTRATION_TEST_FILE,
 }
 MERGE_COMMIT_AUTHORITY_TRUSTED_HOOK_IDENTIFIER_ALLOWLISTS = {
     "DistributedSieveWaveMergeCommitFaultPointV1": (
@@ -10489,6 +11267,9 @@ def _worker_cleanup_receipt_protected_unit_tokens(
         WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE,
         WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
         WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE,
+        WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE,
+        WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE,
+        WORKER_CLEANUP_ORCHESTRATION_TEST_FILE,
     }
     for relative in required:
         try:
@@ -11194,6 +11975,7 @@ def _worker_cleanup_receipt_protected_unit_tokens(
                 )
             else:
                 add_tokens(WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE, body)
+
         struct_spans = _class_definition_body_spans(
             relation_test, WORKER_CLEANUP_RECONCILIATION_TEST_STRUCT_BODY_SHA256
         )
@@ -11213,6 +11995,7 @@ def _worker_cleanup_receipt_protected_unit_tokens(
                 )
             else:
                 add_tokens(WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE, body)
+
         array_spans = _named_std_array_initializer_body_spans(
             relation_test, WORKER_CLEANUP_RECONCILIATION_TEST_ARRAY_BODY_SHA256
         )
@@ -11232,6 +12015,45 @@ def _worker_cleanup_receipt_protected_unit_tokens(
                 )
             else:
                 add_tokens(WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE, body)
+
+    for orchestration_relative, interval_finder, expected_hash in (
+        (
+            WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE,
+            _worker_cleanup_orchestration_header_interval,
+            WORKER_CLEANUP_ORCHESTRATION_HEADER_INTERVAL_SHA256,
+        ),
+        (
+            WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE,
+            _worker_cleanup_orchestration_implementation_interval,
+            WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_INTERVAL_SHA256,
+        ),
+        (
+            WORKER_CLEANUP_ORCHESTRATION_TEST_FILE,
+            _worker_cleanup_orchestration_test_interval,
+            WORKER_CLEANUP_ORCHESTRATION_TEST_INTERVAL_SHA256,
+        ),
+    ):
+        orchestration_text = texts.get(orchestration_relative)
+        interval = (
+            None
+            if orchestration_text is None
+            else interval_finder(orchestration_text)
+        )
+        source = (
+            None
+            if orchestration_text is None or interval is None
+            else orchestration_text[interval[0] : interval[1]]
+        )
+        if source is None or _compact_cpp_sha256(source) != expected_hash:
+            errors.append(
+                (
+                    orchestration_relative,
+                    1,
+                    "cannot derive Tier-B tokens from unfrozen P4c-R4 interval",
+                )
+            )
+        else:
+            add_tokens(orchestration_relative, source)
 
     units[WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE].update(
         {
@@ -11254,6 +12076,7 @@ def _worker_cleanup_receipt_protected_unit_tokens(
         {"CHECK", "check", "fail"}
     )
     units[WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE].add("CHECK")
+    units[WORKER_CLEANUP_ORCHESTRATION_TEST_FILE].add("CHECK")
     return units, errors
 
 
@@ -11936,6 +12759,65 @@ def _worker_cleanup_authorization_publication_test_interval(
     text: str,
 ) -> tuple[int, int] | None:
     """Return the source-private P4c-R3 test namespace through main."""
+
+    namespace_starts = [
+        match.start()
+        for match in re.finditer(r"(?m)^namespace\s*\{\s*$", text)
+    ]
+    main_spans = _function_definition_spans(text, "main")
+    if len(namespace_starts) != 1 or len(main_spans) != 1:
+        return None
+    start = namespace_starts[0]
+    end = main_spans[0][1]
+    if start >= end:
+        return None
+    return start, end
+
+
+def _worker_cleanup_orchestration_header_interval(
+    text: str,
+) -> tuple[int, int] | None:
+    """Return the independent P4c-R4 declaration interval."""
+
+    masked = _mask_cpp_comments_and_literals(text)
+    starts = list(
+        re.finditer(
+            rf"\benum\s+class\s+"
+            rf"{re.escape(WORKER_CLEANUP_ORCHESTRATION_STAGE_IDENTIFIER)}\b",
+            masked,
+        )
+    )
+    authority = _class_definition_body_span(
+        text, WORKER_CLEANUP_ORCHESTRATION_AUTHORITY_IDENTIFIER
+    )
+    if len(starts) != 1 or authority is None:
+        return None
+    start = starts[0].start()
+    end = authority[1] + 1
+    if start >= end:
+        return None
+    return start, end
+
+
+def _worker_cleanup_orchestration_implementation_interval(
+    text: str,
+) -> tuple[int, int] | None:
+    """Return the P4c-R4 helper-through-trusted-entry implementation interval."""
+
+    anchor = "namespace {\n\nusing OrchestrationContinuation ="
+    starts = [match.start() for match in re.finditer(re.escape(anchor), text)]
+    endings = _function_definition_spans(
+        text, WORKER_CLEANUP_ORCHESTRATION_TEST_DRIVE_IDENTIFIER
+    )
+    if len(starts) != 1 or len(endings) != 1 or starts[0] >= endings[0][1]:
+        return None
+    return starts[0], endings[0][1]
+
+
+def _worker_cleanup_orchestration_test_interval(
+    text: str,
+) -> tuple[int, int] | None:
+    """Return the P4c-R4 private test namespace through main."""
 
     namespace_starts = [
         match.start()
@@ -15819,7 +16701,8 @@ class Checks:
                 "CompletionStatus::authorization_not_canonical,"
                 "CompletionDisposition::cold_reopen_required,"
                 "std::make_error_code(std::errc::invalid_argument)));}"
-                "returndrive_with_root(std::move(authorization.root_));"
+                "returndrive_with_root(std::move(authorization.root_),hooks,"
+                "trusted_test_hooks);"
             )
             if wrapper is None or _compact_cpp_code(wrapper) != expected_wrapper:
                 self.fail(
@@ -15907,7 +16790,7 @@ class Checks:
             entry_body, entry_offset, _ = definitions[WORKER_CLEANUP_COMPLETION_ENTRY_IDENTIFIER]
             expected_entry = (
                 "returnDistributedSieveWorkerCleanupCompletionPreparationAuthorityV1::"
-                "drive(std::move(authorization));"
+                "drive(std::move(authorization),{},false);"
             )
             if entry_body is None or _compact_cpp_code(entry_body) != expected_entry:
                 self.fail(
@@ -15915,12 +16798,29 @@ class Checks:
                     entry_offset + 1,
                     "P4c-R1 production entry must consume only the sealed authorization",
                 )
+            trusted_body, trusted_offset, _ = definitions[
+                WORKER_CLEANUP_COMPLETION_TEST_ENTRY_IDENTIFIER
+            ]
+            expected_trusted = (
+                "returnDistributedSieveWorkerCleanupCompletionPreparationAuthorityV1::"
+                "drive(std::move(authorization),hooks,true);"
+            )
+            if (
+                trusted_body is None
+                or _compact_cpp_code(trusted_body) != expected_trusted
+            ):
+                self.fail(
+                    relative,
+                    trusted_offset + 1,
+                    "P4c-R1 trusted hook entry must consume only the sealed "
+                    "authorization and enable only the existing T2a hook",
+                )
             seam_body, seam_offset, _ = definitions[
                 WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_R1_ROOT_TEST_SEAM_IDENTIFIER
             ]
             expected_seam = (
                 "returnDistributedSieveWorkerCleanupCompletionPreparationAuthorityV1::"
-                "drive_with_root(std::move(root));"
+                "drive_with_root(std::move(root),{},false);"
             )
             if seam_body is None or _compact_cpp_code(seam_body) != expected_seam:
                 self.fail(
@@ -17143,6 +18043,380 @@ class Checks:
                 "P4c-R3 authority needs exactly one sealed R2-continuation friend edge",
             )
 
+    def validate_worker_cleanup_orchestration_use_site(
+        self,
+        relative: str,
+        text: str,
+    ) -> None:
+        """Freeze the P4c-R4 closed retry-to-retained orchestration boundary."""
+
+        contexts = _identifier_use_context_signatures(
+            text, WORKER_CLEANUP_ORCHESTRATION_IDENTIFIERS
+        )
+        live = False
+        for identifier, observed in contexts.items():
+            if observed[0] == 0:
+                continue
+            live = True
+            allowed = WORKER_CLEANUP_ORCHESTRATION_IDENTIFIER_ALLOWLISTS[identifier]
+            if relative not in allowed:
+                self.fail(
+                    relative,
+                    1,
+                    "P4c-R4 source-private orchestration identifier escaped its "
+                    f"exact file allowlist: {identifier}",
+                )
+                continue
+            expected = WORKER_CLEANUP_ORCHESTRATION_EXACT_USE_CONTEXTS[
+                identifier
+            ].get(relative)
+            if observed != expected:
+                self.fail(
+                    relative,
+                    1,
+                    "P4c-R4 identifier code-use count/context is not exact for "
+                    f"{identifier}: expected {expected}, found {observed}",
+                )
+
+        if relative not in WORKER_CLEANUP_ORCHESTRATION_FILES:
+            return
+        if not live:
+            self.fail(relative, 1, "P4c-R4 orchestration interval is missing")
+            return
+
+        interval_finder: object
+        expected_interval_hash: str
+        label: str
+        if relative == WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE:
+            interval_finder = _worker_cleanup_orchestration_header_interval
+            expected_interval_hash = (
+                WORKER_CLEANUP_ORCHESTRATION_HEADER_INTERVAL_SHA256
+            )
+            label = "header"
+        elif relative == WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE:
+            interval_finder = _worker_cleanup_orchestration_implementation_interval
+            expected_interval_hash = (
+                WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_INTERVAL_SHA256
+            )
+            label = "implementation"
+        else:
+            interval_finder = _worker_cleanup_orchestration_test_interval
+            expected_interval_hash = WORKER_CLEANUP_ORCHESTRATION_TEST_INTERVAL_SHA256
+            label = "test"
+        interval = interval_finder(text)  # type: ignore[operator]
+        if interval is None:
+            self.fail(relative, 1, f"P4c-R4 independent {label} interval is missing")
+            return
+        if _compact_cpp_sha256(text[interval[0] : interval[1]]) != expected_interval_hash:
+            self.fail(
+                relative,
+                text.count("\n", 0, interval[0]) + 1,
+                f"P4c-R4 independent {label} interval is not exact",
+            )
+
+        if relative == WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE:
+            class_spans = _class_definition_body_spans(
+                text, WORKER_CLEANUP_ORCHESTRATION_CLASS_BODY_SHA256
+            )
+            for identifier, expected in (
+                WORKER_CLEANUP_ORCHESTRATION_CLASS_BODY_SHA256.items()
+            ):
+                span = class_spans[identifier]
+                if (
+                    span is None
+                    or _compact_cpp_sha256(text[span[0] : span[1]]) != expected
+                ):
+                    self.fail(
+                        relative,
+                        1,
+                        f"P4c-R4 header class is not exact: {identifier}",
+                    )
+            enum_spans = _enum_class_definition_body_spans(
+                text, WORKER_CLEANUP_ORCHESTRATION_ENUM_BODY_SHA256
+            )
+            for identifier, expected in (
+                WORKER_CLEANUP_ORCHESTRATION_ENUM_BODY_SHA256.items()
+            ):
+                span = enum_spans[identifier]
+                if (
+                    span is None
+                    or _compact_cpp_sha256(text[span[0] : span[1]]) != expected
+                ):
+                    self.fail(
+                        relative,
+                        1,
+                        f"P4c-R4 header enum is not exact: {identifier}",
+                    )
+            definitions = find_function_definition_bodies(
+                text, WORKER_CLEANUP_ORCHESTRATION_HEADER_FUNCTION_BODY_SHA256
+            )
+            for identifier, expected in (
+                WORKER_CLEANUP_ORCHESTRATION_HEADER_FUNCTION_BODY_SHA256.items()
+            ):
+                body, line_offset, body_errors = definitions[identifier]
+                for line, error in body_errors:
+                    self.fail(relative, line, error)
+                if body is None or _compact_cpp_sha256(body) != expected:
+                    self.fail(
+                        relative,
+                        line_offset + 1,
+                        f"P4c-R4 header function is not exact: {identifier}",
+                    )
+
+            compact = _compact_cpp_code(text)
+            if any(
+                compact.count(declaration) != 1
+                for declaration in WORKER_CLEANUP_ORCHESTRATION_RVALUE_DECLARATIONS
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    "P4c-R4 drive, resume, and trusted drive entries must remain "
+                    "noexcept and rvalue-only",
+                )
+            exact_payload = (
+                "usingPayload=std::variant<AuthorizationRecovery,IntentConversionRetry,"
+                "CompletionPublicationFreshRetry,AuthorizationAdvanceRetry>;"
+            )
+            if compact.count(exact_payload) != 1 or find_code_identifier_uses(
+                text, "monostate"
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    "P4c-R4 continuation must retain the exact four retry arms and "
+                    "their stage mapping without an empty arm",
+                )
+            if any(
+                find_code_identifier_uses(text, identifier)
+                for identifier in ("arm_ooc_cleanup", "launch_worker")
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    "P4c-R4 retained/result surface forbids cleanup authority and "
+                    "worker launch methods",
+                )
+            return
+
+        if relative == WORKER_CLEANUP_ORCHESTRATION_TEST_FILE:
+            hashes = {
+                **WORKER_CLEANUP_ORCHESTRATION_TEST_BODY_SHA256,
+                **WORKER_CLEANUP_ORCHESTRATION_RUNNER_BODY_SHA256,
+            }
+            definitions = find_function_definition_bodies(text, hashes)
+            for identifier, expected in hashes.items():
+                body, line_offset, body_errors = definitions[identifier]
+                for line, error in body_errors:
+                    self.fail(relative, line, error)
+                if body is None or _compact_cpp_sha256(body) != expected:
+                    self.fail(
+                        relative,
+                        line_offset + 1,
+                        f"P4c-R4 test/helper body is not exact: {identifier}",
+                    )
+            observed_tests = re.findall(
+                r"\bvoid\s+(test_orchestrator_[A-Za-z0-9_]+)\s*\(",
+                _mask_cpp_comments_and_literals(text),
+            )
+            expected_tests = WORKER_CLEANUP_ORCHESTRATION_DEDICATED_TEST_FUNCTIONS
+            if (
+                len(observed_tests) != len(expected_tests)
+                or set(observed_tests) != set(expected_tests)
+            ):
+                self.fail(relative, 1, "P4c-R4 dedicated eight-test inventory is not exact")
+            expected_by_runner = {
+                "run_core_suite": set(WORKER_CLEANUP_ORCHESTRATION_CORE_TEST_FUNCTIONS),
+                "run_fault_propagation_suite": set(
+                    WORKER_CLEANUP_ORCHESTRATION_FAULT_TEST_FUNCTIONS
+                ),
+                "run_protection_suite": set(
+                    WORKER_CLEANUP_ORCHESTRATION_PROTECTION_TEST_FUNCTIONS
+                ),
+                "run_platform_suite": set(),
+            }
+            for test_name in expected_tests:
+                for runner_name, expected_in_runner in expected_by_runner.items():
+                    runner, _, _ = definitions[runner_name]
+                    calls = (
+                        []
+                        if runner is None
+                        else find_call_identifier_uses(runner, test_name)
+                    )
+                    if len(calls) != (1 if test_name in expected_in_runner else 0):
+                        self.fail(
+                            relative,
+                            1,
+                            "P4c-R4 test suite 3/3/2 registration is not exact: "
+                            f"{test_name} in {runner_name}",
+                        )
+            compact = _compact_cpp_code(text)
+            if any(
+                compact.count(fragment) != 1
+                for fragment in WORKER_CLEANUP_ORCHESTRATION_TEST_SURFACE_FRAGMENTS
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    "P4c-R4 continuation/result and retained view must remain "
+                    "move-only, rvalue-only, and non-armable",
+                )
+            stable_view_fragments = (
+                "constauto*view_address=std::addressof(retained.merged_relations());",
+                "constrelation::ReadOnlyRelationCorpusViewcopied_view="
+                "retained.merged_relations();",
+                "CHECK(std::addressof(moved.merged_relations())==view_address);",
+                "CHECK(cleanup_record_count==nonempty_ordinals.size()*2U);",
+                "name.find(\"WaveCompleted\")==std::string::npos",
+            )
+            if any(compact.count(fragment) != 1 for fragment in stable_view_fragments):
+                self.fail(
+                    relative,
+                    1,
+                    "P4c-R4 tests must prove stable retained-reader identity, exact "
+                    "cleanup records, and the negative M5 surface",
+                )
+            return
+
+        class_spans = _class_definition_body_spans(
+            text, WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_CLASS_BODY_SHA256
+        )
+        for identifier, expected in (
+            WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_CLASS_BODY_SHA256.items()
+        ):
+            span = class_spans[identifier]
+            if (
+                span is None
+                or _compact_cpp_sha256(text[span[0] : span[1]]) != expected
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    f"P4c-R4 implementation class is not exact: {identifier}",
+                )
+        definitions = find_function_definition_bodies(
+            text, WORKER_CLEANUP_ORCHESTRATION_FUNCTION_BODY_SHA256
+        )
+        for identifier, expected in (
+            WORKER_CLEANUP_ORCHESTRATION_FUNCTION_BODY_SHA256.items()
+        ):
+            body, line_offset, body_errors = definitions[identifier]
+            for line, error in body_errors:
+                self.fail(relative, line, error)
+            if body is None or _compact_cpp_sha256(body) != expected:
+                self.fail(
+                    relative,
+                    line_offset + 1,
+                    f"P4c-R4 implementation body is not exact: {identifier}",
+                )
+
+        for identifier in WORKER_CLEANUP_ORCHESTRATION_PRODUCTION_CHILD_CALLS:
+            if len(find_call_identifier_uses(text, identifier)) != 1:
+                self.fail(
+                    relative,
+                    1,
+                    f"P4c-R4 production child transition is not exact: {identifier}",
+                )
+        for identifier in WORKER_CLEANUP_ORCHESTRATION_TRUSTED_CHILD_CALLS:
+            if len(find_call_identifier_uses(text, identifier)) != 1:
+                self.fail(
+                    relative,
+                    1,
+                    f"P4c-R4 trusted child transition is not exact: {identifier}",
+                )
+        if find_code_identifier_uses(
+            text, WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_R1_ROOT_TEST_SEAM_IDENTIFIER
+        ):
+            self.fail(
+                relative,
+                1,
+                "P4c-R4 must never bypass R3 with the trusted raw-root R1 seam",
+            )
+
+        compact = _compact_cpp_code(text)
+        if any(
+            compact.count(fragment) != expected
+            for fragment, expected in (
+                WORKER_CLEANUP_ORCHESTRATION_RETRY_MAPPING_COUNTS.items()
+            )
+        ):
+            self.fail(
+                relative,
+                1,
+                "P4c-R4 must preserve the exact four retry arms and stage mapping",
+            )
+        if (
+            compact.count("!child||!exact_one") != 18
+            or compact.count(
+                "if(!child||!exact_one||!child.retryable_capsule.has_value()"
+            )
+            != 1
+        ):
+            self.fail(
+                relative,
+                1,
+                "P4c-R4 structurally invalid or post-spend child results must return "
+                "no old authority",
+            )
+        progress_fragments = (
+            "constexprstd::size_toverhead=4U;",
+            "constexprstd::size_ttransitions_per_worker=4U;",
+            "(std::numeric_limits<std::size_t>::max()-overhead)/"
+            "transitions_per_worker",
+            "outcome.transition_budget=*budget;",
+            "if(outcome.transitions_completed>=outcome.transition_budget)",
+            "++outcome.transitions_completed;",
+        )
+        if (
+            any(compact.count(fragment) != 1 for fragment in progress_fragments)
+            or compact.count("begin_transition(") != 6
+        ):
+            self.fail(
+                relative,
+                1,
+                "P4c-R4 must retain the checked 4*W+4 progress bound and six "
+                "transition spends",
+            )
+        reader_fragments = {
+            "constrelation::OOCRelationReader*constexpected_reader="
+            "std::addressof(terminal.root_.reader());": 1,
+            "std::addressof(state->terminal.root_.reader())!=expected_reader": 2,
+            "state->merged_relations.emplace(state->terminal.root_.reader());": 1,
+        }
+        if any(
+            compact.count(fragment) != expected
+            for fragment, expected in reader_fragments.items()
+        ):
+            self.fail(
+                relative,
+                1,
+                "P4c-R4 retained view must bind once to the same terminal reader "
+                "and keep its address stable",
+            )
+        if any(
+            find_code_identifier_uses(text, identifier)
+            for identifier in ("arm_ooc_cleanup",)
+        ):
+            self.fail(
+                relative,
+                1,
+                "P4c-R4 retained/result surface is a negative cleanup surface",
+            )
+        if any(
+            find_code_identifier_uses(text, identifier)
+            for identifier in ("launch_worker_process_batch_v1", "launch_worker")
+        ):
+            self.fail(relative, 1, "P4c-R4 driver forbids worker launch authority")
+        m5_identifiers = (
+            "WaveCompletedV1",
+            "DistributedSieveWaveResult",
+            "WaveConsumptionAckV1",
+            "DISTRIBUTED_SIEVE_CLEANUP_AUTHORIZED_MERGED_RECORD_LEAF",
+            "DISTRIBUTED_SIEVE_CLEANUP_COMPLETED_MERGED_RECORD_LEAF",
+        )
+        if any(find_code_identifier_uses(text, identifier) for identifier in m5_identifiers):
+            self.fail(relative, 1, "P4c-R4 driver forbids WaveCompleted/M5 authority")
+
     def validate_worker_cleanup_reconciliation_authority_use_site(
         self, relative: str, text: str
     ) -> None:
@@ -17852,6 +19126,7 @@ class Checks:
         self.validate_worker_cleanup_authorization_publication_use_site(
             relative, text
         )
+        self.validate_worker_cleanup_orchestration_use_site(relative, text)
 
         if relative == WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE:
             authority_span = _class_definition_body_span(
@@ -18840,6 +20115,199 @@ class Checks:
                 "once in the binary, sieve-module, 180-second timeout, slow-tier, "
                 "and path-to-module catalogs",
             )
+
+    def validate_worker_cleanup_orchestration_catalog(
+        self,
+        cmake_text: str,
+        test_runner_text: str,
+        ci_text: str,
+    ) -> None:
+        """Close the R4 source, target, suite, runner, and CI registrations."""
+
+        target = WORKER_CLEANUP_ORCHESTRATION_TEST_TARGET
+        active_cmake = _mask_definitely_inactive_cmake(cmake_text)
+        cmake_code = _mask_cmake_comments(active_cmake)
+        cmake_count_code = _mask_cmake_comments_and_literals(active_cmake)
+        commands = _cmake_command_records(active_cmake)
+        source_commands = [
+            command
+            for command in commands
+            if command.name == "target_sources"
+            and _cmake_first_argument(command.body) == "gnfs_core"
+            and WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE in command.body
+        ]
+        if (
+            len(source_commands) != 1
+            or cmake_count_code.count(
+                WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE
+            )
+            != 1
+        ):
+            self.fail(
+                WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
+                1,
+                "P4c-R4 production source must attach literally and exactly once "
+                "to gnfs_core",
+            )
+
+        targets = [
+            command
+            for command in commands
+            if command.name == "add_executable"
+            and _cmake_first_argument(command.body) == target
+        ]
+        if len(targets) != 1:
+            self.fail(
+                WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
+                1,
+                "P4c-R4 dedicated CMake target must occur exactly once",
+            )
+        else:
+            start = targets[0].start
+            following = next(
+                (
+                    command
+                    for command in commands
+                    if command.name == "add_executable" and command.start > start
+                ),
+                None,
+            )
+            end = len(cmake_code) if following is None else following.start
+            if (
+                _compact_cpp_sha256(cmake_code[start:end])
+                != WORKER_CLEANUP_ORCHESTRATION_CMAKE_BLOCK_SHA256
+            ):
+                self.fail(
+                    WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
+                    cmake_text.count("\n", 0, start) + 1,
+                    "P4c-R4 CMake target must retain its exact source, includes, "
+                    "Threads linkage, 3/3/2 suites, labels, and timeouts",
+                )
+        if (
+            cmake_count_code.count(WORKER_CLEANUP_ORCHESTRATION_TEST_FILE) != 1
+            or len(
+                re.findall(
+                    rf"(?<![A-Za-z0-9_]){re.escape(target)}(?![A-Za-z0-9_])",
+                    cmake_count_code,
+                )
+            )
+            != 8
+        ):
+            self.fail(
+                WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
+                1,
+                "P4c-R4 CMake target/source counts are not closed",
+            )
+
+        shell = _mask_shell_comments(test_runner_text)
+
+        def array_body(name: str) -> str | None:
+            match = re.search(
+                rf"(?ms)^{re.escape(name)}=\(\s*\n(.*?)^\)\s*$", shell
+            )
+            return None if match is None else match.group(1)
+
+        arrays = {
+            name: array_body(name)
+            for name in (
+                "ALL_TEST_BINARIES",
+                "MODULE_TESTS",
+                "SMOKE_TESTS",
+                "TEST_TIMEOUT",
+                "TEST_TIER",
+            )
+        }
+        if any(body is None for body in arrays.values()):
+            self.fail(
+                WORKER_CLEANUP_RECEIPT_TEST_RUNNER_FILE,
+                1,
+                "P4c-R4 test catalog arrays are not structurally locatable",
+            )
+        else:
+            all_tests = arrays["ALL_TEST_BINARIES"] or ""
+            module_tests = arrays["MODULE_TESTS"] or ""
+            smoke_tests = arrays["SMOKE_TESTS"] or ""
+            timeouts = arrays["TEST_TIMEOUT"] or ""
+            tiers = arrays["TEST_TIER"] or ""
+            sieve = re.search(r'(?m)^\s*sieve\s+"([^"]*)"\s*$', module_tests)
+            module_count = (
+                0
+                if sieve is None
+                else sieve.group(1).split().count(target)
+            )
+            source = re.escape(WORKER_CLEANUP_ORCHESTRATION_TEST_FILE)
+            path_mapping = re.findall(
+                rf'(?m)^\s*[^\n]*{source}[^\n]*\)\s*echo\s+"sieve"\s*;;\s*$',
+                shell,
+            )
+            total = len(
+                re.findall(
+                    rf"(?<![A-Za-z0-9_]){re.escape(target)}(?![A-Za-z0-9_])",
+                    shell,
+                )
+            )
+            exact = (
+                len(re.findall(rf"(?m)^\s*{re.escape(target)}\s*$", all_tests))
+                == 1
+                and module_count == 1
+                and target not in smoke_tests
+                and len(
+                    re.findall(
+                        rf"(?m)^\s*{re.escape(target)}\s+360\s*$", timeouts
+                    )
+                )
+                == 1
+                and len(
+                    re.findall(
+                        rf'(?m)^\s*{re.escape(target)}\s+"slow"\s*$', tiers
+                    )
+                )
+                == 1
+                and len(path_mapping) == 1
+                and total == 5
+            )
+            if not exact:
+                self.fail(
+                    WORKER_CLEANUP_RECEIPT_TEST_RUNNER_FILE,
+                    1,
+                    "P4c-R4 runner catalog must contain exactly one binary, sieve "
+                    "mapping, 360-second timeout, slow tier, and path mapping, "
+                    "and no smoke entry",
+                )
+
+        marker = "    - name: Run macOS worker cleanup orchestrator\n"
+        starts = [match.start() for match in re.finditer(re.escape(marker), ci_text)]
+        end_marker = "    # Windows:"
+        if len(starts) != 1:
+            self.fail(
+                WORKER_CLEANUP_ORCHESTRATION_CI_FILE,
+                1,
+                "P4c-R4 macOS aggregate CI step must occur exactly once",
+            )
+        else:
+            end = ci_text.find(end_marker, starts[0])
+            block = "" if end < 0 else ci_text[starts[0] : end]
+            observed_hash = hashlib.sha256(
+                re.sub(r"\s+", "", block).encode("utf-8")
+            ).hexdigest()
+            if observed_hash != WORKER_CLEANUP_ORCHESTRATION_CI_BLOCK_SHA256:
+                self.fail(
+                    WORKER_CLEANUP_ORCHESTRATION_CI_FILE,
+                    ci_text.count("\n", 0, starts[0]) + 1,
+                    "P4c-R4 macOS aggregate CI step is not exact",
+                )
+
+    def validate_worker_cleanup_orchestration_git_inventory(self) -> None:
+        inventory = _git_indexed_text_inventory(self.root)
+        indexed = set(inventory.text_regular_files)
+        for relative in sorted(WORKER_CLEANUP_ORCHESTRATION_FILES):
+            if relative not in indexed:
+                self.fail(
+                    relative,
+                    1,
+                    "P4c-R4 source-private production/test file must be a "
+                    "Git-indexed regular text file",
+                )
 
     def validate_merge_commit_authority_contract(
         self, relative: str, text: str
@@ -23061,6 +24529,7 @@ class Checks:
         for relative in (
             WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
             WORKER_CLEANUP_RECEIPT_TEST_RUNNER_FILE,
+            WORKER_CLEANUP_ORCHESTRATION_CI_FILE,
         ):
             try:
                 receipt_catalog_texts[relative] = (self.root / relative).read_text(
@@ -23072,13 +24541,23 @@ class Checks:
                     1,
                     f"cannot read worker-cleanup receipt test catalog: {exc}",
                 )
-        if len(receipt_catalog_texts) == 2:
+        if (
+            WORKER_CLEANUP_RECEIPT_CMAKE_FILE in receipt_catalog_texts
+            and WORKER_CLEANUP_RECEIPT_TEST_RUNNER_FILE in receipt_catalog_texts
+        ):
             self.validate_worker_cleanup_receipt_test_catalog(
                 receipt_catalog_texts[WORKER_CLEANUP_RECEIPT_CMAKE_FILE],
                 receipt_catalog_texts[WORKER_CLEANUP_RECEIPT_TEST_RUNNER_FILE],
             )
+        if len(receipt_catalog_texts) == 3:
+            self.validate_worker_cleanup_orchestration_catalog(
+                receipt_catalog_texts[WORKER_CLEANUP_RECEIPT_CMAKE_FILE],
+                receipt_catalog_texts[WORKER_CLEANUP_RECEIPT_TEST_RUNNER_FILE],
+                receipt_catalog_texts[WORKER_CLEANUP_ORCHESTRATION_CI_FILE],
+            )
 
         self.validate_worker_cleanup_receipt_git_indexed_text_inventory()
+        self.validate_worker_cleanup_orchestration_git_inventory()
 
         for relative, path in self.source_files():
             try:
@@ -23097,6 +24576,7 @@ class Checks:
             self.validate_merge_coordinator_boundary(relative, text)
             self.validate_worker_coordinator_boundary(relative, text)
             self.validate_worker_attempt_terminal_transition_boundary(relative, text)
+            self.validate_worker_cleanup_orchestration_use_site(relative, text)
             self.validate_work_package_residue_inspection_body(relative, text)
             self.validate_work_package_residue_reconciliation_body(relative, text)
             if relative == EXECUTION_POLICY_ENVIRONMENT_ADAPTER:
@@ -23313,13 +24793,27 @@ def run_worker_cleanup_capsule_self_test() -> list[str]:
         all(
             allowlist
             == (
-                {
-                    WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
-                    WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_FILE,
-                }
-                if identifier
-                in WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_LEGACY_CAPSULE_TEST_CONTEXTS
-                else {WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE}
+                {WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE}
+                | (
+                    {WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_FILE}
+                    if identifier
+                    in WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_LEGACY_CAPSULE_TEST_CONTEXTS
+                    else set()
+                )
+                | (
+                    {WORKER_CLEANUP_ORCHESTRATION_TEST_FILE}
+                    if identifier
+                    in {
+                        "cleanup_authority",
+                        "CleanupAdmission",
+                        "take_admission",
+                        "direct_base_lock_probe_child",
+                        "run_direct_base_lock_probe",
+                        "require_wave_lock_busy",
+                        "require_all_base_locks_free",
+                    }
+                    else set()
+                )
             )
             for identifier, allowlist in (
                 WORKER_CLEANUP_CAPSULE_TEST_AUTHORITY_IDENTIFIER_ALLOWLISTS.items()
@@ -23764,6 +25258,15 @@ def run_worker_cleanup_completion_route_self_test() -> list[str]:
         checks.validate_worker_cleanup_completion_route_use_site(relative, source)
         return checks.errors
 
+    def replace_once(source: str, old: str, new: str, label: str) -> str:
+        count = source.count(old)
+        if count != 1:
+            errors.append(
+                f"P4c-R1 mutation anchor is not unique ({label}): found {count}"
+            )
+            return source
+        return source.replace(old, new, 1)
+
     for relative, source in sources.items():
         observed = validate(relative, source)
         if observed:
@@ -23838,13 +25341,20 @@ def run_worker_cleanup_completion_route_self_test() -> list[str]:
         (
             "early root publication",
             cpp_relative,
-            cpp.replace(
+            replace_once(
+                cpp,
                 "DistributedSieveWorkerCleanupCompletionPreparationAuthorityV1::drive_with_root(\n"
-                "    DistributedSieveWorkerCleanupRootAdmissionV1&& root) noexcept {",
+                "    DistributedSieveWorkerCleanupRootAdmissionV1&& root,\n"
+                "    relation::ooc_cleanup_detail::"
+                "OOCPrivateHandoffCleanupIntentPublicationTestHooksV2 hooks,\n"
+                "    bool trusted_test_hooks) noexcept {",
                 "DistributedSieveWorkerCleanupCompletionPreparationAuthorityV1::drive_with_root(\n"
-                "    DistributedSieveWorkerCleanupRootAdmissionV1&& root) noexcept {\n"
+                "    DistributedSieveWorkerCleanupRootAdmissionV1&& root,\n"
+                "    relation::ooc_cleanup_detail::"
+                "OOCPrivateHandoffCleanupIntentPublicationTestHooksV2 hooks,\n"
+                "    bool trusted_test_hooks) noexcept {\n"
                 "    publish_at();",
-                1,
+                "early root publication",
             ),
             "forbids root publication",
         ),
@@ -24452,6 +25962,275 @@ def run_worker_cleanup_authorization_publication_self_test() -> list[str]:
     return errors
 
 
+def run_worker_cleanup_orchestration_self_test() -> list[str]:
+    """Run the focused P4c-R4 baseline and twelve mutations in memory."""
+
+    errors: list[str] = []
+    root = Path(__file__).resolve().parents[1]
+    header_relative = WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE
+    cpp_relative = WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE
+    test_relative = WORKER_CLEANUP_ORCHESTRATION_TEST_FILE
+    header = (root / header_relative).read_text(encoding="utf-8")
+    cpp = (root / cpp_relative).read_text(encoding="utf-8")
+    test = (root / test_relative).read_text(encoding="utf-8")
+
+    def expect(condition: bool, message: str) -> None:
+        if not condition:
+            errors.append(message)
+
+    def validate(relative: str, source: str) -> list[str]:
+        checks = Checks(root)
+        checks.validate_worker_cleanup_orchestration_use_site(relative, source)
+        return checks.errors
+
+    def replace_once(
+        relative: str,
+        source: str,
+        old: str,
+        new: str,
+        label: str,
+        *,
+        expected_count: int = 1,
+        occurrence: int = 1,
+    ) -> str | None:
+        count = source.count(old)
+        if count != expected_count or not 1 <= occurrence <= count:
+            errors.append(
+                f"P4c-R4 mutation anchor is not exact ({label}): "
+                f"{relative} found {count}, expected {expected_count}"
+            )
+            return None
+        offset = -len(old)
+        for _ in range(occurrence):
+            offset = source.find(old, offset + len(old))
+        return source[:offset] + new + source[offset + len(old) :]
+
+    for relative, source in (
+        (header_relative, header),
+        (cpp_relative, cpp),
+        (test_relative, test),
+    ):
+        observed = validate(relative, source)
+        expect(
+            not observed,
+            f"P4c-R4 focused baseline rejected {relative}: {observed}",
+        )
+
+    catalog = Checks(root)
+    catalog.validate_worker_cleanup_orchestration_catalog(
+        (root / WORKER_CLEANUP_RECEIPT_CMAKE_FILE).read_text(encoding="utf-8"),
+        (root / WORKER_CLEANUP_RECEIPT_TEST_RUNNER_FILE).read_text(encoding="utf-8"),
+        (root / WORKER_CLEANUP_ORCHESTRATION_CI_FILE).read_text(encoding="utf-8"),
+    )
+    expect(
+        not catalog.errors,
+        f"P4c-R4 focused catalog baseline rejected: {catalog.errors}",
+    )
+
+    drive_declaration = (
+        "[[nodiscard]] DistributedSieveWorkerCleanupOrchestrationResultV1\n"
+        "drive_distributed_sieve_worker_cleanup_to_retained_merged_v1(\n"
+        "    DistributedSieveWorkerCleanupRootAdmissionV1&& root) noexcept;"
+    )
+    raw_r3_call = (
+        "                   : resume_distributed_sieve_worker_cleanup_authorization_v1("
+        "std::move(root));"
+    )
+    root_retry = (
+        "OrchestrationContinuation retry(std::move(*child.retryable_recovery_root),\n"
+        "                                                    worker_count);"
+    )
+    published_retry = (
+        "OrchestrationContinuation retry(\n"
+        "                        std::move(*child.retryable_completion_continuation), "
+        "worker_count);"
+    )
+    driver_anchor = (
+        "DistributedSieveWorkerCleanupOrchestrationAuthorityV1::drive_with_operations(\n"
+        "    DistributedSieveWorkerCleanupOrchestrationContinuationV1&& continuation,\n"
+        "    const ChildOperations& operations) noexcept {\n"
+    )
+    mutations: list[tuple[str, str, str | None, str]] = [
+        (
+            "lvalue drive entry",
+            header_relative,
+            replace_once(
+                header_relative,
+                header,
+                drive_declaration,
+                drive_declaration.replace("AdmissionV1&&", "AdmissionV1 const&"),
+                "lvalue drive entry",
+            ),
+            "rvalue-only",
+        ),
+        (
+            "raw-root R1 bypass",
+            cpp_relative,
+            replace_once(
+                cpp_relative,
+                cpp,
+                raw_r3_call,
+                "                   : trusted_test::"
+                "drive_distributed_sieve_worker_cleanup_to_completion_ready_v1_with_root("
+                "std::move(root));",
+                "raw-root R1 bypass",
+            ),
+            "raw-root R1",
+        ),
+        (
+            "root retry misroute",
+            cpp_relative,
+            replace_once(
+                cpp_relative,
+                cpp,
+                root_retry,
+                root_retry.replace(
+                    "retryable_recovery_root", "retryable_completion_continuation"
+                ),
+                "root retry misroute",
+                expected_count=3,
+                occurrence=1,
+            ),
+            "exact four retry arms",
+        ),
+        (
+            "intent retry misroute",
+            cpp_relative,
+            replace_once(
+                cpp_relative,
+                cpp,
+                "OrchestrationContinuation retry("
+                "std::move(*child.retryable_intent_conversion),\n"
+                "                                                    worker_count);",
+                "OrchestrationContinuation retry(std::move(*child.retryable_root),\n"
+                "                                                    worker_count);",
+                "intent retry misroute",
+            ),
+            "exact four retry arms",
+        ),
+        (
+            "completion-ready retry misroute",
+            cpp_relative,
+            replace_once(
+                cpp_relative,
+                cpp,
+                "OrchestrationContinuation retry("
+                "std::move(*child.retryable_completion_ready),\n"
+                "                                                    worker_count);",
+                root_retry,
+                "completion-ready retry misroute",
+            ),
+            "exact four retry arms",
+        ),
+        (
+            "completion-published retry misroute",
+            cpp_relative,
+            replace_once(
+                cpp_relative,
+                cpp,
+                published_retry,
+                published_retry.replace(
+                    "retryable_completion_continuation", "authorization_published"
+                ),
+                "completion-published retry misroute",
+                expected_count=2,
+                occurrence=1,
+            ),
+            "exact four retry arms",
+        ),
+        (
+            "post-spend child truth guard removed",
+            cpp_relative,
+            replace_once(
+                cpp_relative,
+                cpp,
+                "if (!child || !exact_one || !child.retryable_capsule.has_value()",
+                "if (!exact_one || !child.retryable_capsule.has_value()",
+                "post-spend child truth guard removed",
+            ),
+            "post-spend child results",
+        ),
+        (
+            "progress multiplier weakened",
+            cpp_relative,
+            replace_once(
+                cpp_relative,
+                cpp,
+                "constexpr std::size_t transitions_per_worker = 4U;",
+                "constexpr std::size_t transitions_per_worker = 3U;",
+                "progress multiplier weakened",
+            ),
+            "4*W+4 progress bound",
+        ),
+        (
+            "reader identity recheck removed",
+            cpp_relative,
+            replace_once(
+                cpp_relative,
+                cpp,
+                "if (std::addressof(state->terminal.root_.reader()) != "
+                "expected_reader) {",
+                "if (false) {",
+                "reader identity recheck removed",
+            ),
+            "same terminal reader",
+        ),
+        (
+            "cleanup arm exposed",
+            header_relative,
+            replace_once(
+                header_relative,
+                header,
+                "    [[nodiscard]] const relation::ReadOnlyRelationCorpusView& "
+                "merged_relations() const&;\n",
+                "    [[nodiscard]] const relation::ReadOnlyRelationCorpusView& "
+                "merged_relations() const&;\n"
+                "    void arm_ooc_cleanup();\n",
+                "cleanup arm exposed",
+            ),
+            "forbids cleanup authority",
+        ),
+        (
+            "worker launch injected",
+            cpp_relative,
+            replace_once(
+                cpp_relative,
+                cpp,
+                driver_anchor,
+                driver_anchor + "    launch_worker_process_batch_v1();\n",
+                "worker launch injected",
+            ),
+            "forbids worker launch",
+        ),
+        (
+            "M5 authority injected",
+            cpp_relative,
+            replace_once(
+                cpp_relative,
+                cpp,
+                driver_anchor,
+                driver_anchor + "    DistributedSieveWaveResult forbidden_m5;\n",
+                "M5 authority injected",
+            ),
+            "WaveCompleted/M5 authority",
+        ),
+    ]
+
+    mutations_run = 0
+    for label, relative, mutation, needle in mutations:
+        if mutation is None:
+            continue
+        mutations_run += 1
+        observed = validate(relative, mutation)
+        if not observed or not any(needle in error for error in observed):
+            errors.append(f"P4c-R4 mutation accepted ({label}): {observed}")
+    expect(
+        len(mutations) == 12 and mutations_run == 12,
+        f"P4c-R4 mutation inventory drifted: {mutations_run}/{len(mutations)}",
+    )
+    return errors
+
+
 def run_worker_cleanup_reconciliation_self_test() -> list[str]:
     """Run the independent reconciliation mutation matrix in memory."""
 
@@ -24866,6 +26645,7 @@ def run_self_test() -> list[str]:
     errors.extend(run_worker_cleanup_completion_route_self_test())
     errors.extend(run_worker_cleanup_completion_publication_self_test())
     errors.extend(run_worker_cleanup_authorization_publication_self_test())
+    errors.extend(run_worker_cleanup_orchestration_self_test())
     errors.extend(run_worker_cleanup_reconciliation_self_test())
 
     snippet = r"""
@@ -27885,6 +29665,7 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
             MERGE_COMMIT_AUTHORITY_TEST_FILE,
             WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
             WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_FILE,
+            WORKER_CLEANUP_ORCHESTRATION_TEST_FILE,
         },
         "merge-commit authority interface include allowlist is not exact",
     )
@@ -27908,6 +29689,7 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
                     MERGE_COMMIT_AUTHORITY_TEST_FILE,
                     WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
                     WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_FILE,
+                    WORKER_CLEANUP_ORCHESTRATION_TEST_FILE,
                 }
             ),
             "DistributedSieveMergePreparedCommitContextV1": {
@@ -27925,6 +29707,7 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
                     WORKER_CLEANUP_TAIL_AUTHORITY_INTERFACE_FILE,
                     WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
                     WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_FILE,
+                    WORKER_CLEANUP_ORCHESTRATION_TEST_FILE,
                 }
             ),
             "publish_wave_merge_commit_v1": {
@@ -28126,6 +29909,8 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
             WORKER_CLEANUP_TAIL_AUTHORITY_IMPLEMENTATION_FILE,
             WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
             WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_FILE,
+            WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE,
+            WORKER_CLEANUP_ORCHESTRATION_TEST_FILE,
             MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE,
         },
         "worker-cleanup tail authority include allowlist is not exact",
@@ -28150,6 +29935,7 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
                 | {
                     WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
                     WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_FILE,
+                    WORKER_CLEANUP_ORCHESTRATION_TEST_FILE,
                 }
             ),
             "consume_distributed_sieve_committed_tail_for_worker_cleanup_v1_with_hooks": (
@@ -28186,6 +29972,7 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
                 WORKER_CLEANUP_TAIL_AUTHORITY_IMPLEMENTATION_FILE,
                 WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
                 WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_FILE,
+                WORKER_CLEANUP_ORCHESTRATION_TEST_FILE,
                 MERGE_COMMIT_AUTHORITY_TEST_FILE,
             },
         },
@@ -28432,6 +30219,13 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
         ),
         *(
             relative
+            for allowlist in (
+                WORKER_CLEANUP_CAPSULE_TEST_AUTHORITY_IDENTIFIER_ALLOWLISTS.values()
+            )
+            for relative in allowlist
+        ),
+        *(
+            relative
             for allowlist in WORKER_CLEANUP_COMPLETION_IDENTIFIER_ALLOWLISTS.values()
             for relative in allowlist
         ),
@@ -28452,6 +30246,25 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
             for allowlist in (
                 WORKER_CLEANUP_COMPLETION_PUBLICATION_TEST_IDENTIFIER_ALLOWLISTS.values()
             )
+            for relative in allowlist
+        ),
+        *(
+            relative
+            for allowlist in (
+                WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_IDENTIFIER_ALLOWLISTS.values()
+            )
+            for relative in allowlist
+        ),
+        *(
+            relative
+            for allowlist in (
+                WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_IDENTIFIER_ALLOWLISTS.values()
+            )
+            for relative in allowlist
+        ),
+        *(
+            relative
+            for allowlist in WORKER_CLEANUP_ORCHESTRATION_IDENTIFIER_ALLOWLISTS.values()
             for relative in allowlist
         ),
     }

@@ -332,6 +332,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/distributed_sieve_wave_store.cp
         src/sieve/distributed_sieve_merge_writer_authority.cpp
         src/sieve/distributed_sieve_merge_commit_authority.cpp
         src/sieve/distributed_sieve_worker_cleanup_authority.cpp
+        src/sieve/distributed_sieve_worker_cleanup_orchestrator.cpp
         src/sieve/distributed_sieve_worker_cleanup_codec.cpp
     )
 endif()
@@ -1310,6 +1311,48 @@ if(GNFS_BUILD_TESTS)
         )
         set_tests_properties(
             DistributedSieveWorkerCleanupAuthorizationPublisherPlatform
+            PROPERTIES LABELS "instant" TIMEOUT 10
+        )
+    endif()
+
+    add_executable(test_distributed_sieve_worker_cleanup_orchestrator
+        tests/test_distributed_sieve_worker_cleanup_orchestrator.cpp
+    )
+    target_include_directories(
+        test_distributed_sieve_worker_cleanup_orchestrator PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/relation
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sieve
+    )
+    target_link_libraries(
+        test_distributed_sieve_worker_cleanup_orchestrator PRIVATE
+        gnfs_core Threads::Threads
+    )
+    if(APPLE)
+        add_test(
+            NAME DistributedSieveWorkerCleanupOrchestratorCore
+            COMMAND test_distributed_sieve_worker_cleanup_orchestrator --suite core
+        )
+        add_test(
+            NAME DistributedSieveWorkerCleanupOrchestratorFaultPropagation
+            COMMAND test_distributed_sieve_worker_cleanup_orchestrator --suite fault-propagation
+        )
+        add_test(
+            NAME DistributedSieveWorkerCleanupOrchestratorProtection
+            COMMAND test_distributed_sieve_worker_cleanup_orchestrator --suite protection
+        )
+        set_tests_properties(
+            DistributedSieveWorkerCleanupOrchestratorCore
+            DistributedSieveWorkerCleanupOrchestratorFaultPropagation
+            DistributedSieveWorkerCleanupOrchestratorProtection
+            PROPERTIES LABELS "slow" TIMEOUT 240
+        )
+    else()
+        add_test(
+            NAME DistributedSieveWorkerCleanupOrchestratorPlatform
+            COMMAND test_distributed_sieve_worker_cleanup_orchestrator --suite platform
+        )
+        set_tests_properties(
+            DistributedSieveWorkerCleanupOrchestratorPlatform
             PROPERTIES LABELS "instant" TIMEOUT 10
         )
     endif()

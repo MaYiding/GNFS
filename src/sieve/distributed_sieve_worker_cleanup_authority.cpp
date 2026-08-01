@@ -614,7 +614,9 @@ bool DistributedSieveWorkerCleanupCompletionPreparationAuthorityV1::valid(
 
 DistributedSieveWorkerCleanupCompletionPreparationResultV1
 DistributedSieveWorkerCleanupCompletionPreparationAuthorityV1::drive(
-    DistributedSieveWorkerCleanupAuthorizationPublishedContinuationV1&& authorization) noexcept {
+    DistributedSieveWorkerCleanupAuthorizationPublishedContinuationV1&& authorization,
+    relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentPublicationTestHooksV2 hooks,
+    bool trusted_test_hooks) noexcept {
     if (!authorization.valid()) {
         return cold_reopen(
             completion_diagnostic(CompletionPhase::authorization_validation,
@@ -622,12 +624,14 @@ DistributedSieveWorkerCleanupCompletionPreparationAuthorityV1::drive(
                                   CompletionDisposition::cold_reopen_required,
                                   std::make_error_code(std::errc::invalid_argument)));
     }
-    return drive_with_root(std::move(authorization.root_));
+    return drive_with_root(std::move(authorization.root_), hooks, trusted_test_hooks);
 }
 
 DistributedSieveWorkerCleanupCompletionPreparationResultV1
 DistributedSieveWorkerCleanupCompletionPreparationAuthorityV1::drive_with_root(
-    DistributedSieveWorkerCleanupRootAdmissionV1&& root) noexcept {
+    DistributedSieveWorkerCleanupRootAdmissionV1&& root,
+    relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentPublicationTestHooksV2 hooks,
+    bool trusted_test_hooks) noexcept {
     auto retained_root = std::move(root);
     try {
         const int process_id = gnfs::util::process_id();
@@ -822,8 +826,13 @@ DistributedSieveWorkerCleanupCompletionPreparationAuthorityV1::drive_with_root(
                     return cold_reopen(std::move(diagnostic));
                 }
 
-                auto conversion = execute_distributed_sieve_worker_cleanup_intent_conversion_v1(
-                    std::move(*prepared.capsule));
+                auto conversion =
+                    trusted_test_hooks
+                        ? trusted_test::
+                              execute_distributed_sieve_worker_cleanup_intent_conversion_v1_with_hooks(
+                                  std::move(*prepared.capsule), hooks)
+                        : execute_distributed_sieve_worker_cleanup_intent_conversion_v1(
+                              std::move(*prepared.capsule));
                 diagnostic.phase = CompletionPhase::intent_conversion_execute;
                 diagnostic.intent_execute = std::move(conversion.diagnostic);
                 if (conversion.retryable_capsule.has_value()) {
@@ -970,16 +979,25 @@ DistributedSieveWorkerCleanupCompletionPreparationResultV1
 drive_distributed_sieve_worker_cleanup_to_completion_ready_v1(
     DistributedSieveWorkerCleanupAuthorizationPublishedContinuationV1&& authorization) noexcept {
     return DistributedSieveWorkerCleanupCompletionPreparationAuthorityV1::drive(
-        std::move(authorization));
+        std::move(authorization), {}, false);
 }
 
 namespace trusted_test {
 
 DistributedSieveWorkerCleanupCompletionPreparationResultV1
+drive_distributed_sieve_worker_cleanup_to_completion_ready_v1_with_hooks(
+    DistributedSieveWorkerCleanupAuthorizationPublishedContinuationV1&& authorization,
+    relation::ooc_cleanup_detail::OOCPrivateHandoffCleanupIntentPublicationTestHooksV2
+        hooks) noexcept {
+    return DistributedSieveWorkerCleanupCompletionPreparationAuthorityV1::drive(
+        std::move(authorization), hooks, true);
+}
+
+DistributedSieveWorkerCleanupCompletionPreparationResultV1
 drive_distributed_sieve_worker_cleanup_to_completion_ready_v1_with_root(
     DistributedSieveWorkerCleanupRootAdmissionV1&& root) noexcept {
     return DistributedSieveWorkerCleanupCompletionPreparationAuthorityV1::drive_with_root(
-        std::move(root));
+        std::move(root), {}, false);
 }
 
 } // namespace trusted_test
