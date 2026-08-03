@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 import hashlib
 from http.client import IncompleteRead
 import io
@@ -28,6 +29,13 @@ import zipfile
 
 
 FIRST_RELEASE_TAG = "v0.1.0"
+GITHUB_API_VERSION = "2026-03-10"
+RELEASE_PROOF_NAME = "release-verification.json"
+RELEASE_TAG_RULESET_ID = 20335185
+RELEASE_TAG_RULESET_NAME = "Protect release tags"
+RELEASE_TAG_RULESET_NODE_ID = "RRS_lACqUmVwb3NpdG9yec5GF9b-zgE2SlE"
+RELEASE_TAG_RULESET_CREATED_AT = "2026-08-03T22:46:28.399Z"
+RELEASE_TAG_RULESET_UPDATED_AT = "2026-08-03T22:46:28.413Z"
 FULL_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -129,12 +137,24 @@ class ReleaseContractError(RuntimeError):
     """Raised when release evidence violates a fail-closed contract."""
 
 
+class GitHubAPIRequestError(ReleaseContractError):
+    """Raised when GitHub rejects an API request, retaining the HTTP status."""
+
+    def __init__(self, status: int, path: str, detail: str) -> None:
+        super().__init__(f"GitHub API {status} for {path}: {detail}")
+        self.status = status
+        self.path = path
+
+
 class GitHubAPI(Protocol):
     def get(self, path: str, query: dict[str, str] | None = None) -> Any:
         """Return one GitHub API response."""
 
     def get_optional(self, path: str) -> Any | None:
         """Return one response or None for HTTP 404."""
+
+    def patch(self, path: str, payload: dict[str, Any]) -> Any:
+        """PATCH one resource and return its response."""
 
     def paginate(self, path: str, key: str, query: dict[str, str] | None = None) -> list[Any]:
         """Return every item from a paginated GitHub API response."""
@@ -148,17 +168,30 @@ class GitHubClient:
         self._api_url = api_url.rstrip("/")
         self._ssl_context = _verified_ssl_context()
 
-    def get(self, path: str, query: dict[str, str] | None = None) -> Any:
+    def _request(
+        self,
+        path: str,
+        *,
+        method: str = "GET",
+        query: dict[str, str] | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> Any:
         suffix = path if path.startswith("/") else f"/{path}"
         url = f"{self._api_url}{suffix}"
         if query:
             url = f"{url}?{urlencode(query)}"
+        data = None
+        if payload is not None:
+            data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         request = Request(
             url,
+            data=data,
+            method=method,
             headers={
                 "Accept": "application/vnd.github+json",
                 "Authorization": f"Bearer {self._token}",
-                "X-GitHub-Api-Version": "2022-11-28",
+                "Content-Type": "application/json",
+                "X-GitHub-Api-Version": GITHUB_API_VERSION,
                 "User-Agent": "gnfs-release-contract/1",
             },
         )
@@ -167,11 +200,15 @@ class GitHubClient:
                 return json.load(response)
         except HTTPError as error:
             detail = error.read().decode("utf-8", errors="replace")[:1000]
-            raise ReleaseContractError(
-                f"GitHub API {error.code} for {path}: {detail}"
-            ) from error
+            raise GitHubAPIRequestError(error.code, path, detail) from error
         except (URLError, TimeoutError, json.JSONDecodeError) as error:
             raise ReleaseContractError(f"GitHub API request failed for {path}: {error}") from error
+
+    def get(self, path: str, query: dict[str, str] | None = None) -> Any:
+        return self._request(path, query=query)
+
+    def patch(self, path: str, payload: dict[str, Any]) -> Any:
+        return self._request(path, method="PATCH", payload=payload)
 
     def get_optional(self, path: str) -> Any | None:
         suffix = path if path.startswith("/") else f"/{path}"
@@ -181,7 +218,7 @@ class GitHubClient:
             headers={
                 "Accept": "application/vnd.github+json",
                 "Authorization": f"Bearer {self._token}",
-                "X-GitHub-Api-Version": "2022-11-28",
+                "X-GitHub-Api-Version": GITHUB_API_VERSION,
                 "User-Agent": "gnfs-release-contract/1",
             },
         )
@@ -192,9 +229,7 @@ class GitHubClient:
             if error.code == 404:
                 return None
             detail = error.read().decode("utf-8", errors="replace")[:1000]
-            raise ReleaseContractError(
-                f"GitHub API {error.code} for {path}: {detail}"
-            ) from error
+            raise GitHubAPIRequestError(error.code, path, detail) from error
         except (URLError, TimeoutError, json.JSONDecodeError) as error:
             raise ReleaseContractError(f"GitHub API request failed for {path}: {error}") from error
 
@@ -302,6 +337,88 @@ def _assert_unpublished(client: GitHubAPI, repository: str, release_tag: str) ->
         raise ReleaseContractError(f"refusing to reuse existing tag {release_tag}")
     if client.get_optional(f"/repos/{repository}/releases/tags/{encoded_tag}") is not None:
         raise ReleaseContractError(f"refusing to reuse existing release {release_tag}")
+
+
+def verify_repository_protection(
+    client: GitHubAPI,
+    repository: str,
+    *,
+    allow_unreadable_immutable_setting: bool,
+) -> dict[str, Any]:
+    """Verify the repository-owned tag boundary and immutable-release setting.
+
+    GitHub's immutable-release setting endpoint requires Administration (read),
+    which the ephemeral Actions token cannot be granted.  The caller may allow
+    only that documented visibility gap; publication still requires the public
+    release object itself to report ``immutable: true``.
+    """
+
+    _validate_repository(repository)
+    ruleset = client.get(f"/repos/{repository}/rulesets/{RELEASE_TAG_RULESET_ID}")
+
+    def utc_timestamp(value: Any) -> str:
+        if not isinstance(value, str):
+            raise ReleaseContractError("release tag ruleset timestamp is missing")
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise ReleaseContractError("release tag ruleset timestamp is invalid") from error
+        if parsed.tzinfo is None:
+            raise ReleaseContractError("release tag ruleset timestamp lacks a timezone")
+        return (
+            parsed.astimezone(timezone.utc)
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z")
+        )
+
+    expected_ruleset = {
+        "id": RELEASE_TAG_RULESET_ID,
+        "node_id": RELEASE_TAG_RULESET_NODE_ID,
+        "name": RELEASE_TAG_RULESET_NAME,
+        "target": "tag",
+        "source_type": "Repository",
+        "source": repository,
+        "enforcement": "active",
+        "current_user_can_bypass": "never",
+        "conditions": {
+            "ref_name": {"include": ["refs/tags/v*"], "exclude": []},
+        },
+        "rules": [{"type": "update"}, {"type": "deletion"}],
+    }
+    observed_ruleset = {key: ruleset.get(key) for key in expected_ruleset}
+    if observed_ruleset != expected_ruleset:
+        raise ReleaseContractError("release tag protection ruleset changed from the exact contract")
+    if (
+        utc_timestamp(ruleset.get("created_at")) != RELEASE_TAG_RULESET_CREATED_AT
+        or utc_timestamp(ruleset.get("updated_at")) != RELEASE_TAG_RULESET_UPDATED_AT
+    ):
+        raise ReleaseContractError("release tag protection ruleset version changed")
+    # GitHub omits bypass_actors unless the caller has ruleset write access.
+    # The pinned node/version detects hidden edits; if the field is visible it
+    # must independently confirm the empty-bypass contract.
+    if "bypass_actors" in ruleset and ruleset["bypass_actors"] != []:
+        raise ReleaseContractError("release tag protection ruleset has a bypass actor")
+
+    immutable_setting: dict[str, Any] | None = None
+    try:
+        payload = client.get(f"/repos/{repository}/immutable-releases")
+        if payload != {"enabled": True, "enforced_by_owner": False}:
+            raise ReleaseContractError(
+                "repository immutable-release setting is not the expected enabled repository policy"
+            )
+        immutable_setting = payload
+    except GitHubAPIRequestError as error:
+        if not allow_unreadable_immutable_setting or error.status not in {403, 404}:
+            raise
+
+    return {
+        "schema_version": 1,
+        "tag_ruleset_id": RELEASE_TAG_RULESET_ID,
+        "tag_ruleset": "exact",
+        "immutable_setting": (
+            "enabled" if immutable_setting is not None else "administration-read-unavailable"
+        ),
+    }
 
 
 def _verify_required_external_checks(check_runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1455,11 +1572,16 @@ def assemble_release_bundle(
     ]
     records.sort(key=lambda record: record["name"])
     metadata = {
-        "schema_version": 1,
+        "schema_version": 2,
         "release_tag": release_tag,
         "target_sha": target_sha,
         "source_date_epoch": source_date_epoch,
         "assets": records,
+        "publication_evidence": {
+            "name": RELEASE_PROOF_NAME,
+            "kind": "evidence",
+            "digest_binding": "publication-contract",
+        },
         "workbench_security": {
             "signing": "ad-hoc",
             "notarized": False,
@@ -1517,18 +1639,25 @@ def verify_release_bundle(asset_directory: Path, target_sha: str, release_tag: s
         "target_sha",
         "source_date_epoch",
         "assets",
+        "publication_evidence",
         "workbench_security",
     }
     if set(metadata) != expected_metadata_keys:
         raise ReleaseContractError("release metadata contains missing or unknown fields")
     if (
-        metadata.get("schema_version") != 1
+        metadata.get("schema_version") != 2
         or metadata.get("release_tag") != release_tag
         or metadata.get("target_sha") != target_sha
         or not isinstance(metadata.get("source_date_epoch"), int)
         or metadata["source_date_epoch"] <= 0
     ):
         raise ReleaseContractError("release metadata identity is invalid")
+    if metadata.get("publication_evidence") != {
+        "name": RELEASE_PROOF_NAME,
+        "kind": "evidence",
+        "digest_binding": "publication-contract",
+    }:
+        raise ReleaseContractError("release metadata lost its publication evidence identity")
     if metadata.get("workbench_security") != {
         "signing": "ad-hoc",
         "notarized": False,
@@ -1752,26 +1881,29 @@ def verify_verification_proof(
             raise ReleaseContractError(f"verification proof mismatch for {path.name}")
 
 
-def final_prepublish(
-    client: GitHubAPI,
-    repository: str,
+def _public_release_files(
+    asset_directory: Path,
+    proof_path: Path,
     target_sha: str,
     release_tag: str,
-    expected_release_id: int,
-    asset_directory: Path,
-) -> dict[str, Any]:
-    """Revalidate mutable GitHub state after upload and immediately before publication."""
-
-    if expected_release_id <= 0:
-        raise ReleaseContractError("expected draft release id must be positive")
-    verify_release_bundle(asset_directory, target_sha, release_tag)
-    ci_evidence = verify_main_ci(
-        client,
-        repository,
-        target_sha,
-        release_tag,
-        require_unpublished=False,
+) -> dict[str, Path]:
+    if proof_path.is_symlink():
+        raise ReleaseContractError("release verification proof must not be a symlink")
+    verify_verification_proof(proof_path, asset_directory, target_sha, release_tag)
+    proof_path = proof_path.resolve()
+    if proof_path.name != RELEASE_PROOF_NAME or not proof_path.is_file():
+        raise ReleaseContractError("release verification proof must be a real canonical file")
+    names = sorted(
+        (*expected_release_asset_names(release_tag), "release-metadata.json", "SHA256SUMS")
     )
+    files = {name: asset_directory.resolve() / name for name in names}
+    files[RELEASE_PROOF_NAME] = proof_path
+    return files
+
+
+def _verify_release_tag(
+    client: GitHubAPI, repository: str, release_tag: str, target_sha: str
+) -> None:
     encoded_tag = quote(release_tag, safe="")
     tag_ref = client.get(f"/repos/{repository}/git/ref/tags/{encoded_tag}")
     if (
@@ -1781,37 +1913,42 @@ def final_prepublish(
     ):
         raise ReleaseContractError("release tag is not an exact lightweight ref to target SHA")
 
-    release = client.get(f"/repos/{repository}/releases/tags/{encoded_tag}")
+
+def _verify_release_identity(
+    release: dict[str, Any],
+    *,
+    expected_release_id: int,
+    release_tag: str,
+    target_sha: str,
+    draft: bool,
+    immutable: bool,
+) -> None:
     if (
         release.get("id") != expected_release_id
-        or release.get("draft") is not True
+        or release.get("draft") is not draft
         or release.get("prerelease") is not False
+        or release.get("immutable") is not immutable
         or release.get("tag_name") != release_tag
         or release.get("target_commitish") != target_sha
     ):
-        raise ReleaseContractError(
-            "release is not the exact target-SHA draft created by this workflow"
-        )
-    assets = release.get("assets")
-    if not isinstance(assets, list):
-        raise ReleaseContractError("draft release API response has no asset list")
-    expected_names = sorted(
-        (*expected_release_asset_names(release_tag), "release-metadata.json", "SHA256SUMS")
-    )
-    if len(assets) != len(expected_names):
-        raise ReleaseContractError("draft release has the wrong number of assets")
+        state = "draft" if draft else "public immutable"
+        raise ReleaseContractError(f"release is not the exact target-SHA {state} release")
+
+
+def _verify_release_asset_records(assets: Any, local_files: dict[str, Path]) -> None:
+    if not isinstance(assets, list) or len(assets) != len(local_files):
+        raise ReleaseContractError("release has the wrong number of server assets")
     assets_by_name: dict[str, dict[str, Any]] = {}
     for asset in assets:
         if not isinstance(asset, dict) or not isinstance(asset.get("name"), str):
-            raise ReleaseContractError("draft release contains an invalid asset record")
+            raise ReleaseContractError("release contains an invalid server asset record")
         name = asset["name"]
         if name in assets_by_name:
-            raise ReleaseContractError(f"draft release contains duplicate asset {name}")
+            raise ReleaseContractError(f"release contains duplicate server asset {name}")
         assets_by_name[name] = asset
-    if sorted(assets_by_name) != expected_names:
-        raise ReleaseContractError("draft release asset set does not match verified bundle")
-    for name in expected_names:
-        path = asset_directory / name
+    if sorted(assets_by_name) != sorted(local_files):
+        raise ReleaseContractError("release server asset set does not match verified bytes")
+    for name, path in local_files.items():
         asset = assets_by_name[name]
         if (
             asset.get("state") != "uploaded"
@@ -1819,15 +1956,113 @@ def final_prepublish(
             or asset.get("digest") != f"sha256:{_sha256(path)}"
         ):
             raise ReleaseContractError(
-                f"draft release asset bytes do not match verified bundle: {name}"
+                f"release server asset bytes do not match verified local bytes: {name}"
             )
+
+
+def _verify_server_release_assets(
+    client: GitHubAPI,
+    repository: str,
+    expected_release_id: int,
+    local_files: dict[str, Path],
+) -> None:
+    assets = client.get(
+        f"/repos/{repository}/releases/{expected_release_id}/assets",
+        {"per_page": "100"},
+    )
+    _verify_release_asset_records(assets, local_files)
+
+
+def publish_verified_release(
+    client: GitHubAPI,
+    repository: str,
+    target_sha: str,
+    release_tag: str,
+    expected_release_id: int,
+    asset_directory: Path,
+    proof_path: Path,
+) -> dict[str, Any]:
+    """Contract-check, publish, and postcheck one exact draft release."""
+
+    if expected_release_id <= 0:
+        raise ReleaseContractError("expected draft release id must be positive")
+    local_files = _public_release_files(
+        asset_directory, proof_path, target_sha, release_tag
+    )
+    protection_before = verify_repository_protection(
+        client, repository, allow_unreadable_immutable_setting=True
+    )
+    ci_before = verify_main_ci(
+        client,
+        repository,
+        target_sha,
+        release_tag,
+        require_unpublished=False,
+    )
+    _verify_release_tag(client, repository, release_tag, target_sha)
+    encoded_tag = quote(release_tag, safe="")
+    draft_release = client.get(f"/repos/{repository}/releases/tags/{encoded_tag}")
+    _verify_release_identity(
+        draft_release,
+        expected_release_id=expected_release_id,
+        release_tag=release_tag,
+        target_sha=target_sha,
+        draft=True,
+        immutable=False,
+    )
+    _verify_server_release_assets(client, repository, expected_release_id, local_files)
+
+    published_response = client.patch(
+        f"/repos/{repository}/releases/{expected_release_id}",
+        {"draft": False, "prerelease": False},
+    )
+    _verify_release_identity(
+        published_response,
+        expected_release_id=expected_release_id,
+        release_tag=release_tag,
+        target_sha=target_sha,
+        draft=False,
+        immutable=True,
+    )
+    _verify_release_asset_records(published_response.get("assets"), local_files)
+
+    # Everything below is fetched again after the mutating call. A successful
+    # PATCH response alone is not publication evidence.
+    public_by_id = client.get(f"/repos/{repository}/releases/{expected_release_id}")
+    public_by_tag = client.get(f"/repos/{repository}/releases/tags/{encoded_tag}")
+    for public_release in (public_by_id, public_by_tag):
+        _verify_release_identity(
+            public_release,
+            expected_release_id=expected_release_id,
+            release_tag=release_tag,
+            target_sha=target_sha,
+            draft=False,
+            immutable=True,
+        )
+        _verify_release_asset_records(public_release.get("assets"), local_files)
+    _verify_release_tag(client, repository, release_tag, target_sha)
+    _verify_server_release_assets(client, repository, expected_release_id, local_files)
+    protection_after = verify_repository_protection(
+        client, repository, allow_unreadable_immutable_setting=True
+    )
+    ci_after = verify_main_ci(
+        client,
+        repository,
+        target_sha,
+        release_tag,
+        require_unpublished=False,
+    )
     return {
         "schema_version": 1,
         "release_id": expected_release_id,
         "release_tag": release_tag,
         "target_sha": target_sha,
-        "asset_count": len(expected_names),
-        "ci": ci_evidence,
+        "immutable": True,
+        "asset_count": len(local_files),
+        "protection_before": protection_before,
+        "protection_after": protection_after,
+        "ci_before": ci_before,
+        "ci_after": ci_after,
     }
 
 
@@ -1842,6 +2077,7 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
         "github.ref_name",
         "inputs.tag",
         "mapfile -t runtime_dlls",
+        "--method PATCH",
     )
     for fragment in forbidden_release_fragments:
         if fragment in release_text:
@@ -1864,7 +2100,8 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
         "scripts/release_contract.py fetch-sources",
         "scripts/release_contract.py validate-sources",
         "scripts/release_contract.py verify-proof",
-        "scripts/release_contract.py final-prepublish",
+        "scripts/release_contract.py verify-protection",
+        "scripts/release_contract.py publish-release",
         "release-main-ci-evidence-${{ github.run_id }}",
         "--ci-evidence main-ci-evidence/main-ci-evidence.json",
         "scripts/release_binary_contract.py linux",
@@ -1879,9 +2116,9 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
         "release-assets/gnfs-v0.1.0-source.tar.gz",
         "release-assets/gmp-6.3.0.tar.xz",
         "release-assets/ntl-11.6.0.tar.gz",
+        "verification-proof/release-verification.json",
+        "--proof verification-proof/release-verification.json",
         "--draft",
-        "--method PATCH",
-        "releases/${EXPECTED_RELEASE_ID}",
     )
     for fragment in required_release_fragments:
         if fragment not in release_text:
@@ -1972,19 +2209,63 @@ class _FakeClient:
         self.run_artifacts: dict[int, list[dict[str, Any]]] = {}
         self.tag_ref: dict[str, Any] | None = None
         self.release: dict[str, Any] | None = None
+        self.ruleset: dict[str, Any] = {
+            "id": RELEASE_TAG_RULESET_ID,
+            "node_id": RELEASE_TAG_RULESET_NODE_ID,
+            "name": RELEASE_TAG_RULESET_NAME,
+            "target": "tag",
+            "source_type": "Repository",
+            "source": "example/GNFS",
+            "enforcement": "active",
+            "bypass_actors": [],
+            "current_user_can_bypass": "never",
+            "conditions": {
+                "ref_name": {"include": ["refs/tags/v*"], "exclude": []},
+            },
+            "rules": [{"type": "update"}, {"type": "deletion"}],
+            "created_at": RELEASE_TAG_RULESET_CREATED_AT,
+            "updated_at": RELEASE_TAG_RULESET_UPDATED_AT,
+        }
+        self.immutable_setting_readable = True
+        self.publish_immutable = True
+        self.post_patch_mutator: Callable[[], None] | None = None
 
     def get(self, path: str, query: dict[str, str] | None = None) -> Any:
-        del query
         if path.endswith("/git/ref/heads/main"):
             return {"object": {"sha": self.target_sha}}
+        if path.endswith(f"/rulesets/{RELEASE_TAG_RULESET_ID}"):
+            return self.ruleset
+        if path.endswith("/immutable-releases"):
+            if not self.immutable_setting_readable:
+                raise GitHubAPIRequestError(403, path, "Resource not accessible by integration")
+            return {"enabled": True, "enforced_by_owner": False}
         if "/git/ref/tags/" in path and self.tag_ref is not None:
             return self.tag_ref
         if "/releases/tags/" in path and self.release is not None:
+            return self.release
+        if path.endswith("/assets") and self.release is not None:
+            if query != {"per_page": "100"}:
+                raise AssertionError("release asset verification must request 100 records")
+            return self.release["assets"]
+        if re.search(r"/releases/[1-9][0-9]*$", path) and self.release is not None:
             return self.release
         match = re.search(r"/actions/runs/(\d+)$", path)
         if match:
             return self.run_details[int(match.group(1))]
         raise AssertionError(f"unexpected fake GET {path}")
+
+    def patch(self, path: str, payload: dict[str, Any]) -> Any:
+        if self.release is None or path != f"/repos/example/GNFS/releases/{self.release['id']}":
+            raise AssertionError(f"unexpected fake PATCH {path}")
+        if payload != {"draft": False, "prerelease": False}:
+            raise AssertionError(f"unexpected fake PATCH payload {payload}")
+        self.release["draft"] = False
+        self.release["prerelease"] = False
+        self.release["immutable"] = self.publish_immutable
+        response = json.loads(json.dumps(self.release))
+        if self.post_patch_mutator is not None:
+            self.post_patch_mutator()
+        return response
 
     def get_optional(self, path: str) -> Any | None:
         if "/git/ref/tags/" in path or "/releases/tags/" in path:
@@ -2590,109 +2871,153 @@ def self_test() -> None:
             "ref": f"refs/tags/{FIRST_RELEASE_TAG}",
             "object": {"type": "commit", "sha": target_sha},
         }
-        release_asset_names = sorted(
-            (
-                *expected_release_asset_names(FIRST_RELEASE_TAG),
-                "release-metadata.json",
-                "SHA256SUMS",
-            )
+        release_files = _public_release_files(
+            assets, proof, target_sha, FIRST_RELEASE_TAG
         )
-        client.release = {
-            "id": release_id,
-            "draft": True,
-            "prerelease": False,
-            "tag_name": FIRST_RELEASE_TAG,
-            "target_commitish": target_sha,
-            "assets": [
-                {
-                    "name": name,
-                    "state": "uploaded",
-                    "size": (assets / name).stat().st_size,
-                    "digest": f"sha256:{_sha256(assets / name)}",
-                }
-                for name in release_asset_names
-            ],
-        }
-        result = final_prepublish(
+
+        def reset_release() -> None:
+            client.target_sha = target_sha
+            client.tag_ref = {
+                "ref": f"refs/tags/{FIRST_RELEASE_TAG}",
+                "object": {"type": "commit", "sha": target_sha},
+            }
+            client.release = {
+                "id": release_id,
+                "draft": True,
+                "prerelease": False,
+                "immutable": False,
+                "tag_name": FIRST_RELEASE_TAG,
+                "target_commitish": target_sha,
+                "assets": [
+                    {
+                        "name": name,
+                        "state": "uploaded",
+                        "size": path.stat().st_size,
+                        "digest": f"sha256:{_sha256(path)}",
+                    }
+                    for name, path in sorted(release_files.items())
+                ],
+            }
+            client.publish_immutable = True
+            client.post_patch_mutator = None
+
+        def expect_publish_rejection(label: str) -> None:
+            try:
+                publish_verified_release(
+                    client,
+                    repository,
+                    target_sha,
+                    FIRST_RELEASE_TAG,
+                    release_id,
+                    assets,
+                    proof,
+                )
+            except ReleaseContractError:
+                return
+            raise ReleaseContractError(f"publication accepted {label}")
+
+        reset_release()
+        client.checks[0]["conclusion"] = "failure"
+        expect_publish_rejection("failed exact-SHA CI")
+        client.checks[0]["conclusion"] = "success"
+
+        reset_release()
+        client.target_sha = "2" * 40
+        expect_publish_rejection("a moved main branch")
+
+        reset_release()
+        client.tag_ref["object"]["sha"] = "3" * 40
+        expect_publish_rejection("a moved release tag")
+
+        reset_release()
+        client.release["id"] = release_id + 1
+        expect_publish_rejection("a different draft release id")
+
+        reset_release()
+        client.release["assets"][0]["digest"] = f"sha256:{'4' * 64}"
+        expect_publish_rejection("a changed draft asset digest")
+
+        reset_release()
+        proof_asset = next(
+            asset
+            for asset in client.release["assets"]
+            if asset["name"] == RELEASE_PROOF_NAME
+        )
+        proof_asset["digest"] = f"sha256:{'7' * 64}"
+        expect_publish_rejection("a changed verification proof digest")
+
+        reset_release()
+        client.ruleset["current_user_can_bypass"] = "always"
+        expect_publish_rejection("a tag ruleset bypass")
+        client.ruleset["current_user_can_bypass"] = "never"
+
+        hidden_bypass = client.ruleset.pop("bypass_actors")
+        verify_repository_protection(
+            client, repository, allow_unreadable_immutable_setting=False
+        )
+        client.ruleset["bypass_actors"] = hidden_bypass
+        client.ruleset["updated_at"] = "2026-08-03T22:46:29.413Z"
+        expect_publish_rejection("a changed tag ruleset version")
+        client.ruleset["updated_at"] = RELEASE_TAG_RULESET_UPDATED_AT
+
+        reset_release()
+        client.publish_immutable = False
+        expect_publish_rejection("immutable false after PATCH")
+
+        reset_release()
+
+        def move_tag_after_patch() -> None:
+            assert client.tag_ref is not None
+            client.tag_ref["object"]["sha"] = "5" * 40
+
+        client.post_patch_mutator = move_tag_after_patch
+        expect_publish_rejection("a post-PATCH tag race")
+
+        reset_release()
+
+        def change_asset_after_patch() -> None:
+            assert client.release is not None
+            client.release["assets"][0]["digest"] = f"sha256:{'6' * 64}"
+
+        client.post_patch_mutator = change_asset_after_patch
+        expect_publish_rejection("a post-PATCH asset race")
+
+        reset_release()
+
+        def move_main_after_patch() -> None:
+            client.target_sha = "8" * 40
+
+        client.post_patch_mutator = move_main_after_patch
+        expect_publish_rejection("a post-PATCH main race")
+
+        client.immutable_setting_readable = False
+        protection = verify_repository_protection(
+            client, repository, allow_unreadable_immutable_setting=True
+        )
+        if protection["immutable_setting"] != "administration-read-unavailable":
+            raise ReleaseContractError("unreadable immutable setting was not disclosed")
+        try:
+            verify_repository_protection(
+                client, repository, allow_unreadable_immutable_setting=False
+            )
+        except GitHubAPIRequestError:
+            pass
+        else:
+            raise ReleaseContractError("strict protection check accepted unreadable setting")
+        client.immutable_setting_readable = True
+
+        reset_release()
+        result = publish_verified_release(
             client,
             repository,
             target_sha,
             FIRST_RELEASE_TAG,
             release_id,
             assets,
+            proof,
         )
-        if result["asset_count"] != len(release_asset_names):
-            raise ReleaseContractError("final prepublish self-test lost release assets")
-
-        client.checks[0]["conclusion"] = "failure"
-        try:
-            final_prepublish(
-                client, repository, target_sha, FIRST_RELEASE_TAG, release_id, assets
-            )
-        except ReleaseContractError:
-            pass
-        else:
-            raise ReleaseContractError("final prepublish accepted failed exact-SHA CI")
-        client.checks[0]["conclusion"] = "success"
-
-        original_main = client.target_sha
-        client.target_sha = "2" * 40
-        try:
-            final_prepublish(
-                client, repository, target_sha, FIRST_RELEASE_TAG, release_id, assets
-            )
-        except ReleaseContractError:
-            pass
-        else:
-            raise ReleaseContractError("final prepublish accepted a moved main branch")
-        client.target_sha = original_main
-
-        original_tag_sha = client.tag_ref["object"]["sha"]
-        client.tag_ref["object"]["sha"] = "3" * 40
-        try:
-            final_prepublish(
-                client, repository, target_sha, FIRST_RELEASE_TAG, release_id, assets
-            )
-        except ReleaseContractError:
-            pass
-        else:
-            raise ReleaseContractError("final prepublish accepted a moved release tag")
-        client.tag_ref["object"]["sha"] = original_tag_sha
-
-        client.release["id"] = release_id + 1
-        try:
-            final_prepublish(
-                client, repository, target_sha, FIRST_RELEASE_TAG, release_id, assets
-            )
-        except ReleaseContractError:
-            pass
-        else:
-            raise ReleaseContractError("final prepublish accepted a different draft release")
-        client.release["id"] = release_id
-
-        client.release["assets"][0]["digest"] = f"sha256:{'4' * 64}"
-        try:
-            final_prepublish(
-                client, repository, target_sha, FIRST_RELEASE_TAG, release_id, assets
-            )
-        except ReleaseContractError:
-            pass
-        else:
-            raise ReleaseContractError("final prepublish accepted a changed draft asset")
-        client.release["assets"][0]["digest"] = (
-            f"sha256:{_sha256(assets / client.release['assets'][0]['name'])}"
-        )
-
-        client.release["draft"] = False
-        try:
-            final_prepublish(
-                client, repository, target_sha, FIRST_RELEASE_TAG, release_id, assets
-            )
-        except ReleaseContractError:
-            pass
-        else:
-            raise ReleaseContractError("final prepublish accepted a public release")
-        client.release["draft"] = True
+        if result["asset_count"] != len(release_files) or result["immutable"] is not True:
+            raise ReleaseContractError("publication self-test lost immutable release evidence")
 
         cli_asset = assets / expected_package_names(FIRST_RELEASE_TAG)[1]
         original = cli_asset.read_bytes()
@@ -2790,11 +3115,16 @@ def parse_arguments() -> argparse.Namespace:
     verify_proof.add_argument("--asset-directory", type=Path, required=True)
     verify_proof.add_argument("--proof", type=Path, required=True)
 
-    prepublish = subparsers.add_parser("final-prepublish")
-    _add_identity_arguments(prepublish)
-    prepublish.add_argument("--repository", required=True)
-    prepublish.add_argument("--expected-release-id", type=int, required=True)
-    prepublish.add_argument("--asset-directory", type=Path, required=True)
+    protection = subparsers.add_parser("verify-protection")
+    protection.add_argument("--repository", required=True)
+    protection.add_argument("--allow-unreadable-immutable-setting", action="store_true")
+
+    publish_release = subparsers.add_parser("publish-release")
+    _add_identity_arguments(publish_release)
+    publish_release.add_argument("--repository", required=True)
+    publish_release.add_argument("--expected-release-id", type=int, required=True)
+    publish_release.add_argument("--asset-directory", type=Path, required=True)
+    publish_release.add_argument("--proof", type=Path, required=True)
 
     workflows = subparsers.add_parser("check-workflows")
     workflows.add_argument(
@@ -2916,14 +3246,24 @@ def main() -> int:
                 arguments.target_sha,
                 arguments.release_tag,
             )
-        elif arguments.command == "final-prepublish":
-            evidence = final_prepublish(
+        elif arguments.command == "verify-protection":
+            evidence = verify_repository_protection(
+                _client_from_environment(),
+                arguments.repository,
+                allow_unreadable_immutable_setting=(
+                    arguments.allow_unreadable_immutable_setting
+                ),
+            )
+            print(json.dumps(evidence, indent=2, sort_keys=True))
+        elif arguments.command == "publish-release":
+            evidence = publish_verified_release(
                 _client_from_environment(),
                 arguments.repository,
                 arguments.target_sha,
                 arguments.release_tag,
                 arguments.expected_release_id,
                 arguments.asset_directory,
+                arguments.proof,
             )
             print(json.dumps(evidence, indent=2, sort_keys=True))
         elif arguments.command == "check-workflows":

@@ -87,6 +87,15 @@ jobs:
             --evidence-output main-ci-evidence/main-ci-evidence.json \
             --github-output "${GITHUB_OUTPUT}"
 
+      - name: Verify release protection boundary
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 scripts/release_contract.py verify-protection \
+            --repository "${REPOSITORY}" \
+            --allow-unreadable-immutable-setting
+
       - name: Upload exact-SHA main CI evidence
         if: inputs.mode == 'verify-only'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -666,7 +675,8 @@ jobs:
             "The macOS Workbench is ad-hoc signed and is not Apple notarized." \
             "Exact GNFS source for ${TARGET_SHA} is attached." \
             "Exact GMP 6.3.0 and NTL 11.6.0 corresponding sources are attached." \
-            "Verify every downloaded file with SHA256SUMS." \
+            "Verify packaged and source files with SHA256SUMS." \
+            "release-verification.json is separately bound by the publication contract." \
             > release-notes.md
           gh release create "${RELEASE_TAG}" \
             --repo "${REPOSITORY}" \
@@ -682,7 +692,8 @@ jobs:
             release-assets/gmp-6.3.0.tar.xz \
             release-assets/ntl-11.6.0.tar.gz \
             release-assets/release-metadata.json \
-            release-assets/SHA256SUMS
+            release-assets/SHA256SUMS \
+            verification-proof/release-verification.json
           draft_release_id=$(gh api \
             "repos/${REPOSITORY}/releases/tags/${RELEASE_TAG}" \
             --jq '.id')
@@ -692,29 +703,19 @@ jobs:
           fi
           echo "release_id=${draft_release_id}" >> "${GITHUB_OUTPUT}"
 
-      - name: Revalidate main, CI, draft identity, tag, and asset bytes; then publish
+      - name: Publish exact draft and verify immutable public state
         env:
           EXPECTED_RELEASE_ID: ${{ steps.draft.outputs.release_id }}
           GITHUB_TOKEN: ${{ github.token }}
-          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           REPOSITORY: ${{ github.repository }}
           TARGET_SHA: ${{ inputs.target_sha }}
         shell: bash
         run: |
-          set -euo pipefail
-          python3 scripts/release_contract.py final-prepublish \
+          python3 scripts/release_contract.py publish-release \
             --repository "${REPOSITORY}" \
             --release-tag "${RELEASE_TAG}" \
             --target-sha "${TARGET_SHA}" \
             --expected-release-id "${EXPECTED_RELEASE_ID}" \
-            --asset-directory release-assets
-          published_release_id=$(gh api \
-            --method PATCH \
-            "repos/${REPOSITORY}/releases/${EXPECTED_RELEASE_ID}" \
-            -F draft=false \
-            --jq 'if .draft == false then .id else error("release remained draft") end')
-          if [[ "${published_release_id}" != "${EXPECTED_RELEASE_ID}" ]]; then
-            echo "Published release id changed to ${published_release_id}." >&2
-            exit 1
-          fi
+            --asset-directory release-assets \
+            --proof verification-proof/release-verification.json
