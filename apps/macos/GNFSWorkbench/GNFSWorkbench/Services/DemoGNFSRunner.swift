@@ -5,7 +5,7 @@ actor DemoGNFSRunner: GNFSRunning {
 
   func start(
     configuration: RunConfiguration,
-    resumeDirectory: URL
+    workspace: RunWorkspace
   ) async throws -> AsyncThrowingStream<CLIEvent, Error> {
     task?.cancel()
     let number = configuration.number

@@ -172,7 +172,7 @@ struct WorkbenchHeaderView: View {
       Button("新建分解", systemImage: "plus") {
         model.newRun()
       }
-      .disabled(model.isRunning)
+      .disabled(model.isRunTaskActive)
 
       if let run = model.displayedRun {
         Button("复制整数", systemImage: "doc.on.doc") {
@@ -254,7 +254,7 @@ struct WorkbenchHeaderView: View {
     case .failed:
       return run.errorMessage ?? "请检查日志"
     case .cancelled:
-      return "检查点和历史已保留"
+      return "历史已保存 · 临时工作目录已清理"
     case .ready:
       return "等待输入"
     }
@@ -275,6 +275,7 @@ struct WorkbenchHeaderView: View {
 
   private var primaryActionDisabled: Bool {
     if model.activeRun?.status == .cancelling { return true }
+    if model.isRunTaskActive && !model.isRunning { return true }
     if model.isRunning || model.displayedRun != nil { return false }
     return !model.canStart
   }

@@ -233,7 +233,7 @@ final class OffscreenRenderingTests: XCTestCase {
 private actor PreviewIdleRunner: GNFSRunning {
   func start(
     configuration: RunConfiguration,
-    resumeDirectory: URL
+    workspace: RunWorkspace
   ) async throws -> AsyncThrowingStream<CLIEvent, Error> {
     AsyncThrowingStream { _ in }
   }

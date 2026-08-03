@@ -21,7 +21,7 @@ struct HistoryView: View {
           Image(systemName: "trash")
         }
         .buttonStyle(.borderless)
-        .disabled(model.history.isEmpty || model.isRunning)
+        .disabled(model.history.isEmpty || model.isRunTaskActive)
         .help("清除历史")
       }
       .padding(16)
@@ -45,12 +45,12 @@ struct HistoryView: View {
                 historyRow(run)
               }
               .buttonStyle(.plain)
-              .disabled(model.isRunning && run.id != model.activeRun?.id)
+              .disabled(model.isRunTaskActive && run.id != model.activeRun?.id)
               .contextMenu {
                 Button("删除", role: .destructive) {
                   model.removeHistory(IndexSet(integer: index))
                 }
-                .disabled(model.isRunning)
+                .disabled(model.isRunTaskActive)
               }
             }
           }
@@ -68,7 +68,7 @@ struct HistoryView: View {
       Button("清除历史", role: .destructive) { model.clearHistory() }
       Button("取消", role: .cancel) {}
     } message: {
-      Text("历史记录将从应用中移除；已有的计算检查点不会被删除。")
+      Text("历史记录及其临时工作目录将从这台 Mac 上删除。")
     }
   }
 

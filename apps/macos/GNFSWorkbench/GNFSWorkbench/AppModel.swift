@@ -14,6 +14,7 @@ final class AppModel {
   var areLogsExpanded = true
   var alertMessage: String?
   var toastMessage: String?
+  private(set) var isRunTaskActive = false
 
   @ObservationIgnored private let runner: any GNFSRunning
   @ObservationIgnored private let store: RunStore
@@ -71,11 +72,11 @@ final class AppModel {
   }
 
   var canStart: Bool {
-    inputValidationMessage == nil && !isRunning
+    inputValidationMessage == nil && !isRunTaskActive
   }
 
   func startRun() async {
-    guard !isRunning else { return }
+    guard !isRunTaskActive else { return }
     guard
       case .valid(let normalized) = IntegerInputValidator.validate(
         draftConfiguration.number
@@ -94,18 +95,22 @@ final class AppModel {
     history.removeAll(where: { $0.id == run.id })
     history.insert(run, at: 0)
     history = Array(history.prefix(50))
-    persistSoon()
+    persistNow()
+    let initialSaveTask = saveTask
+    isRunTaskActive = true
 
     let runner = self.runner
     let store = self.store
     runTask = Task { [weak self] in
       guard let self else { return }
       do {
-        let resumeDirectory = try await store.resumeDirectory(for: run.id)
+        await initialSaveTask?.value
+        try Task.checkCancellation()
+        let workspace = try await store.workspace(for: run.id)
         try Task.checkCancellation()
         let events = try await runner.start(
           configuration: run.configuration,
-          resumeDirectory: resumeDirectory
+          workspace: workspace
         )
         for try await event in events {
           guard !Task.isCancelled else { break }
@@ -124,6 +129,9 @@ final class AppModel {
           self.markFailed(error.localizedDescription)
         }
       }
+      await self.finalizeRun(run.id)
+      self.runTask = nil
+      self.isRunTaskActive = false
     }
   }
 
@@ -131,17 +139,23 @@ final class AppModel {
     guard isRunning else { return }
     activeRun?.status = .cancelling
     syncActiveRun()
-    runTask?.cancel()
-    Task { [runner] in await runner.cancel() }
+    let currentRunTask = runTask
+    currentRunTask?.cancel()
+    Task { [runner] in
+      await runner.cancel()
+      await currentRunTask?.value
+    }
   }
 
   func prepareForTermination() async {
-    if isRunning {
-      activeRun?.status = .cancelling
-      syncActiveRun()
-      await runner.cancel()
+    if isRunTaskActive {
+      if isRunning {
+        activeRun?.status = .cancelling
+        syncActiveRun()
+      }
       let currentRunTask = runTask
       currentRunTask?.cancel()
+      await runner.cancel()
       await currentRunTask?.value
       if activeRun?.status.isTerminal == false {
         markCancelled()
@@ -151,7 +165,7 @@ final class AppModel {
   }
 
   func newRun() {
-    guard !isRunning else { return }
+    guard !isRunTaskActive else { return }
     if let displayedRun {
       draftConfiguration = displayedRun.configuration
     }
@@ -161,7 +175,7 @@ final class AppModel {
   }
 
   func useConfigurationFromDisplayedRun() {
-    guard !isRunning, let displayedRun else { return }
+    guard !isRunTaskActive, let displayedRun else { return }
     draftConfiguration = displayedRun.configuration
     activeRun = nil
     selectedRunID = nil
@@ -174,7 +188,7 @@ final class AppModel {
   }
 
   func removeHistory(_ offsets: IndexSet) {
-    guard !isRunning else { return }
+    guard !isRunTaskActive else { return }
     let removedIDs = offsets.map { history[$0].id }
     for index in offsets.sorted(by: >) {
       history.remove(at: index)
@@ -185,11 +199,11 @@ final class AppModel {
     if let activeRun, removedIDs.contains(activeRun.id), activeRun.status.isTerminal {
       self.activeRun = nil
     }
-    persistSoon()
+    persistNow()
   }
 
   func clearHistory() {
-    guard !isRunning else { return }
+    guard !isRunTaskActive else { return }
     history.removeAll()
     activeRun = nil
     selectedRunID = nil
@@ -234,10 +248,14 @@ final class AppModel {
   }
 
   private func restoreHistory() async {
-    let restored = await store.load()
-    guard activeRun == nil else { return }
-    history = restored
-    selectedRunID = restored.first?.id
+    do {
+      let restored = try await store.load()
+      guard activeRun == nil else { return }
+      history = restored
+      selectedRunID = restored.first?.id
+    } catch {
+      alertMessage = "无法恢复运行历史：\(error.localizedDescription)"
+    }
   }
 
   private func consume(_ event: CLIEvent) {
@@ -366,9 +384,11 @@ final class AppModel {
   }
 
   private func persistSoon() {
-    saveTask?.cancel()
+    let pendingSave = saveTask
+    pendingSave?.cancel()
     let snapshot = history
     saveTask = Task { [weak self, store] in
+      await pendingSave?.value
       try? await Task.sleep(for: .milliseconds(300))
       guard !Task.isCancelled else { return }
       do {
@@ -380,9 +400,12 @@ final class AppModel {
   }
 
   private func persistNow() {
-    saveTask?.cancel()
+    let pendingSave = saveTask
+    pendingSave?.cancel()
     let snapshot = history
     saveTask = Task { [weak self, store] in
+      await pendingSave?.value
+      guard !Task.isCancelled else { return }
       do {
         try await store.save(snapshot)
       } catch {
@@ -391,9 +414,23 @@ final class AppModel {
     }
   }
 
-  private func flushHistory() async {
-    saveTask?.cancel()
+  private func finalizeRun(_ runID: UUID) async {
+    let pendingSave = saveTask
+    pendingSave?.cancel()
     saveTask = nil
+    await pendingSave?.value
+    do {
+      try await store.finalize(runID, runs: history)
+    } catch {
+      alertMessage = "无法完成运行清理：\(error.localizedDescription)"
+    }
+  }
+
+  private func flushHistory() async {
+    let pendingSave = saveTask
+    pendingSave?.cancel()
+    saveTask = nil
+    await pendingSave?.value
     do {
       try await store.save(history)
     } catch {

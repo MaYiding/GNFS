@@ -32,6 +32,31 @@ final class AppModelTests: XCTestCase {
     XCTAssertEqual(model.history.first?.status, .succeeded)
   }
 
+  func testTerminalRunPersistsBeforeWorkspaceCleanup() async throws {
+    let storeURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: storeURL) }
+    let store = RunStore(baseURL: storeURL)
+    let model = AppModel(
+      runner: ScriptedRunner(events: [try decodeEvent(Self.resultEvent)]),
+      store: store
+    )
+
+    await model.startRun()
+    let didFinalize = await waitUntil {
+      model.activeRun?.status == .succeeded && !model.isRunTaskActive
+    }
+    XCTAssertTrue(didFinalize)
+    let runID = try XCTUnwrap(model.activeRun?.id)
+    XCTAssertFalse(
+      FileManager.default.fileExists(
+        atPath: storeURL.appendingPathComponent("Runs/\(runID.uuidString)").path
+      ))
+    let restored = try await store.load()
+    XCTAssertEqual(restored.first?.id, runID)
+    XCTAssertEqual(restored.first?.status, .succeeded)
+  }
+
   func testCancellationTransitionsThroughRunnerToTerminalState() async throws {
     let runner = HangingRunner(
       startedEvent: try decodeEvent(
@@ -111,7 +136,7 @@ final class AppModelTests: XCTestCase {
     model.history.insert(second, at: 0)
     await model.prepareForTermination()
 
-    let restored = await store.load()
+    let restored = try await store.load()
     XCTAssertEqual(restored.map(\.id), [second.id, first.id])
   }
 
@@ -152,7 +177,7 @@ private actor ScriptedRunner: GNFSRunning {
 
   func start(
     configuration: RunConfiguration,
-    resumeDirectory: URL
+    workspace: RunWorkspace
   ) async throws -> AsyncThrowingStream<CLIEvent, Error> {
     starts += 1
     return AsyncThrowingStream { continuation in
@@ -176,7 +201,7 @@ private actor HangingRunner: GNFSRunning {
 
   func start(
     configuration: RunConfiguration,
-    resumeDirectory: URL
+    workspace: RunWorkspace
   ) async throws -> AsyncThrowingStream<CLIEvent, Error> {
     AsyncThrowingStream { continuation in
       self.continuation = continuation

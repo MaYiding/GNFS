@@ -37,7 +37,7 @@ struct GNFSWorkbenchApp: App {
       CommandGroup(replacing: .newItem) {
         Button("新建分解") { model.newRun() }
           .keyboardShortcut("n", modifiers: .command)
-          .disabled(model.isRunning)
+          .disabled(model.isRunTaskActive)
       }
       CommandMenu("运行") {
         Button("开始完整质因数分解") {

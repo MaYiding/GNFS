@@ -469,14 +469,14 @@ private struct FailureStateView: View {
           .foregroundStyle(AppTheme.secondaryText)
           .textSelection(.enabled)
           .fixedSize(horizontal: false, vertical: true)
-        Text("历史记录和可用检查点已保留；可以调整算法或参数后重试。")
+        Text("历史记录已保存，本次临时工作目录已清理。可使用当前参数新建任务。")
           .font(.system(size: 11.5))
           .foregroundStyle(AppTheme.tertiaryText)
       }
 
       Spacer()
 
-      Button("修改后重试", action: newRun)
+      Button("使用当前参数新建", action: newRun)
         .buttonStyle(.borderedProminent)
         .tint(AppTheme.indigo)
         .keyboardShortcut(.defaultAction)

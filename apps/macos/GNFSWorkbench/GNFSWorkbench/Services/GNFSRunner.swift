@@ -1,3 +1,4 @@
+import Darwin
 @preconcurrency import Foundation
 
 enum GNFSRunnerError: LocalizedError, Equatable {
@@ -28,7 +29,7 @@ enum GNFSRunnerError: LocalizedError, Equatable {
 protocol GNFSRunning: Sendable {
   func start(
     configuration: RunConfiguration,
-    resumeDirectory: URL
+    workspace: RunWorkspace
   ) async throws -> AsyncThrowingStream<CLIEvent, Error>
 
   func cancel() async
@@ -38,6 +39,8 @@ actor ProcessGNFSRunner: GNFSRunning {
   private let resolver: GNFSExecutableResolver
   private var process: Process?
   private var readerTask: Task<Void, Never>?
+  private var stderrTask: Task<Data, Never>?
+  private var teardownTask: Task<Void, Never>?
 
   init(resolver: GNFSExecutableResolver = GNFSExecutableResolver()) {
     self.resolver = resolver
@@ -45,14 +48,14 @@ actor ProcessGNFSRunner: GNFSRunning {
 
   func start(
     configuration: RunConfiguration,
-    resumeDirectory: URL
+    workspace: RunWorkspace
   ) async throws -> AsyncThrowingStream<CLIEvent, Error> {
     try Task.checkCancellation()
     guard process == nil else { throw GNFSRunnerError.alreadyRunning }
 
     let executable = try resolver.resolve()
     try FileManager.default.createDirectory(
-      at: resumeDirectory,
+      at: workspace.directory,
       withIntermediateDirectories: true
     )
     try Task.checkCancellation()
@@ -64,9 +67,9 @@ actor ProcessGNFSRunner: GNFSRunning {
     process.arguments = GNFSInvocation.arguments(for: configuration)
     process.standardOutput = standardOutput
     process.standardError = standardError
-    process.currentDirectoryURL = resumeDirectory
+    process.currentDirectoryURL = workspace.directory
     var environment = ProcessInfo.processInfo.environment
-    environment["GNFS_RESUME"] = resumeDirectory.path
+    environment["GNFS_RESUME"] = workspace.resumeBase.path
     environment["LC_ALL"] = "en_US.UTF-8"
     process.environment = environment
 
@@ -129,21 +132,53 @@ actor ProcessGNFSRunner: GNFSRunning {
       stderrTask.cancel()
     }
     readerTask = task
+    self.stderrTask = stderrTask
     return stream
   }
 
   func cancel() async {
-    guard let process else { return }
-    if process.isRunning {
-      process.interrupt()
-      try? await Task.sleep(for: .milliseconds(350))
+    if let teardownTask {
+      await teardownTask.value
+      return
     }
-    if process.isRunning {
-      process.terminate()
+
+    guard process != nil || readerTask != nil || stderrTask != nil else { return }
+    let runningProcess = process
+    let outputReader = readerTask
+    let errorReader = stderrTask
+    let teardown = Task {
+      if let runningProcess, runningProcess.isRunning {
+        runningProcess.interrupt()
+        _ = await Self.waitUntilStopped(runningProcess, for: .milliseconds(350))
+      }
+      if let runningProcess, runningProcess.isRunning {
+        runningProcess.terminate()
+        _ = await Self.waitUntilStopped(runningProcess, for: .seconds(1))
+      }
+      if let runningProcess, runningProcess.isRunning {
+        Darwin.kill(runningProcess.processIdentifier, SIGKILL)
+        _ = await Self.waitUntilStopped(runningProcess, for: .seconds(1))
+      }
+
+      outputReader?.cancel()
+      errorReader?.cancel()
+      await outputReader?.value
+      _ = await errorReader?.value
     }
-    readerTask?.cancel()
+    teardownTask = teardown
+    await teardown.value
     self.process = nil
     readerTask = nil
+    stderrTask = nil
+    teardownTask = nil
   }
 
+  private static func waitUntilStopped(_ process: Process, for timeout: Duration) async -> Bool {
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: timeout)
+    while process.isRunning && clock.now < deadline {
+      try? await Task.sleep(for: .milliseconds(20))
+    }
+    return !process.isRunning
+  }
 }
