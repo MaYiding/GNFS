@@ -1893,6 +1893,152 @@ struct NamespaceTreeEntrySnapshot final {
 
 using NamespaceTreeSnapshot = std::vector<NamespaceTreeEntrySnapshot>;
 
+#ifdef _WIN32
+[[nodiscard]] gnfs::relation::ooc_cleanup_detail::FileIdentity
+snapshot_windows_identity(HANDLE file, const BY_HANDLE_FILE_INFORMATION& info) {
+    if (const auto identity = gnfs::relation::ooc_cleanup_detail::windows_identity(file, info)) {
+        return *identity;
+    }
+    return {
+        .first = static_cast<std::uint64_t>(info.dwVolumeSerialNumber),
+        .second = (static_cast<std::uint64_t>(info.nFileIndexHigh) << 32U) |
+                  static_cast<std::uint64_t>(info.nFileIndexLow),
+        .third = 0,
+        .size = (static_cast<std::uint64_t>(info.nFileSizeHigh) << 32U) |
+                static_cast<std::uint64_t>(info.nFileSizeLow),
+    };
+}
+
+void capture_rejected_windows_regular_file(const std::filesystem::path& path,
+                                           NamespaceTreeEntrySnapshot& entry) {
+    class SnapshotHandle final {
+    public:
+        explicit SnapshotHandle(HANDLE value) noexcept : value_(value) {}
+        ~SnapshotHandle() {
+            if (value_ != INVALID_HANDLE_VALUE) {
+                (void)::CloseHandle(value_);
+            }
+        }
+
+        SnapshotHandle(const SnapshotHandle&) = delete;
+        SnapshotHandle& operator=(const SnapshotHandle&) = delete;
+
+        [[nodiscard]] HANDLE get() const noexcept {
+            return value_;
+        }
+
+        [[nodiscard]] HANDLE release() noexcept {
+            return std::exchange(value_, INVALID_HANDLE_VALUE);
+        }
+
+    private:
+        HANDLE value_ = INVALID_HANDLE_VALUE;
+    };
+
+    SnapshotHandle file(::CreateFileW(
+        path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr));
+    if (file.get() == INVALID_HANDLE_VALUE) {
+        const DWORD code = ::GetLastError();
+        throw std::filesystem::filesystem_error(
+            "open rejected namespace snapshot file", path,
+            gnfs::relation::ooc_cleanup_detail::windows_error(code));
+    }
+
+    BY_HANDLE_FILE_INFORMATION before{};
+    if (!::GetFileInformationByHandle(file.get(), &before)) {
+        const DWORD code = ::GetLastError();
+        throw std::filesystem::filesystem_error(
+            "inspect rejected namespace snapshot file", path,
+            gnfs::relation::ooc_cleanup_detail::windows_error(code));
+    }
+    const auto before_identity = snapshot_windows_identity(file.get(), before);
+    if ((before.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) !=
+            0 ||
+        before_identity.size >
+            static_cast<std::uint64_t>((std::numeric_limits<std::size_t>::max)())) {
+        throw std::runtime_error("rejected namespace snapshot leaf was not regular");
+    }
+
+    std::vector<std::byte> bytes(static_cast<std::size_t>(before_identity.size));
+    std::size_t offset = 0;
+    while (offset < bytes.size()) {
+        const DWORD request = static_cast<DWORD>((std::min)(
+            bytes.size() - offset, static_cast<std::size_t>((std::numeric_limits<DWORD>::max)())));
+        DWORD read = 0;
+        if (!::ReadFile(file.get(), bytes.data() + offset, request, &read, nullptr)) {
+            const DWORD code = ::GetLastError();
+            throw std::filesystem::filesystem_error(
+                "read rejected namespace snapshot file", path,
+                gnfs::relation::ooc_cleanup_detail::windows_error(code));
+        }
+        if (read == 0) {
+            throw std::runtime_error("namespace snapshot file changed during capture");
+        }
+        offset += static_cast<std::size_t>(read);
+    }
+
+    BY_HANDLE_FILE_INFORMATION after{};
+    if (!::GetFileInformationByHandle(file.get(), &after)) {
+        const DWORD code = ::GetLastError();
+        throw std::filesystem::filesystem_error(
+            "reinspect rejected namespace snapshot file", path,
+            gnfs::relation::ooc_cleanup_detail::windows_error(code));
+    }
+    const auto after_identity = snapshot_windows_identity(file.get(), after);
+    if (after_identity != before_identity || after.dwFileAttributes != before.dwFileAttributes ||
+        (after.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0 ||
+        after.nNumberOfLinks != before.nNumberOfLinks) {
+        throw std::runtime_error("namespace snapshot file changed during capture");
+    }
+
+    SnapshotHandle named(::CreateFileW(
+        path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr));
+    if (named.get() == INVALID_HANDLE_VALUE) {
+        const DWORD code = ::GetLastError();
+        throw std::filesystem::filesystem_error(
+            "reopen rejected namespace snapshot file", path,
+            gnfs::relation::ooc_cleanup_detail::windows_error(code));
+    }
+    BY_HANDLE_FILE_INFORMATION named_info{};
+    if (!::GetFileInformationByHandle(named.get(), &named_info)) {
+        const DWORD code = ::GetLastError();
+        throw std::filesystem::filesystem_error(
+            "reinspect named namespace snapshot file", path,
+            gnfs::relation::ooc_cleanup_detail::windows_error(code));
+    }
+    const auto named_identity = snapshot_windows_identity(named.get(), named_info);
+    if (named_identity != after_identity || named_info.dwFileAttributes != after.dwFileAttributes ||
+        named_info.nNumberOfLinks != after.nNumberOfLinks) {
+        throw std::runtime_error("namespace snapshot file changed during capture");
+    }
+
+    const HANDLE named_closing = named.release();
+    if (!::CloseHandle(named_closing)) {
+        const DWORD code = ::GetLastError();
+        throw std::filesystem::filesystem_error(
+            "close named namespace snapshot file", path,
+            gnfs::relation::ooc_cleanup_detail::windows_error(code));
+    }
+    const HANDLE closing = file.release();
+    if (!::CloseHandle(closing)) {
+        const DWORD code = ::GetLastError();
+        throw std::filesystem::filesystem_error(
+            "close rejected namespace snapshot file", path,
+            gnfs::relation::ooc_cleanup_detail::windows_error(code));
+    }
+    entry.hard_link_count = static_cast<std::uintmax_t>(after.nNumberOfLinks);
+    entry.identity = {
+        after_identity.first,
+        after_identity.second,
+        after_identity.third,
+        after_identity.size,
+    };
+    entry.bytes = std::move(bytes);
+}
+#endif
+
 [[nodiscard]] NamespaceTreeSnapshot capture_namespace_tree(
     const std::filesystem::path& root,
     const std::optional<std::filesystem::path>& excluded_relative_path = std::nullopt) {
@@ -1948,7 +2094,15 @@ using NamespaceTreeSnapshot = std::vector<NamespaceTreeEntrySnapshot>;
                 entry.bytes = std::move(exact.bytes);
             } else {
 #ifdef _WIN32
-                throw std::runtime_error("could not inspect namespace snapshot file");
+                if (metadata.kind == gnfs::relation::ooc_cleanup_detail::InspectKind::Rejected) {
+                    capture_rejected_windows_regular_file(path, entry);
+                } else if (metadata.kind ==
+                           gnfs::relation::ooc_cleanup_detail::InspectKind::Error) {
+                    throw std::filesystem::filesystem_error("inspect namespace snapshot file", path,
+                                                            metadata.error);
+                } else {
+                    throw std::runtime_error("namespace snapshot file changed during capture");
+                }
 #else
                 const auto inspect_native = [&path] {
                     struct stat result {};

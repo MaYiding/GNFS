@@ -193,9 +193,11 @@ static void replace_file(const std::string& source, const std::string& destinati
 #ifdef _WIN32
     const std::filesystem::path source_path(source);
     const std::filesystem::path destination_path(destination);
-    if (::MoveFileExW(source_path.c_str(), destination_path.c_str(),
-                      MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == 0) {
-        throw std::runtime_error("cannot replace test file");
+    if (::ReplaceFileW(destination_path.c_str(), source_path.c_str(), nullptr, 0, nullptr,
+                       nullptr) == 0) {
+        const DWORD error = ::GetLastError();
+        throw std::system_error(std::error_code(static_cast<int>(error), std::system_category()),
+                                "cannot replace test file");
     }
 #else
     std::error_code error;
