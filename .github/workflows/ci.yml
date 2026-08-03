@@ -192,6 +192,19 @@ jobs:
         ./scripts/test.sh -t Release --no-build --no-color run \
           test_distributed_sieve_worker_cleanup_orchestrator
 
+    - name: Run macOS durable wave result
+      if: >-
+        ${{
+          !cancelled() &&
+          steps.build_posix.outcome == 'success' &&
+          matrix.os == 'macos-14' &&
+          matrix.build_type == 'Release'
+        }}
+      run: |
+        test -x build/test_distributed_sieve_wave_result
+        ./scripts/test.sh -t Release --no-build --no-color run \
+          test_distributed_sieve_wave_result
+
     # Windows: multi-config generator places binaries under build/<Config>/,
     # so we pass -C to ctest and use PowerShell parallel-count syntax.
     - name: Run selected tests (Windows)

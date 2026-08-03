@@ -333,6 +333,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/distributed_sieve_wave_store.cp
         src/sieve/distributed_sieve_merge_commit_authority.cpp
         src/sieve/distributed_sieve_worker_cleanup_authority.cpp
         src/sieve/distributed_sieve_worker_cleanup_orchestrator.cpp
+        src/sieve/distributed_sieve_wave_result.cpp
         src/sieve/distributed_sieve_worker_cleanup_codec.cpp
     )
 endif()
@@ -1353,6 +1354,43 @@ if(GNFS_BUILD_TESTS)
         )
         set_tests_properties(
             DistributedSieveWorkerCleanupOrchestratorPlatform
+            PROPERTIES LABELS "instant" TIMEOUT 10
+        )
+    endif()
+
+    add_executable(test_distributed_sieve_wave_result
+        tests/test_distributed_sieve_wave_result.cpp
+    )
+    target_include_directories(
+        test_distributed_sieve_wave_result PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/relation
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sieve
+    )
+    target_link_libraries(
+        test_distributed_sieve_wave_result PRIVATE
+        gnfs_core Threads::Threads
+    )
+    if(APPLE)
+        add_test(
+            NAME DistributedSieveWaveResultCore
+            COMMAND test_distributed_sieve_wave_result --suite core
+        )
+        add_test(
+            NAME DistributedSieveWaveResultProtection
+            COMMAND test_distributed_sieve_wave_result --suite protection
+        )
+        set_tests_properties(
+            DistributedSieveWaveResultCore
+            DistributedSieveWaveResultProtection
+            PROPERTIES LABELS "slow" TIMEOUT 180
+        )
+    else()
+        add_test(
+            NAME DistributedSieveWaveResultPlatform
+            COMMAND test_distributed_sieve_wave_result --suite platform
+        )
+        set_tests_properties(
+            DistributedSieveWaveResultPlatform
             PROPERTIES LABELS "instant" TIMEOUT 10
         )
     endif()

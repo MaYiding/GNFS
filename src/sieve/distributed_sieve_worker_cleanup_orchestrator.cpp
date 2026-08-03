@@ -159,13 +159,16 @@ template <typename... Optionals>
 
 struct DistributedSieveWorkerCleanupRetainedMergedResultV1::State final {
     State(TerminalContinuation&& terminal_value,
-          const relation::OOCRelationReader* expected_reader_value) noexcept
-        : terminal(std::move(terminal_value)), expected_reader(expected_reader_value) {}
+          const relation::OOCRelationReader* expected_reader_value,
+          WaveMergeCommitV1 commit_value) noexcept
+        : terminal(std::move(terminal_value)), expected_reader(expected_reader_value),
+          commit(std::move(commit_value)) {}
 
     // Reverse destruction releases the borrowed view before the terminal root,
     // merged reader, and WaveLock.
     TerminalContinuation terminal;
     const relation::OOCRelationReader* expected_reader = nullptr;
+    WaveMergeCommitV1 commit;
     std::optional<relation::ReadOnlyRelationCorpusView> merged_relations;
 };
 
@@ -344,6 +347,14 @@ DistributedSieveWorkerCleanupRetainedMergedResultV1::merged_relations() const& {
         throw std::logic_error("retained merged result is moved-from or invalid");
     }
     return *state_->merged_relations;
+}
+
+const WaveMergeCommitV1&
+DistributedSieveWorkerCleanupRetainedMergedResultV1::commit_for_wave_result_promotion_v1() const {
+    if (state_ == nullptr || !state_->terminal.valid()) {
+        throw std::logic_error("retained merged result is moved-from or invalid");
+    }
+    return state_->commit;
 }
 
 DistributedSieveWorkerCleanupOrchestrationResultV1::operator bool() const noexcept {
@@ -766,8 +777,9 @@ DistributedSieveWorkerCleanupOrchestrationAuthorityV1::drive_with_operations(
 
             const relation::OOCRelationReader* const expected_reader =
                 std::addressof(terminal.root_.reader());
-            auto state =
-                std::make_unique<RetainedMergedResult::State>(std::move(terminal), expected_reader);
+            WaveMergeCommitV1 retained_commit = terminal.root_.commit();
+            auto state = std::make_unique<RetainedMergedResult::State>(
+                std::move(terminal), expected_reader, std::move(retained_commit));
             if (!state->terminal.valid() ||
                 std::addressof(state->terminal.root_.reader()) != expected_reader) {
                 outcome.status = OrchestrationStatus::reader_binding_failed;

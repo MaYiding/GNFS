@@ -35,6 +35,8 @@
 #include "gnfs/core/polynomial_context.hpp"
 #include "gnfs/core/relation.hpp"
 #include "gnfs/factor_base/factor_base.hpp"
+#include "gnfs/relation/relation_corpus.hpp"
+#include "gnfs/sieve/distributed_sieve_protocol.hpp"
 #include "gnfs/sieve/lattice_sieve.hpp"
 #include "gnfs/sieve/special_q.hpp"
 
@@ -45,11 +47,17 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <memory>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace gnfs::sieve {
+
+namespace distributed_sieve_result_detail {
+class DistributedSieveWaveResultAuthorityV1;
+}
 
 #ifdef _WIN32
 using distributed_pid_t = int;
@@ -95,6 +103,49 @@ struct DistributedSieveWorkerResult {
     int exit_status = -1;       ///< Raw WEXITSTATUS / -1 if killed by signal.
     int signal = 0;             ///< If killed by signal, signal number; else 0.
     std::string ooc_base_path;  ///< Per-worker OOC base path.
+};
+
+/// Move-only least-authority result of one durable distributed sieve wave.
+///
+/// Construction remains source-private. A successful durable orchestrator
+/// transfers its retained WaveLock and merged reader into this object only
+/// after every worker cleanup completion is durable. Callers may inspect the
+/// immutable commit projection and read relations, but cannot obtain a path,
+/// descriptor, receipt, cleanup operation, worker-launch operation, or
+/// consumption-ACK operation.
+///
+/// References and spans returned by this object must not outlive it. Moving
+/// the result preserves their reader binding because the retained state stays
+/// at a stable address. Accessors that borrow state are lvalue-only.
+class DistributedSieveWaveResult final {
+public:
+    DistributedSieveWaveResult() = delete;
+    DistributedSieveWaveResult(const DistributedSieveWaveResult&) = delete;
+    DistributedSieveWaveResult& operator=(const DistributedSieveWaveResult&) = delete;
+    DistributedSieveWaveResult(DistributedSieveWaveResult&&) noexcept;
+    DistributedSieveWaveResult& operator=(DistributedSieveWaveResult&&) = delete;
+    ~DistributedSieveWaveResult() noexcept;
+
+    [[nodiscard]] bool valid() const noexcept;
+    [[nodiscard]] explicit operator bool() const noexcept;
+    [[nodiscard]] size_t relation_count() const noexcept;
+    [[nodiscard]] size_t completed_worker_count() const noexcept;
+    [[nodiscard]] const util::Sha256Digest& manifest_digest() const&;
+    [[nodiscard]] const util::Sha256Digest& manifest_digest() const&& = delete;
+    [[nodiscard]] const util::Sha256Digest& merge_commit_digest() const&;
+    [[nodiscard]] const util::Sha256Digest& merge_commit_digest() const&& = delete;
+    [[nodiscard]] std::span<const ChunkCommitSummaryV1> chunks() const&;
+    [[nodiscard]] std::span<const ChunkCommitSummaryV1> chunks() const&& = delete;
+    [[nodiscard]] const relation::ReadOnlyRelationCorpusView& merged_relations() const&;
+    [[nodiscard]] const relation::ReadOnlyRelationCorpusView& merged_relations() const&& = delete;
+
+private:
+    struct State;
+    explicit DistributedSieveWaveResult(std::unique_ptr<State> state) noexcept;
+
+    std::unique_ptr<State> state_;
+
+    friend class distributed_sieve_result_detail::DistributedSieveWaveResultAuthorityV1;
 };
 
 #ifndef _WIN32

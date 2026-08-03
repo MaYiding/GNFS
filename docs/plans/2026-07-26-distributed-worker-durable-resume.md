@@ -3220,7 +3220,7 @@ opt-in direct API.
 
 ### M5: Consumer ACK and Pipeline Boundary
 
-- [ ] Add the move-only, non-armable `DistributedSieveWaveResult`.
+- [x] Add the move-only, non-armable `DistributedSieveWaveResult`.
 - [ ] Reserve a deferred successor lease and publish/recover the bounded
   predecessor-linked `ConsumptionStartedV1` chain,
   `SuccessorPreparedV1`, and `WaveConsumptionAckV1`.
@@ -4166,3 +4166,90 @@ ACK, merged cleanup, and `WaveCompletedV1` publication.
 checker, the Markdown-link checker, shell and CI YAML syntax checks,
 `git diff --check`, added-line machine-path and credential scans, and a no-op
 `gnfs_core` rebuild all pass.
+
+## M5-R1 Execution Plan: 2026-08-03
+
+M5-R1 introduces the public least-authority wave result without opening the
+consumer transaction. `DistributedSieveWaveResult` is move-only, has no default
+construction or move assignment, and keeps all borrowing accessors on const
+lvalues. It exposes only the immutable manifest and merge-commit digests, chunk
+commit summaries, completed-worker count, relation count, and the existing
+`ReadOnlyRelationCorpusView`. It exposes no root, path, descriptor, receipt,
+cleanup operation, worker-launch operation, consumption start, or ACK.
+
+A source-private one-shot promotion consumes the R4 retained terminal only
+after it freezes and validates the exact `WaveMergeCommitV1` projection. All
+copying and pimpl allocation happen before the authority spend. The final
+transfer uses only nothrow moves and leaves the terminal proof, merged reader,
+and `WaveLock` at a stable address. Moving the public value preserves existing
+borrowed view and chunk-span bindings; destroying the last owner releases the
+lock without mutating durable artifacts.
+
+Promotion returns a closed ownership union. Success contains exactly one public
+result. A pre-spend allocation or unexpected failure contains the still-valid
+R4 owner for retry. Invalid or contradictory input contains neither arm and
+requires a cold reopen. A successful promotion spends the R4 owner, and a
+second promotion attempt must fail closed.
+
+The dedicated test target freezes the public type traits and negative API,
+exact commit projection and relation order, root-byte immutability, one-shot
+authority spend, stable borrowing across moves, PID binding, continuous
+`WaveLock`, and absence of all M5 mutation records. The Apple target is split
+into bounded `core` and `protection` shards, while unsupported hosts compile
+the closed public surface and run an instant platform case. The project runner,
+macOS Release CI, and policy checker will carry the same target and contract.
+
+This slice deliberately publishes no `ConsumptionStartedV1`, successor lease,
+ACK, merged-cleanup record, or `WaveCompletedV1`. M5-R2 will use this result as
+the least-authority host for the predecessor-linked consumption-start
+transaction; no public producer entry is exposed before that transaction is
+defined.
+
+## M5-R1 Implementation Report: 2026-08-03
+
+M5-R1 now exposes `DistributedSieveWaveResult` as the public least-authority
+owner of one completed durable wave. The result remains move-only and
+non-armable. Its const-lvalue accessors expose only immutable commit
+projections and the read-only merged relation corpus. The retained R4 terminal,
+reader, and `WaveLock` remain behind a stable pimpl, so existing view, span, and
+digest borrows preserve their addresses across a result move.
+
+The source-private promotion freezes and validates the exact merge-commit
+projection before spending the R4 authority. Projection copies and pimpl
+allocation remain on the retryable side of the boundary. After allocation, the
+only ownership transfers are statically constrained nothrow moves. Invalid or
+contradictory inputs fail cold with no authority arm, while a pre-spend
+allocation failure returns exactly one valid R4 owner for retry.
+
+The dedicated test covers exact chunk and digest projection, relation order,
+one-shot promotion, allocation retry, stable borrowing across moves,
+cross-process rejection, continuous `WaveLock`, immutable root inventory, and
+the absence of consumption, ACK, cleanup, completion, or worker-launch
+authority. The Apple `core` and `protection` shards and the aggregate all pass;
+the prior R4 orchestrator aggregate also remains green. The non-Apple target
+continues to compile and exercise the closed platform surface.
+
+`./scripts/test.sh -t Release --no-color changed --deep` passes 78/78 in
+8 minutes 47 seconds, including the API deep-contract and GNFS E2E regressions.
+`./scripts/test.sh list` accepts 242 test binaries and reports the new aggregate
+as a 300-second `slow` test. Live CTest metadata retains two 180-second Apple
+shards and the 10-second non-Apple platform case.
+
+The M5-R1 focused checker rejects eighteen mutations, including escaped
+private authority, weakened move/borrow contracts, missing mutation-free
+assertions, digest-by-value regression, catalog drift, and an additional
+unfrozen design-document mention. The legacy R4 focus, complete parser/table
+self-test, and normal repository scan pass. Bounded immutable caches and batched
+identifier parsing remove repeated translation-phase scans without changing
+the accepted policy surface.
+
+Parallel authority, portability, and final-result reviews report no P0 or P1
+finding. The review's digest-borrow and direct-header findings are closed by
+address-stability assertions and an explicit `<memory>` include. M5-R2 remains
+the next slice: reserve the exact successor lease and publish or recover the
+predecessor-linked `ConsumptionStartedV1` transaction. Structured reduction,
+ACK, merged cleanup, and `WaveCompletedV1` remain outside M5-R1.
+
+`clang-format --dry-run --Werror`, Python bytecode compilation, the Harness
+checker, the Markdown-link checker, shell and CI YAML syntax checks,
+`git diff --check`, and added-line machine-path and credential scans pass.

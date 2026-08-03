@@ -7,6 +7,7 @@ import argparse
 from bisect import bisect_right
 from collections.abc import Iterable
 from dataclasses import dataclass
+from functools import lru_cache
 import hashlib
 from pathlib import Path
 import re
@@ -203,6 +204,19 @@ WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE = (
 WORKER_CLEANUP_ORCHESTRATION_TEST_FILE = (
     "tests/test_distributed_sieve_worker_cleanup_orchestrator.cpp"
 )
+WAVE_RESULT_PUBLIC_INTERFACE_FILE = "include/gnfs/sieve/distributed_sieve.hpp"
+WAVE_RESULT_IMPLEMENTATION_FILE = "src/sieve/distributed_sieve_wave_result.cpp"
+WAVE_RESULT_PRIVATE_INTERFACE_FILE = (
+    "src/sieve/distributed_sieve_wave_result_internal.hpp"
+)
+WAVE_RESULT_TEST_FILE = "tests/test_distributed_sieve_wave_result.cpp"
+WAVE_RESULT_PRIVATE_INTERFACE_INCLUDE = "distributed_sieve_wave_result_internal.hpp"
+WAVE_RESULT_OWNED_FILES = {
+    WAVE_RESULT_IMPLEMENTATION_FILE,
+    WAVE_RESULT_PRIVATE_INTERFACE_FILE,
+    WAVE_RESULT_TEST_FILE,
+}
+WAVE_RESULT_POLICY_FILES = WAVE_RESULT_OWNED_FILES | {WAVE_RESULT_PUBLIC_INTERFACE_FILE}
 WORKER_CLEANUP_ORCHESTRATION_FILES = {
     WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE,
     WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE,
@@ -221,6 +235,7 @@ WORKER_CLEANUP_TAIL_AUTHORITY_INCLUDE_ALLOWLIST = {
     WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_FILE,
     WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE,
     WORKER_CLEANUP_ORCHESTRATION_TEST_FILE,
+    WAVE_RESULT_TEST_FILE,
     MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE,
 }
 WORKER_CLEANUP_TAIL_AUTHORITY_IDENTIFIER_ALLOWLISTS = {
@@ -241,6 +256,7 @@ WORKER_CLEANUP_TAIL_AUTHORITY_IDENTIFIER_ALLOWLISTS = {
             WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
             WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_FILE,
             WORKER_CLEANUP_ORCHESTRATION_TEST_FILE,
+            WAVE_RESULT_TEST_FILE,
         }
     ),
     "consume_distributed_sieve_committed_tail_for_worker_cleanup_v1_with_hooks": (
@@ -3772,7 +3788,7 @@ WORKER_CLEANUP_ORCHESTRATION_EXACT_USE_CONTEXTS = {
     WORKER_CLEANUP_ORCHESTRATION_STAGE_IDENTIFIER: {
         WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (
             8,
-            "c5120ad52014e8e2874c1421dae22655d7f231215ada5787b834f58b91306d9c",
+            "d586f508594af565443a6cd6d783967686677c579e5a7a6c397bc071234725f0",
         ),
         WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (
             2,
@@ -3806,11 +3822,11 @@ WORKER_CLEANUP_ORCHESTRATION_EXACT_USE_CONTEXTS = {
     WORKER_CLEANUP_ORCHESTRATION_RETAINED_IDENTIFIER: {
         WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (
             14,
-            "62555421fc61c5cf42eedb9567ffa01a61d367fd68a1f532d08efd6e0ef359e2",
+            "93facf7320a2d5f0547aa25d42f02464eab7e20c3cf5aacff16c6de9bc13b034",
         ),
         WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (
-            12,
-            "43940078d99c14390f23fbc9d563df2aa9f49165883b878ad8d0e9e31499efb4",
+            13,
+            "46b466def3a152e989f8cdf6f38d78378438751d4aa8790a71e7c4fa70896e2e",
         ),
         WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: (
             1,
@@ -3820,7 +3836,7 @@ WORKER_CLEANUP_ORCHESTRATION_EXACT_USE_CONTEXTS = {
     WORKER_CLEANUP_ORCHESTRATION_PHASE_IDENTIFIER: {
         WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (
             3,
-            "9734dd5b6ff75bdc1f3dc4f95310e3257337c4ff970f16f436946dc647e5143b",
+            "7f6b069113afe19cf7553c4d33ff43e41d821f91367ffcec0b96bc72ee345e61",
         ),
         WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (
             1,
@@ -3834,7 +3850,7 @@ WORKER_CLEANUP_ORCHESTRATION_EXACT_USE_CONTEXTS = {
     WORKER_CLEANUP_ORCHESTRATION_STATUS_IDENTIFIER: {
         WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (
             3,
-            "d5757b2204146d0ef493c92086f8ffd3ae0cfcee7e0a7a186eaa8760f7f9c6e3",
+            "82b339ef5a2bfddd98cacb94451be1163e207f20c61bb2b3f367860daa890384",
         ),
         WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (
             1,
@@ -3876,7 +3892,7 @@ WORKER_CLEANUP_ORCHESTRATION_EXACT_USE_CONTEXTS = {
         ),
         WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (
             10,
-            "3b030f121bf7c8aec5d2ac86dbbfb839f66fd8ac16648c07a3e57739d36bf52f",
+            "4617b1eb9d646a97fe4da8c8984f77b15f29b3abb557acbe27738d4b202a0900",
         ),
         WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: (
             1,
@@ -3890,7 +3906,7 @@ WORKER_CLEANUP_ORCHESTRATION_EXACT_USE_CONTEXTS = {
         ),
         WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (
             3,
-            "e19e0cab8c80af4d686149acedc5e75649692d8fe53836062fdf393732a2f585",
+            "42e7414ce93ac8941aecf9acf3c6d08205142dacbbb9fa386246ddba055b02c4",
         ),
         WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: (
             1,
@@ -3900,11 +3916,11 @@ WORKER_CLEANUP_ORCHESTRATION_EXACT_USE_CONTEXTS = {
     WORKER_CLEANUP_ORCHESTRATION_AUTHORITY_IDENTIFIER: {
         WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (
             5,
-            "d39c174850eef1f3b2629fd126fc8a6dc15d097bfd4766028606f4deeb01f4ff",
+            "09f0fd9bf88414eb27ac6ed028a54dd4bdd21b60ed3e94de7c580b7358c5dc83",
         ),
         WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (
             9,
-            "6d7c3241929efaca5bcd5635e808684b46d9c3fb49d860a93e7d45a5ce6a9219",
+            "ceca532c9548aac8cdfdff6efed3acae68906e5ac96ca246fb87dcfd752aab38",
         ),
         WORKER_CLEANUP_TAIL_AUTHORITY_INTERFACE_FILE: (
             2,
@@ -3959,10 +3975,10 @@ WORKER_CLEANUP_ORCHESTRATION_IDENTIFIER_ALLOWLISTS = {
     for identifier, contexts in WORKER_CLEANUP_ORCHESTRATION_EXACT_USE_CONTEXTS.items()
 }
 WORKER_CLEANUP_ORCHESTRATION_HEADER_INTERVAL_SHA256 = (
-    "c6b67ee709f3fadda24ed9018b8e4277de0decb7f50a295db2814714af12f388"
+    "5fdcfc9a457603e9db92cd5e7d5550de3cc9cdbfb0ab23c33ce4220a3e8a859b"
 )
 WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_INTERVAL_SHA256 = (
-    "7b8e9f1316454184200d10199ed0459feb428d67b655f95d0a323c2be6526c8a"
+    "70d90b0a647d6e86f92dcd90ec8c923288f7744357d27b5e12c6a3f9a2586af5"
 )
 WORKER_CLEANUP_ORCHESTRATION_TEST_INTERVAL_SHA256 = (
     "5856e518b842727bb6a02ed3a4c8d4f3747d63569a2c7d1d089a46c4c38cc07f"
@@ -3971,7 +3987,7 @@ WORKER_CLEANUP_ORCHESTRATION_CLASS_BODY_SHA256 = {
     WORKER_CLEANUP_ORCHESTRATION_CONTINUATION_IDENTIFIER:
         "60abdb8129624c4caf60dbacc8b52d54e2cee5d2d8c5c0230381080ca60da12d",
     WORKER_CLEANUP_ORCHESTRATION_RETAINED_IDENTIFIER:
-        "9d4ed7be8e8894cfabe632613015ffdbeb6817aac7c8e7f205d8015178f2a2be",
+        "78a1e23bbe65a842cc6c670cd9142c7be518071a75bda24fecdd0779f4d8c49a",
     WORKER_CLEANUP_ORCHESTRATION_DIAGNOSTIC_IDENTIFIER:
         "ebfab999bed1943e91892fb0f0c2723a3fd07ee97b2529cf7367b141fc7d23f5",
     WORKER_CLEANUP_ORCHESTRATION_RESULT_IDENTIFIER:
@@ -4011,7 +4027,7 @@ WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_CLASS_BODY_SHA256 = {
     "TerminalRetentionState":
         "1f55481ed530cc708f8b76b56498057a2751c04f75d716b952432fb2a4fc8365",
     "DistributedSieveWorkerCleanupRetainedMergedResultV1::State":
-        "fabd60dd22c96b87497a88b19076b02cf78d69e5f43e2ccd5037cc75900a0da2",
+        "86ff334b199e0036b2fd2d6f0627f7cb5f801afbdbf88ade2a1cd546ac973937",
     "DistributedSieveWorkerCleanupOrchestrationAuthorityV1::ChildOperations":
         "f8c06505d51af23953ecd18373bccce2533bf06154b1306ba9d45754d924a12e",
 }
@@ -4034,7 +4050,7 @@ WORKER_CLEANUP_ORCHESTRATION_FUNCTION_BODY_SHA256 = {
     "DistributedSieveWorkerCleanupOrchestrationResultV1::operator bool":
         "425ead2ce34a6d70059e771f6ff823103ccd42fe8de14df4c16ac37e36cb293c",
     "DistributedSieveWorkerCleanupOrchestrationAuthorityV1::drive_with_operations":
-        "9acb31b192df5ec4411d0cf02b3c4cab43c260722a22e5ddacbab181cb8c835f",
+        "f7704fb9265b49ef57a9127dccbbda1e1d619c9ebc1d7ffb41d3c6c08df48538",
     "DistributedSieveWorkerCleanupOrchestrationAuthorityV1::start":
         "a03f47e9e59041f0bda085ebee69fdabfea36c9d7317a6cd94cda70ba5c02a9b",
     "DistributedSieveWorkerCleanupOrchestrationAuthorityV1::drive":
@@ -4179,6 +4195,390 @@ WORKER_CLEANUP_ORCHESTRATION_CMAKE_BLOCK_SHA256 = (
 WORKER_CLEANUP_ORCHESTRATION_CI_FILE = ".github/workflows/ci.yml"
 WORKER_CLEANUP_ORCHESTRATION_CI_BLOCK_SHA256 = (
     "83454d81eb547fce318a7af622de5e1ec0bced19f585be879300434d75c00f2d"
+)
+
+# M5-R1 is a one-shot source-private promotion from the completed R4 owner to
+# the public least-authority result. Exact identifier contexts keep the public
+# value, promotion authority, retry union, and trusted allocation seam confined
+# to their four intended files plus the two sealed R4 friend/bridge sites; the
+# public value's design-plan mentions are separately frozen as documentation.
+WAVE_RESULT_IDENTIFIER = "DistributedSieveWaveResult"
+WAVE_RESULT_DESIGN_PLAN_FILE = (
+    "docs/plans/2026-07-26-distributed-worker-durable-resume.md"
+)
+WAVE_RESULT_RETAINED_ALIAS_IDENTIFIER = "RetainedMergedResultV1"
+WAVE_RESULT_PHASE_IDENTIFIER = "DistributedSieveWaveResultPromotionPhaseV1"
+WAVE_RESULT_STATUS_IDENTIFIER = "DistributedSieveWaveResultPromotionStatusV1"
+WAVE_RESULT_DISPOSITION_IDENTIFIER = (
+    "DistributedSieveWaveResultPromotionDispositionV1"
+)
+WAVE_RESULT_DIAGNOSTIC_IDENTIFIER = "DistributedSieveWaveResultPromotionDiagnosticV1"
+WAVE_RESULT_PROMOTION_RESULT_IDENTIFIER = (
+    "DistributedSieveWaveResultPromotionResultV1"
+)
+WAVE_RESULT_FAULT_POINT_IDENTIFIER = (
+    "DistributedSieveWaveResultPromotionFaultPointV1"
+)
+WAVE_RESULT_TEST_HOOKS_IDENTIFIER = "DistributedSieveWaveResultPromotionTestHooksV1"
+WAVE_RESULT_AUTHORITY_IDENTIFIER = "DistributedSieveWaveResultAuthorityV1"
+WAVE_RESULT_PROMOTE_IDENTIFIER = "promote_distributed_sieve_wave_result_v1"
+WAVE_RESULT_TRUSTED_PROMOTE_IDENTIFIER = (
+    "promote_distributed_sieve_wave_result_v1_with_hooks"
+)
+WAVE_RESULT_COMMIT_BRIDGE_IDENTIFIER = "commit_for_wave_result_promotion_v1"
+WAVE_RESULT_IDENTIFIERS = (
+    WAVE_RESULT_IDENTIFIER,
+    WAVE_RESULT_RETAINED_ALIAS_IDENTIFIER,
+    WAVE_RESULT_PHASE_IDENTIFIER,
+    WAVE_RESULT_STATUS_IDENTIFIER,
+    WAVE_RESULT_DISPOSITION_IDENTIFIER,
+    WAVE_RESULT_DIAGNOSTIC_IDENTIFIER,
+    WAVE_RESULT_PROMOTION_RESULT_IDENTIFIER,
+    WAVE_RESULT_FAULT_POINT_IDENTIFIER,
+    WAVE_RESULT_TEST_HOOKS_IDENTIFIER,
+    WAVE_RESULT_AUTHORITY_IDENTIFIER,
+    WAVE_RESULT_PROMOTE_IDENTIFIER,
+    WAVE_RESULT_TRUSTED_PROMOTE_IDENTIFIER,
+    WAVE_RESULT_COMMIT_BRIDGE_IDENTIFIER,
+)
+WAVE_RESULT_EXACT_USE_CONTEXTS = {
+    WAVE_RESULT_IDENTIFIER: {
+        WAVE_RESULT_PUBLIC_INTERFACE_FILE: (
+            12,
+            "d77bd5117d6ecd60f6dd7f48b21d74ba2212ac4d747666f4771e0801bfc8f55b",
+        ),
+        WAVE_RESULT_PRIVATE_INTERFACE_FILE: (
+            2,
+            "e9d04496a3ee1cbfeccf6c373cfd68cffbdc8c160e4c593e39a5976d67cc6097",
+        ),
+        WAVE_RESULT_IMPLEMENTATION_FILE: (
+            22,
+            "a9fa051fb2e0034a50afb4245c0b633fdce2d2f24cffa22474f4c355f4e3eb95",
+        ),
+        WAVE_RESULT_TEST_FILE: (
+            1,
+            "3eb28f1439d1ae85ccb146a00e32e906cbb8f48dcab02b56e0d5ae54cba2e3bb",
+        ),
+        WAVE_RESULT_DESIGN_PLAN_FILE: (
+            10,
+            "985e8ce57dee0cc1b77073287d1144ba3b4792838d471b24856e79a5f03fb6d6",
+        ),
+    },
+    WAVE_RESULT_RETAINED_ALIAS_IDENTIFIER: {
+        WAVE_RESULT_PRIVATE_INTERFACE_FILE: (
+            8,
+            "2ab6c43ce3c6979ab6199674345e19deef19e6208a919419d7673c533f3cc3b3",
+        ),
+        WAVE_RESULT_IMPLEMENTATION_FILE: (
+            9,
+            "5fb66d4177fa7b6b0676d102c2b02d03084ba5da7c40bc082aad9090d5189671",
+        ),
+        WAVE_RESULT_TEST_FILE: (
+            1,
+            "932790f3dfab912b20d46447441d28b81024e998d2cdd0106e0df0f918b25bf6",
+        ),
+    },
+    WAVE_RESULT_PHASE_IDENTIFIER: {
+        WAVE_RESULT_PRIVATE_INTERFACE_FILE: (
+            3,
+            "7aa5243ee35b6a6defe365dfbcac90026af35364ab79f8c513192c509c1fb50e",
+        ),
+        WAVE_RESULT_IMPLEMENTATION_FILE: (
+            1,
+            "e9d9a6b9c40908b50edb2eb68191aa47b107143ef89d2d8fd183affa994db529",
+        ),
+        WAVE_RESULT_TEST_FILE: (
+            1,
+            "4beb42f61a212f4aa10258d905f13310bd88099a8955e2f5146603afb00f9539",
+        ),
+    },
+    WAVE_RESULT_STATUS_IDENTIFIER: {
+        WAVE_RESULT_PRIVATE_INTERFACE_FILE: (
+            3,
+            "b9e88e3f46ba4c1eb3be7c5d2978663382d607a72bc938277511d33a75264c60",
+        ),
+        WAVE_RESULT_IMPLEMENTATION_FILE: (
+            1,
+            "e7400c24c30d14b268e62869a1831e382b79356ed2d8e466d9320e02b97fc725",
+        ),
+        WAVE_RESULT_TEST_FILE: (
+            1,
+            "ded9c3289713d437f0f26f69adb8b86d3d1a004ed6514f8774d23bc8dbd0a72d",
+        ),
+    },
+    WAVE_RESULT_DISPOSITION_IDENTIFIER: {
+        WAVE_RESULT_PRIVATE_INTERFACE_FILE: (
+            3,
+            "02aa60ebf41173f946db7b5eaae100e05247165f7f9d007d27e56ab96ef67a27",
+        ),
+        WAVE_RESULT_IMPLEMENTATION_FILE: (
+            1,
+            "9b047d0b38528294bb7853fdb4a7a5475cc52b5a5d90a236b6646b7f05898b68",
+        ),
+        WAVE_RESULT_TEST_FILE: (
+            1,
+            "ad8a34fa222f0a802f2b4e95809044c53e545fcaa2ada7110698ecd2fe58d3f0",
+        ),
+    },
+    WAVE_RESULT_DIAGNOSTIC_IDENTIFIER: {
+        WAVE_RESULT_PRIVATE_INTERFACE_FILE: (
+            3,
+            "b256d67ae347e55c8966f05f50b0f1e02a56e2724bc47be0b1d89719573f9330",
+        ),
+        WAVE_RESULT_IMPLEMENTATION_FILE: (
+            1,
+            "f2ad5c3d7c20ef20a0bec2eec91345247ff603ebed62344632b237ef8c0f3bc2",
+        ),
+    },
+    WAVE_RESULT_PROMOTION_RESULT_IDENTIFIER: {
+        WAVE_RESULT_PRIVATE_INTERFACE_FILE: (
+            16,
+            "66f5da2ca2d60b2499d6247498274873d73c33669853d965c39a0f81626a5492",
+        ),
+        WAVE_RESULT_IMPLEMENTATION_FILE: (
+            5,
+            "bf7991e59bc305c2bcb980c678d72a21ad554f834a9f0fe9f13381d381ed0070",
+        ),
+        WAVE_RESULT_TEST_FILE: (
+            1,
+            "28a41d283bb757e65926f5656894ad736d2f7597d026bdb2a81c31c9283dd4b0",
+        ),
+    },
+    WAVE_RESULT_FAULT_POINT_IDENTIFIER: {
+        WAVE_RESULT_PRIVATE_INTERFACE_FILE: (
+            2,
+            "af1272e09b92652944619c576a13dace28a73dbfce9e3d153e510640ee10811a",
+        ),
+        WAVE_RESULT_IMPLEMENTATION_FILE: (
+            1,
+            "b75aaa0a9d4c4e94c850b3e5894ff30978abfbccb2085621d93bed3d4760c7a6",
+        ),
+        WAVE_RESULT_TEST_FILE: (
+            1,
+            "6668a89398bb75ffd02ec7eea35242f55100a6b8770cc473c2c3b300fa3f119d",
+        ),
+    },
+    WAVE_RESULT_TEST_HOOKS_IDENTIFIER: {
+        WAVE_RESULT_PRIVATE_INTERFACE_FILE: (
+            4,
+            "941ec3143dbd9b89158a482440ae644b511a9295d26570a8c1e5e9da2308e533",
+        ),
+        WAVE_RESULT_IMPLEMENTATION_FILE: (
+            2,
+            "013ed7ae105a58622c61802d8aa4245483f8adebbe3991b4205171f2dd7c135e",
+        ),
+        WAVE_RESULT_TEST_FILE: (
+            1,
+            "2fc9ccf80ff3be187f5c14cff8cfaadaa2ab2520eb18fbfb3d575d0ad4594c69",
+        ),
+    },
+    WAVE_RESULT_AUTHORITY_IDENTIFIER: {
+        WAVE_RESULT_PUBLIC_INTERFACE_FILE: (
+            2,
+            "483a7871c44726e486143b070c0263876087c56d76b8e81d540558a49305cb4c",
+        ),
+        WAVE_RESULT_PRIVATE_INTERFACE_FILE: (
+            2,
+            "5dbc5f38421ceef7773a6b68971c803378a506a7622700e7f08f0a91265379e5",
+        ),
+        WAVE_RESULT_IMPLEMENTATION_FILE: (
+            3,
+            "27f7eeca8b0c1567fe2196173a0fad2c7df6bb1b9771c4c5f23b06a84d3ab242",
+        ),
+        WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (
+            2,
+            "ad837638bfdfe9b96710493af82d61a61f40c91aecc2b61e7cd5b71919067eb1",
+        ),
+    },
+    WAVE_RESULT_PROMOTE_IDENTIFIER: {
+        WAVE_RESULT_PRIVATE_INTERFACE_FILE: (
+            2,
+            "6f4d011731a3912ccc0497d740461fc44878c0fc8c42c368ac70c0fa5a172a5b",
+        ),
+        WAVE_RESULT_IMPLEMENTATION_FILE: (
+            1,
+            "1dffe2332a4139ffd587833226b146fb2aa38f08f91f8332eb0070112f2bd0ff",
+        ),
+        WAVE_RESULT_TEST_FILE: (
+            6,
+            "3e4c804a11e7568c471fd1061f17e022889c886dd629616dd64c5a477162b5fd",
+        ),
+    },
+    WAVE_RESULT_TRUSTED_PROMOTE_IDENTIFIER: {
+        WAVE_RESULT_PRIVATE_INTERFACE_FILE: (
+            2,
+            "792ff796849524705f41c0669219c32b672d3bfafd8c02389accd090b829003f",
+        ),
+        WAVE_RESULT_IMPLEMENTATION_FILE: (
+            1,
+            "fd90633f4937c8859d5f65f4be16e471e96a12e32377fdc79755937821f245cc",
+        ),
+        WAVE_RESULT_TEST_FILE: (
+            1,
+            "71c8bc761281014883de2ec0cbb061b93855dae54cf526efbb8896ffc327429b",
+        ),
+    },
+    WAVE_RESULT_COMMIT_BRIDGE_IDENTIFIER: {
+        WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: (
+            1,
+            "5adc24818ad4c40824815a4787ec030059f0d309e2e4e6ea536dae890cb1049e",
+        ),
+        WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: (
+            1,
+            "3089793c0db790229cdf58a07eac698d1e8700a8088c75b8e6790b8f8a00eef0",
+        ),
+        WAVE_RESULT_IMPLEMENTATION_FILE: (
+            1,
+            "b72e7543fe5af705af4ed4435e3fbe4994a1511fd6240c092159294eedbb0b18",
+        ),
+    },
+}
+WAVE_RESULT_IDENTIFIER_ALLOWLISTS = {
+    identifier: set(contexts)
+    for identifier, contexts in WAVE_RESULT_EXACT_USE_CONTEXTS.items()
+}
+WAVE_RESULT_PRIVATE_INCLUDE_ALLOWLIST = {
+    WAVE_RESULT_IMPLEMENTATION_FILE,
+    WAVE_RESULT_TEST_FILE,
+}
+WAVE_RESULT_PRIVATE_HEADER_INTERVAL_SHA256 = (
+    "41ff4ddf17fad7bea032915a8de130cce2fce67225d3e33392dc2717d49a1734"
+)
+WAVE_RESULT_IMPLEMENTATION_INTERVAL_SHA256 = (
+    "c0143337512f195b4c62721d8ab0e77441cdfdb5d1bda3bbbafd568c0cb5f19d"
+)
+WAVE_RESULT_TEST_INTERVAL_SHA256 = (
+    "d077740d2ba065d7f084280e7273b9332314e9b9fe631fe1c366b77d2bb31864"
+)
+WAVE_RESULT_PUBLIC_CLASS_BODY_SHA256 = (
+    "e430f10a7d16c2dab76d7f07677f7aa4a708f04a37054a18c19f6e8608367900"
+)
+WAVE_RESULT_PRIVATE_CLASS_BODY_SHA256 = {
+    WAVE_RESULT_DIAGNOSTIC_IDENTIFIER:
+        "39b0517357ab74c231625905aced2a982bd21aaa717ae5dc8ca3954d3abb68f4",
+    WAVE_RESULT_PROMOTION_RESULT_IDENTIFIER:
+        "d96952d854845ef75ddb5ac95b20c8a8b2ac215c08ecb687ee8e00e87ec8480b",
+    WAVE_RESULT_TEST_HOOKS_IDENTIFIER:
+        "4a232648031ca4a0af6dcad6e8f2e7a273ca4c2886141a76e1f4b16b1c8ab615",
+    WAVE_RESULT_AUTHORITY_IDENTIFIER:
+        "7ec36f2679492bdfc9ae85352579c657b807e793ba404096784db75cbf37d443",
+}
+WAVE_RESULT_PRIVATE_ENUM_BODY_SHA256 = {
+    WAVE_RESULT_PHASE_IDENTIFIER:
+        "d21952cb9f8715a8e3bc60272040e405ebb0d8faa5f96ec7e03d59f67c607ccb",
+    WAVE_RESULT_STATUS_IDENTIFIER:
+        "4d3f7156870cedad810e1ca3640a2975029a738078b08b838f8acf00397e2ed0",
+    WAVE_RESULT_DISPOSITION_IDENTIFIER:
+        "6fe3575ba5fa82f921317a28f29c2fae923e750fe94d361dbe6939dc52e8d0ab",
+    WAVE_RESULT_FAULT_POINT_IDENTIFIER:
+        "fe51d007580f202283bb35ba8a922c4003282533cafdb78d2cb49af1890d4f16",
+}
+WAVE_RESULT_IMPLEMENTATION_CLASS_BODY_SHA256 = {
+    "DistributedSieveWaveResult::State":
+        "2c2446d560d0c54ee91a0612f8f31c07821f49a5cb999149330069b626cb6986",
+}
+WAVE_RESULT_FUNCTION_BODY_SHA256 = {
+    "DistributedSieveWaveResult::valid":
+        "aad4d4aa44db2f058b6db857710840265501126183b814d758beb2e1d0d83994",
+    "DistributedSieveWaveResult::operator bool":
+        "499c9b47ea328d894c9f607935dd0ed01ff180c2b73baae6bf4e6a69e16cefe5",
+    "DistributedSieveWaveResult::relation_count":
+        "ab532efb05a4f44635f15ef46bcf850802ce3220a8009785692cca7c9f527f05",
+    "DistributedSieveWaveResult::completed_worker_count":
+        "c0aa13c2e22524c718f2269518dae240aba6eb859771f6fb38e5f16a9692d911",
+    "DistributedSieveWaveResult::manifest_digest":
+        "479407c185599b1f8cee9734425e74c8a483eadafd75193ed0a757eced669e29",
+    "DistributedSieveWaveResult::merge_commit_digest":
+        "bc9db1dc591e95dde25d408079cd98ce938f6f1428e6dbfcec3677aba0dd0532",
+    "DistributedSieveWaveResult::chunks":
+        "ceae95ee5b4e498969c8b54c7cebe87f1b750a3e69da584b39f16fc6e2f1b233",
+    "DistributedSieveWaveResult::merged_relations":
+        "511ba8923ade575fd35c4569e008d6e09434887e6888aa0bf03f1024cb53b26e",
+    "diagnostic": "1feb3d3b196d8dd4ab96094daa97af1ac7d215d590c49e5587a0beb59f3fcbe4",
+    "cold": "599e58da3e46abe4edd9297783a91ed3839304927df38b87b48b6c578aaa6818",
+    "retry": "5b2019d6093131502f22768055abd4dd5ddde93c0421e06f330aa62bd4fd4a49",
+    "DistributedSieveWaveResultPromotionResultV1::operator bool":
+        "52350fb912161e737251c6f93c0501a227ecf294928fa86639493f856db50e5c",
+    "DistributedSieveWaveResultAuthorityV1::promote":
+        "b65d2395005bf8b8e9dea975639d80af011ee468076f47c331de70ecf4b5a49b",
+    WAVE_RESULT_PROMOTE_IDENTIFIER:
+        "69606b21da58c65214fb942d14de9845ee1e60e877c151f58cd5333d5e95a602",
+    WAVE_RESULT_TRUSTED_PROMOTE_IDENTIFIER:
+        "6bf40f4f82451d40bb01d2dfff41858a66947c38378e9497dd6d3654e70a3a8a",
+}
+WAVE_RESULT_R4_COMMIT_BRIDGE_BODY_SHA256 = (
+    "2d91a9832393777b84dbd94eabcf67730929dd88f87321d7a86a4c865932830f"
+)
+WAVE_RESULT_DEDICATED_TEST_FUNCTIONS = (
+    "test_wave_result_promotes_exact_commit_projection",
+    "test_wave_result_rejects_spent_r4_authority",
+    "test_wave_result_returns_retryable_owner_before_spend",
+    "test_wave_result_move_preserves_borrowed_view_and_spans",
+    "test_wave_result_retains_wave_lock_and_exposes_no_mutation",
+)
+WAVE_RESULT_CORE_TEST_FUNCTIONS = WAVE_RESULT_DEDICATED_TEST_FUNCTIONS[:3]
+WAVE_RESULT_PROTECTION_TEST_FUNCTIONS = WAVE_RESULT_DEDICATED_TEST_FUNCTIONS[3:]
+WAVE_RESULT_TEST_BODY_SHA256 = {
+    "test_wave_result_promotes_exact_commit_projection":
+        "a23285f549ef8872a03aeb07170402085f95001350bc187f0ffd665bcdc56549",
+    "test_wave_result_rejects_spent_r4_authority":
+        "0347f04556b549c672caae0eaa7e10fa1296898859488381ea8a1884413c3467",
+    "test_wave_result_returns_retryable_owner_before_spend":
+        "81f0a7f5f78bada74fbb579768c1543309c25d3bf42de5dee8e9a5c0a1394a87",
+    "test_wave_result_move_preserves_borrowed_view_and_spans":
+        "190d6aef9bb22926e65cfe4f1c8fcf29c59e924b3a5b35c4d86fef89382d8a95",
+    "test_wave_result_retains_wave_lock_and_exposes_no_mutation":
+        "9ca2c9d1fcd3dfcb31972ba88286544f6e3537b419d324de237d37a4107a4004",
+}
+WAVE_RESULT_RUNNER_BODY_SHA256 = {
+    "run_core_suite": "4a53824228da99de5f86db36366972dbf02fbbf0a55943f4aa05bcb92ca9ab4a",
+    "run_protection_suite":
+        "87b9ac0468d44239316b275097c1ba2367dd5feb72405f6d9c2718800f58c6b3",
+    "run_platform_suite":
+        "802894bffed46826b779b4c5aa933802a7bf6df1a020e53dfaaf853f2d77332d",
+}
+WAVE_RESULT_TEST_SURFACE_FRAGMENTS = (
+    "static_assert(std::is_final_v<WaveResult>);",
+    "static_assert(!std::is_default_constructible_v<WaveResult>);",
+    "static_assert(!std::is_copy_constructible_v<WaveResult>);",
+    "static_assert(!std::is_copy_assignable_v<WaveResult>);",
+    "static_assert(std::is_nothrow_move_constructible_v<WaveResult>);",
+    "static_assert(!std::is_move_assignable_v<WaveResult>);",
+    "static_assert(std::is_nothrow_destructible_v<WaveResult>);",
+    "static_assert(!HasMergedRelationsOnRvalue<WaveResult>);",
+    "static_assert(!HasChunksOnRvalue<WaveResult>);",
+    "static_assert(!HasManifestDigestOnRvalue<WaveResult>);",
+    "static_assert(!HasMergeCommitDigestOnRvalue<WaveResult>);",
+    "static_assert(!HasRootAccessor<WaveResult>);",
+    "static_assert(!HasPathAccessor<WaveResult>);",
+    "static_assert(!HasDescriptorAccessor<WaveResult>);",
+    "static_assert(!HasReceiptAccessor<WaveResult>);",
+    "static_assert(!HasCleanup<WaveResult>);",
+    "static_assert(!HasCleanupArm<WaveResult>);",
+    "static_assert(!HasAcknowledge<WaveResult>);",
+    "static_assert(!HasBeginConsumption<WaveResult>);",
+    "static_assert(!HasWorkerLaunch<WaveResult>);",
+)
+WAVE_RESULT_FORBIDDEN_PRODUCTION_IDENTIFIERS = (
+    "ConsumptionStartedV1",
+    "SuccessorPreparedV1",
+    "WaveConsumptionAckV1",
+    "WaveCompletedV1",
+    "arm_ooc_cleanup",
+    "begin_consumption",
+    "launch_worker",
+    "acknowledge",
+    "DISTRIBUTED_SIEVE_CLEANUP_AUTHORIZED_MERGED_RECORD_LEAF",
+    "DISTRIBUTED_SIEVE_CLEANUP_COMPLETED_MERGED_RECORD_LEAF",
+)
+WAVE_RESULT_TEST_TARGET = "test_distributed_sieve_wave_result"
+WAVE_RESULT_CMAKE_BLOCK_SHA256 = (
+    "0802cb7e87a22266d297aeedbcd59bd01a996efd098e9456325c3e5dccb2bd14"
+)
+WAVE_RESULT_CI_FILE = ".github/workflows/ci.yml"
+WAVE_RESULT_CI_MARKER = "    - name: Run macOS durable wave result\n"
+WAVE_RESULT_CI_BLOCK_SHA256 = (
+    "e3d2e4fef6ebb9742ec74184538655672f2aa998317b6c06ef15b0d8c571875d"
 )
 
 # R4 is a consumer of the already-frozen T2a/R1/R2/R3 capabilities. Extend
@@ -4396,6 +4796,31 @@ for _r4_allowlists, _r4_contexts, _r4_extensions in (
         _r4_allowlists[_r4_identifier].update(_r4_by_file)
         _r4_contexts[_r4_identifier].update(_r4_by_file)
 
+# M5-R1 consumes only the R4 retained type in its private declaration and the
+# ordinary R4 drive entry in its dedicated fixture. Keep those predecessor
+# extensions explicit and exact instead of widening the R4 file inventory.
+WAVE_RESULT_R4_CONTEXT_EXTENSIONS = {
+    WORKER_CLEANUP_ORCHESTRATION_RETAINED_IDENTIFIER: {
+        WAVE_RESULT_PRIVATE_INTERFACE_FILE: (
+            1,
+            "809a1d9d415979ac984763eeada96c7c129150da317d3b249de7f6306b500894",
+        ),
+    },
+    WORKER_CLEANUP_ORCHESTRATION_DRIVE_IDENTIFIER: {
+        WAVE_RESULT_TEST_FILE: (
+            1,
+            "303408fb1cff179953f0209eb17997f6c0b4d3d72173b332a2740562436f41f6",
+        ),
+    },
+}
+for _m5_identifier, _m5_by_file in WAVE_RESULT_R4_CONTEXT_EXTENSIONS.items():
+    WORKER_CLEANUP_ORCHESTRATION_IDENTIFIER_ALLOWLISTS[_m5_identifier].update(
+        _m5_by_file
+    )
+    WORKER_CLEANUP_ORCHESTRATION_EXACT_USE_CONTEXTS[_m5_identifier].update(
+        _m5_by_file
+    )
+
 WORKER_CLEANUP_RECEIPT_TIER_A_MACRO_TARGETS = (
     set(WORKER_CLEANUP_RECEIPT_IDENTIFIER_ALLOWLISTS)
     | set(WORKER_CLEANUP_CAPSULE_IDENTIFIER_ALLOWLISTS)
@@ -4405,6 +4830,7 @@ WORKER_CLEANUP_RECEIPT_TIER_A_MACRO_TARGETS = (
     | set(WORKER_CLEANUP_COMPLETION_PUBLICATION_IDENTIFIERS)
     | set(WORKER_CLEANUP_COMPLETION_PUBLICATION_TEST_IDENTIFIER_ALLOWLISTS)
     | set(WORKER_CLEANUP_ORCHESTRATION_IDENTIFIERS)
+    | set(WAVE_RESULT_IDENTIFIERS)
     | set(WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_IDENTIFIERS)
     | set(WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_IDENTIFIER_ALLOWLISTS)
     | {
@@ -5021,7 +5447,7 @@ WORKER_CLEANUP_RECEIPT_RELEASE_MEMBER_BODY = (
 )
 WORKER_CLEANUP_RECEIPT_CMAKE_FILE = "CMakeLists.txt"
 WORKER_CLEANUP_RECEIPT_CMAKE_COMMENT_MASKED_SHA256 = (
-    "555fe73473a685935e2bf8a786c4dbd4cfd2d6ba13318a68585de5aeea553e6b"
+    "e9ca7b70242adc3b8eb732cdca5893bbebdaecfc0aedb3a51c40718ac2588b8e"
 )
 WORKER_CLEANUP_RECEIPT_CMAKE_PRESETS_FILE = "CMakePresets.json"
 WORKER_CLEANUP_RECEIPT_CMAKE_PRESETS_SHA256 = (
@@ -5077,6 +5503,16 @@ WORKER_CLEANUP_RECEIPT_TIER_B_SAFE_MACROS = {
         (
             128,
             "060e613d6a9c6e49348cba9962627faf5ff05cf3a908b5d2aafa97ed0e384b45",
+        ),
+    ),
+    (
+        WAVE_RESULT_TEST_FILE,
+        "CHECK",
+    ): (
+        WORKER_CLEANUP_RECEIPT_TEST_CHECK_DEFINITION,
+        (
+            73,
+            "c12f72b481e6c829735c661f76e778b08b533822188b0183a1b0447cfc5a2599",
         ),
     ),
     (
@@ -5160,9 +5596,15 @@ WORKER_CLEANUP_RECEIPT_PROTECTED_UNIT_TARGETS = {
     WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE: {"gnfs_core"},
     WORKER_CLEANUP_RECEIPT_AUTHORITY_IMPLEMENTATION_FILE: {"gnfs_core"},
     WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: {"gnfs_core"},
+    WAVE_RESULT_IMPLEMENTATION_FILE: {"gnfs_core"},
     WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: {
         "gnfs_core",
         WORKER_CLEANUP_ORCHESTRATION_TEST_TARGET,
+        WAVE_RESULT_TEST_TARGET,
+    },
+    WAVE_RESULT_PRIVATE_INTERFACE_FILE: {
+        "gnfs_core",
+        WAVE_RESULT_TEST_TARGET,
     },
     WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE: {
         WORKER_CLEANUP_RECEIPT_TEST_TARGET
@@ -5173,6 +5615,7 @@ WORKER_CLEANUP_RECEIPT_PROTECTED_UNIT_TARGETS = {
     WORKER_CLEANUP_ORCHESTRATION_TEST_FILE: {
         WORKER_CLEANUP_ORCHESTRATION_TEST_TARGET
     },
+    WAVE_RESULT_TEST_FILE: {WAVE_RESULT_TEST_TARGET},
     WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE: {
         WORKER_CLEANUP_RECONCILIATION_TEST_TARGET
     },
@@ -5195,6 +5638,9 @@ WORKER_CLEANUP_RECEIPT_TARGET_DEPENDENCY_CLOSURES = {
             "gnfs_core",
             "gnfs_util",
         }
+    ),
+    WAVE_RESULT_TEST_TARGET: frozenset(
+        {WAVE_RESULT_TEST_TARGET, "gnfs_core", "gnfs_util"}
     ),
     WORKER_CLEANUP_RECONCILIATION_TEST_TARGET: frozenset(
         {WORKER_CLEANUP_RECONCILIATION_TEST_TARGET, "gnfs_core", "gnfs_util"}
@@ -5226,6 +5672,11 @@ WORKER_CLEANUP_RECEIPT_TARGET_INCLUDE_COMMANDS = {
         "${CMAKE_CURRENT_SOURCE_DIR}/src/relation"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve",
     ),
+    WAVE_RESULT_TEST_TARGET: (
+        "test_distributed_sieve_wave_resultPRIVATE"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/relation"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve",
+    ),
     WORKER_CLEANUP_RECONCILIATION_TEST_TARGET: (
         "test_ooc_cleanup_transactionPRIVATE"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/relation",
@@ -5244,6 +5695,11 @@ WORKER_CLEANUP_RECEIPT_TARGET_INCLUDE_SEARCH = {
         "include",
     ),
     WORKER_CLEANUP_ORCHESTRATION_TEST_TARGET: (
+        "src/relation",
+        "src/sieve",
+        "include",
+    ),
+    WAVE_RESULT_TEST_TARGET: (
         "src/relation",
         "src/sieve",
         "include",
@@ -5439,6 +5895,7 @@ MERGE_COMMIT_AUTHORITY_API_IDENTIFIER_ALLOWLISTS = {
             WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
             WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_FILE,
             WORKER_CLEANUP_ORCHESTRATION_TEST_FILE,
+            WAVE_RESULT_TEST_FILE,
         }
     ),
     "DistributedSieveMergePreparedCommitContextV1": {
@@ -5457,6 +5914,7 @@ MERGE_COMMIT_AUTHORITY_API_IDENTIFIER_ALLOWLISTS = {
             WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
             WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_FILE,
             WORKER_CLEANUP_ORCHESTRATION_TEST_FILE,
+            WAVE_RESULT_TEST_FILE,
         }
     ),
     "publish_wave_merge_commit_v1": {
@@ -5476,6 +5934,7 @@ MERGE_COMMIT_AUTHORITY_INTERFACE_INCLUDE_ALLOWLIST = {
     WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
     WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_FILE,
     WORKER_CLEANUP_ORCHESTRATION_TEST_FILE,
+    WAVE_RESULT_TEST_FILE,
 }
 MERGE_COMMIT_AUTHORITY_TRUSTED_HOOK_IDENTIFIER_ALLOWLISTS = {
     "DistributedSieveWaveMergeCommitFaultPointV1": (
@@ -9754,7 +10213,8 @@ def find_code_identifier_tokens(
     return tokens
 
 
-def _split_crlf_lines(text: str, *, keepends: bool = False) -> list[str]:
+@lru_cache(maxsize=16)
+def _split_crlf_lines(text: str, *, keepends: bool = False) -> tuple[str, ...]:
     """Split only on C/C++ CR/LF line endings, never on VT or FF."""
 
     lines: list[str] = []
@@ -9772,7 +10232,7 @@ def _split_crlf_lines(text: str, *, keepends: bool = False) -> list[str]:
         cursor = ending
     if start < len(text):
         lines.append(text[start:])
-    return lines
+    return tuple(lines)
 
 
 def _source_line_number(text: str, offset: int) -> int:
@@ -9880,31 +10340,28 @@ def _skip_call_trivia(text: str, cursor: int) -> int:
     return cursor
 
 
+@lru_cache(maxsize=64)
+def _find_code_identifier_uses_cached(
+    text: str, identifier: str
+) -> tuple[CodeIdentifierUse, ...]:
+    """Return immutable uses after one cached layout-preserving trivia mask."""
+
+    masked = _mask_cpp_comments_and_literals(text)
+    pattern = re.compile(rf"(?<!\w){re.escape(identifier)}(?!\w)")
+    newline_offsets = tuple(match.start() for match in re.finditer("\n", text))
+    return tuple(
+        CodeIdentifierUse(
+            line=bisect_right(newline_offsets, match.start() - 1) + 1,
+            offset=match.start(),
+        )
+        for match in pattern.finditer(masked)
+    )
+
+
 def find_code_identifier_uses(text: str, identifier: str) -> list[CodeIdentifierUse]:
-    uses: list[CodeIdentifierUse] = []
-    cursor = 0
-    while cursor < len(text):
-        skipped = _skip_non_code(text, cursor)
-        if skipped is not None:
-            cursor = skipped
-            continue
-        if text.startswith(identifier, cursor):
-            before = text[cursor - 1] if cursor > 0 else ""
-            after_index = cursor + len(identifier)
-            after = text[after_index] if after_index < len(text) else ""
-            if not (
-                (before.isalnum() or before == "_") or (after.isalnum() or after == "_")
-            ):
-                uses.append(
-                    CodeIdentifierUse(
-                        line=text.count("\n", 0, cursor) + 1,
-                        offset=cursor,
-                    )
-                )
-                cursor = after_index
-                continue
-        cursor += 1
-    return uses
+    """Return an isolated list view of the bounded immutable use cache."""
+
+    return list(_find_code_identifier_uses_cached(text, identifier))
 
 
 def find_exact_string_literal_uses(text: str, literal: str) -> list[CodeIdentifierUse]:
@@ -10021,6 +10478,7 @@ def _compact_cpp_sha256(text: str) -> str:
     return hashlib.sha256(_compact_cpp_code(text).encode("utf-8")).hexdigest()
 
 
+@lru_cache(maxsize=8)
 def _mask_cpp_comments_and_literals(text: str) -> str:
     """Preserve source layout while blanking comments and quoted tokens."""
 
@@ -10038,6 +10496,7 @@ def _mask_cpp_comments_and_literals(text: str) -> str:
     return "".join(masked)
 
 
+@lru_cache(maxsize=8)
 def _mask_cpp_comments_preserving_literals(text: str) -> str:
     masked = list(text)
     cursor = 0
@@ -10065,6 +10524,7 @@ def _mask_cpp_comments_preserving_literals(text: str) -> str:
     return "".join(masked)
 
 
+@lru_cache(maxsize=4)
 def _mask_cmake_comments(text: str) -> str:
     """Preserve CMake layout while blanking line and bracket comments."""
 
@@ -10116,6 +10576,7 @@ def _cmake_bracket_end(text: str, cursor: int) -> int | None:
     return len(text) if closing_at < 0 else closing_at + len(closing)
 
 
+@lru_cache(maxsize=4)
 def _mask_cmake_comments_and_literals(text: str) -> str:
     """Blank CMake comments and literal payloads while retaining layout."""
 
@@ -10147,7 +10608,8 @@ class CMakeCommandRecord:
     line: int
 
 
-def _cmake_command_records(text: str) -> list[CMakeCommandRecord]:
+@lru_cache(maxsize=4)
+def _cmake_command_records_cached(text: str) -> tuple[CMakeCommandRecord, ...]:
     """Parse top-level CMake commands with balanced, literal-aware parens."""
 
     visible = _mask_cmake_comments(text)
@@ -10201,7 +10663,13 @@ def _cmake_command_records(text: str) -> list[CMakeCommandRecord]:
             )
         )
         cursor = closing
-    return commands
+    return tuple(commands)
+
+
+def _cmake_command_records(text: str) -> list[CMakeCommandRecord]:
+    """Return an isolated list view of the bounded immutable parse cache."""
+
+    return list(_cmake_command_records_cached(text))
 
 
 def _cmake_literal_false(body: str) -> bool:
@@ -10209,6 +10677,7 @@ def _cmake_literal_false(body: str) -> bool:
     return normalized in {"0", "FALSE", "OFF", "NO", "IGNORE", "NOTFOUND", '"FALSE"'}
 
 
+@lru_cache(maxsize=4)
 def _mask_definitely_inactive_cmake(text: str) -> str:
     """Blank commands proven inactive by literal ``if(FALSE/0)`` blocks."""
 
@@ -10562,6 +11031,7 @@ def _mask_shell_comments(text: str) -> str:
     return "".join(masked)
 
 
+@lru_cache(maxsize=8)
 def _mask_definitely_inactive_cpp(logical: str) -> str:
     """Blank only branches proven inactive by a literal ``#if 0``."""
 
@@ -10629,6 +11099,7 @@ def _mask_definitely_inactive_cpp(logical: str) -> str:
     return "".join(masked)
 
 
+@lru_cache(maxsize=8)
 def _mask_preprocessor_directive_lines(logical: str) -> str:
     """Blank live logical directives so code-use counts cannot be balanced."""
 
@@ -10655,6 +11126,7 @@ def _logical_preprocessor_text(text: str) -> str:
     )
 
 
+@lru_cache(maxsize=8)
 def _translation_phase_masked_cpp_code(text: str) -> str:
     """Apply phase-2 splicing, trivia masking, and literal-0 inactivity."""
 
@@ -10665,6 +11137,7 @@ def _translation_phase_masked_cpp_code(text: str) -> str:
     return _mask_preprocessor_directive_lines(active)
 
 
+@lru_cache(maxsize=8)
 def _translation_phase_macro_views(text: str) -> tuple[str, str]:
     """Return equal-layout directive-control and replacement-payload views."""
 
@@ -10699,9 +11172,10 @@ def _non_preprocessor_line_splice_lines(text: str) -> list[int]:
     return rejected
 
 
+@lru_cache(maxsize=4)
 def _translation_phase_masked_cpp_code_with_offsets(
     text: str,
-) -> tuple[str, list[int]]:
+) -> tuple[str, tuple[int, ...]]:
     logical: list[str] = []
     source_offsets: list[int] = []
     cursor = 0
@@ -10720,7 +11194,7 @@ def _translation_phase_masked_cpp_code_with_offsets(
         cursor += 1
     masked = _mask_cpp_comments_and_literals("".join(logical))
     active = _mask_definitely_inactive_cpp(masked)
-    return _mask_preprocessor_directive_lines(active), source_offsets
+    return _mask_preprocessor_directive_lines(active), tuple(source_offsets)
 
 
 def _receipt_macro_pragma_targets(text: str) -> list[tuple[str, int]]:
@@ -11270,6 +11744,9 @@ def _worker_cleanup_receipt_protected_unit_tokens(
         WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE,
         WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE,
         WORKER_CLEANUP_ORCHESTRATION_TEST_FILE,
+        WAVE_RESULT_PRIVATE_INTERFACE_FILE,
+        WAVE_RESULT_IMPLEMENTATION_FILE,
+        WAVE_RESULT_TEST_FILE,
     }
     for relative in required:
         try:
@@ -12055,6 +12532,43 @@ def _worker_cleanup_receipt_protected_unit_tokens(
         else:
             add_tokens(orchestration_relative, source)
 
+    for wave_result_relative, interval_finder, expected_hash in (
+        (
+            WAVE_RESULT_PRIVATE_INTERFACE_FILE,
+            _wave_result_private_header_interval,
+            WAVE_RESULT_PRIVATE_HEADER_INTERVAL_SHA256,
+        ),
+        (
+            WAVE_RESULT_IMPLEMENTATION_FILE,
+            _wave_result_implementation_interval,
+            WAVE_RESULT_IMPLEMENTATION_INTERVAL_SHA256,
+        ),
+        (
+            WAVE_RESULT_TEST_FILE,
+            _wave_result_test_interval,
+            WAVE_RESULT_TEST_INTERVAL_SHA256,
+        ),
+    ):
+        wave_result_text = texts.get(wave_result_relative)
+        interval = (
+            None if wave_result_text is None else interval_finder(wave_result_text)
+        )
+        source = (
+            None
+            if wave_result_text is None or interval is None
+            else wave_result_text[interval[0] : interval[1]]
+        )
+        if source is None or _compact_cpp_sha256(source) != expected_hash:
+            errors.append(
+                (
+                    wave_result_relative,
+                    1,
+                    "cannot derive Tier-B tokens from unfrozen M5-R1 interval",
+                )
+            )
+        else:
+            add_tokens(wave_result_relative, source)
+
     units[WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE].update(
         {
             "scan_worker_cleanup_root_control_inventory_v1",
@@ -12077,6 +12591,7 @@ def _worker_cleanup_receipt_protected_unit_tokens(
     )
     units[WORKER_CLEANUP_RECEIPT_RELATION_TEST_FILE].add("CHECK")
     units[WORKER_CLEANUP_ORCHESTRATION_TEST_FILE].add("CHECK")
+    units[WAVE_RESULT_TEST_FILE].add("CHECK")
     return units, errors
 
 
@@ -12833,6 +13348,54 @@ def _worker_cleanup_orchestration_test_interval(
     return start, end
 
 
+def _wave_result_private_header_interval(text: str) -> tuple[int, int] | None:
+    """Return the independent M5-R1 source-private declaration interval."""
+
+    masked = _mask_cpp_comments_and_literals(text)
+    starts = list(
+        re.finditer(
+            rf"\benum\s+class\s+{re.escape(WAVE_RESULT_PHASE_IDENTIFIER)}\b",
+            masked,
+        )
+    )
+    authority = _class_definition_body_span(text, WAVE_RESULT_AUTHORITY_IDENTIFIER)
+    if len(starts) != 1 or authority is None:
+        return None
+    start = starts[0].start()
+    end = authority[1] + 1
+    if start >= end:
+        return None
+    return start, end
+
+
+def _wave_result_implementation_interval(text: str) -> tuple[int, int] | None:
+    """Return the M5-R1 stable-state through trusted-entry implementation."""
+
+    anchor = "struct DistributedSieveWaveResult::State final"
+    starts = [match.start() for match in re.finditer(re.escape(anchor), text)]
+    endings = _function_definition_spans(text, WAVE_RESULT_TRUSTED_PROMOTE_IDENTIFIER)
+    if len(starts) != 1 or len(endings) != 1 or starts[0] >= endings[0][1]:
+        return None
+    return starts[0], endings[0][1]
+
+
+def _wave_result_test_interval(text: str) -> tuple[int, int] | None:
+    """Return the M5-R1 dedicated test namespace through main."""
+
+    namespace_starts = [
+        match.start()
+        for match in re.finditer(r"(?m)^namespace\s*\{\s*$", text)
+    ]
+    main_spans = _function_definition_spans(text, "main")
+    if len(namespace_starts) != 1 or len(main_spans) != 1:
+        return None
+    start = namespace_starts[0]
+    end = main_spans[0][1]
+    if start >= end:
+        return None
+    return start, end
+
+
 def _enum_class_definition_body_span(
     text: str, enum_name: str
 ) -> tuple[int, int] | None:
@@ -13233,6 +13796,7 @@ class Checks:
             str, set[tuple[str, ...]]
         ] = {}
         self.worker_cleanup_repo_inventory: GitIndexedTextInventory | None = None
+        self.wave_result_validated_sources: set[tuple[str, str]] = set()
 
     def fail(self, relative: str, line: int, message: str) -> None:
         self.errors.append(f"{relative}:{line}: {message}")
@@ -18416,6 +18980,456 @@ class Checks:
         if any(find_code_identifier_uses(text, identifier) for identifier in m5_identifiers):
             self.fail(relative, 1, "P4c-R4 driver forbids WaveCompleted/M5 authority")
 
+    def validate_wave_result_use_site(
+        self,
+        relative: str,
+        text: str,
+    ) -> None:
+        """Freeze the M5-R1 least-authority promotion and its trusted retry seam."""
+
+        expected_identifiers = tuple(
+            identifier
+            for identifier in WAVE_RESULT_IDENTIFIERS
+            if relative in WAVE_RESULT_EXACT_USE_CONTEXTS[identifier]
+        )
+        raw_identifier_candidates = tuple(
+            identifier for identifier in WAVE_RESULT_IDENTIFIERS if identifier in text
+        )
+        if (
+            not expected_identifiers
+            and not raw_identifier_candidates
+            and WAVE_RESULT_PRIVATE_INTERFACE_INCLUDE not in text
+            and relative not in WAVE_RESULT_POLICY_FILES
+        ):
+            return
+
+        snapshot = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        cache_key = (relative, snapshot)
+        if cache_key in self.wave_result_validated_sources:
+            return
+        self.wave_result_validated_sources.add(cache_key)
+
+        context_identifiers = set(expected_identifiers) | set(raw_identifier_candidates)
+        contexts = _identifier_use_context_signatures(text, context_identifiers)
+        for identifier in WAVE_RESULT_IDENTIFIERS:
+            observed = contexts.get(identifier, (0, ""))
+            expected = WAVE_RESULT_EXACT_USE_CONTEXTS[identifier].get(relative)
+            if observed[0] != 0 and expected is None:
+                self.fail(
+                    relative,
+                    1,
+                    "M5-R1 source-private wave-result identifier escaped its "
+                    f"exact file allowlist: {identifier}",
+                )
+            elif expected is not None and observed != expected:
+                self.fail(
+                    relative,
+                    1,
+                    "M5-R1 identifier code-use count/context is not exact for "
+                    f"{identifier}: expected {expected}, found {observed}",
+                )
+
+        private_includes = [
+            record
+            for record in _cpp_include_records(text)
+            if record.spelling == WAVE_RESULT_PRIVATE_INTERFACE_INCLUDE
+        ]
+        if relative in WAVE_RESULT_PRIVATE_INCLUDE_ALLOWLIST:
+            if (
+                len(private_includes) != 1
+                or private_includes[0].directive != "include"
+                or not private_includes[0].quoted
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    "M5-R1 private interface must be included literally, quoted, "
+                    "and exactly once by its implementation and dedicated test",
+                )
+        elif private_includes:
+            self.fail(
+                relative,
+                private_includes[0].line,
+                "M5-R1 private interface include escaped its implementation/test "
+                "allowlist",
+            )
+
+        if relative == WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE:
+            definitions = find_function_definition_bodies(
+                text, {WAVE_RESULT_COMMIT_BRIDGE_IDENTIFIER: ""}
+            )
+            body, line_offset, body_errors = definitions[
+                WAVE_RESULT_COMMIT_BRIDGE_IDENTIFIER
+            ]
+            for line, error in body_errors:
+                self.fail(relative, line, error)
+            if (
+                body is None
+                or _compact_cpp_sha256(body)
+                != WAVE_RESULT_R4_COMMIT_BRIDGE_BODY_SHA256
+            ):
+                self.fail(
+                    relative,
+                    line_offset + 1,
+                    "M5-R1 R4 commit-projection bridge is not exact",
+                )
+            return
+
+        if relative == WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE:
+            return
+        if relative not in WAVE_RESULT_POLICY_FILES:
+            return
+
+        if relative != WAVE_RESULT_TEST_FILE:
+            for identifier in WAVE_RESULT_FORBIDDEN_PRODUCTION_IDENTIFIERS:
+                if find_code_identifier_uses(text, identifier):
+                    self.fail(
+                        relative,
+                        1,
+                        "M5-R1 production surface forbids consumption, cleanup, "
+                        f"completion, and worker-launch authority: {identifier}",
+                    )
+
+        if relative == WAVE_RESULT_PUBLIC_INTERFACE_FILE:
+            span = _class_definition_body_span(text, WAVE_RESULT_IDENTIFIER)
+            if (
+                span is None
+                or _compact_cpp_sha256(text[span[0] : span[1]])
+                != WAVE_RESULT_PUBLIC_CLASS_BODY_SHA256
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    "M5-R1 public least-authority result class is not exact",
+                )
+                return
+            compact = _compact_cpp_code(text[span[0] : span[1]])
+            public_surface = (
+                "DistributedSieveWaveResult()=delete;",
+                "DistributedSieveWaveResult(constDistributedSieveWaveResult&)=delete;",
+                "DistributedSieveWaveResult&operator=(constDistributedSieveWaveResult&)=delete;",
+                "DistributedSieveWaveResult(DistributedSieveWaveResult&&)noexcept;",
+                "DistributedSieveWaveResult&operator=(DistributedSieveWaveResult&&)=delete;",
+                "constutil::Sha256Digest&manifest_digest()const&&=delete;",
+                "constutil::Sha256Digest&merge_commit_digest()const&&=delete;",
+                "std::span<constChunkCommitSummaryV1>chunks()const&&=delete;",
+                "constrelation::ReadOnlyRelationCorpusView&merged_relations()const&&=delete;",
+                "friendclassdistributed_sieve_result_detail::"
+                "DistributedSieveWaveResultAuthorityV1;",
+            )
+            if (
+                any(compact.count(fragment) != 1 for fragment in public_surface)
+                or compact.count("private:") != 1
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    "M5-R1 public result must remain move-only, lvalue-borrowing, "
+                    "source-private, and least-authority",
+                )
+            return
+
+        if relative == WAVE_RESULT_PRIVATE_INTERFACE_FILE:
+            interval = _wave_result_private_header_interval(text)
+            if interval is None:
+                self.fail(relative, 1, "M5-R1 private declaration interval is missing")
+                return
+            if (
+                _compact_cpp_sha256(text[interval[0] : interval[1]])
+                != WAVE_RESULT_PRIVATE_HEADER_INTERVAL_SHA256
+            ):
+                self.fail(
+                    relative,
+                    text.count("\n", 0, interval[0]) + 1,
+                    "M5-R1 private declaration interval is not exact",
+                )
+
+            class_spans = _class_definition_body_spans(
+                text, WAVE_RESULT_PRIVATE_CLASS_BODY_SHA256
+            )
+            for identifier, expected_hash in WAVE_RESULT_PRIVATE_CLASS_BODY_SHA256.items():
+                span = class_spans[identifier]
+                if (
+                    span is None
+                    or _compact_cpp_sha256(text[span[0] : span[1]])
+                    != expected_hash
+                ):
+                    self.fail(
+                        relative,
+                        1,
+                        f"M5-R1 private class is not exact: {identifier}",
+                    )
+            enum_spans = _enum_class_definition_body_spans(
+                text, WAVE_RESULT_PRIVATE_ENUM_BODY_SHA256
+            )
+            for identifier, expected_hash in WAVE_RESULT_PRIVATE_ENUM_BODY_SHA256.items():
+                span = enum_spans[identifier]
+                if (
+                    span is None
+                    or _compact_cpp_sha256(text[span[0] : span[1]])
+                    != expected_hash
+                ):
+                    self.fail(
+                        relative,
+                        1,
+                        f"M5-R1 private enum is not exact: {identifier}",
+                    )
+
+            compact = _compact_cpp_code(text)
+            ordinary_declaration = (
+                "promote_distributed_sieve_wave_result_v1("
+                "RetainedMergedResultV1&&retained)noexcept;"
+            )
+            trusted_declaration = (
+                "promote_distributed_sieve_wave_result_v1_with_hooks("
+                "RetainedMergedResultV1&&retained,"
+                "DistributedSieveWaveResultPromotionTestHooksV1hooks)noexcept;"
+            )
+            if (
+                compact.count(ordinary_declaration) != 2
+                or compact.count(trusted_declaration) != 1
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    "M5-R1 ordinary and trusted promotion entries must remain "
+                    "noexcept and rvalue-only",
+                )
+            union_fragments = (
+                "std::optional<RetainedMergedResultV1>retryable;",
+                "std::optional<DistributedSieveWaveResult>promoted;",
+            )
+            if (
+                any(compact.count(fragment) != 1 for fragment in union_fragments)
+                or find_code_identifier_uses(text, "monostate")
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    "M5-R1 promotion result must remain the closed retryable-owner "
+                    "or promoted-value union without an empty variant arm",
+                )
+            return
+
+        interval_finder = (
+            _wave_result_implementation_interval
+            if relative == WAVE_RESULT_IMPLEMENTATION_FILE
+            else _wave_result_test_interval
+        )
+        expected_interval_hash = (
+            WAVE_RESULT_IMPLEMENTATION_INTERVAL_SHA256
+            if relative == WAVE_RESULT_IMPLEMENTATION_FILE
+            else WAVE_RESULT_TEST_INTERVAL_SHA256
+        )
+        interval = interval_finder(text)
+        if interval is None:
+            self.fail(relative, 1, "M5-R1 implementation/test interval is missing")
+            return
+        if (
+            _compact_cpp_sha256(text[interval[0] : interval[1]])
+            != expected_interval_hash
+        ):
+            self.fail(
+                relative,
+                text.count("\n", 0, interval[0]) + 1,
+                "M5-R1 implementation/test interval is not exact",
+            )
+
+        if relative == WAVE_RESULT_TEST_FILE:
+            hashes = {**WAVE_RESULT_TEST_BODY_SHA256, **WAVE_RESULT_RUNNER_BODY_SHA256}
+            definitions = find_function_definition_bodies(text, hashes)
+            for identifier, expected_hash in hashes.items():
+                body, line_offset, body_errors = definitions[identifier]
+                for line, error in body_errors:
+                    self.fail(relative, line, error)
+                if body is None or _compact_cpp_sha256(body) != expected_hash:
+                    self.fail(
+                        relative,
+                        line_offset + 1,
+                        f"M5-R1 test or runner body is not exact: {identifier}",
+                    )
+
+            observed_tests = re.findall(
+                r"\bvoid\s+(test_wave_result_[A-Za-z0-9_]+)\s*\(",
+                _mask_cpp_comments_and_literals(text),
+            )
+            expected_tests = WAVE_RESULT_DEDICATED_TEST_FUNCTIONS
+            if (
+                len(observed_tests) != len(expected_tests)
+                or set(observed_tests) != set(expected_tests)
+            ):
+                self.fail(relative, 1, "M5-R1 dedicated five-test inventory is not exact")
+            expected_by_runner = {
+                "run_core_suite": set(WAVE_RESULT_CORE_TEST_FUNCTIONS),
+                "run_protection_suite": set(WAVE_RESULT_PROTECTION_TEST_FUNCTIONS),
+                "run_platform_suite": set(),
+            }
+            for test_name in expected_tests:
+                for runner_name, expected_in_runner in expected_by_runner.items():
+                    runner, _, _ = definitions[runner_name]
+                    calls = (
+                        []
+                        if runner is None
+                        else find_call_identifier_uses(runner, test_name)
+                    )
+                    if len(calls) != (1 if test_name in expected_in_runner else 0):
+                        self.fail(
+                            relative,
+                            1,
+                            "M5-R1 test suite 3/2/0 registration is not exact: "
+                            f"{test_name} in {runner_name}",
+                        )
+
+            compact = _compact_cpp_code(text)
+            if any(
+                compact.count(fragment) != 1
+                for fragment in WAVE_RESULT_TEST_SURFACE_FRAGMENTS
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    "M5-R1 tests must freeze the move-only, lvalue-borrowing, "
+                    "least-authority public surface",
+                )
+            protection_fragments = {
+                "std::optional<WaveResult>moved_owner;": 1,
+                "constauto&manifest_digest=result.manifest_digest();": 1,
+                "constauto*manifest_digest_address="
+                "std::addressof(manifest_digest);": 1,
+                "constauto&merge_commit_digest=result.merge_commit_digest();": 1,
+                "constauto*merge_commit_digest_address="
+                "std::addressof(merge_commit_digest);": 1,
+                "moved_owner.emplace(std::move(result));": 1,
+                "constauto&moved=*moved_owner;": 1,
+                "CHECK(std::addressof(moved.manifest_digest())=="
+                "manifest_digest_address);": 1,
+                "CHECK(std::addressof(moved.merge_commit_digest())=="
+                "merge_commit_digest_address);": 1,
+                "CHECK(capture_root_inventory(fixture_root.prepared().root())=="
+                "inventory_before);": 3,
+                "require_no_m5_mutation_records("
+                "fixture_root.prepared().root());": 2,
+                "PromotionFaultPoint::before_state_allocation": 1,
+            }
+            if any(
+                compact.count(fragment) != expected
+                for fragment, expected in protection_fragments.items()
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    "M5-R1 tests must prove pre-spend retry, stable borrowed views "
+                    "and digest references, WaveLock retention, and a mutation-free root",
+                )
+            move_body, _, _ = definitions[
+                "test_wave_result_move_preserves_borrowed_view_and_spans"
+            ]
+            move_compact = "" if move_body is None else _compact_cpp_code(move_body)
+            ordered_move_fragments = (
+                "std::optional<WaveResult>moved_owner;",
+                "constauto*view_address=std::addressof(result.merged_relations());",
+                "constautocopied_view=result.merged_relations();",
+                "constautochunks=result.chunks();",
+                "constauto*chunk_address=chunks.data();",
+                "constauto&manifest_digest=result.manifest_digest();",
+                "constauto*manifest_digest_address=std::addressof(manifest_digest);",
+                "constauto&merge_commit_digest=result.merge_commit_digest();",
+                "constauto*merge_commit_digest_address="
+                "std::addressof(merge_commit_digest);",
+                "moved_owner.emplace(std::move(result));",
+                "constauto&moved=*moved_owner;",
+            )
+            positions = [move_compact.find(fragment) for fragment in ordered_move_fragments]
+            if any(position < 0 for position in positions) or positions != sorted(positions):
+                self.fail(
+                    relative,
+                    1,
+                    "M5-R1 move test must keep the moved owner alive after all "
+                    "borrow captures and before every borrowed-view assertion",
+                )
+            return
+
+        class_spans = _class_definition_body_spans(
+            text, WAVE_RESULT_IMPLEMENTATION_CLASS_BODY_SHA256
+        )
+        for identifier, expected_hash in WAVE_RESULT_IMPLEMENTATION_CLASS_BODY_SHA256.items():
+            span = class_spans[identifier]
+            if (
+                span is None
+                or _compact_cpp_sha256(text[span[0] : span[1]]) != expected_hash
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    f"M5-R1 implementation class is not exact: {identifier}",
+                )
+        definitions = find_function_definition_bodies(text, WAVE_RESULT_FUNCTION_BODY_SHA256)
+        for identifier, expected_hash in WAVE_RESULT_FUNCTION_BODY_SHA256.items():
+            body, line_offset, body_errors = definitions[identifier]
+            for line, error in body_errors:
+                self.fail(relative, line, error)
+            if body is None or _compact_cpp_sha256(body) != expected_hash:
+                self.fail(
+                    relative,
+                    line_offset + 1,
+                    f"M5-R1 implementation body is not exact: {identifier}",
+                )
+
+        promote_body, _, _ = definitions["DistributedSieveWaveResultAuthorityV1::promote"]
+        promote_compact = "" if promote_body is None else _compact_cpp_code(promote_body)
+        owner = promote_compact.find("RetainedMergedResultV1retained(std::move(input));")
+        try_start = promote_compact.find("try{")
+        commit = promote_compact.find(
+            "constauto&commit=retained.commit_for_wave_result_promotion_v1();"
+        )
+        allocation_hook = promote_compact.find(
+            "PromotionFaultPoint::before_state_allocation"
+        )
+        allocation = promote_compact.find("newDistributedSieveWaveResult::State(")
+        first_catch = promote_compact.find("catch(")
+        last_catch = promote_compact.rfind("catch(")
+        spend = promote_compact.find("state->retained.emplace(std::move(retained));")
+        ordered = (
+            owner,
+            try_start,
+            commit,
+            allocation_hook,
+            allocation,
+            first_catch,
+            last_catch,
+            spend,
+        )
+        if (
+            any(position < 0 for position in ordered)
+            or list(ordered) != sorted(ordered)
+            or promote_compact.count("state->retained.emplace(std::move(retained));")
+            != 1
+            or promote_compact.count("returnretry(std::move(retained),") != 3
+        ):
+            self.fail(
+                relative,
+                1,
+                "M5-R1 promotion must capture the R4 owner before the exception "
+                "boundary, keep projection/allocation retryable, and spend exactly "
+                "once only after every catch",
+            )
+        compact = _compact_cpp_code(text)
+        ordinary_entry = (
+            "returnDistributedSieveWaveResultAuthorityV1::promote("
+            "std::move(retained),{});"
+        )
+        trusted_entry = (
+            "returnDistributedSieveWaveResultAuthorityV1::promote("
+            "std::move(retained),hooks);"
+        )
+        if compact.count(ordinary_entry) != 1 or compact.count(trusted_entry) != 1:
+            self.fail(
+                relative,
+                1,
+                "M5-R1 ordinary promotion must pass no hooks and the trusted test "
+                "entry must be the sole hook-bearing pass-through",
+            )
+
     def validate_worker_cleanup_reconciliation_authority_use_site(
         self, relative: str, text: str
     ) -> None:
@@ -19126,6 +20140,7 @@ class Checks:
             relative, text
         )
         self.validate_worker_cleanup_orchestration_use_site(relative, text)
+        self.validate_wave_result_use_site(relative, text)
 
         if relative == WORKER_CLEANUP_RECEIPT_AUTHORITY_INTERFACE_FILE:
             authority_span = _class_definition_body_span(
@@ -20276,7 +21291,7 @@ class Checks:
 
         marker = "    - name: Run macOS worker cleanup orchestrator\n"
         starts = [match.start() for match in re.finditer(re.escape(marker), ci_text)]
-        end_marker = "    # Windows:"
+        end_marker = WAVE_RESULT_CI_MARKER
         if len(starts) != 1:
             self.fail(
                 WORKER_CLEANUP_ORCHESTRATION_CI_FILE,
@@ -20306,6 +21321,192 @@ class Checks:
                     1,
                     "P4c-R4 source-private production/test file must be a "
                     "Git-indexed regular text file",
+                )
+
+    def validate_wave_result_catalog(
+        self,
+        cmake_text: str,
+        test_runner_text: str,
+        ci_text: str,
+    ) -> None:
+        """Close the M5-R1 source, target, suite, runner, and CI registrations."""
+
+        target = WAVE_RESULT_TEST_TARGET
+        active_cmake = _mask_definitely_inactive_cmake(cmake_text)
+        cmake_code = _mask_cmake_comments(active_cmake)
+        cmake_count_code = _mask_cmake_comments_and_literals(active_cmake)
+        commands = _cmake_command_records(active_cmake)
+        source_commands = [
+            command
+            for command in commands
+            if command.name == "target_sources"
+            and _cmake_first_argument(command.body) == "gnfs_core"
+            and WAVE_RESULT_IMPLEMENTATION_FILE in command.body
+        ]
+        if (
+            len(source_commands) != 1
+            or cmake_count_code.count(WAVE_RESULT_IMPLEMENTATION_FILE) != 1
+        ):
+            self.fail(
+                WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
+                1,
+                "M5-R1 production source must attach literally and exactly once "
+                "to gnfs_core",
+            )
+
+        targets = [
+            command
+            for command in commands
+            if command.name == "add_executable"
+            and _cmake_first_argument(command.body) == target
+        ]
+        if len(targets) != 1:
+            self.fail(
+                WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
+                1,
+                "M5-R1 dedicated CMake target must occur exactly once",
+            )
+        else:
+            start = targets[0].start
+            following = next(
+                (
+                    command
+                    for command in commands
+                    if command.name == "add_executable" and command.start > start
+                ),
+                None,
+            )
+            end = len(cmake_code) if following is None else following.start
+            if (
+                _compact_cpp_sha256(cmake_code[start:end])
+                != WAVE_RESULT_CMAKE_BLOCK_SHA256
+            ):
+                self.fail(
+                    WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
+                    cmake_text.count("\n", 0, start) + 1,
+                    "M5-R1 CMake target must retain its exact source, private "
+                    "includes, Threads linkage, 3/2 suites, labels, and timeouts",
+                )
+        target_uses = len(
+            re.findall(
+                rf"(?<![A-Za-z0-9_]){re.escape(target)}(?![A-Za-z0-9_])",
+                cmake_count_code,
+            )
+        )
+        if cmake_count_code.count(WAVE_RESULT_TEST_FILE) != 1 or target_uses != 7:
+            self.fail(
+                WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
+                1,
+                "M5-R1 CMake target/source counts are not closed",
+            )
+
+        shell = _mask_shell_comments(test_runner_text)
+
+        def array_body(name: str) -> str | None:
+            match = re.search(
+                rf"(?ms)^{re.escape(name)}=\(\s*\n(.*?)^\)\s*$", shell
+            )
+            return None if match is None else match.group(1)
+
+        arrays = {
+            name: array_body(name)
+            for name in (
+                "ALL_TEST_BINARIES",
+                "MODULE_TESTS",
+                "SMOKE_TESTS",
+                "TEST_TIMEOUT",
+                "TEST_TIER",
+            )
+        }
+        if any(body is None for body in arrays.values()):
+            self.fail(
+                WORKER_CLEANUP_RECEIPT_TEST_RUNNER_FILE,
+                1,
+                "M5-R1 test catalog arrays are not structurally locatable",
+            )
+        else:
+            all_tests = arrays["ALL_TEST_BINARIES"] or ""
+            module_tests = arrays["MODULE_TESTS"] or ""
+            smoke_tests = arrays["SMOKE_TESTS"] or ""
+            timeouts = arrays["TEST_TIMEOUT"] or ""
+            tiers = arrays["TEST_TIER"] or ""
+            sieve = re.search(r'(?m)^\s*sieve\s+"([^"]*)"\s*$', module_tests)
+            module_count = (
+                0 if sieve is None else sieve.group(1).split().count(target)
+            )
+            source = re.escape(WAVE_RESULT_TEST_FILE)
+            path_mapping = re.findall(
+                rf'(?m)^\s*[^\n]*{source}[^\n]*\)\s*echo\s+"sieve"\s*;;\s*$',
+                shell,
+            )
+            total = len(
+                re.findall(
+                    rf"(?<![A-Za-z0-9_]){re.escape(target)}(?![A-Za-z0-9_])",
+                    shell,
+                )
+            )
+            exact = (
+                len(re.findall(rf"(?m)^\s*{re.escape(target)}\s*$", all_tests))
+                == 1
+                and module_count == 1
+                and target not in smoke_tests
+                and len(
+                    re.findall(
+                        rf"(?m)^\s*{re.escape(target)}\s+300\s*$", timeouts
+                    )
+                )
+                == 1
+                and len(
+                    re.findall(
+                        rf'(?m)^\s*{re.escape(target)}\s+"slow"\s*$', tiers
+                    )
+                )
+                == 1
+                and len(path_mapping) == 1
+                and total == 5
+            )
+            if not exact:
+                self.fail(
+                    WORKER_CLEANUP_RECEIPT_TEST_RUNNER_FILE,
+                    1,
+                    "M5-R1 runner catalog must contain exactly one binary, sieve "
+                    "mapping, 300-second timeout, slow tier, and path mapping, "
+                    "and no smoke entry",
+                )
+
+        starts = [
+            match.start()
+            for match in re.finditer(re.escape(WAVE_RESULT_CI_MARKER), ci_text)
+        ]
+        if len(starts) != 1:
+            self.fail(
+                WAVE_RESULT_CI_FILE,
+                1,
+                "M5-R1 macOS aggregate CI step must occur exactly once",
+            )
+        else:
+            end = ci_text.find("    # Windows:", starts[0])
+            block = "" if end < 0 else ci_text[starts[0] : end]
+            observed_hash = hashlib.sha256(
+                re.sub(r"\s+", "", block).encode("utf-8")
+            ).hexdigest()
+            if observed_hash != WAVE_RESULT_CI_BLOCK_SHA256:
+                self.fail(
+                    WAVE_RESULT_CI_FILE,
+                    ci_text.count("\n", 0, starts[0]) + 1,
+                    "M5-R1 macOS aggregate CI step is not exact",
+                )
+
+    def validate_wave_result_git_inventory(self) -> None:
+        inventory = _git_indexed_text_inventory(self.root)
+        indexed = set(inventory.text_regular_files)
+        for relative in sorted(WAVE_RESULT_POLICY_FILES):
+            if relative not in indexed:
+                self.fail(
+                    relative,
+                    1,
+                    "M5-R1 public/private production and test files must be "
+                    "Git-indexed regular text files",
                 )
 
     def validate_merge_commit_authority_contract(
@@ -24554,9 +25755,15 @@ class Checks:
                 receipt_catalog_texts[WORKER_CLEANUP_RECEIPT_TEST_RUNNER_FILE],
                 receipt_catalog_texts[WORKER_CLEANUP_ORCHESTRATION_CI_FILE],
             )
+            self.validate_wave_result_catalog(
+                receipt_catalog_texts[WORKER_CLEANUP_RECEIPT_CMAKE_FILE],
+                receipt_catalog_texts[WORKER_CLEANUP_RECEIPT_TEST_RUNNER_FILE],
+                receipt_catalog_texts[WORKER_CLEANUP_ORCHESTRATION_CI_FILE],
+            )
 
         self.validate_worker_cleanup_receipt_git_indexed_text_inventory()
         self.validate_worker_cleanup_orchestration_git_inventory()
+        self.validate_wave_result_git_inventory()
 
         for relative, path in self.source_files():
             try:
@@ -24576,6 +25783,7 @@ class Checks:
             self.validate_worker_coordinator_boundary(relative, text)
             self.validate_worker_attempt_terminal_transition_boundary(relative, text)
             self.validate_worker_cleanup_orchestration_use_site(relative, text)
+            self.validate_wave_result_use_site(relative, text)
             self.validate_work_package_residue_inspection_body(relative, text)
             self.validate_work_package_residue_reconciliation_body(relative, text)
             if relative == EXECUTION_POLICY_ENVIRONMENT_ADAPTER:
@@ -24646,6 +25854,7 @@ class Checks:
             self.validate_consumed_canonical_adoption_bridge(relative, text)
             self.validate_merge_commit_authority_use_site(relative, text)
             self.validate_worker_cleanup_tail_authority_use_site(relative, text)
+            self.validate_wave_result_use_site(relative, text)
             self.validate_merge_commit_authority_contract(relative, text)
             self.validate_merge_prepared_admission_boundary(relative, text)
             self.validate_worker_writer_identifier_exception_boundary(
@@ -26230,6 +27439,425 @@ def run_worker_cleanup_orchestration_self_test() -> list[str]:
     return errors
 
 
+def run_wave_result_self_test() -> list[str]:
+    """Run the focused M5-R1 baseline and eighteen mutations in memory."""
+
+    errors: list[str] = []
+    root = Path(__file__).resolve().parents[1]
+    public_relative = WAVE_RESULT_PUBLIC_INTERFACE_FILE
+    private_relative = WAVE_RESULT_PRIVATE_INTERFACE_FILE
+    cpp_relative = WAVE_RESULT_IMPLEMENTATION_FILE
+    test_relative = WAVE_RESULT_TEST_FILE
+    r4_header_relative = WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE
+    r4_cpp_relative = WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE
+    plan_relative = WAVE_RESULT_DESIGN_PLAN_FILE
+    public = (root / public_relative).read_text(encoding="utf-8")
+    private = (root / private_relative).read_text(encoding="utf-8")
+    cpp = (root / cpp_relative).read_text(encoding="utf-8")
+    test = (root / test_relative).read_text(encoding="utf-8")
+    r4_header = (root / r4_header_relative).read_text(encoding="utf-8")
+    r4_cpp = (root / r4_cpp_relative).read_text(encoding="utf-8")
+    plan = (root / plan_relative).read_text(encoding="utf-8")
+    cmake = (root / WORKER_CLEANUP_RECEIPT_CMAKE_FILE).read_text(encoding="utf-8")
+    runner = (root / WORKER_CLEANUP_RECEIPT_TEST_RUNNER_FILE).read_text(
+        encoding="utf-8"
+    )
+    ci = (root / WAVE_RESULT_CI_FILE).read_text(encoding="utf-8")
+
+    def expect(condition: bool, message: str) -> None:
+        if not condition:
+            errors.append(message)
+
+    def replace_once(
+        relative: str,
+        source: str,
+        old: str,
+        new: str,
+        label: str,
+        *,
+        expected_count: int = 1,
+        occurrence: int = 1,
+    ) -> str | None:
+        count = source.count(old)
+        if count != expected_count or not 1 <= occurrence <= count:
+            errors.append(
+                f"M5-R1 mutation anchor is not exact ({label}): "
+                f"{relative} found {count}, expected {expected_count}"
+            )
+            return None
+        offset = -len(old)
+        for _ in range(occurrence):
+            offset = source.find(old, offset + len(old))
+        return source[:offset] + new + source[offset + len(old) :]
+
+    def validate(relative: str, source: str) -> list[str]:
+        checks = Checks(root)
+        checks.validate_wave_result_use_site(relative, source)
+        return checks.errors
+
+    def run_case(
+        label: str,
+        relative: str,
+        source: str | None,
+        *,
+        needle: str | None = None,
+    ) -> None:
+        nonlocal mutations_run
+        if source is None:
+            return
+        mutations_run += 1
+        observed = validate(relative, source)
+        if not observed or (
+            needle is not None and not any(needle in error for error in observed)
+        ):
+            errors.append(f"M5-R1 mutation accepted ({label}): {observed}")
+
+    expected_identifiers = {
+        WAVE_RESULT_IDENTIFIER,
+        WAVE_RESULT_RETAINED_ALIAS_IDENTIFIER,
+        WAVE_RESULT_PHASE_IDENTIFIER,
+        WAVE_RESULT_STATUS_IDENTIFIER,
+        WAVE_RESULT_DISPOSITION_IDENTIFIER,
+        WAVE_RESULT_DIAGNOSTIC_IDENTIFIER,
+        WAVE_RESULT_PROMOTION_RESULT_IDENTIFIER,
+        WAVE_RESULT_FAULT_POINT_IDENTIFIER,
+        WAVE_RESULT_TEST_HOOKS_IDENTIFIER,
+        WAVE_RESULT_AUTHORITY_IDENTIFIER,
+        WAVE_RESULT_PROMOTE_IDENTIFIER,
+        WAVE_RESULT_TRUSTED_PROMOTE_IDENTIFIER,
+        WAVE_RESULT_COMMIT_BRIDGE_IDENTIFIER,
+    }
+    expect(
+        set(WAVE_RESULT_IDENTIFIERS)
+        == expected_identifiers
+        == set(WAVE_RESULT_EXACT_USE_CONTEXTS)
+        == set(WAVE_RESULT_IDENTIFIER_ALLOWLISTS),
+        "M5-R1 identifier/context/allowlist key-set closure is not exact",
+    )
+    expect(
+        all(
+            WAVE_RESULT_IDENTIFIER_ALLOWLISTS[identifier] == set(contexts)
+            for identifier, contexts in WAVE_RESULT_EXACT_USE_CONTEXTS.items()
+        ),
+        "M5-R1 identifier allowlists do not exactly match their frozen contexts",
+    )
+    expect(
+        WAVE_RESULT_OWNED_FILES
+        == {private_relative, cpp_relative, test_relative}
+        and WAVE_RESULT_POLICY_FILES
+        == {public_relative, private_relative, cpp_relative, test_relative},
+        "M5-R1 owned/policy file inventory is not exact",
+    )
+    expect(
+        set(WAVE_RESULT_TEST_BODY_SHA256)
+        == set(WAVE_RESULT_DEDICATED_TEST_FUNCTIONS)
+        and set(WAVE_RESULT_RUNNER_BODY_SHA256)
+        == {"run_core_suite", "run_protection_suite", "run_platform_suite"},
+        "M5-R1 test/runner body-pin closure is not exact",
+    )
+
+    for relative, source in (
+        (public_relative, public),
+        (private_relative, private),
+        (cpp_relative, cpp),
+        (test_relative, test),
+        (r4_header_relative, r4_header),
+        (r4_cpp_relative, r4_cpp),
+        (plan_relative, plan),
+    ):
+        observed = validate(relative, source)
+        expect(
+            not observed,
+            f"M5-R1 focused baseline rejected {relative}: {observed}",
+        )
+
+    catalog = Checks(root)
+    catalog.validate_wave_result_catalog(cmake, runner, ci)
+    expect(
+        not catalog.errors,
+        f"M5-R1 focused catalog baseline rejected: {catalog.errors}",
+    )
+    inventory = Checks(root)
+    inventory.validate_wave_result_git_inventory()
+    expect(
+        not inventory.errors,
+        f"M5-R1 focused Git-index baseline rejected: {inventory.errors}",
+    )
+
+    mutations_run = 0
+    run_case(
+        "public default construction",
+        public_relative,
+        replace_once(
+            public_relative,
+            public,
+            "    DistributedSieveWaveResult() = delete;\n",
+            "    DistributedSieveWaveResult() = default;\n",
+            "public default construction",
+        ),
+        needle="public least-authority result class",
+    )
+    run_case(
+        "public rvalue relation borrow",
+        public_relative,
+        replace_once(
+            public_relative,
+            public,
+            "    [[nodiscard]] const relation::ReadOnlyRelationCorpusView& "
+            "merged_relations() const&& = delete;\n",
+            "    [[nodiscard]] const relation::ReadOnlyRelationCorpusView& "
+            "merged_relations() const&&;\n",
+            "public rvalue relation borrow",
+        ),
+        needle="public least-authority result class",
+    )
+    ordinary_declaration = (
+        "promote_distributed_sieve_wave_result_v1("
+        "RetainedMergedResultV1&& retained) noexcept;"
+    )
+    run_case(
+        "lvalue ordinary promotion",
+        private_relative,
+        replace_once(
+            private_relative,
+            private,
+            ordinary_declaration,
+            ordinary_declaration.replace("RetainedMergedResultV1&&", "RetainedMergedResultV1&"),
+            "lvalue ordinary promotion",
+            expected_count=2,
+            occurrence=1,
+        ),
+        needle="rvalue-only",
+    )
+    run_case(
+        "empty promotion union arm",
+        private_relative,
+        replace_once(
+            private_relative,
+            private,
+            "    std::optional<RetainedMergedResultV1> retryable;\n",
+            "    std::optional<RetainedMergedResultV1> retryable;\n"
+            "    std::monostate hidden_empty_arm;\n",
+            "empty promotion union arm",
+        ),
+        needle="closed retryable-owner",
+    )
+    run_case(
+        "private include escape",
+        "src/sieve/untrusted_wave_result_include.cpp",
+        '#include "distributed_sieve_wave_result_internal.hpp"\n',
+        needle="private interface include escaped",
+    )
+    run_case(
+        "unfrozen design-plan mention",
+        plan_relative,
+        plan + "\n`DistributedSieveWaveResult`\n",
+        needle="identifier code-use count/context",
+    )
+    run_case(
+        "trusted hook escape",
+        "src/sieve/untrusted_wave_result_hook.cpp",
+        "DistributedSieveWaveResultPromotionTestHooksV1 hooks;\n",
+        needle="identifier escaped",
+    )
+    run_case(
+        "R4 commit bridge replacement",
+        r4_cpp_relative,
+        replace_once(
+            r4_cpp_relative,
+            r4_cpp,
+            "    return state_->commit;\n",
+            "    return WaveMergeCommitV1{};\n",
+            "R4 commit bridge replacement",
+        ),
+        needle="R4 commit-projection bridge",
+    )
+
+    spend_line = "    state->retained.emplace(std::move(retained));\n"
+    catch_anchor = "    } catch (const std::bad_alloc&) {\n"
+    moved_spend = replace_once(
+        cpp_relative,
+        cpp,
+        spend_line,
+        "",
+        "pre-catch authority spend removal",
+    )
+    if moved_spend is not None:
+        moved_spend = replace_once(
+            cpp_relative,
+            moved_spend,
+            catch_anchor,
+            "        state->retained.emplace(std::move(retained));\n" + catch_anchor,
+            "pre-catch authority spend insertion",
+        )
+    run_case(
+        "authority spent before catch closure",
+        cpp_relative,
+        moved_spend,
+        needle="spend exactly once only after every catch",
+    )
+    run_case(
+        "ordinary entry receives hooks",
+        cpp_relative,
+        replace_once(
+            cpp_relative,
+            cpp,
+            "    return DistributedSieveWaveResultAuthorityV1::promote("
+            "std::move(retained), {});\n",
+            "    return DistributedSieveWaveResultAuthorityV1::promote("
+            "std::move(retained), PromotionHooks{});\n",
+            "ordinary entry receives hooks",
+        ),
+        needle="ordinary promotion must pass no hooks",
+    )
+    promotion_entry = (
+        "DistributedSieveWaveResultAuthorityV1::promote(RetainedMergedResultV1&& input,\n"
+        "                                               PromotionHooks hooks) noexcept {\n"
+    )
+    run_case(
+        "completion authority injected",
+        cpp_relative,
+        replace_once(
+            cpp_relative,
+            cpp,
+            promotion_entry,
+            promotion_entry + "    WaveCompletedV1 forbidden_completion;\n",
+            "completion authority injected",
+        ),
+        needle="production surface forbids",
+    )
+    run_case(
+        "public surface assertion removed",
+        test_relative,
+        replace_once(
+            test_relative,
+            test,
+            "static_assert(!std::is_default_constructible_v<WaveResult>);\n",
+            "",
+            "public surface assertion removed",
+        ),
+        needle="least-authority public surface",
+    )
+    run_case(
+        "root inventory assertion removed",
+        test_relative,
+        replace_once(
+            test_relative,
+            test,
+            "    CHECK(capture_root_inventory(fixture_root.prepared().root()) == "
+            "inventory_before);\n",
+            "",
+            "root inventory assertion removed",
+            expected_count=3,
+            occurrence=1,
+        ),
+        needle="mutation-free root",
+    )
+    owner_line = "    std::optional<WaveResult> moved_owner;\n"
+    emplace_line = "    moved_owner.emplace(std::move(result));\n"
+    reordered_owner = replace_once(
+        test_relative,
+        test,
+        owner_line,
+        "",
+        "moved owner declaration removal",
+    )
+    if reordered_owner is not None:
+        reordered_owner = replace_once(
+            test_relative,
+            reordered_owner,
+            emplace_line,
+            owner_line + emplace_line,
+            "moved owner declaration reorder",
+        )
+    run_case(
+        "moved owner declared after borrows",
+        test_relative,
+        reordered_owner,
+        needle="after all borrow captures",
+    )
+    run_case(
+        "manifest digest borrowed by value",
+        test_relative,
+        replace_once(
+            test_relative,
+            test,
+            "    const auto& manifest_digest = result.manifest_digest();\n",
+            "    const auto manifest_digest = result.manifest_digest();\n",
+            "manifest digest borrowed by value",
+        ),
+        needle="digest references",
+    )
+
+    def run_catalog_case(
+        label: str,
+        cmake_source: str,
+        runner_source: str,
+        ci_source: str,
+        needle: str,
+    ) -> None:
+        nonlocal mutations_run
+        mutations_run += 1
+        checks = Checks(root)
+        checks.validate_wave_result_catalog(cmake_source, runner_source, ci_source)
+        if not checks.errors or not any(needle in error for error in checks.errors):
+            errors.append(f"M5-R1 catalog mutation accepted ({label}): {checks.errors}")
+
+    mutated_cmake = replace_once(
+        WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
+        cmake,
+        "            DistributedSieveWaveResultProtection\n"
+        "            PROPERTIES LABELS \"slow\" TIMEOUT 180\n",
+        "            DistributedSieveWaveResultProtection\n"
+        "            PROPERTIES LABELS \"slow\" TIMEOUT 181\n",
+        "CMake timeout",
+    )
+    if mutated_cmake is not None:
+        run_catalog_case(
+            "CMake timeout",
+            mutated_cmake,
+            runner,
+            ci,
+            "CMake target",
+        )
+    mutated_runner = replace_once(
+        WORKER_CLEANUP_RECEIPT_TEST_RUNNER_FILE,
+        runner,
+        "    test_distributed_sieve_wave_result 300\n",
+        "    test_distributed_sieve_wave_result 301\n",
+        "runner timeout",
+    )
+    if mutated_runner is not None:
+        run_catalog_case(
+            "runner timeout",
+            cmake,
+            mutated_runner,
+            ci,
+            "300-second timeout",
+        )
+    mutated_ci = replace_once(
+        WAVE_RESULT_CI_FILE,
+        ci,
+        "        test -x build/test_distributed_sieve_wave_result\n",
+        "        test -x build/test_distributed_sieve_wave_result_unchecked\n",
+        "CI executable probe",
+    )
+    if mutated_ci is not None:
+        run_catalog_case(
+            "CI executable probe",
+            cmake,
+            runner,
+            mutated_ci,
+            "CI step is not exact",
+        )
+
+    expect(
+        mutations_run == 18,
+        f"M5-R1 mutation inventory drifted: ran {mutations_run}, expected 18",
+    )
+    return errors
+
+
 def run_worker_cleanup_reconciliation_self_test() -> list[str]:
     """Run the independent reconciliation mutation matrix in memory."""
 
@@ -26645,6 +28273,7 @@ def run_self_test() -> list[str]:
     errors.extend(run_worker_cleanup_completion_publication_self_test())
     errors.extend(run_worker_cleanup_authorization_publication_self_test())
     errors.extend(run_worker_cleanup_orchestration_self_test())
+    errors.extend(run_wave_result_self_test())
     errors.extend(run_worker_cleanup_reconciliation_self_test())
 
     snippet = r"""
@@ -29665,6 +31294,7 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
             WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
             WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_FILE,
             WORKER_CLEANUP_ORCHESTRATION_TEST_FILE,
+            WAVE_RESULT_TEST_FILE,
         },
         "merge-commit authority interface include allowlist is not exact",
     )
@@ -29689,6 +31319,7 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
                     WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
                     WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_FILE,
                     WORKER_CLEANUP_ORCHESTRATION_TEST_FILE,
+                    WAVE_RESULT_TEST_FILE,
                 }
             ),
             "DistributedSieveMergePreparedCommitContextV1": {
@@ -29707,6 +31338,7 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
                     WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
                     WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_FILE,
                     WORKER_CLEANUP_ORCHESTRATION_TEST_FILE,
+                    WAVE_RESULT_TEST_FILE,
                 }
             ),
             "publish_wave_merge_commit_v1": {
@@ -29910,6 +31542,7 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
             WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_FILE,
             WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE,
             WORKER_CLEANUP_ORCHESTRATION_TEST_FILE,
+            WAVE_RESULT_TEST_FILE,
             MERGE_COMMIT_AUTHORITY_WAVE_STORE_IMPLEMENTATION_FILE,
         },
         "worker-cleanup tail authority include allowlist is not exact",
@@ -29935,6 +31568,7 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
                     WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE,
                     WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_FILE,
                     WORKER_CLEANUP_ORCHESTRATION_TEST_FILE,
+                    WAVE_RESULT_TEST_FILE,
                 }
             ),
             "consume_distributed_sieve_committed_tail_for_worker_cleanup_v1_with_hooks": (

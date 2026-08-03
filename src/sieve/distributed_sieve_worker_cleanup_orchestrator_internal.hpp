@@ -19,6 +19,10 @@ namespace gnfs::relation {
 class ReadOnlyRelationCorpusView;
 }
 
+namespace gnfs::sieve::distributed_sieve_result_detail {
+class DistributedSieveWaveResultAuthorityV1;
+}
+
 namespace gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail {
 
 class DistributedSieveWorkerCleanupOrchestrationAuthorityV1;
@@ -143,10 +147,13 @@ private:
     struct State;
     explicit DistributedSieveWorkerCleanupRetainedMergedResultV1(
         std::unique_ptr<State> state) noexcept;
+    [[nodiscard]] const WaveMergeCommitV1& commit_for_wave_result_promotion_v1() const;
 
     std::unique_ptr<State> state_;
 
     friend class DistributedSieveWorkerCleanupOrchestrationAuthorityV1;
+    friend class ::gnfs::sieve::distributed_sieve_result_detail::
+        DistributedSieveWaveResultAuthorityV1;
 };
 
 enum class DistributedSieveWorkerCleanupOrchestrationPhaseV1 : std::uint8_t {
