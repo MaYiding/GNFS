@@ -74,6 +74,23 @@ The PR CI intentionally has three layers:
 
 ASan/UBSan and coverage run only `instant` tests. They already multiply test cost through instrumentation, and they should not duplicate the Release deep gate. TSan uses the narrower lane below because its purpose is to exercise explicit concurrency boundaries, not to repeat every isolated helper.
 
+## Nightly and Release Qualification
+
+The scheduled nightly workflow and the verify-only release phase call the same
+reusable qualification workflow. This keeps expensive coverage outside the
+default pull request matrix while preventing the release path from drifting
+away from nightly evidence. The reusable workflow runs three independent
+Release jobs: the repository `thorough` mode, the structured 120-bit route
+gate, and the bounded four-special-Q 50-digit legacy/structured route
+comparison. The bounded comparison uses a 900-second timeout for each route;
+it is not a complete 50-digit factorization claim.
+
+Release publication also requires every workflow that was triggered by the
+exact main push to finish successfully. A fixed set of release-critical jobs
+is verified against both the Actions workflow-run API and the commit check-run
+API. The complete publication procedure and artifact contract are documented
+in [releasing.md](releasing.md).
+
 The authenticated Linux profile requires modern glibc plus its complete
 syscall and macro surface. On unsupported libcs, store admission reports
 `platform_unavailable` before opening the journal namespace, and direct

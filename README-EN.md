@@ -437,6 +437,8 @@ The project uses `scripts/test.sh`, which wraps compilation, per-test timeout, t
 | `stress` | 43200 s | 1 | 50-digit (L1) and 60-digit (L2) |
 
 The full test and CI tiering policy appears in [docs/testing-ci-policy.md](docs/testing-ci-policy.md).
+The exact-SHA, two-phase publication procedure appears in
+[docs/releasing.md](docs/releasing.md).
 
 **Build types**
 

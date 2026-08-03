@@ -443,6 +443,8 @@ GNFS/
 | `stress` | 43200 s | 1 | 50 位（L1） + 60 位（L2） |
 
 完整测试与 CI 分层规范见 [docs/testing-ci-policy.md](docs/testing-ci-policy.md)。
+首个版本采用 exact-SHA 两阶段发布，操作与安全边界见
+[docs/releasing.md](docs/releasing.md)。
 
 **构建类型**
 
