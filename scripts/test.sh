@@ -364,6 +364,8 @@ ALL_TEST_BINARIES=(
     test_mpz_gcd_parallel
     test_mpz_mul_parallel
     test_api
+    test_event_stream
+    test_cli_event_stream
     test_bai_brent_poly
     test_batch_ecm_bench
     test_bl_resume_integration
@@ -460,7 +462,7 @@ MODULE_TESTS=(
     linalg         "test_linalg test_sge_batch_pivots test_block_wiedemann test_bw_rank_est test_matrix_diagnostics test_sge_streaming test_mmap_csr test_schirokauer_deg4 test_schirokauer_strip test_schirokauer_parallel test_edge_cases test_integration test_matrix_view_concept test_save_sparse_as_mmap test_linalg_mmap_policy test_bw_krylov_parallel test_metal_spmv test_spmv_simd test_transpose_blocked test_popcount_simd test_and_popcnt_simd test_xor_words_simd test_and_words_simd test_xor_popcnt_simd test_row_popcount_simd test_krylov_compress test_krylov_compression test_bl_checkpoint test_bl_resume_integration test_linalg_progress"
     integration    "test_integration"
     sqrt           "test_sqrt test_sqrt_debug test_hensel_parallel test_class_group test_couveignes_large_class_group test_couveignes_parallel"
-    api            "test_i18n test_method_selection test_relation_reduction_engine"
+    api            "test_api test_i18n test_method_selection test_event_stream test_cli_event_stream test_relation_reduction_engine"
     siqs           "test_siqs test_siqs_2lp test_siqs_live_sieve_capture test_siqs_2lp_graph test_siqs_2lp_materializer test_siqs_2lp_adapter test_siqs_2lp_congruence test_siqs_post_merge_row test_siqs_shadow_assembly test_siqs_shadow_linear_algebra test_siqs_shadow_proof_runner test_siqs_shadow_proof_observe test_siqs_shadow_proof_observe_record_codec test_siqs_runtime_facts test_siqs_shadow_proof_rss_probe_execution_identity test_siqs_shadow_observe_rss_holdouts test_siqs_shadow_proof_rss_gate test_siqs_shadow_proof_rss_terminal_gate_record test_siqs_shadow_proof_rss_policy_record test_siqs_shadow_proof_rss_campaign test_siqs_shadow_proof_rss_campaign_journal test_siqs_shadow_proof_rss_campaign_journal_codec test_siqs_shadow_proof_rss_campaign_journal_layout test_siqs_shadow_proof_rss_campaign_artifact_layout test_siqs_shadow_proof_rss_campaign_journal_store test_siqs_shadow_proof_rss_campaign_entry test_siqs_shadow_proof_rss_holdout_probe_contract test_siqs_shadow_proof_rss_holdout_probe_record_codec test_siqs_shadow_proof_rss_holdout_stream_join test_siqs_shadow_proof_prefer test_siqs_shadow_prefer_route test_siqs_shadow_cross_size"
 )
 
@@ -583,6 +585,8 @@ SMOKE_TESTS=(
     test_survival_predictor
     test_i18n
     test_method_selection
+    test_event_stream
+    test_cli_event_stream
     test_siqs_2lp
     test_siqs_live_sieve_capture
     test_siqs_2lp_graph
@@ -840,6 +844,8 @@ TEST_TIMEOUT=(
     test_25digit             1800
     test_stress              43200
     test_api                 300
+    test_event_stream        10
+    test_cli_event_stream    60
     test_i18n                10
     test_method_selection    60
     test_clique_merger       10
@@ -1089,6 +1095,8 @@ TEST_TIER=(
     test_25digit             "heavy"
     test_stress              "stress"
     test_api                 "slow"
+    test_event_stream        "instant"
+    test_cli_event_stream    "instant"
     test_i18n                "instant"
     test_method_selection    "instant"
     test_siqs                "fast"
@@ -1231,7 +1239,7 @@ path_to_module() {
         tests/test_squfof*.cpp|tests/support/squfof_*.hpp|tests/fixtures/squfof_*.hpp) echo "cofactor" ;;
         tests/test_relation_corpus_sha256.cpp|tests/test_relation_collector.cpp|tests/test_relation_corpus.cpp|tests/test_relation_sink.cpp|tests/test_relation_reduction_engine.cpp|tests/test_ooc_store_integrity.cpp|tests/test_ooc_durable_handoff.cpp|tests/test_ooc_cleanup_transaction.cpp) echo "relation" ;;
         tests/test_structured*.cpp) echo "relation" ;;
-        tests/test_api.cpp|*api/*) echo "api" ;;
+        tests/test_api.cpp|tests/test_event_stream.cpp|tests/test_cli_event_stream.cpp|tests/test_i18n.cpp|tests/test_method_selection.cpp|*api/*|src/cli/*|apps/macos/GNFSWorkbench/*) echo "api" ;;
         tests/test_siqs*.cpp|*siqs/*) echo "siqs" ;;
         tests/test_sieve_checkpoint.cpp|tests/test_distributed_sieve.cpp|tests/test_distributed_sieve_worker_entry.cpp|tests/test_distributed_sieve_worker_writer_authority.cpp|tests/test_distributed_sieve_worker_execution.cpp|tests/test_distributed_sieve_worker_process.cpp|tests/test_distributed_sieve_wave_store_windows.cpp|tests/test_distributed_sieve_work_identity_codec.cpp|tests/test_distributed_sieve_work_package_codec.cpp|tests/test_distributed_sieve_worker_cleanup_codec.cpp|tests/test_distributed_sieve_merge_writer_codec.cpp|tests/test_distributed_sieve_merge_writer.cpp|tests/test_distributed_sieve_merge_writer_authority.cpp|tests/test_distributed_sieve_wave_merge_commit.cpp|tests/test_distributed_sieve_worker_cleanup_tail.cpp|tests/test_distributed_sieve_worker_cleanup_authorization_publisher.cpp|tests/test_distributed_sieve_worker_cleanup_orchestrator.cpp|tests/test_distributed_sieve_wave_result.cpp|tests/support/distributed_sieve_wave_merge_commit_fixture.hpp|tests/test_distributed_sieve_worker_work_package_file.cpp|tests/test_distributed_sieve_execution_policy.cpp|tests/test_distributed_sieve_seed_v2.cpp|tests/test_distributed_sieve_resume.cpp) echo "sieve" ;;
         *core/*)       echo "core" ;;
@@ -5667,9 +5675,9 @@ do_changed() {
 
     # 映射到模块
     typeset -A affected_modules
+    local mod
     while IFS= read -r file; do
         [[ -z "$file" ]] && continue
-        local mod
         mod=$(path_to_module "$file")
         if [[ -n "$mod" ]]; then
             affected_modules[$mod]=1

@@ -1,10 +1,13 @@
 #pragma once
 
 #include "../core/integer.hpp"
+#include "json.hpp"
 #include "progress.hpp"
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <locale>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -30,6 +33,7 @@ enum class SieveStopReason : uint8_t {
     SpecialQRangeExhausted,
     AdaptiveRoundLimitReached,
     DistributedWaveComplete,
+    MixedAcrossSplits,
 };
 
 [[nodiscard]] constexpr std::string_view sieve_stop_reason_name(SieveStopReason reason) noexcept {
@@ -52,6 +56,8 @@ enum class SieveStopReason : uint8_t {
         return "adaptive_round_limit_reached";
     case SieveStopReason::DistributedWaveComplete:
         return "distributed_wave_complete";
+    case SieveStopReason::MixedAcrossSplits:
+        return "mixed_across_splits";
     }
     return "unknown";
 }
@@ -135,13 +141,16 @@ struct FactorStats {
 /// Factorization result
 struct FactorResult {
     bool success = false;
-    Integer n;                    // original input
-    std::vector<Integer> factors; // found factors (sorted ascending)
+    bool factorization_complete = false; // every returned factor is prime/probable-prime
+    bool factors_prime = false;          // every factor passed GMP primality testing
+    Integer n;                           // original input
+    std::vector<Integer> factors;        // found factors (sorted ascending)
     FactorStats stats;
 
     /// Format as human-readable text
     [[nodiscard]] std::string to_text() const {
         std::ostringstream os;
+        os.imbue(std::locale::classic());
         if (success) {
             os << n.to_string() << " =";
             for (size_t i = 0; i < factors.size(); ++i) {
@@ -162,36 +171,42 @@ struct FactorResult {
     /// Format as JSON string
     [[nodiscard]] std::string to_json() const {
         std::ostringstream os;
+        os.imbue(std::locale::classic());
         os << "{\n";
         os << "  \"success\": " << (success ? "true" : "false") << ",\n";
-        os << "  \"n\": \"" << n.to_string() << "\",\n";
+        os << "  \"factorization_complete\": " << (factorization_complete ? "true" : "false")
+           << ",\n";
+        os << "  \"factors_prime\": " << (factors_prime ? "true" : "false") << ",\n";
+        os << "  \"n\": " << json::quote(n.to_string()) << ",\n";
         os << "  \"n_bits\": " << stats.n_bits << ",\n";
         os << "  \"n_digits\": " << stats.n_digits << ",\n";
-        os << "  \"method\": \"" << method_tag(stats.method_used) << "\",\n";
-        os << "  \"method_name\": \"" << method_name(stats.method_used) << "\",\n";
+        os << "  \"method\": " << json::quote(method_tag(stats.method_used)) << ",\n";
+        os << "  \"method_name\": " << json::quote(method_name(stats.method_used)) << ",\n";
         if (!stats.method_reason.empty())
-            os << "  \"method_reason\": \"" << stats.method_reason << "\",\n";
+            os << "  \"method_reason\": " << json::quote(stats.method_reason) << ",\n";
 
         os << "  \"factors\": [";
         for (size_t i = 0; i < factors.size(); ++i) {
             if (i > 0)
                 os << ", ";
-            os << "\"" << factors[i].to_string() << "\"";
+            os << json::quote(factors[i].to_string());
         }
         os << "],\n";
 
         // Timings
         os << "  \"timings\": {\n";
-        os << "    \"total_s\": " << stats.timings.total_s << ",\n";
-        os << "    \"poly_s\": " << stats.timings.poly_s << ",\n";
-        os << "    \"fb_s\": " << stats.timings.fb_s << ",\n";
-        os << "    \"sieve_s\": " << stats.timings.sieve_s << ",\n";
-        os << "    \"candidate_generation_s\": " << stats.timings.candidate_generation_s << ",\n";
-        os << "    \"candidate_cofactor_s\": " << stats.timings.candidate_cofactor_s << ",\n";
-        os << "    \"filter_s\": " << stats.timings.filter_s << ",\n";
-        os << "    \"linalg_s\": " << stats.timings.linalg_s << ",\n";
-        os << "    \"sqrt_s\": " << stats.timings.sqrt_s << ",\n";
-        os << "    \"extract_s\": " << stats.timings.extract_s << "\n";
+        os << "    \"total_s\": " << json::number(stats.timings.total_s) << ",\n";
+        os << "    \"poly_s\": " << json::number(stats.timings.poly_s) << ",\n";
+        os << "    \"fb_s\": " << json::number(stats.timings.fb_s) << ",\n";
+        os << "    \"sieve_s\": " << json::number(stats.timings.sieve_s) << ",\n";
+        os << "    \"candidate_generation_s\": "
+           << json::number(stats.timings.candidate_generation_s) << ",\n";
+        os << "    \"candidate_cofactor_s\": " << json::number(stats.timings.candidate_cofactor_s)
+           << ",\n";
+        os << "    \"filter_s\": " << json::number(stats.timings.filter_s) << ",\n";
+        os << "    \"linalg_s\": " << json::number(stats.timings.linalg_s) << ",\n";
+        os << "    \"sqrt_s\": " << json::number(stats.timings.sqrt_s) << ",\n";
+        os << "    \"extract_s\": " << json::number(stats.timings.extract_s) << "\n";
         os << "  },\n";
 
         // Stats
@@ -204,8 +219,8 @@ struct FactorResult {
         os << "    \"algebraic_primes\": " << stats.algebraic_primes << ",\n";
         os << "    \"special_q_processed\": " << stats.special_q_processed << ",\n";
         os << "    \"sieve_rounds_completed\": " << stats.sieve_rounds_completed << ",\n";
-        os << "    \"sieve_stop_reason\": \"" << sieve_stop_reason_name(stats.sieve_stop_reason)
-           << "\",\n";
+        os << "    \"sieve_stop_reason\": "
+           << json::quote(sieve_stop_reason_name(stats.sieve_stop_reason)) << ",\n";
         os << "    \"special_q_batch_worker_limit\": " << stats.special_q_batch_worker_limit
            << ",\n";
         os << "    \"special_q_batch_peak_workers\": " << stats.special_q_batch_peak_workers
@@ -257,6 +272,7 @@ struct FactorResult {
         os << "    \"merged_relations\": " << stats.merged_relations << ",\n";
         os << "    \"matrix_rows\": " << stats.matrix_rows << ",\n";
         os << "    \"matrix_cols\": " << stats.matrix_cols << ",\n";
+        os << "    \"matrix_weight\": " << stats.matrix_weight << ",\n";
         os << "    \"matrix_excess\": " << stats.matrix_excess << ",\n";
         os << "    \"dependencies_found\": " << stats.dependencies_found << ",\n";
         os << "    \"dependencies_tried\": " << stats.dependencies_tried << "\n";
@@ -268,10 +284,19 @@ struct FactorResult {
     /// Format as CSV line (header + data)
     [[nodiscard]] std::string to_csv_line(bool include_header = false) const {
         std::ostringstream os;
+        os.imbue(std::locale::classic());
         if (include_header) {
             os << "n,success,method,factor1,factor2,bits,digits,total_s,"
                << "poly_s,fb_s,sieve_s,filter_s,linalg_s,sqrt_s,"
-               << "relations,matrix_rows,matrix_cols,deps_found\n";
+               << "relations,matrix_rows,matrix_cols,deps_found,"
+               << "complete,prime_factors,factor_count,all_factors\n";
+        }
+        std::ostringstream factors_os;
+        for (size_t i = 0; i < factors.size(); ++i) {
+            if (i > 0) {
+                factors_os << "*";
+            }
+            factors_os << factors[i].to_string();
         }
         os << n.to_string() << "," << (success ? "true" : "false") << ","
            << method_tag(stats.method_used) << ","
@@ -281,13 +306,16 @@ struct FactorResult {
            << stats.timings.fb_s << "," << stats.timings.sieve_s << "," << stats.timings.filter_s
            << "," << stats.timings.linalg_s << "," << stats.timings.sqrt_s << ","
            << stats.relations_found << "," << stats.matrix_rows << "," << stats.matrix_cols << ","
-           << stats.dependencies_found << "\n";
+           << stats.dependencies_found << "," << (factorization_complete ? "true" : "false") << ","
+           << (factors_prime ? "true" : "false") << "," << factors.size() << "," << factors_os.str()
+           << "\n";
         return os.str();
     }
 
     /// Format as detailed report
     [[nodiscard]] std::string to_report() const {
         std::ostringstream os;
+        os.imbue(std::locale::classic());
         os << "================================================================\n";
         os << "  GNFS Factorization Report\n";
         os << "================================================================\n\n";
@@ -300,6 +328,10 @@ struct FactorResult {
             os << " (" << stats.method_reason << ")";
         os << "\n";
         os << "  Result: " << (success ? "SUCCESS" : "FAILED") << "\n\n";
+        if (success) {
+            os << "  Complete prime factorization: "
+               << (factorization_complete && factors_prime ? "yes" : "no") << "\n\n";
+        }
 
         if (success) {
             os << "Factors\n";

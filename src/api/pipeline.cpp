@@ -1014,7 +1014,7 @@ void Pipeline::emit_progress(Phase phase, const std::string& msg, double phase_p
     info.elapsed_s = elapsed_s();
     info.message = msg;
     info.relations_found = stats_.relations_found;
-    info.relations_target = 0;
+    info.relations_target = relations_target_;
     info.special_q_done = stats_.special_q_processed;
     info.matrix_rows = stats_.matrix_rows;
     info.matrix_cols = stats_.matrix_cols;
@@ -1460,6 +1460,7 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
     size_t matrix_cols = gnfs::util::saturating_size_add(factor_base_cols, params_.target_excess);
     size_t initial_target = params_.raw_relation_target(matrix_cols);
     size_t batch_target = initial_target;
+    relations_target_ = initial_target;
 
     auto make_reduction_config =
         [&](size_t input_relations, relation::ReductionStrategy legacy_strategy,
@@ -1617,6 +1618,7 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
         sq_count = prior_ckpt->sq_count;
         candidates_total = prior_ckpt->candidates_total;
         batch_target = prior_ckpt->batch_target;
+        relations_target_ = batch_target;
         round_start = prior_ckpt->round;
         sq_gen.reset_to(prior_ckpt->current_index);
         emit_log(LogLevel::Info, Phase::Sieving,
@@ -2047,14 +2049,14 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
                         : 0;
                 double pct =
                     static_cast<double>(collector.size()) / static_cast<double>(batch_target);
+                stats_.relations_found = collector.size();
+                stats_.special_q_processed = sq_count;
+                relations_target_ = batch_target;
                 emit_progress(Phase::Sieving,
                               "SQ=" + std::to_string(sq_count) +
                                   " rels=" + std::to_string(collector.size()) + " " +
                                   std::to_string(rels_per_sec) + "/s",
                               std::min(pct, 1.0));
-
-                stats_.relations_found = collector.size();
-                stats_.special_q_processed = sq_count;
             }
         }
 
@@ -2130,6 +2132,7 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
             std::min(std::max(gnfs::util::saturating_size_product(batch_target, 2), needed_raw),
                      gnfs::util::saturating_size_product(initial_target,
                                                          100)); // generous cap for low merge rates
+        relations_target_ = batch_target;
 
         // β = lp_cols / usable (BACKLOG #1 diagnostic). β << 1 means matrix
         // build has excess and BW can find dependencies; β >= 1 means LP cols

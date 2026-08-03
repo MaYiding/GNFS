@@ -37,6 +37,7 @@
 #include <iostream>
 #include <iterator>
 #include <limits>
+#include <locale>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -458,12 +459,32 @@ bool test_result_to_text() {
 }
 
 bool test_result_to_json() {
+    class CommaDecimalPunct final : public std::numpunct<char> {
+    protected:
+        [[nodiscard]] char do_decimal_point() const override {
+            return ',';
+        }
+    };
+    struct LocaleGuard final {
+        std::locale previous;
+        ~LocaleGuard() {
+            try {
+                std::locale::global(previous);
+            } catch (...) {
+            }
+        }
+    } locale_guard{std::locale()};
+
+    std::locale::global(std::locale(std::locale::classic(), new CommaDecimalPunct));
     FactorResult r;
     r.success = true;
+    r.factorization_complete = true;
+    r.factors_prime = true;
     r.n = Integer(143);
     r.factors.push_back(Integer(11));
     r.factors.push_back(Integer(13));
     r.stats.n_bits = 8;
+    r.stats.method_reason = "line\n\"quoted\"\t";
     r.stats.sieve_rounds_completed = 1;
     r.stats.sieve_stop_reason = SieveStopReason::AdaptiveRoundLimitReached;
     r.stats.special_q_batch_worker_limit = 2;
@@ -481,14 +502,21 @@ bool test_result_to_json() {
     r.stats.candidate_batch_after_generation_current_rss_bytes = 123456;
     r.stats.candidate_batch_after_cofactor_current_rss_bytes = 234567;
     r.stats.candidate_batch_after_release_current_rss_bytes = 345678;
+    r.stats.matrix_weight = 987;
+    r.stats.timings.total_s = std::numeric_limits<double>::quiet_NaN();
+    r.stats.timings.poly_s = std::numeric_limits<double>::infinity();
     r.stats.timings.candidate_generation_s = 0.25;
     r.stats.timings.candidate_cofactor_s = 0.5;
 
     auto json = r.to_json();
-    assert(json.find("\"success\": true") != std::string::npos);
-    assert(json.find("\"143\"") != std::string::npos);
-    assert(json.find("\"11\"") != std::string::npos);
-    if (json.find("\"sieve_rounds_completed\": 1") == std::string::npos ||
+    if (json.find("\"success\": true") == std::string::npos ||
+        json.find("\"factorization_complete\": true") == std::string::npos ||
+        json.find("\"factors_prime\": true") == std::string::npos ||
+        json.find("\"143\"") == std::string::npos || json.find("\"11\"") == std::string::npos ||
+        json.find("\"method_reason\": \"line\\n\\\"quoted\\\"\\t\"") == std::string::npos ||
+        json.find("\"total_s\": null") == std::string::npos ||
+        json.find("\"poly_s\": null") == std::string::npos ||
+        json.find("\"sieve_rounds_completed\": 1") == std::string::npos ||
         json.find("\"sieve_stop_reason\": \"adaptive_round_limit_reached\"") == std::string::npos ||
         json.find("\"special_q_batch_worker_limit\": 2") == std::string::npos ||
         json.find("\"special_q_batch_peak_workers\": 2") == std::string::npos ||
@@ -508,6 +536,7 @@ bool test_result_to_json() {
             std::string::npos ||
         json.find("\"candidate_batch_after_release_current_rss_bytes\": 345678") ==
             std::string::npos ||
+        json.find("\"matrix_weight\": 987") == std::string::npos ||
         json.find("\"candidate_generation_s\": 0.25") == std::string::npos ||
         json.find("\"candidate_cofactor_s\": 0.5") == std::string::npos) {
         return false;
@@ -518,15 +547,18 @@ bool test_result_to_json() {
 bool test_result_to_csv() {
     FactorResult r;
     r.success = true;
+    r.factorization_complete = true;
+    r.factors_prime = true;
     r.n = Integer(143);
     r.factors.push_back(Integer(11));
     r.factors.push_back(Integer(13));
 
     auto csv = r.to_csv_line(true);
-    // Should have header + data; header order: n,success,method,factor1,factor2,...
-    assert(csv.find("n,success") != std::string::npos);
-    assert(csv.find("143,true,auto,11,13") != std::string::npos);
-    return true;
+    // Preserve the historic prefix and append complete-factorization metadata.
+    return csv.starts_with("n,success,method,factor1,factor2,bits,digits,total_s,") &&
+           csv.find("deps_found,complete,prime_factors,factor_count,all_factors\n") !=
+               std::string::npos &&
+           csv.ends_with(",true,true,2,11*13\n");
 }
 
 bool test_result_to_report() {
@@ -635,6 +667,46 @@ bool test_factorize_prime_input() {
     assert(!result.success);
     assert(result.factors.empty());
     return true;
+}
+
+bool test_factorize_completely_multiprime() {
+    std::vector<Phase> phases;
+    std::vector<std::string> logs;
+    auto result = factorize_completely(
+        Integer(360), Config::auto_detect(),
+        [&phases](const ProgressInfo& info) { phases.push_back(info.phase); },
+        [&logs](const LogEntry& entry) { logs.push_back(entry.message); });
+
+    if (!result.success || !result.factorization_complete || !result.factors_prime) {
+        return false;
+    }
+    const std::vector<std::string> expected = {"2", "2", "2", "3", "3", "5"};
+    std::vector<std::string> actual;
+    Integer product(1);
+    for (const auto& factor : result.factors) {
+        actual.push_back(factor.to_string());
+        product *= factor;
+    }
+    return actual == expected && product.compare(Integer(360)) == 0 && !phases.empty() &&
+           phases.back() == Phase::Done &&
+           std::count(phases.begin(), phases.end(), Phase::Done) == 1 && !logs.empty();
+}
+
+bool test_factorize_completely_prime_input() {
+    auto result = factorize_completely(Integer(127));
+    return result.success && result.factorization_complete && result.factors_prime &&
+           result.stats.method_used == FactorizationMethod::TrialDivision &&
+           result.factors.size() == 1 && result.factors[0].compare(Integer(127)) == 0;
+}
+
+bool test_factorize_completely_perfect_power() {
+    auto result = factorize_completely(Integer(65536)); // 2^16
+    if (!result.success || !result.factorization_complete || !result.factors_prime ||
+        result.factors.size() != 16) {
+        return false;
+    }
+    return std::all_of(result.factors.begin(), result.factors.end(),
+                       [](const Integer& factor) { return factor.compare(Integer(2)) == 0; });
 }
 
 // ============================================================
@@ -3466,6 +3538,9 @@ int main() {
     TEST(factorize_with_config);
     TEST(factorize_with_progress);
     TEST(factorize_prime_input);
+    TEST(factorize_completely_multiprime);
+    TEST(factorize_completely_prime_input);
+    TEST(factorize_completely_perfect_power);
 
     std::cout << "\nPipeline tests:\n";
     TEST(solver_dependency_shape_guard);
