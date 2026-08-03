@@ -15761,6 +15761,35 @@ void test_wave_store_worker_attempt_start_fresh_retry_chain() {
                                       wave_attempt_lease_from_receipt(reservation_0)));
     }
 
+    const auto predecessor_directory_path = root / names_0->private_directory_leaf;
+    int predecessor_directory_fd = -1;
+    do {
+        predecessor_directory_fd =
+            ::open(predecessor_directory_path.c_str(),
+                   O_RDONLY | O_NONBLOCK | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    } while (predecessor_directory_fd < 0 && errno == EINTR);
+    CHECK(predecessor_directory_fd >= 0);
+    WaveSnapshotFd held_predecessor_directory(predecessor_directory_fd);
+    struct stat predecessor_directory_metadata {};
+    CHECK(::fstat(held_predecessor_directory.get(), &predecessor_directory_metadata) == 0);
+    CHECK(S_ISDIR(predecessor_directory_metadata.st_mode));
+    CHECK(same_native_identity(attempt_0->lease.directory, predecessor_directory_metadata));
+
+    const std::string predecessor_owner_leaf(
+        wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_LEAF);
+    int predecessor_owner_fd = -1;
+    do {
+        predecessor_owner_fd =
+            ::openat(held_predecessor_directory.get(), predecessor_owner_leaf.c_str(),
+                     O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
+    } while (predecessor_owner_fd < 0 && errno == EINTR);
+    CHECK(predecessor_owner_fd >= 0);
+    WaveSnapshotFd held_predecessor_owner(predecessor_owner_fd);
+    struct stat predecessor_owner_metadata {};
+    CHECK(::fstat(held_predecessor_owner.get(), &predecessor_owner_metadata) == 0);
+    CHECK(S_ISREG(predecessor_owner_metadata.st_mode));
+    CHECK(same_native_identity(attempt_0->lease.owner_marker, predecessor_owner_metadata));
+
     auto opened_0 = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
     auto recovered_0 = wave_detail::recover_worker_attempt_private_lease(std::move(opened_0));
     auto& recovered_claim_0 = require_private_lease_root_claim_ready(
