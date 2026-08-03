@@ -100,17 +100,54 @@ final class OffscreenRenderingTests: XCTestCase {
       return
     }
 
-    let minimumEncodedBytes = max(20_000, Int(size.width * size.height / 10))
-    XCTAssertGreaterThan(png.count, minimumEncodedBytes)
     let horizontalScale = Double(representation.pixelsWide) / size.width
     let verticalScale = Double(representation.pixelsHigh) / size.height
     XCTAssertGreaterThanOrEqual(horizontalScale, 1)
     XCTAssertEqual(horizontalScale, verticalScale, accuracy: 0.001)
+    assertRenderedPixelsAreMeaningful(representation)
 
     let attachment = XCTAttachment(data: png, uniformTypeIdentifier: "public.png")
     attachment.name = name
     attachment.lifetime = .keepAlways
     add(attachment)
+  }
+
+  private func assertRenderedPixelsAreMeaningful(_ representation: NSBitmapImageRep) {
+    let sampleColumns = 32
+    let sampleRows = 24
+    var sampledColors: Set<UInt32> = []
+    var visibleSamples = 0
+    var minimumLuminance = Double.greatestFiniteMagnitude
+    var maximumLuminance = -Double.greatestFiniteMagnitude
+
+    for row in 0..<sampleRows {
+      let y = min(
+        representation.pixelsHigh - 1,
+        (row * representation.pixelsHigh + representation.pixelsHigh / 2) / sampleRows
+      )
+      for column in 0..<sampleColumns {
+        let x = min(
+          representation.pixelsWide - 1,
+          (column * representation.pixelsWide + representation.pixelsWide / 2) / sampleColumns
+        )
+        guard let color = representation.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB)
+        else { continue }
+        if color.alphaComponent > 0.05 { visibleSamples += 1 }
+        let red = min(max(color.redComponent, 0), 1)
+        let green = min(max(color.greenComponent, 0), 1)
+        let blue = min(max(color.blueComponent, 0), 1)
+        let quantized = UInt32(red * 15) << 8 | UInt32(green * 15) << 4 | UInt32(blue * 15)
+        sampledColors.insert(quantized)
+        let luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+        minimumLuminance = min(minimumLuminance, luminance)
+        maximumLuminance = max(maximumLuminance, luminance)
+      }
+    }
+
+    let sampleCount = sampleColumns * sampleRows
+    XCTAssertGreaterThan(visibleSamples, sampleCount * 9 / 10)
+    XCTAssertGreaterThan(sampledColors.count, 8)
+    XCTAssertGreaterThan(maximumLuminance - minimumLuminance, 0.08)
   }
 
   private func makeEmptyModel() -> AppModel {
