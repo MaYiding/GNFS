@@ -849,9 +849,11 @@ classify_cofactor_impl_v1(const Integer& cofactor, uint64_t large_prime_bound, b
         return result;
     }
 
-    // 检查是否在 B^2 范围内 — lp_sq = large_prime_bound² via mpz_ui_pow_ui
+    // 检查是否在 B^2 范围内. Build B as a full-width Integer because
+    // unsigned long is only 32 bits under Windows LLP64.
+    const Integer lp_int(static_cast<unsigned long long>(large_prime_bound));
     Integer lp_sq;
-    mpz_ui_pow_ui(lp_sq.get_mpz(), large_prime_bound, 2);
+    mpz_mul(lp_sq.get_mpz(), lp_int.get_mpz(), lp_int.get_mpz());
     if (cofactor.compare(lp_sq) > 0) {
         // 大数 cofactor > B² — 3LP space (此分支稀少, lpb ≤ 30 bits 时 c 通常 fits_uint64).
         // 当前实现 3LP 只支持 uint64 cofactor (fits_uint64 path). 大数路径 fallback TooLarge.
@@ -867,7 +869,6 @@ classify_cofactor_impl_v1(const Integer& cofactor, uint64_t large_prime_bound, b
         mpz_divexact(other.get_mpz(), cofactor.get_mpz(), ecm_result->get_mpz());
 
         // 检查两个因子是否都是素数且在界限内
-        Integer lp_int(static_cast<unsigned long long>(large_prime_bound));
         if (is_probable_prime(*ecm_result) && is_probable_prime(other) &&
             ecm_result->compare(lp_int) <= 0 && other.compare(lp_int) <= 0) {
             result.type = CofactorClass::Semiprime;
