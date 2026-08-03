@@ -1,0 +1,61 @@
+name: Workbench CI
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main, dev ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: workbench-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workbench:
+    name: macOS 26 build, test, and package
+    runs-on: macos-26
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: brew install gmp ntl xcodegen
+
+      - name: Check Workbench scripts and stdout ownership
+        run: |
+          zsh -n apps/macos/GNFSWorkbench/scripts/*.sh
+          python3 scripts/check_stdout_contract.py --self-test
+          python3 scripts/check_stdout_contract.py
+
+      - name: Run Workbench tests
+        run: apps/macos/GNFSWorkbench/scripts/test-app.sh
+
+      - name: Build and verify release package
+        env:
+          WORKBENCH_DIST: ${{ runner.temp }}/gnfs-workbench-dist
+        run: |
+          apps/macos/GNFSWorkbench/scripts/build-app.sh Release "$WORKBENCH_DIST"
+          test -f "$WORKBENCH_DIST/GNFSWorkbench-0.1.0-macOS-arm64.zip"
+          test -f "$WORKBENCH_DIST/GNFSWorkbench-0.1.0-macOS-arm64.zip.sha256"
+          test "$(find "$WORKBENCH_DIST" -type f | wc -l | tr -d ' ')" = 2
+          (
+            cd "$WORKBENCH_DIST"
+            shasum -a 256 -c GNFSWorkbench-0.1.0-macOS-arm64.zip.sha256
+          )
+
+      - name: Upload verified Workbench package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: gnfs-workbench-macos-arm64
+          path: |
+            ${{ runner.temp }}/gnfs-workbench-dist/GNFSWorkbench-0.1.0-macOS-arm64.zip
+            ${{ runner.temp }}/gnfs-workbench-dist/GNFSWorkbench-0.1.0-macOS-arm64.zip.sha256
+          if-no-files-found: error
+          retention-days: 14

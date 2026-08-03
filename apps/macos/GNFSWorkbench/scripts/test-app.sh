@@ -4,9 +4,18 @@ set -euo pipefail
 
 script_dir="${0:A:h}"
 project_root="${script_dir:A:h}"
-derived_data="/private/tmp/GNFSWorkbenchTests"
-generated_project_root="/private/tmp/GNFSWorkbenchTestProject"
 test_target="GNFSWorkbenchTests"
+scratch_root=$(mktemp -d "${TMPDIR:-/private/tmp}/gnfs-workbench-tests.XXXXXX")
+derived_data="$scratch_root/DerivedData"
+generated_project_root="$scratch_root/Project"
+cli_build_root="$scratch_root/CLI"
+repo_root="${script_dir:A:h:h:h:h}"
+source_revision=$(git -C "$repo_root" rev-parse --verify 'HEAD^{commit}')
+
+cleanup() {
+    rm -rf -- "$scratch_root"
+}
+trap cleanup EXIT INT TERM
 
 if [[ "${1:-}" == "--ui" ]]; then
     test_target="GNFSWorkbenchUITests"
@@ -17,7 +26,7 @@ fi
 
 "$script_dir/generate-project.sh" "$generated_project_root"
 
-xcodebuild -quiet \
+GNFS_WORKBENCH_CLI_BUILD_ROOT="$cli_build_root" xcodebuild -quiet \
     -project "$generated_project_root/GNFSWorkbench.xcodeproj" \
     -scheme GNFSWorkbench \
     -configuration Debug \
@@ -26,5 +35,6 @@ xcodebuild -quiet \
     CODE_SIGN_IDENTITY=- \
     DEVELOPMENT_TEAM= \
     GNFS_WORKBENCH_SOURCE_ROOT="$project_root" \
+    GNFS_SOURCE_REVISION="$source_revision" \
     -only-testing:"$test_target" \
     test

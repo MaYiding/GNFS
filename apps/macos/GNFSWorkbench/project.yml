@@ -29,12 +29,9 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: org.gnfs.workbench
         PRODUCT_NAME: GNFSWorkbench
         PRODUCT_MODULE_NAME: GNFSWorkbench
-        GENERATE_INFOPLIST_FILE: true
-        INFOPLIST_KEY_CFBundleDisplayName: GNFS Workbench
-        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
-        INFOPLIST_KEY_NSHumanReadableCopyright: Copyright © 2026 GNFS Contributors
-        INFOPLIST_KEY_NSHighResolutionCapable: true
-        INFOPLIST_KEY_NSSupportsAutomaticGraphicsSwitching: true
+        GENERATE_INFOPLIST_FILE: false
+        INFOPLIST_FILE: $(GNFS_WORKBENCH_SOURCE_ROOT)/Config/GNFSWorkbench-Info.plist
+        GNFS_SOURCE_REVISION: local-development
         MARKETING_VERSION: 0.1.0
         CURRENT_PROJECT_VERSION: 1
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

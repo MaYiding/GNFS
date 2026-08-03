@@ -180,6 +180,16 @@ contains diagnostic text only. See the
 [CLI event stream protocol](docs/api/event-stream.md) for ordering, fields, exit
 statuses, and compatibility rules.
 
+### macOS Workbench
+
+`apps/macos/GNFSWorkbench/` provides a native SwiftUI workbench for pipeline
+progress, relation metrics, structured logs, complete prime factors, and local
+history. It supports Apple silicon on macOS 26 or later. See
+[GNFS Workbench](apps/macos/GNFSWorkbench/README.md) for build, test, temporary
+workspace lifecycle, and local ZIP delivery details. The current ZIP uses an
+ad-hoc signature and is not notarized, so it is not an unrestricted public
+distribution package.
+
 <details>
 <summary><b>Example configuration file (click to expand)</b></summary>
 

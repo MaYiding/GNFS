@@ -34,7 +34,23 @@ for dependency in "$gmp_library" "$ntl_library"; do
     fi
 done
 
-cli_build_root="${GNFS_WORKBENCH_CLI_BUILD_ROOT:-/private/tmp/GNFSWorkbenchCLI}"
+temporary_cli_root=""
+if [[ -n "${GNFS_WORKBENCH_CLI_BUILD_ROOT:-}" ]]; then
+    cli_build_root="$GNFS_WORKBENCH_CLI_BUILD_ROOT"
+elif [[ -n "${TARGET_TEMP_DIR:-}" ]]; then
+    cli_build_root="$TARGET_TEMP_DIR/GNFSWorkbenchCLI"
+else
+    temporary_cli_root=$(mktemp -d "${TMPDIR:-/private/tmp}/gnfs-workbench-cli.XXXXXX")
+    cli_build_root="$temporary_cli_root"
+fi
+
+cleanup() {
+    if [[ -n "$temporary_cli_root" ]]; then
+        rm -rf -- "$temporary_cli_root"
+    fi
+}
+trap cleanup EXIT INT TERM
+
 cli_build_dir="$cli_build_root/$build_type-arm64"
 parallel_jobs=$(sysctl -n hw.ncpu 2>/dev/null || print 4)
 deployment_target="${MACOSX_DEPLOYMENT_TARGET:-26.0}"
