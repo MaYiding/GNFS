@@ -107,6 +107,8 @@ The runner uses a dedicated `build-tsan-relation` Debug directory, disables nati
 - `test_structured_parallel_failures`
 - `test_structured_incidence_builder`
 - `test_siqs_shadow_linear_algebra`
+- `test_siqs_shadow_proof_runner`
+- `test_siqs_shadow_proof_observe`
 
 The binaries run serially with a default 120-second timeout per binary. An explicit `--timeout` overrides that default. The Linux CI job has a separate 20-minute outer timeout, so configuration or compilation cannot leave the lane unbounded.
 
