@@ -1,9 +1,9 @@
 #pragma once
 
+#include "../core/integer.hpp"
 #include "config.hpp"
 #include "progress.hpp"
 #include "result.hpp"
-#include "../core/integer.hpp"
 
 #include <string>
 
@@ -42,6 +42,8 @@ FactorResult factorize_completely(const std::string& n_str, const Config& config
                                   ProgressCallback progress_cb, LogCallback log_cb);
 
 /// Version info
-constexpr const char* version() { return "0.1.0"; }
+constexpr const char* version() {
+    return "0.1.0";
+}
 
 } // namespace gnfs::api
