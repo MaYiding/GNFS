@@ -247,33 +247,47 @@ void close_stdout_stream() noexcept {
 
 [[nodiscard]] int fair_drain_contract() {
     constexpr std::size_t writer_count = 4;
+    constexpr std::size_t chunks_per_writer = 128;
     constexpr std::size_t stderr_size = 256 * 1024;
     const std::string stdout_chunk(8192, 'F');
-    std::atomic<bool> stop{false};
     std::atomic<bool> writers_ok{true};
-    std::atomic<bool> stdout_started{false};
+    std::atomic<std::size_t> writers_started{0};
+    std::atomic<bool> pressure_started{false};
     std::array<std::thread, writer_count> writers;
     for (auto& writer : writers) {
         writer = std::thread([&]() noexcept {
-            while (!stop.load(std::memory_order_relaxed)) {
+            if (!write_stdout(stdout_chunk)) {
+                writers_ok.store(false, std::memory_order_release);
+                return;
+            }
+            writers_started.fetch_add(1, std::memory_order_release);
+            while (!pressure_started.load(std::memory_order_acquire) &&
+                   writers_ok.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            if (!writers_ok.load(std::memory_order_acquire)) {
+                return;
+            }
+            for (std::size_t chunk = 1; chunk < chunks_per_writer; ++chunk) {
                 if (!write_stdout(stdout_chunk)) {
                     writers_ok.store(false, std::memory_order_release);
                     break;
                 }
-                stdout_started.store(true, std::memory_order_release);
             }
         });
     }
 
     // Sanitizer scheduling can let the main thread finish stderr before any
-    // writer runs. Start the pressure phase only after stdout has real data.
-    while (!stdout_started.load(std::memory_order_acquire) &&
+    // writer runs. Start bounded concurrent pressure only after every writer
+    // has put real data into stdout.
+    while (writers_started.load(std::memory_order_acquire) != writer_count &&
            writers_ok.load(std::memory_order_acquire)) {
         std::this_thread::yield();
     }
-    const bool stderr_ok =
-        stdout_started.load(std::memory_order_acquire) && write_repeated(false, 'E', stderr_size);
-    stop.store(true, std::memory_order_relaxed);
+    const bool all_writers_started =
+        writers_started.load(std::memory_order_acquire) == writer_count;
+    pressure_started.store(true, std::memory_order_release);
+    const bool stderr_ok = all_writers_started && write_repeated(false, 'E', stderr_size);
     for (auto& writer : writers) {
         writer.join();
     }
