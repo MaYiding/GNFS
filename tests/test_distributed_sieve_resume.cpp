@@ -3737,7 +3737,9 @@ void test_predecessor_and_dependency_closure() {
                                          fixture.handoff.artifact.index_file.identity;
                                  }));
 
-    for (const auto& [control_name, control_identity] : manifest_control_identities) {
+    for (const auto& control : manifest_control_identities) {
+        const auto control_name = control.first;
+        const auto control_identity = control.second;
         for (const bool mutate_owner : {true, false}) {
             const auto value =
                 make_merge_alias_case({},
@@ -3957,7 +3959,9 @@ void test_predecessor_and_dependency_closure() {
                    &matching_successor_format.successor, &matching_successor_format.ack),
                "successor format may advance when start binds the same version");
 
-    for (const auto& [control_name, control_identity] : manifest_control_identities) {
+    for (const auto& control : manifest_control_identities) {
+        const auto control_name = control.first;
+        const auto control_identity = control.second;
         for (const bool mutate_owner : {true, false}) {
             const auto value = make_consumption_identity_case(
                 [&](auto& started) {
@@ -4512,8 +4516,12 @@ void test_predecessor_and_dependency_closure() {
             {"private handoff record",
              fixture.cleanup_authorizations[0].private_handoff_record.identity},
         }};
-    for (const auto& [field_name, mutate] : private_identity_mutations) {
-        for (const auto& [target_name, target_identity] : first_authorization_identities) {
+    for (const auto& mutation : private_identity_mutations) {
+        const auto field_name = mutation.first;
+        const auto mutate = mutation.second;
+        for (const auto& target : first_authorization_identities) {
+            const auto target_name = target.first;
+            const auto target_identity = target.second;
             const std::string context =
                 std::string(field_name) + " aliases prior " + std::string(target_name);
             require_cross_authorization_binding_rejected(
