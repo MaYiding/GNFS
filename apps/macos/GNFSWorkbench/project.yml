@@ -1,0 +1,113 @@
+name: GNFSWorkbench
+
+options:
+  createIntermediateGroups: true
+  groupSortPosition: top
+  minimumXcodeGenVersion: 2.45.0
+
+configs:
+  Debug: debug
+  Release: release
+
+settings:
+  base:
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+    SWIFT_VERSION: "6.0"
+    GNFS_WORKBENCH_SOURCE_ROOT: $(SRCROOT)
+
+targets:
+  GNFSWorkbench:
+    type: application
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: GNFSWorkbench
+        excludes:
+          - "**/* [0-9].swift"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.gnfs.workbench
+        PRODUCT_NAME: GNFSWorkbench
+        PRODUCT_MODULE_NAME: GNFSWorkbench
+        GENERATE_INFOPLIST_FILE: true
+        INFOPLIST_KEY_CFBundleDisplayName: GNFS Workbench
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        INFOPLIST_KEY_NSHumanReadableCopyright: Copyright © 2026 GNFS Contributors
+        INFOPLIST_KEY_NSHighResolutionCapable: true
+        INFOPLIST_KEY_NSSupportsAutomaticGraphicsSwitching: true
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        ENABLE_HARDENED_RUNTIME: true
+        ENABLE_APP_SANDBOX: false
+        SWIFT_STRICT_CONCURRENCY: complete
+        SWIFT_EMIT_LOC_STRINGS: true
+        CODE_SIGN_STYLE: Automatic
+      configs:
+        Debug:
+          ENABLE_TESTABILITY: true
+          SWIFT_OPTIMIZATION_LEVEL: -Onone
+        Release:
+          SWIFT_COMPILATION_MODE: wholemodule
+          SWIFT_OPTIMIZATION_LEVEL: -O
+    postBuildScripts:
+      - name: Embed GNFS CLI
+        script: |
+          /bin/zsh "$GNFS_WORKBENCH_SOURCE_ROOT/scripts/embed-gnfs-cli.sh" \
+            "$BUILT_PRODUCTS_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/gnfs" \
+            "$CONFIGURATION"
+        basedOnDependencyAnalysis: false
+
+  GNFSWorkbenchTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: GNFSWorkbenchTests
+        excludes:
+          - "**/* [0-9].swift"
+    dependencies:
+      - target: GNFSWorkbench
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.gnfs.workbench.tests
+        GENERATE_INFOPLIST_FILE: true
+        SWIFT_STRICT_CONCURRENCY: complete
+
+  GNFSWorkbenchUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: GNFSWorkbenchUITests
+        excludes:
+          - "**/* [0-9].swift"
+    dependencies:
+      - target: GNFSWorkbench
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.gnfs.workbench.ui-tests
+        GENERATE_INFOPLIST_FILE: true
+        SWIFT_STRICT_CONCURRENCY: complete
+        TEST_TARGET_NAME: GNFSWorkbench
+
+schemes:
+  GNFSWorkbench:
+    build:
+      targets:
+        GNFSWorkbench: all
+        GNFSWorkbenchTests: [test]
+        GNFSWorkbenchUITests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: true
+      targets:
+        - GNFSWorkbenchTests
+        - GNFSWorkbenchUITests
+    profile:
+      config: Release
+    archive:
+      config: Release
