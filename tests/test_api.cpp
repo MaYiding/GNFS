@@ -461,7 +461,9 @@ bool test_result_to_text() {
 bool test_result_to_json() {
     class CommaDecimalPunct final : public std::numpunct<char> {
     protected:
-        [[nodiscard]] char do_decimal_point() const override { return ','; }
+        [[nodiscard]] char do_decimal_point() const override {
+            return ',';
+        }
     };
     struct LocaleGuard final {
         std::locale previous;
@@ -510,10 +512,8 @@ bool test_result_to_json() {
     if (json.find("\"success\": true") == std::string::npos ||
         json.find("\"factorization_complete\": true") == std::string::npos ||
         json.find("\"factors_prime\": true") == std::string::npos ||
-        json.find("\"143\"") == std::string::npos ||
-        json.find("\"11\"") == std::string::npos ||
-        json.find("\"method_reason\": \"line\\n\\\"quoted\\\"\\t\"") ==
-            std::string::npos ||
+        json.find("\"143\"") == std::string::npos || json.find("\"11\"") == std::string::npos ||
+        json.find("\"method_reason\": \"line\\n\\\"quoted\\\"\\t\"") == std::string::npos ||
         json.find("\"total_s\": null") == std::string::npos ||
         json.find("\"poly_s\": null") == std::string::npos ||
         json.find("\"sieve_rounds_completed\": 1") == std::string::npos ||
@@ -673,14 +673,9 @@ bool test_factorize_completely_multiprime() {
     std::vector<Phase> phases;
     std::vector<std::string> logs;
     auto result = factorize_completely(
-        Integer(360),
-        Config::auto_detect(),
-        [&phases](const ProgressInfo& info) {
-            phases.push_back(info.phase);
-        },
-        [&logs](const LogEntry& entry) {
-            logs.push_back(entry.message);
-        });
+        Integer(360), Config::auto_detect(),
+        [&phases](const ProgressInfo& info) { phases.push_back(info.phase); },
+        [&logs](const LogEntry& entry) { logs.push_back(entry.message); });
 
     if (!result.success || !result.factorization_complete || !result.factors_prime) {
         return false;
@@ -692,32 +687,26 @@ bool test_factorize_completely_multiprime() {
         actual.push_back(factor.to_string());
         product *= factor;
     }
-    return actual == expected &&
-           product.compare(Integer(360)) == 0 &&
-           !phases.empty() && phases.back() == Phase::Done &&
-           std::count(phases.begin(), phases.end(), Phase::Done) == 1 &&
-           !logs.empty();
+    return actual == expected && product.compare(Integer(360)) == 0 && !phases.empty() &&
+           phases.back() == Phase::Done &&
+           std::count(phases.begin(), phases.end(), Phase::Done) == 1 && !logs.empty();
 }
 
 bool test_factorize_completely_prime_input() {
     auto result = factorize_completely(Integer(127));
-    return result.success &&
-           result.factorization_complete &&
-           result.factors_prime &&
-           result.factors.size() == 1 &&
-           result.factors[0].compare(Integer(127)) == 0;
+    return result.success && result.factorization_complete && result.factors_prime &&
+           result.stats.method_used == FactorizationMethod::TrialDivision &&
+           result.factors.size() == 1 && result.factors[0].compare(Integer(127)) == 0;
 }
 
 bool test_factorize_completely_perfect_power() {
-    auto result = factorize_completely(Integer(65536));  // 2^16
+    auto result = factorize_completely(Integer(65536)); // 2^16
     if (!result.success || !result.factorization_complete || !result.factors_prime ||
         result.factors.size() != 16) {
         return false;
     }
     return std::all_of(result.factors.begin(), result.factors.end(),
-                       [](const Integer& factor) {
-                           return factor.compare(Integer(2)) == 0;
-                       });
+                       [](const Integer& factor) { return factor.compare(Integer(2)) == 0; });
 }
 
 // ============================================================

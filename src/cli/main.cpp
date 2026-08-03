@@ -79,6 +79,13 @@ static Integer parse_integer_literal(std::string_view value) {
     return Integer(std::string(value), 10);
 }
 
+static bool option_requires_value(std::string_view option) {
+    return option == "--lang" || option == "--method" || option == "-o" || option == "--output" ||
+           option == "-c" || option == "--config" || option == "--degree" ||
+           option == "--fb-rational" || option == "--fb-algebraic" || option == "--lp-bound" ||
+           option == "--sieve-width" || option == "--sieve-height" || option == "--threads";
+}
+
 // ============================================================
 // Duration formatting
 // ============================================================
@@ -646,11 +653,15 @@ int main(int argc, char* argv[]) {
     // Detect the machine protocol before normal parsing so argument errors are
     // structured regardless of where --event-stream appears in argv.
     for (int i = 1; i < argc; ++i) {
-        if (std::string_view(argv[i]) == "--event-stream") {
+        const std::string_view argument = argv[i];
+        if (argument == "--event-stream") {
             event_stream_enabled = true;
             quiet = true;
             g_color = false;
             break;
+        }
+        if (option_requires_value(argument) && i + 1 < argc) {
+            ++i;
         }
     }
     // verbose_explicit: did the user pass -v/--verbose or -q/--quiet on CLI?

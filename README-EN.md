@@ -131,6 +131,7 @@ make -C build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 ./build/gnfs 96091                                # automatic method selection
 ./build/gnfs 1000036000099 --method siqs          # force SIQS
 ./build/gnfs 1000036000099 --json                 # JSON output
+./build/gnfs 360 --complete --event-stream        # recursive factors as JSON Lines
 ./build/gnfs 1000036000099 --report -o result.txt # detailed report to file
 ./build/gnfs --interactive                        # REPL mode
 ```
@@ -142,6 +143,8 @@ Usage: gnfs <number> [options]
 
 Output:
   --json                  Emit JSON
+  --event-stream          Emit the versioned JSON Lines event stream
+  --complete              Recurse until every factor passes primality testing
   --csv                   Emit CSV
   --report                Emit a detailed report with statistics
   -o, --output <file>     Write to file (default: stdout)
@@ -159,10 +162,10 @@ Parameter overrides:
   --degree <d>            Polynomial degree
   --fb-rational <n>       Rational factor base bound
   --fb-algebraic <n>      Algebraic factor base bound
-  --large-prime <n>       Large prime bound
+  --lp-bound <n>          Large prime bound
   --sieve-width <n>       Sieve region width
   --sieve-height <n>      Sieve region height
-  --threads <n>           Worker threads
+  --threads <n>           Local sieve lane budget (not an OS thread cap)
 
 Configuration:
   -c, --config <file>     Load parameters from a key=value config file
@@ -170,6 +173,12 @@ Configuration:
   -h, --help              Show help
   --version               Show version
 ```
+
+`--event-stream` provides a machine protocol for GUIs and automation. It owns
+standard output and emits one complete JSON object per line; standard error
+contains diagnostic text only. See the
+[CLI event stream protocol](docs/api/event-stream.md) for ordering, fields, exit
+statuses, and compatibility rules.
 
 <details>
 <summary><b>Example configuration file (click to expand)</b></summary>
@@ -180,9 +189,10 @@ method            = auto         # auto | trial | rho | siqs | gnfs
 degree            = 4
 rational_bound    = 50000
 algebraic_bound   = 100000
-large_prime_bound = 3000000
-threads           = 8
-verbose           = true
+large_prime_bound            = 3000000
+max_special_q_batch_workers  = 2
+max_local_sieve_threads      = 8
+verbose                      = true
 ```
 </details>
 
@@ -199,10 +209,16 @@ if (result.success) {
               << result.factors[1].to_string() << "\n";
 }
 
+auto complete = gnfs::api::factorize_completely("360");
+if (complete.factorization_complete && complete.factors_prime) {
+    // factors contains 2, 2, 2, 3, 3, 5
+}
+
 // Custom configuration and explicit method
 gnfs::api::Config cfg;
-cfg.method  = gnfs::api::FactorizationMethod::SIQS;
-cfg.threads = 8;
+cfg.method = gnfs::api::FactorizationMethod::SIQS;
+cfg.set_max_special_q_batch_workers(2);
+cfg.set_max_local_sieve_threads(8);
 auto r = gnfs::api::factorize(n, cfg);
 std::cout << gnfs::api::method_name(r.stats.method_used) << "\n";
 ```
@@ -231,13 +247,15 @@ Result structure:
 ```cpp
 struct FactorResult {
     bool                  success;
+    bool                  factorization_complete;
+    bool                  factors_prime;
     Integer               n;
     std::vector<Integer>  factors;
     FactorStats           stats;
 
     std::string to_text();    // "N = p * q\nmethod: SIQS | time: 0.9s"
     std::string to_json();    // full JSON
-    std::string to_csv();
+    std::string to_csv_line();
     std::string to_report();
 };
 ```

@@ -12,7 +12,9 @@ on:
       - 'CMakeLists.txt'
       - 'CLAUDE.md'
       - 'docs/harness-engineering.md'
+      - 'include/**'
       - 'scripts/**'
+      - 'src/**'
       - 'tests/*.sh'
   pull_request:
     branches: [ main, dev ]
@@ -25,7 +27,9 @@ on:
       - 'CMakeLists.txt'
       - 'CLAUDE.md'
       - 'docs/harness-engineering.md'
+      - 'include/**'
       - 'scripts/**'
+      - 'src/**'
       - 'tests/*.sh'
   workflow_dispatch:
 
@@ -70,7 +74,8 @@ jobs:
           python3 -m py_compile \
             .claude/hooks/project-guard.py \
             scripts/check_distributed_sieve_policy.py \
-            scripts/check_harness.py
+            scripts/check_harness.py \
+            scripts/check_stdout_contract.py
 
       - name: Check test catalog
         run: zsh ./scripts/test.sh list >/tmp/gnfs-test-list.txt
@@ -80,3 +85,8 @@ jobs:
           python3 scripts/check_distributed_sieve_policy.py --self-test
           python3 scripts/check_harness.py
           bash tests/test_harness_hooks.sh
+
+      - name: Check stdout ownership
+        run: |
+          python3 scripts/check_stdout_contract.py --self-test
+          python3 scripts/check_stdout_contract.py

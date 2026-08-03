@@ -72,8 +72,8 @@ public:
 
             if (use_bai_brent) {
                 if (verbose) {
-                    std::cout << "  Selector: BaiBrent (degree=" << degree
-                              << ", bits=" << bits << ", GNFS_POLY_BAI_BRENT=1)\n";
+                    std::cerr << "  Selector: BaiBrent (degree=" << degree << ", bits=" << bits
+                              << ", GNFS_POLY_BAI_BRENT=1)\n";
                 }
 
                 auto ctx = try_bai_brent_from_params(n, params, verbose);
@@ -82,11 +82,11 @@ public:
                 }
 
                 if (verbose) {
-                    std::cout << "  BaiBrent failed, falling back to Kleinjung\n";
+                    std::cerr << "  BaiBrent failed, falling back to Kleinjung\n";
                 }
             } else if (verbose) {
-                std::cout << "  Selector: Kleinjung (degree=" << degree
-                          << ", bits=" << bits << ")\n";
+                std::cerr << "  Selector: Kleinjung (degree=" << degree << ", bits=" << bits
+                          << ")\n";
             }
 
             auto ctx = try_kleinjung_from_params(n, params, verbose);
@@ -95,12 +95,12 @@ public:
             }
 
             if (verbose) {
-                std::cout << "  Kleinjung failed, falling back to BaseMSelector\n";
+                std::cerr << "  Kleinjung failed, falling back to BaseMSelector\n";
             }
         } else {
             if (verbose) {
-                std::cout << "  Selector: BaseMSelector (degree=" << degree
-                          << ", bits=" << bits << ")\n";
+                std::cerr << "  Selector: BaseMSelector (degree=" << degree << ", bits=" << bits
+                          << ")\n";
             }
         }
 
@@ -147,10 +147,10 @@ private:
         }
 
         if (verbose) {
-            std::cout << "  Kleinjung: Murphy E = " << result.score.log_e_score
+            std::cerr << "  Kleinjung: Murphy E = " << result.score.log_e_score
                       << ", skewness = " << result.skewness
-                      << ", candidates tested = " << result.candidates_tested
-                      << " (" << result.elapsed_seconds << "s)\n";
+                      << ", candidates tested = " << result.candidates_tested << " ("
+                      << result.elapsed_seconds << "s)\n";
         }
 
         return create_context_from_kleinjung(n, result);
@@ -172,11 +172,11 @@ private:
         }
 
         if (verbose) {
-            std::cout << "  BaiBrent: Murphy E = " << result.score.log_e_score
+            std::cerr << "  BaiBrent: Murphy E = " << result.score.log_e_score
                       << ", skewness = " << result.skewness
                       << ", candidates tested = " << result.candidates_tested
-                      << ", a_d = " << result.f.leading_coeff().to_string()
-                      << " (" << result.elapsed_seconds << "s)\n";
+                      << ", a_d = " << result.f.leading_coeff().to_string() << " ("
+                      << result.elapsed_seconds << "s)\n";
         }
 
         return create_context_from_bai_brent(n, result);

@@ -401,8 +401,8 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
     const size_t m = matrix.num_rows();
     const size_t n = matrix.num_cols();
 
-    std::cout << "  [BW-scalar] Streaming Wiedemann: " << m << "×" << n
-              << " (seed=" << seed << ")" << std::endl;
+    std::cerr << "  [BW-scalar] Streaming Wiedemann: " << m << "×" << n << " (seed=" << seed << ")"
+              << std::endl;
 
     const_cast<SparseMatrix&>(matrix).ensure_all_sorted();
     CSRMatrix csr(matrix);
@@ -446,9 +446,8 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
             "compression yet; falling back to uncompressed mmap\n");
     }
 
-    std::cout << "  [BW] Phase 1: Krylov projection (L=" << L
-              << ", seq_len=" << seq_len << (use_mmap ? ", mmap" : "")
-              << ")..." << std::flush;
+    std::cerr << "  [BW] Phase 1: Krylov projection (L=" << L << ", seq_len=" << seq_len
+              << (use_mmap ? ", mmap" : "") << ")..." << std::flush;
 
     std::vector<std::vector<uint8_t>> sequences;
     std::unique_ptr<KrylovSequenceMmap> seq_mmap;
@@ -495,7 +494,7 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
             std::swap(V.data, Vnext.data);
         }
     }
-    std::cout << " done" << std::endl;
+    std::cerr << " done" << std::endl;
 
     if (use_mmap) {
         seq_mmap->msync();
@@ -510,7 +509,7 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
     }
 
     // ── Phase 2: Scalar BM for each of 64 sequences ──
-    std::cout << "  [BW] Phase 2: Berlekamp-Massey..." << std::flush;
+    std::cerr << "  [BW] Phase 2: Berlekamp-Massey..." << std::flush;
 
     std::vector<LFSRPolynomial> polys(64);
     size_t valid_polys = 0;
@@ -544,7 +543,7 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
         if (!has_nonzero) trivial_seqs++;
     }
     if (trivial_seqs > 0) {
-        std::cout << " [WARN: " << trivial_seqs << "/64 trivial sequences]";
+        std::cerr << " [WARN: " << trivial_seqs << "/64 trivial sequences]";
     }
 
     // Also print BM degree distribution
@@ -558,9 +557,8 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
         }
     }
 
-    std::cout << " " << valid_polys << " valid (div_by_t=" << div_by_t
-              << " not_div=" << not_div << " trivial=" << trivial_seqs
-              << " max_deg=" << max_degree << ")" << std::endl;
+    std::cerr << " " << valid_polys << " valid (div_by_t=" << div_by_t << " not_div=" << not_div
+              << " trivial=" << trivial_seqs << " max_deg=" << max_degree << ")" << std::endl;
 
     if (valid_polys == 0) {
         std::cerr << "  [BW] No valid polynomials found" << std::endl;
@@ -573,8 +571,8 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
     //   Then w_j = q_j(B) * Y_j = Σ_{k=0}^{d-1} c_{k+1} * (B^k * Y)_j
     //   w_j should satisfy B * w_j = 0, hence M^T * w_j = 0.
 
-    std::cout << "  [BW] Phase 3: Solution extraction (max_degree=" << max_degree
-              << ")..." << std::flush;
+    std::cerr << "  [BW] Phase 3: Solution extraction (max_degree=" << max_degree << ")..."
+              << std::flush;
 
     // Accumulators: 64 solution vectors (m bools each, packed as vector<bool>)
     // We only accumulate bit j from V_k into solution j.
@@ -619,7 +617,7 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
             std::swap(V.data, Vnext.data);
         }
     }
-    std::cout << " done" << std::endl;
+    std::cerr << " done" << std::endl;
 
     // ── Verify solutions ──
     std::vector<std::vector<bool>> deps;
@@ -663,9 +661,9 @@ std::vector<std::vector<bool>> BlockWiedemann::block_wiedemann_scalar_solve(
         }
     }
 
-    std::cout << "  [BW-scalar] Results: " << deps.size() << " valid deps"
-              << " (verified=" << verified << " failed=" << failed
-              << " zero=" << zero_vecs << ")" << std::endl;
+    std::cerr << "  [BW-scalar] Results: " << deps.size() << " valid deps"
+              << " (verified=" << verified << " failed=" << failed << " zero=" << zero_vecs << ")"
+              << std::endl;
 
     return deps;
 }
@@ -696,10 +694,11 @@ static std::vector<std::vector<bool>> block_solve_view_impl(
     const size_t m = csr.num_rows();
     const size_t n = csr.num_cols();
 
-    std::cout << "  [BW-block";
-    if (stream_tag) std::cout << " s" << stream_tag;
-    std::cout << "] Block Wiedemann (matrix BM): " << m << "×" << n
-              << " (seed=" << seed << ")" << std::endl;
+    std::cerr << "  [BW-block";
+    if (stream_tag)
+        std::cerr << " s" << stream_tag;
+    std::cerr << "] Block Wiedemann (matrix BM): " << m << "×" << n << " (seed=" << seed << ")"
+              << std::endl;
 
     // Krylov sequence length for matrix BM: L = 2·⌈n/64⌉ + 32 (buffer).
     // Compared to scalar BM's 2n+110, this is ~64× fewer SpMV calls.
@@ -722,9 +721,8 @@ static std::vector<std::vector<bool>> block_solve_view_impl(
     const char* mmap_env = std::getenv("GNFS_BW_KRYLOV_MMAP");
     const bool use_mmap = (mmap_env != nullptr && mmap_env[0] == '1');
     const bool use_compress = use_mmap && bw_use_compress();
-    std::cout << "  [BW-block] Phase 1: Krylov (L=" << L
-              << (use_mmap ? (use_compress ? ", mmap+zip" : ", mmap") : "")
-              << ")..." << std::flush;
+    std::cerr << "  [BW-block] Phase 1: Krylov (L=" << L
+              << (use_mmap ? (use_compress ? ", mmap+zip" : ", mmap") : "") << ")..." << std::flush;
 
     std::vector<DenseGF2_64x64> A_seq;
     std::unique_ptr<KrylovSequenceMmap> A_mmap;
@@ -772,7 +770,7 @@ static std::vector<std::vector<bool>> block_solve_view_impl(
     }
     double phase1_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - phase_start).count();
-    std::cout << " done (" << phase1_ms << " ms)" << std::endl;
+    std::cerr << " done (" << phase1_ms << " ms)" << std::endl;
 
     if (use_compress) {
         A_kryz->close();
@@ -811,14 +809,14 @@ static std::vector<std::vector<bool>> block_solve_view_impl(
 
     // ── Phase 2: Matrix Berlekamp-Massey ──
     phase_start = std::chrono::steady_clock::now();
-    std::cout << "  [BW-block] Phase 2: matrix BM..." << std::flush;
+    std::cerr << "  [BW-block] Phase 2: matrix BM..." << std::flush;
     auto F = BlockWiedemann::matrix_berlekamp_massey(A_seq, n);
     const int valid_count = gnfs::util::popcount64(F.valid_mask);
     const int max_deg = static_cast<int>(F.poly.size()) - 1;
     double phase2_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - phase_start).count();
-    std::cout << " " << valid_count << " valid cols, max_deg=" << max_deg
-              << " (" << phase2_ms << " ms)" << std::endl;
+    std::cerr << " " << valid_count << " valid cols, max_deg=" << max_deg << " (" << phase2_ms
+              << " ms)" << std::endl;
 
     if (F.valid_mask == 0 || max_deg < 0) {
         std::cerr << "  [BW-block] No valid generator — falling through" << std::endl;
@@ -834,8 +832,7 @@ static std::vector<std::vector<bool>> block_solve_view_impl(
     // use F's coefficient at degree (D_j - k) at Krylov step k. Combine all
     // columns into one m×64 accumulator block.
     phase_start = std::chrono::steady_clock::now();
-    std::cout << "  [BW-block] Phase 3: block mksol (max_deg=" << max_deg
-              << ")..." << std::flush;
+    std::cerr << "  [BW-block] Phase 3: block mksol (max_deg=" << max_deg << ")..." << std::flush;
 
     for (size_t i = 0; i < m; ++i) V.data[i] = Y.data[i];
 
@@ -873,7 +870,7 @@ static std::vector<std::vector<bool>> block_solve_view_impl(
     }
     double phase3_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - phase_start).count();
-    std::cout << " done (" << phase3_ms << " ms)" << std::endl;
+    std::cerr << " done (" << phase3_ms << " ms)" << std::endl;
 
     // ── Verify each candidate column of accumulator ──
     std::vector<std::vector<bool>> deps;
@@ -915,9 +912,9 @@ static std::vector<std::vector<bool>> block_solve_view_impl(
         }
     }
 
-    std::cout << "  [BW-block] Results: " << deps.size() << " valid deps"
-              << " (verified=" << verified << " failed=" << failed
-              << " zero=" << zero_vecs << ")" << std::endl;
+    std::cerr << "  [BW-block] Results: " << deps.size() << " valid deps"
+              << " (verified=" << verified << " failed=" << failed << " zero=" << zero_vecs << ")"
+              << std::endl;
 
     return deps;
 }
@@ -961,10 +958,11 @@ static std::vector<std::vector<bool>> thin_solve_view_impl(
     const size_t m = csr.num_rows();
     const size_t n = csr.num_cols();
 
-    std::cout << "  [BW-thin";
-    if (stream_tag) std::cout << " s" << stream_tag;
-    std::cout << "] Thin matrix BW (B'=M^T·M): " << m << "×" << n
-              << " (seed=" << seed << ")" << std::endl;
+    std::cerr << "  [BW-thin";
+    if (stream_tag)
+        std::cerr << " s" << stream_tag;
+    std::cerr << "] Thin matrix BW (B'=M^T·M): " << m << "×" << n << " (seed=" << seed << ")"
+              << std::endl;
 
     // For B' = M^T·M (n×n), rank ≤ m, so minpoly degree ≤ m.
     // Block Krylov length: L = 2·⌈m/64⌉ + 32.
@@ -982,7 +980,7 @@ static std::vector<std::vector<bool>> thin_solve_view_impl(
 
     // ── Phase 1: Krylov sequence A_k = X^T · V_k where V_k = (B')^k · Y ──
     auto phase_start = std::chrono::steady_clock::now();
-    std::cout << "  [BW-thin] Phase 1: Krylov (L=" << L << ")..." << std::flush;
+    std::cerr << "  [BW-thin] Phase 1: Krylov (L=" << L << ")..." << std::flush;
     std::vector<DenseGF2_64x64> A_seq(L);
 
     // V, Vnext live in R^n; tmp lives in R^m for B'·V = M^T·(M·V) intermediate.
@@ -998,13 +996,13 @@ static std::vector<std::vector<bool>> thin_solve_view_impl(
     }
     double phase1_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - phase_start).count();
-    std::cout << " done (" << phase1_ms << " ms)" << std::endl;
+    std::cerr << " done (" << phase1_ms << " ms)" << std::endl;
 
     // ── Phase 2: Matrix Berlekamp-Massey ──
     // BM operates only on the sequence, not on the original matrix; reused as-is.
     // Pass m as the "size" (rank bound) instead of n.
     phase_start = std::chrono::steady_clock::now();
-    std::cout << "  [BW-thin] Phase 2: matrix BM..." << std::flush;
+    std::cerr << "  [BW-thin] Phase 2: matrix BM..." << std::flush;
     auto F = BlockWiedemann::matrix_berlekamp_massey(A_seq, m);
     const int valid_count = gnfs::util::popcount64(F.valid_mask);
     const int max_deg = static_cast<int>(F.poly.size()) - 1;
@@ -1012,9 +1010,8 @@ static std::vector<std::vector<bool>> thin_solve_view_impl(
     const int rank_est = compute_rank_est(F);
     double phase2_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - phase_start).count();
-    std::cout << " " << valid_count << " valid cols, max_deg=" << max_deg
-              << ", rank_est=" << rank_est << "/" << m
-              << " (" << phase2_ms << " ms)" << std::endl;
+    std::cerr << " " << valid_count << " valid cols, max_deg=" << max_deg
+              << ", rank_est=" << rank_est << "/" << m << " (" << phase2_ms << " ms)" << std::endl;
     // stderr fallback for stress/progressive
     std::fprintf(stderr,
         "[bw-thin] valid=%d/64 max_deg=%d rank_est=%d/%zu (m=%zu n=%zu)\n",
@@ -1027,8 +1024,7 @@ static std::vector<std::vector<bool>> thin_solve_view_impl(
 
     // ── Phase 3: Block mksol — accumulator w_j = sum_k V_k · F_k[*,j] in R^n ──
     phase_start = std::chrono::steady_clock::now();
-    std::cout << "  [BW-thin] Phase 3: block mksol (max_deg=" << max_deg
-              << ")..." << std::flush;
+    std::cerr << "  [BW-thin] Phase 3: block mksol (max_deg=" << max_deg << ")..." << std::flush;
 
     for (size_t i = 0; i < n; ++i) V.data[i] = Y.data[i];
 
@@ -1063,7 +1059,7 @@ static std::vector<std::vector<bool>> thin_solve_view_impl(
     }
     double phase3_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - phase_start).count();
-    std::cout << " done (" << phase3_ms << " ms)" << std::endl;
+    std::cerr << " done (" << phase3_ms << " ms)" << std::endl;
 
     // ── Phase 4 (recovery): u_j = M·w_j ∈ R^m for each valid column ──
     // Then verify u_j ≠ 0 AND M^T·u_j = 0 (the latter holds by construction
@@ -1110,9 +1106,9 @@ static std::vector<std::vector<bool>> thin_solve_view_impl(
         }
     }
 
-    std::cout << "  [BW-thin] Results: " << deps.size() << " valid deps"
-              << " (verified=" << verified << " failed=" << failed
-              << " zero=" << zero_vecs << ")" << std::endl;
+    std::cerr << "  [BW-thin] Results: " << deps.size() << " valid deps"
+              << " (verified=" << verified << " failed=" << failed << " zero=" << zero_vecs << ")"
+              << std::endl;
 
     return deps;
 }

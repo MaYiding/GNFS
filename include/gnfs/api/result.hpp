@@ -174,8 +174,8 @@ struct FactorResult {
         os.imbue(std::locale::classic());
         os << "{\n";
         os << "  \"success\": " << (success ? "true" : "false") << ",\n";
-        os << "  \"factorization_complete\": "
-           << (factorization_complete ? "true" : "false") << ",\n";
+        os << "  \"factorization_complete\": " << (factorization_complete ? "true" : "false")
+           << ",\n";
         os << "  \"factors_prime\": " << (factors_prime ? "true" : "false") << ",\n";
         os << "  \"n\": " << json::quote(n.to_string()) << ",\n";
         os << "  \"n_bits\": " << stats.n_bits << ",\n";
@@ -201,8 +201,8 @@ struct FactorResult {
         os << "    \"sieve_s\": " << json::number(stats.timings.sieve_s) << ",\n";
         os << "    \"candidate_generation_s\": "
            << json::number(stats.timings.candidate_generation_s) << ",\n";
-        os << "    \"candidate_cofactor_s\": "
-           << json::number(stats.timings.candidate_cofactor_s) << ",\n";
+        os << "    \"candidate_cofactor_s\": " << json::number(stats.timings.candidate_cofactor_s)
+           << ",\n";
         os << "    \"filter_s\": " << json::number(stats.timings.filter_s) << ",\n";
         os << "    \"linalg_s\": " << json::number(stats.timings.linalg_s) << ",\n";
         os << "    \"sqrt_s\": " << json::number(stats.timings.sqrt_s) << ",\n";
@@ -306,9 +306,9 @@ struct FactorResult {
            << stats.timings.fb_s << "," << stats.timings.sieve_s << "," << stats.timings.filter_s
            << "," << stats.timings.linalg_s << "," << stats.timings.sqrt_s << ","
            << stats.relations_found << "," << stats.matrix_rows << "," << stats.matrix_cols << ","
-           << stats.dependencies_found << "," << (factorization_complete ? "true" : "false")
-           << "," << (factors_prime ? "true" : "false") << "," << factors.size() << ","
-           << factors_os.str() << "\n";
+           << stats.dependencies_found << "," << (factorization_complete ? "true" : "false") << ","
+           << (factors_prime ? "true" : "false") << "," << factors.size() << "," << factors_os.str()
+           << "\n";
         return os.str();
     }
 

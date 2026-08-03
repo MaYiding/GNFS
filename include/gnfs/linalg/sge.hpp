@@ -548,7 +548,7 @@ public:
             ++result.passes;
 
             if (config.verbose) {
-                std::cout << "  SGE pass " << (pass + 1) << ": rows=" << alive_rows
+                std::cerr << "  SGE pass " << (pass + 1) << ": rows=" << alive_rows
                           << " cols=" << alive_cols << " (eliminated " << eliminated_this_pass
                           << ")\n";
             }
@@ -595,7 +595,7 @@ public:
         }
 
         if (config.verbose) {
-            std::cout << "  SGE done: " << n_rows << "×" << n_cols << " → " << alive_rows << "×"
+            std::cerr << "  SGE done: " << n_rows << "×" << n_cols << " → " << alive_rows << "×"
                       << alive_cols << " (" << result.passes << " passes"
                       << ", w1=" << result.weight1_eliminated << ", w2=" << result.weight2_merged
                       << ")\n";

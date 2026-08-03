@@ -586,6 +586,7 @@ SMOKE_TESTS=(
     test_i18n
     test_method_selection
     test_event_stream
+    test_cli_event_stream
     test_siqs_2lp
     test_siqs_live_sieve_capture
     test_siqs_2lp_graph
@@ -1095,7 +1096,7 @@ TEST_TIER=(
     test_stress              "stress"
     test_api                 "slow"
     test_event_stream        "instant"
-    test_cli_event_stream    "fast"
+    test_cli_event_stream    "instant"
     test_i18n                "instant"
     test_method_selection    "instant"
     test_siqs                "fast"
