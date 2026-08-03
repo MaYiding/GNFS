@@ -369,12 +369,15 @@ final class ProcessGNFSRunnerTests: XCTestCase {
     let rootPID = workspace.directory.appendingPathComponent("root.pid")
     let childPID = workspace.directory.appendingPathComponent("child.pid")
     let grandchildPID = workspace.directory.appendingPathComponent("grandchild.pid")
-    let rootDidStart = await waitUntilFileExists(rootPID)
-    let childDidStart = await waitUntilFileExists(childPID)
-    let grandchildDidStart = await waitUntilFileExists(grandchildPID)
-    XCTAssertTrue(rootDidStart)
-    XCTAssertTrue(childDidStart)
-    XCTAssertTrue(grandchildDidStart)
+    let rootDidStart = await waitUntilFileExists(rootPID, timeout: .seconds(5))
+    let childDidStart = await waitUntilFileExists(childPID, timeout: .seconds(15))
+    let grandchildDidStart = await waitUntilFileExists(grandchildPID, timeout: .seconds(15))
+    XCTAssertTrue(rootDidStart, "root PID did not appear within 5s: \(rootPID.path)")
+    XCTAssertTrue(childDidStart, "child PID did not appear within 15s: \(childPID.path)")
+    XCTAssertTrue(
+      grandchildDidStart,
+      "grandchild PID did not appear within 15s: \(grandchildPID.path)"
+    )
 
     let clock = ContinuousClock()
     let cancellationStarted = clock.now
@@ -384,7 +387,10 @@ final class ProcessGNFSRunnerTests: XCTestCase {
     XCTAssertLessThan(cancellationStarted.duration(to: clock.now), .seconds(5))
     for pidURL in [rootPID, childPID, grandchildPID] {
       let didStop = await waitUntilProcessStops(pidURL: pidURL)
-      XCTAssertTrue(didStop)
+      XCTAssertTrue(
+        didStop,
+        "process did not stop within 5s: \(pidURL.path); \(processStateDescription(pidURL: pidURL))"
+      )
     }
   }
 
