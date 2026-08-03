@@ -823,12 +823,13 @@ int main(int argc, char* argv[]) {
     }
 
     // Run
-    size_t n_digits = gnfs::core::GNFSParams::compute(n.bit_length()).digits;
+    const std::string normalized_number = n.to_string();
+    const size_t n_digits = normalized_number.size();
     auto [selected_method, selection_reason] =
         Pipeline::select_method(n.bit_length(), n_digits, final_config.method);
 
     if (event_stream_enabled) {
-        std::cout << event_stream::started_event(n.to_string(), n.bit_length(), n_digits,
+        std::cout << event_stream::started_event(normalized_number, n.bit_length(), n_digits,
                                                  selected_method, selection_reason,
                                                  complete_factorization)
                   << '\n'
@@ -836,8 +837,8 @@ int main(int argc, char* argv[]) {
     }
     if (!quiet) {
         print_banner();
-        std::cerr << TR(S::FACTORING) << " " << n.to_string() << " (" << n.bit_length() << " bits, "
-                  << n_digits << " digits)\n";
+        std::cerr << TR(S::FACTORING) << " " << normalized_number << " (" << n.bit_length()
+                  << " bits, " << n_digits << " digits)\n";
 
         // Show selected method
         std::cerr << TR(S::METHOD_SELECTED) << " " << C(BOLD)

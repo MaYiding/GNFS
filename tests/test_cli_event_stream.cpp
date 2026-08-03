@@ -461,6 +461,17 @@ void test_success_cases(const std::filesystem::path& executable) {
     check_terminal_contains(complete, "\"factorization_complete\":true", "complete 360");
     check_terminal_contains(complete, "\"factors_prime\":true", "complete 360");
 
+    const auto decimal_boundary =
+        validate_protocol(executable, {"--event-stream", "--complete", "999"}, 0, EventKind::result,
+                          true, "decimal digit boundary 999");
+    if (!decimal_boundary.lines.empty()) {
+        CHECK_CONTEXT(decimal_boundary.lines.front().find("\"n_digits\":3") !=
+                          std::string_view::npos,
+                      "decimal digit boundary started digits");
+    }
+    check_terminal_contains(decimal_boundary, "\"n_digits\":3",
+                            "decimal digit boundary result digits");
+
     const auto prime = validate_protocol(executable, {"--event-stream", "--complete", "127"}, 0,
                                          EventKind::result, true, "prime 127");
     check_terminal_contains(prime, "\"factors\":[\"127\"]", "prime 127");
