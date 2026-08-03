@@ -19,7 +19,7 @@ jobs:
     name: ${{ matrix.platform_label }}
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.experimental }}
-    timeout-minutes: 45
+    timeout-minutes: ${{ matrix.timeout_minutes }}
     strategy:
       fail-fast: false
       matrix:
@@ -31,6 +31,7 @@ jobs:
             cxx_compiler: g++
             test_labels: 'instant|fast'
             ctest_parallel: 2
+            timeout_minutes: 45
             experimental: false
           - os: ubuntu-24.04
             platform_label: Linux x86_64 (clang, Debug)
@@ -38,6 +39,7 @@ jobs:
             cxx_compiler: clang++
             test_labels: 'instant'
             ctest_parallel: 2
+            timeout_minutes: 45
             experimental: false
           - os: ubuntu-22.04
             platform_label: Linux x86_64 (gcc, Ubuntu 22.04)
@@ -45,6 +47,7 @@ jobs:
             cxx_compiler: g++
             test_labels: 'instant|fast'
             ctest_parallel: 2
+            timeout_minutes: 45
             experimental: false
           - os: macos-14
             platform_label: macOS arm64 (clang, Release)
@@ -52,6 +55,7 @@ jobs:
             cxx_compiler: clang++
             test_labels: 'instant|fast'
             ctest_parallel: 2
+            timeout_minutes: 45
             experimental: false
           # ── Linux ARM64 native (free for public repos on github-hosted) ──
           # See https://github.blog/changelog/2025-01-16-linux-arm64-hosted-runners-now-available-for-free-in-public-repositories/
@@ -62,6 +66,7 @@ jobs:
             cxx_compiler: g++
             test_labels: 'instant'
             ctest_parallel: 2
+            timeout_minutes: 45
             experimental: true
           # ── Windows MSVC (required instant coverage; vcpkg-based GMP) ──
           - os: windows-latest
@@ -70,6 +75,8 @@ jobs:
             cxx_compiler: ''
             test_labels: 'instant'
             ctest_parallel: 2
+            build_parallel: 2
+            timeout_minutes: 75
             experimental: false
 
     steps:
@@ -126,7 +133,8 @@ jobs:
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} `
           -DGNFS_ENABLE_NATIVE_ARCH=OFF `
           -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" `
-          -DVCPKG_TARGET_TRIPLET=x64-windows
+          -DVCPKG_TARGET_TRIPLET=x64-windows `
+          -DVCPKG_APPLOCAL_DEPS=OFF
 
     - name: Build (POSIX)
       id: build_posix
@@ -136,7 +144,10 @@ jobs:
     - name: Build (Windows)
       if: runner.os == 'Windows'
       shell: pwsh
-      run: cmake --build build --config ${{ matrix.build_type }} --parallel
+      # vcpkg's per-target applocal hook races when many executables copy the
+      # same GMP DLL into build/Release. The hook is disabled at configure
+      # time; ctest resolves the one shared runtime directory below instead.
+      run: cmake --build build --config ${{ matrix.build_type }} --parallel ${{ matrix.build_parallel }}
 
     - name: Run selected tests (POSIX)
       if: runner.os != 'Windows'
@@ -212,6 +223,11 @@ jobs:
       shell: pwsh
       working-directory: build
       run: |
+        $vcpkgBin = Join-Path $env:VCPKG_INSTALLATION_ROOT "installed\x64-windows\bin"
+        if (!(Test-Path -LiteralPath $vcpkgBin -PathType Container)) {
+          throw "vcpkg runtime directory is missing: $vcpkgBin"
+        }
+        $env:PATH = "$vcpkgBin;$env:PATH"
         ctest --output-on-failure `
           --label-regex "${{ matrix.test_labels }}" `
           --label-exclude "slow|heavy|stress|bench|gate" `
