@@ -2181,7 +2181,7 @@ capture_private_lease_external_namespace_without_lock(const OOCCleanupPaths& pat
 
 [[nodiscard]] NamespaceTreeSnapshot
 capture_namespace_tree_while_lock_held(const std::filesystem::path& root,
-                                       const std::filesystem::path& lock_path) {
+                                       [[maybe_unused]] const std::filesystem::path& lock_path) {
 #ifdef _WIN32
     // BaseLock intentionally denies all Windows sharing. The live handle also
     // prevents the named lock from being replaced or removed, so compare the
@@ -7587,7 +7587,7 @@ void test_private_lease_removal_admission_projects_union_blocker_first() {
         std::byte{0xef},
     };
     write_private_control_bytes(paths.intent_path, corrupt_intent);
-    const auto before = capture_namespace_tree(temp.path());
+    const auto before = capture_namespace_tree_while_lock_held(temp.path(), paths.lock_path);
 
     auto lock = std::make_shared<BaseLock>(paths.lock_path);
     auto admission = admit_private_lease_removal_locked(paths, lock, {}, {}, {}, {});
@@ -7598,7 +7598,7 @@ void test_private_lease_removal_admission_projects_union_blocker_first() {
         CHECK(admission.blocked->status == OOCCleanupStatus::IntentCorrupt);
         CHECK(admission.blocked->stage == OOCCleanupStage::None);
     }
-    CHECK(capture_namespace_tree(temp.path()) == before);
+    CHECK(capture_namespace_tree_while_lock_held(temp.path(), paths.lock_path) == before);
 }
 
 struct PrivateLeasePostSyncReplacementContext final {
