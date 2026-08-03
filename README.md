@@ -95,6 +95,20 @@ flowchart TD
 
 ## 快速开始
 
+### 预编译 CLI 的平台契约
+
+GitHub Release 中的预编译 CLI 采用下列兼容性边界；发布工作流会打开归档并逐项校验，不满足边界时不会发布。
+
+| 归档 | 架构与最低系统 | 动态依赖 |
+|---|---|---|
+| `gnfs-v0.1.0-linux-x86_64.tar.gz` | x86_64；glibc 2.31+；另需归档内声明的 libstdc++ ABI | GMP、NTL 由主机提供，不随归档分发 |
+| `gnfs-v0.1.0-macos-arm64.tar.gz` | Apple Silicon；macOS 13.0+ | GMP、NTL 由主机提供，不随归档分发 |
+| `gnfs-v0.1.0-windows-x86_64.zip` | x86_64；MSYS2 UCRT64 | 实际解析到的 UCRT64 DLL 随归档分发 |
+
+Linux 包在 Ubuntu 20.04 容器中使用 GCC 12 构建。发布检查会拒绝高于 `GLIBC_2.31`、`GLIBCXX_3.4.30` 或 `CXXABI_1.3.13` 的符号版本，并拒绝未列入契约的动态库。归档内机器生成的 `binary-compatibility.json` 和 `README-release.txt` 会给出该二进制实际观察到的三个最低 ABI 版本；不能只依据 glibc 版本判断兼容性。macOS 包使用 `CMAKE_OSX_DEPLOYMENT_TARGET=13.0`，同时以 `lipo`、`vtool` 和 `otool` 确认单一 `arm64` 架构及 `minos 13.0`。
+
+每个 CLI 归档根目录都包含本项目的 GPL-2.0 `LICENSE`。Windows 包还包含 `runtime-dependencies.json`、`THIRD_PARTY_NOTICES.txt` 和 `licenses/`；清单固定每个 DLL 的 SHA-256、MSYS2 包名和版本以及对应许可证文件。Linux 与 macOS 包不捆绑 GMP/NTL 动态库，其说明文件会明确这一点。
+
 ### 依赖
 
 - C++20 编译器（Clang 14+ 或 GCC 12+）

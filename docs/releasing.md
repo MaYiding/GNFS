@@ -43,7 +43,12 @@ verify-only run. It downloads and verifies those exact bytes instead of
 rebuilding them. It then rechecks the current main SHA, every triggered push
 workflow, required job contexts, and unpublished tag state immediately before
 creating a draft release. The workflow verifies the draft tag and complete
-asset set before making the release public.
+asset set before making the release public. After all assets have uploaded, a
+second API-backed check again verifies current main and every exact-SHA CI run,
+then requires the tag to be a lightweight commit ref to that SHA, the draft ID
+to equal the ID created by this workflow, and every uploaded asset size and
+server-reported SHA-256 digest to equal the verified local bundle. Only then
+does the next command change that exact draft to public.
 
 If draft creation or asset upload fails, the workflow does not publish the
 draft. An existing draft or tag blocks automatic retry because the workflow
@@ -80,10 +85,42 @@ modes, and rejects output replacement. ZIP entries use stored encoding to
 avoid compressor-dependent output. The release metadata binds every package
 digest to the full source SHA and the source commit epoch.
 
+The Linux x86_64 package is built with GCC 12 inside an Ubuntu 20.04 container,
+whose glibc baseline is 2.31. `readelf` must identify an x86-64 executable, only
+approved dynamic dependencies, and symbol-version maxima no newer than
+`GLIBC_2.31`, `GLIBCXX_3.4.30`, and `CXXABI_1.3.13`. The macOS arm64 package is
+configured with `CMAKE_OSX_DEPLOYMENT_TARGET=13.0`; `lipo`, `vtool`, and
+`otool` must independently confirm its single architecture and minimum system
+version.
+
+The Linux checker writes its observed GLIBC, GLIBCXX, and CXXABI maxima, the
+dynamic dependency set, and the executable digest to
+`binary-compatibility.json`; it generates `README-release.txt` from those same
+values. The archive validator binds the metadata digest to `bin/gnfs`, checks
+every observed ABI against the documented ceiling, and requires the exact
+minimum versions in the README. A glibc version alone is not a sufficient
+compatibility claim because the dynamically linked GCC 12 runtime may require
+a newer libstdc++ ABI than the Ubuntu 20.04 default.
+
+All three CLI archive roots contain the repository's byte-identical GPL-2.0
+`LICENSE`. Linux and macOS do not bundle GMP or NTL dynamic libraries, and
+their README and third-party notice state that the host must provide them.
+Windows dependency discovery captures and checks the `ldd` exit status,
+rejects unresolved or non-UCRT64 non-system paths, and records the owning
+pacman package and version for every copied DLL. License files must resolve
+under an MSYS2 license root and are copied into `licenses/`; the archive
+validator cross-checks those files, all DLL digests, and
+`runtime-dependencies.json`. The executable must also pass its version probe
+from the package directory with `/ucrt64/bin` excluded from `PATH`.
+
 `Workbench CI` embeds the full source SHA as `GNFSSourceRevision` in the
 application `Info.plist`. The release workflow downloads the ZIP and SHA-256
 sidecar from that exact main push workflow run, verifies the sidecar, opens the
-ZIP, and checks the embedded source revision and application version.
+ZIP, and checks the embedded source revision and application version. It also
+requires the exact six-file `Contents/Resources/Licenses` contract: the
+byte-identical GNFS GPL-2.0 license, both GMP copying texts, the NTL copying
+notice, a versioned static-link notice, and an upstream source-offer file. A
+missing, renamed, or additional file blocks release assembly.
 
 The first Workbench package is ad-hoc signed and is not Apple notarized. macOS
 may require an explicit user approval before first launch. The release notes
@@ -98,7 +135,9 @@ The release checks do not call GitHub during self-test mode:
 ```bash
 python3 scripts/release_contract.py self-test
 python3 scripts/release_contract.py check-workflows
+python3 scripts/release_binary_contract.py self-test
 python3 scripts/reproducible_archive.py self-test
+python3 scripts/windows_release_runtime.py self-test
 ```
 
 Script Checks runs both commands, Python bytecode compilation, and the existing
