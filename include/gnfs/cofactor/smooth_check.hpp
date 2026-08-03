@@ -982,15 +982,13 @@ classify_cofactor_seeded_v1(const Integer& cofactor, uint64_t large_prime_bound,
         return true; // 1LP
 
     if (allow_2lp) {
-        Integer lp_sq;
-        mpz_ui_pow_ui(lp_sq.get_mpz(), large_prime_bound, 2);
+        const Integer lp_sq = lp_int * lp_int;
         if (cofactor.compare(lp_sq) <= 0)
             return true; // 2LP
     }
 
     if (allow_3lp) {
-        Integer lp_cube;
-        mpz_ui_pow_ui(lp_cube.get_mpz(), large_prime_bound, 3);
+        const Integer lp_cube = lp_int * lp_int * lp_int;
         if (cofactor.compare(lp_cube) <= 0)
             return true; // 3LP
     }
