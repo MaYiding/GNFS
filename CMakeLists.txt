@@ -595,6 +595,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME ThreadPool COMMAND test_thread_pool)
     set_tests_properties(ThreadPool PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_joining_thread
+        tests/test_joining_thread.cpp
+    )
+    target_link_libraries(test_joining_thread PRIVATE gnfs_util Threads::Threads)
+    add_test(NAME JoiningThread COMMAND test_joining_thread)
+    set_tests_properties(JoiningThread PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_ordered_parallel_map
         tests/test_ordered_parallel_map.cpp
     )

@@ -1,61 +1,61 @@
 #pragma once
 
+/// @file joining_thread.hpp
+/// @brief Move-only std::thread ownership that joins on destruction.
+
 #include <thread>
 #include <type_traits>
 #include <utility>
 
 namespace gnfs::util {
 
-#if defined(__cpp_lib_jthread) && __cpp_lib_jthread >= 201911L
-
-using JoiningThread = std::jthread;
-
-#else
-
-/// Move-only thread ownership with an unconditional join on destruction.
-/// This supplies the subset of `std::jthread` used by GNFS on standard
-/// libraries that do not yet provide it; none of these call sites use stop
-/// tokens.
+/// A stable, stop-token-free joining-thread abstraction.
+///
+/// Destruction joins an owned thread. Callers remain responsible for publishing
+/// any cancellation state needed to let that thread exit before destruction.
+/// Destroy or move-assign the owner only from a thread other than the owned
+/// thread because cleanup cannot join the current thread.
 class JoiningThread final {
 public:
     JoiningThread() noexcept = default;
 
-    template <typename Function, typename... Arguments>
+    template <class Function, class... Args>
         requires(!std::is_same_v<std::remove_cvref_t<Function>, JoiningThread>)
-    explicit JoiningThread(Function&& function, Arguments&&... arguments)
-        : thread_(std::forward<Function>(function), std::forward<Arguments>(arguments)...) {}
+    explicit JoiningThread(Function&& function, Args&&... args)
+        : thread_(std::forward<Function>(function), std::forward<Args>(args)...) {}
+
+    ~JoiningThread() noexcept {
+        join_if_joinable();
+    }
 
     JoiningThread(const JoiningThread&) = delete;
     JoiningThread& operator=(const JoiningThread&) = delete;
 
     JoiningThread(JoiningThread&&) noexcept = default;
-
     JoiningThread& operator=(JoiningThread&& other) noexcept {
         if (this != &other) {
-            join();
+            join_if_joinable();
             thread_ = std::move(other.thread_);
         }
         return *this;
-    }
-
-    ~JoiningThread() {
-        join();
     }
 
     [[nodiscard]] bool joinable() const noexcept {
         return thread_.joinable();
     }
 
-    void join() noexcept {
+    void join() {
+        thread_.join();
+    }
+
+private:
+    void join_if_joinable() noexcept {
         if (thread_.joinable()) {
             thread_.join();
         }
     }
 
-private:
     std::thread thread_;
 };
-
-#endif
 
 } // namespace gnfs::util

@@ -206,6 +206,7 @@ ALL_TEST_BINARIES=(
     test_sha256
     test_relation_corpus_sha256
     test_thread_pool
+    test_joining_thread
     test_ordered_parallel_map
     test_fixed_slot_executor
     test_logger
@@ -449,7 +450,7 @@ ALL_TEST_BINARIES=(
 typeset -A MODULE_TESTS
 MODULE_TESTS=(
     core           "test_integer test_params test_regressions test_edge_cases test_core_types"
-    util           "test_small_vector test_sha256 test_thread_pool test_ordered_parallel_map test_fixed_slot_executor test_logger test_primes test_timer test_process_memory test_bounded_child_process test_durable_immutable_file test_durable_immutable_record test_mmap_file test_safe_math test_bit_intrin test_memory_pool test_integer_scratch_pool test_mpz_powm_parallel test_mpz_invert_parallel test_mpz_mod_parallel test_mpz_gcd_parallel test_mpz_mul_parallel"
+    util           "test_small_vector test_sha256 test_thread_pool test_joining_thread test_ordered_parallel_map test_fixed_slot_executor test_logger test_primes test_timer test_process_memory test_bounded_child_process test_durable_immutable_file test_durable_immutable_record test_mmap_file test_safe_math test_bit_intrin test_memory_pool test_integer_scratch_pool test_mpz_powm_parallel test_mpz_invert_parallel test_mpz_mod_parallel test_mpz_gcd_parallel test_mpz_mul_parallel"
     polynomial     "test_murphy test_root_property_cache test_int_polynomial test_half_gcd test_poly_karatsuba test_horner_batch_simd test_divrem_subquadratic test_poly_ntt test_poly_square test_poly_add_mod_simd test_poly_horner_mod_simd test_regressions test_polynomial_context test_base_m test_polynomial_optimizer test_resultant test_rotation_incremental test_bai_brent_poly test_poly_checkpoint"
     factor_base    "test_factor_base test_fb_checkpoint test_fb_roots_parallel"
     sieve          "test_special_q test_sieve_basic test_sieve_checkpoint test_distributed_sieve test_distributed_sieve_worker_entry test_distributed_sieve_worker_writer_authority test_distributed_sieve_worker_execution test_distributed_sieve_worker_process test_distributed_sieve_work_identity_codec test_distributed_sieve_work_package_codec test_distributed_sieve_worker_cleanup_codec test_distributed_sieve_merge_writer_codec test_distributed_sieve_merge_writer test_distributed_sieve_merge_writer_authority test_distributed_sieve_wave_merge_commit test_distributed_sieve_worker_cleanup_tail test_distributed_sieve_worker_cleanup_authorization_publisher test_distributed_sieve_worker_cleanup_orchestrator test_distributed_sieve_wave_result test_distributed_sieve_worker_work_package_file test_distributed_sieve_execution_policy test_distributed_sieve_seed_v2 test_distributed_sieve_resume test_bucket_sieve test_sieve_ecore_qos test_local_sieve_thread_budget test_lll_lattice test_adaptive_lattice test_sieve_tiny_simd test_bucket_prefetch test_sieve_region_tile test_sieve_norm_tile test_lattice_basis_parallel test_sieve_apply_tile_parallel test_lattice_coords_simd test_threshold_scan_simd test_saturated_sub_simd"
@@ -491,6 +492,7 @@ SMOKE_TESTS=(
     test_sha256
     test_relation_corpus_sha256
     test_thread_pool
+    test_joining_thread
     test_ordered_parallel_map
     test_fixed_slot_executor
     test_logger
@@ -665,6 +667,7 @@ SMOKE_TESTS=(
 # 避免把完整 instant 层复制到高成本的 sanitizer 构建。
 typeset -a TSAN_RELATION_TESTS
 TSAN_RELATION_TESTS=(
+    test_joining_thread
     test_ordered_parallel_map
     test_fixed_slot_executor
     test_candidate_batch
@@ -693,6 +696,7 @@ TEST_TIMEOUT=(
     test_sha256              10
     test_relation_corpus_sha256 10
     test_thread_pool         10
+    test_joining_thread      10
     test_ordered_parallel_map 10
     test_fixed_slot_executor 10
     test_logger              10
@@ -940,6 +944,7 @@ TEST_TIER=(
     test_sha256              "instant"
     test_relation_corpus_sha256 "instant"
     test_thread_pool         "instant"
+    test_joining_thread      "instant"
     test_ordered_parallel_map "instant"
     test_fixed_slot_executor "instant"
     test_logger              "instant"
@@ -1218,7 +1223,7 @@ MODULE_ORDER=(core util polynomial factor_base sieve cofactor relation linalg sq
 path_to_module() {
     local path="$1"
     case "$path" in
-        tests/test_sha256.cpp|tests/test_durable_immutable_file.cpp|tests/test_durable_immutable_record.cpp|tests/test_mmap_file.cpp) echo "util" ;;
+        tests/test_sha256.cpp|tests/test_joining_thread.cpp|tests/test_durable_immutable_file.cpp|tests/test_durable_immutable_record.cpp|tests/test_mmap_file.cpp) echo "util" ;;
         tests/test_ecm_curve_plan.cpp|tests/test_cofactor_attempt_context.cpp|tests/test_cofactor_seed_provider.cpp) echo "cofactor" ;;
         tests/test_squfof*.cpp|tests/support/squfof_*.hpp|tests/fixtures/squfof_*.hpp) echo "cofactor" ;;
         tests/test_relation_corpus_sha256.cpp|tests/test_relation_collector.cpp|tests/test_relation_corpus.cpp|tests/test_relation_sink.cpp|tests/test_relation_reduction_engine.cpp|tests/test_ooc_store_integrity.cpp|tests/test_ooc_durable_handoff.cpp|tests/test_ooc_cleanup_transaction.cpp) echo "relation" ;;

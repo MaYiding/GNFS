@@ -95,6 +95,7 @@ with:
 
 The runner uses a dedicated `build-tsan-relation` Debug directory, disables native-architecture tuning, enables `GNFS_ENABLE_TSAN`, and builds only these targets:
 
+- `test_joining_thread`
 - `test_ordered_parallel_map`
 - `test_fixed_slot_executor`
 - `test_candidate_batch`
