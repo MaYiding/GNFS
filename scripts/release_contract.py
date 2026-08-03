@@ -408,7 +408,7 @@ def verify_repository_protection(
             )
         immutable_setting = payload
     except GitHubAPIRequestError as error:
-        if not allow_unreadable_immutable_setting or error.status not in {403, 404}:
+        if not allow_unreadable_immutable_setting or error.status != 403:
             raise
 
     return {
@@ -2227,6 +2227,7 @@ class _FakeClient:
             "updated_at": RELEASE_TAG_RULESET_UPDATED_AT,
         }
         self.immutable_setting_readable = True
+        self.immutable_setting_enabled = True
         self.publish_immutable = True
         self.post_patch_mutator: Callable[[], None] | None = None
 
@@ -2238,6 +2239,8 @@ class _FakeClient:
         if path.endswith("/immutable-releases"):
             if not self.immutable_setting_readable:
                 raise GitHubAPIRequestError(403, path, "Resource not accessible by integration")
+            if not self.immutable_setting_enabled:
+                raise GitHubAPIRequestError(404, path, "Not Found")
             return {"enabled": True, "enforced_by_owner": False}
         if "/git/ref/tags/" in path and self.tag_ref is not None:
             return self.tag_ref
@@ -3005,6 +3008,18 @@ def self_test() -> None:
         else:
             raise ReleaseContractError("strict protection check accepted unreadable setting")
         client.immutable_setting_readable = True
+
+        client.immutable_setting_enabled = False
+        try:
+            verify_repository_protection(
+                client, repository, allow_unreadable_immutable_setting=True
+            )
+        except GitHubAPIRequestError as error:
+            if error.status != 404:
+                raise
+        else:
+            raise ReleaseContractError("protection check accepted disabled immutable releases")
+        client.immutable_setting_enabled = True
 
         reset_release()
         result = publish_verified_release(

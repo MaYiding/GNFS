@@ -44,7 +44,8 @@ GitHub's immutable-release settings endpoint requires repository
 `Administration: read`, a permission that is not available to the ephemeral
 `GITHUB_TOKEN`. The workflow does not introduce a long-lived personal access
 token to bridge that gap. It attempts the read and reports when the setting is
-not visible, then fails publication unless the PATCH response and both
+rejected with `403`; a documented `404` means immutability is disabled and
+blocks the workflow. Publication also fails unless the PATCH response and both
 post-publication release reads report `immutable: true`. Administrators can run
 the strict read-only check with an authenticated admin session before dispatch:
 
