@@ -17833,8 +17833,8 @@ DistributedSieveWaveStore::claim_private_lease_root_impl(
 #if defined(_WIN32) || (!defined(__APPLE__) && !defined(__linux__))
     (void)held_worker_handoffs;
     (void)allow_merge_raw_recovery_pending;
-    return {nullptr, diagnostic(DistributedSieveWaveStoreStatus::platform_unsupported,
-                                unsupported_error())};
+    return {nullptr,
+            diagnostic(DistributedSieveWaveStoreStatus::platform_unsupported, unsupported_error())};
 #else
     if (state_->merge_raw_recovery_open_anchor.has_value() &&
         !state_->merge_raw_recovery_completed.load(std::memory_order_acquire) &&

@@ -5,8 +5,8 @@
 #include <gnfs/siqs/shadow_proof_observe.hpp>
 
 #include <algorithm>
-#include <atomic>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>

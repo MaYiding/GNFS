@@ -1425,8 +1425,7 @@ struct ConstructionFailureHookContext final {
 
 #if defined(__APPLE__)
                 const bool finalize_before_write =
-                    scenario ==
-                    WriterChildScenario::post_authority_private_directory_replacement;
+                    scenario == WriterChildScenario::post_authority_private_directory_replacement;
 #else
                 constexpr bool finalize_before_write = false;
 #endif
