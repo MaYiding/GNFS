@@ -528,9 +528,9 @@ void test_ooc_roundtrip_streaming() {
     std::remove((base_path + ".reldata").c_str());
     std::remove((base_path + ".relidx").c_str());
 
-    std::cout << "  PASS (500 rels written to disk, mmap read,"
-              << " matrix " << stream_result.matrix.num_rows() << "x"
-              << stream_result.matrix.num_cols() << " matches vector)" << std::endl;
+    std::cout << "  PASS (500 rels written to disk, mmap read," << " matrix "
+              << stream_result.matrix.num_rows() << "x" << stream_result.matrix.num_cols()
+              << " matches vector)" << std::endl;
 }
 
 void test_ooc_relation_selection_source() {

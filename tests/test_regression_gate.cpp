@@ -416,8 +416,8 @@ int main(int argc, char* argv[]) {
     }
 
     std::cout << "═══════════════════════════════════════════\n";
-    std::cout << "  Results: " << passed << " passed, " << failed << " failed"
-              << " (" << std::fixed << std::setprecision(2) << total.sec() << "s)\n";
+    std::cout << "  Results: " << passed << " passed, " << failed << " failed" << " (" << std::fixed
+              << std::setprecision(2) << total.sec() << "s)\n";
     std::cout << "═══════════════════════════════════════════\n";
 
     return (failed > 0) ? 1 : 0;

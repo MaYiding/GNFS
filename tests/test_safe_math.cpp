@@ -139,8 +139,7 @@ void test_size_arithmetic_contracts() {
     static_assert(size_from_nonnegative_double_floor(42.75) == 42);
     static_assert(size_from_nonnegative_double_floor(std::numeric_limits<double>::infinity()) ==
                   MAX_SIZE);
-    static_assert(size_from_nonnegative_double_floor(std::numeric_limits<double>::quiet_NaN()) ==
-                  0);
+    assert(size_from_nonnegative_double_floor(std::numeric_limits<double>::quiet_NaN()) == 0);
 
     std::cout << "  PASS (compile-time boundaries)" << std::endl;
 }

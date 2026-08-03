@@ -289,11 +289,9 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
                           << batch_target << " (" << std::setprecision(1)
                           << (100.0 * static_cast<double>(collector.size()) /
                               static_cast<double>(batch_target))
-                          << "%)"
-                          << " elapsed=" << std::setprecision(1) << phase.sec() << "s"
+                          << "%)" << " elapsed=" << std::setprecision(1) << phase.sec() << "s"
                           << " rate=" << std::setprecision(0) << rate << "/s"
-                          << " eta=" << std::setprecision(0) << eta_s << "s"
-                          << "\n"
+                          << " eta=" << std::setprecision(0) << eta_s << "s" << "\n"
                           << std::flush;
             }
         }
@@ -594,9 +592,9 @@ int main(int argc, char** argv) {
             auto result = factor_gnfs(n, force_no_lp);
             if (result.success) {
                 std::cout << "\n  TOTAL: " << std::fixed << std::setprecision(2) << result.total_sec
-                          << "s"
-                          << " (sieve=" << result.sieve_sec << " linalg=" << result.linalg_sec
-                          << " sqrt=" << result.sqrt_sec << ")\n";
+                          << "s" << " (sieve=" << result.sieve_sec
+                          << " linalg=" << result.linalg_sec << " sqrt=" << result.sqrt_sec
+                          << ")\n";
             } else {
                 std::cout << "\n  FAILED after " << result.total_sec << "s\n";
             }
@@ -632,8 +630,7 @@ int main(int argc, char** argv) {
         if (result.success) {
             ++passed;
             std::cout << "  TOTAL: " << std::fixed << std::setprecision(2) << result.total_sec
-                      << "s"
-                      << " (sieve=" << result.sieve_sec << " linalg=" << result.linalg_sec
+                      << "s" << " (sieve=" << result.sieve_sec << " linalg=" << result.linalg_sec
                       << " sqrt=" << result.sqrt_sec << ")\n";
         } else {
             ++failed;

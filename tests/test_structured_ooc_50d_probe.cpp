@@ -436,14 +436,13 @@ void emit_record(const ExperimentRecord& record, std::string_view prefix = "GNFS
 
     std::cout
         << prefix << " scope=bounded_50d_prefix_probe"
-        << " claim_boundary=relation_reduction_and_matrix_shape_only"
-        << " stop_after=matrix_build"
+        << " claim_boundary=relation_reduction_and_matrix_shape_only" << " stop_after=matrix_build"
         << " pipeline_batch_mode=two_stage_candidate_batch"
         << " candidate_chunk_size=" << gnfs::cofactor::DEFAULT_CANDIDATE_CHUNK_SIZE
         << " candidate_rss_sample_policy=first_max_candidates"
-        << " cofactor_inner_parallel_policy=forced_sequential"
-        << " status=" << record.status << " failure_stage=" << record.failure_stage
-        << " n=" << PROBE_N << " n_digits=" << PROBE_DIGITS << " n_bits=" << PROBE_BITS
+        << " cofactor_inner_parallel_policy=forced_sequential" << " status=" << record.status
+        << " failure_stage=" << record.failure_stage << " n=" << PROBE_N
+        << " n_digits=" << PROBE_DIGITS << " n_bits=" << PROBE_BITS
         << " max_special_q=" << record.max_special_q
         << " max_special_q_batch_workers=" << record.max_special_q_batch_workers
         << " special_q_processed=" << record.special_q_processed
@@ -474,8 +473,7 @@ void emit_record(const ExperimentRecord& record, std::string_view prefix = "GNFS
         << " first_round_complete=" << bool_token(record.first_round_complete)
         << " sieve_rounds_completed=" << record.sieve_rounds_completed
         << " sieve_stop_reason=" << record.sieve_stop_reason << " resume_scope=none"
-        << " attempted_resume=false"
-        << " attempted_distributed=false"
+        << " attempted_resume=false" << " attempted_distributed=false"
         << " sge_attempted=" << bool_token(record.sge_attempted)
         << " solver_attempted=" << bool_token(record.solver_attempted)
         << " sqrt_attempted=" << bool_token(record.sqrt_attempted)

@@ -1168,14 +1168,12 @@ void emit_record(const ProbeRecord& record) {
 
     std::ostringstream output;
     output << std::fixed << std::setprecision(3) << "GNFS_SIQS_LIVE_CAPTURE_V1"
-           << " schema_version=1 status=valid"
-           << " build_type=" << BUILD_TYPE
+           << " schema_version=1 status=valid" << " build_type=" << BUILD_TYPE
            << " ndebug=" << (RELEASE_ASSERTIONS_DISABLED ? "true" : "false")
-           << " scope=fixed_one_a_family_prefix"
-           << " band=" << record.fixture.band << " digits=" << record.fixture.band
-           << " n=" << record.fixture.modulus << " p=" << record.fixture.factor_p
-           << " q=" << record.fixture.factor_q << " seed=" << FIXED_SEED
-           << " a_planner=stable_mpz_root_mt19937_fisher_yates_v1"
+           << " scope=fixed_one_a_family_prefix" << " band=" << record.fixture.band
+           << " digits=" << record.fixture.band << " n=" << record.fixture.modulus
+           << " p=" << record.fixture.factor_p << " q=" << record.fixture.factor_q
+           << " seed=" << FIXED_SEED << " a_planner=stable_mpz_root_mt19937_fisher_yates_v1"
            << " multiplier=" << record.multiplier << " sieved_n=" << record.sieved_modulus
            << " sieved_bits=" << record.sieved_bits << " param_fb_size=" << record.params.fb_size
            << " factor_base_columns=" << record.factor_base_columns
@@ -1202,8 +1200,7 @@ void emit_record(const ProbeRecord& record) {
            << " workers=" << record.options.requested_workers
            << " resolved_workers=" << record.resolved_workers
            << " peak_workers=" << record.peak_workers << " schedule=static_contiguous"
-           << " logical_merge=slot_order"
-           << " worker_independence_premises=pass"
+           << " logical_merge=slot_order" << " worker_independence_premises=pass"
            << " capture_threshold_candidates=" << record.capture.threshold_candidates
            << " capture_unrepresentable_residuals=" << record.capture.unrepresentable_residuals
            << " capture_rejected_residuals=" << record.capture.rejected_residuals
@@ -1284,8 +1281,7 @@ void emit_record(const ProbeRecord& record) {
            << " matrix_default_max_variables=" << matrix_defaults.max_dense_variable_count
            << " matrix_status_scope=projected_not_run"
            << " matrix_admission_status=" << matrix_status_name(record.projected_matrix_status)
-           << " solver_attempted=false"
-           << " rss_scope=self_lifetime"
+           << " solver_attempted=false" << " rss_scope=self_lifetime"
            << " rss_backend=" << gnfs::util::process_memory_backend_name(record.memory.backend)
            << " peak_rss_bytes=" << optional_u64(record.memory.lifetime_peak_rss_bytes)
            << " wall_ns=" << record.wall_nanoseconds;

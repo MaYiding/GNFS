@@ -1400,6 +1400,7 @@ project_strict_handoff_leaves(const OOCCleanupPaths& paths, const BaseLock& lock
 
 struct PrivateCleanupUnionObservationWitness final {
     PrivateCleanupUnionRawObservation raw;
+    std::optional<std::array<std::uint64_t, 3>> directory_identity;
 #if defined(__APPLE__)
     std::unique_ptr<PrivateDirectoryHandle> directory;
     std::optional<PrivateCleanupUnionDirectoryInventory> before_inventory;
@@ -1445,15 +1446,15 @@ observe_private_cleanup_union_locked(const OOCCleanupPaths& paths, const BaseLoc
                 return witness;
             }
         }
+        witness.directory_identity = inspect_directory_identity_locked(paths.private_directory);
 #if defined(__APPLE__)
-        const auto directory_identity = inspect_directory_identity_locked(paths.private_directory);
-        if (!directory_identity) {
+        if (!witness.directory_identity) {
             return witness;
         }
 
         witness.directory = std::make_unique<PrivateDirectoryHandle>(paths.private_directory);
         auto& directory = *witness.directory;
-        if (directory.identity() != *directory_identity) {
+        if (directory.identity() != *witness.directory_identity) {
             fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
         }
         // Enumerating names and no-follow metadata grants no record authority.
@@ -1582,7 +1583,7 @@ observe_private_cleanup_union_locked(const OOCCleanupPaths& paths, const BaseLoc
         raw.cleanup_markers[static_cast<std::size_t>(PrivateCleanupMarkerSlot::StagedPending)] =
             decode_cleanup_marker_leaf(paths.staged_pending_path, true, STAGED_MAGIC,
                                        OOCAuthorizedCleanupMarkerKindV2::staged);
-        if (inspect_directory_identity_locked(paths.private_directory)) {
+        if (witness.directory_identity) {
             const auto entries = inspect_private_handoff_directory_entries(paths);
             raw.namespace_foreign = !entries.valid;
         }
@@ -1930,7 +1931,7 @@ void require_private_cleanup_witness_unchanged(const OOCCleanupPaths& paths, con
 void require_private_cleanup_witness_unchanged(const OOCCleanupPaths& paths, const BaseLock& lock,
                                                PrivateCleanupUnionObservationWitness& witness) {
     const auto current = observe_private_cleanup_union_locked(paths, lock);
-    if (current.raw != witness.raw) {
+    if (current.raw != witness.raw || current.directory_identity != witness.directory_identity) {
         fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None,
              protocol_error());
     }
@@ -5602,7 +5603,7 @@ OOCCleanupResult recover_private_lease_locked(const OOCCleanupPaths& paths,
 OOCCleanupResult recover_private_lease_with_borrowed_base_lock_v1(
     const std::filesystem::path& base_path, OOCPrivateLeaseRecoveryBorrowedBaseLockV1&& borrowed,
     OOCPreactiveLeaseRecoveryExpectationV1 expectation, OOCPrivateLeaseTestHooks hooks) noexcept {
-    return OOCPrivateLeaseRecoveryBuilderV1::invoke([&] {
+    return OOCPrivateLeaseRecoveryBuilderV1::invoke([&]() -> OOCCleanupResult {
 #if defined(_WIN32)
         (void)base_path;
         (void)borrowed;

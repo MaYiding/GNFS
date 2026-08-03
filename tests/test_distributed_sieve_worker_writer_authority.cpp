@@ -1423,7 +1423,14 @@ struct ConstructionFailureHookContext final {
                     report.flags |= WRITER_FLAG_MUTATION_SUCCEEDED;
                 }
 
-                if (scenario == WriterChildScenario::post_authority_private_directory_replacement) {
+#if defined(__APPLE__)
+                const bool finalize_before_write =
+                    scenario ==
+                    WriterChildScenario::post_authority_private_directory_replacement;
+#else
+                constexpr bool finalize_before_write = false;
+#endif
+                if (finalize_before_write) {
                     const auto completion = successful_completion(authority);
                     if (rejects_writer_runtime_failure(
                             [&] { (void)authority.finalize_and_publish_handoff(completion); })) {

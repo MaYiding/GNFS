@@ -378,10 +378,8 @@ void run_test() {
         run_case(n, make_config(structured_threads), context, factor_base, "1");
     validate_route_contract(legacy, structured, structured_threads);
 
-    std::cout << "GNFS_STRUCTURED_120BIT_V1"
-              << " status=pass"
-              << " n_bits=" << FIXTURE_BITS << " max_special_q=" << MAX_SPECIAL_Q
-              << " raw_rows=" << structured.input_rows
+    std::cout << "GNFS_STRUCTURED_120BIT_V1" << " status=pass" << " n_bits=" << FIXTURE_BITS
+              << " max_special_q=" << MAX_SPECIAL_Q << " raw_rows=" << structured.input_rows
               << " raw_digest_low=" << structured.raw_digest.low
               << " raw_digest_high=" << structured.raw_digest.high
               << " raw_lp_columns=" << structured.raw_lp_histogram.unique_keys

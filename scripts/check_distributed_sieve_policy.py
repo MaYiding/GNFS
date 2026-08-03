@@ -2514,7 +2514,7 @@ WORKER_CLEANUP_COMPLETION_PUBLICATION_HEADER_INTERVAL_SHA256 = (
     "0541919d5f19a0a54a8b3c0b0144cefd487b134e615590c542bc25177038135d"
 )
 WORKER_CLEANUP_COMPLETION_PUBLICATION_IMPLEMENTATION_INTERVAL_SHA256 = (
-    "79181136e08698ce5b773a20c06dbb7f1116e86e9eaaa2103cff3b92361659cf"
+    "84b46983b9a496f9a2a93db0b1ba538151e4c839775ce79b44c564e53a8cfa1f"
 )
 WORKER_CLEANUP_COMPLETION_PUBLICATION_FUNCTION_BODY_SHA256 = {
     "completion_publication_process_id": (
@@ -2569,7 +2569,7 @@ WORKER_CLEANUP_COMPLETION_PUBLICATION_FUNCTION_BODY_SHA256 = {
         "9e038ace57478f9ea63e88a25cefe2c9bc0da80ec561c5fe1b37e3d774da7e2e"
     ),
     "DistributedSieveWorkerCleanupCompletionPublicationAuthorityV1::drive": (
-        "7484f0a53b0f36c470db14e208d63fdf71a84e67aecd6dfdbcd9a334f475e10f"
+        "272cc217de22e7c1c2b2ae796510764654eb08d1107a16210b04f0b64437d5fc"
     ),
 }
 WORKER_CLEANUP_COMPLETION_PUBLICATION_IMPLEMENTATION_CLASS_BODY_SHA256 = {
@@ -3251,7 +3251,7 @@ WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_HEADER_INTERVAL_SHA256: str | None = (
     "68768b067480cd634ccc919eea3d61476c2cc929073849cca1bede14d699d771"
 )
 WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_IMPLEMENTATION_INTERVAL_SHA256: str | None = (
-    "a22eca7dbfe06ec90953b37992600e11b829938393c23f616a4b47a293f3b9a8"
+    "597af139e80f2024d4ad080ab70670996837e0938105bbdaf1622ea3c69b63f9"
 )
 WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_TEST_INTERVAL_SHA256: str | None = (
     "469656a9c7a20d134ae28bd0781e5304086093c0a5ed16092fd63e6a4068b290"
@@ -3343,7 +3343,7 @@ WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_IMPLEMENTATION_FUNCTION_BODY_SHA256 = {
         "2e65ebe08b3ff97a0e69c32414ca30cf2899ad8c0548958bd3af13295294455c"
     ),
     "DistributedSieveWorkerCleanupAuthorizationPublicationAuthorityV1::drive": (
-        "fe7d3a3afcc22d0984de531056dccdb1b992f61988099b9a1cb16615bfc1f65f"
+        "56c5640eae4dafc17a6b23f49e470ae3a72aca4ed6291f2a1aafad9c1c3811b3"
     ),
 }
 WORKER_CLEANUP_AUTHORIZATION_PUBLICATION_IMPLEMENTATION_CLASS_BODY_SHA256 = {
@@ -17654,7 +17654,7 @@ class Checks:
             terminal_required = (
                 "spent_root.emplace(std::move(fresh->root_));",
                 "spent_root.emplace(std::move(*recovery));",
-                "authority_spent=true;diagnostic.authority_spent=true;",
+                "diagnostic.authority_spent=true;",
                 "AllWorkersCompletedContinuationsealed(",
                 "diagnostic.status=AuthorizationPublicationStatus::all_workers_completed;",
                 "diagnostic.disposition=AuthorizationPublicationDisposition::"
@@ -17830,7 +17830,7 @@ class Checks:
             )
             publish_count = len(find_call_identifier_uses(drive, "publish_at"))
             nonterminal_spend = compact_drive.rfind(
-                "authority_spent=true;diagnostic.authority_spent=true;"
+                "diagnostic.authority_spent=true;"
             )
             builder_position = compact_drive.find(builder_fragment)
             publish_position = compact_drive.find(publish_fragment)
@@ -17910,7 +17910,6 @@ class Checks:
                 "fresh.has_value()&&!recovery.has_value()&&fresh->valid())",
                 "if(!outcome.authority_spent&&!outcome.publication_started&&"
                 "!fresh.has_value()&&recovery.has_value()&&recovery->valid())",
-                "diagnostic.authority_spent=diagnostic.authority_spent||authority_spent;"
                 "returndiagnostic.authority_spent||diagnostic.publication_started?"
                 "cold_reopen(std::move(diagnostic)):"
                 "retry_input_or_cold(std::move(diagnostic));",

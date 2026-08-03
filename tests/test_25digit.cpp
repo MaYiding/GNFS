@@ -192,8 +192,7 @@ int main() {
                 double rate = static_cast<double>(collector.size()) / (phase.sec() + 0.001);
                 std::cout << "  SQ#" << sq_count << " rels=" << collector.size() << "/"
                           << batch_target << " rate=" << std::fixed << std::setprecision(0) << rate
-                          << "/s"
-                          << " elapsed=" << std::setprecision(1) << phase.sec() << "s\n"
+                          << "/s" << " elapsed=" << std::setprecision(1) << phase.sec() << "s\n"
                           << std::flush;
             }
         }

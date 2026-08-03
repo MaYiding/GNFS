@@ -5,6 +5,7 @@
 #include <gnfs/siqs/shadow_proof_observe.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -381,7 +382,7 @@ struct SnapshotSequence {
 };
 
 struct ThrowingSnapshotProvider {
-    size_t calls = 0;
+    std::atomic_size_t calls{0};
 
     [[nodiscard]] ProcessMemorySnapshot operator()() {
         ++calls;
@@ -475,7 +476,7 @@ void test_setup_failures_and_no_throw_boundary() {
     CHECK(success_without_rss.proof_attempted);
     CHECK(success_without_rss.terminal_status == SIQSShadowProofTerminalStatus::factor_found);
     CHECK(operation_calls == 1);
-    CHECK(throwing_success_snapshots.calls == 2);
+    CHECK(throwing_success_snapshots.calls.load() == 2);
     CHECK(success_without_rss.before_memory.backend == ProcessMemoryBackend::Unsupported);
     CHECK(success_without_rss.after_memory.backend == ProcessMemoryBackend::Unsupported);
     CHECK(!success_without_rss.peak_growth_supported);
@@ -487,7 +488,7 @@ void test_setup_failures_and_no_throw_boundary() {
         throwing_failure_snapshots);
     check_setup_record(failure_without_rss, SIQSShadowProofTerminalStatus::exception_failure,
                        options);
-    CHECK(throwing_failure_snapshots.calls == 2);
+    CHECK(throwing_failure_snapshots.calls.load() == 2);
     CHECK(failure_without_rss.before_memory.backend == ProcessMemoryBackend::Unsupported);
     CHECK(failure_without_rss.after_memory.backend == ProcessMemoryBackend::Unsupported);
 }

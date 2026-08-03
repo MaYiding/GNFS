@@ -406,12 +406,9 @@ FactResult factor_with_progress(const Integer& n, int level) {
                           << batch_target << " (" << std::fixed << std::setprecision(1)
                           << (100.0 * static_cast<double>(collector.size()) /
                               static_cast<double>(batch_target))
-                          << "%)"
-                          << " full=" << full_count << " (" << std::setprecision(0) << full_pct
-                          << "%)"
-                          << " rate=" << std::setprecision(1) << rate << "/s"
-                          << " elapsed=" << std::setprecision(1) << phase.sec() << "s"
-                          << "\n"
+                          << "%)" << " full=" << full_count << " (" << std::setprecision(0)
+                          << full_pct << "%)" << " rate=" << std::setprecision(1) << rate << "/s"
+                          << " elapsed=" << std::setprecision(1) << phase.sec() << "s" << "\n"
                           << std::flush;
             }
 
@@ -490,8 +487,7 @@ FactResult factor_with_progress(const Integer& n, int level) {
                           << " (V3 cascade skipped)\n";
                 std::cout << "  [round " << (round + 1)
                           << "] Full=" << reduction_stats.separated_full_relations
-                          << " Merged=" << reduction_stats.merged_relations << " (V0_BFS)"
-                          << "\n"
+                          << " Merged=" << reduction_stats.merged_relations << " (V0_BFS)" << "\n"
                           << std::flush;
             } else {
                 const auto& mstats = reduction_stats.standard_v0;
@@ -883,8 +879,8 @@ int main(int argc, char** argv) {
         if (tc.n_str.size() > 60)
             std::cout << "...";
         std::cout << "\n";
-        std::cout << "  Expected: " << tc.expected_p.substr(0, 30) << "..."
-                  << " × " << tc.expected_q.substr(0, 30) << "...\n";
+        std::cout << "  Expected: " << tc.expected_p.substr(0, 30) << "..." << " × "
+                  << tc.expected_q.substr(0, 30) << "...\n";
         std::cout << "  Time estimate: " << tc.time_estimate << "\n";
         std::cout << "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
 

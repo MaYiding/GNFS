@@ -981,8 +981,8 @@ site, and fixes their order after bound-work validation. It rejects the generic
 lease-recovery shortcut, premature `ChunkTerminalFailureV1` use, lower
 transport, cleanup, unlink, legacy entry, or public-header use. Its
 `DistributedSievePolicyInventory` CTest is classified as `slow` because the
-closed repository scan and self-test matrix take about five minutes in the
-measured Debug checkout and exceed the `fast` budget.
+closed repository scan and self-test matrix can exceed 15 minutes on shared CI
+runners and therefore exceed the `fast` budget.
 
 `retry_exhausted` remains the coordinator-round diagnostic, while its
 `terminal_failed` chunk disposition carries the durable terminal-wave

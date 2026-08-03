@@ -260,12 +260,10 @@ void run_factor_pass(std::span<uint64_t> results) {
 
 void emit_case_record(size_t repetition, uint64_t wall_ns, const Digest& corpus_id,
                       const Digest& schedule_id, const ResultIdentity& identity) {
-    std::cout << "GNFS_SQUFOF_BENCH_CASE_V1"
-              << " status=pass"
-              << " scope=" << BENCH_SCOPE << " corpus=" << FIXED_50D_SQUFOF_STRATEGY_V1_NAME
+    std::cout << "GNFS_SQUFOF_BENCH_CASE_V1" << " status=pass" << " scope=" << BENCH_SCOPE
+              << " corpus=" << FIXED_50D_SQUFOF_STRATEGY_V1_NAME
               << " build_type=" << BENCH_BUILD_TYPE << " timing_scope=" << TIMING_SCOPE
-              << " timing_asserted=false"
-              << " diagnostics_timed=false"
+              << " timing_asserted=false" << " diagnostics_timed=false"
               << " repetition=" << repetition << " cases=" << FIXED_50D_SQUFOF_STRATEGY_V1.size()
               << " calls=" << FIXED_50D_SQUFOF_STRATEGY_V1.size()
               << " successes=" << identity.successes << " failures=" << identity.failures
@@ -289,9 +287,8 @@ void emit_multiplier_records(const Schedule& schedule, const SQUFOF::Diagnostics
             "diagnostics slot count differs from the multiplier schedule");
     for (size_t slot = 0; slot < schedule.size(); ++slot) {
         const auto& stats = diagnostics.slots[slot];
-        std::cout << "GNFS_SQUFOF_BENCH_MULTIPLIER_V1"
-                  << " status=pass"
-                  << " scope=" << BENCH_SCOPE << " corpus=" << FIXED_50D_SQUFOF_STRATEGY_V1_NAME
+        std::cout << "GNFS_SQUFOF_BENCH_MULTIPLIER_V1" << " status=pass" << " scope=" << BENCH_SCOPE
+                  << " corpus=" << FIXED_50D_SQUFOF_STRATEGY_V1_NAME
                   << " build_type=" << BENCH_BUILD_TYPE << " diagnostics_timed=false"
                   << " slot=" << slot << " multiplier=" << schedule[slot]
                   << " attempts=" << stats.attempts
@@ -309,13 +306,12 @@ void emit_summary_record(size_t repetitions, std::span<const uint64_t> wall_samp
     require(wall_samples.size() == repetitions, "summary has an incomplete timing sample set");
     const auto [minimum, maximum] = std::minmax_element(wall_samples.begin(), wall_samples.end());
 
-    std::cout << "GNFS_SQUFOF_BENCH_SUMMARY_V1"
-              << " status=pass"
-              << " scope=" << BENCH_SCOPE << " corpus=" << FIXED_50D_SQUFOF_STRATEGY_V1_NAME
+    std::cout << "GNFS_SQUFOF_BENCH_SUMMARY_V1" << " status=pass" << " scope=" << BENCH_SCOPE
+              << " corpus=" << FIXED_50D_SQUFOF_STRATEGY_V1_NAME
               << " build_type=" << BENCH_BUILD_TYPE << " claim_boundary=" << CLAIM_BOUNDARY
               << " timing_scope=" << TIMING_SCOPE << " timing_asserted=false"
-              << " diagnostics_timed=false"
-              << " cases=" << FIXED_50D_SQUFOF_STRATEGY_V1.size() << " repetitions=" << repetitions
+              << " diagnostics_timed=false" << " cases=" << FIXED_50D_SQUFOF_STRATEGY_V1.size()
+              << " repetitions=" << repetitions
               << " measured_calls=" << FIXED_50D_SQUFOF_STRATEGY_V1.size() * repetitions
               << " successes_per_repetition=" << identity.successes
               << " failures_per_repetition=" << identity.failures
@@ -467,18 +463,16 @@ int main(int argc, char** argv) {
         run_benchmark(options.repetitions, failure_stage);
         return 0;
     } catch (const std::exception& error) {
-        std::cout << "GNFS_SQUFOF_BENCH_SUMMARY_V1"
-                  << " status=fail"
-                  << " scope=" << BENCH_SCOPE << " corpus=" << FIXED_50D_SQUFOF_STRATEGY_V1_NAME
+        std::cout << "GNFS_SQUFOF_BENCH_SUMMARY_V1" << " status=fail" << " scope=" << BENCH_SCOPE
+                  << " corpus=" << FIXED_50D_SQUFOF_STRATEGY_V1_NAME
                   << " build_type=" << BENCH_BUILD_TYPE << " claim_boundary=" << CLAIM_BOUNDARY
                   << " timing_scope=" << TIMING_SCOPE
                   << " failure_stage=" << sanitize_token(failure_stage)
                   << " error=" << sanitize_token(error.what()) << '\n';
         return 1;
     } catch (...) {
-        std::cout << "GNFS_SQUFOF_BENCH_SUMMARY_V1"
-                  << " status=fail"
-                  << " scope=" << BENCH_SCOPE << " corpus=" << FIXED_50D_SQUFOF_STRATEGY_V1_NAME
+        std::cout << "GNFS_SQUFOF_BENCH_SUMMARY_V1" << " status=fail" << " scope=" << BENCH_SCOPE
+                  << " corpus=" << FIXED_50D_SQUFOF_STRATEGY_V1_NAME
                   << " build_type=" << BENCH_BUILD_TYPE << " claim_boundary=" << CLAIM_BOUNDARY
                   << " timing_scope=" << TIMING_SCOPE
                   << " failure_stage=" << sanitize_token(failure_stage)

@@ -302,9 +302,7 @@ struct EvaluationRecord final {
 };
 
 void emit_evaluation(const EvaluationRecord& record) {
-    std::cout << "GNFS_SQUFOF_STRATEGY_EVAL_V2"
-              << " status=pass"
-              << " identity_preserved="
+    std::cout << "GNFS_SQUFOF_STRATEGY_EVAL_V2" << " status=pass" << " identity_preserved="
               << (record.evaluation.factor_identity_mismatches == 0 ? "true" : "false")
               << " split=" << record.split << " bit_band=" << record.band
               << " policy=" << record.policy << " rows=" << record.evaluation.row_count
@@ -488,10 +486,8 @@ void run_oracle() {
     for (const EvaluationRecord& record : evaluation_records) {
         emit_evaluation(record);
     }
-    std::cout << "GNFS_SQUFOF_STRATEGY_ORACLE_SUMMARY_V2"
-              << " status=pass schema=2"
-              << " promotion=no_go"
-              << " identity_gate=" << (identity_gate ? "pass" : "fail")
+    std::cout << "GNFS_SQUFOF_STRATEGY_ORACLE_SUMMARY_V2" << " status=pass schema=2"
+              << " promotion=no_go" << " identity_gate=" << (identity_gate ? "pass" : "fail")
               << " train_gate=" << (train_gate ? "pass" : "fail")
               << " validation_gate=" << (validation_gate ? "pass" : "fail")
               << " holdout_gate=" << (holdout_gate ? "pass" : "fail")

@@ -436,11 +436,11 @@ struct EvaluationRecord final {
 
 void emit_evaluation(const EvaluationRecord& record) {
     const BudgetEvaluation& value = record.evaluation;
-    std::cout << "GNFS_SQUFOF_BUDGET_EVAL_V1"
-              << " status=pass epoch=" << epoch_name(record.epoch) << " split=" << record.split
-              << " caller_path=" << record.caller << " budget=" << record.budget
-              << " bit_band=" << record.band << " policy=" << record.policy
-              << " rows=" << value.row_count << " unique_n=" << record.unique_inputs
+    std::cout << "GNFS_SQUFOF_BUDGET_EVAL_V1" << " status=pass epoch=" << epoch_name(record.epoch)
+              << " split=" << record.split << " caller_path=" << record.caller
+              << " budget=" << record.budget << " bit_band=" << record.band
+              << " policy=" << record.policy << " rows=" << value.row_count
+              << " unique_n=" << record.unique_inputs
               << " reference_successes=" << value.reference_successes
               << " reference_failures=" << value.reference_failures
               << " candidate_successes=" << value.candidate_successes
@@ -759,8 +759,7 @@ void run_oracle() {
               << " prospective_success_coverage_gate=" << (coverage_gate ? "pass" : "fail")
               << " prospective_work_gate=" << (work_gate ? "pass" : "fail")
               << " v2_holdout_role=published_retrospective"
-              << " confirmation_role=prospective_locked"
-              << " timing_asserted=false"
+              << " confirmation_role=prospective_locked" << " timing_asserted=false"
               << " target_rows=" << target_base.row_count
               << " target_baseline_successes=" << target_base.reference_successes
               << " target_minimum_successes=" << MINIMUM_PROSPECTIVE_TARGET_SUCCESSES

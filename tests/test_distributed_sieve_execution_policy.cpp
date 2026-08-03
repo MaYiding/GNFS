@@ -616,6 +616,8 @@ void test_floating_and_adaptive_integer_normalization() {
     expect_bits(Key::adaptive_lattice_threshold, "0.0001", binary64_bits(0.0001));
     expect_bits(Key::adaptive_lattice_threshold, "100", binary64_bits(100.0));
     expect_bits(Key::adaptive_lattice_threshold, "0.75suffix", binary64_bits(0.75));
+    expect_bits(Key::adaptive_lattice_threshold, "+0.75suffix", binary64_bits(0.75));
+    expect_bits(Key::adaptive_lattice_threshold, "0x1.8p+0suffix", binary64_bits(1.5));
     expect_bits(Key::adaptive_lattice_threshold, "0", binary64_bits(0.5));
     expect_bits(Key::adaptive_lattice_threshold, "101", binary64_bits(0.5));
     expect_bits(Key::adaptive_lattice_threshold, "nan", binary64_bits(0.5));
@@ -624,6 +626,7 @@ void test_floating_and_adaptive_integer_normalization() {
     expect_bits(Key::survival_threshold, "0", binary64_bits(0.0));
     expect_bits(Key::survival_threshold, "1", binary64_bits(1.0));
     expect_bits(Key::survival_threshold, "0.25suffix", binary64_bits(0.25));
+    expect_bits(Key::survival_threshold, "0x1p-2suffix", binary64_bits(0.25));
     expect_bits(Key::survival_threshold, "-1", binary64_bits(0.0));
     expect_bits(Key::survival_threshold, "2", binary64_bits(0.0));
     expect_bits(Key::survival_threshold, "nan", binary64_bits(0.0));

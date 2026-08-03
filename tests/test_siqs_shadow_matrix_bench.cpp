@@ -688,10 +688,9 @@ void emit_optional_size(std::ostream& output, const std::optional<size_t>& value
 }
 
 void emit_configuration(const CliOptions& options, const PackedByteProjection& projection) {
-    std::cout << "GNFS_SIQS_SHADOW_MATRIX_BENCH_CONFIG_V1"
-              << " mode=" << mode_name(options.mode) << " build_contract=" << BUILD_CONTRACT
-              << " cmake_build_type=" << CMAKE_BUILD_TYPE << " timing_asserted=false"
-              << " seed=" << hexadecimal(BENCHMARK_SEED)
+    std::cout << "GNFS_SIQS_SHADOW_MATRIX_BENCH_CONFIG_V1" << " mode=" << mode_name(options.mode)
+              << " build_contract=" << BUILD_CONTRACT << " cmake_build_type=" << CMAKE_BUILD_TYPE
+              << " timing_asserted=false" << " seed=" << hexadecimal(BENCHMARK_SEED)
               << " factor_base_entries=" << options.factor_base_size
               << " rows=" << options.row_count << " odd_weight=" << options.odd_weight
               << " warmups=" << options.warmups << " reps=" << options.repetitions
@@ -706,8 +705,7 @@ void emit_configuration(const CliOptions& options, const PackedByteProjection& p
 void emit_result(const CliOptions& options, std::string_view implementation, uint32_t workers,
                  const TimingSummary& summary, bool is_dependency_digest,
                  std::string_view prototype = "false", size_t inner_iterations = 1) {
-    std::cout << "GNFS_SIQS_SHADOW_MATRIX_BENCH_RESULT_V1"
-              << " status=ok"
+    std::cout << "GNFS_SIQS_SHADOW_MATRIX_BENCH_RESULT_V1" << " status=ok"
               << " mode=" << mode_name(options.mode) << " implementation=" << implementation
               << " prototype=" << prototype << " build_contract=" << BUILD_CONTRACT
               << " cmake_build_type=" << CMAKE_BUILD_TYPE << " timing_asserted=false"

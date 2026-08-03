@@ -151,8 +151,8 @@ struct FactorResult {
             }
             os << "\n";
             os << "Method: " << method_name(stats.method_used)
-               << " | Time: " << stats.timings.total_s << "s"
-               << " (" << stats.n_digits << " digits, " << stats.n_bits << " bits)\n";
+               << " | Time: " << stats.timings.total_s << "s" << " (" << stats.n_digits
+               << " digits, " << stats.n_bits << " bits)\n";
         } else {
             os << "Failed to factorize " << n.to_string() << "\n";
         }

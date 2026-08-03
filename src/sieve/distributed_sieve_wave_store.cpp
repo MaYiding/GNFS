@@ -16421,6 +16421,12 @@ DistributedSieveWaveStore::freeze_worker_cleanup_exact_anchor_v1(
         return fail_with(
             diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error()));
     };
+#if defined(_WIN32) || (!defined(__APPLE__) && !defined(__linux__))
+    (void)expected_commit;
+    (void)expected_commit_snapshot;
+    return fail_with(
+        diagnostic(DistributedSieveWaveStoreStatus::platform_unsupported, unsupported_error()));
+#else
     try {
         if (state_ == nullptr || !process_matches(state_->creator_process_id) ||
             expected_commit_snapshot.identity == durable_record::NativeIdentity{} ||
@@ -16527,6 +16533,7 @@ DistributedSieveWaveStore::freeze_worker_cleanup_exact_anchor_v1(
         return fail_with(diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
                                     std::make_error_code(std::errc::io_error)));
     }
+#endif
 }
 
 DistributedSieveWaveStoreDiagnostic
@@ -16595,6 +16602,11 @@ DistributedSieveWaveStore::revalidate_authority() const noexcept {
     return {};
 #endif
 }
+
+#if defined(_WIN32)
+using MergeCommitPredecessorSnapshots = distributed_sieve_merge_writer_authority_detail::
+    DistributedSieveMergeCommitPredecessorSnapshotsV1;
+#endif
 
 DistributedSieveWaveStoreDiagnostic
 DistributedSieveWaveStore::capture_merge_commit_predecessor_snapshots_v1(
@@ -17818,16 +17830,18 @@ DistributedSieveWaveStore::claim_private_lease_root_impl(
     if (state_->creator_process_id == 0 || !process_matches(state_->creator_process_id)) {
         return {nullptr, process_mismatch()};
     }
-#if !defined(_WIN32)
+#if defined(_WIN32) || (!defined(__APPLE__) && !defined(__linux__))
+    (void)held_worker_handoffs;
+    (void)allow_merge_raw_recovery_pending;
+    return {nullptr, diagnostic(DistributedSieveWaveStoreStatus::platform_unsupported,
+                                unsupported_error())};
+#else
     if (state_->merge_raw_recovery_open_anchor.has_value() &&
         !state_->merge_raw_recovery_completed.load(std::memory_order_acquire) &&
         !allow_merge_raw_recovery_pending) {
         return {nullptr, diagnostic(DistributedSieveWaveStoreStatus::reconciliation_required,
                                     protocol_error())};
     }
-#else
-    (void)allow_merge_raw_recovery_pending;
-#endif
 
     std::vector<const DistributedSievePrivateLeaseBaseLockAt*> borrowed_worker_base_locks;
     try {
@@ -17920,6 +17934,7 @@ DistributedSieveWaveStore::claim_private_lease_root_impl(
         return {nullptr, std::move(validated)};
     }
     return {std::move(claim), {}};
+#endif
 }
 
 DistributedSievePrivateLeaseRootClaimResult
@@ -19211,6 +19226,8 @@ bool DistributedSieveWorkerAttemptStartReceipt::owned_by_current_process() const
 
 namespace {
 
+#if !defined(_WIN32)
+
 enum class WorkerAttemptRecordPrefixShape : std::uint8_t {
     absent,
     pending_only,
@@ -19706,6 +19723,8 @@ worker_attempt_protocol_conflict(DistributedSieveProtocolStatus status) noexcept
     outcome.protocol_status = status;
     return outcome;
 }
+
+#endif
 
 } // namespace
 
@@ -20551,6 +20570,9 @@ DistributedSieveMergeStartedWriterMintV1::merge_started_chain() const noexcept {
 }
 
 bool DistributedSieveMergeStartedWriterMintV1::writer_lifetime_stable() const noexcept {
+#if defined(_WIN32) || (!defined(__APPLE__) && !defined(__linux__))
+    return false;
+#else
     if (creator_process_id_ == 0 || !process_matches(creator_process_id_) || root_fd_ < 0 ||
         directory_fd_ < 0 || receipt_.wave_store_state_ == nullptr || base_path_.empty() ||
         private_directory_.empty() || lock_path_.empty()) {
@@ -20603,6 +20625,7 @@ bool DistributedSieveMergeStartedWriterMintV1::writer_lifetime_stable() const no
     } catch (...) {
         return false;
     }
+#endif
 }
 
 DistributedSieveMergeStartedWriterMintResultV1 consume_distributed_sieve_merge_started_writer_v1(
@@ -22458,6 +22481,12 @@ DistributedSieveMergeLeaseReservationResultV1 reserve_distributed_sieve_merge_ge
             diagnostic(DistributedSieveWaveStoreStatus::invalid_request, invalid_argument_error()));
     }
 
+#if defined(_WIN32) || (!defined(__APPLE__) && !defined(__linux__))
+    (void)hooks;
+    (void)held_worker_handoffs;
+    return fail_with(
+        diagnostic(DistributedSieveWaveStoreStatus::platform_unsupported, unsupported_error()));
+#else
     try {
         std::vector<TerminalChunkInputV1> frozen_inputs(terminal_inputs.begin(),
                                                         terminal_inputs.end());
@@ -22582,6 +22611,7 @@ DistributedSieveMergeLeaseReservationResultV1 reserve_distributed_sieve_merge_ge
         return fail_with(diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
                                     std::make_error_code(std::errc::io_error)));
     }
+#endif
 }
 
 DistributedSievePrivateLeaseReservationResult
@@ -24922,6 +24952,12 @@ DistributedSieveWorkerCleanupCompletionPublicationAuthorityV1::drive(
                              : cold_reopen(std::move(diagnostic));
         };
 
+#if defined(_WIN32) || (!defined(__APPLE__) && !defined(__linux__))
+    (void)hooks;
+    diagnostic.status = CompletionPublicationStatus::platform_unsupported;
+    diagnostic.native_error = unsupported_error();
+    return retry_input_or_cold(std::move(diagnostic));
+#else
     try {
         const bool fresh_path = fresh.has_value() && !recovery.has_value();
         const bool recovery_path = !fresh.has_value() && recovery.has_value();
@@ -25510,6 +25546,7 @@ DistributedSieveWorkerCleanupCompletionPublicationAuthorityV1::drive(
     return diagnostic.authority_spent || diagnostic.publication_started
                ? cold_reopen(std::move(diagnostic))
                : retry_input_or_cold(std::move(diagnostic));
+#endif
 }
 
 namespace {
@@ -25904,6 +25941,12 @@ DistributedSieveWorkerCleanupAuthorizationPublicationAuthorityV1::drive(
                                  : AuthorizationPublicationStatus::retryable_recovery_root;
     };
 
+#if defined(_WIN32) || (!defined(__APPLE__) && !defined(__linux__))
+    (void)hooks;
+    diagnostic.status = AuthorizationPublicationStatus::platform_unsupported;
+    diagnostic.native_error = unsupported_error();
+    return retry_input_or_cold(std::move(diagnostic));
+#else
     try {
         const bool fresh_path = fresh.has_value() && !recovery.has_value();
         const bool recovery_path = !fresh.has_value() && recovery.has_value();
@@ -26823,6 +26866,7 @@ DistributedSieveWorkerCleanupAuthorizationPublicationAuthorityV1::drive(
     return diagnostic.authority_spent || diagnostic.publication_started
                ? cold_reopen(std::move(diagnostic))
                : retry_input_or_cold(std::move(diagnostic));
+#endif
 }
 
 } // namespace gnfs::sieve::distributed_sieve_worker_cleanup_authority_detail

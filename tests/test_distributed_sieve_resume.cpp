@@ -21917,6 +21917,18 @@ constexpr std::array<WaveStoreCommonShard, 20> WAVE_STORE_COMMON_SHARDS = {{
 
 constexpr std::string_view WAVE_STORE_WORKER_LAUNCHER_SHARD = "wave-store-worker-launcher";
 
+#if !defined(__APPLE__)
+[[nodiscard]] constexpr bool
+wave_store_shard_requires_private_handoff(std::string_view name) noexcept {
+    return name == "wave-store-merge-reservation" ||
+           name == "wave-store-merge-start-publication" ||
+           name == "wave-store-merge-start-reconcile-p8" ||
+           name == "wave-store-merge-start-reconcile-canonical" ||
+           name == "wave-store-merge-start-reconcile-invalid" ||
+           name == "wave-store-merge-cursor" || name == "wave-store-worker-handoff";
+}
+#endif
+
 consteval bool wave_store_common_shards_are_contiguous() {
     std::size_t next_offset = 0;
     for (const auto& shard : WAVE_STORE_COMMON_SHARDS) {
@@ -22150,6 +22162,13 @@ void run_wave_store_suite(std::optional<std::string_view> selected_shard = std::
     }};
     const std::span<const NamedTest> common_test_span(common_tests);
     const auto run_common_shard = [&](const WaveStoreCommonShard& shard) {
+#if !defined(__APPLE__)
+        if (wave_store_shard_requires_private_handoff(shard.name)) {
+            std::cout << "  " << shard.name
+                      << ": SKIP (deferred private handoff requires macOS)\n";
+            return;
+        }
+#endif
         run_tests(common_test_span.subspan(shard.offset, shard.count));
     };
     const auto run_launcher_shard = [&] {

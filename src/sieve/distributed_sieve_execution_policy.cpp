@@ -2,14 +2,20 @@
 
 #include <algorithm>
 #include <bit>
+#include <cerrno>
 #include <charconv>
 #include <cmath>
+#include <concepts>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
+#include <locale.h>
 #include <new>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 
 namespace gnfs::sieve::distributed_sieve_execution_policy_detail {
@@ -238,6 +244,77 @@ parse_int32_prefix(std::string_view text, bool skip_leading_space = true) noexce
     return parsed.negative ? UINT64_C(0) - parsed.magnitude : parsed.magnitude;
 }
 
+template <typename Floating>
+concept HasFloatingFromChars =
+    requires(const char* first, const char* last, Floating& value, std::chars_format format) {
+        { std::from_chars(first, last, value, format) } -> std::same_as<std::from_chars_result>;
+    };
+
+[[maybe_unused, nodiscard]] std::optional<double>
+parse_c_locale_double_prefix(std::string_view text) noexcept {
+    try {
+        const std::string storage(text);
+        char* parsed_end = nullptr;
+        errno = 0;
+#if defined(_WIN32)
+        _locale_t c_locale = _create_locale(LC_NUMERIC, "C");
+        if (c_locale == nullptr) {
+            return std::nullopt;
+        }
+        const double value = _strtod_l(storage.c_str(), &parsed_end, c_locale);
+        _free_locale(c_locale);
+#else
+        locale_t c_locale = newlocale(LC_NUMERIC_MASK, "C", nullptr);
+        if (c_locale == nullptr) {
+            return std::nullopt;
+        }
+        const double value = strtod_l(storage.c_str(), &parsed_end, c_locale);
+        freelocale(c_locale);
+#endif
+        if (parsed_end == storage.c_str() || errno == ERANGE) {
+            return std::nullopt;
+        }
+        return value;
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+template <typename Floating>
+[[nodiscard]] std::optional<Floating> parse_floating_prefix(std::string_view text) noexcept {
+    if constexpr (!HasFloatingFromChars<Floating>) {
+        static_assert(std::is_same_v<Floating, double>);
+        return parse_c_locale_double_prefix(text);
+    } else {
+        Floating value = 0.0;
+        std::from_chars_result parsed;
+        bool negate_hex = false;
+        if (text.starts_with("0x") || text.starts_with("0X")) {
+            text.remove_prefix(2);
+            if (text.empty()) {
+                return std::nullopt;
+            }
+            parsed = std::from_chars(text.data(), text.data() + text.size(), value,
+                                     std::chars_format::hex);
+        } else if (text.starts_with("-0x") || text.starts_with("-0X")) {
+            text.remove_prefix(3);
+            if (text.empty()) {
+                return std::nullopt;
+            }
+            parsed = std::from_chars(text.data(), text.data() + text.size(), value,
+                                     std::chars_format::hex);
+            negate_hex = true;
+        } else {
+            parsed = std::from_chars(text.data(), text.data() + text.size(), value,
+                                     std::chars_format::general);
+        }
+        if (parsed.ptr == text.data() || parsed.ec != std::errc{}) {
+            return std::nullopt;
+        }
+        return negate_hex ? -value : value;
+    }
+}
+
 [[nodiscard]] std::optional<double>
 parse_decimal_double_prefix(std::optional<std::string_view> raw) noexcept {
     if (!raw.has_value() || raw->empty()) {
@@ -257,32 +334,7 @@ parse_decimal_double_prefix(std::optional<std::string_view> raw) noexcept {
         }
     }
 
-    double value = 0.0;
-    std::from_chars_result parsed;
-    bool negate_hex = false;
-    if (text.starts_with("0x") || text.starts_with("0X")) {
-        text.remove_prefix(2);
-        if (text.empty()) {
-            return std::nullopt;
-        }
-        parsed =
-            std::from_chars(text.data(), text.data() + text.size(), value, std::chars_format::hex);
-    } else if (text.starts_with("-0x") || text.starts_with("-0X")) {
-        text.remove_prefix(3);
-        if (text.empty()) {
-            return std::nullopt;
-        }
-        parsed =
-            std::from_chars(text.data(), text.data() + text.size(), value, std::chars_format::hex);
-        negate_hex = true;
-    } else {
-        parsed = std::from_chars(text.data(), text.data() + text.size(), value,
-                                 std::chars_format::general);
-    }
-    if (parsed.ptr == text.data() || parsed.ec != std::errc{}) {
-        return std::nullopt;
-    }
-    return negate_hex ? -value : value;
+    return parse_floating_prefix<double>(text);
 }
 
 [[nodiscard]] bool exact(std::optional<std::string_view> raw, std::string_view expected) noexcept {

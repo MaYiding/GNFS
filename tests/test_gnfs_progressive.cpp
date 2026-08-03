@@ -405,10 +405,8 @@ FactResult factor_with_progress(const Integer& n, int level) {
                           << batch_target << " (" << std::fixed << std::setprecision(1)
                           << (100.0 * static_cast<double>(collector.size()) /
                               static_cast<double>(batch_target))
-                          << "%)"
-                          << " rate=" << std::setprecision(1) << rate << "/s"
-                          << " elapsed=" << std::setprecision(1) << phase.sec() << "s"
-                          << "\n"
+                          << "%)" << " rate=" << std::setprecision(1) << rate << "/s"
+                          << " elapsed=" << std::setprecision(1) << phase.sec() << "s" << "\n"
                           << std::flush;
             }
         }
@@ -467,8 +465,7 @@ FactResult factor_with_progress(const Integer& n, int level) {
                           << " merged=" << reduction_stats.merged_relations << "\n";
                 std::cout << "  [round " << (round + 1)
                           << "] Full=" << reduction_stats.separated_full_relations
-                          << " Merged=" << reduction_stats.merged_relations << " (V0_BFS)"
-                          << "\n"
+                          << " Merged=" << reduction_stats.merged_relations << " (V0_BFS)" << "\n"
                           << std::flush;
             } else {
                 // 2LP merge: handles both 1LP×1LP and 2LP via iterative weight-2 processing

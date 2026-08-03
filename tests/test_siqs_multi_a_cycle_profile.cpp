@@ -1989,12 +1989,10 @@ void emit_config(std::ostringstream& output, const ProfileRecord& record) {
            << " max_a=" << fixture.max_a_count << " unique_a=" << record.plan.a_plans.size()
            << " planner_attempts=" << record.plan.planner_attempts
            << " planner_duplicate_draws=" << record.plan.duplicate_a_draws
-           << " accepted_duplicate_a=0"
-           << " max_planner_attempts=" << MAX_A_PLAN_ATTEMPTS
+           << " accepted_duplicate_a=0" << " max_planner_attempts=" << MAX_A_PLAN_ATTEMPTS
            << " b_per_a=" << fixture.b_slots_per_a
            << " available_b_per_a=" << record.plan.available_b_slots << " complete_b_family=true"
-           << " capture_stages=0-1,1-4,4-16,16-64"
-           << " prefix_a_counts=1,4,16,64"
+           << " capture_stages=0-1,1-4,4-16,16-64" << " prefix_a_counts=1,4,16,64"
            << " logical_id_schema=a_ordinal_gray_ordinal"
            << " relation_provenance_schema=a_ordinal_gray_ordinal_relation_ordinal"
            << " accepted_provenance_policy=canonical_min_logical_id"
@@ -2029,8 +2027,7 @@ void emit_prefix(std::ostringstream& output, const PrefixRecord& record) {
     const SIQSShadowAssemblyStats& stats = record.assembly;
     const SIQSShadowAssemblyFingerprints& fingerprints = record.fingerprints;
     const CycleEvidence& cycles = record.cycle_evidence;
-    output << "GNFS_SIQS_MULTI_A_CYCLE_PREFIX_V2"
-           << " schema_version=2 status=valid profile_id="
+    output << "GNFS_SIQS_MULTI_A_CYCLE_PREFIX_V2" << " schema_version=2 status=valid profile_id="
            << SIQS_MULTI_A_CYCLE_FIXTURE_V2.profile_id << " prefix_a=" << record.a_count
            << " stage_a_begin=" << record.stage_a_begin << " stage_a_end=" << record.stage_a_end
            << " b_per_a=" << SIQS_MULTI_A_CYCLE_FIXTURE_V2.b_slots_per_a
@@ -2120,8 +2117,7 @@ void emit_summary(std::ostringstream& output, const ProfileRecord& record) {
         std::any_of(record.prefixes.begin(), record.prefixes.end(), [](const PrefixRecord& prefix) {
             return prefix.capture.capacity_truncated_slots() != 0;
         });
-    output << "GNFS_SIQS_MULTI_A_CYCLE_SUMMARY_V2"
-           << " schema_version=2 status=valid profile_id="
+    output << "GNFS_SIQS_MULTI_A_CYCLE_SUMMARY_V2" << " schema_version=2 status=valid profile_id="
            << SIQS_MULTI_A_CYCLE_FIXTURE_V2.profile_id
            << " stdout_records=6 config_records=1 prefix_records=4 summary_records=1"
            << " max_a=" << SIQS_MULTI_A_CYCLE_FIXTURE_V2.max_a_count
@@ -2132,15 +2128,13 @@ void emit_summary(std::ostringstream& output, const ProfileRecord& record) {
            << " resolved_workers=" << record.options.requested_workers
            << " peak_workers=" << record.options.requested_workers << " stages_with_full_peak=4"
            << " schedule=staged_static_contiguous_logical_slots"
-           << " logical_merge=lexicographic_a_gray_relation"
-           << " worker_independence_premises=pass"
+           << " logical_merge=lexicographic_a_gray_relation" << " worker_independence_premises=pass"
            << " theoretical_relation_cap=" << record.theoretical_relation_cap
            << " theoretical_payload_cap_bytes=" << record.theoretical_payload_cap_bytes
            << " any_capacity_truncation=" << (any_capacity_truncation ? "true" : "false")
            << " first_cycle_prefix=" << optional_size(record.first_cycle_prefix)
            << " first_two_lp_cycle_prefix=" << optional_size(record.first_two_lp_cycle_prefix)
-           << " rss_scope=self_lifetime"
-           << " rss_backend="
+           << " rss_scope=self_lifetime" << " rss_backend="
            << gnfs::util::process_memory_backend_name(record.final_memory.backend)
            << " plan_current_rss_bytes=" << optional_u64(record.plan_memory.current_rss_bytes)
            << " plan_peak_rss_bytes=" << optional_u64(record.plan_memory.lifetime_peak_rss_bytes)
@@ -3359,9 +3353,8 @@ void emit_scale_records(const ScaleProfileRecord& record, const ScaleProofRecord
            << " global_cap_boundary=next_gt_limit timeout_seconds=" << SCALE_TIMEOUT_SECONDS
            << " planner_attempts=" << record.plan.planner_attempts
            << " planner_duplicate_draws=" << record.plan.duplicate_a_draws
-           << " accepted_duplicate_a=0"
-           << " first_a=" << record.plan.first_a << " last_a=" << record.plan.last_a
-           << " plan_digest_low=" << record.plan.digest.low
+           << " accepted_duplicate_a=0" << " first_a=" << record.plan.first_a
+           << " last_a=" << record.plan.last_a << " plan_digest_low=" << record.plan.digest.low
            << " plan_digest_high=" << record.plan.digest.high << " multiplier=" << record.multiplier
            << " sieved_n=" << record.sieved_modulus << " sieved_bits=" << record.sieved_bits
            << " factor_base_columns=" << record.factor_base_columns
@@ -3567,13 +3560,11 @@ void emit_scale_records(const ScaleProfileRecord& record, const ScaleProofRecord
                     ? "not_attempted"
                     : (proof->options.elimination_workers > 1 ? "persistent_parallel" : "serial"))
             << " dependency_search=first_free_column_basis_prefix"
-            << " dependency_combinations_attempted=false"
-            << " dependency_search_complete="
+            << " dependency_combinations_attempted=false" << " dependency_search_complete="
             << (!proof->matrix_status || *proof->matrix_status != SIQSShadowMatrixStatus::valid
                     ? "not_attempted"
                     : (proof->dependency_cap_reached ? "false" : "true"))
-            << " dependency_ordinal_base=0"
-            << " minimum_nullity=" << proof->minimum_nullity
+            << " dependency_ordinal_base=0" << " minimum_nullity=" << proof->minimum_nullity
             << " dependencies_returned=" << proof->dependencies_returned
             << " dependencies_examined=" << proof->dependencies_examined
             << " dependencies_verified=" << proof->dependencies_verified
@@ -3589,15 +3580,15 @@ void emit_scale_records(const ScaleProfileRecord& record, const ScaleProofRecord
             << " factor_found_count=" << proof->factor_found_count
             << " winning_dependency=" << optional_size(proof->winning_dependency)
             << " winning_dependency_size=" << optional_size(proof->winning_dependency_size)
-            << " square_modulus=sieved_n gcd_target=n"
-            << " factor=" << proof->factor << " cofactor=" << proof->cofactor
+            << " square_modulus=sieved_n gcd_target=n" << " factor=" << proof->factor
+            << " cofactor=" << proof->cofactor
             << " solver_wall_ns=" << proof->solver_wall_nanoseconds
             << " verify_extract_wall_ns=" << proof->verify_extract_wall_nanoseconds
             << " solver_attempted=" << solver_attempted << " promotion=false\n";
 
         output
-            << "GNFS_SIQS_256A_SUMMARY_V4"
-            << " schema_version=4 status=" << overall_status << " profile_id=" << fixture.profile_id
+            << "GNFS_SIQS_256A_SUMMARY_V4" << " schema_version=4 status=" << overall_status
+            << " profile_id=" << fixture.profile_id
             << " stdout_records=6 config_records=1 capture_records=1 graph_records=1"
             << " assembly_records=1 proof_records=1 summary_records=1"
             << " workers=" << record.options.requested_workers

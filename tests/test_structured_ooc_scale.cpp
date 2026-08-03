@@ -433,8 +433,7 @@ void run_owning_ooc_case(size_t raw_row_count, uint64_t generation, const std::s
                   << " output_rows_read=" << result.size() << " incidence_entries="
                   << result.stats.structured_incidence.total_incidence_entries
                   << " commits=" << result.stats.structured_run.commits
-                  << " source_backend=finalized-ooc"
-                  << " output_backend=finalized-ooc\n";
+                  << " source_backend=finalized-ooc" << " output_backend=finalized-ooc\n";
     }
     CHECK(private_sink_absent(output_base));
     CHECK(private_sink_absent(working_base));
@@ -727,9 +726,7 @@ void run_rss_case(size_t raw_row_count, uint32_t workers) {
     }
     CHECK(ordinary_artifacts_absent(input_base));
 
-    std::cout << "GNFS_RESOURCE_V1"
-              << " scope=self"
-              << " unit=bytes"
+    std::cout << "GNFS_RESOURCE_V1" << " scope=self" << " unit=bytes"
               << " backend=" << process_memory_backend_name(baseline_memory.backend)
               << " supported=" << (supported ? "true" : "false") << " rows=" << raw_row_count
               << " workers=" << workers << " source_rows=" << source.rows_written

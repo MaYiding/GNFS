@@ -4297,6 +4297,7 @@ void test_slot_runner_authentication_failure_taints_without_launch(
     deployment.holdout_probe->probe_execution_identity = *rebound_identity;
     auto active = begin_runner_slot(deployment);
 
+    CHECK(::chmod(private_probe.c_str(), S_IRUSR | S_IWUSR | S_IXUSR) == 0);
     CHECK(std::filesystem::copy_file(children.nonzero, private_probe,
                                      std::filesystem::copy_options::overwrite_existing));
     CHECK(::chmod(private_probe.c_str(), S_IRUSR | S_IXUSR) == 0);
