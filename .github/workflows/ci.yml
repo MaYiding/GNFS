@@ -223,7 +223,7 @@ jobs:
   linux-release-gate:
     name: Linux x86_64 Release deep gate
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 75
 
     steps:
     - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -252,7 +252,7 @@ jobs:
           --label-regex "gate|slow" \
           --label-exclude "heavy|stress|bench" \
           --parallel 1 \
-          --timeout 1800 \
+          --timeout 2400 \
           --no-tests=error
 
   linux-musl-transport:

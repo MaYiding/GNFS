@@ -24004,6 +24004,10 @@ bool DistributedSieveWorkerCleanupIntentConversionCapsuleV1::valid() const noexc
 
 bool DistributedSieveWorkerCleanupIntentConversionAuthorityV1::valid(
     const DistributedSieveWorkerCleanupIntentConversionCapsuleV1& capsule) noexcept {
+#if defined(_WIN32)
+    (void)capsule;
+    return false;
+#else
     const int process_id = gnfs::util::process_id();
     if (process_id <= 0 || capsule.creator_process_id_ == 0 ||
         capsule.creator_process_id_ != static_cast<std::uint64_t>(process_id) ||
@@ -24035,6 +24039,7 @@ bool DistributedSieveWorkerCleanupIntentConversionAuthorityV1::valid(
     // performs the root-only sticky scan and deliberately ignores all relation
     // and BaseLock namespaces retained by the same-OFD reader.
     return !capsule.receipt_->spent();
+#endif
 }
 
 DistributedSieveWorkerCleanupIntentConversionPrepareResultV1
@@ -24063,6 +24068,11 @@ DistributedSieveWorkerCleanupIntentConversionAuthorityV1::prepare(
         return Result(std::move(retryable_root), std::nullopt, std::move(diagnostic));
     };
 
+#if defined(_WIN32)
+    return Result(std::nullopt, std::nullopt,
+                  failure(Phase::admission_validation, Status::invalid_admission,
+                          std::make_error_code(std::errc::operation_not_supported), true));
+#else
     const int process_id = gnfs::util::process_id();
     const bool process_mismatch = retained_root.state_ != nullptr &&
                                   retained_root.state_->creator_process_id != 0 &&
@@ -24174,6 +24184,7 @@ DistributedSieveWorkerCleanupIntentConversionAuthorityV1::prepare(
     diagnostic.receipt_mint = std::move(minted.diagnostic);
     diagnostic.wave_store = std::move(adopted.diagnostic);
     return Result(std::nullopt, std::move(capsule), std::move(diagnostic));
+#endif
 }
 
 DistributedSieveWorkerCleanupIntentConversionPrepareResultV1
@@ -24185,6 +24196,14 @@ prepare_distributed_sieve_worker_cleanup_intent_conversion_v1(
 DistributedSieveWorkerCleanupReceiptMintResultV1
 DistributedSieveWorkerCleanupReceiptMintAuthorityV1::mint(
     DistributedSieveWorkerCleanupRootAdmissionV1& admission) noexcept {
+#if defined(_WIN32)
+    (void)admission;
+    return {
+        std::nullopt,
+        mint_failure(MintPhase::admission_validation, MintStatus::invalid_admission,
+                     std::make_error_code(std::errc::operation_not_supported), true),
+    };
+#else
     if (admission.state_ == nullptr || admission.state_->store == nullptr ||
         admission.state_->creator_process_id == 0 ||
         !mint_process_matches(admission.state_->creator_process_id)) {
@@ -24332,6 +24351,7 @@ DistributedSieveWorkerCleanupReceiptMintAuthorityV1::mint(
                          std::make_error_code(std::errc::io_error)),
         };
     }
+#endif
 }
 
 namespace {
@@ -24494,6 +24514,10 @@ DistributedSieveWorkerCleanupCompletionPublicationResultV1::operator bool() cons
 
 bool DistributedSieveWorkerCleanupCompletionPublicationAuthorityV1::valid(
     const DistributedSieveWorkerCleanupCompletionPublishedContinuationV1& continuation) noexcept {
+#if defined(_WIN32)
+    (void)continuation;
+    return false;
+#else
     try {
         if (!completion_publication_process_matches(continuation.creator_process_id_) ||
             continuation.root_.state_ == nullptr || continuation.root_.state_->store == nullptr ||
@@ -24528,6 +24552,7 @@ bool DistributedSieveWorkerCleanupCompletionPublicationAuthorityV1::valid(
     } catch (...) {
         return false;
     }
+#endif
 }
 
 DistributedSieveWorkerCleanupCompletionPublicationResultV1
@@ -24629,7 +24654,7 @@ DistributedSieveWorkerCleanupCompletionPublicationAuthorityV1::drive(
 #if defined(_WIN32) || (!defined(__APPLE__) && !defined(__linux__))
     (void)hooks;
     diagnostic.status = CompletionPublicationStatus::platform_unsupported;
-    diagnostic.native_error = unsupported_error();
+    diagnostic.native_error = std::make_error_code(std::errc::operation_not_supported);
     return retry_input_or_cold(std::move(diagnostic));
 #else
     try {
@@ -25402,6 +25427,10 @@ DistributedSieveWorkerCleanupAuthorizationPublicationResultV1::operator bool() c
 bool DistributedSieveWorkerCleanupAuthorizationPublicationAuthorityV1::valid(
     const DistributedSieveWorkerCleanupAuthorizationPublishedContinuationV1&
         continuation) noexcept {
+#if defined(_WIN32)
+    (void)continuation;
+    return false;
+#else
     try {
         if (!authorization_publication_process_matches(continuation.creator_process_id_) ||
             continuation.root_.state_ == nullptr || continuation.root_.state_->store == nullptr ||
@@ -25449,10 +25478,15 @@ bool DistributedSieveWorkerCleanupAuthorizationPublicationAuthorityV1::valid(
     } catch (...) {
         return false;
     }
+#endif
 }
 
 bool DistributedSieveWorkerCleanupAuthorizationPublicationAuthorityV1::valid(
     const DistributedSieveWorkerCleanupAllWorkersCompletedContinuationV1& continuation) noexcept {
+#if defined(_WIN32)
+    (void)continuation;
+    return false;
+#else
     try {
         if (!authorization_publication_process_matches(continuation.creator_process_id_) ||
             continuation.root_.state_ == nullptr || continuation.root_.state_->store == nullptr ||
@@ -25498,6 +25532,7 @@ bool DistributedSieveWorkerCleanupAuthorizationPublicationAuthorityV1::valid(
     } catch (...) {
         return false;
     }
+#endif
 }
 
 DistributedSieveWorkerCleanupAuthorizationPublicationResultV1
@@ -25618,7 +25653,7 @@ DistributedSieveWorkerCleanupAuthorizationPublicationAuthorityV1::drive(
 #if defined(_WIN32) || (!defined(__APPLE__) && !defined(__linux__))
     (void)hooks;
     diagnostic.status = AuthorizationPublicationStatus::platform_unsupported;
-    diagnostic.native_error = unsupported_error();
+    diagnostic.native_error = std::make_error_code(std::errc::operation_not_supported);
     return retry_input_or_cold(std::move(diagnostic));
 #else
     try {

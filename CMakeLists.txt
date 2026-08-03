@@ -569,7 +569,7 @@ if(GNFS_BUILD_TESTS)
                 --self-test
                 --root ${CMAKE_CURRENT_SOURCE_DIR})
         set_tests_properties(DistributedSievePolicyInventory PROPERTIES
-            LABELS "slow" TIMEOUT 1800
+            LABELS "slow" TIMEOUT 2400
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endif()
 

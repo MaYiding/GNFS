@@ -15761,6 +15761,7 @@ void test_wave_store_worker_attempt_start_fresh_retry_chain() {
                                       wave_attempt_lease_from_receipt(reservation_0)));
     }
 
+#if !defined(_WIN32)
     const auto predecessor_directory_path = root / names_0->private_directory_leaf;
     int predecessor_directory_fd = -1;
     do {
@@ -15789,6 +15790,7 @@ void test_wave_store_worker_attempt_start_fresh_retry_chain() {
     CHECK(::fstat(held_predecessor_owner.get(), &predecessor_owner_metadata) == 0);
     CHECK(S_ISREG(predecessor_owner_metadata.st_mode));
     CHECK(same_native_identity(attempt_0->lease.owner_marker, predecessor_owner_metadata));
+#endif
 
     auto opened_0 = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);
     auto recovered_0 = wave_detail::recover_worker_attempt_private_lease(std::move(opened_0));
