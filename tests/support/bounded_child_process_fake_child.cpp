@@ -251,19 +251,28 @@ void close_stdout_stream() noexcept {
     const std::string stdout_chunk(8192, 'F');
     std::atomic<bool> stop{false};
     std::atomic<bool> writers_ok{true};
+    std::atomic<bool> stdout_started{false};
     std::array<std::thread, writer_count> writers;
     for (auto& writer : writers) {
         writer = std::thread([&]() noexcept {
             while (!stop.load(std::memory_order_relaxed)) {
                 if (!write_stdout(stdout_chunk)) {
-                    writers_ok.store(false, std::memory_order_relaxed);
+                    writers_ok.store(false, std::memory_order_release);
                     break;
                 }
+                stdout_started.store(true, std::memory_order_release);
             }
         });
     }
 
-    const bool stderr_ok = write_repeated(false, 'E', stderr_size);
+    // Sanitizer scheduling can let the main thread finish stderr before any
+    // writer runs. Start the pressure phase only after stdout has real data.
+    while (!stdout_started.load(std::memory_order_acquire) &&
+           writers_ok.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
+    const bool stderr_ok =
+        stdout_started.load(std::memory_order_acquire) && write_repeated(false, 'E', stderr_size);
     stop.store(true, std::memory_order_relaxed);
     for (auto& writer : writers) {
         writer.join();
