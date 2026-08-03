@@ -4213,7 +4213,7 @@ WORKER_CLEANUP_ORCHESTRATION_CMAKE_BLOCK_SHA256 = (
 )
 WORKER_CLEANUP_ORCHESTRATION_CI_FILE = ".github/workflows/ci.yml"
 WORKER_CLEANUP_ORCHESTRATION_CI_BLOCK_SHA256 = (
-    "83454d81eb547fce318a7af622de5e1ec0bced19f585be879300434d75c00f2d"
+    "754701bf6d02d6bcc034ae7f192762df2ded834ada96af322956b882543df4f0"
 )
 
 # M5-R1 is a one-shot source-private promotion from the completed R4 owner to
@@ -4670,7 +4670,7 @@ WAVE_RESULT_CMAKE_BLOCK_SHA256 = (
 WAVE_RESULT_CI_FILE = ".github/workflows/ci.yml"
 WAVE_RESULT_CI_MARKER = "    - name: Run macOS durable wave result\n"
 WAVE_RESULT_CI_BLOCK_SHA256 = (
-    "e3d2e4fef6ebb9742ec74184538655672f2aa998317b6c06ef15b0d8c571875d"
+    "606d05582709120ef4954bbb8905620774de77a009c27f39c397f2358a744836"
 )
 
 # R4 is a consumer of the already-frozen T2a/R1/R2/R3 capabilities. Extend
