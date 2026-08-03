@@ -92,10 +92,11 @@ class RequiredCheck:
 
 
 @dataclass(frozen=True)
-class RequiredExternalCheck:
-    name: str
-    app_id: int
-    app_slug: str
+class RequiredCodeScanningAnalysis:
+    tool_name: str
+    analysis_key: str
+    category: str
+    environment: str
 
 
 REQUIRED_MAIN_CHECKS = (
@@ -128,8 +129,13 @@ REQUIRED_MAIN_CHECKS = (
         "macOS 26 build, test, and package",
     ),
 )
-REQUIRED_EXTERNAL_CHECKS = (
-    RequiredExternalCheck("CodeQL", 57789, "github-advanced-security"),
+REQUIRED_CODE_SCANNING_ANALYSES = (
+    RequiredCodeScanningAnalysis(
+        "CodeQL",
+        ".github/workflows/codeql.yml:analyze",
+        ".github/workflows/codeql.yml:analyze",
+        "{}",
+    ),
 )
 
 
@@ -156,8 +162,21 @@ class GitHubAPI(Protocol):
     def patch(self, path: str, payload: dict[str, Any]) -> Any:
         """PATCH one resource and return its response."""
 
+    def post(self, path: str, payload: dict[str, Any]) -> Any:
+        """POST one resource and return its response."""
+
+    def upload_release_asset(
+        self, repository: str, release_id: int, name: str, path: Path
+    ) -> Any:
+        """Upload one release asset without replacing existing state."""
+
     def paginate(self, path: str, key: str, query: dict[str, str] | None = None) -> list[Any]:
         """Return every item from a paginated GitHub API response."""
+
+    def paginate_array(
+        self, path: str, query: dict[str, str] | None = None
+    ) -> list[Any]:
+        """Return every item from an array-valued paginated response."""
 
 
 class GitHubClient:
@@ -210,6 +229,46 @@ class GitHubClient:
     def patch(self, path: str, payload: dict[str, Any]) -> Any:
         return self._request(path, method="PATCH", payload=payload)
 
+    def post(self, path: str, payload: dict[str, Any]) -> Any:
+        return self._request(path, method="POST", payload=payload)
+
+    def upload_release_asset(
+        self, repository: str, release_id: int, name: str, path: Path
+    ) -> Any:
+        _validate_repository(repository)
+        if release_id <= 0 or not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+            raise ReleaseContractError("release asset upload identity is invalid")
+        if path.is_symlink() or not path.is_file():
+            raise ReleaseContractError(f"release asset is not a real file: {name}")
+        if self._api_url != "https://api.github.com":
+            raise ReleaseContractError("release asset upload currently requires GitHub.com")
+        url = (
+            f"https://uploads.github.com/repos/{repository}/releases/{release_id}/assets?"
+            + urlencode({"name": name})
+        )
+        request = Request(
+            url,
+            data=path.read_bytes(),
+            method="POST",
+            headers={
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {self._token}",
+                "Content-Type": "application/octet-stream",
+                "X-GitHub-Api-Version": GITHUB_API_VERSION,
+                "User-Agent": "gnfs-release-contract/1",
+            },
+        )
+        try:
+            with urlopen(request, timeout=300, context=self._ssl_context) as response:
+                return json.load(response)
+        except HTTPError as error:
+            detail = error.read().decode("utf-8", errors="replace")[:1000]
+            raise GitHubAPIRequestError(error.code, url, detail) from error
+        except (URLError, TimeoutError, json.JSONDecodeError) as error:
+            raise ReleaseContractError(
+                f"GitHub release asset upload failed for {name}: {error}"
+            ) from error
+
     def get_optional(self, path: str) -> Any | None:
         suffix = path if path.startswith("/") else f"/{path}"
         url = f"{self._api_url}{suffix}"
@@ -250,6 +309,26 @@ class GitHubClient:
             if page > 100:
                 raise ReleaseContractError(f"GitHub API pagination exceeded 100 pages for {path}")
 
+    def paginate_array(
+        self, path: str, query: dict[str, str] | None = None
+    ) -> list[Any]:
+        items: list[Any] = []
+        page = 1
+        while True:
+            page_query = dict(query or {})
+            page_query.update({"per_page": "100", "page": str(page)})
+            page_items = self.get(path, page_query)
+            if not isinstance(page_items, list):
+                raise ReleaseContractError(
+                    f"GitHub API response is not an array for {path}"
+                )
+            items.extend(page_items)
+            if len(page_items) < 100:
+                return items
+            page += 1
+            if page > 100:
+                raise ReleaseContractError(f"GitHub API pagination exceeded 100 pages for {path}")
+
 
 def _verified_ssl_context() -> ssl.SSLContext:
     default_paths = ssl.get_default_verify_paths()
@@ -272,6 +351,29 @@ def _validate_sha(value: str, label: str = "target SHA") -> None:
 def _validate_repository(repository: str) -> None:
     if not REPOSITORY_PATTERN.fullmatch(repository):
         raise ReleaseContractError("repository must use the owner/name form")
+
+
+def _target_commit_epoch(target_sha: str) -> int:
+    """Return the exact committer epoch for a target commit in this repository."""
+
+    _validate_sha(target_sha)
+    repository_root = Path(__file__).resolve().parents[1]
+    try:
+        result = subprocess.run(
+            ["git", "show", "-s", "--format=%ct", target_sha],
+            cwd=repository_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as error:
+        raise ReleaseContractError(
+            f"unable to resolve target commit timestamp: {error.stderr.strip()[:1000]}"
+        ) from error
+    value = result.stdout.strip()
+    if not re.fullmatch(r"[1-9][0-9]*", value):
+        raise ReleaseContractError("target commit timestamp is not a positive Unix epoch")
+    return int(value)
 
 
 def validate_dispatch(
@@ -331,12 +433,43 @@ def verify_checkout(target_sha: str, repository_root: Path) -> None:
         raise ReleaseContractError("exact-SHA checkout is not clean before release work")
 
 
-def _assert_unpublished(client: GitHubAPI, repository: str, release_tag: str) -> None:
+def _release_candidates(
+    client: GitHubAPI, repository: str, release_tag: str
+) -> list[dict[str, Any]]:
+    releases = client.paginate_array(f"/repos/{repository}/releases")
+    if any(not isinstance(release, dict) for release in releases):
+        raise ReleaseContractError("repository release list contains an invalid record")
+    return [release for release in releases if release.get("tag_name") == release_tag]
+
+
+def _verify_resumable_draft_identity(
+    release: dict[str, Any], target_sha: str, release_tag: str
+) -> int:
+    release_id = release.get("id")
+    if (
+        not isinstance(release_id, int)
+        or release_id <= 0
+        or release.get("tag_name") != release_tag
+        or release.get("target_commitish") != target_sha
+        or release.get("draft") is not True
+        or release.get("prerelease") is not False
+        or release.get("immutable") is not False
+    ):
+        raise ReleaseContractError("existing release is not the exact resumable draft")
+    return release_id
+
+
+def _assert_releasable_state(
+    client: GitHubAPI, repository: str, target_sha: str, release_tag: str
+) -> None:
     encoded_tag = quote(release_tag, safe="")
     if client.get_optional(f"/repos/{repository}/git/ref/tags/{encoded_tag}") is not None:
         raise ReleaseContractError(f"refusing to reuse existing tag {release_tag}")
-    if client.get_optional(f"/repos/{repository}/releases/tags/{encoded_tag}") is not None:
-        raise ReleaseContractError(f"refusing to reuse existing release {release_tag}")
+    candidates = _release_candidates(client, repository, release_tag)
+    if len(candidates) > 1:
+        raise ReleaseContractError(f"multiple releases claim tag {release_tag}")
+    if candidates:
+        _verify_resumable_draft_identity(candidates[0], target_sha, release_tag)
 
 
 def verify_repository_protection(
@@ -421,39 +554,91 @@ def verify_repository_protection(
     }
 
 
-def _verify_required_external_checks(check_runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _verify_required_code_scanning_analyses(
+    client: GitHubAPI, repository: str, target_sha: str
+) -> list[dict[str, Any]]:
+    analyses = client.paginate_array(
+        f"/repos/{repository}/code-scanning/analyses",
+        {"ref": "refs/heads/main"},
+    )
     evidence: list[dict[str, Any]] = []
-    for required in REQUIRED_EXTERNAL_CHECKS:
-        matches = [check for check in check_runs if check.get("name") == required.name]
-        if len(matches) != 1:
+    for required in REQUIRED_CODE_SCANNING_ANALYSES:
+        stream = [
+            analysis
+            for analysis in analyses
+            if isinstance(analysis, dict)
+            and analysis.get("ref") == "refs/heads/main"
+            and analysis.get("analysis_key") == required.analysis_key
+            and analysis.get("category") == required.category
+            and analysis.get("environment") == required.environment
+            and (analysis.get("tool") or {}).get("name") == required.tool_name
+        ]
+        if not stream:
             raise ReleaseContractError(
-                f"expected exactly one external {required.name!r} check run; found {len(matches)}"
+                f"no exact-main {required.tool_name!r} code-scanning analysis stream exists"
             )
-        check = matches[0]
-        check_id = check.get("id")
-        app = check.get("app") or {}
-        if not isinstance(check_id, int) or check_id <= 0:
-            raise ReleaseContractError(
-                f"external {required.name!r} check run has no positive numeric id"
-            )
+
+        ordered: list[tuple[datetime, int, dict[str, Any]]] = []
+        seen_order_keys: set[tuple[datetime, int]] = set()
+        for analysis in stream:
+            analysis_id = analysis.get("id")
+            created_at = analysis.get("created_at")
+            if not isinstance(analysis_id, int) or analysis_id <= 0:
+                raise ReleaseContractError(
+                    f"{required.tool_name} code-scanning analysis has no positive numeric id"
+                )
+            if not isinstance(created_at, str):
+                raise ReleaseContractError(
+                    f"{required.tool_name} code-scanning analysis lacks created_at"
+                )
+            try:
+                created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            except ValueError as error:
+                raise ReleaseContractError(
+                    f"{required.tool_name} code-scanning analysis has invalid created_at"
+                ) from error
+            if created.tzinfo is None:
+                raise ReleaseContractError(
+                    f"{required.tool_name} code-scanning analysis timestamp lacks timezone"
+                )
+            created = created.astimezone(timezone.utc)
+            order_key = (created, analysis_id)
+            if order_key in seen_order_keys:
+                raise ReleaseContractError(
+                    f"{required.tool_name} code-scanning analysis ordering is ambiguous"
+                )
+            seen_order_keys.add(order_key)
+            ordered.append((created, analysis_id, analysis))
+
+        created, analysis_id, analysis = max(ordered, key=lambda item: (item[0], item[1]))
+        analysis_id = analysis.get("id")
+        tool = analysis.get("tool") or {}
+        tool_version = tool.get("version")
+        results_count = analysis.get("results_count")
         if (
-            check.get("status") != "completed"
-            or check.get("conclusion") != "success"
-            or app.get("id") != required.app_id
-            or app.get("slug") != required.app_slug
+            analysis.get("commit_sha") != target_sha
+            or analysis.get("error") != ""
+            or not isinstance(tool_version, str)
+            or not tool_version
+            or not isinstance(results_count, int)
+            or results_count < 0
         ):
             raise ReleaseContractError(
-                f"external {required.name!r} check is not a successful "
-                f"{required.app_slug} app context"
+                f"{required.tool_name} code-scanning analysis is errored or lacks tool version"
             )
         evidence.append(
             {
-                "name": required.name,
-                "check_run_id": check_id,
-                "app_id": required.app_id,
-                "app_slug": required.app_slug,
-                "status": "completed",
-                "conclusion": "success",
+                "analysis_id": analysis_id,
+                "tool_name": required.tool_name,
+                "tool_version": tool_version,
+                "created_at": analysis["created_at"],
+                "commit_sha": target_sha,
+                "ref": "refs/heads/main",
+                "analysis_key": required.analysis_key,
+                "category": required.category,
+                "environment": required.environment,
+                "error": "",
+                "results_count": results_count,
             }
         )
     return evidence
@@ -478,7 +663,7 @@ def verify_main_ci(
             f"target SHA {target_sha} is not the current origin/main SHA {main_sha}"
         )
     if require_unpublished:
-        _assert_unpublished(client, repository, release_tag)
+        _assert_releasable_state(client, repository, target_sha, release_tag)
 
     runs = client.paginate(
         f"/repos/{repository}/actions/runs",
@@ -578,13 +763,15 @@ def verify_main_ci(
 
     if workbench_run_id is None:
         raise ReleaseContractError("Workbench CI run id was not resolved")
-    external_evidence = _verify_required_external_checks(check_runs)
+    code_scanning_evidence = _verify_required_code_scanning_analyses(
+        client, repository, target_sha
+    )
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "target_sha": target_sha,
         "all_triggered_push_workflows": len(exact_runs),
         "required_checks": evidence,
-        "required_external_checks": external_evidence,
+        "required_code_scanning_analyses": code_scanning_evidence,
         "workbench_run_id": workbench_run_id,
     }
 
@@ -595,7 +782,7 @@ def _artifact_name(prefix: str, release_tag: str, target_sha: str) -> str:
 
 def find_verification_run(
     client: GitHubAPI, repository: str, target_sha: str, release_tag: str
-) -> int:
+) -> tuple[int, int]:
     _validate_repository(repository)
     _validate_sha(target_sha)
     proof_name = _artifact_name("release-verification", release_tag, target_sha)
@@ -603,15 +790,20 @@ def find_verification_run(
     artifacts = client.paginate(
         f"/repos/{repository}/actions/artifacts", "artifacts", {"name": proof_name}
     )
-    candidates: list[tuple[int, int]] = []
+    candidates: list[tuple[int, int, int]] = []
     for artifact in artifacts:
         if artifact.get("name") != proof_name or artifact.get("expired") is not False:
             continue
         workflow_run = artifact.get("workflow_run") or {}
         run_id = workflow_run.get("id")
-        if workflow_run.get("head_sha") != target_sha or not isinstance(run_id, int):
+        if (
+            workflow_run.get("head_sha") != target_sha
+            or type(run_id) is not int
+            or run_id <= 0
+        ):
             continue
         run = client.get(f"/repos/{repository}/actions/runs/{run_id}")
+        run_attempt = run.get("run_attempt")
         if (
             run.get("name") != "Release Artifacts"
             or run.get("path") != RELEASE_WORKFLOW_PATH
@@ -620,29 +812,43 @@ def find_verification_run(
             or run.get("head_sha") != target_sha
             or run.get("status") != "completed"
             or run.get("conclusion") != "success"
+            or type(run_attempt) is not int
+            or run_attempt <= 0
+            or run.get("html_url")
+            != f"https://github.com/{repository}/actions/runs/{run_id}"
         ):
             continue
         artifact_id = artifact.get("id")
-        if isinstance(artifact_id, int):
-            candidates.append((artifact_id, run_id))
+        if type(artifact_id) is int and artifact_id > 0:
+            candidates.append((artifact_id, run_id, run_attempt))
     if not candidates:
         raise ReleaseContractError(
             "publish mode requires a completed successful verify-only artifact for the exact SHA"
         )
-    _, selected_run_id = max(candidates)
+    selected_artifact_id, selected_run_id, selected_run_attempt = max(candidates)
     run_artifacts = client.paginate(
         f"/repos/{repository}/actions/runs/{selected_run_id}/artifacts", "artifacts"
     )
+    matching_proofs = [
+        artifact
+        for artifact in run_artifacts
+        if artifact.get("name") == proof_name and artifact.get("expired") is False
+    ]
     matching_assets = [
         artifact
         for artifact in run_artifacts
         if artifact.get("name") == assets_name and artifact.get("expired") is False
     ]
-    if len(matching_assets) != 1:
+    if (
+        len(matching_proofs) != 1
+        or matching_proofs[0].get("id") != selected_artifact_id
+        or len(matching_assets) != 1
+    ):
         raise ReleaseContractError(
-            f"verification run {selected_run_id} must contain one nonexpired {assets_name} artifact"
+            f"verification run {selected_run_id} must contain one exact proof artifact "
+            f"and one nonexpired {assets_name} artifact"
         )
-    return selected_run_id
+    return selected_run_id, selected_run_attempt
 
 
 def _sha256(path: Path) -> str:
@@ -1548,8 +1754,12 @@ def assemble_release_bundle(
     asset_directory: Path, target_sha: str, release_tag: str, source_date_epoch: int
 ) -> None:
     _validate_sha(target_sha)
-    if source_date_epoch <= 0:
-        raise ReleaseContractError("source date epoch must be a positive integer")
+    expected_source_date_epoch = _target_commit_epoch(target_sha)
+    if source_date_epoch != expected_source_date_epoch:
+        raise ReleaseContractError(
+            "source date epoch must equal the exact target commit timestamp "
+            f"{expected_source_date_epoch}"
+        )
     asset_directory = asset_directory.resolve()
     package_names = expected_package_names(release_tag)
     release_asset_names = expected_release_asset_names(release_tag)
@@ -1649,7 +1859,7 @@ def verify_release_bundle(asset_directory: Path, target_sha: str, release_tag: s
         or metadata.get("release_tag") != release_tag
         or metadata.get("target_sha") != target_sha
         or not isinstance(metadata.get("source_date_epoch"), int)
-        or metadata["source_date_epoch"] <= 0
+        or metadata["source_date_epoch"] != _target_commit_epoch(target_sha)
     ):
         raise ReleaseContractError("release metadata identity is invalid")
     if metadata.get("publication_evidence") != {
@@ -1719,8 +1929,8 @@ def _required_check_contract() -> list[dict[str, str]]:
     return [asdict(required) for required in REQUIRED_MAIN_CHECKS]
 
 
-def _required_external_check_contract() -> list[dict[str, Any]]:
-    return [asdict(required) for required in REQUIRED_EXTERNAL_CHECKS]
+def _required_code_scanning_contract() -> list[dict[str, Any]]:
+    return [asdict(required) for required in REQUIRED_CODE_SCANNING_ANALYSES]
 
 
 def _validate_main_ci_evidence(evidence: dict[str, Any], target_sha: str) -> None:
@@ -1729,13 +1939,13 @@ def _validate_main_ci_evidence(evidence: dict[str, Any], target_sha: str) -> Non
         "target_sha",
         "all_triggered_push_workflows",
         "required_checks",
-        "required_external_checks",
+        "required_code_scanning_analyses",
         "workbench_run_id",
     }
     if set(evidence) != expected_keys:
         raise ReleaseContractError("main CI evidence contains missing or unknown fields")
     if (
-        evidence.get("schema_version") != 2
+        evidence.get("schema_version") != 3
         or evidence.get("target_sha") != target_sha
         or not isinstance(evidence.get("all_triggered_push_workflows"), int)
         or evidence["all_triggered_push_workflows"] <= 0
@@ -1771,31 +1981,51 @@ def _validate_main_ci_evidence(evidence: dict[str, Any], target_sha: str) -> Non
     if workbench_run_id != evidence["workbench_run_id"]:
         raise ReleaseContractError("main CI evidence has an inconsistent Workbench run id")
 
-    external_checks = evidence.get("required_external_checks")
-    if not isinstance(external_checks, list) or len(external_checks) != len(
-        REQUIRED_EXTERNAL_CHECKS
+    code_scanning = evidence.get("required_code_scanning_analyses")
+    if not isinstance(code_scanning, list) or len(code_scanning) != len(
+        REQUIRED_CODE_SCANNING_ANALYSES
     ):
-        raise ReleaseContractError("main CI evidence has the wrong external check count")
-    for required, record in zip(REQUIRED_EXTERNAL_CHECKS, external_checks):
+        raise ReleaseContractError("main CI evidence has the wrong code-scanning count")
+    for required, record in zip(REQUIRED_CODE_SCANNING_ANALYSES, code_scanning):
         if not isinstance(record, dict) or set(record) != {
-            "name",
-            "check_run_id",
-            "app_id",
-            "app_slug",
-            "status",
-            "conclusion",
+            "analysis_id",
+            "tool_name",
+            "tool_version",
+            "created_at",
+            "commit_sha",
+            "ref",
+            "analysis_key",
+            "category",
+            "environment",
+            "error",
+            "results_count",
         }:
-            raise ReleaseContractError("main CI external evidence record is malformed")
+            raise ReleaseContractError("main CI code-scanning evidence record is malformed")
         if (
-            record.get("name") != required.name
-            or record.get("app_id") != required.app_id
-            or record.get("app_slug") != required.app_slug
-            or record.get("status") != "completed"
-            or record.get("conclusion") != "success"
-            or not isinstance(record.get("check_run_id"), int)
-            or record["check_run_id"] <= 0
+            record.get("tool_name") != required.tool_name
+            or record.get("commit_sha") != target_sha
+            or record.get("ref") != "refs/heads/main"
+            or record.get("analysis_key") != required.analysis_key
+            or record.get("category") != required.category
+            or record.get("environment") != required.environment
+            or record.get("error") != ""
+            or not isinstance(record.get("analysis_id"), int)
+            or record["analysis_id"] <= 0
+            or not isinstance(record.get("tool_version"), str)
+            or not record["tool_version"]
+            or not isinstance(record.get("created_at"), str)
+            or not isinstance(record.get("results_count"), int)
+            or record["results_count"] < 0
         ):
-            raise ReleaseContractError("main CI external evidence changed identity or result")
+            raise ReleaseContractError("main CI code-scanning evidence changed identity or result")
+        try:
+            created = datetime.fromisoformat(record["created_at"].replace("Z", "+00:00"))
+        except ValueError as error:
+            raise ReleaseContractError(
+                "main CI CodeQL evidence has invalid created_at"
+            ) from error
+        if created.tzinfo is None:
+            raise ReleaseContractError("main CI CodeQL evidence timestamp lacks timezone")
 
 
 def write_verification_proof(
@@ -1804,10 +2034,25 @@ def write_verification_proof(
     ci_evidence_path: Path,
     target_sha: str,
     release_tag: str,
+    repository: str,
+    workflow_run_id: int,
+    workflow_run_attempt: int,
+    server_url: str,
 ) -> None:
     verify_release_bundle(asset_directory, target_sha, release_tag)
     ci_evidence = _read_json_object(ci_evidence_path)
     _validate_main_ci_evidence(ci_evidence, target_sha)
+    _validate_repository(repository)
+    if (
+        type(workflow_run_id) is not int
+        or workflow_run_id <= 0
+        or type(workflow_run_attempt) is not int
+        or workflow_run_attempt <= 0
+    ):
+        raise ReleaseContractError("verification workflow run identity must be positive")
+    if server_url != "https://github.com":
+        raise ReleaseContractError("verification workflow server must be https://github.com")
+    workflow_run_url = f"{server_url}/{repository}/actions/runs/{workflow_run_id}"
     output = output.resolve()
     if output.exists() or output.is_symlink():
         raise ReleaseContractError(f"refusing to overwrite verification proof: {output}")
@@ -1815,12 +2060,17 @@ def write_verification_proof(
         (*expected_release_asset_names(release_tag), "release-metadata.json", "SHA256SUMS")
     )
     proof = {
-        "schema_version": 2,
+        "schema_version": 3,
         "mode": "verify-only",
         "release_tag": release_tag,
         "target_sha": target_sha,
         "required_main_checks": _required_check_contract(),
-        "required_external_checks": _required_external_check_contract(),
+        "required_code_scanning_analyses": _required_code_scanning_contract(),
+        "verification_workflow": {
+            "run_id": workflow_run_id,
+            "run_attempt": workflow_run_attempt,
+            "url": workflow_run_url,
+        },
         "main_ci_evidence": ci_evidence,
         "bundle": [
             {
@@ -1838,7 +2088,13 @@ def write_verification_proof(
 
 
 def verify_verification_proof(
-    proof_path: Path, asset_directory: Path, target_sha: str, release_tag: str
+    proof_path: Path,
+    asset_directory: Path,
+    target_sha: str,
+    release_tag: str,
+    repository: str,
+    expected_workflow_run_id: int,
+    expected_workflow_run_attempt: int,
 ) -> None:
     verify_release_bundle(asset_directory, target_sha, release_tag)
     proof = _read_json_object(proof_path)
@@ -1848,21 +2104,44 @@ def verify_verification_proof(
         "release_tag",
         "target_sha",
         "required_main_checks",
-        "required_external_checks",
+        "required_code_scanning_analyses",
+        "verification_workflow",
         "main_ci_evidence",
         "bundle",
     }
     if set(proof) != expected_keys:
         raise ReleaseContractError("verification proof contains missing or unknown fields")
     if (
-        proof.get("schema_version") != 2
+        proof.get("schema_version") != 3
         or proof.get("mode") != "verify-only"
         or proof.get("release_tag") != release_tag
         or proof.get("target_sha") != target_sha
         or proof.get("required_main_checks") != _required_check_contract()
-        or proof.get("required_external_checks") != _required_external_check_contract()
+        or proof.get("required_code_scanning_analyses")
+        != _required_code_scanning_contract()
     ):
         raise ReleaseContractError("verification proof identity or required checks changed")
+    _validate_repository(repository)
+    if (
+        type(expected_workflow_run_id) is not int
+        or expected_workflow_run_id <= 0
+        or type(expected_workflow_run_attempt) is not int
+        or expected_workflow_run_attempt <= 0
+    ):
+        raise ReleaseContractError("selected verification workflow identity must be positive")
+    workflow = proof.get("verification_workflow")
+    if not isinstance(workflow, dict) or set(workflow) != {"run_id", "run_attempt", "url"}:
+        raise ReleaseContractError("verification proof workflow identity is malformed")
+    if (
+        type(workflow.get("run_id")) is not int
+        or workflow.get("run_id") != expected_workflow_run_id
+        or type(workflow.get("run_attempt")) is not int
+        or workflow.get("run_attempt") != expected_workflow_run_attempt
+        or workflow["run_attempt"] <= 0
+        or workflow.get("url")
+        != f"https://github.com/{repository}/actions/runs/{expected_workflow_run_id}"
+    ):
+        raise ReleaseContractError("verification proof does not match the selected workflow run")
     main_ci_evidence = proof.get("main_ci_evidence")
     if not isinstance(main_ci_evidence, dict):
         raise ReleaseContractError("verification proof lacks main CI evidence")
@@ -1886,10 +2165,21 @@ def _public_release_files(
     proof_path: Path,
     target_sha: str,
     release_tag: str,
+    repository: str,
+    verification_workflow_run_id: int,
+    verification_workflow_run_attempt: int,
 ) -> dict[str, Path]:
     if proof_path.is_symlink():
         raise ReleaseContractError("release verification proof must not be a symlink")
-    verify_verification_proof(proof_path, asset_directory, target_sha, release_tag)
+    verify_verification_proof(
+        proof_path,
+        asset_directory,
+        target_sha,
+        release_tag,
+        repository,
+        verification_workflow_run_id,
+        verification_workflow_run_attempt,
+    )
     proof_path = proof_path.resolve()
     if proof_path.name != RELEASE_PROOF_NAME or not proof_path.is_file():
         raise ReleaseContractError("release verification proof must be a real canonical file")
@@ -1899,6 +2189,188 @@ def _public_release_files(
     files = {name: asset_directory.resolve() / name for name in names}
     files[RELEASE_PROOF_NAME] = proof_path
     return files
+
+
+def _release_notes(target_sha: str, release_tag: str) -> str:
+    return "\n".join(
+        (
+            f"GNFS {release_tag}",
+            "",
+            f"Source revision: {target_sha}",
+            "",
+            "The macOS Workbench is ad-hoc signed and is not Apple notarized.",
+            f"Exact GNFS source for {target_sha} is attached.",
+            "Exact GMP 6.3.0 and NTL 11.6.0 corresponding sources are attached.",
+            "Verify packaged and source files with SHA256SUMS.",
+            "release-verification.json is separately bound by the publication contract.",
+            "",
+        )
+    )
+
+
+def _verify_prepared_draft(
+    release: dict[str, Any],
+    expected_release_id: int,
+    target_sha: str,
+    release_tag: str,
+) -> None:
+    if _verify_resumable_draft_identity(release, target_sha, release_tag) != expected_release_id:
+        raise ReleaseContractError("draft release id changed during preparation")
+    if release.get("name") != release_tag or release.get("body") != _release_notes(
+        target_sha, release_tag
+    ):
+        raise ReleaseContractError("draft release title or notes changed")
+
+
+def _assert_tag_absent(client: GitHubAPI, repository: str, release_tag: str) -> None:
+    encoded_tag = quote(release_tag, safe="")
+    if client.get_optional(f"/repos/{repository}/git/ref/tags/{encoded_tag}") is not None:
+        raise ReleaseContractError("release tag appeared before draft publication")
+
+
+def _index_release_asset_records(
+    assets: Any,
+    local_files: dict[str, Path],
+    *,
+    require_complete: bool,
+) -> dict[str, dict[str, Any]]:
+    if not isinstance(assets, list):
+        raise ReleaseContractError("release server asset response is not a list")
+    assets_by_name: dict[str, dict[str, Any]] = {}
+    for asset in assets:
+        if not isinstance(asset, dict) or not isinstance(asset.get("name"), str):
+            raise ReleaseContractError("release contains an invalid server asset record")
+        name = asset["name"]
+        if name in assets_by_name:
+            raise ReleaseContractError(f"release contains duplicate server asset {name}")
+        if name not in local_files:
+            raise ReleaseContractError(f"release contains unexpected server asset {name}")
+        path = local_files[name]
+        if (
+            asset.get("state") != "uploaded"
+            or asset.get("size") != path.stat().st_size
+            or asset.get("digest") != f"sha256:{_sha256(path)}"
+        ):
+            raise ReleaseContractError(
+                f"release server asset bytes do not match verified local bytes: {name}"
+            )
+        assets_by_name[name] = asset
+    if require_complete and sorted(assets_by_name) != sorted(local_files):
+        raise ReleaseContractError("release server asset set is incomplete")
+    return assets_by_name
+
+
+def prepare_draft_release(
+    client: GitHubAPI,
+    repository: str,
+    target_sha: str,
+    release_tag: str,
+    asset_directory: Path,
+    proof_path: Path,
+    verification_workflow_run_id: int,
+    verification_workflow_run_attempt: int,
+) -> dict[str, Any]:
+    """Create or safely resume one exact draft and upload only missing assets."""
+
+    _validate_repository(repository)
+    _validate_sha(target_sha)
+    local_files = _public_release_files(
+        asset_directory,
+        proof_path,
+        target_sha,
+        release_tag,
+        repository,
+        verification_workflow_run_id,
+        verification_workflow_run_attempt,
+    )
+    _assert_tag_absent(client, repository, release_tag)
+    candidates = _release_candidates(client, repository, release_tag)
+    if len(candidates) > 1:
+        raise ReleaseContractError(f"multiple releases claim tag {release_tag}")
+
+    created = False
+    if candidates:
+        release_id = _verify_resumable_draft_identity(
+            candidates[0], target_sha, release_tag
+        )
+    else:
+        payload = {
+            "tag_name": release_tag,
+            "target_commitish": target_sha,
+            "name": release_tag,
+            "body": _release_notes(target_sha, release_tag),
+            "draft": True,
+            "prerelease": False,
+            "generate_release_notes": False,
+        }
+        try:
+            created_release = client.post(f"/repos/{repository}/releases", payload)
+            release_id = _verify_resumable_draft_identity(
+                created_release, target_sha, release_tag
+            )
+            created = True
+        except GitHubAPIRequestError as error:
+            if error.status != 422:
+                raise
+            raced = _release_candidates(client, repository, release_tag)
+            if len(raced) != 1:
+                raise ReleaseContractError(
+                    "draft creation raced without one exact resumable draft"
+                ) from error
+            release_id = _verify_resumable_draft_identity(
+                raced[0], target_sha, release_tag
+            )
+
+    draft = client.get(f"/repos/{repository}/releases/{release_id}")
+    _verify_prepared_draft(draft, release_id, target_sha, release_tag)
+    uploaded_names: list[str] = []
+    for name, path in sorted(local_files.items()):
+        _assert_tag_absent(client, repository, release_tag)
+        draft = client.get(f"/repos/{repository}/releases/{release_id}")
+        _verify_prepared_draft(draft, release_id, target_sha, release_tag)
+        current_assets = client.get(
+            f"/repos/{repository}/releases/{release_id}/assets",
+            {"per_page": "100"},
+        )
+        indexed = _index_release_asset_records(
+            current_assets, local_files, require_complete=False
+        )
+        if name in indexed:
+            continue
+        try:
+            uploaded = client.upload_release_asset(repository, release_id, name, path)
+            _index_release_asset_records([uploaded], {name: path}, require_complete=True)
+            uploaded_names.append(name)
+        except GitHubAPIRequestError as error:
+            if error.status != 422:
+                raise
+            raced_assets = client.get(
+                f"/repos/{repository}/releases/{release_id}/assets",
+                {"per_page": "100"},
+            )
+            raced_index = _index_release_asset_records(
+                raced_assets, local_files, require_complete=False
+            )
+            if name not in raced_index:
+                raise ReleaseContractError(
+                    f"asset upload raced without exact server bytes: {name}"
+                ) from error
+
+    _assert_tag_absent(client, repository, release_tag)
+    final_draft = client.get(f"/repos/{repository}/releases/{release_id}")
+    _verify_prepared_draft(final_draft, release_id, target_sha, release_tag)
+    final_assets = client.get(
+        f"/repos/{repository}/releases/{release_id}/assets",
+        {"per_page": "100"},
+    )
+    _index_release_asset_records(final_assets, local_files, require_complete=True)
+    return {
+        "schema_version": 1,
+        "release_id": release_id,
+        "created": created,
+        "uploaded": uploaded_names,
+        "asset_count": len(local_files),
+    }
 
 
 def _verify_release_tag(
@@ -1936,28 +2408,7 @@ def _verify_release_identity(
 
 
 def _verify_release_asset_records(assets: Any, local_files: dict[str, Path]) -> None:
-    if not isinstance(assets, list) or len(assets) != len(local_files):
-        raise ReleaseContractError("release has the wrong number of server assets")
-    assets_by_name: dict[str, dict[str, Any]] = {}
-    for asset in assets:
-        if not isinstance(asset, dict) or not isinstance(asset.get("name"), str):
-            raise ReleaseContractError("release contains an invalid server asset record")
-        name = asset["name"]
-        if name in assets_by_name:
-            raise ReleaseContractError(f"release contains duplicate server asset {name}")
-        assets_by_name[name] = asset
-    if sorted(assets_by_name) != sorted(local_files):
-        raise ReleaseContractError("release server asset set does not match verified bytes")
-    for name, path in local_files.items():
-        asset = assets_by_name[name]
-        if (
-            asset.get("state") != "uploaded"
-            or asset.get("size") != path.stat().st_size
-            or asset.get("digest") != f"sha256:{_sha256(path)}"
-        ):
-            raise ReleaseContractError(
-                f"release server asset bytes do not match verified local bytes: {name}"
-            )
+    _index_release_asset_records(assets, local_files, require_complete=True)
 
 
 def _verify_server_release_assets(
@@ -1981,13 +2432,21 @@ def publish_verified_release(
     expected_release_id: int,
     asset_directory: Path,
     proof_path: Path,
+    verification_workflow_run_id: int,
+    verification_workflow_run_attempt: int,
 ) -> dict[str, Any]:
     """Contract-check, publish, and postcheck one exact draft release."""
 
     if expected_release_id <= 0:
         raise ReleaseContractError("expected draft release id must be positive")
     local_files = _public_release_files(
-        asset_directory, proof_path, target_sha, release_tag
+        asset_directory,
+        proof_path,
+        target_sha,
+        release_tag,
+        repository,
+        verification_workflow_run_id,
+        verification_workflow_run_attempt,
     )
     protection_before = verify_repository_protection(
         client, repository, allow_unreadable_immutable_setting=True
@@ -1997,20 +2456,26 @@ def publish_verified_release(
         repository,
         target_sha,
         release_tag,
-        require_unpublished=False,
+        require_unpublished=True,
     )
-    _verify_release_tag(client, repository, release_tag, target_sha)
-    encoded_tag = quote(release_tag, safe="")
-    draft_release = client.get(f"/repos/{repository}/releases/tags/{encoded_tag}")
-    _verify_release_identity(
-        draft_release,
-        expected_release_id=expected_release_id,
-        release_tag=release_tag,
-        target_sha=target_sha,
-        draft=True,
-        immutable=False,
+    proof = _read_json_object(proof_path)
+    if proof.get("main_ci_evidence") != ci_before:
+        raise ReleaseContractError("live main CI evidence changed from the verification proof")
+    draft_release = client.get(
+        f"/repos/{repository}/releases/{expected_release_id}"
     )
+    _verify_prepared_draft(
+        draft_release, expected_release_id, target_sha, release_tag
+    )
+    _assert_tag_absent(client, repository, release_tag)
     _verify_server_release_assets(client, repository, expected_release_id, local_files)
+    draft_release = client.get(
+        f"/repos/{repository}/releases/{expected_release_id}"
+    )
+    _verify_prepared_draft(
+        draft_release, expected_release_id, target_sha, release_tag
+    )
+    _assert_tag_absent(client, repository, release_tag)
 
     published_response = client.patch(
         f"/repos/{repository}/releases/{expected_release_id}",
@@ -2028,6 +2493,7 @@ def publish_verified_release(
 
     # Everything below is fetched again after the mutating call. A successful
     # PATCH response alone is not publication evidence.
+    encoded_tag = quote(release_tag, safe="")
     public_by_id = client.get(f"/repos/{repository}/releases/{expected_release_id}")
     public_by_tag = client.get(f"/repos/{repository}/releases/tags/{encoded_tag}")
     for public_release in (public_by_id, public_by_tag):
@@ -2042,16 +2508,6 @@ def publish_verified_release(
         _verify_release_asset_records(public_release.get("assets"), local_files)
     _verify_release_tag(client, repository, release_tag, target_sha)
     _verify_server_release_assets(client, repository, expected_release_id, local_files)
-    protection_after = verify_repository_protection(
-        client, repository, allow_unreadable_immutable_setting=True
-    )
-    ci_after = verify_main_ci(
-        client,
-        repository,
-        target_sha,
-        release_tag,
-        require_unpublished=False,
-    )
     return {
         "schema_version": 1,
         "release_id": expected_release_id,
@@ -2060,9 +2516,7 @@ def publish_verified_release(
         "immutable": True,
         "asset_count": len(local_files),
         "protection_before": protection_before,
-        "protection_after": protection_after,
         "ci_before": ci_before,
-        "ci_after": ci_after,
     }
 
 
@@ -2078,6 +2532,8 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
         "inputs.tag",
         "mapfile -t runtime_dlls",
         "--method PATCH",
+        "gh release create",
+        "group: release-${{ inputs.release_tag }}-${{ inputs.target_sha }}",
     )
     for fragment in forbidden_release_fragments:
         if fragment in release_text:
@@ -2093,6 +2549,7 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
         "- verify-only",
         "- publish",
         "PUBLISH v0.1.0",
+        "group: release-${{ inputs.release_tag }}",
         "scripts/release_contract.py verify-main",
         "scripts/release_contract.py find-verification",
         "scripts/release_contract.py create-gnfs-source",
@@ -2101,9 +2558,18 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
         "scripts/release_contract.py validate-sources",
         "scripts/release_contract.py verify-proof",
         "scripts/release_contract.py verify-protection",
+        "scripts/release_contract.py prepare-draft",
         "scripts/release_contract.py publish-release",
+        "security-events: read",
         "release-main-ci-evidence-${{ github.run_id }}",
         "--ci-evidence main-ci-evidence/main-ci-evidence.json",
+        "--workflow-run-id \"${WORKFLOW_RUN_ID}\"",
+        "--workflow-run-attempt \"${WORKFLOW_RUN_ATTEMPT}\"",
+        "--server-url \"${SERVER_URL}\"",
+        "--expected-workflow-run-attempt \"${VERIFICATION_WORKFLOW_RUN_ATTEMPT}\"",
+        "--verification-workflow-run-attempt \"${VERIFICATION_WORKFLOW_RUN_ATTEMPT}\"",
+        "verification_run_attempt: ${{ steps.prior.outputs.verification_run_attempt }}",
+        "source_date_epoch=$(git show -s --format=%ct HEAD)",
         "scripts/release_binary_contract.py linux",
         "scripts/release_binary_contract.py macos",
         "scripts/windows_release_runtime.py bundle",
@@ -2112,13 +2578,9 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
         "release-verification-${{ inputs.release_tag }}-${{ inputs.target_sha }}",
         "gnfs-project-source",
         "gnfs-dependency-sources",
-        "GNFSWorkbench-0.1.0-macOS-arm64.zip",
-        "release-assets/gnfs-v0.1.0-source.tar.gz",
-        "release-assets/gmp-6.3.0.tar.xz",
-        "release-assets/ntl-11.6.0.tar.gz",
         "verification-proof/release-verification.json",
         "--proof verification-proof/release-verification.json",
-        "--draft",
+        "--github-output \"${GITHUB_OUTPUT}\"",
     )
     for fragment in required_release_fragments:
         if fragment not in release_text:
@@ -2190,25 +2652,26 @@ class _FakeClient:
                 "conclusion": "success",
             }
         )
-        self.external_check_id = 9000
-        self.checks.append(
+        self.code_scanning_analyses: list[dict[str, Any]] = [
             {
-                "id": self.external_check_id,
-                "name": "CodeQL",
-                "status": "completed",
-                "conclusion": "success",
-                "app": {
-                    "id": 57789,
-                    "slug": "github-advanced-security",
-                    "name": "GitHub Advanced Security",
-                },
+                "id": 9000,
+                "created_at": "2026-08-03T22:56:50Z",
+                "ref": "refs/heads/main",
+                "commit_sha": target_sha,
+                "analysis_key": ".github/workflows/codeql.yml:analyze",
+                "category": ".github/workflows/codeql.yml:analyze",
+                "environment": "{}",
+                "error": "",
+                "results_count": 0,
+                "tool": {"name": "CodeQL", "version": "2.26.2"},
             }
-        )
+        ]
         self.proof_artifacts: list[dict[str, Any]] = []
         self.run_details: dict[int, dict[str, Any]] = {}
         self.run_artifacts: dict[int, list[dict[str, Any]]] = {}
         self.tag_ref: dict[str, Any] | None = None
         self.release: dict[str, Any] | None = None
+        self.extra_releases: list[dict[str, Any]] = []
         self.ruleset: dict[str, Any] = {
             "id": RELEASE_TAG_RULESET_ID,
             "node_id": RELEASE_TAG_RULESET_NODE_ID,
@@ -2230,6 +2693,11 @@ class _FakeClient:
         self.immutable_setting_enabled = True
         self.publish_immutable = True
         self.post_patch_mutator: Callable[[], None] | None = None
+        self.before_upload_mutator: Callable[[str, Path], None] | None = None
+        self.uploaded_names: list[str] = []
+        self.next_release_id = 7000
+        self.release_read_id_override: int | None = None
+        self.post_create_race: Callable[[dict[str, Any]], None] | None = None
 
     def get(self, path: str, query: dict[str, str] | None = None) -> Any:
         if path.endswith("/git/ref/heads/main"):
@@ -2242,16 +2710,27 @@ class _FakeClient:
             if not self.immutable_setting_enabled:
                 raise GitHubAPIRequestError(404, path, "Not Found")
             return {"enabled": True, "enforced_by_owner": False}
-        if "/git/ref/tags/" in path and self.tag_ref is not None:
+        if "/git/ref/tags/" in path:
+            if self.tag_ref is None:
+                raise GitHubAPIRequestError(404, path, "Not Found")
             return self.tag_ref
-        if "/releases/tags/" in path and self.release is not None:
+        if "/releases/tags/" in path:
+            if self.release is None or self.release.get("draft") is True:
+                raise GitHubAPIRequestError(404, path, "Not Found")
             return self.release
         if path.endswith("/assets") and self.release is not None:
             if query != {"per_page": "100"}:
                 raise AssertionError("release asset verification must request 100 records")
             return self.release["assets"]
-        if re.search(r"/releases/[1-9][0-9]*$", path) and self.release is not None:
-            return self.release
+        match = re.search(r"/releases/([1-9][0-9]*)$", path)
+        if match and self.release is not None:
+            if int(match.group(1)) != self.release.get("id"):
+                raise GitHubAPIRequestError(404, path, "Not Found")
+            if self.release_read_id_override is None:
+                return self.release
+            response = json.loads(json.dumps(self.release))
+            response["id"] = self.release_read_id_override
+            return response
         match = re.search(r"/actions/runs/(\d+)$", path)
         if match:
             return self.run_details[int(match.group(1))]
@@ -2265,13 +2744,66 @@ class _FakeClient:
         self.release["draft"] = False
         self.release["prerelease"] = False
         self.release["immutable"] = self.publish_immutable
+        self.tag_ref = {
+            "ref": f"refs/tags/{self.release['tag_name']}",
+            "object": {"type": "commit", "sha": self.release["target_commitish"]},
+        }
         response = json.loads(json.dumps(self.release))
         if self.post_patch_mutator is not None:
             self.post_patch_mutator()
         return response
 
+    def post(self, path: str, payload: dict[str, Any]) -> Any:
+        if self.post_create_race is not None:
+            mutator = self.post_create_race
+            self.post_create_race = None
+            mutator(payload)
+            raise GitHubAPIRequestError(422, path, "Validation Failed")
+        if path != "/repos/example/GNFS/releases" or self.release is not None:
+            raise GitHubAPIRequestError(422, path, "Validation Failed")
+        self.release = {
+            "id": self.next_release_id,
+            "name": payload.get("name"),
+            "body": payload.get("body"),
+            "draft": payload.get("draft"),
+            "prerelease": payload.get("prerelease"),
+            "immutable": False,
+            "tag_name": payload.get("tag_name"),
+            "target_commitish": payload.get("target_commitish"),
+            "assets": [],
+        }
+        return json.loads(json.dumps(self.release))
+
+    def upload_release_asset(
+        self, repository: str, release_id: int, name: str, path: Path
+    ) -> Any:
+        if repository != "example/GNFS" or self.release is None:
+            raise AssertionError("unexpected fake asset upload repository")
+        if release_id != self.release.get("id"):
+            raise GitHubAPIRequestError(404, "fake-upload", "Not Found")
+        if self.before_upload_mutator is not None:
+            mutator = self.before_upload_mutator
+            self.before_upload_mutator = None
+            mutator(name, path)
+        if any(asset.get("name") == name for asset in self.release["assets"]):
+            raise GitHubAPIRequestError(422, "fake-upload", "already_exists")
+        asset = {
+            "id": 10_000 + len(self.release["assets"]),
+            "name": name,
+            "state": "uploaded",
+            "size": path.stat().st_size,
+            "digest": f"sha256:{_sha256(path)}",
+        }
+        self.release["assets"].append(asset)
+        self.uploaded_names.append(name)
+        return json.loads(json.dumps(asset))
+
     def get_optional(self, path: str) -> Any | None:
-        if "/git/ref/tags/" in path or "/releases/tags/" in path:
+        if "/git/ref/tags/" in path:
+            return self.tag_ref
+        if "/releases/tags/" in path:
+            if self.release is not None and self.release.get("draft") is False:
+                return self.release
             return None
         raise AssertionError(f"unexpected fake optional GET {path}")
 
@@ -2284,7 +2816,7 @@ class _FakeClient:
             return self.jobs[int(match.group(1))]
         if path.endswith(f"/commits/{self.target_sha}/check-runs"):
             if query != {"filter": "all"}:
-                raise AssertionError("external check verification must request every check run")
+                raise AssertionError("check verification must request every check run")
             return self.checks
         if path.endswith("/actions/artifacts") and query:
             return self.proof_artifacts
@@ -2292,6 +2824,17 @@ class _FakeClient:
         if match:
             return self.run_artifacts[int(match.group(1))]
         raise AssertionError(f"unexpected fake pagination {path}")
+
+    def paginate_array(
+        self, path: str, query: dict[str, str] | None = None
+    ) -> list[Any]:
+        if path.endswith("/releases"):
+            return ([self.release] if self.release is not None else []) + self.extra_releases
+        if path.endswith("/code-scanning/analyses"):
+            if query != {"ref": "refs/heads/main"}:
+                raise AssertionError("CodeQL analysis must be filtered to main")
+            return self.code_scanning_analyses
+        raise AssertionError(f"unexpected fake array pagination {path}")
 
 
 def _make_workbench_artifact(directory: Path, target_sha: str) -> Path:
@@ -2498,45 +3041,50 @@ def self_test() -> None:
         raise ReleaseContractError("main CI self-test accepted a failed required check")
     client.checks[0]["conclusion"] = "success"
 
-    external_check = next(
-        check for check in client.checks if check.get("id") == client.external_check_id
-    )
+    codeql_analysis = client.code_scanning_analyses[0]
 
-    def expect_external_rejection(label: str) -> None:
+    def expect_codeql_rejection(label: str) -> None:
         try:
             verify_main_ci(client, repository, target_sha, FIRST_RELEASE_TAG)
         except ReleaseContractError:
             return
-        raise ReleaseContractError(f"main CI self-test accepted {label} external CodeQL")
+        raise ReleaseContractError(f"main CI self-test accepted {label} CodeQL analysis")
 
-    external_check["status"] = "in_progress"
-    external_check["conclusion"] = None
-    expect_external_rejection("pending")
-    external_check["status"] = "completed"
-    external_check["conclusion"] = "failure"
-    expect_external_rejection("failed")
-    external_check["conclusion"] = "success"
-    external_check["app"] = {"id": 1, "slug": "wrong-app", "name": "Wrong App"}
-    expect_external_rejection("wrong-app")
-    external_check["app"] = {
-        "id": 57789,
-        "slug": "github-advanced-security",
-        "name": "GitHub Advanced Security",
-    }
-    external_index = client.checks.index(external_check)
-    client.checks.pop(external_index)
-    expect_external_rejection("missing")
-    client.checks.insert(external_index, external_check)
-    duplicate_external = {
-        **external_check,
-        "id": client.external_check_id + 1,
-        "app": dict(external_check["app"]),
-    }
-    client.checks.append(duplicate_external)
-    expect_external_rejection("duplicate")
-    client.checks.pop()
+    codeql_analysis["error"] = "analysis failed"
+    expect_codeql_rejection("errored")
+    codeql_analysis["error"] = ""
+    codeql_analysis["tool"]["name"] = "Wrong Tool"
+    expect_codeql_rejection("wrong-tool")
+    codeql_analysis["tool"]["name"] = "CodeQL"
+    codeql_analysis["tool"]["version"] = ""
+    expect_codeql_rejection("missing-version")
+    codeql_analysis["tool"]["version"] = "2.26.2"
+    codeql_analysis["results_count"] = -1
+    expect_codeql_rejection("negative-results")
+    codeql_analysis["results_count"] = 0
+    saved_analysis = client.code_scanning_analyses.pop()
+    expect_codeql_rejection("missing")
+    client.code_scanning_analyses.append(saved_analysis)
+    newer_analysis = json.loads(json.dumps(saved_analysis))
+    newer_analysis["id"] += 1
+    newer_analysis["created_at"] = "2026-08-03T23:00:00Z"
+    client.code_scanning_analyses.append(newer_analysis)
+    rerun_evidence = verify_main_ci(client, repository, target_sha, FIRST_RELEASE_TAG)
+    if rerun_evidence["required_code_scanning_analyses"][0]["analysis_id"] != 9001:
+        raise ReleaseContractError("main CI evidence did not select the latest CodeQL rerun")
+    newer_analysis["error"] = "rerun failed"
+    expect_codeql_rejection("latest errored rerun")
+    newer_analysis["error"] = ""
+    newer_analysis["commit_sha"] = "9" * 40
+    expect_codeql_rejection("latest analysis for a different SHA")
+    client.code_scanning_analyses.pop()
+    ambiguous_analysis = json.loads(json.dumps(saved_analysis))
+    client.code_scanning_analyses.append(ambiguous_analysis)
+    expect_codeql_rejection("ambiguous duplicate ordering key")
+    client.code_scanning_analyses.pop()
 
     proof_run_id = 3000
+    proof_run_attempt = 1
     proof_name = _artifact_name("release-verification", FIRST_RELEASE_TAG, target_sha)
     assets_name = _artifact_name("release-assets", FIRST_RELEASE_TAG, target_sha)
     client.proof_artifacts = [
@@ -2555,11 +3103,16 @@ def self_test() -> None:
         "head_sha": target_sha,
         "status": "completed",
         "conclusion": "success",
+        "run_attempt": proof_run_attempt,
+        "html_url": f"https://github.com/{repository}/actions/runs/{proof_run_id}",
     }
     client.run_artifacts[proof_run_id] = [
+        {"id": 99, "name": proof_name, "expired": False},
         {"id": 100, "name": assets_name, "expired": False}
     ]
-    if find_verification_run(client, repository, target_sha, FIRST_RELEASE_TAG) != proof_run_id:
+    if find_verification_run(
+        client, repository, target_sha, FIRST_RELEASE_TAG
+    ) != (proof_run_id, proof_run_attempt):
         raise ReleaseContractError("verification-run self-test selected the wrong run")
 
     production_source_urls = {
@@ -2840,21 +3393,112 @@ def self_test() -> None:
         else:
             raise ReleaseContractError("CLI archive validation accepted a missing project LICENSE")
         (assets / workbench_zip.name).write_bytes(workbench_zip.read_bytes())
-        assemble_release_bundle(assets, target_sha, FIRST_RELEASE_TAG, 1_700_000_000)
+        source_date_epoch = _target_commit_epoch(target_sha)
+        try:
+            assemble_release_bundle(
+                assets, target_sha, FIRST_RELEASE_TAG, source_date_epoch + 1
+            )
+        except ReleaseContractError:
+            pass
+        else:
+            raise ReleaseContractError(
+                "release assembly accepted a source epoch different from the target commit"
+            )
+        assemble_release_bundle(
+            assets, target_sha, FIRST_RELEASE_TAG, source_date_epoch
+        )
         verify_release_bundle(assets, target_sha, FIRST_RELEASE_TAG)
+        metadata_path = assets / "release-metadata.json"
+        original_metadata = metadata_path.read_bytes()
+        bad_metadata = _read_json_object(metadata_path)
+        bad_metadata["source_date_epoch"] = source_date_epoch + 1
+        metadata_path.write_text(
+            json.dumps(bad_metadata, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        try:
+            verify_release_bundle(assets, target_sha, FIRST_RELEASE_TAG)
+        except ReleaseContractError:
+            pass
+        else:
+            raise ReleaseContractError(
+                "release verification accepted metadata with a non-commit epoch"
+            )
+        finally:
+            metadata_path.write_bytes(original_metadata)
         proof = root / "release-verification.json"
         ci_evidence_path = root / "main-ci-evidence.json"
         ci_evidence_path.write_text(
             json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
         write_verification_proof(
-            assets, proof, ci_evidence_path, target_sha, FIRST_RELEASE_TAG
+            assets,
+            proof,
+            ci_evidence_path,
+            target_sha,
+            FIRST_RELEASE_TAG,
+            repository,
+            proof_run_id,
+            proof_run_attempt,
+            "https://github.com",
         )
-        verify_verification_proof(proof, assets, target_sha, FIRST_RELEASE_TAG)
+        verify_verification_proof(
+            proof,
+            assets,
+            target_sha,
+            FIRST_RELEASE_TAG,
+            repository,
+            proof_run_id,
+            proof_run_attempt,
+        )
+        try:
+            verify_verification_proof(
+                proof,
+                assets,
+                target_sha,
+                FIRST_RELEASE_TAG,
+                repository,
+                proof_run_id + 1,
+                proof_run_attempt,
+            )
+        except ReleaseContractError:
+            pass
+        else:
+            raise ReleaseContractError(
+                "verification proof accepted a different selected workflow run"
+            )
+
+        for label, field, value in (
+            ("attempt", "run_attempt", 0),
+            ("url", "url", "https://github.com/example/GNFS/actions/runs/9999"),
+        ):
+            bad_workflow_payload = _read_json_object(proof)
+            bad_workflow_payload["verification_workflow"][field] = value
+            bad_workflow_proof = root / f"bad-workflow-{label}-proof.json"
+            bad_workflow_proof.write_text(
+                json.dumps(bad_workflow_payload, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            try:
+                verify_verification_proof(
+                    bad_workflow_proof,
+                    assets,
+                    target_sha,
+                    FIRST_RELEASE_TAG,
+                    repository,
+                    proof_run_id,
+                    proof_run_attempt,
+                )
+            except ReleaseContractError:
+                pass
+            else:
+                raise ReleaseContractError(
+                    f"verification proof accepted an invalid workflow {label}"
+                )
         tampered_proof_payload = _read_json_object(proof)
-        tampered_proof_payload["main_ci_evidence"]["required_external_checks"][0][
-            "app_id"
-        ] = 1
+        tampered_proof_payload["main_ci_evidence"][
+            "required_code_scanning_analyses"
+        ][0]["analysis_key"] = "wrong-analysis-key"
         tampered_proof = root / "tampered-release-verification.json"
         tampered_proof.write_text(
             json.dumps(tampered_proof_payload, indent=2, sort_keys=True) + "\n",
@@ -2862,47 +3506,222 @@ def self_test() -> None:
         )
         try:
             verify_verification_proof(
-                tampered_proof, assets, target_sha, FIRST_RELEASE_TAG
+                tampered_proof,
+                assets,
+                target_sha,
+                FIRST_RELEASE_TAG,
+                repository,
+                proof_run_id,
+                proof_run_attempt,
             )
         except ReleaseContractError:
             pass
         else:
-            raise ReleaseContractError("verification proof accepted altered external CodeQL evidence")
+            raise ReleaseContractError("verification proof accepted altered CodeQL analysis evidence")
 
         release_id = 7000
-        client.tag_ref = {
-            "ref": f"refs/tags/{FIRST_RELEASE_TAG}",
-            "object": {"type": "commit", "sha": target_sha},
-        }
         release_files = _public_release_files(
-            assets, proof, target_sha, FIRST_RELEASE_TAG
+            assets,
+            proof,
+            target_sha,
+            FIRST_RELEASE_TAG,
+            repository,
+            proof_run_id,
+            proof_run_attempt,
         )
 
-        def reset_release() -> None:
-            client.target_sha = target_sha
-            client.tag_ref = {
-                "ref": f"refs/tags/{FIRST_RELEASE_TAG}",
-                "object": {"type": "commit", "sha": target_sha},
+        def asset_record(name: str, path: Path) -> dict[str, Any]:
+            return {
+                "name": name,
+                "state": "uploaded",
+                "size": path.stat().st_size,
+                "digest": f"sha256:{_sha256(path)}",
             }
+
+        def reset_draft(asset_names: list[str] | None = None) -> None:
+            client.target_sha = target_sha
+            client.tag_ref = None
             client.release = {
                 "id": release_id,
+                "name": FIRST_RELEASE_TAG,
+                "body": _release_notes(target_sha, FIRST_RELEASE_TAG),
                 "draft": True,
                 "prerelease": False,
                 "immutable": False,
                 "tag_name": FIRST_RELEASE_TAG,
                 "target_commitish": target_sha,
                 "assets": [
-                    {
-                        "name": name,
-                        "state": "uploaded",
-                        "size": path.stat().st_size,
-                        "digest": f"sha256:{_sha256(path)}",
-                    }
+                    asset_record(name, path)
                     for name, path in sorted(release_files.items())
+                    if asset_names is None or name in asset_names
                 ],
             }
+            client.extra_releases = []
             client.publish_immutable = True
             client.post_patch_mutator = None
+            client.before_upload_mutator = None
+            client.uploaded_names = []
+            client.release_read_id_override = None
+            client.post_create_race = None
+
+        def reset_empty() -> None:
+            reset_draft([])
+            client.release = None
+
+        def expect_prepare_rejection(label: str) -> None:
+            try:
+                prepare_draft_release(
+                    client,
+                    repository,
+                    target_sha,
+                    FIRST_RELEASE_TAG,
+                    assets,
+                    proof,
+                    proof_run_id,
+                    proof_run_attempt,
+                )
+            except ReleaseContractError:
+                return
+            raise ReleaseContractError(f"draft preparation accepted {label}")
+
+        release_names = sorted(release_files)
+        reset_empty()
+        prepared = prepare_draft_release(
+            client,
+            repository,
+            target_sha,
+            FIRST_RELEASE_TAG,
+            assets,
+            proof,
+            proof_run_id,
+            proof_run_attempt,
+        )
+        if (
+            prepared["created"] is not True
+            or prepared["release_id"] != release_id
+            or sorted(prepared["uploaded"]) != release_names
+            or client.tag_ref is not None
+        ):
+            raise ReleaseContractError("first draft preparation lost no-tag upload semantics")
+
+        client.uploaded_names = []
+        resumed = prepare_draft_release(
+            client,
+            repository,
+            target_sha,
+            FIRST_RELEASE_TAG,
+            assets,
+            proof,
+            proof_run_id,
+            proof_run_attempt,
+        )
+        if resumed["created"] is not False or resumed["uploaded"] or client.uploaded_names:
+            raise ReleaseContractError("complete draft resume uploaded existing assets")
+
+        partial_names = release_names[:3]
+        reset_draft(partial_names)
+        resumed = prepare_draft_release(
+            client,
+            repository,
+            target_sha,
+            FIRST_RELEASE_TAG,
+            assets,
+            proof,
+            proof_run_id,
+            proof_run_attempt,
+        )
+        if sorted(resumed["uploaded"]) != release_names[3:]:
+            raise ReleaseContractError("partial draft resume did not upload only missing assets")
+
+        reset_draft()
+        client.release["target_commitish"] = "1" * 40
+        expect_prepare_rejection("a wrong target")
+
+        reset_draft()
+        client.release_read_id_override = release_id + 1
+        expect_prepare_rejection("a mismatched release id response")
+
+        reset_draft()
+        client.release["assets"].append(
+            {
+                "name": "unexpected.bin",
+                "state": "uploaded",
+                "size": 1,
+                "digest": f"sha256:{'1' * 64}",
+            }
+        )
+        expect_prepare_rejection("an extra asset")
+
+        reset_draft()
+        client.release["assets"][0]["digest"] = f"sha256:{'2' * 64}"
+        expect_prepare_rejection("wrong existing asset bytes")
+
+        raced_name = release_names[0]
+        reset_draft(release_names[1:])
+
+        def upload_exact_race(name: str, path: Path) -> None:
+            assert client.release is not None and name == raced_name
+            client.release["assets"].append(asset_record(name, path))
+
+        client.before_upload_mutator = upload_exact_race
+        prepare_draft_release(
+            client,
+            repository,
+            target_sha,
+            FIRST_RELEASE_TAG,
+            assets,
+            proof,
+            proof_run_id,
+            proof_run_attempt,
+        )
+
+        reset_draft(release_names[1:])
+
+        def upload_wrong_race(name: str, path: Path) -> None:
+            record = asset_record(name, path)
+            record["digest"] = f"sha256:{'3' * 64}"
+            assert client.release is not None
+            client.release["assets"].append(record)
+
+        client.before_upload_mutator = upload_wrong_race
+        expect_prepare_rejection("a wrong-byte concurrent asset")
+
+        reset_empty()
+
+        def create_exact_race(payload: dict[str, Any]) -> None:
+            client.release = {
+                "id": release_id,
+                "name": payload["name"],
+                "body": payload["body"],
+                "draft": True,
+                "prerelease": False,
+                "immutable": False,
+                "tag_name": payload["tag_name"],
+                "target_commitish": payload["target_commitish"],
+                "assets": [],
+            }
+
+        client.post_create_race = create_exact_race
+        raced = prepare_draft_release(
+            client,
+            repository,
+            target_sha,
+            FIRST_RELEASE_TAG,
+            assets,
+            proof,
+            proof_run_id,
+            proof_run_attempt,
+        )
+        if raced["created"] is not False or client.tag_ref is not None:
+            raise ReleaseContractError("concurrent exact draft creation did not converge")
+
+        reset_draft()
+        client.extra_releases = [json.loads(json.dumps(client.release))]
+        client.extra_releases[0]["id"] = release_id + 1
+        expect_prepare_rejection("multiple same-tag drafts")
+
+        def reset_release() -> None:
+            reset_draft()
 
         def expect_publish_rejection(label: str) -> None:
             try:
@@ -2914,6 +3733,8 @@ def self_test() -> None:
                     release_id,
                     assets,
                     proof,
+                    proof_run_id,
+                    proof_run_attempt,
                 )
             except ReleaseContractError:
                 return
@@ -2929,8 +3750,11 @@ def self_test() -> None:
         expect_publish_rejection("a moved main branch")
 
         reset_release()
-        client.tag_ref["object"]["sha"] = "3" * 40
-        expect_publish_rejection("a moved release tag")
+        client.tag_ref = {
+            "ref": f"refs/tags/{FIRST_RELEASE_TAG}",
+            "object": {"type": "commit", "sha": "3" * 40},
+        }
+        expect_publish_rejection("a tag created before draft publication")
 
         reset_release()
         client.release["id"] = release_id + 1
@@ -2989,9 +3813,23 @@ def self_test() -> None:
 
         def move_main_after_patch() -> None:
             client.target_sha = "8" * 40
+            client.ruleset["updated_at"] = "2026-08-03T22:46:29.413Z"
 
         client.post_patch_mutator = move_main_after_patch
-        expect_publish_rejection("a post-PATCH main race")
+        frozen_result = publish_verified_release(
+            client,
+            repository,
+            target_sha,
+            FIRST_RELEASE_TAG,
+            release_id,
+            assets,
+            proof,
+            proof_run_id,
+            proof_run_attempt,
+        )
+        if frozen_result["immutable"] is not True:
+            raise ReleaseContractError("immutable publication lost frozen postconditions")
+        client.ruleset["updated_at"] = RELEASE_TAG_RULESET_UPDATED_AT
 
         client.immutable_setting_readable = False
         protection = verify_repository_protection(
@@ -3030,6 +3868,8 @@ def self_test() -> None:
             release_id,
             assets,
             proof,
+            proof_run_id,
+            proof_run_attempt,
         )
         if result["asset_count"] != len(release_files) or result["immutable"] is not True:
             raise ReleaseContractError("publication self-test lost immutable release evidence")
@@ -3038,7 +3878,15 @@ def self_test() -> None:
         original = cli_asset.read_bytes()
         cli_asset.write_bytes(original + b"tampered")
         try:
-            verify_verification_proof(proof, assets, target_sha, FIRST_RELEASE_TAG)
+            verify_verification_proof(
+                proof,
+                assets,
+                target_sha,
+                FIRST_RELEASE_TAG,
+                repository,
+                proof_run_id,
+                proof_run_attempt,
+            )
         except ReleaseContractError:
             pass
         else:
@@ -3124,15 +3972,33 @@ def parse_arguments() -> argparse.Namespace:
     proof.add_argument("--asset-directory", type=Path, required=True)
     proof.add_argument("--output", type=Path, required=True)
     proof.add_argument("--ci-evidence", type=Path, required=True)
+    proof.add_argument("--repository", required=True)
+    proof.add_argument("--workflow-run-id", type=int, required=True)
+    proof.add_argument("--workflow-run-attempt", type=int, required=True)
+    proof.add_argument("--server-url", required=True)
 
     verify_proof = subparsers.add_parser("verify-proof")
     _add_identity_arguments(verify_proof)
     verify_proof.add_argument("--asset-directory", type=Path, required=True)
     verify_proof.add_argument("--proof", type=Path, required=True)
+    verify_proof.add_argument("--repository", required=True)
+    verify_proof.add_argument("--expected-workflow-run-id", type=int, required=True)
+    verify_proof.add_argument("--expected-workflow-run-attempt", type=int, required=True)
 
     protection = subparsers.add_parser("verify-protection")
     protection.add_argument("--repository", required=True)
     protection.add_argument("--allow-unreadable-immutable-setting", action="store_true")
+
+    prepare_draft = subparsers.add_parser("prepare-draft")
+    _add_identity_arguments(prepare_draft)
+    prepare_draft.add_argument("--repository", required=True)
+    prepare_draft.add_argument("--asset-directory", type=Path, required=True)
+    prepare_draft.add_argument("--proof", type=Path, required=True)
+    prepare_draft.add_argument("--verification-workflow-run-id", type=int, required=True)
+    prepare_draft.add_argument(
+        "--verification-workflow-run-attempt", type=int, required=True
+    )
+    prepare_draft.add_argument("--github-output", type=Path)
 
     publish_release = subparsers.add_parser("publish-release")
     _add_identity_arguments(publish_release)
@@ -3140,6 +4006,10 @@ def parse_arguments() -> argparse.Namespace:
     publish_release.add_argument("--expected-release-id", type=int, required=True)
     publish_release.add_argument("--asset-directory", type=Path, required=True)
     publish_release.add_argument("--proof", type=Path, required=True)
+    publish_release.add_argument("--verification-workflow-run-id", type=int, required=True)
+    publish_release.add_argument(
+        "--verification-workflow-run-attempt", type=int, required=True
+    )
 
     workflows = subparsers.add_parser("check-workflows")
     workflows.add_argument(
@@ -3201,7 +4071,7 @@ def main() -> int:
                 arguments.github_output, "workbench_run_id", evidence["workbench_run_id"]
             )
         elif arguments.command == "find-verification":
-            run_id = find_verification_run(
+            run_id, run_attempt = find_verification_run(
                 _client_from_environment(),
                 arguments.repository,
                 arguments.target_sha,
@@ -3209,6 +4079,9 @@ def main() -> int:
             )
             print(run_id)
             _write_github_output(arguments.github_output, "verification_run_id", run_id)
+            _write_github_output(
+                arguments.github_output, "verification_run_attempt", run_attempt
+            )
         elif arguments.command == "validate-workbench":
             validate_workbench_artifact(
                 arguments.artifact_directory, arguments.target_sha, arguments.release_tag
@@ -3253,6 +4126,10 @@ def main() -> int:
                 arguments.ci_evidence,
                 arguments.target_sha,
                 arguments.release_tag,
+                arguments.repository,
+                arguments.workflow_run_id,
+                arguments.workflow_run_attempt,
+                arguments.server_url,
             )
         elif arguments.command == "verify-proof":
             verify_verification_proof(
@@ -3260,6 +4137,9 @@ def main() -> int:
                 arguments.asset_directory,
                 arguments.target_sha,
                 arguments.release_tag,
+                arguments.repository,
+                arguments.expected_workflow_run_id,
+                arguments.expected_workflow_run_attempt,
             )
         elif arguments.command == "verify-protection":
             evidence = verify_repository_protection(
@@ -3270,6 +4150,21 @@ def main() -> int:
                 ),
             )
             print(json.dumps(evidence, indent=2, sort_keys=True))
+        elif arguments.command == "prepare-draft":
+            evidence = prepare_draft_release(
+                _client_from_environment(),
+                arguments.repository,
+                arguments.target_sha,
+                arguments.release_tag,
+                arguments.asset_directory,
+                arguments.proof,
+                arguments.verification_workflow_run_id,
+                arguments.verification_workflow_run_attempt,
+            )
+            print(json.dumps(evidence, indent=2, sort_keys=True))
+            _write_github_output(
+                arguments.github_output, "release_id", evidence["release_id"]
+            )
         elif arguments.command == "publish-release":
             evidence = publish_verified_release(
                 _client_from_environment(),
@@ -3279,6 +4174,8 @@ def main() -> int:
                 arguments.expected_release_id,
                 arguments.asset_directory,
                 arguments.proof,
+                arguments.verification_workflow_run_id,
+                arguments.verification_workflow_run_attempt,
             )
             print(json.dumps(evidence, indent=2, sort_keys=True))
         elif arguments.command == "check-workflows":

@@ -28,9 +28,10 @@ permissions:
   actions: read  # Resolve exact-SHA runs and download immutable artifacts.
   checks: read  # Match required jobs to commit check runs.
   contents: read  # Checkout source and inspect main/tag refs.
+  security-events: read  # Bind exact-main CodeQL analysis evidence.
 
 concurrency:
-  group: release-${{ inputs.release_tag }}-${{ inputs.target_sha }}
+  group: release-${{ inputs.release_tag }}
   cancel-in-progress: false
 
 jobs:
@@ -40,6 +41,7 @@ jobs:
     timeout-minutes: 15
     outputs:
       verification_run_id: ${{ steps.prior.outputs.verification_run_id }}
+      verification_run_attempt: ${{ steps.prior.outputs.verification_run_attempt }}
       workbench_run_id: ${{ steps.main-ci.outputs.workbench_run_id }}
 
     steps:
@@ -568,7 +570,11 @@ jobs:
       - name: Generate metadata, checksums, and verification proof
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
+          REPOSITORY: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
           TARGET_SHA: ${{ inputs.target_sha }}
+          WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
         run: |
           source_date_epoch=$(git show -s --format=%ct HEAD)
           python3 scripts/release_contract.py assemble \
@@ -582,7 +588,11 @@ jobs:
             --ci-evidence main-ci-evidence/main-ci-evidence.json \
             --output verification-proof/release-verification.json \
             --release-tag "${RELEASE_TAG}" \
-            --target-sha "${TARGET_SHA}"
+            --target-sha "${TARGET_SHA}" \
+            --repository "${REPOSITORY}" \
+            --workflow-run-id "${WORKFLOW_RUN_ID}" \
+            --workflow-run-attempt "${WORKFLOW_RUN_ATTEMPT}" \
+            --server-url "${SERVER_URL}"
 
       - name: Upload immutable release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -610,6 +620,7 @@ jobs:
       actions: read  # Download the exact prior verification artifacts.
       checks: read  # Recheck exact-SHA required job contexts.
       contents: write  # Create the locked tag, draft, and release assets.
+      security-events: read  # Recheck exact-main CodeQL analysis before publication.
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -640,68 +651,47 @@ jobs:
           run-id: ${{ needs.preflight.outputs.verification_run_id }}
           github-token: ${{ github.token }}
 
-      - name: Revalidate proof, current main, CI, and unpublished state
+      - name: Revalidate proof, current main, CI, and resumable draft state
         env:
           GITHUB_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           REPOSITORY: ${{ github.repository }}
           TARGET_SHA: ${{ inputs.target_sha }}
+          VERIFICATION_WORKFLOW_RUN_ATTEMPT: ${{ needs.preflight.outputs.verification_run_attempt }}
+          VERIFICATION_WORKFLOW_RUN_ID: ${{ needs.preflight.outputs.verification_run_id }}
         run: |
           python3 scripts/release_contract.py verify-proof \
             --asset-directory release-assets \
             --proof verification-proof/release-verification.json \
             --release-tag "${RELEASE_TAG}" \
-            --target-sha "${TARGET_SHA}"
+            --target-sha "${TARGET_SHA}" \
+            --repository "${REPOSITORY}" \
+            --expected-workflow-run-id "${VERIFICATION_WORKFLOW_RUN_ID}" \
+            --expected-workflow-run-attempt "${VERIFICATION_WORKFLOW_RUN_ATTEMPT}"
           python3 scripts/release_contract.py verify-main \
             --repository "${REPOSITORY}" \
             --release-tag "${RELEASE_TAG}" \
             --target-sha "${TARGET_SHA}"
 
-      - name: Create draft release with verified assets
+      - name: Create or safely resume exact draft release
         id: draft
         env:
-          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           REPOSITORY: ${{ github.repository }}
           TARGET_SHA: ${{ inputs.target_sha }}
-        shell: bash
+          VERIFICATION_WORKFLOW_RUN_ATTEMPT: ${{ needs.preflight.outputs.verification_run_attempt }}
+          VERIFICATION_WORKFLOW_RUN_ID: ${{ needs.preflight.outputs.verification_run_id }}
         run: |
-          set -euo pipefail
-          printf '%s\n' \
-            "GNFS ${RELEASE_TAG}" \
-            "" \
-            "Source revision: ${TARGET_SHA}" \
-            "" \
-            "The macOS Workbench is ad-hoc signed and is not Apple notarized." \
-            "Exact GNFS source for ${TARGET_SHA} is attached." \
-            "Exact GMP 6.3.0 and NTL 11.6.0 corresponding sources are attached." \
-            "Verify packaged and source files with SHA256SUMS." \
-            "release-verification.json is separately bound by the publication contract." \
-            > release-notes.md
-          gh release create "${RELEASE_TAG}" \
-            --repo "${REPOSITORY}" \
-            --target "${TARGET_SHA}" \
-            --title "${RELEASE_TAG}" \
-            --notes-file release-notes.md \
-            --draft \
-            release-assets/GNFSWorkbench-0.1.0-macOS-arm64.zip \
-            release-assets/gnfs-v0.1.0-linux-x86_64.tar.gz \
-            release-assets/gnfs-v0.1.0-macos-arm64.tar.gz \
-            release-assets/gnfs-v0.1.0-windows-x86_64.zip \
-            release-assets/gnfs-v0.1.0-source.tar.gz \
-            release-assets/gmp-6.3.0.tar.xz \
-            release-assets/ntl-11.6.0.tar.gz \
-            release-assets/release-metadata.json \
-            release-assets/SHA256SUMS \
-            verification-proof/release-verification.json
-          draft_release_id=$(gh api \
-            "repos/${REPOSITORY}/releases/tags/${RELEASE_TAG}" \
-            --jq '.id')
-          if [[ ! "${draft_release_id}" =~ ^[1-9][0-9]*$ ]]; then
-            echo "Draft release has an invalid id: ${draft_release_id}" >&2
-            exit 1
-          fi
-          echo "release_id=${draft_release_id}" >> "${GITHUB_OUTPUT}"
+          python3 scripts/release_contract.py prepare-draft \
+            --repository "${REPOSITORY}" \
+            --release-tag "${RELEASE_TAG}" \
+            --target-sha "${TARGET_SHA}" \
+            --asset-directory release-assets \
+            --proof verification-proof/release-verification.json \
+            --verification-workflow-run-id "${VERIFICATION_WORKFLOW_RUN_ID}" \
+            --verification-workflow-run-attempt "${VERIFICATION_WORKFLOW_RUN_ATTEMPT}" \
+            --github-output "${GITHUB_OUTPUT}"
 
       - name: Publish exact draft and verify immutable public state
         env:
@@ -710,6 +700,8 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
           REPOSITORY: ${{ github.repository }}
           TARGET_SHA: ${{ inputs.target_sha }}
+          VERIFICATION_WORKFLOW_RUN_ATTEMPT: ${{ needs.preflight.outputs.verification_run_attempt }}
+          VERIFICATION_WORKFLOW_RUN_ID: ${{ needs.preflight.outputs.verification_run_id }}
         shell: bash
         run: |
           python3 scripts/release_contract.py publish-release \
@@ -718,4 +710,6 @@ jobs:
             --target-sha "${TARGET_SHA}" \
             --expected-release-id "${EXPECTED_RELEASE_ID}" \
             --asset-directory release-assets \
-            --proof verification-proof/release-verification.json
+            --proof verification-proof/release-verification.json \
+            --verification-workflow-run-id "${VERIFICATION_WORKFLOW_RUN_ID}" \
+            --verification-workflow-run-attempt "${VERIFICATION_WORKFLOW_RUN_ATTEMPT}"

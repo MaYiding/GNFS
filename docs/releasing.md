@@ -16,16 +16,19 @@ That SHA must satisfy all of these conditions:
   successfully;
 - every required job has a successful GitHub Actions check run with the same
   job ID and exact name;
-- the release tag and GitHub release do not already exist.
+- the release tag does not exist;
+- no release claims the tag, except one exact resumable draft for the same
+  target SHA.
 
 The required contexts include `CI required`, both sanitizer jobs, static
 analysis, script checks, workflow security, and `Workbench CI`. Code scanning
-has two independent requirements, and neither substitutes for the other: the
+has two independent requirements, and neither substitutes for the other. The
 GitHub Actions job `Analyze C++` must match its exact workflow job and check-run
-ID, while the separate `CodeQL` check must be published by the GitHub Advanced
-Security app (`app.id = 57789`, slug `github-advanced-security`). The release
-contract requires exactly one successful external `CodeQL` check for the
-target SHA.
+ID. The latest entry in the matching Code Scanning analysis stream must use
+`refs/heads/main`, the target SHA, the exact workflow analysis key, category,
+and environment, and the `CodeQL` tool. The latest analysis must have an empty
+error field and a nonempty tool version. An older successful analysis cannot
+hide a newer failed rerun or a newer analysis for a different commit.
 
 The workflow never accepts a branch name, tag, or other mutable checkout ref.
 It never overwrites an artifact, tag, release, or uploaded release asset.
@@ -34,20 +37,22 @@ An administrator must enable repository release immutability before the first
 publication and retain repository ruleset `20335185` (`Protect release tags`).
 The ruleset is active, targets only tags matching `refs/tags/v*`, contains the
 `update` and `deletion` rules, and has no bypass actor. The workflow verifies
-that exact ruleset before qualification and again around publication. Because
-GitHub may hide `bypass_actors` from tokens without ruleset-write access, the
-contract also pins the ruleset node and its creation/update instants; any hidden
-edit changes the pinned version. When `bypass_actors` is visible, it must be an
-empty list, and `current_user_can_bypass` must always be `never`.
+that exact ruleset before qualification and immediately before publication.
+Because GitHub may hide `bypass_actors` from tokens without ruleset-write
+access, the contract also pins the ruleset node and its creation/update
+instants; any hidden edit changes the pinned version. When `bypass_actors` is
+visible, it must be an empty list, and `current_user_can_bypass` must always be
+`never`.
 
 GitHub's immutable-release settings endpoint requires repository
 `Administration: read`, a permission that is not available to the ephemeral
 `GITHUB_TOKEN`. The workflow does not introduce a long-lived personal access
 token to bridge that gap. It attempts the read and reports when the setting is
 rejected with `403`; a documented `404` means immutability is disabled and
-blocks the workflow. Publication also fails unless the PATCH response and both
-post-publication release reads report `immutable: true`. Administrators can run
-the strict read-only check with an authenticated admin session before dispatch:
+blocks the workflow. A `403` is a residual visibility boundary, not an atomic or
+fail-closed proof that the setting stayed enabled. Administrators must run the
+strict read-only check with an authenticated admin session immediately before
+publish mode and keep the setting enabled throughout the publication window:
 
 ```bash
 GITHUB_TOKEN="$(gh auth token)" \
@@ -57,10 +62,17 @@ GITHUB_TOKEN="$(gh auth token)" \
 
 Release immutability applies only to releases published after the setting is
 enabled. Do not dispatch publish mode if that strict administrator check fails.
+Do not store an administrator token or personal access token in Actions to
+remove this operational boundary. The publish command separately requires its
+PATCH response and both post-publication release reads to report
+`immutable: true`.
 
 ## Two-Phase Publication
 
 Run the workflow twice from the `main` branch at the same full SHA.
+The workflow concurrency group is keyed only by release tag, so verify-only and
+publish attempts for the same tag cannot overlap even when callers supply
+different SHAs.
 
 1. Select `verify-only`, set `release_tag` to `v0.1.0`, provide the current
    main SHA, and type `VERIFY v0.1.0`.
@@ -72,31 +84,51 @@ Run the workflow twice from the `main` branch at the same full SHA.
 
 Publish mode requires the nonexpired artifacts from a completed successful
 verify-only run. It downloads and verifies those exact bytes instead of
-rebuilding them. It then rechecks the current main SHA, every triggered push
-workflow, required job contexts, and unpublished tag state immediately before
-creating a draft release. The workflow verifies the draft tag and complete
-asset set before making the release public. After all assets have uploaded, a
-second API-backed check again verifies current main and every exact-SHA CI run,
-then requires the tag to be a lightweight commit ref to that SHA, the draft ID
-to equal the ID created by this workflow, and every uploaded asset size and
-server-reported SHA-256 digest to equal the verified local bundle. One Python
-command performs the last mutable-state check, PATCHes only that numeric release
-ID, and then fetches the release by both ID and tag. It also refetches the tag,
-asset list, current main, all exact-SHA CI evidence, and tag ruleset. Success
-requires the public response and both release reads to match the exact
-ID/tag/target, `draft: false`, `prerelease: false`, and `immutable: true`.
+rebuilding them. The proof records the verify-only workflow run ID, run
+attempt, and GitHub URL. These fields must match the run selected by publish
+mode.
 
-The verify-only proof embeds the exact Actions workflow/job/check-run IDs and
-the external CodeQL check-run ID, app identity, status, and conclusion observed
-during preflight. Proof validation freezes both the Actions `Analyze C++`
-contract and the independent external `CodeQL` app contract. Final prepublish
-validation queries both again from the target commit rather than trusting only
-the earlier proof.
+GitHub does not create a Git tag or tag ref for a draft release. The
+`/releases/tags/{tag}` endpoint also does not return drafts. The preparation
+command therefore pages through the releases collection, requires at most one
+exact tag candidate, and reads an accepted draft by its positive numeric ID.
+It reuses only a draft with the exact tag, target SHA, title, notes,
+`draft: true`, `prerelease: false`, and `immutable: false` state. The tag ref
+must remain absent throughout draft preparation.
+
+Preparation is safe to resume after an interrupted upload. Existing server
+assets must be an exact-byte subset of the expected release files, including
+matching size and server-reported SHA-256 digest. The command uploads only
+missing files. Any extra, duplicate, renamed, incomplete, or wrong-digest asset
+blocks the retry. It never deletes, updates, replaces, or clobbers a server
+asset. A concurrent draft creation or asset upload converges only when the
+observed server object has the same exact identity and bytes.
+
+Immediately before the mutating PATCH, one Python command revalidates the
+proof, repository protection, current main, all exact-SHA CI evidence, exact
+numeric draft ID, complete asset set, and absent tag. It PATCHes only that draft
+ID. GitHub creates the release tag during publication, so only the
+post-publication checks require a lightweight commit ref to the target SHA.
+After a successful immutable PATCH, the command checks only frozen publication
+state: the release by numeric ID and public tag lookup, the exact tag ref, and
+the server asset list. A later main-branch or ruleset movement does not turn an
+already immutable publication into a reported failure. Success requires the
+PATCH response and both release reads to match the exact ID, tag, target,
+`draft: false`, `prerelease: false`, and `immutable: true`.
+
+The verify-only proof embeds the exact Actions workflow, job, and check-run IDs.
+It also embeds the selected Code Scanning analysis ID, tool version, timestamp,
+result count, ref, commit, analysis key, category, environment, and error field.
+Proof validation freezes both the Actions `Analyze C++` contract and the
+independent Code Scanning analysis contract. Final prepublish validation
+queries both again from the target commit rather than trusting only the earlier
+proof.
 
 If draft creation or asset upload fails, the workflow does not publish the
-draft. An existing draft or tag blocks automatic retry because the workflow
-does not delete or replace release state. Inspect and resolve that partial
-state explicitly before another publication attempt.
+draft. Rerun publish mode with the same tag, target SHA, and verify-only proof to
+resume an exact partial draft. A preexisting tag, conflicting release, or
+noncanonical asset blocks the retry and requires explicit administrator
+inspection. The workflow never repairs such state destructively.
 
 ## Qualification Lanes
 
@@ -140,7 +172,9 @@ proof's local and server-reported digest.
 The CLI archive helper sorts paths, normalizes timestamps, ownership, and file
 modes, and rejects output replacement. ZIP entries use stored encoding to
 avoid compressor-dependent output. The release metadata binds every asset
-digest to the full source SHA and the source commit epoch.
+digest to the full source SHA. The contract recomputes the target commit's Unix
+timestamp with Git and requires `source_date_epoch` to equal that value exactly;
+a merely positive or caller-selected epoch is rejected.
 
 The verify-only workflow creates `gnfs-v0.1.0-source.tar.gz` directly from the
 exact target commit. Its validator requires the Git archive commit marker,
