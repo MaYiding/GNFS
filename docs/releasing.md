@@ -18,10 +18,14 @@ That SHA must satisfy all of these conditions:
   job ID and exact name;
 - the release tag and GitHub release do not already exist.
 
-The required contexts include `CI required`, both sanitizer jobs, `Analyze
-C++`, static analysis, script checks, workflow security, and `Workbench CI`.
-The contract uses the real `Analyze C++` job name rather than the historical
-and incorrect `CodeQL` branch-protection context.
+The required contexts include `CI required`, both sanitizer jobs, static
+analysis, script checks, workflow security, and `Workbench CI`. Code scanning
+has two independent requirements, and neither substitutes for the other: the
+GitHub Actions job `Analyze C++` must match its exact workflow job and check-run
+ID, while the separate `CodeQL` check must be published by the GitHub Advanced
+Security app (`app.id = 57789`, slug `github-advanced-security`). The release
+contract requires exactly one successful external `CodeQL` check for the
+target SHA.
 
 The workflow never accepts a branch name, tag, or other mutable checkout ref.
 It never overwrites an artifact, tag, release, or uploaded release asset.
@@ -49,6 +53,13 @@ then requires the tag to be a lightweight commit ref to that SHA, the draft ID
 to equal the ID created by this workflow, and every uploaded asset size and
 server-reported SHA-256 digest to equal the verified local bundle. Only then
 does the next command change that exact draft to public.
+
+The verify-only proof embeds the exact Actions workflow/job/check-run IDs and
+the external CodeQL check-run ID, app identity, status, and conclusion observed
+during preflight. Proof validation freezes both the Actions `Analyze C++`
+contract and the independent external `CodeQL` app contract. Final prepublish
+validation queries both again from the target commit rather than trusting only
+the earlier proof.
 
 If draft creation or asset upload fails, the workflow does not publish the
 draft. An existing draft or tag blocks automatic retry because the workflow
@@ -121,6 +132,10 @@ requires the exact six-file `Contents/Resources/Licenses` contract: the
 byte-identical GNFS GPL-2.0 license, both GMP copying texts, the NTL copying
 notice, a versioned static-link notice, and an upstream source-offer file. A
 missing, renamed, or additional file blocks release assembly.
+`GMP-COPYING.txt` is pinned byte-for-byte to GMP 6.3.0 `COPYINGv2` and must
+carry the GPL version 2 header, while the third-party notice explicitly selects
+GMP's GNU GPL version 2 option for this distribution. The corresponding-source
+URLs are version-locked to the GMP 6.3.0 and NTL 11.6.0 archives.
 
 The first Workbench package is ad-hoc signed and is not Apple notarized. macOS
 may require an explicit user approval before first launch. The release notes

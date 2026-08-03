@@ -84,7 +84,17 @@ jobs:
             --repository "${REPOSITORY}" \
             --release-tag "${RELEASE_TAG}" \
             --target-sha "${TARGET_SHA}" \
+            --evidence-output main-ci-evidence/main-ci-evidence.json \
             --github-output "${GITHUB_OUTPUT}"
+
+      - name: Upload exact-SHA main CI evidence
+        if: inputs.mode == 'verify-only'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-main-ci-evidence-${{ github.run_id }}
+          path: main-ci-evidence/main-ci-evidence.json
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Find successful verify-only evidence
         id: prior
@@ -465,6 +475,12 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Download exact-SHA main CI evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-main-ci-evidence-${{ github.run_id }}
+          path: main-ci-evidence
+
       - name: Generate metadata, checksums, and verification proof
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
@@ -479,6 +495,7 @@ jobs:
           mkdir verification-proof
           python3 scripts/release_contract.py write-proof \
             --asset-directory release-assets \
+            --ci-evidence main-ci-evidence/main-ci-evidence.json \
             --output verification-proof/release-verification.json \
             --release-tag "${RELEASE_TAG}" \
             --target-sha "${TARGET_SHA}"

@@ -38,11 +38,25 @@ LINUX_ABI_CEILINGS = {
 }
 WORKBENCH_LICENSE_RESOURCES = {
     "GNFS-GPL-2.0.txt": ("project",),
-    "GMP-COPYING.txt": ("GNU GENERAL PUBLIC LICENSE",),
+    "GMP-COPYING.txt": ("GNU GENERAL PUBLIC LICENSE", "Version 2, June 1991"),
     "GMP-COPYING.LESSERv3.txt": ("GNU LESSER GENERAL PUBLIC LICENSE",),
     "NTL-copying.txt": ("NTL -- A Library for Doing Number Theory",),
-    "THIRD-PARTY-NOTICES.txt": ("GMP 6.3.0", "NTL 11.6.0", "statically linked"),
-    "SOURCE.txt": ("https://gmplib.org/", "https://libntl.org/"),
+    "THIRD-PARTY-NOTICES.txt": (
+        "GMP 6.3.0",
+        "NTL 11.6.0",
+        "statically linked",
+        "GNU GPL version 2",
+    ),
+    "SOURCE.txt": (
+        "https://gmplib.org/download/gmp/gmp-6.3.0.tar.xz",
+        "https://libntl.org/ntl-11.6.0.tar.gz",
+    ),
+}
+WORKBENCH_LICENSE_FORBIDDEN_MARKERS = {
+    "GMP-COPYING.txt": ("Version 3, 29 June 2007",),
+}
+WORKBENCH_LICENSE_SHA256 = {
+    "GMP-COPYING.txt": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643",
 }
 
 
@@ -51,6 +65,13 @@ class RequiredCheck:
     workflow: str
     workflow_path: str
     job: str
+
+
+@dataclass(frozen=True)
+class RequiredExternalCheck:
+    name: str
+    app_id: int
+    app_slug: str
 
 
 REQUIRED_MAIN_CHECKS = (
@@ -82,6 +103,9 @@ REQUIRED_MAIN_CHECKS = (
         ".github/workflows/workbench.yml",
         "macOS 26 build, test, and package",
     ),
+)
+REQUIRED_EXTERNAL_CHECKS = (
+    RequiredExternalCheck("CodeQL", 57789, "github-advanced-security"),
 )
 
 
@@ -264,6 +288,44 @@ def _assert_unpublished(client: GitHubAPI, repository: str, release_tag: str) ->
         raise ReleaseContractError(f"refusing to reuse existing release {release_tag}")
 
 
+def _verify_required_external_checks(check_runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    evidence: list[dict[str, Any]] = []
+    for required in REQUIRED_EXTERNAL_CHECKS:
+        matches = [check for check in check_runs if check.get("name") == required.name]
+        if len(matches) != 1:
+            raise ReleaseContractError(
+                f"expected exactly one external {required.name!r} check run; found {len(matches)}"
+            )
+        check = matches[0]
+        check_id = check.get("id")
+        app = check.get("app") or {}
+        if not isinstance(check_id, int) or check_id <= 0:
+            raise ReleaseContractError(
+                f"external {required.name!r} check run has no positive numeric id"
+            )
+        if (
+            check.get("status") != "completed"
+            or check.get("conclusion") != "success"
+            or app.get("id") != required.app_id
+            or app.get("slug") != required.app_slug
+        ):
+            raise ReleaseContractError(
+                f"external {required.name!r} check is not a successful "
+                f"{required.app_slug} app context"
+            )
+        evidence.append(
+            {
+                "name": required.name,
+                "check_run_id": check_id,
+                "app_id": required.app_id,
+                "app_slug": required.app_slug,
+                "status": "completed",
+                "conclusion": "success",
+            }
+        )
+    return evidence
+
+
 def verify_main_ci(
     client: GitHubAPI,
     repository: str,
@@ -317,7 +379,9 @@ def verify_main_ci(
         runs_by_identity.setdefault(identity, []).append(run)
 
     check_runs = client.paginate(
-        f"/repos/{repository}/commits/{target_sha}/check-runs", "check_runs"
+        f"/repos/{repository}/commits/{target_sha}/check-runs",
+        "check_runs",
+        {"filter": "all"},
     )
     checks_by_id = {check.get("id"): check for check in check_runs}
     jobs_by_run: dict[int, list[dict[str, Any]]] = {}
@@ -381,11 +445,13 @@ def verify_main_ci(
 
     if workbench_run_id is None:
         raise ReleaseContractError("Workbench CI run id was not resolved")
+    external_evidence = _verify_required_external_checks(check_runs)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "target_sha": target_sha,
         "all_triggered_push_workflows": len(exact_runs),
         "required_checks": evidence,
+        "required_external_checks": external_evidence,
         "workbench_run_id": workbench_run_id,
     }
 
@@ -548,12 +614,24 @@ def _validate_workbench_zip(zip_path: Path, target_sha: str, release_tag: str) -
                         f"Workbench license resource has an invalid size: {resource_path}"
                     )
                 resource = archive.read(resource_path)
+                resource_name = PurePosixPath(resource_path).name
                 if markers == ("project",):
                     if resource != _project_license():
                         raise ReleaseContractError(
                             "Workbench project license does not match the repository LICENSE"
                         )
                 else:
+                    forbidden_markers = WORKBENCH_LICENSE_FORBIDDEN_MARKERS.get(
+                        resource_name, ()
+                    )
+                    present_forbidden_markers = [
+                        marker for marker in forbidden_markers if marker.encode() in resource
+                    ]
+                    if present_forbidden_markers:
+                        raise ReleaseContractError(
+                            "Workbench license resource contains forbidden identity markers "
+                            f"{present_forbidden_markers}: {resource_path}"
+                        )
                     missing_markers = [
                         marker for marker in markers if marker.encode() not in resource
                     ]
@@ -561,6 +639,15 @@ def _validate_workbench_zip(zip_path: Path, target_sha: str, release_tag: str) -
                         raise ReleaseContractError(
                             "Workbench license resource lacks identity markers "
                             f"{missing_markers}: {resource_path}"
+                        )
+                    expected_digest = WORKBENCH_LICENSE_SHA256.get(resource_name)
+                    if (
+                        expected_digest is not None
+                        and hashlib.sha256(resource).hexdigest() != expected_digest
+                    ):
+                        raise ReleaseContractError(
+                            "Workbench license resource is not the pinned upstream text: "
+                            f"{resource_path}"
                         )
     except (zipfile.BadZipFile, KeyError, ValueError, plistlib.InvalidFileException) as error:
         raise ReleaseContractError(f"invalid Workbench ZIP: {error}") from error
@@ -1101,13 +1188,95 @@ def _required_check_contract() -> list[dict[str, str]]:
     return [asdict(required) for required in REQUIRED_MAIN_CHECKS]
 
 
+def _required_external_check_contract() -> list[dict[str, Any]]:
+    return [asdict(required) for required in REQUIRED_EXTERNAL_CHECKS]
+
+
+def _validate_main_ci_evidence(evidence: dict[str, Any], target_sha: str) -> None:
+    expected_keys = {
+        "schema_version",
+        "target_sha",
+        "all_triggered_push_workflows",
+        "required_checks",
+        "required_external_checks",
+        "workbench_run_id",
+    }
+    if set(evidence) != expected_keys:
+        raise ReleaseContractError("main CI evidence contains missing or unknown fields")
+    if (
+        evidence.get("schema_version") != 2
+        or evidence.get("target_sha") != target_sha
+        or not isinstance(evidence.get("all_triggered_push_workflows"), int)
+        or evidence["all_triggered_push_workflows"] <= 0
+        or not isinstance(evidence.get("workbench_run_id"), int)
+        or evidence["workbench_run_id"] <= 0
+    ):
+        raise ReleaseContractError("main CI evidence identity is invalid")
+    required_checks = evidence.get("required_checks")
+    if not isinstance(required_checks, list) or len(required_checks) != len(REQUIRED_MAIN_CHECKS):
+        raise ReleaseContractError("main CI evidence has the wrong Actions check count")
+    workbench_run_id: int | None = None
+    for required, record in zip(REQUIRED_MAIN_CHECKS, required_checks):
+        if not isinstance(record, dict) or set(record) != {
+            "workflow",
+            "workflow_path",
+            "workflow_run_id",
+            "job",
+            "check_run_id",
+        }:
+            raise ReleaseContractError("main CI Actions evidence record is malformed")
+        if (
+            record.get("workflow") != required.workflow
+            or record.get("workflow_path") != required.workflow_path
+            or record.get("job") != required.job
+            or not isinstance(record.get("workflow_run_id"), int)
+            or record["workflow_run_id"] <= 0
+            or not isinstance(record.get("check_run_id"), int)
+            or record["check_run_id"] <= 0
+        ):
+            raise ReleaseContractError("main CI Actions evidence changed identity")
+        if required.workflow == "Workbench CI":
+            workbench_run_id = record["workflow_run_id"]
+    if workbench_run_id != evidence["workbench_run_id"]:
+        raise ReleaseContractError("main CI evidence has an inconsistent Workbench run id")
+
+    external_checks = evidence.get("required_external_checks")
+    if not isinstance(external_checks, list) or len(external_checks) != len(
+        REQUIRED_EXTERNAL_CHECKS
+    ):
+        raise ReleaseContractError("main CI evidence has the wrong external check count")
+    for required, record in zip(REQUIRED_EXTERNAL_CHECKS, external_checks):
+        if not isinstance(record, dict) or set(record) != {
+            "name",
+            "check_run_id",
+            "app_id",
+            "app_slug",
+            "status",
+            "conclusion",
+        }:
+            raise ReleaseContractError("main CI external evidence record is malformed")
+        if (
+            record.get("name") != required.name
+            or record.get("app_id") != required.app_id
+            or record.get("app_slug") != required.app_slug
+            or record.get("status") != "completed"
+            or record.get("conclusion") != "success"
+            or not isinstance(record.get("check_run_id"), int)
+            or record["check_run_id"] <= 0
+        ):
+            raise ReleaseContractError("main CI external evidence changed identity or result")
+
+
 def write_verification_proof(
     asset_directory: Path,
     output: Path,
+    ci_evidence_path: Path,
     target_sha: str,
     release_tag: str,
 ) -> None:
     verify_release_bundle(asset_directory, target_sha, release_tag)
+    ci_evidence = _read_json_object(ci_evidence_path)
+    _validate_main_ci_evidence(ci_evidence, target_sha)
     output = output.resolve()
     if output.exists() or output.is_symlink():
         raise ReleaseContractError(f"refusing to overwrite verification proof: {output}")
@@ -1115,11 +1284,13 @@ def write_verification_proof(
         (*expected_package_names(release_tag), "release-metadata.json", "SHA256SUMS")
     )
     proof = {
-        "schema_version": 1,
+        "schema_version": 2,
         "mode": "verify-only",
         "release_tag": release_tag,
         "target_sha": target_sha,
         "required_main_checks": _required_check_contract(),
+        "required_external_checks": _required_external_check_contract(),
+        "main_ci_evidence": ci_evidence,
         "bundle": [
             {
                 "name": name,
@@ -1146,18 +1317,25 @@ def verify_verification_proof(
         "release_tag",
         "target_sha",
         "required_main_checks",
+        "required_external_checks",
+        "main_ci_evidence",
         "bundle",
     }
     if set(proof) != expected_keys:
         raise ReleaseContractError("verification proof contains missing or unknown fields")
     if (
-        proof.get("schema_version") != 1
+        proof.get("schema_version") != 2
         or proof.get("mode") != "verify-only"
         or proof.get("release_tag") != release_tag
         or proof.get("target_sha") != target_sha
         or proof.get("required_main_checks") != _required_check_contract()
+        or proof.get("required_external_checks") != _required_external_check_contract()
     ):
         raise ReleaseContractError("verification proof identity or required checks changed")
+    main_ci_evidence = proof.get("main_ci_evidence")
+    if not isinstance(main_ci_evidence, dict):
+        raise ReleaseContractError("verification proof lacks main CI evidence")
+    _validate_main_ci_evidence(main_ci_evidence, target_sha)
     expected_names = sorted(
         (*expected_package_names(release_tag), "release-metadata.json", "SHA256SUMS")
     )
@@ -1281,6 +1459,8 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
         "scripts/release_contract.py find-verification",
         "scripts/release_contract.py verify-proof",
         "scripts/release_contract.py final-prepublish",
+        "release-main-ci-evidence-${{ github.run_id }}",
+        "--ci-evidence main-ci-evidence/main-ci-evidence.json",
         "scripts/release_binary_contract.py linux",
         "scripts/release_binary_contract.py macos",
         "scripts/windows_release_runtime.py bundle",
@@ -1362,6 +1542,20 @@ class _FakeClient:
                 "conclusion": "success",
             }
         )
+        self.external_check_id = 9000
+        self.checks.append(
+            {
+                "id": self.external_check_id,
+                "name": "CodeQL",
+                "status": "completed",
+                "conclusion": "success",
+                "app": {
+                    "id": 57789,
+                    "slug": "github-advanced-security",
+                    "name": "GitHub Advanced Security",
+                },
+            }
+        )
         self.proof_artifacts: list[dict[str, Any]] = []
         self.run_details: dict[int, dict[str, Any]] = {}
         self.run_artifacts: dict[int, list[dict[str, Any]]] = {}
@@ -1394,6 +1588,8 @@ class _FakeClient:
         if match:
             return self.jobs[int(match.group(1))]
         if path.endswith(f"/commits/{self.target_sha}/check-runs"):
+            if query != {"filter": "all"}:
+                raise AssertionError("external check verification must request every check run")
             return self.checks
         if path.endswith("/actions/artifacts") and query:
             return self.proof_artifacts
@@ -1406,6 +1602,14 @@ class _FakeClient:
 def _make_workbench_artifact(directory: Path, target_sha: str) -> Path:
     zip_name = expected_package_names(FIRST_RELEASE_TAG)[0]
     zip_path = directory / zip_name
+    project_license = _project_license()
+    gmp_copying_v2 = b"                    " + project_license
+    if hashlib.sha256(gmp_copying_v2).hexdigest() != WORKBENCH_LICENSE_SHA256[
+        "GMP-COPYING.txt"
+    ]:
+        raise ReleaseContractError(
+            "self-test could not derive the pinned GMP 6.3.0 COPYINGv2 fixture"
+        )
     info = {
         "CFBundleShortVersionString": FIRST_RELEASE_TAG[1:],
         WORKBENCH_INFO_KEY: target_sha,
@@ -1417,10 +1621,10 @@ def _make_workbench_artifact(directory: Path, target_sha: str) -> Path:
         )
         archive.writestr("GNFSWorkbench.app/Contents/MacOS/GNFSWorkbench", b"binary")
         license_prefix = "GNFSWorkbench.app/Contents/Resources/Licenses"
-        archive.writestr(f"{license_prefix}/GNFS-GPL-2.0.txt", _project_license())
+        archive.writestr(f"{license_prefix}/GNFS-GPL-2.0.txt", project_license)
         archive.writestr(
             f"{license_prefix}/GMP-COPYING.txt",
-            b"GNU GENERAL PUBLIC LICENSE\nVersion 2\n",
+            gmp_copying_v2,
         )
         archive.writestr(
             f"{license_prefix}/GMP-COPYING.LESSERv3.txt",
@@ -1432,11 +1636,13 @@ def _make_workbench_artifact(directory: Path, target_sha: str) -> Path:
         )
         archive.writestr(
             f"{license_prefix}/THIRD-PARTY-NOTICES.txt",
-            b"GMP 6.3.0 and NTL 11.6.0 are statically linked.\n",
+            b"GMP 6.3.0 and NTL 11.6.0 are statically linked.\n"
+            b"GMP is conveyed under its GNU GPL version 2 option.\n",
         )
         archive.writestr(
             f"{license_prefix}/SOURCE.txt",
-            b"https://gmplib.org/\nhttps://libntl.org/\n",
+            b"https://gmplib.org/download/gmp/gmp-6.3.0.tar.xz\n"
+            b"https://libntl.org/ntl-11.6.0.tar.gz\n",
         )
     (directory / f"{zip_name}.sha256").write_text(
         f"{_sha256(zip_path)}  {zip_name}\n", encoding="utf-8"
@@ -1597,6 +1803,44 @@ def self_test() -> None:
         raise ReleaseContractError("main CI self-test accepted a failed required check")
     client.checks[0]["conclusion"] = "success"
 
+    external_check = next(
+        check for check in client.checks if check.get("id") == client.external_check_id
+    )
+
+    def expect_external_rejection(label: str) -> None:
+        try:
+            verify_main_ci(client, repository, target_sha, FIRST_RELEASE_TAG)
+        except ReleaseContractError:
+            return
+        raise ReleaseContractError(f"main CI self-test accepted {label} external CodeQL")
+
+    external_check["status"] = "in_progress"
+    external_check["conclusion"] = None
+    expect_external_rejection("pending")
+    external_check["status"] = "completed"
+    external_check["conclusion"] = "failure"
+    expect_external_rejection("failed")
+    external_check["conclusion"] = "success"
+    external_check["app"] = {"id": 1, "slug": "wrong-app", "name": "Wrong App"}
+    expect_external_rejection("wrong-app")
+    external_check["app"] = {
+        "id": 57789,
+        "slug": "github-advanced-security",
+        "name": "GitHub Advanced Security",
+    }
+    external_index = client.checks.index(external_check)
+    client.checks.pop(external_index)
+    expect_external_rejection("missing")
+    client.checks.insert(external_index, external_check)
+    duplicate_external = {
+        **external_check,
+        "id": client.external_check_id + 1,
+        "app": dict(external_check["app"]),
+    }
+    client.checks.append(duplicate_external)
+    expect_external_rejection("duplicate")
+    client.checks.pop()
+
     proof_run_id = 3000
     proof_name = _artifact_name("release-verification", FIRST_RELEASE_TAG, target_sha)
     assets_name = _artifact_name("release-assets", FIRST_RELEASE_TAG, target_sha)
@@ -1629,6 +1873,54 @@ def self_test() -> None:
         workbench.mkdir()
         workbench_zip = _make_workbench_artifact(workbench, target_sha)
         validate_workbench_artifact(workbench, target_sha, FIRST_RELEASE_TAG)
+
+        gmp_resource_suffix = (
+            "GNFSWorkbench.app/Contents/Resources/Licenses/GMP-COPYING.txt"
+        )
+        with zipfile.ZipFile(workbench_zip) as valid_workbench_archive:
+            gmp_copying_v2 = valid_workbench_archive.read(gmp_resource_suffix)
+
+        def expect_workbench_license_rejection(
+            label: str, replacement: bytes, expected_error: str
+        ) -> None:
+            tampered_directory = root / f"bad-workbench-{label}"
+            tampered_directory.mkdir()
+            tampered_zip = tampered_directory / workbench_zip.name
+            with zipfile.ZipFile(workbench_zip) as source_archive, zipfile.ZipFile(
+                tampered_zip, mode="x", compression=zipfile.ZIP_STORED
+            ) as destination_archive:
+                for entry in source_archive.infolist():
+                    content = source_archive.read(entry.filename)
+                    if entry.filename == gmp_resource_suffix:
+                        content = replacement
+                    destination_archive.writestr(entry, content)
+            (tampered_directory / f"{workbench_zip.name}.sha256").write_text(
+                f"{_sha256(tampered_zip)}  {workbench_zip.name}\n", encoding="utf-8"
+            )
+            try:
+                validate_workbench_artifact(
+                    tampered_directory, target_sha, FIRST_RELEASE_TAG
+                )
+            except ReleaseContractError as error:
+                if expected_error not in str(error):
+                    raise ReleaseContractError(
+                        f"Workbench {label} self-test failed for the wrong reason: {error}"
+                    ) from error
+            else:
+                raise ReleaseContractError(
+                    f"Workbench validation accepted {label} GMP COPYING text"
+                )
+
+        expect_workbench_license_rejection(
+            "altered",
+            gmp_copying_v2 + b"\n",
+            "not the pinned upstream text",
+        )
+        expect_workbench_license_rejection(
+            "GPLv3",
+            b"GNU GENERAL PUBLIC LICENSE\nVersion 3, 29 June 2007\n",
+            "forbidden identity markers",
+        )
 
         assets = root / "assets"
         assets.mkdir()
@@ -1694,8 +1986,31 @@ def self_test() -> None:
         assemble_release_bundle(assets, target_sha, FIRST_RELEASE_TAG, 1_700_000_000)
         verify_release_bundle(assets, target_sha, FIRST_RELEASE_TAG)
         proof = root / "release-verification.json"
-        write_verification_proof(assets, proof, target_sha, FIRST_RELEASE_TAG)
+        ci_evidence_path = root / "main-ci-evidence.json"
+        ci_evidence_path.write_text(
+            json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        write_verification_proof(
+            assets, proof, ci_evidence_path, target_sha, FIRST_RELEASE_TAG
+        )
         verify_verification_proof(proof, assets, target_sha, FIRST_RELEASE_TAG)
+        tampered_proof_payload = _read_json_object(proof)
+        tampered_proof_payload["main_ci_evidence"]["required_external_checks"][0][
+            "app_id"
+        ] = 1
+        tampered_proof = root / "tampered-release-verification.json"
+        tampered_proof.write_text(
+            json.dumps(tampered_proof_payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        try:
+            verify_verification_proof(
+                tampered_proof, assets, target_sha, FIRST_RELEASE_TAG
+            )
+        except ReleaseContractError:
+            pass
+        else:
+            raise ReleaseContractError("verification proof accepted altered external CodeQL evidence")
 
         release_id = 7000
         client.tag_ref = {
@@ -1843,6 +2158,7 @@ def parse_arguments() -> argparse.Namespace:
     _add_identity_arguments(verify_main)
     verify_main.add_argument("--repository", required=True)
     verify_main.add_argument("--github-output", type=Path)
+    verify_main.add_argument("--evidence-output", type=Path)
 
     find_proof = subparsers.add_parser("find-verification")
     _add_identity_arguments(find_proof)
@@ -1875,6 +2191,7 @@ def parse_arguments() -> argparse.Namespace:
     _add_identity_arguments(proof)
     proof.add_argument("--asset-directory", type=Path, required=True)
     proof.add_argument("--output", type=Path, required=True)
+    proof.add_argument("--ci-evidence", type=Path, required=True)
 
     verify_proof = subparsers.add_parser("verify-proof")
     _add_identity_arguments(verify_proof)
@@ -1933,6 +2250,16 @@ def main() -> int:
                 arguments.release_tag,
             )
             print(json.dumps(evidence, indent=2, sort_keys=True))
+            if arguments.evidence_output is not None:
+                evidence_output = arguments.evidence_output.resolve()
+                if evidence_output.exists() or evidence_output.is_symlink():
+                    raise ReleaseContractError(
+                        f"refusing to overwrite main CI evidence: {evidence_output}"
+                    )
+                evidence_output.parent.mkdir(parents=True, exist_ok=True)
+                with evidence_output.open("x", encoding="utf-8", newline="\n") as handle:
+                    json.dump(evidence, handle, indent=2, sort_keys=True)
+                    handle.write("\n")
             _write_github_output(
                 arguments.github_output, "workbench_run_id", evidence["workbench_run_id"]
             )
@@ -1968,6 +2295,7 @@ def main() -> int:
             write_verification_proof(
                 arguments.asset_directory,
                 arguments.output,
+                arguments.ci_evidence,
                 arguments.target_sha,
                 arguments.release_tag,
             )
