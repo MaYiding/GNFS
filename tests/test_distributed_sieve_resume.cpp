@@ -9146,8 +9146,11 @@ void test_wave_store_worker_attempt_reconcile_created_record_requires_replay() {
         prepare_worker_attempt_reconcile_fixture(store, root, Boundary::FinalDirectoryDurable,
                                                  WorkerAttemptReconcileRecordShape::canonical_only);
     const auto original_snapshot = fixture.expected_canonical_snapshot;
+    const auto canonical_path = root / fixture.names.canonical_record_leaf;
+    std::ifstream original_canonical_hold(canonical_path, std::ios::binary);
+    CHECK(original_canonical_hold.is_open());
     WorkerAttemptReconcileDeleteRecordContext deletion{
-        .record = root / fixture.names.canonical_record_leaf,
+        .record = canonical_path,
     };
 
     auto opened = store.open_worker_attempt_private_lease_root(fixture.record.chunk_id,
@@ -9174,7 +9177,6 @@ void test_wave_store_worker_attempt_reconcile_created_record_requires_replay() {
     CHECK(
         !reconciliation_required.diagnostic.last_worker_attempt_reconcile_fault_point.has_value());
 
-    const auto canonical_path = root / fixture.names.canonical_record_leaf;
     CHECK(!entry_exists_no_follow(canonical_path));
     CHECK(!entry_exists_no_follow(root / fixture.names.pending_record_leaf));
     WaveReservationWitnessObservationContext p8_observation{
@@ -9195,6 +9197,7 @@ void test_wave_store_worker_attempt_reconcile_created_record_requires_replay() {
     CHECK(read_file_bytes(canonical_path) == fixture.bytes);
     fixture.expected_canonical_snapshot = wave_record_snapshot(
         capture_wave_root_entry_snapshot(canonical_path, fixture.names.canonical_record_leaf));
+    CHECK(original_canonical_hold.is_open());
     CHECK(fixture.expected_canonical_snapshot != original_snapshot);
     require_worker_attempt_reconcile_inventory_and_locks_released(
         store, root, fixture, Boundary::FinalDirectoryDurable,
@@ -21728,6 +21731,8 @@ void test_wave_store_worker_package_residue_reconciliation_mutation_sandwiches()
     WorkerPackageResidueFixture fixture("worker-package-residue-successor-insertion");
     const auto initial_package = capture_wave_root_entry_snapshot(
         fixture.package_path, fixture.package_path.filename().string());
+    std::ifstream initial_package_hold(fixture.package_path, std::ios::binary);
+    CHECK(initial_package_hold.is_open());
     const auto record_path = fixture.wave.root / fixture.attempt.names.canonical_record_leaf;
     const auto record_before =
         capture_wave_root_entry_snapshot(record_path, fixture.attempt.names.canonical_record_leaf);
@@ -21766,6 +21771,7 @@ void test_wave_store_worker_package_residue_reconciliation_mutation_sandwiches()
     CHECK(read_file_bytes(fixture.package_path) == fixture.encoded.bytes);
     const auto inserted_package = capture_wave_root_entry_snapshot(
         fixture.package_path, fixture.package_path.filename().string());
+    CHECK(initial_package_hold.is_open());
     CHECK(inserted_package.device != initial_package.device ||
           inserted_package.inode != initial_package.inode);
     CHECK(capture_wave_root_entry_snapshot(
