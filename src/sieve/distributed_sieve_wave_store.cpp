@@ -9302,7 +9302,6 @@ protocol_identity(const durable_record::NativeIdentity& identity) noexcept {
 
 } // namespace
 
-
 DistributedSieveWorkerCleanupRecordLeafLoadResultV1
 load_distributed_sieve_worker_cleanup_record_leaf_v1(int wave_root_fd, std::string_view leaf,
                                                      std::uint64_t creator_process_id) noexcept {
