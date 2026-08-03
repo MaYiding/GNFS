@@ -21,7 +21,9 @@ apps/macos/GNFSWorkbench/scripts/build-app.sh Release
 
 The script regenerates the Xcode project and builds only the matching C++ engine target. It statically links GMP and NTL, so the app has no Homebrew runtime dependency. It writes the full checkout commit to the `GNFSSourceRevision` bundle key before signing. Release packaging requires a clean checkout and verifies that the embedded revision equals the exact `HEAD` commit.
 
-The package undergoes ad-hoc local signing. It is not Developer ID signed or notarized, so it is suitable for CI and local validation but not unrestricted public distribution. The script creates `GNFSWorkbench-0.1.0-macOS-arm64.zip` and `GNFSWorkbench-0.1.0-macOS-arm64.zip.sha256`. It extracts the temporary ZIP and rechecks the signatures, arm64 architecture, dynamic dependencies, version, source revision, and a real `360` JSONL factorization before atomically publishing both files.
+The package undergoes ad-hoc local signing. It is not Developer ID signed or notarized, so it is suitable for CI and local validation but not unrestricted public distribution. The script creates `GNFSWorkbench-0.1.0-macOS-arm64.zip` and `GNFSWorkbench-0.1.0-macOS-arm64.zip.sha256`. It extracts the temporary ZIP and rechecks the signatures, arm64 architecture, dynamic dependencies, version, source revision, license resources, and a real `360` JSONL factorization. An exclusive output lock protects the final publication transaction. A handled interruption restores the previous archive and checksum pair; an abrupt process death leaves a fail-closed lock for inspection.
+
+The app bundle includes exactly six files under `Contents/Resources/Licenses/`: the GNFS GPLv2 license, the GMP GPLv2 and LGPLv3 texts, the NTL copyright and LGPLv2.1-or-later text, third-party notices, and exact source locations. Packaging verifies these files after ZIP extraction. This GPL-2.0 distribution conveys statically linked GMP 6.3.0 under its GNU GPL version 2 option.
 
 The ZIP is the canonical handoff artifact because a raw `.app` left inside a FileProvider-synced workspace can acquire Finder metadata after signing. Extract the archive into `/Applications` or another non-synced directory. The generated `.xcodeproj` and distribution artifacts are intentionally not tracked. Each invocation creates unique C++, Xcode, and packaging scratch directories with deterministic cleanup, so concurrent CI jobs cannot share a build root or reconfigure the repository's normal test build.
 
@@ -40,13 +42,16 @@ The default suite is headless. It covers integer validation, exact large-integer
 apps/macos/GNFSWorkbench/scripts/test-app.sh
 ```
 
-Screen-driving UI tests are available only when they are explicitly useful:
+Screen-driving UI tests are available separately, and Workbench CI runs them as
+an independent release gate after the headless suite:
 
 ```bash
 apps/macos/GNFSWorkbench/scripts/test-app.sh --ui
 ```
 
 Both scripts generate their temporary Xcode project and derived data under `/private/tmp`. This keeps routine builds away from Desktop FileProvider metadata, avoids duplicate generated projects, and requires no signing account or manual approval. The explicit `generate-project.sh` command above still writes a local project beside `project.yml` when a developer wants to open it in Xcode.
+
+Each test has a 120-second default execution allowance and a 300-second maximum. A separate 1,200-second wall timeout also bounds build or test-worker startup stalls; `GNFS_WORKBENCH_TEST_WALL_TIMEOUT_SECONDS` can override it. Set `GNFS_WORKBENCH_TEST_ARTIFACTS` to an external directory to preserve the Xcode result bundle, build log, and test logs when the suite fails. CI uploads this evidence automatically.
 
 ## Runtime behavior
 
@@ -55,7 +60,7 @@ Both scripts generate their temporary Xcode project and derived data under `/pri
 - Advanced values are optional overrides; blank fields retain size-derived defaults.
 - Each active run owns `Runs/<UUID>/` and passes `Runs/<UUID>/state` through `GNFS_RESUME`. The workspace supports checkpoints only within that process lifetime and is removed after success, failure, cancellation, or interrupted-run recovery.
 - History is stored locally as JSON. Interrupted records are recovered as cancelled on the next launch.
-- Deleting history, clearing all history, and the 50-record retention limit also remove matching workspaces, legacy `UUID.*` checkpoints, and orphaned run artifacts.
+- Deleting history, clearing all history, and the 50-record retention limit remove exact UUID workspace directories and known legacy checkpoint suffixes. Unknown files and symbolic links are preserved and cause unsafe managed paths to fail closed.
 - A successful result is accepted only when every returned factor passes the engine's primality check and their exact arbitrary-precision product equals `N`.
 - Closing the application during a run first cancels the engine and persists the terminal state.
 

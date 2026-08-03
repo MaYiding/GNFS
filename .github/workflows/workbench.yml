@@ -31,11 +31,40 @@ jobs:
       - name: Check Workbench scripts and stdout ownership
         run: |
           zsh -n apps/macos/GNFSWorkbench/scripts/*.sh
+          apps/macos/GNFSWorkbench/scripts/test-package-publish.sh
+          apps/macos/GNFSWorkbench/scripts/test-wall-timeout.sh
           python3 scripts/check_stdout_contract.py --self-test
           python3 scripts/check_stdout_contract.py
 
       - name: Run Workbench tests
+        id: workbench_unit
+        env:
+          GNFS_WORKBENCH_TEST_ARTIFACTS: ${{ runner.temp }}/gnfs-workbench-test-artifacts
         run: apps/macos/GNFSWorkbench/scripts/test-app.sh
+
+      - name: Upload Workbench test failure evidence
+        if: ${{ failure() && steps.workbench_unit.outcome == 'failure' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: gnfs-workbench-test-failure-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/gnfs-workbench-test-artifacts
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Run Workbench UI tests
+        id: workbench_ui
+        env:
+          GNFS_WORKBENCH_TEST_ARTIFACTS: ${{ runner.temp }}/gnfs-workbench-ui-test-artifacts
+        run: apps/macos/GNFSWorkbench/scripts/test-app.sh --ui
+
+      - name: Upload Workbench UI test failure evidence
+        if: ${{ failure() && steps.workbench_ui.outcome == 'failure' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: gnfs-workbench-ui-test-failure-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/gnfs-workbench-ui-test-artifacts
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Build and verify release package
         env:
@@ -49,6 +78,43 @@ jobs:
             cd "$WORKBENCH_DIST"
             shasum -a 256 -c GNFSWorkbench-0.1.0-macOS-arm64.zip.sha256
           )
+          verify_root=$(mktemp -d "$RUNNER_TEMP/gnfs-workbench-package-verify.XXXXXX")
+          trap 'rm -rf -- "$verify_root"' EXIT
+          ditto -x -k \
+            "$WORKBENCH_DIST/GNFSWorkbench-0.1.0-macOS-arm64.zip" \
+            "$verify_root"
+          license_dir="$verify_root/GNFSWorkbench.app/Contents/Resources/Licenses"
+          expected_licenses=(
+            GNFS-GPL-2.0.txt
+            GMP-COPYING.txt
+            GMP-COPYING.LESSERv3.txt
+            NTL-copying.txt
+            THIRD-PARTY-NOTICES.txt
+            SOURCE.txt
+          )
+          test -d "$license_dir"
+          test "$(find "$license_dir" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" = 6
+          test -z "$(find "$license_dir" -mindepth 1 -maxdepth 1 ! -type f -print -quit)"
+          for license_name in "${expected_licenses[@]}"; do
+            test -s "$license_dir/$license_name"
+          done
+          test "$(shasum -a 256 "$license_dir/GMP-COPYING.txt" | cut -d ' ' -f 1)" = \
+            8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643
+          grep -Fq 'Version 2, June 1991' "$license_dir/GMP-COPYING.txt"
+          for marker in 'GMP 6.3.0' 'NTL 11.6.0' 'statically linked' 'GNU GPL version 2'; do
+            grep -Fq "$marker" "$license_dir/THIRD-PARTY-NOTICES.txt"
+          done
+          grep -Fq 'https://gmplib.org/download/gmp/gmp-6.3.0.tar.xz' \
+            "$license_dir/SOURCE.txt"
+          grep -Fq 'https://libntl.org/ntl-11.6.0.tar.gz' \
+            "$license_dir/SOURCE.txt"
+          for source_asset in \
+            'gnfs-v0.1.0-source.tar.gz' \
+            'gmp-6.3.0.tar.xz' \
+            'ntl-11.6.0.tar.gz' \
+            'SHA256SUMS'; do
+            grep -Fq "$source_asset" "$license_dir/SOURCE.txt"
+          done
 
       - name: Upload verified Workbench package
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

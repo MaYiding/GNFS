@@ -24,6 +24,7 @@ targets:
       - path: GNFSWorkbench
         excludes:
           - "**/* [0-9].swift"
+          - Resources/Licenses
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.gnfs.workbench
@@ -49,6 +50,11 @@ targets:
           SWIFT_COMPILATION_MODE: wholemodule
           SWIFT_OPTIMIZATION_LEVEL: -O
     postBuildScripts:
+      - name: Embed License Resources
+        script: |
+          /bin/zsh "$GNFS_WORKBENCH_SOURCE_ROOT/scripts/embed-license-resources.sh" \
+            "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/Licenses"
+        basedOnDependencyAnalysis: false
       - name: Embed GNFS CLI
         script: |
           /bin/zsh "$GNFS_WORKBENCH_SOURCE_ROOT/scripts/embed-gnfs-cli.sh" \

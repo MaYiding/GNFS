@@ -26,13 +26,31 @@ gmp_prefix=$(brew --prefix gmp)
 ntl_prefix=$(brew --prefix ntl)
 gmp_library="$gmp_prefix/lib/libgmp.a"
 ntl_library="$ntl_prefix/lib/libntl.a"
+gmp_header="$gmp_prefix/include/gmp.h"
+ntl_version_header="$ntl_prefix/include/NTL/version.h"
 
-for dependency in "$gmp_library" "$ntl_library"; do
+for dependency in \
+    "$gmp_library" "$ntl_library" "$gmp_header" "$ntl_version_header"; do
     if [[ ! -f "$dependency" ]]; then
-        print -u2 "required static dependency not found: $dependency"
+        print -u2 "required pinned dependency input not found: $dependency"
         exit 1
     fi
 done
+
+gmp_major=$(awk '$1 == "#define" && $2 == "__GNU_MP_VERSION" { print $3 }' "$gmp_header")
+gmp_minor=$(awk '$1 == "#define" && $2 == "__GNU_MP_VERSION_MINOR" { print $3 }' "$gmp_header")
+gmp_patch=$(awk '$1 == "#define" && $2 == "__GNU_MP_VERSION_PATCHLEVEL" { print $3 }' "$gmp_header")
+gmp_version="$gmp_major.$gmp_minor.$gmp_patch"
+ntl_version=$(awk '$1 == "#define" && $2 == "NTL_VERSION" { gsub(/"/, "", $3); print $3 }' \
+    "$ntl_version_header")
+if [[ "$gmp_version" != "6.3.0" ]]; then
+    print -u2 "Workbench packaging requires GMP 6.3.0, found: $gmp_version"
+    exit 1
+fi
+if [[ "$ntl_version" != "11.6.0" ]]; then
+    print -u2 "Workbench packaging requires NTL 11.6.0, found: $ntl_version"
+    exit 1
+fi
 
 temporary_cli_root=""
 if [[ -n "${GNFS_WORKBENCH_CLI_BUILD_ROOT:-}" ]]; then
