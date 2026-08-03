@@ -2186,7 +2186,19 @@ capture_namespace_tree_while_lock_held(const std::filesystem::path& root,
     // BaseLock intentionally denies all Windows sharing. The live handle also
     // prevents the named lock from being replaced or removed, so compare the
     // rest of the namespace without trying to stat the exclusively held leaf.
-    return capture_namespace_tree(root, lock_path.lexically_relative(root));
+    std::error_code error;
+    auto canonical_root = std::filesystem::weakly_canonical(root, error);
+    if (error || canonical_root.empty() || !canonical_root.is_absolute()) {
+        throw std::filesystem::filesystem_error(
+            "canonicalize live-lock namespace snapshot root", root,
+            error ? error : std::make_error_code(std::errc::invalid_argument));
+    }
+    canonical_root = canonical_root.lexically_normal();
+    const auto normalized_lock = lock_path.lexically_normal();
+    if (normalized_lock.parent_path() != canonical_root || normalized_lock.filename().empty()) {
+        throw std::runtime_error("live-lock namespace snapshot lock is outside root");
+    }
+    return capture_namespace_tree(canonical_root, normalized_lock.filename());
 #else
     // POSIX locks do not prevent unlink/rename, so retain lock-leaf coverage.
     return capture_namespace_tree(root);
