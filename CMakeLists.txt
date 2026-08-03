@@ -335,6 +335,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/distributed_sieve_wave_store.cp
     if(WIN32)
         target_sources(gnfs_core PRIVATE
             src/sieve/distributed_sieve_wave_store_windows.cpp
+            src/sieve/distributed_sieve_wave_result_windows.cpp
         )
     else()
         target_sources(gnfs_core PRIVATE
@@ -1400,6 +1401,8 @@ if(GNFS_BUILD_TESTS)
         )
     endif()
 
+    endif()
+
     add_executable(test_distributed_sieve_wave_result
         tests/test_distributed_sieve_wave_result.cpp
     )
@@ -1437,6 +1440,7 @@ if(GNFS_BUILD_TESTS)
         )
     endif()
 
+    if(NOT WIN32)
     add_executable(test_distributed_sieve_worker_work_package_file
         tests/test_distributed_sieve_worker_work_package_file.cpp
     )

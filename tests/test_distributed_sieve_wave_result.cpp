@@ -164,6 +164,46 @@ void check(bool condition, std::string_view expression, int line) {
 
 #define CHECK(expression) check(static_cast<bool>(expression), #expression, __LINE__)
 
+using WaveResultBooleanMember = bool (WaveResult::*)() const noexcept;
+using WaveResultCountMember = std::size_t (WaveResult::*)() const noexcept;
+using WaveResultDigestMember = const gnfs::util::Sha256Digest& (WaveResult::*)() const&;
+using WaveResultChunksMember =
+    std::span<const sieve::ChunkCommitSummaryV1> (WaveResult::*)() const&;
+using WaveResultRelationsMember =
+    const relation::ReadOnlyRelationCorpusView& (WaveResult::*)() const&;
+using WaveResultMoveConstructFunction = void (*)(void*, WaveResult&&) noexcept;
+using WaveResultDestroyFunction = void (*)(WaveResult*) noexcept;
+
+void move_construct_wave_result_link_probe(void* storage, WaveResult&& value) noexcept {
+    std::construct_at(static_cast<WaveResult*>(storage), std::move(value));
+}
+
+void destroy_wave_result_link_probe(WaveResult* value) noexcept {
+    if (value != nullptr) {
+        std::destroy_at(value);
+    }
+}
+
+[[maybe_unused]] WaveResultBooleanMember volatile wave_result_valid_link_probe = &WaveResult::valid;
+[[maybe_unused]] WaveResultBooleanMember volatile wave_result_bool_link_probe =
+    &WaveResult::operator bool;
+[[maybe_unused]] WaveResultCountMember volatile wave_result_relation_count_link_probe =
+    &WaveResult::relation_count;
+[[maybe_unused]] WaveResultCountMember volatile wave_result_worker_count_link_probe =
+    &WaveResult::completed_worker_count;
+[[maybe_unused]] WaveResultDigestMember volatile wave_result_manifest_link_probe =
+    static_cast<WaveResultDigestMember>(&WaveResult::manifest_digest);
+[[maybe_unused]] WaveResultDigestMember volatile wave_result_merge_commit_link_probe =
+    static_cast<WaveResultDigestMember>(&WaveResult::merge_commit_digest);
+[[maybe_unused]] WaveResultChunksMember volatile wave_result_chunks_link_probe =
+    static_cast<WaveResultChunksMember>(&WaveResult::chunks);
+[[maybe_unused]] WaveResultRelationsMember volatile wave_result_relations_link_probe =
+    static_cast<WaveResultRelationsMember>(&WaveResult::merged_relations);
+[[maybe_unused]] WaveResultMoveConstructFunction volatile wave_result_move_construct_link_probe =
+    &move_construct_wave_result_link_probe;
+[[maybe_unused]] WaveResultDestroyFunction volatile wave_result_destroy_link_probe =
+    &destroy_wave_result_link_probe;
+
 #if defined(__APPLE__)
 
 namespace fixture = gnfs::test::distributed_sieve_wave_merge_commit_fixture;
@@ -521,6 +561,16 @@ void run_platform_suite() {
     static_assert(!std::is_constructible_v<WaveResult, std::filesystem::path>);
     static_assert(
         !std::is_constructible_v<WaveResult, std::span<const sieve::ChunkCommitSummaryV1>>);
+    CHECK(wave_result_valid_link_probe != nullptr);
+    CHECK(wave_result_bool_link_probe != nullptr);
+    CHECK(wave_result_relation_count_link_probe != nullptr);
+    CHECK(wave_result_worker_count_link_probe != nullptr);
+    CHECK(wave_result_manifest_link_probe != nullptr);
+    CHECK(wave_result_merge_commit_link_probe != nullptr);
+    CHECK(wave_result_chunks_link_probe != nullptr);
+    CHECK(wave_result_relations_link_probe != nullptr);
+    CHECK(wave_result_move_construct_link_probe != nullptr);
+    CHECK(wave_result_destroy_link_probe != nullptr);
     std::cout << "  public result remains unreachable without sealed R4 authority: PASS\n";
 #endif
 }

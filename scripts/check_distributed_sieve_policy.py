@@ -212,6 +212,9 @@ WORKER_CLEANUP_ORCHESTRATION_TEST_FILE = (
 )
 WAVE_RESULT_PUBLIC_INTERFACE_FILE = "include/gnfs/sieve/distributed_sieve.hpp"
 WAVE_RESULT_IMPLEMENTATION_FILE = "src/sieve/distributed_sieve_wave_result.cpp"
+WAVE_RESULT_WINDOWS_IMPLEMENTATION_FILE = (
+    "src/sieve/distributed_sieve_wave_result_windows.cpp"
+)
 WAVE_RESULT_PRIVATE_INTERFACE_FILE = (
     "src/sieve/distributed_sieve_wave_result_internal.hpp"
 )
@@ -219,6 +222,7 @@ WAVE_RESULT_TEST_FILE = "tests/test_distributed_sieve_wave_result.cpp"
 WAVE_RESULT_PRIVATE_INTERFACE_INCLUDE = "distributed_sieve_wave_result_internal.hpp"
 WAVE_RESULT_OWNED_FILES = {
     WAVE_RESULT_IMPLEMENTATION_FILE,
+    WAVE_RESULT_WINDOWS_IMPLEMENTATION_FILE,
     WAVE_RESULT_PRIVATE_INTERFACE_FILE,
     WAVE_RESULT_TEST_FILE,
 }
@@ -4205,7 +4209,7 @@ WORKER_CLEANUP_ORCHESTRATION_TEST_TARGET = (
     "test_distributed_sieve_worker_cleanup_orchestrator"
 )
 WORKER_CLEANUP_ORCHESTRATION_CMAKE_BLOCK_SHA256 = (
-    "68e22a5b9c0f019240688ced73c309a43c2c4fd26990954af5c79e7a6c4cfd98"
+    "907ce71199aa528e16d1d8c53cfc16902cffd8e5be9f3b9cffe05169489f8acd"
 )
 WORKER_CLEANUP_ORCHESTRATION_CI_FILE = ".github/workflows/ci.yml"
 WORKER_CLEANUP_ORCHESTRATION_CI_BLOCK_SHA256 = (
@@ -4269,6 +4273,10 @@ WAVE_RESULT_EXACT_USE_CONTEXTS = {
         WAVE_RESULT_IMPLEMENTATION_FILE: (
             22,
             "a9fa051fb2e0034a50afb4245c0b633fdce2d2f24cffa22474f4c355f4e3eb95",
+        ),
+        WAVE_RESULT_WINDOWS_IMPLEMENTATION_FILE: (
+            16,
+            "46cdda437bbe52a8a7e5ee9dc4c5df5d487f09daaa57bd2d62a869e5b430b4bc",
         ),
         WAVE_RESULT_TEST_FILE: (
             1,
@@ -4462,8 +4470,11 @@ WAVE_RESULT_PRIVATE_HEADER_INTERVAL_SHA256 = (
 WAVE_RESULT_IMPLEMENTATION_INTERVAL_SHA256 = (
     "c0143337512f195b4c62721d8ab0e77441cdfdb5d1bda3bbbafd568c0cb5f19d"
 )
+WAVE_RESULT_WINDOWS_IMPLEMENTATION_SHA256 = (
+    "8ef648e7ad6dde85c5a47b3e7875d06573e799d7e18341626dac5488fb892f81"
+)
 WAVE_RESULT_TEST_INTERVAL_SHA256 = (
-    "d077740d2ba065d7f084280e7273b9332314e9b9fe631fe1c366b77d2bb31864"
+    "32267b745f63fc80e5f085157ec5e17fa9517562ddfe7c81dc7ee9a2d4523457"
 )
 WAVE_RESULT_PUBLIC_CLASS_BODY_SHA256 = (
     "e430f10a7d16c2dab76d7f07677f7aa4a708f04a37054a18c19f6e8608367900"
@@ -4492,6 +4503,9 @@ WAVE_RESULT_IMPLEMENTATION_CLASS_BODY_SHA256 = {
     "DistributedSieveWaveResult::State":
         "2c2446d560d0c54ee91a0612f8f31c07821f49a5cb999149330069b626cb6986",
 }
+WAVE_RESULT_WINDOWS_STATE_BODY_SHA256 = (
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+)
 WAVE_RESULT_FUNCTION_BODY_SHA256 = {
     "DistributedSieveWaveResult::valid":
         "aad4d4aa44db2f058b6db857710840265501126183b814d758beb2e1d0d83994",
@@ -4520,6 +4534,26 @@ WAVE_RESULT_FUNCTION_BODY_SHA256 = {
         "69606b21da58c65214fb942d14de9845ee1e60e877c151f58cd5333d5e95a602",
     WAVE_RESULT_TRUSTED_PROMOTE_IDENTIFIER:
         "6bf40f4f82451d40bb01d2dfff41858a66947c38378e9497dd6d3654e70a3a8a",
+}
+WAVE_RESULT_WINDOWS_FUNCTION_BODY_SHA256 = {
+    "throw_wave_result_platform_unsupported":
+        "52e98641c2376b26fb3291e65681d7347ccd9fe0959b39754be3077d8c63f083",
+    "DistributedSieveWaveResult::valid":
+        "014ac4444caf725e475ca48eeeef1e0ecc8fe91a2d8da01bf20560a85af2b279",
+    "DistributedSieveWaveResult::operator bool":
+        "014ac4444caf725e475ca48eeeef1e0ecc8fe91a2d8da01bf20560a85af2b279",
+    "DistributedSieveWaveResult::relation_count":
+        "af625eb8decd6dbf8320e93055057d44218b44a9e22f403b6fac103582a1f2e5",
+    "DistributedSieveWaveResult::completed_worker_count":
+        "af625eb8decd6dbf8320e93055057d44218b44a9e22f403b6fac103582a1f2e5",
+    "DistributedSieveWaveResult::manifest_digest":
+        "a5abbc8d44ec3f007644042a5754beb6b59f74788180185357c780a75d358c35",
+    "DistributedSieveWaveResult::merge_commit_digest":
+        "a5abbc8d44ec3f007644042a5754beb6b59f74788180185357c780a75d358c35",
+    "DistributedSieveWaveResult::chunks":
+        "a5abbc8d44ec3f007644042a5754beb6b59f74788180185357c780a75d358c35",
+    "DistributedSieveWaveResult::merged_relations":
+        "a5abbc8d44ec3f007644042a5754beb6b59f74788180185357c780a75d358c35",
 }
 WAVE_RESULT_R4_COMMIT_BRIDGE_BODY_SHA256 = (
     "2d91a9832393777b84dbd94eabcf67730929dd88f87321d7a86a4c865932830f"
@@ -4550,8 +4584,48 @@ WAVE_RESULT_RUNNER_BODY_SHA256 = {
     "run_protection_suite":
         "87b9ac0468d44239316b275097c1ba2367dd5feb72405f6d9c2718800f58c6b3",
     "run_platform_suite":
-        "802894bffed46826b779b4c5aa933802a7bf6df1a020e53dfaaf853f2d77332d",
+        "5a2d7d8df654bcc4d591687c4327f6cf53131fa080df83f8cf02e97150c1af38",
 }
+WAVE_RESULT_LINK_PROBE_HELPER_BODY_SHA256 = {
+    "move_construct_wave_result_link_probe":
+        "6362271467194491d3527802cb327c0ca591b2441095b1d496c66c94dc601df6",
+    "destroy_wave_result_link_probe":
+        "3f690cb9eb977084bb4d16bc0c0e478aa220a461c7c439b87e8ffa6c94bbc08b",
+}
+WAVE_RESULT_LINK_PROBE_FRAGMENTS = (
+    "[[maybe_unused]]WaveResultBooleanMembervolatilewave_result_valid_link_probe="
+    "&WaveResult::valid;",
+    "[[maybe_unused]]WaveResultBooleanMembervolatilewave_result_bool_link_probe="
+    "&WaveResult::operatorbool;",
+    "[[maybe_unused]]WaveResultCountMembervolatilewave_result_relation_count_link_probe="
+    "&WaveResult::relation_count;",
+    "[[maybe_unused]]WaveResultCountMembervolatilewave_result_worker_count_link_probe="
+    "&WaveResult::completed_worker_count;",
+    "[[maybe_unused]]WaveResultDigestMembervolatilewave_result_manifest_link_probe="
+    "static_cast<WaveResultDigestMember>(&WaveResult::manifest_digest);",
+    "[[maybe_unused]]WaveResultDigestMembervolatilewave_result_merge_commit_link_probe="
+    "static_cast<WaveResultDigestMember>(&WaveResult::merge_commit_digest);",
+    "[[maybe_unused]]WaveResultChunksMembervolatilewave_result_chunks_link_probe="
+    "static_cast<WaveResultChunksMember>(&WaveResult::chunks);",
+    "[[maybe_unused]]WaveResultRelationsMembervolatilewave_result_relations_link_probe="
+    "static_cast<WaveResultRelationsMember>(&WaveResult::merged_relations);",
+    "[[maybe_unused]]WaveResultMoveConstructFunctionvolatile"
+    "wave_result_move_construct_link_probe=&move_construct_wave_result_link_probe;",
+    "[[maybe_unused]]WaveResultDestroyFunctionvolatilewave_result_destroy_link_probe="
+    "&destroy_wave_result_link_probe;",
+)
+WAVE_RESULT_PLATFORM_LINK_PROBE_CHECKS = (
+    "CHECK(wave_result_valid_link_probe!=nullptr);",
+    "CHECK(wave_result_bool_link_probe!=nullptr);",
+    "CHECK(wave_result_relation_count_link_probe!=nullptr);",
+    "CHECK(wave_result_worker_count_link_probe!=nullptr);",
+    "CHECK(wave_result_manifest_link_probe!=nullptr);",
+    "CHECK(wave_result_merge_commit_link_probe!=nullptr);",
+    "CHECK(wave_result_chunks_link_probe!=nullptr);",
+    "CHECK(wave_result_relations_link_probe!=nullptr);",
+    "CHECK(wave_result_move_construct_link_probe!=nullptr);",
+    "CHECK(wave_result_destroy_link_probe!=nullptr);",
+)
 WAVE_RESULT_TEST_SURFACE_FRAGMENTS = (
     "static_assert(std::is_final_v<WaveResult>);",
     "static_assert(!std::is_default_constructible_v<WaveResult>);",
@@ -4587,8 +4661,11 @@ WAVE_RESULT_FORBIDDEN_PRODUCTION_IDENTIFIERS = (
     "DISTRIBUTED_SIEVE_CLEANUP_COMPLETED_MERGED_RECORD_LEAF",
 )
 WAVE_RESULT_TEST_TARGET = "test_distributed_sieve_wave_result"
+WAVE_RESULT_CMAKE_SOURCE_SELECTION_SHA256 = (
+    "e516da429e83ee7b95df9e13f2aa19010b8103d869465494a52218e1312e351e"
+)
 WAVE_RESULT_CMAKE_BLOCK_SHA256 = (
-    "0802cb7e87a22266d297aeedbcd59bd01a996efd098e9456325c3e5dccb2bd14"
+    "30137a3b3ad83648a67ebb228291761ce1498299cf67656fd2c14bf0f6634dc9"
 )
 WAVE_RESULT_CI_FILE = ".github/workflows/ci.yml"
 WAVE_RESULT_CI_MARKER = "    - name: Run macOS durable wave result\n"
@@ -5462,7 +5539,7 @@ WORKER_CLEANUP_RECEIPT_RELEASE_MEMBER_BODY = (
 )
 WORKER_CLEANUP_RECEIPT_CMAKE_FILE = "CMakeLists.txt"
 WORKER_CLEANUP_RECEIPT_CMAKE_COMMENT_MASKED_SHA256 = (
-    "16b8e25fe314745dc325488b8bf516da1dcaa37239efd7aebfb833daef47309e"
+    "5414baab12657946263f504125c012c5f07746becfc2a00c02fbc017fc1ddda5"
 )
 WORKER_CLEANUP_RECEIPT_CMAKE_PRESETS_FILE = "CMakePresets.json"
 WORKER_CLEANUP_RECEIPT_CMAKE_PRESETS_SHA256 = (
@@ -5526,8 +5603,8 @@ WORKER_CLEANUP_RECEIPT_TIER_B_SAFE_MACROS = {
     ): (
         WORKER_CLEANUP_RECEIPT_TEST_CHECK_DEFINITION,
         (
-            73,
-            "c12f72b481e6c829735c661f76e778b08b533822188b0183a1b0447cfc5a2599",
+            83,
+            "eef36fda7f730a42159e10585a53cbe92531f74489250fdf9fb8a3b9f028db1f",
         ),
     ),
     (
@@ -5613,6 +5690,7 @@ WORKER_CLEANUP_RECEIPT_PROTECTED_UNIT_TARGETS = {
     WORKER_CLEANUP_RECEIPT_AUTHORITY_IMPLEMENTATION_FILE: {"gnfs_core"},
     WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE: {"gnfs_core"},
     WAVE_RESULT_IMPLEMENTATION_FILE: {"gnfs_core"},
+    WAVE_RESULT_WINDOWS_IMPLEMENTATION_FILE: {"gnfs_core"},
     WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE: {
         "gnfs_core",
         WORKER_CLEANUP_ORCHESTRATION_TEST_TARGET,
@@ -6077,6 +6155,7 @@ DURABLE_ENVIRONMENT_FREE_FILES = {
     MERGE_COMMIT_AUTHORITY_INTERFACE_FILE,
     "src/sieve/distributed_sieve_wave_store.cpp",
     WINDOWS_WAVE_STORE_IMPLEMENTATION_FILE,
+    WAVE_RESULT_WINDOWS_IMPLEMENTATION_FILE,
     "src/sieve/distributed_sieve_wave_store_internal.hpp",
     "src/sieve/distributed_sieve_worker_coordinator.cpp",
     "src/sieve/distributed_sieve_worker_coordinator_internal.hpp",
@@ -11765,6 +11844,7 @@ def _worker_cleanup_receipt_protected_unit_tokens(
         WORKER_CLEANUP_ORCHESTRATION_TEST_FILE,
         WAVE_RESULT_PRIVATE_INTERFACE_FILE,
         WAVE_RESULT_IMPLEMENTATION_FILE,
+        WAVE_RESULT_WINDOWS_IMPLEMENTATION_FILE,
         WAVE_RESULT_TEST_FILE,
     }
     for relative in required:
@@ -12587,6 +12667,22 @@ def _worker_cleanup_receipt_protected_unit_tokens(
             )
         else:
             add_tokens(wave_result_relative, source)
+
+    wave_result_windows = texts.get(WAVE_RESULT_WINDOWS_IMPLEMENTATION_FILE)
+    if (
+        wave_result_windows is None
+        or _compact_cpp_sha256(wave_result_windows)
+        != WAVE_RESULT_WINDOWS_IMPLEMENTATION_SHA256
+    ):
+        errors.append(
+            (
+                WAVE_RESULT_WINDOWS_IMPLEMENTATION_FILE,
+                1,
+                "cannot derive Tier-B tokens from unfrozen M5-R1 Windows stub",
+            )
+        )
+    else:
+        add_tokens(WAVE_RESULT_WINDOWS_IMPLEMENTATION_FILE, wave_result_windows)
 
     units[WORKER_CLEANUP_RECEIPT_WAVE_STORE_IMPLEMENTATION_FILE].update(
         {
@@ -19230,6 +19326,82 @@ class Checks:
                 )
             return
 
+        if relative == WAVE_RESULT_WINDOWS_IMPLEMENTATION_FILE:
+            if (
+                _compact_cpp_sha256(text)
+                != WAVE_RESULT_WINDOWS_IMPLEMENTATION_SHA256
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    "M5-R1 Windows fail-closed implementation is not exact",
+                )
+
+            masked = _mask_cpp_comments_and_literals(text)
+            guard_starts = list(
+                re.finditer(
+                    r"(?m)^\s*#\s*if\s+defined\s*\(\s*_WIN32\s*\)\s*$",
+                    masked,
+                )
+            )
+            conditionals = _preprocessor_conditional_directives(text)
+            if (
+                len(guard_starts) != 1
+                or [directive for directive, _ in conditionals]
+                != ["if", "endif"]
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    "M5-R1 Windows implementation must remain inside one exact "
+                    "_WIN32 file guard",
+                )
+
+            state_span = _class_definition_body_span(
+                text, "DistributedSieveWaveResult::State"
+            )
+            if (
+                state_span is None
+                or _compact_cpp_sha256(text[state_span[0] : state_span[1]])
+                != WAVE_RESULT_WINDOWS_STATE_BODY_SHA256
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    "M5-R1 Windows result state must remain empty",
+                )
+
+            definitions = find_function_definition_bodies(
+                text, WAVE_RESULT_WINDOWS_FUNCTION_BODY_SHA256
+            )
+            for identifier, expected_hash in (
+                WAVE_RESULT_WINDOWS_FUNCTION_BODY_SHA256.items()
+            ):
+                body, line_offset, body_errors = definitions[identifier]
+                for line, error in body_errors:
+                    self.fail(relative, line, error)
+                if body is None or _compact_cpp_sha256(body) != expected_hash:
+                    self.fail(
+                        relative,
+                        line_offset + 1,
+                        f"M5-R1 Windows fail-closed body is not exact: {identifier}",
+                    )
+
+            compact = _compact_cpp_code(text)
+            if (
+                compact.count("returnfalse;") != 2
+                or compact.count("return0U;") != 2
+                or compact.count("throw_wave_result_platform_unsupported();") != 4
+                or compact.count("std::errc::operation_not_supported") != 1
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    "M5-R1 Windows result must remain empty, invalid, zero-count, "
+                    "and operation-not-supported for every borrowed accessor",
+                )
+            return
+
         interval_finder = (
             _wave_result_implementation_interval
             if relative == WAVE_RESULT_IMPLEMENTATION_FILE
@@ -19255,7 +19427,11 @@ class Checks:
             )
 
         if relative == WAVE_RESULT_TEST_FILE:
-            hashes = {**WAVE_RESULT_TEST_BODY_SHA256, **WAVE_RESULT_RUNNER_BODY_SHA256}
+            hashes = {
+                **WAVE_RESULT_TEST_BODY_SHA256,
+                **WAVE_RESULT_RUNNER_BODY_SHA256,
+                **WAVE_RESULT_LINK_PROBE_HELPER_BODY_SHA256,
+            }
             definitions = find_function_definition_bodies(text, hashes)
             for identifier, expected_hash in hashes.items():
                 body, line_offset, body_errors = definitions[identifier]
@@ -19309,6 +19485,30 @@ class Checks:
                     1,
                     "M5-R1 tests must freeze the move-only, lvalue-borrowing, "
                     "least-authority public surface",
+                )
+            if any(
+                compact.count(fragment) != 1
+                for fragment in WAVE_RESULT_LINK_PROBE_FRAGMENTS
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    "M5-R1 test must retain one volatile ODR link probe for every "
+                    "public Windows result symbol",
+                )
+            platform_body, _, _ = definitions["run_platform_suite"]
+            platform_compact = (
+                "" if platform_body is None else _compact_cpp_code(platform_body)
+            )
+            if any(
+                platform_compact.count(fragment) != 1
+                for fragment in WAVE_RESULT_PLATFORM_LINK_PROBE_CHECKS
+            ):
+                self.fail(
+                    relative,
+                    1,
+                    "M5-R1 platform suite must ODR-use all ten Windows result "
+                    "link probes",
                 )
             protection_fragments = {
                 "std::optional<WaveResult>moved_owner;": 1,
@@ -21355,23 +21555,67 @@ class Checks:
         cmake_code = _mask_cmake_comments(active_cmake)
         cmake_count_code = _mask_cmake_comments_and_literals(active_cmake)
         commands = _cmake_command_records(active_cmake)
-        source_commands = [
-            command
-            for command in commands
-            if command.name == "target_sources"
-            and _cmake_first_argument(command.body) == "gnfs_core"
-            and WAVE_RESULT_IMPLEMENTATION_FILE in command.body
-        ]
-        if (
-            len(source_commands) != 1
-            or cmake_count_code.count(WAVE_RESULT_IMPLEMENTATION_FILE) != 1
+        source_commands = {
+            relative: [
+                command
+                for command in commands
+                if command.name == "target_sources"
+                and _cmake_first_argument(command.body) == "gnfs_core"
+                and relative in command.body
+            ]
+            for relative in (
+                WAVE_RESULT_IMPLEMENTATION_FILE,
+                WAVE_RESULT_WINDOWS_IMPLEMENTATION_FILE,
+            )
+        }
+        if any(
+            len(source_commands[relative]) != 1
+            or cmake_count_code.count(relative) != 1
+            for relative in source_commands
         ):
             self.fail(
                 WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
                 1,
-                "M5-R1 production source must attach literally and exactly once "
-                "to gnfs_core",
+                "M5-R1 native and Windows production sources must each attach "
+                "literally and exactly once to gnfs_core",
             )
+        else:
+            windows_command = source_commands[
+                WAVE_RESULT_WINDOWS_IMPLEMENTATION_FILE
+            ][0]
+            native_command = source_commands[WAVE_RESULT_IMPLEMENTATION_FILE][0]
+            windows_index = commands.index(windows_command)
+            selection_commands = (
+                commands[windows_index - 1 : windows_index + 4]
+                if windows_index > 0
+                else []
+            )
+            exact_selection = (
+                len(selection_commands) == 5
+                and [command.name for command in selection_commands]
+                == ["if", "target_sources", "else", "target_sources", "endif"]
+                and _compact_cpp_code(selection_commands[0].body) == "WIN32"
+                and selection_commands[1] is windows_command
+                and selection_commands[3] is native_command
+            )
+            selection_text = (
+                ""
+                if not exact_selection
+                else cmake_code[
+                    selection_commands[0].start : selection_commands[-1].end
+                ]
+            )
+            if (
+                not exact_selection
+                or _compact_cpp_sha256(selection_text)
+                != WAVE_RESULT_CMAKE_SOURCE_SELECTION_SHA256
+            ):
+                self.fail(
+                    WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
+                    windows_command.line,
+                    "M5-R1 Windows stub and native implementation must remain "
+                    "the exact adjacent WIN32/else source selection",
+                )
 
         targets = [
             command
@@ -21387,6 +21631,25 @@ class Checks:
             )
         else:
             start = targets[0].start
+            condition_stack: list[str] = []
+            for command in commands:
+                if command.start >= start:
+                    break
+                if command.name == "if":
+                    condition_stack.append(_compact_cpp_code(command.body))
+                elif command.name == "elseif" and condition_stack:
+                    condition_stack[-1] = _compact_cpp_code(command.body)
+                elif command.name == "else" and condition_stack:
+                    condition_stack[-1] = "else:" + condition_stack[-1]
+                elif command.name == "endif" and condition_stack:
+                    condition_stack.pop()
+            if condition_stack != ["GNFS_BUILD_TESTS"]:
+                self.fail(
+                    WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
+                    targets[0].line,
+                    "M5-R1 dedicated target must be available on Windows and "
+                    "guarded only by GNFS_BUILD_TESTS",
+                )
             following = next(
                 (
                     command
@@ -27459,13 +27722,14 @@ def run_worker_cleanup_orchestration_self_test() -> list[str]:
 
 
 def run_wave_result_self_test() -> list[str]:
-    """Run the focused M5-R1 baseline and eighteen mutations in memory."""
+    """Run the focused M5-R1 baseline and twenty-four mutations in memory."""
 
     errors: list[str] = []
     root = Path(__file__).resolve().parents[1]
     public_relative = WAVE_RESULT_PUBLIC_INTERFACE_FILE
     private_relative = WAVE_RESULT_PRIVATE_INTERFACE_FILE
     cpp_relative = WAVE_RESULT_IMPLEMENTATION_FILE
+    windows_relative = WAVE_RESULT_WINDOWS_IMPLEMENTATION_FILE
     test_relative = WAVE_RESULT_TEST_FILE
     r4_header_relative = WORKER_CLEANUP_ORCHESTRATION_INTERFACE_FILE
     r4_cpp_relative = WORKER_CLEANUP_ORCHESTRATION_IMPLEMENTATION_FILE
@@ -27473,6 +27737,7 @@ def run_wave_result_self_test() -> list[str]:
     public = (root / public_relative).read_text(encoding="utf-8")
     private = (root / private_relative).read_text(encoding="utf-8")
     cpp = (root / cpp_relative).read_text(encoding="utf-8")
+    windows = (root / windows_relative).read_text(encoding="utf-8")
     test = (root / test_relative).read_text(encoding="utf-8")
     r4_header = (root / r4_header_relative).read_text(encoding="utf-8")
     r4_cpp = (root / r4_cpp_relative).read_text(encoding="utf-8")
@@ -27562,9 +27827,15 @@ def run_wave_result_self_test() -> list[str]:
     )
     expect(
         WAVE_RESULT_OWNED_FILES
-        == {private_relative, cpp_relative, test_relative}
+        == {private_relative, cpp_relative, windows_relative, test_relative}
         and WAVE_RESULT_POLICY_FILES
-        == {public_relative, private_relative, cpp_relative, test_relative},
+        == {
+            public_relative,
+            private_relative,
+            cpp_relative,
+            windows_relative,
+            test_relative,
+        },
         "M5-R1 owned/policy file inventory is not exact",
     )
     expect(
@@ -27574,11 +27845,40 @@ def run_wave_result_self_test() -> list[str]:
         == {"run_core_suite", "run_protection_suite", "run_platform_suite"},
         "M5-R1 test/runner body-pin closure is not exact",
     )
+    expect(
+        set(WAVE_RESULT_WINDOWS_FUNCTION_BODY_SHA256)
+        == {
+            "throw_wave_result_platform_unsupported",
+            "DistributedSieveWaveResult::valid",
+            "DistributedSieveWaveResult::operator bool",
+            "DistributedSieveWaveResult::relation_count",
+            "DistributedSieveWaveResult::completed_worker_count",
+            "DistributedSieveWaveResult::manifest_digest",
+            "DistributedSieveWaveResult::merge_commit_digest",
+            "DistributedSieveWaveResult::chunks",
+            "DistributedSieveWaveResult::merged_relations",
+        }
+        and set(WAVE_RESULT_LINK_PROBE_HELPER_BODY_SHA256)
+        == {
+            "move_construct_wave_result_link_probe",
+            "destroy_wave_result_link_probe",
+        }
+        and len(WAVE_RESULT_LINK_PROBE_FRAGMENTS) == 10
+        and len(WAVE_RESULT_PLATFORM_LINK_PROBE_CHECKS) == 10,
+        "M5-R1 Windows body/link-probe hash closure is not exact",
+    )
+    expect(
+        WORKER_CLEANUP_RECEIPT_PROTECTED_UNIT_TARGETS.get(windows_relative)
+        == {"gnfs_core"}
+        and windows_relative in DURABLE_ENVIRONMENT_FREE_FILES,
+        "M5-R1 Windows stub protected-unit and durable-file closure is not exact",
+    )
 
     for relative, source in (
         (public_relative, public),
         (private_relative, private),
         (cpp_relative, cpp),
+        (windows_relative, windows),
         (test_relative, test),
         (r4_header_relative, r4_header),
         (r4_cpp_relative, r4_cpp),
@@ -27807,6 +28107,45 @@ def run_wave_result_self_test() -> list[str]:
         ),
         needle="digest references",
     )
+    run_case(
+        "Windows result fail-open",
+        windows_relative,
+        replace_once(
+            windows_relative,
+            windows,
+            "    return false;\n",
+            "    return true;\n",
+            "Windows result fail-open",
+            expected_count=2,
+            occurrence=1,
+        ),
+        needle="Windows fail-closed implementation",
+    )
+    run_case(
+        "Windows ODR link probe removed",
+        test_relative,
+        replace_once(
+            test_relative,
+            test,
+            "[[maybe_unused]] WaveResultBooleanMember volatile "
+            "wave_result_valid_link_probe = &WaveResult::valid;\n",
+            "",
+            "Windows ODR link probe removed",
+        ),
+        needle="volatile ODR link probe",
+    )
+    run_case(
+        "Windows platform ODR probe check removed",
+        test_relative,
+        replace_once(
+            test_relative,
+            test,
+            "    CHECK(wave_result_valid_link_probe != nullptr);\n",
+            "",
+            "Windows platform ODR probe check removed",
+        ),
+        needle="platform suite must ODR-use",
+    )
 
     def run_catalog_case(
         label: str,
@@ -27838,6 +28177,58 @@ def run_wave_result_self_test() -> list[str]:
             runner,
             ci,
             "CMake target",
+        )
+    mutated_windows_selection = replace_once(
+        WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
+        cmake,
+        WAVE_RESULT_WINDOWS_IMPLEMENTATION_FILE,
+        "src/sieve/distributed_sieve_wave_result_windows_unchecked.cpp",
+        "Windows source selection",
+    )
+    if mutated_windows_selection is not None:
+        run_catalog_case(
+            "Windows source selection",
+            mutated_windows_selection,
+            runner,
+            ci,
+            "native and Windows production sources",
+        )
+    mutated_reversed_windows_selection = replace_once(
+        WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
+        cmake,
+        "    if(WIN32)\n"
+        "        target_sources(gnfs_core PRIVATE\n"
+        "            src/sieve/distributed_sieve_wave_store_windows.cpp\n"
+        "            src/sieve/distributed_sieve_wave_result_windows.cpp\n",
+        "    if(NOT WIN32)\n"
+        "        target_sources(gnfs_core PRIVATE\n"
+        "            src/sieve/distributed_sieve_wave_store_windows.cpp\n"
+        "            src/sieve/distributed_sieve_wave_result_windows.cpp\n",
+        "reversed Windows source selection",
+    )
+    if mutated_reversed_windows_selection is not None:
+        run_catalog_case(
+            "reversed Windows source selection",
+            mutated_reversed_windows_selection,
+            runner,
+            ci,
+            "exact adjacent WIN32/else source selection",
+        )
+    mutated_windows_target_guard = replace_once(
+        WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
+        cmake,
+        "    add_executable(test_distributed_sieve_wave_result\n",
+        "    if(NOT WIN32)\n"
+        "    add_executable(test_distributed_sieve_wave_result\n",
+        "Windows test target guard",
+    )
+    if mutated_windows_target_guard is not None:
+        run_catalog_case(
+            "Windows test target guard",
+            mutated_windows_target_guard,
+            runner,
+            ci,
+            "available on Windows",
         )
     mutated_runner = replace_once(
         WORKER_CLEANUP_RECEIPT_TEST_RUNNER_FILE,
@@ -27871,8 +28262,8 @@ def run_wave_result_self_test() -> list[str]:
         )
 
     expect(
-        mutations_run == 18,
-        f"M5-R1 mutation inventory drifted: ran {mutations_run}, expected 18",
+        mutations_run == 24,
+        f"M5-R1 mutation inventory drifted: ran {mutations_run}, expected 24",
     )
     return errors
 
