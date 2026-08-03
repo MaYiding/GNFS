@@ -15753,12 +15753,35 @@ void test_wave_store_worker_attempt_start_fresh_retry_chain() {
     CHECK(names_1.has_value());
 
     std::optional<sieve::AttemptStartedV1> attempt_0;
+#if !defined(_WIN32)
+    std::optional<WaveSnapshotFd> predecessor_directory_hold;
+    std::optional<WaveSnapshotFd> predecessor_owner_hold;
+#endif
     {
         auto reservation_0 =
             reserve_wave_attempt_p8(store, chunk.chunk_id, 0, "reserve retry predecessor P8");
         attempt_0.emplace(
             make_wave_attempt_started(manifest, chunk, 0, store.manifest_digest(),
                                       wave_attempt_lease_from_receipt(reservation_0)));
+#if !defined(_WIN32)
+        const auto predecessor_directory = root / names_0->private_directory_leaf;
+        int directory_fd = -1;
+        do {
+            directory_fd = ::open(predecessor_directory.c_str(),
+                                  O_RDONLY | O_NONBLOCK | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        } while (directory_fd < 0 && errno == EINTR);
+        CHECK(directory_fd >= 0);
+        predecessor_directory_hold.emplace(directory_fd);
+
+        const auto predecessor_owner =
+            predecessor_directory / wave_detail::DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_LEAF;
+        int owner_fd = -1;
+        do {
+            owner_fd = ::open(predecessor_owner.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+        } while (owner_fd < 0 && errno == EINTR);
+        CHECK(owner_fd >= 0);
+        predecessor_owner_hold.emplace(owner_fd);
+#endif
     }
 
     auto opened_0 = store.open_worker_attempt_private_lease_root(chunk.chunk_id, 0);

@@ -2112,7 +2112,9 @@ namespace {
 struct RetainedPrivateHandoffPublicationPrefixV1 final {
     PrivateHandoffPublicationPrefixWitnessV1 witness;
     std::optional<PrivateHandoffObservationWitness> handoff;
+#if defined(__APPLE__)
     std::unique_ptr<PrivateDirectoryHandle> rollback_parent;
+#endif
     std::optional<LoadedPrivateHandoffLeaf> rollback;
     PrivateLeaseRemovalGenerationProof generation;
     std::optional<LoadedPrivateLeaseMarker> owner;
