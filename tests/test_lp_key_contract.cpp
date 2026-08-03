@@ -12,8 +12,8 @@
 #include <gnfs/util/temp_path.hpp>
 
 #include <algorithm>
-#include <cstdio>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <iostream>
 #include <iterator>
@@ -24,9 +24,9 @@
 #include <utility>
 #include <vector>
 
-using gnfs::core::PrimePower;
 using gnfs::core::Integer;
 using gnfs::core::PolynomialContext;
+using gnfs::core::PrimePower;
 using gnfs::core::Relation;
 using gnfs::factor_base::FactorBase;
 using gnfs::linalg::BitVector;
@@ -37,42 +37,42 @@ using gnfs::linalg::PrimeIdealKey;
 using gnfs::linalg::VectorRelationSource;
 using gnfs::relation::CliqueRelationMerger;
 using gnfs::relation::CliqueStats;
-using gnfs::relation::LargePrimeKey;
-using gnfs::relation::LargePrimeKeyHash;
-using gnfs::relation::OOCRelationReader;
-using gnfs::relation::OOCRelationWriter;
-using gnfs::relation::PartialRelationMerger;
-using gnfs::relation::RelationFilter;
 using gnfs::relation::count_lp_key_weights;
 using gnfs::relation::count_odd_large_prime_keys;
 using gnfs::relation::count_unique_lp_keys;
 using gnfs::relation::for_each_odd_large_prime_key;
+using gnfs::relation::LargePrimeKey;
+using gnfs::relation::LargePrimeKeyHash;
 using gnfs::relation::odd_large_prime_keys;
 using gnfs::relation::odd_large_prime_keys_empty;
+using gnfs::relation::OOCRelationReader;
+using gnfs::relation::OOCRelationWriter;
+using gnfs::relation::PartialRelationMerger;
+using gnfs::relation::RelationFilter;
 using gnfs::relation::separate_relations;
 using gnfs::sqrt::verify_algebraic_ideal_powers;
 
 namespace {
 
-[[noreturn]] void fail_check(
-        const char* expression,
-        const char* file,
-        int line,
-        std::string_view message = {}) {
+[[noreturn]] void fail_check(const char* expression, const char* file, int line,
+                             std::string_view message = {}) {
     std::cerr << "CHECK failed: " << expression << " at " << file << ':' << line;
-    if (!message.empty()) std::cerr << " (" << message << ')';
+    if (!message.empty())
+        std::cerr << " (" << message << ')';
     std::cerr << '\n';
     std::exit(EXIT_FAILURE);
 }
 
-#define CHECK(expr)                                                           \
-    do {                                                                      \
-        if (!(expr)) fail_check(#expr, __FILE__, __LINE__);                  \
+#define CHECK(expr)                                                                                \
+    do {                                                                                           \
+        if (!(expr))                                                                               \
+            fail_check(#expr, __FILE__, __LINE__);                                                 \
     } while (false)
 
-#define CHECK_MSG(expr, msg)                                                  \
-    do {                                                                      \
-        if (!(expr)) fail_check(#expr, __FILE__, __LINE__, (msg));           \
+#define CHECK_MSG(expr, msg)                                                                       \
+    do {                                                                                           \
+        if (!(expr))                                                                               \
+            fail_check(#expr, __FILE__, __LINE__, (msg));                                          \
     } while (false)
 
 Relation make_relation(int64_t a) {
@@ -85,20 +85,15 @@ Relation make_rational_lp_relation(int64_t a, uint64_t p, uint8_t e = 1) {
     return relation;
 }
 
-Relation make_algebraic_lp_relation(
-        int64_t a,
-        uint64_t p,
-        uint64_t root,
-        uint8_t e = 1) {
+Relation make_algebraic_lp_relation(int64_t a, uint64_t p, uint64_t root, uint8_t e = 1) {
     Relation relation = make_relation(a);
     relation.algebraic_large_prime.push_back(PrimePower{p, root, e});
     return relation;
 }
 
 struct TempOOCStore {
-    std::string base = gnfs::util::temp_path(
-        "gnfs_lp_key_contract_" +
-        std::to_string(gnfs::util::process_id()));
+    std::string base =
+        gnfs::util::temp_path("gnfs_lp_key_contract_" + std::to_string(gnfs::util::process_id()));
 
     ~TempOOCStore() {
         std::remove((base + ".reldata").c_str());
@@ -106,9 +101,8 @@ struct TempOOCStore {
     }
 };
 
-void check_mapping_equal(
-        const gnfs::linalg::ColumnMapping& lhs,
-        const gnfs::linalg::ColumnMapping& rhs) {
+void check_mapping_equal(const gnfs::linalg::ColumnMapping& lhs,
+                         const gnfs::linalg::ColumnMapping& rhs) {
     CHECK(lhs.num_rational_fb == rhs.num_rational_fb);
     CHECK(lhs.num_algebraic_fb == rhs.num_algebraic_fb);
     CHECK(lhs.num_large_primes_rat == rhs.num_large_primes_rat);
@@ -121,9 +115,8 @@ void check_mapping_equal(
     CHECK(lhs.alg_lp_to_col == rhs.alg_lp_to_col);
 }
 
-void check_matrix_equal(
-        const gnfs::linalg::SparseMatrix& lhs,
-        const gnfs::linalg::SparseMatrix& rhs) {
+void check_matrix_equal(const gnfs::linalg::SparseMatrix& lhs,
+                        const gnfs::linalg::SparseMatrix& rhs) {
     CHECK(lhs.num_rows() == rhs.num_rows());
     CHECK(lhs.num_cols() == rhs.num_cols());
     for (size_t i = 0; i < lhs.num_rows(); ++i) {
@@ -150,47 +143,38 @@ void test_full_width_identity_and_side() {
     CHECK(count_odd_large_prime_keys(relation) == keys.size());
 
     std::vector<LargePrimeKey> visited;
-    for_each_odd_large_prime_key(relation, [&](const LargePrimeKey& key) {
-        visited.push_back(key);
-    });
+    for_each_odd_large_prime_key(relation,
+                                 [&](const LargePrimeKey& key) { visited.push_back(key); });
     CHECK(visited == keys);
 
-    CHECK(std::find(keys.begin(), keys.end(), LargePrimeKey{17, 0, false}) !=
-          keys.end());
-    CHECK(std::find(keys.begin(), keys.end(), LargePrimeKey{17, 0, true}) !=
-          keys.end());
-    CHECK(std::find(keys.begin(), keys.end(), LargePrimeKey{17, 19, true}) !=
-          keys.end());
-    CHECK(std::find(keys.begin(), keys.end(),
-                    LargePrimeKey{high + 17, 19, true}) != keys.end());
-    CHECK(std::find(keys.begin(), keys.end(),
-                    LargePrimeKey{17, high + 19, true}) != keys.end());
-    CHECK(std::find(keys.begin(), keys.end(),
-                    LargePrimeKey{max, 0, false}) != keys.end());
-    CHECK(std::find(keys.begin(), keys.end(),
-                    LargePrimeKey{max, max, true}) != keys.end());
+    CHECK(std::find(keys.begin(), keys.end(), LargePrimeKey{17, 0, false}) != keys.end());
+    CHECK(std::find(keys.begin(), keys.end(), LargePrimeKey{17, 0, true}) != keys.end());
+    CHECK(std::find(keys.begin(), keys.end(), LargePrimeKey{17, 19, true}) != keys.end());
+    CHECK(std::find(keys.begin(), keys.end(), LargePrimeKey{high + 17, 19, true}) != keys.end());
+    CHECK(std::find(keys.begin(), keys.end(), LargePrimeKey{17, high + 19, true}) != keys.end());
+    CHECK(std::find(keys.begin(), keys.end(), LargePrimeKey{max, 0, false}) != keys.end());
+    CHECK(std::find(keys.begin(), keys.end(), LargePrimeKey{max, max, true}) != keys.end());
 
     // A hash collision would be legal, but structural equality must never
     // collapse either high field or the rational/algebraic side.
-    std::unordered_set<LargePrimeKey, LargePrimeKeyHash> exact(
-        keys.begin(), keys.end());
+    std::unordered_set<LargePrimeKey, LargePrimeKeyHash> exact(keys.begin(), keys.end());
     CHECK(exact.size() == keys.size());
 }
 
 void test_exponent_parity_and_deep_fallback() {
     constexpr uint64_t max = std::numeric_limits<uint64_t>::max();
     Relation relation = make_relation(2);
-    relation.rational_large_prime.push_back({97, 0, 0});        // zero: absent
-    relation.rational_large_prime.push_back({101, 0, 2});       // even: absent
+    relation.rational_large_prime.push_back({97, 0, 0});  // zero: absent
+    relation.rational_large_prime.push_back({101, 0, 2}); // even: absent
     relation.rational_large_prime.push_back({103, 0, 2});
-    relation.rational_large_prime.push_back({103, 0, 1});       // total 3: present
+    relation.rational_large_prime.push_back({103, 0, 1}); // total 3: present
     relation.algebraic_large_prime.push_back({107, 7, 1});
-    relation.algebraic_large_prime.push_back({107, 7, 1});      // total 2: absent
-    relation.algebraic_large_prime.push_back({109, 9, 255});    // odd: present
-    relation.algebraic_large_prime.push_back({113, 11, 254});   // even: absent
-    relation.algebraic_large_prime.push_back({max, max, 0});    // zero: absent
+    relation.algebraic_large_prime.push_back({107, 7, 1});    // total 2: absent
+    relation.algebraic_large_prime.push_back({109, 9, 255});  // odd: present
+    relation.algebraic_large_prime.push_back({113, 11, 254}); // even: absent
+    relation.algebraic_large_prime.push_back({max, max, 0});  // zero: absent
     relation.algebraic_large_prime.push_back({127, 13, 255});
-    relation.algebraic_large_prime.push_back({127, 13, 1});     // total 256: absent
+    relation.algebraic_large_prime.push_back({127, 13, 1}); // total 256: absent
 
     const std::vector<LargePrimeKey> expected{
         LargePrimeKey{103, 0, false},
@@ -199,12 +183,12 @@ void test_exponent_parity_and_deep_fallback() {
     const auto parity_keys = odd_large_prime_keys(relation);
     CHECK(parity_keys == expected);
     CHECK(!odd_large_prime_keys_empty(relation));
-    CHECK(std::find(parity_keys.begin(), parity_keys.end(),
-                    LargePrimeKey{97, 0, false}) == parity_keys.end());
-    CHECK(std::find(parity_keys.begin(), parity_keys.end(),
-                    LargePrimeKey{127, 13, true}) == parity_keys.end());
-    CHECK(std::find(parity_keys.begin(), parity_keys.end(),
-                    LargePrimeKey{max, max, true}) == parity_keys.end());
+    CHECK(std::find(parity_keys.begin(), parity_keys.end(), LargePrimeKey{97, 0, false}) ==
+          parity_keys.end());
+    CHECK(std::find(parity_keys.begin(), parity_keys.end(), LargePrimeKey{127, 13, true}) ==
+          parity_keys.end());
+    CHECK(std::find(parity_keys.begin(), parity_keys.end(), LargePrimeKey{max, max, true}) ==
+          parity_keys.end());
 
     Relation empty = make_relation(3);
     CHECK(odd_large_prime_keys_empty(empty));
@@ -220,8 +204,8 @@ void test_exponent_parity_and_deep_fallback() {
     auto deep_keys = odd_large_prime_keys(deep);
     CHECK(deep_keys.size() == 11);
     CHECK(std::is_sorted(deep_keys.begin(), deep_keys.end()));
-    CHECK(std::find(deep_keys.begin(), deep_keys.end(),
-                    LargePrimeKey{1005, 0, false}) == deep_keys.end());
+    CHECK(std::find(deep_keys.begin(), deep_keys.end(), LargePrimeKey{1005, 0, false}) ==
+          deep_keys.end());
 }
 
 void test_merge_xor_homomorphism() {
@@ -238,10 +222,8 @@ void test_merge_xor_homomorphism() {
     const auto lhs_keys = odd_large_prime_keys(lhs);
     const auto rhs_keys = odd_large_prime_keys(rhs);
     std::vector<LargePrimeKey> expected;
-    std::set_symmetric_difference(
-        lhs_keys.begin(), lhs_keys.end(),
-        rhs_keys.begin(), rhs_keys.end(),
-        std::back_inserter(expected));
+    std::set_symmetric_difference(lhs_keys.begin(), lhs_keys.end(), rhs_keys.begin(),
+                                  rhs_keys.end(), std::back_inserter(expected));
 
     Relation merged = PartialRelationMerger::merge_two(lhs, rhs);
     CHECK(odd_large_prime_keys(merged) == expected);
@@ -256,15 +238,17 @@ void test_metrics_filtering_and_separation() {
     even_duplicates.rational_large_prime.push_back({131, 0, 1});
 
     std::vector<Relation> relations{
-        odd_a, odd_b, even_entry, even_duplicates,
+        odd_a,
+        odd_b,
+        even_entry,
+        even_duplicates,
     };
 
     const LargePrimeKey key{131, 0, false};
     auto weights = RelationFilter::count_large_primes(relations);
     CHECK(weights.size() == 1);
     CHECK(weights.at(key) == 2);
-    CHECK(RelationFilter::get_unique_large_primes(relations) ==
-          std::vector<LargePrimeKey>{key});
+    CHECK(RelationFilter::get_unique_large_primes(relations) == std::vector<LargePrimeKey>{key});
     CHECK(count_unique_lp_keys(relations) == 1);
 
     auto histogram = count_lp_key_weights(relations);
@@ -301,8 +285,7 @@ void test_v0_v3_effective_classification() {
     Relation even = make_rational_lp_relation(20, 149, 2);
 
     PartialRelationMerger::MergeStats v0_even_stats;
-    auto v0_even = PartialRelationMerger::merge_all(
-        std::vector<Relation>{even}, 2, &v0_even_stats);
+    auto v0_even = PartialRelationMerger::merge_all(std::vector<Relation>{even}, 2, &v0_even_stats);
     CHECK(v0_even.size() == 1);
     CHECK(PartialRelationMerger::is_effectively_full(v0_even.front()));
     CHECK(v0_even.front().rational_large_prime.front().e == 2);
@@ -314,8 +297,7 @@ void test_v0_v3_effective_classification() {
     CHECK(v0_even_stats.output_relations == 1);
 
     CliqueStats v3_even_stats;
-    auto v3_even = CliqueRelationMerger::merge_cliques(
-        std::vector<Relation>{even}, &v3_even_stats);
+    auto v3_even = CliqueRelationMerger::merge_cliques(std::vector<Relation>{even}, &v3_even_stats);
     CHECK(v3_even.size() == 1);
     CHECK(v3_even_stats.full_produced == 1);
     CHECK(v3_even_stats.input_1lp == 0);
@@ -328,8 +310,8 @@ void test_v0_v3_effective_classification() {
     Relation second = make_rational_lp_relation(22, 151, 3);
 
     PartialRelationMerger::MergeStats v0_pair_stats;
-    auto v0_pair = PartialRelationMerger::merge_all(
-        std::vector<Relation>{first, second}, 2, &v0_pair_stats);
+    auto v0_pair =
+        PartialRelationMerger::merge_all(std::vector<Relation>{first, second}, 2, &v0_pair_stats);
     CHECK(v0_pair.size() == 1);
     CHECK(PartialRelationMerger::is_effectively_full(v0_pair.front()));
     CHECK(v0_pair_stats.input_1lp == 2);
@@ -338,14 +320,13 @@ void test_v0_v3_effective_classification() {
     CHECK(v0_pair_stats.residual_emitted == 0);
     CHECK(v0_pair_stats.output_relations == 1);
 
-    auto legacy_pair = PartialRelationMerger::merge(
-        std::vector<Relation>{first, second});
+    auto legacy_pair = PartialRelationMerger::merge(std::vector<Relation>{first, second});
     CHECK(legacy_pair.size() == 1);
     CHECK(PartialRelationMerger::is_effectively_full(legacy_pair.front()));
 
     CliqueStats v3_pair_stats;
-    auto v3_pair = CliqueRelationMerger::merge_cliques(
-        std::vector<Relation>{first, second}, &v3_pair_stats);
+    auto v3_pair =
+        CliqueRelationMerger::merge_cliques(std::vector<Relation>{first, second}, &v3_pair_stats);
     CHECK(v3_pair.size() == 1);
     CHECK(PartialRelationMerger::is_effectively_full(v3_pair.front()));
     CHECK(v3_pair_stats.input_1lp == 2);
@@ -360,11 +341,9 @@ void test_v0_v3_effective_classification() {
     residual_right.rational_large_prime.push_back({179, 0, 1});
     PartialRelationMerger::MergeStats residual_stats;
     auto residual_output = PartialRelationMerger::merge_all(
-        std::vector<Relation>{residual_left, residual_right}, 1,
-        &residual_stats);
+        std::vector<Relation>{residual_left, residual_right}, 1, &residual_stats);
     CHECK(residual_output.size() == 1);
-    CHECK(!PartialRelationMerger::is_effectively_full(
-        residual_output.front()));
+    CHECK(!PartialRelationMerger::is_effectively_full(residual_output.front()));
     CHECK(residual_stats.full_produced == 0);
     CHECK(residual_stats.residual_emitted == 1);
     CHECK(residual_stats.residual_dropped == 0);
@@ -380,17 +359,14 @@ void test_v0_v3_effective_classification() {
     Relation unmerged = make_rational_lp_relation(25, 163, 1);
     CliqueStats local_accounting_stats;
     auto local_accounting = CliqueRelationMerger::merge_cliques(
-        std::vector<Relation>{third_a, third_b, unmerged},
-        &local_accounting_stats);
+        std::vector<Relation>{third_a, third_b, unmerged}, &local_accounting_stats);
     CHECK(local_accounting.size() == 1);
-    CHECK(PartialRelationMerger::is_effectively_full(
-        local_accounting.front()));
+    CHECK(PartialRelationMerger::is_effectively_full(local_accounting.front()));
     CHECK(local_accounting_stats.full_produced == 1);
     CHECK(local_accounting_stats.residual_emitted == 0);
     CHECK(local_accounting_stats.singletons_removed == 1);
     CHECK(local_accounting_stats.input_1lp == 3);
-    const size_t emitted_source_count =
-        1 + local_accounting.front().extra_ab_pairs.size();
+    const size_t emitted_source_count = 1 + local_accounting.front().extra_ab_pairs.size();
     CHECK(emitted_source_count == 2);
     CHECK(emitted_source_count + local_accounting_stats.singletons_removed ==
           local_accounting_stats.input_relations);
@@ -412,15 +388,18 @@ void test_matrix_builder_uses_canonical_support() {
     mixed.algebraic_large_prime.push_back({29, 7, 1});
 
     std::vector<Relation> relations{
-        first, high_prime, high_root, mixed,
+        first,
+        high_prime,
+        high_root,
+        mixed,
     };
 
     FactorBase empty_factor_base;
     MatrixBuilder builder;
     auto built = builder.build(relations, empty_factor_base);
 
-    const size_t mapped_lp_columns = built.mapping.num_large_primes_rat +
-                                     built.mapping.num_large_primes_alg;
+    const size_t mapped_lp_columns =
+        built.mapping.num_large_primes_rat + built.mapping.num_large_primes_alg;
     CHECK(mapped_lp_columns == 5);
     CHECK(mapped_lp_columns == count_unique_lp_keys(relations));
     CHECK(built.mapping.num_large_primes_rat == 1);
@@ -434,8 +413,7 @@ void test_matrix_builder_uses_canonical_support() {
         for (const auto& key : keys) {
             uint32_t column = 0;
             if (key.is_algebraic) {
-                auto it = built.mapping.alg_lp_to_col.find(
-                    PrimeIdealKey{key.prime, key.root});
+                auto it = built.mapping.alg_lp_to_col.find(PrimeIdealKey{key.prime, key.root});
                 CHECK(it != built.mapping.alg_lp_to_col.end());
                 column = it->second;
             } else {
@@ -465,14 +443,12 @@ void test_matrix_builder_uses_canonical_support() {
     std::vector<Integer> polynomial_coefficients;
     polynomial_coefficients.emplace_back(-10);
     polynomial_coefficients.emplace_back(1);
-    PolynomialContext context(
-        Integer(91), std::move(polynomial_coefficients), Integer(10));
+    PolynomialContext context(Integer(91), std::move(polynomial_coefficients), Integer(10));
 
-    auto vector_result = streaming_builder.build_with_qc(
-        relations, empty_factor_base, context);
+    auto vector_result = streaming_builder.build_with_qc(relations, empty_factor_base, context);
     VectorRelationSource source(relations);
-    auto streaming_result = streaming_builder.build_with_qc_streaming(
-        source, empty_factor_base, context);
+    auto streaming_result =
+        streaming_builder.build_with_qc_streaming(source, empty_factor_base, context);
     check_mapping_equal(vector_result.mapping, streaming_result.mapping);
     check_matrix_equal(vector_result.matrix, streaming_result.matrix);
 }
@@ -515,23 +491,21 @@ void test_ooc_relation_source_preserves_canonical_contract() {
     std::vector<Integer> polynomial_coefficients;
     polynomial_coefficients.emplace_back(-10);
     polynomial_coefficients.emplace_back(1);
-    PolynomialContext context(
-        Integer(91), std::move(polynomial_coefficients), Integer(10));
+    PolynomialContext context(Integer(91), std::move(polynomial_coefficients), Integer(10));
 
-    auto vector_result = builder.build_with_qc(
-        corpus, empty_factor_base, context);
+    auto vector_result = builder.build_with_qc(corpus, empty_factor_base, context);
 
     TempOOCStore store;
     {
         OOCRelationWriter writer(store.base);
-        for (const auto& relation : corpus) writer.write(relation);
+        for (const auto& relation : corpus)
+            writer.write(relation);
         writer.close();
     }
     OOCRelationReader reader(store.base);
     CHECK(reader.count() == corpus.size());
     OOCRelationSource source(reader);
-    auto ooc_result = builder.build_with_qc_streaming(
-        source, empty_factor_base, context);
+    auto ooc_result = builder.build_with_qc_streaming(source, empty_factor_base, context);
 
     check_mapping_equal(vector_result.mapping, ooc_result.mapping);
     check_matrix_equal(vector_result.matrix, ooc_result.matrix);
@@ -570,14 +544,11 @@ void test_algebraic_square_verifier_uses_full_width_keys() {
     pair.set(0);
     pair.set(1);
 
-    CHECK_MSG(!verify_algebraic_ideal_powers(
-                  pair, std::vector<Relation>{base, high_prime}),
+    CHECK_MSG(!verify_algebraic_ideal_powers(pair, std::vector<Relation>{base, high_prime}),
               "p values with identical low 32 bits are distinct ideals");
-    CHECK_MSG(!verify_algebraic_ideal_powers(
-                  pair, std::vector<Relation>{base, high_root}),
+    CHECK_MSG(!verify_algebraic_ideal_powers(pair, std::vector<Relation>{base, high_root}),
               "roots with identical low 32 bits are distinct ideals");
-    CHECK(verify_algebraic_ideal_powers(
-        pair, std::vector<Relation>{base, same}));
+    CHECK(verify_algebraic_ideal_powers(pair, std::vector<Relation>{base, same}));
 
     // Per-row normalization must XOR repeated exponents before dependency
     // aggregation. 255 + 1 = 256 is even despite overflowing uint8_t if summed
@@ -587,19 +558,16 @@ void test_algebraic_square_verifier_uses_full_width_keys() {
     inline_even.algebraic_large_prime.push_back({max, max, 1});
     BitVector one_row(1);
     one_row.set(0);
-    CHECK(verify_algebraic_ideal_powers(
-        one_row, std::vector<Relation>{inline_even}));
+    CHECK(verify_algebraic_ideal_powers(one_row, std::vector<Relation>{inline_even}));
 
     // The same XOR law applies across selected dependency rows.
     Relation cross_left = make_algebraic_lp_relation(45, max, max, 255);
     Relation cross_right = make_algebraic_lp_relation(46, max, max, 1);
-    CHECK(verify_algebraic_ideal_powers(
-        pair, std::vector<Relation>{cross_left, cross_right}));
-    CHECK(!verify_algebraic_ideal_powers(
-        one_row, std::vector<Relation>{cross_left}));
+    CHECK(verify_algebraic_ideal_powers(pair, std::vector<Relation>{cross_left, cross_right}));
+    CHECK(!verify_algebraic_ideal_powers(one_row, std::vector<Relation>{cross_left}));
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     std::cout << "=== Canonical LP Key Contract Tests ===\n";

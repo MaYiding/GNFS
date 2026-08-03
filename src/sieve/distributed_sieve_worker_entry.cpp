@@ -418,7 +418,7 @@ struct AclResult final {
 
 [[nodiscard]] std::optional<Diagnostic> require_missing_at(int parent, std::string_view leaf,
                                                            Phase phase, Status status) {
-    struct stat metadata{};
+    struct stat metadata {};
     std::string stable_leaf(leaf);
     if (fstatat_retrying_eintr(parent, stable_leaf.c_str(), metadata) == 0) {
         return namespace_failure(phase, status);
@@ -492,8 +492,8 @@ struct NamedBytesResult final {
             return {std::nullopt, *policy};
         }
 
-        struct stat held_before{};
-        struct stat named_before{};
+        struct stat held_before {};
+        struct stat named_before {};
         if (fstat_retrying_eintr(held.get(), held_before) != 0) {
             return {std::nullopt, failure(phase, status, errno)};
         }
@@ -540,8 +540,8 @@ struct NamedBytesResult final {
             return {std::nullopt, namespace_failure(phase, status)};
         }
 
-        struct stat held_after{};
-        struct stat named_after{};
+        struct stat held_after {};
+        struct stat named_after {};
         if (fstat_retrying_eintr(held.get(), held_after) != 0 ||
             fstatat_retrying_eintr(parent, stable_leaf.c_str(), named_after) != 0) {
             return {std::nullopt, failure(phase, status, errno)};
@@ -573,8 +573,8 @@ struct NamedBytesResult final {
         policy.has_value()) {
         return *policy;
     }
-    struct stat before{};
-    struct stat after{};
+    struct stat before {};
+    struct stat after {};
     if (fstat_retrying_eintr(descriptor, before) != 0) {
         return failure(phase, Status::namespace_invalid, errno);
     }
@@ -720,7 +720,7 @@ strict_absolute_path_components(std::string_view absolute_path) {
         direct_parent.reset(next);
     }
 
-    struct stat parent_held_before{};
+    struct stat parent_held_before {};
     if (fstat_retrying_eintr(direct_parent.get(), parent_held_before) != 0) {
         return failure(phase, Status::namespace_invalid, errno);
     }
@@ -744,8 +744,8 @@ strict_absolute_path_components(std::string_view absolute_path) {
         named_parent.reset(next);
     }
 
-    struct stat parent_named{};
-    struct stat parent_held_after{};
+    struct stat parent_named {};
+    struct stat parent_held_after {};
     if (fstat_retrying_eintr(named_parent.get(), parent_named) != 0 ||
         fstat_retrying_eintr(direct_parent.get(), parent_held_after) != 0) {
         return failure(phase, Status::namespace_invalid, errno);
@@ -773,7 +773,7 @@ strict_absolute_path_components(std::string_view absolute_path) {
     }
     UniqueFd reopened_root(reopened_root_descriptor);
 
-    struct stat retained_before{};
+    struct stat retained_before {};
     if (fstat_retrying_eintr(descriptor, retained_before) != 0) {
         return failure(phase, Status::namespace_invalid, errno);
     }
@@ -782,9 +782,9 @@ strict_absolute_path_components(std::string_view absolute_path) {
         return *acl;
     }
 
-    struct stat root_named{};
-    struct stat root_reopened{};
-    struct stat retained_after{};
+    struct stat root_named {};
+    struct stat root_reopened {};
+    struct stat retained_after {};
     if (fstatat_retrying_eintr(direct_parent.get(), root_leaf.c_str(), root_named) != 0 ||
         fstat_retrying_eintr(reopened_root.get(), root_reopened) != 0 ||
         fstat_retrying_eintr(descriptor, retained_after) != 0) {
@@ -836,9 +836,9 @@ expected_base_path_digest(std::string_view absolute_root_path,
         policy.has_value()) {
         return *policy;
     }
-    struct stat held_before{};
-    struct stat named{};
-    struct stat held_after{};
+    struct stat held_before {};
+    struct stat named {};
+    struct stat held_after {};
     std::string stable_leaf(leaf);
     if (fstat_retrying_eintr(lock_descriptor, held_before) != 0 ||
         fstatat_retrying_eintr(root_descriptor, stable_leaf.c_str(), named) != 0 ||
@@ -866,7 +866,7 @@ expected_base_path_digest(std::string_view absolute_root_path,
         return failure(phase, Status::lock_invalid, errno);
     }
     UniqueFd contender(contender_descriptor);
-    struct stat contender_metadata{};
+    struct stat contender_metadata {};
     if (fstat_retrying_eintr(contender.get(), contender_metadata) != 0) {
         return failure(phase, Status::lock_invalid, errno);
     }
@@ -905,9 +905,9 @@ expected_base_path_digest(std::string_view absolute_root_path,
         policy.has_value()) {
         return *policy;
     }
-    struct stat held_before{};
-    struct stat named{};
-    struct stat held_after{};
+    struct stat held_before {};
+    struct stat named {};
+    struct stat held_after {};
     std::string stable_leaf(leaf);
     if (fstat_retrying_eintr(directory_descriptor, held_before) != 0 ||
         fstatat_retrying_eintr(root_descriptor, stable_leaf.c_str(), named) != 0 ||
@@ -1211,7 +1211,7 @@ struct PackageReadResult final {
         policy.has_value()) {
         return {std::nullopt, {}, *policy};
     }
-    struct stat before{};
+    struct stat before {};
     if (fstat_retrying_eintr(descriptor, before) != 0) {
         return {std::nullopt, {}, failure(phase, Status::work_package_invalid, errno)};
     }
@@ -1261,7 +1261,7 @@ struct PackageReadResult final {
             return {std::nullopt, {}, namespace_failure(phase, Status::work_package_invalid)};
         }
 
-        struct stat after{};
+        struct stat after {};
         if (fstat_retrying_eintr(descriptor, after) != 0) {
             return {std::nullopt, {}, failure(phase, Status::work_package_invalid, errno)};
         }
@@ -1973,7 +1973,7 @@ DistributedSieveWorkerEntryAdoptionResultV1 adopt_distributed_sieve_worker_entry
             };
         }
 
-        struct stat root_metadata{};
+        struct stat root_metadata {};
         if (fstat_retrying_eintr(capabilities.root.get(), root_metadata) != 0) {
             return {
                 .entry = std::nullopt,
@@ -1995,7 +1995,7 @@ DistributedSieveWorkerEntryAdoptionResultV1 adopt_distributed_sieve_worker_entry
             return {.entry = std::nullopt, .diagnostic = checked};
         }
 
-        struct stat permanent_lock_metadata{};
+        struct stat permanent_lock_metadata {};
         if (fstat_retrying_eintr(capabilities.permanent_lock.get(), permanent_lock_metadata) != 0) {
             return {
                 .entry = std::nullopt,
@@ -2092,7 +2092,7 @@ DistributedSieveWorkerEntryAdoptionResultV1 adopt_distributed_sieve_worker_entry
             };
         }
 
-        struct stat attempt_lock_metadata{};
+        struct stat attempt_lock_metadata {};
         if (fstat_retrying_eintr(capabilities.attempt_lock.get(), attempt_lock_metadata) != 0) {
             return {
                 .entry = std::nullopt,
@@ -2137,7 +2137,7 @@ DistributedSieveWorkerEntryAdoptionResultV1 adopt_distributed_sieve_worker_entry
         }
         UniqueFd attempt_directory(attempt_directory_descriptor);
         attempt_directory_source.reset();
-        struct stat attempt_directory_metadata{};
+        struct stat attempt_directory_metadata {};
         if (fstat_retrying_eintr(attempt_directory.get(), attempt_directory_metadata) != 0) {
             return {
                 .entry = std::nullopt,

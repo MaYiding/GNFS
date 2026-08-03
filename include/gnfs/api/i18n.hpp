@@ -28,7 +28,7 @@ namespace gnfs::api::i18n {
 enum class Lang { ZH, EN };
 
 inline Lang& current_lang() {
-    static Lang lang = Lang::ZH;  // default: Chinese
+    static Lang lang = Lang::ZH; // default: Chinese
     return lang;
 }
 
@@ -40,7 +40,9 @@ inline void set_lang(const std::string& code) {
     }
 }
 
-inline bool is_zh() { return current_lang() == Lang::ZH; }
+inline bool is_zh() {
+    return current_lang() == Lang::ZH;
+}
 
 // ============================================================
 // String keys — every user-facing text has an enum
@@ -51,59 +53,111 @@ enum class S {
     BANNER_SUBTITLE,
 
     // Phase names
-    PHASE_POLY, PHASE_FB, PHASE_SIEVE, PHASE_FILTER,
-    PHASE_LINALG, PHASE_SQRT, PHASE_EXTRACT, PHASE_DONE,
+    PHASE_POLY,
+    PHASE_FB,
+    PHASE_SIEVE,
+    PHASE_FILTER,
+    PHASE_LINALG,
+    PHASE_SQRT,
+    PHASE_EXTRACT,
+    PHASE_DONE,
 
     // CLI help
-    HELP_USAGE, HELP_ARGS, HELP_NUMBER_DESC,
-    HELP_OPTIONS, HELP_OPT_HELP, HELP_OPT_VERSION,
-    HELP_OPT_INTERACTIVE, HELP_OPT_QUIET, HELP_OPT_VERBOSE,
-    HELP_OPT_JSON, HELP_OPT_CSV, HELP_OPT_REPORT,
-    HELP_OPT_OUTPUT, HELP_OPT_CONFIG, HELP_OPT_NO_COLOR,
+    HELP_USAGE,
+    HELP_ARGS,
+    HELP_NUMBER_DESC,
+    HELP_OPTIONS,
+    HELP_OPT_HELP,
+    HELP_OPT_VERSION,
+    HELP_OPT_INTERACTIVE,
+    HELP_OPT_QUIET,
+    HELP_OPT_VERBOSE,
+    HELP_OPT_JSON,
+    HELP_OPT_CSV,
+    HELP_OPT_REPORT,
+    HELP_OPT_OUTPUT,
+    HELP_OPT_CONFIG,
+    HELP_OPT_NO_COLOR,
     HELP_OPT_LANG,
-    HELP_PARAMS, HELP_PARAM_DEGREE, HELP_PARAM_FB_RAT,
-    HELP_PARAM_FB_ALG, HELP_PARAM_LP, HELP_PARAM_SIEVE_W,
-    HELP_PARAM_SIEVE_H, HELP_PARAM_THREADS,
+    HELP_PARAMS,
+    HELP_PARAM_DEGREE,
+    HELP_PARAM_FB_RAT,
+    HELP_PARAM_FB_ALG,
+    HELP_PARAM_LP,
+    HELP_PARAM_SIEVE_W,
+    HELP_PARAM_SIEVE_H,
+    HELP_PARAM_THREADS,
     HELP_EXAMPLES,
 
     // Progress
-    FACTORING,       // "Factoring: %s (%zu bits)"
+    FACTORING, // "Factoring: %s (%zu bits)"
 
     // Summary box
-    RESULT_SUCCESS, RESULT_FAILED,
-    LABEL_TOTAL, LABEL_RELS, LABEL_MATRIX, LABEL_DEPS,
+    RESULT_SUCCESS,
+    RESULT_FAILED,
+    LABEL_TOTAL,
+    LABEL_RELS,
+    LABEL_MATRIX,
+    LABEL_DEPS,
 
     // Phase row names in summary (may differ from phase display names)
-    ROW_POLY, ROW_FB, ROW_SIEVE, ROW_FILTER, ROW_LINALG, ROW_SQRT,
+    ROW_POLY,
+    ROW_FB,
+    ROW_SIEVE,
+    ROW_FILTER,
+    ROW_LINALG,
+    ROW_SQRT,
 
     // Duration units
-    UNIT_LT_1MS,  // "<1ms"
+    UNIT_LT_1MS, // "<1ms"
 
     // Errors
-    ERR_NO_NUMBER, ERR_INVALID_NUMBER, ERR_N_TOO_SMALL,
-    ERR_MULTI_NUMBERS, ERR_UNKNOWN_OPT, ERR_OPEN_FILE,
+    ERR_NO_NUMBER,
+    ERR_INVALID_NUMBER,
+    ERR_N_TOO_SMALL,
+    ERR_MULTI_NUMBERS,
+    ERR_UNKNOWN_OPT,
+    ERR_OPEN_FILE,
     ERR_CONFIG_ERROR,
 
     // REPL
-    REPL_WELCOME, REPL_PROMPT, REPL_GOODBYE,
+    REPL_WELCOME,
+    REPL_PROMPT,
+    REPL_GOODBYE,
     REPL_HELP_HEADER,
-    REPL_HELP_NUMBER, REPL_HELP_VERBOSE, REPL_HELP_QUIET,
-    REPL_HELP_JSON, REPL_HELP_REPORT, REPL_HELP_SET,
-    REPL_HELP_CONFIG, REPL_HELP_RESET, REPL_HELP_VERSION,
+    REPL_HELP_NUMBER,
+    REPL_HELP_VERBOSE,
+    REPL_HELP_QUIET,
+    REPL_HELP_JSON,
+    REPL_HELP_REPORT,
+    REPL_HELP_SET,
+    REPL_HELP_CONFIG,
+    REPL_HELP_RESET,
+    REPL_HELP_VERSION,
     REPL_HELP_QUIT,
-    REPL_VERBOSE_ON, REPL_VERBOSE_OFF,
-    REPL_CONFIG_ALL_AUTO, REPL_CONFIG_RESET,
-    REPL_SET_USAGE, REPL_SET_OK, REPL_UNKNOWN_KEY,
-    REPL_INVALID_VALUE, REPL_N_TOO_SMALL,
-    REPL_FAILED, REPL_WRITTEN_TO,
+    REPL_VERBOSE_ON,
+    REPL_VERBOSE_OFF,
+    REPL_CONFIG_ALL_AUTO,
+    REPL_CONFIG_RESET,
+    REPL_SET_USAGE,
+    REPL_SET_OK,
+    REPL_UNKNOWN_KEY,
+    REPL_INVALID_VALUE,
+    REPL_N_TOO_SMALL,
+    REPL_FAILED,
+    REPL_WRITTEN_TO,
 
     // Method selection
-    METHOD_AUTO, METHOD_TRIAL, METHOD_RHO, METHOD_SIQS, METHOD_GNFS,
-    METHOD_SELECTED,    // "Method: %s (%s)"
-    HELP_OPT_METHOD,    // --method CLI help
-    REPL_HELP_METHOD,   // REPL method help
+    METHOD_AUTO,
+    METHOD_TRIAL,
+    METHOD_RHO,
+    METHOD_SIQS,
+    METHOD_GNFS,
+    METHOD_SELECTED,  // "Method: %s (%s)"
+    HELP_OPT_METHOD,  // --method CLI help
+    REPL_HELP_METHOD, // REPL method help
 
-    _COUNT  // sentinel
+    _COUNT // sentinel
 };
 
 // ============================================================
@@ -297,15 +351,16 @@ inline const char* tr(S key) {
 /// CJK ideographs and fullwidth forms → 2, most others → 1, control → 0.
 inline int codepoint_width(uint32_t cp) {
     // C0/C1 control characters
-    if (cp < 0x20 || (cp >= 0x7F && cp < 0xA0)) return 0;
+    if (cp < 0x20 || (cp >= 0x7F && cp < 0xA0))
+        return 0;
 
     // Combining marks (zero-width)
-    if ((cp >= 0x0300 && cp <= 0x036F) ||  // Combining Diacritical Marks
-        (cp >= 0x1AB0 && cp <= 0x1AFF) ||  // Combining Diacritical Marks Extended
-        (cp >= 0x1DC0 && cp <= 0x1DFF) ||  // Combining Diacritical Marks Supplement
-        (cp >= 0x20D0 && cp <= 0x20FF) ||  // Combining Diacritical Marks for Symbols
-        (cp >= 0xFE00 && cp <= 0xFE0F) ||  // Variation Selectors
-        (cp >= 0xFE20 && cp <= 0xFE2F))    // Combining Half Marks
+    if ((cp >= 0x0300 && cp <= 0x036F) || // Combining Diacritical Marks
+        (cp >= 0x1AB0 && cp <= 0x1AFF) || // Combining Diacritical Marks Extended
+        (cp >= 0x1DC0 && cp <= 0x1DFF) || // Combining Diacritical Marks Supplement
+        (cp >= 0x20D0 && cp <= 0x20FF) || // Combining Diacritical Marks for Symbols
+        (cp >= 0xFE00 && cp <= 0xFE0F) || // Variation Selectors
+        (cp >= 0xFE20 && cp <= 0xFE2F))   // Combining Half Marks
         return 0;
 
     // East Asian Wide / Fullwidth → 2 columns
@@ -332,29 +387,35 @@ inline int codepoint_width(uint32_t cp) {
 /// Decode one UTF-8 codepoint from a byte sequence.
 /// Returns the codepoint and advances `pos` past it.
 inline uint32_t utf8_decode(const char* s, size_t len, size_t& pos) {
-    if (pos >= len) return 0;
+    if (pos >= len)
+        return 0;
     auto b = static_cast<uint8_t>(s[pos]);
 
     uint32_t cp;
     int extra;
     if (b < 0x80) {
-        cp = b; extra = 0;
+        cp = b;
+        extra = 0;
     } else if ((b & 0xE0) == 0xC0) {
-        cp = b & 0x1F; extra = 1;
+        cp = b & 0x1F;
+        extra = 1;
     } else if ((b & 0xF0) == 0xE0) {
-        cp = b & 0x0F; extra = 2;
+        cp = b & 0x0F;
+        extra = 2;
     } else if ((b & 0xF8) == 0xF0) {
-        cp = b & 0x07; extra = 3;
+        cp = b & 0x07;
+        extra = 3;
     } else {
         // Invalid UTF-8 lead byte — skip
         ++pos;
-        return 0xFFFD;  // replacement character
+        return 0xFFFD; // replacement character
     }
 
     ++pos;
     for (int i = 0; i < extra && pos < len; ++i, ++pos) {
         auto cb = static_cast<uint8_t>(s[pos]);
-        if ((cb & 0xC0) != 0x80) break;  // invalid continuation
+        if ((cb & 0xC0) != 0x80)
+            break; // invalid continuation
         cp = (cp << 6) | (cb & 0x3F);
     }
     return cp;
@@ -363,7 +424,8 @@ inline uint32_t utf8_decode(const char* s, size_t len, size_t& pos) {
 /// Calculate the terminal display width of a UTF-8 string.
 /// Skips ANSI escape sequences (CSI: ESC [ ... m).
 inline int display_width(const char* s) {
-    if (!s) return 0;
+    if (!s)
+        return 0;
     size_t len = std::char_traits<char>::length(s);
     size_t pos = 0;
     int width = 0;
@@ -372,11 +434,12 @@ inline int display_width(const char* s) {
         // Skip ANSI CSI sequences: ESC [ ... (letter)
         if (pos + 1 < len && s[pos] == '\033' && s[pos + 1] == '[') {
             pos += 2;
-            while (pos < len && !((s[pos] >= 'A' && s[pos] <= 'Z') ||
-                                   (s[pos] >= 'a' && s[pos] <= 'z'))) {
+            while (pos < len &&
+                   !((s[pos] >= 'A' && s[pos] <= 'Z') || (s[pos] >= 'a' && s[pos] <= 'z'))) {
                 ++pos;
             }
-            if (pos < len) ++pos;  // skip the terminating letter
+            if (pos < len)
+                ++pos; // skip the terminating letter
             continue;
         }
 

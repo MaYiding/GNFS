@@ -1,13 +1,13 @@
 #pragma once
 
-#include "number_field.hpp"
-#include "couveignes.hpp"
-#include "hensel_sqrt.hpp"
 #include "../core/integer.hpp"
-#include "../core/relation.hpp"
 #include "../core/polynomial_context.hpp"
+#include "../core/relation.hpp"
 #include "../linalg/sparse_matrix.hpp"
 #include "../relation/large_prime_key.hpp"
+#include "couveignes.hpp"
+#include "hensel_sqrt.hpp"
+#include "number_field.hpp"
 
 #include <atomic>
 #include <cstdlib>
@@ -21,17 +21,16 @@
 namespace gnfs::sqrt {
 
 using core::Integer;
-using core::Relation;
 using core::PolynomialContext;
+using core::Relation;
 using linalg::BitVector;
 
 /// Pre-check: verify all algebraic ideal powers have even multiplicity.
 /// This is msieve's verify_alg_ideal_powers strategy — catches bad deps
 /// in O(n·d) before running expensive Hensel lifting.
 /// Returns true if parity check passes (all even), false if any odd exponent found.
-[[nodiscard]] inline bool verify_algebraic_ideal_powers(
-        const BitVector& dependency,
-        const std::vector<Relation>& relations) {
+[[nodiscard]] inline bool verify_algebraic_ideal_powers(const BitVector& dependency,
+                                                        const std::vector<Relation>& relations) {
 
     // Count algebraic FB factor multiplicities
     // Reserve dependency.popcount() * 30: avg ~20-30 FB factors per row, dependency
@@ -42,45 +41,47 @@ using linalg::BitVector;
     fb_exponents.reserve(std::min(pop * 30, relations.size()));
     // Track the exact symmetric difference of algebraic LP ideals. PrimePower
     // uses uint64_t p/r, so a 32+32 packed key is not lossless.
-    std::unordered_set<relation::LargePrimeKey, relation::LargePrimeKeyHash>
-        odd_lp_ideals;
+    std::unordered_set<relation::LargePrimeKey, relation::LargePrimeKeyHash> odd_lp_ideals;
     odd_lp_ideals.reserve(std::min(pop * 4, relations.size()));
 
     for (size_t i = 0; i < relations.size(); ++i) {
-        if (!dependency.test(i)) continue;
+        if (!dependency.test(i))
+            continue;
         const auto& rel = relations[i];
         for (uint32_t idx : rel.algebraic_factors) {
             fb_exponents[idx]++;
         }
-        relation::for_each_odd_large_prime_key(
-            rel, [&](const relation::LargePrimeKey& key) {
-                if (!key.is_algebraic) return;
-                auto [it, inserted] = odd_lp_ideals.insert(key);
-                if (!inserted) odd_lp_ideals.erase(it);
-            });
+        relation::for_each_odd_large_prime_key(rel, [&](const relation::LargePrimeKey& key) {
+            if (!key.is_algebraic)
+                return;
+            auto [it, inserted] = odd_lp_ideals.insert(key);
+            if (!inserted)
+                odd_lp_ideals.erase(it);
+        });
     }
 
     for (const auto& [idx, exp] : fb_exponents) {
-        if (exp % 2 != 0) return false;
+        if (exp % 2 != 0)
+            return false;
     }
     return odd_lp_ideals.empty();
 }
 
 /// 代数平方根计算结果
 struct AlgebraicSqrtResult {
-    Integer value;           // 平方根值（模 N）
-    bool success = false;    // 是否成功
-    std::string error;       // 错误信息
+    Integer value;        // 平方根值（模 N）
+    bool success = false; // 是否成功
+    std::string error;    // 错误信息
 };
 
 /// 代数平方根配置
 struct AlgebraicSqrtConfig {
-    bool verify = true;                // 是否验证结果
+    bool verify = true; // 是否验证结果
     // Note: num_primes should be <= 16 since sign determination only searches 2^16 patterns
     // With 16 primes starting at 1000, M ≈ 10^48 which is sufficient for most cases
-    size_t num_primes = 16;            // CRT 使用的素数数量
-    uint64_t prime_start = 1000;       // 素数搜索起点
-    bool use_couveignes = true;        // 使用 Couveignes 算法
+    size_t num_primes = 16;      // CRT 使用的素数数量
+    uint64_t prime_start = 1000; // 素数搜索起点
+    bool use_couveignes = true;  // 使用 Couveignes 算法
 };
 
 /// AlgebraicSqrt - 计算代数侧的平方根
@@ -93,18 +94,16 @@ class AlgebraicSqrt {
 public:
     using Config = AlgebraicSqrtConfig;
 
-    explicit AlgebraicSqrt(const Config& config = Config{})
-        : config_(config) {}
+    explicit AlgebraicSqrt(const Config& config = Config{}) : config_(config) {}
 
     /// 从依赖和关系计算代数平方根
     /// @param dependency 依赖向量
     /// @param relations 所有关系
     /// @param ctx 多项式上下文
     /// @return 平方根结果（模 N）
-    [[nodiscard]] AlgebraicSqrtResult compute(
-            const BitVector& dependency,
-            const std::vector<Relation>& relations,
-            const PolynomialContext& ctx) const {
+    [[nodiscard]] AlgebraicSqrtResult compute(const BitVector& dependency,
+                                              const std::vector<Relation>& relations,
+                                              const PolynomialContext& ctx) const {
 
         AlgebraicSqrtResult result;
 
@@ -124,7 +123,8 @@ public:
         std::vector<std::pair<int64_t, uint64_t>> ab_pairs;
         ab_pairs.reserve(dependency.popcount() * 2);
         for (size_t i = 0; i < relations.size(); ++i) {
-            if (!dependency.test(i)) continue;
+            if (!dependency.test(i))
+                continue;
             const auto& rel = relations[i];
             ab_pairs.emplace_back(rel.a, rel.b);
             for (const auto& [ea, eb] : rel.extra_ab_pairs) {
@@ -142,8 +142,8 @@ public:
         // algebraic-sqrt phase (covers the legacy "Hensel succeeds, Couveignes
         // is dead code" gap). Production callers leave this unset.
         const char* force_couveignes_env = std::getenv("GNFS_FORCE_COUVEIGNES");
-        const bool force_couveignes = (force_couveignes_env != nullptr) &&
-                                      (std::strcmp(force_couveignes_env, "1") == 0);
+        const bool force_couveignes =
+            (force_couveignes_env != nullptr) && (std::strcmp(force_couveignes_env, "1") == 0);
 
         // Try Hensel lifting first (most reliable for all sizes)
         // compute() returns the algebraic sqrt value mod N directly
@@ -161,7 +161,8 @@ public:
             if (sqrt_val) {
                 if (cached == 0) {
                     uint64_t new_cached = hcfg.cached_inert_prime;
-                    if (new_cached == 0) new_cached = hensel.last_inert_prime();
+                    if (new_cached == 0)
+                        new_cached = hensel.last_inert_prime();
                     cached_inert_prime_.store(new_cached, std::memory_order_relaxed);
                 }
                 result.value = std::move(*sqrt_val);
@@ -181,9 +182,8 @@ public:
     }
 
     /// 简化版：假设乘积已经是数域元素
-    [[nodiscard]] AlgebraicSqrtResult compute_from_product(
-            const NumberFieldElement& product,
-            const NumberField& nf) const {
+    [[nodiscard]] AlgebraicSqrtResult compute_from_product(const NumberFieldElement& product,
+                                                           const NumberField& nf) const {
 
         AlgebraicSqrtResult result;
 
@@ -212,9 +212,9 @@ private:
     mutable std::atomic<uint64_t> cached_inert_prime_{0};
 
     /// 使用 Couveignes 算法计算平方根
-    [[nodiscard]] AlgebraicSqrtResult compute_couveignes(
-            const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
-            const NumberField& nf) const {
+    [[nodiscard]] AlgebraicSqrtResult
+    compute_couveignes(const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
+                       const NumberField& nf) const {
 
         AlgebraicSqrtResult result;
 
@@ -268,8 +268,7 @@ private:
                       << " full_verifies=" << m.full_verifications
                       << " char_primes=" << m.character_primes_used
                       << " found=" << (m.found_sqrt ? 1 : 0)
-                      << " apply_corr=" << (apply_correction ? 1 : 0)
-                      << "\n";
+                      << " apply_corr=" << (apply_correction ? 1 : 0) << "\n";
         }
 
         if (!sqrt_opt) {
@@ -283,12 +282,11 @@ private:
             // 标准 Thomé 路径: T(m) ≡ f'(m)·√S(m), 除 inv(f'(m)) 还原。
             Integer f_prime_m_inv;
             // mpz_invert 必成功(刚验证 gcd=1),理论不会失败。
-            mpz_invert(f_prime_m_inv.get_mpz(),
-                       f_prime_m.get_mpz(),
-                       N.get_mpz());
+            mpz_invert(f_prime_m_inv.get_mpz(), f_prime_m.get_mpz(), N.get_mpz());
             T_m *= f_prime_m_inv;
             T_m %= N;
-            if (T_m.is_negative()) T_m += N;
+            if (T_m.is_negative())
+                T_m += N;
         }
         // else: T(m) 就是 √(∏)(m) (小 N 老路径),无需进一步处理。
 
@@ -311,7 +309,7 @@ private:
         // v22: result/term 直接 assign + int64_t direct mul
         Integer result;
         result = nf.coeff(d);
-        result *= static_cast<int64_t>(d);  // mpz_mul_si direct
+        result *= static_cast<int64_t>(d); // mpz_mul_si direct
         result %= N;
 
         for (int i = static_cast<int>(d) - 1; i >= 1; --i) {
@@ -321,17 +319,16 @@ private:
                           static_cast<unsigned long>(i));
             result %= N;
         }
-        if (result.is_negative()) result += N;
+        if (result.is_negative())
+            result += N;
         return result;
     }
-
 };
 
 /// 便捷函数：计算代数平方根
-[[nodiscard]] inline AlgebraicSqrtResult compute_algebraic_sqrt(
-        const BitVector& dependency,
-        const std::vector<Relation>& relations,
-        const PolynomialContext& ctx) {
+[[nodiscard]] inline AlgebraicSqrtResult
+compute_algebraic_sqrt(const BitVector& dependency, const std::vector<Relation>& relations,
+                       const PolynomialContext& ctx) {
 
     AlgebraicSqrt calculator;
     return calculator.compute(dependency, relations, ctx);
@@ -341,15 +338,13 @@ private:
 /// 给定有理平方根 X 和代数平方根 Y
 /// 计算 gcd(X - Y, N) 和 gcd(X + Y, N)
 struct FactorResult {
-    Integer factor1;      // gcd(X - Y, N)
-    Integer factor2;      // gcd(X + Y, N)
-    bool is_nontrivial;   // 是否找到非平凡因子
+    Integer factor1;    // gcd(X - Y, N)
+    Integer factor2;    // gcd(X + Y, N)
+    bool is_nontrivial; // 是否找到非平凡因子
 };
 
-[[nodiscard]] inline FactorResult extract_factors(
-        const Integer& rational_sqrt,
-        const Integer& algebraic_sqrt,
-        const Integer& n) {
+[[nodiscard]] inline FactorResult extract_factors(const Integer& rational_sqrt,
+                                                  const Integer& algebraic_sqrt, const Integer& n) {
 
     FactorResult result;
 
@@ -376,9 +371,11 @@ struct FactorResult {
     result.is_nontrivial = false;
 
     auto check_nontrivial = [&n](const Integer& f) -> bool {
-        if (f.is_one()) return false;       // f == 1 → trivial
-        if (f.compare(n) == 0) return false; // f == N → trivial
-        return true;                         // any other value → non-trivial
+        if (f.is_one())
+            return false; // f == 1 → trivial
+        if (f.compare(n) == 0)
+            return false; // f == N → trivial
+        return true;      // any other value → non-trivial
     };
 
     if (check_nontrivial(result.factor1) || check_nontrivial(result.factor2)) {

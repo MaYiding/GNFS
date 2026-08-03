@@ -75,7 +75,8 @@ void print_i128(wide_int x) {
         buf[pos++] = static_cast<char>('0' + (x % 10));
         x /= 10;
     }
-    while (pos > 0) std::cerr << buf[--pos];
+    while (pos > 0)
+        std::cerr << buf[--pos];
 #else
     std::cerr << x;
 #endif
@@ -86,7 +87,8 @@ void print_i128(wide_int x) {
 [[nodiscard]] bool is_size_reduced(const LatticeBasis& basis) {
     // basis.e0/f0 is the shorter v0, basis.e1/f1 is the longer v1
     wide_int n0 = norm_sq_i128(basis.e0, basis.f0);
-    if (n0 == 0) return true;  // degenerate
+    if (n0 == 0)
+        return true; // degenerate
     wide_int d = dot_i128(basis.e0, basis.f0, basis.e1, basis.f1);
     // |2*d| <= n0
     return abs_i128(2 * d) <= n0;
@@ -119,7 +121,7 @@ void print_i128(wide_int x) {
     return sq;
 }
 
-}  // anonymous namespace
+} // anonymous namespace
 
 // ─── Test 1: basic LLL correctness on small primes ───────────────────
 
@@ -128,8 +130,8 @@ void test_lll_basic() {
 
     // Small primes covering diverse r values
     std::vector<std::pair<uint32_t, uint32_t>> cases = {
-        {2, 1}, {3, 1}, {5, 2}, {7, 3}, {11, 5}, {13, 4}, {17, 8},
-        {101, 42}, {1009, 500}, {99991, 12345},
+        {2, 1},  {3, 1},  {5, 2},    {7, 3},      {11, 5},
+        {13, 4}, {17, 8}, {101, 42}, {1009, 500}, {99991, 12345},
     };
 
     for (auto [q, r] : cases) {
@@ -160,9 +162,9 @@ void test_lll_large_q() {
     // q chosen to stress the __int128_t intermediate computation
     // (q^2 ~ 2^64 > 2^63, so int64_t alone would overflow).
     std::vector<std::pair<uint32_t, uint32_t>> cases = {
-        {2'000'003u, 1'000'001u},   // 2M
-        {16'777'259u, 8'388'629u},  // 16M ~ 2^24
-        {268'435'459u, 134'217'729u}, // 268M ~ 2^28
+        {2'000'003u, 1'000'001u},       // 2M
+        {16'777'259u, 8'388'629u},      // 16M ~ 2^24
+        {268'435'459u, 134'217'729u},   // 268M ~ 2^28
         {1'073'741'827u, 536'870'913u}, // 2^30
         // Largest case below 2^32 (q^2 fits in __int128_t but not int64_t)
         {2'147'483'647u, 1'073'741'823u}, // 2^31 - 1 (Mersenne prime)
@@ -211,7 +213,8 @@ void test_lll_asymmetric_r() {
             q / 2, q / 2 - 1, q / 2 + 1, q / 2 - 7, q / 2 + 13,
         };
         for (uint32_t r : rs) {
-            if (r == 0 || r >= q) continue;
+            if (r == 0 || r >= q)
+                continue;
 
             SpecialQ sq = make_sq(q, r);
             auto lll = compute_lattice_basis(sq, LatticeReductionMethod::LLL);
@@ -222,30 +225,34 @@ void test_lll_asymmetric_r() {
             assert(det_equals_q(gauss));
 
             wide_int lll_total = norm_sq_i128(lll.e0, lll.f0) + norm_sq_i128(lll.e1, lll.f1);
-            wide_int gauss_total = norm_sq_i128(gauss.e0, gauss.f0) + norm_sq_i128(gauss.e1, gauss.f1);
+            wide_int gauss_total =
+                norm_sq_i128(gauss.e0, gauss.f0) + norm_sq_i128(gauss.e1, gauss.f1);
 
-            if (lll_total < gauss_total) ++lll_beats_gauss;
-            else if (lll_total > gauss_total) ++gauss_better;
-            else ++equal;
+            if (lll_total < gauss_total)
+                ++lll_beats_gauss;
+            else if (lll_total > gauss_total)
+                ++gauss_better;
+            else
+                ++equal;
 
             // Critical invariant: LLL never produces strictly worse basis
             // (because Gauss is also size-reduced + 2D Lovasz subset).
             // If gauss_total < lll_total, we have a bug.
             // Allow equality (most common case in 2D).
             if (gauss_total < lll_total) {
-                std::cerr << "    [FAIL] q=" << q << " r=" << r
-                          << " gauss="; print_i128(gauss_total);
-                std::cerr << " lll="; print_i128(lll_total);
+                std::cerr << "    [FAIL] q=" << q << " r=" << r << " gauss=";
+                print_i128(gauss_total);
+                std::cerr << " lll=";
+                print_i128(lll_total);
                 std::cerr << " (LLL is worse)" << std::endl;
                 assert(false && "LLL produced worse basis than Gauss");
             }
         }
     }
 
-    std::cout << "  LLL_better=" << lll_beats_gauss
-              << " equal=" << equal
-              << " gauss_better=" << gauss_better
-              << " (LLL must be >= Gauss; allow equal in 2D)" << std::endl;
+    std::cout << "  LLL_better=" << lll_beats_gauss << " equal=" << equal
+              << " gauss_better=" << gauss_better << " (LLL must be >= Gauss; allow equal in 2D)"
+              << std::endl;
     std::cout << "  PASS (asymmetric r ~ q/2 invariants hold)" << std::endl;
 }
 
@@ -286,7 +293,7 @@ void test_lll_boundary_cases() {
             assert(satisfies_lovasz(basis));
             // For r=1, |b0|^2 should be very small (= 2 for (1,1) vector).
             wide_int n0 = norm_sq_i128(basis.e0, basis.f0);
-            assert(n0 <= 4);  // (1,1) → 2, or some near-equivalent
+            assert(n0 <= 4); // (1,1) → 2, or some near-equivalent
         }
 
         // Case r = q-1: known to oscillate in legacy Gauss path (BACKLOG P2).
@@ -327,7 +334,8 @@ void test_lll_dominates_gauss() {
         std::vector<uint32_t> sample_rs;
         for (uint32_t frac = 1; frac <= 9; ++frac) {
             uint32_t r = (q * frac) / 10;
-            if (r > 0 && r < q) sample_rs.push_back(r);
+            if (r > 0 && r < q)
+                sample_rs.push_back(r);
         }
         // Add small / large extremes
         sample_rs.push_back(1);
@@ -336,13 +344,15 @@ void test_lll_dominates_gauss() {
         sample_rs.push_back(q / 2);
 
         for (uint32_t r : sample_rs) {
-            if (r == 0 || r >= q) continue;
+            if (r == 0 || r >= q)
+                continue;
             SpecialQ sq = make_sq(q, r);
             auto lll = compute_lattice_basis(sq, LatticeReductionMethod::LLL);
             auto gauss = compute_lattice_basis(sq, LatticeReductionMethod::Gauss);
 
             wide_int lll_total = norm_sq_i128(lll.e0, lll.f0) + norm_sq_i128(lll.e1, lll.f1);
-            wide_int gauss_total = norm_sq_i128(gauss.e0, gauss.f0) + norm_sq_i128(gauss.e1, gauss.f1);
+            wide_int gauss_total =
+                norm_sq_i128(gauss.e0, gauss.f0) + norm_sq_i128(gauss.e1, gauss.f1);
 
             ++total;
             if (lll_total < gauss_total) {
@@ -350,19 +360,18 @@ void test_lll_dominates_gauss() {
             } else if (lll_total == gauss_total) {
                 ++equal;
             } else {
-                std::cerr << "    [FAIL] q=" << q << " r=" << r
-                          << " gauss="; print_i128(gauss_total);
-                std::cerr << " lll="; print_i128(lll_total);
+                std::cerr << "    [FAIL] q=" << q << " r=" << r << " gauss=";
+                print_i128(gauss_total);
+                std::cerr << " lll=";
+                print_i128(lll_total);
                 std::cerr << " (LLL is worse)" << std::endl;
                 assert(false && "LLL must dominate Gauss");
             }
         }
     }
 
-    std::cout << "  total=" << total
-              << " lll_strictly_better=" << lll_strictly_better
-              << " equal=" << equal
-              << " (LLL >= Gauss invariant holds)" << std::endl;
+    std::cout << "  total=" << total << " lll_strictly_better=" << lll_strictly_better
+              << " equal=" << equal << " (LLL >= Gauss invariant holds)" << std::endl;
     std::cout << "  PASS" << std::endl;
 }
 
@@ -429,7 +438,8 @@ void test_lll_random_sweep() {
     for (int i = 0; i < 200; ++i) {
         uint32_t q = static_cast<uint32_t>((next() % 10'000'000u) + 1009u);
         uint32_t r = static_cast<uint32_t>(next() % q);
-        if (r == 0) r = 1;
+        if (r == 0)
+            r = 1;
 
         SpecialQ sq = make_sq(q, r);
         auto basis = compute_lattice_basis(sq, LatticeReductionMethod::LLL);
@@ -461,14 +471,16 @@ void test_lll_norm_quality() {
         // Sample 20 r values evenly spaced
         for (uint32_t k = 1; k < 20; ++k) {
             uint32_t r = (q / 20) * k;
-            if (r == 0 || r >= q) continue;
+            if (r == 0 || r >= q)
+                continue;
 
             SpecialQ sq = make_sq(q, r);
             auto lll = compute_lattice_basis(sq, LatticeReductionMethod::LLL);
             auto gauss = compute_lattice_basis(sq, LatticeReductionMethod::Gauss);
 
             wide_int lll_total = norm_sq_i128(lll.e0, lll.f0) + norm_sq_i128(lll.e1, lll.f1);
-            wide_int gauss_total = norm_sq_i128(gauss.e0, gauss.f0) + norm_sq_i128(gauss.e1, gauss.f1);
+            wide_int gauss_total =
+                norm_sq_i128(gauss.e0, gauss.f0) + norm_sq_i128(gauss.e1, gauss.f1);
 
             total_lll += static_cast<double>(static_cast<int64_t>(lll_total));
             total_gauss += static_cast<double>(static_cast<int64_t>(gauss_total));
@@ -478,10 +490,8 @@ void test_lll_norm_quality() {
         double avg_lll = total_lll / n;
         double avg_gauss = total_gauss / n;
         double ratio = avg_gauss / avg_lll;
-        std::cout << "  q=" << q
-                  << " avg |b0|^2+|b1|^2 (LLL)=" << avg_lll
-                  << " (Gauss)=" << avg_gauss
-                  << " ratio Gauss/LLL=" << ratio << std::endl;
+        std::cout << "  q=" << q << " avg |b0|^2+|b1|^2 (LLL)=" << avg_lll
+                  << " (Gauss)=" << avg_gauss << " ratio Gauss/LLL=" << ratio << std::endl;
         // LLL never worse (ratio >= 1, with floating tolerance)
         assert(ratio >= 0.999);
     }
@@ -496,17 +506,14 @@ void test_skew_lll_invariants() {
 
     // Skewness range typical for GNFS polynomials: 1.0 to ~5000.
     std::vector<double> skewnesses = {
-        1.0,    // unskewed (equivalent to LLL)
-        2.0,
-        5.0,
-        10.0,
-        100.0,
-        1000.0,
-        5000.0,
+        1.0, // unskewed (equivalent to LLL)
+        2.0, 5.0, 10.0, 100.0, 1000.0, 5000.0,
     };
 
     std::vector<std::pair<uint32_t, uint32_t>> cases = {
-        {1009, 500}, {99991, 12345}, {1'000'003u, 500'000u},
+        {1009, 500},
+        {99991, 12345},
+        {1'000'003u, 500'000u},
         {10'000'019u, 5'000'000u},
     };
 
@@ -541,13 +548,16 @@ void test_skew_lll_invariants() {
                 return da * da + s * s * db * db;
             };
             double skew_total_skewlll = skew_n(basis.e0, basis.f0) + skew_n(basis.e1, basis.f1);
-            double skew_total_plain = skew_n(plain_lll.e0, plain_lll.f0)
-                                    + skew_n(plain_lll.e1, plain_lll.f1);
+            double skew_total_plain =
+                skew_n(plain_lll.e0, plain_lll.f0) + skew_n(plain_lll.e1, plain_lll.f1);
 
             ++total;
-            if (skew_total_skewlll < skew_total_plain * 0.9999) ++skew_better;
-            else if (skew_total_skewlll > skew_total_plain * 1.0001) ++skew_worse;
-            else ++equal_skew;
+            if (skew_total_skewlll < skew_total_plain * 0.9999)
+                ++skew_better;
+            else if (skew_total_skewlll > skew_total_plain * 1.0001)
+                ++skew_worse;
+            else
+                ++equal_skew;
 
             // Hard invariant: SkewLLL never substantially worse in skew norm
             // (allow small double error: ratio < 1.01)
@@ -555,11 +565,8 @@ void test_skew_lll_invariants() {
         }
     }
 
-    std::cout << "  total=" << total
-              << " skew_better=" << skew_better
-              << " equal=" << equal_skew
-              << " skew_worse=" << skew_worse
-              << " (SkewLLL <= LLL in skew norm)" << std::endl;
+    std::cout << "  total=" << total << " skew_better=" << skew_better << " equal=" << equal_skew
+              << " skew_worse=" << skew_worse << " (SkewLLL <= LLL in skew norm)" << std::endl;
     std::cout << "  PASS" << std::endl;
 }
 
@@ -571,9 +578,15 @@ void test_skew_lll_boundary() {
     // Very large skewness (5000+, e.g., 50d high-skew polynomial)
     std::vector<double> extreme_s = {0.5, 1.0, 1.1, 100.0, 5000.0, 50000.0};
     std::vector<std::pair<uint32_t, uint32_t>> cases = {
-        {1009, 0}, {1009, 1}, {1009, 1008},
-        {99991, 0}, {99991, 1}, {99991, 99990},
-        {1'000'003u, 0}, {1'000'003u, 500'001u}, {1'000'003u, 1'000'002u},
+        {1009, 0},
+        {1009, 1},
+        {1009, 1008},
+        {99991, 0},
+        {99991, 1},
+        {99991, 99990},
+        {1'000'003u, 0},
+        {1'000'003u, 500'001u},
+        {1'000'003u, 1'000'002u},
     };
 
     for (double s : extreme_s) {

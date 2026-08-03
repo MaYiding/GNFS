@@ -1,6 +1,6 @@
-#include "gnfs/sieve/lattice_sieve.hpp"
 #include "gnfs/factor_base/builder.hpp"
 #include "gnfs/polynomial/base_m.hpp"
+#include "gnfs/sieve/lattice_sieve.hpp"
 #include "gnfs/util/safe_math.hpp"
 
 #include <cassert>
@@ -22,8 +22,8 @@ void test_lattice_basis() {
     std::cout << "Testing lattice basis computation..." << std::endl;
 
     SpecialQ sq;
-    sq.q = 1009;  // 素数
-    sq.r = 42;    // 某个根
+    sq.q = 1009; // 素数
+    sq.r = 42;   // 某个根
 
     LatticeBasis basis = compute_lattice_basis(sq);
 
@@ -31,13 +31,15 @@ void test_lattice_basis() {
     // v0 = (e0, f0) 应该满足 e0 - f0*r ≡ 0 (mod q)
     int64_t check0 = basis.e0 - static_cast<int64_t>(basis.f0) * sq.r;
     int64_t mod0 = check0 % static_cast<int64_t>(sq.q);
-    if (mod0 < 0) mod0 += sq.q;
+    if (mod0 < 0)
+        mod0 += sq.q;
     assert(mod0 == 0);
 
     // v1 = (e1, f1) 应该满足 e1 - f1*r ≡ 0 (mod q)
     int64_t check1 = basis.e1 - static_cast<int64_t>(basis.f1) * sq.r;
     int64_t mod1 = check1 % static_cast<int64_t>(sq.q);
-    if (mod1 < 0) mod1 += sq.q;
+    if (mod1 < 0)
+        mod1 += sq.q;
     assert(mod1 == 0);
 
     // 行列式应该等于 q（或 -q）
@@ -217,7 +219,8 @@ void test_mod_inverse() {
             std::swap(r, newr);
         }
 
-        if (t < 0) t += static_cast<int64_t>(m);
+        if (t < 0)
+            t += static_cast<int64_t>(m);
         uint64_t inv = static_cast<uint64_t>(t);
 
         assert(inv == expected);
@@ -225,8 +228,8 @@ void test_mod_inverse() {
     };
 
     test_inv(7, 11, 8);
-    test_inv(3, 7, 5);   // 3 * 5 = 15 ≡ 1 (mod 7)
-    test_inv(2, 5, 3);   // 2 * 3 = 6 ≡ 1 (mod 5)
+    test_inv(3, 7, 5); // 3 * 5 = 15 ≡ 1 (mod 7)
+    test_inv(2, 5, 3); // 2 * 3 = 6 ≡ 1 (mod 5)
 
     std::cout << "  Mod inverse: PASS" << std::endl;
 }
@@ -244,8 +247,9 @@ void test_default_region() {
     assert(region2.i_width() > region1.i_width());
     assert(region2.j_height() < region1.j_height());
 
-    std::cout << "  Default region: PASS (skew=1: " << region1.i_width() << "x" << region1.j_height()
-              << ", skew=4: " << region2.i_width() << "x" << region2.j_height() << ")" << std::endl;
+    std::cout << "  Default region: PASS (skew=1: " << region1.i_width() << "x"
+              << region1.j_height() << ", skew=4: " << region2.i_width() << "x"
+              << region2.j_height() << ")" << std::endl;
 }
 
 void test_lattice_sieve_storage_contract() {
@@ -328,35 +332,29 @@ void test_lattice_sieve_special_q_entry_contract() {
         throw std::runtime_error("special-q rejection fixture started with sieve storage");
     }
 
-    const auto expect_rejected_without_storage =
-        [&](const SpecialQ& sq, const char* description) {
-            bool rejected = false;
-            try {
-                (void)rejecting_sieve.sieve_special_q(sq);
-            } catch (const std::invalid_argument&) {
-                rejected = true;
-            } catch (...) {
-                throw std::runtime_error(std::string(description) +
-                                         " raised the wrong exception type");
-            }
+    const auto expect_rejected_without_storage = [&](const SpecialQ& sq, const char* description) {
+        bool rejected = false;
+        try {
+            (void)rejecting_sieve.sieve_special_q(sq);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        } catch (...) {
+            throw std::runtime_error(std::string(description) + " raised the wrong exception type");
+        }
 
-            if (!rejected) {
-                throw std::runtime_error(std::string(description) +
-                                         " was not rejected");
-            }
-            if (rejecting_sieve.allocated_sieve_bytes() != 0) {
-                throw std::runtime_error(std::string(description) +
-                                         " allocated sieve storage before rejection");
-            }
-        };
+        if (!rejected) {
+            throw std::runtime_error(std::string(description) + " was not rejected");
+        }
+        if (rejecting_sieve.allocated_sieve_bytes() != 0) {
+            throw std::runtime_error(std::string(description) +
+                                     " allocated sieve storage before rejection");
+        }
+    };
 
-    expect_rejected_without_storage(
-        SpecialQ{101, AlgebraicPrime::PROJECTIVE_ROOT, 0},
-        "projective special-q");
-    expect_rejected_without_storage(SpecialQ{101, 101, 0},
-                                    "special-q with r equal to q");
-    expect_rejected_without_storage(SpecialQ{1, 0, 0},
-                                    "special-q with invalid modulus");
+    expect_rejected_without_storage(SpecialQ{101, AlgebraicPrime::PROJECTIVE_ROOT, 0},
+                                    "projective special-q");
+    expect_rejected_without_storage(SpecialQ{101, 101, 0}, "special-q with r equal to q");
+    expect_rejected_without_storage(SpecialQ{1, 0, 0}, "special-q with invalid modulus");
 
     SpecialQRange range;
     range.min_q = 100;
@@ -381,8 +379,7 @@ void test_lattice_sieve_special_q_entry_contract() {
     region.j_max = 8;
     affine_sieve.set_region(region);
     const auto affine_result = affine_sieve.sieve_special_q(*affine_sq);
-    if (affine_result.special_q.q != affine_sq->q ||
-        affine_result.special_q.r != affine_sq->r ||
+    if (affine_result.special_q.q != affine_sq->q || affine_result.special_q.r != affine_sq->r ||
         affine_result.sieved_positions != region.size()) {
         throw std::runtime_error("valid affine special-q did not follow the normal sieve path");
     }

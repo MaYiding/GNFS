@@ -15,23 +15,22 @@
 using gnfs::core::ABPair;
 using gnfs::core::ABPairHash;
 using gnfs::core::Relation;
+using gnfs::relation::relation_source_combination;
 using gnfs::relation::RelationSourceCombination;
 using gnfs::relation::RelationSourceCombinationHash;
-using gnfs::relation::relation_source_combination;
 
 namespace {
 
 int g_checks = 0;
 int g_failures = 0;
 
-#define CHECK(condition, message)                                                \
-    do {                                                                         \
-        ++g_checks;                                                              \
-        if (!(condition)) {                                                      \
-            ++g_failures;                                                        \
-            std::cerr << "FAIL: " << message << " at " << __FILE__ << ':'       \
-                      << __LINE__ << '\n';                                       \
-        }                                                                        \
+#define CHECK(condition, message)                                                                  \
+    do {                                                                                           \
+        ++g_checks;                                                                                \
+        if (!(condition)) {                                                                        \
+            ++g_failures;                                                                          \
+            std::cerr << "FAIL: " << message << " at " << __FILE__ << ':' << __LINE__ << '\n';     \
+        }                                                                                          \
     } while (false)
 
 // Reproduce the information loss of the removed key without performing the
@@ -87,12 +86,7 @@ void test_first_occurrence_order() {
                           std::numeric_limits<uint64_t>::max()};
 
     const std::vector<ABPair> input{
-        old_collision_a,
-        negative,
-        old_collision_b,
-        old_collision_a,
-        endpoint,
-        negative,
+        old_collision_a, negative, old_collision_b, old_collision_a, endpoint, negative,
     };
 
     std::unordered_set<ABPair, ABPairHash> seen;
@@ -109,13 +103,10 @@ void test_first_occurrence_order() {
         old_collision_b,
         endpoint,
     };
-    CHECK(kept == expected,
-          "exact raw dedup must preserve the first occurrence and input order");
+    CHECK(kept == expected, "exact raw dedup must preserve the first occurrence and input order");
 }
 
-Relation materialized_relation(
-        const ABPair& primary,
-        std::initializer_list<ABPair> extras) {
+Relation materialized_relation(const ABPair& primary, std::initializer_list<ABPair> extras) {
     Relation relation(primary.a, primary.b);
     for (const auto& extra : extras) {
         relation.extra_ab_pairs.emplace_back(extra.a, extra.b);
@@ -131,18 +122,14 @@ void test_shared_primary_distinct_combinations_survive() {
     Relation left = materialized_relation(primary, {left_source});
     Relation right = materialized_relation(primary, {right_source});
 
-    CHECK(left.ab() == right.ab(),
-          "fixture must share the same materialized primary pair");
+    CHECK(left.ab() == right.ab(), "fixture must share the same materialized primary pair");
 
-    std::unordered_set<
-        RelationSourceCombination,
-        RelationSourceCombinationHash> seen;
+    std::unordered_set<RelationSourceCombination, RelationSourceCombinationHash> seen;
     CHECK(seen.insert(relation_source_combination(left)).second,
           "first structured source combination must be retained");
     CHECK(seen.insert(relation_source_combination(right)).second,
           "different source combinations sharing a primary pair must survive");
-    CHECK(seen.size() == 2,
-          "primary-pair equality must not collapse structured rows");
+    CHECK(seen.size() == 2, "primary-pair equality must not collapse structured rows");
 }
 
 void test_same_source_set_is_order_and_primary_independent() {
@@ -155,16 +142,11 @@ void test_same_source_set_is_order_and_primary_independent() {
 
     const auto lhs_identity = relation_source_combination(lhs);
     const auto rhs_identity = relation_source_combination(rhs);
-    CHECK(lhs.ab() != rhs.ab(),
-          "fixture must use a different primary materialization order");
-    CHECK(lhs_identity == rhs_identity,
-          "the same source set must have one canonical identity");
+    CHECK(lhs.ab() != rhs.ab(), "fixture must use a different primary materialization order");
+    CHECK(lhs_identity == rhs_identity, "the same source set must have one canonical identity");
 
-    std::unordered_set<
-        RelationSourceCombination,
-        RelationSourceCombinationHash> seen;
-    CHECK(seen.insert(lhs_identity).second,
-          "first materialization must be retained");
+    std::unordered_set<RelationSourceCombination, RelationSourceCombinationHash> seen;
+    CHECK(seen.insert(lhs_identity).second, "first materialization must be retained");
     CHECK(!seen.insert(rhs_identity).second,
           "an equivalent source set must be deduplicated regardless of order");
 }
@@ -177,8 +159,7 @@ void test_nested_provenance_uses_gf2_normalization() {
 
     // This is the flattened representation produced when already-merged rows
     // are merged again: first and second each occur twice and must cancel.
-    Relation nested = materialized_relation(
-        first, {second, third, first, second, fourth});
+    Relation nested = materialized_relation(first, {second, third, first, second, fourth});
     const auto identity = relation_source_combination(nested);
     const std::vector<ABPair> expected{third, fourth};
     CHECK(identity.sources == expected,
@@ -187,8 +168,7 @@ void test_nested_provenance_uses_gf2_normalization() {
 
 void test_structured_identity_preserves_old_collision_pair() {
     const ABPair old_collision_a{0, 1};
-    const ABPair old_collision_b{
-        static_cast<int64_t>(UINT64_C(3) << 32U), 2};
+    const ABPair old_collision_b{static_cast<int64_t>(UINT64_C(3) << 32U), 2};
     const ABPair shared_extra{97, 101};
 
     Relation lhs = materialized_relation(old_collision_a, {shared_extra});
@@ -199,7 +179,7 @@ void test_structured_identity_preserves_old_collision_pair() {
           "full-width structured identity must preserve both colliding sources");
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     test_old_packed_key_collision();

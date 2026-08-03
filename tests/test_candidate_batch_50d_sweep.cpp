@@ -606,10 +606,8 @@ void emit_case_record(const CaseMeasurements& measurement, size_t repetitions,
         std::minmax_element(measurement.wall_ns.begin(), measurement.wall_ns.end());
     std::cout << "GNFS_CANDIDATE_SWEEP_CASE_V1"
               << " status=pass"
-              << " scope=" << SWEEP_SCOPE
-              << " build_type=" << SWEEP_BUILD_TYPE
-              << " timing_scope=" << TIMING_SCOPE
-              << " timing_asserted=false"
+              << " scope=" << SWEEP_SCOPE << " build_type=" << SWEEP_BUILD_TYPE
+              << " timing_scope=" << TIMING_SCOPE << " timing_asserted=false"
               << " worker_cap=" << measurement.sweep_case.worker_cap
               << " chunk_size=" << measurement.sweep_case.chunk_size
               << " planned_chunks=" << measurement.planned_chunks
@@ -639,10 +637,8 @@ void emit_summary_record(const FixedCandidateFixture& fixture, size_t repetition
 
     std::cout << "GNFS_CANDIDATE_SWEEP_SUMMARY_V1"
               << " status=pass"
-              << " scope=" << SWEEP_SCOPE
-              << " build_type=" << SWEEP_BUILD_TYPE
-              << " claim_boundary=" << CLAIM_BOUNDARY
-              << " timing_scope=" << TIMING_SCOPE
+              << " scope=" << SWEEP_SCOPE << " build_type=" << SWEEP_BUILD_TYPE
+              << " claim_boundary=" << CLAIM_BOUNDARY << " timing_scope=" << TIMING_SCOPE
               << " timing_asserted=false"
               << " n_digits=" << PROBE_DIGITS << " n_bits=" << PROBE_BITS
               << " special_q_count=" << fixture.sieve_results.size()
@@ -814,20 +810,16 @@ int main(int argc, char** argv) {
     } catch (const std::exception& error) {
         std::cout << "GNFS_CANDIDATE_SWEEP_SUMMARY_V1"
                   << " status=fail"
-                  << " scope=" << SWEEP_SCOPE
-                  << " build_type=" << SWEEP_BUILD_TYPE
-                  << " claim_boundary=" << CLAIM_BOUNDARY
-                  << " timing_scope=" << TIMING_SCOPE
+                  << " scope=" << SWEEP_SCOPE << " build_type=" << SWEEP_BUILD_TYPE
+                  << " claim_boundary=" << CLAIM_BOUNDARY << " timing_scope=" << TIMING_SCOPE
                   << " failure_stage=" << sanitize_token(failure_stage)
                   << " error=" << sanitize_token(error.what()) << '\n';
         return 1;
     } catch (...) {
         std::cout << "GNFS_CANDIDATE_SWEEP_SUMMARY_V1"
                   << " status=fail"
-                  << " scope=" << SWEEP_SCOPE
-                  << " build_type=" << SWEEP_BUILD_TYPE
-                  << " claim_boundary=" << CLAIM_BOUNDARY
-                  << " timing_scope=" << TIMING_SCOPE
+                  << " scope=" << SWEEP_SCOPE << " build_type=" << SWEEP_BUILD_TYPE
+                  << " claim_boundary=" << CLAIM_BOUNDARY << " timing_scope=" << TIMING_SCOPE
                   << " failure_stage=" << sanitize_token(failure_stage)
                   << " error=unknown_exception\n";
         return 1;

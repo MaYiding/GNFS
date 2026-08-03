@@ -6,31 +6,31 @@
 //   ./test_gnfs_bench 1 2       # Run first two sizes
 //   ./test_gnfs_bench <N>       # Direct: factor a specific number
 
-#include <gnfs/core/params.hpp>
-#include <gnfs/polynomial/selector_dispatch.hpp>
-#include <gnfs/factor_base/builder.hpp>
-#include <gnfs/sieve/special_q.hpp>
-#include <gnfs/sieve/lattice_sieve.hpp>
 #include <gnfs/cofactor/cofactorizer.hpp>
-#include <gnfs/relation/collector.hpp>
-#include <gnfs/relation/reduction_engine.hpp>
+#include <gnfs/core/params.hpp>
+#include <gnfs/factor_base/builder.hpp>
+#include <gnfs/linalg/block_lanczos.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
 #include <gnfs/linalg/sge.hpp>
-#include <gnfs/linalg/block_lanczos.hpp>
-#include <gnfs/sqrt/rational_sqrt.hpp>
+#include <gnfs/polynomial/selector_dispatch.hpp>
+#include <gnfs/relation/collector.hpp>
+#include <gnfs/relation/reduction_engine.hpp>
+#include <gnfs/sieve/lattice_sieve.hpp>
+#include <gnfs/sieve/special_q.hpp>
 #include <gnfs/sqrt/algebraic_sqrt.hpp>
+#include <gnfs/sqrt/rational_sqrt.hpp>
 #include <gnfs/util/safe_math.hpp>
 
 #include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cstdint>
-#include <unordered_set>
 #include <iomanip>
 #include <iostream>
 #include <random>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 using namespace gnfs;
@@ -54,8 +54,13 @@ public:
         auto now = std::chrono::high_resolution_clock::now();
         return std::chrono::duration<double, std::milli>(now - start_).count();
     }
-    double sec() const { return ms() / 1000.0; }
-    void reset() { start_ = std::chrono::high_resolution_clock::now(); }
+    double sec() const {
+        return ms() / 1000.0;
+    }
+    void reset() {
+        start_ = std::chrono::high_resolution_clock::now();
+    }
+
 private:
     std::chrono::high_resolution_clock::time_point start_;
 };
@@ -68,13 +73,18 @@ inline std::vector<std::vector<bool>> find_deps(const SparseMatrix& mat, size_t 
 inline BitVector to_bv(const std::vector<bool>& vec) {
     BitVector bv(vec.size());
     for (size_t i = 0; i < vec.size(); ++i) {
-        if (vec[i]) bv.set(i);
+        if (vec[i])
+            bv.set(i);
     }
     return bv;
 }
 
 inline size_t popcnt(const std::vector<bool>& v) {
-    size_t c = 0; for (bool b : v) if (b) ++c; return c;
+    size_t c = 0;
+    for (bool b : v)
+        if (b)
+            ++c;
+    return c;
 }
 
 // ============================================================
@@ -91,20 +101,17 @@ struct TestCase {
 std::vector<TestCase> get_test_cases() {
     return {
         // 20-digit (65 bits) — should be fast
-        {"20d-65bit", "36329368269807044651",
-         "3746317241", "9697355011"},
+        {"20d-65bit", "36329368269807044651", "3746317241", "9697355011"},
 
         // 25-digit (83 bits)
-        {"25d-83bit", "1034776851887100518790841",
-         "32165413711", "32165536631"},
+        {"25d-83bit", "1034776851887100518790841", "32165413711", "32165536631"},
 
         // 30-digit (100 bits)
-        {"30d-100bit", "201166269974413068358266440287",
-         "215400344428723", "933918051560869"},
+        {"30d-100bit", "201166269974413068358266440287", "215400344428723", "933918051560869"},
 
         // 34-digit (111 bits) — getting into serious GNFS territory
-        {"34d-111bit", "2351797048080285065116384330488001",
-         "48576344210584453", "48414451237519117"},
+        {"34d-111bit", "2351797048080285065116384330488001", "48576344210584453",
+         "48414451237519117"},
     };
 }
 
@@ -138,25 +145,24 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
         params.large_prime_bound = params.rational_bound;
         // Boost FB to compensate for no-LP (need more B-smooth relations)
         // Use 4× raw target to survive singleton filter
-        params.rational_threshold = static_cast<uint16_t>(
-            std::min(1000.0, 4.0 * params.log_scale));
+        params.rational_threshold = static_cast<uint16_t>(std::min(1000.0, 4.0 * params.log_scale));
         params.algebraic_threshold = params.rational_threshold;
     }
 
-    std::cout << "  N = " << n.to_string().substr(0, 50)
-              << (n.to_string().size() > 50 ? "..." : "") << "\n";
-    std::cout << "  Bits=" << bits << " Digits=" << params.digits
-              << " Degree=" << params.degree
+    std::cout << "  N = " << n.to_string().substr(0, 50) << (n.to_string().size() > 50 ? "..." : "")
+              << "\n";
+    std::cout << "  Bits=" << bits << " Digits=" << params.digits << " Degree=" << params.degree
               << " FB=" << params.rational_bound << "/" << params.algebraic_bound
-              << " LP=" << params.large_prime_bound
-              << (force_no_lp ? " [NO-LP]" : "") << "\n" << std::flush;
+              << " LP=" << params.large_prime_bound << (force_no_lp ? " [NO-LP]" : "") << "\n"
+              << std::flush;
 
     // Phase 1: Polynomial Selection
     StopWatch phase;
     auto ctx = SelectorDispatch::select(n, params.degree);
     double poly_ms = phase.ms();
     std::cout << "  [Poly] " << std::fixed << std::setprecision(1) << poly_ms << " ms"
-              << " m=" << ctx.m().to_string() << "\n" << std::flush;
+              << " m=" << ctx.m().to_string() << "\n"
+              << std::flush;
 
     // Phase 2: Factor Base
     phase.reset();
@@ -169,9 +175,9 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
     auto fb = FactorBaseBuilder::build(ctx, fb_opts);
     double fb_ms = phase.ms();
     std::cout << "  [FB] " << std::setprecision(1) << fb_ms << " ms"
-              << " rat=" << fb.rational_count()
-              << " alg=" << fb.algebraic_count()
-              << " (sieve=" << fb.sieve_algebraic_count() << ")\n" << std::flush;
+              << " rat=" << fb.rational_count() << " alg=" << fb.algebraic_count()
+              << " (sieve=" << fb.sieve_algebraic_count() << ")\n"
+              << std::flush;
 
     // Phase 3: Sieving
     phase.reset();
@@ -186,7 +192,7 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
     sieve_region.j_max = params.sieve_j_max;
 
     CofactorizerConfig cofac_config;
-    cofac_config.large_prime_bound = params.large_prime_bound;  // Use GNFSParams, not FB hardcoded
+    cofac_config.large_prime_bound = params.large_prime_bound; // Use GNFSParams, not FB hardcoded
     cofac_config.allow_1lp = true;
     cofac_config.allow_2lp = true;
 
@@ -214,20 +220,24 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
     constexpr int MAX_ROUNDS = 10;
 
     size_t n_threads = std::thread::hardware_concurrency();
-    if (n_threads == 0) n_threads = 4;
-    constexpr size_t SQ_BATCH = 12;  // Batch-parallel sieve
+    if (n_threads == 0)
+        n_threads = 4;
+    constexpr size_t SQ_BATCH = 12; // Batch-parallel sieve
 
     for (int round = 0; round < MAX_ROUNDS; ++round) {
-        while (sq_gen.has_next() && collector.size() < batch_target && result.sq_count < params.max_special_q) {
+        while (sq_gen.has_next() && collector.size() < batch_target &&
+               result.sq_count < params.max_special_q) {
             // Collect a batch of SQs
             std::vector<SpecialQ> sq_batch;
             sq_batch.reserve(SQ_BATCH);
             for (size_t b = 0; b < SQ_BATCH && sq_gen.has_next(); ++b) {
                 auto sq = sq_gen.next();
-                if (!sq) break;
+                if (!sq)
+                    break;
                 sq_batch.push_back(*sq);
             }
-            if (sq_batch.empty()) break;
+            if (sq_batch.empty())
+                break;
 
             // Parallel sieve + cofactorize: each thread handles one SQ
             // (sieve → cofac with SQ pre-division for correct & faster results)
@@ -242,15 +252,16 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
 
                     while (true) {
                         size_t idx = next_sq.fetch_add(1, std::memory_order_relaxed);
-                        if (idx >= sq_batch.size()) break;
+                        if (idx >= sq_batch.size())
+                            break;
 
                         auto sr = local_sieve.sieve_special_q(sq_batch[idx]);
 
                         auto& local_rels = batch_relations[idx];
                         for (const auto& cand : sr.candidates) {
-                            auto rel = local_cofac.verify(cand,
-                                sq_batch[idx].q, sq_batch[idx].r);
-                            if (rel) local_rels.push_back(std::move(*rel));
+                            auto rel = local_cofac.verify(cand, sq_batch[idx].q, sq_batch[idx].r);
+                            if (rel)
+                                local_rels.push_back(std::move(*rel));
                         }
                     }
                 };
@@ -260,7 +271,8 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
                 threads.reserve(actual_threads);
                 for (size_t t = 0; t < actual_threads; ++t)
                     threads.emplace_back(worker, t);
-                for (auto& t : threads) t.join();
+                for (auto& t : threads)
+                    t.join();
 
                 for (auto& rels : batch_relations)
                     for (auto& rel : rels)
@@ -269,23 +281,25 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
             result.sq_count += sq_batch.size();
 
             if (result.sq_count % 10 < SQ_BATCH || result.sq_count <= SQ_BATCH) {
-                double rate = (phase.sec() > 0) ?
-                    static_cast<double>(collector.size()) / phase.sec() : 0;
-                double eta_s = (rate > 0) ?
-                    static_cast<double>(batch_target - collector.size()) / rate : 0;
-                std::cout << "    SQ #" << result.sq_count
-                          << ": rels=" << collector.size() << "/" << batch_target
-                          << " (" << std::setprecision(1)
+                double rate =
+                    (phase.sec() > 0) ? static_cast<double>(collector.size()) / phase.sec() : 0;
+                double eta_s =
+                    (rate > 0) ? static_cast<double>(batch_target - collector.size()) / rate : 0;
+                std::cout << "    SQ #" << result.sq_count << ": rels=" << collector.size() << "/"
+                          << batch_target << " (" << std::setprecision(1)
                           << (100.0 * static_cast<double>(collector.size()) /
-                              static_cast<double>(batch_target)) << "%)"
+                              static_cast<double>(batch_target))
+                          << "%)"
                           << " elapsed=" << std::setprecision(1) << phase.sec() << "s"
                           << " rate=" << std::setprecision(0) << rate << "/s"
                           << " eta=" << std::setprecision(0) << eta_s << "s"
-                          << "\n" << std::flush;
+                          << "\n"
+                          << std::flush;
             }
         }
 
-        if (collector.size() < 10) break;
+        if (collector.size() < 10)
+            break;
 
         // Reduce a stable prefix while keeping the collector appendable when a
         // later adaptive round needs more raw relations.
@@ -323,37 +337,37 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
                       << std::flush;
         }
 
-        if (has_effective_column_excess(
-                relations.size(), matrix_cols, reduced_lp_columns)) break;
+        if (has_effective_column_excess(relations.size(), matrix_cols, reduced_lp_columns))
+            break;
 
         if (!sq_gen.has_next() || result.sq_count >= params.max_special_q) {
             std::cout << "    SQ exhausted\n";
             break;
         }
 
-        double merge_rate = (collector.size() > 0) ?
-            static_cast<double>(relations.size()) / static_cast<double>(collector.size()) : 0.01;
+        double merge_rate = (collector.size() > 0) ? static_cast<double>(relations.size()) /
+                                                         static_cast<double>(collector.size())
+                                                   : 0.01;
         // Use effective_cols (FB + LP) for accurate needed_raw at lp_bits ≥ 20.
         size_t lp_cols_for_target = reduced_lp_columns;
-        size_t effective_cols_for_target =
-            effective_column_count(matrix_cols, lp_cols_for_target);
+        size_t effective_cols_for_target = effective_column_count(matrix_cols, lp_cols_for_target);
         size_t needed_raw = util::size_from_nonnegative_double_floor(
             static_cast<double>(util::saturating_size_product(effective_cols_for_target, 2)) /
             std::max(merge_rate, 0.001));
         // Cap: initial_target × 100 — generous for low merge rates (~2-5%).
         // Session 78 bug: cap of 5× caused adaptive loop to stall at 39d
         // (227K raw > 225K cap, but needed 450K+ for enough usable).
-        batch_target = std::min(
-            std::max(util::saturating_size_product(batch_target, 2), needed_raw),
-            util::saturating_size_product(params.raw_relation_target(matrix_cols), 100));
+        batch_target =
+            std::min(std::max(util::saturating_size_product(batch_target, 2), needed_raw),
+                     util::saturating_size_product(params.raw_relation_target(matrix_cols), 100));
     }
 
     result.raw_relations = collector.size();
     result.sieve_sec = phase.sec();
     std::cout << "  [Sieve] " << std::setprecision(2) << result.sieve_sec << "s"
-              << " raw=" << result.raw_relations
-              << " usable=" << relations.size()
-              << " SQ=" << result.sq_count << "\n" << std::flush;
+              << " raw=" << result.raw_relations << " usable=" << relations.size()
+              << " SQ=" << result.sq_count << "\n"
+              << std::flush;
 
     if (relations.size() < 5) {
         std::cout << "  INSUFFICIENT RELATIONS\n";
@@ -367,13 +381,14 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
     // (SQ primes, etc.) which aren't counted in matrix_cols estimate.
     // Let the matrix builder determine the real column count, then use all relations.
     // Over-determined systems (rows > cols) are fine for BW/Gaussian.
-    std::cout << "  [Relations] " << relations.size() << " (est_cols=" << matrix_cols << ")\n" << std::flush;
+    std::cout << "  [Relations] " << relations.size() << " (est_cols=" << matrix_cols << ")\n"
+              << std::flush;
 
     // Phase 4: Linear Algebra
     phase.reset();
 
     MatrixBuilderConfig mb_config;
-    mb_config.include_sign_column = false;  // Sign handled by rat_sqrt has_negative logic
+    mb_config.include_sign_column = false; // Sign handled by rat_sqrt has_negative logic
     mb_config.include_qc_columns = true;
     mb_config.include_class_group = false;
     mb_config.include_schirokauer = true;
@@ -392,15 +407,18 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
     result.matrix_rows = sge_result.reduced_matrix.num_rows();
     result.matrix_cols = sge_result.reduced_matrix.num_cols();
     std::cout << "  [Matrix] " << build_result.matrix.num_rows() << "x"
-              << build_result.matrix.num_cols()
-              << " -> SGE " << result.matrix_rows << "x" << result.matrix_cols << "\n" << std::flush;
+              << build_result.matrix.num_cols() << " -> SGE " << result.matrix_rows << "x"
+              << result.matrix_cols << "\n"
+              << std::flush;
 
     auto deps = find_deps(sge_result.reduced_matrix, 64);
-    for (auto& dep : deps) dep = sge_result.expand_dependency(dep);
+    for (auto& dep : deps)
+        dep = sge_result.expand_dependency(dep);
 
     result.linalg_sec = phase.sec();
     std::cout << "  [LinAlg] " << std::setprecision(2) << result.linalg_sec << "s"
-              << " deps=" << deps.size() << "\n" << std::flush;
+              << " deps=" << deps.size() << "\n"
+              << std::flush;
 
     if (deps.empty()) {
         result.total_sec = total.sec();
@@ -419,29 +437,32 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
 
         // Skip deps with same weight as a previously failed dep (likely duplicate)
         if (failed_weights.count(dep_weight)) {
-            std::cout << "    dep#" << (di+1) << " weight=" << dep_weight
-                      << " SKIP (same weight as failed dep)\n" << std::flush;
+            std::cout << "    dep#" << (di + 1) << " weight=" << dep_weight
+                      << " SKIP (same weight as failed dep)\n"
+                      << std::flush;
             continue;
         }
 
-        std::cout << "    dep#" << (di+1) << " weight=" << dep_weight << std::flush;
+        std::cout << "    dep#" << (di + 1) << " weight=" << dep_weight << std::flush;
 
         // ── Verify expanded dep against original matrix ──
         {
             std::vector<uint8_t> col_parity(build_result.matrix.num_cols(), 0);
             for (size_t r = 0; r < dep.size(); ++r) {
-                if (!dep[r]) continue;
+                if (!dep[r])
+                    continue;
                 for (auto c : build_result.matrix.row(r).indices()) {
                     col_parity[c] ^= 1;
                 }
             }
             size_t odd_cols = 0;
             for (size_t c = 0; c < col_parity.size(); ++c) {
-                if (col_parity[c]) ++odd_cols;
+                if (col_parity[c])
+                    ++odd_cols;
             }
             if (odd_cols > 0) {
-                std::cout << " DEP_INVALID(odd_cols=" << odd_cols << "/"
-                          << col_parity.size() << ")" << std::flush;
+                std::cout << " DEP_INVALID(odd_cols=" << odd_cols << "/" << col_parity.size() << ")"
+                          << std::flush;
                 // Show first few offending columns
                 size_t shown = 0;
                 for (size_t c = 0; c < col_parity.size() && shown < 10; ++c) {
@@ -464,19 +485,24 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
             std::unordered_map<uint32_t, uint64_t> fb_exp;
             std::unordered_map<uint64_t, uint64_t> lp_exp;
             for (size_t i = 0; i < relations.size(); ++i) {
-                if (!dep[i]) continue;
-                for (auto idx : relations[i].rational_factors) fb_exp[idx]++;
+                if (!dep[i])
+                    continue;
+                for (auto idx : relations[i].rational_factors)
+                    fb_exp[idx]++;
                 for (const auto& lp : relations[i].rational_large_prime)
                     lp_exp[lp.p] += lp.e;
             }
             size_t odd_fb = 0, odd_lp = 0;
             for (const auto& [idx, e] : fb_exp)
-                if (e % 2 != 0) ++odd_fb;
+                if (e % 2 != 0)
+                    ++odd_fb;
             for (const auto& [p, e] : lp_exp)
-                if (e % 2 != 0) ++odd_lp;
+                if (e % 2 != 0)
+                    ++odd_lp;
             std::cout << "      odd_fb=" << odd_fb << " odd_lp=" << odd_lp
-                      << " total_fb_keys=" << fb_exp.size()
-                      << " total_lp_keys=" << lp_exp.size() << "\n" << std::flush;
+                      << " total_fb_keys=" << fb_exp.size() << " total_lp_keys=" << lp_exp.size()
+                      << "\n"
+                      << std::flush;
             continue;
         }
 
@@ -489,34 +515,45 @@ BenchResult factor_gnfs(const Integer& n, bool force_no_lp = false) {
         std::cout << " sqrt OK" << std::flush;
 
         for (int sign = 0; sign < 2; ++sign) {
-            Integer y = (sign == 0) ? alg.value.clone() : [&](){
-                Integer neg = n.clone(); neg -= alg.value; return neg;
+            Integer y = (sign == 0) ? alg.value.clone() : [&]() {
+                Integer neg = n.clone();
+                neg -= alg.value;
+                return neg;
             }();
 
             auto factors = extract_factors(rat.value, y, n);
 
             auto nontrivial = [&](const Integer& f) {
-                if (f.fits_uint64() && f.to_uint64() == 1) return false;
+                if (f.fits_uint64() && f.to_uint64() == 1)
+                    return false;
                 return f.compare(n) != 0;
             };
 
             Integer f1, f2;
             bool found = false;
             if (nontrivial(factors.factor1)) {
-                f1 = factors.factor1.clone(); f2 = n.clone(); f2 /= f1; found = true;
+                f1 = factors.factor1.clone();
+                f2 = n.clone();
+                f2 /= f1;
+                found = true;
             } else if (nontrivial(factors.factor2)) {
-                f1 = factors.factor2.clone(); f2 = n.clone(); f2 /= f1; found = true;
+                f1 = factors.factor2.clone();
+                f2 = n.clone();
+                f2 /= f1;
+                found = true;
             }
 
             if (found) {
-                Integer chk = f1.clone(); chk *= f2;
+                Integer chk = f1.clone();
+                chk *= f2;
                 if (chk.compare(n) == 0 && nontrivial(f1) && nontrivial(f2)) {
                     result.success = true;
                     result.sqrt_sec = phase.sec();
                     result.total_sec = total.sec();
                     std::cout << "  [Sqrt] " << std::setprecision(2) << result.sqrt_sec << "s"
-                              << " dep#" << (di+1) << "\n";
-                    std::cout << "  => " << f1.to_string() << " x " << f2.to_string() << "\n" << std::flush;
+                              << " dep#" << (di + 1) << "\n";
+                    std::cout << "  => " << f1.to_string() << " x " << f2.to_string() << "\n"
+                              << std::flush;
                     return result;
                 }
             }
@@ -556,10 +593,9 @@ int main(int argc, char** argv) {
             std::cout << "═══ GNFS Direct Benchmark ═══\n" << std::flush;
             auto result = factor_gnfs(n, force_no_lp);
             if (result.success) {
-                std::cout << "\n  TOTAL: " << std::fixed << std::setprecision(2)
-                          << result.total_sec << "s"
-                          << " (sieve=" << result.sieve_sec
-                          << " linalg=" << result.linalg_sec
+                std::cout << "\n  TOTAL: " << std::fixed << std::setprecision(2) << result.total_sec
+                          << "s"
+                          << " (sieve=" << result.sieve_sec << " linalg=" << result.linalg_sec
                           << " sqrt=" << result.sqrt_sec << ")\n";
             } else {
                 std::cout << "\n  FAILED after " << result.total_sec << "s\n";
@@ -569,15 +605,19 @@ int main(int argc, char** argv) {
     }
 
     size_t start = 0, end = cases.size() - 1;
-    if (positional_args.size() >= 1) start = static_cast<size_t>(std::max(0, std::stoi(positional_args[0]) - 1));
-    if (positional_args.size() >= 2) end = static_cast<size_t>(std::max(0, std::stoi(positional_args[1]) - 1));
-    if (start >= cases.size()) start = cases.size() - 1;
-    if (end >= cases.size()) end = cases.size() - 1;
-    if (end < start) end = start;
+    if (positional_args.size() >= 1)
+        start = static_cast<size_t>(std::max(0, std::stoi(positional_args[0]) - 1));
+    if (positional_args.size() >= 2)
+        end = static_cast<size_t>(std::max(0, std::stoi(positional_args[1]) - 1));
+    if (start >= cases.size())
+        start = cases.size() - 1;
+    if (end >= cases.size())
+        end = cases.size() - 1;
+    if (end < start)
+        end = start;
 
     std::cout << "═══════════════════════════════════════════════════\n";
-    std::cout << "  GNFS Pipeline Benchmark"
-              << (force_no_lp ? " [NO-LP]" : "") << "\n";
+    std::cout << "  GNFS Pipeline Benchmark" << (force_no_lp ? " [NO-LP]" : "") << "\n";
     std::cout << "═══════════════════════════════════════════════════\n\n" << std::flush;
 
     int passed = 0, failed = 0;
@@ -591,10 +631,9 @@ int main(int argc, char** argv) {
 
         if (result.success) {
             ++passed;
-            std::cout << "  TOTAL: " << std::fixed << std::setprecision(2)
-                      << result.total_sec << "s"
-                      << " (sieve=" << result.sieve_sec
-                      << " linalg=" << result.linalg_sec
+            std::cout << "  TOTAL: " << std::fixed << std::setprecision(2) << result.total_sec
+                      << "s"
+                      << " (sieve=" << result.sieve_sec << " linalg=" << result.linalg_sec
                       << " sqrt=" << result.sqrt_sec << ")\n";
         } else {
             ++failed;

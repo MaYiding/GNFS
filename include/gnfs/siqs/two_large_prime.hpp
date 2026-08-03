@@ -16,9 +16,8 @@ struct TwoLargePrimeFactors {
     uint64_t p;
     uint64_t q;
 
-    [[nodiscard]] friend constexpr bool operator==(
-        const TwoLargePrimeFactors&,
-        const TwoLargePrimeFactors&) = default;
+    [[nodiscard]] friend constexpr bool operator==(const TwoLargePrimeFactors&,
+                                                   const TwoLargePrimeFactors&) = default;
 };
 
 /// Validate and canonicalize a candidate split of a SIQS 2LP cofactor.
@@ -31,8 +30,7 @@ struct TwoLargePrimeFactors {
 /// boundary. In particular, callers of split_cofactor_64() must pass its output
 /// through this function before treating the factors as a usable 2LP relation.
 [[nodiscard]] inline std::optional<TwoLargePrimeFactors>
-normalize_two_large_prime(uint64_t cofactor,
-                          uint64_t large_prime_bound,
+normalize_two_large_prime(uint64_t cofactor, uint64_t large_prime_bound,
                           std::pair<uint64_t, uint64_t> candidate) {
     if (cofactor <= 1 || gnfs::util::is_prime_u64(cofactor)) {
         return std::nullopt;

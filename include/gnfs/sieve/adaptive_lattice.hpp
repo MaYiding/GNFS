@@ -92,11 +92,9 @@ struct AdaptiveLatticeConfig {
         AdaptiveLatticeConfig cfg;
         const char* on = std::getenv("GNFS_ADAPTIVE_LATTICE");
         if (on != nullptr && on[0] != '\0') {
-            if (std::strcmp(on, "1") == 0
-                    || std::strcmp(on, "on") == 0
-                    || std::strcmp(on, "ON") == 0
-                    || std::strcmp(on, "true") == 0
-                    || std::strcmp(on, "TRUE") == 0) {
+            if (std::strcmp(on, "1") == 0 || std::strcmp(on, "on") == 0 ||
+                std::strcmp(on, "ON") == 0 || std::strcmp(on, "true") == 0 ||
+                std::strcmp(on, "TRUE") == 0) {
                 cfg.enabled = true;
             }
         }
@@ -133,12 +131,12 @@ struct AdaptiveLatticeConfig {
 /// 所有 counter 用 std::atomic, record 路径 lock-free, hot path 开销极低
 /// (relaxed memory order, 单 atomic_fetch_add).
 struct AdaptiveLatticeStats {
-    std::atomic<uint64_t> special_qs_processed{0};  // 总 SQ 数
-    std::atomic<uint64_t> retries_attempted{0};     // 累计 retry 次数 (across SQs)
-    std::atomic<uint64_t> rescues_succeeded{0};     // retry 后 density 改善的 SQ 数
-    std::atomic<uint64_t> low_density_skipped{0};   // density 低但 retry 用尽的 SQ 数
-    std::atomic<uint64_t> total_hits{0};            // 累计 hit 数
-    std::atomic<uint64_t> total_cells{0};           // 累计 cell 数
+    std::atomic<uint64_t> special_qs_processed{0}; // 总 SQ 数
+    std::atomic<uint64_t> retries_attempted{0};    // 累计 retry 次数 (across SQs)
+    std::atomic<uint64_t> rescues_succeeded{0};    // retry 后 density 改善的 SQ 数
+    std::atomic<uint64_t> low_density_skipped{0};  // density 低但 retry 用尽的 SQ 数
+    std::atomic<uint64_t> total_hits{0};           // 累计 hit 数
+    std::atomic<uint64_t> total_cells{0};          // 累计 cell 数
 
     /// Snapshot (used for final reporting; non-atomic single read).
     struct Snapshot {
@@ -153,11 +151,11 @@ struct AdaptiveLatticeStats {
     [[nodiscard]] Snapshot snapshot() const noexcept {
         Snapshot s{};
         s.special_qs_processed = special_qs_processed.load(std::memory_order_relaxed);
-        s.retries_attempted    = retries_attempted.load(std::memory_order_relaxed);
-        s.rescues_succeeded    = rescues_succeeded.load(std::memory_order_relaxed);
-        s.low_density_skipped  = low_density_skipped.load(std::memory_order_relaxed);
-        s.total_hits           = total_hits.load(std::memory_order_relaxed);
-        s.total_cells          = total_cells.load(std::memory_order_relaxed);
+        s.retries_attempted = retries_attempted.load(std::memory_order_relaxed);
+        s.rescues_succeeded = rescues_succeeded.load(std::memory_order_relaxed);
+        s.low_density_skipped = low_density_skipped.load(std::memory_order_relaxed);
+        s.total_hits = total_hits.load(std::memory_order_relaxed);
+        s.total_cells = total_cells.load(std::memory_order_relaxed);
         return s;
     }
 
@@ -175,15 +173,14 @@ namespace detail {
 
 /// 计算 hit density (hits per cell). cells == 0 时返回 0.0.
 [[nodiscard]] inline double compute_density(uint64_t hits, uint64_t cells) noexcept {
-    if (cells == 0) return 0.0;
+    if (cells == 0)
+        return 0.0;
     return static_cast<double>(hits) / static_cast<double>(cells);
 }
 
 /// 把 retry_count + perturb_seed 映射到 rotation angle index k ∈ {1,2,-1,-2}.
 /// 默认 mapping (seed=0): {1, -1, 2, -2, ...} (循环).
-[[nodiscard]] inline int rotation_k_for_retry(int retry_count,
-                                              uint64_t seed,
-                                              uint32_t q) noexcept {
+[[nodiscard]] inline int rotation_k_for_retry(int retry_count, uint64_t seed, uint32_t q) noexcept {
     static constexpr int K_TABLE[] = {1, -1, 2, -2};
     // Mix seed + q so different q's perturb differently when seed != 0.
     uint64_t mix = static_cast<uint64_t>(retry_count);
@@ -232,8 +229,7 @@ namespace detail {
 ///   - One-time cost per retry: ~constant (a few multiplications).
 ///   - Sieve correctness unaffected — same lattice, same smooth (a, b)
 ///     candidate set; only the order/distribution of visits changes.
-inline LatticeBasis skew_perturb_basis(const LatticeBasis& current,
-                                       int k) noexcept {
+inline LatticeBasis skew_perturb_basis(const LatticeBasis& current, int k) noexcept {
     LatticeBasis result;
     result.q = current.q;
     result.r = current.r;
@@ -244,8 +240,8 @@ inline LatticeBasis skew_perturb_basis(const LatticeBasis& current,
     //   → int64_t (range ±2^63) safe.
     int64_t v_short_a = current.e0;
     int64_t v_short_b = current.f0;
-    int64_t v_long_a  = current.e1;
-    int64_t v_long_b  = current.f1;
+    int64_t v_long_a = current.e1;
+    int64_t v_long_b = current.f1;
 
     int64_t skewed_a = v_long_a + static_cast<int64_t>(k) * v_short_a;
     int64_t skewed_b = v_long_b + static_cast<int64_t>(k) * v_short_b;
@@ -267,7 +263,7 @@ inline LatticeBasis skew_perturb_basis(const LatticeBasis& current,
     return result;
 }
 
-}  // namespace detail
+} // namespace detail
 
 /// AdaptiveBasisManager - 自适应格基管理器.
 ///
@@ -278,12 +274,10 @@ inline LatticeBasis skew_perturb_basis(const LatticeBasis& current,
 class AdaptiveBasisManager {
 public:
     /// 默认构造: ENV-based config.
-    AdaptiveBasisManager()
-        : config_(AdaptiveLatticeConfig::from_env()) {}
+    AdaptiveBasisManager() : config_(AdaptiveLatticeConfig::from_env()) {}
 
     /// 显式 config 构造 (test 用).
-    explicit AdaptiveBasisManager(AdaptiveLatticeConfig cfg)
-        : config_(cfg) {}
+    explicit AdaptiveBasisManager(AdaptiveLatticeConfig cfg) : config_(cfg) {}
 
     /// 获取 config (read-only).
     [[nodiscard]] const AdaptiveLatticeConfig& config() const noexcept {
@@ -302,8 +296,7 @@ public:
 
     /// 返回初始 LLL-reduced basis (default behavior 相同, zero overhead).
     /// `side` 暂时未用 (rational/algebraic 二者用同 basis), 保留 API 扩展性.
-    [[nodiscard]] LatticeBasis get_initial(const SpecialQ& sq,
-                                           double skewness = 1.0,
+    [[nodiscard]] LatticeBasis get_initial(const SpecialQ& sq, double skewness = 1.0,
                                            int /*side*/ = 0) const {
         return compute_lattice_basis_with_skewness(sq, skewness);
     }
@@ -324,65 +317,67 @@ public:
     /// @param retry_count       当前已 retry 次数 (0 = 第一次 evaluating)
     /// @return  nullopt 表示无需 retry (density 够 / retry 用尽 / config 关闭).
     ///          非 nullopt → 调用者用此 basis 重 sieve.
-    [[nodiscard]] std::optional<LatticeBasis> try_perturb_and_rereduce(
-            const LatticeBasis& current_basis,
-            uint64_t region_hits,
-            uint64_t region_total_cells,
-            int retry_count) const noexcept {
+    [[nodiscard]] std::optional<LatticeBasis>
+    try_perturb_and_rereduce(const LatticeBasis& current_basis, uint64_t region_hits,
+                             uint64_t region_total_cells, int retry_count) const noexcept {
         // Fast-path: disabled → 立即返回, 零开销.
-        if (!config_.enabled) return std::nullopt;
+        if (!config_.enabled)
+            return std::nullopt;
 
         // Retry 用尽?
-        if (retry_count >= config_.max_retries) return std::nullopt;
+        if (retry_count >= config_.max_retries)
+            return std::nullopt;
 
         // Density 够?
         double density = detail::compute_density(region_hits, region_total_cells);
-        if (density >= config_.density_threshold) return std::nullopt;
+        if (density >= config_.density_threshold)
+            return std::nullopt;
 
         // 触发 perturbation.
-        int k = detail::rotation_k_for_retry(retry_count,
-                                             config_.perturb_seed,
-                                             current_basis.q);
+        int k = detail::rotation_k_for_retry(retry_count, config_.perturb_seed, current_basis.q);
         return detail::skew_perturb_basis(current_basis, k);
     }
 
     /// 记录 hit telemetry (thread-safe, lock-free, hot-path safe).
     /// 仅当 config_.enabled 时 record (OFF 时 zero-cost).
-    void record_hit_stats(const LatticeBasis& /*basis*/,
-                          uint64_t hits,
-                          uint64_t cells) noexcept {
-        if (!config_.enabled) return;
+    void record_hit_stats(const LatticeBasis& /*basis*/, uint64_t hits, uint64_t cells) noexcept {
+        if (!config_.enabled)
+            return;
         stats_.total_hits.fetch_add(hits, std::memory_order_relaxed);
         stats_.total_cells.fetch_add(cells, std::memory_order_relaxed);
     }
 
     /// 标记 SQ 处理完成 (一次/SQ).
     void mark_special_q_processed() noexcept {
-        if (!config_.enabled) return;
+        if (!config_.enabled)
+            return;
         stats_.special_qs_processed.fetch_add(1, std::memory_order_relaxed);
     }
 
     /// 记录一次 retry (无论 success/fail).
     void mark_retry_attempted() noexcept {
-        if (!config_.enabled) return;
+        if (!config_.enabled)
+            return;
         stats_.retries_attempted.fetch_add(1, std::memory_order_relaxed);
     }
 
     /// 标记一次 retry 成功 rescue (density 从 < threshold 升到 ≥ threshold).
     void mark_rescue_succeeded() noexcept {
-        if (!config_.enabled) return;
+        if (!config_.enabled)
+            return;
         stats_.rescues_succeeded.fetch_add(1, std::memory_order_relaxed);
     }
 
     /// 标记一次 low density 但 retry 用尽 (没救成).
     void mark_low_density_skipped() noexcept {
-        if (!config_.enabled) return;
+        if (!config_.enabled)
+            return;
         stats_.low_density_skipped.fetch_add(1, std::memory_order_relaxed);
     }
 
 private:
     AdaptiveLatticeConfig config_;
-    mutable AdaptiveLatticeStats stats_;  // mutable: telemetry 可在 const 方法内更新
+    mutable AdaptiveLatticeStats stats_; // mutable: telemetry 可在 const 方法内更新
 };
 
-}  // namespace gnfs::sieve
+} // namespace gnfs::sieve

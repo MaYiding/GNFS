@@ -115,14 +115,12 @@ void test_one_large_prime_rejects_strong_pseudoprimes() {
     for (const CompositeCase& sample : strong_base2_pseudoprimes) {
         if (sample.known_divisor <= 1 || sample.known_divisor >= sample.value ||
             sample.value % sample.known_divisor != 0) {
-            std::fprintf(stderr,
-                         "SIQS pseudoprime fixture lost its known divisor: %llu\n",
+            std::fprintf(stderr, "SIQS pseudoprime fixture lost its known divisor: %llu\n",
                          static_cast<unsigned long long>(sample.value));
             std::abort();
         }
         if (is_valid_one_large_prime(sample.value)) {
-            std::fprintf(stderr,
-                         "SIQS 1LP admitted strong base-2 pseudoprime: %llu\n",
+            std::fprintf(stderr, "SIQS 1LP admitted strong base-2 pseudoprime: %llu\n",
                          static_cast<unsigned long long>(sample.value));
             std::abort();
         }
@@ -138,8 +136,7 @@ void test_one_large_prime_rejects_strong_pseudoprimes() {
             std::abort();
         }
     }
-    if (is_valid_one_large_prime(0) || is_valid_one_large_prime(1) ||
-        is_valid_one_large_prime(4)) {
+    if (is_valid_one_large_prime(0) || is_valid_one_large_prime(1) || is_valid_one_large_prime(4)) {
         std::fprintf(stderr, "SIQS 1LP admitted a trivial composite boundary\n");
         std::abort();
     }
@@ -434,15 +431,15 @@ void test_siqs_20digit() {
 
     auto start = std::chrono::steady_clock::now();
     auto result = factor(N, 30, true);
-    double elapsed = std::chrono::duration<double>(
-        std::chrono::steady_clock::now() - start).count();
+    double elapsed =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 
     if (result) {
         auto f1 = result->factor1, f2 = result->factor2;
-        if (f1 > f2) std::swap(f1, f2);
+        if (f1 > f2)
+            std::swap(f1, f2);
         assert(f1 * f2 == N);
-        printf("  siqs_20digit: PASS (%.3fs, %zu polys)\n",
-               elapsed, result->polynomials_used);
+        printf("  siqs_20digit: PASS (%.3fs, %zu polys)\n", elapsed, result->polynomials_used);
     } else {
         printf("  siqs_20digit: FAIL — no factor found (%.3fs)\n", elapsed);
         assert(false);
@@ -458,8 +455,8 @@ void test_siqs_30digit() {
     auto result = factor(N, 60, true);
     if (result) {
         assert(result->factor1 * result->factor2 == N);
-        printf("  siqs_30digit: PASS (%.3fs, %zu polys)\n",
-               result->time_seconds, result->polynomials_used);
+        printf("  siqs_30digit: PASS (%.3fs, %zu polys)\n", result->time_seconds,
+               result->polynomials_used);
     } else {
         printf("  siqs_30digit: FAIL\n");
         // Don't assert — this may need parameter tuning
@@ -475,8 +472,8 @@ void test_siqs_40digit() {
     auto result = factor(N, 120, true);
     if (result) {
         assert(result->factor1 * result->factor2 == N);
-        printf("  siqs_40digit: PASS (%.3fs, %zu polys)\n",
-               result->time_seconds, result->polynomials_used);
+        printf("  siqs_40digit: PASS (%.3fs, %zu polys)\n", result->time_seconds,
+               result->polynomials_used);
     } else {
         printf("  siqs_40digit: FAIL\n");
     }

@@ -3,6 +3,8 @@
 /// @file fixed_slot_executor.hpp
 /// @brief Static-partition parallel execution with canonical slot results.
 
+#include "joining_thread.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
@@ -161,7 +163,7 @@ template <class Result, class WorkerFactory, class Operation, class ThreadLaunch
     std::atomic_size_t first_failure_slot{no_failed_slot};
     std::atomic_bool infrastructure_stop{false};
     LaunchGate launch_gate(worker_count);
-    std::vector<std::jthread> workers;
+    std::vector<JoiningThread> workers;
     workers.reserve(worker_count);
 
     try {
@@ -223,7 +225,7 @@ template <class Result, class WorkerFactory, class Operation, class ThreadLaunch
         std::rethrow_exception(launch_error);
     }
 
-    // jthread destruction joins every worker before any outcome is inspected.
+    // JoiningThread destruction joins every worker before any outcome is inspected.
     workers.clear();
     stats.peak_workers = static_cast<uint32_t>(launch_gate.peak_workers());
     if (stats.peak_workers != stats.resolved_workers) {
@@ -286,7 +288,7 @@ execute_fixed_slots(size_t slot_count, uint32_t requested_workers,
                     FixedSlotFailurePolicy failure_policy, WorkerFactory&& worker_factory,
                     Operation&& operation) {
     const auto thread_launcher = [](auto&& task) {
-        return std::jthread(std::forward<decltype(task)>(task));
+        return JoiningThread(std::forward<decltype(task)>(task));
     };
     return fixed_slot_executor_detail::execute_fixed_slots_with_launcher<Result>(
         slot_count, requested_workers, failure_policy, std::forward<WorkerFactory>(worker_factory),

@@ -338,7 +338,7 @@ private:
             throw std::invalid_argument("MmapFile: cannot map an invalid owned native file");
         }
 
-        struct stat metadata{};
+        struct stat metadata {};
         if (::fstat(file.handle_, &metadata) < 0) {
             throw std::runtime_error("MmapFile: fstat failed for '" + source + "'");
         }

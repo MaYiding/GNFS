@@ -248,7 +248,7 @@ void test_authenticated_compile_capability_contract() {
     CHECK(classify_compile_capability(all_supported) == CompileCapabilityReason::supported);
 
     struct MissingFactCase final {
-        bool CompileFacts::* fact = nullptr;
+        bool CompileFacts::*fact = nullptr;
         CompileCapabilityReason reason = CompileCapabilityReason::supported;
         std::string_view name;
     };
@@ -720,9 +720,9 @@ void test_authenticated_linux_same_object_and_supervision(const std::filesystem:
         CHECK_CONTEXT(timeout.cleanup_complete, describe(timeout));
     }
 
-    struct sigaction previous_usr1{};
-    struct sigaction previous_alrm{};
-    struct sigaction ignored_action{};
+    struct sigaction previous_usr1 {};
+    struct sigaction previous_alrm {};
+    struct sigaction ignored_action {};
     ignored_action.sa_handler = SIG_IGN;
     CHECK(::sigemptyset(&ignored_action.sa_mask) == 0);
     CHECK(::sigaction(SIGUSR1, &ignored_action, &previous_usr1) == 0);
@@ -1334,8 +1334,8 @@ void test_windows_environment_name_order(const std::filesystem::path& executable
 #if !defined(_WIN32)
 void test_external_reaper_fails_closed(const std::filesystem::path& executable) {
     const auto spec = make_spec(executable, {"--write-sizes", "1", "1"}, 1, 1, 200ms);
-    struct sigaction previous_action{};
-    struct sigaction ignored_action{};
+    struct sigaction previous_action {};
+    struct sigaction ignored_action {};
     ignored_action.sa_handler = SIG_IGN;
     CHECK(sigemptyset(&ignored_action.sa_mask) == 0);
     ignored_action.sa_flags = SA_NOCLDWAIT;

@@ -187,14 +187,15 @@ private:
         consume_distributed_sieve_worker_writer_v1(
             ::gnfs::sieve::distributed_sieve_worker_entry_detail::DistributedSieveWorkerEntryV1&&
                 entry) noexcept -> ::gnfs::sieve::distributed_sieve_worker_entry_detail::
-            DistributedSieveWorkerWriterAdoptionResultV1;
+                                    DistributedSieveWorkerWriterAdoptionResultV1;
     friend auto ::gnfs::sieve::distributed_sieve_worker_entry_detail::trusted_test::
         consume_distributed_sieve_worker_writer_v1_with_hooks(
             ::gnfs::sieve::distributed_sieve_worker_entry_detail::DistributedSieveWorkerEntryV1&&
                 entry,
             ::gnfs::sieve::distributed_sieve_worker_entry_detail::trusted_test::
-                DistributedSieveWorkerWriterTestHooksV1 hooks) noexcept -> ::gnfs::sieve::
-            distributed_sieve_worker_entry_detail::DistributedSieveWorkerWriterAdoptionResultV1;
+                DistributedSieveWorkerWriterTestHooksV1 hooks) noexcept
+        -> ::gnfs::sieve::distributed_sieve_worker_entry_detail::
+            DistributedSieveWorkerWriterAdoptionResultV1;
 };
 
 /// Unforgeable, one-shot transfer object. It owns every retained worker-entry
@@ -265,14 +266,15 @@ private:
         consume_distributed_sieve_worker_writer_v1(
             ::gnfs::sieve::distributed_sieve_worker_entry_detail::DistributedSieveWorkerEntryV1&&
                 entry) noexcept -> ::gnfs::sieve::distributed_sieve_worker_entry_detail::
-            DistributedSieveWorkerWriterAdoptionResultV1;
+                                    DistributedSieveWorkerWriterAdoptionResultV1;
     friend auto ::gnfs::sieve::distributed_sieve_worker_entry_detail::trusted_test::
         consume_distributed_sieve_worker_writer_v1_with_hooks(
             ::gnfs::sieve::distributed_sieve_worker_entry_detail::DistributedSieveWorkerEntryV1&&
                 entry,
             ::gnfs::sieve::distributed_sieve_worker_entry_detail::trusted_test::
-                DistributedSieveWorkerWriterTestHooksV1 hooks) noexcept -> ::gnfs::sieve::
-            distributed_sieve_worker_entry_detail::DistributedSieveWorkerWriterAdoptionResultV1;
+                DistributedSieveWorkerWriterTestHooksV1 hooks) noexcept
+        -> ::gnfs::sieve::distributed_sieve_worker_entry_detail::
+            DistributedSieveWorkerWriterAdoptionResultV1;
     friend DistributedSieveWorkerWriterAdoptionResultV1
     mint_distributed_sieve_worker_writer_v1(OOCInheritedP8WriterMintV1&& mint) noexcept;
     friend class ::gnfs::sieve::distributed_sieve_worker_entry_detail::

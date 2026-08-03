@@ -505,7 +505,7 @@ struct ReplacementHookContext final {
         return errno;
     }
 
-    struct stat metadata{};
+    struct stat metadata {};
     if (::fstat(reader, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
         static_cast<std::uint64_t>(metadata.st_size) > 1024U * 1024U) {
         const int failure = errno == 0 ? EINVAL : errno;
@@ -642,7 +642,7 @@ struct ReplacementHookContext final {
         return errno;
     }
 
-    struct stat metadata{};
+    struct stat metadata {};
     int failure = 0;
     if (::fstat(writer, &metadata) != 0) {
         failure = errno;

@@ -292,7 +292,7 @@ private:
 
 [[nodiscard]] FakeCapabilityExpectation
 capability_expectation(int descriptor, FakeCapabilityKind kind, int access_mode) {
-    struct stat metadata{};
+    struct stat metadata {};
     CHECK(::fstat(descriptor, &metadata) == 0);
     return {
         .device = static_cast<std::uint64_t>(metadata.st_dev),
@@ -420,7 +420,7 @@ public:
         } while (unlink_result < 0 && errno == EINTR);
         CHECK(unlink_result == 0);
         lift_source(package_);
-        struct stat package_metadata{};
+        struct stat package_metadata {};
         CHECK(::fstat(package_.get(), &package_metadata) == 0);
         CHECK(S_ISREG(package_metadata.st_mode));
         CHECK(package_metadata.st_nlink == 0);
@@ -506,7 +506,7 @@ fixed_capability_sources(const std::array<int, FIXED_CAPABILITY_COUNT>& descript
 [[nodiscard]] bool
 descriptor_matches_expectation(int descriptor,
                                const FakeCapabilityExpectation& expectation) noexcept {
-    struct stat metadata{};
+    struct stat metadata {};
     if (::fstat(descriptor, &metadata) != 0) {
         return false;
     }
@@ -575,7 +575,7 @@ struct DescriptorSnapshot final {
         return {};
     }
 
-    struct stat metadata{};
+    struct stat metadata {};
     CHECK(::fstat(descriptor, &metadata) == 0);
     int status_flags = -1;
     do {
@@ -746,7 +746,7 @@ public:
             CHECK(::sigprocmask(SIG_BLOCK, &blocked, &old_mask_) == 0);
             mask_saved_ = true;
 
-            struct sigaction ignored{};
+            struct sigaction ignored {};
             ignored.sa_handler = SIG_IGN;
             CHECK(sigemptyset(&ignored.sa_mask) == 0);
             CHECK(::sigaction(SIGPIPE, &ignored, &old_pipe_action_) == 0);
@@ -777,7 +777,7 @@ private:
     }
 
     sigset_t old_mask_{};
-    struct sigaction old_pipe_action_{};
+    struct sigaction old_pipe_action_ {};
     bool mask_saved_ = false;
     bool action_saved_ = false;
 };

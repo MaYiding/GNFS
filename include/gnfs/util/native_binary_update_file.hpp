@@ -144,7 +144,7 @@ public:
             throw std::system_error(errno, std::generic_category(),
                                     "NativeBinaryUpdateFile: cannot open " + label);
         }
-        struct stat information{};
+        struct stat information {};
         if (::fstat(descriptor, &information) != 0) {
             const int error = errno;
             (void)::close(descriptor);
@@ -245,8 +245,8 @@ public:
         if (descriptor < 0) {
             throw_errno(operation);
         }
-        struct stat held{};
-        struct stat named{};
+        struct stat held {};
+        struct stat named {};
         if (::fstat(descriptor, &held) != 0) {
             throw_errno(operation);
         }
@@ -295,8 +295,8 @@ public:
         if (descriptor < 0) {
             throw_errno(operation);
         }
-        struct stat held{};
-        struct stat named{};
+        struct stat held {};
+        struct stat named {};
         if (::fstat(descriptor, &held) != 0 ||
             ::fstatat(parent, leaf.c_str(), &named, AT_SYMLINK_NOFOLLOW) != 0) {
             throw_errno(operation);
@@ -360,7 +360,7 @@ public:
         if (descriptor < 0) {
             throw_errno(operation);
         }
-        struct stat information{};
+        struct stat information {};
         int result = -1;
         do {
             result = ::fstat(descriptor, &information);
@@ -619,7 +619,7 @@ private:
 #ifndef _WIN32
     [[nodiscard]] static NativeBinaryUpdateFile
     adopt_descriptor(int descriptor, std::size_t buffer_bytes, std::string label) {
-        struct stat information{};
+        struct stat information {};
         if (::fstat(descriptor, &information) != 0) {
             const int error = errno;
             (void)::close(descriptor);

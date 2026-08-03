@@ -386,7 +386,7 @@ struct FdOpenResult final {
 
     const auto validate_current_directory =
         [&](bool allow_root_owner) -> std::optional<StoreDiagnostic> {
-        struct stat metadata{};
+        struct stat metadata {};
         if (::fstat(current.get(), &metadata) != 0) {
             const int saved_errno = errno;
             return make_diagnostic(StoreError::base_invalid, StoreObject::trusted_base,
@@ -456,7 +456,7 @@ struct FdOpenResult final {
     }
     UniqueFd root(raw_fd);
 
-    struct stat metadata{};
+    struct stat metadata {};
     if (::fstat(root.get(), &metadata) != 0) {
         const int saved_errno = errno;
         result.diagnostic = make_diagnostic(StoreError::root_invalid, StoreObject::store_root,
@@ -488,8 +488,8 @@ struct FdOpenResult final {
     }
     UniqueFd artifact_root(raw_fd);
 
-    struct stat held_metadata{};
-    struct stat path_metadata{};
+    struct stat held_metadata {};
+    struct stat path_metadata {};
     if (::fstat(artifact_root.get(), &held_metadata) != 0 ||
         ::fstatat(root_fd, ARTIFACT_ROOT_LEAF, &path_metadata, AT_SYMLINK_NOFOLLOW) != 0) {
         const int saved_errno = errno;
@@ -509,7 +509,7 @@ struct FdOpenResult final {
         return result;
     }
 
-    struct stat root_metadata{};
+    struct stat root_metadata {};
     if (::fstat(root_fd, &root_metadata) != 0) {
         const int saved_errno = errno;
         result.diagnostic = make_diagnostic(StoreError::artifact_root_invalid,
@@ -534,7 +534,7 @@ struct LockOpenResult final {
     LockOpenResult& operator=(LockOpenResult&&) = delete;
 
     UniqueFd fd;
-    struct stat metadata{};
+    struct stat metadata {};
     StoreDiagnostic diagnostic;
     bool missing = false;
 
@@ -606,7 +606,7 @@ static_assert(!std::is_move_assignable_v<LockOpenResult>);
         return result;
     }
 
-    struct stat path_metadata{};
+    struct stat path_metadata {};
     if (::fstatat(root_fd, SESSION_LOCK_LEAF, &path_metadata, AT_SYMLINK_NOFOLLOW) != 0) {
         const int saved_errno = errno;
         result.diagnostic = make_diagnostic(StoreError::lock_invalid, StoreObject::session_lock,
@@ -745,7 +745,7 @@ struct CaptureResult final {
 
 [[nodiscard]] CaptureResult capture_lock_entry(std::string leaf_name, int lock_fd) {
     CaptureResult result;
-    struct stat metadata{};
+    struct stat metadata {};
     if (::fstat(lock_fd, &metadata) != 0) {
         const int saved_errno = errno;
         result.diagnostic = make_diagnostic(StoreError::entry_metadata_failed,
@@ -766,7 +766,7 @@ struct CaptureResult final {
 [[nodiscard]] CaptureResult capture_artifact_root_entry(std::string leaf_name,
                                                         int artifact_root_fd) {
     CaptureResult result;
-    struct stat metadata{};
+    struct stat metadata {};
     if (::fstat(artifact_root_fd, &metadata) != 0) {
         const int saved_errno = errno;
         result.diagnostic = make_diagnostic(StoreError::entry_metadata_failed,
@@ -799,7 +799,7 @@ struct CaptureResult final {
                                                   const LeafTarget& target,
                                                   uint64_t expected_owner) {
     CaptureResult result;
-    struct stat path_metadata{};
+    struct stat path_metadata {};
     if (::fstatat(root_fd, leaf_name.c_str(), &path_metadata, AT_SYMLINK_NOFOLLOW) != 0) {
         const int saved_errno = errno;
         result.diagnostic = make_diagnostic(StoreError::entry_metadata_failed, target.object,
@@ -833,7 +833,7 @@ struct CaptureResult final {
     }
     UniqueFd file(raw_fd);
 
-    struct stat before_read{};
+    struct stat before_read {};
     if (::fstat(file.get(), &before_read) != 0) {
         const int saved_errno = errno;
         result.diagnostic = make_diagnostic(StoreError::entry_metadata_failed, target.object,
@@ -878,7 +878,7 @@ struct CaptureResult final {
         return result;
     }
 
-    struct stat after_read{};
+    struct stat after_read {};
     if (::fstat(file.get(), &after_read) != 0) {
         const int saved_errno = errno;
         result.diagnostic = make_diagnostic(StoreError::entry_metadata_failed, target.object,
@@ -898,7 +898,7 @@ struct CaptureResult final {
         return result;
     }
 
-    struct stat current_path_metadata{};
+    struct stat current_path_metadata {};
     if (::fstatat(root_fd, entry.leaf_name.c_str(), &current_path_metadata, AT_SYMLINK_NOFOLLOW) !=
         0) {
         const int saved_errno = errno;
@@ -1072,7 +1072,7 @@ snapshot_is_pristine_without_session_lock(const DirectorySnapshot& journal,
 capture_artifact_entry(int artifact_root_fd, std::string leaf_name,
                        SIQSShadowProofRssCampaignArtifactAddress address, uint64_t expected_owner) {
     CaptureResult result;
-    struct stat path_metadata{};
+    struct stat path_metadata {};
     if (::fstatat(artifact_root_fd, leaf_name.c_str(), &path_metadata, AT_SYMLINK_NOFOLLOW) != 0) {
         const int saved_errno = errno;
         result.diagnostic = make_diagnostic(StoreError::entry_metadata_failed,
@@ -1113,7 +1113,7 @@ capture_artifact_entry(int artifact_root_fd, std::string leaf_name,
     }
     UniqueFd file(raw_fd);
 
-    struct stat before_read{};
+    struct stat before_read {};
     if (::fstat(file.get(), &before_read) != 0) {
         const int saved_errno = errno;
         result.diagnostic = make_diagnostic(StoreError::entry_metadata_failed,
@@ -1160,7 +1160,7 @@ capture_artifact_entry(int artifact_root_fd, std::string leaf_name,
         return result;
     }
 
-    struct stat after_read{};
+    struct stat after_read {};
     if (::fstat(file.get(), &after_read) != 0) {
         const int saved_errno = errno;
         result.diagnostic = make_diagnostic(StoreError::entry_metadata_failed,
@@ -1181,7 +1181,7 @@ capture_artifact_entry(int artifact_root_fd, std::string leaf_name,
         return result;
     }
 
-    struct stat current_path_metadata{};
+    struct stat current_path_metadata {};
     if (::fstatat(artifact_root_fd, entry.leaf_name.c_str(), &current_path_metadata,
                   AT_SYMLINK_NOFOLLOW) != 0) {
         const int saved_errno = errno;
@@ -1346,7 +1346,7 @@ project_artifact_layout_entries(const DirectorySnapshot& snapshot) {
 verify_root_identity(int base_fd, int root_fd, const DeploymentEntry& deployment,
                      const DirectoryAuthorityFingerprint& initial_root_fingerprint,
                      DirectoryAuthorityFingerprint* rebased_root_fingerprint = nullptr) noexcept {
-    struct stat held_before{};
+    struct stat held_before {};
     if (::fstat(root_fd, &held_before) != 0) {
         const int saved_errno = errno;
         return make_diagnostic(StoreError::root_invalid, StoreObject::store_root,
@@ -1359,7 +1359,7 @@ verify_root_identity(int base_fd, int root_fd, const DeploymentEntry& deployment
         return make_diagnostic(StoreError::root_invalid, StoreObject::store_root, trust_error);
     }
 
-    struct stat path_metadata{};
+    struct stat path_metadata {};
     if (::fstatat(base_fd, deployment.relative_locator.c_str(), &path_metadata,
                   AT_SYMLINK_NOFOLLOW) != 0) {
         const int saved_errno = errno;
@@ -1372,7 +1372,7 @@ verify_root_identity(int base_fd, int root_fd, const DeploymentEntry& deployment
         return make_diagnostic(StoreError::root_invalid, StoreObject::store_root);
     }
 
-    struct stat held_after{};
+    struct stat held_after {};
     if (::fstat(root_fd, &held_after) != 0) {
         const int saved_errno = errno;
         return make_diagnostic(StoreError::root_invalid, StoreObject::store_root,
@@ -1404,7 +1404,7 @@ verify_root_identity(int base_fd, int root_fd, const DeploymentEntry& deployment
 [[nodiscard]] StoreDiagnostic
 verify_root_namespace_generation(int root_fd,
                                  const FileFingerprint& expected_fingerprint) noexcept {
-    struct stat metadata{};
+    struct stat metadata {};
     if (::fstat(root_fd, &metadata) != 0) {
         const int saved_errno = errno;
         return make_diagnostic(StoreError::root_invalid, StoreObject::store_root,
@@ -1420,9 +1420,9 @@ verify_root_namespace_generation(int root_fd,
     int root_fd, int artifact_root_fd,
     const DirectoryAuthorityFingerprint& initial_artifact_root_fingerprint, uint64_t expected_owner,
     DirectoryAuthorityFingerprint* rebased_artifact_root_fingerprint = nullptr) noexcept {
-    struct stat held_before{};
-    struct stat path_metadata{};
-    struct stat root_metadata{};
+    struct stat held_before {};
+    struct stat path_metadata {};
+    struct stat root_metadata {};
     if (::fstat(artifact_root_fd, &held_before) != 0 ||
         ::fstatat(root_fd, ARTIFACT_ROOT_LEAF, &path_metadata, AT_SYMLINK_NOFOLLOW) != 0 ||
         ::fstat(root_fd, &root_metadata) != 0) {
@@ -1440,7 +1440,7 @@ verify_root_namespace_generation(int root_fd,
                                trust_error);
     }
 
-    struct stat held_after{};
+    struct stat held_after {};
     if (::fstat(artifact_root_fd, &held_after) != 0) {
         const int saved_errno = errno;
         return make_diagnostic(StoreError::artifact_root_invalid, StoreObject::artifact_root,
@@ -1473,7 +1473,7 @@ verify_root_namespace_generation(int root_fd,
 [[nodiscard]] StoreDiagnostic
 verify_artifact_namespace_generation(int artifact_root_fd,
                                      const FileFingerprint& expected_fingerprint) noexcept {
-    struct stat metadata{};
+    struct stat metadata {};
     if (::fstat(artifact_root_fd, &metadata) != 0) {
         const int saved_errno = errno;
         return make_diagnostic(StoreError::artifact_root_invalid, StoreObject::artifact_root,
@@ -1488,7 +1488,7 @@ verify_artifact_namespace_generation(int artifact_root_fd,
 [[nodiscard]] StoreDiagnostic verify_lock_identity(int root_fd, int lock_fd,
                                                    const FileFingerprint& initial_lock_fingerprint,
                                                    uint64_t expected_owner) noexcept {
-    struct stat held_before{};
+    struct stat held_before {};
     if (::fstat(lock_fd, &held_before) != 0) {
         const int saved_errno = errno;
         return make_diagnostic(StoreError::lock_invalid, StoreObject::session_lock,
@@ -1500,7 +1500,7 @@ verify_artifact_namespace_generation(int artifact_root_fd,
         return make_diagnostic(StoreError::lock_invalid, StoreObject::session_lock, trust_error);
     }
 
-    struct stat path_metadata{};
+    struct stat path_metadata {};
     if (::fstatat(root_fd, SESSION_LOCK_LEAF, &path_metadata, AT_SYMLINK_NOFOLLOW) != 0) {
         const int saved_errno = errno;
         return make_diagnostic(StoreError::lock_invalid, StoreObject::session_lock,
@@ -1510,7 +1510,7 @@ verify_artifact_namespace_generation(int artifact_root_fd,
         return make_diagnostic(StoreError::lock_invalid, StoreObject::session_lock);
     }
 
-    struct stat held_after{};
+    struct stat held_after {};
     if (::fstat(lock_fd, &held_after) != 0) {
         const int saved_errno = errno;
         return make_diagnostic(StoreError::lock_invalid, StoreObject::session_lock,
@@ -3506,7 +3506,7 @@ private:
         if (lock.error != StoreError::none) {
             return lock;
         }
-        struct stat metadata{};
+        struct stat metadata {};
         if (::fstat(artifact_root_fd_.get(), &metadata) != 0) {
             const int saved_errno = errno;
             return make_diagnostic(StoreError::artifact_root_invalid, StoreObject::artifact_root,
@@ -3526,7 +3526,7 @@ private:
             result.diagnostic = std::move(diagnostic);
             return result;
         }
-        struct stat namespace_before{};
+        struct stat namespace_before {};
         if (::fstat(root_fd_.get(), &namespace_before) != 0) {
             const int saved_errno = errno;
             result.diagnostic = make_diagnostic(StoreError::root_invalid, StoreObject::store_root,
@@ -3540,7 +3540,7 @@ private:
                 make_diagnostic(StoreError::snapshot_changed, StoreObject::directory);
             return result;
         }
-        struct stat artifact_namespace_before{};
+        struct stat artifact_namespace_before {};
         if (::fstat(artifact_root_fd_.get(), &artifact_namespace_before) != 0) {
             const int saved_errno = errno;
             result.diagnostic =
@@ -3594,7 +3594,7 @@ private:
                 make_diagnostic(StoreError::snapshot_changed, artifact_difference.object);
             return result;
         }
-        struct stat namespace_after{};
+        struct stat namespace_after {};
         if (::fstat(root_fd_.get(), &namespace_after) != 0) {
             const int saved_errno = errno;
             result.diagnostic = make_diagnostic(StoreError::root_invalid, StoreObject::store_root,
@@ -3609,7 +3609,7 @@ private:
                 make_diagnostic(StoreError::snapshot_changed, StoreObject::directory);
             return result;
         }
-        struct stat artifact_namespace_after{};
+        struct stat artifact_namespace_after {};
         if (::fstat(artifact_root_fd_.get(), &artifact_namespace_after) != 0) {
             const int saved_errno = errno;
             result.diagnostic =
@@ -3804,12 +3804,12 @@ struct PlatformEngineOpenResult final {
 [[nodiscard]] PlatformEngineOpenResult
 inspect_pristine_state_without_session_lock(int base_fd, int root_fd, int artifact_root_fd,
                                             const DeploymentEntry& deployment) {
-    struct stat root_before{};
+    struct stat root_before {};
     if (::fstat(root_fd, &root_before) != 0) {
         return {nullptr, make_diagnostic(StoreError::root_invalid, StoreObject::store_root,
                                          native_error(errno))};
     }
-    struct stat artifact_before{};
+    struct stat artifact_before {};
     if (::fstat(artifact_root_fd, &artifact_before) != 0) {
         return {nullptr, make_diagnostic(StoreError::artifact_root_invalid,
                                          StoreObject::artifact_root, native_error(errno))};
@@ -3851,12 +3851,12 @@ inspect_pristine_state_without_session_lock(int base_fd, int root_fd, int artifa
         return {nullptr, make_diagnostic(StoreError::snapshot_changed, artifact_difference.object)};
     }
 
-    struct stat root_after{};
+    struct stat root_after {};
     if (::fstat(root_fd, &root_after) != 0) {
         return {nullptr, make_diagnostic(StoreError::root_invalid, StoreObject::store_root,
                                          native_error(errno))};
     }
-    struct stat artifact_after{};
+    struct stat artifact_after {};
     if (::fstat(artifact_root_fd, &artifact_after) != 0) {
         return {nullptr, make_diagnostic(StoreError::artifact_root_invalid,
                                          StoreObject::artifact_root, native_error(errno))};
@@ -3952,7 +3952,7 @@ open_platform_campaign_engine(const SIQSShadowProofRssGatePolicy& policy,
                                                                artifact_root.fd.get(), deployment);
         }
 
-        struct stat root_metadata{};
+        struct stat root_metadata {};
         if (::fstat(root.fd.get(), &root_metadata) != 0) {
             const int saved_errno = errno;
             return {nullptr, make_diagnostic(StoreError::root_invalid, StoreObject::store_root,
@@ -3964,7 +3964,7 @@ open_platform_campaign_engine(const SIQSShadowProofRssGatePolicy& policy,
         const DirectoryAuthorityFingerprint initial_root_fingerprint =
             directory_authority_fingerprint(root_metadata);
         const FileFingerprint initial_root_namespace_fingerprint = fingerprint(root_metadata);
-        struct stat artifact_root_metadata{};
+        struct stat artifact_root_metadata {};
         if (::fstat(artifact_root.fd.get(), &artifact_root_metadata) != 0) {
             const int saved_errno = errno;
             return {nullptr,

@@ -24,9 +24,8 @@ struct TwoLargePrimeEdge {
     uint64_t q;
     size_t relation_index;
 
-    [[nodiscard]] friend constexpr bool operator==(
-        const TwoLargePrimeEdge&,
-        const TwoLargePrimeEdge&) = default;
+    [[nodiscard]] friend constexpr bool operator==(const TwoLargePrimeEdge&,
+                                                   const TwoLargePrimeEdge&) = default;
 };
 
 /// A deterministic fundamental-cycle basis of the partial-relation graph.
@@ -169,8 +168,7 @@ template <class T> [[nodiscard]] inline bool vector_size_is_representable(size_t
 
 class DisjointSet {
 public:
-    explicit DisjointSet(size_t size)
-        : parent_(size), rank_(size, 0) {
+    explicit DisjointSet(size_t size) : parent_(size), rank_(size, 0) {
         std::iota(parent_.begin(), parent_.end(), size_t{0});
     }
 
@@ -194,8 +192,7 @@ public:
             return false;
         }
 
-        if (rank_[lhs] < rank_[rhs] ||
-            (rank_[lhs] == rank_[rhs] && lhs > rhs)) {
+        if (rank_[lhs] < rank_[rhs] || (rank_[lhs] == rank_[rhs] && lhs > rhs)) {
             std::swap(lhs, rhs);
         }
         parent_[rhs] = lhs;
@@ -295,8 +292,10 @@ build_two_large_prime_cycle_basis(std::span<const TwoLargePrimeEdge> edges,
 
     std::sort(canonical_edges.begin(), canonical_edges.end(),
               [](const CanonicalEdge& lhs, const CanonicalEdge& rhs) {
-                  if (lhs.p != rhs.p) return lhs.p < rhs.p;
-                  if (lhs.q != rhs.q) return lhs.q < rhs.q;
+                  if (lhs.p != rhs.p)
+                      return lhs.p < rhs.p;
+                  if (lhs.q != rhs.q)
+                      return lhs.q < rhs.q;
                   return lhs.relation_index < rhs.relation_index;
               });
 
@@ -340,8 +339,8 @@ build_two_large_prime_cycle_basis(std::span<const TwoLargePrimeEdge> edges,
     }
 
     const auto vertex_index = [&vertices](uint64_t vertex) {
-        return static_cast<size_t>(
-            std::lower_bound(vertices.begin(), vertices.end(), vertex) - vertices.begin());
+        return static_cast<size_t>(std::lower_bound(vertices.begin(), vertices.end(), vertex) -
+                                   vertices.begin());
     };
 
     std::vector<ForestAdjacency> forest(vertices.size());
@@ -446,8 +445,7 @@ build_two_large_prime_cycle_basis(std::span<const TwoLargePrimeEdge> edges,
         }
     }
 
-    if (rooted_component_count != component_count ||
-        component_count > vertices.size() ||
+    if (rooted_component_count != component_count || component_count > vertices.size() ||
         tree_edge_count != vertices.size() - component_count) {
         return TwoLargePrimeCycleBasisResultFactory::failure(
             TwoLargePrimeCycleBasisStatus::internal_invariant_failure);
@@ -503,8 +501,8 @@ build_two_large_prime_cycle_basis(std::span<const TwoLargePrimeEdge> edges,
             rhs = parent[rhs];
         }
         while (lhs != rhs) {
-            if (parent[lhs] == no_index || parent[rhs] == no_index ||
-                parent[lhs] == lhs || parent[rhs] == rhs) {
+            if (parent[lhs] == no_index || parent[rhs] == no_index || parent[lhs] == lhs ||
+                parent[rhs] == rhs) {
                 return TwoLargePrimeCycleBasisResultFactory::failure(
                     TwoLargePrimeCycleBasisStatus::internal_invariant_failure);
             }

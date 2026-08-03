@@ -87,15 +87,14 @@ static TestEnv make_env() {
     auto ctx = BaseMSelector::create_context(n, poly);
 
     FactorBaseBuilder::Options opts;
-    opts.rational_bound  = 200;
+    opts.rational_bound = 200;
     opts.algebraic_bound = 200;
     opts.parallel = false;
     auto fb = FactorBaseBuilder::build(ctx, opts);
     return TestEnv{std::move(n), std::move(ctx), std::move(fb)};
 }
 
-static std::vector<Relation> make_synthetic_relations(std::size_t n_rels,
-                                                      std::uint32_t seed = 42) {
+static std::vector<Relation> make_synthetic_relations(std::size_t n_rels, std::uint32_t seed = 42) {
     std::vector<Relation> rels;
     rels.reserve(n_rels);
     std::mt19937 rng(seed);
@@ -122,7 +121,7 @@ static std::vector<Relation> make_synthetic_relations(std::size_t n_rels,
         }
         if (has_lp(rng) < 30) {
             std::uint64_t p = static_cast<std::uint64_t>(lp_p(rng));
-            std::uint64_t root = p / 2;  // arbitrary root
+            std::uint64_t root = p / 2; // arbitrary root
             r.algebraic_large_prime.push_back({p, root, 1});
         }
         rels.push_back(std::move(r));
@@ -133,14 +132,18 @@ static std::vector<Relation> make_synthetic_relations(std::size_t n_rels,
 // Compare two SparseMatrix instances for exact equality
 // (same row/col count, same per-row indices after sort).
 static bool matrices_equal(const SparseMatrix& a, const SparseMatrix& b) {
-    if (a.num_rows() != b.num_rows()) return false;
-    if (a.num_cols() != b.num_cols()) return false;
+    if (a.num_rows() != b.num_rows())
+        return false;
+    if (a.num_cols() != b.num_cols())
+        return false;
     for (std::size_t i = 0; i < a.num_rows(); ++i) {
-        const auto& ai = a.row(i).indices();  // ensure_sorted() inside
+        const auto& ai = a.row(i).indices(); // ensure_sorted() inside
         const auto& bi = b.row(i).indices();
-        if (ai.size() != bi.size()) return false;
+        if (ai.size() != bi.size())
+            return false;
         for (std::size_t k = 0; k < ai.size(); ++k) {
-            if (ai[k] != bi[k]) return false;
+            if (ai[k] != bi[k])
+                return false;
         }
     }
     return true;
@@ -157,25 +160,37 @@ static bool relations_equal(const Relation& a, const Relation& b) {
 // Compare two ColumnMapping instances for full equivalence.
 // LP maps must agree both in size and per-key column index.
 static bool mappings_equal(const ColumnMapping& a, const ColumnMapping& b) {
-    if (a.num_rational_fb != b.num_rational_fb) return false;
-    if (a.num_algebraic_fb != b.num_algebraic_fb) return false;
-    if (a.num_large_primes_rat != b.num_large_primes_rat) return false;
-    if (a.num_large_primes_alg != b.num_large_primes_alg) return false;
-    if (a.num_qc_columns != b.num_qc_columns) return false;
-    if (a.num_class_group_columns != b.num_class_group_columns) return false;
-    if (a.num_schirokauer_columns != b.num_schirokauer_columns) return false;
+    if (a.num_rational_fb != b.num_rational_fb)
+        return false;
+    if (a.num_algebraic_fb != b.num_algebraic_fb)
+        return false;
+    if (a.num_large_primes_rat != b.num_large_primes_rat)
+        return false;
+    if (a.num_large_primes_alg != b.num_large_primes_alg)
+        return false;
+    if (a.num_qc_columns != b.num_qc_columns)
+        return false;
+    if (a.num_class_group_columns != b.num_class_group_columns)
+        return false;
+    if (a.num_schirokauer_columns != b.num_schirokauer_columns)
+        return false;
     if (a.sign_column != b.sign_column)
         return false;
-    if (a.has_sign_column != b.has_sign_column) return false;
-    if (a.rat_lp_to_col.size() != b.rat_lp_to_col.size()) return false;
+    if (a.has_sign_column != b.has_sign_column)
+        return false;
+    if (a.rat_lp_to_col.size() != b.rat_lp_to_col.size())
+        return false;
     for (const auto& [p, col] : a.rat_lp_to_col) {
         auto it = b.rat_lp_to_col.find(p);
-        if (it == b.rat_lp_to_col.end() || it->second != col) return false;
+        if (it == b.rat_lp_to_col.end() || it->second != col)
+            return false;
     }
-    if (a.alg_lp_to_col.size() != b.alg_lp_to_col.size()) return false;
+    if (a.alg_lp_to_col.size() != b.alg_lp_to_col.size())
+        return false;
     for (const auto& [key, col] : a.alg_lp_to_col) {
         auto it = b.alg_lp_to_col.find(key);
-        if (it == b.alg_lp_to_col.end() || it->second != col) return false;
+        if (it == b.alg_lp_to_col.end() || it->second != col)
+            return false;
     }
     return a.qc_prime_roots == b.qc_prime_roots && a.schirokauer_primes == b.schirokauer_primes;
 }
@@ -188,10 +203,10 @@ static bool build_results_equal(const MatrixBuildResult& a, const MatrixBuildRes
 static MatrixBuilderConfig minimal_mb_config() {
     MatrixBuilderConfig cfg;
     cfg.include_sign_column = true;
-    cfg.include_qc_columns  = false;  // skip QC: small N, slow root search
+    cfg.include_qc_columns = false; // skip QC: small N, slow root search
     cfg.include_class_group = false;
     cfg.include_schirokauer = true;
-    cfg.schirokauer_primes  = {2};
+    cfg.schirokauer_primes = {2};
     cfg.verbose = false;
     return cfg;
 }
@@ -242,10 +257,9 @@ void test_vector_source_equivalence_batch_sizes() {
 
         CHECK(mappings_equal(vec_result.mapping, stream_result.mapping));
         CHECK(matrices_equal(vec_result.matrix, stream_result.matrix));
-        std::cout << "  n=" << n
-                  << " vec=" << vec_result.matrix.num_rows() << "x" << vec_result.matrix.num_cols()
-                  << " stream=" << stream_result.matrix.num_rows() << "x" << stream_result.matrix.num_cols()
-                  << " (match)" << std::endl;
+        std::cout << "  n=" << n << " vec=" << vec_result.matrix.num_rows() << "x"
+                  << vec_result.matrix.num_cols() << " stream=" << stream_result.matrix.num_rows()
+                  << "x" << stream_result.matrix.num_cols() << " (match)" << std::endl;
     }
     std::cout << "  PASS" << std::endl;
 }
@@ -451,11 +465,9 @@ void test_sge_equivalence() {
     CHECK(matrices_equal(vec_sge.reduced_matrix, stream_sge.reduced_matrix));
 
     std::cout << "  PASS (matrix " << vec_result.matrix.num_rows() << "x"
-              << vec_result.matrix.num_cols() << " → "
-              << vec_sge.reduced_matrix.num_rows() << "x"
-              << vec_sge.reduced_matrix.num_cols() << ", w1="
-              << vec_sge.weight1_eliminated << " w2=" << vec_sge.weight2_merged << ")"
-              << std::endl;
+              << vec_result.matrix.num_cols() << " → " << vec_sge.reduced_matrix.num_rows() << "x"
+              << vec_sge.reduced_matrix.num_cols() << ", w1=" << vec_sge.weight1_eliminated
+              << " w2=" << vec_sge.weight2_merged << ")" << std::endl;
 }
 
 void test_preprocess_streaming_convenience() {
@@ -469,8 +481,7 @@ void test_preprocess_streaming_convenience() {
     auto vec_sge = SGE::preprocess(vec_result.matrix, sge_config);
 
     VectorRelationSource src(rels);
-    auto combined = preprocess_streaming(src, env.fb, env.ctx,
-                                          minimal_mb_config(), sge_config);
+    auto combined = preprocess_streaming(src, env.fb, env.ctx, minimal_mb_config(), sge_config);
 
     CHECK(mappings_equal(vec_result.mapping, combined.build_result.mapping));
     CHECK(matrices_equal(vec_result.matrix, combined.build_result.matrix));
@@ -486,9 +497,8 @@ void test_ooc_roundtrip_streaming() {
 
     // Write relations through OOCRelationWriter so we exercise the on-disk
     // serialize/deserialize path (mmap → Relation reconstruction).
-    std::string base_path = gnfs::util::temp_path(
-        "gnfs_sge_streaming_test_" +
-        std::to_string(gnfs::util::process_id()));
+    std::string base_path = gnfs::util::temp_path("gnfs_sge_streaming_test_" +
+                                                  std::to_string(gnfs::util::process_id()));
     {
         OOCRelationWriter writer(base_path);
         for (const auto& r : rels) {
@@ -633,11 +643,10 @@ void test_sge_streaming_with_lps() {
     CHECK(vec_sge.weight1_eliminated == stream_sge.weight1_eliminated);
     CHECK(vec_sge.weight2_merged == stream_sge.weight2_merged);
 
-    std::cout << "  PASS (LP cols=" << vec_result.mapping.num_large_primes_rat
-              << ", reduce " << vec_result.matrix.num_rows() << "x"
-              << vec_result.matrix.num_cols() << " → "
-              << vec_sge.reduced_matrix.num_rows() << "x"
-              << vec_sge.reduced_matrix.num_cols() << ")" << std::endl;
+    std::cout << "  PASS (LP cols=" << vec_result.mapping.num_large_primes_rat << ", reduce "
+              << vec_result.matrix.num_rows() << "x" << vec_result.matrix.num_cols() << " → "
+              << vec_sge.reduced_matrix.num_rows() << "x" << vec_sge.reduced_matrix.num_cols()
+              << ")" << std::endl;
 }
 
 // ───────────────────────── main ─────────────────────────

@@ -5,6 +5,7 @@
 #include <gnfs/siqs/shadow_assembly.hpp>
 #include <gnfs/siqs/shadow_matrix.hpp>
 #include <gnfs/siqs/siqs.hpp>
+#include <gnfs/util/joining_thread.hpp>
 #include <gnfs/util/process_memory.hpp>
 
 #include <algorithm>
@@ -955,7 +956,7 @@ struct ProbeRecord final {
     std::vector<std::exception_ptr> worker_errors(record.resolved_workers);
     std::atomic<bool> cancel_workers{false};
     LaunchGate launch_gate(record.resolved_workers);
-    std::vector<std::jthread> workers;
+    std::vector<gnfs::util::JoiningThread> workers;
     workers.reserve(record.resolved_workers);
     try {
         for (size_t worker = 0; worker < record.resolved_workers; ++worker) {

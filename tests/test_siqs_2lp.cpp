@@ -1,7 +1,7 @@
 // test_siqs_2lp.cpp - strict SIQS two-large-prime normalization contracts
 
-#include <gnfs/siqs/two_large_prime.hpp>
 #include <gnfs/siqs/siqs.hpp>
+#include <gnfs/siqs/two_large_prime.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -15,35 +15,33 @@
 namespace {
 
 using gnfs::core::Integer;
-using gnfs::siqs::FBPrime;
 using gnfs::siqs::classify_siqs_residual;
+using gnfs::siqs::FBPrime;
 using gnfs::siqs::nonnegative_mpz_to_uint64_checked;
 using gnfs::siqs::normalize_two_large_prime;
 using gnfs::siqs::sieve_polynomial;
-using gnfs::siqs::SIQSPoly;
-using gnfs::siqs::SIQSRelation;
 using gnfs::siqs::SIQSLiveSieveCaptureController;
 using gnfs::siqs::SIQSLiveSieveCaptureStopReason;
 using gnfs::siqs::SIQSLiveSieveRelationKind;
+using gnfs::siqs::SIQSPoly;
+using gnfs::siqs::SIQSRelation;
 using gnfs::siqs::split_cofactor_64;
 using gnfs::siqs::TwoLargePrimeFactors;
 
 int checks_passed = 0;
 int checks_failed = 0;
 
-#define CHECK(condition)                                                        \
-    do {                                                                        \
-        if (condition) {                                                        \
-            ++checks_passed;                                                    \
-        } else {                                                                \
-            ++checks_failed;                                                    \
-            std::cerr << "FAIL: " #condition " at " << __FILE__ << ':'       \
-                      << __LINE__ << '\n';                                      \
-        }                                                                       \
+#define CHECK(condition)                                                                           \
+    do {                                                                                           \
+        if (condition) {                                                                           \
+            ++checks_passed;                                                                       \
+        } else {                                                                                   \
+            ++checks_failed;                                                                       \
+            std::cerr << "FAIL: " #condition " at " << __FILE__ << ':' << __LINE__ << '\n';        \
+        }                                                                                          \
     } while (false)
 
-void check_factors(const std::optional<TwoLargePrimeFactors>& result,
-                   uint64_t expected_p,
+void check_factors(const std::optional<TwoLargePrimeFactors>& result, uint64_t expected_p,
                    uint64_t expected_q) {
     CHECK(result.has_value());
     if (result) {
@@ -53,16 +51,12 @@ void check_factors(const std::optional<TwoLargePrimeFactors>& result,
 }
 
 void test_existing_splitter_accepts_exact_semiprimes() {
-    check_factors(normalize_two_large_prime(7 * 13, 13, split_cofactor_64(7 * 13)),
-                  7,
-                  13);
+    check_factors(normalize_two_large_prime(7 * 13, 13, split_cofactor_64(7 * 13)), 7, 13);
 
     constexpr uint64_t repeated_prime = 97;
     constexpr uint64_t square = repeated_prime * repeated_prime;
-    check_factors(normalize_two_large_prime(
-                      square, repeated_prime, split_cofactor_64(square)),
-                  repeated_prime,
-                  repeated_prime);
+    check_factors(normalize_two_large_prime(square, repeated_prime, split_cofactor_64(square)),
+                  repeated_prime, repeated_prime);
 }
 
 void test_candidate_order_is_canonicalized() {
@@ -84,8 +78,7 @@ void test_non_semiprimes_are_rejected() {
     // project-wide deterministic uint64 primality predicate must reject it.
     constexpr uint64_t pseudoprime = UINT64_C(341550071728321);
     constexpr uint64_t pseudoprime_product = 2 * pseudoprime;
-    CHECK(!normalize_two_large_prime(
-        pseudoprime_product, pseudoprime, {2, pseudoprime}));
+    CHECK(!normalize_two_large_prime(pseudoprime_product, pseudoprime, {2, pseudoprime}));
 }
 
 void test_bounds_and_exact_product_are_required() {
@@ -96,10 +89,8 @@ void test_bounds_and_exact_product_are_required() {
     CHECK(!normalize_two_large_prime(4 * 9, 9, {4, 9}));
 
     // A forged pair whose multiplication would wrap must still fail closed.
-    CHECK(!normalize_two_large_prime(
-        15,
-        std::numeric_limits<uint64_t>::max(),
-        {std::numeric_limits<uint64_t>::max(), 15}));
+    CHECK(!normalize_two_large_prime(15, std::numeric_limits<uint64_t>::max(),
+                                     {std::numeric_limits<uint64_t>::max(), 15}));
 }
 
 void test_residual_classification_is_exact_and_deterministic() {
@@ -131,12 +122,10 @@ void test_residual_classification_is_exact_and_deterministic() {
     // raw composite candidate; strict split normalization rejects it later if
     // it is not exactly a product of two bounded primes.
     constexpr uint64_t pseudoprime = UINT64_C(341550071728321);
-    const auto pseudoprime_candidate =
-        classify_siqs_residual(pseudoprime, 100, pseudoprime);
+    const auto pseudoprime_candidate = classify_siqs_residual(pseudoprime, 100, pseudoprime);
     CHECK(pseudoprime_candidate.has_value());
     if (pseudoprime_candidate) {
-        CHECK(pseudoprime_candidate->kind ==
-              SIQSLiveSieveRelationKind::two_lp_candidate);
+        CHECK(pseudoprime_candidate->kind == SIQSLiveSieveRelationKind::two_lp_candidate);
     }
 }
 
@@ -165,10 +154,8 @@ void test_nonnegative_mpz_to_uint64_checked() {
 }
 
 std::vector<SIQSRelation> collect_gmp_fallback_relations(
-        const char* cofactor_text,
-        SIQSLiveSieveCaptureController* live_capture = nullptr,
-        uint64_t two_large_prime_bound =
-            std::numeric_limits<uint64_t>::max()) {
+    const char* cofactor_text, SIQSLiveSieveCaptureController* live_capture = nullptr,
+    uint64_t two_large_prime_bound = std::numeric_limits<uint64_t>::max()) {
     const Integer cofactor(cofactor_text);
     Integer q_value;
     mpz_mul_2exp(q_value.get_mpz(), cofactor.get_mpz(), 100);
@@ -196,27 +183,15 @@ std::vector<SIQSRelation> collect_gmp_fallback_relations(
     std::vector<uint8_t> sieve_buffer;
     std::vector<uint8_t> exponent_buffer(factor_base.size(), 0);
 
-    sieve_polynomial(poly,
-                     modulus,
-                     factor_base,
-                     1,
-                     0,
-                     3,
-                     std::numeric_limits<uint32_t>::max(),
-                     two_large_prime_bound,
-                     relations,
-                     relations_mutex,
-                     sieve_buffer,
-                     exponent_buffer,
-                     live_capture);
+    sieve_polynomial(poly, modulus, factor_base, 1, 0, 3, std::numeric_limits<uint32_t>::max(),
+                     two_large_prime_bound, relations, relations_mutex, sieve_buffer,
+                     exponent_buffer, live_capture);
     return relations;
 }
 
 std::vector<SIQSRelation> collect_native_relations(
-        const char* cofactor_text,
-        SIQSLiveSieveCaptureController* live_capture = nullptr,
-        uint64_t two_large_prime_bound = 10'000,
-        std::vector<uint8_t>* reusable_exponents = nullptr) {
+    const char* cofactor_text, SIQSLiveSieveCaptureController* live_capture = nullptr,
+    uint64_t two_large_prime_bound = 10'000, std::vector<uint8_t>* reusable_exponents = nullptr) {
     const Integer cofactor(cofactor_text);
     Integer q_value;
     mpz_mul_2exp(q_value.get_mpz(), cofactor.get_mpz(), 20);
@@ -245,29 +220,15 @@ std::vector<SIQSRelation> collect_native_relations(
         exponent_buffer.assign(factor_base.size(), 0);
     }
 
-    sieve_polynomial(poly,
-                     modulus,
-                     factor_base,
-                     1,
-                     0,
-                     3,
-                     100,
-                     two_large_prime_bound,
-                     relations,
-                     relations_mutex,
-                     sieve_buffer,
-                     exponent_buffer,
-                     live_capture);
+    sieve_polynomial(poly, modulus, factor_base, 1, 0, 3, 100, two_large_prime_bound, relations,
+                     relations_mutex, sieve_buffer, exponent_buffer, live_capture);
     return relations;
 }
 
-[[nodiscard]] bool same_relation(const SIQSRelation& lhs,
-                                 const SIQSRelation& rhs) {
+[[nodiscard]] bool same_relation(const SIQSRelation& lhs, const SIQSRelation& rhs) {
     return lhs.value == rhs.value && lhs.negative == rhs.negative &&
-           lhs.large_prime == rhs.large_prime &&
-           lhs.large_prime2 == rhs.large_prime2 &&
-           lhs.exponents == rhs.exponents &&
-           lhs.fb_indices == rhs.fb_indices &&
+           lhs.large_prime == rhs.large_prime && lhs.large_prime2 == rhs.large_prime2 &&
+           lhs.exponents == rhs.exponents && lhs.fb_indices == rhs.fb_indices &&
            lhs.merge_lps == rhs.merge_lps;
 }
 
@@ -296,10 +257,8 @@ void test_gmp_capture_is_bounded_before_dense_relation_allocation() {
     const auto baseline = collect_gmp_fallback_relations(composite);
     CHECK(baseline.size() == 1);
 
-    SIQSLiveSieveCaptureController roomy_capture(
-        {10, std::numeric_limits<std::size_t>::max()});
-    const auto captured =
-        collect_gmp_fallback_relations(composite, &roomy_capture);
+    SIQSLiveSieveCaptureController roomy_capture({10, std::numeric_limits<std::size_t>::max()});
+    const auto captured = collect_gmp_fallback_relations(composite, &roomy_capture);
     CHECK(captured.size() == baseline.size());
     if (captured.size() == baseline.size() && !captured.empty()) {
         CHECK(same_relation(captured.front(), baseline.front()));
@@ -308,26 +267,22 @@ void test_gmp_capture_is_bounded_before_dense_relation_allocation() {
     CHECK(!roomy_capture.stopped());
     CHECK(roomy.captured_relations == captured.size());
     CHECK(roomy.observed_two_lp_candidates == 1);
-    CHECK(roomy.threshold_candidates ==
-          roomy.unrepresentable_residuals + roomy.rejected_residuals +
-              roomy.observed_full_relations + roomy.observed_one_lp_relations +
-              roomy.observed_two_lp_candidates);
+    CHECK(roomy.threshold_candidates == roomy.unrepresentable_residuals + roomy.rejected_residuals +
+                                            roomy.observed_full_relations +
+                                            roomy.observed_one_lp_relations +
+                                            roomy.observed_two_lp_candidates);
 
-    SIQSLiveSieveCaptureController relation_limited(
-        {1, std::numeric_limits<std::size_t>::max()});
-    const auto final_relation =
-        collect_gmp_fallback_relations(composite, &relation_limited);
+    SIQSLiveSieveCaptureController relation_limited({1, std::numeric_limits<std::size_t>::max()});
+    const auto final_relation = collect_gmp_fallback_relations(composite, &relation_limited);
     CHECK(final_relation.size() == 1);
-    CHECK(relation_limited.stop_reason() ==
-          SIQSLiveSieveCaptureStopReason::relation_limit);
+    CHECK(relation_limited.stop_reason() == SIQSLiveSieveCaptureStopReason::relation_limit);
     CHECK(relation_limited.snapshot().captured_relations == 1);
 
     SIQSLiveSieveCaptureController payload_limited({10, 1});
     const auto rejected_before_allocation =
         collect_gmp_fallback_relations(composite, &payload_limited);
     CHECK(rejected_before_allocation.empty());
-    CHECK(payload_limited.stop_reason() ==
-          SIQSLiveSieveCaptureStopReason::payload_limit);
+    CHECK(payload_limited.stop_reason() == SIQSLiveSieveCaptureStopReason::payload_limit);
     CHECK(payload_limited.snapshot().observed_two_lp_candidates == 1);
     CHECK(payload_limited.snapshot().captured_relations == 0);
     CHECK(payload_limited.snapshot().captured_payload_bytes == 0);
@@ -335,12 +290,9 @@ void test_gmp_capture_is_bounded_before_dense_relation_allocation() {
 
 void test_capture_observation_preserves_one_lp_only_output() {
     for (const char* residual : {"1", "97", "4294967299"}) {
-        const auto baseline =
-            collect_gmp_fallback_relations(residual, nullptr, 0);
-        SIQSLiveSieveCaptureController observer(
-            {10, std::numeric_limits<std::size_t>::max()});
-        const auto observed =
-            collect_gmp_fallback_relations(residual, &observer, 0);
+        const auto baseline = collect_gmp_fallback_relations(residual, nullptr, 0);
+        SIQSLiveSieveCaptureController observer({10, std::numeric_limits<std::size_t>::max()});
+        const auto observed = collect_gmp_fallback_relations(residual, &observer, 0);
 
         CHECK(observed.size() == baseline.size());
         if (observed.size() == baseline.size()) {
@@ -355,8 +307,7 @@ void test_native_capture_matches_null_path_and_cleans_reusable_exponents() {
 #if defined(__SIZEOF_INT128__)
     for (const char* residual : {"1", "97", "91"}) {
         const auto baseline = collect_native_relations(residual);
-        SIQSLiveSieveCaptureController observer(
-            {10, std::numeric_limits<std::size_t>::max()});
+        SIQSLiveSieveCaptureController observer({10, std::numeric_limits<std::size_t>::max()});
         const auto observed = collect_native_relations(residual, &observer);
         CHECK(observed.size() == baseline.size());
         if (observed.size() == baseline.size()) {
@@ -367,19 +318,14 @@ void test_native_capture_matches_null_path_and_cleans_reusable_exponents() {
     }
 
     std::vector<uint8_t> exponent_buffer(2, 0);
-    SIQSLiveSieveCaptureController exact_limit(
-        {1, std::numeric_limits<std::size_t>::max()});
-    const auto first =
-        collect_native_relations("91", &exact_limit, 10'000, &exponent_buffer);
+    SIQSLiveSieveCaptureController exact_limit({1, std::numeric_limits<std::size_t>::max()});
+    const auto first = collect_native_relations("91", &exact_limit, 10'000, &exponent_buffer);
     CHECK(first.size() == 1);
-    CHECK(exact_limit.stop_reason() ==
-          SIQSLiveSieveCaptureStopReason::relation_limit);
+    CHECK(exact_limit.stop_reason() == SIQSLiveSieveCaptureStopReason::relation_limit);
     CHECK(exponent_buffer == std::vector<uint8_t>({0, 0}));
 
-    SIQSLiveSieveCaptureController replay(
-        {1, std::numeric_limits<std::size_t>::max()});
-    const auto second =
-        collect_native_relations("91", &replay, 10'000, &exponent_buffer);
+    SIQSLiveSieveCaptureController replay({1, std::numeric_limits<std::size_t>::max()});
+    const auto second = collect_native_relations("91", &replay, 10'000, &exponent_buffer);
     CHECK(second.size() == 1);
     if (!second.empty()) {
         CHECK(second.front().exponents.size() == 2);
@@ -390,18 +336,13 @@ void test_native_capture_matches_null_path_and_cleans_reusable_exponents() {
     CHECK(exponent_buffer == std::vector<uint8_t>({0, 0}));
 
     SIQSLiveSieveCaptureController payload_limit({10, 1});
-    CHECK(collect_native_relations(
-              "91", &payload_limit, 10'000, &exponent_buffer)
-              .empty());
-    CHECK(payload_limit.stop_reason() ==
-          SIQSLiveSieveCaptureStopReason::payload_limit);
+    CHECK(collect_native_relations("91", &payload_limit, 10'000, &exponent_buffer).empty());
+    CHECK(payload_limit.stop_reason() == SIQSLiveSieveCaptureStopReason::payload_limit);
     CHECK(exponent_buffer == std::vector<uint8_t>({0, 0}));
 
-    SIQSLiveSieveCaptureController unrepresentable(
-        {10, std::numeric_limits<std::size_t>::max()});
-    const auto too_wide = collect_native_relations(
-        "18446744073709551617", &unrepresentable,
-        std::numeric_limits<uint64_t>::max());
+    SIQSLiveSieveCaptureController unrepresentable({10, std::numeric_limits<std::size_t>::max()});
+    const auto too_wide = collect_native_relations("18446744073709551617", &unrepresentable,
+                                                   std::numeric_limits<uint64_t>::max());
     CHECK(too_wide.empty());
     CHECK(unrepresentable.snapshot().unrepresentable_residuals > 0);
     CHECK(unrepresentable.snapshot().captured_relations == 0);
@@ -422,7 +363,6 @@ int main() {
     test_capture_observation_preserves_one_lp_only_output();
     test_native_capture_matches_null_path_and_cleans_reusable_exponents();
 
-    std::cout << checks_passed << " checks passed, " << checks_failed
-              << " checks failed\n";
+    std::cout << checks_passed << " checks passed, " << checks_failed << " checks failed\n";
     return checks_failed == 0 ? 0 : 1;
 }

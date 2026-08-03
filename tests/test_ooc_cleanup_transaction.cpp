@@ -1951,7 +1951,7 @@ using NamespaceTreeSnapshot = std::vector<NamespaceTreeEntrySnapshot>;
                 throw std::runtime_error("could not inspect namespace snapshot file");
 #else
                 const auto inspect_native = [&path] {
-                    struct stat result{};
+                    struct stat result {};
                     int inspected = -1;
                     do {
                         inspected = ::lstat(path.c_str(), &result);
@@ -8904,7 +8904,7 @@ void check_adopted_private_handoff_reader(OOCPrivateHandoffReader& adopted,
 
 [[nodiscard]] gnfs::util::durable_immutable_record::NativeIdentity
 native_identity_for_test_path(const std::filesystem::path& path) {
-    struct stat metadata{};
+    struct stat metadata {};
     if (::lstat(path.c_str(), &metadata) != 0) {
         throw std::system_error(errno, std::generic_category(), "lstat conversion binding");
     }
@@ -10984,7 +10984,7 @@ void test_authorized_cleanup_v2_canonical_intent_conflicts_are_zero_mutation() {
             CHECK(native_identity_for_test_path(mutation_path) != original_identity);
         } else {
             CHECK(native_identity_for_test_path(mutation_path) == original_identity);
-            struct stat metadata{};
+            struct stat metadata {};
             CHECK(::lstat(mutation_path.c_str(), &metadata) == 0);
             CHECK((metadata.st_mode & static_cast<mode_t>(07777)) == static_cast<mode_t>(0400));
         }

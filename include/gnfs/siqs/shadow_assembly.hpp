@@ -7,6 +7,7 @@
 #include <gnfs/siqs/two_large_prime_adapter.hpp>
 #include <gnfs/siqs/two_large_prime_graph.hpp>
 #include <gnfs/siqs/two_large_prime_materializer.hpp>
+#include <gnfs/util/joining_thread.hpp>
 
 #include <algorithm>
 #include <bit>
@@ -978,7 +979,7 @@ assemble_siqs_shadow_rows_bounded(std::span<const SIQSRelation> raw_relations,
         const size_t worker_count =
             std::min(cycle_slots.size(), static_cast<size_t>(options.materialization_workers));
         try {
-            std::vector<std::jthread> workers;
+            std::vector<gnfs::util::JoiningThread> workers;
             workers.reserve(worker_count);
             const size_t cycles_per_worker = cycle_slots.size() / worker_count;
             const size_t extra_cycles = cycle_slots.size() % worker_count;

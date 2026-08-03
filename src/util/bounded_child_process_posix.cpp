@@ -410,7 +410,7 @@ static_assert(sizeof(DescriptorPreExecFailure) <= PIPE_BUF);
 }
 
 [[nodiscard]] int reset_descriptor_child_signals() noexcept {
-    struct sigaction default_action{};
+    struct sigaction default_action {};
     default_action.sa_handler = SIG_DFL;
     if (::sigemptyset(&default_action.sa_mask) != 0) {
         return errno;

@@ -45,12 +45,10 @@ static_assert(noexcept(std::declval<SIQSLiveSieveCaptureController&>().try_reser
     return SIQSLiveSieveRelationPayloadShape{count, 0, 0, 0};
 }
 
-[[nodiscard]] bool reserve_and_commit(
-    SIQSLiveSieveCaptureController& controller,
-    SIQSLiveSieveRelationKind kind,
-    const SIQSLiveSieveRelationPayloadShape& shape) {
-    return controller.try_reserve_relation(kind, shape) &&
-           controller.commit_reserved_relation();
+[[nodiscard]] bool reserve_and_commit(SIQSLiveSieveCaptureController& controller,
+                                      SIQSLiveSieveRelationKind kind,
+                                      const SIQSLiveSieveRelationPayloadShape& shape) {
+    return controller.try_reserve_relation(kind, shape) && controller.commit_reserved_relation();
 }
 
 void check_empty_snapshot(const SIQSLiveSieveCaptureSnapshot& snapshot,
@@ -88,12 +86,14 @@ void test_invalid_limits_fail_closed() {
 
 void test_checked_payload_estimate() {
     const SIQSLiveSieveRelationPayloadShape shape{
-        11, 13, 17, 19,
+        11,
+        13,
+        17,
+        19,
     };
     const auto estimate = checked_siqs_live_sieve_relation_payload_bytes(shape);
     CHECK(estimate.has_value());
-    CHECK(estimate ==
-          11 + 13 * sizeof(uint8_t) + 17 * sizeof(uint32_t) + 19 * sizeof(uint64_t));
+    CHECK(estimate == 11 + 13 * sizeof(uint8_t) + 17 * sizeof(uint32_t) + 19 * sizeof(uint64_t));
     CHECK(checked_siqs_live_sieve_relation_payload_bytes({}) == 0);
 
     const size_t maximum = std::numeric_limits<size_t>::max();
@@ -112,8 +112,7 @@ void test_all_observation_kinds_and_residuals() {
     controller.observe_threshold_candidate();
     CHECK(reserve_and_commit(controller, SIQSLiveSieveRelationKind::one_lp, bytes(5)));
     controller.observe_threshold_candidate();
-    CHECK(reserve_and_commit(
-        controller, SIQSLiveSieveRelationKind::two_lp_candidate, bytes(7)));
+    CHECK(reserve_and_commit(controller, SIQSLiveSieveRelationKind::two_lp_candidate, bytes(7)));
     controller.observe_threshold_candidate();
     controller.observe_unrepresentable_residual();
     controller.observe_threshold_candidate();
@@ -189,9 +188,13 @@ void test_payload_cap_rejects_over_cap_relation() {
 void test_payload_estimate_overflow_stops_before_capture() {
     SIQSLiveSieveCaptureController controller({10, std::numeric_limits<size_t>::max()});
     const SIQSLiveSieveRelationPayloadShape overflowing{
-        0, 0, std::numeric_limits<size_t>::max(), 0,
+        0,
+        0,
+        std::numeric_limits<size_t>::max(),
+        0,
     };
-    CHECK(!controller.try_reserve_relation(SIQSLiveSieveRelationKind::two_lp_candidate, overflowing));
+    CHECK(
+        !controller.try_reserve_relation(SIQSLiveSieveRelationKind::two_lp_candidate, overflowing));
     CHECK(controller.stop_reason() == SIQSLiveSieveCaptureStopReason::size_overflow);
     CHECK(controller.snapshot().observed_two_lp_candidates == 1);
     CHECK(controller.snapshot().captured_relations == 0);
@@ -200,8 +203,7 @@ void test_payload_estimate_overflow_stops_before_capture() {
 
 void test_cancelled_reservation_does_not_claim_capture() {
     SIQSLiveSieveCaptureController controller({1, 10});
-    CHECK(controller.try_reserve_relation(
-        SIQSLiveSieveRelationKind::full, bytes(10)));
+    CHECK(controller.try_reserve_relation(SIQSLiveSieveRelationKind::full, bytes(10)));
     CHECK(!controller.stopped());
     CHECK(controller.snapshot().observed_full_relations == 1);
     CHECK(controller.snapshot().captured_relations == 0);
@@ -212,11 +214,9 @@ void test_cancelled_reservation_does_not_claim_capture() {
     CHECK(controller.snapshot().captured_relations == 0);
     CHECK(controller.snapshot().captured_payload_bytes == 0);
 
-    CHECK(controller.try_reserve_relation(
-        SIQSLiveSieveRelationKind::one_lp, bytes(10)));
+    CHECK(controller.try_reserve_relation(SIQSLiveSieveRelationKind::one_lp, bytes(10)));
     CHECK(controller.commit_reserved_relation());
-    CHECK(controller.stop_reason() ==
-          SIQSLiveSieveCaptureStopReason::relation_limit);
+    CHECK(controller.stop_reason() == SIQSLiveSieveCaptureStopReason::relation_limit);
     CHECK(controller.snapshot().observed_full_relations == 1);
     CHECK(controller.snapshot().observed_one_lp_relations == 1);
     CHECK(controller.snapshot().captured_relations == 1);
@@ -225,40 +225,33 @@ void test_cancelled_reservation_does_not_claim_capture() {
 
 void test_invalid_kind_and_transaction_state_fail_closed() {
     SIQSLiveSieveCaptureController invalid_kind({2, 10});
-    CHECK(!invalid_kind.try_reserve_relation(
-        static_cast<SIQSLiveSieveRelationKind>(255), bytes(1)));
-    CHECK(invalid_kind.stop_reason() ==
-          SIQSLiveSieveCaptureStopReason::invalid_relation_kind);
+    CHECK(
+        !invalid_kind.try_reserve_relation(static_cast<SIQSLiveSieveRelationKind>(255), bytes(1)));
+    CHECK(invalid_kind.stop_reason() == SIQSLiveSieveCaptureStopReason::invalid_relation_kind);
     CHECK(invalid_kind.snapshot().observed_full_relations == 0);
     CHECK(invalid_kind.snapshot().observed_one_lp_relations == 0);
     CHECK(invalid_kind.snapshot().observed_two_lp_candidates == 0);
 
     SIQSLiveSieveCaptureController missing_reservation({2, 10});
     CHECK(!missing_reservation.commit_reserved_relation());
-    CHECK(missing_reservation.stop_reason() ==
-          SIQSLiveSieveCaptureStopReason::invalid_state);
+    CHECK(missing_reservation.stop_reason() == SIQSLiveSieveCaptureStopReason::invalid_state);
 
     SIQSLiveSieveCaptureController pending_observer({2, 10});
-    CHECK(pending_observer.try_reserve_relation(
-        SIQSLiveSieveRelationKind::full, bytes(1)));
+    CHECK(pending_observer.try_reserve_relation(SIQSLiveSieveRelationKind::full, bytes(1)));
     pending_observer.observe_threshold_candidate();
-    CHECK(pending_observer.stop_reason() ==
-          SIQSLiveSieveCaptureStopReason::invalid_state);
+    CHECK(pending_observer.stop_reason() == SIQSLiveSieveCaptureStopReason::invalid_state);
     CHECK(pending_observer.snapshot().captured_relations == 0);
 }
 
 void test_cumulative_payload_overflow_fails_closed() {
     const size_t maximum = std::numeric_limits<size_t>::max();
     SIQSLiveSieveCaptureController controller({3, maximum});
-    CHECK(reserve_and_commit(
-        controller, SIQSLiveSieveRelationKind::full, bytes(maximum - 1)));
+    CHECK(reserve_and_commit(controller, SIQSLiveSieveRelationKind::full, bytes(maximum - 1)));
     CHECK(!controller.stopped());
     CHECK(controller.snapshot().captured_payload_bytes == maximum - 1);
 
-    CHECK(!controller.try_reserve_relation(
-        SIQSLiveSieveRelationKind::one_lp, bytes(2)));
-    CHECK(controller.stop_reason() ==
-          SIQSLiveSieveCaptureStopReason::size_overflow);
+    CHECK(!controller.try_reserve_relation(SIQSLiveSieveRelationKind::one_lp, bytes(2)));
+    CHECK(controller.stop_reason() == SIQSLiveSieveCaptureStopReason::size_overflow);
     CHECK(controller.snapshot().observed_one_lp_relations == 1);
     CHECK(controller.snapshot().captured_relations == 1);
     CHECK(controller.snapshot().captured_payload_bytes == maximum - 1);
@@ -278,8 +271,8 @@ void test_post_stop_is_fully_idempotent() {
         controller.observe_rejected_residual();
         CHECK(!controller.try_reserve_relation(SIQSLiveSieveRelationKind::full, bytes(1)));
         CHECK(!controller.try_reserve_relation(SIQSLiveSieveRelationKind::one_lp, bytes(1)));
-        CHECK(
-            !controller.try_reserve_relation(SIQSLiveSieveRelationKind::two_lp_candidate, bytes(1)));
+        CHECK(!controller.try_reserve_relation(SIQSLiveSieveRelationKind::two_lp_candidate,
+                                               bytes(1)));
         CHECK(!controller.commit_reserved_relation());
         CHECK(!controller.cancel_reserved_relation());
         CHECK(controller.snapshot() == stopped);

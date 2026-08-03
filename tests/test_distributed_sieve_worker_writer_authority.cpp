@@ -655,7 +655,7 @@ struct LeafFingerprint final {
 [[nodiscard]] bool regular_leaf_state_at(int directory, std::string_view leaf,
                                          bool expected_present, int& error,
                                          LeafFingerprint* fingerprint = nullptr) {
-    struct stat metadata{};
+    struct stat metadata {};
     int result = -1;
     do {
         result = ::fstatat(directory, std::string(leaf).c_str(), &metadata, AT_SYMLINK_NOFOLLOW);
@@ -777,7 +777,7 @@ using NamespaceSnapshot = std::map<std::string, NamespaceNode>;
 [[nodiscard]] NamespaceSnapshot snapshot_namespace(const std::filesystem::path& root) {
     NamespaceSnapshot result;
     for (const auto& item : std::filesystem::recursive_directory_iterator(root)) {
-        struct stat metadata{};
+        struct stat metadata {};
         CHECK(::lstat(item.path().c_str(), &metadata) == 0);
         NamespaceNode node{
             .device = static_cast<std::uint64_t>(metadata.st_dev),
@@ -861,7 +861,7 @@ inline constexpr std::string_view WORKER_HANDOFF_PENDING_LEAF =
     if (file < 0) {
         return errno;
     }
-    struct stat metadata{};
+    struct stat metadata {};
     int failure = 0;
     if (::fstat(file, &metadata) != 0) {
         failure = errno;
@@ -889,7 +889,7 @@ inline constexpr std::string_view WORKER_HANDOFF_PENDING_LEAF =
 }
 
 [[nodiscard]] int unlink_regular_at_durable(int directory, std::string_view leaf) noexcept {
-    struct stat metadata{};
+    struct stat metadata {};
     if (::fstatat(directory, std::string(leaf).c_str(), &metadata, AT_SYMLINK_NOFOLLOW) != 0) {
         return errno;
     }
@@ -1080,8 +1080,8 @@ void require_unfinalized_corpus(const std::filesystem::path& base) {
 
 void require_distinct_regular_inodes(const std::filesystem::path& left,
                                      const std::filesystem::path& right) {
-    struct stat left_metadata{};
-    struct stat right_metadata{};
+    struct stat left_metadata {};
+    struct stat right_metadata {};
     CHECK(::lstat(left.c_str(), &left_metadata) == 0);
     CHECK(::lstat(right.c_str(), &right_metadata) == 0);
     CHECK(S_ISREG(left_metadata.st_mode));
@@ -1092,8 +1092,8 @@ void require_distinct_regular_inodes(const std::filesystem::path& left,
 
 void require_distinct_owner_directories(const std::filesystem::path& left,
                                         const std::filesystem::path& right) {
-    struct stat left_metadata{};
-    struct stat right_metadata{};
+    struct stat left_metadata {};
+    struct stat right_metadata {};
     CHECK(::lstat(left.c_str(), &left_metadata) == 0);
     CHECK(::lstat(right.c_str(), &right_metadata) == 0);
     CHECK(S_ISDIR(left_metadata.st_mode));
@@ -2337,8 +2337,8 @@ void test_writer_authority_happy_path(const std::filesystem::path& executable) {
                                                  ".gnfs-test-adopted-index-displaced") == 0);
     CHECK(replace_regular_at_corrupt_same_extent(directory, "corpus.reldata",
                                                  ".gnfs-test-adopted-data-displaced") == 0);
-    struct stat named_index{};
-    struct stat named_data{};
+    struct stat named_index {};
+    struct stat named_data {};
     CHECK(::fstatat(directory, "corpus.relidx", &named_index, AT_SYMLINK_NOFOLLOW) == 0);
     CHECK(::fstatat(directory, "corpus.reldata", &named_data, AT_SYMLINK_NOFOLLOW) == 0);
     CHECK(static_cast<std::uint64_t>(named_index.st_dev) != envelope.index.identity.first ||

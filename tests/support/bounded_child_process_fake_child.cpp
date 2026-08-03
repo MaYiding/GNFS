@@ -435,7 +435,7 @@ template <class Char> int fake_child_main(int argc, Char* argv[]) {
     }
 #if !defined(_WIN32)
     if (mode == NativeView("--signal-dispositions")) {
-        struct sigaction action{};
+        struct sigaction action {};
         for (const int signal_number : {SIGUSR1, SIGALRM, SIGCHLD}) {
             if (::sigaction(signal_number, nullptr, &action) != 0 || action.sa_handler != SIG_DFL) {
                 return 70;

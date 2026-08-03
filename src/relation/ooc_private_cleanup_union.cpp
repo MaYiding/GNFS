@@ -118,8 +118,8 @@ public:
     }
 
     void require_stable() const {
-        struct stat held{};
-        struct stat named{};
+        struct stat held {};
+        struct stat named {};
         if (::fstat(descriptor_, &held) != 0 || ::lstat(path_.c_str(), &named) != 0) {
             fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None,
                  posix_error(errno == 0 ? EACCES : errno));
@@ -140,8 +140,8 @@ private:
     }
 
     void require_initial_binding() {
-        struct stat held{};
-        struct stat named{};
+        struct stat held {};
+        struct stat named {};
         if (::fstat(descriptor_, &held) != 0 || ::lstat(path_.c_str(), &named) != 0 ||
             !valid_parent(held) || !valid_parent(named) || held.st_dev != named.st_dev ||
             held.st_ino != named.st_ino) {
@@ -193,7 +193,7 @@ void require_recovery_file_expectation(
              protocol_error());
     }
 #if !defined(_WIN32)
-    struct stat named{};
+    struct stat named {};
     if (::lstat(path.c_str(), &named) != 0 || !S_ISREG(named.st_mode) || named.st_nlink != 1 ||
         named.st_size < 0 || stable_identity(posix_identity(named)) != expected->identity ||
         static_cast<std::uint64_t>(named.st_size) != expected->extent ||
@@ -450,10 +450,10 @@ OOCPrivateLeaseRecoveryBorrowedBaseLockV1::consume(const OOCCleanupPaths& paths,
                (metadata.st_mode & static_cast<mode_t>(07777)) == static_cast<mode_t>(0600) &&
                metadata.st_uid == ::geteuid();
     };
-    struct stat source_parent{};
-    struct stat retained_parent{};
-    struct stat held_lock{};
-    struct stat named_lock{};
+    struct stat source_parent {};
+    struct stat retained_parent {};
+    struct stat held_lock {};
+    struct stat named_lock {};
     if (::fstat(parent_descriptor_, &source_parent) != 0 ||
         ::fstat(retained_parent_descriptor, &retained_parent) != 0 ||
         ::fstat(lock_descriptor_, &held_lock) != 0 ||
@@ -722,7 +722,7 @@ observe_platform_limited_handoff_leaf(const std::filesystem::path& path) {
     }
     return PrivateHandoffLeafObservationKind::Unsupported;
 #else
-    struct stat named{};
+    struct stat named {};
     int result = -1;
     do {
         result = ::lstat(path.c_str(), &named);
@@ -998,7 +998,7 @@ scan_private_cleanup_union_directory(const OOCCleanupPaths& paths,
     const auto allowed = private_cleanup_union_allowed_leaves(paths);
     PrivateCleanupUnionDirectoryInventory inventory;
 
-    struct attrlist requested{};
+    struct attrlist requested {};
     requested.bitmapcount = ATTR_BIT_MAP_COUNT;
     requested.commonattr = ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_NAME | ATTR_CMN_ERROR;
     alignas(std::uint64_t) std::array<std::byte, 4096> buffer{};
@@ -1092,7 +1092,7 @@ scan_private_cleanup_union_directory(const OOCCleanupPaths& paths,
                 continue;
             }
 
-            struct stat metadata{};
+            struct stat metadata {};
             int inspected = -1;
             do {
                 inspected = ::fstatat(descriptor, leaf.c_str(), &metadata, AT_SYMLINK_NOFOLLOW);
@@ -1818,6 +1818,10 @@ void require_private_lease_removal_generation_unchanged(PrivateCleanupActionPerm
     }
 }
 
+[[noreturn]] void fail_private_cleanup_witness_replacement() {
+    fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None, protocol_error());
+}
+
 #if defined(__APPLE__)
 [[nodiscard]] bool cleanup_leaf_witness_equal(const PrivateCleanupLeafWitness& lhs,
                                               const PrivateCleanupLeafWitness& rhs) noexcept {
@@ -1839,10 +1843,6 @@ lease_marker_witness_equal(const std::optional<LoadedPrivateLeaseMarker>& lhs,
         return false;
     }
     return !lhs || (lhs->record == rhs->record && lhs->identity == rhs->identity);
-}
-
-[[noreturn]] void fail_private_cleanup_witness_replacement() {
-    fail(OOCCleanupStatus::ForeignReplacementPreserved, OOCCleanupStage::None, protocol_error());
 }
 
 void require_private_cleanup_witness_unchanged(const OOCCleanupPaths& paths, const BaseLock& lock,
@@ -2477,7 +2477,7 @@ void move_exact_pending_to_rollback(
     PrivateDirectoryHandle& source, PrivateDirectoryHandle& destination,
     const std::filesystem::path& source_leaf, const std::filesystem::path& destination_leaf,
     const util::durable_immutable_record::RecordSnapshot& expected) {
-    struct stat metadata{};
+    struct stat metadata {};
     int result = -1;
     do {
         result = ::fstatat(static_cast<int>(source.native_handle()), source_leaf.c_str(), &metadata,
@@ -5686,8 +5686,8 @@ public:
                  OOCCleanupStage::None, posix_error(saved_errno));
         }
 
-        struct stat held{};
-        struct stat named{};
+        struct stat held {};
+        struct stat named {};
         if (::fstat(descriptor_, &held) != 0) {
             const int saved_errno = errno;
             release_noexcept();
@@ -5721,7 +5721,7 @@ public:
         if (leaf.empty() || leaf.has_parent_path() || path_contains_nul(leaf)) {
             fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
         }
-        struct stat metadata{};
+        struct stat metadata {};
         int result = -1;
         do {
             result = ::fstatat(descriptor_, leaf.c_str(), &metadata, AT_SYMLINK_NOFOLLOW);
@@ -5737,8 +5737,8 @@ public:
     }
 
     void require_stable() const {
-        struct stat held{};
-        struct stat named{};
+        struct stat held {};
+        struct stat named {};
         if (::fstat(descriptor_, &held) != 0) {
             fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, posix_error(errno));
         }
@@ -5814,7 +5814,7 @@ inspect_authorized_cleanup_leaf_v2(util::durable_immutable_record::NativeHandle 
     if (leaf.empty() || leaf.has_parent_path() || path_contains_nul(leaf)) {
         fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
     }
-    struct stat metadata{};
+    struct stat metadata {};
     int result = -1;
     do {
         result = ::fstatat(static_cast<int>(directory_handle), leaf.c_str(), &metadata,

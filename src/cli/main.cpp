@@ -7,8 +7,8 @@
 //   gnfs --interactive               # REPL mode
 //   gnfs --help                      # show help
 
-#include <gnfs/api/factorizer.hpp>
 #include <gnfs/api/config.hpp>
+#include <gnfs/api/factorizer.hpp>
 #include <gnfs/api/i18n.hpp>
 #include <gnfs/api/pipeline.hpp>
 #include <gnfs/api/progress.hpp>
@@ -33,28 +33,35 @@ using gnfs::core::Integer;
 // ANSI color codes
 // ============================================================
 
-static const char* const RESET  = "\033[0m";
-static const char* const BOLD   = "\033[1m";
-static const char* const DIM    = "\033[2m";
-static const char* const GREEN  = "\033[32m";
+static const char* const RESET = "\033[0m";
+static const char* const BOLD = "\033[1m";
+static const char* const DIM = "\033[2m";
+static const char* const GREEN = "\033[32m";
 static const char* const YELLOW = "\033[33m";
-static const char* const CYAN   = "\033[36m";
-static const char* const RED    = "\033[31m";
-static const char* const WHITE  = "\033[37m";
+static const char* const CYAN = "\033[36m";
+static const char* const RED = "\033[31m";
+static const char* const WHITE = "\033[37m";
 
 static bool g_color = true;
 
 // ANSI helper — returns code if color enabled, empty string otherwise
-static const char* C(const char* code) { return g_color ? code : ""; }
+static const char* C(const char* code) {
+    return g_color ? code : "";
+}
 
 // Bilingual method name for CLI display (uses i18n METHOD_* strings)
 static const char* method_display_name(FactorizationMethod m) {
     switch (m) {
-        case FactorizationMethod::Auto:          return TR(S::METHOD_AUTO);
-        case FactorizationMethod::TrialDivision: return TR(S::METHOD_TRIAL);
-        case FactorizationMethod::PollardRho:    return TR(S::METHOD_RHO);
-        case FactorizationMethod::SIQS:          return TR(S::METHOD_SIQS);
-        case FactorizationMethod::GNFS:          return TR(S::METHOD_GNFS);
+    case FactorizationMethod::Auto:
+        return TR(S::METHOD_AUTO);
+    case FactorizationMethod::TrialDivision:
+        return TR(S::METHOD_TRIAL);
+    case FactorizationMethod::PollardRho:
+        return TR(S::METHOD_RHO);
+    case FactorizationMethod::SIQS:
+        return TR(S::METHOD_SIQS);
+    case FactorizationMethod::GNFS:
+        return TR(S::METHOD_GNFS);
     }
     return "?";
 }
@@ -65,9 +72,12 @@ static const char* method_display_name(FactorizationMethod m) {
 
 static std::string fmt_duration(double s) {
     char buf[32];
-    if (s < 0.001)       std::snprintf(buf, sizeof(buf), "%s", TR(S::UNIT_LT_1MS));
-    else if (s < 1.0)    std::snprintf(buf, sizeof(buf), "%.0fms", s * 1000.0);
-    else if (s < 60.0)   std::snprintf(buf, sizeof(buf), "%.2fs", s);
+    if (s < 0.001)
+        std::snprintf(buf, sizeof(buf), "%s", TR(S::UNIT_LT_1MS));
+    else if (s < 1.0)
+        std::snprintf(buf, sizeof(buf), "%.0fms", s * 1000.0);
+    else if (s < 60.0)
+        std::snprintf(buf, sizeof(buf), "%.2fs", s);
     else if (s < 3600.0) {
         int m = static_cast<int>(s) / 60;
         std::snprintf(buf, sizeof(buf), "%dm %.1fs", m, s - m * 60.0);
@@ -85,28 +95,39 @@ static std::string fmt_duration(double s) {
 
 static std::string repeat_str(const char* s, int n) {
     std::string r;
-    for (int i = 0; i < n; ++i) r += s;
+    for (int i = 0; i < n; ++i)
+        r += s;
     return r;
 }
 
-static constexpr int BOX_INNER = 50;  // inner column width
+static constexpr int BOX_INNER = 50; // inner column width
 
 // Print a box line: "   ║  <content padded to BOX_INNER-2>  ║"
 // Automatically computes display width of content (handles ANSI + CJK)
-// Banner/summary/progress \u8d70 stderr,\u7b26\u5408 Unix \u60ef\u4f8b(\u7ed3\u6784\u5316\u8f93\u51fa\u7559\u5728 stdout)
+// Banner/summary/progress \u8d70 stderr,\u7b26\u5408 Unix
+// \u60ef\u4f8b(\u7ed3\u6784\u5316\u8f93\u51fa\u7559\u5728 stdout)
 static void box_line(const std::string& content) {
     int w = display_width(content);
     int pad = BOX_INNER - 2 - w;
-    if (pad < 0) pad = 0;
-    std::cerr << C(CYAN) << "   \u2551  " << C(RESET)
-              << content
-              << std::string(static_cast<size_t>(pad), ' ')
-              << C(CYAN) << "\u2551" << C(RESET) << "\n";
+    if (pad < 0)
+        pad = 0;
+    std::cerr << C(CYAN) << "   \u2551  " << C(RESET) << content
+              << std::string(static_cast<size_t>(pad), ' ') << C(CYAN) << "\u2551" << C(RESET)
+              << "\n";
 }
 
-static void box_top()    { std::cerr << C(CYAN) << "   \u2554" << repeat_str("\u2550", BOX_INNER) << "\u2557" << C(RESET) << "\n"; }
-static void box_mid()    { std::cerr << C(CYAN) << "   \u2560" << repeat_str("\u2550", BOX_INNER) << "\u2563" << C(RESET) << "\n"; }
-static void box_bottom() { std::cerr << C(CYAN) << "   \u255a" << repeat_str("\u2550", BOX_INNER) << "\u255d" << C(RESET) << "\n"; }
+static void box_top() {
+    std::cerr << C(CYAN) << "   \u2554" << repeat_str("\u2550", BOX_INNER) << "\u2557" << C(RESET)
+              << "\n";
+}
+static void box_mid() {
+    std::cerr << C(CYAN) << "   \u2560" << repeat_str("\u2550", BOX_INNER) << "\u2563" << C(RESET)
+              << "\n";
+}
+static void box_bottom() {
+    std::cerr << C(CYAN) << "   \u255a" << repeat_str("\u2550", BOX_INNER) << "\u255d" << C(RESET)
+              << "\n";
+}
 
 // ============================================================
 // Banner
@@ -149,21 +170,22 @@ static void print_summary_box(const FactorResult& result) {
 
     // N info
     std::string n_str = result.n.to_string();
-    if (n_str.length() > 38) n_str = n_str.substr(0, 35) + "...";
+    if (n_str.length() > 38)
+        n_str = n_str.substr(0, 35) + "...";
     box_line("N = " + n_str);
 
     char info_buf[64];
     std::snprintf(info_buf, sizeof(info_buf), "%zu bits, %zu digits", st.n_bits, st.n_digits);
     box_line(std::string("    ") + info_buf);
-    box_line(std::string("    ") + TR(S::METHOD_SELECTED) + " " +
-             C(BOLD) + method_display_name(st.method_used) + C(RESET));
+    box_line(std::string("    ") + TR(S::METHOD_SELECTED) + " " + C(BOLD) +
+             method_display_name(st.method_used) + C(RESET));
 
     // Factors
     if (result.success && result.factors.size() >= 2) {
         box_line("");
-        std::string f_str = result.factors[0].to_string() + " * " +
-                            result.factors[1].to_string();
-        if (f_str.length() > 42) f_str = f_str.substr(0, 39) + "...";
+        std::string f_str = result.factors[0].to_string() + " * " + result.factors[1].to_string();
+        if (f_str.length() > 42)
+            f_str = f_str.substr(0, 39) + "...";
         box_line(std::string(C(BOLD)) + C(GREEN) + "= " + f_str + C(RESET));
     }
 
@@ -171,11 +193,11 @@ static void print_summary_box(const FactorResult& result) {
 
     // Phase timings — use i18n row names
     const char* row_names[] = {
-        TR(S::ROW_POLY), TR(S::ROW_FB), TR(S::ROW_SIEVE),
+        TR(S::ROW_POLY),   TR(S::ROW_FB),     TR(S::ROW_SIEVE),
         TR(S::ROW_FILTER), TR(S::ROW_LINALG), TR(S::ROW_SQRT),
     };
     double row_times[] = {
-        st.timings.poly_s, st.timings.fb_s, st.timings.sieve_s,
+        st.timings.poly_s,   st.timings.fb_s,     st.timings.sieve_s,
         st.timings.filter_s, st.timings.linalg_s, st.timings.sqrt_s,
     };
 
@@ -183,21 +205,21 @@ static void print_summary_box(const FactorResult& result) {
     int max_name_w = 0;
     for (int i = 0; i < 6; ++i) {
         int w = display_width(row_names[i]);
-        if (w > max_name_w) max_name_w = w;
+        if (w > max_name_w)
+            max_name_w = w;
     }
 
     for (int i = 0; i < 6; ++i) {
         const char* tree = (i < 5) ? "├─ " : "└─ ";
-        double pct = st.timings.total_s > 0 ?
-            (row_times[i] / st.timings.total_s * 100.0) : 0.0;
+        double pct = st.timings.total_s > 0 ? (row_times[i] / st.timings.total_s * 100.0) : 0.0;
 
         std::string dur_str = fmt_duration(row_times[i]);
         int name_w = display_width(row_names[i]);
         int name_pad = max_name_w - name_w;
 
         // Build row: "|-- Name     dur   pct%"
-        std::string row = std::string(tree) + row_names[i] +
-            std::string(static_cast<size_t>(name_pad), ' ');
+        std::string row =
+            std::string(tree) + row_names[i] + std::string(static_cast<size_t>(name_pad), ' ');
 
         // Right-align duration in 8 cols
         int dur_pad = 8 - static_cast<int>(dur_str.length());
@@ -217,19 +239,17 @@ static void print_summary_box(const FactorResult& result) {
     std::string total_dur = fmt_duration(st.timings.total_s);
     int total_label_w = display_width(total_label);
     int gap = max_name_w + 12 - total_label_w;
-    std::string total_line = std::string(C(BOLD)) + C(WHITE) +
-        "    " + total_label + C(RESET) +
-        std::string(static_cast<size_t>(std::max(gap, 1)), ' ') +
-        std::string(C(BOLD)) + C(WHITE) + total_dur + C(RESET);
+    std::string total_line = std::string(C(BOLD)) + C(WHITE) + "    " + total_label + C(RESET) +
+                             std::string(static_cast<size_t>(std::max(gap, 1)), ' ') +
+                             std::string(C(BOLD)) + C(WHITE) + total_dur + C(RESET);
     box_line(total_line);
 
     box_mid();
 
     // Stats
     char stat_buf[80];
-    std::snprintf(stat_buf, sizeof(stat_buf), "%s %zu  %s %zux%zu  %s %zu",
-                  TR(S::LABEL_RELS), st.relations_found,
-                  TR(S::LABEL_MATRIX), st.matrix_rows, st.matrix_cols,
+    std::snprintf(stat_buf, sizeof(stat_buf), "%s %zu  %s %zux%zu  %s %zu", TR(S::LABEL_RELS),
+                  st.relations_found, TR(S::LABEL_MATRIX), st.matrix_rows, st.matrix_cols,
                   TR(S::LABEL_DEPS), st.dependencies_found);
     box_line(stat_buf);
 
@@ -292,8 +312,8 @@ static ProgressCallback make_terminal_progress() {
     return [state](const ProgressInfo& info) {
         auto clear_line = [&state]() {
             if (state->last_bar_len > 0) {
-                std::cerr << "\r" << std::string(
-                    static_cast<size_t>(state->last_bar_len + 10), ' ') << "\r";
+                std::cerr << "\r" << std::string(static_cast<size_t>(state->last_bar_len + 10), ' ')
+                          << "\r";
                 state->last_bar_len = 0;
             }
         };
@@ -310,22 +330,23 @@ static ProgressCallback make_terminal_progress() {
                 std::string dur = fmt_duration(phase_time);
                 int pad = 42 - pname_w;
 
-                std::cerr << "\r   " << C(GREEN) << "\u2713 "
-                          << C(RESET) << C(DIM) << pname << C(RESET)
-                          << std::string(static_cast<size_t>(std::max(pad, 1)), ' ')
+                std::cerr << "\r   " << C(GREEN) << "\u2713 " << C(RESET) << C(DIM) << pname
+                          << C(RESET) << std::string(static_cast<size_t>(std::max(pad, 1)), ' ')
                           << C(DIM) << "[" << dur << "]" << C(RESET) << "\n";
             }
 
             state->current_phase = info.phase;
             state->phase_start_s = info.elapsed_s;
 
-            if (info.phase == Phase::Done) return;
-            if (info.phase == Phase::Sieving) state->sieve_start_s = info.elapsed_s;
+            if (info.phase == Phase::Done)
+                return;
+            if (info.phase == Phase::Sieving)
+                state->sieve_start_s = info.elapsed_s;
 
             state->first_phase = false;
 
-            std::cerr << "   " << C(CYAN) << "\u25B6 " << C(BOLD)
-                      << phase_name(info.phase) << C(RESET) << std::flush;
+            std::cerr << "   " << C(CYAN) << "\u25B6 " << C(BOLD) << phase_name(info.phase)
+                      << C(RESET) << std::flush;
         }
 
         // Sieving progress bar
@@ -338,8 +359,8 @@ static ProgressCallback make_terminal_progress() {
                 bar += (i < filled) ? "\u2588" : "\u2591";
 
             double sieve_elapsed = info.elapsed_s - state->sieve_start_s;
-            double rps = sieve_elapsed > 0.1 ?
-                static_cast<double>(info.relations_found) / sieve_elapsed : 0;
+            double rps =
+                sieve_elapsed > 0.1 ? static_cast<double>(info.relations_found) / sieve_elapsed : 0;
 
             std::string eta_str;
             if (info.phase_progress > 0.01 && info.phase_progress < 0.999) {
@@ -349,18 +370,17 @@ static ProgressCallback make_terminal_progress() {
 
             char buf[256];
             std::snprintf(buf, sizeof(buf),
-                "\r   %s\u25B6%s %s %s%5.1f%%%s  SQ=%zu  rels=%zu  %.0f/s  %s",
-                C(CYAN), C(RESET), bar.c_str(),
-                C(BOLD), info.phase_progress * 100.0, C(RESET),
-                info.special_q_done, info.relations_found, rps, eta_str.c_str());
+                          "\r   %s\u25B6%s %s %s%5.1f%%%s  SQ=%zu  rels=%zu  %.0f/s  %s", C(CYAN),
+                          C(RESET), bar.c_str(), C(BOLD), info.phase_progress * 100.0, C(RESET),
+                          info.special_q_done, info.relations_found, rps, eta_str.c_str());
             std::cerr << buf << std::flush;
             state->last_bar_len = 100;
         }
         // Sqrt dep counter
         else if (info.phase == Phase::SquareRoot && info.dependency_index > 0) {
             char buf[64];
-            std::snprintf(buf, sizeof(buf), "\r   %s\u25B6%s dep %d/%d",
-                C(CYAN), C(RESET), info.dependency_index, info.dependencies_total);
+            std::snprintf(buf, sizeof(buf), "\r   %s\u25B6%s dep %d/%d", C(CYAN), C(RESET),
+                          info.dependency_index, info.dependencies_total);
             std::cerr << buf << std::flush;
             state->last_bar_len = 30;
         }
@@ -370,15 +390,17 @@ static ProgressCallback make_terminal_progress() {
 // Structured log callback
 static LogCallback make_log_callback(LogLevel min_level) {
     return [min_level](const LogEntry& entry) {
-        if (entry.level < min_level) return;
+        if (entry.level < min_level)
+            return;
         char buf[32];
         std::snprintf(buf, sizeof(buf), "[%7.3fs]", entry.timestamp_s);
         const char* color = DIM;
-        if (entry.level == LogLevel::Warn) color = YELLOW;
-        if (entry.level == LogLevel::Error) color = RED;
-        std::cerr << C(color) << buf << " " << log_level_name(entry.level)
-                  << " [" << phase_tag(entry.phase) << "] "
-                  << entry.message << C(RESET) << "\n";
+        if (entry.level == LogLevel::Warn)
+            color = YELLOW;
+        if (entry.level == LogLevel::Error)
+            color = RED;
+        std::cerr << C(color) << buf << " " << log_level_name(entry.level) << " ["
+                  << phase_tag(entry.phase) << "] " << entry.message << C(RESET) << "\n";
     };
 }
 
@@ -394,21 +416,26 @@ static void run_repl() {
     repl_config.verbose = true;
 
     std::string line;
-    std::string output_fmt = "text";  // sticky: persists across REPL iterations
+    std::string output_fmt = "text"; // sticky: persists across REPL iterations
     while (true) {
         std::cout << C(BOLD) << TR(S::REPL_PROMPT) << C(RESET) << std::flush;
 
-        if (!std::getline(std::cin, line)) break;
+        if (!std::getline(std::cin, line))
+            break;
 
         // Trim
         auto start = line.find_first_not_of(" \t");
-        if (start == std::string::npos) continue;
+        if (start == std::string::npos)
+            continue;
         line = line.substr(start);
         auto end = line.find_last_not_of(" \t\r\n");
-        if (end != std::string::npos) line = line.substr(0, end + 1);
-        if (line.empty()) continue;
+        if (end != std::string::npos)
+            line = line.substr(0, end + 1);
+        if (line.empty())
+            continue;
 
-        if (line == "quit" || line == "exit" || line == "q") break;
+        if (line == "quit" || line == "exit" || line == "q")
+            break;
 
         if (line == "help" || line == "h" || line == "?") {
             std::cout << TR(S::REPL_HELP_HEADER) << "\n";
@@ -484,12 +511,20 @@ static void run_repl() {
             std::string key = rest.substr(0, sp);
             std::string val = rest.substr(sp + 1);
             try {
-                if (key == "method") repl_config.method = parse_method(val);
-                else if (key == "degree") repl_config.degree = static_cast<uint32_t>(std::stoul(val));
-                else if (key == "rational_bound" || key == "fb_rational") repl_config.rational_bound = static_cast<uint32_t>(std::stoul(val));
-                else if (key == "algebraic_bound" || key == "fb_algebraic") repl_config.algebraic_bound = static_cast<uint32_t>(std::stoul(val));
-                else if (key == "large_prime_bound" || key == "lp_bound") repl_config.large_prime_bound = std::stoull(val);
-                else { std::cout << TR(S::REPL_UNKNOWN_KEY) << " " << key << "\n"; continue; }
+                if (key == "method")
+                    repl_config.method = parse_method(val);
+                else if (key == "degree")
+                    repl_config.degree = static_cast<uint32_t>(std::stoul(val));
+                else if (key == "rational_bound" || key == "fb_rational")
+                    repl_config.rational_bound = static_cast<uint32_t>(std::stoul(val));
+                else if (key == "algebraic_bound" || key == "fb_algebraic")
+                    repl_config.algebraic_bound = static_cast<uint32_t>(std::stoul(val));
+                else if (key == "large_prime_bound" || key == "lp_bound")
+                    repl_config.large_prime_bound = std::stoull(val);
+                else {
+                    std::cout << TR(S::REPL_UNKNOWN_KEY) << " " << key << "\n";
+                    continue;
+                }
                 std::cout << TR(S::REPL_SET_OK) << " " << key << " = " << val << "\n";
             } catch (const std::exception& e) {
                 std::cout << TR(S::REPL_INVALID_VALUE) << " " << e.what() << "\n";
@@ -497,9 +532,21 @@ static void run_repl() {
             continue;
         }
 
-        if (line == "json") { output_fmt = "json"; std::cout << "Output: JSON\n"; continue; }
-        if (line == "report") { output_fmt = "report"; std::cout << "Output: report\n"; continue; }
-        if (line == "text") { output_fmt = "text"; std::cout << "Output: text\n"; continue; }
+        if (line == "json") {
+            output_fmt = "json";
+            std::cout << "Output: JSON\n";
+            continue;
+        }
+        if (line == "report") {
+            output_fmt = "report";
+            std::cout << "Output: report\n";
+            continue;
+        }
+        if (line == "text") {
+            output_fmt = "text";
+            std::cout << "Output: text\n";
+            continue;
+        }
 
         // Try as number
         try {
@@ -575,25 +622,45 @@ int main(int argc, char* argv[]) {
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
 
-        if (arg == "-h" || arg == "--help") show_help = true;
-        else if (arg == "-V" || arg == "--version") show_version = true;
-        else if (arg == "-i" || arg == "--interactive") interactive = true;
-        else if (arg == "-q" || arg == "--quiet") { quiet = true; verbose_explicit = false; }
-        else if (arg == "-v" || arg == "--verbose") verbose_explicit = true;
-        else if (arg == "--json") output_format = "json";
-        else if (arg == "--csv") output_format = "csv";
-        else if (arg == "--report") output_format = "report";
-        else if (arg == "--no-color") g_color = false;
-        else if (arg == "--lang" && i + 1 < argc) set_lang(argv[++i]);
-        else if (arg == "--method" && i + 1 < argc) cli_config.method = parse_method(argv[++i]);
-        else if ((arg == "-o" || arg == "--output") && i + 1 < argc) output_file = argv[++i];
-        else if ((arg == "-c" || arg == "--config") && i + 1 < argc) config_file = argv[++i];
-        else if (arg == "--degree" && i + 1 < argc) cli_config.degree = static_cast<uint32_t>(std::stoul(argv[++i]));
-        else if (arg == "--fb-rational" && i + 1 < argc) cli_config.rational_bound = static_cast<uint32_t>(std::stoul(argv[++i]));
-        else if (arg == "--fb-algebraic" && i + 1 < argc) cli_config.algebraic_bound = static_cast<uint32_t>(std::stoul(argv[++i]));
-        else if (arg == "--lp-bound" && i + 1 < argc) cli_config.large_prime_bound = std::stoull(argv[++i]);
-        else if (arg == "--sieve-width" && i + 1 < argc) cli_config.sieve_width = std::stoi(argv[++i]);
-        else if (arg == "--sieve-height" && i + 1 < argc) cli_config.sieve_height = std::stoi(argv[++i]);
+        if (arg == "-h" || arg == "--help")
+            show_help = true;
+        else if (arg == "-V" || arg == "--version")
+            show_version = true;
+        else if (arg == "-i" || arg == "--interactive")
+            interactive = true;
+        else if (arg == "-q" || arg == "--quiet") {
+            quiet = true;
+            verbose_explicit = false;
+        } else if (arg == "-v" || arg == "--verbose")
+            verbose_explicit = true;
+        else if (arg == "--json")
+            output_format = "json";
+        else if (arg == "--csv")
+            output_format = "csv";
+        else if (arg == "--report")
+            output_format = "report";
+        else if (arg == "--no-color")
+            g_color = false;
+        else if (arg == "--lang" && i + 1 < argc)
+            set_lang(argv[++i]);
+        else if (arg == "--method" && i + 1 < argc)
+            cli_config.method = parse_method(argv[++i]);
+        else if ((arg == "-o" || arg == "--output") && i + 1 < argc)
+            output_file = argv[++i];
+        else if ((arg == "-c" || arg == "--config") && i + 1 < argc)
+            config_file = argv[++i];
+        else if (arg == "--degree" && i + 1 < argc)
+            cli_config.degree = static_cast<uint32_t>(std::stoul(argv[++i]));
+        else if (arg == "--fb-rational" && i + 1 < argc)
+            cli_config.rational_bound = static_cast<uint32_t>(std::stoul(argv[++i]));
+        else if (arg == "--fb-algebraic" && i + 1 < argc)
+            cli_config.algebraic_bound = static_cast<uint32_t>(std::stoul(argv[++i]));
+        else if (arg == "--lp-bound" && i + 1 < argc)
+            cli_config.large_prime_bound = std::stoull(argv[++i]);
+        else if (arg == "--sieve-width" && i + 1 < argc)
+            cli_config.sieve_width = std::stoi(argv[++i]);
+        else if (arg == "--sieve-height" && i + 1 < argc)
+            cli_config.sieve_height = std::stoi(argv[++i]);
         else if (arg == "--threads" && i + 1 < argc) {
             const std::string value_text = argv[++i];
             try {
@@ -608,12 +675,10 @@ int main(int argc, char* argv[]) {
                 std::cerr << "--threads must be an integer in [1, UINT32_MAX]\n";
                 return 1;
             }
-        }
-        else if (arg[0] == '-') {
+        } else if (arg[0] == '-') {
             std::cerr << TR(S::ERR_UNKNOWN_OPT) << " " << arg << "\n";
             return 1;
-        }
-        else {
+        } else {
             if (!number_str.empty()) {
                 std::cerr << TR(S::ERR_MULTI_NUMBERS) << "\n";
                 return 1;
@@ -622,12 +687,26 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    if (show_version) { std::cout << "GNFS v" << gnfs::api::version() << "\n"; return 0; }
-    if (show_help) { print_banner(); print_help(); return 0; }
-    if (interactive) { run_repl(); return 0; }
+    if (show_version) {
+        std::cout << "GNFS v" << gnfs::api::version() << "\n";
+        return 0;
+    }
+    if (show_help) {
+        print_banner();
+        print_help();
+        return 0;
+    }
+    if (interactive) {
+        run_repl();
+        return 0;
+    }
 
     if (number_str.empty()) {
-        if (argc == 1) { print_banner(); print_help(); return 0; }
+        if (argc == 1) {
+            print_banner();
+            print_help();
+            return 0;
+        }
         std::cerr << TR(S::ERR_NO_NUMBER) << "\n";
         return 1;
     }
@@ -635,8 +714,9 @@ int main(int argc, char* argv[]) {
     // Config: auto < file < cli
     Config final_config;
     if (!config_file.empty()) {
-        try { final_config = Config::from_file(config_file); }
-        catch (const std::exception& e) {
+        try {
+            final_config = Config::from_file(config_file);
+        } catch (const std::exception& e) {
             std::cerr << TR(S::ERR_CONFIG_ERROR) << " " << e.what() << "\n";
             return 1;
         }
@@ -651,48 +731,67 @@ int main(int argc, char* argv[]) {
     (void)verbose;
 
     Integer n;
-    try { n = Integer(number_str); }
-    catch (const std::exception&) {
+    try {
+        n = Integer(number_str);
+    } catch (const std::exception&) {
         std::cerr << TR(S::ERR_INVALID_NUMBER) << " " << number_str << "\n";
         return 1;
     }
-    if (mpz_cmp_si(n.get_mpz(), 1) <= 0) { std::cerr << TR(S::ERR_N_TOO_SMALL) << "\n"; return 1; }
+    if (mpz_cmp_si(n.get_mpz(), 1) <= 0) {
+        std::cerr << TR(S::ERR_N_TOO_SMALL) << "\n";
+        return 1;
+    }
 
     // Run
     if (!quiet) {
         print_banner();
         size_t n_digits = gnfs::core::GNFSParams::compute(n.bit_length()).digits;
-        std::cerr << TR(S::FACTORING) << " " << n.to_string()
-                  << " (" << n.bit_length() << " bits, "
+        std::cerr << TR(S::FACTORING) << " " << n.to_string() << " (" << n.bit_length() << " bits, "
                   << n_digits << " digits)\n";
 
         // Show selected method
-        auto [method, reason] = Pipeline::select_method(
-            n.bit_length(), n_digits, final_config.method);
+        auto [method, reason] =
+            Pipeline::select_method(n.bit_length(), n_digits, final_config.method);
         std::cerr << TR(S::METHOD_SELECTED) << " " << C(BOLD) << method_display_name(method)
                   << C(RESET) << C(DIM) << " (" << reason << ")" << C(RESET) << "\n\n";
     }
 
     Pipeline pipeline(n, final_config);
-    if (!quiet) pipeline.set_progress_callback(make_terminal_progress());
-    if (verbose) pipeline.set_log_callback(make_log_callback(LogLevel::Debug));
+    if (!quiet)
+        pipeline.set_progress_callback(make_terminal_progress());
+    if (verbose)
+        pipeline.set_log_callback(make_log_callback(LogLevel::Debug));
 
     auto result = pipeline.run();
 
-    if (!quiet) { std::cerr << "\n\n"; print_summary_box(result); std::cerr << "\n"; }
+    if (!quiet) {
+        std::cerr << "\n\n";
+        print_summary_box(result);
+        std::cerr << "\n";
+    }
 
     // Output
     std::string output;
-    if (output_format == "json") output = result.to_json();
-    else if (output_format == "csv") output = result.to_csv_line(true);
-    else if (output_format == "report") output = result.to_report();
-    else { if (quiet) output = result.to_text(); }
+    if (output_format == "json")
+        output = result.to_json();
+    else if (output_format == "csv")
+        output = result.to_csv_line(true);
+    else if (output_format == "report")
+        output = result.to_report();
+    else {
+        if (quiet)
+            output = result.to_text();
+    }
 
     if (!output_file.empty()) {
         std::ofstream ofs(output_file);
-        if (!ofs.is_open()) { std::cerr << TR(S::ERR_OPEN_FILE) << " " << output_file << "\n"; return 1; }
+        if (!ofs.is_open()) {
+            std::cerr << TR(S::ERR_OPEN_FILE) << " " << output_file << "\n";
+            return 1;
+        }
         ofs << output;
-        if (!quiet) std::cerr << TR(S::REPL_WRITTEN_TO) << " " << output_file << "\n";
+        if (!quiet)
+            std::cerr << TR(S::REPL_WRITTEN_TO) << " " << output_file << "\n";
     } else if (!output.empty()) {
         std::cout << output;
     }

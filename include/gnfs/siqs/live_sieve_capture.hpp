@@ -157,9 +157,9 @@ public:
     /// The kind counter is cumulative and therefore advances even when this
     /// particular relation is rejected for overflow or for exceeding a cap.
     /// No relation object needs to exist before this call.
-    [[nodiscard]] bool try_reserve_relation(
-        SIQSLiveSieveRelationKind kind,
-        const SIQSLiveSieveRelationPayloadShape& shape) noexcept {
+    [[nodiscard]] bool
+    try_reserve_relation(SIQSLiveSieveRelationKind kind,
+                         const SIQSLiveSieveRelationPayloadShape& shape) noexcept {
         if (stopped()) {
             return false;
         }
@@ -294,8 +294,7 @@ private:
     bool reservation_pending_ = false;
     size_t pending_relation_count_ = 0;
     size_t pending_payload_bytes_ = 0;
-    SIQSLiveSieveCaptureStopReason pending_stop_reason_ =
-        SIQSLiveSieveCaptureStopReason::none;
+    SIQSLiveSieveCaptureStopReason pending_stop_reason_ = SIQSLiveSieveCaptureStopReason::none;
 };
 
 } // namespace gnfs::siqs

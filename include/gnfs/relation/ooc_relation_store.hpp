@@ -245,7 +245,7 @@ inline void sync_directory_descriptor_after_metadata_change(int descriptor,
         throw std::invalid_argument("OOC directory descriptor sync has invalid handle for " +
                                     label);
     }
-    struct stat metadata{};
+    struct stat metadata {};
     if (::fstat(descriptor, &metadata) != 0 || !S_ISDIR(metadata.st_mode)) {
         const int saved_errno = errno == 0 ? ENOTDIR : errno;
         throw std::system_error(saved_errno, std::generic_category(),
@@ -1787,9 +1787,9 @@ private:
                                         ": exact directory descriptor policy changed");
         }
 
-        struct stat root{};
-        struct stat held_directory{};
-        struct stat named_directory{};
+        struct stat root {};
+        struct stat held_directory {};
+        struct stat named_directory {};
         if (::fstat(exact.root_descriptor, &root) != 0 ||
             ::fstat(exact.directory_descriptor, &held_directory) != 0 ||
             ::fstatat(exact.root_descriptor, exact.directory_leaf.c_str(), &named_directory,
@@ -1902,7 +1902,7 @@ private:
                 throw std::system_error(errno, std::generic_category(),
                                         "OOCRelationWriter: cannot reserve fresh artifact " + path);
             }
-            struct stat information{};
+            struct stat information {};
             if (::fstat(descriptor, &information) != 0) {
                 const int error = errno;
                 (void)::close(descriptor);
@@ -1945,7 +1945,7 @@ private:
                                         "OOCRelationWriter: cannot reserve exact fresh artifact " +
                                             label);
             }
-            struct stat information{};
+            struct stat information {};
             int inspected = -1;
             do {
                 inspected = ::fstat(descriptor, &information);
@@ -2034,8 +2034,8 @@ private:
                 throw std::logic_error(
                     "OOCRelationWriter: fresh artifact descriptor is already closed");
             }
-            struct stat held{};
-            struct stat named{};
+            struct stat held {};
+            struct stat named {};
             if (::fstat(descriptor_, &held) != 0 ||
                 ::lstat(std::filesystem::path(path).c_str(), &named) != 0 ||
                 !S_ISREG(held.st_mode) || !S_ISREG(named.st_mode) || held.st_nlink != 1 ||
@@ -2065,8 +2065,8 @@ private:
                 throw std::logic_error(
                     "OOCRelationWriter: exact fresh artifact descriptor is already closed");
             }
-            struct stat held{};
-            struct stat named{};
+            struct stat held {};
+            struct stat named {};
             if (::fstat(descriptor_, &held) != 0 ||
                 ::fstatat(parent_descriptor, leaf.c_str(), &named, AT_SYMLINK_NOFOLLOW) != 0 ||
                 !S_ISREG(held.st_mode) || !S_ISREG(named.st_mode) || held.st_nlink != 1 ||
@@ -2109,7 +2109,7 @@ private:
                     .error = std::make_error_code(std::errc::invalid_argument),
                 };
             }
-            struct stat named{};
+            struct stat named {};
             int inspected = -1;
             do {
                 inspected = ::fstatat(parent_descriptor, leaf.c_str(), &named, AT_SYMLINK_NOFOLLOW);
@@ -2683,10 +2683,12 @@ private:
         if (exact_private_directory_) {
             const auto paths = ooc_cleanup_detail::freeze_paths(base_path_);
             require_exact_private_directory_binding(paths, operation);
+#ifndef _WIN32
             data_stream_.require_named_identity_at(exact_private_directory_->directory_descriptor,
                                                    exact_private_directory_->data_leaf, operation);
             idx_stream_.require_named_identity_at(exact_private_directory_->directory_descriptor,
                                                   exact_private_directory_->index_leaf, operation);
+#endif
             return;
         }
         data_stream_.require_named_identity(base_path_ + ".reldata", operation);

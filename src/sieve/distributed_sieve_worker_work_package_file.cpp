@@ -696,7 +696,7 @@ public:
         if (!to_descriptor(handle, descriptor)) {
             return {operation_failure(OperationState::failed, EBADF), {}};
         }
-        struct stat value{};
+        struct stat value {};
         if (::fstat(descriptor, &value) != 0) {
             return {posix_operation_failure(errno), {}};
         }
@@ -711,7 +711,7 @@ public:
         if (!to_descriptor(directory_handle, directory)) {
             return {operation_failure(OperationState::failed, EBADF), {}};
         }
-        struct stat value{};
+        struct stat value {};
         constexpr auto leaf = DISTRIBUTED_SIEVE_WORKER_WORK_PACKAGE_FILE_LEAF_V1;
         if (::fstatat(directory, leaf.data(), &value, AT_SYMLINK_NOFOLLOW) != 0) {
             return {posix_operation_failure(errno), {}};

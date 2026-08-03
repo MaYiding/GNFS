@@ -23,14 +23,14 @@ using gnfs::core::PrimePower;
 using gnfs::core::Relation;
 
 [[noreturn]] static void check_failed(const char* expression, int line) {
-    throw std::runtime_error(
-        std::string("CHECK failed at line ") + std::to_string(line) +
-        ": " + expression);
+    throw std::runtime_error(std::string("CHECK failed at line ") + std::to_string(line) + ": " +
+                             expression);
 }
 
-#define CHECK(condition) \
-    do { \
-        if (!(condition)) check_failed(#condition, __LINE__); \
+#define CHECK(condition)                                                                           \
+    do {                                                                                           \
+        if (!(condition))                                                                          \
+            check_failed(#condition, __LINE__);                                                    \
     } while (false)
 
 // Timing assertions below assume an unoptimized-but-not-instrumented Debug
@@ -81,8 +81,7 @@ static std::vector<Relation> make_synthetic_50d_like(size_t target_rels, uint64_
     };
     auto make_relation = [&]() {
         const size_t i = rels.size();
-        Relation r(static_cast<int64_t>(i + 1),
-                   static_cast<uint64_t>((i % 1000) + 1));
+        Relation r(static_cast<int64_t>(i + 1), static_cast<uint64_t>((i % 1000) + 1));
         r.rational_factors = {0, 1};
         r.algebraic_factors = {0};
         return r;
@@ -177,9 +176,7 @@ void test_v0_v3_cascade_dedup() {
     CliqueStats v3_stats;
     auto v3_merged = CliqueRelationMerger::merge_cliques(std::move(v3_input), &v3_stats);
 
-    std::unordered_set<
-        RelationSourceCombination,
-        RelationSourceCombinationHash> seen;
+    std::unordered_set<RelationSourceCombination, RelationSourceCombinationHash> seen;
     for (const auto& r : v0_merged) {
         seen.insert(relation_source_combination(r));
     }
@@ -276,9 +273,7 @@ void test_v0_v3_bench_large() {
         PartialRelationMerger::merge_all(std::move(v0_input_copy), 10, &v0_stats_cascade);
     CliqueStats v3_stats;
     auto v3_merged = CliqueRelationMerger::merge_cliques(std::move(v3_input_copy), &v3_stats);
-    std::unordered_set<
-        RelationSourceCombination,
-        RelationSourceCombinationHash> existing;
+    std::unordered_set<RelationSourceCombination, RelationSourceCombinationHash> existing;
     for (const auto& r : v0_merged_cascade) {
         existing.insert(relation_source_combination(r));
     }

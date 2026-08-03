@@ -257,7 +257,7 @@ authenticate_executable_image(const std::filesystem::path& executable,
                                           native_error);
         }
 
-        struct stat source_before{};
+        struct stat source_before {};
         if (::fstat(source.get(), &source_before) != 0) {
             return authentication_failure(ExecutableImageAuthenticationError::metadata_failed,
                                           errno);
@@ -317,7 +317,7 @@ authenticate_executable_image(const std::filesystem::path& executable,
                                           source_extra_count < 0 ? errno : EFBIG);
         }
 
-        struct stat source_after{};
+        struct stat source_after {};
         if (::fstat(source.get(), &source_after) != 0) {
             return authentication_failure(ExecutableImageAuthenticationError::metadata_failed,
                                           errno);
@@ -366,7 +366,7 @@ authenticate_executable_image(const std::filesystem::path& executable,
                                           observed_seals < 0 ? errno : EIO);
         }
 
-        struct stat snapshot_metadata{};
+        struct stat snapshot_metadata {};
         if (::fstat(snapshot.get(), &snapshot_metadata) != 0) {
             return authentication_failure(ExecutableImageAuthenticationError::metadata_failed,
                                           errno);

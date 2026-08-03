@@ -442,19 +442,19 @@ void test_partial_thread_launch_failure_starts_no_slots() {
                     operation_calls.fetch_add(1, std::memory_order_relaxed);
                     return MoveOnlySlot(index, worker->partition().worker_ordinal);
                 },
-                [&](auto&& task) -> std::jthread {
+                [&](auto&& task) -> gnfs::util::JoiningThread {
                     ++launch_attempts;
                     if (launch_attempts == 3) {
                         throw std::runtime_error("thread launch failure at worker 2");
                     }
-                    return std::jthread([owned_task = std::forward<decltype(task)>(task),
-                                         &started_threads, &exited_threads,
-                                         &live_threads]() mutable {
-                        started_threads.fetch_add(1, std::memory_order_relaxed);
-                        ActiveGuard guard(live_threads);
-                        owned_task();
-                        exited_threads.fetch_add(1, std::memory_order_relaxed);
-                    });
+                    return gnfs::util::JoiningThread(
+                        [owned_task = std::forward<decltype(task)>(task), &started_threads,
+                         &exited_threads, &live_threads]() mutable {
+                            started_threads.fetch_add(1, std::memory_order_relaxed);
+                            ActiveGuard guard(live_threads);
+                            owned_task();
+                            exited_threads.fetch_add(1, std::memory_order_relaxed);
+                        });
                 });
     } catch (const std::runtime_error& error) {
         caught = true;
@@ -502,20 +502,20 @@ void test_cancel_remaining_stops_unstarted_slots() {
                     }
                     return MoveOnlySlot(index, partition.worker_ordinal);
                 },
-                [&](auto&& task) -> std::jthread {
+                [&](auto&& task) -> gnfs::util::JoiningThread {
                     const size_t worker = launch_ordinal++;
-                    return std::jthread([owned_task = std::forward<decltype(task)>(task), worker,
-                                         &failure_mutex, &failure_condition,
-                                         &failing_worker_stopped]() mutable {
-                        owned_task();
-                        if (worker == 0) {
-                            {
-                                std::lock_guard lock(failure_mutex);
-                                failing_worker_stopped = true;
+                    return gnfs::util::JoiningThread(
+                        [owned_task = std::forward<decltype(task)>(task), worker, &failure_mutex,
+                         &failure_condition, &failing_worker_stopped]() mutable {
+                            owned_task();
+                            if (worker == 0) {
+                                {
+                                    std::lock_guard lock(failure_mutex);
+                                    failing_worker_stopped = true;
+                                }
+                                failure_condition.notify_all();
                             }
-                            failure_condition.notify_all();
-                        }
-                    });
+                        });
                 });
     } catch (const std::runtime_error& error) {
         caught = true;

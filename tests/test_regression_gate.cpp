@@ -10,19 +10,19 @@
 //
 // Expected runtime: ~2-5 seconds total
 
-#include <gnfs/core/params.hpp>
-#include <gnfs/polynomial/selector_dispatch.hpp>
-#include <gnfs/factor_base/builder.hpp>
-#include <gnfs/sieve/special_q.hpp>
-#include <gnfs/sieve/lattice_sieve.hpp>
 #include <gnfs/cofactor/cofactorizer.hpp>
-#include <gnfs/relation/collector.hpp>
-#include <gnfs/relation/reduction_engine.hpp>
+#include <gnfs/core/params.hpp>
+#include <gnfs/factor_base/builder.hpp>
+#include <gnfs/linalg/block_lanczos.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
 #include <gnfs/linalg/sge.hpp>
-#include <gnfs/linalg/block_lanczos.hpp>
-#include <gnfs/sqrt/rational_sqrt.hpp>
+#include <gnfs/polynomial/selector_dispatch.hpp>
+#include <gnfs/relation/collector.hpp>
+#include <gnfs/relation/reduction_engine.hpp>
+#include <gnfs/sieve/lattice_sieve.hpp>
+#include <gnfs/sieve/special_q.hpp>
 #include <gnfs/sqrt/algebraic_sqrt.hpp>
+#include <gnfs/sqrt/rational_sqrt.hpp>
 #include <gnfs/util/safe_math.hpp>
 
 #include <algorithm>
@@ -59,9 +59,9 @@ struct RegressionLevel {
 
 static const RegressionLevel LEVELS[] = {
     // L1: 17-bit — matches progressive L2 difficulty; avoids too-small-for-GNFS pitfall
-    {1, "17-bit (307x313)",    "96091",             "307",         "313"},
-    {2, "27-bit (10007x10009)", "100160063",        "10007",       "10009"},
-    {3, "40-bit (1000003x1000033)", "1000036000099", "1000003",    "1000033"},
+    {1, "17-bit (307x313)", "96091", "307", "313"},
+    {2, "27-bit (10007x10009)", "100160063", "10007", "10009"},
+    {3, "40-bit (1000003x1000033)", "1000036000099", "1000003", "1000033"},
     {4, "25-digit (81-bit)", "1669994516749619561652133", "1292282676071", "1292282677523"},
 };
 static constexpr int NUM_LEVELS = 4;
@@ -74,10 +74,13 @@ class Timer {
 public:
     Timer() : start_(std::chrono::high_resolution_clock::now()) {}
     double sec() const {
-        return std::chrono::duration<double>(
-            std::chrono::high_resolution_clock::now() - start_).count();
+        return std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start_)
+            .count();
     }
-    void reset() { start_ = std::chrono::high_resolution_clock::now(); }
+    void reset() {
+        start_ = std::chrono::high_resolution_clock::now();
+    }
+
 private:
     std::chrono::high_resolution_clock::time_point start_;
 };
@@ -110,16 +113,20 @@ static bool factorize(const RegressionLevel& tc) {
     sp.rational_threshold = params.rational_threshold;
     sp.algebraic_threshold = params.algebraic_threshold;
     SieveRegion sr;
-    sr.i_min = params.sieve_i_min; sr.i_max = params.sieve_i_max;
-    sr.j_min = params.sieve_j_min; sr.j_max = params.sieve_j_max;
+    sr.i_min = params.sieve_i_min;
+    sr.i_max = params.sieve_i_max;
+    sr.j_min = params.sieve_j_min;
+    sr.j_max = params.sieve_j_max;
 
     CofactorizerConfig cc;
     cc.large_prime_bound = fb.params().large_prime_bound;
-    cc.allow_1lp = true; cc.allow_2lp = true;
+    cc.allow_1lp = true;
+    cc.allow_2lp = true;
     Cofactorizer cofac(ctx, fb, cc);
 
     SpecialQRange sqr;
-    sqr.min_q = params.special_q_min; sqr.max_q = params.special_q_max;
+    sqr.min_q = params.special_q_min;
+    sqr.max_q = params.special_q_max;
     SpecialQGenerator sqg(fb, sqr);
 
     CollectorConfig colc;
@@ -143,16 +150,20 @@ static bool factorize(const RegressionLevel& tc) {
     constexpr int MAX_ROUNDS = 10;
 
     for (int round = 0; round < MAX_ROUNDS; ++round) {
-        while (sqg.has_next() && collector.size() < batch_target && sq_count < params.max_special_q) {
+        while (sqg.has_next() && collector.size() < batch_target &&
+               sq_count < params.max_special_q) {
             auto sq = sqg.next();
-            if (!sq) break;
+            if (!sq)
+                break;
             auto sres = sieve.sieve_special_q(*sq);
 
             const auto& cands = sres.candidates;
             size_t n_cands = cands.size();
             size_t n_threads = std::thread::hardware_concurrency();
-            if (n_threads == 0) n_threads = 4;
-            if (n_cands < 200) n_threads = 1;
+            if (n_threads == 0)
+                n_threads = 4;
+            if (n_cands < 200)
+                n_threads = 1;
 
             std::vector<std::vector<Relation>> thread_results(n_threads);
             std::atomic<size_t> global_found{collector.size()};
@@ -166,8 +177,10 @@ static bool factorize(const RegressionLevel& tc) {
                 auto& local_rels = thread_results[tid];
                 while (true) {
                     size_t start = next_chunk.fetch_add(CHUNK_SIZE, std::memory_order_relaxed);
-                    if (start >= n_cands) break;
-                    if (global_found.load(std::memory_order_relaxed) >= batch_target) break;
+                    if (start >= n_cands)
+                        break;
+                    if (global_found.load(std::memory_order_relaxed) >= batch_target)
+                        break;
                     size_t end = std::min(start + CHUNK_SIZE, n_cands);
                     for (size_t ci = start; ci < end; ++ci) {
                         auto rel = local_cofac.verify(cands[ci], cur_sq_q, cur_sq_r);
@@ -186,7 +199,8 @@ static bool factorize(const RegressionLevel& tc) {
                 threads.reserve(n_threads);
                 for (size_t t = 0; t < n_threads; ++t)
                     threads.emplace_back(worker, t);
-                for (auto& t : threads) t.join();
+                for (auto& t : threads)
+                    t.join();
             }
 
             for (auto& tr : thread_results)
@@ -195,7 +209,8 @@ static bool factorize(const RegressionLevel& tc) {
             ++sq_count;
         }
 
-        if (collector.size() < 10) break;
+        if (collector.size() < 10)
+            break;
 
         // Reduce a stable prefix while keeping the collector appendable when a
         // later adaptive round needs more raw relations.
@@ -212,31 +227,30 @@ static bool factorize(const RegressionLevel& tc) {
         reduced_lp_columns = reduction.stats.output_lp_columns;
         relations = std::move(reduction).take_relations();
 
-        if (has_effective_column_excess(
-                relations.size(), matrix_cols, reduced_lp_columns)) break;
+        if (has_effective_column_excess(relations.size(), matrix_cols, reduced_lp_columns))
+            break;
 
-        if (!sqg.has_next() || sq_count >= params.max_special_q) break;
+        if (!sqg.has_next() || sq_count >= params.max_special_q)
+            break;
 
-        double merge_rate = (collector.size() > 0) ?
-            static_cast<double>(relations.size()) / static_cast<double>(collector.size()) : 0.01;
+        double merge_rate = (collector.size() > 0) ? static_cast<double>(relations.size()) /
+                                                         static_cast<double>(collector.size())
+                                                   : 0.01;
         // Use effective_cols (FB + LP) for accurate needed_raw at lp_bits ≥ 20.
         size_t lp_cols_for_target = reduced_lp_columns;
-        size_t effective_cols_for_target =
-            effective_column_count(matrix_cols, lp_cols_for_target);
+        size_t effective_cols_for_target = effective_column_count(matrix_cols, lp_cols_for_target);
         size_t needed_raw = util::size_from_nonnegative_double_floor(
             static_cast<double>(util::saturating_size_product(effective_cols_for_target, 2)) /
             std::max(merge_rate, 0.001));
-        batch_target = std::min(
-            std::max(util::saturating_size_product(batch_target, 2), needed_raw),
-            util::saturating_size_product(initial_target, 5));
+        batch_target =
+            std::min(std::max(util::saturating_size_product(batch_target, 2), needed_raw),
+                     util::saturating_size_product(initial_target, 5));
     }
 
     const size_t final_lp_columns = reduced_lp_columns;
-    if (!has_effective_column_excess(
-            relations.size(), matrix_cols, final_lp_columns)) {
+    if (!has_effective_column_excess(relations.size(), matrix_cols, final_lp_columns)) {
         std::cerr << "  insufficient relations: rows=" << relations.size()
-                  << " base_cols=" << matrix_cols
-                  << " lp_cols=" << final_lp_columns << "\n";
+                  << " base_cols=" << matrix_cols << " lp_cols=" << final_lp_columns << "\n";
         return false;
     }
 
@@ -247,8 +261,8 @@ static bool factorize(const RegressionLevel& tc) {
     {
         size_t lp_cols_for_trim = reduced_lp_columns;
         size_t effective_cols = effective_column_count(matrix_cols, lp_cols_for_trim);
-        size_t max_rels = util::size_from_nonnegative_double_floor(
-            static_cast<double>(effective_cols) * 1.3);
+        size_t max_rels =
+            util::size_from_nonnegative_double_floor(static_cast<double>(effective_cols) * 1.3);
         if (relations.size() > max_rels) {
             std::mt19937 rng(42);
             std::shuffle(relations.begin(), relations.end(), rng);
@@ -258,7 +272,8 @@ static bool factorize(const RegressionLevel& tc) {
 
     // Phase 4: Linear Algebra
     MatrixBuilderConfig mc;
-    mc.include_sign_column = true; mc.include_qc_columns = true;
+    mc.include_sign_column = true;
+    mc.include_qc_columns = true;
     mc.include_class_group = false;
     mc.include_schirokauer = true;
     mc.num_qc_primes = params.num_qc_primes;
@@ -284,7 +299,9 @@ static bool factorize(const RegressionLevel& tc) {
     // Phase 5: Square Root
     auto to_bv = [](const std::vector<bool>& v) {
         BitVector bv(v.size());
-        for (size_t i = 0; i < v.size(); ++i) if (v[i]) bv.set(i);
+        for (size_t i = 0; i < v.size(); ++i)
+            if (v[i])
+                bv.set(i);
         return bv;
     };
 
@@ -292,37 +309,52 @@ static bool factorize(const RegressionLevel& tc) {
         auto bv = to_bv(deps[di]);
 
         auto rat = compute_rational_sqrt(bv, relations, fb, n, ctx.m());
-        if (!rat.success) continue;
+        if (!rat.success)
+            continue;
 
         auto alg = compute_algebraic_sqrt(bv, relations, ctx);
-        if (!alg.success) continue;
+        if (!alg.success)
+            continue;
 
         for (int sign = 0; sign < 2; ++sign) {
-            Integer y = (sign == 0) ? alg.value.clone() : [&](){
-                Integer neg = n.clone(); neg -= alg.value; return neg;
+            Integer y = (sign == 0) ? alg.value.clone() : [&]() {
+                Integer neg = n.clone();
+                neg -= alg.value;
+                return neg;
             }();
             auto factors = extract_factors(rat.value, y, n);
 
             auto check = [&](const Integer& f) -> bool {
-                if (f.fits_uint64() && f.to_uint64() == 1) return false;
+                if (f.fits_uint64() && f.to_uint64() == 1)
+                    return false;
                 return f.compare(n) != 0;
             };
 
             Integer f1, f2;
             bool found = false;
-            if (check(factors.factor1)) { f1 = factors.factor1.clone(); f2 = n.clone(); f2 /= f1; found = true; }
-            else if (check(factors.factor2)) { f1 = factors.factor2.clone(); f2 = n.clone(); f2 /= f1; found = true; }
+            if (check(factors.factor1)) {
+                f1 = factors.factor1.clone();
+                f2 = n.clone();
+                f2 /= f1;
+                found = true;
+            } else if (check(factors.factor2)) {
+                f1 = factors.factor2.clone();
+                f2 = n.clone();
+                f2 /= f1;
+                found = true;
+            }
 
             if (found) {
-                Integer chk = f1.clone(); chk *= f2;
+                Integer chk = f1.clone();
+                chk *= f2;
                 if (chk.compare(n) == 0) {
                     // Verify factors match expected
                     bool p_match = (f1.compare(expected_p) == 0 && f2.compare(expected_q) == 0) ||
                                    (f1.compare(expected_q) == 0 && f2.compare(expected_p) == 0);
                     if (!p_match) {
                         // Factored correctly but different factors (shouldn't happen for semiprime)
-                        std::cerr << "  factored but unexpected factors: "
-                                  << f1.to_string() << " × " << f2.to_string() << "\n";
+                        std::cerr << "  factored but unexpected factors: " << f1.to_string()
+                                  << " × " << f2.to_string() << "\n";
                     }
                     return true;
                 }
@@ -342,11 +374,15 @@ int main(int argc, char* argv[]) {
     int min_level = 1;
     int max_level = NUM_LEVELS;
 
-    if (argc >= 2) min_level = std::atoi(argv[1]);
-    if (argc >= 3) max_level = std::atoi(argv[2]);
+    if (argc >= 2)
+        min_level = std::atoi(argv[1]);
+    if (argc >= 3)
+        max_level = std::atoi(argv[2]);
 
-    if (min_level < 1) min_level = 1;
-    if (max_level > NUM_LEVELS) max_level = NUM_LEVELS;
+    if (min_level < 1)
+        min_level = 1;
+    if (max_level > NUM_LEVELS)
+        max_level = NUM_LEVELS;
     if (min_level > max_level) {
         std::cerr << "Invalid range: " << min_level << "-" << max_level << "\n";
         return 1;
@@ -361,7 +397,8 @@ int main(int argc, char* argv[]) {
 
     for (int i = 0; i < NUM_LEVELS; ++i) {
         const auto& tc = LEVELS[i];
-        if (tc.level < min_level || tc.level > max_level) continue;
+        if (tc.level < min_level || tc.level > max_level)
+            continue;
 
         std::cout << "[L" << tc.level << "] " << tc.label << " N=" << tc.n_str << "\n";
         Timer level_timer;

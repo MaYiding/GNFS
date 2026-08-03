@@ -438,7 +438,7 @@ public:
             return OpenResult::failed(posix_error(saved_errno));
         }
 
-        struct stat created{};
+        struct stat created {};
         int stat_result = -1;
         do {
             stat_result = ::fstat(descriptor, &created);
@@ -455,7 +455,7 @@ public:
         } while (chmod_result != 0 && errno == EINTR);
 
         int setup_error = chmod_result == 0 ? 0 : errno;
-        struct stat configured{};
+        struct stat configured {};
         if (setup_error == 0) {
             do {
                 stat_result = ::fstat(descriptor, &configured);

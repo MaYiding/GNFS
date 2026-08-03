@@ -361,8 +361,7 @@ void run_test() {
     const Integer n{std::string(FIXTURE_N)};
     require(n.bit_length() == FIXTURE_BITS, "120-bit fixture bit length changed");
 
-    const uint32_t structured_threads =
-        gnfs::relation::structured_filter_hardware_workers();
+    const uint32_t structured_threads = gnfs::relation::structured_filter_hardware_workers();
 
     Pipeline setup_pipeline(n, make_config(structured_threads));
     require(setup_pipeline.params().bits == FIXTURE_BITS,

@@ -1,13 +1,13 @@
 #pragma once
 
-#include "types.hpp"
 #include "../util/safe_math.hpp"
+#include "types.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>  // getenv, atoi for GNFS_OVERRIDE_LP_BITS
+#include <cstdlib> // getenv, atoi for GNFS_OVERRIDE_LP_BITS
 
 namespace gnfs::core {
 
@@ -19,22 +19,22 @@ namespace gnfs::core {
 /// 旧代码因子基界对 15-40 位数过大 20-200×，导致矩阵/BL/Sqrt 时间爆炸。
 struct GNFSParams {
     // === 基本信息 ===
-    size_t bits = 0;           // N 的位数
-    size_t digits = 0;         // N 的十进制位数
+    size_t bits = 0;   // N 的位数
+    size_t digits = 0; // N 的十进制位数
 
     // === 多项式选择 ===
-    uint32_t degree = 3;                     // 多项式度数
-    uint64_t leading_coeff_bound = 10000;    // 首项系数搜索上界
-    uint64_t search_radius = 100;            // Newton 优化搜索半径
-    uint32_t num_candidates = 1000;          // 候选多项式数量
-    uint32_t skewness_steps = 100;           // 偏度搜索步数
+    uint32_t degree = 3;                  // 多项式度数
+    uint64_t leading_coeff_bound = 10000; // 首项系数搜索上界
+    uint64_t search_radius = 100;         // Newton 优化搜索半径
+    uint32_t num_candidates = 1000;       // 候选多项式数量
+    uint32_t skewness_steps = 100;        // 偏度搜索步数
 
     // === 因子基 ===
-    uint32_t rational_bound = 5000;          // 有理侧因子基界
-    uint32_t algebraic_bound = 5000;         // 代数侧因子基界
-    uint64_t large_prime_bound = 500000;     // 大素数界
-    uint32_t large_prime_bits = 0;           // 大素数位数 (0 = 不启用 LP)
-    uint8_t  log_scale = SIEVE_LOG_SCALE;    // 对数缩放因子（动态调整）
+    uint32_t rational_bound = 5000;      // 有理侧因子基界
+    uint32_t algebraic_bound = 5000;     // 代数侧因子基界
+    uint64_t large_prime_bound = 500000; // 大素数界
+    uint32_t large_prime_bits = 0;       // 大素数位数 (0 = 不启用 LP)
+    uint8_t log_scale = SIEVE_LOG_SCALE; // 对数缩放因子（动态调整）
 
     // === 筛法 ===
     int32_t sieve_i_min = -2000;
@@ -47,33 +47,33 @@ struct GNFSParams {
     // === Special-Q ===
     uint32_t special_q_min = 1000;
     uint32_t special_q_max = 5000;
-    uint32_t max_special_q = 2000;           // 最大处理的 special-q 数量
+    uint32_t max_special_q = 2000;            // 最大处理的 special-q 数量
     uint32_t max_special_q_batch_workers = 4; // 单个本地 special-q 批次的外层 worker 上限
-    uint32_t max_local_sieve_threads = 0;     // 本地筛法计算通道预算 (0 = Pipeline 自动冻结)
+    uint32_t max_local_sieve_threads = 0; // 本地筛法计算通道预算 (0 = Pipeline 自动冻结)
 
     // === 线性代数 ===
-    uint32_t num_qc_primes = 64;             // 二次特征素数数量
-    uint32_t target_excess = 100;            // 目标关系过剩数
+    uint32_t num_qc_primes = 64;  // 二次特征素数数量
+    uint32_t target_excess = 100; // 目标关系过剩数
 
     // === Schirokauer ===
     // 注意: GF(2) 矩阵只能用 ℓ=2
     // schirokauer_primes 固定为 {2}
 
     // === 进度报告 ===
-    uint32_t progress_interval = 50;         // 每 N 个 special-q 报告一次
+    uint32_t progress_interval = 50; // 每 N 个 special-q 报告一次
     bool verbose = true;
 
     /// 根据 N 的位数计算所有参数
     static GNFSParams compute(size_t n_bits) {
         GNFSParams p;
         p.bits = n_bits;
-        constexpr double LOG10_2 = 0.30103;  // log10(2)
+        constexpr double LOG10_2 = 0.30103; // log10(2)
         p.digits = static_cast<size_t>(static_cast<double>(n_bits) * LOG10_2 + 1.0);
 
         // L_N 函数的核心值: (ln N)^{1/3} · (ln ln N)^{2/3}
         double ln_n = static_cast<double>(n_bits) * std::log(2.0);
         double ln_ln_n = std::log(std::max(ln_n, 1.0));
-        double l_val = std::pow(ln_n, 1.0/3.0) * std::pow(std::max(ln_ln_n, 1.0), 2.0/3.0);
+        double l_val = std::pow(ln_n, 1.0 / 3.0) * std::pow(std::max(ln_ln_n, 1.0), 2.0 / 3.0);
 
         // === 多项式度数 ===
         // 标准选择: degree = round((3 ln N / ln ln N)^{1/3})
@@ -120,19 +120,33 @@ struct GNFSParams {
         uint32_t lp_bits = 0;
 
         if (p.digits <= 6) {
-            B_rat = 500;      B_alg = 1000;      lp_bits = 0;
+            B_rat = 500;
+            B_alg = 1000;
+            lp_bits = 0;
         } else if (p.digits <= 10) {
-            B_rat = 2000;     B_alg = 4000;      lp_bits = 0;
+            B_rat = 2000;
+            B_alg = 4000;
+            lp_bits = 0;
         } else if (p.digits <= 15) {
-            B_rat = 5000;     B_alg = 10000;     lp_bits = 17;
+            B_rat = 5000;
+            B_alg = 10000;
+            lp_bits = 17;
         } else if (p.digits <= 20) {
-            B_rat = 8000;     B_alg = 16000;     lp_bits = 19;
+            B_rat = 8000;
+            B_alg = 16000;
+            lp_bits = 19;
         } else if (p.digits <= 25) {
-            B_rat = 15000;    B_alg = 30000;     lp_bits = 20;
+            B_rat = 15000;
+            B_alg = 30000;
+            lp_bits = 20;
         } else if (p.digits <= 30) {
-            B_rat = 30000;    B_alg = 60000;     lp_bits = 21;
+            B_rat = 30000;
+            B_alg = 60000;
+            lp_bits = 21;
         } else if (p.digits <= 35) {
-            B_rat = 50000;    B_alg = 100000;    lp_bits = 22;  // CADO C35
+            B_rat = 50000;
+            B_alg = 100000;
+            lp_bits = 22; // CADO C35
         } else if (p.digits <= 40) {
             // Session 78: multiple failures at 39d with larger FB.
             // 100K/200K + lpb=23: failed (29K cols, 19K usable, deps=0)
@@ -141,27 +155,47 @@ struct GNFSParams {
             // Root cause: our merge efficiency (33% of birthday bound) requires
             // smaller matrix for successful dependency extraction.
             // Solution: use 34d-level FB with slightly higher LP.
-            B_rat = 50000;    B_alg = 100000;    lp_bits = 22;
+            B_rat = 50000;
+            B_alg = 100000;
+            lp_bits = 22;
         } else if (p.digits <= 45) {
             // Session 78: keep matrix manageable for our merge efficiency (~3%)
             // Matrix ≈ 18K cols with 60K/120K → needs ~600K raw → feasible
-            B_rat = 60000;    B_alg = 120000;    lp_bits = 22;
+            B_rat = 60000;
+            B_alg = 120000;
+            lp_bits = 22;
         } else if (p.digits <= 50) {
-            B_rat = 80000;    B_alg = 160000;    lp_bits = 23;
+            B_rat = 80000;
+            B_alg = 160000;
+            lp_bits = 23;
         } else if (p.digits <= 55) {
-            B_rat = 200000;   B_alg = 400000;    lp_bits = 24;  // LP enabled: birthday feasible at 2^24
+            B_rat = 200000;
+            B_alg = 400000;
+            lp_bits = 24; // LP enabled: birthday feasible at 2^24
         } else if (p.digits <= 60) {
-            B_rat = 400000;   B_alg = 800000;    lp_bits = 26;  // CADO C60
+            B_rat = 400000;
+            B_alg = 800000;
+            lp_bits = 26; // CADO C60
         } else if (p.digits <= 65) {
-            B_rat = 800000;   B_alg = 1600000;   lp_bits = 26;  // CADO C65
+            B_rat = 800000;
+            B_alg = 1600000;
+            lp_bits = 26; // CADO C65
         } else if (p.digits <= 70) {
-            B_rat = 800000;   B_alg = 1600000;   lp_bits = 27;  // CADO C70
+            B_rat = 800000;
+            B_alg = 1600000;
+            lp_bits = 27; // CADO C70
         } else if (p.digits <= 80) {
-            B_rat = 2000000;  B_alg = 4000000;   lp_bits = 28;  // CADO C80
+            B_rat = 2000000;
+            B_alg = 4000000;
+            lp_bits = 28; // CADO C80
         } else if (p.digits <= 90) {
-            B_rat = 6000000;  B_alg = 12000000;  lp_bits = 29;  // CADO C90
+            B_rat = 6000000;
+            B_alg = 12000000;
+            lp_bits = 29; // CADO C90
         } else if (p.digits <= 100) {
-            B_rat = 12000000; B_alg = 24000000;  lp_bits = 30;  // CADO C100
+            B_rat = 12000000;
+            B_alg = 24000000;
+            lp_bits = 30; // CADO C100
         } else {
             // >100 digits: L_N formula
             double c_B = 0.9;
@@ -171,7 +205,7 @@ struct GNFSParams {
             B_alg = std::min(B_rat * 2.0, 2e9);
             lp_bits = 30;
         }
-        lp_bits = std::min(lp_bits, 30u);  // 安全上限: 2^30 = 1G fits uint32
+        lp_bits = std::min(lp_bits, 30u); // 安全上限: 2^30 = 1G fits uint32
 
         // ENV override: GNFS_OVERRIDE_LP_BITS=N (1..30) — useful for experimentation
         // (e.g., 60d lp_bits=25 vs 26 trade-off comparison in BACKLOG OPT).
@@ -200,21 +234,29 @@ struct GNFSParams {
         // Session 78: 校准 41-70d 区间（之前 41-55d 用 4K×1K 偏小，CADO 用 I=12-13）
         double sieve_width, sieve_height;
         if (p.digits <= 6) {
-            sieve_width = 1000;   sieve_height = 400;
+            sieve_width = 1000;
+            sieve_height = 400;
         } else if (p.digits <= 10) {
-            sieve_width = 2000;   sieve_height = 800;
+            sieve_width = 2000;
+            sieve_height = 800;
         } else if (p.digits <= 25) {
-            sieve_width = 4096;   sieve_height = 1024;   // 4M positions
+            sieve_width = 4096;
+            sieve_height = 1024; // 4M positions
         } else if (p.digits <= 40) {
-            sieve_width = 2048;   sieve_height = 1024;   // I=11, 2M positions
+            sieve_width = 2048;
+            sieve_height = 1024; // I=11, 2M positions
         } else if (p.digits <= 50) {
-            sieve_width = 4096;   sieve_height = 2048;   // I=12, 8M positions
+            sieve_width = 4096;
+            sieve_height = 2048; // I=12, 8M positions
         } else if (p.digits <= 65) {
-            sieve_width = 4096;   sieve_height = 2048;   // I=12, 8M positions (faster per-SQ)
+            sieve_width = 4096;
+            sieve_height = 2048; // I=12, 8M positions (faster per-SQ)
         } else if (p.digits <= 80) {
-            sieve_width = 16384;  sieve_height = 8192;   // I=14, 134M positions
+            sieve_width = 16384;
+            sieve_height = 8192; // I=14, 134M positions
         } else {
-            sieve_width = 32768;  sieve_height = 16384;  // I=15, 536M positions
+            sieve_width = 32768;
+            sieve_height = 16384; // I=15, 536M positions
         }
 
         p.sieve_i_min = -static_cast<int32_t>(sieve_width / 2);
@@ -257,9 +299,8 @@ struct GNFSParams {
         // Special-Q 应在因子基界以上，提供更好的格结构
         // CADO-NFS 典型用 ~10×B
         p.special_q_min = p.algebraic_bound + 1;
-        p.special_q_max = static_cast<uint32_t>(
-            std::min(static_cast<uint64_t>(p.algebraic_bound) * 10,
-                     static_cast<uint64_t>(UINT32_MAX)));
+        p.special_q_max = static_cast<uint32_t>(std::min(
+            static_cast<uint64_t>(p.algebraic_bound) * 10, static_cast<uint64_t>(UINT32_MAX)));
 
         // 最大 special-q 数量：基于预估关系需求量
         // 每个 SQ 平均产出 1-5 个关系（取决于 B/LP），需要足够多的 SQ
@@ -268,15 +309,16 @@ struct GNFSParams {
             // 保守假设每 SQ 平均 1 个关系（小 B 时命中率低），乘 6 安全余量
             // Note: est_rels uses raw_relation_target which may be aggressive (1.5×),
             // so the safety factor here must compensate.
-            uint32_t needed_sq = static_cast<uint32_t>(
-                std::min(static_cast<size_t>(UINT32_MAX), est_rels * 6));
+            uint32_t needed_sq =
+                static_cast<uint32_t>(std::min(static_cast<size_t>(UINT32_MAX), est_rels * 6));
             // 下限：按位数平滑设置
-            uint32_t min_sq = (p.digits < 15) ? 2000u :
-                              (p.digits < 25) ? 10000u :
-                              (p.digits < 35) ? 50000u :
-                              (p.digits < 50) ? 200000u :
-                              (p.digits < 70) ? 500000u :
-                              (p.digits < 90) ? 2000000u : 5000000u;
+            uint32_t min_sq = (p.digits < 15)   ? 2000u
+                              : (p.digits < 25) ? 10000u
+                              : (p.digits < 35) ? 50000u
+                              : (p.digits < 50) ? 200000u
+                              : (p.digits < 70) ? 500000u
+                              : (p.digits < 90) ? 2000000u
+                                                : 5000000u;
             p.max_special_q = std::max(min_sq, needed_sq);
         }
 
@@ -312,7 +354,7 @@ struct GNFSParams {
         }
         // target_excess: 固定基础 + 额外列数（QC + Schirokauer + sign）
         // 不再使用 0.15·π(B) 的比例（随 B 线性增长过快）
-        uint32_t extra_cols = p.num_qc_primes + p.degree + 1;  // QC + Schirokauer + sign
+        uint32_t extra_cols = p.num_qc_primes + p.degree + 1; // QC + Schirokauer + sign
         p.target_excess = std::max(200u, extra_cols + 100);
 
         // === 进度报告间隔 ===
@@ -330,12 +372,12 @@ struct GNFSParams {
     /// 估算需要的关系数量（原始关系，过滤前）
     [[nodiscard]] size_t estimated_relations_needed() const {
         double pi_r = rational_bound / std::log(static_cast<double>(std::max(rational_bound, 2u)));
-        double pi_a = algebraic_bound / std::log(static_cast<double>(std::max(algebraic_bound, 2u)));
+        double pi_a =
+            algebraic_bound / std::log(static_cast<double>(std::max(algebraic_bound, 2u)));
         double matrix_cols = pi_r + pi_a + target_excess;
 
         if (large_prime_bits > 0 && large_prime_bound > algebraic_bound) {
-            return raw_relation_target(
-                util::size_from_nonnegative_double_floor(matrix_cols));
+            return raw_relation_target(util::size_from_nonnegative_double_floor(matrix_cols));
         }
         return util::size_from_nonnegative_double_floor(matrix_cols);
     }
@@ -354,7 +396,8 @@ struct GNFSParams {
         // 默认 1.0 (无 multiplier, 原始策略 unchanged).
         static const double target_mult = []() {
             const char* env = std::getenv("GNFS_SIEVE_TARGET_MULT");
-            if (!env) return 1.0;
+            if (!env)
+                return 1.0;
             double v = std::atof(env);
             return (v >= 0.1 && v <= 100.0) ? v : 1.0;
         }();
@@ -378,8 +421,8 @@ struct GNFSParams {
             // With ratio 4×, singleton survival ≈ 60-70%.
             base_target = util::saturating_size_product(matrix_columns, 4);
         }
-        return util::size_from_nonnegative_double_floor(
-            static_cast<double>(base_target) * target_mult);
+        return util::size_from_nonnegative_double_floor(static_cast<double>(base_target) *
+                                                        target_mult);
     }
 
     /// 估算筛区域大小 (位置数)
@@ -392,7 +435,6 @@ struct GNFSParams {
     [[nodiscard]] size_t sieve_memory_bytes() const {
         return sieve_region_size() * sizeof(uint16_t);
     }
-
 };
 
 } // namespace gnfs::core

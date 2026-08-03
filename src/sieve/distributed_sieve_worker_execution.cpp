@@ -78,7 +78,7 @@ hash_current_executable_path() noexcept {
         return {std::nullopt, errno};
     }
 
-    struct stat metadata{};
+    struct stat metadata {};
     if (::fstat(descriptor, &metadata) != 0) {
         const int failure = close_preserving_error(descriptor, errno);
         return {std::nullopt, failure};

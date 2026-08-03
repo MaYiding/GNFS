@@ -665,7 +665,7 @@ struct ParentPolicyResult final {
 };
 
 [[nodiscard]] ParentPolicyResult inspect_parent_policy(int descriptor) noexcept {
-    struct stat parent_metadata{};
+    struct stat parent_metadata {};
     int stat_result = -1;
     do {
         stat_result = ::fstat(descriptor, &parent_metadata);
@@ -774,8 +774,8 @@ read_stable_relative_file(NativeHandle parent_handle, const std::filesystem::pat
         return stable_read_error(BoundedReadState::failed, posix_error(errno));
     };
 
-    struct stat held_before{};
-    struct stat named_before{};
+    struct stat held_before {};
+    struct stat named_before {};
     int stat_result = -1;
     do {
         stat_result = ::fstat(file_descriptor, &held_before);
@@ -875,8 +875,8 @@ read_stable_relative_file(NativeHandle parent_handle, const std::filesystem::pat
         return close_and_return(stable_read_error(BoundedReadState::rejected, protocol_error()));
     }
 
-    struct stat held_after{};
-    struct stat named_after{};
+    struct stat held_after {};
+    struct stat named_after {};
     do {
         stat_result = ::fstat(file_descriptor, &held_after);
     } while (stat_result != 0 && errno == EINTR);
@@ -1077,7 +1077,7 @@ public:
             return MutationResult::failed(posix_error(EBADF));
         }
 
-        struct stat pending_metadata{};
+        struct stat pending_metadata {};
         if (::fstatat(*descriptor, pending_leaf.c_str(), &pending_metadata, AT_SYMLINK_NOFOLLOW) !=
             0) {
             const int saved_errno = errno;
@@ -1093,7 +1093,7 @@ public:
             return MutationResult::identity_mismatch(protocol_error());
         }
 
-        struct stat canonical_metadata{};
+        struct stat canonical_metadata {};
         if (::fstatat(*descriptor, canonical_leaf.c_str(), &canonical_metadata,
                       AT_SYMLINK_NOFOLLOW) == 0) {
             return MutationResult::destination_exists(std::make_error_code(std::errc::file_exists));
@@ -1144,7 +1144,7 @@ public:
             return MutationResult::failed(posix_error(EBADF));
         }
 
-        struct stat pending_metadata{};
+        struct stat pending_metadata {};
         if (::fstatat(*descriptor, pending_leaf.c_str(), &pending_metadata, AT_SYMLINK_NOFOLLOW) !=
             0) {
             const int saved_errno = errno;
@@ -1332,7 +1332,7 @@ OwnedFileOpenResult open_owned_exact_at(NativeHandle parent_handle,
             if (parent_after.state != ParentPolicyState::accepted) {
                 return parent_failure(parent_after);
             }
-            struct stat named{};
+            struct stat named {};
             int missing_result = -1;
             do {
                 missing_result = ::fstatat(*parent, leaf.c_str(), &named, AT_SYMLINK_NOFOLLOW);
@@ -1381,8 +1381,8 @@ OwnedFileOpenResult open_owned_exact_at(NativeHandle parent_handle,
         return detail::OwnedFileOpenResultFactory::failed(protocol_error());
     };
 
-    struct stat held_before{};
-    struct stat named_before{};
+    struct stat held_before {};
+    struct stat named_before {};
     int stat_result = -1;
     do {
         stat_result = ::fstat(file_descriptor, &held_before);
@@ -1411,8 +1411,8 @@ OwnedFileOpenResult open_owned_exact_at(NativeHandle parent_handle,
             std::make_error_code(std::errc::operation_canceled)));
     }
 
-    struct stat held_after{};
-    struct stat named_after{};
+    struct stat held_after {};
+    struct stat named_after {};
     do {
         stat_result = ::fstat(file_descriptor, &held_after);
     } while (stat_result != 0 && errno == EINTR);

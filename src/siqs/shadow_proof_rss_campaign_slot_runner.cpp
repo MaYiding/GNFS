@@ -62,7 +62,7 @@ void retain_transport_diagnostic(SlotRunnerDiagnostic& diagnostic,
 #if defined(_WIN32)
     return false;
 #else
-    struct stat metadata{};
+    struct stat metadata {};
     return ::lstat(executable.executable.c_str(), &metadata) == 0 && S_ISREG(metadata.st_mode) &&
            metadata.st_nlink == 1 &&
            static_cast<uint64_t>(metadata.st_uid) == executable.expected_owner &&

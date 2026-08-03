@@ -371,7 +371,7 @@ private:
 }
 
 [[nodiscard]] sieve::NativeIdentityV1 native_identity(const std::filesystem::path& path) {
-    struct stat metadata{};
+    struct stat metadata {};
     if (::lstat(path.c_str(), &metadata) != 0) {
         throw std::system_error(errno, std::generic_category(),
                                 "inspect merge-writer-authority fixture entry");
@@ -1340,7 +1340,7 @@ capture_raw_recovery_namespace_snapshot(const RawMergeWriterResidueFixtureV1& fi
         .root_identity = native_identity(fixture.root()),
     };
     for (const auto& entry : std::filesystem::recursive_directory_iterator(fixture.root())) {
-        struct stat metadata{};
+        struct stat metadata {};
         if (::lstat(entry.path().c_str(), &metadata) != 0) {
             throw std::system_error(errno, std::generic_category(),
                                     "inspect raw-recovery namespace snapshot entry");
@@ -1590,7 +1590,7 @@ replace_raw_leaf_with_same_bytes(const std::filesystem::path& path,
     CHECK(!std::filesystem::exists(displaced_path));
     const auto bytes = read_file_bytes(path);
     const auto original_identity = native_identity(path);
-    struct stat metadata{};
+    struct stat metadata {};
     CHECK(::lstat(path.c_str(), &metadata) == 0);
     CHECK(S_ISREG(metadata.st_mode));
     CHECK(::rename(path.c_str(), displaced_path.c_str()) == 0);
@@ -1835,7 +1835,7 @@ void fork_after_first_output_write(std::size_t input_slot, std::uint64_t relatio
     context.hook_input_slot = input_slot;
     context.hook_relation_ordinal = relation_ordinal;
 
-    struct stat metadata{};
+    struct stat metadata {};
     if (::lstat(context.data_path.c_str(), &metadata) != 0) {
         context.stat_error = errno;
     } else if (!S_ISREG(metadata.st_mode) || metadata.st_size < 0) {

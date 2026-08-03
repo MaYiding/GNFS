@@ -1941,7 +1941,7 @@ private:
 }
 
 [[nodiscard]] sieve::NativeIdentityV1 descriptor_identity(int descriptor) {
-    struct stat metadata{};
+    struct stat metadata {};
     CHECK(::fstat(descriptor, &metadata) == 0);
     return {
         .volume = static_cast<std::uint64_t>(metadata.st_dev),
@@ -1985,7 +1985,7 @@ native_reconciliation_request(
 }
 
 void require_fixed_leaf_missing(int directory_descriptor) {
-    struct stat metadata{};
+    struct stat metadata {};
     int result = -1;
     do {
         result =
@@ -2138,7 +2138,7 @@ void test_real_posix_residue_reconciliation_present_absent_and_nlink() {
     } while (retained_descriptor < 0 && errno == EINTR);
     CHECK(retained_descriptor >= 0);
     ScopedFd retained(retained_descriptor);
-    struct stat before{};
+    struct stat before {};
     CHECK(::fstat(retained.get(), &before) == 0);
     CHECK(before.st_nlink == 1);
     const auto baseline = snapshot_open_descriptors();
@@ -2150,7 +2150,7 @@ void test_real_posix_residue_reconciliation_present_absent_and_nlink() {
         removed.disposition ==
         package_file::DistributedSieveWorkerWorkPackageResidueReconciliationDispositionV1::removed);
     require_fixed_leaf_missing(directory.get());
-    struct stat after{};
+    struct stat after {};
     CHECK(::fstat(retained.get(), &after) == 0);
     CHECK(after.st_dev == before.st_dev);
     CHECK(after.st_ino == before.st_ino);
@@ -2263,7 +2263,7 @@ void test_real_posix_residue_reconciliation_revalidates_hooks() {
         CHECK(!replaced);
         CHECK(context.calls == 1);
         CHECK(context.completed);
-        struct stat successor{};
+        struct stat successor {};
         CHECK(::fstatat(directory.get(), fixed_leaf().c_str(), &successor, AT_SYMLINK_NOFOLLOW) ==
               0);
         CHECK(static_cast<std::uint64_t>(successor.st_ino) != original_identity.object);
@@ -2305,7 +2305,7 @@ void test_real_posix_residue_success_missing_and_fd_hygiene() {
         TempDirectory temp;
         auto directory = temp.open_directory();
         create_sealed_leaf_with_bytes(directory.get(), fixed_leaf(), encoded.package->bytes);
-        struct stat before_metadata{};
+        struct stat before_metadata {};
         CHECK(::fstatat(directory.get(), fixed_leaf().c_str(), &before_metadata,
                         AT_SYMLINK_NOFOLLOW) == 0);
         const auto before_descriptors = snapshot_open_descriptors();
@@ -2323,7 +2323,7 @@ void test_real_posix_residue_success_missing_and_fd_hygiene() {
                               static_cast<std::uint64_t>(::geteuid()));
         CHECK(snapshot_open_descriptors() == before_descriptors);
         CHECK(read_leaf_bytes(directory.get(), fixed_leaf()) == encoded.package->bytes);
-        struct stat after_metadata{};
+        struct stat after_metadata {};
         CHECK(::fstatat(directory.get(), fixed_leaf().c_str(), &after_metadata,
                         AT_SYMLINK_NOFOLLOW) == 0);
         CHECK(before_metadata.st_dev == after_metadata.st_dev);
@@ -2553,7 +2553,7 @@ void test_real_posix_foreign_leaves_are_preserved() {
         auto directory = temp.open_directory();
         const auto request = native_request(directory.get());
         create_leaf_with_bytes(directory.get(), fixed_leaf(), sentinel);
-        struct stat before{};
+        struct stat before {};
         CHECK(::fstatat(directory.get(), fixed_leaf().c_str(), &before, AT_SYMLINK_NOFOLLOW) == 0);
 
         const auto baseline = snapshot_open_descriptors();
@@ -2565,7 +2565,7 @@ void test_real_posix_foreign_leaves_are_preserved() {
         CHECK(snapshot_open_descriptors() == baseline);
         CHECK(read_leaf_bytes(directory.get(), fixed_leaf()) ==
               std::vector<std::byte>(sentinel.begin(), sentinel.end()));
-        struct stat after{};
+        struct stat after {};
         CHECK(::fstatat(directory.get(), fixed_leaf().c_str(), &after, AT_SYMLINK_NOFOLLOW) == 0);
         CHECK(before.st_dev == after.st_dev);
         CHECK(before.st_ino == after.st_ino);
@@ -2579,7 +2579,7 @@ void test_real_posix_foreign_leaves_are_preserved() {
         create_leaf_with_bytes(directory.get(), target_leaf, sentinel);
         CHECK(::symlinkat(std::string(target_leaf).c_str(), directory.get(),
                           fixed_leaf().c_str()) == 0);
-        struct stat before{};
+        struct stat before {};
         CHECK(::fstatat(directory.get(), fixed_leaf().c_str(), &before, AT_SYMLINK_NOFOLLOW) == 0);
         CHECK(S_ISLNK(before.st_mode));
 
@@ -2588,7 +2588,7 @@ void test_real_posix_foreign_leaves_are_preserved() {
         CHECK(!result);
         CHECK(result.diagnostic.status ==
               package_file::DistributedSieveWorkerWorkPackageFileStatus::namespace_conflict);
-        struct stat after{};
+        struct stat after {};
         CHECK(::fstatat(directory.get(), fixed_leaf().c_str(), &after, AT_SYMLINK_NOFOLLOW) == 0);
         CHECK(S_ISLNK(after.st_mode));
         CHECK(before.st_dev == after.st_dev);

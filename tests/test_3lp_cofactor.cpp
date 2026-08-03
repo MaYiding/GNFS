@@ -29,12 +29,15 @@ using gnfs::core::Integer;
 static int g_pass = 0;
 static int g_fail = 0;
 
-#define CHECK(cond, msg) do {                                                  \
-    if (cond) { ++g_pass; }                                                    \
-    else { ++g_fail; std::cerr << "FAIL: " << msg                              \
-                                << " at " << __FILE__ << ":" << __LINE__       \
-                                << std::endl; }                                 \
-} while (0)
+#define CHECK(cond, msg)                                                                           \
+    do {                                                                                           \
+        if (cond) {                                                                                \
+            ++g_pass;                                                                              \
+        } else {                                                                                   \
+            ++g_fail;                                                                              \
+            std::cerr << "FAIL: " << msg << " at " << __FILE__ << ":" << __LINE__ << std::endl;    \
+        }                                                                                          \
+    } while (0)
 
 // Test 1: 3LP cofactor accepted under allow_3lp=true
 void test_3lp_accepted() {
@@ -45,16 +48,16 @@ void test_3lp_accepted() {
     assert(is_probable_prime_u64(p));
     assert(is_probable_prime_u64(q));
     assert(is_probable_prime_u64(r));
-    constexpr uint64_t c = p * q * r;   // ≈ 1.01e12, < 2^40
-    [[maybe_unused]] constexpr uint64_t B = 1u << 20;  // lp_bits=20, B = 2^20 ≈ 1.05e6
+    constexpr uint64_t c = p * q * r;                 // ≈ 1.01e12, < 2^40
+    [[maybe_unused]] constexpr uint64_t B = 1u << 20; // lp_bits=20, B = 2^20 ≈ 1.05e6
     // Sanity: c > B² (~1.1e12 > 1.1e12 — actually almost equal!). Let me pick smaller B.
     // Better: B = 2^14 = 16384 so c > B² = 2.7e8 and c < B³ = 4.4e12.
     constexpr uint64_t B2 = 1u << 14;
     static_assert(static_cast<unsigned long long>(p) * q * r >
-                  static_cast<unsigned long long>(B2) * B2,
+                      static_cast<unsigned long long>(B2) * B2,
                   "c must be > B^2");
     static_assert(static_cast<unsigned long long>(p) * q * r <
-                  static_cast<unsigned long long>(B2) * B2 * B2,
+                      static_cast<unsigned long long>(B2) * B2 * B2,
                   "c must be ≤ B^3");
 
     Integer c_int(static_cast<unsigned long long>(c));
@@ -64,15 +67,12 @@ void test_3lp_accepted() {
     if (cls.type == CofactorClass::ThreeLP) {
         // Factors should be sorted.
         CHECK(cls.factor1 <= cls.factor2 && cls.factor2 <= cls.factor3,
-              "factors not sorted: " << cls.factor1 << " "
-                                      << cls.factor2 << " " << cls.factor3);
-        CHECK(cls.factor1 * cls.factor2 * cls.factor3 == c,
-              "factor product != cofactor");
+              "factors not sorted: " << cls.factor1 << " " << cls.factor2 << " " << cls.factor3);
+        CHECK(cls.factor1 * cls.factor2 * cls.factor3 == c, "factor product != cofactor");
         CHECK(is_probable_prime_u64(cls.factor1), "factor1 not prime");
         CHECK(is_probable_prime_u64(cls.factor2), "factor2 not prime");
         CHECK(is_probable_prime_u64(cls.factor3), "factor3 not prime");
-        CHECK(cls.factor1 <= B2 && cls.factor2 <= B2 && cls.factor3 <= B2,
-              "some factor > B");
+        CHECK(cls.factor1 <= B2 && cls.factor2 <= B2 && cls.factor3 <= B2, "some factor > B");
     }
     std::cout << "OK" << std::endl;
 }
@@ -87,8 +87,7 @@ void test_3lp_rejected_by_default() {
     Integer c_int(static_cast<unsigned long long>(c));
     auto cls = classify_cofactor(c_int, B2, /*allow_3lp=*/false);
     CHECK(cls.type == CofactorClass::TooLarge,
-          "expected TooLarge when allow_3lp=false, got "
-              << static_cast<int>(cls.type));
+          "expected TooLarge when allow_3lp=false, got " << static_cast<int>(cls.type));
     std::cout << "OK" << std::endl;
 }
 
@@ -97,15 +96,14 @@ void test_3lp_rejected_factor_too_large() {
     std::cout << "test_3lp_rejected_factor_too_large... ";
     // p*q*r where r > B. We expect not-ThreeLP (Composite or TooLarge).
     constexpr uint64_t p = 10007, q = 10009;
-    constexpr uint64_t r = 20011;        // > 2^14
+    constexpr uint64_t r = 20011; // > 2^14
     constexpr uint64_t c = p * q * r;
-    constexpr uint64_t B = 1u << 14;     // 16384
+    constexpr uint64_t B = 1u << 14; // 16384
     static_assert(r > B, "r should exceed B for this test");
 
     Integer c_int(static_cast<unsigned long long>(c));
     auto cls = classify_cofactor(c_int, B, /*allow_3lp=*/true);
-    CHECK(cls.type != CofactorClass::ThreeLP,
-          "should not accept when a factor exceeds B");
+    CHECK(cls.type != CofactorClass::ThreeLP, "should not accept when a factor exceeds B");
     std::cout << "OK (cls=" << static_cast<int>(cls.type) << ")" << std::endl;
 }
 
@@ -158,8 +156,7 @@ void test_direct_3lp_helper() {
     CHECK(opt.has_value(), "try_classify_three_lp should succeed for p*q*r");
     if (opt) {
         CHECK(opt->type == CofactorClass::ThreeLP, "type should be ThreeLP");
-        CHECK(opt->factor1 * opt->factor2 * opt->factor3 == c,
-              "factor product mismatch");
+        CHECK(opt->factor1 * opt->factor2 * opt->factor3 == c, "factor product mismatch");
     }
     std::cout << "OK" << std::endl;
 }
@@ -168,10 +165,9 @@ void test_direct_3lp_helper() {
 void test_2lp_still_classified() {
     std::cout << "test_2lp_still_classified... ";
     constexpr uint64_t p = 10007, q = 10009;
-    constexpr uint64_t c = p * q;        // < B²
+    constexpr uint64_t c = p * q; // < B²
     constexpr uint64_t B = 1u << 14;
-    static_assert(static_cast<unsigned long long>(c) <
-                  static_cast<unsigned long long>(B) * B,
+    static_assert(static_cast<unsigned long long>(c) < static_cast<unsigned long long>(B) * B,
                   "c must be ≤ B²");
 
     Integer c_int(static_cast<unsigned long long>(c));
@@ -221,8 +217,7 @@ void test_hard_3lp_corpus() {
         const uint64_t p = factors[0];
         const uint64_t q = factors[1];
         const uint64_t r = factors[2];
-        CHECK(is_probable_prime_u64(p) && is_probable_prime_u64(q) &&
-                  is_probable_prime_u64(r),
+        CHECK(is_probable_prime_u64(p) && is_probable_prime_u64(q) && is_probable_prime_u64(r),
               "hard 3LP corpus metadata must contain primes");
         const uint64_t c = p * q * r;
         CHECK(c > B * B && c <= B * B * B,
@@ -234,7 +229,7 @@ void test_hard_3lp_corpus() {
         if (cls.type == CofactorClass::ThreeLP) {
             CHECK(cls.factor1 == p && cls.factor2 == q && cls.factor3 == r,
                   "hard triple factors changed: " << cls.factor1 << " " << cls.factor2 << " "
-                                                   << cls.factor3);
+                                                  << cls.factor3);
         }
     }
 
@@ -254,8 +249,7 @@ int main() {
     test_hard_3lp_corpus();
 
     std::cout << "\n=============================================" << std::endl;
-    std::cout << "  Results: " << g_pass << " passed, "
-              << g_fail << " failed" << std::endl;
+    std::cout << "  Results: " << g_pass << " passed, " << g_fail << " failed" << std::endl;
     std::cout << "=============================================" << std::endl;
     return (g_fail == 0) ? 0 : 1;
 }

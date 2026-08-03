@@ -1373,7 +1373,7 @@ private:
         if (held_original_fd_ < 0) {
             return errno;
         }
-        struct stat original_metadata{};
+        struct stat original_metadata {};
         if (::fstat(held_original_fd_, &original_metadata) != 0) {
             return errno;
         }
@@ -1407,7 +1407,7 @@ private:
         if (::close(fd) != 0) {
             return errno;
         }
-        struct stat replacement_metadata{};
+        struct stat replacement_metadata {};
         if (::fstatat(parent_fd, leaf, &replacement_metadata, AT_SYMLINK_NOFOLLOW) != 0) {
             return errno;
         }
@@ -2138,7 +2138,7 @@ void write_committed_off_slots(const TempStore& fixture, uint32_t slot_count,
 }
 
 void expect_private_regular_leaf(const std::filesystem::path& path, std::size_t expected_size) {
-    struct stat metadata{};
+    struct stat metadata {};
     CHECK(::lstat(path.c_str(), &metadata) == 0);
     CHECK(S_ISREG(metadata.st_mode));
     CHECK(static_cast<uint64_t>(metadata.st_uid) == static_cast<uint64_t>(::geteuid()));

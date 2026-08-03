@@ -1183,7 +1183,7 @@ run_direct_base_lock_probe(const std::filesystem::path& base) {
 }
 
 [[nodiscard]] std::size_t count_open_descriptors_for_path(const std::filesystem::path& path) {
-    struct stat expected{};
+    struct stat expected {};
     int inspected = -1;
     do {
         inspected = ::stat(path.c_str(), &expected);
@@ -1196,7 +1196,7 @@ run_direct_base_lock_probe(const std::filesystem::path& base) {
     CHECK(descriptor_limit > 0);
     std::size_t count = 0;
     for (int descriptor = 0; descriptor < descriptor_limit; ++descriptor) {
-        struct stat actual{};
+        struct stat actual {};
         int result = -1;
         do {
             result = ::fstat(descriptor, &actual);

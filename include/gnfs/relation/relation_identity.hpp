@@ -19,15 +19,13 @@ namespace gnfs::relation {
 struct RelationSourceCombination {
     std::vector<core::ABPair> sources;
 
-    [[nodiscard]] bool operator==(
-            const RelationSourceCombination& other) const noexcept {
+    [[nodiscard]] bool operator==(const RelationSourceCombination& other) const noexcept {
         return sources == other.sources;
     }
 };
 
 struct RelationSourceCombinationHash {
-    [[nodiscard]] size_t operator()(
-            const RelationSourceCombination& combination) const noexcept {
+    [[nodiscard]] size_t operator()(const RelationSourceCombination& combination) const noexcept {
         uint64_t h = 14695981039346656037ULL;
         auto mix = [&](uint64_t value) {
             h ^= value;
@@ -49,8 +47,8 @@ struct RelationSourceCombinationHash {
 };
 
 /// Build the exact, order-independent source combination of one relation.
-[[nodiscard]] inline RelationSourceCombination relation_source_combination(
-        const core::Relation& relation) {
+[[nodiscard]] inline RelationSourceCombination
+relation_source_combination(const core::Relation& relation) {
     RelationSourceCombination combination;
     combination.sources.reserve(relation.extra_ab_pairs.size() + 1);
     combination.sources.push_back(relation.ab());
@@ -76,4 +74,4 @@ struct RelationSourceCombinationHash {
     return combination;
 }
 
-}  // namespace gnfs::relation
+} // namespace gnfs::relation

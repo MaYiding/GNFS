@@ -57,7 +57,7 @@ void test_int64_min_no_ub() {
 
     // |INT64_MIN| = 2^63, which does NOT fit in int64_t.
     // std::abs(INT64_MIN) is UB. safe_abs returns uint64_t and gets it right.
-    const uint64_t expected = uint64_t(1) << 63;  // 9223372036854775808
+    const uint64_t expected = uint64_t(1) << 63; // 9223372036854775808
 
     assert(safe_abs(INT64_MIN) == expected);
     assert(safe_abs(std::numeric_limits<int64_t>::min()) == expected);
@@ -120,8 +120,7 @@ void test_sign_symmetry_in_range() {
 
     // For x ∈ [INT64_MIN+1, INT64_MAX], safe_abs(x) == safe_abs(-x).
     // (INT64_MIN excluded because -INT64_MIN doesn't exist as int64_t.)
-    for (int64_t x : {int64_t(1), int64_t(100), int64_t(10000),
-                       int64_t(1) << 20, INT64_MAX}) {
+    for (int64_t x : {int64_t(1), int64_t(100), int64_t(10000), int64_t(1) << 20, INT64_MAX}) {
         assert(safe_abs(x) == safe_abs(-x));
     }
 
@@ -138,10 +137,10 @@ void test_size_arithmetic_contracts() {
     static_assert(saturating_size_product(MAX_SIZE, 2) == MAX_SIZE);
     static_assert(size_from_nonnegative_double_floor(-1.0) == 0);
     static_assert(size_from_nonnegative_double_floor(42.75) == 42);
-    static_assert(size_from_nonnegative_double_floor(
-                      std::numeric_limits<double>::infinity()) == MAX_SIZE);
-    static_assert(size_from_nonnegative_double_floor(
-                      std::numeric_limits<double>::quiet_NaN()) == 0);
+    static_assert(size_from_nonnegative_double_floor(std::numeric_limits<double>::infinity()) ==
+                  MAX_SIZE);
+    static_assert(size_from_nonnegative_double_floor(std::numeric_limits<double>::quiet_NaN()) ==
+                  0);
 
     std::cout << "  PASS (compile-time boundaries)" << std::endl;
 }

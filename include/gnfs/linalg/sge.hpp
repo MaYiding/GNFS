@@ -31,8 +31,7 @@ struct SGEResult {
     size_t weight2_skipped_cap = 0;
 
     /// 将 BL 在降维矩阵上找到的依赖展开回原始行索引
-    [[nodiscard]] std::vector<bool> expand_dependency(
-            const std::vector<bool>& reduced_dep) const {
+    [[nodiscard]] std::vector<bool> expand_dependency(const std::vector<bool>& reduced_dep) const {
         validate_transform_shape();
         validate_dependency_shape(reduced_dep);
         validate_transform_entries();
@@ -90,7 +89,8 @@ private:
     expand_dependency_unchecked(const std::vector<bool>& reduced_dep) const {
         std::vector<bool> original(original_rows, false);
         for (size_t i = 0; i < reduced_dep.size(); ++i) {
-            if (!reduced_dep[i]) continue;
+            if (!reduced_dep[i])
+                continue;
 
             for (size_t orig_row : row_composition[i]) {
                 original[orig_row] = !original[orig_row]; // XOR
@@ -102,7 +102,7 @@ private:
 
 /// SGE 配置
 struct SGEConfig {
-    size_t max_passes = 100;       ///< 最大迭代轮数 (raised from 20)
+    size_t max_passes = 100; ///< 最大迭代轮数 (raised from 20)
     bool eliminate_weight1 = true;
     bool eliminate_weight2 = true;
     bool verbose = false;
@@ -135,9 +135,8 @@ struct SGEConfig {
 /// 参考：Cavallar (2000) "Strategies for Filtering in the Number Field Sieve"
 class SGE {
 public:
-    [[nodiscard]] static SGEResult preprocess(
-            const SparseMatrix& matrix,
-            const SGEConfig& config = SGEConfig{}) {
+    [[nodiscard]] static SGEResult preprocess(const SparseMatrix& matrix,
+                                              const SGEConfig& config = SGEConfig{}) {
 
         const size_t n_rows = matrix.num_rows();
         const size_t n_cols = matrix.num_cols();
@@ -157,19 +156,18 @@ public:
         // [1, kSGEBatchPivotsMax] bracket the ENV uses) so tests can drive
         // both paths from the same process without environment mutation.
         const int effective_batch = [&]() noexcept {
-            int raw = config.batch_pivots > 0
-                          ? config.batch_pivots
-                          : sge_batch_pivots_size();
-            if (raw < 1) raw = 1;
-            if (raw > kSGEBatchPivotsMax) raw = kSGEBatchPivotsMax;
+            int raw = config.batch_pivots > 0 ? config.batch_pivots : sge_batch_pivots_size();
+            if (raw < 1)
+                raw = 1;
+            if (raw > kSGEBatchPivotsMax)
+                raw = kSGEBatchPivotsMax;
             return raw;
         }();
 
         // ── Working copy ──
         std::vector<SparseRow> working_rows(n_rows);
         for (size_t r = 0; r < n_rows; ++r) {
-            working_rows[r] = SparseRow(
-                SparseRow::IndexList(matrix.row(r).indices()));
+            working_rows[r] = SparseRow(SparseRow::IndexList(matrix.row(r).indices()));
         }
 
         // Row composition tracking
@@ -195,7 +193,8 @@ public:
         // 新实现 (v15): pass 0 之前构建一次,后续 Phase 1/2 增量。
         std::vector<std::vector<size_t>> col_to_rows(n_cols);
         for (size_t r = 0; r < n_rows; ++r) {
-            if (!row_alive[r]) continue;
+            if (!row_alive[r])
+                continue;
             for (auto c : working_rows[r].indices()) {
                 if (c < n_cols && col_alive[c]) {
                     col_to_rows[c].push_back(r);
@@ -225,11 +224,14 @@ public:
         w1_work.reserve(n_cols / 8);
 
         auto apply_w1_pivot = [&](uint32_t c) -> bool {
-            if (c >= n_cols || !col_alive[c]) return false;
-            if (col_to_rows[c].size() != 1) return false;
+            if (c >= n_cols || !col_alive[c])
+                return false;
+            if (col_to_rows[c].size() != 1)
+                return false;
 
             const size_t r = col_to_rows[c][0];
-            if (!row_alive[r]) return false;
+            if (!row_alive[r])
+                return false;
 
             row_alive[r] = false;
             col_alive[c] = false;
@@ -237,10 +239,10 @@ public:
             --alive_cols;
 
             for (auto c2 : working_rows[r].indices()) {
-                if (c2 >= n_cols || !col_alive[c2]) continue;
+                if (c2 >= n_cols || !col_alive[c2])
+                    continue;
                 auto& rows = col_to_rows[c2];
-                rows.erase(std::remove(rows.begin(), rows.end(), r),
-                           rows.end());
+                rows.erase(std::remove(rows.begin(), rows.end(), r), rows.end());
                 if (rows.size() == 1 && col_alive[c2])
                     w1_work.push_back(c2);
                 else if (rows.empty() && col_alive[c2]) {
@@ -256,19 +258,21 @@ public:
         // either (a) eligibility lapsed (row/column killed by an earlier
         // pivot) or (b) the row-composition cap rejected the merge.
         auto apply_w2_pivot = [&](uint32_t c) -> bool {
-            if (!col_alive[c]) return false;
-            if (col_to_rows[c].size() != 2) return false;
+            if (!col_alive[c])
+                return false;
+            if (col_to_rows[c].size() != 2)
+                return false;
 
             size_t r1 = col_to_rows[c][0];
             size_t r2 = col_to_rows[c][1];
-            if (!row_alive[r1] || !row_alive[r2]) return false;
+            if (!row_alive[r1] || !row_alive[r2])
+                return false;
 
             if (working_rows[r1].weight() < working_rows[r2].weight())
                 std::swap(r1, r2);
 
             if (config.row_composition_cap > 0) {
-                size_t prospective =
-                    composition[r1].size() + composition[r2].size();
+                size_t prospective = composition[r1].size() + composition[r2].size();
                 if (prospective > config.row_composition_cap) {
                     ++result.weight2_skipped_cap;
                     return false;
@@ -287,7 +291,7 @@ public:
             std::sort(comp1.begin(), comp1.end());
             std::vector<size_t> deduped;
             deduped.reserve(comp1.size());
-            for (size_t i = 0; i < comp1.size(); ) {
+            for (size_t i = 0; i < comp1.size();) {
                 size_t val = comp1[i];
                 size_t count = 1;
                 while (i + count < comp1.size() && comp1[i + count] == val)
@@ -300,22 +304,22 @@ public:
 
             auto it1 = old_r1_indices.begin();
             for (auto c2_raw : old_r2_indices) {
-                if (c2_raw >= n_cols) continue;
+                if (c2_raw >= n_cols)
+                    continue;
                 size_t c2 = static_cast<size_t>(c2_raw);
-                if (!col_alive[c2]) continue;
+                if (!col_alive[c2])
+                    continue;
 
-                while (it1 != old_r1_indices.end() && *it1 < c2_raw) ++it1;
-                bool was_in_r1 =
-                    (it1 != old_r1_indices.end() && *it1 == c2_raw);
+                while (it1 != old_r1_indices.end() && *it1 < c2_raw)
+                    ++it1;
+                bool was_in_r1 = (it1 != old_r1_indices.end() && *it1 == c2_raw);
 
                 auto& rows = col_to_rows[c2];
 
-                rows.erase(std::remove(rows.begin(), rows.end(), r2),
-                           rows.end());
+                rows.erase(std::remove(rows.begin(), rows.end(), r2), rows.end());
 
                 if (was_in_r1) {
-                    rows.erase(std::remove(rows.begin(), rows.end(), r1),
-                               rows.end());
+                    rows.erase(std::remove(rows.begin(), rows.end(), r1), rows.end());
                 } else {
                     rows.push_back(r1);
                 }
@@ -391,17 +395,22 @@ public:
                         // the algorithm progressing even when many w1
                         // columns share rows.
                         while (!w1_work.empty() &&
-                               batch_cols.size() <
-                                   static_cast<size_t>(effective_batch)) {
+                               batch_cols.size() < static_cast<size_t>(effective_batch)) {
                             uint32_t c = w1_work.back();
                             w1_work.pop_back();
-                            if (c >= n_cols || !col_alive[c]) continue;
-                            if (col_to_rows[c].size() != 1) continue;
+                            if (c >= n_cols || !col_alive[c])
+                                continue;
+                            if (col_to_rows[c].size() != 1)
+                                continue;
                             size_t r = col_to_rows[c][0];
-                            if (!row_alive[r]) continue;
+                            if (!row_alive[r])
+                                continue;
                             bool conflict = false;
                             for (size_t ur : used_rows) {
-                                if (ur == r) { conflict = true; break; }
+                                if (ur == r) {
+                                    conflict = true;
+                                    break;
+                                }
                             }
                             if (conflict) {
                                 deferred.push_back(c);
@@ -463,8 +472,7 @@ public:
                     batch_cols.reserve(static_cast<size_t>(effective_batch));
                     std::vector<size_t> used_rows;
                     // up to 2 rows per pivot, so 2*N capacity is exact.
-                    used_rows.reserve(
-                        static_cast<size_t>(effective_batch) * 2);
+                    used_rows.reserve(static_cast<size_t>(effective_batch) * 2);
                     std::vector<uint32_t> deferred;
                     deferred.reserve(n_cols / 16);
 
@@ -480,15 +488,17 @@ public:
                         // batch retires; columns we cannot use even after
                         // the batch (still ineligible) are dropped by
                         // apply_w2_pivot returning false.
-                        for (; c < n_cols && batch_cols.size() <
-                                                  static_cast<size_t>(
-                                                      effective_batch);
+                        for (;
+                             c < n_cols && batch_cols.size() < static_cast<size_t>(effective_batch);
                              ++c) {
-                            if (!col_alive[c]) continue;
-                            if (col_to_rows[c].size() != 2) continue;
+                            if (!col_alive[c])
+                                continue;
+                            if (col_to_rows[c].size() != 2)
+                                continue;
                             size_t r1 = col_to_rows[c][0];
                             size_t r2 = col_to_rows[c][1];
-                            if (!row_alive[r1] || !row_alive[r2]) continue;
+                            if (!row_alive[r1] || !row_alive[r2])
+                                continue;
 
                             bool conflict = false;
                             for (size_t ur : used_rows) {
@@ -538,22 +548,20 @@ public:
             ++result.passes;
 
             if (config.verbose) {
-                std::cout << "  SGE pass " << (pass + 1)
-                          << ": rows=" << alive_rows
-                          << " cols=" << alive_cols
-                          << " (eliminated " << eliminated_this_pass << ")\n";
+                std::cout << "  SGE pass " << (pass + 1) << ": rows=" << alive_rows
+                          << " cols=" << alive_cols << " (eliminated " << eliminated_this_pass
+                          << ")\n";
             }
 
-            if (eliminated_this_pass == 0) break;
+            if (eliminated_this_pass == 0)
+                break;
         }
 
         // BACKLOG #6: 若 composition cap 触发, stderr 警告 (一次, 非每 pass).
         // 不论 verbose, 这是 algorithm correctness signal (cap 限制了 merge throughput).
         if (result.weight2_skipped_cap > 0) {
-            std::cerr << "[sge] row_composition_cap "
-                      << config.row_composition_cap
-                      << " triggered, skipped "
-                      << result.weight2_skipped_cap
+            std::cerr << "[sge] row_composition_cap " << config.row_composition_cap
+                      << " triggered, skipped " << result.weight2_skipped_cap
                       << " weight-2 merges (potential RAM safety vs reduced merge "
                       << "throughput; tune SGEConfig.row_composition_cap if needed)\n";
         }
@@ -573,7 +581,8 @@ public:
 
         size_t new_row = 0;
         for (size_t r = 0; r < n_rows; ++r) {
-            if (!row_alive[r]) continue;
+            if (!row_alive[r])
+                continue;
 
             for (auto old_col : working_rows[r].indices()) {
                 if (old_col < n_cols && old_to_new_col[old_col] != UINT32_MAX) {
@@ -586,11 +595,10 @@ public:
         }
 
         if (config.verbose) {
-            std::cout << "  SGE done: " << n_rows << "×" << n_cols
-                      << " → " << alive_rows << "×" << alive_cols
-                      << " (" << result.passes << " passes"
-                      << ", w1=" << result.weight1_eliminated
-                      << ", w2=" << result.weight2_merged << ")\n";
+            std::cout << "  SGE done: " << n_rows << "×" << n_cols << " → " << alive_rows << "×"
+                      << alive_cols << " (" << result.passes << " passes"
+                      << ", w1=" << result.weight1_eliminated << ", w2=" << result.weight2_merged
+                      << ")\n";
         }
 
         return result;

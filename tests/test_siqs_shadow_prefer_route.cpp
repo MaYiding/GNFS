@@ -20,8 +20,6 @@ namespace {
 using gnfs::core::Integer;
 using gnfs::siqs::evaluate_siqs_shadow_proof_prefer;
 using gnfs::siqs::finalize_siqs_shadow_proof_prefer;
-using gnfs::siqs::siqs_factor_detail::commit_prefer_route;
-using gnfs::siqs::siqs_factor_detail::prefer_shadow_return_authorized;
 using gnfs::siqs::SIQSPostMergeDependencyStatus;
 using gnfs::siqs::SIQSPostMergeFactorization;
 using gnfs::siqs::SIQSPostMergeFactorStatus;
@@ -35,6 +33,8 @@ using gnfs::siqs::SIQSShadowProofPreferDecision;
 using gnfs::siqs::SIQSShadowProofPreferSourceView;
 using gnfs::siqs::SIQSShadowProofStage;
 using gnfs::siqs::SIQSShadowProofTerminalStatus;
+using gnfs::siqs::siqs_factor_detail::commit_prefer_route;
+using gnfs::siqs::siqs_factor_detail::prefer_shadow_return_authorized;
 using gnfs::tests::support::ScopedEnvironmentVariable;
 using gnfs::tests::support::ScopedStderrCapture;
 using gnfs::tests::support::ScopedUnwritableStderr;
@@ -119,8 +119,7 @@ make_source(const SIQSShadowProofEvidence* evidence,
 commit_with_capture(const SIQSShadowProofPreferDecision& decision,
                     std::optional<SIQSResult> prepared_result) {
     ScopedStderrCapture capture;
-    auto routed =
-        commit_prefer_route(stderr, Integer(91), decision, std::move(prepared_result));
+    auto routed = commit_prefer_route(stderr, Integer(91), decision, std::move(prepared_result));
     return {std::move(routed), capture.finish()};
 }
 
@@ -165,15 +164,13 @@ void test_candidate_commit_and_emit_failure() {
     unwritable.finish();
     require_test(!failed.has_value(), "candidate returned after its V2 record failed to commit");
 
-    auto null_output =
-        commit_prefer_route(nullptr, Integer(91), candidate, make_prepared_result());
+    auto null_output = commit_prefer_route(nullptr, Integer(91), candidate, make_prepared_result());
     require_test(!null_output.has_value(), "candidate returned without an output stream");
 }
 
 void test_fallbacks_never_return_stale_candidates() {
     const auto no_factor = make_no_factor_decision();
-    const auto [fallback, fallback_output] =
-        commit_with_capture(no_factor, make_prepared_result());
+    const auto [fallback, fallback_output] = commit_with_capture(no_factor, make_prepared_result());
     require_test(!fallback.has_value(), "no-factor fallback returned a stale candidate");
     require_test(
         fallback_output ==

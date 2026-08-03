@@ -185,7 +185,7 @@ static_assert(std::is_trivially_copyable_v<FakeReport>);
 
 [[nodiscard]] FakeCapabilityObservation observe_capability(int descriptor) noexcept {
     FakeCapabilityObservation observation;
-    struct stat metadata{};
+    struct stat metadata {};
     if (::fstat(descriptor, &metadata) != 0) {
         observation.native_error = errno;
         return observation;
@@ -267,8 +267,8 @@ static_assert(std::is_trivially_copyable_v<FakeReport>);
 }
 
 [[nodiscard]] bool selected_signals_are_default() noexcept {
-    struct sigaction user_action{};
-    struct sigaction pipe_action{};
+    struct sigaction user_action {};
+    struct sigaction pipe_action {};
     return ::sigaction(SIGUSR1, nullptr, &user_action) == 0 &&
            ::sigaction(SIGPIPE, nullptr, &pipe_action) == 0 && user_action.sa_handler == SIG_DFL &&
            pipe_action.sa_handler == SIG_DFL;

@@ -260,7 +260,7 @@ private:
 };
 
 [[nodiscard]] inline sieve::NativeIdentityV1 native_identity(const std::filesystem::path& path) {
-    struct stat metadata{};
+    struct stat metadata {};
     if (::lstat(path.c_str(), &metadata) != 0) {
         throw std::filesystem::filesystem_error("inspect WaveMergeCommit fixture entry", path,
                                                 std::error_code(errno, std::generic_category()));

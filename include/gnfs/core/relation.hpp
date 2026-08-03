@@ -18,7 +18,7 @@ struct Relation {
     using LargePrimeList = std::vector<PrimePower>;
 
     int64_t a = 0;
-    uint64_t b = 0;  // b > 0 always (matches ABPair::b / SieveCandidate::b)
+    uint64_t b = 0; // b > 0 always (matches ABPair::b / SieveCandidate::b)
 
     // Rational side factorization: indices into factor base
     std::vector<uint32_t> rational_factors;
@@ -72,7 +72,7 @@ struct Relation {
     }
 
     // Serialization format constants
-    static constexpr uint32_t SERIALIZE_MAGIC   = 0x52454C46;  // "RELF"
+    static constexpr uint32_t SERIALIZE_MAGIC = 0x52454C46; // "RELF"
     static constexpr uint32_t SERIALIZE_VERSION = 2;
 
     // Shared persistence limits for both the checksummed stream format and
@@ -84,12 +84,10 @@ struct Relation {
 
     void validate_persistence_limits() const {
         if (rational_factors.size() > MAX_SERIALIZED_FACTORS) {
-            throw std::length_error(
-                "Relation: rational factor count exceeds persistence limit");
+            throw std::length_error("Relation: rational factor count exceeds persistence limit");
         }
         if (algebraic_factors.size() > MAX_SERIALIZED_FACTORS) {
-            throw std::length_error(
-                "Relation: algebraic factor count exceeds persistence limit");
+            throw std::length_error("Relation: algebraic factor count exceeds persistence limit");
         }
         if (rational_large_prime.size() > MAX_SERIALIZED_LARGE_PRIMES) {
             throw std::length_error(
@@ -100,8 +98,7 @@ struct Relation {
                 "Relation: algebraic large-prime count exceeds persistence limit");
         }
         if (extra_ab_pairs.size() > MAX_SERIALIZED_EXTRA_AB_PAIRS) {
-            throw std::length_error(
-                "Relation: extra (a,b) count exceeds persistence limit");
+            throw std::length_error("Relation: extra (a,b) count exceeds persistence limit");
         }
     }
 

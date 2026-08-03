@@ -21,20 +21,19 @@ namespace gnfs::relation {
 /// algebraic keys live in separate namespaces even when p and r are both 0.
 struct LargePrimeKey {
     uint64_t prime = 0;
-    uint64_t root = 0;      // Algebraic root modulo p; always 0 on rational side.
+    uint64_t root = 0; // Algebraic root modulo p; always 0 on rational side.
     bool is_algebraic = false;
 
-    [[nodiscard]] constexpr bool operator==(
-            const LargePrimeKey& other) const noexcept {
-        return prime == other.prime && root == other.root &&
-               is_algebraic == other.is_algebraic;
+    [[nodiscard]] constexpr bool operator==(const LargePrimeKey& other) const noexcept {
+        return prime == other.prime && root == other.root && is_algebraic == other.is_algebraic;
     }
 
     /// Stable ordering used by canonical per-relation LP incidence lists.
-    [[nodiscard]] constexpr bool operator<(
-            const LargePrimeKey& other) const noexcept {
-        if (prime != other.prime) return prime < other.prime;
-        if (root != other.root) return root < other.root;
+    [[nodiscard]] constexpr bool operator<(const LargePrimeKey& other) const noexcept {
+        if (prime != other.prime)
+            return prime < other.prime;
+        if (root != other.root)
+            return root < other.root;
         return is_algebraic < other.is_algebraic;
     }
 };
@@ -58,22 +57,20 @@ struct LargePrimeKeyHash {
     }
 };
 
-[[nodiscard]] constexpr LargePrimeKey rational_large_prime_key(
-        const core::PrimePower& lp) noexcept {
+[[nodiscard]] constexpr LargePrimeKey
+rational_large_prime_key(const core::PrimePower& lp) noexcept {
     return LargePrimeKey{lp.p, 0, false};
 }
 
-[[nodiscard]] constexpr LargePrimeKey algebraic_large_prime_key(
-        const core::PrimePower& lp) noexcept {
+[[nodiscard]] constexpr LargePrimeKey
+algebraic_large_prime_key(const core::PrimePower& lp) noexcept {
     return LargePrimeKey{lp.p, lp.r, true};
 }
 
 namespace detail {
 
 template <typename Toggle>
-inline void for_each_raw_large_prime(
-        const core::Relation& relation,
-        Toggle&& toggle) {
+inline void for_each_raw_large_prime(const core::Relation& relation, Toggle&& toggle) {
     for (const auto& lp : relation.rational_large_prime) {
         if ((lp.e & 1u) != 0) {
             std::invoke(toggle, rational_large_prime_key(lp));
@@ -86,7 +83,7 @@ inline void for_each_raw_large_prime(
     }
 }
 
-}  // namespace detail
+} // namespace detail
 
 /// Visit the canonical LP support of one relation.
 ///
@@ -103,11 +100,9 @@ inline void for_each_raw_large_prime(
 /// their raw-storage meaning. Filtering, merging, metrics, and matrix code must
 /// use this canonical view when they mean effective LP columns.
 template <typename Visitor>
-inline void for_each_odd_large_prime_key(
-        const core::Relation& relation,
-        Visitor&& visitor) {
-    const size_t raw_count = relation.rational_large_prime.size() +
-                             relation.algebraic_large_prime.size();
+inline void for_each_odd_large_prime_key(const core::Relation& relation, Visitor&& visitor) {
+    const size_t raw_count =
+        relation.rational_large_prime.size() + relation.algebraic_large_prime.size();
 
     // The common 1LP/2LP/3LP path stays allocation-free.
     if (raw_count <= 8) {
@@ -131,7 +126,8 @@ inline void for_each_odd_large_prime_key(
         std::array<LargePrimeKey, 8> canonical{};
         size_t canonical_count = 0;
         for (size_t i = 0; i < unique_count; ++i) {
-            if (odd[i]) canonical[canonical_count++] = keys[i];
+            if (odd[i])
+                canonical[canonical_count++] = keys[i];
         }
         std::sort(canonical.begin(), canonical.begin() + canonical_count);
         for (size_t i = 0; i < canonical_count; ++i) {
@@ -147,7 +143,8 @@ inline void for_each_odd_large_prime_key(
     odd_keys.reserve(raw_count);
     detail::for_each_raw_large_prime(relation, [&](LargePrimeKey key) {
         auto [it, inserted] = odd_keys.insert(key);
-        if (!inserted) odd_keys.erase(it);
+        if (!inserted)
+            odd_keys.erase(it);
     });
 
     std::vector<LargePrimeKey> canonical;
@@ -159,34 +156,26 @@ inline void for_each_odd_large_prime_key(
     }
 }
 
-[[nodiscard]] inline std::vector<LargePrimeKey> odd_large_prime_keys(
-        const core::Relation& relation) {
+[[nodiscard]] inline std::vector<LargePrimeKey>
+odd_large_prime_keys(const core::Relation& relation) {
     std::vector<LargePrimeKey> keys;
-    keys.reserve(relation.rational_large_prime.size() +
-                 relation.algebraic_large_prime.size());
-    for_each_odd_large_prime_key(relation, [&](const LargePrimeKey& key) {
-        keys.push_back(key);
-    });
+    keys.reserve(relation.rational_large_prime.size() + relation.algebraic_large_prime.size());
+    for_each_odd_large_prime_key(relation, [&](const LargePrimeKey& key) { keys.push_back(key); });
     return keys;
 }
 
-[[nodiscard]] inline size_t count_odd_large_prime_keys(
-        const core::Relation& relation) {
+[[nodiscard]] inline size_t count_odd_large_prime_keys(const core::Relation& relation) {
     size_t count = 0;
-    for_each_odd_large_prime_key(relation, [&](const LargePrimeKey&) {
-        ++count;
-    });
+    for_each_odd_large_prime_key(relation, [&](const LargePrimeKey&) { ++count; });
     return count;
 }
 
-[[nodiscard]] inline bool odd_large_prime_keys_empty(
-        const core::Relation& relation) {
+[[nodiscard]] inline bool odd_large_prime_keys_empty(const core::Relation& relation) {
     return count_odd_large_prime_keys(relation) == 0;
 }
 
-[[nodiscard]] inline bool has_odd_large_prime_keys(
-        const core::Relation& relation) {
+[[nodiscard]] inline bool has_odd_large_prime_keys(const core::Relation& relation) {
     return !odd_large_prime_keys_empty(relation);
 }
 
-}  // namespace gnfs::relation
+} // namespace gnfs::relation

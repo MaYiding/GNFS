@@ -50,10 +50,10 @@ int main() {
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <sys/wait.h>
 #include <system_error>
 #include <tuple>
 #include <type_traits>
-#include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
 

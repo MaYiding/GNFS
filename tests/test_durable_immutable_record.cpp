@@ -97,6 +97,7 @@ constexpr std::array<std::byte, 6> OTHER_PAYLOAD = {
     std::byte{0x61}, std::byte{0x62}, std::byte{0x63},
     std::byte{0x64}, std::byte{0x65}, std::byte{0x66},
 };
+constexpr durable_record::NativeHandle PARENT = 73;
 
 [[nodiscard]] std::error_code injected_error() {
     return std::make_error_code(std::errc::io_error);
@@ -303,8 +304,6 @@ public:
 };
 
 void test_invalid_requests_stop_before_ops() {
-    constexpr durable_record::NativeHandle PARENT = 73;
-
     const auto require_invalid = [&](const std::filesystem::path& pending,
                                      const std::filesystem::path& canonical,
                                      durable_record::NativeHandle parent = PARENT) {
@@ -677,13 +676,13 @@ void write_leaf(int parent_fd, std::string_view leaf, std::span<const std::byte>
 
 [[nodiscard]] bool leaf_exists(int parent_fd, std::string_view leaf) {
     const std::string name{leaf};
-    struct stat status{};
+    struct stat status {};
     return ::fstatat(parent_fd, name.c_str(), &status, AT_SYMLINK_NOFOLLOW) == 0;
 }
 
 [[nodiscard]] mode_t leaf_mode(int parent_fd, std::string_view leaf) {
     const std::string name{leaf};
-    struct stat status{};
+    struct stat status {};
     if (::fstatat(parent_fd, name.c_str(), &status, AT_SYMLINK_NOFOLLOW) != 0) {
         throw TestFailure("cannot stat fixture leaf");
     }
@@ -692,7 +691,7 @@ void write_leaf(int parent_fd, std::string_view leaf, std::span<const std::byte>
 
 [[nodiscard]] struct stat leaf_stat(int parent_fd, std::string_view leaf) {
     const std::string name{leaf};
-    struct stat status{};
+    struct stat status {};
     if (::fstatat(parent_fd, name.c_str(), &status, AT_SYMLINK_NOFOLLOW) != 0) {
         throw TestFailure("cannot stat fixture leaf");
     }
@@ -721,7 +720,7 @@ void write_leaf(int parent_fd, std::string_view leaf, std::span<const std::byte>
     if (fd < 0) {
         throw TestFailure("cannot open fixture leaf for reading");
     }
-    struct stat status{};
+    struct stat status {};
     if (::fstat(fd, &status) != 0 || status.st_size < 0) {
         (void)::close(fd);
         throw TestFailure("cannot stat fixture leaf for reading");

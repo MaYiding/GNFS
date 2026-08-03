@@ -1,25 +1,25 @@
 // Test 25-digit factorization to measure Hensel sqrt performance improvement
-#include <gnfs/core/params.hpp>
-#include <gnfs/polynomial/selector_dispatch.hpp>
-#include <gnfs/factor_base/builder.hpp>
-#include <gnfs/sieve/special_q.hpp>
-#include <gnfs/sieve/lattice_sieve.hpp>
 #include <gnfs/cofactor/cofactorizer.hpp>
-#include <gnfs/relation/collector.hpp>
-#include <gnfs/relation/reduction_engine.hpp>
+#include <gnfs/core/params.hpp>
+#include <gnfs/factor_base/builder.hpp>
+#include <gnfs/linalg/block_lanczos.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
 #include <gnfs/linalg/sge.hpp>
-#include <gnfs/linalg/block_lanczos.hpp>
-#include <gnfs/sqrt/rational_sqrt.hpp>
+#include <gnfs/polynomial/selector_dispatch.hpp>
+#include <gnfs/relation/collector.hpp>
+#include <gnfs/relation/reduction_engine.hpp>
+#include <gnfs/sieve/lattice_sieve.hpp>
+#include <gnfs/sieve/special_q.hpp>
 #include <gnfs/sqrt/algebraic_sqrt.hpp>
+#include <gnfs/sqrt/rational_sqrt.hpp>
 #include <gnfs/util/safe_math.hpp>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <iostream>
 #include <iomanip>
+#include <iostream>
 #include <random>
 #include <thread>
 #include <vector>
@@ -38,10 +38,13 @@ class Timer {
 public:
     Timer() : start_(std::chrono::high_resolution_clock::now()) {}
     double sec() const {
-        return std::chrono::duration<double>(
-            std::chrono::high_resolution_clock::now() - start_).count();
+        return std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start_)
+            .count();
     }
-    void reset() { start_ = std::chrono::high_resolution_clock::now(); }
+    void reset() {
+        start_ = std::chrono::high_resolution_clock::now();
+    }
+
 private:
     std::chrono::high_resolution_clock::time_point start_;
 };
@@ -78,8 +81,8 @@ int main() {
     fb_opts.special_q_bound = params.special_q_max;
     fb_opts.parallel = true;
     auto fb = FactorBaseBuilder::build(ctx, fb_opts);
-    std::cout << "[Phase 2] FB: " << fb.rational_count() << "+" << fb.algebraic_count()
-              << " in " << phase.sec() << "s\n";
+    std::cout << "[Phase 2] FB: " << fb.rational_count() << "+" << fb.algebraic_count() << " in "
+              << phase.sec() << "s\n";
 
     // Phase 3: Sieving
     phase.reset();
@@ -87,16 +90,20 @@ int main() {
     sp.rational_threshold = params.rational_threshold;
     sp.algebraic_threshold = params.algebraic_threshold;
     SieveRegion sr;
-    sr.i_min = params.sieve_i_min; sr.i_max = params.sieve_i_max;
-    sr.j_min = params.sieve_j_min; sr.j_max = params.sieve_j_max;
+    sr.i_min = params.sieve_i_min;
+    sr.i_max = params.sieve_i_max;
+    sr.j_min = params.sieve_j_min;
+    sr.j_max = params.sieve_j_max;
 
     CofactorizerConfig cc;
     cc.large_prime_bound = fb.params().large_prime_bound;
-    cc.allow_1lp = true; cc.allow_2lp = true;
+    cc.allow_1lp = true;
+    cc.allow_2lp = true;
     Cofactorizer cofac(ctx, fb, cc);
 
     SpecialQRange sqr;
-    sqr.min_q = params.special_q_min; sqr.max_q = params.special_q_max;
+    sqr.min_q = params.special_q_min;
+    sqr.max_q = params.special_q_max;
     SpecialQGenerator sqg(fb, sqr);
 
     CollectorConfig colc;
@@ -120,9 +127,11 @@ int main() {
     constexpr int MAX_ROUNDS = 10;
 
     for (int round = 0; round < MAX_ROUNDS; ++round) {
-        while (sqg.has_next() && collector.size() < batch_target && sq_count < params.max_special_q) {
+        while (sqg.has_next() && collector.size() < batch_target &&
+               sq_count < params.max_special_q) {
             auto sq = sqg.next();
-            if (!sq) break;
+            if (!sq)
+                break;
             auto sres = sieve.sieve_special_q(*sq);
 
             // Parallel cofactorization with early-stop
@@ -130,8 +139,10 @@ int main() {
                 const auto& cands = sres.candidates;
                 size_t n_cands = cands.size();
                 size_t n_threads = std::thread::hardware_concurrency();
-                if (n_threads == 0) n_threads = 4;
-                if (n_cands < 200) n_threads = 1;
+                if (n_threads == 0)
+                    n_threads = 4;
+                if (n_cands < 200)
+                    n_threads = 1;
 
                 std::vector<std::vector<Relation>> thread_results(n_threads);
                 std::atomic<size_t> global_found{collector.size()};
@@ -146,8 +157,10 @@ int main() {
                     local_rels.reserve(n_cands / (n_threads * 4));
                     while (true) {
                         size_t start = next_chunk.fetch_add(CHUNK_SIZE, std::memory_order_relaxed);
-                        if (start >= n_cands) break;
-                        if (global_found.load(std::memory_order_relaxed) >= batch_target) break;
+                        if (start >= n_cands)
+                            break;
+                        if (global_found.load(std::memory_order_relaxed) >= batch_target)
+                            break;
                         size_t end = std::min(start + CHUNK_SIZE, n_cands);
                         for (size_t ci = start; ci < end; ++ci) {
                             auto rel = local_cofac.verify(cands[ci], cur_sq_q, cur_sq_r);
@@ -166,7 +179,8 @@ int main() {
                     threads.reserve(n_threads);
                     for (size_t t = 0; t < n_threads; ++t)
                         threads.emplace_back(worker, t);
-                    for (auto& t : threads) t.join();
+                    for (auto& t : threads)
+                        t.join();
                 }
 
                 for (auto& tr : thread_results)
@@ -176,14 +190,16 @@ int main() {
             ++sq_count;
             if (sq_count % 5 == 0 || collector.size() >= batch_target) {
                 double rate = static_cast<double>(collector.size()) / (phase.sec() + 0.001);
-                std::cout << "  SQ#" << sq_count << " rels=" << collector.size()
-                          << "/" << batch_target
-                          << " rate=" << std::fixed << std::setprecision(0) << rate << "/s"
-                          << " elapsed=" << std::setprecision(1) << phase.sec() << "s\n" << std::flush;
+                std::cout << "  SQ#" << sq_count << " rels=" << collector.size() << "/"
+                          << batch_target << " rate=" << std::fixed << std::setprecision(0) << rate
+                          << "/s"
+                          << " elapsed=" << std::setprecision(1) << phase.sec() << "s\n"
+                          << std::flush;
             }
         }
 
-        if (collector.size() < 10) break;
+        if (collector.size() < 10)
+            break;
 
         // Reduce a stable prefix while keeping the collector appendable when a
         // later adaptive round needs more raw relations.
@@ -211,10 +227,9 @@ int main() {
                       << std::flush;
         }
 
-        if (has_effective_column_excess(
-                relations.size(), matrix_cols, reduced_lp_columns)) {
-            std::cout << "[Phase 3] Sieve: " << collector.size() << " raw, "
-                      << relations.size() << " usable (" << sq_count << " SQs) in " << phase.sec() << "s\n";
+        if (has_effective_column_excess(relations.size(), matrix_cols, reduced_lp_columns)) {
+            std::cout << "[Phase 3] Sieve: " << collector.size() << " raw, " << relations.size()
+                      << " usable (" << sq_count << " SQs) in " << phase.sec() << "s\n";
             break;
         }
 
@@ -223,21 +238,22 @@ int main() {
             break;
         }
 
-        double merge_rate = (collector.size() > 0) ?
-            static_cast<double>(relations.size()) / static_cast<double>(collector.size()) : 0.01;
+        double merge_rate = (collector.size() > 0) ? static_cast<double>(relations.size()) /
+                                                         static_cast<double>(collector.size())
+                                                   : 0.01;
         // Conservative 2× scaling, 5× cap (prevent BL-killing oversized matrices).
         // Use effective_cols (FB + LP) for accurate needed_raw at lp_bits ≥ 20.
         size_t lp_cols_for_target = reduced_lp_columns;
-        size_t effective_cols_for_target =
-            effective_column_count(matrix_cols, lp_cols_for_target);
+        size_t effective_cols_for_target = effective_column_count(matrix_cols, lp_cols_for_target);
         size_t needed_raw = util::size_from_nonnegative_double_floor(
             static_cast<double>(util::saturating_size_product(effective_cols_for_target, 2)) /
             std::max(merge_rate, 0.001));
-        batch_target = std::min(
-            std::max(util::saturating_size_product(batch_target, 2), needed_raw),
-            util::saturating_size_product(initial_target, 5));
+        batch_target =
+            std::min(std::max(util::saturating_size_product(batch_target, 2), needed_raw),
+                     util::saturating_size_product(initial_target, 5));
         std::cout << "\n  Need more — merge_rate=" << std::setprecision(3) << (merge_rate * 100)
-                  << "%, new target=" << batch_target << "\n" << std::flush;
+                  << "%, new target=" << batch_target << "\n"
+                  << std::flush;
     }
 
     // Relation trimming: cap at 1.3× effective_cols (FB + LP) for fast Gaussian
@@ -245,8 +261,8 @@ int main() {
     {
         size_t lp_cols_for_trim = reduced_lp_columns;
         size_t effective_cols = effective_column_count(matrix_cols, lp_cols_for_trim);
-        size_t max_rels = util::size_from_nonnegative_double_floor(
-            static_cast<double>(effective_cols) * 1.3);
+        size_t max_rels =
+            util::size_from_nonnegative_double_floor(static_cast<double>(effective_cols) * 1.3);
         if (relations.size() > max_rels) {
             std::cout << "  [Trim] " << relations.size() << " → " << max_rels
                       << " relations (eff_cols=" << effective_cols << ")\n";
@@ -259,7 +275,8 @@ int main() {
     // Phase 5: Linear Algebra
     phase.reset();
     MatrixBuilderConfig mc;
-    mc.include_sign_column = true; mc.include_qc_columns = true;
+    mc.include_sign_column = true;
+    mc.include_qc_columns = true;
     mc.include_class_group = false; // Skip for ≤25 digit (class number 1, saves ~0.5s determinant)
     mc.include_schirokauer = true;
     mc.num_qc_primes = params.num_qc_primes;
@@ -267,17 +284,15 @@ int main() {
     mc.schirokauer_primes = {2};
     MatrixBuilder mb(mc);
     auto br = mb.build_with_qc(relations, fb, ctx);
-    std::cout << "[Phase 5] Matrix: " << br.matrix.num_rows() << "×"
-              << br.matrix.num_cols() << " in " << phase.sec() << "s\n";
+    std::cout << "[Phase 5] Matrix: " << br.matrix.num_rows() << "×" << br.matrix.num_cols()
+              << " in " << phase.sec() << "s\n";
 
     // SGE preprocessing
     phase.reset();
     auto sge_result = linalg::SGE::preprocess(br.matrix);
-    std::cout << "[Phase 5] SGE: " << br.matrix.num_rows() << "×" << br.matrix.num_cols()
-              << " → " << sge_result.reduced_matrix.num_rows() << "×"
-              << sge_result.reduced_matrix.num_cols()
-              << " (w1=" << sge_result.weight1_eliminated
-              << " w2=" << sge_result.weight2_merged
+    std::cout << "[Phase 5] SGE: " << br.matrix.num_rows() << "×" << br.matrix.num_cols() << " → "
+              << sge_result.reduced_matrix.num_rows() << "×" << sge_result.reduced_matrix.num_cols()
+              << " (w1=" << sge_result.weight1_eliminated << " w2=" << sge_result.weight2_merged
               << ") " << phase.sec() << "s\n";
 
     phase.reset();
@@ -296,7 +311,9 @@ int main() {
 
     auto to_bv = [](const std::vector<bool>& v) {
         BitVector bv(v.size());
-        for (size_t i = 0; i < v.size(); ++i) if (v[i]) bv.set(i);
+        for (size_t i = 0; i < v.size(); ++i)
+            if (v[i])
+                bv.set(i);
         return bv;
     };
 
@@ -305,29 +322,45 @@ int main() {
         auto bv = to_bv(deps[di]);
 
         auto rat = compute_rational_sqrt(bv, relations, fb, n, ctx.m());
-        if (!rat.success) continue;
+        if (!rat.success)
+            continue;
 
         auto alg = compute_algebraic_sqrt(bv, relations, ctx);
-        if (!alg.success) continue;
+        if (!alg.success)
+            continue;
 
         for (int sign = 0; sign < 2; ++sign) {
-            Integer y = (sign == 0) ? alg.value.clone() : [&](){
-                Integer neg = n.clone(); neg -= alg.value; return neg;
+            Integer y = (sign == 0) ? alg.value.clone() : [&]() {
+                Integer neg = n.clone();
+                neg -= alg.value;
+                return neg;
             }();
             auto factors = extract_factors(rat.value, y, n);
             auto check = [&](const Integer& f) -> bool {
-                if (f.fits_uint64() && f.to_uint64() == 1) return false;
+                if (f.fits_uint64() && f.to_uint64() == 1)
+                    return false;
                 return f.compare(n) != 0;
             };
             Integer f1, f2;
             bool found = false;
-            if (check(factors.factor1)) { f1 = factors.factor1.clone(); f2 = n.clone(); f2 /= f1; found = true; }
-            else if (check(factors.factor2)) { f1 = factors.factor2.clone(); f2 = n.clone(); f2 /= f1; found = true; }
+            if (check(factors.factor1)) {
+                f1 = factors.factor1.clone();
+                f2 = n.clone();
+                f2 /= f1;
+                found = true;
+            } else if (check(factors.factor2)) {
+                f1 = factors.factor2.clone();
+                f2 = n.clone();
+                f2 /= f1;
+                found = true;
+            }
 
             if (found) {
-                Integer chk = f1.clone(); chk *= f2;
+                Integer chk = f1.clone();
+                chk *= f2;
                 if (chk.compare(n) == 0) {
-                    std::cout << "\n  ★ SUCCESS at dep #" << (di+1) << " (" << dep_timer.sec() << "s)\n";
+                    std::cout << "\n  ★ SUCCESS at dep #" << (di + 1) << " (" << dep_timer.sec()
+                              << "s)\n";
                     std::cout << "  p = " << f1.to_string() << "\n";
                     std::cout << "  q = " << f2.to_string() << "\n";
                     std::cout << "[Phase 6] Sqrt: " << phase.sec() << "s\n";
@@ -336,7 +369,7 @@ int main() {
                 }
             }
         }
-        std::cout << "  dep#" << (di+1) << " trivial (" << dep_timer.sec() << "s)\n";
+        std::cout << "  dep#" << (di + 1) << " trivial (" << dep_timer.sec() << "s)\n";
     }
 
     std::cout << "  FAILED after " << total.sec() << "s\n";

@@ -211,7 +211,7 @@ struct NativeFileFacts final {
         .extent = extent,
     };
 #else
-    struct stat information{};
+    struct stat information {};
     if (::lstat(path.c_str(), &information) != 0) {
         throw std::system_error(errno, std::generic_category(), "inspect finalized corpus file");
     }

@@ -21,14 +21,12 @@ namespace gnfs::util {
 
 /// Saturating size_t addition for resource and target calculations.
 [[nodiscard]] constexpr size_t saturating_size_add(size_t lhs, size_t rhs) noexcept {
-    return rhs > std::numeric_limits<size_t>::max() - lhs
-               ? std::numeric_limits<size_t>::max()
-               : lhs + rhs;
+    return rhs > std::numeric_limits<size_t>::max() - lhs ? std::numeric_limits<size_t>::max()
+                                                          : lhs + rhs;
 }
 
 /// Saturating size_t multiplication for bounded growth policies.
-[[nodiscard]] constexpr size_t saturating_size_product(size_t value,
-                                                       size_t multiplier) noexcept {
+[[nodiscard]] constexpr size_t saturating_size_product(size_t value, size_t multiplier) noexcept {
     return value != 0 && multiplier > std::numeric_limits<size_t>::max() / value
                ? std::numeric_limits<size_t>::max()
                : value * multiplier;
@@ -42,8 +40,7 @@ namespace gnfs::util {
         return 0;
     }
     const double max_size = static_cast<double>(std::numeric_limits<size_t>::max());
-    return value < max_size ? static_cast<size_t>(value)
-                            : std::numeric_limits<size_t>::max();
+    return value < max_size ? static_cast<size_t>(value) : std::numeric_limits<size_t>::max();
 }
 
 } // namespace gnfs::util

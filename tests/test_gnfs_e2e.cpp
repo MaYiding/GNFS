@@ -9,26 +9,26 @@
 // 6. Square root computation
 // 7. Factor extraction
 
-#include <gnfs/core/params.hpp>
-#include <gnfs/polynomial/selector_dispatch.hpp>
-#include <gnfs/factor_base/builder.hpp>
-#include <gnfs/sieve/special_q.hpp>
-#include <gnfs/sieve/lattice_sieve.hpp>
 #include <gnfs/cofactor/cofactorizer.hpp>
-#include <gnfs/relation/collector.hpp>
-#include <gnfs/relation/reduction_engine.hpp>
+#include <gnfs/core/params.hpp>
+#include <gnfs/factor_base/builder.hpp>
+#include <gnfs/linalg/block_lanczos.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
 #include <gnfs/linalg/sge.hpp>
-#include <gnfs/linalg/block_lanczos.hpp>
-#include <gnfs/sqrt/rational_sqrt.hpp>
+#include <gnfs/polynomial/selector_dispatch.hpp>
+#include <gnfs/relation/collector.hpp>
+#include <gnfs/relation/reduction_engine.hpp>
+#include <gnfs/sieve/lattice_sieve.hpp>
+#include <gnfs/sieve/special_q.hpp>
 #include <gnfs/sqrt/algebraic_sqrt.hpp>
+#include <gnfs/sqrt/rational_sqrt.hpp>
 #include <gnfs/util/process.hpp>
 #include <gnfs/util/temp_path.hpp>
 
 #include <cassert>
 #include <chrono>
-#include <cstdio>      // remove() for OOC artifact cleanup
-#include <cstdlib>     // getenv for GNFS_OOC_RELATIONS
+#include <cstdio>  // remove() for OOC artifact cleanup
+#include <cstdlib> // getenv for GNFS_OOC_RELATIONS
 #include <iomanip>
 #include <iostream>
 #include <optional>
@@ -46,14 +46,16 @@ using namespace gnfs::linalg;
 using namespace gnfs::sqrt;
 
 // Helper wrapper for find_dependencies (BlockLanczos method)
-inline std::vector<std::vector<bool>> find_dependencies(const SparseMatrix& mat, size_t max_deps = 64) {
+inline std::vector<std::vector<bool>> find_dependencies(const SparseMatrix& mat,
+                                                        size_t max_deps = 64) {
     BlockLanczos solver;
     return solver.find_dependencies(mat, max_deps);
 }
 
 // Helper to verify a dependency: sum of selected rows should XOR to zero
 inline bool verify_dependency(const SparseMatrix& mat, const std::vector<bool>& dep) {
-    if (dep.size() != mat.num_rows()) return false;
+    if (dep.size() != mat.num_rows())
+        return false;
 
     // Count set bits in each column for selected rows
     std::vector<size_t> col_count(mat.num_cols(), 0);
@@ -67,7 +69,8 @@ inline bool verify_dependency(const SparseMatrix& mat, const std::vector<bool>& 
 
     // All columns should have even count (XOR to zero)
     for (size_t c = 0; c < col_count.size(); ++c) {
-        if (col_count[c] % 2 != 0) return false;
+        if (col_count[c] % 2 != 0)
+            return false;
     }
     return true;
 }
@@ -76,7 +79,8 @@ inline bool verify_dependency(const SparseMatrix& mat, const std::vector<bool>& 
 inline bool verify_dependency(const SparseMatrix& mat, const BitVector& dep) {
     std::vector<bool> vec(mat.num_rows(), false);
     for (size_t i = 0; i < mat.num_rows(); ++i) {
-        if (dep.test(i)) vec[i] = true;
+        if (dep.test(i))
+            vec[i] = true;
     }
     return verify_dependency(mat, vec);
 }
@@ -85,7 +89,8 @@ inline bool verify_dependency(const SparseMatrix& mat, const BitVector& dep) {
 inline BitVector to_bitvector(const std::vector<bool>& vec) {
     BitVector bv(vec.size());
     for (size_t i = 0; i < vec.size(); ++i) {
-        if (vec[i]) bv.set(i);
+        if (vec[i])
+            bv.set(i);
     }
     return bv;
 }
@@ -93,7 +98,9 @@ inline BitVector to_bitvector(const std::vector<bool>& vec) {
 // Get popcount for std::vector<bool>
 inline size_t popcount_vec(const std::vector<bool>& vec) {
     size_t count = 0;
-    for (bool b : vec) if (b) ++count;
+    for (bool b : vec)
+        if (b)
+            ++count;
     return count;
 }
 
@@ -146,11 +153,13 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
 
     // Primality check: GNFS only works on composites
     if (mpz_probab_prime_p(n.get_mpz(), 25) > 0) {
-        if (verbose) std::cerr << "N is prime (or probably prime). GNFS requires a composite input.\n";
+        if (verbose)
+            std::cerr << "N is prime (or probably prime). GNFS requires a composite input.\n";
         return result;
     }
     if (n <= Integer(1)) {
-        if (verbose) std::cerr << "N must be > 1.\n";
+        if (verbose)
+            std::cerr << "N must be > 1.\n";
         return result;
     }
 
@@ -159,7 +168,8 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
     // ============================================================
     // Phase 1: Polynomial Selection
     // ============================================================
-    if (verbose) print_section("Phase 1: Polynomial Selection");
+    if (verbose)
+        print_section("Phase 1: Polynomial Selection");
 
     Timer phase_timer;
 
@@ -177,8 +187,10 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
         std::cout << "  Degree: " << params.degree << "\n";
         std::cout << "  Factor base bound: " << params.rational_bound << "\n";
         std::cout << "  Large prime bound: " << params.large_prime_bound << "\n";
-        std::cout << "  Sieve region: " << (params.sieve_i_max - params.sieve_i_min + 1) << " x " << (params.sieve_j_max - params.sieve_j_min + 1) << "\n";
-        std::cout << "  Special-Q range: [" << params.special_q_min << ", " << params.special_q_max << "]\n";
+        std::cout << "  Sieve region: " << (params.sieve_i_max - params.sieve_i_min + 1) << " x "
+                  << (params.sieve_j_max - params.sieve_j_min + 1) << "\n";
+        std::cout << "  Special-Q range: [" << params.special_q_min << ", " << params.special_q_max
+                  << "]\n";
         std::cout << "  Max special-Q: " << params.max_special_q << "\n";
     }
 
@@ -195,7 +207,8 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
         std::cout << "m = " << ctx.m().to_string() << "\n";
         std::cout << "Polynomial: ";
         for (uint32_t i = 0; i <= ctx.degree(); ++i) {
-            if (i > 0) std::cout << " + ";
+            if (i > 0)
+                std::cout << " + ";
             std::cout << ctx.coeff(i).to_string() << "*x^" << i;
         }
         std::cout << "\n";
@@ -205,7 +218,8 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
     // ============================================================
     // Phase 2: Factor Base Construction
     // ============================================================
-    if (verbose) print_section("Phase 2: Factor Base Construction");
+    if (verbose)
+        print_section("Phase 2: Factor Base Construction");
     phase_timer.reset();
 
     FactorBaseBuilder::Options fb_opts;
@@ -227,7 +241,8 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
     // ============================================================
     // Phase 3: Sieving and Relation Collection
     // ============================================================
-    if (verbose) print_section("Phase 3: Sieving and Relation Collection");
+    if (verbose)
+        print_section("Phase 3: Sieving and Relation Collection");
     phase_timer.reset();
 
     // Configure sieve parameters
@@ -274,9 +289,9 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
     if (const char* env = std::getenv("GNFS_OOC_RELATIONS");
         env != nullptr && std::atoi(env) == 1) {
         coll_config.ooc_enabled = true;
-        ooc_cleanup.path = gnfs::util::temp_path(
-            "gnfs_e2e_ooc_" + std::to_string(gnfs::util::process_id()) +
-            "_" + std::to_string(reinterpret_cast<uintptr_t>(&coll_config)));
+        ooc_cleanup.path =
+            gnfs::util::temp_path("gnfs_e2e_ooc_" + std::to_string(gnfs::util::process_id()) + "_" +
+                                  std::to_string(reinterpret_cast<uintptr_t>(&coll_config)));
         coll_config.ooc_base_path = ooc_cleanup.path;
         if (verbose) {
             std::cout << "[OOC] streaming relations to " << ooc_cleanup.path
@@ -290,9 +305,8 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
     size_t target_relations = params.raw_relation_target(matrix_cols);
 
     if (verbose) {
-        std::cout << "Sieve region: i=[" << sieve_region.i_min << ", "
-                  << sieve_region.i_max << "], j=[" << sieve_region.j_min
-                  << ", " << sieve_region.j_max << "]\n";
+        std::cout << "Sieve region: i=[" << sieve_region.i_min << ", " << sieve_region.i_max
+                  << "], j=[" << sieve_region.j_min << ", " << sieve_region.j_max << "]\n";
         std::cout << "Special-Q range: [" << sq_range.min_q << ", " << sq_range.max_q << "]\n";
         std::cout << "Target relations: " << target_relations << "\n";
         std::cout << "\nSieving...\n";
@@ -308,7 +322,8 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
 
     while (sq_gen.has_next() && collector.size() < target_relations && sq_count < max_sq) {
         auto sq = sq_gen.next();
-        if (!sq) break;
+        if (!sq)
+            break;
 
         // Run sieve for this special-q
         auto sieve_result = sieve.sieve_special_q(*sq);
@@ -326,8 +341,7 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
 
         // Progress
         if (verbose && sq_count % params.progress_interval == 0) {
-            std::cout << "  Special-Q #" << sq_count << ": " << collector.size()
-                      << " relations\n";
+            std::cout << "  Special-Q #" << sq_count << ": " << collector.size() << " relations\n";
         }
     }
 
@@ -354,7 +368,8 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
     // ============================================================
     // Phase 4: Filtering
     // ============================================================
-    if (verbose) print_section("Phase 4: Relation Filtering");
+    if (verbose)
+        print_section("Phase 4: Relation Filtering");
     phase_timer.reset();
 
     // Get relations and filter singletons
@@ -406,19 +421,21 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
     // ============================================================
     // Phase 5: Matrix Construction and Linear Algebra
     // ============================================================
-    if (verbose) print_section("Phase 5: Linear Algebra");
+    if (verbose)
+        print_section("Phase 5: Linear Algebra");
     phase_timer.reset();
 
     // Build matrix with quadratic characters and class group characters
     MatrixBuilderConfig mb_config;
     mb_config.include_sign_column = true;
     mb_config.include_qc_columns = true;
-    mb_config.include_class_group = false;  // Disabled: small N typically has class number 1, no benefit
-    mb_config.include_schirokauer = true;   // Enable Schirokauer maps
-    mb_config.num_qc_primes = 64;   // More QC primes - powers of 2 work well
-    mb_config.qc_prime_start = 100; // Start with primes around 100
-    mb_config.schirokauer_primes = {2};  // Only ℓ=2 works correctly with GF(2) matrix
-    mb_config.verbose = verbose;    // Enable verbose output
+    mb_config.include_class_group =
+        false; // Disabled: small N typically has class number 1, no benefit
+    mb_config.include_schirokauer = true; // Enable Schirokauer maps
+    mb_config.num_qc_primes = 64;         // More QC primes - powers of 2 work well
+    mb_config.qc_prime_start = 100;       // Start with primes around 100
+    mb_config.schirokauer_primes = {2};   // Only ℓ=2 works correctly with GF(2) matrix
+    mb_config.verbose = verbose;          // Enable verbose output
 
     MatrixBuilder mb(mb_config);
     auto build_result = mb.build_with_qc(relations, fb, ctx);
@@ -429,13 +446,14 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
 
     if (verbose) {
         // std::cerr << "[E2E] Printing matrix stats...\n";
-        std::cout << "Matrix size: " << matrix_stats.num_rows << " x "
-                  << matrix_stats.num_cols << "\n";
+        std::cout << "Matrix size: " << matrix_stats.num_rows << " x " << matrix_stats.num_cols
+                  << "\n";
         std::cout << "Total weight: " << matrix_stats.total_weight << "\n";
         std::cout << "Avg row weight: " << std::fixed << std::setprecision(2)
                   << matrix_stats.avg_row_weight << "\n";
-        std::cout << "Excess: " << (matrix_stats.has_excess() ?
-                  std::to_string(matrix_stats.excess) : "NONE") << "\n";
+        std::cout << "Excess: "
+                  << (matrix_stats.has_excess() ? std::to_string(matrix_stats.excess) : "NONE")
+                  << "\n";
         // std::cerr << "[E2E] Matrix stats printed.\n";
     }
 
@@ -451,11 +469,10 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
 
     if (verbose) {
         std::cout << "SGE: " << build_result.matrix.num_rows() << "×"
-                  << build_result.matrix.num_cols()
-                  << " → " << sge_result.reduced_matrix.num_rows() << "×"
-                  << sge_result.reduced_matrix.num_cols()
-                  << " (w1=" << sge_result.weight1_eliminated
-                  << " w2=" << sge_result.weight2_merged << ")\n";
+                  << build_result.matrix.num_cols() << " → " << sge_result.reduced_matrix.num_rows()
+                  << "×" << sge_result.reduced_matrix.num_cols()
+                  << " (w1=" << sge_result.weight1_eliminated << " w2=" << sge_result.weight2_merged
+                  << ")\n";
     }
 
     // Find dependencies on the reduced matrix
@@ -486,7 +503,8 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
     // ============================================================
     // Phase 6: Square Root and Factor Extraction
     // ============================================================
-    if (verbose) print_section("Phase 6: Square Root and Factor Extraction");
+    if (verbose)
+        print_section("Phase 6: Square Root and Factor Extraction");
     phase_timer.reset();
 
     // Try each dependency
@@ -497,14 +515,15 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
         // std::cerr << "[E2E] Trying dependency " << dep_idx << "\n";
 
         if (verbose) {
-            std::cout << "\nTrying dependency #" << (dep_idx + 1)
-                      << " (size=" << popcount_vec(dep) << ")\n";
+            std::cout << "\nTrying dependency #" << (dep_idx + 1) << " (size=" << popcount_vec(dep)
+                      << ")\n";
         }
 
         // Verify the dependency
         // std::cerr << "[E2E] Verifying dependency " << dep_idx << "...\n";
         if (!verify_dependency(build_result.matrix, dep)) {
-            if (verbose) std::cout << "  Dependency verification failed, skipping\n";
+            if (verbose)
+                std::cout << "  Dependency verification failed, skipping\n";
             continue;
         }
         // Debug: // std::cerr << "[E2E] Dependency " << dep_idx << " verified\n";
@@ -512,10 +531,12 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
         // Compute rational square root
         // Debug: // std::cerr << "[E2E] Computing rational sqrt...\n";
         auto rat_result = compute_rational_sqrt(to_bitvector(dep), relations, fb, n, ctx.m());
-        // Debug: // std::cerr << "[E2E] Rational sqrt done: success=" << rat_result.success << "\n";
+        // Debug: // std::cerr << "[E2E] Rational sqrt done: success=" << rat_result.success <<
+        // "\n";
 
         if (!rat_result.success) {
-            if (verbose) std::cout << "  Rational sqrt failed: " << rat_result.error << "\n";
+            if (verbose)
+                std::cout << "  Rational sqrt failed: " << rat_result.error << "\n";
             continue;
         }
 
@@ -526,14 +547,16 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
             // Verify: compute actual product of (a - bm) mod N (GNFS convention)
             Integer actual_product(1);
             for (size_t i = 0; i < relations.size(); ++i) {
-                if (!test_vec(dep, i)) continue;
+                if (!test_vec(dep, i))
+                    continue;
                 const auto& rel = relations[i];
                 Integer term = Integer(rel.ab().a);
                 Integer bm = ctx.m().clone();
                 bm *= Integer(static_cast<int64_t>(rel.ab().b));
                 term -= bm;
                 term %= n;
-                if (term.is_negative()) term += n;
+                if (term.is_negative())
+                    term += n;
                 actual_product *= term;
                 actual_product %= n;
             }
@@ -544,10 +567,12 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
         // Compute algebraic square root
         // Debug: // std::cerr << "[E2E] Computing algebraic sqrt...\n";
         auto alg_result = compute_algebraic_sqrt(to_bitvector(dep), relations, ctx);
-        // Debug: // std::cerr << "[E2E] Algebraic sqrt done: success=" << alg_result.success << "\n";
+        // Debug: // std::cerr << "[E2E] Algebraic sqrt done: success=" << alg_result.success <<
+        // "\n";
 
         if (!alg_result.success) {
-            if (verbose) std::cout << "  Algebraic sqrt failed: " << alg_result.error << "\n";
+            if (verbose)
+                std::cout << "  Algebraic sqrt failed: " << alg_result.error << "\n";
             // Try with just the rational sqrt anyway
             alg_result.value = Integer(static_cast<int64_t>(1));
         }
@@ -560,7 +585,8 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
             sqrt::NumberField nf(ctx);
             sqrt::NumberFieldElement alg_product = nf.one();
             for (size_t i = 0; i < relations.size(); ++i) {
-                if (!test_vec(dep, i)) continue;
+                if (!test_vec(dep, i))
+                    continue;
                 const auto& rel = relations[i];
                 auto factor = nf.from_ab(rel.ab().a, rel.ab().b);
                 alg_product = nf.multiply_mod_n(alg_product, factor);
@@ -606,8 +632,10 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
 
             auto factors_neg = extract_factors(rat_result.value, alg_value_neg, n);
             if (verbose) {
-                std::cout << "  Trying -Y: gcd(X-(-Y), N) = " << factors_neg.factor1.to_string() << "\n";
-                std::cout << "  Trying -Y: gcd(X+(-Y), N) = " << factors_neg.factor2.to_string() << "\n";
+                std::cout << "  Trying -Y: gcd(X-(-Y), N) = " << factors_neg.factor1.to_string()
+                          << "\n";
+                std::cout << "  Trying -Y: gcd(X+(-Y), N) = " << factors_neg.factor2.to_string()
+                          << "\n";
             }
             if (factors_neg.is_nontrivial) {
                 factors = std::move(factors_neg);
@@ -617,8 +645,10 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
         // Check if we found non-trivial factors
         // A factor is non-trivial if it's not 1 and not N
         auto is_nontrivial_factor = [&n](const Integer& f) -> bool {
-            if (f.fits_uint64() && f.to_uint64() == 1) return false;
-            if (f.compare(n) == 0) return false;
+            if (f.fits_uint64() && f.to_uint64() == 1)
+                return false;
+            if (f.compare(n) == 0)
+                return false;
             return true;
         };
 
@@ -668,20 +698,24 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
         }
 
         for (size_t i = 0; i < std::min(dependencies.size(), size_t(20)) && !result.success; ++i) {
-            for (size_t j = i + 1; j < std::min(dependencies.size(), size_t(20)) && !result.success; ++j) {
+            for (size_t j = i + 1; j < std::min(dependencies.size(), size_t(20)) && !result.success;
+                 ++j) {
                 // XOR the two dependencies
                 BitVector combined = to_bitvector(dependencies[i]);
                 combined.xor_with(to_bitvector(dependencies[j]));
 
                 // Skip if the combination is empty or too small
-                if (combined.popcount() < 2) continue;
+                if (combined.popcount() < 2)
+                    continue;
 
                 // Verify the combined dependency
-                if (!verify_dependency(build_result.matrix, combined)) continue;
+                if (!verify_dependency(build_result.matrix, combined))
+                    continue;
 
                 // Compute sqrt
                 auto rat_result = compute_rational_sqrt(combined, relations, fb, n, ctx.m());
-                if (!rat_result.success) continue;
+                if (!rat_result.success)
+                    continue;
 
                 auto alg_result = compute_algebraic_sqrt(combined, relations, ctx);
                 if (!alg_result.success) {
@@ -696,8 +730,10 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
                 auto factors = extract_factors(rat_result.value, alg_value, n);
 
                 auto is_nontrivial_factor = [&n](const Integer& f) -> bool {
-                    if (f.fits_uint64() && f.to_uint64() == 1) return false;
-                    if (f.compare(n) == 0) return false;
+                    if (f.fits_uint64() && f.to_uint64() == 1)
+                        return false;
+                    if (f.compare(n) == 0)
+                        return false;
                     return true;
                 };
 
@@ -710,14 +746,15 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
                     Integer check = f1.clone();
                     check *= f2;
 
-                    if (check.compare(n) == 0 && is_nontrivial_factor(f1) && is_nontrivial_factor(f2)) {
+                    if (check.compare(n) == 0 && is_nontrivial_factor(f1) &&
+                        is_nontrivial_factor(f2)) {
                         result.factor1 = std::move(f1);
                         result.factor2 = std::move(f2);
                         result.success = true;
 
                         if (verbose) {
-                            std::cout << "\n*** FACTORIZATION SUCCESSFUL (combination "
-                                      << i+1 << " XOR " << j+1 << ")! ***\n";
+                            std::cout << "\n*** FACTORIZATION SUCCESSFUL (combination " << i + 1
+                                      << " XOR " << j + 1 << ")! ***\n";
                             std::cout << "Factor 1: " << result.factor1.to_string() << "\n";
                             std::cout << "Factor 2: " << result.factor2.to_string() << "\n";
                         }
@@ -733,14 +770,15 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
                     Integer check = f1.clone();
                     check *= f2;
 
-                    if (check.compare(n) == 0 && is_nontrivial_factor(f1) && is_nontrivial_factor(f2)) {
+                    if (check.compare(n) == 0 && is_nontrivial_factor(f1) &&
+                        is_nontrivial_factor(f2)) {
                         result.factor1 = std::move(f1);
                         result.factor2 = std::move(f2);
                         result.success = true;
 
                         if (verbose) {
-                            std::cout << "\n*** FACTORIZATION SUCCESSFUL (combination "
-                                      << i+1 << " XOR " << j+1 << ")! ***\n";
+                            std::cout << "\n*** FACTORIZATION SUCCESSFUL (combination " << i + 1
+                                      << " XOR " << j + 1 << ")! ***\n";
                             std::cout << "Factor 1: " << result.factor1.to_string() << "\n";
                             std::cout << "Factor 2: " << result.factor2.to_string() << "\n";
                         }
@@ -760,21 +798,21 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
                         Integer check = f1.clone();
                         check *= f2;
 
-                        if (check.compare(n) == 0 && is_nontrivial_factor(f1) && is_nontrivial_factor(f2)) {
+                        if (check.compare(n) == 0 && is_nontrivial_factor(f1) &&
+                            is_nontrivial_factor(f2)) {
                             result.factor1 = std::move(f1);
                             result.factor2 = std::move(f2);
                             result.success = true;
 
                             if (verbose) {
-                                std::cout << "\n*** FACTORIZATION SUCCESSFUL (combination "
-                                          << i+1 << " XOR " << j+1 << " with -Y)! ***\n";
+                                std::cout << "\n*** FACTORIZATION SUCCESSFUL (combination " << i + 1
+                                          << " XOR " << j + 1 << " with -Y)! ***\n";
                                 std::cout << "Factor 1: " << result.factor1.to_string() << "\n";
                                 std::cout << "Factor 2: " << result.factor2.to_string() << "\n";
                             }
                             break;
                         }
-                    }
-                    else if (is_nontrivial_factor(factors_neg.factor2)) {
+                    } else if (is_nontrivial_factor(factors_neg.factor2)) {
                         Integer f1 = factors_neg.factor2.clone();
                         Integer f2 = n.clone();
                         f2 /= f1;
@@ -782,14 +820,15 @@ FactorizationResult factor_gnfs(const Integer& n, bool verbose = true) {
                         Integer check = f1.clone();
                         check *= f2;
 
-                        if (check.compare(n) == 0 && is_nontrivial_factor(f1) && is_nontrivial_factor(f2)) {
+                        if (check.compare(n) == 0 && is_nontrivial_factor(f1) &&
+                            is_nontrivial_factor(f2)) {
                             result.factor1 = std::move(f1);
                             result.factor2 = std::move(f2);
                             result.success = true;
 
                             if (verbose) {
-                                std::cout << "\n*** FACTORIZATION SUCCESSFUL (combination "
-                                          << i+1 << " XOR " << j+1 << " with -Y)! ***\n";
+                                std::cout << "\n*** FACTORIZATION SUCCESSFUL (combination " << i + 1
+                                          << " XOR " << j + 1 << " with -Y)! ***\n";
                                 std::cout << "Factor 1: " << result.factor1.to_string() << "\n";
                                 std::cout << "Factor 2: " << result.factor2.to_string() << "\n";
                             }
@@ -1047,7 +1086,12 @@ int main() {
     int pass = 0, fail = 0;
     auto run = [&](auto fn, const char* name) {
         bool ok = fn();
-        if (ok) { ++pass; } else { ++fail; std::cout << "  *** FAILED: " << name << "\n"; }
+        if (ok) {
+            ++pass;
+        } else {
+            ++fail;
+            std::cout << "  *** FAILED: " << name << "\n";
+        }
     };
 
     run(test_factor_10800, "factor_10800");

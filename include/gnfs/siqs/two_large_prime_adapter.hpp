@@ -35,14 +35,12 @@ struct TwoLargePrimeAdapterStats {
     size_t exact_duplicate = 0;
 
     [[nodiscard]] constexpr size_t typed_rejections() const noexcept {
-        return malformed_source_shape + unsupported_encoding +
-               invalid_one_large_prime + invalid_two_large_prime_split +
-               exact_duplicate;
+        return malformed_source_shape + unsupported_encoding + invalid_one_large_prime +
+               invalid_two_large_prime_split + exact_duplicate;
     }
 
-    [[nodiscard]] friend constexpr bool operator==(
-        const TwoLargePrimeAdapterStats&,
-        const TwoLargePrimeAdapterStats&) = default;
+    [[nodiscard]] friend constexpr bool operator==(const TwoLargePrimeAdapterStats&,
+                                                   const TwoLargePrimeAdapterStats&) = default;
 };
 
 struct PreparedTwoLargePrimeCorpus {
@@ -61,8 +59,7 @@ enum class RejectionReason {
     exact_duplicate,
 };
 
-inline void record_rejection(TwoLargePrimeAdapterStats& stats,
-                             RejectionReason reason) noexcept {
+inline void record_rejection(TwoLargePrimeAdapterStats& stats, RejectionReason reason) noexcept {
     ++stats.rejected_relations;
     switch (reason) {
     case RejectionReason::malformed_source_shape:
@@ -89,13 +86,10 @@ struct AcceptedRelation {
     uint64_t q;
 };
 
-[[nodiscard]] inline bool has_valid_raw_shape(
-        const SIQSRelation& relation,
-        size_t factor_base_size) {
-    if (factor_base_size == 0 ||
-        !relation.merge_lps.empty() ||
-        relation.exponents.size() != factor_base_size ||
-        relation.exponents[0] != 0) {
+[[nodiscard]] inline bool has_valid_raw_shape(const SIQSRelation& relation,
+                                              size_t factor_base_size) {
+    if (factor_base_size == 0 || !relation.merge_lps.empty() ||
+        relation.exponents.size() != factor_base_size || relation.exponents[0] != 0) {
         return false;
     }
 
@@ -105,20 +99,16 @@ struct AcceptedRelation {
     std::vector<uint32_t> indices = relation.fb_indices;
     std::sort(indices.begin(), indices.end());
     for (size_t i = 0; i < indices.size(); ++i) {
-        if (indices[i] == 0 ||
-            static_cast<size_t>(indices[i]) >= factor_base_size ||
+        if (indices[i] == 0 || static_cast<size_t>(indices[i]) >= factor_base_size ||
             (i > 0 && indices[i - 1] == indices[i])) {
             return false;
         }
     }
 
     size_t sparse_position = 0;
-    for (size_t exponent_index = 0;
-         exponent_index < factor_base_size;
-         ++exponent_index) {
-        const bool is_listed =
-            sparse_position < indices.size() &&
-            static_cast<size_t>(indices[sparse_position]) == exponent_index;
+    for (size_t exponent_index = 0; exponent_index < factor_base_size; ++exponent_index) {
+        const bool is_listed = sparse_position < indices.size() &&
+                               static_cast<size_t>(indices[sparse_position]) == exponent_index;
         if ((relation.exponents[exponent_index] > 0) != is_listed) {
             return false;
         }
@@ -129,9 +119,8 @@ struct AcceptedRelation {
     return sparse_position == indices.size();
 }
 
-[[nodiscard]] inline bool accepted_relation_less(
-        const AcceptedRelation& lhs,
-        const AcceptedRelation& rhs) {
+[[nodiscard]] inline bool accepted_relation_less(const AcceptedRelation& lhs,
+                                                 const AcceptedRelation& rhs) {
     if (lhs.p != rhs.p) {
         return lhs.p < rhs.p;
     }
@@ -151,18 +140,14 @@ struct AcceptedRelation {
         rhs.relation->exponents.begin(), rhs.relation->exponents.end());
 }
 
-[[nodiscard]] inline bool accepted_relation_equal(
-        const AcceptedRelation& lhs,
-        const AcceptedRelation& rhs) {
-    return lhs.p == rhs.p &&
-           lhs.q == rhs.q &&
-           lhs.relation->value == rhs.relation->value &&
+[[nodiscard]] inline bool accepted_relation_equal(const AcceptedRelation& lhs,
+                                                  const AcceptedRelation& rhs) {
+    return lhs.p == rhs.p && lhs.q == rhs.q && lhs.relation->value == rhs.relation->value &&
            lhs.relation->negative == rhs.relation->negative &&
            lhs.relation->exponents == rhs.relation->exponents;
 }
 
-[[nodiscard]] inline std::vector<uint32_t> widen_exponents(
-        const std::vector<uint8_t>& exponents) {
+[[nodiscard]] inline std::vector<uint32_t> widen_exponents(const std::vector<uint8_t>& exponents) {
     std::vector<uint32_t> widened;
     widened.reserve(exponents.size());
     for (const uint8_t exponent : exponents) {
@@ -183,11 +168,8 @@ struct AcceptedRelation {
 /// yet.
 template <class Splitter>
 [[nodiscard]] std::optional<PreparedTwoLargePrimeCorpus>
-prepare_two_large_prime_corpus(
-        std::span<const SIQSRelation> relations,
-        size_t factor_base_size,
-        uint64_t large_prime_bound,
-        Splitter&& splitter) {
+prepare_two_large_prime_corpus(std::span<const SIQSRelation> relations, size_t factor_base_size,
+                               uint64_t large_prime_bound, Splitter&& splitter) {
     using two_large_prime_adapter_detail::AcceptedRelation;
 
     if (factor_base_size == 0 || large_prime_bound < 2) {
@@ -201,8 +183,7 @@ prepare_two_large_prime_corpus(
     accepted.reserve(relations.size());
 
     for (const SIQSRelation& relation : relations) {
-        if (!two_large_prime_adapter_detail::has_valid_raw_shape(
-                relation, factor_base_size)) {
+        if (!two_large_prime_adapter_detail::has_valid_raw_shape(relation, factor_base_size)) {
             two_large_prime_adapter_detail::record_rejection(
                 corpus.stats,
                 two_large_prime_adapter_detail::RejectionReason::malformed_source_shape);
@@ -217,8 +198,7 @@ prepare_two_large_prime_corpus(
         if (relation.large_prime > 1 && relation.large_prime2 == 0) {
             if (relation.large_prime <= large_prime_bound &&
                 gnfs::util::is_prime_u64(relation.large_prime)) {
-                accepted.push_back(AcceptedRelation{
-                    &relation, 0, relation.large_prime});
+                accepted.push_back(AcceptedRelation{&relation, 0, relation.large_prime});
             } else {
                 two_large_prime_adapter_detail::record_rejection(
                     corpus.stats,
@@ -229,11 +209,10 @@ prepare_two_large_prime_corpus(
 
         if (relation.large_prime > 1 && relation.large_prime2 == 1) {
             const auto candidate = std::invoke(splitter, relation.large_prime);
-            const auto factors = normalize_two_large_prime(
-                relation.large_prime, large_prime_bound, candidate);
+            const auto factors =
+                normalize_two_large_prime(relation.large_prime, large_prime_bound, candidate);
             if (factors) {
-                accepted.push_back(AcceptedRelation{
-                    &relation, factors->p, factors->q});
+                accepted.push_back(AcceptedRelation{&relation, factors->p, factors->q});
             } else {
                 two_large_prime_adapter_detail::record_rejection(
                     corpus.stats,
@@ -245,8 +224,7 @@ prepare_two_large_prime_corpus(
         // Pre-split lp1/lp2 records and all other encodings are outside this
         // raw adapter's accepted input contract.
         two_large_prime_adapter_detail::record_rejection(
-            corpus.stats,
-            two_large_prime_adapter_detail::RejectionReason::unsupported_encoding);
+            corpus.stats, two_large_prime_adapter_detail::RejectionReason::unsupported_encoding);
     }
 
     std::sort(accepted.begin(), accepted.end(),
@@ -256,12 +234,10 @@ prepare_two_large_prime_corpus(
     corpus.sources.reserve(accepted.size());
     const AcceptedRelation* previous_relation = nullptr;
     for (const AcceptedRelation& accepted_relation : accepted) {
-        if (previous_relation != nullptr &&
-            two_large_prime_adapter_detail::accepted_relation_equal(
-                *previous_relation, accepted_relation)) {
+        if (previous_relation != nullptr && two_large_prime_adapter_detail::accepted_relation_equal(
+                                                *previous_relation, accepted_relation)) {
             two_large_prime_adapter_detail::record_rejection(
-                corpus.stats,
-                two_large_prime_adapter_detail::RejectionReason::exact_duplicate);
+                corpus.stats, two_large_prime_adapter_detail::RejectionReason::exact_duplicate);
             continue;
         }
         previous_relation = &accepted_relation;

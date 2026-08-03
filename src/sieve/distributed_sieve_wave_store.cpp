@@ -783,8 +783,8 @@ read_immutable_protocol_record_leaf(int root_fd, const char* leaf, std::uint64_t
         return result;
     }
 
-    struct stat held_before{};
-    struct stat named_before{};
+    struct stat held_before {};
+    struct stat named_before {};
     if (fstat_retrying_eintr(held.get(), held_before) != 0) {
         result.diagnostic =
             diagnostic(DistributedSieveWaveStoreStatus::io_failed, posix_error(errno));
@@ -860,8 +860,8 @@ read_immutable_protocol_record_leaf(int root_fd, const char* leaf, std::uint64_t
         return result;
     }
 
-    struct stat held_after{};
-    struct stat named_after{};
+    struct stat held_after {};
+    struct stat named_after {};
     if (fstat_retrying_eintr(held.get(), held_after) != 0) {
         result.diagnostic =
             diagnostic(DistributedSieveWaveStoreStatus::io_failed, posix_error(errno));
@@ -911,7 +911,7 @@ validate_parent_binding(int parent_fd, const std::vector<std::string>& parent_co
     if (!process_matches(creator_process_id)) {
         return process_mismatch();
     }
-    struct stat held_before{};
+    struct stat held_before {};
     if (fstat_retrying_eintr(parent_fd, held_before) != 0) {
         return diagnostic(DistributedSieveWaveStoreStatus::root_invalid, posix_error(errno));
     }
@@ -923,7 +923,7 @@ validate_parent_binding(int parent_fd, const std::vector<std::string>& parent_co
     if (!named_parent) {
         return named_parent.diagnostic;
     }
-    struct stat named{};
+    struct stat named {};
     if (fstat_retrying_eintr(named_parent.parent.get(), named) != 0) {
         return diagnostic(DistributedSieveWaveStoreStatus::root_invalid, posix_error(errno));
     }
@@ -932,7 +932,7 @@ validate_parent_binding(int parent_fd, const std::vector<std::string>& parent_co
         acl.has_value()) {
         return *acl;
     }
-    struct stat held_after{};
+    struct stat held_after {};
     if (fstat_retrying_eintr(parent_fd, held_after) != 0) {
         return diagnostic(DistributedSieveWaveStoreStatus::root_invalid, posix_error(errno));
     }
@@ -961,7 +961,7 @@ validate_root_binding(int parent_fd, const std::vector<std::string>& parent_comp
         return parent;
     }
 
-    struct stat held_before{};
+    struct stat held_before {};
     if (fstat_retrying_eintr(root_fd, held_before) != 0) {
         return diagnostic(DistributedSieveWaveStoreStatus::root_invalid, posix_error(errno));
     }
@@ -969,11 +969,11 @@ validate_root_binding(int parent_fd, const std::vector<std::string>& parent_comp
         acl.has_value()) {
         return *acl;
     }
-    struct stat named{};
+    struct stat named {};
     if (fstatat_retrying_eintr(parent_fd, root_leaf.c_str(), named) != 0) {
         return diagnostic(DistributedSieveWaveStoreStatus::root_invalid, posix_error(errno));
     }
-    struct stat held_after{};
+    struct stat held_after {};
     if (fstat_retrying_eintr(root_fd, held_after) != 0) {
         return diagnostic(DistributedSieveWaveStoreStatus::root_invalid, posix_error(errno));
     }
@@ -1001,7 +1001,7 @@ validate_lock_binding(int root_fd, int lock_fd, std::uint64_t creator_process_id
     if (!process_matches(creator_process_id)) {
         return process_mismatch();
     }
-    struct stat held_before{};
+    struct stat held_before {};
     if (fstat_retrying_eintr(lock_fd, held_before) != 0) {
         return diagnostic(DistributedSieveWaveStoreStatus::lock_invalid, posix_error(errno));
     }
@@ -1009,11 +1009,11 @@ validate_lock_binding(int root_fd, int lock_fd, std::uint64_t creator_process_id
         acl.has_value()) {
         return *acl;
     }
-    struct stat named{};
+    struct stat named {};
     if (fstatat_retrying_eintr(root_fd, LOCK_LEAF, named) != 0) {
         return diagnostic(DistributedSieveWaveStoreStatus::lock_invalid, posix_error(errno));
     }
-    struct stat held_after{};
+    struct stat held_after {};
     if (fstat_retrying_eintr(lock_fd, held_after) != 0) {
         return diagnostic(DistributedSieveWaveStoreStatus::lock_invalid, posix_error(errno));
     }
@@ -1052,8 +1052,8 @@ struct NamespaceInventory final {
     std::vector<DistributedSieveWaveMergeCommitRecordInventoryWitnessV1> wave_merge_commit_records;
     std::vector<std::string> cleanup_record_leaves;
 
-    [[nodiscard]] friend constexpr bool operator==(const NamespaceInventory&,
-                                                   const NamespaceInventory&) noexcept = default;
+    [[nodiscard]] friend bool operator==(const NamespaceInventory&,
+                                         const NamespaceInventory&) noexcept = default;
 };
 
 [[nodiscard]] bool
@@ -1551,7 +1551,7 @@ struct PrivateLeaseBaseLockLeafValidationResult final {
         return {std::nullopt, process_mismatch()};
     }
 
-    struct stat held_before{};
+    struct stat held_before {};
     if (fstat_retrying_eintr(lock_fd, held_before) != 0) {
         return {std::nullopt, diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
                                          posix_error(errno))};
@@ -1561,12 +1561,12 @@ struct PrivateLeaseBaseLockLeafValidationResult final {
         acl.has_value()) {
         return {std::nullopt, *acl};
     }
-    struct stat named{};
+    struct stat named {};
     if (fstatat_retrying_eintr(root_fd, leaf.c_str(), named) != 0) {
         return {std::nullopt, diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
                                          posix_error(errno))};
     }
-    struct stat held_after{};
+    struct stat held_after {};
     if (fstat_retrying_eintr(lock_fd, held_after) != 0) {
         return {std::nullopt, diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
                                          posix_error(errno))};
@@ -1813,7 +1813,7 @@ parse_private_lease_id_hex(std::string_view encoded) noexcept {
 parse_manifest_bound_private_lease_protocol_leaf(const WaveManifestV1& manifest,
                                                  std::string_view leaf) {
     const auto parse_fixed = [&](std::string_view suffix, PrivateLeaseProtocolLeafRole role,
-                                 const std::string DistributedSievePrivateLeaseNamesV1::* member)
+                                 const std::string DistributedSievePrivateLeaseNamesV1::*member)
         -> std::optional<ParsedPrivateLeaseProtocolLeaf> {
         if (!leaf.ends_with(suffix)) {
             return std::nullopt;
@@ -1923,8 +1923,8 @@ read_private_lease_marker_at(int parent_fd, const std::string& leaf,
     }
     UniqueFd held(descriptor);
 
-    struct stat held_before{};
-    struct stat named_before{};
+    struct stat held_before {};
+    struct stat named_before {};
     if (fstat_retrying_eintr(held.get(), held_before) != 0) {
         return {
             std::nullopt, std::nullopt,
@@ -1970,8 +1970,8 @@ read_private_lease_marker_at(int parent_fd, const std::string& leaf,
         offset += static_cast<std::size_t>(count);
     }
 
-    struct stat held_after{};
-    struct stat named_after{};
+    struct stat held_after {};
+    struct stat named_after {};
     if (fstat_retrying_eintr(held.get(), held_after) != 0) {
         return {
             std::nullopt, std::nullopt,
@@ -2023,9 +2023,9 @@ read_private_lease_marker_at(int parent_fd, const std::string& leaf,
                                 invalid_argument_error())
                    : process_mismatch();
     }
-    struct stat held_before{};
-    struct stat named{};
-    struct stat held_after{};
+    struct stat held_before {};
+    struct stat named {};
+    struct stat held_after {};
     if (fstat_retrying_eintr(directory_fd, held_before) != 0) {
         return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, posix_error(errno));
     }
@@ -2098,7 +2098,7 @@ inspect_private_lease_directory_at(int root_fd, const std::string& leaf,
         validated.status != DistributedSieveWaveStoreStatus::ready) {
         return {{}, std::nullopt, std::nullopt, validated};
     }
-    struct stat metadata{};
+    struct stat metadata {};
     if (fstat_retrying_eintr(directory.get(), metadata) != 0) {
         return {{},
                 std::nullopt,
@@ -2220,8 +2220,8 @@ inspect_merge_raw_writer_leaf_at(int directory_fd, const char* leaf,
                                          posix_error(errno))};
     }
     UniqueFd held(descriptor);
-    struct stat held_before{};
-    struct stat named_before{};
+    struct stat held_before {};
+    struct stat named_before {};
     if (fstat_retrying_eintr(held.get(), held_before) != 0 ||
         fstatat_retrying_eintr(directory_fd, leaf, named_before) != 0) {
         return {std::nullopt, diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
@@ -2243,8 +2243,8 @@ inspect_merge_raw_writer_leaf_at(int directory_fd, const char* leaf,
         acl.has_value()) {
         return {std::nullopt, *acl};
     }
-    struct stat held_after{};
-    struct stat named_after{};
+    struct stat held_after {};
+    struct stat named_after {};
     if (fstat_retrying_eintr(held.get(), held_after) != 0 ||
         fstatat_retrying_eintr(directory_fd, leaf, named_after) != 0) {
         return {std::nullopt, diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
@@ -2277,7 +2277,7 @@ inspect_private_lease_directory_handle(int directory_fd,
                              : process_mismatch(),
         };
     }
-    struct stat before{};
+    struct stat before {};
     if (fstat_retrying_eintr(directory_fd, before) != 0) {
         return {std::nullopt, diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
                                          posix_error(errno))};
@@ -2355,7 +2355,7 @@ inspect_private_lease_directory_handle(int directory_fd,
                 diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error())};
     }
 
-    struct stat after{};
+    struct stat after {};
     if (fstat_retrying_eintr(directory_fd, after) != 0) {
         return {std::nullopt, diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
                                          posix_error(errno))};
@@ -3070,7 +3070,7 @@ carrier_work_package_residue_reconciliation_fault_point(
             const auto& owned_record = *owned.record;
             const std::filesystem::path base_path =
                 absolute_root / attempt.names.private_directory_leaf / "corpus";
-            struct stat root_metadata{};
+            struct stat root_metadata {};
             if (fstat_retrying_eintr(root_fd, root_metadata) != 0) {
                 return fail_with(
                     diagnostic(DistributedSieveWaveStoreStatus::io_failed, posix_error(errno)));
@@ -3267,7 +3267,7 @@ carrier_work_package_residue_reconciliation_fault_point(
 
         const std::filesystem::path base_path =
             absolute_root / attempt.names.private_directory_leaf / "corpus";
-        struct stat root_metadata{};
+        struct stat root_metadata {};
         if (fstat_retrying_eintr(root_fd, root_metadata) != 0) {
             return fail_with(
                 diagnostic(DistributedSieveWaveStoreStatus::io_failed, posix_error(errno)));
@@ -5085,7 +5085,7 @@ load_exact_canonical_worker_attempt(int root_fd, const PrivateLeaseAttemptInvent
         if (!canonical) {
             return fail_with(std::move(canonical.diagnostic));
         }
-        struct stat pending{};
+        struct stat pending {};
         if (fstatat_retrying_eintr(root_fd, names.pending_record_leaf.c_str(), pending) == 0) {
             return conflict();
         }
@@ -5160,7 +5160,7 @@ load_exact_canonical_merge_started(int root_fd, const PrivateLeaseAttemptInvento
         if (!canonical) {
             return fail_with(std::move(canonical.diagnostic));
         }
-        struct stat pending{};
+        struct stat pending {};
         if (fstatat_retrying_eintr(root_fd, names.pending_record_leaf.c_str(), pending) == 0) {
             return conflict();
         }
@@ -6857,7 +6857,7 @@ struct RootOpenResult final {
         result.diagnostic = validated;
         return result;
     }
-    struct stat metadata{};
+    struct stat metadata {};
     if (fstat_retrying_eintr(result.root.get(), metadata) != 0) {
         result.diagnostic =
             diagnostic(DistributedSieveWaveStoreStatus::root_invalid, posix_error(errno));
@@ -7015,7 +7015,7 @@ struct LockOpenResult final {
         result.diagnostic = validated;
         return result;
     }
-    struct stat metadata{};
+    struct stat metadata {};
     if (fstat_retrying_eintr(result.lock.get(), metadata) != 0) {
         result.diagnostic =
             diagnostic(DistributedSieveWaveStoreStatus::lock_invalid, posix_error(errno));
@@ -7092,13 +7092,13 @@ struct ManifestReadResult final {
         return result;
     }
 
-    struct stat held_before{};
+    struct stat held_before {};
     if (fstat_retrying_eintr(manifest.get(), held_before) != 0) {
         result.diagnostic =
             diagnostic(DistributedSieveWaveStoreStatus::io_failed, posix_error(errno));
         return result;
     }
-    struct stat named_before{};
+    struct stat named_before {};
     if (fstatat_retrying_eintr(root_fd, leaf, named_before) != 0) {
         result.diagnostic =
             diagnostic(DistributedSieveWaveStoreStatus::manifest_invalid, posix_error(errno));
@@ -7177,13 +7177,13 @@ struct ManifestReadResult final {
         return result;
     }
 
-    struct stat held_after{};
+    struct stat held_after {};
     if (fstat_retrying_eintr(manifest.get(), held_after) != 0) {
         result.diagnostic =
             diagnostic(DistributedSieveWaveStoreStatus::io_failed, posix_error(errno));
         return result;
     }
-    struct stat named_after{};
+    struct stat named_after {};
     if (fstatat_retrying_eintr(root_fd, leaf, named_after) != 0) {
         result.diagnostic =
             diagnostic(DistributedSieveWaveStoreStatus::manifest_invalid, posix_error(errno));
@@ -7219,7 +7219,7 @@ require_manifest_pending_missing(int root_fd, std::uint64_t creator_process_id) 
     if (!process_matches(creator_process_id)) {
         return process_mismatch();
     }
-    struct stat named{};
+    struct stat named {};
     if (fstatat_retrying_eintr(root_fd, MANIFEST_PENDING_LEAF, named) == 0) {
         return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error());
     }
@@ -7291,7 +7291,7 @@ require_manifest_pending_missing(int root_fd, std::uint64_t creator_process_id) 
     if (!canonical) {
         return canonical.diagnostic;
     }
-    struct stat pending{};
+    struct stat pending {};
     if (fstatat_retrying_eintr(root_fd, names.pending_record_leaf.c_str(), pending) == 0) {
         return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error());
     }
@@ -7318,7 +7318,7 @@ require_manifest_pending_missing(int root_fd, std::uint64_t creator_process_id) 
     if (!canonical) {
         return canonical.diagnostic;
     }
-    struct stat pending{};
+    struct stat pending {};
     if (fstatat_retrying_eintr(root_fd, names.pending_record_leaf.c_str(), pending) == 0) {
         return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error());
     }
@@ -8770,8 +8770,8 @@ struct PrivateLeaseMarkerIdentityResult final {
 
 [[nodiscard]] PrivateLeaseMarkerIdentityResult
 inspect_published_private_lease_marker(int parent_fd, const char* leaf, int marker_fd) noexcept {
-    struct stat held{};
-    struct stat named{};
+    struct stat held {};
+    struct stat named {};
     if (fstat_retrying_eintr(marker_fd, held) != 0 ||
         fstatat_retrying_eintr(parent_fd, leaf, named) != 0) {
         return {std::nullopt, diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
@@ -8878,7 +8878,7 @@ private_lease_sync_handle(int descriptor) noexcept;
         return fail_with(
             diagnostic(DistributedSieveWaveStoreStatus::publication_failed, posix_error(errno)));
     }
-    struct stat initial{};
+    struct stat initial {};
     if (fstat_retrying_eintr(marker.get(), initial) != 0) {
         return fail_with(
             diagnostic(DistributedSieveWaveStoreStatus::publication_failed, posix_error(errno)));
@@ -9108,7 +9108,7 @@ validate_named_private_lease_marker_handle(int parent_fd, const char* leaf, int 
     if (!process_matches(creator_process_id)) {
         return process_mismatch();
     }
-    struct stat named{};
+    struct stat named {};
     if (fstatat_retrying_eintr(parent_fd, former_leaf, named) == 0) {
         return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error());
     }
@@ -9116,7 +9116,7 @@ validate_named_private_lease_marker_handle(int parent_fd, const char* leaf, int 
         return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
                           posix_error(saved_errno));
     }
-    struct stat held{};
+    struct stat held {};
     if (fstat_retrying_eintr(marker_fd, held) != 0) {
         return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, posix_error(errno));
     }
@@ -9142,7 +9142,7 @@ validate_exact_empty_private_lease_directory_handle(int directory_fd,
                                              invalid_argument_error())
                                 : process_mismatch();
     }
-    struct stat before{};
+    struct stat before {};
     if (fstat_retrying_eintr(directory_fd, before) != 0) {
         return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, posix_error(errno));
     }
@@ -9182,7 +9182,7 @@ validate_exact_empty_private_lease_directory_handle(int directory_fd,
                               protocol_error());
         }
     }
-    struct stat after{};
+    struct stat after {};
     if (fstat_retrying_eintr(directory_fd, after) != 0) {
         return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, posix_error(errno));
     }
@@ -9199,7 +9199,7 @@ validate_exact_empty_private_lease_directory_handle(int directory_fd,
     if (!process_matches(creator_process_id)) {
         return process_mismatch();
     }
-    struct stat named{};
+    struct stat named {};
     if (fstatat_retrying_eintr(root_fd, former_leaf, named) == 0) {
         return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error());
     }
@@ -9207,7 +9207,7 @@ validate_exact_empty_private_lease_directory_handle(int directory_fd,
         return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
                           posix_error(saved_errno));
     }
-    struct stat held{};
+    struct stat held {};
     if (fstat_retrying_eintr(directory_fd, held) != 0) {
         return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, posix_error(errno));
     }
@@ -9230,8 +9230,8 @@ validate_exact_empty_private_lease_directory_handle(int directory_fd,
         return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, posix_error(errno));
     }
     UniqueFd parent(parent_descriptor);
-    struct stat parent_metadata{};
-    struct stat root_metadata{};
+    struct stat parent_metadata {};
+    struct stat root_metadata {};
     if (fstat_retrying_eintr(parent.get(), parent_metadata) != 0) {
         return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, posix_error(errno));
     }
@@ -9282,6 +9282,24 @@ private_lease_unlink_at(int parent_fd, const char* leaf, int flags) noexcept {
             return diagnostic(DistributedSieveWaveStoreStatus::io_failed, posix_error(saved_errno));
         }
     }
+}
+
+#endif
+
+#if defined(_WIN32)
+
+[[nodiscard]] std::array<std::uint64_t, 3>
+relation_identity(const NativeIdentityV1& identity) noexcept {
+    return {identity.volume, identity.object, identity.generation};
+}
+
+[[nodiscard]] NativeIdentityV1
+protocol_identity(const durable_record::NativeIdentity& identity) noexcept {
+    return {
+        .volume = identity.first,
+        .object = identity.second,
+        .generation = identity.third,
+    };
 }
 
 #endif
@@ -10006,7 +10024,9 @@ struct DistributedSieveWaveStore::State final {
     NativeIdentityV1 root_identity;
     NativeIdentityV1 lock_identity;
     std::vector<std::byte> manifest_bytes;
+#if !defined(_WIN32)
     std::optional<ManifestBoundInventoryWitnessResult> merge_raw_recovery_open_anchor;
+#endif
     std::uint64_t creator_process_id = 0;
     mutable std::atomic_bool merge_raw_recovery_completed = false;
     mutable std::atomic_flag worker_coordinator_claimed = ATOMIC_FLAG_INIT;
@@ -10225,7 +10245,7 @@ DistributedSievePrivateLeaseBaseLockAt::create_new_locked(
         return nullptr;
     }
 
-    struct stat existing{};
+    struct stat existing {};
     if (fstatat_retrying_eintr(root_fd, lock->leaf_.c_str(), existing) == 0) {
         outcome = diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error());
         return nullptr;
@@ -11553,7 +11573,7 @@ public:
                 &successor_inventory,
                 DistributedSievePrivateLeaseReservationBoundary::StagingDirectoryDurable));
         }
-        struct stat metadata{};
+        struct stat metadata {};
         if (fstat_retrying_eintr(created.get(), metadata) != 0) {
             fail(adjudicate_operation_failure(
                 diagnostic(DistributedSieveWaveStoreStatus::io_failed, posix_error(errno)),
@@ -11740,7 +11760,7 @@ private:
             return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
                               protocol_error());
         }
-        struct stat metadata{};
+        struct stat metadata {};
         if (fstat_retrying_eintr(staging_directory_.get(), metadata) != 0) {
             return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict,
                               posix_error(errno));
@@ -12368,8 +12388,8 @@ validate_exact_worker_attempt_record_handle(int root_fd, int record_fd, const st
         return process_mismatch();
     }
 
-    struct stat held_before{};
-    struct stat named_before{};
+    struct stat held_before {};
+    struct stat named_before {};
     if (fstat_retrying_eintr(record_fd, held_before) != 0) {
         return diagnostic(DistributedSieveWaveStoreStatus::io_failed, posix_error(errno));
     }
@@ -12432,8 +12452,8 @@ validate_exact_worker_attempt_record_handle(int root_fd, int record_fd, const st
         return diagnostic(DistributedSieveWaveStoreStatus::namespace_conflict, protocol_error());
     }
 
-    struct stat held_after{};
-    struct stat named_after{};
+    struct stat held_after {};
+    struct stat named_after {};
     if (fstat_retrying_eintr(record_fd, held_after) != 0) {
         return diagnostic(DistributedSieveWaveStoreStatus::io_failed, posix_error(errno));
     }
@@ -13838,6 +13858,8 @@ DistributedSieveFdPrivateLeaseRecoveryTarget::interruption_diagnostic() const no
 
 #endif
 
+#if !defined(_WIN32)
+
 namespace {
 
 [[nodiscard]] DistributedSieveWaveStoreDiagnostic validate_recovered_merge_prepared_projection_once(
@@ -14778,6 +14800,43 @@ const relation::OOCRelationReader& DistributedSieveWorkerCleanupRootAdmissionV1:
     }
     return *state_->merged_reader;
 }
+
+#else
+
+struct DistributedSieveWorkerCleanupRootAdmissionV1::State final {};
+
+DistributedSieveWorkerCleanupRootAdmissionV1::DistributedSieveWorkerCleanupRootAdmissionV1(
+    std::unique_ptr<State> state) noexcept
+    : state_(std::move(state)) {}
+
+DistributedSieveWorkerCleanupRootAdmissionV1::DistributedSieveWorkerCleanupRootAdmissionV1(
+    DistributedSieveWorkerCleanupRootAdmissionV1&&) noexcept = default;
+
+DistributedSieveWorkerCleanupRootAdmissionV1&
+DistributedSieveWorkerCleanupRootAdmissionV1::operator=(
+    DistributedSieveWorkerCleanupRootAdmissionV1&&) noexcept = default;
+
+DistributedSieveWorkerCleanupRootAdmissionV1::~DistributedSieveWorkerCleanupRootAdmissionV1() =
+    default;
+
+bool DistributedSieveWorkerCleanupRootAdmissionV1::valid() const noexcept {
+    return false;
+}
+
+const WaveMergeCommitV1& DistributedSieveWorkerCleanupRootAdmissionV1::commit() const {
+    throw std::logic_error("worker cleanup root admission is unsupported");
+}
+
+const DistributedSieveWorkerCleanupPrefixWitnessV1&
+DistributedSieveWorkerCleanupRootAdmissionV1::cleanup_prefix() const {
+    throw std::logic_error("worker cleanup root admission is unsupported");
+}
+
+const relation::OOCRelationReader& DistributedSieveWorkerCleanupRootAdmissionV1::reader() const {
+    throw std::logic_error("worker cleanup root admission reader is unsupported");
+}
+
+#endif
 
 DistributedSieveWaveStoreOpenResult
 DistributedSieveWaveStore::create(const std::filesystem::path& absolute_root,
@@ -17651,7 +17710,7 @@ DistributedSieveWaveStore::adopt_worker_handoff_impl_v1(
         const auto named_snapshot_matches =
             [&](std::string_view leaf, const durable_record::RecordSnapshot& snapshot) noexcept {
                 const std::string owned_leaf(leaf);
-                struct stat metadata{};
+                struct stat metadata {};
                 return fstatat_retrying_eintr(final_directory.directory.get(), owned_leaf.c_str(),
                                               metadata) == 0 &&
                        S_ISREG(metadata.st_mode) && metadata.st_nlink == 1 &&
@@ -17759,12 +17818,16 @@ DistributedSieveWaveStore::claim_private_lease_root_impl(
     if (state_->creator_process_id == 0 || !process_matches(state_->creator_process_id)) {
         return {nullptr, process_mismatch()};
     }
+#if !defined(_WIN32)
     if (state_->merge_raw_recovery_open_anchor.has_value() &&
         !state_->merge_raw_recovery_completed.load(std::memory_order_acquire) &&
         !allow_merge_raw_recovery_pending) {
         return {nullptr, diagnostic(DistributedSieveWaveStoreStatus::reconciliation_required,
                                     protocol_error())};
     }
+#else
+    (void)allow_merge_raw_recovery_pending;
+#endif
 
     std::vector<const DistributedSievePrivateLeaseBaseLockAt*> borrowed_worker_base_locks;
     try {
@@ -24077,6 +24140,11 @@ DistributedSieveMergeGenerationCursorResultV1 prepare_distributed_sieve_merge_ge
                              : process_mismatch());
     }
 
+#if defined(_WIN32) || (!defined(__APPLE__) && !defined(__linux__))
+    (void)held_worker_handoffs;
+    return fail_with(
+        diagnostic(DistributedSieveWaveStoreStatus::platform_unsupported, unsupported_error()));
+#else
     try {
         auto claimed = store.claim_private_lease_root_impl(held_worker_handoffs, true);
         if (!claimed || claimed.claim == nullptr) {
@@ -24173,6 +24241,7 @@ DistributedSieveMergeGenerationCursorResultV1 prepare_distributed_sieve_merge_ge
         return fail_with(diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
                                     std::make_error_code(std::errc::io_error)));
     }
+#endif
 }
 
 } // namespace gnfs::sieve::distributed_sieve_resume_detail
@@ -24853,7 +24922,6 @@ DistributedSieveWorkerCleanupCompletionPublicationAuthorityV1::drive(
                              : cold_reopen(std::move(diagnostic));
         };
 
-    bool authority_spent = false;
     try {
         const bool fresh_path = fresh.has_value() && !recovery.has_value();
         const bool recovery_path = !fresh.has_value() && recovery.has_value();
@@ -25299,7 +25367,6 @@ DistributedSieveWorkerCleanupCompletionPublicationAuthorityV1::drive(
         if (fresh_path) {
             fresh->completion_receipt_.commit_spend();
         }
-        authority_spent = true;
         diagnostic.authority_spent = true;
         if (fresh_path &&
             invoke_completion_publication_hook(
@@ -25440,7 +25507,6 @@ DistributedSieveWorkerCleanupCompletionPublicationAuthorityV1::drive(
         diagnostic.status = CompletionPublicationStatus::unexpected_failure;
         diagnostic.native_error = std::make_error_code(std::errc::io_error);
     }
-    diagnostic.authority_spent = diagnostic.authority_spent || authority_spent;
     return diagnostic.authority_spent || diagnostic.publication_started
                ? cold_reopen(std::move(diagnostic))
                : retry_input_or_cold(std::move(diagnostic));
@@ -25838,7 +25904,6 @@ DistributedSieveWorkerCleanupAuthorizationPublicationAuthorityV1::drive(
                                  : AuthorizationPublicationStatus::retryable_recovery_root;
     };
 
-    bool authority_spent = false;
     try {
         const bool fresh_path = fresh.has_value() && !recovery.has_value();
         const bool recovery_path = !fresh.has_value() && recovery.has_value();
@@ -26295,7 +26360,6 @@ DistributedSieveWorkerCleanupAuthorizationPublicationAuthorityV1::drive(
             } else {
                 spent_root.emplace(std::move(*recovery));
             }
-            authority_spent = true;
             diagnostic.authority_spent = true;
             if (fresh_path &&
                 invoke_authorization_publication_hook(
@@ -26578,7 +26642,6 @@ DistributedSieveWorkerCleanupAuthorizationPublicationAuthorityV1::drive(
         } else {
             spent_root.emplace(std::move(*recovery));
         }
-        authority_spent = true;
         diagnostic.authority_spent = true;
         if (fresh_path &&
             invoke_authorization_publication_hook(
@@ -26757,7 +26820,6 @@ DistributedSieveWorkerCleanupAuthorizationPublicationAuthorityV1::drive(
         diagnostic.status = AuthorizationPublicationStatus::unexpected_failure;
         diagnostic.native_error = std::make_error_code(std::errc::io_error);
     }
-    diagnostic.authority_spent = diagnostic.authority_spent || authority_spent;
     return diagnostic.authority_spent || diagnostic.publication_started
                ? cold_reopen(std::move(diagnostic))
                : retry_input_or_cold(std::move(diagnostic));
@@ -27128,7 +27190,7 @@ DistributedSieveWaveStore::launch_worker_process_batch_v1(
                 return result;
             }
 
-            struct stat fixed_leaf_metadata{};
+            struct stat fixed_leaf_metadata {};
             if (fstatat_retrying_eintr(
                     attempt_directories[index].get(),
                     carrier::DISTRIBUTED_SIEVE_WORKER_WORK_PACKAGE_FILE_LEAF_V1.data(),
@@ -27166,7 +27228,7 @@ DistributedSieveWaveStore::launch_worker_process_batch_v1(
                 return result;
             }
 
-            struct stat fixed_leaf_metadata{};
+            struct stat fixed_leaf_metadata {};
             if (fstatat_retrying_eintr(
                     attempt_directories[index].get(),
                     carrier::DISTRIBUTED_SIEVE_WORKER_WORK_PACKAGE_FILE_LEAF_V1.data(),

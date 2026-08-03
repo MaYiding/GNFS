@@ -526,16 +526,14 @@ WorkerWaitResult wait_and_decode(pid_t pid) noexcept {
             .failure_kind = WorkerAttemptFailureKind::unreaped,
         };
     }
-    const auto decoded =
-        distributed_sieve_detail::decode_worker_wait_status(wstatus);
+    const auto decoded = distributed_sieve_detail::decode_worker_wait_status(wstatus);
     const auto failure_kind =
         !decoded.terminal
             ? WorkerAttemptFailureKind::unreaped
-            : (decoded.success
-                   ? WorkerAttemptFailureKind::none
-                   : (decoded.exit_status == WORKER_EXIT_SEED_PROVIDER_FATAL
-                          ? WorkerAttemptFailureKind::seed_provider_fatal
-                          : WorkerAttemptFailureKind::retryable));
+            : (decoded.success ? WorkerAttemptFailureKind::none
+                               : (decoded.exit_status == WORKER_EXIT_SEED_PROVIDER_FATAL
+                                      ? WorkerAttemptFailureKind::seed_provider_fatal
+                                      : WorkerAttemptFailureKind::retryable));
     return WorkerWaitResult{
         .reaped = decoded.terminal,
         .success = decoded.success,

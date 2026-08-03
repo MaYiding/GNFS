@@ -55,8 +55,8 @@ public:
                  OOCCleanupStage::None, posix_error(saved_errno));
         }
 
-        struct stat held{};
-        struct stat named{};
+        struct stat held {};
+        struct stat named {};
         if (::fstat(descriptor_, &held) != 0) {
             const int saved_errno = errno;
             release_noexcept();
@@ -102,8 +102,8 @@ public:
     }
 
     void require_stable() const {
-        struct stat held{};
-        struct stat named{};
+        struct stat held {};
+        struct stat named {};
         if (::fstat(descriptor_, &held) != 0) {
             fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, posix_error(errno));
         }
@@ -140,7 +140,7 @@ private:
         if (leaf.empty() || leaf.has_parent_path() || path_contains_nul(leaf)) {
             fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
         }
-        struct stat metadata{};
+        struct stat metadata {};
         int result = -1;
         do {
             result = ::fstatat(descriptor_, leaf.c_str(), &metadata, AT_SYMLINK_NOFOLLOW);
@@ -224,9 +224,9 @@ OOCPrivateHandoffBorrowedBaseLockV1::consume(const OOCCleanupPaths& paths,
         fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, protocol_error());
     }
 
-    struct stat held_parent{};
-    struct stat held_lock{};
-    struct stat named_lock{};
+    struct stat held_parent {};
+    struct stat held_lock {};
+    struct stat named_lock {};
     if (::fstat(parent_descriptor_, &held_parent) != 0 ||
         ::fstat(lock_descriptor_, &held_lock) != 0 ||
         ::fstatat(parent_descriptor_, expected_leaf.c_str(), &named_lock, AT_SYMLINK_NOFOLLOW) !=
@@ -607,7 +607,7 @@ scan_adoption_directory(const OOCCleanupPaths& paths, const PrivateDirectoryHand
                                  ooc_cleanup_detail::posix_error(errno));
     }
 
-    struct stat scan_metadata{};
+    struct stat scan_metadata {};
     if (::fstat(scan_descriptor, &scan_metadata) != 0 ||
         ooc_cleanup_detail::stable_identity(ooc_cleanup_detail::posix_identity(scan_metadata)) !=
             directory.identity()) {
@@ -673,7 +673,7 @@ scan_adoption_directory(const OOCCleanupPaths& paths, const PrivateDirectoryHand
                                  ooc_cleanup_detail::posix_error(errno));
     }
 
-    struct stat final_metadata{};
+    struct stat final_metadata {};
     if (::fstat(::dirfd(stream.get()), &final_metadata) != 0 ||
         ooc_cleanup_detail::stable_identity(ooc_cleanup_detail::posix_identity(final_metadata)) !=
             directory.identity()) {
@@ -951,12 +951,11 @@ artifact_snapshot(const OOCPrivateHandoffArtifactBindingV1& binding) noexcept {
 namespace {
 
 template <typename AcquireLock>
-OOCPrivateHandoffAdoptionResult
-adopt_private_handoff_impl(const std::filesystem::path& base_path,
-                           OOCPrivateHandoffAdoptionTestHooks hooks,
-                           bool require_existing_lock_binding, AcquireLock&& acquire_lock,
-                           const PrivateHandoffPublicationPrefixWitnessV1* expected_terminal,
-                           const AdoptionAggregateRevalidatorV1* aggregate_revalidator) noexcept {
+OOCPrivateHandoffAdoptionResult adopt_private_handoff_impl(
+    const std::filesystem::path& base_path, OOCPrivateHandoffAdoptionTestHooks hooks,
+    bool require_existing_lock_binding, AcquireLock&& acquire_lock,
+    const ooc_cleanup_detail::PrivateHandoffPublicationPrefixWitnessV1* expected_terminal,
+    const AdoptionAggregateRevalidatorV1* aggregate_revalidator) noexcept {
     if (base_path.empty() || ooc_cleanup_detail::path_contains_nul(base_path)) {
         return adoption_failure(OOCCleanupStatus::InvalidRequest,
                                 OOCPrivateHandoffState::TaintedPreserved,
@@ -1344,7 +1343,7 @@ exact_named_regular_leaf(util::durable_immutable_record::NativeHandle directory_
     if (leaf.empty() || leaf.has_parent_path() || path_contains_nul(leaf)) {
         fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
     }
-    struct stat metadata{};
+    struct stat metadata {};
     int inspected = -1;
     do {
         inspected = ::fstatat(static_cast<int>(directory_handle), leaf.c_str(), &metadata,
@@ -1368,7 +1367,7 @@ exact_named_regular_leaf(util::durable_immutable_record::NativeHandle directory_
 [[nodiscard]] bool
 relative_leaf_absent(util::durable_immutable_record::NativeHandle directory_handle,
                      const std::filesystem::path& leaf) {
-    struct stat metadata{};
+    struct stat metadata {};
     int inspected = -1;
     do {
         inspected = ::fstatat(static_cast<int>(directory_handle), leaf.c_str(), &metadata,
@@ -1422,7 +1421,7 @@ void require_cleanup_intent_conversion_inventory(const OOCCleanupPaths& paths,
         }
     } reset{descriptor};
 
-    struct attrlist requested{};
+    struct attrlist requested {};
     requested.bitmapcount = ATTR_BIT_MAP_COUNT;
     requested.commonattr = ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_NAME | ATTR_CMN_ERROR;
     alignas(std::uint64_t) std::array<std::byte, 4096> buffer{};

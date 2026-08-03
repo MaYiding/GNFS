@@ -4,6 +4,7 @@
 /// @brief Deterministic GF(2) left-nullspace solving for canonical SIQS shadow rows.
 
 #include <gnfs/siqs/shadow_assembly.hpp>
+#include <gnfs/util/joining_thread.hpp>
 #include <gnfs/util/thread_pool.hpp>
 
 #include <algorithm>
@@ -373,7 +374,7 @@ eliminate_pivot(std::vector<uint64_t>& matrix, size_t equation_count, size_t wor
         std::min(equation_count, static_cast<size_t>(options.elimination_workers));
     std::atomic<bool> worker_failed{false};
     try {
-        std::vector<std::jthread> workers;
+        std::vector<gnfs::util::JoiningThread> workers;
         workers.reserve(worker_count);
         const size_t base_range = equation_count / worker_count;
         const size_t remainder = equation_count % worker_count;

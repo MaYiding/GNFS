@@ -745,7 +745,7 @@ void test_real_borrowed_parent_publish_preserves_handle() {
     const auto first = durable::publish_at(parent, "record.bin", PAYLOAD);
     CHECK(first.status() == durable::PublishStatus::durable);
     CHECK(first.bytes_written() == PAYLOAD.size());
-    struct stat metadata{};
+    struct stat metadata {};
     CHECK(::fstat(parent, &metadata) == 0);
     CHECK(S_ISDIR(metadata.st_mode));
     CHECK(read_bytes(directory.path() / "record.bin") ==

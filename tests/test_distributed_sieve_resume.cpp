@@ -661,7 +661,7 @@ static_assert(std::is_trivially_copyable_v<WorkerLaunchFakeChildReport>);
 }
 
 [[nodiscard]] bool read_regular_file_exact(int descriptor, std::vector<std::byte>& bytes) noexcept {
-    struct stat metadata{};
+    struct stat metadata {};
     if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
         static_cast<std::uint64_t>(metadata.st_size) >
             static_cast<std::uint64_t>(WORKER_LAUNCH_FAKE_CHILD_INPUT_LIMIT)) {
@@ -794,11 +794,11 @@ static_assert(std::is_trivially_copyable_v<WorkerLaunchFakeChildReport>);
     }
     report.flags |= WORKER_LAUNCH_CHILD_MANIFEST_VALID;
 
-    struct stat root_metadata{};
-    struct stat wave_lock_metadata{};
-    struct stat base_lock_metadata{};
-    struct stat named_base_lock_metadata{};
-    struct stat package_metadata{};
+    struct stat root_metadata {};
+    struct stat wave_lock_metadata {};
+    struct stat base_lock_metadata {};
+    struct stat named_base_lock_metadata {};
+    struct stat package_metadata {};
     if (::fstat(3, &root_metadata) != 0 || ::fstat(4, &wave_lock_metadata) != 0 ||
         ::fstat(5, &base_lock_metadata) != 0 || ::fstat(6, &package_metadata) != 0) {
         report.native_error = errno;
@@ -6119,7 +6119,7 @@ void replace_attempt_root_and_wave_lock_after_lock(void* opaque) noexcept {
 }
 
 void require_strict_empty_base_lock(const std::filesystem::path& path, std::string_view context) {
-    struct stat metadata{};
+    struct stat metadata {};
     if (::lstat(path.c_str(), &metadata) != 0) {
         throw std::system_error(errno, std::generic_category(), std::string(context));
     }
@@ -6133,8 +6133,8 @@ void require_strict_empty_base_lock(const std::filesystem::path& path, std::stri
 void require_distinct_entry_identities(const std::filesystem::path& first,
                                        const std::filesystem::path& second,
                                        std::string_view context) {
-    struct stat first_metadata{};
-    struct stat second_metadata{};
+    struct stat first_metadata {};
+    struct stat second_metadata {};
     if (::lstat(first.c_str(), &first_metadata) != 0 ||
         ::lstat(second.c_str(), &second_metadata) != 0) {
         throw std::system_error(errno, std::generic_category(), std::string(context));
@@ -6232,7 +6232,7 @@ wave_root_entry_snapshot_from_metadata(const struct stat& metadata, std::string 
         throw TestFailure("invalid anchored wave-store snapshot leaf");
     }
     const std::string native_leaf(named_leaf);
-    struct stat named_before{};
+    struct stat named_before {};
     if (::fstatat(root_fd, native_leaf.c_str(), &named_before, AT_SYMLINK_NOFOLLOW) != 0) {
         throw std::system_error(errno, std::generic_category(), "snapshot wave-store namespace");
     }
@@ -6250,7 +6250,7 @@ wave_root_entry_snapshot_from_metadata(const struct stat& metadata, std::string 
         }
         WaveSnapshotFd held(descriptor);
 
-        struct stat held_before{};
+        struct stat held_before {};
         if (::fstat(held.get(), &held_before) != 0) {
             throw std::system_error(errno, std::generic_category(),
                                     "stat wave-store snapshot leaf");
@@ -6279,8 +6279,8 @@ wave_root_entry_snapshot_from_metadata(const struct stat& metadata, std::string 
             offset += static_cast<std::size_t>(count);
         }
 
-        struct stat held_after{};
-        struct stat named_after{};
+        struct stat held_after {};
+        struct stat named_after {};
         if (::fstat(held.get(), &held_after) != 0 ||
             ::fstatat(root_fd, native_leaf.c_str(), &named_after, AT_SYMLINK_NOFOLLOW) != 0) {
             throw std::system_error(errno, std::generic_category(),
@@ -6316,13 +6316,13 @@ wave_root_entry_snapshot_from_metadata(const struct stat& metadata, std::string 
             }
             target.resize(target.size() * 2U);
         }
-        struct stat named_after{};
+        struct stat named_after {};
         if (::fstatat(root_fd, native_leaf.c_str(), &named_after, AT_SYMLINK_NOFOLLOW) != 0 ||
             !same_wave_snapshot_metadata(named_before, named_after)) {
             throw TestFailure("wave-store snapshot symlink changed during read: " + native_leaf);
         }
     } else {
-        struct stat named_after{};
+        struct stat named_after {};
         if (::fstatat(root_fd, native_leaf.c_str(), &named_after, AT_SYMLINK_NOFOLLOW) != 0 ||
             !same_wave_snapshot_metadata(named_before, named_after)) {
             throw TestFailure("wave-store snapshot entry changed during observation: " +
@@ -6361,7 +6361,7 @@ capture_wave_root_entry_snapshot(const std::filesystem::path& path, std::string 
                                 "open anchored wave-store snapshot root");
     }
     WaveSnapshotFd held_root(root_fd);
-    struct stat root_before{};
+    struct stat root_before {};
     if (::fstat(held_root.get(), &root_before) != 0) {
         throw std::system_error(errno, std::generic_category(),
                                 "stat anchored wave-store snapshot root");
@@ -6419,8 +6419,8 @@ capture_wave_root_entry_snapshot(const std::filesystem::path& path, std::string 
         snapshot.push_back(capture_wave_root_entry_snapshot_at(held_root.get(), leaf, leaf));
     }
 
-    struct stat root_after{};
-    struct stat named_root_after{};
+    struct stat root_after {};
+    struct stat named_root_after {};
     if (::fstat(held_root.get(), &root_after) != 0 ||
         ::lstat(root.c_str(), &named_root_after) != 0 || root_before.st_dev != root_after.st_dev ||
         root_before.st_ino != root_after.st_ino || root_before.st_mode != root_after.st_mode ||
@@ -10338,7 +10338,7 @@ void install_wave_extended_read_acl(const std::filesystem::path& path) {
     constexpr std::size_t HEADER_BYTES = 4;
     constexpr std::size_t ENTRY_BYTES = 8;
     std::array<std::byte, HEADER_BYTES + 5 * ENTRY_BYTES> acl{};
-    struct stat metadata{};
+    struct stat metadata {};
     if (::lstat(path.c_str(), &metadata) != 0) {
         throw std::system_error(errno, std::generic_category(),
                                 "inspect wave-store Linux ACL target");

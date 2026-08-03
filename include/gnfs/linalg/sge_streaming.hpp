@@ -74,12 +74,10 @@ dependency_to_relation_selection(const relation::RelationCorpus& corpus,
 /// dependencies back to original relation or corpus ordinals via
 /// build_result.row_to_relation.
 template <RelationSource Source>
-[[nodiscard]] inline StreamingSGEResult preprocess_streaming(
-        const Source& source,
-        const FactorBase& fb,
-        const core::PolynomialContext& ctx,
-        const MatrixBuilderConfig& mb_config = MatrixBuilderConfig{},
-        const SGEConfig& sge_config = SGEConfig{}) {
+[[nodiscard]] inline StreamingSGEResult
+preprocess_streaming(const Source& source, const FactorBase& fb, const core::PolynomialContext& ctx,
+                     const MatrixBuilderConfig& mb_config = MatrixBuilderConfig{},
+                     const SGEConfig& sge_config = SGEConfig{}) {
 
     StreamingSGEResult out;
 

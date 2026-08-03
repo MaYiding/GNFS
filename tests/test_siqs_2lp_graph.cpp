@@ -27,21 +27,19 @@ using gnfs::siqs::TwoLargePrimeEdge;
 int checks_passed = 0;
 int checks_failed = 0;
 
-#define CHECK(condition)                                                        \
-    do {                                                                        \
-        if (condition) {                                                        \
-            ++checks_passed;                                                    \
-        } else {                                                                \
-            ++checks_failed;                                                    \
-            std::cerr << "FAIL: " #condition " at " << __FILE__ << ':'       \
-                      << __LINE__ << '\n';                                      \
-        }                                                                       \
+#define CHECK(condition)                                                                           \
+    do {                                                                                           \
+        if (condition) {                                                                           \
+            ++checks_passed;                                                                       \
+        } else {                                                                                   \
+            ++checks_failed;                                                                       \
+            std::cerr << "FAIL: " #condition " at " << __FILE__ << ':' << __LINE__ << '\n';        \
+        }                                                                                          \
     } while (false)
 
 class ReferenceDisjointSet {
 public:
-    explicit ReferenceDisjointSet(size_t size)
-        : parent_(size) {
+    explicit ReferenceDisjointSet(size_t size) : parent_(size) {
         for (size_t i = 0; i < size; ++i) {
             parent_[i] = i;
         }
@@ -75,8 +73,8 @@ struct ReferenceGraphStats {
     size_t cycle_rank;
 };
 
-[[nodiscard]] ReferenceGraphStats reference_graph_stats(
-        const std::vector<TwoLargePrimeEdge>& edges) {
+[[nodiscard]] ReferenceGraphStats
+reference_graph_stats(const std::vector<TwoLargePrimeEdge>& edges) {
     std::vector<uint64_t> vertices;
     vertices.reserve(edges.size() * 2);
     for (const auto& edge : edges) {
@@ -105,9 +103,8 @@ struct ReferenceGraphStats {
     };
 }
 
-[[nodiscard]] size_t gf2_rank(
-        const std::vector<std::vector<size_t>>& cycles,
-        const std::vector<TwoLargePrimeEdge>& edges) {
+[[nodiscard]] size_t gf2_rank(const std::vector<std::vector<size_t>>& cycles,
+                              const std::vector<TwoLargePrimeEdge>& edges) {
     std::vector<size_t> relation_indices;
     relation_indices.reserve(edges.size());
     for (const auto& edge : edges) {
@@ -116,29 +113,24 @@ struct ReferenceGraphStats {
     std::sort(relation_indices.begin(), relation_indices.end());
 
     const size_t word_count = (relation_indices.size() + 63) / 64;
-    std::vector<std::vector<uint64_t>> rows(
-        cycles.size(), std::vector<uint64_t>(word_count, 0));
+    std::vector<std::vector<uint64_t>> rows(cycles.size(), std::vector<uint64_t>(word_count, 0));
     for (size_t row = 0; row < cycles.size(); ++row) {
         for (const size_t relation_index : cycles[row]) {
-            const auto position = std::lower_bound(
-                relation_indices.begin(), relation_indices.end(), relation_index);
+            const auto position =
+                std::lower_bound(relation_indices.begin(), relation_indices.end(), relation_index);
             if (position == relation_indices.end() || *position != relation_index) {
                 continue;
             }
-            const size_t column =
-                static_cast<size_t>(position - relation_indices.begin());
+            const size_t column = static_cast<size_t>(position - relation_indices.begin());
             rows[row][column / 64] ^= UINT64_C(1) << (column % 64);
         }
     }
 
     size_t rank = 0;
-    for (size_t column = 0;
-         column < relation_indices.size() && rank < rows.size();
-         ++column) {
+    for (size_t column = 0; column < relation_indices.size() && rank < rows.size(); ++column) {
         size_t pivot = rank;
         while (pivot < rows.size() &&
-               (rows[pivot][column / 64] &
-                (UINT64_C(1) << (column % 64))) == 0) {
+               (rows[pivot][column / 64] & (UINT64_C(1) << (column % 64))) == 0) {
             ++pivot;
         }
         if (pivot == rows.size()) {
@@ -147,8 +139,7 @@ struct ReferenceGraphStats {
 
         std::swap(rows[rank], rows[pivot]);
         for (size_t row = rank + 1; row < rows.size(); ++row) {
-            if ((rows[row][column / 64] &
-                 (UINT64_C(1) << (column % 64))) == 0) {
+            if ((rows[row][column / 64] & (UINT64_C(1) << (column % 64))) == 0) {
                 continue;
             }
             for (size_t word = 0; word < word_count; ++word) {
@@ -249,8 +240,8 @@ template <class Result> void self_move_assign(Result& result) {
     result = std::move(*alias);
 }
 
-[[nodiscard]] std::optional<TwoLargePrimeCycleBasis> build_checked(
-        const std::vector<TwoLargePrimeEdge>& edges) {
+[[nodiscard]] std::optional<TwoLargePrimeCycleBasis>
+build_checked(const std::vector<TwoLargePrimeEdge>& edges) {
     const auto result = build_two_large_prime_cycle_basis(
         std::span<const TwoLargePrimeEdge>(edges.data(), edges.size()));
     CHECK(result.has_value());
@@ -260,11 +251,8 @@ template <class Result> void self_move_assign(Result& result) {
     return result;
 }
 
-void check_expected(const TwoLargePrimeCycleBasis& basis,
-                    size_t vertex_count,
-                    size_t edge_count,
-                    size_t component_count,
-                    const std::vector<std::vector<size_t>>& cycles) {
+void check_expected(const TwoLargePrimeCycleBasis& basis, size_t vertex_count, size_t edge_count,
+                    size_t component_count, const std::vector<std::vector<size_t>>& cycles) {
     CHECK(basis.vertex_count == vertex_count);
     CHECK(basis.edge_count == edge_count);
     CHECK(basis.component_count == component_count);
@@ -366,13 +354,8 @@ void test_triangle_and_mixed_one_lp_cycle() {
 
 void test_disconnected_components_and_cycle_rank() {
     const std::vector<TwoLargePrimeEdge> edges{
-        {101, 103, 100},
-        {103, 107, 101},
-        {107, 101, 102},
-        {109, 113, 110},
-        {113, 109, 111},
-        {127, 131, 120},
-        {137, 137, 130},
+        {101, 103, 100}, {103, 107, 101}, {107, 101, 102}, {109, 113, 110},
+        {113, 109, 111}, {127, 131, 120}, {137, 137, 130},
     };
     const std::vector<std::vector<size_t>> expected{
         {100, 101, 102},
@@ -389,11 +372,7 @@ void test_disconnected_components_and_cycle_rank() {
 
 void test_input_order_and_endpoint_direction_are_irrelevant() {
     const std::vector<TwoLargePrimeEdge> edges{
-        {103, 107, 409},
-        {0, 101, 405},
-        {101, 107, 407},
-        {107, 0, 403},
-        {101, 103, 401},
+        {103, 107, 409}, {0, 101, 405}, {101, 107, 407}, {107, 0, 403}, {101, 103, 401},
     };
     const auto baseline = build_checked(edges);
 
@@ -683,8 +662,7 @@ void test_invalid_inputs_fail_closed() {
 
     const std::vector<TwoLargePrimeEdge> endpoint_one{{1, 101, 9}};
     CHECK(!build_two_large_prime_cycle_basis(
-               std::span<const TwoLargePrimeEdge>(endpoint_one.data(),
-                                                  endpoint_one.size()))
+               std::span<const TwoLargePrimeEdge>(endpoint_one.data(), endpoint_one.size()))
                .has_value());
 
     const std::vector<TwoLargePrimeEdge> one_lp_endpoint_one{{0, 1, 10}};
@@ -711,7 +689,6 @@ int main() {
     test_small_multigraph_exhaustive_oracle();
     test_invalid_inputs_fail_closed();
 
-    std::cout << checks_passed << " checks passed, " << checks_failed
-              << " checks failed\n";
+    std::cout << checks_passed << " checks passed, " << checks_failed << " checks failed\n";
     return checks_failed == 0 ? 0 : 1;
 }

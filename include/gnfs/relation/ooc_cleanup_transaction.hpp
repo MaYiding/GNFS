@@ -1070,9 +1070,8 @@ windows_regular_single_link(const BY_HANDLE_FILE_INFORMATION& info) noexcept {
     std::vector<std::byte> bytes(bytes_to_read);
     std::size_t offset = 0;
     while (offset < bytes.size()) {
-        const DWORD request = static_cast<DWORD>(
-            (std::min)(bytes.size() - offset,
-                       static_cast<std::size_t>((std::numeric_limits<DWORD>::max)())));
+        const DWORD request = static_cast<DWORD>((std::min)(
+            bytes.size() - offset, static_cast<std::size_t>((std::numeric_limits<DWORD>::max)())));
         DWORD read = 0;
         if (!::ReadFile(handle, bytes.data() + offset, request, &read, nullptr)) {
             const DWORD code = ::GetLastError();
@@ -1194,7 +1193,7 @@ windows_regular_single_link(const BY_HANDLE_FILE_INFORMATION& info) noexcept {
         };
     }
 
-    struct stat before{};
+    struct stat before {};
     if (::fstat(descriptor, &before) != 0) {
         const int saved_errno = errno;
         (void)::close(descriptor);
@@ -1247,7 +1246,7 @@ windows_regular_single_link(const BY_HANDLE_FILE_INFORMATION& info) noexcept {
         offset += static_cast<std::size_t>(count);
     }
 
-    struct stat after{};
+    struct stat after {};
     if (::fstat(descriptor, &after) != 0) {
         const int saved_errno = errno;
         (void)::close(descriptor);
@@ -1796,8 +1795,8 @@ public:
                  OOCCleanupStage::None, posix_error(saved_errno));
         }
 
-        struct stat held{};
-        struct stat named{};
+        struct stat held {};
+        struct stat named {};
         if (::fstat(descriptor_, &held) != 0 || ::lstat(path.c_str(), &named) != 0 ||
             !posix_regular_single_link(held) || !S_ISREG(named.st_mode) || named.st_nlink != 1 ||
             held.st_dev != named.st_dev || held.st_ino != named.st_ino) {
@@ -1819,7 +1818,7 @@ public:
             }
             fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, posix_error(saved_errno));
         }
-        struct stat locked_name{};
+        struct stat locked_name {};
         if (::lstat(path.c_str(), &locked_name) != 0 || locked_name.st_dev != held.st_dev ||
             locked_name.st_ino != held.st_ino || !S_ISREG(locked_name.st_mode) ||
             locked_name.st_nlink != 1) {
@@ -1883,9 +1882,9 @@ public:
                attributes != INVALID_FILE_ATTRIBUTES &&
                (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) == 0;
 #else
-        struct stat held{};
-        struct stat named{};
-        struct stat parent{};
+        struct stat held {};
+        struct stat named {};
+        struct stat parent {};
         int held_result = -1;
         do {
             held_result = ::fstat(descriptor_, &held);
@@ -1947,9 +1946,9 @@ public:
             fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, windows_error(code));
         }
 #else
-        struct stat held{};
-        struct stat named{};
-        struct stat parent{};
+        struct stat held {};
+        struct stat named {};
+        struct stat parent {};
         int held_result = -1;
         do {
             held_result = ::fstat(descriptor_, &held);
@@ -2042,9 +2041,9 @@ private:
                    metadata.st_uid == ::geteuid();
         };
 
-        struct stat parent_before{};
-        struct stat held_before{};
-        struct stat named_before{};
+        struct stat parent_before {};
+        struct stat held_before {};
+        struct stat named_before {};
         if (::fstat(named_parent_descriptor_, &parent_before) != 0 ||
             ::fstat(descriptor, &held_before) != 0 ||
             ::fstatat(named_parent_descriptor_, named_leaf_.c_str(), &named_before,
@@ -2066,7 +2065,7 @@ private:
         if (contender < 0) {
             fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, posix_error(errno));
         }
-        struct stat contender_metadata{};
+        struct stat contender_metadata {};
         if (::fstat(contender, &contender_metadata) != 0 || !lock_policy(contender_metadata) ||
             identity_for(contender_metadata) != expected_lock_identity) {
             const int saved_errno = errno == 0 ? EACCES : errno;
@@ -2096,9 +2095,9 @@ private:
             fail(OOCCleanupStatus::NamespaceConflict, OOCCleanupStage::None, posix_error(errno));
         }
 
-        struct stat parent_after{};
-        struct stat held_after{};
-        struct stat named_after{};
+        struct stat parent_after {};
+        struct stat held_after {};
+        struct stat named_after {};
         if (::fstat(named_parent_descriptor_, &parent_after) != 0 ||
             ::fstat(descriptor, &held_after) != 0 ||
             ::fstatat(named_parent_descriptor_, named_leaf_.c_str(), &named_after,
@@ -2165,9 +2164,9 @@ private:
                    metadata.st_uid == ::geteuid();
         };
         const auto require_exact_binding = [&] {
-            struct stat parent{};
-            struct stat held{};
-            struct stat named{};
+            struct stat parent {};
+            struct stat held {};
+            struct stat named {};
             if (::fstat(named_parent_descriptor_, &parent) != 0 ||
                 ::fstat(descriptor, &held) != 0 ||
                 ::fstatat(named_parent_descriptor_, named_leaf_.c_str(), &named,
@@ -2303,7 +2302,7 @@ inline void confirm_file_durable(const std::filesystem::path& path, const FileId
     if (descriptor < 0) {
         fail(OOCCleanupStatus::DurabilityFailure, stage, posix_error(errno));
     }
-    struct stat information{};
+    struct stat information {};
     if (::fstat(descriptor, &information) != 0 || !posix_regular_single_link(information) ||
         posix_identity(information) != expected) {
         const int saved_errno = errno == 0 ? EACCES : errno;
@@ -2513,9 +2512,8 @@ inline void rewrite_pending_durable(const std::filesystem::path& path,
     }
     std::size_t offset = 0;
     while (offset < bytes.size()) {
-        const DWORD requested = static_cast<DWORD>(
-            (std::min)(bytes.size() - offset,
-                       static_cast<std::size_t>((std::numeric_limits<DWORD>::max)())));
+        const DWORD requested = static_cast<DWORD>((std::min)(
+            bytes.size() - offset, static_cast<std::size_t>((std::numeric_limits<DWORD>::max)())));
         DWORD written = 0;
         if (!::WriteFile(handle, bytes.data() + offset, requested, &written, nullptr)) {
             const DWORD code = ::GetLastError();
@@ -2567,7 +2565,7 @@ inline void rewrite_pending_durable(const std::filesystem::path& path,
              stage, posix_error(saved_errno));
     }
 
-    struct stat before{};
+    struct stat before {};
     if (::fstat(descriptor, &before) != 0 || !posix_regular_single_link(before)) {
         const int saved_errno = errno == 0 ? EACCES : errno;
         (void)::close(descriptor);
@@ -2619,7 +2617,7 @@ inline void rewrite_pending_durable(const std::filesystem::path& path,
         fail(OOCCleanupStatus::DurabilityFailure, stage, posix_error(saved_errno));
     }
 
-    struct stat after{};
+    struct stat after {};
     if (::fstat(descriptor, &after) != 0 || !posix_regular_single_link(after)) {
         const int saved_errno = errno == 0 ? EACCES : errno;
         (void)::close(descriptor);
@@ -4075,8 +4073,8 @@ capture_directory_identity_locked(const std::filesystem::path& directory_path) {
              OOCCleanupStage::None, posix_error(errno));
     }
 
-    struct stat held{};
-    struct stat named{};
+    struct stat held {};
+    struct stat named {};
     if (::fstat(descriptor, &held) != 0 || ::lstat(directory_path.c_str(), &named) != 0 ||
         !S_ISDIR(held.st_mode) || !S_ISDIR(named.st_mode) || held.st_dev != named.st_dev ||
         held.st_ino != named.st_ino) {
@@ -4137,8 +4135,8 @@ public:
                  OOCCleanupStage::None, posix_error(saved_errno));
         }
 
-        struct stat held{};
-        struct stat named{};
+        struct stat held {};
+        struct stat named {};
         if (::fstat(descriptor_, &held) != 0 || ::lstat(path.c_str(), &named) != 0 ||
             !S_ISDIR(held.st_mode) || !S_ISDIR(named.st_mode) || held.st_dev != named.st_dev ||
             held.st_ino != named.st_ino) {
@@ -4173,7 +4171,7 @@ public:
         if (leaf.empty() || leaf.has_parent_path()) {
             fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
         }
-        struct stat metadata{};
+        struct stat metadata {};
         int result = -1;
         do {
             result = ::fstatat(descriptor_, leaf.c_str(), &metadata, AT_SYMLINK_NOFOLLOW);
@@ -4188,8 +4186,8 @@ public:
     }
 
     void require_private_policy() const {
-        struct stat held{};
-        struct stat named{};
+        struct stat held {};
+        struct stat named {};
         if (::fstat(descriptor_, &held) != 0 || ::lstat(path_.c_str(), &named) != 0) {
             fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, posix_error(errno));
         }
@@ -4208,8 +4206,8 @@ public:
     }
 
     void require_stable() const {
-        struct stat held{};
-        struct stat named{};
+        struct stat held {};
+        struct stat named {};
         if (::fstat(descriptor_, &held) != 0 || ::lstat(path_.c_str(), &named) != 0) {
             fail(OOCCleanupStatus::IoFailure, OOCCleanupStage::None, posix_error(errno));
         }
@@ -4232,9 +4230,9 @@ public:
         if (path_ != old_path) {
             fail(OOCCleanupStatus::InvalidRequest, OOCCleanupStage::None, invalid_argument_error());
         }
-        struct stat held{};
-        struct stat old_named{};
-        struct stat new_named{};
+        struct stat held {};
+        struct stat old_named {};
+        struct stat new_named {};
         int old_result = -1;
         do {
             old_result = ::lstat(old_path.c_str(), &old_named);
@@ -4827,7 +4825,7 @@ inline void
 remove_exact_private_handoff_pending(PrivateDirectoryHandle& directory,
                                      const util::durable_immutable_record::RecordSnapshot& expected,
                                      const std::filesystem::path& leaf) {
-    struct stat before{};
+    struct stat before {};
     int result = -1;
     do {
         result = ::fstatat(static_cast<int>(directory.native_handle()), leaf.c_str(), &before,
@@ -6082,8 +6080,11 @@ public:
             }
 
 #ifdef _WIN32
-            ooc_cleanup_detail::fail(OOCCleanupStatus::PlatformUnsupported, OOCCleanupStage::None,
-                                     std::make_error_code(std::errc::operation_not_supported));
+            return OOCCleanupResult{
+                .status = OOCCleanupStatus::PlatformUnsupported,
+                .stage = OOCCleanupStage::None,
+                .native_error = std::make_error_code(std::errc::operation_not_supported),
+            };
 #else
             ooc_cleanup_detail::PrivateDirectoryHandle directory(paths.private_directory);
             if (directory.identity() != directory_identity) {
