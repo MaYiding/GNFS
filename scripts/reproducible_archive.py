@@ -170,6 +170,8 @@ def self_test() -> None:
         executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         executable.chmod(0o755)
         (source / "README-release.txt").write_text("GNFS v0.1.0\n", encoding="utf-8")
+        license_fixture = b"GNU GENERAL PUBLIC LICENSE Version 2 fixture\n"
+        (source / "LICENSE").write_bytes(license_fixture)
 
         first_tar = root / "first.tar.gz"
         second_tar = root / "second.tar.gz"
@@ -194,6 +196,9 @@ def self_test() -> None:
             binary = archive.getmember("gnfs-v0.1.0-test/bin/gnfs")
             if binary.mode != 0o755 or binary.uid != 0 or binary.gid != 0:
                 raise ArchiveContractError("tar.gz ownership or modes are not normalized")
+            license_member = archive.extractfile("gnfs-v0.1.0-test/LICENSE")
+            if license_member is None or license_member.read() != license_fixture:
+                raise ArchiveContractError("tar.gz does not preserve the project LICENSE")
 
         with zipfile.ZipFile(first_zip) as archive:
             binary = archive.getinfo("gnfs-v0.1.0-test/bin/gnfs")
@@ -201,6 +206,8 @@ def self_test() -> None:
                 raise ArchiveContractError("ZIP entries must use stable stored encoding")
             if (binary.external_attr >> 16) & 0o777 != 0o755:
                 raise ArchiveContractError("ZIP executable mode is not normalized")
+            if archive.read("gnfs-v0.1.0-test/LICENSE") != license_fixture:
+                raise ArchiveContractError("ZIP does not preserve the project LICENSE")
 
         existing = root / "existing.zip"
         existing.write_bytes(b"keep")

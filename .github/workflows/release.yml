@@ -25,9 +25,9 @@ on:
         type: string
 
 permissions:
-  actions: read
-  checks: read
-  contents: read
+  actions: read  # Resolve exact-SHA runs and download immutable artifacts.
+  checks: read  # Match required jobs to commit check runs.
+  contents: read  # Checkout source and inspect main/tag refs.
 
 concurrency:
   group: release-${{ inputs.release_tag }}-${{ inputs.target_sha }}
@@ -111,6 +111,113 @@ jobs:
     permissions:
       contents: read
 
+  package-linux:
+    name: Package linux-x86_64 on glibc 2.31
+    if: inputs.mode == 'verify-only'
+    needs: preflight
+    runs-on: ubuntu-24.04
+    container: ubuntu:20.04@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214
+    timeout-minutes: 75
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install Ubuntu 20.04 build environment
+        run: |
+          set -euo pipefail
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates \
+            git \
+            gnupg \
+            python3 \
+            python3-pip \
+            software-properties-common
+          add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            binutils \
+            g++-12 \
+            gcc-12 \
+            libgmp-dev \
+            libntl-dev \
+            ninja-build
+          python3 -m pip install --no-cache-dir cmake==3.31.6
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ inputs.target_sha }}
+          persist-credentials: false
+
+      - name: Verify exact clean checkout
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          python3 scripts/release_contract.py verify-checkout \
+            --target-sha "${TARGET_SHA}"
+
+      - name: Capture source date epoch
+        id: source
+        run: echo "epoch=$(git show -s --format=%ct HEAD)" >> "${GITHUB_OUTPUT}"
+
+      - name: Configure and build
+        run: |
+          cmake -B build-release -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=g++-12 \
+            -DGNFS_BUILD_TESTS=OFF \
+            -DGNFS_ENABLE_NATIVE_ARCH=OFF
+          cmake --build build-release --parallel
+
+      - name: Verify, install, and archive
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_DATE_EPOCH: ${{ steps.source.outputs.epoch }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          set -euo pipefail
+          package_name="gnfs-${RELEASE_TAG}-linux-x86_64"
+          prefix="dist/${package_name}"
+          cmake --install build-release --prefix "${prefix}"
+          python3 scripts/release_binary_contract.py linux \
+            --executable "${prefix}/bin/gnfs" \
+            --metadata-output "${prefix}/binary-compatibility.json" \
+            --readme-output "${prefix}/README-release.txt" \
+            --release-tag "${RELEASE_TAG}" \
+            --target-sha "${TARGET_SHA}"
+          version_output=$("${prefix}/bin/gnfs" --version)
+          if [[ "${version_output}" != "GNFS ${RELEASE_TAG}" ]]; then
+            echo "CLI version ${version_output} does not match ${RELEASE_TAG}." >&2
+            exit 1
+          fi
+          cp LICENSE "${prefix}/LICENSE"
+          printf '%s\n' \
+            "THIRD-PARTY NOTICES" \
+            "" \
+            "GMP and NTL dynamic libraries are not bundled in this archive." \
+            "Exact GLIBC, GLIBCXX, and CXXABI requirements are in binary-compatibility.json." \
+            "Install compatible host copies and consult their separately distributed licenses." \
+            > "${prefix}/THIRD_PARTY_NOTICES.txt"
+          mkdir packages
+          python3 scripts/reproducible_archive.py create \
+            --source "${prefix}" \
+            --output "packages/${package_name}.tar.gz" \
+            --format tar.gz \
+            --epoch "${SOURCE_DATE_EPOCH}"
+          python3 scripts/release_contract.py validate-cli-archive \
+            --archive "packages/${package_name}.tar.gz" \
+            --platform linux-x86_64 \
+            --release-tag "${RELEASE_TAG}"
+
+      - name: Upload packaged Linux CLI artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: gnfs-linux-x86_64
+          path: packages/*
+          if-no-files-found: error
+          retention-days: 30
+
   package-cli:
     name: Package ${{ matrix.asset_suffix }}
     if: inputs.mode == 'verify-only'
@@ -121,10 +228,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04
-            asset_suffix: linux-x86_64
-            archive_format: tar.gz
-            python: python3
           - os: macos-15
             asset_suffix: macos-arm64
             archive_format: tar.gz
@@ -154,12 +257,6 @@ jobs:
         shell: bash
         run: echo "epoch=$(git show -s --format=%ct HEAD)" >> "${GITHUB_OUTPUT}"
 
-      - name: Install dependencies (Ubuntu)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgmp-dev libntl-dev
-
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
         run: brew install gmp ntl
@@ -178,11 +275,13 @@ jobs:
             mingw-w64-ucrt-x86_64-ntl
             mingw-w64-ucrt-x86_64-python
 
-      - name: Configure CMake (POSIX)
-        if: runner.os != 'Windows'
+      - name: Configure CMake (macOS)
+        if: runner.os == 'macOS'
         run: |
           cmake -B build-release \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
             -DGNFS_BUILD_TESTS=OFF \
             -DGNFS_ENABLE_NATIVE_ARCH=OFF
 
@@ -195,8 +294,8 @@ jobs:
             -DGNFS_BUILD_TESTS=OFF \
             -DGNFS_ENABLE_NATIVE_ARCH=OFF
 
-      - name: Build (POSIX)
-        if: runner.os != 'Windows'
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
         run: cmake --build build-release --config Release --parallel
 
       - name: Build (Windows)
@@ -204,8 +303,8 @@ jobs:
         shell: msys2 {0}
         run: cmake --build build-release --parallel
 
-      - name: Install and archive (POSIX)
-        if: runner.os != 'Windows'
+      - name: Install and archive (macOS)
+        if: runner.os == 'macOS'
         env:
           ARCHIVE_FORMAT: ${{ matrix.archive_format }}
           ASSET_SUFFIX: ${{ matrix.asset_suffix }}
@@ -218,24 +317,37 @@ jobs:
           package_name="gnfs-${RELEASE_TAG}-${ASSET_SUFFIX}"
           prefix="dist/${package_name}"
           cmake --install build-release --prefix "${prefix}"
+          python3 scripts/release_binary_contract.py macos \
+            --executable "${prefix}/bin/gnfs"
           version_output=$("${prefix}/bin/gnfs" --version)
           if [[ "${version_output}" != "GNFS ${RELEASE_TAG}" ]]; then
             echo "CLI version ${version_output} does not match ${RELEASE_TAG}." >&2
             exit 1
           fi
+          cp LICENSE "${prefix}/LICENSE"
           printf '%s\n' \
             "GNFS ${RELEASE_TAG}" \
             "Built from ${TARGET_SHA}" \
-            "" \
-            "This archive contains the gnfs CLI, headers, and static libraries." \
-            "The host must provide compatible GMP and NTL runtime libraries." \
+            "macOS arm64; requires macOS 13.0 or newer." \
+            "GMP and NTL dynamic libraries are required from the host and are not bundled." \
+            "See LICENSE and THIRD_PARTY_NOTICES.txt." \
             > "${prefix}/README-release.txt"
+          printf '%s\n' \
+            "THIRD-PARTY NOTICES" \
+            "" \
+            "GMP and NTL dynamic libraries are not bundled in this archive." \
+            "Install compatible host copies and consult their separately distributed licenses." \
+            > "${prefix}/THIRD_PARTY_NOTICES.txt"
           mkdir -p packages
           python3 scripts/reproducible_archive.py create \
             --source "${prefix}" \
             --output "packages/${package_name}.${ARCHIVE_FORMAT}" \
             --format "${ARCHIVE_FORMAT}" \
             --epoch "${SOURCE_DATE_EPOCH}"
+          python3 scripts/release_contract.py validate-cli-archive \
+            --archive "packages/${package_name}.${ARCHIVE_FORMAT}" \
+            --platform macos-arm64 \
+            --release-tag "${RELEASE_TAG}"
 
       - name: Install and archive (Windows)
         if: runner.os == 'Windows'
@@ -251,36 +363,22 @@ jobs:
           package_name="gnfs-${RELEASE_TAG}-${ASSET_SUFFIX}"
           prefix="dist/${package_name}"
           cmake --install build-release --prefix "${prefix}"
-          mapfile -t runtime_dlls < <(
-            ldd "${prefix}/bin/gnfs.exe" \
-              | awk '$3 ~ /^\/ucrt64\// {print $3}' \
-              | sort -u
-          )
-          if (( ${#runtime_dlls[@]} == 0 )); then
-            echo 'No UCRT64 runtime DLLs were resolved for gnfs.exe.' >&2
-            exit 1
-          fi
-          for runtime_dll in "${runtime_dlls[@]}"; do
-            test -f "${runtime_dll}"
-            cp "${runtime_dll}" "${prefix}/bin/"
-          done
-          version_output=$("${prefix}/bin/gnfs.exe" --version)
-          if [[ "${version_output}" != "GNFS ${RELEASE_TAG}" ]]; then
-            echo "CLI version ${version_output} does not match ${RELEASE_TAG}." >&2
-            exit 1
-          fi
-          printf '%s\n' \
-            "GNFS ${RELEASE_TAG}" \
-            "Built from ${TARGET_SHA}" \
-            "" \
-            "This archive contains the gnfs CLI, headers, static libraries, and UCRT64 DLLs." \
-            > "${prefix}/README-release.txt"
+          python scripts/windows_release_runtime.py bundle \
+            --package-root "${prefix}" \
+            --executable "${prefix}/bin/gnfs.exe" \
+            --project-license LICENSE \
+            --release-tag "${RELEASE_TAG}" \
+            --target-sha "${TARGET_SHA}"
           mkdir -p packages
           python scripts/reproducible_archive.py create \
             --source "${prefix}" \
             --output "packages/${package_name}.${ARCHIVE_FORMAT}" \
             --format "${ARCHIVE_FORMAT}" \
             --epoch "${SOURCE_DATE_EPOCH}"
+          python scripts/release_contract.py validate-cli-archive \
+            --archive "packages/${package_name}.${ARCHIVE_FORMAT}" \
+            --platform windows-x86_64 \
+            --release-tag "${RELEASE_TAG}"
 
       - name: Upload packaged CLI artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -343,6 +441,7 @@ jobs:
     needs:
       - preflight
       - qualification
+      - package-linux
       - package-cli
       - collect-workbench
     runs-on: ubuntu-24.04
@@ -407,9 +506,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
-      actions: read
-      checks: read
-      contents: write
+      actions: read  # Download the exact prior verification artifacts.
+      checks: read  # Recheck exact-SHA required job contexts.
+      contents: write  # Create the locked tag, draft, and release assets.
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -458,6 +557,7 @@ jobs:
             --target-sha "${TARGET_SHA}"
 
       - name: Create draft release with verified assets
+        id: draft
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
@@ -486,9 +586,19 @@ jobs:
             release-assets/gnfs-v0.1.0-windows-x86_64.zip \
             release-assets/release-metadata.json \
             release-assets/SHA256SUMS
+          draft_release_id=$(gh api \
+            "repos/${REPOSITORY}/releases/tags/${RELEASE_TAG}" \
+            --jq '.id')
+          if [[ ! "${draft_release_id}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Draft release has an invalid id: ${draft_release_id}" >&2
+            exit 1
+          fi
+          echo "release_id=${draft_release_id}" >> "${GITHUB_OUTPUT}"
 
-      - name: Verify draft tag and asset set, then publish
+      - name: Revalidate main, CI, draft identity, tag, and asset bytes; then publish
         env:
+          EXPECTED_RELEASE_ID: ${{ steps.draft.outputs.release_id }}
+          GITHUB_TOKEN: ${{ github.token }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           REPOSITORY: ${{ github.repository }}
@@ -496,28 +606,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tag_sha=$(gh api \
-            "repos/${REPOSITORY}/git/ref/tags/${RELEASE_TAG}" \
-            --jq '.object.sha')
-          if [[ "${tag_sha}" != "${TARGET_SHA}" ]]; then
-            echo "Release tag resolved to ${tag_sha}, expected ${TARGET_SHA}." >&2
+          python3 scripts/release_contract.py final-prepublish \
+            --repository "${REPOSITORY}" \
+            --release-tag "${RELEASE_TAG}" \
+            --target-sha "${TARGET_SHA}" \
+            --expected-release-id "${EXPECTED_RELEASE_ID}" \
+            --asset-directory release-assets
+          published_release_id=$(gh api \
+            --method PATCH \
+            "repos/${REPOSITORY}/releases/${EXPECTED_RELEASE_ID}" \
+            -F draft=false \
+            --jq 'if .draft == false then .id else error("release remained draft") end')
+          if [[ "${published_release_id}" != "${EXPECTED_RELEASE_ID}" ]]; then
+            echo "Published release id changed to ${published_release_id}." >&2
             exit 1
           fi
-          gh release view "${RELEASE_TAG}" --repo "${REPOSITORY}" \
-            --json isDraft,assets \
-            --jq '
-              if .isDraft != true then error("release is not draft") else . end
-              | [.assets[].name] | sort
-              | if . == [
-                  "GNFSWorkbench-0.1.0-macOS-arm64.zip",
-                  "SHA256SUMS",
-                  "gnfs-v0.1.0-linux-x86_64.tar.gz",
-                  "gnfs-v0.1.0-macos-arm64.tar.gz",
-                  "gnfs-v0.1.0-windows-x86_64.zip",
-                  "release-metadata.json"
-                ] then . else error("release asset set mismatch") end
-            '
-          gh release edit "${RELEASE_TAG}" --repo "${REPOSITORY}" --draft=false
-          gh release view "${RELEASE_TAG}" --repo "${REPOSITORY}" \
-            --json isDraft \
-            --jq 'if .isDraft == false then . else error("release remained draft") end'
