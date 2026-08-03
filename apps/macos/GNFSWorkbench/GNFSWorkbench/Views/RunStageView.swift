@@ -3,6 +3,7 @@ import SwiftUI
 
 struct RunStageView: View {
   let run: RunRecord?
+  let finalizationMessage: String
   let copy: (String) -> Void
   let newRun: () -> Void
 
@@ -11,7 +12,11 @@ struct RunStageView: View {
       if let run, run.status == .succeeded, let result = run.result {
         ResultSummaryView(result: result, copy: copy, newRun: newRun)
       } else if let run, run.status == .failed || run.status == .cancelled {
-        FailureStateView(run: run, newRun: newRun)
+        FailureStateView(
+          run: run,
+          finalizationMessage: finalizationMessage,
+          newRun: newRun
+        )
       } else if let run {
         LiveMetricsView(run: run)
       } else {
@@ -451,6 +456,7 @@ private struct ResultSummaryView: View {
 
 private struct FailureStateView: View {
   let run: RunRecord
+  let finalizationMessage: String
   let newRun: () -> Void
 
   var body: some View {
@@ -469,7 +475,7 @@ private struct FailureStateView: View {
           .foregroundStyle(AppTheme.secondaryText)
           .textSelection(.enabled)
           .fixedSize(horizontal: false, vertical: true)
-        Text("历史记录已保存，本次临时工作目录已清理。可使用当前参数新建任务。")
+        Text(finalizationMessage + " 可使用当前参数新建任务。")
           .font(.system(size: 11.5))
           .foregroundStyle(AppTheme.tertiaryText)
       }

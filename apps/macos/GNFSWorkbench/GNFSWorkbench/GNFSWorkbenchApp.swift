@@ -35,7 +35,7 @@ struct GNFSWorkbenchApp: App {
     .windowStyle(.hiddenTitleBar)
     .commands {
       CommandGroup(replacing: .newItem) {
-        Button("新建分解") { model.newRun() }
+        Button("新建分解") { Task { await model.newRun() } }
           .keyboardShortcut("n", modifiers: .command)
           .disabled(model.isRunTaskActive)
       }

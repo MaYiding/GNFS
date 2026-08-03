@@ -30,17 +30,22 @@ struct ContentView: View {
               PipelineRailView(run: model.displayedRun)
                 .workbenchPanel(padding: 20)
 
-              RunStageView(run: model.displayedRun) {
+              RunStageView(
+                run: model.displayedRun,
+                finalizationMessage: model.displayedRun.map(model.finalizationMessage(for:))
+                  ?? "历史保存和临时目录清理状态尚未确认。"
+              ) {
                 model.copy($0)
               } newRun: {
-                model.newRun()
+                Task { await model.newRun() }
               }
 
               RunLogsView(
                 entries: model.displayedRun?.logs ?? [],
                 isExpanded: $model.areLogsExpanded,
+                canClear: !model.isRunTaskActive && !model.isHistoryMutationActive,
                 copy: model.copy,
-                clear: model.clearDisplayedLogs
+                clear: { Task { await model.clearDisplayedLogs() } }
               )
             }
             .padding(.horizontal, AppTheme.contentPadding)

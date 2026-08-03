@@ -48,7 +48,7 @@ struct HistoryView: View {
               .disabled(model.isRunTaskActive && run.id != model.activeRun?.id)
               .contextMenu {
                 Button("删除", role: .destructive) {
-                  model.removeHistory(IndexSet(integer: index))
+                  Task { await model.removeHistory(IndexSet(integer: index)) }
                 }
                 .disabled(model.isRunTaskActive)
               }
@@ -65,7 +65,9 @@ struct HistoryView: View {
       isPresented: $isConfirmingClear,
       titleVisibility: .visible
     ) {
-      Button("清除历史", role: .destructive) { model.clearHistory() }
+      Button("清除历史", role: .destructive) {
+        Task { await model.clearHistory() }
+      }
       Button("取消", role: .cancel) {}
     } message: {
       Text("历史记录及其临时工作目录将从这台 Mac 上删除。")

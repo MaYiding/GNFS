@@ -132,6 +132,7 @@ final class ProcessGNFSRunnerTests: XCTestCase {
       print -r -- "$PWD" > cwd.txt
       print -r -- "$GNFS_RESUME" > resume.txt
       print -r -- '{"schema_version":1,"type":"error","message":"probe complete"}'
+      exit 1
       """#
     try Data(script.utf8).write(to: executable)
     try FileManager.default.setAttributes(
@@ -222,6 +223,230 @@ final class ProcessGNFSRunnerTests: XCTestCase {
     XCTAssertEqual(errno, ESRCH)
   }
 
+  func testCancelKillsSeparateDescendantProcessGroupsHoldingStderr() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let grandchild = root.appendingPathComponent("grandchild.py")
+    let child = root.appendingPathComponent("child.py")
+    let executable = root.appendingPathComponent("descendant-cancellation-probe.zsh")
+    let grandchildScript = #"""
+      #!/usr/bin/python3
+      import os
+      import signal
+      import time
+
+      os.setpgid(0, 0)
+      signal.signal(signal.SIGINT, signal.SIG_IGN)
+      signal.signal(signal.SIGTERM, signal.SIG_IGN)
+      workspace = os.path.dirname(os.environ["GNFS_RESUME"])
+      with open(os.path.join(workspace, "grandchild.pid"), "w", encoding="utf-8") as output:
+          output.write(str(os.getpid()))
+      os.write(2, b"grandchild keeps stderr open\n")
+      while True:
+          time.sleep(1)
+      """#
+    let childScript = #"""
+      #!/usr/bin/python3
+      import os
+      import signal
+      import subprocess
+      import time
+
+      os.setpgid(0, 0)
+      signal.signal(signal.SIGINT, signal.SIG_IGN)
+      signal.signal(signal.SIGTERM, signal.SIG_IGN)
+      workspace = os.path.dirname(os.environ["GNFS_RESUME"])
+      with open(os.path.join(workspace, "child.pid"), "w", encoding="utf-8") as output:
+          output.write(str(os.getpid()))
+      subprocess.Popen(
+          [os.path.join(os.path.dirname(__file__), "grandchild.py")],
+          stdout=subprocess.DEVNULL,
+      )
+      os.write(2, b"child keeps stderr open\n")
+      while True:
+          time.sleep(1)
+      """#
+    let rootScript = #"""
+      #!/bin/zsh
+      trap '' INT TERM
+      print -r -- "$$" > "${GNFS_RESUME:h}/root.pid"
+      "${0:A:h}/child.py" > /dev/null &
+      wait
+      """#
+    try Data(grandchildScript.utf8).write(to: grandchild)
+    try Data(childScript.utf8).write(to: child)
+    try Data(rootScript.utf8).write(to: executable)
+    for script in [grandchild, child, executable] {
+      try FileManager.default.setAttributes(
+        [.posixPermissions: 0o755],
+        ofItemAtPath: script.path
+      )
+    }
+
+    let workspace = RunWorkspace(
+      directory: root.appendingPathComponent("Runs/descendant-cancel", isDirectory: true),
+      resumeBase: root.appendingPathComponent("Runs/descendant-cancel/state")
+    )
+    let runner = ProcessGNFSRunner(
+      resolver: GNFSExecutableResolver(
+        bundle: .main,
+        environment: ["GNFS_CLI_PATH": executable.path],
+        workingDirectory: root
+      ))
+    let stream = try await runner.start(
+      configuration: RunConfiguration(number: "360"),
+      workspace: workspace
+    )
+    let consumer = Task {
+      for try await _ in stream {}
+    }
+    let rootPID = workspace.directory.appendingPathComponent("root.pid")
+    let childPID = workspace.directory.appendingPathComponent("child.pid")
+    let grandchildPID = workspace.directory.appendingPathComponent("grandchild.pid")
+    let rootDidStart = await waitUntilFileExists(rootPID)
+    let childDidStart = await waitUntilFileExists(childPID)
+    let grandchildDidStart = await waitUntilFileExists(grandchildPID)
+    XCTAssertTrue(rootDidStart)
+    XCTAssertTrue(childDidStart)
+    XCTAssertTrue(grandchildDidStart)
+
+    let clock = ContinuousClock()
+    let cancellationStarted = clock.now
+    await runner.cancel()
+    try await consumer.value
+
+    XCTAssertLessThan(cancellationStarted.duration(to: clock.now), .seconds(5))
+    for pidURL in [rootPID, childPID, grandchildPID] {
+      let didStop = await waitUntilProcessStops(pidURL: pidURL)
+      XCTAssertTrue(didStop)
+    }
+  }
+
+  func testSuccessResultRequiresZeroExitStatus() async throws {
+    do {
+      _ = try await runProbe(lines: [Self.successfulResultLine], exitStatus: 1)
+      XCTFail("success result followed by exit 1 should fail")
+    } catch let error as GNFSRunnerError {
+      guard case .terminalStatusMismatch(expected: 0, actual: 1, _) = error else {
+        return XCTFail("unexpected runner error: \(error)")
+      }
+    }
+  }
+
+  func testFailedResultRequiresAndAcceptsExitOne() async throws {
+    let events = try await runProbe(lines: [Self.failedResultLine], exitStatus: 1)
+    XCTAssertEqual(events.map(\.type), [.result])
+    XCTAssertEqual(events.first?.result?.success, false)
+  }
+
+  func testErrorRequiresAndAcceptsExitOne() async throws {
+    let errorLine = #"{"schema_version":1,"type":"error","code":"probe","message":"failed"}"#
+    let events = try await runProbe(lines: [errorLine], exitStatus: 1)
+    XCTAssertEqual(events.map(\.type), [.error])
+
+    do {
+      _ = try await runProbe(lines: [errorLine], exitStatus: 0)
+      XCTFail("error event followed by exit 0 should fail")
+    } catch let error as GNFSRunnerError {
+      guard case .terminalStatusMismatch(expected: 1, actual: 0, _) = error else {
+        return XCTFail("unexpected runner error: \(error)")
+      }
+    }
+  }
+
+  func testRejectsDuplicateOrPostTerminalOutput() async throws {
+    let errorLine = #"{"schema_version":1,"type":"error","code":"probe","message":"failed"}"#
+    let postTerminalLog = #"{"schema_version":1,"type":"log","level":"INFO","message":"late"}"#
+    do {
+      _ = try await runProbe(lines: [errorLine, postTerminalLog], exitStatus: 1)
+      XCTFail("output after terminal event should fail")
+    } catch let error as GNFSRunnerError {
+      guard case .protocolViolation = error else {
+        return XCTFail("unexpected runner error: \(error)")
+      }
+    }
+
+    do {
+      _ = try await runProbe(lines: [errorLine, errorLine], exitStatus: 1)
+      XCTFail("duplicate terminal events should fail")
+    } catch let error as GNFSRunnerError {
+      guard case .protocolViolation = error else {
+        return XCTFail("unexpected runner error: \(error)")
+      }
+    }
+  }
+
+  func testRequiresTerminalEventBeforeEOF() async throws {
+    let logLine = #"{"schema_version":1,"type":"log","level":"INFO","message":"only-log"}"#
+    do {
+      _ = try await runProbe(lines: [logLine], exitStatus: 0)
+      XCTFail("EOF without terminal event should fail")
+    } catch let error as GNFSRunnerError {
+      guard case .unexpectedTermination(0, _) = error else {
+        return XCTFail("unexpected runner error: \(error)")
+      }
+    }
+  }
+
+  func testStdoutBufferDropsOldLogsButRetainsVerifiedTerminal() async throws {
+    let logLine = #"{"schema_version":1,"type":"log","level":"INFO","message":"flood"}"#
+    let events = try await runProbe(
+      lines: [logLine, Self.successfulResultLine],
+      exitStatus: 0,
+      repeatedFirstLineCount: 4_000,
+      waitForProducerExitBeforeConsumption: true
+    )
+
+    // The consumer may overlap with the final reader drain, so its lifetime
+    // total can exceed the instantaneous 512-event backlog. It must still
+    // observe that older logs were dropped and that the terminal survived.
+    XCTAssertLessThan(events.count, 4_001)
+    XCTAssertEqual(events.last?.type, .result)
+    XCTAssertEqual(events.last?.result?.success, true)
+  }
+
+  func testStderrDiagnosticsAreBoundedToTail() async throws {
+    let diagnostic = String(repeating: "diagnostic-tail-", count: 64)
+    do {
+      _ = try await runProbe(
+        lines: [],
+        exitStatus: 7,
+        stderrLines: Array(repeating: diagnostic, count: 256)
+      )
+      XCTFail("non-zero exit without terminal should fail")
+    } catch let error as GNFSRunnerError {
+      guard case .unexpectedTermination(7, let stderr) = error else {
+        return XCTFail("unexpected runner error: \(error)")
+      }
+      XCTAssertTrue(stderr.hasPrefix("[stderr truncated;"))
+      XCTAssertLessThanOrEqual(
+        stderr.utf8.count,
+        ProcessGNFSRunner.diagnosticTailLimit + 80
+      )
+      XCTAssertTrue(stderr.contains("diagnostic-tail-"))
+    }
+  }
+
+  func testOversizedEventLineFailsQuicklyWithAndWithoutNewline() async throws {
+    for terminatesLine in [false, true] {
+      let clock = ContinuousClock()
+      let started = clock.now
+      do {
+        try await runOversizedLineProbe(terminatesLine: terminatesLine)
+        XCTFail("oversized event line should fail")
+      } catch let error as GNFSRunnerError {
+        guard case .protocolViolation(let message) = error else {
+          return XCTFail("unexpected runner error: \(error)")
+        }
+        XCTAssertTrue(message.contains("超过"))
+        XCTAssertLessThan(started.duration(to: clock.now), .seconds(4))
+      }
+    }
+  }
+
   @MainActor
   func testAppModelCancelsRunningBundledCLIWithoutReportingFailure() async throws {
     let storeDirectory = FileManager.default.temporaryDirectory
@@ -266,6 +491,112 @@ final class ProcessGNFSRunnerTests: XCTestCase {
     )
   }
 
+  private func runProbe(
+    lines: [String],
+    exitStatus: Int32,
+    stderrLines: [String] = [],
+    repeatedFirstLineCount: Int? = nil,
+    waitForProducerExitBeforeConsumption: Bool = false,
+    delayBeforeConsumption: Duration? = nil
+  ) async throws -> [CLIEvent] {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let executable = root.appendingPathComponent("event-probe.zsh")
+    var scriptLines = ["#!/bin/zsh", "print -r -- \"$$\" > producer.pid"]
+    if let repeatedFirstLineCount, let firstLine = lines.first {
+      scriptLines.append("repeat \(repeatedFirstLineCount) print -r -- '\(firstLine)'")
+      scriptLines += lines.dropFirst().map { "print -r -- '\($0)'" }
+    } else {
+      scriptLines += lines.map { "print -r -- '\($0)'" }
+    }
+    scriptLines += stderrLines.map { "print -r -- '\($0)' >&2" }
+    scriptLines.append("exit \(exitStatus)")
+    try Data((scriptLines.joined(separator: "\n") + "\n").utf8).write(to: executable)
+    try FileManager.default.setAttributes(
+      [.posixPermissions: 0o755],
+      ofItemAtPath: executable.path
+    )
+
+    let workspace = RunWorkspace(
+      directory: root.appendingPathComponent("workspace", isDirectory: true),
+      resumeBase: root.appendingPathComponent("workspace/state")
+    )
+    let runner = ProcessGNFSRunner(
+      resolver: GNFSExecutableResolver(
+        bundle: .main,
+        environment: ["GNFS_CLI_PATH": executable.path],
+        workingDirectory: root
+      ))
+    let stream = try await runner.start(
+      configuration: RunConfiguration(number: "360"),
+      workspace: workspace
+    )
+    if waitForProducerExitBeforeConsumption {
+      let didStop = await waitUntilProcessStops(
+        pidURL: workspace.directory.appendingPathComponent("producer.pid")
+      )
+      XCTAssertTrue(didStop)
+    }
+    if let delayBeforeConsumption {
+      try await Task.sleep(for: delayBeforeConsumption)
+    }
+
+    var events: [CLIEvent] = []
+    do {
+      for try await event in stream {
+        events.append(event)
+      }
+    } catch {
+      await runner.cancel()
+      throw error
+    }
+    await runner.cancel()
+    return events
+  }
+
+  private func runOversizedLineProbe(terminatesLine: Bool) async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let executable = root.appendingPathComponent("oversized-event-probe.zsh")
+    let newlineExpression = terminatesLine ? #"+ "\n""# : ""
+    let script = """
+      #!/bin/zsh
+      /usr/bin/python3 -c 'import sys; sys.stdout.write("x" * \(ProcessGNFSRunner.maxEventLineBytes + 1) \(newlineExpression)); sys.stdout.flush()'
+      while true; do :; done
+      """
+    try Data(script.utf8).write(to: executable)
+    try FileManager.default.setAttributes(
+      [.posixPermissions: 0o755],
+      ofItemAtPath: executable.path
+    )
+
+    let workspace = RunWorkspace(
+      directory: root.appendingPathComponent("workspace", isDirectory: true),
+      resumeBase: root.appendingPathComponent("workspace/state")
+    )
+    let runner = ProcessGNFSRunner(
+      resolver: GNFSExecutableResolver(
+        bundle: .main,
+        environment: ["GNFS_CLI_PATH": executable.path],
+        workingDirectory: root
+      ))
+    let stream = try await runner.start(
+      configuration: RunConfiguration(number: "360"),
+      workspace: workspace
+    )
+    do {
+      for try await _ in stream {}
+    } catch {
+      await runner.cancel()
+      throw error
+    }
+    await runner.cancel()
+  }
+
   private func waitUntilFileExists(
     _ url: URL,
     timeout: Duration = .seconds(2)
@@ -278,6 +609,35 @@ final class ProcessGNFSRunnerTests: XCTestCase {
     }
     return FileManager.default.fileExists(atPath: url.path)
   }
+
+  private func waitUntilProcessStops(
+    pidURL: URL,
+    timeout: Duration = .seconds(5)
+  ) async -> Bool {
+    guard await waitUntilFileExists(pidURL, timeout: timeout),
+      let pidText = try? String(contentsOf: pidURL, encoding: .utf8)
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+      let pid = Int32(pidText)
+    else {
+      return false
+    }
+
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: timeout)
+    while clock.now < deadline {
+      if Darwin.kill(pid, 0) == -1, errno == ESRCH { return true }
+      try? await Task.sleep(for: .milliseconds(10))
+    }
+    return Darwin.kill(pid, 0) == -1 && errno == ESRCH
+  }
+
+  private static let successfulResultLine =
+    #"{"schema_version":1,"type":"result","result":{"success":true,"factorization_complete":true,"factors_prime":true,"n":"360","n_bits":9,"n_digits":3,"method":"trial","method_name":"Trial Division","method_reason":"probe","factors":["2","2","2","3","3","5"],"timings":{"total_s":0.01,"poly_s":0,"fb_s":0,"sieve_s":0,"filter_s":0,"linalg_s":0,"sqrt_s":0,"extract_s":0.01},"stats":{"degree":0,"rational_bound":0,"algebraic_bound":0,"large_prime_bound":0,"rational_primes":0,"algebraic_primes":0,"special_q_processed":0,"candidates_total":0,"relations_found":0,"full_relations":0,"partial_1lp":0,"partial_2lp":0,"relations_after_filter":0,"singletons_removed":0,"merged_relations":0,"matrix_rows":0,"matrix_cols":0,"matrix_excess":0,"dependencies_found":0,"dependencies_tried":0}}}"#
+
+  private static let failedResultLine = successfulResultLine.replacingOccurrences(
+    of: #""success":true"#,
+    with: #""success":false"#
+  )
 
   @MainActor
   private func waitUntil(

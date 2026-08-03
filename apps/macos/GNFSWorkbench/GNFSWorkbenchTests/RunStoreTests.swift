@@ -83,7 +83,7 @@ final class RunStoreTests: XCTestCase {
     XCTAssertEqual(restored.first?.status, .succeeded)
   }
 
-  func testSaveCapsHistoryAndRemovesEvictedAndUnknownWorkspaces() async throws {
+  func testSaveCapsHistoryAndRemovesEvictedWorkspacesButPreservesUnknownEntries() async throws {
     let directory = temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -107,7 +107,7 @@ final class RunStoreTests: XCTestCase {
       FileManager.default.fileExists(
         atPath: directory.appendingPathComponent("Runs/\(runs[50].id.uuidString)").path
       ))
-    XCTAssertFalse(FileManager.default.fileExists(atPath: unknown.path))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: unknown.path))
     let restored = try await store.load()
     XCTAssertEqual(restored.count, 50)
     XCTAssertEqual(restored.last?.id, runs[49].id)
@@ -121,6 +121,8 @@ final class RunStoreTests: XCTestCase {
     let run = RunRecord(configuration: RunConfiguration())
     try await store.save([run])
     let workspace = try await store.workspace(for: run.id)
+    let unknown = directory.appendingPathComponent("Runs/operator-note.txt")
+    try Data("preserve".utf8).write(to: unknown)
 
     try await store.clearHistory()
 
@@ -129,8 +131,117 @@ final class RunStoreTests: XCTestCase {
         atPath: directory.appendingPathComponent("history.json").path
       ))
     XCTAssertFalse(FileManager.default.fileExists(atPath: workspace.directory.path))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: unknown.path))
     let restored = try await store.load()
     XCTAssertEqual(restored, [])
+  }
+
+  func testMalformedOrFutureHistoryIsAtomicallyQuarantined() async throws {
+    let directory = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let history = directory.appendingPathComponent("history.json")
+    let original = Data(#"{"schema_version":2,"runs":[]}"#.utf8)
+    try original.write(to: history)
+
+    let store = RunStore(baseURL: directory)
+    do {
+      _ = try await store.load()
+      XCTFail("malformed history should be rejected")
+    } catch let error as RunStoreError {
+      guard case .historyQuarantined(let filename) = error else {
+        return XCTFail("unexpected RunStoreError: \(error)")
+      }
+      XCTAssertTrue(filename.hasPrefix("history.invalid-"))
+      let quarantine = directory.appendingPathComponent(filename)
+      XCTAssertEqual(try Data(contentsOf: quarantine), original)
+    }
+
+    XCTAssertFalse(FileManager.default.fileExists(atPath: history.path))
+    let quarantines = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+      .filter { $0.hasPrefix("history.invalid-") }
+    XCTAssertEqual(quarantines.count, 1)
+  }
+
+  func testRunsRootSymlinkFailsClosedWithoutTouchingExternalSentinel() async throws {
+    let directory = temporaryDirectory()
+    let external = temporaryDirectory()
+    defer {
+      try? FileManager.default.removeItem(at: directory)
+      try? FileManager.default.removeItem(at: external)
+    }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: external, withIntermediateDirectories: true)
+    let sentinel = external.appendingPathComponent("sentinel.txt")
+    try Data("outside".utf8).write(to: sentinel)
+
+    let initialStore = RunStore(baseURL: directory)
+    let run = RunRecord(configuration: RunConfiguration())
+    try await initialStore.save([run])
+    let history = directory.appendingPathComponent("history.json")
+    let originalHistory = try Data(contentsOf: history)
+    try FileManager.default.createSymbolicLink(
+      at: directory.appendingPathComponent("Runs"),
+      withDestinationURL: external
+    )
+
+    let store = RunStore(baseURL: directory)
+    await expectUnsafe { _ = try await store.load() }
+    let replacement = RunRecord(configuration: RunConfiguration(number: "143"))
+    await expectUnsafe { try await store.save([replacement]) }
+    await expectUnsafe { _ = try await store.workspace(for: run.id) }
+    await expectUnsafe { try await store.finalize(run.id, runs: [run]) }
+    await expectUnsafe { try await store.clearHistory() }
+    XCTAssertEqual(try Data(contentsOf: history), originalHistory)
+    XCTAssertEqual(try String(contentsOf: sentinel, encoding: .utf8), "outside")
+  }
+
+  func testPerRunSymlinkFailsClosedWithoutTouchingExternalSentinel() async throws {
+    let directory = temporaryDirectory()
+    let external = temporaryDirectory()
+    defer {
+      try? FileManager.default.removeItem(at: directory)
+      try? FileManager.default.removeItem(at: external)
+    }
+    try FileManager.default.createDirectory(
+      at: directory.appendingPathComponent("Runs"),
+      withIntermediateDirectories: true
+    )
+    try FileManager.default.createDirectory(at: external, withIntermediateDirectories: true)
+    let sentinel = external.appendingPathComponent("sentinel.txt")
+    try Data("outside".utf8).write(to: sentinel)
+    let run = RunRecord(configuration: RunConfiguration())
+    let linkedWorkspace = directory.appendingPathComponent("Runs/\(run.id.uuidString)")
+    try FileManager.default.createSymbolicLink(
+      at: linkedWorkspace,
+      withDestinationURL: external
+    )
+
+    let store = RunStore(baseURL: directory)
+    await expectUnsafe { _ = try await store.workspace(for: run.id) }
+    await expectUnsafe { try await store.save([run]) }
+    XCTAssertFalse(
+      FileManager.default.fileExists(
+        atPath: directory.appendingPathComponent("history.json").path
+      )
+    )
+    await expectUnsafe { try await store.finalize(run.id, runs: [run]) }
+    await expectUnsafe { _ = try await store.load() }
+    await expectUnsafe { try await store.clearHistory() }
+    XCTAssertEqual(try String(contentsOf: sentinel, encoding: .utf8), "outside")
+  }
+
+  private func expectUnsafe(_ operation: () async throws -> Void) async {
+    do {
+      try await operation()
+      XCTFail("unsafe managed path should be rejected")
+    } catch let error as RunStoreError {
+      guard case .unsafeManagedPath = error else {
+        return XCTFail("unexpected RunStoreError: \(error)")
+      }
+    } catch {
+      XCTFail("unexpected error: \(error)")
+    }
   }
 
   private func temporaryDirectory() -> URL {

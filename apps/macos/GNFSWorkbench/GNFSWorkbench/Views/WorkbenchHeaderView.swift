@@ -170,7 +170,7 @@ struct WorkbenchHeaderView: View {
   private var overflowMenu: some View {
     Menu {
       Button("新建分解", systemImage: "plus") {
-        model.newRun()
+        Task { await model.newRun() }
       }
       .disabled(model.isRunTaskActive)
 
@@ -185,9 +185,9 @@ struct WorkbenchHeaderView: View {
         }
         Divider()
         Button("清除当前日志", systemImage: "text.badge.minus") {
-          model.clearDisplayedLogs()
+          Task { await model.clearDisplayedLogs() }
         }
-        .disabled(run.logs.isEmpty)
+        .disabled(run.logs.isEmpty || model.isRunTaskActive || model.isHistoryMutationActive)
       }
     } label: {
       Image(systemName: "ellipsis")
@@ -254,7 +254,7 @@ struct WorkbenchHeaderView: View {
     case .failed:
       return run.errorMessage ?? "请检查日志"
     case .cancelled:
-      return "历史已保存 · 临时工作目录已清理"
+      return model.finalizationMessage(for: run)
     case .ready:
       return "等待输入"
     }
@@ -284,8 +284,10 @@ struct WorkbenchHeaderView: View {
     if model.isRunning {
       model.cancelRun()
     } else if model.displayedRun != nil {
-      model.useConfigurationFromDisplayedRun()
-      Task { await model.startRun() }
+      Task {
+        await model.useConfigurationFromDisplayedRun()
+        await model.startRun()
+      }
     } else {
       Task { await model.startRun() }
     }

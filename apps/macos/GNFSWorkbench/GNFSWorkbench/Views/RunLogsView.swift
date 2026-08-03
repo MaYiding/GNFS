@@ -3,6 +3,7 @@ import SwiftUI
 struct RunLogsView: View {
   let entries: [RunLogEntry]
   @Binding var isExpanded: Bool
+  let canClear: Bool
   let copy: (String) -> Void
   let clear: () -> Void
   @State private var query = ""
@@ -88,7 +89,7 @@ struct RunLogsView: View {
             .buttonStyle(.borderless)
             .font(.system(size: 11.5, weight: .medium))
             .foregroundStyle(AppTheme.secondaryText)
-            .disabled(entries.isEmpty)
+            .disabled(entries.isEmpty || !canClear)
 
           Menu {
             Button("全部级别") { severityFilter = nil }
