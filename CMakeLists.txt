@@ -2878,6 +2878,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME API COMMAND test_api)
     set_tests_properties(API PROPERTIES LABELS "slow" TIMEOUT 300)
 
+    # GUI/automation-safe JSON Lines event protocol
+    add_executable(test_event_stream
+        tests/test_event_stream.cpp
+    )
+    target_link_libraries(test_event_stream PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME EventStream COMMAND test_event_stream)
+    set_tests_properties(EventStream PROPERTIES LABELS "instant" TIMEOUT 10)
+
     # Method selection 测试
     add_executable(test_method_selection
         tests/test_method_selection.cpp

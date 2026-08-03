@@ -8,6 +8,7 @@
 //   gnfs --help                      # show help
 
 #include <gnfs/api/config.hpp>
+#include <gnfs/api/event_stream.hpp>
 #include <gnfs/api/factorizer.hpp>
 #include <gnfs/api/i18n.hpp>
 #include <gnfs/api/pipeline.hpp>
@@ -17,13 +18,18 @@
 #include <gnfs/util/thread_pool.hpp>
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 using namespace gnfs::api;
 using namespace gnfs::api::i18n;
@@ -64,6 +70,13 @@ static const char* method_display_name(FactorizationMethod m) {
         return TR(S::METHOD_GNFS);
     }
     return "?";
+}
+
+static Integer parse_integer_literal(std::string_view value) {
+    if (value.size() >= 2 && value[0] == '0' && (value[1] == 'x' || value[1] == 'X')) {
+        return Integer(std::string(value.substr(2)), 16);
+    }
+    return Integer(std::string(value), 10);
 }
 
 // ============================================================
@@ -181,9 +194,14 @@ static void print_summary_box(const FactorResult& result) {
              method_display_name(st.method_used) + C(RESET));
 
     // Factors
-    if (result.success && result.factors.size() >= 2) {
+    if (result.success && !result.factors.empty()) {
         box_line("");
-        std::string f_str = result.factors[0].to_string() + " * " + result.factors[1].to_string();
+        std::string f_str;
+        for (size_t i = 0; i < result.factors.size(); ++i) {
+            if (i > 0)
+                f_str += " * ";
+            f_str += result.factors[i].to_string();
+        }
         if (f_str.length() > 42)
             f_str = f_str.substr(0, 39) + "...";
         box_line(std::string(C(BOLD)) + C(GREEN) + "= " + f_str + C(RESET));
@@ -271,6 +289,8 @@ static void print_help() {
     std::cout << TR(S::HELP_OPT_QUIET) << "\n";
     std::cout << TR(S::HELP_OPT_VERBOSE) << "\n";
     std::cout << TR(S::HELP_OPT_JSON) << "\n";
+    std::cout << TR(S::HELP_OPT_EVENT_STREAM) << "\n";
+    std::cout << TR(S::HELP_OPT_COMPLETE) << "\n";
     std::cout << TR(S::HELP_OPT_CSV) << "\n";
     std::cout << TR(S::HELP_OPT_REPORT) << "\n";
     std::cout << TR(S::HELP_OPT_OUTPUT) << "\n";
@@ -550,16 +570,13 @@ static void run_repl() {
 
         // Try as number
         try {
-            Integer n;
-            if (line.substr(0, 2) == "0x" || line.substr(0, 2) == "0X") {
-                n = Integer(line);
-            } else {
+            if (line.substr(0, 2) != "0x" && line.substr(0, 2) != "0X") {
                 for (char ch : line) {
                     if (ch < '0' || ch > '9')
                         throw std::runtime_error(line);
                 }
-                n = Integer(line);
             }
+            Integer n = parse_integer_literal(line);
             if (mpz_cmp_si(n.get_mpz(), 1) <= 0) {
                 std::cout << TR(S::REPL_N_TOO_SMALL) << "\n";
                 continue;
@@ -596,6 +613,15 @@ static void run_repl() {
 // Main
 // ============================================================
 
+static int cli_error(bool event_stream_enabled, std::string_view code, const std::string& message) {
+    if (event_stream_enabled) {
+        std::cout << event_stream::error_event(code, message) << '\n' << std::flush;
+    } else {
+        std::cerr << message << '\n';
+    }
+    return 1;
+}
+
 int main(int argc, char* argv[]) {
     // P3-1 / doctrine §7.2 第 3 条: main thread hint scheduler 优先 P-core.
     // macOS only, Linux no-op. ThreadPool worker 也会自动 set 同样 QoS.
@@ -613,78 +639,123 @@ int main(int argc, char* argv[]) {
     std::string output_file;
     bool interactive = false;
     bool quiet = false;
+    bool event_stream_enabled = false;
+    bool complete_factorization = false;
+    bool output_format_explicit = false;
+    bool output_file_explicit = false;
+    // Detect the machine protocol before normal parsing so argument errors are
+    // structured regardless of where --event-stream appears in argv.
+    for (int i = 1; i < argc; ++i) {
+        if (std::string_view(argv[i]) == "--event-stream") {
+            event_stream_enabled = true;
+            quiet = true;
+            g_color = false;
+            break;
+        }
+    }
     // verbose_explicit: did the user pass -v/--verbose or -q/--quiet on CLI?
     // 三态语义:nullopt=未指定走 config 文件,true=用户显式 -v,false=用户显式 -q
     std::optional<bool> verbose_explicit;
     bool show_help = false;
     bool show_version = false;
 
-    for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
+    try {
+        for (int i = 1; i < argc; ++i) {
+            std::string arg = argv[i];
 
-        if (arg == "-h" || arg == "--help")
-            show_help = true;
-        else if (arg == "-V" || arg == "--version")
-            show_version = true;
-        else if (arg == "-i" || arg == "--interactive")
-            interactive = true;
-        else if (arg == "-q" || arg == "--quiet") {
-            quiet = true;
-            verbose_explicit = false;
-        } else if (arg == "-v" || arg == "--verbose")
-            verbose_explicit = true;
-        else if (arg == "--json")
-            output_format = "json";
-        else if (arg == "--csv")
-            output_format = "csv";
-        else if (arg == "--report")
-            output_format = "report";
-        else if (arg == "--no-color")
-            g_color = false;
-        else if (arg == "--lang" && i + 1 < argc)
-            set_lang(argv[++i]);
-        else if (arg == "--method" && i + 1 < argc)
-            cli_config.method = parse_method(argv[++i]);
-        else if ((arg == "-o" || arg == "--output") && i + 1 < argc)
-            output_file = argv[++i];
-        else if ((arg == "-c" || arg == "--config") && i + 1 < argc)
-            config_file = argv[++i];
-        else if (arg == "--degree" && i + 1 < argc)
-            cli_config.degree = static_cast<uint32_t>(std::stoul(argv[++i]));
-        else if (arg == "--fb-rational" && i + 1 < argc)
-            cli_config.rational_bound = static_cast<uint32_t>(std::stoul(argv[++i]));
-        else if (arg == "--fb-algebraic" && i + 1 < argc)
-            cli_config.algebraic_bound = static_cast<uint32_t>(std::stoul(argv[++i]));
-        else if (arg == "--lp-bound" && i + 1 < argc)
-            cli_config.large_prime_bound = std::stoull(argv[++i]);
-        else if (arg == "--sieve-width" && i + 1 < argc)
-            cli_config.sieve_width = std::stoi(argv[++i]);
-        else if (arg == "--sieve-height" && i + 1 < argc)
-            cli_config.sieve_height = std::stoi(argv[++i]);
-        else if (arg == "--threads" && i + 1 < argc) {
-            const std::string value_text = argv[++i];
-            try {
-                size_t consumed = 0;
-                const uint64_t value = std::stoull(value_text, &consumed);
-                if (consumed != value_text.size() || value == 0 ||
-                    value > std::numeric_limits<uint32_t>::max()) {
-                    throw std::out_of_range("thread budget outside uint32 range");
+            if (arg == "-h" || arg == "--help") {
+                show_help = true;
+            } else if (arg == "-V" || arg == "--version") {
+                show_version = true;
+            } else if (arg == "-i" || arg == "--interactive") {
+                interactive = true;
+            } else if (arg == "-q" || arg == "--quiet") {
+                quiet = true;
+                verbose_explicit = false;
+            } else if (arg == "-v" || arg == "--verbose") {
+                verbose_explicit = true;
+            } else if (arg == "--json") {
+                output_format = "json";
+                output_format_explicit = true;
+            } else if (arg == "--csv") {
+                output_format = "csv";
+                output_format_explicit = true;
+            } else if (arg == "--report") {
+                output_format = "report";
+                output_format_explicit = true;
+            } else if (arg == "--event-stream") {
+                event_stream_enabled = true;
+            } else if (arg == "--complete") {
+                complete_factorization = true;
+            } else if (arg == "--no-color") {
+                g_color = false;
+            } else if (arg == "--lang" && i + 1 < argc) {
+                set_lang(argv[++i]);
+            } else if (arg == "--method" && i + 1 < argc) {
+                cli_config.method = parse_method(argv[++i]);
+            } else if ((arg == "-o" || arg == "--output") && i + 1 < argc) {
+                output_file = argv[++i];
+                output_file_explicit = true;
+            } else if ((arg == "-c" || arg == "--config") && i + 1 < argc) {
+                config_file = argv[++i];
+            } else if (arg == "--degree" && i + 1 < argc) {
+                cli_config.degree = static_cast<uint32_t>(std::stoul(argv[++i]));
+            } else if (arg == "--fb-rational" && i + 1 < argc) {
+                cli_config.rational_bound = static_cast<uint32_t>(std::stoul(argv[++i]));
+            } else if (arg == "--fb-algebraic" && i + 1 < argc) {
+                cli_config.algebraic_bound = static_cast<uint32_t>(std::stoul(argv[++i]));
+            } else if (arg == "--lp-bound" && i + 1 < argc) {
+                cli_config.large_prime_bound = std::stoull(argv[++i]);
+            } else if (arg == "--sieve-width" && i + 1 < argc) {
+                cli_config.sieve_width = std::stoi(argv[++i]);
+            } else if (arg == "--sieve-height" && i + 1 < argc) {
+                cli_config.sieve_height = std::stoi(argv[++i]);
+            } else if (arg == "--threads" && i + 1 < argc) {
+                const std::string value_text = argv[++i];
+                try {
+                    size_t consumed = 0;
+                    const uint64_t value = std::stoull(value_text, &consumed);
+                    if (consumed != value_text.size() || value == 0 ||
+                        value > std::numeric_limits<uint32_t>::max()) {
+                        throw std::out_of_range("thread budget outside uint32 range");
+                    }
+                    cli_config.set_max_local_sieve_threads(static_cast<uint32_t>(value));
+                } catch (const std::exception&) {
+                    return cli_error(event_stream_enabled, "invalid_threads",
+                                     "--threads must be an integer in [1, UINT32_MAX]");
                 }
-                cli_config.set_max_local_sieve_threads(static_cast<uint32_t>(value));
-            } catch (const std::exception&) {
-                std::cerr << "--threads must be an integer in [1, UINT32_MAX]\n";
-                return 1;
+            } else if (!arg.empty() && arg[0] == '-') {
+                return cli_error(event_stream_enabled, "unknown_option",
+                                 std::string(TR(S::ERR_UNKNOWN_OPT)) + " " + arg);
+            } else {
+                if (!number_str.empty()) {
+                    return cli_error(event_stream_enabled, "multiple_numbers",
+                                     TR(S::ERR_MULTI_NUMBERS));
+                }
+                number_str = arg;
             }
-        } else if (arg[0] == '-') {
-            std::cerr << TR(S::ERR_UNKNOWN_OPT) << " " << arg << "\n";
-            return 1;
-        } else {
-            if (!number_str.empty()) {
-                std::cerr << TR(S::ERR_MULTI_NUMBERS) << "\n";
-                return 1;
-            }
-            number_str = arg;
         }
+    } catch (const std::exception& e) {
+        return cli_error(event_stream_enabled, "invalid_option_value",
+                         std::string("Invalid option value: ") + e.what());
+    }
+
+    if (event_stream_enabled) {
+        if (show_help)
+            return cli_error(true, "incompatible_options",
+                             "--event-stream cannot be combined with --help");
+        if (show_version)
+            return cli_error(true, "incompatible_options",
+                             "--event-stream cannot be combined with --version");
+        if (interactive)
+            return cli_error(true, "incompatible_options",
+                             "--event-stream cannot be combined with --interactive");
+        if (output_format_explicit)
+            return cli_error(true, "incompatible_options",
+                             "--event-stream cannot be combined with --json, --csv, or --report");
+        if (output_file_explicit)
+            return cli_error(true, "incompatible_options",
+                             "--event-stream cannot be combined with --output");
     }
 
     if (show_version) {
@@ -707,8 +778,7 @@ int main(int argc, char* argv[]) {
             print_help();
             return 0;
         }
-        std::cerr << TR(S::ERR_NO_NUMBER) << "\n";
-        return 1;
+        return cli_error(event_stream_enabled, "missing_number", TR(S::ERR_NO_NUMBER));
     }
 
     // Config: auto < file < cli
@@ -717,8 +787,8 @@ int main(int argc, char* argv[]) {
         try {
             final_config = Config::from_file(config_file);
         } catch (const std::exception& e) {
-            std::cerr << TR(S::ERR_CONFIG_ERROR) << " " << e.what() << "\n";
-            return 1;
+            return cli_error(event_stream_enabled, "config_error",
+                             std::string(TR(S::ERR_CONFIG_ERROR)) + " " + e.what());
         }
     }
     final_config = final_config.merge(cli_config);
@@ -732,69 +802,109 @@ int main(int argc, char* argv[]) {
 
     Integer n;
     try {
-        n = Integer(number_str);
+        n = parse_integer_literal(number_str);
     } catch (const std::exception&) {
-        std::cerr << TR(S::ERR_INVALID_NUMBER) << " " << number_str << "\n";
-        return 1;
+        return cli_error(event_stream_enabled, "invalid_number",
+                         std::string(TR(S::ERR_INVALID_NUMBER)) + " " + number_str);
     }
     if (mpz_cmp_si(n.get_mpz(), 1) <= 0) {
-        std::cerr << TR(S::ERR_N_TOO_SMALL) << "\n";
-        return 1;
+        return cli_error(event_stream_enabled, "number_too_small", TR(S::ERR_N_TOO_SMALL));
     }
 
     // Run
+    size_t n_digits = gnfs::core::GNFSParams::compute(n.bit_length()).digits;
+    auto [selected_method, selection_reason] =
+        Pipeline::select_method(n.bit_length(), n_digits, final_config.method);
+
+    if (event_stream_enabled) {
+        std::cout << event_stream::started_event(n.to_string(), n.bit_length(), n_digits,
+                                                 selected_method, selection_reason,
+                                                 complete_factorization)
+                  << '\n'
+                  << std::flush;
+    }
     if (!quiet) {
         print_banner();
-        size_t n_digits = gnfs::core::GNFSParams::compute(n.bit_length()).digits;
         std::cerr << TR(S::FACTORING) << " " << n.to_string() << " (" << n.bit_length() << " bits, "
                   << n_digits << " digits)\n";
 
         // Show selected method
-        auto [method, reason] =
-            Pipeline::select_method(n.bit_length(), n_digits, final_config.method);
-        std::cerr << TR(S::METHOD_SELECTED) << " " << C(BOLD) << method_display_name(method)
-                  << C(RESET) << C(DIM) << " (" << reason << ")" << C(RESET) << "\n\n";
+        std::cerr << TR(S::METHOD_SELECTED) << " " << C(BOLD)
+                  << method_display_name(selected_method) << C(RESET) << C(DIM) << " ("
+                  << selection_reason << ")" << C(RESET) << "\n\n";
     }
 
-    Pipeline pipeline(n, final_config);
-    if (!quiet)
-        pipeline.set_progress_callback(make_terminal_progress());
-    if (verbose)
-        pipeline.set_log_callback(make_log_callback(LogLevel::Debug));
-
-    auto result = pipeline.run();
-
-    if (!quiet) {
-        std::cerr << "\n\n";
-        print_summary_box(result);
-        std::cerr << "\n";
-    }
-
-    // Output
-    std::string output;
-    if (output_format == "json")
-        output = result.to_json();
-    else if (output_format == "csv")
-        output = result.to_csv_line(true);
-    else if (output_format == "report")
-        output = result.to_report();
-    else {
-        if (quiet)
-            output = result.to_text();
-    }
-
-    if (!output_file.empty()) {
-        std::ofstream ofs(output_file);
-        if (!ofs.is_open()) {
-            std::cerr << TR(S::ERR_OPEN_FILE) << " " << output_file << "\n";
-            return 1;
-        }
-        ofs << output;
+    auto event_mutex = std::make_shared<std::mutex>();
+    auto emit_event = [event_mutex](const std::string& event) {
+        std::lock_guard<std::mutex> lock(*event_mutex);
+        std::cout << event << '\n' << std::flush;
+    };
+    ProgressCallback progress_callback;
+    LogCallback log_callback;
+    if (event_stream_enabled) {
+        progress_callback = [emit_event](const ProgressInfo& info) {
+            emit_event(event_stream::progress_event(info));
+        };
+        log_callback = [emit_event](const LogEntry& entry) {
+            emit_event(event_stream::log_event(entry));
+        };
+    } else {
         if (!quiet)
-            std::cerr << TR(S::REPL_WRITTEN_TO) << " " << output_file << "\n";
-    } else if (!output.empty()) {
-        std::cout << output;
+            progress_callback = make_terminal_progress();
+        if (verbose)
+            log_callback = make_log_callback(LogLevel::Debug);
     }
 
-    return result.success ? 0 : 1;
+    try {
+        FactorResult result;
+        if (complete_factorization) {
+            result = factorize_completely(n, final_config, progress_callback, log_callback);
+        } else {
+            Pipeline pipeline(n, final_config);
+            if (progress_callback)
+                pipeline.set_progress_callback(progress_callback);
+            if (log_callback)
+                pipeline.set_log_callback(log_callback);
+            result = pipeline.run();
+        }
+
+        if (event_stream_enabled) {
+            emit_event(event_stream::result_event(result));
+            return result.success ? 0 : 1;
+        }
+
+        if (!quiet) {
+            std::cerr << "\n\n";
+            print_summary_box(result);
+            std::cerr << "\n";
+        }
+
+        // Output
+        std::string output;
+        if (output_format == "json")
+            output = result.to_json();
+        else if (output_format == "csv")
+            output = result.to_csv_line(true);
+        else if (output_format == "report")
+            output = result.to_report();
+        else if (quiet)
+            output = result.to_text();
+
+        if (!output_file.empty()) {
+            std::ofstream ofs(output_file);
+            if (!ofs.is_open()) {
+                return cli_error(false, "open_output_failed",
+                                 std::string(TR(S::ERR_OPEN_FILE)) + " " + output_file);
+            }
+            ofs << output;
+            if (!quiet)
+                std::cerr << TR(S::REPL_WRITTEN_TO) << " " << output_file << "\n";
+        } else if (!output.empty()) {
+            std::cout << output;
+        }
+
+        return result.success ? 0 : 1;
+    } catch (const std::exception& e) {
+        return cli_error(event_stream_enabled, "runtime_error", e.what());
+    }
 }

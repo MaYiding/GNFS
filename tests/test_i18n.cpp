@@ -118,6 +118,8 @@ bool test_english_strings() {
     assert(std::strcmp(tr(S::PHASE_SIEVE), "Sieving") == 0);
     assert(std::strcmp(tr(S::RESULT_SUCCESS), "FACTORIZATION SUCCESSFUL") == 0);
     assert(std::strcmp(tr(S::LABEL_TOTAL), "TOTAL") == 0);
+    assert(std::strstr(tr(S::HELP_OPT_EVENT_STREAM), "Versioned JSON Lines") != nullptr);
+    assert(std::strstr(tr(S::HELP_OPT_COMPLETE), "complete prime factorization") != nullptr);
 
     set_lang("zh");  // restore
     return true;

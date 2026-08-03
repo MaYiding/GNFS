@@ -218,6 +218,7 @@ private:
 
     ProgressCallback progress_cb_;
     LogCallback log_cb_;
+    size_t relations_target_ = 0;
 
     std::chrono::high_resolution_clock::time_point start_time_;
 
