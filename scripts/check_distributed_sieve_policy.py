@@ -10284,6 +10284,7 @@ def find_code_identifier_tokens(
     text: str,
 ) -> list[tuple[str, CodeIdentifierUse]]:
     tokens: list[tuple[str, CodeIdentifierUse]] = []
+    newline_offsets = tuple(match.start() for match in re.finditer("\\n", text))
     cursor = 0
     while cursor < len(text):
         skipped = _skip_non_code(text, cursor)
@@ -10301,7 +10302,7 @@ def find_code_identifier_tokens(
                 (
                     text[start:cursor],
                     CodeIdentifierUse(
-                        line=text.count("\n", 0, start) + 1,
+                        line=bisect_right(newline_offsets, start - 1) + 1,
                         offset=start,
                     ),
                 )
@@ -10666,6 +10667,8 @@ def _mask_cmake_comments(text: str) -> str:
 
 
 def _cmake_bracket_end(text: str, cursor: int) -> int | None:
+    if cursor >= len(text) or (cursor >= 0 and text[cursor] != "["):
+        return None
     opening = re.match(r"\[(=*)\[", text[cursor:])
     if opening is None:
         return None
