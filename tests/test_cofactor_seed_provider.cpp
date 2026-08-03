@@ -314,6 +314,20 @@ void test_seeded_classification_is_lazy_and_binds_residual_input() {
     CHECK(requests.front().algorithm_identity == COFACTOR_ECM_CURVE_SCHEDULE_ALGORITHM_IDENTITY_V1);
 }
 
+void test_large_integer_quick_bounds_preserve_uint64_width() {
+    constexpr std::uint64_t large_prime_bound = 5'000'000'000ULL;
+    const Integer bound(static_cast<unsigned long long>(large_prime_bound));
+    const Integer square = bound * bound;
+    const Integer cube = square * bound;
+    const Integer one(1);
+
+    CHECK(!square.fits_uint64());
+    CHECK(gnfs::cofactor::quick_cofactor_check(square, large_prime_bound, true, false));
+    CHECK(!gnfs::cofactor::quick_cofactor_check(square + one, large_prime_bound, true, false));
+    CHECK(gnfs::cofactor::quick_cofactor_check(square + one, large_prime_bound, true, true));
+    CHECK(!gnfs::cofactor::quick_cofactor_check(cube + one, large_prime_bound, true, true));
+}
+
 void test_seeded_classification_validation_and_failure_boundaries() {
     const Integer residual("2035431132824962728145373");
     constexpr std::uint64_t large_prime_bound = 2'000'000'000'000ULL;
@@ -749,6 +763,7 @@ int main() {
         test_invalid_inputs_fail_before_provider();
         test_provider_exception_propagates_without_retry();
         test_seeded_classification_is_lazy_and_binds_residual_input();
+        test_large_integer_quick_bounds_preserve_uint64_width();
         test_seeded_classification_validation_and_failure_boundaries();
         test_seeded_brent_success_and_gate_boundaries();
         test_seeded_brent_miss_domain_separates_ecm();

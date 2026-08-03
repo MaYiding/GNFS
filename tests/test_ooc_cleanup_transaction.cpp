@@ -1899,14 +1899,7 @@ snapshot_windows_identity(HANDLE file, const BY_HANDLE_FILE_INFORMATION& info) {
     if (const auto identity = gnfs::relation::ooc_cleanup_detail::windows_identity(file, info)) {
         return *identity;
     }
-    return {
-        .first = static_cast<std::uint64_t>(info.dwVolumeSerialNumber),
-        .second = (static_cast<std::uint64_t>(info.nFileIndexHigh) << 32U) |
-                  static_cast<std::uint64_t>(info.nFileIndexLow),
-        .third = 0,
-        .size = (static_cast<std::uint64_t>(info.nFileSizeHigh) << 32U) |
-                static_cast<std::uint64_t>(info.nFileSizeLow),
-    };
+    throw std::runtime_error("could not inspect exact Windows namespace snapshot identity");
 }
 
 void capture_rejected_windows_regular_file(const std::filesystem::path& path,
@@ -1951,6 +1944,10 @@ void capture_rejected_windows_regular_file(const std::filesystem::path& path,
         throw std::filesystem::filesystem_error(
             "inspect rejected namespace snapshot file", path,
             gnfs::relation::ooc_cleanup_detail::windows_error(code));
+    }
+    if (before.nNumberOfLinks <= 1) {
+        throw std::runtime_error(
+            "rejected Windows namespace snapshot file was not a hard-link case");
     }
     const auto before_identity = snapshot_windows_identity(file.get(), before);
     if ((before.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) !=
