@@ -299,13 +299,17 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/distributed_sieve_protocol.cpp"
         src/sieve/distributed_sieve_protocol.cpp
         src/sieve/distributed_sieve_work_identity_codec.cpp
         src/sieve/distributed_sieve_work_package_codec.cpp
-        src/sieve/distributed_sieve_worker_entry.cpp
-        src/sieve/distributed_sieve_worker_execution.cpp
         src/sieve/distributed_sieve_worker_chunk.cpp
         src/sieve/distributed_sieve_worker_runtime.cpp
-        src/sieve/distributed_sieve_worker_writer.cpp
-        src/sieve/distributed_sieve_worker_work_package_file.cpp
     )
+    if(NOT WIN32)
+        target_sources(gnfs_core PRIVATE
+            src/sieve/distributed_sieve_worker_entry.cpp
+            src/sieve/distributed_sieve_worker_execution.cpp
+            src/sieve/distributed_sieve_worker_writer.cpp
+            src/sieve/distributed_sieve_worker_work_package_file.cpp
+        )
+    endif()
 endif()
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/distributed_sieve_seed_v2.cpp")
@@ -324,18 +328,27 @@ endif()
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/distributed_sieve_wave_store.cpp")
     target_sources(gnfs_core PRIVATE
-        src/sieve/distributed_sieve_wave_store.cpp
-        src/sieve/distributed_sieve_worker_coordinator.cpp
-        src/sieve/distributed_sieve_merge_coordinator.cpp
+        src/sieve/distributed_sieve_wave_store_names.cpp
         src/sieve/distributed_sieve_merge_writer_internal.cpp
         src/sieve/distributed_sieve_merge_writer_codec_internal.cpp
-        src/sieve/distributed_sieve_merge_writer_authority.cpp
-        src/sieve/distributed_sieve_merge_commit_authority.cpp
-        src/sieve/distributed_sieve_worker_cleanup_authority.cpp
-        src/sieve/distributed_sieve_worker_cleanup_orchestrator.cpp
-        src/sieve/distributed_sieve_wave_result.cpp
-        src/sieve/distributed_sieve_worker_cleanup_codec.cpp
     )
+    if(WIN32)
+        target_sources(gnfs_core PRIVATE
+            src/sieve/distributed_sieve_wave_store_windows.cpp
+        )
+    else()
+        target_sources(gnfs_core PRIVATE
+            src/sieve/distributed_sieve_wave_store.cpp
+            src/sieve/distributed_sieve_worker_coordinator.cpp
+            src/sieve/distributed_sieve_merge_coordinator.cpp
+            src/sieve/distributed_sieve_merge_writer_authority.cpp
+            src/sieve/distributed_sieve_merge_commit_authority.cpp
+            src/sieve/distributed_sieve_worker_cleanup_authority.cpp
+            src/sieve/distributed_sieve_worker_cleanup_orchestrator.cpp
+            src/sieve/distributed_sieve_wave_result.cpp
+            src/sieve/distributed_sieve_worker_cleanup_codec.cpp
+        )
+    endif()
 endif()
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/cofactor/cofactorizer.cpp")
@@ -1063,6 +1076,24 @@ if(GNFS_BUILD_TESTS)
         PROPERTIES LABELS "instant" TIMEOUT 20
     )
 
+    add_executable(test_distributed_sieve_wave_store_windows
+        tests/test_distributed_sieve_wave_store_windows.cpp
+    )
+    target_include_directories(test_distributed_sieve_wave_store_windows PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sieve
+    )
+    target_link_libraries(test_distributed_sieve_wave_store_windows PRIVATE
+        gnfs_core Threads::Threads)
+    add_test(
+        NAME DistributedSieveWaveStoreWindows
+        COMMAND test_distributed_sieve_wave_store_windows
+    )
+    set_tests_properties(
+        DistributedSieveWaveStoreWindows
+        PROPERTIES LABELS "instant" TIMEOUT 10 SKIP_RETURN_CODE 77
+    )
+
+    if(NOT WIN32)
     add_executable(test_distributed_sieve_worker_entry
         tests/test_distributed_sieve_worker_entry.cpp
     )
@@ -1113,6 +1144,7 @@ if(GNFS_BUILD_TESTS)
         DistributedSieveWorkerExecution
         PROPERTIES LABELS "fast" TIMEOUT 180
     )
+    endif()
 
     add_executable(test_distributed_sieve_work_identity_codec
         tests/test_distributed_sieve_work_identity_codec.cpp
@@ -1146,6 +1178,7 @@ if(GNFS_BUILD_TESTS)
         PROPERTIES LABELS "instant" TIMEOUT 10
     )
 
+    if(NOT WIN32)
     add_executable(test_distributed_sieve_worker_cleanup_codec
         tests/test_distributed_sieve_worker_cleanup_codec.cpp
     )
@@ -1162,6 +1195,7 @@ if(GNFS_BUILD_TESTS)
         DistributedSieveWorkerCleanupCodec
         PROPERTIES LABELS "instant" TIMEOUT 10
     )
+    endif()
 
     add_executable(test_distributed_sieve_merge_writer_codec
         tests/test_distributed_sieve_merge_writer_codec.cpp
@@ -1195,6 +1229,7 @@ if(GNFS_BUILD_TESTS)
         PROPERTIES LABELS "instant" TIMEOUT 10
     )
 
+    if(NOT WIN32)
     add_executable(test_distributed_sieve_merge_writer_authority
         tests/test_distributed_sieve_merge_writer_authority.cpp
     )
@@ -1417,6 +1452,7 @@ if(GNFS_BUILD_TESTS)
         DistributedSieveWorkerWorkPackageFile
         PROPERTIES LABELS "instant" TIMEOUT 20
     )
+    endif()
 
     add_executable(test_distributed_sieve_execution_policy
         tests/test_distributed_sieve_execution_policy.cpp
@@ -1442,6 +1478,7 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME DistributedSieveSeedV2 COMMAND test_distributed_sieve_seed_v2)
     set_tests_properties(DistributedSieveSeedV2 PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    if(NOT WIN32)
     add_executable(test_distributed_sieve_resume
         tests/test_distributed_sieve_resume.cpp
     )
@@ -1592,6 +1629,7 @@ if(GNFS_BUILD_TESTS)
         DistributedSieveMergePreparedProtection
         PROPERTIES LABELS "fast" TIMEOUT 60
     )
+    endif()
 
     add_executable(test_poly_checkpoint
         tests/test_poly_checkpoint.cpp

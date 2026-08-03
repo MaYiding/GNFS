@@ -1565,6 +1565,7 @@ public:
          const util::Sha256Digest& expected_manifest_digest,
          DistributedSieveWaveStoreTestHooks hooks = {}) noexcept;
 
+#if !defined(_WIN32)
     [[nodiscard]] const std::filesystem::path& absolute_root() const noexcept;
     [[nodiscard]] const WaveManifestV1& manifest() const noexcept;
     [[nodiscard]] const util::Sha256Digest& manifest_digest() const noexcept;
@@ -1783,6 +1784,7 @@ private:
     publish_chunk_terminal_failure_v1(
         DistributedSieveChunkTerminalFailureAdmissionV1&& admission,
         DistributedSieveChunkTerminalFailureTestHooksV1 hooks) noexcept;
+#endif
 };
 
 /// Move-only cold-open authority for a committed worker-cleanup root.
@@ -1815,10 +1817,12 @@ public:
     [[nodiscard]] const relation::OOCRelationReader& reader() const;
 
 private:
+#if !defined(_WIN32)
     struct State;
     explicit DistributedSieveWorkerCleanupRootAdmissionV1(std::unique_ptr<State> state) noexcept;
 
     std::unique_ptr<State> state_;
+#endif
 
     friend DistributedSieveWorkerCleanupRootOpenResultV1 open_worker_cleanup_root_v1(
         const std::filesystem::path& absolute_root,
@@ -1868,6 +1872,7 @@ struct DistributedSieveWorkerCleanupRootOpenResultV1 final {
     DistributedSieveWorkerCleanupRootOpenTestHooksV1 hooks = {},
     const DistributedSieveWorkerCleanupRootExactAnchorV1* expected_anchor = nullptr) noexcept;
 
+#if !defined(_WIN32)
 enum class DistributedSieveWorkerChunkDurableStateV1 : std::uint8_t {
     empty,
     missing,
@@ -2765,6 +2770,7 @@ private:
     friend void distributed_sieve_external_cleanup_authorization_state_release_receipt_claim(
         const DistributedSieveExternalCleanupAuthorizationState& state) noexcept;
 };
+#endif
 
 struct DistributedSieveWaveStoreOpenResult final {
     DistributedSieveWaveStoreOpenResult() = default;

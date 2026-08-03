@@ -482,21 +482,23 @@ digests before invoking the identity decoder, so integrity-unbound counts
 cannot trigger destination allocation. Sink coverage includes partial
 short-write prefixes at the header, body, and trailer boundaries.
 
-`test_distributed_sieve_worker_work_package_file` is the `instant` anonymous
+On macOS and Linux, `test_distributed_sieve_worker_work_package_file` is the
+`instant` anonymous
 work-package capability contract. The injected operation matrix covers the
 64KiB buffered writer, `EINTR`, short and zero writes, directory and file
 policy drift, exact-once close diagnostics, fixed-leaf conflicts, and package
 decode binding. Native macOS and Linux cases prove exclusive creation below a
 borrowed owner-only directory descriptor, read-only same-inode reopen,
 unlink-to-`nlink == 0`, directory synchronization, move-only token ownership,
-and retained-descriptor revalidation. On Windows the production entry covers
-only the explicit unavailable result; portable injected-state tests do not
-claim native anonymous file-capability support. The repository policy checker
+and retained-descriptor revalidation. Windows does not build the native worker
+entry, writer, or anonymous work-package capability graph. The repository
+policy checker
 permits the token and production factory only in their definition boundary and
 this dedicated test, plus their first production composition inside the
 receipt-gated launcher.
 
-`test_distributed_sieve_resume` is a split protocol and WaveStore contract.
+On macOS and Linux, `test_distributed_sieve_resume` is a split protocol and
+WaveStore contract.
 `DistributedSieveResumeCore` remains an `instant` pure record, dependency, and
 compile-boundary test. It also compiles the source-private cleanup-authorization
 passkey and receipt traits. The passkey and receipt have no production or test
@@ -514,9 +516,13 @@ exclusion, and inherited-open-description lock lifetime. POSIX builds register
 matrices, and cursor preparation use six separate shards so the combined
 merge-start matrix does not exceed the `fast` single-run target. The first 20
 shards use 60-second timeouts, and the process-launcher shard uses a 90-second
-timeout. Windows registers only the bounded
-`DistributedSieveWaveStoreOpenRecovery` platform contract as `instant` with a
-10-second timeout.
+timeout. Windows excludes these native authority targets and instead runs
+`DistributedSieveWaveStoreWindows` as an `instant`, 10-second file-level stub
+contract. It proves that invalid shapes fail before the platform decision,
+valid create/open and cleanup requests return `platform_unsupported` with no
+result arm, hooks remain uncalled, and no requested namespace is created. The
+same test target exits with the CTest convention code 77 on non-Windows hosts;
+CTest and `scripts/test.sh` both record that result as a skip.
 
 The shard union preserves the original WaveStore case order. CTest does not
 register the aggregate because that would duplicate the complete matrix in
