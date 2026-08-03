@@ -1,13 +1,16 @@
 #pragma once
 
+#include "gnfs/util/owned_native_file.hpp"
+
 #include <cassert>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <string>
+#include <filesystem>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 #ifdef _WIN32
@@ -34,56 +37,19 @@ class MmapFile {
 public:
     MmapFile() = default;
 
-    explicit MmapFile(const std::string& path) {
-        file_ = ::CreateFileA(path.c_str(), GENERIC_READ,
-                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                              nullptr, OPEN_EXISTING,
-                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
-                              nullptr);
-        if (file_ == INVALID_HANDLE_VALUE) {
-            throw std::runtime_error("MmapFile: cannot open '" + path + "': " +
-                                     last_error_message());
-        }
+    explicit MmapFile(const std::string& path) : MmapFile(open_read_only(path), path) {}
 
-        LARGE_INTEGER file_size{};
-        if (!::GetFileSizeEx(file_, &file_size)) {
-            close();
-            throw std::runtime_error("MmapFile: GetFileSizeEx failed for '" + path + "': " +
-                                     last_error_message());
-        }
-        if (file_size.QuadPart < 0 ||
-            static_cast<unsigned long long>(file_size.QuadPart) >
-                static_cast<unsigned long long>(SIZE_MAX)) {
-            close();
-            throw std::runtime_error("MmapFile: file too large for size_t: " + path);
-        }
-        size_ = static_cast<size_t>(file_size.QuadPart);
+    /// Consume and map an already-open file without reopening any path.
+    /// Ownership transfers only after mapping succeeds.
+    explicit MmapFile(OwnedNativeFile&& file)
+        : MmapFile(std::move(file), std::string("owned native file")) {}
 
-        if (size_ == 0) {
-            return;
-        }
-
-        mapping_ = ::CreateFileMappingA(file_, nullptr, PAGE_READONLY, 0, 0, nullptr);
-        if (mapping_ == nullptr) {
-            close();
-            throw std::runtime_error("MmapFile: CreateFileMapping failed for '" + path + "': " +
-                                     last_error_message());
-        }
-
-        data_ = static_cast<const uint8_t*>(
-            ::MapViewOfFile(mapping_, FILE_MAP_READ, 0, 0, 0));
-        if (data_ == nullptr) {
-            close();
-            throw std::runtime_error("MmapFile: MapViewOfFile failed for '" + path + "': " +
-                                     last_error_message());
-        }
+    ~MmapFile() {
+        close();
     }
 
-    ~MmapFile() { close(); }
-
     MmapFile(MmapFile&& other) noexcept
-        : data_(std::exchange(other.data_, nullptr)),
-          size_(std::exchange(other.size_, 0)),
+        : data_(std::exchange(other.data_, nullptr)), size_(std::exchange(other.size_, 0)),
           mapping_(std::exchange(other.mapping_, nullptr)),
           file_(std::exchange(other.file_, INVALID_HANDLE_VALUE)) {}
 
@@ -126,22 +92,24 @@ public:
         file_ = INVALID_HANDLE_VALUE;
     }
 
-    [[nodiscard]] const uint8_t* data() const noexcept { return data_; }
-    [[nodiscard]] size_t size() const noexcept { return size_; }
+    [[nodiscard]] const uint8_t* data() const noexcept {
+        return data_;
+    }
+    [[nodiscard]] size_t size() const noexcept {
+        return size_;
+    }
     [[nodiscard]] bool is_open() const noexcept {
         return file_ != INVALID_HANDLE_VALUE;
     }
 
-    template <typename T>
-    [[nodiscard]] T read_at(size_t offset) const {
+    template <typename T> [[nodiscard]] T read_at(size_t offset) const {
         assert(offset + sizeof(T) <= size_);
         T val;
         std::memcpy(&val, data_ + offset, sizeof(T));
         return val;
     }
 
-    template <typename T>
-    [[nodiscard]] const T* ptr_at(size_t offset) const {
+    template <typename T> [[nodiscard]] const T* ptr_at(size_t offset) const {
         assert(offset <= size_);
         return reinterpret_cast<const T*>(data_ + offset);
     }
@@ -149,22 +117,98 @@ public:
     void advise_random() const {}
 
 private:
-    static std::string last_error_message() {
-        DWORD error = ::GetLastError();
-        if (error == 0) return "no error";
+    class PendingMapping final {
+    public:
+        PendingMapping() = default;
+        PendingMapping(const PendingMapping&) = delete;
+        PendingMapping& operator=(const PendingMapping&) = delete;
 
-        char* buffer = nullptr;
-        DWORD len = ::FormatMessageA(
-            FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
-                FORMAT_MESSAGE_IGNORE_INSERTS,
-            nullptr, error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-            reinterpret_cast<char*>(&buffer), 0, nullptr);
-        if (len == 0 || buffer == nullptr) {
+        ~PendingMapping() {
+            if (data != nullptr && !::UnmapViewOfFile(data)) {
+                std::fprintf(stderr, "[mmap_file] UnmapViewOfFile(pending) failed: error=%lu\n",
+                             static_cast<unsigned long>(::GetLastError()));
+            }
+            if (mapping != nullptr && !::CloseHandle(mapping)) {
+                std::fprintf(stderr, "[mmap_file] CloseHandle(pending mapping) failed: error=%lu\n",
+                             static_cast<unsigned long>(::GetLastError()));
+            }
+        }
+
+        const uint8_t* data = nullptr;
+        HANDLE mapping = nullptr;
+    };
+
+    [[nodiscard]] static OwnedNativeFile open_read_only(const std::string& path) {
+        const std::filesystem::path filesystem_path(path);
+        HANDLE file = ::CreateFileW(filesystem_path.c_str(), GENERIC_READ,
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                    OPEN_EXISTING,
+                                    FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+        if (file == INVALID_HANDLE_VALUE) {
+            const DWORD error = ::GetLastError();
+            throw std::runtime_error("MmapFile: cannot open '" + path +
+                                     "': " + last_error_message(error));
+        }
+        return OwnedNativeFile::adopt_ownership(file);
+    }
+
+    MmapFile(OwnedNativeFile&& file, const std::string& source) {
+        if (!file.valid()) {
+            throw std::invalid_argument("MmapFile: cannot map an invalid owned native file");
+        }
+
+        LARGE_INTEGER file_size{};
+        if (!::GetFileSizeEx(file.handle_, &file_size)) {
+            const DWORD error = ::GetLastError();
+            throw std::runtime_error("MmapFile: GetFileSizeEx failed for '" + source +
+                                     "': " + last_error_message(error));
+        }
+        if (file_size.QuadPart < 0 || static_cast<unsigned long long>(file_size.QuadPart) >
+                                          static_cast<unsigned long long>(SIZE_MAX)) {
+            throw std::runtime_error("MmapFile: file too large for size_t: " + source);
+        }
+        const size_t mapped_size = static_cast<size_t>(file_size.QuadPart);
+
+        if (mapped_size == 0) {
+            file_ = file.take_native_handle();
+            return;
+        }
+
+        PendingMapping pending;
+        pending.mapping = ::CreateFileMappingW(file.handle_, nullptr, PAGE_READONLY, 0, 0, nullptr);
+        if (pending.mapping == nullptr) {
+            const DWORD error = ::GetLastError();
+            throw std::runtime_error("MmapFile: CreateFileMapping failed for '" + source +
+                                     "': " + last_error_message(error));
+        }
+
+        pending.data =
+            static_cast<const uint8_t*>(::MapViewOfFile(pending.mapping, FILE_MAP_READ, 0, 0, 0));
+        if (pending.data == nullptr) {
+            const DWORD error = ::GetLastError();
+            throw std::runtime_error("MmapFile: MapViewOfFile failed for '" + source +
+                                     "': " + last_error_message(error));
+        }
+
+        file_ = file.take_native_handle();
+        size_ = mapped_size;
+        mapping_ = std::exchange(pending.mapping, nullptr);
+        data_ = std::exchange(pending.data, nullptr);
+    }
+
+    static std::string last_error_message(DWORD error) {
+        if (error == 0)
+            return "no error";
+
+        char buffer[1024]{};
+        DWORD len = ::FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                                     nullptr, error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                                     buffer, static_cast<DWORD>(sizeof(buffer)), nullptr);
+        if (len == 0) {
             return "Windows error " + std::to_string(error);
         }
 
         std::string message(buffer, len);
-        ::LocalFree(buffer);
         while (!message.empty() &&
                (message.back() == '\r' || message.back() == '\n' || message.back() == ' ')) {
             message.pop_back();
@@ -178,7 +222,7 @@ private:
     HANDLE file_ = INVALID_HANDLE_VALUE;
 };
 
-#else  // POSIX implementation
+#else // POSIX implementation
 
 /// RAII wrapper for memory-mapped files (read-only).
 ///
@@ -192,44 +236,19 @@ public:
     MmapFile() = default;
 
     /// Open and map a file read-only. Throws on failure.
-    explicit MmapFile(const std::string& path) {
-        fd_ = ::open(path.c_str(), O_RDONLY);
-        if (fd_ < 0) {
-            throw std::runtime_error("MmapFile: cannot open '" + path + "'");
-        }
+    explicit MmapFile(const std::string& path) : MmapFile(open_read_only(path), path) {}
 
-        struct stat st;
-        if (::fstat(fd_, &st) < 0) {
-            ::close(fd_);
-            fd_ = -1;
-            throw std::runtime_error("MmapFile: fstat failed for '" + path + "'");
-        }
-        size_ = static_cast<size_t>(st.st_size);
+    /// Consume and map an already-open file without reopening any path.
+    /// Ownership transfers only after mapping succeeds.
+    explicit MmapFile(OwnedNativeFile&& file)
+        : MmapFile(std::move(file), std::string("owned native file")) {}
 
-        if (size_ == 0) {
-            // Empty file: valid but no mapping needed
-            data_ = nullptr;
-            return;
-        }
-
-        data_ = static_cast<const uint8_t*>(
-            ::mmap(nullptr, size_, PROT_READ, MAP_PRIVATE, fd_, 0));
-        if (data_ == MAP_FAILED) {
-            data_ = nullptr;
-            ::close(fd_);
-            fd_ = -1;
-            throw std::runtime_error("MmapFile: mmap failed for '" + path + "'");
-        }
-
-        // Advise sequential access for relation scanning
-        ::madvise(const_cast<uint8_t*>(data_), size_, MADV_SEQUENTIAL);
+    ~MmapFile() {
+        close();
     }
 
-    ~MmapFile() { close(); }
-
     // Move-only
-    MmapFile(MmapFile&& other) noexcept
-        : data_(other.data_), size_(other.size_), fd_(other.fd_) {
+    MmapFile(MmapFile&& other) noexcept : data_(other.data_), size_(other.size_), fd_(other.fd_) {
         other.data_ = nullptr;
         other.size_ = 0;
         other.fd_ = -1;
@@ -258,16 +277,15 @@ public:
             assert(rc == 0 && "MmapFile::close: munmap failed");
             if (rc != 0) {
                 // Best-effort warning; can't throw from noexcept.
-                std::fprintf(stderr, "[mmap_file] munmap failed: errno=%d size=%zu\n",
-                             errno, size_);
+                std::fprintf(stderr, "[mmap_file] munmap failed: errno=%d size=%zu\n", errno,
+                             size_);
             }
         }
         if (fd_ >= 0) {
             int rc = ::close(fd_);
             assert(rc == 0 && "MmapFile::close: close(fd) failed");
             if (rc != 0) {
-                std::fprintf(stderr, "[mmap_file] close(fd=%d) failed: errno=%d\n",
-                             fd_, errno);
+                std::fprintf(stderr, "[mmap_file] close(fd=%d) failed: errno=%d\n", fd_, errno);
             }
         }
         data_ = nullptr;
@@ -275,13 +293,18 @@ public:
         fd_ = -1;
     }
 
-    [[nodiscard]] const uint8_t* data() const noexcept { return data_; }
-    [[nodiscard]] size_t size() const noexcept { return size_; }
-    [[nodiscard]] bool is_open() const noexcept { return fd_ >= 0; }
+    [[nodiscard]] const uint8_t* data() const noexcept {
+        return data_;
+    }
+    [[nodiscard]] size_t size() const noexcept {
+        return size_;
+    }
+    [[nodiscard]] bool is_open() const noexcept {
+        return fd_ >= 0;
+    }
 
     /// Read a typed value at byte offset. No bounds check in release.
-    template <typename T>
-    [[nodiscard]] T read_at(size_t offset) const {
+    template <typename T> [[nodiscard]] T read_at(size_t offset) const {
         assert(offset + sizeof(T) <= size_);
         T val;
         std::memcpy(&val, data_ + offset, sizeof(T));
@@ -289,8 +312,7 @@ public:
     }
 
     /// Get a pointer to a contiguous array of T at byte offset.
-    template <typename T>
-    [[nodiscard]] const T* ptr_at(size_t offset) const {
+    template <typename T> [[nodiscard]] const T* ptr_at(size_t offset) const {
         assert(offset <= size_);
         return reinterpret_cast<const T*>(data_ + offset);
     }
@@ -303,11 +325,54 @@ public:
     }
 
 private:
+    [[nodiscard]] static OwnedNativeFile open_read_only(const std::string& path) {
+        const int descriptor = ::open(path.c_str(), O_RDONLY);
+        if (descriptor < 0) {
+            throw std::runtime_error("MmapFile: cannot open '" + path + "'");
+        }
+        return OwnedNativeFile::adopt_ownership(descriptor);
+    }
+
+    MmapFile(OwnedNativeFile&& file, const std::string& source) {
+        if (!file.valid()) {
+            throw std::invalid_argument("MmapFile: cannot map an invalid owned native file");
+        }
+
+        struct stat metadata {};
+        if (::fstat(file.handle_, &metadata) < 0) {
+            throw std::runtime_error("MmapFile: fstat failed for '" + source + "'");
+        }
+        if (metadata.st_size < 0 ||
+            static_cast<std::uintmax_t>(metadata.st_size) > static_cast<std::uintmax_t>(SIZE_MAX)) {
+            throw std::runtime_error("MmapFile: file too large for size_t: " + source);
+        }
+        const size_t mapped_size = static_cast<size_t>(metadata.st_size);
+
+        if (mapped_size == 0) {
+            // Empty file: valid but no mapping needed
+            fd_ = file.take_native_handle();
+            return;
+        }
+
+        const auto* mapped_data = static_cast<const uint8_t*>(
+            ::mmap(nullptr, mapped_size, PROT_READ, MAP_PRIVATE, file.handle_, 0));
+        if (mapped_data == MAP_FAILED) {
+            throw std::runtime_error("MmapFile: mmap failed for '" + source + "'");
+        }
+
+        // Advise sequential access for relation scanning
+        ::madvise(const_cast<uint8_t*>(mapped_data), mapped_size, MADV_SEQUENTIAL);
+
+        fd_ = file.take_native_handle();
+        size_ = mapped_size;
+        data_ = mapped_data;
+    }
+
     const uint8_t* data_ = nullptr;
     size_t size_ = 0;
     int fd_ = -1;
 };
 
-#endif  // _WIN32
+#endif // _WIN32
 
 } // namespace gnfs::util

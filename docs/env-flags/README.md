@@ -8,11 +8,12 @@
 
 | 模块 | 开关数 | 文档 | 主题 |
 |------|-------:|------|------|
-| relation | 11 | [relation.md](relation.md) | filter merge (V0/V3)、OOC、LP key dedup、radix sort |
+| relation | 12 | [relation.md](relation.md) | structured filter、filter merge (V0/V3)、OOC、LP key dedup、radix sort |
 | linalg | 14 | [linalg.md](linalg.md) | BW Krylov、SpMV/GF(2) SIMD、SGE、转置、进度遥测 |
 | cofactor | 10 | [cofactor.md](cofactor.md) | ECM stage 并行/cache、survival predictor、Brent rho |
 | polynomial | 9 | [polynomial.md](polynomial.md) | Karatsuba / NTT / HGCD / squaring / mod-p SIMD |
 | sieve | 9 | [sieve.md](sieve.md) | checkpoint、cache tile、prefetch、lattice SIMD |
+| siqs | 1 | [siqs.md](siqs.md) | default-off shadow proof observe / explicit prefer |
 | util | 6 | [util.md](util.md) | Integer scratch pool、批量 GMP `mpz_*` 并行 |
 | sqrt | 2 | [sqrt.md](sqrt.md) | Hensel lift 并行、Couveignes pattern search 并行 |
 | factor_base | 1 | [factor_base.md](factor_base.md) | Cantor-Zassenhaus 求根并行 |
@@ -21,11 +22,11 @@
 
 绝大多数开关共享以下契约,各模块文档不再重复:
 
-- **ENV 解析**:cached(`std::once_flag` + `std::atomic`),每进程一次 `getenv`;严格解析,非法值 fallback 到 default。
+- **ENV 解析**:性能 helper 通常 cached(`std::once_flag` + `std::atomic`),每进程一次 `getenv`;正确性策略可采用无缓存纯 parser。非法值通常 fallback 到 default,但模块文档可以定义更严格的 fail-closed 契约。
 - **三态 SIMD gate**(`auto|0|1`):`auto` = 平台/尺寸可用则启用,`0` = 强制 scalar(回归 bisect / sanitizer 用),`1` = 强制 SIMD(无 SIMD 平台仍 fallback scalar)。
 - **并行 dispatcher**(整数 `N`,default 1):`N=1` 走 sequential,不创建 ThreadPool,零开销;`N>=2` dispatch 到大小 `min(N, batch)` 的 ThreadPool。
 - **cache / pool**(整数 `N`,default 0):`N=0` disabled,零开销;`N>=1` 启用,容量 `N`。
-- **bit-for-bit guarantee**:开 / 关产生逐位一致的输出(仅性能不同),由单元测试强制。
+- **bit-for-bit guarantee**:性能开关的开 / 关产生逐位一致的输出(仅性能不同),由单元测试强制。会改变算法策略的开关单独记录禁用路径与依赖空间契约。
 - **helper-only future-infra**:许多 helper 当前主 pipeline **未 wire-in**,是预留基础设施;ENV 仅在调用方显式 wire-in 后才生效。各文档「集成点」「Default」小节会注明当前是否 wire-in。
 
 ## Parallel Dispatcher Family

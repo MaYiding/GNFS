@@ -14,6 +14,10 @@ namespace gnfs::relation {
 
 struct OocPolicy {
     bool enabled;
+    /// True only for the existing atoi-compatible GNFS_OOC_RELATIONS=1 path.
+    /// Size-aware automatic enablement deliberately leaves this false so
+    /// experimental downstream routes can require an explicit opt-in.
+    bool explicitly_enabled;
     std::string_view reason;
 };
 
@@ -21,7 +25,8 @@ struct OocPolicy {
 // Examples: 1<<20 -> 20, 1<<22 -> 22 (sweet spot), 1<<23 -> 23 (50d), 1<<26 -> 26 (60d).
 inline size_t estimate_lp_bits(uint64_t large_prime_bound) noexcept {
     size_t bits = 0;
-    for (uint64_t b = large_prime_bound; b > 1; b >>= 1) ++bits;
+    for (uint64_t b = large_prime_bound; b > 1; b >>= 1)
+        ++bits;
     return bits;
 }
 
@@ -36,8 +41,7 @@ inline size_t estimate_lp_bits(uint64_t large_prime_bound) noexcept {
 //     lp_bits >= 22: ON (50d+ Round 2 OOM avoidance)
 //     lp_bits <  22: OFF (25d / 40-bit / 81-bit unchanged)
 //   ENV "" or non-numeric: std::atoi returns 0 → treated as explicit OFF
-inline OocPolicy decide_ooc_policy(const char* ooc_env,
-                                    uint64_t large_prime_bound) noexcept {
+inline OocPolicy decide_ooc_policy(const char* ooc_env, uint64_t large_prime_bound) noexcept {
     const size_t lp_bits = estimate_lp_bits(large_prime_bound);
     const bool env_set = (ooc_env != nullptr);
     const int env_int = env_set ? std::atoi(ooc_env) : 0;
@@ -57,7 +61,7 @@ inline OocPolicy decide_ooc_policy(const char* ooc_env,
         reason = "default off (lp_bits<22)";
     }
 
-    return {enabled, reason};
+    return {enabled, env_explicit_on, reason};
 }
 
-}  // namespace gnfs::relation
+} // namespace gnfs::relation

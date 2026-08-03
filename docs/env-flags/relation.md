@@ -38,6 +38,169 @@ V3 cascade 默认 OFF (V0 path 零开销). 启用时:
 
 ---
 
+## Structured relation filter policy (GNFS_STRUCTURED_FILTER)
+
+`GNFS_STRUCTURED_FILTER` 是结构化关系消元的 opt-in 策略开关。M4 提供严格解析、
+预消费策略决策和共享 `RelationReductionEngine` 的单次 structured dispatch，并已
+接入 adaptive sieve、distributed 前置决策和公开 `Pipeline::filter()` 入口。当前
+调用方固定传入 `auto_eligible=false`；在获得独立尺寸实证前，不得复用 V0 BFS 或
+OOC 的 `lp_bits` 阈值冒充结构化策略的 auto 证据。
+
+受支持的实验边界包括两类启用 LP 的输入：内存 vector route，以及显式普通 OOC
+route。后者要求同时设置 `GNFS_STRUCTURED_FILTER=1` 和按现有 `atoi` 兼容语义解析为
+1 的 `GNFS_OOC_RELATIONS`，且不能启用 sieve resume 或 distributed route。尺寸阈值
+自动打开的 OOC 不算显式授权；forced structured 会在运行前置判定中拒绝，`auto`
+继续使用调用方具名的 legacy 策略。resume corpus 和 distributed worker stores 仍未
+接入 structured reducer。
+
+普通 OOC adaptive 生产 route 要求 collector 以 `check_duplicates=true` 运行。
+`with_unique_ooc_prefix()` 在 collector 锁内证明
+`seen_.size() == writer.count() == stats.total_relations` 后，签发私有构造的
+`CollectorUniqueOOCPrefixSource` 强类型 capability。engine 的直达入口只接受该具体
+类型；任意 `RelationSource` 自行声明 marker 不能替代 collector 的唯一性证明。
+
+collector 暂停 append，并把已提交 raw prefix 暴露为 callback-scoped、只读的
+indexed source。engine 在该 callback 内完成全量 raw relation 校验、固定 V1 corpus
+digest、LP histogram、incidence 构建、并行归约和 transactional OOC output
+发布；所有 reducer worker 与 future 必须在 callback 返回前收束。该路径不再做
+`ABPair` 去重，也不创建 per-generation working corpus。callback 结束后，collector
+先销毁 reader、解除 mmap，再用精确 descriptor 恢复 raw append。source
+integrity/I/O 失败会使 raw fail closed；配置、归约、output 或 `std::bad_alloc`
+失败会先恢复 raw 再传播，resume 失败优先。
+
+强类型 capability 的 count 证明还会绑定到实际 payload：初扫使用临时 exact
+`ABPair` set，逐行核对 raw AB 属于 collector 的完整 `seen_` 集合，并为每个 ordinal
+保存 128-bit V1 relation fingerprint。reducer 的每次并发重读都校验该 fingerprint；
+output finalize 后，engine 在同一 suspended descriptor 上打开第二个 fresh reader/new
+mapping，再完整复核一次。这样不会依赖旧 `MAP_PRIVATE` view 是否观察到底层同尺寸
+改写。集合、语义或 fingerprint 漂移会删除未发布 output 并把 raw writer 标记为
+Failed。fingerprint 是进程内重放一致性校验，不是密码学认证或持久格式。
+最终成功 probe 必须与 terminal raw 的 format、store identity、count 和 physical extent
+一致，Pipeline 才会在所有用户 callback 成功后转交并删除 raw owner。
+
+这条路径不是 native incremental reduction：第 `r` 轮仍完整读取截至该轮的
+raw prefix，因此累计解码与 I/O 仍为 `O(rounds * relations)`。raw writer 在整轮
+校验、归约和 output 发布期间都处于 `Suspended`，所以 relation collection 不能与
+该轮归约重叠。生产直达 route 的每代 relation-payload 磁盘峰值为 `raw + output`
+两份；这只是 payload 拓扑，不是 RSS 结论。
+collector `ABPair` set、每行 16-byte fingerprint、LP histogram、incidence、logical
+rows 与 history 仍是 corpus-scale metadata。初扫的第二个 exact AB set 和 LP weight
+map 会在 incidence 构建前释放，避免与 reducer metadata 叠加；这仍不构成 RSS 上界。
+跨平台 process RSS helper 和 5K/50K/200K 独立进程测量入口已经接入，但其
+lifetime peak 是进程高水位，不是 route 的净分配量。真实 50 位入口使用硬
+special-Q 上限，并明确标为 bounded prefix probe；它不等价于完整首轮或完整分解。
+当前仍无足以支持自动选路的真实尺寸收益证据，所以该能力继续保持 forced
+experimental route，不构成 auto 或默认启用依据。测量边界见
+[Structured OOC Measurement](../perf/structured-ooc-measurement.md)。
+
+完整 `Pipeline::run()` 在任何 progress/log callback、试探算法、checkpoint 读写和
+relation generation 分配前捕获不创建 artifact 的 route snapshot；callback 后续修改
+ENV 不会改变本次运行的 resume/OOC/distributed 路由。直接 `sieve_and_collect()` 还会
+在 fresh raw pair 原子占有成功后才发出首个 sieve callback，所以同路径冲突不截断
+sentinel，也不消费 relation generation。完整 `run()` 的显式 raw 路径冲突在进入
+sieve 时 fail closed；此前已完成的 polynomial/factor-base callback 不属于该
+fresh-pair 边界。
+
+| ENV 值 | 受支持 | `auto_eligible` | 决策 |
+|---|---:|---:|---|
+| unset / `0` | 任意 | 任意 | 使用调用方具名 legacy 策略 |
+| `1` | 是 | 任意 | 强制选择 structured |
+| `1` | 否 | 任意 | 消费 raw snapshot 前抛出 `std::invalid_argument` |
+| `auto` | 是 | 是 | 选择 structured |
+| `auto` | 否 | 任意 | 使用调用方具名 legacy 策略并记录 unsupported 原因 |
+| `auto` | 是 | 否 | 使用调用方具名 legacy 策略并记录 ineligible 原因 |
+| 其他值 | 任意 | 任意 | 消费 raw snapshot 前抛出 `std::invalid_argument` |
+
+解析严格且区分 unset 与显式空串。仅 `nullptr`、`0`、`1`、`auto` 合法；
+空串、大小写变体、`on` / `off`、`true` / `false`、前后空白和其它数字均为
+配置错误。策略 helper 接收调用方传入的 ENV 原始值，不调用 `getenv`，也不使用
+`std::once_flag` 或其它进程级静态缓存。生产入口在消费 vector raw snapshot 或借读
+OOC prefix 前解析一次，再把不可变决策传给 reducer；测试无需 reset cache。
+
+**Fallback contract**：fallback 只允许发生在 structured 启动前。`auto` 对不受
+支持或未 eligible 的输入返回 legacy 选择与稳定原因；具体 V0/V3 策略仍由调用方
+命名。`GNFS_STRUCTURED_FILTER=1` 不允许静默 fallback。structured 一旦启动，
+内部 invariant 错误必须向上传播；`NoCandidates` 是成功的未变 structured 结果，
+不是 fallback。
+
+**Bit-for-bit contract**：unset / `0` 仅返回 legacy 选择，不消费或修改 corpus，
+因此后续 legacy 输出必须与引入该策略层前逐位一致。structured 与 legacy 之间
+只要求依赖空间等价，不承诺关系行逐位相同。
+
+**M4 experimental caps**：forced ON 使用固定、保守的研究 profile，不接受额外
+ENV 数字，也不使用伪无限上限。一次 snapshot 的 candidate examinations/pass 与
+累计 emitted rows 均不超过 4096，commits 不超过 1024，正 LP fill growth 为 0，
+单次 accepted payload 不超过 8192 entries，单输出 source/materialized pairs 不超过
+64，单侧 factors 不超过 4096，batch width 不超过 4，incidence shard 不超过
+4096 rows，worker 数为 `min(hardware_concurrency, 4)`（零报告回退 1）。小 corpus
+的 row-dependent cap 进一步收紧到实际行数。达到 cap 返回显式 `BudgetLimit` 和
+完整 active basis，不 fallback legacy。相同 profile 可消费 vector 或 finalized OOC
+corpus；上述重复 prefix 扫描、corpus-scale metadata 和未测 RSS 仍阻止 auto promotion。
+profile factory 同时拒绝 worker=0 或 worker>4，因此 4-worker ceiling 是 API
+invariant，不只是 production caller 的约定。
+
+每次 structured generation 发出一条 `schema=1` relation-graph
+`structured_filter` 记录。记录包含 policy reason、generation、route、source/output
+backend、输入/输出 rows 与 LP columns、raw/output digest、raw duplicates、输入 LP
+weight histogram、commits、emitted rows、LP fill、planning/candidate/rejection
+counters、所有主 cap、batch、workers、stop reason、reduction-engine wall time，以及
+归约前后的 process current/lifetime-peak RSS。RSS 单位固定为 bytes，scope 为
+`self_lifetime`；unsupported 字段使用显式 support bit 和数值 0。peak growth 只表示
+归约测量窗口内进程高水位的增量，不能解释成净分配量。
+
+进入 `solve_matrix()` 后另发 `structured_filter_matrix`。该记录保留兼容字段
+`excess=max(rows-cols, 0)`，并新增有符号 `row_column_delta=rows-cols`、累计
+MatrixBuilder wall time 和 nonzeros。记录在 deterministic trim 完成后、SGE 前恰好
+发出一次，并与最终 `MatrixResult.matrix` handoff 对齐。thin matrix 因此不会再把
+负缺口误报为 0；归约阶段也不会伪造尚未构建的矩阵指标。
+
+**集成点**：
+
+- `include/gnfs/relation/structured_filter_policy.hpp`：严格 parser 与独立
+  `selection` / `reason` 决策，不依赖 `ReductionStrategy`。
+- `include/gnfs/relation/reduction_engine.hpp`：vector、finalized-OOC 和 generic borrowed
+  route 在 raw 校验与完整 `ABPair` 去重后选择 structured reducer；生产普通 OOC
+  直达 route 改为消费 collector-proven unique source，不重复去重。结构化执行不再
+  运行 V0/V3，错误也不 fallback。
+- `include/gnfs/relation/structured_filter_profile.hpp`：M4 forced-on profile 与
+  production worker 选择。
+- `include/gnfs/relation/relation_source.hpp` / `relation_sink.hpp`：共享 indexed
+  source 契约与显式 finalize/abort output transaction。OOC sink pair 位于
+  `<base>.gnfs-sink-lease/corpus.{relidx,reldata}`，对应的跨进程锁位于可删除
+  lease 之外并永久保留。fresh sink 另持有不可伪造、绑定目录原生 identity 的
+  move-only lease receipt；
+  `RemoveArtifacts` 自动把 pair 与私有目录的清理能力交给最终 corpus owner，
+  `Preserve` 则只转移能力而不自动 arm，后续显式 `arm_ooc_cleanup()` 仍可同时清理
+  两者。pair 删除权只由 fresh writer 的 move-only receipt 转移；
+  descriptor-only reopen 与 recovery receipt 只能读，不能升级为清理权限。
+- `RelationReductionConfig::StructuredExecutionConfig::deduplicated_ooc_base_path`：
+  generic finalized-OOC 输入以及 generic `prepare_borrowed_structured()` route 的必填 working
+  base。它必须与 output base 不同；engine 使用 `RemoveArtifacts` 管理 working
+  corpus。working/output lease root 互不允许相等或形成祖先关系，也不得与
+  raw corpus 的独占 cleanup root 重叠。sink/corpus 构造时会冻结规范化绝对路径，
+  避免后续工作目录变化重定向清理。生产普通 OOC 直达 route 拒绝非空 working
+  path；Pipeline 只从一次冻结的 run namespace 为每个 logical generation 派生
+  output sibling base。该 API 字段不是 ENV。
+- `include/gnfs/relation/collector.hpp`：appendable OOC prefix 的 callback-scoped borrowed
+  source、collector-proven unique 强类型 capability、authoritative source descriptor、兼容性
+  corpus snapshot 和 terminal one-shot handoff。fresh raw pair 使用 exclusive create，不覆盖
+  既有 artifact。
+- `src/api/pipeline.cpp`：adaptive/final probe 与公开 filter 的统一 overlay；仅显式普通
+  OOC 接入 structured，size-aware OOC、resume 和 distributed 保持 legacy/unsupported。
+- `tests/test_structured_filter_policy.cpp`：合法与非法 token、OFF、forced ON、
+  unsupported 和显式 auto eligibility 的表驱动边界。
+- `tests/test_relation_reduction_engine.cpp`：structured config 预检、NoCandidates、
+  singleton 所有权、generic borrowed prepare/finish 边界、强类型 unique prefix 直达归约、
+  AB proof/payload drift、output-finalize 后 raw-resume 失败清理、去重顺序、1/2/4
+  线程等价和 invariant fail-closed。
+- `CMakeLists.txt` / `scripts/test.sh`：注册 relation 模块的 instant 测试。
+- `tests/test_api.cpp`：公开 route 的 forced ON、unset/0/auto legacy 等价、非法值
+  callback/generation 边界、无 LP fail-closed、resume/distributed sentinel、显式 OOC
+  path drift/collision、finalized output 生命周期、terminal callback 失败保留 raw、每代
+  exact-once、最终 matrix record 对齐，以及真实 adaptive sieve structured 路径。
+
+---
+
 ## lp_bits 实验 (GNFS_OVERRIDE_LP_BITS)
 
 **ENV `GNFS_OVERRIDE_LP_BITS=N`** (commit `dce0a5e`, `e271c5a`): runtime override `params.hpp` digit-based lp_bits default. 范围 1-30. 不在范围则忽略 (default).
@@ -55,6 +218,13 @@ GNFS_OVERRIDE_LP_BITS=27 ./gnfs <N>          # any size with lp_bits=27
 ---
 
 ## V0 weight-3 merge (GNFS_V0_WEIGHT3)
+
+`Pipeline::sieve_and_collect()` captures the effective merge policy once, before
+any callback, and binds it into sieve run-identity schema 3. The same frozen
+values drive every adaptive round and terminal recovery reduction; changing
+them across restart rejects the checkpoint before opening the OOC store.
+Standalone merger/reduction calls still resolve their default policy when the
+call/config object is created.
 
 **ENV `GNFS_V0_WEIGHT3=1`** (commit `81d3331`, 2026-05-17):
 V0 Phase 2 也 merge weight=3 LP keys 的 first 2 partials (3rd 下轮变 singleton).
@@ -133,9 +303,10 @@ GNFS_V0_BFS=1 ./gnfs <81-bit>          # 自动 fallback, stderr 警告
 
 **ENV `GNFS_OOC_RELATIONS=1`** (2026-05-18 实施):
 启用 RelationCollector OOC 流式持久化, sieve 期间 relations 流式写盘
-`/tmp/gnfs_relations_<pid>.{reldata,relidx}` 而非 in-memory vector. 内存只保留
-(a,b) seen set + stats. Phase 4 filter 入口 OOCRelationReader 一次性 read_all
-→ vector. 默认 OFF (vector mode).
+`<system-temp>/gnfs_relations_<run-id>.{reldata,relidx}` 而非 in-memory vector。内存只保留
+`(a,b)` seen set + stats。legacy filter 在 probe 边界 materialize vector；同时显式
+强制 structured 时走上一节描述的 collector-proven unique raw-prefix/output 直达 route。ENV unset
+时 `lp_bits >= 22` 使用 size-aware default，显式 `0` 始终关闭，显式 `1` 绕过尺寸门槛。
 
 ```bash
 GNFS_OOC_RELATIONS=1 ./gnfs <N>                  # 启用 OOC streaming
@@ -148,25 +319,59 @@ GNFS_OOC_RELATIONS=1 ./test_gnfs_e2e             # e2e stress test OOC path
   (2026-05-17 实测, RSS ~3.5GB, sieve buckets + collector.relations_ 联合 OOM).
 - OOC mode 减小 sieve 期间 RAM peak (relations_ vector 不再 grow, seen_ 占
   ~16 B/relation, 1M relations 仅 16 MB; vs vector 1M × 500B = 500 MB).
-- fault tolerance: OOCWriter MAGIC_INCOMPLETE → MAGIC flip 设计保证 mid-write
-  crash 时 reader 严格拒绝, 不会 partial-load.
+- fault tolerance: fresh writer 在 V3 index/data header 中写入同一个 durable
+  store ID；普通 reader 严格拒绝 incomplete store。只有与 `SieveCheckpoint` V2
+  wire format 配对的 OOC V3 descriptor 可以验证并恢复 committed prefix，同时
+  截断 crash 后未提交 tail。
+- fresh writer 用 exclusive create 原子占有 `.relidx` 和 `.reldata`；任一既有 regular
+  file、directory 或 dangling symlink 都会 fail closed，不允许 fresh route 截断旧 pair。
+- V3 index 使用固定布局
+  `[magic][format_version][store_id][count][offsets...]`，data 使用
+  `[data_magic][format_version][store_id][records...]`。offset 与 descriptor
+  `data_end` 都是物理文件偏移；首 offset 及空库 EOF 均为 byte 24。finalize
+  只在最后切换 index magic，不会覆盖任一 store ID。
+- 普通 reader 保留 finalized V1/V2 只读兼容；V1/V2 不能参与 append recovery
+  或 `RelationCorpus` ownership promotion。
+- `checkpoint_prefix()` 与 finalize 会同步 data/index；POSIX 还同步父目录。
+  finalize metadata 已落盘但 final magic 未切换时，paired descriptor 仍可恢复。
+- final magic 已 flush 且文件句柄已关闭后，writer 状态固定为 `Finalized`。
+  后续目录同步或 observer hook 抛错不会把可读 pair 重新标成 `Failed`；若最终
+  durability barrier 尚未完成，重复 finalize 会重试同步。
 
 **集成点** (commits `3b843fc` → `d39b637`, 2026-05-18):
 - `include/gnfs/relation/collector.hpp` — CollectorConfig + add/get/clear/merge OOC dual mode
+- `include/gnfs/relation/ooc_relation_format.hpp` — V1/V2/V3 稳定布局常量
 - `include/gnfs/relation/ooc_relation_store.hpp` — OOCRelationWriter/Reader, MAGIC/INCOMPLETE flip
 - `include/gnfs/relation/ooc_policy.hpp` — 三态 ENV 解析 (off / auto-by-size / on)
-- `src/api/pipeline.cpp` — `sieve_and_collect` ENV-gate + base_path (检索 `GNFS_OOC_RELATIONS` getenv 点)
-- `tests/test_relation_collector.cpp` — 8 OOC unit tests (basic/dedup/N-divisibility/partial/concurrent/clear/empty-path/legacy)
+- `src/api/pipeline.cpp` — `sieve_and_collect` ENV-gate、per-run path namespace 和 structured
+  ordinary-OOC bridge
+- `tests/test_relation_collector.cpp` — OOC lifecycle、snapshot/handoff、unique-prefix capability、
+  collision、recovery 与 terminal-state tests
 - `tests/test_ooc_relations.cpp` / `tests/test_ooc_policy.cpp` — OOC store + policy
-- `tests/test_gnfs_e2e.cpp` — OOC stress test in real GNFS pipeline (5/5 PASS)
+- `tests/test_gnfs_e2e.cpp` — real GNFS pipeline OOC stress path
 
-**API 兼容**:
+**API 语义**:
 - `add()`: OOC 模式跳过 relations_.push_back, 走 OOCWriter::write
-- `get_relations()`: OOC 模式 close writer + open reader + read_all → vector (spike at Phase 4 entry)
+- `snapshot_relations()`: 暂停 writer、读取受信 prefix、解除映射并重新打开 append；
+  后续 `add()` 仍有效
+- `with_ooc_prefix()`: 在线性化 callback 内借读 committed prefix；observer 可重入，
+  owner/mutation API 在借读期确定性拒绝。callback 不得让 source/view/worker 逃逸；
+  reader 解除映射并精确 resume 后才返回 move-only 结果
+- `with_unique_ooc_prefix()`: 仅在 `check_duplicates=true` 且 seen/writer/stats 计数完全一致
+  时签发私有构造的 `CollectorUniqueOOCPrefixSource`；其 callback 生命期、source 失败分类和
+  exact-resume 顺序与 `with_ooc_prefix()` 相同
+- `snapshot_ooc_corpus()`: 不构建全量 relation vector，逐行复制 committed prefix 到独立
+  finalized corpus，同时返回 authoritative raw source descriptor；保留为显式复制 API，
+  structured adaptive 生产路径不再使用它
+- `handoff_ooc_corpus()`: terminal one-shot ownership transfer；成功后 mutation/materialize/
+  repeated finalize 均拒绝，`size()` / `stats()` 仍可读
+- `finalize_relations()` / `get_relations()`: finalize 后 read_all；此后禁止 append
+- `checkpoint_ooc()` / `resume_ooc()`: 为 sieve transaction 暴露 descriptor 配对边界
 - `size()/empty()`: 基于 writer->count() (准确反映写盘 relation 数)
-- `clear()`: OOC 模式 close + delete files + recreate writer (允许 reuse)
+- `clear()`: finalize 并 descriptor-bound 验证 exact pair 后删除，再 exclusive-create 新 writer；
+  Failed 或 handed-off collector 拒绝 destructive recycle
 - `save/load`: legacy 序列化协议 OOC 模式 disabled (return false); 直接用 OOCRelationReader
-- `merge`: OOC source 不支持 (read overhead 不实用); OOC sink 工作
+- `merge`: OOC source 显式抛错 (read overhead 不实用); OOC sink 工作
 
 ---
 
@@ -286,20 +491,26 @@ ENV parsing matrix).
 ## Filter Phase 0 LP key Bloom pre-screen (GNFS_FILTER_LP_BLOOM_BITS)
 
 **ENV `GNFS_FILTER_LP_BLOOM_BITS=N`** (2026-05-22 实施, W9 T5, range [10, 28], default 0):
-LP key (large prime key) 去重计数的可选 Bloom filter pre-screen helper.
-`filter.hpp::count_unique_lp_keys(relations)` 是 50d+/60d Round 2 adaptive
-sieve loop 的 hot path, 每次 Phase 4 entry 都扫全部 relations 把 LP key
-插入 `std::unordered_set<uint64_t>` 然后取 `.size()` 作为 effective_cols
-trim limit. 1M+ relations 时 hash-set bucket probe cache miss 显著.
+为 `uint64_t` key 流提供去重计数的可选 Bloom filter pre-screen helper。
+该 helper 最初面向 50d+/60d Round 2 adaptive sieve loop 中的
+`filter.hpp::count_unique_lp_keys(relations)` hot path。
+
+**当前状态**：生产主路径已改用 full-width structural
+`LargePrimeKey{prime, root, is_algebraic}`，并以
+`std::unordered_set<LargePrimeKey, LargePrimeKeyHash>` 精确计数。当前
+`count_unique_lp_keys` 不调用这个仅接收 `uint64_t` 的 standalone helper，
+因此 `GNFS_FILTER_LP_BLOOM_BITS` 对生产主路径无效。不得把结构键有损压缩为
+单个 `uint64_t` 来接线；未来集成需要让 Bloom 层直接支持完整结构键，同时
+保留结构键集合的精确相等性确认。
 
 ```bash
-GNFS_FILTER_LP_BLOOM_BITS=0  ./gnfs <N>   # default, pure hash-set baseline (零开销)
-GNFS_FILTER_LP_BLOOM_BITS=14 ./gnfs <N>   # 16 KiB filter (L1-friendly)
-GNFS_FILTER_LP_BLOOM_BITS=18 ./gnfs <N>   # 256 KiB filter (L2-friendly)
-GNFS_FILTER_LP_BLOOM_BITS=22 ./gnfs <N>   # 4 MiB filter (L3-friendly, 50d+)
-GNFS_FILTER_LP_BLOOM_BITS=24 ./gnfs <N>   # 16 MiB filter (60d 大数量 LP)
-GNFS_FILTER_LP_BLOOM_BITS=28 ./gnfs <N>   # 256 MiB filter (上限)
-unset GNFS_FILTER_LP_BLOOM_BITS           # 同 default 0
+GNFS_FILTER_LP_BLOOM_BITS=0  ./gnfs <N>   # helper default；当前主路径无变化
+GNFS_FILTER_LP_BLOOM_BITS=14 ./gnfs <N>   # helper 配置 16 KiB；当前主路径无变化
+GNFS_FILTER_LP_BLOOM_BITS=18 ./gnfs <N>   # helper 配置 256 KiB；当前主路径无变化
+GNFS_FILTER_LP_BLOOM_BITS=22 ./gnfs <N>   # helper 配置 4 MiB；当前主路径无变化
+GNFS_FILTER_LP_BLOOM_BITS=24 ./gnfs <N>   # helper 配置 16 MiB；当前主路径无变化
+GNFS_FILTER_LP_BLOOM_BITS=28 ./gnfs <N>   # helper 配置 256 MiB；当前主路径无变化
+unset GNFS_FILTER_LP_BLOOM_BITS           # helper 解析为 default 0
 ```
 
 **算法** (k=4, m=2^bits):
@@ -334,15 +545,14 @@ bits ∈ {0, 10, 14, 18, 22} 严格相等.
 - 数字前缀 ("16abc"): 取首数字段; 非数字前缀 ("abc16"): 视为 0
 
 **ROI 与定位**:
-- 主要 ROI: 50d+/60d 大 relation 数 (1M+) 时 `count_unique_lp_keys` 内
-  hash-set bucket cache miss 显著. Bloom (m=2^22 = 4 MiB) 完全在 L3,
-  大部分 query 直接 4-hash mask + bit-test 在 L1/L2 完成, 跳过 hash-set
-  probe.
+- 历史目标是减少 50d+/60d 大 relation 数 (1M+) 时的 hash-set bucket
+  probe。Bloom (m=2^22 = 4 MiB) 可容纳在 L3，大部分 query 先执行
+  4-hash mask + bit-test。
 - 25d/40-bit small N (< 50k relations) 无 ROI, Bloom 构造与 4-hash overhead
   反而增加常数项. 默认 OFF 保证零回归.
-- helper 当前 standalone (`count_unique_lp_keys` 主路径未 wire-in), 是
-  future-infrastructure. wire-in 时调用方需切到 `count_unique_with_bloom`
-  并传入 `filter_lp_bloom_bits()`.
+- helper 当前 standalone，生产主路径没有调用点，所以上述 ROI 尚未在主路径
+  兑现。未来接线必须扩展 helper 以接收完整 `LargePrimeKey`；不能先把
+  `prime`、`root` 与 side 有损压成 `uint64_t`。
 
 **集成点** (W9 T5, 2026-05-22):
 - `include/gnfs/relation/lp_bloom.hpp` — helper API + ENV gate + k=4 Bloom
@@ -350,35 +560,39 @@ bits ∈ {0, 10, 14, 18, 22} 严格相等.
 - `tests/test_lp_bloom.cpp` — 11 个测试 (4 ENV / 3 Bloom 行为 / 1 parity
   100k keys / 3 edge cases). 全部 instant tier
 - `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout
-- 主路径 `include/gnfs/relation/filter.hpp::count_unique_lp_keys` **未改动**
-  (helper-only landing, future wire-in)
+- `include/gnfs/relation/filter.hpp::count_unique_lp_keys` 当前使用 full-width
+  structural `LargePrimeKey`，未调用这个 `uint64_t` helper
 
-**Default OFF (bits=0)**: ENV unset → `filter_lp_bloom_bits() == 0` →
-`count_unique_with_bloom` 退化为 pure `std::unordered_set<uint64_t>` baseline,
-零行为变化. 仅当 caller wire-in helper 且用户 explicit
-`GNFS_FILTER_LP_BLOOM_BITS=N>=10` 时启用.
+**Helper default OFF (bits=0)**: ENV unset 时，若 standalone helper 被直接调用，
+`filter_lp_bloom_bits() == 0`，`count_unique_with_bloom` 退化为 pure
+`std::unordered_set<uint64_t>` baseline。当前生产主路径不调用 helper，故无论
+ENV 取值为何，均不会改变 relation filtering 行为。
 
 ---
 
 ## LP key splitmix64 hash mixing (GNFS_FILTER_LP_HASH_MIX)
 
 **ENV `GNFS_FILTER_LP_HASH_MIX=auto|0|1`** (2026-05-22 实施, W11 T5, default auto):
-LP key (large prime key) `std::unordered_set<uint64_t>` / `std::unordered_map`
-的 hash 混合 helper. libstdc++ / libc++ 默认 `std::hash<uint64_t>` 几乎是
-identity, 而 LP key 典型 packing `(prime_id << 1) | side` 在低位严重 cluster
-(小素数 ID 在低位密集, side bit 固定). 这导致 unordered_set 的 bucket 集中,
-chain 长, probe 数升高. helper 提供 splitmix64 (Stafford Mix 13) bit mixer
-打散 input bit pattern. `count_unique_lp_keys` (W9 T5 Bloom 兄弟 helper) 与
-`filter.hpp` / `clique_merger.hpp` 主路径 `std::unordered_set` 调用方 **未改动**,
-是 opt-in future wire-in.
+为 `std::unordered_set<uint64_t>` / `std::unordered_map<uint64_t, ...>` 提供
+splitmix64 (Stafford Mix 13) hash 混合。该 standalone helper 最初面向
+`(prime_id << 1) | side` 一类 64 位 LP key packing，以改善 clustered input
+的 bucket 分布。
+
+**当前状态**：生产主路径已使用 full-width structural
+`LargePrimeKey{prime, root, is_algebraic}` 与 `LargePrimeKeyHash`，不再使用
+64 位 packed LP identity。`filter.hpp`、`clique_merger.hpp` 与
+`count_unique_lp_keys` 均不调用 `LpKeyHash`，因此
+`GNFS_FILTER_LP_HASH_MIX` 对生产主路径无效。不得通过截断 `prime` 或 `root`
+来把结构键塞入该 helper；如需采用新的混合策略，应直接修改或替换
+`LargePrimeKeyHash`，并继续对完整结构键执行相等性比较。
 
 ```bash
-GNFS_FILTER_LP_HASH_MIX=auto ./gnfs <N>   # 默认: mixing 启用
-GNFS_FILTER_LP_HASH_MIX=0    ./gnfs <N>   # 显式 disable mixing (回归 bisect 用)
-GNFS_FILTER_LP_HASH_MIX=off  ./gnfs <N>   # 同 0
-GNFS_FILTER_LP_HASH_MIX=1    ./gnfs <N>   # 显式 enable (与 auto 行为一致)
-GNFS_FILTER_LP_HASH_MIX=on   ./gnfs <N>   # 同 1
-unset GNFS_FILTER_LP_HASH_MIX             # 同 auto
+GNFS_FILTER_LP_HASH_MIX=auto ./gnfs <N>   # helper 默认启用；当前主路径无变化
+GNFS_FILTER_LP_HASH_MIX=0    ./gnfs <N>   # helper 禁用；当前主路径无变化
+GNFS_FILTER_LP_HASH_MIX=off  ./gnfs <N>   # helper 语义同 0
+GNFS_FILTER_LP_HASH_MIX=1    ./gnfs <N>   # helper 启用；当前主路径无变化
+GNFS_FILTER_LP_HASH_MIX=on   ./gnfs <N>   # helper 语义同 1
+unset GNFS_FILTER_LP_HASH_MIX             # helper 解析为 auto
 ```
 
 **Helper API** (`include/gnfs/relation/lp_key_hash.hpp`):
@@ -423,17 +637,14 @@ of input. 同一输入永远产生同一输出. constexpr-evaluable. 单元测�
 - "1" / "on" → ForceOn (mixing 启用, 与 Auto 行为一致, 仅语义区分用户意图)
 
 **ROI 与定位**:
-- 主要 ROI: LP key 集合用 `std::unordered_set<uint64_t, LpKeyHash>` 后,
-  clustered LP key 散到全 bucket 范围, 减小 chain 长. 50d+/60d 大 LP key
-  集合 (1M+ unique) 上 hash-set lookup wall-time 实测可见. 默认 ON (Auto)
-  对未来 wire-in 调用方零额外配置.
-- 与 W9 T5 `GNFS_FILTER_LP_BLOOM_BITS` 互补: Bloom 是 pre-screen 减少
-  hash-set probe 数, 本 helper 是改善 hash-set 内部 bucket 分布. 可同时启用.
-- helper 当前 standalone (`filter.hpp::count_unique_lp_keys` 与
-  `clique_merger.hpp` 主路径 `std::unordered_set` 未 wire-in), 是
-  future-infrastructure. wire-in 时 caller 把
-  `std::unordered_set<uint64_t>` 改为 `std::unordered_set<uint64_t, LpKeyHash>`
-  即可生效, 不需修改 insert / find / count 等调用.
+- 历史目标是让 `std::unordered_set<uint64_t, LpKeyHash>` 中的 clustered
+  64 位 key 分散到更多 bucket，减小 chain 长。该结论只描述 standalone
+  helper，不是当前生产 LP 集合的性能结论。
+- 与 W9 T5 `GNFS_FILTER_LP_BLOOM_BITS` 的历史设计互补：Bloom 减少 probe，
+  mixer 改善 bucket 分布。两个 helper 目前都没有生产调用点。
+- 当前不能把 `std::unordered_set<LargePrimeKey, LargePrimeKeyHash>` 直接替换为
+  `std::unordered_set<uint64_t, LpKeyHash>`。这种替换要求有损压缩完整结构键，
+  会破坏 LP identity 正确性。
 - perf-info 实测 10k LP-shaped keys (`(pid << 1) | side` 序列):
   identity hash max_bucket_load=1 (uniform-stride pattern 已被 identity 完美散开),
   LpKeyHash max_bucket_load=6 (mixer 引入 Poisson-style 自然 collision).
@@ -450,10 +661,12 @@ of input. 同一输入永远产生同一输出. constexpr-evaluable. 单元测�
 - `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
   relation 模块.
 - 主路径 `include/gnfs/relation/filter.hpp` / `include/gnfs/relation/clique_merger.hpp`
-  **未改动** (helper-only landing, future wire-in).
+  当前使用 full-width structural `LargePrimeKey` 与 `LargePrimeKeyHash`，未调用
+  该 `uint64_t` helper。
 
-**Default ON (auto)**: helper standalone, 当前主 pipeline 无调用点,
-ENV 对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
+**Helper default ON (auto)**: `auto` 只控制 standalone `uint64_t` helper。
+当前主 pipeline 无调用点，因此 ENV 对运行行为无影响。未来若扩展 hash
+策略，应以完整 `LargePrimeKey` 为输入，不能复用有损 packed identity。
 
 ---
 

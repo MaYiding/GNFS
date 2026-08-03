@@ -1,0 +1,1197 @@
+// Pure contract tests for the SIQS RSS campaign journal.
+// This test never launches a process, opens a fixture, calls factor(), or samples live RSS.
+
+#include <gnfs/siqs/shadow_proof_rss_campaign_journal.hpp>
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <exception>
+#include <iostream>
+#include <optional>
+#include <span>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
+namespace {
+
+using namespace gnfs::siqs;
+using gnfs::util::ProcessMemoryBackend;
+
+static_assert(!std::is_default_constructible_v<SIQSShadowProofRssPreparedSlotStart>);
+static_assert(!std::is_copy_constructible_v<SIQSShadowProofRssPreparedSlotStart>);
+static_assert(std::is_move_constructible_v<SIQSShadowProofRssPreparedSlotStart>);
+static_assert(std::is_nothrow_move_assignable_v<SIQSShadowProofRssPreparedSlotStart>);
+static_assert(!std::is_default_constructible_v<SIQSShadowProofRssDurableRecordReceipt>);
+static_assert(!std::is_copy_constructible_v<SIQSShadowProofRssDurableRecordReceipt>);
+static_assert(std::is_move_constructible_v<SIQSShadowProofRssDurableRecordReceipt>);
+static_assert(!std::is_move_assignable_v<SIQSShadowProofRssDurableRecordReceipt>);
+static_assert(!std::is_default_constructible_v<SIQSShadowProofRssLaunchPermit>);
+static_assert(!std::is_copy_constructible_v<SIQSShadowProofRssLaunchPermit>);
+static_assert(std::is_move_constructible_v<SIQSShadowProofRssLaunchPermit>);
+static_assert(!std::is_move_assignable_v<SIQSShadowProofRssLaunchPermit>);
+static_assert(std::is_nothrow_move_constructible_v<std::optional<SIQSShadowProofRssLaunchPermit>>);
+static_assert(!std::is_move_assignable_v<std::optional<SIQSShadowProofRssLaunchPermit>>);
+static_assert(!std::is_copy_constructible_v<SIQSShadowProofRssCampaignJournalResume>);
+static_assert(SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT == 80);
+static_assert(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_MAX_CONCURRENCY == 1);
+static_assert(SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SCHEMA_VERSION == 3);
+
+[[nodiscard]] constexpr SIQSShadowProofRssProbeExecutionIdentity
+test_probe_execution_identity() noexcept {
+    SIQSShadowProofRssProbeExecutionIdentity identity;
+    for (std::size_t index = 0; index < identity.executable_sha256.bytes.size(); ++index) {
+        identity.executable_sha256.bytes[index] = static_cast<std::byte>(index);
+        identity.execution_contract_sha256.bytes[index] = static_cast<std::byte>(index + 32);
+    }
+    return identity;
+}
+
+inline constexpr auto TEST_PROBE_EXECUTION_IDENTITY = test_probe_execution_identity();
+static_assert(
+    siqs_shadow_proof_rss_probe_execution_identity_is_valid(TEST_PROBE_EXECUTION_IDENTITY));
+
+constexpr auto EMPTY_STDERR_SEAL =
+    seal_siqs_shadow_proof_rss_artifact(SIQSShadowProofRssArtifactKind::probe_stderr, {});
+static_assert(EMPTY_STDERR_SEAL.committed);
+static_assert(EMPTY_STDERR_SEAL.byte_count == 0);
+static_assert(EMPTY_STDERR_SEAL.digest != SIQSShadowProofRssCorpusDigest{});
+
+int checks_passed = 0;
+int checks_failed = 0;
+
+#define CHECK(condition)                                                                           \
+    do {                                                                                           \
+        if (condition) {                                                                           \
+            ++checks_passed;                                                                       \
+        } else {                                                                                   \
+            ++checks_failed;                                                                       \
+            std::cerr << "FAIL: " #condition " at " << __FILE__ << ':' << __LINE__ << '\n';        \
+        }                                                                                          \
+    } while (false)
+
+[[nodiscard]] constexpr SIQSShadowProofRssGatePolicy make_policy() noexcept {
+    SIQSShadowProofRssGatePolicy policy;
+    policy.approved = true;
+    policy.corpus_id = SIQS_SHADOW_PROOF_RSS_GATE_CORPUS_ID;
+    policy.corpus_digest = {SIQS_SHADOW_PROOF_RSS_GATE_CORPUS_DIGEST_LOW,
+                            SIQS_SHADOW_PROOF_RSS_GATE_CORPUS_DIGEST_HIGH};
+    policy.operating_system = SIQSShadowProofRssOperatingSystem::darwin;
+    policy.architecture = SIQSShadowProofRssArchitecture::arm64;
+    policy.memory_backend = ProcessMemoryBackend::DarwinGetrusage;
+    policy.resolved_production_sieve_workers = 4;
+    policy.candidate_revision = "candidate-revision-1";
+    policy.probe_execution_identity = TEST_PROBE_EXECUTION_IDENTITY;
+    policy.approval_id = "approval-ticket-1";
+    policy.journal_store = {{UINT64_C(1010101010101010), UINT64_C(2020202020202020)},
+                            {UINT64_C(1111222233334444), UINT64_C(5555666677778888)},
+                            "rss-campaign-prod-v1"};
+    policy.deployment_budget_bytes = UINT64_C(1000000000);
+    policy.reserved_headroom_bytes = UINT64_C(100000000);
+    return policy;
+}
+
+[[nodiscard]] constexpr SIQSShadowProofRssCampaignRuntimeFacts make_facts() noexcept {
+    return {
+        .operating_system = SIQSShadowProofRssOperatingSystem::darwin,
+        .architecture = SIQSShadowProofRssArchitecture::arm64,
+        .memory_backend = ProcessMemoryBackend::DarwinGetrusage,
+        .resolved_production_sieve_workers = 4,
+        .probe_kind = SIQSShadowProofRssProbeKind::production_holdout,
+        .candidate_revision = "candidate-revision-1",
+        .probe_execution_identity = TEST_PROBE_EXECUTION_IDENTITY,
+        .release_build = true,
+        .ndebug = true,
+    };
+}
+
+[[nodiscard]] SIQSShadowProofRssJournalCommitPayload make_payload(
+    SIQSShadowProofRssSampleMode mode, uint64_t peak,
+    SIQSShadowProofRssProbeKind probe_kind = SIQSShadowProofRssProbeKind::production_holdout,
+    SIQSShadowProofRssProbeExecutionIdentity probe_execution_identity =
+        TEST_PROBE_EXECUTION_IDENTITY) {
+    SIQSShadowProofRssJournalCommitPayload payload;
+    payload.actual_operating_system = SIQSShadowProofRssOperatingSystem::darwin;
+    payload.actual_architecture = SIQSShadowProofRssArchitecture::arm64;
+    payload.actual_memory_backend = ProcessMemoryBackend::DarwinGetrusage;
+    payload.actual_resolved_sieve_workers = 4;
+    payload.deployment_probe_kind = probe_kind;
+    payload.fresh_process = true;
+    payload.completed = true;
+    payload.factor_identity = SIQSShadowProofRssFactorIdentity::pass;
+    payload.proof_evidence = mode == SIQSShadowProofRssSampleMode::off
+                                 ? SIQSShadowProofRssEvidence::not_applicable
+                                 : SIQSShadowProofRssEvidence::pass;
+    payload.matrix_evidence = payload.proof_evidence;
+    payload.absolute_peak_rss_bytes = peak;
+    payload.observe_minus_off_peak_bytes = INT64_C(17);
+    payload.current_rss_bytes = peak / 2;
+    payload.peak_growth_bytes = peak / 3;
+    payload.wall_ns = UINT64_C(1000) + peak;
+    payload.stdout_seal = seal_siqs_shadow_proof_rss_artifact(
+        SIQSShadowProofRssArtifactKind::probe_stdout, "synthetic-stdout-record\n");
+    payload.stderr_seal = seal_siqs_shadow_proof_rss_artifact(
+        SIQSShadowProofRssArtifactKind::probe_stderr,
+        mode == SIQSShadowProofRssSampleMode::off ? std::string_view{}
+                                                  : std::string_view{"synthetic-observe-record\n"});
+    payload.joined_sample_seal = seal_siqs_shadow_proof_rss_artifact(
+        SIQSShadowProofRssArtifactKind::joined_gate_sample, "synthetic-joined-sample\n");
+    payload.probe_execution_identity = probe_execution_identity;
+    return payload;
+}
+
+[[nodiscard]] SIQSShadowProofRssCampaignJournalRecord
+make_synthetic_commit(const SIQSShadowProofRssCampaignJournalRecord& start,
+                      const SIQSShadowProofRssJournalCommitPayload& payload) {
+    SIQSShadowProofRssCampaignJournalRecord commit;
+    commit.schema_version = SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SCHEMA_VERSION;
+    commit.sequence_number = start.sequence_number + 1;
+    commit.kind = SIQSShadowProofRssJournalRecordKind::slot_committed;
+    commit.previous_record_digest = start.record_digest;
+    commit.plan_digest = start.plan_digest;
+    commit.slot_number = start.slot_number;
+    commit.slot_digest = start.slot_digest;
+    commit.commit_payload = payload;
+    commit.record_digest = shadow_proof_rss_campaign_journal_detail::record_digest(commit);
+    return commit;
+}
+
+[[nodiscard]] SIQSShadowProofRssCampaignJournalHeader
+make_header(const SIQSShadowProofRssGatePolicy& policy,
+            const SIQSShadowProofRssCampaignRuntimeFacts& facts) {
+    auto absent = resume_siqs_shadow_proof_rss_campaign_journal(
+        &policy, &facts, SIQSShadowProofRssJournalPresence::absent, nullptr, {});
+    CHECK(absent.status == SIQSShadowProofRssJournalStatus::ready);
+    CHECK(absent.reason == SIQSShadowProofRssJournalReason::ready);
+    CHECK(absent.action == SIQSShadowProofRssJournalAction::create_header);
+    CHECK(absent.next_slot_number == 1);
+    CHECK(absent.header_to_create.has_value());
+    CHECK(!absent.prepared_slot_start.has_value());
+    CHECK(absent.header_to_create->policy_binding_digest ==
+          siqs_shadow_proof_rss_policy_binding_digest(policy));
+    return *absent.header_to_create;
+}
+
+[[nodiscard]] bool append_one_slot(const SIQSShadowProofRssGatePolicy& policy,
+                                   const SIQSShadowProofRssCampaignRuntimeFacts& facts,
+                                   const SIQSShadowProofRssCampaignJournalHeader& header,
+                                   std::vector<SIQSShadowProofRssCampaignJournalRecord>& records,
+                                   bool check_dangling) {
+    auto ready = resume_siqs_shadow_proof_rss_campaign_journal(
+        &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header, records);
+    CHECK(ready.status == SIQSShadowProofRssJournalStatus::ready);
+    CHECK(ready.action == SIQSShadowProofRssJournalAction::append_slot_start);
+    CHECK(ready.prepared_slot_start.has_value());
+    if (!ready.prepared_slot_start.has_value()) {
+        return false;
+    }
+
+    auto prepared = std::move(*ready.prepared_slot_start);
+    const auto start = prepared.record();
+    CHECK(prepared.active());
+    CHECK(start.kind == SIQSShadowProofRssJournalRecordKind::slot_started);
+    CHECK(start.slot_number == records.size() / 2 + 1);
+
+    if (check_dangling) {
+        auto dangling_records = records;
+        dangling_records.push_back(start);
+        auto dangling = resume_siqs_shadow_proof_rss_campaign_journal(
+            &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header, dangling_records);
+        CHECK(dangling.status == SIQSShadowProofRssJournalStatus::tainted);
+        CHECK(dangling.reason == SIQSShadowProofRssJournalReason::dangling_slot_start);
+        CHECK(dangling.action == SIQSShadowProofRssJournalAction::append_taint);
+        CHECK(dangling.committed_slot_count == records.size() / 2);
+        CHECK(dangling.next_slot_number == start.slot_number);
+        CHECK(dangling.taint_to_append.has_value());
+        if (dangling.taint_to_append.has_value()) {
+            dangling_records.push_back(*dangling.taint_to_append);
+            auto sealed_taint = resume_siqs_shadow_proof_rss_campaign_journal(
+                &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header,
+                dangling_records);
+            CHECK(sealed_taint.status == SIQSShadowProofRssJournalStatus::tainted);
+            CHECK(sealed_taint.reason == SIQSShadowProofRssJournalReason::explicitly_tainted);
+            CHECK(sealed_taint.action == SIQSShadowProofRssJournalAction::none);
+            CHECK(!sealed_taint.prepared_slot_start.has_value());
+        }
+    }
+
+    records.push_back(start); // Pure replay fixture; no durability claim is made.
+    const auto plan = make_siqs_shadow_proof_rss_campaign_plan(&policy);
+    const auto& slot = plan.slots[start.slot_number - 1];
+    const auto payload = make_payload(slot.mode, UINT64_C(1000000) + start.slot_number,
+                                      facts.probe_kind, facts.probe_execution_identity);
+    const auto commit = make_synthetic_commit(start, payload);
+    CHECK(commit.kind == SIQSShadowProofRssJournalRecordKind::slot_committed);
+    CHECK(commit.sequence_number == start.sequence_number + 1);
+    CHECK(commit.previous_record_digest == start.record_digest);
+    records.push_back(commit);
+    return true;
+}
+
+void expect_no_action(const SIQSShadowProofRssCampaignJournalResume& result,
+                      SIQSShadowProofRssJournalStatus status,
+                      SIQSShadowProofRssJournalReason reason) {
+    CHECK(result.status == status);
+    CHECK(result.reason == reason);
+    CHECK(result.action == SIQSShadowProofRssJournalAction::none);
+    CHECK(!result.header_to_create.has_value());
+    CHECK(!result.prepared_slot_start.has_value());
+}
+
+void test_digest_golden_and_direct_identity_binding() {
+    const auto policy = make_policy();
+    const auto facts = make_facts();
+    const auto plan = make_siqs_shadow_proof_rss_campaign_plan(&policy);
+    const auto policy_digest = siqs_shadow_proof_rss_policy_binding_digest(policy);
+    const auto facts_digest = shadow_proof_rss_campaign_journal_detail::runtime_facts_digest(facts);
+    const auto plan_digest =
+        shadow_proof_rss_campaign_journal_detail::plan_digest(plan, policy_digest, facts_digest);
+    const auto slot_digest =
+        shadow_proof_rss_campaign_journal_detail::slot_digest(plan_digest, plan.slots[0]);
+    const auto header = make_header(policy, facts);
+    const auto ready = resume_siqs_shadow_proof_rss_campaign_journal(
+        &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header, {});
+    CHECK(ready.prepared_slot_start.has_value());
+    if (!ready.prepared_slot_start.has_value()) {
+        return;
+    }
+    const auto start = ready.prepared_slot_start->record();
+    const auto commit =
+        make_synthetic_commit(start, make_payload(plan.slots[0].mode, UINT64_C(1000001)));
+
+    CHECK((facts_digest == SIQSShadowProofRssCorpusDigest{UINT64_C(8624788272733518812),
+                                                          UINT64_C(7101834960391791036)}));
+    CHECK((plan_digest == SIQSShadowProofRssCorpusDigest{UINT64_C(11758829139004436893),
+                                                         UINT64_C(7797381071883052783)}));
+    CHECK((slot_digest == SIQSShadowProofRssCorpusDigest{UINT64_C(9368380339141518580),
+                                                         UINT64_C(4514767332851739578)}));
+    CHECK((header.header_digest == SIQSShadowProofRssCorpusDigest{UINT64_C(8589499005228493453),
+                                                                  UINT64_C(4948389377862530220)}));
+    CHECK((start.record_digest == SIQSShadowProofRssCorpusDigest{UINT64_C(16501681039389251898),
+                                                                 UINT64_C(1976505039744510824)}));
+    CHECK((commit.record_digest == SIQSShadowProofRssCorpusDigest{UINT64_C(2962927626944888881),
+                                                                  UINT64_C(2801105212135068312)}));
+
+    auto changed_facts = facts;
+    changed_facts.probe_execution_identity.executable_sha256.bytes[1] ^= std::byte{0xff};
+    CHECK(shadow_proof_rss_campaign_journal_detail::runtime_facts_digest(changed_facts) !=
+          facts_digest);
+
+    auto changed_plan = plan;
+    changed_plan.slots[0].probe_execution_identity.executable_sha256.bytes[1] ^= std::byte{0xff};
+    CHECK(shadow_proof_rss_campaign_journal_detail::plan_digest(changed_plan, policy_digest,
+                                                                facts_digest) != plan_digest);
+
+    auto changed_slot = plan.slots[0];
+    changed_slot.probe_execution_identity.execution_contract_sha256.bytes[1] ^= std::byte{0xff};
+    CHECK(shadow_proof_rss_campaign_journal_detail::slot_digest(plan_digest, changed_slot) !=
+          slot_digest);
+
+    auto changed_header = header;
+    changed_header.probe_execution_identity.executable_sha256.bytes[1] ^= std::byte{0xff};
+    CHECK(shadow_proof_rss_campaign_journal_detail::header_digest(changed_header) !=
+          header.header_digest);
+
+    auto changed_commit = commit;
+    changed_commit.commit_payload.probe_execution_identity.execution_contract_sha256.bytes[1] ^=
+        std::byte{0xff};
+    CHECK(shadow_proof_rss_campaign_journal_detail::record_digest(changed_commit) !=
+          commit.record_digest);
+}
+
+void test_policy_and_runtime_preflight() {
+    const auto approved = make_policy();
+    const auto facts = make_facts();
+
+    expect_no_action(resume_siqs_shadow_proof_rss_campaign_journal(
+                         nullptr, &facts, SIQSShadowProofRssJournalPresence::absent, nullptr, {}),
+                     SIQSShadowProofRssJournalStatus::blocked,
+                     SIQSShadowProofRssJournalReason::policy_missing);
+
+    auto policy = approved;
+    policy.approved = false;
+    expect_no_action(resume_siqs_shadow_proof_rss_campaign_journal(
+                         &policy, &facts, SIQSShadowProofRssJournalPresence::absent, nullptr, {}),
+                     SIQSShadowProofRssJournalStatus::blocked,
+                     SIQSShadowProofRssJournalReason::policy_not_approved);
+
+    policy = approved;
+    policy.deployment_budget_bytes.reset();
+    expect_no_action(resume_siqs_shadow_proof_rss_campaign_journal(
+                         &policy, &facts, SIQSShadowProofRssJournalPresence::absent, nullptr, {}),
+                     SIQSShadowProofRssJournalStatus::blocked,
+                     SIQSShadowProofRssJournalReason::policy_budget_missing);
+
+    policy = approved;
+    policy.reserved_headroom_bytes.reset();
+    expect_no_action(resume_siqs_shadow_proof_rss_campaign_journal(
+                         &policy, &facts, SIQSShadowProofRssJournalPresence::absent, nullptr, {}),
+                     SIQSShadowProofRssJournalStatus::blocked,
+                     SIQSShadowProofRssJournalReason::policy_headroom_missing);
+    policy = approved;
+    policy.deployment_budget_bytes = policy.reserved_headroom_bytes;
+    expect_no_action(resume_siqs_shadow_proof_rss_campaign_journal(
+                         &policy, &facts, SIQSShadowProofRssJournalPresence::absent, nullptr, {}),
+                     SIQSShadowProofRssJournalStatus::invalid,
+                     SIQSShadowProofRssJournalReason::policy_budget_not_above_headroom);
+    policy = approved;
+    policy.corpus_id = "wrong-corpus";
+    expect_no_action(resume_siqs_shadow_proof_rss_campaign_journal(
+                         &policy, &facts, SIQSShadowProofRssJournalPresence::absent, nullptr, {}),
+                     SIQSShadowProofRssJournalStatus::invalid,
+                     SIQSShadowProofRssJournalReason::policy_binding_invalid);
+
+    expect_no_action(
+        resume_siqs_shadow_proof_rss_campaign_journal(
+            &approved, nullptr, SIQSShadowProofRssJournalPresence::absent, nullptr, {}),
+        SIQSShadowProofRssJournalStatus::invalid,
+        SIQSShadowProofRssJournalReason::runtime_facts_missing);
+
+    auto changed = facts;
+    changed.operating_system = SIQSShadowProofRssOperatingSystem::linux;
+    changed.memory_backend = ProcessMemoryBackend::LinuxGetrusage;
+    expect_no_action(
+        resume_siqs_shadow_proof_rss_campaign_journal(
+            &approved, &changed, SIQSShadowProofRssJournalPresence::absent, nullptr, {}),
+        SIQSShadowProofRssJournalStatus::invalid,
+        SIQSShadowProofRssJournalReason::runtime_facts_mismatch);
+    changed = facts;
+    changed.architecture = SIQSShadowProofRssArchitecture::x86_64;
+    expect_no_action(
+        resume_siqs_shadow_proof_rss_campaign_journal(
+            &approved, &changed, SIQSShadowProofRssJournalPresence::absent, nullptr, {}),
+        SIQSShadowProofRssJournalStatus::invalid,
+        SIQSShadowProofRssJournalReason::runtime_facts_mismatch);
+    changed = facts;
+    changed.memory_backend = ProcessMemoryBackend::LinuxGetrusage;
+    expect_no_action(
+        resume_siqs_shadow_proof_rss_campaign_journal(
+            &approved, &changed, SIQSShadowProofRssJournalPresence::absent, nullptr, {}),
+        SIQSShadowProofRssJournalStatus::invalid,
+        SIQSShadowProofRssJournalReason::runtime_facts_invalid);
+    changed = facts;
+    changed.resolved_production_sieve_workers = 3;
+    expect_no_action(
+        resume_siqs_shadow_proof_rss_campaign_journal(
+            &approved, &changed, SIQSShadowProofRssJournalPresence::absent, nullptr, {}),
+        SIQSShadowProofRssJournalStatus::invalid,
+        SIQSShadowProofRssJournalReason::runtime_facts_mismatch);
+    changed = facts;
+    changed.candidate_revision = "other-revision";
+    expect_no_action(
+        resume_siqs_shadow_proof_rss_campaign_journal(
+            &approved, &changed, SIQSShadowProofRssJournalPresence::absent, nullptr, {}),
+        SIQSShadowProofRssJournalStatus::invalid,
+        SIQSShadowProofRssJournalReason::runtime_facts_mismatch);
+    changed = facts;
+    changed.probe_execution_identity.executable_sha256 = {};
+    expect_no_action(
+        resume_siqs_shadow_proof_rss_campaign_journal(
+            &approved, &changed, SIQSShadowProofRssJournalPresence::absent, nullptr, {}),
+        SIQSShadowProofRssJournalStatus::invalid,
+        SIQSShadowProofRssJournalReason::runtime_facts_invalid);
+    changed = facts;
+    changed.probe_execution_identity.execution_contract_sha256 = {};
+    expect_no_action(
+        resume_siqs_shadow_proof_rss_campaign_journal(
+            &approved, &changed, SIQSShadowProofRssJournalPresence::absent, nullptr, {}),
+        SIQSShadowProofRssJournalStatus::invalid,
+        SIQSShadowProofRssJournalReason::runtime_facts_invalid);
+    changed = facts;
+    changed.probe_execution_identity.executable_sha256.bytes[0] ^= std::byte{0xff};
+    expect_no_action(
+        resume_siqs_shadow_proof_rss_campaign_journal(
+            &approved, &changed, SIQSShadowProofRssJournalPresence::absent, nullptr, {}),
+        SIQSShadowProofRssJournalStatus::invalid,
+        SIQSShadowProofRssJournalReason::runtime_facts_mismatch);
+    changed = facts;
+    changed.probe_execution_identity.execution_contract_sha256.bytes[0] ^= std::byte{0xff};
+    expect_no_action(
+        resume_siqs_shadow_proof_rss_campaign_journal(
+            &approved, &changed, SIQSShadowProofRssJournalPresence::absent, nullptr, {}),
+        SIQSShadowProofRssJournalStatus::invalid,
+        SIQSShadowProofRssJournalReason::runtime_facts_mismatch);
+    changed = facts;
+    changed.release_build = false;
+    expect_no_action(
+        resume_siqs_shadow_proof_rss_campaign_journal(
+            &approved, &changed, SIQSShadowProofRssJournalPresence::absent, nullptr, {}),
+        SIQSShadowProofRssJournalStatus::invalid,
+        SIQSShadowProofRssJournalReason::release_ndebug_required);
+    changed = facts;
+    changed.ndebug = false;
+    expect_no_action(
+        resume_siqs_shadow_proof_rss_campaign_journal(
+            &approved, &changed, SIQSShadowProofRssJournalPresence::absent, nullptr, {}),
+        SIQSShadowProofRssJournalStatus::invalid,
+        SIQSShadowProofRssJournalReason::release_ndebug_required);
+
+    for (const auto& invalid_facts : {
+             SIQSShadowProofRssCampaignRuntimeFacts{
+                 .operating_system = SIQSShadowProofRssOperatingSystem::unknown,
+                 .architecture = facts.architecture,
+                 .memory_backend = facts.memory_backend,
+                 .resolved_production_sieve_workers = facts.resolved_production_sieve_workers,
+                 .probe_kind = facts.probe_kind,
+                 .candidate_revision = facts.candidate_revision,
+                 .probe_execution_identity = facts.probe_execution_identity,
+                 .release_build = true,
+                 .ndebug = true,
+             },
+             SIQSShadowProofRssCampaignRuntimeFacts{
+                 .operating_system = facts.operating_system,
+                 .architecture = SIQSShadowProofRssArchitecture::unknown,
+                 .memory_backend = facts.memory_backend,
+                 .resolved_production_sieve_workers = facts.resolved_production_sieve_workers,
+                 .probe_kind = facts.probe_kind,
+                 .candidate_revision = facts.candidate_revision,
+                 .probe_execution_identity = facts.probe_execution_identity,
+                 .release_build = true,
+                 .ndebug = true,
+             },
+             SIQSShadowProofRssCampaignRuntimeFacts{
+                 .operating_system = facts.operating_system,
+                 .architecture = facts.architecture,
+                 .memory_backend = ProcessMemoryBackend::Unsupported,
+                 .resolved_production_sieve_workers = facts.resolved_production_sieve_workers,
+                 .probe_kind = facts.probe_kind,
+                 .candidate_revision = facts.candidate_revision,
+                 .probe_execution_identity = facts.probe_execution_identity,
+                 .release_build = true,
+                 .ndebug = true,
+             },
+             SIQSShadowProofRssCampaignRuntimeFacts{
+                 .operating_system = facts.operating_system,
+                 .architecture = facts.architecture,
+                 .memory_backend = facts.memory_backend,
+                 .resolved_production_sieve_workers = 0,
+                 .probe_kind = facts.probe_kind,
+                 .candidate_revision = facts.candidate_revision,
+                 .probe_execution_identity = facts.probe_execution_identity,
+                 .release_build = true,
+                 .ndebug = true,
+             },
+             SIQSShadowProofRssCampaignRuntimeFacts{
+                 .operating_system = facts.operating_system,
+                 .architecture = facts.architecture,
+                 .memory_backend = facts.memory_backend,
+                 .resolved_production_sieve_workers = facts.resolved_production_sieve_workers,
+                 .probe_kind = facts.probe_kind,
+                 .candidate_revision = "unsafe revision",
+                 .probe_execution_identity = facts.probe_execution_identity,
+                 .release_build = true,
+                 .ndebug = true,
+             },
+         }) {
+        expect_no_action(
+            resume_siqs_shadow_proof_rss_campaign_journal(
+                &approved, &invalid_facts, SIQSShadowProofRssJournalPresence::absent, nullptr, {}),
+            SIQSShadowProofRssJournalStatus::invalid,
+            SIQSShadowProofRssJournalReason::runtime_facts_invalid);
+    }
+    for (const auto invalid_kind :
+         {SIQSShadowProofRssProbeKind::unknown, static_cast<SIQSShadowProofRssProbeKind>(255)}) {
+        auto invalid_facts = facts;
+        invalid_facts.probe_kind = invalid_kind;
+        expect_no_action(
+            resume_siqs_shadow_proof_rss_campaign_journal(
+                &approved, &invalid_facts, SIQSShadowProofRssJournalPresence::absent, nullptr, {}),
+            SIQSShadowProofRssJournalStatus::invalid,
+            SIQSShadowProofRssJournalReason::runtime_facts_invalid);
+    }
+
+    expect_no_action(
+        resume_siqs_shadow_proof_rss_campaign_journal(
+            &approved, &facts, static_cast<SIQSShadowProofRssJournalPresence>(255), nullptr, {}),
+        SIQSShadowProofRssJournalStatus::invalid,
+        SIQSShadowProofRssJournalReason::journal_presence_invalid);
+}
+
+void test_presence_header_and_capability_boundaries() {
+    const auto policy = make_policy();
+    const auto facts = make_facts();
+    const auto header = make_header(policy, facts);
+    CHECK(header.probe_execution_identity == TEST_PROBE_EXECUTION_IDENTITY);
+    auto synthetic_facts = facts;
+    synthetic_facts.probe_kind = SIQSShadowProofRssProbeKind::synthetic_test;
+    const auto synthetic_header = make_header(policy, synthetic_facts);
+    CHECK(shadow_proof_rss_campaign_journal_detail::runtime_facts_digest(facts) !=
+          shadow_proof_rss_campaign_journal_detail::runtime_facts_digest(synthetic_facts));
+    CHECK(synthetic_header.runtime_facts_digest != header.runtime_facts_digest);
+    CHECK(synthetic_header.plan_digest != header.plan_digest);
+    CHECK(synthetic_header.header_digest != header.header_digest);
+    const auto production_ready = resume_siqs_shadow_proof_rss_campaign_journal(
+        &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header, {});
+    const auto synthetic_ready = resume_siqs_shadow_proof_rss_campaign_journal(
+        &policy, &synthetic_facts, SIQSShadowProofRssJournalPresence::present, &synthetic_header,
+        {});
+    CHECK(production_ready.prepared_slot_start->record().slot_digest !=
+          synthetic_ready.prepared_slot_start->record().slot_digest);
+
+    for (unsigned member = 0; member < 2; ++member) {
+        auto changed_policy = policy;
+        auto changed_facts = facts;
+        if (member == 0) {
+            changed_policy.probe_execution_identity.executable_sha256.bytes[0] ^= std::byte{0xff};
+            changed_facts.probe_execution_identity.executable_sha256.bytes[0] ^= std::byte{0xff};
+        } else {
+            changed_policy.probe_execution_identity.execution_contract_sha256.bytes[0] ^=
+                std::byte{0xff};
+            changed_facts.probe_execution_identity.execution_contract_sha256.bytes[0] ^=
+                std::byte{0xff};
+        }
+        const auto changed_header = make_header(changed_policy, changed_facts);
+        CHECK(changed_header.probe_execution_identity == changed_facts.probe_execution_identity);
+        CHECK(changed_header.runtime_facts_digest != header.runtime_facts_digest);
+        CHECK(changed_header.plan_digest != header.plan_digest);
+        CHECK(changed_header.header_digest != header.header_digest);
+        const auto changed_ready = resume_siqs_shadow_proof_rss_campaign_journal(
+            &changed_policy, &changed_facts, SIQSShadowProofRssJournalPresence::present,
+            &changed_header, {});
+        CHECK(changed_ready.prepared_slot_start.has_value());
+        if (changed_ready.prepared_slot_start.has_value()) {
+            CHECK(changed_ready.prepared_slot_start->record().slot_digest !=
+                  production_ready.prepared_slot_start->record().slot_digest);
+        }
+        expect_no_action(resume_siqs_shadow_proof_rss_campaign_journal(
+                             &changed_policy, &changed_facts,
+                             SIQSShadowProofRssJournalPresence::present, &header, {}),
+                         SIQSShadowProofRssJournalStatus::invalid,
+                         SIQSShadowProofRssJournalReason::header_invalid);
+    }
+
+    for (unsigned mutation = 0; mutation < 5; ++mutation) {
+        auto changed_policy = policy;
+        switch (mutation) {
+        case 0:
+            ++changed_policy.journal_store.trusted_base_id.low;
+            break;
+        case 1:
+            ++changed_policy.journal_store.trusted_base_id.high;
+            break;
+        case 2:
+            ++changed_policy.journal_store.store_id.low;
+            break;
+        case 3:
+            ++changed_policy.journal_store.store_id.high;
+            break;
+        case 4:
+            changed_policy.journal_store.relative_locator = "rss-campaign-prod-v2";
+            break;
+        default:
+            std::terminate();
+        }
+        const auto changed_header = make_header(changed_policy, facts);
+        CHECK(changed_header.policy_binding_digest != header.policy_binding_digest);
+        CHECK(changed_header.plan_digest != header.plan_digest);
+        CHECK(changed_header.header_digest != header.header_digest);
+        expect_no_action(
+            resume_siqs_shadow_proof_rss_campaign_journal(
+                &changed_policy, &facts, SIQSShadowProofRssJournalPresence::present, &header, {}),
+            SIQSShadowProofRssJournalStatus::invalid,
+            SIQSShadowProofRssJournalReason::header_invalid);
+    }
+
+    expect_no_action(resume_siqs_shadow_proof_rss_campaign_journal(
+                         &policy, &facts, SIQSShadowProofRssJournalPresence::present, nullptr, {}),
+                     SIQSShadowProofRssJournalStatus::invalid,
+                     SIQSShadowProofRssJournalReason::present_journal_missing_header);
+    expect_no_action(resume_siqs_shadow_proof_rss_campaign_journal(
+                         &policy, &facts, SIQSShadowProofRssJournalPresence::absent, &header, {}),
+                     SIQSShadowProofRssJournalStatus::invalid,
+                     SIQSShadowProofRssJournalReason::absent_journal_has_state);
+
+    auto bad_header = header;
+    ++bad_header.plan_digest.low;
+    expect_no_action(
+        resume_siqs_shadow_proof_rss_campaign_journal(
+            &policy, &facts, SIQSShadowProofRssJournalPresence::present, &bad_header, {}),
+        SIQSShadowProofRssJournalStatus::invalid, SIQSShadowProofRssJournalReason::header_invalid);
+
+    auto ready = resume_siqs_shadow_proof_rss_campaign_journal(
+        &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header, {});
+    CHECK(ready.status == SIQSShadowProofRssJournalStatus::ready);
+    CHECK(ready.action == SIQSShadowProofRssJournalAction::append_slot_start);
+    CHECK(ready.next_slot_number == 1);
+    CHECK(ready.prepared_slot_start.has_value());
+
+    auto first = std::move(*ready.prepared_slot_start);
+    const auto start = first.record();
+    auto moved = std::move(first);
+    CHECK(!first.active());
+    CHECK(moved.active());
+    CHECK(moved.record() == start);
+}
+
+void test_post_start_failures_are_tainted() {
+    const auto policy = make_policy();
+    const auto facts = make_facts();
+    const auto header = make_header(policy, facts);
+    auto ready = resume_siqs_shadow_proof_rss_campaign_journal(
+        &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header, {});
+    const auto start = ready.prepared_slot_start->record();
+
+    auto corrupt = start;
+    ++corrupt.sequence_number;
+    auto before_start = resume_siqs_shadow_proof_rss_campaign_journal(
+        &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header,
+        std::span<const SIQSShadowProofRssCampaignJournalRecord>(&corrupt, 1));
+    expect_no_action(before_start, SIQSShadowProofRssJournalStatus::invalid,
+                     SIQSShadowProofRssJournalReason::record_invalid);
+
+    SIQSShadowProofRssCampaignJournalRecord bad_commit;
+    bad_commit.schema_version = SIQS_SHADOW_PROOF_RSS_CAMPAIGN_JOURNAL_SCHEMA_VERSION;
+    bad_commit.sequence_number = start.sequence_number + 1;
+    bad_commit.kind = SIQSShadowProofRssJournalRecordKind::slot_committed;
+    bad_commit.previous_record_digest = start.record_digest;
+    bad_commit.plan_digest = start.plan_digest;
+    bad_commit.slot_number = start.slot_number;
+    bad_commit.slot_digest = start.slot_digest;
+    bad_commit.commit_payload = make_payload(SIQSShadowProofRssSampleMode::off, 1);
+    bad_commit.commit_payload.completed = false;
+    bad_commit.record_digest = shadow_proof_rss_campaign_journal_detail::record_digest(bad_commit);
+    const std::vector records{start, bad_commit};
+    auto after_start = resume_siqs_shadow_proof_rss_campaign_journal(
+        &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header, records);
+    expect_no_action(after_start, SIQSShadowProofRssJournalStatus::tainted,
+                     SIQSShadowProofRssJournalReason::committed_sample_invalid);
+
+    auto noncanonical_empty = bad_commit;
+    noncanonical_empty.commit_payload.completed = true;
+    ++noncanonical_empty.commit_payload.stderr_seal.digest.low;
+    noncanonical_empty.record_digest =
+        shadow_proof_rss_campaign_journal_detail::record_digest(noncanonical_empty);
+    const std::vector bad_empty_records{start, noncanonical_empty};
+    auto bad_empty = resume_siqs_shadow_proof_rss_campaign_journal(
+        &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header, bad_empty_records);
+    expect_no_action(bad_empty, SIQSShadowProofRssJournalStatus::tainted,
+                     SIQSShadowProofRssJournalReason::committed_sample_invalid);
+}
+
+void test_header_field_closure() {
+    const auto policy = make_policy();
+    const auto facts = make_facts();
+    const auto header = make_header(policy, facts);
+    std::vector<SIQSShadowProofRssCampaignJournalHeader> mutations;
+
+    const auto add_rehashed = [&](auto mutate) {
+        auto changed = header;
+        mutate(changed);
+        changed.header_digest = shadow_proof_rss_campaign_journal_detail::header_digest(changed);
+        mutations.push_back(changed);
+    };
+    add_rehashed([](auto& value) { ++value.schema_version; });
+    add_rehashed(
+        [](auto& value) { value.probe_kind = SIQSShadowProofRssProbeKind::synthetic_test; });
+    add_rehashed([](auto& value) { ++value.policy_binding_digest.low; });
+    add_rehashed([](auto& value) { ++value.policy_binding_digest.high; });
+    add_rehashed([](auto& value) { ++value.runtime_facts_digest.low; });
+    add_rehashed([](auto& value) { ++value.runtime_facts_digest.high; });
+    add_rehashed([](auto& value) { ++value.plan_digest.low; });
+    add_rehashed([](auto& value) { ++value.plan_digest.high; });
+    add_rehashed([](auto& value) { ++value.slot_count; });
+    add_rehashed([](auto& value) { ++value.max_concurrency; });
+    add_rehashed([](auto& value) {
+        value.probe_execution_identity.executable_sha256.bytes[0] ^= std::byte{0xff};
+    });
+    add_rehashed([](auto& value) {
+        value.probe_execution_identity.execution_contract_sha256.bytes[0] ^= std::byte{0xff};
+    });
+    auto changed = header;
+    ++changed.header_digest.low;
+    mutations.push_back(changed);
+    changed = header;
+    ++changed.header_digest.high;
+    mutations.push_back(changed);
+
+    for (const auto& mutation : mutations) {
+        expect_no_action(
+            resume_siqs_shadow_proof_rss_campaign_journal(
+                &policy, &facts, SIQSShadowProofRssJournalPresence::present, &mutation, {}),
+            SIQSShadowProofRssJournalStatus::invalid,
+            SIQSShadowProofRssJournalReason::header_invalid);
+    }
+}
+
+void test_record_chain_and_order_closure() {
+    const auto policy = make_policy();
+    const auto facts = make_facts();
+    const auto header = make_header(policy, facts);
+    std::vector<SIQSShadowProofRssCampaignJournalRecord> pair;
+    CHECK(append_one_slot(policy, facts, header, pair, false));
+    CHECK(pair.size() == 2);
+    const auto start = pair.front();
+    const auto commit = pair.back();
+    CHECK(start.commit_payload.probe_execution_identity ==
+          SIQSShadowProofRssProbeExecutionIdentity{});
+    CHECK(commit.commit_payload.probe_execution_identity == TEST_PROBE_EXECUTION_IDENTITY);
+
+    std::vector<SIQSShadowProofRssCampaignJournalRecord> bad_starts;
+    const auto add_bad_start = [&](auto mutate, bool rehash = true) {
+        auto value = start;
+        mutate(value);
+        if (rehash) {
+            value.record_digest = shadow_proof_rss_campaign_journal_detail::record_digest(value);
+        }
+        bad_starts.push_back(value);
+    };
+    add_bad_start([](auto& value) { ++value.schema_version; });
+    add_bad_start([](auto& value) { ++value.sequence_number; });
+    add_bad_start([](auto& value) { ++value.previous_record_digest.low; });
+    add_bad_start([](auto& value) { ++value.previous_record_digest.high; });
+    add_bad_start([](auto& value) { ++value.plan_digest.low; });
+    add_bad_start([](auto& value) { ++value.plan_digest.high; });
+    add_bad_start([](auto& value) { ++value.slot_number; });
+    add_bad_start([](auto& value) { ++value.slot_digest.low; });
+    add_bad_start([](auto& value) { ++value.slot_digest.high; });
+    add_bad_start([](auto& value) { value.kind = SIQSShadowProofRssJournalRecordKind::unknown; });
+    add_bad_start(
+        [](auto& value) { value.kind = SIQSShadowProofRssJournalRecordKind::slot_committed; });
+    add_bad_start([](auto& value) { value.commit_payload.fresh_process = true; });
+    add_bad_start([](auto& value) {
+        value.commit_payload.probe_execution_identity.executable_sha256.bytes[0] = std::byte{1};
+    });
+    add_bad_start([](auto& value) {
+        value.commit_payload.probe_execution_identity.execution_contract_sha256.bytes[0] =
+            std::byte{1};
+    });
+    add_bad_start([](auto& value) { ++value.record_digest.low; }, false);
+    add_bad_start([](auto& value) { ++value.record_digest.high; }, false);
+    for (const auto& mutation : bad_starts) {
+        const auto replay = resume_siqs_shadow_proof_rss_campaign_journal(
+            &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header,
+            std::span<const SIQSShadowProofRssCampaignJournalRecord>(&mutation, 1));
+        CHECK(replay.status == SIQSShadowProofRssJournalStatus::invalid);
+        CHECK(replay.action == SIQSShadowProofRssJournalAction::none);
+    }
+
+    std::vector<SIQSShadowProofRssCampaignJournalRecord> bad_commits;
+    const auto add_bad_commit = [&](auto mutate, bool rehash = true) {
+        auto value = commit;
+        mutate(value);
+        if (rehash) {
+            value.record_digest = shadow_proof_rss_campaign_journal_detail::record_digest(value);
+        }
+        bad_commits.push_back(value);
+    };
+    add_bad_commit([](auto& value) { ++value.schema_version; });
+    add_bad_commit([](auto& value) { ++value.sequence_number; });
+    add_bad_commit([](auto& value) { ++value.previous_record_digest.low; });
+    add_bad_commit([](auto& value) { ++value.previous_record_digest.high; });
+    add_bad_commit([](auto& value) { ++value.plan_digest.low; });
+    add_bad_commit([](auto& value) { ++value.plan_digest.high; });
+    add_bad_commit([](auto& value) { ++value.slot_number; });
+    add_bad_commit([](auto& value) { ++value.slot_digest.low; });
+    add_bad_commit([](auto& value) { ++value.slot_digest.high; });
+    add_bad_commit([](auto& value) { value.kind = SIQSShadowProofRssJournalRecordKind::unknown; });
+    add_bad_commit(
+        [](auto& value) { value.kind = SIQSShadowProofRssJournalRecordKind::slot_started; });
+    add_bad_commit([](auto& value) {
+        value.commit_payload.probe_execution_identity.executable_sha256.bytes[0] ^= std::byte{0xff};
+    });
+    add_bad_commit([](auto& value) {
+        value.commit_payload.probe_execution_identity.execution_contract_sha256.bytes[0] ^=
+            std::byte{0xff};
+    });
+    add_bad_commit([](auto& value) { ++value.record_digest.low; }, false);
+    add_bad_commit([](auto& value) { ++value.record_digest.high; }, false);
+    for (const auto& mutation : bad_commits) {
+        const std::vector records{start, mutation};
+        const auto replay = resume_siqs_shadow_proof_rss_campaign_journal(
+            &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header, records);
+        CHECK(replay.status == SIQSShadowProofRssJournalStatus::tainted);
+        CHECK(replay.action == SIQSShadowProofRssJournalAction::none);
+        CHECK(!replay.prepared_slot_start.has_value());
+    }
+
+    const std::array commit_before_start{commit};
+    const auto early_commit = resume_siqs_shadow_proof_rss_campaign_journal(
+        &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header, commit_before_start);
+    CHECK(early_commit.status == SIQSShadowProofRssJournalStatus::invalid);
+
+    auto second_start = start;
+    second_start.sequence_number = 2;
+    second_start.previous_record_digest = start.record_digest;
+    second_start.record_digest =
+        shadow_proof_rss_campaign_journal_detail::record_digest(second_start);
+    const std::vector double_start{start, second_start};
+    const auto double_start_replay = resume_siqs_shadow_proof_rss_campaign_journal(
+        &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header, double_start);
+    CHECK(double_start_replay.status == SIQSShadowProofRssJournalStatus::tainted);
+    CHECK(double_start_replay.reason == SIQSShadowProofRssJournalReason::record_order_invalid);
+
+    const auto plan = make_siqs_shadow_proof_rss_campaign_plan(&policy);
+    auto skipped = start;
+    skipped.slot_number = 2;
+    skipped.slot_digest =
+        shadow_proof_rss_campaign_journal_detail::slot_digest(header.plan_digest, plan.slots[1]);
+    skipped.record_digest = shadow_proof_rss_campaign_journal_detail::record_digest(skipped);
+    const auto skipped_replay = resume_siqs_shadow_proof_rss_campaign_journal(
+        &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header,
+        std::span<const SIQSShadowProofRssCampaignJournalRecord>(&skipped, 1));
+    CHECK(skipped_replay.status == SIQSShadowProofRssJournalStatus::invalid);
+    CHECK(skipped_replay.reason == SIQSShadowProofRssJournalReason::record_order_invalid);
+}
+
+void test_commit_payload_and_artifact_closure() {
+    const auto policy = make_policy();
+    const auto facts = make_facts();
+    const auto header = make_header(policy, facts);
+    std::vector<SIQSShadowProofRssCampaignJournalRecord> off_pair;
+    CHECK(append_one_slot(policy, facts, header, off_pair, false));
+    const auto off_commit = off_pair.back();
+    std::vector<SIQSShadowProofRssJournalCommitPayload> off_mutations;
+    const auto add_off = [&](auto mutate) {
+        auto value = off_commit.commit_payload;
+        mutate(value);
+        off_mutations.push_back(value);
+    };
+    add_off([](auto& value) {
+        value.actual_operating_system = SIQSShadowProofRssOperatingSystem::linux;
+    });
+    add_off(
+        [](auto& value) { value.actual_architecture = SIQSShadowProofRssArchitecture::x86_64; });
+    add_off(
+        [](auto& value) { value.actual_memory_backend = ProcessMemoryBackend::LinuxGetrusage; });
+    add_off([](auto& value) { value.actual_resolved_sieve_workers = 3; });
+    add_off(
+        [](auto& value) { value.deployment_probe_kind = SIQSShadowProofRssProbeKind::unknown; });
+    add_off([](auto& value) {
+        value.deployment_probe_kind = SIQSShadowProofRssProbeKind::synthetic_test;
+    });
+    add_off([](auto& value) { value.fresh_process = false; });
+    add_off([](auto& value) { value.completed = false; });
+    add_off([](auto& value) { value.factor_identity = SIQSShadowProofRssFactorIdentity::unknown; });
+    add_off([](auto& value) { value.factor_identity = SIQSShadowProofRssFactorIdentity::fail; });
+    add_off(
+        [](auto& value) { value.factor_identity = SIQSShadowProofRssFactorIdentity::not_checked; });
+    add_off([](auto& value) { value.absolute_peak_rss_bytes.reset(); });
+    add_off([](auto& value) { value.absolute_peak_rss_bytes = 0; });
+    add_off([](auto& value) { value.proof_evidence = SIQSShadowProofRssEvidence::pass; });
+    add_off([](auto& value) { value.matrix_evidence = SIQSShadowProofRssEvidence::fail; });
+    add_off([](auto& value) { value.stdout_seal.committed = false; });
+    add_off([](auto& value) { value.stdout_seal.kind = SIQSShadowProofRssArtifactKind::unknown; });
+    add_off([](auto& value) { value.stdout_seal.byte_count = 0; });
+    add_off([](auto& value) { value.stdout_seal.digest = {}; });
+    add_off([](auto& value) { value.stderr_seal.committed = false; });
+    add_off([](auto& value) { value.stderr_seal.kind = SIQSShadowProofRssArtifactKind::unknown; });
+    add_off([](auto& value) { value.stderr_seal.byte_count = 1; });
+    add_off([](auto& value) { value.stderr_seal.digest = {}; });
+    add_off([](auto& value) { ++value.stderr_seal.digest.low; });
+    add_off([](auto& value) { value.joined_sample_seal.committed = false; });
+    add_off([](auto& value) {
+        value.joined_sample_seal.kind = SIQSShadowProofRssArtifactKind::unknown;
+    });
+    add_off([](auto& value) { value.joined_sample_seal.byte_count = 0; });
+    add_off([](auto& value) { value.joined_sample_seal.digest = {}; });
+    add_off([](auto& value) { value.probe_execution_identity.executable_sha256 = {}; });
+    add_off([](auto& value) { value.probe_execution_identity.execution_contract_sha256 = {}; });
+    add_off([](auto& value) {
+        value.probe_execution_identity.executable_sha256.bytes[0] ^= std::byte{0xff};
+    });
+    add_off([](auto& value) {
+        value.probe_execution_identity.execution_contract_sha256.bytes[0] ^= std::byte{0xff};
+    });
+
+    for (const auto& payload : off_mutations) {
+        auto records = off_pair;
+        records.back().commit_payload = payload;
+        records.back().record_digest =
+            shadow_proof_rss_campaign_journal_detail::record_digest(records.back());
+        const auto replay = resume_siqs_shadow_proof_rss_campaign_journal(
+            &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header, records);
+        CHECK(replay.status == SIQSShadowProofRssJournalStatus::tainted);
+        CHECK(replay.reason == SIQSShadowProofRssJournalReason::committed_sample_invalid);
+        CHECK(replay.action == SIQSShadowProofRssJournalAction::none);
+    }
+
+    std::vector<SIQSShadowProofRssCampaignJournalRecord> observe_prefix;
+    for (int slot = 0; slot < 4; ++slot) {
+        CHECK(append_one_slot(policy, facts, header, observe_prefix, false));
+    }
+    const auto observe_commit = observe_prefix.back();
+    CHECK(observe_commit.slot_number == 4);
+    std::vector<SIQSShadowProofRssJournalCommitPayload> observe_mutations;
+    for (const auto evidence :
+         {SIQSShadowProofRssEvidence::unknown, SIQSShadowProofRssEvidence::not_applicable,
+          SIQSShadowProofRssEvidence::fail}) {
+        auto proof = observe_commit.commit_payload;
+        proof.proof_evidence = evidence;
+        observe_mutations.push_back(proof);
+        auto matrix = observe_commit.commit_payload;
+        matrix.matrix_evidence = evidence;
+        observe_mutations.push_back(matrix);
+    }
+    auto empty_stderr = observe_commit.commit_payload;
+    empty_stderr.stderr_seal = EMPTY_STDERR_SEAL;
+    observe_mutations.push_back(empty_stderr);
+    for (const auto& payload : observe_mutations) {
+        auto records = observe_prefix;
+        records.back().commit_payload = payload;
+        records.back().record_digest =
+            shadow_proof_rss_campaign_journal_detail::record_digest(records.back());
+        const auto replay = resume_siqs_shadow_proof_rss_campaign_journal(
+            &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header, records);
+        CHECK(replay.status == SIQSShadowProofRssJournalStatus::tainted);
+        CHECK(replay.reason == SIQSShadowProofRssJournalReason::committed_sample_invalid);
+    }
+}
+
+void test_taint_record_closure_and_absorption() {
+    const auto policy = make_policy();
+    const auto facts = make_facts();
+    const auto header = make_header(policy, facts);
+    auto ready = resume_siqs_shadow_proof_rss_campaign_journal(
+        &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header, {});
+    const auto start = ready.prepared_slot_start->record();
+    const std::vector dangling_records{start};
+    auto dangling = resume_siqs_shadow_proof_rss_campaign_journal(
+        &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header, dangling_records);
+    CHECK(dangling.taint_to_append.has_value());
+    if (!dangling.taint_to_append.has_value()) {
+        return;
+    }
+    const auto taint = *dangling.taint_to_append;
+    CHECK(taint.commit_payload.probe_execution_identity ==
+          SIQSShadowProofRssProbeExecutionIdentity{});
+    const std::vector sealed{start, taint};
+    auto replay = resume_siqs_shadow_proof_rss_campaign_journal(
+        &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header, sealed);
+    CHECK(replay.status == SIQSShadowProofRssJournalStatus::tainted);
+    CHECK(replay.action == SIQSShadowProofRssJournalAction::none);
+    CHECK(!reconstruct_siqs_shadow_proof_rss_gate_samples(&policy, &facts, &header, sealed));
+
+    auto trailing = sealed;
+    trailing.push_back(start);
+    replay = resume_siqs_shadow_proof_rss_campaign_journal(
+        &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header, trailing);
+    CHECK(replay.status == SIQSShadowProofRssJournalStatus::tainted);
+    CHECK(replay.reason == SIQSShadowProofRssJournalReason::record_order_invalid);
+    CHECK(replay.action == SIQSShadowProofRssJournalAction::none);
+
+    auto taint_without_start = taint;
+    taint_without_start.sequence_number = 1;
+    taint_without_start.previous_record_digest = header.header_digest;
+    taint_without_start.record_digest =
+        shadow_proof_rss_campaign_journal_detail::record_digest(taint_without_start);
+    const std::array early_taint{taint_without_start};
+    replay = resume_siqs_shadow_proof_rss_campaign_journal(
+        &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header, early_taint);
+    CHECK(replay.status == SIQSShadowProofRssJournalStatus::invalid);
+    CHECK(replay.reason == SIQSShadowProofRssJournalReason::record_order_invalid);
+    CHECK(replay.action == SIQSShadowProofRssJournalAction::none);
+
+    std::vector<SIQSShadowProofRssCampaignJournalRecord> committed_prefix;
+    CHECK(append_one_slot(policy, facts, header, committed_prefix, false));
+    auto after_commit = resume_siqs_shadow_proof_rss_campaign_journal(
+        &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header, committed_prefix);
+    CHECK(after_commit.prepared_slot_start.has_value());
+    if (after_commit.prepared_slot_start.has_value()) {
+        auto taint_after_commit = after_commit.prepared_slot_start->record();
+        taint_after_commit.kind = SIQSShadowProofRssJournalRecordKind::campaign_tainted;
+        taint_after_commit.record_digest =
+            shadow_proof_rss_campaign_journal_detail::record_digest(taint_after_commit);
+        committed_prefix.push_back(taint_after_commit);
+        replay = resume_siqs_shadow_proof_rss_campaign_journal(
+            &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header, committed_prefix);
+        CHECK(replay.status == SIQSShadowProofRssJournalStatus::invalid);
+        CHECK(replay.reason == SIQSShadowProofRssJournalReason::record_order_invalid);
+        CHECK(replay.action == SIQSShadowProofRssJournalAction::none);
+    }
+
+    std::vector<std::pair<SIQSShadowProofRssCampaignJournalRecord, SIQSShadowProofRssJournalReason>>
+        bad_taints;
+    const auto add_bad_taint = [&](auto mutate, SIQSShadowProofRssJournalReason expected_reason,
+                                   bool rehash = true) {
+        auto value = taint;
+        mutate(value);
+        if (rehash) {
+            value.record_digest = shadow_proof_rss_campaign_journal_detail::record_digest(value);
+        }
+        bad_taints.emplace_back(value, expected_reason);
+    };
+    add_bad_taint([](auto& value) { ++value.schema_version; },
+                  SIQSShadowProofRssJournalReason::record_invalid);
+    add_bad_taint([](auto& value) { ++value.sequence_number; },
+                  SIQSShadowProofRssJournalReason::record_invalid);
+    add_bad_taint([](auto& value) { ++value.previous_record_digest.low; },
+                  SIQSShadowProofRssJournalReason::record_invalid);
+    add_bad_taint([](auto& value) { ++value.plan_digest.low; },
+                  SIQSShadowProofRssJournalReason::record_invalid);
+    add_bad_taint([](auto& value) { ++value.slot_number; },
+                  SIQSShadowProofRssJournalReason::record_order_invalid);
+    add_bad_taint([](auto& value) { ++value.slot_digest.low; },
+                  SIQSShadowProofRssJournalReason::record_order_invalid);
+    add_bad_taint([](auto& value) { value.commit_payload.completed = true; },
+                  SIQSShadowProofRssJournalReason::record_invalid);
+    add_bad_taint(
+        [](auto& value) {
+            value.commit_payload.probe_execution_identity.executable_sha256.bytes[0] = std::byte{1};
+        },
+        SIQSShadowProofRssJournalReason::record_invalid);
+    add_bad_taint(
+        [](auto& value) {
+            value.commit_payload.probe_execution_identity.execution_contract_sha256.bytes[0] =
+                std::byte{1};
+        },
+        SIQSShadowProofRssJournalReason::record_invalid);
+    add_bad_taint([](auto& value) { ++value.record_digest.low; },
+                  SIQSShadowProofRssJournalReason::record_invalid, false);
+    for (const auto& [mutation, expected_reason] : bad_taints) {
+        const std::vector records{start, mutation};
+        replay = resume_siqs_shadow_proof_rss_campaign_journal(
+            &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header, records);
+        CHECK(replay.status == SIQSShadowProofRssJournalStatus::tainted);
+        CHECK(replay.reason == expected_reason);
+        CHECK(replay.action == SIQSShadowProofRssJournalAction::none);
+        CHECK(!replay.header_to_create.has_value());
+        CHECK(!replay.prepared_slot_start.has_value());
+        CHECK(!replay.taint_to_append.has_value());
+    }
+}
+
+void test_authority_free_production_tagged_replay_and_terminal_gate_contract() {
+    const auto policy = make_policy();
+    const auto facts = make_facts();
+    const auto header = make_header(policy, facts);
+    std::vector<SIQSShadowProofRssCampaignJournalRecord> records;
+    records.reserve(2 * SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT);
+
+    for (std::size_t index = 0; index < SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT; ++index) {
+        CHECK(append_one_slot(policy, facts, header, records, true));
+        CHECK(records.size() == 2 * (index + 1));
+    }
+
+    auto complete = resume_siqs_shadow_proof_rss_campaign_journal(
+        &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header, records);
+    CHECK(complete.status == SIQSShadowProofRssJournalStatus::complete);
+    CHECK(complete.reason == SIQSShadowProofRssJournalReason::complete);
+    CHECK(complete.action == SIQSShadowProofRssJournalAction::evaluate_gate);
+    CHECK(complete.committed_slot_count == SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT);
+
+    auto terminal_extra = records;
+    terminal_extra.push_back(
+        shadow_proof_rss_campaign_journal_detail::make_taint_record(records.back()));
+    const auto terminal_extra_replay = resume_siqs_shadow_proof_rss_campaign_journal(
+        &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header, terminal_extra);
+    CHECK(terminal_extra_replay.status == SIQSShadowProofRssJournalStatus::invalid);
+    CHECK(terminal_extra_replay.reason == SIQSShadowProofRssJournalReason::record_invalid);
+    CHECK(terminal_extra_replay.action == SIQSShadowProofRssJournalAction::none);
+    CHECK(complete.next_slot_number == 0);
+    CHECK(!complete.prepared_slot_start.has_value());
+
+    auto samples =
+        reconstruct_siqs_shadow_proof_rss_gate_samples(&policy, &facts, &header, records);
+    CHECK(samples.has_value());
+    if (samples.has_value()) {
+        const auto outcome = evaluate_siqs_shadow_proof_rss_gate(&policy, *samples);
+        CHECK(outcome.status == SIQSShadowProofRssGateStatus::manual_review_candidate);
+        CHECK(outcome.reason == SIQSShadowProofRssGateReason::all_observe_peaks_within_limit);
+        CHECK(outcome.total_sample_count == SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT);
+        CHECK(outcome.valid_off_sample_count == 24);
+        CHECK(outcome.valid_observe_sample_count == 56);
+        CHECK(!outcome.shadow_outcome_routed);
+        CHECK(!outcome.promotion);
+    }
+
+    // Mutating a replay result cannot affect reconstruction, which replays the
+    // immutable input records instead of trusting the public result aggregate.
+    complete.committed_payloads[0].absolute_peak_rss_bytes = UINT64_MAX;
+    CHECK(reconstruct_siqs_shadow_proof_rss_gate_samples(&policy, &facts, &header, records));
+
+    auto bad_records = records;
+    ++bad_records.back().record_digest.low;
+    CHECK(!reconstruct_siqs_shadow_proof_rss_gate_samples(&policy, &facts, &header, bad_records));
+
+    bad_records = records;
+    bad_records.back().commit_payload.factor_identity = SIQSShadowProofRssFactorIdentity::fail;
+    bad_records.back().record_digest =
+        shadow_proof_rss_campaign_journal_detail::record_digest(bad_records.back());
+    auto tainted = resume_siqs_shadow_proof_rss_campaign_journal(
+        &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header, bad_records);
+    CHECK(tainted.status == SIQSShadowProofRssJournalStatus::tainted);
+    CHECK(!reconstruct_siqs_shadow_proof_rss_gate_samples(&policy, &facts, &header, bad_records));
+
+    auto bad_header = header;
+    ++bad_header.runtime_facts_digest.high;
+    CHECK(!reconstruct_siqs_shadow_proof_rss_gate_samples(&policy, &facts, &bad_header, records));
+
+    auto bad_facts = facts;
+    bad_facts.resolved_production_sieve_workers = 2;
+    CHECK(!reconstruct_siqs_shadow_proof_rss_gate_samples(&policy, &bad_facts, &header, records));
+
+    const auto expect_not_complete = [&](const auto& changed_records) {
+        const auto replay = resume_siqs_shadow_proof_rss_campaign_journal(
+            &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header, changed_records);
+        CHECK(replay.status != SIQSShadowProofRssJournalStatus::complete);
+        CHECK(replay.action != SIQSShadowProofRssJournalAction::evaluate_gate);
+        CHECK(!reconstruct_siqs_shadow_proof_rss_gate_samples(&policy, &facts, &header,
+                                                              changed_records));
+    };
+    auto missing = records;
+    missing.erase(missing.begin() + 17);
+    expect_not_complete(missing);
+    auto swapped = records;
+    std::swap(swapped[40], swapped[42]);
+    std::swap(swapped[41], swapped[43]);
+    expect_not_complete(swapped);
+    auto duplicated = records;
+    duplicated.insert(duplicated.begin() + 20, records.begin() + 18, records.begin() + 20);
+    expect_not_complete(duplicated);
+    auto extra_start = records;
+    extra_start.push_back(records.front());
+    expect_not_complete(extra_start);
+    auto extra_commit = records;
+    extra_commit.push_back(records.back());
+    expect_not_complete(extra_commit);
+}
+
+void test_synthetic_complete_is_gate_ineligible() {
+    const auto policy = make_policy();
+    auto facts = make_facts();
+    facts.probe_kind = SIQSShadowProofRssProbeKind::synthetic_test;
+    const auto header = make_header(policy, facts);
+    CHECK(header.probe_kind == SIQSShadowProofRssProbeKind::synthetic_test);
+    std::vector<SIQSShadowProofRssCampaignJournalRecord> records;
+    records.reserve(2 * SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT);
+    for (std::size_t index = 0; index < SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT; ++index) {
+        CHECK(append_one_slot(policy, facts, header, records, true));
+    }
+
+    const auto complete = resume_siqs_shadow_proof_rss_campaign_journal(
+        &policy, &facts, SIQSShadowProofRssJournalPresence::present, &header, records);
+    CHECK(complete.status == SIQSShadowProofRssJournalStatus::complete);
+    CHECK(complete.reason == SIQSShadowProofRssJournalReason::synthetic_complete);
+    CHECK(complete.action == SIQSShadowProofRssJournalAction::none);
+    CHECK(complete.committed_slot_count == SIQS_SHADOW_PROOF_RSS_GATE_EXPECTED_SAMPLE_COUNT);
+    CHECK(!reconstruct_siqs_shadow_proof_rss_gate_samples(&policy, &facts, &header, records));
+
+    auto production_facts = facts;
+    production_facts.probe_kind = SIQSShadowProofRssProbeKind::production_holdout;
+    const auto relabeled = resume_siqs_shadow_proof_rss_campaign_journal(
+        &policy, &production_facts, SIQSShadowProofRssJournalPresence::present, &header, records);
+    CHECK(relabeled.status == SIQSShadowProofRssJournalStatus::invalid);
+    CHECK(relabeled.reason == SIQSShadowProofRssJournalReason::header_invalid);
+    CHECK(!reconstruct_siqs_shadow_proof_rss_gate_samples(&policy, &production_facts, &header,
+                                                          records));
+}
+
+} // namespace
+
+int main() {
+    test_digest_golden_and_direct_identity_binding();
+    test_policy_and_runtime_preflight();
+    test_presence_header_and_capability_boundaries();
+    test_post_start_failures_are_tainted();
+    test_header_field_closure();
+    test_record_chain_and_order_closure();
+    test_commit_payload_and_artifact_closure();
+    test_taint_record_closure_and_absorption();
+    test_authority_free_production_tagged_replay_and_terminal_gate_contract();
+    test_synthetic_complete_is_gate_ineligible();
+
+    std::cout << "SIQS shadow-proof RSS campaign journal: " << checks_passed << " checks passed, "
+              << checks_failed << " failed\n";
+    return checks_failed == 0 ? 0 : 1;
+}

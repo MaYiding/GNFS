@@ -3,6 +3,9 @@
 #include "../core/types.hpp"
 #include "../factor_base/factor_base.hpp"
 
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <vector>
@@ -12,24 +15,47 @@ namespace gnfs::sieve {
 using core::AlgebraicPrime;
 using factor_base::FactorBase;
 
+/// Whether an algebraic factor-base entry denotes the projective root.
+[[nodiscard]] constexpr bool is_projective_special_q_root(const AlgebraicPrime& prime) noexcept {
+    return prime.is_projective();
+}
+
+/// Whether an algebraic factor-base entry can define an affine special-q.
+///
+/// Invalid encodings are rejected explicitly instead of relying on the
+/// projective sentinel also comparing greater than p.
+[[nodiscard]] constexpr bool is_affine_special_q_root(const AlgebraicPrime& prime) noexcept {
+    return prime.p > 1 && !is_projective_special_q_root(prime) && prime.r < prime.p;
+}
+
 /// SpecialQ - 特殊Q值
 /// 在格筛法中，每个 special-q 定义一个待筛的格
 struct SpecialQ {
-    uint32_t q;         // 素数 q
-    uint32_t r;         // f(r) ≡ 0 (mod q)
-    uint32_t index;     // 在因子基中的索引
+    uint32_t q;     // 素数 q
+    uint32_t r;     // f(r) ≡ 0 (mod q)
+    uint32_t index; // 在因子基中的索引
+
+    /// 是否为 projective root
+    [[nodiscard]] constexpr bool is_projective() const noexcept {
+        return r == AlgebraicPrime::PROJECTIVE_ROOT;
+    }
+
+    /// 是否为可用的 affine special-q
+    [[nodiscard]] constexpr bool is_affine() const noexcept {
+        return q > 1 && !is_projective() && r < q;
+    }
 
     /// 检查是否有效
-    [[nodiscard]] bool is_valid() const noexcept {
-        return q > 1;
+    [[nodiscard]] constexpr bool is_valid() const noexcept {
+        return is_affine();
     }
 };
 
 /// SpecialQRange - Special-Q 的范围参数
 struct SpecialQRange {
-    uint32_t min_q = 1'000'000;     // 最小 q 值
-    uint32_t max_q = 10'000'000;    // 最大 q 值
-    uint32_t start_index = 0;       // 起始索引（用于恢复）
+    uint32_t min_q = 1'000'000;      // 最小 q 值
+    uint32_t max_q = 10'000'000;     // 最大 q 值
+    uint32_t start_index = 0;        // 起始索引（用于恢复）
     uint32_t end_index = UINT32_MAX; // 终止索引（UINT32_MAX = 无限制）
 
     /// 从索引范围创建
@@ -37,7 +63,7 @@ struct SpecialQRange {
         SpecialQRange range;
         range.start_index = start;
         range.end_index = end;
-        range.min_q = 0;  // 使用索引模式，不限制 q 值
+        range.min_q = 0; // 使用索引模式，不限制 q 值
         range.max_q = UINT32_MAX;
         return range;
     }
@@ -51,9 +77,7 @@ public:
     /// @param fb 因子基
     /// @param range Q 值范围
     explicit SpecialQGenerator(const FactorBase& fb, const SpecialQRange& range = SpecialQRange{})
-        : fb_(fb)
-        , range_(range)
-        , current_index_(range.start_index) {
+        : fb_(fb), range_(range), current_index_(range.start_index) {
 
         // 找到起始位置
         if (range.min_q > 0) {
@@ -63,45 +87,19 @@ public:
 
     /// 是否有更多 special-q
     [[nodiscard]] bool has_next() const noexcept {
-        if (current_index_ >= fb_.algebraic_count()) {
-            return false;
-        }
-        if (current_index_ >= range_.end_index) {
-            return false;
-        }
-        // 检查当前素数是否超出 max_q
-        if (range_.max_q > 0 && fb_.algebraic()[current_index_].p > range_.max_q) {
-            return false;
-        }
-        return true;
+        return find_next_affine_index(current_index_).has_value();
     }
 
     /// 获取下一个 special-q
     [[nodiscard]] std::optional<SpecialQ> next() {
-        while (current_index_ < fb_.algebraic_count()) {
-            if (current_index_ >= range_.end_index) {
-                return std::nullopt;  // 超出索引范围
-            }
-
-            const auto& ap = fb_.algebraic()[current_index_];
-
-            // 检查是否在范围内
-            if (ap.p > range_.max_q) {
-                return std::nullopt;  // 超出 q 值范围
-            }
-
-            if (ap.p >= range_.min_q) {
-                SpecialQ sq;
-                sq.q = ap.p;
-                sq.r = ap.r;
-                sq.index = current_index_;
-                ++current_index_;
-                return sq;
-            }
-
-            ++current_index_;
+        const auto index = find_next_affine_index(current_index_);
+        if (!index) {
+            return std::nullopt;
         }
-        return std::nullopt;
+
+        const auto& ap = fb_.algebraic()[*index];
+        current_index_ = *index + 1;
+        return SpecialQ{ap.p, ap.r, *index};
     }
 
     /// 获取当前索引
@@ -116,17 +114,41 @@ public:
 
     /// 估计剩余数量
     [[nodiscard]] size_t estimate_remaining() const {
-        uint32_t upper = std::min(static_cast<uint32_t>(fb_.algebraic_count()), range_.end_index);
-        if (current_index_ >= upper) {
-            return 0;
+        size_t remaining = 0;
+        auto index = find_next_affine_index(current_index_);
+        while (index) {
+            ++remaining;
+            index = find_next_affine_index(*index + 1);
         }
-        return upper - current_index_;
+        return remaining;
     }
 
 private:
     const FactorBase& fb_;
     SpecialQRange range_;
     uint32_t current_index_;
+
+    [[nodiscard]] bool exceeds_max_q(uint32_t q) const noexcept {
+        return range_.max_q > 0 && q > range_.max_q;
+    }
+
+    /// Find the next usable affine entry without changing generator state.
+    [[nodiscard]] std::optional<uint32_t>
+    find_next_affine_index(uint32_t start_index) const noexcept {
+        const auto& algebraics = fb_.algebraic();
+        const size_t upper = std::min(algebraics.size(), static_cast<size_t>(range_.end_index));
+
+        for (size_t index = start_index; index < upper; ++index) {
+            const auto& ap = algebraics[index];
+            if (exceeds_max_q(ap.p)) {
+                break;
+            }
+            if (ap.p >= range_.min_q && is_affine_special_q_root(ap)) {
+                return static_cast<uint32_t>(index);
+            }
+        }
+        return std::nullopt;
+    }
 
     /// 跳过到 min_q
     void skip_to_min_q() {
@@ -156,7 +178,8 @@ public:
 
         while (batch.items_.size() < count) {
             auto sq = gen.next();
-            if (!sq) break;
+            if (!sq)
+                break;
             batch.items_.push_back(*sq);
         }
 
@@ -184,8 +207,12 @@ public:
     }
 
     /// 迭代器
-    [[nodiscard]] auto begin() const noexcept { return items_.begin(); }
-    [[nodiscard]] auto end() const noexcept { return items_.end(); }
+    [[nodiscard]] auto begin() const noexcept {
+        return items_.begin();
+    }
+    [[nodiscard]] auto end() const noexcept {
+        return items_.end();
+    }
 
 private:
     std::vector<SpecialQ> items_;
@@ -195,19 +222,18 @@ private:
 /// @param fb 因子基
 /// @param min_q 最小 q
 /// @param max_q 最大 q
-[[nodiscard]] inline size_t estimate_special_q_count(
-        const FactorBase& fb,
-        uint32_t min_q,
-        uint32_t max_q) {
+[[nodiscard]] inline size_t estimate_special_q_count(const FactorBase& fb, uint32_t min_q,
+                                                     uint32_t max_q) {
 
     const auto& algebraics = fb.algebraic();
     size_t count = 0;
 
     for (const auto& ap : algebraics) {
-        if (ap.p >= min_q && ap.p <= max_q) {
+        if (max_q > 0 && ap.p > max_q) {
+            break; // 已排序，可以提前退出
+        }
+        if (ap.p >= min_q && is_affine_special_q_root(ap)) {
             ++count;
-        } else if (ap.p > max_q) {
-            break;  // 已排序，可以提前退出
         }
     }
 
@@ -218,9 +244,9 @@ private:
 /// 基于目标关系数量和预期收益
 struct SpecialQRangeSelector {
     /// 参数
-    uint32_t algebraic_bound;        // 代数因子基上界
-    size_t target_relations;         // 目标关系数量
-    double relations_per_sq;         // 每个 special-q 预期产出
+    uint32_t algebraic_bound; // 代数因子基上界
+    size_t target_relations;  // 目标关系数量
+    double relations_per_sq;  // 每个 special-q 预期产出
 
     /// 选择范围
     [[nodiscard]] SpecialQRange select(const FactorBase& /* fb */) const {
@@ -230,8 +256,8 @@ struct SpecialQRangeSelector {
         range.min_q = algebraic_bound;
 
         // 估计需要多少 special-q
-        size_t needed_sq = static_cast<size_t>(
-            static_cast<double>(target_relations) / relations_per_sq);
+        size_t needed_sq =
+            static_cast<size_t>(static_cast<double>(target_relations) / relations_per_sq);
         needed_sq = std::max(needed_sq, size_t(1000));
 
         // 估计 max_q
@@ -243,9 +269,8 @@ struct SpecialQRangeSelector {
         double ln_min = std::log(static_cast<double>(range.min_q));
         uint64_t delta = static_cast<uint64_t>(static_cast<double>(needed_sq) * ln_min * 1.5);
 
-        range.max_q = static_cast<uint32_t>(
-            std::min(static_cast<uint64_t>(range.min_q) + delta,
-                     static_cast<uint64_t>(UINT32_MAX)));
+        range.max_q = static_cast<uint32_t>(std::min(static_cast<uint64_t>(range.min_q) + delta,
+                                                     static_cast<uint64_t>(UINT32_MAX)));
 
         return range;
     }

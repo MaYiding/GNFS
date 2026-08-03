@@ -1,20 +1,34 @@
 // test_linalg.cpp - Test linear algebra components
 
-#include <gnfs/linalg/sparse_matrix.hpp>
-#include <gnfs/linalg/matrix_builder.hpp>
-#include <gnfs/linalg/gauss.hpp>
+#include <gnfs/core/polynomial_context.hpp>
+#include <gnfs/core/relation.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
+#include <gnfs/linalg/gauss.hpp>
+#include <gnfs/linalg/matrix_builder.hpp>
 #include <gnfs/linalg/schirokauer.hpp>
 #include <gnfs/linalg/sge.hpp>
-#include <gnfs/core/relation.hpp>
-#include <gnfs/core/polynomial_context.hpp>
+#include <gnfs/linalg/sparse_matrix.hpp>
 
 #include <cassert>
 #include <iostream>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 using namespace gnfs;
 using namespace gnfs::linalg;
+
+template <typename Exception, typename Callable>
+void require_throws(Callable&& callable, const char* context) {
+    try {
+        callable();
+    } catch (const Exception&) {
+        return;
+    } catch (...) {
+        throw std::runtime_error(std::string(context) + ": wrong exception type");
+    }
+    throw std::runtime_error(std::string(context) + ": expected exception was not thrown");
+}
 
 // Test SparseRow operations
 void test_sparse_row() {
@@ -46,9 +60,9 @@ void test_sparse_row() {
     assert(row.weight() == 2);
 
     // Test flip
-    row.flip(7);  // Add
+    row.flip(7); // Add
     assert(row.test(7));
-    row.flip(7);  // Remove
+    row.flip(7); // Remove
     assert(!row.test(7));
 
     std::cout << "  SparseRow: PASSED" << std::endl;
@@ -73,7 +87,7 @@ void test_sparse_row_xor() {
 
     assert(row1.test(1));
     assert(row1.test(2));
-    assert(!row1.test(3));  // Cancelled
+    assert(!row1.test(3)); // Cancelled
     assert(row1.test(4));
     assert(row1.test(5));
     assert(row1.weight() == 4);
@@ -134,12 +148,12 @@ void test_sparse_matrix_transpose() {
     assert(transposed.num_cols() == 3);
 
     // Check elements
-    assert(transposed.test(0, 1));  // Was (1, 0)
-    assert(transposed.test(1, 0));  // Was (0, 1)
-    assert(transposed.test(1, 2));  // Was (2, 1)
-    assert(transposed.test(2, 1));  // Was (1, 2)
-    assert(transposed.test(2, 2));  // Was (2, 2)
-    assert(transposed.test(3, 0));  // Was (0, 3)
+    assert(transposed.test(0, 1)); // Was (1, 0)
+    assert(transposed.test(1, 0)); // Was (0, 1)
+    assert(transposed.test(1, 2)); // Was (2, 1)
+    assert(transposed.test(2, 1)); // Was (1, 2)
+    assert(transposed.test(2, 2)); // Was (2, 2)
+    assert(transposed.test(3, 0)); // Was (0, 3)
 
     std::cout << "  SparseMatrix transpose: PASSED" << std::endl;
 }
@@ -198,9 +212,12 @@ void test_gaussian_simple() {
     // Null space: (1, 1, 1) since row1 + row2 + row3 = 0 in GF(2)
 
     SparseMatrix mat(3, 3);
-    mat.set(0, 0); mat.set(0, 1);
-    mat.set(1, 0); mat.set(1, 2);
-    mat.set(2, 1); mat.set(2, 2);
+    mat.set(0, 0);
+    mat.set(0, 1);
+    mat.set(1, 0);
+    mat.set(1, 2);
+    mat.set(2, 1);
+    mat.set(2, 2);
 
     GaussianConfig config;
     config.compute_null_space = true;
@@ -233,19 +250,26 @@ void test_gaussian_larger() {
     SparseMatrix mat(5, 4);
 
     // Row 0: 1 0 1 0
-    mat.set(0, 0); mat.set(0, 2);
+    mat.set(0, 0);
+    mat.set(0, 2);
 
     // Row 1: 0 1 0 1
-    mat.set(1, 1); mat.set(1, 3);
+    mat.set(1, 1);
+    mat.set(1, 3);
 
     // Row 2: 1 1 1 1
-    mat.set(2, 0); mat.set(2, 1); mat.set(2, 2); mat.set(2, 3);
+    mat.set(2, 0);
+    mat.set(2, 1);
+    mat.set(2, 2);
+    mat.set(2, 3);
 
     // Row 3: 1 0 1 0 (same as row 0)
-    mat.set(3, 0); mat.set(3, 2);
+    mat.set(3, 0);
+    mat.set(3, 2);
 
     // Row 4: 0 1 0 1 (same as row 1)
-    mat.set(4, 1); mat.set(4, 3);
+    mat.set(4, 1);
+    mat.set(4, 3);
 
     GaussianConfig config;
     config.compute_null_space = true;
@@ -294,12 +318,12 @@ void test_matrix_builder() {
     ColumnMapping mapping;
     mapping.has_sign_column = true;
     mapping.sign_column = 0;
-    mapping.num_rational_fb = 3;  // 3 rational primes
+    mapping.num_rational_fb = 3; // 3 rational primes
     mapping.num_algebraic_fb = 0;
     mapping.num_large_primes_rat = 0;
     mapping.num_large_primes_alg = 0;
 
-    assert(mapping.total_columns() == 4);  // sign + 3 primes
+    assert(mapping.total_columns() == 4); // sign + 3 primes
     assert(mapping.rat_fb_start() == 1);
     assert(mapping.alg_fb_start() == 4);
 
@@ -315,16 +339,20 @@ void test_find_dependencies() {
     SparseMatrix mat(4, 3);
 
     // Row 0: 1 1 0
-    mat.set(0, 0); mat.set(0, 1);
+    mat.set(0, 0);
+    mat.set(0, 1);
 
     // Row 1: 0 1 1
-    mat.set(1, 1); mat.set(1, 2);
+    mat.set(1, 1);
+    mat.set(1, 2);
 
     // Row 2: 1 1 0 (same as row 0)
-    mat.set(2, 0); mat.set(2, 1);
+    mat.set(2, 0);
+    mat.set(2, 1);
 
     // Row 3: 1 0 1
-    mat.set(3, 0); mat.set(3, 2);
+    mat.set(3, 0);
+    mat.set(3, 2);
 
     BlockLanczos solver;
     auto deps = solver.find_dependencies(mat, 1);
@@ -346,13 +374,18 @@ void test_verify_dependency() {
     SparseMatrix mat(3, 4);
 
     // Row 0: 1 0 1 0
-    mat.set(0, 0); mat.set(0, 2);
+    mat.set(0, 0);
+    mat.set(0, 2);
 
     // Row 1: 0 1 0 1
-    mat.set(1, 1); mat.set(1, 3);
+    mat.set(1, 1);
+    mat.set(1, 3);
 
     // Row 2: 1 1 1 1 = row 0 XOR row 1
-    mat.set(2, 0); mat.set(2, 1); mat.set(2, 2); mat.set(2, 3);
+    mat.set(2, 0);
+    mat.set(2, 1);
+    mat.set(2, 2);
+    mat.set(2, 3);
 
     // Test with BlockLanczos solver
     BlockLanczos solver;
@@ -399,7 +432,9 @@ void test_thin_matrix_dependencies() {
     // m=3 < n=4, all rows identical = "1 0 1 1"
     SparseMatrix mat(3, 4);
     for (size_t r = 0; r < 3; ++r) {
-        mat.set(r, 0); mat.set(r, 2); mat.set(r, 3);
+        mat.set(r, 0);
+        mat.set(r, 2);
+        mat.set(r, 3);
     }
 
     // BL on m<n: 小矩阵 (m,n < 5000) BW 会 delegate 到 BL.
@@ -418,13 +453,18 @@ void test_thin_matrix_dependencies() {
         // Sum (XOR) of selected rows
         std::vector<bool> xor_row(4, false);
         for (size_t r = 0; r < 3; ++r) {
-            if (!dep[r]) continue;
+            if (!dep[r])
+                continue;
             for (uint32_t col_idx : mat.row(r).indices()) {
                 xor_row[col_idx] = !xor_row[col_idx];
             }
         }
         bool is_zero = true;
-        for (bool b : xor_row) if (b) { is_zero = false; break; }
+        for (bool b : xor_row)
+            if (b) {
+                is_zero = false;
+                break;
+            }
         if (!is_zero) {
             std::cerr << "  FAIL: dependency does not XOR to zero" << std::endl;
             std::exit(1);
@@ -449,9 +489,9 @@ void test_matrix_stats() {
 
     assert(stats.num_rows == 10);
     assert(stats.num_cols == 8);
-    assert(stats.total_weight == 20);  // 2 per row * 10 rows
+    assert(stats.total_weight == 20); // 2 per row * 10 rows
     assert(stats.has_excess());
-    assert(stats.excess == 2);  // 10 - 8
+    assert(stats.excess == 2); // 10 - 8
 
     std::cout << "  Matrix stats: PASSED" << std::endl;
 }
@@ -464,18 +504,28 @@ void test_structured_gauss() {
     SparseMatrix mat(6, 4);
 
     // Rows 0, 1 are independent
-    mat.set(0, 0); mat.set(0, 1);
-    mat.set(1, 2); mat.set(1, 3);
+    mat.set(0, 0);
+    mat.set(0, 1);
+    mat.set(1, 2);
+    mat.set(1, 3);
 
     // Row 2 = Row 0 XOR Row 1
-    mat.set(2, 0); mat.set(2, 1); mat.set(2, 2); mat.set(2, 3);
+    mat.set(2, 0);
+    mat.set(2, 1);
+    mat.set(2, 2);
+    mat.set(2, 3);
 
     // Rows 3, 4 are independent
-    mat.set(3, 0); mat.set(3, 2);
-    mat.set(4, 1); mat.set(4, 3);
+    mat.set(3, 0);
+    mat.set(3, 2);
+    mat.set(4, 1);
+    mat.set(4, 3);
 
     // Row 5 = Row 3 XOR Row 4
-    mat.set(5, 0); mat.set(5, 1); mat.set(5, 2); mat.set(5, 3);
+    mat.set(5, 0);
+    mat.set(5, 1);
+    mat.set(5, 2);
+    mat.set(5, 3);
 
     BlockLanczos solver;
     auto deps = solver.find_dependencies(mat, 4);
@@ -528,9 +578,8 @@ void test_schirokauer_repeated_roots() {
            "Lifted factor (x+1) should have degree 1");
 
     // Compute map for several (a, b) values — must not crash and return valid values
-    std::vector<std::pair<int64_t, uint64_t>> test_cases = {
-        {3, 2}, {7, 1}, {1, 5}, {11, 3}, {-1, 4}, {0, 1}
-    };
+    std::vector<std::pair<int64_t, uint64_t>> test_cases = {{3, 2},  {7, 1},  {1, 5},
+                                                            {11, 3}, {-1, 4}, {0, 1}};
 
     for (auto [a, b] : test_cases) {
         auto maps = smap.compute(a, b);
@@ -571,10 +620,8 @@ void test_schirokauer_perfect_power() {
     assert(smap.num_columns() == 3);
     // Perfect power mod ℓ has no multiplicity-1 factors → falls back to unsplit mode
     // (zero-filling would remove all Schirokauer constraints, making every dependency trivial)
-    assert(!smap.prime_info_[0].is_split &&
-           "Perfect power mod 2 must fall back to unsplit mode");
-    assert(smap.prime_info_[0].exponent == 7 &&
-           "Unsplit exponent should be ℓ^d - 1 = 2^3 - 1 = 7");
+    assert(!smap.prime_info_[0].is_split && "Perfect power mod 2 must fall back to unsplit mode");
+    assert(smap.prime_info_[0].exponent == 7 && "Unsplit exponent should be ℓ^d - 1 = 2^3 - 1 = 7");
 
     // Unsplit mode produces actual Schirokauer values (not all zeros)
     auto maps = smap.compute(5, 3);
@@ -603,13 +650,11 @@ void test_schirokauer_squarefree_reducible() {
     //
     // For degree 3 squarefree-reducible over GF(2), we need 3 distinct linear roots:
     // x(x+1)(x+a) but GF(2) only has 0 and 1, so x(x+1) times... no third root exists.
-    // Actually deg-3 squarefree reducible over GF(2) must factor into a linear × irreducible quadratic.
-    // (x+1)(x²+x+1) = x³+1+x²+x = x³+x²+x+1 mod 2 = the same as above.
-    // Wait: (x+1)(x²+x+1) = x³ + x²·1 + x·1 + 1·1 + x² + x = ?
-    // Let me expand: x·(x²+x+1) = x³+x²+x, plus 1·(x²+x+1) = x²+x+1
-    // Total: x³+x²+x + x²+x+1 = x³ + 2x² + 2x + 1 = x³ + 1 (mod 2)
-    // So (x+1)(x²+x+1) = x³+1 mod 2.
-    // f mod 2 = x³+1 = (x+1)(x²+x+1) — squarefree! Two coprime factors.
+    // Actually deg-3 squarefree reducible over GF(2) must factor into a linear × irreducible
+    // quadratic. (x+1)(x²+x+1) = x³+1+x²+x = x³+x²+x+1 mod 2 = the same as above. Wait:
+    // (x+1)(x²+x+1) = x³ + x²·1 + x·1 + 1·1 + x² + x = ? Let me expand: x·(x²+x+1) = x³+x²+x, plus
+    // 1·(x²+x+1) = x²+x+1 Total: x³+x²+x + x²+x+1 = x³ + 2x² + 2x + 1 = x³ + 1 (mod 2) So
+    // (x+1)(x²+x+1) = x³+1 mod 2. f mod 2 = x³+1 = (x+1)(x²+x+1) — squarefree! Two coprime factors.
     //
     // Use f(x) = x³ + 3, so f mod 2 = x³ + 1 = (x+1)(x²+x+1)
     // f(10) = 1000 + 3 = 1003
@@ -679,9 +724,11 @@ void test_parallel_block_lanczos_correctness() {
         // Compute M^T * v
         std::vector<bool> result(n, false);
         for (size_t i = 0; i < m; ++i) {
-            if (!dep[i]) continue;
+            if (!dep[i])
+                continue;
             for (uint32_t col : mat.row(i).indices()) {
-                if (col < n) result[col] = !result[col];
+                if (col < n)
+                    result[col] = !result[col];
             }
         }
 
@@ -735,10 +782,14 @@ void test_sge_weight1() {
     // Row 2: {1, 3}
     // Row 3: {0, 3}
     SparseMatrix mat(4, 4);
-    mat.set(0, 0); mat.set(0, 1);
-    mat.set(1, 0); mat.set(1, 2);
-    mat.set(2, 1); mat.set(2, 3);
-    mat.set(3, 0); mat.set(3, 3);
+    mat.set(0, 0);
+    mat.set(0, 1);
+    mat.set(1, 0);
+    mat.set(1, 2);
+    mat.set(2, 1);
+    mat.set(2, 3);
+    mat.set(3, 0);
+    mat.set(3, 3);
 
     SGEConfig config;
     config.eliminate_weight2 = false; // only test weight-1
@@ -753,9 +804,8 @@ void test_sge_weight1() {
         assert(!comp.empty());
     }
 
-    std::cout << "  SGE weight-1: " << result.original_rows << "×" << result.original_cols
-              << " → " << result.reduced_matrix.num_rows() << "×"
-              << result.reduced_matrix.num_cols()
+    std::cout << "  SGE weight-1: " << result.original_rows << "×" << result.original_cols << " → "
+              << result.reduced_matrix.num_rows() << "×" << result.reduced_matrix.num_cols()
               << " (w1=" << result.weight1_eliminated << ")" << std::endl;
     std::cout << "  PASSED" << std::endl;
 }
@@ -771,11 +821,22 @@ void test_sge_weight2() {
     // Row 3: {0, 1, 5}
     // Row 4: {2, 3, 5}      ← shares col 5 with row 3
     SparseMatrix mat(5, 6);
-    mat.set(0, 0); mat.set(0, 1); mat.set(0, 2); mat.set(0, 3);
-    mat.set(1, 0); mat.set(1, 2); mat.set(1, 4);
-    mat.set(2, 1); mat.set(2, 3); mat.set(2, 4);
-    mat.set(3, 0); mat.set(3, 1); mat.set(3, 5);
-    mat.set(4, 2); mat.set(4, 3); mat.set(4, 5);
+    mat.set(0, 0);
+    mat.set(0, 1);
+    mat.set(0, 2);
+    mat.set(0, 3);
+    mat.set(1, 0);
+    mat.set(1, 2);
+    mat.set(1, 4);
+    mat.set(2, 1);
+    mat.set(2, 3);
+    mat.set(2, 4);
+    mat.set(3, 0);
+    mat.set(3, 1);
+    mat.set(3, 5);
+    mat.set(4, 2);
+    mat.set(4, 3);
+    mat.set(4, 5);
 
     SGEConfig config;
     config.eliminate_weight1 = false; // only test weight-2
@@ -788,13 +849,13 @@ void test_sge_weight2() {
     // The merged rows' compositions should contain 2 original rows
     size_t merged_count = 0;
     for (auto& comp : result.row_composition) {
-        if (comp.size() == 2) ++merged_count;
+        if (comp.size() == 2)
+            ++merged_count;
     }
     assert(merged_count == 2);
 
-    std::cout << "  SGE weight-2: " << result.original_rows << "×" << result.original_cols
-              << " → " << result.reduced_matrix.num_rows() << "×"
-              << result.reduced_matrix.num_cols()
+    std::cout << "  SGE weight-2: " << result.original_rows << "×" << result.original_cols << " → "
+              << result.reduced_matrix.num_rows() << "×" << result.reduced_matrix.num_cols()
               << " (w2=" << result.weight2_merged << ")" << std::endl;
     std::cout << "  PASSED" << std::endl;
 }
@@ -814,18 +875,22 @@ void test_sge_expand_dependency() {
     // Row 4: {2, 3}
     // Row 5: {1}             (column 1 has weight 3)
     SparseMatrix mat(6, 4);
-    mat.set(0, 0); mat.set(0, 1);
-    mat.set(1, 1); mat.set(1, 2);
-    mat.set(2, 0); mat.set(2, 2);
-    mat.set(3, 0); mat.set(3, 3);
-    mat.set(4, 2); mat.set(4, 3);
+    mat.set(0, 0);
+    mat.set(0, 1);
+    mat.set(1, 1);
+    mat.set(1, 2);
+    mat.set(2, 0);
+    mat.set(2, 2);
+    mat.set(3, 0);
+    mat.set(3, 3);
+    mat.set(4, 2);
+    mat.set(4, 3);
     mat.set(5, 1);
 
     auto sge_result = SGE::preprocess(mat);
 
     std::cout << "  SGE: 6×4 → " << sge_result.reduced_matrix.num_rows() << "×"
-              << sge_result.reduced_matrix.num_cols()
-              << " (w1=" << sge_result.weight1_eliminated
+              << sge_result.reduced_matrix.num_cols() << " (w1=" << sge_result.weight1_eliminated
               << " w2=" << sge_result.weight2_merged << ")" << std::endl;
 
     // Find deps on reduced matrix
@@ -841,7 +906,8 @@ void test_sge_expand_dependency() {
         // Verify: v^T * M = 0 over GF(2)
         std::vector<bool> check(4, false);
         for (size_t r = 0; r < 6; ++r) {
-            if (!orig[r]) continue;
+            if (!orig[r])
+                continue;
             for (auto col : mat.row(r).indices()) {
                 check[col] = !check[col];
             }
@@ -852,6 +918,98 @@ void test_sge_expand_dependency() {
     }
 
     std::cout << "  Expanded deps verified: " << deps.size() << " deps, all v^T*M=0" << std::endl;
+    std::cout << "  PASSED" << std::endl;
+}
+
+// Release-active contract tests for dependency expansion. These fixtures do
+// not rely on assert(), so malformed solver output and corrupt provenance stay
+// fail-closed when NDEBUG is enabled.
+void test_sge_expand_dependency_contract() {
+    std::cout << "Testing SGE dependency expansion contract..." << std::endl;
+
+    SGEResult valid;
+    valid.original_rows = 3;
+    valid.reduced_matrix = SparseMatrix(2, 1);
+    valid.row_composition = {{0, 2}, {1, 2}};
+
+    const auto expanded = valid.expand_dependency({true, true});
+    const std::vector<bool> expected{true, true, false};
+    if (expanded != expected) {
+        throw std::runtime_error("valid SGE dependency did not expand with GF(2) parity");
+    }
+
+    require_throws<std::invalid_argument>([&] { (void)valid.expand_dependency({true}); },
+                                          "short reduced dependency");
+    require_throws<std::invalid_argument>(
+        [&] { (void)valid.expand_dependency({true, false, true}); }, "long reduced dependency");
+
+    SGEResult inconsistent_shape;
+    inconsistent_shape.original_rows = 3;
+    inconsistent_shape.reduced_matrix = SparseMatrix(1, 1);
+    inconsistent_shape.row_composition = {{0}, {1}};
+    require_throws<std::logic_error>(
+        [&] { (void)inconsistent_shape.expand_dependency({false, false}); },
+        "row composition and reduced matrix mismatch");
+
+    SGEResult invalid_composition;
+    invalid_composition.original_rows = 3;
+    invalid_composition.reduced_matrix = SparseMatrix(2, 1);
+    invalid_composition.row_composition = {{0, 3}, {1, 2}};
+    require_throws<std::out_of_range>(
+        [&] { (void)invalid_composition.expand_dependency({false, false}); },
+        "out-of-range original row in unselected composition");
+
+    std::cout << "  PASSED" << std::endl;
+}
+
+void test_sge_expand_dependencies_contract() {
+    std::cout << "Testing SGE batch dependency expansion contract..." << std::endl;
+
+    SGEResult valid;
+    valid.original_rows = 4;
+    valid.reduced_matrix = SparseMatrix(3, 1);
+    valid.row_composition = {{0, 3}, {1, 3}, {2}};
+
+    const std::vector<std::vector<bool>> reduced_dependencies{
+        {true, false, false},
+        {false, true, true},
+        {true, true, false},
+    };
+    const auto expanded = valid.expand_dependencies(reduced_dependencies);
+    if (expanded.size() != reduced_dependencies.size()) {
+        throw std::runtime_error("batch SGE expansion returned the wrong result count");
+    }
+    for (size_t i = 0; i < reduced_dependencies.size(); ++i) {
+        if (expanded[i] != valid.expand_dependency(reduced_dependencies[i])) {
+            throw std::runtime_error("batch SGE expansion differs from strict single expansion");
+        }
+    }
+
+    const std::vector<std::vector<bool>> empty_dependencies;
+    if (!valid.expand_dependencies(empty_dependencies).empty()) {
+        throw std::runtime_error("empty SGE dependency batch did not remain empty");
+    }
+
+    const std::vector<std::vector<bool>> malformed_batch{
+        {true, false, false},
+        {true, false},
+        {false, true, true},
+    };
+    require_throws<std::invalid_argument>([&] { (void)valid.expand_dependencies(malformed_batch); },
+                                          "malformed dependency inside batch");
+
+    SGEResult invalid_composition;
+    invalid_composition.original_rows = 4;
+    invalid_composition.reduced_matrix = SparseMatrix(3, 1);
+    invalid_composition.row_composition = {{0}, {1, 4}, {2, 3}};
+    const std::vector<std::vector<bool>> never_selects_invalid_row{
+        {true, false, false},
+        {false, false, true},
+    };
+    require_throws<std::out_of_range>(
+        [&] { (void)invalid_composition.expand_dependencies(never_selects_invalid_row); },
+        "out-of-range original row in batch-unselected composition");
+
     std::cout << "  PASSED" << std::endl;
 }
 
@@ -884,14 +1042,16 @@ void test_sge_row_composition_cap() {
     constexpr size_t N = 10;
     SparseMatrix mat(N, N - 1);
     for (size_t r = 0; r < N; ++r) {
-        if (r > 0) mat.set(r, r - 1);
-        if (r < N - 1) mat.set(r, r);
+        if (r > 0)
+            mat.set(r, r - 1);
+        if (r < N - 1)
+            mat.set(r, r);
     }
 
     // Run with low cap to force trigger
     SGEConfig config;
-    config.eliminate_weight1 = false;  // Force weight-2 path
-    config.row_composition_cap = 4;    // Small cap
+    config.eliminate_weight1 = false; // Force weight-2 path
+    config.row_composition_cap = 4;   // Small cap
     auto result_capped = SGE::preprocess(mat, config);
 
     // Run again without cap to baseline
@@ -930,15 +1090,26 @@ void test_sge_row_composition_cap_disabled() {
     std::cout << "Testing SGE row_composition cap disabled (cap=0)..." << std::endl;
 
     SparseMatrix mat(5, 6);
-    mat.set(0, 0); mat.set(0, 1); mat.set(0, 2); mat.set(0, 3);
-    mat.set(1, 0); mat.set(1, 2); mat.set(1, 4);
-    mat.set(2, 1); mat.set(2, 3); mat.set(2, 4);
-    mat.set(3, 0); mat.set(3, 1); mat.set(3, 5);
-    mat.set(4, 2); mat.set(4, 3); mat.set(4, 5);
+    mat.set(0, 0);
+    mat.set(0, 1);
+    mat.set(0, 2);
+    mat.set(0, 3);
+    mat.set(1, 0);
+    mat.set(1, 2);
+    mat.set(1, 4);
+    mat.set(2, 1);
+    mat.set(2, 3);
+    mat.set(2, 4);
+    mat.set(3, 0);
+    mat.set(3, 1);
+    mat.set(3, 5);
+    mat.set(4, 2);
+    mat.set(4, 3);
+    mat.set(4, 5);
 
     SGEConfig config;
     config.eliminate_weight1 = false;
-    config.row_composition_cap = 0;  // disabled
+    config.row_composition_cap = 0; // disabled
     auto result = SGE::preprocess(mat, config);
 
     // Should never skip with cap=0
@@ -962,20 +1133,21 @@ void test_sge_cascading_weight1() {
     // R1 dies → col 0 becomes w1 (only R0) → kill → R0 dies → empty matrix.
     SparseMatrix mat(3, 3);
     mat.set(0, 0);
-    mat.set(1, 0); mat.set(1, 1);
-    mat.set(2, 1); mat.set(2, 2);
+    mat.set(1, 0);
+    mat.set(1, 1);
+    mat.set(2, 1);
+    mat.set(2, 2);
 
     SGEConfig config;
-    config.eliminate_weight2 = false;  // 只测 w1 级联
+    config.eliminate_weight2 = false; // 只测 w1 级联
     auto result = SGE::preprocess(mat, config);
 
     // 全部 3 列通过 w1 cascade 消除
     assert(result.reduced_matrix.num_rows() == 0);
     assert(result.weight1_eliminated == 3);
 
-    std::cout << "  Cascading w1: " << result.original_rows << "x"
-              << result.original_cols << " → empty (w1=" << result.weight1_eliminated
-              << ")" << std::endl;
+    std::cout << "  Cascading w1: " << result.original_rows << "x" << result.original_cols
+              << " → empty (w1=" << result.weight1_eliminated << ")" << std::endl;
     std::cout << "  PASSED" << std::endl;
 }
 
@@ -996,10 +1168,14 @@ void test_sge_alternating_cascade() {
     // Phase 2 处理 w2,产生新结构;新 pass 又可能产生 w1。
     SparseMatrix mat(5, 5);
     mat.set(0, 0);
-    mat.set(1, 1); mat.set(1, 2);
-    mat.set(2, 1); mat.set(2, 3);
-    mat.set(3, 3); mat.set(3, 4);
-    mat.set(4, 2); mat.set(4, 4);
+    mat.set(1, 1);
+    mat.set(1, 2);
+    mat.set(2, 1);
+    mat.set(2, 3);
+    mat.set(3, 3);
+    mat.set(3, 4);
+    mat.set(4, 2);
+    mat.set(4, 4);
 
     SGEConfig config;
     config.eliminate_weight1 = true;
@@ -1007,15 +1183,15 @@ void test_sge_alternating_cascade() {
     auto result = SGE::preprocess(mat, config);
 
     // 期望:R0 在 Phase 1 被消(col 0 是 w1),后续 w2 merge 把剩余压缩
-    assert(result.weight1_eliminated >= 1);  // 至少 col 0 触发
-    assert(result.reduced_matrix.num_rows() <= 4);  // R0 必定消失
+    assert(result.weight1_eliminated >= 1);        // 至少 col 0 触发
+    assert(result.reduced_matrix.num_rows() <= 4); // R0 必定消失
     assert(result.passes >= 1);
 
-    std::cout << "  Alternating cascade: " << result.original_rows << "x"
-              << result.original_cols << " → " << result.reduced_matrix.num_rows()
-              << "x" << result.reduced_matrix.num_cols() << " (passes="
-              << result.passes << ", w1=" << result.weight1_eliminated
-              << ", w2=" << result.weight2_merged << ")" << std::endl;
+    std::cout << "  Alternating cascade: " << result.original_rows << "x" << result.original_cols
+              << " → " << result.reduced_matrix.num_rows() << "x"
+              << result.reduced_matrix.num_cols() << " (passes=" << result.passes
+              << ", w1=" << result.weight1_eliminated << ", w2=" << result.weight2_merged << ")"
+              << std::endl;
     std::cout << "  PASSED" << std::endl;
 }
 
@@ -1043,7 +1219,8 @@ void test_sge_edge_cases() {
     // Identity matrix (all weight-1 columns)
     {
         SparseMatrix ident(5, 5);
-        for (size_t i = 0; i < 5; ++i) ident.set(i, i);
+        for (size_t i = 0; i < 5; ++i)
+            ident.set(i, i);
         auto result = SGE::preprocess(ident);
         assert(result.reduced_matrix.num_rows() == 0);
         assert(result.weight1_eliminated == 5);
@@ -1080,6 +1257,8 @@ int main() {
     test_sge_cascading_weight1();
     test_sge_alternating_cascade();
     test_sge_expand_dependency();
+    test_sge_expand_dependency_contract();
+    test_sge_expand_dependencies_contract();
     test_sge_row_composition_cap();
     test_sge_row_composition_cap_disabled();
     test_sge_edge_cases();

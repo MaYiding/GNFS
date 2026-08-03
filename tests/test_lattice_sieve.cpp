@@ -1,10 +1,13 @@
-#include "gnfs/sieve/lattice_sieve.hpp"
 #include "gnfs/factor_base/builder.hpp"
 #include "gnfs/polynomial/base_m.hpp"
+#include "gnfs/sieve/lattice_sieve.hpp"
 #include "gnfs/util/safe_math.hpp"
 
 #include <cassert>
 #include <iostream>
+#include <optional>
+#include <stdexcept>
+#include <string>
 
 using namespace gnfs;
 using namespace gnfs::sieve;
@@ -19,8 +22,8 @@ void test_lattice_basis() {
     std::cout << "Testing lattice basis computation..." << std::endl;
 
     SpecialQ sq;
-    sq.q = 1009;  // 素数
-    sq.r = 42;    // 某个根
+    sq.q = 1009; // 素数
+    sq.r = 42;   // 某个根
 
     LatticeBasis basis = compute_lattice_basis(sq);
 
@@ -28,13 +31,15 @@ void test_lattice_basis() {
     // v0 = (e0, f0) 应该满足 e0 - f0*r ≡ 0 (mod q)
     int64_t check0 = basis.e0 - static_cast<int64_t>(basis.f0) * sq.r;
     int64_t mod0 = check0 % static_cast<int64_t>(sq.q);
-    if (mod0 < 0) mod0 += sq.q;
+    if (mod0 < 0)
+        mod0 += sq.q;
     assert(mod0 == 0);
 
     // v1 = (e1, f1) 应该满足 e1 - f1*r ≡ 0 (mod q)
     int64_t check1 = basis.e1 - static_cast<int64_t>(basis.f1) * sq.r;
     int64_t mod1 = check1 % static_cast<int64_t>(sq.q);
-    if (mod1 < 0) mod1 += sq.q;
+    if (mod1 < 0)
+        mod1 += sq.q;
     assert(mod1 == 0);
 
     // 行列式应该等于 q（或 -q）
@@ -214,7 +219,8 @@ void test_mod_inverse() {
             std::swap(r, newr);
         }
 
-        if (t < 0) t += static_cast<int64_t>(m);
+        if (t < 0)
+            t += static_cast<int64_t>(m);
         uint64_t inv = static_cast<uint64_t>(t);
 
         assert(inv == expected);
@@ -222,8 +228,8 @@ void test_mod_inverse() {
     };
 
     test_inv(7, 11, 8);
-    test_inv(3, 7, 5);   // 3 * 5 = 15 ≡ 1 (mod 7)
-    test_inv(2, 5, 3);   // 2 * 3 = 6 ≡ 1 (mod 5)
+    test_inv(3, 7, 5); // 3 * 5 = 15 ≡ 1 (mod 7)
+    test_inv(2, 5, 3); // 2 * 3 = 6 ≡ 1 (mod 5)
 
     std::cout << "  Mod inverse: PASS" << std::endl;
 }
@@ -241,8 +247,144 @@ void test_default_region() {
     assert(region2.i_width() > region1.i_width());
     assert(region2.j_height() < region1.j_height());
 
-    std::cout << "  Default region: PASS (skew=1: " << region1.i_width() << "x" << region1.j_height()
-              << ", skew=4: " << region2.i_width() << "x" << region2.j_height() << ")" << std::endl;
+    std::cout << "  Default region: PASS (skew=1: " << region1.i_width() << "x"
+              << region1.j_height() << ", skew=4: " << region2.i_width() << "x"
+              << region2.j_height() << ")" << std::endl;
+}
+
+void test_lattice_sieve_storage_contract() {
+    std::cout << "Testing lattice sieve storage contract..." << std::endl;
+
+    Integer n(test_n);
+    auto result = BaseMSelector::select(n, 3);
+    if (!result.success) {
+        throw std::runtime_error("storage fixture polynomial selection failed");
+    }
+    auto ctx = BaseMSelector::create_context(n, result);
+
+    FactorBaseBuilder::Options fb_opts;
+    fb_opts.rational_bound = 500;
+    fb_opts.algebraic_bound = 500;
+    fb_opts.parallel = false;
+    auto fb = FactorBaseBuilder::build(ctx, fb_opts);
+
+    SieveParams params;
+    LatticeSieve sieve(ctx, fb, params);
+    if (sieve.allocated_sieve_bytes() != 0) {
+        throw std::runtime_error("constructor eagerly reserved the default sieve region");
+    }
+
+    SieveRegion large_region;
+    large_region.i_min = -1000;
+    large_region.i_max = 999;
+    large_region.j_min = 1;
+    large_region.j_max = 200;
+    sieve.set_region(large_region);
+    const size_t large_required = large_region.size() * sizeof(uint16_t);
+    const size_t large_allocated = sieve.allocated_sieve_bytes();
+    if (large_allocated < large_required) {
+        throw std::runtime_error("large region did not allocate its logical sieve storage");
+    }
+
+    SieveRegion small_region;
+    small_region.i_min = -50;
+    small_region.i_max = 49;
+    small_region.j_min = 1;
+    small_region.j_max = 20;
+    sieve.set_region(small_region);
+    const size_t small_required = small_region.size() * sizeof(uint16_t);
+    const size_t small_allocated = sieve.allocated_sieve_bytes();
+    if (small_allocated < small_required || small_allocated >= large_allocated / 4) {
+        throw std::runtime_error("shrinking the region retained the prior sieve capacity");
+    }
+
+    LatticeSieve degenerate(ctx, fb, params);
+    const SpecialQ r_zero{1009, 0, 0};
+    const auto empty = degenerate.sieve_special_q(r_zero);
+    if (!empty.candidates.empty() || empty.sieved_positions != 0 ||
+        degenerate.allocated_sieve_bytes() != 0) {
+        throw std::runtime_error("r=0 path allocated unused sieve storage");
+    }
+
+    std::cout << "  Storage contract: PASS (large=" << large_allocated
+              << " bytes, small=" << small_allocated << " bytes)" << std::endl;
+}
+
+void test_lattice_sieve_special_q_entry_contract() {
+    std::cout << "Testing lattice sieve special-q entry contract..." << std::endl;
+
+    Integer n(test_n);
+    auto selection = BaseMSelector::select(n, 3);
+    if (!selection.success) {
+        throw std::runtime_error("special-q entry fixture polynomial selection failed");
+    }
+    auto ctx = BaseMSelector::create_context(n, selection);
+
+    FactorBaseBuilder::Options fb_opts;
+    fb_opts.rational_bound = 500;
+    fb_opts.algebraic_bound = 500;
+    fb_opts.parallel = false;
+    auto fb = FactorBaseBuilder::build(ctx, fb_opts);
+
+    SieveParams params;
+    LatticeSieve rejecting_sieve(ctx, fb, params);
+    if (rejecting_sieve.allocated_sieve_bytes() != 0) {
+        throw std::runtime_error("special-q rejection fixture started with sieve storage");
+    }
+
+    const auto expect_rejected_without_storage = [&](const SpecialQ& sq, const char* description) {
+        bool rejected = false;
+        try {
+            (void)rejecting_sieve.sieve_special_q(sq);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        } catch (...) {
+            throw std::runtime_error(std::string(description) + " raised the wrong exception type");
+        }
+
+        if (!rejected) {
+            throw std::runtime_error(std::string(description) + " was not rejected");
+        }
+        if (rejecting_sieve.allocated_sieve_bytes() != 0) {
+            throw std::runtime_error(std::string(description) +
+                                     " allocated sieve storage before rejection");
+        }
+    };
+
+    expect_rejected_without_storage(SpecialQ{101, AlgebraicPrime::PROJECTIVE_ROOT, 0},
+                                    "projective special-q");
+    expect_rejected_without_storage(SpecialQ{101, 101, 0}, "special-q with r equal to q");
+    expect_rejected_without_storage(SpecialQ{1, 0, 0}, "special-q with invalid modulus");
+
+    SpecialQRange range;
+    range.min_q = 100;
+    range.max_q = 500;
+    SpecialQGenerator generator(fb, range);
+    std::optional<SpecialQ> affine_sq;
+    while (auto candidate = generator.next()) {
+        if (candidate->q > 1 && candidate->r > 0 && candidate->r < candidate->q) {
+            affine_sq = *candidate;
+            break;
+        }
+    }
+    if (!affine_sq.has_value()) {
+        throw std::runtime_error("special-q entry fixture has no nonzero affine root");
+    }
+
+    LatticeSieve affine_sieve(ctx, fb, params);
+    SieveRegion region;
+    region.i_min = -16;
+    region.i_max = 15;
+    region.j_min = 1;
+    region.j_max = 8;
+    affine_sieve.set_region(region);
+    const auto affine_result = affine_sieve.sieve_special_q(*affine_sq);
+    if (affine_result.special_q.q != affine_sq->q || affine_result.special_q.r != affine_sq->r ||
+        affine_result.sieved_positions != region.size()) {
+        throw std::runtime_error("valid affine special-q did not follow the normal sieve path");
+    }
+
+    std::cout << "  Special-q entry contract: PASS" << std::endl;
 }
 
 // r=0 退化路径:LatticeSieve 在 sq.r==0 时 early-return 空 candidates。
@@ -298,6 +440,8 @@ int main() {
     test_sieve_region();
     test_mod_inverse();
     test_default_region();
+    test_lattice_sieve_storage_contract();
+    test_lattice_sieve_special_q_entry_contract();
     test_lattice_sieve_basic();
     test_candidate_properties();
     test_lattice_sieve_r_zero();

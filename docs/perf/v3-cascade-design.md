@@ -58,10 +58,15 @@ ENV-gated `GNFS_CASCADE_V3`。默认 OFF, V0 path 零开销。
 2. `src/api/pipeline.cpp:686-745` — `Pipeline::filter()` (Phase 4, 当前 N>100d 才走)
 3. `tests/test_stress.cpp:368-418` — stress 50d/60d 测试自己的 sieve loop
 
-**Dedup**: V3 output 可能与 V0 重复 (同一 clique 都被覆盖)。用 `(a, b)` XOR hash dedup:
+**Dedup**: V3 output 可能与 V0 重复 (同一 clique 都被覆盖)。原始筛法行使用完整 `ABPair` 相等性和 `ABPairHash`；哈希碰撞仍由相等比较消解，不再把字段压进一个整数：
 ```cpp
-int64_t key = static_cast<int64_t>(r.a) ^ (static_cast<int64_t>(r.b) << 32);
+std::unordered_set<core::ABPair, core::ABPairHash> existing;
+if (existing.insert(r.ab()).second) {
+    // keep the first exact raw row
+}
 ```
+
+V0/V3 的 merged output 不能沿用 primary `(a,b)`：不同组合可以共享 primary，同一组合也可以由不同 primary/order 物化。兼容路径因此展平 primary 与全部 `extra_ab_pairs`，按 GF(2) 规范化成排序 source combination 后去重。正式结构化约简则使用排序的 immutable source-ID combination；两者都不按 materialized primary 去重。
 
 ## 使用
 
@@ -109,7 +114,7 @@ stderr 输出:
 | 风险 | 缓解 |
 |------|------|
 | V3 cascade 引入 invalid relations (LP cancel 弱) | LP cancel check 强约束: after < before 才 accept |
-| V0+V3 dedup overhead | XOR hash O(1) + unordered_set lookup, 50d 估 <100ms |
+| V0+V3 dedup overhead | 每个 merged row 的 source combination 排序/GF(2) 规范化后做 structural hash lookup；仅索引 merged outputs，并在规模实验中单独计时 |
 | V3 stats 不一致 | 集成时记录 `cstats.full_produced + v3_added` (dedup 后) |
 | V3 在 small N 略增时间 | 25d e2e 实测 ENV=1 vs ENV=0: 9.9s vs 8.9s (~10% overhead, 可接受) |
 

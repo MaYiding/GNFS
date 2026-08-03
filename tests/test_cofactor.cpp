@@ -1,20 +1,34 @@
 // test_cofactor.cpp - Test cofactorization components
 
+#include <gnfs/cofactor/cofactorizer.hpp>
 #include <gnfs/cofactor/smooth_check.hpp>
 #include <gnfs/cofactor/trial_division.hpp>
-#include <gnfs/cofactor/cofactorizer.hpp>
-#include <gnfs/relation/filter.hpp>
-#include <gnfs/factor_base/builder.hpp>
 #include <gnfs/core/polynomial_context.hpp>
+#include <gnfs/factor_base/builder.hpp>
+#include <gnfs/relation/filter.hpp>
 
 #include <cassert>
-#include <iostream>
-#include <sstream>
 #include <cmath>
+#include <iostream>
+#include <limits>
+#include <sstream>
+#include <stdexcept>
+#include <string>
 
 using namespace gnfs;
 using namespace gnfs::cofactor;
 using namespace gnfs::relation;
+
+[[noreturn]] static void check_failed(const char* expression, int line) {
+    throw std::runtime_error(std::string("CHECK failed at line ") + std::to_string(line) + ": " +
+                             expression);
+}
+
+#define CHECK(condition)                                                                           \
+    do {                                                                                           \
+        if (!(condition))                                                                          \
+            check_failed(#condition, __LINE__);                                                    \
+    } while (false)
 
 // Test primality checking
 void test_primality() {
@@ -40,9 +54,9 @@ void test_primality() {
     assert(!is_probable_prime_u64(100));
 
     // Large primes
-    assert(is_probable_prime_u64(104729));    // 10000th prime
-    assert(is_probable_prime_u64(1299709));   // 100000th prime
-    assert(is_probable_prime_u64(15485863));  // 1000000th prime
+    assert(is_probable_prime_u64(104729));   // 10000th prime
+    assert(is_probable_prime_u64(1299709));  // 100000th prime
+    assert(is_probable_prime_u64(15485863)); // 1000000th prime
 
     // Large non-primes
     assert(!is_probable_prime_u64(104729 * 2));
@@ -61,14 +75,14 @@ void test_perfect_power() {
     // Perfect squares
     assert(is_perfect_power(4, base, exp) && base == 2 && exp == 2);
     assert(is_perfect_power(9, base, exp) && base == 3 && exp == 2);
-    assert(is_perfect_power(16, base, exp));  // 2^4
+    assert(is_perfect_power(16, base, exp)); // 2^4
     assert(is_perfect_power(25, base, exp) && base == 5 && exp == 2);
     assert(is_perfect_power(49, base, exp) && base == 7 && exp == 2);
 
     // Perfect cubes
     assert(is_perfect_power(8, base, exp) && base == 2 && exp == 3);
     assert(is_perfect_power(27, base, exp) && base == 3 && exp == 3);
-    assert(is_perfect_power(64, base, exp));  // 2^6 or 4^3
+    assert(is_perfect_power(64, base, exp)); // 2^6 or 4^3
     assert(is_perfect_power(125, base, exp) && base == 5 && exp == 3);
 
     // Higher powers
@@ -95,38 +109,38 @@ void test_pollard_rho() {
     // Small semiprimes
     uint64_t f;
 
-    f = pollard_rho(15);  // 3 * 5
+    f = pollard_rho(15); // 3 * 5
     assert(f == 3 || f == 5);
 
-    f = pollard_rho(21);  // 3 * 7
+    f = pollard_rho(21); // 3 * 7
     assert(f == 3 || f == 7);
 
-    f = pollard_rho(35);  // 5 * 7
+    f = pollard_rho(35); // 5 * 7
     assert(f == 5 || f == 7);
 
-    f = pollard_rho(77);  // 7 * 11
+    f = pollard_rho(77); // 7 * 11
     assert(f == 7 || f == 11);
 
     // Larger semiprimes
-    f = pollard_rho(1147);  // 31 * 37
+    f = pollard_rho(1147); // 31 * 37
     assert(f == 31 || f == 37);
 
-    f = pollard_rho(10403);  // 101 * 103
+    f = pollard_rho(10403); // 101 * 103
     assert(f == 101 || f == 103);
 
     // Edge cases
-    assert(pollard_rho(4) == 2);  // 2^2
-    assert(pollard_rho(6) == 2 || pollard_rho(6) == 3);  // 2 * 3
+    assert(pollard_rho(4) == 2);                        // 2^2
+    assert(pollard_rho(6) == 2 || pollard_rho(6) == 3); // 2 * 3
 
     // n = p² 边界:Pollard rho 的 cycle structure 在素数平方下可能退化,
     // 需验证多次重试(13 个 c 值)能找到唯一素因子 p。
-    f = pollard_rho(49);     // 7^2
+    f = pollard_rho(49); // 7^2
     assert(f == 7);
-    f = pollard_rho(169);    // 13^2
+    f = pollard_rho(169); // 13^2
     assert(f == 13);
-    f = pollard_rho(10609);  // 103^2
+    f = pollard_rho(10609); // 103^2
     assert(f == 103);
-    f = pollard_rho(1018081);  // 1009^2 (中等大小,需 Brent batch GCD 顺利)
+    f = pollard_rho(1018081); // 1009^2 (中等大小,需 Brent batch GCD 顺利)
     assert(f == 1009);
 
     std::cout << "  Pollard's rho: PASSED" << std::endl;
@@ -136,7 +150,7 @@ void test_pollard_rho() {
 void test_cofactor_classification() {
     std::cout << "Testing cofactor classification..." << std::endl;
 
-    uint64_t lpb = 1000000;  // Large prime bound = 10^6
+    uint64_t lpb = 1000000; // Large prime bound = 10^6
 
     // Smooth (cofactor = 1)
     core::Integer one(1);
@@ -150,12 +164,12 @@ void test_cofactor_classification() {
     assert(cls.factor1 == 997);
 
     // Single prime at bound
-    core::Integer prime_at_bound(999983);  // largest 6-digit prime
+    core::Integer prime_at_bound(999983); // largest 6-digit prime
     cls = classify_cofactor(prime_at_bound, lpb);
     assert(cls.type == CofactorClass::Prime);
 
     // Single prime above bound
-    core::Integer prime_large(1000003);  // first 7-digit prime
+    core::Integer prime_large(1000003); // first 7-digit prime
     cls = classify_cofactor(prime_large, lpb);
     assert(cls.type == CofactorClass::TooLarge);
 
@@ -191,11 +205,11 @@ void test_trial_division() {
     // m = 12 since f(12) = 144 - 143 = 1 ≡ 1 (mod 143)
     // We use N=143 so that small primes 2,3,5,7 are NOT excluded from factor base
     std::vector<core::Integer> coeffs;
-    coeffs.push_back(core::Integer(static_cast<int64_t>(-143)));  // constant term
-    coeffs.push_back(core::Integer(static_cast<int64_t>(0)));     // x term
-    coeffs.push_back(core::Integer(static_cast<int64_t>(1)));     // x^2 term
+    coeffs.push_back(core::Integer(static_cast<int64_t>(-143))); // constant term
+    coeffs.push_back(core::Integer(static_cast<int64_t>(0)));    // x term
+    coeffs.push_back(core::Integer(static_cast<int64_t>(1)));    // x^2 term
 
-    core::Integer N(static_cast<int64_t>(143));  // 11 * 13, so 2,3,5,7 are in factor base
+    core::Integer N(static_cast<int64_t>(143)); // 11 * 13, so 2,3,5,7 are in factor base
     core::Integer M(static_cast<int64_t>(12));
     core::PolynomialContext ctx(std::move(N), std::move(coeffs), std::move(M));
 
@@ -213,18 +227,18 @@ void test_trial_division() {
     core::Integer value(210);
     auto result = divider.divide_rational(std::move(value));
 
-    assert(result.is_smooth);  // 210 should be smooth over small primes
-    assert(result.factor_indices.size() >= 4);  // 2, 3, 5, 7
+    assert(result.is_smooth);                  // 210 should be smooth over small primes
+    assert(result.factor_indices.size() >= 4); // 2, 3, 5, 7
 
     // Test with a number that has a cofactor
-    core::Integer value2(210 * 101);  // 101 is prime > 100
+    core::Integer value2(210 * 101); // 101 is prime > 100
     result = divider.divide_rational(std::move(value2));
 
-    assert(!result.is_smooth);  // Should have cofactor 101
+    assert(!result.is_smooth); // Should have cofactor 101
     // Safety check: ensure cofactor fits before converting
     if (!result.cofactor.fits_uint64()) {
-        std::cerr << "  ERROR: cofactor doesn't fit in uint64: "
-                  << result.cofactor.to_string() << std::endl;
+        std::cerr << "  ERROR: cofactor doesn't fit in uint64: " << result.cofactor.to_string()
+                  << std::endl;
         assert(false);
     }
     assert(result.cofactor.to_uint64() == 101);
@@ -326,9 +340,48 @@ void test_large_prime_counting() {
 
     // Get unique primes
     auto unique = RelationFilter::get_unique_large_primes(relations);
-    assert(unique.size() == 4);  // 101, 103, 107, 109
+    assert(unique.size() == 4); // 101, 103, 107, 109
 
     std::cout << "  Large prime counting: PASSED" << std::endl;
+}
+
+// Cofactorizer statistics must classify the effective GF(2) LP support, not
+// the number of raw PrimePower entries. CHECK remains active under NDEBUG.
+void test_effective_large_prime_stats() {
+    std::cout << "Testing effective large prime statistics..." << std::endl;
+
+    std::vector<core::Integer> coeffs;
+    coeffs.emplace_back(static_cast<int64_t>(-1));
+    coeffs.emplace_back(static_cast<int64_t>(1));
+    core::PolynomialContext ctx(core::Integer(15), std::move(coeffs), core::Integer(1));
+
+    core::FactorBaseParams params;
+    params.large_prime_bound = 1000;
+    factor_base::FactorBase fb(params);
+    Cofactorizer cofactorizer(ctx, fb);
+
+    core::Relation even_exponent(7, 8);
+    even_exponent.rational_large_prime.push_back(core::PrimePower{101, 0, 2});
+    cofactorizer.update_stats(even_exponent);
+
+    core::Relation repeated_key(9, 10);
+    repeated_key.algebraic_large_prime.push_back(core::PrimePower{103, 7, 1});
+    repeated_key.algebraic_large_prime.push_back(core::PrimePower{103, 7, 1});
+    cofactorizer.update_stats(repeated_key);
+
+    core::Relation three_lp(11, 12);
+    three_lp.rational_large_prime.push_back(core::PrimePower{107, 0, 1});
+    three_lp.rational_large_prime.push_back(core::PrimePower{109, 0, 1});
+    three_lp.algebraic_large_prime.push_back(core::PrimePower{113, 5, 1});
+    cofactorizer.update_stats(three_lp);
+
+    const auto stats = cofactorizer.stats();
+    CHECK(stats.full_relations == 2);
+    CHECK(stats.partial_1lp == 0);
+    CHECK(stats.partial_2lp == 0);
+    CHECK(stats.partial_3lp == 1);
+
+    std::cout << "  Effective large prime statistics: PASSED" << std::endl;
 }
 
 // Test relation requirement calculation
@@ -413,7 +466,7 @@ void test_quick_cofactor_check() {
     assert(quick_cofactor_check(c3, lpb, true));
 
     // 2LP within bound^2
-    core::Integer c4(500 * 600);  // 300000 < 1000000
+    core::Integer c4(500 * 600); // 300000 < 1000000
     assert(quick_cofactor_check(c4, lpb, true));
 
     // 2LP at bound^2
@@ -426,7 +479,7 @@ void test_quick_cofactor_check() {
 
     // 2LP disabled
     core::Integer c7(500 * 600);
-    assert(!quick_cofactor_check(c7, lpb, false));  // > lpb, 2LP disabled
+    assert(!quick_cofactor_check(c7, lpb, false)); // > lpb, 2LP disabled
 
     std::cout << "  Quick cofactor check: PASSED" << std::endl;
 }
@@ -457,14 +510,13 @@ void test_lpb_squared_overflow() {
            "Cofactor near UINT64_MAX but below real lpb² must pass");
 
     // Case 3: cofactor > real lpb² (as Integer, since 3e19 > UINT64_MAX)
-    core::Integer cof_too_large("30000000000000000000");  // 3e19 > 2.5e19
+    core::Integer cof_too_large("30000000000000000000"); // 3e19 > 2.5e19
     assert(!quick_cofactor_check(cof_too_large, lpb, true) &&
            "Cofactor above real lpb² must be rejected");
 
     // Case 4: single LP within bound still works
     core::Integer cof_single_lp(static_cast<uint64_t>(4000000000ULL));
-    assert(quick_cofactor_check(cof_single_lp, lpb, true) &&
-           "Single LP within bound must pass");
+    assert(quick_cofactor_check(cof_single_lp, lpb, true) && "Single LP within bound must pass");
 
     // Case 5: 2LP disabled, cofactor > lpb should fail
     core::Integer cof_above_lpb(static_cast<uint64_t>(6000000000ULL));
@@ -492,21 +544,18 @@ void test_prime_power_uint64_storage() {
 
     // --- PrimePower must store primes > UINT32_MAX ---
 
-    uint64_t large_p = 5000000000ULL;  // > UINT32_MAX (4294967295)
-    uint64_t large_r = 4999999999ULL;  // root mod p, also > UINT32_MAX
+    uint64_t large_p = 5000000000ULL; // > UINT32_MAX (4294967295)
+    uint64_t large_r = 4999999999ULL; // root mod p, also > UINT32_MAX
 
     // Case 1: Two-arg constructor (p, e) — for rational side
     core::PrimePower pp1(large_p, static_cast<uint8_t>(1));
-    assert(pp1.p == large_p &&
-           "PrimePower(p, e) must store p > UINT32_MAX without truncation");
+    assert(pp1.p == large_p && "PrimePower(p, e) must store p > UINT32_MAX without truncation");
     assert(pp1.e == 1);
 
     // Case 2: Three-arg constructor (p, r, e) — for algebraic side
     core::PrimePower pp2(large_p, large_r, static_cast<uint8_t>(2));
-    assert(pp2.p == large_p &&
-           "PrimePower(p, r, e) must store p > UINT32_MAX");
-    assert(pp2.r == large_r &&
-           "PrimePower(p, r, e) must store r > UINT32_MAX");
+    assert(pp2.p == large_p && "PrimePower(p, r, e) must store p > UINT32_MAX");
+    assert(pp2.r == large_r && "PrimePower(p, r, e) must store r > UINT32_MAX");
     assert(pp2.e == 2);
 
     // Case 3: Comparison operators with large values
@@ -531,10 +580,9 @@ void test_prime_power_uint64_storage() {
            "PrimePower must handle UINT32_MAX+1 correctly");
 
     // Case 7: UINT64_MAX-range prime
-    uint64_t huge_p = 18000000000000000000ULL;  // ~1.8e19
+    uint64_t huge_p = 18000000000000000000ULL; // ~1.8e19
     core::PrimePower pp_huge(huge_p, static_cast<uint8_t>(1));
-    assert(pp_huge.p == huge_p &&
-           "PrimePower must handle very large primes near UINT64_MAX");
+    assert(pp_huge.p == huge_p && "PrimePower must handle very large primes near UINT64_MAX");
 
     std::cout << "  PrimePower uint64 storage: PASSED" << std::endl;
 }
@@ -543,7 +591,7 @@ void test_prime_power_uint64_storage() {
 void test_factor_base_params_uint64_lpb() {
     std::cout << "Testing FactorBaseParams uint64 large_prime_bound..." << std::endl;
 
-    uint64_t large_lpb = 5000000000ULL;  // > UINT32_MAX
+    uint64_t large_lpb = 5000000000ULL; // > UINT32_MAX
 
     // Case 1: Direct assignment
     core::FactorBaseParams params;
@@ -574,15 +622,14 @@ void test_factor_base_params_uint64_lpb() {
 void test_cofactorizer_large_prime_storage() {
     std::cout << "Testing cofactorizer large prime storage..." << std::endl;
 
-    uint64_t lpb = 5000000000ULL;  // > UINT32_MAX
+    uint64_t lpb = 5000000000ULL; // > UINT32_MAX
 
     // Case 1: A prime cofactor just below lpb should be stored correctly
-    uint64_t prime_val = 4999999937ULL;  // A prime near 5e9
+    uint64_t prime_val = 4999999937ULL; // A prime near 5e9
     core::Integer cof_prime(prime_val);
 
     auto cls = classify_cofactor(cof_prime, lpb);
-    assert(cls.type == CofactorClass::Prime &&
-           "Prime < lpb should classify as Prime");
+    assert(cls.type == CofactorClass::Prime && "Prime < lpb should classify as Prime");
     assert(cls.factor1 == prime_val &&
            "classify_cofactor must store the full uint64 prime in factor1");
 
@@ -591,8 +638,8 @@ void test_cofactorizer_large_prime_storage() {
     // 4294967311 is prime (just above UINT32_MAX)
     // 4294967357 is prime
     // Their product is ~1.844e19 < (5e9)² = 2.5e19
-    uint64_t p1 = 4294967311ULL;  // prime > UINT32_MAX
-    uint64_t p2 = 4294967357ULL;  // prime > UINT32_MAX
+    uint64_t p1 = 4294967311ULL; // prime > UINT32_MAX
+    uint64_t p2 = 4294967357ULL; // prime > UINT32_MAX
 
     // Verify these are actually > UINT32_MAX
     assert(p1 > UINT32_MAX && p2 > UINT32_MAX);
@@ -607,10 +654,8 @@ void test_cofactorizer_large_prime_storage() {
     // classify_cofactor should find both factors
     if (cls2.type == CofactorClass::Semiprime) {
         // Both factors should be > UINT32_MAX
-        assert(cls2.factor1 > UINT32_MAX &&
-               "Semiprime factor1 must not be truncated to uint32");
-        assert(cls2.factor2 > UINT32_MAX &&
-               "Semiprime factor2 must not be truncated to uint32");
+        assert(cls2.factor1 > UINT32_MAX && "Semiprime factor1 must not be truncated to uint32");
+        assert(cls2.factor2 > UINT32_MAX && "Semiprime factor2 must not be truncated to uint32");
         // Factors should multiply back to the product
         assert(cls2.factor1 * cls2.factor2 == p1 * p2 &&
                "Factors must reconstruct the original product");
@@ -643,6 +688,68 @@ void test_cofactorizer_large_prime_storage() {
            "Deserialized algebraic root must be preserved");
 
     std::cout << "  Cofactorizer large prime storage: PASSED" << std::endl;
+}
+
+// Special-Q metadata identifies a prime ideal, so verify() must reject a root
+// that does not match the candidate's a/b identity. CHECK stays active in
+// Release builds, where ordinary assert() is compiled out.
+void test_special_q_root_identity_validation() {
+    std::cout << "Testing Special-Q root identity validation..." << std::endl;
+
+    core::FactorBaseParams params;
+    params.large_prime_bound = 1000;
+    factor_base::FactorBase fb(params);
+    const uint32_t projective_root = core::AlgebraicPrime::PROJECTIVE_ROOT;
+
+    // Ordinary root: f(x) = x - 1, N = 15, m = 1. For (a,b) = (8,1)
+    // the algebraic norm is 7 and the Special-Q root is 8/1 mod 7 = 1.
+    std::vector<core::Integer> ordinary_coeffs;
+    ordinary_coeffs.emplace_back(static_cast<int64_t>(-1));
+    ordinary_coeffs.emplace_back(static_cast<int64_t>(1));
+    core::PolynomialContext ordinary_ctx(core::Integer(15), std::move(ordinary_coeffs),
+                                         core::Integer(1));
+    Cofactorizer ordinary_cofactorizer(ordinary_ctx, fb);
+
+    auto ordinary = ordinary_cofactorizer.verify(8, 1, 7, 1);
+    CHECK(ordinary.has_value());
+    CHECK(ordinary->algebraic_large_prime.size() == 1);
+    CHECK(ordinary->algebraic_large_prime[0].p == 7);
+    CHECK(ordinary->algebraic_large_prime[0].r == 1);
+    CHECK(ordinary->algebraic_large_prime[0].e == 1);
+    CHECK(!ordinary_cofactorizer.verify(8, 1, 7, 2).has_value());
+    CHECK(!ordinary_cofactorizer.verify(8, 1, 7, 8).has_value());
+    CHECK(!ordinary_cofactorizer.verify(8, 1, 1, projective_root).has_value());
+    CHECK(Cofactorizer::special_q_root_matches(-5, 3, 7, 3));
+    CHECK(!Cofactorizer::special_q_root_matches(-5, 3, 7, projective_root));
+    CHECK(!Cofactorizer::special_q_root_matches(1, 7, 7, 0));
+    CHECK(!Cofactorizer::special_q_root_matches(1, 1, 7, projective_root));
+
+    constexpr uint32_t LARGE_Q = 4294967291U;
+    CHECK(Cofactorizer::special_q_root_matches(1, LARGE_Q - 1, LARGE_Q, LARGE_Q - 1));
+    const uint32_t min_root = static_cast<uint32_t>(
+        Cofactorizer::compute_alg_lp_root(std::numeric_limits<int64_t>::min(), 3, 7));
+    CHECK(
+        Cofactorizer::special_q_root_matches(std::numeric_limits<int64_t>::min(), 3, 7, min_root));
+
+    // Projective root: q | b makes b non-invertible modulo q. With
+    // f(x) = 7x - 1, N = 15, m = 13 and (a,b) = (2,7), the norm is 7,
+    // and compute_alg_lp_root() specifies the PROJECTIVE_ROOT sentinel.
+    std::vector<core::Integer> projective_coeffs;
+    projective_coeffs.emplace_back(static_cast<int64_t>(-1));
+    projective_coeffs.emplace_back(static_cast<int64_t>(7));
+    core::PolynomialContext projective_ctx(core::Integer(15), std::move(projective_coeffs),
+                                           core::Integer(13));
+    Cofactorizer projective_cofactorizer(projective_ctx, fb);
+
+    auto projective = projective_cofactorizer.verify(2, 7, 7, projective_root);
+    CHECK(projective.has_value());
+    CHECK(projective->algebraic_large_prime.size() == 1);
+    CHECK(projective->algebraic_large_prime[0].p == 7);
+    CHECK(projective->algebraic_large_prime[0].r == projective_root);
+    CHECK(projective->algebraic_large_prime[0].e == 1);
+    CHECK(!projective_cofactorizer.verify(2, 7, 7, 0).has_value());
+
+    std::cout << "  Special-Q root identity validation: PASSED" << std::endl;
 }
 
 // compute_alg_lp_root: 当 p | b 时,b 不可逆 mod p,LP 对应"投影根"理想 (p, 1/α)。
@@ -686,6 +793,7 @@ int main() {
     test_trial_division();
     test_relation_filter();
     test_large_prime_counting();
+    test_effective_large_prime_stats();
     test_relation_requirements();
     test_separate_relations();
     test_quick_cofactor_check();
@@ -693,6 +801,7 @@ int main() {
     test_prime_power_uint64_storage();
     test_factor_base_params_uint64_lpb();
     test_cofactorizer_large_prime_storage();
+    test_special_q_root_identity_validation();
     test_compute_alg_lp_root_projective();
 
     std::cout << std::endl;

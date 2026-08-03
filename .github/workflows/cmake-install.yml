@@ -95,7 +95,13 @@ jobs:
 
           prefix="${PWD}/install-root"
           compile_flags=(-std=c++20 -I"${prefix}/include")
-          link_flags=("${prefix}/lib/libgnfs_core.a" -lntl -lgmp -pthread)
+          link_flags=(
+            "${prefix}/lib/libgnfs_core.a"
+            "${prefix}/lib/libgnfs_util.a"
+            -lntl
+            -lgmp
+            -pthread
+          )
 
           if [[ "${RUNNER_OS}" == "macOS" ]]; then
               gmp_prefix="$(brew --prefix gmp)"

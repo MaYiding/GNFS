@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -53,6 +54,25 @@ class Checks:
             capture_output=True,
             check=False,
         )
+
+    def check_executable(self, relative: str) -> None:
+        path = self.root / relative
+        if not path.is_file():
+            self.fail(f"{relative}: missing")
+            return
+
+        staged = self.git("ls-files", "--stage", "--", relative)
+        staged_mode = staged.stdout.split(maxsplit=1)[0] if staged.returncode == 0 else ""
+        if staged_mode != "100755":
+            self.fail(f"{relative}: must be tracked as executable")
+            return
+
+        # Windows worktrees do not materialize Git's POSIX executable bit.
+        # The index mode is the portable source of truth there; POSIX hosts
+        # additionally need the live mode because hooks execute the file
+        # directly from the worktree.
+        if os.name != "nt" and path.stat().st_mode & 0o111 == 0:
+            self.fail(f"{relative}: must be executable")
 
     def check_instructions(self) -> None:
         agents = self.read("AGENTS.md")
@@ -115,11 +135,7 @@ class Checks:
         if not (self.root / "docs" / "harness-engineering.md").is_file():
             self.fail("docs/harness-engineering.md: missing Harness ownership and contract documentation")
 
-        hook = self.root / ".claude" / "hooks" / "project-guard.py"
-        if not hook.is_file():
-            self.fail(".claude/hooks/project-guard.py: missing")
-        elif hook.stat().st_mode & 0o111 == 0:
-            self.fail(".claude/hooks/project-guard.py: must be executable")
+        self.check_executable(".claude/hooks/project-guard.py")
 
         for name in CANONICAL_SKILLS:
             canonical_rel = f".claude/skills/{name}/SKILL.md"
@@ -148,19 +164,24 @@ class Checks:
             if {"Edit", "Write"} & tools:
                 self.fail(f"{relative}: specialist agents must remain read-only")
 
-        hook_test = self.root / "tests" / "test_harness_hooks.sh"
-        if not hook_test.is_file():
-            self.fail("tests/test_harness_hooks.sh: missing Hook regression test")
-        elif hook_test.stat().st_mode & 0o111 == 0:
-            self.fail("tests/test_harness_hooks.sh: must be executable")
+        self.check_executable("tests/test_harness_hooks.sh")
 
     def check_integration(self) -> None:
         cmake = self.read("CMakeLists.txt")
         if "add_test(NAME HarnessHooks" not in cmake or "tests/test_harness_hooks.sh" not in cmake:
             self.fail("CMakeLists.txt: register the HarnessHooks CTest")
+        if (
+            "add_test(NAME DistributedSievePolicyInventory" not in cmake
+            or "scripts/check_distributed_sieve_policy.py" not in cmake
+        ):
+            self.fail("CMakeLists.txt: register the distributed-sieve policy inventory CTest")
 
         workflow = self.read(".github/workflows/scripts.yml")
-        for command in ("python3 scripts/check_harness.py", "bash tests/test_harness_hooks.sh"):
+        for command in (
+            "python3 scripts/check_distributed_sieve_policy.py --self-test",
+            "python3 scripts/check_harness.py",
+            "bash tests/test_harness_hooks.sh",
+        ):
             if command not in workflow:
                 self.fail(f".github/workflows/scripts.yml: missing CI command {command!r}")
 

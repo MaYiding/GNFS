@@ -6,52 +6,232 @@
 
 ---
 
-## Sieve mid-flight checkpoint (GNFS_SIEVE_RESUME)
+## LatticeSieve Region Storage Contract
 
-**ENV `GNFS_SIEVE_RESUME=<base_path>`** (2026-05-18 实施):
-启用 OOC streaming + sieve loop checkpoint, 长时间 50d+/60d sieve 中断后能 resume.
-ENV 隐含启用 OOC (base_path 作 OOC base 和 checkpoint base, 不需 单独 set
-GNFS_OOC_RELATIONS).
+`LatticeSieve` 的默认 region 约为 268.4M 个 cell，即约 512MiB `uint16_t`
+storage。构造器现在只冻结默认 region，不立即分配数组；首次处理有效 special-Q
+时才按当前 region 分配。`set_region()` 使用新 vector 加 `swap`，所以从大 region
+切到小 region 会确定释放旧 capacity，不依赖非强制的 `shrink_to_fit()`。
 
-```bash
-# 首次启动 / 续跑同 path
-GNFS_SIEVE_RESUME=/tmp/gnfs_50d_session ./gnfs <50d-N>
-# 进程崩溃后, 同 path 再跑 → resume from last checkpoint
-GNFS_SIEVE_RESUME=/tmp/gnfs_50d_session ./gnfs <50d-N>
+production Pipeline 在 worker 启动前已经知道 `GNFSParams` region。50 位 region 为
+4096 x 2048，只需 16MiB/worker。Pipeline 不再构造未使用的常驻 sieve 实例；
+`allocated_sieve_bytes()` 提供只读 capacity 诊断。该改动只修正分配生命周期，不改变
+region、special-Q 顺序、筛数组值、候选关系或停止条件。
+
+固定 4-SQ 的 Release 50 位探针在改动前后得到相同 raw/output digest 和矩阵形状。
+process lifetime peak RSS 从 1,530,101,760 bytes 降到 218,169,344 bytes，sieve wall
+time 从 1.76s 降到 0.82s。该数字用于回归证据，不是跨机器性能阈值。
+
+**集成点**：
+
+- `include/gnfs/sieve/lattice_sieve.hpp`：lazy allocation、region capacity release 和
+  `allocated_sieve_bytes()`；
+- `src/api/pipeline.cpp`：删除未使用的常驻 `LatticeSieve`；
+- `tests/test_lattice_sieve.cpp`：Release 下执行的 lazy/shrink/r=0 storage contract。
+
+---
+
+## Special-Q Local Compute Budget (Config)
+
+`max_special_q_batch_workers` 和 `max_local_sieve_threads` 是本地 production
+Pipeline 的类型化配置，不是 `GNFS_*` ENV。前者限制每批外层 worker 数，默认值为
+4，合法范围为 `[1, 4]`。后者限制本地 Pipeline 的计算通道；未配置时使用
+`hardware_concurrency`，读取失败时回退到 4。显式值的合法范围为
+`[1, UINT32_MAX]`，Pipeline 构造时再钳制到硬件并发数。CLI 的 `--threads N` 设置
+同一计算通道预算。
+
+```ini
+max_special_q_batch_workers = 2
+max_local_sieve_threads = 8
 ```
 
-**Resume 流程**:
-1. Pipeline::sieve_and_collect 检测 `<base_path>.sieve_ckpt` 存在 + magic 有效
-2. 加载 ckpt: sq_count, current_index (SpecialQGenerator 位置), round (adaptive
-   loop 进度), batch_target, candidates_total
-3. CollectorConfig.ooc_resume=true → OOCWriter 用 resume mode 续写
-   .reldata/.relidx (要求 magic=INCOMPLETE, finalized files 不允许 resume)
-4. RelationCollector ctor 从 .reldata 读 (a,b) 16 bytes/rel 重建 seen_ set
-   (防 resume 后 dedup 错过)
-5. SpecialQGenerator::reset_to(current_index) skip 已 done SQs
-6. Sieve loop 从 round_start 继续, 每 CHECKPOINT_BATCH_INTERVAL=25 batches
-   保存 ckpt (每 batch 2-4 SQ, ~50-100 SQs/checkpoint)
-7. Sieve 正常完成 → 删 ckpt + OOC finalize MAGIC (后续 read 通过 reader)
-8. 异常退出 (crash/kill) → ckpt + INCOMPLETE OOC 保留, 下次 resume
+```cpp
+gnfs::api::Config config;
+config.set_max_special_q_batch_workers(2);
+config.set_max_local_sieve_threads(8);
+```
 
-**Crash safety** (MAGIC/INCOMPLETE flip 双重保护):
-- SieveCheckpoint: save() 先写 MAGIC_INCOMPLETE, flush, seek 头 flip MAGIC
-- OOCRelationWriter: ctor 写 INCOMPLETE, close() flip MAGIC; uncaught_exceptions
-  跟踪让析构异常路径 skip flip → 文件保留 INCOMPLETE → reader 拒读
-- 任一 stage crash 时下次 resume 仍 detect partial state (允许丢 ≤25 batches)
+Pipeline 构造时冻结有效预算 $B$。非空 special-Q 批次的大小为 $Q$，外层配置上限为
+$C$ 时，实际 worker 数为：
 
-**集成点** (commits `b4c6364` → `60a1282`, 2026-05-18):
-- `include/gnfs/sieve/sieve_checkpoint.hpp` — SieveCheckpoint binary format (MAGIC/INCOMPLETE flip)
-- `include/gnfs/relation/ooc_relation_store.hpp` — OOCWriter resume ctor
-- `include/gnfs/relation/collector.hpp` — CollectorConfig.ooc_resume + `restore_seen_from_ooc` helper
-- `src/api/pipeline.cpp` — `sieve_and_collect` ENV-gate + ckpt save/load (检索 `GNFS_SIEVE_RESUME` getenv 点 + `SieveCheckpoint::save` 调用点)
-- `tests/test_sieve_checkpoint.cpp` — 9 unit tests (roundtrip/corrupt/version/INCOMPLETE)
-- `tests/test_relation_collector.cpp` — 6 new tests (writer append + collector resume)
-- `tests/test_api.cpp` — 2 e2e tests (fresh + synthetic_ckpt resume)
+$$
+W = \min(B, C, Q)
+$$
 
-**触发条件**: 50d+ sieve 持续 hours+ 而 crash 风险 (OOM/电源/Ctrl-C) 存在.
-对 25d/40-bit 短任务 overhead 不实用 (sieve <1 min). 不与 GNFS_OOC_RELATIONS
-共存 (SIEVE_RESUME 优先).
+预算按商和余数分配。第 $i$ 个 worker 的 `LatticeSieve` 内层通道数为：
+
+$$
+t_i = \left\lfloor\frac{B}{W}\right\rfloor + [i < B \bmod W]
+$$
+
+因此非空批次满足 $\sum_i t_i = B$，且任意两个 worker 的分配相差不超过 1。
+Pipeline 按两个不重叠的阶段执行本地批次：
+
+1. sieve 阶段中，每个外层 worker 持有一个 `LatticeSieve`；
+2. 所有 sieve workers 结束并释放 region storage 后，candidate 阶段把每个
+   special-Q 的候选按 256 个一块切分，再由 worker-local `Cofactorizer` 动态领取。
+
+`LatticeSieve::set_max_threads()` 统一约束 bucket scatter、bucket apply 和 row-major
+阶段的内层并行。candidate 阶段最多启动 $\min(B, K)$ 个 workers，其中 $K$ 是当前
+批次的非空 candidate chunks 数。两个阶段顺序复用预算 $B$，不会叠加并行度。
+
+当前 production candidate worker 在 `Cofactorizer` 内串行执行。ECM Stage 1、
+ECM Stage 2、Brent-Pollard rho 和 ECM curve pool 的并行 helper 均未接入该路径。
+未来接入任一 helper 时，Pipeline 必须显式分配每个 candidate worker 的内层预算。
+所有同时活跃 worker 的内层预算总和不得超过 $B$。worker 内不得直接把 ENV 值当作
+独立线程上限，否则会形成 candidate worker 数与内层线程数的乘积。
+
+该契约限制本地批次各顺序阶段的计算通道，不限制进程 OS 线程数或 RSS。多通道
+`LatticeSieve` 执行时，外层 worker 线程会阻塞等待内层线程；运行库线程以及显式启用
+的余因子分解嵌套并行也不计入此预算。candidate worker 数受该预算约束，但预算仍不
+等于进程的 OS 线程上限。它不改变
+`DistributedSieveConfig::num_workers`，也不约束独立调用的
+`LatticeSieve::sieve_parallel()`。distributed route 不填充本地批次遥测。
+
+小于等于 50 位的固定批次宽度仍为 4，大于 50 位仍为 2。实际外层 worker 数为
+`min(local_sieve_thread_budget, batch_size, max_special_q_batch_workers)`。调度参数不改变
+special-Q 顺序、批次成员、归约输入或 checkpoint identity。`max_special_q` 仍是处理
+数量的硬上限；最后一批只取剩余配额，并为该批重新分配完整计算通道预算。
+
+`FactorStats` 提供以下本地调度遥测：
+
+- `local_sieve_thread_budget`：Pipeline 冻结后的有效计算通道预算；
+- `special_q_batch_worker_limit`：计算通道预算与外层配置上限的较小值；
+- `special_q_batch_peak_workers`：实际同时启动的最多外层 workers；
+- `special_q_batch_count`：已执行的本地批次数；
+- `special_q_batch_peak_size`：实际最大批次大小；
+- `special_q_batch_peak_assigned_threads`：单批分配的最大计算通道总数；
+- `special_q_worker_peak_sieve_threads`：单个 worker 获得的最大内层通道数；
+- `candidate_batch_peak_workers`：candidate 阶段实际启动的最大 worker 数；
+- `candidate_batch_total_chunks`：所有本地批次处理的 candidate chunks 总数；
+- `candidate_batch_peak_chunks`：单个批次的最大 candidate chunks 数；
+- `candidate_batch_peak_candidates`：单个批次保留的最大候选数；
+- `candidate_batch_rss_sample_candidates`：配对 RSS 样本对应的候选数；
+- `candidate_batch_after_generation_current_rss_bytes`：Stage A 结束后的 current RSS；
+- `candidate_batch_after_cofactor_current_rss_bytes`：Stage B 结束后的 current RSS；
+- `candidate_batch_after_release_current_rss_bytes`：批次 storage 析构后的 current RSS；
+- `timings.candidate_generation_s`：生成候选的累计 wall time；
+- `timings.candidate_cofactor_s`：candidate cofactor 阶段的累计 wall time。
+
+RSS 采样策略为 `first_max_candidates`。Pipeline 只在当前批次候选数严格大于既有样本时
+替换配对样本。因此，并列最大值保留最早批次，且三个 RSS 值始终来自同一批次。
+三个 current RSS 字段必须全有或全无；不支持的平台不以 0 bytes 伪装成功样本。
+
+`after_generation` 在 Stage A workers 和 worker-local `LatticeSieve` 析构后采样，
+但仍保留全部 `SieveResult`。`after_cofactor` 在 candidate workers、chunk scratch
+和 worker-local `Cofactorizer` 析构后采样，此时输入与归并前输出仍在内存。
+`after_release` 在输出移入 collector，并析构批次输入与输出 storage 后采样。
+它表示进程 current RSS，不表示这些对象独占的 bytes，也不保证小于前两个样本。
+
+当 candidate worker 数为 1 时，顺序路径在调用线程执行。ECM 的 thread-local state
+可保留到进程结束。allocator 也可能保留已释放页面。因此，三个样本之间不得建立
+单调断言，也不得作为跨平台 CI 阈值。
+
+`special_q_batch_peak_assigned_threads` 和 `special_q_worker_peak_sieve_threads` 在
+worker join 后从各 `LatticeSieve` 的实际配置值汇总。它们不只复述 planner 的预期
+向量；若预算没有写入 worker，Pipeline 会 fail closed。
+
+真实 50 位 Release 探针在固定 10 通道预算下对比 workers 1、2 和 4。runner 声明的
+relation、matrix 与生命周期身份集合完全一致；4-SQ 和 64-SQ 两个尺寸都通过。资源值
+只作为单机证据，详见 [structured OOC measurement](../perf/structured-ooc-measurement.md)。
+
+**集成点**：
+
+- `include/gnfs/core/params.hpp`：默认值和冻结后的 Pipeline 参数；
+- `include/gnfs/api/config.hpp`：配置文件解析、builder、merge 和范围校验；
+- `include/gnfs/sieve/local_thread_budget.hpp`：均衡线程分配纯函数；
+- `include/gnfs/cofactor/candidate_chunk_plan.hpp`：规范 candidate chunk 规划；
+- `include/gnfs/cofactor/candidate_batch.hpp`：确定性 candidate 执行器；
+- `src/api/pipeline.cpp`：预算冻结、两阶段批次执行、worker 分配和遥测；
+- `tests/test_api.cpp`：类型化配置与公开结果格式；
+- `tests/test_local_sieve_thread_budget.cpp`：分配示例、无效输入和性质网格；
+- `tests/test_candidate_chunk_plan.cpp`：chunk 覆盖、顺序和溢出契约；
+- `tests/test_candidate_batch.cpp`：真实 Special-Q fixture 和跨线程顺序不变性；
+- `tests/test_sieve_checkpoint.cpp`：调度参数不进入数学 run identity；
+- `tests/test_structured_ooc_50d_probe.cpp`：真实 50 位调度与 identity 证据。
+
+---
+
+## Sieve mid-flight checkpoint (GNFS_RESUME / GNFS_SIEVE_RESUME)
+
+**ENV `GNFS_RESUME=<base_path>`** 启用全流水线恢复；历史名称
+`GNFS_SIEVE_RESUME=<base_path>` 仍作为别名。进入 sieve 阶段后，该路径同时
+作为 OOC relation store 与 sieve checkpoint 的 base path，不需要再设置
+`GNFS_OOC_RELATIONS`。
+
+```bash
+# 首次启动 / 续跑同一 path
+GNFS_RESUME=/var/tmp/gnfs-session ./gnfs <N>
+# 进程崩溃后使用同一路径重启
+GNFS_RESUME=/var/tmp/gnfs-session ./gnfs <N>
+```
+
+**SieveCheckpoint V3 + OOC V3 配对恢复流程**:
+
+1. 新 OOC store 在 `.relidx` 与 `.reldata` 的 V3 header 中持久化同一个不可变
+   `store_id`。`RelationCollector::checkpoint_ooc()` flush 两个 stream，写入 prefix
+   sentinel，并返回 `format_version/store_id/generation/count/data_end`；collector
+   同时给出从每次成功 `add()` 独立滚动得到的 relation-sequence receipt。offset 与
+   `data_end` 都是包含 24-byte data header 的物理文件偏移。
+2. `SieveCheckpoint` 把 descriptor、sequence receipt、`sq_count/current_index/round`
+   和本次 run identity 写入同目录临时文件；写入 checksum、完整 flush 后以原子
+   替换发布。
+3. 周期性 checkpoint 发布成功后，collector 才以同一个 descriptor 重新打开
+   append。终态 checkpoint 额外写入 `collection_complete=true`，保持该 exact prefix
+   suspended，并直接从同一 generation 发布 final magic。
+4. 重启先严格加载 V3 checkpoint，再比对 N、多项式、因子基和 sieve 参数的
+   128-bit run fingerprint；不一致时在打开 OOC store 前 fail closed。当前 run
+   identity schema 3 还绑定 affine-only Special-Q 枚举规则，以及冻结后的 cascade
+   V3、3LP、V0 weight/cutoff/residual 和 structured/legacy reduction 选择，因此旧
+   schema 或不同语义策略不会跨 checkpoint 恢复。
+5. identity 匹配后，再从同一次只读打开校验 OOC V3 index/data header、配对
+   `store_id` 与 committed prefix，并重算 checkpoint prefix 的 sequence receipt；
+   所有检查通过后才允许截断 checkpoint 之后的未提交 index/data tail。同尺寸改写
+   factor payload、异源 `.reldata` 或 AB 保持不变的载荷漂移都会 fail closed。
+6. OOC prefix 恢复成功后，才应用 Special-Q 游标。旧 SieveCheckpoint V1/V2、
+   V1/V2 OOC descriptor、checksum 错误、路径、store identity 或 receipt 不匹配
+   都 fail closed，不会回退到 fresh 并截断证据。
+   Finalized V1/V2 只保留普通 reader 的只读兼容，不允许 append recovery 或 corpus
+   ownership promotion。
+7. 若进程在终态 checkpoint 发布后、OOC final magic 前退出，重启会识别
+   `collection_complete`，只重做确定性 reduction/finalize，不再重复 adaptive round
+   或追加 relation。若退出发生在 final magic 与 checkpoint 删除之间，重启要求
+   finalized corpus 与终态 descriptor/receipt 的 count 和 extent 精确相等，以只读
+   方式继续；任何 checkpoint 后 finalized extension 都 fail closed。
+
+**Crash-safety 边界**:
+
+- 普通 `OOCRelationReader` 始终拒绝 incomplete store；只有带配对 V3 descriptor
+  的 recovery path 能读取并回滚到已提交前缀。
+- checkpoint 发布使用同目录临时文件和替换操作。发布前失败时重新打开已持久化
+  OOC prefix 并重试；若替换后目录同步报错，Pipeline 会严格加载正式文件并与
+  本次目标逐字段比较，只有目标版本已可见时才按“已发布、耐久性告警”继续。
+- OOC prefix checkpoint 和 finalize 会同步 data/index 文件，并在 POSIX 上同步
+  父目录。进程崩溃矩阵覆盖 prefix、checkpoint 临时态/发布态、append tail、
+  terminal publication、finalize metadata 与 final magic；文件系统和硬件仍决定
+  断电耐久性的最终边界。
+- 同进程 checkpoint/resume 只重验 paired header、精确 extent、首 offset 与
+  sentinel，并读取 collector 已滚动维护的 receipt，保持 O(1) checkpoint 边界；
+  final precommit 与进程重启恢复才完整扫描 offset/record，避免固定 checkpoint
+  周期对增长中 relation index 造成二次复杂度。
+- 测试用 self-exec 子进程在 typed save stage 调用 `std::_Exit()`，避免析构自动
+  finalize 造成“伪崩溃”。这些测试证明进程退出一致性；不把它表述为完整断电证明。
+
+**集成点**:
+
+- `include/gnfs/sieve/sieve_checkpoint.hpp` — V3 wire format、receipt、checksum、原子发布
+- `include/gnfs/sieve/sieve_run_identity.hpp` — portable run identity
+- `include/gnfs/relation/ooc_relation_format.hpp` — 轻量 V3 format contract
+- `include/gnfs/relation/ooc_relation_store.hpp` — paired V3 identity、prefix rollback
+- `include/gnfs/relation/relation_sequence_receipt.hpp` — constant-memory accepted-sequence receipt
+- `include/gnfs/relation/collector.hpp` — paired resume descriptor 与 recovery outcome
+- `src/api/pipeline.cpp` — fail-closed load 与 prefix/checkpoint/reopen 顺序
+- `tests/test_sieve_checkpoint.cpp` — 格式、原子发布与真实子进程 crash 边界
+- `tests/test_ooc_store_integrity.cpp` — prefix、tail、identity、finalized-corpus 校验
+
+**触发条件**: 50d+ sieve 持续 hours+ 且存在 OOM、进程退出或重启风险。对短任务
+通常不值得启用。该模式与 `GNFS_OOC_RELATIONS` 不叠加，resume path 优先。
+同一 base path 目前只支持单个活跃进程；并发 writer 的进程级 lease 尚未实现。
 
 ---
 

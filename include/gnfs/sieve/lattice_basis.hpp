@@ -57,6 +57,12 @@ enum class LatticeReductionMethod {
     SkewLLL,
 };
 
+/// 显式格基规约配置。低层调用方通过该配置固定行为，避免隐式依赖进程 ENV。
+struct LatticeBasisReductionConfig {
+    LatticeReductionMethod base_method = LatticeReductionMethod::LLL;
+    bool skew_enabled = false;
+};
+
 /// LatticeBasis - 格基
 /// 格 L_q = {(a, b) : a - b*r ≡ 0 (mod q)} (GNFS convention)
 /// For prime ideal P = (q, α - r), P | (a - bα) iff a - b*r ≡ 0 (mod q)
@@ -88,7 +94,8 @@ struct LatticeBasis {
         // (a - b*r) mod q should be 0
         int64_t val = a - static_cast<int64_t>(b) * r;
         int64_t mod = val % static_cast<int64_t>(q);
-        if (mod < 0) mod += q;
+        if (mod < 0)
+            mod += q;
         return mod == 0;
     }
 
@@ -118,7 +125,8 @@ using lb_wide_int = long double;
 /// 精确整数 round-half-to-even-like: round(a/b) for b > 0.
 /// 用 (2a + b)/(2b) for a≥0, (2a - b)/(2b) for a<0 (round-half-away-from-zero).
 [[nodiscard]] inline int64_t lb_int_round_div(lb_wide_int a, lb_wide_int b) noexcept {
-    if (b <= 0) return 0;  // safety
+    if (b <= 0)
+        return 0; // safety
 #if defined(__SIZEOF_INT128__)
     if (a >= 0) {
         return static_cast<int64_t>((2 * a + b) / (2 * b));
@@ -134,12 +142,18 @@ using lb_wide_int = long double;
 /// "1" / "lll" / "auto" / unset → LLL (new default, F-K 2005 style)
 [[nodiscard]] inline LatticeReductionMethod lattice_reduction_method_from_env() {
     const char* env = std::getenv("GNFS_LATTICE_LLL");
-    if (!env) return LatticeReductionMethod::LLL;  // default LLL
-    if (env[0] == '\0') return LatticeReductionMethod::LLL;
-    if (std::strcmp(env, "0") == 0) return LatticeReductionMethod::Gauss;
-    if (std::strcmp(env, "gauss") == 0) return LatticeReductionMethod::Gauss;
-    if (std::strcmp(env, "Gauss") == 0) return LatticeReductionMethod::Gauss;
-    if (std::strcmp(env, "GAUSS") == 0) return LatticeReductionMethod::Gauss;
+    if (!env)
+        return LatticeReductionMethod::LLL; // default LLL
+    if (env[0] == '\0')
+        return LatticeReductionMethod::LLL;
+    if (std::strcmp(env, "0") == 0)
+        return LatticeReductionMethod::Gauss;
+    if (std::strcmp(env, "gauss") == 0)
+        return LatticeReductionMethod::Gauss;
+    if (std::strcmp(env, "Gauss") == 0)
+        return LatticeReductionMethod::Gauss;
+    if (std::strcmp(env, "GAUSS") == 0)
+        return LatticeReductionMethod::Gauss;
     return LatticeReductionMethod::LLL;
 }
 
@@ -154,20 +168,25 @@ using lb_wide_int = long double;
 /// 时启用, 不破回归.
 [[nodiscard]] inline bool lattice_skew_enabled_from_env() {
     const char* env = std::getenv("GNFS_LATTICE_SKEW");
-    if (!env || env[0] == '\0') return false;
-    if (std::strcmp(env, "1") == 0) return true;
-    if (std::strcmp(env, "on") == 0) return true;
-    if (std::strcmp(env, "ON") == 0) return true;
-    if (std::strcmp(env, "true") == 0) return true;
-    if (std::strcmp(env, "TRUE") == 0) return true;
+    if (!env || env[0] == '\0')
+        return false;
+    if (std::strcmp(env, "1") == 0)
+        return true;
+    if (std::strcmp(env, "on") == 0)
+        return true;
+    if (std::strcmp(env, "ON") == 0)
+        return true;
+    if (std::strcmp(env, "true") == 0)
+        return true;
+    if (std::strcmp(env, "TRUE") == 0)
+        return true;
     return false;
 }
 
 /// Gauss / Lagrange reduction (legacy, BACKLOG P2 fix preserved).
 /// 输入 v0=(q,0), v1=(r,1), 输出 (shorter, longer) 经 size-reduced 的基.
 /// max_iters guard 防 oscillation (r=q-1 边界 case).
-inline void lb_reduce_gauss(int64_t& v0_a, int64_t& v0_b,
-                             int64_t& v1_a, int64_t& v1_b) {
+inline void lb_reduce_gauss(int64_t& v0_a, int64_t& v0_b, int64_t& v1_a, int64_t& v1_b) {
     constexpr int MAX_GAUSSIAN_ITERS = 64;
     bool changed = true;
     int iters = 0;
@@ -182,8 +201,8 @@ inline void lb_reduce_gauss(int64_t& v0_a, int64_t& v0_b,
         }
 
         // v0 = v0 - round(v0·v1 / v1·v1) * v1
-        lb_wide_int dot = static_cast<lb_wide_int>(v0_a) * v1_a +
-                          static_cast<lb_wide_int>(v0_b) * v1_b;
+        lb_wide_int dot =
+            static_cast<lb_wide_int>(v0_a) * v1_a + static_cast<lb_wide_int>(v0_b) * v1_b;
         lb_wide_int n1 = lb_norm_sq(v1_a, v1_b);
         if (n1 > 0) {
             int64_t mu = lb_int_round_div(dot, n1);
@@ -221,9 +240,8 @@ inline void lb_reduce_gauss(int64_t& v0_a, int64_t& v0_b,
 ///
 /// 复杂度 O(log(max(q,r))) iterations, 每 iter O(1) integer ops.
 /// max_iters guard 防极端 oscillation (理论上 2D LLL 不会, 但安全网).
-inline void lb_reduce_lll_fk2005(int64_t& v0_a, int64_t& v0_b,
-                                   int64_t& v1_a, int64_t& v1_b) {
-    constexpr int MAX_LLL_ITERS = 128;  // 2× Gauss, double safety
+inline void lb_reduce_lll_fk2005(int64_t& v0_a, int64_t& v0_b, int64_t& v1_a, int64_t& v1_b) {
+    constexpr int MAX_LLL_ITERS = 128; // 2× Gauss, double safety
 
     // 保证初始 v0 = shorter (LLL 不变量)
     if (lb_norm_sq(v0_a, v0_b) > lb_norm_sq(v1_a, v1_b)) {
@@ -237,10 +255,11 @@ inline void lb_reduce_lll_fk2005(int64_t& v0_a, int64_t& v0_b,
 
         // Size-reduction: v1 ← v1 - round(v0·v1 / |v0|²) · v0
         lb_wide_int n0 = lb_norm_sq(v0_a, v0_b);
-        if (n0 == 0) break;  // degenerate: v0 = (0,0), 不动
+        if (n0 == 0)
+            break; // degenerate: v0 = (0,0), 不动
 
-        lb_wide_int dot = static_cast<lb_wide_int>(v0_a) * v1_a +
-                          static_cast<lb_wide_int>(v0_b) * v1_b;
+        lb_wide_int dot =
+            static_cast<lb_wide_int>(v0_a) * v1_a + static_cast<lb_wide_int>(v0_b) * v1_b;
         int64_t mu = lb_int_round_div(dot, n0);
         if (mu != 0) {
             v1_a -= mu * v0_a;
@@ -294,8 +313,8 @@ inline void lb_reduce_lll_fk2005(int64_t& v0_a, int64_t& v0_b,
 }
 
 /// double-precision skew dot product.
-[[nodiscard]] inline double lb_skew_dot_d(
-        int64_t a0, int64_t b0, int64_t a1, int64_t b1, double s2) noexcept {
+[[nodiscard]] inline double lb_skew_dot_d(int64_t a0, int64_t b0, int64_t a1, int64_t b1,
+                                          double s2) noexcept {
     double da0 = static_cast<double>(a0), db0 = static_cast<double>(b0);
     double da1 = static_cast<double>(a1), db1 = static_cast<double>(b1);
     return da0 * da1 + s2 * db0 * db1;
@@ -313,9 +332,8 @@ inline void lb_reduce_lll_fk2005(int64_t& v0_a, int64_t& v0_b,
 ///
 /// Skewness=1.0 时输出可能与 unskewed LLL 不 bit-identical (因 double rounding),
 /// 但 caller 应直接 dispatch 到 unskewed path 在 s=1.0 case.
-inline void lb_reduce_skew_lll(int64_t& v0_a, int64_t& v0_b,
-                                 int64_t& v1_a, int64_t& v1_b,
-                                 double skewness) {
+inline void lb_reduce_skew_lll(int64_t& v0_a, int64_t& v0_b, int64_t& v1_a, int64_t& v1_b,
+                               double skewness) {
     constexpr int MAX_LLL_ITERS = 128;
     const double s2 = skewness * skewness;
 
@@ -330,14 +348,17 @@ inline void lb_reduce_skew_lll(int64_t& v0_a, int64_t& v0_b,
         ++iters;
 
         double n0 = lb_skew_norm_sq_d(v0_a, v0_b, s2);
-        if (n0 == 0.0) break;  // degenerate
+        if (n0 == 0.0)
+            break; // degenerate
 
         double dot = lb_skew_dot_d(v0_a, v0_b, v1_a, v1_b, s2);
         double mu_d = std::round(dot / n0);
         // mu 范围 saturation: |mu| ≤ max(|v0|, |v1|) ≤ 2^32. 64-bit int 安全.
         // 极端 case (sieve 中实际见不到) 用 clamp 防 cast UB.
-        if (mu_d > 1e18) mu_d = 1e18;
-        if (mu_d < -1e18) mu_d = -1e18;
+        if (mu_d > 1e18)
+            mu_d = 1e18;
+        if (mu_d < -1e18)
+            mu_d = -1e18;
         int64_t mu = static_cast<int64_t>(mu_d);
         if (mu != 0) {
             v1_a -= mu * v0_a;
@@ -360,14 +381,13 @@ inline void lb_reduce_skew_lll(int64_t& v0_a, int64_t& v0_b,
     }
 }
 
-}  // namespace detail
+} // namespace detail
 
 /// 计算格基 (显式 method overload, 测试 / bench 用).
 /// 给定 special-q = (q, r)，计算满足 a - b*r ≡ 0 (mod q) 的格基.
 /// 输出 e0/f0 = shorter, e1/f1 = longer.
-[[nodiscard]] inline LatticeBasis compute_lattice_basis(const SpecialQ& sq,
-                                                         LatticeReductionMethod method,
-                                                         double skewness = 1.0) {
+[[nodiscard]] inline LatticeBasis
+compute_lattice_basis(const SpecialQ& sq, LatticeReductionMethod method, double skewness = 1.0) {
     LatticeBasis basis;
     basis.q = sq.q;
     basis.r = sq.r;
@@ -380,28 +400,28 @@ inline void lb_reduce_skew_lll(int64_t& v0_a, int64_t& v0_b,
     int64_t v1_a = r64, v1_b = 1;
 
     switch (method) {
-        case LatticeReductionMethod::Gauss:
-            detail::lb_reduce_gauss(v0_a, v0_b, v1_a, v1_b);
-            break;
-        case LatticeReductionMethod::LLL:
+    case LatticeReductionMethod::Gauss:
+        detail::lb_reduce_gauss(v0_a, v0_b, v1_a, v1_b);
+        break;
+    case LatticeReductionMethod::LLL:
+        detail::lb_reduce_lll_fk2005(v0_a, v0_b, v1_a, v1_b);
+        break;
+    case LatticeReductionMethod::SkewLLL: {
+        // Skewness=1.0 退化为 unskewed LLL (bit-exact path).
+        if (std::abs(skewness - 1.0) < 1e-9) {
             detail::lb_reduce_lll_fk2005(v0_a, v0_b, v1_a, v1_b);
-            break;
-        case LatticeReductionMethod::SkewLLL: {
-            // Skewness=1.0 退化为 unskewed LLL (bit-exact path).
-            if (std::abs(skewness - 1.0) < 1e-9) {
-                detail::lb_reduce_lll_fk2005(v0_a, v0_b, v1_a, v1_b);
-            } else {
-                detail::lb_reduce_skew_lll(v0_a, v0_b, v1_a, v1_b, skewness);
-            }
-            break;
+        } else {
+            detail::lb_reduce_skew_lll(v0_a, v0_b, v1_a, v1_b, skewness);
         }
+        break;
+    }
     }
 
     // Caller 约定: e0/f0 是较短的 (sieve i-axis primary).
     // Note for SkewLLL: shorter 按 skew-norm 比, 不是 Euclidean norm.
-    basis.e0 = v1_a;  // (skew-)shorter (post-condition of both helpers)
+    basis.e0 = v1_a; // (skew-)shorter (post-condition of both helpers)
     basis.f0 = v1_b;
-    basis.e1 = v0_a;  // (skew-)longer
+    basis.e1 = v0_a; // (skew-)longer
     basis.f1 = v0_b;
 
     return basis;
@@ -414,38 +434,48 @@ inline void lb_reduce_skew_lll(int64_t& v0_a, int64_t& v0_b,
     return compute_lattice_basis(sq, detail::lattice_reduction_method_from_env(), 1.0);
 }
 
-/// 计算格基 (skew-aware overload).
-/// 当 `GNFS_LATTICE_SKEW=1` + skewness ≠ 1.0 + LLL method 时升级到 SkewLLL.
-/// 默认 ENV OFF → 行为同 unskewed `compute_lattice_basis(sq)` (LLL).
-///
-/// **设计原因**: SkewLLL 改变 (i, j) → (a, b) 映射的几何, 对小 N
-/// (27-bit / 40-bit) + 固定 sieve region 可能 reduce overlap with smooth
-/// region. 仅在显式 opt-in (ENV) 时启用, 大 N (50d+) explicit 验证后
-/// promote 为 default. 当前 default OFF 保证 zero-regression-risk.
-[[nodiscard]] inline LatticeBasis compute_lattice_basis_with_skewness(
-        const SpecialQ& sq, double skewness) {
-    auto method = detail::lattice_reduction_method_from_env();
-    // 仅当 ENV opt-in + method 是 LLL + skewness 显著 ≠ 1.0 时, 升级为 SkewLLL
-    if (method == LatticeReductionMethod::LLL
-            && detail::lattice_skew_enabled_from_env()
-            && std::abs(skewness - 1.0) > 1e-6) {
+/// 计算格基 (显式 skew-aware 配置，不读取 ENV).
+[[nodiscard]] inline LatticeBasis
+compute_lattice_basis_with_skewness(const SpecialQ& sq, double skewness,
+                                    const LatticeBasisReductionConfig& config) {
+    auto method = config.base_method;
+    if (method == LatticeReductionMethod::LLL && config.skew_enabled &&
+        std::abs(skewness - 1.0) > 1e-6) {
         method = LatticeReductionMethod::SkewLLL;
     }
     return compute_lattice_basis(sq, method, skewness);
 }
 
+/// 计算格基 (legacy skew-aware ENV wrapper).
+/// 当 `GNFS_LATTICE_SKEW=1` + skewness ≠ 1.0 + LLL method 时升级到 SkewLLL.
+/// 每次调用都重新读取 ENV；默认 ENV OFF 时保持 unskewed LLL 行为.
+///
+/// **设计原因**: SkewLLL 改变 (i, j) → (a, b) 映射的几何, 对小 N
+/// (27-bit / 40-bit) + 固定 sieve region 可能 reduce overlap with smooth
+/// region. 仅在显式 opt-in (ENV) 时启用, 大 N (50d+) explicit 验证后
+/// promote 为 default. 当前 default OFF 保证 zero-regression-risk.
+[[nodiscard]] inline LatticeBasis compute_lattice_basis_with_skewness(const SpecialQ& sq,
+                                                                      double skewness) {
+    const auto base_method = detail::lattice_reduction_method_from_env();
+    bool skew_enabled = false;
+    if (base_method == LatticeReductionMethod::LLL) {
+        skew_enabled = detail::lattice_skew_enabled_from_env();
+    }
+    return compute_lattice_basis_with_skewness(
+        sq, skewness, LatticeBasisReductionConfig{base_method, skew_enabled});
+}
+
 /// SieveRegion - 筛区域
 /// 定义在格坐标 (i, j) 空间中的筛区域
 struct SieveRegion {
-    int32_t i_min = -16384;     // i 的最小值
-    int32_t i_max = 16383;      // i 的最大值
-    int32_t j_min = 1;          // j 的最小值（通常 > 0 以保证 b > 0）
-    int32_t j_max = 16384;      // j 的最大值
+    int32_t i_min = -16384; // i 的最小值
+    int32_t i_max = 16383;  // i 的最大值
+    int32_t j_min = 1;      // j 的最小值（通常 > 0 以保证 b > 0）
+    int32_t j_max = 16384;  // j 的最大值
 
     /// 区域大小
     [[nodiscard]] size_t size() const noexcept {
-        return static_cast<size_t>(i_max - i_min + 1) *
-               static_cast<size_t>(j_max - j_min + 1);
+        return static_cast<size_t>(i_max - i_min + 1) * static_cast<size_t>(j_max - j_min + 1);
     }
 
     /// i 方向宽度
@@ -479,7 +509,7 @@ struct SieveRegion {
 
     // 根据 skewness 调整 i/j 的范围
     // skewness > 1 意味着 |a| 通常比 |b| 大
-    int32_t base_size = 16384;  // 2^14
+    int32_t base_size = 16384; // 2^14
 
     double i_half, j_size;
     if (skewness > 1.0) {

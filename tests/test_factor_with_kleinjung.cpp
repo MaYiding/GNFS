@@ -2,18 +2,18 @@
 ///
 /// 演示完整的 GNFS 流程，比较 Base-m 和 Kleinjung 多项式选择的效果
 
-#include <gnfs/polynomial/kleinjung_selector.hpp>
-#include <gnfs/polynomial/base_m.hpp>
-#include <gnfs/factor_base/builder.hpp>
-#include <gnfs/sieve/special_q.hpp>
-#include <gnfs/sieve/lattice_sieve.hpp>
 #include <gnfs/cofactor/cofactorizer.hpp>
-#include <gnfs/relation/collector.hpp>
-#include <gnfs/relation/filter.hpp>
-#include <gnfs/linalg/matrix_builder.hpp>
+#include <gnfs/factor_base/builder.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
-#include <gnfs/sqrt/rational_sqrt.hpp>
+#include <gnfs/linalg/matrix_builder.hpp>
+#include <gnfs/polynomial/base_m.hpp>
+#include <gnfs/polynomial/kleinjung_selector.hpp>
+#include <gnfs/relation/collector.hpp>
+#include <gnfs/relation/reduction_engine.hpp>
+#include <gnfs/sieve/lattice_sieve.hpp>
+#include <gnfs/sieve/special_q.hpp>
 #include <gnfs/sqrt/algebraic_sqrt.hpp>
+#include <gnfs/sqrt/rational_sqrt.hpp>
 
 #include <chrono>
 #include <iomanip>
@@ -37,7 +37,8 @@ inline std::vector<std::vector<bool>> find_dependencies(const SparseMatrix& mat,
 
 // Helper to verify a dependency: sum of selected rows should XOR to zero
 inline bool verify_dependency(const SparseMatrix& mat, const std::vector<bool>& dep) {
-    if (dep.size() != mat.num_rows()) return false;
+    if (dep.size() != mat.num_rows())
+        return false;
 
     // Count set bits in each column for selected rows
     std::vector<size_t> col_count(mat.num_cols(), 0);
@@ -51,7 +52,8 @@ inline bool verify_dependency(const SparseMatrix& mat, const std::vector<bool>& 
 
     // All columns should have even count (XOR to zero)
     for (size_t c = 0; c < col_count.size(); ++c) {
-        if (col_count[c] % 2 != 0) return false;
+        if (col_count[c] % 2 != 0)
+            return false;
     }
     return true;
 }
@@ -60,7 +62,8 @@ inline bool verify_dependency(const SparseMatrix& mat, const std::vector<bool>& 
 inline BitVector to_bitvector(const std::vector<bool>& vec) {
     BitVector bv(vec.size());
     for (size_t i = 0; i < vec.size(); ++i) {
-        if (vec[i]) bv.set(i);
+        if (vec[i])
+            bv.set(i);
     }
     return bv;
 }
@@ -73,8 +76,13 @@ public:
         auto now = std::chrono::high_resolution_clock::now();
         return std::chrono::duration<double, std::milli>(now - start_).count();
     }
-    double elapsed_sec() const { return elapsed_ms() / 1000.0; }
-    void reset() { start_ = std::chrono::high_resolution_clock::now(); }
+    double elapsed_sec() const {
+        return elapsed_ms() / 1000.0;
+    }
+    void reset() {
+        start_ = std::chrono::high_resolution_clock::now();
+    }
+
 private:
     std::chrono::high_resolution_clock::time_point start_;
 };
@@ -93,7 +101,8 @@ void print_poly(const IntPolynomial& f, const char* name) {
     bool first = true;
     for (int i = static_cast<int>(f.degree()); i >= 0; --i) {
         const size_t idx = static_cast<size_t>(i);
-        if (f[idx].is_zero() && i > 0) continue;
+        if (f[idx].is_zero() && i > 0)
+            continue;
         if (!first) {
             std::cout << (f[idx].is_negative() ? " - " : " + ");
         } else if (f[idx].is_negative()) {
@@ -104,9 +113,11 @@ void print_poly(const IntPolynomial& f, const char* name) {
         abs_c.abs();
         if (i == 0 || abs_c.to_string() != "1") {
             std::cout << abs_c.to_string();
-            if (i > 0) std::cout << "*";
+            if (i > 0)
+                std::cout << "*";
         }
-        if (i > 0) std::cout << "x" << (i > 1 ? "^" + std::to_string(i) : "");
+        if (i > 0)
+            std::cout << "x" << (i > 1 ? "^" + std::to_string(i) : "");
     }
     std::cout << "\n";
 }
@@ -123,12 +134,9 @@ struct GNFSFactorResult {
 };
 
 // 使用给定的多项式上下文进行 GNFS 分解
-GNFSFactorResult factor_with_context(
-        const Integer& n,
-        const PolynomialContext& ctx,
-        const std::string& method_name,
-        double murphy_log_e,
-        bool verbose = true) {
+GNFSFactorResult factor_with_context(const Integer& n, const PolynomialContext& ctx,
+                                     const std::string& method_name, double murphy_log_e,
+                                     bool verbose = true) {
 
     GNFSFactorResult result;
     result.n = n.clone();
@@ -138,12 +146,15 @@ GNFSFactorResult factor_with_context(
     Timer total_timer;
 
     // ============ 因子基构建 ============
-    if (verbose) std::cout << "\n[Factor Base Construction]\n";
+    if (verbose)
+        std::cout << "\n[Factor Base Construction]\n";
 
     size_t bits = n.bit_length();
     uint32_t fb_bound = 5000;
-    if (bits > 50) fb_bound = 10000;
-    if (bits > 70) fb_bound = 30000;
+    if (bits > 50)
+        fb_bound = 10000;
+    if (bits > 70)
+        fb_bound = 30000;
 
     uint32_t sq_max = fb_bound * 3;
 
@@ -163,7 +174,8 @@ GNFSFactorResult factor_with_context(
     }
 
     // ============ 筛选 ============
-    if (verbose) std::cout << "\n[Sieving]\n";
+    if (verbose)
+        std::cout << "\n[Sieving]\n";
 
     SieveParams sieve_params;
     sieve_params.rational_threshold = 50;
@@ -208,7 +220,8 @@ GNFSFactorResult factor_with_context(
 
     while (sq_gen.has_next() && collector.size() < target_relations && sq_count < max_sq) {
         auto sq = sq_gen.next();
-        if (!sq) break;
+        if (!sq)
+            break;
 
         auto sieve_result = sieve.sieve_special_q(*sq);
 
@@ -234,7 +247,8 @@ GNFSFactorResult factor_with_context(
     result.relations = collector.size();
 
     if (collector.size() < 10) {
-        if (verbose) std::cout << "  Not enough relations!\n";
+        if (verbose)
+            std::cout << "  Not enough relations!\n";
         result.time_sec = total_timer.elapsed_sec();
         return result;
     }
@@ -242,15 +256,21 @@ GNFSFactorResult factor_with_context(
     // ============ 过滤 ============
     auto relations = collector.get_relations();
 
-    FilterConfig filter_config;
-    filter_config.remove_singletons = true;
-    filter_config.max_passes = 10;
-
-    RelationFilter filter(filter_config);
-    relations = filter.filter(std::move(relations));
+    const bool lp_enabled = cofac_config.large_prime_bound > fb_bound;
+    RelationReductionConfig reduction_config;
+    reduction_config.filter.remove_singletons = true;
+    reduction_config.filter.max_passes = 10;
+    reduction_config.large_primes_enabled = lp_enabled;
+    reduction_config.strategy =
+        lp_enabled ? ReductionStrategy::FilterOnly : ReductionStrategy::NoLargePrimes;
+    auto reduction = RelationReductionEngine::reduce(RawRelationSnapshot(1, std::move(relations)),
+                                                     reduction_config);
+    const auto& reduction_stats = reduction.stats;
+    relations = std::move(reduction).take_relations();
 
     if (verbose) {
-        std::cout << "  After filtering: " << relations.size() << " relations\n";
+        std::cout << "  After filtering: " << reduction_stats.filter.output_relations
+                  << " relations\n";
     }
 
     if (relations.size() < 5) {
@@ -259,12 +279,13 @@ GNFSFactorResult factor_with_context(
     }
 
     // ============ 线性代数 ============
-    if (verbose) std::cout << "\n[Linear Algebra]\n";
+    if (verbose)
+        std::cout << "\n[Linear Algebra]\n";
 
     MatrixBuilderConfig mb_config;
     mb_config.include_sign_column = true;
     mb_config.include_qc_columns = true;
-    mb_config.include_class_group = false;  // Small N: class number 1
+    mb_config.include_class_group = false; // Small N: class number 1
     mb_config.include_schirokauer = true;
     mb_config.num_qc_primes = 64;
     mb_config.verbose = false;
@@ -275,7 +296,8 @@ GNFSFactorResult factor_with_context(
     auto matrix_stats = compute_matrix_stats(build_result.matrix);
 
     if (verbose) {
-        std::cout << "  Matrix: " << matrix_stats.num_rows << " x " << matrix_stats.num_cols << "\n";
+        std::cout << "  Matrix: " << matrix_stats.num_rows << " x " << matrix_stats.num_cols
+                  << "\n";
         std::cout << "  Excess: " << matrix_stats.excess << "\n";
     }
 
@@ -296,15 +318,18 @@ GNFSFactorResult factor_with_context(
     }
 
     // ============ 平方根和因子提取 ============
-    if (verbose) std::cout << "\n[Factor Extraction]\n";
+    if (verbose)
+        std::cout << "\n[Factor Extraction]\n";
 
     for (size_t dep_idx = 0; dep_idx < dependencies.size(); ++dep_idx) {
         const auto& dep = dependencies[dep_idx];
 
-        if (!verify_dependency(build_result.matrix, dep)) continue;
+        if (!verify_dependency(build_result.matrix, dep))
+            continue;
 
         auto rat_result = compute_rational_sqrt(to_bitvector(dep), relations, fb, n, ctx.m());
-        if (!rat_result.success) continue;
+        if (!rat_result.success)
+            continue;
 
         auto alg_result = compute_algebraic_sqrt(to_bitvector(dep), relations, ctx);
         if (!alg_result.success) {
@@ -318,7 +343,8 @@ GNFSFactorResult factor_with_context(
         auto factors = extract_factors(rat_result.value, alg_result.value, n);
 
         auto is_nontrivial = [&n](const Integer& f) {
-            if (f.fits_uint64() && f.to_uint64() == 1) return false;
+            if (f.fits_uint64() && f.to_uint64() == 1)
+                return false;
             return f.compare(n) != 0;
         };
 
@@ -429,8 +455,8 @@ void test_factorization(const char* name, const Integer& n, uint32_t degree) {
 
     selector.set_progress_callback([](size_t cur, size_t tot, double score, const char* stage) {
         if (cur % 100 == 0 || cur == tot) {
-            std::cout << "  " << stage << ": " << cur << "/" << tot
-                      << " log(E)=" << std::fixed << std::setprecision(2) << score << "\n";
+            std::cout << "  " << stage << ": " << cur << "/" << tot << " log(E)=" << std::fixed
+                      << std::setprecision(2) << score << "\n";
         }
     });
 
@@ -482,16 +508,15 @@ void test_factorization(const char* name, const Integer& n, uint32_t degree) {
     // ============ 使用更好的多项式进行分解 ============
     bool use_kleinjung = kleinjung_result.score.log_e_score > basem_score.log_e_score;
 
-    std::cout << "\n--- Factorization using "
-              << (use_kleinjung ? "Kleinjung" : "Base-m") << " polynomial ---\n";
+    std::cout << "\n--- Factorization using " << (use_kleinjung ? "Kleinjung" : "Base-m")
+              << " polynomial ---\n";
 
     GNFSFactorResult factor_result;
     if (use_kleinjung) {
-        factor_result = factor_with_context(n, kleinjung_ctx, "Kleinjung",
-                                            kleinjung_result.score.log_e_score);
+        factor_result =
+            factor_with_context(n, kleinjung_ctx, "Kleinjung", kleinjung_result.score.log_e_score);
     } else {
-        factor_result = factor_with_context(n, basem_ctx, "Base-m",
-                                            basem_score.log_e_score);
+        factor_result = factor_with_context(n, basem_ctx, "Base-m", basem_score.log_e_score);
     }
 
     // ============ 结果 ============
@@ -499,8 +524,8 @@ void test_factorization(const char* name, const Integer& n, uint32_t degree) {
     std::cout << "Polynomial method: " << factor_result.poly_method << "\n";
     std::cout << "Murphy log(E): " << factor_result.murphy_log_e << "\n";
     std::cout << "Relations collected: " << factor_result.relations << "\n";
-    std::cout << "Total time: " << std::fixed << std::setprecision(2)
-              << factor_result.time_sec << " seconds\n";
+    std::cout << "Total time: " << std::fixed << std::setprecision(2) << factor_result.time_sec
+              << " seconds\n";
 
     if (factor_result.success) {
         std::cout << "\n*** FACTORIZATION SUCCESSFUL! ***\n";
@@ -534,7 +559,7 @@ int main() {
     {
         Integer p("10007");
         Integer q("10009");
-        Integer n = p * q;  // 100160063
+        Integer n = p * q; // 100160063
         test_factorization("Test 1: 27-bit semiprime (10007 * 10009)", n, 3);
     }
 
@@ -542,7 +567,7 @@ int main() {
     {
         Integer p("1000003");
         Integer q("1000033");
-        Integer n = p * q;  // 1000036000099
+        Integer n = p * q; // 1000036000099
         test_factorization("Test 2: 40-bit semiprime (1000003 * 1000033)", n, 3);
     }
 
@@ -550,7 +575,7 @@ int main() {
     {
         Integer p("10000019");
         Integer q("10000079");
-        Integer n = p * q;  // 100000980001501
+        Integer n = p * q; // 100000980001501
         test_factorization("Test 3: 50-bit semiprime (10000019 * 10000079)", n, 4);
     }
 

@@ -6,28 +6,41 @@
 
 #include "gnfs/relation/ooc_policy.hpp"
 
-#include <cassert>
 #include <cstdint>
 #include <iostream>
+#include <stdexcept>
+#include <string>
 #include <string_view>
 
-using gnfs::relation::OocPolicy;
 using gnfs::relation::decide_ooc_policy;
 using gnfs::relation::estimate_lp_bits;
+using gnfs::relation::OocPolicy;
+
+[[noreturn]] void check_failed(const char* expression, int line) {
+    throw std::runtime_error(std::string("CHECK failed at line ") + std::to_string(line) + ": " +
+                             expression);
+}
+
+#define CHECK(expression)                                                                          \
+    do {                                                                                           \
+        if (!(expression)) {                                                                       \
+            check_failed(#expression, __LINE__);                                                   \
+        }                                                                                          \
+    } while (false)
 
 void test_estimate_lp_bits_examples() {
     std::cout << "Testing estimate_lp_bits..." << std::endl;
-    assert(estimate_lp_bits(0) == 0);
-    assert(estimate_lp_bits(1) == 0);
-    assert(estimate_lp_bits(2) == 1);
-    assert(estimate_lp_bits(uint64_t(1) << 20) == 20);
-    assert(estimate_lp_bits(uint64_t(1) << 21) == 21);
-    assert(estimate_lp_bits(uint64_t(1) << 22) == 22);
-    assert(estimate_lp_bits(uint64_t(1) << 23) == 23);
-    assert(estimate_lp_bits(uint64_t(1) << 26) == 26);
+    CHECK(estimate_lp_bits(0) == 0);
+    CHECK(estimate_lp_bits(1) == 0);
+    CHECK(estimate_lp_bits(2) == 1);
+    CHECK(estimate_lp_bits(uint64_t(1) << 20) == 20);
+    CHECK(estimate_lp_bits(uint64_t(1) << 21) == 21);
+    CHECK(estimate_lp_bits(uint64_t(1) << 22) == 22);
+    CHECK(estimate_lp_bits(uint64_t(1) << 23) == 23);
+    CHECK(estimate_lp_bits(uint64_t(1) << 26) == 26);
     // Non-power-of-2: floor(log2(1.5M)) = 20
-    assert(estimate_lp_bits(1500000) == 20);
-    assert(estimate_lp_bits(uint64_t(1) << 30) == 30);
+    CHECK(estimate_lp_bits(1500000) == 20);
+    CHECK(estimate_lp_bits(uint64_t(1) << 30) == 30);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -35,11 +48,12 @@ void test_env_unset_small_n() {
     std::cout << "Testing ENV unset + lp_bits<22 (25d/40-bit/81-bit)..." << std::endl;
     // 25d band: lp_bits=20 → default OFF
     OocPolicy p20 = decide_ooc_policy(nullptr, uint64_t(1) << 20);
-    assert(p20.enabled == false);
-    assert(p20.reason == std::string_view("default off (lp_bits<22)"));
+    CHECK(p20.enabled == false);
+    CHECK(p20.explicitly_enabled == false);
+    CHECK(p20.reason == std::string_view("default off (lp_bits<22)"));
     // 21-bit band: still off
     OocPolicy p21 = decide_ooc_policy(nullptr, uint64_t(1) << 21);
-    assert(p21.enabled == false);
+    CHECK(p21.enabled == false);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -47,11 +61,12 @@ void test_env_unset_large_n() {
     std::cout << "Testing ENV unset + lp_bits>=22 (50d+ size-aware default)..." << std::endl;
     // 50d: lp_bits=23 → ON via size gate
     OocPolicy p23 = decide_ooc_policy(nullptr, uint64_t(1) << 23);
-    assert(p23.enabled == true);
-    assert(p23.reason == std::string_view("size-aware default (lp_bits>=22)"));
+    CHECK(p23.enabled == true);
+    CHECK(p23.explicitly_enabled == false);
+    CHECK(p23.reason == std::string_view("size-aware default (lp_bits>=22)"));
     // 60d: lp_bits=26 → ON
     OocPolicy p26 = decide_ooc_policy(nullptr, uint64_t(1) << 26);
-    assert(p26.enabled == true);
+    CHECK(p26.enabled == true);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -59,11 +74,11 @@ void test_threshold_boundary() {
     std::cout << "Testing lp_bits>=22 boundary (inclusive)..." << std::endl;
     // Exactly 22 should trigger size gate
     OocPolicy p22 = decide_ooc_policy(nullptr, uint64_t(1) << 22);
-    assert(p22.enabled == true);
-    assert(p22.reason == std::string_view("size-aware default (lp_bits>=22)"));
+    CHECK(p22.enabled == true);
+    CHECK(p22.reason == std::string_view("size-aware default (lp_bits>=22)"));
     // One less (21) should not
     OocPolicy p21 = decide_ooc_policy(nullptr, uint64_t(1) << 21);
-    assert(p21.enabled == false);
+    CHECK(p21.enabled == false);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -71,15 +86,16 @@ void test_env_explicit_off_overrides_size_gate() {
     std::cout << "Testing GNFS_OOC_RELATIONS=0 explicit opt-out..." << std::endl;
     // 50d: lp_bits=23, ENV="0" → OFF (explicit opt-out wins)
     OocPolicy p_50d = decide_ooc_policy("0", uint64_t(1) << 23);
-    assert(p_50d.enabled == false);
-    assert(p_50d.reason == std::string_view("GNFS_OOC_RELATIONS=0"));
+    CHECK(p_50d.enabled == false);
+    CHECK(p_50d.explicitly_enabled == false);
+    CHECK(p_50d.reason == std::string_view("GNFS_OOC_RELATIONS=0"));
     // 60d: lp_bits=26, ENV="0" → OFF
     OocPolicy p_60d = decide_ooc_policy("0", uint64_t(1) << 26);
-    assert(p_60d.enabled == false);
+    CHECK(p_60d.enabled == false);
     // 25d already off, ENV="0" stays off
     OocPolicy p_25d = decide_ooc_policy("0", uint64_t(1) << 20);
-    assert(p_25d.enabled == false);
-    assert(p_25d.reason == std::string_view("GNFS_OOC_RELATIONS=0"));
+    CHECK(p_25d.enabled == false);
+    CHECK(p_25d.reason == std::string_view("GNFS_OOC_RELATIONS=0"));
     std::cout << "  PASS" << std::endl;
 }
 
@@ -87,12 +103,14 @@ void test_env_explicit_on_bypasses_size_gate() {
     std::cout << "Testing GNFS_OOC_RELATIONS=1 explicit opt-in..." << std::endl;
     // 25d: lp_bits=20, ENV="1" → ON (force-on)
     OocPolicy p_25d = decide_ooc_policy("1", uint64_t(1) << 20);
-    assert(p_25d.enabled == true);
-    assert(p_25d.reason == std::string_view("GNFS_OOC_RELATIONS=1"));
+    CHECK(p_25d.enabled == true);
+    CHECK(p_25d.explicitly_enabled == true);
+    CHECK(p_25d.reason == std::string_view("GNFS_OOC_RELATIONS=1"));
     // 50d: lp_bits=23, ENV="1" → ON (already would be on via size gate, but explicit reason)
     OocPolicy p_50d = decide_ooc_policy("1", uint64_t(1) << 23);
-    assert(p_50d.enabled == true);
-    assert(p_50d.reason == std::string_view("GNFS_OOC_RELATIONS=1"));
+    CHECK(p_50d.enabled == true);
+    CHECK(p_50d.explicitly_enabled == true);
+    CHECK(p_50d.reason == std::string_view("GNFS_OOC_RELATIONS=1"));
     std::cout << "  PASS" << std::endl;
 }
 
@@ -100,16 +118,16 @@ void test_env_non_numeric_treated_as_off() {
     std::cout << "Testing non-numeric ENV → atoi=0 → OFF semantics..." << std::endl;
     // ENV="foo": std::atoi returns 0 → treated as explicit off
     OocPolicy p_50d = decide_ooc_policy("foo", uint64_t(1) << 23);
-    assert(p_50d.enabled == false);
-    assert(p_50d.reason == std::string_view("GNFS_OOC_RELATIONS=0"));
+    CHECK(p_50d.enabled == false);
+    CHECK(p_50d.reason == std::string_view("GNFS_OOC_RELATIONS=0"));
     std::cout << "  PASS" << std::endl;
 }
 
 void test_env_empty_string() {
     std::cout << "Testing empty-string ENV → atoi=0 → OFF semantics..." << std::endl;
     OocPolicy p = decide_ooc_policy("", uint64_t(1) << 23);
-    assert(p.enabled == false);
-    assert(p.reason == std::string_view("GNFS_OOC_RELATIONS=0"));
+    CHECK(p.enabled == false);
+    CHECK(p.reason == std::string_view("GNFS_OOC_RELATIONS=0"));
     std::cout << "  PASS" << std::endl;
 }
 
@@ -117,15 +135,16 @@ void test_env_other_int_falls_through_to_size_gate() {
     std::cout << "Testing ENV='2'/'-1' (non-0, non-1) falls through to size gate..." << std::endl;
     // ENV="2": std::atoi=2, not 0 not 1 → size-aware default applies
     OocPolicy p_50d_2 = decide_ooc_policy("2", uint64_t(1) << 23);
-    assert(p_50d_2.enabled == true);
-    assert(p_50d_2.reason == std::string_view("size-aware default (lp_bits>=22)"));
+    CHECK(p_50d_2.enabled == true);
+    CHECK(p_50d_2.explicitly_enabled == false);
+    CHECK(p_50d_2.reason == std::string_view("size-aware default (lp_bits>=22)"));
     OocPolicy p_25d_2 = decide_ooc_policy("2", uint64_t(1) << 20);
-    assert(p_25d_2.enabled == false);
-    assert(p_25d_2.reason == std::string_view("default off (lp_bits<22)"));
+    CHECK(p_25d_2.enabled == false);
+    CHECK(p_25d_2.reason == std::string_view("default off (lp_bits<22)"));
 
     // ENV="-1": std::atoi=-1, not 0 not 1 → size-aware default applies
     OocPolicy p_50d_neg = decide_ooc_policy("-1", uint64_t(1) << 23);
-    assert(p_50d_neg.enabled == true);
+    CHECK(p_50d_neg.enabled == true);
     std::cout << "  PASS" << std::endl;
 }
 

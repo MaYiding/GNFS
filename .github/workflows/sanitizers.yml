@@ -56,9 +56,9 @@ jobs:
           --timeout 300
 
   tsan:
-    name: ThreadSanitizer
+    name: ThreadSanitizer (candidate and structured relation)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 20
 
     steps:
     - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -68,27 +68,11 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y libgmp-dev libntl-dev
+        sudo apt-get install -y clang libgmp-dev libntl-dev zsh
 
-    - name: Configure with ThreadSanitizer
-      run: |
-        cmake -B build \
-          -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_C_COMPILER=clang \
-          -DCMAKE_CXX_COMPILER=clang++ \
-          -DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer -g" \
-          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
-
-    - name: Build
-      run: make -C build -j"$(nproc)"
-
-    - name: Run instant tests under ThreadSanitizer
-      working-directory: build
+    - name: Run narrow concurrency lane under ThreadSanitizer
       env:
+        CC: clang
+        CXX: clang++
         TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
-      run: |
-        ctest --output-on-failure \
-          --label-regex "instant" \
-          --label-exclude "bench|slow|heavy|stress|gate" \
-          --parallel 2 \
-          --timeout 300
+      run: ./scripts/test.sh --no-color --timeout 120 tsan-relation

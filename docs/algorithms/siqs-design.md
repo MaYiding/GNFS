@@ -54,11 +54,26 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 |-----------|--------|------|
 | `select_params(digits)` | `siqs.hpp` lines 53-75 | Calibrated table (FB size, M, LP multiplier, # A factors, error budget) |
 | `select_multiplier` | `siqs.hpp` ~line 252 | Knuth-Schroeppel; picks `k` so `kN` has a denser FB |
-| `build_factor_base` | `siqs.hpp` ~line 310 | Adds primes with `Legendre(N, p) = 1` plus the `p=2` sentinel |
+| `build_factor_base` | `siqs.hpp` ~line 310 | Adds the sign sentinel at slot 0, then primes including `p=2` |
 | `choose_A` / `init_poly` | `siqs.hpp` ~line 386 | Target `A ≈ sqrt(2N)/M`, then build B and prime sieve offsets |
 | `next_poly_B` | `siqs.hpp` ~line 591 | Gray-code switch: one bit flip rotates offsets in O(FB) |
 | `sieve_polynomial` | `siqs.hpp` ~line 658 | Log-add over `[-M, M]`, threshold filter, trial divide, 2LP cofactor split |
+| `SIQSLiveSieveCaptureController` | `live_sieve_capture.hpp` | Transactional relation/payload admission before dense capture allocation |
+| `execute_fixed_slots` | `util/fixed_slot_executor.hpp` | Static contiguous worker partitions, a full-participation launch gate, canonical slot results, and explicit cancel-or-drain failure policy |
 | `merge_partials` | `siqs.hpp` ~line 994 | Iterative greedy LP merge — 1LP pairs plus 2LP cycle finding |
+| `normalize_two_large_prime` | `two_large_prime.hpp` | Exact, deterministic-prime validation for a candidate 2LP split |
+| `build_two_large_prime_cycle_basis` | `two_large_prime_graph.hpp` | Deterministic fundamental-cycle oracle over the 1LP/2LP multigraph |
+| `materialize_two_large_prime_cycle_checked` | `two_large_prime_materializer.hpp` | Typed, wide cycle arithmetic and exact LP degree/2 accounting |
+| `prepare_two_large_prime_corpus` | `two_large_prime_adapter.hpp` | Fail-closed raw-partial validation, canonical deduplication, and stable relation IDs |
+| `check_materialized_two_large_prime_identity` | `two_large_prime_congruence.hpp` | Exact signed row identity before matrix admission |
+| `make_full_post_merge_row` / `make_cycle_post_merge_row` | `post_merge_row.hpp` | Canonical sparse-wide rows shared by full and cycle relations |
+| `assemble_siqs_shadow_rows` | `shadow_assembly.hpp` | Deterministic source-ID layout, parallel cycle assembly, exact deduplication, and stable trim |
+| `solve_siqs_shadow_matrix` | `shadow_matrix.hpp` | Direct sparse-wide row admission and deterministic packed GF(2) solving with lazy persistent elimination workers |
+| `verify_siqs_post_merge_dependency` / `extract_siqs_post_merge_factor` | `post_merge_dependency.hpp` | Proof-gated dependency reconstruction and canonical non-trivial factor extraction |
+| `run_siqs_shadow_proof` | `shadow_proof_runner.hpp` | Read-only, resource-bounded orchestration from raw relations through verified factor evidence |
+| `SIQSShadowProofObserveRecord` | `shadow_proof_observe.hpp` | Strict opt-in mode parsing, process-memory snapshots, and one-line typed telemetry |
+| `SIQSShadowProofPreferDecision` | `shadow_proof_prefer.hpp` | Pure V2 factor/result validation and a fail-closed pre-route audit decision |
+| `are_congruent_squares` | `congruence.hpp` | Final `X² == Y² (mod kN)` gate before GCD |
 | `dense_gauss_left_nullspace` | `siqs.hpp` ~line 1130 | Word-packed dense GF(2) Gaussian elimination |
 | `solve_matrix` | `siqs.hpp` ~line 1231 | Dense path ≤100K cols, otherwise `linalg::BlockLanczos` |
 | `try_extract` / `try_extract_with_combos` | `siqs.hpp` ~line 1270 | Per-dependency factor extraction with random XOR retry |
@@ -72,8 +87,38 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `src/api/pipeline.cpp:1798` | Phase 2 SIQS invocation, adaptive timeout, fallback to GNFS |
 | `include/gnfs/api/progress.hpp` | `FactorizationMethod::SIQS` enum + name/tag helpers |
 | `include/gnfs/api/i18n.hpp` | Localised method labels (`siqs` tag, CLI `--method siqs`) |
-| `tests/test_siqs.cpp` | Unit tests: tonelli, FB, split_cofactor edges, 14d/19d/31d/39d |
+| `tests/test_siqs.cpp` | Unit tests: helpers, off/observe parity, exact prefer fallback, public 50-digit prefer route, and 14d/19d/31d/39d factorization |
 | `tests/test_siqs_e2e.cpp` | 100-bit (31d) and 180-bit (55d) wall-clock proofs, ENV check |
+| `tests/test_siqs_shadow_cross_size.cpp` | Constructed arithmetic-valid 50-, 70-, and 90-digit shadow-chain corpus across 1/2/4 workers |
+| `tests/test_siqs_shadow_proof_runner.cpp` | Bounded facade terminal states, inclusive caps, exception mapping, and input immutability |
+| `tests/test_siqs_shadow_proof_observe.cpp` | Strict three-state parser, observe-only compatibility parser, typed record schema, RSS fields, and emitter contract |
+| `include/gnfs/siqs/shadow_proof_observe_record_codec.hpp` | Strict owning decoder for one canonical observe stderr record |
+| `tests/test_siqs_shadow_proof_observe_probe.cpp` | Release-only production 1LP fresh-process factor and RSS probe |
+| `src/siqs/shadow_proof_rss_holdout_fixture_internal.hpp` | Source-private outcome-blind sealed 50-digit RSS holdout identities and stable corpus digest |
+| `tests/test_siqs_shadow_observe_rss_holdouts.cpp` | Mathematical corpus generation, primality, identity, uniqueness, and digest checks without calling `factor()` |
+| `include/gnfs/siqs/shadow_proof_rss_gate.hpp` | `SIQSShadowProofRssGatePolicy`, `SIQSShadowProofRssGateSample`, and closed `SIQSShadowProofRssGateOutcome` |
+| `tests/test_siqs_shadow_proof_rss_gate.cpp` | Synthetic policy binding, exact sample coverage, budget boundary, and closed terminal-emitter tests |
+| `include/gnfs/siqs/shadow_proof_rss_probe_execution_identity.hpp` | Fixed SHA-256 identity for approved probe bytes and the canonical launch contract |
+| `tests/test_siqs_shadow_proof_rss_probe_execution_identity.cpp` | Schema V2 launch-profile, environment, boundary-vector, and mutation tests without launching a probe |
+| `include/gnfs/siqs/shadow_proof_rss_campaign_artifact_layout.hpp` | Fixed three-artifact-per-slot namespace, bounded pure inspection, and exact closure against validated journal replay |
+| `include/gnfs/siqs/shadow_proof_rss_campaign_journal_store.hpp` | Move-construct-only native session plus lease-bound start, artifact-batch, explicit-taint, and probe-classification authority boundaries |
+| `src/siqs/shadow_proof_rss_campaign_controller_internal.hpp` | Source-private fresh-only 80-slot controller and authority-free terminal projection |
+| `src/siqs/shadow_proof_rss_campaign_entry_internal.hpp` | Default-closed source-private production composition through the public store-open boundary |
+| `src/siqs/shadow_proof_rss_campaign_reconciliation_internal.hpp` | Source-private claims-only recovery boundary with authority-free confirmed-state projections |
+| `src/siqs/shadow_proof_rss_terminal_gate_internal.hpp` | Source-private claims-only terminal gate transaction and authority-free durable outcome projection |
+| `src/siqs/shadow_proof_rss_terminal_gate_record_internal.hpp` | Fixed 192-byte immutable terminal outcome record with policy, plan, journal, and executable identity binding |
+| `tests/test_siqs_shadow_proof_rss_campaign_artifact_layout.cpp` | Canonical leaf grammar, bounded sizes, deterministic diagnostics, and journal-to-artifact consistency |
+| `tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp` | Registry/preflight closure, held-root loading, leases, authenticated Linux same-child commits, actual 80-child synthetic controller completion, nonfresh rejection, authority-free reconciliation and terminal gate transactions, slot-41 uncertainty stop and reopen, crash recovery, and platform fallback |
+| `tests/test_siqs_shadow_proof_rss_terminal_gate_record.cpp` | Fixed-width terminal record round trip and fail-closed field, tag, reserved-byte, length, and digest validation |
+| `tests/test_siqs_shadow_proof_rss_campaign_entry.cpp` | Cross-platform preflight, production-classification, empty-registry, zero-side-effect, and authority-free result contract |
+| `src/siqs/shadow_proof_rss_holdout_probe_record_codec_internal.hpp` | Source-private strict owning decoder for one canonical holdout-probe stdout record |
+| `src/siqs/shadow_proof_rss_holdout_stream_join_internal.hpp` | Source-private approved-policy, runtime-facts, slot, and two-stream validation into a V3 identity-bound authority-free draft |
+| `include/gnfs/util/bounded_child_process.hpp` | Production shell-free, deadline-bounded dual-stream capture; it transports data but grants no campaign authority |
+| `src/util/bounded_child_process_internal.hpp` | Source-private one-shot executable-image capability and authenticated Linux transport boundary |
+| `src/util/authenticated_bounded_child_process_capability_internal.hpp` | Source-private positive compile-capability grant shared by store admission, authentication, and descriptor launch |
+| `tests/test_bounded_child_process.cpp` | Cross-platform transport tests plus compile-capability classification and Linux sealed-image, replacement, one-shot, descriptor-closure, and concurrency tests |
+| `tests/test_siqs_shadow_proof_prefer.cpp` | Pure V2 decisions, defensive metadata validation, and pre-route emitter contract |
+| `tests/test_siqs_shadow_prefer_route.cpp` | Instant production-adapter composition, three-gate truth table, exact candidate/fallback records, write failure, stale candidate rejection, and cross-platform environment/stderr paths |
 | `tests/test_method_selection.cpp` | Router unit tests including ENV overrides |
 
 ## Parameter Calibration
@@ -81,7 +126,7 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 The `select_params` table is tuned against msieve, CADO-NFS, and YAFU defaults.
 The crucial knobs by digit band:
 
-- `fb_size` — primary factor base length (excluding the `p=2` sentinel)
+- `fb_size` — primary factor base length (excluding the sign sentinel at slot 0)
 - `sieve_half` — `M`, the half-width of the sieve interval
 - `lp_multiplier` — large prime bound is `fb.back().p * multiplier`
 - `num_a_factors` — `s`, the number of primes composing each `A`. Maximum 12
@@ -90,13 +135,483 @@ The crucial knobs by digit band:
 - `small_prime_cutoff` — primes below this are skipped during sieving and
   paid back via `small_contrib` in the threshold computation
 
-Two-large-prime support is implemented end-to-end but currently disabled by
-setting `lp_bound_sq = 0`. The reason is documented inline near `siqs.hpp:1450`:
-2LP cycle extraction failed for certain multipliers in earlier runs, and 1LP
-merging already supplies enough usable relations. Re-enabling requires a
-re-validation across the 50-90 digit band.
+Two-large-prime collection and the legacy greedy merge remain disabled by
+setting `lp_bound_sq = 0`. The low-level sieve now has an optional caller-owned
+capture controller with checked relation and logical-payload limits. Its
+reserve/append/commit transaction runs before dense exponent allocation and is
+absent from the production null-controller path. Exact split normalization,
+deterministic cycle selection, wide checked cycle materialization, a stable
+raw-partial adapter with typed rejection reasons, canonical sparse post-merge
+rows, deterministic parallel shadow assembly, and an exact wide-row matrix,
+dependency, and extraction chain are available as isolated, tested boundaries.
+`run_siqs_shadow_proof` composes those boundaries behind a const raw-relation
+span and inclusive relation, payload, graph, row, and dense-matrix limits. It
+returns only typed scalar evidence and an optional verified factor pair; it
+does not retain the raw corpus, graph, rows, or dependencies.
+
+The facade is wired into `factor()` for explicit `observe` and `prefer`. The
+mode is parsed and frozen once at function entry. After all sieve workers join
+and before `merge_partials` mutates the raw relations, both modes construct the
+factor-base prime vector and run the facade through a const raw-relation span.
+Observe snapshots process memory, attempts one typed V1 record emission, and
+always continues through the legacy path. Prefer may return a revalidated
+shadow factor only after a complete V2 pre-route record passes its stdio gate;
+every fallback continues the untouched legacy corpus. Neither mode enables 2LP
+collection. Explicit records are attempted even when `verbose=false`; unset or
+`0` performs no shadow work and adds no output. See
+[SIQS Runtime Flags](../env-flags/siqs.md) for the strict parser and
+failure-transparency contract.
+
+The facade performs a bounded graph preflight before assembly. Assembly still
+rebuilds the adapter and graph from the immutable raw corpus, but the rebuild
+now receives the same inclusive graph, row-candidate, and pre-trim limits. An
+edge, cycle, incidence, candidate-row, or pre-trim cap therefore terminates
+before the corresponding downstream allocation, even if a stateful splitter
+violates the required pure-function contract between the two passes.
+Because graph and candidate-row bounds are already proven during preflight, a
+corresponding failure during the owning rebuild is classified as an internal
+invariant failure rather than an ordinary bounded fallback. A pre-trim limit
+has no equivalent preflight observation and remains a bounded fallback.
+Candidate-row and pre-trim failures retain only the observed and maximum
+scalar counts in the in-memory assembly and proof results; no partial assembly
+escapes the boundary. The existing V1 observe-record schema is unchanged and
+continues to expose only the terminal status for these failures.
+Production keeps raw relations alive together with owning shadow rows and the
+packed matrix.
+Before/after process snapshots describe endpoint and lifetime high-water state,
+not the exact transient shadow peak. Meaningful RSS comparisons require fresh
+processes and must not reuse the lower peak from the Release-only proof runner,
+which releases raw storage before solving.
+
+The production-overlap measurement contract uses the fixed production 1LP
+profile rather than the raw-releasing proof executable. One comparison launches
+one `off` control and three independent `observe` samples in fresh
+Release/NDEBUG processes. It validates each typed proof, matrix shape, canonical
+legacy factor, and RSS record separately. It does not compare raw corpus or
+fingerprint identity because the production multi-threaded collection boundary
+is schedule-sensitive. The resulting
+`GNFS_SIQS_SHADOW_PROOF_OBSERVE_COMPARISON_V1` record applies no timing or RSS
+threshold and keeps both shadow routing and promotion false. It labels prefer
+eligibility as `candidate` only when all required RSS observations are
+available from one consistent backend; otherwise it reports
+`insufficient_evidence`. See
+[SIQS Shadow Matrix Scaling](../perf/siqs-shadow-matrix-scaling.md) for the
+complete command and HWM interpretation.
+
+These first samples are `calibration_excluded`; they cannot be recycled as a
+promotion gate. The outcome-blind corpus seal now lives in
+`src/siqs/shadow_proof_rss_holdout_fixture_internal.hpp` under corpus ID
+`siqs50_shadow_observe_rss_holdout_v1`. It freezes eight new, balanced,
+50-digit semiprimes. It freezes factors derived from public decimal base and
+stride constants with the `gmp_nextprime_decimal_stride_v1` protocol,
+preserves canonical factor order, and binds the ordered identities with a
+stable, non-cryptographic 128-bit identity digest. Its frozen digest lanes are
+`low=303806906129662515` and `high=18179245792498443738`.
+
+The matching test checks only mathematical and corpus identity invariants. It
+has never called production `factor()`, the observe probe, or an RSS
+measurement path for these inputs. No production factorization result, shadow
+proof record, timing sample, or memory measurement has opened the holdout.
+
+The pure typed gate in `include/gnfs/siqs/shadow_proof_rss_gate.hpp` exposes
+`evaluate_siqs_shadow_proof_rss_gate`. It accepts a nullable
+`SIQSShadowProofRssGatePolicy` pointer and a span of
+`SIQSShadowProofRssGateSample` records. A null policy produces
+`status=blocked reason=policy_missing`. An accepted policy binds the sealed
+corpus ID and digest, operating system, architecture, RSS backend, resolved
+production sieve worker count, candidate revision, probe execution identity,
+approval identity, deployment memory budget, reserved headroom, and the
+versioned journal-store binding. That binding uses deployment-owned
+trusted-base and store IDs plus one
+canonical lowercase ASCII relative locator; absolute paths and runtime
+inode/file IDs are not policy fields. The gate does not discover or approve any
+of those values. Before filesystem access, a production-owned registry must
+resolve the trusted-base ID without accepting a caller path, resolver, or base
+handle, and must verify that the locator maps to the provisioned store ID.
+
+The pure journal-layout inspector accepts only one persistent `.session.lock`
+leaf, the exact 160-byte `campaign-header.rjhd`, and a contiguous prefix of
+`record-%010u.rjrc` leaves starting at sequence 1, with at most 160 leaves and
+exactly 320 bytes per leaf. It rejects unknown names, case variants, temporary
+artifacts, wrong entry kinds or link counts, wrong sizes, sequence gaps, codec
+errors, and disagreement between the filename sequence and decoded wire
+sequence. This fail-closed inspection neither opens the root nor signs a
+durable-record receipt. Its decoded snapshot is ordinary, forgeable data and
+is never a receipt authority or public store input. The native POSIX store
+constructs and consumes that snapshot internally while holding a verified root
+descriptor and cross-process lease. Its public session exposes an
+authority-free replay view plus one consuming `begin_next_slot()` transition.
+That transition publishes the exact pending header and start through the held
+root, rereads the strict snapshot, privately exchanges the durable receipt for
+a launch permit, and traps both the permit and lease inside a move-only active
+slot.
+
+Journal schema and wire V3 bind `synthetic_test` or `production_holdout` plus
+the two-part `SIQSShadowProofRssProbeExecutionIdentity` through runtime facts,
+the fixed-width header, plan and record digests, every commit payload, and the
+canonical joined draft. Digest builders append the two 32-byte SHA-256 values
+directly. The textual policy and audit records use strict lowercase
+64-character hexadecimal fields. A complete synthetic journal terminates as
+`synthetic_complete` with no gate action, and reopening it under a production
+label or different execution identity fails.
+
+The private deployment row provides the approved executable SHA-256 and the
+canonical execution-contract SHA-256. Execution-contract schema V2 also binds
+the launch profile, fixed logical `argv[0]`, and profile-specific transport ID.
+The remaining fields cover the probe kind, candidate revision, platform,
+memory backend, worker count, build mode, exact sorted environment, timeout,
+owner, argument template, capture limits, and output schemas. Authenticated
+profiles reject `LD_*`, `DYLD_*`, and `GLIBC_TUNABLES` where applicable. The
+store recomputes the contract before it opens the journal. The runner, joined
+draft, same-child receipt, and commit path require the same identity.
+
+On Linux, `linux_sealed_memfd_execveat_v1` closes the same-object boundary.
+After the start record is durable and the store revalidates the pending slot,
+the runner creates one move-only capability for that slot. It opens the
+approved path with `O_NOFOLLOW`, checks owner and executable metadata, copies
+the bounded ELF image into an `MFD_EXEC` memfd, confirms that the source
+snapshot stayed stable, verifies the approved SHA-256, applies the write,
+growth, shrink, execution, and seal seals, and rehashes the sealed object. The
+child then uses the fixed logical `argv[0]` and
+`execveat(..., AT_EMPTY_PATH)` under the existing bounded dual-stream,
+post-authentication deadline, process-group, and descendant-cleanup supervisor.
+Before any other child setup, the Linux transport arms
+`PR_SET_PDEATHSIG(SIGKILL)` and verifies that `getppid()` still names the
+captured launcher process. Supervisor death therefore terminates the direct
+probe even when ordinary process-group cleanup cannot run. The transport
+identity is
+`gnfs.util.authenticated_bounded_child_process.linux_memfd_execveat_pdeathsig.v2`
+with contract version 2, so an approval for the earlier launch semantics
+cannot authorize this path. Replacing the path after authentication cannot
+change the executed object. The capability is consumed by one launch and
+cannot be cached or reused across slots.
+
+An authentication or launch failure after the durable start publishes the
+terminal taint and cannot publish artifacts or a sample commit. A production
+commit additionally requires private same-object evidence from the
+authenticated launch. The profile deliberately requires modern Linux support
+for executable memfds, `F_SEAL_EXEC`, `execveat`, `close_range`, `_Fork`,
+`prctl`, and `getppid`; missing or policy-blocked support fails closed without
+a path fallback. `PR_SET_PDEATHSIG` is tied to the thread that created the
+child and is cleared in a child created by a later `fork()`. The approved probe
+is therefore a direct, no-fork/no-descendant process, and the runner must keep
+the same synchronous launch thread alive for the complete call. This is
+direct-probe containment, not a general process-tree guarantee. The executable
+image digest does not authenticate the dynamic loader, shared libraries,
+kernel, Linux Security Module policy, or external configuration. Those
+dependencies remain part of the approved deployment and host boundary.
+Authentication is size-bounded to 256 MiB but uses synchronous regular-file
+I/O before the child deadline starts. A slow or stalled filesystem can
+therefore delay terminal taint; a separately supervised authenticator remains
+required for a clock-bounded authentication phase.
+
+The ordinary POSIX path transport remains libc-portable and is required to
+build and pass its focused transport test on Alpine Linux with musl. The
+authenticated descriptor launch is intentionally narrower: it is available
+only with modern glibc and the complete required syscall and macro surface.
+Unsupported libcs, including musl, return `platform_unavailable` before any
+campaign journal is opened or any executable-path or permission access occurs.
+A runtime capability rejection classified as unavailable on a supported glibc
+build also returns `platform_unavailable` and preserves its native error in
+`native_error`. GNFS does not support authenticated launch on musl, and this
+portability guard does not change the existing transport ID.
+
+The private deployment row also owns the complete approved policy and expected
+runtime contract. Public policy and runtime values act only as claims. After
+selecting one unique row, the store compares every field and constructs the
+native session from row-owned strings and values. A malformed executable
+contract, including a relative path, revision mismatch, unsorted or invalid
+environment, configured-owner mismatch, invalid timeout, zero identity, or
+identity disagreement, fails before the store opens a filesystem object. A
+production row must contain a probe binding and cannot use the publication test
+seam. Expected `release_build` and `ndebug` values remain deployment assertions;
+they are not host observations or executable authentication.
+
+The store also holds the preprovisioned `.artifacts-v1` directory and tracks its
+namespace generation independently. Its strict pure layout permits one bounded
+stdout, stderr, and joined leaf for each canonical slot. Reopen verifies that
+every committed record names the exact three durable artifact seals, rejects
+future artifacts, and permits only a partial current-slot orphan set after
+taint. A private store integration can publish the three leaves while the active
+slot retains the lease and permit. The public active slot exposes only a
+consuming explicit-taint transition. Reopen confirms the immutable header and
+start durability barriers and rereads the exact dangling replay before it may
+append the terminal taint. The public active-slot interface still has no child
+launch or sample commit operation. Windows remains explicitly unavailable until
+it has an equivalent held-directory implementation.
+
+Coverage is exact: each evaluated platform and backend needs three `off` and
+seven `observe` fresh-process records for every one of the eight fixture IDs,
+for 80 records total. Missing, duplicate, or extra coverage cannot pass. The
+only deciding measurement is each `observe` record's absolute process peak RSS.
+Every peak must satisfy `peak <= budget - headroom`; equality passes. The `off`
+records, cross-process deltas, current RSS, in-record peak growth, and wall time
+remain diagnostic and cannot change the result.
+
+A `SIQSShadowProofRssGateOutcome` uses the closed statuses `blocked`, `invalid`,
+`limit_exceeded`, and `manual_review_candidate`. Only the last one is a pass,
+with `reason=all_observe_peaks_within_limit`; it still requires manual review.
+A terminal outcome carries the probe execution identity plus a stable,
+non-cryptographic checksum over every policy binding field.
+`emit_siqs_shadow_proof_rss_gate_outcome`
+re-evaluates the policy and complete sample span, requires an exact outcome
+match, and writes the closed `GNFS_SIQS_SHADOW_PROOF_RSS_GATE_V3` record. The
+record includes both SHA-256 fields and the policy-binding checksum lanes. The
+emitter is terminal-only:
+`blocked` and `invalid` remain typed outcomes but do not produce an audit line.
+Every outcome keeps `shadow_outcome_routed=false` and `promotion=false`.
+
+No approved per-platform policy currently exists, no sealed holdout has been
+run, and no approved numeric threshold or real gate result is available. The
+production deployment registry remains empty, so the 80-process campaign and
+production measurement remain blocked. The sealed corpus must not be used to
+construct or launch that campaign until the policy is approved.
+
+A source-private, fresh-only serial controller now closes the synthetic
+Session -> ActiveSlot -> same-child runner -> continuation chain. Its
+integration test starts all 80 synthetic children in canonical order and
+reaches only `synthetic_complete`; it never evaluates the gate. The controller
+rejects committed prefixes, complete stores, and dangling starts instead of
+gaining implicit reopen, resume, or recovery authority. Begin uncertainty,
+taint closure failure, and commit uncertainty return `reconcile_required`
+without a possibly stale terminal view. No retry, callback, cancellation
+insertion point, caller policy input, or gate authority crosses this boundary.
+The commit-uncertainty test also fails confirmation at slot 41: the controller
+reports only 40 confirmed slots and starts no slot 42, while a clean reopen may
+observe the exact slot-41 commit that was already durable.
+
+A separate source-private reconciliation boundary closes the nonfresh side
+without extending controller authority. Its only caller inputs are untrusted
+policy and runtime claims; deployment selection still comes from the private
+registry. It acquires a new native lease and then derives one of the following
+results solely from the reopened namespace:
+
+- a truly pristine namespace with no persistent lock returns
+  `no_nonfresh_state` without creating the lock, header, or record;
+- a header-only or committed prefix confirms the header and, for every
+  committed slot, its start, three artifacts, and commit before returning
+  `stable_prefix_confirmed`;
+- a dangling start confirms the complete predecessor chain and that start,
+  appends the exact derived taint record once, rereads the namespace, and
+  returns `dangling_start_durably_tainted`;
+- an explicit taint confirms the committed prefix, dangling start, exact taint,
+  and replay before returning `terminal_confirmed`;
+- a complete 80-slot journal confirms the header and all 400 per-slot durable
+  objects before returning `terminal_confirmed`.
+
+Missing-lock nonfresh state, a held lease, malformed layout, identity or
+generation drift, failed confirmation, and uncertain taint publication all
+return `reconcile_required` without a confirmed observation. A later invocation
+must reopen the namespace; the same invocation does not retry after publication
+has started. Deployment selection failures return `admission_rejected`.
+Reconciliation cannot launch a child, so it does not require the platform's
+authenticated-launch capability. It still requires a complete valid deployment
+row and uses the same held-directory, no-follow, owner, link, and immutable-leaf
+checks as the launch-capable store.
+
+The core library has no reconciliation function that accepts a deployment
+table, path, handle, or publication seam. The closed selector converts its
+owning deployment row into a move-only opaque binding, and the platform loader
+consumes only that binding. Session and reconciliation platform results own
+independent interfaces and independent concrete wrappers; the reconciliation
+wrapper is not a `SessionCore` and exposes only `reconcile()`. Fixture
+deployment injection is compiled into the native-store test executable rather
+than `gnfs_core`. A final projector also requires the exact nonzero
+deployment-derived plan digest and rejects any outcome, observation, or
+diagnostic mismatch.
+
+The result is copyable data containing only outcome, diagnostic, and an optional
+confirmed status, reason, committed count, and plan digest. It has no session,
+active slot, action, next-slot, retry, reopen, callback, controller, executable,
+or gate projection. The header is not installed, and the default production
+registry remains empty.
+
+A separate source-private terminal gate transaction consumes another move-only
+deployment binding from that same closed registry. It never launches a child.
+A pristine namespace or a nonterminal prefix returns `gate_not_ready` without
+creating a lock or terminal leaf. A complete `production_holdout` journal is
+eligible only after the transaction holds a fresh lease, confirms the header
+and all 400 per-slot objects, strictly rereads every journal and artifact leaf,
+reconstructs all 80 samples, and evaluates the existing pure gate under the
+deployment-owned policy.
+
+The transaction commits exactly one immutable 192-byte
+`terminal-gate.rtgr` record. The record binds the plan digest, final journal
+record digest, gate outcome, policy-binding digest, both executable identity
+digests, fixed sample counts, RSS limit, and maximum observed peak. It accepts
+only `limit_exceeded/observe_peak_over_limit` or
+`manual_review_candidate/all_observe_peaks_within_limit`; routing and promotion
+remain false. A newly published record is returned only after its own durability
+confirmation and a strict post-confirmation reread. Reopening an exact record
+reconfirms the 401 predecessors and then the terminal leaf as durability object
+402 before returning the same observation. Both paths carry the terminal leaf's
+full file fingerprint across that confirmation and reject metadata or object
+identity drift even when the 192 record bytes remain unchanged.
+
+Any malformed terminal bytes fail as `layout_invalid`; canonical bytes that do
+not equal the one record derivable from the leased journal and approved binding
+fail as `publication_conflict`. A same-call `already_exists`, a failed
+post-publication confirmation, or any state drift after a durability action
+returns `outcome_uncertain` without an observation. A failure proven to occur
+before creation returns `reconcile_required`; a later invocation must reopen
+and revalidate the namespace. Session open, reconciliation, and terminal
+evaluation all recognize the terminal leaf and fail closed on malformed or
+conflicting state. The copyable successful result contains only the outcome
+and the four bound data fields; it exposes no samples, policy, deployment row,
+path, session, retry, callback, routing, or promotion authority.
+Native integration tests also terminate a real subprocess immediately after
+durable terminal publication, immediately after the reopened terminal's
+durability confirmation, and after a durable half-frame publication. Exact
+records converge through a fresh reopen; the half frame remains unchanged and
+is rejected by session, reconciliation, and terminal evaluation.
+
+A source-private production composition now compiles with `gnfs_core`, including
+when tests are disabled. It performs the exact pure absent-journal preflight,
+rejects synthetic classification before registry lookup, calls the public
+store-open boundary exactly once for a production claim, and immediately
+consumes any returned session in the fresh-only controller. Its result is
+copyable data with no session, retry, recovery, or gate authority. The default
+registry is still empty, so the independent cross-platform entry test proves
+that a superficially valid production claim returns
+`binding_not_registered/deployment_registry` twice with an unchanged recursive
+temporary-directory snapshot and no child marker. No successful production
+execution is injected into this test. The internal symbol is compiled into the
+installed static core archive, but no entry header is installed and this is not
+a supported public API. Adding the first production registry row would be an
+entry-activation change requiring the still-pending approval, not an ordinary
+packaging update.
+
+`darwin_hardened_suspended_v1` is reserved in schema V2 but has no production
+implementation. A platform prototype confirmed that suspended spawn and
+process code validation are available, but the current hardened probe links a
+Homebrew GMP library with a different signing identity. The resulting process
+cannot satisfy one signer chain for all loaded code. macOS production rows
+therefore fail before journal filesystem access; only the explicitly
+synthetic path profile remains available to private tests. Windows remains
+fail-closed until an equivalent held-object design exists. The default-closed
+authority-held terminal transaction is present; an approved policy, first
+production registry row, and approved production entry point remain later
+activation milestones.
+
+Durable receipts, launch permits, executable-image handles, sessions, active
+slots, and authority-bearing result wrappers are move-constructible but not
+move-assignable. This intentionally prevents assignment from silently
+destroying a live lease or one-shot capability. It is a source and link
+compatibility break for the installed journal-store types; callers must use
+move construction or `reset()` followed by `emplace()` on an empty optional.
+`SIQSShadowProofRssPreparedSlotStart` is the documented exception: it is a
+pre-publication proposal reproducible from replay and may be replaced during a
+verified refresh before a durable receipt exists.
+The source-private artifact-batch receipt is stricter: it is constructed in
+place inside the lease-owning core and is neither copyable nor movable.
+
+The V2 `prefer` boundary separates pure decision validation from the
+production adapter. The implementation in
+`include/gnfs/siqs/shadow_proof_prefer.hpp` evaluates an owning draft with
+`evaluate_siqs_shadow_proof_prefer`, attaches the caller's wall-time sample with
+`finalize_siqs_shadow_proof_prefer`, and emits the closed
+`GNFS_SIQS_SHADOW_PROOF_PREFER_DECISION_V2` record with
+`emit_siqs_shadow_proof_prefer_decision`. Its `next_route` field is a pre-route
+recommendation recorded with `emit_phase=before_route`, not a claim that the
+route ran. The production adapter prepares the complete `SIQSResult`, samples
+the wall clock once, finalizes and rechecks the candidate, then uses a `true`
+emitter return as the third and final route gate. Ordinary write,
+partial-write, flush, or stream-error failure keeps the legacy path available.
+`tests/test_siqs_shadow_prefer_route.cpp` exercises this composition directly:
+it admits a prepared result only after the real emitter succeeds, rejects
+candidate mismatches without emitting, and proves that fallback decisions
+cannot return a stale pre-finalization candidate. The public 50-digit test is a
+live-sieve route and continuation smoke test; the instant adapter test provides
+the deterministic route distinction.
+
+This stdio gate is not filesystem durability, consumer acknowledgement, or a
+cross-process transaction. Default POSIX `SIGPIPE` and other fatal signals,
+crash, abort, and allocator fatal failure are outside the recoverable C++ error
+contract. It also assumes `stderr` and its underlying descriptor remain stable
+during emission; concurrent `freopen`, `dup2`, `fclose`, `clearerr`, or writes
+that bypass the same `FILE*` are outside the pre/post-`ferror` guarantee. For a
+shadow return, `SIQSResult::relations_found` is the selected row count actually
+submitted to the shadow matrix and equals the matrix row count.
+`polynomials_used` remains the production sieve counter sampled after all
+workers join. `time_seconds` is derived from the same pre-emit decision
+wall-time sample measured from the existing SIQS timer start. The caller
+samples after pure proof/factor/evidence evaluation and complete `SIQSResult`
+preparation, but before finalization and emitter I/O; the returned `SIQSResult`
+copies this value without resampling.
+
+A fixed constructed corpus exercises the full chain at the live 50-, 70-, and
+90-digit factor-base column counts with stable fingerprints and dependencies
+across one, two, and four workers. A separate bounded 256-A, 50-digit profile
+now reaches 1701 selected rows and recovers the frozen factor pair through the
+proof gate across the same worker counts. These results establish deterministic
+factor evidence, but they do not authorize automatic promotion or 2LP
+collection.
+
+## Two-Large-Prime Re-enablement Plan
+
+The large-prime graph uses one global virtual vertex `0`: a 1LP relation is an
+edge `(0, p)`, a 2LP relation is `(p, q)`, and a repeated factor `p^2` is a
+self-loop. Parallel edges are distinct arithmetic source relations; exact raw
+duplicates are canonicalized before graph construction. For a graph with `E`
+edges, `V` represented vertices, and `C` connected components, a complete
+fundamental-cycle basis contains exactly `E - V + C` independent cycles.
+
+The safe migration order is:
+
+1. Convert every partial through a fail-closed adapter. Candidate 2LP splits
+   must pass `normalize_two_large_prime`; relation IDs must be stable rather
+   than derived from concurrent collector insertion order.
+2. Select cycles with `build_two_large_prime_cycle_basis` and retain the source
+   IDs of each cycle. Different basis cycles may legitimately share tree edges.
+3. Materialize each cycle directly from its original relations. Do not feed it
+   through the legacy pairwise `merge_two`: multiply values modulo `kN`, XOR
+   signs, accumulate factor-base exponents in a wide checked type, and derive
+   each large-prime square-root multiplicity as graph degree divided by two.
+   Preserve the typed result: capacity and exponent overflow fail the stage,
+   while a source, support, shape, or odd-degree failure after the strict
+   adapter and graph is an internal invariant failure.
+4. Convert raw full relations and materialized cycles into one sparse-wide
+   post-merge row type. Preserve sorted source provenance and repeated LP
+   square-root factors; never narrow the row back to legacy byte exponents.
+5. Verify each row against its signed relation identity before matrix
+   admission. After dependency selection, require even sign and factor-base
+   parity, construct `X` and `Y`, and verify
+   `X^2 == Y^2 (mod kN)` before any GCD attempt.
+6. Assemble full and cycle rows through a deterministic shadow path. Assign
+   source IDs from a canonical global layout, bind accepted source descriptors
+   into a portable fingerprint, materialize cycles into fixed parallel slots,
+   reduce typed slot outcomes by cycle ordinal after every worker joins,
+   deduplicate only exact arithmetic rows, and apply a stable full/cycle trim
+   policy. Only an exact row-identity mismatch remains a counted cycle-row
+   rejection.
+7. Solve the selected sparse-wide rows without narrowing them back to legacy
+   byte exponents. Preserve singleton zero rows, choose pivots and output
+   dependencies deterministically across worker counts, revalidate every row,
+   reconstruct each square pair, and admit GCD only through the final
+   congruence proof.
+8. Run the bounded read-only proof facade at the post-join, pre-merge seam in
+   explicit observe mode. `GNFS_SIQS_SHADOW_PROOF=observe` always continues
+   through the legacy path and records process-memory endpoints while raw and
+   shadow state overlap.
+9. Permit a proof-gated early return only for explicit
+   `GNFS_SIQS_SHADOW_PROOF=prefer`. The adapter defensively revalidates that the
+   canonical, non-trivial factor pair multiplies exactly to the original input,
+   constructs the complete `SIQSResult`, and successfully emits the pre-route
+   decision before committing its recommendation. Any validation or ordinary
+   emission failure continues the legacy path. Default mode and automatic
+   promotion stay disabled. Keep production 2LP collection as a later,
+   independently bounded change.
+
+The arithmetic oracle must include a single-edge `p^2` cycle, three or more
+parallel edges, a vertex of degree four, and a cycle whose factor-base exponent
+sum exceeds 255. These cases respectively prevent self-merging, lost cycle
+rank, incorrect LP square-root multiplicity, and byte-exponent wraparound.
 
 ## Performance Notes
+
+See [SIQS Shadow Matrix Scaling](../perf/siqs-shadow-matrix-scaling.md) for the
+cross-size dense-memory boundary, shared-validation measurements, threading
+evidence, and sparse-backend promotion gates.
 
 Observed on Apple M5 (10 P+E cores), Debug build:
 
@@ -111,8 +626,32 @@ SIQS's `L_N(1/2, 1)`.
 
 ## Known Limitations
 
-- **2LP cofactor handling is gated off** (`lp_bound_sq = 0`); single-LP graph
-  merging is the production path
+- **2LP cofactor handling is gated off** (`lp_bound_sq = 0`); normalization,
+  stable shadow-corpus preparation, cycle selection, materialization,
+  sparse-wide row conversion, deterministic parallel assembly, packed solving,
+  proof-gated factor extraction, a bounded read-only facade, and cross-size
+  evidence are staged. The 256-A Release-only profile supplies live 50-digit
+  factor evidence. The observe telemetry seam and fresh-process probe
+  protocol are wired and a current-tree comparison has exercised the contract.
+  These samples are calibration-excluded. The eight-fixture outcome-blind
+  holdout corpus is sealed with a stable identity digest, but no production
+  factor or probe has opened it. The pure typed RSS gate is staged and tested
+  only with synthetic records. The production-overlap checklist remains pending
+  until an approved per-platform policy and matching deployment registry row
+  exist, and the corpus is measured against the approved deployment budget with
+  reserved headroom. No numeric RSS threshold or real gate result is currently
+  available. A separately bounded 2LP
+  collector remains a prerequisite for production 2LP collection. Explicit
+  V2-audited `prefer` routing is available, but current probe, RSS gate,
+  terminal, and V2 records never authorize automatic promotion.
+  See [SIQS Live-Sieve Capture Contract](../perf/siqs-live-sieve-capture.md)
+- **The wide sparse shadow backend is not implemented**; the dense solver
+  admits at most 100000 row variables and 256MiB of packed matrix payload,
+  then returns a typed `unsupported_backend` or `resource_limit` result instead
+  of attempting an unsafe allocation
+- **The shadow parallel threshold is not live-calibrated**; the persistent
+  worker team is implemented and sanitizer-clean, but the default remains
+  20000 equations until bounded live row distributions justify lowering it
 - **Beyond ~57 digits, extraction failures dominate** in current calibration.
   The 60-digit band needs FB and threshold tuning before being declared
   production-ready. Use GNFS for ≥60 digits until then

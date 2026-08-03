@@ -2,11 +2,21 @@
 #include "gnfs/relation/filter.hpp"
 
 #include <cassert>
+#include <cstdlib>
 #include <iostream>
+#include <limits>
+#include <string_view>
 
 using namespace gnfs::relation;
-using gnfs::core::Relation;
 using gnfs::core::PrimePower;
+using gnfs::core::Relation;
+
+void require_test(bool condition, std::string_view message) {
+    if (!condition) {
+        std::cerr << "  FAIL: " << message << '\n';
+        std::exit(EXIT_FAILURE);
+    }
+}
 
 // Helper: create a full relation (no large primes)
 Relation make_full_relation(int64_t a, int64_t b) {
@@ -162,7 +172,7 @@ void test_disable_singleton_removal() {
     std::cout << "Testing disabled singleton removal..." << std::endl;
 
     std::vector<Relation> rels;
-    rels.push_back(make_1lp_relation(1, 1, 101));  // singleton
+    rels.push_back(make_1lp_relation(1, 1, 101)); // singleton
     rels.push_back(make_full_relation(2, 1));
 
     FilterConfig cfg;
@@ -182,18 +192,57 @@ void test_max_passes_limit() {
     // Create a scenario where filtering could cascade many times
     std::vector<Relation> rels;
     for (int i = 0; i < 10; ++i) {
-        rels.push_back(make_1lp_relation(i, 1, static_cast<uint64_t>(100 + i)));  // all singletons
+        rels.push_back(make_1lp_relation(i, 1, static_cast<uint64_t>(100 + i))); // all singletons
     }
 
     FilterConfig cfg;
     cfg.remove_singletons = true;
-    cfg.max_passes = 2;  // limit to 2 passes
+    cfg.max_passes = 2; // limit to 2 passes
     RelationFilter filter(cfg);
     auto result = filter.filter(std::move(rels));
 
     // All are singletons, should be removed in 1 pass
     assert(result.empty());
     assert(filter.stats().passes <= 2);
+
+    std::cout << "  PASS" << std::endl;
+}
+
+void test_reuse_max_passes_is_per_call() {
+    std::cout << "Testing max_passes on reused filter..." << std::endl;
+
+    FilterConfig cfg;
+    cfg.remove_singletons = true;
+    cfg.max_passes = 1;
+    RelationFilter filter(cfg);
+
+    std::vector<Relation> first_input;
+    first_input.push_back(make_1lp_relation(1, 1, 101));
+    auto first_result = filter.filter(std::move(first_input));
+    require_test(first_result.empty(), "first call must remove its singleton");
+    require_test(filter.stats() ==
+                     FilterStats{
+                         .input_relations = 1,
+                         .output_relations = 0,
+                         .singletons_removed = 1,
+                         .duplicates_removed = 0,
+                         .passes = 1,
+                     },
+                 "first call must report one-pass local statistics");
+
+    std::vector<Relation> second_input;
+    second_input.push_back(make_1lp_relation(2, 1, 103));
+    auto second_result = filter.filter(std::move(second_input));
+    require_test(second_result.empty(), "second call must receive its own max_passes budget");
+    require_test(filter.stats() ==
+                     FilterStats{
+                         .input_relations = 1,
+                         .output_relations = 0,
+                         .singletons_removed = 1,
+                         .duplicates_removed = 0,
+                         .passes = 1,
+                     },
+                 "second call statistics must replace the first call statistics");
 
     std::cout << "  PASS" << std::endl;
 }
@@ -205,15 +254,15 @@ void test_count_large_primes() {
     rels.push_back(make_1lp_relation(1, 1, 101));
     rels.push_back(make_1lp_relation(2, 1, 101));
     rels.push_back(make_1lp_relation(3, 1, 103));
-    rels.push_back(make_1alp_relation(4, 1, 101));  // algebraic, different from rational 101
+    rels.push_back(make_1alp_relation(4, 1, 101)); // algebraic, different from rational 101
 
     auto counts = RelationFilter::count_large_primes(rels);
     LargePrimeKey k101r{101, 0, false};
     LargePrimeKey k103r{103, 0, false};
     LargePrimeKey k101a{101, 0, true};
-    assert(counts[k101r] == 2);   // rational 101 appears twice
-    assert(counts[k103r] == 1);   // rational 103 once
-    assert(counts[k101a] == 1);   // algebraic 101 once
+    assert(counts[k101r] == 2); // rational 101 appears twice
+    assert(counts[k103r] == 1); // rational 103 once
+    assert(counts[k101a] == 1); // algebraic 101 once
 
     std::cout << "  PASS" << std::endl;
 }
@@ -227,7 +276,7 @@ void test_get_unique_large_primes() {
     rels.push_back(make_1lp_relation(3, 1, 103));
 
     auto unique = RelationFilter::get_unique_large_primes(rels);
-    assert(unique.size() == 2);  // 101 and 103
+    assert(unique.size() == 2); // 101 and 103
 
     std::cout << "  PASS" << std::endl;
 }
@@ -262,6 +311,32 @@ void test_required_relations() {
     // has_enough_relations
     assert(has_enough_relations(1576, 1000, 500, 1.05));
     assert(!has_enough_relations(1575, 1000, 500, 1.05));
+
+    std::cout << "  PASS" << std::endl;
+}
+
+void test_effective_column_excess_boundaries() {
+    std::cout << "Testing effective-column excess boundaries..." << std::endl;
+
+    require_test(!has_effective_column_excess(0, 0, 0), "zero rows must not exceed zero columns");
+    require_test(!has_effective_column_excess(10, 6, 4),
+                 "rows equal to effective columns are not excess");
+    require_test(has_effective_column_excess(11, 6, 4),
+                 "one row beyond effective columns must be excess");
+
+    constexpr size_t MAX_SIZE = std::numeric_limits<size_t>::max();
+    require_test(effective_column_count(6, 4) == 10,
+                 "effective columns must include the LP columns");
+    require_test(effective_column_count(MAX_SIZE - 1, 2) == MAX_SIZE,
+                 "overflowing effective columns must saturate");
+    require_test(has_effective_column_excess(MAX_SIZE, MAX_SIZE - 2, 1),
+                 "representable near-limit sum must preserve strict excess");
+    require_test(!has_effective_column_excess(MAX_SIZE, MAX_SIZE - 1, 1),
+                 "rows equal to a near-limit sum are not excess");
+    require_test(!has_effective_column_excess(MAX_SIZE, MAX_SIZE - 1, 2),
+                 "overflowing effective-column sum cannot have representable excess rows");
+    require_test(!has_effective_column_excess(MAX_SIZE, MAX_SIZE, 1),
+                 "maximal base columns plus LP columns must fail closed");
 
     std::cout << "  PASS" << std::endl;
 }
@@ -318,8 +393,8 @@ void test_merger_merge() {
     assert(m.extra_ab_pairs[0].second == 2);
 
     // Factors: concatenation of both
-    assert(m.rational_factors.size() == 5);   // {0,1,3} + {1,2}
-    assert(m.algebraic_factors.size() == 3);  // {0,2} + {1}
+    assert(m.rational_factors.size() == 5);  // {0,1,3} + {1,2}
+    assert(m.algebraic_factors.size() == 3); // {0,2} + {1}
 
     // LP: shared LP=101 appears twice (preserved for rational_sqrt exponent computation)
     assert(m.rational_large_prime.size() == 2);
@@ -347,7 +422,7 @@ void test_merger_algebraic_lp() {
         Relation r2(13, 2);
         r2.rational_factors = {1};
         r2.algebraic_factors = {2};
-        r2.algebraic_large_prime.push_back(PrimePower{107, 3, 1});  // same root=3
+        r2.algebraic_large_prime.push_back(PrimePower{107, 3, 1}); // same root=3
         partials.push_back(std::move(r2));
     }
 
@@ -370,11 +445,11 @@ void test_merger_algebraic_lp() {
         partials2.push_back(std::move(r3));
 
         Relation r4(17, 2);
-        r4.algebraic_large_prime.push_back(PrimePower{109, 5, 1});  // different root
+        r4.algebraic_large_prime.push_back(PrimePower{109, 5, 1}); // different root
         partials2.push_back(std::move(r4));
 
         auto merged2 = PartialRelationMerger::merge(partials2);
-        assert(merged2.empty());  // no merge: different prime ideals
+        assert(merged2.empty()); // no merge: different prime ideals
     }
 
     std::cout << "  PASS" << std::endl;
@@ -561,7 +636,7 @@ void test_merge_all_chain() {
     // Should produce 1 effectively-full relation through multi-round merging
     assert(merged.size() == 1);
     assert(PartialRelationMerger::is_effectively_full(merged[0]));
-    assert(merged[0].extra_ab_pairs.size() == 3);  // 4 relations merged
+    assert(merged[0].extra_ab_pairs.size() == 3); // 4 relations merged
 
     std::cout << "  PASS" << std::endl;
 }
@@ -577,13 +652,13 @@ void test_count_unique_lp_keys() {
     {
         std::vector<Relation> rels;
         rels.push_back(make_1lp_relation(1, 1, 12345));
-        assert(count_unique_lp_keys(rels) == 1);  // 1 rat LP
+        assert(count_unique_lp_keys(rels) == 1); // 1 rat LP
     }
     // 2 rels share same rat LP (even exponent → cancels)
     {
         std::vector<Relation> rels;
         rels.push_back(make_1lp_relation(1, 1, 99));
-        rels.push_back(make_1lp_relation(2, 1, 99));  // same LP
+        rels.push_back(make_1lp_relation(2, 1, 99)); // same LP
         // 2 rels independently have lp=99 with e=1 each. NOT same relation.
         // count_unique_lp_keys 在 per-rel 内累加 (per matrix_builder convention),
         // 所以 rel1 has e=1 (奇), rel2 has e=1 (奇), 两个 unique key = same key = 1.
@@ -594,32 +669,35 @@ void test_count_unique_lp_keys() {
         Relation r(1, 1);
         r.rational_factors = {0};
         r.algebraic_factors = {0};
-        r.rational_large_prime.push_back(PrimePower{99, 0, 2});  // e=2 even
+        r.rational_large_prime.push_back(PrimePower{99, 0, 2}); // e=2 even
         std::vector<Relation> rels;
         rels.push_back(std::move(r));
-        assert(count_unique_lp_keys(rels) == 0);  // even-exp → not counted
+        assert(count_unique_lp_keys(rels) == 0); // even-exp → not counted
     }
     // alg LP differs by (p, r) — same p, different r → 2 columns
     {
         Relation r1(1, 1), r2(2, 1);
-        r1.rational_factors = {0}; r1.algebraic_factors = {0};
-        r2.rational_factors = {0}; r2.algebraic_factors = {0};
-        r1.algebraic_large_prime.push_back(PrimePower{77, 3, 1});  // (p=77, r=3)
-        r2.algebraic_large_prime.push_back(PrimePower{77, 5, 1});  // (p=77, r=5)
+        r1.rational_factors = {0};
+        r1.algebraic_factors = {0};
+        r2.rational_factors = {0};
+        r2.algebraic_factors = {0};
+        r1.algebraic_large_prime.push_back(PrimePower{77, 3, 1}); // (p=77, r=3)
+        r2.algebraic_large_prime.push_back(PrimePower{77, 5, 1}); // (p=77, r=5)
         std::vector<Relation> rels;
         rels.push_back(std::move(r1));
         rels.push_back(std::move(r2));
-        assert(count_unique_lp_keys(rels) == 2);  // 2 distinct ideals
+        assert(count_unique_lp_keys(rels) == 2); // 2 distinct ideals
     }
     // Same alg ideal twice in 1 rel (e=2 even → cancels)
     {
         Relation r(1, 1);
-        r.rational_factors = {0}; r.algebraic_factors = {0};
+        r.rational_factors = {0};
+        r.algebraic_factors = {0};
         r.algebraic_large_prime.push_back(PrimePower{77, 3, 1});
-        r.algebraic_large_prime.push_back(PrimePower{77, 3, 1});  // duplicate
+        r.algebraic_large_prime.push_back(PrimePower{77, 3, 1}); // duplicate
         std::vector<Relation> rels;
         rels.push_back(std::move(r));
-        assert(count_unique_lp_keys(rels) == 0);  // even-exp cancels
+        assert(count_unique_lp_keys(rels) == 0); // even-exp cancels
     }
     // Regression test for V2 bug: 5% guess vs ~64% actual
     // Simulates 50d distribution: many rels each with multiple distinct LP keys.
@@ -638,7 +716,7 @@ void test_count_unique_lp_keys() {
         // 100 rels × 2 unique LP each = 200 distinct (p,r) keys
         assert(count_unique_lp_keys(rels) == 200);
         // 5% guess would say 5; bug-induced under-estimate of 40×.
-        assert(rels.size() / 20 == 5);  // confirm old buggy estimate
+        assert(rels.size() / 20 == 5); // confirm old buggy estimate
     }
     std::cout << "  PASS" << std::endl;
 }
@@ -704,20 +782,22 @@ void test_count_lp_key_weights() {
     // 1 rel with rat lp=100, 1 rel with alg lp=100 → 2 distinct keys both weight=1
     {
         std::vector<Relation> rels;
-        rels.push_back(make_1lp_relation(1, 1, 100));   // rat lp=100
-        rels.push_back(make_1alp_relation(2, 1, 100));  // alg (p=100, r=0)
+        rels.push_back(make_1lp_relation(1, 1, 100));  // rat lp=100
+        rels.push_back(make_1alp_relation(2, 1, 100)); // alg (p=100, r=0)
         auto h = count_lp_key_weights(rels);
         assert(h.unique_keys == 2);
-        assert(h.weight_1 == 2);  // both singleton
+        assert(h.weight_1 == 2); // both singleton
     }
 
     // Algebraic LP distinguishes by (p, r) — same p different r → 2 keys
     {
         Relation r1(1, 1), r2(2, 1);
-        r1.rational_factors = {0}; r1.algebraic_factors = {0};
-        r2.rational_factors = {0}; r2.algebraic_factors = {0};
-        r1.algebraic_large_prime.push_back(PrimePower{77, 3, 1});  // (77, 3)
-        r2.algebraic_large_prime.push_back(PrimePower{77, 5, 1});  // (77, 5)
+        r1.rational_factors = {0};
+        r1.algebraic_factors = {0};
+        r2.rational_factors = {0};
+        r2.algebraic_factors = {0};
+        r1.algebraic_large_prime.push_back(PrimePower{77, 3, 1}); // (77, 3)
+        r2.algebraic_large_prime.push_back(PrimePower{77, 5, 1}); // (77, 5)
         std::vector<Relation> rels;
         rels.push_back(std::move(r1));
         rels.push_back(std::move(r2));
@@ -731,7 +811,8 @@ void test_count_lp_key_weights() {
     // still yields weight=1 (not weight=3 for the same key in the same rel).
     {
         Relation r(1, 1);
-        r.rational_factors = {0}; r.algebraic_factors = {0};
+        r.rational_factors = {0};
+        r.algebraic_factors = {0};
         r.rational_large_prime.push_back(PrimePower{99, 0, 1});
         r.rational_large_prime.push_back(PrimePower{99, 0, 1});
         r.rational_large_prime.push_back(PrimePower{99, 0, 1});
@@ -739,7 +820,7 @@ void test_count_lp_key_weights() {
         rels.push_back(std::move(r));
         auto h = count_lp_key_weights(rels);
         assert(h.unique_keys == 1);
-        assert(h.weight_1 == 1);  // de-dup within rel
+        assert(h.weight_1 == 1); // de-dup within rel
     }
 
     // Regression: per-relation LP count > 8 must NOT inflate weight via
@@ -748,7 +829,8 @@ void test_count_lp_key_weights() {
     // overflow path must hand off to unordered_set (not silently miss).
     {
         Relation r(1, 1);
-        r.rational_factors = {0}; r.algebraic_factors = {0};
+        r.rational_factors = {0};
+        r.algebraic_factors = {0};
         // 12 distinct rational LPs, plus one of them (say p=1005) repeated
         // 4 more times. Without overflow handling, the duplicate occurrences
         // would inflate the count from 1 to 5 for p=1005 (BUG: 5 in a single
@@ -782,10 +864,12 @@ void test_count_lp_key_weights() {
         // 50 pairs sharing alg LP → 50 weight=2 keys
         for (uint64_t i = 1; i <= 50; ++i) {
             Relation a(static_cast<int64_t>(1000 + i), 1);
-            a.rational_factors = {0}; a.algebraic_factors = {0};
+            a.rational_factors = {0};
+            a.algebraic_factors = {0};
             a.algebraic_large_prime.push_back(PrimePower{i + 10000, 0, 1});
             Relation b(static_cast<int64_t>(2000 + i), 1);
-            b.rational_factors = {0}; b.algebraic_factors = {0};
+            b.rational_factors = {0};
+            b.algebraic_factors = {0};
             b.algebraic_large_prime.push_back(PrimePower{i + 10000, 0, 1});
             rels.push_back(std::move(a));
             rels.push_back(std::move(b));
@@ -811,10 +895,12 @@ int main() {
     test_cascading_singletons();
     test_disable_singleton_removal();
     test_max_passes_limit();
+    test_reuse_max_passes_is_per_call();
     test_count_large_primes();
     test_get_unique_large_primes();
     test_separate_relations();
     test_required_relations();
+    test_effective_column_excess_boundaries();
     test_merger_count();
     test_merger_merge();
     test_merger_algebraic_lp();

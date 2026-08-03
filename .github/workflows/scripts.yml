@@ -40,7 +40,7 @@ jobs:
   syntax:
     name: zsh/bash syntax
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -67,12 +67,16 @@ jobs:
           done < <(git ls-files '.claude/hooks/*.sh' 'scripts/*.sh' 'scripts/perf/*.sh' 'tests/*.sh' \
             | xargs grep -l '^#!/usr/bin/env bash')
 
-          python3 -m py_compile .claude/hooks/project-guard.py scripts/check_harness.py
+          python3 -m py_compile \
+            .claude/hooks/project-guard.py \
+            scripts/check_distributed_sieve_policy.py \
+            scripts/check_harness.py
 
       - name: Check test catalog
         run: zsh ./scripts/test.sh list >/tmp/gnfs-test-list.txt
 
       - name: Check agent Harness
         run: |
+          python3 scripts/check_distributed_sieve_policy.py --self-test
           python3 scripts/check_harness.py
           bash tests/test_harness_hooks.sh

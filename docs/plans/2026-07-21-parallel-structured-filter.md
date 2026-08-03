@@ -1,0 +1,2086 @@
+# Deterministic Parallel Structured Relation Reduction
+
+## Status
+
+- Date: 2026-07-21
+- Branch: `codex/parallel-structured-filter`
+- State: M1 is complete; the vector-backed M2/M3 implementations are complete.
+  M4 has default-off vector and explicitly forced ordinary-OOC production
+  routes. The ordinary-OOC route now consumes a collector-proven unique raw
+  prefix directly inside its borrow callback, completes validation, the fixed
+  V1 digest, LP histogram, incidence, reduction, and output publication before
+  exact raw resume, and creates no per-generation snapshot or working payload.
+  Generic finalized-OOC and prepared-borrowed routes retain their working
+  corpus. M4 also retains the frozen per-run path namespace, owning result
+  corpus, descriptor-bound selection identity, direct matrix input,
+  deterministic trim, dependency-only square-root materialization,
+  transactional source/sink reduction, and paired V3 identity. Native
+  incremental OOC reduction, a complete bounded 50-digit first-round
+  comparison, and automatic-selection evidence remain before promotion. The
+  deterministic 120-bit real sieve-to-reduction transition is now covered by
+  a heavy targeted one-lane versus bounded multi-lane gate.
+- Target: unify relation reduction and replace heuristic large-prime chain merging on large inputs with controlled structured Gaussian elimination over GF(2)
+
+## Outcome
+
+Build one deterministic relation-reduction engine for every production and test path, then add an opt-in structured large-prime filter that performs bounded `k`-way elimination in conflict-free parallel batches.
+
+The development succeeds only when all of the following hold:
+
+1. The adaptive sieve loop, distributed path, public `Pipeline::filter()`, stress/progressive drivers, and final pipeline use the same reduction policy and accounting.
+2. Large-prime identity and odd-exponent parity are computed once, at full width, and agree bit-for-bit with `MatrixBuilder`.
+3. Out-of-core snapshots do not finalize the writer; adding relations after a snapshot is defined and tested.
+4. Every accepted elimination induces a bijection between the reduced left-dependency space and the original left-dependency space, while preserving exact source-relation provenance.
+5. Weight-3 and higher LP columns produce `k - 1` source-coordinate-independent combinations instead of one BFS accumulator and an arbitrary residue.
+6. One-thread and multi-thread runs produce identical rows, order, statistics, and stop reason.
+7. A real overlapping 50-digit-like hypergraph preserves dependency dimension and materially improves full-matrix nonzeros, downstream matrix time, or required raw-relation count under frozen fill and memory budgets.
+8. The 17/27/40/81-bit gate stays unchanged, a true 100-150-bit relation path passes, and a bounded 50-digit experiment confirms or rejects the structural gain.
+
+## Why This Is Next
+
+The project already has the end-to-end GNFS pipeline, out-of-core relation storage, checkpoints, distributed sieve workers, sparse matrix reduction, and thin-matrix Block Wiedemann. The current 50-digit evidence instead points to a relation-structure plateau: 282,027 usable rows versus 365,516 columns, with weight-3 and higher LP keys still dominating the unresolved graph.
+
+The existing merge paths do not implement general structured elimination:
+
+- `PartialRelationMerger::merge_all()` handles weight-2 columns and may consume only one pair from a weight-3 column. The independent survivor is not constructed.
+- `CliqueRelationMerger::merge_cliques()` builds one BFS accumulator per walk. It may compress a component to one row and may emit a residue that is not a rank-preserving `k - 1` basis.
+- The existing “50d synthetic” generator assigns relations to sequential LP keys. It does not create the overlapping 2LP/3LP/4LP hypergraph needed to measure fill or elimination quality.
+
+The code audit also found six prerequisite contract groups that must be fixed before the new algorithm can be trusted:
+
+1. `Pipeline::run()` calls `sieve_and_collect()` and then `solve_matrix()` directly. It does not call the public `Pipeline::filter()`, while adaptive, distributed, stress, and progressive paths each contain similar but drifting reduction logic.
+2. The adaptive loop calls `RelationCollector::get_relations()` after each round. In OOC mode that method closes the writer, yet later rounds continue calling `add()`, which the collector contract marks undefined.
+3. `PartialRelationMerger::remaining_lp_keys()` counts entries instead of exponent parity, while LP metrics and algebraic-square-root validation pack algebraic `(p, r)` into 64 bits by discarding high bits of both fields. These paths can disagree with matrix construction.
+4. Production paths deduplicate on a collision-prone signed-shift expression derived from `(a, b)`. Reapplying primary-pair deduplication to structured outputs would also discard distinct `k - 1` combinations that share their first source row.
+5. Merged relations can carry more than 16 raw LP entries per side, while `Relation::deserialize()` rejects more than 16; furthermore, reconstructing only each source's primary `(a, b)` would lose nested `extra_ab_pairs`.
+6. A `RelationReductionResult` that owns only `std::vector<Relation>` cannot support the promised bounded-memory OOC route or keep the reduced corpus alive through matrix and square-root consumers.
+
+Filtering literature models merge as the first stage of Gaussian elimination. Eliminating a column of weight `k` replaces its `k` rows with `k - 1` independent combinations and chooses combinations that limit fill. This is the missing abstraction, but it must be built on a single routing, parity, provenance, and persistence contract.
+
+## Confirmed Premises
+
+Confirmed by the user on 2026-07-21 as standing authorization for ordinary, reversible GNFS development decisions.
+
+1. The main target is the forced GNFS path at 50 digits and above. SIQS remains the preferred automatic method below the current selection boundary.
+2. This project improves relation reduction and matrix shape. It does not retune polynomial selection, factor-base bounds, special-Q scheduling, or cofactor yield.
+3. The first release is opt-in. No default changes until cross-size, out-of-core, and bounded real-input evidence passes.
+4. Exact GF(2) equivalence, source provenance, and deterministic output take priority over maximum thread utilization.
+5. The V0 and V3 implementations remain as temporary baselines and fallback paths, but every caller reaches them through one reduction engine.
+6. Correcting the existing routing, OOC snapshot, full-width LP-key, and serialization contracts is part of this development, not a separate cleanup project.
+
+## Scope
+
+### In Scope
+
+- A canonical full-width odd-LP helper shared by filters, metrics, V0/V3, `MatrixBuilder`, and algebraic-square-root validation.
+- A shared `RelationReductionEngine` used by every pipeline and test route.
+- Appendable `RelationCollector` snapshots and an explicit consuming finalize operation.
+- Reconciliation of the early “rows <= effective columns” return with the existing thin-matrix solver.
+- Iterative singleton purge and controlled low-weight `k`-way LP elimination.
+- Symmetric-difference source provenance and deterministic relation materialization.
+- Exact raw-input identity, source-combination identity, nested provenance normalization, and a measured shared serialization contract for merged rows.
+- Deterministic conflict-free parallel scoring and materialization.
+- Release-active correctness checks, exact small-matrix oracles, realistic hypergraph generators, and route-regression tests.
+- Opt-in policy, structured telemetry, documentation, and promotion criteria.
+
+### Not in Scope
+
+- Rewriting lattice sieving, polynomial selection, cofactorization, Block Wiedemann, or square root extraction.
+- Enabling 3LP cofactorization by default. Its sieve-time cost needs a separate relation-yield study.
+- Copying CADO-NFS source, file formats, or distributed filter executables.
+- Making the structured path the default in its first implementation batch.
+- Claiming a full 50-digit factorization from a synthetic benchmark or bounded first-round run.
+- Converting every historical test-suite `assert()` in this project. New and modified relation tests must use always-on checks.
+
+## Phase 0: Contracts Before Algorithms
+
+### One Reduction Route and Ownership Boundary
+
+Introduce `RelationReductionEngine` as the only owner of deduplication, canonical LP incidence, singleton policy, merge-strategy selection, metrics, and result validation.
+
+```text
+RelationCollector snapshot/finalize
+                |
+                v
+       RelationReductionEngine
+         |       |        |
+         |       |        +--> structured strategy
+         |       +-----------> V0/V3 baseline strategy
+         +-------------------> no-LP strategy
+                |
+                v
+       RelationReductionResult
+         |       |        |
+         |       |        +--> stop reason and policy decision
+         |       +-----------> canonical rows/LP columns/excess
+         +-------------------> active relations for MatrixBuilder
+```
+
+The following callers delegate to this engine instead of duplicating reduction logic:
+
+- each adaptive sieve snapshot;
+- the final `sieve_and_collect()` result;
+- distributed collection;
+- public `Pipeline::filter()`;
+- stress, progressive, regression, and benchmark drivers.
+
+The engine consumes a move-only `RawRelationSnapshot{generation, corpus}` and returns a distinct `RelationReductionResult`; the raw snapshot and reduced result are intentionally not interchangeable. A public vector entrypoint constructs a fresh generation explicitly. This type boundary, rather than a convention-only `reduced_once` flag, prevents accidental double reduction.
+
+The shared storage boundary is:
+
+```text
+RelationCorpus
+  = InMemoryCorpus(vector<Relation>)
+  | OwnedOOCCorpus(store paths, format descriptor, cleanup owner)
+
+RelationReductionResult
+  - owns one RelationCorpus
+  - exposes count/read and RelationSource iteration
+  - keeps the corpus alive through MatrixBuilder and square-root dependency use
+```
+
+The reducer writes through a `RelationSink`; an OOC sink produces a new immutable reduced corpus. Matrix construction reads the corpus directly. Trimming uses deterministic selected indices or rewrites a reduced corpus. `MatrixResult` retains the corpus owner and dependencies read only selected relations. No milestone may call an O(output rows) vector “bounded memory.”
+
+### Appendable OOC Snapshots
+
+Split the collector API into two explicit operations:
+
+- `snapshot_relations()`: returns a stable prefix and leaves later `add()` calls valid;
+- `finalize_relations()`: consumes/finalizes the collector and forbids later `add()` calls.
+
+For OOC mode, add an explicit writer state machine `Open -> Suspended -> Open`, `Open -> Finalized`, and any I/O failure to `Failed`. `write()` is legal only in `Open`; rejected writes never increment count. `finalize()` is idempotent and is the only operation allowed to publish final `MAGIC`.
+
+`checkpoint_prefix()` returns a descriptor containing `store_id`, `generation`, committed `count`, and `data_end`. Under the collector lock it flushes and checks both exact update handles, writes a temporary sentinel while keeping `MAGIC_INCOMPLETE`, and logically suspends append authority. The trusted-prefix reader maps duplicates of those retained handles; it never resolves either artifact name. After the reader is destroyed and all mappings are closed, the writer restores the append cursors and returns to `Open`. Windows sharing flags permit the read-only mappings while the state machine, rather than pathname close/reopen, excludes concurrent mutation.
+
+The production ordinary-OOC bridge uses the stronger
+`with_unique_ooc_prefix()` boundary. With `check_duplicates=true`, the
+collector verifies that its complete seen set, persisted writer count, and
+accepted-relation statistics agree before it mints the private-construction
+`CollectorUniqueOOCPrefixSource` capability. Only that concrete type may enter
+the direct reducer. The entire reduction and every worker future stay inside
+the callback; only after they finish is the reader unmapped and the exact raw
+descriptor resumed.
+
+The ordinary reader continues to reject incomplete stores. The trusted-prefix reader validates descriptor identity, overflow-safe index size, monotonic offsets, `offset[count] == data_end`, file bounds, exact deserialization consumption, and runtime bounds in Release builds. Recovery opens each regular single-link artifact once, validates the complete committed prefix and semantic receipt through those handles, truncates uncommitted tails through the same handles, and retains them for append and finalize.
+
+`SieveCheckpoint` moves to a versioned contract that records the OOC format version, store ID, generation, relation count, and data end. Save order is relation-prefix commit first, then a checkpoint containing that descriptor and the special-Q position. A V1 checkpoint cannot prove relation/SQ consistency and is rejected for automatic resume. Normal completion finalizes the relation corpus before deleting the sieve checkpoint. Tests use child-process `std::_Exit()` failpoints rather than “finalize then flip MAGIC” simulations.
+
+Phase 0 freezes this lifecycle and corpus contract. The first functional snapshot may synchronously materialize a vector, but default promotion remains blocked until the reducer, MatrixBuilder, trimming, and dependency retrieval operate through the bounded-memory corpus/source path.
+
+### Thin-Matrix Ownership
+
+`solve_matrix()` already contains a thin-matrix Block Wiedemann path, but the earlier `Pipeline::run()` row/column check can make it unreachable. Keep the adaptive loop's positive-excess target as a collection heuristic, but make `solve_matrix()` the sole final authority after the special-Q budget is exhausted. The early check becomes a diagnostic, not a terminal return. Add a regression proving that a bounded thin result reaches the thin solver exactly once.
+
+## Existing Components and Decisions
+
+| Need | Existing component | Decision |
+|---|---|---|
+| LP identity | `LargePrimeKey` and `LargePrimeKeyHash` | Move to neutral `relation/large_prime_key.hpp`; keep all 64 bits of `prime` and `root` plus the side |
+| Odd parity | `remaining_lp_keys()` plus MatrixBuilder-local logic | Replace with one sorted `odd_large_prime_keys()` helper that sums `PrimePower::e mod 2` |
+| LP metrics | `count_unique_lp_keys()` and `count_lp_key_weights()` | Reimplement on canonical keys; remove `(p << 32) | low32(r)` packing |
+| Row composition | `PartialRelationMerger::merge_two()` | Retain as a baseline helper; structured code composes source-ID sets and materializes canonically |
+| Initial deduplication | collector and caller-local `filter_duplicates()` variants | Deduplicate raw rows once, before source-ID assignment, with full `ABPair`; never deduplicate structured rows by primary `(a,b)` |
+| Size gating | `decide_v0_bfs_policy()` | Follow its explicit truth-table pattern; do not overload V0 semantics |
+| Work scheduling | `gnfs::util::ThreadPool` | Reuse only after conflict batches are frozen deterministically |
+| Large-input storage | `RelationCollector`, `OOCRelationStore`, and relation sources | Add appendable snapshot and streaming-reduction contracts |
+| Matrix correctness oracle | existing sparse GF(2) SGE/row operations | Reuse as an independent small-case oracle, not as production filter code |
+| Build/test catalog | `CMakeLists.txt` and `scripts/test.sh` | Register each binary, label, timeout, tier, module, and slow mapping |
+
+## Proposed Structured Core
+
+### Core Types
+
+```cpp
+using SourceRelationId = uint64_t;
+
+struct RelationCombination {
+    std::vector<SourceRelationId> source_ids;  // sorted symmetric difference
+};
+
+struct StructuredFilterConfig {
+    size_t max_column_weight = 8;
+    size_t max_constituent_relations = 64;
+    size_t max_odd_lp_weight = 64;
+    size_t max_serialized_lp_entries_per_side = measured_format_limit;
+    int64_t max_total_lp_fill_delta = 0;
+    int64_t max_total_matrix_fill_delta = measured_budget;
+    size_t max_batch_candidates = 1024;
+    size_t threads = 1;
+};
+
+enum class StructuredFilterStopReason {
+    NotStarted,
+    NoCandidates,
+    ObjectiveReached,
+    FillBudgetReached,
+    RelationCapReached,
+};
+
+struct StructuredFilterStats {
+    size_t input_rows = 0;
+    size_t input_lp_columns = 0;
+    size_t singleton_rows_removed = 0;
+    size_t singleton_columns_removed = 0;
+    size_t columns_eliminated = 0;
+    size_t two_way_merges = 0;
+    size_t higher_way_merges = 0;
+    size_t fill_rejections = 0;
+    size_t serialization_rejections = 0;
+    size_t conflict_batches = 0;
+    size_t peak_odd_lp_weight = 0;
+    size_t output_rows = 0;
+    size_t output_lp_columns = 0;
+    StructuredFilterStopReason stop_reason{};
+};
+
+struct RelationReductionResult {
+    RelationCorpus corpus;
+    StructuredFilterStats structured_stats;
+    size_t matrix_base_columns = 0;
+    size_t lp_columns = 0;
+    int64_t excess = 0;
+    uint64_t input_generation = 0;
+};
+```
+
+Invariant violations are errors and never normal stop reasons. The numeric caps are placeholders until M0 records current relation sizes, exponent totals, serialization counts, and matrix nonzeros. Configuration must validate that its persisted-entry cap is no greater than the single format maximum.
+
+### Canonical LP Incidence
+
+`odd_large_prime_keys(Relation)` must:
+
+1. distinguish rational `p` from algebraic `(p, r)`;
+2. preserve the full 64-bit `p` and `r` fields;
+3. sum each `PrimePower::e` modulo two, rather than count vector entries;
+4. return sorted, unique keys for deterministic hashing and comparison.
+
+The helper lives in `include/gnfs/relation/large_prime_key.hpp` and exposes a visitor plus vector/count/empty wrappers. It uses XOR of `(e & 1)` and emits rational keys as `{p, 0, rational}` regardless of an input root. A stack fast path handles the common small relation and a hash fallback handles larger inputs; both sort the final unique keys.
+
+`count_unique_lp_keys()`, `count_lp_key_weights()`, singleton logic, V0/V3 classification, structured incidence, both MatrixBuilder collection and row-building paths, and `verify_algebraic_ideal_powers()` consume this contract. `Relation::is_full()` and `num_large_primes()` keep raw-storage semantics, with comments prohibiting their use as GF(2) completeness predicates. Tests include even exponents, repeated entries, side collisions, two algebraic roots, and `p`/`r` values above `2^32` that collide under the old packing.
+
+Raw relation identity is a complete `ABPair` comparison and hash. Remove every production `a ^ (b << 32)` identity, including adaptive and distributed paths; besides collisions, the signed shift is not a valid portable key. Raw deduplication happens once before immutable source IDs are assigned. A structured row is identified only by its sorted source-ID combination, and never by its materialized primary `(a,b)`.
+
+### Provenance and Materialization
+
+Each input row receives an immutable source ID. A structured row stores the sorted symmetric difference of its source IDs. Merging two rows performs a set XOR, so duplicate sources cancel and no source appears twice in the canonical combination.
+
+Materialization rebuilds a `Relation` from immutable source rows, including sources that are already merged:
+
+- flatten each selected source's primary `(a,b)` followed by all of its existing `extra_ab_pairs`; the first flattened pair becomes primary and every remaining pair becomes `extra_ab_pairs` in stable source/pair order;
+- factor lists preserve every selected source contribution;
+- rational LP entries consolidate by full `p` and rational side; algebraic entries consolidate by full `(p,r)` and algebraic side;
+- totals larger than `PrimePower::e` can represent are emitted as deterministic bounded chunks instead of overflowing;
+- no side may exceed the shared persisted-entry limit.
+
+Move the persistence limit and format version to named relation-format constants used by stream and OOC readers/writers. M0 measures a defensible limit; it must not assume 256 while current readers enforce 16. A candidate that would exceed the constituent, odd-weight, exponent, or persisted-entry cap is rejected before incidence mutation.
+
+Every accepted deep merge must pass different-parenthesization, `serialize -> deserialize -> MatrixBuilder`, OOC round-trip, and rational/algebraic square-root reconstruction tests. In-memory success alone is insufficient.
+
+### Incidence Model
+
+Maintain synchronized views:
+
+- active row ID to sorted odd LP keys and source combination;
+- LP key to sorted active row IDs.
+
+Each row and column has a generation counter. Candidate-queue entries include the observed generation. Stale entries are discarded when popped, avoiding global heap rewrites after every commit.
+
+### Singleton Fixed Point
+
+A weight-one LP column cannot participate in a dependency. Remove its only row, update every incident column, and enqueue newly created singletons until a fixed point.
+
+Removing one row can delete the pivot singleton column and any other column that becomes empty. Therefore LP-only excess `rows - active_lp_columns` is non-decreasing; it is not necessarily unchanged. Tests compare the fixed point to an exact peeling oracle.
+
+### Controlled `k`-Way Elimination
+
+For a pivot LP column with active rows `r[0..k-1]`:
+
+1. Reject if `k < 2`, `k > max_column_weight`, or any proposed output exceeds a cap.
+2. For `k == 2`, emit `r0 XOR r1`.
+3. For `k >= 3`, score every pair from canonical key/source metadata without materializing candidate relations. The comparator is total and frozen in M0: projected full-matrix fill delta, LP fill delta, source count, persisted factor-entry count, then stable row IDs.
+4. Select a minimum spanning tree over the `k` rows.
+5. Emit one source combination per tree edge.
+6. Replace the `k` inputs with the `k - 1` outputs during ordered commit.
+
+Let `M` be the original relation matrix, `T` the reduced-row to immutable-source-row transform, and `F = T M` after eliminated pivot columns are removed. For a weight-`k` pivot, the selected tree incidence has rank `k - 1`; its transpose maps reduced left dependencies back to source coordinates. The pivot column forces every original dependency on those rows to have even parity, and the image of a tree-incidence transpose is exactly that even-parity subspace. Therefore `ker(F^T) -> ker(M^T)` under `T^T` is a bijection. This dependency-space isomorphism—not equality of row spaces—is the correctness contract.
+
+The oracle verifies `rank(T)`, equality of dependency dimensions, forward dependency mapping, and that each materialized source combination equals its row of `T`. Its payload includes sign, rational/algebraic factor-base, quadratic-character, Schirokauer, and LP columns rather than an LP-only graph. A legal pivot does not manufacture nullity or true matrix excess; rows/columns, nonzeros, fill, solver time, and preserved dependency dimension are reported separately.
+
+Each accepted elimination removes one active row and the pivot column before incidental cancellations. Other columns remain represented exactly; when no candidate is admissible, all active rows pass to `MatrixBuilder` with their canonical remaining LP columns. The structured path never emits a one-off BFS accumulator as a substitute for the active basis. Only selected tree edges are materialized.
+
+Implement a simple pivot planner as the reference and the MST planner as the production choice. The exact oracle must show that both induce the same dependency-space isomorphism, even when their reduced row bases differ.
+
+### Deterministic Parallelism
+
+Introduce parallelism in four bounded layers:
+
+1. Build per-worker incidence shards and merge them in sorted LP-key order.
+2. Score candidate columns in parallel against an immutable generation snapshot.
+3. Build a batch greedily in globally sorted candidate order. A batch contains only candidates whose input rows are disjoint.
+4. Materialize candidates in parallel, then publish one batch in original sorted order.
+
+The first release does not update shared incidence maps concurrently. This keeps the commit sequence deterministic while parallelizing parity extraction, candidate cost calculation, and relation materialization.
+
+M3a preserves the sequential reference order: all 2-way candidates precede
+tree-basis candidates, and each kind retains its existing total order. The
+planner canonicalizes scorer output, removes equivalent same-member plans,
+then builds a greedy maximal member-disjoint set. This is not the future full
+`MatrixBuilder` score and is not a maximum-cardinality set-packing solver.
+
+M3a.2 seals and validates the reducer once on the coordinator thread, validates
+exact plans in candidate order, and dispatches only pure corpus materialization.
+The barrier retains `PersistenceLimit` as a per-slot outcome. It drains every
+submitted future before rethrowing any other error, and the lowest candidate
+index determines which error escapes. The `threads=1` path follows the same
+attempt-all and ordered-error contract without creating a thread pool.
+
+Batch execution will transform every selected member set against one frozen
+snapshot, publish the batch atomically with one epoch advance, and peel
+singletons after the whole batch. `threads=1` defines the batch-scheduler
+reference. M3 does not claim byte-for-byte row equivalence with the M2 loop,
+which peels after every individual commit.
+
+`parallel_merge_partials()` cannot be the main scheduler because relations appear in multiple LP buckets. Buckets are not independent; explicit row-conflict detection is mandatory.
+
+## Runtime Policy
+
+Add one relation-module mode:
+
+```text
+GNFS_STRUCTURED_FILTER=0|1|auto
+```
+
+- unset or `0`: preserve the legacy strategy selected by the existing size-aware V0/V3 policy.
+- `1`: force the structured strategy on supported inputs; unsupported inputs or invariant errors fail explicitly and never silently fall back.
+- `auto`: explicitly request the size policy; supported inputs may select structured mode, unsupported inputs use the named legacy strategy, and invariant errors fail explicitly.
+- invalid: reject configuration before consuming a snapshot.
+
+Promotion later changes only the unset default from OFF to size-aware auto. A table-driven truth table covers unset/0/1/auto/invalid × supported/unsupported × normal/no-candidate/invariant-error. `NoCandidates` is a successful unchanged structured result; it is not a hidden fallback.
+
+Production uses `ThreadPool(0)` hardware selection because pipeline thread configuration no longer exists. `StructuredFilterConfig::threads` is only an explicit library/test override; zero hardware concurrency falls back to one worker. Cross-thread determinism is required on a fixed platform and build. Cross-platform byte-level column ordering additionally requires sorting canonical LP keys before column assignment and is a separate verified criterion.
+
+Keep `GNFS_V0_BFS` and `GNFS_CASCADE_V3` for baseline comparison. `RelationReductionEngine` selects exactly one strategy for a snapshot; structured mode never consumes V0/V3 output a second time. Emit one stable record containing policy reason, input generation, rows, LP columns, excess, nonzeros, caps, thread count, and stop reason.
+
+## Parallel Development Lanes
+
+The implementation uses four isolated ownership lanes after M0 freezes shared contracts. Each lane works in a separate file set and integrates only at stated gates.
+
+### Lane A: Canonical LP Contract and Consumer Sweep
+
+Owns:
+
+- `include/gnfs/relation/large_prime_key.hpp`;
+- canonical-key changes in `filter.hpp`, `clique_merger.hpp`, `matrix_builder.hpp`, and `sqrt/algebraic_sqrt.hpp`;
+- `test_lp_key_contract` and only its catalog entries.
+
+Lane A lands the neutral helper API first. No other lane edits its consumer files until that commit is integrated.
+
+### Lane B: OOC Lifecycle and Checkpoint Contract
+
+Owns:
+
+- `ooc_relation_store.hpp`, collector snapshot/finalize code, and `sieve_checkpoint.hpp`;
+- OOC/checkpoint lifecycle tests and failpoint child cases;
+- measured relation-format descriptor/constants after M0.
+
+Lane B does not edit MatrixBuilder, filtering, or structured mathematics. The primary integrator owns the small pipeline save-order patch after Lane B's API commit.
+
+### Lane C: Mathematical Core, Oracle, and Test Data
+
+Owns:
+
+- source-combination representation and materializer in new structured files;
+- sequential incidence, singleton purge, pivot planner, and MST planner;
+- an exact dense GF(2) rank/kernel oracle for small cases;
+- source-ID accounting checks;
+- a true overlapping LP-hypergraph generator with controlled row and column weights;
+- V3 regression fixtures and structured property tests.
+
+Tests use an always-on `CHECK` mechanism. Modified clique tests are converted away from bare `assert()` so Release validation is meaningful.
+
+### Lane D: Routing, Parallel Scheduler, and Measurement
+
+Owns:
+
+- `RelationCorpus`, `RelationReductionEngine`, and mode public types after the M0 API commit;
+- adaptive/distributed/public/stress/progressive routing and exact `ABPair` dedup sweep;
+- thin-matrix handoff and mode parser;
+- conflict-batch construction and worker scheduling after Lane A freezes the sequential API;
+- shared build/test catalog entries after per-test lane entries land;
+- algorithm/runtime documentation;
+- baseline and comparison reports.
+
+Lane D may add benchmark scaffolding early but does not alter core correctness code.
+
+### Integration Gates
+
+```text
+M0 contract freeze
+      |
+      +--> Lane A core ---------+
+      +--> Lane B routing ------+--> sequential oracle gate
+      +--> Lane C oracle -------+
+      +--> Lane D scaffolding --+
+                                  |
+                                  +--> parallel scheduler gate
+                                  |
+                                  +--> cross-size and OOC gate
+```
+
+The primary integrator resolves shared-header changes, runs route-equivalence tests, and reviews the full diff. No lane edits another lane's owned file to “help” without an explicit handoff.
+
+## Milestones
+
+### M0: Baseline and Contract Freeze
+
+- Configure a clean Release build without touching generated directories.
+- Record V0 and V3 metrics, LP histograms, serialization entry counts, wall time, and peak RSS.
+- Freeze `RelationReductionEngine`, canonical LP helper, source-combination, snapshot, and result contracts.
+- Add a source-ID fixture that reproduces the current V3 residue/accounting risk.
+
+Exit gate: fixed corpora, environment matrix, comparator/budgets, corpus ownership, persistence cap, dependency-space proof, dedup identities, nested provenance, and snapshot state machine are recorded; no production behavior changed.
+
+### M1a: Canonical LP Identity and Classification
+
+- Replace packed LP metrics and entry-count parity with the canonical helper.
+- Route MatrixBuilder, metrics, V0/V3 classification, separation, collector/cofactor statistics, and algebraic-square-root validation through the helper.
+- Sort LP keys before cross-platform column assignment.
+
+Exit gate: high-bit/exponent/side tests, helper-to-MatrixBuilder agreement, V0/V3 classification, and square-root collision regressions pass.
+
+### M1b: Collector and OOC State Machine
+
+- Implement snapshot/finalize collector semantics and OOC lifecycle tests.
+- Version sieve checkpoints and enforce relation-prefix-before-SQ commit order.
+- Replace synthetic resume tests with child-process crash/failpoint tests.
+
+Exit gate: snapshot-append-snapshot-finalize works; recovery sees only the last committed prefix; finalized/failed writers reject writes without count drift.
+
+### M1c: Exact Raw Identity and One Reduction Route
+
+- Remove packed/signed-shift `(a,b)` deduplication and deduplicate raw rows once with full `ABPair` before source-ID assignment.
+- Introduce the move-only snapshot, corpus-owning reduction result, and shared reduction engine.
+- Remove caller-local policy copies and prove the OFF-mode relation-reduction digest is identical on fixed fixtures.
+
+Exit gate: collision and shared-primary-output regressions pass; every route reduces a generation exactly once; relation-reduction output is equivalent in OFF mode.
+
+### M1d: Thin-Solver Handoff
+
+- Make the thin solver reachable after collection budget exhaustion.
+- Record this intentional end-to-end behavior change separately from OFF-mode reduction equivalence.
+
+Exit gate: a bounded thin result reaches the existing thin solver exactly once and the previous early return is unreachable.
+
+### M2: Sequential Structured Reference
+
+- M2a, complete: build deterministic incidence, singleton fixed point, degree-2
+  planning, immutable source XOR, nested materialization, persistence preflight,
+  incidence epochs, transactional commit, and explicit stop accounting.
+- M2a is intentionally vector-backed and keeps append-only tombstone history. Its
+  exhaustive oracle covers factor, AB-provenance, and LP projections, including
+  nested residual merges. It is not the complete `MatrixBuilder` or OOC oracle.
+- M2b tree-basis core, complete: plan deterministic 3-way through 8-way pivots
+  with both a reference star and an LP/source-sparsity-scored MST. Preparation
+  materializes the complete tree without mutation; commit publishes contiguous
+  output IDs only after all allocations succeed. Active source transforms use
+  one full-row-rank invariant throughout M2a and M2b, so nested outputs may
+  overlap in source IDs. Fixed fixtures and randomized cases check the exact
+  even-parity tree span, dependency-kernel mapping, deterministic tie-breaks,
+  stale and forged plans, and persistence-failure atomicity.
+- M2c, complete: add per-invocation candidate-examination, commit, emitted-row,
+  LP-fill, source, pivot-weight, output, and post-prepare materialization caps.
+  The deterministic driver repeatedly plans 2-way and tree-basis candidates,
+  skips cached persistence failures, commits the first admissible candidate,
+  and peels singleton rows. Exact boundary tests freeze rejection precedence,
+  stop reasons, commit-granular atomicity, cache fairness, deterministic output,
+  full source rank, and dependency-kernel mapping.
+- M2c remains a vector-backed sequential reference. It constructs every plan
+  for an epoch, and its accepted-payload cap is not an allocation or peak-RSS
+  bound. Parallel batches, bounded-memory OOC execution, and full
+  `MatrixBuilder` payload equivalence remain later gates.
+- Complete randomized cases and full sign, quadratic-character, Schirokauer,
+  stream, and OOC round-trip validation before claiming the M2 exit gate.
+
+Exit gate: every hand-built and randomized case passes the exact dependency-space and provenance oracle in one thread.
+
+### M3: Deterministic Parallel Scheduler
+
+- M3a.1, complete: expose immutable snapshot identity; canonicalize shuffled
+  candidate vectors; verify same-member duplicate payloads; and select a
+  deterministic greedy maximal batch using active member-row conflicts only.
+  Exact fixtures freeze candidate order, duplicate representatives, width
+  accounting, stale epochs, and maximal-not-maximum behavior.
+- M3a.1 is planning-only and vector-backed. It constructs all 2-way and tree
+  plans before applying batch width. It does not prepare, execute, budget, or
+  commit a batch, and it does not claim bounded planning memory or parallel
+  speedup.
+- M3a.2, complete: add an opaque, move-only prepared batch; retain ordered
+  success and persistence-limit slots; run exact validation once per selected
+  candidate after one whole-state seal; and materialize candidates through a
+  drain-all ordered parallel map. Controlled future gates freeze lowest-index
+  error precedence and prove that the barrier does not return before tail work
+  finishes.
+- M3a.2 does not commit, peel, update statistics or persistence caches, apply a
+  reduction budget, or permit concurrent reducer mutation. Tree edges inside
+  one candidate remain sequential to avoid nested pools.
+- M3b, complete: consume the opaque prepared-batch handle by value. Validate the
+  complete batch, compute every structural-statistics delta and output ID, and
+  reserve all row and incidence capacity before the first mutation. After the
+  final potentially throwing operation, publish all successful slots together
+  through one `noexcept` mutation phase.
+- One publication containing at least one successful slot advances the
+  incidence epoch exactly once. An empty batch or a batch containing only
+  persistence-limit slots is a successful no-op and does not advance the
+  epoch. M3b does not peel singletons.
+- M3b updates only structural commit statistics. It does not apply a reduction
+  budget, update persistence caches or persistence statistics, or change
+  budget, run, or stop-reason statistics. The later scheduler owns those
+  ordered policy transitions.
+- The commit result retains one prefix offset per input slot plus the terminal
+  offset. A 2-way slot contributes one output row, a tree slot contributes its
+  edge count, and a persistence-limit slot contributes zero. The final offset
+  equals the output-row ID count, so callers can recover each slot's exact
+  output range without compacting away rejected slots.
+- M3c.1, complete: retain `reduce_budgeted()` unchanged as the M2c sequential policy
+  oracle. Add a separate parallel scheduler with
+  `StructuredParallelReductionOptions`. Its `max_batch_candidates` and
+  `worker_count` fields must both be nonzero. `worker_count=1` defines the
+  parallel scheduler's thread-equivalence baseline.
+- Each scheduler pass follows one frozen coordinator order: build the canonical
+  conflict-free plan; apply metadata policy, persistence-cache lookup, and the
+  candidate-examination gate in candidate order; run drain-all parallel
+  preparation; apply post-prepare admission in slot order; publish the accepted
+  slots through one masked atomic batch commit; and, only when that commit
+  publishes at least one candidate, peel singletons exactly once.
+- Pre-prepare cache hits do not consume the candidate-examination budget.
+  Once a wave has a dispatchable prefix, the coordinator reserves cumulative
+  emitted-row and LP-fill budgets as if every earlier slot succeeds. A later
+  metadata rejection, cache hit, or examination boundary ends that prefix and
+  defers the candidate until the next deterministic replan. This conservative
+  rule preserves metadata-before-cache precedence without speculatively
+  polluting persistence state.
+- Post-prepare admission checks cumulative emitted-row and LP-fill budgets before
+  interpreting persistence outcomes or ready payloads. It then stages
+  persistence-cache entries, scheduler statistics, materialization rejections,
+  and the publication mask in slot order without mutating reducer policy state.
+- A fatal preparation barrier or publication failure discards every staged
+  scheduler statistic and persistence-cache change from the current pass.
+  Previously completed commits and peels remain published. Speculative
+  preparation fails closed: a fatal error aborts the pass even if later ordered
+  admission would have rejected that candidate.
+- An empty plan, a fully rejected plan, or a batch with no accepted publication
+  is a nonpublishing pass. It does not advance the incidence epoch and does not
+  peel singletons. Nonfatal ordered policy and cache outcomes may still be
+  folded before the scheduler chooses the existing stop reason.
+- M3c.1 remains vector-backed and does not provide bounded-memory
+  or out-of-core execution. It adds no batch-specific statistics and does not
+  reinterpret existing candidate-level counters.
+- M3c.2 implementation complete: deterministic property tests cover three
+  fixed seeds, seven budget profiles, batch widths 1 and 3, and worker counts
+  1, 2, and 4. Fixed-width runs compare the complete state, scheduler
+  statistics, run result, and stop reason; width 1 also compares with the
+  sequential oracle. The host's `hardware_concurrency` count is included when
+  it is reported and is deduplicated from 1, 2, and 4.
+- Macro-gated test hooks cover concurrent preparation start and completion,
+  masked commit prepublication, and the postcommit/pre-peel boundary. Tests
+  prove lowest-slot fatal precedence with tail draining, rollback of staged
+  round state and persistence cache, complete prepublication rollback, and
+  commit-granular state after publication.
+- Initial LP incidence now builds through deterministic bounded row shards.
+  Shard width and worker count are explicit, output order is canonical, and
+  construction statistics report shard count, peak shard rows, peak temporary
+  incidence entries, total incidence entries, requested workers, and peak
+  worker slots. Each row shard is partitioned into deterministic contiguous
+  worker shards; their locally sorted incidences are merged in canonical key
+  and row order before coordinator-only accumulation. This bounds only the
+  per-shard row-support work set. The accumulating distinct-key index is still
+  corpus-scale, while `SourceCorpus`, logical rows, final buckets, and incidence
+  history remain vector-backed. The construction test includes a 5,000-row
+  synthetic first scale band with 48-bit LP keys.
+- The supported ThreadSanitizer lane is available through
+  `./scripts/test.sh tsan-relation`. It builds only the ordered parallel-map,
+  shared-engine dispatch, parallel-prepare, batch-commit, parallel-driver,
+  controlled-failure, and bounded-incidence tests, runs them serially with a 120-second per-test
+  default, and has a 20-minute Linux CI bound. macOS is supported when its
+  Clang runtime links TSan; other hosts report an explicit skip, while
+  unsupported Linux/macOS toolchains fail configuration.
+- Compare `threads=1,2,4,hardware_concurrency`.
+- Run the narrow relation suite under ThreadSanitizer where supported.
+
+Exit gate: result rows, order, stats, and stop reason are identical across thread counts, with no race report.
+
+### M4: Opt-In Integration
+
+- [x] Add strict `GNFS_STRUCTURED_FILTER` parsing, exact strategy selection,
+  vector/explicit-ordinary-OOC support checks, and one shared-engine structured
+  dispatch.
+- [x] Register tests and document OFF/forced/auto/fail-closed behavior. The
+  forced-on experimental profile has fixed work-budget caps, accepts vector or
+  finalized-OOC corpus input, defaults OFF, and `auto` remains ineligible pending
+  M5 evidence.
+- [x] Add a move-only `RelationCorpus` for owned vectors and descriptor-bound
+  finalized V3 OOC artifacts. Selection identity is bound to one corpus
+  instance, survives handle moves, and rejects same-generation/same-count
+  foreign or reopened corpora. Collector finalization hands off its descriptor;
+  adoption validates both persistent identities, count, offsets, sentinel, and
+  physical extents against the reader's actual mapped handles. Cleanup repeats
+  the paired validation after closing the corpus mappings and preserves both
+  artifacts on any identity failure.
+- [x] Route the supported structured vector result through `RelationCorpus`
+  directly into the streaming `MatrixBuilder`. A refined selection source
+  preserves corpus ordinals, trim uses a repository-owned deterministic
+  reservoir sampler, and the complete build result is replaced after trim so
+  no stale column mapping or row provenance survives. Full sign, factor-base,
+  large-prime, QC, and Schirokauer payload equivalence is covered for in-memory
+  and finalized-OOC selected sources; both backends explicitly assert that each
+  enabled payload family contributes a nonzero column set.
+- [x] Retain the structured corpus and final row-to-corpus mapping through the
+  square-root phase. Solver dependency batches are shape-checked before and
+  after SGE while the full provenance transform is validated once per batch;
+  mapped dependencies use GF(2) duplicate parity and materialize only their
+  selected relations. XOR pairs are combined once in matrix coordinates before
+  mapping, with a real structured `N=143` fallback oracle. `MatrixResult`
+  preserves legacy move-construction and move-assignment compatibility while
+  releasing any replaced corpus owner after its public payload. The legacy
+  vector path and its trim order remain unchanged.
+- [x] Use paired V3 identity for new writes, prefix snapshots, checkpoint
+  recovery, finalized recovery, prefix readers, and promoted corpus ownership.
+  `.reldata` carries an immutable header with the same store identity as
+  `.relidx`; offsets and descriptor `data_end` are physical file positions, so
+  an empty store ends at byte 24. Same-sized foreign data files fail closed
+  before recovery mutation. SieveCheckpoint V3 also binds the accepted payload
+  sequence and marks the exact terminal prefix with `collection_complete`;
+  pre-final-magic recovery does not repeat collection, and finalized recovery
+  rejects any extension beyond that terminal receipt. Ordinary finalized
+  readers retain V1/V2 compatibility, while append recovery and ownership
+  promotion reject them.
+- [x] Add a neutral indexed `RelationSource` contract and a move-only,
+  transactional `RelationSink`. Structured active rows now materialize directly
+  into either an in-memory corpus or a paired V3 store inside an atomically
+  reserved private directory. Explicit `finalize()` is the only publication
+  boundary; append, observer, and materialization failures abort partial output.
+  Output digest and LP metrics finish before publication, and the result retains
+  the owning corpus through matrix and square-root consumers.
+- [x] Remove structured OOC relation-payload materialization from the generic
+  finalized-OOC and prepared-borrowed routes. A finalized V3 raw corpus streams
+  validation, the raw digest, and stable `ABPair` de-duplication in one pass.
+  Accepted rows enter a private working OOC corpus, and the reducer reads that
+  corpus directly with worker counts 1, 2, and 4.
+  The raw corpus remains authoritative after any failure and is consumed only
+  after output publication succeeds. The four source/sink backend combinations
+  produce identical rows, order, digest, and complete reduction statistics.
+  Explicit OOC output bounds duplicate and active-output relation payloads;
+  memory output intentionally retains every active row. Lease roots are frozen
+  absolute paths and cannot overlap each other or an input-owned cleanup scope.
+  The `ABPair` set, LP histogram, incidence, logical rows, and history remain
+  corpus-scale metadata. A gate-tier 5K/50K/200K finalized-OOC corpus with
+  isolated weight-2 and weight-3 LP components proves nonzero planning,
+  parallel materialization, commits, stable rows/order, full stats, and digest
+  equivalence for worker counts 1, 2, and 4 in Release.
+- [x] Wire the adaptive ordinary-OOC collector into the structured engine when
+  both OOC and structured modes are explicitly forced. The production collector
+  runs with duplicate rejection enabled and mints a private-construction unique
+  prefix only after its seen set, writer count, and accepted-relation statistics
+  agree. The engine accepts that concrete capability and completes full raw
+  validation, the fixed V1 digest, LP histogram, incidence, parallel reduction,
+  and transactional output publication inside the callback. Every worker and
+  future drains before callback return; the reader is then unmapped and the raw
+  writer resumes from the exact descriptor. Terminal descriptor and input-count
+  equality are proved before handoff, while the raw owner survives all user
+  callbacks.
+- [x] Bind the collector uniqueness proof and raw digest to every payload read.
+  The first scan checks an exact raw AB set against the collector's complete
+  `seen_` set and stores one 128-bit V1 relation fingerprint per ordinal.
+  Reducer reads validate those fingerprints concurrently. After output
+  finalize, a second reader/new mapping rechecks the complete suspended prefix,
+  so platforms with snapshot-like `MAP_PRIVATE` behavior cannot hide a
+  same-size backing-file rewrite from the old mapping. Proof, payload, semantic,
+  or fresh-view drift fails the raw writer closed and removes the unpublished
+  output; a later raw-resume failure also wins and removes finalized output.
+  The fingerprints are replay guards, not cryptographic authentication.
+- [x] Remove per-generation snapshot and working payloads from the production
+  ordinary-OOC route. Each logical generation receives only an output lease
+  under the frozen run namespace, so the relation-payload disk peak is
+  `raw + output` rather than the former four-payload layout. This is not an RSS result:
+  the collector `ABPair` set, 16-byte-per-row fingerprints, LP histogram,
+  incidence, logical rows, and history remain corpus-scale metadata. The
+  temporary exact AB set and LP weight map are released before incidence state
+  is built. The raw writer stays `Suspended` throughout the
+  full reduction, collection cannot overlap that round, and every round still
+  scans its accumulated prefix for `O(rounds * relations)` decoding and I/O.
+  Generic finalized-OOC reduction and generic `prepare_borrowed_structured()`
+  continue to use a private working corpus. Independent-process RSS measurement
+  and a hard-capped 50-digit production prefix probe are now available. Native
+  incremental scanning, a complete 50-digit first-round comparison, and
+  automatic structured selection remain open; size-aware OOC, resume, and
+  distributed structured routes retain legacy or unsupported behavior.
+
+Exit gate: structured mode runs exactly once, OFF mode is unchanged, every route
+reports the same metrics for the same generation input, and the explicit OOC-output route
+avoids a per-generation relation-payload vector.
+
+### M5: Scale Validation
+
+- [x] Run overlapping 50-digit-like hypergraphs at 5K, 50K, and 200K rows.
+- [x] Add fresh-process RSS cases for 5K, 50K, and 200K direct OOC reduction.
+- [x] Run the 17/27/40/81-bit gate after direct production OOC integration.
+- [x] Add a hard-capped real 50-digit production prefix probe with structured
+  reduction and full matrix-shape telemetry.
+- [x] Run a deterministic 100-150-bit sieve-to-reduction integration, not only
+  polynomial selection. The fixed 120-bit semiprime processes 32 special-Qs;
+  one-lane legacy and four-lane structured collection produce the same 9,170-row
+  raw corpus and LP histogram before both routes build their full thin matrix.
+- [ ] Run a complete bounded 50-digit first-round baseline/structured comparison.
+
+Exit gate: no correctness regression; dependency dimension is preserved and structured mode meets the frozen materiality threshold for total NNZ, downstream matrix time, or raw-relation requirement under the fill and memory budgets.
+
+### M6: Promotion Decision
+
+- Compare dependency dimension, rows, LP columns, nominal excess, total nonzeros, peak source count, filter wall time, peak RSS, downstream matrix time, and required raw relations.
+- Promote default auto behavior only if every criterion below passes.
+- Otherwise keep the implementation as an explicit research mode and document the measured limitation.
+
+## Test Matrix
+
+| Code path or branch | Test type | Required evidence |
+|---|---|---|
+| Canonical odd LP keys | Unit | `e mod 2`, duplicate entries, side/root identity, full 64-bit values |
+| Matrix/helper agreement | Unit + property | Helper LP columns exactly match `MatrixBuilder` columns |
+| Filter/sqrt consumer agreement | Unit + regression | V0/V3/full classification and algebraic-sqrt verification use the same full-width parity |
+| Raw/structured identity | Regression | Full `ABPair` collision resistance and two shared-primary structured outputs both survive |
+| Nested provenance | Unit + integration | Merged-plus-raw input, parenthesization, stream/OOC, matrix row, and sqrt reconstruction agree |
+| OOC snapshot lifecycle | Integration + child process | Snapshot, append, second snapshot, failpoint crash, committed-prefix resume, finalize, no data loss |
+| Corpus ownership | Integration | Vector and OOC results outlive reducer locals; MatrixBuilder and selected dependency reads stay valid |
+| Shared route selection | Integration | Same snapshot and mode produce identical output from every caller |
+| Thin final handoff | Integration | Exhausted thin collection reaches BW path once instead of returning early |
+| V3 source accounting | Regression | At least two sources per emitted merge, no duplicate source IDs, exact XOR |
+| Singleton fixed point | Unit + property | Peeling matches the exact oracle; excess never decreases |
+| 2-way elimination | Unit | Pivot gone, source XOR exact, provenance materializes correctly |
+| `k`-way MST | Unit + property | Exactly `k - 1` source-coordinate-independent outputs, pivot absent, and dependency mapping bijective |
+| Incidental cancellation | Unit | Actual fill score matches canonical output keys |
+| Caps and stale candidates | Unit | Rejection is mutation-free; stale generations cannot double-consume rows |
+| Serialization depth | Integration | Measured cap enforced; deep/nested merge survives stream and OOC round trips, MatrixBuilder, and sqrt reconstruction |
+| Conflict-free batch | Unit | Overlapping candidates never enter the same batch |
+| Thread equivalence | Unit + integration | Relations, order, metrics, and stop reason are byte-equivalent |
+| Realistic hypergraph | Scale | Configured 2/3/4+ LP row overlap, dependency dimension, full NNZ fill, and histogram, not sequential one-key rows |
+| Mode OFF | Integration | Existing V0/V3 result remains unchanged |
+| Mode ON | Integration | Structured strategy selected once; no fallback double consumption |
+| 17/27/40/81-bit path | Gate | Existing factorization checks pass |
+| 100-150-bit relation path | Heavy targeted | Real sieve-to-reduction size transition passes |
+| Bounded 50-digit round | Experiment | Structural evidence supports or rejects promotion |
+
+The new 100-150-bit test must exercise actual relation collection and reduction. `test_kleinjung_large` remains a useful polynomial-selection companion but is not accepted as the relation-path gate.
+
+## Validation Commands
+
+Run from narrowest to widest:
+
+```bash
+./scripts/test.sh build
+./scripts/test.sh run test_lp_key_contract
+./scripts/test.sh run test_relation_collector_snapshot
+./scripts/test.sh run test_relation_reduction_routes
+./scripts/test.sh run test_structured_filter
+./scripts/test.sh run test_structured_filter_property
+./scripts/test.sh run test_structured_filter_parallel
+./scripts/test.sh run test_structured_filter_50d_synthetic
+./scripts/test.sh module relation
+./scripts/test.sh changed --deep
+./scripts/test.sh gate
+./scripts/test.sh run test_structured_filter_pipeline_120bit
+./scripts/test.sh run test_kleinjung_large
+./scripts/test.sh list
+```
+
+The exact binary names are finalized in M0 and then registered in the live catalog. The plan does not assume they exist before implementation.
+
+The bounded 50-digit run records:
+
+- raw, deduplicated, active, singleton-removed, and output row counts;
+- full LP column-weight histogram and row LP-weight percentiles;
+- base columns, LP columns, total columns, and excess before and after reduction;
+- total factor/LP nonzeros and fill delta;
+- source-count and persisted-LP-entry percentiles and maxima;
+- filter wall time, peak RSS, worker count, batch occupancy, and speedup;
+- strategy, policy reason, cap rejections, and stop reason.
+
+A first-round run is not a full factorization claim. A full stress run is justified only if bounded evidence shows a credible route to positive excess or a materially smaller matrix.
+
+## Performance Budgets
+
+M0 replaces these initial budgets with measured baselines before promotion:
+
+- Inputs below the size gate: no structured work and less than 1% OFF-mode overhead.
+- 50K overlapping synthetic rows: stay within the relation test's declared Release timeout.
+- 200K rows: peak memory bounded by source storage, incidence, and one output batch; no obsolete-row history.
+- Four workers: at least 1.5x speedup in scoring plus materialization on a workload large enough to amortize scheduling.
+- Ordered commit: less than 35% of structured-filter wall time at 200K rows; otherwise redesign batch size before adding shared-map concurrency.
+- Fill, source count, serialized LP entries, and exponent chunks: configured, reported, and never silently exceeded.
+- OOC mode: no full duplicate of both raw and reduced corpora after streaming integration.
+
+Matrix-quality improvement outranks microbenchmark speed. A slower filter may be acceptable only when measured downstream matrix work or required raw-relation count falls by more than the added cost.
+
+## Failure Modes and Rescue
+
+| Failure | Detection | Rescue |
+|---|---|---|
+| Canonical LP helper disagrees with MatrixBuilder | Full-width/parity property test | Block structured work; make MatrixBuilder consume the helper |
+| OOC snapshot finalizes or loses append data | Snapshot-append-finalize integration | Use immutable round segments; do not keep undefined append behavior |
+| A route applies reduction zero or two times | Generation/result-state assertion | Fail closed and route through the engine |
+| Pivot survives or dependency mapping is not bijective | Invariant checker and exact oracle | Abort structured strategy with input snapshot untouched |
+| Source appears twice or provenance is lost | Source-XOR and square-root reconstruction test | Rebuild from immutable source IDs; block rollout |
+| Persisted relation exceeds reader contract | Precommit materialization check and round trip | Reject candidate or raise one shared bounded format limit with tests |
+| Candidate consumes an old row | Generation and conflict assertion | Discard stale candidate and rescore |
+| Fill grows too quickly | LP/full-matrix fill budgets plus source and persisted-entry caps | Reject candidate and continue |
+| No admissible low-weight column | Explicit stop reason | Return the exact active basis and remaining LP columns |
+| Parallel result differs | Thread-equivalence test | Disable parallel scheduler; keep sequential reference |
+| Synthetic gain does not transfer | Real 120-bit and bounded 50-digit runs | Keep opt-in and revisit purge/sieve yield separately |
+| Thin solver still unreachable | Route regression and phase telemetry | Remove remaining pre-solver terminal gate |
+
+## Promotion Criteria
+
+Unset `GNFS_STRUCTURED_FILTER` may become size-aware auto only when:
+
+1. Canonical parity, provenance, dependency-space, serialization, OOC, and route-equivalence suites pass in Release.
+2. One-thread and multi-thread results are identical on every deterministic suite.
+3. Existing 17/27/40/81-bit results remain unchanged in OFF mode.
+4. A true 100-150-bit relation path passes without relying on `test_kleinjung_large` alone.
+5. The bounded 50-digit run meets the M0-frozen materiality threshold for full-matrix nonzeros, downstream matrix time, or projected raw-relation demand; nominal excess alone is insufficient.
+6. Fill and downstream matrix nonzeros stay within the frozen budget.
+7. OOC structured reduction is bounded-memory and snapshot append remains defined.
+8. No tested size band regresses end-to-end wall time by more than 5% without a larger measured downstream gain.
+9. Unsupported auto inputs have a tested named fallback; forced-mode unsupported inputs and invariant errors fail explicitly, while no-candidate completion has an explicit normal stop reason.
+
+## Decisions Frozen by This Plan
+
+1. The production `k >= 3` planner uses MST; a simpler pivot planner remains the independent reference oracle.
+2. When elimination stops, the engine returns the exact active transformed basis and its remaining LP columns. It does not emit a heuristic accumulator residue.
+3. Source provenance is a symmetric-difference set of immutable source IDs, not concatenated opaque merge chains.
+4. All relation persistence paths share one measured, versioned LP-entry contract and one corpus ownership boundary.
+5. Parallelism uses snapshot scoring, conflict-free batches, and ordered commit before considering concurrent incidence mutation.
+
+## Completion Definition
+
+The project is complete only when code, tests, documentation, route integration, and measured evidence agree. A header-only helper without the production caller does not count. Passing only the 81-bit gate does not count. A synthetic improvement without realistic overlap and exact dependency-space equivalence does not count. An in-memory result that fails after serialization or corpus-lifetime use does not count.
+
+A bounded 50-digit result that disproves the approach is still a valid engineering outcome if the mode stays opt-in and the evidence, stop reason, and next decision are recorded.
+
+## CEO Review Record
+
+### Step 0A: Premise Challenge
+
+| Premise | Evidence and challenge | Decision |
+|---|---|---|
+| Target 50-digit-and-larger GNFS | The recorded 50-digit matrix has negative excess and a weight-3+ LP plateau. Smaller automatic inputs already prefer SIQS. | Accepted. This is the highest-leverage unresolved GNFS path. |
+| Improve reduction before yield | The current rows/columns gap is structural, but a filter cannot manufacture rank. The bounded experiment must be allowed to disprove the premise. | Accepted with a kill criterion: no structural gain sends future work back to sieve/cofactor yield. |
+| Opt-in first | The path changes dependency-space transformations and persistence limits. Default-on would make rollback and cross-size diagnosis harder. | Accepted. Explicit flag first; unset behavior stays unchanged. |
+| Determinism over saturation | Reproducibility is a project priority and conflict-free batches still expose useful parallel work. | Accepted. Ordered commit is not relaxed for benchmark gains. |
+| Keep V0/V3 temporarily | They are required as baselines and rollback paths but should not become permanent duplicate architecture. | Accepted through M6; retirement becomes a measured post-promotion decision. |
+| Contract fixes are part of scope | The current routing, OOC lifecycle, key packing, and serialization mismatches can invalidate any structured-filter conclusion. | Accepted as M1 blockers, not optional cleanup. |
+
+Doing nothing leaves the 50-digit path collecting more raw relations without evidence that the reduced matrix becomes materially cheaper while preserving dependencies. A pure thread-level optimization would make the same structural failure arrive faster. The plan addresses the dependency-preserving reduction bottleneck directly and has a bounded experiment that can reject the bet.
+
+### Step 0B: What Already Exists
+
+| Sub-problem | Existing code | Reuse |
+|---|---|---|
+| LP semantic identity | `LargePrimeKey` in `filter.hpp` | Move the type to a neutral header; remove lossy metric and square-root packing. |
+| Baseline parity and composition | `remaining_lp_keys()` and `merge_two()` | Use only as regression baselines; structured code uses the canonical helper and source IDs. |
+| Matrix LP semantics | `MatrixBuilder` | Make it consume the same helper used by filtering and diagnostics. |
+| Sequential low-weight elimination | relation V0 and linalg SGE | V0 supplies comparison cases; linalg SGE supplies an independent oracle. |
+| Parallel execution | `gnfs::util::ThreadPool` | Reuse after deterministic batches are frozen. |
+| Large relation persistence | `RelationCollector` and `OOCRelationStore` | Extend lifecycle; do not invent a second file format. |
+| Size-aware policy | `decide_v0_bfs_policy()` | Reuse the table-driven policy pattern. |
+| Test orchestration | `scripts/test.sh` | Keep one catalog and live tier metadata. |
+
+The plan does not introduce an external filter executable, database, service, or third-party concurrency runtime.
+
+### Step 0C: Dream State
+
+```text
+CURRENT
+  duplicated reduction routes
+  heuristic V0/V3 combinations
+  parity/persistence drift
+        |
+        v
+THIS PLAN
+  one reduction engine
+  exact low-weight structured elimination
+  deterministic parallel batches
+  full-width parity and bounded OOC contracts
+        |
+        v
+12-MONTH IDEAL
+  streaming, checkpointable relation-reduction platform
+  policy selected from measured matrix cost
+  reproducible traces across local/distributed execution
+  V0/V3 retired after evidence-backed migration
+```
+
+This plan reaches the reusable engine and correctness substrate. It deliberately stops before a standalone distributed filter service or automatic yield tuning.
+
+### Step 0C-bis: Implementation Alternatives
+
+| Approach | Effort | Risk | Completeness | Advantages | Costs |
+|---|---:|---:|---:|---|---|
+| A. Patch V3 and LP metrics in place | M | Medium | 5/10 | Small diff; quick regression fix | Keeps route duplication, OOC undefined behavior, and no general `k`-way basis |
+| B. Staged shared engine plus structured filter | XL | Medium | 10/10 | Fixes contracts first; reversible rollout; exact oracle; supports later streaming | More files and integration gates; requires disciplined ownership |
+| C. Standalone CADO-style distributed filter subsystem | XXL | High | 10/10 | Strong long-term scale isolation | Duplicates file/distribution machinery and delays useful in-repo evidence |
+
+Decision: Approach B. It has the same correctness coverage as the ideal external subsystem without spending a second infrastructure stack. Approach A cannot establish trustworthy 50-digit evidence.
+
+### Step 0D: Selective Expansion Decisions
+
+| Proposal | Decision | Rationale |
+|---|---|---|
+| Bounded-memory `RelationSource` reduction | Accepted | Required before OOC default promotion; already included in M4. |
+| Stable reduction digest for replay/equivalence | Accepted | Small addition that makes route/thread determinism observable without storing every merge. |
+| Standalone filter executable and distributed file protocol | Deferred | Useful only after the in-process algorithm proves matrix gain. |
+| 3LP yield and cofactor retuning | Deferred | Different experiment; mixing it would hide whether reduction itself works. |
+| Automatic V0/V3 deletion | Deferred | Remove only after promotion evidence and a compatibility window. |
+| Performance dashboard/UI | Skipped | Stable logs and report artifacts answer the engineering need without UI scope. |
+
+### Step 0E: Temporal Interrogation
+
+| Implementation point | Decision frozen now |
+|---|---|
+| Foundations | One full-width helper owns parity; one reduction engine owns policy; snapshot and finalize are distinct operations. |
+| Core logic | Source combinations use symmetric difference; MST is production, pivot planner is oracle; caps reject before mutation. |
+| Integration | OFF relation-reduction digest is identical; the engine consumes each generation once; thin solving is owned by `solve_matrix()` and is a separately tested behavior fix. |
+| Tests and scale | Release-active checks, real overlap, persistence round trips, route equivalence, and a real 100-150-bit relation path are mandatory. |
+
+### Step 0F: Review Mode
+
+Mode: selective expansion. The plan keeps the 50-digit reduction objective, accepts only streaming and reproducibility support, and defers yield tuning and external filter infrastructure.
+
+### Section 1: Architecture Review
+
+Three architectural findings were accepted:
+
+1. Structural and behavioral changes must be sequenced. M1 unifies contracts and proves OFF-mode equivalence before M2 changes merge mathematics.
+2. The collector and reducer need explicit state machines. A boolean “already reduced” convention is insufficient; a move-only raw snapshot and distinct result type enforce generation ownership at the engine boundary.
+3. The input snapshot must remain immutable until a structured result validates. Candidate rejection is normal; an invariant error never returns a partially committed basis.
+
+Full architecture:
+
+```text
+Special-Q workers / distributed shards
+                |
+                v
+        RelationCollector
+       COLLECTING state
+          |          |
+          | snapshot | finalize
+          v          v
+  immutable prefix   FINALIZED corpus
+          |          |
+          +----+-----+
+               v
+    RelationReductionEngine
+       |        |        |
+       |        |        +--> StructuredFilter
+       |        +-----------> V0/V3 baseline
+       +--------------------> no-LP pass-through
+               |
+               v
+   validated ReductionResult
+      rows + LP columns + digest
+               |
+               v
+          MatrixBuilder
+               |
+               v
+       SGE -> BL/BW -> sqrt
+```
+
+Collector state machine:
+
+```text
+              snapshot success
+     +--------------------------------+
+     |                                |
+     v                                |
+ COLLECTING --snapshot start--> SNAPSHOTTING
+     |                                |
+     | finalize                       +--snapshot error--> COLLECTING + visible error
+     v
+ FINALIZING --success--> FINALIZED
+     |                       |
+     +--error--> ERROR       +--add/snapshot/finalize--> rejected
+
+ Invalid transitions never mutate files or counts.
+```
+
+Reduction transaction:
+
+```text
+IMMUTABLE INPUT
+      |
+      v
+BUILD INCIDENCE -> SCORE/PLAN -> MATERIALIZE TEMP OUTPUT -> VALIDATE
+      |                |                 |                   |
+      +--invalid------>+--cap reject---->+--I/O/overflow---->+--mismatch
+            |                 |                 |                   |
+            +-----------------+-----------------+-------------------+
+                                      |
+                                      v
+                          input remains authoritative
+```
+
+At 10x load, incidence memory and source-set materialization break before CPU. At 100x, repeated full OOC prefix scans are unacceptable; direct corpus source/sink reduction, matrix input, trimming, and selected-dependency reads are therefore promotion blockers. No network or authorization boundary is added.
+
+Rollback is `GNFS_STRUCTURED_FILTER=0` for behavior and a branch revert for contract changes. The OOC/checkpoint contract is explicitly versioned; old readers may reject deeper rows or newer headers, so producing version and persistence cap travel with owned corpora rather than being assumed compatible.
+
+### Section 2: Error and Rescue Registry
+
+Use one contextual `RelationReductionError` with an explicit code instead of catch-all exceptions:
+
+```cpp
+enum class RelationReductionErrorCode {
+    InvalidInput,
+    IncidenceMismatch,
+    SourceCombinationInvalid,
+    ExponentOverflow,
+    PersistenceLimit,
+    SnapshotIo,
+    SnapshotState,
+};
+```
+
+| Method/codepath | Failure | Code or exception | Rescue | Observable result |
+|---|---|---|---|---|
+| `odd_large_prime_keys()` | malformed exponent/key or allocation failure | `InvalidInput`, `std::bad_alloc` | Validate fields; propagate allocation failure | Reduction abort with relation index/key context |
+| `snapshot_relations()` | exact-handle flush/seek/sentinel/sync failure | `SnapshotIo` | Recover last committed prefix if possible; otherwise writer enters `Failed` | Pipeline stops; writer path and generation logged |
+| `snapshot_relations()` | snapshot after finalize or concurrent invalid transition | `SnapshotState` | Reject before mutation | Explicit lifecycle error |
+| `RelationReductionEngine::reduce()` | already-consumed snapshot | Compile-time move-only boundary or explicit invalid-input error | Reject caller bug | Phase and generation logged; no second output |
+| incidence build/commit | row/column views disagree | `IncidenceMismatch` | Discard temporary result | Structured path fails closed |
+| source XOR/materialize | empty, duplicate, or unknown source ID | `SourceCombinationInvalid` | Reject candidate or abort if internal invariant | Source IDs and pivot logged |
+| exponent normalization | sum cannot be represented in bounded chunks | `ExponentOverflow` | Reject before commit | Rejection counter; forced mode fails if no valid result |
+| relation persistence | entry count exceeds shared limit | `PersistenceLimit` | Candidate rejection before incidence mutation | Limit and projected count logged |
+| thread task | worker throws | original exception plus batch context | Join all workers; discard batch; rethrow | Batch ID and candidate keys logged |
+| final validation | digest, pivot, or dependency-space invariant fails | `IncidenceMismatch` | Never publish result | Pipeline returns explicit failure |
+
+Candidate-cap rejection and “no candidates” are normal stop reasons, not exceptions. `std::bad_alloc` is not swallowed. No path logs and continues with a partially transformed basis.
+
+### Section 3: Security and Threat Model
+
+| Threat | Likelihood | Impact | Mitigation |
+|---|---|---|---|
+| Corrupt OOC lengths trigger overflow or huge allocation | Low | High | Checked multiplication, file-range validation, shared count caps, corruption tests |
+| Crafted environment values enable unbounded weights/threads | Medium | Medium | Table-driven parsing and clamped numeric limits; invalid values fail visibly |
+| Snapshot path collision or traversal | Low | High | Existing trusted base-path construction; no shell interpolation; explicit files only |
+| Adversarial relation graph causes CPU/memory exhaustion | Medium | High | Weight/source/fill/batch caps, bounded candidate queue, peak metrics |
+| Thread race publishes partial state | Low | High | Read-only snapshots, disjoint rows, ordered single-thread commit, TSAN |
+
+No endpoint, credential, dependency, PII flow, or authorization surface is added. Auditability is provided by the stable generation, policy reason, reduction digest, limits, and stop reason.
+
+### Section 4: Data Flow and Edge Cases
+
+```text
+RAW RELATIONS
+  | nil/missing -> InvalidInput
+  | empty       -> valid empty result, NoCandidates
+  | corrupt     -> indexed validation error
+  v
+CANONICAL KEYS
+  | even exponent -> key absent
+  | high bits     -> preserved
+  | allocation    -> propagate
+  v
+INCIDENCE + PURGE
+  | singleton cascade -> fixed point
+  | empty graph       -> valid full-only result
+  | mismatch          -> abort transaction
+  v
+PLAN + PARALLEL MATERIALIZE
+  | stale candidate -> discard/rescore
+  | cap exceeded    -> reject without mutation
+  | worker error    -> discard entire batch
+  v
+ORDERED COMMIT + VALIDATE
+  | digest mismatch -> abort
+  | no candidates   -> exact active basis
+  | objective reached -> exact active basis
+  v
+PERSIST / MATRIX BUILD
+  | round-trip mismatch -> test/abort
+  | thin matrix         -> BW path
+```
+
+Boundary cases include 0/1/2/8/9 pivot weight, zero and maximum worker counts, duplicate source IDs, empty source XOR, exponent 0/1/254/255/256 totals, counts at and above persistence limits, roots and primes at `2^32 - 1`, `2^32`, and `UINT64_MAX`, exact packed-AB collisions, merged inputs with nested pairs, empty/full-only corpora, snapshot at zero rows, crash at each commit boundary, and finalize after a failed snapshot.
+
+### Section 5: Code Quality Review
+
+Accepted constraints:
+
+- Put LP-key/parity helpers in a neutral relation header, not inside either merger.
+- Keep one policy function and one engine implementation; test drivers call library APIs instead of copying pipeline blocks.
+- Separate candidate selection, planning, materialization, and commit so no method owns more than one state transition.
+- Use explicit result/stop/error enums. Avoid configuration booleans whose combinations create hidden modes.
+- Do not add a generic graph framework. The bounded LP incidence graph is the only abstraction needed.
+- Keep legacy V0/V3 untouched during M1 except for canonical helper adoption and targeted regression checks.
+
+### Section 6: Test Review
+
+```text
+NEW DATA FLOWS
+  canonical key extraction
+    -> unit + property + MatrixBuilder agreement
+  collector snapshot/append/finalize
+    -> in-memory/OOC integration + corruption/resume
+  shared route selection
+    -> route equivalence + double-reduction rejection
+  structured reduction
+    -> exact GF(2) oracle + provenance + persistence round trip
+
+NEW ASYNC PATHS
+  incidence sharding
+  candidate scoring
+  conflict batching
+  parallel materialization
+    -> thread equivalence + exception join + TSAN
+
+NEW POLICY PATHS
+  unset / 0 / 1 / auto / invalid
+  supported / unsupported size
+  target / no-candidate / cap / invariant stop
+    -> table-driven unit + pipeline integration
+
+SCALE PATHS
+  overlapping 5K / 50K / 200K hypergraphs
+  17/27/40/81-bit gate
+  real 100-150-bit sieve-to-reduction
+  bounded 50-digit first round
+```
+
+The “2am Friday” test serializes a deep 8-way result, reads it through both stream and OOC formats, builds the matrix, and proves its rows map to the original source space. The hostile test uses high-bit key collisions, even exponents, stale generations, overlapping candidates, and a worker exception in one batch. The chaos test interrupts an OOC snapshot around flush/sentinel/seek boundaries and verifies either a usable append cursor or a visible ERROR state.
+
+All randomized tests use a recorded seed and deterministic minimization output. New and modified relation tests use always-on checks in Release.
+
+### Section 7: Performance Review
+
+The three expected slow paths are:
+
+1. Canonical incidence construction: `O(total LP entries)` plus deterministic sorting.
+2. Candidate scoring: bounded by `max_column_weight^2` pair scores and source/row key XOR cost.
+3. Materialization: proportional to selected source factors and LP entries; this is the primary parallel target.
+
+Memory is the first scale constraint. Store immutable sources once, active combinations as sorted IDs, and one batch of materialized outputs. Tombstone obsolete rows and compact only at deterministic barriers. Do not cache all pair scores across generations.
+
+The baseline report must separate scoring, materialization, commit, and validation time. A headline worker speedup that leaves total filter time unchanged does not satisfy promotion.
+
+### Section 8: Observability and Debuggability
+
+Every reduction emits one stable record with:
+
+- input generation and canonical input digest;
+- selected strategy and policy reason;
+- rows, LP columns, excess, and nonzeros before/after;
+- singleton, 2-way, higher-way, stale, fill, source, and persistence counters;
+- batch count, worker count, scoring/materialization/commit/validation timings;
+- output digest and stop/error code.
+
+The digest is accepted as a small selective expansion because it proves route and thread equivalence without a full trace file. When an invariant fails, log the first row/pivot/source witness and keep the immutable input generation identifiable. No dashboard is required; bounded experiment reports are the operational artifact.
+
+### Section 9: Deployment and Rollout
+
+```text
+M1 contracts -> OFF-mode equivalence -> M2 sequential oracle
+     -> M3 thread equivalence -> M4 explicit flag integration
+     -> M5 cross-size/OOC evidence -> M6 promotion decision
+```
+
+Rollback flow:
+
+```text
+structured failure or regression?
+          |
+          +-- before promotion --> unset/0 flag -> V0/V3 baseline
+          |
+          +-- after promotion  --> set flag 0 immediately
+                                  |
+                                  +--> revert default-policy commit
+                                  +--> preserve diagnostic corpus
+```
+
+There is no database migration. Increasing a reader limit without changing the wire layout remains backward-compatible, but old binaries may reject newly deep rows. Therefore structured output is never written to a corpus intended for an older binary without recording the producing version and configured limit.
+
+Post-integration verification runs OFF and ON modes on the same fixed corpus and compares source-space validity, then exercises one adaptive OOC borrowed-prefix cycle.
+
+### Section 10: Long-Term Trajectory
+
+Reversibility: 5/5 before default promotion and 4/5 afterward because persisted deep rows may exceed older reader limits.
+
+Debt intentionally introduced:
+
+- V0/V3 coexistence through the measurement window;
+- in-process rather than standalone distributed filtering;
+- fixed starting caps before measured auto-tuning.
+
+The shared engine, canonical incidence, generation digest, and `RelationSource` boundary are platform capabilities. Future merge policies, yield experiments, or external reducers can reuse them without copying pipeline routing.
+
+Deferred work is explicit: standalone distributed filter, 3LP/cofactor retuning, V0/V3 retirement, and policy auto-tuning after measured corpora.
+
+### Section 11: Design and UX
+
+Skipped after checking the plan for screens, components, interaction flows, responsive behavior, and design-system changes. This is a backend C++ pipeline change with no UI scope.
+
+### NOT in Scope After Review
+
+- Standalone/distributed filter executable: wait for in-process matrix gain.
+- 3LP and cofactor-yield retuning: separate causal experiment.
+- V0/V3 deletion: wait for compatibility and promotion evidence.
+- Automatic cap tuning: requires multiple measured size bands.
+- Performance UI/dashboard: stable logs and reports are sufficient.
+- Global conversion of historical test assertions: convert only touched relation suites and prevent new Release-inactive checks.
+
+### Dream State Delta
+
+After this project, GNFS has one relation-reduction contract, exact source-space transformations, deterministic parallel execution, and OOC relation-payload streaming. Measured whole-process memory bounds, automatic policy learning from corpora, standalone distributed reduction when scale proves it necessary, and retirement of legacy strategies remain part of the 12-month ideal.
+
+### Failure Modes Registry
+
+| Codepath | Failure mode | Rescued? | Test? | Visible? | Logged? |
+|---|---|---:|---:|---:|---:|
+| canonical LP helper | exponent/key disagreement | Yes, reject | Yes | Yes | Yes |
+| snapshot | I/O or invalid state | Yes, restore/error state | Yes | Yes | Yes |
+| reduction routing | duplicate or skipped generation | Yes, reject | Yes | Yes | Yes |
+| incidence | synchronized views diverge | Yes, abort transaction | Yes | Yes | Yes |
+| planner | no admissible candidate | Normal stop | Yes | Yes | Yes |
+| materializer | source/exponent/persistence cap | Yes, reject/abort | Yes | Yes | Yes |
+| worker batch | exception or overlap | Yes, discard batch | Yes | Yes | Yes |
+| validator | pivot/dependency-map/digest mismatch | Yes, fail closed | Yes | Yes | Yes |
+| MatrixBuilder handoff | persistence or parity drift | Yes, abort | Yes | Yes | Yes |
+| thin solve handoff | early return bypass | Yes, route fixed | Yes | Yes | Yes |
+
+There are no planned silent, untested, unlogged failures.
+
+### Stale Diagram Audit
+
+The plan touches lifecycle diagrams embedded as comments in `collector.hpp` and `ooc_relation_store.hpp`; their “write then finalize then read” descriptions become stale when snapshot semantics land and must change in M1. Pipeline filtering comments in `pipeline.cpp` also become stale when routing is centralized. No user-facing design diagrams are involved.
+
+### CEO Implementation Tasks
+
+- [x] **T1 (P1, human: ~4h / agent: ~45m)** — LP contract — implement the full-width exponent-parity helper and MatrixBuilder agreement tests.
+- [x] **T2 (P1, human: ~1d / agent: ~2h)** — OOC lifecycle — implement snapshot/finalize states with append and corruption tests.
+- [x] **T3 (P1, human: ~1d / agent: ~2h)** — routing — centralize reduction and prove OFF-mode route equivalence.
+- [x] **T4 (P1, human: ~2h / agent: ~30m)** — solver handoff — make thin solving reachable and add a regression.
+- [x] **T5 (P1, human: ~3d / agent: ~6h)** — structured core — M2a
+  2-way purge, M2b weight-[3,8] star/MST plan/prepare/commit, and M2c budgeted
+  sequential orchestration are complete with exact projection and
+  dependency-kernel oracles, full `MatrixBuilder` payload checks, and retained
+  source-space row mappings are complete.
+- [x] **T6 (P1, human: ~2d / agent: ~4h)** — persistence — finalized writer
+  descriptor handoff, owning vector/OOC corpus lifetime, normalized reducer
+  sinks, selection identity, direct stream/OOC reduction, MatrixBuilder, and
+  selected-dependency round trips are complete.
+- [x] **T7 (P2, human: ~2d / agent: ~4h)** — parallel scheduler — add conflict batches, ordered commit, thread equivalence, and TSAN.
+- [ ] **T8 (P2, human: ~2d / agent: ~4h)** — integration evidence — strict policy
+  parsing, the shared engine's single structured dispatch, the default-off
+  production vector overlay, collector-proven unique ordinary-OOC direct route,
+  frozen callback prefix, and unsupported-route side-effect boundaries are
+  complete. Cross-size direct-OOC validation, fresh-process RSS measurement,
+  and a bounded real 50-digit prefix probe are complete; complete first-round
+  comparison and automatic route evidence remain.
+
+### CEO Review Completion Summary
+
+```text
++====================================================================+
+| Mode selected        | SELECTIVE EXPANSION                          |
+| System audit         | 6 blocking contract groups; dirty .gitignore |
+| Step 0               | Approach B; 2 of 6 expansions accepted       |
+| Section 1  (Arch)    | 3 issues resolved in the plan                |
+| Section 2  (Errors)  | 10 paths mapped, 0 critical gaps             |
+| Section 3  (Security)| 5 threats, 0 unmitigated High threats        |
+| Section 4  (Data/UX) | shadow paths and boundaries mapped           |
+| Section 5  (Quality) | 6 constraints frozen                         |
+| Section 6  (Tests)   | full diagram; hostile and chaos cases added  |
+| Section 7  (Perf)    | 3 slow paths; memory is first constraint     |
+| Section 8  (Observ)  | stable digest and timings accepted           |
+| Section 9  (Deploy)  | flag rollback and version caveat documented  |
+| Section 10 (Future)  | reversibility 5/5 pre-promotion              |
+| Section 11 (Design)  | skipped, no UI scope                         |
++--------------------------------------------------------------------+
+| NOT in scope         | 6 explicit items                             |
+| What already exists  | 9 components mapped                         |
+| Dream state delta    | written                                      |
+| Error/rescue registry| 10 paths, 0 critical gaps                    |
+| Failure modes        | 10 rows, 0 critical gaps                     |
+| Scope proposals      | 6 proposed, 2 accepted, 3 deferred           |
+| Lake score           | 6/6 completeness decisions                   |
+| Diagrams produced    | architecture, state, data, deploy, rollback  |
+| Unresolved decisions | 0                                            |
++====================================================================+
+```
+
+## Engineering Review Record
+
+### Scope Challenge and Actual-Code Findings
+
+The review read the production call paths, storage format, checkpoint contract, MatrixBuilder LP construction, V0/V3 classification, algebraic-square-root validation, and current tests. The project remains warranted, but implementation is gated by the following consolidated findings; every P1 is folded into M0/M1 rather than left as an implementation-time interpretation.
+
+| # | Priority | Finding | Evidence | Resolution in this plan | Confidence |
+|---:|---|---|---|---|---:|
+| 1 | P1 | Correctness target was row-space equality instead of dependency-space isomorphism | A weight-`k` column replacement intentionally changes row space | Freeze `M`, `T`, `F` and the `ker(F^T) --T^T--> ker(M^T)` bijection; exact oracle covers all matrix payload columns | 10/10 |
+| 2 | P1 | Raw `(a,b)` packing collides and structured primary-pair dedup drops valid MST outputs | `pipeline.cpp:1055-1063,1339-1349`; `distributed_sieve.cpp:548`; signed shift is non-portable | Full `ABPair` raw identity before source IDs; source-combination identity afterward; collision regressions | 10/10 |
+| 3 | P1 | LP parity/width/classification drift spans filters, V0/V3, matrix, metrics, and sqrt | `filter.hpp:115-205,227-278,299-460,545-805`; `matrix_builder.hpp:561-599,926-990`; `algebraic_sqrt.hpp:41-65` | One neutral full-width odd-key visitor and complete consumer sweep in M1a | 10/10 |
+| 4 | P1 | Materialization loses nested `extra_ab_pairs` | Public filter accepts already-merged relations; first-source-only wording discarded inner provenance | Flatten primary plus every nested pair in stable source order; matrix/sqrt/round-trip tests | 9/10 |
+| 5 | P1 | Vector-only results contradict bounded-memory OOC promotion | `RelationReductionResult`, `Pipeline`, and `MatrixResult` currently retain vectors | Own `InMemoryCorpus` or `OwnedOOCCorpus`; source/sink reducer; direct matrix and selected-dependency reads | 10/10 |
+| 6 | P1 | OOC snapshot/resume has no committed prefix and may silently count failed writes | `collector.hpp:249-259`; `ooc_relation_store.hpp:124-169`; checkpoint lacks relation descriptor | Explicit writer states, trusted committed-prefix descriptor, versioned paired checkpoint, child-process failpoints | 10/10 |
+| 7 | P1 | Thin Block Wiedemann exists but an earlier pipeline gate bypasses it | `pipeline.cpp:2183-2193` versus thin path in `solve_matrix()` | Make solver the final authority; isolate this expected behavior change in M1d | 10/10 |
+| 8 | P1 | V3 residual accounting can emit a later unmerged singleton | `clique_merger.hpp:210,292` reuses global `visited.size()` in a per-start decision | Add source-accounting regression and fix in M1a compatibility sweep | 9/10 |
+| 9 | P2 | Fill scoring and stop semantics were underspecified | Pair scoring proposed materialization; `FillBudgetReached` had no budget; invariant was a normal stop | Metadata-only scoring, frozen total comparator, LP/full-matrix budgets, invariant-only error channel | 10/10 |
+| 10 | P2 | Existing scale fixtures cannot support promotion claims | `test_clique_merger_50d_synthetic.cpp:70-126` lacks real overlap; touched tests use bare `assert()` | Fixed overlapping corpora, always-on checks, frozen 120-bit/50-digit parameters and materiality thresholds | 10/10 |
+
+The scope is accepted at full size. Reducing it to a V3 patch would leave duplicate routing, undefined OOC append behavior, and no trustworthy scale conclusion. New infrastructure is limited to one corpus boundary, one reducer, one structured strategy, and the existing thread pool.
+
+### What Already Exists
+
+| Capability | Existing implementation | Reuse decision |
+|---|---|---|
+| End-to-end GNFS pipeline and thin solver | `src/api/pipeline.cpp` | Reuse; remove the earlier terminal gate and centralize relation routing |
+| Full-width matrix LP semantics | `include/gnfs/linalg/matrix_builder.hpp` | Use as behavioral baseline, then make both collection/build paths consume the canonical helper |
+| V0/V3 mergers | `filter.hpp`, `clique_merger.hpp` | Retain as opt-in baselines/fallbacks through M6; repair contract consumers and source-accounting bug |
+| Relation/OOC serialization | core relation streams and `ooc_relation_store.hpp` | Version and extend one format; do not create a second incompatible store |
+| Collector and sieve checkpoint | `collector.hpp`, `sieve_checkpoint.hpp` | Add an explicit paired committed-prefix state machine |
+| Parallel runtime | `gnfs::util::ThreadPool` | Reuse with immutable scoring snapshots, conflict batches, and ordered commit |
+| Sparse GF(2) operations | linalg SGE/row operations | Reuse only as an independent small-case oracle |
+| Test runner and catalog | `scripts/test.sh`, CMake | Register all binaries and derive live counts/times from the catalog |
+
+### Architecture Review
+
+```text
+special-Q/distributed producers
+           |
+           v
+  RelationCollector (Open)
+           |
+           +-- checkpoint_prefix --> OOCSnapshotDescriptor
+           |                            |
+           |                            +--> SieveCheckpoint V3 commit
+           +-- snapshot/finalize ------+
+                                        v
+                         move-only RawRelationSnapshot
+                                        |
+                                        v
+                         RelationReductionEngine
+                       / legacy | structured \
+                      /         |            \
+             canonical LP   dependency T   ordered batches
+                      \         |            /
+                       \        v           /
+                         RelationSink -> RelationCorpus owner
+                                        |
+                         +--------------+--------------+
+                         v                             v
+                  MatrixBuilder source        selected dependency reads
+                         |                             |
+                         +----------> solver ----------+--> sqrt
+```
+
+Coupling is contained by the neutral key helper and corpus source/sink interface.
+Scaling pressure appears first in source-set/incidence memory, so output-vector
+materialization cannot be the promoted design. The security-sensitive boundaries
+are untrusted persisted lengths/offsets and paired-file identity. Readers use
+checked arithmetic and fail closed on format or extent corruption. Finalized V2
+stores identity only in `.relidx`, so a same-sized foreign `.reldata` payload
+cannot be authenticated; exclusive pair ownership is required now, and a
+paired-data identity is required before OOC promotion. Inline state diagrams
+should be added to `ooc_relation_store.hpp`, `collector.hpp`, and the new
+reduction engine because their transitions are non-obvious.
+
+### Code Quality Review
+
+1. Remove production copies of packed AB identity rather than wrapping them; one `ABPairHash` is simpler and correct.
+2. Keep raw-storage queries (`is_full`, `num_large_primes`) distinct from GF(2) canonical queries (`has_odd_large_prime_keys`, count/visitor), with comments preventing semantic substitution.
+3. Keep candidate planning, metadata scoring, materialization, and commit as separate functions; no generic graph/task framework is warranted.
+4. Use move-only snapshot and corpus-owner types instead of `reduced_once` booleans or path-lifetime conventions.
+5. Use one normal stop enum beginning at `NotStarted`; invariant violations use contextual errors and never publish partial results.
+
+### Test Coverage Diagram
+
+```text
+CANONICAL CONTRACT
+  odd LP helper
+    +-- [ADD UNIT/PROPERTY] e parity, side, p/r high bits, XOR homomorphism
+    +-- [ADD AGREEMENT] MatrixBuilder collect/build, V0/V3, separation, sqrt
+  identity
+    +-- [ADD REGRESSION] packed AB collision
+    +-- [ADD REGRESSION] shared-primary structured outputs survive
+
+PERSISTENCE AND RECOVERY
+  writer states
+    +-- [ADD INTEGRATION] snapshot -> append -> snapshot -> finalize
+    +-- [ADD FAILURE] invalid state and I/O failure preserve committed count
+  paired checkpoint
+    +-- [REPLACE FALSE RESUME] child `_Exit()` at every commit boundary
+    +-- [ADD CORRUPTION] truncated/non-monotonic/overflow/wrong generation
+  corpus owner
+    +-- [ADD INTEGRATION] vector/OOC matrix and selected dependency lifetime
+
+REDUCTION ROUTING
+  raw snapshot -> engine -> corpus
+    +-- [ADD ROUTE] adaptive/distributed/public/stress/progressive/final digest
+    +-- [ADD TYPE/REGRESSION] each generation consumed once
+    +-- [ADD HANDOFF] thin solver reached exactly once
+
+STRUCTURED MATHEMATICS
+  singleton -> 2-way -> k-way MST
+    +-- [ADD EXACT ORACLE] dependency dimension and `T^T` bijection
+    +-- [ADD PAYLOAD] sign, FB, QC, Schirokauer, LP columns
+    +-- [ADD PROVENANCE] nested merge parenthesization and sqrt reconstruction
+    +-- [ADD PARALLEL] 1/2/4/hardware rows, order, stats, digest, stop
+
+SCALE AND RELEASE
+  fixed overlap corpus -> 120-bit path -> bounded 50-digit round
+    +-- [ADD SCALE] histogram, dependency dimension, full NNZ, RSS, timings
+    +-- [EXISTING GATE] 17/27/40/81-bit OFF-mode factorization
+```
+
+This diagram records the coverage plan at review time. M1, the vector-backed
+M2/M3 implementation, and the explicit M4 vector/ordinary-OOC routes now have
+tests. The full selected-source MatrixBuilder payload oracle, direct corpus
+handoff, selected dependency lifetime, source/sink reduction, paired-data
+identity, and collector-proven unique structured OOC bridge are closed. The
+production bridge has no per-generation snapshot or working payload, but keeps
+the raw writer suspended for the complete reduction and rereads the full prefix
+each round. Remaining gaps are native incremental OOC scanning, measured RSS,
+bounded 50-digit production evidence, automatic-selection evidence, and
+cross-size scale evidence.
+
+### Performance Review
+
+1. Scoring every pair by fully materializing relations would multiply allocations and integer copies. Score canonical key/source/factor metadata and materialize only selected MST edges.
+2. The production ordinary-OOC route no longer copies snapshot or working payloads, so its per-generation relation-payload disk peak is `raw + output`. It still holds raw `Suspended` and rereads the full accumulated prefix for `O(rounds × relations)` decoding and I/O; this prevents collection/reduction overlap and does not establish an RSS bound. Generic finalized-OOC and prepared-borrowed routes retain their working corpus. Promotion still requires incremental scanning and measured RSS.
+3. Ordered commit can dominate at scale. Measure batch occupancy and commit share before considering concurrent incidence mutation; redesign batch size if commit exceeds the frozen budget.
+4. Full-matrix fill, not LP weight alone, controls solver cost. Record both projected and realized matrix nonzeros and reject pivots under a global budget.
+
+### Engineering Failure Registry
+
+| Codepath | Production failure | Test planned | Handling planned | Silent after implementation? |
+|---|---|---:|---:|---:|
+| canonical key | high-bit or exponent cancellation drift | Yes | Contract helper and consumer agreement | No |
+| raw identity | packed collision drops a relation | Yes | Full `ABPair` identity | No |
+| materializer | nested pair or factor provenance lost | Yes | Immutable-source reconstruction and exact checks | No |
+| writer/checkpoint | SQ progress outruns committed relation prefix | Yes | Paired versioned descriptor; fail closed | No |
+| prefix reader | corrupt size/offset causes OOB/allocation | Yes | Checked arithmetic and runtime validation | No |
+| paired OOC files | same-sized foreign data payload is adopted or resumed | Yes | V3 identity in both headers; validate the pair before reads, mutation, promotion, and cleanup | No |
+| corpus owner | files/vectors die before matrix/sqrt use | Yes | Owning result lifetime | No |
+| engine route | generation reduced zero or twice | Yes | Move-only input and route digest | No |
+| structured pivot | dependency nullity changes | Yes | Exact oracle and pre-publish validation | No |
+| worker batch | exception or overlap partially commits | Yes | Join/discard batch; ordered commit | No |
+| scale policy | nominal excess hides matrix regression | Yes | Frozen materiality and full-NNZ budgets | No |
+
+The explicit structured vector route and explicitly forced ordinary-OOC route
+are available but default-off. Automatic structured selection, size-aware OOC
+structured selection, resume, and distributed structured routes remain
+unavailable until incremental OOC and scale gates land. No current result
+supplies measured RSS or bounded 50-digit production evidence. Legacy default
+behavior remains unchanged.
+
+### NOT in Scope After Engineering Review
+
+- Standalone distributed reducer and segment manifest: defer until in-process matrix gain and corpus format stabilize.
+- 3LP/cofactor-yield retuning: keep as an independent causal experiment.
+- V0/V3 removal: retain baselines and rollback through the promotion window.
+- Generic graph framework or new task runtime: the bounded incidence model and existing thread pool suffice.
+- Automatic cap/policy learning: needs reproducible multi-size reports.
+- Whole-repository conversion from `assert()`: convert touched relation/checkpoint suites and forbid new inactive checks.
+
+These deferred items are recorded in `TODOS.md` with rationale and dependencies.
+
+### Retrospective and Outside Voice
+
+Recent branch ancestry contains the harness-engineering series that centralized project contracts, test catalog checks, local-path scanning, and pull-request workflow. This plan follows that precedent: volatile counts stay in `scripts/test.sh`, contracts live in one public API, and generated/local state is excluded from commits. No prior structured-filter implementation exists on this branch to preserve.
+
+An independent adversarial plan reviewer reported `DONE_WITH_CONCERNS`. Its six P1 groups—dependency proof, dedup identity, full-width sqrt coverage, nested provenance, corpus ownership, and crash-safe OOC state—are all folded into M0/M1. Separate LP-contract and OOC-lifecycle reviewers independently confirmed the consumer drift and missing committed prefix. No outside-voice objection remains unresolved.
+
+### Engineering Review Completion Summary
+
+```text
+Step 0: Scope Challenge       — scope accepted at full size after six P1 contract corrections
+Architecture Review           — 6 blocking boundaries found and resolved in the plan
+Code Quality Review           — 5 issues found; explicit minimal abstractions selected
+Test Review                   — diagram produced; all new-path gaps assigned to M1-M5
+Performance Review            — 4 issues found; scoring, OOC, commit, and fill budgets frozen
+NOT in scope                  — written
+What already exists           — written
+TODOS.md updates              — 4 deferred items recorded
+Failure modes                 — 0 critical gaps after planned coverage/handling
+Outside voice                 — issues found and folded; 0 unresolved
+Lake Score                    — 10/10 consolidated findings chose the complete option
+Unresolved decisions          — 0
+```
+
+<!-- AUTONOMOUS DECISION LOG -->
+## Decision Audit Trail
+
+| # | Phase | Decision | Principle | Rationale | Rejected |
+|---:|---|---|---|---|---|
+| 1 | CEO | Keep full structured-reduction scope, opt-in first | Correctness and reversibility | A V3-only patch cannot produce trustworthy scale evidence | Patch-only approach |
+| 2 | CEO | Accept corpus source/sink boundary | Completeness | Required for bounded-memory OOC promotion and lifetime safety | Vector-only result |
+| 3 | CEO | Accept stable generation digest | Reproducibility | Makes route/thread equivalence observable | Logs without replay identity |
+| 4 | CEO | Defer standalone distributed reducer | Minimal proven infrastructure | Algorithm gain must precede a second execution stack | Build now |
+| 5 | CEO | Defer 3LP/yield tuning | Causal evidence | Avoid mixing collection yield with reduction quality | Bundle experiments |
+| 6 | Eng | Prove dependency-space bijection | Mathematical correctness | Row space intentionally changes during elimination | Row-space equality |
+| 7 | Eng | Split raw and structured identity | Exact provenance | Primary pairs are not unique structured rows | Packed/primary dedup |
+| 8 | Eng | Sweep every full-width LP consumer | One source of truth | Matrix-only agreement would leave sqrt/classification wrong | Partial helper adoption |
+| 9 | Eng | Flatten nested merged provenance | End-to-end correctness | Public inputs may already contain `extra_ab_pairs` | Raw-only silent assumption |
+| 10 | Eng | Pair relation prefix with SQ checkpoint | Crash consistency | Resume must never skip work beyond durable relations | Flush-only best effort |
+| 11 | Eng | Use metadata-only scoring and global fill budgets | Measured performance | Full materialization is wasteful and LP weight is incomplete | Pair materialization |
+| 12 | Eng | Separate thin-solver fix from OFF equivalence | Honest validation | The handoff intentionally changes end-to-end behavior | One ambiguous byte-equality gate |
+| 13 | Eng | Forced invariant errors fail explicitly | Fail closed | Silent legacy fallback would mask corruption | Automatic fallback |
+| 14 | Eng | Preserve user `.gitignore` change | Repository hygiene | It is unrelated user-owned work | Include or discard it |
+
+## GSTACK REVIEW REPORT
+
+```text
+Plan                       docs/plans/2026-07-21-parallel-structured-filter.md
+CEO review                 CLEAN — selective expansion, 0 unresolved decisions
+Design review              SKIPPED — no UI scope
+Engineering review         CLEAN — 10 consolidated findings folded into plan
+Independent outside voice  DONE_WITH_CONCERNS -> all concerns resolved in plan
+Test plan artifact         recorded in the external gstack project directory
+Deferred-work artifact     TODOS.md
+Critical gaps              0 after required M1-M5 coverage and handling
+Implementation gate        M0 contract/baseline freeze, then M1a-M1d
+```
+
+NO UNRESOLVED DECISIONS
+
+## 2026-07-25 Follow-up: Durable OOC Cleanup Transaction
+
+The paired checkpoint and receipt protocol now closes recovery before any
+truncate or append. Artifact deletion remains a separate boundary: writer,
+corpus, and sink cleanup currently validate ownership first and then remove the
+two paths sequentially. A crash or second-path removal failure can therefore
+leave one owned artifact. The current code and documentation treat this as
+best-effort cleanup, not as a crash-recoverable same-path retry contract.
+
+The target cleanup design uses one shared cleanup transaction:
+
+1. require a move-only ownership receipt captured from both native file
+   identities before an intent can begin; `store_id` correlates the V3 pair but
+   never grants deletion authority by itself;
+2. write each SHA-256-protected marker to a no-authority pending leaf, make the
+   complete marker durable, and publish its canonical name with no-replace
+   rename;
+3. move each leaf atomically to a no-replace quarantine name under one frozen
+   parent namespace, with no-follow and file-identity checks before deleting
+   either quarantine entry;
+4. publish a second durable `staged` marker only after both exact leaves are
+   quarantined; only that marker grants unlink authority;
+5. resume from every valid original/quarantined/deleted combination after
+   process failure, while preserving any foreign replacement;
+6. later use whole-private-directory quarantine as the fast path for
+   structured output leases; and
+7. cover marker publication, each rename/unlink boundary, foreign
+   replacement, symlink/hardlink, Windows sharing failures, and next-process
+   same-base reuse in the crash matrix.
+
+The paired-leaf state machine is deliberately one-way:
+
+```text
+live/live
+  -> quarantined/live
+  -> quarantined/quarantined
+  -> staged/delete-authorized
+  -> quarantined/absent
+  -> absent/absent
+  -> intent removed
+  -> staged removed
+```
+
+Every namespace transition must reach the parent-directory durability
+boundary before the next transition. The immutable intent and staged marker
+remain present while owned leaves are deleted. After both leaves, and any
+exclusively owned cleanup directory, are durably absent, recovery first
+removes the intent and finally removes the staged marker. A staged-only tail
+therefore records completion but grants no authority to delete a newly created
+store. Recovery accepts only the states in this sequence. A
+pre-existing half-pair without a valid intent, multiple intents for one base,
+an unexpected live/quarantine combination, or a replacement whose identity
+does not match the intent fails closed.
+
+Pending marker leaves never authorize artifact deletion. A regular,
+single-link malformed pending leaf is repairable only under the declared
+trusted-parent contract and only while the matching unspent receipt or
+canonical intent still supplies authority. Valid markers for another
+transaction, symlinks, hardlinks, and reparse points are preserved. Base names
+ending in the reserved `.gnfs-ooc-cleanup-v1` suffix are rejected so one
+transaction's quarantine names cannot alias another store's live pair.
+
+Native identity is `dev + ino` on POSIX and 64-bit volume serial plus the full
+128-bit `FILE_ID_INFO` identity on Windows. A platform or filesystem that
+cannot supply that identity fails closed. macOS uses `F_FULLFSYNC` for both
+file and parent-directory durability boundaries. Marker confirmation preserves
+the file handle across the file -> parent -> file barrier.
+
+Implementation is split into four independently reviewable slices:
+
+1. land the receipt-gated common intent/quarantine engine and its core plus
+   self-exec crash matrix;
+2. issue receipts during fresh-writer creation, transfer them through
+   RelationSink/RelationCollector into RelationCorpus, and route pair cleanup
+   through that engine;
+3. add fresh-path reconciliation so a later process can finish a valid pending
+   cleanup before reusing the same base; and
+4. add whole-private-directory quarantine for exclusively owned RelationSink
+   leases after the persistent lock-file lifecycle is separated from that
+   directory.
+
+The transaction does not grant deletion authority from a pending marker, from
+a leaf name alone, or from a non-cryptographic `store_id` alone. Before intent
+publication, only the unspent move-only receipt can start cleanup. Once the
+canonical intent is durable, the receipt is consumed and recovery may proceed
+from that intent alone. Each quarantined leaf is reopened and checked again
+before staged publication and before unlink. One per-base cross-process lock
+serializes cooperating GNFS cleanup processes.
+
+The portable threat boundary is a trusted parent namespace with cooperating
+same-UID processes. Linux and macOS cannot condition a path-based rename or
+unlink on a previously opened inode, so this transaction does not promise
+that a malicious same-UID process can never temporarily move or replace a
+name. It does promise that a detected foreign object is preserved and never
+unlinked. Stronger adversarial isolation requires a trusted private directory
+or a platform-specific handle-bound implementation.
+
+### Cleanup Integration Status
+
+The fresh-writer integration slice now enforces the following authority chain:
+
+1. Fresh construction freezes the base path, acquires the per-base lock,
+   confirms that every live, pending, canonical, staged, and quarantine leaf is
+   absent, and reserves both artifacts with `O_EXCL` while retaining that lock.
+2. The writer attaches self-buffered duplicates of both exclusive-create
+   handles before the first header byte. Those duplicates remain the writer's
+   exact I/O witnesses. It then closes the reservation handles and captures
+   the pair again under the same namespace lock. Receipt construction occurs
+   only after the captured identities match the retained reservation
+   identities, so no throwing work follows issuance.
+3. `RelationCorpus::from_owned_finalized_ooc()` constructs and validates its
+   descriptor-bound reader and allocates its complete state before the final
+   non-throwing receipt move.
+4. Public descriptor-only corpus reopen always preserves artifacts.
+   `arm_ooc_cleanup()` returns `false` when no fresh-writer receipt was
+   transferred.
+5. Fresh collector handoff and `clear()` use the receipt-backed transaction.
+   Descriptor-plus-sequence recovery rejects destructive handoff and `clear()`.
+6. `RelationSink` retains its writer receipt through finalize and abort.
+   A second move-only receipt proves ownership of its exact private lease;
+   public corpus adoption no longer accepts a raw cleanup-directory string.
+7. The sink pair lock is a persistent sibling outside the removable lease.
+   Lease creation, pair cleanup, and lease removal all serialize on that one
+   inode. The lease receipt also binds the directory's native identity. Pair
+   cleanup confirms the full namespace empty, then removes only that exact
+   empty lease while retaining the external lock for later same-base use. An
+   old receipt rejects a replacement directory instead of deleting a newer
+   lease after an uncertain parent-directory durability barrier.
+8. `Preserve` transfers both receipts without arming cleanup. A later explicit
+   `arm_ooc_cleanup()` therefore removes the owned pair and lease together;
+   descriptor-only recovery still returns `false`.
+
+### Durable Private-Lease Recovery Status
+
+Private lease creation now publishes a separate versioned ownership protocol
+under the persistent external lock:
+
+1. A canonical `RESERVED` record binds a 128-bit lease generation, the frozen
+   base-path digest, parent identity, and the identity of the held lock. It can
+   roll back only the exact random staging directory derived from that
+   generation until a matching `OWNED` record adds an explicit preactivation
+   capability.
+2. The staging directory receives a durable internal owner record. Canonical
+   `OWNED` then binds the directory and owner-file identities and the digest of
+   `RESERVED`.
+3. A no-replace rename moves that exact directory to the fixed lease name.
+   The reservation receipt retains the same `BaseLock` across this transition,
+   both writer `O_EXCL` reservations, header validation, and cleanup-receipt
+   issuance.
+4. Only after the fresh pair is identity-validated does activation durably
+   consume `RESERVED` and release the retained lock. This closes the interval
+   in which another cooperating process could mistake a live pre-writer lease
+   for abandoned state.
+5. `OWNED` remains until teardown. `OWNED` alone may remove only its exact
+   owner marker and empty directory. The new capability authorizes pair
+   rollback only while its canonical `RESERVED` predecessor still exists.
+   Activation consumes `RESERVED`, so active live pairs without a canonical
+   pair intent remain preserved.
+
+Every record is fixed-size and SHA-256 protected. Pending names remain
+no-authority publication state. Recovery validates platform, path, parent,
+lock, directory, generation, owner identity, and single-link regular-file
+shape before a mutation. Directory replacement, marker replacement, unknown
+children, symlinks, hardlinks, and reparse points fail closed. The durable
+teardown order is owner unlink and directory sync, exact-directory removal and
+parent sync, then `OWNED` unlink and another parent sync. Crash tests terminate
+children after every pending/canonical publication, directory rename, and
+teardown barrier and require idempotent parent-process convergence.
+
+### Preactivation Pair Rollback Status
+
+The same-child writer boundary now uses whole-directory quarantine. A newly
+created lease records `RollbackPreactivePairAndLease` in `OWNED`, but recovery
+accepts that capability only together with the exact canonical `RESERVED`
+record. This conjunction exists before the first pair `O_EXCL` and ends at the
+activation commit point.
+
+Recovery first validates the lock, lease chain, owner marker, and directory
+identity. It accepts only the owner marker plus the expected `.relidx` and
+`.reldata` leaves. It then moves the exact fixed directory back to its
+generation-specific staging name with a no-replace rename. This atomic
+quarantine removes the pair from the reusable live namespace before deletion.
+Recovery revalidates each regular single-link leaf, removes data and index with
+directory barriers, removes the owner and directory, and finally consumes
+`RESERVED` and `OWNED`. Every step is idempotent after process termination.
+Unknown children, links, replacement directories, and inconsistent protocol
+tails remain fail closed.
+
+Fresh-writer crash tests cover the first reservation, second reservation,
+header validation, cleanup-receipt capture, and activation commit. Separate
+recovery crashes cover directory quarantine, both leaf removals, owner and
+directory removal, and both external marker removals. A crash after
+`RESERVED` removal proves the inverse property: recovery preserves the active
+pair and cannot reconstruct deletion authority from `OWNED`.
+
+The next ownership milestone applies this same durable lease authority to
+distributed-sieve worker artifacts. The external lock remains persistent, so
+it cannot split into two cooperating lock domains.
+
+### Distributed Worker Cleanup Handoff Status
+
+Distributed sieve workers now use a parent-owned private lease for every
+nonempty chunk. The master freezes and allocates all slot paths before the
+first fork, reserves the lease, and retains the move-only receipt. The child
+inherits the held lock, creates the V3 pair without activating the lease,
+finalizes the pair, and publishes only its exact canonical cleanup intent.
+The child then calls `_exit()` without running receipt or lock destructors.
+
+The cleanup handoff follows this order:
+
+1. The parent assigns the attempt ordinal in memory. No `.attempts` leaf
+   exists in the artifact namespace.
+2. A failed child is reaped before the parent may remove its lease or reuse
+   the path.
+3. After cleanup-intent publication, the child writes a fixed completion
+   report through a parent-owned pipe. The report binds the attempt ordinal,
+   actual special-Q and relation counts, and the finalized pair's store ID,
+   generation, data end, and independent relation-sequence receipt.
+4. A successful child is not accepted until the parent reconstructs that
+   exact snapshot descriptor and reads every relation through the
+   descriptor-bound reader into an isolated buffer. It then recomputes and
+   matches the complete sequence receipt, so structurally valid same-size
+   payload drift also fails closed.
+5. The parent closes the reader and converges the exact canonical transaction
+   plus private lease before marking the attempt successful.
+6. Only successful, fully read, and fully cleaned buffers enter the
+   cross-worker deduplication pass.
+7. A failed attempt must finish exact lease cleanup before a fresh lease
+   generation can be reserved for its single retry.
+
+The POSIX lock owner closes its descriptor without an explicit `LOCK_UN`.
+After `fork()`, this keeps the advisory lock held until the final inherited
+descriptor closes. The lease receipt also records its creator PID.
+Fork children cannot activate or remove the parent lease, and deferred writers
+reject generic destructive APIs. Their only authority transition is exact
+cleanup-intent publication.
+
+Recovery validates the complete private-directory allowlist before the first
+pair rename. An unknown sibling, link, marker replacement, or pair identity
+mismatch therefore preserves the live pair and makes the worker unsuccessful.
+The parent never uses a raw suffix-based `unlink()`. Read errors can no longer
+appear as a successful zero-relation chunk, and an uncertain `waitpid()` result
+suppresses cleanup for that slot and every retry in the whole wave. Whole-wave
+suppression is required because later fork children inherit earlier lease-lock
+descriptors. Worker statistics distinguish persisted rows from rows retained
+after cross-worker deduplication and come from the completion report rather
+than inferred chunk bounds.
+
+This milestone defines cleanup ownership, not a durable distributed-wave
+checkpoint. If the master process crashes, the whole wave is invalid and the
+next run recomputes it. A later reservation may therefore finish a canonical
+orphan cleanup intent. Preserving and adopting completed workers across a
+master restart requires a separate no-delete handoff record bound to a work
+digest and a merge-completion receipt. That durable-resume protocol remains a
+future milestone.
+
+### Deferred Writer Ownership Closure Status
+
+Deferred worker construction now consumes an rvalue private-lease receipt.
+The lvalue overload is deleted, and `RelationCollector` forwards the child
+process's copy into the writer. The writer retains that move-only receipt until
+it reaches `Finalized` or `Failed`. A caller cannot extract the receipt while
+the writer is open, while a prefix reader exists, or while either publication
+transaction is active.
+
+Both cleanup and no-delete handoff publication use one writer-local action
+guard. Publication hooks cannot extract the pair receipt, extract the lease
+receipt, or reenter either publication method. The constructor performs the
+receipt move only after every throwing initialization step, so an interrupted
+construction leaves the caller's receipt usable for exact recovery.
+
+The parent still owns an independent copy-on-write receipt after `fork()`.
+This cross-process capability is safe only under the master lifecycle rule:
+cleanup requires a terminal child status. A returned PID with a stopped or
+continued status does not confirm reap. Such a status preserves the lease,
+suppresses cleanup, and disables every retry in the wave.
+
+### Same-Handle Writer I/O Status
+
+Out-of-core writer mutation no longer reopens either artifact pathname. A
+move-only native binary update file owns its buffer and stable file identity.
+Fresh construction attaches it to a duplicate of each exclusive-create
+handle. Descriptor recovery opens each regular single-link leaf once, then
+performs header, extent, offset-table, relation, and semantic-receipt
+validation before truncating through those same handles.
+
+The `Open -> Suspended -> Open -> Finalized` lifecycle retains the exact pair.
+Checkpoint durability barriers run before suspension. Prefix readers map
+owned duplicates of the retained handles. Resume, suspended finalize,
+metadata sync, final-magic publication, and durability retry therefore cannot
+be redirected by a replacement pathname. Each publication boundary checks
+that both canonical leaves still name the retained identities before and
+after file and parent-directory synchronization.
+
+Trusted pre-header fault points cover regular-file replacement, symlink
+replacement, and a double-rename ABA for both index and data. The foreign
+object or symlink target remains byte-for-byte unchanged; ABA succeeds only
+because writes stay bound to the originally reserved object. Private-lease
+crash and commit-last matrices also cover both new attachment boundaries.
+Recovery fault points replace byte-identical index or data leaves immediately
+after full prefix validation on both appendable and finalized paths; recovery
+must reject at the namespace commit boundary without mutating either object.
+
+After the relation module and deep dependency gate pass, the next durable
+execution milestone makes one self-exec launcher the sole admitted WaveStore
+start-receipt consumer.
+
+### Source-Private Worker Process Transport Status
+
+The distributed sieve now has a standalone source-private self-exec transport
+foundation. It does not run C++ callbacks between `fork()` and `exec()`.
+Preparation validates executable-path syntax, owns copied argv storage,
+allocates all bootstrap and report pipes, and prewrites each bounded bootstrap
+frame before the first `posix_spawn()` call. Executable-object authentication
+is not part of this foundation.
+
+The low-level exact-role milestone is implemented with one fixed child layout:
+descriptor `0` carries the bounded bootstrap, `1` carries the report, and `2`
+preserves the launch-time open/closed standard-error snapshot. Descriptors `3`
+through `6` carry the wave-root directory, permanent WaveStore lock, attempt
+`BaseLock`, and anonymous immutable work-package file, respectively. Both lock
+roles preserve their supplied open-file-description.
+
+Before any fixed mapping, the transport pre-stages the complete batch's
+child-side sources at descriptor `7` or above. Generated endpoints, the
+standard-error snapshot, and all capability sources therefore survive
+source/target and cross-slot collisions. Each child maps only its own `0..6`
+roles, closes staged sources and foreign batch endpoints, and uses a
+close-from action at floor `7` where the platform provides one. Other POSIX
+builds claim only the enumerated closure contract.
+
+The generic `spawn_distributed_sieve_worker_process_batch()` entry point
+retains the standard-stream-only contract and carries no authority inventory.
+Only the exact-role
+`spawn_distributed_sieve_worker_process_batch_with_capabilities()` entry point
+accepts `DistributedSieveWorkerProcessFixedCapabilitySourcesV1`. The repository
+policy checker allows both identifiers only in the source-private process
+header, its implementation, the WaveStore launcher implementation, and the
+dedicated process test.
+
+The parent receives one move-only process token per successful slot. Its first
+non-`EINTR` wait observation is permanent. Only an exited or signaled child
+permits transfer of the report descriptor; stopped, continued, mismatched, or
+failed observations remain uncertain. Token destruction closes the report
+reader but never kills or reaps a child. The static policy gate grants
+`posix_spawn()` only to this source file, requires its direct spawn and wait
+calls exactly once, and rejects raw `fork()` or parent-environment access in
+the transport.
+
+This transport alone does not close the durable-launch milestone. The legacy
+path remains unchanged and still reserves and forks one slot at a time. The
+exact-role API does not consume `AttemptStartedV1`, rerun manifest work
+binding, integrate with WaveStore, or rehydrate writer-only private-lease
+authority in the exec image. The receipt-gated section below adds the sole
+WaveStore start-receipt consumer and keeps the existing `AttemptStartedV1` as
+its durable job descriptor. Worker-side rehydration remains future work; the
+M2j-B B1/B2 section below closes named-package restart classification and
+reconciliation.
+
+### Canonical Work-Identity Codec Status
+
+One source-private archive now emits the complete V1 work preimage for the
+existing SHA-256 binding, canonical little-endian bytes, counting, and future
+streaming file sinks. The old digest golden is unchanged. Span-backed decoding
+does not copy the body and proves fixed minimum bytes before resizing any
+sequence. Dedicated tests cover an independent byte oracle, round-trip,
+sink-failure short-circuiting, every exact prefix truncation, trailing bytes,
+wire bounds, ordinals, booleans, and semantic rejection.
+
+The structural body ceiling is 739,266,535 bytes; the valid ceiling is
+739,266,524 because a nonempty chunk stem must reserve `_attempt_XX`.
+
+### Immutable Work-Package Envelope Status
+
+The source-private V1 work-package codec now encloses the canonical identity
+body in a fixed 80-byte little-endian header and a 32-byte
+domain-separated SHA-256 trailer. The header binds the wire and work schema
+versions, exact body and total extents, and the canonical work digest. Its
+reserved field is zero and included in the package integrity binding.
+Preparation and emission traverse the identity independently. A changed byte
+count or work digest therefore fails closed before a trailer can be emitted.
+The emitter rejects a longer second pass before it can cross the prepared
+body boundary.
+
+The span-backed decoder checks both declared and actual extents, verifies the
+package trailer, and verifies the work digest before invoking the owning
+identity decoder. Integrity-unbound counts cannot reach destination
+allocation. Dedicated tests freeze the header offsets and both digest goldens,
+cover every exact truncation, and prove sticky failure at the header, body,
+and trailer write boundaries, including partial short writes. The structural
+package ceiling is 739,266,647 bytes; the largest semantically valid package
+is 739,266,636 bytes.
+
+### Anonymous Work-Package File Capability Status
+
+The source-private carrier now streams the prepared envelope into the fixed
+`.gnfs-worker-work-package-v1` leaf below a borrowed attempt-directory
+descriptor. It validates the held directory identity, owner, `0700` mode, and
+ACL state before exclusive creation. The writer starts at `0600`, uses a
+sticky 64KiB `pwrite()` buffer, seals to `0400`, synchronizes, and is rebound
+to a separately opened read-only descriptor. Writer, reader, and name must
+identify the same regular inode before the package is decoded.
+
+Success closes the writer exactly once, revalidates the reader and name,
+unlinks the fixed leaf, proves `nlink == 0`, decodes the retained inode again,
+synchronizes the same held directory, and performs a final anonymous-inode
+check. Production returns an opaque move-only token. The injected operation
+seam cannot mint that token and closes its reader before returning a data-only
+witness. Failure never unlinks opportunistically; diagnostics preserve both
+the primary error and any secondary close error, and report whether the named
+leaf may remain.
+
+This milestone is a standalone held-directory transaction on macOS and Linux.
+Windows returns an explicit unavailable result. M2i alone does not consume
+`AttemptStartedV1`, validate a manifest binding, map an exec descriptor, or
+grant launch authority. The receipt-gated section below revalidates the start
+receipt before creation and again after successful unlink plus directory
+synchronization. It does not invoke the receipt's full namespace scan while
+the fixed leaf is transiently named. The static policy gate admits the token
+and production factory only at their definition boundary, dedicated test, and
+the WaveStore launcher implementation.
+
+### Receipt-Gated WaveStore Launcher Status
+
+The M2j-A source-private WaveStore launcher is the first composition in
+production source code of bound-work validation, the anonymous package
+carrier, and the exact-role self-exec transport. No production runtime calls
+it yet; this slice remains internal and test-only. The source-private surface
+is split between the launcher forward and full internal headers; the
+implementation stays in the WaveStore translation unit so it can use the
+complete private `State`. It reruns the complete work binding immediately
+before consuming each fresh `AttemptStartedV1` receipt. The launch bootstrap
+comes from that receipt's canonical record encoding, not from caller-supplied
+bytes. Each successful process composite owns the receipt and its attempt
+`BaseLock`. A sticky terminal reap permits ordinary destruction. Abandoning an
+unreaped composite does not wait or kill; it quarantines the receipt and lock
+until process exit.
+
+All slots finish receipt, live-binding, held-directory, package, and
+descriptor preflight before the first spawn. A preflight or descriptor-staging
+failure therefore starts zero children. Launcher storage and transport staging
+are fixed before the first spawn, but they do not all precede the one-shot
+receipt gate. After the spawn loop begins, later failure can yield an explicit
+partial result containing earlier successful composites. The result closes
+this state as `failed_before_gate`, `armed_no_child`, `indeterminate`,
+`partial`, or `all`. The transport reports `spawn_loop_entered` and
+`child_set_complete` separately: global pre-spawn refusal is `false/false`,
+pre-spawn failure with an already complete zero-process slot set is
+`false/true`, and a normal or slot-local partial loop is `true/true`. A
+complete, internally consistent set maps to `armed_no_child`, `partial`, or
+`all` by process count. An incomplete or inconsistent child set maps to
+`indeterminate` and quarantines the whole receipt set. The legacy seeded
+runner remains a separate, non-durable baseline and cannot call or compose the
+launcher.
+
+A carrier result with `named_may_remain` stops the batch and returns
+`reconciliation_required`. After carrier success, one batch-wide absence gate
+stays armed across all slot transactions. It is released only after the
+complete receipt set, every retained exact attempt-directory binding, and
+every fixed-leaf absence have all been revalidated after the final carrier
+hook. A later-slot hook rebuilding an earlier slot's fixed leaf therefore
+stops the batch before spawn, reports the earlier slot, and preserves the
+residue for explicit reconciliation. This first slice never deletes a package
+leaf or replaced directory from its name alone. The M2j-B section below adds
+read-only reopening and a separate identity-bound WaveStore cleanup transition
+without granting cleanup authority to the launcher.
+M2j-A is internal and test-only; it also rejects hosts without an atomic
+spawn-time close-all primitive. Path-based `posix_spawn()` is not manifest
+same-object executable authentication. Worker-side descriptor `3..6`
+rehydration, actual sieve execution, and no-delete handoff remain later
+milestones. Restart cleanup is the separate M2j-B transition below. The static
+checker count-closes lower-capability and reader access inside the exact
+WaveStore launcher function body.
+
+The launcher matrix contains ten cases. Every non-Windows host runs the
+pre-gate close-all refusal: supported hosts take a trusted force-unavailable
+test seam, while unsupported hosts take the real platform query. Only hosts
+with atomic close-all support register and execute the other nine positive
+launcher cases.
+
+### Named Package Residue Reconciliation Status
+
+M2j-B B1 is complete. It extends the WaveStore inventory without granting
+cleanup authority.
+The carrier opens the fixed package leaf relative to the retained final P8
+directory, validates a sealed owner-only regular file with one link, decodes
+the canonical envelope, and returns data only. WaveStore records body and
+total extents, work and package digests, native file identity, file extent, and
+effective owner in its compact double-snapshot witness.
+
+Admission binds the decoded full work identity to the immutable manifest. It
+also requires canonical owner and owned markers, a canonical-only
+`AttemptStartedV1`, the latest same-chunk attempt, and exact agreement on the
+manifest, lease ID, owner marker, directory identity, relative stem, chunk,
+and ordinal. An exact residue therefore survives store destruction and
+reopens through `open()`, `revalidate()`, the generic root claim, and the
+attempt-bound claim.
+
+Legacy lease recovery and fresh same-chunk creation do not consume this
+evidence. They return `reconciliation_required` before mutation. Publication
+and normalization revalidate the complete claim after their final trusted
+hook. Cross-chunk recovery retains its P3 directory descriptor through the
+last hook, revalidates the whole inventory, and only then removes the staging
+directory.
+
+The restart suite uses the canonical package codec and a synchronized `0400`
+fixed leaf. It verifies the compact witness, the no-residue baseline, record
+shape and latest-attempt failures, content and metadata corruption, and
+same-byte package, directory, record, and `BaseLock` replacement. Every
+failure preserves the observed residue.
+
+B1 itself does not unlink, repair, launch from, or rehydrate the named package.
+M2j-B B2 is implemented as the sole identity-bound cleanup transition inside
+`reconcile_worker_attempt_started()`. While the attempt `BaseLock` remains
+held, WaveStore revalidates the claim, record, directory, and compact witness;
+the carrier then removes the exact authenticated residue or confirms absence
+and synchronizes the directory. Only a double-confirmed residue-free successor
+can proceed through record normalization and private-lease recovery to P0.
+
+Interruptions after unlink and after directory durability, plus selected
+present and absent directory-sync failures, leave no later record or recovery
+mutation and converge after store destruction, reopen, and retry. Package,
+directory, record, and `BaseLock` replacement sandwiches fail closed. A new
+package inserted after the first successor observation remains intact.
+
+The policy checker count-closes one direct inspector call in each of
+`validate_private_lease_attempt_inventory()` and the reconciliation body, plus
+one direct carrier reconciler call in the reconciliation body. It rejects
+aliases, duplicates, non-carrier fixed-leaf unlink, WaveStore `_with_ops`, and
+legacy, launcher, pipeline, or relation use. Native cleanup is supported on
+macOS and Linux; unsupported targets return the explicit platform status. The
+threat model continues to exclude an adversarial same-UID namespace mutator.
+Descriptor `3..6` rehydration, the real sieve handoff, and no-delete
+publication remain pending.

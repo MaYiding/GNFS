@@ -80,12 +80,42 @@ option(GNFS_ENABLE_ASAN  "Enable AddressSanitizer"        OFF)
 option(GNFS_ENABLE_TSAN  "Enable ThreadSanitizer"         OFF)
 option(GNFS_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 
+if(GNFS_ENABLE_ASAN AND GNFS_ENABLE_TSAN)
+    message(FATAL_ERROR
+        "GNFS sanitizers: AddressSanitizer and ThreadSanitizer cannot be enabled together")
+endif()
+
 if(GNFS_ENABLE_ASAN)
     add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
     add_link_options(-fsanitize=address)
 endif()
 if(GNFS_ENABLE_TSAN)
-    add_compile_options(-fsanitize=thread)
+    if(NOT (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin"))
+        message(FATAL_ERROR
+            "GNFS ThreadSanitizer supports Linux and macOS only "
+            "(got ${CMAKE_SYSTEM_NAME})")
+    endif()
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        message(FATAL_ERROR
+            "GNFS ThreadSanitizer requires Clang or GNU C++ "
+            "(got ${CMAKE_CXX_COMPILER_ID})")
+    endif()
+
+    include(CheckCXXSourceCompiles)
+    include(CMakePushCheckState)
+    cmake_push_check_state(RESET)
+    set(CMAKE_REQUIRED_FLAGS "-fsanitize=thread -fno-omit-frame-pointer")
+    set(CMAKE_REQUIRED_LINK_OPTIONS "-fsanitize=thread")
+    check_cxx_source_compiles("int main() { return 0; }"
+        GNFS_TSAN_TOOLCHAIN_SUPPORTED)
+    cmake_pop_check_state()
+    if(NOT GNFS_TSAN_TOOLCHAIN_SUPPORTED)
+        message(FATAL_ERROR
+            "GNFS ThreadSanitizer was requested, but ${CMAKE_CXX_COMPILER} "
+            "cannot compile and link the ThreadSanitizer runtime")
+    endif()
+
+    add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
     add_link_options(-fsanitize=thread)
 endif()
 if(GNFS_ENABLE_UBSAN)
@@ -202,11 +232,28 @@ endif()
 # ============================================================
 
 # gnfs_util - 工具库
-add_library(gnfs_util INTERFACE)
-target_include_directories(gnfs_util INTERFACE
+add_library(gnfs_util STATIC
+    src/util/authenticated_bounded_child_process.cpp
+    src/util/durable_immutable_file.cpp
+    src/util/durable_immutable_record.cpp
+    src/util/sha256.cpp
+)
+if(WIN32)
+    target_sources(gnfs_util PRIVATE
+        src/util/bounded_child_process_windows.cpp
+    )
+else()
+    target_sources(gnfs_util PRIVATE
+        src/util/bounded_child_process_posix.cpp
+    )
+endif()
+target_include_directories(gnfs_util PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
+if(WIN32)
+    target_link_libraries(gnfs_util PUBLIC Psapi)
+endif()
 
 # gnfs_core - 核心类型库
 add_library(gnfs_core STATIC
@@ -241,19 +288,127 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/lattice_sieve.cpp")
 endif()
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/distributed_sieve.cpp")
-    target_sources(gnfs_core PRIVATE src/sieve/distributed_sieve.cpp)
+    target_sources(gnfs_core PRIVATE
+        src/sieve/distributed_sieve.cpp
+        src/sieve/distributed_sieve_worker_process.cpp
+    )
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/distributed_sieve_protocol.cpp")
+    target_sources(gnfs_core PRIVATE
+        src/sieve/distributed_sieve_protocol.cpp
+        src/sieve/distributed_sieve_work_identity_codec.cpp
+        src/sieve/distributed_sieve_work_package_codec.cpp
+        src/sieve/distributed_sieve_worker_chunk.cpp
+        src/sieve/distributed_sieve_worker_runtime.cpp
+    )
+    if(NOT WIN32)
+        target_sources(gnfs_core PRIVATE
+            src/sieve/distributed_sieve_worker_entry.cpp
+            src/sieve/distributed_sieve_worker_execution.cpp
+            src/sieve/distributed_sieve_worker_writer.cpp
+            src/sieve/distributed_sieve_worker_work_package_file.cpp
+        )
+    endif()
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/distributed_sieve_seed_v2.cpp")
+    target_sources(gnfs_core PRIVATE src/sieve/distributed_sieve_seed_v2.cpp)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/distributed_sieve_execution_policy.cpp")
+    target_sources(gnfs_core PRIVATE
+        src/sieve/distributed_sieve_execution_policy.cpp
+        src/sieve/distributed_sieve_execution_policy_environment.cpp
+        src/sieve/distributed_sieve_bound_work.cpp
+        src/sieve/distributed_sieve_cofactor_runtime_config.cpp
+        src/sieve/distributed_sieve_lattice_runtime_config.cpp
+    )
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sieve/distributed_sieve_wave_store.cpp")
+    target_sources(gnfs_core PRIVATE
+        src/sieve/distributed_sieve_wave_store_names.cpp
+        src/sieve/distributed_sieve_merge_writer_internal.cpp
+        src/sieve/distributed_sieve_merge_writer_codec_internal.cpp
+    )
+    if(WIN32)
+        target_sources(gnfs_core PRIVATE
+            src/sieve/distributed_sieve_wave_store_windows.cpp
+            src/sieve/distributed_sieve_wave_result_windows.cpp
+        )
+    else()
+        target_sources(gnfs_core PRIVATE
+            src/sieve/distributed_sieve_wave_store.cpp
+            src/sieve/distributed_sieve_worker_coordinator.cpp
+            src/sieve/distributed_sieve_merge_coordinator.cpp
+            src/sieve/distributed_sieve_merge_writer_authority.cpp
+            src/sieve/distributed_sieve_merge_commit_authority.cpp
+            src/sieve/distributed_sieve_worker_cleanup_authority.cpp
+            src/sieve/distributed_sieve_worker_cleanup_orchestrator.cpp
+            src/sieve/distributed_sieve_wave_result.cpp
+            src/sieve/distributed_sieve_worker_cleanup_codec.cpp
+        )
+    endif()
 endif()
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/cofactor/cofactorizer.cpp")
     target_sources(gnfs_core PRIVATE src/cofactor/cofactorizer.cpp)
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/cofactor/candidate_batch.cpp")
+    target_sources(gnfs_core PRIVATE src/cofactor/candidate_batch.cpp)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/cofactor/attempt_context.cpp")
+    target_sources(gnfs_core PRIVATE src/cofactor/attempt_context.cpp)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/cofactor/seed_provider.cpp")
+    target_sources(gnfs_core PRIVATE src/cofactor/seed_provider.cpp)
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/collector.cpp")
     target_sources(gnfs_core PRIVATE src/relation/collector.cpp)
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/ooc_durable_handoff.cpp")
+    target_sources(gnfs_core PRIVATE src/relation/ooc_durable_handoff.cpp)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/ooc_authorized_cleanup_intent.cpp")
+    target_sources(gnfs_core PRIVATE src/relation/ooc_authorized_cleanup_intent.cpp)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/ooc_private_cleanup_union.cpp")
+    target_sources(gnfs_core PRIVATE src/relation/ooc_private_cleanup_union.cpp)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/ooc_private_handoff_adoption.cpp")
+    target_sources(gnfs_core PRIVATE src/relation/ooc_private_handoff_adoption.cpp)
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/filter.cpp")
     target_sources(gnfs_core PRIVATE src/relation/filter.cpp)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/structured_reduction.cpp")
+    target_sources(gnfs_core PRIVATE src/relation/structured_reduction.cpp)
+    # The macro-gated failure test compiles a separately instrumented variant
+    # and relies on the production object remaining an independently extractable
+    # archive member. Unity inclusion would merge unrelated dependencies into
+    # that member and produce duplicate symbols when the test links gnfs_core.
+    set_source_files_properties(src/relation/structured_reduction.cpp
+        PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON
+    )
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/structured_incidence_builder.cpp")
+    target_sources(gnfs_core PRIVATE src/relation/structured_incidence_builder.cpp)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/relation/structured_batch.cpp")
+    target_sources(gnfs_core PRIVATE src/relation/structured_batch.cpp)
 endif()
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/linalg/matrix_builder.cpp")
@@ -296,6 +451,30 @@ endif()
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/util/thread_pool.cpp")
     target_sources(gnfs_core PRIVATE src/util/thread_pool.cpp)
+endif()
+
+# SIQS RSS campaign journal native lease and source-private execution
+# boundary. The common source owns the closed production registry and public
+# result/session state; exactly one platform loader supplies the native
+# implementation. The controller, entry, authority-free reconciliation, and
+# default-closed terminal gate transaction compile in production builds, but
+# none is installed as a public entry point.
+target_sources(gnfs_core PRIVATE
+    src/siqs/shadow_proof_rss_campaign_journal_store.cpp
+    src/siqs/shadow_proof_rss_campaign_slot_runner.cpp
+    src/siqs/shadow_proof_rss_campaign_controller.cpp
+    src/siqs/shadow_proof_rss_campaign_entry.cpp
+    src/siqs/shadow_proof_rss_campaign_reconciliation.cpp
+    src/siqs/shadow_proof_rss_terminal_gate.cpp
+)
+if(WIN32)
+    target_sources(gnfs_core PRIVATE
+        src/siqs/shadow_proof_rss_campaign_journal_store_windows.cpp
+    )
+else()
+    target_sources(gnfs_core PRIVATE
+        src/siqs/shadow_proof_rss_campaign_journal_store_posix.cpp
+    )
 endif()
 
 # API 层
@@ -346,15 +525,51 @@ option(GNFS_BUILD_FUZZERS "Build libFuzzer fuzz targets" OFF)
 if(GNFS_BUILD_TESTS)
     enable_testing()
 
+    function(add_siqs_rss_campaign_synthetic_child target_name behavior)
+        add_executable(${target_name} EXCLUDE_FROM_ALL
+            tests/support/siqs_shadow_proof_rss_campaign_slot_synthetic_child.cpp
+        )
+        target_include_directories(${target_name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/siqs
+        )
+        target_compile_definitions(${target_name} PRIVATE
+            GNFS_SIQS_RSS_SYNTHETIC_BEHAVIOR=${behavior}
+        )
+        target_link_libraries(${target_name} PRIVATE gnfs_core Threads::Threads)
+    endfunction()
+
+    add_siqs_rss_campaign_synthetic_child(
+        siqs_rss_campaign_synthetic_success 0)
+    add_siqs_rss_campaign_synthetic_child(
+        siqs_rss_campaign_synthetic_nonzero 1)
+    add_siqs_rss_campaign_synthetic_child(
+        siqs_rss_campaign_synthetic_malformed 2)
+    add_siqs_rss_campaign_synthetic_child(
+        siqs_rss_campaign_synthetic_overflow 3)
+    add_siqs_rss_campaign_synthetic_child(
+        siqs_rss_campaign_synthetic_hang 4)
+
     find_program(BASH_EXECUTABLE bash)
-    find_program(PYTHON_EXECUTABLE NAMES python3 python)
-    if(BASH_EXECUTABLE AND PYTHON_EXECUTABLE)
+    find_program(ZSH_EXECUTABLE zsh)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(BASH_EXECUTABLE AND Python3_Interpreter_FOUND)
         add_test(NAME HarnessHooks
             COMMAND ${CMAKE_COMMAND} -E env
-                PYTHON=${PYTHON_EXECUTABLE}
+                PYTHON=${Python3_EXECUTABLE}
                 ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_harness_hooks.sh)
         set_tests_properties(HarnessHooks PROPERTIES
             LABELS "instant" TIMEOUT 10
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endif()
+
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME DistributedSievePolicyInventory
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_distributed_sieve_policy.py
+                --self-test
+                --root ${CMAKE_CURRENT_SOURCE_DIR})
+        set_tests_properties(DistributedSievePolicyInventory PROPERTIES
+            LABELS "slow" TIMEOUT 2400
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endif()
 
@@ -365,6 +580,20 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_small_vector PRIVATE gnfs_util)
     add_test(NAME SmallVector COMMAND test_small_vector)
     set_tests_properties(SmallVector PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_sha256
+        tests/test_sha256.cpp
+    )
+    target_link_libraries(test_sha256 PRIVATE gnfs_util)
+    add_test(NAME Sha256 COMMAND test_sha256)
+    set_tests_properties(Sha256 PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_relation_corpus_sha256
+        tests/test_relation_corpus_sha256.cpp
+    )
+    target_link_libraries(test_relation_corpus_sha256 PRIVATE gnfs_core)
+    add_test(NAME RelationCorpusSha256 COMMAND test_relation_corpus_sha256)
+    set_tests_properties(RelationCorpusSha256 PROPERTIES LABELS "instant" TIMEOUT 10)
 
     add_executable(test_integer
         tests/test_integer.cpp
@@ -379,6 +608,27 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_thread_pool PRIVATE gnfs_util Threads::Threads)
     add_test(NAME ThreadPool COMMAND test_thread_pool)
     set_tests_properties(ThreadPool PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_joining_thread
+        tests/test_joining_thread.cpp
+    )
+    target_link_libraries(test_joining_thread PRIVATE gnfs_util Threads::Threads)
+    add_test(NAME JoiningThread COMMAND test_joining_thread)
+    set_tests_properties(JoiningThread PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_ordered_parallel_map
+        tests/test_ordered_parallel_map.cpp
+    )
+    target_link_libraries(test_ordered_parallel_map PRIVATE gnfs_util Threads::Threads)
+    add_test(NAME OrderedParallelMap COMMAND test_ordered_parallel_map)
+    set_tests_properties(OrderedParallelMap PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_fixed_slot_executor
+        tests/test_fixed_slot_executor.cpp
+    )
+    target_link_libraries(test_fixed_slot_executor PRIVATE gnfs_util Threads::Threads)
+    add_test(NAME FixedSlotExecutor COMMAND test_fixed_slot_executor)
+    set_tests_properties(FixedSlotExecutor PROPERTIES LABELS "instant" TIMEOUT 10)
 
     add_executable(test_logger
         tests/test_logger.cpp
@@ -400,6 +650,65 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_timer PRIVATE gnfs_util)
     add_test(NAME UtilTimer COMMAND test_timer)
     set_tests_properties(UtilTimer PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Cross-platform current/lifetime-peak process RSS normalization.
+    add_executable(test_process_memory
+        tests/test_process_memory.cpp
+    )
+    target_link_libraries(test_process_memory PRIVATE gnfs_util)
+    add_test(NAME ProcessMemory COMMAND test_process_memory)
+    set_tests_properties(ProcessMemory PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_durable_immutable_file
+        tests/test_durable_immutable_file.cpp
+    )
+    target_link_libraries(test_durable_immutable_file PRIVATE gnfs_util Threads::Threads)
+    add_test(NAME DurableImmutableFile COMMAND test_durable_immutable_file)
+    set_tests_properties(DurableImmutableFile PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_durable_immutable_record
+        tests/test_durable_immutable_record.cpp
+    )
+    target_link_libraries(test_durable_immutable_record PRIVATE gnfs_util Threads::Threads)
+    add_test(NAME DurableImmutableRecord COMMAND test_durable_immutable_record)
+    set_tests_properties(DurableImmutableRecord PROPERTIES LABELS "instant" TIMEOUT 20)
+
+    add_executable(bounded_child_process_fake_child
+        tests/support/bounded_child_process_fake_child.cpp
+    )
+    add_executable(test_bounded_child_process
+        tests/test_bounded_child_process.cpp
+    )
+    target_include_directories(test_bounded_child_process PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/util
+    )
+    if(MINGW)
+        target_link_options(bounded_child_process_fake_child PRIVATE -municode)
+        target_link_options(test_bounded_child_process PRIVATE -municode)
+    endif()
+    target_link_libraries(bounded_child_process_fake_child PRIVATE Threads::Threads)
+    target_link_libraries(test_bounded_child_process PRIVATE gnfs_util Threads::Threads)
+    add_dependencies(test_bounded_child_process bounded_child_process_fake_child)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_executable(bounded_child_process_authenticated_supervisor EXCLUDE_FROM_ALL
+            tests/support/bounded_child_process_authenticated_supervisor.cpp
+        )
+        target_include_directories(bounded_child_process_authenticated_supervisor PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/util
+        )
+        target_link_libraries(bounded_child_process_authenticated_supervisor
+            PRIVATE gnfs_util Threads::Threads)
+        add_dependencies(test_bounded_child_process
+            bounded_child_process_authenticated_supervisor)
+        add_test(NAME BoundedChildProcess
+            COMMAND test_bounded_child_process
+                $<TARGET_FILE:bounded_child_process_fake_child>
+                $<TARGET_FILE:bounded_child_process_authenticated_supervisor>)
+    else()
+        add_test(NAME BoundedChildProcess
+            COMMAND test_bounded_child_process $<TARGET_FILE:bounded_child_process_fake_child>)
+    endif()
+    set_tests_properties(BoundedChildProcess PROPERTIES LABELS "instant" TIMEOUT 30)
 
     add_executable(test_mmap_file
         tests/test_mmap_file.cpp
@@ -480,6 +789,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SieveEcoreQoS COMMAND test_sieve_ecore_qos)
     set_tests_properties(SieveEcoreQoS PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_local_sieve_thread_budget
+        tests/test_local_sieve_thread_budget.cpp
+    )
+    target_link_libraries(test_local_sieve_thread_budget PRIVATE gnfs_core)
+    add_test(NAME LocalSieveThreadBudget COMMAND test_local_sieve_thread_budget)
+    set_tests_properties(LocalSieveThreadBudget PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_factor_base
         tests/test_factor_base.cpp
     )
@@ -521,6 +837,122 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_relation_collector PRIVATE gnfs_core Threads::Threads)
     add_test(NAME RelationCollector COMMAND test_relation_collector)
     set_tests_properties(RelationCollector PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_relation_corpus
+        tests/test_relation_corpus.cpp
+    )
+    target_link_libraries(test_relation_corpus PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME RelationCorpus COMMAND test_relation_corpus)
+    set_tests_properties(RelationCorpus PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_relation_sink
+        tests/test_relation_sink.cpp
+    )
+    target_link_libraries(test_relation_sink PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME RelationSink COMMAND test_relation_sink)
+    set_tests_properties(RelationSink PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_ooc_store_integrity
+        tests/test_ooc_store_integrity.cpp
+    )
+    target_link_libraries(test_ooc_store_integrity PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME OOCStoreIntegrity COMMAND test_ooc_store_integrity)
+    set_tests_properties(OOCStoreIntegrity PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_ooc_durable_handoff
+        tests/test_ooc_durable_handoff.cpp
+    )
+    target_link_libraries(test_ooc_durable_handoff PRIVATE gnfs_core Threads::Threads)
+    add_test(
+        NAME OOCPrivateHandoffProtocolCore
+        COMMAND test_ooc_durable_handoff --suite core
+    )
+    set_tests_properties(
+        OOCPrivateHandoffProtocolCore
+        PROPERTIES LABELS "instant" TIMEOUT 10
+    )
+    add_test(
+        NAME OOCPrivateHandoffProtocolNegative
+        COMMAND test_ooc_durable_handoff --suite negative
+    )
+    set_tests_properties(
+        OOCPrivateHandoffProtocolNegative
+        PROPERTIES LABELS "instant" TIMEOUT 10
+    )
+
+    add_executable(test_ooc_cleanup_transaction
+        tests/test_ooc_cleanup_transaction.cpp
+    )
+    target_include_directories(test_ooc_cleanup_transaction PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/relation
+    )
+    target_link_libraries(test_ooc_cleanup_transaction PRIVATE gnfs_core Threads::Threads)
+    add_test(
+        NAME OOCCleanupAuthorityUnion
+        COMMAND test_ooc_cleanup_transaction --suite authority-union
+    )
+    set_tests_properties(
+        OOCCleanupAuthorityUnion
+        PROPERTIES LABELS "instant" TIMEOUT 20
+    )
+    add_test(
+        NAME OOCCleanupAuthorityObserver
+        COMMAND test_ooc_cleanup_transaction --suite authority-observer
+    )
+    set_tests_properties(
+        OOCCleanupAuthorityObserver
+        PROPERTIES LABELS "instant" TIMEOUT 30
+    )
+    if(APPLE)
+        add_test(
+            NAME OOCAuthorizedV2CleanupCore
+            COMMAND test_ooc_cleanup_transaction --suite authorized-v2-core
+        )
+        set_tests_properties(
+            OOCAuthorizedV2CleanupCore
+            PROPERTIES LABELS "instant" TIMEOUT 30
+        )
+        add_test(
+            NAME OOCAuthorizedV2CleanupArtifactCrash
+            COMMAND test_ooc_cleanup_transaction --suite authorized-v2-artifact-crash
+        )
+        set_tests_properties(
+            OOCAuthorizedV2CleanupArtifactCrash
+            PROPERTIES LABELS "fast" TIMEOUT 90
+        )
+        add_test(
+            NAME OOCAuthorizedV2CleanupLeaseCrash
+            COMMAND test_ooc_cleanup_transaction --suite authorized-v2-lease-crash
+        )
+        set_tests_properties(
+            OOCAuthorizedV2CleanupLeaseCrash
+            PROPERTIES LABELS "fast" TIMEOUT 90
+        )
+    endif()
+    add_test(
+        NAME OOCCleanupTransactionCore
+        COMMAND test_ooc_cleanup_transaction --suite core
+    )
+    set_tests_properties(
+        OOCCleanupTransactionCore
+        PROPERTIES LABELS "instant" TIMEOUT 20
+    )
+    add_test(
+        NAME OOCCleanupTransactionCrash
+        COMMAND test_ooc_cleanup_transaction --suite crash
+    )
+    set_tests_properties(
+        OOCCleanupTransactionCrash
+        PROPERTIES LABELS "fast" TIMEOUT 60
+    )
+    add_test(
+        NAME OOCCleanupPrivateLeaseCrash
+        COMMAND test_ooc_cleanup_transaction --suite lease-crash
+    )
+    set_tests_properties(
+        OOCCleanupPrivateLeaseCrash
+        PROPERTIES LABELS "fast" TIMEOUT 90
+    )
 
     # ── W6 T4: relation collector memory pool ──
     add_executable(test_memory_pool
@@ -620,6 +1052,589 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME DistributedSieve COMMAND test_distributed_sieve)
     set_tests_properties(DistributedSieve PROPERTIES LABELS "fast" TIMEOUT 180)
 
+    add_executable(test_distributed_sieve_worker_process
+        tests/test_distributed_sieve_worker_process.cpp
+    )
+    add_executable(distributed_sieve_worker_process_fake_child
+        tests/support/distributed_sieve_worker_process_fake_child.cpp
+    )
+    target_include_directories(test_distributed_sieve_worker_process PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sieve
+    )
+    target_link_libraries(test_distributed_sieve_worker_process
+        PRIVATE gnfs_core Threads::Threads)
+    add_dependencies(
+        test_distributed_sieve_worker_process
+        distributed_sieve_worker_process_fake_child
+    )
+    add_test(
+        NAME DistributedSieveWorkerProcess
+        COMMAND test_distributed_sieve_worker_process
+                $<TARGET_FILE:distributed_sieve_worker_process_fake_child>
+    )
+    set_tests_properties(
+        DistributedSieveWorkerProcess
+        PROPERTIES LABELS "instant" TIMEOUT 20
+    )
+
+    add_executable(test_distributed_sieve_wave_store_windows
+        tests/test_distributed_sieve_wave_store_windows.cpp
+    )
+    target_include_directories(test_distributed_sieve_wave_store_windows PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sieve
+    )
+    target_link_libraries(test_distributed_sieve_wave_store_windows PRIVATE
+        gnfs_core Threads::Threads)
+    add_test(
+        NAME DistributedSieveWaveStoreWindows
+        COMMAND test_distributed_sieve_wave_store_windows
+    )
+    set_tests_properties(
+        DistributedSieveWaveStoreWindows
+        PROPERTIES LABELS "instant" TIMEOUT 10 SKIP_RETURN_CODE 77
+    )
+
+    if(NOT WIN32)
+    add_executable(test_distributed_sieve_worker_entry
+        tests/test_distributed_sieve_worker_entry.cpp
+    )
+    target_include_directories(test_distributed_sieve_worker_entry PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sieve
+    )
+    target_link_libraries(test_distributed_sieve_worker_entry
+        PRIVATE gnfs_core Threads::Threads)
+    add_test(
+        NAME DistributedSieveWorkerEntry
+        COMMAND test_distributed_sieve_worker_entry
+    )
+    set_tests_properties(
+        DistributedSieveWorkerEntry
+        PROPERTIES LABELS "fast" TIMEOUT 60
+    )
+
+    add_executable(test_distributed_sieve_worker_writer_authority
+        tests/test_distributed_sieve_worker_writer_authority.cpp
+    )
+    target_include_directories(test_distributed_sieve_worker_writer_authority PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sieve
+    )
+    target_link_libraries(test_distributed_sieve_worker_writer_authority
+        PRIVATE gnfs_core Threads::Threads)
+    add_test(
+        NAME DistributedSieveWorkerWriterAuthority
+        COMMAND test_distributed_sieve_worker_writer_authority
+    )
+    set_tests_properties(
+        DistributedSieveWorkerWriterAuthority
+        PROPERTIES LABELS "fast" TIMEOUT 60
+    )
+
+    add_executable(test_distributed_sieve_worker_execution
+        tests/test_distributed_sieve_worker_execution.cpp
+    )
+    target_include_directories(test_distributed_sieve_worker_execution PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sieve
+    )
+    target_link_libraries(test_distributed_sieve_worker_execution
+        PRIVATE gnfs_core Threads::Threads)
+    add_test(
+        NAME DistributedSieveWorkerExecution
+        COMMAND test_distributed_sieve_worker_execution
+    )
+    set_tests_properties(
+        DistributedSieveWorkerExecution
+        PROPERTIES LABELS "fast" TIMEOUT 180
+    )
+    endif()
+
+    add_executable(test_distributed_sieve_work_identity_codec
+        tests/test_distributed_sieve_work_identity_codec.cpp
+    )
+    target_include_directories(test_distributed_sieve_work_identity_codec PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sieve
+    )
+    target_link_libraries(test_distributed_sieve_work_identity_codec PRIVATE gnfs_core)
+    add_test(
+        NAME DistributedSieveWorkIdentityCodec
+        COMMAND test_distributed_sieve_work_identity_codec
+    )
+    set_tests_properties(
+        DistributedSieveWorkIdentityCodec
+        PROPERTIES LABELS "instant" TIMEOUT 10
+    )
+
+    add_executable(test_distributed_sieve_work_package_codec
+        tests/test_distributed_sieve_work_package_codec.cpp
+    )
+    target_include_directories(test_distributed_sieve_work_package_codec PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sieve
+    )
+    target_link_libraries(test_distributed_sieve_work_package_codec PRIVATE gnfs_core)
+    add_test(
+        NAME DistributedSieveWorkPackageCodec
+        COMMAND test_distributed_sieve_work_package_codec
+    )
+    set_tests_properties(
+        DistributedSieveWorkPackageCodec
+        PROPERTIES LABELS "instant" TIMEOUT 10
+    )
+
+    if(NOT WIN32)
+    add_executable(test_distributed_sieve_worker_cleanup_codec
+        tests/test_distributed_sieve_worker_cleanup_codec.cpp
+    )
+    target_include_directories(test_distributed_sieve_worker_cleanup_codec PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/relation
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sieve
+    )
+    target_link_libraries(test_distributed_sieve_worker_cleanup_codec PRIVATE gnfs_core)
+    add_test(
+        NAME DistributedSieveWorkerCleanupCodec
+        COMMAND test_distributed_sieve_worker_cleanup_codec
+    )
+    set_tests_properties(
+        DistributedSieveWorkerCleanupCodec
+        PROPERTIES LABELS "instant" TIMEOUT 10
+    )
+    endif()
+
+    add_executable(test_distributed_sieve_merge_writer_codec
+        tests/test_distributed_sieve_merge_writer_codec.cpp
+    )
+    target_include_directories(test_distributed_sieve_merge_writer_codec PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sieve
+    )
+    target_link_libraries(test_distributed_sieve_merge_writer_codec PRIVATE gnfs_core)
+    add_test(
+        NAME DistributedSieveMergeWriterCodec
+        COMMAND test_distributed_sieve_merge_writer_codec
+    )
+    set_tests_properties(
+        DistributedSieveMergeWriterCodec
+        PROPERTIES LABELS "instant" TIMEOUT 10
+    )
+
+    add_executable(test_distributed_sieve_merge_writer
+        tests/test_distributed_sieve_merge_writer.cpp
+    )
+    target_include_directories(test_distributed_sieve_merge_writer PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sieve
+    )
+    target_link_libraries(test_distributed_sieve_merge_writer PRIVATE gnfs_core)
+    add_test(
+        NAME DistributedSieveMergeWriter
+        COMMAND test_distributed_sieve_merge_writer
+    )
+    set_tests_properties(
+        DistributedSieveMergeWriter
+        PROPERTIES LABELS "instant" TIMEOUT 10
+    )
+
+    if(NOT WIN32)
+    add_executable(test_distributed_sieve_merge_writer_authority
+        tests/test_distributed_sieve_merge_writer_authority.cpp
+    )
+    target_include_directories(test_distributed_sieve_merge_writer_authority PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sieve
+    )
+    target_link_libraries(test_distributed_sieve_merge_writer_authority PRIVATE
+        gnfs_core Threads::Threads)
+    add_test(
+        NAME DistributedSieveMergeWriterAuthority
+        COMMAND test_distributed_sieve_merge_writer_authority
+    )
+    set_tests_properties(
+        DistributedSieveMergeWriterAuthority
+        PROPERTIES LABELS "fast" TIMEOUT 120
+    )
+
+    add_executable(test_distributed_sieve_wave_merge_commit
+        tests/test_distributed_sieve_wave_merge_commit.cpp
+    )
+    target_include_directories(test_distributed_sieve_wave_merge_commit PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/relation
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sieve
+    )
+    target_link_libraries(test_distributed_sieve_wave_merge_commit PRIVATE
+        gnfs_core Threads::Threads)
+    if(APPLE)
+        add_test(
+            NAME DistributedSieveWaveMergeCommitCore
+            COMMAND test_distributed_sieve_wave_merge_commit --suite core
+        )
+        add_test(
+            NAME DistributedSieveWaveMergeCommitCrash
+            COMMAND test_distributed_sieve_wave_merge_commit --suite commit-crash
+        )
+        add_test(
+            NAME DistributedSieveWaveMergeCommitProtection
+            COMMAND test_distributed_sieve_wave_merge_commit --suite protection
+        )
+        set_tests_properties(
+            DistributedSieveWaveMergeCommitCore
+            DistributedSieveWaveMergeCommitCrash
+            PROPERTIES LABELS "slow" TIMEOUT 60
+        )
+        set_tests_properties(
+            DistributedSieveWaveMergeCommitProtection
+            PROPERTIES LABELS "slow" TIMEOUT 90
+        )
+    else()
+        add_test(
+            NAME DistributedSieveWaveMergeCommitPlatform
+            COMMAND test_distributed_sieve_wave_merge_commit --suite platform
+        )
+        set_tests_properties(
+            DistributedSieveWaveMergeCommitPlatform
+            PROPERTIES LABELS "instant" TIMEOUT 10
+        )
+    endif()
+
+    add_executable(test_distributed_sieve_worker_cleanup_tail
+        tests/test_distributed_sieve_worker_cleanup_tail.cpp
+    )
+    target_include_directories(test_distributed_sieve_worker_cleanup_tail PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/relation
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sieve
+    )
+    target_link_libraries(test_distributed_sieve_worker_cleanup_tail PRIVATE
+        gnfs_core Threads::Threads)
+    add_test(
+        NAME DistributedSieveWorkerCleanupTail
+        COMMAND test_distributed_sieve_worker_cleanup_tail
+    )
+    if(APPLE)
+        set_tests_properties(
+            DistributedSieveWorkerCleanupTail
+            PROPERTIES LABELS "slow" TIMEOUT 120
+        )
+    else()
+        set_tests_properties(
+            DistributedSieveWorkerCleanupTail
+            PROPERTIES LABELS "instant" TIMEOUT 10
+        )
+    endif()
+
+    add_executable(test_distributed_sieve_worker_cleanup_authorization_publisher
+        tests/test_distributed_sieve_worker_cleanup_authorization_publisher.cpp
+    )
+    target_include_directories(
+        test_distributed_sieve_worker_cleanup_authorization_publisher PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/relation
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sieve
+    )
+    target_link_libraries(
+        test_distributed_sieve_worker_cleanup_authorization_publisher PRIVATE
+        gnfs_core Threads::Threads
+    )
+    if(APPLE)
+        add_test(
+            NAME DistributedSieveWorkerCleanupAuthorizationPublisherCore
+            COMMAND test_distributed_sieve_worker_cleanup_authorization_publisher --suite core
+        )
+        add_test(
+            NAME DistributedSieveWorkerCleanupAuthorizationPublisherPublicationCrash
+            COMMAND test_distributed_sieve_worker_cleanup_authorization_publisher
+                --suite publication-crash
+        )
+        add_test(
+            NAME DistributedSieveWorkerCleanupAuthorizationPublisherProtection
+            COMMAND test_distributed_sieve_worker_cleanup_authorization_publisher
+                --suite protection
+        )
+        set_tests_properties(
+            DistributedSieveWorkerCleanupAuthorizationPublisherCore
+            DistributedSieveWorkerCleanupAuthorizationPublisherPublicationCrash
+            DistributedSieveWorkerCleanupAuthorizationPublisherProtection
+            PROPERTIES LABELS "slow" TIMEOUT 120
+        )
+    else()
+        add_test(
+            NAME DistributedSieveWorkerCleanupAuthorizationPublisherPlatform
+            COMMAND test_distributed_sieve_worker_cleanup_authorization_publisher --suite platform
+        )
+        set_tests_properties(
+            DistributedSieveWorkerCleanupAuthorizationPublisherPlatform
+            PROPERTIES LABELS "instant" TIMEOUT 10
+        )
+    endif()
+
+    add_executable(test_distributed_sieve_worker_cleanup_orchestrator
+        tests/test_distributed_sieve_worker_cleanup_orchestrator.cpp
+    )
+    target_include_directories(
+        test_distributed_sieve_worker_cleanup_orchestrator PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/relation
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sieve
+    )
+    target_link_libraries(
+        test_distributed_sieve_worker_cleanup_orchestrator PRIVATE
+        gnfs_core Threads::Threads
+    )
+    if(APPLE)
+        add_test(
+            NAME DistributedSieveWorkerCleanupOrchestratorCore
+            COMMAND test_distributed_sieve_worker_cleanup_orchestrator --suite core
+        )
+        add_test(
+            NAME DistributedSieveWorkerCleanupOrchestratorFaultPropagation
+            COMMAND test_distributed_sieve_worker_cleanup_orchestrator --suite fault-propagation
+        )
+        add_test(
+            NAME DistributedSieveWorkerCleanupOrchestratorProtection
+            COMMAND test_distributed_sieve_worker_cleanup_orchestrator --suite protection
+        )
+        set_tests_properties(
+            DistributedSieveWorkerCleanupOrchestratorCore
+            DistributedSieveWorkerCleanupOrchestratorFaultPropagation
+            DistributedSieveWorkerCleanupOrchestratorProtection
+            PROPERTIES LABELS "slow" TIMEOUT 240
+        )
+    else()
+        add_test(
+            NAME DistributedSieveWorkerCleanupOrchestratorPlatform
+            COMMAND test_distributed_sieve_worker_cleanup_orchestrator --suite platform
+        )
+        set_tests_properties(
+            DistributedSieveWorkerCleanupOrchestratorPlatform
+            PROPERTIES LABELS "instant" TIMEOUT 10
+        )
+    endif()
+
+    endif()
+
+    add_executable(test_distributed_sieve_wave_result
+        tests/test_distributed_sieve_wave_result.cpp
+    )
+    target_include_directories(
+        test_distributed_sieve_wave_result PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/relation
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sieve
+    )
+    target_link_libraries(
+        test_distributed_sieve_wave_result PRIVATE
+        gnfs_core Threads::Threads
+    )
+    if(APPLE)
+        add_test(
+            NAME DistributedSieveWaveResultCore
+            COMMAND test_distributed_sieve_wave_result --suite core
+        )
+        add_test(
+            NAME DistributedSieveWaveResultProtection
+            COMMAND test_distributed_sieve_wave_result --suite protection
+        )
+        set_tests_properties(
+            DistributedSieveWaveResultCore
+            DistributedSieveWaveResultProtection
+            PROPERTIES LABELS "slow" TIMEOUT 180
+        )
+    else()
+        add_test(
+            NAME DistributedSieveWaveResultPlatform
+            COMMAND test_distributed_sieve_wave_result --suite platform
+        )
+        set_tests_properties(
+            DistributedSieveWaveResultPlatform
+            PROPERTIES LABELS "instant" TIMEOUT 10
+        )
+    endif()
+
+    if(NOT WIN32)
+    add_executable(test_distributed_sieve_worker_work_package_file
+        tests/test_distributed_sieve_worker_work_package_file.cpp
+    )
+    target_include_directories(test_distributed_sieve_worker_work_package_file PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sieve
+    )
+    target_link_libraries(test_distributed_sieve_worker_work_package_file PRIVATE gnfs_core)
+    add_test(
+        NAME DistributedSieveWorkerWorkPackageFile
+        COMMAND test_distributed_sieve_worker_work_package_file
+    )
+    set_tests_properties(
+        DistributedSieveWorkerWorkPackageFile
+        PROPERTIES LABELS "instant" TIMEOUT 20
+    )
+    endif()
+
+    add_executable(test_distributed_sieve_execution_policy
+        tests/test_distributed_sieve_execution_policy.cpp
+    )
+    target_include_directories(test_distributed_sieve_execution_policy PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sieve
+    )
+    target_link_libraries(test_distributed_sieve_execution_policy
+        PRIVATE gnfs_core Threads::Threads)
+    add_test(
+        NAME DistributedSieveExecutionPolicy
+        COMMAND test_distributed_sieve_execution_policy
+    )
+    set_tests_properties(
+        DistributedSieveExecutionPolicy
+        PROPERTIES LABELS "instant" TIMEOUT 20
+    )
+
+    add_executable(test_distributed_sieve_seed_v2
+        tests/test_distributed_sieve_seed_v2.cpp
+    )
+    target_link_libraries(test_distributed_sieve_seed_v2 PRIVATE gnfs_core)
+    add_test(NAME DistributedSieveSeedV2 COMMAND test_distributed_sieve_seed_v2)
+    set_tests_properties(DistributedSieveSeedV2 PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    if(NOT WIN32)
+    add_executable(test_distributed_sieve_resume
+        tests/test_distributed_sieve_resume.cpp
+    )
+    target_include_directories(test_distributed_sieve_resume PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/relation
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/sieve
+    )
+    target_link_libraries(test_distributed_sieve_resume PRIVATE gnfs_core Threads::Threads)
+    add_test(
+        NAME DistributedSieveResumeCore
+        COMMAND test_distributed_sieve_resume --suite core
+    )
+    set_tests_properties(
+        DistributedSieveResumeCore
+        PROPERTIES LABELS "instant" TIMEOUT 20
+    )
+    add_test(
+        NAME DistributedSieveWaveStoreOpenRecovery
+        COMMAND test_distributed_sieve_resume --suite wave-store-open-recovery
+    )
+    if(WIN32)
+        set_tests_properties(
+            DistributedSieveWaveStoreOpenRecovery
+            PROPERTIES LABELS "instant" TIMEOUT 10
+        )
+    else()
+        add_test(
+            NAME DistributedSieveWaveStoreNamespaceLocks
+            COMMAND test_distributed_sieve_resume --suite wave-store-namespace-locks
+        )
+        add_test(
+            NAME DistributedSieveWaveStorePrivateLeaseLifecycle
+            COMMAND test_distributed_sieve_resume --suite wave-store-private-lease-lifecycle
+        )
+        add_test(
+            NAME DistributedSieveWaveStorePrivateLeaseAdversarial
+            COMMAND test_distributed_sieve_resume --suite wave-store-private-lease-adversarial
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreAttemptLockLifecycle
+            COMMAND test_distributed_sieve_resume --suite wave-store-attempt-lock-lifecycle
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreAttemptLockAdversarial
+            COMMAND test_distributed_sieve_resume --suite wave-store-attempt-lock-adversarial
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreAttemptInventory
+            COMMAND test_distributed_sieve_resume --suite wave-store-attempt-inventory
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreAttemptStart
+            COMMAND test_distributed_sieve_resume --suite wave-store-attempt-start
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreMergeReservation
+            COMMAND test_distributed_sieve_resume --suite wave-store-merge-reservation
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreMergeStartPublication
+            COMMAND test_distributed_sieve_resume --suite wave-store-merge-start-publication
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreMergeStartReconcileP8
+            COMMAND test_distributed_sieve_resume --suite wave-store-merge-start-reconcile-p8
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreMergeStartReconcileCanonical
+            COMMAND test_distributed_sieve_resume --suite wave-store-merge-start-reconcile-canonical
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreMergeStartReconcileInvalid
+            COMMAND test_distributed_sieve_resume --suite wave-store-merge-start-reconcile-invalid
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreMergeCursor
+            COMMAND test_distributed_sieve_resume --suite wave-store-merge-cursor
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreAttemptReconcileReplay
+            COMMAND test_distributed_sieve_resume --suite wave-store-attempt-reconcile-replay
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreAttemptReconcileAuthority
+            COMMAND test_distributed_sieve_resume --suite wave-store-attempt-reconcile-authority
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreTerminalRecords
+            COMMAND test_distributed_sieve_resume --suite wave-store-terminal-records
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreWorkerHandoff
+            COMMAND test_distributed_sieve_resume --suite wave-store-worker-handoff
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreWorkerPackageReplay
+            COMMAND test_distributed_sieve_resume --suite wave-store-worker-package-replay
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreWorkerPackageValidation
+            COMMAND test_distributed_sieve_resume --suite wave-store-worker-package-validation
+        )
+        add_test(
+            NAME DistributedSieveWaveStoreWorkerLauncher
+            COMMAND test_distributed_sieve_resume --suite wave-store-worker-launcher
+        )
+        set_tests_properties(
+            DistributedSieveWaveStoreOpenRecovery
+            DistributedSieveWaveStoreNamespaceLocks
+            DistributedSieveWaveStorePrivateLeaseLifecycle
+            DistributedSieveWaveStorePrivateLeaseAdversarial
+            DistributedSieveWaveStoreAttemptLockLifecycle
+            DistributedSieveWaveStoreAttemptLockAdversarial
+            DistributedSieveWaveStoreAttemptInventory
+            DistributedSieveWaveStoreAttemptStart
+            DistributedSieveWaveStoreMergeReservation
+            DistributedSieveWaveStoreMergeStartPublication
+            DistributedSieveWaveStoreMergeStartReconcileP8
+            DistributedSieveWaveStoreMergeStartReconcileCanonical
+            DistributedSieveWaveStoreMergeStartReconcileInvalid
+            DistributedSieveWaveStoreMergeCursor
+            DistributedSieveWaveStoreAttemptReconcileReplay
+            DistributedSieveWaveStoreAttemptReconcileAuthority
+            DistributedSieveWaveStoreTerminalRecords
+            DistributedSieveWaveStoreWorkerHandoff
+            DistributedSieveWaveStoreWorkerPackageReplay
+            DistributedSieveWaveStoreWorkerPackageValidation
+            PROPERTIES LABELS "fast" TIMEOUT 60
+        )
+        set_tests_properties(
+            DistributedSieveWaveStoreWorkerLauncher
+            PROPERTIES LABELS "fast" TIMEOUT 90
+        )
+    endif()
+    add_test(
+        NAME DistributedSieveWorkerCoordinator
+        COMMAND test_distributed_sieve_resume --suite coordinator
+    )
+    set_tests_properties(
+        DistributedSieveWorkerCoordinator
+        PROPERTIES LABELS "fast" TIMEOUT 180
+    )
+    add_test(
+        NAME DistributedSieveMergePreparedProtection
+        COMMAND test_distributed_sieve_resume --suite merge-prepared-protection
+    )
+    set_tests_properties(
+        DistributedSieveMergePreparedProtection
+        PROPERTIES LABELS "fast" TIMEOUT 60
+    )
+    endif()
+
     add_executable(test_poly_checkpoint
         tests/test_poly_checkpoint.cpp
     )
@@ -683,6 +1698,34 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME Cofactor COMMAND test_cofactor)
     set_tests_properties(Cofactor PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_cofactor_attempt_context
+        tests/test_cofactor_attempt_context.cpp
+    )
+    target_link_libraries(test_cofactor_attempt_context PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME CofactorAttemptContext COMMAND test_cofactor_attempt_context)
+    set_tests_properties(CofactorAttemptContext PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_cofactor_seed_provider
+        tests/test_cofactor_seed_provider.cpp
+    )
+    target_link_libraries(test_cofactor_seed_provider PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME CofactorSeedProvider COMMAND test_cofactor_seed_provider)
+    set_tests_properties(CofactorSeedProvider PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_candidate_chunk_plan
+        tests/test_candidate_chunk_plan.cpp
+    )
+    target_link_libraries(test_candidate_chunk_plan PRIVATE gnfs_core)
+    add_test(NAME CandidateChunkPlan COMMAND test_candidate_chunk_plan)
+    set_tests_properties(CandidateChunkPlan PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_candidate_batch
+        tests/test_candidate_batch.cpp
+    )
+    target_link_libraries(test_candidate_batch PRIVATE gnfs_core)
+    add_test(NAME CandidateBatch COMMAND test_candidate_batch)
+    set_tests_properties(CandidateBatch PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_trial_wheel
         tests/test_trial_wheel.cpp
     )
@@ -705,6 +1748,57 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_squfof PRIVATE gnfs_core Threads::Threads)
     add_test(NAME SQUFOF COMMAND test_squfof)
     set_tests_properties(SQUFOF PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Deterministic 192-case x production-multiplier counterfactual matrix and
+    # exact subset-DP policy oracle. It asserts identities and work counts, not wall time.
+    add_executable(test_squfof_strategy_oracle
+        tests/test_squfof_strategy_oracle.cpp
+    )
+    target_link_libraries(test_squfof_strategy_oracle PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SQUFOFStrategyOracle COMMAND test_squfof_strategy_oracle)
+    set_tests_properties(SQUFOFStrategyOracle PROPERTIES LABELS "fast" TIMEOUT 60)
+
+    # Outcome-blind prospective corpus and split contract for SQUFOF budget work.
+    add_executable(test_squfof_budget_corpus
+        tests/test_squfof_budget_corpus.cpp
+    )
+    add_test(NAME SQUFOFBudgetCorpus COMMAND test_squfof_budget_corpus)
+    set_tests_properties(SQUFOFBudgetCorpus PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Outcome-blind factor-balance challenge corpus sealed before its first probe.
+    add_executable(test_squfof_success_challenge_corpus
+        tests/test_squfof_success_challenge_corpus.cpp
+    )
+    add_test(NAME SQUFOFSuccessChallengeCorpus COMMAND test_squfof_success_challenge_corpus)
+    set_tests_properties(SQUFOFSuccessChallengeCorpus PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Sealed two-cap success challenge with raw-factor and deterministic work gates.
+    add_executable(test_squfof_success_challenge_oracle
+        tests/test_squfof_success_challenge_oracle.cpp
+    )
+    target_link_libraries(test_squfof_success_challenge_oracle PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SQUFOFSuccessChallengeOracle COMMAND test_squfof_success_challenge_oracle)
+    set_tests_properties(SQUFOFSuccessChallengeOracle PROPERTIES LABELS "fast" TIMEOUT 120)
+
+    # Deterministic case-by-slot-by-cap matrix and offline budget policy gates.
+    add_executable(test_squfof_budget_oracle
+        tests/test_squfof_budget_oracle.cpp
+    )
+    target_link_libraries(test_squfof_budget_oracle PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SQUFOFBudgetOracle COMMAND test_squfof_budget_oracle)
+    set_tests_properties(SQUFOFBudgetOracle PROPERTIES LABELS "fast" TIMEOUT 120)
+
+    # Fixed production-derived SQUFOF strategy corpus. Timings are manual
+    # comparison evidence, so this Release-only target stays out of routine CTest lanes.
+    add_executable(test_squfof_bench
+        tests/test_squfof_bench.cpp
+    )
+    target_compile_definitions(test_squfof_bench PRIVATE
+        GNFS_SQUFOF_BENCH_BUILD_TYPE="$<CONFIG>")
+    target_link_libraries(test_squfof_bench PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SQUFOFBench COMMAND test_squfof_bench)
+    set_tests_properties(SQUFOFBench PROPERTIES DISABLED TRUE
+        LABELS "bench" TIMEOUT 120)
 
     add_executable(test_brent_pollard_rho
         tests/test_brent_pollard_rho.cpp
@@ -729,6 +1823,13 @@ if(GNFS_BUILD_TESTS)
     # which can take ~5-30s under sanitizers (mont_mul + mont_double inner loop slow).
     # Marked as fast (60s budget) to accommodate Debug+sanitizers.
     set_tests_properties(BatchECM PROPERTIES LABELS "fast" TIMEOUT 60)
+
+    add_executable(test_ecm_curve_plan
+        tests/test_ecm_curve_plan.cpp
+    )
+    target_link_libraries(test_ecm_curve_plan PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME EcmCurvePlan COMMAND test_ecm_curve_plan)
+    set_tests_properties(EcmCurvePlan PROPERTIES LABELS "fast" TIMEOUT 60)
 
     # Micro-benchmark: not run by default test suites (label "bench")
     # Invoke manually:  ./build-release/test_batch_ecm_bench [count] [seed]
@@ -992,6 +2093,185 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_filter PRIVATE gnfs_core Threads::Threads)
     add_test(NAME Filter COMMAND test_filter)
     set_tests_properties(Filter PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Canonical full-width odd-large-prime contract and consumer agreement.
+    add_executable(test_lp_key_contract
+        tests/test_lp_key_contract.cpp
+    )
+    target_link_libraries(test_lp_key_contract PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME LPKeyContract COMMAND test_lp_key_contract)
+    set_tests_properties(LPKeyContract PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Exact raw (a,b) and merged-source identity regressions.
+    add_executable(test_relation_identity
+        tests/test_relation_identity.cpp
+    )
+    target_link_libraries(test_relation_identity PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME RelationIdentity COMMAND test_relation_identity)
+    set_tests_properties(RelationIdentity PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Shared relation-reduction engine, storage boundaries, and strategy contract.
+    add_executable(test_relation_reduction_engine
+        tests/test_relation_reduction_engine.cpp
+    )
+    target_link_libraries(test_relation_reduction_engine PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME RelationReductionEngine COMMAND test_relation_reduction_engine)
+    set_tests_properties(RelationReductionEngine PROPERTIES LABELS "fast" TIMEOUT 30)
+
+    # Multi-size finalized-OOC structured source and cross-worker determinism gate.
+    add_executable(test_structured_ooc_scale
+        tests/test_structured_ooc_scale.cpp
+    )
+    target_link_libraries(test_structured_ooc_scale PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME StructuredOOCScale COMMAND test_structured_ooc_scale)
+    set_tests_properties(StructuredOOCScale PROPERTIES LABELS "gate" TIMEOUT 180)
+
+    # Real 120-bit sieve-to-reduction transition. The fixed prefix compares a
+    # one-lane legacy route with the bounded multi-lane structured route and
+    # carries both results through full matrix construction.
+    add_executable(test_structured_filter_pipeline_120bit
+        tests/test_structured_filter_pipeline_120bit.cpp
+    )
+    target_link_libraries(test_structured_filter_pipeline_120bit PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME StructuredFilterPipeline120bit COMMAND test_structured_filter_pipeline_120bit)
+    set_tests_properties(StructuredFilterPipeline120bit PROPERTIES LABELS "heavy" TIMEOUT 600)
+
+    # Real 50-digit Pipeline prefix probe. Disabled by default because even the
+    # four-special-Q bound exercises the production sieve and factor-base path.
+    add_executable(test_structured_ooc_50d_probe
+        tests/test_structured_ooc_50d_probe.cpp
+    )
+    target_link_libraries(test_structured_ooc_50d_probe PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME StructuredOOC50dProbe
+        COMMAND test_structured_ooc_50d_probe --strategy structured --max-special-q 4)
+    set_tests_properties(StructuredOOC50dProbe PROPERTIES DISABLED TRUE
+        LABELS "stress" TIMEOUT 3600)
+    if(ZSH_EXECUTABLE AND Python3_Interpreter_FOUND)
+        add_test(NAME StructuredOOC50dContract
+            COMMAND ${CMAKE_COMMAND} -E env
+                "GNFS_50D_PROBE_EXECUTABLE=$<TARGET_FILE:test_structured_ooc_50d_probe>"
+                "GNFS_PYTHON_EXECUTABLE=${Python3_EXECUTABLE}"
+                "${ZSH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/test.sh"
+                --no-build --no-color check-50d-contracts)
+        set_tests_properties(StructuredOOC50dContract PROPERTIES
+            LABELS "fast"
+            TIMEOUT 30
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    endif()
+
+    # Fixed real 50-digit candidate corpus. The executable checks every
+    # worker/chunk case against a serial oracle, but timings remain manual
+    # measurement evidence and never enter routine CTest lanes.
+    add_executable(test_candidate_batch_50d_sweep
+        tests/test_candidate_batch_50d_sweep.cpp
+    )
+    target_compile_definitions(test_candidate_batch_50d_sweep PRIVATE
+        GNFS_CANDIDATE_SWEEP_BUILD_TYPE="$<CONFIG>")
+    target_link_libraries(test_candidate_batch_50d_sweep PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME CandidateBatch50dSweep COMMAND test_candidate_batch_50d_sweep)
+    set_tests_properties(CandidateBatch50dSweep PROPERTIES DISABLED TRUE
+        LABELS "bench;stress" TIMEOUT 900)
+
+    # Sequential structured relation reduction and exact GF(2) oracle.
+    add_executable(test_structured_filter
+        tests/test_structured_filter.cpp
+    )
+    target_link_libraries(test_structured_filter PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME StructuredFilter COMMAND test_structured_filter)
+    set_tests_properties(StructuredFilter PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Strict opt-in policy parsing and pre-snapshot strategy-family selection.
+    add_executable(test_structured_filter_policy
+        tests/test_structured_filter_policy.cpp
+    )
+    target_link_libraries(test_structured_filter_policy PRIVATE gnfs_core)
+    add_test(NAME StructuredFilterPolicy COMMAND test_structured_filter_policy)
+    set_tests_properties(StructuredFilterPolicy PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Deterministic weight-[3,8] tree bases and exact dependency-space oracle.
+    add_executable(test_structured_tree_basis
+        tests/test_structured_tree_basis.cpp
+    )
+    target_link_libraries(test_structured_tree_basis PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME StructuredTreeBasis COMMAND test_structured_tree_basis)
+    set_tests_properties(StructuredTreeBasis PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Exhaustive/property coverage for structured tree-basis planning.
+    add_executable(test_structured_tree_basis_property
+        tests/test_structured_tree_basis_property.cpp
+    )
+    target_link_libraries(test_structured_tree_basis_property PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME StructuredTreeBasisProperty COMMAND test_structured_tree_basis_property)
+    set_tests_properties(StructuredTreeBasisProperty PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Budgeted vector-backed structured driver limits and stop semantics.
+    add_executable(test_structured_budgeted_driver
+        tests/test_structured_budgeted_driver.cpp
+    )
+    target_link_libraries(test_structured_budgeted_driver PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME StructuredBudgetedDriver COMMAND test_structured_budgeted_driver)
+    set_tests_properties(StructuredBudgetedDriver PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Immutable-snapshot candidate ordering and conflict-free batch selection.
+    add_executable(test_structured_conflict_batch
+        tests/test_structured_conflict_batch.cpp
+    )
+    target_link_libraries(test_structured_conflict_batch PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME StructuredConflictBatch COMMAND test_structured_conflict_batch)
+    set_tests_properties(StructuredConflictBatch PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Drain-all parallel materialization over one immutable conflict-free batch.
+    add_executable(test_structured_parallel_prepare
+        tests/test_structured_parallel_prepare.cpp
+    )
+    target_link_libraries(test_structured_parallel_prepare PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME StructuredParallelPrepare COMMAND test_structured_parallel_prepare)
+    set_tests_properties(StructuredParallelPrepare PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Atomic publication of prepared structured batches.
+    add_executable(test_structured_batch_commit
+        tests/test_structured_batch_commit.cpp
+    )
+    target_link_libraries(test_structured_batch_commit PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME StructuredBatchCommit COMMAND test_structured_batch_commit)
+    set_tests_properties(StructuredBatchCommit PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Budgeted deterministic parallel structured-reduction driver.
+    add_executable(test_structured_parallel_driver
+        tests/test_structured_parallel_driver.cpp
+    )
+    target_link_libraries(test_structured_parallel_driver PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME StructuredParallelDriver COMMAND test_structured_parallel_driver)
+    set_tests_properties(StructuredParallelDriver PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Macro-gated fatal-barrier and publication-boundary fault injection. The
+    # implementation is compiled directly so production gnfs_core stays clean.
+    add_executable(test_structured_parallel_failures
+        tests/test_structured_parallel_failures.cpp
+        src/relation/structured_reduction.cpp
+    )
+    target_compile_definitions(test_structured_parallel_failures
+        PRIVATE GNFS_STRUCTURED_REDUCTION_TEST_HOOKS=1
+    )
+    target_link_libraries(test_structured_parallel_failures PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME StructuredParallelFailures COMMAND test_structured_parallel_failures)
+    set_tests_properties(StructuredParallelFailures PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Deterministic bounded-shard construction of structured LP incidence.
+    add_executable(test_structured_incidence_builder
+        tests/test_structured_incidence_builder.cpp
+    )
+    target_link_libraries(test_structured_incidence_builder PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME StructuredIncidenceBuilder COMMAND test_structured_incidence_builder)
+    set_tests_properties(StructuredIncidenceBuilder PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Structured source-XOR materialization and persistence contracts.
+    add_executable(test_structured_materialization
+        tests/test_structured_materialization.cpp
+    )
+    target_link_libraries(test_structured_materialization PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME StructuredMaterialization COMMAND test_structured_materialization)
+    set_tests_properties(StructuredMaterialization PROPERTIES LABELS "instant" TIMEOUT 10)
 
     # Phase 0 radix-sort ENV gate + bit-for-bit parity with std::sort path
     add_executable(test_filter_radix_sort
@@ -1622,6 +2902,380 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SIQS COMMAND test_siqs)
     set_tests_properties(SIQS PROPERTIES LABELS "fast" TIMEOUT 180)
 
+    add_executable(test_siqs_2lp
+        tests/test_siqs_2lp.cpp
+    )
+    target_link_libraries(test_siqs_2lp PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME Siqs2LP COMMAND test_siqs_2lp)
+    set_tests_properties(Siqs2LP PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_live_sieve_capture
+        tests/test_siqs_live_sieve_capture.cpp
+    )
+    target_link_libraries(test_siqs_live_sieve_capture PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SiqsLiveSieveCapture COMMAND test_siqs_live_sieve_capture)
+    set_tests_properties(SiqsLiveSieveCapture PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Bounded live-sieve evidence probe. This Release-only bench/stress target
+    # stays out of CTest and every routine test catalog. The executable checks
+    # this configure-time contract together with NDEBUG at runtime.
+    add_executable(test_siqs_live_sieve_probe
+        tests/test_siqs_live_sieve_probe.cpp
+    )
+    target_compile_definitions(test_siqs_live_sieve_probe PRIVATE
+        GNFS_SIQS_LIVE_SIEVE_PROBE_BUILD_TYPE="$<CONFIG>")
+    target_link_libraries(test_siqs_live_sieve_probe PRIVATE gnfs_core Threads::Threads)
+
+    # Fresh-process production factor probe for the opt-in shadow-proof
+    # telemetry seam. This Release-only measurement target stays outside CTest
+    # and every routine test catalog.
+    add_executable(test_siqs_shadow_proof_observe_probe
+        tests/test_siqs_shadow_proof_observe_probe.cpp
+    )
+    target_compile_definitions(test_siqs_shadow_proof_observe_probe PRIVATE
+        GNFS_SIQS_SHADOW_PROOF_OBSERVE_PROBE_BUILD_TYPE="$<CONFIG>")
+    target_link_libraries(test_siqs_shadow_proof_observe_probe PRIVATE
+        gnfs_core Threads::Threads)
+
+    # Single-sample sealed-holdout evidence probe. This Release-only production
+    # target is excluded from default builds, CTest, and every runner catalog.
+    add_executable(test_siqs_shadow_proof_rss_holdout_probe EXCLUDE_FROM_ALL
+        tests/test_siqs_shadow_proof_rss_holdout_probe.cpp
+    )
+    target_include_directories(test_siqs_shadow_proof_rss_holdout_probe PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/siqs
+    )
+    target_compile_definitions(test_siqs_shadow_proof_rss_holdout_probe PRIVATE
+        GNFS_SIQS_SHADOW_PROOF_RSS_HOLDOUT_PROBE_BUILD_TYPE="$<CONFIG>")
+    target_link_libraries(test_siqs_shadow_proof_rss_holdout_probe PRIVATE
+        gnfs_core Threads::Threads)
+
+    # Fixed 50-digit multi-A cycle-density profile. This Release-only manual
+    # evidence target deliberately stays outside CTest and routine catalogs.
+    add_executable(test_siqs_multi_a_cycle_profile
+        tests/test_siqs_multi_a_cycle_profile.cpp
+    )
+    target_compile_definitions(test_siqs_multi_a_cycle_profile PRIVATE
+        GNFS_SIQS_MULTI_A_PROFILE_BUILD_TYPE="$<CONFIG>")
+    target_link_libraries(test_siqs_multi_a_cycle_profile PRIVATE gnfs_core Threads::Threads)
+
+    # The same source is compiled under a closed V3 schema for the bounded
+    # 256-A Release-only scale gate. It remains outside CTest and routine tiers.
+    add_executable(test_siqs_256a_scale_profile
+        tests/test_siqs_multi_a_cycle_profile.cpp
+    )
+    target_compile_definitions(test_siqs_256a_scale_profile PRIVATE
+        GNFS_SIQS_MULTI_A_PROFILE_BUILD_TYPE="$<CONFIG>"
+        GNFS_SIQS_MULTI_A_PROFILE_SCHEMA=3)
+    target_link_libraries(test_siqs_256a_scale_profile PRIVATE gnfs_core Threads::Threads)
+
+    # Closed V4 proof-shadow path over the same frozen 256-A gate. This
+    # Release-only manual target runs the bounded dense solver and proof-gated
+    # factor extraction without enabling the production 2LP path.
+    add_executable(test_siqs_256a_proof_shadow
+        tests/test_siqs_multi_a_cycle_profile.cpp
+    )
+    target_compile_definitions(test_siqs_256a_proof_shadow PRIVATE
+        GNFS_SIQS_MULTI_A_PROFILE_BUILD_TYPE="$<CONFIG>"
+        GNFS_SIQS_MULTI_A_PROFILE_SCHEMA=4)
+    target_link_libraries(test_siqs_256a_proof_shadow PRIVATE gnfs_core Threads::Threads)
+
+    add_executable(test_siqs_2lp_graph
+        tests/test_siqs_2lp_graph.cpp
+    )
+    target_link_libraries(test_siqs_2lp_graph PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME Siqs2LPGraph COMMAND test_siqs_2lp_graph)
+    set_tests_properties(Siqs2LPGraph PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_2lp_materializer
+        tests/test_siqs_2lp_materializer.cpp
+    )
+    target_link_libraries(test_siqs_2lp_materializer PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME Siqs2LPMaterializer COMMAND test_siqs_2lp_materializer)
+    set_tests_properties(Siqs2LPMaterializer PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_2lp_adapter
+        tests/test_siqs_2lp_adapter.cpp
+    )
+    target_link_libraries(test_siqs_2lp_adapter PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME Siqs2LPAdapter COMMAND test_siqs_2lp_adapter)
+    set_tests_properties(Siqs2LPAdapter PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_2lp_congruence
+        tests/test_siqs_2lp_congruence.cpp
+    )
+    target_link_libraries(test_siqs_2lp_congruence PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME Siqs2LPCongruence COMMAND test_siqs_2lp_congruence)
+    set_tests_properties(Siqs2LPCongruence PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_post_merge_row
+        tests/test_siqs_post_merge_row.cpp
+    )
+    target_link_libraries(test_siqs_post_merge_row PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SiqsPostMergeRow COMMAND test_siqs_post_merge_row)
+    set_tests_properties(SiqsPostMergeRow PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_assembly
+        tests/test_siqs_shadow_assembly.cpp
+    )
+    target_link_libraries(test_siqs_shadow_assembly PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SiqsShadowAssembly COMMAND test_siqs_shadow_assembly)
+    set_tests_properties(SiqsShadowAssembly PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_linear_algebra
+        tests/test_siqs_shadow_linear_algebra.cpp
+    )
+    target_link_libraries(test_siqs_shadow_linear_algebra PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SiqsShadowLinearAlgebra COMMAND test_siqs_shadow_linear_algebra)
+    set_tests_properties(SiqsShadowLinearAlgebra PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_proof_runner
+        tests/test_siqs_shadow_proof_runner.cpp
+    )
+    target_link_libraries(test_siqs_shadow_proof_runner PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SiqsShadowProofRunner COMMAND test_siqs_shadow_proof_runner)
+    set_tests_properties(SiqsShadowProofRunner PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_proof_observe
+        tests/test_siqs_shadow_proof_observe.cpp
+    )
+    target_link_libraries(test_siqs_shadow_proof_observe PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SiqsShadowProofObserve COMMAND test_siqs_shadow_proof_observe)
+    set_tests_properties(SiqsShadowProofObserve PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_proof_observe_record_codec
+        tests/test_siqs_shadow_proof_observe_record_codec.cpp
+    )
+    target_link_libraries(test_siqs_shadow_proof_observe_record_codec PRIVATE
+        gnfs_core Threads::Threads)
+    add_test(NAME SiqsShadowProofObserveRecordCodec
+        COMMAND test_siqs_shadow_proof_observe_record_codec)
+    set_tests_properties(SiqsShadowProofObserveRecordCodec
+        PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_runtime_facts
+        tests/test_siqs_runtime_facts.cpp
+    )
+    target_link_libraries(test_siqs_runtime_facts PRIVATE gnfs_core)
+    add_test(NAME SiqsRuntimeFacts COMMAND test_siqs_runtime_facts)
+    set_tests_properties(SiqsRuntimeFacts PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_proof_rss_probe_execution_identity
+        tests/test_siqs_shadow_proof_rss_probe_execution_identity.cpp
+    )
+    target_include_directories(test_siqs_shadow_proof_rss_probe_execution_identity PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/siqs
+    )
+    target_link_libraries(test_siqs_shadow_proof_rss_probe_execution_identity PRIVATE gnfs_util)
+    add_test(NAME SiqsShadowProofRssProbeExecutionIdentity
+        COMMAND test_siqs_shadow_proof_rss_probe_execution_identity)
+    set_tests_properties(SiqsShadowProofRssProbeExecutionIdentity
+        PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_observe_rss_holdouts
+        tests/test_siqs_shadow_observe_rss_holdouts.cpp
+    )
+    target_include_directories(test_siqs_shadow_observe_rss_holdouts PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/siqs
+    )
+    target_link_libraries(test_siqs_shadow_observe_rss_holdouts PRIVATE gnfs_core)
+    add_test(NAME SiqsShadowObserveRssHoldouts COMMAND test_siqs_shadow_observe_rss_holdouts)
+    set_tests_properties(SiqsShadowObserveRssHoldouts PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_proof_rss_gate
+        tests/test_siqs_shadow_proof_rss_gate.cpp
+    )
+    target_include_directories(test_siqs_shadow_proof_rss_gate PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/siqs
+    )
+    target_link_libraries(test_siqs_shadow_proof_rss_gate PRIVATE gnfs_core)
+    add_test(NAME SiqsShadowProofRssGate COMMAND test_siqs_shadow_proof_rss_gate)
+    set_tests_properties(SiqsShadowProofRssGate PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_proof_rss_terminal_gate_record
+        tests/test_siqs_shadow_proof_rss_terminal_gate_record.cpp
+    )
+    target_include_directories(test_siqs_shadow_proof_rss_terminal_gate_record PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/siqs
+    )
+    target_link_libraries(test_siqs_shadow_proof_rss_terminal_gate_record PRIVATE gnfs_core)
+    add_test(NAME SiqsShadowProofRssTerminalGateRecord
+        COMMAND test_siqs_shadow_proof_rss_terminal_gate_record)
+    set_tests_properties(SiqsShadowProofRssTerminalGateRecord
+        PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_proof_rss_policy_record
+        tests/test_siqs_shadow_proof_rss_policy_record.cpp
+    )
+    target_link_libraries(test_siqs_shadow_proof_rss_policy_record PRIVATE gnfs_core)
+    add_test(NAME SiqsShadowProofRssPolicyRecord COMMAND test_siqs_shadow_proof_rss_policy_record)
+    set_tests_properties(SiqsShadowProofRssPolicyRecord PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_proof_rss_campaign
+        tests/test_siqs_shadow_proof_rss_campaign.cpp
+    )
+    target_link_libraries(test_siqs_shadow_proof_rss_campaign PRIVATE gnfs_core)
+    add_test(NAME SiqsShadowProofRssCampaign COMMAND test_siqs_shadow_proof_rss_campaign)
+    set_tests_properties(SiqsShadowProofRssCampaign PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_proof_rss_campaign_journal
+        tests/test_siqs_shadow_proof_rss_campaign_journal.cpp
+    )
+    target_link_libraries(test_siqs_shadow_proof_rss_campaign_journal PRIVATE gnfs_core)
+    add_test(NAME SiqsShadowProofRssCampaignJournal
+        COMMAND test_siqs_shadow_proof_rss_campaign_journal)
+    set_tests_properties(SiqsShadowProofRssCampaignJournal
+        PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_proof_rss_campaign_journal_codec
+        tests/test_siqs_shadow_proof_rss_campaign_journal_codec.cpp
+    )
+    target_link_libraries(test_siqs_shadow_proof_rss_campaign_journal_codec PRIVATE gnfs_core)
+    add_test(NAME SiqsShadowProofRssCampaignJournalCodec
+        COMMAND test_siqs_shadow_proof_rss_campaign_journal_codec)
+    set_tests_properties(SiqsShadowProofRssCampaignJournalCodec
+        PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_proof_rss_campaign_journal_layout
+        tests/test_siqs_shadow_proof_rss_campaign_journal_layout.cpp
+    )
+    target_link_libraries(test_siqs_shadow_proof_rss_campaign_journal_layout PRIVATE gnfs_core)
+    add_test(NAME SiqsShadowProofRssCampaignJournalLayout
+        COMMAND test_siqs_shadow_proof_rss_campaign_journal_layout)
+    set_tests_properties(SiqsShadowProofRssCampaignJournalLayout
+        PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_proof_rss_campaign_artifact_layout
+        tests/test_siqs_shadow_proof_rss_campaign_artifact_layout.cpp
+    )
+    target_link_libraries(test_siqs_shadow_proof_rss_campaign_artifact_layout PRIVATE gnfs_core)
+    add_test(NAME SiqsShadowProofRssCampaignArtifactLayout
+        COMMAND test_siqs_shadow_proof_rss_campaign_artifact_layout)
+    set_tests_properties(SiqsShadowProofRssCampaignArtifactLayout
+        PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_proof_rss_campaign_journal_store
+        tests/test_siqs_shadow_proof_rss_campaign_journal_store.cpp
+        tests/support/siqs_shadow_proof_rss_campaign_reconciliation_test_peer.cpp
+        tests/support/siqs_shadow_proof_rss_terminal_gate_test_peer.cpp
+    )
+    target_include_directories(test_siqs_shadow_proof_rss_campaign_journal_store PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/siqs
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/util
+    )
+    target_link_libraries(test_siqs_shadow_proof_rss_campaign_journal_store PRIVATE
+        gnfs_core
+    )
+    add_dependencies(test_siqs_shadow_proof_rss_campaign_journal_store
+        siqs_rss_campaign_synthetic_success
+        siqs_rss_campaign_synthetic_nonzero
+        siqs_rss_campaign_synthetic_malformed
+        siqs_rss_campaign_synthetic_overflow
+        siqs_rss_campaign_synthetic_hang
+    )
+    add_test(NAME SiqsShadowProofRssCampaignJournalStore
+        COMMAND test_siqs_shadow_proof_rss_campaign_journal_store
+            $<TARGET_FILE:siqs_rss_campaign_synthetic_success>
+            $<TARGET_FILE:siqs_rss_campaign_synthetic_nonzero>
+            $<TARGET_FILE:siqs_rss_campaign_synthetic_malformed>
+            $<TARGET_FILE:siqs_rss_campaign_synthetic_overflow>
+            $<TARGET_FILE:siqs_rss_campaign_synthetic_hang>
+    )
+    if(WIN32)
+        set_tests_properties(SiqsShadowProofRssCampaignJournalStore
+            PROPERTIES LABELS "instant" TIMEOUT 20)
+    else()
+        set_tests_properties(SiqsShadowProofRssCampaignJournalStore
+            PROPERTIES LABELS "fast" TIMEOUT 120)
+    endif()
+    set_tests_properties(SiqsShadowProofRssCampaignJournalStore
+        PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+    add_executable(test_siqs_shadow_proof_rss_campaign_entry
+        tests/test_siqs_shadow_proof_rss_campaign_entry.cpp
+    )
+    target_include_directories(test_siqs_shadow_proof_rss_campaign_entry PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/siqs
+    )
+    target_link_libraries(test_siqs_shadow_proof_rss_campaign_entry PRIVATE
+        gnfs_core
+    )
+    add_test(NAME SiqsShadowProofRssCampaignEntry
+        COMMAND test_siqs_shadow_proof_rss_campaign_entry)
+    set_tests_properties(SiqsShadowProofRssCampaignEntry
+        PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_proof_rss_holdout_probe_contract
+        tests/test_siqs_shadow_proof_rss_holdout_probe_contract.cpp
+    )
+    target_include_directories(test_siqs_shadow_proof_rss_holdout_probe_contract PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/siqs
+    )
+    target_link_libraries(test_siqs_shadow_proof_rss_holdout_probe_contract PRIVATE gnfs_core)
+    add_test(NAME SiqsShadowProofRssHoldoutProbeContract
+        COMMAND test_siqs_shadow_proof_rss_holdout_probe_contract)
+    set_tests_properties(SiqsShadowProofRssHoldoutProbeContract
+        PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_proof_rss_holdout_probe_record_codec
+        tests/test_siqs_shadow_proof_rss_holdout_probe_record_codec.cpp
+    )
+    target_include_directories(test_siqs_shadow_proof_rss_holdout_probe_record_codec PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/siqs
+    )
+    target_link_libraries(test_siqs_shadow_proof_rss_holdout_probe_record_codec PRIVATE gnfs_core)
+    add_test(NAME SiqsShadowProofRssHoldoutProbeRecordCodec
+        COMMAND test_siqs_shadow_proof_rss_holdout_probe_record_codec)
+    set_tests_properties(SiqsShadowProofRssHoldoutProbeRecordCodec
+        PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_proof_rss_holdout_stream_join
+        tests/test_siqs_shadow_proof_rss_holdout_stream_join.cpp
+    )
+    target_include_directories(test_siqs_shadow_proof_rss_holdout_stream_join PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/siqs
+    )
+    target_link_libraries(test_siqs_shadow_proof_rss_holdout_stream_join PRIVATE
+        gnfs_core Threads::Threads)
+    add_test(NAME SiqsShadowProofRssHoldoutStreamJoin
+        COMMAND test_siqs_shadow_proof_rss_holdout_stream_join)
+    set_tests_properties(SiqsShadowProofRssHoldoutStreamJoin
+        PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_proof_prefer
+        tests/test_siqs_shadow_proof_prefer.cpp
+    )
+    target_link_libraries(test_siqs_shadow_proof_prefer PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SiqsShadowProofPrefer COMMAND test_siqs_shadow_proof_prefer)
+    set_tests_properties(SiqsShadowProofPrefer PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_prefer_route
+        tests/test_siqs_shadow_prefer_route.cpp
+    )
+    target_link_libraries(test_siqs_shadow_prefer_route PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SiqsShadowPreferRoute COMMAND test_siqs_shadow_prefer_route)
+    set_tests_properties(SiqsShadowPreferRoute PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_cross_size
+        tests/test_siqs_shadow_cross_size.cpp
+    )
+    target_link_libraries(test_siqs_shadow_cross_size PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SiqsShadowCrossSize COMMAND test_siqs_shadow_cross_size)
+    set_tests_properties(SiqsShadowCrossSize PROPERTIES LABELS "fast" TIMEOUT 60)
+
+    # Fixed synthetic shadow-matrix corpus. Timings are manual comparison
+    # evidence, so this Release-only target stays out of routine CTest lanes.
+    add_executable(test_siqs_shadow_matrix_bench
+        tests/test_siqs_shadow_matrix_bench.cpp
+    )
+    target_compile_definitions(test_siqs_shadow_matrix_bench PRIVATE
+        GNFS_SIQS_SHADOW_BENCH_BUILD_TYPE="$<CONFIG>")
+    target_link_libraries(test_siqs_shadow_matrix_bench PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SiqsShadowMatrixBench
+        COMMAND test_siqs_shadow_matrix_bench solve --workers 1 --warmups 0 --reps 1)
+    set_tests_properties(SiqsShadowMatrixBench PROPERTIES DISABLED TRUE
+        LABELS "bench" TIMEOUT 600)
+
     # SIQS 端到端：100-bit + 180-bit 实测分解
     add_executable(test_siqs_e2e
         tests/test_siqs_e2e.cpp
@@ -1667,7 +3321,8 @@ if(GNFS_BUILD_TESTS)
     # CI 下必须放大 TIMEOUT 否则 instant/fast 测试会被 spurious 超时.
     # ────────────────────────────────────────────────────────────
     set(_GNFS_TEST_TIMEOUT_MULT 1)
-    if(CMAKE_CXX_FLAGS MATCHES "fsanitize=(address|thread|memory|undefined|leak)")
+    if(GNFS_ENABLE_ASAN OR GNFS_ENABLE_TSAN OR GNFS_ENABLE_UBSAN OR
+       CMAKE_CXX_FLAGS MATCHES "fsanitize=(address|thread|memory|undefined|leak)")
         set(_GNFS_TEST_TIMEOUT_MULT 10)
         message(STATUS "Sanitizer detected — multiplying test TIMEOUTs by ${_GNFS_TEST_TIMEOUT_MULT}")
     elseif(CMAKE_CXX_FLAGS MATCHES "(^|[ ;])-(-coverage|fprofile-arcs|ftest-coverage)" OR
@@ -1757,5 +3412,6 @@ message(STATUS "  Build Type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "  GMP: ${GMP_LIBRARY}")
 message(STATUS "  NTL: ${HAVE_NTL}")
 message(STATUS "  Metal: ${HAVE_METAL}")
+message(STATUS "  ThreadSanitizer: ${GNFS_ENABLE_TSAN}")
 message(STATUS "  Tests: ${GNFS_BUILD_TESTS}")
 message(STATUS "")

@@ -25,10 +25,10 @@ namespace gnfs::util {
 /// macOS: 调度 hint 到 P-core (UserInitiated) / E-core (Background).
 /// Linux: no-op (内核调度自由).
 enum class QoSClass {
-    UserInitiated,   ///< 性能优先, hint P-core. **基准/perf 默认**.
-    Utility,         ///< 中等优先, 允许 E-core (节能).
-    Background,      ///< 后台优先, 常驻 E-core.
-    Unspecified,     ///< 不设置, 系统默认 (legacy 行为).
+    UserInitiated, ///< 性能优先, hint P-core. **基准/perf 默认**.
+    Utility,       ///< 中等优先, 允许 E-core (节能).
+    Background,    ///< 后台优先, 常驻 E-core.
+    Unspecified,   ///< 不设置, 系统默认 (legacy 行为).
 };
 
 /// 设置当前线程 QoS class (静态 helper, main thread + worker 都用).
@@ -38,10 +38,17 @@ inline void set_current_thread_qos(QoSClass qos) noexcept {
 #if defined(__APPLE__)
     qos_class_t cls;
     switch (qos) {
-        case QoSClass::UserInitiated: cls = QOS_CLASS_USER_INITIATED; break;
-        case QoSClass::Utility:       cls = QOS_CLASS_UTILITY;        break;
-        case QoSClass::Background:    cls = QOS_CLASS_BACKGROUND;     break;
-        case QoSClass::Unspecified:   return;
+    case QoSClass::UserInitiated:
+        cls = QOS_CLASS_USER_INITIATED;
+        break;
+    case QoSClass::Utility:
+        cls = QOS_CLASS_UTILITY;
+        break;
+    case QoSClass::Background:
+        cls = QOS_CLASS_BACKGROUND;
+        break;
+    case QoSClass::Unspecified:
+        return;
     }
     pthread_set_qos_class_self_np(cls, 0);
 #else
@@ -57,19 +64,36 @@ public:
     /// @param qos worker thread QoS class (macOS only, Linux no-op).
     ///            默认 UserInitiated — hint scheduler 优先 P-core.
     ///            doctrine §7.2 第 3 条: 基准用 P-core 强制.
-    explicit ThreadPool(uint32_t num_threads = 0,
-                        QoSClass qos = QoSClass::UserInitiated)
+    explicit ThreadPool(uint32_t num_threads = 0, QoSClass qos = QoSClass::UserInitiated)
         : qos_(qos), stop_(false), pending_(0), queue_size_(0) {
         if (num_threads == 0) {
             num_threads = std::thread::hardware_concurrency();
             if (num_threads == 0) {
-                num_threads = 4;  // 默认值
+                num_threads = 4; // 默认值
             }
         }
 
         workers_.reserve(num_threads);
-        for (uint32_t i = 0; i < num_threads; ++i) {
-            workers_.emplace_back([this] { worker_loop(); });
+        try {
+            for (uint32_t i = 0; i < num_threads; ++i) {
+                workers_.emplace_back([this] { worker_loop(); });
+            }
+        } catch (...) {
+            // A partially constructed vector of joinable std::threads would
+            // call std::terminate while unwinding this constructor. Stop and
+            // join every worker that was created before propagating the
+            // resource failure.
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                stop_ = true;
+            }
+            cv_.notify_all();
+            for (auto& worker : workers_) {
+                if (worker.joinable()) {
+                    worker.join();
+                }
+            }
+            throw;
         }
     }
 
@@ -101,13 +125,11 @@ public:
 
     /// 提交任务
     template <typename F, typename... Args>
-    auto submit(F&& f, Args&&... args)
-        -> std::future<decltype(f(args...))> {
+    auto submit(F&& f, Args&&... args) -> std::future<decltype(f(args...))> {
         using return_type = decltype(f(args...));
 
         auto task = std::make_shared<std::packaged_task<return_type()>>(
-            std::bind(std::forward<F>(f), std::forward<Args>(args)...)
-        );
+            std::bind(std::forward<F>(f), std::forward<Args>(args)...));
 
         std::future<return_type> result = task->get_future();
 
@@ -129,10 +151,10 @@ public:
     /// @param begin 起始迭代器
     /// @param end 结束迭代器
     /// @param func 对每个元素执行的函数
-    template <typename Iter, typename Func>
-    void parallel_for(Iter begin, Iter end, Func&& func) {
+    template <typename Iter, typename Func> void parallel_for(Iter begin, Iter end, Func&& func) {
         auto distance = std::distance(begin, end);
-        if (distance <= 0) return;
+        if (distance <= 0)
+            return;
 
         size_t num_threads = workers_.size();
         size_t total = static_cast<size_t>(distance);
@@ -166,9 +188,9 @@ public:
     /// @param start 起始索引
     /// @param end 结束索引（不包含）
     /// @param func 函数，接受索引参数
-    template <typename Func>
-    void parallel_for_index(size_t start, size_t end, Func&& func) {
-        if (start >= end) return;
+    template <typename Func> void parallel_for_index(size_t start, size_t end, Func&& func) {
+        if (start >= end)
+            return;
 
         size_t distance = end - start;
         size_t num_threads = workers_.size();
@@ -181,7 +203,8 @@ public:
             size_t chunk_start = start + i * chunk_size;
             size_t chunk_end = std::min(chunk_start + chunk_size, end);
 
-            if (chunk_start >= end) break;
+            if (chunk_start >= end)
+                break;
 
             futures.push_back(submit([chunk_start, chunk_end, &func]() {
                 for (size_t j = chunk_start; j < chunk_end; ++j) {
@@ -204,8 +227,10 @@ public:
     /// @param grain  Chunk granularity (default: 1 for finest balancing)
     template <typename Func>
     void parallel_for_stealing(size_t start, size_t end, Func&& func, size_t grain = 1) {
-        if (start >= end) return;
-        if (grain == 0) grain = 1;
+        if (start >= end)
+            return;
+        if (grain == 0)
+            grain = 1;
 
         std::atomic<size_t> next_idx{start};
 
@@ -217,7 +242,8 @@ public:
             futures.push_back(submit([&next_idx, end, grain, &func]() {
                 while (true) {
                     size_t chunk_start = next_idx.fetch_add(grain, std::memory_order_relaxed);
-                    if (chunk_start >= end) break;
+                    if (chunk_start >= end)
+                        break;
                     size_t chunk_end = std::min(chunk_start + grain, end);
                     for (size_t i = chunk_start; i < chunk_end; ++i) {
                         func(i);
@@ -259,9 +285,8 @@ private:
     /// `cpu_pause`) because spin-then-cv worker loops benefit from the
     /// scheduler hint when the underlying CPU has neither pause nor yield.
     static inline void cpu_relax() noexcept {
-#if defined(__aarch64__) || defined(__arm__) || defined(__x86_64__) || \
-    defined(__i386__) || defined(_M_X64) || defined(_M_IX86) ||         \
-    defined(_M_ARM64) || defined(_M_ARM)
+#if defined(__aarch64__) || defined(__arm__) || defined(__x86_64__) || defined(__i386__) ||        \
+    defined(_M_X64) || defined(_M_IX86) || defined(_M_ARM64) || defined(_M_ARM)
         ::gnfs::util::cpu_pause();
 #else
         std::this_thread::yield();

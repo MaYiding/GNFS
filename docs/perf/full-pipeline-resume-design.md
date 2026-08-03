@@ -39,10 +39,72 @@ phase. There is no attempt to capture in-loop state for Phase 1 / Phase 2.
 
 ## File Format
 
-All three checkpoint files share the same crash-safety primitive: write
-`MAGIC_INCOMPLETE` first, fully serialise the body, then seek back to offset 0
-and flip the four-byte magic to the finalised value. A reader that observes
-`MAGIC_INCOMPLETE` refuses to load (treats the file as if it were absent).
+Polynomial and factor-base checkpoints use an incomplete-to-final magic
+transition. The sieve checkpoint uses the stronger V3 paired transaction
+described below: it publishes a checksummed temporary file by atomic replace
+only after the OOC relation prefix is durable.
+
+### `<base>.sieve_ckpt` V3
+
+The sieve checkpoint records the Special-Q cursor and adaptive-round state, an
+exact decimal N, a portable 128-bit run fingerprint, and the OOC relation
+descriptor: format version, durable store ID, generation, relation count, and
+data end. It also records the collector's constant-memory relation-sequence
+receipt, accumulated only after each OOC relation is accepted. A
+`collection_complete` field distinguishes periodic appendable progress from
+the exact terminal prefix waiting for final magic. The fingerprint covers the
+selected polynomial, ordered factor-base contents, and the sieve parameters
+that affect relation generation or stopping. Run-identity schema 3 also binds
+the affine-only Special-Q enumeration policy and the frozen cascade-V3, 3LP,
+V0 weight/cutoff/residual, and structured-versus-legacy reduction decisions.
+Checkpoints from the earlier projective-Q schedule or a different semantic
+reduction policy fail closed.
+
+Recovery first rejects a run-identity mismatch without opening the relation
+store. It then validates the exact relation prefix, decodes it in ordinal order,
+and compares the reconstructed receipt before truncating later uncommitted tail
+bytes or applying the Special-Q cursor. V1/V2 sieve checkpoints cannot prove
+this payload pairing and are rejected for automatic resume.
+
+Periodic publication reopens the exact descriptor for append. Terminal
+publication leaves it suspended and sets `collection_complete=true` before
+final magic. Recovery from that pre-final-magic window rebuilds the reduction
+and finishes the commit without repeating collection. Recovery after final
+magic requires the finalized count and extent to equal the terminal descriptor;
+an unreceipted finalized extension is rejected.
+
+The paired V3 OOC files keep identity immutable across finalize:
+
+```text
+<base>.relidx:
+u64 MAGIC_INCOMPLETE_V3 / MAGIC_FINAL_V3
+u64 FORMAT_VERSION
+u64 store_id
+u64 count
+u64 offsets[count + 1]
+
+<base>.reldata:
+u64 DATA_MAGIC_V3
+u64 FORMAT_VERSION
+u64 store_id
+bytes relation_records[]
+```
+
+Offsets and descriptor `data_end` are physical file positions, including the
+24-byte data header; an empty V3 store therefore has first offset and EOF at
+byte 24. Finalization persists count and the terminal offset while index magic
+remains incomplete, then publishes final index magic last. A paired checkpoint
+can therefore roll back safely after a crash between those stages, and a
+same-sized foreign data file is rejected by its mismatched header identity. The
+ordinary reader keeps read-only compatibility with finalized V1/V2 stores, but
+paired recovery and corpus ownership promotion reject them.
+
+The active single-writer checkpoint/reopen path validates paired headers,
+physical extents, first offset, and sentinel in constant time. Final precommit
+and process-restart recovery perform the complete offset scan; recovery also
+decodes every committed record and checks the published receipt. This keeps
+corruption and same-size payload drift fail-closed without rescanning the full
+growing index at every checkpoint interval.
 
 ### `<base>.poly_ckpt`
 
@@ -160,8 +222,11 @@ There is no measurable runtime overhead on the fresh-write path.
 
 - Default behaviour (no ENV) is unchanged. Pipeline never touches the
   checkpoint files, never opens them, never writes them.
-- The existing `<base>.sieve_ckpt` format from Wave -1 is unchanged, so
-  Phase 3 resume continues to work alongside the new Phase 1+2 logic.
+- `<base>.sieve_ckpt` is V2. The older V1 format is intentionally not
+  auto-resumed because it does not bind a Special-Q cursor to a durable OOC
+  relation prefix.
+- Reusing a base path with a different N, selected polynomial, factor base, or
+  sieve parameter set fails closed before any OOC mutation.
 - The `GNFS_SIEVE_RESUME` ENV remains valid as an alias.
 
 ## Limitations
@@ -174,3 +239,5 @@ There is no measurable runtime overhead on the fresh-write path.
   fingerprint, including `GNFS_OVERRIDE_LP_BITS`. This is correct (parameter
   drift would produce a wrong FB) but may surprise users who change ENV
   flags between resume attempts.
+- A resume base path currently supports one active process. Cross-process
+  writer leasing is not part of this checkpoint version.

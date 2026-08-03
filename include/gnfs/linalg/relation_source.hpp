@@ -1,9 +1,9 @@
 #pragma once
 
 #include "../core/relation.hpp"
-#include "../relation/ooc_relation_store.hpp"
+#include "../relation/relation_corpus.hpp"
+#include "../relation/relation_source.hpp"
 
-#include <concepts>
 #include <cstddef>
 #include <vector>
 
@@ -24,10 +24,17 @@ namespace gnfs::linalg {
 /// each thread fetches its own relation. OOCRelationReader satisfies this
 /// (read-only mmap + per-call local deserialize buffer) and so does
 /// VectorRelationSource (const vector access).
+using gnfs::relation::RelationSource;
+
+/// Refined RelationSource concept for sources whose local row indices map to
+/// stable ordinals in a larger corpus. MatrixBuilder uses this optional
+/// capability to preserve relation provenance; ordinary RelationSource
+/// implementations retain identity row numbering. `source_ordinal(i)` must
+/// return the ordinal of `read(i)` in the owning corpus and, like `read(i)`,
+/// must be safe for concurrent read-only calls on distinct indices.
 template <typename Source>
-concept RelationSource = requires(const Source& s, std::size_t i) {
-    { s.count() } -> std::convertible_to<std::size_t>;
-    { s.read(i) } -> std::same_as<core::Relation>;
+concept OrdinalRelationSource = RelationSource<Source> && requires(const Source& s, std::size_t i) {
+    { s.source_ordinal(i) } -> std::convertible_to<std::size_t>;
 };
 
 /// Adapter that exposes an existing `std::vector<Relation>` as a RelationSource.
@@ -42,34 +49,60 @@ concept RelationSource = requires(const Source& s, std::size_t i) {
 ///      matrices (after deterministic LP ordering)
 class VectorRelationSource {
 public:
-    explicit VectorRelationSource(const std::vector<core::Relation>& v) noexcept
-        : v_(&v) {}
+    explicit VectorRelationSource(const std::vector<core::Relation>& v) noexcept : v_(&v) {}
 
-    [[nodiscard]] std::size_t count() const noexcept { return v_->size(); }
-    [[nodiscard]] core::Relation read(std::size_t i) const { return (*v_)[i]; }
+    [[nodiscard]] std::size_t count() const noexcept {
+        return v_->size();
+    }
+    [[nodiscard]] core::Relation read(std::size_t i) const {
+        return (*v_)[i];
+    }
 
 private:
     const std::vector<core::Relation>* v_;
 };
 
-/// Adapter exposing OOCRelationReader as a RelationSource.
-/// Reader must outlive the adapter (which itself outlives the streaming builder).
-class OOCRelationSource {
-public:
-    explicit OOCRelationSource(const relation::OOCRelationReader& reader) noexcept
-        : reader_(&reader) {}
+/// Canonical non-armable borrowed view of an OOC relation reader.
+///
+/// Keeping the linalg name as an alias gives streaming consumers the same
+/// lifetime checks and capability surface as every other OOC corpus consumer.
+using OOCRelationSource = relation::ReadOnlyRelationCorpusView;
 
-    [[nodiscard]] std::size_t count() const noexcept { return reader_->count(); }
-    [[nodiscard]] core::Relation read(std::size_t i) const { return reader_->read(i); }
+/// Adapter exposing an immutable RelationSelection as a RelationSource while
+/// preserving the selected rows' ordinals in the owning RelationCorpus.
+/// Both the corpus and selection must outlive this non-owning adapter.
+class RelationSelectionSource {
+public:
+    RelationSelectionSource(const relation::RelationCorpus& corpus,
+                            const relation::RelationSelection& selection)
+        : corpus_(&corpus), selection_(&selection) {
+        selection_->validate_for(*corpus_);
+    }
+
+    [[nodiscard]] std::size_t count() const noexcept {
+        return selection_->count();
+    }
+
+    [[nodiscard]] core::Relation read(std::size_t i) const {
+        return corpus_->read(selection_->source_ordinal(i));
+    }
+
+    [[nodiscard]] std::size_t source_ordinal(std::size_t i) const {
+        return selection_->source_ordinal(i);
+    }
 
 private:
-    const relation::OOCRelationReader* reader_;
+    const relation::RelationCorpus* corpus_;
+    const relation::RelationSelection* selection_;
 };
 
 // Concept conformance checks (compile-time)
 static_assert(RelationSource<VectorRelationSource>,
               "VectorRelationSource must satisfy RelationSource");
-static_assert(RelationSource<OOCRelationSource>,
-              "OOCRelationSource must satisfy RelationSource");
+static_assert(RelationSource<OOCRelationSource>, "OOCRelationSource must satisfy RelationSource");
+static_assert(RelationSource<RelationSelectionSource>,
+              "RelationSelectionSource must satisfy RelationSource");
+static_assert(OrdinalRelationSource<RelationSelectionSource>,
+              "RelationSelectionSource must preserve corpus ordinals");
 
 } // namespace gnfs::linalg

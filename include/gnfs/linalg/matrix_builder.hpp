@@ -1,39 +1,40 @@
 #pragma once
 
-#include "sparse_matrix.hpp"
-#include "schirokauer.hpp"
-#include "relation_source.hpp"
-#include "../core/relation.hpp"
 #include "../core/integer.hpp"
 #include "../core/polynomial_context.hpp"
+#include "../core/relation.hpp"
 #include "../factor_base/factor_base.hpp"
+#include "../polynomial/int_polynomial.hpp"
+#include "../relation/large_prime_key.hpp"
 #include "../sqrt/class_group.hpp"
 #include "../sqrt/modular_poly.hpp"
-#include "../polynomial/int_polynomial.hpp"
 #include "../util/primes.hpp"
 #include "../util/thread_pool.hpp"
+#include "relation_source.hpp"
+#include "schirokauer.hpp"
+#include "sparse_matrix.hpp"
 
+#include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <iostream>
+#include <memory>
+#include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include <cmath>
-#include <memory>
-#include <iostream>
-#include <stdexcept>
 
 namespace gnfs::linalg {
 
 using core::Integer;
-using core::Relation;
-using core::PrimePower;
 using core::PolynomialContext;
+using core::Relation;
 using factor_base::FactorBase;
 
 /// 代数侧素理想键 (p, r)——区分同一素数上方的不同素理想
 struct PrimeIdealKey {
-    uint64_t p;  // 素数
-    uint64_t r;  // 根 mod p
+    uint64_t p; // 素数
+    uint64_t r; // 根 mod p
 
     bool operator==(const PrimeIdealKey& other) const noexcept {
         return p == other.p && r == other.r;
@@ -55,15 +56,15 @@ struct PrimeIdealKeyHash {
 /// 矩阵列映射
 /// 管理素数到列索引的映射
 struct ColumnMapping {
-    size_t num_rational_fb = 0;        // 有理因子基列数
-    size_t num_algebraic_fb = 0;       // 代数因子基列数
-    size_t num_large_primes_rat = 0;   // 有理大素数列数
-    size_t num_large_primes_alg = 0;   // 代数大素数列数
-    size_t num_qc_columns = 0;         // 二次特征列数
+    size_t num_rational_fb = 0;         // 有理因子基列数
+    size_t num_algebraic_fb = 0;        // 代数因子基列数
+    size_t num_large_primes_rat = 0;    // 有理大素数列数
+    size_t num_large_primes_alg = 0;    // 代数大素数列数
+    size_t num_qc_columns = 0;          // 二次特征列数
     size_t num_class_group_columns = 0; // 类群特征列数
     size_t num_schirokauer_columns = 0; // Schirokauer map 列数
-    size_t sign_column = 0;            // 符号列（如果有）
-    bool has_sign_column = false;      // 是否有符号列
+    size_t sign_column = 0;             // 符号列（如果有）
+    bool has_sign_column = false;       // 是否有符号列
 
     // 有理大素数 -> 列索引（有理侧无根，按 p 即可）
     std::unordered_map<uint64_t, uint32_t> rat_lp_to_col;
@@ -79,10 +80,8 @@ struct ColumnMapping {
 
     /// 总列数
     [[nodiscard]] size_t total_columns() const noexcept {
-        return num_rational_fb + num_algebraic_fb +
-               num_large_primes_rat + num_large_primes_alg +
-               num_qc_columns + num_class_group_columns +
-               num_schirokauer_columns +
+        return num_rational_fb + num_algebraic_fb + num_large_primes_rat + num_large_primes_alg +
+               num_qc_columns + num_class_group_columns + num_schirokauer_columns +
                (has_sign_column ? 1 : 0);
     }
 
@@ -124,21 +123,21 @@ struct ColumnMapping {
 
 /// 矩阵构建结果
 struct MatrixBuildResult {
-    SparseMatrix matrix;         // 构建的矩阵
-    ColumnMapping mapping;       // 列映射信息
-    std::vector<size_t> row_to_relation;  // 行索引 -> 原始关系索引的映射
+    SparseMatrix matrix;                 // 构建的矩阵
+    ColumnMapping mapping;               // 列映射信息
+    std::vector<size_t> row_to_relation; // 行索引 -> 原始关系索引的映射
 };
 
 /// 矩阵构建配置
 struct MatrixBuilderConfig {
-    bool include_sign_column = true;       // 是否包含符号列
-    bool include_qc_columns = true;        // 是否包含二次特征列
-    bool include_class_group = false;      // 类群特征列（默认禁用：大多数 N class number=1，无需额外列）
-    bool include_schirokauer = true;       // 是否包含 Schirokauer map 列
-    size_t num_qc_primes = 10;             // 二次特征素数数量
-    uint32_t qc_prime_start = 1000;        // 二次特征素数搜索起点
-    std::vector<uint32_t> schirokauer_primes = {2};  // GF(2) 矩阵只能用 ℓ=2
-    bool verbose = false;                   // 详细输出
+    bool include_sign_column = true; // 是否包含符号列
+    bool include_qc_columns = true;  // 是否包含二次特征列
+    bool include_class_group = false; // 类群特征列（默认禁用：大多数 N class number=1，无需额外列）
+    bool include_schirokauer = true;                // 是否包含 Schirokauer map 列
+    size_t num_qc_primes = 10;                      // 二次特征素数数量
+    uint32_t qc_prime_start = 1000;                 // 二次特征素数搜索起点
+    std::vector<uint32_t> schirokauer_primes = {2}; // GF(2) 矩阵只能用 ℓ=2
+    bool verbose = false;                           // 详细输出
 };
 
 /// MatrixBuilder - 从关系构建指数矩阵
@@ -146,16 +145,14 @@ class MatrixBuilder {
 public:
     using Config = MatrixBuilderConfig;
 
-    explicit MatrixBuilder(const Config& config = Config{})
-        : config_(config) {}
+    explicit MatrixBuilder(const Config& config = Config{}) : config_(config) {}
 
     /// 从关系和因子基构建矩阵
     /// @param relations 关系列表
     /// @param fb 因子基
     /// @return 构建结果
-    [[nodiscard]] MatrixBuildResult build(
-            const std::vector<Relation>& relations,
-            const FactorBase& fb) const {
+    [[nodiscard]] MatrixBuildResult build(const std::vector<Relation>& relations,
+                                          const FactorBase& fb) const {
 
         MatrixBuildResult result;
 
@@ -182,10 +179,9 @@ public:
     /// @param fb 因子基
     /// @param ctx 多项式上下文（用于计算代数范数）
     /// @return 构建结果
-    [[nodiscard]] MatrixBuildResult build_with_qc(
-            const std::vector<Relation>& relations,
-            const FactorBase& fb,
-            const PolynomialContext& ctx) const {
+    [[nodiscard]] MatrixBuildResult build_with_qc(const std::vector<Relation>& relations,
+                                                  const FactorBase& fb,
+                                                  const PolynomialContext& ctx) const {
 
         MatrixBuildResult result;
 
@@ -195,8 +191,8 @@ public:
         // 第二步：选择二次特征素数
         // If Schirokauer will be unavailable (f reducible mod 2), use extra QC primes
         size_t effective_qc_count = config_.num_qc_primes;
-        bool can_use_schirokauer = config_.include_schirokauer &&
-                                   ctx.degree() <= FastPoly::MAX_DEGREE;
+        bool can_use_schirokauer =
+            config_.include_schirokauer && ctx.degree() <= FastPoly::MAX_DEGREE;
         if (can_use_schirokauer) {
             // Full irreducibility check mod 2 (not just "no roots")
             uint32_t d_check = ctx.degree();
@@ -207,22 +203,21 @@ public:
             for (uint32_t i = 0; i <= d_check; ++i) {
                 c = ctx.coeff(i);
                 c %= two;
-                if (c.is_negative()) c += two;
+                if (c.is_negative())
+                    c += two;
                 f_mod2[i] = c.to_uint64();
             }
             bool f_irred_mod2 = sqrt::ModularPoly::is_irreducible(f_mod2, 2);
             if (!f_irred_mod2) {
                 // Compensate: more QC primes to replace missing Schirokauer
                 effective_qc_count = std::max(
-                    effective_qc_count,
-                    config_.num_qc_primes + static_cast<size_t>(d_check) * 8);
+                    effective_qc_count, config_.num_qc_primes + static_cast<size_t>(d_check) * 8);
             }
         } else if (config_.include_schirokauer) {
             // Degree exceeds FastPoly::MAX_DEGREE — cannot use Schirokauer maps
             // Compensate with extra QC primes
             effective_qc_count = std::max(
-                effective_qc_count,
-                config_.num_qc_primes + static_cast<size_t>(ctx.degree()) * 8);
+                effective_qc_count, config_.num_qc_primes + static_cast<size_t>(ctx.degree()) * 8);
         }
         std::vector<std::pair<uint32_t, uint32_t>> qc_prime_roots;
         if (config_.include_qc_columns) {
@@ -239,9 +234,12 @@ public:
             class_group = std::make_unique<sqrt::ClassGroup>(ctx, cg_config);
 
             if (config_.verbose) {
-                std::cerr << "[ClassGroup] Discriminant: " << class_group->discriminant().to_string() << "\n"
-                          << "[ClassGroup] Minkowski bound: " << class_group->minkowski_bound() << "\n"
-                          << "[ClassGroup] Class number estimate: " << class_group->class_number() << "\n"
+                std::cerr << "[ClassGroup] Discriminant: "
+                          << class_group->discriminant().to_string() << "\n"
+                          << "[ClassGroup] Minkowski bound: " << class_group->minkowski_bound()
+                          << "\n"
+                          << "[ClassGroup] Class number estimate: " << class_group->class_number()
+                          << "\n"
                           << "[ClassGroup] Generators: " << class_group->num_generators() << "\n";
             }
         }
@@ -263,7 +261,8 @@ public:
                     for (uint32_t i = 0; i <= d; ++i) {
                         c = ctx.coeff(i);
                         c %= ell_int;
-                        if (c.is_negative()) c += ell_int;
+                        if (c.is_negative())
+                            c += ell_int;
                         f_mod_ell[i] = c.to_uint64();
                     }
                     if (sqrt::ModularPoly::is_irreducible(f_mod_ell, ell)) {
@@ -283,7 +282,8 @@ public:
 
             if (config_.verbose) {
                 std::cerr << "[Schirokauer] Primes: ";
-                for (auto p : sm_primes) std::cerr << p << " ";
+                for (auto p : sm_primes)
+                    std::cerr << p << " ";
                 std::cerr << "\n[Schirokauer] Columns per prime: " << ctx.degree() << "\n"
                           << "[Schirokauer] Total columns: " << schirokauer->num_columns() << "\n";
             }
@@ -300,13 +300,14 @@ public:
         // 添加 Schirokauer map 列
         if (schirokauer) {
             result.mapping.num_schirokauer_columns = schirokauer->num_columns();
-            result.mapping.schirokauer_primes = schirokauer->primes();  // 存储实际使用的素数，非 config 原始值
+            result.mapping.schirokauer_primes =
+                schirokauer->primes(); // 存储实际使用的素数，非 config 原始值
         }
 
         // 第六步：构建矩阵
         if (config_.verbose) {
-            std::cerr << "[Matrix] Starting matrix build: " << relations.size()
-                      << " x " << result.mapping.total_columns() << "\n";
+            std::cerr << "[Matrix] Starting matrix build: " << relations.size() << " x "
+                      << result.mapping.total_columns() << "\n";
         }
         result.matrix = SparseMatrix(relations.size(), result.mapping.total_columns());
         result.row_to_relation.resize(relations.size());
@@ -374,6 +375,8 @@ public:
     /// Functionally identical to build_with_qc(vector, fb, ctx) when fed via
     /// VectorRelationSource(vec): produces bit-for-bit identical
     /// MatrixBuildResult. Verified by tests/test_sge_streaming.cpp.
+    /// OrdinalRelationSource implementations additionally preserve their
+    /// owning-corpus ordinals in MatrixBuildResult::row_to_relation.
     ///
     /// Memory cost: O(unique LPs + matrix nnz). The vector<Relation> never
     /// exists. Each parallel thread fetches its relation on demand and lets
@@ -385,10 +388,9 @@ public:
     /// For OOCRelationSource these are mmap reads — page cache handles repeat
     /// access. For VectorRelationSource the cost is negligible (vector copy).
     template <RelationSource Source>
-    [[nodiscard]] MatrixBuildResult build_with_qc_streaming(
-            const Source& source,
-            const FactorBase& fb,
-            const PolynomialContext& ctx) const {
+    [[nodiscard]] MatrixBuildResult build_with_qc_streaming(const Source& source,
+                                                            const FactorBase& fb,
+                                                            const PolynomialContext& ctx) const {
 
         MatrixBuildResult result;
 
@@ -397,8 +399,8 @@ public:
 
         // 第二步：选择二次特征素数 (与 vector 版完全相同)
         size_t effective_qc_count = config_.num_qc_primes;
-        bool can_use_schirokauer = config_.include_schirokauer &&
-                                   ctx.degree() <= FastPoly::MAX_DEGREE;
+        bool can_use_schirokauer =
+            config_.include_schirokauer && ctx.degree() <= FastPoly::MAX_DEGREE;
         if (can_use_schirokauer) {
             uint32_t d_check = ctx.degree();
             std::vector<uint64_t> f_mod2(d_check + 1);
@@ -407,19 +409,18 @@ public:
             for (uint32_t i = 0; i <= d_check; ++i) {
                 c = ctx.coeff(i);
                 c %= two;
-                if (c.is_negative()) c += two;
+                if (c.is_negative())
+                    c += two;
                 f_mod2[i] = c.to_uint64();
             }
             bool f_irred_mod2 = sqrt::ModularPoly::is_irreducible(f_mod2, 2);
             if (!f_irred_mod2) {
                 effective_qc_count = std::max(
-                    effective_qc_count,
-                    config_.num_qc_primes + static_cast<size_t>(d_check) * 8);
+                    effective_qc_count, config_.num_qc_primes + static_cast<size_t>(d_check) * 8);
             }
         } else if (config_.include_schirokauer) {
             effective_qc_count = std::max(
-                effective_qc_count,
-                config_.num_qc_primes + static_cast<size_t>(ctx.degree()) * 8);
+                effective_qc_count, config_.num_qc_primes + static_cast<size_t>(ctx.degree()) * 8);
         }
         std::vector<std::pair<uint32_t, uint32_t>> qc_prime_roots;
         if (config_.include_qc_columns) {
@@ -436,8 +437,7 @@ public:
             if (config_.verbose) {
                 std::cerr << "[ClassGroup] Discriminant: "
                           << class_group->discriminant().to_string() << "\n"
-                          << "[ClassGroup] Generators: "
-                          << class_group->num_generators() << "\n";
+                          << "[ClassGroup] Generators: " << class_group->num_generators() << "\n";
             }
         }
 
@@ -454,7 +454,8 @@ public:
                     for (uint32_t i = 0; i <= d; ++i) {
                         c = ctx.coeff(i);
                         c %= ell_int;
-                        if (c.is_negative()) c += ell_int;
+                        if (c.is_negative())
+                            c += ell_int;
                         f_mod_ell[i] = c.to_uint64();
                     }
                     if (sqrt::ModularPoly::is_irreducible(f_mod_ell, ell)) {
@@ -470,8 +471,7 @@ public:
             sm_config.verbose = config_.verbose;
             schirokauer = std::make_unique<SchirokaurMap>(ctx, sm_config);
             if (config_.verbose) {
-                std::cerr << "[Schirokauer] Total columns: "
-                          << schirokauer->num_columns() << "\n";
+                std::cerr << "[Schirokauer] Total columns: " << schirokauer->num_columns() << "\n";
             }
         }
 
@@ -489,8 +489,8 @@ public:
         // 第六步：流式矩阵构建
         const std::size_t n = source.count();
         if (config_.verbose) {
-            std::cerr << "[Matrix-streaming] Starting matrix build: " << n
-                      << " x " << result.mapping.total_columns() << "\n";
+            std::cerr << "[Matrix-streaming] Starting matrix build: " << n << " x "
+                      << result.mapping.total_columns() << "\n";
         }
         result.matrix = SparseMatrix(n, result.mapping.total_columns());
         result.row_to_relation.resize(n);
@@ -538,7 +538,11 @@ public:
                 }
             }
 
-            result.row_to_relation[i] = i;
+            if constexpr (OrdinalRelationSource<Source>) {
+                result.row_to_relation[i] = static_cast<std::size_t>(source.source_ordinal(i));
+            } else {
+                result.row_to_relation[i] = i;
+            }
             // rel destroyed here — RAM not accumulating.
         });
 
@@ -550,59 +554,30 @@ private:
 
     /// 大素数收集结果
     struct LargePrimeInfo {
-        std::unordered_set<uint64_t> rat_primes;  // 有理侧大素数集合
-        std::unordered_set<PrimeIdealKey, PrimeIdealKeyHash> alg_primes;  // 代数侧素理想 (p,r) 集合
+        std::unordered_set<uint64_t> rat_primes;                         // 有理侧大素数集合
+        std::unordered_set<PrimeIdealKey, PrimeIdealKeyHash> alg_primes; // 代数侧素理想 (p,r) 集合
     };
 
     /// Accumulate a single relation's LP contributions into LargePrimeInfo.
     /// Extracted from collect_large_primes so both vector and streaming paths
-    /// share identical insertion logic — guarantees the same unordered_set
-    /// iteration order (column layout) across paths on identical inputs.
+    /// share identical parity semantics. Column assignment sorts the collected
+    /// keys later, so hash iteration order cannot affect the layout.
     static void accumulate_lp_one(LargePrimeInfo& info, const Relation& rel) {
-        // 有理侧：按素数累计指数，只收集奇数指数的
-        // 小 LP 计数 (典型 1-2) → 用 stack 数组避免 map alloc
-        const auto& rat_lps = rel.rational_large_prime;
-        if (rat_lps.size() <= 8) {
-            uint64_t rkeys[8]; uint32_t rexps[8]; size_t ru = 0;
-            for (const auto& lp : rat_lps) {
-                size_t j = 0;
-                for (; j < ru; ++j) if (rkeys[j] == lp.p) break;
-                if (j == ru) { rkeys[ru] = lp.p; rexps[ru] = lp.e; ++ru; }
-                else rexps[j] += lp.e;
-            }
-            for (size_t i = 0; i < ru; ++i) if (rexps[i] & 1u) info.rat_primes.insert(rkeys[i]);
-        } else {
-            std::unordered_map<uint64_t, uint32_t> rat_exp;
-            rat_exp.reserve(rat_lps.size());
-            for (const auto& lp : rat_lps) rat_exp[lp.p] += lp.e;
-            for (const auto& [p, exp] : rat_exp) if (exp & 1u) info.rat_primes.insert(p);
-        }
-
-        // 代数侧：按 (p,r) 素理想累计指数，只收集奇数指数的
-        const auto& alg_lps = rel.algebraic_large_prime;
-        if (alg_lps.size() <= 8) {
-            PrimeIdealKey akeys[8]; uint32_t aexps[8]; size_t au = 0;
-            for (const auto& lp : alg_lps) {
-                PrimeIdealKey k{lp.p, lp.r};
-                size_t j = 0;
-                for (; j < au; ++j) if (akeys[j] == k) break;
-                if (j == au) { akeys[au] = k; aexps[au] = lp.e; ++au; }
-                else aexps[j] += lp.e;
-            }
-            for (size_t i = 0; i < au; ++i) if (aexps[i] & 1u) info.alg_primes.insert(akeys[i]);
-        } else {
-            std::unordered_map<PrimeIdealKey, uint32_t, PrimeIdealKeyHash> alg_exp;
-            alg_exp.reserve(alg_lps.size());
-            for (const auto& lp : alg_lps) alg_exp[{lp.p, lp.r}] += lp.e;
-            for (const auto& [key, exp] : alg_exp) if (exp & 1u) info.alg_primes.insert(key);
-        }
+        gnfs::relation::for_each_odd_large_prime_key(
+            rel, [&](const gnfs::relation::LargePrimeKey& key) {
+                if (key.is_algebraic) {
+                    info.alg_primes.insert(PrimeIdealKey{key.prime, key.root});
+                } else {
+                    info.rat_primes.insert(key.prime);
+                }
+            });
     }
 
     /// 收集所有大素数（仅包含有效贡献的 LP）
     /// 合并关系中，共享 LP 的指数为偶数（在 GF(2) 矩阵中贡献为 0），
     /// 不应为其创建列。只收集在至少一个关系中有奇数指数的 LP。
-    [[nodiscard]] LargePrimeInfo collect_large_primes(
-            const std::vector<Relation>& relations) const {
+    [[nodiscard]] LargePrimeInfo
+    collect_large_primes(const std::vector<Relation>& relations) const {
 
         LargePrimeInfo info;
         // Reserve for typical LP density (60d-scale: ~M cols expected for M rels).
@@ -621,8 +596,7 @@ private:
     /// from the source one relation at a time, so RAM usage stays O(unique LPs)
     /// instead of O(relations) needed by the vector path.
     template <RelationSource Source>
-    [[nodiscard]] LargePrimeInfo collect_large_primes_streaming(
-            const Source& source) const {
+    [[nodiscard]] LargePrimeInfo collect_large_primes_streaming(const Source& source) const {
 
         const std::size_t n = source.count();
         LargePrimeInfo info;
@@ -642,10 +616,9 @@ private:
     /// Select SPLIT primes where f(x) has roots mod p, returning (prime, root) pairs.
     /// Each (p, r) pair becomes one QC column: Legendre symbol ((a - b*r) / p).
     /// This gives d independent bits per fully-split prime (vs 1 bit for norm-based QC).
-    [[nodiscard]] std::vector<std::pair<uint32_t, uint32_t>> select_qc_prime_roots(
-            const PolynomialContext& ctx,
-            size_t num_columns,
-            uint32_t min_prime = 0) const {
+    [[nodiscard]] std::vector<std::pair<uint32_t, uint32_t>>
+    select_qc_prime_roots(const PolynomialContext& ctx, size_t num_columns,
+                          uint32_t min_prime = 0) const {
 
         std::vector<std::pair<uint32_t, uint32_t>> qc_pairs;
         qc_pairs.reserve(num_columns);
@@ -662,7 +635,7 @@ private:
         std::vector<Integer> f_coeffs;
         f_coeffs.reserve(d + 1);
         for (uint32_t i = 0; i <= d; ++i) {
-            f_coeffs.emplace_back(ctx.coeff(i));  // Integer copy ctor
+            f_coeffs.emplace_back(ctx.coeff(i)); // Integer copy ctor
         }
         polynomial::IntPolynomial f_poly(std::move(f_coeffs));
 
@@ -670,22 +643,27 @@ private:
             p = next_prime(p);
 
             // Skip primes that divide N or leading coeff — direct GMP (zero alloc)
-            if (mpz_divisible_ui_p(n.get_mpz(), p)) continue;
-            if (mpz_divisible_ui_p(ctx.coeff(d).get_mpz(), p)) continue;
+            if (mpz_divisible_ui_p(n.get_mpz(), p))
+                continue;
+            if (mpz_divisible_ui_p(ctx.coeff(d).get_mpz(), p))
+                continue;
 
             // Find roots using Cantor-Zassenhaus (O(d²·log p), fast for large p)
             auto roots = f_poly.roots_mod_p(p);
 
             // Skip inert primes (no roots) — useless for per-root QC
-            if (roots.empty()) continue;
+            if (roots.empty())
+                continue;
 
             // Skip primes with repeated roots (gcd(f, f') non-trivial mod p)
-            if (roots.size() < d && has_multiple_root(ctx, p)) continue;
+            if (roots.size() < d && has_multiple_root(ctx, p))
+                continue;
 
             // Add each root as a separate QC column
             for (uint32_t r : roots) {
                 qc_pairs.emplace_back(p, r);
-                if (qc_pairs.size() >= num_columns) break;
+                if (qc_pairs.size() >= num_columns)
+                    break;
             }
         }
 
@@ -696,7 +674,8 @@ private:
     /// Uses gcd(f, f') — has repeated root iff deg(gcd) >= 1
     [[nodiscard]] bool has_multiple_root(const PolynomialContext& ctx, uint32_t p) const {
         uint32_t d = ctx.degree();
-        if (d == 0) return false;
+        if (d == 0)
+            return false;
 
         uint64_t p64 = p;
 
@@ -708,7 +687,8 @@ private:
         for (uint32_t i = 0; i <= d; ++i) {
             c = ctx.coeff(i);
             c %= p_int;
-            if (c.is_negative()) c += p_int;
+            if (c.is_negative())
+                c += p_int;
             f[i] = c.to_uint64();
         }
 
@@ -720,35 +700,47 @@ private:
 
         // gcd(f, f') via Euclidean algorithm over F_p[x]
         // Copy f and fp into working buffers
-        auto a = f;    // degree d
-        auto b = fp;   // degree d-1
+        auto a = f;  // degree d
+        auto b = fp; // degree d-1
 
         // Find actual degrees
         auto deg = [](const std::vector<uint64_t>& poly) -> int {
             for (int i = static_cast<int>(poly.size()) - 1; i >= 0; --i) {
-                if (poly[static_cast<size_t>(i)] != 0) return i;
+                if (poly[static_cast<size_t>(i)] != 0)
+                    return i;
             }
-            return -1;  // zero polynomial
+            return -1; // zero polynomial
         };
 
         // Modular inverse via extended Euclidean
         auto mod_inv = [p64](uint64_t x) -> uint64_t {
-            if (x == 0) return 0;
+            if (x == 0)
+                return 0;
             int64_t a0 = static_cast<int64_t>(p64), a1 = static_cast<int64_t>(x);
             int64_t s0 = 0, s1 = 1;
             while (a1 != 0) {
                 int64_t q = a0 / a1;
-                int64_t tmp = a0 - q * a1; a0 = a1; a1 = tmp;
-                tmp = s0 - q * s1; s0 = s1; s1 = tmp;
+                int64_t tmp = a0 - q * a1;
+                a0 = a1;
+                a1 = tmp;
+                tmp = s0 - q * s1;
+                s0 = s1;
+                s1 = tmp;
             }
-            return static_cast<uint64_t>((s0 % static_cast<int64_t>(p64) + static_cast<int64_t>(p64)) % static_cast<int64_t>(p64));
+            return static_cast<uint64_t>(
+                (s0 % static_cast<int64_t>(p64) + static_cast<int64_t>(p64)) %
+                static_cast<int64_t>(p64));
         };
 
         while (true) {
             int db = deg(b);
-            if (db < 0) break;  // b is zero → gcd = a
+            if (db < 0)
+                break; // b is zero → gcd = a
             int da = deg(a);
-            if (da < db) { std::swap(a, b); continue; }
+            if (da < db) {
+                std::swap(a, b);
+                continue;
+            }
 
             // a = a - (lead_a / lead_b) * x^(da-db) * b
             uint64_t inv_lb = mod_inv(b[static_cast<size_t>(db)]);
@@ -761,7 +753,8 @@ private:
                 a[a_idx] = (a[a_idx] + p64 - sub) % p64;
             }
             // Trim leading zeros
-            while (a.size() > 1 && a.back() == 0) a.pop_back();
+            while (a.size() > 1 && a.back() == 0)
+                a.pop_back();
             std::swap(a, b);
         }
 
@@ -769,9 +762,43 @@ private:
         return deg(a) >= 1;
     }
 
+    /// Assign deterministic LP columns after factor-base/sign offsets are set.
+    /// unordered_set iteration order is not portable across standard-library
+    /// implementations, so both vector and streaming builds sort the structural
+    /// keys before assigning column numbers.
+    static void setup_large_prime_mapping(ColumnMapping& mapping, const LargePrimeInfo& lp_info) {
+        mapping.num_large_primes_rat = lp_info.rat_primes.size();
+        mapping.num_large_primes_alg = lp_info.alg_primes.size();
+
+        std::vector<uint64_t> rational_primes(lp_info.rat_primes.begin(), lp_info.rat_primes.end());
+        std::sort(rational_primes.begin(), rational_primes.end());
+
+        std::vector<PrimeIdealKey> algebraic_primes(lp_info.alg_primes.begin(),
+                                                    lp_info.alg_primes.end());
+        std::sort(algebraic_primes.begin(), algebraic_primes.end(),
+                  [](const PrimeIdealKey& lhs, const PrimeIdealKey& rhs) {
+                      if (lhs.p != rhs.p)
+                          return lhs.p < rhs.p;
+                      return lhs.r < rhs.r;
+                  });
+
+        mapping.rat_lp_to_col.clear();
+        mapping.rat_lp_to_col.reserve(rational_primes.size());
+        uint32_t col = static_cast<uint32_t>(mapping.rat_lp_start());
+        for (uint64_t p : rational_primes) {
+            mapping.rat_lp_to_col.emplace(p, col++);
+        }
+
+        mapping.alg_lp_to_col.clear();
+        mapping.alg_lp_to_col.reserve(algebraic_primes.size());
+        col = static_cast<uint32_t>(mapping.alg_lp_start());
+        for (const auto& key : algebraic_primes) {
+            mapping.alg_lp_to_col.emplace(key, col++);
+        }
+    }
+
     /// 设置列映射（无 QC 版本 — build_row 不设 sign 列，强制禁用）
-    void setup_column_mapping(ColumnMapping& mapping,
-                              const FactorBase& fb,
+    void setup_column_mapping(ColumnMapping& mapping, const FactorBase& fb,
                               const LargePrimeInfo& lp_info) const {
 
         // build_row() cannot compute sign (needs PolynomialContext),
@@ -783,39 +810,22 @@ private:
         mapping.num_rational_fb = fb.rational_count();
         mapping.num_algebraic_fb = fb.sieve_algebraic_count();
 
-        // 大素数列
-        mapping.num_large_primes_rat = lp_info.rat_primes.size();
-        mapping.num_large_primes_alg = lp_info.alg_primes.size();
-
         // 无二次特征列
         mapping.num_qc_columns = 0;
 
-        // 为有理大素数分配列索引
-        mapping.rat_lp_to_col.reserve(lp_info.rat_primes.size());
-        uint32_t col = static_cast<uint32_t>(mapping.rat_lp_start());
-        for (uint64_t p : lp_info.rat_primes) {
-            mapping.rat_lp_to_col[p] = col++;
-        }
-
-        // 为代数大素数（素理想）分配列索引——按 (p, r) 键
-        mapping.alg_lp_to_col.reserve(lp_info.alg_primes.size());
-        col = static_cast<uint32_t>(mapping.alg_lp_start());
-        for (const auto& key : lp_info.alg_primes) {
-            mapping.alg_lp_to_col[key] = col++;
-        }
+        setup_large_prime_mapping(mapping, lp_info);
     }
 
     /// 设置带二次特征的列映射（per-root QC）
     /// 此版本可选启用符号列（build_with_qc 有 PolynomialContext，可以正确计算符号）
-    void setup_column_mapping_with_qc(ColumnMapping& mapping,
-                                      const FactorBase& fb,
-                                      const LargePrimeInfo& lp_info,
-                                      const std::vector<std::pair<uint32_t, uint32_t>>& qc_prime_roots) const {
+    void setup_column_mapping_with_qc(
+        ColumnMapping& mapping, const FactorBase& fb, const LargePrimeInfo& lp_info,
+        const std::vector<std::pair<uint32_t, uint32_t>>& qc_prime_roots) const {
 
         // Enable sign column if requested — build_with_qc can compute it
         if (config_.include_sign_column) {
             mapping.has_sign_column = true;
-            mapping.sign_column = 0;  // column 0 = sign
+            mapping.sign_column = 0; // column 0 = sign
         } else {
             mapping.has_sign_column = false;
             mapping.sign_column = 0;
@@ -825,36 +835,18 @@ private:
         mapping.num_rational_fb = fb.rational_count();
         mapping.num_algebraic_fb = fb.sieve_algebraic_count();
 
-        // 大素数列
-        mapping.num_large_primes_rat = lp_info.rat_primes.size();
-        mapping.num_large_primes_alg = lp_info.alg_primes.size();
-
         // 二次特征列
         mapping.num_qc_columns = qc_prime_roots.size();
         mapping.qc_prime_roots = qc_prime_roots;
 
-        // 为有理大素数分配列索引
-        mapping.rat_lp_to_col.reserve(lp_info.rat_primes.size());
-        uint32_t col = static_cast<uint32_t>(mapping.rat_lp_start());
-        for (uint64_t p : lp_info.rat_primes) {
-            mapping.rat_lp_to_col[p] = col++;
-        }
-
-        // 为代数大素数（素理想）分配列索引
-        mapping.alg_lp_to_col.reserve(lp_info.alg_primes.size());
-        col = static_cast<uint32_t>(mapping.alg_lp_start());
-        for (const auto& key : lp_info.alg_primes) {
-            mapping.alg_lp_to_col[key] = col++;
-        }
+        setup_large_prime_mapping(mapping, lp_info);
     }
 
     /// 构建单行
-    void build_row(SparseRow& row,
-                   const Relation& rel,
-                   const FactorBase& fb,
+    void build_row(SparseRow& row, const Relation& rel, const FactorBase& fb,
                    const ColumnMapping& mapping) const {
 
-        (void)fb;  // 未使用，但保持接口一致
+        (void)fb; // 未使用，但保持接口一致
 
         // 清空行
         row.clear_all();
@@ -871,22 +863,32 @@ private:
         {
             const auto& rfacs = rel.rational_factors;
             if (rfacs.size() <= 32) {
-                uint32_t rkeys[32]; uint8_t rexps[32]; size_t ru = 0;
+                uint32_t rkeys[32];
+                uint8_t rexps[32];
+                size_t ru = 0;
                 for (uint32_t f : rfacs) {
                     size_t j = 0;
-                    for (; j < ru; ++j) if (rkeys[j] == f) break;
-                    if (j == ru) { rkeys[ru] = f; rexps[ru] = 1; ++ru; }
-                    else ++rexps[j];
+                    for (; j < ru; ++j)
+                        if (rkeys[j] == f)
+                            break;
+                    if (j == ru) {
+                        rkeys[ru] = f;
+                        rexps[ru] = 1;
+                        ++ru;
+                    } else
+                        ++rexps[j];
                 }
                 for (size_t i = 0; i < ru; ++i) {
                     if ((rexps[i] & 1u) && rkeys[i] < mapping.num_rational_fb) {
-                        row.append_unchecked(static_cast<uint32_t>(mapping.rat_fb_start() + rkeys[i]));
+                        row.append_unchecked(
+                            static_cast<uint32_t>(mapping.rat_fb_start() + rkeys[i]));
                     }
                 }
             } else {
                 std::unordered_map<uint32_t, uint8_t> exponents;
                 exponents.reserve(rfacs.size());
-                for (uint32_t f : rfacs) exponents[f]++;
+                for (uint32_t f : rfacs)
+                    exponents[f]++;
                 for (const auto& [idx, exp] : exponents) {
                     if ((exp & 1u) && idx < mapping.num_rational_fb) {
                         row.append_unchecked(static_cast<uint32_t>(mapping.rat_fb_start() + idx));
@@ -899,22 +901,32 @@ private:
         {
             const auto& afacs = rel.algebraic_factors;
             if (afacs.size() <= 32) {
-                uint32_t akeys[32]; uint8_t aexps[32]; size_t au = 0;
+                uint32_t akeys[32];
+                uint8_t aexps[32];
+                size_t au = 0;
                 for (uint32_t f : afacs) {
                     size_t j = 0;
-                    for (; j < au; ++j) if (akeys[j] == f) break;
-                    if (j == au) { akeys[au] = f; aexps[au] = 1; ++au; }
-                    else ++aexps[j];
+                    for (; j < au; ++j)
+                        if (akeys[j] == f)
+                            break;
+                    if (j == au) {
+                        akeys[au] = f;
+                        aexps[au] = 1;
+                        ++au;
+                    } else
+                        ++aexps[j];
                 }
                 for (size_t i = 0; i < au; ++i) {
                     if ((aexps[i] & 1u) && akeys[i] < mapping.num_algebraic_fb) {
-                        row.append_unchecked(static_cast<uint32_t>(mapping.alg_fb_start() + akeys[i]));
+                        row.append_unchecked(
+                            static_cast<uint32_t>(mapping.alg_fb_start() + akeys[i]));
                     }
                 }
             } else {
                 std::unordered_map<uint32_t, uint8_t> exponents;
                 exponents.reserve(afacs.size());
-                for (uint32_t f : afacs) exponents[f]++;
+                for (uint32_t f : afacs)
+                    exponents[f]++;
                 for (const auto& [idx, exp] : exponents) {
                     if ((exp & 1u) && idx < mapping.num_algebraic_fb) {
                         row.append_unchecked(static_cast<uint32_t>(mapping.alg_fb_start() + idx));
@@ -923,82 +935,30 @@ private:
             }
         }
 
-        // 有理大素数 (small-LP fast path: size<=8 用 stack arrays 避免 map alloc)
-        {
-            const auto& rat_lps = rel.rational_large_prime;
-            if (rat_lps.size() <= 8) {
-                uint64_t rkeys[8]; uint8_t rexps[8]; size_t ru = 0;
-                for (const auto& lp : rat_lps) {
-                    size_t j = 0;
-                    for (; j < ru; ++j) if (rkeys[j] == lp.p) break;
-                    if (j == ru) { rkeys[ru] = lp.p; rexps[ru] = lp.e; ++ru; }
-                    else rexps[j] += lp.e;
-                }
-                for (size_t i = 0; i < ru; ++i) {
-                    if (rexps[i] & 1u) {
-                        auto it = mapping.rat_lp_to_col.find(rkeys[i]);
-                        if (it != mapping.rat_lp_to_col.end()) row.append_unchecked(it->second);
+        // Large-prime columns use the same canonical per-relation parity view
+        // as filtering and adaptive relation metrics.
+        gnfs::relation::for_each_odd_large_prime_key(
+            rel, [&](const gnfs::relation::LargePrimeKey& key) {
+                if (key.is_algebraic) {
+                    auto it = mapping.alg_lp_to_col.find(PrimeIdealKey{key.prime, key.root});
+                    if (it != mapping.alg_lp_to_col.end()) {
+                        row.append_unchecked(it->second);
+                    }
+                } else {
+                    auto it = mapping.rat_lp_to_col.find(key.prime);
+                    if (it != mapping.rat_lp_to_col.end()) {
+                        row.append_unchecked(it->second);
                     }
                 }
-            } else {
-                std::unordered_map<uint64_t, uint8_t> exponents;
-                exponents.reserve(rat_lps.size());
-                for (const auto& lp : rat_lps) exponents[lp.p] += lp.e;
-                for (const auto& [p, exp] : exponents) {
-                    if (exp & 1u) {
-                        auto it = mapping.rat_lp_to_col.find(p);
-                        if (it != mapping.rat_lp_to_col.end()) row.append_unchecked(it->second);
-                    }
-                }
-            }
-        }
-
-        // 代数大素数——按 (p, r) 素理想键累积指数 (same small-LP fast path)
-        {
-            const auto& alg_lps = rel.algebraic_large_prime;
-            if (alg_lps.size() <= 8) {
-                PrimeIdealKey akeys[8]; uint8_t aexps[8]; size_t au = 0;
-                for (const auto& lp : alg_lps) {
-                    PrimeIdealKey k{lp.p, lp.r};
-                    size_t j = 0;
-                    for (; j < au; ++j) if (akeys[j] == k) break;
-                    if (j == au) { akeys[au] = k; aexps[au] = lp.e; ++au; }
-                    else aexps[j] += lp.e;
-                }
-                for (size_t i = 0; i < au; ++i) {
-                    if (aexps[i] & 1u) {
-                        auto it = mapping.alg_lp_to_col.find(akeys[i]);
-                        if (it != mapping.alg_lp_to_col.end()) row.append_unchecked(it->second);
-                    }
-                }
-            } else {
-                std::unordered_map<PrimeIdealKey, uint8_t, PrimeIdealKeyHash> exponents;
-                exponents.reserve(alg_lps.size());
-                for (const auto& lp : alg_lps) {
-                    exponents[{lp.p, lp.r}] += lp.e;
-                }
-
-                for (const auto& [key, exp] : exponents) {
-                    if (exp % 2 == 1) {
-                        auto it = mapping.alg_lp_to_col.find(key);
-                        if (it != mapping.alg_lp_to_col.end()) {
-                            row.append_unchecked(it->second);
-                        }
-                    }
-                }
-            }
-        }
+            });
 
         // build_with_qc 后续会 test() sign 列;ensure_sorted 让 test 走 O(log n) 二分。
         row.ensure_sorted();
     }
 
     /// 构建带二次特征的单行
-    void build_row_with_qc(SparseRow& row,
-                           const Relation& rel,
-                           const FactorBase& fb,
-                           const PolynomialContext& ctx,
-                           const ColumnMapping& mapping) const {
+    void build_row_with_qc(SparseRow& row, const Relation& rel, const FactorBase& fb,
+                           const PolynomialContext& ctx, const ColumnMapping& mapping) const {
 
         // 首先构建基础行
         build_row(row, rel, fb, mapping);
@@ -1009,9 +969,8 @@ private:
             // v = ai - m*bi via mpz_submul_ui (fused FMS, drops bm temp)
             Integer v;
             auto is_neg = [&](int64_t ai, uint64_t bi) {
-                v = ai;  // mpz_set_si direct
-                mpz_submul_ui(v.get_mpz(), ctx.m().get_mpz(),
-                              static_cast<unsigned long>(bi));
+                v = ai; // mpz_set_si direct
+                mpz_submul_ui(v.get_mpz(), ctx.m().get_mpz(), static_cast<unsigned long>(bi));
                 return v.is_negative();
             };
 
@@ -1043,9 +1002,10 @@ private:
                 uint64_t b_mod = b % q;
                 uint64_t br = (b_mod * r) % q;
                 int64_t val = (a_mod - static_cast<int64_t>(br) + q_s) % q_s;
-                if (val == 0) return false;  // (0/q) = 0, contributes 0 to GF(2)
+                if (val == 0)
+                    return false; // (0/q) = 0, contributes 0 to GF(2)
                 uint64_t leg = powmod_u64(static_cast<uint64_t>(val), (q - 1) / 2, q);
-                return (leg == q - 1);  // -1 → bit=1 (non-residue)
+                return (leg == q - 1); // -1 → bit=1 (non-residue)
             };
 
             bool qc_bit = compute_legendre_bit(rel.a, rel.b);
@@ -1084,22 +1044,28 @@ private:
         // (a / p) = a^((p-1)/2) mod p using fast native arithmetic
         uint64_t r = powmod_u64(a_val, (p - 1) / 2, p);
 
-        if (r == 0) return 0;
-        if (r == 1) return 1;
-        if (r == p - 1) return -1;
+        if (r == 0)
+            return 0;
+        if (r == 1)
+            return 1;
+        if (r == p - 1)
+            return -1;
 
         // a^((p-1)/2) mod p ∈ {0, 1, p-1} for prime p (Euler's criterion).
         // 走到这里说明 p 不是素数或 powmod 有 bug — Release 下不能静默返回 0
         // (会让 QR/NQR 判定错误，下游矩阵列污染)。
         assert(false && "legendre_symbol: unexpected residue");
-        throw std::logic_error("legendre_symbol: a^((p-1)/2) ∉ {0, 1, p-1}; p is not prime or powmod is broken");
+        throw std::logic_error(
+            "legendre_symbol: a^((p-1)/2) ∉ {0, 1, p-1}; p is not prime or powmod is broken");
     }
 
     /// 找下一个素数
     [[nodiscard]] static uint32_t next_prime(uint32_t n) {
         n++;
-        if (n <= 2) return 2;
-        if (n % 2 == 0) n++;
+        if (n <= 2)
+            return 2;
+        if (n % 2 == 0)
+            n++;
 
         while (!is_prime(n)) {
             n += 2;
@@ -1109,17 +1075,23 @@ private:
 
     /// 简单素性测试。整数 sqrt 避免 std::sqrt(double) 在接近 2^32 边界的精度问题。
     [[nodiscard]] static bool is_prime(uint32_t n) {
-        if (n < 2) return false;
-        if (n == 2) return true;
-        if (n % 2 == 0) return false;
+        if (n < 2)
+            return false;
+        if (n == 2)
+            return true;
+        if (n % 2 == 0)
+            return false;
 
         // 整数 sqrt:用 floor(sqrt(double)) + 修正,防止 n 接近 UINT32_MAX 时
         // double 浮点丢精度导致 sqrt_n 少 1 漏检。
         uint32_t sqrt_n = static_cast<uint32_t>(std::sqrt(static_cast<double>(n)));
-        while (static_cast<uint64_t>(sqrt_n + 1) * (sqrt_n + 1) <= n) ++sqrt_n;
-        while (static_cast<uint64_t>(sqrt_n) * sqrt_n > n) --sqrt_n;
+        while (static_cast<uint64_t>(sqrt_n + 1) * (sqrt_n + 1) <= n)
+            ++sqrt_n;
+        while (static_cast<uint64_t>(sqrt_n) * sqrt_n > n)
+            --sqrt_n;
         for (uint32_t i = 3; i <= sqrt_n; i += 2) {
-            if (n % i == 0) return false;
+            if (n % i == 0)
+                return false;
         }
         return true;
     }
@@ -1131,8 +1103,8 @@ struct MatrixStats {
     size_t num_cols = 0;
     size_t total_weight = 0;
     double avg_row_weight = 0.0;
-    double density = 0.0;  // 非零比例
-    size_t excess = 0;     // 行数 - 列数 (期望 > 0)
+    double density = 0.0; // 非零比例
+    size_t excess = 0;    // 行数 - 列数 (期望 > 0)
 
     [[nodiscard]] bool has_excess() const noexcept {
         return num_rows > num_cols;
@@ -1148,8 +1120,7 @@ struct MatrixStats {
 
     if (stats.num_rows > 0 && stats.num_cols > 0) {
         stats.density = static_cast<double>(stats.total_weight) /
-                        (static_cast<double>(stats.num_rows) *
-                         static_cast<double>(stats.num_cols));
+                        (static_cast<double>(stats.num_rows) * static_cast<double>(stats.num_cols));
     }
 
     if (stats.num_rows > stats.num_cols) {
@@ -1165,17 +1136,17 @@ struct MatrixStats {
 /// cols/rows). Walked once per Phase 5 matrix build (~10M nnz scan on 50d).
 struct MatrixDiagnostics {
     // Row distribution
-    size_t empty_rows = 0;        // weight=0 (degenerate, would be dropped by SGE)
-    size_t singleton_rows = 0;    // weight=1 (forces a column to 0, often-useless)
+    size_t empty_rows = 0;     // weight=0 (degenerate, would be dropped by SGE)
+    size_t singleton_rows = 0; // weight=1 (forces a column to 0, often-useless)
     size_t min_row_weight = 0;
     size_t max_row_weight = 0;
 
     // Col distribution
-    size_t empty_cols = 0;        // weight=0 (column never appears; sieve gap signal)
-    size_t singleton_cols = 0;    // weight=1 (SGE eliminable, free Gauss pivot)
-    size_t low_weight_cols = 0;   // weight ∈ [2, 4] (eligible for SGE w1/w2)
+    size_t empty_cols = 0;      // weight=0 (column never appears; sieve gap signal)
+    size_t singleton_cols = 0;  // weight=1 (SGE eliminable, free Gauss pivot)
+    size_t low_weight_cols = 0; // weight ∈ [2, 4] (eligible for SGE w1/w2)
     size_t max_col_weight = 0;
-    double avg_col_weight = 0.0;  // total_weight / num_cols (includes empty cols)
+    double avg_col_weight = 0.0; // total_weight / num_cols (includes empty cols)
 };
 
 [[nodiscard]] inline MatrixDiagnostics compute_matrix_diagnostics(const SparseMatrix& matrix) {
@@ -1192,20 +1163,25 @@ struct MatrixDiagnostics {
     std::vector<size_t> col_weight(num_cols, 0);
     bool first_row = true;
     for (const auto& row : matrix.rows()) {
-        const auto& idx = row.indices();  // sorted + dedup'd
+        const auto& idx = row.indices(); // sorted + dedup'd
         const size_t w = idx.size();
-        if (w == 0) ++d.empty_rows;
-        else if (w == 1) ++d.singleton_rows;
+        if (w == 0)
+            ++d.empty_rows;
+        else if (w == 1)
+            ++d.singleton_rows;
         if (first_row) {
             d.min_row_weight = w;
             d.max_row_weight = w;
             first_row = false;
         } else {
-            if (w < d.min_row_weight) d.min_row_weight = w;
-            if (w > d.max_row_weight) d.max_row_weight = w;
+            if (w < d.min_row_weight)
+                d.min_row_weight = w;
+            if (w > d.max_row_weight)
+                d.max_row_weight = w;
         }
         for (uint32_t c : idx) {
-            if (c < num_cols) ++col_weight[c];
+            if (c < num_cols)
+                ++col_weight[c];
         }
     }
 
@@ -1214,10 +1190,14 @@ struct MatrixDiagnostics {
     for (size_t c = 0; c < num_cols; ++c) {
         const size_t w = col_weight[c];
         col_total += w;
-        if (w == 0) ++d.empty_cols;
-        else if (w == 1) ++d.singleton_cols;
-        else if (w <= 4) ++d.low_weight_cols;
-        if (w > d.max_col_weight) d.max_col_weight = w;
+        if (w == 0)
+            ++d.empty_cols;
+        else if (w == 1)
+            ++d.singleton_cols;
+        else if (w <= 4)
+            ++d.low_weight_cols;
+        if (w > d.max_col_weight)
+            d.max_col_weight = w;
     }
     d.avg_col_weight = static_cast<double>(col_total) / static_cast<double>(num_cols);
 

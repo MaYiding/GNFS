@@ -19,7 +19,7 @@ jobs:
     name: ${{ matrix.platform_label }}
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.experimental }}
-    timeout-minutes: 45
+    timeout-minutes: ${{ matrix.timeout_minutes }}
     strategy:
       fail-fast: false
       matrix:
@@ -31,6 +31,7 @@ jobs:
             cxx_compiler: g++
             test_labels: 'instant|fast'
             ctest_parallel: 2
+            timeout_minutes: 45
             experimental: false
           - os: ubuntu-24.04
             platform_label: Linux x86_64 (clang, Debug)
@@ -38,6 +39,7 @@ jobs:
             cxx_compiler: clang++
             test_labels: 'instant'
             ctest_parallel: 2
+            timeout_minutes: 45
             experimental: false
           - os: ubuntu-22.04
             platform_label: Linux x86_64 (gcc, Ubuntu 22.04)
@@ -45,6 +47,7 @@ jobs:
             cxx_compiler: g++
             test_labels: 'instant|fast'
             ctest_parallel: 2
+            timeout_minutes: 45
             experimental: false
           - os: macos-14
             platform_label: macOS arm64 (clang, Release)
@@ -52,6 +55,7 @@ jobs:
             cxx_compiler: clang++
             test_labels: 'instant|fast'
             ctest_parallel: 2
+            timeout_minutes: 45
             experimental: false
           # ── Linux ARM64 native (free for public repos on github-hosted) ──
           # See https://github.blog/changelog/2025-01-16-linux-arm64-hosted-runners-now-available-for-free-in-public-repositories/
@@ -62,6 +66,7 @@ jobs:
             cxx_compiler: g++
             test_labels: 'instant'
             ctest_parallel: 2
+            timeout_minutes: 45
             experimental: true
           # ── Windows MSVC (required instant coverage; vcpkg-based GMP) ──
           - os: windows-latest
@@ -70,6 +75,8 @@ jobs:
             cxx_compiler: ''
             test_labels: 'instant'
             ctest_parallel: 2
+            build_parallel: 2
+            timeout_minutes: 75
             experimental: false
 
     steps:
@@ -126,20 +133,27 @@ jobs:
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} `
           -DGNFS_ENABLE_NATIVE_ARCH=OFF `
           -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" `
-          -DVCPKG_TARGET_TRIPLET=x64-windows
+          -DVCPKG_TARGET_TRIPLET=x64-windows `
+          -DVCPKG_APPLOCAL_DEPS=OFF
 
     - name: Build (POSIX)
+      id: build_posix
       if: runner.os != 'Windows'
       run: cmake --build build --parallel "$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
 
     - name: Build (Windows)
       if: runner.os == 'Windows'
       shell: pwsh
-      run: cmake --build build --config ${{ matrix.build_type }} --parallel
+      # vcpkg's per-target applocal hook races when many executables copy the
+      # same GMP DLL into build/Release. The hook is disabled at configure
+      # time; ctest resolves the one shared runtime directory below instead.
+      run: cmake --build build --config ${{ matrix.build_type }} --parallel ${{ matrix.build_parallel }}
 
     - name: Run selected tests (POSIX)
       if: runner.os != 'Windows'
       working-directory: build
+      env:
+        GNFS_TEST_REQUIRE_AUTHENTICATED_LINUX: ${{ runner.os == 'Linux' && !matrix.experimental && '1' || '' }}
       # Cross-platform PR coverage stays on instant/fast tests. Real GNFS
       # pipeline tests run in the Linux Release deep-gate job below.
       run: |
@@ -150,6 +164,58 @@ jobs:
           --timeout 300 \
           --no-tests=error
 
+    - name: Run macOS worker cleanup tail
+      if: >-
+        ${{
+          !cancelled() &&
+          steps.build_posix.outcome == 'success' &&
+          matrix.os == 'macos-14' &&
+          matrix.build_type == 'Release'
+        }}
+      run: |
+        test -x build/test_distributed_sieve_worker_cleanup_tail
+        ./scripts/test.sh -t Release --no-build --no-color run \
+          test_distributed_sieve_worker_cleanup_tail
+
+    - name: Run macOS worker cleanup authorization publisher
+      if: >-
+        ${{
+          !cancelled() &&
+          steps.build_posix.outcome == 'success' &&
+          matrix.os == 'macos-14' &&
+          matrix.build_type == 'Release'
+        }}
+      run: |
+        test -x build/test_distributed_sieve_worker_cleanup_authorization_publisher
+        ./scripts/test.sh -t Release --no-build --no-color run \
+          test_distributed_sieve_worker_cleanup_authorization_publisher
+
+    - name: Run macOS worker cleanup orchestrator
+      if: >-
+        ${{
+          !cancelled() &&
+          steps.build_posix.outcome == 'success' &&
+          matrix.os == 'macos-14' &&
+          matrix.build_type == 'Release'
+        }}
+      run: |
+        test -x build/test_distributed_sieve_worker_cleanup_orchestrator
+        ./scripts/test.sh -t Release --no-build --no-color run \
+          test_distributed_sieve_worker_cleanup_orchestrator
+
+    - name: Run macOS durable wave result
+      if: >-
+        ${{
+          !cancelled() &&
+          steps.build_posix.outcome == 'success' &&
+          matrix.os == 'macos-14' &&
+          matrix.build_type == 'Release'
+        }}
+      run: |
+        test -x build/test_distributed_sieve_wave_result
+        ./scripts/test.sh -t Release --no-build --no-color run \
+          test_distributed_sieve_wave_result
+
     # Windows: multi-config generator places binaries under build/<Config>/,
     # so we pass -C to ctest and use PowerShell parallel-count syntax.
     - name: Run selected tests (Windows)
@@ -157,6 +223,11 @@ jobs:
       shell: pwsh
       working-directory: build
       run: |
+        $vcpkgBin = Join-Path $env:VCPKG_INSTALLATION_ROOT "installed\x64-windows\bin"
+        if (!(Test-Path -LiteralPath $vcpkgBin -PathType Container)) {
+          throw "vcpkg runtime directory is missing: $vcpkgBin"
+        }
+        $env:PATH = "$vcpkgBin;$env:PATH"
         ctest --output-on-failure `
           --label-regex "${{ matrix.test_labels }}" `
           --label-exclude "slow|heavy|stress|bench|gate" `
@@ -168,7 +239,7 @@ jobs:
   linux-release-gate:
     name: Linux x86_64 Release deep gate
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 75
 
     steps:
     - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -197,8 +268,48 @@ jobs:
           --label-regex "gate|slow" \
           --label-exclude "heavy|stress|bench" \
           --parallel 1 \
-          --timeout 900 \
+          --timeout 2400 \
           --no-tests=error
+
+  linux-musl-transport:
+    name: Alpine 3.21 musl transport boundary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      with:
+        persist-credentials: false
+
+    - name: Build and test in Alpine 3.21
+      shell: bash
+      run: |
+        docker run --rm \
+          --mount "type=bind,source=${GITHUB_WORKSPACE},target=/src,readonly" \
+          --env TMPDIR=/tmp \
+          alpine:3.21 \
+          /bin/sh -euxc '
+            apk add --no-cache build-base cmake gmp-dev linux-headers
+            install -d -m 0700 /gnfs-src
+            cp -a /src/. /gnfs-src/
+            chown 0:0 /gnfs-src
+            chmod 0700 /gnfs-src
+            cmake -S /gnfs-src -B /tmp/gnfs-build \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DGNFS_BUILD_TESTS=ON \
+              -DGNFS_BUILD_FUZZERS=OFF \
+              -DGNFS_ENABLE_NATIVE_ARCH=OFF
+            cmake --build /tmp/gnfs-build \
+              --target \
+                test_bounded_child_process \
+                test_siqs_shadow_proof_rss_campaign_journal_store \
+              --parallel 2
+            ctest --test-dir /tmp/gnfs-build \
+              --output-on-failure \
+              -R "^(BoundedChildProcess|SiqsShadowProofRssCampaignJournalStore)$" \
+              --timeout 120 \
+              --no-tests=error
+          '
 
   required:
     name: CI required
@@ -206,6 +317,7 @@ jobs:
     needs:
       - build-and-test
       - linux-release-gate
+      - linux-musl-transport
     if: always()
     timeout-minutes: 5
 
@@ -214,9 +326,11 @@ jobs:
       shell: bash
       run: |
         if [[ "${{ needs.build-and-test.result }}" != "success" ||
-              "${{ needs.linux-release-gate.result }}" != "success" ]]; then
+              "${{ needs.linux-release-gate.result }}" != "success" ||
+              "${{ needs.linux-musl-transport.result }}" != "success" ]]; then
           echo "Required CI matrix result: ${{ needs.build-and-test.result }}"
           echo "Linux Release deep gate result: ${{ needs.linux-release-gate.result }}"
+          echo "Alpine musl transport boundary result: ${{ needs.linux-musl-transport.result }}"
           exit 1
         fi
-        echo "Required CI matrix and Linux Release deep gate passed."
+        echo "Required CI matrix, Linux Release deep gate, and Alpine musl boundary passed."

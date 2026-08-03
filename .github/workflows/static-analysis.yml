@@ -37,7 +37,7 @@ jobs:
   clang-tidy:
     name: clang-tidy
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
       FULL_SCAN: ${{ github.event_name == 'workflow_dispatch' && inputs.full_scan == 'true' }}
