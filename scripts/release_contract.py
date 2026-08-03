@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, dataclass
 import hashlib
+from http.client import IncompleteRead
+import io
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -18,6 +20,7 @@ import sys
 import tarfile
 import tempfile
 from typing import Any, Callable, Protocol
+from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
@@ -58,6 +61,19 @@ WORKBENCH_LICENSE_FORBIDDEN_MARKERS = {
 WORKBENCH_LICENSE_SHA256 = {
     "GMP-COPYING.txt": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643",
 }
+DEPENDENCY_SOURCE_URLS = {
+    "gmp-6.3.0.tar.xz": "https://gmplib.org/download/gmp/gmp-6.3.0.tar.xz",
+    "ntl-11.6.0.tar.gz": "https://libntl.org/ntl-11.6.0.tar.gz",
+}
+DEPENDENCY_SOURCE_SHA256 = {
+    "gmp-6.3.0.tar.xz": "a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898",
+    "ntl-11.6.0.tar.gz": "bc0ef9aceb075a6a0673ac8d8f47d5f8458c72fe806e4468fbd5d3daff056182",
+}
+DEPENDENCY_SOURCE_ROOTS = {
+    "gmp-6.3.0.tar.xz": "gmp-6.3.0",
+    "ntl-11.6.0.tar.gz": "ntl-11.6.0",
+}
+MAX_DEPENDENCY_SOURCE_BYTES = 64 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -530,6 +546,55 @@ def expected_package_names(release_tag: str) -> tuple[str, ...]:
         f"gnfs-{release_tag}-macos-arm64.tar.gz",
         f"gnfs-{release_tag}-windows-x86_64.zip",
     )
+
+
+def expected_dependency_source_names() -> tuple[str, ...]:
+    names = tuple(DEPENDENCY_SOURCE_URLS)
+    if set(names) != set(DEPENDENCY_SOURCE_SHA256) or set(names) != set(
+        DEPENDENCY_SOURCE_ROOTS
+    ):
+        raise ReleaseContractError(
+            "dependency source URL, digest, and archive-root contracts diverged"
+        )
+    for name in names:
+        if (
+            not re.fullmatch(r"[A-Za-z0-9._-]+", name)
+            or not DEPENDENCY_SOURCE_URLS[name].startswith("https://")
+            or not SHA256_PATTERN.fullmatch(DEPENDENCY_SOURCE_SHA256[name])
+        ):
+            raise ReleaseContractError(f"invalid dependency source contract for {name}")
+    return names
+
+
+def expected_gnfs_source_name(release_tag: str) -> str:
+    if release_tag != FIRST_RELEASE_TAG:
+        raise ReleaseContractError(f"release tag must be {FIRST_RELEASE_TAG}")
+    return f"gnfs-{release_tag}-source.tar.gz"
+
+
+def expected_corresponding_source_names(release_tag: str) -> tuple[str, ...]:
+    return (expected_gnfs_source_name(release_tag), *expected_dependency_source_names())
+
+
+def expected_release_asset_names(release_tag: str) -> tuple[str, ...]:
+    return (*expected_package_names(release_tag), *expected_corresponding_source_names(release_tag))
+
+
+def _release_asset_identity_contract(release_tag: str) -> dict[str, tuple[str, str]]:
+    package_names = expected_package_names(release_tag)
+    contract = {
+        package_names[0]: ("macos-application", "macos-arm64"),
+        package_names[1]: ("cli-sdk", "linux-x86_64"),
+        package_names[2]: ("cli-sdk", "macos-arm64"),
+        package_names[3]: ("cli-sdk", "windows-x86_64"),
+    }
+    contract.update(
+        {
+            name: ("corresponding-source", "source")
+            for name in expected_corresponding_source_names(release_tag)
+        }
+    )
+    return contract
 
 
 def _validate_safe_zip(archive: zipfile.ZipFile) -> None:
@@ -1042,6 +1107,326 @@ def _flat_file_names(directory: Path, label: str) -> list[str]:
     return sorted(entry.name for entry in entries)
 
 
+def _validate_source_tar_structure(
+    archive_path: Path,
+    expected_root: str,
+    expected_commit: str | None = None,
+) -> dict[str, tuple[Any, ...]]:
+    try:
+        with tarfile.open(archive_path, mode="r:*") as archive:
+            if expected_commit is not None and archive.pax_headers.get("comment") != expected_commit:
+                raise ReleaseContractError(
+                    f"source archive is not bound to exact commit {expected_commit}"
+                )
+            members = archive.getmembers()
+            if not members or len(members) > 100_000:
+                raise ReleaseContractError(
+                    f"source archive has an invalid entry count: {archive_path.name}"
+                )
+            names: set[str] = set()
+            manifest: dict[str, tuple[Any, ...]] = {}
+            has_root_directory = False
+            for member in members:
+                normalized = member.name.rstrip("/")
+                path = PurePosixPath(normalized)
+                if (
+                    not normalized
+                    or normalized in names
+                    or path.is_absolute()
+                    or ".." in path.parts
+                    or "\\" in member.name
+                    or "\0" in member.name
+                    or not path.parts
+                    or path.parts[0] != expected_root
+                ):
+                    raise ReleaseContractError(
+                        f"source archive contains an unsafe or unexpected path: {member.name}"
+                    )
+                names.add(normalized)
+                if normalized == expected_root and member.isdir():
+                    has_root_directory = True
+                if member.isdir():
+                    manifest[normalized] = ("directory", member.mode & 0o777)
+                    continue
+                if not member.isfile():
+                    raise ReleaseContractError(
+                        f"source archive contains a link or special entry: {member.name}"
+                    )
+                extracted = archive.extractfile(member)
+                if extracted is None:
+                    raise ReleaseContractError(
+                        f"source archive file cannot be read: {member.name}"
+                    )
+                digest = hashlib.sha256()
+                with extracted:
+                    for chunk in iter(lambda: extracted.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                manifest[normalized] = (
+                    "file",
+                    member.mode & 0o777,
+                    member.size,
+                    digest.hexdigest(),
+                )
+            if not has_root_directory:
+                raise ReleaseContractError(
+                    f"source archive lacks exact top-level directory {expected_root}"
+                )
+            return manifest
+    except tarfile.TarError as error:
+        raise ReleaseContractError(
+            f"invalid source archive {archive_path.name}: {error}"
+        ) from error
+
+
+def _repository_head(repository_root: Path) -> tuple[Path, str]:
+    root = repository_root.resolve()
+    if not root.is_dir() or repository_root.is_symlink():
+        raise ReleaseContractError(f"repository root must be a real directory: {root}")
+    try:
+        top_level = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except subprocess.CalledProcessError as error:
+        raise ReleaseContractError(f"unable to resolve source repository: {error}") from error
+    if Path(top_level).resolve() != root or not FULL_SHA_PATTERN.fullmatch(head):
+        raise ReleaseContractError("source repository identity is invalid")
+    return root, head
+
+
+def _write_git_source_archive(
+    repository_root: Path,
+    target_sha: str,
+    root_name: str,
+    archive_format: str,
+    output: Path,
+) -> None:
+    command = [
+        "git",
+        "archive",
+        f"--format={archive_format}",
+        f"--prefix={root_name}/",
+        target_sha,
+    ]
+    with output.open("xb") as handle:
+        result = subprocess.run(
+            command,
+            cwd=repository_root,
+            check=False,
+            stdout=handle,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    if result.returncode != 0:
+        raise ReleaseContractError(
+            "unable to create exact-SHA GNFS source archive: "
+            f"{result.stderr.strip()[:1000]}"
+        )
+
+
+def validate_gnfs_source_archive(
+    archive_path: Path,
+    repository_root: Path,
+    target_sha: str,
+    release_tag: str,
+) -> None:
+    _validate_sha(target_sha)
+    expected_name = expected_gnfs_source_name(release_tag)
+    if archive_path.name != expected_name or archive_path.is_symlink():
+        raise ReleaseContractError(
+            f"GNFS source archive name does not match the release contract: {archive_path.name}"
+        )
+    archive_path = archive_path.resolve()
+    if not archive_path.is_file():
+        raise ReleaseContractError(f"GNFS source archive is missing: {archive_path}")
+    root, head = _repository_head(repository_root)
+    if head != target_sha:
+        raise ReleaseContractError(
+            f"source repository HEAD is {head}, expected exact release SHA {target_sha}"
+        )
+    source_root = expected_name[: -len(".tar.gz")]
+    observed_manifest = _validate_source_tar_structure(
+        archive_path, source_root, expected_commit=target_sha
+    )
+    with tempfile.TemporaryDirectory(prefix="gnfs-source-contract-") as temp_dir:
+        expected_archive = Path(temp_dir) / "expected.tar"
+        _write_git_source_archive(root, target_sha, source_root, "tar", expected_archive)
+        expected_manifest = _validate_source_tar_structure(
+            expected_archive, source_root, expected_commit=target_sha
+        )
+    if observed_manifest != expected_manifest:
+        raise ReleaseContractError(
+            "GNFS source archive contents do not match the exact target commit"
+        )
+
+
+def create_gnfs_source_archive(
+    output_directory: Path,
+    repository_root: Path,
+    target_sha: str,
+    release_tag: str,
+) -> Path:
+    _validate_sha(target_sha)
+    root, head = _repository_head(repository_root)
+    if head != target_sha:
+        raise ReleaseContractError(
+            f"source repository HEAD is {head}, expected exact release SHA {target_sha}"
+        )
+    output_directory = output_directory.resolve()
+    if output_directory.exists() or output_directory.is_symlink():
+        raise ReleaseContractError(
+            f"refusing to reuse GNFS source directory: {output_directory}"
+        )
+    output_directory.parent.mkdir(parents=True, exist_ok=True)
+    output_directory.mkdir()
+    archive_name = expected_gnfs_source_name(release_tag)
+    archive_path = output_directory / archive_name
+    partial_path = output_directory / f".{archive_name}.partial"
+    root_name = archive_name[: -len(".tar.gz")]
+    _write_git_source_archive(root, target_sha, root_name, "tar.gz", partial_path)
+    os.replace(partial_path, archive_path)
+    validate_gnfs_source_archive(archive_path, root, target_sha, release_tag)
+    return archive_path
+
+
+def _validate_dependency_source_files(source_directory: Path) -> None:
+    for name in expected_dependency_source_names():
+        path = source_directory / name
+        if not path.is_file() or path.is_symlink():
+            raise ReleaseContractError(f"dependency source archive is not a real file: {name}")
+        observed_digest = _sha256(path)
+        expected_digest = DEPENDENCY_SOURCE_SHA256[name]
+        if observed_digest != expected_digest:
+            raise ReleaseContractError(
+                f"dependency source archive digest mismatch for {name}: {observed_digest}"
+            )
+        _validate_source_tar_structure(path, DEPENDENCY_SOURCE_ROOTS[name])
+
+
+def _validate_corresponding_source_files(
+    source_directory: Path, target_sha: str, release_tag: str
+) -> None:
+    repository_root = Path(__file__).resolve().parents[1]
+    validate_gnfs_source_archive(
+        source_directory / expected_gnfs_source_name(release_tag),
+        repository_root,
+        target_sha,
+        release_tag,
+    )
+    _validate_dependency_source_files(source_directory)
+
+
+def validate_dependency_source_archives(source_directory: Path) -> None:
+    source_directory = source_directory.resolve()
+    expected_names = expected_dependency_source_names()
+    observed_names = _flat_file_names(
+        source_directory, "dependency source archive directory"
+    )
+    if observed_names != sorted(expected_names):
+        raise ReleaseContractError(
+            "dependency source archive directory is missing, extra, or renamed: "
+            f"{observed_names}"
+        )
+    _validate_dependency_source_files(source_directory)
+
+
+def fetch_dependency_source_archives(output_directory: Path) -> None:
+    output_directory = output_directory.resolve()
+    if output_directory.exists() or output_directory.is_symlink():
+        raise ReleaseContractError(
+            f"refusing to reuse dependency source directory: {output_directory}"
+        )
+    output_directory.parent.mkdir(parents=True, exist_ok=True)
+    output_directory.mkdir()
+    ssl_context = _verified_ssl_context()
+    for name in expected_dependency_source_names():
+        url = DEPENDENCY_SOURCE_URLS[name]
+        request = Request(
+            url,
+            headers={
+                "Accept": "application/octet-stream",
+                "User-Agent": "gnfs-release-source-fetch/1",
+            },
+        )
+        partial_path = output_directory / f".{name}.partial"
+        expected_digest = DEPENDENCY_SOURCE_SHA256[name]
+        last_error: Exception | None = None
+        for attempt in range(1, 4):
+            digest = hashlib.sha256()
+            size = 0
+            try:
+                with urlopen(request, timeout=120, context=ssl_context) as response:
+                    final_url = response.geturl()
+                    if not isinstance(final_url, str) or not final_url.startswith("https://"):
+                        raise ReleaseContractError(
+                            f"dependency source download left HTTPS for {name}: {final_url}"
+                        )
+                    content_length_header = response.headers.get("Content-Length")
+                    content_length = (
+                        int(content_length_header)
+                        if content_length_header is not None
+                        else None
+                    )
+                    if content_length is not None and (
+                        content_length <= 0 or content_length > MAX_DEPENDENCY_SOURCE_BYTES
+                    ):
+                        raise ReleaseContractError(
+                            f"dependency source archive has invalid Content-Length: {name}"
+                        )
+                    with partial_path.open("wb") as handle:
+                        while True:
+                            chunk = response.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            size += len(chunk)
+                            if size > MAX_DEPENDENCY_SOURCE_BYTES:
+                                raise ReleaseContractError(
+                                    f"dependency source archive exceeds size cap: {name}"
+                                )
+                            digest.update(chunk)
+                            handle.write(chunk)
+                    if content_length is not None and size != content_length:
+                        raise ReleaseContractError(
+                            f"dependency source download was truncated for {name}: "
+                            f"{size} of {content_length} bytes"
+                        )
+                    observed_digest = digest.hexdigest()
+                    if observed_digest != expected_digest:
+                        raise ReleaseContractError(
+                            "dependency source download digest mismatch for "
+                            f"{name}: {observed_digest}"
+                        )
+            except (
+                IncompleteRead,
+                OSError,
+                ReleaseContractError,
+                ValueError,
+            ) as error:
+                last_error = error
+                if attempt < 3:
+                    continue
+                raise ReleaseContractError(
+                    f"dependency source download failed after three attempts for {name}: {error}"
+                ) from error
+            os.replace(partial_path, output_directory / name)
+            break
+        else:
+            raise ReleaseContractError(
+                f"dependency source download failed for {name}: {last_error}"
+            )
+    validate_dependency_source_archives(output_directory)
+
+
 def assemble_release_bundle(
     asset_directory: Path, target_sha: str, release_tag: str, source_date_epoch: int
 ) -> None:
@@ -1050,22 +1435,23 @@ def assemble_release_bundle(
         raise ReleaseContractError("source date epoch must be a positive integer")
     asset_directory = asset_directory.resolve()
     package_names = expected_package_names(release_tag)
+    release_asset_names = expected_release_asset_names(release_tag)
     existing = _flat_file_names(asset_directory, "release assembly directory")
-    if existing != sorted(package_names):
+    if existing != sorted(release_asset_names):
         raise ReleaseContractError(
-            f"release assembly requires exactly the four package assets; found {existing}"
+            "release assembly requires the exact binary and corresponding-source assets; "
+            f"found {existing}"
         )
     _validate_workbench_zip(asset_directory / package_names[0], target_sha, release_tag)
     for platform, name in zip(
         ("linux-x86_64", "macos-arm64", "windows-x86_64"), package_names[1:]
     ):
         validate_cli_archive(asset_directory / name, platform, release_tag)
+    _validate_corresponding_source_files(asset_directory, target_sha, release_tag)
 
     records = [
-        _asset_record(asset_directory / package_names[0], "macos-application", "macos-arm64"),
-        _asset_record(asset_directory / package_names[1], "cli-sdk", "linux-x86_64"),
-        _asset_record(asset_directory / package_names[2], "cli-sdk", "macos-arm64"),
-        _asset_record(asset_directory / package_names[3], "cli-sdk", "windows-x86_64"),
+        _asset_record(asset_directory / name, kind, platform)
+        for name, (kind, platform) in _release_asset_identity_contract(release_tag).items()
     ]
     records.sort(key=lambda record: record["name"])
     metadata = {
@@ -1088,7 +1474,7 @@ def assemble_release_bundle(
         json.dump(metadata, handle, indent=2, sort_keys=True)
         handle.write("\n")
 
-    checksum_paths = [asset_directory / name for name in package_names]
+    checksum_paths = [asset_directory / name for name in release_asset_names]
     checksum_paths.append(metadata_path)
     with checksums_path.open("x", encoding="utf-8", newline="\n") as handle:
         for path in sorted(checksum_paths, key=lambda item: item.name):
@@ -1110,7 +1496,8 @@ def verify_release_bundle(asset_directory: Path, target_sha: str, release_tag: s
     _validate_sha(target_sha)
     asset_directory = asset_directory.resolve()
     package_names = expected_package_names(release_tag)
-    expected_files = sorted((*package_names, "release-metadata.json", "SHA256SUMS"))
+    release_asset_names = expected_release_asset_names(release_tag)
+    expected_files = sorted((*release_asset_names, "release-metadata.json", "SHA256SUMS"))
     files = _flat_file_names(asset_directory, "release bundle directory")
     if files != expected_files:
         raise ReleaseContractError(
@@ -1121,6 +1508,7 @@ def verify_release_bundle(asset_directory: Path, target_sha: str, release_tag: s
         ("linux-x86_64", "macos-arm64", "windows-x86_64"), package_names[1:]
     ):
         validate_cli_archive(asset_directory / name, platform, release_tag)
+    _validate_corresponding_source_files(asset_directory, target_sha, release_tag)
 
     metadata = _read_json_object(asset_directory / "release-metadata.json")
     expected_metadata_keys = {
@@ -1149,15 +1537,29 @@ def verify_release_bundle(asset_directory: Path, target_sha: str, release_tag: s
         raise ReleaseContractError("release metadata must disclose ad-hoc, unnotarized Workbench")
 
     assets = metadata.get("assets")
-    if not isinstance(assets, list) or len(assets) != len(package_names):
-        raise ReleaseContractError("release metadata must describe exactly four package assets")
+    if not isinstance(assets, list) or len(assets) != len(release_asset_names):
+        raise ReleaseContractError(
+            "release metadata must describe every binary and corresponding-source asset"
+        )
     asset_names = [asset.get("name") for asset in assets if isinstance(asset, dict)]
-    if asset_names != sorted(package_names):
+    if asset_names != sorted(release_asset_names):
         raise ReleaseContractError("release metadata assets are not canonical and sorted")
+    identity_contract = _release_asset_identity_contract(release_tag)
     for asset in assets:
-        if set(asset) != {"name", "kind", "platform", "sha256", "size"}:
+        if not isinstance(asset, dict) or set(asset) != {
+            "name",
+            "kind",
+            "platform",
+            "sha256",
+            "size",
+        }:
             raise ReleaseContractError("release metadata asset contains unknown fields")
-        path = asset_directory / asset["name"]
+        name = asset["name"]
+        if not isinstance(name, str) or (asset["kind"], asset["platform"]) != identity_contract.get(
+            name
+        ):
+            raise ReleaseContractError("release metadata asset identity changed")
+        path = asset_directory / name
         if (
             not SHA256_PATTERN.fullmatch(str(asset["sha256"]))
             or asset["sha256"] != _sha256(path)
@@ -1166,7 +1568,7 @@ def verify_release_bundle(asset_directory: Path, target_sha: str, release_tag: s
             raise ReleaseContractError(f"release metadata digest mismatch for {path.name}")
 
     checksum_path = asset_directory / "SHA256SUMS"
-    expected_checksum_names = sorted((*package_names, "release-metadata.json"))
+    expected_checksum_names = sorted((*release_asset_names, "release-metadata.json"))
     checksum_lines = checksum_path.read_text(encoding="utf-8").splitlines()
     if len(checksum_lines) != len(expected_checksum_names):
         raise ReleaseContractError("SHA256SUMS has the wrong number of records")
@@ -1281,7 +1683,7 @@ def write_verification_proof(
     if output.exists() or output.is_symlink():
         raise ReleaseContractError(f"refusing to overwrite verification proof: {output}")
     bundle_names = sorted(
-        (*expected_package_names(release_tag), "release-metadata.json", "SHA256SUMS")
+        (*expected_release_asset_names(release_tag), "release-metadata.json", "SHA256SUMS")
     )
     proof = {
         "schema_version": 2,
@@ -1337,7 +1739,7 @@ def verify_verification_proof(
         raise ReleaseContractError("verification proof lacks main CI evidence")
     _validate_main_ci_evidence(main_ci_evidence, target_sha)
     expected_names = sorted(
-        (*expected_package_names(release_tag), "release-metadata.json", "SHA256SUMS")
+        (*expected_release_asset_names(release_tag), "release-metadata.json", "SHA256SUMS")
     )
     bundle = proof.get("bundle")
     if not isinstance(bundle, list) or [entry.get("name") for entry in bundle] != expected_names:
@@ -1394,7 +1796,7 @@ def final_prepublish(
     if not isinstance(assets, list):
         raise ReleaseContractError("draft release API response has no asset list")
     expected_names = sorted(
-        (*expected_package_names(release_tag), "release-metadata.json", "SHA256SUMS")
+        (*expected_release_asset_names(release_tag), "release-metadata.json", "SHA256SUMS")
     )
     if len(assets) != len(expected_names):
         raise ReleaseContractError("draft release has the wrong number of assets")
@@ -1457,6 +1859,10 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
         "PUBLISH v0.1.0",
         "scripts/release_contract.py verify-main",
         "scripts/release_contract.py find-verification",
+        "scripts/release_contract.py create-gnfs-source",
+        "scripts/release_contract.py validate-gnfs-source",
+        "scripts/release_contract.py fetch-sources",
+        "scripts/release_contract.py validate-sources",
         "scripts/release_contract.py verify-proof",
         "scripts/release_contract.py final-prepublish",
         "release-main-ci-evidence-${{ github.run_id }}",
@@ -1467,7 +1873,12 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
         "container: ubuntu:20.04",
         "-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0",
         "release-verification-${{ inputs.release_tag }}-${{ inputs.target_sha }}",
+        "gnfs-project-source",
+        "gnfs-dependency-sources",
         "GNFSWorkbench-0.1.0-macOS-arm64.zip",
+        "release-assets/gnfs-v0.1.0-source.tar.gz",
+        "release-assets/gmp-6.3.0.tar.xz",
+        "release-assets/ntl-11.6.0.tar.gz",
         "--draft",
         "--method PATCH",
         "releases/${EXPECTED_RELEASE_ID}",
@@ -1754,7 +2165,7 @@ def _make_cli_archive(directory: Path, platform: str) -> Path:
 
 
 def self_test() -> None:
-    target_sha = "1" * 40
+    repository_root, target_sha = _repository_head(Path(__file__).resolve().parents[1])
     repository = "example/GNFS"
     workflow_ref = f"{repository}/{RELEASE_WORKFLOW_PATH}@refs/heads/main"
     validate_dispatch(
@@ -1867,8 +2278,68 @@ def self_test() -> None:
     if find_verification_run(client, repository, target_sha, FIRST_RELEASE_TAG) != proof_run_id:
         raise ReleaseContractError("verification-run self-test selected the wrong run")
 
-    with tempfile.TemporaryDirectory(prefix="gnfs-release-contract-self-test-") as temp_dir:
+    production_source_urls = {
+        "gmp-6.3.0.tar.xz": "https://gmplib.org/download/gmp/gmp-6.3.0.tar.xz",
+        "ntl-11.6.0.tar.gz": "https://libntl.org/ntl-11.6.0.tar.gz",
+    }
+    production_source_hashes = {
+        "gmp-6.3.0.tar.xz": "a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898",
+        "ntl-11.6.0.tar.gz": "bc0ef9aceb075a6a0673ac8d8f47d5f8458c72fe806e4468fbd5d3daff056182",
+    }
+    production_source_roots = {
+        "gmp-6.3.0.tar.xz": "gmp-6.3.0",
+        "ntl-11.6.0.tar.gz": "ntl-11.6.0",
+    }
+    if (
+        DEPENDENCY_SOURCE_URLS != production_source_urls
+        or DEPENDENCY_SOURCE_SHA256 != production_source_hashes
+        or DEPENDENCY_SOURCE_ROOTS != production_source_roots
+    ):
+        raise ReleaseContractError("pinned dependency source contract changed")
+
+    def source_archive_fixture(root_name: str, mode: str) -> bytes:
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode=mode) as archive:
+            root_info = tarfile.TarInfo(root_name)
+            root_info.type = tarfile.DIRTYPE
+            root_info.mode = 0o755
+            archive.addfile(root_info)
+            content = f"{root_name} source self-test fixture\n".encode()
+            readme = tarfile.TarInfo(f"{root_name}/README")
+            readme.mode = 0o644
+            readme.size = len(content)
+            archive.addfile(readme, io.BytesIO(content))
+        return buffer.getvalue()
+
+    source_fixture_payloads = {
+        "gmp-6.3.0.tar.xz": source_archive_fixture("gmp-6.3.0", "w:xz"),
+        "ntl-11.6.0.tar.gz": source_archive_fixture("ntl-11.6.0", "w:gz"),
+    }
+    source_hash_patch = patch.dict(
+        DEPENDENCY_SOURCE_SHA256,
+        {
+            name: hashlib.sha256(payload).hexdigest()
+            for name, payload in source_fixture_payloads.items()
+        },
+        clear=True,
+    )
+    with source_hash_patch, tempfile.TemporaryDirectory(
+        prefix="gnfs-release-contract-self-test-"
+    ) as temp_dir:
         root = Path(temp_dir)
+        with patch(f"{__name__}.urlopen", side_effect=OSError("connection reset")) as opener:
+            try:
+                fetch_dependency_source_archives(root / "failed-source-download")
+            except ReleaseContractError as error:
+                if "failed after three attempts" not in str(error) or opener.call_count != 3:
+                    raise ReleaseContractError(
+                        "dependency source download did not exhaust bounded OSError retries"
+                    ) from error
+            else:
+                raise ReleaseContractError(
+                    "dependency source download accepted a persistent connection failure"
+                )
+
         workbench = root / "workbench"
         workbench.mkdir()
         workbench_zip = _make_workbench_artifact(workbench, target_sha)
@@ -1922,8 +2393,110 @@ def self_test() -> None:
             "forbidden identity markers",
         )
 
+        dependency_sources = root / "dependency-sources"
+        dependency_sources.mkdir()
+        for name, payload in source_fixture_payloads.items():
+            (dependency_sources / name).write_bytes(payload)
+        validate_dependency_source_archives(dependency_sources)
+
+        unsafe_source_archive = root / "unsafe-source.tar.gz"
+        with tarfile.open(unsafe_source_archive, mode="w:gz") as archive:
+            unsafe_entry = tarfile.TarInfo("../escape")
+            unsafe_entry.size = 1
+            archive.addfile(unsafe_entry, io.BytesIO(b"x"))
+        try:
+            _validate_source_tar_structure(unsafe_source_archive, "gmp-6.3.0")
+        except ReleaseContractError:
+            pass
+        else:
+            raise ReleaseContractError(
+                "dependency source structure validation accepted path traversal"
+            )
+
+        def expect_dependency_source_rejection(
+            label: str, payloads: dict[str, bytes], expected_error: str
+        ) -> None:
+            invalid_sources = root / f"bad-dependency-sources-{label}"
+            invalid_sources.mkdir()
+            for name, payload in payloads.items():
+                (invalid_sources / name).write_bytes(payload)
+            try:
+                validate_dependency_source_archives(invalid_sources)
+            except ReleaseContractError as error:
+                if expected_error not in str(error):
+                    raise ReleaseContractError(
+                        f"dependency source {label} self-test failed for the wrong reason: {error}"
+                    ) from error
+            else:
+                raise ReleaseContractError(
+                    f"dependency source validation accepted {label} archives"
+                )
+
+        expect_dependency_source_rejection(
+            "missing",
+            {"gmp-6.3.0.tar.xz": source_fixture_payloads["gmp-6.3.0.tar.xz"]},
+            "missing, extra, or renamed",
+        )
+        wrong_hash_payloads = dict(source_fixture_payloads)
+        wrong_hash_payloads["ntl-11.6.0.tar.gz"] += b"tampered"
+        expect_dependency_source_rejection(
+            "wrong-hash",
+            wrong_hash_payloads,
+            "digest mismatch for ntl-11.6.0.tar.gz",
+        )
+
+        gnfs_source_directory = root / "gnfs-source"
+        gnfs_source_archive = create_gnfs_source_archive(
+            gnfs_source_directory,
+            repository_root,
+            target_sha,
+            FIRST_RELEASE_TAG,
+        )
+        validate_gnfs_source_archive(
+            gnfs_source_archive,
+            repository_root,
+            target_sha,
+            FIRST_RELEASE_TAG,
+        )
+        wrong_gnfs_source_directory = root / "wrong-gnfs-source"
+        wrong_gnfs_source_directory.mkdir()
+        wrong_gnfs_source = wrong_gnfs_source_directory / expected_gnfs_source_name(
+            FIRST_RELEASE_TAG
+        )
+        source_root = wrong_gnfs_source.name[: -len(".tar.gz")]
+        with tarfile.open(
+            wrong_gnfs_source,
+            mode="w:gz",
+            pax_headers={"comment": target_sha},
+        ) as archive:
+            root_info = tarfile.TarInfo(source_root)
+            root_info.type = tarfile.DIRTYPE
+            root_info.mode = 0o755
+            archive.addfile(root_info)
+            content = b"not the target tree\n"
+            file_info = tarfile.TarInfo(f"{source_root}/README")
+            file_info.mode = 0o644
+            file_info.size = len(content)
+            archive.addfile(file_info, io.BytesIO(content))
+        try:
+            validate_gnfs_source_archive(
+                wrong_gnfs_source,
+                repository_root,
+                target_sha,
+                FIRST_RELEASE_TAG,
+            )
+        except ReleaseContractError:
+            pass
+        else:
+            raise ReleaseContractError(
+                "GNFS source validation accepted content outside the exact target commit"
+            )
+
         assets = root / "assets"
         assets.mkdir()
+        for name, payload in source_fixture_payloads.items():
+            (assets / name).write_bytes(payload)
+        (assets / gnfs_source_archive.name).write_bytes(gnfs_source_archive.read_bytes())
         cli_fixtures = root / "cli-fixtures"
         cli_fixtures.mkdir()
         for platform in ("linux-x86_64", "macos-arm64", "windows-x86_64"):
@@ -2018,7 +2591,11 @@ def self_test() -> None:
             "object": {"type": "commit", "sha": target_sha},
         }
         release_asset_names = sorted(
-            (*expected_package_names(FIRST_RELEASE_TAG), "release-metadata.json", "SHA256SUMS")
+            (
+                *expected_release_asset_names(FIRST_RELEASE_TAG),
+                "release-metadata.json",
+                "SHA256SUMS",
+            )
         )
         client.release = {
             "id": release_id,
@@ -2127,7 +2704,6 @@ def self_test() -> None:
         else:
             raise ReleaseContractError("verification proof accepted a modified release asset")
 
-    repository_root = Path(__file__).resolve().parents[1]
     release_workflow = repository_root / ".github/workflows/release.yml"
     qualification_workflow = repository_root / ".github/workflows/release-qualification.yml"
     validate_workflow_sources(release_workflow, qualification_workflow)
@@ -2177,6 +2753,22 @@ def parse_arguments() -> argparse.Namespace:
         required=True,
     )
     cli_archive.add_argument("--release-tag", default=FIRST_RELEASE_TAG)
+
+    create_gnfs_source = subparsers.add_parser("create-gnfs-source")
+    _add_identity_arguments(create_gnfs_source)
+    create_gnfs_source.add_argument("--output-directory", type=Path, required=True)
+    create_gnfs_source.add_argument("--repository-root", type=Path, default=Path.cwd())
+
+    validate_gnfs_source = subparsers.add_parser("validate-gnfs-source")
+    _add_identity_arguments(validate_gnfs_source)
+    validate_gnfs_source.add_argument("--archive", type=Path, required=True)
+    validate_gnfs_source.add_argument("--repository-root", type=Path, default=Path.cwd())
+
+    fetch_sources = subparsers.add_parser("fetch-sources")
+    fetch_sources.add_argument("--output-directory", type=Path, required=True)
+
+    validate_sources = subparsers.add_parser("validate-sources")
+    validate_sources.add_argument("--source-directory", type=Path, required=True)
 
     assemble = subparsers.add_parser("assemble")
     _add_identity_arguments(assemble)
@@ -2280,6 +2872,24 @@ def main() -> int:
             validate_cli_archive(
                 arguments.archive, arguments.platform, arguments.release_tag
             )
+        elif arguments.command == "create-gnfs-source":
+            create_gnfs_source_archive(
+                arguments.output_directory,
+                arguments.repository_root,
+                arguments.target_sha,
+                arguments.release_tag,
+            )
+        elif arguments.command == "validate-gnfs-source":
+            validate_gnfs_source_archive(
+                arguments.archive,
+                arguments.repository_root,
+                arguments.target_sha,
+                arguments.release_tag,
+            )
+        elif arguments.command == "fetch-sources":
+            fetch_dependency_source_archives(arguments.output_directory)
+        elif arguments.command == "validate-sources":
+            validate_dependency_source_archives(arguments.source_directory)
         elif arguments.command == "assemble":
             assemble_release_bundle(
                 arguments.asset_directory,

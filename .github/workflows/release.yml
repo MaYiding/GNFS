@@ -398,6 +398,79 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  collect-gnfs-source:
+    name: Collect exact-SHA GNFS source
+    if: inputs.mode == 'verify-only'
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ inputs.target_sha }}
+          persist-credentials: false
+
+      - name: Verify exact clean checkout
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: python3 scripts/release_contract.py verify-checkout --target-sha "${TARGET_SHA}"
+
+      - name: Create and validate exact-SHA source archive
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          python3 scripts/release_contract.py create-gnfs-source \
+            --output-directory gnfs-source \
+            --release-tag "${RELEASE_TAG}" \
+            --target-sha "${TARGET_SHA}"
+          python3 scripts/release_contract.py validate-gnfs-source \
+            --archive "gnfs-source/gnfs-${RELEASE_TAG}-source.tar.gz" \
+            --release-tag "${RELEASE_TAG}" \
+            --target-sha "${TARGET_SHA}"
+
+      - name: Upload exact-SHA GNFS source
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: gnfs-project-source
+          path: gnfs-source/*
+          if-no-files-found: error
+          retention-days: 30
+
+  collect-dependency-sources:
+    name: Collect pinned GMP and NTL sources
+    if: inputs.mode == 'verify-only'
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ inputs.target_sha }}
+          persist-credentials: false
+
+      - name: Verify exact clean checkout
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: python3 scripts/release_contract.py verify-checkout --target-sha "${TARGET_SHA}"
+
+      - name: Download and validate pinned dependency sources
+        run: |
+          python3 scripts/release_contract.py fetch-sources \
+            --output-directory dependency-sources
+          python3 scripts/release_contract.py validate-sources \
+            --source-directory dependency-sources
+
+      - name: Upload pinned dependency sources
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: gnfs-dependency-sources
+          path: dependency-sources/*
+          if-no-files-found: error
+          retention-days: 30
+
   collect-workbench:
     name: Collect exact-SHA Workbench artifact
     if: inputs.mode == 'verify-only'
@@ -453,6 +526,8 @@ jobs:
       - qualification
       - package-linux
       - package-cli
+      - collect-gnfs-source
+      - collect-dependency-sources
       - collect-workbench
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -589,6 +664,8 @@ jobs:
             "Source revision: ${TARGET_SHA}" \
             "" \
             "The macOS Workbench is ad-hoc signed and is not Apple notarized." \
+            "Exact GNFS source for ${TARGET_SHA} is attached." \
+            "Exact GMP 6.3.0 and NTL 11.6.0 corresponding sources are attached." \
             "Verify every downloaded file with SHA256SUMS." \
             > release-notes.md
           gh release create "${RELEASE_TAG}" \
@@ -601,6 +678,9 @@ jobs:
             release-assets/gnfs-v0.1.0-linux-x86_64.tar.gz \
             release-assets/gnfs-v0.1.0-macos-arm64.tar.gz \
             release-assets/gnfs-v0.1.0-windows-x86_64.zip \
+            release-assets/gnfs-v0.1.0-source.tar.gz \
+            release-assets/gmp-6.3.0.tar.xz \
+            release-assets/ntl-11.6.0.tar.gz \
             release-assets/release-metadata.json \
             release-assets/SHA256SUMS
           draft_release_id=$(gh api \

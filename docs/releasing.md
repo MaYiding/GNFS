@@ -88,13 +88,31 @@ The verified bundle contains exactly these files:
 - `gnfs-v0.1.0-macos-arm64.tar.gz`;
 - `gnfs-v0.1.0-windows-x86_64.zip`;
 - `GNFSWorkbench-0.1.0-macOS-arm64.zip`;
+- `gnfs-v0.1.0-source.tar.gz`;
+- `gmp-6.3.0.tar.xz`;
+- `ntl-11.6.0.tar.gz`;
 - `release-metadata.json`;
 - `SHA256SUMS`.
 
 The CLI archive helper sorts paths, normalizes timestamps, ownership, and file
 modes, and rejects output replacement. ZIP entries use stored encoding to
-avoid compressor-dependent output. The release metadata binds every package
+avoid compressor-dependent output. The release metadata binds every asset
 digest to the full source SHA and the source commit epoch.
+
+The verify-only workflow creates `gnfs-v0.1.0-source.tar.gz` directly from the
+exact target commit. Its validator requires the Git archive commit marker,
+fixed top-level directory, safe paths, and a file-by-file manifest equal to a
+fresh archive of that target SHA. The workflow also downloads GMP 6.3.0 and
+NTL 11.6.0 corresponding source from their fixed HTTPS URLs. It accepts only
+`gmp-6.3.0.tar.xz` with
+SHA-256 `a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898`
+and `ntl-11.6.0.tar.gz` with SHA-256
+`bc0ef9aceb075a6a0673ac8d8f47d5f8458c72fe806e4468fbd5d3daff056182`.
+All three source archives are first-class release assets. Their names, sizes,
+and digests are bound by `release-metadata.json`, `SHA256SUMS`, the verification
+proof, and the final server-side release-asset check. GitHub's generated tag
+source remains an additional source path, not a substitute for the verified
+GNFS source asset.
 
 The Linux x86_64 package is built with GCC 12 inside an Ubuntu 20.04 container,
 whose glibc baseline is 2.31. `readelf` must identify an x86-64 executable, only
@@ -130,7 +148,7 @@ sidecar from that exact main push workflow run, verifies the sidecar, opens the
 ZIP, and checks the embedded source revision and application version. It also
 requires the exact six-file `Contents/Resources/Licenses` contract: the
 byte-identical GNFS GPL-2.0 license, both GMP copying texts, the NTL copying
-notice, a versioned static-link notice, and an upstream source-offer file. A
+notice, a versioned static-link notice, and a source-location file. A
 missing, renamed, or additional file blocks release assembly.
 `GMP-COPYING.txt` is pinned byte-for-byte to GMP 6.3.0 `COPYINGv2` and must
 carry the GPL version 2 header, while the third-party notice explicitly selects
