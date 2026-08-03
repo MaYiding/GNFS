@@ -1,0 +1,120 @@
+name: Release Qualification
+
+on:
+  workflow_call:
+    inputs:
+      target_sha:
+        description: 'Full main-branch SHA to qualify'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  thorough:
+    name: Release thorough regression
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ inputs.target_sha }}
+          persist-credentials: false
+
+      - name: Verify exact checkout
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: python3 scripts/release_contract.py verify-checkout --target-sha "${TARGET_SHA}"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zsh libgmp-dev libntl-dev
+
+      - name: Run Release thorough regression
+        run: ./scripts/test.sh -t Release thorough
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: qualification-thorough-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/Testing/Temporary/LastTest.log
+            build/test_report.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  structured-120-bit:
+    name: Structured 120-bit route gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ inputs.target_sha }}
+          persist-credentials: false
+
+      - name: Verify exact checkout
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: python3 scripts/release_contract.py verify-checkout --target-sha "${TARGET_SHA}"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zsh libgmp-dev libntl-dev
+
+      - name: Run structured 120-bit route gate
+        run: ./scripts/test.sh -t Release run test_structured_filter_pipeline_120bit
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: qualification-120-bit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/Testing/Temporary/LastTest.log
+            build/test_report.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  bounded-50-digit:
+    name: Bounded 50-digit route comparison
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ inputs.target_sha }}
+          persist-credentials: false
+
+      - name: Verify exact checkout
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: python3 scripts/release_contract.py verify-checkout --target-sha "${TARGET_SHA}"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zsh libgmp-dev libntl-dev
+
+      - name: Compare bounded 50-digit production routes
+        run: |
+          ./scripts/test.sh -t Release --timeout 900 \
+            compare-50d-bounded-routes 4 4 auto
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: qualification-50-digit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/Testing/Temporary/LastTest.log
+            build/test_report.json
+          if-no-files-found: ignore
+          retention-days: 14

@@ -70,7 +70,15 @@ jobs:
           python3 -m py_compile \
             .claude/hooks/project-guard.py \
             scripts/check_distributed_sieve_policy.py \
-            scripts/check_harness.py
+            scripts/check_harness.py \
+            scripts/release_contract.py \
+            scripts/reproducible_archive.py
+
+      - name: Check release automation contracts
+        run: |
+          python3 scripts/release_contract.py self-test
+          python3 scripts/release_contract.py check-workflows
+          python3 scripts/reproducible_archive.py self-test
 
       - name: Check test catalog
         run: zsh ./scripts/test.sh list >/tmp/gnfs-test-list.txt

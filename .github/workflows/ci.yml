@@ -49,7 +49,7 @@ jobs:
             ctest_parallel: 2
             timeout_minutes: 45
             experimental: false
-          - os: macos-14
+          - os: macos-15
             platform_label: macOS arm64 (clang, Release)
             build_type: Release
             cxx_compiler: clang++
@@ -169,7 +169,7 @@ jobs:
         ${{
           !cancelled() &&
           steps.build_posix.outcome == 'success' &&
-          matrix.os == 'macos-14' &&
+          matrix.os == 'macos-15' &&
           matrix.build_type == 'Release'
         }}
       run: |
@@ -182,7 +182,7 @@ jobs:
         ${{
           !cancelled() &&
           steps.build_posix.outcome == 'success' &&
-          matrix.os == 'macos-14' &&
+          matrix.os == 'macos-15' &&
           matrix.build_type == 'Release'
         }}
       run: |
@@ -195,7 +195,7 @@ jobs:
         ${{
           !cancelled() &&
           steps.build_posix.outcome == 'success' &&
-          matrix.os == 'macos-14' &&
+          matrix.os == 'macos-15' &&
           matrix.build_type == 'Release'
         }}
       run: |
@@ -208,7 +208,7 @@ jobs:
         ${{
           !cancelled() &&
           steps.build_posix.outcome == 'success' &&
-          matrix.os == 'macos-14' &&
+          matrix.os == 'macos-15' &&
           matrix.build_type == 'Release'
         }}
       run: |
