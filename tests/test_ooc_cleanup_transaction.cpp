@@ -2179,6 +2179,20 @@ capture_private_lease_external_namespace_without_lock(const OOCCleanupPaths& pat
         paths.private_directory.filename());
 }
 
+[[nodiscard]] NamespaceTreeSnapshot
+capture_namespace_tree_while_lock_held(const std::filesystem::path& root,
+                                       const std::filesystem::path& lock_path) {
+#ifdef _WIN32
+    // BaseLock intentionally denies all Windows sharing. The live handle also
+    // prevents the named lock from being replaced or removed, so compare the
+    // rest of the namespace without trying to stat the exclusively held leaf.
+    return capture_namespace_tree(root, lock_path.lexically_relative(root));
+#else
+    // POSIX locks do not prevent unlink/rename, so retain lock-leaf coverage.
+    return capture_namespace_tree(root);
+#endif
+}
+
 [[maybe_unused]] void write_test_bytes(const std::filesystem::path& path,
                                        std::span<const std::byte> bytes) {
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
@@ -4059,7 +4073,7 @@ void test_private_authority_union_preflight_is_zero_mutation() {
                                  OOCRelationWriter::PrivateLeaseMode::DeferCleanupHandoff);
         (void)writer.write(make_real_relation(11, 13));
         write_private_control_bytes(paths.staged_pending_path, v2_staged);
-        const auto before = capture_namespace_tree(temp.path());
+        const auto before = capture_namespace_tree_while_lock_held(temp.path(), paths.lock_path);
 
         std::error_code rejected_error;
         try {
@@ -4069,7 +4083,7 @@ void test_private_authority_union_preflight_is_zero_mutation() {
         }
         CHECK(rejected_error == unsupported);
         CHECK(writer.has_cleanup_ownership_receipt());
-        CHECK(capture_namespace_tree(temp.path()) == before);
+        CHECK(capture_namespace_tree_while_lock_held(temp.path(), paths.lock_path) == before);
         writer.abort();
     }
 
@@ -4123,13 +4137,13 @@ void test_private_authority_union_preflight_is_zero_mutation() {
                                     read_test_bytes(paths.lease_owned_path));
         write_private_control_bytes(paths.staged_pending_path, v2_staged);
 
-        const auto before = capture_namespace_tree(temp.path());
+        const auto before = capture_namespace_tree_while_lock_held(temp.path(), paths.lock_path);
         const auto rejected = OOCCleanupTransaction::remove_private_lease(*reservation.ownership);
         CHECK(rejected.status == OOCCleanupStatus::PlatformUnsupported);
         CHECK(rejected.stage == OOCCleanupStage::None);
         CHECK(rejected.native_error == unsupported);
         CHECK(!reservation.ownership->spent());
-        CHECK(capture_namespace_tree(temp.path()) == before);
+        CHECK(capture_namespace_tree_while_lock_held(temp.path(), paths.lock_path) == before);
     }
 
     {
