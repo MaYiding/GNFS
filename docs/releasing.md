@@ -114,7 +114,22 @@ state: the release by numeric ID and public tag lookup, the exact tag ref, and
 the server asset list. A later main-branch or ruleset movement does not turn an
 already immutable publication into a reported failure. Success requires the
 PATCH response and both release reads to match the exact ID, tag, target,
-`draft: false`, `prerelease: false`, and `immutable: true`.
+title, notes, `draft: false`, `prerelease: false`, and `immutable: true`.
+
+A publish retry also accepts one already public release, but only as a recovery
+state for the same immutable object. This path revalidates the selected
+verify-only proof and all ten local release files, then requires the numeric-ID
+lookup, public tag lookup, lightweight tag ref, title, notes, and every server
+asset name, size, and SHA-256 digest to match exactly. It performs no release
+creation, asset upload, deletion, or PATCH. This allows a rerun to converge when
+the original PATCH succeeded but a transient failure interrupted its first
+post-publication read. Recovery depends only on frozen release state, so it does
+not require `main` or the ruleset to retain their earlier values. Any conflicting
+public identity or asset blocks the retry. Verify-only mode never accepts an
+already published release. If `main` has moved, rerun the failed publish
+workflow attempt so its original event SHA and inputs remain bound to the
+release target; a new dispatch remains intentionally locked to the current
+`main` workflow revision.
 
 The verify-only proof embeds the exact Actions workflow, job, and check-run IDs.
 It also embeds the selected Code Scanning analysis ID, tool version, timestamp,
@@ -128,7 +143,9 @@ If draft creation or asset upload fails, the workflow does not publish the
 draft. Rerun publish mode with the same tag, target SHA, and verify-only proof to
 resume an exact partial draft. A preexisting tag, conflicting release, or
 noncanonical asset blocks the retry and requires explicit administrator
-inspection. The workflow never repairs such state destructively.
+inspection. The sole accepted preexisting tag is the exact immutable recovery
+state described above. The workflow never repairs conflicting state
+destructively.
 
 ## Qualification Lanes
 

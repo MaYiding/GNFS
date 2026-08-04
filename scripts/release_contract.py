@@ -36,6 +36,9 @@ RELEASE_TAG_RULESET_NAME = "Protect release tags"
 RELEASE_TAG_RULESET_NODE_ID = "RRS_lACqUmVwb3NpdG9yec5GF9b-zgE2SlE"
 RELEASE_TAG_RULESET_CREATED_AT = "2026-08-03T22:46:28.399Z"
 RELEASE_TAG_RULESET_UPDATED_AT = "2026-08-03T22:46:28.413Z"
+RELEASE_STATE_EMPTY = "unpublished-empty"
+RELEASE_STATE_DRAFT = "resumable-draft"
+RELEASE_STATE_PUBLISHED = "published-immutable"
 FULL_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -459,17 +462,52 @@ def _verify_resumable_draft_identity(
     return release_id
 
 
-def _assert_releasable_state(
-    client: GitHubAPI, repository: str, target_sha: str, release_tag: str
-) -> None:
+def _verify_release_state(
+    client: GitHubAPI,
+    repository: str,
+    target_sha: str,
+    release_tag: str,
+    *,
+    allow_exact_published: bool,
+) -> tuple[str, int | None]:
+    """Classify the tag as empty, one exact draft, or one exact public release."""
+
     encoded_tag = quote(release_tag, safe="")
-    if client.get_optional(f"/repos/{repository}/git/ref/tags/{encoded_tag}") is not None:
-        raise ReleaseContractError(f"refusing to reuse existing tag {release_tag}")
+    tag_ref = client.get_optional(f"/repos/{repository}/git/ref/tags/{encoded_tag}")
     candidates = _release_candidates(client, repository, release_tag)
     if len(candidates) > 1:
         raise ReleaseContractError(f"multiple releases claim tag {release_tag}")
-    if candidates:
-        _verify_resumable_draft_identity(candidates[0], target_sha, release_tag)
+    if tag_ref is None:
+        if not candidates:
+            return RELEASE_STATE_EMPTY, None
+        release_id = _verify_resumable_draft_identity(
+            candidates[0], target_sha, release_tag
+        )
+        _verify_prepared_draft(candidates[0], release_id, target_sha, release_tag)
+        return RELEASE_STATE_DRAFT, release_id
+
+    if not allow_exact_published:
+        raise ReleaseContractError(f"refusing to reuse existing tag {release_tag}")
+    if len(candidates) != 1:
+        raise ReleaseContractError(
+            "published release recovery requires one exact release candidate"
+        )
+    release_id = candidates[0].get("id")
+    if type(release_id) is not int or release_id <= 0:
+        raise ReleaseContractError("published release has no positive numeric id")
+    public_by_id = client.get(f"/repos/{repository}/releases/{release_id}")
+    public_by_tag = client.get(f"/repos/{repository}/releases/tags/{encoded_tag}")
+    for public_release in (candidates[0], public_by_id, public_by_tag):
+        _verify_release_identity(
+            public_release,
+            expected_release_id=release_id,
+            release_tag=release_tag,
+            target_sha=target_sha,
+            draft=False,
+            immutable=True,
+        )
+    _verify_release_tag_record(tag_ref, release_tag, target_sha)
+    return RELEASE_STATE_PUBLISHED, release_id
 
 
 def verify_repository_protection(
@@ -649,12 +687,29 @@ def verify_main_ci(
     repository: str,
     target_sha: str,
     release_tag: str,
-    require_unpublished: bool = True,
+    *,
+    allow_exact_published: bool = False,
 ) -> dict[str, Any]:
     _validate_repository(repository)
     _validate_sha(target_sha)
     if release_tag != FIRST_RELEASE_TAG:
         raise ReleaseContractError(f"release tag must be {FIRST_RELEASE_TAG}")
+
+    release_state, release_id = _verify_release_state(
+        client,
+        repository,
+        target_sha,
+        release_tag,
+        allow_exact_published=allow_exact_published,
+    )
+    if release_state == RELEASE_STATE_PUBLISHED:
+        return {
+            "schema_version": 1,
+            "release_state": RELEASE_STATE_PUBLISHED,
+            "release_id": release_id,
+            "release_tag": release_tag,
+            "target_sha": target_sha,
+        }
 
     main_ref = client.get(f"/repos/{repository}/git/ref/heads/main")
     main_sha = main_ref.get("object", {}).get("sha")
@@ -662,9 +717,6 @@ def verify_main_ci(
         raise ReleaseContractError(
             f"target SHA {target_sha} is not the current origin/main SHA {main_sha}"
         )
-    if require_unpublished:
-        _assert_releasable_state(client, repository, target_sha, release_tag)
-
     runs = client.paginate(
         f"/repos/{repository}/actions/runs",
         "workflow_runs",
@@ -2270,7 +2322,7 @@ def prepare_draft_release(
     verification_workflow_run_id: int,
     verification_workflow_run_attempt: int,
 ) -> dict[str, Any]:
-    """Create or safely resume one exact draft and upload only missing assets."""
+    """Create or resume one exact draft, or verify one frozen public release."""
 
     _validate_repository(repository)
     _validate_sha(target_sha)
@@ -2283,16 +2335,40 @@ def prepare_draft_release(
         verification_workflow_run_id,
         verification_workflow_run_attempt,
     )
-    _assert_tag_absent(client, repository, release_tag)
-    candidates = _release_candidates(client, repository, release_tag)
-    if len(candidates) > 1:
-        raise ReleaseContractError(f"multiple releases claim tag {release_tag}")
+
+    def recovered_public_result(release_id: int) -> dict[str, Any]:
+        frozen = _verify_frozen_public_release(
+            client,
+            repository,
+            release_id,
+            target_sha,
+            release_tag,
+            local_files,
+        )
+        return {
+            **frozen,
+            "created": False,
+            "uploaded": [],
+            "recovered": True,
+        }
+
+    release_state, observed_release_id = _verify_release_state(
+        client,
+        repository,
+        target_sha,
+        release_tag,
+        allow_exact_published=True,
+    )
+    if release_state == RELEASE_STATE_PUBLISHED:
+        if type(observed_release_id) is not int:
+            raise ReleaseContractError("published release recovery lost its numeric id")
+        return recovered_public_result(observed_release_id)
 
     created = False
-    if candidates:
-        release_id = _verify_resumable_draft_identity(
-            candidates[0], target_sha, release_tag
-        )
+    if release_state == RELEASE_STATE_DRAFT:
+        if type(observed_release_id) is not int:
+            raise ReleaseContractError("resumable draft lost its numeric id")
+        release_id = observed_release_id
     else:
         payload = {
             "tag_name": release_tag,
@@ -2312,14 +2388,24 @@ def prepare_draft_release(
         except GitHubAPIRequestError as error:
             if error.status != 422:
                 raise
-            raced = _release_candidates(client, repository, release_tag)
-            if len(raced) != 1:
+            raced_state, raced_release_id = _verify_release_state(
+                client,
+                repository,
+                target_sha,
+                release_tag,
+                allow_exact_published=True,
+            )
+            if raced_state == RELEASE_STATE_PUBLISHED:
+                if type(raced_release_id) is not int:
+                    raise ReleaseContractError(
+                        "concurrent publication lost its numeric release id"
+                    ) from error
+                return recovered_public_result(raced_release_id)
+            if raced_state != RELEASE_STATE_DRAFT or type(raced_release_id) is not int:
                 raise ReleaseContractError(
                     "draft creation raced without one exact resumable draft"
                 ) from error
-            release_id = _verify_resumable_draft_identity(
-                raced[0], target_sha, release_tag
-            )
+            release_id = raced_release_id
 
     draft = client.get(f"/repos/{repository}/releases/{release_id}")
     _verify_prepared_draft(draft, release_id, target_sha, release_tag)
@@ -2370,20 +2456,33 @@ def prepare_draft_release(
         "created": created,
         "uploaded": uploaded_names,
         "asset_count": len(local_files),
+        "immutable": False,
+        "recovered": False,
     }
 
 
-def _verify_release_tag(
-    client: GitHubAPI, repository: str, release_tag: str, target_sha: str
+def _verify_release_tag_record(
+    tag_ref: Any, release_tag: str, target_sha: str
 ) -> None:
-    encoded_tag = quote(release_tag, safe="")
-    tag_ref = client.get(f"/repos/{repository}/git/ref/tags/{encoded_tag}")
+    if not isinstance(tag_ref, dict):
+        raise ReleaseContractError("release tag response is not an object")
     if (
         tag_ref.get("ref") != f"refs/tags/{release_tag}"
         or tag_ref.get("object", {}).get("type") != "commit"
         or tag_ref.get("object", {}).get("sha") != target_sha
     ):
         raise ReleaseContractError("release tag is not an exact lightweight ref to target SHA")
+
+
+def _verify_release_tag(
+    client: GitHubAPI, repository: str, release_tag: str, target_sha: str
+) -> None:
+    encoded_tag = quote(release_tag, safe="")
+    _verify_release_tag_record(
+        client.get(f"/repos/{repository}/git/ref/tags/{encoded_tag}"),
+        release_tag,
+        target_sha,
+    )
 
 
 def _verify_release_identity(
@@ -2396,12 +2495,16 @@ def _verify_release_identity(
     immutable: bool,
 ) -> None:
     if (
-        release.get("id") != expected_release_id
+        not isinstance(release, dict)
+        or type(release.get("id")) is not int
+        or release.get("id") != expected_release_id
         or release.get("draft") is not draft
         or release.get("prerelease") is not False
         or release.get("immutable") is not immutable
         or release.get("tag_name") != release_tag
         or release.get("target_commitish") != target_sha
+        or release.get("name") != release_tag
+        or release.get("body") != _release_notes(target_sha, release_tag)
     ):
         state = "draft" if draft else "public immutable"
         raise ReleaseContractError(f"release is not the exact target-SHA {state} release")
@@ -2424,6 +2527,41 @@ def _verify_server_release_assets(
     _verify_release_asset_records(assets, local_files)
 
 
+def _verify_frozen_public_release(
+    client: GitHubAPI,
+    repository: str,
+    expected_release_id: int,
+    target_sha: str,
+    release_tag: str,
+    local_files: dict[str, Path],
+) -> dict[str, Any]:
+    """Re-read and bind every immutable public-release representation."""
+
+    encoded_tag = quote(release_tag, safe="")
+    public_by_id = client.get(f"/repos/{repository}/releases/{expected_release_id}")
+    public_by_tag = client.get(f"/repos/{repository}/releases/tags/{encoded_tag}")
+    for public_release in (public_by_id, public_by_tag):
+        _verify_release_identity(
+            public_release,
+            expected_release_id=expected_release_id,
+            release_tag=release_tag,
+            target_sha=target_sha,
+            draft=False,
+            immutable=True,
+        )
+        _verify_release_asset_records(public_release.get("assets"), local_files)
+    _verify_release_tag(client, repository, release_tag, target_sha)
+    _verify_server_release_assets(client, repository, expected_release_id, local_files)
+    return {
+        "schema_version": 1,
+        "release_id": expected_release_id,
+        "release_tag": release_tag,
+        "target_sha": target_sha,
+        "immutable": True,
+        "asset_count": len(local_files),
+    }
+
+
 def publish_verified_release(
     client: GitHubAPI,
     repository: str,
@@ -2435,9 +2573,9 @@ def publish_verified_release(
     verification_workflow_run_id: int,
     verification_workflow_run_attempt: int,
 ) -> dict[str, Any]:
-    """Contract-check, publish, and postcheck one exact draft release."""
+    """Publish one exact draft, or recover one exact frozen publication."""
 
-    if expected_release_id <= 0:
+    if type(expected_release_id) is not int or expected_release_id <= 0:
         raise ReleaseContractError("expected draft release id must be positive")
     local_files = _public_release_files(
         asset_directory,
@@ -2448,6 +2586,33 @@ def publish_verified_release(
         verification_workflow_run_id,
         verification_workflow_run_attempt,
     )
+    release_state, observed_release_id = _verify_release_state(
+        client,
+        repository,
+        target_sha,
+        release_tag,
+        allow_exact_published=True,
+    )
+    if release_state == RELEASE_STATE_PUBLISHED:
+        if observed_release_id != expected_release_id:
+            raise ReleaseContractError(
+                "published release id does not match the prepared numeric release id"
+            )
+        frozen = _verify_frozen_public_release(
+            client,
+            repository,
+            expected_release_id,
+            target_sha,
+            release_tag,
+            local_files,
+        )
+        return {**frozen, "recovered": True}
+    if (
+        release_state != RELEASE_STATE_DRAFT
+        or observed_release_id != expected_release_id
+    ):
+        raise ReleaseContractError("publication requires the exact prepared draft release id")
+
     protection_before = verify_repository_protection(
         client, repository, allow_unreadable_immutable_setting=True
     )
@@ -2456,7 +2621,6 @@ def publish_verified_release(
         repository,
         target_sha,
         release_tag,
-        require_unpublished=True,
     )
     proof = _read_json_object(proof_path)
     if proof.get("main_ci_evidence") != ci_before:
@@ -2493,28 +2657,17 @@ def publish_verified_release(
 
     # Everything below is fetched again after the mutating call. A successful
     # PATCH response alone is not publication evidence.
-    encoded_tag = quote(release_tag, safe="")
-    public_by_id = client.get(f"/repos/{repository}/releases/{expected_release_id}")
-    public_by_tag = client.get(f"/repos/{repository}/releases/tags/{encoded_tag}")
-    for public_release in (public_by_id, public_by_tag):
-        _verify_release_identity(
-            public_release,
-            expected_release_id=expected_release_id,
-            release_tag=release_tag,
-            target_sha=target_sha,
-            draft=False,
-            immutable=True,
-        )
-        _verify_release_asset_records(public_release.get("assets"), local_files)
-    _verify_release_tag(client, repository, release_tag, target_sha)
-    _verify_server_release_assets(client, repository, expected_release_id, local_files)
+    frozen = _verify_frozen_public_release(
+        client,
+        repository,
+        expected_release_id,
+        target_sha,
+        release_tag,
+        local_files,
+    )
     return {
-        "schema_version": 1,
-        "release_id": expected_release_id,
-        "release_tag": release_tag,
-        "target_sha": target_sha,
-        "immutable": True,
-        "asset_count": len(local_files),
+        **frozen,
+        "recovered": False,
         "protection_before": protection_before,
         "ci_before": ci_before,
     }
@@ -2581,10 +2734,19 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
         "verification-proof/release-verification.json",
         "--proof verification-proof/release-verification.json",
         "--github-output \"${GITHUB_OUTPUT}\"",
+        "steps.main-ci.outputs.release_state != 'published-immutable'",
     )
     for fragment in required_release_fragments:
         if fragment not in release_text:
             raise ReleaseContractError(f"release workflow lost required boundary: {fragment}")
+    if release_text.count("--allow-exact-published") != 2:
+        raise ReleaseContractError(
+            "release workflow must allow exact published recovery only in both publish preflights"
+        )
+    if "release_state_args+=(--allow-exact-published)" not in release_text:
+        raise ReleaseContractError(
+            "release workflow lost its publish-only exact-public preflight boundary"
+        )
     forbidden_qualification_triggers = ("workflow_dispatch:", "pull_request:", "schedule:")
     for trigger in forbidden_qualification_triggers:
         if trigger in qualification_text:
@@ -2695,8 +2857,11 @@ class _FakeClient:
         self.post_patch_mutator: Callable[[], None] | None = None
         self.before_upload_mutator: Callable[[str, Path], None] | None = None
         self.uploaded_names: list[str] = []
+        self.patch_count = 0
+        self.create_count = 0
         self.next_release_id = 7000
         self.release_read_id_override: int | None = None
+        self.fail_next_release_get_status: int | None = None
         self.post_create_race: Callable[[dict[str, Any]], None] | None = None
 
     def get(self, path: str, query: dict[str, str] | None = None) -> Any:
@@ -2724,6 +2889,10 @@ class _FakeClient:
             return self.release["assets"]
         match = re.search(r"/releases/([1-9][0-9]*)$", path)
         if match and self.release is not None:
+            if self.fail_next_release_get_status is not None:
+                status = self.fail_next_release_get_status
+                self.fail_next_release_get_status = None
+                raise GitHubAPIRequestError(status, path, "transient release read failure")
             if int(match.group(1)) != self.release.get("id"):
                 raise GitHubAPIRequestError(404, path, "Not Found")
             if self.release_read_id_override is None:
@@ -2741,6 +2910,7 @@ class _FakeClient:
             raise AssertionError(f"unexpected fake PATCH {path}")
         if payload != {"draft": False, "prerelease": False}:
             raise AssertionError(f"unexpected fake PATCH payload {payload}")
+        self.patch_count += 1
         self.release["draft"] = False
         self.release["prerelease"] = False
         self.release["immutable"] = self.publish_immutable
@@ -2754,6 +2924,7 @@ class _FakeClient:
         return response
 
     def post(self, path: str, payload: dict[str, Any]) -> Any:
+        self.create_count += 1
         if self.post_create_race is not None:
             mutator = self.post_create_race
             self.post_create_race = None
@@ -3561,7 +3732,10 @@ def self_test() -> None:
             client.post_patch_mutator = None
             client.before_upload_mutator = None
             client.uploaded_names = []
+            client.patch_count = 0
+            client.create_count = 0
             client.release_read_id_override = None
+            client.fail_next_release_get_status = None
             client.post_create_race = None
 
         def reset_empty() -> None:
@@ -3723,6 +3897,17 @@ def self_test() -> None:
         def reset_release() -> None:
             reset_draft()
 
+        def reset_public_release() -> None:
+            reset_draft()
+            assert client.release is not None
+            client.release["draft"] = False
+            client.release["prerelease"] = False
+            client.release["immutable"] = True
+            client.tag_ref = {
+                "ref": f"refs/tags/{FIRST_RELEASE_TAG}",
+                "object": {"type": "commit", "sha": target_sha},
+            }
+
         def expect_publish_rejection(label: str) -> None:
             try:
                 publish_verified_release(
@@ -3811,6 +3996,24 @@ def self_test() -> None:
 
         reset_release()
 
+        def change_title_after_patch() -> None:
+            assert client.release is not None
+            client.release["name"] = "wrong-title"
+
+        client.post_patch_mutator = change_title_after_patch
+        expect_publish_rejection("a post-PATCH title race")
+
+        reset_release()
+
+        def change_notes_after_patch() -> None:
+            assert client.release is not None
+            client.release["body"] = "wrong notes"
+
+        client.post_patch_mutator = change_notes_after_patch
+        expect_publish_rejection("a post-PATCH notes race")
+
+        reset_release()
+
         def move_main_after_patch() -> None:
             client.target_sha = "8" * 40
             client.ruleset["updated_at"] = "2026-08-03T22:46:29.413Z"
@@ -3830,6 +4033,157 @@ def self_test() -> None:
         if frozen_result["immutable"] is not True:
             raise ReleaseContractError("immutable publication lost frozen postconditions")
         client.ruleset["updated_at"] = RELEASE_TAG_RULESET_UPDATED_AT
+
+        reset_release()
+
+        def fail_first_frozen_read_after_patch() -> None:
+            client.target_sha = "8" * 40
+            client.ruleset["updated_at"] = "2026-08-03T22:46:29.413Z"
+            client.fail_next_release_get_status = 503
+
+        client.post_patch_mutator = fail_first_frozen_read_after_patch
+        try:
+            publish_verified_release(
+                client,
+                repository,
+                target_sha,
+                FIRST_RELEASE_TAG,
+                release_id,
+                assets,
+                proof,
+                proof_run_id,
+                proof_run_attempt,
+            )
+        except GitHubAPIRequestError as error:
+            if error.status != 503:
+                raise
+        else:
+            raise ReleaseContractError(
+                "publication self-test did not expose the transient first frozen read"
+            )
+        if (
+            client.patch_count != 1
+            or client.release is None
+            or client.release.get("draft") is not False
+            or client.release.get("immutable") is not True
+        ):
+            raise ReleaseContractError(
+                "transient postcheck failure did not retain one immutable publication"
+            )
+        try:
+            verify_main_ci(client, repository, target_sha, FIRST_RELEASE_TAG)
+        except ReleaseContractError:
+            pass
+        else:
+            raise ReleaseContractError(
+                "verify-only main preflight accepted an already published release"
+            )
+        recovery_preflight = verify_main_ci(
+            client,
+            repository,
+            target_sha,
+            FIRST_RELEASE_TAG,
+            allow_exact_published=True,
+        )
+        if (
+            recovery_preflight.get("release_state") != RELEASE_STATE_PUBLISHED
+            or recovery_preflight.get("release_id") != release_id
+        ):
+            raise ReleaseContractError(
+                "publish preflight did not recognize exact immutable recovery state"
+            )
+        recovered_prepare = prepare_draft_release(
+            client,
+            repository,
+            target_sha,
+            FIRST_RELEASE_TAG,
+            assets,
+            proof,
+            proof_run_id,
+            proof_run_attempt,
+        )
+        recovered_publish = publish_verified_release(
+            client,
+            repository,
+            target_sha,
+            FIRST_RELEASE_TAG,
+            release_id,
+            assets,
+            proof,
+            proof_run_id,
+            proof_run_attempt,
+        )
+        if (
+            recovered_prepare.get("recovered") is not True
+            or recovered_prepare.get("uploaded") != []
+            or recovered_publish.get("recovered") is not True
+            or client.patch_count != 1
+            or client.create_count != 0
+            or client.uploaded_names
+        ):
+            raise ReleaseContractError(
+                "immutable publication recovery performed a mutation or lost evidence"
+            )
+        client.ruleset["updated_at"] = RELEASE_TAG_RULESET_UPDATED_AT
+
+        def expect_public_shell_rejection(label: str) -> None:
+            try:
+                verify_main_ci(
+                    client,
+                    repository,
+                    target_sha,
+                    FIRST_RELEASE_TAG,
+                    allow_exact_published=True,
+                )
+            except ReleaseContractError:
+                pass
+            else:
+                raise ReleaseContractError(
+                    f"publish preflight accepted conflicting public release {label}"
+                )
+            expect_prepare_rejection(f"conflicting public release {label}")
+            expect_publish_rejection(f"conflicting public release {label}")
+
+        reset_public_release()
+        assert client.release is not None
+        client.release["target_commitish"] = "1" * 40
+        expect_public_shell_rejection("target SHA")
+
+        reset_public_release()
+        assert client.release is not None
+        client.release["name"] = "wrong-title"
+        expect_public_shell_rejection("title")
+
+        reset_public_release()
+        assert client.release is not None
+        client.release["body"] = "wrong notes"
+        expect_public_shell_rejection("notes")
+
+        reset_public_release()
+        assert client.tag_ref is not None
+        client.tag_ref["object"]["sha"] = "2" * 40
+        expect_public_shell_rejection("tag ref")
+
+        reset_public_release()
+        client.release_read_id_override = release_id + 1
+        expect_public_shell_rejection("numeric id")
+
+        reset_public_release()
+        assert client.release is not None
+        client.release["assets"][0]["digest"] = f"sha256:{'9' * 64}"
+        asset_shell = verify_main_ci(
+            client,
+            repository,
+            target_sha,
+            FIRST_RELEASE_TAG,
+            allow_exact_published=True,
+        )
+        if asset_shell.get("release_state") != RELEASE_STATE_PUBLISHED:
+            raise ReleaseContractError(
+                "public release shell did not preserve deferred asset validation"
+            )
+        expect_prepare_rejection("conflicting public release asset digest")
+        expect_publish_rejection("conflicting public release asset digest")
 
         client.immutable_setting_readable = False
         protection = verify_repository_protection(
@@ -3921,6 +4275,7 @@ def parse_arguments() -> argparse.Namespace:
     verify_main = subparsers.add_parser("verify-main")
     _add_identity_arguments(verify_main)
     verify_main.add_argument("--repository", required=True)
+    verify_main.add_argument("--allow-exact-published", action="store_true")
     verify_main.add_argument("--github-output", type=Path)
     verify_main.add_argument("--evidence-output", type=Path)
 
@@ -4055,6 +4410,7 @@ def main() -> int:
                 arguments.repository,
                 arguments.target_sha,
                 arguments.release_tag,
+                allow_exact_published=arguments.allow_exact_published,
             )
             print(json.dumps(evidence, indent=2, sort_keys=True))
             if arguments.evidence_output is not None:
@@ -4067,8 +4423,15 @@ def main() -> int:
                 with evidence_output.open("x", encoding="utf-8", newline="\n") as handle:
                     json.dump(evidence, handle, indent=2, sort_keys=True)
                     handle.write("\n")
+            workbench_run_id = evidence.get("workbench_run_id")
+            if type(workbench_run_id) is int:
+                _write_github_output(
+                    arguments.github_output, "workbench_run_id", workbench_run_id
+                )
             _write_github_output(
-                arguments.github_output, "workbench_run_id", evidence["workbench_run_id"]
+                arguments.github_output,
+                "release_state",
+                evidence.get("release_state", "unpublished"),
             )
         elif arguments.command == "find-verification":
             run_id, run_attempt = find_verification_run(

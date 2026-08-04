@@ -74,22 +74,29 @@ jobs:
           TARGET_SHA: ${{ inputs.target_sha }}
         run: python3 scripts/release_contract.py verify-checkout --target-sha "${TARGET_SHA}"
 
-      - name: Verify current main and every triggered push workflow
+      - name: Verify releasable state and required main CI
         id: main-ci
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          MODE: ${{ inputs.mode }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           REPOSITORY: ${{ github.repository }}
           TARGET_SHA: ${{ inputs.target_sha }}
         run: |
+          release_state_args=()
+          if [[ "${MODE}" == "publish" ]]; then
+            release_state_args+=(--allow-exact-published)
+          fi
           python3 scripts/release_contract.py verify-main \
             --repository "${REPOSITORY}" \
             --release-tag "${RELEASE_TAG}" \
             --target-sha "${TARGET_SHA}" \
             --evidence-output main-ci-evidence/main-ci-evidence.json \
-            --github-output "${GITHUB_OUTPUT}"
+            --github-output "${GITHUB_OUTPUT}" \
+            "${release_state_args[@]}"
 
       - name: Verify release protection boundary
+        if: inputs.mode == 'verify-only' || steps.main-ci.outputs.release_state != 'published-immutable'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
@@ -651,7 +658,7 @@ jobs:
           run-id: ${{ needs.preflight.outputs.verification_run_id }}
           github-token: ${{ github.token }}
 
-      - name: Revalidate proof, current main, CI, and resumable draft state
+      - name: Revalidate proof and publish or recovery state
         env:
           GITHUB_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
@@ -671,7 +678,8 @@ jobs:
           python3 scripts/release_contract.py verify-main \
             --repository "${REPOSITORY}" \
             --release-tag "${RELEASE_TAG}" \
-            --target-sha "${TARGET_SHA}"
+            --target-sha "${TARGET_SHA}" \
+            --allow-exact-published
 
       - name: Create or safely resume exact draft release
         id: draft
