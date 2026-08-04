@@ -251,9 +251,11 @@ the exact PyPI `manylinux2014_x86_64` wheel whose SHA-256 is
 `1c8b05df0602365da91ee6a3336fe57525b137706c4ab5675498f662ae1dbcec`.
 Pip runs with `--require-hashes`, `--only-binary=:all:`, and `--no-deps`, then
 the job checks the installed CMake version. The wheel is build infrastructure,
-not a release asset. This authenticates the rolling PPA and enforces the binary
-ABI ceiling, but it is not a bit-for-bit pin of the complete Debian package
-closure.
+not a release asset. Because GitHub mounts the workspace into the pinned
+container with host ownership, the job registers only `${GITHUB_WORKSPACE}` as
+a Git safe directory before verifying the exact SHA and clean tree. This
+authenticates the rolling PPA and enforces the binary ABI ceiling, but it is not
+a bit-for-bit pin of the complete Debian package closure.
 
 The Linux checker writes its observed GLIBC, GLIBCXX, and CXXABI maxima, the
 dynamic dependency set, and the executable digest to

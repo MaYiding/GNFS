@@ -44,6 +44,7 @@ jobs:
         env:
           TARGET_SHA: ${{ github.sha }}
         run: |
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
           python3 scripts/release_contract.py verify-checkout \
             --target-sha "${TARGET_SHA}"
 
