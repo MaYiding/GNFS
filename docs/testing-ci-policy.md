@@ -113,7 +113,11 @@ of inheriting an older successful run.
 
 `Release Readiness` is a required lane for every pull request and `main` push.
 It deliberately has no path filter. Its Ubuntu 20.04 container job installs the
-exact CMake 3.31.6 wheel through pip hash-checking mode and verifies the
+release toolchain through the same versioned installer as the publication
+workflow. That installer uses an isolated temporary GnuPG home, verifies the
+Ubuntu Toolchain PPA's full fingerprint and Deb822 `Signed-By` boundary, and
+checks amd64, glibc 2.31, and GCC/G++ major version 12. The job then installs
+the exact CMake 3.31.6 wheel through pip hash-checking mode and verifies the
 installed version. Its Windows 2022 job installs the digest-pinned UCRT64
 compiler and runtime packages, configures the build with
 `GNFS_ENABLE_NTL=OFF`, derives the four-DLL closure with `ldd`, launches the

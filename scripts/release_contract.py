@@ -3039,8 +3039,77 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
     qualification_text = qualification_workflow.read_text(encoding="utf-8")
     readiness_workflow = release_workflow.with_name("release-readiness.yml")
     readiness_text = readiness_workflow.read_text(encoding="utf-8")
+    repository_root = release_workflow.parents[2]
+    linux_toolchain_installer = (
+        repository_root / "scripts" / "install_linux_release_toolchain.sh"
+    )
+    if not linux_toolchain_installer.is_file():
+        raise ReleaseContractError("Linux release toolchain installer is missing")
+    if linux_toolchain_installer.stat().st_mode & 0o111 == 0:
+        raise ReleaseContractError("Linux release toolchain installer is not executable")
+    linux_toolchain_text = linux_toolchain_installer.read_text(encoding="utf-8")
+    required_linux_toolchain_fragments = (
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        "EUID",
+        "dpkg --print-architecture",
+        "getconf GNU_LIBC_VERSION",
+        "Acquire::Retries=4",
+        "Acquire::http::Timeout=30",
+        "Acquire::https::Timeout=30",
+        "C8EC952E2A0E1FBDC5090F6A2C277A0A352154E5",
+        "https://keyserver.ubuntu.com/",
+        "key_file=$(mktemp)",
+        "gpg_home=$(mktemp -d)",
+        'chmod 0700 "${gpg_home}"',
+        'export GNUPGHOME="${gpg_home}"',
+        'rm -rf -- "${gpg_home}"',
+        "--show-keys --with-colons",
+        "primary_fingerprints",
+        "--dearmor",
+        "https://ppa.launchpadcontent.net/ubuntu-toolchain-r/test/ubuntu/",
+        "Suites: focal",
+        "Architectures: amd64",
+        "Signed-By: /etc/apt/keyrings/ubuntu-toolchain-r-test.gpg",
+        "gcc-12",
+        "g++-12",
+    )
+    for fragment in required_linux_toolchain_fragments:
+        if fragment not in linux_toolchain_text:
+            raise ReleaseContractError(
+                f"Linux release toolchain installer lost required boundary: {fragment}"
+            )
+    forbidden_linux_toolchain_fragments = (
+        "add-apt-repository",
+        "apt-key",
+        "trusted=yes",
+        "http://ppa",
+        "set +e",
+        "|| true",
+    )
+    for fragment in forbidden_linux_toolchain_fragments:
+        if fragment in linux_toolchain_text:
+            raise ReleaseContractError(
+                "Linux release toolchain installer contains forbidden mutable or "
+                f"fail-open fragment: {fragment}"
+            )
+    if linux_toolchain_text.count(
+        'gpg --batch --no-options --homedir "${gpg_home}"'
+    ) != 2:
+        raise ReleaseContractError(
+            "Linux release toolchain installer must isolate both GPG operations"
+        )
+    installer_invocation = "bash scripts/install_linux_release_toolchain.sh"
+    for workflow_name, workflow_text in (
+        ("release", release_text),
+        ("release readiness", readiness_text),
+    ):
+        if workflow_text.count(installer_invocation) != 1:
+            raise ReleaseContractError(
+                f"{workflow_name} workflow must invoke the Linux toolchain installer once"
+            )
     cmake_requirements = (
-        release_workflow.parents[2] / "scripts" / "release-cmake-requirements.txt"
+        repository_root / "scripts" / "release-cmake-requirements.txt"
     )
     expected_cmake_requirements = (
         "# PyPI file: cmake-3.31.6-py3-none-manylinux_2_17_x86_64."
@@ -3122,18 +3191,12 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
         "-DGNFS_ENABLE_NTL=OFF",
         "container: ubuntu:20.04@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214",
         "Acquire::Retries=4",
-        "https://ppa.launchpadcontent.net/ubuntu-toolchain-r/test/ubuntu/",
-        "C8EC952E2A0E1FBDC5090F6A2C277A0A352154E5",
-        "Suites: focal",
-        "Architectures: amd64",
-        "Signed-By: /etc/apt/keyrings/ubuntu-toolchain-r-test.gpg",
+        "scripts/install_linux_release_toolchain.sh",
         "scripts/release-cmake-requirements.txt",
         'git config --global --add safe.directory "${GITHUB_WORKSPACE}"',
         "--no-deps",
         "--only-binary=:all:",
         "--require-hashes",
-        "getconf GNU_LIBC_VERSION",
-        "gcc-12",
         "g++-12",
         "-DCMAKE_CXX_COMPILER=g++-12",
         "-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0",
@@ -3178,7 +3241,9 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
         "name: Release Readiness",
         "name: Linux pinned CMake wheel closure",
         "container: ubuntu:20.04@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214",
+        "timeout-minutes: 30",
         'git config --global --add safe.directory "${GITHUB_WORKSPACE}"',
+        "scripts/install_linux_release_toolchain.sh",
         "scripts/release-cmake-requirements.txt",
         "--no-deps",
         "--only-binary=:all:",

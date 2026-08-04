@@ -245,9 +245,14 @@ The Linux bootstrap uses the Ubuntu Toolchain test PPA through its direct
 Focal Deb822 endpoint rather than the Launchpad metadata API. The source is
 limited by `Signed-By` to the PPA key whose full fingerprint is
 `C8EC952E2A0E1FBDC5090F6A2C277A0A352154E5`; key retrieval and APT transport
-have bounded retries and timeouts. The job also checks amd64, glibc 2.31, and
-GCC/G++ major version 12 before building. CMake 3.31.6 is installed only from
-the exact PyPI `manylinux2014_x86_64` wheel whose SHA-256 is
+have bounded retries and timeouts. Key inspection and dearmoring use an
+isolated temporary GnuPG home with mode `0700`, pass that home explicitly to
+both GPG operations, and remove it on exit. They do not depend on a mounted
+runner home containing `.gnupg`. The versioned installer is shared with
+`Release Readiness`, so every pull request and `main` push exercises the same
+PPA, fingerprint, architecture, glibc, and GCC/G++ 12 boundary used for the
+release package. CMake 3.31.6 is installed only from the exact PyPI
+`manylinux2014_x86_64` wheel whose SHA-256 is
 `1c8b05df0602365da91ee6a3336fe57525b137706c4ab5675498f662ae1dbcec`.
 Pip runs with `--require-hashes`, `--only-binary=:all:`, and `--no-deps`, then
 the job checks the installed CMake version. The wheel is build infrastructure,
@@ -290,11 +295,12 @@ The archive validator cross-checks every license, runtime contract, DLL, and
 source mapping. The executable must also pass its version probe from the
 package directory with `/ucrt64/bin` excluded from `PATH`.
 
-`Release Readiness` repeats the complete pinned Windows build, isolated launch,
-archive creation, and archive validation on every pull request and `main` push.
-It deliberately has no path filter because it is a required check and the release
-preflight requires exact-SHA evidence in addition to
-the ordinary Windows compiler matrix.
+`Release Readiness` repeats the complete Linux toolchain bootstrap and pinned
+CMake installation, plus the complete pinned Windows build, isolated launch,
+archive creation, and archive validation, on every pull request and `main`
+push. It deliberately has no path filter because it is a required check and
+the release preflight requires exact-SHA evidence in addition to the ordinary
+platform compiler matrix.
 
 `Workbench CI` embeds the full source SHA as `GNFSSourceRevision` in the
 application `Info.plist`. The release workflow downloads the ZIP and SHA-256
