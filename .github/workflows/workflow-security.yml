@@ -3,8 +3,6 @@ name: Workflow Security
 on:
   push:
     branches: [ main, dev ]
-    paths:
-      - '.github/**'
   pull_request:
     branches: [ main, dev ]
     paths:

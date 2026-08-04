@@ -30,6 +30,13 @@ and environment, and the `CodeQL` tool. The latest analysis must have an empty
 error field and a nonempty tool version. An older successful analysis cannot
 hide a newer failed rerun or a newer analysis for a different commit.
 
+Every workflow that supplies a required context has one canonical, unfiltered
+`main` push trigger, even when its pull-request trigger retains path filters to
+control cost. `check-workflows` accepts only `branches: [ main ]` or
+`branches: [ main, dev ]` as the complete push block for those workflows. This
+guarantees exactly one eligible push run for every releasable main SHA; a
+manually dispatched run cannot substitute for that evidence.
+
 The workflow never accepts a branch name, tag, or other mutable checkout ref.
 It never overwrites an artifact, tag, release, or uploaded release asset.
 
