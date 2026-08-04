@@ -112,14 +112,16 @@ script, workflow-security, and platform evidence at its own exact SHA instead
 of inheriting an older successful run.
 
 `Release Readiness` is a required lane for every pull request and `main` push.
-It deliberately has no path filter. Its Windows 2022 job installs the digest-
-pinned UCRT64 compiler and runtime packages, configures the build with
-`GNFS_ENABLE_NTL=OFF`, derives
-the four-DLL closure with `ldd`, launches the packaged CLI with `/ucrt64/bin`
-removed from `PATH`, creates the deterministic ZIP, and validates its package,
-license, DLL, and corresponding-source manifest. This lane is distinct from
-the ordinary Windows `instant` test row: it proves the distribution boundary
-rather than duplicating the unit-test selection.
+It deliberately has no path filter. Its Ubuntu 20.04 container job installs the
+exact CMake 3.31.6 wheel through pip hash-checking mode and verifies the
+installed version. Its Windows 2022 job installs the digest-pinned UCRT64
+compiler and runtime packages, configures the build with
+`GNFS_ENABLE_NTL=OFF`, derives the four-DLL closure with `ldd`, launches the
+packaged CLI with `/ucrt64/bin` removed from `PATH`, creates the deterministic
+ZIP, and validates its package, license, DLL, and corresponding-source
+manifest. These jobs are distinct from ordinary platform test rows: they prove
+release distribution and toolchain boundaries rather than duplicating unit-
+test selection.
 
 The authenticated Linux profile requires modern glibc plus its complete
 syscall and macro surface. On unsupported libcs, store admission reports

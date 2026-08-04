@@ -246,9 +246,16 @@ Focal Deb822 endpoint rather than the Launchpad metadata API. The source is
 limited by `Signed-By` to the PPA key whose full fingerprint is
 `C8EC952E2A0E1FBDC5090F6A2C277A0A352154E5`; key retrieval and APT transport
 have bounded retries and timeouts. The job also checks amd64, glibc 2.31, and
-GCC/G++ major version 12 before building. This authenticates the rolling PPA
-and enforces the binary ABI ceiling, but it is not a bit-for-bit pin of the
-complete Debian package closure.
+GCC/G++ major version 12 before building. CMake 3.31.6 is installed only from
+the exact PyPI `manylinux2014_x86_64` wheel whose SHA-256 is
+`1c8b05df0602365da91ee6a3336fe57525b137706c4ab5675498f662ae1dbcec`.
+Pip runs with `--require-hashes`, `--only-binary=:all:`, and `--no-deps`, then
+the job checks the installed CMake version. The wheel is build infrastructure,
+not a release asset. Because GitHub mounts the workspace into the pinned
+container with host ownership, the job registers only `${GITHUB_WORKSPACE}` as
+a Git safe directory before verifying the exact SHA and clean tree. This
+authenticates the rolling PPA and enforces the binary ABI ceiling, but it is not
+a bit-for-bit pin of the complete Debian package closure.
 
 The Linux checker writes its observed GLIBC, GLIBCXX, and CXXABI maxima, the
 dynamic dependency set, and the executable digest to

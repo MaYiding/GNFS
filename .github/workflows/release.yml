@@ -45,7 +45,7 @@ jobs:
       workbench_run_id: ${{ steps.main-ci.outputs.workbench_run_id }}
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
@@ -107,7 +107,7 @@ jobs:
 
       - name: Upload exact-SHA main CI evidence
         if: inputs.mode == 'verify-only'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-main-ci-evidence-${{ github.run_id }}
           path: main-ci-evidence/main-ci-evidence.json
@@ -224,9 +224,7 @@ jobs:
               exit 1
             fi
           done
-          python3 -m pip install --no-cache-dir cmake==3.31.6
-
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ inputs.target_sha }}
           persist-credentials: false
@@ -235,8 +233,19 @@ jobs:
         env:
           TARGET_SHA: ${{ inputs.target_sha }}
         run: |
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
           python3 scripts/release_contract.py verify-checkout \
             --target-sha "${TARGET_SHA}"
+
+      - name: Install hash-pinned CMake
+        run: |
+          python3 -m pip install \
+            --no-cache-dir \
+            --no-deps \
+            --only-binary=:all: \
+            --require-hashes \
+            --requirement scripts/release-cmake-requirements.txt
+          [[ "$(cmake --version | awk 'NR == 1 { print $3 }')" == '3.31.6' ]]
 
       - name: Capture source date epoch
         id: source
@@ -292,7 +301,7 @@ jobs:
             --release-tag "${RELEASE_TAG}"
 
       - name: Upload packaged Linux CLI artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gnfs-linux-x86_64
           path: packages/*
@@ -319,7 +328,7 @@ jobs:
             python: python
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ inputs.target_sha }}
           persist-credentials: false
@@ -344,7 +353,7 @@ jobs:
 
       - name: Install dependencies (Windows / MSYS2 UCRT64)
         if: runner.os == 'Windows'
-        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2.32.0
         with:
           msystem: UCRT64
           update: true
@@ -469,7 +478,7 @@ jobs:
             --release-tag "${RELEASE_TAG}"
 
       - name: Upload packaged CLI artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gnfs-${{ matrix.asset_suffix }}
           path: packages/*
@@ -484,7 +493,7 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ inputs.target_sha }}
           persist-credentials: false
@@ -509,7 +518,7 @@ jobs:
             --target-sha "${TARGET_SHA}"
 
       - name: Upload exact-SHA GNFS source
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gnfs-project-source
           path: gnfs-source/*
@@ -524,7 +533,7 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ inputs.target_sha }}
           persist-credentials: false
@@ -542,7 +551,7 @@ jobs:
             --source-directory dependency-sources
 
       - name: Upload pinned dependency sources
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gnfs-dependency-sources
           path: dependency-sources/*
@@ -557,7 +566,7 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ inputs.target_sha }}
           persist-credentials: false
@@ -568,7 +577,7 @@ jobs:
         run: python3 scripts/release_contract.py verify-checkout --target-sha "${TARGET_SHA}"
 
       - name: Download Workbench artifact from the exact push run
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: gnfs-workbench-macos-arm64
           path: workbench-ci
@@ -589,7 +598,7 @@ jobs:
           cp "workbench-ci/GNFSWorkbench-${RELEASE_TAG#v}-macOS-arm64.zip" packages/
 
       - name: Upload verified Workbench package
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gnfs-workbench
           path: packages/*
@@ -611,7 +620,7 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ inputs.target_sha }}
           persist-credentials: false
@@ -622,14 +631,14 @@ jobs:
         run: python3 scripts/release_contract.py verify-checkout --target-sha "${TARGET_SHA}"
 
       - name: Download package jobs
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: gnfs-*
           path: release-assets
           merge-multiple: true
 
       - name: Download exact-SHA main CI evidence
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-main-ci-evidence-${{ github.run_id }}
           path: main-ci-evidence
@@ -662,7 +671,7 @@ jobs:
             --server-url "${SERVER_URL}"
 
       - name: Upload immutable release assets
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-assets-${{ inputs.release_tag }}-${{ inputs.target_sha }}
           path: release-assets/*
@@ -670,7 +679,7 @@ jobs:
           retention-days: 30
 
       - name: Upload verification proof
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-verification-${{ inputs.release_tag }}-${{ inputs.target_sha }}
           path: verification-proof/release-verification.json
@@ -690,7 +699,7 @@ jobs:
       security-events: read  # Recheck exact-main CodeQL analysis before publication.
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ inputs.target_sha }}
           persist-credentials: false
@@ -701,7 +710,7 @@ jobs:
         run: python3 scripts/release_contract.py verify-checkout --target-sha "${TARGET_SHA}"
 
       - name: Download previously verified release assets
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-assets-${{ inputs.release_tag }}-${{ inputs.target_sha }}
           path: release-assets
@@ -710,7 +719,7 @@ jobs:
           github-token: ${{ github.token }}
 
       - name: Download prior verification proof
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-verification-${{ inputs.release_tag }}-${{ inputs.target_sha }}
           path: verification-proof
