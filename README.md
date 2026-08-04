@@ -145,6 +145,7 @@ make -C build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 ./build/gnfs 96091                                # 自动方法选择
 ./build/gnfs 1000036000099 --method siqs          # 强制 SIQS
 ./build/gnfs 1000036000099 --json                 # JSON 输出
+./build/gnfs 360 --complete --event-stream        # 递归分解并输出 JSONL 事件
 ./build/gnfs 1000036000099 --report -o result.txt # 详细报告
 ./build/gnfs --interactive                        # REPL 模式
 ```
@@ -156,6 +157,8 @@ make -C build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 
 输出选项:
   --json                  以 JSON 格式输出
+  --event-stream          输出版本化 JSONL 事件流
+  --complete              递归分解，直到所有因子均通过素性测试
   --csv                   以 CSV 格式输出
   --report                输出带统计信息的详细报告
   -o, --output <文件>     输出到文件（默认: stdout）
@@ -184,6 +187,18 @@ make -C build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
   -h, --help              显示帮助
   --version               显示版本
 ```
+
+`--event-stream` 为 GUI 和自动化提供仅占用 stdout 的机器协议。每行均为一个
+完整 JSON 对象；stderr 仅承载诊断文本。协议顺序、字段、退出码及兼容规则见
+[CLI 事件流协议](docs/api/event-stream.md)。
+
+### macOS Workbench
+
+`apps/macos/GNFSWorkbench/` 提供原生 SwiftUI 工作台，可查看流水线进度、
+关系指标、结构化日志、完整质因数结果和本地历史。应用仅支持 Apple Silicon
+与 macOS 26 及以上版本。构建、测试、临时工作目录生命周期及本地 ZIP 交付
+说明见 [GNFS Workbench](apps/macos/GNFSWorkbench/README.md)。当前 ZIP 采用
+ad-hoc 签名且未经 notarization，不作为无提示公开分发包。
 
 <details>
 <summary><b>配置文件示例（点击展开）</b></summary>
@@ -219,6 +234,11 @@ if (result.success) {
               << result.factors[1].to_string() << "\n";
 }
 
+auto complete = gnfs::api::factorize_completely("360");
+if (complete.factorization_complete && complete.factors_prime) {
+    // factors contains 2, 2, 2, 3, 3, 5
+}
+
 // 自定义配置 + 方法选择
 gnfs::api::Config cfg;
 cfg.method = gnfs::api::FactorizationMethod::GNFS;
@@ -251,6 +271,8 @@ std::cout << "矩阵: " << stats.matrix_rows << " × " << stats.matrix_cols << "
 ```cpp
 struct FactorResult {
     bool                  success;
+    bool                  factorization_complete;
+    bool                  factors_prime;
     Integer               n;
     std::vector<Integer>  factors;
     FactorStats           stats;

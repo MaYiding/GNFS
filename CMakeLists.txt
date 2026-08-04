@@ -563,6 +563,18 @@ if(GNFS_BUILD_TESTS)
     endif()
 
     if(Python3_Interpreter_FOUND)
+        add_test(NAME StdoutContract
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_stdout_contract.py
+                --root ${CMAKE_CURRENT_SOURCE_DIR})
+        add_test(NAME StdoutContractSelfTest
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_stdout_contract.py
+                --self-test)
+        set_tests_properties(StdoutContract StdoutContractSelfTest PROPERTIES
+            LABELS "instant" TIMEOUT 10
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
         add_test(NAME DistributedSievePolicyInventory
             COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_distributed_sieve_policy.py
@@ -2877,6 +2889,24 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_api PRIVATE gnfs_core Threads::Threads)
     add_test(NAME API COMMAND test_api)
     set_tests_properties(API PROPERTIES LABELS "slow" TIMEOUT 300)
+
+    # GUI/automation-safe JSON Lines event protocol
+    add_executable(test_event_stream
+        tests/test_event_stream.cpp
+    )
+    target_link_libraries(test_event_stream PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME EventStream COMMAND test_event_stream)
+    set_tests_properties(EventStream PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Real-process contract test for the CLI JSON Lines protocol.
+    add_executable(test_cli_event_stream
+        tests/test_cli_event_stream.cpp
+    )
+    target_link_libraries(test_cli_event_stream PRIVATE gnfs_util Threads::Threads)
+    add_dependencies(test_cli_event_stream gnfs)
+    add_test(NAME CLIEventStream
+        COMMAND test_cli_event_stream $<TARGET_FILE:gnfs>)
+    set_tests_properties(CLIEventStream PROPERTIES LABELS "instant" TIMEOUT 60)
 
     # Method selection 测试
     add_executable(test_method_selection

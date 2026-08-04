@@ -1,10 +1,10 @@
 #pragma once
 
+#include "../core/params.hpp"
+#include "../core/polynomial_context.hpp"
 #include "bai_brent_selector.hpp"
 #include "base_m.hpp"
 #include "kleinjung_selector.hpp"
-#include "../core/params.hpp"
-#include "../core/polynomial_context.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -14,8 +14,8 @@
 
 namespace gnfs::polynomial {
 
-using core::Integer;
 using core::GNFSParams;
+using core::Integer;
 using core::PolynomialContext;
 
 /// 多项式选择自动分发
@@ -35,10 +35,8 @@ public:
     /// @param verbose 是否输出选择过程信息
     /// @return PolynomialContext
     /// @throws std::runtime_error 如果所有选择器均失败
-    [[nodiscard]] static PolynomialContext select(
-            const Integer& n,
-            const GNFSParams& params,
-            bool verbose = false) {
+    [[nodiscard]] static PolynomialContext select(const Integer& n, const GNFSParams& params,
+                                                  bool verbose = false) {
 
         uint32_t degree = params.degree;
         size_t bits = n.bit_length();
@@ -72,8 +70,8 @@ public:
 
             if (use_bai_brent) {
                 if (verbose) {
-                    std::cout << "  Selector: BaiBrent (degree=" << degree
-                              << ", bits=" << bits << ", GNFS_POLY_BAI_BRENT=1)\n";
+                    std::cerr << "  Selector: BaiBrent (degree=" << degree << ", bits=" << bits
+                              << ", GNFS_POLY_BAI_BRENT=1)\n";
                 }
 
                 auto ctx = try_bai_brent_from_params(n, params, verbose);
@@ -82,11 +80,11 @@ public:
                 }
 
                 if (verbose) {
-                    std::cout << "  BaiBrent failed, falling back to Kleinjung\n";
+                    std::cerr << "  BaiBrent failed, falling back to Kleinjung\n";
                 }
             } else if (verbose) {
-                std::cout << "  Selector: Kleinjung (degree=" << degree
-                          << ", bits=" << bits << ")\n";
+                std::cerr << "  Selector: Kleinjung (degree=" << degree << ", bits=" << bits
+                          << ")\n";
             }
 
             auto ctx = try_kleinjung_from_params(n, params, verbose);
@@ -95,20 +93,20 @@ public:
             }
 
             if (verbose) {
-                std::cout << "  Kleinjung failed, falling back to BaseMSelector\n";
+                std::cerr << "  Kleinjung failed, falling back to BaseMSelector\n";
             }
         } else {
             if (verbose) {
-                std::cout << "  Selector: BaseMSelector (degree=" << degree
-                          << ", bits=" << bits << ")\n";
+                std::cerr << "  Selector: BaseMSelector (degree=" << degree << ", bits=" << bits
+                          << ")\n";
             }
         }
 
         // BaseMSelector 路径
         auto poly_result = BaseMSelector::select(n, degree);
         if (!poly_result.success) {
-            throw std::runtime_error(
-                "Polynomial selection failed for " + std::to_string(bits) + "-bit N");
+            throw std::runtime_error("Polynomial selection failed for " + std::to_string(bits) +
+                                     "-bit N");
         }
 
         return BaseMSelector::create_context(n, poly_result);
@@ -119,23 +117,19 @@ public:
     /// @param degree 多项式度数
     /// @param verbose 是否输出选择过程信息
     /// @return PolynomialContext
-    [[nodiscard]] static PolynomialContext select(
-            const Integer& n,
-            uint32_t degree,
-            bool verbose = false) {
+    [[nodiscard]] static PolynomialContext select(const Integer& n, uint32_t degree,
+                                                  bool verbose = false) {
 
         // 构造 GNFSParams 以获取自适应参数
         auto params = GNFSParams::compute(n.bit_length());
-        params.degree = degree;  // 尊重调用者指定的 degree
+        params.degree = degree; // 尊重调用者指定的 degree
         return select(n, params, verbose);
     }
 
 private:
     /// 尝试 Kleinjung 选择（从 GNFSParams 自动推导参数）
-    [[nodiscard]] static std::optional<PolynomialContext> try_kleinjung_from_params(
-            const Integer& n,
-            const GNFSParams& params,
-            bool verbose) {
+    [[nodiscard]] static std::optional<PolynomialContext>
+    try_kleinjung_from_params(const Integer& n, const GNFSParams& params, bool verbose) {
 
         auto kparams = KleinjungParams::from_gnfs_params(params);
 
@@ -147,20 +141,18 @@ private:
         }
 
         if (verbose) {
-            std::cout << "  Kleinjung: Murphy E = " << result.score.log_e_score
+            std::cerr << "  Kleinjung: Murphy E = " << result.score.log_e_score
                       << ", skewness = " << result.skewness
-                      << ", candidates tested = " << result.candidates_tested
-                      << " (" << result.elapsed_seconds << "s)\n";
+                      << ", candidates tested = " << result.candidates_tested << " ("
+                      << result.elapsed_seconds << "s)\n";
         }
 
         return create_context_from_kleinjung(n, result);
     }
 
     /// 尝试 Bai-Brent 非首一选择 (从 GNFSParams 自动推导参数)
-    [[nodiscard]] static std::optional<PolynomialContext> try_bai_brent_from_params(
-            const Integer& n,
-            const GNFSParams& params,
-            bool verbose) {
+    [[nodiscard]] static std::optional<PolynomialContext>
+    try_bai_brent_from_params(const Integer& n, const GNFSParams& params, bool verbose) {
 
         auto bp = BaiBrentParams::from_gnfs_params(params);
 
@@ -172,11 +164,11 @@ private:
         }
 
         if (verbose) {
-            std::cout << "  BaiBrent: Murphy E = " << result.score.log_e_score
+            std::cerr << "  BaiBrent: Murphy E = " << result.score.log_e_score
                       << ", skewness = " << result.skewness
                       << ", candidates tested = " << result.candidates_tested
-                      << ", a_d = " << result.f.leading_coeff().to_string()
-                      << " (" << result.elapsed_seconds << "s)\n";
+                      << ", a_d = " << result.f.leading_coeff().to_string() << " ("
+                      << result.elapsed_seconds << "s)\n";
         }
 
         return create_context_from_bai_brent(n, result);

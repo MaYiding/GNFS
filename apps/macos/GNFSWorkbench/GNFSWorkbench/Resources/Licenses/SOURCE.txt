@@ -1,0 +1,35 @@
+Corresponding source information
+================================
+
+The v0.1.0 binary release must include these corresponding-source assets in
+the same GitHub Release as the Workbench ZIP:
+
+- gnfs-v0.1.0-source.tar.gz
+- gmp-6.3.0.tar.xz
+- ntl-11.6.0.tar.gz
+- SHA256SUMS, recording the exact SHA-256 digests of the binary and source
+  packages and release-metadata.json
+
+The release provenance record binds gnfs-v0.1.0-source.tar.gz to the exact
+GNFSSourceRevision embedded in GNFSWorkbench.app/Contents/Info.plist. The GMP
+archive SHA-256 is
+a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898. The NTL
+archive SHA-256 is
+bc0ef9aceb075a6a0673ac8d8f47d5f8458c72fe806e4468fbd5d3daff056182.
+
+The upstream locations below are supplemental mirrors; they do not replace
+the source archives conveyed with the v0.1.0 release.
+
+GNFS Workbench and the bundled GNFS command-line engine:
+https://github.com/MaYiding/GNFS
+
+Use the release tag that accompanied this binary distribution.
+
+GMP 6.3.0 source archive:
+https://gmplib.org/download/gmp/gmp-6.3.0.tar.xz
+
+NTL 11.6.0 source archive:
+https://libntl.org/ntl-11.6.0.tar.gz
+
+The repository build instructions describe how to rebuild and relink the GNFS
+command-line engine with the corresponding library sources.

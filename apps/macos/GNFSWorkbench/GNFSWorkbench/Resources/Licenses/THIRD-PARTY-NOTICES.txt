@@ -1,0 +1,39 @@
+GNFS Workbench third-party notices
+==================================
+
+This distribution contains the GNFS command-line engine and the following
+third-party libraries. The command-line engine is statically linked with the
+listed library versions; no Homebrew runtime installation is required.
+
+GMP 6.3.0
+---------
+
+GNU Multiple Precision Arithmetic Library
+Copyright 1991-2023 Free Software Foundation, Inc.
+Upstream project: https://gmplib.org/
+
+GMP 6.3.0 is offered by its upstream project under GNU LGPL version 3 or GNU
+GPL version 2. For this GPL-2.0 GNFS distribution, GMP is conveyed under its
+GNU GPL version 2 option. The relevant upstream license texts supplied with
+this distribution are:
+
+- GMP-COPYING.txt
+- GMP-COPYING.LESSERv3.txt
+
+NTL 11.6.0
+----------
+
+NTL -- A Library for Doing Number Theory
+Copyright 1996-2025 Victor Shoup
+Upstream project: https://libntl.org/
+
+NTL is distributed under GNU LGPL version 2.1 or later. This package conveys
+NTL under those terms alongside the GPLv2 GNFS work. The complete upstream
+copyright notice and license text supplied with this distribution is
+NTL-copying.txt.
+
+GNFS Workbench
+--------------
+
+The GNFS project license is supplied as GNFS-GPL-2.0.txt. Corresponding source
+locations for this application, GMP, and NTL are recorded in SOURCE.txt.

@@ -74,6 +74,14 @@ The PR CI intentionally has three layers:
 
 ASan/UBSan and coverage run only `instant` tests. They already multiply test cost through instrumentation, and they should not duplicate the Release deep gate. TSan uses the narrower lane below because its purpose is to exercise explicit concurrency boundaries, not to repeat every isolated helper.
 
+`CLIEventStream` is an `instant` real-process contract. It launches the selected
+`gnfs` target with successful, verbose, invalid, and incompatible invocations;
+then it validates JSON Lines framing, event order, terminal status, and process
+exit status. The cross-platform quick matrix runs it on Windows as well as POSIX
+hosts, so `CreateProcess`, runtime DLL lookup, complete child-environment
+replacement, and executable-path handling remain covered. The test is also in
+the project smoke set because each invocation uses a deterministic small input.
+
 ## Nightly and Release Qualification
 
 The scheduled nightly workflow and the verify-only release phase call the same

@@ -12,7 +12,9 @@ on:
       - 'CMakeLists.txt'
       - 'CLAUDE.md'
       - 'docs/harness-engineering.md'
+      - 'include/**'
       - 'scripts/**'
+      - 'src/**'
       - 'tests/*.sh'
   pull_request:
     branches: [ main, dev ]
@@ -25,7 +27,9 @@ on:
       - 'CMakeLists.txt'
       - 'CLAUDE.md'
       - 'docs/harness-engineering.md'
+      - 'include/**'
       - 'scripts/**'
+      - 'src/**'
       - 'tests/*.sh'
   workflow_dispatch:
 
@@ -71,6 +75,7 @@ jobs:
             .claude/hooks/project-guard.py \
             scripts/check_distributed_sieve_policy.py \
             scripts/check_harness.py \
+            scripts/check_stdout_contract.py \
             scripts/release_binary_contract.py \
             scripts/release_contract.py \
             scripts/reproducible_archive.py \
@@ -92,3 +97,8 @@ jobs:
           python3 scripts/check_distributed_sieve_policy.py --self-test
           python3 scripts/check_harness.py
           bash tests/test_harness_hooks.sh
+
+      - name: Check stdout ownership
+        run: |
+          python3 scripts/check_stdout_contract.py --self-test
+          python3 scripts/check_stdout_contract.py
