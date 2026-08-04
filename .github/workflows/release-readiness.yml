@@ -1,0 +1,92 @@
+name: Release Readiness
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main, dev ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-readiness-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-runtime-closure:
+    name: Windows pinned runtime and source closure
+    runs-on: windows-2022
+    timeout-minutes: 75
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Verify exact clean checkout
+        env:
+          TARGET_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          python scripts/release_contract.py verify-checkout \
+            --target-sha "${TARGET_SHA}"
+
+      - name: Capture source date epoch
+        id: source
+        shell: bash
+        run: echo "epoch=$(git show -s --format=%ct HEAD)" >> "${GITHUB_OUTPUT}"
+
+      - name: Install minimal MSYS2 build shell
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-python
+
+      - name: Install digest-pinned compiler and runtime packages
+        shell: msys2 {0}
+        run: |
+          python scripts/windows_release_runtime.py install-pinned \
+            --download-directory pinned-windows-packages \
+            --evidence-output pinned-windows-packages.json
+
+      - name: Build and install Windows release tree
+        shell: msys2 {0}
+        run: |
+          cmake -B build-release-readiness -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGNFS_BUILD_TESTS=OFF \
+            -DGNFS_ENABLE_NTL=OFF \
+            -DGNFS_ENABLE_NATIVE_ARCH=OFF
+          cmake --build build-release-readiness --parallel
+          cmake --install build-release-readiness \
+            --prefix dist/gnfs-v0.1.0-windows-x86_64
+
+      - name: Bundle and validate exact runtime/source closure
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.source.outputs.epoch }}
+          TARGET_SHA: ${{ github.sha }}
+        shell: msys2 {0}
+        run: |
+          python scripts/windows_release_runtime.py bundle \
+            --package-root dist/gnfs-v0.1.0-windows-x86_64 \
+            --executable dist/gnfs-v0.1.0-windows-x86_64/bin/gnfs.exe \
+            --pinned-package-evidence pinned-windows-packages.json \
+            --project-license LICENSE \
+            --release-tag v0.1.0 \
+            --target-sha "${TARGET_SHA}"
+          mkdir packages
+          python scripts/reproducible_archive.py create \
+            --source dist/gnfs-v0.1.0-windows-x86_64 \
+            --output packages/gnfs-v0.1.0-windows-x86_64.zip \
+            --format zip \
+            --epoch "${SOURCE_DATE_EPOCH}"
+          python scripts/release_contract.py validate-cli-archive \
+            --archive packages/gnfs-v0.1.0-windows-x86_64.zip \
+            --platform windows-x86_64 \
+            --release-tag v0.1.0

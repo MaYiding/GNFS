@@ -82,6 +82,33 @@ hosts, so `CreateProcess`, runtime DLL lookup, complete child-environment
 replacement, and executable-path handling remain covered. The test is also in
 the project smoke set because each invocation uses a deterministic small input.
 
+## Nightly and Release Qualification
+
+The scheduled nightly workflow and the verify-only release phase call the same
+reusable qualification workflow. This keeps expensive coverage outside the
+default pull request matrix while preventing the release path from drifting
+away from nightly evidence. The reusable workflow runs three independent
+Release jobs: the repository `thorough` mode, the structured 120-bit route
+gate, and the bounded four-special-Q 50-digit legacy/structured route
+comparison. The bounded comparison uses a 900-second timeout for each route;
+it is not a complete 50-digit factorization claim.
+
+Release publication also requires every workflow that was triggered by the
+exact main push to finish successfully. A fixed set of release-critical jobs
+is verified against both the Actions workflow-run API and the commit check-run
+API. The complete publication procedure and artifact contract are documented
+in [releasing.md](releasing.md).
+
+`Release Readiness` is a required lane for every pull request and `main` push.
+It deliberately has no path filter. Its Windows 2022 job installs the digest-
+pinned UCRT64 compiler and runtime packages, configures the build with
+`GNFS_ENABLE_NTL=OFF`, derives
+the four-DLL closure with `ldd`, launches the packaged CLI with `/ucrt64/bin`
+removed from `PATH`, creates the deterministic ZIP, and validates its package,
+license, DLL, and corresponding-source manifest. This lane is distinct from
+the ordinary Windows `instant` test row: it proves the distribution boundary
+rather than duplicating the unit-test selection.
+
 The authenticated Linux profile requires modern glibc plus its complete
 syscall and macro surface. On unsupported libcs, store admission reports
 `platform_unavailable` before opening the journal namespace, and direct

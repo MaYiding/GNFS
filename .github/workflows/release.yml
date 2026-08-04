@@ -1,55 +1,289 @@
 name: Release Artifacts
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'Existing tag to package'
+      mode:
+        description: 'Verify artifacts first, then publish the exact verified bytes'
         required: true
+        type: choice
+        options:
+          - verify-only
+          - publish
+      release_tag:
+        description: 'First release tag (contract-locked to v0.1.0)'
+        required: true
+        default: 'v0.1.0'
+        type: string
+      target_sha:
+        description: 'Current origin/main full 40-character SHA'
+        required: true
+        type: string
+      confirmation:
+        description: 'Type VERIFY v0.1.0 or PUBLISH v0.1.0 to match the selected mode'
+        required: true
+        type: string
 
 permissions:
-  contents: read
+  actions: read  # Resolve exact-SHA runs and download immutable artifacts.
+  checks: read  # Match required jobs to commit check runs.
+  contents: read  # Checkout source and inspect main/tag refs.
+  security-events: read  # Bind exact-main CodeQL analysis evidence.
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.release_tag }}
   cancel-in-progress: false
 
 jobs:
-  package:
-    name: Package ${{ matrix.asset_suffix }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
-    continue-on-error: ${{ matrix.experimental }}
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            asset_suffix: linux-x86_64
-            experimental: false
-          - os: macos-14
-            asset_suffix: macos-arm64
-            experimental: false
-          - os: windows-2022
-            asset_suffix: windows-x86_64
-            experimental: false
+  preflight:
+    name: Exact main SHA and CI preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      verification_run_id: ${{ steps.prior.outputs.verification_run_id }}
+      verification_run_attempt: ${{ steps.prior.outputs.verification_run_attempt }}
+      workbench_run_id: ${{ steps.main-ci.outputs.workbench_run_id }}
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ github.sha }}
           persist-credentials: false
 
-      - name: Install dependencies (Ubuntu)
-        if: runner.os == 'Linux'
+      - name: Validate immutable dispatch inputs
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+          MODE: ${{ inputs.mode }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          REPOSITORY: ${{ github.repository }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_SHA: ${{ github.sha }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libgmp-dev libntl-dev
+          python3 scripts/release_contract.py validate-dispatch \
+            --mode "${MODE}" \
+            --release-tag "${RELEASE_TAG}" \
+            --target-sha "${TARGET_SHA}" \
+            --confirmation "${CONFIRMATION}" \
+            --repository "${REPOSITORY}" \
+            --workflow-ref "${WORKFLOW_REF}" \
+            --workflow-sha "${WORKFLOW_SHA}"
+
+      - name: Verify exact clean checkout
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: python3 scripts/release_contract.py verify-checkout --target-sha "${TARGET_SHA}"
+
+      - name: Verify releasable state and required main CI
+        id: main-ci
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MODE: ${{ inputs.mode }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          REPOSITORY: ${{ github.repository }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          release_state_args=()
+          if [[ "${MODE}" == "publish" ]]; then
+            release_state_args+=(--allow-exact-published)
+          fi
+          python3 scripts/release_contract.py verify-main \
+            --repository "${REPOSITORY}" \
+            --release-tag "${RELEASE_TAG}" \
+            --target-sha "${TARGET_SHA}" \
+            --evidence-output main-ci-evidence/main-ci-evidence.json \
+            --github-output "${GITHUB_OUTPUT}" \
+            "${release_state_args[@]}"
+
+      - name: Verify release protection boundary
+        if: inputs.mode == 'verify-only' || steps.main-ci.outputs.release_state != 'published-immutable'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 scripts/release_contract.py verify-protection \
+            --repository "${REPOSITORY}" \
+            --allow-unreadable-immutable-setting
+
+      - name: Upload exact-SHA main CI evidence
+        if: inputs.mode == 'verify-only'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-main-ci-evidence-${{ github.run_id }}
+          path: main-ci-evidence/main-ci-evidence.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Find successful verify-only evidence
+        id: prior
+        if: inputs.mode == 'publish'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          REPOSITORY: ${{ github.repository }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          python3 scripts/release_contract.py find-verification \
+            --repository "${REPOSITORY}" \
+            --release-tag "${RELEASE_TAG}" \
+            --target-sha "${TARGET_SHA}" \
+            --github-output "${GITHUB_OUTPUT}"
+
+  qualification:
+    name: Deep release qualification
+    if: inputs.mode == 'verify-only'
+    needs: preflight
+    uses: ./.github/workflows/release-qualification.yml
+    with:
+      target_sha: ${{ inputs.target_sha }}
+    permissions:
+      contents: read
+
+  package-linux:
+    name: Package linux-x86_64 on glibc 2.31
+    if: inputs.mode == 'verify-only'
+    needs: preflight
+    runs-on: ubuntu-24.04
+    container: ubuntu:20.04@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214
+    timeout-minutes: 75
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install Ubuntu 20.04 build environment
+        run: |
+          set -euo pipefail
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates \
+            git \
+            gnupg \
+            python3 \
+            python3-pip \
+            software-properties-common
+          add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            binutils \
+            g++-12 \
+            gcc-12 \
+            libgmp-dev \
+            libntl-dev \
+            ninja-build
+          python3 -m pip install --no-cache-dir cmake==3.31.6
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ inputs.target_sha }}
+          persist-credentials: false
+
+      - name: Verify exact clean checkout
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          python3 scripts/release_contract.py verify-checkout \
+            --target-sha "${TARGET_SHA}"
+
+      - name: Capture source date epoch
+        id: source
+        run: echo "epoch=$(git show -s --format=%ct HEAD)" >> "${GITHUB_OUTPUT}"
+
+      - name: Configure and build
+        run: |
+          cmake -B build-release -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=g++-12 \
+            -DGNFS_BUILD_TESTS=OFF \
+            -DGNFS_ENABLE_NATIVE_ARCH=OFF
+          cmake --build build-release --parallel
+
+      - name: Verify, install, and archive
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_DATE_EPOCH: ${{ steps.source.outputs.epoch }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          set -euo pipefail
+          package_name="gnfs-${RELEASE_TAG}-linux-x86_64"
+          prefix="dist/${package_name}"
+          cmake --install build-release --prefix "${prefix}"
+          python3 scripts/release_binary_contract.py linux \
+            --executable "${prefix}/bin/gnfs" \
+            --metadata-output "${prefix}/binary-compatibility.json" \
+            --readme-output "${prefix}/README-release.txt" \
+            --release-tag "${RELEASE_TAG}" \
+            --target-sha "${TARGET_SHA}"
+          version_output=$("${prefix}/bin/gnfs" --version)
+          if [[ "${version_output}" != "GNFS ${RELEASE_TAG}" ]]; then
+            echo "CLI version ${version_output} does not match ${RELEASE_TAG}." >&2
+            exit 1
+          fi
+          cp LICENSE "${prefix}/LICENSE"
+          printf '%s\n' \
+            "THIRD-PARTY NOTICES" \
+            "" \
+            "GMP and NTL dynamic libraries are not bundled in this archive." \
+            "Exact GLIBC, GLIBCXX, and CXXABI requirements are in binary-compatibility.json." \
+            "Install compatible host copies and consult their separately distributed licenses." \
+            > "${prefix}/THIRD_PARTY_NOTICES.txt"
+          mkdir packages
+          python3 scripts/reproducible_archive.py create \
+            --source "${prefix}" \
+            --output "packages/${package_name}.tar.gz" \
+            --format tar.gz \
+            --epoch "${SOURCE_DATE_EPOCH}"
+          python3 scripts/release_contract.py validate-cli-archive \
+            --archive "packages/${package_name}.tar.gz" \
+            --platform linux-x86_64 \
+            --release-tag "${RELEASE_TAG}"
+
+      - name: Upload packaged Linux CLI artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: gnfs-linux-x86_64
+          path: packages/*
+          if-no-files-found: error
+          retention-days: 30
+
+  package-cli:
+    name: Package ${{ matrix.asset_suffix }}
+    if: inputs.mode == 'verify-only'
+    needs: preflight
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            asset_suffix: macos-arm64
+            archive_format: tar.gz
+            python: python3
+          - os: windows-2022
+            asset_suffix: windows-x86_64
+            archive_format: zip
+            python: python
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ inputs.target_sha }}
+          persist-credentials: false
+
+      - name: Verify exact clean checkout
+        env:
+          PYTHON: ${{ matrix.python }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+        shell: bash
+        run: |
+          "${PYTHON}" scripts/release_contract.py verify-checkout \
+            --target-sha "${TARGET_SHA}"
+
+      - name: Capture source date epoch
+        id: source
+        shell: bash
+        run: echo "epoch=$(git show -s --format=%ct HEAD)" >> "${GITHUB_OUTPUT}"
 
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
@@ -62,19 +296,25 @@ jobs:
           msystem: UCRT64
           update: true
           install: >-
-            git
-            zip
             mingw-w64-ucrt-x86_64-cmake
-            mingw-w64-ucrt-x86_64-gcc
-            mingw-w64-ucrt-x86_64-gmp
             mingw-w64-ucrt-x86_64-ninja
-            mingw-w64-ucrt-x86_64-ntl
+            mingw-w64-ucrt-x86_64-python
 
-      - name: Configure CMake (POSIX)
-        if: runner.os != 'Windows'
+      - name: Install exact Windows compiler and runtime packages
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          python scripts/windows_release_runtime.py install-pinned \
+            --download-directory pinned-windows-packages \
+            --evidence-output pinned-windows-packages.json
+
+      - name: Configure CMake (macOS)
+        if: runner.os == 'macOS'
         run: |
           cmake -B build-release \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
             -DGNFS_BUILD_TESTS=OFF \
             -DGNFS_ENABLE_NATIVE_ARCH=OFF
 
@@ -85,10 +325,11 @@ jobs:
           cmake -B build-release -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DGNFS_BUILD_TESTS=OFF \
+            -DGNFS_ENABLE_NTL=OFF \
             -DGNFS_ENABLE_NATIVE_ARCH=OFF
 
-      - name: Build (POSIX)
-        if: runner.os != 'Windows'
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
         run: cmake --build build-release --config Release --parallel
 
       - name: Build (Windows)
@@ -96,97 +337,394 @@ jobs:
         shell: msys2 {0}
         run: cmake --build build-release --parallel
 
-      - name: Install and archive (POSIX)
-        if: runner.os != 'Windows'
+      - name: Install and archive (macOS)
+        if: runner.os == 'macOS'
         env:
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          ARCHIVE_FORMAT: ${{ matrix.archive_format }}
           ASSET_SUFFIX: ${{ matrix.asset_suffix }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_DATE_EPOCH: ${{ steps.source.outputs.epoch }}
+          TARGET_SHA: ${{ inputs.target_sha }}
         shell: bash
         run: |
           set -euo pipefail
-          tag="${RELEASE_TAG}"
-          package_name="gnfs-${tag}-${ASSET_SUFFIX}"
+          package_name="gnfs-${RELEASE_TAG}-${ASSET_SUFFIX}"
           prefix="dist/${package_name}"
           cmake --install build-release --prefix "${prefix}"
-          cat > "${prefix}/README-release.txt" <<EOF
-          GNFS ${tag}
-          Built from ${GITHUB_SHA}
-
-          This archive contains the gnfs CLI, headers, and static library.
-          Linux/macOS packages expect GMP and, when enabled by the build host, NTL at runtime.
-          EOF
+          python3 scripts/release_binary_contract.py macos \
+            --executable "${prefix}/bin/gnfs"
+          version_output=$("${prefix}/bin/gnfs" --version)
+          if [[ "${version_output}" != "GNFS ${RELEASE_TAG}" ]]; then
+            echo "CLI version ${version_output} does not match ${RELEASE_TAG}." >&2
+            exit 1
+          fi
+          cp LICENSE "${prefix}/LICENSE"
+          printf '%s\n' \
+            "GNFS ${RELEASE_TAG}" \
+            "Built from ${TARGET_SHA}" \
+            "macOS arm64; requires macOS 13.0 or newer." \
+            "GMP and NTL dynamic libraries are required from the host and are not bundled." \
+            "See LICENSE and THIRD_PARTY_NOTICES.txt." \
+            > "${prefix}/README-release.txt"
+          printf '%s\n' \
+            "THIRD-PARTY NOTICES" \
+            "" \
+            "GMP and NTL dynamic libraries are not bundled in this archive." \
+            "Install compatible host copies and consult their separately distributed licenses." \
+            > "${prefix}/THIRD_PARTY_NOTICES.txt"
           mkdir -p packages
-          tar -C dist -czf "packages/${package_name}.tar.gz" "${package_name}"
+          python3 scripts/reproducible_archive.py create \
+            --source "${prefix}" \
+            --output "packages/${package_name}.${ARCHIVE_FORMAT}" \
+            --format "${ARCHIVE_FORMAT}" \
+            --epoch "${SOURCE_DATE_EPOCH}"
+          python3 scripts/release_contract.py validate-cli-archive \
+            --archive "packages/${package_name}.${ARCHIVE_FORMAT}" \
+            --platform macos-arm64 \
+            --release-tag "${RELEASE_TAG}"
 
       - name: Install and archive (Windows)
         if: runner.os == 'Windows'
         env:
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          ARCHIVE_FORMAT: ${{ matrix.archive_format }}
           ASSET_SUFFIX: ${{ matrix.asset_suffix }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_DATE_EPOCH: ${{ steps.source.outputs.epoch }}
+          TARGET_SHA: ${{ inputs.target_sha }}
         shell: msys2 {0}
         run: |
           set -euo pipefail
-          tag="${RELEASE_TAG}"
-          package_name="gnfs-${tag}-${ASSET_SUFFIX}"
+          package_name="gnfs-${RELEASE_TAG}-${ASSET_SUFFIX}"
           prefix="dist/${package_name}"
           cmake --install build-release --prefix "${prefix}"
-
-          ldd "${prefix}/bin/gnfs.exe" \
-            | awk '/\/ucrt64\// {print $3}' \
-            | sort -u \
-            | while read -r dll; do
-                cp -n "${dll}" "${prefix}/bin/" || true
-              done
-
-          cat > "${prefix}/README-release.txt" <<EOF
-          GNFS ${tag}
-          Built from ${GITHUB_SHA}
-
-          This archive contains the gnfs CLI, headers, static library, and MSYS2 UCRT64 runtime DLLs.
-          EOF
+          python scripts/windows_release_runtime.py bundle \
+            --package-root "${prefix}" \
+            --executable "${prefix}/bin/gnfs.exe" \
+            --pinned-package-evidence pinned-windows-packages.json \
+            --project-license LICENSE \
+            --release-tag "${RELEASE_TAG}" \
+            --target-sha "${TARGET_SHA}"
           mkdir -p packages
-          (cd dist && zip -qr "../packages/${package_name}.zip" "${package_name}")
+          python scripts/reproducible_archive.py create \
+            --source "${prefix}" \
+            --output "packages/${package_name}.${ARCHIVE_FORMAT}" \
+            --format "${ARCHIVE_FORMAT}" \
+            --epoch "${SOURCE_DATE_EPOCH}"
+          python scripts/release_contract.py validate-cli-archive \
+            --archive "packages/${package_name}.${ARCHIVE_FORMAT}" \
+            --platform windows-x86_64 \
+            --release-tag "${RELEASE_TAG}"
 
-      - name: Upload packaged artifact
+      - name: Upload packaged CLI artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: gnfs-${{ matrix.asset_suffix }}
           path: packages/*
+          if-no-files-found: error
           retention-days: 30
 
-  publish:
-    name: Publish GitHub Release
+  collect-gnfs-source:
+    name: Collect exact-SHA GNFS source
+    if: inputs.mode == 'verify-only'
+    needs: preflight
     runs-on: ubuntu-24.04
-    needs: package
     timeout-minutes: 15
-    if: always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    permissions:
-      contents: write
 
     steps:
-      - name: Download packaged artifacts
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ inputs.target_sha }}
+          persist-credentials: false
+
+      - name: Verify exact clean checkout
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: python3 scripts/release_contract.py verify-checkout --target-sha "${TARGET_SHA}"
+
+      - name: Create and validate exact-SHA source archive
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          python3 scripts/release_contract.py create-gnfs-source \
+            --output-directory gnfs-source \
+            --release-tag "${RELEASE_TAG}" \
+            --target-sha "${TARGET_SHA}"
+          python3 scripts/release_contract.py validate-gnfs-source \
+            --archive "gnfs-source/gnfs-${RELEASE_TAG}-source.tar.gz" \
+            --release-tag "${RELEASE_TAG}" \
+            --target-sha "${TARGET_SHA}"
+
+      - name: Upload exact-SHA GNFS source
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: gnfs-project-source
+          path: gnfs-source/*
+          if-no-files-found: error
+          retention-days: 30
+
+  collect-dependency-sources:
+    name: Collect pinned GMP, NTL, and MSYS2 sources
+    if: inputs.mode == 'verify-only'
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ inputs.target_sha }}
+          persist-credentials: false
+
+      - name: Verify exact clean checkout
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: python3 scripts/release_contract.py verify-checkout --target-sha "${TARGET_SHA}"
+
+      - name: Download and validate pinned dependency sources
+        run: |
+          python3 scripts/release_contract.py fetch-sources \
+            --output-directory dependency-sources
+          python3 scripts/release_contract.py validate-sources \
+            --source-directory dependency-sources
+
+      - name: Upload pinned dependency sources
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: gnfs-dependency-sources
+          path: dependency-sources/*
+          if-no-files-found: error
+          retention-days: 30
+
+  collect-workbench:
+    name: Collect exact-SHA Workbench artifact
+    if: inputs.mode == 'verify-only'
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ inputs.target_sha }}
+          persist-credentials: false
+
+      - name: Verify exact clean checkout
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: python3 scripts/release_contract.py verify-checkout --target-sha "${TARGET_SHA}"
+
+      - name: Download Workbench artifact from the exact push run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: gnfs-workbench-macos-arm64
+          path: workbench-ci
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.preflight.outputs.workbench_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Validate Workbench checksum and embedded source revision
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          python3 scripts/release_contract.py validate-workbench \
+            --artifact-directory workbench-ci \
+            --release-tag "${RELEASE_TAG}" \
+            --target-sha "${TARGET_SHA}"
+          mkdir packages
+          cp "workbench-ci/GNFSWorkbench-${RELEASE_TAG#v}-macOS-arm64.zip" packages/
+
+      - name: Upload verified Workbench package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: gnfs-workbench
+          path: packages/*
+          if-no-files-found: error
+          retention-days: 30
+
+  assemble-verification:
+    name: Assemble immutable verification bundle
+    if: inputs.mode == 'verify-only'
+    needs:
+      - preflight
+      - qualification
+      - package-linux
+      - package-cli
+      - collect-gnfs-source
+      - collect-dependency-sources
+      - collect-workbench
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ inputs.target_sha }}
+          persist-credentials: false
+
+      - name: Verify exact clean checkout
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: python3 scripts/release_contract.py verify-checkout --target-sha "${TARGET_SHA}"
+
+      - name: Download package jobs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: gnfs-*
           path: release-assets
           merge-multiple: true
 
-      - name: Publish assets
+      - name: Download exact-SHA main CI evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-main-ci-evidence-${{ github.run_id }}
+          path: main-ci-evidence
+
+      - name: Generate metadata, checksums, and verification proof
         env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          REPOSITORY: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
+        run: |
+          source_date_epoch=$(git show -s --format=%ct HEAD)
+          python3 scripts/release_contract.py assemble \
+            --asset-directory release-assets \
+            --release-tag "${RELEASE_TAG}" \
+            --source-date-epoch "${source_date_epoch}" \
+            --target-sha "${TARGET_SHA}"
+          mkdir verification-proof
+          python3 scripts/release_contract.py write-proof \
+            --asset-directory release-assets \
+            --ci-evidence main-ci-evidence/main-ci-evidence.json \
+            --output verification-proof/release-verification.json \
+            --release-tag "${RELEASE_TAG}" \
+            --target-sha "${TARGET_SHA}" \
+            --repository "${REPOSITORY}" \
+            --workflow-run-id "${WORKFLOW_RUN_ID}" \
+            --workflow-run-attempt "${WORKFLOW_RUN_ATTEMPT}" \
+            --server-url "${SERVER_URL}"
+
+      - name: Upload immutable release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-assets-${{ inputs.release_tag }}-${{ inputs.target_sha }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload verification proof
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-verification-${{ inputs.release_tag }}-${{ inputs.target_sha }}
+          path: verification-proof/release-verification.json
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish previously verified bytes
+    if: inputs.mode == 'publish'
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: read  # Download the exact prior verification artifacts.
+      checks: read  # Recheck exact-SHA required job contexts.
+      contents: write  # Create the locked tag, draft, and release assets.
+      security-events: read  # Recheck exact-main CodeQL analysis before publication.
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ inputs.target_sha }}
+          persist-credentials: false
+
+      - name: Verify exact clean checkout
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: python3 scripts/release_contract.py verify-checkout --target-sha "${TARGET_SHA}"
+
+      - name: Download previously verified release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-assets-${{ inputs.release_tag }}-${{ inputs.target_sha }}
+          path: release-assets
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.preflight.outputs.verification_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Download prior verification proof
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-verification-${{ inputs.release_tag }}-${{ inputs.target_sha }}
+          path: verification-proof
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.preflight.outputs.verification_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Revalidate proof and publish or recovery state
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          REPOSITORY: ${{ github.repository }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          VERIFICATION_WORKFLOW_RUN_ATTEMPT: ${{ needs.preflight.outputs.verification_run_attempt }}
+          VERIFICATION_WORKFLOW_RUN_ID: ${{ needs.preflight.outputs.verification_run_id }}
+        run: |
+          python3 scripts/release_contract.py verify-proof \
+            --asset-directory release-assets \
+            --proof verification-proof/release-verification.json \
+            --release-tag "${RELEASE_TAG}" \
+            --target-sha "${TARGET_SHA}" \
+            --repository "${REPOSITORY}" \
+            --expected-workflow-run-id "${VERIFICATION_WORKFLOW_RUN_ID}" \
+            --expected-workflow-run-attempt "${VERIFICATION_WORKFLOW_RUN_ATTEMPT}"
+          python3 scripts/release_contract.py verify-main \
+            --repository "${REPOSITORY}" \
+            --release-tag "${RELEASE_TAG}" \
+            --target-sha "${TARGET_SHA}" \
+            --allow-exact-published
+
+      - name: Create or safely resume exact draft release
+        id: draft
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          REPOSITORY: ${{ github.repository }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          VERIFICATION_WORKFLOW_RUN_ATTEMPT: ${{ needs.preflight.outputs.verification_run_attempt }}
+          VERIFICATION_WORKFLOW_RUN_ID: ${{ needs.preflight.outputs.verification_run_id }}
+        run: |
+          python3 scripts/release_contract.py prepare-draft \
+            --repository "${REPOSITORY}" \
+            --release-tag "${RELEASE_TAG}" \
+            --target-sha "${TARGET_SHA}" \
+            --asset-directory release-assets \
+            --proof verification-proof/release-verification.json \
+            --verification-workflow-run-id "${VERIFICATION_WORKFLOW_RUN_ID}" \
+            --verification-workflow-run-attempt "${VERIFICATION_WORKFLOW_RUN_ATTEMPT}" \
+            --github-output "${GITHUB_OUTPUT}"
+
+      - name: Publish exact draft and verify immutable public state
+        env:
+          EXPECTED_RELEASE_ID: ${{ steps.draft.outputs.release_id }}
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          REPOSITORY: ${{ github.repository }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          VERIFICATION_WORKFLOW_RUN_ATTEMPT: ${{ needs.preflight.outputs.verification_run_attempt }}
+          VERIFICATION_WORKFLOW_RUN_ID: ${{ needs.preflight.outputs.verification_run_id }}
         shell: bash
         run: |
-          set -euo pipefail
-          mapfile -t assets < <(find release-assets -type f \( -name '*.tar.gz' -o -name '*.zip' \) | sort)
-          if [[ "${#assets[@]}" -eq 0 ]]; then
-            echo "No release assets were produced."
-            exit 1
-          fi
-
-          if ! gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
-            gh release create "${RELEASE_TAG}" \
-              --title "${RELEASE_TAG}" \
-              --notes "Automated GNFS release artifacts."
-          fi
-          gh release upload "${RELEASE_TAG}" "${assets[@]}" --clobber
+          python3 scripts/release_contract.py publish-release \
+            --repository "${REPOSITORY}" \
+            --release-tag "${RELEASE_TAG}" \
+            --target-sha "${TARGET_SHA}" \
+            --expected-release-id "${EXPECTED_RELEASE_ID}" \
+            --asset-directory release-assets \
+            --proof verification-proof/release-verification.json \
+            --verification-workflow-run-id "${VERIFICATION_WORKFLOW_RUN_ID}" \
+            --verification-workflow-run-attempt "${VERIFICATION_WORKFLOW_RUN_ATTEMPT}"
