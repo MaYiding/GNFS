@@ -104,6 +104,13 @@ is verified against both the Actions workflow-run API and the commit check-run
 API. The complete publication procedure and artifact contract are documented
 in [releasing.md](releasing.md).
 
+Workflows that supply those fixed release-critical jobs run on every `main`
+push without `paths` or `paths-ignore`, while pull-request path filters may
+remain. The release workflow source checker enforces that distinction. A docs-
+only or packaging-only main commit must therefore produce fresh static,
+script, workflow-security, and platform evidence at its own exact SHA instead
+of inheriting an older successful run.
+
 `Release Readiness` is a required lane for every pull request and `main` push.
 It deliberately has no path filter. Its Windows 2022 job installs the digest-
 pinned UCRT64 compiler and runtime packages, configures the build with

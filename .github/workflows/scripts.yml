@@ -3,19 +3,6 @@ name: Script Checks
 on:
   push:
     branches: [ main, dev ]
-    paths:
-      - '.agents/**'
-      - '.claude/**'
-      - '.github/workflows/scripts.yml'
-      - '.gitignore'
-      - 'AGENTS.md'
-      - 'CMakeLists.txt'
-      - 'CLAUDE.md'
-      - 'docs/harness-engineering.md'
-      - 'include/**'
-      - 'scripts/**'
-      - 'src/**'
-      - 'tests/*.sh'
   pull_request:
     branches: [ main, dev ]
     paths:

@@ -2957,11 +2957,90 @@ def publish_verified_release(
     }
 
 
+def _canonical_workflow_on_block(workflow_text: str) -> str:
+    lines = workflow_text.splitlines(keepends=True)
+    top_level_key = re.compile(
+        r'^(?:"(?P<double>[A-Za-z0-9_-]+)"|'
+        r"'(?P<single>[A-Za-z0-9_-]+)'|(?P<plain>[A-Za-z0-9_-]+))\s*:"
+    )
+    on_indices: list[int] = []
+    for index, line in enumerate(lines):
+        if re.match(r"^<<\s*:", line):
+            raise ReleaseContractError("workflow root mappings must not use YAML merges")
+        match = top_level_key.match(line)
+        if match and next(value for value in match.groups() if value is not None) == "on":
+            on_indices.append(index)
+    if len(on_indices) != 1:
+        raise ReleaseContractError(
+            "workflow must contain exactly one canonical top-level on mapping; "
+            f"found {len(on_indices)}"
+        )
+    on_index = on_indices[0]
+    if lines[on_index] != "on:\n":
+        raise ReleaseContractError("workflow top-level on mapping spelling is not canonical")
+    body: list[str] = []
+    for line in lines[on_index + 1 :]:
+        content = line.lstrip(" ")
+        indentation = len(line) - len(content)
+        if content.strip() and not content.startswith("#") and indentation == 0:
+            break
+        body.append(line)
+    return "".join(body)
+
+
+def _workflow_trigger_block(workflow_text: str, trigger: str) -> str:
+    lines = _canonical_workflow_on_block(workflow_text).splitlines(keepends=True)
+    trigger_key = re.compile(
+        r"^ {2}(?:\"(?P<double>[A-Za-z0-9_-]+)\"|"
+        r"'(?P<single>[A-Za-z0-9_-]+)'|(?P<plain>[A-Za-z0-9_-]+))\s*:"
+    )
+    trigger_indices: list[int] = []
+    for index, line in enumerate(lines):
+        if re.match(r"^ {2}<<\s*:", line):
+            raise ReleaseContractError("workflow trigger mappings must not use YAML merges")
+        match = trigger_key.match(line)
+        if match and next(value for value in match.groups() if value is not None) == trigger:
+            trigger_indices.append(index)
+    if len(trigger_indices) != 1:
+        raise ReleaseContractError(
+            f"workflow must contain exactly one canonical {trigger} trigger; "
+            f"found {len(trigger_indices)}"
+        )
+    trigger_index = trigger_indices[0]
+    if lines[trigger_index] != f"  {trigger}:\n":
+        raise ReleaseContractError(f"workflow {trigger} trigger spelling is not canonical")
+    body: list[str] = []
+    for line in lines[trigger_index + 1 :]:
+        content = line.lstrip(" ")
+        indentation = len(line) - len(content)
+        if content.strip() and not content.startswith("#") and indentation < 4:
+            break
+        body.append(line)
+    return "".join(body)
+
+
+def _validate_required_main_push_trigger(workflow_path: Path, workflow_text: str) -> None:
+    push_block = _workflow_trigger_block(workflow_text, "push")
+    canonical_blocks = {"    branches: [ main ]\n", "    branches: [ main, dev ]\n"}
+    if push_block not in canonical_blocks:
+        raise ReleaseContractError(
+            f"required release workflow {workflow_path} must use one canonical, "
+            "unfiltered main push block"
+        )
+
+
 def validate_workflow_sources(release_workflow: Path, qualification_workflow: Path) -> None:
     release_text = release_workflow.read_text(encoding="utf-8")
     qualification_text = qualification_workflow.read_text(encoding="utf-8")
     readiness_workflow = release_workflow.with_name("release-readiness.yml")
     readiness_text = readiness_workflow.read_text(encoding="utf-8")
+    required_workflow_paths = sorted(
+        {Path(required.workflow_path) for required in REQUIRED_MAIN_CHECKS}
+    )
+    for workflow_path in required_workflow_paths:
+        workflow_file = release_workflow.parent / workflow_path.name
+        workflow_text = workflow_file.read_text(encoding="utf-8")
+        _validate_required_main_push_trigger(workflow_path, workflow_text)
     forbidden_release_fragments = (
         "if: always()",
         "--clobber",
@@ -3522,6 +3601,95 @@ def self_test() -> None:
     repository_root, target_sha = _repository_head(Path(__file__).resolve().parents[1])
     repository = "example/GNFS"
     workflow_ref = f"{repository}/{RELEASE_WORKFLOW_PATH}@refs/heads/main"
+    valid_required_trigger = """name: Required Fixture
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main ]
+    paths: [ 'src/**' ]
+"""
+    fixture_path = Path(".github/workflows/required-fixture.yml")
+    _validate_required_main_push_trigger(fixture_path, valid_required_trigger)
+    invalid_required_triggers = {
+        "filtered push": valid_required_trigger.replace(
+            "    branches: [ main, dev ]\n",
+            "    branches: [ main, dev ]\n    paths: [ 'src/**' ]\n",
+            1,
+        ),
+        "ignored push paths": valid_required_trigger.replace(
+            "    branches: [ main, dev ]\n",
+            "    branches: [ main, dev ]\n    paths-ignore: [ 'docs/**' ]\n",
+            1,
+        ),
+        "missing main": valid_required_trigger.replace(
+            "    branches: [ main, dev ]", "    branches: [ dev ]", 1
+        ),
+        "lookalike main branch": valid_required_trigger.replace(
+            "    branches: [ main, dev ]", "    branches: [ not-main, dev ]", 1
+        ),
+        "excluded main": valid_required_trigger.replace(
+            "    branches: [ main, dev ]", "    branches: [ '**', '!main' ]", 1
+        ),
+        "main in comment": valid_required_trigger.replace(
+            "    branches: [ main, dev ]", "    branches: [ dev ] # main", 1
+        ),
+        "quoted paths key": valid_required_trigger.replace(
+            "    branches: [ main, dev ]\n",
+            "    branches: [ main, dev ]\n    \"paths\": [ 'src/**' ]\n",
+            1,
+        ),
+        "spaced paths key": valid_required_trigger.replace(
+            "    branches: [ main, dev ]\n",
+            "    branches: [ main, dev ]\n    paths : [ 'src/**' ]\n",
+            1,
+        ),
+        "comment-separated paths": valid_required_trigger.replace(
+            "    branches: [ main, dev ]\n",
+            "    branches: [ main, dev ]\n  # still inside push\n    paths: [ 'src/**' ]\n",
+            1,
+        ),
+        "duplicate push": valid_required_trigger
+        + "  push:\n    branches: [ main, dev ]\n",
+        "quoted duplicate push": valid_required_trigger
+        + "  \"push\":\n    branches: [ main, dev ]\n",
+        "merged trigger mapping": valid_required_trigger
+        + "  <<: *additional-events\n",
+        "flow-style on with block scalar decoy": """name: Required Fixture
+
+run-name: |
+  push:
+    branches: [ main, dev ]
+on: { push: { branches: [ main ], paths: [ 'docs/**' ] } }
+""",
+        "pull request on with block scalar decoy": """name: Required Fixture
+
+run-name: |
+  push:
+    branches: [ main, dev ]
+on:
+  pull_request:
+    branches: [ main ]
+""",
+        "quoted on mapping": valid_required_trigger.replace("on:\n", '"on":\n', 1),
+        "spaced on mapping": valid_required_trigger.replace("on:\n", "on :\n", 1),
+        "aliased on mapping": valid_required_trigger.replace(
+            "on:\n", "on: *workflow-events\n", 1
+        ),
+        "duplicate on mapping": valid_required_trigger
+        + "on:\n  push:\n    branches: [ main, dev ]\n",
+        "merged root mapping": valid_required_trigger + "<<: *workflow-root\n",
+    }
+    for label, invalid_trigger in invalid_required_triggers.items():
+        try:
+            _validate_required_main_push_trigger(fixture_path, invalid_trigger)
+        except ReleaseContractError:
+            pass
+        else:
+            raise ReleaseContractError(
+                f"required workflow trigger self-test accepted {label}"
+            )
     validate_dispatch(
         "verify-only",
         FIRST_RELEASE_TAG,

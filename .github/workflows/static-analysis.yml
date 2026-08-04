@@ -3,13 +3,6 @@ name: Static Analysis
 on:
   push:
     branches: [ main, dev ]
-    paths:
-      - '.clang-tidy'
-      - '.github/**'
-      - 'CMakeLists.txt'
-      - 'include/**'
-      - 'src/**'
-      - 'tests/**'
   pull_request:
     branches: [ main, dev ]
     paths:
