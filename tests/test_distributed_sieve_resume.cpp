@@ -60,7 +60,9 @@
 #if defined(__APPLE__)
 #include <membership.h>
 #include <sys/acl.h>
+#include <sys/event.h>
 #elif defined(__linux__)
+#include <sys/prctl.h>
 #include <sys/xattr.h>
 #endif
 
@@ -587,8 +589,11 @@ inline constexpr std::string_view WORKER_LAUNCH_FAKE_CHILD_CLOSE_BASE_LOCK_AND_W
     "--close-base-lock-and-wait";
 inline constexpr std::string_view WORKER_COORDINATOR_REAL_CHILD_ARGUMENT =
     "--worker-coordinator-real-child";
+inline constexpr std::string_view WORKER_COORDINATOR_CONTROLLED_CHILD_ARGUMENT =
+    "--worker-coordinator-controlled-child";
 inline constexpr std::string_view WORKER_COORDINATOR_FAIL_CHILD_ARGUMENT =
     "--worker-coordinator-fail-child";
+inline constexpr char WORKER_COORDINATOR_CONTROLLED_CHILD_READY = 'r';
 inline constexpr std::uint32_t WORKER_LAUNCH_FAKE_CHILD_REPORT_MAGIC = 0x474c4352U;
 inline constexpr std::size_t WORKER_LAUNCH_FAKE_CHILD_INPUT_LIMIT = 1024U * 1024U;
 inline constexpr int WORKER_LAUNCH_FAKE_CHILD_DESCRIPTOR_SCAN_LIMIT = 4096;
@@ -903,6 +908,141 @@ static_assert(std::is_trivially_copyable_v<WorkerLaunchFakeChildReport>);
     const auto executed = worker_execution_detail::execute_distributed_sieve_worker_entry_v1(
         std::move(*adopted.entry));
     return executed ? 0 : 222;
+}
+
+[[nodiscard]] int wait_for_worker_coordinator_controlled_release(const sigset_t& release_set,
+                                                                 pid_t expected_parent) noexcept {
+#if defined(__APPLE__)
+    if (expected_parent <= 1 || ::getppid() != expected_parent) {
+        return 1;
+    }
+
+    const int queue = ::kqueue();
+    if (queue < 0) {
+        return -1;
+    }
+    const auto close_queue = [queue]() noexcept { (void)::close(queue); };
+
+    std::array<struct kevent, 2> changes{};
+    EV_SET(&changes[0], static_cast<uintptr_t>(SIGUSR1), EVFILT_SIGNAL, EV_ADD | EV_ENABLE, 0, 0,
+           nullptr);
+    EV_SET(&changes[1], static_cast<uintptr_t>(expected_parent), EVFILT_PROC, EV_ADD | EV_ENABLE,
+           NOTE_EXIT, 0, nullptr);
+    int changed = -1;
+    do {
+        changed =
+            ::kevent(queue, changes.data(), static_cast<int>(changes.size()), nullptr, 0, nullptr);
+    } while (changed < 0 && errno == EINTR);
+    const bool parent_changed = ::getppid() != expected_parent;
+    if (changed < 0 || parent_changed) {
+        close_queue();
+        return parent_changed ? 1 : -1;
+    }
+
+    if (!write_exact_noexcept(STDOUT_FILENO, &WORKER_COORDINATOR_CONTROLLED_CHILD_READY,
+                              sizeof(WORKER_COORDINATOR_CONTROLLED_CHILD_READY))) {
+        close_queue();
+        return -2;
+    }
+
+    for (;;) {
+        std::array<struct kevent, 2> observed{};
+        int count = -1;
+        do {
+            count = ::kevent(queue, nullptr, 0, observed.data(), static_cast<int>(observed.size()),
+                             nullptr);
+        } while (count < 0 && errno == EINTR);
+        if (count < 1) {
+            close_queue();
+            return -1;
+        }
+        bool released = false;
+        for (int index = 0; index < count; ++index) {
+            const auto& event = observed[static_cast<std::size_t>(index)];
+            if ((event.flags & EV_ERROR) != 0U) {
+                close_queue();
+                return -1;
+            }
+            if (event.filter == EVFILT_PROC &&
+                event.ident == static_cast<uintptr_t>(expected_parent) &&
+                (event.fflags & NOTE_EXIT) != 0U) {
+                close_queue();
+                return 1;
+            }
+            released = released || (event.filter == EVFILT_SIGNAL &&
+                                    event.ident == static_cast<uintptr_t>(SIGUSR1));
+        }
+        if (released) {
+            int release_signal = 0;
+            const int wait_error = ::sigwait(&release_set, &release_signal);
+            const bool parent_exited = ::getppid() != expected_parent;
+            close_queue();
+            if (parent_exited) {
+                return 1;
+            }
+            return wait_error == 0 && release_signal == SIGUSR1 ? 0 : -1;
+        }
+    }
+#elif defined(__linux__)
+    if (expected_parent <= 1 || ::getppid() != expected_parent) {
+        return 1;
+    }
+    if (::prctl(PR_SET_PDEATHSIG, static_cast<unsigned long>(SIGKILL), 0UL, 0UL, 0UL) != 0) {
+        return -1;
+    }
+    if (::getppid() != expected_parent) {
+        return 1;
+    }
+    if (!write_exact_noexcept(STDOUT_FILENO, &WORKER_COORDINATOR_CONTROLLED_CHILD_READY,
+                              sizeof(WORKER_COORDINATOR_CONTROLLED_CHILD_READY))) {
+        return -2;
+    }
+    int release_signal = 0;
+    const int wait_error = ::sigwait(&release_set, &release_signal);
+    return wait_error == 0 && release_signal == SIGUSR1 ? 0 : -1;
+#else
+    (void)expected_parent;
+    if (!write_exact_noexcept(STDOUT_FILENO, &WORKER_COORDINATOR_CONTROLLED_CHILD_READY,
+                              sizeof(WORKER_COORDINATOR_CONTROLLED_CHILD_READY))) {
+        return -2;
+    }
+    int release_signal = 0;
+    const int wait_error = ::sigwait(&release_set, &release_signal);
+    return wait_error == 0 && release_signal == SIGUSR1 ? 0 : -1;
+#endif
+}
+
+[[nodiscard]] int run_worker_coordinator_controlled_child() noexcept {
+    sigset_t release_set;
+    if (sigemptyset(&release_set) != 0 || sigaddset(&release_set, SIGUSR1) != 0 ||
+        ::sigprocmask(SIG_BLOCK, &release_set, nullptr) != 0) {
+        return 224;
+    }
+    const pid_t expected_parent = ::getppid();
+    if (expected_parent <= 1) {
+        return 229;
+    }
+
+    auto adopted = worker_entry_detail::adopt_distributed_sieve_worker_entry_v1();
+    if (!adopted || !adopted.entry.has_value()) {
+        return 225;
+    }
+
+    const int release =
+        wait_for_worker_coordinator_controlled_release(release_set, expected_parent);
+    if (release == -2) {
+        return 226;
+    }
+    if (release > 0) {
+        return 229;
+    }
+    if (release < 0) {
+        return 227;
+    }
+
+    const auto executed = worker_execution_detail::execute_distributed_sieve_worker_entry_v1(
+        std::move(*adopted.entry));
+    return executed ? 0 : 228;
 }
 
 [[nodiscard]] int run_worker_coordinator_fail_child() noexcept {
@@ -19016,6 +19156,99 @@ struct WorkerCoordinatorCorpusFacts final {
                                          const WorkerCoordinatorCorpusFacts&) noexcept = default;
 };
 
+void append_wave_store_diagnostic(
+    std::string& detail, const wave_detail::DistributedSieveWaveStoreDiagnostic& diagnostic) {
+    detail.append("status=");
+    detail.append(wave_detail::distributed_sieve_wave_store_status_name(diagnostic.status));
+    detail.append(", native_error=");
+    detail.append(std::to_string(diagnostic.native_error.value()));
+    if (diagnostic.native_error) {
+        detail.append("(");
+        detail.append(diagnostic.native_error.message());
+        detail.append(")");
+    }
+    if (diagnostic.protocol_status.has_value()) {
+        detail.append(", protocol=");
+        detail.append(
+            sieve::distributed_sieve_protocol_error_name(diagnostic.protocol_status->error));
+    }
+    if (diagnostic.last_durable_fault_point.has_value()) {
+        detail.append(", durable_fault=");
+        detail.append(std::to_string(static_cast<unsigned>(*diagnostic.last_durable_fault_point)));
+    }
+    if (diagnostic.failed_private_lease_base_lock_sync_point.has_value()) {
+        detail.append(", base_lock_sync=");
+        detail.append(std::to_string(
+            static_cast<unsigned>(*diagnostic.failed_private_lease_base_lock_sync_point)));
+    }
+}
+
+void append_worker_launcher_diagnostic(
+    std::string& detail,
+    const worker_launcher_detail::DistributedSieveWorkerLaunchDiagnosticV1& diagnostic) {
+    detail.append("phase=");
+    detail.append(std::to_string(static_cast<unsigned>(diagnostic.phase)));
+    detail.append(", slot=");
+    detail.append(diagnostic.slot == worker_launcher_detail::DISTRIBUTED_SIEVE_WORKER_LAUNCH_NO_SLOT
+                      ? "none"
+                      : std::to_string(diagnostic.slot));
+    detail.append(", protocol=");
+    detail.append(sieve::distributed_sieve_protocol_error_name(diagnostic.protocol.error));
+    detail.append(", wave_store={");
+    append_wave_store_diagnostic(detail, diagnostic.wave_store);
+    detail.append("}, carrier={status=");
+    detail.append(work_package_file_detail::distributed_sieve_worker_work_package_file_status_name(
+        diagnostic.carrier.status));
+    detail.append(", native_error=");
+    detail.append(std::to_string(diagnostic.carrier.native_error));
+    detail.append(", protocol=");
+    detail.append(
+        sieve::distributed_sieve_protocol_error_name(diagnostic.carrier.protocol_status.error));
+    detail.append("}, transport={error=");
+    detail.append(worker_process_detail::distributed_sieve_worker_process_transport_error_name(
+        diagnostic.transport.error));
+    detail.append(", native_error=");
+    detail.append(std::to_string(diagnostic.transport.native_error));
+    detail.append("}, reconciliation_required=");
+    detail.append(diagnostic.reconciliation_required ? "true" : "false");
+}
+
+void append_worker_wait_facts(std::string& detail,
+                              const std::optional<sieve::WorkerWaitFactsV1>& wait_facts) {
+    if (!wait_facts.has_value()) {
+        detail.append("none");
+        return;
+    }
+    detail.append("kind=");
+    detail.append(std::to_string(static_cast<unsigned>(wait_facts->kind)));
+    detail.append(", exit_code=");
+    detail.append(std::to_string(wait_facts->exit_code));
+    detail.append(", signal=");
+    detail.append(std::to_string(wait_facts->signal));
+    detail.append(", native_error=");
+    detail.append(std::to_string(wait_facts->native_error));
+}
+
+[[nodiscard]] std::string worker_coordinator_diagnostic_detail(
+    const worker_coordinator_detail::DistributedSieveWorkerCoordinatorDiagnosticV1& diagnostic) {
+    std::string detail("phase=");
+    detail.append(std::to_string(static_cast<unsigned>(diagnostic.phase)));
+    detail.append(", status=");
+    detail.append(std::to_string(static_cast<unsigned>(diagnostic.status)));
+    detail.append(", manifest_slot=");
+    detail.append(diagnostic.manifest_slot == std::numeric_limits<std::size_t>::max()
+                      ? "none"
+                      : std::to_string(diagnostic.manifest_slot));
+    detail.append(", wave_store={");
+    append_wave_store_diagnostic(detail, diagnostic.wave_store);
+    detail.append("}, launcher={");
+    append_worker_launcher_diagnostic(detail, diagnostic.launcher);
+    detail.append("}, wait={");
+    append_worker_wait_facts(detail, diagnostic.wait_facts);
+    detail.append("}");
+    return detail;
+}
+
 [[nodiscard]] WorkerCoordinatorCorpusFacts require_worker_coordinator_corpus(
     const worker_coordinator_detail::DistributedSieveWorkerCoordinatedChunkV1& coordinated,
     const Digest& expected_manifest_digest, const Digest& expected_work_digest) {
@@ -19087,7 +19320,10 @@ void require_worker_coordinator_empty_has_no_attempt(const std::filesystem::path
     const std::array<worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1, 3>&
         dispositions,
     const std::filesystem::path& root) {
-    CHECK(result);
+    if (!result) {
+        fail("worker coordinator result", __LINE__,
+             worker_coordinator_diagnostic_detail(result.diagnostic));
+    }
     CHECK(result.store != nullptr);
     CHECK(result.coordinator_claim != nullptr);
     CHECK(result.coordinator_claim->owned_by_current_process());
@@ -20000,6 +20236,8 @@ struct WorkerCoordinatorBusyLateHandoffContext final {
           polynomial(&polynomial_value), factor_base(&factor_base_value),
           receipt(std::move(receipt_value)) {}
 
+    ~WorkerCoordinatorBusyLateHandoffContext() noexcept;
+
     wave_detail::DistributedSieveWaveStore* store = nullptr;
     const sieve::DistributedSieveWorkIdentityV1* identity = nullptr;
     const execution_policy_detail::DistributedSieveFrozenExecutionPolicyV1* frozen = nullptr;
@@ -20009,10 +20247,74 @@ struct WorkerCoordinatorBusyLateHandoffContext final {
     std::optional<worker_launcher_detail::DistributedSieveWorkerLaunchBatchResultV1> launched;
     bool launch_invoked = false;
     bool launch_ready = false;
+    bool child_ready = false;
     bool finish_invoked = false;
+    bool release_sent = false;
     bool succeeded = false;
     bool threw = false;
+    int sync_native_error = 0;
+    worker_process_detail::DistributedSieveWorkerProcessWaitResult wait;
 };
+
+void record_worker_coordinator_sync_error(WorkerCoordinatorBusyLateHandoffContext& context,
+                                          int error) noexcept {
+    if (context.sync_native_error == 0) {
+        context.sync_native_error = error != 0 ? error : EIO;
+    }
+}
+
+[[nodiscard]] bool
+read_worker_coordinator_sync_marker(int descriptor, char expected,
+                                    WorkerCoordinatorBusyLateHandoffContext& context) noexcept {
+    char observed = '\0';
+    ssize_t count = -1;
+    do {
+        count = ::read(descriptor, &observed, sizeof(observed));
+    } while (count < 0 && errno == EINTR);
+    if (count < 0) {
+        record_worker_coordinator_sync_error(context, errno);
+        return false;
+    }
+    if (count == 0) {
+        record_worker_coordinator_sync_error(context, EPIPE);
+        return false;
+    }
+    if (count != 1 || observed != expected) {
+        record_worker_coordinator_sync_error(context, EPROTO);
+        return false;
+    }
+    return true;
+}
+
+[[nodiscard]] int signal_worker_coordinator_child(pid_t process_id, int signal) noexcept {
+    int result = -1;
+    do {
+        result = ::kill(process_id, signal);
+    } while (result != 0 && errno == EINTR);
+    return result;
+}
+
+void reap_failed_worker_coordinator_controlled_child(
+    WorkerCoordinatorBusyLateHandoffContext& context) noexcept {
+    if (!context.launched.has_value() || context.launched->children.size() != 1U ||
+        !context.launched->children.front().worker.has_value()) {
+        return;
+    }
+    auto& worker = *context.launched->children.front().worker;
+    if (!context.wait.reaped && worker.process_id() > 0) {
+        (void)signal_worker_coordinator_child(worker.process_id(), SIGKILL);
+    }
+    context.wait = worker.wait_terminal();
+    const int report_descriptor = worker.release_report_descriptor();
+    if (report_descriptor >= 0) {
+        WaveSnapshotFd report(report_descriptor);
+    }
+    context.launched->children.front().worker.reset();
+}
+
+WorkerCoordinatorBusyLateHandoffContext::~WorkerCoordinatorBusyLateHandoffContext() noexcept {
+    reap_failed_worker_coordinator_controlled_child(*this);
+}
 
 void launch_worker_coordinator_busy_late_handoff(void* opaque) noexcept {
     auto& context = *static_cast<WorkerCoordinatorBusyLateHandoffContext*>(opaque);
@@ -20027,7 +20329,7 @@ void launch_worker_coordinator_busy_late_handoff(void* opaque) noexcept {
         std::vector<worker_launcher_detail::DistributedSieveWorkerLaunchSlotV1> slots;
         slots.emplace_back(
             std::move(*context.receipt),
-            std::vector<std::string>{std::string(WORKER_COORDINATOR_REAL_CHILD_ARGUMENT)});
+            std::vector<std::string>{std::string(WORKER_COORDINATOR_CONTROLLED_CHILD_ARGUMENT)});
         context.receipt.reset();
         worker_launcher_detail::DistributedSieveWorkerLaunchRequestV1 request(
             worker_launch_test_executable, std::move(slots));
@@ -20039,8 +20341,19 @@ void launch_worker_coordinator_busy_late_handoff(void* opaque) noexcept {
                                context.launched->children.size() == 1U &&
                                context.launched->children.front() &&
                                context.launched->children.front().worker.has_value();
+        if (!context.launch_ready) {
+            return;
+        }
+
+        auto& worker = *context.launched->children.front().worker;
+        context.child_ready = read_worker_coordinator_sync_marker(
+            worker.report_descriptor(), WORKER_COORDINATOR_CONTROLLED_CHILD_READY, context);
+        if (!context.child_ready) {
+            reap_failed_worker_coordinator_controlled_child(context);
+        }
     } catch (...) {
         context.threw = true;
+        reap_failed_worker_coordinator_controlled_child(context);
     }
 }
 
@@ -20048,22 +20361,79 @@ void finish_worker_coordinator_busy_late_handoff(void* opaque) noexcept {
     auto& context = *static_cast<WorkerCoordinatorBusyLateHandoffContext*>(opaque);
     context.finish_invoked = true;
     try {
-        if (!context.launch_ready || !context.launched.has_value() ||
+        if (!context.launch_ready || !context.child_ready || !context.launched.has_value() ||
             !context.launched->children.front().worker.has_value()) {
             return;
         }
         auto& worker = *context.launched->children.front().worker;
-        const auto waited = worker.wait_terminal();
+        if (signal_worker_coordinator_child(worker.process_id(), SIGUSR1) == 0) {
+            context.release_sent = true;
+        } else {
+            record_worker_coordinator_sync_error(context, errno);
+            (void)signal_worker_coordinator_child(worker.process_id(), SIGKILL);
+        }
+        context.wait = worker.wait_terminal();
         const int report_descriptor = worker.release_report_descriptor();
         if (report_descriptor >= 0) {
             WaveSnapshotFd report(report_descriptor);
+        } else {
+            record_worker_coordinator_sync_error(context, EBADF);
         }
         context.launched->children.front().worker.reset();
-        context.succeeded = waited.reaped && waited.success && waited.exit_status == 0 &&
-                            waited.signal == 0 && waited.native_error == 0;
+        context.succeeded = context.release_sent && context.wait.reaped && context.wait.success &&
+                            context.wait.exit_status == 0 && context.wait.signal == 0 &&
+                            context.wait.native_error == 0 && context.sync_native_error == 0;
     } catch (...) {
         context.threw = true;
+        reap_failed_worker_coordinator_controlled_child(context);
     }
+}
+
+[[nodiscard]] std::string worker_coordinator_busy_late_handoff_detail(
+    const WorkerCoordinatorBusyLateHandoffContext& context) {
+    std::string detail("launch_invoked=");
+    detail.append(context.launch_invoked ? "true" : "false");
+    detail.append(", launch_ready=");
+    detail.append(context.launch_ready ? "true" : "false");
+    detail.append(", child_ready=");
+    detail.append(context.child_ready ? "true" : "false");
+    detail.append(", finish_invoked=");
+    detail.append(context.finish_invoked ? "true" : "false");
+    detail.append(", release_sent=");
+    detail.append(context.release_sent ? "true" : "false");
+    detail.append(", succeeded=");
+    detail.append(context.succeeded ? "true" : "false");
+    detail.append(", threw=");
+    detail.append(context.threw ? "true" : "false");
+    detail.append(", sync_native_error=");
+    detail.append(std::to_string(context.sync_native_error));
+    detail.append(", wait={reaped=");
+    detail.append(context.wait.reaped ? "true" : "false");
+    detail.append(", success=");
+    detail.append(context.wait.success ? "true" : "false");
+    detail.append(", exit_status=");
+    detail.append(std::to_string(context.wait.exit_status));
+    detail.append(", signal=");
+    detail.append(std::to_string(context.wait.signal));
+    detail.append(", native_error=");
+    detail.append(std::to_string(context.wait.native_error));
+    detail.append("}");
+    if (context.launched.has_value()) {
+        detail.append(", launcher={");
+        append_worker_launcher_diagnostic(detail, context.launched->diagnostic);
+        detail.append("}");
+        if (context.launched->children.size() == 1U) {
+            detail.append(", child_transport={error=");
+            detail.append(
+                worker_process_detail::distributed_sieve_worker_process_transport_error_name(
+                    context.launched->children.front().transport.error));
+            detail.append(", native_error=");
+            detail.append(
+                std::to_string(context.launched->children.front().transport.native_error));
+            detail.append("}");
+        }
+    }
+    return detail;
 }
 
 void test_worker_coordinator_fresh_repeat_and_empty_matrix() {
@@ -20479,6 +20849,19 @@ void test_worker_coordinator_busy_late_handoff_precedes_retry() {
     auto result = worker_coordinator_detail::coordinate_missing_distributed_sieve_workers_v1(
         std::move(request), fixture.identity, fixture.frozen, fixture.polynomial,
         fixture.factor_base);
+    const auto sync_detail = worker_coordinator_busy_late_handoff_detail(late_context);
+    if (!result) {
+        auto detail = worker_coordinator_diagnostic_detail(result.diagnostic);
+        detail.append(", busy_late_handoff={");
+        detail.append(sync_detail);
+        detail.append("}");
+        fail("busy late handoff coordinator result", __LINE__, detail);
+    }
+    if (!late_context.launch_invoked || !late_context.launch_ready || !late_context.child_ready ||
+        !late_context.finish_invoked || !late_context.release_sent || !late_context.succeeded ||
+        late_context.threw || late_context.sync_native_error != 0) {
+        fail("busy late handoff synchronization", __LINE__, sync_detail);
+    }
     const auto facts = require_worker_coordinator_matrix(
         result, fixture.identity,
         {
@@ -20487,11 +20870,6 @@ void test_worker_coordinator_busy_late_handoff_precedes_retry() {
             worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::empty,
         },
         fixture.root);
-    CHECK(late_context.launch_invoked);
-    CHECK(late_context.launch_ready);
-    CHECK(late_context.finish_invoked);
-    CHECK(late_context.succeeded);
-    CHECK(!late_context.threw);
     CHECK(!late_context.receipt.has_value());
     CHECK(!late_context.launched->children.front().worker.has_value());
     CHECK(!ledger.overflow);
@@ -22380,6 +22758,10 @@ int main(int argc, char** argv) {
         }
         if (argc == 2 && std::string_view(argv[1]) == WORKER_COORDINATOR_REAL_CHILD_ARGUMENT) {
             return run_worker_coordinator_real_child();
+        }
+        if (argc == 2 &&
+            std::string_view(argv[1]) == WORKER_COORDINATOR_CONTROLLED_CHILD_ARGUMENT) {
+            return run_worker_coordinator_controlled_child();
         }
         if (argc == 2 && std::string_view(argv[1]) == WORKER_LAUNCH_FAKE_CHILD_ARGUMENT) {
             return run_worker_launch_fake_child();
