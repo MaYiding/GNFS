@@ -79,7 +79,8 @@ jobs:
             scripts/release_binary_contract.py \
             scripts/release_contract.py \
             scripts/reproducible_archive.py \
-            scripts/windows_release_runtime.py
+            scripts/windows_release_runtime.py \
+            scripts/windows_runtime_contract.py
 
       - name: Check release automation contracts
         run: |
@@ -88,6 +89,7 @@ jobs:
           python3 scripts/release_binary_contract.py self-test
           python3 scripts/reproducible_archive.py self-test
           python3 scripts/windows_release_runtime.py self-test
+          python3 scripts/windows_runtime_contract.py self-test
 
       - name: Check test catalog
         run: zsh ./scripts/test.sh list >/tmp/gnfs-test-list.txt

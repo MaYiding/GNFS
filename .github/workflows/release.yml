@@ -297,11 +297,16 @@ jobs:
           update: true
           install: >-
             mingw-w64-ucrt-x86_64-cmake
-            mingw-w64-ucrt-x86_64-gcc
-            mingw-w64-ucrt-x86_64-gmp
             mingw-w64-ucrt-x86_64-ninja
-            mingw-w64-ucrt-x86_64-ntl
             mingw-w64-ucrt-x86_64-python
+
+      - name: Install exact Windows compiler and runtime packages
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          python scripts/windows_release_runtime.py install-pinned \
+            --download-directory pinned-windows-packages \
+            --evidence-output pinned-windows-packages.json
 
       - name: Configure CMake (macOS)
         if: runner.os == 'macOS'
@@ -320,6 +325,7 @@ jobs:
           cmake -B build-release -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DGNFS_BUILD_TESTS=OFF \
+            -DGNFS_ENABLE_NTL=OFF \
             -DGNFS_ENABLE_NATIVE_ARCH=OFF
 
       - name: Build (macOS)
@@ -394,6 +400,7 @@ jobs:
           python scripts/windows_release_runtime.py bundle \
             --package-root "${prefix}" \
             --executable "${prefix}/bin/gnfs.exe" \
+            --pinned-package-evidence pinned-windows-packages.json \
             --project-license LICENSE \
             --release-tag "${RELEASE_TAG}" \
             --target-sha "${TARGET_SHA}"
@@ -457,7 +464,7 @@ jobs:
           retention-days: 30
 
   collect-dependency-sources:
-    name: Collect pinned GMP and NTL sources
+    name: Collect pinned GMP, NTL, and MSYS2 sources
     if: inputs.mode == 'verify-only'
     needs: preflight
     runs-on: ubuntu-24.04

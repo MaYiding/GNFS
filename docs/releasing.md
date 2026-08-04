@@ -118,7 +118,7 @@ title, notes, `draft: false`, `prerelease: false`, and `immutable: true`.
 
 A publish retry also accepts one already public release, but only as a recovery
 state for the same immutable object. This path revalidates the selected
-verify-only proof and all ten local release files, then requires the numeric-ID
+verify-only proof and all 13 local release files, then requires the numeric-ID
 lookup, public tag lookup, lightweight tag ref, title, notes, and every server
 asset name, size, and SHA-256 digest to match exactly. It performs no release
 creation, asset upload, deletion, or PATCH. This allows a rerun to converge when
@@ -172,6 +172,9 @@ The public release contains exactly these files:
 - `gnfs-v0.1.0-source.tar.gz`;
 - `gmp-6.3.0.tar.xz`;
 - `ntl-11.6.0.tar.gz`;
+- `mingw-w64-gcc-16.1.0-6.src.tar.zst`;
+- `mingw-w64-gmp-6.3.0-2.src.tar.zst`;
+- `mingw-w64-winpthreads-14.0.0.r220.gd999af622-1.src.tar.zst`;
 - `release-metadata.json`;
 - `SHA256SUMS`;
 - `release-verification.json`.
@@ -202,11 +205,23 @@ NTL 11.6.0 corresponding source from their fixed HTTPS URLs. It accepts only
 SHA-256 `a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898`
 and `ntl-11.6.0.tar.gz` with SHA-256
 `bc0ef9aceb075a6a0673ac8d8f47d5f8458c72fe806e4468fbd5d3daff056182`.
-All three source archives are first-class release assets. Their names, sizes,
-and digests are bound by `release-metadata.json`, `SHA256SUMS`, the verification
-proof, and the final server-side release-asset check. GitHub's generated tag
-source remains an additional source path, not a substitute for the verified
-GNFS source asset.
+The same workflow downloads three exact MSYS2 source-only archives for the
+Windows runtime closure. Their SHA-256 digests are:
+
+- `mingw-w64-gcc-16.1.0-6.src.tar.zst`:
+  `6c24a08c75679601a20bfc4d6c40c34ff5473a89ef69d74f939b2b6f5172327c`;
+- `mingw-w64-gmp-6.3.0-2.src.tar.zst`:
+  `f288f944fd9609db220bcf6a8dd0703a5674eeb906ef35eb8485bb8192135994`;
+- `mingw-w64-winpthreads-14.0.0.r220.gd999af622-1.src.tar.zst`:
+  `9743facee4a25c6bb44e856ed8182f7e4c652812481656e68aa57b9070992451`.
+
+These source packages contain the upstream source, `.SRCINFO`, `PKGBUILD`,
+and downstream patches used by the selected MSYS2 packages. The GCC contract
+enumerates every patch in its source package. All six source archives are
+first-class release assets. Their names, sizes, and digests are bound by
+`release-metadata.json`, `SHA256SUMS`, the verification proof, and the final
+server-side release-asset check. GitHub's generated tag source remains an
+additional source path, not a substitute for the verified GNFS source asset.
 
 The Linux x86_64 package is built with GCC 12 inside an Ubuntu 20.04 container,
 whose glibc baseline is 2.31. `readelf` must identify an x86-64 executable, only
@@ -228,13 +243,32 @@ a newer libstdc++ ABI than the Ubuntu 20.04 default.
 All three CLI archive roots contain the repository's byte-identical GPL-2.0
 `LICENSE`. Linux and macOS do not bundle GMP or NTL dynamic libraries, and
 their README and third-party notice state that the host must provide them.
+Windows uses a frozen MSYS2 UCRT64 baseline rather than rolling package names.
+The workflow downloads digest-pinned GCC 16.1.0-6, GCC runtime, GMP 6.3.0-2,
+and winpthreads packages from `repo.msys2.org`, verifies their package
+archives, and installs those exact versions. NTL is not installed for this
+package because GNFS currently imports no NTL symbol; the release configuration
+also sets `GNFS_ENABLE_NTL=OFF`, so a pre-existing library cannot silently enter
+the link. The runtime closure is
+exactly `libgmp-10.dll`, `libstdc++-6.dll`, `libgcc_s_seh-1.dll`, and
+`libwinpthread-1.dll`, owned by three packages. Any missing or additional DLL,
+package, version, digest, or source mapping fails closed.
+
 Windows dependency discovery captures and checks the `ldd` exit status,
 rejects unresolved or non-UCRT64 non-system paths, and records the owning
-pacman package and version for every copied DLL. License files must resolve
-under an MSYS2 license root and are copied into `licenses/`; the archive
-validator cross-checks those files, all DLL digests, and
-`runtime-dependencies.json`. The executable must also pass its version probe
-from the package directory with `/ucrt64/bin` excluded from `PATH`.
+package, binary package digest, DLL digest, and corresponding source archive.
+Package license files are copied into `licenses/`. The MSYS2 GMP binary package
+contains no license file, so the packager copies the byte-pinned upstream
+`COPYINGv2` text and explicitly conveys GMP under its GNU GPL version 2 option.
+The archive validator cross-checks every license, runtime contract, DLL, and
+source mapping. The executable must also pass its version probe from the
+package directory with `/ucrt64/bin` excluded from `PATH`.
+
+`Release Readiness` repeats the complete pinned Windows build, isolated launch,
+archive creation, and archive validation on every pull request and `main` push.
+It deliberately has no path filter because it is a required check and the release
+preflight requires exact-SHA evidence in addition to
+the ordinary Windows compiler matrix.
 
 `Workbench CI` embeds the full source SHA as `GNFSSourceRevision` in the
 application `Info.plist`. The release workflow downloads the ZIP and SHA-256
@@ -265,6 +299,7 @@ python3 scripts/release_contract.py check-workflows
 python3 scripts/release_binary_contract.py self-test
 python3 scripts/reproducible_archive.py self-test
 python3 scripts/windows_release_runtime.py self-test
+python3 scripts/windows_runtime_contract.py self-test
 ```
 
 Script Checks runs both commands, Python bytecode compilation, and the existing

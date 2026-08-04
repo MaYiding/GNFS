@@ -1,0 +1,131 @@
+{
+  "install_packages": [
+    {
+      "archive": "mingw-w64-ucrt-x86_64-gcc-16.1.0-6-any.pkg.tar.zst",
+      "name": "mingw-w64-ucrt-x86_64-gcc",
+      "sha256": "4d756f6506b490efd600458856692a4cb958cfd6860c16d9abd63ad6b041cc5d",
+      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-gcc-16.1.0-6-any.pkg.tar.zst",
+      "version": "16.1.0-6"
+    },
+    {
+      "archive": "mingw-w64-ucrt-x86_64-gcc-libs-16.1.0-6-any.pkg.tar.zst",
+      "name": "mingw-w64-ucrt-x86_64-gcc-libs",
+      "sha256": "803cbff6ca337a16904e8a94a40fef4a0c9b58a983d6440a7f3a32b5d6c3362a",
+      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-gcc-libs-16.1.0-6-any.pkg.tar.zst",
+      "version": "16.1.0-6"
+    },
+    {
+      "archive": "mingw-w64-ucrt-x86_64-gmp-6.3.0-2-any.pkg.tar.zst",
+      "name": "mingw-w64-ucrt-x86_64-gmp",
+      "sha256": "e82a75968a556484a50084578238a84eb60fb93e34986fd6695c537975bd39ea",
+      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-gmp-6.3.0-2-any.pkg.tar.zst",
+      "version": "6.3.0-2"
+    },
+    {
+      "archive": "mingw-w64-ucrt-x86_64-libwinpthread-14.0.0.r220.gd999af622-1-any.pkg.tar.zst",
+      "name": "mingw-w64-ucrt-x86_64-libwinpthread",
+      "sha256": "a3f0a17a5c8544174bbe05c5905934f208205969e0b8be6f36c880b4a4547fe8",
+      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-libwinpthread-14.0.0.r220.gd999af622-1-any.pkg.tar.zst",
+      "version": "14.0.0.r220.gd999af622-1"
+    },
+    {
+      "archive": "mingw-w64-ucrt-x86_64-winpthreads-14.0.0.r220.gd999af622-1-any.pkg.tar.zst",
+      "name": "mingw-w64-ucrt-x86_64-winpthreads",
+      "sha256": "53cb2aea001c48cfdffb8fbc2b8c4b5e383f08ffe1df1f3e1abe576db8ab2a63",
+      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-winpthreads-14.0.0.r220.gd999af622-1-any.pkg.tar.zst",
+      "version": "14.0.0.r220.gd999af622-1"
+    }
+  ],
+  "runtime": "MSYS2 UCRT64",
+  "runtime_packages": [
+    {
+      "dll_sha256": {
+        "libgcc_s_seh-1.dll": "404a3bc40f0d60ffcfb9c4134b82c34fcf6c975c7afcc3cf1aead8d6cb86e0b0",
+        "libstdc++-6.dll": "2ff674011e3ab768a362d213228da37369b9233f5befb26b0bc10cc4d269c6fb"
+      },
+      "fallback_licenses": [],
+      "name": "mingw-w64-ucrt-x86_64-gcc-libs",
+      "source_archive": "mingw-w64-gcc-16.1.0-6.src.tar.zst",
+      "version": "16.1.0-6"
+    },
+    {
+      "dll_sha256": {
+        "libgmp-10.dll": "c2567ccf3f410c3411ba7cd4b7ba14f393a0e70a1d0c0593297df6706b5fba96"
+      },
+      "fallback_licenses": [
+        {
+          "archive_name": "COPYINGv2",
+          "path": "apps/macos/GNFSWorkbench/GNFSWorkbench/Resources/Licenses/GMP-COPYING.txt",
+          "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643"
+        }
+      ],
+      "name": "mingw-w64-ucrt-x86_64-gmp",
+      "source_archive": "mingw-w64-gmp-6.3.0-2.src.tar.zst",
+      "version": "6.3.0-2"
+    },
+    {
+      "dll_sha256": {
+        "libwinpthread-1.dll": "4bd23b274a3a96ff8114d0069e69177fd0c88911a987f530fabc12a2cc5b5ecc"
+      },
+      "fallback_licenses": [],
+      "name": "mingw-w64-ucrt-x86_64-libwinpthread",
+      "source_archive": "mingw-w64-winpthreads-14.0.0.r220.gd999af622-1.src.tar.zst",
+      "version": "14.0.0.r220.gd999af622-1"
+    }
+  ],
+  "schema_version": 1,
+  "source_archives": [
+    {
+      "name": "mingw-w64-gcc-16.1.0-6.src.tar.zst",
+      "required_paths": [
+        ".SRCINFO",
+        "0002-i386-Keep-SEH-enabled-for-Win64-sysv_abi-functions.patch",
+        "0003-Windows-Follow-Posix-dir-exists-semantics-more-close.patch",
+        "0007-Build-EXTRA_GNATTOOLS-for-Ada.patch",
+        "0008-Prettify-linking-no-undefined.patch",
+        "0011-Enable-shared-gnat-implib.patch",
+        "0012-Handle-spaces-in-path-for-default-manifest.patch",
+        "0014-gcc-9-branch-clone_function_name_1-Retain-any-stdcall-suffix.patch",
+        "0020-libgomp-Don-t-hard-code-MS-printf-attributes.patch",
+        "0022-unset-native-system-header-dir.patch",
+        "0023-Ada-Don-t-export-gnat1-s-symbols-on-PE-hosts.patch",
+        "0140-gcc-diagnostic-color.patch",
+        "0200-add-m-no-align-vector-insn-option-for-i386.patch",
+        "2001-fix-building-rust-on-mingw-w64.patch",
+        "3001-fix-codeview-crashes.patch",
+        "PKGBUILD",
+        "gcc-16.1.0.tar.xz",
+        "gcc-16.1.0.tar.xz.sig",
+        "gdbinit"
+      ],
+      "root": "mingw-w64-gcc",
+      "sha256": "6c24a08c75679601a20bfc4d6c40c34ff5473a89ef69d74f939b2b6f5172327c",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-gcc-16.1.0-6.src.tar.zst"
+    },
+    {
+      "name": "mingw-w64-gmp-6.3.0-2.src.tar.zst",
+      "required_paths": [
+        ".SRCINFO",
+        "PKGBUILD",
+        "do-not-use-dllimport.diff",
+        "gmp-6.3.0.tar.xz",
+        "gmp-staticlib.diff"
+      ],
+      "root": "mingw-w64-gmp",
+      "sha256": "f288f944fd9609db220bcf6a8dd0703a5674eeb906ef35eb8485bb8192135994",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-gmp-6.3.0-2.src.tar.zst"
+    },
+    {
+      "name": "mingw-w64-winpthreads-14.0.0.r220.gd999af622-1.src.tar.zst",
+      "required_paths": [
+        ".SRCINFO",
+        "0001-Define-__-de-register_frame_info-in-fake-libgcc_s.patch",
+        "PKGBUILD",
+        "mingw-w64/HEAD"
+      ],
+      "root": "mingw-w64-winpthreads",
+      "sha256": "9743facee4a25c6bb44e856ed8182f7e4c652812481656e68aa57b9070992451",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-winpthreads-14.0.0.r220.gd999af622-1.src.tar.zst"
+    }
+  ]
+}

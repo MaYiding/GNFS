@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 import hashlib
 from http.client import IncompleteRead
@@ -26,6 +26,12 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 import zipfile
+
+from windows_runtime_contract import (
+    CONTRACT_PATH as WINDOWS_RUNTIME_CONTRACT_PATH,
+    WindowsRuntimeContractError,
+    load_contract as load_windows_runtime_contract,
+)
 
 
 FIRST_RELEASE_TAG = "v0.1.0"
@@ -84,7 +90,7 @@ DEPENDENCY_SOURCE_ROOTS = {
     "gmp-6.3.0.tar.xz": "gmp-6.3.0",
     "ntl-11.6.0.tar.gz": "ntl-11.6.0",
 }
-MAX_DEPENDENCY_SOURCE_BYTES = 64 * 1024 * 1024
+MAX_DEPENDENCY_SOURCE_BYTES = 192 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -131,6 +137,11 @@ REQUIRED_MAIN_CHECKS = (
         ".github/workflows/workbench.yml",
         "macOS 26 build, test, and package",
     ),
+    RequiredCheck(
+        "Release Readiness",
+        ".github/workflows/release-readiness.yml",
+        "Windows pinned runtime and source closure",
+    ),
 )
 REQUIRED_CODE_SCANNING_ANALYSES = (
     RequiredCodeScanningAnalysis(
@@ -153,6 +164,26 @@ class GitHubAPIRequestError(ReleaseContractError):
         super().__init__(f"GitHub API {status} for {path}: {detail}")
         self.status = status
         self.path = path
+
+
+def _windows_runtime_contract():
+    try:
+        return load_windows_runtime_contract()
+    except WindowsRuntimeContractError as error:
+        raise ReleaseContractError(f"Windows runtime source contract is invalid: {error}") from error
+
+
+def _dependency_source_contracts() -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+    urls = dict(DEPENDENCY_SOURCE_URLS)
+    digests = dict(DEPENDENCY_SOURCE_SHA256)
+    roots = dict(DEPENDENCY_SOURCE_ROOTS)
+    for source in _windows_runtime_contract().source_archives:
+        if source.name in urls or source.name in digests or source.name in roots:
+            raise ReleaseContractError(f"duplicate dependency source contract: {source.name}")
+        urls[source.name] = source.url
+        digests[source.name] = source.sha256
+        roots[source.name] = source.root
+    return urls, digests, roots
 
 
 class GitHubAPI(Protocol):
@@ -924,18 +955,17 @@ def expected_package_names(release_tag: str) -> tuple[str, ...]:
 
 
 def expected_dependency_source_names() -> tuple[str, ...]:
-    names = tuple(DEPENDENCY_SOURCE_URLS)
-    if set(names) != set(DEPENDENCY_SOURCE_SHA256) or set(names) != set(
-        DEPENDENCY_SOURCE_ROOTS
-    ):
+    urls, digests, roots = _dependency_source_contracts()
+    names = tuple(urls)
+    if set(names) != set(digests) or set(names) != set(roots):
         raise ReleaseContractError(
             "dependency source URL, digest, and archive-root contracts diverged"
         )
     for name in names:
         if (
             not re.fullmatch(r"[A-Za-z0-9._-]+", name)
-            or not DEPENDENCY_SOURCE_URLS[name].startswith("https://")
-            or not SHA256_PATTERN.fullmatch(DEPENDENCY_SOURCE_SHA256[name])
+            or not urls[name].startswith("https://")
+            or not SHA256_PATTERN.fullmatch(digests[name])
         ):
             raise ReleaseContractError(f"invalid dependency source contract for {name}")
     return names
@@ -1163,16 +1193,36 @@ def _validate_windows_runtime_manifest(
     except json.JSONDecodeError as error:
         raise ReleaseContractError(f"Windows runtime manifest is invalid JSON: {error}") from error
     if not isinstance(manifest, dict) or set(manifest) != {
+        "contract_file",
+        "contract_sha256",
         "dependencies",
         "runtime",
         "schema_version",
     }:
         raise ReleaseContractError("Windows runtime manifest has missing or unknown fields")
-    if manifest.get("schema_version") != 1 or manifest.get("runtime") != "MSYS2 UCRT64":
+    contract = _windows_runtime_contract()
+    contract_name = WINDOWS_RUNTIME_CONTRACT_PATH.name
+    contract_path = f"{root}/{contract_name}"
+    try:
+        expected_contract_bytes = WINDOWS_RUNTIME_CONTRACT_PATH.read_bytes()
+    except OSError as error:
+        raise ReleaseContractError(f"unable to read Windows runtime contract: {error}") from error
+    if (
+        manifest.get("schema_version") != 2
+        or manifest.get("runtime") != contract.runtime
+        or manifest.get("contract_file") != contract_name
+        or contract_path not in files
+        or read_file(contract_path) != expected_contract_bytes
+        or manifest.get("contract_sha256")
+        != hashlib.sha256(expected_contract_bytes).hexdigest()
+    ):
         raise ReleaseContractError("Windows runtime manifest identity is invalid")
     dependencies = manifest.get("dependencies")
     if not isinstance(dependencies, list) or not dependencies:
         raise ReleaseContractError("Windows runtime manifest has no bundled dependencies")
+    runtime_by_name = {record.name: record for record in contract.runtime_packages}
+    install_by_name = {record.name: record for record in contract.install_packages}
+    source_by_name = {record.name: record for record in contract.source_archives}
     observed_dlls: list[str] = []
     declared_licenses: set[str] = set()
     for dependency in dependencies:
@@ -1180,8 +1230,12 @@ def _validate_windows_runtime_manifest(
             "dll",
             "license_files",
             "package",
+            "package_archive",
+            "package_archive_sha256",
             "package_version",
             "sha256",
+            "source_archive",
+            "source_archive_sha256",
         }:
             raise ReleaseContractError("Windows runtime dependency has missing or unknown fields")
         dll = dependency.get("dll")
@@ -1189,6 +1243,13 @@ def _validate_windows_runtime_manifest(
         package_version = dependency.get("package_version")
         digest = dependency.get("sha256")
         licenses = dependency.get("license_files")
+        package_contract = runtime_by_name.get(package) if isinstance(package, str) else None
+        install_contract = install_by_name.get(package) if isinstance(package, str) else None
+        source_contract = (
+            source_by_name.get(package_contract.source_archive)
+            if package_contract is not None
+            else None
+        )
         if (
             not isinstance(dll, str)
             or PurePosixPath(dll).name != dll
@@ -1204,6 +1265,15 @@ def _validate_windows_runtime_manifest(
             or not licenses
             or not all(isinstance(license_path, str) for license_path in licenses)
             or licenses != sorted(set(licenses))
+            or package_contract is None
+            or install_contract is None
+            or source_contract is None
+            or package_version != package_contract.version
+            or dependency.get("package_archive") != install_contract.archive
+            or dependency.get("package_archive_sha256") != install_contract.sha256
+            or dependency.get("source_archive") != source_contract.name
+            or dependency.get("source_archive_sha256") != source_contract.sha256
+            or package_contract.dll_sha256.get(dll) != digest
         ):
             raise ReleaseContractError(f"Windows runtime dependency record is invalid: {dll!r}")
         dll_path = f"{root}/bin/{dll}"
@@ -1220,6 +1290,17 @@ def _validate_windows_runtime_manifest(
             if rooted_license not in files or not read_file(rooted_license):
                 raise ReleaseContractError(f"Windows runtime license is missing or empty: {license_path}")
             declared_licenses.add(rooted_license)
+        expected_fallbacks = {
+            f"licenses/{package}/{fallback.archive_name}": fallback.sha256
+            for fallback in package_contract.fallback_licenses
+        }
+        for fallback_path, fallback_digest in expected_fallbacks.items():
+            if fallback_path not in licenses or hashlib.sha256(
+                read_file(f"{root}/{fallback_path}")
+            ).hexdigest() != fallback_digest:
+                raise ReleaseContractError(
+                    f"Windows runtime fallback license is missing or changed: {fallback_path}"
+                )
         observed_dlls.append(dll)
     if observed_dlls != sorted(set(observed_dlls), key=str.lower):
         raise ReleaseContractError("Windows runtime dependencies are duplicate or unsorted")
@@ -1235,6 +1316,14 @@ def _validate_windows_runtime_manifest(
         raise ReleaseContractError(
             "Windows archive license set does not match its runtime manifest"
         )
+    observed_packages = {dependency["package"] for dependency in dependencies}
+    if observed_packages != {record.name for record in contract.runtime_packages}:
+        raise ReleaseContractError("Windows runtime package set is not the exact source closure")
+    expected_dlls = {
+        dll for package in contract.runtime_packages for dll in package.dll_sha256
+    }
+    if set(observed_dlls) != expected_dlls:
+        raise ReleaseContractError("Windows runtime DLL set is not the exact release closure")
     notice = _decode_archive_text(read_file, f"{root}/THIRD_PARTY_NOTICES.txt")
     if "runtime-dependencies.json" not in notice:
         raise ReleaseContractError("Windows third-party notice does not identify its manifest")
@@ -1243,6 +1332,17 @@ def _validate_windows_runtime_manifest(
         if identity not in notice:
             raise ReleaseContractError(
                 f"Windows third-party notice omits package identity {identity}"
+            )
+        if dependency["source_archive"] not in notice:
+            raise ReleaseContractError(
+                f"Windows third-party notice omits source archive {dependency['source_archive']}"
+            )
+        if (
+            dependency["package"] == "mingw-w64-ucrt-x86_64-gmp"
+            and "license selection: GNU GPL version 2" not in notice
+        ):
+            raise ReleaseContractError(
+                "Windows third-party notice omits the GMP GNU GPL version 2 selection"
             )
 
 
@@ -1361,7 +1461,11 @@ def _validate_cli_archive_contents(
     notice = _decode_archive_text(read_file, f"{root}/THIRD_PARTY_NOTICES.txt")
     if platform == "windows-x86_64":
         _validate_windows_runtime_manifest(root, files, read_file)
-        if "UCRT64" not in readme or "runtime-dependencies.json" not in readme:
+        if (
+            "UCRT64" not in readme
+            or "runtime-dependencies.json" not in readme
+            or WINDOWS_RUNTIME_CONTRACT_PATH.name not in readme
+        ):
             raise ReleaseContractError("Windows release README omits bundled-runtime provenance")
         return
     if platform == "linux-x86_64":
@@ -1674,18 +1778,77 @@ def create_gnfs_source_archive(
     return archive_path
 
 
+def _validate_msys2_source_archive(path: Path, expected_root: str) -> None:
+    try:
+        completed = subprocess.run(
+            ["tar", "--zstd", "-tf", str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ReleaseContractError(
+            f"unable to inspect MSYS2 source archive {path.name}: {error}"
+        ) from error
+    if completed.returncode != 0:
+        raise ReleaseContractError(
+            f"MSYS2 source archive cannot be listed: {path.name}: {completed.stderr[:500]}"
+        )
+    names = completed.stdout.splitlines()
+    if not names or len(names) > 200_000 or names != list(dict.fromkeys(names)):
+        raise ReleaseContractError(
+            f"MSYS2 source archive has an invalid entry set: {path.name}"
+        )
+    normalized_names: set[str] = set()
+    for name in names:
+        archive_path = PurePosixPath(name)
+        if (
+            not archive_path.parts
+            or archive_path.is_absolute()
+            or ".." in archive_path.parts
+            or "\\" in name
+            or "\0" in name
+            or archive_path.parts[0] != expected_root
+        ):
+            raise ReleaseContractError(
+                f"MSYS2 source archive contains an unsafe path: {path.name}: {name}"
+            )
+        normalized_names.add(archive_path.as_posix())
+    source = next(
+        (
+            record
+            for record in _windows_runtime_contract().source_archives
+            if record.name == path.name
+        ),
+        None,
+    )
+    if source is None or source.root != expected_root:
+        raise ReleaseContractError(f"MSYS2 source archive is not in the runtime contract: {path.name}")
+    required = {f"{expected_root}/{relative}" for relative in source.required_paths}
+    if not required.issubset(normalized_names):
+        raise ReleaseContractError(
+            f"MSYS2 source archive lacks required recipe/source paths: {path.name}: "
+            f"{sorted(required - normalized_names)}"
+        )
+
+
 def _validate_dependency_source_files(source_directory: Path) -> None:
+    _, digests, roots = _dependency_source_contracts()
     for name in expected_dependency_source_names():
         path = source_directory / name
         if not path.is_file() or path.is_symlink():
             raise ReleaseContractError(f"dependency source archive is not a real file: {name}")
         observed_digest = _sha256(path)
-        expected_digest = DEPENDENCY_SOURCE_SHA256[name]
+        expected_digest = digests[name]
         if observed_digest != expected_digest:
             raise ReleaseContractError(
                 f"dependency source archive digest mismatch for {name}: {observed_digest}"
             )
-        _validate_source_tar_structure(path, DEPENDENCY_SOURCE_ROOTS[name])
+        if name.endswith(".src.tar.zst"):
+            _validate_msys2_source_archive(path, roots[name])
+        else:
+            _validate_source_tar_structure(path, roots[name])
 
 
 def _validate_corresponding_source_files(
@@ -1724,8 +1887,9 @@ def fetch_dependency_source_archives(output_directory: Path) -> None:
     output_directory.parent.mkdir(parents=True, exist_ok=True)
     output_directory.mkdir()
     ssl_context = _verified_ssl_context()
+    urls, digests, _ = _dependency_source_contracts()
     for name in expected_dependency_source_names():
-        url = DEPENDENCY_SOURCE_URLS[name]
+        url = urls[name]
         request = Request(
             url,
             headers={
@@ -1734,7 +1898,7 @@ def fetch_dependency_source_archives(output_directory: Path) -> None:
             },
         )
         partial_path = output_directory / f".{name}.partial"
-        expected_digest = DEPENDENCY_SOURCE_SHA256[name]
+        expected_digest = digests[name]
         last_error: Exception | None = None
         for attempt in range(1, 4):
             digest = hashlib.sha256()
@@ -2253,6 +2417,7 @@ def _release_notes(target_sha: str, release_tag: str) -> str:
             "The macOS Workbench is ad-hoc signed and is not Apple notarized.",
             f"Exact GNFS source for {target_sha} is attached.",
             "Exact GMP 6.3.0 and NTL 11.6.0 corresponding sources are attached.",
+            "Exact MSYS2 GCC, GMP, and winpthreads source packages for the Windows runtime are attached.",
             "Verify packaged and source files with SHA256SUMS.",
             "release-verification.json is separately bound by the publication contract.",
             "",
@@ -2676,6 +2841,8 @@ def publish_verified_release(
 def validate_workflow_sources(release_workflow: Path, qualification_workflow: Path) -> None:
     release_text = release_workflow.read_text(encoding="utf-8")
     qualification_text = qualification_workflow.read_text(encoding="utf-8")
+    readiness_workflow = release_workflow.with_name("release-readiness.yml")
+    readiness_text = readiness_workflow.read_text(encoding="utf-8")
     forbidden_release_fragments = (
         "if: always()",
         "--clobber",
@@ -2726,6 +2893,9 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
         "scripts/release_binary_contract.py linux",
         "scripts/release_binary_contract.py macos",
         "scripts/windows_release_runtime.py bundle",
+        "scripts/windows_release_runtime.py install-pinned",
+        "--pinned-package-evidence pinned-windows-packages.json",
+        "-DGNFS_ENABLE_NTL=OFF",
         "container: ubuntu:20.04",
         "-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0",
         "release-verification-${{ inputs.release_tag }}-${{ inputs.target_sha }}",
@@ -2757,6 +2927,30 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
         raise ReleaseContractError("release qualification must remain workflow_call-only")
     if "if: always()" in qualification_text or "continue-on-error:" in qualification_text:
         raise ReleaseContractError("release qualification contains a fail-open job boundary")
+    if "if: always()" in readiness_text or "continue-on-error:" in readiness_text:
+        raise ReleaseContractError("release readiness contains a fail-open job boundary")
+    if "mingw-w64-ucrt-x86_64-ntl" in release_text + readiness_text:
+        raise ReleaseContractError("Windows release workflows must not install MSYS2 NTL")
+    if re.search(r"(?m)^\s+paths(?:-ignore)?:\s*$", readiness_text):
+        raise ReleaseContractError(
+            "required release readiness must run for every main and pull-request SHA"
+        )
+    required_readiness_fragments = (
+        "name: Release Readiness",
+        "name: Windows pinned runtime and source closure",
+        "runs-on: windows-2022",
+        "scripts/windows_release_runtime.py install-pinned",
+        "scripts/windows_release_runtime.py bundle",
+        "--pinned-package-evidence pinned-windows-packages.json",
+        "-DGNFS_ENABLE_NTL=OFF",
+        "scripts/release_contract.py validate-cli-archive",
+        "scripts/reproducible_archive.py create",
+    )
+    for fragment in required_readiness_fragments:
+        if fragment not in readiness_text:
+            raise ReleaseContractError(
+                f"release readiness workflow lost required boundary: {fragment}"
+            )
 
 
 def _write_github_output(path: Path | None, key: str, value: str | int) -> None:
@@ -3078,34 +3272,63 @@ def _make_cli_archive(directory: Path, platform: str) -> Path:
     if platform == "windows-x86_64":
         executable = root / "bin" / "gnfs.exe"
         executable.write_bytes(b"windows test executable")
-        dll = root / "bin" / "libgmp-10.dll"
-        dll.write_bytes(b"windows test runtime")
-        license_path = root / "licenses" / "mingw-w64-ucrt-x86_64-gmp" / "COPYING"
-        license_path.parent.mkdir(parents=True)
-        license_path.write_text("GNU license fixture\n", encoding="utf-8")
-        manifest = {
-            "dependencies": [
+        contract = _windows_runtime_contract()
+        installs = {package.name: package for package in contract.install_packages}
+        sources = {source.name: source for source in contract.source_archives}
+        dependencies: list[dict[str, Any]] = []
+        notice_lines = ["runtime-dependencies.json", WINDOWS_RUNTIME_CONTRACT_PATH.name]
+        for package in contract.runtime_packages:
+            dll_name, expected_digest = next(iter(package.dll_sha256.items()))
+            dll = root / "bin" / dll_name
+            dll.write_bytes(f"{package.name} runtime fixture".encode())
+            if _sha256(dll) != expected_digest:
+                raise ReleaseContractError(
+                    f"Windows runtime fixture digest diverged for {dll_name}"
+                )
+            license_relative = f"licenses/{package.name}/COPYING"
+            license_path = root / license_relative
+            license_path.parent.mkdir(parents=True)
+            license_path.write_text("license fixture\n", encoding="utf-8")
+            install = installs[package.name]
+            source = sources[package.source_archive]
+            dependencies.append(
                 {
-                    "dll": dll.name,
-                    "license_files": [
-                        "licenses/mingw-w64-ucrt-x86_64-gmp/COPYING"
-                    ],
-                    "package": "mingw-w64-ucrt-x86_64-gmp",
-                    "package_version": "6.3.0-1",
-                    "sha256": _sha256(dll),
+                    "dll": dll_name,
+                    "license_files": [license_relative],
+                    "package": package.name,
+                    "package_archive": install.archive,
+                    "package_archive_sha256": install.sha256,
+                    "package_version": package.version,
+                    "sha256": expected_digest,
+                    "source_archive": source.name,
+                    "source_archive_sha256": source.sha256,
                 }
-            ],
-            "runtime": "MSYS2 UCRT64",
-            "schema_version": 1,
+            )
+            notice_lines.extend(
+                (f"{package.name} {package.version}", source.name)
+            )
+            if package.name == "mingw-w64-ucrt-x86_64-gmp":
+                notice_lines.append("license selection: GNU GPL version 2")
+        dependencies.sort(key=lambda item: item["dll"].lower())
+        contract_bytes = WINDOWS_RUNTIME_CONTRACT_PATH.read_bytes()
+        (root / WINDOWS_RUNTIME_CONTRACT_PATH.name).write_bytes(contract_bytes)
+        manifest = {
+            "contract_file": WINDOWS_RUNTIME_CONTRACT_PATH.name,
+            "contract_sha256": hashlib.sha256(contract_bytes).hexdigest(),
+            "dependencies": dependencies,
+            "runtime": contract.runtime,
+            "schema_version": 2,
         }
         (root / "runtime-dependencies.json").write_text(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
         (root / "README-release.txt").write_text(
-            "GNFS v0.1.0 Windows UCRT64 runtime-dependencies.json\n", encoding="utf-8"
+            "GNFS v0.1.0 Windows UCRT64 runtime-dependencies.json "
+            f"{WINDOWS_RUNTIME_CONTRACT_PATH.name}\n",
+            encoding="utf-8",
         )
         (root / "THIRD_PARTY_NOTICES.txt").write_text(
-            "runtime-dependencies.json\nmingw-w64-ucrt-x86_64-gmp 6.3.0-1\n",
+            "\n".join(notice_lines) + "\n",
             encoding="utf-8",
         )
     else:
@@ -3304,6 +3527,7 @@ def self_test() -> None:
         or DEPENDENCY_SOURCE_ROOTS != production_source_roots
     ):
         raise ReleaseContractError("pinned dependency source contract changed")
+    production_windows_contract = _windows_runtime_contract()
 
     def source_archive_fixture(root_name: str, mode: str) -> bytes:
         buffer = io.BytesIO()
@@ -3323,15 +3547,76 @@ def self_test() -> None:
         "gmp-6.3.0.tar.xz": source_archive_fixture("gmp-6.3.0", "w:xz"),
         "ntl-11.6.0.tar.gz": source_archive_fixture("ntl-11.6.0", "w:gz"),
     }
-    source_hash_patch = patch.dict(
-        DEPENDENCY_SOURCE_SHA256,
+
+    def msys2_source_archive_fixture(source) -> bytes:
+        with tempfile.TemporaryDirectory(
+            prefix="gnfs-msys2-source-fixture-"
+        ) as fixture_directory:
+            fixture_root = Path(fixture_directory) / source.root
+            fixture_root.mkdir()
+            for relative in source.required_paths:
+                path = fixture_root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(f"{relative} source fixture\n", encoding="utf-8")
+            archive_path = Path(fixture_directory) / source.name
+            completed = subprocess.run(
+                [
+                    "tar",
+                    "--zstd",
+                    "-cf",
+                    str(archive_path),
+                    "-C",
+                    fixture_directory,
+                    source.root,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if completed.returncode != 0:
+                raise ReleaseContractError(
+                    "unable to create MSYS2 source self-test fixture: "
+                    f"{completed.stderr[:500]}"
+                )
+            return archive_path.read_bytes()
+
+    fixture_source_urls = dict(production_source_urls)
+    fixture_source_roots = dict(production_source_roots)
+    for source in production_windows_contract.source_archives:
+        source_fixture_payloads[source.name] = msys2_source_archive_fixture(source)
+        fixture_source_urls[source.name] = source.url
+        fixture_source_roots[source.name] = source.root
+    fixture_source_contracts = (
+        fixture_source_urls,
         {
             name: hashlib.sha256(payload).hexdigest()
             for name, payload in source_fixture_payloads.items()
         },
-        clear=True,
+        fixture_source_roots,
     )
-    with source_hash_patch, tempfile.TemporaryDirectory(
+    fixture_runtime_packages = []
+    for package in production_windows_contract.runtime_packages:
+        dll_name = next(iter(package.dll_sha256))
+        fixture_payload = f"{package.name} runtime fixture".encode()
+        fixture_runtime_packages.append(
+            replace(
+                package,
+                dll_sha256={dll_name: hashlib.sha256(fixture_payload).hexdigest()},
+                fallback_licenses=(),
+            )
+        )
+    fixture_windows_contract = replace(
+        production_windows_contract,
+        runtime_packages=tuple(fixture_runtime_packages),
+    )
+    with patch(
+        f"{__name__}._dependency_source_contracts",
+        return_value=fixture_source_contracts,
+    ), patch(
+        f"{__name__}._windows_runtime_contract",
+        return_value=fixture_windows_contract,
+    ), tempfile.TemporaryDirectory(
         prefix="gnfs-release-contract-self-test-"
     ) as temp_dir:
         root = Path(temp_dir)
@@ -3445,6 +3730,15 @@ def self_test() -> None:
             {"gmp-6.3.0.tar.xz": source_fixture_payloads["gmp-6.3.0.tar.xz"]},
             "missing, extra, or renamed",
         )
+        missing_msys2_source = dict(source_fixture_payloads)
+        missing_msys2_source.pop(
+            "mingw-w64-winpthreads-14.0.0.r220.gd999af622-1.src.tar.zst"
+        )
+        expect_dependency_source_rejection(
+            "missing-msys2-source",
+            missing_msys2_source,
+            "missing, extra, or renamed",
+        )
         wrong_hash_payloads = dict(source_fixture_payloads)
         wrong_hash_payloads["ntl-11.6.0.tar.gz"] += b"tampered"
         expect_dependency_source_rejection(
@@ -3548,6 +3842,86 @@ def self_test() -> None:
         bad_cli = root / "bad-cli"
         bad_cli.mkdir()
         windows_name = expected_package_names(FIRST_RELEASE_TAG)[3]
+
+        def expect_windows_archive_rejection(
+            label: str,
+            transform: Callable[[str, bytes], bytes],
+            expected_error: str,
+            extra_files: dict[str, bytes] | None = None,
+        ) -> None:
+            invalid_directory = root / f"bad-windows-{label}"
+            invalid_directory.mkdir()
+            invalid_archive = invalid_directory / windows_name
+            with zipfile.ZipFile(assets / windows_name) as source_archive, zipfile.ZipFile(
+                invalid_archive, mode="x", compression=zipfile.ZIP_STORED
+            ) as destination_archive:
+                for entry in source_archive.infolist():
+                    destination_archive.writestr(
+                        entry,
+                        transform(entry.filename, source_archive.read(entry.filename)),
+                    )
+                for name, payload in sorted((extra_files or {}).items()):
+                    destination_archive.writestr(name, payload)
+            try:
+                validate_cli_archive(
+                    invalid_archive, "windows-x86_64", FIRST_RELEASE_TAG
+                )
+            except ReleaseContractError as error:
+                if expected_error not in str(error):
+                    raise ReleaseContractError(
+                        f"Windows {label} self-test failed for the wrong reason: {error}"
+                    ) from error
+            else:
+                raise ReleaseContractError(
+                    f"Windows archive validation accepted {label}"
+                )
+
+        windows_root = windows_name[: -len(".zip")]
+
+        def tamper_gmp_dll(name: str, payload: bytes) -> bytes:
+            if name == f"{windows_root}/bin/libgmp-10.dll":
+                return payload + b"tampered"
+            return payload
+
+        expect_windows_archive_rejection(
+            "changed-dll",
+            tamper_gmp_dll,
+            "Windows runtime DLL digest mismatch",
+        )
+
+        def tamper_source_digest(name: str, payload: bytes) -> bytes:
+            if name != f"{windows_root}/runtime-dependencies.json":
+                return payload
+            manifest = json.loads(payload)
+            manifest["dependencies"][0]["source_archive_sha256"] = "0" * 64
+            return (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
+
+        expect_windows_archive_rejection(
+            "changed-source-digest",
+            tamper_source_digest,
+            "Windows runtime dependency record is invalid",
+        )
+
+        def remove_gmp_selection(name: str, payload: bytes) -> bytes:
+            if name != f"{windows_root}/THIRD_PARTY_NOTICES.txt":
+                return payload
+            return payload.replace(
+                b"license selection: GNU GPL version 2",
+                b"license selection removed",
+            )
+
+        expect_windows_archive_rejection(
+            "missing-gmp-gpl2-selection",
+            remove_gmp_selection,
+            "omits the GMP GNU GPL version 2 selection",
+        )
+        expect_windows_archive_rejection(
+            "unexpected-gf2x",
+            lambda _name, payload: payload,
+            "Windows archive DLL set does not match its runtime manifest",
+            {f"{windows_root}/bin/libgf2x-3.dll": b"unexpected GF2X runtime"},
+        )
+
         with zipfile.ZipFile(assets / windows_name) as source_archive, zipfile.ZipFile(
             bad_cli / windows_name, mode="x", compression=zipfile.ZIP_STORED
         ) as bad_archive:

@@ -99,6 +99,16 @@ is verified against both the Actions workflow-run API and the commit check-run
 API. The complete publication procedure and artifact contract are documented
 in [releasing.md](releasing.md).
 
+`Release Readiness` is a required lane for every pull request and `main` push.
+It deliberately has no path filter. Its Windows 2022 job installs the digest-
+pinned UCRT64 compiler and runtime packages, configures the build with
+`GNFS_ENABLE_NTL=OFF`, derives
+the four-DLL closure with `ldd`, launches the packaged CLI with `/ucrt64/bin`
+removed from `PATH`, creates the deterministic ZIP, and validates its package,
+license, DLL, and corresponding-source manifest. This lane is distinct from
+the ordinary Windows `instant` test row: it proves the distribution boundary
+rather than duplicating the unit-test selection.
+
 The authenticated Linux profile requires modern glibc plus its complete
 syscall and macro surface. On unsupported libcs, store admission reports
 `platform_unavailable` before opening the journal namespace, and direct
