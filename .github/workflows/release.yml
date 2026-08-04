@@ -154,23 +154,76 @@ jobs:
       - name: Install Ubuntu 20.04 build environment
         run: |
           set -euo pipefail
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+          apt_opts=(
+            -o Acquire::Retries=4
+            -o Acquire::http::Timeout=30
+            -o Acquire::https::Timeout=30
+          )
+          apt-get "${apt_opts[@]}" update
+          DEBIAN_FRONTEND=noninteractive apt-get "${apt_opts[@]}" install -y \
+            --no-install-recommends \
             ca-certificates \
+            curl \
             git \
             gnupg \
             python3 \
-            python3-pip \
-            software-properties-common
-          add-apt-repository -y ppa:ubuntu-toolchain-r/test
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            python3-pip
+          [[ "$(dpkg --print-architecture)" == amd64 ]]
+
+          key_fingerprint='C8EC952E2A0E1FBDC5090F6A2C277A0A352154E5'
+          key_url="https://keyserver.ubuntu.com/pks/lookup?op=get&options=mr&exact=on&search=0x${key_fingerprint}"
+          key_file=$(mktemp)
+          trap 'rm -f -- "${key_file}"' EXIT
+          for attempt in 1 2 3 4; do
+            if curl --proto '=https' --proto-redir '=https' --fail --silent \
+                --show-error --location --connect-timeout 15 --max-time 60 \
+                --output "${key_file}" "${key_url}"; then
+              break
+            fi
+            if [[ "${attempt}" -eq 4 ]]; then
+              echo 'Unable to fetch the pinned Ubuntu Toolchain PPA key.' >&2
+              exit 1
+            fi
+            sleep $((attempt * 2))
+          done
+          primary_fingerprints=$(
+            gpg --batch --no-options --show-keys --with-colons "${key_file}" |
+              awk -F: '$1 == "pub" { want = 1; next } want && $1 == "fpr" { print $10; want = 0 }'
+          )
+          if [[ "${primary_fingerprints}" != "${key_fingerprint}" ]]; then
+            echo 'Ubuntu Toolchain PPA key fingerprint mismatch.' >&2
+            exit 1
+          fi
+          install -d -m 0755 /etc/apt/keyrings
+          gpg --batch --yes --dearmor \
+            --output /etc/apt/keyrings/ubuntu-toolchain-r-test.gpg "${key_file}"
+          chmod 0644 /etc/apt/keyrings/ubuntu-toolchain-r-test.gpg
+          cat > /etc/apt/sources.list.d/ubuntu-toolchain-r-test.sources <<'EOF'
+          Types: deb
+          URIs: https://ppa.launchpadcontent.net/ubuntu-toolchain-r/test/ubuntu/
+          Suites: focal
+          Components: main
+          Architectures: amd64
+          Signed-By: /etc/apt/keyrings/ubuntu-toolchain-r-test.gpg
+          EOF
+
+          apt-get "${apt_opts[@]}" update
+          DEBIAN_FRONTEND=noninteractive apt-get "${apt_opts[@]}" install -y \
+            --no-install-recommends \
             binutils \
             g++-12 \
             gcc-12 \
             libgmp-dev \
             libntl-dev \
             ninja-build
+          [[ "$(getconf GNU_LIBC_VERSION)" == 'glibc 2.31' ]]
+          for compiler in gcc-12 g++-12; do
+            version=$("${compiler}" -dumpfullversion -dumpversion)
+            if [[ "${version}" != 12 && "${version}" != 12.* ]]; then
+              echo "Unexpected ${compiler} version: ${version}" >&2
+              exit 1
+            fi
+          done
           python3 -m pip install --no-cache-dir cmake==3.31.6
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7

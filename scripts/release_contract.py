@@ -79,8 +79,11 @@ WORKBENCH_LICENSE_SHA256 = {
     "GMP-COPYING.txt": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643",
 }
 DEPENDENCY_SOURCE_URLS = {
-    "gmp-6.3.0.tar.xz": "https://gmplib.org/download/gmp/gmp-6.3.0.tar.xz",
-    "ntl-11.6.0.tar.gz": "https://libntl.org/ntl-11.6.0.tar.gz",
+    "gmp-6.3.0.tar.xz": (
+        "https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz",
+        "https://gmplib.org/download/gmp/gmp-6.3.0.tar.xz",
+    ),
+    "ntl-11.6.0.tar.gz": ("https://libntl.org/ntl-11.6.0.tar.gz",),
 }
 DEPENDENCY_SOURCE_SHA256 = {
     "gmp-6.3.0.tar.xz": "a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898",
@@ -173,14 +176,16 @@ def _windows_runtime_contract():
         raise ReleaseContractError(f"Windows runtime source contract is invalid: {error}") from error
 
 
-def _dependency_source_contracts() -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+def _dependency_source_contracts() -> tuple[
+    dict[str, tuple[str, ...]], dict[str, str], dict[str, str]
+]:
     urls = dict(DEPENDENCY_SOURCE_URLS)
     digests = dict(DEPENDENCY_SOURCE_SHA256)
     roots = dict(DEPENDENCY_SOURCE_ROOTS)
     for source in _windows_runtime_contract().source_archives:
         if source.name in urls or source.name in digests or source.name in roots:
             raise ReleaseContractError(f"duplicate dependency source contract: {source.name}")
-        urls[source.name] = source.url
+        urls[source.name] = (source.url,)
         digests[source.name] = source.sha256
         roots[source.name] = source.root
     return urls, digests, roots
@@ -962,9 +967,13 @@ def expected_dependency_source_names() -> tuple[str, ...]:
             "dependency source URL, digest, and archive-root contracts diverged"
         )
     for name in names:
+        endpoints = urls[name]
         if (
             not re.fullmatch(r"[A-Za-z0-9._-]+", name)
-            or not urls[name].startswith("https://")
+            or not isinstance(endpoints, tuple)
+            or not endpoints
+            or len(endpoints) != len(set(endpoints))
+            or any(not endpoint.startswith("https://") for endpoint in endpoints)
             or not SHA256_PATTERN.fullmatch(digests[name])
         ):
             raise ReleaseContractError(f"invalid dependency source contract for {name}")
@@ -1889,18 +1898,19 @@ def fetch_dependency_source_archives(output_directory: Path) -> None:
     ssl_context = _verified_ssl_context()
     urls, digests, _ = _dependency_source_contracts()
     for name in expected_dependency_source_names():
-        url = urls[name]
-        request = Request(
-            url,
-            headers={
-                "Accept": "application/octet-stream",
-                "User-Agent": "gnfs-release-source-fetch/1",
-            },
-        )
+        endpoints = urls[name]
         partial_path = output_directory / f".{name}.partial"
         expected_digest = digests[name]
         last_error: Exception | None = None
         for attempt in range(1, 4):
+            endpoint = endpoints[(attempt - 1) % len(endpoints)]
+            request = Request(
+                endpoint,
+                headers={
+                    "Accept": "application/octet-stream",
+                    "User-Agent": "gnfs-release-source-fetch/1",
+                },
+            )
             digest = hashlib.sha256()
             size = 0
             try:
@@ -1952,10 +1962,12 @@ def fetch_dependency_source_archives(output_directory: Path) -> None:
                 ValueError,
             ) as error:
                 last_error = error
+                partial_path.unlink(missing_ok=True)
                 if attempt < 3:
                     continue
                 raise ReleaseContractError(
-                    f"dependency source download failed after three attempts for {name}: {error}"
+                    "dependency source download failed after three attempts across "
+                    f"{len(endpoints)} pinned HTTPS endpoint(s) for {name}: {error}"
                 ) from error
             os.replace(partial_path, output_directory / name)
             break
@@ -2853,6 +2865,8 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
         "mapfile -t runtime_dlls",
         "--method PATCH",
         "gh release create",
+        "add-apt-repository",
+        "software-properties-common",
         "group: release-${{ inputs.release_tag }}-${{ inputs.target_sha }}",
     )
     for fragment in forbidden_release_fragments:
@@ -2896,7 +2910,17 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
         "scripts/windows_release_runtime.py install-pinned",
         "--pinned-package-evidence pinned-windows-packages.json",
         "-DGNFS_ENABLE_NTL=OFF",
-        "container: ubuntu:20.04",
+        "container: ubuntu:20.04@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214",
+        "Acquire::Retries=4",
+        "https://ppa.launchpadcontent.net/ubuntu-toolchain-r/test/ubuntu/",
+        "C8EC952E2A0E1FBDC5090F6A2C277A0A352154E5",
+        "Suites: focal",
+        "Architectures: amd64",
+        "Signed-By: /etc/apt/keyrings/ubuntu-toolchain-r-test.gpg",
+        "getconf GNU_LIBC_VERSION",
+        "gcc-12",
+        "g++-12",
+        "-DCMAKE_CXX_COMPILER=g++-12",
         "-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0",
         "release-verification-${{ inputs.release_tag }}-${{ inputs.target_sha }}",
         "gnfs-project-source",
@@ -3512,8 +3536,11 @@ def self_test() -> None:
         raise ReleaseContractError("verification-run self-test selected the wrong run")
 
     production_source_urls = {
-        "gmp-6.3.0.tar.xz": "https://gmplib.org/download/gmp/gmp-6.3.0.tar.xz",
-        "ntl-11.6.0.tar.gz": "https://libntl.org/ntl-11.6.0.tar.gz",
+        "gmp-6.3.0.tar.xz": (
+            "https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz",
+            "https://gmplib.org/download/gmp/gmp-6.3.0.tar.xz",
+        ),
+        "ntl-11.6.0.tar.gz": ("https://libntl.org/ntl-11.6.0.tar.gz",),
     }
     production_source_hashes = {
         "gmp-6.3.0.tar.xz": "a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898",
@@ -3587,7 +3614,7 @@ def self_test() -> None:
     fixture_source_roots = dict(production_source_roots)
     for source in production_windows_contract.source_archives:
         source_fixture_payloads[source.name] = msys2_source_archive_fixture(source)
-        fixture_source_urls[source.name] = source.url
+        fixture_source_urls[source.name] = (source.url,)
         fixture_source_roots[source.name] = source.root
     fixture_source_contracts = (
         fixture_source_urls,
@@ -3622,18 +3649,109 @@ def self_test() -> None:
         prefix="gnfs-release-contract-self-test-"
     ) as temp_dir:
         root = Path(temp_dir)
+
+        class DependencySourceResponse(io.BytesIO):
+            def __init__(self, payload: bytes, url: str) -> None:
+                super().__init__(payload)
+                self.headers = {"Content-Length": str(len(payload))}
+                self._url = url
+
+            def geturl(self) -> str:
+                return self._url
+
+        endpoint_names = {
+            endpoint: name
+            for name, endpoints in fixture_source_urls.items()
+            for endpoint in endpoints
+        }
+        gmp_endpoints = fixture_source_urls["gmp-6.3.0.tar.xz"]
+        fallback_calls = 0
+
+        def open_with_gmp_fallback(request, **_kwargs):
+            nonlocal fallback_calls
+            endpoint = request.full_url
+            if endpoint == gmp_endpoints[0] and fallback_calls == 0:
+                fallback_calls += 1
+                raise TimeoutError("primary source timed out")
+            name = endpoint_names.get(endpoint)
+            if name is None:
+                raise AssertionError(f"unexpected dependency source endpoint: {endpoint}")
+            fallback_calls += 1
+            return DependencySourceResponse(source_fixture_payloads[name], endpoint)
+
+        fallback_directory = root / "fallback-source-download"
+        with patch(f"{__name__}.urlopen", side_effect=open_with_gmp_fallback) as opener:
+            fetch_dependency_source_archives(fallback_directory)
+            if [call.args[0].full_url for call in opener.call_args_list[:2]] != list(
+                gmp_endpoints
+            ):
+                raise ReleaseContractError(
+                    "dependency source download did not fail over to the pinned GMP endpoint"
+                )
+        if (fallback_directory / "gmp-6.3.0.tar.xz").read_bytes() != (
+            source_fixture_payloads["gmp-6.3.0.tar.xz"]
+        ) or list(fallback_directory.glob(".*.partial")):
+            raise ReleaseContractError(
+                "dependency source fallback did not preserve exact bytes and cleanup"
+            )
+
+        failed_directory = root / "failed-source-download"
         with patch(f"{__name__}.urlopen", side_effect=OSError("connection reset")) as opener:
             try:
-                fetch_dependency_source_archives(root / "failed-source-download")
+                fetch_dependency_source_archives(failed_directory)
             except ReleaseContractError as error:
-                if "failed after three attempts" not in str(error) or opener.call_count != 3:
+                if (
+                    "failed after three attempts across 2 pinned HTTPS endpoint(s)"
+                    not in str(error)
+                    or opener.call_count != 3
+                ):
                     raise ReleaseContractError(
-                        "dependency source download did not exhaust bounded OSError retries"
+                        "dependency source download did not exhaust bounded endpoint retries"
                     ) from error
             else:
                 raise ReleaseContractError(
                     "dependency source download accepted a persistent connection failure"
                 )
+        if list(failed_directory.iterdir()):
+            raise ReleaseContractError(
+                "dependency source download retained partial bytes after retry exhaustion"
+            )
+
+        gmp_only_contract = (
+            {"gmp-6.3.0.tar.xz": gmp_endpoints},
+            {
+                "gmp-6.3.0.tar.xz": hashlib.sha256(
+                    source_fixture_payloads["gmp-6.3.0.tar.xz"]
+                ).hexdigest()
+            },
+            {"gmp-6.3.0.tar.xz": "gmp-6.3.0"},
+        )
+
+        def open_tampered_source(request, **_kwargs):
+            return DependencySourceResponse(b"tampered source", request.full_url)
+
+        digest_mismatch_directory = root / "digest-mismatch-source-download"
+        with patch(
+            f"{__name__}._dependency_source_contracts",
+            return_value=gmp_only_contract,
+        ), patch(
+            f"{__name__}.urlopen", side_effect=open_tampered_source
+        ) as opener:
+            try:
+                fetch_dependency_source_archives(digest_mismatch_directory)
+            except ReleaseContractError as error:
+                if "digest mismatch" not in str(error) or opener.call_count != 3:
+                    raise ReleaseContractError(
+                        "dependency source download did not reject untrusted endpoint bytes"
+                    ) from error
+            else:
+                raise ReleaseContractError(
+                    "dependency source download accepted an untrusted endpoint digest"
+                )
+        if list(digest_mismatch_directory.iterdir()):
+            raise ReleaseContractError(
+                "dependency source download retained digest-mismatched partial bytes"
+            )
 
         workbench = root / "workbench"
         workbench.mkdir()
