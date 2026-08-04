@@ -318,7 +318,16 @@ Script Checks runs both commands, Python bytecode compilation, and the existing
 Harness validation. Workflow Security also runs `actionlint` and `zizmor`
 against every workflow change.
 
-The release currently records exact source revisions and binary dependency
-contracts, but it does not yet publish a signed SLSA-style toolchain provenance
-statement for each compiler and packaging tool. That is a remaining provenance
-hardening item, not a claim made by the first release.
+The first release records exact source revisions, platform-specific binary
+dependency contracts, corresponding sources, and CI evidence. It does not
+publish a separate SPDX/CycloneDX SBOM, a detached GPG/Sigstore signature, or a
+signed SLSA-style toolchain provenance statement for each compiler and
+packaging tool. The current dependency/source closure is auditable but is not a
+standards-format SBOM or an independent publisher signature. These are future
+hardening items, not claims made by `v0.1.0`.
+
+Adding any such artifact later requires adding its exact name and identity to
+the release asset contract, metadata, checksum manifest, verification proof,
+self-tests, and final server-side closure check. Do not upload an unbound
+sidecar asset or generate a nominal SBOM that invents host-provided Linux or
+macOS GMP/NTL versions.

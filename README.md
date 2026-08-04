@@ -12,12 +12,14 @@
   <a href="https://en.cppreference.com/w/cpp/20"><img alt="C++20" src="https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white"></a>
   <a href="LICENSE"><img alt="License: GPL-2.0" src="https://img.shields.io/badge/license-GPL%202.0-blue"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-63%20files-brightgreen">
-  <img alt="LoC" src="https://img.shields.io/badge/code-~56K%20lines-informational">
   <img alt="Build" src="https://img.shields.io/badge/build-CMake%203.20%2B-064F8C?logo=cmake&logoColor=white">
+  <a href="https://github.com/MaYiding/GNFS/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/MaYiding/GNFS/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+  <a href="https://github.com/MaYiding/GNFS/actions/workflows/workbench.yml"><img alt="Workbench CI" src="https://github.com/MaYiding/GNFS/actions/workflows/workbench.yml/badge.svg?branch=main"></a>
+  <a href="https://github.com/MaYiding/GNFS/releases"><img alt="Latest Release" src="https://img.shields.io/github/v/release/MaYiding/GNFS?display_name=tag&sort=semver"></a>
 </p>
 
 <p align="center">
+  <a href="#下载与校验">下载与校验</a> ·
   <a href="#快速开始">快速开始</a> ·
   <a href="#性能数据">性能数据</a> ·
   <a href="#架构">架构</a> ·
@@ -36,10 +38,9 @@ GNFS（General Number Field Sieve）是目前已知最强的经典大整数分�
 | 指标 | 数值 |
 |---|---|
 | 验证规模上限 | 65 位十进制（213 bit）平衡半素数，SIQS 路径 24 秒 |
-| 代码规模 | 61 头文件 + 14 源文件 + 63 测试，约 56,000 行 |
 | 并行模型 | 多线程格筛、`ThreadPool` 驱动的 Block Lanczos / Cantor-Zassenhaus |
 | 内存扩展 | mmap 后端的 CSR 矩阵、关系存储、BW Krylov 序列；筛中检查点 |
-| 平台 | Apple Silicon、x86\_64；macOS 13+ 与 Linux glibc 2.31+ |
+| 发布平台 | macOS 13+ CLI、macOS 26+ Workbench、Linux glibc 2.31+、Windows UCRT64 |
 
 ### 设计目标
 
@@ -92,6 +93,77 @@ flowchart TD
 ```
 
 通过 `./build/gnfs <N> --method <name>` 可手动指定，可选值为 `auto` / `trial` / `rho` / `siqs` / `gnfs`。
+
+## 下载与校验
+
+首个公开版本固定为 `v0.1.0`。发布完成后，请从
+[v0.1.0 Release 页面](https://github.com/MaYiding/GNFS/releases/tag/v0.1.0)
+下载；不要使用第三方转载包。按用途选择资产：
+
+| 用途 | Release 资产 | 运行边界 |
+|---|---|---|
+| macOS 图形应用 | `GNFSWorkbench-0.1.0-macOS-arm64.zip` | Apple Silicon；macOS 26+；ad-hoc 签名，未经 Apple notarization |
+| Linux CLI/SDK | `gnfs-v0.1.0-linux-x86_64.tar.gz` | x86_64；glibc 2.31+；主机提供 GMP/NTL |
+| macOS CLI/SDK | `gnfs-v0.1.0-macos-arm64.tar.gz` | Apple Silicon；macOS 13+；主机提供 GMP/NTL |
+| Windows CLI/SDK | `gnfs-v0.1.0-windows-x86_64.zip` | x86_64；MSYS2 UCRT64；固定的 4 个运行时 DLL 已随包提供 |
+| 精确项目源码 | `gnfs-v0.1.0-source.tar.gz` | 由发布目标 commit 直接生成并校验 Git archive 标记与逐文件清单 |
+
+同一 Release 还包含 GMP 6.3.0、NTL 11.6.0，以及 Windows 运行时对应的
+MSYS2 GCC/GMP/winpthreads 源码归档。它们是许可证与对应源码闭包的一部分，
+不是普通用户安装 CLI 时必须全部下载的运行时文件。GitHub 自动生成的
+“Source code”归档仅作为额外入口；需要可验证的精确源码时，应选择上表中的
+`gnfs-v0.1.0-source.tar.gz`。
+
+发布资产使用四层证据：
+
+1. `SHA256SUMS` 记录全部程序包、源码包和 `release-metadata.json` 的 SHA-256；
+2. `release-metadata.json` 记录目标 commit、资产用途、平台、大小和 SHA-256；
+3. `release-verification.json` 绑定 exact-SHA 的主线 CI、CodeQL、verify-only
+   工作流身份，以及包括 `SHA256SUMS` 在内的发布包字节；
+4. 发布合同在上传前后核对 GitHub 返回的资产 SHA-256，并要求公开 Release
+   在发布后处于 immutable 状态。验证证明自身的摘要由这层发布合同单独绑定，
+   避免自引用摘要循环。
+
+macOS 或 Linux 可只校验选中的单个资产：
+
+```bash
+base=https://github.com/MaYiding/GNFS/releases/download/v0.1.0
+asset=GNFSWorkbench-0.1.0-macOS-arm64.zip   # 可替换为任一程序包或源码包
+curl -fLO "$base/$asset"
+curl -fLO "$base/SHA256SUMS"
+
+line="$(awk -v name="$asset" '$2 == name { print }' SHA256SUMS)"
+test -n "$line"
+if command -v sha256sum >/dev/null 2>&1; then
+  printf '%s\n' "$line" | sha256sum -c -
+else
+  printf '%s\n' "$line" | shasum -a 256 -c -
+fi
+```
+
+Windows PowerShell 可使用：
+
+```powershell
+$base = "https://github.com/MaYiding/GNFS/releases/download/v0.1.0"
+$asset = "gnfs-v0.1.0-windows-x86_64.zip"
+Invoke-WebRequest "$base/$asset" -OutFile $asset
+Invoke-WebRequest "$base/SHA256SUMS" -OutFile SHA256SUMS
+
+$lines = @(Get-Content SHA256SUMS | Where-Object {
+    $_ -match "  $([Regex]::Escape($asset))$"
+})
+if ($lines.Count -ne 1) { throw "checksum record missing or duplicated" }
+$expected = ($lines[0] -split '\s+', 2)[0].ToLowerInvariant()
+$actual = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($actual -ne $expected) { throw "SHA-256 mismatch for $asset" }
+"${asset}: OK"
+```
+
+SHA-256 校验用于确认下载字节与 Release 清单一致，但无签名的
+`SHA256SUMS` 不是独立的发布者身份证明。`v0.1.0` 不宣称具备 detached
+GPG/Sigstore 签名、签名式 SLSA provenance 或独立 SPDX/CycloneDX SBOM；
+Workbench 也不是 Developer ID 签名或 Apple 公证包。完整的发布安全边界、
+13 项公开资产合同与复核方法见 [Release 流程](docs/releasing.md)。
 
 ## 快速开始
 
@@ -198,7 +270,8 @@ make -C build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 关系指标、结构化日志、完整质因数结果和本地历史。应用仅支持 Apple Silicon
 与 macOS 26 及以上版本。构建、测试、临时工作目录生命周期及本地 ZIP 交付
 说明见 [GNFS Workbench](apps/macos/GNFSWorkbench/README.md)。当前 ZIP 采用
-ad-hoc 签名且未经 notarization，不作为无提示公开分发包。
+ad-hoc 签名且未经 notarization；它会作为公开 Release 资产提供，但首次启动时
+macOS 可能要求用户显式批准。
 
 <details>
 <summary><b>配置文件示例（点击展开）</b></summary>
@@ -354,37 +427,21 @@ flowchart LR
 
 ```text
 GNFS/
-├── include/gnfs/           # 61 个头文件，11 个子模块
-│   ├── api/           (6)  # 公开 API 层
-│   ├── core/          (6)  # 基础类型
-│   ├── polynomial/    (7)  # 多项式选择
-│   ├── factor_base/   (2)  # 因子基构建
-│   ├── sieve/         (5)  # 格筛 + Bucket + QoS
-│   ├── cofactor/      (5)  # 余因子分解
-│   ├── relation/      (6)  # 关系收集与合并 + OOC
-│   ├── linalg/        (9)  # GF(2) 求解器 + Mmap + Krylov
-│   ├── sqrt/          (7)  # 平方根提取
-│   ├── siqs/          (1)  # SIQS 备选路径
-│   └── util/          (7)  # 工具集
-├── src/                    # 14 个源文件
-├── tests/                  # 63 个测试文件
-├── scripts/
-│   ├── test.sh             # 统一测试运行器（超时、分级、心跳）
-│   └── feature-branch.sh   # 特性分支工作流
-├── docs/                   # 设计文档
+├── include/gnfs/           # 公开头文件；按流水线模块组织
+├── src/                    # C++ 实现与 CLI
+├── tests/                  # 单元、集成、回归与压力测试
+├── apps/macos/GNFSWorkbench/
+│                           # 原生 SwiftUI Workbench 与 UI 测试
+├── scripts/                # 统一测试、发布与合同检查工具
+├── docs/                   # 算法、运行参数、测试及发布文档
+├── .github/workflows/      # 跨平台 CI、安全与发布工作流
 ├── CMakeLists.txt
-├── CLAUDE.md               # 开发指令与工程纪要
+├── AGENTS.md               # 共享工程规则
+├── CLAUDE.md               # Claude Code 入口
 ├── README.md               # 本文件（中文）
 ├── README-EN.md            # English
 └── LICENSE                 # GPL-2.0
 ```
-
-| 分类 | 文件 | 行数 |
-|---|:---:|---:|
-| 头文件 | 61 | ~22,000 |
-| 源文件 | 14 | ~6,400 |
-| 测试 | 63 | ~27,900 |
-| **合计** | **138** | **~56,300** |
 
 ### 参考文献
 
