@@ -25,6 +25,19 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Verify exact clean checkout
+        env:
+          TARGET_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          python scripts/release_contract.py verify-checkout \
+            --target-sha "${TARGET_SHA}"
+
+      - name: Capture source date epoch
+        id: source
+        shell: bash
+        run: echo "epoch=$(git show -s --format=%ct HEAD)" >> "${GITHUB_OUTPUT}"
+
       - name: Install minimal MSYS2 build shell
         uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
         with:
@@ -56,10 +69,10 @@ jobs:
 
       - name: Bundle and validate exact runtime/source closure
         env:
+          SOURCE_DATE_EPOCH: ${{ steps.source.outputs.epoch }}
           TARGET_SHA: ${{ github.sha }}
         shell: msys2 {0}
         run: |
-          source_date_epoch=$(git show -s --format=%ct HEAD)
           python scripts/windows_release_runtime.py bundle \
             --package-root dist/gnfs-v0.1.0-windows-x86_64 \
             --executable dist/gnfs-v0.1.0-windows-x86_64/bin/gnfs.exe \
@@ -72,7 +85,7 @@ jobs:
             --source dist/gnfs-v0.1.0-windows-x86_64 \
             --output packages/gnfs-v0.1.0-windows-x86_64.zip \
             --format zip \
-            --epoch "${source_date_epoch}"
+            --epoch "${SOURCE_DATE_EPOCH}"
           python scripts/release_contract.py validate-cli-archive \
             --archive packages/gnfs-v0.1.0-windows-x86_64.zip \
             --platform windows-x86_64 \

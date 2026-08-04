@@ -2943,6 +2943,8 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
         "scripts/windows_release_runtime.py bundle",
         "--pinned-package-evidence pinned-windows-packages.json",
         "-DGNFS_ENABLE_NTL=OFF",
+        "scripts/release_contract.py verify-checkout",
+        "steps.source.outputs.epoch",
         "scripts/release_contract.py validate-cli-archive",
         "scripts/reproducible_archive.py create",
     )
