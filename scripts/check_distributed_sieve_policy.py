@@ -5541,11 +5541,22 @@ WORKER_CLEANUP_RECEIPT_CMAKE_FILE = "CMakeLists.txt"
 WORKER_CLEANUP_RECEIPT_CMAKE_COMMENT_MASKED_SHA256 = (
     "16ae0c202188707b00083c71d78d137ae2b76bed3cf1b5703ff9516cd58ccafd"
 )
+WORKER_CLEANUP_RECEIPT_RELEASE_TOOLCHAIN_FILE = (
+    "scripts/linux-release-gcc12-toolchain.cmake"
+)
+WORKER_CLEANUP_RECEIPT_RELEASE_TOOLCHAIN_SHA256 = (
+    "ef1439d3facd3faa4cc28f56a8229adac630f629700d3261a5010d57b2937f77"
+)
 WORKER_CLEANUP_RECEIPT_CMAKE_PRESETS_FILE = "CMakePresets.json"
 WORKER_CLEANUP_RECEIPT_CMAKE_PRESETS_SHA256 = (
     "1ee7b09596994f18a3d070cc4ccbef7f91bac4bef86b9579ff0dae4ab81ff2b7"
 )
-WORKER_CLEANUP_RECEIPT_REPO_BUILD_FILES = frozenset({"CMakeLists.txt"})
+WORKER_CLEANUP_RECEIPT_REPO_BUILD_FILES = frozenset(
+    {
+        WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
+        WORKER_CLEANUP_RECEIPT_RELEASE_TOOLCHAIN_FILE,
+    }
+)
 WORKER_CLEANUP_RECEIPT_CONTROL_PLANE_POLICY_FILE = (
     "scripts/check_distributed_sieve_policy.py"
 )
@@ -11584,6 +11595,15 @@ def _git_indexed_text_inventory(root: Path) -> GitIndexedTextInventory:
     )
 
 
+def _is_worker_cleanup_receipt_cmake_build_surface(relative: str) -> bool:
+    name = Path(relative).name
+    return name == "CMakeLists.txt" or name.lower().endswith(".cmake")
+
+
+def _is_worker_cleanup_receipt_cmake_preset_surface(relative: str) -> bool:
+    return Path(relative).name in {"CMakePresets.json", "CMakeUserPresets.json"}
+
+
 def _worker_cleanup_receipt_repo_build_inventory_errors(
     repo_inventory: GitIndexedTextInventory,
 ) -> tuple[tuple[str, str], ...]:
@@ -11593,28 +11613,54 @@ def _worker_cleanup_receipt_repo_build_inventory_errors(
     observed_build_files = {
         relative
         for relative in repo_inventory.regular_files
-        if Path(relative).name == "CMakeLists.txt"
-        or Path(relative).suffix.lower() == ".cmake"
+        if _is_worker_cleanup_receipt_cmake_build_surface(relative)
     }
     if observed_build_files != set(WORKER_CLEANUP_RECEIPT_REPO_BUILD_FILES):
         errors.append(
             (
                 WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
-                "worker-cleanup receipt requires one exact repo CMake build file: "
+                "worker-cleanup receipt requires the exact repo CMake build "
+                "inventory: "
                 f"expected {sorted(WORKER_CLEANUP_RECEIPT_REPO_BUILD_FILES)}, "
                 f"found {sorted(observed_build_files)}",
+            )
+        )
+    observed_build_symlinks = {
+        relative
+        for relative in repo_inventory.symlink_files
+        if _is_worker_cleanup_receipt_cmake_build_surface(relative)
+    }
+    if observed_build_symlinks:
+        errors.append(
+            (
+                sorted(observed_build_symlinks)[0],
+                "worker-cleanup receipt forbids Git-indexed CMake build "
+                f"symlinks: {sorted(observed_build_symlinks)}",
             )
         )
     observed_preset_files = {
         relative
         for relative in repo_inventory.regular_files
-        if Path(relative).name in {"CMakePresets.json", "CMakeUserPresets.json"}
+        if _is_worker_cleanup_receipt_cmake_preset_surface(relative)
     }
     if observed_preset_files != {WORKER_CLEANUP_RECEIPT_CMAKE_PRESETS_FILE}:
         errors.append(
             (
                 WORKER_CLEANUP_RECEIPT_CMAKE_PRESETS_FILE,
                 "worker-cleanup receipt requires one exact repo CMake preset file",
+            )
+        )
+    observed_preset_symlinks = {
+        relative
+        for relative in repo_inventory.symlink_files
+        if _is_worker_cleanup_receipt_cmake_preset_surface(relative)
+    }
+    if observed_preset_symlinks:
+        errors.append(
+            (
+                sorted(observed_preset_symlinks)[0],
+                "worker-cleanup receipt forbids Git-indexed CMake preset "
+                f"symlinks: {sorted(observed_preset_symlinks)}",
             )
         )
     return tuple(errors)
@@ -14012,6 +14058,20 @@ class Checks:
             self.validate_worker_cleanup_committed_cmake_presets_surface(
                 preset_bytes
             )
+        try:
+            release_toolchain_bytes = (
+                self.root / WORKER_CLEANUP_RECEIPT_RELEASE_TOOLCHAIN_FILE
+            ).read_bytes()
+        except OSError as exc:
+            self.fail(
+                WORKER_CLEANUP_RECEIPT_RELEASE_TOOLCHAIN_FILE,
+                1,
+                f"cannot read committed Linux release toolchain surface: {exc}",
+            )
+        else:
+            self.validate_worker_cleanup_committed_release_toolchain_surface(
+                release_toolchain_bytes
+            )
         unit_tokens, token_errors = _worker_cleanup_receipt_protected_unit_tokens(
             self.root
         )
@@ -14164,6 +14224,19 @@ class Checks:
                 WORKER_CLEANUP_RECEIPT_CMAKE_PRESETS_FILE,
                 1,
                 "committed CMake preset semantic surface is not exact",
+            )
+
+    def validate_worker_cleanup_committed_release_toolchain_surface(
+        self, toolchain_bytes: bytes
+    ) -> None:
+        if (
+            hashlib.sha256(toolchain_bytes).hexdigest()
+            != WORKER_CLEANUP_RECEIPT_RELEASE_TOOLCHAIN_SHA256
+        ):
+            self.fail(
+                WORKER_CLEANUP_RECEIPT_RELEASE_TOOLCHAIN_FILE,
+                1,
+                "committed Linux release toolchain semantic surface is not exact",
             )
 
     def validate_worker_cleanup_receipt_git_indexed_text_inventory(self) -> None:
@@ -33067,6 +33140,9 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
         fixture_files = {
             "CMakeLists.txt": "cmake_minimum_required(VERSION 3.20)\n",
             "CMakePresets.json": "{}\n",
+            WORKER_CLEANUP_RECEIPT_RELEASE_TOOLCHAIN_FILE: (
+                "# release toolchain fixture\n"
+            ),
             ".hidden/receipt.custom": "#define private public\n",
             "cmake/extra.cmake": "# injected build surface\n",
             "src/entry.cpp": '#include "payload.tokens"\n',
@@ -33192,18 +33268,103 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
             not _worker_cleanup_receipt_repo_build_inventory_errors(
                 baseline_inventory
             ),
-            "the exact one-file CMake/preset inventory was rejected",
+            "the exact CMake/preset inventory was rejected",
         )
         extra_build_errors = _worker_cleanup_receipt_repo_build_inventory_errors(
             fixture_inventory
         )
         expect(
             any(
-                "requires one exact repo CMake build file" in error
+                "requires the exact repo CMake build inventory" in error
                 for _, error in extra_build_errors
             ),
             "an additional Git-indexed .cmake build surface escaped inventory: "
             f"{extra_build_errors}",
+        )
+        hidden_cmake_inventory = GitIndexedTextInventory(
+            baseline_inventory.regular_files + (".cmake",),
+            baseline_inventory.text_regular_files + (".cmake",),
+            baseline_inventory.symlink_files,
+            baseline_inventory.errors,
+        )
+        hidden_cmake_errors = _worker_cleanup_receipt_repo_build_inventory_errors(
+            hidden_cmake_inventory
+        )
+        expect(
+            any(
+                "requires the exact repo CMake build inventory" in error
+                for _, error in hidden_cmake_errors
+            ),
+            "a basename-only .cmake build surface escaped inventory: "
+            f"{hidden_cmake_errors}",
+        )
+        extra_build_symlink_inventory = GitIndexedTextInventory(
+            baseline_inventory.regular_files,
+            baseline_inventory.text_regular_files,
+            baseline_inventory.symlink_files + ("cmake/linked.cmake",),
+            baseline_inventory.errors,
+        )
+        extra_build_symlink_errors = (
+            _worker_cleanup_receipt_repo_build_inventory_errors(
+                extra_build_symlink_inventory
+            )
+        )
+        expect(
+            any(
+                "forbids Git-indexed CMake build symlinks" in error
+                for _, error in extra_build_symlink_errors
+            ),
+            "an additional Git-indexed .cmake symlink escaped inventory: "
+            f"{extra_build_symlink_errors}",
+        )
+        toolchain_as_symlink_inventory = GitIndexedTextInventory(
+            tuple(
+                relative
+                for relative in baseline_inventory.regular_files
+                if relative != WORKER_CLEANUP_RECEIPT_RELEASE_TOOLCHAIN_FILE
+            ),
+            tuple(
+                relative
+                for relative in baseline_inventory.text_regular_files
+                if relative != WORKER_CLEANUP_RECEIPT_RELEASE_TOOLCHAIN_FILE
+            ),
+            baseline_inventory.symlink_files
+            + (WORKER_CLEANUP_RECEIPT_RELEASE_TOOLCHAIN_FILE,),
+            baseline_inventory.errors,
+        )
+        toolchain_as_symlink_errors = (
+            _worker_cleanup_receipt_repo_build_inventory_errors(
+                toolchain_as_symlink_inventory
+            )
+        )
+        expect(
+            any(
+                "requires the exact repo CMake build inventory" in error
+                for _, error in toolchain_as_symlink_errors
+            )
+            and any(
+                "forbids Git-indexed CMake build symlinks" in error
+                for _, error in toolchain_as_symlink_errors
+            ),
+            "the expected Linux release toolchain was accepted as a symlink: "
+            f"{toolchain_as_symlink_errors}",
+        )
+        preset_symlink_inventory = GitIndexedTextInventory(
+            baseline_inventory.regular_files,
+            baseline_inventory.text_regular_files,
+            baseline_inventory.symlink_files + ("CMakeUserPresets.json",),
+            baseline_inventory.errors,
+        )
+        preset_symlink_errors = _worker_cleanup_receipt_repo_build_inventory_errors(
+            preset_symlink_inventory
+        )
+        expect(
+            any(
+                "forbids Git-indexed CMake preset symlinks" in error
+                for _, error in preset_symlink_errors
+            ),
+            "a Git-indexed CMake user preset symlink escaped inventory: "
+            f"{preset_symlink_errors}",
         )
 
         hidden_inventory_checks = Checks(fixture_root)
@@ -33920,6 +34081,33 @@ void escaped_cleanup_conversion_wrapper() {
         ),
         "a CMake preset build mutation escaped exact hashing: "
         f"{mutated_cmake_preset_checks.errors}",
+    )
+    release_toolchain_bytes = (
+        Path(__file__).resolve().parents[1]
+        / WORKER_CLEANUP_RECEIPT_RELEASE_TOOLCHAIN_FILE
+    ).read_bytes()
+    exact_release_toolchain_checks = Checks(Path("."))
+    exact_release_toolchain_checks.validate_worker_cleanup_committed_release_toolchain_surface(
+        release_toolchain_bytes
+    )
+    expect(
+        not exact_release_toolchain_checks.errors,
+        "exact Linux release toolchain surface was rejected: "
+        f"{exact_release_toolchain_checks.errors}",
+    )
+    mutated_release_toolchain_checks = Checks(Path("."))
+    mutated_release_toolchain_checks.validate_worker_cleanup_committed_release_toolchain_surface(
+        release_toolchain_bytes.replace(
+            b'"/usr/bin/gcc-ar-12"', b'"/usr/bin/ar"', 1
+        )
+    )
+    expect(
+        any(
+            "Linux release toolchain semantic surface is not exact" in error
+            for error in mutated_release_toolchain_checks.errors
+        ),
+        "a Linux release toolchain archiver mutation escaped exact hashing: "
+        f"{mutated_release_toolchain_checks.errors}",
     )
 
     cmake_root = Path(__file__).resolve().parents[1]

@@ -117,8 +117,10 @@ release toolchain through the same versioned installer as the publication
 workflow. That installer uses an isolated temporary GnuPG home, verifies the
 Ubuntu Toolchain PPA's full fingerprint and Deb822 `Signed-By` boundary, and
 checks amd64, glibc 2.31, and GCC/G++ major version 12. The job then installs
-the exact CMake 3.31.6 wheel through pip hash-checking mode and verifies the
-installed version. Its Windows 2022 job installs the digest-pinned UCRT64
+the exact CMake 3.31.6 wheel through pip hash-checking mode, binds GCC 12's
+matching `gcc-ar`, `gcc-nm`, and `gcc-ranlib` wrappers, and performs the same
+Release/LTO project build used by Linux packaging. Its Windows 2022 job
+installs the digest-pinned UCRT64
 compiler and runtime packages, configures the build with
 `GNFS_ENABLE_NTL=OFF`, derives the four-DLL closure with `ldd`, launches the
 packaged CLI with `/ucrt64/bin` removed from `PATH`, creates the deterministic

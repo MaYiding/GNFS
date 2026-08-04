@@ -202,7 +202,7 @@ jobs:
         run: |
           cmake -B build-release -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_COMPILER=g++-12 \
+            -DCMAKE_TOOLCHAIN_FILE=scripts/linux-release-gcc12-toolchain.cmake \
             -DGNFS_BUILD_TESTS=OFF \
             -DGNFS_ENABLE_NATIVE_ARCH=OFF
           cmake --build build-release --parallel
