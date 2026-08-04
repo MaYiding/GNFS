@@ -44,6 +44,14 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _read_pinned_text(path: Path, expected_sha256: str) -> bytes:
+    payload = path.read_bytes()
+    canonical = payload.replace(b"\r\n", b"\n")
+    if b"\r" in canonical or hashlib.sha256(canonical).hexdigest() != expected_sha256:
+        raise RuntimeContractError(f"pinned text is missing or changed: {path}")
+    return canonical
+
+
 def _run(command: list[str]) -> str:
     try:
         completed = subprocess.run(command, check=False, capture_output=True, text=True)
@@ -162,10 +170,16 @@ def _copy_fallback_licenses(
             raise RuntimeContractError(
                 f"fallback license escaped the repository: {fallback.path}"
             ) from error
-        if not source.is_file() or source.is_symlink() or _sha256(source) != fallback.sha256:
+        if not source.is_file() or source.is_symlink():
             raise RuntimeContractError(
                 f"fallback license is missing or changed for {package.name}: {fallback.path}"
             )
+        try:
+            payload = _read_pinned_text(source, fallback.sha256)
+        except (OSError, RuntimeContractError) as error:
+            raise RuntimeContractError(
+                f"fallback license is missing or changed for {package.name}: {fallback.path}"
+            ) from error
         if fallback.archive_name in used_names:
             raise RuntimeContractError(
                 f"fallback license name collides for {package.name}: {fallback.archive_name}"
@@ -175,7 +189,8 @@ def _copy_fallback_licenses(
         destination = destination_directory / fallback.archive_name
         if destination.exists() or destination.is_symlink():
             raise RuntimeContractError(f"refusing to overwrite fallback license: {destination}")
-        shutil.copyfile(source, destination)
+        with destination.open("xb") as handle:
+            handle.write(payload)
         records.append(destination.relative_to(root).as_posix())
     return records
 
@@ -521,6 +536,21 @@ def self_test() -> None:
     import tempfile
 
     with tempfile.TemporaryDirectory(prefix="gnfs-windows-runtime-evidence-") as directory:
+        canonical_license = Path(__file__).resolve().parents[1] / gmp.fallback_licenses[0].path
+        canonical_payload = canonical_license.read_bytes()
+        crlf_license = Path(directory) / "COPYINGv2-crlf"
+        crlf_license.write_bytes(canonical_payload.replace(b"\n", b"\r\n"))
+        if _read_pinned_text(crlf_license, gmp.fallback_licenses[0].sha256) != canonical_payload:
+            raise RuntimeContractError("CRLF checkout did not restore the pinned license bytes")
+        changed_license = Path(directory) / "COPYINGv2-changed"
+        changed_license.write_bytes(canonical_payload + b"changed")
+        try:
+            _read_pinned_text(changed_license, gmp.fallback_licenses[0].sha256)
+        except RuntimeContractError:
+            pass
+        else:
+            raise RuntimeContractError("pinned text validation accepted changed license bytes")
+
         evidence = Path(directory) / "pinned.json"
         _write_json_exclusive(evidence, _pinned_evidence_value())
         _validate_pinned_evidence(evidence)
