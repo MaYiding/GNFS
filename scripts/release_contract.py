@@ -2422,16 +2422,123 @@ def _public_release_files(
 def _release_notes(target_sha: str, release_tag: str) -> str:
     return "\n".join(
         (
-            f"GNFS {release_tag}",
+            f"# GNFS {release_tag}",
             "",
-            f"Source revision: {target_sha}",
+            (
+                "The first public GNFS release delivers the C++20 factoring library and "
+                "CLI/SDK for Linux, macOS, and Windows together with the native macOS Workbench."
+            ),
             "",
-            "The macOS Workbench is ad-hoc signed and is not Apple notarized.",
-            f"Exact GNFS source for {target_sha} is attached.",
-            "Exact GMP 6.3.0 and NTL 11.6.0 corresponding sources are attached.",
-            "Exact MSYS2 GCC, GMP, and winpthreads source packages for the Windows runtime are attached.",
-            "Verify packaged and source files with SHA256SUMS.",
-            "release-verification.json is separately bound by the publication contract.",
+            f"Source revision: `{target_sha}`",
+            "",
+            "## Highlights",
+            "",
+            "- Complete factoring through trial division, Pollard rho, SIQS, and GNFS.",
+            (
+                "- Recursive complete factorization and a versioned JSON Lines event stream "
+                "for GUIs and automation."
+            ),
+            (
+                "- Native SwiftUI Workbench with progress, relation metrics, structured logs, "
+                "complete prime factors, and local history."
+            ),
+            (
+                "- Exact-SHA, two-phase qualification with cross-platform CI, CodeQL, a "
+                "120-bit structured-filter lane, and a bounded 50-digit route comparison."
+            ),
+            (
+                "- Reproducible archive metadata, corresponding sources, SHA-256 manifests, "
+                "and immutable publication checks."
+            ),
+            "",
+            "## Choose an asset",
+            "",
+            "| Use case | Asset | Runtime boundary |",
+            "|---|---|---|",
+            (
+                "| macOS application | `GNFSWorkbench-0.1.0-macOS-arm64.zip` | "
+                "Apple silicon; macOS 26+ |"
+            ),
+            (
+                "| Linux CLI/SDK | `gnfs-v0.1.0-linux-x86_64.tar.gz` | "
+                "x86_64; glibc 2.31+; host GMP/NTL |"
+            ),
+            (
+                "| macOS CLI/SDK | `gnfs-v0.1.0-macos-arm64.tar.gz` | "
+                "Apple silicon; macOS 13+; host GMP/NTL |"
+            ),
+            (
+                "| Windows CLI/SDK | `gnfs-v0.1.0-windows-x86_64.zip` | "
+                "x86_64; MSYS2 UCRT64; four pinned DLLs included |"
+            ),
+            (
+                "| Exact project source | `gnfs-v0.1.0-source.tar.gz` | Generated from and "
+                "validated against the source revision above |"
+            ),
+            "",
+            (
+                "GMP 6.3.0, NTL 11.6.0, and the exact MSYS2 GCC, GMP, and winpthreads "
+                "corresponding-source archives are attached for the binary dependency closure."
+            ),
+            "",
+            "Corresponding-source assets:",
+            "",
+            "- `gmp-6.3.0.tar.xz`",
+            "- `ntl-11.6.0.tar.gz`",
+            "- `mingw-w64-gcc-16.1.0-6.src.tar.zst`",
+            "- `mingw-w64-gmp-6.3.0-2.src.tar.zst`",
+            "- `mingw-w64-winpthreads-14.0.0.r220.gd999af622-1.src.tar.zst`",
+            "",
+            "## Verify the download",
+            "",
+            (
+                "`SHA256SUMS` contains the SHA-256 for all application, CLI/SDK, and source "
+                "archives plus `release-metadata.json`. For one downloaded asset:"
+            ),
+            "",
+            "```bash",
+            "asset=GNFSWorkbench-0.1.0-macOS-arm64.zip",
+            "line=\"$(awk -v name=\"$asset\" '$2 == name { print }' SHA256SUMS)\"",
+            "test -n \"$line\"",
+            "if command -v sha256sum >/dev/null 2>&1; then",
+            "  printf '%s\\n' \"$line\" | sha256sum -c -",
+            "else",
+            "  printf '%s\\n' \"$line\" | shasum -a 256 -c -",
+            "fi",
+            "```",
+            "",
+            (
+                "`release-metadata.json` binds every package/source asset to this source "
+                "revision. `release-verification.json` binds the exact main CI and verify-only "
+                "evidence plus every other release asset; its own local and server SHA-256 are "
+                "checked separately by the publication contract."
+            ),
+            "",
+            "## Security and compatibility notes",
+            "",
+            (
+                "- The Workbench is ad-hoc signed and is not Apple notarized. macOS may require "
+                "explicit approval before first launch."
+            ),
+            (
+                "- Linux and macOS do not bundle the dynamically linked GMP/NTL libraries. "
+                "Check the archive README for the observed ABI contract."
+            ),
+            (
+                "- Windows bundles only the four contracted UCRT64 runtime DLLs and includes "
+                "their licenses and corresponding sources."
+            ),
+            (
+                "- SHA-256 proves byte equality with the unsigned manifest; this release does "
+                "not claim a detached signature, signed SLSA provenance, or a separate "
+                "SPDX/CycloneDX SBOM."
+            ),
+            "",
+            (
+                "See README.md or README-EN.md for installation and PowerShell verification "
+                "instructions, and docs/releasing.md for the complete 13-asset publication "
+                "contract."
+            ),
             "",
         )
     )
@@ -3433,6 +3540,25 @@ def self_test() -> None:
         workflow_ref,
         target_sha,
     )
+    release_notes = _release_notes(target_sha, FIRST_RELEASE_TAG)
+    required_note_fragments = {
+        target_sha,
+        *expected_release_asset_names(FIRST_RELEASE_TAG),
+        "SHA256SUMS",
+        "release-metadata.json",
+        RELEASE_PROOF_NAME,
+        "ad-hoc signed",
+        "not Apple notarized",
+        "signed SLSA provenance",
+        "SPDX/CycloneDX SBOM",
+    }
+    missing_note_fragments = sorted(
+        fragment for fragment in required_note_fragments if fragment not in release_notes
+    )
+    if missing_note_fragments:
+        raise ReleaseContractError(
+            f"release notes self-test found missing disclosure: {missing_note_fragments}"
+        )
     try:
         validate_dispatch(
             "publish",

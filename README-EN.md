@@ -12,12 +12,14 @@
   <a href="https://en.cppreference.com/w/cpp/20"><img alt="C++20" src="https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white"></a>
   <a href="LICENSE"><img alt="License: GPL-2.0" src="https://img.shields.io/badge/license-GPL%202.0-blue"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-63%20files-brightgreen">
-  <img alt="LoC" src="https://img.shields.io/badge/code-~56K%20lines-informational">
   <img alt="Build" src="https://img.shields.io/badge/build-CMake%203.20%2B-064F8C?logo=cmake&logoColor=white">
+  <a href="https://github.com/MaYiding/GNFS/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/MaYiding/GNFS/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+  <a href="https://github.com/MaYiding/GNFS/actions/workflows/workbench.yml"><img alt="Workbench CI" src="https://github.com/MaYiding/GNFS/actions/workflows/workbench.yml/badge.svg?branch=main"></a>
+  <a href="https://github.com/MaYiding/GNFS/releases"><img alt="Latest Release" src="https://img.shields.io/github/v/release/MaYiding/GNFS?display_name=tag&sort=semver"></a>
 </p>
 
 <p align="center">
+  <a href="#downloads-and-verification">Downloads & Verification</a> ·
   <a href="#quick-start">Quick Start</a> ·
   <a href="#performance">Performance</a> ·
   <a href="#architecture">Architecture</a> ·
@@ -36,10 +38,9 @@ The General Number Field Sieve (GNFS) is the asymptotically fastest known classi
 | Metric | Value |
 |---|---|
 | Largest verified input | 65 decimal digits (213 bits), balanced semiprime, 24 s via SIQS |
-| Code footprint | 61 headers, 14 source files, 63 test files, approximately 56,000 lines |
 | Concurrency model | Multi-threaded lattice sieve, `ThreadPool`-driven Block Lanczos, parallel Cantor-Zassenhaus |
 | Memory scaling | mmap-backed CSR matrices, streaming relation store, Block Wiedemann Krylov mmap, sieve mid-flight checkpoint |
-| Platforms | Apple Silicon and x86\_64; macOS 13+ and Linux glibc 2.31+ |
+| Release platforms | macOS 13+ CLI, macOS 26+ Workbench, Linux glibc 2.31+, and Windows UCRT64 |
 
 ### Design Goals
 
@@ -93,7 +94,114 @@ flowchart TD
 
 To override the default selection, use `./build/gnfs <N> --method <name>`, where the choices are `auto`, `trial`, `rho`, `siqs`, or `gnfs`.
 
+## Downloads and Verification
+
+The first public version is fixed at `v0.1.0`. After publication, download it
+from the [v0.1.0 release page](https://github.com/MaYiding/GNFS/releases/tag/v0.1.0),
+not from a third-party mirror. Choose the asset that matches your use case:
+
+| Use case | Release asset | Runtime boundary |
+|---|---|---|
+| macOS application | `GNFSWorkbench-0.1.0-macOS-arm64.zip` | Apple silicon; macOS 26+; ad-hoc signed and not Apple notarized |
+| Linux CLI/SDK | `gnfs-v0.1.0-linux-x86_64.tar.gz` | x86_64; glibc 2.31+; host-provided GMP/NTL |
+| macOS CLI/SDK | `gnfs-v0.1.0-macos-arm64.tar.gz` | Apple silicon; macOS 13+; host-provided GMP/NTL |
+| Windows CLI/SDK | `gnfs-v0.1.0-windows-x86_64.zip` | x86_64; MSYS2 UCRT64; four pinned runtime DLLs included |
+| Exact project source | `gnfs-v0.1.0-source.tar.gz` | Generated directly from the release target commit; Git archive marker and file manifest verified |
+
+The same release also carries the GMP 6.3.0 and NTL 11.6.0 sources plus the
+MSYS2 GCC, GMP, and winpthreads sources corresponding to the Windows runtime.
+Those files close the licensing and corresponding-source contract; ordinary CLI
+users do not need to download all of them to run GNFS. GitHub's generated
+“Source code” archives remain an additional convenience path. Use
+`gnfs-v0.1.0-source.tar.gz` when you need the contract-verified exact source.
+
+Release assets have four evidence layers:
+
+1. `SHA256SUMS` records the SHA-256 of every application, CLI, and source
+   archive plus `release-metadata.json`;
+2. `release-metadata.json` records the target commit, asset purpose, platform,
+   size, and SHA-256;
+3. `release-verification.json` binds exact-SHA main CI, CodeQL, the verify-only
+   workflow identity, and the release-bundle bytes including `SHA256SUMS`;
+4. the publication contract compares GitHub's server-reported asset SHA-256
+   before and after upload and requires the public release to become immutable.
+   The proof's own digest is bound separately at this layer to avoid a
+   self-referential checksum cycle.
+
+On macOS or Linux, verify only the asset you selected with:
+
+```bash
+base=https://github.com/MaYiding/GNFS/releases/download/v0.1.0
+asset=GNFSWorkbench-0.1.0-macOS-arm64.zip   # replace with any package/source asset
+curl -fLO "$base/$asset"
+curl -fLO "$base/SHA256SUMS"
+
+line="$(awk -v name="$asset" '$2 == name { print }' SHA256SUMS)"
+test -n "$line"
+if command -v sha256sum >/dev/null 2>&1; then
+  printf '%s\n' "$line" | sha256sum -c -
+else
+  printf '%s\n' "$line" | shasum -a 256 -c -
+fi
+```
+
+On Windows PowerShell, use:
+
+```powershell
+$base = "https://github.com/MaYiding/GNFS/releases/download/v0.1.0"
+$asset = "gnfs-v0.1.0-windows-x86_64.zip"
+Invoke-WebRequest "$base/$asset" -OutFile $asset
+Invoke-WebRequest "$base/SHA256SUMS" -OutFile SHA256SUMS
+
+$lines = @(Get-Content SHA256SUMS | Where-Object {
+    $_ -match "  $([Regex]::Escape($asset))$"
+})
+if ($lines.Count -ne 1) { throw "checksum record missing or duplicated" }
+$expected = ($lines[0] -split '\s+', 2)[0].ToLowerInvariant()
+$actual = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($actual -ne $expected) { throw "SHA-256 mismatch for $asset" }
+"${asset}: OK"
+```
+
+SHA-256 verifies that downloaded bytes match the release manifest, but the
+unsigned `SHA256SUMS` file is not an independent publisher identity proof.
+`v0.1.0` does not claim detached GPG/Sigstore signatures, signed SLSA
+provenance, or a separate SPDX/CycloneDX SBOM. The Workbench is also not
+Developer ID signed or Apple notarized. See the [release process](docs/releasing.md)
+for the complete security boundary, the exact 13-asset contract, and audit
+commands.
+
 ## Quick Start
+
+### Prebuilt CLI Platform Contract
+
+The release workflow opens each prebuilt CLI archive and enforces these
+compatibility boundaries before publication:
+
+| Archive | Architecture and minimum system | Dynamic dependencies |
+|---|---|---|
+| `gnfs-v0.1.0-linux-x86_64.tar.gz` | x86_64; glibc 2.31+; archive-declared libstdc++ ABI | Host-provided GMP and NTL |
+| `gnfs-v0.1.0-macos-arm64.tar.gz` | Apple silicon; macOS 13.0+ | Host-provided GMP and NTL |
+| `gnfs-v0.1.0-windows-x86_64.zip` | x86_64; MSYS2 UCRT64 | Four pinned UCRT64 DLLs included |
+
+The Linux package is built with GCC 12 in an Ubuntu 20.04 container. Release
+checks reject symbol versions above `GLIBC_2.31`, `GLIBCXX_3.4.30`, or
+`CXXABI_1.3.13`, as well as dynamic libraries outside the allowlist. The
+machine-generated `binary-compatibility.json` and `README-release.txt` inside
+the archive report the binary's observed minimum ABI versions; glibc alone is
+not a complete compatibility claim. The macOS package uses
+`CMAKE_OSX_DEPLOYMENT_TARGET=13.0`, while `lipo`, `vtool`, and `otool`
+independently confirm one `arm64` slice and `minos 13.0`.
+
+Every CLI archive contains the project's byte-identical GPL-2.0 `LICENSE`.
+The Windows archive includes `libgmp-10.dll`, `libstdc++-6.dll`,
+`libgcc_s_seh-1.dll`, and `libwinpthread-1.dll`, plus
+`runtime-dependencies.json`, the versioned runtime contract,
+`THIRD_PARTY_NOTICES.txt`, and `licenses/`. The contract pins each owner
+package, binary package and DLL SHA-256, license, and corresponding MSYS2 source
+archive in the same release; GMP is conveyed under its GNU GPL version 2
+option. The Windows build disables NTL, and any missing or extra DLL blocks the
+release. Linux and macOS do not bundle the dynamically linked GMP/NTL libraries.
 
 ### Requirements
 
@@ -187,8 +295,8 @@ progress, relation metrics, structured logs, complete prime factors, and local
 history. It supports Apple silicon on macOS 26 or later. See
 [GNFS Workbench](apps/macos/GNFSWorkbench/README.md) for build, test, temporary
 workspace lifecycle, and local ZIP delivery details. The current ZIP uses an
-ad-hoc signature and is not notarized, so it is not an unrestricted public
-distribution package.
+ad-hoc signature and is not notarized. It is published as a public release
+asset, but macOS may require explicit user approval before first launch.
 
 <details>
 <summary><b>Example configuration file (click to expand)</b></summary>
@@ -340,37 +448,21 @@ flowchart LR
 
 ```text
 GNFS/
-├── include/gnfs/           # 61 headers, 11 submodules
-│   ├── api/           (6)  # Public API surface
-│   ├── core/          (6)  # Foundational types
-│   ├── polynomial/    (7)  # Polynomial selection
-│   ├── factor_base/   (2)  # Factor base construction
-│   ├── sieve/         (5)  # Lattice sieve, bucket sieve, QoS
-│   ├── cofactor/      (5)  # Cofactor factorization
-│   ├── relation/      (6)  # Relation collection, merging, and OOC
-│   ├── linalg/        (9)  # GF(2) solvers, mmap, Krylov
-│   ├── sqrt/          (7)  # Square root extraction
-│   ├── siqs/          (1)  # SIQS fallback path
-│   └── util/          (7)  # Shared utilities
-├── src/                    # 14 source files
-├── tests/                  # 63 test files
-├── scripts/
-│   ├── test.sh             # Unified test runner (timeout, tiering, heartbeat)
-│   └── feature-branch.sh   # Feature-branch workflow helper
-├── docs/                   # Design documents
+├── include/gnfs/           # Public headers organized by pipeline module
+├── src/                    # C++ implementation and CLI
+├── tests/                  # Unit, integration, regression, and stress tests
+├── apps/macos/GNFSWorkbench/
+│                           # Native SwiftUI Workbench and UI tests
+├── scripts/                # Unified test, release, and contract tooling
+├── docs/                   # Algorithm, runtime, test, and release documentation
+├── .github/workflows/      # Cross-platform CI, security, and release workflows
 ├── CMakeLists.txt
-├── CLAUDE.md               # Engineering doctrine and development notes
+├── AGENTS.md               # Shared engineering rules
+├── CLAUDE.md               # Claude Code entry point
 ├── README.md               # 简体中文
 ├── README-EN.md            # This file
 └── LICENSE                 # GPL-2.0
 ```
-
-| Category | Files | Lines |
-|---|:---:|---:|
-| Headers | 61 | ~22,000 |
-| Source | 14 | ~6,400 |
-| Tests | 63 | ~27,900 |
-| **Total** | **138** | **~56,300** |
 
 ### References
 
@@ -482,8 +574,9 @@ cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo     # Release with debug info
 | `GNFS_ENABLE_ASAN` | `OFF` | AddressSanitizer |
 | `GNFS_ENABLE_TSAN` | `OFF` | ThreadSanitizer |
 | `GNFS_ENABLE_UBSAN` | `OFF` | UndefinedBehaviorSanitizer |
+| `GNFS_ENABLE_NTL` | `ON` | Enable optional NTL detection and linking; explicitly disabled for the Windows release |
 
-The build system auto-detects GMP (required), NTL (optional), Metal (optional on macOS), native CPU flags (`-mcpu=native` on Apple Silicon and `-march=native` on x86), and either ThinLTO (Clang on macOS) or LTO (GCC) when targeting Release.
+The build system auto-detects GMP (required), NTL when enabled (optional), Metal (optional on macOS), native CPU flags (`-mcpu=native` on Apple Silicon and `-march=native` on x86), and either ThinLTO (Clang on macOS) or LTO (GCC) when targeting Release.
 
 ## Contributing
 
