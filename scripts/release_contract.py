@@ -143,6 +143,11 @@ REQUIRED_MAIN_CHECKS = (
     RequiredCheck(
         "Release Readiness",
         ".github/workflows/release-readiness.yml",
+        "Linux pinned CMake wheel closure",
+    ),
+    RequiredCheck(
+        "Release Readiness",
+        ".github/workflows/release-readiness.yml",
         "Windows pinned runtime and source closure",
     ),
 )
@@ -3034,6 +3039,24 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
     qualification_text = qualification_workflow.read_text(encoding="utf-8")
     readiness_workflow = release_workflow.with_name("release-readiness.yml")
     readiness_text = readiness_workflow.read_text(encoding="utf-8")
+    cmake_requirements = (
+        release_workflow.parents[2] / "scripts" / "release-cmake-requirements.txt"
+    )
+    expected_cmake_requirements = (
+        "# PyPI file: cmake-3.31.6-py3-none-manylinux_2_17_x86_64."
+        "manylinux2014_x86_64.whl\n"
+        "cmake @ https://files.pythonhosted.org/packages/59/e8/"
+        "096984b89133681533650b9078c5ed1c5c9b534e869b5487f22d4de1935c/"
+        "cmake-3.31.6-py3-none-manylinux_2_17_x86_64."
+        "manylinux2014_x86_64.whl "
+        "--hash=sha256:1c8b05df0602365da91ee6a3336fe57525b137706c4ab5675498f662ae1dbcec\n"
+    )
+    if (
+        not cmake_requirements.is_file()
+        or cmake_requirements.read_text(encoding="utf-8")
+        != expected_cmake_requirements
+    ):
+        raise ReleaseContractError("release CMake wheel requirement changed")
     required_workflow_paths = sorted(
         {Path(required.workflow_path) for required in REQUIRED_MAIN_CHECKS}
     )
@@ -3053,6 +3076,7 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
         "gh release create",
         "add-apt-repository",
         "software-properties-common",
+        "pip install --no-cache-dir cmake==",
         "group: release-${{ inputs.release_tag }}-${{ inputs.target_sha }}",
     )
     for fragment in forbidden_release_fragments:
@@ -3103,6 +3127,10 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
         "Suites: focal",
         "Architectures: amd64",
         "Signed-By: /etc/apt/keyrings/ubuntu-toolchain-r-test.gpg",
+        "scripts/release-cmake-requirements.txt",
+        "--no-deps",
+        "--only-binary=:all:",
+        "--require-hashes",
         "getconf GNU_LIBC_VERSION",
         "gcc-12",
         "g++-12",
@@ -3147,6 +3175,12 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
         )
     required_readiness_fragments = (
         "name: Release Readiness",
+        "name: Linux pinned CMake wheel closure",
+        "container: ubuntu:20.04@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214",
+        "scripts/release-cmake-requirements.txt",
+        "--no-deps",
+        "--only-binary=:all:",
+        "--require-hashes",
         "name: Windows pinned runtime and source closure",
         "runs-on: windows-2022",
         "scripts/windows_release_runtime.py install-pinned",
