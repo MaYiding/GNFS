@@ -178,6 +178,14 @@ make -C build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 完整 JSON 对象；stderr 仅承载诊断文本。协议顺序、字段、退出码及兼容规则见
 [CLI 事件流协议](docs/api/event-stream.md)。
 
+### macOS Workbench
+
+`apps/macos/GNFSWorkbench/` 提供原生 SwiftUI 工作台，可查看流水线进度、
+关系指标、结构化日志、完整质因数结果和本地历史。应用仅支持 Apple Silicon
+与 macOS 26 及以上版本。构建、测试、临时工作目录生命周期及本地 ZIP 交付
+说明见 [GNFS Workbench](apps/macos/GNFSWorkbench/README.md)。当前 ZIP 采用
+ad-hoc 签名且未经 notarization，不作为无提示公开分发包。
+
 <details>
 <summary><b>配置文件示例（点击展开）</b></summary>
 
