@@ -2042,6 +2042,16 @@ for arguments in valid_help_cases:
             "GNFS_EXPERIMENT_V2 " in result.stdout:
         raise SystemExit(f"50d CLI self-check rejected valid help boundary: {arguments}")
 PY
+    "$GNFS_TEST_PYTHON" \
+        "${PROJECT_ROOT}/scripts/cleanup_50d_probe_artifacts.py" self-test >/dev/null
+}
+
+cleanup_successful_50d_probe_directory() {
+    local directory="$1"
+    local route="$2"
+    "$GNFS_TEST_PYTHON" \
+        "${PROJECT_ROOT}/scripts/cleanup_50d_probe_artifacts.py" cleanup \
+        --directory "$directory" --route "$route"
 }
 
 self_check_50d_probe_contracts() {
@@ -2281,10 +2291,10 @@ run_50d_route_comparison() {
             comparison_ready=0
             continue
         fi
-        if rmdir "$probe_dir"; then
+        if cleanup_successful_50d_probe_directory "$probe_dir" "$route"; then
             log_success "route=${route} 探针工件已完成生命周期清理"
         else
-            log_fail "route=${route} 成功但临时目录非空，已保留: ${probe_dir}"
+            log_fail "route=${route} 成功但持久锁目录不符合精确清理合同，已保留: ${probe_dir}"
             (( FAILED_TESTS += 1 ))
             comparison_ready=0
         fi
@@ -6564,11 +6574,12 @@ case "$MODE" in
                     _probe_contract_valid=0
                 fi
             fi
-            if (( _probe_contract_valid )) && rmdir "$_probe_dir"; then
+            if (( _probe_contract_valid )) && \
+               cleanup_successful_50d_probe_directory "$_probe_dir" structured; then
                 log_success "探针工件已完成生命周期清理"
             else
                 if (( _probe_contract_valid )); then
-                    log_fail "探针成功但临时目录非空，已保留: ${_probe_dir}"
+                    log_fail "探针成功但持久锁目录不符合精确清理合同，已保留: ${_probe_dir}"
                     (( FAILED_TESTS += 1 ))
                 else
                     log_warn "探针记录或生命周期无效，保留诊断工件: ${_probe_dir}"
@@ -6722,10 +6733,11 @@ case "$MODE" in
             fi
             _comparison_records[$_comparison_workers]="$MEASUREMENT_RECORD"
             print -r -- "$MEASUREMENT_RECORD"
-            if rmdir "$_comparison_dir"; then
+            if cleanup_successful_50d_probe_directory \
+                "$_comparison_dir" structured; then
                 log_success "workers=${_comparison_workers} 探针工件已完成生命周期清理"
             else
-                log_fail "workers=${_comparison_workers} 探针成功但临时目录非空，已保留: ${_comparison_dir}"
+                log_fail "workers=${_comparison_workers} 探针成功但持久锁目录不符合精确清理合同，已保留: ${_comparison_dir}"
                 (( FAILED_TESTS += 1 ))
                 _comparison_ready=0
             fi

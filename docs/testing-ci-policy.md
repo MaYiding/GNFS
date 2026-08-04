@@ -91,7 +91,12 @@ away from nightly evidence. The reusable workflow runs three independent
 Release jobs: the repository `thorough` mode, the structured 120-bit route
 gate, and the bounded four-special-Q 50-digit legacy/structured route
 comparison. The bounded comparison uses a 900-second timeout for each route;
-it is not a complete 50-digit factorization claim.
+it is not a complete 50-digit factorization claim. Successful probes retain
+the permanent zero-byte OOC coordination locks required by the store contract.
+The Harness removes the private test directory only after a no-following,
+directory-relative check proves that its entries are exactly the raw lock and,
+for the structured route, one precisely named structured-output lock. Extra,
+renamed, linked, symlinked, or nonempty residue remains a release failure.
 
 Release publication also requires every workflow that was triggered by the
 exact main push to finish successfully. A fixed set of release-critical jobs

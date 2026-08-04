@@ -199,9 +199,12 @@ a merely positive or caller-selected epoch is rejected.
 The verify-only workflow creates `gnfs-v0.1.0-source.tar.gz` directly from the
 exact target commit. Its validator requires the Git archive commit marker,
 fixed top-level directory, safe paths, and a file-by-file manifest equal to a
-fresh archive of that target SHA. The workflow also downloads GMP 6.3.0 and
-NTL 11.6.0 corresponding source from their fixed HTTPS URLs. It accepts only
-`gmp-6.3.0.tar.xz` with
+fresh archive of that target SHA. The workflow downloads GMP 6.3.0 from two
+ordered, fixed, official HTTPS endpoints: `ftp.gnu.org` first and `gmplib.org`
+as a fallback. It makes at most three attempts and rotates between those
+endpoints. NTL 11.6.0 and the MSYS2 sources retain their fixed HTTPS endpoints.
+Every endpoint must return the exact contracted bytes. The workflow accepts
+only `gmp-6.3.0.tar.xz` with
 SHA-256 `a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898`
 and `ntl-11.6.0.tar.gz` with SHA-256
 `bc0ef9aceb075a6a0673ac8d8f47d5f8458c72fe806e4468fbd5d3daff056182`.
@@ -230,6 +233,15 @@ approved dynamic dependencies, and symbol-version maxima no newer than
 configured with `CMAKE_OSX_DEPLOYMENT_TARGET=13.0`; `lipo`, `vtool`, and
 `otool` must independently confirm its single architecture and minimum system
 version.
+
+The Linux bootstrap uses the Ubuntu Toolchain test PPA through its direct
+Focal Deb822 endpoint rather than the Launchpad metadata API. The source is
+limited by `Signed-By` to the PPA key whose full fingerprint is
+`C8EC952E2A0E1FBDC5090F6A2C277A0A352154E5`; key retrieval and APT transport
+have bounded retries and timeouts. The job also checks amd64, glibc 2.31, and
+GCC/G++ major version 12 before building. This authenticates the rolling PPA
+and enforces the binary ABI ceiling, but it is not a bit-for-bit pin of the
+complete Debian package closure.
 
 The Linux checker writes its observed GLIBC, GLIBCXX, and CXXABI maxima, the
 dynamic dependency set, and the executable digest to
