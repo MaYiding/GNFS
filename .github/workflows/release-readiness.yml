@@ -63,6 +63,16 @@ jobs:
             --requirement scripts/release-cmake-requirements.txt
           [[ "$(cmake --version | awk 'NR == 1 { print $3 }')" == '3.31.6' ]]
 
+      - name: Build pinned Linux LTO closure
+        run: |
+          cmake -B build-release-readiness -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE=scripts/linux-release-gcc12-toolchain.cmake \
+            -DGNFS_BUILD_TESTS=OFF \
+            -DGNFS_ENABLE_NATIVE_ARCH=OFF
+          cmake --build build-release-readiness --parallel
+          [[ "$(build-release-readiness/gnfs --version)" == 'GNFS v0.1.0' ]]
+
   windows-runtime-closure:
     name: Windows pinned runtime and source closure
     runs-on: windows-2022

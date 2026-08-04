@@ -94,6 +94,26 @@ DEPENDENCY_SOURCE_ROOTS = {
     "ntl-11.6.0.tar.gz": "ntl-11.6.0",
 }
 MAX_DEPENDENCY_SOURCE_BYTES = 192 * 1024 * 1024
+LINUX_RELEASE_CMAKE_TOOLCHAIN_TEXT = (
+    "# Exact compiler and binary-utility family for the Ubuntu 20.04 release build.\n"
+    "# GCC LTO objects must be archived through the matching GCC wrappers so that\n"
+    "# liblto_plugin is supplied to binutils during both archive creation and use.\n"
+    "\n"
+    'set(CMAKE_C_COMPILER "/usr/bin/gcc-12" CACHE FILEPATH '
+    '"GNFS release C compiler" FORCE)\n'
+    'set(CMAKE_CXX_COMPILER "/usr/bin/g++-12" CACHE FILEPATH '
+    '"GNFS release C++ compiler" FORCE)\n'
+    'set(CMAKE_AR "/usr/bin/gcc-ar-12" CACHE FILEPATH '
+    '"GNFS release archiver" FORCE)\n'
+    'set(CMAKE_NM "/usr/bin/gcc-nm-12" CACHE FILEPATH '
+    '"GNFS release symbol reader" FORCE)\n'
+    'set(CMAKE_RANLIB "/usr/bin/gcc-ranlib-12" CACHE FILEPATH '
+    '"GNFS release archive indexer" FORCE)\n'
+    'set(CMAKE_CXX_COMPILER_AR "/usr/bin/gcc-ar-12" CACHE FILEPATH\n'
+    '    "GNFS release C++ compiler archiver" FORCE)\n'
+    'set(CMAKE_CXX_COMPILER_RANLIB "/usr/bin/gcc-ranlib-12" CACHE FILEPATH\n'
+    '    "GNFS release C++ compiler archive indexer" FORCE)\n'
+)
 
 
 @dataclass(frozen=True)
@@ -3024,6 +3044,30 @@ def _workflow_trigger_block(workflow_text: str, trigger: str) -> str:
     return "".join(body)
 
 
+def _workflow_job_block(workflow_text: str, job_id: str) -> str:
+    lines = workflow_text.splitlines(keepends=True)
+    marker = f"  {job_id}:\n"
+    indices = [index for index, line in enumerate(lines) if line == marker]
+    if len(indices) != 1:
+        raise ReleaseContractError(
+            f"workflow must contain exactly one canonical {job_id} job; "
+            f"found {len(indices)}"
+        )
+    job_index = indices[0]
+    body = [lines[job_index]]
+    next_job = re.compile(r"^  [A-Za-z0-9_-]+:\s*$")
+    for line in lines[job_index + 1 :]:
+        if next_job.match(line):
+            break
+        body.append(line)
+    return "".join(body)
+
+
+def _validate_linux_cmake_toolchain_text(toolchain_text: str) -> None:
+    if toolchain_text != LINUX_RELEASE_CMAKE_TOOLCHAIN_TEXT:
+        raise ReleaseContractError("Linux release CMake toolchain changed")
+
+
 def _validate_required_main_push_trigger(workflow_path: Path, workflow_text: str) -> None:
     push_block = _workflow_trigger_block(workflow_text, "push")
     canonical_blocks = {"    branches: [ main ]\n", "    branches: [ main, dev ]\n"}
@@ -3048,6 +3092,14 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
     if linux_toolchain_installer.stat().st_mode & 0o111 == 0:
         raise ReleaseContractError("Linux release toolchain installer is not executable")
     linux_toolchain_text = linux_toolchain_installer.read_text(encoding="utf-8")
+    linux_cmake_toolchain = (
+        repository_root / "scripts" / "linux-release-gcc12-toolchain.cmake"
+    )
+    if not linux_cmake_toolchain.is_file():
+        raise ReleaseContractError("Linux release CMake toolchain file is missing")
+    _validate_linux_cmake_toolchain_text(
+        linux_cmake_toolchain.read_text(encoding="utf-8")
+    )
     required_linux_toolchain_fragments = (
         "#!/usr/bin/env bash",
         "set -euo pipefail",
@@ -3073,6 +3125,9 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
         "Signed-By: /etc/apt/keyrings/ubuntu-toolchain-r-test.gpg",
         "gcc-12",
         "g++-12",
+        "gcc-ar-12",
+        "gcc-nm-12",
+        "gcc-ranlib-12",
     )
     for fragment in required_linux_toolchain_fragments:
         if fragment not in linux_toolchain_text:
@@ -3108,6 +3163,45 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
             raise ReleaseContractError(
                 f"{workflow_name} workflow must invoke the Linux toolchain installer once"
             )
+    cmake_toolchain_argument = (
+        "-DCMAKE_TOOLCHAIN_FILE=scripts/linux-release-gcc12-toolchain.cmake"
+    )
+    for workflow_name, workflow_text in (
+        ("release", release_text),
+        ("release readiness", readiness_text),
+    ):
+        if workflow_text.count(cmake_toolchain_argument) != 1:
+            raise ReleaseContractError(
+                f"{workflow_name} workflow must use the Linux CMake toolchain once"
+            )
+    release_linux_build = _workflow_job_block(release_text, "package-linux")
+    required_release_linux_build = (
+        "          cmake -B build-release -G Ninja \\\n"
+        "            -DCMAKE_BUILD_TYPE=Release \\\n"
+        "            -DCMAKE_TOOLCHAIN_FILE=scripts/linux-release-gcc12-toolchain.cmake \\\n"
+        "            -DGNFS_BUILD_TESTS=OFF \\\n"
+        "            -DGNFS_ENABLE_NATIVE_ARCH=OFF\n"
+        "          cmake --build build-release --parallel\n"
+    )
+    if release_linux_build.count(required_release_linux_build) != 1:
+        raise ReleaseContractError("release Linux job lost its exact Release/LTO build")
+    readiness_linux_build = _workflow_job_block(readiness_text, "linux-cmake-closure")
+    required_readiness_linux_build = (
+        "      - name: Build pinned Linux LTO closure\n"
+        "        run: |\n"
+        "          cmake -B build-release-readiness -G Ninja \\\n"
+        "            -DCMAKE_BUILD_TYPE=Release \\\n"
+        "            -DCMAKE_TOOLCHAIN_FILE=scripts/linux-release-gcc12-toolchain.cmake \\\n"
+        "            -DGNFS_BUILD_TESTS=OFF \\\n"
+        "            -DGNFS_ENABLE_NATIVE_ARCH=OFF\n"
+        "          cmake --build build-release-readiness --parallel\n"
+        '          [[ "$(build-release-readiness/gnfs --version)" == '
+        "'GNFS v0.1.0' ]]\n"
+    )
+    if readiness_linux_build.count(required_readiness_linux_build) != 1:
+        raise ReleaseContractError(
+            "release readiness Linux job lost its exact Release/LTO build closure"
+        )
     cmake_requirements = (
         repository_root / "scripts" / "release-cmake-requirements.txt"
     )
@@ -3197,8 +3291,7 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
         "--no-deps",
         "--only-binary=:all:",
         "--require-hashes",
-        "g++-12",
-        "-DCMAKE_CXX_COMPILER=g++-12",
+        "-DCMAKE_TOOLCHAIN_FILE=scripts/linux-release-gcc12-toolchain.cmake",
         "-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0",
         "release-verification-${{ inputs.release_tag }}-${{ inputs.target_sha }}",
         "gnfs-project-source",
@@ -3244,10 +3337,15 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
         "timeout-minutes: 30",
         'git config --global --add safe.directory "${GITHUB_WORKSPACE}"',
         "scripts/install_linux_release_toolchain.sh",
+        "scripts/linux-release-gcc12-toolchain.cmake",
         "scripts/release-cmake-requirements.txt",
         "--no-deps",
         "--only-binary=:all:",
         "--require-hashes",
+        "name: Build pinned Linux LTO closure",
+        "-DCMAKE_TOOLCHAIN_FILE=scripts/linux-release-gcc12-toolchain.cmake",
+        "cmake --build build-release-readiness --parallel",
+        "build-release-readiness/gnfs --version",
         "name: Windows pinned runtime and source closure",
         "runs-on: windows-2022",
         "scripts/windows_release_runtime.py install-pinned",
@@ -3702,6 +3800,37 @@ def self_test() -> None:
     repository_root, target_sha = _repository_head(Path(__file__).resolve().parents[1])
     repository = "example/GNFS"
     workflow_ref = f"{repository}/{RELEASE_WORKFLOW_PATH}@refs/heads/main"
+    _validate_linux_cmake_toolchain_text(LINUX_RELEASE_CMAKE_TOOLCHAIN_TEXT)
+    invalid_linux_toolchains = {
+        "missing archiver": LINUX_RELEASE_CMAKE_TOOLCHAIN_TEXT.replace(
+            'set(CMAKE_AR "/usr/bin/gcc-ar-12" CACHE FILEPATH '
+            '"GNFS release archiver" FORCE)\n',
+            "",
+            1,
+        ),
+        "commented archiver": LINUX_RELEASE_CMAKE_TOOLCHAIN_TEXT.replace(
+            'set(CMAKE_AR "/usr/bin/gcc-ar-12"',
+            '# set(CMAKE_AR "/usr/bin/gcc-ar-12"',
+            1,
+        ),
+        "wrong ranlib": LINUX_RELEASE_CMAKE_TOOLCHAIN_TEXT.replace(
+            "/usr/bin/gcc-ranlib-12", "/usr/bin/ranlib", 1
+        ),
+        "non-forced compiler": LINUX_RELEASE_CMAKE_TOOLCHAIN_TEXT.replace(
+            '"GNFS release C++ compiler" FORCE)',
+            '"GNFS release C++ compiler")',
+            1,
+        ),
+    }
+    for label, toolchain_text in invalid_linux_toolchains.items():
+        try:
+            _validate_linux_cmake_toolchain_text(toolchain_text)
+        except ReleaseContractError:
+            pass
+        else:
+            raise ReleaseContractError(
+                f"Linux CMake toolchain self-test accepted {label}"
+            )
     valid_required_trigger = """name: Required Fixture
 
 on:

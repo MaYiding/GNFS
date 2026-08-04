@@ -87,9 +87,29 @@ DEBIAN_FRONTEND=noninteractive apt-get "${apt_opts[@]}" install -y \
     ninja-build
 
 for compiler in gcc-12 g++-12; do
-    version=$("${compiler}" -dumpfullversion -dumpversion)
+    if ! resolved=$(command -v "${compiler}"); then
+        echo "Missing ${compiler}." >&2
+        exit 1
+    fi
+    if [[ "${resolved}" != "/usr/bin/${compiler}" ]]; then
+        echo "Unexpected ${compiler} path: ${resolved}" >&2
+        exit 1
+    fi
+    version=$("${resolved}" -dumpfullversion -dumpversion)
     if [[ "${version}" != 12 && "${version}" != 12.* ]]; then
         echo "Unexpected ${compiler} version: ${version}" >&2
         exit 1
     fi
+done
+
+for binary_utility in gcc-ar-12 gcc-nm-12 gcc-ranlib-12; do
+    if ! resolved=$(command -v "${binary_utility}"); then
+        echo "Missing ${binary_utility}." >&2
+        exit 1
+    fi
+    if [[ "${resolved}" != "/usr/bin/${binary_utility}" ]]; then
+        echo "Unexpected ${binary_utility} path: ${resolved}" >&2
+        exit 1
+    fi
+    "${binary_utility}" --version >/dev/null
 done
