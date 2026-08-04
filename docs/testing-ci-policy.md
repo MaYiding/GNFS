@@ -1011,6 +1011,15 @@ The positive coordinator matrix is:
 The launch ledger must match every `executed` result by chunk, attempt ordinal,
 lease, and the complete `AttemptStartedV1` record. A successful wait or child
 report without the matching durable handoff is a failure, not `executed`.
+The busy-late-handoff case uses an explicit process handshake instead of a
+timing delay. The self-exec worker blocks `SIGUSR1`, adopts the exact entry and
+its `BaseLock`, reports readiness, and waits. The coordinator's busy-observation
+hook releases it; a successful terminal wait and exact handoff adoption then
+prove publication. Exceptional teardown kills and reaps a still-waiting child.
+The child also arms a parent-liveness guard before reporting readiness: Darwin
+uses `EVFILT_PROC` and Linux uses `PR_SET_PDEATHSIG`, so an externally killed or
+timed-out test process cannot orphan the still-waiting controlled worker or its
+`BaseLock`.
 Child exit alone never grants retry authority. A retry requires a fresh
 durable observation, nonblocking acquisition of the exact old-attempt
 `BaseLock`, and `reconcile_worker_attempt_started()` returning either the
