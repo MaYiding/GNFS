@@ -406,11 +406,12 @@ jobs:
           package_name="gnfs-${RELEASE_TAG}-${ASSET_SUFFIX}"
           prefix="dist/${package_name}"
           cmake --install build-release --prefix "${prefix}"
+          git show "${TARGET_SHA}:LICENSE" > canonical-project-LICENSE
           python scripts/windows_release_runtime.py bundle \
             --package-root "${prefix}" \
             --executable "${prefix}/bin/gnfs.exe" \
             --pinned-package-evidence pinned-windows-packages.json \
-            --project-license LICENSE \
+            --project-license canonical-project-LICENSE \
             --release-tag "${RELEASE_TAG}" \
             --target-sha "${TARGET_SHA}"
           mkdir -p packages

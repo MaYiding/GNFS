@@ -131,11 +131,12 @@ jobs:
           TARGET_SHA: ${{ github.sha }}
         shell: msys2 {0}
         run: |
+          git show "${TARGET_SHA}:LICENSE" > canonical-project-LICENSE
           python scripts/windows_release_runtime.py bundle \
             --package-root dist/gnfs-v0.1.0-windows-x86_64 \
             --executable dist/gnfs-v0.1.0-windows-x86_64/bin/gnfs.exe \
             --pinned-package-evidence pinned-windows-packages.json \
-            --project-license LICENSE \
+            --project-license canonical-project-LICENSE \
             --release-tag v0.1.0 \
             --target-sha "${TARGET_SHA}"
           mkdir packages

@@ -14,7 +14,9 @@ import shutil
 import ssl
 import subprocess
 import sys
+import tempfile
 from typing import Any
+from unittest.mock import patch
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
@@ -50,6 +52,63 @@ def _read_pinned_text(path: Path, expected_sha256: str) -> bytes:
     if b"\r" in canonical or hashlib.sha256(canonical).hexdigest() != expected_sha256:
         raise RuntimeContractError(f"pinned text is missing or changed: {path}")
     return canonical
+
+
+def _read_canonical_lf(path: Path, label: str) -> bytes:
+    try:
+        payload = path.read_bytes()
+    except OSError as error:
+        raise RuntimeContractError(f"{label} is unreadable: {error}") from error
+    if b"\r" in payload:
+        raise RuntimeContractError(f"{label} must use canonical LF line endings")
+    return payload
+
+
+def _write_bytes_exclusive(
+    path: Path,
+    payload: bytes,
+    label: str,
+    *,
+    platform_name: str = "",
+) -> None:
+    if not path.parent.is_dir() or path.parent.is_symlink():
+        raise RuntimeContractError(f"{label} destination parent must be a real directory")
+    if path.exists() or path.is_symlink():
+        raise RuntimeContractError(f"refusing to overwrite {label}: {path}")
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=path.parent,
+            prefix=f".{path.name}.tmp-",
+        )
+    except OSError as error:
+        raise RuntimeContractError(f"unable to create temporary {label}: {error}") from error
+    temporary_path = Path(temporary_name)
+    try:
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except OSError as error:
+            raise RuntimeContractError(f"unable to write temporary {label}: {error}") from error
+        try:
+            active_platform = platform_name or os.name
+            if active_platform == "nt":
+                # Windows rename is atomic and rejects an existing destination.
+                os.rename(temporary_path, path)
+            elif active_platform == "posix":
+                # POSIX rename replaces its destination, so publish with an atomic link.
+                os.link(temporary_path, path)
+            else:
+                raise RuntimeContractError(
+                    f"unsupported platform for exclusive publication: {active_platform}"
+                )
+        except FileExistsError as error:
+            raise RuntimeContractError(f"refusing to overwrite {label}: {path}") from error
+        except OSError as error:
+            raise RuntimeContractError(f"unable to publish {label}: {error}") from error
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def _run(command: list[str]) -> str:
@@ -370,10 +429,19 @@ def bundle_runtime(
         raise RuntimeContractError("Windows executable must be package-root/bin/gnfs.exe")
     if not project_license.is_file() or project_license.is_symlink():
         raise RuntimeContractError("project LICENSE must be a regular file")
+    project_license_content = _read_canonical_lf(project_license, "project LICENSE")
+    if (
+        b"GNU GENERAL PUBLIC LICENSE" not in project_license_content
+        or b"Version 2" not in project_license_content
+    ):
+        raise RuntimeContractError("project LICENSE is not the expected GPL-2.0 text")
     if not pinned_package_evidence.is_file() or pinned_package_evidence.is_symlink():
         raise RuntimeContractError("pinned package evidence must be a regular file")
     if not re.fullmatch(r"[0-9a-f]{40}", target_sha):
         raise RuntimeContractError("target SHA must be canonical lowercase 40-hex")
+    runtime_contract_content = _read_canonical_lf(
+        CONTRACT_PATH, "Windows runtime contract"
+    )
 
     _validate_pinned_evidence(pinned_package_evidence)
     _validate_installed_packages()
@@ -455,11 +523,11 @@ def bundle_runtime(
             "resolved runtime DLL set does not match the exact Windows release closure"
         )
     contract_destination = package_root / CONTRACT_PATH.name
-    if contract_destination.exists() or contract_destination.is_symlink():
-        raise RuntimeContractError(
-            f"refusing to overwrite packaged runtime contract: {contract_destination}"
-        )
-    shutil.copyfile(CONTRACT_PATH, contract_destination)
+    _write_bytes_exclusive(
+        contract_destination,
+        runtime_contract_content,
+        "packaged runtime contract",
+    )
     manifest = {
         "contract_file": CONTRACT_PATH.name,
         "contract_sha256": _sha256(contract_destination),
@@ -470,9 +538,11 @@ def bundle_runtime(
     _write_json_exclusive(package_root / "runtime-dependencies.json", manifest)
 
     project_destination = package_root / "LICENSE"
-    if project_destination.exists() or project_destination.is_symlink():
-        raise RuntimeContractError(f"refusing to overwrite project license: {project_destination}")
-    shutil.copyfile(project_license, project_destination)
+    _write_bytes_exclusive(
+        project_destination,
+        project_license_content,
+        "project LICENSE",
+    )
     notice_lines = [
         "THIRD-PARTY NOTICES",
         "",
@@ -533,9 +603,86 @@ def self_test() -> None:
     )
     if len(gmp.fallback_licenses) != 1:
         raise RuntimeContractError("GMP runtime contract lost its pinned fallback licenses")
-    import tempfile
-
     with tempfile.TemporaryDirectory(prefix="gnfs-windows-runtime-evidence-") as directory:
+        atomic_directory = Path(directory) / "atomic"
+        atomic_directory.mkdir()
+        atomic_destination = atomic_directory / "contract.txt"
+        _write_bytes_exclusive(
+            atomic_destination,
+            b"complete\n",
+            "atomic fixture",
+        )
+        if atomic_destination.read_bytes() != b"complete\n":
+            raise RuntimeContractError("exclusive byte publication changed its payload")
+        try:
+            _write_bytes_exclusive(
+                atomic_destination,
+                b"replacement\n",
+                "atomic fixture",
+            )
+        except RuntimeContractError:
+            pass
+        else:
+            raise RuntimeContractError("exclusive byte publication overwrote its target")
+        if atomic_destination.read_bytes() != b"complete\n":
+            raise RuntimeContractError("exclusive byte publication changed an existing target")
+        failed_destination = atomic_directory / "failed.txt"
+        failing_primitive = "rename" if os.name == "nt" else "link"
+        with patch.object(
+            os,
+            failing_primitive,
+            side_effect=OSError("injected publication failure"),
+        ):
+            try:
+                _write_bytes_exclusive(
+                    failed_destination,
+                    b"partial\n",
+                    "failure fixture",
+                )
+            except RuntimeContractError:
+                pass
+            else:
+                raise RuntimeContractError("exclusive byte publication ignored link failure")
+        if failed_destination.exists() or list(atomic_directory.glob(".failed.txt.tmp-*")):
+            raise RuntimeContractError("exclusive byte publication left failure residue")
+        windows_destination = atomic_directory / "windows.txt"
+        _write_bytes_exclusive(
+            windows_destination,
+            b"windows\n",
+            "Windows atomic fixture",
+            platform_name="nt",
+        )
+        if windows_destination.read_bytes() != b"windows\n":
+            raise RuntimeContractError("Windows byte publication changed its payload")
+        raced_destination = atomic_directory / "raced.txt"
+        with patch.object(os, "rename", side_effect=FileExistsError("injected race")):
+            try:
+                _write_bytes_exclusive(
+                    raced_destination,
+                    b"raced\n",
+                    "Windows race fixture",
+                    platform_name="nt",
+                )
+            except RuntimeContractError:
+                pass
+            else:
+                raise RuntimeContractError(
+                    "Windows byte publication ignored a target race"
+                )
+        if raced_destination.exists() or list(atomic_directory.glob(".raced.txt.tmp-*")):
+            raise RuntimeContractError("Windows byte publication left race residue")
+        canonical_raw = Path(directory) / "canonical-raw"
+        canonical_raw.write_bytes(b"canonical\n")
+        if _read_canonical_lf(canonical_raw, "raw fixture") != b"canonical\n":
+            raise RuntimeContractError("canonical raw text changed during validation")
+        crlf_raw = Path(directory) / "crlf-raw"
+        crlf_raw.write_bytes(b"canonical\r\n")
+        try:
+            _read_canonical_lf(crlf_raw, "raw fixture")
+        except RuntimeContractError:
+            pass
+        else:
+            raise RuntimeContractError("canonical raw text validation accepted CRLF")
         canonical_license = Path(__file__).resolve().parents[1] / gmp.fallback_licenses[0].path
         canonical_payload = canonical_license.read_bytes()
         crlf_license = Path(directory) / "COPYINGv2-crlf"
