@@ -125,6 +125,12 @@ jobs:
           cmake --install build-release-readiness \
             --prefix dist/gnfs-v0.1.0-windows-x86_64
 
+      - name: Materialize canonical project license
+        env:
+          TARGET_SHA: ${{ github.sha }}
+        shell: bash
+        run: git show "${TARGET_SHA}:LICENSE" > canonical-project-LICENSE
+
       - name: Bundle and validate exact runtime/source closure
         env:
           SOURCE_DATE_EPOCH: ${{ steps.source.outputs.epoch }}
@@ -135,7 +141,7 @@ jobs:
             --package-root dist/gnfs-v0.1.0-windows-x86_64 \
             --executable dist/gnfs-v0.1.0-windows-x86_64/bin/gnfs.exe \
             --pinned-package-evidence pinned-windows-packages.json \
-            --project-license LICENSE \
+            --project-license canonical-project-LICENSE \
             --release-tag v0.1.0 \
             --target-sha "${TARGET_SHA}"
           mkdir packages

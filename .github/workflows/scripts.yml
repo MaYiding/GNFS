@@ -8,7 +8,8 @@ on:
     paths:
       - '.agents/**'
       - '.claude/**'
-      - '.github/workflows/scripts.yml'
+      - '.github/workflows/**'
+      - '.gitattributes'
       - '.gitignore'
       - 'AGENTS.md'
       - 'CMakeLists.txt'

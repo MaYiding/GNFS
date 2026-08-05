@@ -277,6 +277,12 @@ All three CLI archive roots contain the repository's byte-identical GPL-2.0
 `LICENSE`. Linux and macOS do not bundle GMP or NTL dynamic libraries, and
 their README and third-party notice state that the host must provide them.
 Windows uses a frozen MSYS2 UCRT64 baseline rather than rolling package names.
+The repository attributes pin `LICENSE` and
+`scripts/windows-ucrt64-runtime.json` to LF line endings because Windows copies
+both files into the archive and Linux later compares their bytes. Every release
+checkout compares these working-tree files with the exact target Git blobs.
+The Windows workflow also materializes `LICENSE` from that target blob, and the
+bundler rejects carriage returns in either raw-copy input before packaging.
 The workflow downloads digest-pinned GCC 16.1.0-6, GCC runtime, GMP 6.3.0-2,
 and winpthreads packages from `repo.msys2.org`, verifies their package
 archives, and installs those exact versions. NTL is not installed for this

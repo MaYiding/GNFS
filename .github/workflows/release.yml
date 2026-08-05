@@ -392,7 +392,25 @@ jobs:
             --platform macos-arm64 \
             --release-tag "${RELEASE_TAG}"
 
-      - name: Install and archive (Windows)
+      - name: Install Windows release tree
+        if: runner.os == 'Windows'
+        env:
+          ASSET_SUFFIX: ${{ matrix.asset_suffix }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          package_name="gnfs-${RELEASE_TAG}-${ASSET_SUFFIX}"
+          cmake --install build-release --prefix "dist/${package_name}"
+
+      - name: Materialize canonical project license (Windows)
+        if: runner.os == 'Windows'
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+        shell: bash
+        run: git show "${TARGET_SHA}:LICENSE" > canonical-project-LICENSE
+
+      - name: Bundle and archive (Windows)
         if: runner.os == 'Windows'
         env:
           ARCHIVE_FORMAT: ${{ matrix.archive_format }}
@@ -405,12 +423,11 @@ jobs:
           set -euo pipefail
           package_name="gnfs-${RELEASE_TAG}-${ASSET_SUFFIX}"
           prefix="dist/${package_name}"
-          cmake --install build-release --prefix "${prefix}"
           python scripts/windows_release_runtime.py bundle \
             --package-root "${prefix}" \
             --executable "${prefix}/bin/gnfs.exe" \
             --pinned-package-evidence pinned-windows-packages.json \
-            --project-license LICENSE \
+            --project-license canonical-project-LICENSE \
             --release-tag "${RELEASE_TAG}" \
             --target-sha "${TARGET_SHA}"
           mkdir -p packages

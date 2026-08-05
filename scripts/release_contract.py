@@ -49,6 +49,10 @@ FULL_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 RELEASE_WORKFLOW_PATH = ".github/workflows/release.yml"
+RAW_RELEASE_COPY_PATHS = (
+    "LICENSE",
+    "scripts/windows-ucrt64-runtime.json",
+)
 WORKBENCH_ARTIFACT_NAME = "gnfs-workbench-macos-arm64"
 WORKBENCH_INFO_KEY = "GNFSSourceRevision"
 LINUX_ABI_CEILINGS = {
@@ -440,6 +444,20 @@ def _target_commit_epoch(target_sha: str) -> int:
     return int(value)
 
 
+def _validate_raw_release_copy(
+    relative_path: str, checkout_bytes: bytes, blob: bytes
+) -> None:
+    if b"\r" in blob:
+        raise ReleaseContractError(
+            f"raw release contract Git blob is not canonical LF text: {relative_path}"
+        )
+    if checkout_bytes != blob:
+        raise ReleaseContractError(
+            "raw release contract input differs byte-for-byte from the target Git blob: "
+            f"{relative_path}"
+        )
+
+
 def validate_dispatch(
     mode: str,
     release_tag: str,
@@ -495,6 +513,25 @@ def verify_checkout(target_sha: str, repository_root: Path) -> None:
     ).stdout
     if status:
         raise ReleaseContractError("exact-SHA checkout is not clean before release work")
+    for relative_path in RAW_RELEASE_COPY_PATHS:
+        checkout_path = root / relative_path
+        if not checkout_path.is_file() or checkout_path.is_symlink():
+            raise ReleaseContractError(
+                f"raw release contract input is not a regular file: {relative_path}"
+            )
+        try:
+            blob = subprocess.run(
+                ["git", "show", f"{target_sha}:{relative_path}"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            ).stdout
+            checkout_bytes = checkout_path.read_bytes()
+        except (OSError, subprocess.CalledProcessError) as error:
+            raise ReleaseContractError(
+                f"unable to compare raw release contract input {relative_path}: {error}"
+            ) from error
+        _validate_raw_release_copy(relative_path, checkout_bytes, blob)
 
 
 def _release_candidates(
@@ -1058,15 +1095,27 @@ def _validate_safe_zip(archive: zipfile.ZipFile) -> None:
             raise ReleaseContractError(f"ZIP contains a symlink: {info.filename}")
 
 
+def _canonicalize_checkout_text(content: bytes, label: str) -> bytes:
+    content = content.replace(b"\r\n", b"\n")
+    if b"\r" in content:
+        raise ReleaseContractError(f"{label} contains a noncanonical carriage return")
+    return content
+
+
+def _canonicalize_project_license(content: bytes) -> bytes:
+    content = _canonicalize_checkout_text(content, "project LICENSE")
+    if b"GNU GENERAL PUBLIC LICENSE" not in content or b"Version 2" not in content:
+        raise ReleaseContractError("project LICENSE is not the expected GPL-2.0 text")
+    return content
+
+
 def _project_license() -> bytes:
     license_path = Path(__file__).resolve().parents[1] / "LICENSE"
     try:
         content = license_path.read_bytes()
     except OSError as error:
         raise ReleaseContractError(f"unable to read project LICENSE: {error}") from error
-    if b"GNU GENERAL PUBLIC LICENSE" not in content or b"Version 2" not in content:
-        raise ReleaseContractError("project LICENSE is not the expected GPL-2.0 text")
-    return content
+    return _canonicalize_project_license(content)
 
 
 def _validate_workbench_zip(zip_path: Path, target_sha: str, release_tag: str) -> None:
@@ -1241,6 +1290,9 @@ def _validate_windows_runtime_manifest(
         expected_contract_bytes = WINDOWS_RUNTIME_CONTRACT_PATH.read_bytes()
     except OSError as error:
         raise ReleaseContractError(f"unable to read Windows runtime contract: {error}") from error
+    expected_contract_bytes = _canonicalize_checkout_text(
+        expected_contract_bytes, "Windows runtime contract"
+    )
     if (
         manifest.get("schema_version") != 2
         or manifest.get("runtime") != contract.runtime
@@ -3078,12 +3130,112 @@ def _validate_required_main_push_trigger(workflow_path: Path, workflow_text: str
         )
 
 
+def _validate_script_checks_pr_trigger(workflow_text: str) -> None:
+    pull_request_block = _workflow_trigger_block(workflow_text, "pull_request")
+    workflow_glob = "      - '.github/workflows/**'\n"
+    attributes_path = "      - '.gitattributes'\n"
+    if pull_request_block.count(workflow_glob) != 1:
+        raise ReleaseContractError(
+            "Script Checks pull requests must cover every GitHub workflow exactly once"
+        )
+    if pull_request_block.count(attributes_path) != 1:
+        raise ReleaseContractError(
+            "Script Checks pull requests must cover .gitattributes exactly once"
+        )
+    if "      - '.github/workflows/scripts.yml'\n" in pull_request_block:
+        raise ReleaseContractError(
+            "Script Checks must not narrow workflow validation to its own file"
+        )
+    if re.search(r"(?m)^\s*-\s*['\"]?!", pull_request_block) or re.search(
+        r"(?m)^\s+paths-ignore:\s*$", pull_request_block
+    ):
+        raise ReleaseContractError(
+            "Script Checks pull-request paths must not contain exclusions"
+        )
+
+
+def _validate_windows_canonical_license_input(
+    workflow_name: str,
+    windows_job_text: str,
+    materialization_step: str,
+    install_fragment: str,
+) -> None:
+    verify_fragment = "scripts/release_contract.py verify-checkout"
+    bundle_fragment = "scripts/windows_release_runtime.py bundle"
+    git_show_fragment = (
+        'git show "${TARGET_SHA}:LICENSE" > canonical-project-LICENSE'
+    )
+    license_argument = "            --project-license canonical-project-LICENSE \\\n"
+    if windows_job_text.count(verify_fragment) != 1:
+        raise ReleaseContractError(
+            f"{workflow_name} Windows packaging job must verify its checkout exactly once"
+        )
+    if windows_job_text.count(bundle_fragment) != 1:
+        raise ReleaseContractError(
+            f"{workflow_name} Windows packaging job must invoke its bundler exactly once"
+        )
+    if windows_job_text.count(install_fragment) != 1:
+        raise ReleaseContractError(
+            f"{workflow_name} Windows packaging job must install its release tree exactly once"
+        )
+    if windows_job_text.count(materialization_step) != 1:
+        raise ReleaseContractError(
+            f"{workflow_name} Windows packaging job must materialize the target Git "
+            "LICENSE in one dedicated bash step"
+        )
+    if windows_job_text.count(git_show_fragment) != 1 or len(
+        re.findall(r'git show "\$\{TARGET_SHA\}:LICENSE"', windows_job_text)
+    ) != 1:
+        raise ReleaseContractError(
+            f"{workflow_name} Windows packaging job must read the target LICENSE exactly once"
+        )
+    if [
+        line
+        for line in windows_job_text.splitlines(keepends=True)
+        if line == license_argument
+    ] != [license_argument]:
+        raise ReleaseContractError(
+            f"{workflow_name} Windows packaging job must consume the canonical project "
+            "LICENSE exactly once"
+        )
+    if len(re.findall(r"(?m)^\s*--project-license\b[^\n]*$", windows_job_text)) != 1:
+        raise ReleaseContractError(
+            f"{workflow_name} Windows packaging job must have one project LICENSE input"
+        )
+    verify_index = windows_job_text.index(verify_fragment)
+    install_index = windows_job_text.index(install_fragment)
+    materialize_index = windows_job_text.index(materialization_step)
+    bundle_index = windows_job_text.index(bundle_fragment)
+    license_index = windows_job_text.index(license_argument)
+    if not verify_index < install_index < materialize_index < bundle_index < license_index:
+        raise ReleaseContractError(
+            f"{workflow_name} Windows packaging job must verify, install, materialize, "
+            "and then bundle the target LICENSE"
+        )
+
+
 def validate_workflow_sources(release_workflow: Path, qualification_workflow: Path) -> None:
     release_text = release_workflow.read_text(encoding="utf-8")
     qualification_text = qualification_workflow.read_text(encoding="utf-8")
     readiness_workflow = release_workflow.with_name("release-readiness.yml")
     readiness_text = readiness_workflow.read_text(encoding="utf-8")
+    script_checks_workflow = release_workflow.with_name("scripts.yml")
+    script_checks_text = script_checks_workflow.read_text(encoding="utf-8")
+    _validate_script_checks_pr_trigger(script_checks_text)
     repository_root = release_workflow.parents[2]
+    attributes_path = repository_root / ".gitattributes"
+    expected_attributes = (
+        "LICENSE text eol=lf\n"
+        "scripts/windows-ucrt64-runtime.json text eol=lf\n"
+    )
+    if (
+        not attributes_path.is_file()
+        or attributes_path.is_symlink()
+        or attributes_path.read_text(encoding="utf-8") != expected_attributes
+    ):
+        raise ReleaseContractError(
+            "release raw-copy inputs must have the exact canonical LF Git attributes"
+        )
     linux_toolchain_installer = (
         repository_root / "scripts" / "install_linux_release_toolchain.sh"
     )
@@ -3100,6 +3252,31 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
     _validate_linux_cmake_toolchain_text(
         linux_cmake_toolchain.read_text(encoding="utf-8")
     )
+    windows_runtime_bundler = repository_root / "scripts" / "windows_release_runtime.py"
+    if not windows_runtime_bundler.is_file():
+        raise ReleaseContractError("Windows release runtime bundler is missing")
+    windows_runtime_bundler_text = windows_runtime_bundler.read_text(encoding="utf-8")
+    for fragment in (
+        "def _read_canonical_lf(path: Path, label: str) -> bytes:",
+        'if b"\\r" in payload:',
+        '_read_canonical_lf(project_license, "project LICENSE")',
+        'CONTRACT_PATH, "Windows runtime contract"',
+        "def _write_bytes_exclusive(\n",
+        'platform_name: str = ""',
+        "os.fsync(handle.fileno())",
+        "active_platform = platform_name or os.name",
+        'if active_platform == "nt":',
+        "os.rename(temporary_path, path)",
+        "os.link(temporary_path, path)",
+        "temporary_path.unlink(missing_ok=True)",
+        "_write_bytes_exclusive(\n        contract_destination,",
+        "_write_bytes_exclusive(\n        project_destination,",
+    ):
+        if windows_runtime_bundler_text.count(fragment) != 1:
+            raise ReleaseContractError(
+                "Windows release runtime bundler lost canonical project LICENSE "
+                f"handling: {fragment}"
+            )
     required_linux_toolchain_fragments = (
         "#!/usr/bin/env bash",
         "set -euo pipefail",
@@ -3227,6 +3404,39 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
         workflow_file = release_workflow.parent / workflow_path.name
         workflow_text = workflow_file.read_text(encoding="utf-8")
         _validate_required_main_push_trigger(workflow_path, workflow_text)
+    release_license_step = (
+        "      - name: Materialize canonical project license (Windows)\n"
+        "        if: runner.os == 'Windows'\n"
+        "        env:\n"
+        "          TARGET_SHA: ${{ inputs.target_sha }}\n"
+        "        shell: bash\n"
+        '        run: git show "${TARGET_SHA}:LICENSE" > canonical-project-LICENSE\n'
+    )
+    readiness_license_step = (
+        "      - name: Materialize canonical project license\n"
+        "        env:\n"
+        "          TARGET_SHA: ${{ github.sha }}\n"
+        "        shell: bash\n"
+        '        run: git show "${TARGET_SHA}:LICENSE" > canonical-project-LICENSE\n'
+    )
+    for workflow_name, windows_job_text, license_step, install_fragment in (
+        (
+            "release",
+            _workflow_job_block(release_text, "package-cli"),
+            release_license_step,
+            'cmake --install build-release --prefix "dist/${package_name}"',
+        ),
+        (
+            "release readiness",
+            _workflow_job_block(readiness_text, "windows-runtime-closure"),
+            readiness_license_step,
+            "cmake --install build-release-readiness \\\n"
+            "            --prefix dist/gnfs-v0.1.0-windows-x86_64",
+        ),
+    ):
+        _validate_windows_canonical_license_input(
+            workflow_name, windows_job_text, license_step, install_fragment
+        )
     forbidden_release_fragments = (
         "if: always()",
         "--clobber",
@@ -3721,7 +3931,10 @@ def _make_cli_archive(directory: Path, platform: str) -> Path:
             if package.name == "mingw-w64-ucrt-x86_64-gmp":
                 notice_lines.append("license selection: GNU GPL version 2")
         dependencies.sort(key=lambda item: item["dll"].lower())
-        contract_bytes = WINDOWS_RUNTIME_CONTRACT_PATH.read_bytes()
+        contract_bytes = _canonicalize_checkout_text(
+            WINDOWS_RUNTIME_CONTRACT_PATH.read_bytes(),
+            "Windows runtime contract",
+        )
         (root / WINDOWS_RUNTIME_CONTRACT_PATH.name).write_bytes(contract_bytes)
         manifest = {
             "contract_file": WINDOWS_RUNTIME_CONTRACT_PATH.name,
@@ -3800,6 +4013,180 @@ def self_test() -> None:
     repository_root, target_sha = _repository_head(Path(__file__).resolve().parents[1])
     repository = "example/GNFS"
     workflow_ref = f"{repository}/{RELEASE_WORKFLOW_PATH}@refs/heads/main"
+    canonical_license = _project_license()
+    crlf_checkout_license = canonical_license.replace(b"\n", b"\r\n")
+    if _canonicalize_project_license(crlf_checkout_license) != canonical_license:
+        raise ReleaseContractError(
+            "project LICENSE canonicalization changed checkout-equivalent content"
+        )
+    try:
+        _canonicalize_project_license(canonical_license + b"\r")
+    except ReleaseContractError:
+        pass
+    else:
+        raise ReleaseContractError(
+            "project LICENSE canonicalization accepted a bare carriage return"
+        )
+    canonical_runtime_contract = _canonicalize_checkout_text(
+        WINDOWS_RUNTIME_CONTRACT_PATH.read_bytes(),
+        "Windows runtime contract",
+    )
+    if (
+        _canonicalize_checkout_text(
+            canonical_runtime_contract.replace(b"\n", b"\r\n"),
+            "Windows runtime contract",
+        )
+        != canonical_runtime_contract
+    ):
+        raise ReleaseContractError(
+            "Windows runtime contract canonicalization changed checkout-equivalent content"
+        )
+    _validate_raw_release_copy("fixture.txt", b"canonical\n", b"canonical\n")
+    invalid_raw_copies = (
+        ("checkout CRLF", b"canonical\r\n", b"canonical\n"),
+        ("Git blob CRLF", b"canonical\r\n", b"canonical\r\n"),
+        ("arbitrary checkout drift", b"changed\n", b"canonical\n"),
+    )
+    for label, checkout_bytes, blob in invalid_raw_copies:
+        try:
+            _validate_raw_release_copy("fixture.txt", checkout_bytes, blob)
+        except ReleaseContractError:
+            pass
+        else:
+            raise ReleaseContractError(
+                f"raw release copy validation accepted {label}"
+            )
+    valid_license_step = (
+        "      - name: Materialize canonical project license fixture\n"
+        "        env:\n"
+        "          TARGET_SHA: ${{ fixture.sha }}\n"
+        "        shell: bash\n"
+        '        run: git show "${TARGET_SHA}:LICENSE" > canonical-project-LICENSE\n'
+    )
+    license_argument = "            --project-license canonical-project-LICENSE \\\n"
+    fixture_install = "cmake --install fixture"
+    valid_windows_license_job = (
+        "          python scripts/release_contract.py verify-checkout \\\n"
+        "            --target-sha \"${TARGET_SHA}\"\n"
+        + f"          {fixture_install}\n"
+        + valid_license_step
+        + "          python scripts/windows_release_runtime.py bundle \\\n"
+        + license_argument
+        + "            --target-sha \"${TARGET_SHA}\"\n"
+    )
+    _validate_windows_canonical_license_input(
+        "fixture", valid_windows_license_job, valid_license_step, fixture_install
+    )
+    invalid_windows_license_jobs = {
+        "missing checkout verification": valid_windows_license_job.replace(
+            "scripts/release_contract.py verify-checkout",
+            "scripts/release_contract.py omitted-checkout",
+            1,
+        ),
+        "duplicate checkout verification": valid_windows_license_job.replace(
+            valid_license_step,
+            "scripts/release_contract.py verify-checkout\n" + valid_license_step,
+            1,
+        ),
+        "missing release tree install": valid_windows_license_job.replace(
+            fixture_install, "cmake --omitted-install fixture", 1
+        ),
+        "duplicate release tree install": valid_windows_license_job.replace(
+            valid_license_step, f"{fixture_install}\n" + valid_license_step, 1
+        ),
+        "materialization before install": valid_windows_license_job.replace(
+            f"          {fixture_install}\n" + valid_license_step,
+            valid_license_step + f"          {fixture_install}\n",
+            1,
+        ),
+        "materialization in MSYS2": valid_windows_license_job.replace(
+            "        shell: bash\n", "        shell: msys2 {0}\n", 1
+        ),
+        "duplicate materialization": valid_windows_license_job.replace(
+            valid_license_step, valid_license_step + valid_license_step, 1
+        ),
+        "license suffix path": valid_windows_license_job.replace(
+            "--project-license canonical-project-LICENSE",
+            "--project-license canonical-project-LICENSE.bak",
+            1,
+        ),
+        "additional license input": valid_windows_license_job.replace(
+            license_argument,
+            license_argument + "            --project-license LICENSE \\\n",
+            1,
+        ),
+        "license before bundler": valid_windows_license_job.replace(
+            "          python scripts/windows_release_runtime.py bundle \\\n"
+            + license_argument,
+            license_argument
+            + "          python scripts/windows_release_runtime.py bundle \\\n",
+            1,
+        ),
+        "duplicate Git blob read": valid_windows_license_job.replace(
+            valid_license_step,
+            valid_license_step
+            + 'git show "${TARGET_SHA}:LICENSE" > second-project-LICENSE\n',
+            1,
+        ),
+    }
+    for label, job_text in invalid_windows_license_jobs.items():
+        try:
+            _validate_windows_canonical_license_input(
+                "fixture", job_text, valid_license_step, fixture_install
+            )
+        except ReleaseContractError:
+            pass
+        else:
+            raise ReleaseContractError(
+                f"Windows project LICENSE workflow self-test accepted {label}"
+            )
+    valid_script_checks_trigger = """name: Script Checks Fixture
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/**'
+      - '.gitattributes'
+      - 'scripts/**'
+"""
+    _validate_script_checks_pr_trigger(valid_script_checks_trigger)
+    invalid_script_checks_triggers = {
+        "narrow workflow path": valid_script_checks_trigger.replace(
+            "      - '.github/workflows/**'",
+            "      - '.github/workflows/scripts.yml'",
+            1,
+        ),
+        "missing workflow path": valid_script_checks_trigger.replace(
+            "      - '.github/workflows/**'\n",
+            "",
+            1,
+        ),
+        "missing attributes path": valid_script_checks_trigger.replace(
+            "      - '.gitattributes'\n",
+            "",
+            1,
+        ),
+        "negated workflow path": valid_script_checks_trigger.replace(
+            "      - 'scripts/**'",
+            "      - 'scripts/**'\n      - '!.github/workflows/release*.yml'",
+            1,
+        ),
+        "paths-ignore": valid_script_checks_trigger.replace(
+            "    paths:",
+            "    paths-ignore:",
+            1,
+        ),
+    }
+    for label, workflow_text in invalid_script_checks_triggers.items():
+        try:
+            _validate_script_checks_pr_trigger(workflow_text)
+        except ReleaseContractError:
+            pass
+        else:
+            raise ReleaseContractError(
+                f"Script Checks trigger self-test accepted {label}"
+            )
     _validate_linux_cmake_toolchain_text(LINUX_RELEASE_CMAKE_TOOLCHAIN_TEXT)
     invalid_linux_toolchains = {
         "missing archiver": LINUX_RELEASE_CMAKE_TOOLCHAIN_TEXT.replace(
@@ -4558,6 +4945,38 @@ on:
             "missing-gmp-gpl2-selection",
             remove_gmp_selection,
             "omits the GMP GNU GPL version 2 selection",
+        )
+
+        def transform_project_license_to_crlf(name: str, payload: bytes) -> bytes:
+            if name == f"{windows_root}/LICENSE":
+                return payload.replace(b"\n", b"\r\n")
+            return payload
+
+        expect_windows_archive_rejection(
+            "checkout-transformed-license",
+            transform_project_license_to_crlf,
+            "project LICENSE is missing or does not match",
+        )
+
+        runtime_contract_name = f"{windows_root}/{WINDOWS_RUNTIME_CONTRACT_PATH.name}"
+        runtime_manifest_name = f"{windows_root}/runtime-dependencies.json"
+        crlf_runtime_contract = canonical_runtime_contract.replace(b"\n", b"\r\n")
+
+        def transform_runtime_contract_to_crlf(name: str, payload: bytes) -> bytes:
+            if name == runtime_contract_name:
+                return crlf_runtime_contract
+            if name != runtime_manifest_name:
+                return payload
+            manifest = json.loads(payload)
+            manifest["contract_sha256"] = hashlib.sha256(
+                crlf_runtime_contract
+            ).hexdigest()
+            return (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
+
+        expect_windows_archive_rejection(
+            "checkout-transformed-runtime-contract",
+            transform_runtime_contract_to_crlf,
+            "Windows runtime manifest identity is invalid",
         )
         expect_windows_archive_rejection(
             "unexpected-gf2x",
