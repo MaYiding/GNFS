@@ -3154,6 +3154,66 @@ def _validate_script_checks_pr_trigger(workflow_text: str) -> None:
         )
 
 
+def _validate_windows_canonical_license_input(
+    workflow_name: str,
+    windows_job_text: str,
+    materialization_step: str,
+    install_fragment: str,
+) -> None:
+    verify_fragment = "scripts/release_contract.py verify-checkout"
+    bundle_fragment = "scripts/windows_release_runtime.py bundle"
+    git_show_fragment = (
+        'git show "${TARGET_SHA}:LICENSE" > canonical-project-LICENSE'
+    )
+    license_argument = "            --project-license canonical-project-LICENSE \\\n"
+    if windows_job_text.count(verify_fragment) != 1:
+        raise ReleaseContractError(
+            f"{workflow_name} Windows packaging job must verify its checkout exactly once"
+        )
+    if windows_job_text.count(bundle_fragment) != 1:
+        raise ReleaseContractError(
+            f"{workflow_name} Windows packaging job must invoke its bundler exactly once"
+        )
+    if windows_job_text.count(install_fragment) != 1:
+        raise ReleaseContractError(
+            f"{workflow_name} Windows packaging job must install its release tree exactly once"
+        )
+    if windows_job_text.count(materialization_step) != 1:
+        raise ReleaseContractError(
+            f"{workflow_name} Windows packaging job must materialize the target Git "
+            "LICENSE in one dedicated bash step"
+        )
+    if windows_job_text.count(git_show_fragment) != 1 or len(
+        re.findall(r'git show "\$\{TARGET_SHA\}:LICENSE"', windows_job_text)
+    ) != 1:
+        raise ReleaseContractError(
+            f"{workflow_name} Windows packaging job must read the target LICENSE exactly once"
+        )
+    if [
+        line
+        for line in windows_job_text.splitlines(keepends=True)
+        if line == license_argument
+    ] != [license_argument]:
+        raise ReleaseContractError(
+            f"{workflow_name} Windows packaging job must consume the canonical project "
+            "LICENSE exactly once"
+        )
+    if len(re.findall(r"(?m)^\s*--project-license\b[^\n]*$", windows_job_text)) != 1:
+        raise ReleaseContractError(
+            f"{workflow_name} Windows packaging job must have one project LICENSE input"
+        )
+    verify_index = windows_job_text.index(verify_fragment)
+    install_index = windows_job_text.index(install_fragment)
+    materialize_index = windows_job_text.index(materialization_step)
+    bundle_index = windows_job_text.index(bundle_fragment)
+    license_index = windows_job_text.index(license_argument)
+    if not verify_index < install_index < materialize_index < bundle_index < license_index:
+        raise ReleaseContractError(
+            f"{workflow_name} Windows packaging job must verify, install, materialize, "
+            "and then bundle the target LICENSE"
+        )
+
+
 def validate_workflow_sources(release_workflow: Path, qualification_workflow: Path) -> None:
     release_text = release_workflow.read_text(encoding="utf-8")
     qualification_text = qualification_workflow.read_text(encoding="utf-8")
@@ -3344,24 +3404,39 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
         workflow_file = release_workflow.parent / workflow_path.name
         workflow_text = workflow_file.read_text(encoding="utf-8")
         _validate_required_main_push_trigger(workflow_path, workflow_text)
-    canonical_license_fragments = (
-        'git show "${TARGET_SHA}:LICENSE" > canonical-project-LICENSE',
-        "--project-license canonical-project-LICENSE",
+    release_license_step = (
+        "      - name: Materialize canonical project license (Windows)\n"
+        "        if: runner.os == 'Windows'\n"
+        "        env:\n"
+        "          TARGET_SHA: ${{ inputs.target_sha }}\n"
+        "        shell: bash\n"
+        '        run: git show "${TARGET_SHA}:LICENSE" > canonical-project-LICENSE\n'
     )
-    for workflow_name, workflow_text in (
-        ("release", release_text),
-        ("release readiness", readiness_text),
+    readiness_license_step = (
+        "      - name: Materialize canonical project license\n"
+        "        env:\n"
+        "          TARGET_SHA: ${{ github.sha }}\n"
+        "        shell: bash\n"
+        '        run: git show "${TARGET_SHA}:LICENSE" > canonical-project-LICENSE\n'
+    )
+    for workflow_name, windows_job_text, license_step, install_fragment in (
+        (
+            "release",
+            _workflow_job_block(release_text, "package-cli"),
+            release_license_step,
+            'cmake --install build-release --prefix "dist/${package_name}"',
+        ),
+        (
+            "release readiness",
+            _workflow_job_block(readiness_text, "windows-runtime-closure"),
+            readiness_license_step,
+            "cmake --install build-release-readiness \\\n"
+            "            --prefix dist/gnfs-v0.1.0-windows-x86_64",
+        ),
     ):
-        for fragment in canonical_license_fragments:
-            if workflow_text.count(fragment) != 1:
-                raise ReleaseContractError(
-                    f"{workflow_name} workflow must materialize the canonical project "
-                    f"LICENSE exactly once: {fragment}"
-                )
-        if "--project-license LICENSE" in workflow_text:
-            raise ReleaseContractError(
-                f"{workflow_name} workflow must not package checkout-transformed LICENSE bytes"
-            )
+        _validate_windows_canonical_license_input(
+            workflow_name, windows_job_text, license_step, install_fragment
+        )
     forbidden_release_fragments = (
         "if: always()",
         "--clobber",
@@ -3970,6 +4045,7 @@ def self_test() -> None:
     invalid_raw_copies = (
         ("checkout CRLF", b"canonical\r\n", b"canonical\n"),
         ("Git blob CRLF", b"canonical\r\n", b"canonical\r\n"),
+        ("arbitrary checkout drift", b"changed\n", b"canonical\n"),
     )
     for label, checkout_bytes, blob in invalid_raw_copies:
         try:
@@ -3979,6 +4055,90 @@ def self_test() -> None:
         else:
             raise ReleaseContractError(
                 f"raw release copy validation accepted {label}"
+            )
+    valid_license_step = (
+        "      - name: Materialize canonical project license fixture\n"
+        "        env:\n"
+        "          TARGET_SHA: ${{ fixture.sha }}\n"
+        "        shell: bash\n"
+        '        run: git show "${TARGET_SHA}:LICENSE" > canonical-project-LICENSE\n'
+    )
+    license_argument = "            --project-license canonical-project-LICENSE \\\n"
+    fixture_install = "cmake --install fixture"
+    valid_windows_license_job = (
+        "          python scripts/release_contract.py verify-checkout \\\n"
+        "            --target-sha \"${TARGET_SHA}\"\n"
+        + f"          {fixture_install}\n"
+        + valid_license_step
+        + "          python scripts/windows_release_runtime.py bundle \\\n"
+        + license_argument
+        + "            --target-sha \"${TARGET_SHA}\"\n"
+    )
+    _validate_windows_canonical_license_input(
+        "fixture", valid_windows_license_job, valid_license_step, fixture_install
+    )
+    invalid_windows_license_jobs = {
+        "missing checkout verification": valid_windows_license_job.replace(
+            "scripts/release_contract.py verify-checkout",
+            "scripts/release_contract.py omitted-checkout",
+            1,
+        ),
+        "duplicate checkout verification": valid_windows_license_job.replace(
+            valid_license_step,
+            "scripts/release_contract.py verify-checkout\n" + valid_license_step,
+            1,
+        ),
+        "missing release tree install": valid_windows_license_job.replace(
+            fixture_install, "cmake --omitted-install fixture", 1
+        ),
+        "duplicate release tree install": valid_windows_license_job.replace(
+            valid_license_step, f"{fixture_install}\n" + valid_license_step, 1
+        ),
+        "materialization before install": valid_windows_license_job.replace(
+            f"          {fixture_install}\n" + valid_license_step,
+            valid_license_step + f"          {fixture_install}\n",
+            1,
+        ),
+        "materialization in MSYS2": valid_windows_license_job.replace(
+            "        shell: bash\n", "        shell: msys2 {0}\n", 1
+        ),
+        "duplicate materialization": valid_windows_license_job.replace(
+            valid_license_step, valid_license_step + valid_license_step, 1
+        ),
+        "license suffix path": valid_windows_license_job.replace(
+            "--project-license canonical-project-LICENSE",
+            "--project-license canonical-project-LICENSE.bak",
+            1,
+        ),
+        "additional license input": valid_windows_license_job.replace(
+            license_argument,
+            license_argument + "            --project-license LICENSE \\\n",
+            1,
+        ),
+        "license before bundler": valid_windows_license_job.replace(
+            "          python scripts/windows_release_runtime.py bundle \\\n"
+            + license_argument,
+            license_argument
+            + "          python scripts/windows_release_runtime.py bundle \\\n",
+            1,
+        ),
+        "duplicate Git blob read": valid_windows_license_job.replace(
+            valid_license_step,
+            valid_license_step
+            + 'git show "${TARGET_SHA}:LICENSE" > second-project-LICENSE\n',
+            1,
+        ),
+    }
+    for label, job_text in invalid_windows_license_jobs.items():
+        try:
+            _validate_windows_canonical_license_input(
+                "fixture", job_text, valid_license_step, fixture_install
+            )
+        except ReleaseContractError:
+            pass
+        else:
+            raise ReleaseContractError(
+                f"Windows project LICENSE workflow self-test accepted {label}"
             )
     valid_script_checks_trigger = """name: Script Checks Fixture
 

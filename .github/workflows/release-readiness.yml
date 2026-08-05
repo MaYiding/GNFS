@@ -125,13 +125,18 @@ jobs:
           cmake --install build-release-readiness \
             --prefix dist/gnfs-v0.1.0-windows-x86_64
 
+      - name: Materialize canonical project license
+        env:
+          TARGET_SHA: ${{ github.sha }}
+        shell: bash
+        run: git show "${TARGET_SHA}:LICENSE" > canonical-project-LICENSE
+
       - name: Bundle and validate exact runtime/source closure
         env:
           SOURCE_DATE_EPOCH: ${{ steps.source.outputs.epoch }}
           TARGET_SHA: ${{ github.sha }}
         shell: msys2 {0}
         run: |
-          git show "${TARGET_SHA}:LICENSE" > canonical-project-LICENSE
           python scripts/windows_release_runtime.py bundle \
             --package-root dist/gnfs-v0.1.0-windows-x86_64 \
             --executable dist/gnfs-v0.1.0-windows-x86_64/bin/gnfs.exe \
