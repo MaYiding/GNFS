@@ -236,6 +236,23 @@ jobs:
           --no-tests=error `
           -C ${{ matrix.build_type }}
 
+    - name: Run Windows BW Krylov mmap integration
+      if: runner.os == 'Windows'
+      shell: pwsh
+      working-directory: build
+      run: |
+        $vcpkgBin = Join-Path $env:VCPKG_INSTALLATION_ROOT "installed\x64-windows\bin"
+        if (!(Test-Path -LiteralPath $vcpkgBin -PathType Container)) {
+          throw "vcpkg runtime directory is missing: $vcpkgBin"
+        }
+        $env:PATH = "$vcpkgBin;$env:PATH"
+        ctest --output-on-failure `
+          --tests-regex '^BWKrylovMmapIntegration$' `
+          --parallel 1 `
+          --timeout 60 `
+          --no-tests=error `
+          -C ${{ matrix.build_type }}
+
   linux-release-gate:
     name: Linux x86_64 Release deep gate
     runs-on: ubuntu-24.04
