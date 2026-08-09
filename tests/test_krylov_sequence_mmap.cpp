@@ -22,6 +22,7 @@
 #include <ios>
 #include <iostream>
 #include <istream>
+#include <limits>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -134,6 +135,16 @@ bool throws_with_message(Callable&& callable, std::string_view expected_message)
         std::forward<Callable>(callable)();
     } catch (const Exception& error) {
         return std::string_view(error.what()).find(expected_message) != std::string_view::npos;
+    }
+    return false;
+}
+
+template <typename Exception, typename Callable>
+bool throws_with_exact_message(Callable&& callable, std::string_view expected_message) {
+    try {
+        std::forward<Callable>(callable)();
+    } catch (const Exception& error) {
+        return std::string_view(error.what()) == expected_message;
     }
     return false;
 }
@@ -374,7 +385,62 @@ void test_invalid_args() {
     GNFS_TEST_CHECK(!path_exists(zero_entry_path));
     GNFS_TEST_CHECK(zero_entry_threw);
 
-    std::cout << "  Zero dimensions fail before file creation: PASS\n";
+    constexpr auto max_uint64 = (std::numeric_limits<std::uint64_t>::max)();
+    constexpr std::uint64_t overflow_entry_size = 2;
+    constexpr std::uint64_t overflow_length =
+        (max_uint64 - static_cast<std::uint64_t>(KrylovSequenceMmap::HEADER_SIZE)) /
+            overflow_entry_size +
+        1;
+    const auto overflow_path = unique_path("size_overflow");
+    PathCleanup overflow_cleanup(overflow_path);
+    GNFS_TEST_CHECK(!path_exists(overflow_path));
+    const bool overflow_threw = throws_with_exact_message<std::overflow_error>(
+        [&] { (void)KrylovSequenceMmap(overflow_path, overflow_length, overflow_entry_size); },
+        "KrylovSequenceMmap: file size overflow");
+    GNFS_TEST_CHECK(!path_exists(overflow_path));
+    GNFS_TEST_CHECK(overflow_threw);
+
+    using NativeFileOffset = detail::krylov_native_file_offset_t;
+    constexpr auto native_max =
+        static_cast<std::uint64_t>((std::numeric_limits<NativeFileOffset>::max)());
+    static_assert(native_max >= KrylovSequenceMmap::HEADER_SIZE);
+    static_assert(native_max < max_uint64);
+    constexpr std::uint64_t native_overflow_length =
+        native_max - static_cast<std::uint64_t>(KrylovSequenceMmap::HEADER_SIZE) + 1;
+    const auto native_overflow_path = unique_path("native_offset_overflow");
+    PathCleanup native_overflow_cleanup(native_overflow_path);
+    GNFS_TEST_CHECK(!path_exists(native_overflow_path));
+    const bool native_overflow_threw = throws_with_exact_message<std::overflow_error>(
+        [&] { (void)KrylovSequenceMmap(native_overflow_path, native_overflow_length, 1); },
+        "KrylovSequenceMmap: file too large for native file offset");
+    GNFS_TEST_CHECK(!path_exists(native_overflow_path));
+    GNFS_TEST_CHECK(native_overflow_threw);
+
+    const auto truncation_path = unique_path("preflight_preserves_existing");
+    PathCleanup truncation_cleanup(truncation_path);
+    constexpr std::string_view sentinel = "GNFS Krylov size preflight";
+    {
+        std::ofstream output(std::filesystem::path(truncation_path),
+                             std::ios::binary | std::ios::trunc);
+        GNFS_TEST_CHECK(output.is_open());
+        output.write(sentinel.data(), static_cast<std::streamsize>(sentinel.size()));
+        GNFS_TEST_CHECK(output.good());
+    }
+    GNFS_TEST_CHECK(path_exists(truncation_path));
+    const bool truncation_guard_threw = throws_with_exact_message<std::overflow_error>(
+        [&] { (void)KrylovSequenceMmap(truncation_path, native_overflow_length, 1); },
+        "KrylovSequenceMmap: file too large for native file offset");
+    GNFS_TEST_CHECK(truncation_guard_threw);
+    GNFS_TEST_CHECK(path_exists(truncation_path));
+    GNFS_TEST_CHECK(checked_file_size(truncation_path) == sentinel.size());
+    std::ifstream preserved_input(std::filesystem::path(truncation_path), std::ios::binary);
+    GNFS_TEST_CHECK(preserved_input.is_open());
+    std::string preserved(sentinel.size(), '\0');
+    preserved_input.read(preserved.data(), static_cast<std::streamsize>(preserved.size()));
+    GNFS_TEST_CHECK(preserved_input.gcount() == static_cast<std::streamsize>(preserved.size()));
+    GNFS_TEST_CHECK(std::string_view(preserved) == sentinel);
+
+    std::cout << "  Invalid sizes fail before file creation or truncation: PASS\n";
 }
 
 void test_move_semantics() {

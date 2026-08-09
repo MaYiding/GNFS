@@ -52,9 +52,11 @@ correctness oracle in CI. New or modified correctness tests must use a check
 that remains active in Release builds. The first migrated mathematical chain is
 `Integer`, `IntPolynomial`, `LinearAlgebra`, and `SquareRoot`; these tests use
 `GNFS_TEST_CHECK` from `tests/support/test_check.hpp` in every build type.
-The `KrylovSequenceMmap` persistence and handle-lifecycle contract uses the
-same Release-active check and exercises the real Win32 file-mapping path on
-Windows instead of a platform stub.
+The `KrylovSequenceMmap` persistence, handle-lifecycle, and size-boundary
+contract uses the same Release-active check and exercises the real Win32
+file-mapping path on Windows instead of a platform stub. Arithmetic or native
+file-offset sizes that cannot be represented must fail before creating or
+truncating the requested path.
 The three `BWKrylovMmapIntegration` contracts also require every returned
 dependency to be valid and preserve bit-for-bit ON/OFF results while proving
 that the mmap route did not fall back to the scalar solver.

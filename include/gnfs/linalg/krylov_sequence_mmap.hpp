@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -23,68 +24,98 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 #endif
 
 namespace gnfs::linalg {
 
+namespace detail {
+
+inline constexpr std::uint64_t krylov_file_header_size = 4 * sizeof(std::uint64_t);
+
+#ifdef _WIN32
+using krylov_native_file_offset_t = LONGLONG;
+#else
+using krylov_native_file_offset_t = off_t;
+#endif
+
+struct CheckedKrylovFileSize {
+    std::size_t mapped_size;
+    krylov_native_file_offset_t native_size;
+};
+
+[[nodiscard]] inline CheckedKrylovFileSize checked_krylov_file_size(std::uint64_t length,
+                                                                    std::uint64_t entry_size) {
+    if (length == 0 || entry_size == 0) {
+        throw std::invalid_argument("KrylovSequenceMmap: L and entry_size must be > 0");
+    }
+
+    constexpr auto max_uint64 = (std::numeric_limits<std::uint64_t>::max)();
+    if (length > (max_uint64 - krylov_file_header_size) / entry_size) {
+        throw std::overflow_error("KrylovSequenceMmap: file size overflow");
+    }
+
+    const std::uint64_t total_size = krylov_file_header_size + length * entry_size;
+    const auto wide_total_size = static_cast<std::uintmax_t>(total_size);
+    if (wide_total_size > static_cast<std::uintmax_t>((std::numeric_limits<std::size_t>::max)())) {
+        throw std::overflow_error("KrylovSequenceMmap: file too large for size_t");
+    }
+    if (wide_total_size >
+        static_cast<std::uintmax_t>((std::numeric_limits<krylov_native_file_offset_t>::max)())) {
+        throw std::overflow_error("KrylovSequenceMmap: file too large for native file offset");
+    }
+
+    return {static_cast<std::size_t>(total_size),
+            static_cast<krylov_native_file_offset_t>(total_size)};
+}
+
+} // namespace detail
+
 #ifdef _WIN32
 
 class KrylovSequenceMmap {
 public:
-    static constexpr uint64_t MAGIC = 0x4C59524B53464E47ULL;  // "GNFSKRYL"
+    static constexpr uint64_t MAGIC = 0x4C59524B53464E47ULL; // "GNFSKRYL"
     static constexpr uint64_t VERSION = 1;
-    static constexpr size_t HEADER_SIZE = 32;
+    static constexpr size_t HEADER_SIZE = static_cast<size_t>(detail::krylov_file_header_size);
 
     KrylovSequenceMmap() = default;
 
     KrylovSequenceMmap(const std::string& path, uint64_t L, uint64_t entry_size)
         : path_(path), L_(L), entry_size_(entry_size) {
-        if (L == 0 || entry_size == 0) {
-            throw std::invalid_argument("KrylovSequenceMmap: L and entry_size must be > 0");
-        }
-
-        if (L > (UINT64_MAX - HEADER_SIZE) / entry_size) {
-            throw std::overflow_error("KrylovSequenceMmap: file size overflow");
-        }
-        const uint64_t total_size64 = HEADER_SIZE + L * entry_size;
-        if (total_size64 > static_cast<uint64_t>(SIZE_MAX)) {
-            throw std::overflow_error("KrylovSequenceMmap: file too large for size_t");
-        }
-        size_ = static_cast<size_t>(total_size64);
+        const auto file_size = detail::checked_krylov_file_size(L, entry_size);
+        size_ = file_size.mapped_size;
 
         file_ = ::CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE,
-                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                              nullptr, CREATE_ALWAYS,
-                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                              CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
                               nullptr);
         if (file_ == INVALID_HANDLE_VALUE) {
-            throw std::runtime_error("KrylovSequenceMmap: cannot create '" + path + "': " +
-                                     last_error_message());
+            throw std::runtime_error("KrylovSequenceMmap: cannot create '" + path +
+                                     "': " + last_error_message());
         }
 
         LARGE_INTEGER end_pos{};
-        end_pos.QuadPart = static_cast<LONGLONG>(total_size64);
-        if (!::SetFilePointerEx(file_, end_pos, nullptr, FILE_BEGIN) ||
-            !::SetEndOfFile(file_)) {
+        end_pos.QuadPart = file_size.native_size;
+        if (!::SetFilePointerEx(file_, end_pos, nullptr, FILE_BEGIN) || !::SetEndOfFile(file_)) {
             close();
-            throw std::runtime_error("KrylovSequenceMmap: resize failed for '" + path + "': " +
-                                     last_error_message());
+            throw std::runtime_error("KrylovSequenceMmap: resize failed for '" + path +
+                                     "': " + last_error_message());
         }
 
         mapping_ = ::CreateFileMappingA(file_, nullptr, PAGE_READWRITE, 0, 0, nullptr);
         if (mapping_ == nullptr) {
             close();
-            throw std::runtime_error("KrylovSequenceMmap: CreateFileMapping failed for '" +
-                                     path + "': " + last_error_message());
+            throw std::runtime_error("KrylovSequenceMmap: CreateFileMapping failed for '" + path +
+                                     "': " + last_error_message());
         }
 
-        data_ = static_cast<uint8_t*>(
-            ::MapViewOfFile(mapping_, FILE_MAP_ALL_ACCESS, 0, 0, 0));
+        data_ = static_cast<uint8_t*>(::MapViewOfFile(mapping_, FILE_MAP_ALL_ACCESS, 0, 0, 0));
         if (data_ == nullptr) {
             close();
-            throw std::runtime_error("KrylovSequenceMmap: MapViewOfFile failed for '" +
-                                     path + "': " + last_error_message());
+            throw std::runtime_error("KrylovSequenceMmap: MapViewOfFile failed for '" + path +
+                                     "': " + last_error_message());
         }
 
         std::memcpy(data_, &MAGIC, 8);
@@ -95,15 +126,14 @@ public:
         body_ = data_ + HEADER_SIZE;
     }
 
-    ~KrylovSequenceMmap() { close(); }
+    ~KrylovSequenceMmap() {
+        close();
+    }
 
     KrylovSequenceMmap(KrylovSequenceMmap&& other) noexcept
-        : path_(std::move(other.path_)),
-          data_(std::exchange(other.data_, nullptr)),
-          body_(std::exchange(other.body_, nullptr)),
-          size_(std::exchange(other.size_, 0)),
-          L_(std::exchange(other.L_, 0)),
-          entry_size_(std::exchange(other.entry_size_, 0)),
+        : path_(std::move(other.path_)), data_(std::exchange(other.data_, nullptr)),
+          body_(std::exchange(other.body_, nullptr)), size_(std::exchange(other.size_, 0)),
+          L_(std::exchange(other.L_, 0)), entry_size_(std::exchange(other.entry_size_, 0)),
           mapping_(std::exchange(other.mapping_, nullptr)),
           file_(std::exchange(other.file_, INVALID_HANDLE_VALUE)) {}
 
@@ -128,22 +158,19 @@ public:
     void close() noexcept {
         if (data_ != nullptr) {
             if (!::UnmapViewOfFile(data_)) {
-                std::fprintf(stderr,
-                             "[krylov_mmap] UnmapViewOfFile failed: error=%lu\n",
+                std::fprintf(stderr, "[krylov_mmap] UnmapViewOfFile failed: error=%lu\n",
                              static_cast<unsigned long>(::GetLastError()));
             }
         }
         if (mapping_ != nullptr) {
             if (!::CloseHandle(mapping_)) {
-                std::fprintf(stderr,
-                             "[krylov_mmap] CloseHandle(mapping) failed: error=%lu\n",
+                std::fprintf(stderr, "[krylov_mmap] CloseHandle(mapping) failed: error=%lu\n",
                              static_cast<unsigned long>(::GetLastError()));
             }
         }
         if (file_ != INVALID_HANDLE_VALUE) {
             if (!::CloseHandle(file_)) {
-                std::fprintf(stderr,
-                             "[krylov_mmap] CloseHandle(file) failed: error=%lu\n",
+                std::fprintf(stderr, "[krylov_mmap] CloseHandle(file) failed: error=%lu\n",
                              static_cast<unsigned long>(::GetLastError()));
             }
         }
@@ -162,27 +189,32 @@ public:
         if (!path.empty() && !::DeleteFileA(path.c_str())) {
             const DWORD err = ::GetLastError();
             if (err != ERROR_FILE_NOT_FOUND && err != ERROR_PATH_NOT_FOUND) {
-                std::fprintf(stderr,
-                             "[krylov_mmap] DeleteFile failed: error=%lu path=%s\n",
+                std::fprintf(stderr, "[krylov_mmap] DeleteFile failed: error=%lu path=%s\n",
                              static_cast<unsigned long>(err), path.c_str());
             }
         }
     }
 
-    [[nodiscard]] uint64_t length() const noexcept { return L_; }
-    [[nodiscard]] uint64_t entry_size() const noexcept { return entry_size_; }
-    [[nodiscard]] bool is_open() const noexcept { return data_ != nullptr; }
-    [[nodiscard]] const std::string& path() const noexcept { return path_; }
+    [[nodiscard]] uint64_t length() const noexcept {
+        return L_;
+    }
+    [[nodiscard]] uint64_t entry_size() const noexcept {
+        return entry_size_;
+    }
+    [[nodiscard]] bool is_open() const noexcept {
+        return data_ != nullptr;
+    }
+    [[nodiscard]] const std::string& path() const noexcept {
+        return path_;
+    }
 
-    template <typename T>
-    [[nodiscard]] T* at(uint64_t k) noexcept {
+    template <typename T> [[nodiscard]] T* at(uint64_t k) noexcept {
         assert(k < L_);
         assert(sizeof(T) == entry_size_);
         return reinterpret_cast<T*>(body_ + k * entry_size_);
     }
 
-    template <typename T>
-    [[nodiscard]] const T* at(uint64_t k) const noexcept {
+    template <typename T> [[nodiscard]] const T* at(uint64_t k) const noexcept {
         assert(k < L_);
         assert(sizeof(T) == entry_size_);
         return reinterpret_cast<const T*>(body_ + k * entry_size_);
@@ -203,8 +235,7 @@ public:
     void msync() const noexcept {
         if (data_ != nullptr && size_ > 0) {
             if (!::FlushViewOfFile(data_, size_)) {
-                std::fprintf(stderr,
-                             "[krylov_mmap] FlushViewOfFile failed: error=%lu\n",
+                std::fprintf(stderr, "[krylov_mmap] FlushViewOfFile failed: error=%lu\n",
                              static_cast<unsigned long>(::GetLastError()));
             }
         }
@@ -214,11 +245,10 @@ public:
     }
 
     static void validate_header(const std::string& path) {
-        HANDLE file = ::CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
-                                    nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        HANDLE file = ::CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (file == INVALID_HANDLE_VALUE) {
-            throw std::runtime_error(
-                "KrylovSequenceMmap::validate_header: cannot open " + path);
+            throw std::runtime_error("KrylovSequenceMmap::validate_header: cannot open " + path);
         }
 
         uint64_t hdr[4]{};
@@ -226,30 +256,28 @@ public:
         const BOOL ok = ::ReadFile(file, hdr, static_cast<DWORD>(sizeof(hdr)), &got, nullptr);
         ::CloseHandle(file);
         if (!ok || got != sizeof(hdr)) {
-            throw std::runtime_error(
-                "KrylovSequenceMmap::validate_header: short read " + path);
+            throw std::runtime_error("KrylovSequenceMmap::validate_header: short read " + path);
         }
         if (hdr[0] != MAGIC) {
-            throw std::runtime_error(
-                "KrylovSequenceMmap::validate_header: bad magic in " + path);
+            throw std::runtime_error("KrylovSequenceMmap::validate_header: bad magic in " + path);
         }
         if (hdr[1] != VERSION) {
-            throw std::runtime_error(
-                "KrylovSequenceMmap::validate_header: version mismatch in " + path);
+            throw std::runtime_error("KrylovSequenceMmap::validate_header: version mismatch in " +
+                                     path);
         }
     }
 
 private:
     static std::string last_error_message() {
         DWORD error = ::GetLastError();
-        if (error == 0) return "no error";
+        if (error == 0)
+            return "no error";
 
         char* buffer = nullptr;
-        DWORD len = ::FormatMessageA(
-            FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
-                FORMAT_MESSAGE_IGNORE_INSERTS,
-            nullptr, error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-            reinterpret_cast<char*>(&buffer), 0, nullptr);
+        DWORD len = ::FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+                                         FORMAT_MESSAGE_IGNORE_INSERTS,
+                                     nullptr, error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                                     reinterpret_cast<char*>(&buffer), 0, nullptr);
         if (len == 0 || buffer == nullptr) {
             return "Windows error " + std::to_string(error);
         }
@@ -294,9 +322,9 @@ private:
 /// freeing physical RAM for matrix + V/Vnext block vectors.
 class KrylovSequenceMmap {
 public:
-    static constexpr uint64_t MAGIC = 0x4C59524B53464E47ULL;  // "GNFSKRYL"
+    static constexpr uint64_t MAGIC = 0x4C59524B53464E47ULL; // "GNFSKRYL"
     static constexpr uint64_t VERSION = 1;
-    static constexpr size_t HEADER_SIZE = 32;
+    static constexpr size_t HEADER_SIZE = static_cast<size_t>(detail::krylov_file_header_size);
 
     KrylovSequenceMmap() = default;
 
@@ -304,19 +332,15 @@ public:
     /// Maps the body PROT_READ | PROT_WRITE for in-place writes.
     KrylovSequenceMmap(const std::string& path, uint64_t L, uint64_t entry_size)
         : path_(path), L_(L), entry_size_(entry_size) {
-        if (L == 0 || entry_size == 0) {
-            throw std::invalid_argument("KrylovSequenceMmap: L and entry_size must be > 0");
-        }
-
-        const size_t total_size = HEADER_SIZE + static_cast<size_t>(L) * static_cast<size_t>(entry_size);
+        const auto file_size = detail::checked_krylov_file_size(L, entry_size);
 
         fd_ = ::open(path.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
         if (fd_ < 0) {
-            throw std::runtime_error("KrylovSequenceMmap: cannot create '" + path + "': errno=" +
-                                     std::to_string(errno));
+            throw std::runtime_error("KrylovSequenceMmap: cannot create '" + path +
+                                     "': errno=" + std::to_string(errno));
         }
 
-        if (::ftruncate(fd_, static_cast<off_t>(total_size)) != 0) {
+        if (::ftruncate(fd_, file_size.native_size) != 0) {
             ::close(fd_);
             fd_ = -1;
             throw std::runtime_error("KrylovSequenceMmap: ftruncate failed for '" + path +
@@ -324,7 +348,7 @@ public:
         }
 
         data_ = static_cast<uint8_t*>(
-            ::mmap(nullptr, total_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, 0));
+            ::mmap(nullptr, file_size.mapped_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, 0));
         if (data_ == MAP_FAILED) {
             ::close(fd_);
             fd_ = -1;
@@ -332,7 +356,7 @@ public:
             throw std::runtime_error("KrylovSequenceMmap: mmap failed for '" + path +
                                      "': errno=" + std::to_string(errno));
         }
-        size_ = total_size;
+        size_ = file_size.mapped_size;
 
         std::memcpy(data_, &MAGIC, 8);
         std::memcpy(data_ + 8, &VERSION, 8);
@@ -344,12 +368,13 @@ public:
         body_ = data_ + HEADER_SIZE;
     }
 
-    ~KrylovSequenceMmap() { close(); }
+    ~KrylovSequenceMmap() {
+        close();
+    }
 
     KrylovSequenceMmap(KrylovSequenceMmap&& other) noexcept
-        : path_(std::move(other.path_)), data_(other.data_), body_(other.body_),
-          size_(other.size_), L_(other.L_), entry_size_(other.entry_size_),
-          fd_(other.fd_) {
+        : path_(std::move(other.path_)), data_(other.data_), body_(other.body_), size_(other.size_),
+          L_(other.L_), entry_size_(other.entry_size_), fd_(other.fd_) {
         other.data_ = nullptr;
         other.body_ = nullptr;
         other.size_ = 0;
@@ -384,12 +409,12 @@ public:
     void close() noexcept {
         if (data_ && size_ > 0) {
             int rc = ::munmap(data_, size_);
-            (void) rc;
+            (void)rc;
             assert(rc == 0 && "KrylovSequenceMmap::close: munmap failed");
         }
         if (fd_ >= 0) {
             int rc = ::close(fd_);
-            (void) rc;
+            (void)rc;
             assert(rc == 0 && "KrylovSequenceMmap::close: close(fd) failed");
         }
         data_ = nullptr;
@@ -407,22 +432,28 @@ public:
         }
     }
 
-    [[nodiscard]] uint64_t length() const noexcept { return L_; }
-    [[nodiscard]] uint64_t entry_size() const noexcept { return entry_size_; }
-    [[nodiscard]] bool is_open() const noexcept { return data_ != nullptr; }
-    [[nodiscard]] const std::string& path() const noexcept { return path_; }
+    [[nodiscard]] uint64_t length() const noexcept {
+        return L_;
+    }
+    [[nodiscard]] uint64_t entry_size() const noexcept {
+        return entry_size_;
+    }
+    [[nodiscard]] bool is_open() const noexcept {
+        return data_ != nullptr;
+    }
+    [[nodiscard]] const std::string& path() const noexcept {
+        return path_;
+    }
 
     /// Get a typed pointer to entry k. Caller is responsible for sizeof(T)
     /// matching entry_size_ (asserted in Debug).
-    template <typename T>
-    [[nodiscard]] T* at(uint64_t k) noexcept {
+    template <typename T> [[nodiscard]] T* at(uint64_t k) noexcept {
         assert(k < L_);
         assert(sizeof(T) == entry_size_);
         return reinterpret_cast<T*>(body_ + k * entry_size_);
     }
 
-    template <typename T>
-    [[nodiscard]] const T* at(uint64_t k) const noexcept {
+    template <typename T> [[nodiscard]] const T* at(uint64_t k) const noexcept {
         assert(k < L_);
         assert(sizeof(T) == entry_size_);
         return reinterpret_cast<const T*>(body_ + k * entry_size_);
@@ -471,7 +502,8 @@ public:
             throw std::runtime_error("KrylovSequenceMmap::validate_header: bad magic in " + path);
         }
         if (hdr[1] != VERSION) {
-            throw std::runtime_error("KrylovSequenceMmap::validate_header: version mismatch in " + path);
+            throw std::runtime_error("KrylovSequenceMmap::validate_header: version mismatch in " +
+                                     path);
         }
     }
 
@@ -487,4 +519,4 @@ private:
 
 #endif
 
-}  // namespace gnfs::linalg
+} // namespace gnfs::linalg

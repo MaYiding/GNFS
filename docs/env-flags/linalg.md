@@ -49,7 +49,8 @@ GNFS_BW_KRYLOV_MMAP=1 ./gnfs <N>   # 50d+/60d 大矩阵 Phase 5 启用
 **集成点** (commits `21ac368` → `66ce50f`, 2026-05-18):
 - `include/gnfs/linalg/krylov_sequence_mmap.hpp` — POSIX mmap / Win32 file-mapping RAII container
 - `src/linalg/block_wiedemann.cpp` — matrix BM `block_solve` + scalar BM `streaming_solve`
-- `tests/test_krylov_sequence_mmap.cpp` — 8 cross-platform, Release-active unit tests
+- `tests/test_krylov_sequence_mmap.cpp` — cross-platform, Release-active construction,
+  persistence, access, handle-lifecycle, and pre-I/O size-boundary contracts
 - `tests/test_bw_krylov_mmap_integration.cpp` — 3 cross-platform, Release-active
   5550×5000 ON/OFF contracts; the required Windows Release lane exercises the
   real Win32 mapping path
