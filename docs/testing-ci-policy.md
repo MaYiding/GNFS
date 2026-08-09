@@ -45,6 +45,18 @@ Longest measured enabled tests:
 
 Do not classify a test from Release timing alone. Debug, sanitizer, coverage, Windows, and high CTest parallelism can change runtime by an order of magnitude.
 
+### Release-active correctness checks
+
+Release builds define `NDEBUG`, so the standard `assert()` macro is not a
+correctness oracle in CI. New or modified correctness tests must use a check
+that remains active in Release builds. The first migrated mathematical chain is
+`Integer`, `IntPolynomial`, `LinearAlgebra`, and `SquareRoot`; these tests use
+`GNFS_TEST_CHECK` from `tests/support/test_check.hpp` in every build type.
+
+Do not remove `NDEBUG` globally. Fresh-process probes and performance campaigns
+deliberately exercise the optimized Release contract. Migrate legacy unit tests
+to release-active checks in bounded batches instead.
+
 ## CI Policy
 
 The PR CI intentionally has three layers:
