@@ -10,7 +10,8 @@ using gnfs::core::Integer;
 // Helper: create polynomial from int64 coefficients
 IntPolynomial make_poly(std::initializer_list<int64_t> coeffs) {
     std::vector<Integer> v;
-    for (auto c : coeffs) v.push_back(Integer(c));
+    for (auto c : coeffs)
+        v.push_back(Integer(c));
     return IntPolynomial(std::move(v));
 }
 
@@ -335,7 +336,7 @@ void test_translate() {
     }
 
     // Verify: f(x+t) evaluated at x should equal f(x+t)
-    auto p = make_poly({1, -3, 2, 1});  // x^3 + 2x^2 - 3x + 1
+    auto p = make_poly({1, -3, 2, 1}); // x^3 + 2x^2 - 3x + 1
     auto shifted = p.translate(5);
     // shifted(0) should equal p(5)
     Integer p_at_5 = p.evaluate(Integer(5));
@@ -440,8 +441,8 @@ void test_discriminant_leading_coeff() {
     Integer d = p.discriminant();
     // Don't hard-code value — just ensure non-monic case doesn't crash and
     // returns a consistent Integer (exact value depends on Bareiss division by a_d).
-    (void) d;
-    GNFS_TEST_CHECK(d.compare(Integer(0)) != 0);  // Not zero for this irreducible-ish form
+    (void)d;
+    GNFS_TEST_CHECK(d.compare(Integer(0)) != 0); // Not zero for this irreducible-ish form
 
     // disc(x^3 - 7x + 6) = -4·(-7)^3 - 27·6² = -4·(-343) - 27·36 = 1372 - 972 = 400
     // f = (x-1)(x-2)(x+3), all distinct integer roots → disc > 0

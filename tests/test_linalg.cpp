@@ -1,5 +1,6 @@
 // test_linalg.cpp - Test linear algebra components
 
+#include "support/test_check.hpp"
 #include <gnfs/core/polynomial_context.hpp>
 #include <gnfs/core/relation.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
@@ -8,7 +9,6 @@
 #include <gnfs/linalg/schirokauer.hpp>
 #include <gnfs/linalg/sge.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
-#include "support/test_check.hpp"
 
 #include <iostream>
 #include <stdexcept>
@@ -409,9 +409,9 @@ void test_default_schirokauer_primes() {
     // in GF(2) — taking mod 2 destroys the mod-3 constraint.
     MatrixBuilderConfig config;
     GNFS_TEST_CHECK(config.schirokauer_primes.size() == 1 &&
-           "Default should have exactly 1 Schirokauer prime");
+                    "Default should have exactly 1 Schirokauer prime");
     GNFS_TEST_CHECK(config.schirokauer_primes[0] == 2 &&
-           "Default Schirokauer prime must be 2 for GF(2) matrix");
+                    "Default Schirokauer prime must be 2 for GF(2) matrix");
 
     // Explicitly setting {2} should also work
     MatrixBuilderConfig config2;
@@ -562,20 +562,20 @@ void test_schirokauer_repeated_roots() {
 
     // Should produce degree=3 columns (one per Schirokauer prime)
     GNFS_TEST_CHECK(smap.num_columns() == 3 &&
-           "Schirokauer map must produce degree_ columns even with repeated roots");
+                    "Schirokauer map must produce degree_ columns even with repeated roots");
 
     // Verify map is in split mode (not unsplit)
     GNFS_TEST_CHECK(!smap.prime_info_.empty());
     GNFS_TEST_CHECK(smap.prime_info_[0].is_split &&
-           "f with repeated roots mod 2 must use split mode, not unsplit");
+                    "f with repeated roots mod 2 must use split mode, not unsplit");
 
     // The squarefree factor x+1 (multiplicity 1 in f) should be lifted
     // The x² factor (multiplicity 2) should be skipped → those columns zero-padded
     // So we expect exactly 1 factor of degree 1
     GNFS_TEST_CHECK(smap.prime_info_[0].factors.size() == 1 &&
-           "Only multiplicity-1 factor (x+1) should be lifted");
+                    "Only multiplicity-1 factor (x+1) should be lifted");
     GNFS_TEST_CHECK(smap.prime_info_[0].factors[0].degree == 1 &&
-           "Lifted factor (x+1) should have degree 1");
+                    "Lifted factor (x+1) should have degree 1");
 
     // Compute map for several (a, b) values — must not crash and return valid values
     std::vector<std::pair<int64_t, uint64_t>> test_cases = {{3, 2},  {7, 1},  {1, 5},
@@ -620,8 +620,10 @@ void test_schirokauer_perfect_power() {
     GNFS_TEST_CHECK(smap.num_columns() == 3);
     // Perfect power mod ℓ has no multiplicity-1 factors → falls back to unsplit mode
     // (zero-filling would remove all Schirokauer constraints, making every dependency trivial)
-    GNFS_TEST_CHECK(!smap.prime_info_[0].is_split && "Perfect power mod 2 must fall back to unsplit mode");
-    GNFS_TEST_CHECK(smap.prime_info_[0].exponent == 7 && "Unsplit exponent should be ℓ^d - 1 = 2^3 - 1 = 7");
+    GNFS_TEST_CHECK(!smap.prime_info_[0].is_split &&
+                    "Perfect power mod 2 must fall back to unsplit mode");
+    GNFS_TEST_CHECK(smap.prime_info_[0].exponent == 7 &&
+                    "Unsplit exponent should be ℓ^d - 1 = 2^3 - 1 = 7");
 
     // Unsplit mode produces actual Schirokauer values (not all zeros)
     auto maps = smap.compute(5, 3);
@@ -671,7 +673,7 @@ void test_schirokauer_squarefree_reducible() {
     GNFS_TEST_CHECK(smap.prime_info_[0].is_split);
     // Should have 2 factors: (x+1) of degree 1, (x²+x+1) of degree 2
     GNFS_TEST_CHECK(smap.prime_info_[0].factors.size() == 2 &&
-           "Squarefree reducible should have 2 lifted factors");
+                    "Squarefree reducible should have 2 lifted factors");
 
     uint32_t total_deg = 0;
     for (const auto& fi : smap.prime_info_[0].factors) {
@@ -1067,10 +1069,10 @@ void test_sge_row_composition_cap() {
 
     // Cap=4 should skip some merges (composition grows above 4 in chain)
     GNFS_TEST_CHECK(result_capped.weight2_skipped_cap > 0 &&
-           "row_composition_cap should trigger skips on chain matrix");
+                    "row_composition_cap should trigger skips on chain matrix");
     GNFS_TEST_CHECK(result_capped.weight2_skipped_cap == 0 ||
-           result_capped.weight2_merged < result_baseline.weight2_merged ||
-           result_capped.weight2_merged == result_baseline.weight2_merged);
+                    result_capped.weight2_merged < result_baseline.weight2_merged ||
+                    result_capped.weight2_merged == result_baseline.weight2_merged);
 
     // No row_composition entry exceeds cap in capped result
     for (const auto& comp : result_capped.row_composition) {
@@ -1079,7 +1081,7 @@ void test_sge_row_composition_cap() {
         // is at cap before final merge that pushed over → could be cap + cap = 2*cap.
         // Use generous 2*cap check.
         GNFS_TEST_CHECK(comp.size() <= 2 * config.row_composition_cap &&
-               "composition size should stay bounded by ~2*cap");
+                        "composition size should stay bounded by ~2*cap");
     }
 
     std::cout << "  PASSED" << std::endl;

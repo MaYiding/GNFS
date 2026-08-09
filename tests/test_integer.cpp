@@ -154,7 +154,7 @@ void test_powmod() {
     Integer mod(1000);
 
     Integer result = powmod(base, exp, mod);
-    GNFS_TEST_CHECK(result.to_int64() == 24);  // 2^10 = 1024 % 1000 = 24
+    GNFS_TEST_CHECK(result.to_int64() == 24); // 2^10 = 1024 % 1000 = 24
 
     // 大数 powmod
     Integer big_base("12345");
@@ -170,14 +170,14 @@ void test_powmod() {
 void test_primality() {
     std::cout << "Testing primality..." << std::endl;
 
-    Integer prime(104729);  // 第10000个素数
+    Integer prime(104729); // 第10000个素数
     GNFS_TEST_CHECK(prime.is_probable_prime() > 0);
 
     Integer composite(104730);
     GNFS_TEST_CHECK(composite.is_probable_prime() == 0);
 
     // 大素数
-    Integer mersenne("2147483647");  // 2^31 - 1，梅森素数
+    Integer mersenne("2147483647"); // 2^31 - 1，梅森素数
     GNFS_TEST_CHECK(mersenne.is_probable_prime() > 0);
 
     std::cout << "  Primality: PASS" << std::endl;
@@ -199,16 +199,17 @@ void test_uint64_construction() {
 
     // --- Case 1: Value exactly at 2^63 (first value that overflows int64_t) ---
     {
-        uint64_t val = uint64_t(1) << 63;  // 9223372036854775808
+        uint64_t val = uint64_t(1) << 63; // 9223372036854775808
         Integer n(val);
-        GNFS_TEST_CHECK(n.is_positive() && "2^63 should be positive, not negative from int64_t overflow");
+        GNFS_TEST_CHECK(n.is_positive() &&
+                        "2^63 should be positive, not negative from int64_t overflow");
         GNFS_TEST_CHECK(n.to_string() == "9223372036854775808");
         GNFS_TEST_CHECK(n.bit_length() == 64);
     }
 
     // --- Case 2: UINT64_MAX ---
     {
-        uint64_t val = UINT64_MAX;  // 18446744073709551615
+        uint64_t val = UINT64_MAX; // 18446744073709551615
         Integer n(val);
         GNFS_TEST_CHECK(n.is_positive());
         GNFS_TEST_CHECK(n.to_string() == "18446744073709551615");
@@ -230,7 +231,7 @@ void test_uint64_construction() {
 
     // --- Case 4b: Value in (2^32, 2^63) range ---
     {
-        uint64_t val = uint64_t(1) << 40;  // 1099511627776, > UINT32_MAX, < INT64_MAX
+        uint64_t val = uint64_t(1) << 40; // 1099511627776, > UINT32_MAX, < INT64_MAX
         Integer n(val);
         GNFS_TEST_CHECK(n.is_positive());
         GNFS_TEST_CHECK(n.to_string() == "1099511627776");
@@ -257,8 +258,8 @@ void test_uint64_construction() {
 
     // --- Case 7: Regression — int literals still work (no ambiguity) ---
     {
-        Integer a(42);      // int literal
-        Integer b(-17);     // negative int literal
+        Integer a(42);  // int literal
+        Integer b(-17); // negative int literal
         GNFS_TEST_CHECK(a.to_int64() == 42);
         GNFS_TEST_CHECK(b.to_int64() == -17);
     }
@@ -365,14 +366,14 @@ void test_int64_min_boundaries() {
     {
         Integer x(0);
         x -= INT64_MIN;
-        Integer expected("9223372036854775808");  // 2^63
+        Integer expected("9223372036854775808"); // 2^63
         GNFS_TEST_CHECK(x == expected);
     }
 
     // operator/=(int64_t) with INT64_MIN
     {
-        Integer x("9223372036854775808");  // 2^63
-        x /= INT64_MIN;                    // 2^63 / (-2^63) = -1
+        Integer x("9223372036854775808"); // 2^63
+        x /= INT64_MIN;                   // 2^63 / (-2^63) = -1
         Integer expected(-1);
         GNFS_TEST_CHECK(x == expected);
     }

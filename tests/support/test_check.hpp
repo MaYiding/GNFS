@@ -6,8 +6,7 @@
 
 namespace gnfs::test {
 
-[[noreturn]] inline void check_failed(std::string_view expression,
-                                      std::string_view file,
+[[noreturn]] inline void check_failed(std::string_view expression, std::string_view file,
                                       int line) {
     std::string message(file);
     message += ':';
@@ -17,9 +16,9 @@ namespace gnfs::test {
     throw std::runtime_error(message);
 }
 
-}  // namespace gnfs::test
+} // namespace gnfs::test
 
-#define GNFS_TEST_CHECK(expression)                                                               \
+#define GNFS_TEST_CHECK(expression)                                                                \
     do {                                                                                           \
         if (!static_cast<bool>(expression)) {                                                      \
             ::gnfs::test::check_failed(#expression, __FILE__, __LINE__);                           \

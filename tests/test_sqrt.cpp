@@ -1,16 +1,16 @@
 // test_sqrt.cpp - Test square root components
 
+#include "support/test_check.hpp"
+#include <gnfs/core/polynomial_context.hpp>
+#include <gnfs/sqrt/algebraic_sqrt.hpp>
+#include <gnfs/sqrt/couveignes.hpp>
+#include <gnfs/sqrt/modular_poly.hpp>
 #include <gnfs/sqrt/number_field.hpp>
 #include <gnfs/sqrt/rational_sqrt.hpp>
-#include <gnfs/sqrt/algebraic_sqrt.hpp>
-#include <gnfs/sqrt/modular_poly.hpp>
-#include <gnfs/sqrt/couveignes.hpp>
-#include <gnfs/core/polynomial_context.hpp>
-#include "support/test_check.hpp"
 
+#include <chrono>
 #include <iostream>
 #include <vector>
-#include <chrono>
 
 using namespace gnfs;
 using namespace gnfs::sqrt;
@@ -102,12 +102,12 @@ void test_number_field() {
     // N = 15, m = 4 (since 4^2 - 2 = 14 ≡ -1 (mod 15))
     // Actually let's use a simpler setup
     std::vector<Integer> coeffs;
-    coeffs.push_back(Integer(-15));  // constant
-    coeffs.push_back(Integer(static_cast<int64_t>(0)));    // x
-    coeffs.push_back(Integer(static_cast<int64_t>(1)));    // x^2
+    coeffs.push_back(Integer(-15));                     // constant
+    coeffs.push_back(Integer(static_cast<int64_t>(0))); // x
+    coeffs.push_back(Integer(static_cast<int64_t>(1))); // x^2
 
     Integer n(15);
-    Integer m(4);  // 4^2 = 16 ≡ 1 (mod 15)
+    Integer m(4); // 4^2 = 16 ≡ 1 (mod 15)
 
     PolynomialContext ctx(std::move(n), std::move(coeffs), std::move(m));
 
@@ -128,9 +128,9 @@ void test_number_field() {
     GNFS_TEST_CHECK(alpha.coeff(1).to_int64() == 1);
 
     // Test from_ab (GNFS convention: a - b*α)
-    auto ab_elem = nf.from_ab(3, 2);  // 3 - 2*α (GNFS convention)
+    auto ab_elem = nf.from_ab(3, 2); // 3 - 2*α (GNFS convention)
     GNFS_TEST_CHECK(ab_elem.coeff(0).to_int64() == 3);
-    GNFS_TEST_CHECK(ab_elem.coeff(1).to_int64() == -2);  // -b in GNFS convention
+    GNFS_TEST_CHECK(ab_elem.coeff(1).to_int64() == -2); // -b in GNFS convention
 
     std::cout << "  NumberField: PASSED" << std::endl;
 }
@@ -141,11 +141,11 @@ void test_number_field_multiply() {
 
     // f(x) = x^2 - 2, so α^2 = 2
     std::vector<Integer> coeffs;
-    coeffs.push_back(Integer(-2));   // constant: -2
-    coeffs.push_back(Integer(static_cast<int64_t>(0)));    // x
-    coeffs.push_back(Integer(static_cast<int64_t>(1)));    // x^2
+    coeffs.push_back(Integer(-2));                      // constant: -2
+    coeffs.push_back(Integer(static_cast<int64_t>(0))); // x
+    coeffs.push_back(Integer(static_cast<int64_t>(1))); // x^2
 
-    Integer n(1000000007);  // Large prime for testing
+    Integer n(1000000007); // Large prime for testing
     Integer m(1000);
 
     PolynomialContext ctx(std::move(n), std::move(coeffs), std::move(m));
@@ -153,11 +153,11 @@ void test_number_field_multiply() {
 
     // from_ab(1, 1) returns 1 - α (GNFS convention)
     // (1 - α) * (1 - α) = 1 - 2α + α^2 = 1 - 2α + 2 = 3 - 2α
-    auto one_minus_alpha = nf.from_ab(1, 1);  // 1 - α
+    auto one_minus_alpha = nf.from_ab(1, 1); // 1 - α
     auto squared = nf.multiply(one_minus_alpha, one_minus_alpha);
 
     GNFS_TEST_CHECK(squared.coeff(0).to_int64() == 3);
-    GNFS_TEST_CHECK(squared.coeff(1).to_int64() == -2);  // -2α (GNFS convention)
+    GNFS_TEST_CHECK(squared.coeff(1).to_int64() == -2); // -2α (GNFS convention)
 
     // For (1 + α), we need to create it directly with positive α coefficient
     // (1 + α) * (1 - α) = 1 - α^2 = 1 - 2 = -1
@@ -230,7 +230,7 @@ void test_evaluate_at_m() {
     coeffs.push_back(Integer(static_cast<int64_t>(0)));
     coeffs.push_back(Integer(static_cast<int64_t>(1)));
 
-    Integer n(143);  // 11 * 13
+    Integer n(143); // 11 * 13
     Integer m(4);
 
     PolynomialContext ctx(std::move(n), std::move(coeffs), std::move(m));
@@ -262,7 +262,7 @@ void test_rational_sqrt_simple() {
 
     // Test compute_from_exponents
     // sqrt(2^4 * 3^2) = 2^2 * 3 = 12
-    std::vector<uint64_t> exponents = {4, 2};  // 2^4 * 3^2
+    std::vector<uint64_t> exponents = {4, 2}; // 2^4 * 3^2
     std::vector<uint32_t> primes = {2, 3};
     Integer n(1000000007);
 
@@ -270,7 +270,7 @@ void test_rational_sqrt_simple() {
     GNFS_TEST_CHECK(result.to_int64() == 12);
 
     // sqrt(2^6 * 5^4) = 2^3 * 5^2 = 8 * 25 = 200
-    std::vector<uint64_t> exponents2 = {6, 0, 4};  // 2^6 * 3^0 * 5^4
+    std::vector<uint64_t> exponents2 = {6, 0, 4}; // 2^6 * 3^0 * 5^4
     std::vector<uint32_t> primes2 = {2, 3, 5};
 
     Integer result2 = RationalSqrt::compute_from_exponents(exponents2, primes2, n);
@@ -352,16 +352,17 @@ void test_is_irreducible() {
 
     // --- Degree 2 over F_2 ---
     // x^2 + x + 1 is the only irreducible degree-2 polynomial over F_2
-    GNFS_TEST_CHECK(MP::is_irreducible({1, 1, 1}, 2));    // x^2+x+1: irreducible
-    GNFS_TEST_CHECK(!MP::is_irreducible({0, 0, 1}, 2));   // x^2 = x·x: reducible
-    GNFS_TEST_CHECK(!MP::is_irreducible({0, 1, 1}, 2));   // x^2+x = x(x+1): reducible
+    GNFS_TEST_CHECK(MP::is_irreducible({1, 1, 1}, 2));  // x^2+x+1: irreducible
+    GNFS_TEST_CHECK(!MP::is_irreducible({0, 0, 1}, 2)); // x^2 = x·x: reducible
+    GNFS_TEST_CHECK(!MP::is_irreducible({0, 1, 1}, 2)); // x^2+x = x(x+1): reducible
     std::cout << "  degree 2 / F_2: PASSED" << std::endl;
 
     // --- Degree 3 over F_2 ---
     // x^3 + x + 1 and x^3 + x^2 + 1 are irreducible over F_2
-    GNFS_TEST_CHECK(MP::is_irreducible({1, 1, 0, 1}, 2));  // x^3+x+1: irreducible
-    GNFS_TEST_CHECK(MP::is_irreducible({1, 0, 1, 1}, 2));  // x^3+x^2+1: irreducible
-    GNFS_TEST_CHECK(!MP::is_irreducible({1, 1, 1, 1}, 2)); // x^3+x^2+x+1 = (x+1)(x^2+1) = (x+1)^3: reducible
+    GNFS_TEST_CHECK(MP::is_irreducible({1, 1, 0, 1}, 2)); // x^3+x+1: irreducible
+    GNFS_TEST_CHECK(MP::is_irreducible({1, 0, 1, 1}, 2)); // x^3+x^2+1: irreducible
+    GNFS_TEST_CHECK(
+        !MP::is_irreducible({1, 1, 1, 1}, 2)); // x^3+x^2+x+1 = (x+1)(x^2+1) = (x+1)^3: reducible
     std::cout << "  degree 3 / F_2: PASSED" << std::endl;
 
     // --- Degree 4 over F_2: THE CRITICAL CASE ---
@@ -383,7 +384,7 @@ void test_is_irreducible() {
     // f(0)=1, f(1)=3, f(2)=11≡1, f(3)=31≡1, f(4)=69≡4 → no roots → irreducible (degree 3)
     GNFS_TEST_CHECK(MP::is_irreducible({1, 1, 0, 1}, 5));
     // x^3 - 1 = (x-1)(x^2+x+1) over F_5: has root x=1
-    GNFS_TEST_CHECK(!MP::is_irreducible({4, 0, 0, 1}, 5));  // -1≡4 mod 5
+    GNFS_TEST_CHECK(!MP::is_irreducible({4, 0, 0, 1}, 5)); // -1≡4 mod 5
     std::cout << "  degree 3 / F_5: PASSED" << std::endl;
 
     // --- Degree 4 over F_3 ---
@@ -391,7 +392,7 @@ void test_is_irreducible() {
     // but is it irreducible? Need full Rabin test.
     // x^4 + 1 over F_3 = (x^2+x+2)(x^2+2x+2) → reducible without roots
     // f(0)=1, f(1)=2, f(2)=17≡2 → no roots
-    GNFS_TEST_CHECK(!MP::is_irreducible({1, 0, 0, 0, 1}, 3));  // x^4+1 reducible mod 3
+    GNFS_TEST_CHECK(!MP::is_irreducible({1, 0, 0, 0, 1}, 3)); // x^4+1 reducible mod 3
     std::cout << "  degree 4 / F_3 (reducible without roots): PASSED" << std::endl;
 
     std::cout << "  ALL is_irreducible tests PASSED" << std::endl;
@@ -412,11 +413,11 @@ void test_non_monic_modular_poly() {
 
     // (x + 1)^2 = x^2 + 2x + 1
     // Correct: x^2 → (2x + 4), so (x+1)^2 = (2x + 4) + 2x + 1 = 4x + 5
-    MP a({1, 1});  // x + 1
+    MP a({1, 1}); // x + 1
     auto a_sq = MP::mul(a, a, f, p);
 
-    GNFS_TEST_CHECK(a_sq.coeff(0) == 5);  // constant = 5
-    GNFS_TEST_CHECK(a_sq.coeff(1) == 4);  // x coeff = 4
+    GNFS_TEST_CHECK(a_sq.coeff(0) == 5); // constant = 5
+    GNFS_TEST_CHECK(a_sq.coeff(1) == 4); // x coeff = 4
     GNFS_TEST_CHECK(a_sq.degree() <= 1);
     std::cout << "  non-monic (x+1)^2 mod (3x^2+x+2, 7): PASSED" << std::endl;
 
@@ -433,7 +434,7 @@ void test_non_monic_modular_poly() {
     // f_d = 2, inv(2, 5) = 3
     std::vector<uint64_t> f3 = {1, 1, 0, 2};
     uint64_t p3 = 5;
-    MP b({1, 0, 1});  // x^2 + 1
+    MP b({1, 0, 1}); // x^2 + 1
     // x^3 = -(x + 1)/2 = -(x + 1)*3 = -3x - 3 ≡ 2x + 2 (mod 5)
     // b^2 = (x^2+1)^2 = x^4 + 2x^2 + 1
     // x^4 = x·x^3 = x·(2x+2) = 2x^2 + 2x
@@ -456,9 +457,9 @@ void test_non_monic_number_field() {
     // N = f(5) = 3*25 + 5 + 2 = 82
     // gcd(3, 82) = 1, so modular inverse exists
     std::vector<Integer> coeffs;
-    coeffs.push_back(Integer(2));    // f_0
-    coeffs.push_back(Integer(1));    // f_1
-    coeffs.push_back(Integer(3));    // f_2 (non-monic: f_d = 3)
+    coeffs.push_back(Integer(2)); // f_0
+    coeffs.push_back(Integer(1)); // f_1
+    coeffs.push_back(Integer(3)); // f_2 (non-monic: f_d = 3)
 
     Integer n(82);
     Integer m(5);
@@ -473,7 +474,8 @@ void test_non_monic_number_field() {
     auto squared = nf.multiply_mod_n(elem, elem.clone());
     Integer val = nf.evaluate_at_m_mod_n(squared);
     GNFS_TEST_CHECK(val.to_int64() == 16);
-    std::cout << "  (1-α)^2 at m=5 mod 82 = " << val.to_string() << " (expected 16): PASSED" << std::endl;
+    std::cout << "  (1-α)^2 at m=5 mod 82 = " << val.to_string() << " (expected 16): PASSED"
+              << std::endl;
 
     // Another element: (3 - 2α)
     auto elem2 = nf.from_ab(3, 2);
@@ -481,14 +483,16 @@ void test_non_monic_number_field() {
     auto sq2 = nf.multiply_mod_n(elem2, elem2.clone());
     Integer val2 = nf.evaluate_at_m_mod_n(sq2);
     GNFS_TEST_CHECK(val2.to_int64() == 49);
-    std::cout << "  (3-2α)^2 at m=5 mod 82 = " << val2.to_string() << " (expected 49): PASSED" << std::endl;
+    std::cout << "  (3-2α)^2 at m=5 mod 82 = " << val2.to_string() << " (expected 49): PASSED"
+              << std::endl;
 
     // Product of two different elements: (1-α)(3-2α)
     // At α=5: (1-5)(3-10) = (-4)(-7) = 28 mod 82 = 28
     auto product = nf.multiply_mod_n(nf.from_ab(1, 1), nf.from_ab(3, 2));
     Integer val3 = nf.evaluate_at_m_mod_n(product);
     GNFS_TEST_CHECK(val3.to_int64() == 28);
-    std::cout << "  (1-α)(3-2α) at m=5 mod 82 = " << val3.to_string() << " (expected 28): PASSED" << std::endl;
+    std::cout << "  (1-α)(3-2α) at m=5 mod 82 = " << val3.to_string() << " (expected 28): PASSED"
+              << std::endl;
 
     // Verify monic case still works (regression)
     // f(x) = x^2 + x + 2, m = 5, N = 25 + 5 + 2 = 32
@@ -526,26 +530,26 @@ void test_characteristic_2_sqrt() {
     // f(x) = x^2 + x + 1 (irreducible over F_2, so F_2[x]/f = F_4)
     // F_4 = {0, 1, α, α+1} where α^2 = α + 1
     // All nonzero elements are squares in F_{2^d}
-    std::vector<uint64_t> f2 = {1, 1, 1};  // x^2+x+1
-    GNFS_TEST_CHECK(MP::is_square(MP(0), f2, 2));  // 0 is trivially square
-    GNFS_TEST_CHECK(MP::is_square(MP(1), f2, 2));  // 1 = 1^2
+    std::vector<uint64_t> f2 = {1, 1, 1};         // x^2+x+1
+    GNFS_TEST_CHECK(MP::is_square(MP(0), f2, 2)); // 0 is trivially square
+    GNFS_TEST_CHECK(MP::is_square(MP(1), f2, 2)); // 1 = 1^2
     // α is also a square in F_4 (α = (α+1)^2 since (α+1)^2 = α^2+1 = α+1+1 = α)
     MP alpha;
-    alpha.set_coeff(1, 1);  // x
+    alpha.set_coeff(1, 1); // x
     GNFS_TEST_CHECK(MP::is_square(alpha, f2, 2));
     // α+1 is also a square
     MP alpha_plus_1;
     alpha_plus_1.set_coeff(0, 1);
-    alpha_plus_1.set_coeff(1, 1);  // x+1
+    alpha_plus_1.set_coeff(1, 1); // x+1
     GNFS_TEST_CHECK(MP::is_square(alpha_plus_1, f2, 2));
     std::cout << "  is_square F_4: PASSED" << std::endl;
 
     // ---- is_square over F_{2^3} ----
     // f(x) = x^3 + x + 1 (irreducible over F_2, so F_2[x]/f = F_8)
     // All 7 nonzero elements are squares
-    std::vector<uint64_t> f3 = {1, 1, 0, 1};  // x^3+x+1
+    std::vector<uint64_t> f3 = {1, 1, 0, 1}; // x^3+x+1
     GNFS_TEST_CHECK(MP::is_square(MP(1), f3, 2));
-    GNFS_TEST_CHECK(MP::is_square(alpha, f3, 2));       // α in F_8
+    GNFS_TEST_CHECK(MP::is_square(alpha, f3, 2)); // α in F_8
     std::cout << "  is_square F_8: PASSED" << std::endl;
 
     // ---- sqrt_tonelli_shanks over F_4 ----
@@ -586,7 +590,7 @@ void test_characteristic_2_sqrt() {
 
     // ---- Edge case: p=2, d=1 (F_2 itself) ----
     // F_2 = {0, 1}, sqrt(1) = 1
-    std::vector<uint64_t> f1 = {1, 1};  // x+1 (irreducible, degree 1)
+    std::vector<uint64_t> f1 = {1, 1}; // x+1 (irreducible, degree 1)
     GNFS_TEST_CHECK(MP::is_square(MP(1), f1, 2));
     // Note: sqrt_tonelli_shanks on F_2 is trivial — only element is 1
     auto sqrt_f2 = MP::sqrt_tonelli_shanks(MP(1), f1, 2);
@@ -602,10 +606,10 @@ void test_couveignes_compute_from_element_terminates() {
 
     // f(x) = x^3 + 2x + 1, N = 143, m = 5
     std::vector<Integer> f_coeffs;
-    f_coeffs.push_back(Integer(1));   // x^0
-    f_coeffs.push_back(Integer(2));   // x^1
-    f_coeffs.push_back(Integer(static_cast<int64_t>(0)));   // x^2
-    f_coeffs.push_back(Integer(1));   // x^3
+    f_coeffs.push_back(Integer(1));                       // x^0
+    f_coeffs.push_back(Integer(2));                       // x^1
+    f_coeffs.push_back(Integer(static_cast<int64_t>(0))); // x^2
+    f_coeffs.push_back(Integer(1));                       // x^3
     PolynomialContext ctx(Integer(143), std::move(f_coeffs), Integer(5));
     NumberField nf(ctx);
 
@@ -619,29 +623,29 @@ void test_couveignes_compute_from_element_terminates() {
     // Request more primes than can be found within max_prime_checks.
     // Without the guard, this would loop indefinitely.
     CouveignesSqrtConfig cfg;
-    cfg.num_primes = 100;  // Want 100 primes
+    cfg.num_primes = 100; // Want 100 primes
     cfg.prime_start = 1000;
-    cfg.max_prime_checks = 50;  // But only allow 50 checks (~17 will be irreducible for d=3)
+    cfg.max_prime_checks = 50; // But only allow 50 checks (~17 will be irreducible for d=3)
 
     CouveignesSqrt couveignes(cfg);
 
     auto start = std::chrono::steady_clock::now();
     auto result = couveignes.compute_from_element(elem, nf);
     auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - start).count();
+                          std::chrono::steady_clock::now() - start)
+                          .count();
 
     // The key assertion: function MUST terminate.
     // Without the max-attempts guard, this would loop indefinitely.
     // With the guard, it finishes within seconds (scans up to 100000 primes).
     GNFS_TEST_CHECK(elapsed_ms < 5000 &&
-           "compute_from_element should terminate quickly with max-attempts guard");
+                    "compute_from_element should terminate quickly with max-attempts guard");
 
     // For degree 3, ~1/3 of primes give irreducible f.
     // 100000 checks → ~33000 primes found < 100000 requested.
     // The function makes a best-effort CRT with whatever it found.
-    std::cout << "  compute_from_element termination: PASSED (took "
-              << elapsed_ms << "ms, result="
-              << (result.has_value() ? "found" : "nullopt") << ")" << std::endl;
+    std::cout << "  compute_from_element termination: PASSED (took " << elapsed_ms
+              << "ms, result=" << (result.has_value() ? "found" : "nullopt") << ")" << std::endl;
 }
 
 /// BACKLOG #3 regression test: Couveignes Gray code optimization across multiple
@@ -656,7 +660,8 @@ void test_couveignes_compute_from_element_terminates() {
 /// search space (4, 16, 64, 256 patterns). Bugs in the incremental update or
 /// bit-flip detection may only surface at specific 2^k sizes.
 void test_couveignes_gray_code_invariants() {
-    std::cout << "Testing Couveignes Gray code optimization invariants (BACKLOG #3)..." << std::endl;
+    std::cout << "Testing Couveignes Gray code optimization invariants (BACKLOG #3)..."
+              << std::endl;
 
     // f(x) = x^3 + 2x + 1 over N = 143 (= 11 × 13), m = 5
     std::vector<Integer> f_coeffs;
@@ -677,7 +682,7 @@ void test_couveignes_gray_code_invariants() {
         CouveignesSqrtConfig cfg;
         cfg.num_primes = np;
         cfg.prime_start = 100;
-        cfg.max_prime_checks = 5000;  // generous, but bounded — never infinite loop
+        cfg.max_prime_checks = 5000; // generous, but bounded — never infinite loop
 
         CouveignesSqrt couveignes(cfg);
         auto result = couveignes.compute_from_element(elem, nf);
@@ -685,9 +690,8 @@ void test_couveignes_gray_code_invariants() {
         // For element=1, the sqrt is ±1. Couveignes either finds it (return non-empty)
         // or returns nullopt if it can't construct a valid combination. Either way,
         // the function must terminate without crashing or failing a check (v20 [0,M-1] invariant).
-        std::cout << "  num_primes=" << np << " (Gray space=" << (1u << np) << "): "
-                  << (result.has_value() ? "found sqrt" : "nullopt")
-                  << std::endl;
+        std::cout << "  num_primes=" << np << " (Gray space=" << (1u << np)
+                  << "): " << (result.has_value() ? "found sqrt" : "nullopt") << std::endl;
     }
 
     std::cout << "  Gray code invariants across 2^k sizes: PASSED (no crash, no failed check)"
@@ -711,7 +715,7 @@ void test_couveignes_compute_from_element_normal() {
     NumberFieldElement elem(Integer(1));
 
     CouveignesSqrtConfig cfg;
-    cfg.num_primes = 4;  // Small, reasonable
+    cfg.num_primes = 4; // Small, reasonable
     cfg.prime_start = 100;
 
     CouveignesSqrt couveignes(cfg);
@@ -740,7 +744,7 @@ void test_sqrt_even_degree_extension() {
     // Need an irreducible degree-4 polynomial over F_1013.
     // x^4 + x + 2 — verify irreducibility first.
     uint64_t p = 1013;
-    std::vector<uint64_t> f = {2, 1, 0, 0, 1};  // x^4 + x + 2
+    std::vector<uint64_t> f = {2, 1, 0, 0, 1}; // x^4 + x + 2
 
     // Verify f is irreducible over F_1013
     GNFS_TEST_CHECK(MP::is_irreducible(f, p) && "f must be irreducible for this test");
@@ -760,7 +764,7 @@ void test_sqrt_even_degree_extension() {
     // Test 2: sqrt of a polynomial element
     // Compute (x+1)^2 mod f, then sqrt should give ±(x+1)
     {
-        MP xp1(std::vector<uint64_t>{1, 1});  // x + 1
+        MP xp1(std::vector<uint64_t>{1, 1}); // x + 1
         auto sq = MP::mul(xp1, xp1, f, p);
         auto r = MP::sqrt_tonelli_shanks(sq, f, p);
         GNFS_TEST_CHECK(!r.is_zero() && "sqrt of (x+1)^2 must succeed");
@@ -776,7 +780,7 @@ void test_sqrt_even_degree_extension() {
     // Test 3: sqrt of a random-looking element that is a square
     // Compute (3x^2 + 5x + 7)^2 mod f, then sqrt
     {
-        MP elem(std::vector<uint64_t>{7, 5, 3});  // 3x^2 + 5x + 7
+        MP elem(std::vector<uint64_t>{7, 5, 3}); // 3x^2 + 5x + 7
         auto sq = MP::mul(elem, elem, f, p);
         auto r = MP::sqrt_tonelli_shanks(sq, f, p);
         GNFS_TEST_CHECK(!r.is_zero() && "sqrt of (3x^2+5x+7)^2 must succeed");
@@ -796,13 +800,14 @@ void test_sqrt_even_degree_extension() {
         // Let's just find an irreducible f2 by testing.
         std::vector<uint64_t> f2;
         for (uint64_t c = 1; c < p; ++c) {
-            f2 = {c, 1, 1};  // x^2 + x + c
-            if (MP::is_irreducible(f2, p)) break;
+            f2 = {c, 1, 1}; // x^2 + x + c
+            if (MP::is_irreducible(f2, p))
+                break;
         }
         GNFS_TEST_CHECK(f2.size() == 3 && "must find irreducible degree-2 poly");
         std::cout << "  Found irreducible x^2 + x + " << f2[0] << " over F_" << p << std::endl;
 
-        MP a(42);  // constant square: 42 is an element of F_p
+        MP a(42); // constant square: 42 is an element of F_p
         auto r = MP::sqrt_tonelli_shanks(a, f2, p);
         // 42 must be a square in F_{p^2} (all F_p* elements are squares in even extensions)
         GNFS_TEST_CHECK(!r.is_zero() && "sqrt(42) must succeed in F_{1013^2}");
@@ -817,7 +822,8 @@ void test_sqrt_even_degree_extension() {
         for (uint64_t c = 1; c <= 20; ++c) {
             if (!MP::is_square(MP(c), f, p)) {
                 all_sq = false;
-                std::cerr << "  ERROR: " << c << " reported as non-square in F_{1013^4}" << std::endl;
+                std::cerr << "  ERROR: " << c << " reported as non-square in F_{1013^4}"
+                          << std::endl;
                 break;
             }
         }
