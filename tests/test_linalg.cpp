@@ -1,5 +1,6 @@
 // test_linalg.cpp - Test linear algebra components
 
+#include "support/test_check.hpp"
 #include <gnfs/core/polynomial_context.hpp>
 #include <gnfs/core/relation.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
@@ -9,7 +10,6 @@
 #include <gnfs/linalg/sge.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
 
-#include <cassert>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -41,29 +41,29 @@ void test_sparse_row() {
     row.set(10);
     row.set(3);
 
-    assert(row.test(3));
-    assert(row.test(5));
-    assert(row.test(10));
-    assert(!row.test(0));
-    assert(!row.test(7));
+    GNFS_TEST_CHECK(row.test(3));
+    GNFS_TEST_CHECK(row.test(5));
+    GNFS_TEST_CHECK(row.test(10));
+    GNFS_TEST_CHECK(!row.test(0));
+    GNFS_TEST_CHECK(!row.test(7));
 
     // Test weight
-    assert(row.weight() == 3);
+    GNFS_TEST_CHECK(row.weight() == 3);
 
     // Test first/last nonzero
-    assert(row.first_nonzero() == 3);
-    assert(row.last_nonzero() == 10);
+    GNFS_TEST_CHECK(row.first_nonzero() == 3);
+    GNFS_TEST_CHECK(row.last_nonzero() == 10);
 
     // Test clear
     row.clear(5);
-    assert(!row.test(5));
-    assert(row.weight() == 2);
+    GNFS_TEST_CHECK(!row.test(5));
+    GNFS_TEST_CHECK(row.weight() == 2);
 
     // Test flip
     row.flip(7); // Add
-    assert(row.test(7));
+    GNFS_TEST_CHECK(row.test(7));
     row.flip(7); // Remove
-    assert(!row.test(7));
+    GNFS_TEST_CHECK(!row.test(7));
 
     std::cout << "  SparseRow: PASSED" << std::endl;
 }
@@ -85,12 +85,12 @@ void test_sparse_row_xor() {
     // row1 XOR row2 = {1, 2, 4, 5} (3 cancels)
     row1.xor_with(row2);
 
-    assert(row1.test(1));
-    assert(row1.test(2));
-    assert(!row1.test(3)); // Cancelled
-    assert(row1.test(4));
-    assert(row1.test(5));
-    assert(row1.weight() == 4);
+    GNFS_TEST_CHECK(row1.test(1));
+    GNFS_TEST_CHECK(row1.test(2));
+    GNFS_TEST_CHECK(!row1.test(3)); // Cancelled
+    GNFS_TEST_CHECK(row1.test(4));
+    GNFS_TEST_CHECK(row1.test(5));
+    GNFS_TEST_CHECK(row1.weight() == 4);
 
     std::cout << "  SparseRow XOR: PASSED" << std::endl;
 }
@@ -109,21 +109,21 @@ void test_sparse_matrix() {
     mat.set(2, 2);
     mat.set(2, 4);
 
-    assert(mat.num_rows() == 3);
-    assert(mat.num_cols() == 5);
-    assert(mat.test(0, 0));
-    assert(mat.test(0, 2));
-    assert(!mat.test(0, 1));
+    GNFS_TEST_CHECK(mat.num_rows() == 3);
+    GNFS_TEST_CHECK(mat.num_cols() == 5);
+    GNFS_TEST_CHECK(mat.test(0, 0));
+    GNFS_TEST_CHECK(mat.test(0, 2));
+    GNFS_TEST_CHECK(!mat.test(0, 1));
 
     // Test total weight
-    assert(mat.total_weight() == 6);
+    GNFS_TEST_CHECK(mat.total_weight() == 6);
 
     // Test swap rows
     mat.swap_rows(0, 1);
-    assert(mat.test(0, 1));
-    assert(mat.test(0, 3));
-    assert(mat.test(1, 0));
-    assert(mat.test(1, 2));
+    GNFS_TEST_CHECK(mat.test(0, 1));
+    GNFS_TEST_CHECK(mat.test(0, 3));
+    GNFS_TEST_CHECK(mat.test(1, 0));
+    GNFS_TEST_CHECK(mat.test(1, 2));
 
     std::cout << "  SparseMatrix: PASSED" << std::endl;
 }
@@ -144,16 +144,16 @@ void test_sparse_matrix_transpose() {
     // Transpose to get 4x3 matrix
     SparseMatrix transposed = mat.transpose();
 
-    assert(transposed.num_rows() == 4);
-    assert(transposed.num_cols() == 3);
+    GNFS_TEST_CHECK(transposed.num_rows() == 4);
+    GNFS_TEST_CHECK(transposed.num_cols() == 3);
 
     // Check elements
-    assert(transposed.test(0, 1)); // Was (1, 0)
-    assert(transposed.test(1, 0)); // Was (0, 1)
-    assert(transposed.test(1, 2)); // Was (2, 1)
-    assert(transposed.test(2, 1)); // Was (1, 2)
-    assert(transposed.test(2, 2)); // Was (2, 2)
-    assert(transposed.test(3, 0)); // Was (0, 3)
+    GNFS_TEST_CHECK(transposed.test(0, 1)); // Was (1, 0)
+    GNFS_TEST_CHECK(transposed.test(1, 0)); // Was (0, 1)
+    GNFS_TEST_CHECK(transposed.test(1, 2)); // Was (2, 1)
+    GNFS_TEST_CHECK(transposed.test(2, 1)); // Was (1, 2)
+    GNFS_TEST_CHECK(transposed.test(2, 2)); // Was (2, 2)
+    GNFS_TEST_CHECK(transposed.test(3, 0)); // Was (0, 3)
 
     std::cout << "  SparseMatrix transpose: PASSED" << std::endl;
 }
@@ -169,23 +169,23 @@ void test_bitvector() {
     bv.set(50);
     bv.set(99);
 
-    assert(bv.test(0));
-    assert(bv.test(50));
-    assert(bv.test(99));
-    assert(!bv.test(1));
-    assert(!bv.test(49));
+    GNFS_TEST_CHECK(bv.test(0));
+    GNFS_TEST_CHECK(bv.test(50));
+    GNFS_TEST_CHECK(bv.test(99));
+    GNFS_TEST_CHECK(!bv.test(1));
+    GNFS_TEST_CHECK(!bv.test(49));
 
     // Test popcount
-    assert(bv.popcount() == 3);
+    GNFS_TEST_CHECK(bv.popcount() == 3);
 
     // Test flip
     bv.flip(50);
-    assert(!bv.test(50));
-    assert(bv.popcount() == 2);
+    GNFS_TEST_CHECK(!bv.test(50));
+    GNFS_TEST_CHECK(bv.popcount() == 2);
 
     // Test clear
     bv.clear(0);
-    assert(!bv.test(0));
+    GNFS_TEST_CHECK(!bv.test(0));
 
     // Test XOR
     BitVector bv2(100);
@@ -195,8 +195,8 @@ void test_bitvector() {
     bv.xor_with(bv2);
     // bv was {99}, bv2 is {50, 99}
     // After XOR: {50} (99 cancels)
-    assert(bv.test(50));
-    assert(!bv.test(99));
+    GNFS_TEST_CHECK(bv.test(50));
+    GNFS_TEST_CHECK(!bv.test(99));
 
     std::cout << "  BitVector: PASSED" << std::endl;
 }
@@ -236,7 +236,7 @@ void test_gaussian_simple() {
     // [0 1 1] -> [0 0 0] -> [0 0 0]
     // Rank = 2, one free variable
 
-    assert(result.rank == 2);
+    GNFS_TEST_CHECK(result.rank == 2);
 
     std::cout << "  Gaussian (simple): PASSED" << std::endl;
 }
@@ -281,7 +281,7 @@ void test_gaussian_larger() {
 
     // Row 3 = Row 0, Row 4 = Row 1, Row 2 = Row 0 XOR Row 1 (over GF(2))
     // So rank is 2 (only rows 0, 1 are independent)
-    assert(result.rank == 2);
+    GNFS_TEST_CHECK(result.rank == 2);
 
     std::cout << "  Gaussian (larger): PASSED" << std::endl;
 }
@@ -323,9 +323,9 @@ void test_matrix_builder() {
     mapping.num_large_primes_rat = 0;
     mapping.num_large_primes_alg = 0;
 
-    assert(mapping.total_columns() == 4); // sign + 3 primes
-    assert(mapping.rat_fb_start() == 1);
-    assert(mapping.alg_fb_start() == 4);
+    GNFS_TEST_CHECK(mapping.total_columns() == 4); // sign + 3 primes
+    GNFS_TEST_CHECK(mapping.rat_fb_start() == 1);
+    GNFS_TEST_CHECK(mapping.alg_fb_start() == 4);
 
     std::cout << "  MatrixBuilder: PASSED" << std::endl;
 }
@@ -395,7 +395,7 @@ void test_verify_dependency() {
 
     // In this matrix, rows 0 XOR row 1 XOR row 2 = 0
     // So there should be at least one dependency
-    assert(deps.size() >= 1);
+    GNFS_TEST_CHECK(deps.size() >= 1);
 
     std::cout << "  verify_dependency: PASSED" << std::endl;
 }
@@ -408,16 +408,16 @@ void test_default_schirokauer_primes() {
     // ℓ=3 produces values in {0,1,2} which cannot be faithfully represented
     // in GF(2) — taking mod 2 destroys the mod-3 constraint.
     MatrixBuilderConfig config;
-    assert(config.schirokauer_primes.size() == 1 &&
-           "Default should have exactly 1 Schirokauer prime");
-    assert(config.schirokauer_primes[0] == 2 &&
-           "Default Schirokauer prime must be 2 for GF(2) matrix");
+    GNFS_TEST_CHECK(config.schirokauer_primes.size() == 1 &&
+                    "Default should have exactly 1 Schirokauer prime");
+    GNFS_TEST_CHECK(config.schirokauer_primes[0] == 2 &&
+                    "Default Schirokauer prime must be 2 for GF(2) matrix");
 
     // Explicitly setting {2} should also work
     MatrixBuilderConfig config2;
     config2.schirokauer_primes = {2};
-    assert(config2.schirokauer_primes.size() == 1);
-    assert(config2.schirokauer_primes[0] == 2);
+    GNFS_TEST_CHECK(config2.schirokauer_primes.size() == 1);
+    GNFS_TEST_CHECK(config2.schirokauer_primes[0] == 2);
 
     std::cout << "  Default schirokauer_primes: PASSED" << std::endl;
 }
@@ -487,11 +487,11 @@ void test_matrix_stats() {
 
     auto stats = compute_matrix_stats(mat);
 
-    assert(stats.num_rows == 10);
-    assert(stats.num_cols == 8);
-    assert(stats.total_weight == 20); // 2 per row * 10 rows
-    assert(stats.has_excess());
-    assert(stats.excess == 2); // 10 - 8
+    GNFS_TEST_CHECK(stats.num_rows == 10);
+    GNFS_TEST_CHECK(stats.num_cols == 8);
+    GNFS_TEST_CHECK(stats.total_weight == 20); // 2 per row * 10 rows
+    GNFS_TEST_CHECK(stats.has_excess());
+    GNFS_TEST_CHECK(stats.excess == 2); // 10 - 8
 
     std::cout << "  Matrix stats: PASSED" << std::endl;
 }
@@ -534,7 +534,7 @@ void test_structured_gauss() {
 
     // Should find at least the two dependencies
     // (rows 0,1,2 and rows 3,4,5)
-    assert(deps.size() >= 1);
+    GNFS_TEST_CHECK(deps.size() >= 1);
 
     std::cout << "  Block Lanczos: PASSED" << std::endl;
 }
@@ -561,21 +561,21 @@ void test_schirokauer_repeated_roots() {
     SchirokaurMap smap(ctx, config);
 
     // Should produce degree=3 columns (one per Schirokauer prime)
-    assert(smap.num_columns() == 3 &&
-           "Schirokauer map must produce degree_ columns even with repeated roots");
+    GNFS_TEST_CHECK(smap.num_columns() == 3 &&
+                    "Schirokauer map must produce degree_ columns even with repeated roots");
 
     // Verify map is in split mode (not unsplit)
-    assert(!smap.prime_info_.empty());
-    assert(smap.prime_info_[0].is_split &&
-           "f with repeated roots mod 2 must use split mode, not unsplit");
+    GNFS_TEST_CHECK(!smap.prime_info_.empty());
+    GNFS_TEST_CHECK(smap.prime_info_[0].is_split &&
+                    "f with repeated roots mod 2 must use split mode, not unsplit");
 
     // The squarefree factor x+1 (multiplicity 1 in f) should be lifted
     // The x² factor (multiplicity 2) should be skipped → those columns zero-padded
     // So we expect exactly 1 factor of degree 1
-    assert(smap.prime_info_[0].factors.size() == 1 &&
-           "Only multiplicity-1 factor (x+1) should be lifted");
-    assert(smap.prime_info_[0].factors[0].degree == 1 &&
-           "Lifted factor (x+1) should have degree 1");
+    GNFS_TEST_CHECK(smap.prime_info_[0].factors.size() == 1 &&
+                    "Only multiplicity-1 factor (x+1) should be lifted");
+    GNFS_TEST_CHECK(smap.prime_info_[0].factors[0].degree == 1 &&
+                    "Lifted factor (x+1) should have degree 1");
 
     // Compute map for several (a, b) values — must not crash and return valid values
     std::vector<std::pair<int64_t, uint64_t>> test_cases = {{3, 2},  {7, 1},  {1, 5},
@@ -583,17 +583,17 @@ void test_schirokauer_repeated_roots() {
 
     for (auto [a, b] : test_cases) {
         auto maps = smap.compute(a, b);
-        assert(maps.size() == 1 && "Should have maps for 1 prime");
-        assert(maps[0].size() == 3 && "Each map should have degree_ = 3 values");
+        GNFS_TEST_CHECK(maps.size() == 1 && "Should have maps for 1 prime");
+        GNFS_TEST_CHECK(maps[0].size() == 3 && "Each map should have degree_ = 3 values");
         for (uint32_t v : maps[0]) {
-            assert(v < 2 && "Map values must be in [0, ℓ)");
+            GNFS_TEST_CHECK(v < 2 && "Map values must be in [0, ℓ)");
         }
     }
 
     // Determinism: same input should give same output
     auto map1 = smap.compute(3, 2);
     auto map2 = smap.compute(3, 2);
-    assert(map1[0] == map2[0] && "Schirokauer map must be deterministic");
+    GNFS_TEST_CHECK(map1[0] == map2[0] && "Schirokauer map must be deterministic");
 
     std::cout << "  Repeated roots (x^2*(x+1) mod 2): PASSED" << std::endl;
 }
@@ -617,15 +617,17 @@ void test_schirokauer_perfect_power() {
 
     SchirokaurMap smap(ctx, config);
 
-    assert(smap.num_columns() == 3);
+    GNFS_TEST_CHECK(smap.num_columns() == 3);
     // Perfect power mod ℓ has no multiplicity-1 factors → falls back to unsplit mode
     // (zero-filling would remove all Schirokauer constraints, making every dependency trivial)
-    assert(!smap.prime_info_[0].is_split && "Perfect power mod 2 must fall back to unsplit mode");
-    assert(smap.prime_info_[0].exponent == 7 && "Unsplit exponent should be ℓ^d - 1 = 2^3 - 1 = 7");
+    GNFS_TEST_CHECK(!smap.prime_info_[0].is_split &&
+                    "Perfect power mod 2 must fall back to unsplit mode");
+    GNFS_TEST_CHECK(smap.prime_info_[0].exponent == 7 &&
+                    "Unsplit exponent should be ℓ^d - 1 = 2^3 - 1 = 7");
 
     // Unsplit mode produces actual Schirokauer values (not all zeros)
     auto maps = smap.compute(5, 3);
-    assert(maps[0].size() == 3);
+    GNFS_TEST_CHECK(maps[0].size() == 3);
     // Values are computed from (a - b*α)^7 mod (f, 2^3), then extract bits
     // Just verify we get 3 values (actual values depend on element)
 
@@ -667,23 +669,23 @@ void test_schirokauer_squarefree_reducible() {
 
     SchirokaurMap smap(ctx, config);
 
-    assert(smap.num_columns() == 3);
-    assert(smap.prime_info_[0].is_split);
+    GNFS_TEST_CHECK(smap.num_columns() == 3);
+    GNFS_TEST_CHECK(smap.prime_info_[0].is_split);
     // Should have 2 factors: (x+1) of degree 1, (x²+x+1) of degree 2
-    assert(smap.prime_info_[0].factors.size() == 2 &&
-           "Squarefree reducible should have 2 lifted factors");
+    GNFS_TEST_CHECK(smap.prime_info_[0].factors.size() == 2 &&
+                    "Squarefree reducible should have 2 lifted factors");
 
     uint32_t total_deg = 0;
     for (const auto& fi : smap.prime_info_[0].factors) {
         total_deg += fi.degree;
     }
-    assert(total_deg == 3 && "Factor degrees should sum to polynomial degree");
+    GNFS_TEST_CHECK(total_deg == 3 && "Factor degrees should sum to polynomial degree");
 
     // Compute and verify
     auto maps = smap.compute(7, 1);
-    assert(maps[0].size() == 3);
+    GNFS_TEST_CHECK(maps[0].size() == 3);
     for (uint32_t v : maps[0]) {
-        assert(v < 2);
+        GNFS_TEST_CHECK(v < 2);
     }
 
     std::cout << "  Squarefree reducible ((x+1)(x^2+x+1) mod 2): PASSED" << std::endl;
@@ -715,11 +717,11 @@ void test_parallel_block_lanczos_correctness() {
     auto deps = solver.find_dependencies(mat, 10);
 
     std::cout << "  Found " << deps.size() << " dependencies" << std::endl;
-    assert(deps.size() >= 1);
+    GNFS_TEST_CHECK(deps.size() >= 1);
 
     // Verify each dependency: v^T * M = 0 over GF(2)
     for (const auto& dep : deps) {
-        assert(dep.size() == m);
+        GNFS_TEST_CHECK(dep.size() == m);
 
         // Compute M^T * v
         std::vector<bool> result(n, false);
@@ -734,7 +736,7 @@ void test_parallel_block_lanczos_correctness() {
 
         // Must be all zeros
         for (size_t j = 0; j < n; ++j) {
-            assert(!result[j]);
+            GNFS_TEST_CHECK(!result[j]);
         }
     }
 
@@ -759,15 +761,15 @@ void test_ensure_all_sorted() {
 
     // After ensure_all_sorted, indices() must return sorted lists
     auto& idx0 = mat.row(0).indices();
-    assert(idx0.size() == 3);
-    assert(idx0[0] == 2);
-    assert(idx0[1] == 5);
-    assert(idx0[2] == 8);
+    GNFS_TEST_CHECK(idx0.size() == 3);
+    GNFS_TEST_CHECK(idx0[0] == 2);
+    GNFS_TEST_CHECK(idx0[1] == 5);
+    GNFS_TEST_CHECK(idx0[2] == 8);
 
     auto& idx1 = mat.row(1).indices();
-    assert(idx1.size() == 2);
-    assert(idx1[0] == 1);
-    assert(idx1[1] == 9);
+    GNFS_TEST_CHECK(idx1.size() == 2);
+    GNFS_TEST_CHECK(idx1[0] == 1);
+    GNFS_TEST_CHECK(idx1[1] == 9);
 
     std::cout << "  ensure_all_sorted: PASSED" << std::endl;
 }
@@ -796,12 +798,12 @@ void test_sge_weight1() {
     auto result = SGE::preprocess(mat, config);
 
     // Row 1 should be eliminated (weight-1 col 2)
-    assert(result.reduced_matrix.num_rows() == 3);
-    assert(result.weight1_eliminated >= 1);
+    GNFS_TEST_CHECK(result.reduced_matrix.num_rows() == 3);
+    GNFS_TEST_CHECK(result.weight1_eliminated >= 1);
 
     // Verify row composition: each reduced row maps to exactly one original row
     for (auto& comp : result.row_composition) {
-        assert(!comp.empty());
+        GNFS_TEST_CHECK(!comp.empty());
     }
 
     std::cout << "  SGE weight-1: " << result.original_rows << "×" << result.original_cols << " → "
@@ -843,8 +845,8 @@ void test_sge_weight2() {
     auto result = SGE::preprocess(mat, config);
 
     // Two weight-2 merges: cols 4 and 5 → 2 rows eliminated
-    assert(result.reduced_matrix.num_rows() == 3);
-    assert(result.weight2_merged == 2);
+    GNFS_TEST_CHECK(result.reduced_matrix.num_rows() == 3);
+    GNFS_TEST_CHECK(result.weight2_merged == 2);
 
     // The merged rows' compositions should contain 2 original rows
     size_t merged_count = 0;
@@ -852,7 +854,7 @@ void test_sge_weight2() {
         if (comp.size() == 2)
             ++merged_count;
     }
-    assert(merged_count == 2);
+    GNFS_TEST_CHECK(merged_count == 2);
 
     std::cout << "  SGE weight-2: " << result.original_rows << "×" << result.original_cols << " → "
               << result.reduced_matrix.num_rows() << "×" << result.reduced_matrix.num_cols()
@@ -896,12 +898,12 @@ void test_sge_expand_dependency() {
     // Find deps on reduced matrix
     BlockLanczos solver;
     auto deps = solver.find_dependencies(sge_result.reduced_matrix);
-    assert(!deps.empty());
+    GNFS_TEST_CHECK(!deps.empty());
 
     // Expand and verify against original matrix
     for (auto& dep : deps) {
         auto orig = sge_result.expand_dependency(dep);
-        assert(orig.size() == 6);
+        GNFS_TEST_CHECK(orig.size() == 6);
 
         // Verify: v^T * M = 0 over GF(2)
         std::vector<bool> check(4, false);
@@ -913,7 +915,7 @@ void test_sge_expand_dependency() {
             }
         }
         for (size_t c = 0; c < 4; ++c) {
-            assert(!check[c]);
+            GNFS_TEST_CHECK(!check[c]);
         }
     }
 
@@ -921,9 +923,9 @@ void test_sge_expand_dependency() {
     std::cout << "  PASSED" << std::endl;
 }
 
-// Release-active contract tests for dependency expansion. These fixtures do
-// not rely on assert(), so malformed solver output and corrupt provenance stay
-// fail-closed when NDEBUG is enabled.
+// Release-active contract tests for dependency expansion. These fixtures use
+// explicit exception checks, so malformed solver output and corrupt provenance
+// stay fail-closed when NDEBUG is enabled.
 void test_sge_expand_dependency_contract() {
     std::cout << "Testing SGE dependency expansion contract..." << std::endl;
 
@@ -1066,11 +1068,11 @@ void test_sge_row_composition_cap() {
               << " w2_skipped=" << result_capped.weight2_skipped_cap << "\n";
 
     // Cap=4 should skip some merges (composition grows above 4 in chain)
-    assert(result_capped.weight2_skipped_cap > 0 &&
-           "row_composition_cap should trigger skips on chain matrix");
-    assert(result_capped.weight2_skipped_cap == 0 ||
-           result_capped.weight2_merged < result_baseline.weight2_merged ||
-           result_capped.weight2_merged == result_baseline.weight2_merged);
+    GNFS_TEST_CHECK(result_capped.weight2_skipped_cap > 0 &&
+                    "row_composition_cap should trigger skips on chain matrix");
+    GNFS_TEST_CHECK(result_capped.weight2_skipped_cap == 0 ||
+                    result_capped.weight2_merged < result_baseline.weight2_merged ||
+                    result_capped.weight2_merged == result_baseline.weight2_merged);
 
     // No row_composition entry exceeds cap in capped result
     for (const auto& comp : result_capped.row_composition) {
@@ -1078,8 +1080,8 @@ void test_sge_row_composition_cap() {
         // (we check prospective = comp[r1]+comp[r2] > cap). Worst case comp[r1]
         // is at cap before final merge that pushed over → could be cap + cap = 2*cap.
         // Use generous 2*cap check.
-        assert(comp.size() <= 2 * config.row_composition_cap &&
-               "composition size should stay bounded by ~2*cap");
+        GNFS_TEST_CHECK(comp.size() <= 2 * config.row_composition_cap &&
+                        "composition size should stay bounded by ~2*cap");
     }
 
     std::cout << "  PASSED" << std::endl;
@@ -1113,7 +1115,7 @@ void test_sge_row_composition_cap_disabled() {
     auto result = SGE::preprocess(mat, config);
 
     // Should never skip with cap=0
-    assert(result.weight2_skipped_cap == 0);
+    GNFS_TEST_CHECK(result.weight2_skipped_cap == 0);
 
     std::cout << "  PASSED" << std::endl;
 }
@@ -1143,8 +1145,8 @@ void test_sge_cascading_weight1() {
     auto result = SGE::preprocess(mat, config);
 
     // 全部 3 列通过 w1 cascade 消除
-    assert(result.reduced_matrix.num_rows() == 0);
-    assert(result.weight1_eliminated == 3);
+    GNFS_TEST_CHECK(result.reduced_matrix.num_rows() == 0);
+    GNFS_TEST_CHECK(result.weight1_eliminated == 3);
 
     std::cout << "  Cascading w1: " << result.original_rows << "x" << result.original_cols
               << " → empty (w1=" << result.weight1_eliminated << ")" << std::endl;
@@ -1183,9 +1185,9 @@ void test_sge_alternating_cascade() {
     auto result = SGE::preprocess(mat, config);
 
     // 期望:R0 在 Phase 1 被消(col 0 是 w1),后续 w2 merge 把剩余压缩
-    assert(result.weight1_eliminated >= 1);        // 至少 col 0 触发
-    assert(result.reduced_matrix.num_rows() <= 4); // R0 必定消失
-    assert(result.passes >= 1);
+    GNFS_TEST_CHECK(result.weight1_eliminated >= 1);        // 至少 col 0 触发
+    GNFS_TEST_CHECK(result.reduced_matrix.num_rows() <= 4); // R0 必定消失
+    GNFS_TEST_CHECK(result.passes >= 1);
 
     std::cout << "  Alternating cascade: " << result.original_rows << "x" << result.original_cols
               << " → " << result.reduced_matrix.num_rows() << "x"
@@ -1202,8 +1204,8 @@ void test_sge_edge_cases() {
     {
         SparseMatrix empty(0, 0);
         auto result = SGE::preprocess(empty);
-        assert(result.reduced_matrix.num_rows() == 0);
-        assert(result.reduced_matrix.num_cols() == 0);
+        GNFS_TEST_CHECK(result.reduced_matrix.num_rows() == 0);
+        GNFS_TEST_CHECK(result.reduced_matrix.num_cols() == 0);
     }
 
     // 1×1 matrix
@@ -1212,8 +1214,8 @@ void test_sge_edge_cases() {
         tiny.set(0, 0);
         auto result = SGE::preprocess(tiny);
         // Weight-1 column → eliminated
-        assert(result.reduced_matrix.num_rows() == 0);
-        assert(result.weight1_eliminated == 1);
+        GNFS_TEST_CHECK(result.reduced_matrix.num_rows() == 0);
+        GNFS_TEST_CHECK(result.weight1_eliminated == 1);
     }
 
     // Identity matrix (all weight-1 columns)
@@ -1222,8 +1224,8 @@ void test_sge_edge_cases() {
         for (size_t i = 0; i < 5; ++i)
             ident.set(i, i);
         auto result = SGE::preprocess(ident);
-        assert(result.reduced_matrix.num_rows() == 0);
-        assert(result.weight1_eliminated == 5);
+        GNFS_TEST_CHECK(result.reduced_matrix.num_rows() == 0);
+        GNFS_TEST_CHECK(result.weight1_eliminated == 5);
     }
 
     std::cout << "  Edge cases: PASSED" << std::endl;
