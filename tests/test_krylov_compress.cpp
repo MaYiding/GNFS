@@ -2,14 +2,15 @@
 //
 // Tests the compressor in isolation, before integration with the mmap layer.
 // Roundtrip correctness over GF(2) Krylov data is non-negotiable: any byte
-// mismatch breaks BW dependency extraction, so these tests assert exact
+// mismatch breaks BW dependency extraction, so these tests require exact
 // equality after decompress.
 
 #include "gnfs/linalg/krylov_compress.hpp"
+#include "support/test_check.hpp"
 
-#include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <iostream>
 #include <random>
 #include <string>
@@ -21,48 +22,47 @@ namespace {
 
 void check_roundtrip(const std::vector<uint8_t>& src, size_t block_stride,
                      const std::string& label) {
-    auto compressed = KrylovCompressor::compress_chunk(
-        src.data(), src.size(), block_stride);
+    auto compressed = KrylovCompressor::compress_chunk(src.data(), src.size(), block_stride);
 
     // Header check
-    assert(compressed.size() >= KrylovCompressor::HEADER_BYTES);
-    uint64_t reported = KrylovCompressor::peek_uncompressed_size(
-        compressed.data(), compressed.size());
-    assert(reported == src.size());
+    GNFS_TEST_CHECK(compressed.size() >= KrylovCompressor::HEADER_BYTES);
+    uint64_t reported =
+        KrylovCompressor::peek_uncompressed_size(compressed.data(), compressed.size());
+    GNFS_TEST_CHECK(reported == src.size());
 
     // Decompress
-    std::vector<uint8_t> dst(src.size(), 0xFE);  // poison to detect under-write
-    bool ok = KrylovCompressor::decompress_chunk(
-        compressed.data(), compressed.size(),
-        dst.data(), dst.size(), block_stride);
-    assert(ok);
-    assert(dst.size() == src.size());
+    std::vector<uint8_t> dst(src.size(), 0xFE); // poison to detect under-write
+    bool ok = KrylovCompressor::decompress_chunk(compressed.data(), compressed.size(), dst.data(),
+                                                 dst.size(), block_stride);
+    GNFS_TEST_CHECK(ok);
+    GNFS_TEST_CHECK(dst.size() == src.size());
     for (size_t i = 0; i < src.size(); ++i) {
         if (dst[i] != src[i]) {
             std::cerr << label << ": mismatch at byte " << i
                       << " expected=" << static_cast<int>(src[i])
                       << " got=" << static_cast<int>(dst[i]) << std::endl;
-            assert(false);
+            GNFS_TEST_CHECK(false);
         }
     }
 
-    double ratio = src.empty() ? 0.0 :
-        static_cast<double>(compressed.size()) / static_cast<double>(src.size());
-    std::cout << "  " << label << ": " << src.size() << " B -> "
-              << compressed.size() << " B (ratio=" << ratio << ")" << std::endl;
+    double ratio = src.empty()
+                       ? 0.0
+                       : static_cast<double>(compressed.size()) / static_cast<double>(src.size());
+    std::cout << "  " << label << ": " << src.size() << " B -> " << compressed.size()
+              << " B (ratio=" << ratio << ")" << std::endl;
 }
 
-}  // namespace
+} // namespace
 
 void test_empty_roundtrip() {
     std::cout << "Testing empty input..." << std::endl;
     std::vector<uint8_t> src;
     auto compressed = KrylovCompressor::compress_chunk(src.data(), 0, 0);
-    assert(compressed.size() == KrylovCompressor::HEADER_BYTES);
+    GNFS_TEST_CHECK(compressed.size() == KrylovCompressor::HEADER_BYTES);
     std::vector<uint8_t> dst;
-    bool ok = KrylovCompressor::decompress_chunk(
-        compressed.data(), compressed.size(), dst.data(), 0, 0);
-    assert(ok);
+    bool ok =
+        KrylovCompressor::decompress_chunk(compressed.data(), compressed.size(), dst.data(), 0, 0);
+    GNFS_TEST_CHECK(ok);
     std::cout << "  empty: PASS" << std::endl;
 }
 
@@ -75,7 +75,8 @@ void test_single_byte_roundtrip() {
 void test_16_byte_roundtrip() {
     std::cout << "Testing 16 byte buffer..." << std::endl;
     std::vector<uint8_t> src(16);
-    for (size_t i = 0; i < 16; ++i) src[i] = static_cast<uint8_t>(i * 17 + 5);
+    for (size_t i = 0; i < 16; ++i)
+        src[i] = static_cast<uint8_t>(i * 17 + 5);
     check_roundtrip(src, 0, "16 B mixed");
 }
 
@@ -83,7 +84,8 @@ void test_4kb_random_roundtrip() {
     std::cout << "Testing 4 KB pseudo-random buffer..." << std::endl;
     std::vector<uint8_t> src(4096);
     std::mt19937_64 rng(0xABCD1234);
-    for (size_t i = 0; i < src.size(); ++i) src[i] = static_cast<uint8_t>(rng());
+    for (size_t i = 0; i < src.size(); ++i)
+        src[i] = static_cast<uint8_t>(rng());
     check_roundtrip(src, 0, "4 KB random");
 }
 
@@ -92,14 +94,15 @@ void test_all_zero_high_ratio() {
     std::vector<uint8_t> src(32768, 0);
     auto compressed = KrylovCompressor::compress_chunk(src.data(), src.size(), 0);
     std::vector<uint8_t> dst(src.size());
-    assert(KrylovCompressor::decompress_chunk(
-        compressed.data(), compressed.size(), dst.data(), dst.size(), 0));
-    for (size_t i = 0; i < src.size(); ++i) assert(dst[i] == 0);
+    GNFS_TEST_CHECK(KrylovCompressor::decompress_chunk(compressed.data(), compressed.size(),
+                                                       dst.data(), dst.size(), 0));
+    for (size_t i = 0; i < src.size(); ++i)
+        GNFS_TEST_CHECK(dst[i] == 0);
 
     double ratio = static_cast<double>(compressed.size()) / static_cast<double>(src.size());
-    std::cout << "  32 KB zeros: " << src.size() << " B -> "
-              << compressed.size() << " B (ratio=" << ratio << ")" << std::endl;
-    assert(ratio < 0.05);  // < 5% — strongly compressible
+    std::cout << "  32 KB zeros: " << src.size() << " B -> " << compressed.size()
+              << " B (ratio=" << ratio << ")" << std::endl;
+    GNFS_TEST_CHECK(ratio < 0.05); // < 5% — strongly compressible
 }
 
 void test_all_ones_roundtrip() {
@@ -119,15 +122,16 @@ void test_sparse_input_roundtrip() {
     }
     auto compressed = KrylovCompressor::compress_chunk(src.data(), src.size(), 0);
     std::vector<uint8_t> dst(src.size());
-    assert(KrylovCompressor::decompress_chunk(
-        compressed.data(), compressed.size(), dst.data(), dst.size(), 0));
-    for (size_t i = 0; i < src.size(); ++i) assert(dst[i] == src[i]);
+    GNFS_TEST_CHECK(KrylovCompressor::decompress_chunk(compressed.data(), compressed.size(),
+                                                       dst.data(), dst.size(), 0));
+    for (size_t i = 0; i < src.size(); ++i)
+        GNFS_TEST_CHECK(dst[i] == src[i]);
 
     double ratio = static_cast<double>(compressed.size()) / static_cast<double>(src.size());
-    std::cout << "  16 KB sparse: " << src.size() << " B -> "
-              << compressed.size() << " B (ratio=" << ratio << ")" << std::endl;
+    std::cout << "  16 KB sparse: " << src.size() << " B -> " << compressed.size()
+              << " B (ratio=" << ratio << ")" << std::endl;
     // Sparse should compress to well under 50%
-    assert(ratio < 0.5);
+    GNFS_TEST_CHECK(ratio < 0.5);
 }
 
 void test_incompressible_no_blowup() {
@@ -135,20 +139,22 @@ void test_incompressible_no_blowup() {
     std::vector<uint8_t> src(4096);
     // Truly random data
     std::mt19937_64 rng(0xCAFEBABE);
-    for (size_t i = 0; i < src.size(); ++i) src[i] = static_cast<uint8_t>(rng());
+    for (size_t i = 0; i < src.size(); ++i)
+        src[i] = static_cast<uint8_t>(rng());
 
     auto compressed = KrylovCompressor::compress_chunk(src.data(), src.size(), 0);
     std::vector<uint8_t> dst(src.size());
-    assert(KrylovCompressor::decompress_chunk(
-        compressed.data(), compressed.size(), dst.data(), dst.size(), 0));
-    for (size_t i = 0; i < src.size(); ++i) assert(dst[i] == src[i]);
+    GNFS_TEST_CHECK(KrylovCompressor::decompress_chunk(compressed.data(), compressed.size(),
+                                                       dst.data(), dst.size(), 0));
+    for (size_t i = 0; i < src.size(); ++i)
+        GNFS_TEST_CHECK(dst[i] == src[i]);
 
     // Worst case overhead: header (16) + 1 length byte per 128 bytes of literal
     // = 16 + 32 = 48 bytes overhead over 4096; ratio < 1.015
     double ratio = static_cast<double>(compressed.size()) / static_cast<double>(src.size());
-    std::cout << "  4 KB random: " << src.size() << " B -> "
-              << compressed.size() << " B (ratio=" << ratio << ")" << std::endl;
-    assert(ratio < 1.02);
+    std::cout << "  4 KB random: " << src.size() << " B -> " << compressed.size()
+              << " B (ratio=" << ratio << ")" << std::endl;
+    GNFS_TEST_CHECK(ratio < 1.02);
 }
 
 void test_delta_mode_roundtrip_sparse() {
@@ -160,7 +166,8 @@ void test_delta_mode_roundtrip_sparse() {
     std::vector<uint8_t> src(BLOCK_STRIDE * N_BLOCKS, 0);
     // First block: random fill
     std::mt19937_64 rng(0x11223344);
-    for (size_t i = 0; i < BLOCK_STRIDE; ++i) src[i] = static_cast<uint8_t>(rng());
+    for (size_t i = 0; i < BLOCK_STRIDE; ++i)
+        src[i] = static_cast<uint8_t>(rng());
     // Subsequent blocks: copy previous + 5 random byte flips
     for (size_t blk = 1; blk < N_BLOCKS; ++blk) {
         const size_t off = blk * BLOCK_STRIDE;
@@ -171,79 +178,76 @@ void test_delta_mode_roundtrip_sparse() {
         }
     }
 
-    auto compressed = KrylovCompressor::compress_chunk(
-        src.data(), src.size(), BLOCK_STRIDE);
+    auto compressed = KrylovCompressor::compress_chunk(src.data(), src.size(), BLOCK_STRIDE);
     std::vector<uint8_t> dst(src.size());
-    bool ok = KrylovCompressor::decompress_chunk(
-        compressed.data(), compressed.size(),
-        dst.data(), dst.size(), BLOCK_STRIDE);
-    assert(ok);
+    bool ok = KrylovCompressor::decompress_chunk(compressed.data(), compressed.size(), dst.data(),
+                                                 dst.size(), BLOCK_STRIDE);
+    GNFS_TEST_CHECK(ok);
     for (size_t i = 0; i < src.size(); ++i) {
         if (dst[i] != src[i]) {
             std::cerr << "delta mismatch byte " << i << std::endl;
-            assert(false);
+            GNFS_TEST_CHECK(false);
         }
     }
 
     double ratio = static_cast<double>(compressed.size()) / static_cast<double>(src.size());
-    std::cout << "  delta sparse: " << src.size() << " B -> "
-              << compressed.size() << " B (ratio=" << ratio << ")" << std::endl;
+    std::cout << "  delta sparse: " << src.size() << " B -> " << compressed.size()
+              << " B (ratio=" << ratio << ")" << std::endl;
     // Delta mode should crush sparse difference to << 0.5
-    assert(ratio < 0.5);
+    GNFS_TEST_CHECK(ratio < 0.5);
 }
 
 void test_invalid_magic_rejected() {
     std::cout << "Testing decompress rejects bad magic..." << std::endl;
     std::vector<uint8_t> src(64);
-    for (size_t i = 0; i < src.size(); ++i) src[i] = static_cast<uint8_t>(i);
+    for (size_t i = 0; i < src.size(); ++i)
+        src[i] = static_cast<uint8_t>(i);
     auto compressed = KrylovCompressor::compress_chunk(src.data(), src.size(), 0);
 
     // Corrupt magic
     compressed[0] ^= 0xFF;
     std::vector<uint8_t> dst(src.size());
-    bool ok = KrylovCompressor::decompress_chunk(
-        compressed.data(), compressed.size(), dst.data(), dst.size(), 0);
-    assert(!ok);
+    bool ok = KrylovCompressor::decompress_chunk(compressed.data(), compressed.size(), dst.data(),
+                                                 dst.size(), 0);
+    GNFS_TEST_CHECK(!ok);
     std::cout << "  invalid magic: rejected (PASS)" << std::endl;
 }
 
 void test_size_mismatch_rejected() {
     std::cout << "Testing decompress rejects size mismatch..." << std::endl;
     std::vector<uint8_t> src(100);
-    for (size_t i = 0; i < src.size(); ++i) src[i] = static_cast<uint8_t>(i);
+    for (size_t i = 0; i < src.size(); ++i)
+        src[i] = static_cast<uint8_t>(i);
     auto compressed = KrylovCompressor::compress_chunk(src.data(), src.size(), 0);
 
     // Tell decompressor wrong size
     std::vector<uint8_t> dst(50);
-    bool ok = KrylovCompressor::decompress_chunk(
-        compressed.data(), compressed.size(), dst.data(), dst.size(), 0);
-    assert(!ok);
+    bool ok = KrylovCompressor::decompress_chunk(compressed.data(), compressed.size(), dst.data(),
+                                                 dst.size(), 0);
+    GNFS_TEST_CHECK(!ok);
     std::cout << "  size mismatch: rejected (PASS)" << std::endl;
 }
 
 void test_delta_flag_mismatch_rejected() {
     std::cout << "Testing decompress rejects delta flag mismatch..." << std::endl;
     std::vector<uint8_t> src(256);
-    for (size_t i = 0; i < src.size(); ++i) src[i] = static_cast<uint8_t>(i);
+    for (size_t i = 0; i < src.size(); ++i)
+        src[i] = static_cast<uint8_t>(i);
 
     // Compressed without delta
-    auto raw_compressed = KrylovCompressor::compress_chunk(
-        src.data(), src.size(), 0);
+    auto raw_compressed = KrylovCompressor::compress_chunk(src.data(), src.size(), 0);
     std::vector<uint8_t> dst(src.size());
     // Decompress with delta=64 should fail
-    bool ok = KrylovCompressor::decompress_chunk(
-        raw_compressed.data(), raw_compressed.size(),
-        dst.data(), dst.size(), 64);
-    assert(!ok);
+    bool ok = KrylovCompressor::decompress_chunk(raw_compressed.data(), raw_compressed.size(),
+                                                 dst.data(), dst.size(), 64);
+    GNFS_TEST_CHECK(!ok);
 
     // Compressed with delta=64
-    auto delta_compressed = KrylovCompressor::compress_chunk(
-        src.data(), src.size(), 64);
+    auto delta_compressed = KrylovCompressor::compress_chunk(src.data(), src.size(), 64);
     // Decompress with delta=0 should fail
-    ok = KrylovCompressor::decompress_chunk(
-        delta_compressed.data(), delta_compressed.size(),
-        dst.data(), dst.size(), 0);
-    assert(!ok);
+    ok = KrylovCompressor::decompress_chunk(delta_compressed.data(), delta_compressed.size(),
+                                            dst.data(), dst.size(), 0);
+    GNFS_TEST_CHECK(!ok);
 
     std::cout << "  delta flag mismatch: rejected (PASS)" << std::endl;
 }
@@ -252,14 +256,15 @@ void test_truncated_payload_rejected() {
     std::cout << "Testing decompress rejects truncated payload..." << std::endl;
     std::vector<uint8_t> src(1024);
     std::mt19937_64 rng(0x99);
-    for (size_t i = 0; i < src.size(); ++i) src[i] = static_cast<uint8_t>(rng());
+    for (size_t i = 0; i < src.size(); ++i)
+        src[i] = static_cast<uint8_t>(rng());
     auto compressed = KrylovCompressor::compress_chunk(src.data(), src.size(), 0);
 
     // Cut off last few bytes
     std::vector<uint8_t> dst(src.size());
-    bool ok = KrylovCompressor::decompress_chunk(
-        compressed.data(), compressed.size() - 5, dst.data(), dst.size(), 0);
-    assert(!ok);
+    bool ok = KrylovCompressor::decompress_chunk(compressed.data(), compressed.size() - 5,
+                                                 dst.data(), dst.size(), 0);
+    GNFS_TEST_CHECK(!ok);
 
     std::cout << "  truncated: rejected (PASS)" << std::endl;
 }
@@ -278,44 +283,52 @@ void test_repeated_runs() {
 void test_chunk_sized_block_grid() {
     std::cout << "Testing 32 KB grid of 512 B blocks..." << std::endl;
     constexpr size_t BLOCK_STRIDE = 512;
-    constexpr size_t N_BLOCKS = 64;  // 32 KB total
+    constexpr size_t N_BLOCKS = 64; // 32 KB total
     std::vector<uint8_t> src(BLOCK_STRIDE * N_BLOCKS);
     std::mt19937_64 rng(0xBEEF1234);
-    for (size_t i = 0; i < src.size(); ++i) src[i] = static_cast<uint8_t>(rng());
+    for (size_t i = 0; i < src.size(); ++i)
+        src[i] = static_cast<uint8_t>(rng());
 
-    auto compressed = KrylovCompressor::compress_chunk(
-        src.data(), src.size(), BLOCK_STRIDE);
+    auto compressed = KrylovCompressor::compress_chunk(src.data(), src.size(), BLOCK_STRIDE);
     std::vector<uint8_t> dst(src.size());
-    bool ok = KrylovCompressor::decompress_chunk(
-        compressed.data(), compressed.size(),
-        dst.data(), dst.size(), BLOCK_STRIDE);
-    assert(ok);
-    for (size_t i = 0; i < src.size(); ++i) assert(dst[i] == src[i]);
+    bool ok = KrylovCompressor::decompress_chunk(compressed.data(), compressed.size(), dst.data(),
+                                                 dst.size(), BLOCK_STRIDE);
+    GNFS_TEST_CHECK(ok);
+    for (size_t i = 0; i < src.size(); ++i)
+        GNFS_TEST_CHECK(dst[i] == src[i]);
 
     double ratio = static_cast<double>(compressed.size()) / static_cast<double>(src.size());
-    std::cout << "  32 KB grid: " << src.size() << " B -> "
-              << compressed.size() << " B (ratio=" << ratio << ")" << std::endl;
+    std::cout << "  32 KB grid: " << src.size() << " B -> " << compressed.size()
+              << " B (ratio=" << ratio << ")" << std::endl;
 }
 
 int main() {
-    std::cout << "===== KrylovCompressor Tests =====" << std::endl;
+    try {
+        std::cout << "===== KrylovCompressor Tests =====" << std::endl;
 
-    test_empty_roundtrip();
-    test_single_byte_roundtrip();
-    test_16_byte_roundtrip();
-    test_4kb_random_roundtrip();
-    test_all_zero_high_ratio();
-    test_all_ones_roundtrip();
-    test_sparse_input_roundtrip();
-    test_incompressible_no_blowup();
-    test_delta_mode_roundtrip_sparse();
-    test_invalid_magic_rejected();
-    test_size_mismatch_rejected();
-    test_delta_flag_mismatch_rejected();
-    test_truncated_payload_rejected();
-    test_repeated_runs();
-    test_chunk_sized_block_grid();
+        test_empty_roundtrip();
+        test_single_byte_roundtrip();
+        test_16_byte_roundtrip();
+        test_4kb_random_roundtrip();
+        test_all_zero_high_ratio();
+        test_all_ones_roundtrip();
+        test_sparse_input_roundtrip();
+        test_incompressible_no_blowup();
+        test_delta_mode_roundtrip_sparse();
+        test_invalid_magic_rejected();
+        test_size_mismatch_rejected();
+        test_delta_flag_mismatch_rejected();
+        test_truncated_payload_rejected();
+        test_repeated_runs();
+        test_chunk_sized_block_grid();
 
-    std::cout << "\n===== All KrylovCompressor tests PASSED =====" << std::endl;
-    return 0;
+        std::cout << "\n===== All KrylovCompressor tests PASSED =====" << std::endl;
+        return 0;
+    } catch (const std::exception& error) {
+        std::cerr << "KrylovCompressor tests FAILED: " << error.what() << '\n';
+        return 1;
+    } catch (...) {
+        std::cerr << "KrylovCompressor tests FAILED: unknown exception\n";
+        return 1;
+    }
 }

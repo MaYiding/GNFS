@@ -60,6 +60,11 @@ truncating the requested path.
 The three `BWKrylovMmapIntegration` contracts also require every returned
 dependency to be valid and preserve bit-for-bit ON/OFF results while proving
 that the mmap route did not fall back to the scalar solver.
+The `KrylovCompressor` byte-codec and POSIX `KrylovSequenceCompressed`
+contracts use Release-active checks for exact round trips, corrupt-input
+rejection, deterministic size bounds, chunk navigation, and completion-state
+handling. The storage test retains an explicit Windows unsupported stub until
+the native backend lands; that stub is not Windows storage coverage.
 
 Do not remove `NDEBUG` globally. Fresh-process probes and performance campaigns
 deliberately exercise the optimized Release contract. Migrate legacy unit tests
