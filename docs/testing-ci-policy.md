@@ -52,6 +52,9 @@ correctness oracle in CI. New or modified correctness tests must use a check
 that remains active in Release builds. The first migrated mathematical chain is
 `Integer`, `IntPolynomial`, `LinearAlgebra`, and `SquareRoot`; these tests use
 `GNFS_TEST_CHECK` from `tests/support/test_check.hpp` in every build type.
+The `KrylovSequenceMmap` persistence and handle-lifecycle contract uses the
+same Release-active check and exercises the real Win32 file-mapping path on
+Windows instead of a platform stub.
 
 Do not remove `NDEBUG` globally. Fresh-process probes and performance campaigns
 deliberately exercise the optimized Release contract. Migrate legacy unit tests
