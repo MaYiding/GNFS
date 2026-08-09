@@ -34,7 +34,7 @@ operator 而非标准 `B=M·M^T`. 工作在 R^n, recovery via `u=M·w`.
 ## BW Krylov sequence mmap (GNFS_BW_KRYLOV_MMAP)
 
 **ENV `GNFS_BW_KRYLOV_MMAP=1`** (2026-05-18 实施):
-BW Phase 1 Krylov sequence 写到 `/tmp/gnfs_bw_krylov_*.kry` mmap-backed file
+BW Phase 1 Krylov sequence 写到系统临时目录中的 `gnfs_bw_krylov_*.kry` mmap-backed file
 而非 in-memory vector. Phase 2 BM 入口 copy mmap → vector 再 close.
 
 ```bash
@@ -47,9 +47,9 @@ GNFS_BW_KRYLOV_MMAP=1 ./gnfs <N>   # 50d+/60d 大矩阵 Phase 5 启用
 - 总 ~144 MB physical RAM 释放 给 V/Vnext block vectors + matrix + OS cache
 
 **集成点** (commits `21ac368` → `66ce50f`, 2026-05-18):
-- `include/gnfs/linalg/krylov_sequence_mmap.hpp` — 233 行 mmap RAII container
+- `include/gnfs/linalg/krylov_sequence_mmap.hpp` — POSIX mmap / Win32 file-mapping RAII container
 - `src/linalg/block_wiedemann.cpp` — matrix BM `block_solve` + scalar BM `streaming_solve`
-- `tests/test_krylov_sequence_mmap.cpp` — 8 unit tests
+- `tests/test_krylov_sequence_mmap.cpp` — 8 cross-platform, Release-active unit tests
 - `tests/test_bw_krylov_mmap_integration.cpp` — 3 integration tests (5550×5000)
 
 **Default OFF**: vector path 完整保留, 零回归风险. 仅 50d+ Phase 5 RAM pressure 时启用.

@@ -1,309 +1,478 @@
 #ifdef _WIN32
-#include <iostream>
-int main() {
-    std::cout << "KrylovSequenceMmap tests skipped on Windows (POSIX mmap unavailable)\n";
-    return 0;
-}
-#else
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 #include "gnfs/linalg/krylov_sequence_mmap.hpp"
+#include "gnfs/util/process.hpp"
 #include "gnfs/util/temp_path.hpp"
+#include "support/test_check.hpp"
 
-#include <cassert>
-#include <cstdio>
-#include <cstring>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <exception>
+#include <filesystem>
+#include <fstream>
+#include <ios>
 #include <iostream>
+#include <istream>
 #include <random>
+#include <stdexcept>
 #include <string>
-#include <unistd.h>
+#include <string_view>
+#include <system_error>
+#include <type_traits>
+#include <utility>
 
 using namespace gnfs::linalg;
 
-static std::string tmp_path(const char* label) {
-    static int seq = 0;
-    char buf[256];
-    std::snprintf(buf, sizeof(buf), "gnfs_test_krylov_%d_%d_%s",
-                  static_cast<int>(::getpid()), ++seq, label);
-    return gnfs::util::temp_path(buf);
+namespace {
+
+std::string unique_path(std::string_view label) {
+    static std::uint64_t sequence = 0;
+    return gnfs::util::temp_path("gnfs_test_krylov_" + std::to_string(gnfs::util::process_id()) +
+                                 "_" + std::to_string(++sequence) + "_" + std::string(label) +
+                                 ".kry");
 }
 
-struct PathCleanup {
-    std::string path;
+class PathCleanup {
+public:
+    explicit PathCleanup(std::string path) : path_(std::move(path)) {}
+
     ~PathCleanup() {
-        if (!path.empty()) ::unlink(path.c_str());
+        if (!path_.empty()) {
+            std::error_code error;
+            std::filesystem::remove(std::filesystem::path(path_), error);
+        }
     }
+
+    PathCleanup(const PathCleanup&) = delete;
+    PathCleanup& operator=(const PathCleanup&) = delete;
+
+private:
+    std::string path_;
 };
 
 struct DenseGF2_64x64_Mock {
-    uint64_t rows[64];
-    void clear() {
-        for (int i = 0; i < 64; ++i) rows[i] = 0;
-    }
-    bool operator==(const DenseGF2_64x64_Mock& other) const {
-        for (int i = 0; i < 64; ++i) if (rows[i] != other.rows[i]) return false;
-        return true;
-    }
+    std::array<std::uint64_t, 64> rows{};
+
+    bool operator==(const DenseGF2_64x64_Mock&) const = default;
 };
 
-void test_basic_typed_roundtrip() {
-    std::cout << "Testing typed roundtrip (DenseGF2_64x64-shaped)..." << std::endl;
+static_assert(sizeof(DenseGF2_64x64_Mock) == 512);
+static_assert(alignof(DenseGF2_64x64_Mock) == alignof(std::uint64_t));
+static_assert(std::is_trivially_copyable_v<DenseGF2_64x64_Mock>);
 
-    auto path = tmp_path("typed_rt");
-    PathCleanup cleanup{path};
-
-    constexpr uint64_t L = 100;
-
-    {
-        KrylovSequenceMmap seq(path, L, sizeof(DenseGF2_64x64_Mock));
-        std::mt19937_64 rng(42);
-
-        for (uint64_t k = 0; k < L; ++k) {
-            DenseGF2_64x64_Mock& m = *seq.at<DenseGF2_64x64_Mock>(k);
-            for (int i = 0; i < 64; ++i) {
-                m.rows[i] = rng();
-            }
-        }
-        // dtor closes; MAP_SHARED + close ensures flush
-    }
-
-    {
-        KrylovSequenceMmap reader(path, L, sizeof(DenseGF2_64x64_Mock));
-        // Note: reopening with same params over an existing file recreates it.
-        // For real validation we need a read-only reopen path. Use a custom reopen.
-    }
-
-    std::cout << "  Typed roundtrip basic test: PASS" << std::endl;
+bool path_exists(const std::string& path) {
+    std::error_code error;
+    const bool exists = std::filesystem::exists(std::filesystem::path(path), error);
+    GNFS_TEST_CHECK(!error);
+    return exists;
 }
 
-void test_persistent_roundtrip() {
-    std::cout << "Testing persistent roundtrip via re-open..." << std::endl;
-
-    auto path = tmp_path("persist_rt");
-    PathCleanup cleanup{path};
-
-    constexpr uint64_t L = 256;
-    constexpr uint64_t entry_size = 512;
-
-    std::mt19937_64 rng_orig(12345);
-    DenseGF2_64x64_Mock golden[L];
-
-    {
-        KrylovSequenceMmap seq(path, L, entry_size);
-        assert(seq.length() == L);
-        assert(seq.entry_size() == entry_size);
-
-        for (uint64_t k = 0; k < L; ++k) {
-            DenseGF2_64x64_Mock& m = *seq.at<DenseGF2_64x64_Mock>(k);
-            for (int i = 0; i < 64; ++i) {
-                m.rows[i] = rng_orig();
-            }
-            golden[k] = m;
-        }
-        seq.msync();
-    }
-
-    {
-        int fd = ::open(path.c_str(), O_RDONLY);
-        assert(fd >= 0);
-        uint64_t hdr[4];
-        ssize_t got = ::read(fd, hdr, sizeof(hdr));
-        assert(got == sizeof(hdr));
-        assert(hdr[0] == KrylovSequenceMmap::MAGIC);
-        assert(hdr[1] == KrylovSequenceMmap::VERSION);
-        assert(hdr[2] == L);
-        assert(hdr[3] == entry_size);
-
-        DenseGF2_64x64_Mock loaded;
-        for (uint64_t k = 0; k < L; ++k) {
-            ::lseek(fd, static_cast<off_t>(KrylovSequenceMmap::HEADER_SIZE + k * entry_size), SEEK_SET);
-            ssize_t r = ::read(fd, &loaded, sizeof(loaded));
-            assert(r == sizeof(loaded));
-            assert(loaded == golden[k]);
-        }
-        ::close(fd);
-    }
-
-    std::cout << "  Persistent roundtrip: PASS" << std::endl;
+std::uintmax_t checked_file_size(const std::string& path) {
+    std::error_code error;
+    const auto size = std::filesystem::file_size(std::filesystem::path(path), error);
+    GNFS_TEST_CHECK(!error);
+    return size;
 }
 
-void test_validate_header() {
-    std::cout << "Testing validate_header()..." << std::endl;
+void remove_existing_file(const std::string& path) {
+    std::error_code error;
+    const bool removed = std::filesystem::remove(std::filesystem::path(path), error);
+    GNFS_TEST_CHECK(!error);
+    GNFS_TEST_CHECK(removed);
+}
 
-    auto path = tmp_path("validate");
-    PathCleanup cleanup{path};
+template <typename T> T read_trivial(std::istream& input) {
+    static_assert(std::is_trivially_copyable_v<T>);
+    T value{};
+    constexpr auto byte_count = static_cast<std::streamsize>(sizeof(T));
+    input.read(reinterpret_cast<char*>(&value), byte_count);
+    GNFS_TEST_CHECK(input.gcount() == byte_count);
+    GNFS_TEST_CHECK(input.good());
+    return value;
+}
 
-    {
-        KrylovSequenceMmap seq(path, 10, 64);
-        DenseGF2_64x64_Mock m;
-        m.clear();
-        for (uint64_t k = 0; k < 10; ++k) {
-            std::memcpy(seq.raw_at(k), &m, 64);
-        }
-    }
+template <typename T> T read_trivial_at(std::ifstream& input, std::uint64_t offset) {
+    input.clear();
+    input.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+    GNFS_TEST_CHECK(input.good());
+    return read_trivial<T>(input);
+}
 
-    KrylovSequenceMmap::validate_header(path);
+void overwrite_u64(const std::string& path, std::streamoff offset, std::uint64_t value) {
+    std::fstream output(std::filesystem::path(path),
+                        std::ios::binary | std::ios::in | std::ios::out);
+    GNFS_TEST_CHECK(output.is_open());
+    output.seekp(offset, std::ios::beg);
+    GNFS_TEST_CHECK(output.good());
+    output.write(reinterpret_cast<const char*>(&value),
+                 static_cast<std::streamsize>(sizeof(value)));
+    output.flush();
+    GNFS_TEST_CHECK(output.good());
+}
 
-    {
-        int fd = ::open(path.c_str(), O_WRONLY);
-        assert(fd >= 0);
-        uint64_t bad_magic = 0xDEADBEEFCAFEBABEULL;
-        ::write(fd, &bad_magic, 8);
-        ::close(fd);
-    }
-
-    bool threw = false;
+template <typename Exception, typename Callable> bool throws_as(Callable&& callable) {
     try {
-        KrylovSequenceMmap::validate_header(path);
-    } catch (const std::runtime_error&) {
-        threw = true;
+        std::forward<Callable>(callable)();
+    } catch (const Exception&) {
+        return true;
     }
-    assert(threw);
-
-    std::cout << "  validate_header: PASS" << std::endl;
+    return false;
 }
 
-void test_raw_byte_access() {
-    std::cout << "Testing raw_at() byte access (single-session)..." << std::endl;
-
-    auto path = tmp_path("raw_bytes");
-    PathCleanup cleanup{path};
-
-    constexpr uint64_t L = 16;
-    constexpr uint64_t entry_size = 17;
-
-    KrylovSequenceMmap seq(path, L, entry_size);
-    for (uint64_t k = 0; k < L; ++k) {
-        uint8_t* b = seq.raw_at(k);
-        for (uint64_t i = 0; i < entry_size; ++i) {
-            b[i] = static_cast<uint8_t>((k * 31 + i) & 0xFF);
-        }
-    }
-
-    for (uint64_t k = 0; k < L; ++k) {
-        const uint8_t* b = seq.raw_at(k);
-        for (uint64_t i = 0; i < entry_size; ++i) {
-            uint8_t expected = static_cast<uint8_t>((k * 31 + i) & 0xFF);
-            assert(b[i] == expected);
-        }
-    }
-
-    std::cout << "  raw_at single-session roundtrip: PASS" << std::endl;
-}
-
-void test_large_sequence() {
-    std::cout << "Testing large sequence (1MB+)..." << std::endl;
-
-    auto path = tmp_path("large");
-    PathCleanup cleanup{path};
-
-    constexpr uint64_t L = 4096;
-    constexpr uint64_t entry_size = 512;
-    static_assert(L * entry_size == 2 * 1024 * 1024, "2 MiB sequence");
-
-    {
-        KrylovSequenceMmap seq(path, L, entry_size);
-        for (uint64_t k = 0; k < L; ++k) {
-            DenseGF2_64x64_Mock& m = *seq.at<DenseGF2_64x64_Mock>(k);
-            for (int i = 0; i < 64; ++i) {
-                m.rows[i] = (k << 32) | static_cast<uint64_t>(i);
-            }
-        }
-        seq.msync();
-    }
-
-    {
-        int fd = ::open(path.c_str(), O_RDONLY);
-        DenseGF2_64x64_Mock loaded;
-        for (uint64_t k : {uint64_t(0), uint64_t(1), uint64_t(L / 2), uint64_t(L - 1)}) {
-            ::lseek(fd, static_cast<off_t>(KrylovSequenceMmap::HEADER_SIZE + k * entry_size), SEEK_SET);
-            ::read(fd, &loaded, sizeof(loaded));
-            assert(loaded.rows[0] == ((k << 32) | 0));
-            assert(loaded.rows[63] == ((k << 32) | 63));
-        }
-        ::close(fd);
-    }
-
-    std::cout << "  Large sequence (2 MiB): PASS" << std::endl;
-}
-
-void test_invalid_args() {
-    std::cout << "Testing invalid construction args..." << std::endl;
-
-    bool threw_zero_L = false;
+template <typename Exception, typename Callable>
+bool throws_with_message(Callable&& callable, std::string_view expected_message) {
     try {
-        KrylovSequenceMmap seq(gnfs::util::temp_path("gnfs_invalid_test"), 0, 64);
-    } catch (const std::invalid_argument&) {
-        threw_zero_L = true;
+        std::forward<Callable>(callable)();
+    } catch (const Exception& error) {
+        return std::string_view(error.what()).find(expected_message) != std::string_view::npos;
     }
-    assert(threw_zero_L);
-
-    bool threw_zero_entry = false;
-    try {
-        KrylovSequenceMmap seq(gnfs::util::temp_path("gnfs_invalid_test"), 10, 0);
-    } catch (const std::invalid_argument&) {
-        threw_zero_entry = true;
-    }
-    assert(threw_zero_entry);
-
-    std::cout << "  Invalid args: PASS" << std::endl;
+    return false;
 }
 
-void test_move_semantics() {
-    std::cout << "Testing move semantics..." << std::endl;
+#ifdef _WIN32
 
-    auto path = tmp_path("move");
-    PathCleanup cleanup{path};
+class ScopedWindowsHandle {
+public:
+    explicit ScopedWindowsHandle(HANDLE handle) : handle_(handle) {}
 
-    KrylovSequenceMmap seq1(path, 10, 64);
-    assert(seq1.is_open());
-    assert(seq1.length() == 10);
-
-    KrylovSequenceMmap seq2(std::move(seq1));
-    assert(!seq1.is_open());
-    assert(seq2.is_open());
-    assert(seq2.length() == 10);
-
-    auto path2 = tmp_path("move2");
-    PathCleanup cleanup2{path2};
-    KrylovSequenceMmap seq3(path2, 5, 32);
-    seq3 = std::move(seq2);
-    assert(!seq2.is_open());
-    assert(seq3.is_open());
-    assert(seq3.length() == 10);
-
-    std::cout << "  Move semantics: PASS" << std::endl;
-}
-
-void test_remove_file() {
-    std::cout << "Testing remove_file()..." << std::endl;
-
-    auto path = tmp_path("remove");
-
-    {
-        KrylovSequenceMmap seq(path, 4, 64);
-        struct stat st;
-        assert(::stat(path.c_str(), &st) == 0);
-        seq.remove_file();
-        assert(::stat(path.c_str(), &st) != 0);
+    ~ScopedWindowsHandle() {
+        if (handle_ != INVALID_HANDLE_VALUE) {
+            ::CloseHandle(handle_);
+        }
     }
 
-    std::cout << "  remove_file: PASS" << std::endl;
-}
+    ScopedWindowsHandle(const ScopedWindowsHandle&) = delete;
+    ScopedWindowsHandle& operator=(const ScopedWindowsHandle&) = delete;
 
-int main() {
-    std::cout << "===== KrylovSequenceMmap Tests =====" << std::endl;
+private:
+    HANDLE handle_ = INVALID_HANDLE_VALUE;
+};
 
-    test_basic_typed_roundtrip();
-    test_persistent_roundtrip();
-    test_validate_header();
-    test_raw_byte_access();
-    test_large_sequence();
-    test_invalid_args();
-    test_move_semantics();
-    test_remove_file();
+struct ExclusiveOpenResult {
+    bool opened = false;
+    DWORD error = ERROR_SUCCESS;
+};
 
-    std::cout << "\n===== All KrylovSequenceMmap tests PASSED =====" << std::endl;
-    return 0;
+ExclusiveOpenResult try_exclusive_open(const std::string& path) {
+    const std::filesystem::path native_path(path);
+    const HANDLE handle = ::CreateFileW(native_path.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
+                                        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) {
+        const DWORD error = ::GetLastError();
+        return {false, error};
+    }
+    ScopedWindowsHandle guard(handle);
+    return {true, ERROR_SUCCESS};
 }
 
 #endif
+
+void test_basic_typed_access() {
+    std::cout << "Testing typed access (DenseGF2_64x64-shaped)...\n";
+
+    const auto path = unique_path("typed");
+    PathCleanup cleanup(path);
+    constexpr std::uint64_t length = 100;
+    constexpr std::uint64_t entry_size = sizeof(DenseGF2_64x64_Mock);
+
+    KrylovSequenceMmap sequence(path, length, entry_size);
+    GNFS_TEST_CHECK(sequence.is_open());
+    GNFS_TEST_CHECK(sequence.length() == length);
+    GNFS_TEST_CHECK(sequence.entry_size() == entry_size);
+    GNFS_TEST_CHECK(sequence.path() == path);
+
+    for (std::uint64_t k = 0; k < length; ++k) {
+        auto& matrix = *sequence.at<DenseGF2_64x64_Mock>(k);
+        for (std::size_t row = 0; row < matrix.rows.size(); ++row) {
+            matrix.rows[row] = (k << 32U) | static_cast<std::uint64_t>(row);
+        }
+    }
+
+    sequence.advise_random();
+    const auto& const_sequence = sequence;
+    for (std::uint64_t k = 0; k < length; ++k) {
+        const auto& matrix = *const_sequence.at<DenseGF2_64x64_Mock>(k);
+        for (std::size_t row = 0; row < matrix.rows.size(); ++row) {
+            GNFS_TEST_CHECK(matrix.rows[row] == ((k << 32U) | static_cast<std::uint64_t>(row)));
+        }
+    }
+
+    std::cout << "  Typed mutable/const access: PASS\n";
+}
+
+void test_persistent_roundtrip() {
+    std::cout << "Testing persistent roundtrip...\n";
+
+    const auto path = unique_path("persistent");
+    PathCleanup cleanup(path);
+    constexpr std::uint64_t length = 256;
+    constexpr std::uint64_t entry_size = sizeof(DenseGF2_64x64_Mock);
+    constexpr std::uint64_t expected_file_size =
+        static_cast<std::uint64_t>(KrylovSequenceMmap::HEADER_SIZE) + length * entry_size;
+
+    std::array<DenseGF2_64x64_Mock, 256> golden{};
+    std::mt19937_64 random(12345);
+
+    {
+        KrylovSequenceMmap sequence(path, length, entry_size);
+        GNFS_TEST_CHECK(sequence.length() == length);
+        GNFS_TEST_CHECK(sequence.entry_size() == entry_size);
+
+        for (std::uint64_t k = 0; k < length; ++k) {
+            auto& matrix = *sequence.at<DenseGF2_64x64_Mock>(k);
+            for (auto& row : matrix.rows) {
+                row = random();
+            }
+            golden[static_cast<std::size_t>(k)] = matrix;
+        }
+        sequence.msync();
+    }
+
+    GNFS_TEST_CHECK(checked_file_size(path) == static_cast<std::uintmax_t>(expected_file_size));
+
+    std::ifstream input(std::filesystem::path(path), std::ios::binary);
+    GNFS_TEST_CHECK(input.is_open());
+    const auto header = read_trivial<std::array<std::uint64_t, 4>>(input);
+    GNFS_TEST_CHECK(header[0] == KrylovSequenceMmap::MAGIC);
+    GNFS_TEST_CHECK(header[1] == KrylovSequenceMmap::VERSION);
+    GNFS_TEST_CHECK(header[2] == length);
+    GNFS_TEST_CHECK(header[3] == entry_size);
+
+    for (std::uint64_t k = 0; k < length; ++k) {
+        const auto loaded = read_trivial<DenseGF2_64x64_Mock>(input);
+        GNFS_TEST_CHECK(loaded == golden[static_cast<std::size_t>(k)]);
+    }
+
+    std::cout << "  Header and 256 entries persisted: PASS\n";
+}
+
+void test_validate_header() {
+    std::cout << "Testing validate_header()...\n";
+
+    const auto path = unique_path("validate");
+    PathCleanup cleanup(path);
+
+    { KrylovSequenceMmap sequence(path, 10, 64); }
+    KrylovSequenceMmap::validate_header(path);
+
+    overwrite_u64(path, 0, 0xDEADBEEFCAFEBABEULL);
+    GNFS_TEST_CHECK(throws_with_message<std::runtime_error>(
+        [&] { KrylovSequenceMmap::validate_header(path); }, "bad magic"));
+
+    { KrylovSequenceMmap sequence(path, 10, 64); }
+    overwrite_u64(path, static_cast<std::streamoff>(sizeof(std::uint64_t)),
+                  KrylovSequenceMmap::VERSION + 1);
+    GNFS_TEST_CHECK(throws_with_message<std::runtime_error>(
+        [&] { KrylovSequenceMmap::validate_header(path); }, "version mismatch"));
+
+    {
+        std::ofstream output(std::filesystem::path(path), std::ios::binary | std::ios::trunc);
+        GNFS_TEST_CHECK(output.is_open());
+        const std::uint64_t magic = KrylovSequenceMmap::MAGIC;
+        output.write(reinterpret_cast<const char*>(&magic),
+                     static_cast<std::streamsize>(sizeof(magic)));
+        GNFS_TEST_CHECK(output.good());
+    }
+    GNFS_TEST_CHECK(throws_with_message<std::runtime_error>(
+        [&] { KrylovSequenceMmap::validate_header(path); }, "short read"));
+
+    std::cout << "  Valid, bad-magic, bad-version, and short headers: PASS\n";
+}
+
+void test_raw_byte_access() {
+    std::cout << "Testing raw_at() byte access...\n";
+
+    const auto path = unique_path("raw");
+    PathCleanup cleanup(path);
+    constexpr std::uint64_t length = 16;
+    constexpr std::uint64_t entry_size = 17;
+
+    KrylovSequenceMmap sequence(path, length, entry_size);
+    for (std::uint64_t k = 0; k < length; ++k) {
+        auto* bytes = sequence.raw_at(k);
+        for (std::uint64_t index = 0; index < entry_size; ++index) {
+            bytes[index] = static_cast<std::uint8_t>((k * 31U + index) & 0xFFU);
+        }
+    }
+
+    const auto& const_sequence = sequence;
+    for (std::uint64_t k = 0; k < length; ++k) {
+        const auto* bytes = const_sequence.raw_at(k);
+        for (std::uint64_t index = 0; index < entry_size; ++index) {
+            const auto expected = static_cast<std::uint8_t>((k * 31U + index) & 0xFFU);
+            GNFS_TEST_CHECK(bytes[index] == expected);
+        }
+    }
+
+    std::cout << "  Mutable/const raw byte access: PASS\n";
+}
+
+void test_large_sequence() {
+    std::cout << "Testing large sequence (2 MiB)...\n";
+
+    const auto path = unique_path("large");
+    PathCleanup cleanup(path);
+    constexpr std::uint64_t length = 4096;
+    constexpr std::uint64_t entry_size = sizeof(DenseGF2_64x64_Mock);
+    constexpr std::uint64_t expected_file_size =
+        static_cast<std::uint64_t>(KrylovSequenceMmap::HEADER_SIZE) + length * entry_size;
+    constexpr std::array<std::uint64_t, 4> sample_positions{0, 1, length / 2, length - 1};
+
+    static_assert(length * entry_size == 2U * 1024U * 1024U);
+
+    {
+        KrylovSequenceMmap sequence(path, length, entry_size);
+        for (std::uint64_t k = 0; k < length; ++k) {
+            auto& matrix = *sequence.at<DenseGF2_64x64_Mock>(k);
+            for (std::size_t row = 0; row < matrix.rows.size(); ++row) {
+                matrix.rows[row] = (k << 32U) | static_cast<std::uint64_t>(row);
+            }
+        }
+        sequence.msync();
+    }
+
+    GNFS_TEST_CHECK(checked_file_size(path) == static_cast<std::uintmax_t>(expected_file_size));
+    std::ifstream input(std::filesystem::path(path), std::ios::binary);
+    GNFS_TEST_CHECK(input.is_open());
+
+    for (const auto k : sample_positions) {
+        const std::uint64_t offset =
+            static_cast<std::uint64_t>(KrylovSequenceMmap::HEADER_SIZE) + k * entry_size;
+        const auto loaded = read_trivial_at<DenseGF2_64x64_Mock>(input, offset);
+        GNFS_TEST_CHECK(loaded.rows.front() == (k << 32U));
+        GNFS_TEST_CHECK(loaded.rows.back() == ((k << 32U) | 63U));
+    }
+
+    std::cout << "  File size, seek/read, and sampled entries: PASS\n";
+}
+
+void test_invalid_args() {
+    std::cout << "Testing invalid construction arguments...\n";
+
+    const auto zero_length_path = unique_path("zero_length");
+    PathCleanup zero_length_cleanup(zero_length_path);
+    GNFS_TEST_CHECK(!path_exists(zero_length_path));
+    const bool zero_length_threw = throws_as<std::invalid_argument>(
+        [&] { (void)KrylovSequenceMmap(zero_length_path, 0, 64); });
+    GNFS_TEST_CHECK(!path_exists(zero_length_path));
+    GNFS_TEST_CHECK(zero_length_threw);
+
+    const auto zero_entry_path = unique_path("zero_entry");
+    PathCleanup zero_entry_cleanup(zero_entry_path);
+    GNFS_TEST_CHECK(!path_exists(zero_entry_path));
+    const bool zero_entry_threw =
+        throws_as<std::invalid_argument>([&] { (void)KrylovSequenceMmap(zero_entry_path, 10, 0); });
+    GNFS_TEST_CHECK(!path_exists(zero_entry_path));
+    GNFS_TEST_CHECK(zero_entry_threw);
+
+    std::cout << "  Zero dimensions fail before file creation: PASS\n";
+}
+
+void test_move_semantics() {
+    std::cout << "Testing move semantics and old-resource release...\n";
+
+    const auto source_path = unique_path("move_source");
+    PathCleanup source_cleanup(source_path);
+    KrylovSequenceMmap source(source_path, 10, 64);
+    source.raw_at(3)[0] = 0xA5U;
+    source.msync();
+    GNFS_TEST_CHECK(source.is_open());
+
+    KrylovSequenceMmap moved(std::move(source));
+    GNFS_TEST_CHECK(!source.is_open());
+    GNFS_TEST_CHECK(moved.is_open());
+    GNFS_TEST_CHECK(moved.length() == 10);
+    GNFS_TEST_CHECK(moved.entry_size() == 64);
+    GNFS_TEST_CHECK(moved.path() == source_path);
+    GNFS_TEST_CHECK(moved.raw_at(3)[0] == 0xA5U);
+
+    const auto destination_path = unique_path("move_destination");
+    PathCleanup destination_cleanup(destination_path);
+    KrylovSequenceMmap destination(destination_path, 5, 32);
+    destination.raw_at(1)[0] = 0x5AU;
+    GNFS_TEST_CHECK(path_exists(destination_path));
+
+#ifdef _WIN32
+    const auto locked = try_exclusive_open(destination_path);
+    GNFS_TEST_CHECK(!locked.opened);
+    GNFS_TEST_CHECK(locked.error == ERROR_SHARING_VIOLATION);
+#endif
+
+    destination = std::move(moved);
+    GNFS_TEST_CHECK(!moved.is_open());
+    GNFS_TEST_CHECK(destination.is_open());
+    GNFS_TEST_CHECK(destination.length() == 10);
+    GNFS_TEST_CHECK(destination.entry_size() == 64);
+    GNFS_TEST_CHECK(destination.path() == source_path);
+    GNFS_TEST_CHECK(destination.raw_at(3)[0] == 0xA5U);
+
+#ifdef _WIN32
+    const auto released = try_exclusive_open(destination_path);
+    GNFS_TEST_CHECK(released.opened);
+    GNFS_TEST_CHECK(released.error == ERROR_SUCCESS);
+#endif
+
+    remove_existing_file(destination_path);
+    GNFS_TEST_CHECK(!path_exists(destination_path));
+
+    std::cout << "  Move construction/assignment and old target release: PASS\n";
+}
+
+void test_remove_file() {
+    std::cout << "Testing remove_file()...\n";
+
+    const auto path = unique_path("remove");
+    PathCleanup cleanup(path);
+    {
+        KrylovSequenceMmap sequence(path, 4, 64);
+        GNFS_TEST_CHECK(path_exists(path));
+        sequence.remove_file();
+        GNFS_TEST_CHECK(!path_exists(path));
+#ifdef _WIN32
+        GNFS_TEST_CHECK(!sequence.is_open());
+#else
+        GNFS_TEST_CHECK(sequence.is_open());
+        sequence.raw_at(2)[0] = 0xC3U;
+        GNFS_TEST_CHECK(sequence.raw_at(2)[0] == 0xC3U);
+#endif
+        sequence.remove_file();
+        GNFS_TEST_CHECK(!path_exists(path));
+    }
+
+    std::cout << "  Path removal and idempotent retry: PASS\n";
+}
+
+} // namespace
+
+int main() {
+    try {
+        std::cout << "===== KrylovSequenceMmap Tests =====\n";
+
+        test_basic_typed_access();
+        test_persistent_roundtrip();
+        test_validate_header();
+        test_raw_byte_access();
+        test_large_sequence();
+        test_invalid_args();
+        test_move_semantics();
+        test_remove_file();
+
+        std::cout << "===== All KrylovSequenceMmap tests PASSED =====\n";
+        return 0;
+    } catch (const std::exception& error) {
+        std::cerr << "KrylovSequenceMmap tests FAILED: " << error.what() << '\n';
+        return 1;
+    } catch (...) {
+        std::cerr << "KrylovSequenceMmap tests FAILED: unknown exception\n";
+        return 1;
+    }
+}
