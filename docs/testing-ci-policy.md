@@ -55,6 +55,9 @@ that remains active in Release builds. The first migrated mathematical chain is
 The `KrylovSequenceMmap` persistence and handle-lifecycle contract uses the
 same Release-active check and exercises the real Win32 file-mapping path on
 Windows instead of a platform stub.
+The three `BWKrylovMmapIntegration` contracts also require every returned
+dependency to be valid and preserve bit-for-bit ON/OFF results while proving
+that the mmap route did not fall back to the scalar solver.
 
 Do not remove `NDEBUG` globally. Fresh-process probes and performance campaigns
 deliberately exercise the optimized Release contract. Migrate legacy unit tests
@@ -72,7 +75,9 @@ The PR CI intentionally has three layers:
      invocation is the CI witness for the Apple-only same-OFD lock, fork
      rejection, and cleanup-intent conversion path; unsupported hosts execute
      only the platform stub.
-   - Windows Release runs `instant`.
+   - Windows Release runs `instant` plus the targeted fast
+     `BWKrylovMmapIntegration` contract. This required end-to-end witness
+     exercises the real Win32 file-mapping path through Block Wiedemann.
    - Linux arm64 runs `instant` as an experimental public-runner signal.
    - Required glibc Linux rows set `GNFS_TEST_REQUIRE_AUTHENTICATED_LINUX=1`, so the sealed-image, same-object, descriptor-closure, and parent-death tests cannot silently skip a disabled authenticated transport.
 2. Linux Release deep gate:

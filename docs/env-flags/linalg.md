@@ -50,7 +50,9 @@ GNFS_BW_KRYLOV_MMAP=1 ./gnfs <N>   # 50d+/60d 大矩阵 Phase 5 启用
 - `include/gnfs/linalg/krylov_sequence_mmap.hpp` — POSIX mmap / Win32 file-mapping RAII container
 - `src/linalg/block_wiedemann.cpp` — matrix BM `block_solve` + scalar BM `streaming_solve`
 - `tests/test_krylov_sequence_mmap.cpp` — 8 cross-platform, Release-active unit tests
-- `tests/test_bw_krylov_mmap_integration.cpp` — 3 integration tests (5550×5000)
+- `tests/test_bw_krylov_mmap_integration.cpp` — 3 cross-platform, Release-active
+  5550×5000 ON/OFF contracts; the required Windows Release lane exercises the
+  real Win32 mapping path
 
 **Default OFF**: vector path 完整保留, 零回归风险. 仅 50d+ Phase 5 RAM pressure 时启用.
 
