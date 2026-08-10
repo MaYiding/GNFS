@@ -55,6 +55,10 @@ that remains active in Release builds. The first migrated mathematical chain is
 The `HalfGCD`, `PolyKaratsuba`, `DivremSubquadratic`, `PolyNTT`, and
 `PolySquare` arithmetic contracts also keep their exact parity, dispatch,
 boundary, and environment-parsing checks active in Release builds.
+The `SafeMath` contract keeps its runtime checks for full-width signed
+absolute values and non-finite conversion active under `NDEBUG`; its
+saturation-boundary and other compile-time `static_assert` checks remain
+unchanged.
 The `KrylovSequenceMmap` persistence, handle-lifecycle, and size-boundary
 contract uses the same Release-active check and exercises the real Win32
 file-mapping path on Windows instead of a platform stub. Arithmetic or native
