@@ -670,11 +670,13 @@ SMOKE_TESTS=(
     test_mpz_mul_parallel
 )
 
-# ThreadSanitizer 窄通道: 覆盖候选级 cofactor 调度、structured relation 有界并发和
-# SIQS shadow 持久消元 worker 的发布/收敛/故障边界。保持此列表小而明确，
+# ThreadSanitizer 窄通道: 覆盖 util ThreadPool、候选级 cofactor 调度、
+# structured relation 有界并发和 SIQS shadow 持久消元 worker 的发布/收敛/故障边界。
+# 保持此列表小而明确，
 # 避免把完整 instant 层复制到高成本的 sanitizer 构建。
 typeset -a TSAN_RELATION_TESTS
 TSAN_RELATION_TESTS=(
+    test_thread_pool
     test_joining_thread
     test_ordered_parallel_map
     test_fixed_slot_executor
@@ -1239,7 +1241,7 @@ MODULE_ORDER=(core util polynomial factor_base sieve cofactor relation linalg sq
 path_to_module() {
     local path="$1"
     case "$path" in
-        tests/test_sha256.cpp|tests/test_joining_thread.cpp|tests/test_durable_immutable_file.cpp|tests/test_durable_immutable_record.cpp|tests/test_mmap_file.cpp|tests/test_native_random_access_file.cpp) echo "util" ;;
+        tests/test_sha256.cpp|tests/test_thread_pool.cpp|tests/test_joining_thread.cpp|tests/test_durable_immutable_file.cpp|tests/test_durable_immutable_record.cpp|tests/test_mmap_file.cpp|tests/test_native_random_access_file.cpp) echo "util" ;;
         tests/test_ecm_curve_plan.cpp|tests/test_cofactor_attempt_context.cpp|tests/test_cofactor_seed_provider.cpp) echo "cofactor" ;;
         tests/test_squfof*.cpp|tests/support/squfof_*.hpp|tests/fixtures/squfof_*.hpp) echo "cofactor" ;;
         tests/test_relation_corpus_sha256.cpp|tests/test_relation_collector.cpp|tests/test_relation_corpus.cpp|tests/test_relation_sink.cpp|tests/test_relation_reduction_engine.cpp|tests/test_ooc_store_integrity.cpp|tests/test_ooc_durable_handoff.cpp|tests/test_ooc_cleanup_transaction.cpp) echo "relation" ;;
@@ -6218,7 +6220,7 @@ do_list() {
 
     echo ""
     echo "${BOLD}Sanitizer 窄通道:${RESET}"
-    echo "  ${BULLET} ${CYAN}tsan-relation${RESET} — ${#TSAN_RELATION_TESTS[@]} 个 cofactor/relation/SIQS 并发边界测试"
+    echo "  ${BULLET} ${CYAN}tsan-relation${RESET} — ${#TSAN_RELATION_TESTS[@]} 个 util/cofactor/relation/SIQS 并发边界测试"
     for test in "${TSAN_RELATION_TESTS[@]}"; do
         echo "      ${DIM}${test}${RESET}"
     done
