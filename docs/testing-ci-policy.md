@@ -57,14 +57,17 @@ contract uses the same Release-active check and exercises the real Win32
 file-mapping path on Windows instead of a platform stub. Arithmetic or native
 file-offset sizes that cannot be represented must fail before creating or
 truncating the requested path.
-The three `BWKrylovMmapIntegration` contracts also require every returned
-dependency to be valid and preserve bit-for-bit ON/OFF results while proving
-that the mmap route did not fall back to the scalar solver.
-The `KrylovCompressor` byte-codec and POSIX `KrylovSequenceCompressed`
-contracts use Release-active checks for exact round trips, corrupt-input
-rejection, deterministic size bounds, chunk navigation, and completion-state
-handling. The storage test retains an explicit Windows unsupported stub until
-the native backend lands; that stub is not Windows storage coverage.
+The `BWKrylovMmapIntegration` contract requires every returned dependency to
+be valid and preserves bit-for-bit results across memory, mmap, and mmap+zip
+storage. Its trace assertions prove that neither on-disk route fell back to the
+scalar solver and that compressed scratch data was reopened, copied, and
+removed.
+The `KrylovCompressor` byte-codec and cross-platform
+`KrylovSequenceCompressed` contracts use Release-active checks for exact copy
+round trips, hostile header and index rejection, deterministic cache eviction,
+Unicode paths, exact-length publication, and terminal failure handling. The
+required Windows row executes the real Win32 positioned-I/O backend instead of
+a platform stub.
 The `NativeRandomAccessFile` instant contract exercises exact positioned I/O,
 range rejection, high-offset reads, Unicode paths, and move-only ownership. It
 runs the Win32 overlapped path in the required Windows row and `pread`/`pwrite`
@@ -88,7 +91,8 @@ The PR CI intentionally has three layers:
      only the platform stub.
    - Windows Release runs `instant` plus the targeted fast
      `BWKrylovMmapIntegration` contract. This required end-to-end witness
-     exercises the real Win32 file-mapping path through Block Wiedemann.
+     exercises the real Win32 raw-mapping and compressed positioned-I/O paths
+     through Block Wiedemann.
    - Linux arm64 runs `instant` as an experimental public-runner signal.
    - Required glibc Linux rows set `GNFS_TEST_REQUIRE_AUTHENTICATED_LINUX=1`, so the sealed-image, same-object, descriptor-closure, and parent-death tests cannot silently skip a disabled authenticated transport.
 2. Linux Release deep gate:

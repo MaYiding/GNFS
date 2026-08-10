@@ -51,11 +51,47 @@ GNFS_BW_KRYLOV_MMAP=1 ./gnfs <N>   # 50d+/60d 大矩阵 Phase 5 启用
 - `src/linalg/block_wiedemann.cpp` — matrix BM `block_solve` + scalar BM `streaming_solve`
 - `tests/test_krylov_sequence_mmap.cpp` — cross-platform, Release-active construction,
   persistence, access, handle-lifecycle, and pre-I/O size-boundary contracts
-- `tests/test_bw_krylov_mmap_integration.cpp` — 3 cross-platform, Release-active
-  5550×5000 ON/OFF contracts; the required Windows Release lane exercises the
-  real Win32 mapping path
+- `tests/test_bw_krylov_mmap_integration.cpp` — one cross-platform,
+  Release-active 5550×5000 three-mode contract; the required Windows Release
+  lane exercises memory, raw Win32 mapping, and compressed positioned I/O
 
 **Default OFF**: vector path 完整保留, 零回归风险. 仅 50d+ Phase 5 RAM pressure 时启用.
+
+---
+
+## BW Krylov sequence compression (GNFS_BW_KRYLOV_COMPRESS)
+
+**ENV `GNFS_BW_KRYLOV_COMPRESS=1`**: 当且仅当
+`GNFS_BW_KRYLOV_MMAP=1` 时，将 matrix-BM Phase 1 序列写成
+`mmap+zip` 的 chunked scratch 格式。解析规则只识别首字符 `1`；未设置、
+空值和其他值均为关闭。默认 OFF，单独设置本开关不会改变内存路径。
+
+每个 chunk 先对相邻 `DenseGF2_64x64` entry 做 XOR delta，再用内置 byte-RLE
+编码。writer 必须按序接收恰好 `L` 个 entry，并在 payload、index 与 header
+首次同步成功后才发布 completion marker；reader 在分配前验证完整 header、
+index extent 和每个 payload 边界。内部 I/O 使用 POSIX positioned I/O 或
+Win32 overlapped positioned I/O，路径保持 `std::filesystem::path`。正常完成或
+C++ 异常展开会关闭 handle 并清理 `.kryz` scratch；进程终止可能遗留
+INCOMPLETE scratch，reader 会拒绝加载。
+
+**bit-for-bit contract**: 压缩只改变 Krylov 序列的存储介质，不改变 solver
+seed、矩阵运算或 dependency 顺序。`BWKrylovMmapIntegration` 用同一 fixture
+和 seed 强制 memory、mmap、mmap+zip 三路返回逐位相同且数学有效的依赖；
+required Windows Release lane 还核验 `mmap+zip` route、压缩统计和清理证据。
+
+```bash
+GNFS_BW_KRYLOV_MMAP=1 GNFS_BW_KRYLOV_COMPRESS=1 ./gnfs <N>
+```
+
+**集成点与测试**:
+- `src/linalg/block_wiedemann.cpp` — matrix-BM storage route、copy-in/copy-out
+  与 scratch 生命周期
+- `include/gnfs/linalg/krylov_sequence_compressed.hpp` — 跨平台 public contract
+- `tests/test_krylov_compress.cpp` — 平台无关 codec 合同
+- `tests/test_krylov_compression.cpp` — Release-active Win32/POSIX storage、损坏
+  拒绝、LRU、Unicode 与 publication 合同
+- `tests/test_bw_krylov_mmap_integration.cpp` — 三模式 end-to-end bit-for-bit
+  witness
 
 ---
 

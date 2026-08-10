@@ -523,6 +523,7 @@ All experimental strategies hide behind environment variable switches. The defau
 | `GNFS_OOC_BASE_PATH` | `<path>` | Overrides the OOC file prefix |
 | `GNFS_SIEVE_RESUME` | `<base_path>` | Saves mid-flight sieve checkpoints and resumes OOC append, supporting recovery from multi-hour sieve crashes |
 | `GNFS_BW_KRYLOV_MMAP` | `1` | mmaps the Block Wiedemann Phase 1 Krylov sequence to disk and saves about 144 MB at n=1M for the 60-digit case |
+| `GNFS_BW_KRYLOV_COMPRESS` | `1` (requires mmap) | Chunk-compresses Krylov scratch data; Win32 and POSIX results remain bit-for-bit identical to the in-memory path |
 | `GNFS_NO_THIN_SOLVE` | `1` | Disables thin matrix BW solve and restores the legacy NO_EXCESS abort behavior |
 
 **Performance and algorithm experiments**

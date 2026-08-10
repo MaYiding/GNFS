@@ -265,6 +265,7 @@ add_library(gnfs_core STATIC
     src/core/integer.cpp
     src/core/polynomial.cpp
     src/core/relation.cpp
+    src/linalg/krylov_sequence_compressed.cpp
 )
 
 # 添加可选的源文件（如果存在）

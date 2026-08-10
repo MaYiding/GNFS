@@ -14,14 +14,17 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace gnfs::linalg {
@@ -37,6 +40,30 @@ namespace gnfs::linalg {
 // deduplicated. Trades extra concurrency for shorter wall-time on small-to-
 // medium matrices where pool-barrier overhead dominates per-SpMV inner work.
 namespace {
+
+class ScratchFileCleanup final {
+public:
+    explicit ScratchFileCleanup(std::filesystem::path path) : path_(std::move(path)) {}
+
+    ScratchFileCleanup(const ScratchFileCleanup&) = delete;
+    ScratchFileCleanup& operator=(const ScratchFileCleanup&) = delete;
+
+    ~ScratchFileCleanup() {
+        if (!armed_) {
+            return;
+        }
+        std::error_code ignored;
+        (void)std::filesystem::remove(path_, ignored);
+    }
+
+    void disarm() noexcept {
+        armed_ = false;
+    }
+
+private:
+    std::filesystem::path path_;
+    bool armed_ = true;
+};
 
 constexpr uint32_t kMaxBwStreams = 16;
 
@@ -768,14 +795,17 @@ block_solve_view_impl(const MV& csr, size_t max_deps, uint64_t seed, uint32_t po
 
     std::vector<DenseGF2_64x64> A_seq;
     std::unique_ptr<KrylovSequenceMmap> A_mmap;
+    std::filesystem::path kryz_path;
+    std::unique_ptr<ScratchFileCleanup> kryz_cleanup;
     std::unique_ptr<KrylovSequenceCompressed> A_kryz;
     if (use_compress) {
         char path_buf[160];
         std::snprintf(path_buf, sizeof(path_buf), "gnfs_bw_krylov_%d_s%u_%llu.kryz",
                       gnfs::util::process_id(), static_cast<unsigned>(stream_tag),
                       static_cast<unsigned long long>(seed));
-        const std::string path = gnfs::util::temp_path(path_buf);
-        A_kryz = std::make_unique<KrylovSequenceCompressed>(path, L, sizeof(DenseGF2_64x64));
+        kryz_path = gnfs::util::temp_directory_path() / std::filesystem::path(path_buf);
+        kryz_cleanup = std::make_unique<ScratchFileCleanup>(kryz_path);
+        A_kryz = std::make_unique<KrylovSequenceCompressed>(kryz_path, L, sizeof(DenseGF2_64x64));
     } else if (use_mmap) {
         char path_buf[160];
         std::snprintf(path_buf, sizeof(path_buf), "gnfs_bw_krylov_%d_s%u_%llu.kry",
@@ -794,7 +824,7 @@ block_solve_view_impl(const MV& csr, size_t max_deps, uint64_t seed, uint32_t po
     for (size_t k = 0; k < L; ++k) {
         DenseGF2_64x64 a = inner_product_64x64(X, V);
         if (use_compress) {
-            *A_kryz->write_at_typed<DenseGF2_64x64>(k) = a;
+            A_kryz->write_entry(k, a);
         } else if (use_mmap) {
             *A_mmap->at<DenseGF2_64x64>(k) = a;
         } else {
@@ -821,16 +851,20 @@ block_solve_view_impl(const MV& csr, size_t max_deps, uint64_t seed, uint32_t po
                      static_cast<double>(orig) / (1024.0 * 1024.0),
                      static_cast<double>(comp) / (1024.0 * 1024.0), ratio);
         // Reopen for read in Phase 2 BM copy step
-        const std::string path = A_kryz->path();
         A_kryz.reset();
-        auto reader = KrylovSequenceCompressed::open_readonly(path);
+        auto reader = KrylovSequenceCompressed::open_readonly(kryz_path);
         A_seq.resize(L);
         for (size_t k = 0; k < L; ++k) {
-            const auto* p = reader.read_at_typed<DenseGF2_64x64>(k);
-            A_seq[k] = *p;
+            A_seq[k] = reader.read_entry<DenseGF2_64x64>(k);
         }
-        reader.close();
-        ::unlink(path.c_str());
+        reader.remove_file();
+        std::error_code cleanup_error;
+        const bool remains = std::filesystem::exists(kryz_path, cleanup_error);
+        if (cleanup_error || remains) {
+            throw std::runtime_error("Block Wiedemann: compressed Krylov scratch cleanup failed");
+        }
+        kryz_cleanup->disarm();
+        std::cerr << "[bw_krylov_compress] copied_entries=" << L << " cleanup=removed" << std::endl;
     } else if (use_mmap) {
         A_mmap->msync();
         // Copy mmap → vector once at BM entry (BM signature requires contiguous

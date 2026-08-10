@@ -78,11 +78,30 @@ jobs:
 
           cat > /tmp/gnfs_consumer.cpp <<'CPP'
           #include <gnfs/api/factorizer.hpp>
+          #include <gnfs/linalg/krylov_sequence_compressed.hpp>
 
+          #include <cstdint>
+          #include <filesystem>
           #include <iostream>
           #include <string>
 
           int main() {
+              const auto scratch = std::filesystem::temp_directory_path() /
+                                   "gnfs_install_consumer.kryz";
+              constexpr std::uint64_t expected = 0x123456789ABCDEF0ULL;
+              gnfs::linalg::KrylovSequenceCompressed writer(
+                  scratch, 1, sizeof(expected), 1);
+              writer.write_entry(0, expected);
+              writer.close();
+              auto reader =
+                  gnfs::linalg::KrylovSequenceCompressed::open_readonly(scratch);
+              const auto actual = reader.read_entry<std::uint64_t>(0);
+              reader.remove_file();
+              if (actual != expected || std::filesystem::exists(scratch)) {
+                  std::cerr << "installed compressed Krylov contract failed\n";
+                  return 1;
+              }
+
               auto result = gnfs::api::factorize(std::string("91"));
               if (!result.success || result.factors.size() < 2) {
                   std::cerr << result.to_text();
