@@ -79,6 +79,9 @@ The `NativeRandomAccessFile` instant contract exercises exact positioned I/O,
 range rejection, high-offset reads, Unicode paths, and move-only ownership. It
 runs the Win32 overlapped path in the required Windows row and `pread`/`pwrite`
 on POSIX; it is not a pathname-identity or durable-publication contract.
+The `ThreadPool` instant contract keeps task results, completion barriers,
+exception propagation, and bounded concurrent-submit stress checks active in
+Release builds.
 
 Do not remove `NDEBUG` globally. Fresh-process probes and performance campaigns
 deliberately exercise the optimized Release contract. Migrate legacy unit tests
@@ -192,8 +195,8 @@ change the authenticated transport ID.
 
 ## ThreadSanitizer Lane
 
-Run the supported candidate, structured-relation, and SIQS shadow race detector
-with:
+Run the supported utility, candidate, structured-relation, and SIQS shadow race
+detector with:
 
 ```bash
 ./scripts/test.sh tsan-relation
@@ -201,6 +204,7 @@ with:
 
 The runner uses a dedicated `build-tsan-relation` Debug directory, disables native-architecture tuning, enables `GNFS_ENABLE_TSAN`, and builds only these targets:
 
+- `test_thread_pool`
 - `test_joining_thread`
 - `test_ordered_parallel_map`
 - `test_fixed_slot_executor`

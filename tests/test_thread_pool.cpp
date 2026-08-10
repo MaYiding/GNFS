@@ -1,10 +1,14 @@
 #include "gnfs/util/thread_pool.hpp"
 #include "gnfs/util/timer.hpp"
+#include "support/test_check.hpp"
 
 #include <atomic>
-#include <cassert>
 #include <chrono>
+#include <cstddef>
+#include <future>
 #include <iostream>
+#include <stdexcept>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -15,11 +19,9 @@ void test_basic_submit() {
 
     ThreadPool pool(4);
 
-    auto future = pool.submit([]() {
-        return 42;
-    });
+    auto future = pool.submit([]() { return 42; });
 
-    assert(future.get() == 42);
+    GNFS_TEST_CHECK(future.get() == 42);
 
     std::cout << "  Basic submit: PASS" << std::endl;
 }
@@ -31,13 +33,11 @@ void test_multiple_tasks() {
 
     std::vector<std::future<int>> futures;
     for (int i = 0; i < 100; ++i) {
-        futures.push_back(pool.submit([i]() {
-            return i * 2;
-        }));
+        futures.push_back(pool.submit([i]() { return i * 2; }));
     }
 
     for (int i = 0; i < 100; ++i) {
-        assert(futures[static_cast<size_t>(i)].get() == i * 2);
+        GNFS_TEST_CHECK(futures[static_cast<size_t>(i)].get() == i * 2);
     }
 
     std::cout << "  Multiple tasks: PASS" << std::endl;
@@ -49,12 +49,10 @@ void test_parallel_for_index() {
     ThreadPool pool(4);
 
     std::atomic<int> sum{0};
-    pool.parallel_for_index(0, 1000, [&sum](size_t i) {
-        sum += static_cast<int>(i);
-    });
+    pool.parallel_for_index(0, 1000, [&sum](size_t i) { sum += static_cast<int>(i); });
 
     // 0 + 1 + 2 + ... + 999 = 999 * 1000 / 2 = 499500
-    assert(sum.load() == 499500);
+    GNFS_TEST_CHECK(sum.load() == 499500);
 
     std::cout << "  parallel_for_index: PASS" << std::endl;
 }
@@ -70,12 +68,10 @@ void test_parallel_for() {
     }
 
     std::atomic<int> sum{0};
-    pool.parallel_for(data.begin(), data.end(), [&sum](int val) {
-        sum += val;
-    });
+    pool.parallel_for(data.begin(), data.end(), [&sum](int val) { sum += val; });
 
     // 0 + 1 + ... + 99 = 99 * 100 / 2 = 4950
-    assert(sum.load() == 4950);
+    GNFS_TEST_CHECK(sum.load() == 4950);
 
     std::cout << "  parallel_for: PASS" << std::endl;
 }
@@ -95,7 +91,7 @@ void test_wait_all() {
     }
 
     pool.wait_all();
-    assert(counter.load() == 100);
+    GNFS_TEST_CHECK(counter.load() == 100);
 
     std::cout << "  wait_all: PASS" << std::endl;
 }
@@ -104,10 +100,10 @@ void test_num_threads() {
     std::cout << "Testing num_threads..." << std::endl;
 
     ThreadPool pool1(8);
-    assert(pool1.num_threads() == 8);
+    GNFS_TEST_CHECK(pool1.num_threads() == 8);
 
-    ThreadPool pool2(0);  // 自动检测
-    assert(pool2.num_threads() > 0);
+    ThreadPool pool2(0); // 自动检测
+    GNFS_TEST_CHECK(pool2.num_threads() > 0);
 
     std::cout << "  num_threads: PASS" << std::endl;
 }
@@ -127,9 +123,9 @@ void test_exception_handling() {
         future.get();
     } catch (const std::runtime_error& e) {
         caught = true;
-        assert(std::string(e.what()) == "test exception");
+        GNFS_TEST_CHECK(std::string(e.what()) == "test exception");
     }
-    assert(caught);
+    GNFS_TEST_CHECK(caught);
 
     std::cout << "  Exception handling: PASS" << std::endl;
 }
@@ -155,9 +151,7 @@ void test_wait_all_race_stress() {
 
         // Submit many tiny tasks (no sleep — maximize race window)
         for (int i = 0; i < tasks_per_round; ++i) {
-            pool.submit([&counter]() {
-                counter.fetch_add(1, std::memory_order_relaxed);
-            });
+            pool.submit([&counter]() { counter.fetch_add(1, std::memory_order_relaxed); });
         }
 
         // wait_all() must return. Under the old buggy code, this can
@@ -166,8 +160,8 @@ void test_wait_all_race_stress() {
         pool.wait_all();
 
         // After wait_all returns, ALL tasks must be complete
-        assert(counter.load() == tasks_per_round &&
-               "wait_all() returned before all tasks completed!");
+        GNFS_TEST_CHECK(counter.load() == tasks_per_round &&
+                        "wait_all() returned before all tasks completed!");
     }
 
     std::cout << "  wait_all race stress (" << rounds << " rounds): PASS" << std::endl;
@@ -193,9 +187,7 @@ void test_concurrent_submit_wait() {
         for (int t = 0; t < 4; ++t) {
             submitters.emplace_back([&pool, &counter]() {
                 for (int i = 0; i < 4; ++i) {
-                    pool.submit([&counter]() {
-                        counter.fetch_add(1, std::memory_order_relaxed);
-                    });
+                    pool.submit([&counter]() { counter.fetch_add(1, std::memory_order_relaxed); });
                 }
             });
         }
@@ -205,12 +197,11 @@ void test_concurrent_submit_wait() {
         }
 
         pool.wait_all();
-        assert(counter.load() == tasks &&
-               "Concurrent submit: wait_all returned prematurely!");
+        GNFS_TEST_CHECK(counter.load() == tasks &&
+                        "Concurrent submit: wait_all returned prematurely!");
     }
 
-    std::cout << "  Concurrent submit + wait_all (" << rounds << " rounds): PASS"
-              << std::endl;
+    std::cout << "  Concurrent submit + wait_all (" << rounds << " rounds): PASS" << std::endl;
 }
 
 int main() {
