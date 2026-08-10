@@ -149,6 +149,11 @@ only or packaging-only main commit must therefore produce fresh static,
 script, workflow-security, and platform evidence at its own exact SHA instead
 of inheriting an older successful run.
 
+Workflows that combine branch, scheduled, and manual triggers include the
+event name in their concurrency group. A newer run may supersede an older run
+only for the same event and ref; a delayed scheduled or manual run must not
+cancel exact-SHA push or pull-request evidence.
+
 `Release Readiness` is a required lane for every pull request and `main` push.
 It deliberately has no path filter. Its Ubuntu 20.04 container job installs the
 release toolchain through the same versioned installer as the publication
