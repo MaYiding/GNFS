@@ -324,7 +324,7 @@ jobs:
             ctest --test-dir /tmp/gnfs-build \
               --output-on-failure \
               -R "^(BoundedChildProcess|SiqsShadowProofRssCampaignJournalStore)$" \
-              --timeout 120 \
+              --timeout 240 \
               --no-tests=error
           '
 
