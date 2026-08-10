@@ -6,8 +6,8 @@
 // uint64_t to safely cover the full range.
 
 #include "gnfs/util/safe_math.hpp"
+#include "support/test_check.hpp"
 
-#include <cassert>
 #include <cstdint>
 #include <iostream>
 #include <limits>
@@ -20,20 +20,20 @@ using gnfs::util::size_from_nonnegative_double_floor;
 
 void test_zero() {
     std::cout << "Testing safe_abs(0)..." << std::endl;
-    assert(safe_abs(0) == 0u);
+    GNFS_TEST_CHECK(safe_abs(0) == 0u);
     std::cout << "  PASS" << std::endl;
 }
 
 void test_positive_values() {
     std::cout << "Testing safe_abs positive values..." << std::endl;
 
-    assert(safe_abs(1) == 1u);
-    assert(safe_abs(42) == 42u);
-    assert(safe_abs(1000000) == 1000000u);
-    assert(safe_abs(int64_t(1) << 32) == (uint64_t(1) << 32));
+    GNFS_TEST_CHECK(safe_abs(1) == 1u);
+    GNFS_TEST_CHECK(safe_abs(42) == 42u);
+    GNFS_TEST_CHECK(safe_abs(1000000) == 1000000u);
+    GNFS_TEST_CHECK(safe_abs(int64_t(1) << 32) == (uint64_t(1) << 32));
 
     // INT64_MAX itself
-    assert(safe_abs(INT64_MAX) == static_cast<uint64_t>(INT64_MAX));
+    GNFS_TEST_CHECK(safe_abs(INT64_MAX) == static_cast<uint64_t>(INT64_MAX));
 
     std::cout << "  PASS" << std::endl;
 }
@@ -41,13 +41,13 @@ void test_positive_values() {
 void test_negative_values() {
     std::cout << "Testing safe_abs negative values..." << std::endl;
 
-    assert(safe_abs(-1) == 1u);
-    assert(safe_abs(-42) == 42u);
-    assert(safe_abs(-1000000) == 1000000u);
-    assert(safe_abs(-(int64_t(1) << 32)) == (uint64_t(1) << 32));
+    GNFS_TEST_CHECK(safe_abs(-1) == 1u);
+    GNFS_TEST_CHECK(safe_abs(-42) == 42u);
+    GNFS_TEST_CHECK(safe_abs(-1000000) == 1000000u);
+    GNFS_TEST_CHECK(safe_abs(-(int64_t(1) << 32)) == (uint64_t(1) << 32));
 
     // Symmetric across zero
-    assert(safe_abs(int64_t(12345)) == safe_abs(int64_t(-12345)));
+    GNFS_TEST_CHECK(safe_abs(int64_t(12345)) == safe_abs(int64_t(-12345)));
 
     std::cout << "  PASS" << std::endl;
 }
@@ -59,11 +59,11 @@ void test_int64_min_no_ub() {
     // std::abs(INT64_MIN) is UB. safe_abs returns uint64_t and gets it right.
     const uint64_t expected = uint64_t(1) << 63; // 9223372036854775808
 
-    assert(safe_abs(INT64_MIN) == expected);
-    assert(safe_abs(std::numeric_limits<int64_t>::min()) == expected);
+    GNFS_TEST_CHECK(safe_abs(INT64_MIN) == expected);
+    GNFS_TEST_CHECK(safe_abs(std::numeric_limits<int64_t>::min()) == expected);
 
     // Conceptually: |INT64_MIN| = INT64_MAX + 1 in unsigned space
-    assert(safe_abs(INT64_MIN) == static_cast<uint64_t>(INT64_MAX) + 1u);
+    GNFS_TEST_CHECK(safe_abs(INT64_MIN) == static_cast<uint64_t>(INT64_MAX) + 1u);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -73,12 +73,12 @@ void test_near_int64_min() {
 
     // INT64_MIN + 1 is the largest representable negative result of -INT64_MIN's
     // would-be value (i.e., one less than 2^63). Check |INT64_MIN+1| = 2^63-1.
-    assert(safe_abs(INT64_MIN + 1) == static_cast<uint64_t>(INT64_MAX));
-    assert(safe_abs(INT64_MIN + 2) == static_cast<uint64_t>(INT64_MAX) - 1u);
+    GNFS_TEST_CHECK(safe_abs(INT64_MIN + 1) == static_cast<uint64_t>(INT64_MAX));
+    GNFS_TEST_CHECK(safe_abs(INT64_MIN + 2) == static_cast<uint64_t>(INT64_MAX) - 1u);
 
     // Monotonicity: larger absolute value → larger return.
-    assert(safe_abs(INT64_MIN) > safe_abs(INT64_MIN + 1));
-    assert(safe_abs(INT64_MIN + 1) > safe_abs(INT64_MIN + 2));
+    GNFS_TEST_CHECK(safe_abs(INT64_MIN) > safe_abs(INT64_MIN + 1));
+    GNFS_TEST_CHECK(safe_abs(INT64_MIN + 1) > safe_abs(INT64_MIN + 2));
 
     std::cout << "  PASS" << std::endl;
 }
@@ -121,7 +121,7 @@ void test_sign_symmetry_in_range() {
     // For x ∈ [INT64_MIN+1, INT64_MAX], safe_abs(x) == safe_abs(-x).
     // (INT64_MIN excluded because -INT64_MIN doesn't exist as int64_t.)
     for (int64_t x : {int64_t(1), int64_t(100), int64_t(10000), int64_t(1) << 20, INT64_MAX}) {
-        assert(safe_abs(x) == safe_abs(-x));
+        GNFS_TEST_CHECK(safe_abs(x) == safe_abs(-x));
     }
 
     std::cout << "  PASS" << std::endl;
@@ -139,7 +139,8 @@ void test_size_arithmetic_contracts() {
     static_assert(size_from_nonnegative_double_floor(42.75) == 42);
     static_assert(size_from_nonnegative_double_floor(std::numeric_limits<double>::infinity()) ==
                   MAX_SIZE);
-    assert(size_from_nonnegative_double_floor(std::numeric_limits<double>::quiet_NaN()) == 0);
+    GNFS_TEST_CHECK(size_from_nonnegative_double_floor(std::numeric_limits<double>::quiet_NaN()) ==
+                    0);
 
     std::cout << "  PASS (compile-time boundaries)" << std::endl;
 }
