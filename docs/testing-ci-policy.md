@@ -52,6 +52,9 @@ correctness oracle in CI. New or modified correctness tests must use a check
 that remains active in Release builds. The first migrated mathematical chain is
 `Integer`, `IntPolynomial`, `LinearAlgebra`, and `SquareRoot`; these tests use
 `GNFS_TEST_CHECK` from `tests/support/test_check.hpp` in every build type.
+The `HalfGCD`, `PolyKaratsuba`, `DivremSubquadratic`, `PolyNTT`, and
+`PolySquare` arithmetic contracts also keep their exact parity, dispatch,
+boundary, and environment-parsing checks active in Release builds.
 The `KrylovSequenceMmap` persistence, handle-lifecycle, and size-boundary
 contract uses the same Release-active check and exercises the real Win32
 file-mapping path on Windows instead of a platform stub. Arithmetic or native

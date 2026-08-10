@@ -23,8 +23,9 @@
 
 #include "gnfs/polynomial/karatsuba_mul.hpp"
 #include "gnfs/polynomial/poly_square.hpp"
+#include "support/test_check.hpp"
 
-#include <cassert>
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -36,22 +37,22 @@
 #include <vector>
 
 #if defined(_WIN32)
-  #include <stdlib.h>
-  #define gnfs_setenv(name, value) _putenv_s((name), (value))
-  #define gnfs_unsetenv(name)      _putenv_s((name), "")
+#include <stdlib.h>
+#define gnfs_setenv(name, value) _putenv_s((name), (value))
+#define gnfs_unsetenv(name) _putenv_s((name), "")
 #else
-  #include <stdlib.h>
-  #define gnfs_setenv(name, value) ::setenv((name), (value), 1)
-  #define gnfs_unsetenv(name)      ::unsetenv((name))
+#include <stdlib.h>
+#define gnfs_setenv(name, value) ::setenv((name), (value), 1)
+#define gnfs_unsetenv(name) ::unsetenv((name))
 #endif
 
 using gnfs::polynomial::karatsuba_mul_mod;
 using gnfs::polynomial::karatsuba_square_mod;
-using gnfs::polynomial::PolySquareMode;
 using gnfs::polynomial::poly_square_enabled;
 using gnfs::polynomial::poly_square_karatsuba_threshold;
 using gnfs::polynomial::poly_square_mode;
 using gnfs::polynomial::poly_square_reset_env_cache_for_testing;
+using gnfs::polynomial::PolySquareMode;
 using gnfs::polynomial::schoolbook_mul_mod;
 using gnfs::polynomial::schoolbook_square_mod;
 using gnfs::polynomial::square_mod;
@@ -74,8 +75,7 @@ constexpr uint64_t kSmallPrime = 1009ULL;
 
 // ---------- helpers ----------
 
-std::vector<uint64_t> random_poly(std::mt19937_64& rng, size_t size,
-                                  uint64_t p) {
+std::vector<uint64_t> random_poly(std::mt19937_64& rng, size_t size, uint64_t p) {
     std::vector<uint64_t> v(size);
     for (size_t i = 0; i < size; ++i) {
         v[i] = rng() % p;
@@ -87,46 +87,46 @@ std::vector<uint64_t> random_poly(std::mt19937_64& rng, size_t size,
     return v;
 }
 
-bool vectors_equal(const std::vector<uint64_t>& a,
-                   const std::vector<uint64_t>& b) {
-    if (a.size() != b.size()) return false;
+bool vectors_equal(const std::vector<uint64_t>& a, const std::vector<uint64_t>& b) {
+    if (a.size() != b.size())
+        return false;
     for (size_t i = 0; i < a.size(); ++i) {
-        if (a[i] != b[i]) return false;
+        if (a[i] != b[i])
+            return false;
     }
     return true;
 }
 
-std::string vec_to_string(const std::vector<uint64_t>& v,
-                          size_t max_show = 8) {
+std::string vec_to_string(const std::vector<uint64_t>& v, size_t max_show = 8) {
     std::string s = "[";
     const size_t n = std::min(v.size(), max_show);
     for (size_t i = 0; i < n; ++i) {
-        if (i > 0) s += ", ";
+        if (i > 0)
+            s += ", ";
         s += std::to_string(v[i]);
     }
-    if (n < v.size()) s += ", ...";
+    if (n < v.size())
+        s += ", ...";
     s += "]";
     return s;
 }
 
-void expect_equal(const std::vector<uint64_t>& expected,
-                  const std::vector<uint64_t>& actual,
+void expect_equal(const std::vector<uint64_t>& expected, const std::vector<uint64_t>& actual,
                   const std::string& tag) {
     if (!vectors_equal(expected, actual)) {
         std::cerr << "  FAIL [" << tag << "]\n";
-        std::cerr << "    expected size=" << expected.size()
-                  << " " << vec_to_string(expected) << "\n";
-        std::cerr << "    actual   size=" << actual.size()
-                  << " " << vec_to_string(actual) << "\n";
-        assert(false && "square_mod output must match karatsuba_mul_mod(a, a) bit-for-bit");
+        std::cerr << "    expected size=" << expected.size() << " " << vec_to_string(expected)
+                  << "\n";
+        std::cerr << "    actual   size=" << actual.size() << " " << vec_to_string(actual) << "\n";
+        GNFS_TEST_CHECK(false &&
+                        "square_mod output must match karatsuba_mul_mod(a, a) bit-for-bit");
     }
 }
 
 // Build the W9 golden reference by calling karatsuba_mul_mod(a, a, p, out).
 // karatsuba_mul_mod is the bit-for-bit-equivalent kernel that this
 // helper's square_mod must replicate.
-void karatsuba_self_mul_reference(const std::vector<uint64_t>& a,
-                                  uint64_t p,
+void karatsuba_self_mul_reference(const std::vector<uint64_t>& a, uint64_t p,
                                   std::vector<uint64_t>& out) {
     std::span<const uint64_t> sa(a.data(), a.size());
     karatsuba_mul_mod(sa, sa, p, out);
@@ -146,8 +146,8 @@ void test_env_unset_default_auto() {
     gnfs_unsetenv("GNFS_POLY_SQUARE_OPT");
     poly_square_reset_env_cache_for_testing();
     auto mode = poly_square_mode();
-    assert(mode == PolySquareMode::Auto);
-    assert(poly_square_enabled());
+    GNFS_TEST_CHECK(mode == PolySquareMode::Auto);
+    GNFS_TEST_CHECK(poly_square_enabled());
     std::cout << "  PASS (mode=Auto, enabled)" << std::endl;
 }
 
@@ -158,12 +158,11 @@ void test_env_explicit_off() {
         poly_square_reset_env_cache_for_testing();
         auto mode = poly_square_mode();
         if (mode != PolySquareMode::ForceOff) {
-            std::cerr << "  FAIL: ENV=\"" << v << "\" gave mode="
-                      << static_cast<int>(mode)
+            std::cerr << "  FAIL: ENV=\"" << v << "\" gave mode=" << static_cast<int>(mode)
                       << ", expected ForceOff\n";
-            assert(false);
+            GNFS_TEST_CHECK(false);
         }
-        assert(!poly_square_enabled());
+        GNFS_TEST_CHECK(!poly_square_enabled());
     }
     gnfs_unsetenv("GNFS_POLY_SQUARE_OPT");
     poly_square_reset_env_cache_for_testing();
@@ -177,12 +176,11 @@ void test_env_explicit_on() {
         poly_square_reset_env_cache_for_testing();
         auto mode = poly_square_mode();
         if (mode != PolySquareMode::ForceOn) {
-            std::cerr << "  FAIL: ENV=\"" << v << "\" gave mode="
-                      << static_cast<int>(mode)
+            std::cerr << "  FAIL: ENV=\"" << v << "\" gave mode=" << static_cast<int>(mode)
                       << ", expected ForceOn\n";
-            assert(false);
+            GNFS_TEST_CHECK(false);
         }
-        assert(poly_square_enabled());
+        GNFS_TEST_CHECK(poly_square_enabled());
     }
     gnfs_unsetenv("GNFS_POLY_SQUARE_OPT");
     poly_square_reset_env_cache_for_testing();
@@ -192,31 +190,24 @@ void test_env_explicit_on() {
 void test_env_unrecognized_to_auto() {
     std::cout << "test_env_unrecognized_to_auto..." << std::endl;
     const char* unrecognized[] = {
-        "garbage",
-        "2",
-        "true",
-        "-1",
-        "yes",
-        "ON",      // case-sensitive: only lowercase "on" recognized
-        "OFF",
-        "Auto",
-        "  1",     // leading whitespace not stripped
+        "garbage", "2",    "true", "-1", "yes",
+        "ON", // case-sensitive: only lowercase "on" recognized
+        "OFF",     "Auto",
+        "  1", // leading whitespace not stripped
     };
     for (const char* v : unrecognized) {
         gnfs_setenv("GNFS_POLY_SQUARE_OPT", v);
         poly_square_reset_env_cache_for_testing();
         auto mode = poly_square_mode();
         if (mode != PolySquareMode::Auto) {
-            std::cerr << "  FAIL: ENV=\"" << v << "\" gave mode="
-                      << static_cast<int>(mode)
+            std::cerr << "  FAIL: ENV=\"" << v << "\" gave mode=" << static_cast<int>(mode)
                       << ", expected Auto\n";
-            assert(false);
+            GNFS_TEST_CHECK(false);
         }
     }
     gnfs_unsetenv("GNFS_POLY_SQUARE_OPT");
     poly_square_reset_env_cache_for_testing();
-    std::cout << "  PASS ("
-              << (sizeof(unrecognized) / sizeof(unrecognized[0]))
+    std::cout << "  PASS (" << (sizeof(unrecognized) / sizeof(unrecognized[0]))
               << " unrecognized values mapped to Auto)" << std::endl;
 }
 
@@ -225,10 +216,10 @@ void test_threshold_env_default_32() {
     gnfs_unsetenv("GNFS_POLY_SQUARE_KARATSUBA_THRESHOLD");
     poly_square_reset_env_cache_for_testing();
     auto t = poly_square_karatsuba_threshold();
-    assert(t == 32);
+    GNFS_TEST_CHECK(t == 32);
     gnfs_setenv("GNFS_POLY_SQUARE_KARATSUBA_THRESHOLD", "32");
     poly_square_reset_env_cache_for_testing();
-    assert(poly_square_karatsuba_threshold() == 32);
+    GNFS_TEST_CHECK(poly_square_karatsuba_threshold() == 32);
     gnfs_unsetenv("GNFS_POLY_SQUARE_KARATSUBA_THRESHOLD");
     poly_square_reset_env_cache_for_testing();
     std::cout << "  PASS (default 32 reported)" << std::endl;
@@ -242,23 +233,23 @@ void test_threshold_env_lower_clamp() {
         poly_square_reset_env_cache_for_testing();
         auto t = poly_square_karatsuba_threshold();
         if (t != 4) {
-            std::cerr << "  FAIL: ENV=\"" << v << "\" gave threshold="
-                      << t << ", expected 4 (lower clamp)\n";
-            assert(false);
+            std::cerr << "  FAIL: ENV=\"" << v << "\" gave threshold=" << t
+                      << ", expected 4 (lower clamp)\n";
+            GNFS_TEST_CHECK(false);
         }
     }
     // Explicit "4" stays 4.
     gnfs_setenv("GNFS_POLY_SQUARE_KARATSUBA_THRESHOLD", "4");
     poly_square_reset_env_cache_for_testing();
-    assert(poly_square_karatsuba_threshold() == 4);
+    GNFS_TEST_CHECK(poly_square_karatsuba_threshold() == 4);
     // "5000" upper clamp to 4096.
     gnfs_setenv("GNFS_POLY_SQUARE_KARATSUBA_THRESHOLD", "5000");
     poly_square_reset_env_cache_for_testing();
-    assert(poly_square_karatsuba_threshold() == 4096);
+    GNFS_TEST_CHECK(poly_square_karatsuba_threshold() == 4096);
     // garbage → default 32.
     gnfs_setenv("GNFS_POLY_SQUARE_KARATSUBA_THRESHOLD", "garbage");
     poly_square_reset_env_cache_for_testing();
-    assert(poly_square_karatsuba_threshold() == 32);
+    GNFS_TEST_CHECK(poly_square_karatsuba_threshold() == 32);
     gnfs_unsetenv("GNFS_POLY_SQUARE_KARATSUBA_THRESHOLD");
     poly_square_reset_env_cache_for_testing();
     std::cout << "  PASS (lower clamp 1/2/3→4, explicit 4, upper clamp 5000→4096, garbage→32)"
@@ -275,20 +266,19 @@ void test_empty_input() {
 
     std::vector<uint64_t> out{77};
     square_mod({}, kPrime31, out);
-    assert(out.empty());
+    GNFS_TEST_CHECK(out.empty());
 
     // schoolbook_square_mod on empty → empty
     out = {88};
     schoolbook_square_mod({}, kPrime31, out);
-    assert(out.empty());
+    GNFS_TEST_CHECK(out.empty());
 
     // karatsuba_square_mod on empty → empty
     out = {99};
     karatsuba_square_mod({}, kPrime31, out);
-    assert(out.empty());
+    GNFS_TEST_CHECK(out.empty());
 
-    std::cout << "  PASS (empty input produces empty output across all kernels)"
-              << std::endl;
+    std::cout << "  PASS (empty input produces empty output across all kernels)" << std::endl;
 }
 
 void test_single_coefficient() {
@@ -303,30 +293,29 @@ void test_single_coefficient() {
     std::vector<uint64_t> out;
     std::span<const uint64_t> sa(a.data(), a.size());
     square_mod(sa, kSmallPrime, out);
-    assert(out.size() == 1);
-    assert(out[0] == (7 * 7) % kSmallPrime);
+    GNFS_TEST_CHECK(out.size() == 1);
+    GNFS_TEST_CHECK(out[0] == (7 * 7) % kSmallPrime);
 
     // schoolbook_square_mod
     std::vector<uint64_t> out2;
     schoolbook_square_mod(sa, kSmallPrime, out2);
-    assert(out2.size() == 1);
-    assert(out2[0] == 49 % kSmallPrime);
+    GNFS_TEST_CHECK(out2.size() == 1);
+    GNFS_TEST_CHECK(out2[0] == 49 % kSmallPrime);
 
     // karatsuba_square_mod
     std::vector<uint64_t> out3;
     karatsuba_square_mod(sa, kSmallPrime, out3);
-    assert(out3.size() == 1);
-    assert(out3[0] == 49 % kSmallPrime);
+    GNFS_TEST_CHECK(out3.size() == 1);
+    GNFS_TEST_CHECK(out3[0] == 49 % kSmallPrime);
 
     // Single coefficient = 0 → out should canonicalize to empty.
     std::vector<uint64_t> zero{0};
     std::vector<uint64_t> outz;
     std::span<const uint64_t> sz(zero.data(), zero.size());
     square_mod(sz, kPrime31, outz);
-    assert(outz.empty());
+    GNFS_TEST_CHECK(outz.empty());
 
-    std::cout << "  PASS (single coefficient squared correctly; 0 → empty)"
-              << std::endl;
+    std::cout << "  PASS (single coefficient squared correctly; 0 → empty)" << std::endl;
 }
 
 void test_deg_2_cross_product() {
@@ -341,18 +330,17 @@ void test_deg_2_cross_product() {
 
     std::vector<uint64_t> out;
     square_mod(sa, kSmallPrime, out);
-    assert(out.size() == 3);
-    assert(out[0] == 9);            // 3^2
-    assert(out[1] == 30);           // 2 * 3 * 5
-    assert(out[2] == 25);           // 5^2
+    GNFS_TEST_CHECK(out.size() == 3);
+    GNFS_TEST_CHECK(out[0] == 9);  // 3^2
+    GNFS_TEST_CHECK(out[1] == 30); // 2 * 3 * 5
+    GNFS_TEST_CHECK(out[2] == 25); // 5^2
 
     // Also verify against W9 karatsuba_mul_mod(a, a).
     std::vector<uint64_t> ref;
     karatsuba_self_mul_reference(a, kSmallPrime, ref);
     expect_equal(ref, out, "deg2_cross_product");
 
-    std::cout << "  PASS (deg=2 cross product matches expected algebra)"
-              << std::endl;
+    std::cout << "  PASS (deg=2 cross product matches expected algebra)" << std::endl;
 }
 
 // ====================== Schoolbook parity tests ======================
@@ -367,8 +355,7 @@ void test_deg_2_cross_product() {
 // All four kernels (Auto schoolbook, Auto Karatsuba, ForceOn schoolbook,
 // ForceOn Karatsuba) get exercised when used across different sizes
 // because the threshold dispatch fires at `a.size() >= threshold`.
-void check_square_parity_all_gates(const std::vector<uint64_t>& a,
-                                   uint64_t p,
+void check_square_parity_all_gates(const std::vector<uint64_t>& a, uint64_t p,
                                    const std::string& tag) {
     std::vector<uint64_t> ref;
     karatsuba_self_mul_reference(a, p, ref);
@@ -415,9 +402,8 @@ void test_schoolbook_parity_deg_10() {
     for (uint64_t p : {kPrime31, kPrime30, kSmallPrime}) {
         for (int trial = 0; trial < 3; ++trial) {
             auto a = random_poly(rng, 10, p);
-            check_square_parity_all_gates(a, p,
-                "deg10_p" + std::to_string(p) + "_t" +
-                std::to_string(trial));
+            check_square_parity_all_gates(
+                a, p, "deg10_p" + std::to_string(p) + "_t" + std::to_string(trial));
         }
     }
     std::cout << "  PASS (3 primes × 3 trials at deg=10)" << std::endl;
@@ -429,9 +415,8 @@ void test_schoolbook_parity_deg_50() {
     for (uint64_t p : {kPrime31, kPrime30, kSmallPrime}) {
         for (int trial = 0; trial < 2; ++trial) {
             auto a = random_poly(rng, 50, p);
-            check_square_parity_all_gates(a, p,
-                "deg50_p" + std::to_string(p) + "_t" +
-                std::to_string(trial));
+            check_square_parity_all_gates(
+                a, p, "deg50_p" + std::to_string(p) + "_t" + std::to_string(trial));
         }
     }
     std::cout << "  PASS (3 primes × 2 trials at deg=50)" << std::endl;
@@ -444,8 +429,7 @@ void test_karatsuba_parity_deg_200() {
     std::mt19937_64 rng(0xEE550055FF66BEEFULL);
     for (uint64_t p : {kPrime31, kPrime30}) {
         auto a = random_poly(rng, 200, p);
-        check_square_parity_all_gates(a, p,
-            "deg200_p" + std::to_string(p));
+        check_square_parity_all_gates(a, p, "deg200_p" + std::to_string(p));
     }
     std::cout << "  PASS (2 primes at deg=200)" << std::endl;
 }
@@ -472,11 +456,10 @@ void test_random_shape_sweep() {
         const uint64_t p = (idx & 1) ? kPrime31 : kPrime30;
         auto a = random_poly(rng, n, p);
         check_square_parity_all_gates(a, p,
-            "shape_n" + std::to_string(n) + "_p" + std::to_string(p));
+                                      "shape_n" + std::to_string(n) + "_p" + std::to_string(p));
         ++idx;
     }
-    std::cout << "  PASS (10 shapes swept, including threshold-boundary 31/32/33)"
-              << std::endl;
+    std::cout << "  PASS (10 shapes swept, including threshold-boundary 31/32/33)" << std::endl;
 }
 
 // ====================== Mersenne boundary ======================
@@ -488,7 +471,7 @@ void test_mersenne_p_boundary() {
     // room. Build an input where every coefficient is exactly p-1 to
     // stress the upper bound, then verify against W9.
     const uint64_t p = kPrime31;
-    std::vector<uint64_t> a(50, p - 1);  // all coefficients = p - 1
+    std::vector<uint64_t> a(50, p - 1); // all coefficients = p - 1
     check_square_parity_all_gates(a, p, "mersenne_all_pminus1_n50");
 
     // Also a single big-coeff input at a moderate size.
@@ -498,8 +481,7 @@ void test_mersenne_p_boundary() {
     a[74] = p - 1;
     check_square_parity_all_gates(a, p, "mersenne_sparse_n150");
 
-    std::cout << "  PASS (Mersenne p boundary, both dense and sparse)"
-              << std::endl;
+    std::cout << "  PASS (Mersenne p boundary, both dense and sparse)" << std::endl;
 }
 
 // ====================== Informational perf probe ======================
@@ -542,24 +524,17 @@ void perf_info_deg_200() {
     }
     auto t5 = clk::now();
 
-    double sq_ms =
-        std::chrono::duration<double, std::milli>(t1 - t0).count() / iters;
-    double mul_ms =
-        std::chrono::duration<double, std::milli>(t3 - t2).count() / iters;
-    double sb_sq_ms =
-        std::chrono::duration<double, std::milli>(t5 - t4).count() / iters;
+    double sq_ms = std::chrono::duration<double, std::milli>(t1 - t0).count() / iters;
+    double mul_ms = std::chrono::duration<double, std::milli>(t3 - t2).count() / iters;
+    double sb_sq_ms = std::chrono::duration<double, std::milli>(t5 - t4).count() / iters;
     double sq_speedup = (sq_ms > 0.0) ? (mul_ms / sq_ms) : 0.0;
     double sb_speedup = (sb_sq_ms > 0.0) ? (mul_ms / sb_sq_ms) : 0.0;
 
-    std::cout << "  square_mod (Auto/Karatsuba): " << sq_ms << " ms/call"
-              << std::endl;
-    std::cout << "  karatsuba_mul_mod(a, a):     " << mul_ms << " ms/call"
-              << std::endl;
-    std::cout << "  schoolbook_square_mod:       " << sb_sq_ms << " ms/call"
-              << std::endl;
+    std::cout << "  square_mod (Auto/Karatsuba): " << sq_ms << " ms/call" << std::endl;
+    std::cout << "  karatsuba_mul_mod(a, a):     " << mul_ms << " ms/call" << std::endl;
+    std::cout << "  schoolbook_square_mod:       " << sb_sq_ms << " ms/call" << std::endl;
     std::cout << "  square/mul speedup: " << sq_speedup << "x"
-              << "  schoolbook_square/mul speedup: " << sb_speedup << "x"
-              << std::endl;
+              << "  schoolbook_square/mul speedup: " << sb_speedup << "x" << std::endl;
     std::cout << "  PASS (informational only — squaring at deg=200 should be "
               << "competitive with W9 mul)" << std::endl;
 
@@ -568,14 +543,13 @@ void perf_info_deg_200() {
     poly_square_reset_env_cache_for_testing();
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     std::cout << "=== test_poly_square ===" << std::endl;
-    std::cout << "default Karatsuba squaring threshold = 32 (matches W9 mul)"
+    std::cout << "default Karatsuba squaring threshold = 32 (matches W9 mul)" << std::endl;
+    std::cout << "golden reference: W9 karatsuba_mul_mod(a, a, p, out) " << "(trimmed canonical)"
               << std::endl;
-    std::cout << "golden reference: W9 karatsuba_mul_mod(a, a, p, out) "
-              << "(trimmed canonical)" << std::endl;
     std::cout << std::endl;
 
     // 4 ENV_OPT parsing tests.

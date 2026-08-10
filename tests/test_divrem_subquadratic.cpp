@@ -20,8 +20,9 @@
 
 #include "gnfs/polynomial/divrem_subquadratic.hpp"
 #include "gnfs/util/primes.hpp"
+#include "support/test_check.hpp"
 
-#include <cassert>
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -33,13 +34,13 @@
 #include <vector>
 
 #if defined(_WIN32)
-  #include <stdlib.h>
-  #define gnfs_setenv(name, value) _putenv_s((name), (value))
-  #define gnfs_unsetenv(name)      _putenv_s((name), "")
+#include <stdlib.h>
+#define gnfs_setenv(name, value) _putenv_s((name), (value))
+#define gnfs_unsetenv(name) _putenv_s((name), "")
 #else
-  #include <stdlib.h>
-  #define gnfs_setenv(name, value) ::setenv((name), (value), 1)
-  #define gnfs_unsetenv(name)      ::unsetenv((name))
+#include <stdlib.h>
+#define gnfs_setenv(name, value) ::setenv((name), (value), 1)
+#define gnfs_unsetenv(name) ::unsetenv((name))
 #endif
 
 using gnfs::polynomial::divrem_modp;
@@ -64,11 +65,11 @@ constexpr uint64_t kSmallPrime = 7;
 // comparisons against the helper output (which trims internally) line
 // up.
 void trim(std::vector<uint64_t>& v) {
-    while (!v.empty() && v.back() == 0) v.pop_back();
+    while (!v.empty() && v.back() == 0)
+        v.pop_back();
 }
 
-std::vector<uint64_t> random_poly(std::mt19937_64& rng, size_t size,
-                                  uint64_t p) {
+std::vector<uint64_t> random_poly(std::mt19937_64& rng, size_t size, uint64_t p) {
     std::vector<uint64_t> v(size);
     for (size_t i = 0; i < size; ++i) {
         v[i] = rng() % p;
@@ -80,45 +81,45 @@ std::vector<uint64_t> random_poly(std::mt19937_64& rng, size_t size,
     return v;
 }
 
-bool vectors_equal(const std::vector<uint64_t>& a,
-                   const std::vector<uint64_t>& b) {
-    if (a.size() != b.size()) return false;
+bool vectors_equal(const std::vector<uint64_t>& a, const std::vector<uint64_t>& b) {
+    if (a.size() != b.size())
+        return false;
     for (size_t i = 0; i < a.size(); ++i) {
-        if (a[i] != b[i]) return false;
+        if (a[i] != b[i])
+            return false;
     }
     return true;
 }
 
-std::string vec_to_string(const std::vector<uint64_t>& v,
-                          size_t max_show = 8) {
+std::string vec_to_string(const std::vector<uint64_t>& v, size_t max_show = 8) {
     std::string s = "[";
     const size_t n = std::min(v.size(), max_show);
     for (size_t i = 0; i < n; ++i) {
-        if (i > 0) s += ", ";
+        if (i > 0)
+            s += ", ";
         s += std::to_string(v[i]);
     }
-    if (n < v.size()) s += ", ...";
+    if (n < v.size())
+        s += ", ...";
     s += "]";
     return s;
 }
 
 void expect_equal_pair(const std::vector<uint64_t>& q_expected,
                        const std::vector<uint64_t>& r_expected,
-                       const std::vector<uint64_t>& q_actual,
-                       const std::vector<uint64_t>& r_actual,
+                       const std::vector<uint64_t>& q_actual, const std::vector<uint64_t>& r_actual,
                        const std::string& tag) {
-    if (!vectors_equal(q_expected, q_actual) ||
-        !vectors_equal(r_expected, r_actual)) {
+    if (!vectors_equal(q_expected, q_actual) || !vectors_equal(r_expected, r_actual)) {
         std::cerr << "  FAIL [" << tag << "]\n";
-        std::cerr << "    quot expected size=" << q_expected.size()
-                  << " " << vec_to_string(q_expected) << "\n";
-        std::cerr << "    quot actual   size=" << q_actual.size()
-                  << " " << vec_to_string(q_actual) << "\n";
-        std::cerr << "    rem  expected size=" << r_expected.size()
-                  << " " << vec_to_string(r_expected) << "\n";
-        std::cerr << "    rem  actual   size=" << r_actual.size()
-                  << " " << vec_to_string(r_actual) << "\n";
-        assert(false && "divrem output must match schoolbook bit-for-bit");
+        std::cerr << "    quot expected size=" << q_expected.size() << " "
+                  << vec_to_string(q_expected) << "\n";
+        std::cerr << "    quot actual   size=" << q_actual.size() << " " << vec_to_string(q_actual)
+                  << "\n";
+        std::cerr << "    rem  expected size=" << r_expected.size() << " "
+                  << vec_to_string(r_expected) << "\n";
+        std::cerr << "    rem  actual   size=" << r_actual.size() << " " << vec_to_string(r_actual)
+                  << "\n";
+        GNFS_TEST_CHECK(false && "divrem output must match schoolbook bit-for-bit");
     }
 }
 
@@ -129,8 +130,8 @@ void test_env_unset_default_auto() {
     gnfs_unsetenv("GNFS_POLY_DIVREM_SUBQUADRATIC");
     divrem_subquadratic_reset_env_cache_for_testing();
     auto mode = divrem_subquadratic_mode();
-    assert(mode == DivremSubquadraticMode::Auto);
-    assert(divrem_subquadratic_enabled() == false);  // Auto is conservative
+    GNFS_TEST_CHECK(mode == DivremSubquadraticMode::Auto);
+    GNFS_TEST_CHECK(divrem_subquadratic_enabled() == false); // Auto is conservative
     std::cout << "  PASS (mode=Auto, enabled=false)" << std::endl;
 }
 
@@ -141,16 +142,15 @@ void test_env_explicit_off() {
         divrem_subquadratic_reset_env_cache_for_testing();
         auto mode = divrem_subquadratic_mode();
         if (mode != DivremSubquadraticMode::ForceOff) {
-            std::cerr << "  FAIL: ENV=\"" << v << "\" gave mode="
-                      << static_cast<int>(mode) << ", expected ForceOff\n";
-            assert(false);
+            std::cerr << "  FAIL: ENV=\"" << v << "\" gave mode=" << static_cast<int>(mode)
+                      << ", expected ForceOff\n";
+            GNFS_TEST_CHECK(false);
         }
-        assert(divrem_subquadratic_enabled() == false);
+        GNFS_TEST_CHECK(divrem_subquadratic_enabled() == false);
     }
     gnfs_unsetenv("GNFS_POLY_DIVREM_SUBQUADRATIC");
     divrem_subquadratic_reset_env_cache_for_testing();
-    std::cout << "  PASS (both \"0\" and \"off\" → ForceOff, enabled=false)"
-              << std::endl;
+    std::cout << "  PASS (both \"0\" and \"off\" → ForceOff, enabled=false)" << std::endl;
 }
 
 void test_env_explicit_on() {
@@ -160,45 +160,38 @@ void test_env_explicit_on() {
         divrem_subquadratic_reset_env_cache_for_testing();
         auto mode = divrem_subquadratic_mode();
         if (mode != DivremSubquadraticMode::ForceOn) {
-            std::cerr << "  FAIL: ENV=\"" << v << "\" gave mode="
-                      << static_cast<int>(mode) << ", expected ForceOn\n";
-            assert(false);
+            std::cerr << "  FAIL: ENV=\"" << v << "\" gave mode=" << static_cast<int>(mode)
+                      << ", expected ForceOn\n";
+            GNFS_TEST_CHECK(false);
         }
-        assert(divrem_subquadratic_enabled() == true);
+        GNFS_TEST_CHECK(divrem_subquadratic_enabled() == true);
     }
     gnfs_unsetenv("GNFS_POLY_DIVREM_SUBQUADRATIC");
     divrem_subquadratic_reset_env_cache_for_testing();
-    std::cout << "  PASS (both \"1\" and \"on\" → ForceOn, enabled=true)"
-              << std::endl;
+    std::cout << "  PASS (both \"1\" and \"on\" → ForceOn, enabled=true)" << std::endl;
 }
 
 void test_env_unrecognized_to_auto() {
     std::cout << "test_env_unrecognized_to_auto..." << std::endl;
     const char* unrecognized[] = {
-        "garbage",
-        "2",
-        "true",
-        "-1",
-        "yes",
-        "ON",       // case-sensitive: only lowercase "on" recognized
-        "OFF",
-        "Auto",
-        "  1",      // leading whitespace not stripped
+        "garbage", "2",    "true", "-1", "yes",
+        "ON", // case-sensitive: only lowercase "on" recognized
+        "OFF",     "Auto",
+        "  1", // leading whitespace not stripped
     };
     for (const char* v : unrecognized) {
         gnfs_setenv("GNFS_POLY_DIVREM_SUBQUADRATIC", v);
         divrem_subquadratic_reset_env_cache_for_testing();
         auto mode = divrem_subquadratic_mode();
         if (mode != DivremSubquadraticMode::Auto) {
-            std::cerr << "  FAIL: ENV=\"" << v << "\" gave mode="
-                      << static_cast<int>(mode) << ", expected Auto\n";
-            assert(false);
+            std::cerr << "  FAIL: ENV=\"" << v << "\" gave mode=" << static_cast<int>(mode)
+                      << ", expected Auto\n";
+            GNFS_TEST_CHECK(false);
         }
     }
     gnfs_unsetenv("GNFS_POLY_DIVREM_SUBQUADRATIC");
     divrem_subquadratic_reset_env_cache_for_testing();
-    std::cout << "  PASS ("
-              << (sizeof(unrecognized) / sizeof(unrecognized[0]))
+    std::cout << "  PASS (" << (sizeof(unrecognized) / sizeof(unrecognized[0]))
               << " unrecognized values mapped to Auto)" << std::endl;
 }
 
@@ -210,7 +203,7 @@ void test_schoolbook_basic_division() {
     // Expected: quotient x^2 + x + 0  → coeffs [0, 1, 1]; remainder 1 → [1]
     // Verification: (x + 1) * (x^2 + x) = x^3 + x^2 + x^2 + x = x^3 + 2x^2 + x
     //   + remainder 1 = x^3 + 2x^2 + x + 1. Correct.
-    std::vector<uint64_t> num{1, 1, 2, 1};  // coeffs[0..3]
+    std::vector<uint64_t> num{1, 1, 2, 1}; // coeffs[0..3]
     std::vector<uint64_t> den{1, 1};
     std::vector<uint64_t> q, r;
     divrem_modp_schoolbook(num, den, kSmallPrime, q, r);
@@ -218,21 +211,20 @@ void test_schoolbook_basic_division() {
     trim(q_exp);
     std::vector<uint64_t> r_exp{1};
     expect_equal_pair(q_exp, r_exp, q, r, "basic_division");
-    std::cout << "  PASS (quot=" << vec_to_string(q)
-              << " rem=" << vec_to_string(r) << ")" << std::endl;
+    std::cout << "  PASS (quot=" << vec_to_string(q) << " rem=" << vec_to_string(r) << ")"
+              << std::endl;
 }
 
 void test_schoolbook_num_smaller_than_den() {
     std::cout << "test_schoolbook_num_smaller_than_den..." << std::endl;
-    std::vector<uint64_t> num{3, 5};       // deg 1
-    std::vector<uint64_t> den{1, 0, 1};    // x^2 + 1, deg 2
+    std::vector<uint64_t> num{3, 5};    // deg 1
+    std::vector<uint64_t> den{1, 0, 1}; // x^2 + 1, deg 2
     std::vector<uint64_t> q, r;
     divrem_modp_schoolbook(num, den, kSmallPrime, q, r);
-    assert(q.empty());
+    GNFS_TEST_CHECK(q.empty());
     std::vector<uint64_t> r_exp{3, 5};
     expect_equal_pair(std::vector<uint64_t>{}, r_exp, q, r, "num<den");
-    std::cout << "  PASS (quot empty, rem=" << vec_to_string(r) << ")"
-              << std::endl;
+    std::cout << "  PASS (quot empty, rem=" << vec_to_string(r) << ")" << std::endl;
 }
 
 void test_schoolbook_num_multiple_of_den() {
@@ -244,9 +236,8 @@ void test_schoolbook_num_multiple_of_den() {
     std::vector<uint64_t> num{3, 5, 3, 1};
     std::vector<uint64_t> q, r;
     divrem_modp_schoolbook(num, den, kSmallPrime, q, r);
-    assert(r.empty());  // exact division
-    expect_equal_pair(q_truth, std::vector<uint64_t>{}, q, r,
-                      "num = q*den");
+    GNFS_TEST_CHECK(r.empty()); // exact division
+    expect_equal_pair(q_truth, std::vector<uint64_t>{}, q, r, "num = q*den");
     std::cout << "  PASS (rem all zeros)" << std::endl;
 }
 
@@ -267,7 +258,7 @@ void test_schoolbook_num_zero() {
     std::vector<uint64_t> den{1, 2, 3};
     std::vector<uint64_t> q, r;
     divrem_modp_schoolbook(num, den, kSmallPrime, q, r);
-    assert(q.empty() && r.empty());
+    GNFS_TEST_CHECK(q.empty() && r.empty());
     std::cout << "  PASS (both quot and rem empty)" << std::endl;
 }
 
@@ -277,9 +268,7 @@ void test_schoolbook_num_zero() {
 // and asserts bit-for-bit identical output. Caller is responsible for
 // having set the gate to ForceOn (and reset the env cache) so the
 // helper's Newton path is actually exercised above the threshold.
-void check_parity(const std::vector<uint64_t>& num,
-                  const std::vector<uint64_t>& den,
-                  uint64_t p,
+void check_parity(const std::vector<uint64_t>& num, const std::vector<uint64_t>& den, uint64_t p,
                   const std::string& tag) {
     std::vector<uint64_t> q_subq, r_subq, q_school, r_school;
     divrem_modp(num, den, p, q_subq, r_subq);
@@ -295,8 +284,7 @@ void test_parity_deg_50() {
     for (int trial = 0; trial < 4; ++trial) {
         auto num = random_poly(rng, 50, kPrime);
         auto den = random_poly(rng, 10, kPrime);
-        check_parity(num, den, kPrime,
-                     "deg_50_trial_" + std::to_string(trial));
+        check_parity(num, den, kPrime, "deg_50_trial_" + std::to_string(trial));
     }
     gnfs_unsetenv("GNFS_POLY_DIVREM_SUBQUADRATIC");
     divrem_subquadratic_reset_env_cache_for_testing();
@@ -311,8 +299,7 @@ void test_parity_deg_200() {
     for (int trial = 0; trial < 3; ++trial) {
         auto num = random_poly(rng, 200, kPrime);
         auto den = random_poly(rng, 40, kPrime);
-        check_parity(num, den, kPrime,
-                     "deg_200_trial_" + std::to_string(trial));
+        check_parity(num, den, kPrime, "deg_200_trial_" + std::to_string(trial));
     }
     gnfs_unsetenv("GNFS_POLY_DIVREM_SUBQUADRATIC");
     divrem_subquadratic_reset_env_cache_for_testing();
@@ -327,8 +314,7 @@ void test_parity_deg_500() {
     for (int trial = 0; trial < 2; ++trial) {
         auto num = random_poly(rng, 500, kPrime);
         auto den = random_poly(rng, 100, kPrime);
-        check_parity(num, den, kPrime,
-                     "deg_500_trial_" + std::to_string(trial));
+        check_parity(num, den, kPrime, "deg_500_trial_" + std::to_string(trial));
     }
     gnfs_unsetenv("GNFS_POLY_DIVREM_SUBQUADRATIC");
     divrem_subquadratic_reset_env_cache_for_testing();
@@ -346,15 +332,14 @@ void test_threshold_below_routes_to_schoolbook() {
     // the inversion misbehaved at very small precision).
     gnfs_setenv("GNFS_POLY_DIVREM_SUBQUADRATIC", "1");
     divrem_subquadratic_reset_env_cache_for_testing();
-    assert(divrem_subquadratic_enabled());
+    GNFS_TEST_CHECK(divrem_subquadratic_enabled());
 
     std::mt19937_64 rng(0xDEADBEEFCAFEBABEULL);
     // Pick num.size() values strictly below the threshold of 32.
     for (size_t sz : {1u, 5u, 10u, 20u, 31u}) {
         auto num = random_poly(rng, sz, kPrime);
         auto den = random_poly(rng, std::max<size_t>(1, sz / 3), kPrime);
-        check_parity(num, den, kPrime,
-                     "below_threshold_" + std::to_string(sz));
+        check_parity(num, den, kPrime, "below_threshold_" + std::to_string(sz));
     }
     // Single-coefficient den (constant) at small num.
     {
@@ -364,8 +349,7 @@ void test_threshold_below_routes_to_schoolbook() {
     }
     gnfs_unsetenv("GNFS_POLY_DIVREM_SUBQUADRATIC");
     divrem_subquadratic_reset_env_cache_for_testing();
-    std::cout << "  PASS (all below-threshold dispatches matched schoolbook)"
-              << std::endl;
+    std::cout << "  PASS (all below-threshold dispatches matched schoolbook)" << std::endl;
 }
 
 void test_boundary_den_constant() {
@@ -386,11 +370,11 @@ void test_boundary_num_zero() {
     std::cout << "test_boundary_num_zero..." << std::endl;
     gnfs_setenv("GNFS_POLY_DIVREM_SUBQUADRATIC", "1");
     divrem_subquadratic_reset_env_cache_for_testing();
-    std::vector<uint64_t> num;  // zero polynomial
+    std::vector<uint64_t> num; // zero polynomial
     std::vector<uint64_t> den{1, 2, 3, 4, 5};
     std::vector<uint64_t> q, r;
     divrem_modp(num, den, kPrime, q, r);
-    assert(q.empty() && r.empty());
+    GNFS_TEST_CHECK(q.empty() && r.empty());
     gnfs_unsetenv("GNFS_POLY_DIVREM_SUBQUADRATIC");
     divrem_subquadratic_reset_env_cache_for_testing();
     std::cout << "  PASS (zero num → quot=rem=empty)" << std::endl;
@@ -404,22 +388,17 @@ void test_random_sweep() {
     // 10 shape pairs covering: just-above threshold, very skewed (long
     // num / short den), near-balanced (num ~ 2*den), all medium-large.
     const std::pair<size_t, size_t> shapes[] = {
-        {40, 5}, {50, 25}, {64, 8},
-        {100, 30}, {150, 50}, {200, 100},
-        {256, 64}, {300, 150}, {400, 80},
-        {500, 250},
+        {40, 5},    {50, 25},  {64, 8},    {100, 30}, {150, 50},
+        {200, 100}, {256, 64}, {300, 150}, {400, 80}, {500, 250},
     };
     for (const auto& [na, nb] : shapes) {
         auto num = random_poly(rng, na, kPrime);
         auto den = random_poly(rng, nb, kPrime);
-        check_parity(num, den, kPrime,
-                     "sweep_" + std::to_string(na) + "x" +
-                     std::to_string(nb));
+        check_parity(num, den, kPrime, "sweep_" + std::to_string(na) + "x" + std::to_string(nb));
     }
     gnfs_unsetenv("GNFS_POLY_DIVREM_SUBQUADRATIC");
     divrem_subquadratic_reset_env_cache_for_testing();
-    std::cout << "  PASS (" << (sizeof(shapes) / sizeof(shapes[0]))
-              << " shapes)" << std::endl;
+    std::cout << "  PASS (" << (sizeof(shapes) / sizeof(shapes[0])) << " shapes)" << std::endl;
 }
 
 void test_num_exact_multiple_subq() {
@@ -442,20 +421,18 @@ void test_num_exact_multiple_subq() {
     }
     std::vector<uint64_t> q, r;
     divrem_modp(num, den, kPrime, q, r);
-    assert(r.empty() && "exact division must yield empty remainder");
+    GNFS_TEST_CHECK(r.empty() && "exact division must yield empty remainder");
     trim(quot_truth);
     if (!vectors_equal(quot_truth, q)) {
         std::cerr << "  FAIL: recovered quotient differs from construction\n";
-        std::cerr << "    truth size=" << quot_truth.size() << " "
-                  << vec_to_string(quot_truth) << "\n";
-        std::cerr << "    actual size=" << q.size() << " "
-                  << vec_to_string(q) << "\n";
-        assert(false);
+        std::cerr << "    truth size=" << quot_truth.size() << " " << vec_to_string(quot_truth)
+                  << "\n";
+        std::cerr << "    actual size=" << q.size() << " " << vec_to_string(q) << "\n";
+        GNFS_TEST_CHECK(false);
     }
     gnfs_unsetenv("GNFS_POLY_DIVREM_SUBQUADRATIC");
     divrem_subquadratic_reset_env_cache_for_testing();
-    std::cout << "  PASS (exact multiple: rem empty, quotient recovered)"
-              << std::endl;
+    std::cout << "  PASS (exact multiple: rem empty, quotient recovered)" << std::endl;
 }
 
 // ====================== Perf info (not asserted) ======================
@@ -489,29 +466,24 @@ void perf_info_deg_500() {
     }
     auto t3 = clk::now();
 
-    double sb_ms = std::chrono::duration<double, std::milli>(t1 - t0).count() /
-                   iters;
-    double subq_ms = std::chrono::duration<double, std::milli>(t3 - t2).count() /
-                     iters;
+    double sb_ms = std::chrono::duration<double, std::milli>(t1 - t0).count() / iters;
+    double subq_ms = std::chrono::duration<double, std::milli>(t3 - t2).count() / iters;
     double ratio = (subq_ms > 0.0) ? (sb_ms / subq_ms) : 0.0;
 
-    std::cout << "  schoolbook: " << sb_ms << " ms/call"
-              << "  subquadratic: " << subq_ms << " ms/call"
-              << "  ratio (sb/subq): " << ratio << "x" << std::endl;
+    std::cout << "  schoolbook: " << sb_ms << " ms/call" << "  subquadratic: " << subq_ms
+              << " ms/call" << "  ratio (sb/subq): " << ratio << "x" << std::endl;
     std::cout << "  PASS (informational only — Newton wins asymptotically;"
-              << " at deg=500 with schoolbook M(n) the ratio may be < 1)"
-              << std::endl;
+              << " at deg=500 with schoolbook M(n) the ratio may be < 1)" << std::endl;
 
     gnfs_unsetenv("GNFS_POLY_DIVREM_SUBQUADRATIC");
     divrem_subquadratic_reset_env_cache_for_testing();
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     std::cout << "=== test_divrem_subquadratic ===" << std::endl;
-    std::cout << "threshold = " << kDivremSubquadraticThreshold
-              << " coefficients" << std::endl;
+    std::cout << "threshold = " << kDivremSubquadraticThreshold << " coefficients" << std::endl;
     std::cout << std::endl;
 
     // 4 ENV parsing tests.
