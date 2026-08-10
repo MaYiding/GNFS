@@ -246,7 +246,7 @@ jobs:
           throw "vcpkg runtime directory is missing: $vcpkgBin"
         }
         $env:PATH = "$vcpkgBin;$env:PATH"
-        ctest --output-on-failure `
+        ctest --verbose --output-on-failure `
           --tests-regex '^BWKrylovMmapIntegration$' `
           --parallel 1 `
           --timeout 60 `

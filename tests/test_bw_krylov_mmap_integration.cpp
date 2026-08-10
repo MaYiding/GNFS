@@ -1,9 +1,9 @@
 // End-to-end contract for BlockWiedemann's KrylovSequenceMmap route.
 //
 // The fixture is large enough to select the block solver. It verifies that
-// GNFS_BW_KRYLOV_MMAP changes only the sequence storage medium: both routes
-// must return the same valid left-null-space dependencies, while the captured
-// trace proves that the mmap-enabled run did not fall back to the scalar path.
+// GNFS_BW_KRYLOV_MMAP and GNFS_BW_KRYLOV_COMPRESS change only the sequence
+// storage medium: memory, mmap, and mmap+zip must return the same valid
+// left-null-space dependencies, while the captured trace proves the route.
 
 #include <gnfs/linalg/block_wiedemann.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
@@ -39,6 +39,8 @@ struct SolveResult {
     Dependencies dependencies;
     std::string stderr_output;
 };
+
+enum class StorageMode : std::uint8_t { memory, mmap, mmap_zip };
 
 bool verify_dependency(const SparseMatrix& matrix, const std::vector<bool>& dependency) {
     const std::size_t rows = matrix.num_rows();
@@ -82,9 +84,12 @@ SparseMatrix build_large_matrix(std::size_t rows, std::size_t columns, std::size
     return matrix;
 }
 
-SolveResult run_solver(const SparseMatrix& matrix, std::size_t max_dependencies, bool use_mmap) {
+SolveResult run_solver(const SparseMatrix& matrix, std::size_t max_dependencies, StorageMode mode) {
+    const bool use_mmap = mode != StorageMode::memory;
+    const bool use_compression = mode == StorageMode::mmap_zip;
     ScopedEnvironmentVariable mmap("GNFS_BW_KRYLOV_MMAP", use_mmap ? "1" : nullptr);
-    ScopedEnvironmentVariable compression("GNFS_BW_KRYLOV_COMPRESS", nullptr);
+    ScopedEnvironmentVariable compression("GNFS_BW_KRYLOV_COMPRESS",
+                                          use_compression ? "1" : nullptr);
     ScopedEnvironmentVariable streams("GNFS_BW_KRYLOV_STREAMS", "1");
     ScopedEnvironmentVariable algorithm("GNFS_BW_ALGORITHM", nullptr);
 
@@ -103,18 +108,29 @@ void print_trace(std::string_view label, const std::string& trace) {
     }
 }
 
-void require_block_route(const SolveResult& result, bool use_mmap) {
+void require_block_route(const SolveResult& result, StorageMode mode) {
     const std::string_view trace(result.stderr_output);
     GNFS_TEST_CHECK(trace.find("[BW-block] Block Wiedemann") != std::string_view::npos);
     GNFS_TEST_CHECK(trace.find("falling back to scalar") == std::string_view::npos);
     GNFS_TEST_CHECK(trace.find("[BW-scalar]") == std::string_view::npos);
     GNFS_TEST_CHECK(trace.find("[krylov_mmap]") == std::string_view::npos);
 
-    if (use_mmap) {
+    if (mode == StorageMode::mmap) {
         GNFS_TEST_CHECK(trace.find("Phase 1: Krylov (L=190, mmap)") != std::string_view::npos);
         GNFS_TEST_CHECK(trace.find("mmap+zip") == std::string_view::npos);
+        GNFS_TEST_CHECK(trace.find("[bw_krylov_compress]") == std::string_view::npos);
+    } else if (mode == StorageMode::mmap_zip) {
+        GNFS_TEST_CHECK(trace.find("Phase 1: Krylov (L=190, mmap+zip)") != std::string_view::npos);
+        GNFS_TEST_CHECK(trace.find("[bw_krylov_compress] orig=") != std::string_view::npos);
+        GNFS_TEST_CHECK(trace.find(" compressed=") != std::string_view::npos);
+        GNFS_TEST_CHECK(trace.find(" ratio=") != std::string_view::npos);
+        GNFS_TEST_CHECK(trace.find("[bw_krylov_compress] copied_entries=190 cleanup=removed") !=
+                        std::string_view::npos);
+        GNFS_TEST_CHECK(trace.find("falling back to uncompressed mmap") == std::string_view::npos);
+        GNFS_TEST_CHECK(trace.find("WARN:") == std::string_view::npos);
     } else {
         GNFS_TEST_CHECK(trace.find(", mmap") == std::string_view::npos);
+        GNFS_TEST_CHECK(trace.find("[bw_krylov_compress]") == std::string_view::npos);
     }
 }
 
@@ -129,42 +145,25 @@ void require_dependencies(const SparseMatrix& matrix, const SolveResult& result,
     }
 }
 
-void test_block_solve_mmap_off() {
-    std::cout << "Testing block_solve with mmap OFF (baseline)...\n";
-    SparseMatrix matrix = build_large_matrix(kBaseRows, kColumns, kInjectedDependencies, 11111);
-    const auto result = run_solver(matrix, 10, false);
-
-    print_trace("mmap OFF", result.stderr_output);
-    require_block_route(result, false);
-    require_dependencies(matrix, result, 10);
-    std::cout << "  mmap OFF: 10/10 dependencies valid\n";
-}
-
-void test_block_solve_mmap_on() {
-    std::cout << "Testing block_solve with mmap ON...\n";
-    SparseMatrix matrix = build_large_matrix(kBaseRows, kColumns, kInjectedDependencies, 11111);
-    const auto result = run_solver(matrix, 10, true);
-
-    print_trace("mmap ON", result.stderr_output);
-    require_block_route(result, true);
-    require_dependencies(matrix, result, 10);
-    std::cout << "  mmap ON: 10/10 dependencies valid\n";
-}
-
-void test_block_solve_mmap_correctness_invariant() {
-    std::cout << "Testing mmap ON vs OFF bit-for-bit invariant...\n";
+void test_storage_modes_are_bit_for_bit_identical() {
+    std::cout << "Testing memory, mmap, and mmap+zip bit-for-bit invariant...\n";
     SparseMatrix matrix = build_large_matrix(kBaseRows, kColumns, kInjectedDependencies, 22222);
-    const auto result_off = run_solver(matrix, 5, false);
-    const auto result_on = run_solver(matrix, 5, true);
+    const auto memory = run_solver(matrix, 5, StorageMode::memory);
+    const auto mmap = run_solver(matrix, 5, StorageMode::mmap);
+    const auto mmap_zip = run_solver(matrix, 5, StorageMode::mmap_zip);
 
-    print_trace("invariant OFF", result_off.stderr_output);
-    print_trace("invariant ON", result_on.stderr_output);
-    require_block_route(result_off, false);
-    require_block_route(result_on, true);
-    require_dependencies(matrix, result_off, 5);
-    require_dependencies(matrix, result_on, 5);
-    GNFS_TEST_CHECK(result_off.dependencies == result_on.dependencies);
-    std::cout << "  ON/OFF: 5/5 identical valid dependencies\n";
+    print_trace("memory", memory.stderr_output);
+    print_trace("mmap", mmap.stderr_output);
+    print_trace("mmap+zip", mmap_zip.stderr_output);
+    require_block_route(memory, StorageMode::memory);
+    require_block_route(mmap, StorageMode::mmap);
+    require_block_route(mmap_zip, StorageMode::mmap_zip);
+    require_dependencies(matrix, memory, 5);
+    require_dependencies(matrix, mmap, 5);
+    require_dependencies(matrix, mmap_zip, 5);
+    GNFS_TEST_CHECK(memory.dependencies == mmap.dependencies);
+    GNFS_TEST_CHECK(memory.dependencies == mmap_zip.dependencies);
+    std::cout << "  memory/mmap/mmap+zip: 5/5 identical valid dependencies\n";
 }
 
 } // namespace
@@ -173,9 +172,7 @@ int main() {
     try {
         std::cout << "===== BW Krylov mmap Integration Tests =====\n";
 
-        test_block_solve_mmap_off();
-        test_block_solve_mmap_on();
-        test_block_solve_mmap_correctness_invariant();
+        test_storage_modes_are_bit_for_bit_identical();
 
         std::cout << "===== All BW Krylov mmap integration tests PASSED =====\n";
         return 0;

@@ -502,6 +502,7 @@ GNFS/
 | `GNFS_OOC_BASE_PATH` | `<path>` | 覆盖 OOC 文件路径前缀 |
 | `GNFS_SIEVE_RESUME` | `<base_path>` | 筛 mid-flight 检查点 + OOC 续写，支持 hours 级 sieve 崩溃恢复 |
 | `GNFS_BW_KRYLOV_MMAP` | `1` | BW Phase 1 Krylov 序列 mmap，60 d n=1 M 节省 ~144 MB |
+| `GNFS_BW_KRYLOV_COMPRESS` | `1`（需同时启用 mmap） | Krylov scratch 分块压缩；Win32/POSIX 输出与内存路径逐位一致 |
 | `GNFS_NO_THIN_SOLVE` | `1` | 关闭 thin matrix BW solve（恢复 NO_EXCESS abort 旧行为） |
 
 **性能与算法实验**
