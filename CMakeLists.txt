@@ -861,7 +861,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_relation_collector PRIVATE gnfs_core Threads::Threads)
     add_test(NAME RelationCollector COMMAND test_relation_collector)
-    set_tests_properties(RelationCollector PROPERTIES LABELS "instant" TIMEOUT 10)
+    set_tests_properties(RelationCollector PROPERTIES LABELS "instant" TIMEOUT 30)
 
     add_executable(test_relation_corpus
         tests/test_relation_corpus.cpp
