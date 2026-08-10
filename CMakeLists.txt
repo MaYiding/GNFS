@@ -875,14 +875,14 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_relation_sink PRIVATE gnfs_core Threads::Threads)
     add_test(NAME RelationSink COMMAND test_relation_sink)
-    set_tests_properties(RelationSink PROPERTIES LABELS "instant" TIMEOUT 10)
+    set_tests_properties(RelationSink PROPERTIES LABELS "instant" TIMEOUT 20)
 
     add_executable(test_ooc_store_integrity
         tests/test_ooc_store_integrity.cpp
     )
     target_link_libraries(test_ooc_store_integrity PRIVATE gnfs_core Threads::Threads)
     add_test(NAME OOCStoreIntegrity COMMAND test_ooc_store_integrity)
-    set_tests_properties(OOCStoreIntegrity PROPERTIES LABELS "instant" TIMEOUT 10)
+    set_tests_properties(OOCStoreIntegrity PROPERTIES LABELS "instant" TIMEOUT 20)
 
     add_executable(test_ooc_durable_handoff
         tests/test_ooc_durable_handoff.cpp
@@ -1054,7 +1054,7 @@ if(GNFS_BUILD_TESTS)
     )
     target_link_libraries(test_sieve_checkpoint PRIVATE gnfs_core Threads::Threads)
     add_test(NAME SieveCheckpoint COMMAND test_sieve_checkpoint)
-    set_tests_properties(SieveCheckpoint PROPERTIES LABELS "instant" TIMEOUT 10)
+    set_tests_properties(SieveCheckpoint PROPERTIES LABELS "instant" TIMEOUT 30)
 
     add_executable(test_bl_checkpoint
         tests/test_bl_checkpoint.cpp

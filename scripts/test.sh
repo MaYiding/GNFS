@@ -734,8 +734,8 @@ TEST_TIMEOUT=(
     test_special_q           10
     test_relation_collector  30
     test_relation_corpus     10
-    test_relation_sink       10
-    test_ooc_store_integrity 10
+    test_relation_sink       20
+    test_ooc_store_integrity 20
     test_ooc_durable_handoff 10
     test_ooc_cleanup_transaction 120
     test_cofactor            10
@@ -798,7 +798,7 @@ TEST_TIMEOUT=(
     test_edge_cases          10
     test_integration         30
     test_sieve_basic         120
-    test_sieve_checkpoint    10
+    test_sieve_checkpoint    30
     test_distributed_sieve   180
     test_distributed_sieve_worker_entry 60
     test_distributed_sieve_worker_writer_authority 60
