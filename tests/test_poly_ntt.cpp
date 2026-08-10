@@ -428,8 +428,7 @@ void perf_info_deg_2000() {
     double ntt_ms = std::chrono::duration<double, std::milli>(t3 - t2).count() / iters;
     double ratio = (ntt_ms > 0.0) ? (sb_ms / ntt_ms) : 0.0;
 
-    std::cout << "  schoolbook: " << sb_ms << " ms/call"
-              << "  ntt: " << ntt_ms << " ms/call"
+    std::cout << "  schoolbook: " << sb_ms << " ms/call" << "  ntt: " << ntt_ms << " ms/call"
               << "  ratio (sb/ntt): " << ratio << "x" << std::endl;
     std::cout << "  PASS (informational only — NTT wins asymptotically; "
               << "ratio > 1 favors NTT at this size)" << std::endl;

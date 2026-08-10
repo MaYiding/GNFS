@@ -548,8 +548,8 @@ void perf_info_deg_200() {
 int main() {
     std::cout << "=== test_poly_square ===" << std::endl;
     std::cout << "default Karatsuba squaring threshold = 32 (matches W9 mul)" << std::endl;
-    std::cout << "golden reference: W9 karatsuba_mul_mod(a, a, p, out) "
-              << "(trimmed canonical)" << std::endl;
+    std::cout << "golden reference: W9 karatsuba_mul_mod(a, a, p, out) " << "(trimmed canonical)"
+              << std::endl;
     std::cout << std::endl;
 
     // 4 ENV_OPT parsing tests.

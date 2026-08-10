@@ -470,9 +470,8 @@ void perf_info_deg_500() {
     double subq_ms = std::chrono::duration<double, std::milli>(t3 - t2).count() / iters;
     double ratio = (subq_ms > 0.0) ? (sb_ms / subq_ms) : 0.0;
 
-    std::cout << "  schoolbook: " << sb_ms << " ms/call"
-              << "  subquadratic: " << subq_ms << " ms/call"
-              << "  ratio (sb/subq): " << ratio << "x" << std::endl;
+    std::cout << "  schoolbook: " << sb_ms << " ms/call" << "  subquadratic: " << subq_ms
+              << " ms/call" << "  ratio (sb/subq): " << ratio << "x" << std::endl;
     std::cout << "  PASS (informational only — Newton wins asymptotically;"
               << " at deg=500 with schoolbook M(n) the ratio may be < 1)" << std::endl;
 

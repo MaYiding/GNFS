@@ -297,8 +297,7 @@ void perf_info_large() {
     double kt_ms = std::chrono::duration<double, std::milli>(t2 - t1).count() / iters;
     double ratio = (kt_ms > 0.0) ? (sb_ms / kt_ms) : 0.0;
 
-    std::cout << "  schoolbook: " << sb_ms << " ms/call"
-              << "  karatsuba: " << kt_ms << " ms/call"
+    std::cout << "  schoolbook: " << sb_ms << " ms/call" << "  karatsuba: " << kt_ms << " ms/call"
               << "  ratio (sb/kt): " << ratio << "x" << std::endl;
     std::cout << "  PASS (informational only — Karatsuba wins for larger n)" << std::endl;
 }

@@ -411,8 +411,7 @@ void perf_info_medium() {
     double hg_ms = std::chrono::duration<double, std::milli>(t2 - t1).count() / iters;
     double speedup = (hg_ms > 0.0) ? (eu_ms / hg_ms) : 0.0;
 
-    std::cout << "  Euclidean: " << eu_ms << " ms/call"
-              << "  HGCD: " << hg_ms << " ms/call"
+    std::cout << "  Euclidean: " << eu_ms << " ms/call" << "  HGCD: " << hg_ms << " ms/call"
               << "  ratio (eu/hg): " << speedup << "x" << std::endl;
     std::cout << "  PASS (informational only)" << std::endl;
 }
@@ -443,8 +442,7 @@ void perf_info_large() {
     double hg_ms = std::chrono::duration<double, std::milli>(t2 - t1).count() / iters;
     double speedup = (hg_ms > 0.0) ? (eu_ms / hg_ms) : 0.0;
 
-    std::cout << "  Euclidean: " << eu_ms << " ms/call"
-              << "  HGCD: " << hg_ms << " ms/call"
+    std::cout << "  Euclidean: " << eu_ms << " ms/call" << "  HGCD: " << hg_ms << " ms/call"
               << "  ratio (eu/hg): " << speedup << "x" << std::endl;
     std::cout << "  Note: HGCD ROI requires sub-quadratic M(n); schoolbook"
               << " multiplication keeps Euclidean ahead at these sizes." << std::endl;
