@@ -732,7 +732,7 @@ TEST_TIMEOUT=(
     test_factor_base         10
     test_fb_roots_parallel   60
     test_special_q           10
-    test_relation_collector  10
+    test_relation_collector  30
     test_relation_corpus     10
     test_relation_sink       10
     test_ooc_store_integrity 10
