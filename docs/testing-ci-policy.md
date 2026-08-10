@@ -82,6 +82,9 @@ on POSIX; it is not a pathname-identity or durable-publication contract.
 The `ThreadPool` instant contract keeps task results, completion barriers,
 exception propagation, and bounded concurrent-submit stress checks active in
 Release builds.
+The `SmallVector` instant contract keeps inline and heap transitions,
+move-construction source reset, iteration, emplacement, clear, and resize
+checks active in Release builds.
 
 Do not remove `NDEBUG` globally. Fresh-process probes and performance campaigns
 deliberately exercise the optimized Release contract. Migrate legacy unit tests
