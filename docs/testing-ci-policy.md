@@ -586,6 +586,13 @@ digests before invoking the identity decoder, so integrity-unbound counts
 cannot trigger destination allocation. Sink coverage includes partial
 short-write prefixes at the header, body, and trailer boundaries.
 
+`test_distributed_sieve_worker_cleanup_codec` is an `instant`, cross-platform,
+authority-free worker-cleanup protocol contract. It seals and round-trips the
+handoff projection, retained authorization, relation binding, and completion
+record, then rejects source, identity, path, snapshot, and absence-evidence
+drift. Windows runs the same matrix with its native absolute-path value; the
+suite performs no filesystem I/O and does not claim cleanup authority.
+
 On macOS and Linux, `test_distributed_sieve_worker_work_package_file` is the
 `instant` anonymous
 work-package capability contract. The injected operation matrix covers the
