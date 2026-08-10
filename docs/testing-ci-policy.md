@@ -65,6 +65,10 @@ contracts use Release-active checks for exact round trips, corrupt-input
 rejection, deterministic size bounds, chunk navigation, and completion-state
 handling. The storage test retains an explicit Windows unsupported stub until
 the native backend lands; that stub is not Windows storage coverage.
+The `NativeRandomAccessFile` instant contract exercises exact positioned I/O,
+range rejection, high-offset reads, Unicode paths, and move-only ownership. It
+runs the Win32 overlapped path in the required Windows row and `pread`/`pwrite`
+on POSIX; it is not a pathname-identity or durable-publication contract.
 
 Do not remove `NDEBUG` globally. Fresh-process probes and performance campaigns
 deliberately exercise the optimized Release contract. Migrate legacy unit tests
