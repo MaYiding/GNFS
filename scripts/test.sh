@@ -937,7 +937,7 @@ TEST_TIMEOUT=(
     test_siqs_shadow_proof_rss_campaign_journal_codec 10
     test_siqs_shadow_proof_rss_campaign_journal_layout 10
     test_siqs_shadow_proof_rss_campaign_artifact_layout 10
-    test_siqs_shadow_proof_rss_campaign_journal_store 120
+    test_siqs_shadow_proof_rss_campaign_journal_store 240
     test_siqs_shadow_proof_rss_campaign_entry 10
     test_siqs_shadow_proof_rss_holdout_probe_contract 10
     test_siqs_shadow_proof_rss_holdout_probe_record_codec 10

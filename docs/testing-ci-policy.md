@@ -111,7 +111,11 @@ The PR CI intentionally has three layers:
    - Copies the checkout into a root-owned, mode-0700, container-native `/gnfs-src` test workspace because the journal-store test deliberately requires a trusted writable working directory.
    - Keeps the build directory and `TMPDIR` in the container-native `/tmp`; the host checkout remains read-only.
    - Configures `GNFS_BUILD_TESTS=ON`, `GNFS_BUILD_FUZZERS=OFF`, and `GNFS_ENABLE_NATIVE_ARCH=OFF`, then builds only the bounded-child and SIQS campaign-journal-store targets.
-   - Runs `BoundedChildProcess` and `SiqsShadowProofRssCampaignJournalStore` with a 120-second CTest timeout.
+   - Uses a 240-second CTest default for the targeted invocation. The explicit
+     CMake timeouts remain 30 seconds for `BoundedChildProcess` and 240 seconds
+     for `SiqsShadowProofRssCampaignJournalStore`. This outer watchdog covers
+     its 80-child durable-publication campaign without changing child deadlines
+     or the `fast` tier.
    - Proves that the ordinary POSIX path transport builds and runs on musl, while production campaign admission rejects the unavailable authenticated profile without creating the journal lock, header, artifact entries, or launch marker.
 
 ASan/UBSan and coverage run only `instant` tests. They already multiply test cost through instrumentation, and they should not duplicate the Release deep gate. TSan uses the narrower lane below because its purpose is to exercise explicit concurrency boundaries, not to repeat every isolated helper.

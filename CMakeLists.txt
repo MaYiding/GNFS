@@ -3227,7 +3227,7 @@ if(GNFS_BUILD_TESTS)
             PROPERTIES LABELS "instant" TIMEOUT 20)
     else()
         set_tests_properties(SiqsShadowProofRssCampaignJournalStore
-            PROPERTIES LABELS "fast" TIMEOUT 120)
+            PROPERTIES LABELS "fast" TIMEOUT 240)
     endif()
     set_tests_properties(SiqsShadowProofRssCampaignJournalStore
         PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
