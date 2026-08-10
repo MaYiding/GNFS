@@ -10,8 +10,8 @@
 
 #include "gnfs/polynomial/half_gcd.hpp"
 #include "gnfs/sqrt/modular_poly.hpp"
+#include "support/test_check.hpp"
 
-#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -19,6 +19,7 @@
 #include <iostream>
 #include <random>
 #include <string>
+#include <utility>
 #include <vector>
 
 using gnfs::polynomial::gcd_via_hgcd;
@@ -30,7 +31,7 @@ using gnfs::sqrt::ModularPoly;
 namespace {
 
 constexpr uint64_t kSmallPrime = 1000003;
-constexpr uint64_t kLargePrime = 18446744073709551557ULL;  // largest 64-bit prime
+constexpr uint64_t kLargePrime = 18446744073709551557ULL; // largest 64-bit prime
 
 /// Build a random polynomial of exact degree `deg` mod p, leading coeff = 1.
 ModularPoly random_poly(std::mt19937_64& rng, size_t deg, uint64_t p) {
@@ -38,41 +39,45 @@ ModularPoly random_poly(std::mt19937_64& rng, size_t deg, uint64_t p) {
     for (size_t i = 0; i < deg; ++i) {
         coeffs[i] = rng() % p;
     }
-    coeffs[deg] = 1;  // monic (force nonzero leading coeff)
+    coeffs[deg] = 1; // monic (force nonzero leading coeff)
     return ModularPoly(std::move(coeffs));
 }
 
 /// Compare two polynomials for bit-for-bit equality.
 bool polys_equal(const ModularPoly& a, const ModularPoly& b) {
-    if (a.degree() != b.degree()) return false;
-    if (a.is_zero() != b.is_zero()) return false;
-    if (a.is_zero()) return true;
+    if (a.degree() != b.degree())
+        return false;
+    if (a.is_zero() != b.is_zero())
+        return false;
+    if (a.is_zero())
+        return true;
     for (size_t i = 0; i <= static_cast<size_t>(a.degree()); ++i) {
-        if (a.coeff(i) != b.coeff(i)) return false;
+        if (a.coeff(i) != b.coeff(i))
+            return false;
     }
     return true;
 }
 
 std::string poly_to_string(const ModularPoly& p) {
-    if (p.is_zero()) return "0";
+    if (p.is_zero())
+        return "0";
     std::string s = "[";
     for (size_t i = 0; i <= static_cast<size_t>(p.degree()); ++i) {
-        if (i > 0) s += ", ";
+        if (i > 0)
+            s += ", ";
         s += std::to_string(p.coeff(i));
     }
     s += "]";
     return s;
 }
 
-void expect_equal(const ModularPoly& euclidean, const ModularPoly& hgcd,
-                  const std::string& tag) {
+void expect_equal(const ModularPoly& euclidean, const ModularPoly& hgcd, const std::string& tag) {
     if (!polys_equal(euclidean, hgcd)) {
         std::cerr << "  FAIL [" << tag << "]\n";
-        std::cerr << "    Euclidean: deg=" << euclidean.degree()
-                  << " " << poly_to_string(euclidean) << "\n";
-        std::cerr << "    HGCD     : deg=" << hgcd.degree()
-                  << " " << poly_to_string(hgcd) << "\n";
-        assert(false && "HGCD output must match Euclidean bit-for-bit");
+        std::cerr << "    Euclidean: deg=" << euclidean.degree() << " " << poly_to_string(euclidean)
+                  << "\n";
+        std::cerr << "    HGCD     : deg=" << hgcd.degree() << " " << poly_to_string(hgcd) << "\n";
+        GNFS_TEST_CHECK(false && "HGCD output must match Euclidean bit-for-bit");
     }
 }
 
@@ -80,7 +85,7 @@ void expect_equal(const ModularPoly& euclidean, const ModularPoly& hgcd,
 
 void test_correctness_small() {
     std::cout << "test_correctness_small (deg [10, 30])..." << std::endl;
-    std::mt19937_64 rng(0xDEADBEEF12345678ULL);  // deterministic seed
+    std::mt19937_64 rng(0xDEADBEEF12345678ULL); // deterministic seed
 
     for (size_t deg : std::initializer_list<size_t>{10, 12, 16, 20, 25, 30}) {
         for (int trial = 0; trial < 3; ++trial) {
@@ -148,10 +153,10 @@ void test_correctness_with_common_factor() {
             ModularPoly hg = gcd_via_hgcd(a, b, kSmallPrime);
 
             expect_equal(eu, hg,
-                "common=" + std::to_string(common_deg)
-                + "_extra=" + std::to_string(extra_deg));
+                         "common=" + std::to_string(common_deg) +
+                             "_extra=" + std::to_string(extra_deg));
             // GCD degree must be at least common_deg.
-            assert(static_cast<size_t>(eu.degree()) >= common_deg);
+            GNFS_TEST_CHECK(static_cast<size_t>(eu.degree()) >= common_deg);
         }
     }
     std::cout << "  PASS" << std::endl;
@@ -227,9 +232,8 @@ void test_correctness_random_extensive() {
         ModularPoly hg = gcd_via_hgcd(a, b, kSmallPrime);
 
         expect_equal(eu, hg,
-            "extensive trial=" + std::to_string(trial)
-            + " da=" + std::to_string(da)
-            + " db=" + std::to_string(db));
+                     "extensive trial=" + std::to_string(trial) + " da=" + std::to_string(da) +
+                         " db=" + std::to_string(db));
     }
     std::cout << "  PASS" << std::endl;
 }
@@ -257,7 +261,7 @@ void test_edge_zero_polynomial() {
     auto eu3 = ModularPoly::gcd(zero, zero, kSmallPrime);
     auto hg3 = gcd_via_hgcd(zero, zero, kSmallPrime);
     expect_equal(eu3, hg3, "gcd(0, 0)");
-    assert(hg3.is_zero());
+    GNFS_TEST_CHECK(hg3.is_zero());
 
     std::cout << "  PASS" << std::endl;
 }
@@ -274,8 +278,8 @@ void test_edge_constant_polynomial() {
     auto eu1 = ModularPoly::gcd(a, one, kSmallPrime);
     auto hg1 = gcd_via_hgcd(a, one, kSmallPrime);
     expect_equal(eu1, hg1, "gcd(a, 1)");
-    assert(hg1.degree() == 0);
-    assert(hg1.coeff(0) == 1);
+    GNFS_TEST_CHECK(hg1.degree() == 0);
+    GNFS_TEST_CHECK(hg1.coeff(0) == 1);
 
     // gcd(a, 7) — both make it monic = 1
     auto eu2 = ModularPoly::gcd(a, seven, kSmallPrime);
@@ -304,10 +308,11 @@ void test_edge_coprime_polynomials() {
         ModularPoly hg = gcd_via_hgcd(a, b, kSmallPrime);
 
         expect_equal(eu, hg, "coprime_trial=" + std::to_string(trial));
-        if (eu.degree() == 0) ++coprime_count;
+        if (eu.degree() == 0)
+            ++coprime_count;
     }
     // At least some trials should produce coprime results.
-    assert(coprime_count >= 5);
+    GNFS_TEST_CHECK(coprime_count >= 5);
     std::cout << "  PASS (" << coprime_count << "/10 coprime)" << std::endl;
 }
 
@@ -325,10 +330,10 @@ void test_edge_perfect_division() {
             ModularPoly eu = ModularPoly::gcd(a, b, kSmallPrime);
             ModularPoly hg = gcd_via_hgcd(a, b, kSmallPrime);
 
-            expect_equal(eu, hg, "perfect_div_b=" + std::to_string(b_deg)
-                + "_q=" + std::to_string(q_deg));
+            expect_equal(eu, hg,
+                         "perfect_div_b=" + std::to_string(b_deg) + "_q=" + std::to_string(q_deg));
             // GCD == b (both monic).
-            assert(eu.degree() == static_cast<int>(b_deg));
+            GNFS_TEST_CHECK(eu.degree() == static_cast<int>(b_deg));
         }
     }
     std::cout << "  PASS" << std::endl;
@@ -349,13 +354,13 @@ void test_env_default_off() {
     bool first = poly_hgcd_enabled();
     bool second = poly_hgcd_enabled();
     bool third = poly_hgcd_enabled();
-    assert(first == second);
-    assert(second == third);
+    GNFS_TEST_CHECK(first == second);
+    GNFS_TEST_CHECK(second == third);
 
     // Independent check: read ENV directly to confirm cache matches reality.
     const char* env = std::getenv("GNFS_POLY_HGCD");
     bool expected = (env != nullptr && std::string(env) == "1");
-    assert(first == expected);
+    GNFS_TEST_CHECK(first == expected);
 
     std::cout << "  PASS (cached value = " << (first ? "true" : "false")
               << ", ENV=" << (env ? env : "<unset>") << ")" << std::endl;
@@ -366,14 +371,14 @@ void test_should_use_hgcd_dispatch() {
     bool enabled = poly_hgcd_enabled();
 
     // Below threshold: should never dispatch.
-    assert(!should_use_hgcd(0));
-    assert(!should_use_hgcd(1));
-    assert(!should_use_hgcd(kHGCDThreshold - 1));
+    GNFS_TEST_CHECK(!should_use_hgcd(0));
+    GNFS_TEST_CHECK(!should_use_hgcd(1));
+    GNFS_TEST_CHECK(!should_use_hgcd(kHGCDThreshold - 1));
 
     // At/above threshold: dispatch == enabled.
-    assert(should_use_hgcd(kHGCDThreshold) == enabled);
-    assert(should_use_hgcd(kHGCDThreshold + 10) == enabled);
-    assert(should_use_hgcd(1000) == enabled);
+    GNFS_TEST_CHECK(should_use_hgcd(kHGCDThreshold) == enabled);
+    GNFS_TEST_CHECK(should_use_hgcd(kHGCDThreshold + 10) == enabled);
+    GNFS_TEST_CHECK(should_use_hgcd(1000) == enabled);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -446,7 +451,7 @@ void perf_info_large() {
     std::cout << "  PASS (informational only)" << std::endl;
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     std::cout << "=== test_half_gcd ===" << std::endl;

@@ -20,8 +20,9 @@
 //   sweeps within a single test binary.
 
 #include "gnfs/polynomial/ntt_mul.hpp"
+#include "support/test_check.hpp"
 
-#include <cassert>
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -32,13 +33,13 @@
 #include <vector>
 
 #if defined(_WIN32)
-  #include <stdlib.h>
-  #define gnfs_setenv(name, value) _putenv_s((name), (value))
-  #define gnfs_unsetenv(name)      _putenv_s((name), "")
+#include <stdlib.h>
+#define gnfs_setenv(name, value) _putenv_s((name), (value))
+#define gnfs_unsetenv(name) _putenv_s((name), "")
 #else
-  #include <stdlib.h>
-  #define gnfs_setenv(name, value) ::setenv((name), (value), 1)
-  #define gnfs_unsetenv(name)      ::unsetenv((name))
+#include <stdlib.h>
+#define gnfs_setenv(name, value) ::setenv((name), (value), 1)
+#define gnfs_unsetenv(name) ::unsetenv((name))
 #endif
 
 using gnfs::polynomial::kNttAutoThreshold;
@@ -64,8 +65,7 @@ constexpr uint64_t kSmallPrime = 1009ULL;
 
 // ---------- helpers ----------
 
-std::vector<uint64_t> random_poly(std::mt19937_64& rng, size_t size,
-                                  uint64_t p) {
+std::vector<uint64_t> random_poly(std::mt19937_64& rng, size_t size, uint64_t p) {
     std::vector<uint64_t> v(size);
     for (size_t i = 0; i < size; ++i) {
         v[i] = rng() % p;
@@ -77,38 +77,38 @@ std::vector<uint64_t> random_poly(std::mt19937_64& rng, size_t size,
     return v;
 }
 
-bool vectors_equal(const std::vector<uint64_t>& a,
-                   const std::vector<uint64_t>& b) {
-    if (a.size() != b.size()) return false;
+bool vectors_equal(const std::vector<uint64_t>& a, const std::vector<uint64_t>& b) {
+    if (a.size() != b.size())
+        return false;
     for (size_t i = 0; i < a.size(); ++i) {
-        if (a[i] != b[i]) return false;
+        if (a[i] != b[i])
+            return false;
     }
     return true;
 }
 
-std::string vec_to_string(const std::vector<uint64_t>& v,
-                          size_t max_show = 8) {
+std::string vec_to_string(const std::vector<uint64_t>& v, size_t max_show = 8) {
     std::string s = "[";
     const size_t n = std::min(v.size(), max_show);
     for (size_t i = 0; i < n; ++i) {
-        if (i > 0) s += ", ";
+        if (i > 0)
+            s += ", ";
         s += std::to_string(v[i]);
     }
-    if (n < v.size()) s += ", ...";
+    if (n < v.size())
+        s += ", ...";
     s += "]";
     return s;
 }
 
-void expect_equal(const std::vector<uint64_t>& expected,
-                  const std::vector<uint64_t>& actual,
+void expect_equal(const std::vector<uint64_t>& expected, const std::vector<uint64_t>& actual,
                   const std::string& tag) {
     if (!vectors_equal(expected, actual)) {
         std::cerr << "  FAIL [" << tag << "]\n";
-        std::cerr << "    expected size=" << expected.size()
-                  << " " << vec_to_string(expected) << "\n";
-        std::cerr << "    actual   size=" << actual.size()
-                  << " " << vec_to_string(actual) << "\n";
-        assert(false && "NTT output must match schoolbook bit-for-bit");
+        std::cerr << "    expected size=" << expected.size() << " " << vec_to_string(expected)
+                  << "\n";
+        std::cerr << "    actual   size=" << actual.size() << " " << vec_to_string(actual) << "\n";
+        GNFS_TEST_CHECK(false && "NTT output must match schoolbook bit-for-bit");
     }
 }
 
@@ -119,7 +119,7 @@ void test_env_unset_default_auto() {
     gnfs_unsetenv("GNFS_POLY_NTT");
     poly_ntt_reset_env_cache_for_testing();
     auto mode = poly_ntt_mode();
-    assert(mode == PolyNttMode::Auto);
+    GNFS_TEST_CHECK(mode == PolyNttMode::Auto);
     std::cout << "  PASS (mode=Auto)" << std::endl;
 }
 
@@ -130,10 +130,9 @@ void test_env_explicit_off() {
         poly_ntt_reset_env_cache_for_testing();
         auto mode = poly_ntt_mode();
         if (mode != PolyNttMode::ForceOff) {
-            std::cerr << "  FAIL: ENV=\"" << v << "\" gave mode="
-                      << static_cast<int>(mode)
+            std::cerr << "  FAIL: ENV=\"" << v << "\" gave mode=" << static_cast<int>(mode)
                       << ", expected ForceOff\n";
-            assert(false);
+            GNFS_TEST_CHECK(false);
         }
     }
     gnfs_unsetenv("GNFS_POLY_NTT");
@@ -148,10 +147,9 @@ void test_env_explicit_on() {
         poly_ntt_reset_env_cache_for_testing();
         auto mode = poly_ntt_mode();
         if (mode != PolyNttMode::ForceOn) {
-            std::cerr << "  FAIL: ENV=\"" << v << "\" gave mode="
-                      << static_cast<int>(mode)
+            std::cerr << "  FAIL: ENV=\"" << v << "\" gave mode=" << static_cast<int>(mode)
                       << ", expected ForceOn\n";
-            assert(false);
+            GNFS_TEST_CHECK(false);
         }
     }
     gnfs_unsetenv("GNFS_POLY_NTT");
@@ -162,31 +160,24 @@ void test_env_explicit_on() {
 void test_env_unrecognized_to_auto() {
     std::cout << "test_env_unrecognized_to_auto..." << std::endl;
     const char* unrecognized[] = {
-        "garbage",
-        "2",
-        "true",
-        "-1",
-        "yes",
-        "ON",      // case-sensitive: only lowercase "on" recognized
-        "OFF",
-        "Auto",
-        "  1",     // leading whitespace not stripped
+        "garbage", "2",    "true", "-1", "yes",
+        "ON", // case-sensitive: only lowercase "on" recognized
+        "OFF",     "Auto",
+        "  1", // leading whitespace not stripped
     };
     for (const char* v : unrecognized) {
         gnfs_setenv("GNFS_POLY_NTT", v);
         poly_ntt_reset_env_cache_for_testing();
         auto mode = poly_ntt_mode();
         if (mode != PolyNttMode::Auto) {
-            std::cerr << "  FAIL: ENV=\"" << v << "\" gave mode="
-                      << static_cast<int>(mode)
+            std::cerr << "  FAIL: ENV=\"" << v << "\" gave mode=" << static_cast<int>(mode)
                       << ", expected Auto\n";
-            assert(false);
+            GNFS_TEST_CHECK(false);
         }
     }
     gnfs_unsetenv("GNFS_POLY_NTT");
     poly_ntt_reset_env_cache_for_testing();
-    std::cout << "  PASS ("
-              << (sizeof(unrecognized) / sizeof(unrecognized[0]))
+    std::cout << "  PASS (" << (sizeof(unrecognized) / sizeof(unrecognized[0]))
               << " unrecognized values mapped to Auto)" << std::endl;
 }
 
@@ -202,24 +193,22 @@ void test_empty_inputs() {
 
     // both empty
     out = {99};
-    ntt_mul_mod(std::vector<uint64_t>{}, std::vector<uint64_t>{},
-                kPrime31, out);
-    assert(out.empty());
+    ntt_mul_mod(std::vector<uint64_t>{}, std::vector<uint64_t>{}, kPrime31, out);
+    GNFS_TEST_CHECK(out.empty());
 
     // a empty
     std::vector<uint64_t> b{1, 2, 3};
     out = {77};
     ntt_mul_mod(std::vector<uint64_t>{}, b, kPrime31, out);
-    assert(out.empty());
+    GNFS_TEST_CHECK(out.empty());
 
     // b empty
     std::vector<uint64_t> a{1, 2, 3};
     out = {55};
     ntt_mul_mod(a, std::vector<uint64_t>{}, kPrime31, out);
-    assert(out.empty());
+    GNFS_TEST_CHECK(out.empty());
 
-    std::cout << "  PASS (all three empty-input cases produced empty output)"
-              << std::endl;
+    std::cout << "  PASS (all three empty-input cases produced empty output)" << std::endl;
 }
 
 void test_size_1_inputs() {
@@ -236,8 +225,8 @@ void test_size_1_inputs() {
     poly_ntt_reset_env_cache_for_testing();
     std::vector<uint64_t> out_on;
     ntt_mul_mod(a, b, kSmallPrime, out_on);
-    assert(out_on.size() == 1);
-    assert(out_on[0] == (7 * 13) % kSmallPrime);
+    GNFS_TEST_CHECK(out_on.size() == 1);
+    GNFS_TEST_CHECK(out_on[0] == (7 * 13) % kSmallPrime);
 
     // ForceOff path identical.
     gnfs_setenv("GNFS_POLY_NTT", "0");
@@ -253,8 +242,7 @@ void test_size_1_inputs() {
 
     gnfs_unsetenv("GNFS_POLY_NTT");
     poly_ntt_reset_env_cache_for_testing();
-    std::cout << "  PASS (size-1 multiply correct under On / Off / schoolbook)"
-              << std::endl;
+    std::cout << "  PASS (size-1 multiply correct under On / Off / schoolbook)" << std::endl;
 }
 
 // ====================== Correctness (schoolbook parity) ======================
@@ -262,10 +250,8 @@ void test_size_1_inputs() {
 // Runs `ntt_mul_mod` (with ENV=ForceOn so NTT path actually runs even at
 // small sizes) and `schoolbook_mul_mod` on the same (a, b, p) and asserts
 // bit-for-bit identical output.
-void check_parity_force_on(const std::vector<uint64_t>& a,
-                           const std::vector<uint64_t>& b,
-                           uint64_t p,
-                           const std::string& tag) {
+void check_parity_force_on(const std::vector<uint64_t>& a, const std::vector<uint64_t>& b,
+                           uint64_t p, const std::string& tag) {
     gnfs_setenv("GNFS_POLY_NTT", "1");
     poly_ntt_reset_env_cache_for_testing();
     std::vector<uint64_t> out_ntt, out_school;
@@ -286,8 +272,7 @@ void test_parity_size_10() {
             auto a = random_poly(rng, 10, p);
             auto b = random_poly(rng, 10, p);
             check_parity_force_on(a, b, p,
-                "size10_p" + std::to_string(p) + "_t" +
-                std::to_string(trial));
+                                  "size10_p" + std::to_string(p) + "_t" + std::to_string(trial));
         }
     }
     std::cout << "  PASS (3 primes × 3 trials at size=10)" << std::endl;
@@ -301,15 +286,13 @@ void test_parity_size_100() {
             auto a = random_poly(rng, 100, p);
             auto b = random_poly(rng, 100, p);
             check_parity_force_on(a, b, p,
-                "size100_p" + std::to_string(p) + "_t" +
-                std::to_string(trial));
+                                  "size100_p" + std::to_string(p) + "_t" + std::to_string(trial));
         }
     }
     // Also exercise an asymmetric shape at size-100 scale.
     auto a_asym = random_poly(rng, 100, kPrime31);
     auto b_asym = random_poly(rng, 30, kPrime31);
-    check_parity_force_on(a_asym, b_asym, kPrime31,
-                          "size100x30_asym");
+    check_parity_force_on(a_asym, b_asym, kPrime31, "size100x30_asym");
     std::cout << "  PASS (3 primes × 2 trials + 1 asymmetric)" << std::endl;
 }
 
@@ -319,8 +302,7 @@ void test_parity_size_500() {
     for (uint64_t p : {kPrime31, kPrime30}) {
         auto a = random_poly(rng, 500, p);
         auto b = random_poly(rng, 500, p);
-        check_parity_force_on(a, b, p,
-            "size500_p" + std::to_string(p));
+        check_parity_force_on(a, b, p, "size500_p" + std::to_string(p));
     }
     std::cout << "  PASS (2 primes at size=500)" << std::endl;
 }
@@ -348,13 +330,13 @@ void test_force_off_vs_force_on() {
 
     gnfs_setenv("GNFS_POLY_NTT", "0");
     poly_ntt_reset_env_cache_for_testing();
-    assert(poly_ntt_mode() == PolyNttMode::ForceOff);
+    GNFS_TEST_CHECK(poly_ntt_mode() == PolyNttMode::ForceOff);
     std::vector<uint64_t> out_off;
     ntt_mul_mod(a, b, kPrime31, out_off);
 
     gnfs_setenv("GNFS_POLY_NTT", "1");
     poly_ntt_reset_env_cache_for_testing();
-    assert(poly_ntt_mode() == PolyNttMode::ForceOn);
+    GNFS_TEST_CHECK(poly_ntt_mode() == PolyNttMode::ForceOn);
     std::vector<uint64_t> out_on;
     ntt_mul_mod(a, b, kPrime31, out_on);
 
@@ -369,8 +351,7 @@ void test_force_off_vs_force_on() {
 
     gnfs_unsetenv("GNFS_POLY_NTT");
     poly_ntt_reset_env_cache_for_testing();
-    std::cout << "  PASS (ForceOff, ForceOn, schoolbook all agree at size=300)"
-              << std::endl;
+    std::cout << "  PASS (ForceOff, ForceOn, schoolbook all agree at size=300)" << std::endl;
 }
 
 // ====================== Auto threshold routing ======================
@@ -381,14 +362,12 @@ void test_auto_threshold_routing() {
     // or above takes NTT. Both paths must yield bit-identical output.
     gnfs_unsetenv("GNFS_POLY_NTT");
     poly_ntt_reset_env_cache_for_testing();
-    assert(poly_ntt_mode() == PolyNttMode::Auto);
+    GNFS_TEST_CHECK(poly_ntt_mode() == PolyNttMode::Auto);
 
     // Below threshold: routing returns false → schoolbook.
-    assert(!poly_ntt_enabled_for_size(kNttAutoThreshold - 1,
-                                      kNttAutoThreshold - 1));
+    GNFS_TEST_CHECK(!poly_ntt_enabled_for_size(kNttAutoThreshold - 1, kNttAutoThreshold - 1));
     // At threshold: routing returns true → NTT.
-    assert(poly_ntt_enabled_for_size(kNttAutoThreshold,
-                                     kNttAutoThreshold));
+    GNFS_TEST_CHECK(poly_ntt_enabled_for_size(kNttAutoThreshold, kNttAutoThreshold));
 
     // Verify mathematical agreement.
     std::mt19937_64 rng(0xA0A1A2A3B0B1B2B3ULL);
@@ -412,8 +391,7 @@ void test_auto_threshold_routing() {
         expect_equal(out_school, out_auto, "auto_at_threshold");
     }
     poly_ntt_reset_env_cache_for_testing();
-    std::cout << "  PASS (Auto routing dispatches by size; both paths agree)"
-              << std::endl;
+    std::cout << "  PASS (Auto routing dispatches by size; both paths agree)" << std::endl;
 }
 
 // ====================== Informational perf probe (not asserted) ======================
@@ -446,10 +424,8 @@ void perf_info_deg_2000() {
     }
     auto t3 = clk::now();
 
-    double sb_ms =
-        std::chrono::duration<double, std::milli>(t1 - t0).count() / iters;
-    double ntt_ms =
-        std::chrono::duration<double, std::milli>(t3 - t2).count() / iters;
+    double sb_ms = std::chrono::duration<double, std::milli>(t1 - t0).count() / iters;
+    double ntt_ms = std::chrono::duration<double, std::milli>(t3 - t2).count() / iters;
     double ratio = (ntt_ms > 0.0) ? (sb_ms / ntt_ms) : 0.0;
 
     std::cout << "  schoolbook: " << sb_ms << " ms/call"
@@ -462,14 +438,12 @@ void perf_info_deg_2000() {
     poly_ntt_reset_env_cache_for_testing();
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     std::cout << "=== test_poly_ntt ===" << std::endl;
-    std::cout << "kNttAutoThreshold = " << kNttAutoThreshold << " coefficients"
-              << std::endl;
-    std::cout << "primes: q1=998244353, q2=985661441, q3=754974721"
-              << std::endl;
+    std::cout << "kNttAutoThreshold = " << kNttAutoThreshold << " coefficients" << std::endl;
+    std::cout << "primes: q1=998244353, q2=985661441, q3=754974721" << std::endl;
     std::cout << std::endl;
 
     // 4 ENV parsing tests.
