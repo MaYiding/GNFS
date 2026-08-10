@@ -240,6 +240,7 @@ add_library(gnfs_util STATIC
     src/util/authenticated_bounded_child_process.cpp
     src/util/durable_immutable_file.cpp
     src/util/durable_immutable_record.cpp
+    src/util/native_random_access_file.cpp
     src/util/sha256.cpp
 )
 if(WIN32)
@@ -732,6 +733,13 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_mmap_file PRIVATE gnfs_util)
     add_test(NAME MmapFile COMMAND test_mmap_file)
     set_tests_properties(MmapFile PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_native_random_access_file
+        tests/test_native_random_access_file.cpp
+    )
+    target_link_libraries(test_native_random_access_file PRIVATE gnfs_util)
+    add_test(NAME NativeRandomAccessFile COMMAND test_native_random_access_file)
+    set_tests_properties(NativeRandomAccessFile PROPERTIES LABELS "instant" TIMEOUT 10)
 
     add_executable(test_resultant
         tests/test_resultant.cpp

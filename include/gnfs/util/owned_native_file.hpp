@@ -20,6 +20,7 @@
 namespace gnfs::util {
 
 class MmapFile;
+class NativeRandomAccessFile;
 
 /// Move-only ownership of one already-open native file handle.
 ///
@@ -110,6 +111,7 @@ private:
     NativeHandle handle_ = invalid_native_handle();
 
     friend class MmapFile;
+    friend class NativeRandomAccessFile;
 };
 
 } // namespace gnfs::util
