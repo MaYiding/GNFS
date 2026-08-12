@@ -85,6 +85,9 @@ Release builds.
 The `SmallVector` instant contract keeps inline and heap transitions,
 move-construction source reset, iteration, emplacement, clear, and resize
 checks active in Release builds.
+The `Resultant` instant contract keeps Bareiss determinant identity, pivot,
+sign, singular, and large-value checks, plus resultant shared-root and
+discriminant identities, active in Release builds.
 
 Do not remove `NDEBUG` globally. Fresh-process probes and performance campaigns
 deliberately exercise the optimized Release contract. Migrate legacy unit tests
