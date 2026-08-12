@@ -88,6 +88,9 @@ output-lock concurrency paths also run in the narrow ThreadSanitizer lane.
 The `SmallVector` instant contract keeps inline and heap transitions,
 move-construction source reset, iteration, emplacement, clear, and resize
 checks active in Release builds.
+The `Primes` instant contract keeps modular multiplication and exponentiation,
+32-bit and 64-bit primality, integer square-root, and next-prime boundary
+checks active in Release builds.
 The `Resultant` instant contract keeps Bareiss determinant identity, pivot,
 sign, singular, and large-value checks, plus resultant shared-root and
 discriminant identities, active in Release builds.
