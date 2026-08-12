@@ -88,9 +88,9 @@ jobs:
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: build
-        key: ${{ matrix.os }}-${{ runner.arch }}-${{ matrix.cxx_compiler }}-cmake-${{ matrix.build_type }}-${{ hashFiles('CMakeLists.txt', 'include/**', 'src/**') }}
+        key: ${{ matrix.os }}-${{ runner.arch }}-${{ matrix.cxx_compiler }}-cmake-${{ matrix.build_type }}-${{ hashFiles('.github/workflows/ci.yml') }}-${{ hashFiles('CMakeLists.txt', 'include/**', 'src/**') }}
         restore-keys: |
-          ${{ matrix.os }}-${{ runner.arch }}-${{ matrix.cxx_compiler }}-cmake-${{ matrix.build_type }}-
+          ${{ matrix.os }}-${{ runner.arch }}-${{ matrix.cxx_compiler }}-cmake-${{ matrix.build_type }}-${{ hashFiles('.github/workflows/ci.yml') }}-
 
     - name: Install dependencies (Ubuntu)
       if: runner.os == 'Linux'
@@ -104,15 +104,50 @@ jobs:
         brew install gmp ntl
 
     # ── Windows: vcpkg-based GMP install ──
-    # vcpkg is preinstalled on windows-latest runners at $env:VCPKG_INSTALLATION_ROOT
-    # (C:\vcpkg). Install the gmp port and let the vcpkg toolchain file feed
-    # find_package/find_library hints to CMake.
+    # Pin vcpkg instead of using the mutable windows-latest installation. The
+    # pinned GMP port still names an MSYS2 package revision that its mirrors
+    # retired, so the install step below applies one exact, hash-checked package
+    # revision update before invoking vcpkg.
+    - name: Checkout pinned vcpkg (Windows)
+      if: runner.os == 'Windows'
+      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      with:
+        repository: microsoft/vcpkg
+        ref: e12aaf7336cc1e348c43a1244f348451b534c0a9
+        path: .vcpkg
+        persist-credentials: false
+
     - name: Install dependencies (Windows / vcpkg)
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
-        & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install gmp:x64-windows
+        $vcpkgRoot = Join-Path $env:GITHUB_WORKSPACE ".vcpkg"
+        & "$vcpkgRoot\bootstrap-vcpkg.bat" -disableMetrics
+        if ($LASTEXITCODE -ne 0) {
+          throw "Pinned vcpkg bootstrap failed with exit code $LASTEXITCODE"
+        }
+
+        $gmpPortfile = Join-Path $vcpkgRoot "ports\gmp\portfile.cmake"
+        $oldUrl = "https://mirror.msys2.org/msys/x86_64/autoconf2.71-2.71-3-any.pkg.tar.zst"
+        $newUrl = "https://repo.msys2.org/msys/x86_64/autoconf2.71-2.71-4-any.pkg.tar.zst"
+        $oldSha512 = "dd312c428b2e19afd00899eb53ea4255794dea4c19d1d6dea2419cb6a54209ea2130d48abbc20af12196b9f628143436f736fbf889809c2c2291be0c69c0e306"
+        $newSha512 = "c93b791eb55893cbe7c425e764074837355fd165deb7b1775f652c8e25d9d1f0cdd4120ab710d56fb859b7df55c4f971eccda7c112448f60615bff8a2dc81166"
+        $portfile = [IO.File]::ReadAllText($gmpPortfile)
+        if ([regex]::Matches($portfile, [regex]::Escape($oldUrl)).Count -ne 1 -or
+            [regex]::Matches($portfile, [regex]::Escape($oldSha512)).Count -ne 1) {
+          throw "Pinned GMP port no longer matches the expected MSYS2 package revision"
+        }
+        $portfile = $portfile.Replace($oldUrl, $newUrl).Replace($oldSha512, $newSha512)
+        [IO.File]::WriteAllText(
+          $gmpPortfile,
+          $portfile,
+          [System.Text.UTF8Encoding]::new($false))
+
+        echo "VCPKG_ROOT=$vcpkgRoot" >> $env:GITHUB_ENV
+        & "$vcpkgRoot\vcpkg.exe" install gmp:x64-windows
+        if ($LASTEXITCODE -ne 0) {
+          throw "Pinned vcpkg GMP install failed with exit code $LASTEXITCODE"
+        }
 
     # ── Configure: POSIX vs Windows multi-config split ──
     - name: Configure CMake (POSIX)
@@ -132,7 +167,7 @@ jobs:
         cmake -B build `
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} `
           -DGNFS_ENABLE_NATIVE_ARCH=OFF `
-          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" `
+          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
           -DVCPKG_TARGET_TRIPLET=x64-windows `
           -DVCPKG_APPLOCAL_DEPS=OFF
 
@@ -223,7 +258,7 @@ jobs:
       shell: pwsh
       working-directory: build
       run: |
-        $vcpkgBin = Join-Path $env:VCPKG_INSTALLATION_ROOT "installed\x64-windows\bin"
+        $vcpkgBin = Join-Path $env:VCPKG_ROOT "installed\x64-windows\bin"
         if (!(Test-Path -LiteralPath $vcpkgBin -PathType Container)) {
           throw "vcpkg runtime directory is missing: $vcpkgBin"
         }
@@ -241,7 +276,7 @@ jobs:
       shell: pwsh
       working-directory: build
       run: |
-        $vcpkgBin = Join-Path $env:VCPKG_INSTALLATION_ROOT "installed\x64-windows\bin"
+        $vcpkgBin = Join-Path $env:VCPKG_ROOT "installed\x64-windows\bin"
         if (!(Test-Path -LiteralPath $vcpkgBin -PathType Container)) {
           throw "vcpkg runtime directory is missing: $vcpkgBin"
         }
