@@ -505,11 +505,11 @@ ENV parsing matrix).
 
 ```bash
 GNFS_FILTER_LP_BLOOM_BITS=0  ./gnfs <N>   # helper default；当前主路径无变化
-GNFS_FILTER_LP_BLOOM_BITS=14 ./gnfs <N>   # helper 配置 16 KiB；当前主路径无变化
-GNFS_FILTER_LP_BLOOM_BITS=18 ./gnfs <N>   # helper 配置 256 KiB；当前主路径无变化
-GNFS_FILTER_LP_BLOOM_BITS=22 ./gnfs <N>   # helper 配置 4 MiB；当前主路径无变化
-GNFS_FILTER_LP_BLOOM_BITS=24 ./gnfs <N>   # helper 配置 16 MiB；当前主路径无变化
-GNFS_FILTER_LP_BLOOM_BITS=28 ./gnfs <N>   # helper 配置 256 MiB；当前主路径无变化
+GNFS_FILTER_LP_BLOOM_BITS=14 ./gnfs <N>   # helper 配置 2 KiB；当前主路径无变化
+GNFS_FILTER_LP_BLOOM_BITS=18 ./gnfs <N>   # helper 配置 32 KiB；当前主路径无变化
+GNFS_FILTER_LP_BLOOM_BITS=22 ./gnfs <N>   # helper 配置 512 KiB；当前主路径无变化
+GNFS_FILTER_LP_BLOOM_BITS=24 ./gnfs <N>   # helper 配置 2 MiB；当前主路径无变化
+GNFS_FILTER_LP_BLOOM_BITS=28 ./gnfs <N>   # helper 配置 32 MiB；当前主路径无变化
 unset GNFS_FILTER_LP_BLOOM_BITS           # helper 解析为 default 0
 ```
 
@@ -533,21 +533,22 @@ unset GNFS_FILTER_LP_BLOOM_BITS           # helper 解析为 default 0
 
 **Bit-for-bit guarantee**: `count_unique_with_bloom` 输出与 `bloom_bits == 0`
 baseline 完全相同, 不管 Bloom 是否启用. Bloom false positive 仍走 hash-set
-exact match 确认; Bloom "definitely not seen" 直接 hash-set insert (跳过
-probe 但产物一致). 单元测试 `test_lp_bloom` 强制 100k random keys 跨
+exact match 确认; Bloom "definitely not seen" 也直接执行 hash-set insert
+(仍由容器完成精确插入). 单元测试 `test_lp_bloom` 强制 100k random keys 跨
 bits ∈ {0, 10, 14, 18, 22} 严格相等.
 
 **ENV parsing**:
 - unset / "0" / 负数 / 非数字 / 空字符串 → 0 (disabled)
-- "1".."9" → 0 (clamp 至 disabled, 低于 1 KiB floor)
+- "1".."9" → 0 (clamp 至 disabled, 低于 128 B floor)
 - "10".."28" → as-is
 - "29"+ → 28 (clamp)
 - 数字前缀 ("16abc"): 取首数字段; 非数字前缀 ("abc16"): 视为 0
 
 **ROI 与定位**:
 - 历史目标是减少 50d+/60d 大 relation 数 (1M+) 时的 hash-set bucket
-  probe。Bloom (m=2^22 = 4 MiB) 可容纳在 L3，大部分 query 先执行
-  4-hash mask + bit-test。
+  probe。Bloom (m=2^22 = 512 KiB) 可放入部分平台的共享 cache，但当前
+  standalone helper 仍会为每个 key 执行精确 hash-set insert，尚未证明
+  生产性能收益。
 - 25d/40-bit small N (< 50k relations) 无 ROI, Bloom 构造与 4-hash overhead
   反而增加常数项. 默认 OFF 保证零回归.
 - helper 当前 standalone，生产主路径没有调用点，所以上述 ROI 尚未在主路径

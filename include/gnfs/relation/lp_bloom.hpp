@@ -4,15 +4,12 @@
 //
 // Scope
 // -----
-// `count_unique_lp_keys(relations)` in `filter.hpp` is on the hot path for
-// 50d+/60d Round 2 adaptive sieve loops. The current implementation scans
-// each relation's LP keys and inserts every (b-smooth) key into a pair of
-// `std::unordered_set<uint64_t>` containers (rational primes and
-// (p, r) algebraic packed pairs). The `.size()` of those sets is then used
-// as the effective_cols safety margin for trim limits. At 1M+ relations
-// this hash-set churn dominates Phase 4 entry wall time because each
-// `insert` does an open-addressing probe and an `equal_range` lookup, and
-// the underlying buckets are out of L2.
+// This is a standalone helper for exact unique counting over 64-bit key
+// streams. It is not wired into `filter.hpp::count_unique_lp_keys`, whose
+// production path uses full-width `LargePrimeKey` values that cannot be
+// packed losslessly into one `uint64_t`. Future production integration must
+// add full-width structural-key support and retain exact equality checks.
+// See `docs/env-flags/relation.md` for integration status and constraints.
 //
 // This helper provides:
 //
@@ -31,19 +28,18 @@
 //          hash set (the key MUST be new; this saves nothing in unique
 //          count work but documents the Bloom invariant).
 //      Either way the final `unique_count` is the cardinality of the
-//      underlying hash set, which is bit-for-bit identical to the pure
-//      `std::unordered_set` path because hash-set semantics are
-//      deterministic over the input sequence.
+//      underlying hash set, which is identical to the pure
+//      `std::unordered_set` path for the same input sequence.
 //
 // Correctness invariant
 // ---------------------
 // The output of `count_unique_with_bloom(first, last, B)` is independent
 // of `B`: false positives in the Bloom filter still go through the hash
 // set's exact equality check before the unique counter increments. The
-// helper exists purely to amortise probing cost when the working set is
-// large enough that the hash-set buckets sit out of L1/L2. The unit test
-// `count_unique_parity_random_100k` enforces this with a sweep across
-// 100k random uint64 keys and bit widths {0, 14, 18, 22}.
+// current helper still performs an exact hash-set insertion for every key;
+// it does not by itself establish a production performance benefit. The unit
+// test `count_unique_parity_random_100k` enforces exact parity with a sweep
+// across 100k random uint64 keys and bit widths {0, 14, 18, 22}.
 //
 // ENV gate
 // --------
@@ -59,17 +55,17 @@
 //
 // Sizing rationale
 // ----------------
-// bits=10  →   1 KiB  filter →  fits L1, k=4 wastes a lot of cache
-// bits=14  →  16 KiB  filter →  L1-friendly, ~1.5% FP @ 5k keys
-// bits=18  → 256 KiB  filter →  L2-friendly, ~0.5% FP @ 50k keys
-// bits=22  →   4 MiB  filter →  L3-friendly, ~0.5% FP @ 500k keys
-// bits=24  →  16 MiB  filter →  off-cache,   ~0.5% FP @ 2M keys
-// bits=28  → 256 MiB  filter →  oversized; clamp ceiling
+// bits=10  → 128 B   filter →  constructor and ENV floor; saturates quickly
+// bits=14  →   2 KiB filter →  L1-friendly, ~24.7% FP @ 5k keys
+// bits=18  →  32 KiB filter →  L1/L2-sized, ~8.1% FP @ 50k keys
+// bits=22  → 512 KiB filter →  L2/L3-sized, ~2.1% FP @ 500k keys
+// bits=24  →   2 MiB filter →  L3-sized,    ~2.1% FP @ 2M keys
+// bits=28  →  32 MiB filter →  oversized; ENV clamp ceiling
 //
-// k=4 is hardcoded — that's the empirical sweet spot for the (m, n) range
-// the helper is designed for (10 < log2(m) <= 28, n in 10k..10M). For
-// larger n the optimal k grows; the helper is parameterised to make
-// future tuning easy without breaking the API.
+// k=4 is fixed to keep the helper's probability profile stable. For fixed m,
+// the theoretical optimum k=(m/n)ln(2) decreases as occupancy n grows.
+// Changing k therefore requires measurements for the intended m/n bands,
+// but does not change the exact-counting correctness invariant.
 //
 // Threading
 // ---------
@@ -77,14 +73,11 @@
 // concurrent `insert` / `maybe_contains`. The counting helper is single-
 // threaded by design.
 
-#include <algorithm>
 #include <atomic>
-#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
-#include <cstring>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -125,7 +118,7 @@ inline int resolve_bloom_bits_from_env() noexcept {
         return 0;
     }
     if (parsed < 10) {
-        // Below the 1 KiB floor → treat as disabled rather than throwing
+        // Below the 128-byte floor → treat as disabled rather than throwing
         // at gate-resolution time. Tests can still hand a small bit count
         // directly to the `BloomLPKeyFilter` constructor for explicit
         // exercise.
@@ -148,19 +141,16 @@ inline int resolve_bloom_bits_from_env() noexcept {
     return x;
 }
 
-/// Returns 4 hashes for key `k`. Each seed is chosen to be coprime with
-/// the others under multiplication mod 2^64; the salts dodge trivial
-/// collision between the rational packing (prime in low 64 bits) and the
-/// algebraic packing ((prime << 32) | root).
-inline void hash_quadruple(std::uint64_t key,
-                           std::uint64_t out[4]) noexcept {
+/// Returns 4 hashes for key `k`. Distinct salts decorrelate the streams for
+/// arbitrary 64-bit input keys.
+inline void hash_quadruple(std::uint64_t key, std::uint64_t out[4]) noexcept {
     out[0] = splitmix64_step(key + 0x9E3779B97F4A7C15ULL);
     out[1] = splitmix64_step(key ^ 0xBB67AE8584CAA73BULL);
     out[2] = splitmix64_step(key + 0x243F6A8885A308D3ULL);
     out[3] = splitmix64_step(key ^ 0x13198A2E03707344ULL);
 }
 
-}  // namespace detail
+} // namespace detail
 
 /// Returns the cached parsed value of GNFS_FILTER_LP_BLOOM_BITS.
 /// 0 means disabled (pure hash-set baseline path).
@@ -195,13 +185,12 @@ inline void filter_lp_bloom_reset_env_cache_for_testing() noexcept {
 class BloomLPKeyFilter {
 public:
     /// `bits` must be in [10, 30]. The lower bound keeps the filter from
-    /// degenerating below 1 KiB (where k=4 immediately saturates); the
+    /// degenerating below 128 bytes (where k=4 immediately saturates); the
     /// upper bound caps the storage at 128 MiB (`2^30 / 8` bytes).
     explicit BloomLPKeyFilter(int bits) : bits_(bits) {
         if (bits_ < 10 || bits_ > 30) {
-            throw std::invalid_argument(
-                "BloomLPKeyFilter: bits out of range [10, 30] (got " +
-                std::to_string(bits_) + ")");
+            throw std::invalid_argument("BloomLPKeyFilter: bits out of range [10, 30] (got " +
+                                        std::to_string(bits_) + ")");
         }
         const std::size_t slot_count = static_cast<std::size_t>(1) << bits_;
         const std::size_t word_count = slot_count / 64;
@@ -238,7 +227,9 @@ public:
         return data_.size() * sizeof(std::uint64_t);
     }
 
-    [[nodiscard]] int bits() const noexcept { return bits_; }
+    [[nodiscard]] int bits() const noexcept {
+        return bits_;
+    }
 
     /// Estimated false-positive rate after `n_inserted` distinct keys.
     /// Standard formula: (1 - exp(-kn / m))^k with k=4 and m=2^bits.
@@ -264,8 +255,8 @@ namespace detail {
 /// into either a pure hash set (when `bloom_bits == 0`) or a Bloom-pre-
 /// screened hash set. Returns the cardinality of the hash set.
 template <typename KeyIt>
-[[nodiscard]] inline std::size_t count_unique_with_bloom_impl(
-        KeyIt first, KeyIt last, int bloom_bits) {
+[[nodiscard]] inline std::size_t count_unique_with_bloom_impl(KeyIt first, KeyIt last,
+                                                              int bloom_bits) {
     // Empty span short-circuit avoids constructing a Bloom filter and a
     // hash set when there is nothing to count.
     if (first == last) {
@@ -304,15 +295,14 @@ template <typename KeyIt>
     return set.size();
 }
 
-}  // namespace detail
+} // namespace detail
 
 /// Count unique 64-bit keys in `[first, last)` with optional Bloom
 /// filter pre-screen. Output is independent of `bloom_bits` (Bloom only
 /// influences probe count, not the unique-set membership decision).
 template <typename KeyIt>
-[[nodiscard]] inline std::size_t count_unique_with_bloom(
-        KeyIt first, KeyIt last, int bloom_bits) {
+[[nodiscard]] inline std::size_t count_unique_with_bloom(KeyIt first, KeyIt last, int bloom_bits) {
     return detail::count_unique_with_bloom_impl(first, last, bloom_bits);
 }
 
-}  // namespace gnfs::relation
+} // namespace gnfs::relation
