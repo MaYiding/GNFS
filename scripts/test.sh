@@ -1241,6 +1241,7 @@ MODULE_ORDER=(core util polynomial factor_base sieve cofactor relation linalg sq
 path_to_module() {
     local path="$1"
     case "$path" in
+        tests/test_resultant.cpp) echo "polynomial" ;;
         tests/test_small_vector.cpp|tests/test_sha256.cpp|tests/test_thread_pool.cpp|tests/test_joining_thread.cpp|tests/test_durable_immutable_file.cpp|tests/test_durable_immutable_record.cpp|tests/test_mmap_file.cpp|tests/test_native_random_access_file.cpp) echo "util" ;;
         tests/test_ecm_curve_plan.cpp|tests/test_cofactor_attempt_context.cpp|tests/test_cofactor_seed_provider.cpp) echo "cofactor" ;;
         tests/test_squfof*.cpp|tests/support/squfof_*.hpp|tests/fixtures/squfof_*.hpp) echo "cofactor" ;;
