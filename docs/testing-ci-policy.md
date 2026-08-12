@@ -88,6 +88,9 @@ checks active in Release builds.
 The `Resultant` instant contract keeps Bareiss determinant identity, pivot,
 sign, singular, and large-value checks, plus resultant shared-root and
 discriminant identities, active in Release builds.
+The `LPBloom` instant contract keeps environment parsing and clamping, exact
+unique-count parity, no-false-negative membership, bounded false-positive
+rate, and constructor and storage boundaries active in Release builds.
 
 Do not remove `NDEBUG` globally. Fresh-process probes and performance campaigns
 deliberately exercise the optimized Release contract. Migrate legacy unit tests
