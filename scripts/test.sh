@@ -670,12 +670,13 @@ SMOKE_TESTS=(
     test_mpz_mul_parallel
 )
 
-# ThreadSanitizer 窄通道: 覆盖 util ThreadPool、候选级 cofactor 调度、
+# ThreadSanitizer 窄通道: 覆盖 util Logger/ThreadPool、候选级 cofactor 调度、
 # structured relation 有界并发和 SIQS shadow 持久消元 worker 的发布/收敛/故障边界。
 # 保持此列表小而明确，
 # 避免把完整 instant 层复制到高成本的 sanitizer 构建。
 typeset -a TSAN_RELATION_TESTS
 TSAN_RELATION_TESTS=(
+    test_logger
     test_thread_pool
     test_joining_thread
     test_ordered_parallel_map
@@ -1242,7 +1243,7 @@ path_to_module() {
     local path="$1"
     case "$path" in
         tests/test_resultant.cpp) echo "polynomial" ;;
-        tests/test_small_vector.cpp|tests/test_sha256.cpp|tests/test_thread_pool.cpp|tests/test_joining_thread.cpp|tests/test_durable_immutable_file.cpp|tests/test_durable_immutable_record.cpp|tests/test_mmap_file.cpp|tests/test_native_random_access_file.cpp) echo "util" ;;
+        tests/test_small_vector.cpp|tests/test_sha256.cpp|tests/test_thread_pool.cpp|tests/test_joining_thread.cpp|tests/test_logger.cpp|tests/test_durable_immutable_file.cpp|tests/test_durable_immutable_record.cpp|tests/test_mmap_file.cpp|tests/test_native_random_access_file.cpp) echo "util" ;;
         tests/test_ecm_curve_plan.cpp|tests/test_cofactor_attempt_context.cpp|tests/test_cofactor_seed_provider.cpp) echo "cofactor" ;;
         tests/test_squfof*.cpp|tests/support/squfof_*.hpp|tests/fixtures/squfof_*.hpp) echo "cofactor" ;;
         tests/test_relation_corpus_sha256.cpp|tests/test_relation_collector.cpp|tests/test_relation_corpus.cpp|tests/test_relation_sink.cpp|tests/test_relation_reduction_engine.cpp|tests/test_lp_bloom.cpp|tests/test_ooc_store_integrity.cpp|tests/test_ooc_durable_handoff.cpp|tests/test_ooc_cleanup_transaction.cpp) echo "relation" ;;
@@ -6120,6 +6121,7 @@ do_tsan_relation() {
     # an explicit --timeout override; otherwise cap every binary at 120 seconds.
     if (( ! TIMEOUT_EXPLICIT )); then
         TIMEOUT=120
+        TIMEOUT_EXPLICIT=1
     fi
     export TSAN_OPTIONS="${TSAN_OPTIONS:-halt_on_error=1:second_deadlock_stack=1}"
     log_info "每测试 timeout=${TIMEOUT}s; TSAN_OPTIONS=${TSAN_OPTIONS}"
