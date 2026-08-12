@@ -1,13 +1,17 @@
-#include "gnfs/polynomial/base_m.hpp"
 #include "gnfs/factor_base/builder.hpp"
-#include "gnfs/sieve/special_q.hpp"
-#include "gnfs/sieve/lattice_sieve.hpp"
+#include "gnfs/polynomial/base_m.hpp"
 #include "gnfs/relation/collector.hpp"
+#include "gnfs/sieve/lattice_sieve.hpp"
+#include "gnfs/sieve/special_q.hpp"
 #include "gnfs/util/safe_math.hpp"
+#include "support/test_check.hpp"
 
-#include <cassert>
-#include <iostream>
+#include <cstddef>
+#include <cstdint>
 #include <iomanip>
+#include <iostream>
+#include <numeric>
+#include <utility>
 
 using namespace gnfs;
 using namespace gnfs::core;
@@ -31,20 +35,21 @@ void test_full_sieve_pipeline() {
     // 2. 多项式选择
     std::cout << "\n[2] Polynomial Selection (Base-m method)" << std::endl;
 
-    uint32_t degree = 3;  // 对于小数使用低度数
+    std::uint32_t degree = 3; // 对于小数使用低度数
     auto poly_result = BaseMSelector::select(n, degree);
-    assert(poly_result.success);
+    GNFS_TEST_CHECK(poly_result.success);
 
     auto ctx = BaseMSelector::create_context(n, poly_result);
 
     std::cout << "    Degree: " << ctx.degree() << std::endl;
     std::cout << "    m = " << ctx.m().to_string() << std::endl;
-    std::cout << "    Skewness: " << std::fixed << std::setprecision(2) << ctx.skewness() << std::endl;
+    std::cout << "    Skewness: " << std::fixed << std::setprecision(2) << ctx.skewness()
+              << std::endl;
 
     // 打印多项式
     std::cout << "    f(x) = ";
     for (int i = static_cast<int>(ctx.degree()); i >= 0; --i) {
-        const auto& coeff = ctx.coeff(static_cast<uint32_t>(i));
+        const auto& coeff = ctx.coeff(static_cast<std::uint32_t>(i));
         if (!coeff.is_zero() || i == 0) {
             if (i < static_cast<int>(ctx.degree())) {
                 std::cout << (coeff.is_negative() ? " - " : " + ");
@@ -56,14 +61,15 @@ void test_full_sieve_pipeline() {
             }
             if (i > 0) {
                 std::cout << "x";
-                if (i > 1) std::cout << "^" << i;
+                if (i > 1)
+                    std::cout << "^" << i;
             }
         }
     }
     std::cout << std::endl;
 
     // 验证 f(m) ≡ 0 (mod n)
-    assert(ctx.verify());
+    GNFS_TEST_CHECK(ctx.verify());
     std::cout << "    f(m) ≡ 0 (mod n): verified ✓" << std::endl;
 
     // 3. 构建因子基
@@ -115,35 +121,41 @@ void test_full_sieve_pipeline() {
 
     SpecialQGenerator sq_gen(fb, sq_range);
 
-    size_t num_sq_to_process = 10;
-    size_t total_candidates = 0;
-    size_t total_positions = 0;
+    constexpr std::size_t num_sq_to_process = 10;
+    std::size_t processed_sq = 0;
+    std::size_t total_candidates = 0;
+    std::size_t total_positions = 0;
 
     std::cout << "    Processing " << num_sq_to_process << " special-q values..." << std::endl;
 
-    for (size_t i = 0; i < num_sq_to_process && sq_gen.has_next(); ++i) {
+    for (std::size_t i = 0; i < num_sq_to_process && sq_gen.has_next(); ++i) {
         auto sq = sq_gen.next();
-        if (!sq) break;
+        if (!sq)
+            break;
 
+        ++processed_sq;
         auto result = sieve.sieve_special_q(*sq);
 
         total_candidates += result.candidates.size();
         total_positions += result.sieved_positions;
 
         if (i < 3 || result.candidates.size() > 0) {
-            std::cout << "    Special-Q (" << sq->q << ", " << sq->r << "): "
-                      << result.candidates.size() << " candidates" << std::endl;
+            std::cout << "    Special-Q (" << sq->q << ", " << sq->r
+                      << "): " << result.candidates.size() << " candidates" << std::endl;
         }
     }
 
     std::cout << "\n    Total positions sieved: " << total_positions << std::endl;
     std::cout << "    Total candidates found: " << total_candidates << std::endl;
+    GNFS_TEST_CHECK(processed_sq == num_sq_to_process);
+    GNFS_TEST_CHECK(total_positions > 0);
+    GNFS_TEST_CHECK(total_candidates > 0);
 
     if (total_positions > 0) {
-        double candidate_rate = static_cast<double>(total_candidates) /
-                                static_cast<double>(total_positions) * 100.0;
-        std::cout << "    Candidate rate: " << std::fixed << std::setprecision(4)
-                  << candidate_rate << "%" << std::endl;
+        double candidate_rate =
+            static_cast<double>(total_candidates) / static_cast<double>(total_positions) * 100.0;
+        std::cout << "    Candidate rate: " << std::fixed << std::setprecision(4) << candidate_rate
+                  << "%" << std::endl;
     }
 
     // 6. 验证候选点
@@ -151,14 +163,15 @@ void test_full_sieve_pipeline() {
 
     // 重新筛一个 special-q 来获取候选点
     sq_gen.reset_to(0);
-    (void)sq_gen.next();  // 跳到 min_q
+    (void)sq_gen.next(); // 跳到 min_q
 
-    size_t verified = 0;
-    size_t total_checked = 0;
+    std::size_t verified = 0;
+    std::size_t total_checked = 0;
 
-    for (size_t i = 0; i < 3 && sq_gen.has_next(); ++i) {
+    for (std::size_t i = 0; i < 3 && sq_gen.has_next(); ++i) {
         auto sq = sq_gen.next();
-        if (!sq) break;
+        if (!sq)
+            break;
 
         auto result = sieve.sieve_special_q(*sq);
         LatticeBasis basis = compute_lattice_basis(*sq);
@@ -167,7 +180,7 @@ void test_full_sieve_pipeline() {
             ++total_checked;
 
             // 验证格条件
-            bool lattice_ok = basis.verify_ab(cand.a, static_cast<int64_t>(cand.b));
+            bool lattice_ok = basis.verify_ab(cand.a, static_cast<std::int64_t>(cand.b));
 
             // 验证 gcd(a, b) = 1
             bool coprime_ok = std::gcd(util::safe_abs(cand.a), cand.b) == 1;
@@ -183,7 +196,8 @@ void test_full_sieve_pipeline() {
 
     std::cout << "    Checked: " << total_checked << " candidates" << std::endl;
     std::cout << "    Verified: " << verified << " (100% should pass)" << std::endl;
-    assert(verified == total_checked);  // 所有候选应该通过验证
+    GNFS_TEST_CHECK(total_checked > 0);
+    GNFS_TEST_CHECK(verified == total_checked); // 所有候选应该通过验证
     std::cout << "    All candidates valid ✓" << std::endl;
 
     // 7. 关系收集器测试
@@ -207,6 +221,9 @@ void test_full_sieve_pipeline() {
     std::cout << "    Total relations: " << stats.total_relations << std::endl;
     std::cout << "    Full relations: " << stats.full_relations << std::endl;
     std::cout << "    Partial (1LP): " << stats.partial_1lp << std::endl;
+    GNFS_TEST_CHECK(stats.total_relations == 20);
+    GNFS_TEST_CHECK(stats.full_relations == 16);
+    GNFS_TEST_CHECK(stats.partial_1lp == 4);
 
     // 8. 总结
     std::cout << "\n[8] Summary" << std::endl;
@@ -229,10 +246,10 @@ void test_small_factorization_setup() {
 
     // 多项式选择
     auto result = BaseMSelector::select(n, 2);
-    assert(result.success);
+    GNFS_TEST_CHECK(result.success);
 
     auto ctx = BaseMSelector::create_context(n, result);
-    assert(ctx.verify());
+    GNFS_TEST_CHECK(ctx.verify());
 
     std::cout << "Polynomial degree: " << ctx.degree() << std::endl;
     std::cout << "m = " << ctx.m().to_string() << std::endl;
@@ -268,14 +285,13 @@ void test_small_factorization_setup() {
     range.max_q = 50;
 
     SpecialQGenerator gen(fb, range);
-    if (gen.has_next()) {
-        auto sq = gen.next();
-        if (sq) {
-            auto sieve_result = sieve.sieve_special_q(*sq);
-            std::cout << "Special-Q (" << sq->q << ", " << sq->r << "): "
-                      << sieve_result.candidates.size() << " candidates" << std::endl;
-        }
-    }
+    GNFS_TEST_CHECK(gen.has_next());
+    auto sq = gen.next();
+    GNFS_TEST_CHECK(sq.has_value());
+    auto sieve_result = sieve.sieve_special_q(*sq);
+    std::cout << "Special-Q (" << sq->q << ", " << sq->r << "): " << sieve_result.candidates.size()
+              << " candidates" << std::endl;
+    GNFS_TEST_CHECK(!sieve_result.candidates.empty());
 
     std::cout << "Small factorization setup: PASS" << std::endl;
 }
@@ -288,9 +304,9 @@ void test_estimate_initial_log_no_ub() {
     // 设置：N=143=11×13，小因子基
     Integer n(143);
     auto result = BaseMSelector::select(n, 2);
-    assert(result.success);
+    GNFS_TEST_CHECK(result.success);
     auto ctx = BaseMSelector::create_context(n, result);
-    assert(ctx.verify());
+    GNFS_TEST_CHECK(ctx.verify());
 
     FactorBaseBuilder::Options opts;
     opts.rational_bound = 50;
@@ -353,8 +369,9 @@ void test_estimate_initial_log_no_ub() {
         sq.q = 7;
         sq.r = 3;
         auto sieve_result = sieve.sieve_special_q(sq);
-        std::cout << "    Normal region: " << sieve_result.candidates.size()
-                  << " candidates" << std::endl;
+        std::cout << "    Normal region: " << sieve_result.candidates.size() << " candidates"
+                  << std::endl;
+        GNFS_TEST_CHECK(!sieve_result.candidates.empty());
     }
 
     std::cout << "    PASSED" << std::endl;
