@@ -3,16 +3,15 @@
 // Validates the GNFS_MPZ_GCD_BATCH_THREADS env-gated dispatcher introduced in
 // include/gnfs/util/mpz_gcd_parallel.hpp:
 //
-//   * ENV parsing handles unset / "0" / "1" / "4" / "garbage" / "" / "9999" /
+//   * ENV parsing handles unset / "0" / "1" / "4" / "garbage" / "" /
 //     "12abc" / leading whitespace / "10000" correctly; clamping at
 //     hardware_concurrency() * 2.
 //   * Sequential (N=1, default) and parallel (N>=2) paths produce per-index
 //     bit-identical results for the same (a_values, b_values) input. The
 //     dispatcher is a pure parallel wrapper around `mpz_gcd`.
-//   * Empty input vectors return cleanly without creating a pool or
-//     invoking any mpz operation.
-//   * Single pair under N>=2 short-circuits to sequential (exactly-once
-//     mpz_gcd invocation, no stall).
+//   * Empty input vectors return cleanly under sequential and parallel
+//     settings.
+//   * Single pair under N>=2 returns the correct result without stalling.
 //   * 100-pair random batch matches scalar mpz_gcd reference at N=1 and
 //     stays bit-identical at N=4 and N=hardware_concurrency.
 //   * 200-bit prime modulus exercises multi-limb `mpz_gcd` semantics on
@@ -20,16 +19,17 @@
 //   * Boundary cases: gcd(0, 0) = 0, gcd(a, 0) = |a|, gcd(12, 18) = 6,
 //     negative operands -> positive result.
 //   * Mismatched input span sizes throw `std::invalid_argument`.
-//   * Undersized `results` gets defensive clamp; tail untouched.
+//   * Undersized `results` clamps writes to the available slots without
+//     resizing the vector.
 //   * Cache reset hook re-parses ENV between assertions.
 //   * Perf-info probe (informational, no assert).
 
-#include <gnfs/util/mpz_gcd_parallel.hpp>
+#include "support/test_check.hpp"
 #include <gnfs/core/integer.hpp>
+#include <gnfs/util/mpz_gcd_parallel.hpp>
 
-#include <algorithm>
-#include <cassert>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <gmp.h>
@@ -82,7 +82,8 @@ std::vector<Integer> make_random_integers(std::size_t n, uint64_t seed) {
         uint64_t v = rng() & 0x7FFFFFFFFFFFFFFFULL;
         // Avoid zero -> gcd(0, 0) is a tested boundary, but we want random
         // batches to have actual gcd workload. Bump zero to 1.
-        if (v == 0) v = 1;
+        if (v == 0)
+            v = 1;
         values.emplace_back(v);
     }
     return values;
@@ -96,8 +97,7 @@ void test_env_unset_defaults_to_one() {
     apply_env(nullptr);
     int v = mpz_gcd_batch_threads();
     if (v != 1) {
-        std::cerr << "\n  ERROR: unset env parsed to " << v
-                  << ", expected 1" << std::endl;
+        std::cerr << "\n  ERROR: unset env parsed to " << v << ", expected 1" << std::endl;
         std::abort();
     }
     std::cout << " PASS\n";
@@ -111,8 +111,7 @@ void test_env_zero_to_one() {
     apply_env("0");
     int v = mpz_gcd_batch_threads();
     if (v != 1) {
-        std::cerr << "\n  ERROR: '0' parsed to " << v
-                  << ", expected 1" << std::endl;
+        std::cerr << "\n  ERROR: '0' parsed to " << v << ", expected 1" << std::endl;
         std::abort();
     }
     apply_env(nullptr);
@@ -125,15 +124,16 @@ void test_env_zero_to_one() {
 void test_env_four() {
     std::cout << "Test 3: ENV '4' -> 4..." << std::flush;
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     int cap = static_cast<int>(hw) * 2;
     int expect = (4 < cap) ? 4 : cap;
 
     apply_env("4");
     int v = mpz_gcd_batch_threads();
     if (v != expect) {
-        std::cerr << "\n  ERROR: '4' parsed to " << v << ", expected "
-                  << expect << " (hw*2 cap = " << cap << ")" << std::endl;
+        std::cerr << "\n  ERROR: '4' parsed to " << v << ", expected " << expect
+                  << " (hw*2 cap = " << cap << ")" << std::endl;
         std::abort();
     }
     apply_env(nullptr);
@@ -146,14 +146,14 @@ void test_env_four() {
 void test_env_clamp() {
     std::cout << "Test 4: ENV '10000' clamped at hw*2..." << std::flush;
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     int cap = static_cast<int>(hw) * 2;
 
     apply_env("10000");
     int v = mpz_gcd_batch_threads();
     if (v != cap) {
-        std::cerr << "\n  ERROR: '10000' parsed to " << v
-                  << ", expected cap=" << cap << std::endl;
+        std::cerr << "\n  ERROR: '10000' parsed to " << v << ", expected cap=" << cap << std::endl;
         std::abort();
     }
     apply_env(nullptr);
@@ -167,17 +167,16 @@ void test_env_clamp() {
 // consumed by atoi and "  4" parses to 4).
 // ---------------------------------------------------------------------------
 void test_env_non_numeric() {
-    std::cout << "Test 5: ENV non-numeric / boundary -> family semantics..."
-              << std::flush;
+    std::cout << "Test 5: ENV non-numeric / boundary -> family semantics..." << std::flush;
 
     apply_env("");
-    assert(mpz_gcd_batch_threads() == 1);
+    GNFS_TEST_CHECK(mpz_gcd_batch_threads() == 1);
 
     apply_env("-5");
-    assert(mpz_gcd_batch_threads() == 1);
+    GNFS_TEST_CHECK(mpz_gcd_batch_threads() == 1);
 
     apply_env("garbage");
-    assert(mpz_gcd_batch_threads() == 1);
+    GNFS_TEST_CHECK(mpz_gcd_batch_threads() == 1);
 
     // std::atoi consumes leading whitespace before parsing digits, so
     // "  4" yields 4 -- consistent with the rest of the parallel-dispatcher
@@ -186,15 +185,14 @@ void test_env_non_numeric() {
     apply_env("  4");
     {
         unsigned int hw = std::thread::hardware_concurrency();
-        if (hw == 0) hw = 4;
+        if (hw == 0)
+            hw = 4;
         int cap = static_cast<int>(hw) * 2;
         int expect = (4 < cap) ? 4 : cap;
         int got = mpz_gcd_batch_threads();
         if (got != expect) {
-            std::cerr << "\n  ERROR: '  4' parsed to " << got
-                      << ", expected " << expect
-                      << " (std::atoi consumes leading whitespace)"
-                      << std::endl;
+            std::cerr << "\n  ERROR: '  4' parsed to " << got << ", expected " << expect
+                      << " (std::atoi consumes leading whitespace)" << std::endl;
             std::abort();
         }
     }
@@ -206,13 +204,13 @@ void test_env_non_numeric() {
     apply_env("12abc");
     {
         unsigned int hw = std::thread::hardware_concurrency();
-        if (hw == 0) hw = 4;
+        if (hw == 0)
+            hw = 4;
         int cap = static_cast<int>(hw) * 2;
         int expect = (12 < cap) ? 12 : cap;
         int got = mpz_gcd_batch_threads();
         if (got != expect) {
-            std::cerr << "\n  ERROR: '12abc' parsed to " << got
-                      << ", expected " << expect
+            std::cerr << "\n  ERROR: '12abc' parsed to " << got << ", expected " << expect
                       << " (atoi prefix semantics)" << std::endl;
             std::abort();
         }
@@ -223,10 +221,10 @@ void test_env_non_numeric() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 6: Empty input vectors - no-op, no pool, no writes.
+// Test 6: Empty input vectors return cleanly.
 // ---------------------------------------------------------------------------
 void test_empty_inputs() {
-    std::cout << "Test 6: empty inputs (no-op)..." << std::flush;
+    std::cout << "Test 6: empty inputs return cleanly..." << std::flush;
 
     std::vector<Integer> a_values;
     std::vector<Integer> b_values;
@@ -235,15 +233,15 @@ void test_empty_inputs() {
     // N=1 sequential.
     apply_env("1");
     parallel_mpz_gcd(a_values, b_values, results);
-    assert(results.empty());
+    GNFS_TEST_CHECK(results.empty());
 
     // N=4 parallel.
     apply_env("4");
     parallel_mpz_gcd(a_values, b_values, results);
-    assert(results.empty());
+    GNFS_TEST_CHECK(results.empty());
 
     // resolve_mpz_gcd_batch_threads on empty batch returns 0.
-    assert(resolve_mpz_gcd_batch_threads(0) == 0);
+    GNFS_TEST_CHECK(resolve_mpz_gcd_batch_threads(0) == 0);
 
     apply_env(nullptr);
     std::cout << " PASS\n";
@@ -268,26 +266,25 @@ void test_single_pair_n1() {
 
     Integer expect = scalar_gcd(a, b);
     if (results[0].to_uint64() != expect.to_uint64()) {
-        std::cerr << "\n  ERROR: got " << results[0].to_string()
-                  << " expected " << expect.to_string() << std::endl;
+        std::cerr << "\n  ERROR: got " << results[0].to_string() << " expected "
+                  << expect.to_string() << std::endl;
         std::abort();
     }
-    assert(results[0].to_uint64() == 6);
+    GNFS_TEST_CHECK(results[0].to_uint64() == 6);
 
     apply_env(nullptr);
     std::cout << " PASS (gcd(12, 18) = " << results[0].to_string() << ")\n";
 }
 
 // ---------------------------------------------------------------------------
-// Test 8: Single pair at N=4 - exactly-once invocation, no stall.
+// Test 8: Single pair at N=4 returns the correct result without stalling.
 // ---------------------------------------------------------------------------
 void test_single_pair_n4_no_stall() {
-    std::cout << "Test 8: single pair N=4 (no stall, correct)..."
-              << std::flush;
+    std::cout << "Test 8: single pair N=4 (no stall, correct)..." << std::flush;
     apply_env("4");
 
     Integer a(uint64_t{100});
-    Integer b(uint64_t{75});  // gcd(100, 75) = 25
+    Integer b(uint64_t{75}); // gcd(100, 75) = 25
 
     std::vector<Integer> a_values{a};
     std::vector<Integer> b_values{b};
@@ -296,28 +293,25 @@ void test_single_pair_n4_no_stall() {
     auto t0 = std::chrono::steady_clock::now();
     parallel_mpz_gcd(a_values, b_values, results);
     auto t1 = std::chrono::steady_clock::now();
-    long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                       t1 - t0).count();
+    long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 
     Integer expect = scalar_gcd(a, b);
     if (results[0].to_uint64() != expect.to_uint64()) {
-        std::cerr << "\n  ERROR: got " << results[0].to_string()
-                  << " expected " << expect.to_string() << std::endl;
+        std::cerr << "\n  ERROR: got " << results[0].to_string() << " expected "
+                  << expect.to_string() << std::endl;
         std::abort();
     }
-    assert(results[0].to_uint64() == 25);
+    GNFS_TEST_CHECK(results[0].to_uint64() == 25);
 
-    // Sanity-bound the wall-time: if the helper accidentally spawned a
-    // 4-thread pool the spin-up alone would push past this.
+    // Keep a generous informational signal for unexpectedly slow dispatch.
     if (ms > 1000) {
-        std::cerr << "\n  WARN: single-pair dispatch took " << ms
-                  << " ms (expected << 1000 ms)" << std::endl;
+        std::cerr << "\n  WARN: single-pair dispatch took " << ms << " ms (expected << 1000 ms)"
+                  << std::endl;
         // No abort -- soft signal, sanitizers can be slow.
     }
 
     apply_env(nullptr);
-    std::cout << " PASS (gcd(100, 75) = " << results[0].to_string()
-              << ", " << ms << " ms)\n";
+    std::cout << " PASS (gcd(100, 75) = " << results[0].to_string() << ", " << ms << " ms)\n";
 }
 
 // ---------------------------------------------------------------------------
@@ -326,8 +320,7 @@ void test_single_pair_n4_no_stall() {
 // gcd(small primes), negative operand handling.
 // ---------------------------------------------------------------------------
 void test_n1_baseline_matches_scalar() {
-    std::cout << "Test 9: N=1 baseline matches scalar mpz_gcd (5 cases)..."
-              << std::flush;
+    std::cout << "Test 9: N=1 baseline matches scalar mpz_gcd (5 cases)..." << std::flush;
     apply_env("1");
 
     std::vector<Integer> a_values;
@@ -366,15 +359,12 @@ void test_n1_baseline_matches_scalar() {
     for (std::size_t i = 0; i < a_values.size(); ++i) {
         Integer scalar_expect = scalar_gcd(a_values[i], b_values[i]);
         if (mpz_cmp(results[i].get_mpz(), scalar_expect.get_mpz()) != 0) {
-            std::cerr << "\n  ERROR: idx " << i << " got "
-                      << results[i].to_string() << " expected "
-                      << scalar_expect.to_string()
-                      << " (scalar reference)" << std::endl;
+            std::cerr << "\n  ERROR: idx " << i << " got " << results[i].to_string() << " expected "
+                      << scalar_expect.to_string() << " (scalar reference)" << std::endl;
             std::abort();
         }
         if (results[i].to_uint64() != expected[i]) {
-            std::cerr << "\n  ERROR: idx " << i << " got "
-                      << results[i].to_string() << " expected "
+            std::cerr << "\n  ERROR: idx " << i << " got " << results[i].to_string() << " expected "
                       << expected[i] << " (hand-computed)" << std::endl;
             std::abort();
         }
@@ -394,8 +384,7 @@ void test_n1_baseline_matches_scalar() {
 // Test 10: 100 random pairs at N=1 vs N=4 -- per-index bit-identical.
 // ---------------------------------------------------------------------------
 void test_n1_vs_n4_parity() {
-    std::cout << "Test 10: N=1 vs N=4 parity (per-index bit-identical)..."
-              << std::flush;
+    std::cout << "Test 10: N=1 vs N=4 parity (per-index bit-identical)..." << std::flush;
 
     auto a_values = make_random_integers(100, /*seed=*/0xDEADBEEFULL);
     auto b_values = make_random_integers(100, /*seed=*/0xCAFEBABEULL);
@@ -412,15 +401,13 @@ void test_n1_vs_n4_parity() {
 
     for (std::size_t i = 0; i < a_values.size(); ++i) {
         if (mpz_cmp(seq[i].get_mpz(), par[i].get_mpz()) != 0) {
-            std::cerr << "\n  ERROR: idx " << i << " seq="
-                      << seq[i].to_string() << " par="
-                      << par[i].to_string() << std::endl;
+            std::cerr << "\n  ERROR: idx " << i << " seq=" << seq[i].to_string()
+                      << " par=" << par[i].to_string() << std::endl;
             std::abort();
         }
     }
 
-    std::cout << " PASS (" << a_values.size()
-              << " per-index identical)\n";
+    std::cout << " PASS (" << a_values.size() << " per-index identical)\n";
 }
 
 // ---------------------------------------------------------------------------
@@ -430,7 +417,8 @@ void test_n1_vs_n_hw_parity() {
     std::cout << "Test 11: N=1 vs N=hw_concurrency parity..." << std::flush;
 
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     std::string hw_str = std::to_string(hw);
 
     auto a_values = make_random_integers(100, /*seed=*/0x1234567890ABCDEFULL);
@@ -448,15 +436,13 @@ void test_n1_vs_n_hw_parity() {
 
     for (std::size_t i = 0; i < a_values.size(); ++i) {
         if (mpz_cmp(seq[i].get_mpz(), par[i].get_mpz()) != 0) {
-            std::cerr << "\n  ERROR: idx " << i << " seq="
-                      << seq[i].to_string() << " par="
-                      << par[i].to_string() << std::endl;
+            std::cerr << "\n  ERROR: idx " << i << " seq=" << seq[i].to_string()
+                      << " par=" << par[i].to_string() << std::endl;
             std::abort();
         }
     }
 
-    std::cout << " PASS (N=hw=" << hw << ", " << a_values.size()
-              << " per-index identical)\n";
+    std::cout << " PASS (N=hw=" << hw << ", " << a_values.size() << " per-index identical)\n";
 }
 
 // ---------------------------------------------------------------------------
@@ -465,8 +451,7 @@ void test_n1_vs_n_hw_parity() {
 // structural pattern -- not just "fuzz it with random multi-limb integers".
 // ---------------------------------------------------------------------------
 void test_composite_prime_pattern() {
-    std::cout << "Test 12: gcd(P*Q, P*R) = P pattern (5 cases, 100-bit primes)..."
-              << std::flush;
+    std::cout << "Test 12: gcd(P*Q, P*R) = P pattern (5 cases, 100-bit primes)..." << std::flush;
     apply_env("1");
 
     // Five distinct ~100-104-bit primes found via `mpz_nextprime` from 2^k
@@ -484,8 +469,7 @@ void test_composite_prime_pattern() {
     for (const char* s : prime_strs) {
         Integer p(s, 10);
         if (mpz_probab_prime_p(p.get_mpz(), 25) == 0) {
-            std::cerr << "\n  ERROR: chosen prime " << s
-                      << " is composite (test bug)" << std::endl;
+            std::cerr << "\n  ERROR: chosen prime " << s << " is composite (test bug)" << std::endl;
             std::abort();
         }
         primes.push_back(std::move(p));
@@ -525,23 +509,19 @@ void test_composite_prime_pattern() {
     for (std::size_t i = 0; i < a_values.size(); ++i) {
         // gcd matches expected prime P.
         if (mpz_cmp(seq[i].get_mpz(), expected[i].get_mpz()) != 0) {
-            std::cerr << "\n  ERROR: seq idx " << i << " gcd("
-                      << a_values[i].to_string() << ", "
-                      << b_values[i].to_string() << ") = "
-                      << seq[i].to_string() << " expected "
+            std::cerr << "\n  ERROR: seq idx " << i << " gcd(" << a_values[i].to_string() << ", "
+                      << b_values[i].to_string() << ") = " << seq[i].to_string() << " expected "
                       << expected[i].to_string() << std::endl;
             std::abort();
         }
         // Sequential vs parallel agreement.
         if (mpz_cmp(seq[i].get_mpz(), par[i].get_mpz()) != 0) {
-            std::cerr << "\n  ERROR: seq vs par mismatch at idx " << i
-                      << std::endl;
+            std::cerr << "\n  ERROR: seq vs par mismatch at idx " << i << std::endl;
             std::abort();
         }
         // Result is non-negative.
         if (mpz_sgn(seq[i].get_mpz()) < 0) {
-            std::cerr << "\n  ERROR: idx " << i
-                      << " produced negative gcd" << std::endl;
+            std::cerr << "\n  ERROR: idx " << i << " produced negative gcd" << std::endl;
             std::abort();
         }
     }
@@ -553,8 +533,7 @@ void test_composite_prime_pattern() {
 // Test 13: mismatched span sizes throw std::invalid_argument.
 // ---------------------------------------------------------------------------
 void test_mismatched_span_throws() {
-    std::cout << "Test 13: mismatched span size throws invalid_argument..."
-              << std::flush;
+    std::cout << "Test 13: mismatched span size throws invalid_argument..." << std::flush;
     apply_env("4");
 
     std::vector<Integer> a_values;
@@ -578,8 +557,8 @@ void test_mismatched_span_throws() {
         // future readers debugging dispatcher misuse.
         std::string msg = e.what();
         if (msg.find("size") == std::string::npos) {
-            std::cerr << "\n  WARN: exception message does not mention 'size': "
-                      << msg << std::endl;
+            std::cerr << "\n  WARN: exception message does not mention 'size': " << msg
+                      << std::endl;
         }
     } catch (...) {
         std::cerr << "\n  ERROR: wrong exception type thrown" << std::endl;
@@ -595,12 +574,11 @@ void test_mismatched_span_throws() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 14: results undersized -- defensive clamp, only first
-// results.size() slots written, tail untouched.
+// Test 14: results undersized -- defensive clamp writes only the available
+// result slots and does not resize the vector.
 // ---------------------------------------------------------------------------
 void test_results_undersized_clamp() {
-    std::cout << "Test 14: results undersized -> defensive clamp..."
-              << std::flush;
+    std::cout << "Test 14: results undersized -> defensive clamp..." << std::flush;
     apply_env("4");
 
     // 5 input pairs but only 3 result slots.
@@ -612,11 +590,10 @@ void test_results_undersized_clamp() {
     }
 
     std::vector<Integer> results;
-    // Pre-fill with sentinel value so we can verify the clamp does not
-    // touch slots beyond results.size().
-    results.emplace_back(uint64_t{999});  // will be overwritten
-    results.emplace_back(uint64_t{888});  // will be overwritten
-    results.emplace_back(uint64_t{777});  // will be overwritten
+    // Pre-fill the available result slots so their updates are observable.
+    results.emplace_back(uint64_t{999}); // will be overwritten
+    results.emplace_back(uint64_t{888}); // will be overwritten
+    results.emplace_back(uint64_t{777}); // will be overwritten
     // results.size() == 3; only first 3 input pairs should be processed.
 
     parallel_mpz_gcd(a_values, b_values, results);
@@ -633,9 +610,8 @@ void test_results_undersized_clamp() {
     for (std::size_t i = 0; i < 3; ++i) {
         uint64_t expect = (i + 1) * 6;
         if (results[i].to_uint64() != expect) {
-            std::cerr << "\n  ERROR: idx " << i << " got "
-                      << results[i].to_string() << " expected " << expect
-                      << std::endl;
+            std::cerr << "\n  ERROR: idx " << i << " got " << results[i].to_string() << " expected "
+                      << expect << std::endl;
             std::abort();
         }
     }
@@ -653,8 +629,7 @@ void test_reset_env_cache_hook() {
     apply_env("1");
     int initial = mpz_gcd_batch_threads();
     if (initial != 1) {
-        std::cerr << "\n  ERROR: pre-reset value " << initial
-                  << " (expected 1)" << std::endl;
+        std::cerr << "\n  ERROR: pre-reset value " << initial << " (expected 1)" << std::endl;
         std::abort();
     }
 
@@ -663,20 +638,21 @@ void test_reset_env_cache_hook() {
     setenv("GNFS_MPZ_GCD_BATCH_THREADS", "4", /*overwrite=*/1);
     int stale = mpz_gcd_batch_threads();
     if (stale != 1) {
-        std::cerr << "\n  ERROR: cache not stable before reset, got "
-                  << stale << " (expected 1)" << std::endl;
+        std::cerr << "\n  ERROR: cache not stable before reset, got " << stale << " (expected 1)"
+                  << std::endl;
         std::abort();
     }
 
     // After reset, the new value resolves.
     mpz_gcd_batch_threads_reset_env_cache_for_testing();
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     int cap = static_cast<int>(hw) * 2;
     int expect = (4 < cap) ? 4 : cap;
     if (mpz_gcd_batch_threads() != expect) {
-        std::cerr << "\n  ERROR: post-reset value " << mpz_gcd_batch_threads()
-                  << " expected " << expect << std::endl;
+        std::cerr << "\n  ERROR: post-reset value " << mpz_gcd_batch_threads() << " expected "
+                  << expect << std::endl;
         std::abort();
     }
 
@@ -690,8 +666,7 @@ void test_reset_env_cache_hook() {
 // Not strictly required by the spec, but documents the speedup ceiling.
 // ---------------------------------------------------------------------------
 void test_perf_info_100_pairs() {
-    std::cout << "Test 16: perf info (100 pairs, 200-bit operands)..."
-              << std::flush;
+    std::cout << "Test 16: perf info (100 pairs, 200-bit operands)..." << std::flush;
 
     // Build 100 random pairs of 192-bit integers so mpz_gcd actually has
     // to walk multiple limbs.
@@ -700,7 +675,7 @@ void test_perf_info_100_pairs() {
     a_values.reserve(100);
     b_values.reserve(100);
     std::mt19937_64 rng(0xFEEDBEEFCAFED00DULL);
-    Integer two64("18446744073709551616", 10);  // 2^64
+    Integer two64("18446744073709551616", 10); // 2^64
     for (std::size_t i = 0; i < 100; ++i) {
         Integer a(uint64_t{rng()});
         Integer chunk_a(uint64_t{rng()});
@@ -724,41 +699,35 @@ void test_perf_info_100_pairs() {
     auto t0 = std::chrono::steady_clock::now();
     parallel_mpz_gcd(a_values, b_values, seq);
     auto t1 = std::chrono::steady_clock::now();
-    long long us_seq = std::chrono::duration_cast<std::chrono::microseconds>(
-                           t1 - t0).count();
+    long long us_seq = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
 
     // N=hw parallel.
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     apply_env(std::to_string(hw).c_str());
     std::vector<Integer> par(a_values.size());
     auto t2 = std::chrono::steady_clock::now();
     parallel_mpz_gcd(a_values, b_values, par);
     auto t3 = std::chrono::steady_clock::now();
-    long long us_par = std::chrono::duration_cast<std::chrono::microseconds>(
-                           t3 - t2).count();
+    long long us_par = std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2).count();
 
     apply_env(nullptr);
 
     // Strict parity check is still required even on a perf-info probe.
     for (std::size_t i = 0; i < a_values.size(); ++i) {
         if (mpz_cmp(seq[i].get_mpz(), par[i].get_mpz()) != 0) {
-            std::cerr << "\n  ERROR: perf probe parity break at idx " << i
-                      << std::endl;
+            std::cerr << "\n  ERROR: perf probe parity break at idx " << i << std::endl;
             std::abort();
         }
     }
 
-    double speedup = (us_par > 0)
-                         ? static_cast<double>(us_seq) /
-                               static_cast<double>(us_par)
-                         : 0.0;
-    std::cout << " INFO seq=" << us_seq << " us, N=" << hw
-              << " par=" << us_par << " us, speedup="
-              << speedup << "x (parity verified)\n";
+    double speedup = (us_par > 0) ? static_cast<double>(us_seq) / static_cast<double>(us_par) : 0.0;
+    std::cout << " INFO seq=" << us_seq << " us, N=" << hw << " par=" << us_par
+              << " us, speedup=" << speedup << "x (parity verified)\n";
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     std::cout << "=== Batched mpz_gcd Parallel Dispatch Tests ===\n";
