@@ -94,6 +94,8 @@ checks active in Release builds.
 The `Timer` instant contract keeps lifecycle, accumulation, unit conversion,
 scoped ownership, and stopwatch restart checks active in Release builds; its
 `noexcept` contract remains compile-time checked.
+The `MpzPowmParallel` instant contract keeps invalid environment-value fallback
+and empty-batch return-path checks active in Release builds.
 The `SieveIntegration` fast contract keeps polynomial selection and context
 verification, non-empty special-Q and candidate flow, candidate lattice and
 coprimality invariants, relation classification, and degenerate-region
