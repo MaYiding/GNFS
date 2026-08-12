@@ -1,11 +1,13 @@
 // Unit tests for gnfs::util::Timer + Stopwatch + ScopedTimer.
 
 #include "gnfs/util/timer.hpp"
+#include "support/test_check.hpp"
 
-#include <cassert>
 #include <chrono>
+#include <cmath>
+#include <cstdint>
 #include <iostream>
-#include <thread>
+#include <utility>
 
 using namespace gnfs::util;
 using namespace std::chrono_literals;
@@ -28,11 +30,11 @@ void test_default_state() {
     std::cout << "Testing Timer default state..." << std::endl;
 
     Timer t;
-    assert(!t.is_running());
-    assert(t.elapsed_seconds() == 0.0);
-    assert(t.elapsed_ms() == 0.0);
-    assert(t.elapsed_us() == 0.0);
-    assert(t.elapsed_ns() == 0);
+    GNFS_TEST_CHECK(!t.is_running());
+    GNFS_TEST_CHECK(t.elapsed_seconds() == 0.0);
+    GNFS_TEST_CHECK(t.elapsed_ms() == 0.0);
+    GNFS_TEST_CHECK(t.elapsed_us() == 0.0);
+    GNFS_TEST_CHECK(t.elapsed_ns() == 0);
 
     std::cout << "  default state: PASS" << std::endl;
 }
@@ -42,20 +44,20 @@ void test_start_stop_basic() {
 
     Timer t;
     t.start();
-    assert(t.is_running());
+    GNFS_TEST_CHECK(t.is_running());
     busy_for(1ms);
     t.stop();
-    assert(!t.is_running());
+    GNFS_TEST_CHECK(!t.is_running());
 
     // Should have accumulated > 0
-    assert(t.elapsed_seconds() > 0.0);
-    assert(t.elapsed_ms() > 0.0);
-    assert(t.elapsed_ns() > 0);
+    GNFS_TEST_CHECK(t.elapsed_seconds() > 0.0);
+    GNFS_TEST_CHECK(t.elapsed_ms() > 0.0);
+    GNFS_TEST_CHECK(t.elapsed_ns() > 0);
 
     // Idempotent stop (second stop should be no-op)
-    int64_t snapshot_ns = t.elapsed_ns();
+    std::int64_t snapshot_ns = t.elapsed_ns();
     t.stop();
-    assert(t.elapsed_ns() == snapshot_ns);
+    GNFS_TEST_CHECK(t.elapsed_ns() == snapshot_ns);
 
     std::cout << "  start/stop: PASS" << std::endl;
 }
@@ -69,15 +71,18 @@ void test_double_start_idempotent() {
     busy_for(500us);
 
     // Second start should be no-op (per impl: only sets start_ if !running_)
+    const std::int64_t before_second_start = t.elapsed_ns();
     t.start();
+    const std::int64_t after_second_start = t.elapsed_ns();
     busy_for(500us);
     t.stop();
 
-    assert(first_start_running);
+    GNFS_TEST_CHECK(first_start_running);
+    GNFS_TEST_CHECK(after_second_start >= before_second_start);
     // We busied for 1 ms total; require non-zero accumulation. Don't pin a
     // specific magnitude — under parallel test load the busy spin can be
     // CPU-starved and report less elapsed wall-clock time than expected.
-    assert(t.elapsed_ns() > 0);
+    GNFS_TEST_CHECK(t.elapsed_ns() > 0);
 
     std::cout << "  double start idempotent: PASS" << std::endl;
 }
@@ -90,19 +95,19 @@ void test_accumulating_across_cycles() {
     t.start();
     busy_for(1ms);
     t.stop();
-    int64_t after_first = t.elapsed_ns();
+    std::int64_t after_first = t.elapsed_ns();
 
     // Restart without resetting accumulated_
     t.start();
     busy_for(1ms);
     t.stop();
-    int64_t after_second = t.elapsed_ns();
+    std::int64_t after_second = t.elapsed_ns();
 
     // Second cycle's accumulation strictly greater than the first cycle's
     // — that's the invariant we care about (accumulator across stop/start
     // cycles). Don't pin an absolute lower bound; busy_for() under heavy
     // parallel test load can be CPU-starved.
-    assert(after_second > after_first);
+    GNFS_TEST_CHECK(after_second > after_first);
 
     std::cout << "  accumulation: PASS" << std::endl;
 }
@@ -114,18 +119,18 @@ void test_reset() {
     t.start();
     busy_for(500us);
     t.stop();
-    assert(t.elapsed_ns() > 0);
+    GNFS_TEST_CHECK(t.elapsed_ns() > 0);
 
     t.reset();
-    assert(t.elapsed_seconds() == 0.0);
-    assert(t.elapsed_ns() == 0);
-    assert(!t.is_running());
+    GNFS_TEST_CHECK(t.elapsed_seconds() == 0.0);
+    GNFS_TEST_CHECK(t.elapsed_ns() == 0);
+    GNFS_TEST_CHECK(!t.is_running());
 
     // After reset, can re-start
     t.start();
     busy_for(500us);
     t.stop();
-    assert(t.elapsed_ns() > 0);
+    GNFS_TEST_CHECK(t.elapsed_ns() > 0);
 
     std::cout << "  reset: PASS" << std::endl;
 }
@@ -137,19 +142,22 @@ void test_restart() {
     t.start();
     busy_for(500us);
     t.stop();
-    int64_t before_restart = t.elapsed_ns();
-    assert(before_restart > 0);
+    std::int64_t before_restart = t.elapsed_ns();
+    GNFS_TEST_CHECK(before_restart > 0);
 
-    // restart should reset and start in one step
-    t.restart();
-    assert(t.is_running());
+    // A runner can be preempted between restart() and elapsed_ns(). Retry the
+    // immediate observation so one scheduling delay cannot fail the contract.
+    std::int64_t after_restart = before_restart;
+    for (int attempt = 0; attempt < 5 && after_restart >= before_restart; ++attempt) {
+        t.restart();
+        after_restart = t.elapsed_ns();
+    }
+    GNFS_TEST_CHECK(after_restart < before_restart);
+    GNFS_TEST_CHECK(t.is_running());
 
     busy_for(500us);
-    int64_t during_running = t.elapsed_ns();
-    // restart() should leave the timer running and usable. Avoid comparing
-    // against the previous wall-clock duration: under parallel CI load the
-    // process can be preempted immediately after restart().
-    assert(during_running > 0);
+    std::int64_t during_running = t.elapsed_ns();
+    GNFS_TEST_CHECK(during_running > after_restart);
 
     t.stop();
 
@@ -164,12 +172,12 @@ void test_running_query_while_active() {
     busy_for(500us);
 
     // Query while running should include in-flight time
-    int64_t snapshot1 = t.elapsed_ns();
+    std::int64_t snapshot1 = t.elapsed_ns();
     busy_for(500us);
-    int64_t snapshot2 = t.elapsed_ns();
+    std::int64_t snapshot2 = t.elapsed_ns();
 
-    assert(snapshot1 > 0);
-    assert(snapshot2 > snapshot1); // Time advances
+    GNFS_TEST_CHECK(snapshot1 > 0);
+    GNFS_TEST_CHECK(snapshot2 > snapshot1); // Time advances
 
     t.stop();
 
@@ -187,20 +195,20 @@ void test_elapsed_unit_conversions() {
     double seconds = t.elapsed_seconds();
     double ms = t.elapsed_ms();
     double us = t.elapsed_us();
-    int64_t ns = t.elapsed_ns();
+    std::int64_t ns = t.elapsed_ns();
 
     // All units describe the same duration; conversion factors must hold.
     // Allow tiny epsilon for floating-point.
-    assert(std::abs(seconds * 1000.0 - ms) < 1e-6);
-    assert(std::abs(ms * 1000.0 - us) < 1e-3);
-    assert(std::abs(us * 1000.0 - static_cast<double>(ns)) < 1e3);
+    GNFS_TEST_CHECK(std::abs(seconds * 1000.0 - ms) < 1e-6);
+    GNFS_TEST_CHECK(std::abs(ms * 1000.0 - us) < 1e-3);
+    GNFS_TEST_CHECK(std::abs(us * 1000.0 - static_cast<double>(ns)) < 1e3);
 
     // All > 0 (we busied 2 ms). Don't pin absolute magnitudes — under heavy
     // parallel test load a busy spin can wall-clock less than its target.
-    assert(seconds > 0);
-    assert(ms > 0);
-    assert(us > 0);
-    assert(ns > 0);
+    GNFS_TEST_CHECK(seconds > 0);
+    GNFS_TEST_CHECK(ms > 0);
+    GNFS_TEST_CHECK(us > 0);
+    GNFS_TEST_CHECK(ns > 0);
 
     std::cout << "  unit conversions: PASS" << std::endl;
 }
@@ -209,16 +217,16 @@ void test_scoped_timer() {
     std::cout << "Testing ScopedTimer RAII..." << std::endl;
 
     Timer t;
-    assert(!t.is_running());
+    GNFS_TEST_CHECK(!t.is_running());
 
     {
         Timer::ScopedTimer guard(t);
-        assert(t.is_running());
+        GNFS_TEST_CHECK(t.is_running());
         busy_for(1ms);
     } // guard destructor stops timer
 
-    assert(!t.is_running());
-    assert(t.elapsed_ns() > 0);
+    GNFS_TEST_CHECK(!t.is_running());
+    GNFS_TEST_CHECK(t.elapsed_ns() > 0);
 
     std::cout << "  ScopedTimer RAII: PASS" << std::endl;
 }
@@ -229,11 +237,11 @@ void test_scoped_timer_via_factory() {
     Timer t;
     {
         auto guard = t.scoped();
-        assert(t.is_running());
+        GNFS_TEST_CHECK(t.is_running());
         busy_for(500us);
     }
-    assert(!t.is_running());
-    assert(t.elapsed_ns() > 0);
+    GNFS_TEST_CHECK(!t.is_running());
+    GNFS_TEST_CHECK(t.elapsed_ns() > 0);
 
     std::cout << "  scoped() factory: PASS" << std::endl;
 }
@@ -244,18 +252,18 @@ void test_scoped_timer_move() {
     Timer t;
     {
         Timer::ScopedTimer outer(t);
-        assert(t.is_running());
+        GNFS_TEST_CHECK(t.is_running());
 
         // Move outer into inner; outer becomes inactive
         Timer::ScopedTimer inner(std::move(outer));
-        assert(t.is_running()); // Inner now owns; timer still running
+        GNFS_TEST_CHECK(t.is_running()); // Inner now owns; timer still running
 
         busy_for(500us);
     } // Inner destroyed first (last-declared, first-destroyed), stops timer.
       // Outer destroyed after; its active_=false so no-op.
 
-    assert(!t.is_running());
-    assert(t.elapsed_ns() > 0);
+    GNFS_TEST_CHECK(!t.is_running());
+    GNFS_TEST_CHECK(t.elapsed_ns() > 0);
 
     std::cout << "  ScopedTimer move: PASS" << std::endl;
 }
@@ -270,11 +278,11 @@ void test_stopwatch_basic() {
     double elapsed_ms = sw.elapsed_ms();
     double after_s = sw.elapsed_seconds();
 
-    assert(before_s > 0);
-    assert(after_s > 0);
-    assert(elapsed_ms > 0); // Don't pin magnitude; busy spin can be CPU-starved
-    assert(elapsed_ms >= before_s * 1000.0);
-    assert(elapsed_ms <= after_s * 1000.0);
+    GNFS_TEST_CHECK(before_s > 0);
+    GNFS_TEST_CHECK(after_s > 0);
+    GNFS_TEST_CHECK(elapsed_ms > 0); // Don't pin magnitude; busy spin can be CPU-starved
+    GNFS_TEST_CHECK(elapsed_ms >= before_s * 1000.0);
+    GNFS_TEST_CHECK(elapsed_ms <= after_s * 1000.0);
 
     std::cout << "  Stopwatch basic: PASS" << std::endl;
 }
@@ -285,13 +293,16 @@ void test_stopwatch_restart() {
     Stopwatch sw;
     busy_for(2ms);
     double before = sw.elapsed_ms();
-    assert(before > 0); // Busy-spin advances clock at least minimally
+    GNFS_TEST_CHECK(before > 0); // Busy-spin advances clock at least minimally
 
-    sw.restart();
-    double after_restart = sw.elapsed_ms();
-    // Immediately after restart, elapsed should be much smaller than before
-    // (essentially the time to call restart() and elapsed_ms() — sub-µs).
-    assert(after_restart < before);
+    // A runner can be preempted between restart() and elapsed_ms(). Retry the
+    // immediate observation so one scheduling delay cannot fail the contract.
+    double after_restart = before;
+    for (int attempt = 0; attempt < 5 && after_restart >= before; ++attempt) {
+        sw.restart();
+        after_restart = sw.elapsed_ms();
+    }
+    GNFS_TEST_CHECK(after_restart < before);
 
     std::cout << "  Stopwatch restart: PASS" << std::endl;
 }
