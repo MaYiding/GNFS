@@ -102,6 +102,9 @@ in Release builds.
 The `MpzGcdParallel` instant contract keeps invalid environment-value fallback,
 empty-batch and resolver boundaries, and fixed small-value GCD checks active in
 Release builds.
+The `MpzMulParallel` instant contract keeps invalid environment-value fallback,
+empty-batch and resolver boundaries, and fixed small-value product checks active
+in Release builds.
 The `SieveIntegration` fast contract keeps polynomial selection and context
 verification, non-empty special-Q and candidate flow, candidate lattice and
 coprimality invariants, relation classification, and degenerate-region
