@@ -306,6 +306,148 @@ void validate_budget(const StructuredReductionBudget& budget) {
     }
 }
 
+size_t validate_prebuilt_incidence_stats(const std::vector<std::vector<LargePrimeKey>>& row_lp_keys,
+                                         const StructuredIncidenceBuildStats& stats) {
+    if (stats.requested_worker_count == 0) {
+        fail(StructuredReductionErrorCode::InvariantViolation,
+             "prebuilt incidence reports no requested worker");
+    }
+
+    const size_t row_count = row_lp_keys.size();
+    if (row_count == 0) {
+        if (stats.shard_count != 0 || stats.peak_shard_rows != 0 ||
+            stats.peak_shard_incidence_entries != 0 || stats.total_incidence_entries != 0 ||
+            stats.peak_worker_count != 0) {
+            fail(StructuredReductionErrorCode::InvariantViolation,
+                 "empty prebuilt incidence has nonempty build statistics");
+        }
+        return 0;
+    }
+
+    if (stats.peak_shard_rows == 0 || stats.peak_shard_rows > row_count) {
+        fail(StructuredReductionErrorCode::InvariantViolation,
+             "prebuilt incidence peak shard row count is invalid");
+    }
+    const size_t expected_shard_count =
+        row_count / stats.peak_shard_rows + (row_count % stats.peak_shard_rows != 0);
+    if (stats.shard_count != expected_shard_count) {
+        fail(StructuredReductionErrorCode::InvariantViolation,
+             "prebuilt incidence shard count is inconsistent");
+    }
+
+    const size_t expected_peak_workers =
+        std::min<size_t>(stats.requested_worker_count, stats.peak_shard_rows);
+    if (stats.peak_worker_count != expected_peak_workers) {
+        fail(StructuredReductionErrorCode::InvariantViolation,
+             "prebuilt incidence worker statistics are inconsistent");
+    }
+
+    size_t total_entries = 0;
+    size_t peak_shard_entries = 0;
+    for (size_t shard_begin = 0; shard_begin < row_count;) {
+        const size_t shard_rows = std::min(stats.peak_shard_rows, row_count - shard_begin);
+        size_t shard_entries = 0;
+        for (size_t local_row = 0; local_row < shard_rows; ++local_row) {
+            const size_t row_index = shard_begin + local_row;
+            shard_entries = checked_resource_add(shard_entries, row_lp_keys[row_index].size(),
+                                                 "prebuilt incidence shard entry count overflows");
+        }
+        total_entries = checked_resource_add(total_entries, shard_entries,
+                                             "prebuilt incidence total entry count overflows");
+        peak_shard_entries = std::max(peak_shard_entries, shard_entries);
+        shard_begin += shard_rows;
+    }
+    if (stats.total_incidence_entries != total_entries ||
+        stats.peak_shard_incidence_entries != peak_shard_entries) {
+        fail(StructuredReductionErrorCode::InvariantViolation,
+             "prebuilt incidence entry statistics are inconsistent");
+    }
+    return total_entries;
+}
+
+void validate_prebuilt_incidence(const SourceCorpus& corpus,
+                                 const StructuredIncidenceBuildResult& incidence) {
+    if (!incidence.valid()) {
+        fail(StructuredReductionErrorCode::InvalidInput,
+             "prebuilt incidence receipt is invalid or already consumed");
+    }
+    if (incidence.generation() != corpus.generation()) {
+        fail(StructuredReductionErrorCode::InvalidGeneration,
+             "prebuilt incidence belongs to a different source generation");
+    }
+    if (incidence.row_count() != corpus.size()) {
+        fail(StructuredReductionErrorCode::InvalidInput,
+             "prebuilt incidence row count differs from the source corpus");
+    }
+
+    const auto& row_lp_keys = incidence.row_lp_keys();
+    if (row_lp_keys.size() != incidence.row_count()) {
+        fail(StructuredReductionErrorCode::InvariantViolation,
+             "prebuilt incidence row support count is inconsistent");
+    }
+    if (!std::in_range<uint64_t>(row_lp_keys.size())) {
+        fail(StructuredReductionErrorCode::ResourceLimit,
+             "prebuilt incidence row count exceeds the row ID representation");
+    }
+    constexpr size_t max_lp_keys = static_cast<size_t>(Relation::MAX_SERIALIZED_LARGE_PRIMES) * 2;
+    for (const auto& keys : row_lp_keys) {
+        if (keys.size() > max_lp_keys) {
+            fail(StructuredReductionErrorCode::InvariantViolation,
+                 "prebuilt incidence row support exceeds relation persistence limits");
+        }
+        validate_canonical_lp_keys(keys);
+    }
+
+    const size_t expected_entries =
+        validate_prebuilt_incidence_stats(row_lp_keys, incidence.stats());
+    const auto& built_buckets = incidence.buckets();
+    size_t bucket_entries = 0;
+    for (size_t bucket_index = 0; bucket_index < built_buckets.size(); ++bucket_index) {
+        const auto& bucket = built_buckets[bucket_index];
+        validate_lp_key(bucket.key);
+        if (bucket_index != 0 && !(built_buckets[bucket_index - 1].key < bucket.key)) {
+            fail(StructuredReductionErrorCode::InvariantViolation,
+                 "prebuilt incidence buckets are not strictly canonical");
+        }
+        if (bucket.adjacency.empty()) {
+            fail(StructuredReductionErrorCode::InvariantViolation,
+                 "prebuilt incidence contains an empty bucket");
+        }
+
+        StructuredRowId previous{};
+        bool have_previous = false;
+        for (const StructuredRowId row_id : bucket.adjacency) {
+            if (row_id.value >= row_lp_keys.size()) {
+                fail(StructuredReductionErrorCode::InvariantViolation,
+                     "prebuilt incidence bucket contains an out-of-range row");
+            }
+            if (have_previous && !(previous < row_id)) {
+                fail(StructuredReductionErrorCode::InvariantViolation,
+                     "prebuilt incidence bucket adjacency is not strictly canonical");
+            }
+            previous = row_id;
+            have_previous = true;
+
+            const size_t row_index = static_cast<size_t>(row_id.value);
+            if (!std::binary_search(row_lp_keys[row_index].begin(), row_lp_keys[row_index].end(),
+                                    bucket.key)) {
+                fail(StructuredReductionErrorCode::InvariantViolation,
+                     "prebuilt incidence bucket is not symmetric with its row support");
+            }
+        }
+        bucket_entries = checked_resource_add(bucket_entries, bucket.adjacency.size(),
+                                              "prebuilt incidence bucket entry count overflows");
+    }
+    if (bucket_entries != expected_entries) {
+        fail(StructuredReductionErrorCode::InvariantViolation,
+             "prebuilt incidence bucket entries differ from row supports");
+    }
+    // Canonical row supports and strictly unique bucket adjacency make both
+    // sides sets of (key, row) pairs. Every bucket pair was proven present in
+    // its row support above, and equal cardinality therefore proves the reverse
+    // inclusion without an O(E log B) second lookup pass.
+}
+
 } // namespace
 
 StructuredReductionError::StructuredReductionError(StructuredReductionErrorCode code,
@@ -684,27 +826,29 @@ struct SequentialStructuredReducer::Impl final {
         std::vector<Relation> materialized;
     };
 
-    explicit Impl(SourceCorpus source_corpus, const StructuredIncidenceBuildOptions& build_options)
-        : corpus(std::move(source_corpus)) {
-        auto incidence = build_structured_incidence_shards(corpus, build_options);
-        incidence_build_statistics = incidence.stats;
-
+    explicit Impl(SourceCorpus source_corpus, std::vector<std::vector<LargePrimeKey>> row_lp_keys,
+                  std::vector<StructuredIncidenceBucket> built_buckets,
+                  StructuredIncidenceBuildStats build_stats)
+        : corpus(std::move(source_corpus)), incidence_build_statistics(build_stats) {
         rows.reserve(corpus.size());
         for (size_t ordinal = 0; ordinal < corpus.size(); ++ordinal) {
             const SourceId source = corpus.source_id(ordinal);
-            auto keys = std::move(incidence.row_lp_keys[ordinal]);
-            validate_canonical_lp_keys(keys);
+            auto keys = std::move(row_lp_keys[ordinal]);
             rows.push_back(Row{SourceCombination::singleton(source), std::move(keys), {}, true});
         }
 
-        buckets.reserve(incidence.buckets.size());
-        for (auto& built_bucket : incidence.buckets) {
+        buckets.reserve(built_buckets.size());
+        for (auto& built_bucket : built_buckets) {
             const size_t bucket_id = buckets.size();
             Bucket bucket;
             bucket.key = built_bucket.key;
             bucket.adjacency = std::move(built_bucket.adjacency);
             bucket.active_degree = bucket.adjacency.size();
             for (const StructuredRowId row : bucket.adjacency) {
+                if (row.value >= rows.size()) {
+                    fail(StructuredReductionErrorCode::InvariantViolation,
+                         "prebuilt incidence bucket contains an out-of-range row");
+                }
                 rows[static_cast<size_t>(row.value)].bucket_ids.push_back(bucket_id);
             }
             buckets.push_back(std::move(bucket));
@@ -1828,8 +1972,24 @@ SequentialStructuredReducer::SequentialStructuredReducer(SourceCorpus corpus)
     : SequentialStructuredReducer(std::move(corpus), StructuredIncidenceBuildOptions{}) {}
 
 SequentialStructuredReducer::SequentialStructuredReducer(
-    SourceCorpus corpus, const StructuredIncidenceBuildOptions& build_options)
-    : impl_(std::make_unique<Impl>(std::move(corpus), build_options)) {}
+    SourceCorpus corpus, const StructuredIncidenceBuildOptions& build_options) {
+    auto incidence = build_structured_incidence_shards(corpus, build_options);
+    impl_ = consume_prebuilt_incidence(std::move(corpus), std::move(incidence));
+}
+
+SequentialStructuredReducer::SequentialStructuredReducer(SourceCorpus corpus,
+                                                         StructuredIncidenceBuildResult&& incidence)
+    : impl_(consume_prebuilt_incidence(std::move(corpus), std::move(incidence))) {}
+
+std::unique_ptr<SequentialStructuredReducer::Impl>
+SequentialStructuredReducer::consume_prebuilt_incidence(
+    SourceCorpus corpus, StructuredIncidenceBuildResult&& incidence) {
+    validate_prebuilt_incidence(corpus, incidence);
+
+    StructuredIncidenceBuildResult consumed(std::move(incidence));
+    return std::make_unique<Impl>(std::move(corpus), std::move(consumed.row_lp_keys_),
+                                  std::move(consumed.buckets_), consumed.stats_);
+}
 
 SequentialStructuredReducer::SequentialStructuredReducer(uint64_t generation,
                                                          std::vector<Relation> relations)

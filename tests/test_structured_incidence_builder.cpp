@@ -7,15 +7,18 @@
 #include <exception>
 #include <initializer_list>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 using gnfs::core::Relation;
+using gnfs::relation::build_structured_incidence_from_row_supports;
 using gnfs::relation::build_structured_incidence_shards;
 using gnfs::relation::LargePrimeKey;
 using gnfs::relation::odd_large_prime_keys;
@@ -29,6 +32,15 @@ using gnfs::relation::StructuredReductionError;
 using gnfs::relation::StructuredReductionErrorCode;
 using gnfs::relation::StructuredReductionStats;
 using gnfs::relation::StructuredRowId;
+
+template <typename T>
+concept HasIncidenceRowsOnRvalue = requires(T&& value) { std::move(value).row_lp_keys(); };
+
+template <typename T>
+concept HasIncidenceBucketsOnRvalue = requires(T&& value) { std::move(value).buckets(); };
+
+template <typename T>
+concept HasIncidenceStatsOnRvalue = requires(T&& value) { std::move(value).stats(); };
 
 namespace {
 
@@ -136,15 +148,21 @@ void check_reducer_state_equal(const SequentialStructuredReducer& lhs,
     CHECK(stats_equal(lhs.stats(), rhs.stats()));
 }
 
-[[nodiscard]] StructuredIncidenceBuildResult independent_build(const SourceCorpus& corpus) {
-    StructuredIncidenceBuildResult result;
+struct ExpectedIncidence final {
+    std::vector<std::vector<LargePrimeKey>> row_lp_keys;
+    std::vector<StructuredIncidenceBucket> buckets;
+    size_t total_incidence_entries = 0;
+};
+
+[[nodiscard]] ExpectedIncidence independent_build(const SourceCorpus& corpus) {
+    ExpectedIncidence result;
     result.row_lp_keys.reserve(corpus.size());
     std::map<LargePrimeKey, std::vector<StructuredRowId>> buckets;
     for (size_t ordinal = 0; ordinal < corpus.size(); ++ordinal) {
         auto keys = odd_large_prime_keys(corpus.at(corpus.source_id(ordinal)));
         for (const LargePrimeKey& key : keys)
             buckets[key].push_back(StructuredRowId{static_cast<uint64_t>(ordinal)});
-        result.stats.total_incidence_entries += keys.size();
+        result.total_incidence_entries += keys.size();
         result.row_lp_keys.push_back(std::move(keys));
     }
     for (auto& [key, adjacency] : buckets)
@@ -153,23 +171,33 @@ void check_reducer_state_equal(const SequentialStructuredReducer& lhs,
 }
 
 void check_structural_result(const StructuredIncidenceBuildResult& result) {
-    for (size_t row = 0; row < result.row_lp_keys.size(); ++row) {
-        const auto& keys = result.row_lp_keys[row];
+    CHECK(result.valid());
+    CHECK(result.generation() != 0);
+    CHECK(result.row_count() == result.row_lp_keys().size());
+    for (size_t row = 0; row < result.row_lp_keys().size(); ++row) {
+        const auto& keys = result.row_lp_keys()[row];
         CHECK(std::is_sorted(keys.begin(), keys.end()));
         CHECK(std::adjacent_find(keys.begin(), keys.end()) == keys.end());
     }
-    for (size_t bucket = 0; bucket < result.buckets.size(); ++bucket) {
+    for (size_t bucket = 0; bucket < result.buckets().size(); ++bucket) {
         if (bucket != 0)
-            CHECK(result.buckets[bucket - 1].key < result.buckets[bucket].key);
-        const auto& adjacency = result.buckets[bucket].adjacency;
+            CHECK(result.buckets()[bucket - 1].key < result.buckets()[bucket].key);
+        const auto& adjacency = result.buckets()[bucket].adjacency;
         CHECK(std::is_sorted(adjacency.begin(), adjacency.end()));
         CHECK(std::adjacent_find(adjacency.begin(), adjacency.end()) == adjacency.end());
         for (const StructuredRowId row : adjacency) {
-            CHECK(row.value < result.row_lp_keys.size());
-            const auto& keys = result.row_lp_keys[static_cast<size_t>(row.value)];
-            CHECK(std::binary_search(keys.begin(), keys.end(), result.buckets[bucket].key));
+            CHECK(row.value < result.row_lp_keys().size());
+            const auto& keys = result.row_lp_keys()[static_cast<size_t>(row.value)];
+            CHECK(std::binary_search(keys.begin(), keys.end(), result.buckets()[bucket].key));
         }
     }
+}
+
+void check_matches_expected(const StructuredIncidenceBuildResult& actual,
+                            const ExpectedIncidence& expected) {
+    CHECK(actual.row_lp_keys() == expected.row_lp_keys);
+    CHECK(actual.buckets() == expected.buckets);
+    CHECK(actual.stats().total_incidence_entries == expected.total_incidence_entries);
 }
 
 void test_invalid_options_fail_before_construction() {
@@ -191,14 +219,17 @@ void test_empty_corpus_has_no_shards() {
     SourceCorpus corpus(51'002, {});
     const auto result =
         build_structured_incidence_shards(corpus, StructuredIncidenceBuildOptions{7, 4});
-    CHECK(result.row_lp_keys.empty());
-    CHECK(result.buckets.empty());
-    CHECK(result.stats.shard_count == 0);
-    CHECK(result.stats.peak_shard_rows == 0);
-    CHECK(result.stats.peak_shard_incidence_entries == 0);
-    CHECK(result.stats.total_incidence_entries == 0);
-    CHECK(result.stats.requested_worker_count == 4);
-    CHECK(result.stats.peak_worker_count == 0);
+    CHECK(result.valid());
+    CHECK(result.generation() == corpus.generation());
+    CHECK(result.row_count() == 0);
+    CHECK(result.row_lp_keys().empty());
+    CHECK(result.buckets().empty());
+    CHECK(result.stats().shard_count == 0);
+    CHECK(result.stats().peak_shard_rows == 0);
+    CHECK(result.stats().peak_shard_incidence_entries == 0);
+    CHECK(result.stats().total_incidence_entries == 0);
+    CHECK(result.stats().requested_worker_count == 4);
+    CHECK(result.stats().peak_worker_count == 0);
 }
 
 void test_hand_built_parity_and_full_width_keys() {
@@ -215,14 +246,13 @@ void test_hand_built_parity_and_full_width_keys() {
         for (const uint32_t workers : std::array<uint32_t, 3>{1, 2, 4}) {
             const auto actual = build_structured_incidence_shards(
                 corpus, StructuredIncidenceBuildOptions{shard_rows, workers});
-            CHECK(actual.row_lp_keys == expected.row_lp_keys);
-            CHECK(actual.buckets == expected.buckets);
-            CHECK(actual.stats.shard_count == (corpus.size() + shard_rows - 1) / shard_rows);
-            CHECK(actual.stats.peak_shard_rows == std::min(shard_rows, corpus.size()));
-            CHECK(actual.stats.total_incidence_entries == expected.stats.total_incidence_entries);
-            CHECK(actual.stats.requested_worker_count == workers);
-            CHECK(actual.stats.peak_worker_count ==
-                  std::min<uint32_t>(workers, static_cast<uint32_t>(actual.stats.peak_shard_rows)));
+            check_matches_expected(actual, expected);
+            CHECK(actual.stats().shard_count == (corpus.size() + shard_rows - 1) / shard_rows);
+            CHECK(actual.stats().peak_shard_rows == std::min(shard_rows, corpus.size()));
+            CHECK(actual.stats().requested_worker_count == workers);
+            CHECK(
+                actual.stats().peak_worker_count ==
+                std::min<uint32_t>(workers, static_cast<uint32_t>(actual.stats().peak_shard_rows)));
             check_structural_result(actual);
         }
     }
@@ -249,6 +279,137 @@ void test_hand_built_parity_and_full_width_keys() {
     return relations;
 }
 
+void expect_invalid_row_support_build(
+    uint64_t generation, std::vector<std::vector<LargePrimeKey>> row_lp_keys,
+    StructuredIncidenceBuildOptions options = StructuredIncidenceBuildOptions{4, 2},
+    StructuredReductionErrorCode expected = StructuredReductionErrorCode::InvalidInput) {
+    bool caught = false;
+    try {
+        (void)build_structured_incidence_from_row_supports(generation, std::move(row_lp_keys),
+                                                           options);
+    } catch (const StructuredReductionError& error) {
+        caught = true;
+        CHECK(error.code() == expected);
+    }
+    CHECK(caught);
+}
+
+void test_source_and_row_support_builders_are_exactly_equivalent() {
+    constexpr uint64_t generation = 51'008;
+    const auto p = rational_key((uint64_t{1} << 40) + 87);
+    const auto q = algebraic_key((uint64_t{1} << 42) + 21, (uint64_t{1} << 39) + 9);
+    const auto projective = algebraic_key(65'537, std::numeric_limits<uint32_t>::max());
+
+    Relation even_exponent = make_relation(4, {});
+    even_exponent.rational_large_prime.emplace_back(p.prime, uint8_t{2});
+    SourceCorpus corpus(generation,
+                        {make_relation(1, {}), make_relation(2, {p}), make_relation(3, {p, p, q}),
+                         std::move(even_exponent), make_relation(5, {p, q, projective})});
+
+    for (const size_t shard_rows : std::array<size_t, 4>{1, 2, 4, 64}) {
+        for (const uint32_t workers : std::array<uint32_t, 3>{1, 2, 4}) {
+            const StructuredIncidenceBuildOptions options{shard_rows, workers};
+            const auto source_built = build_structured_incidence_shards(corpus, options);
+            auto row_supports = source_built.row_lp_keys();
+            const auto support_built = build_structured_incidence_from_row_supports(
+                generation, std::move(row_supports), options);
+
+            CHECK(source_built == support_built);
+            CHECK(source_built.generation() == generation);
+            CHECK(source_built.row_count() == corpus.size());
+            CHECK(source_built.row_lp_keys()[0].empty());
+            CHECK(source_built.row_lp_keys()[1] == std::vector<LargePrimeKey>{p});
+            CHECK(source_built.row_lp_keys()[2] == std::vector<LargePrimeKey>{q});
+            CHECK(source_built.row_lp_keys()[3].empty());
+            CHECK(source_built.row_lp_keys()[4] == (std::vector<LargePrimeKey>{projective, p, q}));
+            CHECK(source_built.stats() == support_built.stats());
+            check_structural_result(support_built);
+        }
+    }
+}
+
+void test_empty_row_support_build_is_valid_and_source_equivalent() {
+    constexpr uint64_t generation = 51'009;
+    const StructuredIncidenceBuildOptions options{64, 4};
+    SourceCorpus corpus(generation, {});
+    const auto source_built = build_structured_incidence_shards(corpus, options);
+    const auto support_built =
+        build_structured_incidence_from_row_supports(generation, {}, options);
+
+    CHECK(source_built == support_built);
+    CHECK(support_built.valid());
+    CHECK(support_built.generation() == generation);
+    CHECK(support_built.row_count() == 0);
+    CHECK(support_built.row_lp_keys().empty());
+    CHECK(support_built.buckets().empty());
+    CHECK(support_built.stats().requested_worker_count == options.worker_count);
+    CHECK(support_built.stats().peak_worker_count == 0);
+}
+
+void test_row_support_builder_rejects_invalid_requests_and_noncanonical_support() {
+    const auto p = rational_key(101);
+    const auto q = rational_key(103);
+    std::vector<LargePrimeKey> oversized;
+    for (size_t index = 0;
+         index < static_cast<size_t>(Relation::MAX_SERIALIZED_LARGE_PRIMES) * 2 + 1; ++index) {
+        oversized.push_back(rational_key(101 + static_cast<uint64_t>(index) * 2));
+    }
+
+    expect_invalid_row_support_build(0, {{p}}, StructuredIncidenceBuildOptions{4, 2},
+                                     StructuredReductionErrorCode::InvalidGeneration);
+    expect_invalid_row_support_build(51'010, {{p}}, StructuredIncidenceBuildOptions{0, 1});
+    expect_invalid_row_support_build(51'010, {{p}}, StructuredIncidenceBuildOptions{1, 0});
+    expect_invalid_row_support_build(51'010, {{p, p}});
+    expect_invalid_row_support_build(51'010, {{q, p}});
+    expect_invalid_row_support_build(51'010, {{LargePrimeKey{1, 0, false}}});
+    expect_invalid_row_support_build(51'010, {{LargePrimeKey{101, 7, false}}});
+    expect_invalid_row_support_build(51'010, {{LargePrimeKey{101, 101, true}}});
+    expect_invalid_row_support_build(51'010, {std::move(oversized)},
+                                     StructuredIncidenceBuildOptions{4, 2},
+                                     StructuredReductionErrorCode::PersistenceLimit);
+}
+
+void test_incidence_receipt_is_move_only_and_moved_from_invalid() {
+    static_assert(!std::is_default_constructible_v<StructuredIncidenceBuildResult>);
+    static_assert(!std::is_copy_constructible_v<StructuredIncidenceBuildResult>);
+    static_assert(!std::is_copy_assignable_v<StructuredIncidenceBuildResult>);
+    static_assert(std::is_nothrow_move_constructible_v<StructuredIncidenceBuildResult>);
+    static_assert(std::is_nothrow_move_assignable_v<StructuredIncidenceBuildResult>);
+    static_assert(!HasIncidenceRowsOnRvalue<StructuredIncidenceBuildResult>);
+    static_assert(!HasIncidenceBucketsOnRvalue<StructuredIncidenceBuildResult>);
+    static_assert(!HasIncidenceStatsOnRvalue<StructuredIncidenceBuildResult>);
+
+    constexpr uint64_t generation = 51'011;
+    auto original = build_structured_incidence_from_row_supports(
+        generation, {{rational_key(101)}, {algebraic_key(103, 7)}},
+        StructuredIncidenceBuildOptions{1, 2});
+    const auto expected_rows = original.row_lp_keys();
+    const auto expected_buckets = original.buckets();
+    const auto expected_stats = original.stats();
+
+    auto moved(std::move(original));
+    CHECK(!original.valid());
+    CHECK(original.generation() == 0);
+    CHECK(original.row_count() == 0);
+    CHECK(moved.valid());
+    CHECK(moved.generation() == generation);
+    CHECK(moved.row_lp_keys() == expected_rows);
+    CHECK(moved.buckets() == expected_buckets);
+    CHECK(moved.stats() == expected_stats);
+
+    auto assigned = build_structured_incidence_from_row_supports(
+        generation + 1, {}, StructuredIncidenceBuildOptions{64, 1});
+    assigned = std::move(moved);
+    CHECK(!moved.valid());
+    CHECK(moved.generation() == 0);
+    CHECK(moved.row_count() == 0);
+    CHECK(assigned.valid());
+    CHECK(assigned.generation() == generation);
+    CHECK(assigned.row_lp_keys() == expected_rows);
+    CHECK(assigned.buckets() == expected_buckets);
+    CHECK(assigned.stats() == expected_stats);
+}
+
 [[nodiscard]] std::vector<Relation> synthetic_50d_incidence_fixture(size_t row_count) {
     constexpr uint64_t base = (uint64_t{1} << 48) + 1;
     std::vector<Relation> relations;
@@ -273,35 +434,38 @@ void test_large_overlapping_fixture_is_shard_and_worker_equivalent() {
     SourceCorpus corpus(51'004, overlapping_fixture(257));
     const auto expected = independent_build(corpus);
     for (const size_t shard_rows : std::array<size_t, 5>{1, 7, 32, 64, 512}) {
-        StructuredIncidenceBuildResult baseline;
+        std::vector<std::vector<LargePrimeKey>> baseline_row_lp_keys;
+        std::vector<StructuredIncidenceBucket> baseline_buckets;
+        gnfs::relation::StructuredIncidenceBuildStats baseline_stats;
         bool have_baseline = false;
         for (const uint32_t workers : std::array<uint32_t, 3>{1, 2, 4}) {
             const auto actual = build_structured_incidence_shards(
                 corpus, StructuredIncidenceBuildOptions{shard_rows, workers});
-            CHECK(actual.row_lp_keys == expected.row_lp_keys);
-            CHECK(actual.buckets == expected.buckets);
-            CHECK(actual.stats.shard_count == (corpus.size() + shard_rows - 1) / shard_rows);
-            CHECK(actual.stats.peak_shard_rows == std::min(shard_rows, corpus.size()));
-            CHECK(actual.stats.peak_shard_rows <= shard_rows);
-            CHECK(actual.stats.total_incidence_entries == expected.stats.total_incidence_entries);
-            CHECK(actual.stats.peak_shard_incidence_entries <=
-                  actual.stats.total_incidence_entries);
-            CHECK(actual.stats.requested_worker_count == workers);
-            CHECK(actual.stats.peak_worker_count ==
-                  std::min<uint32_t>(workers, static_cast<uint32_t>(actual.stats.peak_shard_rows)));
+            check_matches_expected(actual, expected);
+            CHECK(actual.stats().shard_count == (corpus.size() + shard_rows - 1) / shard_rows);
+            CHECK(actual.stats().peak_shard_rows == std::min(shard_rows, corpus.size()));
+            CHECK(actual.stats().peak_shard_rows <= shard_rows);
+            CHECK(actual.stats().peak_shard_incidence_entries <=
+                  actual.stats().total_incidence_entries);
+            CHECK(actual.stats().requested_worker_count == workers);
+            CHECK(
+                actual.stats().peak_worker_count ==
+                std::min<uint32_t>(workers, static_cast<uint32_t>(actual.stats().peak_shard_rows)));
             check_structural_result(actual);
             if (!have_baseline) {
-                baseline = actual;
+                baseline_row_lp_keys = actual.row_lp_keys();
+                baseline_buckets = actual.buckets();
+                baseline_stats = actual.stats();
                 have_baseline = true;
             } else {
-                CHECK(actual.row_lp_keys == baseline.row_lp_keys);
-                CHECK(actual.buckets == baseline.buckets);
-                CHECK(actual.stats.shard_count == baseline.stats.shard_count);
-                CHECK(actual.stats.peak_shard_rows == baseline.stats.peak_shard_rows);
-                CHECK(actual.stats.peak_shard_incidence_entries ==
-                      baseline.stats.peak_shard_incidence_entries);
-                CHECK(actual.stats.total_incidence_entries ==
-                      baseline.stats.total_incidence_entries);
+                CHECK(actual.row_lp_keys() == baseline_row_lp_keys);
+                CHECK(actual.buckets() == baseline_buckets);
+                CHECK(actual.stats().shard_count == baseline_stats.shard_count);
+                CHECK(actual.stats().peak_shard_rows == baseline_stats.peak_shard_rows);
+                CHECK(actual.stats().peak_shard_incidence_entries ==
+                      baseline_stats.peak_shard_incidence_entries);
+                CHECK(actual.stats().total_incidence_entries ==
+                      baseline_stats.total_incidence_entries);
             }
         }
     }
@@ -314,14 +478,12 @@ void test_hardware_worker_request_preserves_canonical_output() {
     const auto expected = independent_build(corpus);
     const auto actual =
         build_structured_incidence_shards(corpus, StructuredIncidenceBuildOptions{5, workers});
-    CHECK(actual.row_lp_keys == expected.row_lp_keys);
-    CHECK(actual.buckets == expected.buckets);
-    CHECK(actual.stats.shard_count == 4);
-    CHECK(actual.stats.peak_shard_rows == 5);
-    CHECK(actual.stats.total_incidence_entries == expected.stats.total_incidence_entries);
-    CHECK(actual.stats.requested_worker_count == workers);
-    CHECK(actual.stats.peak_worker_count ==
-          std::min<uint32_t>(workers, static_cast<uint32_t>(actual.stats.peak_shard_rows)));
+    check_matches_expected(actual, expected);
+    CHECK(actual.stats().shard_count == 4);
+    CHECK(actual.stats().peak_shard_rows == 5);
+    CHECK(actual.stats().requested_worker_count == workers);
+    CHECK(actual.stats().peak_worker_count ==
+          std::min<uint32_t>(workers, static_cast<uint32_t>(actual.stats().peak_shard_rows)));
     check_structural_result(actual);
 }
 
@@ -331,16 +493,18 @@ void test_50d_like_first_band_preserves_shard_bound_and_output() {
     SourceCorpus corpus(51'007, synthetic_50d_incidence_fixture(row_count));
     const auto expected = independent_build(corpus);
     for (const uint32_t workers : std::array<uint32_t, 2>{1, 4}) {
-        const auto actual = build_structured_incidence_shards(
-            corpus, StructuredIncidenceBuildOptions{shard_rows, workers});
-        CHECK(actual.row_lp_keys == expected.row_lp_keys);
-        CHECK(actual.buckets == expected.buckets);
-        CHECK(actual.stats.shard_count == (row_count + shard_rows - 1) / shard_rows);
-        CHECK(actual.stats.peak_shard_rows == shard_rows);
-        CHECK(actual.stats.peak_shard_incidence_entries <= shard_rows * 2);
-        CHECK(actual.stats.total_incidence_entries == expected.stats.total_incidence_entries);
-        CHECK(actual.stats.requested_worker_count == workers);
-        CHECK(actual.stats.peak_worker_count == workers);
+        const StructuredIncidenceBuildOptions options{shard_rows, workers};
+        const auto actual = build_structured_incidence_shards(corpus, options);
+        auto row_supports = actual.row_lp_keys();
+        const auto support_built = build_structured_incidence_from_row_supports(
+            corpus.generation(), std::move(row_supports), options);
+        check_matches_expected(actual, expected);
+        CHECK(actual == support_built);
+        CHECK(actual.stats().shard_count == (row_count + shard_rows - 1) / shard_rows);
+        CHECK(actual.stats().peak_shard_rows == shard_rows);
+        CHECK(actual.stats().peak_shard_incidence_entries <= shard_rows * 2);
+        CHECK(actual.stats().requested_worker_count == workers);
+        CHECK(actual.stats().peak_worker_count == workers);
         check_structural_result(actual);
     }
 }
@@ -410,6 +574,14 @@ int main() {
     run_test("hand-built parity and full-width keys", test_hand_built_parity_and_full_width_keys);
     run_test("large shard and worker equivalence",
              test_large_overlapping_fixture_is_shard_and_worker_equivalent);
+    run_test("source and row-support builder equivalence",
+             test_source_and_row_support_builders_are_exactly_equivalent);
+    run_test("empty row-support receipt",
+             test_empty_row_support_build_is_valid_and_source_equivalent);
+    run_test("invalid and noncanonical row supports",
+             test_row_support_builder_rejects_invalid_requests_and_noncanonical_support);
+    run_test("move-only incidence receipt",
+             test_incidence_receipt_is_move_only_and_moved_from_invalid);
     run_test("hardware worker request", test_hardware_worker_request_preserves_canonical_output);
     run_test("50d-like first scale band",
              test_50d_like_first_band_preserves_shard_bound_and_output);
