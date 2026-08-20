@@ -17,6 +17,7 @@
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -935,76 +936,82 @@ void check_dense_stage_telemetry(const StructuredReductionTelemetryRecord& recor
 void print_dense_stage_record(uint32_t workers, uint64_t generation,
                               const RelationReductionStats& stats,
                               const StructuredReductionTelemetryRecord& telemetry) {
-    std::cout
-        << "GNFS_STRUCTURED_OOC_DENSE_STAGE_V1"
-        << " schema=1"
-        << " status=pass"
-        << " scope=direct_observed_route"
-        << " process_rss_scope=self_lifetime"
-        << " fixture=synthetic_cardinality_anchor"
-        << " topology=singleton_spokes_degree9_circulant_v1"
-        << " build_type=" << STRUCTURED_OOC_SCALE_BUILD_TYPE << " generation=" << generation
-        << " workers=" << workers << " source_rows=" << DENSE_STAGE_ROWS
-        << " incidence_rows=" << DENSE_STAGE_ROWS << " incidence_unique_keys=" << DENSE_STAGE_KEYS
-        << " incidence_entries=" << DENSE_STAGE_INCIDENCES
-        << " input_lp_w1=" << DENSE_STAGE_SINGLETON_KEYS << " input_lp_w2=0"
-        << " input_lp_w3=0"
-        << " input_lp_w4plus=" << DENSE_STAGE_WEIGHT_4PLUS_KEYS
-        << " incidence_shards=" << stats.structured_incidence.shard_count
-        << " peak_shard_rows=" << stats.structured_incidence.peak_shard_rows
-        << " peak_shard_entries=" << stats.structured_incidence.peak_shard_incidence_entries
-        << " peak_incidence_workers=" << stats.structured_incidence.peak_worker_count
-        << " singleton_rows_removed=" << stats.singleton_rows_removed
-        << " core_rows=" << DENSE_STAGE_CORE_ROWS
-        << " structured_stop=" << dense_stage_stop_reason_name(stats.structured_run.stop_reason)
-        << " commits=" << stats.structured_run.commits
-        << " emitted_rows=" << stats.structured_run.emitted_rows
-        << " output_rows=" << stats.output_relations
-        << " output_lp_columns=" << stats.output_lp_columns
-        << " raw_digest_low=" << stats.raw_input_digest.low
-        << " raw_digest_high=" << stats.raw_input_digest.high
-        << " output_digest_low=" << stats.output_digest.low
-        << " output_digest_high=" << stats.output_digest.high
-        << " source_backend=collector_direct_borrowed_prefix"
-        << " output_backend=finalized_ooc"
-        << " output_published=true"
-        << " output_lease_removed=true"
-        << " source_resumed=true"
-        << " source_pair_removed=true"
-        << " telemetry_completed=" << bool_token(telemetry.completed)
-        << " telemetry_succeeded=" << bool_token(telemetry.succeeded) << " telemetry_failure_stage="
-        << gnfs::relation::structured_telemetry_failure_stage_name(telemetry.failure_stage)
-        << " telemetry_last_checkpoint="
-        << (telemetry.last_checkpoint.has_value()
-                ? gnfs::relation::structured_telemetry_checkpoint_name(*telemetry.last_checkpoint)
-                : std::string_view("none"))
-        << " telemetry_counter_overflow=" << bool_token(telemetry.counter_overflow)
-        << " telemetry_clock_monotone=" << bool_token(telemetry.clock_monotone)
-        << " telemetry_peak_monotone=" << bool_token(telemetry.peak_monotone)
-        << " telemetry_clock_provider_failures=" << telemetry.clock_provider_failures
-        << " telemetry_memory_provider_failures=" << telemetry.memory_provider_failures
-        << " memory_backend="
-        << process_memory_backend_name(telemetry.checkpoints.front().memory.backend);
+    std::ostringstream record;
+    record << "GNFS_STRUCTURED_OOC_DENSE_STAGE_V1";
+    record << " schema=1";
+    record << " status=pass";
+    record << " scope=direct_observed_route";
+    record << " process_rss_scope=self_lifetime";
+    record << " fixture=synthetic_cardinality_anchor";
+    record << " topology=singleton_spokes_degree9_circulant_v1";
+    record << " build_type=" << STRUCTURED_OOC_SCALE_BUILD_TYPE;
+    record << " generation=" << generation;
+    record << " workers=" << workers;
+    record << " source_rows=" << DENSE_STAGE_ROWS;
+    record << " incidence_rows=" << DENSE_STAGE_ROWS;
+    record << " incidence_unique_keys=" << DENSE_STAGE_KEYS;
+    record << " incidence_entries=" << DENSE_STAGE_INCIDENCES;
+    record << " input_lp_w1=" << DENSE_STAGE_SINGLETON_KEYS;
+    record << " input_lp_w2=0";
+    record << " input_lp_w3=0";
+    record << " input_lp_w4plus=" << DENSE_STAGE_WEIGHT_4PLUS_KEYS;
+    record << " incidence_shards=" << stats.structured_incidence.shard_count;
+    record << " peak_shard_rows=" << stats.structured_incidence.peak_shard_rows;
+    record << " peak_shard_entries=" << stats.structured_incidence.peak_shard_incidence_entries;
+    record << " peak_incidence_workers=" << stats.structured_incidence.peak_worker_count;
+    record << " singleton_rows_removed=" << stats.singleton_rows_removed;
+    record << " core_rows=" << DENSE_STAGE_CORE_ROWS;
+    record << " structured_stop=" << dense_stage_stop_reason_name(stats.structured_run.stop_reason);
+    record << " commits=" << stats.structured_run.commits;
+    record << " emitted_rows=" << stats.structured_run.emitted_rows;
+    record << " output_rows=" << stats.output_relations;
+    record << " output_lp_columns=" << stats.output_lp_columns;
+    record << " raw_digest_low=" << stats.raw_input_digest.low;
+    record << " raw_digest_high=" << stats.raw_input_digest.high;
+    record << " output_digest_low=" << stats.output_digest.low;
+    record << " output_digest_high=" << stats.output_digest.high;
+    record << " source_backend=collector_direct_borrowed_prefix";
+    record << " output_backend=finalized_ooc";
+    record << " output_published=true";
+    record << " output_lease_removed=true";
+    record << " source_resumed=true";
+    record << " source_pair_removed=true";
+    record << " telemetry_completed=" << bool_token(telemetry.completed);
+    record << " telemetry_succeeded=" << bool_token(telemetry.succeeded);
+    record << " telemetry_failure_stage="
+           << gnfs::relation::structured_telemetry_failure_stage_name(telemetry.failure_stage);
+    record << " telemetry_last_checkpoint="
+           << (telemetry.last_checkpoint.has_value()
+                   ? gnfs::relation::structured_telemetry_checkpoint_name(
+                         *telemetry.last_checkpoint)
+                   : std::string_view("none"));
+    record << " telemetry_counter_overflow=" << bool_token(telemetry.counter_overflow);
+    record << " telemetry_clock_monotone=" << bool_token(telemetry.clock_monotone);
+    record << " telemetry_peak_monotone=" << bool_token(telemetry.peak_monotone);
+    record << " telemetry_clock_provider_failures=" << telemetry.clock_provider_failures;
+    record << " telemetry_memory_provider_failures=" << telemetry.memory_provider_failures;
+    record << " memory_backend="
+           << process_memory_backend_name(telemetry.checkpoints.front().memory.backend);
 
     for (const auto phase : DENSE_STAGE_READ_PHASES) {
         const std::string_view name = gnfs::relation::structured_telemetry_read_phase_name(phase);
         const auto& counters = telemetry.reads[static_cast<size_t>(phase)];
-        std::cout << " read_" << name << "_attempts=" << counters.attempts << " read_" << name
-                  << "_successes=" << counters.successes << " read_" << name
-                  << "_failures=" << counters.failures;
+        record << " read_" << name << "_attempts=" << counters.attempts << " read_" << name
+               << "_successes=" << counters.successes << " read_" << name
+               << "_failures=" << counters.failures;
     }
 
     for (const auto checkpoint : DENSE_STAGE_CHECKPOINTS) {
         const std::string_view name =
             gnfs::relation::structured_telemetry_checkpoint_name(checkpoint);
         const auto& sample = telemetry.checkpoints[static_cast<size_t>(checkpoint)];
-        std::cout << " cp_" << name << "_observed=" << bool_token(sample.observed) << " cp_" << name
-                  << "_wall_supported=" << bool_token(sample.wall_supported) << " cp_" << name
-                  << "_wall_ns=" << sample.elapsed_wall_ns << " cp_" << name
-                  << "_current_rss=" << optional_metric(sample.memory.current_rss_bytes) << " cp_"
-                  << name << "_peak_rss=" << optional_metric(sample.memory.lifetime_peak_rss_bytes);
+        record << " cp_" << name << "_observed=" << bool_token(sample.observed) << " cp_" << name
+               << "_wall_supported=" << bool_token(sample.wall_supported) << " cp_" << name
+               << "_wall_ns=" << sample.elapsed_wall_ns << " cp_" << name
+               << "_current_rss=" << optional_metric(sample.memory.current_rss_bytes) << " cp_"
+               << name << "_peak_rss=" << optional_metric(sample.memory.lifetime_peak_rss_bytes);
     }
-    std::cout << '\n';
+    std::cout << record.str() << '\n';
 }
 
 void run_dense_stage_case(uint32_t workers) {

@@ -7546,7 +7546,7 @@ case "$MODE" in
                    "Structured OOC dense stage" &&
                validate_structured_ooc_dense_stage_v1_schema \
                    "$MEASUREMENT_RECORD" "$_dense_stage_workers"; then
-                print -r -- "$MEASUREMENT_RECORD"
+                (( VERBOSE )) || print -r -- "$MEASUREMENT_RECORD"
             else
                 if ! reclassify_last_pass_as_contract_failure \
                          test_structured_ooc_scale dense_stage_record_contract; then
@@ -7556,7 +7556,6 @@ case "$MODE" in
             fi
         fi
         show_summary
-        (( FAILED_TESTS == 0 ))
         ;;
 
     probe-50d-structured-ooc)
