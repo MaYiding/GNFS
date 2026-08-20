@@ -22,6 +22,7 @@ class SequentialStructuredReducer;
 class RelationReductionEngine;
 class RelationSink;
 struct StructuredIncidenceBuildOptions;
+class StructuredIncidenceBuildResult;
 struct StructuredIncidenceBuildStats;
 struct StructuredConflictFreeBatchPlan;
 class StructuredPreparedBatch;
@@ -478,12 +479,20 @@ public:
     [[nodiscard]] StructuredIncidenceBuildStats incidence_build_stats() const noexcept;
 
 private:
+    /// Consume a generation-bound incidence receipt minted by an approved
+    /// builder. RelationReductionEngine owns the only external call path; the
+    /// public source constructors build the same receipt internally.
+    SequentialStructuredReducer(SourceCorpus corpus, StructuredIncidenceBuildResult&& incidence);
+
     friend StructuredPreparedBatch
     prepare_conflict_free_batch(const SequentialStructuredReducer& reducer,
                                 const StructuredConflictFreeBatchPlan& batch,
                                 uint32_t worker_count);
+    friend class RelationReductionEngine;
 
     struct Impl;
+    [[nodiscard]] static std::unique_ptr<Impl>
+    consume_prebuilt_incidence(SourceCorpus corpus, StructuredIncidenceBuildResult&& incidence);
     std::unique_ptr<Impl> impl_;
 };
 
