@@ -48,6 +48,11 @@ using gnfs::relation::StructuredReductionBudget;
 using gnfs::relation::StructuredReductionError;
 using gnfs::relation::StructuredReductionErrorCode;
 using gnfs::relation::StructuredReductionStopReason;
+using gnfs::relation::StructuredReductionTelemetry;
+using gnfs::relation::StructuredReductionTelemetryProviders;
+using gnfs::relation::StructuredTelemetryCheckpoint;
+using gnfs::relation::StructuredTelemetryFailureStage;
+using gnfs::relation::StructuredTelemetryReadPhase;
 
 using PreparedBorrowedStructuredInput = RelationReductionEngine::PreparedBorrowedStructuredInput;
 
@@ -61,6 +66,15 @@ static_assert(!std::is_same_v<RawRelationSnapshot, RelationReductionResult>);
 static_assert(!std::is_copy_constructible_v<PreparedBorrowedStructuredInput>);
 static_assert(!std::is_copy_assignable_v<PreparedBorrowedStructuredInput>);
 static_assert(std::is_nothrow_move_constructible_v<PreparedBorrowedStructuredInput>);
+static_assert(gnfs::relation::structured_telemetry_checkpoint_count == 10);
+static_assert(gnfs::relation::structured_telemetry_read_phase_count == 4);
+static_assert(gnfs::relation::structured_telemetry_checkpoint_name(
+                  StructuredTelemetryCheckpoint::ScanCompleteBeforeAbRelease) ==
+              "scan_complete_before_ab_release");
+static_assert(gnfs::relation::structured_telemetry_read_phase_name(
+                  StructuredTelemetryReadPhase::FreshValidation) == "fresh_validation");
+static_assert(gnfs::relation::structured_telemetry_failure_stage_name(
+                  StructuredTelemetryFailureStage::OutputFinalize) == "output_finalize");
 
 namespace {
 
@@ -84,6 +98,55 @@ struct OOCArtifacts final {
 
     std::string base;
 };
+
+struct DeterministicTelemetryProviderState final {
+    size_t clock_calls = 0;
+    size_t memory_calls = 0;
+
+    [[nodiscard]] static uint64_t steady_now_ns(void* context) {
+        auto& state = *static_cast<DeterministicTelemetryProviderState*>(context);
+        const uint64_t value = UINT64_C(10000) + static_cast<uint64_t>(state.clock_calls) * 100;
+        ++state.clock_calls;
+        return value;
+    }
+
+    [[nodiscard]] static gnfs::util::ProcessMemorySnapshot memory_snapshot(void* context) {
+        auto& state = *static_cast<DeterministicTelemetryProviderState*>(context);
+        const uint64_t offset = static_cast<uint64_t>(state.memory_calls);
+        ++state.memory_calls;
+        return {gnfs::util::ProcessMemoryBackend::LinuxGetrusage, UINT64_C(20000) + offset,
+                UINT64_C(30000) + offset};
+    }
+};
+
+struct FirstClockFailureTelemetryProviderState final {
+    size_t clock_calls = 0;
+    size_t memory_calls = 0;
+
+    [[nodiscard]] static uint64_t steady_now_ns(void* context) {
+        auto& state = *static_cast<FirstClockFailureTelemetryProviderState*>(context);
+        const size_t call = state.clock_calls++;
+        if (call == 0) {
+            throw std::runtime_error("injected ScanBegin clock failure");
+        }
+        return UINT64_C(20000) + static_cast<uint64_t>(call) * 100;
+    }
+
+    [[nodiscard]] static gnfs::util::ProcessMemorySnapshot memory_snapshot(void* context) {
+        auto& state = *static_cast<FirstClockFailureTelemetryProviderState*>(context);
+        const uint64_t offset = static_cast<uint64_t>(state.memory_calls++);
+        return {gnfs::util::ProcessMemoryBackend::LinuxGetrusage, UINT64_C(40000) + offset,
+                UINT64_C(50000) + offset};
+    }
+};
+
+[[nodiscard]] uint64_t throwing_telemetry_clock(void*) {
+    throw std::runtime_error("injected telemetry clock failure");
+}
+
+[[nodiscard]] gnfs::util::ProcessMemorySnapshot throwing_telemetry_memory(void*) {
+    throw std::runtime_error("injected telemetry memory failure");
+}
 
 class BorrowedVectorRelationSource final {
 public:
@@ -148,11 +211,24 @@ concept DirectBorrowedStructuredSource =
         } -> std::same_as<RelationReductionResult>;
     };
 
+template <typename Source>
+concept ObservedDirectBorrowedStructuredSource =
+    requires(uint64_t generation, const Source& source, const RelationReductionConfig& config,
+             StructuredReductionTelemetry& telemetry) {
+        {
+            RelationReductionEngine::reduce_direct_borrowed_structured_observed(generation, source,
+                                                                                config, telemetry)
+        } -> std::same_as<RelationReductionResult>;
+    };
+
 static_assert(gnfs::relation::RelationSource<SpoofedUniqueRelationSource>);
 static_assert(SpoofedUniqueRelationSource::provides_unique_relations);
 static_assert(!DirectBorrowedStructuredSource<BorrowedVectorRelationSource>);
 static_assert(!DirectBorrowedStructuredSource<SpoofedUniqueRelationSource>);
 static_assert(DirectBorrowedStructuredSource<CollectorUniqueOOCPrefixSource>);
+static_assert(!ObservedDirectBorrowedStructuredSource<BorrowedVectorRelationSource>);
+static_assert(!ObservedDirectBorrowedStructuredSource<SpoofedUniqueRelationSource>);
+static_assert(ObservedDirectBorrowedStructuredSource<CollectorUniqueOOCPrefixSource>);
 
 [[nodiscard]] std::string unique_ooc_base(const char* label) {
     static uint64_t sequence = 0;
@@ -1331,6 +1407,155 @@ void test_structured_direct_borrowed_source_matches_owning_and_two_stage() {
     }
 }
 
+void test_structured_direct_borrowed_telemetry_contract() {
+    constexpr uint64_t generation = 728;
+    const auto input = make_weight_stratified_incidence_corpus();
+    OOCArtifacts raw(unique_ooc_base("direct_telemetry_raw"));
+    OOCArtifacts output(unique_ooc_base("direct_telemetry_output"));
+
+    CollectorConfig collector_config;
+    collector_config.ooc_enabled = true;
+    collector_config.ooc_base_path = raw.base;
+    collector_config.check_duplicates = true;
+    RelationCollector collector(collector_config);
+    add_relations(collector, input);
+
+    auto config = structured_config(2, 3);
+    config.structured->incidence.max_rows_per_shard = 3;
+    config.structured->output_ooc_base_path = output.base;
+    DeterministicTelemetryProviderState provider_state;
+    StructuredReductionTelemetry telemetry(StructuredReductionTelemetryProviders{
+        &provider_state, &DeterministicTelemetryProviderState::steady_now_ns,
+        &DeterministicTelemetryProviderState::memory_snapshot});
+
+    auto observed_result =
+        collector.with_unique_ooc_prefix([&](const CollectorUniqueOOCPrefixSource& source) {
+            return RelationReductionEngine::reduce_direct_borrowed_structured_observed(
+                generation, source, config, telemetry);
+        });
+    const auto record = telemetry.snapshot();
+    CHECK(record.schema_version == 1);
+    CHECK(record.generation == generation);
+    CHECK(record.source_rows == input.size());
+    CHECK(record.incidence_rows == input.size());
+    CHECK(record.incidence_unique_keys == 4);
+    CHECK(record.incidence_entries == 10);
+    CHECK(record.completed);
+    CHECK(record.succeeded);
+    CHECK(record.failure_stage == StructuredTelemetryFailureStage::None);
+    CHECK(record.last_checkpoint == StructuredTelemetryCheckpoint::FreshValidationComplete);
+    CHECK(!record.counter_overflow);
+    CHECK(record.clock_monotone);
+    CHECK(record.peak_monotone);
+    CHECK(record.clock_provider_failures == 0);
+    CHECK(record.memory_provider_failures == 0);
+
+    const auto read_counters = [&](StructuredTelemetryReadPhase phase) -> const auto& {
+        return record.reads[static_cast<size_t>(phase)];
+    };
+    CHECK(read_counters(StructuredTelemetryReadPhase::InitialScan).attempts == input.size());
+    CHECK(read_counters(StructuredTelemetryReadPhase::InitialScan).successes == input.size());
+    CHECK(read_counters(StructuredTelemetryReadPhase::InitialScan).failures == 0);
+    CHECK(read_counters(StructuredTelemetryReadPhase::IncidenceBuild).attempts == 0);
+    CHECK(read_counters(StructuredTelemetryReadPhase::IncidenceBuild).successes == 0);
+    CHECK(read_counters(StructuredTelemetryReadPhase::IncidenceBuild).failures == 0);
+    CHECK(read_counters(StructuredTelemetryReadPhase::Reducer).attempts ==
+          read_counters(StructuredTelemetryReadPhase::Reducer).successes);
+    CHECK(read_counters(StructuredTelemetryReadPhase::Reducer).failures == 0);
+    CHECK(read_counters(StructuredTelemetryReadPhase::FreshValidation).attempts == input.size());
+    CHECK(read_counters(StructuredTelemetryReadPhase::FreshValidation).successes == input.size());
+    CHECK(read_counters(StructuredTelemetryReadPhase::FreshValidation).failures == 0);
+
+    CHECK(provider_state.clock_calls == gnfs::relation::structured_telemetry_checkpoint_count);
+    CHECK(provider_state.memory_calls == gnfs::relation::structured_telemetry_checkpoint_count);
+    for (size_t checkpoint = 0; checkpoint < record.checkpoints.size(); ++checkpoint) {
+        const auto& sample = record.checkpoints[checkpoint];
+        CHECK(sample.observed);
+        CHECK(sample.wall_supported);
+        CHECK(sample.elapsed_wall_ns == static_cast<uint64_t>(checkpoint) * 100);
+        CHECK(sample.memory.backend == gnfs::util::ProcessMemoryBackend::LinuxGetrusage);
+        CHECK(sample.memory.current_rss_bytes == UINT64_C(20000) + checkpoint);
+        CHECK(sample.memory.lifetime_peak_rss_bytes == UINT64_C(30000) + checkpoint);
+    }
+
+    OOCArtifacts unobserved_output(unique_ooc_base("direct_telemetry_unobserved_output"));
+    auto unobserved_config = config;
+    unobserved_config.structured->output_ooc_base_path = unobserved_output.base;
+    auto unobserved_result =
+        collector.with_unique_ooc_prefix([&](const CollectorUniqueOOCPrefixSource& source) {
+            return RelationReductionEngine::reduce_direct_borrowed_structured(generation, source,
+                                                                              unobserved_config);
+        });
+    CHECK(unobserved_result.stats == observed_result.stats);
+    CHECK(equal_corpus(unobserved_result.materialize_relations(),
+                       observed_result.materialize_relations()));
+
+    OOCArtifacts throwing_output(unique_ooc_base("direct_telemetry_throwing_output"));
+    auto throwing_config = config;
+    throwing_config.structured->output_ooc_base_path = throwing_output.base;
+    StructuredReductionTelemetry throwing_telemetry(StructuredReductionTelemetryProviders{
+        nullptr, &throwing_telemetry_clock, &throwing_telemetry_memory});
+    auto throwing_provider_result =
+        collector.with_unique_ooc_prefix([&](const CollectorUniqueOOCPrefixSource& source) {
+            return RelationReductionEngine::reduce_direct_borrowed_structured_observed(
+                generation, source, throwing_config, throwing_telemetry);
+        });
+    const auto throwing_record = throwing_telemetry.snapshot();
+    CHECK(throwing_record.completed);
+    CHECK(throwing_record.succeeded);
+    CHECK(throwing_record.failure_stage == StructuredTelemetryFailureStage::None);
+    CHECK(throwing_record.clock_provider_failures ==
+          gnfs::relation::structured_telemetry_checkpoint_count);
+    CHECK(throwing_record.memory_provider_failures ==
+          gnfs::relation::structured_telemetry_checkpoint_count);
+    CHECK(throwing_record.clock_monotone);
+    CHECK(throwing_record.peak_monotone);
+    for (const auto& sample : throwing_record.checkpoints) {
+        CHECK(sample.observed);
+        CHECK(!sample.wall_supported);
+        CHECK(sample.elapsed_wall_ns == 0);
+        CHECK(sample.memory.backend == gnfs::util::ProcessMemoryBackend::Unsupported);
+        CHECK(!sample.memory.current_rss_bytes);
+        CHECK(!sample.memory.lifetime_peak_rss_bytes);
+    }
+    CHECK(throwing_provider_result.stats == observed_result.stats);
+    CHECK(equal_corpus(throwing_provider_result.materialize_relations(),
+                       observed_result.materialize_relations()));
+
+    OOCArtifacts first_clock_failure_output(
+        unique_ooc_base("direct_telemetry_first_clock_failure_output"));
+    auto first_clock_failure_config = config;
+    first_clock_failure_config.structured->output_ooc_base_path = first_clock_failure_output.base;
+    FirstClockFailureTelemetryProviderState first_clock_failure_state;
+    StructuredReductionTelemetry first_clock_failure_telemetry(
+        StructuredReductionTelemetryProviders{
+            &first_clock_failure_state, &FirstClockFailureTelemetryProviderState::steady_now_ns,
+            &FirstClockFailureTelemetryProviderState::memory_snapshot});
+    auto first_clock_failure_result =
+        collector.with_unique_ooc_prefix([&](const CollectorUniqueOOCPrefixSource& source) {
+            return RelationReductionEngine::reduce_direct_borrowed_structured_observed(
+                generation, source, first_clock_failure_config, first_clock_failure_telemetry);
+        });
+    const auto first_clock_failure_record = first_clock_failure_telemetry.snapshot();
+    CHECK(first_clock_failure_record.completed);
+    CHECK(first_clock_failure_record.succeeded);
+    CHECK(first_clock_failure_record.clock_provider_failures == 1);
+    CHECK(first_clock_failure_record.clock_monotone);
+    CHECK(first_clock_failure_state.clock_calls ==
+          gnfs::relation::structured_telemetry_checkpoint_count);
+    CHECK(first_clock_failure_state.memory_calls ==
+          gnfs::relation::structured_telemetry_checkpoint_count);
+    for (const auto& sample : first_clock_failure_record.checkpoints) {
+        CHECK(sample.observed);
+        CHECK(!sample.wall_supported);
+        CHECK(sample.elapsed_wall_ns == 0);
+        CHECK(sample.memory.backend == gnfs::util::ProcessMemoryBackend::LinuxGetrusage);
+    }
+    CHECK(first_clock_failure_result.stats == observed_result.stats);
+    CHECK(equal_corpus(first_clock_failure_result.materialize_relations(),
+                       observed_result.materialize_relations()));
+}
+
 void test_structured_direct_borrowed_contract_and_unique_capability() {
     constexpr uint64_t generation = 720;
     const auto input = make_shared_primary_corpus();
@@ -1409,12 +1634,19 @@ void test_structured_direct_borrowed_output_failure_is_retryable() {
     CHECK(std::filesystem::create_directory(output.base + ".gnfs-sink-lease", error));
     CHECK(!error);
 
+    StructuredReductionTelemetry failure_telemetry;
     CHECK(throws_runtime_error([&] {
         (void)collector.with_unique_ooc_prefix([&](const CollectorUniqueOOCPrefixSource& source) {
-            return RelationReductionEngine::reduce_direct_borrowed_structured(generation, source,
-                                                                              config);
+            return RelationReductionEngine::reduce_direct_borrowed_structured_observed(
+                generation, source, config, failure_telemetry);
         });
     }));
+    const auto failure_record = failure_telemetry.snapshot();
+    CHECK(failure_record.completed);
+    CHECK(!failure_record.succeeded);
+    CHECK(failure_record.failure_stage == StructuredTelemetryFailureStage::OutputReservation);
+    CHECK(!failure_record.last_checkpoint);
+    CHECK(failure_record.source_rows == 0);
     CHECK(std::filesystem::is_directory(output.base + ".gnfs-sink-lease"));
 
     Relation tail = make_full(955);
@@ -1468,12 +1700,23 @@ void test_structured_direct_borrowed_source_failure_aborts_output() {
 
     auto config = structured_config(2, 3);
     config.structured->output_ooc_base_path = output.base;
+    StructuredReductionTelemetry failure_telemetry;
     CHECK(throws_runtime_error([&] {
         (void)collector.with_unique_ooc_prefix([&](const CollectorUniqueOOCPrefixSource& source) {
-            return RelationReductionEngine::reduce_direct_borrowed_structured(generation, source,
-                                                                              config);
+            return RelationReductionEngine::reduce_direct_borrowed_structured_observed(
+                generation, source, config, failure_telemetry);
         });
     }));
+    const auto failure_record = failure_telemetry.snapshot();
+    const auto& initial_reads =
+        failure_record.reads[static_cast<size_t>(StructuredTelemetryReadPhase::InitialScan)];
+    CHECK(failure_record.completed);
+    CHECK(!failure_record.succeeded);
+    CHECK(failure_record.failure_stage == StructuredTelemetryFailureStage::InitialScan);
+    CHECK(failure_record.last_checkpoint == StructuredTelemetryCheckpoint::ScanBegin);
+    CHECK(initial_reads.attempts == 1);
+    CHECK(initial_reads.successes == 0);
+    CHECK(initial_reads.failures == 1);
     CHECK(private_sink_absent(output.base));
     CHECK(equal_collector_stats(collector.stats(), stats_before_failure));
     CHECK(throws_logic_error([&] {
@@ -1955,6 +2198,7 @@ int main() {
     test_structured_ooc_rejects_overlapping_artifact_scopes();
     test_structured_borrowed_source_matches_owning_routes();
     test_structured_direct_borrowed_source_matches_owning_and_two_stage();
+    test_structured_direct_borrowed_telemetry_contract();
     test_structured_direct_borrowed_contract_and_unique_capability();
     test_structured_direct_borrowed_output_failure_is_retryable();
     test_structured_direct_borrowed_source_failure_aborts_output();

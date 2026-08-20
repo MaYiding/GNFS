@@ -10,6 +10,7 @@
 #include "structured_filter_policy.hpp"
 #include "structured_incidence_builder.hpp"
 #include "structured_reduction.hpp"
+#include "structured_reduction_telemetry.hpp"
 
 #include <algorithm>
 #include <concepts>
@@ -709,6 +710,39 @@ public:
     [[nodiscard]] static RelationReductionResult
     reduce_direct_borrowed_structured(uint64_t generation, const Source& source,
                                       const RelationReductionConfig& config) {
+        return reduce_direct_borrowed_structured_impl<false>(generation, source, config, nullptr);
+    }
+
+    /// The explicitly observed direct route. Telemetry provider failures are
+    /// contained by the recorder, and reduction exceptions are rethrown with
+    /// their original type and message.
+    template <typename Source>
+        requires std::same_as<std::remove_cvref_t<Source>, CollectorUniqueOOCPrefixSource>
+    [[nodiscard]] static RelationReductionResult
+    reduce_direct_borrowed_structured_observed(uint64_t generation, const Source& source,
+                                               const RelationReductionConfig& config,
+                                               StructuredReductionTelemetry& telemetry) {
+        telemetry.begin(generation);
+        try {
+            RelationReductionResult result = reduce_direct_borrowed_structured_impl<true>(
+                generation, source, config, &telemetry);
+            telemetry.finish_success();
+            return result;
+        } catch (...) {
+            telemetry.finish_failure();
+            throw;
+        }
+    }
+
+private:
+    template <bool Observe, typename Source>
+    [[nodiscard]] static RelationReductionResult
+    reduce_direct_borrowed_structured_impl(uint64_t generation, const Source& source,
+                                           const RelationReductionConfig& config,
+                                           StructuredReductionTelemetry* telemetry) {
+        if constexpr (Observe) {
+            telemetry->enter_stage(StructuredTelemetryFailureStage::Preflight);
+        }
         validate_config(config);
         if (generation == 0) {
             throw std::invalid_argument(
@@ -724,11 +758,19 @@ public:
         }
 
         auto structured = freeze_direct_borrowed_structured_config(*config.structured);
+        if constexpr (Observe) {
+            telemetry->enter_stage(StructuredTelemetryFailureStage::OutputReservation);
+        }
         std::optional<RelationSink> structured_sink;
         structured_sink.emplace(RelationSink::out_of_core(
             generation, structured.output_ooc_base_path, structured.output_ooc_cleanup));
 
         const size_t input_relations = static_cast<size_t>(source.count());
+        if constexpr (Observe) {
+            telemetry->set_source_rows(input_relations);
+            telemetry->enter_stage(StructuredTelemetryFailureStage::InitialScan);
+            telemetry->checkpoint(StructuredTelemetryCheckpoint::ScanBegin);
+        }
         struct DirectSourceScan final {
             CorpusDigest raw_digest;
             std::vector<std::vector<LargePrimeKey>> row_lp_keys;
@@ -751,7 +793,8 @@ public:
             std::unordered_set<core::ABPair, core::ABPairHash> observed_ab_pairs;
             observed_ab_pairs.reserve(input_relations);
             for (size_t ordinal = 0; ordinal < input_relations; ++ordinal) {
-                const core::Relation relation = source.read(ordinal);
+                const core::Relation relation = read_direct_source<Observe>(
+                    source, ordinal, telemetry, StructuredTelemetryReadPhase::InitialScan);
                 validate_trusted_direct_source_relation(source, relation);
                 if (!source.contains_proven_ab_pair(relation.ab())) {
                     fail_direct_source_untrusted(
@@ -772,12 +815,25 @@ public:
                     source,
                     "direct borrowed source payload differs from the collector-accepted sequence");
             }
+            if constexpr (Observe) {
+                telemetry->checkpoint(StructuredTelemetryCheckpoint::ScanCompleteBeforeAbRelease);
+            }
             return DirectSourceScan{raw_digest.finish(), std::move(row_lp_keys),
                                     std::move(fingerprints)};
         }();
+        if constexpr (Observe) {
+            telemetry->checkpoint(StructuredTelemetryCheckpoint::AfterAbRelease);
+            telemetry->enter_stage(StructuredTelemetryFailureStage::IncidenceBuild);
+        }
 
         StructuredIncidenceBuildResult incidence = build_structured_incidence_from_row_supports(
             generation, std::move(scan.row_lp_keys), structured.incidence);
+        if constexpr (Observe) {
+            telemetry->set_incidence(incidence.row_count(), incidence.buckets().size(),
+                                     incidence.stats().total_incidence_entries);
+            telemetry->checkpoint(StructuredTelemetryCheckpoint::IncidenceReceiptBuilt);
+            telemetry->enter_stage(StructuredTelemetryFailureStage::ReducerConstruction);
+        }
 
         RelationReductionStats stats;
         stats.strategy = ReductionStrategy::Structured;
@@ -785,16 +841,20 @@ public:
         stats.raw_input_digest = scan.raw_digest;
         stats.deduplicated_input_lp_histogram = lp_histogram_from_incidence(incidence);
 
-        ValidatedDirectBorrowedSource<Source, Source> validated_source(source, source,
-                                                                       scan.fingerprints);
+        ValidatedDirectBorrowedSource<Source, Source, Observe> validated_source(
+            source, source, scan.fingerprints, telemetry, StructuredTelemetryReadPhase::Reducer);
         SourceCorpus borrowed = SourceCorpus::from_validated_borrowed(generation, validated_source);
         if (borrowed.size() != input_relations) {
             throw std::logic_error(
                 "direct borrowed relation source count changed during synchronous reduction");
         }
-        RelationReductionResult result = reduce_structured_source_with_prebuilt_incidence(
+        RelationReductionResult result = reduce_structured_source_with_prebuilt_incidence<Observe>(
             generation, std::move(borrowed), std::move(incidence), std::move(stats), structured,
-            std::move(structured_sink));
+            std::move(structured_sink), telemetry);
+        if constexpr (Observe) {
+            telemetry->checkpoint(StructuredTelemetryCheckpoint::ReducerReleased);
+            telemetry->enter_stage(StructuredTelemetryFailureStage::FreshValidation);
+        }
 
         // Some successful reducer paths do not need to rematerialize every raw
         // atom. Reopen a fresh view and read the whole immutable prefix after
@@ -804,16 +864,38 @@ public:
         // failed.
         source.with_fresh_prefix_view([&](const auto& fresh_source) {
             using FreshSource = std::remove_cvref_t<decltype(fresh_source)>;
-            ValidatedDirectBorrowedSource<FreshSource, Source> fresh_validated_source(
-                fresh_source, source, scan.fingerprints);
+            ValidatedDirectBorrowedSource<FreshSource, Source, Observe> fresh_validated_source(
+                fresh_source, source, scan.fingerprints, telemetry,
+                StructuredTelemetryReadPhase::FreshValidation);
             for (size_t ordinal = 0; ordinal < input_relations; ++ordinal) {
                 (void)fresh_validated_source.read(ordinal);
             }
         });
+        if constexpr (Observe) {
+            telemetry->checkpoint(StructuredTelemetryCheckpoint::FreshValidationComplete);
+        }
         return result;
     }
 
-private:
+    template <bool Observe, typename Source>
+    [[nodiscard]] static core::Relation read_direct_source(const Source& source, size_t ordinal,
+                                                           StructuredReductionTelemetry* telemetry,
+                                                           StructuredTelemetryReadPhase phase) {
+        if constexpr (!Observe) {
+            return source.read(ordinal);
+        } else {
+            telemetry->record_read_attempt(phase);
+            try {
+                core::Relation relation = source.read(ordinal);
+                telemetry->record_read_success(phase);
+                return relation;
+            } catch (...) {
+                telemetry->record_read_failure(phase);
+                throw;
+            }
+        }
+    }
+
     template <typename Source>
     [[noreturn]] static void fail_direct_source_untrusted(const Source& source,
                                                           const char* message) {
@@ -865,13 +947,35 @@ private:
         return histogram;
     }
 
-    template <typename ReadSource, typename TrustSource> class ValidatedDirectBorrowedSource final {
+    struct DisabledDirectReadTelemetry final {};
+
+    struct EnabledDirectReadTelemetry final {
+        StructuredReductionTelemetry* telemetry = nullptr;
+        StructuredTelemetryReadPhase phase = StructuredTelemetryReadPhase::InitialScan;
+    };
+
+    template <bool Observe>
+    using DirectReadTelemetryState =
+        std::conditional_t<Observe, EnabledDirectReadTelemetry, DisabledDirectReadTelemetry>;
+
+    template <typename ReadSource, typename TrustSource, bool Observe>
+    class ValidatedDirectBorrowedSource final {
     public:
         ValidatedDirectBorrowedSource(const ReadSource& read_source,
                                       const TrustSource& trust_source,
-                                      const std::vector<CorpusDigest>& fingerprints) noexcept
+                                      const std::vector<CorpusDigest>& fingerprints,
+                                      StructuredReductionTelemetry* telemetry,
+                                      StructuredTelemetryReadPhase phase) noexcept
             : read_source_(&read_source), trust_source_(&trust_source),
-              fingerprints_(&fingerprints) {}
+              fingerprints_(&fingerprints) {
+            if constexpr (Observe) {
+                telemetry_state_.telemetry = telemetry;
+                telemetry_state_.phase = phase;
+            } else {
+                (void)telemetry;
+                (void)phase;
+            }
+        }
 
         [[nodiscard]] size_t count() const noexcept {
             return fingerprints_->size();
@@ -881,7 +985,14 @@ private:
             if (ordinal >= fingerprints_->size()) {
                 throw std::out_of_range("validated direct borrowed source ordinal is out of range");
             }
-            core::Relation relation = read_source_->read(ordinal);
+            core::Relation relation = [&] {
+                if constexpr (Observe) {
+                    return read_direct_source<true>(
+                        *read_source_, ordinal, telemetry_state_.telemetry, telemetry_state_.phase);
+                } else {
+                    return read_source_->read(ordinal);
+                }
+            }();
             validate_trusted_direct_source_relation(*trust_source_, relation);
             if (direct_relation_fingerprint(relation) != fingerprints_->at(ordinal)) {
                 fail_direct_source_untrusted(
@@ -894,6 +1005,7 @@ private:
         const ReadSource* read_source_;
         const TrustSource* trust_source_;
         const std::vector<CorpusDigest>* fingerprints_;
+        [[no_unique_address]] DirectReadTelemetryState<Observe> telemetry_state_;
     };
 
     [[nodiscard]] static RelationReductionResult
@@ -914,34 +1026,49 @@ private:
                 "structured source generation does not match the reduction generation");
         }
         SequentialStructuredReducer reducer(std::move(source), structured.incidence);
-        return finish_structured_reduction(generation, std::move(reducer), std::move(stats),
-                                           structured, std::move(structured_sink));
+        return finish_structured_reduction<false>(generation, std::move(reducer), std::move(stats),
+                                                  structured, std::move(structured_sink), nullptr);
     }
 
+    template <bool Observe>
     [[nodiscard]] static RelationReductionResult reduce_structured_source_with_prebuilt_incidence(
         uint64_t generation, SourceCorpus source, StructuredIncidenceBuildResult&& incidence,
         RelationReductionStats stats,
         const RelationReductionConfig::StructuredExecutionConfig& structured,
-        std::optional<RelationSink> structured_sink) {
+        std::optional<RelationSink> structured_sink, StructuredReductionTelemetry* telemetry) {
         if (source.generation() != generation) {
             throw std::logic_error(
                 "structured source generation does not match the reduction generation");
         }
         SequentialStructuredReducer reducer(std::move(source), std::move(incidence));
-        return finish_structured_reduction(generation, std::move(reducer), std::move(stats),
-                                           structured, std::move(structured_sink));
+        if constexpr (Observe) {
+            telemetry->checkpoint(StructuredTelemetryCheckpoint::ReducerConstructed);
+        }
+        return finish_structured_reduction<Observe>(generation, std::move(reducer),
+                                                    std::move(stats), structured,
+                                                    std::move(structured_sink), telemetry);
     }
 
+    template <bool Observe>
     [[nodiscard]] static RelationReductionResult finish_structured_reduction(
         uint64_t generation, SequentialStructuredReducer reducer, RelationReductionStats stats,
         const RelationReductionConfig::StructuredExecutionConfig& structured,
-        std::optional<RelationSink> structured_sink) {
+        std::optional<RelationSink> structured_sink, StructuredReductionTelemetry* telemetry) {
+        if constexpr (Observe) {
+            telemetry->enter_stage(StructuredTelemetryFailureStage::BudgetedReduction);
+        }
         stats.structured_run = reducer.reduce_budgeted_parallel(
             structured.budget, structured.parallel, structured.planner);
+        if constexpr (Observe) {
+            telemetry->checkpoint(StructuredTelemetryCheckpoint::ReductionComplete);
+        }
         stats.structured = reducer.stats();
         stats.structured_incidence = reducer.incidence_build_stats();
         stats.singleton_rows_removed = stats.structured_run.singleton_rows_removed;
 
+        if constexpr (Observe) {
+            telemetry->enter_stage(StructuredTelemetryFailureStage::OutputMaterialization);
+        }
         if (!structured_sink) {
             structured_sink.emplace(
                 RelationSink::in_memory(generation, reducer.active_row_count()));
@@ -968,7 +1095,14 @@ private:
                 "structured sink count differs from materialized active rows");
         }
         metrics.digest = output_digest.finish();
+        if constexpr (Observe) {
+            telemetry->checkpoint(StructuredTelemetryCheckpoint::OutputMaterialized);
+            telemetry->enter_stage(StructuredTelemetryFailureStage::OutputFinalize);
+        }
         RelationCorpus output = structured_sink->finalize();
+        if constexpr (Observe) {
+            telemetry->checkpoint(StructuredTelemetryCheckpoint::OutputFinalized);
+        }
         stats.merged_relations = metrics.merged_relations;
         stats.output_relations = output.count();
         stats.output_lp_columns = metrics.unique_lp_columns;
