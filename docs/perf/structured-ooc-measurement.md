@@ -838,3 +838,88 @@ output digests 沿用上一节的固定值：
 outer worker 数主要影响候选生成阶段的内存布局；占主导的 cofactor 阶段始终使用同一
 预算，因此三组总时间接近。该证据仍是 macOS arm64、10 个逻辑 CPU 上的 bounded
 prefix，不能推断完整首轮或其它机器的最优 chunk size 或 candidate worker cap。
+
+## 2026-08-20 and 21 Complete 50-Digit First-Round Evidence
+
+完整首轮对照按 `legacy`、`structured` 的顺序，在两个 fresh Release 进程中执行。
+runner 对比并通过了 51 个原始输入与调度身份字段。两条路由共享以下输入证据：
+
+```bash
+./scripts/test.sh compare-50d-first-round 8192 4 auto
+```
+
+本次二进制由 source commit `2b21694bd8d8decf722567c180f71697e6732156`
+构建。后续合入的 PR #68 只更新 GitHub Actions 固定 SHA，不改变该二进制的源文件。
+
+本节历史数字来自当时的 stdout records；该次运行早于 JSON 持久化校验器。自本 PR
+及后续运行起，这两个 legacy/structured route scope 使用按 `scope` 分派的
+`GNFS_EXPERIMENT_COMPARISON_V2` 协议中的固定 58-field variant。校验器会将成功记录
+原子发布到 `build/50d-comparisons/<scope>.json`；该 build artifact 不纳入版本控制。
+一次参数合法的新运行会在构建前失效同 scope 的旧快照，只有两条 route、清理合同、
+schema 和来源绑定全部通过时才发布替代文件，因此失败运行不会留下陈旧的
+`status=pass`。同 scope 的并发 comparison 不在该 latest-snapshot 合同内。JSON 将
+`n` 和所有 digest 固定编码为 canonical decimal string；其它超过 IEEE-754
+safe-integer 范围的整数也使用该编码。顶层 `legacy_stop` 和 `structured_stop` 均指
+sieve route 的终止原因；每条 route 的 `fields.structured_stop` 才是 structured
+reduction 的终止原因。
+
+```text
+raw_rows=618449
+input_lp_columns=576189
+raw_digest_low=13981542011392217821
+raw_digest_high=10762676124248923769
+raw_identity_fields=51
+```
+
+`structured` reduction 执行了 1,024 次 commit，并发布了 1,024 行，然后以
+`budget_limit` 停止。structured sieve route 以 `effective_column_excess` 完成首轮。
+两条 route 都停在 matrix-only 边界，不将该结果表述为 solver 或完整分解证据。
+
+| Metric | Legacy | Structured | Structured Change |
+|---|---:|---:|---:|
+| Reduction output rows | 6,559 (1.06% of raw) | 267,456 (43.25% of raw) | +260,897 (+3,977.69%; 40.78x) |
+| Output LP columns | 4,647 | 169,824 | +165,177 (+3,554.49%; 36.54x) |
+| Matrix rows | 6,559 | 211,732 | +205,173 (+3,128.11%; 32.28x) |
+| Matrix columns | 27,307 | 188,413 | +161,106 (+589.98%; 6.90x) |
+| Matrix signed delta | -20,748 | +23,319 | +44,067; crosses zero |
+| Matrix nonzeros | 525,868 | 14,326,278 | +13,800,410 (+2,624.31%; 27.24x) |
+| Mean nonzeros per row | 80.18 | 67.66 | -15.61% |
+| MatrixBuilder wall time | 41ms | 2,399ms | +2,358ms (+5,751.22%; 58.51x) |
+| Route wall time | 1,269,976ms | 1,441,922ms | +171,946ms (+13.54%) |
+| Lifetime peak RSS | 613,924,864 bytes | 894,304,256 bytes | +280,379,392 bytes (+45.67%) |
+
+### Structural Feasibility Gain
+
+Legacy reduction 保留了 1.06% 的 raw rows，并从 raw LP 集合中移除了 99.19% 的
+columns，但最终矩阵仍缺少 20,748 行。Structured reduction 保留了 43.25% 的
+raw rows 和 29.47% 的 raw LP columns。矩阵阶段使用了 211,732 行，比 reduction
+output 少 55,724 行，即 20.83%，仍将 nominal signed delta 从 -20,748 提高到
++23,319。该 44,067 行的跨零改善是显著的结构可行性证据。它证明 bounded
+structured basis 可以避免 legacy route 的 nominal thin-matrix 结果，但尚未证明
+solver 可行性或保证实际 dependency yield。
+
+### NNZ and Resource Cost
+
+结构改善并非矩阵压缩。Structured matrix 的总 nonzeros 是 legacy 的 27.24 倍，
+增加 2,624.31%。虽然每行平均 nonzeros 降低 15.61%，但总行数的增加使
+MatrixBuilder 时间扩大到 58.51 倍。单次 route wall time 增加 13.54%，lifetime peak
+RSS 增加 45.67%，即约 267.39MiB。因此，该结果同时记录了巨大的结构
+收益和实质性 NNZ、构建时间与 RSS 代价；不能用其中一类指标替代另一类。
+
+### Bias and Claim Boundary
+
+完整对照耗时 45m13.7s。两条 route 内部记录的 wall time 合计为 45m11.898s。
+fresh-process 边界避免了跨 route 的 lifetime RSS 累积，但该次运行只包含一个
+`legacy -> structured` 顺序，不能消除温度、调频、allocator 状态或系统调度的顺序
+偏差。host 同期运行 Windows VM，其背景负载约为 1.7 个 CPU 核。因此，
+`timing_asserted=false` 和 `rss_asserted=false` 是正确的 claim boundary。本次时间与 RSS
+只是观测值，不是回归门禁或跨机器性能阈值。
+
+### Decision
+
+该对照完成了 M5 的完整首轮证据采集，但不支持自动选路。runner 明示记录
+`promotion=false`，并且在新证据通过前禁止将 unset 默认值推广为
+`GNFS_STRUCTURED_FILTER=auto`。M6 下一步是实现并测量 native incremental OOC
+reduction，再在受控 host 上交错重复 `legacy -> structured` 和
+`structured -> legacy` fresh-process 顺序。后续证据必须同时复现跨零结构收益，
+并证明 NNZ、wall time 和 RSS 在明确预算内，才能重新审议 auto promotion。
