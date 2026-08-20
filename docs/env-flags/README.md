@@ -8,7 +8,7 @@
 
 | 模块 | 开关数 | 文档 | 主题 |
 |------|-------:|------|------|
-| relation | 12 | [relation.md](relation.md) | structured filter、filter merge (V0/V3)、OOC、LP key dedup、radix sort |
+| relation | 13 | [relation.md](relation.md) | structured filter、filter merge (V0/V3)、OOC、LP key dedup、radix sort |
 | linalg | 15 | [linalg.md](linalg.md) | BW Krylov、SpMV/GF(2) SIMD、SGE、转置、进度遥测 |
 | cofactor | 10 | [cofactor.md](cofactor.md) | ECM stage 并行/cache、survival predictor、Brent rho |
 | polynomial | 9 | [polynomial.md](polynomial.md) | Karatsuba / NTT / HGCD / squaring / mod-p SIMD |

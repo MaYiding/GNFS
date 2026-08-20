@@ -33,6 +33,10 @@ namespace gnfs::api {
 
 namespace detail {
 
+/// Parse the opt-in structured-stage telemetry gate without consulting process
+/// state. Only unset, exact "0", and exact "1" are accepted.
+[[nodiscard]] bool parse_structured_filter_stage_telemetry(const char* raw_value);
+
 /// Requested output base reserved for one logical relation generation.
 /// RelationSink adds its private lease suffix to the requested base. The raw
 /// collector prefix is reduced directly, so no generation-scoped working
@@ -209,6 +213,7 @@ private:
         bool distributed_size_gate_ok = false;
         bool distributed_force_small = false;
         bool distributed_route_selected = false;
+        bool stage_telemetry_enabled = false;
     };
 
     Integer n_;

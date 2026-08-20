@@ -22,6 +22,7 @@
 #include <gnfs/relation/reduction_engine.hpp>
 #include <gnfs/relation/relation_corpus.hpp>
 #include <gnfs/relation/structured_filter_profile.hpp>
+#include <gnfs/relation/structured_reduction_telemetry.hpp>
 #include <gnfs/relation/v0_bfs_policy.hpp>
 #include <gnfs/sieve/distributed_sieve.hpp>
 #include <gnfs/sieve/lattice_sieve.hpp>
@@ -40,6 +41,7 @@
 #include <gnfs/util/temp_path.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -60,6 +62,17 @@
 #include <type_traits>
 
 namespace gnfs::api {
+
+bool detail::parse_structured_filter_stage_telemetry(const char* raw_value) {
+    if (raw_value == nullptr || std::string_view(raw_value) == "0") {
+        return false;
+    }
+    if (std::string_view(raw_value) == "1") {
+        return true;
+    }
+    throw std::invalid_argument(
+        "GNFS_STRUCTURED_FILTER_STAGE_TELEMETRY must be unset, exact 0, or exact 1");
+}
 
 namespace {
 
@@ -529,6 +542,127 @@ std::string structured_filter_record(
            " process_peak_rss_growth_bytes=" + std::to_string(peak_growth_bytes(telemetry));
 }
 
+void append_stage_record_field(std::string& record, std::string_view name, std::string_view value) {
+    record.push_back(' ');
+    record.append(name);
+    record.push_back('=');
+    record.append(value);
+}
+
+void append_stage_record_field(std::string& record, std::string_view name, uint64_t value) {
+    append_stage_record_field(record, name, std::to_string(value));
+}
+
+void append_stage_record_field(std::string& record, std::string_view name, const char* value) {
+    append_stage_record_field(record, name, std::string_view(value));
+}
+
+void append_stage_record_field(std::string& record, std::string_view name, bool value) {
+    append_stage_record_field(record, name, value ? std::string_view("1") : std::string_view("0"));
+}
+
+struct StructuredStageReadSchemaEntry final {
+    relation::StructuredTelemetryReadPhase phase;
+    std::string_view name;
+};
+
+struct StructuredStageCheckpointSchemaEntry final {
+    relation::StructuredTelemetryCheckpoint checkpoint;
+    std::string_view name;
+};
+
+constexpr std::array<StructuredStageReadSchemaEntry, 4> STRUCTURED_STAGE_SCHEMA_1_READ_PHASES{{
+    {relation::StructuredTelemetryReadPhase::InitialScan, "initial_scan"},
+    {relation::StructuredTelemetryReadPhase::IncidenceBuild, "incidence_build"},
+    {relation::StructuredTelemetryReadPhase::Reducer, "reducer"},
+    {relation::StructuredTelemetryReadPhase::FreshValidation, "fresh_validation"},
+}};
+
+constexpr std::array<StructuredStageCheckpointSchemaEntry, 10>
+    STRUCTURED_STAGE_SCHEMA_1_CHECKPOINTS{{
+        {relation::StructuredTelemetryCheckpoint::ScanBegin, "scan_begin"},
+        {relation::StructuredTelemetryCheckpoint::ScanCompleteBeforeAbRelease,
+         "scan_complete_before_ab_release"},
+        {relation::StructuredTelemetryCheckpoint::AfterAbRelease, "after_ab_release"},
+        {relation::StructuredTelemetryCheckpoint::IncidenceReceiptBuilt, "incidence_receipt_built"},
+        {relation::StructuredTelemetryCheckpoint::ReducerConstructed, "reducer_constructed"},
+        {relation::StructuredTelemetryCheckpoint::ReductionComplete, "reduction_complete"},
+        {relation::StructuredTelemetryCheckpoint::OutputMaterialized, "output_materialized"},
+        {relation::StructuredTelemetryCheckpoint::OutputFinalized, "output_finalized"},
+        {relation::StructuredTelemetryCheckpoint::ReducerReleased, "reducer_released"},
+        {relation::StructuredTelemetryCheckpoint::FreshValidationComplete,
+         "fresh_validation_complete"},
+    }};
+
+static_assert(relation::StructuredReductionTelemetryRecord::current_schema_version == 1);
+static_assert(STRUCTURED_STAGE_SCHEMA_1_READ_PHASES.size() ==
+              relation::structured_telemetry_read_phase_count);
+static_assert(STRUCTURED_STAGE_SCHEMA_1_CHECKPOINTS.size() ==
+              relation::structured_telemetry_checkpoint_count);
+
+std::string
+structured_filter_stage_record(const relation::StructuredReductionTelemetryRecord& telemetry) {
+    if (telemetry.schema_version !=
+        relation::StructuredReductionTelemetryRecord::current_schema_version) {
+        throw std::logic_error("unsupported structured filter stage telemetry schema");
+    }
+
+    std::string record = "structured_filter_stage schema=1";
+    record.reserve(8192);
+    append_stage_record_field(record, "generation", telemetry.generation);
+    append_stage_record_field(record, "route", "direct_ooc_prefix");
+    append_stage_record_field(record, "process_rss_scope", "self_lifetime");
+    append_stage_record_field(record, "source_rows", telemetry.source_rows);
+    append_stage_record_field(record, "incidence_rows", telemetry.incidence_rows);
+    append_stage_record_field(record, "incidence_unique_keys", telemetry.incidence_unique_keys);
+    append_stage_record_field(record, "incidence_entries", telemetry.incidence_entries);
+    append_stage_record_field(record, "completed", telemetry.completed);
+    append_stage_record_field(record, "succeeded", telemetry.succeeded);
+    append_stage_record_field(
+        record, "failure_stage",
+        relation::structured_telemetry_failure_stage_name(telemetry.failure_stage));
+    append_stage_record_field(
+        record, "last_checkpoint",
+        telemetry.last_checkpoint.has_value()
+            ? relation::structured_telemetry_checkpoint_name(*telemetry.last_checkpoint)
+            : std::string_view("none"));
+
+    for (const auto& entry : STRUCTURED_STAGE_SCHEMA_1_READ_PHASES) {
+        const std::string prefix = "read_" + std::string(entry.name);
+        const auto& counters = telemetry.reads[static_cast<size_t>(entry.phase)];
+        append_stage_record_field(record, prefix + "_attempts", counters.attempts);
+        append_stage_record_field(record, prefix + "_successes", counters.successes);
+        append_stage_record_field(record, prefix + "_failures", counters.failures);
+    }
+
+    for (const auto& entry : STRUCTURED_STAGE_SCHEMA_1_CHECKPOINTS) {
+        const std::string prefix = "checkpoint_" + std::string(entry.name);
+        const auto& sample = telemetry.checkpoints[static_cast<size_t>(entry.checkpoint)];
+        const bool current_supported = sample.memory.current_rss_bytes.has_value();
+        const bool peak_supported = sample.memory.lifetime_peak_rss_bytes.has_value();
+        append_stage_record_field(record, prefix + "_observed", sample.observed);
+        append_stage_record_field(record, prefix + "_wall_supported", sample.wall_supported);
+        append_stage_record_field(record, prefix + "_elapsed_wall_ns",
+                                  sample.wall_supported ? sample.elapsed_wall_ns : uint64_t{0});
+        append_stage_record_field(record, prefix + "_memory_backend",
+                                  util::process_memory_backend_name(sample.memory.backend));
+        append_stage_record_field(record, prefix + "_current_rss_supported", current_supported);
+        append_stage_record_field(record, prefix + "_current_rss_bytes",
+                                  sample.memory.current_rss_bytes.value_or(0));
+        append_stage_record_field(record, prefix + "_peak_rss_supported", peak_supported);
+        append_stage_record_field(record, prefix + "_peak_rss_bytes",
+                                  sample.memory.lifetime_peak_rss_bytes.value_or(0));
+    }
+
+    append_stage_record_field(record, "counter_overflow", telemetry.counter_overflow);
+    append_stage_record_field(record, "clock_monotone", telemetry.clock_monotone);
+    append_stage_record_field(record, "peak_monotone", telemetry.peak_monotone);
+    append_stage_record_field(record, "clock_provider_failures", telemetry.clock_provider_failures);
+    append_stage_record_field(record, "memory_provider_failures",
+                              telemetry.memory_provider_failures);
+    return record;
+}
+
 // Pipeline resume base path (Phase 1+2+3 checkpoints).
 //
 // Precedence:
@@ -928,6 +1062,8 @@ Pipeline::Pipeline(const Integer& n, const Config& config)
 }
 
 Pipeline::StructuredRouteSnapshot Pipeline::capture_structured_route_snapshot() const {
+    const bool stage_telemetry_enabled = detail::parse_structured_filter_stage_telemetry(
+        std::getenv("GNFS_STRUCTURED_FILTER_STAGE_TELEMETRY"));
     const auto mode = relation::parse_structured_filter_mode(std::getenv("GNFS_STRUCTURED_FILTER"));
     std::string resume_base_path = pipeline_resume_base_path();
     if (!resume_base_path.empty()) {
@@ -986,6 +1122,7 @@ Pipeline::StructuredRouteSnapshot Pipeline::capture_structured_route_snapshot() 
         distributed_size_gate_ok,
         distributed_force_small,
         distributed_route_selected,
+        stage_telemetry_enabled,
     };
 }
 
@@ -1569,15 +1706,25 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
         const auto generation_paths = structured_preflight.ooc_paths->generation_paths(generation);
         std::optional<relation::RelationReductionConfig> reduction_config;
         std::optional<StructuredFilterRuntimeTelemetry> telemetry;
+        std::optional<relation::StructuredReductionTelemetryRecord> stage_telemetry;
         auto reduction_and_source = collector.with_unique_ooc_prefix(
             [&](const relation::CollectorUniqueOOCPrefixSource& source) {
                 reduction_config.emplace(
                     make_reduction_config(source.count(), legacy_strategy, &generation_paths));
                 auto memory_before = util::process_memory_snapshot();
                 const auto reduction_start = std::chrono::steady_clock::now();
-                auto reduction =
-                    relation::RelationReductionEngine::reduce_direct_borrowed_structured(
-                        generation, source, *reduction_config);
+                auto reduction = [&] {
+                    if (!structured_preflight.stage_telemetry_enabled) {
+                        return relation::RelationReductionEngine::reduce_direct_borrowed_structured(
+                            generation, source, *reduction_config);
+                    }
+                    relation::StructuredReductionTelemetry observer;
+                    auto observed = relation::RelationReductionEngine::
+                        reduce_direct_borrowed_structured_observed(generation, source,
+                                                                   *reduction_config, observer);
+                    stage_telemetry.emplace(observer.snapshot());
+                    return observed;
+                }();
                 telemetry.emplace(finish_structured_filter_telemetry(
                     "direct_ooc_prefix", reduction_start, std::move(memory_before)));
                 return std::pair(std::move(reduction), source.descriptor());
@@ -1589,6 +1736,11 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
         auto reduction = std::move(reduction_and_source.first);
         const relation::OOCSnapshotDescriptor source_descriptor = reduction_and_source.second;
         publish_structured_reduction(reduction, *reduction_config, *telemetry);
+        if (stage_telemetry.has_value()) {
+            const std::string record = structured_filter_stage_record(*stage_telemetry);
+            emit_log(LogLevel::Info, Phase::Sieving, record);
+            std::fprintf(stderr, "[%s]\n", record.c_str());
+        }
         if (reduction.stats.input_relations != source_descriptor.count) {
             throw std::logic_error(
                 "structured OOC reduction input count differs from its raw prefix");
@@ -2385,6 +2537,11 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
 // ============================================================
 
 relation::RelationReductionResult Pipeline::filter(std::vector<Relation> relations) {
+    // Validate this independent process gate before callbacks or relation
+    // generation allocation, even though owned snapshots never publish the
+    // direct-OOC stage record.
+    (void)detail::parse_structured_filter_stage_telemetry(
+        std::getenv("GNFS_STRUCTURED_FILTER_STAGE_TELEMETRY"));
     const auto structured_mode =
         relation::parse_structured_filter_mode(std::getenv("GNFS_STRUCTURED_FILTER"));
     const bool lp_enabled = params_.large_prime_bound > params_.algebraic_bound;

@@ -148,6 +148,49 @@ counters、所有主 cap、batch、workers、stop reason、reduction-engine wall
 `self_lifetime`；unsupported 字段使用显式 support bit 和数值 0。peak growth 只表示
 归约测量窗口内进程高水位的增量，不能解释成净分配量。
 
+### Structured stage telemetry (GNFS_STRUCTURED_FILTER_STAGE_TELEMETRY)
+
+`GNFS_STRUCTURED_FILTER_STAGE_TELEMETRY` 是 direct-OOC structured route 的阶段遥测
+开关。它独立于 `GNFS_STRUCTURED_FILTER`：unset 和精确 `0` 关闭，精确 `1` 开启；
+空串、其它数字、大小写变体、布尔别名、`auto` 和带空白 token 均抛出
+`std::invalid_argument`。完整 `run()` 和直接 `sieve_and_collect()` 在创建或打开
+relation artifact、调用 raw-prefix callback 或发出 progress/log callback 前冻结该值。
+公开 `Pipeline::filter()` 也会在 progress callback 和 generation 分配前验证该值，
+但 owned route 不发布阶段记录。parser 不缓存 ENV，也不读取其它进程状态。
+
+开启后，只有 `direct_ooc_prefix` structured route 调用 observed engine overload。成功
+归约先发布 schema、字段顺序和语义不变的 `structured_filter schema=1`，再发布一条独立的
+`structured_filter_stage schema=1`。owned structured、所有 legacy route 和开关关闭
+路径均不发布 `structured_filter_stage`。关闭路径继续调用原 unobserved overload；
+确定性的关系输出、digest 和统计不变。原记录中的 wall/RSS 仍是观测值，不承诺重复
+运行逐值相同。开启路径仅观察读取和 coordinator checkpoint；provider 失败被计数并
+转成 unsupported sample，不能替换归约异常，也不能改变归约输出。
+
+`structured_filter_stage schema=1` 是 closed schema，字段按以下顺序展开：
+
+1. `generation`、固定 `route=direct_ooc_prefix`、固定
+   `process_rss_scope=self_lifetime`、`source_rows`、`incidence_rows`、
+   `incidence_unique_keys`、`incidence_entries`、`completed`、`succeeded`、
+   `failure_stage`、`last_checkpoint`。
+2. 按 `initial_scan`、`incidence_build`、`reducer`、`fresh_validation` 顺序，为每个
+   `read_<phase>` 写入 `attempts`、`successes`、`failures`。direct route 从初扫保存
+   row support，因此 `read_incidence_build_*` 固定为 0，显式证明未发生第二次
+   authoritative incidence reread。
+3. 按 `scan_begin`、`scan_complete_before_ab_release`、`after_ab_release`、
+   `incidence_receipt_built`、`reducer_constructed`、`reduction_complete`、
+   `output_materialized`、`output_finalized`、`reducer_released`、
+   `fresh_validation_complete` 顺序，为每个 `checkpoint_<name>` 写入 `observed`、
+   `wall_supported`、`elapsed_wall_ns`、`memory_backend`、`current_rss_supported`、
+   `current_rss_bytes`、`peak_rss_supported`、`peak_rss_bytes`。
+4. `counter_overflow`、`clock_monotone`、`peak_monotone`、
+   `clock_provider_failures`、`memory_provider_failures`。
+
+所有计数、时间和 RSS 均以无符号十进制文本输出，不经过窄化格式化。wall 或 RSS
+support bit 为 `0` 时，对应数值字段固定为 `0`。checkpoint RSS 仍是整个进程的
+current/lifetime peak，不是该阶段独占内存；`elapsed_wall_ns` 以 `scan_begin` 为零点。
+API 测试覆盖严格 parser、callback/artifact 前拒绝、默认关闭零记录、direct 开启时
+新旧记录各一次，以及 owned/legacy 开启时零阶段记录。
+
 进入 `solve_matrix()` 后另发 `structured_filter_matrix`。该记录保留兼容字段
 `excess=max(rows-cols, 0)`，并新增有符号 `row_column_delta=rows-cols`、累计
 MatrixBuilder wall time 和 nonzeros。记录在 deterministic trim 完成后、SGE 前恰好
