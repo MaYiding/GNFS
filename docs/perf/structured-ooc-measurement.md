@@ -851,6 +851,18 @@ runner 对比并通过了 51 个原始输入与调度身份字段。两条路由
 本次二进制由 source commit `2b21694bd8d8decf722567c180f71697e6732156`
 构建。后续合入的 PR #68 只更新 GitHub Actions 固定 SHA，不改变该二进制的源文件。
 
+本节历史数字来自当时的 stdout records；该次运行早于 JSON 持久化校验器。自本 PR
+及后续运行起，这两个 legacy/structured route scope 使用按 `scope` 分派的
+`GNFS_EXPERIMENT_COMPARISON_V2` 协议中的固定 58-field variant。校验器会将成功记录
+原子发布到 `build/50d-comparisons/<scope>.json`；该 build artifact 不纳入版本控制。
+一次参数合法的新运行会在构建前失效同 scope 的旧快照，只有两条 route、清理合同、
+schema 和来源绑定全部通过时才发布替代文件，因此失败运行不会留下陈旧的
+`status=pass`。同 scope 的并发 comparison 不在该 latest-snapshot 合同内。JSON 将
+`n` 和所有 digest 固定编码为 canonical decimal string；其它超过 IEEE-754
+safe-integer 范围的整数也使用该编码。顶层 `legacy_stop` 和 `structured_stop` 均指
+sieve route 的终止原因；每条 route 的 `fields.structured_stop` 才是 structured
+reduction 的终止原因。
+
 ```text
 raw_rows=618449
 input_lp_columns=576189

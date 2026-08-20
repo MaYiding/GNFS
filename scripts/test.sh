@@ -1927,6 +1927,624 @@ except SchemaError as error:
 PY
 }
 
+# The legacy/structured route-comparison scopes are one closed 58-field variant
+# of the scope-dispatched GNFS_EXPERIMENT_COMPARISON_V2 protocol. Validate the
+# variant and its bindings to the already-validated fresh-process route records
+# before optionally publishing an atomic JSON evidence artifact.
+validate_50d_route_comparison_v2_schema() {
+    local record="$1"
+    local label="$2"
+    local legacy_record="$3"
+    local structured_record="$4"
+    local artifact_path="${5:-}"
+    "$GNFS_TEST_PYTHON" - "$record" "$label" "$legacy_record" \
+        "$structured_record" "$artifact_path" <<'PY'
+import json
+import os
+import re
+import sys
+import tempfile
+from pathlib import Path
+
+
+class SchemaError(Exception):
+    pass
+
+
+def require(condition, message):
+    if not condition:
+        raise SchemaError(message)
+
+
+EXPECTED_KEYS = """
+status scope routes n max_special_q max_special_q_batch_workers
+max_local_sieve_threads special_q_processed special_q_batch_worker_limit
+special_q_batch_peak_workers local_sieve_thread_budget
+special_q_batch_peak_assigned_threads special_q_worker_peak_sieve_threads
+candidates_total candidate_batch_peak_workers candidate_batch_total_chunks
+candidate_batch_peak_chunks candidate_batch_peak_candidates first_round_complete
+legacy_stop structured_stop raw_rows raw_duplicates input_lp_columns input_lp_w1
+input_lp_w2 input_lp_w3 input_lp_w4plus raw_digest_low raw_digest_high
+raw_identity_fields legacy_output_rows structured_output_rows legacy_output_lp_columns
+structured_output_lp_columns legacy_output_digest_low legacy_output_digest_high
+structured_output_digest_low structured_output_digest_high legacy_matrix_rows
+legacy_matrix_cols legacy_matrix_nonzeros legacy_matrix_signed_delta
+legacy_matrix_row_mapping_identity structured_matrix_rows structured_matrix_cols
+structured_matrix_nonzeros structured_matrix_signed_delta
+structured_matrix_row_mapping_identity legacy_wall_ms structured_wall_ms
+legacy_peak_rss_bytes structured_peak_rss_bytes timing_scope rss_scope timing_asserted
+rss_asserted promotion
+""".split()
+
+SHARED_IDENTITY_FIELDS = """
+scope claim_boundary stop_after pipeline_batch_mode candidate_chunk_size
+candidate_rss_sample_policy cofactor_inner_parallel_policy n_digits n_bits n
+max_special_q max_special_q_batch_workers special_q_processed
+special_q_batch_worker_limit special_q_batch_peak_workers special_q_batch_count
+special_q_batch_peak_size max_local_sieve_threads_requested local_sieve_thread_budget
+special_q_batch_peak_assigned_threads special_q_worker_peak_sieve_threads
+candidates_total candidate_batch_peak_workers candidate_batch_total_chunks
+candidate_batch_peak_chunks candidate_batch_peak_candidates
+candidate_batch_rss_sample_candidates rational_fb_columns algebraic_fb_columns
+base_factor_columns initial_raw_target sieve_rounds_completed first_round_complete
+resume_scope attempted_resume attempted_distributed sge_attempted solver_attempted
+sqrt_attempted factorization_attempted raw_rows raw_duplicates input_lp_columns
+input_lp_w1 input_lp_w2 input_lp_w3 input_lp_w4plus raw_digest_low raw_digest_high
+raw_pair_observed raw_pair_removed
+""".split()
+
+BOTH_ROUTE_BINDINGS = {
+    "n": "n",
+    "max_special_q": "max_special_q",
+    "max_special_q_batch_workers": "max_special_q_batch_workers",
+    "special_q_processed": "special_q_processed",
+    "special_q_batch_worker_limit": "special_q_batch_worker_limit",
+    "special_q_batch_peak_workers": "special_q_batch_peak_workers",
+    "local_sieve_thread_budget": "local_sieve_thread_budget",
+    "special_q_batch_peak_assigned_threads": "special_q_batch_peak_assigned_threads",
+    "special_q_worker_peak_sieve_threads": "special_q_worker_peak_sieve_threads",
+    "candidates_total": "candidates_total",
+    "candidate_batch_peak_workers": "candidate_batch_peak_workers",
+    "candidate_batch_total_chunks": "candidate_batch_total_chunks",
+    "candidate_batch_peak_chunks": "candidate_batch_peak_chunks",
+    "candidate_batch_peak_candidates": "candidate_batch_peak_candidates",
+    "first_round_complete": "first_round_complete",
+    "raw_rows": "raw_rows",
+    "raw_duplicates": "raw_duplicates",
+    "input_lp_columns": "input_lp_columns",
+    "input_lp_w1": "input_lp_w1",
+    "input_lp_w2": "input_lp_w2",
+    "input_lp_w3": "input_lp_w3",
+    "input_lp_w4plus": "input_lp_w4plus",
+    "raw_digest_low": "raw_digest_low",
+    "raw_digest_high": "raw_digest_high",
+}
+
+ROUTE_BINDINGS = {
+    "legacy": {
+        "legacy_stop": "sieve_stop_reason",
+        "legacy_output_rows": "output_rows",
+        "legacy_output_lp_columns": "output_lp_columns",
+        "legacy_output_digest_low": "output_digest_low",
+        "legacy_output_digest_high": "output_digest_high",
+        "legacy_matrix_rows": "matrix_rows",
+        "legacy_matrix_cols": "matrix_cols",
+        "legacy_matrix_nonzeros": "matrix_nonzeros",
+        "legacy_matrix_signed_delta": "matrix_signed_delta",
+        "legacy_matrix_row_mapping_identity": "matrix_row_mapping_identity",
+        "legacy_wall_ms": "wall_ms",
+        "legacy_peak_rss_bytes": "process_peak_rss_bytes",
+    },
+    "structured": {
+        "structured_stop": "sieve_stop_reason",
+        "structured_output_rows": "output_rows",
+        "structured_output_lp_columns": "output_lp_columns",
+        "structured_output_digest_low": "output_digest_low",
+        "structured_output_digest_high": "output_digest_high",
+        "structured_matrix_rows": "matrix_rows",
+        "structured_matrix_cols": "matrix_cols",
+        "structured_matrix_nonzeros": "matrix_nonzeros",
+        "structured_matrix_signed_delta": "matrix_signed_delta",
+        "structured_matrix_row_mapping_identity": "matrix_row_mapping_identity",
+        "structured_wall_ms": "wall_ms",
+        "structured_peak_rss_bytes": "process_peak_rss_bytes",
+    },
+}
+
+BOOLEAN_FIELDS = {
+    "first_round_complete", "legacy_matrix_row_mapping_identity",
+    "structured_matrix_row_mapping_identity", "timing_asserted", "rss_asserted",
+    "promotion",
+}
+OPTIONAL_UINT_FIELDS = {"legacy_peak_rss_bytes", "structured_peak_rss_bytes"}
+SIGNED_FIELDS = {"legacy_matrix_signed_delta", "structured_matrix_signed_delta"}
+BIG_UINT_FIELDS = {"n"}
+STRING_FIELDS = {
+    "status", "scope", "routes", "legacy_stop", "structured_stop", "timing_scope",
+    "rss_scope",
+}
+SPECIAL_FIELDS = {"max_local_sieve_threads"}
+UINT_FIELDS = set(EXPECTED_KEYS) - (
+    BOOLEAN_FIELDS | OPTIONAL_UINT_FIELDS | SIGNED_FIELDS | BIG_UINT_FIELDS |
+    STRING_FIELDS | SPECIAL_FIELDS
+)
+
+require(len(EXPECTED_KEYS) == 58, "internal comparison schema is not 58 fields")
+require(len(SHARED_IDENTITY_FIELDS) == 51,
+        "internal shared route identity schema is not 51 fields")
+require(
+    BOOLEAN_FIELDS | OPTIONAL_UINT_FIELDS | SIGNED_FIELDS | BIG_UINT_FIELDS |
+    STRING_FIELDS | SPECIAL_FIELDS | UINT_FIELDS == set(EXPECTED_KEYS),
+    "internal comparison schema field coverage is incomplete",
+)
+
+UINT_RE = re.compile(r"(?:0|[1-9][0-9]*)\Z")
+POSITIVE_UINT_RE = re.compile(r"[1-9][0-9]*\Z")
+SIGNED_RE = re.compile(r"(?:0|[1-9][0-9]*|-[1-9][0-9]*)\Z")
+TOKEN_RE = re.compile(r"[A-Za-z0-9_.,-]+\Z")
+UINT32_MAX = (1 << 32) - 1
+UINT64_MAX = (1 << 64) - 1
+INT64_MIN = -(1 << 63)
+INT64_MAX = (1 << 63) - 1
+JSON_SAFE_INTEGER_MAX = (1 << 53) - 1
+PROBE_N = 16000000000000004000000216000000000000027000000729
+
+
+def parse_uint(value, field, bounded=True):
+    require(UINT_RE.fullmatch(value) is not None,
+            f"{field} is not canonical unsigned decimal")
+    number = int(value)
+    if bounded:
+        require(number <= UINT64_MAX, f"{field} exceeds uint64")
+    return number
+
+
+def parse_comparison(line):
+    require(line.isascii(), "record is not ASCII")
+    require("\n" not in line and "\r" not in line and "\x00" not in line,
+            "record contains a forbidden control byte")
+    tokens = line.split(" ")
+    require(tokens[0] == "GNFS_EXPERIMENT_COMPARISON_V2", "record prefix mismatch")
+    require(len(tokens) == len(EXPECTED_KEYS) + 1, "field count mismatch")
+
+    fields = {}
+    observed_keys = []
+    for token in tokens[1:]:
+        require(token.count("=") == 1, "field token must contain one equals sign")
+        key, value = token.split("=", 1)
+        require(key and value, "field key/value must be nonempty")
+        require(key not in fields, f"duplicate field {key}")
+        fields[key] = value
+        observed_keys.append(key)
+    require(observed_keys == EXPECTED_KEYS, "field set or order mismatch")
+
+    typed = {}
+    for field in BOOLEAN_FIELDS:
+        require(fields[field] in {"true", "false"},
+                f"{field} is not a canonical boolean")
+        typed[field] = fields[field] == "true"
+    for field in UINT_FIELDS:
+        typed[field] = parse_uint(fields[field], field)
+    for field in BIG_UINT_FIELDS:
+        typed[field] = parse_uint(fields[field], field, bounded=False)
+    for field in OPTIONAL_UINT_FIELDS:
+        typed[field] = None if fields[field] == "na" else parse_uint(fields[field], field)
+    for field in SIGNED_FIELDS:
+        require(SIGNED_RE.fullmatch(fields[field]) is not None,
+                f"{field} is not canonical signed decimal")
+        typed[field] = int(fields[field])
+        require(INT64_MIN <= typed[field] <= INT64_MAX, f"{field} exceeds int64")
+    for field in STRING_FIELDS:
+        require(TOKEN_RE.fullmatch(fields[field]) is not None,
+                f"{field} contains a non-token value")
+        typed[field] = fields[field]
+
+    local_threads = fields["max_local_sieve_threads"]
+    require(local_threads == "auto" or POSITIVE_UINT_RE.fullmatch(local_threads) is not None,
+            "max_local_sieve_threads is neither auto nor a canonical positive integer")
+    if local_threads == "auto":
+        typed["max_local_sieve_threads"] = "auto"
+    else:
+        typed["max_local_sieve_threads"] = int(local_threads)
+        require(typed["max_local_sieve_threads"] <= UINT32_MAX,
+                "max_local_sieve_threads exceeds uint32")
+
+    return fields, {key: typed[key] for key in EXPECTED_KEYS}
+
+
+def parse_route_record(line, expected_route):
+    require(line.isascii(), f"{expected_route} route record is not ASCII")
+    require("\n" not in line and "\r" not in line and "\x00" not in line,
+            f"{expected_route} route record contains a forbidden control byte")
+    tokens = line.split(" ")
+    require(tokens[0] == "GNFS_EXPERIMENT_V2",
+            f"{expected_route} route record prefix mismatch")
+    fields = {}
+    for token in tokens[1:]:
+        require(token.count("=") == 1,
+                f"{expected_route} route field token must contain one equals sign")
+        key, value = token.split("=", 1)
+        require(key and value, f"{expected_route} route field key/value must be nonempty")
+        require(key not in fields, f"duplicate {expected_route} route field {key}")
+        fields[key] = value
+    require(fields.get("route") == expected_route,
+            f"{expected_route} route source identifies a different route")
+    require(fields.get("status") == "pass" and fields.get("failure_stage") == "none",
+            f"{expected_route} route source is not a pass record")
+    require(fields.get("scope") == "bounded_50d_prefix_probe",
+            f"{expected_route} route source scope mismatch")
+    return fields
+
+
+def route_value(fields, key, route):
+    require(key in fields, f"{route} route source lacks {key}")
+    return fields[key]
+
+
+def validate_internal(fields, typed):
+    require(typed["status"] == "pass", "comparison status is not pass")
+    expected_complete = {
+        "bounded_50d_route_prefix_comparison": False,
+        "bounded_50d_first_round_comparison": True,
+    }
+    require(typed["scope"] in expected_complete, "unknown comparison scope")
+    require(typed["first_round_complete"] == expected_complete[typed["scope"]],
+            "scope/first-round completion mismatch")
+    require(typed["routes"] == "legacy,structured", "route order mismatch")
+    require(typed["n"] == PROBE_N, "comparison target N mismatch")
+    require(1 <= typed["max_special_q"] <= UINT32_MAX,
+            "max_special_q is outside uint32 probe bounds")
+    require(1 <= typed["max_special_q_batch_workers"] <= 4,
+            "max_special_q_batch_workers is outside 1..4")
+    require(typed["special_q_processed"] <= typed["max_special_q"],
+            "processed special-Q count exceeds its cap")
+    require(typed["special_q_batch_worker_limit"] <=
+            typed["max_special_q_batch_workers"],
+            "special-Q worker limit exceeds its CLI cap")
+    require(typed["special_q_batch_worker_limit"] <= typed["local_sieve_thread_budget"],
+            "special-Q worker limit exceeds the local thread budget")
+    if typed["max_local_sieve_threads"] != "auto":
+        require(typed["local_sieve_thread_budget"] ==
+                typed["max_local_sieve_threads"],
+                "explicit local thread request differs from the effective budget")
+
+    if typed["special_q_processed"] == 0:
+        require(
+            typed["special_q_batch_worker_limit"] == 0 and
+            typed["special_q_batch_peak_workers"] == 0 and
+            typed["special_q_batch_peak_assigned_threads"] == 0 and
+            typed["special_q_worker_peak_sieve_threads"] == 0,
+            "empty special-Q schedule has nonzero topology",
+        )
+    else:
+        require(typed["special_q_batch_worker_limit"] > 0,
+                "nonempty special-Q schedule has no worker")
+        peak_batch_size = min(4, typed["special_q_processed"])
+        require(typed["special_q_batch_peak_workers"] == min(
+                    typed["special_q_batch_worker_limit"], peak_batch_size),
+                "special-Q peak worker topology mismatch")
+        require(typed["special_q_batch_peak_assigned_threads"] ==
+                typed["local_sieve_thread_budget"],
+                "special-Q schedule did not assign the full local budget")
+        final_batch_size = typed["special_q_processed"] % 4 or peak_batch_size
+        final_workers = min(typed["special_q_batch_worker_limit"], final_batch_size)
+        expected_peak_threads = (
+            typed["local_sieve_thread_budget"] + final_workers - 1
+        ) // final_workers
+        require(typed["special_q_worker_peak_sieve_threads"] == expected_peak_threads,
+                "per-worker sieve thread topology mismatch")
+
+    candidate_keys = (
+        "candidate_batch_peak_workers", "candidate_batch_total_chunks",
+        "candidate_batch_peak_chunks", "candidate_batch_peak_candidates",
+    )
+    if typed["candidates_total"] == 0:
+        require(all(typed[key] == 0 for key in candidate_keys),
+                "empty candidate corpus has nonzero batch topology")
+    else:
+        require(0 < typed["candidate_batch_peak_candidates"] <= typed["candidates_total"],
+                "candidate peak size exceeds the candidate corpus")
+        require(0 < typed["candidate_batch_peak_chunks"] <=
+                typed["candidate_batch_total_chunks"],
+                "candidate peak chunks exceed total chunks")
+        require(typed["candidate_batch_peak_workers"] == min(
+                    typed["local_sieve_thread_budget"],
+                    typed["candidate_batch_peak_chunks"]),
+                "candidate worker topology mismatch")
+
+    require(typed["raw_duplicates"] == 0,
+            "comparison raw corpus unexpectedly contains duplicates")
+    require(
+        typed["input_lp_w1"] + typed["input_lp_w2"] + typed["input_lp_w3"] +
+        typed["input_lp_w4plus"] == typed["input_lp_columns"],
+        "input LP histogram differs from the unique-column count",
+    )
+    require(typed["raw_identity_fields"] == len(SHARED_IDENTITY_FIELDS),
+            "raw identity field count mismatch")
+
+    for route in ("legacy", "structured"):
+        rows = typed[f"{route}_matrix_rows"]
+        columns = typed[f"{route}_matrix_cols"]
+        require(typed[f"{route}_matrix_signed_delta"] == rows - columns,
+                f"{route} matrix signed delta mismatch")
+        require(rows <= typed[f"{route}_output_rows"],
+                f"{route} matrix has more rows than its reduction output")
+
+    short_stops = {"special_q_budget_reached", "special_q_range_exhausted"}
+    complete_stops = {"adaptive_round_limit_reached", "effective_column_excess"}
+    allowed_stops = complete_stops if typed["first_round_complete"] else short_stops
+    require(typed["legacy_stop"] in allowed_stops,
+            "legacy stop reason crosses the comparison boundary")
+    require(typed["structured_stop"] in allowed_stops,
+            "structured stop reason crosses the comparison boundary")
+    require(typed["timing_scope"] == "fresh_process_per_route",
+            "timing scope mismatch")
+    require(typed["rss_scope"] == "fresh_process_per_route", "RSS scope mismatch")
+    require(not typed["timing_asserted"] and not typed["rss_asserted"] and
+            not typed["promotion"],
+            "observational comparison unexpectedly asserts or promotes a result")
+
+
+def validate_sources(fields, legacy, structured):
+    sources = {"legacy": legacy, "structured": structured}
+    expected_route_fields = {
+        "legacy": {
+            "route_evidence": "production_legacy_ooc",
+            "strategy": "standard_v0",
+            "storage": "in_memory",
+        },
+        "structured": {
+            "route_evidence": "production_direct_ooc",
+            "strategy": "structured",
+            "storage": "finalized_ooc",
+        },
+    }
+    for route, expected in expected_route_fields.items():
+        for key, value in expected.items():
+            require(route_value(sources[route], key, route) == value,
+                    f"{route} route {key} mismatch")
+
+    for key in SHARED_IDENTITY_FIELDS:
+        legacy_value = route_value(legacy, key, "legacy")
+        structured_value = route_value(structured, key, "structured")
+        require(legacy_value == structured_value,
+                f"shared route identity field {key} drifted")
+
+    for comparison_key, route_key in BOTH_ROUTE_BINDINGS.items():
+        for route, source in sources.items():
+            require(fields[comparison_key] == route_value(source, route_key, route),
+                    f"comparison {comparison_key} differs from {route} source {route_key}")
+
+    requested_threads = "0" if fields["max_local_sieve_threads"] == "auto" else \
+        fields["max_local_sieve_threads"]
+    for route, source in sources.items():
+        require(route_value(source, "max_local_sieve_threads_requested", route) ==
+                requested_threads,
+                f"comparison local thread request differs from {route} source")
+
+    for route, bindings in ROUTE_BINDINGS.items():
+        source = sources[route]
+        for comparison_key, route_key in bindings.items():
+            require(fields[comparison_key] == route_value(source, route_key, route),
+                    f"comparison {comparison_key} differs from {route} source {route_key}")
+        peak_supported = route_value(source, "process_peak_rss_supported", route) == "true"
+        require((fields[f"{route}_peak_rss_bytes"] != "na") == peak_supported,
+                f"{route} comparison RSS support/value linkage mismatch")
+
+
+def validate_record(line, legacy_line, structured_line):
+    fields, typed = parse_comparison(line)
+    validate_internal(fields, typed)
+    legacy = parse_route_record(legacy_line, "legacy")
+    structured = parse_route_record(structured_line, "structured")
+    validate_sources(fields, legacy, structured)
+    return fields, typed, legacy, structured
+
+
+def replace_token(line, key, replacement):
+    tokens = line.split(" ")
+    matches = [index for index, token in enumerate(tokens) if token.startswith(f"{key}=")]
+    require(len(matches) == 1, f"self-check cannot uniquely replace {key}")
+    tokens[matches[0]] = replacement
+    return " ".join(tokens)
+
+
+def replace_field(line, key, value):
+    return replace_token(line, key, f"{key}={value}")
+
+
+def remove_field(line, key):
+    tokens = line.split(" ")
+    filtered = [token for token in tokens if not token.startswith(f"{key}=")]
+    require(len(filtered) + 1 == len(tokens), f"self-check cannot uniquely remove {key}")
+    return " ".join(filtered)
+
+
+def swap_fields(line, first, second):
+    tokens = line.split(" ")
+    first_matches = [index for index, token in enumerate(tokens)
+                     if token.startswith(f"{first}=")]
+    second_matches = [index for index, token in enumerate(tokens)
+                      if token.startswith(f"{second}=")]
+    require(len(first_matches) == 1 and len(second_matches) == 1,
+            "self-check cannot uniquely reorder fields")
+    tokens[first_matches[0]], tokens[second_matches[0]] = (
+        tokens[second_matches[0]], tokens[first_matches[0]]
+    )
+    return " ".join(tokens)
+
+
+def expect_rejected(line, description, legacy_line, structured_line):
+    try:
+        validate_record(line, legacy_line, structured_line)
+    except SchemaError:
+        return
+    raise SchemaError(f"comparison schema self-check accepted {description}")
+
+
+def requires_decimal_string(field):
+    return field == "n" or "digest_low" in field or "digest_high" in field
+
+
+def json_integer_value(field, value):
+    if requires_decimal_string(field) or abs(value) > JSON_SAFE_INTEGER_MAX:
+        return str(value)
+    return value
+
+
+def json_comparison_value(field, value):
+    if isinstance(value, bool) or value is None or isinstance(value, str):
+        return value
+    require(isinstance(value, int), f"unexpected typed JSON value for {field}")
+    return json_integer_value(field, value)
+
+
+def json_route_value(field, value):
+    if value in {"true", "false"}:
+        return value == "true"
+    if value == "na":
+        return None
+    if SIGNED_RE.fullmatch(value) is not None:
+        return json_integer_value(field, int(value))
+    return value
+
+
+def write_artifact(path_text, record, typed, route_records, route_fields):
+    routes = {}
+    for route in ("legacy", "structured"):
+        fields = route_fields[route]
+        routes[route] = {
+            "record": route_records[route],
+            "fields": {
+                key: json_route_value(key, value) for key, value in fields.items()
+            },
+        }
+
+    artifact = {
+        "artifact_format": "gnfs_50d_route_comparison_evidence",
+        "artifact_format_version": 1,
+        "record_schema": "GNFS_EXPERIMENT_COMPARISON_V2",
+        "record_schema_variant": "legacy_structured_route_comparison_58",
+        "record_scope": typed["scope"],
+        "record_field_count": len(EXPECTED_KEYS),
+        "integer_encoding": {
+            "json_safe_integer_limit": JSON_SAFE_INTEGER_MAX,
+            "wide_integer_representation": "canonical_decimal_string",
+            "always_decimal_string_fields": ["n", "*_digest_low", "*_digest_high"],
+        },
+        "stop_field_semantics": {
+            "comparison.legacy_stop": "routes.legacy.fields.sieve_stop_reason",
+            "comparison.structured_stop": "routes.structured.fields.sieve_stop_reason",
+            "routes.*.fields.structured_stop": "structured_reduction_terminal_reason",
+        },
+        "comparison_record": record,
+        "comparison": {
+            key: json_comparison_value(key, typed[key]) for key in EXPECTED_KEYS
+        },
+        "routes": routes,
+    }
+
+    destination = Path(path_text)
+    temporary_name = None
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=destination.parent,
+            prefix=f".{destination.name}.", suffix=".tmp", delete=False,
+        ) as handle:
+            temporary_name = handle.name
+            json.dump(artifact, handle, ensure_ascii=True, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, destination)
+        temporary_name = None
+    except OSError as error:
+        raise SchemaError(f"cannot persist comparison JSON: {error}") from error
+    finally:
+        if temporary_name is not None:
+            try:
+                Path(temporary_name).unlink()
+            except FileNotFoundError:
+                pass
+
+
+record = sys.argv[1]
+label = sys.argv[2]
+legacy_record = sys.argv[3]
+structured_record = sys.argv[4]
+artifact_path = sys.argv[5]
+
+try:
+    fields, typed, legacy, structured = validate_record(
+        record, legacy_record, structured_record
+    )
+
+    expect_rejected(remove_field(record, "status"), "a missing field",
+                    legacy_record, structured_record)
+    expect_rejected(replace_token(record, "scope", "status=pass"),
+                    "a duplicate field", legacy_record, structured_record)
+    expect_rejected(replace_token(record, "status", "unknown_field=pass"),
+                    "an unknown field", legacy_record, structured_record)
+    expect_rejected(swap_fields(record, "status", "scope"), "field reordering",
+                    legacy_record, structured_record)
+    expect_rejected(replace_field(record, "max_special_q", "01"),
+                    "a noncanonical integer", legacy_record, structured_record)
+    expect_rejected(replace_field(record, "first_round_complete", "TRUE"),
+                    "a noncanonical boolean", legacy_record, structured_record)
+    expect_rejected(replace_field(record, "scope", "experimental"),
+                    "an unknown scope", legacy_record, structured_record)
+    expect_rejected(replace_field(record, "legacy_peak_rss_bytes", "-1"),
+                    "a negative optional integer", legacy_record, structured_record)
+    expect_rejected(
+        replace_field(record, "legacy_matrix_signed_delta",
+                      str(typed["legacy_matrix_signed_delta"] + 1)),
+        "a matrix delta mismatch", legacy_record, structured_record,
+    )
+    expect_rejected(
+        replace_field(record, "input_lp_w1", str(typed["input_lp_w1"] + 1)),
+        "an LP histogram mismatch", legacy_record, structured_record,
+    )
+    expect_rejected(
+        replace_field(record, "legacy_wall_ms", str(typed["legacy_wall_ms"] + 1)),
+        "a comparison/source drift", legacy_record, structured_record,
+    )
+    drifted_structured = replace_field(
+        structured_record, "candidate_batch_rss_sample_candidates",
+        str(int(route_value(structured, "candidate_batch_rss_sample_candidates",
+                            "structured")) + 1),
+    )
+    expect_rejected(record, "a shared route identity drift", legacy_record,
+                    drifted_structured)
+
+    if artifact_path:
+        write_artifact(
+            artifact_path, record, typed,
+            {"legacy": legacy_record, "structured": structured_record},
+            {"legacy": legacy, "structured": structured},
+        )
+except SchemaError as error:
+    print(f"{label}: GNFS_EXPERIMENT_COMPARISON_V2 route schema error: {error}",
+          file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
+invalidate_50d_route_comparison_artifact() {
+    local artifact_path="$1"
+    "$GNFS_TEST_PYTHON" - "$artifact_path" <<'PY'
+import sys
+from pathlib import Path
+
+
+path = Path(sys.argv[1])
+try:
+    path.unlink()
+except FileNotFoundError:
+    pass
+PY
+}
+
 validate_50d_uint32_argument() {
     local value="$1"
     local label="$2"
@@ -2095,7 +2713,117 @@ self_check_50d_probe_contracts() {
     RUN_OUTPUT="$saved_run_output"
 
     validate_50d_route_record "$fixture_record" structured false \
-        "50 位探针合同 fixture" 4 4 auto
+        "50 位探针合同 structured fixture" 4 4 auto || return 1
+
+    local legacy_fixture_record="$fixture_record"
+    legacy_fixture_record="${legacy_fixture_record/route=structured/route=legacy}"
+    legacy_fixture_record="${legacy_fixture_record/route_evidence=production_direct_ooc/route_evidence=production_legacy_ooc}"
+    legacy_fixture_record="${legacy_fixture_record/strategy=structured/strategy=standard_v0}"
+    legacy_fixture_record="${legacy_fixture_record/storage=finalized_ooc/storage=in_memory}"
+    legacy_fixture_record="${legacy_fixture_record/structured_stop=no_candidates/structured_stop=not_started}"
+    validate_50d_route_record "$legacy_fixture_record" legacy false \
+        "50 位探针合同 legacy fixture" 4 4 auto || return 1
+
+    local comparison_fixture
+    comparison_fixture="GNFS_EXPERIMENT_COMPARISON_V2 status=pass"
+    comparison_fixture+=" scope=bounded_50d_route_prefix_comparison"
+    comparison_fixture+=" routes=legacy,structured"
+    comparison_fixture+=" n=16000000000000004000000216000000000000027000000729"
+    comparison_fixture+=" max_special_q=4 max_special_q_batch_workers=4"
+    comparison_fixture+=" max_local_sieve_threads=auto special_q_processed=0"
+    comparison_fixture+=" special_q_batch_worker_limit=0 special_q_batch_peak_workers=0"
+    comparison_fixture+=" local_sieve_thread_budget=0"
+    comparison_fixture+=" special_q_batch_peak_assigned_threads=0"
+    comparison_fixture+=" special_q_worker_peak_sieve_threads=0 candidates_total=0"
+    comparison_fixture+=" candidate_batch_peak_workers=0 candidate_batch_total_chunks=0"
+    comparison_fixture+=" candidate_batch_peak_chunks=0 candidate_batch_peak_candidates=0"
+    comparison_fixture+=" first_round_complete=false"
+    comparison_fixture+=" legacy_stop=special_q_budget_reached"
+    comparison_fixture+=" structured_stop=special_q_budget_reached"
+    comparison_fixture+=" raw_rows=0 raw_duplicates=0 input_lp_columns=0"
+    comparison_fixture+=" input_lp_w1=0 input_lp_w2=0 input_lp_w3=0 input_lp_w4plus=0"
+    comparison_fixture+=" raw_digest_low=0 raw_digest_high=0 raw_identity_fields=51"
+    comparison_fixture+=" legacy_output_rows=0 structured_output_rows=0"
+    comparison_fixture+=" legacy_output_lp_columns=0 structured_output_lp_columns=0"
+    comparison_fixture+=" legacy_output_digest_low=0 legacy_output_digest_high=0"
+    comparison_fixture+=" structured_output_digest_low=0 structured_output_digest_high=0"
+    comparison_fixture+=" legacy_matrix_rows=0 legacy_matrix_cols=0"
+    comparison_fixture+=" legacy_matrix_nonzeros=0 legacy_matrix_signed_delta=0"
+    comparison_fixture+=" legacy_matrix_row_mapping_identity=true"
+    comparison_fixture+=" structured_matrix_rows=0 structured_matrix_cols=0"
+    comparison_fixture+=" structured_matrix_nonzeros=0 structured_matrix_signed_delta=0"
+    comparison_fixture+=" structured_matrix_row_mapping_identity=true"
+    comparison_fixture+=" legacy_wall_ms=0 structured_wall_ms=0"
+    comparison_fixture+=" legacy_peak_rss_bytes=na structured_peak_rss_bytes=na"
+    comparison_fixture+=" timing_scope=fresh_process_per_route"
+    comparison_fixture+=" rss_scope=fresh_process_per_route"
+    comparison_fixture+=" timing_asserted=false rss_asserted=false promotion=false"
+
+    local comparison_contract_dir comparison_contract_artifact
+    if ! comparison_contract_dir=$(mktemp -d \
+        "${TMPDIR:-/tmp}/gnfs_50d_comparison_contract.XXXXXX"); then
+        log_fail "无法创建 50 位 comparison 合同临时目录"
+        return 1
+    fi
+    comparison_contract_artifact="${comparison_contract_dir}/comparison.json"
+    if ! print -r -- "stale comparison evidence" > "$comparison_contract_artifact" ||
+       ! invalidate_50d_route_comparison_artifact "$comparison_contract_artifact" ||
+       [[ -e "$comparison_contract_artifact" || -L "$comparison_contract_artifact" ]]; then
+        log_fail "50 位 comparison 合同无法失效陈旧 JSON"
+        rm -f "$comparison_contract_artifact"
+        rmdir "$comparison_contract_dir" 2>/dev/null || true
+        return 1
+    fi
+    if ! validate_50d_route_comparison_v2_schema "$comparison_fixture" \
+        "50 位 comparison 合同 fixture" "$legacy_fixture_record" "$fixture_record" \
+        "$comparison_contract_artifact"; then
+        rmdir "$comparison_contract_dir" 2>/dev/null || true
+        return 1
+    fi
+    "$GNFS_TEST_PYTHON" - "$comparison_contract_artifact" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+
+path = Path(sys.argv[1])
+try:
+    with path.open(encoding="utf-8") as handle:
+        artifact = json.load(handle)
+    if artifact.get("record_schema") != "GNFS_EXPERIMENT_COMPARISON_V2" or \
+            artifact.get("record_schema_variant") != \
+            "legacy_structured_route_comparison_58" or \
+            artifact.get("record_scope") != "bounded_50d_route_prefix_comparison" or \
+            artifact.get("record_field_count") != 58:
+        raise SystemExit("50d comparison contract JSON lost its schema identity")
+    if artifact.get("integer_encoding", {}).get("wide_integer_representation") != \
+            "canonical_decimal_string":
+        raise SystemExit("50d comparison contract JSON lost its integer encoding")
+    if artifact.get("comparison", {}).get("status") != "pass" or \
+            list(artifact.get("routes", {})) != ["legacy", "structured"]:
+        raise SystemExit("50d comparison contract JSON lost its validated route evidence")
+    expected_n = "16000000000000004000000216000000000000027000000729"
+    if artifact.get("comparison", {}).get("n") != expected_n or \
+            artifact.get("routes", {}).get("legacy", {}).get("fields", {}).get("n") != \
+            expected_n:
+        raise SystemExit("50d comparison contract JSON narrowed its target N")
+    comparison = artifact.get("comparison", {})
+    route_fields = artifact.get("routes", {}).get("structured", {}).get("fields", {})
+    if comparison.get("raw_digest_low") != "0" or \
+            route_fields.get("raw_digest_low") != "0" or \
+            route_fields.get("output_digest_high") != "0":
+        raise SystemExit("50d comparison contract JSON narrowed a digest field")
+    if "matrix_ms" not in route_fields or "structured_stop" not in route_fields or \
+            "structured_commits" not in route_fields or \
+            "structured_emitted_rows" not in route_fields:
+        raise SystemExit("50d comparison contract JSON omitted route evidence")
+finally:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    path.parent.rmdir()
+PY
 }
 
 expect_measurement_field() {
@@ -2215,6 +2943,14 @@ run_50d_route_comparison() {
         return 1
     fi
 
+    case "${scope}:${expected_complete}" in
+        bounded_50d_route_prefix_comparison:false|bounded_50d_first_round_comparison:true) ;;
+        *)
+            log_fail "未知的 50 位 route comparison scope: ${scope}"
+            return 1
+            ;;
+    esac
+
     local max_special_q="${1:-$default_cap}"
     local max_batch_workers="${2:-4}"
     local max_local_sieve_threads="${3:-auto}"
@@ -2238,6 +2974,11 @@ run_50d_route_comparison() {
     fi
     if (( RETRY_EXPLICIT )); then
         log_fail "${MODE} 不接受 --retry；自动重试会破坏每条 route 的 fresh-process 证据"
+        return 1
+    fi
+    local comparison_artifact_path="${BUILD_DIR}/50d-comparisons/${scope}.json"
+    if ! invalidate_50d_route_comparison_artifact "$comparison_artifact_path"; then
+        log_fail "无法失效上一轮 50 位 comparison JSON: ${comparison_artifact_path}"
         return 1
     fi
     do_build
@@ -2428,8 +3169,19 @@ run_50d_route_comparison() {
         legacy_peak=$(measurement_record_field "${route_records[legacy]}" process_peak_rss_bytes)
         structured_peak=$(measurement_record_field "${route_records[structured]}" process_peak_rss_bytes)
 
-        print -r -- "GNFS_EXPERIMENT_COMPARISON_V2 status=pass scope=${scope} routes=legacy,structured n=${shared_n} max_special_q=${max_special_q} max_special_q_batch_workers=${max_batch_workers} max_local_sieve_threads=${max_local_sieve_threads} special_q_processed=${shared_special_q} special_q_batch_worker_limit=${shared_sq_worker_limit} special_q_batch_peak_workers=${shared_sq_peak_workers} local_sieve_thread_budget=${shared_local_budget} special_q_batch_peak_assigned_threads=${shared_sq_assigned_threads} special_q_worker_peak_sieve_threads=${shared_sq_peak_sieve_threads} candidates_total=${shared_candidates} candidate_batch_peak_workers=${shared_candidate_peak_workers} candidate_batch_total_chunks=${shared_candidate_total_chunks} candidate_batch_peak_chunks=${shared_candidate_peak_chunks} candidate_batch_peak_candidates=${shared_candidate_peak_candidates} first_round_complete=${expected_complete} legacy_stop=${legacy_stop} structured_stop=${structured_stop} raw_rows=${shared_raw_rows} raw_duplicates=${shared_raw_duplicates} input_lp_columns=${shared_lp_columns} input_lp_w1=${shared_lp_w1} input_lp_w2=${shared_lp_w2} input_lp_w3=${shared_lp_w3} input_lp_w4plus=${shared_lp_w4plus} raw_digest_low=${shared_raw_digest_low} raw_digest_high=${shared_raw_digest_high} raw_identity_fields=${#identity_fields[@]} legacy_output_rows=${legacy_output_rows} structured_output_rows=${structured_output_rows} legacy_output_lp_columns=${legacy_output_lp} structured_output_lp_columns=${structured_output_lp} legacy_output_digest_low=${legacy_output_digest_low} legacy_output_digest_high=${legacy_output_digest_high} structured_output_digest_low=${structured_output_digest_low} structured_output_digest_high=${structured_output_digest_high} legacy_matrix_rows=${legacy_matrix_rows} legacy_matrix_cols=${legacy_matrix_cols} legacy_matrix_nonzeros=${legacy_matrix_nonzeros} legacy_matrix_signed_delta=${legacy_matrix_delta} legacy_matrix_row_mapping_identity=${legacy_matrix_mapping} structured_matrix_rows=${structured_matrix_rows} structured_matrix_cols=${structured_matrix_cols} structured_matrix_nonzeros=${structured_matrix_nonzeros} structured_matrix_signed_delta=${structured_matrix_delta} structured_matrix_row_mapping_identity=${structured_matrix_mapping} legacy_wall_ms=${legacy_wall} structured_wall_ms=${structured_wall} legacy_peak_rss_bytes=${legacy_peak} structured_peak_rss_bytes=${structured_peak} timing_scope=fresh_process_per_route rss_scope=fresh_process_per_route timing_asserted=false rss_asserted=false promotion=false"
-        log_success "legacy/structured 原始语料身份一致；策略输出与矩阵结果已分别记录"
+        local comparison_record
+        comparison_record="GNFS_EXPERIMENT_COMPARISON_V2 status=pass scope=${scope} routes=legacy,structured n=${shared_n} max_special_q=${max_special_q} max_special_q_batch_workers=${max_batch_workers} max_local_sieve_threads=${max_local_sieve_threads} special_q_processed=${shared_special_q} special_q_batch_worker_limit=${shared_sq_worker_limit} special_q_batch_peak_workers=${shared_sq_peak_workers} local_sieve_thread_budget=${shared_local_budget} special_q_batch_peak_assigned_threads=${shared_sq_assigned_threads} special_q_worker_peak_sieve_threads=${shared_sq_peak_sieve_threads} candidates_total=${shared_candidates} candidate_batch_peak_workers=${shared_candidate_peak_workers} candidate_batch_total_chunks=${shared_candidate_total_chunks} candidate_batch_peak_chunks=${shared_candidate_peak_chunks} candidate_batch_peak_candidates=${shared_candidate_peak_candidates} first_round_complete=${expected_complete} legacy_stop=${legacy_stop} structured_stop=${structured_stop} raw_rows=${shared_raw_rows} raw_duplicates=${shared_raw_duplicates} input_lp_columns=${shared_lp_columns} input_lp_w1=${shared_lp_w1} input_lp_w2=${shared_lp_w2} input_lp_w3=${shared_lp_w3} input_lp_w4plus=${shared_lp_w4plus} raw_digest_low=${shared_raw_digest_low} raw_digest_high=${shared_raw_digest_high} raw_identity_fields=${#identity_fields[@]} legacy_output_rows=${legacy_output_rows} structured_output_rows=${structured_output_rows} legacy_output_lp_columns=${legacy_output_lp} structured_output_lp_columns=${structured_output_lp} legacy_output_digest_low=${legacy_output_digest_low} legacy_output_digest_high=${legacy_output_digest_high} structured_output_digest_low=${structured_output_digest_low} structured_output_digest_high=${structured_output_digest_high} legacy_matrix_rows=${legacy_matrix_rows} legacy_matrix_cols=${legacy_matrix_cols} legacy_matrix_nonzeros=${legacy_matrix_nonzeros} legacy_matrix_signed_delta=${legacy_matrix_delta} legacy_matrix_row_mapping_identity=${legacy_matrix_mapping} structured_matrix_rows=${structured_matrix_rows} structured_matrix_cols=${structured_matrix_cols} structured_matrix_nonzeros=${structured_matrix_nonzeros} structured_matrix_signed_delta=${structured_matrix_delta} structured_matrix_row_mapping_identity=${structured_matrix_mapping} legacy_wall_ms=${legacy_wall} structured_wall_ms=${structured_wall} legacy_peak_rss_bytes=${legacy_peak} structured_peak_rss_bytes=${structured_peak} timing_scope=fresh_process_per_route rss_scope=fresh_process_per_route timing_asserted=false rss_asserted=false promotion=false"
+        if validate_50d_route_comparison_v2_schema "$comparison_record" \
+            "50 位 legacy/structured comparison" "${route_records[legacy]}" \
+            "${route_records[structured]}" "$comparison_artifact_path"; then
+            print -r -- "$comparison_record"
+            log_success "legacy/structured 原始语料身份一致；策略输出与矩阵结果已分别记录"
+            log_success "经过验证的 comparison JSON: ${comparison_artifact_path}"
+        else
+            log_fail "legacy/structured comparison schema 或来源绑定无效"
+            (( FAILED_TESTS += 1 ))
+            comparison_ready=0
+        fi
     fi
     show_summary
 }
@@ -6149,7 +6901,7 @@ do_50d_probe_contracts() {
         REPORT_ENTRIES+=(
             "{\"name\":\"test_structured_ooc_50d_contract\",\"status\":\"pass\",\"elapsed_ms\":${elapsed},\"detail\":\"\"}"
         )
-        log_success "CLI 负例、fixture emitter、schema synthetic 负例全部通过"
+        log_success "CLI、route/comparison schema 负例与 synthetic JSON 持久化全部通过"
         return 0
     fi
 
