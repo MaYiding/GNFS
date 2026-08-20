@@ -5,6 +5,7 @@
 #include "gnfs/util/process.hpp"
 #include "gnfs/util/temp_path.hpp"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -223,6 +224,23 @@ std::vector<Relation> make_shared_primary_corpus() {
     return {
         make_partial(10, {h, u1}), make_partial(20, {h, u2}), make_partial(30, {h, u3}),
         make_partial(40, {u1}),    make_partial(50, {u2}),    make_partial(60, {u3}),
+    };
+}
+
+std::vector<Relation> make_weight_stratified_incidence_corpus() {
+    // Across these six rows, 101 has weight 1, 103 has weight 2, 107 has
+    // weight 3, and 109 has weight 4. The final row's persisted even exponent
+    // cancels canonically, leaving empty GF(2) LP support.
+    constexpr uint64_t weight_1 = 101;
+    constexpr uint64_t weight_2 = 103;
+    constexpr uint64_t weight_3 = 107;
+    constexpr uint64_t weight_4 = 109;
+    Relation canonical_empty = make_full(60);
+    canonical_empty.rational_large_prime.emplace_back(113, uint8_t{2});
+    return {
+        make_partial(10, {weight_1, weight_4}), make_partial(20, {weight_2, weight_3, weight_4}),
+        make_partial(30, {weight_2, weight_4}), make_partial(40, {weight_3, weight_4}),
+        make_partial(50, {weight_3}),           std::move(canonical_empty),
     };
 }
 
@@ -1204,26 +1222,67 @@ void test_structured_borrowed_source_matches_owning_routes() {
 
 void test_structured_direct_borrowed_source_matches_owning_and_two_stage() {
     constexpr uint64_t generation = 719;
-    const auto input = make_shared_primary_corpus();
+    const auto input = make_weight_stratified_incidence_corpus();
+    struct IncidenceExecutionShape final {
+        size_t shard_rows;
+        uint32_t workers;
+    };
+    const std::array<IncidenceExecutionShape, 4> execution_shapes{{
+        {1, 4},                // Worker count clamps to the one-row shard.
+        {3, 2},                // Two uniform three-row shards.
+        {4, 2},                // A full shard followed by a two-row tail.
+        {input.size() + 1, 1}, // One oversized, single-worker shard.
+    }};
 
-    for (const uint32_t workers : {1U, 2U, 4U}) {
-        auto memory_result = RelationReductionEngine::reduce(RawRelationSnapshot(generation, input),
-                                                             structured_config(workers, 3));
-        const auto expected_rows = memory_result.materialize_relations();
-        CHECK(memory_result.stats.raw_duplicates_removed == 0);
+    for (const auto& [shard_rows, workers] : execution_shapes) {
+        const auto make_config = [&] {
+            auto config = structured_config(workers, 3);
+            config.structured->incidence.max_rows_per_shard = shard_rows;
+            return config;
+        };
+
+        auto owning_result =
+            RelationReductionEngine::reduce(RawRelationSnapshot(generation, input), make_config());
+        const auto expected_rows = owning_result.materialize_relations();
+        const auto& expected_histogram = owning_result.stats.deduplicated_input_lp_histogram;
+        CHECK(owning_result.storage_kind() == gnfs::relation::RelationStorageKind::InMemory);
+        CHECK(owning_result.stats.raw_duplicates_removed == 0);
+        CHECK(owning_result.stats.raw_input_digest == corpus_digest(input));
+        CHECK(owning_result.stats.output_digest == corpus_digest(owning_result.relation_corpus()));
+        CHECK(expected_histogram.unique_keys == 4);
+        CHECK(expected_histogram.weight_1 == 1);
+        CHECK(expected_histogram.weight_2 == 1);
+        CHECK(expected_histogram.weight_3 == 1);
+        CHECK(expected_histogram.weight_4plus == 1);
+
+        const size_t expected_peak_shard_rows = std::min(shard_rows, input.size());
+        const size_t expected_shard_count = (input.size() + shard_rows - 1) / shard_rows;
+        CHECK(owning_result.stats.structured_incidence.shard_count == expected_shard_count);
+        CHECK(owning_result.stats.structured_incidence.peak_shard_rows == expected_peak_shard_rows);
+        CHECK(owning_result.stats.structured_incidence.total_incidence_entries == 10);
+        CHECK(owning_result.stats.structured_incidence.requested_worker_count == workers);
+        CHECK(owning_result.stats.structured_incidence.peak_worker_count ==
+              std::min<size_t>(workers, expected_peak_shard_rows));
 
         OOCArtifacts two_stage_work(unique_ooc_base("direct_equivalence_two_stage_work"));
         OOCArtifacts two_stage_output(unique_ooc_base("direct_equivalence_two_stage_output"));
-        auto two_stage_config = structured_config(workers, 3);
+        auto two_stage_config = make_config();
         two_stage_config.structured->deduplicated_ooc_base_path = two_stage_work.base;
         two_stage_config.structured->output_ooc_base_path = two_stage_output.base;
         BorrowedVectorRelationSource two_stage_source(input);
 
         auto two_stage_result = RelationReductionEngine::reduce_borrowed_structured(
             generation, two_stage_source, two_stage_config);
-        CHECK(two_stage_result.stats == memory_result.stats);
+        CHECK(two_stage_result.storage_kind() == gnfs::relation::RelationStorageKind::FinalizedOOC);
+        CHECK(two_stage_result.stats == owning_result.stats);
+        CHECK(two_stage_result.stats.raw_input_digest == owning_result.stats.raw_input_digest);
+        CHECK(two_stage_result.stats.output_digest == owning_result.stats.output_digest);
+        CHECK(two_stage_result.stats.deduplicated_input_lp_histogram == expected_histogram);
+        CHECK(two_stage_result.stats.pre_merge_lp_histogram ==
+              owning_result.stats.pre_merge_lp_histogram);
         CHECK(equal_corpus(two_stage_result.materialize_relations(), expected_rows));
         CHECK(private_sink_absent(two_stage_work.base));
+        CHECK(private_sink_exists(two_stage_output.base));
 
         OOCArtifacts raw(unique_ooc_base("direct_equivalence_raw"));
         OOCArtifacts direct_output(unique_ooc_base("direct_equivalence_output"));
@@ -1236,7 +1295,7 @@ void test_structured_direct_borrowed_source_matches_owning_and_two_stage() {
             RelationCollector collector(collector_config);
             add_relations(collector, input);
 
-            auto direct_config = structured_config(workers, 3);
+            auto direct_config = make_config();
             direct_config.structured->output_ooc_base_path = direct_output.base;
             direct_result.emplace(
                 collector.with_unique_ooc_prefix([&](const CollectorUniqueOOCPrefixSource& source) {
@@ -1252,17 +1311,20 @@ void test_structured_direct_borrowed_source_matches_owning_and_two_stage() {
             CHECK(private_sink_exists(direct_output.base));
 
             // The returned corpus must not retain the callback-scoped source.
-            Relation tail = make_full(900 + workers);
+            Relation tail = make_full(static_cast<int64_t>(900 + workers + shard_rows * 10));
             CHECK(collector.add(std::move(tail)));
             CHECK(collector.size() == input.size() + 1);
         }
 
         CHECK(direct_result.has_value());
         CHECK(direct_result->generation == generation);
-        CHECK(direct_result->stats == memory_result.stats);
+        CHECK(direct_result->stats == owning_result.stats);
         CHECK(direct_result->stats == two_stage_result.stats);
-        CHECK(direct_result->stats.raw_input_digest == memory_result.stats.raw_input_digest);
-        CHECK(direct_result->stats.output_digest == memory_result.stats.output_digest);
+        CHECK(direct_result->stats.raw_input_digest == owning_result.stats.raw_input_digest);
+        CHECK(direct_result->stats.output_digest == owning_result.stats.output_digest);
+        CHECK(direct_result->stats.deduplicated_input_lp_histogram == expected_histogram);
+        CHECK(direct_result->stats.pre_merge_lp_histogram ==
+              owning_result.stats.pre_merge_lp_histogram);
         CHECK(equal_corpus(direct_result->materialize_relations(), expected_rows));
         direct_result.reset();
         CHECK(private_sink_absent(direct_output.base));

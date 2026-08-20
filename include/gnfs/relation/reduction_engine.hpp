@@ -731,21 +731,23 @@ public:
         const size_t input_relations = static_cast<size_t>(source.count());
         struct DirectSourceScan final {
             CorpusDigest raw_digest;
-            LpKeyWeightHistogram lp_histogram;
+            std::vector<std::vector<LargePrimeKey>> row_lp_keys;
             std::vector<CorpusDigest> fingerprints;
         };
-        const DirectSourceScan scan = [&] {
+        DirectSourceScan scan = [&] {
             CorpusDigestAccumulator raw_digest(input_relations);
             RelationSequenceReceiptAccumulator accepted_sequence;
-            LpKeyWeightAccumulator lp_histogram(input_relations);
+            std::vector<std::vector<LargePrimeKey>> row_lp_keys;
+            row_lp_keys.reserve(input_relations);
             std::vector<CorpusDigest> fingerprints;
             fingerprints.reserve(input_relations);
 
             // The capability is minted before the prefix reader opens. Prove
             // that the bytes visible to this engine still describe exactly the
             // collector's unique AB set, then release this temporary O(N) set
-            // and the histogram's O(N) weights before incidence construction
-            // adds its own O(N) state.
+            // before incidence construction adds its O(N) bucket state. The
+            // canonical row supports survive the scan so the authoritative
+            // payload never needs a second incidence-only read.
             std::unordered_set<core::ABPair, core::ABPairHash> observed_ab_pairs;
             observed_ab_pairs.reserve(input_relations);
             for (size_t ordinal = 0; ordinal < input_relations; ++ordinal) {
@@ -762,7 +764,7 @@ public:
                 }
                 raw_digest.append(relation);
                 accepted_sequence.append(relation);
-                lp_histogram.append(relation);
+                row_lp_keys.push_back(odd_large_prime_keys(relation));
                 fingerprints.push_back(direct_relation_fingerprint(relation));
             }
             if (accepted_sequence.finish() != source.accepted_sequence_receipt()) {
@@ -770,15 +772,18 @@ public:
                     source,
                     "direct borrowed source payload differs from the collector-accepted sequence");
             }
-            return DirectSourceScan{raw_digest.finish(), lp_histogram.finish(),
+            return DirectSourceScan{raw_digest.finish(), std::move(row_lp_keys),
                                     std::move(fingerprints)};
         }();
+
+        StructuredIncidenceBuildResult incidence = build_structured_incidence_from_row_supports(
+            generation, std::move(scan.row_lp_keys), structured.incidence);
 
         RelationReductionStats stats;
         stats.strategy = ReductionStrategy::Structured;
         stats.input_relations = input_relations;
         stats.raw_input_digest = scan.raw_digest;
-        stats.deduplicated_input_lp_histogram = scan.lp_histogram;
+        stats.deduplicated_input_lp_histogram = lp_histogram_from_incidence(incidence);
 
         ValidatedDirectBorrowedSource<Source, Source> validated_source(source, source,
                                                                        scan.fingerprints);
@@ -787,9 +792,9 @@ public:
             throw std::logic_error(
                 "direct borrowed relation source count changed during synchronous reduction");
         }
-        RelationReductionResult result =
-            reduce_structured_source(generation, std::move(borrowed), std::move(stats), structured,
-                                     std::move(structured_sink));
+        RelationReductionResult result = reduce_structured_source_with_prebuilt_incidence(
+            generation, std::move(borrowed), std::move(incidence), std::move(stats), structured,
+            std::move(structured_sink));
 
         // Some successful reducer paths do not need to rematerialize every raw
         // atom. Reopen a fresh view and read the whole immutable prefix after
@@ -835,6 +840,29 @@ private:
         CorpusDigestAccumulator fingerprint(1);
         fingerprint.append(relation);
         return fingerprint.finish();
+    }
+
+    [[nodiscard]] static LpKeyWeightHistogram
+    lp_histogram_from_incidence(const StructuredIncidenceBuildResult& incidence) {
+        LpKeyWeightHistogram histogram;
+        histogram.unique_keys = incidence.buckets().size();
+        for (const auto& bucket : incidence.buckets()) {
+            const size_t weight = bucket.adjacency.size();
+            if (weight == 1) {
+                ++histogram.weight_1;
+            } else if (weight == 2) {
+                ++histogram.weight_2;
+            } else if (weight == 3) {
+                ++histogram.weight_3;
+            } else if (weight >= 4) {
+                ++histogram.weight_4plus;
+            } else {
+                throw StructuredReductionError(
+                    StructuredReductionErrorCode::InvariantViolation,
+                    "structured incidence contains an empty large-prime bucket");
+            }
+        }
+        return histogram;
     }
 
     template <typename ReadSource, typename TrustSource> class ValidatedDirectBorrowedSource final {
@@ -886,6 +914,28 @@ private:
                 "structured source generation does not match the reduction generation");
         }
         SequentialStructuredReducer reducer(std::move(source), structured.incidence);
+        return finish_structured_reduction(generation, std::move(reducer), std::move(stats),
+                                           structured, std::move(structured_sink));
+    }
+
+    [[nodiscard]] static RelationReductionResult reduce_structured_source_with_prebuilt_incidence(
+        uint64_t generation, SourceCorpus source, StructuredIncidenceBuildResult&& incidence,
+        RelationReductionStats stats,
+        const RelationReductionConfig::StructuredExecutionConfig& structured,
+        std::optional<RelationSink> structured_sink) {
+        if (source.generation() != generation) {
+            throw std::logic_error(
+                "structured source generation does not match the reduction generation");
+        }
+        SequentialStructuredReducer reducer(std::move(source), std::move(incidence));
+        return finish_structured_reduction(generation, std::move(reducer), std::move(stats),
+                                           structured, std::move(structured_sink));
+    }
+
+    [[nodiscard]] static RelationReductionResult finish_structured_reduction(
+        uint64_t generation, SequentialStructuredReducer reducer, RelationReductionStats stats,
+        const RelationReductionConfig::StructuredExecutionConfig& structured,
+        std::optional<RelationSink> structured_sink) {
         stats.structured_run = reducer.reduce_budgeted_parallel(
             structured.budget, structured.parallel, structured.planner);
         stats.structured = reducer.stats();
