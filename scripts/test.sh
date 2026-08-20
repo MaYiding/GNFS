@@ -58,6 +58,8 @@
 #   ./scripts/test.sh bench --compare     # 与上次保存的基准对比
 #   ./scripts/test.sh structured-ooc-rss 50000 4
 #                                         # 独立进程 structured OOC RSS 场景
+#   ./scripts/test.sh structured-ooc-dense-stage 4
+#                                         # 50 位规模 structured stage/read replay
 #   ./scripts/test.sh probe-50d-structured-ooc
 #                                         # 真实 50 位、有界 production Pipeline 探针
 #   ./scripts/test.sh check-50d-contracts  # 仅 CLI/schema 合同，不运行真实 50 位流水线
@@ -1605,6 +1607,28 @@ capture_single_measurement_record() {
         awk -v prefix="$prefix" 'index($0, prefix) == 1 { print }')
 }
 
+# A dedicated measurement mode may validate a closed record only after the
+# binary exits successfully. Reclassify that one already-recorded pass in
+# place so summary counters and test_report.json still describe one test.
+reclassify_last_pass_as_contract_failure() {
+    local expected_name="$1"
+    local detail="$2"
+    if (( PASSED_TESTS == 0 || ${#REPORT_ENTRIES[@]} == 0 )); then
+        log_fail "无法重分类 ${expected_name}: 不存在最近通过记录"
+        return 1
+    fi
+    local entry="${REPORT_ENTRIES[-1]}"
+    if [[ "$entry" != *"\"name\":\"${expected_name}\",\"status\":\"pass\""* ]]; then
+        log_fail "无法重分类 ${expected_name}: 最近记录不是该测试的 pass"
+        return 1
+    fi
+    entry="${entry/\"status\":\"pass\"/\"status\":\"fail\"}"
+    entry="${entry/\"detail\":\"\"/\"detail\":\"${detail}\"}"
+    REPORT_ENTRIES[-1]="$entry"
+    (( PASSED_TESTS -= 1 ))
+    (( FAILED_TESTS += 1 ))
+}
+
 measurement_record_field() {
     local record="$1"
     local key="$2"
@@ -1619,6 +1643,219 @@ measurement_record_field() {
         }
         END { if (matches != 1) exit 1 }
     '
+}
+
+# Validate the closed dense structured stage/read replay record. The fixture
+# has no machine-dependent identity fields; wall and RSS values are
+# observational, but their syntax, support linkage, and monotonic contracts are
+# still fail-closed.
+validate_structured_ooc_dense_stage_v1_schema() {
+    local record="$1"
+    local expected_workers="$2"
+    "$GNFS_TEST_PYTHON" - "$record" "$expected_workers" <<'PY'
+import sys
+
+
+class SchemaError(Exception):
+    pass
+
+
+def require(condition, message):
+    if not condition:
+        raise SchemaError(message)
+
+
+def parse_uint(text, field):
+    ascii_digits = text and all("0" <= byte <= "9" for byte in text)
+    require(text == "0" or (ascii_digits and not text.startswith("0")),
+            f"{field} is not a canonical unsigned integer")
+    return int(text)
+
+
+def parse_bool(text, field):
+    require(text in ("true", "false"), f"{field} is not a canonical boolean")
+    return text == "true"
+
+
+def parse_optional_uint(text, field):
+    if text == "na":
+        return None
+    return parse_uint(text, field)
+
+
+BASE_KEYS = [
+    "schema", "status", "scope", "process_rss_scope", "fixture", "topology", "build_type",
+    "generation", "workers", "source_rows", "incidence_rows", "incidence_unique_keys",
+    "incidence_entries", "input_lp_w1", "input_lp_w2", "input_lp_w3",
+    "input_lp_w4plus", "incidence_shards", "peak_shard_rows", "peak_shard_entries",
+    "peak_incidence_workers", "singleton_rows_removed", "core_rows", "structured_stop",
+    "commits", "emitted_rows", "output_rows", "output_lp_columns", "raw_digest_low",
+    "raw_digest_high", "output_digest_low", "output_digest_high", "source_backend",
+    "output_backend", "output_published", "output_lease_removed", "source_resumed",
+    "source_pair_removed", "telemetry_completed", "telemetry_succeeded",
+    "telemetry_failure_stage", "telemetry_last_checkpoint", "telemetry_counter_overflow",
+    "telemetry_clock_monotone", "telemetry_peak_monotone",
+    "telemetry_clock_provider_failures", "telemetry_memory_provider_failures",
+    "memory_backend",
+]
+READ_PHASES = ["initial_scan", "incidence_build", "reducer", "fresh_validation"]
+CHECKPOINTS = [
+    "scan_begin", "scan_complete_before_ab_release", "after_ab_release",
+    "incidence_receipt_built", "reducer_constructed", "reduction_complete",
+    "output_materialized", "output_finalized", "reducer_released",
+    "fresh_validation_complete",
+]
+EXPECTED_KEYS = list(BASE_KEYS)
+for phase in READ_PHASES:
+    EXPECTED_KEYS.extend([
+        f"read_{phase}_attempts", f"read_{phase}_successes", f"read_{phase}_failures",
+    ])
+for checkpoint in CHECKPOINTS:
+    EXPECTED_KEYS.extend([
+        f"cp_{checkpoint}_observed", f"cp_{checkpoint}_wall_supported",
+        f"cp_{checkpoint}_wall_ns", f"cp_{checkpoint}_current_rss",
+        f"cp_{checkpoint}_peak_rss",
+    ])
+
+
+def parse_record(line):
+    parts = line.split()
+    require(parts and parts[0] == "GNFS_STRUCTURED_OOC_DENSE_STAGE_V1",
+            "record prefix mismatch")
+    fields = {}
+    ordered_keys = []
+    for token in parts[1:]:
+        require(token.count("=") == 1, f"malformed token: {token}")
+        key, value = token.split("=", 1)
+        require(key and value, f"empty key or value: {token}")
+        require(key not in fields, f"duplicate field: {key}")
+        fields[key] = value
+        ordered_keys.append(key)
+    require(ordered_keys == EXPECTED_KEYS, "field set or ordering differs from closed schema")
+    return fields
+
+
+try:
+    fields = parse_record(sys.argv[1])
+    expected_workers = parse_uint(sys.argv[2], "expected_workers")
+    require(expected_workers in (1, 4), "runner worker request is outside the sealed grid")
+
+    require(parse_uint(fields["schema"], "schema") == 1, "schema mismatch")
+    require(fields["status"] == "pass", "status mismatch")
+    require(fields["scope"] == "direct_observed_route", "scope mismatch")
+    require(fields["process_rss_scope"] == "self_lifetime", "RSS scope mismatch")
+    require(fields["fixture"] == "synthetic_cardinality_anchor", "fixture mismatch")
+    require(fields["topology"] == "singleton_spokes_degree9_circulant_v1",
+            "topology mismatch")
+    require(fields["build_type"] == "Release", "dense replay is not a Release build")
+    require(parse_uint(fields["generation"], "generation") == 73002, "generation mismatch")
+    require(parse_uint(fields["workers"], "workers") == expected_workers, "worker mismatch")
+
+    fixed_uints = {
+        "source_rows": 618449,
+        "incidence_rows": 618449,
+        "incidence_unique_keys": 576189,
+        "incidence_entries": 1236898,
+        "input_lp_w1": 493601,
+        "input_lp_w2": 0,
+        "input_lp_w3": 0,
+        "input_lp_w4plus": 82588,
+        "incidence_shards": 151,
+        "peak_shard_rows": 4096,
+        "peak_shard_entries": 8192,
+        "peak_incidence_workers": expected_workers,
+        "singleton_rows_removed": 493601,
+        "core_rows": 124848,
+        "commits": 0,
+        "emitted_rows": 0,
+        "output_rows": 124848,
+        "output_lp_columns": 27744,
+        "raw_digest_low": 12026999194036640146,
+        "raw_digest_high": 18236242084170576750,
+        "output_digest_low": 16663096013469244788,
+        "output_digest_high": 7825550821674115266,
+    }
+    for key, expected in fixed_uints.items():
+        require(parse_uint(fields[key], key) == expected, f"{key} mismatch")
+    require(fields["structured_stop"] == "no_candidates", "structured stop mismatch")
+
+    require(parse_uint(fields["input_lp_w1"], "input_lp_w1") +
+            parse_uint(fields["input_lp_w2"], "input_lp_w2") +
+            parse_uint(fields["input_lp_w3"], "input_lp_w3") +
+            parse_uint(fields["input_lp_w4plus"], "input_lp_w4plus") ==
+            parse_uint(fields["incidence_unique_keys"], "incidence_unique_keys"),
+            "LP histogram does not sum to the unique-key count")
+    require(parse_uint(fields["incidence_entries"], "incidence_entries") ==
+            2 * parse_uint(fields["source_rows"], "source_rows"),
+            "incidence count does not match the two-key-per-row fixture")
+
+    require(fields["source_backend"] == "collector_direct_borrowed_prefix",
+            "source backend mismatch")
+    require(fields["output_backend"] == "finalized_ooc", "output backend mismatch")
+    for key in ("output_published", "output_lease_removed", "source_resumed",
+                "source_pair_removed",
+                "telemetry_completed", "telemetry_succeeded", "telemetry_clock_monotone",
+                "telemetry_peak_monotone"):
+        require(parse_bool(fields[key], key), f"{key} is not true")
+    require(not parse_bool(fields["telemetry_counter_overflow"],
+                           "telemetry_counter_overflow"),
+            "telemetry counters overflowed")
+    require(fields["telemetry_failure_stage"] == "none", "telemetry failure stage mismatch")
+    require(fields["telemetry_last_checkpoint"] == "fresh_validation_complete",
+            "telemetry did not reach the final checkpoint")
+    require(parse_uint(fields["telemetry_clock_provider_failures"],
+                       "telemetry_clock_provider_failures") == 0,
+            "clock provider failed")
+    require(parse_uint(fields["telemetry_memory_provider_failures"],
+                       "telemetry_memory_provider_failures") == 0,
+            "memory provider threw")
+    require(fields["memory_backend"] in
+            ("unsupported", "darwin_getrusage", "linux_getrusage", "windows_psapi"),
+            "unknown memory backend")
+
+    expected_reads = {
+        "initial_scan": 618449,
+        "incidence_build": 0,
+        "reducer": 124848,
+        "fresh_validation": 618449,
+    }
+    for phase, expected in expected_reads.items():
+        attempts = parse_uint(fields[f"read_{phase}_attempts"], f"read_{phase}_attempts")
+        successes = parse_uint(fields[f"read_{phase}_successes"], f"read_{phase}_successes")
+        failures = parse_uint(fields[f"read_{phase}_failures"], f"read_{phase}_failures")
+        require((attempts, successes, failures) == (expected, expected, 0),
+                f"{phase} read counters mismatch")
+
+    previous_wall = 0
+    previous_peak = None
+    for index, checkpoint in enumerate(CHECKPOINTS):
+        observed_key = f"cp_{checkpoint}_observed"
+        supported_key = f"cp_{checkpoint}_wall_supported"
+        require(parse_bool(fields[observed_key], observed_key),
+                f"{checkpoint} was not observed")
+        require(parse_bool(fields[supported_key], supported_key),
+                f"{checkpoint} wall clock is unsupported")
+        wall = parse_uint(fields[f"cp_{checkpoint}_wall_ns"],
+                          f"cp_{checkpoint}_wall_ns")
+        require(wall >= previous_wall, f"{checkpoint} wall time regressed")
+        if index == 0:
+            require(wall == 0, "scan_begin wall time is not zero")
+        previous_wall = wall
+        current = parse_optional_uint(fields[f"cp_{checkpoint}_current_rss"],
+                                      f"cp_{checkpoint}_current_rss")
+        peak = parse_optional_uint(fields[f"cp_{checkpoint}_peak_rss"],
+                                   f"cp_{checkpoint}_peak_rss")
+        if fields["memory_backend"] == "unsupported":
+            require(current is None and peak is None,
+                    "unsupported memory backend emitted an RSS value")
+        if peak is not None and previous_peak is not None:
+            require(peak >= previous_peak, f"{checkpoint} lifetime peak regressed")
+        if peak is not None:
+            previous_peak = peak
+except SchemaError as error:
+    print(f"Structured OOC dense stage schema error: {error}", file=sys.stderr)
+    sys.exit(1)
+PY
 }
 
 validate_50d_experiment_v2_schema() {
@@ -6957,6 +7194,7 @@ do_list() {
     echo "  ${BULLET} ${CYAN}test_stress${RESET}            — 压力测试: 50/60-digit (164-197 bit)"
     echo "  ${BULLET} ${CYAN}test_structured_ooc_50d_probe${RESET} — 有界 50 位 production OOC 前缀探针"
     echo "  ${BULLET} ${CYAN}check-50d-contracts${RESET} — 不运行真实 50 位流水线的 CLI/schema 合同"
+    echo "  ${BULLET} ${CYAN}structured-ooc-dense-stage <1|4>${RESET} — Release-only cardinality-anchor stage/read replay"
     echo "  ${BULLET} ${CYAN}compare-50d-bounded-routes${RESET} — 4-SQ legacy/structured fresh-process 对照"
     echo "  ${BULLET} ${CYAN}compare-50d-first-round${RESET} — 完整首轮 legacy/structured fresh-process 对照"
     echo "  ${BULLET} ${CYAN}test_candidate_batch_50d_sweep${RESET} — 固定 50 位 4-SQ candidate 调度扫测"
@@ -7258,6 +7496,63 @@ case "$MODE" in
                 print -r -- "$MEASUREMENT_RECORD"
             else
                 (( FAILED_TESTS += 1 ))
+            fi
+        fi
+        show_summary
+        ;;
+
+    structured-ooc-dense-stage)
+        if [[ ${#MODE_ARGS[@]} -ne 1 ]]; then
+            log_fail "用法: $0 structured-ooc-dense-stage <1|4>"
+            exit 1
+        fi
+        local _dense_stage_workers="${MODE_ARGS[1]}"
+        case "$_dense_stage_workers" in
+            1|4) ;;
+            *)
+                log_fail "非法 dense stage worker 数: ${_dense_stage_workers}"
+                exit 1
+                ;;
+        esac
+        if (( BUILD_TYPE_EXPLICIT )) && [[ "$BUILD_TYPE" != "Release" ]]; then
+            log_fail "structured-ooc-dense-stage 只接受 Release 构建（传入: ${BUILD_TYPE}）"
+            exit 1
+        fi
+        BUILD_TYPE="Release"
+        if (( SKIP_BUILD )); then
+            log_fail "structured-ooc-dense-stage 不接受 --no-build；stage 证据必须由本次请求的构建生成"
+            exit 1
+        fi
+        if (( RETRY_EXPLICIT )); then
+            log_fail "structured-ooc-dense-stage 不接受 --retry；自动重试会破坏 fresh-process 证据"
+            exit 1
+        fi
+        if (( ! TIMEOUT_EXPLICIT )); then
+            TIMEOUT=600
+            TIMEOUT_EXPLICIT=1
+        fi
+        do_build
+        if [[ ! -x "${BUILD_DIR}/test_structured_ooc_scale" ]]; then
+            log_fail "dense stage replay 二进制不存在: ${BUILD_DIR}/test_structured_ooc_scale"
+            exit 1
+        fi
+        log_header "Structured OOC dense stage/read replay"
+        local _dense_stage_status=0
+        run_single_test test_structured_ooc_scale --dense-stage-case \
+            "$_dense_stage_workers" || _dense_stage_status=$?
+        if (( _dense_stage_status == 0 )); then
+            if capture_single_measurement_record \
+                   "GNFS_STRUCTURED_OOC_DENSE_STAGE_V1 " \
+                   "Structured OOC dense stage" &&
+               validate_structured_ooc_dense_stage_v1_schema \
+                   "$MEASUREMENT_RECORD" "$_dense_stage_workers"; then
+                (( VERBOSE && ! QUIET )) || print -r -- "$MEASUREMENT_RECORD"
+            else
+                if ! reclassify_last_pass_as_contract_failure \
+                         test_structured_ooc_scale dense_stage_record_contract; then
+                    log_fail "dense stage 合同失败且无法保持报告计数一致"
+                    exit 1
+                fi
             fi
         fi
         show_summary

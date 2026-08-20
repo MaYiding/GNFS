@@ -5539,7 +5539,7 @@ WORKER_CLEANUP_RECEIPT_RELEASE_MEMBER_BODY = (
 )
 WORKER_CLEANUP_RECEIPT_CMAKE_FILE = "CMakeLists.txt"
 WORKER_CLEANUP_RECEIPT_CMAKE_COMMENT_MASKED_SHA256 = (
-    "bc49729f2fc3ad96de034aa51f6f32dfc9920e406b3b57f39f123247936278db"
+    "476a8045fbfeaa9b3a5cef58fde9fbbdca11923e650025e21fd0928d402ab478"
 )
 WORKER_CLEANUP_RECEIPT_RELEASE_TOOLCHAIN_FILE = (
     "scripts/linux-release-gcc12-toolchain.cmake"
@@ -5679,8 +5679,8 @@ WORKER_CLEANUP_RECEIPT_PASTE_MACRO_CODE_USE_CONTEXTS = {
         "470d0973f63d32e9af3a85a485ba14b2c2eba9e516190d32a86a0ca37aa57a26",
     ),
     ("tests/test_api.cpp", "TEST"): (
-        59,
-        "49bcc9df9cf50bf04df534764379402d496ccd1de826bb1a5f5c6247433d4650",
+        60,
+        "f74527ca825b4a19ad394f2ac92c8ae71005751d7ccba50c651a7316d3f935a7",
     ),
     ("tests/test_full_resume.cpp", "RUN_TEST"): (
         6,

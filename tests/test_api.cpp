@@ -19,6 +19,7 @@
 #include <gnfs/relation/relation_corpus.hpp>
 #include <gnfs/relation/relation_sequence_receipt.hpp>
 #include <gnfs/relation/relation_sink.hpp>
+#include <gnfs/relation/structured_reduction_telemetry.hpp>
 #include <gnfs/sieve/sieve_checkpoint.hpp>
 #include <gnfs/sieve/sieve_run_identity.hpp>
 #include <gnfs/util/process.hpp>
@@ -113,6 +114,117 @@ bool has_unsigned_record_field(std::string_view record, std::string_view key) {
         ++cursor;
     }
     return cursor > value_start && (cursor == record.size() || record[cursor] == ' ');
+}
+
+bool has_closed_structured_stage_schema(std::string_view record) {
+    std::vector<std::pair<std::string, std::string>> fields;
+    size_t cursor = 0;
+    const size_t first_end = record.find(' ');
+    if (first_end == std::string_view::npos ||
+        record.substr(0, first_end) != "structured_filter_stage") {
+        return false;
+    }
+    cursor = first_end + 1;
+    while (cursor < record.size()) {
+        const size_t token_end = record.find(' ', cursor);
+        const std::string_view token =
+            record.substr(cursor, token_end == std::string_view::npos ? std::string_view::npos
+                                                                      : token_end - cursor);
+        const size_t separator = token.find('=');
+        if (separator == std::string_view::npos || separator == 0 ||
+            separator + 1 == token.size()) {
+            return false;
+        }
+        fields.emplace_back(token.substr(0, separator), token.substr(separator + 1));
+        if (token_end == std::string_view::npos) {
+            break;
+        }
+        cursor = token_end + 1;
+    }
+
+    std::vector<std::string> expected{
+        "schema",
+        "generation",
+        "route",
+        "process_rss_scope",
+        "source_rows",
+        "incidence_rows",
+        "incidence_unique_keys",
+        "incidence_entries",
+        "completed",
+        "succeeded",
+        "failure_stage",
+        "last_checkpoint",
+    };
+    constexpr std::array<std::string_view, 4> schema_1_read_phases{
+        "initial_scan", "incidence_build", "reducer", "fresh_validation"};
+    for (const std::string_view phase : schema_1_read_phases) {
+        const std::string prefix = "read_" + std::string(phase);
+        expected.push_back(prefix + "_attempts");
+        expected.push_back(prefix + "_successes");
+        expected.push_back(prefix + "_failures");
+    }
+    constexpr std::array<std::string_view, 10> schema_1_checkpoints{
+        "scan_begin",          "scan_complete_before_ab_release",
+        "after_ab_release",    "incidence_receipt_built",
+        "reducer_constructed", "reduction_complete",
+        "output_materialized", "output_finalized",
+        "reducer_released",    "fresh_validation_complete",
+    };
+    for (const std::string_view checkpoint : schema_1_checkpoints) {
+        const std::string prefix = "checkpoint_" + std::string(checkpoint);
+        expected.push_back(prefix + "_observed");
+        expected.push_back(prefix + "_wall_supported");
+        expected.push_back(prefix + "_elapsed_wall_ns");
+        expected.push_back(prefix + "_memory_backend");
+        expected.push_back(prefix + "_current_rss_supported");
+        expected.push_back(prefix + "_current_rss_bytes");
+        expected.push_back(prefix + "_peak_rss_supported");
+        expected.push_back(prefix + "_peak_rss_bytes");
+    }
+    expected.insert(expected.end(), {"counter_overflow", "clock_monotone", "peak_monotone",
+                                     "clock_provider_failures", "memory_provider_failures"});
+    if (fields.size() != expected.size() || fields.front().second != "1") {
+        return false;
+    }
+
+    for (size_t index = 0; index < fields.size(); ++index) {
+        const auto& [name, value] = fields[index];
+        if (name != expected[index]) {
+            return false;
+        }
+        const bool textual = name == "route" || name == "process_rss_scope" ||
+                             name == "failure_stage" || name == "last_checkpoint" ||
+                             name.ends_with("_memory_backend");
+        if (!textual &&
+            (value.empty() || !std::all_of(value.begin(), value.end(), [](unsigned char byte) {
+                 return byte >= '0' && byte <= '9';
+             }))) {
+            return false;
+        }
+        if ((name == "route" && value != "direct_ooc_prefix") ||
+            (name == "process_rss_scope" && value != "self_lifetime")) {
+            return false;
+        }
+        const bool unsupported = value == "0";
+        if (unsupported && name.ends_with("_wall_supported") &&
+            (index + 1 >= fields.size() || !fields[index + 1].first.ends_with("_elapsed_wall_ns") ||
+             fields[index + 1].second != "0")) {
+            return false;
+        }
+        if (unsupported && name.ends_with("_current_rss_supported") &&
+            (index + 1 >= fields.size() ||
+             !fields[index + 1].first.ends_with("_current_rss_bytes") ||
+             fields[index + 1].second != "0")) {
+            return false;
+        }
+        if (unsupported && name.ends_with("_peak_rss_supported") &&
+            (index + 1 >= fields.size() || !fields[index + 1].first.ends_with("_peak_rss_bytes") ||
+             fields[index + 1].second != "0")) {
+            return false;
+        }
+    }
+    return true;
 }
 
 // ============================================================
@@ -1336,6 +1448,33 @@ void write_test_file(const std::string& path, std::string_view contents) {
 
 } // namespace
 
+bool test_structured_filter_stage_telemetry_parser() {
+    using gnfs::api::detail::parse_structured_filter_stage_telemetry;
+
+    if (parse_structured_filter_stage_telemetry(nullptr) ||
+        parse_structured_filter_stage_telemetry("0") ||
+        !parse_structured_filter_stage_telemetry("1")) {
+        std::cout << "(stage telemetry parser changed its valid truth table) ";
+        return false;
+    }
+
+    for (const char* invalid :
+         {"", "00", "01", "2", "-1", "true", "on", "off", " 1", "1 ", "auto", "TRUE"}) {
+        bool rejected = false;
+        try {
+            (void)parse_structured_filter_stage_telemetry(invalid);
+        } catch (const std::invalid_argument& error) {
+            rejected = std::string_view(error.what())
+                           .starts_with("GNFS_STRUCTURED_FILTER_STAGE_TELEMETRY ");
+        }
+        if (!rejected) {
+            std::cout << "(stage telemetry parser accepted an invalid token) ";
+            return false;
+        }
+    }
+    return true;
+}
+
 std::vector<gnfs::core::Relation> make_structured_route_corpus() {
     auto partial = [](int64_t a, std::initializer_list<uint64_t> primes) {
         gnfs::core::Relation relation(a, 1);
@@ -1408,6 +1547,7 @@ bool test_structured_ooc_path_namespace_contract() {
 
 bool test_structured_filter_public_route() {
     ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "1");
+    ScopedEnvironmentVariable stage_telemetry("GNFS_STRUCTURED_FILTER_STAGE_TELEMETRY", "1");
     ScopedEnvironmentVariable v0_bfs("GNFS_V0_BFS", "1");
     ScopedEnvironmentVariable cascade("GNFS_CASCADE_V3", "1");
 
@@ -1421,12 +1561,16 @@ bool test_structured_filter_public_route() {
     }
 
     size_t structured_records = 0;
+    size_t stage_records = 0;
     size_t legacy_records = 0;
     std::string structured_record;
     pipeline.set_log_callback([&](const LogEntry& entry) {
         if (entry.message.starts_with("structured_filter ")) {
             ++structured_records;
             structured_record = entry.message;
+        }
+        if (entry.message.starts_with("structured_filter_stage ")) {
+            ++stage_records;
         }
         if (entry.message.starts_with("v0_bfs") || entry.message.starts_with("v3_cascade"))
             ++legacy_records;
@@ -1438,8 +1582,8 @@ bool test_structured_filter_public_route() {
         stats.structured_run.stop_reason !=
             gnfs::relation::StructuredReductionStopReason::NoCandidates ||
         stats.structured_run.emitted_rows != 2 || stats.merged_relations != 1 ||
-        reduction.size() != 1 || structured_records != 1 || legacy_records != 0 ||
-        !structured_record.starts_with("structured_filter schema=1 ") ||
+        reduction.size() != 1 || structured_records != 1 || stage_records != 0 ||
+        legacy_records != 0 || !structured_record.starts_with("structured_filter schema=1 ") ||
         structured_record.find(" route=owned_snapshot ") == std::string::npos ||
         structured_record.find(" output_backend=in_memory ") == std::string::npos ||
         structured_record.find(" raw_digest_low=") == std::string::npos ||
@@ -1456,16 +1600,24 @@ bool test_structured_filter_public_route() {
 }
 
 bool test_structured_filter_public_off_equivalence() {
+    ScopedEnvironmentVariable stage_telemetry("GNFS_STRUCTURED_FILTER_STAGE_TELEMETRY", "1");
     ScopedEnvironmentVariable v0_bfs("GNFS_V0_BFS", "0");
     ScopedEnvironmentVariable cascade("GNFS_CASCADE_V3", "0");
     Integer n("1000036000099");
     Config cfg;
     cfg.verbose = false;
+    size_t stage_records = 0;
+    const auto count_stage_records = [&](const LogEntry& entry) {
+        if (entry.message.starts_with("structured_filter_stage ")) {
+            ++stage_records;
+        }
+    };
 
     std::optional<gnfs::relation::RelationReductionResult> baseline;
     {
         ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", std::nullopt);
         Pipeline pipeline(n, cfg);
+        pipeline.set_log_callback(count_stage_records);
         baseline.emplace(pipeline.filter(make_structured_route_corpus()));
     }
 
@@ -1473,6 +1625,7 @@ bool test_structured_filter_public_off_equivalence() {
     {
         ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "0");
         Pipeline pipeline(n, cfg);
+        pipeline.set_log_callback(count_stage_records);
         explicit_off.emplace(pipeline.filter(make_structured_route_corpus()));
     }
 
@@ -1480,6 +1633,7 @@ bool test_structured_filter_public_off_equivalence() {
     {
         ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "auto");
         Pipeline pipeline(n, cfg);
+        pipeline.set_log_callback(count_stage_records);
         explicit_auto.emplace(pipeline.filter(make_structured_route_corpus()));
     }
 
@@ -1500,7 +1654,7 @@ bool test_structured_filter_public_off_equivalence() {
         lhs.standard_v0.input_1lp != rhs.standard_v0.input_1lp ||
         lhs.standard_v0.input_2lp != rhs.standard_v0.input_2lp ||
         lhs.standard_v0.output_relations != rhs.standard_v0.output_relations ||
-        lhs.output_relations != rhs.output_relations ||
+        lhs.output_relations != rhs.output_relations || stage_records != 0 ||
         lhs.output_lp_columns != rhs.output_lp_columns) {
         std::cout << "(unset and explicit OFF diverged) ";
         return false;
@@ -1530,7 +1684,24 @@ bool test_structured_filter_invalid_env_precedes_generation() {
         return false;
     }
 
+    bool invalid_stage_rejected = false;
+    {
+        ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", std::nullopt);
+        ScopedEnvironmentVariable invalid_stage("GNFS_STRUCTURED_FILTER_STAGE_TELEMETRY", "");
+        try {
+            (void)pipeline.filter({});
+        } catch (const std::invalid_argument&) {
+            invalid_stage_rejected = true;
+        }
+    }
+    if (!invalid_stage_rejected || progress_callbacks != 0) {
+        std::cout << "(invalid stage telemetry flag emitted progress) ";
+        return false;
+    }
+
     ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", std::nullopt);
+    ScopedEnvironmentVariable stage_telemetry("GNFS_STRUCTURED_FILTER_STAGE_TELEMETRY",
+                                              std::nullopt);
     auto reduction = pipeline.filter({});
     if (reduction.generation != 1) {
         std::cout << "(invalid flag consumed a relation generation) ";
@@ -1729,6 +1900,8 @@ bool test_structured_filter_ooc_collision_rejected_without_clobber() {
     write_test_file(base + ".reldata", data_sentinel);
     write_test_file(base + ".relidx", index_sentinel);
     ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "1");
+    ScopedEnvironmentVariable stage_telemetry("GNFS_STRUCTURED_FILTER_STAGE_TELEMETRY",
+                                              std::nullopt);
     ScopedEnvironmentVariable ooc("GNFS_OOC_RELATIONS", "1");
     ScopedEnvironmentVariable ooc_path("GNFS_OOC_BASE_PATH", base);
     ScopedEnvironmentVariable distributed("GNFS_DISTRIBUTED_SIEVE_WORKERS", "0");
@@ -1745,6 +1918,23 @@ bool test_structured_filter_ooc_collision_rejected_without_clobber() {
     size_t callbacks = 0;
     pipeline.set_progress_callback([&](const ProgressInfo&) { ++callbacks; });
     pipeline.set_log_callback([&](const LogEntry&) { ++callbacks; });
+
+    bool invalid_stage_rejected = false;
+    {
+        ScopedEnvironmentVariable invalid_stage("GNFS_STRUCTURED_FILTER_STAGE_TELEMETRY",
+                                                "invalid");
+        try {
+            (void)pipeline.sieve_and_collect(ctx, fb);
+        } catch (const std::invalid_argument&) {
+            invalid_stage_rejected = true;
+        }
+    }
+    if (!invalid_stage_rejected || callbacks != 0 ||
+        read_test_file(base + ".reldata") != data_sentinel ||
+        read_test_file(base + ".relidx") != index_sentinel) {
+        std::cout << "(invalid stage telemetry flag crossed the raw preflight boundary) ";
+        return false;
+    }
 
     bool rejected = false;
     try {
@@ -1765,6 +1955,7 @@ bool test_fresh_ooc_callback_failure_cleans_uncommitted_raw() {
                                                    std::to_string(gnfs::util::process_id()));
     SieveResumeArtifacts artifacts(base);
     ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "1");
+    ScopedEnvironmentVariable stage_telemetry("GNFS_STRUCTURED_FILTER_STAGE_TELEMETRY", "1");
     ScopedEnvironmentVariable ooc("GNFS_OOC_RELATIONS", "1");
     ScopedEnvironmentVariable ooc_path("GNFS_OOC_BASE_PATH", base);
     ScopedEnvironmentVariable resume("GNFS_SIEVE_RESUME", std::nullopt);
@@ -1784,6 +1975,20 @@ bool test_fresh_ooc_callback_failure_cleans_uncommitted_raw() {
     auto fb = pipeline.build_factor_base(ctx);
 
     bool callback_invoked = false;
+    size_t structured_records = 0;
+    size_t stage_records = 0;
+    std::string structured_record;
+    std::string stage_record;
+    pipeline.set_log_callback([&](const LogEntry& entry) {
+        if (entry.message.starts_with("structured_filter ")) {
+            ++structured_records;
+            structured_record = entry.message;
+        }
+        if (entry.message.starts_with("structured_filter_stage ")) {
+            ++stage_records;
+            stage_record = entry.message;
+        }
+    });
     pipeline.set_progress_callback([&](const ProgressInfo& info) {
         if (info.phase == Phase::Sieving && !callback_invoked) {
             callback_invoked = true;
@@ -1810,9 +2015,24 @@ bool test_fresh_ooc_callback_failure_cleans_uncommitted_raw() {
 
     pipeline.set_progress_callback({});
     auto reduction = pipeline.sieve_and_collect(ctx, fb, options);
+    const std::string input_rows = std::to_string(reduction.stats.input_relations);
+    const std::string generation = std::to_string(reduction.generation);
     if (reduction.generation == 0 ||
         reduction.stats.strategy != gnfs::relation::ReductionStrategy::Structured ||
-        std::filesystem::exists(base + ".reldata") || std::filesystem::exists(base + ".relidx")) {
+        std::filesystem::exists(base + ".reldata") || std::filesystem::exists(base + ".relidx") ||
+        structured_records != 1 || stage_records != 1 ||
+        !structured_record.starts_with("structured_filter schema=1 ") ||
+        structured_record.find(" generation=" + generation + " ") == std::string::npos ||
+        !has_closed_structured_stage_schema(stage_record) ||
+        stage_record.find(" generation=" + generation + " ") == std::string::npos ||
+        stage_record.find(" source_rows=" + input_rows + " ") == std::string::npos ||
+        stage_record.find(" completed=1 succeeded=1 failure_stage=none "
+                          "last_checkpoint=fresh_validation_complete ") == std::string::npos ||
+        stage_record.find(" read_initial_scan_attempts=" + input_rows +
+                          " read_initial_scan_successes=" + input_rows +
+                          " read_initial_scan_failures=0 ") == std::string::npos ||
+        stage_record.find(" read_incidence_build_attempts=0 read_incidence_build_successes=0 "
+                          "read_incidence_build_failures=0 ") == std::string::npos) {
         std::cout << "(fresh OOC path was not reusable after exception cleanup) ";
         return false;
     }
@@ -1834,6 +2054,8 @@ bool test_ooc_base_snapshot_ignores_callback_env_drift() {
     write_test_file(drift_base + ".relidx", index_sentinel);
 
     ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "1");
+    ScopedEnvironmentVariable stage_telemetry("GNFS_STRUCTURED_FILTER_STAGE_TELEMETRY",
+                                              std::nullopt);
     ScopedEnvironmentVariable ooc("GNFS_OOC_RELATIONS", "1");
     ScopedEnvironmentVariable ooc_path("GNFS_OOC_BASE_PATH", configured_base);
     ScopedEnvironmentVariable resume("GNFS_SIEVE_RESUME", std::nullopt);
@@ -1853,12 +2075,14 @@ bool test_ooc_base_snapshot_ignores_callback_env_drift() {
 
     bool injected = false;
     size_t structured_records = 0;
+    size_t stage_records = 0;
     std::string structured_record;
     std::string logged_ooc_base;
     pipeline.set_progress_callback([&](const ProgressInfo& info) {
         if (info.phase == Phase::Sieving && !injected) {
-            if (setenv("GNFS_OOC_BASE_PATH", drift_base.c_str(), 1) != 0) {
-                throw std::runtime_error("failed to inject OOC base-path drift");
+            if (setenv("GNFS_OOC_BASE_PATH", drift_base.c_str(), 1) != 0 ||
+                setenv("GNFS_STRUCTURED_FILTER_STAGE_TELEMETRY", "1", 1) != 0) {
+                throw std::runtime_error("failed to inject frozen OOC route drift");
             }
             injected = true;
         }
@@ -1867,6 +2091,9 @@ bool test_ooc_base_snapshot_ignores_callback_env_drift() {
         if (entry.message.starts_with("structured_filter ")) {
             ++structured_records;
             structured_record = entry.message;
+        }
+        if (entry.message.starts_with("structured_filter_stage ")) {
+            ++stage_records;
         }
         if (!entry.message.starts_with("OOC mode enabled")) {
             return;
@@ -1889,7 +2116,7 @@ bool test_ooc_base_snapshot_ignores_callback_env_drift() {
     const auto output_scope = reduction->relation_corpus().ooc_artifact_scope();
     const std::string generation_marker =
         ".g" + std::to_string(reduction->generation) + ".output.gnfs-sink-lease";
-    if (!injected || reduction->generation == 0 || structured_records != 1 ||
+    if (!injected || reduction->generation == 0 || structured_records != 1 || stage_records != 0 ||
         structured_record.find(" route=direct_ooc_prefix ") == std::string::npos ||
         structured_record.find(" output_backend=finalized_ooc ") == std::string::npos ||
         !has_unsigned_record_field(structured_record, "reduction_engine_wall_us") ||
@@ -3550,6 +3777,7 @@ int main() {
     TEST(pipeline_stats);
     TEST(pipeline_relation_generations);
     TEST(pipeline_progress_callback);
+    TEST(structured_filter_stage_telemetry_parser);
     TEST(structured_ooc_path_namespace_contract);
     TEST(structured_filter_public_route);
     TEST(structured_filter_public_off_equivalence);

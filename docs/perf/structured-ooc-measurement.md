@@ -39,6 +39,43 @@ resume。该模式不创建 in-memory oracle，也不回读 output payload。正
 source/output rows、baseline/final current 与 peak、peak growth、wall time 和明确的
 source/output backend。缺失的 RSS 值写为 `na`。
 
+## Dense Structured Stage Replay
+
+以下手动入口固定一个 50 位规模的 structured cardinality anchor，并在 fresh Release
+进程中执行完整 direct observed route：
+
+```bash
+./scripts/test.sh structured-ooc-dense-stage 1
+./scripts/test.sh structured-ooc-dense-stage 4
+```
+
+fixture 固定为 618,449 rows、576,189 unique LP keys 和 1,236,898 incidence entries。
+每行恰好包含 2 个 LP keys。它使用 493,601 个 weight-1 keys；其余 82,588 个 keys
+属于 weight-4+ 桶。具体拓扑包含：
+
+- 493,601 个 singleton spokes，连接 54,839 个 degree-9 consumed hubs 和 5 个
+  degree-10 consumed hubs；
+- 27,744 个 degree-9 core keys，使用 offsets 1 至 4 加一组 perfect matching 的
+  circulant，形成 124,848 个 core rows。
+
+singleton peeling 移除全部 spokes。剩余 core 的 active degree 为 9，高于当前
+weight-8 planner cap，因此 reducer 以 `no_candidates` 停止。该构造避免测量入口因
+1,024 次 bounded commits 重复生成 corpus-scale plans，同时仍覆盖输入扫描、AB set
+释放、incidence receipt、reducer 构造、OOC output、reducer 释放和 fresh-view 验证。
+
+`synthetic_cardinality_anchor` 只固定 rows、keys、incidences 和声明的合成拓扑。它不复现
+完整 50 位语料的 LP-weight distribution、连通分量、merge yield 或 matrix 质量，不能与
+真实 50 位 route comparison 互换。
+
+成功运行恰好输出一条 closed
+`GNFS_STRUCTURED_OOC_DENSE_STAGE_V1 schema=1` 记录。记录包含固定 fixture identity、
+输入与输出 digests、冻结的关键 reduction/incidence 统计、OOC 生命周期、四类 source-read
+计数，以及十个 checkpoint 的 elapsed wall time 与 process RSS 样本。关键合同要求
+`incidence_build` source reads 为 0；initial scan 和 fresh validation 必须分别读取全部
+618,449 rows。`process_rss_scope=self_lifetime` 明确 peak 包含 fixture 构建期和先前进程
+阶段；`output_lease_removed` 与 `source_pair_removed` 不声称永久 cleanup lock 已删除。
+wall time 与 RSS 仍只作观测，不设置性能阈值。
+
 ## Bounded Real 50-Digit Probe
 
 真实探针固定输入：
