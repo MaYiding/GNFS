@@ -15,10 +15,14 @@
   corpus, descriptor-bound selection identity, direct matrix input,
   deterministic trim, dependency-only square-root materialization,
   transactional source/sink reduction, and paired V3 identity. Native
-  incremental OOC reduction, a complete bounded 50-digit first-round
-  comparison, and automatic-selection evidence remain before promotion. The
-  deterministic 120-bit real sieve-to-reduction transition is now covered by
-  a heavy targeted one-lane versus bounded multi-lane gate.
+  incremental OOC reduction and automatic-selection evidence remain before
+  promotion. M5 evidence collection is complete: the 2026-08-20/21 bounded
+  50-digit first-round comparison matched 51 raw identity fields and moved the
+  matrix signed delta from -20,748 to +23,319, but increased matrix nonzeros by
+  2,624.31% and peak RSS by 45.67%. The single legacy-first sequence ran while
+  a Windows VM consumed about 1.7 CPU cores, so timing and RSS remain
+  observational. The deterministic 120-bit real sieve-to-reduction transition
+  is also covered by a heavy targeted one-lane versus bounded multi-lane gate.
 - Target: unify relation reduction and replace heuristic large-prime chain merging on large inputs with controlled structured Gaussian elimination over GF(2)
 
 ## Outcome
@@ -710,8 +714,10 @@ Exit gate: result rows, order, stats, and stop reason are identical across threa
   scans its accumulated prefix for `O(rounds * relations)` decoding and I/O.
   Generic finalized-OOC reduction and generic `prepare_borrowed_structured()`
   continue to use a private working corpus. Independent-process RSS measurement
-  and a hard-capped 50-digit production prefix probe are now available. Native
-  incremental scanning, a complete 50-digit first-round comparison, and
+  and a hard-capped 50-digit production prefix probe are now available. The
+  complete 50-digit first-round comparison is recorded in
+  [Structured OOC Measurement](../perf/structured-ooc-measurement.md#2026-08-20-and-21-complete-50-digit-first-round-evidence).
+  Native incremental scanning, repeated interleaved route evidence, and
   automatic structured selection remain open; size-aware OOC, resume, and
   distributed structured routes retain legacy or unsupported behavior.
 
@@ -730,12 +736,28 @@ avoids a per-generation relation-payload vector.
   polynomial selection. The fixed 120-bit semiprime processes 32 special-Qs;
   one-lane legacy and four-lane structured collection produce the same 9,170-row
   raw corpus and LP histogram before both routes build their full thin matrix.
-- [ ] Run a complete bounded 50-digit first-round baseline/structured comparison.
+- [x] Run a complete bounded 50-digit first-round baseline/structured
+  comparison. The 2026-08-20/21 fresh-process record matched 51 raw identity
+  fields for 618,449 rows. Structured reduction changed matrix signed delta
+  from -20,748 to +23,319, while matrix nonzeros grew from 525,868 to
+  14,326,278. See
+  [Complete 50-Digit First-Round Evidence](../perf/structured-ooc-measurement.md#2026-08-20-and-21-complete-50-digit-first-round-evidence).
 
-Exit gate: no correctness regression; dependency dimension is preserved and structured mode meets the frozen materiality threshold for total NNZ, downstream matrix time, or raw-relation requirement under the fill and memory budgets.
+Exit result: M5 evidence collection is complete and raw-input identity is
+preserved. The structured route establishes a material nominal-feasibility
+gain, but it does not pass the promotion boundary: total NNZ, MatrixBuilder
+time, and peak RSS all increase, and dependency solving was outside the
+matrix-only boundary.
 
 ### M6: Promotion Decision
 
+- Current decision (2026-08-21): keep `promotion=false`; do not promote the
+  unset default to `GNFS_STRUCTURED_FILTER=auto` from one sequential comparison.
+- Implement and measure native incremental OOC reduction before reconsidering
+  the memory and repeated-scan budgets.
+- Repeat interleaved `legacy -> structured` and `structured -> legacy`
+  fresh-process comparisons on a controlled host to bound order and background
+  load effects.
 - Compare dependency dimension, rows, LP columns, nominal excess, total nonzeros, peak source count, filter wall time, peak RSS, downstream matrix time, and required raw relations.
 - Promote default auto behavior only if every criterion below passes.
 - Otherwise keep the implementation as an explicit research mode and document the measured limitation.
@@ -1281,8 +1303,9 @@ The plan touches lifecycle diagrams embedded as comments in `collector.hpp` and 
   production vector overlay, collector-proven unique ordinary-OOC direct route,
   frozen callback prefix, and unsupported-route side-effect boundaries are
   complete. Cross-size direct-OOC validation, fresh-process RSS measurement,
-  and a bounded real 50-digit prefix probe are complete; complete first-round
-  comparison and automatic route evidence remain.
+  a bounded real 50-digit prefix probe, and the complete first-round comparison
+  are complete. Native incremental OOC reduction, repeated interleaved
+  comparisons, and automatic route evidence remain.
 
 ### CEO Review Completion Summary
 
