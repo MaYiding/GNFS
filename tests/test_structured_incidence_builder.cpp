@@ -1,3 +1,4 @@
+#include "gnfs/relation/reduction_engine.hpp"
 #include "gnfs/relation/structured_incidence_builder.hpp"
 
 #include <algorithm>
@@ -20,6 +21,7 @@
 using gnfs::core::Relation;
 using gnfs::relation::build_structured_incidence_from_row_supports;
 using gnfs::relation::build_structured_incidence_shards;
+using gnfs::relation::corpus_digest;
 using gnfs::relation::LargePrimeKey;
 using gnfs::relation::odd_large_prime_keys;
 using gnfs::relation::SequentialStructuredReducer;
@@ -553,6 +555,74 @@ void test_reducer_construction_and_reduction_are_shard_worker_equivalent() {
     }
 }
 
+void test_consumed_adjacency_history_is_separate_from_active_degree() {
+    constexpr uint64_t generation = 51'012;
+    const auto p = rational_key(50'021);
+    const auto q = algebraic_key(50'023, 11);
+    const auto r = rational_key(50'033);
+    const std::vector<Relation> relations{
+        make_relation(200, {p, q}),
+        make_relation(201, {q}),
+        make_relation(202, {r}),
+        make_relation(203, {r}),
+    };
+    SourceCorpus receipt_source(generation, relations);
+    const StructuredIncidenceBuildOptions prebuilt_options{2, 2};
+    const auto receipt = build_structured_incidence_shards(receipt_source, prebuilt_options);
+
+    const std::vector<StructuredIncidenceBucket> expected_buckets{
+        {p, {StructuredRowId{0}}},
+        {q, {StructuredRowId{0}, StructuredRowId{1}}},
+        {r, {StructuredRowId{2}, StructuredRowId{3}}},
+    };
+    CHECK(receipt.buckets() == expected_buckets);
+
+    SequentialStructuredReducer reference(generation, relations);
+    SequentialStructuredReducer prebuilt(generation, relations, prebuilt_options);
+    check_reducer_state_equal(reference, prebuilt);
+    CHECK(reference.active_lp_column_count() == 3);
+
+    CHECK(reference.peel_singletons() == 2);
+    CHECK(prebuilt.peel_singletons() == 2);
+    check_reducer_state_equal(reference, prebuilt);
+    CHECK(reference.active_row_ids() ==
+          (std::vector<StructuredRowId>{StructuredRowId{2}, StructuredRowId{3}}));
+    CHECK(reference.active_lp_column_count() == 1);
+
+    const auto reference_plans = reference.plan_two_way_merges();
+    const auto prebuilt_plans = prebuilt.plan_two_way_merges();
+    CHECK(reference_plans == prebuilt_plans);
+    CHECK(reference_plans.size() == 1);
+    if (reference_plans.size() != 1) {
+        return;
+    }
+    CHECK(reference_plans.front().witness == r);
+    CHECK(reference_plans.front().members ==
+          (std::array<StructuredRowId, 2>{StructuredRowId{2}, StructuredRowId{3}}));
+    CHECK(reference_plans.front().expected_lp_keys.empty());
+
+    auto reference_prepared = reference.prepare(reference_plans.front());
+    auto prebuilt_prepared = prebuilt.prepare(prebuilt_plans.front());
+    CHECK(reference_prepared.plan() == prebuilt_prepared.plan());
+    CHECK(relation_equal(reference_prepared.materialized_relation(),
+                         prebuilt_prepared.materialized_relation()));
+
+    const StructuredRowId reference_output = reference.commit(std::move(reference_prepared));
+    const StructuredRowId prebuilt_output = prebuilt.commit(std::move(prebuilt_prepared));
+    CHECK(reference_output == prebuilt_output);
+    check_reducer_state_equal(reference, prebuilt);
+    CHECK(reference.active_row_ids() == std::vector<StructuredRowId>{reference_output});
+    CHECK(reference.active_lp_column_count() == 0);
+    CHECK(reference.stats().singleton_rows_removed == 2);
+    CHECK(reference.stats().two_way_merges == 1);
+    CHECK(reference.stats().output_rows == 1);
+
+    const auto reference_materialized = reference.materialize_active();
+    const auto prebuilt_materialized = prebuilt.materialize_active();
+    CHECK(relations_equal(reference_materialized, prebuilt_materialized));
+    CHECK(corpus_digest(reference_materialized) == corpus_digest(prebuilt_materialized));
+}
+
 template <typename Action> void run_test(std::string_view name, Action&& action) {
     current_test = name;
     try {
@@ -587,6 +657,8 @@ int main() {
              test_50d_like_first_band_preserves_shard_bound_and_output);
     run_test("reducer shard and worker equivalence",
              test_reducer_construction_and_reduction_are_shard_worker_equivalent);
+    run_test("consumed adjacency history and active degree separation",
+             test_consumed_adjacency_history_is_separate_from_active_degree);
 
     if (failures != 0) {
         std::cerr << failures << " tests failed after " << checks << " checks\n";
