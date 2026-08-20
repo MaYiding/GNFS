@@ -2,6 +2,7 @@
 #include "gnfs/relation/ooc_relation_store.hpp"
 #include "gnfs/relation/reduction_engine.hpp"
 #include "gnfs/relation/structured_filter_profile.hpp"
+#include "gnfs/relation/structured_reduction_telemetry.hpp"
 #include "gnfs/util/process.hpp"
 #include "gnfs/util/process_memory.hpp"
 #include "gnfs/util/temp_path.hpp"
@@ -42,12 +43,22 @@ using gnfs::relation::RelationReductionResult;
 using gnfs::relation::RelationReductionStats;
 using gnfs::relation::RelationStorageKind;
 using gnfs::relation::StructuredReductionStopReason;
+using gnfs::relation::StructuredReductionTelemetry;
+using gnfs::relation::StructuredReductionTelemetryRecord;
+using gnfs::relation::StructuredTelemetryCheckpoint;
+using gnfs::relation::StructuredTelemetryReadPhase;
 using gnfs::util::process_memory_backend_name;
 using gnfs::util::process_memory_snapshot;
 using gnfs::util::ProcessMemoryBackend;
 using gnfs::util::ProcessMemorySnapshot;
 
 namespace {
+
+#ifndef GNFS_STRUCTURED_OOC_SCALE_BUILD_TYPE
+#define GNFS_STRUCTURED_OOC_SCALE_BUILD_TYPE "unknown"
+#endif
+
+constexpr std::string_view STRUCTURED_OOC_SCALE_BUILD_TYPE = GNFS_STRUCTURED_OOC_SCALE_BUILD_TYPE;
 
 size_t checks = 0;
 std::string_view current_case;
@@ -194,6 +205,97 @@ constexpr size_t COMPONENT_STRIDE = 4'096;
     return relation;
 }
 
+// This cardinality anchor matches the complete 50-digit first-round row, key,
+// and incidence counts without claiming to reproduce that corpus's LP-weight
+// distribution. Singleton spokes peel completely. The remaining 9-regular
+// core is above the structured planner's weight-eight pivot cap, so the full
+// observed direct route reaches NoCandidates without constructing hundreds of
+// thousands of merge plans in repeated waves.
+constexpr size_t DENSE_STAGE_ROWS = 618'449;
+constexpr size_t DENSE_STAGE_KEYS = 576'189;
+constexpr size_t DENSE_STAGE_INCIDENCES = 1'236'898;
+constexpr size_t DENSE_STAGE_KEYS_PER_ROW = 2;
+constexpr size_t DENSE_STAGE_SINGLETON_KEYS = 493'601;
+constexpr size_t DENSE_STAGE_CONSUMED_DEGREE_9_KEYS = 54'839;
+constexpr size_t DENSE_STAGE_CONSUMED_DEGREE_10_KEYS = 5;
+constexpr size_t DENSE_STAGE_CONSUMED_HUB_KEYS =
+    DENSE_STAGE_CONSUMED_DEGREE_9_KEYS + DENSE_STAGE_CONSUMED_DEGREE_10_KEYS;
+constexpr size_t DENSE_STAGE_CORE_KEYS = 27'744;
+constexpr size_t DENSE_STAGE_CORE_ROWS = DENSE_STAGE_CORE_KEYS * 9 / 2;
+constexpr size_t DENSE_STAGE_WEIGHT_4PLUS_KEYS =
+    DENSE_STAGE_CONSUMED_HUB_KEYS + DENSE_STAGE_CORE_KEYS;
+constexpr size_t DENSE_STAGE_CORE_OFFSET_ROWS = DENSE_STAGE_CORE_KEYS * 4;
+constexpr size_t DENSE_STAGE_CORE_MATCHING_ROWS = DENSE_STAGE_CORE_KEYS / 2;
+constexpr CorpusDigest DENSE_STAGE_EXPECTED_RAW_DIGEST{
+    UINT64_C(12026999194036640146),
+    UINT64_C(18236242084170576750),
+};
+constexpr CorpusDigest DENSE_STAGE_EXPECTED_OUTPUT_DIGEST{
+    UINT64_C(16663096013469244788),
+    UINT64_C(7825550821674115266),
+};
+
+static_assert(DENSE_STAGE_SINGLETON_KEYS + DENSE_STAGE_WEIGHT_4PLUS_KEYS == DENSE_STAGE_KEYS);
+static_assert(DENSE_STAGE_SINGLETON_KEYS + DENSE_STAGE_CORE_ROWS == DENSE_STAGE_ROWS);
+static_assert(DENSE_STAGE_ROWS * DENSE_STAGE_KEYS_PER_ROW == DENSE_STAGE_INCIDENCES);
+static_assert(DENSE_STAGE_KEYS_PER_ROW <= Relation::MAX_SERIALIZED_LARGE_PRIMES);
+static_assert(DENSE_STAGE_CONSUMED_DEGREE_9_KEYS * 9 + DENSE_STAGE_CONSUMED_DEGREE_10_KEYS * 10 ==
+              DENSE_STAGE_SINGLETON_KEYS);
+static_assert(DENSE_STAGE_CORE_OFFSET_ROWS + DENSE_STAGE_CORE_MATCHING_ROWS ==
+              DENSE_STAGE_CORE_ROWS);
+
+[[nodiscard]] constexpr uint64_t dense_stage_key_value(size_t key_ordinal) noexcept {
+    // These are deterministic structural tokens. The reduction fixture does
+    // not make a primality claim about the synthetic LargePrimeKey values.
+    return UINT64_C(4'000'000'007) + static_cast<uint64_t>(key_ordinal) * 2;
+}
+
+[[nodiscard]] std::pair<size_t, size_t> dense_stage_row_key_ordinals(size_t raw_ordinal) {
+    if (raw_ordinal >= DENSE_STAGE_ROWS) {
+        throw std::out_of_range("dense structured stage row ordinal is out of range");
+    }
+
+    if (raw_ordinal < DENSE_STAGE_SINGLETON_KEYS) {
+        size_t hub_ordinal = 0;
+        const size_t degree_9_rows = DENSE_STAGE_CONSUMED_DEGREE_9_KEYS * 9;
+        if (raw_ordinal < degree_9_rows) {
+            hub_ordinal = raw_ordinal / 9;
+        } else {
+            hub_ordinal = DENSE_STAGE_CONSUMED_DEGREE_9_KEYS + (raw_ordinal - degree_9_rows) / 10;
+        }
+        return {raw_ordinal, DENSE_STAGE_SINGLETON_KEYS + hub_ordinal};
+    }
+
+    const size_t core_row = raw_ordinal - DENSE_STAGE_SINGLETON_KEYS;
+    size_t lhs = 0;
+    size_t rhs = 0;
+    if (core_row < DENSE_STAGE_CORE_OFFSET_ROWS) {
+        const size_t offset = core_row / DENSE_STAGE_CORE_KEYS + 1;
+        lhs = core_row % DENSE_STAGE_CORE_KEYS;
+        rhs = (lhs + offset) % DENSE_STAGE_CORE_KEYS;
+    } else {
+        lhs = core_row - DENSE_STAGE_CORE_OFFSET_ROWS;
+        rhs = lhs + DENSE_STAGE_CORE_KEYS / 2;
+    }
+
+    const size_t core_key_begin = DENSE_STAGE_SINGLETON_KEYS + DENSE_STAGE_CONSUMED_HUB_KEYS;
+    return {core_key_begin + std::min(lhs, rhs), core_key_begin + std::max(lhs, rhs)};
+}
+
+[[nodiscard]] Relation make_dense_stage_relation(size_t raw_ordinal) {
+    const uint64_t magnitude = static_cast<uint64_t>(raw_ordinal) + 3'000'001;
+    const int64_t signed_magnitude = static_cast<int64_t>(magnitude);
+    const int64_t a = (raw_ordinal & 1U) == 0 ? signed_magnitude : -signed_magnitude;
+    Relation relation(a, magnitude + 1);
+
+    auto [lhs, rhs] = dense_stage_row_key_ordinals(raw_ordinal);
+    if (rhs < lhs)
+        std::swap(lhs, rhs);
+    relation.rational_large_prime.emplace_back(dense_stage_key_value(lhs), uint8_t{1});
+    relation.rational_large_prime.emplace_back(dense_stage_key_value(rhs), uint8_t{1});
+    return relation;
+}
+
 struct BuiltOOCSource final {
     std::unique_ptr<OOCRelationWriter> writer;
     OOCSnapshotDescriptor descriptor;
@@ -205,6 +307,12 @@ struct BuiltCollectorSource final {
     CorpusDigest raw_digest;
     size_t rows_written = 0;
     size_t duplicates_rejected = 0;
+};
+
+struct BuiltDenseStageSource final {
+    CorpusDigest raw_digest;
+    CorpusDigest expected_output_digest;
+    size_t rows_written = 0;
 };
 
 [[nodiscard]] BuiltOOCSource build_ooc_source(const std::string& base_path, size_t row_count) {
@@ -246,6 +354,35 @@ struct BuiltCollectorSource final {
     CHECK(stats.total_relations == rows_written);
     CHECK(stats.duplicates_rejected == duplicates_rejected);
     return {digest.finish(), rows_written, duplicates_rejected};
+}
+
+[[nodiscard]] BuiltDenseStageSource build_dense_stage_source(RelationCollector& collector) {
+    CorpusDigestAccumulator raw_digest(DENSE_STAGE_ROWS);
+    CorpusDigestAccumulator output_digest(DENSE_STAGE_CORE_ROWS);
+    size_t rows_written = 0;
+    for (size_t raw_ordinal = 0; raw_ordinal < DENSE_STAGE_ROWS; ++raw_ordinal) {
+        Relation relation = make_dense_stage_relation(raw_ordinal);
+        raw_digest.append(relation);
+        if (raw_ordinal >= DENSE_STAGE_SINGLETON_KEYS)
+            output_digest.append(relation);
+        CHECK(collector.add(std::move(relation)));
+        ++rows_written;
+    }
+
+    const auto stats = collector.stats();
+    CHECK(rows_written == DENSE_STAGE_ROWS);
+    CHECK(collector.size() == DENSE_STAGE_ROWS);
+    CHECK(stats.total_relations == DENSE_STAGE_ROWS);
+    CHECK(stats.full_relations == 0);
+    CHECK(stats.partial_1lp == 0);
+    CHECK(stats.partial_2lp == DENSE_STAGE_ROWS);
+    CHECK(stats.duplicates_rejected == 0);
+    CHECK(stats.invalid_rejected == 0);
+    const CorpusDigest observed_raw_digest = raw_digest.finish();
+    const CorpusDigest observed_output_digest = output_digest.finish();
+    CHECK(observed_raw_digest == DENSE_STAGE_EXPECTED_RAW_DIGEST);
+    CHECK(observed_output_digest == DENSE_STAGE_EXPECTED_OUTPUT_DIGEST);
+    return {observed_raw_digest, observed_output_digest, rows_written};
 }
 
 [[nodiscard]] size_t verify_ooc_source_payload(const std::string& base_path,
@@ -341,6 +478,55 @@ void check_common_result(const RelationReductionResult& result, size_t input_row
     CHECK(result.stats.structured_incidence.requested_worker_count == workers);
     CHECK(result.stats.structured_incidence.peak_worker_count ==
           std::min<uint32_t>(workers, static_cast<uint32_t>(std::min(shard_rows, unique_rows))));
+}
+
+void check_dense_stage_result(const RelationReductionResult& result,
+                              const BuiltDenseStageSource& source, uint32_t workers) {
+    constexpr size_t shard_rows =
+        gnfs::relation::StructuredFilterExperimentalCaps::max_rows_per_incidence_shard;
+    constexpr size_t expected_shards = (DENSE_STAGE_ROWS + shard_rows - 1) / shard_rows;
+
+    CHECK(result.stats.strategy == ReductionStrategy::Structured);
+    CHECK(result.stats.input_relations == DENSE_STAGE_ROWS);
+    CHECK(result.stats.raw_duplicates_removed == 0);
+    CHECK(result.stats.raw_input_digest == source.raw_digest);
+    CHECK(result.stats.deduplicated_input_lp_histogram.weight_1 == DENSE_STAGE_SINGLETON_KEYS);
+    CHECK(result.stats.deduplicated_input_lp_histogram.weight_2 == 0);
+    CHECK(result.stats.deduplicated_input_lp_histogram.weight_3 == 0);
+    CHECK(result.stats.deduplicated_input_lp_histogram.weight_4plus ==
+          DENSE_STAGE_WEIGHT_4PLUS_KEYS);
+    CHECK(result.stats.deduplicated_input_lp_histogram.unique_keys == DENSE_STAGE_KEYS);
+    CHECK(result.stats.pre_merge_lp_histogram == gnfs::relation::LpKeyWeightHistogram{});
+
+    CHECK(result.stats.structured.input_rows == DENSE_STAGE_ROWS);
+    CHECK(result.stats.structured.singleton_rows_removed == DENSE_STAGE_SINGLETON_KEYS);
+    CHECK(result.stats.structured.two_way_merges == 0);
+    CHECK(result.stats.structured.tree_basis_batches == 0);
+    CHECK(result.stats.structured.budgeted_runs == 1);
+    CHECK(result.stats.structured.planning_passes == 1);
+    CHECK(result.stats.structured.candidate_plans_considered == 0);
+    CHECK(result.stats.structured.output_rows == DENSE_STAGE_CORE_ROWS);
+    CHECK(result.stats.structured.stop_reason == StructuredReductionStopReason::NoCandidates);
+    CHECK(result.stats.structured_run.singleton_rows_removed == DENSE_STAGE_SINGLETON_KEYS);
+    CHECK(result.stats.structured_run.commits == 0);
+    CHECK(result.stats.structured_run.emitted_rows == 0);
+    CHECK(result.stats.structured_run.lp_fill_growth == 0);
+    CHECK(result.stats.structured_run.stop_reason == StructuredReductionStopReason::NoCandidates);
+
+    CHECK(result.stats.singleton_rows_removed == DENSE_STAGE_SINGLETON_KEYS);
+    CHECK(result.stats.merged_relations == 0);
+    CHECK(result.stats.output_relations == DENSE_STAGE_CORE_ROWS);
+    CHECK(result.stats.output_lp_columns == DENSE_STAGE_CORE_KEYS);
+    CHECK(result.stats.output_digest == source.expected_output_digest);
+    CHECK(result.size() == DENSE_STAGE_CORE_ROWS);
+
+    CHECK(result.stats.structured_incidence.shard_count == expected_shards);
+    CHECK(result.stats.structured_incidence.peak_shard_rows == shard_rows);
+    CHECK(result.stats.structured_incidence.peak_shard_incidence_entries ==
+          shard_rows * DENSE_STAGE_KEYS_PER_ROW);
+    CHECK(result.stats.structured_incidence.total_incidence_entries == DENSE_STAGE_INCIDENCES);
+    CHECK(result.stats.structured_incidence.requested_worker_count == workers);
+    CHECK(result.stats.structured_incidence.peak_worker_count == workers);
 }
 
 struct ScaleOracle final {
@@ -591,6 +777,10 @@ struct RssCaseArguments final {
     uint32_t workers = 0;
 };
 
+struct DenseStageCaseArguments final {
+    uint32_t workers = 0;
+};
+
 [[nodiscard]] std::optional<uint64_t> parse_unsigned(std::string_view text) noexcept {
     if (text.empty()) {
         return std::nullopt;
@@ -627,6 +817,19 @@ struct RssCaseArguments final {
                             static_cast<uint32_t>(*parsed_workers)};
 }
 
+[[nodiscard]] std::optional<DenseStageCaseArguments>
+parse_dense_stage_case_arguments(int argc, char* argv[]) noexcept {
+    if (argc != 3 || std::string_view(argv[1]) != "--dense-stage-case") {
+        return std::nullopt;
+    }
+
+    const auto parsed_workers = parse_unsigned(argv[2]);
+    if (!parsed_workers.has_value() || (*parsed_workers != 1 && *parsed_workers != 4)) {
+        return std::nullopt;
+    }
+    return DenseStageCaseArguments{static_cast<uint32_t>(*parsed_workers)};
+}
+
 [[nodiscard]] std::string optional_metric(const std::optional<uint64_t>& value) {
     return value.has_value() ? std::to_string(*value) : "na";
 }
@@ -641,6 +844,247 @@ checked_peak_growth(const ProcessMemorySnapshot& baseline,
         return std::nullopt;
     }
     return *final.lifetime_peak_rss_bytes - *baseline.lifetime_peak_rss_bytes;
+}
+
+constexpr std::array<StructuredTelemetryReadPhase, 4> DENSE_STAGE_READ_PHASES{
+    StructuredTelemetryReadPhase::InitialScan,
+    StructuredTelemetryReadPhase::IncidenceBuild,
+    StructuredTelemetryReadPhase::Reducer,
+    StructuredTelemetryReadPhase::FreshValidation,
+};
+
+constexpr std::array<StructuredTelemetryCheckpoint, 10> DENSE_STAGE_CHECKPOINTS{
+    StructuredTelemetryCheckpoint::ScanBegin,
+    StructuredTelemetryCheckpoint::ScanCompleteBeforeAbRelease,
+    StructuredTelemetryCheckpoint::AfterAbRelease,
+    StructuredTelemetryCheckpoint::IncidenceReceiptBuilt,
+    StructuredTelemetryCheckpoint::ReducerConstructed,
+    StructuredTelemetryCheckpoint::ReductionComplete,
+    StructuredTelemetryCheckpoint::OutputMaterialized,
+    StructuredTelemetryCheckpoint::OutputFinalized,
+    StructuredTelemetryCheckpoint::ReducerReleased,
+    StructuredTelemetryCheckpoint::FreshValidationComplete,
+};
+
+static_assert(DENSE_STAGE_READ_PHASES.size() ==
+              gnfs::relation::structured_telemetry_read_phase_count);
+static_assert(DENSE_STAGE_CHECKPOINTS.size() ==
+              gnfs::relation::structured_telemetry_checkpoint_count);
+
+[[nodiscard]] constexpr const char* bool_token(bool value) noexcept {
+    return value ? "true" : "false";
+}
+
+[[nodiscard]] std::string_view
+dense_stage_stop_reason_name(StructuredReductionStopReason reason) noexcept {
+    switch (reason) {
+    case StructuredReductionStopReason::NotStarted:
+        return "not_started";
+    case StructuredReductionStopReason::NoCandidates:
+        return "no_candidates";
+    case StructuredReductionStopReason::BudgetLimit:
+        return "budget_limit";
+    case StructuredReductionStopReason::PersistenceLimit:
+        return "persistence_limit";
+    }
+    return "unknown";
+}
+
+void check_dense_stage_telemetry(const StructuredReductionTelemetryRecord& record,
+                                 uint64_t generation) {
+    CHECK(record.schema_version == StructuredReductionTelemetryRecord::current_schema_version);
+    CHECK(record.generation == generation);
+    CHECK(record.source_rows == DENSE_STAGE_ROWS);
+    CHECK(record.incidence_rows == DENSE_STAGE_ROWS);
+    CHECK(record.incidence_unique_keys == DENSE_STAGE_KEYS);
+    CHECK(record.incidence_entries == DENSE_STAGE_INCIDENCES);
+    CHECK(record.completed);
+    CHECK(record.succeeded);
+    CHECK(record.failure_stage == gnfs::relation::StructuredTelemetryFailureStage::None);
+    CHECK(record.last_checkpoint == StructuredTelemetryCheckpoint::FreshValidationComplete);
+    CHECK(!record.counter_overflow);
+    CHECK(record.clock_monotone);
+    CHECK(record.peak_monotone);
+    CHECK(record.clock_provider_failures == 0);
+    CHECK(record.memory_provider_failures == 0);
+
+    const auto check_reads = [&](StructuredTelemetryReadPhase phase, uint64_t expected) {
+        const auto& counters = record.reads[static_cast<size_t>(phase)];
+        CHECK(counters.attempts == expected);
+        CHECK(counters.successes == expected);
+        CHECK(counters.failures == 0);
+    };
+    check_reads(StructuredTelemetryReadPhase::InitialScan, DENSE_STAGE_ROWS);
+    check_reads(StructuredTelemetryReadPhase::IncidenceBuild, 0);
+    check_reads(StructuredTelemetryReadPhase::Reducer, DENSE_STAGE_CORE_ROWS);
+    check_reads(StructuredTelemetryReadPhase::FreshValidation, DENSE_STAGE_ROWS);
+
+    uint64_t previous_wall_ns = 0;
+    const auto memory_backend = record.checkpoints.front().memory.backend;
+    for (size_t index = 0; index < DENSE_STAGE_CHECKPOINTS.size(); ++index) {
+        const auto& sample = record.checkpoints[index];
+        CHECK(sample.observed);
+        CHECK(sample.wall_supported);
+        CHECK(sample.elapsed_wall_ns >= previous_wall_ns);
+        CHECK(sample.memory.backend == memory_backend);
+        previous_wall_ns = sample.elapsed_wall_ns;
+    }
+    CHECK(record.checkpoints.front().elapsed_wall_ns == 0);
+}
+
+void print_dense_stage_record(uint32_t workers, uint64_t generation,
+                              const RelationReductionStats& stats,
+                              const StructuredReductionTelemetryRecord& telemetry) {
+    std::cout
+        << "GNFS_STRUCTURED_OOC_DENSE_STAGE_V1"
+        << " schema=1"
+        << " status=pass"
+        << " scope=direct_observed_route"
+        << " process_rss_scope=self_lifetime"
+        << " fixture=synthetic_cardinality_anchor"
+        << " topology=singleton_spokes_degree9_circulant_v1"
+        << " build_type=" << STRUCTURED_OOC_SCALE_BUILD_TYPE << " generation=" << generation
+        << " workers=" << workers << " source_rows=" << DENSE_STAGE_ROWS
+        << " incidence_rows=" << DENSE_STAGE_ROWS << " incidence_unique_keys=" << DENSE_STAGE_KEYS
+        << " incidence_entries=" << DENSE_STAGE_INCIDENCES
+        << " input_lp_w1=" << DENSE_STAGE_SINGLETON_KEYS << " input_lp_w2=0"
+        << " input_lp_w3=0"
+        << " input_lp_w4plus=" << DENSE_STAGE_WEIGHT_4PLUS_KEYS
+        << " incidence_shards=" << stats.structured_incidence.shard_count
+        << " peak_shard_rows=" << stats.structured_incidence.peak_shard_rows
+        << " peak_shard_entries=" << stats.structured_incidence.peak_shard_incidence_entries
+        << " peak_incidence_workers=" << stats.structured_incidence.peak_worker_count
+        << " singleton_rows_removed=" << stats.singleton_rows_removed
+        << " core_rows=" << DENSE_STAGE_CORE_ROWS
+        << " structured_stop=" << dense_stage_stop_reason_name(stats.structured_run.stop_reason)
+        << " commits=" << stats.structured_run.commits
+        << " emitted_rows=" << stats.structured_run.emitted_rows
+        << " output_rows=" << stats.output_relations
+        << " output_lp_columns=" << stats.output_lp_columns
+        << " raw_digest_low=" << stats.raw_input_digest.low
+        << " raw_digest_high=" << stats.raw_input_digest.high
+        << " output_digest_low=" << stats.output_digest.low
+        << " output_digest_high=" << stats.output_digest.high
+        << " source_backend=collector_direct_borrowed_prefix"
+        << " output_backend=finalized_ooc"
+        << " output_published=true"
+        << " output_lease_removed=true"
+        << " source_resumed=true"
+        << " source_pair_removed=true"
+        << " telemetry_completed=" << bool_token(telemetry.completed)
+        << " telemetry_succeeded=" << bool_token(telemetry.succeeded) << " telemetry_failure_stage="
+        << gnfs::relation::structured_telemetry_failure_stage_name(telemetry.failure_stage)
+        << " telemetry_last_checkpoint="
+        << (telemetry.last_checkpoint.has_value()
+                ? gnfs::relation::structured_telemetry_checkpoint_name(*telemetry.last_checkpoint)
+                : std::string_view("none"))
+        << " telemetry_counter_overflow=" << bool_token(telemetry.counter_overflow)
+        << " telemetry_clock_monotone=" << bool_token(telemetry.clock_monotone)
+        << " telemetry_peak_monotone=" << bool_token(telemetry.peak_monotone)
+        << " telemetry_clock_provider_failures=" << telemetry.clock_provider_failures
+        << " telemetry_memory_provider_failures=" << telemetry.memory_provider_failures
+        << " memory_backend="
+        << process_memory_backend_name(telemetry.checkpoints.front().memory.backend);
+
+    for (const auto phase : DENSE_STAGE_READ_PHASES) {
+        const std::string_view name = gnfs::relation::structured_telemetry_read_phase_name(phase);
+        const auto& counters = telemetry.reads[static_cast<size_t>(phase)];
+        std::cout << " read_" << name << "_attempts=" << counters.attempts << " read_" << name
+                  << "_successes=" << counters.successes << " read_" << name
+                  << "_failures=" << counters.failures;
+    }
+
+    for (const auto checkpoint : DENSE_STAGE_CHECKPOINTS) {
+        const std::string_view name =
+            gnfs::relation::structured_telemetry_checkpoint_name(checkpoint);
+        const auto& sample = telemetry.checkpoints[static_cast<size_t>(checkpoint)];
+        std::cout << " cp_" << name << "_observed=" << bool_token(sample.observed) << " cp_" << name
+                  << "_wall_supported=" << bool_token(sample.wall_supported) << " cp_" << name
+                  << "_wall_ns=" << sample.elapsed_wall_ns << " cp_" << name
+                  << "_current_rss=" << optional_metric(sample.memory.current_rss_bytes) << " cp_"
+                  << name << "_peak_rss=" << optional_metric(sample.memory.lifetime_peak_rss_bytes);
+    }
+    std::cout << '\n';
+}
+
+void run_dense_stage_case(uint32_t workers) {
+    current_case = "structured dense stage replay";
+    constexpr uint64_t generation = 73'002;
+    const std::string input_base = unique_ooc_base("dense_stage_input", DENSE_STAGE_ROWS, workers);
+    const std::string output_base =
+        unique_ooc_base("dense_stage_output", DENSE_STAGE_ROWS, workers);
+    ArtifactCleanup cleanup;
+    cleanup.add(input_base);
+    cleanup.add(output_base);
+
+    CollectorConfig collector_config;
+    collector_config.check_duplicates = true;
+    collector_config.ooc_enabled = true;
+    collector_config.ooc_base_path = input_base;
+    RelationCollector collector(collector_config);
+    const BuiltDenseStageSource source = build_dense_stage_source(collector);
+    CHECK(ordinary_artifacts_exist(input_base));
+
+    RelationReductionConfig config = structured_config(DENSE_STAGE_ROWS, workers);
+    config.structured->output_ooc_base_path = output_base;
+    config.structured->output_ooc_cleanup = OOCCleanupPolicy::RemoveArtifacts;
+
+    StructuredReductionTelemetry telemetry;
+    OOCSnapshotDescriptor source_descriptor;
+    RelationReductionStats result_stats;
+    StructuredReductionTelemetryRecord telemetry_record;
+    {
+        auto run =
+            collector.with_unique_ooc_prefix([&](const CollectorUniqueOOCPrefixSource& prefix) {
+                auto result = RelationReductionEngine::reduce_direct_borrowed_structured_observed(
+                    generation, prefix, config, telemetry);
+                return std::pair(std::move(result), prefix.descriptor());
+            });
+
+        auto& result = run.first;
+        source_descriptor = run.second;
+        CHECK(source_descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V3);
+        CHECK(source_descriptor.store_id != 0);
+        CHECK(source_descriptor.generation != 0);
+        CHECK(source_descriptor.count == DENSE_STAGE_ROWS);
+        CHECK(source_descriptor.data_end > OOCRelationWriter::DATA_HEADER_BYTES);
+        CHECK(collector.size() == DENSE_STAGE_ROWS);
+        CHECK(ordinary_artifacts_exist(input_base));
+
+        CHECK(result.generation == generation);
+        CHECK(result.storage_kind() == RelationStorageKind::FinalizedOOC);
+        CHECK(private_sink_exists(output_base));
+        check_dense_stage_result(result, source, workers);
+        const auto output_scope = result.relation_corpus().ooc_artifact_scope();
+        CHECK(output_scope.has_value());
+        CHECK(output_scope->base_path ==
+              std::filesystem::weakly_canonical(private_sink_base(output_base)).string());
+        CHECK(output_scope->descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V3);
+        CHECK(output_scope->descriptor.count == DENSE_STAGE_CORE_ROWS);
+
+        telemetry_record = telemetry.snapshot();
+        check_dense_stage_telemetry(telemetry_record, generation);
+        result_stats = result.stats;
+    }
+    CHECK(private_sink_absent(output_base));
+    CHECK(ordinary_artifacts_exist(input_base));
+    CHECK(collector.size() == DENSE_STAGE_ROWS);
+
+    {
+        RelationCorpus raw_corpus =
+            collector.handoff_ooc_corpus(generation, OOCCleanupPolicy::RemoveArtifacts);
+        const auto raw_scope = raw_corpus.ooc_artifact_scope();
+        CHECK(raw_scope.has_value());
+        CHECK(raw_scope->base_path == std::filesystem::weakly_canonical(input_base).string());
+        CHECK(raw_scope->descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V3);
+        CHECK(raw_scope->descriptor.store_id == source_descriptor.store_id);
+        CHECK(raw_scope->descriptor.generation > source_descriptor.generation);
+        CHECK(raw_scope->descriptor.count == source_descriptor.count);
+        CHECK(raw_scope->descriptor.data_end == source_descriptor.data_end);
+        CHECK(raw_corpus.count() == DENSE_STAGE_ROWS);
+    }
+    CHECK(ordinary_artifacts_absent(input_base));
+    print_dense_stage_record(workers, generation, result_stats, telemetry_record);
 }
 
 void run_rss_case(size_t raw_row_count, uint32_t workers) {
@@ -744,9 +1188,26 @@ void run_rss_case(size_t raw_row_count, uint32_t workers) {
 
 int main(int argc, char* argv[]) {
     if (argc != 1) {
+        const auto dense_stage_case = parse_dense_stage_case_arguments(argc, argv);
+        if (dense_stage_case.has_value()) {
+            if (STRUCTURED_OOC_SCALE_BUILD_TYPE != "Release") {
+                std::cerr << "dense structured stage replay requires a Release build\n";
+                return 2;
+            }
+            try {
+                run_dense_stage_case(dense_stage_case->workers);
+            } catch (const std::exception& error) {
+                std::cerr << error.what() << '\n';
+                return 1;
+            }
+            return 0;
+        }
+
         const auto rss_case = parse_rss_case_arguments(argc, argv);
         if (!rss_case.has_value()) {
-            std::cerr << "Usage: " << argv[0] << " [--rss-case <5000|50000|200000> <1|2|4>]\n";
+            std::cerr << "Usage: " << argv[0]
+                      << " [--rss-case <5000|50000|200000> <1|2|4> | "
+                         "--dense-stage-case <1|4>]\n";
             return 2;
         }
 

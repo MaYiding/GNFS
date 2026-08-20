@@ -1284,6 +1284,19 @@ fresh process and emits one `GNFS_RESOURCE_V1` record. The normal no-argument
 gate remains a deterministic correctness test and has no timing or RSS
 threshold.
 
+`test_structured_ooc_scale --dense-stage-case <1|4>` is the disabled
+`bench;stress` cardinality-anchor replay. It fixes 618,449 rows, 576,189 LP
+keys, and 1,236,898 incidence entries, then executes the full observed direct
+OOC route. The synthetic topology peels 493,601 singleton rows and leaves a
+27,744-key degree-9 core above the planner pivot cap. A successful invocation
+emits exactly one closed `GNFS_STRUCTURED_OOC_DENSE_STAGE_V1 schema=1` record.
+The record makes source-read phases and stage checkpoints auditable, but wall
+time and process-lifetime RSS remain observational. Lifecycle fields distinguish
+the removed output lease and raw relation pair from persistent cleanup locks.
+This case stays disabled in CTest, does not
+enter the normal `StructuredOOCScale` gate, and must run through
+`./scripts/test.sh structured-ooc-dense-stage <1|4>` in a fresh Release build.
+
 `test_structured_filter_pipeline_120bit` is a `heavy` targeted size-transition
 gate. It fixes a 120-bit semiprime and one polynomial/factor-base context, then
 runs the production sieve-to-reduction route with a one-lane StandardV0 baseline

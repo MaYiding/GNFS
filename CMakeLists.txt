@@ -2145,9 +2145,15 @@ if(GNFS_BUILD_TESTS)
     add_executable(test_structured_ooc_scale
         tests/test_structured_ooc_scale.cpp
     )
+    target_compile_definitions(test_structured_ooc_scale PRIVATE
+        GNFS_STRUCTURED_OOC_SCALE_BUILD_TYPE="$<CONFIG>")
     target_link_libraries(test_structured_ooc_scale PRIVATE gnfs_core Threads::Threads)
     add_test(NAME StructuredOOCScale COMMAND test_structured_ooc_scale)
     set_tests_properties(StructuredOOCScale PROPERTIES LABELS "gate" TIMEOUT 180)
+    add_test(NAME StructuredOOCDenseStage
+        COMMAND test_structured_ooc_scale --dense-stage-case 4)
+    set_tests_properties(StructuredOOCDenseStage PROPERTIES DISABLED TRUE
+        LABELS "bench;stress" TIMEOUT 600)
 
     # Real 120-bit sieve-to-reduction transition. The fixed prefix compares a
     # one-lane legacy route with the bounded multi-lane structured route and
