@@ -27,6 +27,7 @@
 #include <stdexcept>
 #include <system_error>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #ifdef __ARM_NEON
@@ -225,11 +226,19 @@ public:
 
     /// 设置筛区域
     void set_region(const SieveRegion& region) {
+        const int32_t width = region.i_width();
+        const int32_t height = region.j_height();
+        const size_t area = region.size();
+        if (width <= 0 || height <= 0 || area == 0) {
+            throw std::invalid_argument(
+                "LatticeSieve region must have positive, representable dimensions");
+        }
+
         // Allocate for the requested region before publishing it. A plain
         // resize() retains the previous capacity when the region shrinks; the
         // default region can be about 512 MiB while a 50-digit production
         // region needs only 16 MiB.
-        std::vector<uint16_t> replacement(region.size(), 0);
+        std::vector<uint16_t> replacement(area, 0);
         region_ = region;
         sieve_array_.swap(replacement);
         last_init_val_ = 0; // 重置:不残留上次 SQ 的 estimate
@@ -405,11 +414,27 @@ private:
         // 3. 预计算所有 FB 素数的格参数
         auto primes = build_prime_entries(basis, sq);
 
+        // CompactSmallPrime stores residues below the row width in int16_t,
+        // so 32768 is its exact inclusive width boundary. Wider regions must
+        // send the complete prime set through the region-bucket path before
+        // any global/small/large split; that path uses uint16_t offsets only
+        // within fixed 64K regions and therefore supports every int32 width.
+        // Keeping this as an early return also prevents flags==2 entries from
+        // being applied once here and a second time inside the bucket path.
+        constexpr uint32_t max_compact_row_width = static_cast<uint32_t>(INT16_MAX) + 1U;
+        const uint32_t sieve_width = static_cast<uint32_t>(region_.i_width());
+        if (sieve_width > max_compact_row_width) {
+            sieve_bucket_region(primes);
+            result.candidates = collect_candidates(basis);
+            result.sieved_positions = region_.size();
+            return;
+        }
+
         // 4. 两级筛法:
         //    小素数 (p < sieve_width): row-major 直接筛（每行命中多次，cache 友好）
         //    大素数 (p >= sieve_width): bucket region 筛（每行最多命中一次）
         //    这比全 bucket 快，因为小素数的 bucket scatter 开销大于直接写入。
-        uint32_t split_bound = static_cast<uint32_t>(region_.i_width());
+        uint32_t split_bound = sieve_width;
 
         // 分离小/大素数
         // Reserve: split typically ~70/30 small/large for medium FBs (50d/60d).
@@ -618,8 +643,12 @@ private:
         // |a| ~ |i * e0 + j * e1|, |b| ~ |i * f0 + j * f1|
         // E[|i|] ≈ range/4 for symmetric distribution on [i_min, i_max]
         // E[j]   ≈ midpoint for [j_min, j_max] (j > 0)
-        double typical_i = std::max(1.0, static_cast<double>(region_.i_max - region_.i_min) / 4.0);
-        double typical_j = std::max(1.0, static_cast<double>(region_.j_max + region_.j_min) / 2.0);
+        const int64_t i_span =
+            static_cast<int64_t>(region_.i_max) - static_cast<int64_t>(region_.i_min);
+        const int64_t j_midpoint_sum =
+            static_cast<int64_t>(region_.j_max) + static_cast<int64_t>(region_.j_min);
+        double typical_i = std::max(1.0, static_cast<double>(i_span) / 4.0);
+        double typical_j = std::max(1.0, static_cast<double>(j_midpoint_sum) / 2.0);
 
         double typical_a = std::abs(typical_i * static_cast<double>(basis.e0) +
                                     typical_j * static_cast<double>(basis.e1));
@@ -850,10 +879,12 @@ private:
         const size_t total_area = sieve_array_.size();
         const size_t w = static_cast<size_t>(region_.i_width());
         const int32_t height = region_.j_height();
+        const size_t height_size = static_cast<size_t>(height);
         const int32_t j_min = region_.j_min;
 
         // Number of bucket regions
-        const size_t num_regions = (total_area + BUCKET_REGION_SIZE - 1) / BUCKET_REGION_SIZE;
+        const size_t num_regions =
+            total_area / BUCKET_REGION_SIZE + (total_area % BUCKET_REGION_SIZE != 0 ? 1 : 0);
 
         // Phase 0: global hits (flags==2, extremely rare).
         // NEON 8-lane via detail::apply_log_p_range (P2-A baseline).
@@ -925,11 +956,11 @@ private:
                         int32_t p32 = static_cast<int32_t>(pe.p);
                         int32_t i_mod = pe.i_mod_init;
                         int32_t imin_mod = pe.i_min_mod;
-                        for (int32_t j = j_min; j <= j_min + height - 1; ++j) {
+                        for (int32_t row_offset = 0; row_offset < height; ++row_offset) {
                             int32_t offset = i_mod - imin_mod;
                             if (offset < 0)
                                 offset += p32;
-                            size_t row_base = static_cast<size_t>(j - j_min) * w;
+                            size_t row_base = static_cast<size_t>(row_offset) * w;
                             const size_t stride = static_cast<size_t>(pe.p);
                             const size_t row_end = row_base + w;
                             for (size_t pos = row_base + static_cast<size_t>(offset); pos < row_end;
@@ -1000,7 +1031,8 @@ private:
         // Each region writes to a non-overlapping sieve_array segment → thread-safe.
         auto apply_region = [&](size_t r) {
             size_t region_start = r * BUCKET_REGION_SIZE;
-            size_t region_end = std::min(region_start + BUCKET_REGION_SIZE, total_area);
+            size_t region_end =
+                region_start + std::min<size_t>(BUCKET_REGION_SIZE, total_area - region_start);
 
             // Apply scattered bucket entries for this region (from all threads).
             // Gather hot loop: speculative prefetch of the `sieve_array_[pos]`
@@ -1031,27 +1063,31 @@ private:
                 }
             }
 
-            // Apply tiny primes via stride within this region
-            int32_t region_j_start = static_cast<int32_t>(region_start / w) + j_min;
-            int32_t region_j_end = static_cast<int32_t>((region_end - 1) / w) + j_min;
-            region_j_end = std::min(region_j_end, j_min + height - 1);
+            // Apply tiny primes via stride within this region. Keep the row
+            // interval as [0, height) offsets: a valid region may end at
+            // INT32_MAX, where coordinate-based inclusive loops would
+            // overflow on their final increment.
+            const size_t region_row_begin = region_start / w;
+            const size_t region_row_end = std::min((region_end - 1) / w + 1, height_size);
 
             // Make working copies for this region's i_mod state
             auto tiny_copy = tiny_primes;
             for (auto& tp : tiny_copy) {
-                // Advance i_mod to region_j_start
+                // Advance i_mod to region_row_begin.
                 int32_t p32 = static_cast<int32_t>(tp.p);
-                int64_t row_offset = static_cast<int64_t>(region_j_start - j_min);
                 int64_t advanced =
-                    static_cast<int64_t>(tp.i_mod) + row_offset * static_cast<int64_t>(tp.delta);
+                    static_cast<int64_t>(tp.i_mod) +
+                    static_cast<int64_t>(region_row_begin) * static_cast<int64_t>(tp.delta);
                 int64_t mod = advanced % static_cast<int64_t>(p32);
                 if (mod < 0)
                     mod += p32;
                 tp.i_mod = static_cast<int16_t>(mod);
             }
 
-            for (int32_t j = region_j_start; j <= region_j_end; ++j) {
-                size_t row_base = static_cast<size_t>(j - j_min) * w;
+            for (size_t row_offset = region_row_begin; row_offset < region_row_end; ++row_offset) {
+                const int32_t j = static_cast<int32_t>(static_cast<int64_t>(j_min) +
+                                                       static_cast<int64_t>(row_offset));
+                size_t row_base = row_offset * w;
                 size_t row_end = row_base + w;
                 // Clamp to region bounds
                 size_t eff_start = std::max(row_base, region_start);
@@ -1141,9 +1177,7 @@ private:
     [[nodiscard]] std::vector<std::vector<BucketEntry>>
     fill_buckets(const std::vector<PrimeEntry>& primes, uint32_t bucket_threshold) const {
 
-        const int32_t j_min = region_.j_min;
-        const int32_t j_max = region_.j_max;
-        const int32_t total_rows = j_max - j_min + 1;
+        const int32_t total_rows = region_.j_height();
         const auto w = static_cast<int32_t>(region_.i_width());
 
         std::vector<std::vector<BucketEntry>> buckets(static_cast<size_t>(total_rows));
@@ -1214,17 +1248,16 @@ private:
         auto pre = preseparate_primes(primes, bucket_threshold);
 
         // Phase 2: 多线程行处理
-        const int32_t j_min = region_.j_min;
-        const int32_t j_max = region_.j_max;
-        const int32_t total_rows = j_max - j_min + 1;
+        const int32_t total_rows = region_.j_height();
         const int32_t i_min = region_.i_min;
 
         size_t num_threads = resolve_internal_thread_count_();
         if (total_rows < 500)
             num_threads = 1;
+        num_threads = std::min(num_threads, static_cast<size_t>(total_rows));
 
         if (num_threads <= 1) {
-            sieve_row_chunk(pre, primes, buckets, bucket_threshold, j_min, j_max, w, i_min, 0);
+            sieve_row_chunk(pre, primes, buckets, bucket_threshold, 0, total_rows, w, i_min);
             return;
         }
 
@@ -1234,18 +1267,18 @@ private:
         int32_t rows_per_thread = total_rows / static_cast<int32_t>(num_threads);
         int32_t remainder = total_rows % static_cast<int32_t>(num_threads);
 
-        // 计算每个 chunk 的 row_offset (= chunk_start - j_min),
-        // 预先收集 boundary 数据,后续 sieve_row_chunk 不再重算。
+        // Keep chunk boundaries as half-open row offsets in [0, total_rows).
+        // Coordinate endpoints may sit at INT32_MIN/MAX, so a coordinate
+        // one-past value is not generally representable.
         std::vector<int32_t> chunk_starts(num_threads + 1);
-        chunk_starts[0] = j_min;
+        chunk_starts[0] = 0;
         for (size_t t = 0; t < num_threads; ++t) {
             int32_t chunk_rows = rows_per_thread + (static_cast<int32_t>(t) < remainder ? 1 : 0);
             chunk_starts[t + 1] = chunk_starts[t] + chunk_rows;
         }
 
         // v18 优化: 单次性预算所有 chunk 的起始 i_mod (避免 N 线程独立扫 primes)
-        auto chunk_imods =
-            precompute_chunk_imods(pre, primes, bucket_threshold, chunk_starts, j_min);
+        auto chunk_imods = precompute_chunk_imods(pre, primes, bucket_threshold, chunk_starts);
 
         // BACKLOG #4: optional E-core threads via GNFS_SIEVE_ECORE_THREADS=N.
         // Static row-chunk dispatch — mixed P+E hurts unless ENV opts in (slowest
@@ -1253,17 +1286,16 @@ private:
         const size_t row_ecore_count = resolve_ecore_thread_count_(num_threads);
 
         for (size_t t = 0; t < num_threads; ++t) {
-            int32_t chunk_start_t = chunk_starts[t];
-            int32_t chunk_end_t = chunk_starts[t + 1] - 1;
-            int32_t row_offset = chunk_start_t - j_min;
+            int32_t chunk_begin_t = chunk_starts[t];
+            int32_t chunk_end_t = chunk_starts[t + 1];
             const std::vector<int16_t>* imod_ptr = &chunk_imods[t];
             const auto qos = qos_for_sieve_thread(t, num_threads, row_ecore_count);
 
-            threads.emplace_back([this, &pre, &primes, &buckets, bucket_threshold, chunk_start_t,
-                                  chunk_end_t, w, i_min, row_offset, imod_ptr, qos]() {
+            threads.emplace_back([this, &pre, &primes, &buckets, bucket_threshold, chunk_begin_t,
+                                  chunk_end_t, w, i_min, imod_ptr, qos]() {
                 gnfs::util::set_current_thread_qos(qos);
-                sieve_row_chunk(pre, primes, buckets, bucket_threshold, chunk_start_t, chunk_end_t,
-                                w, i_min, row_offset, imod_ptr);
+                sieve_row_chunk(pre, primes, buckets, bucket_threshold, chunk_begin_t, chunk_end_t,
+                                w, i_min, imod_ptr);
             });
         }
 
@@ -1331,8 +1363,8 @@ private:
     /// 返回: chunk_imods[t][si] = thread t 的第 si 个 small_prime 的 i_mod 起始值
     [[nodiscard]] std::vector<std::vector<int16_t>>
     precompute_chunk_imods(const PreSeparatedPrimes& pre, const std::vector<PrimeEntry>& primes,
-                           uint32_t bucket_threshold, const std::vector<int32_t>& chunk_starts,
-                           int32_t j_min) const {
+                           uint32_t bucket_threshold,
+                           const std::vector<int32_t>& chunk_starts) const {
         size_t num_chunks = chunk_starts.size() - 1;
         size_t num_small = pre.small.size();
         std::vector<std::vector<int16_t>> chunk_imods(num_chunks);
@@ -1346,8 +1378,7 @@ private:
                 int64_t delta = static_cast<int64_t>(pe.delta);
                 int64_t init = static_cast<int64_t>(pe.i_mod_init);
                 for (size_t t = 0; t < num_chunks; ++t) {
-                    int32_t row_offset = chunk_starts[t] - j_min;
-                    int64_t advanced = init + static_cast<int64_t>(row_offset) * delta;
+                    int64_t advanced = init + static_cast<int64_t>(chunk_starts[t]) * delta;
                     int64_t mod = advanced % static_cast<int64_t>(p32);
                     if (mod < 0)
                         mod += p32;
@@ -1359,15 +1390,15 @@ private:
         return chunk_imods;
     }
 
-    /// 处理一段行范围 [j_start, j_end]
+    /// 处理一段半开行偏移范围 [row_begin, row_end)
     /// 小素数走 stride loop，大素数从 bucket 直接 apply
     ///
     /// @param initial_imods 预算好的 small_primes 起始 i_mod (chunk_imods[t]),
     ///                      nullptr 则回退到内嵌 mod 计算(单线程路径)
     void sieve_row_chunk(const PreSeparatedPrimes& pre, const std::vector<PrimeEntry>& primes,
                          const std::vector<std::vector<BucketEntry>>& buckets,
-                         uint32_t bucket_threshold, int32_t j_start, int32_t j_end, size_t w,
-                         [[maybe_unused]] int32_t i_min, int32_t row_offset,
+                         uint32_t bucket_threshold, int32_t row_begin, int32_t row_end, size_t w,
+                         [[maybe_unused]] int32_t i_min,
                          const std::vector<int16_t>* initial_imods = nullptr) {
 
         // Copy pre-separated small primes, compute per-chunk i_mod
@@ -1383,14 +1414,14 @@ private:
                 small_primes[si].i_mod = (*initial_imods)[si];
             }
         } else {
-            // 单线程回退路径: 现场算 (row_offset=0 时即 i_mod_init)
+            // 单线程回退路径: 现场算该行偏移的 i_mod。
             size_t si = 0;
             for (const auto& pe : primes) {
                 if (pe.flags == 0 && pe.p < bucket_threshold) {
                     int32_t p32 = static_cast<int32_t>(pe.p);
                     int64_t advanced =
                         static_cast<int64_t>(pe.i_mod_init) +
-                        static_cast<int64_t>(row_offset) * static_cast<int64_t>(pe.delta);
+                        static_cast<int64_t>(row_begin) * static_cast<int64_t>(pe.delta);
                     int64_t mod = advanced % static_cast<int64_t>(p32);
                     if (mod < 0)
                         mod += p32;
@@ -1406,17 +1437,19 @@ private:
         const bool prefetch_on = bucket_prefetch_enabled_();
         const bool tiny_simd_on = tiny_simd_enabled_();
 
-        for (int32_t j = j_start; j <= j_end; ++j) {
-            size_t row_base = static_cast<size_t>(j - region_.j_min) * w;
-            size_t row_end = row_base + w;
+        for (int32_t row_offset = row_begin; row_offset < row_end; ++row_offset) {
+            const int32_t j = static_cast<int32_t>(static_cast<int64_t>(region_.j_min) +
+                                                   static_cast<int64_t>(row_offset));
+            size_t row_base = static_cast<size_t>(row_offset) * w;
+            size_t row_linear_end = row_base + w;
 
             // ── v-primes: whole-row broadcast (rare, 0-2 typical) ──
             // Route through NEON 8-lane helper; mirrors bucket-region apply
             // path so both code paths use the same vectorized broadcast.
             for (const auto& vp : v_primes) {
                 if ((j % static_cast<int32_t>(vp.p)) == 0) {
-                    detail::apply_log_p_range(sieve_array_.data() + row_base, row_end - row_base,
-                                              vp.log_p);
+                    detail::apply_log_p_range(sieve_array_.data() + row_base,
+                                              row_linear_end - row_base, vp.log_p);
                 }
             }
 
@@ -1432,8 +1465,8 @@ private:
 
                 const size_t idx = row_base + static_cast<size_t>(offset);
                 const size_t stride = static_cast<size_t>(sp.p);
-                detail::apply_log_p_stride(sieve_array_.data(), idx, row_end, stride, sp.log_p,
-                                           tiny_simd_on);
+                detail::apply_log_p_stride(sieve_array_.data(), idx, row_linear_end, stride,
+                                           sp.log_p, tiny_simd_on);
 
                 // Advance carry-forward
                 int32_t new_mod = static_cast<int32_t>(sp.i_mod) + static_cast<int32_t>(sp.delta);
@@ -1448,8 +1481,7 @@ private:
             // `sieve_array_` write target so the L1 fill lands before the
             // accumulator load issues. Prefetch is a hint — output is
             // bit-for-bit identical regardless of state.
-            size_t row_idx = static_cast<size_t>(j - region_.j_min);
-            const auto& bucket = buckets[row_idx];
+            const auto& bucket = buckets[static_cast<size_t>(row_offset)];
             const size_t n_entries = bucket.size();
             for (size_t ei = 0; ei < n_entries; ++ei) {
                 if (prefetch_on) {

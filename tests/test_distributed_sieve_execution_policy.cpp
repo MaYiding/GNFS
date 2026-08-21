@@ -1403,38 +1403,50 @@ void test_bound_work_enforces_lattice_sieve_region_bounds() {
         expect_work_binding_rejected(identity, frozen, polynomial, factor_base);
     };
 
-    // CompactSmallPrime stores values in [0, p) for p < width. Thus 32768 is
-    // the exact accepted threshold and 32769 is the first unsafe width.
-    {
+    const auto bind_region = [&](const sieve::SieveRegionWorkIdentityV1& region) {
         auto identity = make_runtime_identity(frozen);
-        identity.region = {-16'384, 16'383, 1, 1};
+        identity.region = region;
         CHECK(sieve::validate_distributed_sieve_work_identity(identity));
-        const auto bound = bind_work_checked(identity, frozen, polynomial, factor_base);
-        CHECK(bound.sieve_region.i_width() == 32'768);
-        CHECK(bound.sieve_region.size() == 32'768);
+        return bind_work_checked(identity, frozen, polynomial, factor_base);
+    };
+
+    // Widths above CompactSmallPrime's row-major limit bind successfully and
+    // use LatticeSieve's complete-prime region-bucket route. Put the one row
+    // at INT32_MAX to cover the runtime endpoint contract as well.
+    {
+        const auto bound = bind_region({-32'768, 32'768, std::numeric_limits<std::int32_t>::max(),
+                                        std::numeric_limits<std::int32_t>::max()});
+        CHECK(bound.sieve_region.i_width() == 65'537);
+        CHECK(bound.sieve_region.j_height() == 1);
+        CHECK(bound.sieve_region.size() == 65'537);
 
         sieve::LatticeSieve lattice_sieve(polynomial, factor_base, bound.sieve_parameters,
                                           bound.lattice.sieve);
         lattice_sieve.set_region(bound.sieve_region);
         lattice_sieve.set_max_threads(1);
         const auto result = lattice_sieve.sieve_special_q({7, 1, 0});
-        CHECK(result.sieved_positions == 32'768);
+        CHECK(result.sieved_positions == 65'537);
     }
-    expect_region_rejected({-16'384, 16'384, 1, 1});
 
-    // SieveRegion::j_height() and row offsets are int32_t.
+    // Dimension values one above INT32_MAX are not representable by the
+    // SieveRegion API even though each wire endpoint is individually int32.
+    expect_region_rejected({std::numeric_limits<std::int32_t>::min(), 0, 1, 1});
     expect_region_rejected({0, 0, std::numeric_limits<std::int32_t>::min(), 0});
 
-    // Inclusive row loops increment once after the last row, so INT32_MAX
-    // cannot itself be a j endpoint even for a one-row region.
-    expect_region_rejected(
-        {0, 0, std::numeric_limits<std::int32_t>::max(), std::numeric_limits<std::int32_t>::max()});
-
-    // estimate_initial_log() forms j_min + j_max in int32_t.
-    expect_region_rejected({0, 0, std::numeric_limits<std::int32_t>::max() - 2,
-                            std::numeric_limits<std::int32_t>::max() - 1});
-    expect_region_rejected({0, 0, std::numeric_limits<std::int32_t>::min(),
-                            std::numeric_limits<std::int32_t>::min() + 1});
+    // Widened midpoint arithmetic and row-offset traversal admit small
+    // regions adjacent to either int32 endpoint.
+    {
+        const auto high = bind_region({0, 0, std::numeric_limits<std::int32_t>::max() - 2,
+                                       std::numeric_limits<std::int32_t>::max() - 1});
+        CHECK(high.sieve_region.j_height() == 2);
+        CHECK(high.sieve_region.size() == 2);
+    }
+    {
+        const auto low = bind_region({0, 0, std::numeric_limits<std::int32_t>::min(),
+                                      std::numeric_limits<std::int32_t>::min() + 1});
+        CHECK(low.sieve_region.j_height() == 2);
+        CHECK(low.sieve_region.size() == 2);
+    }
 
     // Exercise the widest/tallest representable product without allocating
     // it. On a platform whose vector limit is smaller, the same identity must

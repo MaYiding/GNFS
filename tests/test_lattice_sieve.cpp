@@ -2,12 +2,21 @@
 #include "gnfs/polynomial/base_m.hpp"
 #include "gnfs/sieve/lattice_sieve.hpp"
 #include "gnfs/util/safe_math.hpp"
+#include "support/test_check.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cassert>
+#include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <limits>
+#include <numeric>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 using namespace gnfs;
 using namespace gnfs::sieve;
@@ -274,6 +283,26 @@ void test_lattice_sieve_storage_contract() {
         throw std::runtime_error("constructor eagerly reserved the default sieve region");
     }
 
+    const auto expect_invalid_region = [&](const SieveRegion& invalid_region) {
+        const size_t allocation_before = sieve.allocated_sieve_bytes();
+        bool rejected = false;
+        try {
+            sieve.set_region(invalid_region);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        GNFS_TEST_CHECK(rejected);
+        GNFS_TEST_CHECK(sieve.allocated_sieve_bytes() == allocation_before);
+    };
+    expect_invalid_region(SieveRegion{1, 0, 1, 1});
+    expect_invalid_region(SieveRegion{0, 0, 2, 1});
+    expect_invalid_region(SieveRegion{
+        std::numeric_limits<int32_t>::min(),
+        std::numeric_limits<int32_t>::max(),
+        1,
+        1,
+    });
+
     SieveRegion large_region;
     large_region.i_min = -1000;
     large_region.i_max = 999;
@@ -297,6 +326,16 @@ void test_lattice_sieve_storage_contract() {
     if (small_allocated < small_required || small_allocated >= large_allocated / 4) {
         throw std::runtime_error("shrinking the region retained the prior sieve capacity");
     }
+
+    // Invalid publication must preserve both the allocated storage and the
+    // previously selected logical region.
+    const SieveRegion rejected_after_publish{1, 0, 1, 1};
+    expect_invalid_region(rejected_after_publish);
+    GNFS_TEST_CHECK(sieve.allocated_sieve_bytes() == small_allocated);
+
+    const SpecialQ retained_region_sq{101, 1, 0};
+    const auto retained_region_result = sieve.sieve_special_q(retained_region_sq);
+    GNFS_TEST_CHECK(retained_region_result.sieved_positions == small_region.size());
 
     LatticeSieve degenerate(ctx, fb, params);
     const SpecialQ r_zero{1009, 0, 0};
@@ -387,6 +426,507 @@ void test_lattice_sieve_special_q_entry_contract() {
     std::cout << "  Special-q entry contract: PASS" << std::endl;
 }
 
+void test_wide_region_uses_exact_bucket_path() {
+    std::cout << "Testing wide-region bucket contract..." << std::endl;
+
+    Integer n(test_n);
+    auto selection = BaseMSelector::select(n, 3);
+    GNFS_TEST_CHECK(selection.success);
+    auto ctx = BaseMSelector::create_context(n, selection);
+
+    FactorBaseBuilder::Options fb_opts;
+    fb_opts.rational_bound = 500;
+    fb_opts.algebraic_bound = 500;
+    fb_opts.parallel = false;
+    auto fb = FactorBaseBuilder::build(ctx, fb_opts);
+
+    SpecialQRange range;
+    range.min_q = 100;
+    range.max_q = 500;
+    SpecialQGenerator generator(fb, range);
+    std::optional<SpecialQ> affine_sq;
+    while (auto candidate = generator.next()) {
+        if (candidate->q > 1 && candidate->r > 0 && candidate->r < candidate->q) {
+            affine_sq = *candidate;
+            break;
+        }
+    }
+    GNFS_TEST_CHECK(affine_sq.has_value());
+
+    SieveParams params;
+    params.log_scale = 16;
+    params.rational_threshold = 500;
+    params.algebraic_threshold = 500;
+
+    LatticeSieveExecutionConfig config{};
+    config.fallback_thread_count = 1;
+    config.enable_tiny_simd = false;
+    config.enable_bucket_prefetch = false;
+
+    const LatticeBasis basis =
+        compute_lattice_basis_with_skewness(*affine_sq, ctx.skewness(), config.lattice_basis);
+
+    // Cross a complete 64K bucket boundary and leave thousands of cells in
+    // the second region. Choose the sign/orientation independently from the
+    // sieve so b is positive over the complete one-row oracle interval.
+    const std::array<SieveRegion, 4> region_candidates{{
+        {-69'998, 1, 1, 1},
+        {-1, 69'998, 1, 1},
+        {-69'998, 1, -1, -1},
+        {-1, 69'998, -1, -1},
+    }};
+    const auto has_positive_b_endpoints = [&](const SieveRegion& region) {
+        const auto [first_a, first_b] = basis.to_ab(region.i_min, region.j_min);
+        const auto [last_a, last_b] = basis.to_ab(region.i_max, region.j_max);
+        static_cast<void>(first_a);
+        static_cast<void>(last_a);
+        return first_b > 0 && last_b > 0;
+    };
+    const auto selected_region =
+        std::find_if(region_candidates.begin(), region_candidates.end(), has_positive_b_endpoints);
+    GNFS_TEST_CHECK(selected_region != region_candidates.end());
+    const SieveRegion wide_region = *selected_region;
+    GNFS_TEST_CHECK(wide_region.i_width() == 70'000);
+
+    LatticeSieve sieve(ctx, fb, params, config);
+    sieve.set_region(wide_region);
+    const auto actual = sieve.sieve_special_q(*affine_sq);
+    GNFS_TEST_CHECK(actual.sieved_positions == wide_region.size());
+
+    // Independent scalar oracle: test p | (a - b*root) directly for every
+    // factor-base entry and reconstruct the additive score. This avoids both
+    // production bucket helpers and their compact residue/offset types.
+    const auto is_divisible = [](int64_t a, int64_t b, uint64_t root, uint32_t p) {
+        const int64_t modulus = static_cast<int64_t>(p);
+        int64_t a_mod = a % modulus;
+        int64_t b_mod = b % modulus;
+        if (a_mod < 0)
+            a_mod += modulus;
+        if (b_mod < 0)
+            b_mod += modulus;
+        const uint64_t product =
+            (static_cast<uint64_t>(b_mod) * (root % p)) % static_cast<uint64_t>(p);
+        return (static_cast<uint64_t>(a_mod) + p - product) % p == 0;
+    };
+
+    const double typical_i =
+        std::max(1.0, static_cast<double>(static_cast<int64_t>(wide_region.i_max) -
+                                          static_cast<int64_t>(wide_region.i_min)) /
+                          4.0);
+    const double typical_j =
+        std::max(1.0, static_cast<double>(static_cast<int64_t>(wide_region.j_max) +
+                                          static_cast<int64_t>(wide_region.j_min)) /
+                          2.0);
+    const double typical_a = std::abs(typical_i * static_cast<double>(basis.e0) +
+                                      typical_j * static_cast<double>(basis.e1));
+    const double typical_b = std::abs(typical_i * static_cast<double>(basis.f0) +
+                                      typical_j * static_cast<double>(basis.f1));
+    const double rational_value =
+        std::max(1.0, std::abs(typical_a - typical_b * ctx.m().to_double()));
+    const double algebraic_value = std::max(1.0, std::pow(std::max(typical_a, 1.0), ctx.degree()));
+    const double combined_log =
+        (std::log2(rational_value) + std::log2(algebraic_value)) * params.log_scale;
+    GNFS_TEST_CHECK(std::isfinite(combined_log));
+    GNFS_TEST_CHECK(combined_log >= 0.0);
+    const uint16_t initial_log =
+        static_cast<uint16_t>(std::min(combined_log, static_cast<double>(UINT16_MAX)));
+    const uint16_t threshold = params.combined_threshold();
+    GNFS_TEST_CHECK(initial_log > threshold);
+    const uint16_t effective_threshold = static_cast<uint16_t>(initial_log - threshold);
+
+    const auto& algebraic = fb.algebraic();
+    std::vector<SieveCandidate> expected;
+    constexpr size_t bucket_region_size = size_t{1} << 16;
+    std::array<size_t, 2> expected_candidates_by_region{};
+    GNFS_TEST_CHECK(wide_region.j_min == wide_region.j_max);
+    for (size_t index = 0; index < wide_region.size(); ++index) {
+        const int64_t i_wide =
+            static_cast<int64_t>(wide_region.i_min) + static_cast<int64_t>(index);
+        GNFS_TEST_CHECK(i_wide <= wide_region.i_max);
+        const int32_t i = static_cast<int32_t>(i_wide);
+        const int32_t j = wide_region.j_min;
+        const auto [a, b] = basis.to_ab(i, j);
+        uint16_t accumulated = 0;
+
+        for (const auto& prime : fb.rational()) {
+            const uint64_t m_mod_p = static_cast<uint64_t>(mpz_fdiv_ui(ctx.m().get_mpz(), prime.p));
+            if (is_divisible(a, b, m_mod_p, prime.p)) {
+                accumulated =
+                    static_cast<uint16_t>(accumulated + static_cast<uint16_t>(prime.log_p));
+            }
+        }
+
+        for (size_t prime_index = 0; prime_index < fb.sieve_algebraic_count(); ++prime_index) {
+            const auto& prime = algebraic[prime_index];
+            if (prime.is_projective() || (prime.p == affine_sq->q && prime.r == affine_sq->r)) {
+                continue;
+            }
+            if (is_divisible(a, b, prime.r, prime.p)) {
+                accumulated =
+                    static_cast<uint16_t>(accumulated + static_cast<uint16_t>(prime.log_p));
+            }
+        }
+
+        if (accumulated < effective_threshold || b <= 0 || std::gcd(util::safe_abs(a), b) != 1) {
+            continue;
+        }
+
+        const uint16_t residual = accumulated <= initial_log
+                                      ? static_cast<uint16_t>(initial_log - accumulated)
+                                      : uint16_t{0};
+        ++expected_candidates_by_region[index / bucket_region_size];
+        expected.push_back(SieveCandidate{
+            i,
+            j,
+            a,
+            static_cast<uint64_t>(b),
+            static_cast<uint8_t>(std::min(residual, uint16_t{255})),
+        });
+    }
+
+    GNFS_TEST_CHECK(!expected.empty());
+    GNFS_TEST_CHECK(actual.candidates.size() == expected.size());
+    for (const size_t count : expected_candidates_by_region) {
+        GNFS_TEST_CHECK(count > 0);
+    }
+    std::array<size_t, 2> actual_candidates_by_region{};
+    for (size_t index = 0; index < expected.size(); ++index) {
+        const auto& got = actual.candidates[index];
+        const auto& want = expected[index];
+        GNFS_TEST_CHECK(got.i == want.i);
+        GNFS_TEST_CHECK(got.j == want.j);
+        GNFS_TEST_CHECK(got.a == want.a);
+        GNFS_TEST_CHECK(got.b == want.b);
+        GNFS_TEST_CHECK(got.residual == want.residual);
+        GNFS_TEST_CHECK(got.b > 0);
+        GNFS_TEST_CHECK(std::gcd(util::safe_abs(got.a), got.b) == 1);
+
+        const uint64_t q = affine_sq->q;
+        const int64_t row_offset =
+            static_cast<int64_t>(got.i) - static_cast<int64_t>(wide_region.i_min);
+        GNFS_TEST_CHECK(row_offset >= 0);
+        GNFS_TEST_CHECK(row_offset < wide_region.i_width());
+        ++actual_candidates_by_region[static_cast<size_t>(row_offset) / bucket_region_size];
+
+        int64_t a_mod_q = got.a % static_cast<int64_t>(q);
+        if (a_mod_q < 0)
+            a_mod_q += static_cast<int64_t>(q);
+        const uint64_t br_mod_q = ((got.b % q) * affine_sq->r) % q;
+        GNFS_TEST_CHECK(static_cast<uint64_t>(a_mod_q) == br_mod_q);
+    }
+    GNFS_TEST_CHECK(actual_candidates_by_region == expected_candidates_by_region);
+
+    std::cout << "  Wide-region bucket contract: PASS (candidates=" << actual.candidates.size()
+              << ")" << std::endl;
+}
+
+void test_wide_region_prime_classes_are_exact_once() {
+    std::cout << "Testing wide-region exact-once prime classes..." << std::endl;
+
+    // f(x) = x^3 + 812 has f(7) = 1155 = 15 * 77, while f(2) is
+    // divisible by 5. Thus (q, r) = (5, 2) is a valid affine special-q
+    // for a context whose required m-root congruence also holds.
+    std::vector<Integer> coefficients;
+    coefficients.emplace_back(int64_t{812});
+    coefficients.emplace_back(int64_t{0});
+    coefficients.emplace_back(int64_t{0});
+    coefficients.emplace_back(int64_t{1});
+    PolynomialContext ctx(Integer(int64_t{77}), std::move(coefficients), Integer(int64_t{7}), 1.0);
+    const SpecialQ sq{5, 2, 0};
+    GNFS_TEST_CHECK(ctx.evaluate(ctx.m()).to_int64() == 1155);
+    GNFS_TEST_CHECK(ctx.evaluate_mod(7, 77) == 0);
+    GNFS_TEST_CHECK(ctx.evaluate_mod(sq.r, sq.q) == 0);
+    GNFS_TEST_CHECK(std::gcd(uint64_t{77}, uint64_t{sq.q}) == 1);
+
+    LatticeSieveExecutionConfig config{};
+    config.fallback_thread_count = 1;
+    config.enable_tiny_simd = false;
+    config.enable_bucket_prefetch = false;
+    const LatticeBasis basis =
+        compute_lattice_basis_with_skewness(sq, ctx.skewness(), config.lattice_basis);
+    GNFS_TEST_CHECK(basis.e0 == 1);
+    GNFS_TEST_CHECK(basis.f0 == -2);
+    GNFS_TEST_CHECK(basis.e1 == 2);
+    GNFS_TEST_CHECK(basis.f1 == 1);
+
+    // j=3 makes the independently classified p=3 v-prime hit the complete
+    // row. Keep i_max <= 1 so b stays positive, and leave 4464 cells after
+    // the 64K boundary so every prime class is observable in both buckets.
+    const SieveRegion wide_region{-69'998, 1, 3, 3};
+    GNFS_TEST_CHECK(wide_region.i_width() == 70'000);
+    GNFS_TEST_CHECK(wide_region.j_height() == 1);
+
+    SieveParams params;
+    params.log_scale = 16;
+    params.rational_threshold = 64;
+    params.algebraic_threshold = 0;
+
+    // Independent reconstruction of the production threshold. This is kept
+    // local and does not call a production estimate helper.
+    const double typical_i =
+        std::max(1.0, static_cast<double>(static_cast<int64_t>(wide_region.i_max) -
+                                          static_cast<int64_t>(wide_region.i_min)) /
+                          4.0);
+    const double typical_j =
+        std::max(1.0, static_cast<double>(static_cast<int64_t>(wide_region.j_max) +
+                                          static_cast<int64_t>(wide_region.j_min)) /
+                          2.0);
+    const double typical_a = std::abs(typical_i * static_cast<double>(basis.e0) +
+                                      typical_j * static_cast<double>(basis.e1));
+    const double typical_b = std::abs(typical_i * static_cast<double>(basis.f0) +
+                                      typical_j * static_cast<double>(basis.f1));
+    const double rational_value =
+        std::max(1.0, std::abs(typical_a - typical_b * ctx.m().to_double()));
+    const double algebraic_value = std::max(1.0, std::pow(std::max(typical_a, 1.0), ctx.degree()));
+    const double combined_log =
+        (std::log2(rational_value) + std::log2(algebraic_value)) * params.log_scale;
+    GNFS_TEST_CHECK(std::isfinite(combined_log));
+    GNFS_TEST_CHECK(combined_log > 81.0);
+    const uint16_t initial_log =
+        static_cast<uint16_t>(std::min(combined_log, static_cast<double>(UINT16_MAX)));
+    GNFS_TEST_CHECK(initial_log > params.combined_threshold());
+
+    enum class PrimeClass : size_t {
+        global,
+        v,
+        tiny,
+        medium,
+        count,
+    };
+    struct OraclePrime {
+        uint32_t p;
+        uint32_t root;
+        uint16_t log_p;
+        PrimeClass expected_class;
+    };
+
+    const auto positive_mod = [](int64_t value, uint32_t p) {
+        int64_t residue = value % static_cast<int64_t>(p);
+        if (residue < 0) {
+            residue += static_cast<int64_t>(p);
+        }
+        return static_cast<uint32_t>(residue);
+    };
+    const auto uv_for_root = [&](uint32_t root, uint32_t p) {
+        const uint64_t f0_root = (static_cast<uint64_t>(positive_mod(basis.f0, p)) * root) % p;
+        const uint64_t f1_root = (static_cast<uint64_t>(positive_mod(basis.f1, p)) * root) % p;
+        const uint32_t u = static_cast<uint32_t>(
+            (static_cast<uint64_t>(positive_mod(basis.e0, p)) + p - f0_root) % p);
+        const uint32_t v = static_cast<uint32_t>(
+            (static_cast<uint64_t>(positive_mod(basis.e1, p)) + p - f1_root) % p);
+        return std::pair<uint32_t, uint32_t>{u, v};
+    };
+    const auto classify = [&](const OraclePrime& prime) {
+        const auto [u, v] = uv_for_root(prime.root, prime.p);
+        if (u == 0 && v == 0) {
+            return PrimeClass::global;
+        }
+        if (u == 0) {
+            return PrimeClass::v;
+        }
+        return prime.p < 256 ? PrimeClass::tiny : PrimeClass::medium;
+    };
+
+    const uint16_t global_log = static_cast<uint16_t>(initial_log - params.combined_threshold());
+    GNFS_TEST_CHECK(static_cast<uint32_t>(global_log) + 3U + 5U + 9U < initial_log);
+    const std::array<OraclePrime, 4> oracle_primes{{
+        {5, 2, global_log, PrimeClass::global},
+        {3, 1, 3, PrimeClass::v},
+        {2, 1, 5, PrimeClass::tiny},
+        {257, 7, 9, PrimeClass::medium},
+    }};
+
+    FactorBaseParams fb_params;
+    fb_params.rational_bound = 500;
+    fb_params.algebraic_bound = 500;
+    fb_params.log_scale = params.log_scale;
+    FactorBase fb(fb_params);
+
+    std::array<size_t, static_cast<size_t>(PrimeClass::count)> class_counts{};
+    for (const auto& prime : oracle_primes) {
+        GNFS_TEST_CHECK(prime.root ==
+                        static_cast<uint32_t>(mpz_fdiv_ui(ctx.m().get_mpz(), prime.p)));
+        const PrimeClass actual_class = classify(prime);
+        GNFS_TEST_CHECK(actual_class == prime.expected_class);
+        ++class_counts[static_cast<size_t>(actual_class)];
+        fb.add_rational(prime.p, prime.log_p);
+    }
+    for (const size_t count : class_counts) {
+        GNFS_TEST_CHECK(count == 1);
+    }
+
+    // Keep the valid special-q in the algebraic base. Production must skip
+    // this exact (p, r) entry rather than adding it a fifth time.
+    fb.add_algebraic(sq.q, sq.r, 7);
+    fb.set_sieve_algebraic_count(1);
+
+    LatticeSieve sieve(ctx, fb, params, config);
+    sieve.set_region(wide_region);
+    const auto actual = sieve.sieve_special_q(sq);
+    GNFS_TEST_CHECK(actual.sieved_positions == wide_region.size());
+
+    const auto is_divisible = [](int64_t a, int64_t b, uint32_t root, uint32_t p) {
+        const int64_t modulus = static_cast<int64_t>(p);
+        int64_t a_mod = a % modulus;
+        int64_t b_mod = b % modulus;
+        if (a_mod < 0) {
+            a_mod += modulus;
+        }
+        if (b_mod < 0) {
+            b_mod += modulus;
+        }
+        const uint64_t product = (static_cast<uint64_t>(b_mod) * root) % static_cast<uint64_t>(p);
+        return (static_cast<uint64_t>(a_mod) + p - product) % p == 0;
+    };
+
+    const uint16_t effective_threshold =
+        static_cast<uint16_t>(initial_log - params.combined_threshold());
+    constexpr size_t bucket_region_size = size_t{1} << 16;
+    using ClassHitCounts = std::array<size_t, static_cast<size_t>(PrimeClass::count)>;
+    std::array<ClassHitCounts, 2> observable_hits_by_region{};
+    std::array<size_t, 2> observable_candidates_by_region{};
+    std::vector<SieveCandidate> expected;
+    for (size_t index = 0; index < wide_region.size(); ++index) {
+        const int64_t i_wide =
+            static_cast<int64_t>(wide_region.i_min) + static_cast<int64_t>(index);
+        GNFS_TEST_CHECK(i_wide <= wide_region.i_max);
+        const int32_t i = static_cast<int32_t>(i_wide);
+        const int32_t j = wide_region.j_min;
+        // Golden basis oracle: (a,b) = i*(1,-2) + j*(2,1).
+        const int64_t a = static_cast<int64_t>(i) + 2 * static_cast<int64_t>(j);
+        const int64_t b = -2 * static_cast<int64_t>(i) + static_cast<int64_t>(j);
+        GNFS_TEST_CHECK(b > 0);
+
+        uint16_t accumulated = 0;
+        std::array<bool, static_cast<size_t>(PrimeClass::count)> hits{};
+        for (const auto& prime : oracle_primes) {
+            if (!is_divisible(a, b, prime.root, prime.p)) {
+                continue;
+            }
+            accumulated = static_cast<uint16_t>(accumulated + prime.log_p);
+            hits[static_cast<size_t>(prime.expected_class)] = true;
+        }
+
+        if (accumulated < effective_threshold || b <= 0 || std::gcd(util::safe_abs(a), b) != 1) {
+            continue;
+        }
+        const size_t bucket_region = index / bucket_region_size;
+        ++observable_candidates_by_region[bucket_region];
+        for (size_t prime_class = 0; prime_class < hits.size(); ++prime_class) {
+            if (hits[prime_class]) {
+                ++observable_hits_by_region[bucket_region][prime_class];
+            }
+        }
+
+        const uint16_t residual = accumulated <= initial_log
+                                      ? static_cast<uint16_t>(initial_log - accumulated)
+                                      : uint16_t{0};
+        GNFS_TEST_CHECK(residual < 255);
+        expected.push_back(SieveCandidate{
+            i,
+            j,
+            a,
+            static_cast<uint64_t>(b),
+            static_cast<uint8_t>(std::min(residual, uint16_t{255})),
+        });
+    }
+
+    for (size_t bucket_region = 0; bucket_region < observable_hits_by_region.size();
+         ++bucket_region) {
+        GNFS_TEST_CHECK(observable_candidates_by_region[bucket_region] > 0);
+        for (const size_t count : observable_hits_by_region[bucket_region]) {
+            GNFS_TEST_CHECK(count > 0);
+        }
+    }
+    GNFS_TEST_CHECK(!expected.empty());
+    GNFS_TEST_CHECK(actual.candidates.size() == expected.size());
+    std::array<size_t, 2> actual_candidates_by_region{};
+    for (size_t index = 0; index < expected.size(); ++index) {
+        const auto& got = actual.candidates[index];
+        const auto& want = expected[index];
+        GNFS_TEST_CHECK(got.i == want.i);
+        GNFS_TEST_CHECK(got.j == want.j);
+        GNFS_TEST_CHECK(got.a == want.a);
+        GNFS_TEST_CHECK(got.b == want.b);
+        GNFS_TEST_CHECK(got.residual == want.residual);
+        GNFS_TEST_CHECK((got.a - static_cast<int64_t>(got.b) * sq.r) % static_cast<int64_t>(sq.q) ==
+                        0);
+        const int64_t coordinate_offset =
+            static_cast<int64_t>(got.i) - static_cast<int64_t>(wide_region.i_min);
+        GNFS_TEST_CHECK(coordinate_offset >= 0);
+        GNFS_TEST_CHECK(coordinate_offset < wide_region.i_width());
+        ++actual_candidates_by_region[static_cast<size_t>(coordinate_offset) / bucket_region_size];
+    }
+    GNFS_TEST_CHECK(actual_candidates_by_region == observable_candidates_by_region);
+
+    std::cout << "  Wide-region exact-once classes: PASS (candidates=" << actual.candidates.size()
+              << ")" << std::endl;
+}
+
+void test_extreme_j_row_offset_sieving() {
+    std::cout << "Testing extreme j row-offset sieving..." << std::endl;
+
+    std::vector<Integer> coefficients;
+    coefficients.emplace_back(int64_t{812});
+    coefficients.emplace_back(int64_t{0});
+    coefficients.emplace_back(int64_t{0});
+    coefficients.emplace_back(int64_t{1});
+    PolynomialContext ctx(Integer(int64_t{77}), std::move(coefficients), Integer(int64_t{7}), 1.0);
+    const SpecialQ sq{5, 2, 0};
+    GNFS_TEST_CHECK(ctx.evaluate_mod(sq.r, sq.q) == 0);
+
+    FactorBaseParams fb_params;
+    fb_params.rational_bound = 500;
+    fb_params.algebraic_bound = 500;
+    fb_params.log_scale = 16;
+    FactorBase fb(fb_params);
+    fb.add_rational(2, 5);
+    fb.add_rational(3, 7);
+    fb.add_rational(5, 11);
+    fb.add_rational(257, 13);
+    fb.set_sieve_algebraic_count(0);
+
+    SieveParams params;
+    params.log_scale = 16;
+    params.rational_threshold = 64;
+    params.algebraic_threshold = 0;
+
+    LatticeSieveExecutionConfig config{};
+    config.fallback_thread_count = 2;
+    config.enable_tiny_simd = false;
+    config.enable_bucket_prefetch = false;
+    LatticeSieve sieve(ctx, fb, params, config);
+    sieve.set_max_threads(2);
+
+    // Height 500 takes the parallel row-chunk path. Its half-open offset
+    // boundary is representable even though coordinate j_max + 1 is not.
+    const SieveRegion high_region{
+        -2,
+        2,
+        std::numeric_limits<int32_t>::max() - 499,
+        std::numeric_limits<int32_t>::max(),
+    };
+    GNFS_TEST_CHECK(high_region.j_height() == 500);
+    sieve.set_region(high_region);
+    const auto high = sieve.sieve_special_q(sq);
+    GNFS_TEST_CHECK(high.sieved_positions == high_region.size());
+
+    // The opposite endpoint exercises a negative midpoint outside int32 and
+    // the single-thread row-offset path.
+    const SieveRegion low_region{
+        -2,
+        2,
+        std::numeric_limits<int32_t>::min(),
+        std::numeric_limits<int32_t>::min() + 1,
+    };
+    GNFS_TEST_CHECK(low_region.j_height() == 2);
+    sieve.set_region(low_region);
+    const auto low = sieve.sieve_special_q(sq);
+    GNFS_TEST_CHECK(low.sieved_positions == low_region.size());
+
+    std::cout << "  Extreme j row-offset sieving: PASS" << std::endl;
+}
+
 // r=0 退化路径:LatticeSieve 在 sq.r==0 时 early-return 空 candidates。
 // 该路径仅当 q | f₀ 时出现,极罕见,但代码必须正确 short-circuit
 // (不要 estimate_initial_log 塌缩,不要在退化 basis 上跑全 sieve)。
@@ -442,6 +982,9 @@ int main() {
     test_default_region();
     test_lattice_sieve_storage_contract();
     test_lattice_sieve_special_q_entry_contract();
+    test_wide_region_uses_exact_bucket_path();
+    test_wide_region_prime_classes_are_exact_once();
+    test_extreme_j_row_offset_sieving();
     test_lattice_sieve_basic();
     test_candidate_properties();
     test_lattice_sieve_r_zero();

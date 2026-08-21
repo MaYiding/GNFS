@@ -25,13 +25,17 @@
 #include "gnfs/sqrt/modular_poly.hpp"
 #include "gnfs/sqrt/class_group.hpp"
 #include "gnfs/sieve/lattice_basis.hpp"
+#include "support/test_check.hpp"
 
+#include <array>
 #include <cassert>
 #include <climits>   // INT64_MAX, INT64_MIN, UINT32_MAX
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
+#include <utility>
 
 using namespace gnfs::core;
 using namespace gnfs::linalg;
@@ -2140,25 +2144,147 @@ void test_lattice_basis_edge_cases() {
 
     // Test 6: default_sieve_region with various skewness values
     {
+        constexpr size_t max_sieve_area = size_t{256} * 1024 * 1024;
+
+        const auto check_region_contract = [](const SieveRegion& region) {
+            GNFS_TEST_CHECK(region.i_width() > 0);
+            GNFS_TEST_CHECK(region.j_height() > 0);
+            GNFS_TEST_CHECK(region.size() > 0);
+            GNFS_TEST_CHECK(region.size() <= size_t{256} * 1024 * 1024);
+            GNFS_TEST_CHECK(region.size() == static_cast<size_t>(region.i_width()) *
+                                                 static_cast<size_t>(region.j_height()));
+
+            const std::array<std::pair<int32_t, int32_t>, 4> endpoints{{
+                {region.i_min, region.j_min},
+                {region.i_max, region.j_min},
+                {region.i_min, region.j_max},
+                {region.i_max, region.j_max},
+            }};
+            for (const auto& [i, j] : endpoints) {
+                const size_t index = region.ij_to_index(i, j);
+                GNFS_TEST_CHECK(index < region.size());
+                const auto coordinate = region.index_to_ij(index);
+                GNFS_TEST_CHECK(coordinate.first == i);
+                GNFS_TEST_CHECK(coordinate.second == j);
+            }
+
+            const size_t width = static_cast<size_t>(region.i_width());
+            const std::array<size_t, 5> indices{{
+                0,
+                width - 1,
+                region.size() / 2,
+                region.size() - width,
+                region.size() - 1,
+            }};
+            for (const size_t index : indices) {
+                const auto [i, j] = region.index_to_ij(index);
+                GNFS_TEST_CHECK(region.ij_to_index(i, j) == index);
+            }
+
+            const auto index_sentinel = region.index_to_ij(region.size());
+            GNFS_TEST_CHECK(index_sentinel.first == region.i_min);
+            GNFS_TEST_CHECK(index_sentinel.second == region.j_min);
+            GNFS_TEST_CHECK(region.ij_to_index(region.i_min - 1, region.j_min) == region.size());
+            GNFS_TEST_CHECK(region.ij_to_index(region.i_min, region.j_min - 1) == region.size());
+        };
+
+        const auto same_region = [](const SieveRegion& lhs, const SieveRegion& rhs) {
+            return lhs.i_min == rhs.i_min && lhs.i_max == rhs.i_max && lhs.j_min == rhs.j_min &&
+                   lhs.j_max == rhs.j_max;
+        };
+
         // skewness = 1.0 → symmetric region
         auto r1 = default_sieve_region(1.0);
-        assert(r1.i_min < 0 && r1.i_max > 0);
-        assert(r1.j_min >= 1 && r1.j_max > 0);
+        GNFS_TEST_CHECK(r1.i_width() == 23170);
+        GNFS_TEST_CHECK(r1.j_height() == 11585);
+        check_region_contract(r1);
 
         // skewness = 100.0 → wider i, shorter j
         auto r2 = default_sieve_region(100.0);
-        assert(r2.i_width() >= r1.i_width()); // wider or equal
-        assert(r2.j_height() <= r1.j_height()); // shorter or equal
+        GNFS_TEST_CHECK(r2.i_width() >= r1.i_width());   // wider or equal
+        GNFS_TEST_CHECK(r2.j_height() <= r1.j_height()); // shorter or equal
+        check_region_contract(r2);
 
-        // skewness = 0.5 → should not crash, treated as < 1
+        // skewness = 0.5 retains the historical symmetric fallback.
         auto r3 = default_sieve_region(0.5);
-        assert(r3.size() > 0);
+        GNFS_TEST_CHECK(same_region(r3, r1));
+        check_region_contract(r3);
 
-        // Very large skewness → j_size collapses to 0 (known P2 bug)
-        // For extreme skewness, j_size = base/sqrt(skew) → 0 before area cap fires
-        auto r4 = default_sieve_region(1e10);
-        // Don't assert size > 0 — this is a documented limitation (BACKLOG P2)
-        (void)r4;
+        // Finite extreme skew saturates to a one-row region without exceeding
+        // the old area cap or overflowing the int32 width contract.
+        for (const double skewness :
+             std::array<double, 2>{1e10, std::numeric_limits<double>::max()}) {
+            const auto extreme = default_sieve_region(skewness);
+            GNFS_TEST_CHECK(extreme.i_width() == static_cast<int32_t>(max_sieve_area));
+            GNFS_TEST_CHECK(extreme.j_height() == 1);
+            GNFS_TEST_CHECK(extreme.size() == max_sieve_area);
+            check_region_contract(extreme);
+        }
+
+        // Invalid/non-positive inputs choose the deterministic skew=1 fallback.
+        for (const double invalid : std::array<double, 6>{
+                 std::numeric_limits<double>::quiet_NaN(),
+                 std::numeric_limits<double>::infinity(),
+                 -std::numeric_limits<double>::infinity(),
+                 -1.0,
+                 -std::numeric_limits<double>::max(),
+                 0.0,
+             }) {
+            const auto fallback = default_sieve_region(invalid);
+            GNFS_TEST_CHECK(same_region(fallback, r1));
+            check_region_contract(fallback);
+        }
+
+        // Arbitrary public endpoints must fail closed instead of overflowing
+        // the int32 return type used by i_width().
+        const SieveRegion unrepresentable{
+            std::numeric_limits<int32_t>::min(),
+            std::numeric_limits<int32_t>::max(),
+            1,
+            1,
+        };
+        GNFS_TEST_CHECK(unrepresentable.i_width() == 0);
+        GNFS_TEST_CHECK(unrepresentable.size() == 0);
+
+        const SieveRegion unrepresentable_height{
+            0,
+            0,
+            std::numeric_limits<int32_t>::min(),
+            std::numeric_limits<int32_t>::max(),
+        };
+        GNFS_TEST_CHECK(unrepresentable_height.i_width() == 1);
+        GNFS_TEST_CHECK(unrepresentable_height.j_height() == 0);
+        GNFS_TEST_CHECK(unrepresentable_height.size() == 0);
+        GNFS_TEST_CHECK(unrepresentable_height.ij_to_index(0, 0) == unrepresentable_height.size());
+        const auto height_sentinel = unrepresentable_height.index_to_ij(0);
+        GNFS_TEST_CHECK(height_sentinel.first == unrepresentable_height.i_min);
+        GNFS_TEST_CHECK(height_sentinel.second == unrepresentable_height.j_min);
+
+        // Small valid regions adjacent to both j endpoints retain exact
+        // row-major index roundtrips without needing a representable
+        // coordinate one-past j_max.
+        const std::array<SieveRegion, 2> endpoint_regions{{
+            {-2, 2, std::numeric_limits<int32_t>::max() - 1, std::numeric_limits<int32_t>::max()},
+            {-2, 2, std::numeric_limits<int32_t>::min(), std::numeric_limits<int32_t>::min() + 1},
+        }};
+        for (const auto& endpoint_region : endpoint_regions) {
+            GNFS_TEST_CHECK(endpoint_region.i_width() == 5);
+            GNFS_TEST_CHECK(endpoint_region.j_height() == 2);
+            GNFS_TEST_CHECK(endpoint_region.size() == 10);
+            for (size_t index = 0; index < endpoint_region.size(); ++index) {
+                const auto [i, j] = endpoint_region.index_to_ij(index);
+                GNFS_TEST_CHECK(endpoint_region.ij_to_index(i, j) == index);
+            }
+            const auto final_coordinate = endpoint_region.index_to_ij(endpoint_region.size() - 1);
+            GNFS_TEST_CHECK(final_coordinate.first == endpoint_region.i_max);
+            GNFS_TEST_CHECK(final_coordinate.second == endpoint_region.j_max);
+            GNFS_TEST_CHECK(
+                endpoint_region.ij_to_index(endpoint_region.i_max + 1, endpoint_region.j_min) ==
+                endpoint_region.size());
+            const auto index_sentinel = endpoint_region.index_to_ij(endpoint_region.size());
+            GNFS_TEST_CHECK(index_sentinel.first == endpoint_region.i_min);
+            GNFS_TEST_CHECK(index_sentinel.second == endpoint_region.j_min);
+        }
     }
 
     // Test 7: Large prime q — determinant still ±q
