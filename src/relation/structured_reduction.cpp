@@ -5,6 +5,7 @@
 #include "gnfs/util/ordered_parallel_map.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -892,6 +893,10 @@ struct SequentialStructuredReducer::Impl final {
     }
 
     void validate_state() const {
+        const uint64_t epoch_to_validate = incidence_epoch;
+        if (validated_incidence_epoch.load(std::memory_order_relaxed) == epoch_to_validate)
+            return;
+
         if (bucket_active_degrees.size() != buckets.size()) {
             fail(StructuredReductionErrorCode::InvariantViolation,
                  "LP bucket degree storage size is inconsistent");
@@ -973,6 +978,12 @@ struct SequentialStructuredReducer::Impl final {
                      "LP bucket degree is inconsistent");
             }
         }
+
+        validated_incidence_epoch.store(epoch_to_validate, std::memory_order_relaxed);
+    }
+
+    void invalidate_state_validation_cache() noexcept {
+        validated_incidence_epoch.store(0, std::memory_order_relaxed);
     }
 
     [[nodiscard]] std::array<StructuredRowId, 2>
@@ -1396,6 +1407,7 @@ struct SequentialStructuredReducer::Impl final {
 
         // From this point onward all operations are no-throw: capacities were
         // reserved and vector moves use the default allocator.
+        invalidate_state_validation_cache();
         rows.push_back(std::move(output));
         for (const auto member : members) {
             auto& input = rows[static_cast<size_t>(member.value)];
@@ -1570,6 +1582,7 @@ struct SequentialStructuredReducer::Impl final {
         }
 
         static_assert(std::is_nothrow_move_constructible_v<Row>);
+        invalidate_state_validation_cache();
         for (auto& staged : staged_rows)
             rows.push_back(std::move(staged));
         for (const auto member : validated.members) {
@@ -1955,6 +1968,7 @@ struct SequentialStructuredReducer::Impl final {
             StructuredReductionTestEvent::MaskedBatchCommitBeforePublish);
 #endif
 
+        invalidate_state_validation_cache();
         for (auto& staged : staged_rows)
             rows.push_back(std::move(staged));
         for (const auto member : claimed_members)
@@ -1984,6 +1998,9 @@ struct SequentialStructuredReducer::Impl final {
     std::vector<size_t> bucket_active_degrees;
     size_t active_rows = 0;
     uint64_t incidence_epoch = 1;
+    // This only keeps concurrent read-only validation calls race-free; reducer
+    // mutation still requires exclusive access.
+    mutable std::atomic<uint64_t> validated_incidence_epoch{0};
     StructuredReductionStats statistics;
     StructuredIncidenceBuildStats incidence_build_statistics;
     std::set<PersistenceFailureKey> persistence_limited_plans;
@@ -2120,6 +2137,8 @@ size_t SequentialStructuredReducer::peel_singletons() {
         }
 
         auto& row = impl_->row_at(singleton);
+        if (removed == 0)
+            impl_->invalidate_state_validation_cache();
         row.active = false;
         --impl_->active_rows;
         ++removed;
