@@ -1224,14 +1224,14 @@ fresh-process 样本，顺序为 `ABBA`。证据绑定 source commit
 `1274fbfb0297a6384489a1ede1f24f35fbfaec95` 和 Release probe binary SHA-256
 `326140d50316f569a662df579e8063b24e2c4464b2dd846626cd69f425e47402`。
 
-4 个 slot 同时记录 route 内部 wall time 和 runner 外层 elapsed time：
+4 个 slot 同时记录 route 内部 wall time、runner 外层 elapsed time 和 lifetime peak RSS：
 
-| Slot | Route | Route `wall_ms` | Runner `elapsed_ms` |
-|---:|---|---:|---:|
-| 1 | `legacy` #1 | 1,263,686 | 1,263,808 |
-| 2 | `structured` #1 | 1,359,153 | 1,359,205 |
-| 3 | `structured` #2 | 1,394,025 | 1,394,321 |
-| 4 | `legacy` #2 | 1,235,971 | 1,236,117 |
+| Slot | Route | Route `wall_ms` | Runner `elapsed_ms` | Peak RSS Bytes |
+|---:|---|---:|---:|---:|
+| 1 | `legacy` #1 | 1,263,686 | 1,263,808 | 720,060,416 |
+| 2 | `structured` #1 | 1,359,153 | 1,359,205 | 945,045,504 |
+| 3 | `structured` #2 | 1,394,025 | 1,394,321 | 887,111,680 |
+| 4 | `legacy` #2 | 1,235,971 | 1,236,117 | 652,820,480 |
 
 4 条 route record 的 51 个 raw identity 字段逐字段相等，identity SHA-256 为
 `491a3ef8f29cff7f7af59911267665a7fb0d65bda45532f7301f94222223489a`。同一路由的策略
@@ -1241,9 +1241,10 @@ fresh-process 样本，顺序为 `ABBA`。证据绑定 source commit
 
 方向预算先使用精确有理数，再向上取整为整数 ppm。`1,101,423ppm` wall ratio 只按
 route record `wall_ms` 的 structured/legacy 精确中位数计算。runner `elapsed_ms` 包含
-外层进程生命周期开销，只作生命周期观测，不参与该预算。peak RSS 使用
-structured/legacy 中位数比；matrix nonzeros 在同一路由内稳定，因此使用两条路由的
-固定结果比：
+外层进程生命周期开销，只作生命周期观测，不参与该预算。peak RSS 的 legacy 中位数为
+686,440,448 bytes，structured 中位数为 916,078,592 bytes；精确比率为
+`55913/41897`，向上取整得到 `1,334,535ppm`。matrix nonzeros 在同一路由内稳定，
+因此使用两条路由的固定结果比：
 
 | Budget | Observed | Limit | Result |
 |---|---:|---:|:---:|
