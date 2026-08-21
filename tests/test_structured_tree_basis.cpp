@@ -651,6 +651,105 @@ void test_nested_tree_merges_allow_source_overlap() {
     check_exact_dependency_bijection(reducer, golden_rows, universe);
 }
 
+void test_rank_validation_survives_elimination_and_row_reallocation() {
+    const auto p = rational_key(3251);
+    const auto a = rational_key(3253);
+    const auto b = rational_key(3257);
+    const GoldenUniverse universe{{p, a, b}};
+    const std::vector<Mask> golden_rows{
+        lp_bit(universe, p) ^ lp_bit(universe, a),
+        lp_bit(universe, p) ^ lp_bit(universe, b),
+        lp_bit(universe, p) ^ lp_bit(universe, a) ^ lp_bit(universe, b),
+    };
+    SequentialStructuredReducer reducer(
+        325, {make_relation({p, a}), make_relation({p, b}), make_relation({p, a, b})});
+
+    const auto plans = reducer.plan_tree_basis_merges(TreeBasisPlanner::DeterministicMst);
+    const auto* found = find_plan(plans, p);
+    CHECK(found != nullptr);
+    if (found == nullptr) {
+        return;
+    }
+    const std::vector<RowPair> expected_edges{{0, 2}, {1, 2}};
+    CHECK(edge_pairs(*found) == expected_edges);
+    check_independent_tree_rank(*found);
+    check_plan_payloads(reducer, *found);
+
+    const auto outputs = reducer.commit(reducer.prepare(*found));
+    CHECK(outputs == std::vector<StructuredRowId>({StructuredRowId{3}, StructuredRowId{4}}));
+    if (outputs.size() != 2) {
+        return;
+    }
+    CHECK(source_mask(reducer.sources(outputs[0]), reducer) == Mask{0b101});
+    CHECK(source_mask(reducer.sources(outputs[1]), reducer) == Mask{0b110});
+    const auto first_lp_keys = reducer.lp_keys(outputs[0]);
+    const auto second_lp_keys = reducer.lp_keys(outputs[1]);
+    CHECK(first_lp_keys.size() == 1);
+    CHECK(second_lp_keys.size() == 1);
+    if (first_lp_keys.size() == 1) {
+        CHECK(first_lp_keys.front() == b);
+    }
+    if (second_lp_keys.size() == 1) {
+        CHECK(second_lp_keys.front() == a);
+    }
+
+    // Both active source transforms have pivot 2, so full-rank validation must
+    // eliminate the second against the first. Planning again after commit also
+    // validates after rows grew from three to five entries and may have moved.
+    CHECK(reducer.plan_tree_basis_merges(TreeBasisPlanner::DeterministicMst).empty());
+    CHECK(reducer.plan_two_way_merges().empty());
+    check_exact_dependency_bijection(reducer, golden_rows, universe);
+}
+
+void test_rank_validation_retains_eliminated_basis_rows() {
+    const auto p = rational_key(3301);
+    const auto a = rational_key(3307);
+    const auto b = rational_key(3313);
+    const auto c = rational_key(3319);
+    const auto d = rational_key(3323);
+    const GoldenUniverse universe{{p, a, b, c, d}};
+    const std::vector<Mask> golden_rows{
+        lp_bit(universe, p),
+        lp_bit(universe, p) ^ lp_bit(universe, a) ^ lp_bit(universe, b) ^ lp_bit(universe, c) ^
+            lp_bit(universe, d),
+        lp_bit(universe, p) ^ lp_bit(universe, a) ^ lp_bit(universe, b),
+        lp_bit(universe, p) ^ lp_bit(universe, a) ^ lp_bit(universe, c),
+        lp_bit(universe, p) ^ lp_bit(universe, a),
+    };
+    SequentialStructuredReducer reducer(331, {make_relation({p}), make_relation({p, a, b, c, d}),
+                                              make_relation({p, a, b}), make_relation({p, a, c}),
+                                              make_relation({p, a})});
+
+    const auto plans = reducer.plan_tree_basis_merges(TreeBasisPlanner::DeterministicMst);
+    const auto* found = find_plan(plans, p);
+    CHECK(found != nullptr);
+    if (found == nullptr) {
+        return;
+    }
+    const std::vector<RowPair> expected_edges{{0, 4}, {2, 4}, {3, 4}, {1, 2}};
+    CHECK(edge_pairs(*found) == expected_edges);
+    check_independent_tree_rank(*found);
+    check_plan_payloads(reducer, *found);
+
+    const auto outputs = reducer.commit(reducer.prepare(*found));
+    CHECK(outputs == std::vector<StructuredRowId>({StructuredRowId{5}, StructuredRowId{6},
+                                                   StructuredRowId{7}, StructuredRowId{8}}));
+    if (outputs.size() != 4) {
+        return;
+    }
+    const std::vector<Mask> expected_sources{Mask{0b10001}, Mask{0b10100}, Mask{0b11000},
+                                             Mask{0b00110}};
+    for (size_t index = 0; index < outputs.size(); ++index) {
+        CHECK(source_mask(reducer.sources(outputs[index]), reducer) == expected_sources[index]);
+    }
+
+    // Validation processes these transforms in output order. The second and
+    // third each collide with {0,4} and create distinct owned basis rows; the
+    // fourth then collides with the first owned row after another append.
+    (void)reducer.plan_two_way_merges();
+    check_exact_dependency_bijection(reducer, golden_rows, universe);
+}
+
 void test_mst_prefers_sparse_source_xor_after_lp_tie() {
     const auto p = rational_key(3527);
     const auto q = rational_key(3533);
@@ -802,6 +901,8 @@ int main() {
         test_weight_three_through_eight();
         test_incidental_cancellation_and_reference_star();
         test_nested_tree_merges_allow_source_overlap();
+        test_rank_validation_survives_elimination_and_row_reallocation();
+        test_rank_validation_retains_eliminated_basis_rows();
         test_mst_prefers_sparse_source_xor_after_lp_tie();
         test_forged_tree_plans_fail_closed();
         test_weight_above_eight_is_rejected();

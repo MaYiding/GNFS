@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <limits>
 #include <queue>
@@ -141,8 +142,11 @@ void validate_full_source_rank(size_t corpus_size,
                                std::span<const SourceCombination* const> transforms) {
     constexpr size_t no_basis_row = std::numeric_limits<size_t>::max();
     std::vector<size_t> pivot_to_basis(corpus_size, no_basis_row);
-    std::vector<SourceCombination> basis;
+    // Collision-free rows are borrowed only for this synchronous validation.
+    // Reduced rows need stable addresses while later basis rows are appended.
+    std::vector<const SourceCombination*> basis;
     basis.reserve(transforms.size());
+    std::deque<SourceCombination> owned_basis;
 
     for (const SourceCombination* transform : transforms) {
         if (transform == nullptr) {
@@ -150,22 +154,31 @@ void validate_full_source_rank(size_t corpus_size,
                  "source transform pointer is null");
         }
         validate_source_combination(*transform, false);
-        SourceCombination candidate = *transform;
+        const SourceCombination* candidate = transform;
+        SourceCombination owned_candidate;
+        bool candidate_is_owned = false;
         bool inserted = false;
-        while (!candidate.empty()) {
-            const SourceId pivot = candidate.sources().back();
+        while (!candidate->empty()) {
+            const SourceId pivot = candidate->sources().back();
             if (pivot.ordinal >= pivot_to_basis.size()) {
                 fail(StructuredReductionErrorCode::InvariantViolation,
                      "source transform has an invalid pivot");
             }
             const size_t basis_index = pivot_to_basis[static_cast<size_t>(pivot.ordinal)];
             if (basis_index == no_basis_row) {
-                pivot_to_basis[static_cast<size_t>(pivot.ordinal)] = basis.size();
-                basis.push_back(std::move(candidate));
+                if (candidate_is_owned) {
+                    owned_basis.push_back(std::move(owned_candidate));
+                    candidate = &owned_basis.back();
+                }
+                basis.push_back(candidate);
+                pivot_to_basis[static_cast<size_t>(pivot.ordinal)] = basis.size() - 1;
                 inserted = true;
                 break;
             }
-            candidate = SourceCombination::symmetric_difference(candidate, basis[basis_index]);
+            auto reduced = SourceCombination::symmetric_difference(*candidate, *basis[basis_index]);
+            owned_candidate = std::move(reduced);
+            candidate = &owned_candidate;
+            candidate_is_owned = true;
         }
         if (!inserted) {
             fail(StructuredReductionErrorCode::InvariantViolation,
