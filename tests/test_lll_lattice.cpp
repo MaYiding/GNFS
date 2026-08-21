@@ -10,6 +10,7 @@
 //   7. Large q close to uint32_t upper bound
 //   8. Cross-check verify_ab on both basis vectors
 
+#include "gnfs/core/integer.hpp"
 #include "gnfs/sieve/lattice_basis.hpp"
 #include "gnfs/sieve/special_q.hpp"
 
@@ -17,6 +18,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -24,25 +26,44 @@ using namespace gnfs::sieve;
 
 namespace {
 
-#if defined(__SIZEOF_INT128__)
-using wide_int = __int128_t;
-#else
-using wide_int = long double;
-#endif
+using gnfs::core::Integer;
 
-[[nodiscard]] wide_int norm_sq_i128(int64_t a, int64_t b) noexcept {
-    wide_int a128 = static_cast<wide_int>(a);
-    wide_int b128 = static_cast<wide_int>(b);
-    return a128 * a128 + b128 * b128;
+[[noreturn]] void fail_check(const char* message) {
+    std::cerr << "  [FAIL] " << message << std::endl;
+    std::abort();
 }
 
-[[nodiscard]] wide_int dot_i128(int64_t a0, int64_t b0, int64_t a1, int64_t b1) noexcept {
-    return static_cast<wide_int>(a0) * static_cast<wide_int>(a1) +
-           static_cast<wide_int>(b0) * static_cast<wide_int>(b1);
+void check(bool condition, const char* message) {
+    if (!condition)
+        fail_check(message);
 }
 
-[[nodiscard]] wide_int abs_i128(wide_int x) noexcept {
-    return x < 0 ? -x : x;
+[[nodiscard]] Integer exact_norm_sq(int64_t a, int64_t b) {
+    const Integer exact_a(a);
+    const Integer exact_b(b);
+    return exact_a * exact_a + exact_b * exact_b;
+}
+
+[[nodiscard]] Integer exact_norm_sq(const Integer& a, const Integer& b) {
+    return a * a + b * b;
+}
+
+[[nodiscard]] Integer exact_dot(int64_t a0, int64_t b0, int64_t a1, int64_t b1) {
+    return Integer(a0) * Integer(a1) + Integer(b0) * Integer(b1);
+}
+
+[[nodiscard]] Integer exact_from_u128(detail::LbU128 value) {
+    Integer result(value.hi);
+    result *= Integer("18446744073709551616"); // 2^64
+    result += Integer(value.lo);
+    return result;
+}
+
+[[nodiscard]] Integer exact_from_i128(detail::LbI128 value) {
+    Integer result = exact_from_u128(value.magnitude);
+    if (value.negative)
+        result.negate();
+    return result;
 }
 
 [[nodiscard]] bool same_basis(const LatticeBasis& lhs, const LatticeBasis& rhs) noexcept {
@@ -54,57 +75,43 @@ void require_same_basis(const LatticeBasis& actual, const LatticeBasis& expected
                         const char* context) {
     if (same_basis(actual, expected))
         return;
-    std::cerr << "  [FAIL] " << context << std::endl;
+    std::cerr << "  [FAIL] " << context << "\n"
+              << "    actual:   (" << actual.e0 << ", " << actual.f0 << "), (" << actual.e1 << ", "
+              << actual.f1 << "), q=" << actual.q << ", r=" << actual.r << "\n"
+              << "    expected: (" << expected.e0 << ", " << expected.f0 << "), (" << expected.e1
+              << ", " << expected.f1 << "), q=" << expected.q << ", r=" << expected.r << std::endl;
     std::abort();
 }
 
-/// Print 128-bit integer to stderr (for assertion failure debugging).
-void print_i128(wide_int x) {
-#if defined(__SIZEOF_INT128__)
-    if (x < 0) {
-        std::cerr << "-";
-        x = -x;
-    }
-    if (x == 0) {
-        std::cerr << "0";
-        return;
-    }
-    char buf[64];
-    int pos = 0;
-    while (x > 0) {
-        buf[pos++] = static_cast<char>('0' + (x % 10));
-        x /= 10;
-    }
-    while (pos > 0)
-        std::cerr << buf[--pos];
-#else
-    std::cerr << x;
-#endif
+void print_exact(const Integer& value) {
+    std::cerr << value;
 }
 
 /// Verify the size-reduction invariant: |2 * (v0.v1)| <= |v0|^2.
 /// Equivalent to |mu| = |v0.v1/|v0|^2| <= 1/2.
 [[nodiscard]] bool is_size_reduced(const LatticeBasis& basis) {
     // basis.e0/f0 is the shorter v0, basis.e1/f1 is the longer v1
-    wide_int n0 = norm_sq_i128(basis.e0, basis.f0);
+    const Integer n0 = exact_norm_sq(basis.e0, basis.f0);
     if (n0 == 0)
         return true; // degenerate
-    wide_int d = dot_i128(basis.e0, basis.f0, basis.e1, basis.f1);
+    Integer d = exact_dot(basis.e0, basis.f0, basis.e1, basis.f1);
+    d.abs();
+    d *= 2;
     // |2*d| <= n0
-    return abs_i128(2 * d) <= n0;
+    return d <= n0;
 }
 
 /// Verify Lovasz condition with delta = 1 (LLL strict optimal in 2D).
 /// |v1|^2 >= |v0|^2 (after size-reduction; v0 = shorter).
 [[nodiscard]] bool satisfies_lovasz(const LatticeBasis& basis) {
-    wide_int n0 = norm_sq_i128(basis.e0, basis.f0);
-    wide_int n1 = norm_sq_i128(basis.e1, basis.f1);
+    const Integer n0 = exact_norm_sq(basis.e0, basis.f0);
+    const Integer n1 = exact_norm_sq(basis.e1, basis.f1);
     return n1 >= n0;
 }
 
 /// Caller API: e0/f0 = shorter, e1/f1 = longer.
 [[nodiscard]] bool e0_is_shorter(const LatticeBasis& basis) {
-    return norm_sq_i128(basis.e0, basis.f0) <= norm_sq_i128(basis.e1, basis.f1);
+    return exact_norm_sq(basis.e0, basis.f0) <= exact_norm_sq(basis.e1, basis.f1);
 }
 
 [[nodiscard]] bool det_equals_q(const LatticeBasis& basis) {
@@ -121,7 +128,304 @@ void print_i128(wide_int x) {
     return sq;
 }
 
+[[nodiscard]] int64_t exact_round_div(const Integer& numerator, const Integer& denominator) {
+    check(denominator.is_positive(), "GMP oracle received a non-positive denominator");
+
+    Integer magnitude = numerator.clone();
+    const bool negative = magnitude.is_negative();
+    magnitude.abs();
+
+    Integer quotient;
+    Integer remainder;
+    Integer::divmod(quotient, remainder, magnitude, denominator);
+    remainder *= 2;
+    if (remainder >= denominator)
+        quotient += 1;
+    if (negative)
+        quotient.negate();
+
+    check(quotient.fits_int64(), "GMP oracle quotient did not fit int64_t");
+    return quotient.to_int64();
+}
+
+void exact_reduce_gauss(Integer& v0_a, Integer& v0_b, Integer& v1_a, Integer& v1_b) {
+    constexpr int MAX_GAUSSIAN_ITERS = 64;
+    bool changed = true;
+    int iters = 0;
+    while (changed && iters < MAX_GAUSSIAN_ITERS) {
+        changed = false;
+        ++iters;
+
+        if (exact_norm_sq(v0_a, v0_b) < exact_norm_sq(v1_a, v1_b)) {
+            std::swap(v0_a, v1_a);
+            std::swap(v0_b, v1_b);
+        }
+
+        const Integer dot = v0_a * v1_a + v0_b * v1_b;
+        const Integer norm = v1_a * v1_a + v1_b * v1_b;
+        if (!norm.is_zero()) {
+            const int64_t mu = exact_round_div(dot, norm);
+            if (mu != 0) {
+                const Integer exact_mu(mu);
+                v0_a -= exact_mu * v1_a;
+                v0_b -= exact_mu * v1_b;
+                changed = true;
+            }
+        }
+    }
+
+    if (exact_norm_sq(v0_a, v0_b) < exact_norm_sq(v1_a, v1_b)) {
+        std::swap(v0_a, v1_a);
+        std::swap(v0_b, v1_b);
+    }
+}
+
+void exact_reduce_lll(Integer& v0_a, Integer& v0_b, Integer& v1_a, Integer& v1_b) {
+    constexpr int MAX_LLL_ITERS = 128;
+    if (exact_norm_sq(v0_a, v0_b) > exact_norm_sq(v1_a, v1_b)) {
+        std::swap(v0_a, v1_a);
+        std::swap(v0_b, v1_b);
+    }
+
+    int iters = 0;
+    while (iters < MAX_LLL_ITERS) {
+        ++iters;
+        const Integer norm0 = exact_norm_sq(v0_a, v0_b);
+        if (norm0.is_zero())
+            break;
+
+        const Integer dot = v0_a * v1_a + v0_b * v1_b;
+        const int64_t mu = exact_round_div(dot, norm0);
+        if (mu != 0) {
+            const Integer exact_mu(mu);
+            v1_a -= exact_mu * v0_a;
+            v1_b -= exact_mu * v0_b;
+        }
+
+        const Integer norm1 = exact_norm_sq(v1_a, v1_b);
+        if (norm1 >= norm0)
+            break;
+        std::swap(v0_a, v1_a);
+        std::swap(v0_b, v1_b);
+    }
+
+    if (exact_norm_sq(v0_a, v0_b) < exact_norm_sq(v1_a, v1_b)) {
+        std::swap(v0_a, v1_a);
+        std::swap(v0_b, v1_b);
+    }
+}
+
+[[nodiscard]] LatticeBasis exact_oracle_basis(uint32_t q, uint32_t r,
+                                              LatticeReductionMethod method) {
+    Integer v0_a(static_cast<uint64_t>(q));
+    Integer v0_b(0);
+    Integer v1_a(static_cast<uint64_t>(r));
+    Integer v1_b(1);
+
+    if (method == LatticeReductionMethod::Gauss) {
+        exact_reduce_gauss(v0_a, v0_b, v1_a, v1_b);
+    } else {
+        check(method == LatticeReductionMethod::LLL,
+              "GMP oracle only supports exact Gauss and LLL paths");
+        exact_reduce_lll(v0_a, v0_b, v1_a, v1_b);
+    }
+
+    check(v0_a.fits_int64() && v0_b.fits_int64() && v1_a.fits_int64() && v1_b.fits_int64(),
+          "GMP oracle basis coordinate did not fit int64_t");
+    return LatticeBasis{
+        .e0 = v1_a.to_int64(),
+        .f0 = v1_b.to_int64(),
+        .e1 = v0_a.to_int64(),
+        .f1 = v0_b.to_int64(),
+        .q = q,
+        .r = r,
+    };
+}
+
 } // anonymous namespace
+
+// ─── Test 0: exact cross-platform wide arithmetic ───────────────────
+
+void test_exact_wide_arithmetic() {
+    std::cout << "Testing exact portable lattice arithmetic..." << std::endl;
+
+    const uint64_t max_u64 = std::numeric_limits<uint64_t>::max();
+    const std::vector<std::pair<uint64_t, uint64_t>> products = {
+        {0, max_u64},
+        {1, max_u64},
+        {std::numeric_limits<uint32_t>::max(), std::numeric_limits<uint32_t>::max()},
+        {max_u64, max_u64},
+        {0xFEDCBA9876543210ULL, 0x123456789ABCDEF0ULL},
+    };
+    for (const auto [lhs, rhs] : products) {
+        Integer expected(lhs);
+        expected *= Integer(rhs);
+        check(exact_from_u128(detail::lb_mul_u64_portable(lhs, rhs)) == expected,
+              "portable 32-bit-limb multiplication disagreed with GMP");
+        check(exact_from_u128(detail::lb_mul_u64(lhs, rhs)) == expected,
+              "selected 64x64 multiplication backend disagreed with GMP");
+    }
+
+    const int64_t min_i64 = std::numeric_limits<int64_t>::min();
+    check(detail::lb_abs_i64(min_i64) == (uint64_t{1} << 63),
+          "INT64_MIN absolute magnitude was not represented exactly");
+    check(exact_from_u128(detail::lb_norm_sq(min_i64, 0)) == exact_norm_sq(min_i64, 0),
+          "INT64_MIN one-coordinate norm disagreed with GMP");
+    const auto two_min_norm = detail::lb_norm_sq(min_i64, min_i64);
+    check(two_min_norm == detail::LbU128{uint64_t{1} << 63, 0},
+          "two-coordinate INT64_MIN norm did not reach 2^127 exactly");
+    check(exact_from_u128(two_min_norm) == exact_norm_sq(min_i64, min_i64),
+          "two-coordinate INT64_MIN norm disagreed with GMP");
+
+    struct DotCase {
+        int64_t a0;
+        int64_t b0;
+        int64_t a1;
+        int64_t b1;
+    };
+    const std::vector<DotCase> dot_cases = {
+        {2, 3, 4, 5},
+        {-2, 3, 4, 5},
+        {2, -3, 4, 5},
+        {-2, -3, 4, 5},
+        {min_i64, min_i64, 1, -1},
+        {min_i64, min_i64, min_i64, min_i64},
+        {min_i64, min_i64, std::numeric_limits<int64_t>::max(),
+         std::numeric_limits<int64_t>::max()},
+    };
+    for (const auto& dot_case : dot_cases) {
+        const auto actual = detail::lb_dot(dot_case.a0, dot_case.b0, dot_case.a1, dot_case.b1);
+        const Integer expected = exact_dot(dot_case.a0, dot_case.b0, dot_case.a1, dot_case.b1);
+        check(exact_from_i128(actual) == expected, "signed lattice dot disagreed with GMP");
+    }
+    const auto cancelled_dot = detail::lb_dot(min_i64, min_i64, 1, -1);
+    check(detail::lb_is_zero(cancelled_dot.magnitude) && !cancelled_dot.negative,
+          "zero dot product retained a negative sign");
+    const auto positive_2_to_127 = detail::lb_dot(min_i64, min_i64, min_i64, min_i64);
+    check(!positive_2_to_127.negative &&
+              positive_2_to_127.magnitude == detail::LbU128{uint64_t{1} << 63, 0},
+          "positive 2^127 dot boundary was not represented exactly");
+    const detail::LbI128 negative_2_to_126{{uint64_t{1} << 62, 0}, true};
+    const auto negative_2_to_127 = detail::lb_add_i128(negative_2_to_126, negative_2_to_126);
+    Integer negative_2_to_127_oracle = exact_from_u128({uint64_t{1} << 63, 0});
+    negative_2_to_127_oracle.negate();
+    check(exact_from_i128(negative_2_to_127) == negative_2_to_127_oracle,
+          "negative 2^127 signed-magnitude boundary was not represented exactly");
+
+    const auto near_half_dot = detail::lb_dot(300'000'000, 0, 200'000'000, 0);
+    const auto near_half_norm = detail::lb_norm_sq(200'000'000, 1);
+    check(detail::lb_int_round_div(near_half_dot, near_half_norm) == 1,
+          "just-below-half reducer quotient rounded upward");
+    const auto negative_near_half_dot = detail::lb_dot(-300'000'000, 0, 200'000'000, 0);
+    check(detail::lb_int_round_div(negative_near_half_dot, near_half_norm) == -1,
+          "negative just-below-half reducer quotient rounded away from zero");
+
+    const detail::LbU128 exact_tie_denominator{0, 40'000'000'000'000'000ULL};
+    const detail::LbI128 exact_tie_numerator{{0, 60'000'000'000'000'000ULL}, false};
+    check(detail::lb_int_round_div(exact_tie_numerator, exact_tie_denominator) == 2,
+          "positive halfway quotient did not round away from zero");
+    check(detail::lb_int_round_div(detail::LbI128{exact_tie_numerator.magnitude, true},
+                                   exact_tie_denominator) == -2,
+          "negative halfway quotient did not round away from zero");
+
+    const detail::LbU128 odd_denominator{0, 5};
+    check(detail::lb_int_round_div(detail::LbI128{{0, 7}, false}, odd_denominator) == 1,
+          "odd-denominator just-below-half quotient rounded upward");
+    check(detail::lb_int_round_div(detail::LbI128{{0, 7}, true}, odd_denominator) == -1,
+          "negative odd-denominator just-below-half quotient rounded away from zero");
+    check(detail::lb_int_round_div(detail::LbI128{{0, 8}, false}, odd_denominator) == 2,
+          "odd-denominator just-above-half quotient rounded downward");
+
+    const detail::LbU128 one{0, 1};
+    const detail::LbU128 two_to_63{0, uint64_t{1} << 63};
+    check(detail::lb_int_round_div(detail::LbI128{two_to_63, false}, one) ==
+              std::numeric_limits<int64_t>::max(),
+          "positive 2^63 quotient did not saturate at INT64_MAX");
+    check(detail::lb_int_round_div(detail::LbI128{two_to_63, true}, one) ==
+              std::numeric_limits<int64_t>::min(),
+          "negative 2^63 quotient did not produce INT64_MIN");
+    check(detail::lb_int_round_div(detail::LbI128{{1, 0}, true}, one) ==
+              std::numeric_limits<int64_t>::min(),
+          "negative quotient below INT64_MIN did not saturate");
+
+    const detail::LbU128 high_denominator{uint64_t{1} << 36, 0}; // 2^100
+    const detail::LbI128 high_just_below{
+        {(uint64_t{3} << 35) - 1, std::numeric_limits<uint64_t>::max()}, false};
+    const detail::LbI128 high_exact_tie{{uint64_t{3} << 35, 0}, false};
+    check(detail::lb_int_round_div(high_just_below, high_denominator) == 1,
+          "high-limb just-below-half quotient rounded upward");
+    check(detail::lb_int_round_div(high_exact_tie, high_denominator) == 2,
+          "high-limb halfway quotient did not round upward");
+
+    struct DivisionCase {
+        detail::LbU128 numerator;
+        detail::LbU128 denominator;
+    };
+    const std::vector<DivisionCase> divisions = {
+        {{0, 123'456'789}, {0, 12'345}},
+        {{1, 0}, {0, 3}},
+        {{max_u64, max_u64}, {0, max_u64}},
+        {{max_u64, max_u64}, {uint64_t{1} << 63, 0}},
+        {{uint64_t{1} << 32, 9}, {uint64_t{1} << 16, 7}},
+        {{1, 0}, {2, 0}},
+    };
+    for (const auto& division_case : divisions) {
+        const auto actual =
+            detail::lb_divmod_u128(division_case.numerator, division_case.denominator);
+        const Integer numerator = exact_from_u128(division_case.numerator);
+        const Integer denominator = exact_from_u128(division_case.denominator);
+        Integer oracle_quotient;
+        Integer oracle_remainder;
+        Integer::divmod(oracle_quotient, oracle_remainder, numerator, denominator);
+        check(exact_from_u128(actual.quotient) == oracle_quotient,
+              "128-bit division quotient disagreed with GMP");
+        check(exact_from_u128(actual.remainder) == oracle_remainder,
+              "128-bit division remainder disagreed with GMP");
+        const Integer reconstructed =
+            exact_from_u128(actual.quotient) * denominator + exact_from_u128(actual.remainder);
+        check(reconstructed == numerator, "128-bit division violated q*d+r=n identity");
+        check(exact_from_u128(actual.remainder) < denominator,
+              "128-bit division remainder was not less than its denominator");
+    }
+
+    struct GoldenBasis {
+        uint32_t q;
+        uint32_t r;
+        LatticeReductionMethod method;
+        int64_t e0;
+        int64_t f0;
+        int64_t e1;
+        int64_t f1;
+    };
+    const std::vector<GoldenBasis> golden_cases = {
+        {300'000'000u, 200'000'000u, LatticeReductionMethod::Gauss, 0, 3, 100'000'000, -1},
+        {300'000'000u, 200'000'000u, LatticeReductionMethod::LLL, 0, 3, 100'000'000, -1},
+        {4'294'967'291u, 1u, LatticeReductionMethod::Gauss, 1, 1, 2'147'483'646, -2'147'483'645},
+        {4'294'967'291u, 1u, LatticeReductionMethod::LLL, 1, 1, 2'147'483'645, -2'147'483'646},
+        {4'294'967'291u, 2u, LatticeReductionMethod::Gauss, 2, 1, 858'993'459, -1'717'986'916},
+        {4'294'967'291u, 2u, LatticeReductionMethod::LLL, 2, 1, 858'993'459, -1'717'986'916},
+        {4'294'967'295u, 2'863'311'530u, LatticeReductionMethod::Gauss, 0, 3, 1'431'655'765, -1},
+        {4'294'967'295u, 2'863'311'530u, LatticeReductionMethod::LLL, 0, 3, 1'431'655'765, -1},
+    };
+
+    for (const auto& golden : golden_cases) {
+        const LatticeBasis expected{
+            .e0 = golden.e0,
+            .f0 = golden.f0,
+            .e1 = golden.e1,
+            .f1 = golden.f1,
+            .q = golden.q,
+            .r = golden.r,
+        };
+        const auto oracle = exact_oracle_basis(golden.q, golden.r, golden.method);
+        const auto actual = compute_lattice_basis(make_sq(golden.q, golden.r), golden.method);
+        require_same_basis(oracle, expected, "GMP oracle disagreed with a fixed golden basis");
+        require_same_basis(actual, oracle, "production basis disagreed with GMP oracle");
+    }
+
+    std::cout << "  PASS (portable/native limbs, exact rounding, 8 GMP-oracle goldens)"
+              << std::endl;
+}
 
 // ─── Test 1: basic LLL correctness on small primes ───────────────────
 
@@ -182,12 +486,13 @@ void test_lll_large_q() {
         assert(satisfies_lovasz(basis));
 
         // |b0|^2 should be O(q), not O(q^2). For ideal LLL, |b0| ~ sqrt(q).
-        wide_int n0 = norm_sq_i128(basis.e0, basis.f0);
-        wide_int q128 = static_cast<wide_int>(q);
+        const Integer n0 = exact_norm_sq(basis.e0, basis.f0);
+        Integer twice_q(static_cast<uint64_t>(q));
+        twice_q *= 2;
         // |b0|^2 should be <= 2*q (loose upper bound, theory: <= 4/3 * q)
-        if (n0 > 2 * q128) {
+        if (n0 > twice_q) {
             std::cerr << "    [WARN] q=" << q << " r=" << r << " |b0|^2=";
-            print_i128(n0);
+            print_exact(n0);
             std::cerr << " > 2q=" << (2 * q) << std::endl;
             // Don't assert — this is a quality metric, not correctness
         }
@@ -224,9 +529,9 @@ void test_lll_asymmetric_r() {
             assert(det_equals_q(lll));
             assert(det_equals_q(gauss));
 
-            wide_int lll_total = norm_sq_i128(lll.e0, lll.f0) + norm_sq_i128(lll.e1, lll.f1);
-            wide_int gauss_total =
-                norm_sq_i128(gauss.e0, gauss.f0) + norm_sq_i128(gauss.e1, gauss.f1);
+            const Integer lll_total = exact_norm_sq(lll.e0, lll.f0) + exact_norm_sq(lll.e1, lll.f1);
+            const Integer gauss_total =
+                exact_norm_sq(gauss.e0, gauss.f0) + exact_norm_sq(gauss.e1, gauss.f1);
 
             if (lll_total < gauss_total)
                 ++lll_beats_gauss;
@@ -241,9 +546,9 @@ void test_lll_asymmetric_r() {
             // Allow equality (most common case in 2D).
             if (gauss_total < lll_total) {
                 std::cerr << "    [FAIL] q=" << q << " r=" << r << " gauss=";
-                print_i128(gauss_total);
+                print_exact(gauss_total);
                 std::cerr << " lll=";
-                print_i128(lll_total);
+                print_exact(lll_total);
                 std::cerr << " (LLL is worse)" << std::endl;
                 assert(false && "LLL produced worse basis than Gauss");
             }
@@ -276,7 +581,7 @@ void test_lll_boundary_cases() {
             assert(is_size_reduced(basis));
             assert(satisfies_lovasz(basis));
             // For r=0, optimal |b0|^2 = 1 (the (0, 1) vector).
-            wide_int n0 = norm_sq_i128(basis.e0, basis.f0);
+            const Integer n0 = exact_norm_sq(basis.e0, basis.f0);
             assert(n0 == 1);
         }
 
@@ -292,8 +597,8 @@ void test_lll_boundary_cases() {
             assert(is_size_reduced(basis));
             assert(satisfies_lovasz(basis));
             // For r=1, |b0|^2 should be very small (= 2 for (1,1) vector).
-            wide_int n0 = norm_sq_i128(basis.e0, basis.f0);
-            assert(n0 <= 4); // (1,1) → 2, or some near-equivalent
+            const Integer n0 = exact_norm_sq(basis.e0, basis.f0);
+            assert(n0 <= Integer(4)); // (1,1) → 2, or some near-equivalent
         }
 
         // Case r = q-1: known to oscillate in legacy Gauss path (BACKLOG P2).
@@ -350,9 +655,9 @@ void test_lll_dominates_gauss() {
             auto lll = compute_lattice_basis(sq, LatticeReductionMethod::LLL);
             auto gauss = compute_lattice_basis(sq, LatticeReductionMethod::Gauss);
 
-            wide_int lll_total = norm_sq_i128(lll.e0, lll.f0) + norm_sq_i128(lll.e1, lll.f1);
-            wide_int gauss_total =
-                norm_sq_i128(gauss.e0, gauss.f0) + norm_sq_i128(gauss.e1, gauss.f1);
+            const Integer lll_total = exact_norm_sq(lll.e0, lll.f0) + exact_norm_sq(lll.e1, lll.f1);
+            const Integer gauss_total =
+                exact_norm_sq(gauss.e0, gauss.f0) + exact_norm_sq(gauss.e1, gauss.f1);
 
             ++total;
             if (lll_total < gauss_total) {
@@ -361,9 +666,9 @@ void test_lll_dominates_gauss() {
                 ++equal;
             } else {
                 std::cerr << "    [FAIL] q=" << q << " r=" << r << " gauss=";
-                print_i128(gauss_total);
+                print_exact(gauss_total);
                 std::cerr << " lll=";
-                print_i128(lll_total);
+                print_exact(lll_total);
                 std::cerr << " (LLL is worse)" << std::endl;
                 assert(false && "LLL must dominate Gauss");
             }
@@ -478,12 +783,12 @@ void test_lll_norm_quality() {
             auto lll = compute_lattice_basis(sq, LatticeReductionMethod::LLL);
             auto gauss = compute_lattice_basis(sq, LatticeReductionMethod::Gauss);
 
-            wide_int lll_total = norm_sq_i128(lll.e0, lll.f0) + norm_sq_i128(lll.e1, lll.f1);
-            wide_int gauss_total =
-                norm_sq_i128(gauss.e0, gauss.f0) + norm_sq_i128(gauss.e1, gauss.f1);
+            const Integer lll_total = exact_norm_sq(lll.e0, lll.f0) + exact_norm_sq(lll.e1, lll.f1);
+            const Integer gauss_total =
+                exact_norm_sq(gauss.e0, gauss.f0) + exact_norm_sq(gauss.e1, gauss.f1);
 
-            total_lll += static_cast<double>(static_cast<int64_t>(lll_total));
-            total_gauss += static_cast<double>(static_cast<int64_t>(gauss_total));
+            total_lll += lll_total.to_double();
+            total_gauss += gauss_total.to_double();
             ++n;
         }
 
@@ -529,16 +834,16 @@ void test_skew_lll_invariants() {
             auto plain_lll = compute_lattice_basis(sq, LatticeReductionMethod::LLL);
 
             // Core invariants (must hold for any reduction):
-            assert(det_equals_q(basis));
-            assert(basis.verify_ab(basis.e0, basis.f0));
-            assert(basis.verify_ab(basis.e1, basis.f1));
+            check(det_equals_q(basis), "SkewLLL did not preserve determinant");
+            check(basis.verify_ab(basis.e0, basis.f0),
+                  "SkewLLL first vector left the special-q lattice");
+            check(basis.verify_ab(basis.e1, basis.f1),
+                  "SkewLLL second vector left the special-q lattice");
 
             // For s=1.0, SkewLLL should be bit-identical to LLL (dispatched).
             if (s == 1.0) {
-                assert(basis.e0 == plain_lll.e0);
-                assert(basis.f0 == plain_lll.f0);
-                assert(basis.e1 == plain_lll.e1);
-                assert(basis.f1 == plain_lll.f1);
+                require_same_basis(basis, plain_lll,
+                                   "unit-skew SkewLLL was not bit-identical to exact LLL");
             }
 
             // Quality metric: skew norm² (a² + s²·b²)
@@ -561,9 +866,13 @@ void test_skew_lll_invariants() {
 
             // Hard invariant: SkewLLL never substantially worse in skew norm
             // (allow small double error: ratio < 1.01)
-            assert(skew_total_skewlll <= skew_total_plain * 1.01);
+            check(skew_total_skewlll <= skew_total_plain * 1.01,
+                  "non-unit SkewLLL baseline regressed in skew norm");
         }
     }
+
+    check(skew_better > 0, "non-unit SkewLLL baselines did not exercise a changed basis");
+    check(skew_worse == 0, "non-unit SkewLLL baseline was measurably worse than exact LLL");
 
     std::cout << "  total=" << total << " skew_better=" << skew_better << " equal=" << equal_skew
               << " skew_worse=" << skew_worse << " (SkewLLL <= LLL in skew norm)" << std::endl;
@@ -731,6 +1040,7 @@ int main() {
     std::cout << "  F-K 2005 LLL Lattice Reduction Tests" << std::endl;
     std::cout << "===========================================" << std::endl;
 
+    test_exact_wide_arithmetic();
     test_lll_basic();
     test_lll_large_q();
     test_lll_asymmetric_r();

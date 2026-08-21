@@ -37,6 +37,12 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
+#include <utility>
+
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_ARM64))
+#include <intrin.h>
+#endif
 
 namespace gnfs::sieve {
 
@@ -109,32 +115,270 @@ struct LatticeBasis {
 
 namespace detail {
 
-/// Wide norm² (native int128 where available, long double fallback on MSVC).
-#if defined(__SIZEOF_INT128__)
-using lb_wide_int = __int128_t;
-#else
-using lb_wide_int = long double;
-#endif
+/// Exact unsigned 128-bit value represented as two 64-bit limbs.
+///
+/// The unskewed lattice reducers must make the same rounding decisions on
+/// Windows, where MSVC has no `__int128`, as on GCC/Clang. Keeping the value
+/// in a platform-independent limb form also lets adaptive-lattice norm
+/// comparisons remain exact when perturbed coordinates exceed 53 bits.
+struct LbU128 {
+    uint64_t hi = 0;
+    uint64_t lo = 0;
+};
 
-[[nodiscard]] inline lb_wide_int lb_norm_sq(int64_t a, int64_t b) noexcept {
-    lb_wide_int a128 = static_cast<lb_wide_int>(a);
-    lb_wide_int b128 = static_cast<lb_wide_int>(b);
-    return a128 * a128 + b128 * b128;
+/// Signed 128-bit value. Lattice dot-product magnitudes are at most 2^127,
+/// so a normalized sign + magnitude representation is enough.
+struct LbI128 {
+    LbU128 magnitude{};
+    bool negative = false;
+};
+
+[[nodiscard]] constexpr bool operator==(LbU128 lhs, LbU128 rhs) noexcept {
+    return lhs.hi == rhs.hi && lhs.lo == rhs.lo;
 }
 
-/// 精确整数 round-half-to-even-like: round(a/b) for b > 0.
-/// 用 (2a + b)/(2b) for a≥0, (2a - b)/(2b) for a<0 (round-half-away-from-zero).
-[[nodiscard]] inline int64_t lb_int_round_div(lb_wide_int a, lb_wide_int b) noexcept {
-    if (b <= 0)
-        return 0; // safety
+[[nodiscard]] constexpr bool operator<(LbU128 lhs, LbU128 rhs) noexcept {
+    return lhs.hi < rhs.hi || (lhs.hi == rhs.hi && lhs.lo < rhs.lo);
+}
+
+[[nodiscard]] constexpr bool operator>(LbU128 lhs, LbU128 rhs) noexcept {
+    return rhs < lhs;
+}
+
+[[nodiscard]] constexpr bool operator<=(LbU128 lhs, LbU128 rhs) noexcept {
+    return !(rhs < lhs);
+}
+
+[[nodiscard]] constexpr bool operator>=(LbU128 lhs, LbU128 rhs) noexcept {
+    return !(lhs < rhs);
+}
+
+[[nodiscard]] constexpr bool lb_is_zero(LbU128 value) noexcept {
+    return value.hi == 0 && value.lo == 0;
+}
+
+[[nodiscard]] constexpr uint64_t lb_abs_i64(int64_t value) noexcept {
+    const uint64_t bits = static_cast<uint64_t>(value);
+    return value < 0 ? uint64_t{0} - bits : bits;
+}
+
+[[nodiscard]] constexpr LbU128 lb_add_u128(LbU128 lhs, LbU128 rhs) noexcept {
+    const uint64_t lo = lhs.lo + rhs.lo;
+    const uint64_t carry = lo < lhs.lo ? 1 : 0;
+    return {lhs.hi + rhs.hi + carry, lo};
+}
+
+/// Subtract modulo 2^128. Callers use it only when lhs >= rhs, except for
+/// the intentional wrapped subtraction in the long-division overflow step.
+[[nodiscard]] constexpr LbU128 lb_sub_u128(LbU128 lhs, LbU128 rhs) noexcept {
+    const uint64_t borrow = lhs.lo < rhs.lo ? 1 : 0;
+    return {lhs.hi - rhs.hi - borrow, lhs.lo - rhs.lo};
+}
+
+[[nodiscard]] constexpr LbU128 lb_shift_right_one(LbU128 value) noexcept {
+    return {value.hi >> 1, (value.lo >> 1) | (value.hi << 63)};
+}
+
+/// Portable 64x64 -> 128 multiplication using four 32-bit partial products.
+/// This remains separately callable so every platform can test the fallback
+/// retained for targets without native or MSVC wide-multiply intrinsics.
+[[nodiscard]] constexpr LbU128 lb_mul_u64_portable(uint64_t lhs, uint64_t rhs) noexcept {
+    // Standard special-q reduction keeps both coordinates below 2^32. This
+    // exact fast path avoids four partial products on targets without a native
+    // 64x64 -> 128 multiply while preserving the general fallback below.
+    if ((lhs | rhs) <= 0xFFFF'FFFFULL)
+        return {0, lhs * rhs};
+
+    const uint64_t lhs_lo = static_cast<uint32_t>(lhs);
+    const uint64_t lhs_hi = lhs >> 32;
+    const uint64_t rhs_lo = static_cast<uint32_t>(rhs);
+    const uint64_t rhs_hi = rhs >> 32;
+
+    const uint64_t p00 = lhs_lo * rhs_lo;
+    const uint64_t p01 = lhs_lo * rhs_hi;
+    const uint64_t p10 = lhs_hi * rhs_lo;
+    const uint64_t p11 = lhs_hi * rhs_hi;
+    const uint64_t middle = (p00 >> 32) + static_cast<uint32_t>(p01) + static_cast<uint32_t>(p10);
+
+    return {p11 + (p01 >> 32) + (p10 >> 32) + (middle >> 32),
+            (middle << 32) | static_cast<uint32_t>(p00)};
+}
+
+[[nodiscard]] inline LbU128 lb_mul_u64(uint64_t lhs, uint64_t rhs) noexcept {
 #if defined(__SIZEOF_INT128__)
-    if (a >= 0) {
-        return static_cast<int64_t>((2 * a + b) / (2 * b));
-    }
-    return static_cast<int64_t>((2 * a - b) / (2 * b));
+    const __uint128_t product = static_cast<__uint128_t>(lhs) * rhs;
+    return {static_cast<uint64_t>(product >> 64), static_cast<uint64_t>(product)};
+#elif defined(_MSC_VER) && defined(_M_X64)
+    unsigned __int64 hi = 0;
+    const unsigned __int64 lo =
+        _umul128(static_cast<unsigned __int64>(lhs), static_cast<unsigned __int64>(rhs), &hi);
+    return {static_cast<uint64_t>(hi), static_cast<uint64_t>(lo)};
+#elif defined(_MSC_VER) && defined(_M_ARM64)
+    const auto lhs64 = static_cast<unsigned __int64>(lhs);
+    const auto rhs64 = static_cast<unsigned __int64>(rhs);
+    return {static_cast<uint64_t>(__umulh(lhs64, rhs64)), lhs * rhs};
 #else
-    return static_cast<int64_t>(std::round(a / b));
+    return lb_mul_u64_portable(lhs, rhs);
 #endif
+}
+
+[[nodiscard]] inline LbU128 lb_norm_sq(int64_t a, int64_t b) noexcept {
+    const uint64_t abs_a = lb_abs_i64(a);
+    const uint64_t abs_b = lb_abs_i64(b);
+#if defined(__SIZEOF_INT128__)
+    const __uint128_t exact_a = abs_a;
+    const __uint128_t exact_b = abs_b;
+    const __uint128_t norm = exact_a * exact_a + exact_b * exact_b;
+    return {static_cast<uint64_t>(norm >> 64), static_cast<uint64_t>(norm)};
+#else
+#if !(defined(_MSC_VER) && (defined(_M_X64) || defined(_M_ARM64)))
+    if ((abs_a | abs_b) <= 0xFFFF'FFFFULL) {
+        const uint64_t square_a = abs_a * abs_a;
+        const uint64_t square_b = abs_b * abs_b;
+        const uint64_t lo = square_a + square_b;
+        return {lo < square_a ? 1U : 0U, lo};
+    }
+#endif
+    return lb_add_u128(lb_mul_u64(abs_a, abs_a), lb_mul_u64(abs_b, abs_b));
+#endif
+}
+
+[[nodiscard]] inline LbI128 lb_signed_product(int64_t lhs, int64_t rhs) noexcept {
+    const LbU128 magnitude = lb_mul_u64(lb_abs_i64(lhs), lb_abs_i64(rhs));
+    return {magnitude, !lb_is_zero(magnitude) && ((lhs < 0) != (rhs < 0))};
+}
+
+[[nodiscard]] constexpr LbI128 lb_add_i128(LbI128 lhs, LbI128 rhs) noexcept {
+    if (lhs.negative == rhs.negative) {
+        const LbU128 magnitude = lb_add_u128(lhs.magnitude, rhs.magnitude);
+        return {magnitude, !lb_is_zero(magnitude) && lhs.negative};
+    }
+    if (lhs.magnitude < rhs.magnitude) {
+        const LbU128 magnitude = lb_sub_u128(rhs.magnitude, lhs.magnitude);
+        return {magnitude, !lb_is_zero(magnitude) && rhs.negative};
+    }
+    const LbU128 magnitude = lb_sub_u128(lhs.magnitude, rhs.magnitude);
+    return {magnitude, !lb_is_zero(magnitude) && lhs.negative};
+}
+
+[[nodiscard]] inline LbI128 lb_dot(int64_t a0, int64_t b0, int64_t a1, int64_t b1) noexcept {
+#if !defined(__SIZEOF_INT128__) && !(defined(_MSC_VER) && (defined(_M_X64) || defined(_M_ARM64)))
+    const uint64_t abs_a0 = lb_abs_i64(a0);
+    const uint64_t abs_b0 = lb_abs_i64(b0);
+    const uint64_t abs_a1 = lb_abs_i64(a1);
+    const uint64_t abs_b1 = lb_abs_i64(b1);
+    if ((abs_a0 | abs_b0 | abs_a1 | abs_b1) <= 0xFFFF'FFFFULL) {
+        const LbU128 magnitude_a{0, abs_a0 * abs_a1};
+        const LbU128 magnitude_b{0, abs_b0 * abs_b1};
+        return lb_add_i128({magnitude_a, !lb_is_zero(magnitude_a) && ((a0 < 0) != (a1 < 0))},
+                           {magnitude_b, !lb_is_zero(magnitude_b) && ((b0 < 0) != (b1 < 0))});
+    }
+#endif
+    return lb_add_i128(lb_signed_product(a0, a1), lb_signed_product(b0, b1));
+}
+
+struct LbU128DivResult {
+    LbU128 quotient{};
+    LbU128 remainder{};
+};
+
+[[nodiscard]] constexpr bool lb_test_bit(LbU128 value, unsigned bit) noexcept {
+    return bit < 64 ? ((value.lo >> bit) & 1U) != 0 : ((value.hi >> (bit - 64)) & 1U) != 0;
+}
+
+constexpr void lb_set_bit(LbU128& value, unsigned bit) noexcept {
+    if (bit < 64) {
+        value.lo |= uint64_t{1} << bit;
+    } else {
+        value.hi |= uint64_t{1} << (bit - 64);
+    }
+}
+
+/// Exact unsigned 128-bit division. The common lattice path stays in the
+/// single-limb fast path; the bounded long-division fallback makes the helper
+/// total for adaptive-lattice-sized values and direct arithmetic tests.
+[[nodiscard]] constexpr LbU128DivResult lb_divmod_u128(LbU128 numerator,
+                                                       LbU128 denominator) noexcept {
+    if (lb_is_zero(denominator))
+        return {};
+    if (numerator < denominator)
+        return {{}, numerator};
+    if (numerator.hi == 0 && denominator.hi == 0) {
+        return {{0, numerator.lo / denominator.lo}, {0, numerator.lo % denominator.lo}};
+    }
+
+    LbU128DivResult result;
+    for (int bit = 127; bit >= 0; --bit) {
+        const bool overflow = (result.remainder.hi >> 63) != 0;
+        result.remainder.hi = (result.remainder.hi << 1) | (result.remainder.lo >> 63);
+        result.remainder.lo = (result.remainder.lo << 1) |
+                              (lb_test_bit(numerator, static_cast<unsigned>(bit)) ? 1 : 0);
+        if (overflow || result.remainder >= denominator) {
+            result.remainder = lb_sub_u128(result.remainder, denominator);
+            lb_set_bit(result.quotient, static_cast<unsigned>(bit));
+        }
+    }
+    return result;
+}
+
+[[nodiscard]] constexpr LbU128 lb_increment_u128(LbU128 value) noexcept {
+    if (value.lo == std::numeric_limits<uint64_t>::max()) {
+        if (value.hi != std::numeric_limits<uint64_t>::max()) {
+            ++value.hi;
+            value.lo = 0;
+        }
+        return value;
+    }
+    ++value.lo;
+    return value;
+}
+
+/// Exact round(a / b) for b > 0, with halfway cases rounded away from zero.
+/// Quotient saturation is a defensive totality guard; valid lattice inputs
+/// have |quotient| below 2^32.
+[[nodiscard]] constexpr int64_t lb_int_round_div(LbI128 a, LbU128 b) noexcept {
+    if (lb_is_zero(b) || lb_is_zero(a.magnitude))
+        return 0;
+
+#if !defined(__SIZEOF_INT128__) && !(defined(_MSC_VER) && (defined(_M_X64) || defined(_M_ARM64)))
+    if (a.magnitude.hi == 0 && b.hi == 0) {
+        uint64_t quotient = a.magnitude.lo / b.lo;
+        const uint64_t remainder = a.magnitude.lo % b.lo;
+        const uint64_t half = b.lo >> 1;
+        const bool round_up = remainder > half || (((b.lo & 1U) == 0) && remainder == half);
+        if (round_up && quotient != std::numeric_limits<uint64_t>::max())
+            ++quotient;
+
+        constexpr uint64_t INT64_SIGN_BIT = uint64_t{1} << 63;
+        if (a.negative) {
+            if (quotient >= INT64_SIGN_BIT)
+                return std::numeric_limits<int64_t>::min();
+            return -static_cast<int64_t>(quotient);
+        }
+        if (quotient >= INT64_SIGN_BIT)
+            return std::numeric_limits<int64_t>::max();
+        return static_cast<int64_t>(quotient);
+    }
+#endif
+
+    auto division = lb_divmod_u128(a.magnitude, b);
+    const LbU128 half = lb_shift_right_one(b);
+    const bool round_up =
+        division.remainder > half || (((b.lo & 1U) == 0) && division.remainder == half);
+    if (round_up)
+        division.quotient = lb_increment_u128(division.quotient);
+
+    constexpr uint64_t INT64_SIGN_BIT = uint64_t{1} << 63;
+    if (a.negative) {
+        if (division.quotient.hi != 0 || division.quotient.lo >= INT64_SIGN_BIT) {
+            return std::numeric_limits<int64_t>::min();
+        }
+        return -static_cast<int64_t>(division.quotient.lo);
+    }
+    if (division.quotient.hi != 0 || division.quotient.lo >= INT64_SIGN_BIT) {
+        return std::numeric_limits<int64_t>::max();
+    }
+    return static_cast<int64_t>(division.quotient.lo);
 }
 
 /// 读 ENV `GNFS_LATTICE_LLL` 解析 reduction method 默认值.
@@ -201,10 +445,9 @@ inline void lb_reduce_gauss(int64_t& v0_a, int64_t& v0_b, int64_t& v1_a, int64_t
         }
 
         // v0 = v0 - round(v0·v1 / v1·v1) * v1
-        lb_wide_int dot =
-            static_cast<lb_wide_int>(v0_a) * v1_a + static_cast<lb_wide_int>(v0_b) * v1_b;
-        lb_wide_int n1 = lb_norm_sq(v1_a, v1_b);
-        if (n1 > 0) {
+        const LbI128 dot = lb_dot(v0_a, v0_b, v1_a, v1_b);
+        const LbU128 n1 = lb_norm_sq(v1_a, v1_b);
+        if (!lb_is_zero(n1)) {
             int64_t mu = lb_int_round_div(dot, n1);
             if (mu != 0) {
                 v0_a -= mu * v1_a;
@@ -254,12 +497,11 @@ inline void lb_reduce_lll_fk2005(int64_t& v0_a, int64_t& v0_b, int64_t& v1_a, in
         ++iters;
 
         // Size-reduction: v1 ← v1 - round(v0·v1 / |v0|²) · v0
-        lb_wide_int n0 = lb_norm_sq(v0_a, v0_b);
-        if (n0 == 0)
+        const LbU128 n0 = lb_norm_sq(v0_a, v0_b);
+        if (lb_is_zero(n0))
             break; // degenerate: v0 = (0,0), 不动
 
-        lb_wide_int dot =
-            static_cast<lb_wide_int>(v0_a) * v1_a + static_cast<lb_wide_int>(v0_b) * v1_b;
+        const LbI128 dot = lb_dot(v0_a, v0_b, v1_a, v1_b);
         int64_t mu = lb_int_round_div(dot, n0);
         if (mu != 0) {
             v1_a -= mu * v0_a;
@@ -267,7 +509,7 @@ inline void lb_reduce_lll_fk2005(int64_t& v0_a, int64_t& v0_b, int64_t& v1_a, in
         }
 
         // Lovász 检查: 现在 |v1| 应 ≥ |v0|, 否则 swap 继续
-        lb_wide_int n1 = lb_norm_sq(v1_a, v1_b);
+        const LbU128 n1 = lb_norm_sq(v1_a, v1_b);
         if (n1 >= n0) {
             // Lovász 满足 + size-reduced → 终止
             break;
