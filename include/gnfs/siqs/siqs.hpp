@@ -954,7 +954,7 @@ inline void sieve_polynomial(const SIQSPoly& poly, const Integer& N, const std::
             const size_t value_bytes = value_bits / 8 + static_cast<size_t>(value_bits % 8 != 0);
             const SIQSLiveSieveRelationPayloadShape payload{value_bytes, fb.size(),
                                                             touched_buf.size(), 0};
-            (void)shadow_two_lp_capture->try_capture(payload, [&] {
+            (void)shadow_two_lp_capture->try_capture(residual, payload, [&] {
                 SIQSRelation relation;
                 relation.value = value;
                 relation.negative = negative;

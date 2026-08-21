@@ -298,7 +298,7 @@ void test_shadow_sink_factory_exceptions_roll_back_for_retry() {
 
     bool runtime_error_seen = false;
     try {
-        (void)factory_failure.try_capture(payload, []() -> SIQSRelation {
+        (void)factory_failure.try_capture(91, payload, []() -> SIQSRelation {
             throw std::runtime_error("injected shadow relation factory failure");
         });
     } catch (const std::runtime_error&) {
@@ -309,7 +309,7 @@ void test_shadow_sink_factory_exceptions_roll_back_for_retry() {
     CHECK(factory_failure.relations().empty());
     CHECK(factory_failure.snapshot().captured_relations == 0);
     CHECK(factory_failure.snapshot().captured_payload_bytes == 0);
-    CHECK(factory_failure.try_capture(payload, [] { return make_raw_two_lp_relation(); }));
+    CHECK(factory_failure.try_capture(91, payload, [] { return make_raw_two_lp_relation(); }));
     CHECK(factory_failure.relations().size() == 1);
     CHECK(factory_failure.snapshot().captured_relations == 1);
 
@@ -317,7 +317,7 @@ void test_shadow_sink_factory_exceptions_roll_back_for_retry() {
         SIQSShadowTwoLargePrimeCaptureConfig{10'000, {1, 1}});
     bool factory_bad_alloc_seen = false;
     try {
-        (void)factory_bad_alloc.try_capture(payload,
+        (void)factory_bad_alloc.try_capture(91, payload,
                                             []() -> SIQSRelation { throw std::bad_alloc(); });
     } catch (const std::bad_alloc&) {
         factory_bad_alloc_seen = true;
@@ -326,7 +326,7 @@ void test_shadow_sink_factory_exceptions_roll_back_for_retry() {
     CHECK(!factory_bad_alloc.stopped());
     CHECK(factory_bad_alloc.relations().empty());
     CHECK(factory_bad_alloc.snapshot().captured_relations == 0);
-    CHECK(factory_bad_alloc.try_capture(payload, [] { return make_raw_two_lp_relation(); }));
+    CHECK(factory_bad_alloc.try_capture(91, payload, [] { return make_raw_two_lp_relation(); }));
     CHECK(factory_bad_alloc.relations().size() == 1);
     CHECK(factory_bad_alloc.stop_reason() == SIQSLiveSieveCaptureStopReason::relation_limit);
 }
@@ -338,7 +338,7 @@ void test_shadow_sink_rejects_malformed_factory_output_and_can_retry() {
     const auto expect_logic_error = [&](auto&& factory) {
         bool logic_error_seen = false;
         try {
-            (void)sink.try_capture(payload, std::forward<decltype(factory)>(factory));
+            (void)sink.try_capture(91, payload, std::forward<decltype(factory)>(factory));
         } catch (const std::logic_error&) {
             logic_error_seen = true;
         }
@@ -354,6 +354,7 @@ void test_shadow_sink_rejects_malformed_factory_output_and_can_retry() {
         return relation;
     });
     expect_logic_error([] { return make_raw_two_lp_relation(101); });
+    expect_logic_error([] { return make_raw_two_lp_relation(77); });
     expect_logic_error([] {
         SIQSRelation relation = make_raw_two_lp_relation();
         relation.large_prime2 = 0;
@@ -370,10 +371,29 @@ void test_shadow_sink_rejects_malformed_factory_output_and_can_retry() {
         return relation;
     });
 
-    CHECK(sink.try_capture(payload, [] { return make_raw_two_lp_relation(); }));
+    gnfs::siqs::SIQSLiveSieveRelationPayloadShape aliased_payload = payload;
+    bool alias_mutation_rejected = false;
+    try {
+        (void)sink.try_capture(91, aliased_payload, [&aliased_payload] {
+            aliased_payload.factor_base_exponent_count = 1;
+            SIQSRelation relation = make_raw_two_lp_relation();
+            relation.exponents.push_back(1);
+            return relation;
+        });
+    } catch (const std::logic_error&) {
+        alias_mutation_rejected = true;
+    }
+    CHECK(alias_mutation_rejected);
+    CHECK(aliased_payload.factor_base_exponent_count == 1);
+    CHECK(!sink.stopped());
+    CHECK(sink.relations().empty());
+    CHECK(sink.snapshot().captured_relations == 0);
+    CHECK(sink.snapshot().captured_payload_bytes == 0);
+
+    CHECK(sink.try_capture(91, payload, [] { return make_raw_two_lp_relation(); }));
     CHECK(sink.relations().size() == 1);
     CHECK(sink.snapshot().captured_relations == 1);
-    CHECK(sink.snapshot().observed_two_lp_candidates == 6);
+    CHECK(sink.snapshot().observed_two_lp_candidates == 8);
 }
 
 void test_shadow_sink_validates_config_before_reserving() {
@@ -408,11 +428,11 @@ void test_shadow_sink_exact_caps_are_terminal_only_for_the_sink() {
 
     SIQSShadowTwoLargePrimeCaptureSink relation_limited(
         SIQSShadowTwoLargePrimeCaptureConfig{10'000, {1, std::numeric_limits<std::size_t>::max()}});
-    CHECK(relation_limited.try_capture(payload, [] { return make_raw_two_lp_relation(); }));
+    CHECK(relation_limited.try_capture(91, payload, [] { return make_raw_two_lp_relation(); }));
     CHECK(relation_limited.stop_reason() == SIQSLiveSieveCaptureStopReason::relation_limit);
     CHECK(relation_limited.relations().size() == 1);
     bool stopped_factory_called = false;
-    CHECK(!relation_limited.try_capture(payload, [&] {
+    CHECK(!relation_limited.try_capture(91, payload, [&] {
         stopped_factory_called = true;
         return make_raw_two_lp_relation();
     }));
@@ -421,7 +441,7 @@ void test_shadow_sink_exact_caps_are_terminal_only_for_the_sink() {
 
     SIQSShadowTwoLargePrimeCaptureSink payload_limited(
         SIQSShadowTwoLargePrimeCaptureConfig{10'000, {2, 1}});
-    CHECK(payload_limited.try_capture(payload, [] { return make_raw_two_lp_relation(); }));
+    CHECK(payload_limited.try_capture(91, payload, [] { return make_raw_two_lp_relation(); }));
     CHECK(payload_limited.stop_reason() == SIQSLiveSieveCaptureStopReason::payload_limit);
     CHECK(payload_limited.relations().size() == 1);
     CHECK(payload_limited.snapshot().captured_payload_bytes == 1);
@@ -429,7 +449,7 @@ void test_shadow_sink_exact_caps_are_terminal_only_for_the_sink() {
     SIQSShadowTwoLargePrimeCaptureSink payload_rejected(
         SIQSShadowTwoLargePrimeCaptureConfig{10'000, {2, 1}});
     bool overcap_factory_called = false;
-    CHECK(!payload_rejected.try_capture({2, 0, 0, 0}, [&] {
+    CHECK(!payload_rejected.try_capture(91, {2, 0, 0, 0}, [&] {
         overcap_factory_called = true;
         return make_raw_two_lp_relation();
     }));

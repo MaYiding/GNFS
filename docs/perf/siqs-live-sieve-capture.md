@@ -52,12 +52,14 @@ splitting. A legacy full, 1LP, or enabled 2LP admission therefore wins and is
 never duplicated. Reaching a supplemental cap stops only that sink; later
 legacy relations and later sieve candidates continue normally.
 
-The sink reserves logical payload before invoking its relation factory. It
-recomputes the returned relation's value bytes and vector sizes, requires an
-exact match with the reservation, validates the unresolved sentinel, then
-appends and commits as one transaction. A factory exception or contract
-violation cancels the reservation, preserves the prior vector, and propagates
-to the caller. Production `factor()` passes null for both optional capture
+The sink snapshots the expected cofactor and logical-payload shape by value,
+then reserves that payload before invoking its relation factory. It recomputes
+the returned relation's value bytes and vector sizes, requires an exact match
+with the reservation, and requires the unresolved sentinel to contain the same
+cofactor. A callback therefore cannot weaken the bound by mutating caller-owned
+arguments. Append and commit form one transaction. A factory exception or
+contract violation cancels the reservation, preserves the prior vector, and
+propagates to the caller. Production `factor()` passes null for both optional capture
 controllers, so this slice does not enable production 2LP collection. A later
 slice must construct one sink per worker and compose the retained vectors in a
 deterministic logical-slot order.

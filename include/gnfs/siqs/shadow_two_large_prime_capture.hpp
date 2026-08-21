@@ -87,22 +87,27 @@ public:
     /// Retain one already-classified raw 2LP candidate.
     ///
     /// The factory must return SIQSRelation with the unresolved sentinel shape
-    /// selected by the caller (`large_prime = cofactor`, `large_prime2 = 1`).
+    /// selected by the caller (`large_prime = expected_cofactor`,
+    /// `large_prime2 = 1`).
     /// The sieve's trusted residual classifier establishes that the cofactor is
     /// composite; this storage boundary does not repeat primality or splitting.
     /// It is never invoked after the sink stops or when the payload exceeds a
     /// configured cap. The produced relation must exactly match the reserved
     /// logical payload shape.
     template <typename RelationFactory>
-    [[nodiscard]] bool try_capture(const SIQSLiveSieveRelationPayloadShape& shape,
+    [[nodiscard]] bool try_capture(uint64_t expected_cofactor,
+                                   SIQSLiveSieveRelationPayloadShape shape,
                                    RelationFactory&& relation_factory) {
+        if (expected_cofactor <= 1 || expected_cofactor > cofactor_bound_) {
+            throw std::invalid_argument("SIQS shadow 2LP expected cofactor is out of bounds");
+        }
         if (!admission_.try_reserve_relation(SIQSLiveSieveRelationKind::two_lp_candidate, shape)) {
             return false;
         }
 
         try {
             SIQSRelation relation = std::forward<RelationFactory>(relation_factory)();
-            if (!has_valid_raw_sentinel(relation)) {
+            if (!has_valid_raw_sentinel(relation, expected_cofactor)) {
                 throw std::logic_error("SIQS shadow 2LP factory returned a malformed sentinel");
             }
             if (relation_payload_shape(relation) != shape) {
@@ -132,9 +137,10 @@ private:
         return config.retention;
     }
 
-    [[nodiscard]] bool has_valid_raw_sentinel(const SIQSRelation& relation) const noexcept {
-        return relation.large_prime > 1 && relation.large_prime <= cofactor_bound_ &&
-               relation.large_prime2 == 1 && relation.merge_lps.empty();
+    [[nodiscard]] static bool has_valid_raw_sentinel(const SIQSRelation& relation,
+                                                     uint64_t expected_cofactor) noexcept {
+        return relation.large_prime == expected_cofactor && relation.large_prime2 == 1 &&
+               relation.merge_lps.empty();
     }
 
     [[nodiscard]] static SIQSLiveSieveRelationPayloadShape
