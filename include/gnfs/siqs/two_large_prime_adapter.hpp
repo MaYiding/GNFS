@@ -3,7 +3,7 @@
 /// @file two_large_prime_adapter.hpp
 /// @brief Validate and prepare raw SIQS relations for the 2LP graph boundary.
 
-#include <gnfs/siqs/relation.hpp>
+#include <gnfs/siqs/raw_relation_corpus_view.hpp>
 #include <gnfs/siqs/two_large_prime.hpp>
 #include <gnfs/siqs/two_large_prime_graph.hpp>
 #include <gnfs/siqs/two_large_prime_materializer.hpp>
@@ -168,7 +168,7 @@ struct AcceptedRelation {
 /// yet.
 template <class Splitter>
 [[nodiscard]] std::optional<PreparedTwoLargePrimeCorpus>
-prepare_two_large_prime_corpus(std::span<const SIQSRelation> relations, size_t factor_base_size,
+prepare_two_large_prime_corpus(SIQSRawRelationCorpusView relations, size_t factor_base_size,
                                uint64_t large_prime_bound, Splitter&& splitter) {
     using two_large_prime_adapter_detail::AcceptedRelation;
 
@@ -271,6 +271,15 @@ prepare_two_large_prime_corpus(std::span<const SIQSRelation> relations, size_t f
     }
 
     return std::optional<PreparedTwoLargePrimeCorpus>{std::move(corpus)};
+}
+
+/// Source-compatible wrapper for one contiguous raw corpus.
+template <class Splitter>
+[[nodiscard]] std::optional<PreparedTwoLargePrimeCorpus>
+prepare_two_large_prime_corpus(std::span<const SIQSRelation> relations, size_t factor_base_size,
+                               uint64_t large_prime_bound, Splitter&& splitter) {
+    return prepare_two_large_prime_corpus(SIQSRawRelationCorpusView(relations), factor_base_size,
+                                          large_prime_bound, std::forward<Splitter>(splitter));
 }
 
 } // namespace gnfs::siqs

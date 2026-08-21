@@ -1,6 +1,7 @@
 // test_siqs_shadow_assembly.cpp - deterministic SIQS shadow assembly contracts
 
 #include <gnfs/core/integer.hpp>
+#include <gnfs/siqs/raw_relation_corpus_view.hpp>
 #include <gnfs/siqs/relation.hpp>
 #include <gnfs/siqs/shadow_assembly.hpp>
 
@@ -33,6 +34,7 @@ using gnfs::siqs::MaterializedTwoLargePrimeCycle;
 using gnfs::siqs::prepare_two_large_prime_corpus;
 using gnfs::siqs::SIQSFactorPower;
 using gnfs::siqs::SIQSPostMergeRow;
+using gnfs::siqs::SIQSRawRelationCorpusView;
 using gnfs::siqs::SIQSRelation;
 using gnfs::siqs::SIQSShadowAssembly;
 using gnfs::siqs::SIQSShadowAssemblyLimits;
@@ -333,6 +335,77 @@ void test_permutation_split_order_and_worker_determinism() {
             CHECK(same_assembly(*baseline.assembly(), *candidate.assembly()));
         }
     }
+}
+
+void test_segmented_corpus_matches_flattened_across_duplicates_limits_and_exceptions() {
+    const auto relations = make_main_corpus();
+    const auto baseline = assemble(relations, {3, 1});
+    check_result(baseline, SIQSShadowAssemblyStatus::valid);
+    if (!baseline.assembly()) {
+        return;
+    }
+
+    const auto relation_span = std::span<const SIQSRelation>(relations.data(), relations.size());
+    const auto factor_base_span =
+        std::span<const uint32_t>(factor_base_primes.data(), factor_base_primes.size());
+    for (size_t split = 0; split <= relations.size(); ++split) {
+        const auto view = SIQSRawRelationCorpusView::try_create(relation_span.first(split),
+                                                                relation_span.subspan(split));
+        CHECK(view.has_value());
+        if (!view) {
+            continue;
+        }
+        const auto segmented =
+            assemble_siqs_shadow_rows(*view, factor_base_span, relation_modulus, 41,
+                                      SIQSShadowAssemblyOptions{3, 1}, OracleSplitter{});
+        check_result(segmented, SIQSShadowAssemblyStatus::valid);
+        if (segmented.assembly()) {
+            CHECK(same_assembly(*segmented.assembly(), *baseline.assembly()));
+        }
+    }
+
+    // The duplicate 1LP records at ordinals 8 and 9 straddle this boundary and
+    // live in independent vectors. Canonical IDs, statistics, and fingerprints
+    // must remain identical for every worker count.
+    const std::vector<SIQSRelation> first(relations.begin(), relations.begin() + 9);
+    const std::vector<SIQSRelation> second(relations.begin() + 9, relations.end());
+    const auto independent = SIQSRawRelationCorpusView::try_create(
+        std::span<const SIQSRelation>(first.data(), first.size()),
+        std::span<const SIQSRelation>(second.data(), second.size()));
+    CHECK(independent.has_value());
+    if (!independent) {
+        return;
+    }
+    for (const uint32_t workers : {1U, 2U, 4U}) {
+        const auto segmented =
+            assemble_siqs_shadow_rows(*independent, factor_base_span, relation_modulus, 41,
+                                      SIQSShadowAssemblyOptions{3, workers}, OracleSplitter{});
+        check_result(segmented, SIQSShadowAssemblyStatus::valid);
+        if (segmented.assembly()) {
+            CHECK(same_assembly(*segmented.assembly(), *baseline.assembly()));
+        }
+    }
+
+    const SIQSShadowAssemblyLimits candidate_short{
+        TwoLargePrimeCycleBasisLimits{6, 3, 6},
+        9,
+        9,
+    };
+    const auto bounded = assemble_siqs_shadow_rows_bounded(
+        *independent, factor_base_span, relation_modulus, 41, SIQSShadowAssemblyOptions{3, 1},
+        candidate_short, OracleSplitter{});
+    check_result(bounded, SIQSShadowAssemblyStatus::row_candidate_limit);
+    CHECK(bounded.limit_evidence() == (gnfs::siqs::SIQSShadowAssemblyLimitEvidence{10, 9}));
+
+    const auto throwing = assemble_siqs_shadow_rows(
+        *independent, factor_base_span, relation_modulus, 41, SIQSShadowAssemblyOptions{3, 1},
+        [](uint64_t) -> std::pair<uint64_t, uint64_t> { throw 7; });
+    check_result(throwing, SIQSShadowAssemblyStatus::exception_failure);
+
+    const auto exhausted = assemble_siqs_shadow_rows(
+        *independent, factor_base_span, relation_modulus, 41, SIQSShadowAssemblyOptions{3, 1},
+        [](uint64_t) -> std::pair<uint64_t, uint64_t> { throw std::bad_alloc(); });
+    check_result(exhausted, SIQSShadowAssemblyStatus::resource_exhausted);
 }
 
 void test_adapter_graph_cycles_match_generic_and_indexed_materializers() {
@@ -798,6 +871,7 @@ void test_empty_assembly_is_valid_and_fingerprinted() {
 int main() {
     test_catalog_provenance_dedup_and_trim();
     test_permutation_split_order_and_worker_determinism();
+    test_segmented_corpus_matches_flattened_across_duplicates_limits_and_exceptions();
     test_adapter_graph_cycles_match_generic_and_indexed_materializers();
     test_materialization_failures_map_fail_closed();
     test_invalid_configuration_and_result_moves();

@@ -1,6 +1,7 @@
 // test_siqs_2lp_adapter.cpp - SIQS raw-relation to 2LP graph adapter contracts
 
 #include <gnfs/core/integer.hpp>
+#include <gnfs/siqs/raw_relation_corpus_view.hpp>
 #include <gnfs/siqs/relation.hpp>
 #include <gnfs/siqs/two_large_prime_adapter.hpp>
 #include <gnfs/siqs/two_large_prime_graph.hpp>
@@ -29,6 +30,7 @@ using gnfs::siqs::materialize_two_large_prime_cycle;
 using gnfs::siqs::MaterializedTwoLargePrimeCycle;
 using gnfs::siqs::prepare_two_large_prime_corpus;
 using gnfs::siqs::PreparedTwoLargePrimeCorpus;
+using gnfs::siqs::SIQSRawRelationCorpusView;
 using gnfs::siqs::SIQSRelation;
 using gnfs::siqs::TwoLargePrimeAdapterStats;
 using gnfs::siqs::TwoLargePrimeCycleBasis;
@@ -501,6 +503,80 @@ void test_exact_duplicates_are_deduplicated_but_parallel_payloads_survive() {
     return relations;
 }
 
+void test_segmented_view_matches_flattened_and_deduplicates_across_segments() {
+    const auto empty = SIQSRawRelationCorpusView::try_create(std::span<const SIQSRelation>{},
+                                                             std::span<const SIQSRelation>{});
+    CHECK(empty.has_value());
+    if (empty) {
+        CHECK(empty->size() == 0);
+        CHECK(empty->empty());
+        CHECK(empty->begin() == empty->end());
+    }
+
+    const auto relations = make_shadow_relations();
+    size_t baseline_calls = 0;
+    std::vector<uint64_t> baseline_inputs;
+    const auto baseline =
+        prepare(relations, 4, 200, RecordingShadowSplitter{&baseline_calls, &baseline_inputs});
+    CHECK(baseline.has_value());
+    if (!baseline) {
+        return;
+    }
+
+    const auto flat = std::span<const SIQSRelation>(relations.data(), relations.size());
+    for (size_t split = 0; split <= relations.size(); ++split) {
+        const auto view =
+            SIQSRawRelationCorpusView::try_create(flat.first(split), flat.subspan(split));
+        CHECK(view.has_value());
+        if (!view) {
+            continue;
+        }
+        CHECK(view->size() == relations.size());
+        CHECK(view->empty() == relations.empty());
+
+        size_t ordinal = 0;
+        for (const SIQSRelation& relation : *view) {
+            CHECK(&relation == &relations[ordinal]);
+            ++ordinal;
+        }
+        CHECK(ordinal == relations.size());
+
+        size_t segmented_calls = 0;
+        std::vector<uint64_t> segmented_inputs;
+        const auto segmented = prepare_two_large_prime_corpus(
+            *view, 4, 200, RecordingShadowSplitter{&segmented_calls, &segmented_inputs});
+        CHECK(segmented.has_value());
+        if (segmented) {
+            CHECK(same_corpus(*segmented, *baseline));
+        }
+        CHECK(segmented_calls == baseline_calls);
+        CHECK(segmented_inputs == baseline_inputs);
+    }
+
+    // The duplicate at logical ordinal 6 matches ordinal 4 across these two
+    // independent backing vectors. It must still consume exactly one rejection
+    // and no canonical source ID.
+    const std::vector<SIQSRelation> first(relations.begin(), relations.begin() + 5);
+    const std::vector<SIQSRelation> second(relations.begin() + 5, relations.end());
+    const auto independent = SIQSRawRelationCorpusView::try_create(
+        std::span<const SIQSRelation>(first.data(), first.size()),
+        std::span<const SIQSRelation>(second.data(), second.size()));
+    CHECK(independent.has_value());
+    if (independent) {
+        size_t segmented_calls = 0;
+        std::vector<uint64_t> segmented_inputs;
+        const auto segmented = prepare_two_large_prime_corpus(
+            *independent, 4, 200, RecordingShadowSplitter{&segmented_calls, &segmented_inputs});
+        CHECK(segmented.has_value());
+        if (segmented) {
+            CHECK(same_corpus(*segmented, *baseline));
+            CHECK(segmented->stats.exact_duplicate == 1);
+        }
+        CHECK(segmented_calls == baseline_calls);
+        CHECK(segmented_inputs == baseline_inputs);
+    }
+}
+
 void test_graph_and_materializer_shadow_oracle() {
     const auto relations = make_shadow_relations();
     size_t forward_calls = 0;
@@ -604,6 +680,7 @@ int main() {
     test_structural_rejections_precede_splitter();
     test_uint8_exponents_are_widened_exactly();
     test_exact_duplicates_are_deduplicated_but_parallel_payloads_survive();
+    test_segmented_view_matches_flattened_and_deduplicates_across_segments();
     test_graph_and_materializer_shadow_oracle();
 
     std::cout << checks_passed << " checks passed, " << checks_failed << " checks failed\n";

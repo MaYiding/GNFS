@@ -6,6 +6,7 @@
 #include <gnfs/core/integer.hpp>
 #include <gnfs/siqs/live_sieve_capture.hpp>
 #include <gnfs/siqs/post_merge_dependency.hpp>
+#include <gnfs/siqs/raw_relation_corpus_view.hpp>
 #include <gnfs/siqs/relation.hpp>
 #include <gnfs/siqs/shadow_assembly.hpp>
 #include <gnfs/siqs/shadow_matrix.hpp>
@@ -270,7 +271,7 @@ checked_siqs_shadow_relation_payload_bytes(const SIQSRelation& relation) {
 }
 
 [[nodiscard]] inline std::optional<size_t>
-checked_siqs_shadow_corpus_payload_bytes(std::span<const SIQSRelation> raw_relations) {
+checked_siqs_shadow_corpus_payload_bytes(SIQSRawRelationCorpusView raw_relations) {
     size_t total = 0;
     for (const SIQSRelation& relation : raw_relations) {
         const auto relation_bytes = checked_siqs_shadow_relation_payload_bytes(relation);
@@ -280,6 +281,12 @@ checked_siqs_shadow_corpus_payload_bytes(std::span<const SIQSRelation> raw_relat
         total += *relation_bytes;
     }
     return total;
+}
+
+/// Source-compatible wrapper for one contiguous raw corpus.
+[[nodiscard]] inline std::optional<size_t>
+checked_siqs_shadow_corpus_payload_bytes(std::span<const SIQSRelation> raw_relations) {
+    return checked_siqs_shadow_corpus_payload_bytes(SIQSRawRelationCorpusView(raw_relations));
 }
 
 namespace shadow_proof_detail {
@@ -500,7 +507,7 @@ assembly_fallback(SIQSShadowAssemblyStatus status) noexcept {
 /// bounded preflight and the owning assembly rebuild.
 template <class Splitter>
 [[nodiscard]] SIQSShadowProofResult
-run_siqs_shadow_proof(std::span<const SIQSRelation> raw_relations,
+run_siqs_shadow_proof(SIQSRawRelationCorpusView raw_relations,
                       std::span<const uint32_t> factor_base_primes,
                       const core::Integer& square_modulus, const core::Integer& gcd_target,
                       uint64_t large_prime_bound, Splitter&& splitter,
@@ -846,6 +853,19 @@ run_siqs_shadow_proof(std::span<const SIQSRelation> raw_relations,
             SIQSShadowProofTerminalStatus::exception_failure, current_stage,
             SIQSShadowProofFallbackReason::none, std::move(evidence));
     }
+}
+
+/// Source-compatible wrapper for one contiguous raw corpus.
+template <class Splitter>
+[[nodiscard]] SIQSShadowProofResult
+run_siqs_shadow_proof(std::span<const SIQSRelation> raw_relations,
+                      std::span<const uint32_t> factor_base_primes,
+                      const core::Integer& square_modulus, const core::Integer& gcd_target,
+                      uint64_t large_prime_bound, Splitter&& splitter,
+                      const SIQSShadowProofOptions& options = {}) noexcept {
+    return run_siqs_shadow_proof(SIQSRawRelationCorpusView(raw_relations), factor_base_primes,
+                                 square_modulus, gcd_target, large_prime_bound,
+                                 std::forward<Splitter>(splitter), options);
 }
 
 } // namespace gnfs::siqs
