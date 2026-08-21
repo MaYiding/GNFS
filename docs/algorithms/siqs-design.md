@@ -59,6 +59,7 @@ congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a facto
 | `next_poly_B` | `siqs.hpp` ~line 591 | Gray-code switch: one bit flip rotates offsets in O(FB) |
 | `sieve_polynomial` | `siqs.hpp` ~line 658 | Log-add over `[-M, M]`, threshold filter, trial divide, 2LP cofactor split |
 | `SIQSLiveSieveCaptureController` | `live_sieve_capture.hpp` | Transactional relation/payload admission before dense capture allocation |
+| `SIQSShadowTwoLargePrimeCaptureSink` | `shadow_two_large_prime_capture.hpp` | Independent bounded storage for supplemental raw 2LP candidates rejected by the legacy admission bound |
 | `execute_fixed_slots` | `util/fixed_slot_executor.hpp` | Static contiguous worker partitions, a full-participation launch gate, canonical slot results, and explicit cancel-or-drain failure policy |
 | `merge_partials` | `siqs.hpp` ~line 994 | Iterative greedy LP merge — 1LP pairs plus 2LP cycle finding |
 | `normalize_two_large_prime` | `two_large_prime.hpp` | Exact, deterministic-prime validation for a candidate 2LP split |
@@ -139,7 +140,12 @@ Two-large-prime collection and the legacy greedy merge remain disabled by
 setting `lp_bound_sq = 0`. The low-level sieve now has an optional caller-owned
 capture controller with checked relation and logical-payload limits. Its
 reserve/append/commit transaction runs before dense exponent allocation and is
-absent from the production null-controller path. Exact split normalization,
+absent from the production null-controller path. The separate supplemental
+2LP sink reserves its full relation capacity at valid construction, publishes
+only 2LP-specific counters, and validates the factory's raw sentinel and exact
+payload shape before append. The trusted residual classifier establishes the
+composite-candidate precondition; the storage sink does not repeat primality or
+factor splitting. Exact split normalization,
 deterministic cycle selection, wide checked cycle materialization, a stable
 raw-partial adapter with typed rejection reasons, canonical sparse post-merge
 rows, deterministic parallel shadow assembly, and an exact wide-row matrix,
@@ -640,8 +646,10 @@ SIQS's `L_N(1/2, 1)`.
   until an approved per-platform policy and matching deployment registry row
   exist, and the corpus is measured against the approved deployment budget with
   reserved headroom. No numeric RSS threshold or real gate result is currently
-  available. A separately bounded 2LP
-  collector remains a prerequisite for production 2LP collection. Explicit
+  available. A separately bounded, single-threaded 2LP collector is available
+  at the sieve boundary, but production and probe callers still pass a null
+  sink. Per-worker collection and immutable corpus composition remain
+  prerequisites for production 2LP collection. Explicit
   V2-audited `prefer` routing is available, but current probe, RSS gate,
   terminal, and V2 records never authorize automatic promotion.
   See [SIQS Live-Sieve Capture Contract](../perf/siqs-live-sieve-capture.md)
