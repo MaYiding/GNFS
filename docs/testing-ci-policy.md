@@ -297,6 +297,11 @@ its real 50-digit slots. The canonical leaf never resolves a final symlink;
 the containing build namespace is a trusted local parent, not an attacker-owned
 symlink tree.
 
+The only supported real-campaign entry is
+`./scripts/test.sh campaign-50d-first-round`. The Python `run` subcommand is an
+internal helper: it holds no shell flock, does not publish the closed one-test
+report, and must not be used as a standalone or concurrent publication entry.
+
 The entire same-`BUILD_DIR` manual mode holds a nonblocking `zsh/system` flock
 on the persistent `.complete_first_round_abba_v1.lock` inode through canonical
 and atomic report publication. A contender fails before touching either shared

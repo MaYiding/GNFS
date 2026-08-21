@@ -323,6 +323,10 @@ LP columns 和 full-matrix shape/nonzeros 属于策略结果，runner 分别记�
 directory-fd 语义，递归进程回收依赖独占 POSIX process group。schema/parser synthetic
 self-test 仍可在其它平台运行，但不会启动真实 slot。
 
+唯一受支持的真实入口是 `./scripts/test.sh campaign-50d-first-round`。Python `run`
+子命令仅供该 shell runner 内部调用；它不持有 shell flock，也不生成 closed one-test
+`test_report.json`，不得作为独立或并发发布入口。
+
 同一 `BUILD_DIR`/scope 的 shell 生命周期持有
 `build/50d-campaigns/.complete_first_round_abba_v1.lock` 的 nonblocking
 `zsh/system` flock，直到 canonical 与原子 `test_report.json` 都完成终态复核。并发调用在

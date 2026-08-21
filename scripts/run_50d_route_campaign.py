@@ -800,6 +800,14 @@ def process_group_exists(process_group: int) -> bool:
         return True
 
 
+def campaign_termination_signals() -> tuple[int, ...]:
+    return tuple(
+        int(getattr(signal, name))
+        for name in ("SIGHUP", "SIGINT", "SIGTERM")
+        if hasattr(signal, name)
+    )
+
+
 def wait_for_process_group_exit(
     process: subprocess.Popen[Any],
     process_group: int,
@@ -899,21 +907,46 @@ def run_process(
     stderr_path: Path,
     timeout_s: int,
     label: str,
+    popen_factory: Any = subprocess.Popen,
 ) -> tuple[int, int, bool]:
     require(os.name == "posix" and hasattr(os, "killpg"),
             "campaign process execution requires POSIX process groups")
     started = time.monotonic()
+    process: subprocess.Popen[Any] | None = None
+    deferred_signals: list[int] = []
+    previous_signal_handlers: list[tuple[int, Any]] = []
+
+    def defer_signal(signal_number: int, _frame: Any) -> None:
+        deferred_signals.append(signal_number)
+
+    def restore_signal_handlers() -> None:
+        if not previous_signal_handlers:
+            return
+        for signal_number, previous_handler in reversed(previous_signal_handlers):
+            signal.signal(signal_number, previous_handler)
+        previous_signal_handlers.clear()
+
     with stdout_path.open("wb") as stdout_handle, stderr_path.open("wb") as stderr_handle:
-        process = subprocess.Popen(
-            list(arguments),
-            cwd=cwd,
-            stdin=subprocess.DEVNULL,
-            stdout=stdout_handle,
-            stderr=stderr_handle,
-            shell=False,
-            start_new_session=True,
-        )
         try:
+            for signal_number in campaign_termination_signals():
+                previous_handler = signal.signal(signal_number, defer_signal)
+                previous_signal_handlers.append((signal_number, previous_handler))
+            process = popen_factory(
+                list(arguments),
+                cwd=cwd,
+                stdin=subprocess.DEVNULL,
+                stdout=stdout_handle,
+                stderr=stderr_handle,
+                shell=False,
+                start_new_session=True,
+            )
+            restore_signal_handlers()
+            if deferred_signals:
+                raise CampaignError(
+                    f"{label} was interrupted by signal {deferred_signals[0]}",
+                    stage="process",
+                    code="interrupted",
+                )
             timed_out = wait_for_process(process, started, timeout_s, label)
             return_code = process.returncode if process.returncode is not None else -1
             if process_group_exists(process.pid):
@@ -924,21 +957,26 @@ def run_process(
                     code="descendant_process_leak",
                 )
         except BaseException as error:
-            try:
-                terminate_process(process, label)
-            except CampaignError as termination_error:
-                raise CampaignError(
-                    f"{label} failed and child cleanup failed: {termination_error}",
-                    stage="process",
-                    code="interrupted",
-                ) from error
+            if process is not None:
+                try:
+                    terminate_process(process, label)
+                except CampaignError as termination_error:
+                    raise CampaignError(
+                        f"{label} failed and child cleanup failed: {termination_error}",
+                        stage="process",
+                        code="interrupted",
+                    ) from error
             if isinstance(error, CampaignError):
+                raise
+            if process is None:
                 raise
             raise CampaignError(
                 f"{label} was interrupted: {type(error).__name__}: {error}",
                 stage="process",
                 code="interrupted",
             ) from error
+        finally:
+            restore_signal_handlers()
     elapsed_ms = max(0, int((time.monotonic() - started) * 1000))
     return return_code, elapsed_ms, timed_out
 
@@ -2141,6 +2179,52 @@ def self_test_process_lifecycle(root: Path) -> None:
     )
     require(timed_out and exit_code != 0, "timeout child group was not terminated")
 
+    original_signal_handlers = {
+        signal_number: signal.getsignal(signal_number)
+        for signal_number in campaign_termination_signals()
+    }
+    for injected_signal in campaign_termination_signals():
+        spawned_process: subprocess.Popen[Any] | None = None
+
+        def interrupting_popen(*popen_arguments: Any, **popen_keywords: Any) -> Any:
+            nonlocal spawned_process
+            spawned_process = subprocess.Popen(*popen_arguments, **popen_keywords)
+            os.kill(os.getpid(), injected_signal)
+            return spawned_process
+
+        try:
+            try:
+                run_process(
+                    [sys.executable, "-c", "import time; time.sleep(30)"],
+                    root,
+                    child_stdout,
+                    child_stderr,
+                    10,
+                    f"campaign self-test deferred signal {injected_signal}",
+                    popen_factory=interrupting_popen,
+                )
+            except CampaignError as error:
+                require(error.stage == "process" and error.code == "interrupted",
+                        f"signal {injected_signal} did not map to process/interrupted")
+            else:
+                raise CampaignError(
+                    f"self-test accepted deferred signal {injected_signal}"
+                )
+        finally:
+            if spawned_process is not None and process_group_exists(spawned_process.pid):
+                terminate_process(
+                    spawned_process,
+                    f"self-test deferred signal {injected_signal} cleanup",
+                )
+        require(spawned_process is not None,
+                f"signal {injected_signal} fixture did not spawn its child")
+        require(spawned_process.poll() is not None and
+                not process_group_exists(spawned_process.pid),
+                f"signal {injected_signal} left its process group running")
+        for signal_number, original_handler in original_signal_handlers.items():
+            require(signal.getsignal(signal_number) == original_handler,
+                    f"signal {signal_number} handler was not restored exactly")
+
     kill_fallback_marker = root / "kill-fallback.ready"
     kill_fallback_code = (
         "import pathlib,signal,sys,time;"
@@ -2156,10 +2240,11 @@ def self_test_process_lifecycle(root: Path) -> None:
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
-    kill_fallback_deadline = time.monotonic() + 2
-    while not kill_fallback_marker.exists() and time.monotonic() < kill_fallback_deadline:
-        time.sleep(0.01)
     try:
+        kill_fallback_deadline = time.monotonic() + 2
+        while (not kill_fallback_marker.exists() and
+               time.monotonic() < kill_fallback_deadline):
+            time.sleep(0.01)
         require(kill_fallback_marker.is_file(), "SIGKILL fallback child was not ready")
         terminate_process(
             kill_fallback_child,
@@ -2215,6 +2300,9 @@ def self_test_process_lifecycle(root: Path) -> None:
         (KeyboardInterrupt(), "KeyboardInterrupt"),
         (RuntimeError("synthetic poll failure"), "poll exception"),
     ):
+        def interrupt_wait(_delay: float, raised: BaseException = exception) -> None:
+            raise raised
+
         interrupted_child = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(30)"],
             cwd=root,
@@ -2223,10 +2311,6 @@ def self_test_process_lifecycle(root: Path) -> None:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-
-        def interrupt_wait(_delay: float, raised: BaseException = exception) -> None:
-            raise raised
-
         try:
             try:
                 wait_for_process(
@@ -2263,11 +2347,11 @@ def self_test_process_lifecycle(root: Path) -> None:
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
-    deadline = time.monotonic() + 2
-    while (not grandchild_pid_path.exists() or
-           grandchild_pid_path.stat().st_size == 0) and time.monotonic() < deadline:
-        time.sleep(0.01)
     try:
+        deadline = time.monotonic() + 2
+        while (not grandchild_pid_path.exists() or
+               grandchild_pid_path.stat().st_size == 0) and time.monotonic() < deadline:
+            time.sleep(0.01)
         require(grandchild_pid_path.is_file() and grandchild_pid_path.stat().st_size > 0,
                 "grandchild PID fixture was not published")
         grandchild_pid = int(grandchild_pid_path.read_text(encoding="ascii"))
@@ -2944,15 +3028,13 @@ def handle_termination_signal(signal_number: int, _frame: Any) -> None:
 def main() -> NoReturn:
     parser = build_parser()
     arguments = parser.parse_args()
-    previous_sigterm: Any = None
-    sigterm_installed = False
-    if arguments.command == "run" and hasattr(signal, "SIGTERM"):
-        try:
-            previous_sigterm = signal.signal(signal.SIGTERM, handle_termination_signal)
-            sigterm_installed = True
-        except (OSError, ValueError):
-            pass
+    previous_signal_handlers: list[tuple[int, Any]] = []
     try:
+        if arguments.command == "run":
+            for signal_number in campaign_termination_signals():
+                previous_handler = signal.getsignal(signal_number)
+                previous_signal_handlers.append((signal_number, previous_handler))
+                signal.signal(signal_number, handle_termination_signal)
         if arguments.command == "run":
             status = execute_campaign(arguments)
         elif arguments.command == "invalidate":
@@ -2975,8 +3057,8 @@ def main() -> NoReturn:
         print("50-digit route campaign error: interrupted by SIGINT", file=sys.stderr)
         status = 1
     finally:
-        if sigterm_installed:
-            signal.signal(signal.SIGTERM, previous_sigterm)
+        for signal_number, previous_handler in reversed(previous_signal_handlers):
+            signal.signal(signal_number, previous_handler)
     raise SystemExit(status)
 
 

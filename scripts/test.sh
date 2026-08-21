@@ -176,10 +176,12 @@ REPORT_ENTRIES=()
 integer CAMPAIGN_50D_LOCK_FD=-1
 integer CAMPAIGN_50D_LOCK_HELD=0
 integer CAMPAIGN_50D_RUNNER_PID=0
+integer CAMPAIGN_50D_DEFERRED_SIGNAL_STATUS=0
 integer CAMPAIGN_50D_TERMINAL_COMMITTED=0
 CAMPAIGN_50D_LOCK_PATH=""
 CAMPAIGN_50D_STDOUT_PATH=""
 CAMPAIGN_50D_ARTIFACT_PATH=""
+CAMPAIGN_50D_DEFERRED_SIGNAL_NAME=""
 integer CAMPAIGN_50D_STARTED_MS=0
 
 # ============================================================
@@ -2903,6 +2905,53 @@ finalize_50d_campaign_exit() {
     release_50d_campaign_lock || true
 }
 
+defer_50d_campaign_launch_signal() {
+    local exit_status="$1"
+    local signal_name="$2"
+    if (( CAMPAIGN_50D_DEFERRED_SIGNAL_STATUS == 0 )); then
+        CAMPAIGN_50D_DEFERRED_SIGNAL_STATUS="$exit_status"
+        CAMPAIGN_50D_DEFERRED_SIGNAL_NAME="$signal_name"
+    fi
+}
+
+arm_50d_campaign_launch_signal_deferral() {
+    CAMPAIGN_50D_DEFERRED_SIGNAL_STATUS=0
+    CAMPAIGN_50D_DEFERRED_SIGNAL_NAME=""
+    trap 'defer_50d_campaign_launch_signal 129 HUP' HUP
+    trap 'defer_50d_campaign_launch_signal 130 INT' INT
+    trap 'defer_50d_campaign_launch_signal 143 TERM' TERM
+}
+
+restore_50d_campaign_signal_handlers() {
+    trap 'handle_50d_campaign_signal 129 HUP' HUP
+    trap 'handle_50d_campaign_signal 130 INT' INT
+    trap 'handle_50d_campaign_signal 143 TERM' TERM
+}
+
+bind_50d_campaign_runner_pid() {
+    local launched_runner_pid="$1"
+    local launch_hook="${2:-}"
+    local launch_hook_status=0
+    if [[ "$launched_runner_pid" != <-> ]] || (( launched_runner_pid <= 0 )); then
+        restore_50d_campaign_signal_handlers
+        return 1
+    fi
+    if [[ -n "$launch_hook" ]]; then
+        "$launch_hook" "$launched_runner_pid" || launch_hook_status=$?
+    fi
+    CAMPAIGN_50D_RUNNER_PID="$launched_runner_pid"
+    restore_50d_campaign_signal_handlers
+
+    local deferred_status="$CAMPAIGN_50D_DEFERRED_SIGNAL_STATUS"
+    local deferred_name="$CAMPAIGN_50D_DEFERRED_SIGNAL_NAME"
+    CAMPAIGN_50D_DEFERRED_SIGNAL_STATUS=0
+    CAMPAIGN_50D_DEFERRED_SIGNAL_NAME=""
+    if (( deferred_status > 0 )); then
+        handle_50d_campaign_signal "$deferred_status" "$deferred_name"
+    fi
+    (( launch_hook_status == 0 ))
+}
+
 handle_50d_campaign_signal() {
     local exit_status="$1"
     local signal_name="$2"
@@ -2926,6 +2975,7 @@ handle_50d_campaign_signal() {
     signal_end_ms=$(timer_start_ms)
     signal_elapsed=$(( signal_end_ms - CAMPAIGN_50D_STARTED_MS ))
     (( signal_elapsed < 0 )) && signal_elapsed=0
+    BUILD_TYPE="Release"
     TOTAL_TESTS=1
     PASSED_TESTS=0
     FAILED_TESTS=1
@@ -3401,13 +3451,14 @@ PY
         return 1
     fi
 
-    # Send TERM only to a top-level zsh PID whose actual production handler is
-    # armed.  It must forward TERM to the recorded fake-runner PID, wait while
-    # that runner reaps its child, invalidate stale terminal evidence, publish
-    # one failure report, clean stdout, and release the same flock.
+    # Send TERM to the actual top-level zsh after a fake runner has launched but
+    # before its PID is bound globally.  The temporary handler must only latch
+    # the signal, then the production handler must forward TERM after binding,
+    # wait while the runner reaps its child, and fail closed under the same lock.
     local campaign_signal_dir campaign_signal_lock campaign_signal_artifact
     local campaign_signal_report campaign_signal_capture campaign_signal_child_marker
-    local campaign_signal_runner_marker campaign_signal_shell_pid
+    local campaign_signal_runner_marker campaign_signal_launch_marker
+    local campaign_signal_shell_pid
     local campaign_signal_runner_pid=0 campaign_signal_child_pid=0
     local campaign_signal_status=0 campaign_signal_ready=0
     if ! campaign_signal_dir=$(mktemp -d \
@@ -3421,6 +3472,7 @@ PY
     campaign_signal_capture="${campaign_signal_dir}/stdout.capture"
     campaign_signal_child_marker="${campaign_signal_dir}/child.pid"
     campaign_signal_runner_marker="${campaign_signal_dir}/runner.pid"
+    campaign_signal_launch_marker="${campaign_signal_dir}/launch-window.marker"
     (
         REPORT_FILE="$campaign_signal_report"
         CAMPAIGN_50D_ARTIFACT_PATH="$campaign_signal_artifact"
@@ -3428,7 +3480,7 @@ PY
         CAMPAIGN_50D_STARTED_MS=$(timer_start_ms)
         CAMPAIGN_50D_RUNNER_PID=0
         CAMPAIGN_50D_TERMINAL_COMMITTED=0
-        BUILD_TYPE="Release"
+        BUILD_TYPE="Debug"
         acquire_50d_campaign_lock "$campaign_signal_lock"
         trap 'finalize_50d_campaign_exit $?' EXIT
         trap 'handle_50d_campaign_signal 129 HUP' HUP
@@ -3436,6 +3488,25 @@ PY
         trap 'handle_50d_campaign_signal 143 TERM' TERM
         print -r -- "synthetic published pass" > "$campaign_signal_artifact"
         print -r -- "synthetic stale pass report" > "$campaign_signal_report"
+
+        campaign_signal_launch_hook() {
+            local _launched_runner_pid="$1"
+            local _poll
+            for _poll in {1..300}; do
+                [[ -s "$campaign_signal_child_marker" ]] && break
+                sleep 0.01
+            done
+            [[ -s "$campaign_signal_child_marker" ]] || return 2
+            kill -TERM "$sysparams[pid]" || return 3
+            if (( CAMPAIGN_50D_DEFERRED_SIGNAL_STATUS != 143 ||
+                  CAMPAIGN_50D_RUNNER_PID != 0 )); then
+                return 4
+            fi
+            print -r -- "${_launched_runner_pid} deferred-before-global-bind" \
+                > "$campaign_signal_launch_marker"
+        }
+
+        arm_50d_campaign_launch_signal_deferral
         "$GNFS_TEST_PYTHON" - "$campaign_signal_child_marker" \
             > "$campaign_signal_capture" <<'PY' &
 import signal
@@ -3463,15 +3534,20 @@ Path(sys.argv[1]).write_text(str(child.pid), encoding="ascii")
 while child.poll() is None:
     time.sleep(0.05)
 PY
-        CAMPAIGN_50D_RUNNER_PID=$!
-        print -r -- "$CAMPAIGN_50D_RUNNER_PID" > "$campaign_signal_runner_marker"
+        local launched_signal_runner_pid="$!"
+        print -r -- "$launched_signal_runner_pid" > "$campaign_signal_runner_marker"
+        if ! bind_50d_campaign_runner_pid \
+            "$launched_signal_runner_pid" campaign_signal_launch_hook; then
+            exit 98
+        fi
         wait "$CAMPAIGN_50D_RUNNER_PID"
     ) >/dev/null 2>&1 &
     campaign_signal_shell_pid=$!
     local campaign_signal_poll
     for campaign_signal_poll in {1..300}; do
         if [[ -s "$campaign_signal_child_marker" &&
-              -s "$campaign_signal_runner_marker" ]]; then
+              -s "$campaign_signal_runner_marker" &&
+              -s "$campaign_signal_launch_marker" ]]; then
             campaign_signal_ready=1
             break
         fi
@@ -3480,7 +3556,6 @@ PY
     if (( campaign_signal_ready )); then
         campaign_signal_child_pid=$(<"$campaign_signal_child_marker")
         campaign_signal_runner_pid=$(<"$campaign_signal_runner_marker")
-        kill -TERM "$campaign_signal_shell_pid" 2>/dev/null || true
         wait "$campaign_signal_shell_pid" || campaign_signal_status=$?
     else
         kill -TERM "$campaign_signal_shell_pid" 2>/dev/null || true
@@ -3526,13 +3601,15 @@ PY
             kill -KILL "$campaign_signal_child_pid" 2>/dev/null || true
         rm -f -- "$campaign_signal_artifact" "$campaign_signal_report" \
             "$campaign_signal_capture" "$campaign_signal_child_marker" \
-            "$campaign_signal_runner_marker" "$campaign_signal_lock"
+            "$campaign_signal_runner_marker" "$campaign_signal_launch_marker" \
+            "$campaign_signal_lock"
         rmdir "$campaign_signal_dir" 2>/dev/null || true
         log_fail "50 位 campaign 生产 signal handler 合同失败"
         return 1
     fi
     rm -f -- "$campaign_signal_report" "$campaign_signal_child_marker" \
-        "$campaign_signal_runner_marker" "$campaign_signal_lock"
+        "$campaign_signal_runner_marker" "$campaign_signal_launch_marker" \
+        "$campaign_signal_lock"
     if ! rmdir "$campaign_signal_dir"; then
         log_fail "50 位 campaign signal 合同临时目录 cleanup 失败"
         return 1
@@ -4030,6 +4107,7 @@ run_50d_first_round_campaign() {
     fi
 
     local end_ms elapsed campaign_status=0 campaign_output=""
+    arm_50d_campaign_launch_signal_deferral
     "$GNFS_TEST_PYTHON" "$campaign_runner" run \
         --project-root "$PROJECT_ROOT" \
         --executable "$campaign_executable" \
@@ -4038,8 +4116,17 @@ run_50d_first_round_campaign() {
         --max-batch-workers "$max_batch_workers" \
         --max-local-threads "$max_local_sieve_threads" \
         --timeout-s "$slot_timeout" > "$CAMPAIGN_50D_STDOUT_PATH" &
-    CAMPAIGN_50D_RUNNER_PID=$!
-    wait "$CAMPAIGN_50D_RUNNER_PID" || campaign_status=$?
+    local launched_runner_pid="$!"
+    if ! bind_50d_campaign_runner_pid "$launched_runner_pid"; then
+        campaign_status=1
+        log_fail "无法绑定完整首轮 campaign runner PID"
+        if [[ "$launched_runner_pid" == <-> ]] && (( launched_runner_pid > 0 )); then
+            kill -TERM "$launched_runner_pid" 2>/dev/null || true
+            wait "$launched_runner_pid" 2>/dev/null || true
+        fi
+    else
+        wait "$CAMPAIGN_50D_RUNNER_PID" || campaign_status=$?
+    fi
     CAMPAIGN_50D_RUNNER_PID=0
     if ! campaign_output=$(<"$CAMPAIGN_50D_STDOUT_PATH"); then
         campaign_status=1
