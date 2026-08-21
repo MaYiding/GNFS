@@ -1,6 +1,7 @@
 // test_siqs_shadow_proof_runner.cpp - bounded read-only shadow proof contracts
 
 #include <gnfs/core/integer.hpp>
+#include <gnfs/siqs/raw_relation_corpus_view.hpp>
 #include <gnfs/siqs/relation.hpp>
 #include <gnfs/siqs/shadow_proof_runner.hpp>
 
@@ -31,6 +32,7 @@ using gnfs::siqs::checked_siqs_shadow_relation_payload_bytes;
 using gnfs::siqs::run_siqs_shadow_proof;
 using gnfs::siqs::SIQSPostMergeDependencyStatus;
 using gnfs::siqs::SIQSPostMergeFactorStatus;
+using gnfs::siqs::SIQSRawRelationCorpusView;
 using gnfs::siqs::SIQSRelation;
 using gnfs::siqs::SIQSShadowAssemblyStatus;
 using gnfs::siqs::SIQSShadowFingerprint;
@@ -232,6 +234,29 @@ run_immutable(const std::vector<SIQSRelation>& relations, const std::vector<uint
                               std::span<const uint32_t>(factor_base.data(), factor_base.size()),
                               square_modulus, gcd_target, large_prime_bound, splitter, options);
     check_relations_unchanged(relations, before);
+    return result;
+}
+
+template <class Splitter>
+[[nodiscard]] SIQSShadowProofResult
+run_segmented_immutable(const std::vector<SIQSRelation>& first,
+                        const std::vector<SIQSRelation>& second,
+                        const std::vector<uint32_t>& factor_base, const Integer& square_modulus,
+                        const Integer& gcd_target, uint64_t large_prime_bound, Splitter& splitter,
+                        const SIQSShadowProofOptions& options = {}) {
+    const auto first_before = snapshot_relations(first);
+    const auto second_before = snapshot_relations(second);
+    const auto view = SIQSRawRelationCorpusView::try_create(
+        std::span<const SIQSRelation>(first.data(), first.size()),
+        std::span<const SIQSRelation>(second.data(), second.size()));
+    if (!view) {
+        throw std::runtime_error("segmented SIQS test corpus size overflow");
+    }
+    auto result = run_siqs_shadow_proof(
+        *view, std::span<const uint32_t>(factor_base.data(), factor_base.size()), square_modulus,
+        gcd_target, large_prime_bound, splitter, options);
+    check_relations_unchanged(first, first_before);
+    check_relations_unchanged(second, second_before);
     return result;
 }
 
@@ -748,6 +773,136 @@ void test_splitter_exceptions_and_drift() {
     CHECK(drift_result.evidence().assembly.adapter.invalid_two_large_prime_split == 1);
 }
 
+void test_segmented_corpus_matches_flattened_caps_and_exception_stages() {
+    const auto relations = make_main_corpus();
+    // The exact duplicate 1LP records at ordinals 8 and 9 are deliberately
+    // split across independent backing vectors.
+    const std::vector<SIQSRelation> first(relations.begin(), relations.begin() + 9);
+    const std::vector<SIQSRelation> second(relations.begin() + 9, relations.end());
+    const auto view = SIQSRawRelationCorpusView::try_create(
+        std::span<const SIQSRelation>(first.data(), first.size()),
+        std::span<const SIQSRelation>(second.data(), second.size()));
+    if (!view) {
+        throw std::runtime_error("segmented SIQS test corpus size overflow");
+    }
+
+    SIQSShadowProofOptions baseline_options;
+    baseline_options.assembly.trim_excess_rows = 3;
+    baseline_options.assembly.materialization_workers = 1;
+    baseline_options.matrix.max_dependencies = 64;
+    baseline_options.matrix.elimination_workers = 1;
+    baseline_options.matrix.parallel_column_threshold = 0;
+
+    OracleSplitter flat_splitter;
+    const auto baseline = run_immutable(relations, mixed_factor_base, oracle_modulus,
+                                        oracle_modulus, 41, flat_splitter, baseline_options);
+    OracleSplitter segmented_splitter;
+    const auto segmented =
+        run_segmented_immutable(first, second, mixed_factor_base, oracle_modulus, oracle_modulus,
+                                41, segmented_splitter, baseline_options);
+    CHECK(segmented.status() == baseline.status());
+    CHECK(segmented.stage() == baseline.stage());
+    CHECK(segmented.fallback_reason() == baseline.fallback_reason());
+    CHECK(segmented.evidence() == baseline.evidence());
+    CHECK(same_factorization(segmented, baseline));
+    CHECK(segmented.evidence().adapter.exact_duplicate == 1);
+
+    const auto flat_payload = checked_siqs_shadow_corpus_payload_bytes(
+        std::span<const SIQSRelation>(relations.data(), relations.size()));
+    const auto segmented_payload = checked_siqs_shadow_corpus_payload_bytes(*view);
+    CHECK(segmented_payload == flat_payload);
+    CHECK(segmented_payload.has_value());
+    if (!segmented_payload) {
+        return;
+    }
+
+    SIQSShadowProofOptions exact_count = baseline_options;
+    exact_count.limits.max_raw_relations = view->size();
+    OracleSplitter exact_count_splitter;
+    const auto exact_count_result =
+        run_segmented_immutable(first, second, mixed_factor_base, oracle_modulus, oracle_modulus,
+                                41, exact_count_splitter, exact_count);
+    CHECK(same_worker_independent_evidence(exact_count_result.evidence(), baseline.evidence()));
+    CHECK(same_factorization(exact_count_result, baseline));
+
+    SIQSShadowProofOptions short_count = exact_count;
+    short_count.limits.max_raw_relations = view->size() - 1;
+    OracleSplitter short_count_splitter;
+    const auto short_count_result =
+        run_segmented_immutable(first, second, mixed_factor_base, oracle_modulus, oracle_modulus,
+                                41, short_count_splitter, short_count);
+    check_terminal_contract(short_count_result, SIQSShadowProofTerminalStatus::bounded_fallback,
+                            SIQSShadowProofStage::payload_accounting,
+                            SIQSShadowProofFallbackReason::raw_relation_limit);
+    CHECK(short_count_result.evidence().raw_relations == view->size());
+    CHECK(!short_count_result.evidence().raw_payload_bytes.has_value());
+
+    SIQSShadowProofOptions exact_payload = baseline_options;
+    exact_payload.limits.max_raw_payload_bytes = *segmented_payload;
+    OracleSplitter exact_payload_splitter;
+    const auto exact_payload_result =
+        run_segmented_immutable(first, second, mixed_factor_base, oracle_modulus, oracle_modulus,
+                                41, exact_payload_splitter, exact_payload);
+    CHECK(same_worker_independent_evidence(exact_payload_result.evidence(), baseline.evidence()));
+    CHECK(same_factorization(exact_payload_result, baseline));
+
+    SIQSShadowProofOptions short_payload = exact_payload;
+    short_payload.limits.max_raw_payload_bytes = *segmented_payload - 1;
+    OracleSplitter short_payload_splitter;
+    const auto short_payload_result =
+        run_segmented_immutable(first, second, mixed_factor_base, oracle_modulus, oracle_modulus,
+                                41, short_payload_splitter, short_payload);
+    check_terminal_contract(short_payload_result, SIQSShadowProofTerminalStatus::bounded_fallback,
+                            SIQSShadowProofStage::payload_accounting,
+                            SIQSShadowProofFallbackReason::raw_payload_limit);
+    CHECK(short_payload_result.evidence().raw_payload_bytes == segmented_payload);
+
+    // The only splitter-bearing relation is in the second segment. Preserve
+    // both the adapter-preflight and second-pass assembly exception mappings.
+    const std::vector<SIQSRelation> exception_first{
+        make_relation(1, false, {0, 0, 0, 0}),
+    };
+    const std::vector<SIQSRelation> exception_second{
+        make_relation(379, false, {0, 1, 2, 2}, 319, 1),
+    };
+
+    AlwaysRuntimeSplitter adapter_runtime_splitter;
+    const auto adapter_runtime =
+        run_segmented_immutable(exception_first, exception_second, mixed_factor_base,
+                                oracle_modulus, oracle_modulus, 47, adapter_runtime_splitter);
+    check_terminal_contract(adapter_runtime, SIQSShadowProofTerminalStatus::exception_failure,
+                            SIQSShadowProofStage::adapter_preflight,
+                            SIQSShadowProofFallbackReason::none);
+
+    AlwaysBadAllocSplitter adapter_bad_alloc_splitter;
+    const auto adapter_bad_alloc =
+        run_segmented_immutable(exception_first, exception_second, mixed_factor_base,
+                                oracle_modulus, oracle_modulus, 47, adapter_bad_alloc_splitter);
+    check_terminal_contract(adapter_bad_alloc, SIQSShadowProofTerminalStatus::resource_exhausted,
+                            SIQSShadowProofStage::adapter_preflight,
+                            SIQSShadowProofFallbackReason::none);
+
+    RuntimeOnSecondCallSplitter assembly_runtime_splitter;
+    const auto assembly_runtime =
+        run_segmented_immutable(exception_first, exception_second, mixed_factor_base,
+                                oracle_modulus, oracle_modulus, 47, assembly_runtime_splitter);
+    check_terminal_contract(assembly_runtime, SIQSShadowProofTerminalStatus::exception_failure,
+                            SIQSShadowProofStage::assembly, SIQSShadowProofFallbackReason::none);
+    CHECK(assembly_runtime_splitter.calls == 2);
+    CHECK(assembly_runtime.evidence().assembly_status ==
+          SIQSShadowAssemblyStatus::exception_failure);
+
+    BadAllocOnSecondCallSplitter assembly_bad_alloc_splitter;
+    const auto assembly_bad_alloc =
+        run_segmented_immutable(exception_first, exception_second, mixed_factor_base,
+                                oracle_modulus, oracle_modulus, 47, assembly_bad_alloc_splitter);
+    check_terminal_contract(assembly_bad_alloc, SIQSShadowProofTerminalStatus::resource_exhausted,
+                            SIQSShadowProofStage::assembly, SIQSShadowProofFallbackReason::none);
+    CHECK(assembly_bad_alloc_splitter.calls == 2);
+    CHECK(assembly_bad_alloc.evidence().assembly_status ==
+          SIQSShadowAssemblyStatus::resource_exhausted);
+}
+
 void test_second_pass_assembly_limits_cannot_be_bypassed() {
     const auto relations = make_main_corpus();
 
@@ -930,6 +1085,7 @@ int main() {
     test_invalid_context_and_options();
     test_malformed_full_and_rejected_cycle();
     test_splitter_exceptions_and_drift();
+    test_segmented_corpus_matches_flattened_caps_and_exception_stages();
     test_second_pass_assembly_limits_cannot_be_bypassed();
     test_result_copy_and_move_contracts();
     test_mixed_corpus_worker_determinism();

@@ -4,6 +4,7 @@
 /// @brief Deterministic, parallel assembly of staged SIQS two-large-prime rows.
 
 #include <gnfs/siqs/post_merge_row.hpp>
+#include <gnfs/siqs/raw_relation_corpus_view.hpp>
 #include <gnfs/siqs/two_large_prime_adapter.hpp>
 #include <gnfs/siqs/two_large_prime_graph.hpp>
 #include <gnfs/siqs/two_large_prime_materializer.hpp>
@@ -743,7 +744,7 @@ reduce_cycle_slot_statuses(std::span<const CycleSlot> slots) noexcept {
 /// fail the whole result closed.
 template <class Splitter>
 [[nodiscard]] SIQSShadowAssemblyResult
-assemble_siqs_shadow_rows_bounded(std::span<const SIQSRelation> raw_relations,
+assemble_siqs_shadow_rows_bounded(SIQSRawRelationCorpusView raw_relations,
                                   std::span<const uint32_t> factor_base_primes,
                                   const core::Integer& modulus, uint64_t large_prime_bound,
                                   const SIQSShadowAssemblyOptions& options,
@@ -1097,10 +1098,23 @@ assemble_siqs_shadow_rows_bounded(std::span<const SIQSRelation> raw_relations,
     return SIQSShadowAssemblyResultFactory::success(std::move(assembly));
 }
 
+/// Source-compatible wrapper for one contiguous raw corpus.
+template <class Splitter>
+[[nodiscard]] SIQSShadowAssemblyResult
+assemble_siqs_shadow_rows_bounded(std::span<const SIQSRelation> raw_relations,
+                                  std::span<const uint32_t> factor_base_primes,
+                                  const core::Integer& modulus, uint64_t large_prime_bound,
+                                  const SIQSShadowAssemblyOptions& options,
+                                  const SIQSShadowAssemblyLimits& limits, Splitter&& splitter) {
+    return assemble_siqs_shadow_rows_bounded(SIQSRawRelationCorpusView(raw_relations),
+                                             factor_base_primes, modulus, large_prime_bound,
+                                             options, limits, std::forward<Splitter>(splitter));
+}
+
 /// Source-compatible wrapper with the historical unlimited assembly policy.
 template <class Splitter>
 [[nodiscard]] SIQSShadowAssemblyResult
-assemble_siqs_shadow_rows(std::span<const SIQSRelation> raw_relations,
+assemble_siqs_shadow_rows(SIQSRawRelationCorpusView raw_relations,
                           std::span<const uint32_t> factor_base_primes,
                           const core::Integer& modulus, uint64_t large_prime_bound,
                           const SIQSShadowAssemblyOptions& options, Splitter&& splitter) {
@@ -1113,6 +1127,19 @@ assemble_siqs_shadow_rows(std::span<const SIQSRelation> raw_relations,
             unlimited,
         },
         std::forward<Splitter>(splitter));
+}
+
+/// Source-compatible wrapper for one contiguous raw corpus and the historical
+/// unlimited assembly policy.
+template <class Splitter>
+[[nodiscard]] SIQSShadowAssemblyResult
+assemble_siqs_shadow_rows(std::span<const SIQSRelation> raw_relations,
+                          std::span<const uint32_t> factor_base_primes,
+                          const core::Integer& modulus, uint64_t large_prime_bound,
+                          const SIQSShadowAssemblyOptions& options, Splitter&& splitter) {
+    return assemble_siqs_shadow_rows(SIQSRawRelationCorpusView(raw_relations), factor_base_primes,
+                                     modulus, large_prime_bound, options,
+                                     std::forward<Splitter>(splitter));
 }
 
 } // namespace gnfs::siqs
