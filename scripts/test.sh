@@ -2605,6 +2605,65 @@ def replace_field(line, key, value):
     return replace_token(line, key, f"{key}={value}")
 
 
+def derive_local_thread_topology(special_q_processed, worker_limit,
+                                 candidates_total, candidate_peak_chunks,
+                                 local_budget):
+    if special_q_processed == 0:
+        assigned_threads = 0
+        peak_sieve_threads = 0
+    else:
+        peak_batch_size = min(4, special_q_processed)
+        final_batch_size = special_q_processed % 4 or peak_batch_size
+        final_workers = min(worker_limit, final_batch_size)
+        require(final_workers > 0,
+                "self-check cannot derive a nonempty special-Q topology")
+        assigned_threads = local_budget
+        peak_sieve_threads = (
+            local_budget + final_workers - 1
+        ) // final_workers
+
+    candidate_workers = 0
+    if candidates_total > 0:
+        candidate_workers = min(local_budget, candidate_peak_chunks)
+    return assigned_threads, peak_sieve_threads, candidate_workers
+
+
+def replace_local_thread_topology(line, legacy_line, structured_line,
+                                  requested_threads, local_budget):
+    _, typed = parse_comparison(line)
+    assigned_threads, peak_sieve_threads, candidate_workers = \
+        derive_local_thread_topology(
+            typed["special_q_processed"], typed["special_q_batch_worker_limit"],
+            typed["candidates_total"], typed["candidate_batch_peak_chunks"],
+            local_budget,
+        )
+
+    comparison_replacements = {
+        "max_local_sieve_threads": requested_threads,
+        "local_sieve_thread_budget": str(local_budget),
+        "special_q_batch_peak_assigned_threads": str(assigned_threads),
+        "special_q_worker_peak_sieve_threads": str(peak_sieve_threads),
+        "candidate_batch_peak_workers": str(candidate_workers),
+    }
+    for key, value in comparison_replacements.items():
+        line = replace_field(line, key, value)
+
+    route_requested_threads = "0" if requested_threads == "auto" else requested_threads
+    route_replacements = {
+        "max_local_sieve_threads_requested": route_requested_threads,
+        "local_sieve_thread_budget": str(local_budget),
+        "special_q_batch_peak_assigned_threads": str(assigned_threads),
+        "special_q_worker_peak_sieve_threads": str(peak_sieve_threads),
+        "candidate_batch_peak_workers": str(candidate_workers),
+    }
+    routes = []
+    for route_line in (legacy_line, structured_line):
+        for key, value in route_replacements.items():
+            route_line = replace_field(route_line, key, value)
+        routes.append(route_line)
+    return line, routes
+
+
 def remove_field(line, key):
     tokens = line.split(" ")
     filtered = [token for token in tokens if not token.startswith(f"{key}=")]
@@ -2732,6 +2791,15 @@ try:
         record, legacy_record, structured_record
     )
 
+    require(
+        derive_local_thread_topology(5, 4, 10, 10, 10) == (10, 10, 10),
+        "internal greater-than-four-budget topology self-check failed",
+    )
+    require(
+        derive_local_thread_topology(0, 0, 0, 0, 10) == (0, 0, 0),
+        "internal empty-schedule topology self-check failed",
+    )
+
     expect_rejected(remove_field(record, "status"), "a missing field",
                     legacy_record, structured_record)
     expect_rejected(replace_token(record, "scope", "status=pass"),
@@ -2761,16 +2829,40 @@ try:
         replace_field(record, "legacy_wall_ms", str(typed["legacy_wall_ms"] + 1)),
         "a comparison/source drift", legacy_record, structured_record,
     )
-    clamped_record = replace_field(record, "max_local_sieve_threads", "8")
-    clamped_record = replace_field(clamped_record, "local_sieve_thread_budget", "4")
-    clamped_routes = []
-    for route_record in (legacy_record, structured_record):
-        route_record = replace_field(
-            route_record, "max_local_sieve_threads_requested", "8"
-        )
-        route_record = replace_field(route_record, "local_sieve_thread_budget", "4")
-        clamped_routes.append(route_record)
+    clamped_record, clamped_routes = replace_local_thread_topology(
+        record, legacy_record, structured_record, "8", 4
+    )
     validate_record(clamped_record, clamped_routes[0], clamped_routes[1])
+
+    remainder_record = record
+    remainder_comparison_replacements = {
+        "max_special_q": "5",
+        "special_q_processed": "5",
+        "special_q_batch_worker_limit": "4",
+        "special_q_batch_peak_workers": "4",
+        "candidates_total": "10",
+        "candidate_batch_total_chunks": "10",
+        "candidate_batch_peak_chunks": "10",
+        "candidate_batch_peak_candidates": "10",
+    }
+    for key, value in remainder_comparison_replacements.items():
+        remainder_record = replace_field(remainder_record, key, value)
+
+    remainder_routes = []
+    remainder_route_replacements = {
+        **remainder_comparison_replacements,
+        "special_q_batch_count": "2",
+        "special_q_batch_peak_size": "4",
+        "candidate_batch_rss_sample_candidates": "10",
+    }
+    for route_line in (legacy_record, structured_record):
+        for key, value in remainder_route_replacements.items():
+            route_line = replace_field(route_line, key, value)
+        remainder_routes.append(route_line)
+    remainder_record, remainder_routes = replace_local_thread_topology(
+        remainder_record, remainder_routes[0], remainder_routes[1], "12", 10
+    )
+    validate_record(remainder_record, remainder_routes[0], remainder_routes[1])
     over_request_record = replace_field(
         clamped_record, "max_local_sieve_threads", "3"
     )
