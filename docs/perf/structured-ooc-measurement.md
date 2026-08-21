@@ -172,6 +172,85 @@ Release gate 188/188、120-bit relation path 1/1、bounded 50-digit route compar
 运行完整真实 50 位首轮，因此不能据此更新 NNZ、完整首轮 wall time、完整首轮 RSS 或
 matrix-quality 结论。runner 继续记录 `promotion=false`。
 
+### M6d-C Validation Epoch Cache Evidence
+
+M6d-C 的正式 candidate commit 为
+`4e71260fb56d1be9db6810894b7ecb2aca5f703d`，source tree 为
+`0e541f113c0838865b16063b00042651a3ed6bf9`。该 tree 与测量时 candidate commit
+`5554936d4fd6e5eb4b8cb154a80f95d81da16ac2` 逐位相同。baseline 测量 worktree 的
+head commit 为 `57287252cff572b84acb8e8def052553fa422fbd`；它相对 production
+commit `29ad00d3b35cc68489a80ed30a8935a119a0441f` 只修改本文，不影响可执行文件。
+baseline 与 candidate Release 二进制的 SHA-256 分别为
+`128d71e90a275c49f398bc4843a2f42282fa3981df16fc644685805ceb20e198` 和
+`864015dbc22b9bbf6181644a1d80c21d45cea5eda2beff6d595d0966d753a1fb`。后者在证据
+冻结后重新执行 Release 构建，仍精确复现相同 SHA-256。
+
+记 A 为 baseline，B 为 candidate。每个 worker lane 都在 fresh process 中执行
+`ABBA BAAB ABBA BAAB AB`。每个 revision、每个 worker 有 9 个样本，worker 1 与
+worker 4 的顺序交错，共执行 36 个 Release 进程。每条 closed record 有 110 个字段，
+其中 30 个是 wall time 或 RSS 观测字段。其余字段按既有规则形成 80-field lane
+identity。worker 1 的 identity SHA-256 为
+`569b41a5b53203a7f02fa8c644db46547649f3ce18c783683b6e98f28990dc1b`，worker 4 为
+`e8ae0eb68c3d5d18030fe6ee63e669b3ba8dc08250a6227483f857fb854518af`。排除
+`workers` 和 `peak_incidence_workers` 后，78-field 跨 worker identity SHA-256 为
+`2ce17e7f15b5ecf3dd6bc2c7ebb761f616df6c3ccaa364b34c4d4510a9dd1d4b`。这些值与
+M6d-B 相同，证明 fixture、digests、reduction 结果、生命周期和 source-read
+counters 均未改变。证据 bundle `gnfs_m6dc_abba.VqN68s` 保留 `summary.json`、
+`metrics.tsv` 和全部 36 条 raw records，供本机复核。
+
+主指标定位在 reducer 构造完成至 reduction 完成之间：
+
+$$
+T_r = \mathtt{cp\_reduction\_complete\_wall\_ns}
+    - \mathtt{cp\_reducer\_constructed\_wall\_ns}.
+$$
+
+硬门槛要求每个 worker lane 的 $T_r$ 中位数至少减少 8ms，且至少减少 25%。结果中的
+`±` 值是 median absolute deviation (MAD)：
+
+| Workers | Baseline $T_r$ | Candidate $T_r$ | Saved | Reduction | Separation gap |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 34,884,208 ± 560,833ns | 21,742,334 ± 242,001ns | 13,141,874ns | 37.672846% | 10,932,333ns |
+| 4 | 34,467,666 ± 592,708ns | 21,936,416 ± 240,125ns | 12,531,250ns | 36.356538% | 11,121,542ns |
+
+`separation gap` 是最小 baseline 样本减去最大 candidate 样本。两个 lane 的全部样本
+均分离，且同时通过绝对值和相对值门槛。constructor 与完整 route 使用非回归边界：
+只有 candidate 中位数增量同时超过 baseline 的 5% 和两倍的较大 MAD 时才失败。
+本轮四项增量均为负值：
+
+| Workers | Baseline constructor | Candidate constructor | Delta |
+|---:|---:|---:|---:|
+| 1 | 45,144,125ns | 41,773,250ns | -3,370,875ns |
+| 4 | 45,262,792ns | 42,211,292ns | -3,051,500ns |
+
+| Workers | Baseline route | Candidate route | Delta |
+|---:|---:|---:|---:|
+| 1 | 885,739,750ns | 843,090,000ns | -42,649,750ns |
+| 4 | 883,382,375ns | 836,132,542ns | -47,249,833ns |
+
+`Pg` 的四组中位数均为 88,539,136 bytes，因此本轮不声明 reducer 构造边界的额外
+内存收益。candidate 缓存最近一次完整验证成功的 incidence epoch。每次逻辑状态
+修改都在首个写入前使缓存失效。$T_r$ 覆盖 singleton peeling、planning、commit 和
+其间的验证，因此它不是独立 validation microbenchmark。不过，被删除的工作只位于
+该窗口，identity 又保持不变，所以该指标可以定位 dense fixture 中重复全量验证扫描
+的成本。它不能量化真实 50 位语料的命中率，也不能外推完整首轮收益。cache 使用的
+atomic 只避免只读验证之间的数据竞争，不扩展 reducer mutation 的并发合同。
+
+验证覆盖 `test_structured_tree_basis`、`test_structured_tree_basis_property` 和
+`test_structured_batch_commit`，以及 Debug relation module 35/35 和 TSan relation
+16/16。首次 relation module 运行只有无关的
+`test_ooc_cleanup_transaction` 超时；该测试隔离复跑通过，随后完整 clean rerun 为
+35/35。Debug 和 Release gate 均为 188/188。Release 120-bit relation path 为 1/1，
+耗时 3.25s。bounded 50-digit route comparison 为 2/2，耗时 2.19s。后者的 51 个 raw
+identity 字段逐字段相等，固定为 188 条 raw relations，digest 为
+`2999840282289098554 / 11378523343223252016`。两条 route 均输出 0 行，并形成
+`0 x 22660` matrix，符合冻结身份。dense replay workers 1 和 4 及上述 36-process
+sealed ABBA 对照全部通过。
+
+bounded 50-digit comparison 仍只是 4-SQ prefix，不是完整真实 50 位首轮。本节不更新
+完整首轮的 NNZ、wall time、RSS、matrix quality 或 dependency-space 结论，也不提供
+auto-promotion authority。runner 继续记录 `promotion=false`。
+
 ## Bounded Real 50-Digit Probe
 
 真实探针固定输入：
@@ -1051,11 +1130,13 @@ fresh-process 边界避免了跨 route 的 lifetime RSS 累积，但该次运行
 ### Decision
 
 该对照完成了 M5 的完整首轮证据采集，但不支持自动选路。M6 已完成 direct incidence
-reread elimination、stage telemetry、sealed receipt adoption 和 borrowed rank basis。
-M6d-B 的 sealed 资源结果来自 collision-free dense fixture；它没有更新完整真实 50 位
-首轮的 NNZ、wall time、RSS 或 matrix quality。runner 仍明示记录 `promotion=false`；
-在新证据通过前，禁止将 unset 默认值推广为 `GNFS_STRUCTURED_FILTER=auto`。
+reread elimination、stage telemetry、sealed receipt adoption、borrowed rank basis 和
+validation epoch cache。M6d-B 的资源结果与 M6d-C 的 reduction-window 结果都来自
+collision-free dense fixture。两者没有更新完整真实 50 位首轮的 NNZ、wall time、RSS
+或 matrix quality。runner 仍明示记录 `promotion=false`；在新证据通过前，禁止将
+unset 默认值推广为 `GNFS_STRUCTURED_FILTER=auto`。
 
 下一步应在受控 host 上重复完整 50 位首轮，并交错 `legacy -> structured` 与
-`structured -> legacy` fresh-process 顺序。后续证据必须同时复现跨零结构收益，并
-证明 NNZ、wall time 和 RSS 在明确预算内，才能重新审议 auto promotion。
+`structured -> legacy` fresh-process 顺序。该对照还应单独记录 validation epoch cache
+在真实 mutation/validation 序列中的命中范围。后续证据必须同时复现跨零结构收益，
+并证明 NNZ、wall time 和 RSS 在明确预算内，才能重新审议 auto promotion。
