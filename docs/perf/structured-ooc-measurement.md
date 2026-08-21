@@ -76,6 +76,42 @@ weight-8 planner cap，因此 reducer 以 `no_candidates` 停止。该构造避�
 阶段；`output_lease_removed` 与 `source_pair_removed` 不声称永久 cleanup lock 已删除。
 wall time 与 RSS 仍只作观测，不设置性能阈值。
 
+### M6d-A Sealed Receipt Adoption Evidence
+
+M6d-A 比较 main baseline commit `610742b` 与 production candidate commit `1559e33`。
+记 A 为 baseline，B 为 candidate。每个 worker lane 都在 fresh Release 进程中执行
+`ABBA BAAB ABBA BAAB AB`，得到每个 revision、每个 worker 9 个样本。worker 1 与
+worker 4 的运行顺序交错，共执行 36 个进程。每组配对的 closed record 中，所有
+非观测字段都逐字段相等。
+
+主内存指标定义为
+`Pg = cp_reducer_constructed_peak_rss - cp_incidence_receipt_built_peak_rss`。每个
+worker lane 的
+通过门槛要求 `Pg` 至少减少 24MiB，且相对 baseline 至少减少 15%。结果如下：
+
+| Workers | Baseline Pg | Candidate Pg | Saved bytes | Saved MiB | Reduction |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 140,984,320 | 113,311,744 | 27,672,576 | 26.391 | 19.6281% |
+| 4 | 141,410,304 | 113,311,744 | 28,098,560 | 26.797 | 19.8702% |
+
+时间回归门槛要求中位数同时恶化超过 5% 和 2 个 median absolute deviations (MAD)。
+完整 wall time 与 reducer constructor time 的中位数均改善，没有触发该门槛：
+
+| Workers | Baseline wall | Candidate wall | Baseline constructor | Candidate constructor |
+|---:|---:|---:|---:|---:|
+| 1 | 832,424,500ns | 822,350,791ns | 45,452,458ns | 42,965,208ns |
+| 4 | 833,643,750ns | 821,835,792ns | 45,912,750ns | 43,079,791ns |
+
+容器布局分析估算，receipt 到 reducer 构造边界原先有约 40.531MiB 的 LP64/LLP64
+瞬时外壳重叠。该估算解释被移除的 row 与 bucket 外壳，不承诺 allocator 会稳定归还
+页面，也不保证 `current RSS` 出现相同差值。`current RSS` 节省只作辅助观测，不是
+硬门槛。
+
+验证覆盖 relation module 35/35、TSan relation 16/16、Release gate 188/188、120-bit
+relation path 1/1、bounded 50-digit route comparison 2/2、dense replay workers 1 和 4，
+以及上述 sealed ABBA 对照。dense fixture 仍只固定 cardinality 与声明的合成拓扑；
+这些资源结果不能替代真实 50 位 LP 分布、merge yield、矩阵质量或完整首轮证据。
+
 ## Bounded Real 50-Digit Probe
 
 真实探针固定输入：
@@ -954,9 +990,13 @@ fresh-process 边界避免了跨 route 的 lifetime RSS 累积，但该次运行
 
 ### Decision
 
-该对照完成了 M5 的完整首轮证据采集，但不支持自动选路。runner 明示记录
-`promotion=false`，并且在新证据通过前禁止将 unset 默认值推广为
-`GNFS_STRUCTURED_FILTER=auto`。M6 下一步是实现并测量 native incremental OOC
-reduction，再在受控 host 上交错重复 `legacy -> structured` 和
-`structured -> legacy` fresh-process 顺序。后续证据必须同时复现跨零结构收益，
-并证明 NNZ、wall time 和 RSS 在明确预算内，才能重新审议 auto promotion。
+该对照完成了 M5 的完整首轮证据采集，但不支持自动选路。M6 已完成 direct incidence
+reread elimination、stage telemetry 和 sealed receipt adoption。runner 仍明示记录
+`promotion=false`；在新证据通过前，禁止将 unset 默认值推广为
+`GNFS_STRUCTURED_FILTER=auto`。
+
+下一步 M6d-B 将消除 full-rank validation 中不必要的 basis ownership copy，改用
+borrowed rank basis。随后应在受控 host 上重复完整 50 位首轮，并交错
+`legacy -> structured` 与 `structured -> legacy` fresh-process 顺序。后续证据必须
+同时复现跨零结构收益，并证明 NNZ、wall time 和 RSS 在明确预算内，才能重新审议
+auto promotion。

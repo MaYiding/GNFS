@@ -810,12 +810,6 @@ struct SequentialStructuredReducer::Impl final {
         bool active = true;
     };
 
-    struct Bucket final {
-        LargePrimeKey key;
-        std::vector<StructuredRowId> adjacency;
-        size_t active_degree = 0;
-    };
-
     struct PreparedData final {
         TwoWayMergePlan plan;
         Relation materialized;
@@ -829,21 +823,20 @@ struct SequentialStructuredReducer::Impl final {
     explicit Impl(SourceCorpus source_corpus, std::vector<std::vector<LargePrimeKey>> row_lp_keys,
                   std::vector<StructuredIncidenceBucket> built_buckets,
                   StructuredIncidenceBuildStats build_stats)
-        : corpus(std::move(source_corpus)), incidence_build_statistics(build_stats) {
+        : corpus(std::move(source_corpus)), buckets(std::move(built_buckets)),
+          incidence_build_statistics(build_stats) {
         rows.reserve(corpus.size());
         for (size_t ordinal = 0; ordinal < corpus.size(); ++ordinal) {
             const SourceId source = corpus.source_id(ordinal);
             auto keys = std::move(row_lp_keys[ordinal]);
             rows.push_back(Row{SourceCombination::singleton(source), std::move(keys), {}, true});
         }
+        std::vector<std::vector<LargePrimeKey>>{}.swap(row_lp_keys);
 
-        buckets.reserve(built_buckets.size());
-        for (auto& built_bucket : built_buckets) {
-            const size_t bucket_id = buckets.size();
-            Bucket bucket;
-            bucket.key = built_bucket.key;
-            bucket.adjacency = std::move(built_bucket.adjacency);
-            bucket.active_degree = bucket.adjacency.size();
+        bucket_active_degrees.reserve(buckets.size());
+        for (size_t bucket_id = 0; bucket_id < buckets.size(); ++bucket_id) {
+            const auto& bucket = buckets[bucket_id];
+            bucket_active_degrees.push_back(bucket.adjacency.size());
             for (const StructuredRowId row : bucket.adjacency) {
                 if (row.value >= rows.size()) {
                     fail(StructuredReductionErrorCode::InvariantViolation,
@@ -851,7 +844,6 @@ struct SequentialStructuredReducer::Impl final {
                 }
                 rows[static_cast<size_t>(row.value)].bucket_ids.push_back(bucket_id);
             }
-            buckets.push_back(std::move(bucket));
         }
 
         active_rows = rows.size();
@@ -875,10 +867,10 @@ struct SequentialStructuredReducer::Impl final {
     }
 
     [[nodiscard]] size_t find_bucket(const LargePrimeKey& key) const {
-        const auto it = std::lower_bound(buckets.begin(), buckets.end(), key,
-                                         [](const Bucket& bucket, const LargePrimeKey& candidate) {
-                                             return bucket.key < candidate;
-                                         });
+        const auto it =
+            std::lower_bound(buckets.begin(), buckets.end(), key,
+                             [](const StructuredIncidenceBucket& bucket,
+                                const LargePrimeKey& candidate) { return bucket.key < candidate; });
         if (it == buckets.end() || !(it->key == key)) {
             fail(StructuredReductionErrorCode::InvariantViolation,
                  "logical row references an unknown LP bucket");
@@ -887,6 +879,10 @@ struct SequentialStructuredReducer::Impl final {
     }
 
     void validate_state() const {
+        if (bucket_active_degrees.size() != buckets.size()) {
+            fail(StructuredReductionErrorCode::InvariantViolation,
+                 "LP bucket degree storage size is inconsistent");
+        }
         size_t counted_active = 0;
         std::vector<const SourceCombination*> active_transforms;
         active_transforms.reserve(active_rows);
@@ -959,14 +955,15 @@ struct SequentialStructuredReducer::Impl final {
                 if (row.active)
                     ++degree;
             }
-            if (degree != bucket.active_degree) {
+            if (degree != bucket_active_degrees[bucket_index]) {
                 fail(StructuredReductionErrorCode::InvariantViolation,
                      "LP bucket degree is inconsistent");
             }
         }
     }
 
-    [[nodiscard]] std::array<StructuredRowId, 2> active_pair(const Bucket& bucket) const {
+    [[nodiscard]] std::array<StructuredRowId, 2>
+    active_pair(const StructuredIncidenceBucket& bucket) const {
         std::array<StructuredRowId, 2> pair{};
         size_t count = 0;
         for (const auto row_id : bucket.adjacency) {
@@ -987,14 +984,16 @@ struct SequentialStructuredReducer::Impl final {
         return pair;
     }
 
-    [[nodiscard]] std::vector<StructuredRowId> active_members(const Bucket& bucket) const {
+    [[nodiscard]] std::vector<StructuredRowId> active_members(size_t bucket_id) const {
+        const auto& bucket = buckets[bucket_id];
+        const size_t active_degree = bucket_active_degrees[bucket_id];
         std::vector<StructuredRowId> members;
-        members.reserve(bucket.active_degree);
+        members.reserve(active_degree);
         for (const auto row_id : bucket.adjacency) {
             if (rows[static_cast<size_t>(row_id.value)].active)
                 members.push_back(row_id);
         }
-        if (members.size() != bucket.active_degree) {
+        if (members.size() != active_degree) {
             fail(StructuredReductionErrorCode::InvariantViolation,
                  "LP bucket active member count is inconsistent");
         }
@@ -1020,9 +1019,11 @@ struct SequentialStructuredReducer::Impl final {
         return TreeBasisEdgePlan{{lhs, rhs}, std::move(sources), std::move(lp_keys)};
     }
 
-    [[nodiscard]] TreeBasisMergePlan build_tree_plan(const Bucket& bucket,
+    [[nodiscard]] TreeBasisMergePlan build_tree_plan(size_t bucket_id,
                                                      TreeBasisPlanner planner) const {
-        if (bucket.active_degree < 3 || bucket.active_degree > 8) {
+        const auto& bucket = buckets[bucket_id];
+        const size_t active_degree = bucket_active_degrees[bucket_id];
+        if (active_degree < 3 || active_degree > 8) {
             fail(StructuredReductionErrorCode::InvalidPlan,
                  "tree-basis pivot weight is outside [3,8]");
         }
@@ -1036,7 +1037,7 @@ struct SequentialStructuredReducer::Impl final {
         plan.incidence_epoch = incidence_epoch;
         plan.planner = planner;
         plan.pivot = bucket.key;
-        plan.members = active_members(bucket);
+        plan.members = active_members(bucket_id);
 
         for (const auto member : plan.members) {
             const auto& keys = row_at(member).lp_keys;
@@ -1196,16 +1197,19 @@ struct SequentialStructuredReducer::Impl final {
         } catch (const StructuredReductionError&) {
             fail(StructuredReductionErrorCode::InvalidPlan, "tree-basis pivot is invalid");
         }
-        const auto bucket_it = std::lower_bound(
-            buckets.begin(), buckets.end(), plan.pivot,
-            [](const Bucket& bucket, const LargePrimeKey& key) { return bucket.key < key; });
+        const auto bucket_it =
+            std::lower_bound(buckets.begin(), buckets.end(), plan.pivot,
+                             [](const StructuredIncidenceBucket& bucket, const LargePrimeKey& key) {
+                                 return bucket.key < key;
+                             });
+        const size_t bucket_id = static_cast<size_t>(bucket_it - buckets.begin());
         if (bucket_it == buckets.end() || !(bucket_it->key == plan.pivot) ||
-            bucket_it->active_degree < 3 || bucket_it->active_degree > 8) {
+            bucket_active_degrees[bucket_id] < 3 || bucket_active_degrees[bucket_id] > 8) {
             fail(StructuredReductionErrorCode::InvalidPlan,
                  "tree-basis pivot is not an active weight-[3,8] bucket");
         }
 
-        TreeBasisMergePlan expected = build_tree_plan(*bucket_it, plan.planner);
+        TreeBasisMergePlan expected = build_tree_plan(bucket_id, plan.planner);
         if (!(plan == expected)) {
             fail(StructuredReductionErrorCode::InvalidPlan,
                  "tree-basis plan is not the exact current deterministic plan");
@@ -1272,8 +1276,10 @@ struct SequentialStructuredReducer::Impl final {
             fail(StructuredReductionErrorCode::InvalidPlan,
                  "merge witness is not shared by both rows");
         }
-        const auto& witness_bucket = buckets[find_bucket(plan.witness)];
-        if (witness_bucket.active_degree != 2 || active_pair(witness_bucket) != plan.members) {
+        const size_t witness_bucket_id = find_bucket(plan.witness);
+        const auto& witness_bucket = buckets[witness_bucket_id];
+        if (bucket_active_degrees[witness_bucket_id] != 2 ||
+            active_pair(witness_bucket) != plan.members) {
             fail(StructuredReductionErrorCode::InvalidPlan,
                  "merge witness does not identify this exact degree-two pair");
         }
@@ -1382,12 +1388,12 @@ struct SequentialStructuredReducer::Impl final {
             auto& input = rows[static_cast<size_t>(member.value)];
             input.active = false;
             for (const size_t bucket_id : input.bucket_ids) {
-                --buckets[bucket_id].active_degree;
+                --bucket_active_degrees[bucket_id];
             }
         }
         for (const size_t bucket_id : rows.back().bucket_ids) {
             buckets[bucket_id].adjacency.push_back(output_id);
-            ++buckets[bucket_id].active_degree;
+            ++bucket_active_degrees[bucket_id];
         }
 
         --active_rows;
@@ -1410,10 +1416,11 @@ struct SequentialStructuredReducer::Impl final {
         };
 
         std::vector<ScoredPlan> scored;
-        for (const auto& bucket : buckets) {
-            if (bucket.active_degree < 3 || bucket.active_degree > 8)
+        for (size_t bucket_id = 0; bucket_id < buckets.size(); ++bucket_id) {
+            const size_t active_degree = bucket_active_degrees[bucket_id];
+            if (active_degree < 3 || active_degree > 8)
                 continue;
-            TreeBasisMergePlan plan = build_tree_plan(bucket, planner);
+            TreeBasisMergePlan plan = build_tree_plan(bucket_id, planner);
             size_t source_nnz = 0;
             for (const auto& edge : plan.edges) {
                 source_nnz = checked_resource_add(source_nnz, edge.expected_sources.size(),
@@ -1556,14 +1563,14 @@ struct SequentialStructuredReducer::Impl final {
             auto& input = rows[static_cast<size_t>(member.value)];
             input.active = false;
             for (const size_t bucket_id : input.bucket_ids)
-                --buckets[bucket_id].active_degree;
+                --bucket_active_degrees[bucket_id];
         }
         for (size_t i = 0; i < output_count; ++i) {
             const auto output_id = output_ids[i];
             const auto& output = rows[static_cast<size_t>(first_output) + i];
             for (const size_t bucket_id : output.bucket_ids) {
                 buckets[bucket_id].adjacency.push_back(output_id);
-                ++buckets[bucket_id].active_degree;
+                ++bucket_active_degrees[bucket_id];
             }
         }
 
@@ -1888,12 +1895,12 @@ struct SequentialStructuredReducer::Impl final {
         std::vector<size_t> next_active_degrees;
         next_active_degrees.reserve(buckets.size());
         for (size_t bucket_id = 0; bucket_id < buckets.size(); ++bucket_id) {
-            const auto& bucket = buckets[bucket_id];
-            if (remove_counts[bucket_id] > bucket.active_degree) {
+            const size_t active_degree = bucket_active_degrees[bucket_id];
+            if (remove_counts[bucket_id] > active_degree) {
                 fail(StructuredReductionErrorCode::InvariantViolation,
                      "prepared batch bucket removal exceeds active degree");
             }
-            const size_t residual_degree = bucket.active_degree - remove_counts[bucket_id];
+            const size_t residual_degree = active_degree - remove_counts[bucket_id];
             next_active_degrees.push_back(
                 checked_resource_add(residual_degree, append_counts[bucket_id],
                                      "prepared batch bucket degree overflows"));
@@ -1946,7 +1953,7 @@ struct SequentialStructuredReducer::Impl final {
                 buckets[bucket_id].adjacency.push_back(output_id);
         }
         for (size_t bucket_id = 0; bucket_id < buckets.size(); ++bucket_id)
-            buckets[bucket_id].active_degree = next_active_degrees[bucket_id];
+            bucket_active_degrees[bucket_id] = next_active_degrees[bucket_id];
 
         active_rows = next_active_rows;
         statistics.two_way_merges = next_two_way_merges;
@@ -1960,7 +1967,8 @@ struct SequentialStructuredReducer::Impl final {
 
     SourceCorpus corpus;
     std::vector<Row> rows;
-    std::vector<Bucket> buckets;
+    std::vector<StructuredIncidenceBucket> buckets;
+    std::vector<size_t> bucket_active_degrees;
     size_t active_rows = 0;
     uint64_t incidence_epoch = 1;
     StructuredReductionStats statistics;
@@ -2026,8 +2034,8 @@ size_t SequentialStructuredReducer::active_row_count() const noexcept {
 
 size_t SequentialStructuredReducer::active_lp_column_count() const noexcept {
     return static_cast<size_t>(
-        std::count_if(impl_->buckets.begin(), impl_->buckets.end(),
-                      [](const auto& bucket) { return bucket.active_degree != 0; }));
+        std::count_if(impl_->bucket_active_degrees.begin(), impl_->bucket_active_degrees.end(),
+                      [](size_t active_degree) { return active_degree != 0; }));
 }
 
 bool SequentialStructuredReducer::is_active(StructuredRowId row) const {
@@ -2060,7 +2068,7 @@ size_t SequentialStructuredReducer::peel_singletons() {
     std::priority_queue<size_t, std::vector<size_t>, std::greater<size_t>> pending(
         std::greater<size_t>{}, std::move(pending_storage));
     for (size_t bucket_id = 0; bucket_id < impl_->buckets.size(); ++bucket_id) {
-        if (impl_->buckets[bucket_id].active_degree == 1) {
+        if (impl_->bucket_active_degrees[bucket_id] == 1) {
             pending.push(bucket_id);
         }
     }
@@ -2078,7 +2086,7 @@ size_t SequentialStructuredReducer::peel_singletons() {
         const size_t bucket_id = pending.top();
         pending.pop();
         auto& bucket = impl_->buckets[bucket_id];
-        if (bucket.active_degree != 1)
+        if (impl_->bucket_active_degrees[bucket_id] != 1)
             continue;
 
         StructuredRowId singleton{};
@@ -2103,7 +2111,7 @@ size_t SequentialStructuredReducer::peel_singletons() {
         --impl_->active_rows;
         ++removed;
         for (const size_t affected_bucket : row.bucket_ids) {
-            auto& degree = impl_->buckets[affected_bucket].active_degree;
+            auto& degree = impl_->bucket_active_degrees[affected_bucket];
             if (degree == 0) {
                 fail(StructuredReductionErrorCode::InvariantViolation,
                      "LP bucket degree underflow during singleton peeling");
@@ -2125,8 +2133,9 @@ size_t SequentialStructuredReducer::peel_singletons() {
 std::vector<TwoWayMergePlan> SequentialStructuredReducer::plan_two_way_merges() const {
     impl_->validate_state();
     std::vector<TwoWayMergePlan> plans;
-    for (const auto& bucket : impl_->buckets) {
-        if (bucket.active_degree != 2)
+    for (size_t bucket_id = 0; bucket_id < impl_->buckets.size(); ++bucket_id) {
+        const auto& bucket = impl_->buckets[bucket_id];
+        if (impl_->bucket_active_degrees[bucket_id] != 2)
             continue;
         const auto members = impl_->active_pair(bucket);
         const auto& lhs = impl_->row_at(members[0]);
