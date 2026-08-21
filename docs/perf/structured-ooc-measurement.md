@@ -112,6 +112,66 @@ relation path 1/1、bounded 50-digit route comparison 2/2、dense replay workers
 以及上述 sealed ABBA 对照。dense fixture 仍只固定 cardinality 与声明的合成拓扑；
 这些资源结果不能替代真实 50 位 LP 分布、merge yield、矩阵质量或完整首轮证据。
 
+### M6d-B Borrowed Rank Basis Evidence
+
+M6d-B 比较合并后的 baseline commit
+`bcf2cf49f772f2cf4ec91375a03854993272486f` 与 production candidate commit
+`1985a18e794d744a06800b630ccbc8bc928c461f`。两者的 source tree 分别与测量时 commit
+`87706844678f9935f50428734de16615ce7a5882` 和
+`29ad00d3b35cc68489a80ed30a8935a119a0441f` 逐位相同。对应 Release 二进制的
+SHA-256 分别为
+`41c67ca93186dac96e24333649bf25c165f9cb3fea5e9e27b7a35a81880a5f71` 和
+`128d71e90a275c49f398bc4843a2f42282fa3981df16fc644685805ceb20e198`。记 A 为
+baseline，B 为 candidate。每个 worker lane 都在 fresh process 中执行
+`ABBA BAAB ABBA BAAB AB`，得到每个 revision、每个 worker 9 个样本。worker 1 与
+worker 4 的运行顺序交错，共执行 36 个 Release 进程。
+
+每个 lane 的 80-field 非观测 identity 都逐字段相等。worker 1 的 identity SHA-256 为
+`569b41a5b53203a7f02fa8c644db46547649f3ce18c783683b6e98f28990dc1b`，worker 4 为
+`e8ae0eb68c3d5d18030fe6ee63e669b3ba8dc08250a6227483f857fb854518af`。再排除
+`workers` 与 `peak_incidence_workers` 后，跨 worker 的 78-field identity SHA-256 为
+`2ce17e7f15b5ecf3dd6bc2c7ebb761f616df6c3ccaa364b34c4d4510a9dd1d4b`。这些 identity
+绑定 fixture、输入与输出 digests、reduction 结果、生命周期、telemetry 状态和
+source-read counters；wall time 与 RSS 样本不参与 identity。
+
+主内存指标继续使用
+`Pg = cp_reducer_constructed_peak_rss - cp_incidence_receipt_built_peak_rss`。本轮硬门槛
+要求每个 worker lane 至少减少 20MiB，且相对 baseline 至少减少 15%。两个 lane 的
+中位数相同，并通过门槛：
+
+| Workers | Baseline Pg | Candidate Pg | Saved bytes | Saved MiB | Reduction |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 113,311,744 | 88,539,136 | 24,772,608 | 23.625 | 21.862348% |
+| 4 | 113,311,744 | 88,539,136 | 24,772,608 | 23.625 | 21.862348% |
+
+时间回归仍要求中位数同时恶化超过 5% 和 2 个 baseline median absolute deviations
+(MAD)。表中的 regression threshold 是两项边界的较大值。constructor 与完整 route
+的 candidate 中位数均改善，因此没有触发门槛：
+
+| Workers | Baseline constructor | Candidate constructor | Baseline MAD | Regression threshold |
+|---:|---:|---:|---:|---:|
+| 1 | 50,946,375ns | 42,068,000ns | 1,430,750ns | 2,861,500ns |
+| 4 | 51,080,458ns | 41,055,541ns | 945,750ns | 2,554,023ns |
+
+| Workers | Baseline route | Candidate route | Baseline MAD | Regression threshold |
+|---:|---:|---:|---:|---:|
+| 1 | 866,939,375ns | 847,101,375ns | 7,585,667ns | 43,346,969ns |
+| 4 | 866,557,750ns | 843,487,833ns | 7,502,125ns | 43,327,888ns |
+
+dense fixture 的 survivor source transforms 没有 pivot collision，因此本节的资源收益
+只测量 collision-free basis rows 从 ownership copy 改为同步借用后的效果。发生
+elimination 时，candidate 仍把生成的 basis row 存入地址稳定的 owned deque。专门的
+tree-basis 单元测试覆盖多次 pivot collision、连续 owned append、后续 basis reuse 和
+reducer row growth 后再次验证。该测试证明 owned 路径的正确性，但不提供
+collision-heavy corpus 的 RSS 收益估计。
+
+验证覆盖 `test_structured_tree_basis`、`test_structured_tree_basis_property` 和
+`test_structured_batch_commit`，以及 relation module 35/35、TSan relation 16/16、
+Release gate 188/188、120-bit relation path 1/1、bounded 50-digit route comparison
+2/2、dense replay workers 1 和 4，以及上述 36-process sealed ABBA 对照。本轮没有
+运行完整真实 50 位首轮，因此不能据此更新 NNZ、完整首轮 wall time、完整首轮 RSS 或
+matrix-quality 结论。runner 继续记录 `promotion=false`。
+
 ## Bounded Real 50-Digit Probe
 
 真实探针固定输入：
@@ -991,12 +1051,11 @@ fresh-process 边界避免了跨 route 的 lifetime RSS 累积，但该次运行
 ### Decision
 
 该对照完成了 M5 的完整首轮证据采集，但不支持自动选路。M6 已完成 direct incidence
-reread elimination、stage telemetry 和 sealed receipt adoption。runner 仍明示记录
-`promotion=false`；在新证据通过前，禁止将 unset 默认值推广为
-`GNFS_STRUCTURED_FILTER=auto`。
+reread elimination、stage telemetry、sealed receipt adoption 和 borrowed rank basis。
+M6d-B 的 sealed 资源结果来自 collision-free dense fixture；它没有更新完整真实 50 位
+首轮的 NNZ、wall time、RSS 或 matrix quality。runner 仍明示记录 `promotion=false`；
+在新证据通过前，禁止将 unset 默认值推广为 `GNFS_STRUCTURED_FILTER=auto`。
 
-下一步 M6d-B 将消除 full-rank validation 中不必要的 basis ownership copy，改用
-borrowed rank basis。随后应在受控 host 上重复完整 50 位首轮，并交错
-`legacy -> structured` 与 `structured -> legacy` fresh-process 顺序。后续证据必须
-同时复现跨零结构收益，并证明 NNZ、wall time 和 RSS 在明确预算内，才能重新审议
-auto promotion。
+下一步应在受控 host 上重复完整 50 位首轮，并交错 `legacy -> structured` 与
+`structured -> legacy` fresh-process 顺序。后续证据必须同时复现跨零结构收益，并
+证明 NNZ、wall time 和 RSS 在明确预算内，才能重新审议 auto promotion。
