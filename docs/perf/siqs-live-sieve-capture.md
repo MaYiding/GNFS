@@ -33,6 +33,35 @@ candidate 2LP relations into an independent bounded vector. It must not change
 the production relation vector, full and 1LP admission, production counters, or
 production stopping behavior.
 
+`SIQSShadowTwoLargePrimeCaptureSink` now supplies that supplemental storage
+boundary. Each caller-owned sink has an independent vector, a cofactor bound,
+and checked relation and logical-payload limits. One sieve worker must have
+exclusive access to one sink. A valid constructor reserves
+`max_relations` entries before sieving; a cofactor bound below four or either
+zero cap produces a stopped sink without reserving. An impossible reservation
+fails construction instead of deferring an allocation failure into capture.
+The public snapshot contains only the stop reason, observed 2LP candidates,
+captured relations, and captured logical payload. It does not expose unrelated
+threshold or residual counters from the internal admission controller.
+
+`sieve_polynomial()` applies the legacy residual classification first and
+consults the supplemental bound only after legacy rejection. The trusted
+classifier establishes that the raw cofactor is composite. The sink checks the
+bounded unresolved sentinel but does not repeat primality testing or factor
+splitting. A legacy full, 1LP, or enabled 2LP admission therefore wins and is
+never duplicated. Reaching a supplemental cap stops only that sink; later
+legacy relations and later sieve candidates continue normally.
+
+The sink reserves logical payload before invoking its relation factory. It
+recomputes the returned relation's value bytes and vector sizes, requires an
+exact match with the reservation, validates the unresolved sentinel, then
+appends and commits as one transaction. A factory exception or contract
+violation cancels the reservation, preserves the prior vector, and propagates
+to the caller. Production `factor()` passes null for both optional capture
+controllers, so this slice does not enable production 2LP collection. A later
+slice must construct one sink per worker and compose the retained vectors in a
+deterministic logical-slot order.
+
 ## Fixed Logical B Plan
 
 Each band uses one fixed input, one fixed seed, and one immutable logical B

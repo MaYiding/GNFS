@@ -19,6 +19,7 @@
 #include <gnfs/siqs/runtime_facts.hpp>
 #include <gnfs/siqs/shadow_proof_observe.hpp>
 #include <gnfs/siqs/shadow_proof_prefer.hpp>
+#include <gnfs/siqs/shadow_two_large_prime_capture.hpp>
 #include <gnfs/util/bit_intrin.hpp>
 #include <gnfs/util/primes.hpp>
 
@@ -781,12 +782,14 @@ nonnegative_mpz_to_uint64_checked(mpz_srcptr value) noexcept {
 /// Sieve one polynomial and collect smooth relations.
 /// sieve_buf: caller-owned buffer (avoids reallocation per polynomial)
 /// @param lp_bound_sq  Upper bound for 2LP cofactors (set to 0 to disable 2LP)
+/// @param shadow_two_lp_capture  Independent supplemental 2LP sink; never stops sieving
 inline void sieve_polynomial(const SIQSPoly& poly, const Integer& N, const std::vector<FBPrime>& fb,
                              uint32_t sieve_half, uint8_t threshold, uint32_t small_cutoff,
                              uint64_t lp_bound, uint64_t lp_bound_sq,
                              std::vector<SIQSRelation>& out_relations, std::mutex& relations_mutex,
                              std::vector<uint8_t>& sieve_buf, std::vector<uint8_t>& exp_buf,
-                             SIQSLiveSieveCaptureController* live_capture = nullptr) {
+                             SIQSLiveSieveCaptureController* live_capture = nullptr,
+                             SIQSShadowTwoLargePrimeCaptureSink* shadow_two_lp_capture = nullptr) {
     if (live_capture != nullptr && live_capture->stopped()) {
         return;
     }
@@ -939,6 +942,34 @@ inline void sieve_polynomial(const SIQSPoly& poly, const Integer& N, const std::
         std::optional<SIQSLiveSieveRelationKind> relation_kind;
         bool residual_unrepresentable = false;
 
+        const auto capture_shadow_two_lp = [&](uint64_t residual) {
+            const auto shadow_admission =
+                classify_siqs_residual(residual, lp_bound, shadow_two_lp_capture->cofactor_bound());
+            if (!shadow_admission ||
+                shadow_admission->kind != SIQSLiveSieveRelationKind::two_lp_candidate) {
+                return;
+            }
+
+            const size_t value_bits = value.bit_length();
+            const size_t value_bytes = value_bits / 8 + static_cast<size_t>(value_bits % 8 != 0);
+            const SIQSLiveSieveRelationPayloadShape payload{value_bytes, fb.size(),
+                                                            touched_buf.size(), 0};
+            (void)shadow_two_lp_capture->try_capture(payload, [&] {
+                SIQSRelation relation;
+                relation.value = value;
+                relation.negative = negative;
+                relation.large_prime = shadow_admission->large_prime;
+                relation.large_prime2 = shadow_admission->large_prime2;
+                relation.exponents.assign(fb.size(), 0);
+                relation.fb_indices.reserve(touched_buf.size());
+                for (uint32_t idx : touched_buf) {
+                    relation.exponents[idx] = exp[idx];
+                    relation.fb_indices.push_back(idx);
+                }
+                return relation;
+            });
+        };
+
 #if defined(__SIZEOF_INT128__)
         if (Q.bit_length() <= 127) {
             // Native 128-bit trial division (no GMP) — zero-alloc limb access
@@ -981,6 +1012,8 @@ inline void sieve_polynomial(const SIQSPoly& poly, const Integer& N, const std::
                     relation_kind = admission->kind;
                     large_prime = admission->large_prime;
                     large_prime2 = admission->large_prime2;
+                } else if (shadow_two_lp_capture != nullptr && !shadow_two_lp_capture->stopped()) {
+                    capture_shadow_two_lp(static_cast<uint64_t>(q128));
                 }
             } else {
                 residual_unrepresentable = true;
@@ -1025,6 +1058,8 @@ inline void sieve_polynomial(const SIQSPoly& poly, const Integer& N, const std::
                     relation_kind = admission->kind;
                     large_prime = admission->large_prime;
                     large_prime2 = admission->large_prime2;
+                } else if (shadow_two_lp_capture != nullptr && !shadow_two_lp_capture->stopped()) {
+                    capture_shadow_two_lp(*cofactor);
                 }
             } else {
                 residual_unrepresentable = true;
@@ -1755,7 +1790,7 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
                 size_t before = local_relations.size();
                 sieve_polynomial(poly, kN, fb, params.sieve_half, threshold,
                                  params.small_prime_cutoff, lp_bound, lp_bound_sq, local_relations,
-                                 dummy_mutex, sieve_buf, exp_buf);
+                                 dummy_mutex, sieve_buf, exp_buf, nullptr, nullptr);
 
                 // Incrementally count new relations by type
                 for (size_t ri = before; ri < local_relations.size(); ri++) {
