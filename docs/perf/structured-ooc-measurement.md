@@ -1216,16 +1216,66 @@ fresh-process 边界避免了跨 route 的 lifetime RSS 累积，但该次运行
 `timing_asserted=false` 和 `rss_asserted=false` 是正确的 claim boundary。本次时间与 RSS
 只是观测值，不是回归门禁或跨机器性能阈值。
 
+### 2026-08-21 N=2 Interleaved Campaign
+
+正式 campaign 在同一固定 50 位输入上完成了最小交错重复。每条 route 有 2 个
+fresh-process 样本，顺序为 `ABBA`。证据绑定 source commit
+`103607844c65a5221e3fdafd5291a8364f0d8f51`、source tree
+`1274fbfb0297a6384489a1ede1f24f35fbfaec95` 和 Release probe binary SHA-256
+`326140d50316f569a662df579e8063b24e2c4464b2dd846626cd69f425e47402`。
+
+4 个 slot 同时记录 route 内部 wall time 和 runner 外层 elapsed time：
+
+| Slot | Route | Route `wall_ms` | Runner `elapsed_ms` |
+|---:|---|---:|---:|
+| 1 | `legacy` #1 | 1,263,686 | 1,263,808 |
+| 2 | `structured` #1 | 1,359,153 | 1,359,205 |
+| 3 | `structured` #2 | 1,394,025 | 1,394,321 |
+| 4 | `legacy` #2 | 1,235,971 | 1,236,117 |
+
+4 条 route record 的 51 个 raw identity 字段逐字段相等，identity SHA-256 为
+`491a3ef8f29cff7f7af59911267665a7fb0d65bda45532f7301f94222223489a`。同一路由的策略
+结果也保持稳定。legacy route-stability SHA-256 为
+`4b6b1b298acb02049338533a1338ff55882ebb901354788e71e12521bc38241e`，structured 为
+`aa62a3c32f58dbc56103685ed240341145f69024e833415953a376b7870b0b3f`。
+
+方向预算先使用精确有理数，再向上取整为整数 ppm。`1,101,423ppm` wall ratio 只按
+route record `wall_ms` 的 structured/legacy 精确中位数计算。runner `elapsed_ms` 包含
+外层进程生命周期开销，只作生命周期观测，不参与该预算。peak RSS 使用
+structured/legacy 中位数比；matrix nonzeros 在同一路由内稳定，因此使用两条路由的
+固定结果比：
+
+| Budget | Observed | Limit | Result |
+|---|---:|---:|:---:|
+| Wall ratio | 1,101,423ppm | 1,200,000ppm | pass |
+| Peak RSS ratio | 1,334,535ppm | 1,600,000ppm | pass |
+| Matrix nonzeros ratio | 27,243,107ppm | 30,000,000ppm | pass |
+| Structured positive signed delta | 2/2 | 2/2 | pass |
+
+独立审计重新执行 closed validator，并复核 source binding、schema、identity、route
+stability、方向预算和生命周期。4 个成功 slot 的 staging、stdout capture 与临时 OOC
+目录均按合同清理。终态 one-test report 固定为 Release、1/1 pass、0 fail 和 0 skipped。
+
+本轮 claim boundary 仅覆盖 relation reduction 结果与 matrix shape。nonzeros、wall time
+和 RSS 只记录该边界的资源代价。所有 probe 都在 MatrixBuilder 后停止，没有进入 SGE、
+solver、dependency search、平方根或因子提取。因此，该结果不证明 dependency yield、
+solver 可行性、平方根正确性或完整分解。方向预算也只是宽退化边界，不是性能推广门槛；
+canonical summary 继续记录
+`promotion=false`，不得据此启用 `GNFS_STRUCTURED_FILTER=auto`。
+
 ### Decision
 
-该对照完成了 M5 的完整首轮证据采集，但不支持自动选路。M6 已完成 direct incidence
-reread elimination、stage telemetry、sealed receipt adoption、borrowed rank basis 和
-validation epoch cache。M6d-B 的资源结果与 M6d-C 的 reduction-window 结果都来自
-collision-free dense fixture。两者没有更新完整真实 50 位首轮的 NNZ、wall time、RSS
-或 matrix quality。runner 仍明示记录 `promotion=false`；在新证据通过前，禁止将
-unset 默认值推广为 `GNFS_STRUCTURED_FILTER=auto`。
+早期单次对照完成了 M5 的完整首轮证据采集。正式 N=2 campaign 又完成了最小
+fresh-process 交错重复，并在同一输入和 host 上复现 structured 正 signed delta，且通过
+预注册的 NNZ、wall time 和 RSS 方向预算。该结论仍只涉及 relation reduction 与 matrix
+shape，不能扩展为下游正确性或自动选路结论。
 
-下一步应在受控 host 上重复完整 50 位首轮，并交错 `legacy -> structured` 与
-`structured -> legacy` fresh-process 顺序。该对照还应单独记录 validation epoch cache
-在真实 mutation/validation 序列中的命中范围。后续证据必须同时复现跨零结构收益，
-并证明 NNZ、wall time 和 RSS 在明确预算内，才能重新审议 auto promotion。
+M6 已完成 direct incidence reread elimination、stage telemetry、sealed receipt
+adoption、borrowed rank basis 和 validation epoch cache。dense fixture 资源结果与本次
+真实 50 位 campaign 属于不同 scope，不能相互替代。runner 继续明示记录
+`promotion=false`；禁止将 unset 默认值推广为 `GNFS_STRUCTURED_FILTER=auto`。
+
+下一阶段应扩展到多尺寸、多输入和多主机的交错重复，并单独记录 validation epoch cache
+在真实 mutation/validation 序列中的命中范围。下游证据还必须覆盖 solver、dependency
+验证、平方根和因子提取。只有这些结果保持可复现，并且资源仍位于预注册预算内，才能
+重新审议 auto promotion。
