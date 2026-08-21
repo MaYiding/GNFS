@@ -275,6 +275,8 @@ Brent rho helper 固定为单线程，ECM curve pool 保持关闭。
 ./scripts/test.sh compare-50d-bounded-routes 8 2 4
 ./scripts/test.sh compare-50d-first-round
 ./scripts/test.sh compare-50d-first-round 8192 4 auto
+./scripts/test.sh campaign-50d-first-round
+./scripts/test.sh campaign-50d-first-round 5 4 auto
 ./scripts/test.sh probe-50d-special-q-workers 4 auto
 ./scripts/test.sh probe-50d-special-q-workers 4 4
 ./scripts/test.sh check-50d-contracts
@@ -313,14 +315,97 @@ LP columns 和 full-matrix shape/nonzeros 属于策略结果，runner 分别记�
 最终 `GNFS_EXPERIMENT_COMPARISON_V2` 明示 `promotion=false`；wall time 和 RSS 仅来自
 两个 fresh processes，不是门禁阈值。
 
+`campaign-50d-first-round` 在一个 Release 构建后运行可重复的完整首轮 campaign。
+三个可选参数依次是每条 route 的样本数、special-Q batch worker 上限和 local sieve
+线程数。样本数接受 2 至 9，默认值为 2；special-Q 上限固定为 8192。runner 拒绝
+`--no-build` 和 `--retry`。默认每个 slot 的硬超时为 7200 秒，显式 `--timeout` 可以
+替换该值。真实 campaign 当前只支持 Linux 和 macOS：精确 lock cleanup 依赖 POSIX
+directory-fd 语义，递归进程回收依赖独占 POSIX process group。schema/parser synthetic
+self-test 仍可在其它平台运行，但不会启动真实 slot。
+
+同一 `BUILD_DIR`/scope 的 shell 生命周期持有
+`build/50d-campaigns/.complete_first_round_abba_v1.lock` 的 nonblocking
+`zsh/system` flock，直到 canonical 与原子 `test_report.json` 都完成终态复核。并发调用在
+触碰旧 report 或 canonical 前 fail-fast。lock leaf 会持久存在；它只是稳定 inode，不表示
+当前有人持锁，也不得在 campaign 之间删除。真实所有权只属于 top-level zsh 的
+close-on-exec fd，正常退出、失败和 signal unwind 都释放它。
+在 terminal report 尚未 commit 时，top-level EXIT trap 默认撤销 canonical 与任何未提交
+report、清理 stdout capture，并在锁内尽力发布唯一 `shell_unexpected_exit` 失败报告；只有
+closed report 成功落盘后才 disarm，因此任一未守护的 shell `set -e` 退出也不能留下 pass。
+failure diagnostic 的 slots 固定为 fail-fast prefix：failed slot 至多一个且只能位于末尾，
+failure ordinal 必须绑定该 slot；若 prefix 全通过，则 ordinal 只能为空或绑定尚未执行的下一
+slot。显式 local-thread 与 per-slot timeout 在 summary、CLI 和 artifact 中统一限制为 uint32。
+
+runner 将 legacy 记为 A，将 structured 记为 B。它重复 `ABBA BAAB` 并取前
+`2 * samples_per_route` 项。默认顺序因此是 legacy、structured、structured、legacy。
+4 个样本使用 `ABBA BAAB`，5 个样本使用 `ABBA BAAB AB`。每个 slot 都启动新的
+probe 进程，使用独占目录，并保留原始 stdout 和 stderr bytes。成功 slot 通过既有精确
+cleanup 合同删除 OOC 工件；通过 source/artifact preflight 后的失败保留该次 campaign
+独占诊断目录。preflight 自身失败时还没有 run directory，但 canonical 仍保持缺失且会写入
+本次失败 test report。slot 运行中收到 Ctrl-C、SIGTERM 或内部轮询异常时，runner 会对
+独占 process group 先发 TERM、限时等待，再按需发 KILL 并限时回收 leader 与 descendants，
+随后才记录 `process/interrupted` 失败；不会遗留后台 50 位 probe 或孙进程。
+outer shell 不使用 command substitution 承载长跑 runner：它把 stdout 写入独占临时文件，
+保存 Python PID，并在只向 top-level zsh PID 发送 HUP/INT/TERM 时显式转发 TERM、等待 Python
+完成 probe process-group 回收，再清理 capture、失效 canonical、发布失败 report 并释放锁。
+
+campaign 在运行前、每个 slot 前和最终汇总前复核 clean tracked source、source commit、
+source tree 和 probe binary SHA-256。direct runner 还从 probe 同目录的单链接
+`CMakeCache.txt` 精确要求 `CMAKE_BUILD_TYPE:STRING=Release`，不能只在 artifact 中声称
+Release。所有 slot 必须逐字段匹配现有 51-field raw identity。
+同一 route 的 stop reason、output rows、LP columns、structured commit 结果、output digest、
+matrix shape、nonzeros、signed delta 和 row-mapping identity 也必须稳定。legacy 与
+structured 的策略输出仍允许不同。每条 source record 还独立复核 special-Q/candidate
+topology、raw duplicate、LP histogram、raw target、reduction/matrix shape 和 route-specific
+OOC lifecycle；两个 route 一致地报告错误值也不能通过。秒值使用 `Decimal` 解析并要求
+canonical、有限、非负且位于 binary64 范围。显式 local-thread request 可被 C++ 按硬件
+并发数向下钳制；effective budget 必须为正且不超过 request，不要求错误的相等关系。
+production candidate chunk 固定为 256；structured route 还必须证明 reducer 已启动，不能
+报告 `structured_stop=not_started`。`structured_emitted_rows` 是中间发射计数，可合法大于
+后续 reduction output rows，因此不会被错误地当作 output 上界。
+
+方向预算使用精确整数和有理数计算。每个 structured 样本必须满足
+`matrix_signed_delta > 0`；structured 的 wall 中位数不得超过 legacy 的 1.20 倍，peak
+RSS 中位数不得超过 1.60 倍，matrix nonzeros 不得超过 30 倍。RSS backend 缺失或跨样本
+不一致会得到 `unavailable` 并 fail closed。这些宽边界只拦截方向性退化；campaign 仍固定
+`promotion=false`，不能据此声明完整分解或自动推广。
+
+campaign 使用独立 closed `GNFS_50D_ROUTE_CAMPAIGN_V1`，不会增加或重解释 58-field
+`GNFS_EXPERIMENT_COMPARISON_V2`。合法新运行先失效
+`build/50d-campaigns/complete_first_round_abba_v1.json`。只有全通过的 pass evidence 才能
+成为 canonical artifact：runner 先从每个原始 route record 重建 identity、稳定性、预算和
+summary，再精确清理成功 staging；随后在 canonical 同目录写入临时文件、flush、fsync、
+重读并按 closed schema 复核，最后才通过 `os.replace()` 发布。所有失败都让 canonical
+保持缺失；通过 source/artifact preflight 并创建 run directory 后的失败只在该目录原子
+写入 `diagnostic.json`，其 summary 固定
+`artifact_published=false`；旧 pass 不会存活，也不会用 fail JSON 替代。outer shell 在
+记 pass 前还会重新读取 canonical regular file、运行同一 closed validator，并要求其中的
+summary 与 stdout summary 逐字一致。整个 campaign（含 build、binary/CLI preflight）在
+`test_report.json` 中只计为一个测试；任一 preflight failure 都覆盖旧报告，slot 不单独
+增加 pass 或 fail 计数。canonical leaf 使用不解析最终 symlink 的 lexical absolute path；
+失效操作删除链接本身，validator 也拒绝链接。`build/50d-campaigns` 的父目录仍属于受信任的
+本地 build namespace，不接受攻击者可替换的祖先 symlink。
+唯一 `test_report.json` 也在锁内通过同目录 temp、flush/fsync、序列化重读、`os.replace()`、
+parent fsync 和最终 closed re-read 发布；任何 post-replace 失败会先精确删除未通过验证的
+report，再撤销 canonical pass。artifact/diagnostic 的整数和布尔字段按 JSON 实际类型比较，
+不接受 Python 的 `true == 1`/`false == 0` 等价；schedule 时间固定为可解析且非逆序的
+`YYYY-MM-DDTHH:MM:SSZ`。
+独立 summary validator 对 pass 记录也直接要求 wall/RSS/matrix-nonzeros ratio 分别不超过
+1.20/1.60/30.0 倍，而不是只检查三个字段非 `na`。
+
 所有 50 位 runner 通过同一封闭式 `GNFS_EXPERIMENT_V2` schema 解析器。它固定完整
 字段集合和顺序，拒绝缺失、重复、未知或非规范字段，并校验布尔/数值/枚举、RSS
 support-value 联动、factor-base 列总数和 matrix signed delta。解析器同时运行
 missing/duplicate/unknown/reordered/noncanonical/partial-RSS 合成负向自检。
 `check-50d-contracts` 通过 probe emitter 的无流水线固定
 `GNFS_EXPERIMENT_FIXTURE_V2` fixture 执行同一解析器，并先断言 fixture 没有输出
-production `GNFS_EXPERIMENT_V2` 前缀，再覆盖 CLI 负例和 help 边界；
+production `GNFS_EXPERIMENT_V2` 前缀，再覆盖 CLI 负例、help 边界和 campaign V1 的
+closed schema、顺序、identity、稳定性、预算、timeout 及原子发布边界；
 `StructuredOOC50dContract` 将它作为 fast CTest。
+shell synthetic 直接安装生产 EXIT/signal handler，预放 stale pass evidence 后分别强制
+unexpected exit 和只向 top-level zsh PID 发送 TERM，并复核 runner/child 回收、canonical/
+capture 清理、唯一失败 report 与 lock 重获；process self-test 另覆盖忽略 TERM 后的 KILL
+fallback，以及 emitted rows 大于 output rows 的合法正例。
 
 `probe-50d-special-q-workers` 使用同一个 Release 构建，分别在 3 个新进程中运行
 workers 1、2 和 4。它的第二个可选参数设置 3 个进程共同使用的

@@ -67,6 +67,8 @@
 #                                         # 真实 50 位，4-SQ legacy/structured 独立进程对照
 #   ./scripts/test.sh compare-50d-first-round
 #                                         # 真实 50 位，完整首轮 legacy/structured 独立进程对照
+#   ./scripts/test.sh campaign-50d-first-round
+#                                         # 完整首轮 ABBA/BAAB fresh-process campaign
 #   ./scripts/test.sh probe-50d-special-q-workers
 #                                         # 真实 50 位，外层 SQ workers=1/2/4 对照
 #   ./scripts/test.sh sweep-50d-candidate-batch
@@ -168,6 +170,17 @@ TOTAL_TIME_MS=0
 # JSON 报告条目
 typeset -a REPORT_ENTRIES
 REPORT_ENTRIES=()
+
+# Manual 50-digit campaign process/lock state.  The zsystem flock descriptor
+# is close-on-exec and therefore remains owned solely by this top-level zsh.
+integer CAMPAIGN_50D_LOCK_FD=-1
+integer CAMPAIGN_50D_LOCK_HELD=0
+integer CAMPAIGN_50D_RUNNER_PID=0
+integer CAMPAIGN_50D_TERMINAL_COMMITTED=0
+CAMPAIGN_50D_LOCK_PATH=""
+CAMPAIGN_50D_STDOUT_PATH=""
+CAMPAIGN_50D_ARTIFACT_PATH=""
+integer CAMPAIGN_50D_STARTED_MS=0
 
 # ============================================================
 # 颜色
@@ -2441,9 +2454,9 @@ def validate_internal(fields, typed):
     require(typed["special_q_batch_worker_limit"] <= typed["local_sieve_thread_budget"],
             "special-Q worker limit exceeds the local thread budget")
     if typed["max_local_sieve_threads"] != "auto":
-        require(typed["local_sieve_thread_budget"] ==
+        require(0 < typed["local_sieve_thread_budget"] <=
                 typed["max_local_sieve_threads"],
-                "explicit local thread request differs from the effective budget")
+                "effective local thread budget exceeds its explicit request")
 
     if typed["special_q_processed"] == 0:
         require(
@@ -2746,6 +2759,29 @@ try:
         replace_field(record, "legacy_wall_ms", str(typed["legacy_wall_ms"] + 1)),
         "a comparison/source drift", legacy_record, structured_record,
     )
+    clamped_record = replace_field(record, "max_local_sieve_threads", "8")
+    clamped_record = replace_field(clamped_record, "local_sieve_thread_budget", "4")
+    clamped_routes = []
+    for route_record in (legacy_record, structured_record):
+        route_record = replace_field(
+            route_record, "max_local_sieve_threads_requested", "8"
+        )
+        route_record = replace_field(route_record, "local_sieve_thread_budget", "4")
+        clamped_routes.append(route_record)
+    validate_record(clamped_record, clamped_routes[0], clamped_routes[1])
+    over_request_record = replace_field(
+        clamped_record, "max_local_sieve_threads", "3"
+    )
+    over_request_routes = [
+        replace_field(route_record, "max_local_sieve_threads_requested", "3")
+        for route_record in clamped_routes
+    ]
+    expect_rejected(
+        over_request_record,
+        "an effective local-thread budget above its explicit request",
+        over_request_routes[0],
+        over_request_routes[1],
+    )
     drifted_structured = replace_field(
         structured_record, "candidate_batch_rss_sample_candidates",
         str(int(route_value(structured, "candidate_batch_rss_sample_candidates",
@@ -2780,6 +2816,150 @@ try:
 except FileNotFoundError:
     pass
 PY
+}
+
+# The Python runner owns the canonical artifact contract, but the shell must
+# still fail closed if that subprocess is unavailable or rejects a hostile
+# final path.  The fallback is deliberately limited to the exact lexical
+# artifact path: rm unlinks a final symlink instead of following its target.
+invalidate_50d_campaign_artifact() {
+    local artifact_path="$1"
+    local campaign_runner="${PROJECT_ROOT}/scripts/run_50d_route_campaign.py"
+    if "$GNFS_TEST_PYTHON" "$campaign_runner" invalidate \
+        --artifact "$artifact_path" &&
+       [[ ! -e "$artifact_path" && ! -L "$artifact_path" ]]; then
+        return 0
+    fi
+    if ! rm -f -- "$artifact_path"; then
+        return 1
+    fi
+    [[ ! -e "$artifact_path" && ! -L "$artifact_path" ]]
+}
+
+release_50d_campaign_lock() {
+    if (( ! CAMPAIGN_50D_LOCK_HELD )); then
+        return 0
+    fi
+    if ! zsystem flock -u "$CAMPAIGN_50D_LOCK_FD"; then
+        return 1
+    fi
+    CAMPAIGN_50D_LOCK_HELD=0
+    CAMPAIGN_50D_LOCK_FD=-1
+}
+
+cleanup_50d_campaign_stdout() {
+    if [[ -z "$CAMPAIGN_50D_STDOUT_PATH" ]]; then
+        return 0
+    fi
+    local capture_path="$CAMPAIGN_50D_STDOUT_PATH"
+    if ! rm -f -- "$capture_path" || [[ -e "$capture_path" || -L "$capture_path" ]]; then
+        return 1
+    fi
+    CAMPAIGN_50D_STDOUT_PATH=""
+}
+
+invalidate_50d_campaign_report() {
+    if ! rm -f -- "$REPORT_FILE" || [[ -e "$REPORT_FILE" || -L "$REPORT_FILE" ]]; then
+        return 1
+    fi
+}
+
+finalize_50d_campaign_exit() {
+    local original_status="${1:-1}"
+    if (( CAMPAIGN_50D_LOCK_HELD && ! CAMPAIGN_50D_TERMINAL_COMMITTED )); then
+        trap '' HUP INT TERM
+        if (( CAMPAIGN_50D_RUNNER_PID > 0 )); then
+            kill -TERM "$CAMPAIGN_50D_RUNNER_PID" 2>/dev/null || true
+            wait "$CAMPAIGN_50D_RUNNER_PID" 2>/dev/null || true
+            CAMPAIGN_50D_RUNNER_PID=0
+        fi
+        if [[ -n "$CAMPAIGN_50D_ARTIFACT_PATH" ]]; then
+            invalidate_50d_campaign_artifact "$CAMPAIGN_50D_ARTIFACT_PATH" || \
+                log_fail "shell exit=${original_status} 后无法确认 canonical campaign artifact 缺失"
+        fi
+        invalidate_50d_campaign_report || \
+            log_fail "shell exit=${original_status} 后无法失效未提交的 campaign report"
+        cleanup_50d_campaign_stdout || \
+            log_fail "shell exit=${original_status} 后无法清理 campaign stdout capture"
+
+        local exit_end_ms exit_elapsed
+        exit_end_ms=$(timer_start_ms 2>/dev/null) || exit_end_ms=$CAMPAIGN_50D_STARTED_MS
+        exit_elapsed=$(( exit_end_ms - CAMPAIGN_50D_STARTED_MS ))
+        (( exit_elapsed < 0 )) && exit_elapsed=0
+        BUILD_TYPE="Release"
+        TOTAL_TESTS=1
+        PASSED_TESTS=0
+        FAILED_TESTS=1
+        SKIPPED_TESTS=0
+        TOTAL_TIME_MS=$exit_elapsed
+        REPORT_ENTRIES=(
+            "{\"name\":\"test_50d_first_round_campaign\",\"status\":\"fail\",\"elapsed_ms\":${exit_elapsed},\"detail\":\"shell_unexpected_exit\"}"
+        )
+        if ! write_50d_campaign_report_atomic "$exit_elapsed"; then
+            invalidate_50d_campaign_report || true
+        fi
+    fi
+    cleanup_50d_campaign_stdout || true
+    release_50d_campaign_lock || true
+}
+
+handle_50d_campaign_signal() {
+    local exit_status="$1"
+    local signal_name="$2"
+    trap '' HUP INT TERM
+    if (( CAMPAIGN_50D_RUNNER_PID > 0 )); then
+        kill -TERM "$CAMPAIGN_50D_RUNNER_PID" 2>/dev/null || true
+        # The Python runner maps SIGTERM to process/interrupted and performs
+        # bounded TERM/KILL cleanup of its active probe process group.  Waiting
+        # here prevents a top-level-PID-only signal from orphaning that runner.
+        wait "$CAMPAIGN_50D_RUNNER_PID" 2>/dev/null || true
+        CAMPAIGN_50D_RUNNER_PID=0
+    fi
+    cleanup_50d_campaign_stdout || \
+        log_fail "${signal_name} 后无法清理 campaign stdout capture"
+    if [[ -n "$CAMPAIGN_50D_ARTIFACT_PATH" ]]; then
+        invalidate_50d_campaign_artifact "$CAMPAIGN_50D_ARTIFACT_PATH" || \
+            log_fail "${signal_name} 后无法确认 canonical campaign artifact 缺失"
+    fi
+
+    local signal_end_ms signal_elapsed
+    signal_end_ms=$(timer_start_ms)
+    signal_elapsed=$(( signal_end_ms - CAMPAIGN_50D_STARTED_MS ))
+    (( signal_elapsed < 0 )) && signal_elapsed=0
+    TOTAL_TESTS=1
+    PASSED_TESTS=0
+    FAILED_TESTS=1
+    SKIPPED_TESTS=0
+    TOTAL_TIME_MS=$signal_elapsed
+    REPORT_ENTRIES=(
+        "{\"name\":\"test_50d_first_round_campaign\",\"status\":\"fail\",\"elapsed_ms\":${signal_elapsed},\"detail\":\"shell_${signal_name:l}\"}"
+    )
+    if ! write_50d_campaign_report_atomic "$signal_elapsed"; then
+        invalidate_50d_campaign_report || true
+        log_fail "${signal_name} 后无法原子发布 campaign test_report"
+    fi
+    release_50d_campaign_lock || true
+    trap - HUP INT TERM EXIT
+    exit "$exit_status"
+}
+
+acquire_50d_campaign_lock() {
+    local lock_path="${1:-${BUILD_DIR}/50d-campaigns/.complete_first_round_abba_v1.lock}"
+    if ! mkdir -p "${lock_path:h}" || ! : >> "$lock_path"; then
+        log_fail "无法准备完整首轮 campaign 互斥锁: ${lock_path}"
+        return 1
+    fi
+    if ! zmodload zsh/system; then
+        log_fail "当前 zsh 不支持 campaign 所需的 zsh/system flock"
+        return 1
+    fi
+    if ! zsystem flock -t 0 -f CAMPAIGN_50D_LOCK_FD "$lock_path"; then
+        log_fail "已有同 BUILD_DIR 的完整首轮 campaign 持有互斥锁: ${lock_path}"
+        return 1
+    fi
+    CAMPAIGN_50D_LOCK_HELD=1
+    CAMPAIGN_50D_TERMINAL_COMMITTED=0
+    CAMPAIGN_50D_LOCK_PATH="$lock_path"
 }
 
 validate_50d_uint32_argument() {
@@ -3061,6 +3241,310 @@ finally:
         pass
     path.parent.rmdir()
 PY
+
+    # Exercise the shell's final-component fallback independently of Python:
+    # a failed runner invocation must unlink only the canonical symlink and
+    # leave its target untouched.
+    local campaign_invalidation_dir campaign_invalidation_anchor
+    local campaign_invalidation_link saved_test_python invalidation_status=0
+    if ! campaign_invalidation_dir=$(mktemp -d \
+        "${TMPDIR:-/tmp}/gnfs_50d_campaign_invalidation.XXXXXX"); then
+        log_fail "无法创建 50 位 campaign 失效合同临时目录"
+        return 1
+    fi
+    campaign_invalidation_anchor="${campaign_invalidation_dir}/sentinel"
+    campaign_invalidation_link="${campaign_invalidation_dir}/canonical.json"
+    if ! print -r -- "sentinel" > "$campaign_invalidation_anchor" ||
+       ! ln -s "$campaign_invalidation_anchor" "$campaign_invalidation_link"; then
+        rm -f -- "$campaign_invalidation_link" "$campaign_invalidation_anchor"
+        rmdir "$campaign_invalidation_dir" 2>/dev/null || true
+        log_fail "无法准备 50 位 campaign 失效合同 symlink fixture"
+        return 1
+    fi
+    saved_test_python="$GNFS_TEST_PYTHON"
+    GNFS_TEST_PYTHON=false
+    invalidate_50d_campaign_artifact "$campaign_invalidation_link" || \
+        invalidation_status=$?
+    GNFS_TEST_PYTHON="$saved_test_python"
+    if (( invalidation_status != 0 )) ||
+       [[ -e "$campaign_invalidation_link" || -L "$campaign_invalidation_link" ]] ||
+       [[ ! -f "$campaign_invalidation_anchor" ]] ||
+       [[ "$(<"$campaign_invalidation_anchor")" != "sentinel" ]]; then
+        rm -f -- "$campaign_invalidation_link" "$campaign_invalidation_anchor"
+        rmdir "$campaign_invalidation_dir" 2>/dev/null || true
+        log_fail "50 位 campaign shell fallback 未能安全失效 canonical symlink"
+        return 1
+    fi
+    rm -f -- "$campaign_invalidation_anchor"
+    if ! rmdir "$campaign_invalidation_dir"; then
+        log_fail "50 位 campaign 失效合同临时目录 cleanup 失败"
+        return 1
+    fi
+
+    local campaign_lock_test_dir campaign_lock_test_path
+    if ! campaign_lock_test_dir=$(mktemp -d \
+        "${TMPDIR:-/tmp}/gnfs_50d_campaign_lock.XXXXXX"); then
+        log_fail "无法创建 50 位 campaign flock 合同临时目录"
+        return 1
+    fi
+    campaign_lock_test_path="${campaign_lock_test_dir}/campaign.lock"
+    if ! acquire_50d_campaign_lock "$campaign_lock_test_path"; then
+        rmdir "$campaign_lock_test_dir" 2>/dev/null || true
+        return 1
+    fi
+    if zsh -c '
+        zmodload zsh/system || exit 2
+        integer contender_fd=-1
+        zsystem flock -t 0 -f contender_fd "$1" || exit 3
+        zsystem flock -u "$contender_fd"
+    ' -- "$campaign_lock_test_path" 2>/dev/null; then
+        release_50d_campaign_lock || true
+        rm -f -- "$campaign_lock_test_path"
+        rmdir "$campaign_lock_test_dir" 2>/dev/null || true
+        log_fail "50 位 campaign flock 接受了并发 owner"
+        return 1
+    fi
+    if ! release_50d_campaign_lock || ! zsh -c '
+        zmodload zsh/system || exit 2
+        integer successor_fd=-1
+        zsystem flock -t 0 -f successor_fd "$1" || exit 3
+        zsystem flock -u "$successor_fd"
+    ' -- "$campaign_lock_test_path"; then
+        rm -f -- "$campaign_lock_test_path"
+        rmdir "$campaign_lock_test_dir" 2>/dev/null || true
+        log_fail "50 位 campaign flock 正常释放后不可重新获取"
+        return 1
+    fi
+    rm -f -- "$campaign_lock_test_path"
+    if ! rmdir "$campaign_lock_test_dir"; then
+        log_fail "50 位 campaign flock 合同临时目录 cleanup 失败"
+        return 1
+    fi
+
+    local campaign_exit_test_dir campaign_exit_lock campaign_exit_artifact
+    local campaign_exit_report campaign_exit_capture unexpected_exit_status=0
+    if ! campaign_exit_test_dir=$(mktemp -d \
+        "${TMPDIR:-/tmp}/gnfs_50d_campaign_exit.XXXXXX"); then
+        log_fail "无法创建 50 位 campaign EXIT fail-closed 合同临时目录"
+        return 1
+    fi
+    campaign_exit_lock="${campaign_exit_test_dir}/campaign.lock"
+    campaign_exit_artifact="${campaign_exit_test_dir}/canonical.json"
+    campaign_exit_report="${campaign_exit_test_dir}/test_report.json"
+    campaign_exit_capture="${campaign_exit_test_dir}/stdout.capture"
+    (
+        REPORT_FILE="$campaign_exit_report"
+        CAMPAIGN_50D_ARTIFACT_PATH="$campaign_exit_artifact"
+        CAMPAIGN_50D_STDOUT_PATH="$campaign_exit_capture"
+        CAMPAIGN_50D_STARTED_MS=$(timer_start_ms)
+        CAMPAIGN_50D_RUNNER_PID=0
+        CAMPAIGN_50D_TERMINAL_COMMITTED=0
+        BUILD_TYPE="Release"
+        acquire_50d_campaign_lock "$campaign_exit_lock"
+        trap 'finalize_50d_campaign_exit $?' EXIT
+        trap 'handle_50d_campaign_signal 129 HUP' HUP
+        trap 'handle_50d_campaign_signal 130 INT' INT
+        trap 'handle_50d_campaign_signal 143 TERM' TERM
+        print -r -- "synthetic published pass" > "$campaign_exit_artifact"
+        print -r -- "synthetic stale pass report" > "$campaign_exit_report"
+        print -r -- "synthetic runner stdout" > "$campaign_exit_capture"
+        # Simulate an unguarded set -e failure after Python publication but
+        # before shell terminal validation/report commit.
+        exit 97
+    ) >/dev/null || unexpected_exit_status=$?
+    local campaign_exit_report_valid=0
+    if "$GNFS_TEST_PYTHON" - "$campaign_exit_report" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+
+report = json.loads(Path(sys.argv[1]).read_text(encoding="ascii"))
+if (report.get("build_type") != "Release" or report.get("total") != 1 or
+        report.get("passed") != 0 or report.get("failed") != 1 or
+        report.get("skipped") != 0 or len(report.get("tests", [])) != 1 or
+        report["tests"][0].get("status") != "fail" or
+        report["tests"][0].get("detail") != "shell_unexpected_exit"):
+    raise SystemExit("unexpected-exit report is not the unique closed failure")
+PY
+    then
+        campaign_exit_report_valid=1
+    fi
+    local campaign_exit_artifact_present=0 campaign_exit_capture_present=0
+    [[ -e "$campaign_exit_artifact" || -L "$campaign_exit_artifact" ]] && \
+        campaign_exit_artifact_present=1
+    [[ -e "$campaign_exit_capture" || -L "$campaign_exit_capture" ]] && \
+        campaign_exit_capture_present=1
+    if (( unexpected_exit_status != 97 || ! campaign_exit_report_valid )) ||
+       (( campaign_exit_artifact_present || campaign_exit_capture_present )); then
+        log_fail "EXIT fixture status=${unexpected_exit_status} report_valid=${campaign_exit_report_valid} artifact_present=${campaign_exit_artifact_present} capture_present=${campaign_exit_capture_present}"
+        rm -f -- "$campaign_exit_artifact" "$campaign_exit_report" \
+            "$campaign_exit_capture" "$campaign_exit_lock"
+        rmdir "$campaign_exit_test_dir" 2>/dev/null || true
+        log_fail "50 位 campaign 未提交终态的 EXIT trap 未 fail closed"
+        return 1
+    fi
+    if ! zsh -c '
+        zmodload zsh/system || exit 2
+        integer successor_fd=-1
+        zsystem flock -t 0 -f successor_fd "$1" || exit 3
+        zsystem flock -u "$successor_fd"
+    ' -- "$campaign_exit_lock"; then
+        rm -f -- "$campaign_exit_report" "$campaign_exit_lock"
+        rmdir "$campaign_exit_test_dir" 2>/dev/null || true
+        log_fail "50 位 campaign unexpected EXIT 后 flock 未释放"
+        return 1
+    fi
+    rm -f -- "$campaign_exit_report" "$campaign_exit_lock"
+    if ! rmdir "$campaign_exit_test_dir"; then
+        log_fail "50 位 campaign EXIT 合同临时目录 cleanup 失败"
+        return 1
+    fi
+
+    # Send TERM only to a top-level zsh PID whose actual production handler is
+    # armed.  It must forward TERM to the recorded fake-runner PID, wait while
+    # that runner reaps its child, invalidate stale terminal evidence, publish
+    # one failure report, clean stdout, and release the same flock.
+    local campaign_signal_dir campaign_signal_lock campaign_signal_artifact
+    local campaign_signal_report campaign_signal_capture campaign_signal_child_marker
+    local campaign_signal_runner_marker campaign_signal_shell_pid
+    local campaign_signal_runner_pid=0 campaign_signal_child_pid=0
+    local campaign_signal_status=0 campaign_signal_ready=0
+    if ! campaign_signal_dir=$(mktemp -d \
+        "${TMPDIR:-/tmp}/gnfs_50d_campaign_signal.XXXXXX"); then
+        log_fail "无法创建 50 位 campaign signal 合同临时目录"
+        return 1
+    fi
+    campaign_signal_lock="${campaign_signal_dir}/campaign.lock"
+    campaign_signal_artifact="${campaign_signal_dir}/canonical.json"
+    campaign_signal_report="${campaign_signal_dir}/test_report.json"
+    campaign_signal_capture="${campaign_signal_dir}/stdout.capture"
+    campaign_signal_child_marker="${campaign_signal_dir}/child.pid"
+    campaign_signal_runner_marker="${campaign_signal_dir}/runner.pid"
+    (
+        REPORT_FILE="$campaign_signal_report"
+        CAMPAIGN_50D_ARTIFACT_PATH="$campaign_signal_artifact"
+        CAMPAIGN_50D_STDOUT_PATH="$campaign_signal_capture"
+        CAMPAIGN_50D_STARTED_MS=$(timer_start_ms)
+        CAMPAIGN_50D_RUNNER_PID=0
+        CAMPAIGN_50D_TERMINAL_COMMITTED=0
+        BUILD_TYPE="Release"
+        acquire_50d_campaign_lock "$campaign_signal_lock"
+        trap 'finalize_50d_campaign_exit $?' EXIT
+        trap 'handle_50d_campaign_signal 129 HUP' HUP
+        trap 'handle_50d_campaign_signal 130 INT' INT
+        trap 'handle_50d_campaign_signal 143 TERM' TERM
+        print -r -- "synthetic published pass" > "$campaign_signal_artifact"
+        print -r -- "synthetic stale pass report" > "$campaign_signal_report"
+        "$GNFS_TEST_PYTHON" - "$campaign_signal_child_marker" \
+            > "$campaign_signal_capture" <<'PY' &
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+
+
+def stop(_signal, _frame):
+    child.terminate()
+    try:
+        child.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        child.kill()
+        child.wait(timeout=2)
+    raise SystemExit(143)
+
+
+signal.signal(signal.SIGTERM, stop)
+Path(sys.argv[1]).write_text(str(child.pid), encoding="ascii")
+while child.poll() is None:
+    time.sleep(0.05)
+PY
+        CAMPAIGN_50D_RUNNER_PID=$!
+        print -r -- "$CAMPAIGN_50D_RUNNER_PID" > "$campaign_signal_runner_marker"
+        wait "$CAMPAIGN_50D_RUNNER_PID"
+    ) >/dev/null 2>&1 &
+    campaign_signal_shell_pid=$!
+    local campaign_signal_poll
+    for campaign_signal_poll in {1..300}; do
+        if [[ -s "$campaign_signal_child_marker" &&
+              -s "$campaign_signal_runner_marker" ]]; then
+            campaign_signal_ready=1
+            break
+        fi
+        sleep 0.01
+    done
+    if (( campaign_signal_ready )); then
+        campaign_signal_child_pid=$(<"$campaign_signal_child_marker")
+        campaign_signal_runner_pid=$(<"$campaign_signal_runner_marker")
+        kill -TERM "$campaign_signal_shell_pid" 2>/dev/null || true
+        wait "$campaign_signal_shell_pid" || campaign_signal_status=$?
+    else
+        kill -TERM "$campaign_signal_shell_pid" 2>/dev/null || true
+        wait "$campaign_signal_shell_pid" 2>/dev/null || true
+        campaign_signal_status=1
+    fi
+    local campaign_signal_report_valid=0 campaign_signal_processes_gone=1
+    if (( campaign_signal_runner_pid > 0 )) && kill -0 "$campaign_signal_runner_pid" 2>/dev/null; then
+        campaign_signal_processes_gone=0
+    fi
+    if (( campaign_signal_child_pid > 0 )) && kill -0 "$campaign_signal_child_pid" 2>/dev/null; then
+        campaign_signal_processes_gone=0
+    fi
+    if "$GNFS_TEST_PYTHON" - "$campaign_signal_report" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+
+report = json.loads(Path(sys.argv[1]).read_text(encoding="ascii"))
+if (report.get("build_type") != "Release" or report.get("total") != 1 or
+        report.get("passed") != 0 or report.get("failed") != 1 or
+        len(report.get("tests", [])) != 1 or
+        report["tests"][0].get("detail") != "shell_term"):
+    raise SystemExit("TERM report is not the unique closed failure")
+PY
+    then
+        campaign_signal_report_valid=1
+    fi
+    if (( campaign_signal_status != 143 || ! campaign_signal_processes_gone ||
+          ! campaign_signal_report_valid )) ||
+       [[ -e "$campaign_signal_artifact" || -L "$campaign_signal_artifact" ]] ||
+       [[ -e "$campaign_signal_capture" || -L "$campaign_signal_capture" ]] ||
+       ! zsh -c '
+            zmodload zsh/system || exit 2
+            integer successor_fd=-1
+            zsystem flock -t 0 -f successor_fd "$1" || exit 3
+            zsystem flock -u "$successor_fd"
+       ' -- "$campaign_signal_lock"; then
+        (( campaign_signal_runner_pid > 0 )) && \
+            kill -KILL "$campaign_signal_runner_pid" 2>/dev/null || true
+        (( campaign_signal_child_pid > 0 )) && \
+            kill -KILL "$campaign_signal_child_pid" 2>/dev/null || true
+        rm -f -- "$campaign_signal_artifact" "$campaign_signal_report" \
+            "$campaign_signal_capture" "$campaign_signal_child_marker" \
+            "$campaign_signal_runner_marker" "$campaign_signal_lock"
+        rmdir "$campaign_signal_dir" 2>/dev/null || true
+        log_fail "50 位 campaign 生产 signal handler 合同失败"
+        return 1
+    fi
+    rm -f -- "$campaign_signal_report" "$campaign_signal_child_marker" \
+        "$campaign_signal_runner_marker" "$campaign_signal_lock"
+    if ! rmdir "$campaign_signal_dir"; then
+        log_fail "50 位 campaign signal 合同临时目录 cleanup 失败"
+        return 1
+    fi
+
+    if ! "$GNFS_TEST_PYTHON" \
+        "${PROJECT_ROOT}/scripts/run_50d_route_campaign.py" self-test \
+        --structured-record "$fixture_record" \
+        --legacy-record "$legacy_fixture_record" >/dev/null; then
+        log_fail "50 位 route campaign V1 合同自检失败"
+        return 1
+    fi
 }
 
 expect_measurement_field() {
@@ -3419,6 +3903,221 @@ run_50d_route_comparison() {
             (( FAILED_TESTS += 1 ))
             comparison_ready=0
         fi
+    fi
+    show_summary
+}
+
+run_50d_first_round_campaign() {
+    local campaign_runner="${PROJECT_ROOT}/scripts/run_50d_route_campaign.py"
+    local campaign_artifact_path="${BUILD_DIR}/50d-campaigns/complete_first_round_abba_v1.json"
+    local campaign_started_ms="$CAMPAIGN_50D_STARTED_MS"
+    local campaign_requested_build_type="$BUILD_TYPE"
+    BUILD_TYPE="Release"
+    (( TOTAL_TESTS += 1 ))
+
+    campaign_finish_early_failure() {
+        local detail="$1"
+        local message="$2"
+        local failure_end_ms failure_elapsed
+        log_fail "$message"
+        failure_end_ms=$(timer_start_ms)
+        failure_elapsed=$(( failure_end_ms - campaign_started_ms ))
+        TOTAL_TIME_MS=$(( TOTAL_TIME_MS + failure_elapsed ))
+        (( FAILED_TESTS += 1 ))
+        REPORT_ENTRIES+=(
+            "{\"name\":\"test_50d_first_round_campaign\",\"status\":\"fail\",\"elapsed_ms\":${failure_elapsed},\"detail\":\"${detail}\"}"
+        )
+        show_summary
+    }
+
+    if ! mkdir -p "$BUILD_DIR" || ! rm -f -- "$REPORT_FILE"; then
+        campaign_finish_early_failure "report_initialization_failure" \
+            "无法初始化本次 campaign test_report，拒绝沿用旧报告"
+        return 0
+    fi
+    if ! invalidate_50d_campaign_artifact "$campaign_artifact_path"; then
+        campaign_finish_early_failure "artifact_invalidation_failure" \
+            "无法失效上一轮完整首轮 campaign artifact: ${campaign_artifact_path}"
+        return 0
+    fi
+
+    if (( $# > 3 )); then
+        campaign_finish_early_failure "invalid_arguments" \
+            "用法: $0 ${MODE} [samples_per_route] [max_batch_workers] [max_local_sieve_threads|auto]"
+        return 0
+    fi
+
+    local samples_per_route="${1:-2}"
+    local max_batch_workers="${2:-4}"
+    local max_local_sieve_threads="${3:-auto}"
+    if [[ ! "$samples_per_route" =~ ^[2-9]$ ]]; then
+        campaign_finish_early_failure "invalid_samples_per_route" \
+            "samples_per_route 必须在 2..9（传入: ${samples_per_route}）"
+        return 0
+    fi
+    if ! validate_50d_batch_workers "$max_batch_workers"; then
+        campaign_finish_early_failure "invalid_batch_workers" \
+            "campaign batch-worker 参数无效"
+        return 0
+    fi
+    if ! validate_50d_local_threads "$max_local_sieve_threads"; then
+        campaign_finish_early_failure "invalid_local_threads" \
+            "campaign local-thread 参数无效"
+        return 0
+    fi
+
+    local slot_timeout=7200
+    if (( TIMEOUT_EXPLICIT )); then
+        slot_timeout="$TIMEOUT"
+    fi
+    if ! validate_50d_uint32_argument \
+        "$slot_timeout" "50 位 campaign slot timeout（秒）" 1; then
+        campaign_finish_early_failure "invalid_timeout" "campaign timeout 参数无效"
+        return 0
+    fi
+
+    if (( BUILD_TYPE_EXPLICIT )) && [[ "$campaign_requested_build_type" != "Release" ]]; then
+        campaign_finish_early_failure "invalid_build_type" \
+            "${MODE} 只接受 Release 构建（传入: ${campaign_requested_build_type}）"
+        return 0
+    fi
+    if (( SKIP_BUILD )); then
+        campaign_finish_early_failure "no_build_rejected" \
+            "${MODE} 不接受 --no-build；campaign 必须先完成一次当前源码构建"
+        return 0
+    fi
+    if (( RETRY_EXPLICIT )); then
+        campaign_finish_early_failure "retry_rejected" \
+            "${MODE} 不接受 --retry；自动重试会破坏固定 ABBA/BAAB 顺序"
+        return 0
+    fi
+
+    local campaign_host_os
+    campaign_host_os=$(uname -s)
+    case "$campaign_host_os" in
+        Linux|Darwin) ;;
+        *)
+            campaign_finish_early_failure "platform_unsupported" \
+                "${MODE} 当前仅支持 Linux/macOS POSIX 进程组与精确 cleanup 合同（传入: ${campaign_host_os}）"
+            return 0
+            ;;
+    esac
+
+    if ! do_build; then
+        campaign_finish_early_failure "build_failure" "完整首轮 campaign Release 构建失败"
+        return 0
+    fi
+    local campaign_executable="${BUILD_DIR}/test_structured_ooc_50d_probe"
+    if [[ ! -x "$campaign_executable" ]]; then
+        campaign_finish_early_failure "binary_missing" \
+            "50 位探针二进制不存在: ${campaign_executable}"
+        return 0
+    fi
+    if ! self_check_50d_probe_cli; then
+        campaign_finish_early_failure "cli_self_check_failure" \
+            "50 位探针 CLI 边界自检失败"
+        return 0
+    fi
+
+    log_header "50 位完整首轮 legacy/structured campaign"
+    log_info "samples_per_route=${samples_per_route}; schedule=ABBA/BAAB prefix; max_special_q=8192; max_batch_workers=${max_batch_workers}; max_local_sieve_threads=${max_local_sieve_threads}; per_slot_timeout=${slot_timeout}s"
+
+    if ! CAMPAIGN_50D_STDOUT_PATH=$(mktemp \
+        "${BUILD_DIR}/50d-campaigns/.complete_first_round_abba_v1.stdout.XXXXXX"); then
+        campaign_finish_early_failure "stdout_capture_failure" \
+            "无法创建完整首轮 campaign 独占 stdout capture"
+        return 0
+    fi
+
+    local end_ms elapsed campaign_status=0 campaign_output=""
+    "$GNFS_TEST_PYTHON" "$campaign_runner" run \
+        --project-root "$PROJECT_ROOT" \
+        --executable "$campaign_executable" \
+        --artifact "$campaign_artifact_path" \
+        --samples-per-route "$samples_per_route" \
+        --max-batch-workers "$max_batch_workers" \
+        --max-local-threads "$max_local_sieve_threads" \
+        --timeout-s "$slot_timeout" > "$CAMPAIGN_50D_STDOUT_PATH" &
+    CAMPAIGN_50D_RUNNER_PID=$!
+    wait "$CAMPAIGN_50D_RUNNER_PID" || campaign_status=$?
+    CAMPAIGN_50D_RUNNER_PID=0
+    if ! campaign_output=$(<"$CAMPAIGN_50D_STDOUT_PATH"); then
+        campaign_status=1
+        log_fail "无法读取完整首轮 campaign stdout capture"
+    fi
+    if ! cleanup_50d_campaign_stdout; then
+        campaign_status=1
+        log_fail "无法精确清理完整首轮 campaign stdout capture"
+    fi
+    end_ms=$(timer_start_ms)
+    elapsed=$(( end_ms - campaign_started_ms ))
+    TOTAL_TIME_MS=$(( TOTAL_TIME_MS + elapsed ))
+
+    local campaign_summary="" summary_count=0 summary_valid=0
+    local campaign_summary_status="" campaign_artifact_published=""
+    summary_count=$(printf '%s\n' "$campaign_output" | awk \
+        'index($0, "GNFS_50D_ROUTE_CAMPAIGN_V1 ") == 1 { count += 1 } END { print count + 0 }')
+    if [[ "$summary_count" == "1" ]]; then
+        campaign_summary=$(printf '%s\n' "$campaign_output" | awk \
+            'index($0, "GNFS_50D_ROUTE_CAMPAIGN_V1 ") == 1 { print }')
+        if "$GNFS_TEST_PYTHON" "$campaign_runner" validate-summary \
+            --record "$campaign_summary"; then
+            summary_valid=1
+            campaign_summary_status=$(printf '%s\n' "$campaign_summary" | awk '
+                { for (i = 1; i <= NF; ++i) if ($i ~ /^status=/) { sub(/^status=/, "", $i); print $i } }')
+            campaign_artifact_published=$(printf '%s\n' "$campaign_summary" | awk '
+                { for (i = 1; i <= NF; ++i) if ($i ~ /^artifact_published=/) { sub(/^artifact_published=/, "", $i); print $i } }')
+            print -r -- "$campaign_summary"
+        fi
+    fi
+
+    local artifact_valid=0
+    if (( campaign_status == 0 && summary_valid )) &&
+        [[ "$campaign_summary_status" == "pass" ]] &&
+        [[ "$campaign_artifact_published" == "true" ]]; then
+        if "$GNFS_TEST_PYTHON" "$campaign_runner" validate-artifact \
+            --artifact "$campaign_artifact_path" \
+            --summary-record "$campaign_summary"; then
+            artifact_valid=1
+        else
+            log_fail "canonical campaign artifact 重读/闭合验证失败"
+        fi
+    fi
+
+    if (( campaign_status == 0 && summary_valid && artifact_valid )) &&
+        [[ "$campaign_summary_status" == "pass" ]] &&
+        [[ "$campaign_artifact_published" == "true" ]]; then
+        (( PASSED_TESTS += 1 ))
+        REPORT_ENTRIES+=(
+            "{\"name\":\"test_50d_first_round_campaign\",\"status\":\"pass\",\"elapsed_ms\":${elapsed},\"detail\":\"\"}"
+        )
+        log_success "完整首轮 campaign 通过；原子证据: ${campaign_artifact_path}"
+    else
+        local terminal_invalidation_valid=1
+        if ! invalidate_50d_campaign_artifact "$campaign_artifact_path"; then
+            terminal_invalidation_valid=0
+            log_fail "campaign 失败后无法确认 canonical artifact 已失效"
+        fi
+        (( FAILED_TESTS += 1 ))
+        local failure_detail="campaign_failure"
+        if (( ! terminal_invalidation_valid )); then
+            failure_detail="artifact_invalidation_failure"
+        fi
+        if (( campaign_status == 0 )); then
+            if (( terminal_invalidation_valid )); then
+                failure_detail="invalid_terminal_evidence"
+            fi
+            log_fail "campaign runner 成功，但 V1 summary/canonical terminal evidence 无效"
+        else
+            if (( terminal_invalidation_valid )); then
+                log_fail "完整首轮 campaign 失败（exit=${campaign_status}）；旧 pass artifact 已失效"
+            else
+                log_fail "完整首轮 campaign 失败（exit=${campaign_status}）；canonical 缺失状态无法确认"
+            fi
+        fi
+        REPORT_ENTRIES+=(
+            "{\"name\":\"test_50d_first_round_campaign\",\"status\":\"fail\",\"elapsed_ms\":${elapsed},\"detail\":\"${failure_detail}\"}"
+        )
     fi
     show_summary
 }
@@ -6306,6 +7005,141 @@ EOF
     log_info "测试报告 ${ARROW} ${REPORT_FILE}"
 }
 
+write_50d_campaign_report_atomic() {
+    local total_elapsed="$1"
+    if (( TOTAL_TESTS != 1 || PASSED_TESTS + FAILED_TESTS + SKIPPED_TESTS != 1 ||
+          ${#REPORT_ENTRIES[@]} != 1 )); then
+        log_fail "campaign test_report 计数不是唯一逻辑测试"
+        return 1
+    fi
+    "$GNFS_TEST_PYTHON" - \
+        "$REPORT_FILE" "$BUILD_TYPE" "$TOTAL_TESTS" "$PASSED_TESTS" \
+        "$FAILED_TESTS" "$SKIPPED_TESTS" "$total_elapsed" \
+        "${REPORT_ENTRIES[1]}" <<'PY'
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import stat
+import sys
+import tempfile
+
+
+def closed_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def parse_uint(text, label):
+    if not text.isascii() or not text.isdecimal() or (len(text) > 1 and text[0] == "0"):
+        raise ValueError(f"{label} is not canonical unsigned decimal")
+    return int(text)
+
+
+destination = Path(os.path.abspath(sys.argv[1]))
+build_type = sys.argv[2]
+total, passed, failed, skipped, elapsed = (
+    parse_uint(value, label)
+    for value, label in zip(
+        sys.argv[3:8], ("total", "passed", "failed", "skipped", "elapsed")
+    )
+)
+entry = json.loads(sys.argv[8], object_pairs_hook=closed_object)
+if build_type != "Release":
+    raise SystemExit("campaign report is not bound to the Release lane")
+if total != 1 or passed + failed + skipped != 1:
+    raise SystemExit("campaign report counters are not closed to one test")
+if not isinstance(entry, dict) or set(entry) != {"name", "status", "elapsed_ms", "detail"}:
+    raise SystemExit("campaign report entry is not closed")
+if entry["name"] != "test_50d_first_round_campaign" or \
+        type(entry["elapsed_ms"]) is not int or entry["elapsed_ms"] < 0 or \
+        type(entry["detail"]) is not str:
+    raise SystemExit("campaign report entry identity is invalid")
+expected_status = "pass" if passed == 1 else ("fail" if failed == 1 else "skip")
+if entry["status"] != expected_status or \
+        (expected_status == "pass" and entry["detail"] != "") or \
+        (expected_status == "fail" and entry["detail"] == ""):
+    raise SystemExit("campaign report entry status does not match counters")
+
+document = {
+    "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "build_type": build_type,
+    "total": total,
+    "passed": passed,
+    "failed": failed,
+    "skipped": skipped,
+    "total_elapsed_ms": elapsed,
+    "tests": [entry],
+}
+payload = (json.dumps(document, ensure_ascii=True, indent=2) + "\n").encode("ascii")
+temporary_path = None
+published = False
+try:
+    parent_metadata = os.lstat(destination.parent)
+    if not stat.S_ISDIR(parent_metadata.st_mode):
+        raise OSError("report parent is not a directory")
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
+    )
+    temporary_path = Path(temporary_name)
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    reread = temporary_path.read_bytes()
+    if reread != payload or json.loads(
+        reread.decode("ascii"), object_pairs_hook=closed_object
+    ) != document:
+        raise ValueError("serialized campaign report failed pre-replace validation")
+    os.replace(temporary_path, destination)
+    temporary_path = None
+    published = True
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    directory_fd = os.open(destination.parent, directory_flags)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+    metadata = os.lstat(destination)
+    final_payload = destination.read_bytes()
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1 or \
+            final_payload != payload or json.loads(
+                final_payload.decode("ascii"), object_pairs_hook=closed_object
+            ) != document:
+        raise ValueError("published campaign report failed closed re-read")
+except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
+    print(f"campaign report publication failed: {error}", file=sys.stderr)
+    if published:
+        try:
+            destination.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as cleanup_error:
+            print(
+                f"campaign report post-replace cleanup failed: {cleanup_error}",
+                file=sys.stderr,
+            )
+        if os.path.lexists(destination):
+            print("campaign report survived failed post-replace validation", file=sys.stderr)
+    raise SystemExit(1)
+finally:
+    if temporary_path is not None:
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+PY
+    local report_status=$?
+    if (( report_status == 0 )); then
+        log_info "测试报告 ${ARROW} ${REPORT_FILE}"
+    fi
+    return "$report_status"
+}
+
 # ============================================================
 # 总结输出
 # ============================================================
@@ -7197,6 +8031,7 @@ do_list() {
     echo "  ${BULLET} ${CYAN}structured-ooc-dense-stage <1|4>${RESET} — Release-only cardinality-anchor stage/read replay"
     echo "  ${BULLET} ${CYAN}compare-50d-bounded-routes${RESET} — 4-SQ legacy/structured fresh-process 对照"
     echo "  ${BULLET} ${CYAN}compare-50d-first-round${RESET} — 完整首轮 legacy/structured fresh-process 对照"
+    echo "  ${BULLET} ${CYAN}campaign-50d-first-round${RESET} — 完整首轮 ABBA/BAAB fresh-process campaign"
     echo "  ${BULLET} ${CYAN}test_candidate_batch_50d_sweep${RESET} — 固定 50 位 4-SQ candidate 调度扫测"
     echo "  ${BULLET} ${CYAN}test_squfof_bench${RESET}     — 固定 50 位 SQUFOF multiplier/吞吐基准"
     echo "  ${BULLET} ${CYAN}test_siqs_shadow_matrix_bench${RESET} — 固定 SIQS shadow matrix 求解/内核/准备基准"
@@ -7657,6 +8492,25 @@ case "$MODE" in
     compare-50d-first-round|probe-50d-first-round-comparison)
         run_50d_route_comparison \
             bounded_50d_first_round_comparison true 8192 7200 "${MODE_ARGS[@]}"
+        ;;
+
+    campaign-50d-first-round)
+        CAMPAIGN_50D_STARTED_MS=$(timer_start_ms)
+        CAMPAIGN_50D_ARTIFACT_PATH="${BUILD_DIR}/50d-campaigns/complete_first_round_abba_v1.json"
+        if ! acquire_50d_campaign_lock; then
+            log_fail "完整首轮 campaign 在触碰共享 report/canonical 前 fail-fast"
+            exit 1
+        fi
+        # In zsh, an EXIT trap installed inside a function fires when that
+        # function returns.  Install every mode-lifetime trap here at top level,
+        # after ownership succeeds and before any shared evidence is touched.
+        trap 'finalize_50d_campaign_exit $?' EXIT
+        trap 'handle_50d_campaign_signal 129 HUP' HUP
+        trap 'handle_50d_campaign_signal 130 INT' INT
+        trap 'handle_50d_campaign_signal 143 TERM' TERM
+        if ! run_50d_first_round_campaign "${MODE_ARGS[@]}"; then
+            exit 1
+        fi
         ;;
 
     probe-50d-special-q-workers)
@@ -9089,9 +9943,58 @@ case "$MODE" in
         ;;
 esac
 
+# campaign report is part of the pass-only terminal evidence.  Publish it
+# atomically while the same-scope lock is still held; if publication fails,
+# invalidate any canonical pass and make one best-effort atomic failure report.
+if [[ "$MODE" == "campaign-50d-first-round" ]] && (( TOTAL_TESTS > 0 )); then
+    local campaign_report_end_ms campaign_report_elapsed
+    local campaign_report_committed=0
+    campaign_report_end_ms=$(timer_start_ms)
+    campaign_report_elapsed=$(( campaign_report_end_ms - OVERALL_START_MS ))
+    if write_50d_campaign_report_atomic "$campaign_report_elapsed"; then
+        campaign_report_committed=1
+    else
+        log_fail "完整首轮 campaign test_report 原子发布/重读失败；撤销 canonical pass"
+        invalidate_50d_campaign_report || \
+            log_fail "无法失效未通过终态验证的 campaign test_report"
+        invalidate_50d_campaign_artifact "$CAMPAIGN_50D_ARTIFACT_PATH" || \
+            log_fail "test_report 失败后无法确认 canonical campaign artifact 缺失"
+        PASSED_TESTS=0
+        FAILED_TESTS=1
+        SKIPPED_TESTS=0
+        REPORT_ENTRIES=(
+            "{\"name\":\"test_50d_first_round_campaign\",\"status\":\"fail\",\"elapsed_ms\":${campaign_report_elapsed},\"detail\":\"report_publication_failure\"}"
+        )
+        if write_50d_campaign_report_atomic "$campaign_report_elapsed"; then
+            campaign_report_committed=1
+        else
+            log_fail "campaign 失败 test_report 的原子发布仍失败"
+        fi
+    fi
+    if (( campaign_report_committed )); then
+        CAMPAIGN_50D_TERMINAL_COMMITTED=1
+    fi
+    # Terminal report/canonical state is now fixed.  Ignore a last-microsecond
+    # signal while dropping traps and exiting so it cannot create a post-lock
+    # mutation window.
+    trap '' HUP INT TERM
+    local campaign_exit_status=$FAILED_TESTS
+    if (( CAMPAIGN_50D_TERMINAL_COMMITTED )); then
+        if ! release_50d_campaign_lock; then
+            log_warn "完整首轮 campaign 互斥锁显式释放失败；shell 退出将关闭 owner-only fd"
+        fi
+        trap - EXIT
+    else
+        # Keep the lock owned until the EXIT trap invalidates any uncommitted
+        # report/canonical state and publishes a best-effort failure report.
+        :
+    fi
+    exit "$campaign_exit_status"
+fi
+
 # 自动写入报告
 case "$MODE" in
-    report|list|ls|matrix|watch|build) ;;
+    report|list|ls|matrix|watch|build|campaign-50d-first-round) ;;
     *)
         if (( TOTAL_TESTS > 0 )); then
             local overall_end_ms=$(timer_start_ms)
