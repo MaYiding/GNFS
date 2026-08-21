@@ -59,6 +59,15 @@ static_assert(std::string_view(ARTIFACT_ROOT_LEAF) ==
 static_assert(std::string_view(TERMINAL_GATE_RECORD_LEAF) ==
               terminal_gate_record::SIQS_SHADOW_PROOF_RSS_TERMINAL_GATE_RECORD_LEAF);
 
+[[nodiscard]] constexpr bool has_exact_private_file_mode(mode_t mode) noexcept {
+    return (mode & static_cast<mode_t>(07777)) == static_cast<mode_t>(0600);
+}
+
+static_assert(has_exact_private_file_mode(0600));
+static_assert(!has_exact_private_file_mode(04600));
+static_assert(!has_exact_private_file_mode(02600));
+static_assert(!has_exact_private_file_mode(01600));
+
 class NativePublicationOps final : public PublicationOps {
 public:
     [[nodiscard]] durable::PublishResult
@@ -1097,7 +1106,7 @@ capture_artifact_entry(int artifact_root_fd, std::string leaf_name,
         result.entry = std::move(entry);
         return result;
     }
-    if ((path_metadata.st_mode & 07777) != 0600 ||
+    if (!has_exact_private_file_mode(path_metadata.st_mode) ||
         static_cast<uint64_t>(path_metadata.st_uid) != expected_owner) {
         result.diagnostic = make_diagnostic(StoreError::entry_trust_invalid, StoreObject::artifact);
         return result;
@@ -1126,7 +1135,7 @@ capture_artifact_entry(int artifact_root_fd, std::string leaf_name,
         return result;
     }
     std::error_code trust_error;
-    if ((before_read.st_mode & 07777) != 0600 ||
+    if (!has_exact_private_file_mode(before_read.st_mode) ||
         !descriptor_has_trusted_access(file.get(), before_read, expected_owner, false,
                                        trust_error)) {
         result.diagnostic =
@@ -1173,7 +1182,7 @@ capture_artifact_entry(int artifact_root_fd, std::string leaf_name,
         return result;
     }
     trust_error.clear();
-    if ((after_read.st_mode & 07777) != 0600 ||
+    if (!has_exact_private_file_mode(after_read.st_mode) ||
         !descriptor_has_trusted_access(file.get(), after_read, expected_owner, false,
                                        trust_error)) {
         result.diagnostic =
