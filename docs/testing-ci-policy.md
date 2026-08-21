@@ -265,21 +265,98 @@ byte normalization and process high-water-mark monotonicity without requiring a
 fixed allocation delta. `test_structured_ooc_50d_probe` is a disabled `stress`
 target because it builds a real 50-digit factor base and runs the production
 sieve. Run it only through `./scripts/test.sh probe-50d-structured-ooc`,
-`compare-50d-bounded-routes`, `compare-50d-first-round`, or
-`probe-50d-special-q-workers`. These modes supply a hard special-Q cap, a
-bounded outer-worker configuration, a local sieve compute-lane budget, fresh
-processes, and isolated artifact directories. The worker mode runs settings 1,
-2, and 4 under one fixed compute-lane budget; the two route modes compare
-legacy and structured production paths. Every mode uses the closed
-`GNFS_EXPERIMENT_V2` schema validator and treats timing and RSS as measurements,
-not CI assertions.
+`compare-50d-bounded-routes`, `compare-50d-first-round`,
+`campaign-50d-first-round`, or `probe-50d-special-q-workers`. These modes supply
+a hard special-Q cap, a bounded outer-worker configuration, a local sieve
+compute-lane budget, fresh processes, and isolated artifact directories. The
+worker mode runs settings 1, 2, and 4 under one fixed compute-lane budget; the
+route modes compare legacy and structured production paths. Every mode uses the
+closed `GNFS_EXPERIMENT_V2` source-record validator. The pair and worker modes
+treat timing and RSS as measurements rather than assertions; the manual
+campaign applies the directional budgets below.
+
+`campaign-50d-first-round` is a manual Release-only lane. It builds once, rejects
+automatic retry and build reuse, and runs an `ABBA/BAAB` prefix with two to nine
+samples per route. Its independent `GNFS_50D_ROUTE_CAMPAIGN_V1` artifact binds
+the clean source commit and tree, the binary SHA-256, all 51 raw-identity fields,
+and 13 within-route stability fields. The campaign applies broad directional
+wall, RSS, matrix-nonzero, and positive-excess budgets, but it always reports
+`promotion=false`. It invalidates the canonical artifact before work, publishes
+only a rebuilt and revalidated pass after successful staging cleanup. Failures
+after source/artifact preflight and run-directory creation stay solely as
+`diagnostic.json` in that exclusive directory with `artifact_published=false`;
+earlier preflight failures guarantee only an absent canonical and one fresh test
+report. SIGINT, SIGTERM, and polling exceptions terminate,
+then bounded-wait and kill the active POSIX process group before the failure
+escapes. Real campaign execution is Linux/macOS-only because process-group
+reaping and exact directory-fd cleanup are part of the contract; unsupported
+platforms fail before the Release build and still replace the one logical test
+report. The outer runner re-reads and closed-validates the canonical artifact
+against its exact stdout summary before counting a pass. Routine CI never starts
+its real 50-digit slots. The canonical leaf never resolves a final symlink;
+the containing build namespace is a trusted local parent, not an attacker-owned
+symlink tree.
+
+The only supported real-campaign entry is
+`./scripts/test.sh campaign-50d-first-round`. The Python `run` subcommand is an
+internal helper: it holds no shell flock, does not publish the closed one-test
+report, and must not be used as a standalone or concurrent publication entry.
+
+The entire same-`BUILD_DIR` manual mode holds a nonblocking `zsh/system` flock
+on the persistent `.complete_first_round_abba_v1.lock` inode through canonical
+and atomic report publication. A contender fails before touching either shared
+output; the persistent leaf is not an ownership marker and must not be removed
+between runs. The owner fd is close-on-exec and is released on every return and
+signal path. The shell captures runner stdout in an exclusive file instead of a
+command substitution. HUP, INT, or TERM sent only to the top-level zsh is
+forwarded to the recorded Python PID, and the shell waits for Python to reap its
+probe process group before it invalidates evidence, writes the one-test failure
+report, and unlocks. The report itself uses same-directory temp validation,
+fsync, atomic replace, parent sync, and a closed final re-read. Report publication
+failure removes any post-replace report and invalidates the canonical artifact.
+Direct Python execution additionally requires the executable's single-link
+`CMakeCache.txt` to bind `CMAKE_BUILD_TYPE:STRING=Release`.
+Until a closed terminal report is committed, the top-level EXIT trap remains
+armed: any unexpected shell exit invalidates canonical and uncommitted report
+state, removes the stdout capture, and best-effort publishes one
+`shell_unexpected_exit` failure while still holding the lock. Only terminal
+commit disarms that trap. A passing standalone summary also enforces the stated
+1.20x wall, 1.60x RSS, and 30x matrix-nonzero ceilings directly.
 
 `StructuredOOC50dContract` is a `fast` CTest that runs
 `./scripts/test.sh --no-build check-50d-contracts`. It never enters the real
 50-digit pipeline. It exercises all CLI rejection/help cases, asks the probe
 emitter for one deterministic `GNFS_EXPERIMENT_FIXTURE_V2` pass fixture, rejects
 any production-evidence prefix in that fixture, then runs the closed schema and
-its synthetic negative mutations against it. CMake passes the selected target's
+its synthetic negative mutations against it. The same emitted structured fixture
+and its validated legacy counterpart drive the campaign V1 self-test, so its
+109-field source parser cannot drift behind an independent fake record. That
+self-test covers fixed ordering and command-option multiplicity, closed artifact,
+diagnostic, and summary schemas, record/field and derived identity/stability/budget
+mutation, raw-byte cardinality, timeout and nonzero children, stale-artifact
+invalidation, interrupted descendant-group cleanup, pass-only publication,
+canonical re-read, and a validator that rejects the serialized temp on its
+second pre-replace validation.
+It also covers every sample count from two through nine, strict JSON bool/integer
+separation, canonical non-reversed UTC timestamps, an exited leader with a live
+descendant, shell flock contention/reacquisition, and top-level-PID-only TERM
+forwarding through a fake runner to its child.
+The shell fixture additionally places synthetic pass files after lock
+acquisition and exits before terminal commit, proving that the real top-level
+EXIT trap removes canonical/capture state, publishes only the one-test failure
+report, and releases the lock.
+The TERM fixture invokes the production signal handler rather than a duplicate
+wrapper, checks runner/child reaping and the same terminal evidence, and the
+process fixture forces the TERM-ignore/KILL fallback. Route negatives freeze the
+production candidate chunk at 256 and reject structured `not_started`; a positive
+case preserves the valid lifecycle where structured emitted rows exceed final
+reduction output rows.
+Failure-diagnostic mutations also enforce the fail-fast slot prefix: at most one
+failed final slot, exact failure-ordinal binding, and no pass after failure. An
+all-pass prefix may bind only the next unexecuted slot (or no slot for a
+post-run failure). Standalone summary local-thread and timeout values share the
+CLI/artifact uint32 ceiling.
+CMake passes the selected target's
 exact `$<TARGET_FILE:...>` and Python executable into the runner, so non-default
 and multi-config build trees cannot accidentally validate a stale root
 `build/` binary. This keeps CLI/schema drift in routine CTest without weakening
