@@ -402,7 +402,9 @@ cross-process contender reports `Busy`, and that the same base is reusable
 without replacing that lock after a completed lease removal. It also replaces
 an owned empty lease with a different live directory and verifies that the old
 identity-bound receipt rejects the ABA target. The no-argument binary runs all
-suites, so its `scripts/test.sh` tier and timeout are `fast` and 120 seconds.
+suites. On macOS that serial aggregate includes all eight logical suites, so
+`scripts/test.sh` catalogs the physical binary as `slow` with a five-minute
+timeout. CTest retains the narrower per-suite tiers and timeouts above.
 `OOCCleanupAuthorityUnion` is an `instant` pure-policy suite from the same
 binary. It exhaustively reduces all 60,025 combinations of four cleanup-marker
 leaf states and two generic-handoff leaf states, plus namespace-foreign

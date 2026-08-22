@@ -757,7 +757,7 @@ TEST_TIMEOUT=(
     test_relation_sink       20
     test_ooc_store_integrity 20
     test_ooc_durable_handoff 10
-    test_ooc_cleanup_transaction 120
+    test_ooc_cleanup_transaction 300
     test_cofactor            10
     test_cofactor_attempt_context 10
     test_cofactor_seed_provider 10
@@ -1009,7 +1009,7 @@ TEST_TIER=(
     test_relation_sink       "instant"
     test_ooc_store_integrity "instant"
     test_ooc_durable_handoff "instant"
-    test_ooc_cleanup_transaction "fast"
+    test_ooc_cleanup_transaction "slow"
     test_cofactor            "instant"
     test_cofactor_attempt_context "instant"
     test_cofactor_seed_provider "instant"
