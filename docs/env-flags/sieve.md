@@ -31,6 +31,29 @@ time 从 1.76s 降到 0.82s。该数字用于回归证据，不是跨机器性�
 
 ---
 
+## Lattice Sieve Numeric Contract
+
+无 skew 的 Gauss/LLL 规约使用精确的双 64-bit limb 算术；GCC/Clang、MSVC x64、
+MSVC ARM64 和无宽乘法 intrinsic 的 fallback 必须作出相同的规约与舍入决定。
+SkewLLL 的加权度量仍使用 `double`，不属于该 bit-for-bit 整数算术保证。
+
+`SieveRegion` 的 inclusive width/height 必须为正且各自可表示为 `int32_t`，面积必须
+可表示为 `size_t` 并可由 `vector<uint16_t>` 分配。默认 region 生成器另外把面积限制为
+256 Mi cells。宽度 32768 是 compact row-state 的上界；更宽的合法 region 把全部素数
+路由到 region-bucket 路径，而不是直接拒绝。每次初始或 adaptive sieve pass 之前都会
+精确检查矩形的四个投影角点；任何 `(a,b)` 超出 `int64_t` 时 fail closed。SkewLLL
+还会在浮点转整数前拒绝不能保持有限 norm/dot/quotient 的 skew；分布式 identity
+仅接受平方在任意 rounding/FTZ 环境中都为 normal finite 的 binary64 指数域。进入
+fixed-width sieve state 的 factor-base 素数范围是 `[2, INT32_MAX]`，且
+`log_p <= UINT16_MAX`。
+分布式 worker 会在接管 writer authority 前，按 special-Q cap 预检初始格基和零命中
+时可到达的完整 adaptive retry 轨迹；实际命中只能提前结束该确定性轨迹。
+
+完整边界、舍入规则、backend 和验证点见
+[Lattice Sieve Numeric Contract](../algorithms/lattice-sieve-numeric-contract.md)。
+
+---
+
 ## Special-Q Local Compute Budget (Config)
 
 `max_special_q_batch_workers` 和 `max_local_sieve_threads` 是本地 production
@@ -798,8 +821,8 @@ unset GNFS_LATTICE_BASIS_PARALLEL_THREADS          # same as N=1
 - 内部 per-basis reduction 算法 bit-identical (helper 仅改变外层 dispatch,
   不触碰 `LatticeBasis::Gauss` / `LatticeBasis::LLL` / `LatticeBasis::SkewLLL`
   内核, 也不修改 `src/sieve/lattice_sieve.cpp` 主 sieve loop)
-- 每个 basis task 拥有独立 Integer / Result buffer, GMP `mpz_*` 调用操作数
-  互不重叠, 满足 GMP per-call disjoint-operands thread-safety
+- 每个 basis task 拥有独立 Result slot。helper 本身不调用 GMP；若 caller 的
+  `reduce_fn` 使用 `Integer` / `mpz_*`，其操作数和 scratch 必须 per-task 独立
 - 空 basis span (n==0) / 单 basis (n==1) 都走 sequential 短路, 不创建 pool
 - Exception path: dispatcher drain 全部 future, 第一个 thrown exception
   通过 `std::rethrow_exception` 传给 caller (不 swallow); pool 析构干净 join
@@ -811,11 +834,10 @@ per-index `Result` 完全一致, downstream sieve region 设置严格相同. 由
 N=1 vs N=4 vs N=hw_concurrency 严格 per-index bit-identical assert).
 
 **ROI 与定位**:
-- 主要 ROI: 50d+/60d sieve 主循环每 batch 可能有数百到上千 Special-Q,
-  per-basis reduction 内部 GMP 多精度算术 (skew-LLL 涉及 Lagrange-Gauss
-  iteration + 双向 reduce). K basis 并发后 outer wall ~ T_max_basis +
-  tasking overhead, 替代 sum(K) sequential 累计. 当 reduction 内部走
-  schoolbook GMP 大数时 ROI 显著.
+- 主要 ROI: 50d+/60d sieve 主循环每 batch 可能有数百到上千 Special-Q。
+  当前 unskewed reducer 使用精确 fixed-width limb 算术，SkewLLL 使用 `double`
+  加权度量；generic caller 也可在 `reduce_fn` 中使用独立 GMP 数据。K basis 并发后
+  outer wall 约为最慢 basis 的时间加 tasking overhead，而不是所有 basis 时间之和。
 - helper 与 W7 (`hensel_parallel`) / W8 T1 (`ecm_stage2_parallel`) /
   W9 T1 (`ecm_stage1_parallel`) / W10 T4 (`merger_parallel`) / W11 T3
   (mpz_powm 并行) 共享同一 ENV-gate + ThreadPool dispatcher 设计模式,

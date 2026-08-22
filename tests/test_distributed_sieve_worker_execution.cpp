@@ -87,6 +87,23 @@ void check(bool condition, std::string_view expression, int line) {
     return std::move(*frozen.policy);
 }
 
+[[nodiscard]] policy::DistributedSieveFrozenExecutionPolicyV1
+frozen_skew_policy(bool adaptive = false) {
+    policy::DistributedSieveExecutionPolicyEnvironmentSnapshotV1 snapshot;
+    snapshot.hardware_concurrency = 8;
+    snapshot.canonical_values[policy_index(sieve::ExecutionPolicyKeyV1::lattice_skew)] = "1";
+    snapshot.canonical_values[policy_index(sieve::ExecutionPolicyKeyV1::cofactor_brent)] = "1";
+    if (adaptive) {
+        snapshot.canonical_values[policy_index(sieve::ExecutionPolicyKeyV1::adaptive_lattice)] =
+            "1";
+        snapshot.canonical_values[policy_index(
+            sieve::ExecutionPolicyKeyV1::adaptive_lattice_max_retries)] = "1";
+    }
+    auto frozen = policy::freeze_distributed_sieve_execution_policy_v1(snapshot);
+    CHECK(frozen);
+    return std::move(*frozen.policy);
+}
+
 [[nodiscard]] PolynomialContext seeded_polynomial() {
     Integer input("93185905945582757");
     input *= 15;
@@ -107,6 +124,31 @@ void check(bool condition, std::string_view expression, int line) {
     options.log_scale = 16;
     options.parallel = false;
     return FactorBaseBuilder::build(polynomial, options);
+}
+
+[[nodiscard]] PolynomialContext projection_overflow_polynomial() {
+    std::vector<Integer> coefficients;
+    coefficients.emplace_back(int64_t{812});
+    coefficients.emplace_back(int64_t{0});
+    coefficients.emplace_back(int64_t{0});
+    coefficients.emplace_back(int64_t{1});
+    return PolynomialContext(Integer(int64_t{77}), std::move(coefficients), Integer(int64_t{7}),
+                             1e12);
+}
+
+[[nodiscard]] FactorBase projection_overflow_factor_base() {
+    FactorBase factor_base({2, 2, 10'000, 16});
+    factor_base.add_rational(2, 16);
+    factor_base.add_algebraic(2, 0, 16, 1);
+    // Suffix entries are special-Q inputs, not fixed-width sieve primes. The
+    // first remains safe at the extreme one-cell region; the second is the
+    // real SkewLLL projection-overflow fixture.
+    factor_base.add_algebraic(5, 2, std::numeric_limits<std::uint32_t>::max(), 1);
+    factor_base.add_algebraic(4'294'967'291U, 3'542'712'079U,
+                              std::numeric_limits<std::uint32_t>::max(), 1);
+    factor_base.set_sieve_algebraic_count(1);
+    factor_base.build_index();
+    return factor_base;
 }
 
 [[nodiscard]] sieve::DistributedSieveWorkIdentityV1
@@ -373,6 +415,67 @@ void test_sq_cap_preserves_cursor_before_projective_hole() {
     std::cout << "PASS\n";
 }
 
+void test_projection_preflight_respects_sq_cap_before_writer_adoption() {
+    std::cout << "[projection preflight before writer adoption] ... " << std::flush;
+    auto polynomial = projection_overflow_polynomial();
+    auto factor_base = projection_overflow_factor_base();
+    const auto frozen = frozen_skew_policy();
+    const auto extreme = std::numeric_limits<std::int32_t>::max();
+    CHECK(polynomial.evaluate_mod(3'542'712'079U, 4'294'967'291U) == 0);
+
+    auto capped_identity = make_identity(polynomial, factor_base, frozen, 1, 3, 1);
+    capped_identity.region = {-extreme, -extreme, extreme, extreme};
+    CHECK(sieve::validate_distributed_sieve_work_identity(capped_identity));
+    auto capped_runtime = execution::rehydrate_distributed_sieve_worker_runtime_v1(capped_identity);
+    CHECK(capped_runtime);
+    auto capped_prepared = execution::prepare_distributed_sieve_worker_chunk_v1(
+        capped_runtime.runtime->polynomial, capped_runtime.runtime->factor_base,
+        capped_runtime.runtime->bound_work, capped_identity.distributed.chunks.front());
+    CHECK(capped_prepared);
+
+    auto overflowing_identity = make_identity(polynomial, factor_base, frozen, 1, 3);
+    overflowing_identity.region = {-extreme, -extreme, extreme, extreme};
+    CHECK(sieve::validate_distributed_sieve_work_identity(overflowing_identity));
+    auto overflowing_runtime =
+        execution::rehydrate_distributed_sieve_worker_runtime_v1(overflowing_identity);
+    CHECK(overflowing_runtime);
+    const auto rejected = execution::prepare_distributed_sieve_worker_chunk_v1(
+        overflowing_runtime.runtime->polynomial, overflowing_runtime.runtime->factor_base,
+        overflowing_runtime.runtime->bound_work, overflowing_identity.distributed.chunks.front());
+    CHECK(!rejected);
+    CHECK(!rejected.prepared.has_value());
+    CHECK(rejected.status == execution::DistributedSieveWorkerChunkStatusV1::binding_invalid);
+
+    // The same real root has a representable initial SkewLLL projection at
+    // (+I,+I), but retry zero changes the long vector by k=1 and overflows.
+    // Preparation must therefore cover the complete possible adaptive path.
+    auto initial_only_identity = make_identity(polynomial, factor_base, frozen, 2, 3);
+    initial_only_identity.region = {extreme, extreme, extreme, extreme};
+    CHECK(sieve::validate_distributed_sieve_work_identity(initial_only_identity));
+    auto initial_only_runtime =
+        execution::rehydrate_distributed_sieve_worker_runtime_v1(initial_only_identity);
+    CHECK(initial_only_runtime);
+    auto initial_only_prepared = execution::prepare_distributed_sieve_worker_chunk_v1(
+        initial_only_runtime.runtime->polynomial, initial_only_runtime.runtime->factor_base,
+        initial_only_runtime.runtime->bound_work, initial_only_identity.distributed.chunks.front());
+    CHECK(initial_only_prepared);
+
+    const auto adaptive_frozen = frozen_skew_policy(true);
+    auto adaptive_identity = make_identity(polynomial, factor_base, adaptive_frozen, 2, 3);
+    adaptive_identity.region = {extreme, extreme, extreme, extreme};
+    CHECK(sieve::validate_distributed_sieve_work_identity(adaptive_identity));
+    auto adaptive_runtime =
+        execution::rehydrate_distributed_sieve_worker_runtime_v1(adaptive_identity);
+    CHECK(adaptive_runtime);
+    const auto adaptive_rejected = execution::prepare_distributed_sieve_worker_chunk_v1(
+        adaptive_runtime.runtime->polynomial, adaptive_runtime.runtime->factor_base,
+        adaptive_runtime.runtime->bound_work, adaptive_identity.distributed.chunks.front());
+    CHECK(!adaptive_rejected);
+    CHECK(adaptive_rejected.status ==
+          execution::DistributedSieveWorkerChunkStatusV1::binding_invalid);
+    std::cout << "PASS\n";
+}
+
 void test_current_executable_digest_is_stable(
     [[maybe_unused]] const std::filesystem::path& executable) {
     std::cout << "[current executable digest] ... " << std::flush;
@@ -442,6 +545,7 @@ int main(int argc, char** argv) {
         test_admission_rejects_invalid_and_duplicate_relations();
         test_trailing_projective_special_q_normalizes_cursor();
         test_sq_cap_preserves_cursor_before_projective_hole();
+        test_projection_preflight_respects_sq_cap_before_writer_adoption();
         test_current_executable_digest_is_stable(argv[0]);
         std::cout << "All distributed sieve worker execution tests passed.\n";
         return 0;

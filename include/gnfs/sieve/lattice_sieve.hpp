@@ -22,6 +22,7 @@
 #include <cstring>
 #include <exception>
 #include <functional>
+#include <limits>
 #include <numeric>
 #include <optional>
 #include <stdexcept>
@@ -250,6 +251,12 @@ public:
         return sieve_array_.capacity() * sizeof(uint16_t);
     }
 
+    /// Logical cells in the configured sieve region. Unlike capacity, this
+    /// value is exact across standard-library allocation strategies.
+    [[nodiscard]] size_t sieve_cell_count() const noexcept {
+        return sieve_array_.size();
+    }
+
     /// 设置最大线程数。Legacy 的 0 = hardware auto；显式配置的 0 使用其
     /// deterministic fallback_thread_count。
     void set_max_threads(size_t n) {
@@ -297,6 +304,36 @@ public:
         return adaptive_external_ != nullptr ? *adaptive_external_ : adaptive_internal_;
     }
 
+    /// Validate every lattice basis that this special-Q can use without
+    /// allocating pass-local state or updating adaptive telemetry. The
+    /// zero-hit trajectory reaches every possible retry because retry basis
+    /// selection depends only on the current basis, retry ordinal, seed, and
+    /// q; observed hit counts can only stop that trajectory early.
+    void preflight_special_q(const SpecialQ& sq) const {
+        require_affine_special_q_(sq);
+        if (sq.r == 0) {
+            return;
+        }
+
+        const AdaptiveBasisManager& mgr = adaptive_manager();
+        LatticeBasis basis = initial_basis_for_special_q_(sq, mgr);
+        require_region_projection_(basis);
+
+        const auto& adaptive = mgr.config();
+        if (!adaptive.enabled || adaptive.max_retries <= 0) {
+            return;
+        }
+        const auto cells = static_cast<uint64_t>(region_.size());
+        for (int retry = 0; retry < adaptive.max_retries; ++retry) {
+            auto next = mgr.try_perturb_and_rereduce(basis, 0, cells, retry);
+            if (!next.has_value()) {
+                break;
+            }
+            basis = *next;
+            require_region_projection_(basis);
+        }
+    }
+
     /// 对单个 special-q 进行筛法
     /// 使用 row-major bucket sieve：预计算所有 FB 素数的格参数，
     /// 然后逐行处理（每行在 L1 cache 中热驻留，所有素数贡献完成后才移到下一行）。
@@ -312,10 +349,7 @@ public:
         // roots use the UINT32_MAX sentinel, while any r >= q is a
         // non-canonical affine representative. Reject both before preparing
         // sieve storage or invoking basis reduction.
-        if (!sq.is_affine()) {
-            throw std::invalid_argument(
-                "LatticeSieve requires an affine Special-Q with q > 1 and r < q");
-        }
+        require_affine_special_q_(sq);
 
         SieveResult result;
         result.special_q = sq;
@@ -335,12 +369,7 @@ public:
 
         // 1. 计算初始格基. Explicit instances use their captured policy;
         // legacy instances retain per-special-q ambient ENV reads.
-        LatticeBasis basis;
-        if (execution_config_.has_value()) {
-            basis = mgr.get_initial(sq, ctx_.skewness(), execution_config_->lattice_basis);
-        } else {
-            basis = mgr.get_initial(sq, ctx_.skewness());
-        }
+        LatticeBasis basis = initial_basis_for_special_q_(sq, mgr);
 
         // First pass: sieve with initial basis.
         sieve_region_once_(basis, sq, result);
@@ -402,12 +431,36 @@ public:
     }
 
 private:
+    static void require_affine_special_q_(const SpecialQ& sq) {
+        if (!sq.is_affine()) {
+            throw std::invalid_argument(
+                "LatticeSieve requires an affine Special-Q with q > 1 and r < q");
+        }
+    }
+
+    [[nodiscard]] LatticeBasis initial_basis_for_special_q_(const SpecialQ& sq,
+                                                            const AdaptiveBasisManager& mgr) const {
+        if (execution_config_.has_value()) {
+            return mgr.get_initial(sq, ctx_.skewness(), execution_config_->lattice_basis);
+        }
+        return mgr.get_initial(sq, ctx_.skewness());
+    }
+
+    void require_region_projection_(const LatticeBasis& basis) const {
+        if (!lattice_projection_fits_int64(basis, region_)) {
+            throw std::overflow_error(
+                "LatticeSieve region projects outside int64 candidate coordinates");
+        }
+    }
+
     /// Internal helper: run a single sieve pass over `region_` with `basis`,
     /// populate `result.candidates` and `result.sieved_positions`.
     /// All five sieve sub-phases (init array, build primes, global hits,
     /// row-major, bucket region, collect_candidates) live here.
     /// Caller is responsible for adaptive bookkeeping and retry decisions.
     void sieve_region_once_(const LatticeBasis& basis, const SpecialQ& sq, SieveResult& result) {
+        require_region_projection_(basis);
+
         // 2. 初始化筛数组（memset(0)，加法筛）
         init_sieve_array(basis);
 
@@ -772,11 +825,29 @@ private:
     [[nodiscard]] std::vector<PrimeEntry> build_prime_entries(const LatticeBasis& basis,
                                                               const SpecialQ& sq) const {
 
+        const auto& algebraics = fb_.algebraic();
+        const size_t sieve_count = fb_.sieve_algebraic_count();
+        if (sieve_count > algebraics.size()) {
+            throw std::invalid_argument(
+                "LatticeSieve algebraic sieve count exceeds the factor base");
+        }
+
         std::vector<PrimeEntry> entries;
         entries.reserve(fb_.rational_count() + fb_.sieve_algebraic_count());
 
         const int32_t j_min = region_.j_min;
         const int32_t i_min = region_.i_min;
+
+        const auto require_supported_sieve_entry = [](uint32_t p, uint32_t log_p) {
+            if (p < 2 || p > static_cast<uint32_t>(std::numeric_limits<int32_t>::max())) {
+                throw std::invalid_argument(
+                    "LatticeSieve factor-base primes must be in [2, INT32_MAX]");
+            }
+            if (log_p > static_cast<uint32_t>(std::numeric_limits<uint16_t>::max())) {
+                throw std::invalid_argument(
+                    "LatticeSieve factor-base log contributions must fit in uint16_t");
+            }
+        };
 
         auto make_entry = [j_min, i_min](int64_t u, int64_t v, uint32_t p,
                                          uint32_t log_p) -> PrimeEntry {
@@ -824,19 +895,19 @@ private:
 
         // 有理侧 FB
         for (const auto& rp : fb_.rational()) {
+            require_supported_sieve_entry(rp.p, rp.log_p);
             auto [u, v] = compute_rational_uv(basis, rp.p);
             entries.push_back(make_entry(u, v, rp.p, rp.log_p));
         }
 
         // 代数侧 FB（仅筛选范围，跳过投影根和 SQ 本身）
-        const auto& algebraics = fb_.algebraic();
-        const size_t sieve_count = fb_.sieve_algebraic_count();
         for (size_t ai = 0; ai < sieve_count; ++ai) {
             const auto& ap = algebraics[ai];
             if (ap.is_projective())
                 continue;
             if (ap.p == sq.q && ap.r == sq.r)
                 continue;
+            require_supported_sieve_entry(ap.p, ap.log_p);
             auto [u, v] = compute_algebraic_uv(basis, ap.p, ap.r);
             entries.push_back(make_entry(u, v, ap.p, ap.log_p));
         }
@@ -988,9 +1059,10 @@ private:
                                          pe.log_p});
                                 }
                             }
-                            i_mod += pe.delta;
-                            if (i_mod >= p32)
-                                i_mod -= p32;
+                            int64_t next_i_mod = static_cast<int64_t>(i_mod) + pe.delta;
+                            if (next_i_mod >= p32)
+                                next_i_mod -= p32;
+                            i_mod = static_cast<int32_t>(next_i_mod);
                         }
                     }
                 };
@@ -1214,9 +1286,10 @@ private:
                 }
 
                 // Advance carry-forward
-                i_mod += pe.delta;
-                if (i_mod >= p32)
-                    i_mod -= p32;
+                int64_t next_i_mod = static_cast<int64_t>(i_mod) + pe.delta;
+                if (next_i_mod >= p32)
+                    next_i_mod -= p32;
+                i_mod = static_cast<int32_t>(next_i_mod);
             }
         }
 

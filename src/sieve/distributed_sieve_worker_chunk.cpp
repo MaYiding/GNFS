@@ -57,6 +57,25 @@ struct PreparedDistributedSieveWorkerChunkV1::State final {
         // nested worker topology from changing scheduling or oversubscribing
         // a wave, and avoids the standalone auto-thread hardware probe.
         sieve.set_max_threads(1);
+
+        // Prove every basis that this chunk can reach before the caller
+        // transfers writer authority. Projective entries are skipped by the
+        // generator and the special-Q cap has the same boundary priority as
+        // execute(), so unreachable suffix work is not over-validated.
+        SpecialQGenerator preflight_generator(
+            factor_base, SpecialQRange::from_indices(chunk.sq_begin, chunk.sq_end));
+        std::uint64_t preflight_sq_count = 0;
+        while (preflight_generator.has_next()) {
+            if (work.sq_cap_per_worker > 0 && preflight_sq_count >= work.sq_cap_per_worker) {
+                break;
+            }
+            auto special_q = preflight_generator.next();
+            if (!special_q.has_value()) {
+                break;
+            }
+            sieve.preflight_special_q(*special_q);
+            ++preflight_sq_count;
+        }
     }
 
     const core::PolynomialContext& polynomial;

@@ -40,6 +40,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <optional>
+#include <stdexcept>
 #include <utility>
 #if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_ARM64))
 #include <intrin.h>
@@ -48,6 +50,16 @@
 namespace gnfs::sieve {
 
 using core::Integer;
+
+namespace detail {
+
+[[nodiscard]] inline bool lb_try_linear_combination(int64_t lhs_multiplier, int64_t lhs_value,
+                                                    int64_t rhs_multiplier, int64_t rhs_value,
+                                                    int64_t& result) noexcept;
+[[nodiscard]] inline bool lb_try_determinant(int64_t e0, int64_t f0, int64_t e1, int64_t f1,
+                                             int64_t& result) noexcept;
+
+} // namespace detail
 
 /// LatticeReductionMethod - 格基规约方法
 /// Gauss: 经典 Gaussian (Lagrange) reduction (legacy default).
@@ -90,25 +102,58 @@ struct LatticeBasis {
     /// 从格坐标 (i, j) 转换为原始坐标 (a, b)
     /// a = i * e0 + j * e1
     /// b = i * f0 + j * f1
-    [[nodiscard]] std::pair<int64_t, int64_t> to_ab(int32_t i, int32_t j) const noexcept {
-        int64_t a = static_cast<int64_t>(i) * e0 + static_cast<int64_t>(j) * e1;
-        int64_t b = static_cast<int64_t>(i) * f0 + static_cast<int64_t>(j) * f1;
-        return {a, b};
+    [[nodiscard]] std::optional<std::pair<int64_t, int64_t>> try_to_ab(int32_t i,
+                                                                       int32_t j) const noexcept {
+        int64_t a = 0;
+        int64_t b = 0;
+        if (!detail::lb_try_linear_combination(i, e0, j, e1, a) ||
+            !detail::lb_try_linear_combination(i, f0, j, f1, b)) {
+            return std::nullopt;
+        }
+        return std::pair<int64_t, int64_t>{a, b};
+    }
+
+    /// Throw instead of invoking signed-overflow UB when a public coordinate
+    /// pair cannot be represented by the fixed-width candidate format.
+    [[nodiscard]] std::pair<int64_t, int64_t> to_ab(int32_t i, int32_t j) const {
+        if (auto projected = try_to_ab(i, j)) {
+            return *projected;
+        }
+        throw std::overflow_error("lattice coordinate projection does not fit in int64_t");
     }
 
     /// 检查 (a, b) 是否满足 a - b*r ≡ 0 (mod q) (GNFS convention)
     [[nodiscard]] bool verify_ab(int64_t a, int64_t b) const noexcept {
-        // (a - b*r) mod q should be 0
-        int64_t val = a - static_cast<int64_t>(b) * r;
-        int64_t mod = val % static_cast<int64_t>(q);
-        if (mod < 0)
-            mod += q;
-        return mod == 0;
+        if (q == 0) {
+            return false;
+        }
+        const int64_t modulus = static_cast<int64_t>(q);
+        auto positive_residue = [modulus](int64_t value) noexcept {
+            int64_t residue = value % modulus;
+            if (residue < 0) {
+                residue += modulus;
+            }
+            return static_cast<uint64_t>(residue);
+        };
+        const uint64_t a_residue = positive_residue(a);
+        const uint64_t b_residue = positive_residue(b);
+        return a_residue == (b_residue * static_cast<uint64_t>(r)) % q;
     }
 
     /// 格的行列式（应该等于 q）
-    [[nodiscard]] int64_t determinant() const noexcept {
-        return e0 * f1 - e1 * f0;
+    [[nodiscard]] std::optional<int64_t> try_determinant() const noexcept {
+        int64_t result = 0;
+        if (!detail::lb_try_determinant(e0, f0, e1, f1, result)) {
+            return std::nullopt;
+        }
+        return result;
+    }
+
+    [[nodiscard]] int64_t determinant() const {
+        if (auto result = try_determinant()) {
+            return *result;
+        }
+        throw std::overflow_error("lattice determinant does not fit in int64_t");
     }
 };
 
@@ -260,6 +305,70 @@ struct LbI128 {
     }
     const LbU128 magnitude = lb_sub_u128(lhs.magnitude, rhs.magnitude);
     return {magnitude, !lb_is_zero(magnitude) && lhs.negative};
+}
+
+[[nodiscard]] constexpr bool lb_try_i128_to_i64(LbI128 value, int64_t& result) noexcept {
+    if (value.magnitude.hi != 0) {
+        return false;
+    }
+
+    constexpr uint64_t int64_sign_bit = uint64_t{1} << 63;
+    if (!value.negative) {
+        if (value.magnitude.lo >= int64_sign_bit) {
+            return false;
+        }
+        result = static_cast<int64_t>(value.magnitude.lo);
+        return true;
+    }
+
+    if (value.magnitude.lo > int64_sign_bit) {
+        return false;
+    }
+    if (value.magnitude.lo == int64_sign_bit) {
+        result = std::numeric_limits<int64_t>::min();
+        return true;
+    }
+    result = -static_cast<int64_t>(value.magnitude.lo);
+    return true;
+}
+
+[[nodiscard]] inline bool lb_try_linear_combination(int64_t lhs_multiplier, int64_t lhs_value,
+                                                    int64_t rhs_multiplier, int64_t rhs_value,
+                                                    int64_t& result) noexcept {
+    return lb_try_i128_to_i64(lb_add_i128(lb_signed_product(lhs_multiplier, lhs_value),
+                                          lb_signed_product(rhs_multiplier, rhs_value)),
+                              result);
+}
+
+[[nodiscard]] inline bool lb_try_multiply_subtract(int64_t value, int64_t multiplier,
+                                                   int64_t multiplicand, int64_t& result) noexcept {
+    LbI128 product = lb_signed_product(multiplier, multiplicand);
+    if (!lb_is_zero(product.magnitude)) {
+        product.negative = !product.negative;
+    }
+    return lb_try_i128_to_i64(lb_add_i128(lb_signed_product(1, value), product), result);
+}
+
+inline void lb_reduce_vector_checked(int64_t& target_a, int64_t& target_b, int64_t multiplier,
+                                     int64_t source_a, int64_t source_b) {
+    int64_t next_a = 0;
+    int64_t next_b = 0;
+    if (!lb_try_multiply_subtract(target_a, multiplier, source_a, next_a) ||
+        !lb_try_multiply_subtract(target_b, multiplier, source_b, next_b)) {
+        throw std::overflow_error("lattice basis update does not fit in int64_t");
+    }
+    target_a = next_a;
+    target_b = next_b;
+}
+
+[[nodiscard]] inline bool lb_try_determinant(int64_t e0, int64_t f0, int64_t e1, int64_t f1,
+                                             int64_t& result) noexcept {
+    const LbI128 left = lb_signed_product(e0, f1);
+    LbI128 right = lb_signed_product(e1, f0);
+    if (!lb_is_zero(right.magnitude)) {
+        right.negative = !right.negative;
+    }
+    return lb_try_i128_to_i64(lb_add_i128(left, right), result);
 }
 
 [[nodiscard]] inline LbI128 lb_dot(int64_t a0, int64_t b0, int64_t a1, int64_t b1) noexcept {
@@ -451,8 +560,7 @@ inline void lb_reduce_gauss(int64_t& v0_a, int64_t& v0_b, int64_t& v1_a, int64_t
         if (!lb_is_zero(n1)) {
             int64_t mu = lb_int_round_div(dot, n1);
             if (mu != 0) {
-                v0_a -= mu * v1_a;
-                v0_b -= mu * v1_b;
+                lb_reduce_vector_checked(v0_a, v0_b, mu, v1_a, v1_b);
                 changed = true;
             }
         }
@@ -505,8 +613,7 @@ inline void lb_reduce_lll_fk2005(int64_t& v0_a, int64_t& v0_b, int64_t& v1_a, in
         const LbI128 dot = lb_dot(v0_a, v0_b, v1_a, v1_b);
         int64_t mu = lb_int_round_div(dot, n0);
         if (mu != 0) {
-            v1_a -= mu * v0_a;
-            v1_b -= mu * v0_b;
+            lb_reduce_vector_checked(v1_a, v1_b, mu, v0_a, v0_b);
         }
 
         // Lovász 检查: 现在 |v1| 应 ≥ |v0|, 否则 swap 继续
@@ -563,6 +670,22 @@ inline void lb_reduce_lll_fk2005(int64_t& v0_a, int64_t& v0_b, int64_t& v1_a, in
     return da0 * da1 + s2 * db0 * db1;
 }
 
+/// Round a finite SkewLLL quotient without invoking an out-of-range integer
+/// conversion. The hexadecimal bounds are exact binary64 powers and do not
+/// depend on the active floating-point rounding mode.
+[[nodiscard]] inline int64_t lb_checked_round_to_i64(double quotient) {
+    if (!std::isfinite(quotient)) {
+        throw std::overflow_error("SkewLLL quotient is not representable as double");
+    }
+    const double rounded = std::round(quotient);
+    constexpr double int64_lower_inclusive = -0x1p63;
+    constexpr double int64_upper_exclusive = 0x1p63;
+    if (rounded < int64_lower_inclusive || rounded >= int64_upper_exclusive) {
+        throw std::overflow_error("SkewLLL quotient does not fit in int64_t");
+    }
+    return static_cast<int64_t>(rounded);
+}
+
 /// Skew-aware LLL (F-K 2005 + CADO-NFS skew_gauss style).
 /// 算法与 lb_reduce_lll_fk2005 相同, 但 norm² 和 dot 用 skew-quadratic form q(v) = a² + s²·b².
 ///
@@ -578,10 +701,31 @@ inline void lb_reduce_lll_fk2005(int64_t& v0_a, int64_t& v0_b, int64_t& v1_a, in
 inline void lb_reduce_skew_lll(int64_t& v0_a, int64_t& v0_b, int64_t& v1_a, int64_t& v1_b,
                                double skewness) {
     constexpr int MAX_LLL_ITERS = 128;
+    if (!std::isfinite(skewness) || skewness <= 0.0) {
+        throw std::invalid_argument("SkewLLL skewness must be positive and finite");
+    }
     const double s2 = skewness * skewness;
+    if (!std::isfinite(s2) || s2 <= 0.0) {
+        throw std::invalid_argument("SkewLLL squared skewness must be positive and finite");
+    }
+
+    const auto checked_norm = [s2](int64_t a, int64_t b) {
+        const double norm = lb_skew_norm_sq_d(a, b, s2);
+        if (!std::isfinite(norm)) {
+            throw std::overflow_error("SkewLLL norm is not representable as double");
+        }
+        return norm;
+    };
+    const auto checked_dot = [s2](int64_t a0, int64_t b0, int64_t a1, int64_t b1) {
+        const double dot = lb_skew_dot_d(a0, b0, a1, b1, s2);
+        if (!std::isfinite(dot)) {
+            throw std::overflow_error("SkewLLL dot product is not representable as double");
+        }
+        return dot;
+    };
 
     // 保证初始 v0 = skew-shorter
-    if (lb_skew_norm_sq_d(v0_a, v0_b, s2) > lb_skew_norm_sq_d(v1_a, v1_b, s2)) {
+    if (checked_norm(v0_a, v0_b) > checked_norm(v1_a, v1_b)) {
         std::swap(v0_a, v1_a);
         std::swap(v0_b, v1_b);
     }
@@ -590,26 +734,19 @@ inline void lb_reduce_skew_lll(int64_t& v0_a, int64_t& v0_b, int64_t& v1_a, int6
     while (iters < MAX_LLL_ITERS) {
         ++iters;
 
-        double n0 = lb_skew_norm_sq_d(v0_a, v0_b, s2);
+        const double n0 = checked_norm(v0_a, v0_b);
         if (n0 == 0.0)
             break; // degenerate
 
-        double dot = lb_skew_dot_d(v0_a, v0_b, v1_a, v1_b, s2);
-        double mu_d = std::round(dot / n0);
-        // mu 范围 saturation: |mu| ≤ max(|v0|, |v1|) ≤ 2^32. 64-bit int 安全.
-        // 极端 case (sieve 中实际见不到) 用 clamp 防 cast UB.
-        if (mu_d > 1e18)
-            mu_d = 1e18;
-        if (mu_d < -1e18)
-            mu_d = -1e18;
-        int64_t mu = static_cast<int64_t>(mu_d);
+        const double dot = checked_dot(v0_a, v0_b, v1_a, v1_b);
+        const double quotient = dot / n0;
+        const int64_t mu = lb_checked_round_to_i64(quotient);
         if (mu != 0) {
-            v1_a -= mu * v0_a;
-            v1_b -= mu * v0_b;
+            lb_reduce_vector_checked(v1_a, v1_b, mu, v0_a, v0_b);
         }
 
         // Lovász (skew): |v1|²_skew ≥ |v0|²_skew?
-        double n1 = lb_skew_norm_sq_d(v1_a, v1_b, s2);
+        const double n1 = checked_norm(v1_a, v1_b);
         if (n1 >= n0) {
             break;
         }
@@ -618,7 +755,7 @@ inline void lb_reduce_skew_lll(int64_t& v0_a, int64_t& v0_b, int64_t& v1_a, int6
     }
 
     // 后置 swap: v1 = skew-shorter (一致约定)
-    if (lb_skew_norm_sq_d(v0_a, v0_b, s2) < lb_skew_norm_sq_d(v1_a, v1_b, s2)) {
+    if (checked_norm(v0_a, v0_b) < checked_norm(v1_a, v1_b)) {
         std::swap(v0_a, v1_a);
         std::swap(v0_b, v1_b);
     }
@@ -650,6 +787,9 @@ compute_lattice_basis(const SpecialQ& sq, LatticeReductionMethod method, double 
         detail::lb_reduce_lll_fk2005(v0_a, v0_b, v1_a, v1_b);
         break;
     case LatticeReductionMethod::SkewLLL: {
+        if (!std::isfinite(skewness) || skewness <= 0.0) {
+            throw std::invalid_argument("SkewLLL skewness must be positive and finite");
+        }
         // Skewness=1.0 退化为 unskewed LLL (bit-exact path).
         if (std::abs(skewness - 1.0) < 1e-9) {
             detail::lb_reduce_lll_fk2005(v0_a, v0_b, v1_a, v1_b);
@@ -682,9 +822,14 @@ compute_lattice_basis(const SpecialQ& sq, LatticeReductionMethod method, double 
 compute_lattice_basis_with_skewness(const SpecialQ& sq, double skewness,
                                     const LatticeBasisReductionConfig& config) {
     auto method = config.base_method;
-    if (method == LatticeReductionMethod::LLL && config.skew_enabled &&
-        std::abs(skewness - 1.0) > 1e-6) {
-        method = LatticeReductionMethod::SkewLLL;
+    if (method == LatticeReductionMethod::LLL && config.skew_enabled) {
+        if (!std::isfinite(skewness) || skewness <= 0.0) {
+            throw std::invalid_argument(
+                "skew-aware lattice reduction requires positive finite skewness");
+        }
+        if (std::abs(skewness - 1.0) > 1e-6) {
+            method = LatticeReductionMethod::SkewLLL;
+        }
     }
     return compute_lattice_basis(sq, method, skewness);
 }
@@ -778,6 +923,20 @@ struct SieveRegion {
         return row * static_cast<size_t>(width) + column;
     }
 };
+
+/// Return whether every lattice point in the inclusive rectangular region can
+/// be projected into the fixed-width candidate representation. Each output is
+/// affine in (i,j), so checking all four corners is necessary and sufficient.
+[[nodiscard]] inline bool lattice_projection_fits_int64(const LatticeBasis& basis,
+                                                        const SieveRegion& region) noexcept {
+    if (region.i_width() <= 0 || region.j_height() <= 0 || region.size() == 0) {
+        return false;
+    }
+    return basis.try_to_ab(region.i_min, region.j_min).has_value() &&
+           basis.try_to_ab(region.i_min, region.j_max).has_value() &&
+           basis.try_to_ab(region.i_max, region.j_min).has_value() &&
+           basis.try_to_ab(region.i_max, region.j_max).has_value();
+}
 
 /// 默认筛区域（基于 skewness 调整）
 [[nodiscard]] inline SieveRegion default_sieve_region(double skewness) {

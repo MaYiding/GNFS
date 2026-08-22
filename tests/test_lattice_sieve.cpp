@@ -927,6 +927,148 @@ void test_extreme_j_row_offset_sieving() {
     std::cout << "  Extreme j row-offset sieving: PASS" << std::endl;
 }
 
+void test_projection_overflow_rejected_before_sieving() {
+    std::cout << "Testing lattice projection overflow rejection..." << std::endl;
+
+    std::vector<Integer> coefficients;
+    coefficients.emplace_back(int64_t{812});
+    coefficients.emplace_back(int64_t{0});
+    coefficients.emplace_back(int64_t{0});
+    coefficients.emplace_back(int64_t{1});
+    PolynomialContext ctx(Integer(int64_t{77}), std::move(coefficients), Integer(int64_t{7}), 1e12);
+
+    FactorBaseParams fb_params;
+    fb_params.rational_bound = 2;
+    fb_params.algebraic_bound = 2;
+    FactorBase fb(fb_params);
+
+    LatticeSieveExecutionConfig config{};
+    config.lattice_basis.base_method = LatticeReductionMethod::SkewLLL;
+    config.fallback_thread_count = 1;
+    config.enable_tiny_simd = false;
+    config.enable_bucket_prefetch = false;
+
+    const SpecialQ sq{4'294'967'291U, 3'542'712'079U, 0};
+    GNFS_TEST_CHECK(ctx.evaluate_mod(sq.r, sq.q) == 0);
+    const LatticeBasis basis =
+        compute_lattice_basis_with_skewness(sq, ctx.skewness(), config.lattice_basis);
+    const SieveRegion region{
+        -std::numeric_limits<int32_t>::max(),
+        -std::numeric_limits<int32_t>::max(),
+        std::numeric_limits<int32_t>::max(),
+        std::numeric_limits<int32_t>::max(),
+    };
+    GNFS_TEST_CHECK(!lattice_projection_fits_int64(basis, region));
+
+    LatticeSieve sieve(ctx, fb, SieveParams{}, config);
+    sieve.set_region(region);
+    bool rejected = false;
+    try {
+        (void)sieve.sieve_special_q(sq);
+    } catch (const std::overflow_error&) {
+        rejected = true;
+    }
+    GNFS_TEST_CHECK(rejected);
+    GNFS_TEST_CHECK(sieve.sieve_cell_count() == region.size());
+
+    std::cout << "  Projection overflow rejection: PASS" << std::endl;
+}
+
+void test_factor_base_prime_admission_contract() {
+    std::cout << "Testing lattice factor-base prime admission..." << std::endl;
+
+    std::vector<Integer> coefficients;
+    coefficients.emplace_back(int64_t{812});
+    coefficients.emplace_back(int64_t{0});
+    coefficients.emplace_back(int64_t{0});
+    coefficients.emplace_back(int64_t{1});
+    PolynomialContext ctx(Integer(int64_t{77}), std::move(coefficients), Integer(int64_t{7}), 1.0);
+    const SpecialQ sq{5, 2, 0};
+    const SieveRegion region{-2, 2, 1, 2};
+
+    LatticeSieveExecutionConfig config{};
+    config.fallback_thread_count = 1;
+    config.enable_tiny_simd = false;
+    config.enable_bucket_prefetch = false;
+
+    const auto expect_rejected = [&](FactorBase& factor_base) {
+        LatticeSieve sieve(ctx, factor_base, SieveParams{}, config);
+        sieve.set_region(region);
+        bool rejected = false;
+        try {
+            (void)sieve.sieve_special_q(sq);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        GNFS_TEST_CHECK(rejected);
+    };
+
+    FactorBaseParams fb_params;
+    fb_params.rational_bound = std::numeric_limits<uint32_t>::max();
+    fb_params.algebraic_bound = std::numeric_limits<uint32_t>::max();
+
+    {
+        FactorBase factor_base(fb_params);
+        factor_base.add_rational(0, 1);
+        expect_rejected(factor_base);
+    }
+    {
+        FactorBase factor_base(fb_params);
+        factor_base.add_rational(4'294'967'291U, 1);
+        expect_rejected(factor_base);
+    }
+    {
+        FactorBase factor_base(fb_params);
+        factor_base.add_algebraic(4'294'967'291U, 3'037'000'506U, 1);
+        expect_rejected(factor_base);
+    }
+    {
+        FactorBase factor_base(fb_params);
+        factor_base.add_rational(3,
+                                 static_cast<uint32_t>(std::numeric_limits<uint16_t>::max()) + 1U);
+        expect_rejected(factor_base);
+    }
+    {
+        FactorBase factor_base(fb_params);
+        factor_base.add_algebraic(3, 1,
+                                  static_cast<uint32_t>(std::numeric_limits<uint16_t>::max()) + 1U);
+        expect_rejected(factor_base);
+    }
+    {
+        FactorBase factor_base(fb_params);
+        factor_base.add_algebraic(3, 1, 1);
+        factor_base.set_sieve_algebraic_count(2);
+        expect_rejected(factor_base);
+    }
+
+    // With this basis and m=7, the INT32_MAX rational prime solves 3i=j.
+    // Advancing from j=-2 to j=-1 adds 1,431,655,765 to an initial residue of
+    // 1,431,655,764, crossing INT32_MAX before the modular subtraction. Only
+    // the second row hits the selected coordinate. Assert that independent
+    // oracle through both the compact fill_buckets path and the full wide
+    // region scatter path.
+    FactorBase boundary_factor_base(fb_params);
+    boundary_factor_base.add_rational(static_cast<uint32_t>(std::numeric_limits<int32_t>::max()),
+                                      std::numeric_limits<uint16_t>::max());
+    SieveParams boundary_params;
+    boundary_params.rational_threshold = 0;
+    boundary_params.algebraic_threshold = 0;
+    constexpr int32_t carry_hit_i = -1'431'655'765;
+    const auto expect_single_carry_hit = [&](const SieveRegion& carry_region) {
+        LatticeSieve sieve(ctx, boundary_factor_base, boundary_params, config);
+        sieve.set_region(carry_region);
+        const auto result = sieve.sieve_special_q(sq);
+        GNFS_TEST_CHECK(result.sieved_positions == carry_region.size());
+        GNFS_TEST_CHECK(result.candidates.size() == 1);
+        GNFS_TEST_CHECK(result.candidates[0].i == carry_hit_i);
+        GNFS_TEST_CHECK(result.candidates[0].j == -1);
+    };
+    expect_single_carry_hit({carry_hit_i, carry_hit_i, -2, -1});
+    expect_single_carry_hit({carry_hit_i, carry_hit_i + 32'768, -2, -1});
+
+    std::cout << "  Factor-base prime admission: PASS" << std::endl;
+}
+
 // r=0 退化路径:LatticeSieve 在 sq.r==0 时 early-return 空 candidates。
 // 该路径仅当 q | f₀ 时出现,极罕见,但代码必须正确 short-circuit
 // (不要 estimate_initial_log 塌缩,不要在退化 basis 上跑全 sieve)。
@@ -985,6 +1127,8 @@ int main() {
     test_wide_region_uses_exact_bucket_path();
     test_wide_region_prime_classes_are_exact_once();
     test_extreme_j_row_offset_sieving();
+    test_projection_overflow_rejected_before_sieving();
+    test_factor_base_prime_admission_contract();
     test_lattice_sieve_basic();
     test_candidate_properties();
     test_lattice_sieve_r_zero();

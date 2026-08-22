@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -1520,6 +1521,110 @@ void test_bound_work_rejects_every_live_polynomial_drift() {
     }
 }
 
+void test_work_identity_rejects_unrepresentable_active_sieve_entries() {
+    const auto frozen = freeze_checked(unset_snapshot());
+    const auto identity = make_runtime_identity(frozen);
+    constexpr std::uint64_t max_i32 =
+        static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max());
+    constexpr std::uint32_t max_u16 = std::numeric_limits<std::uint16_t>::max();
+
+    auto rational_boundary = identity;
+    rational_boundary.factor_base.rational_bound = std::numeric_limits<std::uint32_t>::max();
+    rational_boundary.factor_base.rational.back().p = max_i32;
+    rational_boundary.factor_base.rational.back().log_p = max_u16;
+    CHECK(sieve::validate_distributed_sieve_work_identity(rational_boundary));
+
+    auto rational_prime_overflow = rational_boundary;
+    rational_prime_overflow.factor_base.rational.back().p = max_i32 + 1U;
+    CHECK(!sieve::validate_distributed_sieve_work_identity(rational_prime_overflow));
+    auto rational_log_overflow = rational_boundary;
+    rational_log_overflow.factor_base.rational.back().log_p = max_u16 + 1U;
+    CHECK(!sieve::validate_distributed_sieve_work_identity(rational_log_overflow));
+
+    auto algebraic_boundary = identity;
+    algebraic_boundary.factor_base.algebraic_bound = std::numeric_limits<std::uint32_t>::max();
+    algebraic_boundary.factor_base.algebraic.back().p = max_i32;
+    algebraic_boundary.factor_base.algebraic.back().log_p = max_u16;
+    CHECK(sieve::validate_distributed_sieve_work_identity(algebraic_boundary));
+
+    auto algebraic_prime_overflow = algebraic_boundary;
+    algebraic_prime_overflow.factor_base.algebraic.back().p = max_i32 + 1U;
+    CHECK(!sieve::validate_distributed_sieve_work_identity(algebraic_prime_overflow));
+    auto algebraic_log_overflow = algebraic_boundary;
+    algebraic_log_overflow.factor_base.algebraic.back().log_p = max_u16 + 1U;
+    CHECK(!sieve::validate_distributed_sieve_work_identity(algebraic_log_overflow));
+
+    // Projective algebraic entries never enter fixed-width prime state, so the
+    // protocol retains their full uint32 payload range.
+    auto projective_entry = algebraic_boundary;
+    projective_entry.factor_base.algebraic.back().p = max_i32 + 1U;
+    projective_entry.factor_base.algebraic.back().r = std::numeric_limits<std::uint32_t>::max();
+    projective_entry.factor_base.algebraic.back().log_p = std::numeric_limits<std::uint32_t>::max();
+    CHECK(sieve::validate_distributed_sieve_work_identity(projective_entry));
+
+    // Affine suffix entries are special-Q inputs and never enter fixed-width
+    // PrimeEntry state, so they retain the complete uint32 payload as well.
+    auto inactive_affine_entry = identity;
+    inactive_affine_entry.factor_base.algebraic.push_back(
+        {max_i32 + 1U, 17, std::numeric_limits<std::uint32_t>::max(), 1});
+    inactive_affine_entry.original_sq_bounds.end_index = 3;
+    inactive_affine_entry.effective_sq_bounds.end_index = 3;
+    inactive_affine_entry.distributed.chunks.front().sq_end = 3;
+    CHECK(sieve::validate_distributed_sieve_work_identity(inactive_affine_entry));
+
+    auto suffix_spec = LiveFactorBaseSpec{};
+    suffix_spec.algebraic.push_back({static_cast<std::uint32_t>(max_i32 + 1U), 17,
+                                     std::numeric_limits<std::uint32_t>::max(), 1});
+    const auto suffix_factor_base = make_live_factor_base(suffix_spec);
+    const auto suffix_polynomial = make_live_polynomial();
+    const auto bound_suffix =
+        bind_work_checked(inactive_affine_entry, frozen, suffix_polynomial, suffix_factor_base);
+    CHECK(bound_suffix.chunks.front().sq_end == 3);
+}
+
+void test_work_identity_binds_skew_numeric_domain_to_policy() {
+    const auto frozen = freeze_checked(unset_snapshot());
+    const auto baseline = make_runtime_identity(frozen);
+    const auto set_skewness = [](WorkIdentity& identity, double skewness) {
+        identity.polynomial.skewness_ieee754_bits = std::bit_cast<std::uint64_t>(skewness);
+    };
+    const auto enable_skew = [](WorkIdentity& identity) {
+        identity.execution_policy.settings[policy_index(Key::lattice_skew)].canonical_bits = 1;
+    };
+
+    auto skew_disabled = baseline;
+    set_skewness(skew_disabled, std::numeric_limits<double>::max());
+    CHECK(sieve::validate_distributed_sieve_work_identity(skew_disabled));
+
+    auto gauss_skew_flag = skew_disabled;
+    gauss_skew_flag.execution_policy.settings[policy_index(Key::lattice_lll)].canonical_bits = 1;
+    enable_skew(gauss_skew_flag);
+    CHECK(sieve::validate_distributed_sieve_work_identity(gauss_skew_flag));
+
+    auto valid_skew_lll = baseline;
+    enable_skew(valid_skew_lll);
+    set_skewness(valid_skew_lll, std::sqrt(std::numeric_limits<double>::max()) * 0.75);
+    CHECK(sieve::validate_distributed_sieve_work_identity(valid_skew_lll));
+
+    for (const std::uint64_t skewness_bits :
+         {UINT64_C(0x2000000000000000), UINT64_C(0x5fefffffffffffff)}) {
+        auto boundary_skew_lll = baseline;
+        enable_skew(boundary_skew_lll);
+        boundary_skew_lll.polynomial.skewness_ieee754_bits = skewness_bits;
+        CHECK(sieve::validate_distributed_sieve_work_identity(boundary_skew_lll));
+    }
+
+    for (const std::uint64_t skewness_bits :
+         {UINT64_C(0x1fffffffffffffff), UINT64_C(0x5ff0000000000000),
+          std::bit_cast<std::uint64_t>(std::numeric_limits<double>::denorm_min()),
+          std::bit_cast<std::uint64_t>(std::numeric_limits<double>::max())}) {
+        auto invalid_skew_lll = baseline;
+        enable_skew(invalid_skew_lll);
+        invalid_skew_lll.polynomial.skewness_ieee754_bits = skewness_bits;
+        CHECK(!sieve::validate_distributed_sieve_work_identity(invalid_skew_lll));
+    }
+}
+
 void test_bound_work_rejects_every_live_factor_base_drift() {
     const auto frozen = freeze_checked(unset_snapshot());
     const auto identity = make_runtime_identity(frozen);
@@ -1719,6 +1824,8 @@ int main() {
         test_bound_work_derives_every_small_runtime_input();
         test_bound_work_enforces_lattice_sieve_region_bounds();
         test_bound_work_rejects_every_live_polynomial_drift();
+        test_work_identity_rejects_unrepresentable_active_sieve_entries();
+        test_work_identity_binds_skew_numeric_domain_to_policy();
         test_bound_work_rejects_every_live_factor_base_drift();
         test_bound_work_rejects_policy_version_and_mapper_drift();
         test_diagnostics_are_noncanonical_and_consistency_is_closed();

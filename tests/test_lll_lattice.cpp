@@ -14,11 +14,14 @@
 #include "gnfs/sieve/lattice_basis.hpp"
 #include "gnfs/sieve/special_q.hpp"
 
+#include <array>
 #include <cassert>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -425,6 +428,137 @@ void test_exact_wide_arithmetic() {
 
     std::cout << "  PASS (portable/native limbs, exact rounding, 8 GMP-oracle goldens)"
               << std::endl;
+}
+
+void test_checked_lattice_projection_contract() {
+    std::cout << "Testing checked lattice projection contract..." << std::endl;
+
+    constexpr int64_t high_limb = std::numeric_limits<int64_t>::max();
+    const LatticeBasis cancellation_basis{
+        .e0 = high_limb,
+        .f0 = high_limb - 1,
+        .e1 = high_limb - 1,
+        .f1 = high_limb - 2,
+        .q = 1,
+        .r = 0,
+    };
+    check(cancellation_basis.try_determinant() == -1,
+          "high-limb determinant cancellation was not exact");
+    check(cancellation_basis.determinant() == -1,
+          "checked determinant changed a representable result");
+
+    const auto max_i64 = std::numeric_limits<int64_t>::max();
+    const auto min_i64 = std::numeric_limits<int64_t>::min();
+    int64_t checked_value = 0;
+    check(detail::lb_try_linear_combination(1, max_i64, 0, 0, checked_value) &&
+              checked_value == max_i64,
+          "exact INT64_MAX projection was rejected");
+    check(detail::lb_try_linear_combination(1, min_i64, 0, 0, checked_value) &&
+              checked_value == min_i64,
+          "exact INT64_MIN projection was rejected");
+    check(!detail::lb_try_linear_combination(1, max_i64, 1, 1, checked_value),
+          "INT64_MAX+1 projection was accepted");
+    check(!detail::lb_try_linear_combination(1, min_i64, -1, 1, checked_value),
+          "INT64_MIN-1 projection was accepted");
+
+    int64_t update_a = max_i64;
+    int64_t update_b = 17;
+    bool update_threw = false;
+    try {
+        detail::lb_reduce_vector_checked(update_a, update_b, -1, 1, 0);
+    } catch (const std::overflow_error&) {
+        update_threw = true;
+    }
+    check(update_threw && update_a == max_i64 && update_b == 17,
+          "overflowing basis update did not fail transactionally");
+
+    const LatticeBasis overflowing_determinant{
+        .e0 = max_i64,
+        .f0 = max_i64,
+        .e1 = min_i64,
+        .f1 = max_i64,
+        .q = 1,
+        .r = 0,
+    };
+    check(!overflowing_determinant.try_determinant().has_value(),
+          "non-representable determinant was accepted");
+    bool determinant_threw = false;
+    try {
+        (void)overflowing_determinant.determinant();
+    } catch (const std::overflow_error&) {
+        determinant_threw = true;
+    }
+    check(determinant_threw, "determinant overflow did not fail closed");
+
+    const auto max_u32 = std::numeric_limits<uint32_t>::max();
+    const LatticeBasis extreme_skew_basis{
+        .e0 = static_cast<int64_t>(max_u32),
+        .f0 = 0,
+        .e1 = -static_cast<int64_t>(max_u32 - 1U),
+        .f1 = 1,
+        .q = max_u32,
+        .r = 1,
+    };
+    check(extreme_skew_basis.determinant() == static_cast<int64_t>(max_u32),
+          "extreme skew fixture determinant was invalid");
+    check(extreme_skew_basis.verify_ab(extreme_skew_basis.e0, extreme_skew_basis.f0) &&
+              extreme_skew_basis.verify_ab(extreme_skew_basis.e1, extreme_skew_basis.f1),
+          "extreme skew fixture did not span the requested lattice");
+
+    int64_t b_residue = min_i64 % static_cast<int64_t>(max_u32);
+    if (b_residue < 0) {
+        b_residue += static_cast<int64_t>(max_u32);
+    }
+    check(extreme_skew_basis.verify_ab(b_residue, min_i64),
+          "modular membership check overflowed for an extreme b value");
+    LatticeBasis zero_modulus = extreme_skew_basis;
+    zero_modulus.q = 0;
+    check(!zero_modulus.verify_ab(0, 0), "zero-modulus lattice membership was accepted");
+
+    const SieveRegion unsafe_region{
+        std::numeric_limits<int32_t>::max(),
+        std::numeric_limits<int32_t>::max(),
+        std::numeric_limits<int32_t>::min(),
+        std::numeric_limits<int32_t>::min(),
+    };
+    check(!extreme_skew_basis.try_to_ab(unsafe_region.i_min, unsafe_region.j_min).has_value(),
+          "overflowing coordinate projection was accepted");
+    check(!lattice_projection_fits_int64(extreme_skew_basis, unsafe_region),
+          "overflowing region projection was accepted");
+    bool projection_threw = false;
+    try {
+        (void)extreme_skew_basis.to_ab(unsafe_region.i_min, unsafe_region.j_min);
+    } catch (const std::overflow_error&) {
+        projection_threw = true;
+    }
+    check(projection_threw, "coordinate projection overflow did not fail closed");
+
+    const SieveRegion safe_region{-16, 15, 1, 16};
+    check(lattice_projection_fits_int64(extreme_skew_basis, safe_region),
+          "representable region projection was rejected");
+    check(extreme_skew_basis.try_to_ab(safe_region.i_max, safe_region.j_max).has_value(),
+          "representable coordinate projection was rejected");
+
+    constexpr int64_t corner_scale = 5'000'000'000'000'000'000LL;
+    const LatticeBasis off_diagonal_overflow_basis{
+        .e0 = corner_scale,
+        .f0 = 1,
+        .e1 = -corner_scale - 2,
+        .f1 = -1,
+        .q = 2,
+        .r = 0,
+    };
+    const SieveRegion off_diagonal_overflow_region{1, 3, 1, 3};
+    check(off_diagonal_overflow_basis.try_to_ab(1, 1).has_value() &&
+              off_diagonal_overflow_basis.try_to_ab(3, 3).has_value(),
+          "representable diagonal corners were rejected");
+    check(!off_diagonal_overflow_basis.try_to_ab(1, 3).has_value() &&
+              !off_diagonal_overflow_basis.try_to_ab(3, 1).has_value(),
+          "overflowing off-diagonal corners were accepted");
+    check(!lattice_projection_fits_int64(off_diagonal_overflow_basis, off_diagonal_overflow_region),
+          "region projection checked only the diagonal corners");
+
+    std::cout << "  PASS (projection, determinant, and membership fail closed)" << std::endl;
 }
 
 // ─── Test 1: basic LLL correctness on small primes ───────────────────
@@ -909,7 +1043,63 @@ void test_skew_lll_boundary() {
         }
     }
 
-    std::cout << "  PASS (6 skewnesses x 9 cases, all invariants)" << std::endl;
+    const SpecialQ sq = make_sq(1009, 500);
+    const std::array<double, 6> invalid_skewnesses{
+        0.0,
+        -1.0,
+        std::numeric_limits<double>::denorm_min(),
+        std::numeric_limits<double>::max(),
+        std::numeric_limits<double>::infinity(),
+        std::numeric_limits<double>::quiet_NaN(),
+    };
+    for (const double skewness : invalid_skewnesses) {
+        bool rejected = false;
+        try {
+            (void)compute_lattice_basis(sq, LatticeReductionMethod::SkewLLL, skewness);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        check(rejected, "SkewLLL accepted a non-representable skewness");
+    }
+
+    const double high_finite_skewness = std::sqrt(std::numeric_limits<double>::max()) * 0.75;
+    const auto high_finite_basis =
+        compute_lattice_basis(sq, LatticeReductionMethod::SkewLLL, high_finite_skewness);
+    check(det_equals_q(high_finite_basis), "high finite SkewLLL changed the determinant");
+
+    int64_t v0_a = 1;
+    int64_t v0_b = 2;
+    int64_t v1_a = 1;
+    int64_t v1_b = 1;
+    bool metric_overflow_rejected = false;
+    try {
+        detail::lb_reduce_skew_lll(v0_a, v0_b, v1_a, v1_b, high_finite_skewness);
+    } catch (const std::overflow_error&) {
+        metric_overflow_rejected = true;
+    }
+    check(metric_overflow_rejected, "SkewLLL accepted a non-finite intermediate metric");
+
+    bool quotient_overflow_rejected = false;
+    try {
+        (void)detail::lb_checked_round_to_i64(0x1p63);
+    } catch (const std::overflow_error&) {
+        quotient_overflow_rejected = true;
+    }
+    check(quotient_overflow_rejected, "SkewLLL accepted a finite quotient outside int64_t");
+    check(detail::lb_checked_round_to_i64(-0x1p63) == std::numeric_limits<int64_t>::min(),
+          "SkewLLL rejected the exact INT64_MIN quotient boundary");
+
+    bool config_nan_rejected = false;
+    try {
+        (void)compute_lattice_basis_with_skewness(
+            sq, std::numeric_limits<double>::quiet_NaN(),
+            LatticeBasisReductionConfig{LatticeReductionMethod::LLL, true});
+    } catch (const std::invalid_argument&) {
+        config_nan_rejected = true;
+    }
+    check(config_nan_rejected, "skew-enabled configuration silently accepted NaN");
+
+    std::cout << "  PASS (finite metrics, invalid inputs, and all invariants)" << std::endl;
 }
 
 // ─── Test 11: compute_lattice_basis_with_skewness dispatch ──────────
@@ -1041,6 +1231,7 @@ int main() {
     std::cout << "===========================================" << std::endl;
 
     test_exact_wide_arithmetic();
+    test_checked_lattice_projection_contract();
     test_lll_basic();
     test_lll_large_q();
     test_lll_asymmetric_r();

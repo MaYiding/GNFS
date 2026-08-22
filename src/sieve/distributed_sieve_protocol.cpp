@@ -171,6 +171,20 @@ failure(DistributedSieveProtocolError error,
     return std::isfinite(value) && value > 0.0;
 }
 
+[[nodiscard]] constexpr bool positive_normal_square_binary64(uint64_t bits) noexcept {
+    // A positive binary64 value has a normal, finite exact square for every
+    // rounding/FTZ environment precisely within this exponent band:
+    // [2^-511, nextafter(2^512, 0)]. Comparing encoded exponents keeps work
+    // identity validation independent of mutable floating-point state.
+    constexpr uint64_t sign_mask = uint64_t{1} << 63;
+    constexpr uint64_t exponent_mask = 0x7ffU;
+    constexpr uint64_t minimum_biased_exponent = 512;
+    constexpr uint64_t maximum_biased_exponent = 1534;
+    const uint64_t exponent = (bits >> 52) & exponent_mask;
+    return (bits & sign_mask) == 0 && exponent >= minimum_biased_exponent &&
+           exponent <= maximum_biased_exponent;
+}
+
 class Writer final {
 public:
     explicit Writer(uint32_t limit = DISTRIBUTED_SIEVE_PROTOCOL_MAX_RECORD_BYTES) noexcept
@@ -2590,6 +2604,11 @@ validate_distributed_sieve_work_identity(const DistributedSieveWorkIdentityV1& v
     uint64_t previous_rational_p = 0;
     for (uint32_t index = 0; index < factor_base.rational.size(); ++index) {
         const auto& entry = factor_base.rational[index];
+        if (entry.p > static_cast<uint64_t>(std::numeric_limits<int32_t>::max()) ||
+            entry.log_p > std::numeric_limits<uint16_t>::max()) {
+            return failure(DistributedSieveProtocolError::invalid_value,
+                           DISTRIBUTED_SIEVE_PROTOCOL_NO_OFFSET, index);
+        }
         if (entry.p <= 1 || entry.p <= previous_rational_p ||
             entry.p > factor_base.rational_bound ||
             entry.p > std::numeric_limits<uint32_t>::max()) {
@@ -2613,10 +2632,15 @@ validate_distributed_sieve_work_identity(const DistributedSieveWorkIdentityV1& v
                                                   : entry.p > factor_base.algebraic_bound;
         const bool root_is_valid =
             entry.r == std::numeric_limits<uint32_t>::max() || entry.r < entry.p;
+        const bool active_affine_entry =
+            in_sieve_prefix && entry.r != std::numeric_limits<uint32_t>::max();
         if (!greater || entry.p <= 1 || entry.p > std::numeric_limits<uint32_t>::max() ||
             entry.r > std::numeric_limits<uint32_t>::max() || !root_is_valid ||
             !bound_partition_is_valid || entry.degree == 0 ||
-            entry.degree > std::numeric_limits<uint8_t>::max()) {
+            entry.degree > std::numeric_limits<uint8_t>::max() ||
+            (active_affine_entry &&
+             (entry.p > static_cast<uint64_t>(std::numeric_limits<int32_t>::max()) ||
+              entry.log_p > std::numeric_limits<uint16_t>::max()))) {
             return failure(!greater ? DistributedSieveProtocolError::noncanonical_order
                                     : DistributedSieveProtocolError::invalid_value,
                            DISTRIBUTED_SIEVE_PROTOCOL_NO_OFFSET, index);
@@ -2684,6 +2708,17 @@ validate_distributed_sieve_work_identity(const DistributedSieveWorkIdentityV1& v
     if (const auto status = validate_distributed_sieve_execution_policy(value.execution_policy);
         !status) {
         return status;
+    }
+    constexpr uint64_t canonical_lll_mode = 2;
+    const auto policy_bits = [&value](ExecutionPolicyKeyV1 key) noexcept {
+        const size_t index = static_cast<size_t>(static_cast<uint16_t>(key) - 1U);
+        return value.execution_policy.settings[index].canonical_bits;
+    };
+    const bool skew_lll_enabled =
+        policy_bits(ExecutionPolicyKeyV1::lattice_lll) == canonical_lll_mode &&
+        policy_bits(ExecutionPolicyKeyV1::lattice_skew) != 0;
+    if (skew_lll_enabled && !positive_normal_square_binary64(polynomial.skewness_ieee754_bits)) {
+        return failure(DistributedSieveProtocolError::invalid_value);
     }
 
     const auto& versions = value.semantic_versions;

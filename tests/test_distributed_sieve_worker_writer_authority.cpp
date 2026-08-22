@@ -251,6 +251,126 @@ public:
     wave::DistributedSieveWaveStoreOpenResult opened;
 };
 
+inline constexpr std::uint32_t PROJECTION_OVERFLOW_Q = 4'294'967'291U;
+inline constexpr std::uint32_t PROJECTION_OVERFLOW_ROOT = 3'542'712'079U;
+
+[[nodiscard]] policy::DistributedSieveFrozenExecutionPolicyV1
+make_projection_overflow_execution_policy() {
+    policy::DistributedSieveExecutionPolicyEnvironmentSnapshotV1 snapshot;
+    snapshot.hardware_concurrency = 8;
+    snapshot.canonical_values[positive_execution_policy_index(
+        sieve::ExecutionPolicyKeyV1::lattice_skew)] = "1";
+    snapshot.canonical_values[positive_execution_policy_index(
+        sieve::ExecutionPolicyKeyV1::adaptive_lattice)] = "1";
+    snapshot.canonical_values[positive_execution_policy_index(
+        sieve::ExecutionPolicyKeyV1::adaptive_lattice_max_retries)] = "1";
+    snapshot.canonical_values[positive_execution_policy_index(
+        sieve::ExecutionPolicyKeyV1::cofactor_brent)] = "1";
+    auto frozen = policy::freeze_distributed_sieve_execution_policy_v1(snapshot);
+    CHECK(frozen);
+    CHECK(frozen.policy.has_value());
+    return std::move(*frozen.policy);
+}
+
+[[nodiscard]] gnfs::core::PolynomialContext make_projection_overflow_execution_polynomial() {
+    std::vector<gnfs::core::Integer> coefficients;
+    coefficients.emplace_back(std::int64_t{812});
+    coefficients.emplace_back(std::int64_t{0});
+    coefficients.emplace_back(std::int64_t{0});
+    coefficients.emplace_back(std::int64_t{1});
+    gnfs::core::PolynomialContext polynomial(gnfs::core::Integer(std::int64_t{77}),
+                                             std::move(coefficients),
+                                             gnfs::core::Integer(std::int64_t{7}), 1e12);
+    CHECK(polynomial.verify());
+    CHECK(polynomial.evaluate_mod(PROJECTION_OVERFLOW_ROOT, PROJECTION_OVERFLOW_Q) == 0);
+    return polynomial;
+}
+
+[[nodiscard]] gnfs::factor_base::FactorBase make_projection_overflow_execution_factor_base() {
+    gnfs::factor_base::FactorBase factor_base(
+        {2, 2, std::numeric_limits<std::uint32_t>::max(), 16});
+    factor_base.add_rational(2, 16);
+    factor_base.add_algebraic(2, 0, 16, 1);
+    factor_base.add_algebraic(PROJECTION_OVERFLOW_Q, PROJECTION_OVERFLOW_ROOT, 512, 1);
+    factor_base.set_sieve_algebraic_count(1);
+    factor_base.build_index();
+    return factor_base;
+}
+
+[[nodiscard]] gnfs::sieve::SpecialQ
+make_projection_overflow_execution_special_q(const gnfs::factor_base::FactorBase& factor_base) {
+    gnfs::sieve::SpecialQGenerator generator(factor_base,
+                                             gnfs::sieve::SpecialQRange::from_indices(1, 2));
+    const auto special_q = generator.next();
+    CHECK(special_q.has_value());
+    CHECK(special_q->q == PROJECTION_OVERFLOW_Q);
+    CHECK(special_q->r == PROJECTION_OVERFLOW_ROOT);
+    CHECK(special_q->index == 1);
+    return *special_q;
+}
+
+[[nodiscard]] sieve::DistributedSieveWorkIdentityV1 make_projection_overflow_execution_identity(
+    const policy::DistributedSieveFrozenExecutionPolicyV1& frozen,
+    const gnfs::core::PolynomialContext& polynomial,
+    const gnfs::factor_base::FactorBase& factor_base, const gnfs::sieve::SpecialQ& special_q) {
+    auto identity = make_positive_execution_identity(frozen, polynomial, factor_base, special_q);
+    const auto extreme = std::numeric_limits<std::int32_t>::max();
+    identity.region = {
+        .i_min = extreme,
+        .i_max = extreme,
+        .j_min = extreme,
+        .j_max = extreme,
+    };
+    CHECK(sieve::validate_distributed_sieve_work_identity(identity));
+    return identity;
+}
+
+class ProjectionOverflowWorkerExecutionFixture final {
+public:
+    explicit ProjectionOverflowWorkerExecutionFixture(std::string_view label,
+                                                      Digest executable_sha256)
+        : frozen(make_projection_overflow_execution_policy()),
+          polynomial(make_projection_overflow_execution_polynomial()),
+          factor_base(make_projection_overflow_execution_factor_base()),
+          special_q(make_projection_overflow_execution_special_q(factor_base)),
+          identity(make_projection_overflow_execution_identity(frozen, polynomial, factor_base,
+                                                               special_q)),
+          root(temp.path() / std::string(label)),
+          opened(wave::DistributedSieveWaveStore::create(
+              root, make_manifest_draft(identity, executable_sha256))) {
+        if (!opened || opened.store == nullptr) {
+            fail("create projection-overflow worker-execution WaveStore", __LINE__,
+                 wave_diagnostic_detail(opened.diagnostic));
+        }
+    }
+
+    [[nodiscard]] wave::DistributedSieveWaveStore& store() const noexcept {
+        return *opened.store;
+    }
+
+    [[nodiscard]] wave::DistributedSieveWorkerAttemptStartReceipt start_receipt() {
+        auto claimed = store().create_worker_attempt_private_lease_root(0, 0);
+        CHECK(claimed);
+        CHECK(claimed.claim != nullptr);
+        auto reserved = wave::reserve_worker_attempt_private_lease(std::move(claimed));
+        CHECK(reserved);
+        CHECK(reserved.receipt.has_value());
+        auto started = wave::publish_worker_attempt_started(std::move(*reserved.receipt));
+        CHECK(started);
+        CHECK(started.receipt.has_value());
+        return std::move(*started.receipt);
+    }
+
+    TempDirectory temp;
+    policy::DistributedSieveFrozenExecutionPolicyV1 frozen;
+    gnfs::core::PolynomialContext polynomial;
+    gnfs::factor_base::FactorBase factor_base;
+    gnfs::sieve::SpecialQ special_q;
+    sieve::DistributedSieveWorkIdentityV1 identity;
+    std::filesystem::path root;
+    wave::DistributedSieveWaveStoreOpenResult opened;
+};
+
 [[nodiscard]] std::uint64_t positive_execution_signed_mod(std::int64_t value,
                                                           std::uint64_t modulus) noexcept {
     const std::uint64_t magnitude = gnfs::util::safe_abs(value) % modulus;
@@ -546,6 +666,7 @@ struct WriterChildReport final {
     std::uint32_t entry_phase = 0;
     std::uint32_t writer_status = 0;
     std::uint32_t writer_phase = 0;
+    std::uint32_t chunk_status = 0;
     std::uint32_t writer_rollback = 0;
     std::uint32_t second_status = 0;
     std::uint32_t second_phase = 0;
@@ -1260,6 +1381,7 @@ struct ConstructionFailureHookContext final {
                 execute_distributed_sieve_worker_entry_v1(std::move(*adopted.entry));
             report.writer_status = static_cast<std::uint32_t>(executed.diagnostic.status);
             report.writer_phase = static_cast<std::uint32_t>(executed.diagnostic.phase);
+            report.chunk_status = static_cast<std::uint32_t>(executed.diagnostic.chunk_status);
             report.writer_native_error = executed.diagnostic.native_error;
             if (executed && executed.handoff.has_value() && executed.completion.has_value()) {
                 const auto& handoff = *executed.handoff;
@@ -2455,6 +2577,60 @@ void test_real_worker_execution_facade(const std::filesystem::path& executable) 
     require_no_handoff_or_cleanup_publication(mismatch_fixture);
 }
 
+void test_projection_preflight_rejects_before_writer_adoption(
+    const std::filesystem::path& executable) {
+    const auto executable_digest =
+        worker_execution::current_distributed_sieve_worker_executable_sha256_v1();
+    CHECK(executable_digest);
+    CHECK(executable_digest.digest.has_value());
+
+    ProjectionOverflowWorkerExecutionFixture fixture("worker-projection-preflight",
+                                                     *executable_digest.digest);
+    CHECK(fixture.frozen.sieve.lattice_skew);
+    CHECK(fixture.frozen.sieve.adaptive_lattice);
+    CHECK(fixture.frozen.sieve.adaptive_lattice_max_retries == 1);
+
+    const auto mapped = policy::map_distributed_sieve_lattice_runtime_config_v1(fixture.frozen);
+    CHECK(mapped);
+    CHECK(mapped.config.has_value());
+    const auto& sieve_config = mapped.config->sieve;
+    const gnfs::sieve::SieveRegion region{
+        std::numeric_limits<std::int32_t>::max(),
+        std::numeric_limits<std::int32_t>::max(),
+        std::numeric_limits<std::int32_t>::max(),
+        std::numeric_limits<std::int32_t>::max(),
+    };
+    const auto initial = gnfs::sieve::compute_lattice_basis_with_skewness(
+        fixture.special_q, fixture.polynomial.skewness(), sieve_config.lattice_basis);
+    CHECK(gnfs::sieve::lattice_projection_fits_int64(initial, region));
+    gnfs::sieve::AdaptiveBasisManager adaptive(sieve_config.adaptive_lattice);
+    const auto retry = adaptive.try_perturb_and_rereduce(initial, 0, region.size(), 0);
+    CHECK(retry.has_value());
+    CHECK(!gnfs::sieve::lattice_projection_fits_int64(*retry, region));
+
+    const auto result =
+        launch_writer_case(fixture, executable, WriterChildScenario::real_worker_execution);
+    require_writer_entry_was_adopted(result.report);
+    CHECK(result.report.writer_status ==
+          static_cast<std::uint32_t>(
+              worker_execution::DistributedSieveWorkerExecutionStatusV1::chunk_invalid));
+    CHECK(result.report.writer_phase ==
+          static_cast<std::uint32_t>(
+              worker_execution::DistributedSieveWorkerExecutionPhaseV1::chunk_preparation));
+    CHECK(result.report.chunk_status ==
+          static_cast<std::uint32_t>(
+              worker_execution::DistributedSieveWorkerChunkStatusV1::binding_invalid));
+    CHECK(result.report.writer_native_error == 0);
+    constexpr std::uint32_t forbidden_flags = WRITER_FLAG_REAL_EXECUTION_SUCCEEDED |
+                                              WRITER_FLAG_FINALIZED | WRITER_FLAG_HANDOFF_PUBLISHED;
+    CHECK((result.report.flags & forbidden_flags) == 0U);
+
+    // Writer adoption removes the reservation and constructs corpus leaves.
+    // Exact identity-and-byte equality with the post-start baseline proves
+    // that chunk preparation failed before either mutation could occur.
+    CHECK(same_namespace_snapshot(result.baseline, snapshot_namespace(fixture.root)));
+}
+
 void test_positive_relation_worker_execution_facade(const std::filesystem::path& executable) {
     const auto executable_digest =
         worker_execution::current_distributed_sieve_worker_executable_sha256_v1();
@@ -3327,6 +3503,7 @@ int main(int argc, char** argv) {
 #if defined(__APPLE__)
         test_retry_creation_serializes_with_predecessor_handoff(executable);
         test_real_worker_execution_facade(executable);
+        test_projection_preflight_rejects_before_writer_adoption(executable);
         test_positive_relation_worker_execution_facade(executable);
         test_writer_zero_row_handoff(executable);
         test_worker_handoff_inventory_rejects_foreign_state(executable);
