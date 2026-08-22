@@ -1,6 +1,7 @@
 #include "gnfs/factor_base/builder.hpp"
 #include "gnfs/polynomial/base_m.hpp"
 #include "gnfs/sieve/lattice_sieve.hpp"
+#include "gnfs/util/primes.hpp"
 #include "gnfs/util/safe_math.hpp"
 #include "support/test_check.hpp"
 
@@ -26,6 +27,24 @@ using namespace gnfs::core;
 
 // 测试用的半素数
 const char* test_n = "1000036000099";
+
+[[nodiscard]] bool sieve_results_equal(const SieveResult& lhs, const SieveResult& rhs) {
+    if (lhs.special_q.q != rhs.special_q.q || lhs.special_q.r != rhs.special_q.r ||
+        lhs.special_q.index != rhs.special_q.index ||
+        lhs.sieved_positions != rhs.sieved_positions || lhs.smooth_count != rhs.smooth_count ||
+        lhs.candidates.size() != rhs.candidates.size()) {
+        return false;
+    }
+    for (size_t index = 0; index < lhs.candidates.size(); ++index) {
+        const auto& left = lhs.candidates[index];
+        const auto& right = rhs.candidates[index];
+        if (left.i != right.i || left.j != right.j || left.a != right.a || left.b != right.b ||
+            left.residual != right.residual) {
+            return false;
+        }
+    }
+    return true;
+}
 
 void test_lattice_basis() {
     std::cout << "Testing lattice basis computation..." << std::endl;
@@ -927,6 +946,118 @@ void test_extreme_j_row_offset_sieving() {
     std::cout << "  Extreme j row-offset sieving: PASS" << std::endl;
 }
 
+void test_parallel_sieve_phase_equivalence() {
+    std::cout << "Testing joined-worker sieve phase equivalence..." << std::endl;
+
+    std::vector<Integer> coefficients;
+    coefficients.emplace_back(int64_t{812});
+    coefficients.emplace_back(int64_t{0});
+    coefficients.emplace_back(int64_t{0});
+    coefficients.emplace_back(int64_t{1});
+    PolynomialContext ctx(Integer(int64_t{77}), std::move(coefficients), Integer(int64_t{7}), 1.0);
+    const SpecialQ sq{5, 2, 0};
+    GNFS_TEST_CHECK(ctx.evaluate_mod(sq.r, sq.q) == 0);
+
+    FactorBaseParams fb_params;
+    fb_params.rational_bound = 2'000;
+    fb_params.algebraic_bound = 2'000;
+    fb_params.log_scale = 16;
+
+    LatticeSieveExecutionConfig config{};
+    config.fallback_thread_count = 2;
+    config.enable_tiny_simd = false;
+    config.enable_bucket_prefetch = false;
+
+    const auto run = [&](const FactorBase& factor_base, const SieveParams& params,
+                         const SieveRegion& region, size_t threads) {
+        LatticeSieve sieve(ctx, factor_base, params, config);
+        sieve.set_max_threads(threads);
+        sieve.set_region(region);
+        return sieve.sieve_special_q(sq);
+    };
+    const auto has_candidate = [](const SieveResult& result, int32_t i, int32_t j, int64_t a,
+                                  uint64_t b) {
+        return std::any_of(result.candidates.begin(), result.candidates.end(),
+                           [&](const SieveCandidate& candidate) {
+                               return candidate.i == i && candidate.j == j && candidate.a == a &&
+                                      candidate.b == b;
+                           });
+    };
+
+    // Exactly 500 rows crosses the row-chunk threshold. The three-column
+    // region stays on the compact row-major path, isolating that worker group.
+    FactorBase row_factor_base(fb_params);
+    row_factor_base.add_rational(2, 17);
+    row_factor_base.add_rational(3, 512);
+    row_factor_base.set_sieve_algebraic_count(0);
+    SieveParams row_params;
+    row_params.log_scale = 16;
+    row_params.rational_threshold = 100;
+    row_params.algebraic_threshold = 0;
+    const SieveRegion row_region{-2, 0, 1, 500};
+    GNFS_TEST_CHECK(row_region.i_width() == 3);
+    GNFS_TEST_CHECK(row_region.j_height() == 500);
+    const auto row_serial = run(row_factor_base, row_params, row_region, 1);
+    const auto row_parallel = run(row_factor_base, row_params, row_region, 2);
+    GNFS_TEST_CHECK(!row_serial.candidates.empty());
+    GNFS_TEST_CHECK(has_candidate(row_serial, -2, 3, 4, 7));
+    GNFS_TEST_CHECK(has_candidate(row_serial, -1, 252, 503, 254));
+    GNFS_TEST_CHECK(sieve_results_equal(row_serial, row_parallel));
+
+    // One row and one 64K region keep apply serial. Exactly 100 normal primes
+    // at or above 256 cross only the scatter worker threshold.
+    FactorBase scatter_factor_base(fb_params);
+    uint64_t prime = 256;
+    for (size_t index = 0; index < 100; ++index) {
+        prime = util::next_prime_u64(prime);
+        GNFS_TEST_CHECK(prime >= 257);
+        GNFS_TEST_CHECK(prime <= static_cast<uint64_t>(std::numeric_limits<int32_t>::max()));
+        scatter_factor_base.add_rational(static_cast<uint32_t>(prime), 512);
+    }
+    scatter_factor_base.set_sieve_algebraic_count(0);
+    GNFS_TEST_CHECK(scatter_factor_base.rational().size() == 100);
+    GNFS_TEST_CHECK(prime == 887);
+    SieveParams scatter_params;
+    scatter_params.log_scale = 16;
+    scatter_params.rational_threshold = 100;
+    scatter_params.algebraic_threshold = 0;
+    const SieveRegion scatter_region{-255, 0, 1, 1};
+    GNFS_TEST_CHECK(scatter_region.i_width() == 256);
+    GNFS_TEST_CHECK(scatter_region.size() < (size_t{1} << 16));
+    const auto scatter_serial = run(scatter_factor_base, scatter_params, scatter_region, 1);
+    const auto scatter_parallel = run(scatter_factor_base, scatter_params, scatter_region, 2);
+    GNFS_TEST_CHECK(!scatter_serial.candidates.empty());
+    GNFS_TEST_CHECK(has_candidate(scatter_serial, -171, 1, -169, 343));
+    GNFS_TEST_CHECK(sieve_results_equal(scatter_serial, scatter_parallel));
+
+    // A width just beyond the compact-row limit forces region buckets. Six
+    // rows produce exactly four regions, while one medium prime keeps scatter
+    // serial and therefore isolates the dynamic apply worker group.
+    FactorBase apply_factor_base(fb_params);
+    apply_factor_base.add_rational(2, 17);
+    apply_factor_base.add_rational(3, 512);
+    apply_factor_base.add_rational(257, 19);
+    apply_factor_base.set_sieve_algebraic_count(0);
+    SieveParams apply_params;
+    apply_params.log_scale = 16;
+    apply_params.rational_threshold = 400;
+    apply_params.algebraic_threshold = 0;
+    const SieveRegion apply_region{-32'768, 0, 1, 6};
+    constexpr size_t bucket_region_size = size_t{1} << 16;
+    const size_t apply_region_count =
+        apply_region.size() / bucket_region_size +
+        (apply_region.size() % bucket_region_size != 0 ? size_t{1} : size_t{0});
+    GNFS_TEST_CHECK(apply_region.i_width() == 32'769);
+    GNFS_TEST_CHECK(apply_region_count == 4);
+    const auto apply_serial = run(apply_factor_base, apply_params, apply_region, 1);
+    const auto apply_parallel = run(apply_factor_base, apply_params, apply_region, 2);
+    GNFS_TEST_CHECK(!apply_serial.candidates.empty());
+    GNFS_TEST_CHECK(has_candidate(apply_serial, -5, 6, 7, 16));
+    GNFS_TEST_CHECK(sieve_results_equal(apply_serial, apply_parallel));
+
+    std::cout << "  Joined-worker sieve phases: PASS" << std::endl;
+}
+
 void test_projection_overflow_rejected_before_sieving() {
     std::cout << "Testing lattice projection overflow rejection..." << std::endl;
 
@@ -1127,6 +1258,7 @@ int main() {
     test_wide_region_uses_exact_bucket_path();
     test_wide_region_prime_classes_are_exact_once();
     test_extreme_j_row_offset_sieving();
+    test_parallel_sieve_phase_equivalence();
     test_projection_overflow_rejected_before_sieving();
     test_factor_base_prime_admission_contract();
     test_lattice_sieve_basic();

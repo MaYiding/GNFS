@@ -4,6 +4,7 @@
 #include "../core/relation.hpp"
 #include "../core/types.hpp"
 #include "../factor_base/factor_base.hpp"
+#include "../util/joined_worker_group.hpp"
 #include "../util/joining_thread.hpp"
 #include "../util/primes.hpp"
 #include "../util/safe_math.hpp"
@@ -20,7 +21,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <exception>
 #include <functional>
 #include <limits>
 #include <numeric>
@@ -534,10 +534,15 @@ public:
     [[nodiscard]] std::vector<SieveResult> sieve_parallel(const std::vector<SpecialQ>& special_qs,
                                                           size_t num_threads = 0) {
 
+        if (special_qs.empty()) {
+            return {};
+        }
+
         if (num_threads == 0) {
             num_threads = execution_config_.has_value() ? resolve_internal_thread_count_()
                                                         : legacy_hardware_thread_count_();
         }
+        num_threads = std::min(num_threads, special_qs.size());
 
         std::vector<SieveResult> all_results(special_qs.size());
         std::atomic<size_t> next_sq{0};
@@ -569,43 +574,33 @@ public:
         // Construct each branch directly: AdaptiveBasisManager contains
         // non-movable atomics, so a conditional temporary is not viable.
         // No mutex needed: each thread writes to a unique all_results[idx].
-        std::vector<std::exception_ptr> worker_failures(num_threads);
-        auto worker = [&](size_t worker_index, gnfs::util::QoSClass qos) noexcept {
-            try {
-                gnfs::util::set_current_thread_qos(qos);
-                if (execution_config_.has_value()) {
-                    LatticeSieve local_sieve(ctx_, fb_, params_, *execution_config_);
-                    process_special_qs(local_sieve);
-                } else {
-                    LatticeSieve local_sieve(ctx_, fb_, params_);
-                    process_special_qs(local_sieve);
-                }
-            } catch (...) {
-                worker_failures[worker_index] = std::current_exception();
+        auto worker = [&](size_t worker_index) {
+            gnfs::util::set_current_thread_qos(
+                qos_for_sieve_thread(worker_index, num_threads, ecore_count));
+            if (execution_config_.has_value()) {
+                LatticeSieve local_sieve(ctx_, fb_, params_, *execution_config_);
+                process_special_qs(local_sieve);
+            } else {
+                LatticeSieve local_sieve(ctx_, fb_, params_);
+                process_special_qs(local_sieve);
             }
         };
 
-        {
-            // JoiningThread joins every successfully launched worker, including
-            // while unwinding a later thread-construction failure.
-            std::vector<gnfs::util::JoiningThread> threads;
-            threads.reserve(num_threads);
-            for (size_t t = 0; t < num_threads; ++t) {
-                if (sieve_parallel_launch_failure_after_for_testing_.has_value() &&
-                    threads.size() >= *sieve_parallel_launch_failure_after_for_testing_) {
+        if (sieve_parallel_launch_failure_after_for_testing_.has_value()) {
+            size_t successful_launches = 0;
+            auto thread_launcher = [&](size_t, auto&& task) -> gnfs::util::JoiningThread {
+                if (successful_launches >= *sieve_parallel_launch_failure_after_for_testing_) {
                     throw std::system_error(
                         std::make_error_code(std::errc::resource_unavailable_try_again),
                         "LatticeSieve test hook: parallel thread launch failed");
                 }
-                const auto qos = qos_for_sieve_thread(t, num_threads, ecore_count);
-                threads.emplace_back(worker, t, qos);
-            }
-        }
-
-        for (const auto& failure : worker_failures) {
-            if (failure != nullptr) {
-                std::rethrow_exception(failure);
-            }
+                ++successful_launches;
+                return gnfs::util::JoiningThread(std::forward<decltype(task)>(task));
+            };
+            gnfs::util::joined_worker_group_detail::run_joined_worker_group_with_launcher(
+                num_threads, worker, thread_launcher);
+        } else {
+            gnfs::util::run_joined_worker_group(num_threads, worker);
         }
 
         return all_results;
@@ -980,8 +975,11 @@ private:
         }
 
         size_t scatter_threads = resolve_internal_thread_count_();
-        if (medium_prime_indices.size() < 100)
+        if (medium_prime_indices.size() < 100) {
             scatter_threads = 1;
+        } else {
+            scatter_threads = std::min(scatter_threads, medium_prime_indices.size());
+        }
 
         // Thread-local per-region bucket vectors (used by both serial and parallel paths)
         struct ThreadBuckets {
@@ -994,87 +992,80 @@ private:
 
         // Scatter: each thread handles a chunk of primes
         {
-            size_t chunk = (medium_prime_indices.size() + scatter_threads - 1) / scatter_threads;
-            std::vector<std::thread> scatter_workers;
-            scatter_workers.reserve(scatter_threads);
+            const size_t base_primes = medium_prime_indices.size() / scatter_threads;
+            const size_t extra_primes = medium_prime_indices.size() % scatter_threads;
 
             // BACKLOG #4: optional E-core threads via GNFS_SIEVE_ECORE_THREADS=N.
-            // Chunked scatter — fixed per-thread work, mixed P+E hurts under
-            // slowest-core barrier unless ENV opts in.
+            // Balanced scatter gives every launched worker a non-empty range.
+            // Mixed P+E still hurts under the slowest-core barrier unless ENV
+            // opts in.
             const size_t scatter_ecore_count = resolve_ecore_thread_count_(scatter_threads);
 
-            for (size_t t = 0; t < scatter_threads; ++t) {
-                size_t start = t * chunk;
-                size_t end_idx = std::min(start + chunk, medium_prime_indices.size());
-                if (start >= medium_prime_indices.size())
-                    break;
-
+            auto scatter_worker = [&](size_t t) {
+                const size_t start = t * base_primes + std::min(t, extra_primes);
+                const size_t prime_count = base_primes + (t < extra_primes ? size_t{1} : size_t{0});
+                const size_t end_idx = start + prime_count;
                 const auto qos = qos_for_sieve_thread(t, scatter_threads, scatter_ecore_count);
-
-                auto scatter_fn = [&, t, start, end_idx, qos]() {
-                    if (scatter_threads > 1) {
-                        gnfs::util::set_current_thread_qos(qos);
-                    }
-                    auto& local = thread_buckets[t].per_region;
-                    // Resolve the prefetch gate once outside the inner loops:
-                    // it never changes mid-scatter and we want the inner
-                    // bodies to branch on a stack-local boolean rather than
-                    // re-issuing an atomic load per iteration.
-                    const bool prefetch_on = bucket_prefetch_enabled_();
-                    const size_t prefetch_step = kBucketPrefetchDistance;
-                    for (size_t pi_idx = start; pi_idx < end_idx; ++pi_idx) {
-                        const auto& pe = primes[medium_prime_indices[pi_idx]];
-                        int32_t p32 = static_cast<int32_t>(pe.p);
-                        int32_t i_mod = pe.i_mod_init;
-                        int32_t imin_mod = pe.i_min_mod;
-                        for (int32_t row_offset = 0; row_offset < height; ++row_offset) {
-                            int32_t offset = i_mod - imin_mod;
-                            if (offset < 0)
-                                offset += p32;
-                            size_t row_base = static_cast<size_t>(row_offset) * w;
-                            const size_t stride = static_cast<size_t>(pe.p);
-                            const size_t row_end = row_base + w;
-                            for (size_t pos = row_base + static_cast<size_t>(offset); pos < row_end;
-                                 pos += stride) {
-                                size_t region_idx = pos >> LOG_BUCKET_REGION;
-                                // Speculatively touch the destination region
-                                // vector's metadata for an iteration far
-                                // enough ahead that the L1 fill should land
-                                // before we issue the next push_back. The
-                                // prefetch is a hint — the output is bit-for
-                                // -bit identical with or without it.
-                                if (prefetch_on) {
-                                    const size_t look_pos = pos + prefetch_step * stride;
-                                    if (look_pos < row_end) {
-                                        const size_t look_region = look_pos >> LOG_BUCKET_REGION;
-                                        if (look_region < num_regions) {
-                                            prefetch_bucket_write(
-                                                static_cast<const void*>(&local[look_region]));
-                                        }
+                if (scatter_threads > 1) {
+                    gnfs::util::set_current_thread_qos(qos);
+                }
+                auto& local = thread_buckets[t].per_region;
+                // Resolve the prefetch gate once outside the inner loops:
+                // it never changes mid-scatter and we want the inner
+                // bodies to branch on a stack-local boolean rather than
+                // re-issuing an atomic load per iteration.
+                const bool prefetch_on = bucket_prefetch_enabled_();
+                const size_t prefetch_step = kBucketPrefetchDistance;
+                for (size_t pi_idx = start; pi_idx < end_idx; ++pi_idx) {
+                    const auto& pe = primes[medium_prime_indices[pi_idx]];
+                    int32_t p32 = static_cast<int32_t>(pe.p);
+                    int32_t i_mod = pe.i_mod_init;
+                    int32_t imin_mod = pe.i_min_mod;
+                    for (int32_t row_offset = 0; row_offset < height; ++row_offset) {
+                        int32_t offset = i_mod - imin_mod;
+                        if (offset < 0)
+                            offset += p32;
+                        size_t row_base = static_cast<size_t>(row_offset) * w;
+                        const size_t stride = static_cast<size_t>(pe.p);
+                        const size_t row_end = row_base + w;
+                        for (size_t pos = row_base + static_cast<size_t>(offset); pos < row_end;
+                             pos += stride) {
+                            size_t region_idx = pos >> LOG_BUCKET_REGION;
+                            // Speculatively touch the destination region
+                            // vector's metadata for an iteration far
+                            // enough ahead that the L1 fill should land
+                            // before we issue the next push_back. The
+                            // prefetch is a hint — the output is bit-for
+                            // -bit identical with or without it.
+                            if (prefetch_on) {
+                                const size_t look_pos = pos + prefetch_step * stride;
+                                if (look_pos < row_end) {
+                                    const size_t look_region = look_pos >> LOG_BUCKET_REGION;
+                                    if (look_region < num_regions) {
+                                        prefetch_bucket_write(
+                                            static_cast<const void*>(&local[look_region]));
                                     }
                                 }
-                                if (region_idx < num_regions) {
-                                    local[region_idx].push_back(
-                                        {static_cast<uint16_t>(pos & (BUCKET_REGION_SIZE - 1)),
-                                         pe.log_p});
-                                }
                             }
-                            int64_t next_i_mod = static_cast<int64_t>(i_mod) + pe.delta;
-                            if (next_i_mod >= p32)
-                                next_i_mod -= p32;
-                            i_mod = static_cast<int32_t>(next_i_mod);
+                            if (region_idx < num_regions) {
+                                local[region_idx].push_back(
+                                    {static_cast<uint16_t>(pos & (BUCKET_REGION_SIZE - 1)),
+                                     pe.log_p});
+                            }
                         }
+                        int64_t next_i_mod = static_cast<int64_t>(i_mod) + pe.delta;
+                        if (next_i_mod >= p32)
+                            next_i_mod -= p32;
+                        i_mod = static_cast<int32_t>(next_i_mod);
                     }
-                };
-
-                if (scatter_threads <= 1) {
-                    scatter_fn(); // Inline for single-thread case
-                } else {
-                    scatter_workers.emplace_back(scatter_fn);
                 }
+            };
+
+            if (scatter_threads <= 1) {
+                scatter_worker(0); // Inline for single-thread case
+            } else {
+                gnfs::util::run_joined_worker_group(scatter_threads, scatter_worker);
             }
-            for (auto& w_thread : scatter_workers)
-                w_thread.join();
         }
 
         // Phase 2: apply bucket regions + tiny prime stride
@@ -1206,10 +1197,11 @@ private:
             }
         };
 
-        // Dispatch regions in parallel using std::thread (no lock needed — disjoint writes)
+        // Dispatch regions in parallel (no lock needed — disjoint writes).
         size_t num_threads = resolve_internal_thread_count_();
         if (num_regions < 4)
             num_threads = 1; // Not enough regions to parallelize
+        num_threads = std::min(num_threads, num_regions);
 
         if (num_threads <= 1) {
             for (size_t r = 0; r < num_regions; ++r)
@@ -1220,24 +1212,18 @@ private:
             // robust to slowest-core barrier — faster cores grab more regions.
             const size_t ecore_count = resolve_ecore_thread_count_(num_threads);
 
-            std::vector<std::thread> threads;
-            threads.reserve(num_threads);
             std::atomic<size_t> next_region{0};
 
-            for (size_t t = 0; t < num_threads; ++t) {
+            gnfs::util::run_joined_worker_group(num_threads, [&](size_t t) {
                 const auto qos = qos_for_sieve_thread(t, num_threads, ecore_count);
-                threads.emplace_back([&, qos]() {
-                    gnfs::util::set_current_thread_qos(qos);
-                    while (true) {
-                        size_t r = next_region.fetch_add(1, std::memory_order_relaxed);
-                        if (r >= num_regions)
-                            break;
-                        apply_region(r);
-                    }
-                });
-            }
-            for (auto& t : threads)
-                t.join();
+                gnfs::util::set_current_thread_qos(qos);
+                while (true) {
+                    size_t r = next_region.fetch_add(1, std::memory_order_relaxed);
+                    if (r >= num_regions)
+                        break;
+                    apply_region(r);
+                }
+            });
         }
     }
 
@@ -1335,8 +1321,6 @@ private:
         }
 
         // 分块并行
-        std::vector<std::thread> threads;
-        threads.reserve(num_threads);
         int32_t rows_per_thread = total_rows / static_cast<int32_t>(num_threads);
         int32_t remainder = total_rows % static_cast<int32_t>(num_threads);
 
@@ -1358,23 +1342,16 @@ private:
         // chunk barrier). Convert method-pointer style to lambda to inject QoS.
         const size_t row_ecore_count = resolve_ecore_thread_count_(num_threads);
 
-        for (size_t t = 0; t < num_threads; ++t) {
+        gnfs::util::run_joined_worker_group(num_threads, [&](size_t t) {
             int32_t chunk_begin_t = chunk_starts[t];
             int32_t chunk_end_t = chunk_starts[t + 1];
             const std::vector<int16_t>* imod_ptr = &chunk_imods[t];
             const auto qos = qos_for_sieve_thread(t, num_threads, row_ecore_count);
 
-            threads.emplace_back([this, &pre, &primes, &buckets, bucket_threshold, chunk_begin_t,
-                                  chunk_end_t, w, i_min, imod_ptr, qos]() {
-                gnfs::util::set_current_thread_qos(qos);
-                sieve_row_chunk(pre, primes, buckets, bucket_threshold, chunk_begin_t, chunk_end_t,
-                                w, i_min, imod_ptr);
-            });
-        }
-
-        for (auto& t : threads) {
-            t.join();
-        }
+            gnfs::util::set_current_thread_qos(qos);
+            sieve_row_chunk(pre, primes, buckets, bucket_threshold, chunk_begin_t, chunk_end_t, w,
+                            i_min, imod_ptr);
+        });
     }
 
     /// 紧凑小素数条目（16 bytes vs PrimeEntry 36 bytes → 2.25× cache 效率）

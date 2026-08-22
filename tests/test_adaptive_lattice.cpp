@@ -1074,6 +1074,32 @@ void test_explicit_sieve_parallel_preserves_execution_config() {
         }
         check(caught_launch_failure, "parallel launch failure must join started workers before "
                                      "rethrowing");
+        const auto launch_failure_stats =
+            launch_failure_sieve.adaptive_manager().stats().snapshot();
+        check(launch_failure_stats.special_qs_processed == 0,
+              "parallel launch failure must release zero special-Q workers");
+        check(launch_failure_stats.retries_attempted == 0,
+              "parallel launch failure must not publish adaptive retries");
+        check(launch_failure_stats.total_cells == 0,
+              "parallel launch failure must not publish sieve-cell telemetry");
+    }
+
+    {
+        LatticeSieve clamped_sieve(ctx, fb, sieve_params, explicit_config);
+        clamped_sieve.set_region(region);
+        clamped_sieve.set_sieve_parallel_launch_failure_after_for_testing(1);
+
+        const std::vector<SpecialQ> one_special_q{special_qs.front()};
+        const auto one_result = clamped_sieve.sieve_parallel(one_special_q, 4);
+        check(one_result.size() == 1,
+              "parallel special-Q workers must clamp to the available work");
+        check(one_result.size() == 1 &&
+                  sieve_result_equal(one_result.front(), sequential_results.front()),
+              "clamped parallel special-Q result differs from sequential");
+
+        clamped_sieve.set_sieve_parallel_launch_failure_after_for_testing(0);
+        const auto empty_result = clamped_sieve.sieve_parallel({}, 4);
+        check(empty_result.empty(), "empty parallel special-Q input must launch zero workers");
     }
 
     // Flip every ambient runtime gate and select the opposite explicit values.
