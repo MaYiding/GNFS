@@ -164,6 +164,27 @@ hosts, so `CreateProcess`, runtime DLL lookup, complete child-environment
 replacement, and executable-path handling remain covered. The test is also in
 the project smoke set because each invocation uses a deterministic small input.
 
+`ProcessSupervisor` is the cross-platform `instant` contract for the compiled
+test-runner supervisor. It freezes ambient-environment and Unicode argument
+forwarding, exact nonzero and POSIX signal exit propagation, output-file
+initialization failure, separate output files, spawn-time combined-stream
+ordering, and timeout cleanup of a finite self-exec descendant. The fixture
+publishes a ready marker before the deadline and would publish a second delayed
+marker if cleanup left it alive. `test_bounded_child_process` also holds a
+killed POSIX descendant as an unreaped group member for 350 milliseconds, so a
+successful cleanup must prove group disappearance rather than only signal
+delivery. Windows 10 / Server 2016 and newer use the atomic Job-list creation
+attribute; unsupported systems fail before starting a child. Required Windows
+MSVC runs the `instant` contract, and release readiness separately builds and
+runs it with the pinned MSYS2 UCRT64 MinGW toolchain. The `fast`
+`HarnessProcessTreeTimeout` contract adds the POSIX zsh integration witness for
+both generic wrapper modes and for HUP, INT, and TERM cancellation after
+descendant readiness. Both contracts use
+bounded, self-expiring fixtures, so a failed assertion cannot create a permanent
+orphan. Generic runner capture is limited to 16 MiB per stream; overflow is a
+Harness failure rather than a truncated test result. The manual 50-digit
+campaign retains its separately validated process-group and signal protocol.
+
 ## Nightly and Release Qualification
 
 The scheduled nightly workflow and the verify-only release phase call the same

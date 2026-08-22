@@ -138,6 +138,38 @@ void check(bool condition, std::string_view expression, std::string_view context
     return spec;
 }
 
+[[nodiscard]] std::string path_argument(const std::filesystem::path& path) {
+#if defined(_WIN32)
+    const std::u8string utf8 = path.u8string();
+    return {reinterpret_cast<const char*>(utf8.data()), utf8.size()};
+#else
+    return path.native();
+#endif
+}
+
+struct CancellationSequence final {
+    std::size_t probes_before_cancel = 0;
+};
+
+[[nodiscard]] bool cancellation_after_probes(void* context) noexcept {
+    auto& sequence = *static_cast<CancellationSequence*>(context);
+    if (sequence.probes_before_cancel == 0) {
+        return true;
+    }
+    --sequence.probes_before_cancel;
+    return false;
+}
+
+struct MarkerCancellation final {
+    std::filesystem::path marker;
+};
+
+[[nodiscard]] bool cancellation_after_marker(void* context) noexcept {
+    const auto& cancellation = *static_cast<const MarkerCancellation*>(context);
+    std::error_code error;
+    return std::filesystem::exists(cancellation.marker, error) && !error;
+}
+
 [[nodiscard]] bool all_bytes_are(std::string_view bytes, char expected) {
     return std::all_of(bytes.begin(), bytes.end(),
                        [expected](char byte) { return byte == expected; });
@@ -190,6 +222,7 @@ void test_error_name_contract() {
         {BoundedChildProcessError::read_failed, "read_failed"},
         {BoundedChildProcessError::overflow, "overflow"},
         {BoundedChildProcessError::timeout, "timeout"},
+        {BoundedChildProcessError::cancelled, "cancelled"},
         {BoundedChildProcessError::descendant_writer_leak, "descendant_writer_leak"},
         {BoundedChildProcessError::wait_failed, "wait_failed"},
         {BoundedChildProcessError::cleanup_failed, "cleanup_failed"},
@@ -720,6 +753,26 @@ void test_authenticated_linux_same_object_and_supervision(const std::filesystem:
         CHECK_CONTEXT(timeout.cleanup_complete, describe(timeout));
     }
 
+    auto cancellation_image =
+        authenticate_executable_image(held_original, *digest, current_owner());
+    CHECK(static_cast<bool>(cancellation_image));
+    if (cancellation_image) {
+        MarkerCancellation cancellation{
+            .marker = fixture.leaf("authenticated-cancellation-ready"),
+        };
+        auto cancellation_spec = make_spec(
+            held_original, {"--ready-marker-hang", path_argument(cancellation.marker)}, 32, 32, 5s);
+        cancellation_spec.cancellation_probe = cancellation_after_marker;
+        cancellation_spec.cancellation_context = &cancellation;
+        const auto cancellation_result = run_authenticated_bounded_child_process(
+            std::move(*cancellation_image.image), cancellation_spec, "authenticated-test-probe");
+        const std::string context = describe(cancellation_result);
+        CHECK_CONTEXT(cancellation_result.error == BoundedChildProcessError::cancelled, context);
+        CHECK_CONTEXT(cancellation_result.child_started, context);
+        CHECK_CONTEXT(cancellation_result.cleanup_complete, context);
+        CHECK_CONTEXT(std::filesystem::exists(cancellation.marker), context);
+    }
+
     struct sigaction previous_usr1 {};
     struct sigaction previous_alrm {};
     struct sigaction ignored_action {};
@@ -1043,6 +1096,13 @@ void test_invalid_specs(const std::filesystem::path& executable) {
         CHECK(result.error == BoundedChildProcessError::invalid_spec);
         CHECK(!result.child_started);
     }
+    {
+        auto spec = make_spec(executable, {"--hang"}, 1, 1);
+        spec.environment = {"=C:=C:\\one", "=c:=C:\\two"};
+        const auto result = run_bounded_child_process(spec);
+        CHECK(result.error == BoundedChildProcessError::invalid_spec);
+        CHECK(!result.child_started);
+    }
 #endif
     {
         auto spec = make_spec(executable, {"--hang"}, 1, 1);
@@ -1050,6 +1110,22 @@ void test_invalid_specs(const std::filesystem::path& executable) {
         const auto result = run_bounded_child_process(spec);
         CHECK(result.error == BoundedChildProcessError::invalid_spec);
         CHECK(!result.child_started);
+    }
+    {
+        auto spec = make_spec(executable, {"--hang"}, 1, 1);
+        spec.inherit_parent_environment = true;
+        const auto result = run_bounded_child_process(spec);
+        CHECK(result.error == BoundedChildProcessError::invalid_spec);
+        CHECK(!result.child_started);
+        CHECK(result.cleanup_complete);
+    }
+    {
+        auto spec = make_spec(executable, {"--hang"}, 2, 1);
+        spec.merge_stderr_into_stdout = true;
+        const auto result = run_bounded_child_process(spec);
+        CHECK(result.error == BoundedChildProcessError::invalid_spec);
+        CHECK(!result.child_started);
+        CHECK(result.cleanup_complete);
     }
     {
         const auto missing = executable.parent_path() / "bounded-child-does-not-exist";
@@ -1085,6 +1161,16 @@ void test_dual_stream_deadlock_boundaries(const std::filesystem::path& executabl
     CHECK(interleaved.stderr_bytes.size() == interleaved_size);
     CHECK(all_bytes_are(interleaved.stdout_bytes, 'O'));
     CHECK(all_bytes_are(interleaved.stderr_bytes, 'E'));
+
+    auto merged_spec = make_spec(executable, {"--interleaved", "9", "3"}, 18, 0);
+    merged_spec.merge_stderr_into_stdout = true;
+    const auto merged = run_bounded_child_process(merged_spec);
+    check_success(merged);
+    CHECK_CONTEXT(merged.stdout_bytes == "OOOEEEOOOEEEOOOEEE", merged.stdout_bytes);
+    CHECK(merged.stderr_bytes.empty());
+    CHECK(merged.stderr_eof);
+    CHECK(!merged.stderr_overflow);
+    CHECK(!merged.stderr_read_failed);
 }
 
 void test_concurrent_launch_isolation(const std::filesystem::path& executable) {
@@ -1235,6 +1321,71 @@ void test_timeout_and_writer_lifecycle(const std::filesystem::path& executable) 
         CHECK_CONTEXT(result.termination.kind == BoundedChildTerminationKind::exited, context);
         CHECK_CONTEXT(result.termination.exit_code == 0, context);
     }
+#if !defined(_WIN32)
+    {
+        const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+        const std::filesystem::path reap_marker = std::filesystem::temp_directory_path() /
+                                                  ("gnfs-bcp-group-reap-" + std::to_string(nonce));
+        std::error_code remove_error;
+        std::filesystem::remove(reap_marker, remove_error);
+        const auto before = std::chrono::steady_clock::now();
+        const auto result = run_bounded_child_process(make_spec(
+            executable, {"--group-cleanup-receipt", path_argument(reap_marker)}, 64, 64, 3s));
+        const auto elapsed = std::chrono::steady_clock::now() - before;
+        const std::string context = describe(result);
+        check_success(result);
+        CHECK_CONTEXT(result.stdout_bytes == "cleanup-receipt-ready\n", context);
+        const bool marker_published = std::filesystem::exists(reap_marker);
+        CHECK_CONTEXT(marker_published, context);
+        CHECK_CONTEXT(elapsed >= 250ms, context);
+        CHECK_CONTEXT(elapsed < 3s, context);
+        if (!marker_published) {
+            std::this_thread::sleep_for(500ms);
+        }
+        std::filesystem::remove(reap_marker, remove_error);
+    }
+#endif
+}
+
+void test_cancellation_lifecycle(const std::filesystem::path& executable) {
+    {
+        CancellationSequence cancellation;
+        auto spec = make_spec(executable, {"--hang"}, 32, 32);
+        spec.cancellation_probe = cancellation_after_probes;
+        spec.cancellation_context = &cancellation;
+        const auto result = run_bounded_child_process(spec);
+        const std::string context = describe(result);
+        CHECK_CONTEXT(result.error == BoundedChildProcessError::cancelled, context);
+        CHECK_CONTEXT(!result.child_started, context);
+        CHECK_CONTEXT(result.stdout_bytes.empty(), context);
+        CHECK_CONTEXT(result.stderr_bytes.empty(), context);
+        CHECK_CONTEXT(result.cleanup_complete, context);
+    }
+    {
+        const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+        MarkerCancellation cancellation{
+            .marker = std::filesystem::temp_directory_path() /
+                      ("gnfs-bcp-cancellation-ready-" + std::to_string(nonce)),
+        };
+        std::error_code remove_error;
+        std::filesystem::remove(cancellation.marker, remove_error);
+        auto spec = make_spec(executable,
+                              {"--ready-marker-hang", path_argument(cancellation.marker)}, 32, 32);
+        spec.cancellation_probe = cancellation_after_marker;
+        spec.cancellation_context = &cancellation;
+        const auto before = std::chrono::steady_clock::now();
+        const auto result = run_bounded_child_process(spec);
+        const auto elapsed = std::chrono::steady_clock::now() - before;
+        const std::string context = describe(result);
+        CHECK_CONTEXT(result.error == BoundedChildProcessError::cancelled, context);
+        CHECK_CONTEXT(result.child_started, context);
+        CHECK_CONTEXT(result.stdout_eof, context);
+        CHECK_CONTEXT(result.stderr_eof, context);
+        CHECK_CONTEXT(result.cleanup_complete, context);
+        CHECK_CONTEXT(elapsed < 3s, context);
+        CHECK_CONTEXT(std::filesystem::exists(cancellation.marker), context);
+        std::filesystem::remove(cancellation.marker, remove_error);
+    }
 }
 
 void test_exit_semantics(const std::filesystem::path& executable) {
@@ -1316,6 +1467,20 @@ void test_exact_argv_and_environment(const std::filesystem::path& executable) {
     CHECK(result.stderr_bytes.empty());
 }
 
+void test_inherited_environment(const std::filesystem::path& executable) {
+    set_parent_only_environment();
+    auto spec = make_spec(executable, {"--echo"}, 256, 64);
+    spec.environment.clear();
+    spec.inherit_parent_environment = true;
+    const auto result = run_bounded_child_process(spec);
+    clear_parent_only_environment();
+
+    check_success(result);
+    CHECK_CONTEXT(result.stdout_bytes.starts_with("argument_count=0\n"), result.stdout_bytes);
+    CHECK_CONTEXT(result.stdout_bytes.ends_with("parent_only=<present>\n"), result.stdout_bytes);
+    CHECK(result.stderr_bytes.empty());
+}
+
 #if defined(_WIN32)
 void test_windows_environment_name_order(const std::filesystem::path& executable) {
     auto spec = make_spec(executable, {"--environment-order"}, 256, 64);
@@ -1323,10 +1488,13 @@ void test_windows_environment_name_order(const std::filesystem::path& executable
         "BCP_SORT_A1=one",
         "BCP_TEST_ENV=exact-environment",
         "BCP_SORT_A=zero",
+        "=C:=C:\\gnfs-bcp-drive",
     };
     const auto result = run_bounded_child_process(spec);
     check_success(result);
-    CHECK_CONTEXT(result.stdout_bytes == "BCP_SORT_A=zero\nBCP_SORT_A1=one\n", result.stdout_bytes);
+    CHECK_CONTEXT(result.stdout_bytes ==
+                      "=C:=C:\\gnfs-bcp-drive\nBCP_SORT_A=zero\nBCP_SORT_A1=one\n",
+                  result.stdout_bytes);
     CHECK(result.stderr_bytes.empty());
 }
 #endif
@@ -1413,8 +1581,10 @@ template <class Char> int bounded_child_process_test_main(int argc, Char* argv[]
         test_continuous_writer_is_bounded(executable);
         test_dual_stream_fair_drain(executable);
         test_timeout_and_writer_lifecycle(executable);
+        test_cancellation_lifecycle(executable);
         test_exit_semantics(executable);
         test_exact_argv_and_environment(executable);
+        test_inherited_environment(executable);
 #if defined(_WIN32)
         test_windows_environment_name_order(executable);
 #endif

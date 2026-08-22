@@ -697,16 +697,22 @@ if(GNFS_BUILD_TESTS)
     add_executable(test_bounded_child_process
         tests/test_bounded_child_process.cpp
     )
+    add_executable(gnfs_test_process_supervisor
+        tests/support/gnfs_test_process_supervisor.cpp
+    )
     target_include_directories(test_bounded_child_process PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/util
     )
     if(MINGW)
         target_link_options(bounded_child_process_fake_child PRIVATE -municode)
         target_link_options(test_bounded_child_process PRIVATE -municode)
+        target_link_options(gnfs_test_process_supervisor PRIVATE -municode)
     endif()
     target_link_libraries(bounded_child_process_fake_child PRIVATE Threads::Threads)
     target_link_libraries(test_bounded_child_process PRIVATE gnfs_util Threads::Threads)
+    target_link_libraries(gnfs_test_process_supervisor PRIVATE gnfs_util Threads::Threads)
     add_dependencies(test_bounded_child_process bounded_child_process_fake_child)
+    add_dependencies(gnfs_test_process_supervisor bounded_child_process_fake_child)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_executable(bounded_child_process_authenticated_supervisor EXCLUDE_FROM_ALL
             tests/support/bounded_child_process_authenticated_supervisor.cpp
@@ -727,6 +733,26 @@ if(GNFS_BUILD_TESTS)
             COMMAND test_bounded_child_process $<TARGET_FILE:bounded_child_process_fake_child>)
     endif()
     set_tests_properties(BoundedChildProcess PROPERTIES LABELS "instant" TIMEOUT 30)
+
+    add_test(NAME ProcessSupervisor
+        COMMAND ${CMAKE_COMMAND}
+            "-DSUPERVISOR=$<TARGET_FILE:gnfs_test_process_supervisor>"
+            "-DFAKE_CHILD=$<TARGET_FILE:bounded_child_process_fake_child>"
+            "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/process_supervisor_contract/$<CONFIG>"
+            "-DGNFS_TEST_UNIX=${UNIX}"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_process_supervisor.cmake)
+    set_tests_properties(ProcessSupervisor PROPERTIES LABELS "instant" TIMEOUT 15)
+    if(UNIX AND ZSH_EXECUTABLE)
+        add_test(NAME HarnessProcessTreeTimeout
+            COMMAND ${ZSH_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_harness_process_tree_timeout.zsh
+                $<TARGET_FILE:gnfs_test_process_supervisor>
+                $<TARGET_FILE:bounded_child_process_fake_child>
+                ${ZSH_EXECUTABLE})
+        set_tests_properties(HarnessProcessTreeTimeout PROPERTIES
+            LABELS "fast" TIMEOUT 20
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endif()
 
     add_executable(test_mmap_file
         tests/test_mmap_file.cpp

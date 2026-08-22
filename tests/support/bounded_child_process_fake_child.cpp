@@ -10,9 +10,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 
 #if defined(_WIN32)
@@ -23,6 +26,7 @@
 #include <csignal>
 #include <fcntl.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -159,6 +163,39 @@ void append_quoted_argument(std::wstring_view argument, std::wstring& command_li
     return true;
 }
 
+[[nodiscard]] bool spawn_timeout_descendant(std::wstring_view executable,
+                                            std::wstring_view survived_marker,
+                                            std::wstring_view delay_ms,
+                                            std::wstring_view ready_marker) {
+    std::wstring command_line;
+    append_quoted_argument(executable, command_line);
+    command_line.push_back(L' ');
+    append_quoted_argument(L"--delayed-marker", command_line);
+    command_line.push_back(L' ');
+    append_quoted_argument(survived_marker, command_line);
+    command_line.push_back(L' ');
+    append_quoted_argument(delay_ms, command_line);
+    command_line.push_back(L' ');
+    append_quoted_argument(ready_marker, command_line);
+    command_line.push_back(L'\0');
+
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = ::GetStdHandle(STD_INPUT_HANDLE);
+    startup.hStdOutput = ::GetStdHandle(STD_OUTPUT_HANDLE);
+    startup.hStdError = ::GetStdHandle(STD_ERROR_HANDLE);
+    PROCESS_INFORMATION process{};
+    const std::wstring application(executable);
+    if (::CreateProcessW(application.c_str(), command_line.data(), nullptr, nullptr, TRUE,
+                         CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process) == 0) {
+        return false;
+    }
+    (void)::CloseHandle(process.hThread);
+    (void)::CloseHandle(process.hProcess);
+    return true;
+}
+
 #else
 
 [[nodiscard]] bool write_all(int fd, const char* bytes, std::size_t size) noexcept {
@@ -201,7 +238,147 @@ void close_stdout_stream() noexcept {
     return true;
 }
 
+[[nodiscard]] bool spawn_timeout_descendant(std::string_view executable,
+                                            std::string_view survived_marker,
+                                            std::string_view delay_ms,
+                                            std::string_view ready_marker) {
+    const pid_t child = ::fork();
+    if (child < 0) {
+        return false;
+    }
+    if (child == 0) {
+        const std::string executable_string(executable);
+        const std::string marker_string(survived_marker);
+        const std::string delay_string(delay_ms);
+        const std::string ready_string(ready_marker);
+        (void)::execl(executable_string.c_str(), executable_string.c_str(), "--delayed-marker",
+                      marker_string.c_str(), delay_string.c_str(), ready_string.c_str(), nullptr);
+        std::_Exit(75);
+    }
+    return true;
+}
+
+[[nodiscard]] bool group_cleanup_receipt_contract(const std::filesystem::path& reap_marker) {
+    const pid_t supervised_group = ::getpgrp();
+    if (supervised_group <= 1 || supervised_group != ::getpid()) {
+        return false;
+    }
+    const std::string marker_path = reap_marker.native();
+
+    int handshake[2] = {-1, -1};
+    if (::pipe(handshake) != 0) {
+        return false;
+    }
+    const pid_t helper = ::fork();
+    if (helper < 0) {
+        (void)::close(handshake[0]);
+        (void)::close(handshake[1]);
+        return false;
+    }
+    if (helper == 0) {
+        (void)::close(handshake[0]);
+        (void)::close(STDOUT_FILENO);
+        (void)::close(STDERR_FILENO);
+        if (::setpgid(0, 0) != 0) {
+            (void)write_all(handshake[1], "E", 1);
+            std::_Exit(77);
+        }
+        const pid_t victim = ::fork();
+        if (victim < 0) {
+            (void)write_all(handshake[1], "E", 1);
+            std::_Exit(78);
+        }
+        if (victim == 0) {
+            if (::setpgid(0, supervised_group) != 0 || !write_all(handshake[1], "R", 1)) {
+                std::_Exit(79);
+            }
+            (void)::close(handshake[1]);
+            std::this_thread::sleep_for(3s);
+            std::_Exit(0);
+        }
+        (void)::close(handshake[1]);
+
+        siginfo_t information{};
+        int observed = -1;
+        do {
+            observed = ::waitid(P_PID, static_cast<id_t>(victim), &information, WEXITED | WNOWAIT);
+        } while (observed < 0 && errno == EINTR);
+        if (observed != 0 || information.si_pid != victim) {
+            std::_Exit(80);
+        }
+
+        // Hold the killed victim as a zombie in the supervised process group.
+        // A valid cleanup receipt must wait for this delayed reap, not merely
+        // for successful SIGKILL delivery or the direct child's exit.
+        std::this_thread::sleep_for(350ms);
+        int marker_fd = -1;
+        do {
+            marker_fd = ::open(marker_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        } while (marker_fd < 0 && errno == EINTR);
+        if (marker_fd < 0 || !write_all(marker_fd, "reaping\n", 8)) {
+            if (marker_fd >= 0) {
+                (void)::close(marker_fd);
+            }
+            std::_Exit(81);
+        }
+        (void)::close(marker_fd);
+        int status = 0;
+        pid_t waited = -1;
+        do {
+            waited = ::waitpid(victim, &status, 0);
+        } while (waited < 0 && errno == EINTR);
+        std::_Exit(waited == victim ? 0 : 83);
+    }
+
+    (void)::close(handshake[1]);
+    char readiness = '\0';
+    ssize_t count = -1;
+    do {
+        count = ::read(handshake[0], &readiness, 1);
+    } while (count < 0 && errno == EINTR);
+    (void)::close(handshake[0]);
+    if (count == 1 && readiness == 'R') {
+        return true;
+    }
+
+    (void)::kill(helper, SIGKILL);
+    int status = 0;
+    while (::waitpid(helper, &status, 0) < 0 && errno == EINTR) {
+    }
+    return false;
+}
+
 #endif
+
+[[nodiscard]] bool publish_marker(const std::filesystem::path& path, std::string_view contents) {
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        return false;
+    }
+    output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+    output.flush();
+    return output.good();
+}
+
+[[nodiscard]] bool wait_for_marker(const std::filesystem::path& path,
+                                   std::string_view expected_contents,
+                                   std::chrono::milliseconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        std::ifstream input(path, std::ios::binary);
+        if (input) {
+            std::array<char, 64> contents{};
+            input.read(contents.data(), static_cast<std::streamsize>(contents.size()));
+            const auto count = static_cast<std::size_t>(input.gcount());
+            if (count == expected_contents.size() &&
+                std::string_view(contents.data(), count) == expected_contents) {
+                return true;
+            }
+        }
+        std::this_thread::sleep_for(10ms);
+    }
+    return false;
+}
 
 [[nodiscard]] bool write_repeated(bool to_stdout, char byte, std::size_t size) noexcept {
     const std::string chunk(8192, byte);
@@ -333,7 +510,8 @@ template <class Char> [[nodiscard]] int echo_contract(int argc, Char* argv[]) {
     bool valid = true;
     for (const wchar_t* cursor = environment; *cursor != L'\0';) {
         const std::wstring_view entry(cursor);
-        if (entry.starts_with(L"BCP_SORT_")) {
+        if (entry.starts_with(L"BCP_SORT_") || entry.starts_with(L"=C:") ||
+            entry.starts_with(L"=c:")) {
             std::string converted;
             if (!wide_to_utf8(entry, converted)) {
                 valid = false;
@@ -356,6 +534,57 @@ template <class Char> int fake_child_main(int argc, Char* argv[]) {
     const NativeView mode(argv[1]);
     if (mode == NativeView(
 #if defined(_WIN32)
+                    L"--delayed-marker"
+#else
+                    "--delayed-marker"
+#endif
+                    )) {
+        if (argc != 5) {
+            return 64;
+        }
+        std::size_t delay_ms = 0;
+        if (!parse_size(NativeView(argv[3]), delay_ms) || delay_ms > 60'000) {
+            return 64;
+        }
+        if (!publish_marker(std::filesystem::path(argv[4]), "descendant-ready\n")) {
+            return 76;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+        if (!publish_marker(std::filesystem::path(argv[2]), "survived\n")) {
+            return 76;
+        }
+        // Keep the inherited streams live long enough for a broken supervisor
+        // to observe the marker, but guarantee a finite failed-test lifetime.
+        std::this_thread::sleep_for(2500ms);
+        return 0;
+    }
+    if (mode == NativeView(
+#if defined(_WIN32)
+                    L"--timeout-tree"
+#else
+                    "--timeout-tree"
+#endif
+                    )) {
+        if (argc != 5) {
+            return 64;
+        }
+        const std::filesystem::path ready_marker(argv[4]);
+        std::filesystem::path descendant_ready_marker = ready_marker;
+        descendant_ready_marker += ".descendant";
+        const auto descendant_ready_native = descendant_ready_marker.native();
+        if (!spawn_timeout_descendant(NativeView(argv[0]), NativeView(argv[2]), NativeView(argv[3]),
+                                      NativeView(descendant_ready_native))) {
+            return 75;
+        }
+        if (!wait_for_marker(descendant_ready_marker, "descendant-ready\n", 1s) ||
+            !write_stdout("descendant-ready\n") || !publish_marker(ready_marker, "tree-ready\n")) {
+            return 76;
+        }
+        std::this_thread::sleep_for(10s);
+        return 0;
+    }
+    if (mode == NativeView(
+#if defined(_WIN32)
                     L"--grandchild-sleep"
 #else
                     "--grandchild-sleep"
@@ -364,6 +593,14 @@ template <class Char> int fake_child_main(int argc, Char* argv[]) {
         std::this_thread::sleep_for(10s);
         return 0;
     }
+#if !defined(_WIN32)
+    if (mode == NativeView("--group-cleanup-receipt")) {
+        if (argc != 3 || !group_cleanup_receipt_contract(std::filesystem::path(argv[2]))) {
+            return 82;
+        }
+        return write_stdout("cleanup-receipt-ready\n") ? 0 : 66;
+    }
+#endif
     if (mode == NativeView(
 #if defined(_WIN32)
                     L"--hang"
@@ -371,6 +608,19 @@ template <class Char> int fake_child_main(int argc, Char* argv[]) {
                     "--hang"
 #endif
                     )) {
+        std::this_thread::sleep_for(10s);
+        return 0;
+    }
+    if (mode == NativeView(
+#if defined(_WIN32)
+                    L"--ready-marker-hang"
+#else
+                    "--ready-marker-hang"
+#endif
+                    )) {
+        if (argc != 3 || !publish_marker(std::filesystem::path(argv[2]), "ready\n")) {
+            return argc == 3 ? 76 : 64;
+        }
         std::this_thread::sleep_for(10s);
         return 0;
     }

@@ -160,6 +160,8 @@ TIMEOUT_EXPLICIT=0
 RETRY_COUNT=0
 RETRY_EXPLICIT=0
 
+source "${PROJECT_ROOT}/scripts/lib/process_tree_timeout.zsh"
+
 # 统计变量
 TOTAL_TESTS=0
 PASSED_TESTS=0
@@ -494,6 +496,13 @@ MODULE_SLOW_TESTS=(
     api            "test_api test_full_resume"
     siqs           "test_siqs_e2e"
 )
+
+# 模块 → 非二进制 CTest 合同映射
+typeset -A MODULE_CTEST_CONTRACTS
+MODULE_CTEST_CONTRACTS=(
+    util "^(ProcessSupervisor|HarnessProcessTreeTimeout)$"
+)
+SMOKE_CTEST_CONTRACT="^ProcessSupervisor$"
 
 # 冒烟测试子集: instant 层核心测试，绝不包含真实 GNFS pipeline / bench / stress
 typeset -a SMOKE_TESTS
@@ -1259,6 +1268,7 @@ MODULE_ORDER=(core util polynomial factor_base sieve cofactor relation linalg sq
 path_to_module() {
     local path="$1"
     case "$path" in
+        CMakeLists.txt|.github/workflows/*.yml|scripts/test.sh|scripts/lib/process_tree_timeout.zsh|scripts/check_harness.py|scripts/check_distributed_sieve_policy.py|docs/harness-engineering.md|docs/testing-ci-policy.md|tests/test_process_supervisor.cmake|tests/test_harness_process_tree_timeout.zsh|tests/support/gnfs_test_process_supervisor.cpp|tests/support/bounded_child_process_fake_child.cpp) echo "util" ;;
         tests/test_resultant.cpp) echo "polynomial" ;;
         tests/test_small_vector.cpp|tests/test_sha256.cpp|tests/test_thread_pool.cpp|tests/test_joining_thread.cpp|tests/test_logger.cpp|tests/test_primes.cpp|tests/test_timer.cpp|tests/test_mpz_powm_parallel.cpp|tests/test_mpz_mod_parallel.cpp|tests/test_mpz_gcd_parallel.cpp|tests/test_mpz_mul_parallel.cpp|tests/test_durable_immutable_file.cpp|tests/test_durable_immutable_record.cpp|tests/test_mmap_file.cpp|tests/test_native_random_access_file.cpp) echo "util" ;;
         tests/test_ecm_curve_plan.cpp|tests/test_cofactor_attempt_context.cpp|tests/test_cofactor_seed_provider.cpp) echo "cofactor" ;;
@@ -1415,70 +1425,9 @@ do_build() {
     fi
 }
 
-# ============================================================
-# 核心: zsh 原生超时包装器 (不依赖 timeout/gtimeout)
-# ============================================================
-
-# run_with_timeout <timeout_secs> <command> [args...]
-# 返回: 0=正常退出, 124=超时, 其他=命令退出码
-# 输出保存在全局变量 RUN_OUTPUT 中
-RUN_OUTPUT=""
-run_with_timeout() {
-    local timeout_secs=$1
-    shift
-    local cmd=("$@")
-
-    local tmpfile
-    tmpfile=$(mktemp /tmp/gnfs_test.XXXXXX)
-
-    # 启动后台进程
-    "${cmd[@]}" > "$tmpfile" 2>&1 &
-    local pid=$!
-
-    # 快速轮询: 前 2 秒每 0.1s 检查一次 (覆盖 instant 测试)
-    local polls=0
-    while (( polls < 20 )); do
-        sleep 0.1
-        (( polls += 1 ))
-        if ! kill -0 $pid 2>/dev/null; then
-            wait $pid 2>/dev/null
-            local exit_code=$?
-            RUN_OUTPUT=$(cat "$tmpfile")
-            rm -f "$tmpfile"
-            return $exit_code
-        fi
-    done
-
-    # 慢速轮询: 之后每 1s 检查 + 心跳
-    local elapsed_secs=2
-    while (( elapsed_secs < timeout_secs )); do
-        sleep 1
-        (( elapsed_secs += 1 ))
-
-        if ! kill -0 $pid 2>/dev/null; then
-            wait $pid 2>/dev/null
-            local exit_code=$?
-            RUN_OUTPUT=$(cat "$tmpfile")
-            rm -f "$tmpfile"
-            return $exit_code
-        fi
-
-        # 每 10 秒打一个心跳点
-        if (( elapsed_secs % 10 == 0 && !QUIET )); then
-            printf "${DIM}[%ds]${RESET}" "$elapsed_secs" >&2
-        fi
-    done
-
-    # 超时: 杀掉进程
-    kill $pid 2>/dev/null
-    sleep 0.2
-    kill -9 $pid 2>/dev/null
-    wait $pid 2>/dev/null
-
-    RUN_OUTPUT=$(cat "$tmpfile")
-    rm -f "$tmpfile"
-    return 124
-}
+# Process-tree timeout wrappers are sourced from
+# scripts/lib/process_tree_timeout.zsh. They route through the compiled
+# cross-platform supervisor instead of owning raw child PIDs in zsh.
 
 # ============================================================
 # 核心: 运行单个测试
@@ -1517,7 +1466,7 @@ run_single_test() {
     local start_ms exit_code=0
     start_ms=$(timer_start_ms)
 
-    # 用 zsh 原生超时运行
+    # 通过跨平台进程树 supervisor 有界运行
     run_with_timeout "$test_timeout" "$binary" "${extra_args[@]}"
     exit_code=$?
     local output="$RUN_OUTPUT"
@@ -4708,36 +4657,12 @@ run_dual_stream_with_timeout() {
     local cmd=("$@")
 
     DUAL_STREAM_TIMED_OUT=0
-    "${cmd[@]}" >"$stdout_file" 2>"$stderr_file" &
-    local pid=$!
-    local elapsed_tenths=0
-    local timeout_tenths=$((timeout_seconds * 10))
-    local next_heartbeat_tenths=100
-
-    while kill -0 "$pid" 2>/dev/null; do
-        if (( elapsed_tenths >= timeout_tenths )); then
-            DUAL_STREAM_TIMED_OUT=1
-            kill "$pid" 2>/dev/null || true
-            sleep 0.2
-            kill -9 "$pid" 2>/dev/null || true
-            wait "$pid" 2>/dev/null || true
-            return 124
-        fi
-        if (( elapsed_tenths < 20 )); then
-            sleep 0.1
-            (( elapsed_tenths += 1 ))
-        else
-            sleep 1
-            (( elapsed_tenths += 10 ))
-        fi
-        if (( elapsed_tenths >= next_heartbeat_tenths && !QUIET )); then
-            printf "${DIM}[%ds]${RESET}" "$((elapsed_tenths / 10))" >&2
-            (( next_heartbeat_tenths += 100 ))
-        fi
-    done
-
     local exit_code=0
-    wait "$pid" 2>/dev/null || exit_code=$?
+    run_with_timeout_to_files "$stdout_file" "$stderr_file" "$timeout_seconds" \
+        "${cmd[@]}" || exit_code=$?
+    if (( exit_code == 124 )); then
+        DUAL_STREAM_TIMED_OUT=1
+    fi
     return "$exit_code"
 }
 
@@ -7394,12 +7319,14 @@ show_summary() {
 
 do_smoke() {
     log_header "冒烟测试 (Smoke)"
-    log_info "运行 ${#SMOKE_TESTS[@]} 个 instant 层核心测试"
+    log_info "运行 ${#SMOKE_TESTS[@]} 个 instant 核心二进制 + 1 个 CTest 合同组"
     echo ""
 
     for test in "${SMOKE_TESTS[@]}"; do
         run_single_test "$test" || true
     done
+    run_ctest_contract_group "util process supervisor" \
+        "$SMOKE_CTEST_CONTRACT" || true
 }
 
 # ============================================================
@@ -7427,6 +7354,34 @@ do_ctest() {
         log_fail "CTest 有失败项 ($(format_duration $elapsed))"
     fi
     return $exit_code
+}
+
+run_ctest_contract_group() {
+    local name="$1"
+    local regex="$2"
+    local start_ms exit_code=0
+    start_ms=$(timer_start_ms)
+    (( TOTAL_TESTS += 1 ))
+
+    local ctest_args=(--test-dir "$BUILD_DIR" --output-on-failure --no-tests=error
+        -C "$BUILD_TYPE" -R "$regex")
+    if (( VERBOSE )); then ctest_args+=(--verbose); fi
+    if (( QUIET )); then ctest_args+=(--quiet); fi
+    ctest "${ctest_args[@]}" 2>&1 || exit_code=$?
+
+    local end_ms=$(timer_start_ms)
+    local elapsed=$((end_ms - start_ms))
+    TOTAL_TIME_MS=$((TOTAL_TIME_MS + elapsed))
+    if (( exit_code == 0 )); then
+        (( PASSED_TESTS += 1 ))
+        log_success "${name} CTest 合同 ($(format_duration $elapsed))"
+        REPORT_ENTRIES+=("{\"name\":\"${name}\",\"status\":\"pass\",\"elapsed_ms\":${elapsed},\"detail\":\"ctest-contract\"}")
+    else
+        (( FAILED_TESTS += 1 ))
+        log_fail "${name} CTest 合同失败 ($(format_duration $elapsed))"
+        REPORT_ENTRIES+=("{\"name\":\"${name}\",\"status\":\"fail\",\"elapsed_ms\":${elapsed},\"detail\":\"ctest-contract\"}")
+    fi
+    return "$exit_code"
 }
 
 # ============================================================
@@ -7501,6 +7456,18 @@ do_module() {
                         (( mod_pass += 1 ))
                     fi
                 done
+            fi
+        fi
+
+        local contract_regex="${MODULE_CTEST_CONTRACTS[$mod]:-}"
+        if [[ -n "$contract_regex" ]]; then
+            (( mod_total += 1 ))
+            local failed_before=$FAILED_TESTS
+            run_ctest_contract_group "${mod} process supervisor" "$contract_regex" || true
+            if (( FAILED_TESTS > failed_before )); then
+                (( mod_failed += 1 ))
+            else
+                (( mod_pass += 1 ))
             fi
         fi
 
@@ -7863,11 +7830,18 @@ do_gate() {
             return 1
         fi
     done
+    run_ctest_contract_group "util process supervisor" \
+        "$SMOKE_CTEST_CONTRACT" || true
+    if (( FAIL_FAST && FAILED_TESTS > pre_fail )); then
+        log_fail "Gate Level 1 FAILED — 中止门禁"
+        return 1
+    fi
     if (( FAILED_TESTS > pre_fail )); then
         log_fail "Gate Level 1 FAILED — smoke 测试有失败，中止门禁"
         return 1
     fi
-    log_success "Gate Level 1 PASSED — smoke ${#SMOKE_TESTS[@]}/${#SMOKE_TESTS[@]}"
+    log_success \
+        "Gate Level 1 PASSED — smoke ${#SMOKE_TESTS[@]} binaries + 1 CTest contract"
 
     if (( quick )); then
         log_info "快速模式: 跳过 Level 2"
@@ -8108,7 +8082,12 @@ do_tsan_relation() {
             -DGNFS_ENABLE_UBSAN=OFF
         cmake --build "$BUILD_DIR" \
             --parallel "$PARALLEL_JOBS" \
-            --target "${TSAN_RELATION_TESTS[@]}"
+            --target gnfs_test_process_supervisor "${TSAN_RELATION_TESTS[@]}"
+    fi
+
+    if ! gnfs_test_process_supervisor_path >/dev/null; then
+        log_fail "TSan process-tree supervisor 不存在: ${BUILD_DIR}/gnfs_test_process_supervisor"
+        return 1
     fi
 
     local test
@@ -8198,6 +8177,11 @@ do_list() {
     for test in "${SMOKE_TESTS[@]}"; do
         echo "  ${BULLET} ${test}"
     done
+
+    echo ""
+    echo "${BOLD}非二进制 CTest 合同:${RESET}"
+    echo "  ${BULLET} ${CYAN}ProcessSupervisor${RESET} — instant, 15s, cross-platform"
+    echo "  ${BULLET} ${CYAN}HarnessProcessTreeTimeout${RESET} — fast, 20s, POSIX + zsh"
 
     echo ""
     echo "${BOLD}特殊测试:${RESET}"

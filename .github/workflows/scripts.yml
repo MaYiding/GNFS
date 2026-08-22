@@ -19,6 +19,7 @@ on:
       - 'scripts/**'
       - 'src/**'
       - 'tests/*.sh'
+      - 'tests/*.zsh'
   workflow_dispatch:
 
 permissions:
@@ -50,9 +51,14 @@ jobs:
           set -euo pipefail
 
           while IFS= read -r file; do
-            zsh -n "${file}"
-          done < <(git ls-files 'scripts/*.sh' 'scripts/perf/*.sh' 'tests/*.sh' \
-            | xargs grep -l '^#!/usr/bin/env zsh')
+            zsh -o NO_BG_NICE -n "${file}"
+          done < <(
+            {
+              git ls-files 'scripts/*.sh' 'scripts/perf/*.sh' 'tests/*.sh' \
+                | xargs grep -l '^#!/usr/bin/env zsh'
+              git ls-files 'scripts/*.zsh' 'scripts/lib/*.zsh' 'tests/*.zsh'
+            } | sort -u
+          )
 
           while IFS= read -r file; do
             bash -n "${file}"

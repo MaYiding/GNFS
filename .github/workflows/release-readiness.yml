@@ -113,6 +113,22 @@ jobs:
             --download-directory pinned-windows-packages \
             --evidence-output pinned-windows-packages.json
 
+      - name: Verify MinGW process-tree supervisor
+        shell: msys2 {0}
+        run: |
+          cmake -B build-process-supervisor -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGNFS_BUILD_TESTS=ON \
+            -DGNFS_ENABLE_NTL=OFF \
+            -DGNFS_ENABLE_NATIVE_ARCH=OFF
+          cmake --build build-process-supervisor --parallel \
+            --target gnfs_test_process_supervisor
+          ctest --test-dir build-process-supervisor \
+            --output-on-failure \
+            --no-tests=error \
+            -C Release \
+            -R '^ProcessSupervisor$'
+
       - name: Build and install Windows release tree
         shell: msys2 {0}
         run: |

@@ -40,6 +40,8 @@
 #include <sys/syscall.h>
 #endif
 
+extern char** environ;
+
 namespace gnfs::util {
 namespace {
 
@@ -50,6 +52,45 @@ constexpr auto POLL_QUANTUM = 20ms;
 constexpr auto POST_EXIT_WRITER_GRACE = 200ms;
 constexpr auto TERMINATION_CLEANUP_GRACE = 2s;
 constexpr std::size_t STREAM_DRAIN_BUDGET = 64 * 1024;
+
+struct ProcessGroupAbsenceResult final {
+    bool absent = false;
+    int native_error = 0;
+};
+
+[[nodiscard]] ProcessGroupAbsenceResult
+wait_for_process_group_absence_until(pid_t process_group, Clock::time_point deadline) noexcept {
+    while (true) {
+        const int probe_status = ::kill(-process_group, 0);
+        if (probe_status < 0 && errno == EINTR) {
+            if (Clock::now() >= deadline) {
+                return {false, ETIMEDOUT};
+            }
+            continue;
+        }
+        if (probe_status < 0 && errno == ESRCH) {
+            return {true, 0};
+        }
+        if (probe_status < 0 && errno != EPERM) {
+            return {false, errno};
+        }
+
+        const auto now = Clock::now();
+        if (now >= deadline) {
+            return {false, probe_status < 0 ? EPERM : ETIMEDOUT};
+        }
+        const auto remaining =
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+        const int timeout = static_cast<int>(std::min(remaining, POLL_QUANTUM).count());
+        const int poll_status = ::poll(nullptr, 0, timeout);
+        if (poll_status < 0 && errno == EINTR) {
+            continue;
+        }
+        if (poll_status < 0) {
+            return {false, errno};
+        }
+    }
+}
 
 class UniqueFd final {
 public:
@@ -159,7 +200,9 @@ struct CapturePipe final {
 
 [[nodiscard]] bool valid_spec(const BoundedChildProcessSpec& spec) noexcept {
     if (spec.executable.empty() || !spec.executable.is_absolute() ||
-        spec.deadline <= Clock::now()) {
+        spec.deadline <= Clock::now() ||
+        (spec.inherit_parent_environment && !spec.environment.empty()) ||
+        (spec.merge_stderr_into_stdout && spec.stderr_limit != 0)) {
         return false;
     }
     const std::string& executable = spec.executable.native();
@@ -186,6 +229,10 @@ struct CapturePipe final {
         }
     }
     return true;
+}
+
+[[nodiscard]] bool cancellation_requested(const BoundedChildProcessSpec& spec) noexcept {
+    return spec.cancellation_probe != nullptr && spec.cancellation_probe(spec.cancellation_context);
 }
 
 void set_primary_error(BoundedChildProcessResult& result, BoundedChildProcessError error,
@@ -287,7 +334,8 @@ void set_cleanup_error(BoundedChildProcessResult& result, int native_error) noex
 }
 
 [[nodiscard]] int add_spawn_file_actions(SpawnFileActions& actions, const CapturePipe& stdout_pipe,
-                                         const CapturePipe& stderr_pipe) noexcept {
+                                         const CapturePipe& stderr_pipe,
+                                         bool merge_stderr_into_stdout) noexcept {
     int status =
         ::posix_spawn_file_actions_addopen(actions.get(), STDIN_FILENO, "/dev/null", O_RDONLY, 0);
     if (status == 0) {
@@ -295,12 +343,13 @@ void set_cleanup_error(BoundedChildProcessResult& result, int native_error) noex
                                                     STDOUT_FILENO);
     }
     if (status == 0) {
-        status = ::posix_spawn_file_actions_adddup2(actions.get(), stderr_pipe.write_end.get(),
-                                                    STDERR_FILENO);
+        const int stderr_source =
+            merge_stderr_into_stdout ? stdout_pipe.write_end.get() : stderr_pipe.write_end.get();
+        status = ::posix_spawn_file_actions_adddup2(actions.get(), stderr_source, STDERR_FILENO);
     }
     for (const int fd : {stdout_pipe.read_end.get(), stdout_pipe.write_end.get(),
                          stderr_pipe.read_end.get(), stderr_pipe.write_end.get()}) {
-        if (status == 0) {
+        if (status == 0 && fd >= 0) {
             status = ::posix_spawn_file_actions_addclose(actions.get(), fd);
         }
     }
@@ -436,6 +485,7 @@ struct DescriptorCleanupResult final {
         return {false, EPERM};
     }
 
+    const auto cleanup_deadline = Clock::now() + TERMINATION_CLEANUP_GRACE;
     int retained_error = 0;
     if (::kill(-child, SIGKILL) != 0 && errno != ESRCH) {
         retained_error = errno;
@@ -444,15 +494,19 @@ struct DescriptorCleanupResult final {
         retained_error = errno;
     }
 
-    const auto cleanup_deadline = Clock::now() + TERMINATION_CLEANUP_GRACE;
+    bool child_reaped = false;
     while (true) {
         int wait_status = 0;
-        pid_t waited = -1;
-        do {
-            waited = ::waitpid(child, &wait_status, WNOHANG);
-        } while (waited < 0 && errno == EINTR);
+        const pid_t waited = ::waitpid(child, &wait_status, WNOHANG);
         if (waited == child) {
-            return {retained_error == 0, retained_error};
+            child_reaped = true;
+            break;
+        }
+        if (waited < 0 && errno == EINTR) {
+            if (Clock::now() >= cleanup_deadline) {
+                return {false, ETIMEDOUT};
+            }
+            continue;
         }
         if (waited < 0) {
             return {false, errno != 0 ? errno : ECHILD};
@@ -460,14 +514,20 @@ struct DescriptorCleanupResult final {
         if (Clock::now() >= cleanup_deadline) {
             return {false, ETIMEDOUT};
         }
-        int poll_status = -1;
-        do {
-            poll_status = ::poll(nullptr, 0, static_cast<int>(POLL_QUANTUM.count()));
-        } while (poll_status < 0 && errno == EINTR);
+        const int poll_status = ::poll(nullptr, 0, static_cast<int>(POLL_QUANTUM.count()));
+        if (poll_status < 0 && errno == EINTR) {
+            continue;
+        }
         if (poll_status < 0) {
             return {false, errno};
         }
     }
+
+    const auto group_receipt = wait_for_process_group_absence_until(child, cleanup_deadline);
+    if (!group_receipt.absent && retained_error == 0) {
+        retained_error = group_receipt.native_error;
+    }
+    return {child_reaped && group_receipt.absent && retained_error == 0, retained_error};
 }
 
 [[nodiscard]] constexpr bool descriptor_exec_is_platform_unavailable(int native_error) noexcept {
@@ -491,14 +551,14 @@ descriptor_stage_is_parent_death_setup(DescriptorPreExecStage stage) noexcept {
 [[nodiscard]] DescriptorSpawnResult
 spawn_from_executable_fd(int executable_fd, const CapturePipe& stdout_pipe,
                          const CapturePipe& stderr_pipe, char* const* argv,
-                         char* const* environment, Clock::time_point deadline) noexcept {
+                         char* const* environment, const BoundedChildProcessSpec& spec) noexcept {
 #if !GNFS_AUTHENTICATED_BOUNDED_CHILD_COMPILE_CAPABLE
     (void)executable_fd;
     (void)stdout_pipe;
     (void)stderr_pipe;
     (void)argv;
     (void)environment;
-    (void)deadline;
+    (void)spec;
     return {-1, ENOTSUP, BoundedChildProcessError::platform_unavailable};
 #else
     int descriptors[2]{-1, -1};
@@ -534,6 +594,20 @@ spawn_from_executable_fd(int executable_fd, const CapturePipe& stdout_pipe,
         return {-1, block_status, BoundedChildProcessError::spawn_failed};
     }
 
+    BoundedChildProcessError prevented_error = BoundedChildProcessError::none;
+    int prevented_native_error = 0;
+    if (cancellation_requested(spec)) {
+        prevented_error = BoundedChildProcessError::cancelled;
+        prevented_native_error = ECANCELED;
+    } else if (Clock::now() >= spec.deadline) {
+        prevented_error = BoundedChildProcessError::timeout;
+        prevented_native_error = ETIMEDOUT;
+    }
+    if (prevented_error != BoundedChildProcessError::none) {
+        const int restore_status = ::pthread_sigmask(SIG_SETMASK, &previous_mask, nullptr);
+        return {-1, prevented_native_error, prevented_error, restore_status == 0, restore_status};
+    }
+
     const pid_t expected_parent = ::getpid();
     const pid_t child = ::_Fork();
     if (child < 0) {
@@ -564,9 +638,11 @@ spawn_from_executable_fd(int executable_fd, const CapturePipe& stdout_pipe,
             report_pre_exec_failure(diagnostic_write.get(), DescriptorPreExecStage::reset_signals,
                                     signal_error);
         }
+        const int stderr_source = spec.merge_stderr_into_stdout ? stdout_pipe.write_end.get()
+                                                                : stderr_pipe.write_end.get();
         if (::dup2(null_fd.get(), STDIN_FILENO) < 0 ||
             ::dup2(stdout_pipe.write_end.get(), STDOUT_FILENO) < 0 ||
-            ::dup2(stderr_pipe.write_end.get(), STDERR_FILENO) < 0) {
+            ::dup2(stderr_source, STDERR_FILENO) < 0) {
             report_pre_exec_failure(diagnostic_write.get(), DescriptorPreExecStage::duplicate_stdio,
                                     errno);
         }
@@ -598,61 +674,102 @@ spawn_from_executable_fd(int executable_fd, const CapturePipe& stdout_pipe,
     auto* bytes = reinterpret_cast<std::byte*>(&child_failure);
     std::size_t received = 0;
     bool handshake_timed_out = false;
-    while (received < sizeof(child_failure)) {
+    bool handshake_cancelled = false;
+    bool diagnostic_eof = false;
+    const auto consume_diagnostic_event = [&](const pollfd& descriptor, int poll_status) noexcept {
+        if (poll_status < 0 || (descriptor.revents & (POLLERR | POLLNVAL)) != 0) {
+            child_failure.native_error = poll_status < 0 ? errno : EIO;
+            received = sizeof(child_failure);
+            return;
+        }
+        if ((descriptor.revents & (POLLIN | POLLHUP)) == 0) {
+            return;
+        }
+        const ssize_t count =
+            ::read(diagnostic_read.get(), bytes + received, sizeof(child_failure) - received);
+        if (count < 0 && errno == EINTR) {
+            return;
+        }
+        if (count == 0) {
+            diagnostic_eof = true;
+        } else if (count < 0) {
+            child_failure.native_error = errno;
+            received = sizeof(child_failure);
+        } else {
+            received += static_cast<std::size_t>(count);
+        }
+    };
+    while (received < sizeof(child_failure) && !diagnostic_eof) {
+        // A closed diagnostic descriptor authenticates exec success, and a
+        // complete failure record authenticates pre-exec failure. Consume
+        // either already-published outcome before a concurrent cancel/deadline.
+        pollfd descriptor{diagnostic_read.get(), POLLIN | POLLHUP, 0};
+        int poll_status = ::poll(&descriptor, 1, 0);
+        if (poll_status < 0 && errno == EINTR) {
+            poll_status = 0;
+        }
+        if (poll_status != 0) {
+            consume_diagnostic_event(descriptor, poll_status);
+            continue;
+        }
+        if (cancellation_requested(spec)) {
+            descriptor.revents = 0;
+            poll_status = ::poll(&descriptor, 1, 0);
+            if (poll_status < 0 && errno == EINTR) {
+                continue;
+            }
+            if (poll_status != 0) {
+                consume_diagnostic_event(descriptor, poll_status);
+                continue;
+            }
+            handshake_cancelled = true;
+            break;
+        }
         const auto now = Clock::now();
-        if (now >= deadline) {
+        if (now >= spec.deadline) {
+            descriptor.revents = 0;
+            poll_status = ::poll(&descriptor, 1, 0);
+            if (poll_status < 0 && errno == EINTR) {
+                continue;
+            }
+            if (poll_status != 0) {
+                consume_diagnostic_event(descriptor, poll_status);
+                continue;
+            }
             handshake_timed_out = true;
             break;
         }
         const auto remaining =
-            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+            std::chrono::duration_cast<std::chrono::milliseconds>(spec.deadline - now);
         const auto bounded_remaining =
             std::max<std::chrono::milliseconds>(1ms, std::min(remaining, POLL_QUANTUM));
-        pollfd descriptor{diagnostic_read.get(), POLLIN | POLLHUP, 0};
-        int poll_status = -1;
-        do {
-            poll_status = ::poll(&descriptor, 1, static_cast<int>(bounded_remaining.count()));
-        } while (poll_status < 0 && errno == EINTR);
+        descriptor.revents = 0;
+        poll_status = ::poll(&descriptor, 1, static_cast<int>(bounded_remaining.count()));
+        if (poll_status < 0 && errno == EINTR) {
+            continue;
+        }
         if (poll_status == 0) {
             continue;
         }
-        if (poll_status < 0 || (descriptor.revents & (POLLERR | POLLNVAL)) != 0) {
-            child_failure.native_error = poll_status < 0 ? errno : EIO;
-            received = sizeof(child_failure);
-            break;
-        }
-        if ((descriptor.revents & (POLLIN | POLLHUP)) == 0) {
-            continue;
-        }
-        ssize_t count = -1;
-        do {
-            count =
-                ::read(diagnostic_read.get(), bytes + received, sizeof(child_failure) - received);
-        } while (count < 0 && errno == EINTR);
-        if (count == 0) {
-            break;
-        }
-        if (count < 0) {
-            child_failure.native_error = errno;
-            received = sizeof(child_failure);
-            break;
-        }
-        received += static_cast<std::size_t>(count);
+        consume_diagnostic_event(descriptor, poll_status);
     }
     diagnostic_read.reset();
-    if (received == 0) {
-        if (!handshake_timed_out) {
-            return {child, 0, BoundedChildProcessError::none};
-        }
+    if (handshake_cancelled) {
+        child_failure.native_error = ECANCELED;
+    } else if (handshake_timed_out) {
         child_failure.native_error = ETIMEDOUT;
+    } else if (received == 0) {
+        return {child, 0, BoundedChildProcessError::none};
     }
-    if (received != sizeof(child_failure) || child_failure.native_error == 0) {
+    if ((!handshake_timed_out && !handshake_cancelled && received != sizeof(child_failure)) ||
+        child_failure.native_error == 0) {
         child_failure.native_error = EIO;
     }
 
     const auto cleanup = kill_and_reap_descriptor_child(child);
     const auto error =
-        handshake_timed_out ? BoundedChildProcessError::timeout
+        handshake_cancelled   ? BoundedChildProcessError::cancelled
+        : handshake_timed_out ? BoundedChildProcessError::timeout
         : child_failure.stage == DescriptorPreExecStage::execveat &&
                 descriptor_exec_is_platform_unavailable(child_failure.native_error)
             ? BoundedChildProcessError::platform_unavailable
@@ -856,10 +973,19 @@ void terminate_child_tree(pid_t child, pid_t verified_group, bool child_reaped,
         return;
     }
 
+    group_cleanup_needs_verification = true;
     int status = -1;
     do {
         status = ::kill(-verified_group, SIGKILL);
     } while (status < 0 && errno == EINTR);
+    if (status == 0) {
+        // Delivery is not a completion receipt: non-child members can remain
+        // observable briefly after accepting SIGKILL. Keep the leader's PID
+        // reserved until waitpid(), then require that numeric group ID to
+        // vanish. Reuse after reaping can only cause a fail-closed result:
+        // subsequent probes use signal 0 and never target the reused group.
+        return;
+    }
     if (status < 0 && errno != ESRCH) {
         const int signal_error = errno;
         if (signal_error == EPERM) {
@@ -867,7 +993,6 @@ void terminate_child_tree(pid_t child, pid_t verified_group, bool child_reaped,
             // just-exited leader. Defer the verdict until that exact PID is
             // reaped, then require the group to be absent. A genuinely live,
             // unsignalable descendant therefore remains a cleanup failure.
-            group_cleanup_needs_verification = true;
             if (!child_exited_waitable) {
                 kill_direct_child(child, result);
             }
@@ -908,6 +1033,15 @@ void record_termination(int status, BoundedChildProcessResult& result) noexcept 
     return static_cast<int>(std::min(remaining, POLL_QUANTUM).count());
 }
 
+[[nodiscard]] bool wait_for_process_group_absence(pid_t verified_group, Clock::time_point deadline,
+                                                  BoundedChildProcessResult& result) noexcept {
+    const auto receipt = wait_for_process_group_absence_until(verified_group, deadline);
+    if (!receipt.absent) {
+        set_cleanup_error(result, receipt.native_error);
+    }
+    return receipt.absent;
+}
+
 } // namespace
 
 namespace {
@@ -934,6 +1068,11 @@ BoundedChildProcessResult run_bounded_child_process_impl(const BoundedChildProce
             result.cleanup_complete = true;
             return result;
         }
+        if (cancellation_requested(spec)) {
+            result.error = BoundedChildProcessError::cancelled;
+            result.cleanup_complete = true;
+            return result;
+        }
 
         result.stdout_bytes.reserve(spec.stdout_limit);
         result.stderr_bytes.reserve(spec.stderr_limit);
@@ -957,14 +1096,34 @@ BoundedChildProcessResult run_bounded_child_process_impl(const BoundedChildProce
             environment.push_back(value.data());
         }
         environment.push_back(nullptr);
+        char* const* child_environment =
+            spec.inherit_parent_environment ? ::environ : environment.data();
 
         CapturePipe stdout_pipe;
         CapturePipe stderr_pipe;
         int native_error = 0;
         if (!make_capture_pipe(stdout_pipe, native_error) ||
-            !make_capture_pipe(stderr_pipe, native_error)) {
+            (!spec.merge_stderr_into_stdout && !make_capture_pipe(stderr_pipe, native_error))) {
             set_primary_error(result, BoundedChildProcessError::pipe_failed, native_error);
             result.cleanup_complete = true;
+            return result;
+        }
+        result.stderr_eof = spec.merge_stderr_into_stdout;
+
+        const auto launch_prevented = [&]() noexcept {
+            if (cancellation_requested(spec)) {
+                result.error = BoundedChildProcessError::cancelled;
+                result.cleanup_complete = true;
+                return true;
+            }
+            if (Clock::now() >= spec.deadline) {
+                result.error = BoundedChildProcessError::timeout;
+                result.cleanup_complete = true;
+                return true;
+            }
+            return false;
+        };
+        if (launch_prevented()) {
             return result;
         }
 
@@ -976,9 +1135,8 @@ BoundedChildProcessResult run_bounded_child_process_impl(const BoundedChildProce
         int launch_cleanup_error = 0;
 #if defined(__linux__)
         if (executable_fd >= 0) {
-            const DescriptorSpawnResult spawned =
-                spawn_from_executable_fd(executable_fd, stdout_pipe, stderr_pipe, argv.data(),
-                                         environment.data(), spec.deadline);
+            const DescriptorSpawnResult spawned = spawn_from_executable_fd(
+                executable_fd, stdout_pipe, stderr_pipe, argv.data(), child_environment, spec);
             child = spawned.child;
             status = spawned.native_error;
             launch_error = spawned.error;
@@ -994,14 +1152,18 @@ BoundedChildProcessResult run_bounded_child_process_impl(const BoundedChildProce
                 status = attributes.status();
             }
             if (status == 0) {
-                status = add_spawn_file_actions(actions, stdout_pipe, stderr_pipe);
+                status = add_spawn_file_actions(actions, stdout_pipe, stderr_pipe,
+                                                spec.merge_stderr_into_stdout);
             }
             if (status == 0) {
                 status = configure_spawn_attributes(attributes);
             }
+            if (status == 0 && launch_prevented()) {
+                return result;
+            }
             if (status == 0) {
                 status = ::posix_spawn(&child, spec.executable.c_str(), actions.get(),
-                                       attributes.get(), argv.data(), environment.data());
+                                       attributes.get(), argv.data(), child_environment);
             }
         }
         if (status != 0) {
@@ -1091,6 +1253,11 @@ BoundedChildProcessResult run_bounded_child_process_impl(const BoundedChildProce
         }
 
         while (true) {
+            // Pipes are nonblocking. Observe already-published transport faults
+            // and EOF before accepting a concurrent cancellation request.
+            drain_stream(stdout_state, result);
+            drain_stream(stderr_state, result);
+
             if (!reaped && !child_exited_waitable) {
                 child_identity = observe_child_without_reaping(child);
                 if (child_identity.state == ChildIdentityState::exited_waitable) {
@@ -1124,6 +1291,9 @@ BoundedChildProcessResult run_bounded_child_process_impl(const BoundedChildProce
                 request_termination(result.stdout_overflow || result.stderr_overflow
                                         ? BoundedChildProcessError::overflow
                                         : BoundedChildProcessError::read_failed);
+            }
+            if (!termination_requested && cancellation_requested(spec)) {
+                request_termination(BoundedChildProcessError::cancelled);
             }
 
             const auto now = Clock::now();
@@ -1166,10 +1336,11 @@ BoundedChildProcessResult run_bounded_child_process_impl(const BoundedChildProce
                 next_deadline = std::min(next_deadline, writer_deadline);
             }
             const int timeout = bounded_poll_timeout(now, next_deadline);
-            int poll_status = -1;
-            do {
-                poll_status = ::poll(poll_descriptors.data(), poll_descriptors.size(), timeout);
-            } while (poll_status < 0 && errno == EINTR);
+            const int poll_status =
+                ::poll(poll_descriptors.data(), poll_descriptors.size(), timeout);
+            if (poll_status < 0 && errno == EINTR) {
+                continue;
+            }
             if (poll_status < 0) {
                 const int error = errno;
                 result.stdout_read_failed = true;
@@ -1214,28 +1385,25 @@ BoundedChildProcessResult run_bounded_child_process_impl(const BoundedChildProce
         if (reaped) {
             record_termination(wait_status, result);
         }
-        if (group_cleanup_needs_verification) {
-            int probe_status = -1;
-            do {
-                probe_status = ::kill(-verified_group, 0);
-            } while (probe_status < 0 && errno == EINTR);
-            if (probe_status == 0 || errno != ESRCH) {
-                set_cleanup_error(result, probe_status == 0 ? EPERM : errno);
-            }
+        if (reaped && group_cleanup_needs_verification &&
+            wait_for_process_group_absence(verified_group, cleanup_deadline, result)) {
+            group_cleanup_needs_verification = false;
         }
 
         result.cleanup_complete = reaped && result.stdout_eof && result.stderr_eof &&
                                   !stdout_pipe.read_end && !stderr_pipe.read_end &&
-                                  !result.cleanup_error;
+                                  !group_cleanup_needs_verification && !result.cleanup_error;
         if (!result.cleanup_complete && result.error == BoundedChildProcessError::none) {
             result.error = BoundedChildProcessError::cleanup_failed;
         }
         return result;
     } catch (const std::bad_alloc&) {
         result.error = BoundedChildProcessError::resource_failure;
+        result.cleanup_complete = !result.child_started;
         return result;
     } catch (...) {
         result.error = BoundedChildProcessError::unexpected_failure;
+        result.cleanup_complete = !result.child_started;
         return result;
     }
 }
