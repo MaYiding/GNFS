@@ -27,8 +27,7 @@ public:
     }
 
     /// 从系数列表构造
-    explicit IntPolynomial(std::vector<Integer> coeffs)
-        : coeffs_(std::move(coeffs)) {
+    explicit IntPolynomial(std::vector<Integer> coeffs) : coeffs_(std::move(coeffs)) {
         if (coeffs_.empty()) {
             coeffs_.emplace_back(static_cast<int64_t>(0));
         }
@@ -53,7 +52,7 @@ public:
         std::vector<Integer> coeffs_copy;
         coeffs_copy.reserve(coeffs_.size());
         for (const auto& c : coeffs_) {
-            coeffs_copy.emplace_back(c);  // Integer copy ctor
+            coeffs_copy.emplace_back(c); // Integer copy ctor
         }
         return IntPolynomial(std::move(coeffs_copy));
     }
@@ -73,7 +72,8 @@ public:
     /// 获取系数
     [[nodiscard]] const Integer& operator[](size_t i) const {
         static const Integer zero(static_cast<int64_t>(0));
-        if (i >= coeffs_.size()) return zero;
+        if (i >= coeffs_.size())
+            return zero;
         return coeffs_[i];
     }
 
@@ -99,9 +99,10 @@ public:
 
     /// 计算 f(x) 的值 (Horner 方法)
     [[nodiscard]] Integer evaluate(const Integer& x) const {
-        if (coeffs_.empty()) return Integer{};
+        if (coeffs_.empty())
+            return Integer{};
 
-        Integer result = coeffs_.back();  // copy ctor (Integer)
+        Integer result = coeffs_.back(); // copy ctor (Integer)
         for (int i = static_cast<int>(coeffs_.size()) - 2; i >= 0; --i) {
             result *= x;
             result += coeffs_[static_cast<size_t>(i)];
@@ -111,7 +112,8 @@ public:
 
     /// 计算 f(x) 的 double 值
     [[nodiscard]] double evaluate_double(double x) const {
-        if (coeffs_.empty()) return 0.0;
+        if (coeffs_.empty())
+            return 0.0;
 
         double result = coeffs_.back().to_double();
         for (int i = static_cast<int>(coeffs_.size()) - 2; i >= 0; --i) {
@@ -124,7 +126,8 @@ public:
 
     /// 计算 f(x) mod p 的值
     [[nodiscard]] uint64_t evaluate_mod(uint64_t x, uint64_t p) const {
-        if (coeffs_.empty()) return 0;
+        if (coeffs_.empty())
+            return 0;
 
         uint64_t result = coeff_mod(coeffs_.size() - 1, p);
         for (int i = static_cast<int>(coeffs_.size()) - 2; i >= 0; --i) {
@@ -138,7 +141,7 @@ public:
     /// 使用暴力搜索（小 p）或 Cantor-Zassenhaus（大 p）
     [[nodiscard]] std::vector<uint32_t> roots_mod_p(uint32_t p) const {
         std::vector<uint32_t> roots;
-        roots.reserve(static_cast<size_t>(degree()));  // bounded by f degree
+        roots.reserve(static_cast<size_t>(degree())); // bounded by f degree
 
         if (p < 1000) {
             // 小 p：暴力搜索
@@ -213,8 +216,8 @@ public:
         // 卷积 — mpz_addmul: result_coeffs[i+j] += coeffs[i] * other[j] (fused FMA)
         for (uint32_t i = 0; i <= d1; ++i) {
             for (uint32_t j = 0; j <= d2; ++j) {
-                mpz_addmul(result_coeffs[i + j].get_mpz(),
-                           coeffs_[i].get_mpz(), other.coeffs_[j].get_mpz());
+                mpz_addmul(result_coeffs[i + j].get_mpz(), coeffs_[i].get_mpz(),
+                           other.coeffs_[j].get_mpz());
             }
         }
 
@@ -240,7 +243,7 @@ public:
 
         for (uint32_t i = 1; i <= d; ++i) {
             Integer c;
-            mpz_mul_ui(c.get_mpz(), coeffs_[i].get_mpz(), i);  // c = coeffs[i] * i
+            mpz_mul_ui(c.get_mpz(), coeffs_[i].get_mpz(), i); // c = coeffs[i] * i
             new_coeffs.push_back(std::move(c));
         }
 
@@ -260,9 +263,9 @@ public:
 
         // 预计算 t 的幂次 — mpz_mul_si into default-init slot (skips set step)
         std::vector<Integer> t_powers(d + 1);
-        t_powers[0] = int64_t(1);  // mpz_set_si on default-init slot
+        t_powers[0] = int64_t(1); // mpz_set_si on default-init slot
         for (uint32_t i = 1; i <= d; ++i) {
-            mpz_mul_si(t_powers[i].get_mpz(), t_powers[i-1].get_mpz(), t);
+            mpz_mul_si(t_powers[i].get_mpz(), t_powers[i - 1].get_mpz(), t);
         }
 
         // 二项式系数表(静态初始化,线程安全)。GNFS degree 上限 6,
@@ -277,7 +280,7 @@ public:
                 b[i][0] = 1;
                 b[i][i] = 1;
                 for (uint32_t j = 1; j < i; ++j) {
-                    b[i][j] = b[i-1][j-1] + b[i-1][j];
+                    b[i][j] = b[i - 1][j - 1] + b[i - 1][j];
                 }
             }
             return b;
@@ -295,11 +298,9 @@ public:
                 } else {
                     mpz_bin_uiui(high_degree_binom.get_mpz(), static_cast<unsigned long>(i),
                                  static_cast<unsigned long>(j));
-                    mpz_mul(term.get_mpz(), t_powers[i - j].get_mpz(),
-                            high_degree_binom.get_mpz());
+                    mpz_mul(term.get_mpz(), t_powers[i - j].get_mpz(), high_degree_binom.get_mpz());
                 }
-                mpz_addmul(new_coeffs[j].get_mpz(),
-                           coeffs_[i].get_mpz(), term.get_mpz());
+                mpz_addmul(new_coeffs[j].get_mpz(), coeffs_[i].get_mpz(), term.get_mpz());
             }
         }
 
@@ -324,20 +325,19 @@ public:
     }
 
 private:
-    [[nodiscard]] static Integer discriminant_impl(
-            const std::vector<Integer>& coeffs, uint32_t d) {
+    [[nodiscard]] static Integer discriminant_impl(const std::vector<Integer>& coeffs, uint32_t d) {
         return ::gnfs::polynomial::discriminant(coeffs, d);
     }
 
 public:
-
 private:
     std::vector<Integer> coeffs_;
 
     // 辅助函数：取系数 mod p — mpz_fdiv_ui returns floor-div remainder ∈ [0, p-1]
     // regardless of c's sign (handles negative coeffs automatically, zero alloc)
     [[nodiscard]] uint64_t coeff_mod(size_t i, uint64_t p) const {
-        if (i >= coeffs_.size()) return 0;
+        if (i >= coeffs_.size())
+            return 0;
         return static_cast<uint64_t>(mpz_fdiv_ui(coeffs_[i].get_mpz(), p));
     }
 
@@ -379,7 +379,8 @@ private:
         }
         // f_mod 可能 leading coeff == 0 (mod p)，跳过
         MP f_poly(f_mod);
-        if (f_poly.degree() <= 0) return {};
+        if (f_poly.degree() <= 0)
+            return {};
 
         // Step 1: h = gcd(f, x^p - x) mod p
         MP x_poly;
@@ -392,19 +393,21 @@ private:
         auto h = MP::gcd(x_p_minus_x, f_poly, p);
 
         int h_deg = h.degree();
-        if (h_deg <= 0) return {};
+        if (h_deg <= 0)
+            return {};
 
         // Step 2: 从 h 中提取根
         return cz_extract_roots(h, p);
     }
 
     /// 从度数为 deg 的 split-free 多项式中提取所有根
-    [[nodiscard]] static std::vector<uint32_t> cz_extract_roots(
-            const sqrt::ModularPoly& poly, uint32_t p) {
+    [[nodiscard]] static std::vector<uint32_t> cz_extract_roots(const sqrt::ModularPoly& poly,
+                                                                uint32_t p) {
         using MP = sqrt::ModularPoly;
 
         int deg = poly.degree();
-        if (deg <= 0) return {};
+        if (deg <= 0)
+            return {};
 
         if (deg == 1) {
             // ax + b = 0 → x = -b · a^{-1} mod p
@@ -420,12 +423,14 @@ private:
         // share the same random sequence. p*31+17 fed mt19937_64 well enough, but two distinct
         // CZ calls with the same p (different polys) would attempt identical a values 1-by-1.
         uint64_t seed = static_cast<uint64_t>(p);
-        seed ^= poly.coeff(static_cast<size_t>(deg)) + 0x9E3779B97F4A7C15ULL + (seed << 6) + (seed >> 2);
+        seed ^= poly.coeff(static_cast<size_t>(deg)) + 0x9E3779B97F4A7C15ULL + (seed << 6) +
+                (seed >> 2);
         seed ^= static_cast<uint64_t>(deg) + 0x9E3779B97F4A7C15ULL + (seed << 6) + (seed >> 2);
         std::mt19937_64 rng(seed);
         std::vector<uint64_t> poly_coeffs;
         poly_coeffs.reserve(static_cast<size_t>(deg + 1));
-        for (int i = 0; i <= deg; ++i) poly_coeffs.push_back(poly.coeff(static_cast<size_t>(i)));
+        for (int i = 0; i <= deg; ++i)
+            poly_coeffs.push_back(poly.coeff(static_cast<size_t>(i)));
 
         // (p-1)/2 depends only on p — hoist out of attempt loop
         const Integer exp_val{int64_t((p - 1) / 2)};
@@ -461,15 +466,16 @@ private:
 
         // 极少数情况回退暴力
         std::vector<uint32_t> roots;
-        roots.reserve(static_cast<size_t>(deg));  // bounded by f degree
+        roots.reserve(static_cast<size_t>(deg)); // bounded by f degree
         for (uint32_t r = 0; r < p && static_cast<int>(roots.size()) < deg; ++r) {
             uint64_t val = 0, rp = 1;
             for (int i = 0; i <= deg; ++i) {
-                val = (val + gnfs::util::mul_mod_u64(
-                    poly.coeff(static_cast<size_t>(i)), rp, p)) % p;
+                val =
+                    (val + gnfs::util::mul_mod_u64(poly.coeff(static_cast<size_t>(i)), rp, p)) % p;
                 rp = gnfs::util::mul_mod_u64(rp, r, p);
             }
-            if (val == 0) roots.push_back(r);
+            if (val == 0)
+                roots.push_back(r);
         }
         return roots;
     }
