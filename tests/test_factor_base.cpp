@@ -4,7 +4,9 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
 #include <iostream>
+#include <limits>
 #include <sstream>
 
 using namespace gnfs;
@@ -412,6 +414,71 @@ void test_serialization_invalid() {
         uint32_t bad_version = 99;
         ss.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
         ss.write(reinterpret_cast<const char*>(&bad_version), sizeof(bad_version));
+        bool caught = false;
+        try { FactorBase::load(ss); }
+        catch (const std::runtime_error&) { caught = true; }
+        assert(caught);
+    }
+
+    // Truncated header must fail before interpreting uninitialized fields.
+    {
+        std::stringstream ss;
+        uint32_t magic = 0x47464246;
+        ss.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
+        bool caught = false;
+        try { FactorBase::load(ss); }
+        catch (const std::runtime_error&) { caught = true; }
+        assert(caught);
+    }
+
+    // A corrupt count must not trigger a count-sized resize before EOF is checked.
+    {
+        std::stringstream ss;
+        const uint32_t magic = 0x47464246;
+        const uint32_t version = 1;
+        const uint32_t rational_bound = 100;
+        const uint32_t algebraic_bound = 100;
+        const uint64_t large_prime_bound = 10'000;
+        const uint8_t log_scale = 16;
+        const uint64_t sieve_algebraic_count = 0;
+        const uint32_t rational_count = (std::numeric_limits<uint32_t>::max)();
+        ss.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
+        ss.write(reinterpret_cast<const char*>(&version), sizeof(version));
+        ss.write(reinterpret_cast<const char*>(&rational_bound), sizeof(rational_bound));
+        ss.write(reinterpret_cast<const char*>(&algebraic_bound), sizeof(algebraic_bound));
+        ss.write(reinterpret_cast<const char*>(&large_prime_bound), sizeof(large_prime_bound));
+        ss.write(reinterpret_cast<const char*>(&log_scale), sizeof(log_scale));
+        ss.write(reinterpret_cast<const char*>(&sieve_algebraic_count), sizeof(sieve_algebraic_count));
+        ss.write(reinterpret_cast<const char*>(&rational_count), sizeof(rational_count));
+
+        bool caught = false;
+        try { FactorBase::load(ss); }
+        catch (const std::runtime_error&) { caught = true; }
+        assert(caught);
+    }
+
+    // The sieve count is a bounded view into the algebraic-prime array.
+    {
+        std::stringstream ss;
+        const uint32_t magic = 0x47464246;
+        const uint32_t version = 1;
+        const uint32_t rational_bound = 100;
+        const uint32_t algebraic_bound = 100;
+        const uint64_t large_prime_bound = 10'000;
+        const uint8_t log_scale = 16;
+        const uint64_t sieve_algebraic_count = 1;
+        const uint32_t rational_count = 0;
+        const uint32_t algebraic_count = 0;
+        ss.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
+        ss.write(reinterpret_cast<const char*>(&version), sizeof(version));
+        ss.write(reinterpret_cast<const char*>(&rational_bound), sizeof(rational_bound));
+        ss.write(reinterpret_cast<const char*>(&algebraic_bound), sizeof(algebraic_bound));
+        ss.write(reinterpret_cast<const char*>(&large_prime_bound), sizeof(large_prime_bound));
+        ss.write(reinterpret_cast<const char*>(&log_scale), sizeof(log_scale));
+        ss.write(reinterpret_cast<const char*>(&sieve_algebraic_count), sizeof(sieve_algebraic_count));
+        ss.write(reinterpret_cast<const char*>(&rational_count), sizeof(rational_count));
+        ss.write(reinterpret_cast<const char*>(&algebraic_count), sizeof(algebraic_count));
+
         bool caught = false;
         try { FactorBase::load(ss); }
         catch (const std::runtime_error&) { caught = true; }

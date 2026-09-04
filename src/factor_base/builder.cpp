@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cmath>
 #include <istream>
+#include <limits>
 #include <ostream>
 #include <random>
 #include <stdexcept>
@@ -19,46 +20,67 @@ namespace gnfs::factor_base {
 // ============================================================
 
 void FactorBase::save(std::ostream& os) const {
+    const auto write_bytes = [&os](const void* data, std::size_t size, const char* field) {
+        os.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));
+        if (!os) {
+            throw std::runtime_error(std::string("FactorBase::save: write failed for ") + field);
+        }
+    };
+
     // Magic + version header
     constexpr uint32_t MAGIC = 0x47464246;  // "GFBF" (GNFS Factor Base Format)
     constexpr uint32_t VERSION = 1;
-    os.write(reinterpret_cast<const char*>(&MAGIC), sizeof(MAGIC));
-    os.write(reinterpret_cast<const char*>(&VERSION), sizeof(VERSION));
+    write_bytes(&MAGIC, sizeof(MAGIC), "magic");
+    write_bytes(&VERSION, sizeof(VERSION), "version");
 
     // Params
-    os.write(reinterpret_cast<const char*>(&params_.rational_bound), sizeof(params_.rational_bound));
-    os.write(reinterpret_cast<const char*>(&params_.algebraic_bound), sizeof(params_.algebraic_bound));
-    os.write(reinterpret_cast<const char*>(&params_.large_prime_bound), sizeof(params_.large_prime_bound));
-    os.write(reinterpret_cast<const char*>(&params_.log_scale), sizeof(params_.log_scale));
+    write_bytes(&params_.rational_bound, sizeof(params_.rational_bound), "rational_bound");
+    write_bytes(&params_.algebraic_bound, sizeof(params_.algebraic_bound), "algebraic_bound");
+    write_bytes(&params_.large_prime_bound, sizeof(params_.large_prime_bound), "large_prime_bound");
+    write_bytes(&params_.log_scale, sizeof(params_.log_scale), "log_scale");
 
     // Sieve algebraic count
     uint64_t sac = static_cast<uint64_t>(sieve_algebraic_count_);
-    os.write(reinterpret_cast<const char*>(&sac), sizeof(sac));
+    write_bytes(&sac, sizeof(sac), "sieve_algebraic_count");
 
     // Rational primes
+    if (rational_.size() > (std::numeric_limits<uint32_t>::max)()) {
+        throw std::overflow_error("FactorBase::save: rational-prime count exceeds uint32_t");
+    }
     uint32_t rat_count = static_cast<uint32_t>(rational_.size());
-    os.write(reinterpret_cast<const char*>(&rat_count), sizeof(rat_count));
+    write_bytes(&rat_count, sizeof(rat_count), "rational-prime count");
     for (const auto& rp : rational_) {
-        os.write(reinterpret_cast<const char*>(&rp.p), sizeof(rp.p));
-        os.write(reinterpret_cast<const char*>(&rp.log_p), sizeof(rp.log_p));
+        write_bytes(&rp.p, sizeof(rp.p), "rational-prime value");
+        write_bytes(&rp.log_p, sizeof(rp.log_p), "rational-prime log");
     }
 
     // Algebraic primes
+    if (algebraic_.size() > (std::numeric_limits<uint32_t>::max)()) {
+        throw std::overflow_error("FactorBase::save: algebraic-prime count exceeds uint32_t");
+    }
     uint32_t alg_count = static_cast<uint32_t>(algebraic_.size());
-    os.write(reinterpret_cast<const char*>(&alg_count), sizeof(alg_count));
+    write_bytes(&alg_count, sizeof(alg_count), "algebraic-prime count");
     for (const auto& ap : algebraic_) {
-        os.write(reinterpret_cast<const char*>(&ap.p), sizeof(ap.p));
-        os.write(reinterpret_cast<const char*>(&ap.r), sizeof(ap.r));
-        os.write(reinterpret_cast<const char*>(&ap.log_p), sizeof(ap.log_p));
-        os.write(reinterpret_cast<const char*>(&ap.degree), sizeof(ap.degree));
+        write_bytes(&ap.p, sizeof(ap.p), "algebraic-prime value");
+        write_bytes(&ap.r, sizeof(ap.r), "algebraic-prime root");
+        write_bytes(&ap.log_p, sizeof(ap.log_p), "algebraic-prime log");
+        write_bytes(&ap.degree, sizeof(ap.degree), "algebraic-prime degree");
     }
 }
 
 FactorBase FactorBase::load(std::istream& is) {
+    const auto read_bytes = [&is](void* data, std::size_t size, const char* field) {
+        if (!is.read(static_cast<char*>(data), static_cast<std::streamsize>(size))) {
+            throw std::runtime_error(std::string("FactorBase::load: unexpected end of stream while reading ") +
+                                     field);
+        }
+    };
+
     // Magic + version
-    uint32_t magic, version;
-    is.read(reinterpret_cast<char*>(&magic), sizeof(magic));
-    is.read(reinterpret_cast<char*>(&version), sizeof(version));
+    uint32_t magic = 0;
+    uint32_t version = 0;
+    read_bytes(&magic, sizeof(magic), "magic");
+    read_bytes(&version, sizeof(version), "version");
     if (magic != 0x47464246)
         throw std::runtime_error("FactorBase::load: invalid magic number");
     if (version != 1)
@@ -66,43 +88,51 @@ FactorBase FactorBase::load(std::istream& is) {
 
     // Params
     FactorBaseParams params;
-    is.read(reinterpret_cast<char*>(&params.rational_bound), sizeof(params.rational_bound));
-    is.read(reinterpret_cast<char*>(&params.algebraic_bound), sizeof(params.algebraic_bound));
-    is.read(reinterpret_cast<char*>(&params.large_prime_bound), sizeof(params.large_prime_bound));
-    is.read(reinterpret_cast<char*>(&params.log_scale), sizeof(params.log_scale));
+    read_bytes(&params.rational_bound, sizeof(params.rational_bound), "rational_bound");
+    read_bytes(&params.algebraic_bound, sizeof(params.algebraic_bound), "algebraic_bound");
+    read_bytes(&params.large_prime_bound, sizeof(params.large_prime_bound), "large_prime_bound");
+    read_bytes(&params.log_scale, sizeof(params.log_scale), "log_scale");
 
     FactorBase fb(params);
 
     // Sieve algebraic count
-    uint64_t sac;
-    is.read(reinterpret_cast<char*>(&sac), sizeof(sac));
+    uint64_t sac = 0;
+    read_bytes(&sac, sizeof(sac), "sieve_algebraic_count");
+    if (sac > static_cast<uint64_t>((std::numeric_limits<size_t>::max)())) {
+        throw std::overflow_error("FactorBase::load: sieve_algebraic_count exceeds size_t");
+    }
     fb.sieve_algebraic_count_ = static_cast<size_t>(sac);
 
     // Rational primes
-    uint32_t rat_count;
-    is.read(reinterpret_cast<char*>(&rat_count), sizeof(rat_count));
-    fb.rational_.resize(rat_count);
+    uint32_t rat_count = 0;
+    read_bytes(&rat_count, sizeof(rat_count), "rational-prime count");
+    fb.rational_.clear();
     for (uint32_t i = 0; i < rat_count; ++i) {
-        is.read(reinterpret_cast<char*>(&fb.rational_[i].p), sizeof(uint32_t));
-        is.read(reinterpret_cast<char*>(&fb.rational_[i].log_p), sizeof(uint32_t));
+        RationalPrime rp{};
+        read_bytes(&rp.p, sizeof(rp.p), "rational-prime value");
+        read_bytes(&rp.log_p, sizeof(rp.log_p), "rational-prime log");
+        fb.rational_.push_back(rp);
     }
 
     // Algebraic primes
-    uint32_t alg_count;
-    is.read(reinterpret_cast<char*>(&alg_count), sizeof(alg_count));
-    fb.algebraic_.resize(alg_count);
+    uint32_t alg_count = 0;
+    read_bytes(&alg_count, sizeof(alg_count), "algebraic-prime count");
+    fb.algebraic_.clear();
     for (uint32_t i = 0; i < alg_count; ++i) {
-        is.read(reinterpret_cast<char*>(&fb.algebraic_[i].p), sizeof(uint32_t));
-        is.read(reinterpret_cast<char*>(&fb.algebraic_[i].r), sizeof(uint32_t));
-        is.read(reinterpret_cast<char*>(&fb.algebraic_[i].log_p), sizeof(uint32_t));
-        is.read(reinterpret_cast<char*>(&fb.algebraic_[i].degree), sizeof(uint8_t));
+        AlgebraicPrime ap{};
+        read_bytes(&ap.p, sizeof(ap.p), "algebraic-prime value");
+        read_bytes(&ap.r, sizeof(ap.r), "algebraic-prime root");
+        read_bytes(&ap.log_p, sizeof(ap.log_p), "algebraic-prime log");
+        read_bytes(&ap.degree, sizeof(ap.degree), "algebraic-prime degree");
+        fb.algebraic_.push_back(ap);
+    }
+
+    if (fb.sieve_algebraic_count_ > fb.algebraic_.size()) {
+        throw std::runtime_error("FactorBase::load: sieve_algebraic_count exceeds algebraic-prime count");
     }
 
     // Rebuild index tables
     fb.build_index();
-
-    if (!is)
-        throw std::runtime_error("FactorBase::load: unexpected end of stream");
 
     return fb;
 }
