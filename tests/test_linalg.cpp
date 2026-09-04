@@ -422,6 +422,35 @@ void test_default_schirokauer_primes() {
     std::cout << "  Default schirokauer_primes: PASSED" << std::endl;
 }
 
+// Regression: MatrixBuilder must not project an ell>2 Schirokauer map into
+// GF(2).  Such a map needs matrix arithmetic modulo ell and is invalid here.
+void test_matrix_builder_rejects_non_gf2_schirokauer_prime() {
+    std::cout << "Testing MatrixBuilder rejects non-GF(2) Schirokauer primes..." << std::endl;
+
+    using core::Integer;
+    using core::PolynomialContext;
+
+    std::vector<Integer> coeffs = {Integer(-2), Integer(0), Integer(1)};
+    PolynomialContext ctx(Integer(15), std::move(coeffs), Integer(4), 1.0);
+
+    MatrixBuilderConfig config;
+    config.include_qc_columns = false;
+    config.schirokauer_primes = {3};
+    MatrixBuilder builder(config);
+    factor_base::FactorBase fb;
+    const std::vector<core::Relation> empty_relations;
+
+    require_throws<std::invalid_argument>([&] { (void)builder.build_with_qc({}, fb, ctx); },
+                                          "MatrixBuilder must reject Schirokauer ell>2");
+    require_throws<std::invalid_argument>(
+        [&] {
+            (void)builder.build_with_qc_streaming(VectorRelationSource(empty_relations), fb, ctx);
+        },
+        "Streaming MatrixBuilder must reject Schirokauer ell>2");
+
+    std::cout << "  Non-GF(2) Schirokauer prime rejected: PASSED" << std::endl;
+}
+
 // Test matrix stats
 // Thin matrix test (m < n) — BACKLOG #80 step 7 — confirm BW/BL can find
 // left-kernel of M when rows < cols. Synthetic: 3 rows × 4 cols, all rows
@@ -1244,6 +1273,7 @@ int main() {
     test_gaussian_larger();
     test_matrix_builder();
     test_default_schirokauer_primes();
+    test_matrix_builder_rejects_non_gf2_schirokauer_prime();
     test_find_dependencies();
     test_thin_matrix_dependencies();
     test_verify_dependency();

@@ -130,12 +130,12 @@ struct MatrixBuildResult {
 
 /// 矩阵构建配置
 struct MatrixBuilderConfig {
-    bool include_sign_column = true; // 是否包含符号列
-    bool include_qc_columns = true;  // 是否包含二次特征列
+    bool include_sign_column = true;  // 是否包含符号列
+    bool include_qc_columns = true;   // 是否包含二次特征列
     bool include_class_group = false; // 类群特征列（默认禁用：大多数 N class number=1，无需额外列）
-    bool include_schirokauer = true;                // 是否包含 Schirokauer map 列
-    size_t num_qc_primes = 10;                      // 二次特征素数数量
-    uint32_t qc_prime_start = 1000;                 // 二次特征素数搜索起点
+    bool include_schirokauer = true;  // 是否包含 Schirokauer map 列
+    size_t num_qc_primes = 10;        // 二次特征素数数量
+    uint32_t qc_prime_start = 1000;   // 二次特征素数搜索起点
     std::vector<uint32_t> schirokauer_primes = {2}; // GF(2) 矩阵只能用 ℓ=2
     bool verbose = false;                           // 详细输出
 };
@@ -248,6 +248,7 @@ public:
         // AUTO-SELECT: find primes where f is irreducible (inert)
         std::unique_ptr<SchirokaurMap> schirokauer;
         if (can_use_schirokauer) {
+            validate_gf2_schirokauer_primes(config_.schirokauer_primes);
             std::vector<uint32_t> sm_primes;
             if (!config_.schirokauer_primes.empty()) {
                 // Validate user-specified primes: only keep inert ones
@@ -444,6 +445,7 @@ public:
         // 第四步：Schirokauer
         std::unique_ptr<SchirokaurMap> schirokauer;
         if (can_use_schirokauer) {
+            validate_gf2_schirokauer_primes(config_.schirokauer_primes);
             std::vector<uint32_t> sm_primes;
             if (!config_.schirokauer_primes.empty()) {
                 uint32_t d = ctx.degree();
@@ -550,6 +552,19 @@ public:
     }
 
 private:
+    /// SparseMatrix stores entries over GF(2), so Schirokauer maps for
+    /// ell > 2 cannot be represented by the row builder's `% 2` projection.
+    /// Reject them explicitly instead of silently constructing an invalid
+    /// constraint system.
+    static void validate_gf2_schirokauer_primes(const std::vector<uint32_t>& primes) {
+        for (uint32_t ell : primes) {
+            if (ell != 2) {
+                throw std::invalid_argument(
+                    "MatrixBuilder: GF(2) matrices support only Schirokauer prime ell=2");
+            }
+        }
+    }
+
     Config config_;
 
     /// 大素数收集结果
