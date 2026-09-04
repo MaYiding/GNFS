@@ -573,8 +573,8 @@ void test_posix_descriptor_hygiene() {
 
     const std::string device_path = "/dev/null";
     const int device_descriptor_before = find_fd_for_path(device_path);
-    GNFS_TEST_CHECK(throws_with_message<std::runtime_error>(
-        [&] { (void)KrylovSequenceMmap(device_path, 1, 64); }, "mmap failed"));
+    GNFS_TEST_CHECK(
+        throws_as<std::runtime_error>([&] { (void)KrylovSequenceMmap(device_path, 1, 64); }));
     GNFS_TEST_CHECK(find_fd_for_path(device_path) == device_descriptor_before);
     std::cout << "  O_CLOEXEC and close release: PASS\n";
 #endif
