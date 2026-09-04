@@ -12,8 +12,10 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <charconv>
 #include <chrono>
+#include <climits>
 #include <csignal>
 #include <cstddef>
 #include <cstdint>
@@ -36,14 +38,18 @@
 #if defined(_WIN32)
 #define NOMINMAX
 #include <windows.h>
-#elif defined(__linux__)
+#else
 #include <cerrno>
 #include <fcntl.h>
 #include <poll.h>
+#include <pthread.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
+#include <unistd.h>
+#if defined(__linux__)
 #include <sys/syscall.h>
 #include <sys/wait.h>
-#include <unistd.h>
+#endif
 #endif
 
 namespace {
@@ -189,7 +195,314 @@ void check_success(const BoundedChildProcessResult& result) {
     CHECK_CONTEXT(!result.cleanup_error, context);
 }
 
+#if !defined(_WIN32)
+
+std::atomic<unsigned int> posix_atfork_prepare_calls{0};
+
+void record_posix_atfork_prepare() noexcept {
+    posix_atfork_prepare_calls.fetch_add(1, std::memory_order_relaxed);
+}
+
+[[nodiscard]] int descriptor_flags_no_intr(int descriptor) noexcept {
+    int flags = -1;
+    do {
+        flags = ::fcntl(descriptor, F_GETFD);
+    } while (flags < 0 && errno == EINTR);
+    return flags;
+}
+
+[[nodiscard]] bool set_descriptor_cloexec(int descriptor, bool enabled) noexcept {
+    const int flags = descriptor_flags_no_intr(descriptor);
+    if (flags < 0) {
+        return false;
+    }
+    const int desired = enabled ? flags | FD_CLOEXEC : flags & ~FD_CLOEXEC;
+    int status = -1;
+    do {
+        status = ::fcntl(descriptor, F_SETFD, desired);
+    } while (status < 0 && errno == EINTR);
+    return status == 0;
+}
+
+[[nodiscard]] int duplicate_descriptor(int source, int command, int minimum) noexcept {
+    int duplicate = -1;
+    do {
+        duplicate = ::fcntl(source, command, minimum);
+    } while (duplicate < 0 && errno == EINTR);
+    return duplicate;
+}
+
+[[nodiscard]] bool stat_path_no_intr(const std::filesystem::path& path,
+                                     struct stat& metadata) noexcept {
+    int status = -1;
+    do {
+        status = ::stat(path.c_str(), &metadata);
+    } while (status < 0 && errno == EINTR);
+    return status == 0;
+}
+
+[[nodiscard]] bool fstat_no_intr(int descriptor, struct stat& metadata) noexcept {
+    int status = -1;
+    do {
+        status = ::fstat(descriptor, &metadata);
+    } while (status < 0 && errno == EINTR);
+    return status == 0;
+}
+
+[[nodiscard]] bool same_regular_file(const struct stat& left, const struct stat& right) noexcept {
+    return S_ISREG(left.st_mode) && S_ISREG(right.st_mode) && left.st_dev == right.st_dev &&
+           left.st_ino == right.st_ino;
+}
+
+struct PosixFdSentinel final {
+    std::filesystem::path path;
+    int descriptor = -1;
+    bool cloexec = false;
+    bool high = false;
+};
+
+class PosixFdSentinelSet final {
+public:
+    PosixFdSentinelSet() {
+        try {
+            int control_descriptor = -1;
+            create_file(control_path_, control_descriptor, "control");
+            (void)::close(control_descriptor);
+
+            create_low_sentinel(sentinels_[0], "low-plain", false);
+            create_low_sentinel(sentinels_[1], "low-cloexec", true);
+            high_floor_ = choose_high_floor();
+            create_high_sentinel(sentinels_[2], "high-plain", false);
+            create_high_sentinel(sentinels_[3], "high-cloexec", true);
+        } catch (...) {
+            cleanup();
+            throw;
+        }
+    }
+
+    ~PosixFdSentinelSet() {
+        cleanup();
+    }
+
+    PosixFdSentinelSet(const PosixFdSentinelSet&) = delete;
+    PosixFdSentinelSet& operator=(const PosixFdSentinelSet&) = delete;
+
+    [[nodiscard]] const std::array<PosixFdSentinel, 4>& sentinels() const noexcept {
+        return sentinels_;
+    }
+
+    [[nodiscard]] int high_floor() const noexcept {
+        return high_floor_;
+    }
+
+    [[nodiscard]] std::vector<std::string> probe_arguments() const {
+        std::vector<std::string> arguments{"--probe-fd-sentinels", control_path_.string()};
+        arguments.reserve(2 + sentinels_.size() * 2);
+        for (const auto& sentinel : sentinels_) {
+            arguments.push_back(std::to_string(sentinel.descriptor));
+            arguments.push_back(sentinel.path.string());
+        }
+        return arguments;
+    }
+
+private:
+    static void create_file(std::filesystem::path& path, int& descriptor, std::string_view label) {
+        const std::string leaf = "gnfs-bcp-fd-" + std::string(label) + "-XXXXXX";
+        const std::string pattern = (std::filesystem::temp_directory_path() / leaf).string();
+        std::vector<char> mutable_pattern(pattern.begin(), pattern.end());
+        mutable_pattern.push_back('\0');
+        const int created = ::mkstemp(mutable_pattern.data());
+        if (created < 0) {
+            throw std::runtime_error("unable to create descriptor sentinel fixture");
+        }
+        try {
+            path = std::filesystem::path(mutable_pattern.data());
+            descriptor = created;
+        } catch (...) {
+            (void)::close(created);
+            (void)::unlink(mutable_pattern.data());
+            throw;
+        }
+    }
+
+    static void move_above_standard_streams(PosixFdSentinel& sentinel) {
+        if (sentinel.descriptor >= 3) {
+            return;
+        }
+        const int command = sentinel.cloexec ? F_DUPFD_CLOEXEC : F_DUPFD;
+        const int duplicate = duplicate_descriptor(sentinel.descriptor, command, 3);
+        if (duplicate < 0) {
+            throw std::runtime_error("unable to move descriptor sentinel above standard streams");
+        }
+        (void)::close(sentinel.descriptor);
+        sentinel.descriptor = duplicate;
+    }
+
+    void create_low_sentinel(PosixFdSentinel& sentinel, std::string_view label, bool cloexec) {
+        sentinel.cloexec = cloexec;
+        create_file(sentinel.path, sentinel.descriptor, label);
+        move_above_standard_streams(sentinel);
+        if (!set_descriptor_cloexec(sentinel.descriptor, cloexec)) {
+            throw std::runtime_error("unable to configure descriptor sentinel flags");
+        }
+    }
+
+    [[nodiscard]] int choose_high_floor() const {
+        struct rlimit limit{};
+        if (::getrlimit(RLIMIT_NOFILE, &limit) != 0) {
+            throw std::runtime_error("unable to query descriptor limit");
+        }
+        constexpr std::uintmax_t preferred_floor = UINTMAX_C(4096);
+        constexpr std::uintmax_t infinite_capacity = preferred_floor * UINTMAX_C(2);
+        const std::uintmax_t capacity =
+            limit.rlim_cur == RLIM_INFINITY
+                ? infinite_capacity
+                : std::min<std::uintmax_t>(static_cast<std::uintmax_t>(limit.rlim_cur),
+                                           static_cast<std::uintmax_t>(INT_MAX));
+        const int low_maximum = std::max(sentinels_[0].descriptor, sentinels_[1].descriptor);
+        if (capacity < static_cast<std::uintmax_t>(low_maximum) + UINTMAX_C(4)) {
+            throw std::runtime_error("descriptor limit is too low for high sentinel coverage");
+        }
+        const std::uintmax_t preferred = std::min(preferred_floor, capacity / UINTMAX_C(2));
+        std::uintmax_t floor =
+            std::max(preferred, static_cast<std::uintmax_t>(low_maximum) + UINTMAX_C(16));
+        if (floor + UINTMAX_C(2) > capacity) {
+            floor = static_cast<std::uintmax_t>(low_maximum) + UINTMAX_C(2);
+        }
+        if (floor + UINTMAX_C(2) > capacity) {
+            throw std::runtime_error("descriptor limit cannot hold two high sentinels");
+        }
+        return static_cast<int>(floor);
+    }
+
+    void create_high_sentinel(PosixFdSentinel& sentinel, std::string_view label, bool cloexec) {
+        sentinel.cloexec = cloexec;
+        sentinel.high = true;
+        create_file(sentinel.path, sentinel.descriptor, label);
+        const int source = sentinel.descriptor;
+        const int command = cloexec ? F_DUPFD_CLOEXEC : F_DUPFD;
+        const int duplicate = duplicate_descriptor(source, command, high_floor_);
+        if (duplicate < 0) {
+            throw std::runtime_error("unable to create high descriptor sentinel");
+        }
+        sentinel.descriptor = duplicate;
+        (void)::close(source);
+        if (!set_descriptor_cloexec(sentinel.descriptor, cloexec)) {
+            throw std::runtime_error("unable to configure high descriptor sentinel flags");
+        }
+    }
+
+    void cleanup() noexcept {
+        for (auto& sentinel : sentinels_) {
+            if (sentinel.descriptor >= 0) {
+                (void)::close(sentinel.descriptor);
+                sentinel.descriptor = -1;
+            }
+            if (!sentinel.path.empty()) {
+                std::error_code ignored;
+                (void)std::filesystem::remove(sentinel.path, ignored);
+            }
+        }
+        if (!control_path_.empty()) {
+            std::error_code ignored;
+            (void)std::filesystem::remove(control_path_, ignored);
+        }
+    }
+
+    std::filesystem::path control_path_;
+    std::array<PosixFdSentinel, 4> sentinels_{};
+    int high_floor_ = -1;
+};
+
+void check_posix_fd_sentinels_intact(const PosixFdSentinelSet& fixture) {
+    for (const auto& sentinel : fixture.sentinels()) {
+        const std::string context =
+            sentinel.path.string() + " fd=" + std::to_string(sentinel.descriptor);
+        const int flags = descriptor_flags_no_intr(sentinel.descriptor);
+        CHECK_CONTEXT(sentinel.descriptor >= 3, context);
+        CHECK_CONTEXT(flags >= 0, context);
+        if (flags >= 0) {
+            CHECK_CONTEXT(((flags & FD_CLOEXEC) != 0) == sentinel.cloexec, context);
+        }
+        if (sentinel.high) {
+            CHECK_CONTEXT(sentinel.descriptor >= fixture.high_floor(), context);
+        } else {
+            CHECK_CONTEXT(sentinel.descriptor < fixture.high_floor(), context);
+        }
+        struct stat expected{};
+        struct stat observed{};
+        const bool expected_ok = stat_path_no_intr(sentinel.path, expected);
+        const bool observed_ok = fstat_no_intr(sentinel.descriptor, observed);
+        CHECK_CONTEXT(expected_ok, context);
+        CHECK_CONTEXT(observed_ok, context);
+        if (expected_ok && observed_ok) {
+            CHECK_CONTEXT(same_regular_file(expected, observed), context);
+        }
+    }
+}
+
+void check_posix_fd_probe_success(const BoundedChildProcessResult& result) {
+    const std::string context = describe(result);
+    check_success(result);
+    CHECK_CONTEXT(result.stdout_bytes == "sentinels-absent=4\n",
+                  context + " " + result.stdout_bytes);
+    CHECK_CONTEXT(result.stderr_bytes.empty(), context + " " + result.stderr_bytes);
+}
+
+void test_posix_inherited_descriptor_hygiene(const std::filesystem::path& executable) {
+    const int atfork_status = ::pthread_atfork(record_posix_atfork_prepare, nullptr, nullptr);
+    CHECK_CONTEXT(atfork_status == 0, std::to_string(atfork_status));
+    const unsigned int atfork_calls_before =
+        posix_atfork_prepare_calls.load(std::memory_order_relaxed);
+
+    PosixFdSentinelSet fixture;
+    check_posix_fd_sentinels_intact(fixture);
+    const auto result =
+        run_bounded_child_process(make_spec(executable, fixture.probe_arguments(), 64, 512, 2s));
+    check_posix_fd_probe_success(result);
+    check_posix_fd_sentinels_intact(fixture);
+    if (atfork_status == 0) {
+        CHECK(posix_atfork_prepare_calls.load(std::memory_order_relaxed) == atfork_calls_before);
+    }
+}
+
+#endif
+
 #if defined(__linux__)
+
+void test_linux_path_fd_closure_fallbacks(const std::filesystem::path& executable) {
+    using gnfs::util::detail::trusted_test::LinuxPathFdClosureTestMode;
+    using gnfs::util::detail::trusted_test::run_bounded_child_process_with_fd_closure_test_mode;
+
+    PosixFdSentinelSet fixture;
+    check_posix_fd_sentinels_intact(fixture);
+
+    const unsigned int proc_scan_atfork_calls_before =
+        posix_atfork_prepare_calls.load(std::memory_order_relaxed);
+    const auto proc_scan_result = run_bounded_child_process_with_fd_closure_test_mode(
+        make_spec(executable, fixture.probe_arguments(), 64, 512, 2s),
+        LinuxPathFdClosureTestMode::force_proc_scan);
+    check_posix_fd_probe_success(proc_scan_result);
+    check_posix_fd_sentinels_intact(fixture);
+    CHECK(posix_atfork_prepare_calls.load(std::memory_order_relaxed) ==
+          proc_scan_atfork_calls_before);
+
+    const unsigned int unavailable_atfork_calls_before =
+        posix_atfork_prepare_calls.load(std::memory_order_relaxed);
+    const auto unavailable_result = run_bounded_child_process_with_fd_closure_test_mode(
+        make_spec(executable, fixture.probe_arguments(), 64, 512, 2s),
+        LinuxPathFdClosureTestMode::force_unavailable);
+    const std::string unavailable_context = describe(unavailable_result);
+    CHECK_CONTEXT(unavailable_result.error == BoundedChildProcessError::spawn_failed,
+                  unavailable_context);
+    CHECK_CONTEXT(!unavailable_result.child_started, unavailable_context);
+    CHECK_CONTEXT(unavailable_result.cleanup_complete, unavailable_context);
+    CHECK_CONTEXT(unavailable_result.native_error.value() == ENOTSUP, unavailable_context);
+    check_posix_fd_sentinels_intact(fixture);
+    CHECK(posix_atfork_prepare_calls.load(std::memory_order_relaxed) ==
+          unavailable_atfork_calls_before);
+}
+
 [[nodiscard]] std::optional<Sha256Digest> sha256_file(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
     if (!input) {
@@ -803,26 +1116,18 @@ void test_authenticated_linux_same_object_and_supervision(const std::filesystem:
         CHECK_CONTEXT(overflow.cleanup_complete, describe(overflow));
     }
 
-    int sentinel = ::open("/dev/null", O_RDONLY);
-    CHECK(sentinel >= 0);
-    if (sentinel >= 0) {
-        if (sentinel < 3) {
-            const int duplicate = ::fcntl(sentinel, F_DUPFD, 3);
-            (void)::close(sentinel);
-            sentinel = duplicate;
-        }
-        auto fd_image = authenticate_executable_image(held_original, *digest, current_owner());
-        CHECK(static_cast<bool>(fd_image));
-        if (fd_image) {
-            const auto fd_result = run_authenticated_bounded_child_process(
-                std::move(*fd_image.image),
-                make_spec(held_original, {"--check-fd-closed", std::to_string(sentinel)}, 32, 0),
-                "authenticated-test-probe");
-            check_success(fd_result);
-            CHECK(fd_result.stdout_bytes == "closed\n");
-        }
-        (void)::close(sentinel);
+    PosixFdSentinelSet fd_sentinels;
+    check_posix_fd_sentinels_intact(fd_sentinels);
+    auto fd_image = authenticate_executable_image(held_original, *digest, current_owner());
+    CHECK(static_cast<bool>(fd_image));
+    if (fd_image) {
+        const auto fd_result = run_authenticated_bounded_child_process(
+            std::move(*fd_image.image),
+            make_spec(held_original, fd_sentinels.probe_arguments(), 64, 512, 2s),
+            "authenticated-test-probe");
+        check_posix_fd_probe_success(fd_result);
     }
+    check_posix_fd_sentinels_intact(fd_sentinels);
 
     constexpr std::size_t parallel_count = 4;
     std::array<BoundedChildProcessResult, parallel_count> results;
@@ -1573,6 +1878,10 @@ template <class Char> int bounded_child_process_test_main(int argc, Char* argv[]
 #endif
 #if !defined(_WIN32)
         test_posix_termination_scope_guard();
+        test_posix_inherited_descriptor_hygiene(executable);
+#if defined(__linux__)
+        test_linux_path_fd_closure_fallbacks(executable);
+#endif
 #endif
         test_invalid_specs(executable);
         test_dual_stream_deadlock_boundaries(executable);

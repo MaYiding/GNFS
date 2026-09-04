@@ -3343,13 +3343,14 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
     cmake_toolchain_argument = (
         "-DCMAKE_TOOLCHAIN_FILE=scripts/linux-release-gcc12-toolchain.cmake"
     )
-    for workflow_name, workflow_text in (
-        ("release", release_text),
-        ("release readiness", readiness_text),
+    for workflow_name, workflow_text, expected_count in (
+        ("release", release_text, 1),
+        ("release readiness", readiness_text, 2),
     ):
-        if workflow_text.count(cmake_toolchain_argument) != 1:
+        if workflow_text.count(cmake_toolchain_argument) != expected_count:
             raise ReleaseContractError(
-                f"{workflow_name} workflow must use the Linux CMake toolchain once"
+                f"{workflow_name} workflow must use the Linux CMake toolchain "
+                f"exactly {expected_count} time(s)"
             )
     release_linux_build = _workflow_job_block(release_text, "package-linux")
     required_release_linux_build = (
@@ -3378,6 +3379,27 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
     if readiness_linux_build.count(required_readiness_linux_build) != 1:
         raise ReleaseContractError(
             "release readiness Linux job lost its exact Release/LTO build closure"
+        )
+    required_readiness_bcp_build = (
+        "      - name: Verify glibc 2.31 bounded-child transport\n"
+        "        run: |\n"
+        "          cmake -B build-bcp -G Ninja \\\n"
+        "            -DCMAKE_BUILD_TYPE=Release \\\n"
+        "            -DCMAKE_TOOLCHAIN_FILE=scripts/linux-release-gcc12-toolchain.cmake \\\n"
+        "            -DGNFS_BUILD_TESTS=ON \\\n"
+        "            -DGNFS_BUILD_FUZZERS=OFF \\\n"
+        "            -DGNFS_ENABLE_NATIVE_ARCH=OFF\n"
+        "          cmake --build build-bcp --parallel \\\n"
+        "            --target test_bounded_child_process\n"
+        "          ctest --test-dir build-bcp \\\n"
+        "            --output-on-failure \\\n"
+        "            --no-tests=error \\\n"
+        "            -R '^BoundedChildProcess$'\n"
+    )
+    if readiness_linux_build.count(required_readiness_bcp_build) != 1:
+        raise ReleaseContractError(
+            "release readiness Linux job lost its isolated glibc 2.31 "
+            "bounded-child contract"
         )
     cmake_requirements = (
         repository_root / "scripts" / "release-cmake-requirements.txt"
@@ -3556,6 +3578,11 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
         "-DCMAKE_TOOLCHAIN_FILE=scripts/linux-release-gcc12-toolchain.cmake",
         "cmake --build build-release-readiness --parallel",
         "build-release-readiness/gnfs --version",
+        "name: Verify glibc 2.31 bounded-child transport",
+        "cmake -B build-bcp -G Ninja",
+        "--target test_bounded_child_process",
+        "ctest --test-dir build-bcp",
+        "-R '^BoundedChildProcess$'",
         "name: Windows pinned runtime and source closure",
         "runs-on: windows-2022",
         "scripts/windows_release_runtime.py install-pinned",

@@ -40,6 +40,16 @@
 #include <sys/syscall.h>
 #endif
 
+#if defined(__linux__) && defined(__GLIBC__) && defined(__GLIBC_PREREQ)
+#if __GLIBC_PREREQ(2, 34)
+#define GNFS_POSIX_SPAWN_HAS_CLOSEFROM 1
+#else
+#define GNFS_POSIX_SPAWN_HAS_CLOSEFROM 0
+#endif
+#else
+#define GNFS_POSIX_SPAWN_HAS_CLOSEFROM 0
+#endif
+
 extern char** environ;
 
 namespace gnfs::util {
@@ -52,6 +62,12 @@ constexpr auto POLL_QUANTUM = 20ms;
 constexpr auto POST_EXIT_WRITER_GRACE = 200ms;
 constexpr auto TERMINATION_CLEANUP_GRACE = 2s;
 constexpr std::size_t STREAM_DRAIN_BUDGET = 64 * 1024;
+
+enum class PathFdClosureMode : std::uint8_t {
+    automatic,
+    proc_only,
+    unavailable,
+};
 
 struct ProcessGroupAbsenceResult final {
     bool absent = false;
@@ -353,12 +369,10 @@ void set_cleanup_error(BoundedChildProcessResult& result, int native_error) noex
             status = ::posix_spawn_file_actions_addclose(actions.get(), fd);
         }
     }
-#if defined(__GLIBC__) && defined(__GLIBC_PREREQ)
-#if __GLIBC_PREREQ(2, 34)
+#if GNFS_POSIX_SPAWN_HAS_CLOSEFROM
     if (status == 0) {
         status = ::posix_spawn_file_actions_addclosefrom_np(actions.get(), 3);
     }
-#endif
 #endif
     return status;
 }
@@ -405,8 +419,6 @@ struct DescriptorSpawnResult final {
     int cleanup_error = 0;
 };
 
-#if GNFS_AUTHENTICATED_BOUNDED_CHILD_COMPILE_CAPABLE
-
 enum class DescriptorPreExecStage : std::uint32_t {
     set_process_group = 1,
     reset_signals = 2,
@@ -416,6 +428,7 @@ enum class DescriptorPreExecStage : std::uint32_t {
     execveat = 6,
     arm_parent_death_signal = 7,
     verify_parent_liveness = 8,
+    execve = 9,
 };
 
 struct DescriptorPreExecFailure final {
@@ -456,6 +469,160 @@ static_assert(sizeof(DescriptorPreExecFailure) <= PIPE_BUF);
     errno = ENOSYS;
     return false;
 #endif
+}
+
+struct LinuxDirectoryEntry64 final {
+    std::uint64_t inode;
+    std::int64_t offset;
+    unsigned short record_length;
+    unsigned char type;
+    char name[1];
+};
+
+static_assert(offsetof(LinuxDirectoryEntry64, record_length) == 16);
+static_assert(offsetof(LinuxDirectoryEntry64, name) == 19);
+
+enum class ProcDescriptorNameKind : std::uint8_t {
+    dot,
+    descriptor,
+    malformed,
+};
+
+[[nodiscard]] ProcDescriptorNameKind
+parse_proc_descriptor_name(const char* name, std::size_t capacity, int& descriptor) noexcept {
+    std::size_t length = 0;
+    while (length < capacity && name[length] != '\0') {
+        ++length;
+    }
+    if (length == capacity || length == 0) {
+        return ProcDescriptorNameKind::malformed;
+    }
+    if ((length == 1 && name[0] == '.') || (length == 2 && name[0] == '.' && name[1] == '.')) {
+        return ProcDescriptorNameKind::dot;
+    }
+
+    int value = 0;
+    for (std::size_t index = 0; index < length; ++index) {
+        const unsigned char byte = static_cast<unsigned char>(name[index]);
+        if (byte < static_cast<unsigned char>('0') || byte > static_cast<unsigned char>('9')) {
+            return ProcDescriptorNameKind::malformed;
+        }
+        const int digit = static_cast<int>(byte - static_cast<unsigned char>('0'));
+        if (value > (std::numeric_limits<int>::max() - digit) / 10) {
+            return ProcDescriptorNameKind::malformed;
+        }
+        value = value * 10 + digit;
+    }
+    descriptor = value;
+    return ProcDescriptorNameKind::descriptor;
+}
+
+[[nodiscard]] int mark_proc_nonstandard_fds_cloexec() noexcept {
+#if defined(SYS_openat) && defined(SYS_getdents64)
+    const int directory = static_cast<int>(
+        ::syscall(SYS_openat, AT_FDCWD, "/proc/self/fd", O_RDONLY | O_DIRECTORY | O_CLOEXEC, 0));
+    if (directory < 0) {
+        return errno;
+    }
+
+    constexpr std::size_t name_offset = offsetof(LinuxDirectoryEntry64, name);
+    alignas(LinuxDirectoryEntry64) std::array<std::byte, 4096> entries{};
+    int retained_error = 0;
+    while (retained_error == 0) {
+        long count = -1;
+        do {
+            count = ::syscall(SYS_getdents64, directory, entries.data(), entries.size());
+        } while (count < 0 && errno == EINTR);
+        if (count < 0) {
+            retained_error = errno;
+            break;
+        }
+        if (count == 0) {
+            break;
+        }
+
+        std::size_t position = 0;
+        const std::size_t received = static_cast<std::size_t>(count);
+        while (position < received) {
+            if (received - position < name_offset + 1) {
+                retained_error = EIO;
+                break;
+            }
+            unsigned short native_record_length = 0;
+            std::memcpy(&native_record_length,
+                        entries.data() + position + offsetof(LinuxDirectoryEntry64, record_length),
+                        sizeof(native_record_length));
+            const std::size_t record_length = native_record_length;
+            if (record_length < name_offset + 1 || record_length > received - position) {
+                retained_error = EIO;
+                break;
+            }
+
+            int descriptor = -1;
+            const auto* name =
+                reinterpret_cast<const char*>(entries.data() + position + name_offset);
+            const auto name_kind =
+                parse_proc_descriptor_name(name, record_length - name_offset, descriptor);
+            if (name_kind == ProcDescriptorNameKind::malformed) {
+                retained_error = EIO;
+                break;
+            }
+            if (name_kind == ProcDescriptorNameKind::descriptor && descriptor >= 3) {
+                int flags = -1;
+                do {
+                    flags = ::fcntl(descriptor, F_GETFD);
+                } while (flags < 0 && errno == EINTR);
+                if (flags < 0) {
+                    retained_error = errno;
+                    break;
+                }
+                if ((flags & FD_CLOEXEC) == 0) {
+                    int status = -1;
+                    do {
+                        status = ::fcntl(descriptor, F_SETFD, flags | FD_CLOEXEC);
+                    } while (status < 0 && errno == EINTR);
+                    if (status < 0) {
+                        retained_error = errno;
+                        break;
+                    }
+                }
+            }
+            position += record_length;
+        }
+    }
+
+    // The directory was opened with O_CLOEXEC, so a rare close failure cannot
+    // leak it through a successful exec. Do not retry close after EINTR.
+    (void)::close(directory);
+    return retained_error;
+#else
+    return ENOSYS;
+#endif
+}
+
+[[nodiscard]] bool
+mark_all_nonstandard_fds_cloexec_with_proc_fallback(PathFdClosureMode mode) noexcept {
+    switch (mode) {
+    case PathFdClosureMode::automatic:
+        if (mark_all_nonstandard_fds_cloexec()) {
+            return true;
+        }
+        break;
+    case PathFdClosureMode::proc_only:
+        break;
+    case PathFdClosureMode::unavailable:
+        errno = ENOTSUP;
+        return false;
+    default:
+        errno = ENOTSUP;
+        return false;
+    }
+    const int proc_error = mark_proc_nonstandard_fds_cloexec();
+    if (proc_error == 0) {
+        return true;
+    }
+    errno = proc_error;
+    return false;
 }
 
 [[nodiscard]] int reset_descriptor_child_signals() noexcept {
@@ -546,7 +713,250 @@ descriptor_stage_is_parent_death_setup(DescriptorPreExecStage stage) noexcept {
            stage == DescriptorPreExecStage::verify_parent_liveness;
 }
 
+[[nodiscard]] DescriptorSpawnResult
+complete_descriptor_spawn_handshake(pid_t child, UniqueFd diagnostic_read,
+                                    const BoundedChildProcessSpec& spec) noexcept {
+    DescriptorPreExecFailure child_failure{};
+    auto* bytes = reinterpret_cast<std::byte*>(&child_failure);
+    std::size_t received = 0;
+    bool handshake_timed_out = false;
+    bool handshake_cancelled = false;
+    bool diagnostic_eof = false;
+    const auto consume_diagnostic_event = [&](const pollfd& descriptor, int poll_status) noexcept {
+        if (poll_status < 0 || (descriptor.revents & (POLLERR | POLLNVAL)) != 0) {
+            child_failure.native_error = poll_status < 0 ? errno : EIO;
+            received = sizeof(child_failure);
+            return;
+        }
+        if ((descriptor.revents & (POLLIN | POLLHUP)) == 0) {
+            return;
+        }
+        const ssize_t count =
+            ::read(diagnostic_read.get(), bytes + received, sizeof(child_failure) - received);
+        if (count < 0 && errno == EINTR) {
+            return;
+        }
+        if (count == 0) {
+            diagnostic_eof = true;
+        } else if (count < 0) {
+            child_failure.native_error = errno;
+            received = sizeof(child_failure);
+        } else {
+            received += static_cast<std::size_t>(count);
+        }
+    };
+    while (received < sizeof(child_failure) && !diagnostic_eof) {
+        // A closed diagnostic descriptor authenticates exec success, and a
+        // complete failure record authenticates pre-exec failure. Consume
+        // either already-published outcome before a concurrent cancel/deadline.
+        pollfd descriptor{diagnostic_read.get(), POLLIN | POLLHUP, 0};
+        int poll_status = ::poll(&descriptor, 1, 0);
+        if (poll_status < 0 && errno == EINTR) {
+            poll_status = 0;
+        }
+        if (poll_status != 0) {
+            consume_diagnostic_event(descriptor, poll_status);
+            continue;
+        }
+        if (cancellation_requested(spec)) {
+            descriptor.revents = 0;
+            poll_status = ::poll(&descriptor, 1, 0);
+            if (poll_status < 0 && errno == EINTR) {
+                continue;
+            }
+            if (poll_status != 0) {
+                consume_diagnostic_event(descriptor, poll_status);
+                continue;
+            }
+            handshake_cancelled = true;
+            break;
+        }
+        const auto now = Clock::now();
+        if (now >= spec.deadline) {
+            descriptor.revents = 0;
+            poll_status = ::poll(&descriptor, 1, 0);
+            if (poll_status < 0 && errno == EINTR) {
+                continue;
+            }
+            if (poll_status != 0) {
+                consume_diagnostic_event(descriptor, poll_status);
+                continue;
+            }
+            handshake_timed_out = true;
+            break;
+        }
+        const auto remaining =
+            std::chrono::duration_cast<std::chrono::milliseconds>(spec.deadline - now);
+        const auto bounded_remaining =
+            std::max<std::chrono::milliseconds>(1ms, std::min(remaining, POLL_QUANTUM));
+        descriptor.revents = 0;
+        poll_status = ::poll(&descriptor, 1, static_cast<int>(bounded_remaining.count()));
+        if (poll_status < 0 && errno == EINTR) {
+            continue;
+        }
+        if (poll_status == 0) {
+            continue;
+        }
+        consume_diagnostic_event(descriptor, poll_status);
+    }
+    diagnostic_read.reset();
+    if (handshake_cancelled) {
+        child_failure.native_error = ECANCELED;
+    } else if (handshake_timed_out) {
+        child_failure.native_error = ETIMEDOUT;
+    } else if (received == 0) {
+        return {child, 0, BoundedChildProcessError::none};
+    }
+    if ((!handshake_timed_out && !handshake_cancelled && received != sizeof(child_failure)) ||
+        child_failure.native_error == 0) {
+        child_failure.native_error = EIO;
+    }
+
+    const auto cleanup = kill_and_reap_descriptor_child(child);
+    const auto error =
+        handshake_cancelled   ? BoundedChildProcessError::cancelled
+        : handshake_timed_out ? BoundedChildProcessError::timeout
+        : child_failure.stage == DescriptorPreExecStage::execveat &&
+                descriptor_exec_is_platform_unavailable(child_failure.native_error)
+            ? BoundedChildProcessError::platform_unavailable
+        : descriptor_stage_is_parent_death_setup(child_failure.stage) &&
+                descriptor_parent_death_is_platform_unavailable(child_failure.native_error)
+            ? BoundedChildProcessError::platform_unavailable
+            : BoundedChildProcessError::spawn_failed;
+    return {-1, child_failure.native_error, error, cleanup.complete, cleanup.native_error};
+}
+
+[[nodiscard]] pid_t create_child_without_atfork() noexcept {
+#if defined(SYS_fork)
+    return static_cast<pid_t>(::syscall(SYS_fork));
+#elif defined(SYS_clone) &&                                                                        \
+    (defined(__aarch64__) || defined(__alpha__) || defined(__arc__) || defined(__arm__) ||         \
+     defined(__csky__) || defined(__hexagon__) || defined(__hppa__) || defined(__i386__) ||        \
+     defined(__loongarch__) || defined(__mips__) || defined(__nios2__) || defined(__or1k__) ||     \
+     defined(__powerpc__) || defined(__riscv) || defined(__sh__) || defined(__tile__) ||           \
+     defined(__x86_64__) || defined(__xtensa__))
+    // These ABIs all place clone flags and child stack first. Their final
+    // parent-TID, child-TID, and TLS arguments differ in order, but zero is
+    // valid for every one of them. With no CLONE_VM and a null child stack,
+    // the raw call has fork-like copy-on-write semantics without libc
+    // pthread_atfork callbacks.
+    return static_cast<pid_t>(
+        ::syscall(SYS_clone, static_cast<unsigned long>(SIGCHLD), 0UL, 0UL, 0UL, 0UL));
+#else
+    // clone has incompatible first-argument ordering on some architectures
+    // and an extra stack-size argument on MicroBlaze. Unknown ABIs must not
+    // guess: fail before a child PID can be created.
+    errno = ENOSYS;
+    return -1;
 #endif
+}
+
+[[nodiscard]] DescriptorSpawnResult
+spawn_from_path_with_fd_hygiene(const char* executable, const CapturePipe& stdout_pipe,
+                                const CapturePipe& stderr_pipe, char* const* argv,
+                                char* const* environment, const BoundedChildProcessSpec& spec,
+                                PathFdClosureMode fd_closure_mode) noexcept {
+    int descriptors[2]{-1, -1};
+    if (::pipe2(descriptors, O_CLOEXEC) != 0) {
+        return {-1, errno, BoundedChildProcessError::spawn_failed};
+    }
+    UniqueFd diagnostic_read(descriptors[0]);
+    UniqueFd diagnostic_write(descriptors[1]);
+    if (!move_above_standard_streams(diagnostic_read) ||
+        !move_above_standard_streams(diagnostic_write)) {
+        return {-1, errno, BoundedChildProcessError::spawn_failed};
+    }
+
+    int null_descriptor = -1;
+    do {
+        null_descriptor = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
+    } while (null_descriptor < 0 && errno == EINTR);
+    if (null_descriptor < 0) {
+        return {-1, errno, BoundedChildProcessError::spawn_failed};
+    }
+    UniqueFd null_fd(null_descriptor);
+    if (!move_above_standard_streams(null_fd)) {
+        return {-1, errno, BoundedChildProcessError::spawn_failed};
+    }
+
+    sigset_t blocked_signals;
+    sigset_t previous_mask;
+    if (::sigfillset(&blocked_signals) != 0) {
+        return {-1, errno, BoundedChildProcessError::spawn_failed};
+    }
+    const int block_status = ::pthread_sigmask(SIG_SETMASK, &blocked_signals, &previous_mask);
+    if (block_status != 0) {
+        return {-1, block_status, BoundedChildProcessError::spawn_failed};
+    }
+
+    BoundedChildProcessError prevented_error = BoundedChildProcessError::none;
+    int prevented_native_error = 0;
+    if (cancellation_requested(spec)) {
+        prevented_error = BoundedChildProcessError::cancelled;
+        prevented_native_error = ECANCELED;
+    } else if (Clock::now() >= spec.deadline) {
+        prevented_error = BoundedChildProcessError::timeout;
+        prevented_native_error = ETIMEDOUT;
+    }
+    if (prevented_error != BoundedChildProcessError::none) {
+        const int restore_status = ::pthread_sigmask(SIG_SETMASK, &previous_mask, nullptr);
+        return {-1, prevented_native_error, prevented_error, restore_status == 0, restore_status};
+    }
+
+    // Bypass libc fork() so arbitrary pthread_atfork prepare callbacks cannot
+    // consume the deadline before a PID exists. Every operation in the child
+    // below is async-signal-safe or a direct Linux syscall, and all storage it
+    // consumes was prepared before this point.
+    const pid_t child = create_child_without_atfork();
+    if (child < 0) {
+        const int fork_error = errno;
+        (void)::pthread_sigmask(SIG_SETMASK, &previous_mask, nullptr);
+        return {-1, fork_error, BoundedChildProcessError::spawn_failed};
+    }
+    if (child == 0) {
+        (void)::close(diagnostic_read.get());
+        if (::setpgid(0, 0) != 0) {
+            report_pre_exec_failure(diagnostic_write.get(),
+                                    DescriptorPreExecStage::set_process_group, errno);
+        }
+        if (const int signal_error = reset_descriptor_child_signals(); signal_error != 0) {
+            report_pre_exec_failure(diagnostic_write.get(), DescriptorPreExecStage::reset_signals,
+                                    signal_error);
+        }
+        const int stderr_source = spec.merge_stderr_into_stdout ? stdout_pipe.write_end.get()
+                                                                : stderr_pipe.write_end.get();
+        if (::dup2(null_fd.get(), STDIN_FILENO) < 0 ||
+            ::dup2(stdout_pipe.write_end.get(), STDOUT_FILENO) < 0 ||
+            ::dup2(stderr_source, STDERR_FILENO) < 0) {
+            report_pre_exec_failure(diagnostic_write.get(), DescriptorPreExecStage::duplicate_stdio,
+                                    errno);
+        }
+        if (!mark_all_nonstandard_fds_cloexec_with_proc_fallback(fd_closure_mode)) {
+            report_pre_exec_failure(diagnostic_write.get(),
+                                    DescriptorPreExecStage::close_descriptors, errno);
+        }
+        sigset_t empty_mask;
+        if (::sigemptyset(&empty_mask) != 0 ||
+            ::sigprocmask(SIG_SETMASK, &empty_mask, nullptr) != 0) {
+            report_pre_exec_failure(diagnostic_write.get(),
+                                    DescriptorPreExecStage::restore_signal_mask, errno);
+        }
+
+        (void)::execve(executable, argv, environment);
+        report_pre_exec_failure(diagnostic_write.get(), DescriptorPreExecStage::execve, errno);
+    }
+
+    (void)::setpgid(child, child);
+    const int restore_status = ::pthread_sigmask(SIG_SETMASK, &previous_mask, nullptr);
+    if (restore_status != 0) {
+        const auto cleanup = kill_and_reap_descriptor_child(child);
+        return {-1, restore_status, BoundedChildProcessError::spawn_failed, cleanup.complete,
+                cleanup.native_error};
+    }
+
+    diagnostic_write.reset();
+    return complete_descriptor_spawn_handshake(child, std::move(diagnostic_read), spec);
+}
 
 [[nodiscard]] DescriptorSpawnResult
 spawn_from_executable_fd(int executable_fd, const CapturePipe& stdout_pipe,
@@ -670,114 +1080,7 @@ spawn_from_executable_fd(int executable_fd, const CapturePipe& stdout_pipe,
     }
 
     diagnostic_write.reset();
-    DescriptorPreExecFailure child_failure{};
-    auto* bytes = reinterpret_cast<std::byte*>(&child_failure);
-    std::size_t received = 0;
-    bool handshake_timed_out = false;
-    bool handshake_cancelled = false;
-    bool diagnostic_eof = false;
-    const auto consume_diagnostic_event = [&](const pollfd& descriptor, int poll_status) noexcept {
-        if (poll_status < 0 || (descriptor.revents & (POLLERR | POLLNVAL)) != 0) {
-            child_failure.native_error = poll_status < 0 ? errno : EIO;
-            received = sizeof(child_failure);
-            return;
-        }
-        if ((descriptor.revents & (POLLIN | POLLHUP)) == 0) {
-            return;
-        }
-        const ssize_t count =
-            ::read(diagnostic_read.get(), bytes + received, sizeof(child_failure) - received);
-        if (count < 0 && errno == EINTR) {
-            return;
-        }
-        if (count == 0) {
-            diagnostic_eof = true;
-        } else if (count < 0) {
-            child_failure.native_error = errno;
-            received = sizeof(child_failure);
-        } else {
-            received += static_cast<std::size_t>(count);
-        }
-    };
-    while (received < sizeof(child_failure) && !diagnostic_eof) {
-        // A closed diagnostic descriptor authenticates exec success, and a
-        // complete failure record authenticates pre-exec failure. Consume
-        // either already-published outcome before a concurrent cancel/deadline.
-        pollfd descriptor{diagnostic_read.get(), POLLIN | POLLHUP, 0};
-        int poll_status = ::poll(&descriptor, 1, 0);
-        if (poll_status < 0 && errno == EINTR) {
-            poll_status = 0;
-        }
-        if (poll_status != 0) {
-            consume_diagnostic_event(descriptor, poll_status);
-            continue;
-        }
-        if (cancellation_requested(spec)) {
-            descriptor.revents = 0;
-            poll_status = ::poll(&descriptor, 1, 0);
-            if (poll_status < 0 && errno == EINTR) {
-                continue;
-            }
-            if (poll_status != 0) {
-                consume_diagnostic_event(descriptor, poll_status);
-                continue;
-            }
-            handshake_cancelled = true;
-            break;
-        }
-        const auto now = Clock::now();
-        if (now >= spec.deadline) {
-            descriptor.revents = 0;
-            poll_status = ::poll(&descriptor, 1, 0);
-            if (poll_status < 0 && errno == EINTR) {
-                continue;
-            }
-            if (poll_status != 0) {
-                consume_diagnostic_event(descriptor, poll_status);
-                continue;
-            }
-            handshake_timed_out = true;
-            break;
-        }
-        const auto remaining =
-            std::chrono::duration_cast<std::chrono::milliseconds>(spec.deadline - now);
-        const auto bounded_remaining =
-            std::max<std::chrono::milliseconds>(1ms, std::min(remaining, POLL_QUANTUM));
-        descriptor.revents = 0;
-        poll_status = ::poll(&descriptor, 1, static_cast<int>(bounded_remaining.count()));
-        if (poll_status < 0 && errno == EINTR) {
-            continue;
-        }
-        if (poll_status == 0) {
-            continue;
-        }
-        consume_diagnostic_event(descriptor, poll_status);
-    }
-    diagnostic_read.reset();
-    if (handshake_cancelled) {
-        child_failure.native_error = ECANCELED;
-    } else if (handshake_timed_out) {
-        child_failure.native_error = ETIMEDOUT;
-    } else if (received == 0) {
-        return {child, 0, BoundedChildProcessError::none};
-    }
-    if ((!handshake_timed_out && !handshake_cancelled && received != sizeof(child_failure)) ||
-        child_failure.native_error == 0) {
-        child_failure.native_error = EIO;
-    }
-
-    const auto cleanup = kill_and_reap_descriptor_child(child);
-    const auto error =
-        handshake_cancelled   ? BoundedChildProcessError::cancelled
-        : handshake_timed_out ? BoundedChildProcessError::timeout
-        : child_failure.stage == DescriptorPreExecStage::execveat &&
-                descriptor_exec_is_platform_unavailable(child_failure.native_error)
-            ? BoundedChildProcessError::platform_unavailable
-        : descriptor_stage_is_parent_death_setup(child_failure.stage) &&
-                descriptor_parent_death_is_platform_unavailable(child_failure.native_error)
-            ? BoundedChildProcessError::platform_unavailable
-            : BoundedChildProcessError::spawn_failed;
-    return {-1, child_failure.native_error, error, cleanup.complete, cleanup.native_error};
+    return complete_descriptor_spawn_handshake(child, std::move(diagnostic_read), spec);
 #endif
 }
 
@@ -1046,12 +1349,16 @@ void record_termination(int status, BoundedChildProcessResult& result) noexcept 
 
 namespace {
 
-BoundedChildProcessResult run_bounded_child_process_impl(const BoundedChildProcessSpec& spec,
-                                                         int executable_fd,
-                                                         std::string_view logical_argv0,
-                                                         bool logical_argv0_is_explicit) noexcept {
+BoundedChildProcessResult
+run_bounded_child_process_impl(const BoundedChildProcessSpec& spec, int executable_fd,
+                               std::string_view logical_argv0, bool logical_argv0_is_explicit,
+                               PathFdClosureMode fd_closure_mode) noexcept {
     BoundedChildProcessResult result;
     result.error = BoundedChildProcessError::none;
+
+#if !defined(__linux__)
+    (void)fd_closure_mode;
+#endif
 
     try {
         if (!valid_spec(spec) || executable_fd < -1 ||
@@ -1137,6 +1444,16 @@ BoundedChildProcessResult run_bounded_child_process_impl(const BoundedChildProce
         if (executable_fd >= 0) {
             const DescriptorSpawnResult spawned = spawn_from_executable_fd(
                 executable_fd, stdout_pipe, stderr_pipe, argv.data(), child_environment, spec);
+            child = spawned.child;
+            status = spawned.native_error;
+            launch_error = spawned.error;
+            launch_cleanup_complete = spawned.cleanup_complete;
+            launch_cleanup_error = spawned.cleanup_error;
+        } else if (fd_closure_mode != PathFdClosureMode::automatic ||
+                   GNFS_POSIX_SPAWN_HAS_CLOSEFROM == 0) {
+            const DescriptorSpawnResult spawned = spawn_from_path_with_fd_hygiene(
+                spec.executable.c_str(), stdout_pipe, stderr_pipe, argv.data(), child_environment,
+                spec, fd_closure_mode);
             child = spawned.child;
             status = spawned.native_error;
             launch_error = spawned.error;
@@ -1411,17 +1728,39 @@ BoundedChildProcessResult run_bounded_child_process_impl(const BoundedChildProce
 } // namespace
 
 BoundedChildProcessResult run_bounded_child_process(const BoundedChildProcessSpec& spec) noexcept {
-    return run_bounded_child_process_impl(spec, -1, {}, false);
+    return run_bounded_child_process_impl(spec, -1, {}, false, PathFdClosureMode::automatic);
 }
 
 namespace detail {
 
 BoundedChildProcessResult run_bounded_child_process_with_argv0(const BoundedChildProcessSpec& spec,
                                                                std::string_view argv0) noexcept {
-    return run_bounded_child_process_impl(spec, -1, argv0, true);
+    return run_bounded_child_process_impl(spec, -1, argv0, true, PathFdClosureMode::automatic);
 }
 
 #if defined(__linux__)
+namespace trusted_test {
+
+BoundedChildProcessResult
+run_bounded_child_process_with_fd_closure_test_mode(const BoundedChildProcessSpec& spec,
+                                                    LinuxPathFdClosureTestMode mode) noexcept {
+    PathFdClosureMode internal_mode = PathFdClosureMode::unavailable;
+    switch (mode) {
+    case LinuxPathFdClosureTestMode::force_proc_scan:
+        internal_mode = PathFdClosureMode::proc_only;
+        break;
+    case LinuxPathFdClosureTestMode::force_unavailable:
+        internal_mode = PathFdClosureMode::unavailable;
+        break;
+    default:
+        // Unknown test values retain the fail-closed unavailable mode.
+        break;
+    }
+    return run_bounded_child_process_impl(spec, -1, {}, false, internal_mode);
+}
+
+} // namespace trusted_test
+
 BoundedChildProcessResult
 run_bounded_child_process_from_executable_fd(const BoundedChildProcessSpec& spec, int executable_fd,
                                              std::string_view argv0) noexcept {
@@ -1434,7 +1773,8 @@ run_bounded_child_process_from_executable_fd(const BoundedChildProcessSpec& spec
     result.cleanup_complete = true;
     return result;
 #else
-    return run_bounded_child_process_impl(spec, executable_fd, argv0, true);
+    return run_bounded_child_process_impl(spec, executable_fd, argv0, true,
+                                          PathFdClosureMode::automatic);
 #endif
 }
 #endif

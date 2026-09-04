@@ -102,6 +102,9 @@ using BoundedChildCancellationProbe = bool (*)(void* context) noexcept;
 /// repeatedly from the launching thread and must remain valid until this
 /// function returns. Already-observable capture faults take precedence over a
 /// concurrent cancellation, which in turn takes precedence over the deadline.
+/// The child receives only the configured standard streams; nonstandard parent
+/// descriptors or handles are not inherited, and their parent-side flags and
+/// identities remain unchanged.
 /// A containment failure is always reported through `cleanup_error` and
 /// `cleanup_complete` without replacing an earlier primary `error`.
 struct BoundedChildProcessSpec final {

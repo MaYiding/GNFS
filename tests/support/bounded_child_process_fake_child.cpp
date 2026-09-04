@@ -25,6 +25,7 @@
 #include <cerrno>
 #include <csignal>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -380,6 +381,112 @@ void close_stdout_stream() noexcept {
     return false;
 }
 
+#if !defined(_WIN32)
+
+enum class DescriptorIdentityState : std::uint8_t {
+    absent,
+    present,
+    error,
+};
+
+struct DescriptorIdentityProbe final {
+    DescriptorIdentityState state = DescriptorIdentityState::error;
+    int native_error = EIO;
+};
+
+[[nodiscard]] bool same_regular_file(const struct stat& left, const struct stat& right) noexcept {
+    return S_ISREG(left.st_mode) && S_ISREG(right.st_mode) && left.st_dev == right.st_dev &&
+           left.st_ino == right.st_ino;
+}
+
+[[nodiscard]] bool stat_path_no_intr(const char* path, struct stat& metadata) noexcept {
+    int status = -1;
+    do {
+        status = ::stat(path, &metadata);
+    } while (status < 0 && errno == EINTR);
+    return status == 0;
+}
+
+[[nodiscard]] DescriptorIdentityProbe
+probe_descriptor_identity(int descriptor, const char* expected_path) noexcept {
+    struct stat expected{};
+    if (!stat_path_no_intr(expected_path, expected)) {
+        return {DescriptorIdentityState::error, errno};
+    }
+    if (!S_ISREG(expected.st_mode)) {
+        return {DescriptorIdentityState::error, EINVAL};
+    }
+
+    struct stat observed{};
+    int status = -1;
+    do {
+        status = ::fstat(descriptor, &observed);
+    } while (status < 0 && errno == EINTR);
+    if (status < 0) {
+        return errno == EBADF ? DescriptorIdentityProbe{DescriptorIdentityState::absent, 0}
+                              : DescriptorIdentityProbe{DescriptorIdentityState::error, errno};
+    }
+    return {same_regular_file(expected, observed) ? DescriptorIdentityState::present
+                                                  : DescriptorIdentityState::absent,
+            0};
+}
+
+[[nodiscard]] int fd_sentinel_contract(int argc, char* argv[]) {
+    if (argc < 5 || (argc - 3) % 2 != 0) {
+        return 64;
+    }
+
+    int control_descriptor = -1;
+    do {
+        control_descriptor = ::open(argv[2], O_RDONLY | O_CLOEXEC);
+    } while (control_descriptor < 0 && errno == EINTR);
+    if (control_descriptor < 0) {
+        (void)write_stderr("unable to open descriptor identity control\n");
+        return 70;
+    }
+    const DescriptorIdentityProbe control = probe_descriptor_identity(control_descriptor, argv[2]);
+    if (control.state != DescriptorIdentityState::present) {
+        (void)::close(control_descriptor);
+        (void)write_stderr("descriptor identity control did not match\n");
+        return 70;
+    }
+
+    std::size_t sentinel_count = 0;
+    for (int index = 3; index < argc; index += 2) {
+        std::size_t parsed_descriptor = 0;
+        if (!parse_size(NativeView(argv[index]), parsed_descriptor) || parsed_descriptor < 3 ||
+            parsed_descriptor > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+            (void)::close(control_descriptor);
+            return 64;
+        }
+        const int descriptor = static_cast<int>(parsed_descriptor);
+        const DescriptorIdentityProbe probe =
+            probe_descriptor_identity(descriptor, argv[index + 1]);
+        if (probe.state == DescriptorIdentityState::present) {
+            const std::string diagnostic =
+                "descriptor sentinel leaked: fd=" + std::to_string(descriptor) + "\n";
+            (void)::close(control_descriptor);
+            (void)write_stderr(diagnostic);
+            return 69;
+        }
+        if (probe.state == DescriptorIdentityState::error) {
+            const std::string diagnostic =
+                "descriptor sentinel probe failed: fd=" + std::to_string(descriptor) +
+                " error=" + std::to_string(probe.native_error) + "\n";
+            (void)::close(control_descriptor);
+            (void)write_stderr(diagnostic);
+            return 70;
+        }
+        ++sentinel_count;
+    }
+
+    (void)::close(control_descriptor);
+    const std::string output = "sentinels-absent=" + std::to_string(sentinel_count) + "\n";
+    return write_stdout(output) ? 0 : 66;
+}
+
+#endif
+
 [[nodiscard]] bool write_repeated(bool to_stdout, char byte, std::size_t size) noexcept {
     const std::string chunk(8192, byte);
     std::size_t remaining = size;
@@ -706,21 +813,11 @@ template <class Char> int fake_child_main(int argc, Char* argv[]) {
         }
         return write_stdout("default\n") ? 0 : 71;
     }
+    if (mode == NativeView("--probe-fd-sentinels")) {
+        return fd_sentinel_contract(argc, argv);
+    }
 #endif
 #if defined(__linux__)
-    if (mode == NativeView("--check-fd-closed")) {
-        if (argc != 3) {
-            return 64;
-        }
-        std::size_t descriptor = 0;
-        if (!parse_size(NativeView(argv[2]), descriptor) ||
-            descriptor > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-            return 64;
-        }
-        errno = 0;
-        const int status = ::fcntl(static_cast<int>(descriptor), F_GETFD);
-        return status < 0 && errno == EBADF && write_stdout("closed\n") ? 0 : 69;
-    }
     if (mode == NativeView("--pid-ledger-hang")) {
         if (argc != 3) {
             return 64;

@@ -73,6 +73,21 @@ jobs:
           cmake --build build-release-readiness --parallel
           [[ "$(build-release-readiness/gnfs --version)" == 'GNFS v0.1.0' ]]
 
+      - name: Verify glibc 2.31 bounded-child transport
+        run: |
+          cmake -B build-bcp -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE=scripts/linux-release-gcc12-toolchain.cmake \
+            -DGNFS_BUILD_TESTS=ON \
+            -DGNFS_BUILD_FUZZERS=OFF \
+            -DGNFS_ENABLE_NATIVE_ARCH=OFF
+          cmake --build build-bcp --parallel \
+            --target test_bounded_child_process
+          ctest --test-dir build-bcp \
+            --output-on-failure \
+            --no-tests=error \
+            -R '^BoundedChildProcess$'
+
   windows-runtime-closure:
     name: Windows pinned runtime and source closure
     runs-on: windows-2022
