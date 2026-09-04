@@ -59,7 +59,7 @@ inline void sync_file(const std::filesystem::path& path) {
 #else
     int fd = -1;
     do {
-        fd = ::open(path.c_str(), O_RDWR);
+        fd = ::open(path.c_str(), O_RDWR | O_CLOEXEC);
     } while (fd < 0 && errno == EINTR);
     if (fd < 0) {
         throw io_error("cannot reopen temporary file", path.string());
@@ -103,7 +103,7 @@ inline void atomic_replace(const std::filesystem::path& temporary,
     }
     int dir_fd = -1;
     do {
-        dir_fd = ::open(parent.c_str(), O_RDONLY);
+        dir_fd = ::open(parent.c_str(), O_RDONLY | O_CLOEXEC);
     } while (dir_fd < 0 && errno == EINTR);
     if (dir_fd < 0) {
         throw io_error("cannot open checkpoint directory", parent.string());
@@ -175,7 +175,7 @@ inline void sync_parent_directory_after_remove(const std::filesystem::path& targ
 #else
     int directory = -1;
     do {
-        directory = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+        directory = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
     } while (directory < 0 && errno == EINTR);
     if (directory < 0) {
         throw std::system_error(errno, std::generic_category(),
