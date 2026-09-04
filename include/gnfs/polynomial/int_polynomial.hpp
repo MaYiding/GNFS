@@ -268,6 +268,8 @@ public:
         // 二项式系数表(静态初始化,线程安全)。GNFS degree 上限 6,
         // 预表覆盖到 16 仍极小(<2KB),C(16,8)=12870 < 2^14。
         // 之前每次 translate 调用都重建,Stage2 平移循环 ×11 重复浪费。
+        // IntPolynomial 本身不限制 degree；更高次数在循环中回退到 GMP
+        // 的任意精度二项式系数，避免 Release 下越界访问静态表。
         constexpr uint32_t BINOM_MAX = 16;
         static const auto binom = []() {
             std::array<std::array<uint64_t, BINOM_MAX + 1>, BINOM_MAX + 1> b{};
@@ -280,16 +282,22 @@ public:
             }
             return b;
         }();
-        assert(d <= BINOM_MAX && "IntPolynomial::translate degree exceeds binom table");
-
         // 二项式展开: f(x+t) = sum_i f[i] * (x+t)^i
         // (x+t)^i = sum_j C(i,j) * x^j * t^{i-j}
         // term = C(i,j) * t^{i-j}, then new_coeffs[j] += f[i] * term via addmul
         Integer term;
+        Integer high_degree_binom;
         for (uint32_t i = 0; i <= d; ++i) {
             for (uint32_t j = 0; j <= i; ++j) {
-                mpz_mul_ui(term.get_mpz(), t_powers[i - j].get_mpz(),
-                           static_cast<unsigned long>(binom[i][j]));
+                if (i <= BINOM_MAX) {
+                    mpz_mul_ui(term.get_mpz(), t_powers[i - j].get_mpz(),
+                               static_cast<unsigned long>(binom[i][j]));
+                } else {
+                    mpz_bin_uiui(high_degree_binom.get_mpz(), static_cast<unsigned long>(i),
+                                 static_cast<unsigned long>(j));
+                    mpz_mul(term.get_mpz(), t_powers[i - j].get_mpz(),
+                            high_degree_binom.get_mpz());
+                }
                 mpz_addmul(new_coeffs[j].get_mpz(),
                            coeffs_[i].get_mpz(), term.get_mpz());
             }
