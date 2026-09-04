@@ -3565,7 +3565,6 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
     required_readiness_fragments = (
         "name: Release Readiness",
         "name: Linux pinned CMake wheel closure",
-        "container: ubuntu:20.04@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214",
         "timeout-minutes: 30",
         'git config --global --add safe.directory "${GITHUB_WORKSPACE}"',
         "scripts/install_linux_release_toolchain.sh",
@@ -3599,6 +3598,15 @@ def validate_workflow_sources(release_workflow: Path, qualification_workflow: Pa
             raise ReleaseContractError(
                 f"release readiness workflow lost required boundary: {fragment}"
             )
+    if not re.search(
+        r"(?ms)^\s{4}container:\s*$.*?^\s{6}image:\s*"
+        r"ubuntu:20\.04@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214\s*$"
+        r".*?^\s{6}options:\s*--init\s*$",
+        readiness_text,
+    ):
+        raise ReleaseContractError(
+            "release readiness Linux container must use the pinned image with Docker init"
+        )
 
 
 def _write_github_output(path: Path | None, key: str, value: str | int) -> None:
