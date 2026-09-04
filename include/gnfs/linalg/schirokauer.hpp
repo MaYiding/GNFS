@@ -128,6 +128,18 @@ struct GFPolyOps {
         return a;
     }
 
+    /// Return whether f has no repeated irreducible factors over GF(p).
+    static bool is_squarefree(const Poly& f, uint64_t p) {
+        const Poly normalized = trim(f);
+        if (normalized.size() <= 1)
+            return true;
+
+        Poly derivative(normalized.size() - 1, 0);
+        for (size_t i = 1; i < normalized.size(); ++i)
+            derivative[i - 1] = (i % p) * (normalized[i] % p) % p;
+        return gcd(normalized, trim(derivative), p).size() <= 1;
+    }
+
     /// Extended GCD: returns (gcd, s, t) with s*a + t*b = gcd
     static std::tuple<Poly, Poly, Poly> extended_gcd(Poly a, Poly b, uint64_t p) {
         Poly old_r = trim(a), r = trim(b);
@@ -278,6 +290,8 @@ struct GFPolyOps {
                                  uint32_t max_attempts = 200) {
         if (f.size() <= 1)
             return {};
+        if (!is_squarefree(f, p))
+            throw std::runtime_error("Cantor-Zassenhaus EDF requires a squarefree polynomial");
         if (static_cast<uint32_t>(f.size() - 1) == d) {
             std::vector<Poly> result = {f};
             validate_factorization(f, result, p);

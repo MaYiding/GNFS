@@ -724,6 +724,10 @@ void test_gf_poly_factorization_determinism() {
     require_throws<std::runtime_error>([&] { (void)GFPolyOps::edf(two_linear_factors, 1, 2, 0); },
                                        "EDF must fail closed when its attempt budget is exhausted");
 
+    const GFPolyOps::Poly repeated_linear_factor = {1, 0, 1}; // (x+1)^2
+    require_throws<std::runtime_error>([&] { (void)GFPolyOps::edf(repeated_linear_factor, 1, 2); },
+                                       "EDF must reject repeated-factor input");
+
     std::cout << "  Deterministic EDF and fail-closed validation: PASSED" << std::endl;
 }
 
