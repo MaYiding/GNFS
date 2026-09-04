@@ -55,6 +55,14 @@ GNFS_BW_KRYLOV_MMAP=1 ./gnfs <N>   # 50d+/60d 大矩阵 Phase 5 启用
   Release-active 5550×5000 three-mode contract; the required Windows Release
   lane exercises memory, raw Win32 mapping, and compressed positioned I/O
 
+Windows paths passed to the raw mmap container are treated as UTF-8. The
+Win32 implementation converts that byte string to a native wide path before
+`CreateFileW`, header validation, or deletion, so non-ASCII temporary and
+workspace names do not depend on the machine ANSI code page. The public
+`path()` accessor continues to return the original UTF-8 string. The
+`KrylovSequenceMmap` test includes a non-ASCII filename round trip on every
+platform and uses the same native-path conversion for its file probes.
+
 **Default OFF**: vector path 完整保留, 零回归风险. 仅 50d+ Phase 5 RAM pressure 时启用.
 
 ---

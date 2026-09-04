@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -45,6 +46,35 @@ struct CheckedKrylovFileSize {
     krylov_native_file_offset_t native_size;
 };
 
+[[nodiscard]] inline std::filesystem::path krylov_native_path_from_string(
+    const std::string& path) {
+#ifdef _WIN32
+    std::u8string utf8;
+    utf8.reserve(path.size());
+    for (const char byte : path) {
+        utf8.push_back(static_cast<char8_t>(static_cast<unsigned char>(byte)));
+    }
+    return std::filesystem::path(utf8);
+#else
+    return std::filesystem::path(path);
+#endif
+}
+
+[[nodiscard]] inline std::string krylov_cached_path_string(
+    const std::filesystem::path& path) {
+#ifdef _WIN32
+    const std::u8string utf8 = path.u8string();
+    std::string result;
+    result.reserve(utf8.size());
+    for (const char8_t byte : utf8) {
+        result.push_back(static_cast<char>(byte));
+    }
+    return result;
+#else
+    return path.native();
+#endif
+}
+
 [[nodiscard]] inline CheckedKrylovFileSize checked_krylov_file_size(std::uint64_t length,
                                                                     std::uint64_t entry_size) {
     if (length == 0 || entry_size == 0) {
@@ -83,11 +113,12 @@ public:
     KrylovSequenceMmap() = default;
 
     KrylovSequenceMmap(const std::string& path, uint64_t L, uint64_t entry_size)
-        : path_(path), L_(L), entry_size_(entry_size) {
+        : path_(path), filesystem_path_(detail::krylov_native_path_from_string(path)), L_(L),
+          entry_size_(entry_size) {
         const auto file_size = detail::checked_krylov_file_size(L, entry_size);
         size_ = file_size.mapped_size;
 
-        file_ = ::CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE,
+        file_ = ::CreateFileW(filesystem_path_.c_str(), GENERIC_READ | GENERIC_WRITE,
                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
                               nullptr);
@@ -131,7 +162,8 @@ public:
     }
 
     KrylovSequenceMmap(KrylovSequenceMmap&& other) noexcept
-        : path_(std::move(other.path_)), data_(std::exchange(other.data_, nullptr)),
+        : path_(std::move(other.path_)), filesystem_path_(std::move(other.filesystem_path_)),
+          data_(std::exchange(other.data_, nullptr)),
           body_(std::exchange(other.body_, nullptr)), size_(std::exchange(other.size_, 0)),
           L_(std::exchange(other.L_, 0)), entry_size_(std::exchange(other.entry_size_, 0)),
           mapping_(std::exchange(other.mapping_, nullptr)),
@@ -141,6 +173,7 @@ public:
         if (this != &other) {
             close();
             path_ = std::move(other.path_);
+            filesystem_path_ = std::move(other.filesystem_path_);
             data_ = std::exchange(other.data_, nullptr);
             body_ = std::exchange(other.body_, nullptr);
             size_ = std::exchange(other.size_, 0);
@@ -186,7 +219,7 @@ public:
     void remove_file() noexcept {
         const std::string path = path_;
         close();
-        if (!path.empty() && !::DeleteFileA(path.c_str())) {
+        if (!filesystem_path_.empty() && !::DeleteFileW(filesystem_path_.c_str())) {
             const DWORD err = ::GetLastError();
             if (err != ERROR_FILE_NOT_FOUND && err != ERROR_PATH_NOT_FOUND) {
                 std::fprintf(stderr, "[krylov_mmap] DeleteFile failed: error=%lu path=%s\n",
@@ -245,8 +278,10 @@ public:
     }
 
     static void validate_header(const std::string& path) {
-        HANDLE file = ::CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-                                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        const auto filesystem_path = detail::krylov_native_path_from_string(path);
+        HANDLE file = ::CreateFileW(filesystem_path.c_str(), GENERIC_READ,
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                    nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (file == INVALID_HANDLE_VALUE) {
             throw std::runtime_error("KrylovSequenceMmap::validate_header: cannot open " + path);
         }
@@ -292,6 +327,7 @@ private:
     }
 
     std::string path_;
+    std::filesystem::path filesystem_path_;
     uint8_t* data_ = nullptr;
     uint8_t* body_ = nullptr;
     size_t size_ = 0;
