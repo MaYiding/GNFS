@@ -5555,6 +5555,7 @@ WORKER_CLEANUP_RECEIPT_REPO_BUILD_FILES = frozenset(
     {
         WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
         WORKER_CLEANUP_RECEIPT_RELEASE_TOOLCHAIN_FILE,
+        "tests/test_process_supervisor.cmake",
     }
 )
 WORKER_CLEANUP_RECEIPT_CONTROL_PLANE_POLICY_FILE = (
@@ -33134,6 +33135,7 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
             "include/dup",
             "scripts",
             "src",
+            "tests",
             "vendor/dup",
         ):
             (fixture_root / directory).mkdir(parents=True, exist_ok=True)
@@ -33145,6 +33147,7 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
             ),
             ".hidden/receipt.custom": "#define private public\n",
             "cmake/extra.cmake": "# injected build surface\n",
+            "tests/test_process_supervisor.cmake": "# supervisor test fixture\n",
             "src/entry.cpp": '#include "payload.tokens"\n',
             "src/payload.tokens": "inline int custom_extension_payload = 1;\n",
             "src/angle.cpp": "#include <dup/receipt.tokens>\n",
