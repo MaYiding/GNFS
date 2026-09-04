@@ -10,6 +10,7 @@
 #include <vector>
 #include <optional>
 #include <iostream>
+#include <limits>
 
 namespace gnfs::sqrt {
 
@@ -405,13 +406,21 @@ public:
         // f'(m)² · expected_X2,否则全 search space 都对不上。
         //
         // 注意: 直接对 expected_X2 取 sqrt 等价于因子化 N,因此我们验证 Y² 而非 Y。
-        // hot loop (10K+ iters per dep): term_buf = a - m*b via mpz_submul_ui
+        // hot loop (10K+ iters per dep): term_buf = a - m*b.  Use an
+        // arbitrary-precision operand for b because unsigned long is only
+        // 32 bits on Windows LLP64.
         Integer expected_X2(1);
         Integer term_buf;
+        Integer b_value;
         for (const auto& [a, b] : ab_pairs) {
             term_buf = a;  // mpz_set_si direct
-            mpz_submul_ui(term_buf.get_mpz(), nf.m().get_mpz(),
-                          static_cast<unsigned long>(b));
+            if (b <= std::numeric_limits<unsigned long>::max()) {
+                mpz_submul_ui(term_buf.get_mpz(), nf.m().get_mpz(),
+                              static_cast<unsigned long>(b));
+            } else {
+                b_value = b;
+                mpz_submul(term_buf.get_mpz(), nf.m().get_mpz(), b_value.get_mpz());
+            }
             term_buf %= n;
             if (term_buf.is_negative()) term_buf += n;
             expected_X2 *= term_buf;

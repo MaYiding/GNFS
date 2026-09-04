@@ -10,6 +10,7 @@
 
 #include <chrono>
 #include <iostream>
+#include <limits>
 #include <vector>
 
 using namespace gnfs;
@@ -133,6 +134,30 @@ void test_number_field() {
     GNFS_TEST_CHECK(ab_elem.coeff(1).to_int64() == -2); // -b in GNFS convention
 
     std::cout << "  NumberField: PASSED" << std::endl;
+}
+
+// Regression for uint64_t b values on Windows LLP64.  GMP's *_ui APIs take
+// unsigned long (32 bits on Windows), and converting b to long long first is
+// implementation-defined above INT64_MAX.  The number-field helpers must keep
+// the complete b value in both element construction and norm evaluation.
+void test_uint64_b_portability_boundaries() {
+    std::cout << "Testing uint64_t b portability boundaries..." << std::endl;
+
+    // f(x) = x^2 - 1 and m = 2 give n = f(m) = 3.
+    std::vector<Integer> coeffs = {Integer(-1), Integer(0), Integer(1)};
+    NumberField nf(PolynomialContext(Integer(3), std::move(coeffs), Integer(2)));
+
+    const uint64_t b = std::numeric_limits<uint64_t>::max();
+    auto element = nf.from_ab(0, b);
+    Integer expected_coeff(b);
+    expected_coeff.negate();
+    GNFS_TEST_CHECK(element.coeff(1) == expected_coeff);
+
+    // N(0 - b*alpha) = -b^2 for this polynomial; norm_linear returns |N|.
+    Integer expected_norm = Integer(b) * Integer(b);
+    GNFS_TEST_CHECK(nf.norm_linear(0, b) == expected_norm);
+
+    std::cout << "  uint64_t b preserved through from_ab/norm_linear: PASSED" << std::endl;
 }
 
 // Test NumberField multiplication
@@ -843,6 +868,7 @@ int main() {
     test_number_field();
     test_number_field_multiply();
     test_number_field_power();
+    test_uint64_b_portability_boundaries();
     test_evaluate_at_m();
     test_rational_sqrt_simple();
     test_factor_extraction();

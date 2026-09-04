@@ -11,6 +11,7 @@
 #include <vector>
 #include <optional>
 #include <iostream>
+#include <limits>
 #include <thread>
 #include <chrono>
 
@@ -197,12 +198,19 @@ private:
             const NumberField& nf) {
         const Integer& n = nf.n();
         Integer product(1);
-        // factor = a - m*b via mpz_submul_ui (fused FMS, drops bm temp)
+        // factor = a - m*b.  Use mpz_submul_ui when b fits its unsigned-long
+        // operand and fall back to an Integer for full-width LLP64 values.
         Integer factor;
+        Integer b_value;
         for (const auto& [a, b] : ab_pairs) {
             factor = a;
-            mpz_submul_ui(factor.get_mpz(), nf.m().get_mpz(),
-                          static_cast<unsigned long>(b));
+            if (b <= std::numeric_limits<unsigned long>::max()) {
+                mpz_submul_ui(factor.get_mpz(), nf.m().get_mpz(),
+                              static_cast<unsigned long>(b));
+            } else {
+                b_value = b;
+                mpz_submul(factor.get_mpz(), nf.m().get_mpz(), b_value.get_mpz());
+            }
             factor %= n;
             if (factor.is_negative()) factor += n;
             product *= factor;
@@ -1228,7 +1236,7 @@ private:
             if (factor[0].is_negative()) factor[0] += modulus;
 
             if (d > 1) {
-                factor[1] = int64_t(b);  // mpz_set_si direct
+                factor[1] = b;
                 factor[1].negate();
                 factor[1] %= modulus;
                 if (factor[1].is_negative()) factor[1] += modulus;
@@ -1302,7 +1310,7 @@ private:
 
                     if (d > 1) {
                         // -b mod modulus (复用 factor[1] buffer)
-                        factor[1] = int64_t(b);  // mpz_set_si direct
+                        factor[1] = b;
                         factor[1].negate();
                         factor[1] %= modulus;
                         if (factor[1].is_negative()) factor[1] += modulus;

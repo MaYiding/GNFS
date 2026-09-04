@@ -6,7 +6,9 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace gnfs::sqrt {
@@ -228,7 +230,12 @@ public:
         coeffs.emplace_back(a);
         if (b != 0) {
             // Note: coefficient of α is -b (negative)
-            coeffs.emplace_back(-static_cast<long long>(b));
+            // Keep the full uint64_t value on LLP64 platforms.  Converting b
+            // to long long first truncates or becomes implementation-defined
+            // once b exceeds INT64_MAX.
+            Integer neg_b(b);
+            neg_b.negate();
+            coeffs.emplace_back(std::move(neg_b));
         }
         return NumberFieldElement(std::move(coeffs));
     }
@@ -403,8 +410,19 @@ public:
         Integer result;
         ws_a_power = int64_t(1);
         b_powers[0] = int64_t(1);
+        Integer b_value;
+        b_value = b;
         for (uint32_t i = 1; i <= degree_; ++i) {
-            mpz_mul_ui(b_powers[i].get_mpz(), b_powers[i-1].get_mpz(), b);
+            // mpz_mul_ui takes unsigned long, which is only 32 bits on
+            // Windows LLP64.  Retain its fast path for representable b and
+            // use an arbitrary-precision operand for larger values.
+            if (b <= std::numeric_limits<unsigned long>::max()) {
+                mpz_mul_ui(b_powers[i].get_mpz(), b_powers[i - 1].get_mpz(),
+                           static_cast<unsigned long>(b));
+            } else {
+                mpz_mul(b_powers[i].get_mpz(), b_powers[i - 1].get_mpz(),
+                        b_value.get_mpz());
+            }
         }
 
         // term = a^i * b^{d-i}, then result += f_i * term via mpz_addmul (fused FMA)
