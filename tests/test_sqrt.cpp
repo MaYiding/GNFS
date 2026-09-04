@@ -10,6 +10,7 @@
 
 #include <chrono>
 #include <iostream>
+#include <string>
 #include <vector>
 
 using namespace gnfs;
@@ -277,6 +278,51 @@ void test_rational_sqrt_simple() {
     GNFS_TEST_CHECK(result2.to_int64() == 200);
 
     std::cout << "  RationalSqrt (simple): PASSED" << std::endl;
+}
+
+void test_sqrt_dependency_dimension_guard() {
+    std::cout << "Testing sqrt dependency dimension guard..." << std::endl;
+
+    std::vector<Relation> relations;
+    relations.emplace_back(1, 1);
+
+    FactorBase fb;
+    Integer n(15);
+    Integer m(1);
+    RationalSqrt rational_sqrt;
+
+    const BitVector short_dependency(0);
+    const BitVector long_dependency(2);
+    const auto short_rational = rational_sqrt.compute(short_dependency, relations, fb, n, m);
+    const auto long_rational = rational_sqrt.compute(long_dependency, relations, fb, n, m);
+    GNFS_TEST_CHECK(!short_rational.success);
+    GNFS_TEST_CHECK(!long_rational.success);
+    GNFS_TEST_CHECK(short_rational.error.find("dependency length") != std::string::npos);
+    GNFS_TEST_CHECK(long_rational.error.find("dependency length") != std::string::npos);
+
+    Relation malformed_relation(1, 1);
+    malformed_relation.rational_factors.push_back(0);
+    std::vector<Relation> malformed_relations = {malformed_relation};
+    BitVector valid_dependency(1);
+    valid_dependency.set(0);
+    const auto malformed_rational =
+        rational_sqrt.compute(valid_dependency, malformed_relations, fb, n, m);
+    GNFS_TEST_CHECK(!malformed_rational.success);
+    GNFS_TEST_CHECK(malformed_rational.error.find("factor-base index") != std::string::npos);
+
+    std::vector<Integer> coefficients = {Integer(-2), Integer(0), Integer(1)};
+    PolynomialContext ctx(Integer(15), std::move(coefficients), Integer(4));
+    AlgebraicSqrt algebraic_sqrt;
+    const auto short_algebraic = algebraic_sqrt.compute(short_dependency, relations, ctx);
+    const auto long_algebraic = algebraic_sqrt.compute(long_dependency, relations, ctx);
+    GNFS_TEST_CHECK(!short_algebraic.success);
+    GNFS_TEST_CHECK(!long_algebraic.success);
+    GNFS_TEST_CHECK(short_algebraic.error.find("dependency length") != std::string::npos);
+    GNFS_TEST_CHECK(long_algebraic.error.find("dependency length") != std::string::npos);
+    GNFS_TEST_CHECK(!verify_algebraic_ideal_powers(short_dependency, relations));
+    GNFS_TEST_CHECK(!verify_algebraic_ideal_powers(long_dependency, relations));
+
+    std::cout << "  Sqrt dependency dimension guard: PASSED" << std::endl;
 }
 
 // Test factor extraction
@@ -845,6 +891,7 @@ int main() {
     test_number_field_power();
     test_evaluate_at_m();
     test_rational_sqrt_simple();
+    test_sqrt_dependency_dimension_guard();
     test_factor_extraction();
     test_norm_linear();
     test_is_irreducible();

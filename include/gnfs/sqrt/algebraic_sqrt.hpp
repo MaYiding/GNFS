@@ -14,6 +14,7 @@
 #include <cstring>
 #include <iostream>
 #include <map>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -31,6 +32,8 @@ using linalg::BitVector;
 /// Returns true if parity check passes (all even), false if any odd exponent found.
 [[nodiscard]] inline bool verify_algebraic_ideal_powers(const BitVector& dependency,
                                                         const std::vector<Relation>& relations) {
+    if (dependency.size() != relations.size())
+        return false;
 
     // Count algebraic FB factor multiplicities
     // Reserve dependency.popcount() * 30: avg ~20-30 FB factors per row, dependency
@@ -106,6 +109,10 @@ public:
                                               const PolynomialContext& ctx) const {
 
         AlgebraicSqrtResult result;
+        if (dependency.size() != relations.size()) {
+            result.error = "Algebraic sqrt: dependency length does not match relation count";
+            return result;
+        }
 
         // Quick pre-check: algebraic ideal power parity (msieve strategy)
         // Catches bad deps in O(n·d) before expensive Hensel lifting
