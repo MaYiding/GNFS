@@ -20,6 +20,17 @@ namespace gnfs::factor_base {
 // ============================================================
 
 void FactorBase::save(std::ostream& os) const {
+    if (sieve_algebraic_count_ > algebraic_.size()) {
+        throw std::runtime_error(
+            "FactorBase::save: sieve_algebraic_count exceeds algebraic-prime count");
+    }
+    if (rational_.size() > (std::numeric_limits<uint32_t>::max)()) {
+        throw std::overflow_error("FactorBase::save: rational-prime count exceeds uint32_t");
+    }
+    if (algebraic_.size() > (std::numeric_limits<uint32_t>::max)()) {
+        throw std::overflow_error("FactorBase::save: algebraic-prime count exceeds uint32_t");
+    }
+
     const auto write_bytes = [&os](const void* data, std::size_t size, const char* field) {
         os.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));
         if (!os) {
@@ -28,7 +39,7 @@ void FactorBase::save(std::ostream& os) const {
     };
 
     // Magic + version header
-    constexpr uint32_t MAGIC = 0x47464246;  // "GFBF" (GNFS Factor Base Format)
+    constexpr uint32_t MAGIC = 0x47464246; // "GFBF" (GNFS Factor Base Format)
     constexpr uint32_t VERSION = 1;
     write_bytes(&MAGIC, sizeof(MAGIC), "magic");
     write_bytes(&VERSION, sizeof(VERSION), "version");
@@ -44,9 +55,6 @@ void FactorBase::save(std::ostream& os) const {
     write_bytes(&sac, sizeof(sac), "sieve_algebraic_count");
 
     // Rational primes
-    if (rational_.size() > (std::numeric_limits<uint32_t>::max)()) {
-        throw std::overflow_error("FactorBase::save: rational-prime count exceeds uint32_t");
-    }
     uint32_t rat_count = static_cast<uint32_t>(rational_.size());
     write_bytes(&rat_count, sizeof(rat_count), "rational-prime count");
     for (const auto& rp : rational_) {
@@ -55,9 +63,6 @@ void FactorBase::save(std::ostream& os) const {
     }
 
     // Algebraic primes
-    if (algebraic_.size() > (std::numeric_limits<uint32_t>::max)()) {
-        throw std::overflow_error("FactorBase::save: algebraic-prime count exceeds uint32_t");
-    }
     uint32_t alg_count = static_cast<uint32_t>(algebraic_.size());
     write_bytes(&alg_count, sizeof(alg_count), "algebraic-prime count");
     for (const auto& ap : algebraic_) {
@@ -71,8 +76,8 @@ void FactorBase::save(std::ostream& os) const {
 FactorBase FactorBase::load(std::istream& is) {
     const auto read_bytes = [&is](void* data, std::size_t size, const char* field) {
         if (!is.read(static_cast<char*>(data), static_cast<std::streamsize>(size))) {
-            throw std::runtime_error(std::string("FactorBase::load: unexpected end of stream while reading ") +
-                                     field);
+            throw std::runtime_error(
+                std::string("FactorBase::load: unexpected end of stream while reading ") + field);
         }
     };
 
@@ -84,7 +89,8 @@ FactorBase FactorBase::load(std::istream& is) {
     if (magic != 0x47464246)
         throw std::runtime_error("FactorBase::load: invalid magic number");
     if (version != 1)
-        throw std::runtime_error("FactorBase::load: unsupported version " + std::to_string(version));
+        throw std::runtime_error("FactorBase::load: unsupported version " +
+                                 std::to_string(version));
 
     // Params
     FactorBaseParams params;
@@ -128,7 +134,8 @@ FactorBase FactorBase::load(std::istream& is) {
     }
 
     if (fb.sieve_algebraic_count_ > fb.algebraic_.size()) {
-        throw std::runtime_error("FactorBase::load: sieve_algebraic_count exceeds algebraic-prime count");
+        throw std::runtime_error(
+            "FactorBase::load: sieve_algebraic_count exceeds algebraic-prime count");
     }
 
     // Rebuild index tables
@@ -144,8 +151,7 @@ FactorBase FactorBase::load(std::istream& is) {
 // Note: Instance-based constructor is removed because PolynomialContext
 // doesn't support copying. Use the static build method instead.
 
-FactorBaseBuilder::FactorBaseBuilder(const PolynomialContext& /* ctx */)
-    : ctx_() {
+FactorBaseBuilder::FactorBaseBuilder(const PolynomialContext& /* ctx */) : ctx_() {
     // Cannot copy PolynomialContext, this constructor is deprecated
     // Use the static build() method instead
 }
@@ -155,13 +161,10 @@ FactorBase FactorBaseBuilder::build(const PolynomialContext& ctx, const Options&
 
     // Set parameters
     uint64_t lp_bound = opts.large_prime_bound;
-    if (lp_bound == 0) lp_bound = static_cast<uint64_t>(opts.rational_bound) * 100;
-    core::FactorBaseParams params(
-        opts.rational_bound,
-        opts.algebraic_bound,
-        lp_bound,
-        opts.log_scale
-    );
+    if (lp_bound == 0)
+        lp_bound = static_cast<uint64_t>(opts.rational_bound) * 100;
+    core::FactorBaseParams params(opts.rational_bound, opts.algebraic_bound, lp_bound,
+                                  opts.log_scale);
     fb.set_params(params);
 
     // 实际代数素数上界：含 special-Q 范围
@@ -174,11 +177,13 @@ FactorBase FactorBaseBuilder::build(const PolynomialContext& ctx, const Options&
     // Prime counting function: π(n) ≈ n / ln(n)
     // `+1` widened to uint64_t so UINT32_MAX doesn't wrap to 0 (log(0)=-inf → 0 estimate).
     size_t estimated_rational = static_cast<size_t>(
-        opts.rational_bound / std::log(static_cast<double>(static_cast<uint64_t>(opts.rational_bound) + 1)) * 1.2
-    );
-    size_t estimated_algebraic = static_cast<size_t>(
-        effective_alg_bound / std::log(static_cast<double>(static_cast<uint64_t>(effective_alg_bound) + 1)) * 1.2
-    ) * ctx.degree();
+        opts.rational_bound /
+        std::log(static_cast<double>(static_cast<uint64_t>(opts.rational_bound) + 1)) * 1.2);
+    size_t estimated_algebraic =
+        static_cast<size_t>(
+            effective_alg_bound /
+            std::log(static_cast<double>(static_cast<uint64_t>(effective_alg_bound) + 1)) * 1.2) *
+        ctx.degree();
     fb.reserve(estimated_rational, estimated_algebraic);
 
     // 构建共享的 Eratosthenes 筛,bound = max(rational, algebraic),
@@ -196,10 +201,9 @@ FactorBase FactorBaseBuilder::build(const PolynomialContext& ctx, const Options&
     // 注意: 必须显式过滤 algebraic_bound==UINT32_MAX 否则 +1 wrap=0 让 find_…_range
     // 收到 (min_p=0, max_p>0),min_p<2 早 return 会救住但语义不对。params.hpp 实际
     // 把 B 限到 1e9,这层是 future-proof 防御。
-    if (opts.special_q_bound > opts.algebraic_bound &&
-        opts.algebraic_bound < UINT32_MAX) {
-        find_algebraic_primes_range(fb, ctx,
-            opts.algebraic_bound + 1, opts.special_q_bound, opts.log_scale);
+    if (opts.special_q_bound > opts.algebraic_bound && opts.algebraic_bound < UINT32_MAX) {
+        find_algebraic_primes_range(fb, ctx, opts.algebraic_bound + 1, opts.special_q_bound,
+                                    opts.log_scale);
     }
 
     fb.build_index();
@@ -209,9 +213,8 @@ FactorBase FactorBaseBuilder::build(const PolynomialContext& ctx, const Options&
 FactorBase FactorBaseBuilder::build(uint32_t /* rational_bound */, uint32_t /* algebraic_bound */) {
     // This instance method requires a valid ctx_, which we can't have with deleted copy.
     // The static build(ctx, opts) method should be used instead.
-    throw std::logic_error(
-        "FactorBaseBuilder::build(uint32_t, uint32_t) is deprecated — "
-        "use the static build(ctx, opts) method instead");
+    throw std::logic_error("FactorBaseBuilder::build(uint32_t, uint32_t) is deprecated — "
+                           "use the static build(ctx, opts) method instead");
 }
 
 std::vector<bool> FactorBaseBuilder::build_eratosthenes_sieve(uint32_t bound) {
@@ -225,11 +228,14 @@ std::vector<bool> FactorBaseBuilder::build_eratosthenes_sieve(uint32_t bound) {
 
     if (bound < PARALLEL_THRESHOLD) {
         std::vector<bool> is_prime(static_cast<size_t>(bound) + 1, true);
-        if (bound >= 1) is_prime[0] = false;
-        if (bound >= 1) is_prime[1] = false;
+        if (bound >= 1)
+            is_prime[0] = false;
+        if (bound >= 1)
+            is_prime[1] = false;
 
         for (uint64_t p = 2; p * p <= bound; ++p) {
-            if (!is_prime[static_cast<size_t>(p)]) continue;
+            if (!is_prime[static_cast<size_t>(p)])
+                continue;
             for (uint64_t k = p * p; k <= bound; k += p) {
                 is_prime[static_cast<size_t>(k)] = false;
             }
@@ -239,12 +245,12 @@ std::vector<bool> FactorBaseBuilder::build_eratosthenes_sieve(uint32_t bound) {
 
     // ── 分段并行筛 ──
     // Step 1: 子筛 ≤ √bound 的小素数 (单线程,数量少)
-    uint32_t sqrt_bound = static_cast<uint32_t>(
-        std::sqrt(static_cast<double>(bound))) + 1;
+    uint32_t sqrt_bound = static_cast<uint32_t>(std::sqrt(static_cast<double>(bound))) + 1;
     std::vector<bool> small_sieve(static_cast<size_t>(sqrt_bound) + 1, true);
     small_sieve[0] = small_sieve[1] = false;
     for (uint64_t p = 2; p * p <= sqrt_bound; ++p) {
-        if (!small_sieve[static_cast<size_t>(p)]) continue;
+        if (!small_sieve[static_cast<size_t>(p)])
+            continue;
         for (uint64_t k = p * p; k <= sqrt_bound; k += p) {
             small_sieve[static_cast<size_t>(k)] = false;
         }
@@ -252,7 +258,8 @@ std::vector<bool> FactorBaseBuilder::build_eratosthenes_sieve(uint32_t bound) {
     std::vector<uint32_t> small_primes;
     small_primes.reserve(static_cast<size_t>(sqrt_bound / std::log(sqrt_bound + 1.0) * 1.2));
     for (uint32_t p = 2; p <= sqrt_bound; ++p) {
-        if (small_sieve[p]) small_primes.push_back(p);
+        if (small_sieve[p])
+            small_primes.push_back(p);
     }
 
     // Step 2: 用 uint8_t (而非 vector<bool> 位包装) 以保证 byte 粒度
@@ -267,14 +274,17 @@ std::vector<bool> FactorBaseBuilder::build_eratosthenes_sieve(uint32_t bound) {
     uint32_t num_segments = (bound + SEGMENT_SIZE) / SEGMENT_SIZE;
 
     size_t n_threads = std::thread::hardware_concurrency();
-    if (n_threads == 0) n_threads = 4;
-    if (n_threads > num_segments) n_threads = num_segments;
+    if (n_threads == 0)
+        n_threads = 4;
+    if (n_threads > num_segments)
+        n_threads = num_segments;
 
     std::atomic<uint32_t> next_seg{0};
     auto worker = [&]() {
         while (true) {
             uint32_t s = next_seg.fetch_add(1, std::memory_order_relaxed);
-            if (s >= num_segments) break;
+            if (s >= num_segments)
+                break;
             uint64_t seg_lo = static_cast<uint64_t>(s) * SEGMENT_SIZE;
             uint64_t seg_hi = std::min<uint64_t>(seg_lo + SEGMENT_SIZE - 1, bound);
 
@@ -282,12 +292,13 @@ std::vector<bool> FactorBaseBuilder::build_eratosthenes_sieve(uint32_t bound) {
                 uint64_t pp = static_cast<uint64_t>(p) * p;
                 uint64_t start;
                 if (pp >= seg_lo) {
-                    start = pp;  // 第一个未划掉的倍数: p*p
+                    start = pp; // 第一个未划掉的倍数: p*p
                 } else {
                     // ⌈seg_lo / p⌉ · p — 第一个 ≥ seg_lo 的 p 的倍数
                     start = ((seg_lo + p - 1) / p) * p;
                 }
-                if (start > seg_hi) continue;
+                if (start > seg_hi)
+                    continue;
                 for (uint64_t k = start; k <= seg_hi; k += p) {
                     is_prime_u8[static_cast<size_t>(k)] = 0;
                 }
@@ -300,7 +311,8 @@ std::vector<bool> FactorBaseBuilder::build_eratosthenes_sieve(uint32_t bound) {
     for (size_t i = 0; i < n_threads; ++i) {
         threads.emplace_back(worker);
     }
-    for (auto& t : threads) t.join();
+    for (auto& t : threads)
+        t.join();
 
     // 转 std::vector<bool> 返回 (保持接口兼容)
     std::vector<bool> result(static_cast<size_t>(bound) + 1);
@@ -311,8 +323,8 @@ std::vector<bool> FactorBaseBuilder::build_eratosthenes_sieve(uint32_t bound) {
 }
 
 void FactorBaseBuilder::find_rational_primes(FactorBase& fb, const PolynomialContext& ctx,
-                                              uint32_t bound, uint8_t log_scale,
-                                              const std::vector<bool>* shared_sieve) {
+                                             uint32_t bound, uint8_t log_scale,
+                                             const std::vector<bool>* shared_sieve) {
     // 优先用调用方传入的共享筛(build() 一次构建供 rational+algebraic 复用);
     // 否则自行构建(为了独立测试 find_rational_primes 的入口而保留)。
     std::vector<bool> local_sieve;
@@ -326,7 +338,8 @@ void FactorBaseBuilder::find_rational_primes(FactorBase& fb, const PolynomialCon
     const auto& is_prime = *sieve_ptr;
 
     for (uint32_t p = 2; p <= bound; ++p) {
-        if (!is_prime[p]) continue;
+        if (!is_prime[p])
+            continue;
 
         // Skip primes that divide N — use mpz_divisible_ui_p (zero GMP alloc)
         if (mpz_divisible_ui_p(ctx.n().get_mpz(), p)) {
@@ -342,8 +355,8 @@ void FactorBaseBuilder::find_rational_primes(FactorBase& fb, const PolynomialCon
 }
 
 void FactorBaseBuilder::find_algebraic_primes(FactorBase& fb, const PolynomialContext& ctx,
-                                               uint32_t bound, uint8_t log_scale,
-                                               const std::vector<bool>* shared_sieve) {
+                                              uint32_t bound, uint8_t log_scale,
+                                              const std::vector<bool>* shared_sieve) {
     // Step 1: 复用 build() 提供的筛或自建
     std::vector<bool> local_sieve;
     const std::vector<bool>* sieve_ptr;
@@ -359,14 +372,17 @@ void FactorBaseBuilder::find_algebraic_primes(FactorBase& fb, const PolynomialCo
     // Projective root check: precompute leading_coeff mod small primes
     uint64_t fd_u64 = 0;
     bool fd_fits = ctx.leading_coeff().fits_uint64();
-    if (fd_fits) fd_u64 = ctx.leading_coeff().to_uint64();
+    if (fd_fits)
+        fd_u64 = ctx.leading_coeff().to_uint64();
 
     std::vector<uint32_t> primes;
     primes.reserve(static_cast<size_t>(bound / std::log(static_cast<double>(bound + 1)) * 1.1));
 
     for (uint32_t p = 2; p <= bound; ++p) {
-        if (!is_prime_sieve[p]) continue;
-        if (mpz_divisible_ui_p(ctx.n().get_mpz(), p)) continue;
+        if (!is_prime_sieve[p])
+            continue;
+        if (mpz_divisible_ui_p(ctx.n().get_mpz(), p))
+            continue;
         primes.push_back(p);
     }
 
@@ -377,8 +393,10 @@ void FactorBaseBuilder::find_algebraic_primes(FactorBase& fb, const PolynomialCo
     };
 
     size_t n_threads = std::thread::hardware_concurrency();
-    if (n_threads == 0) n_threads = 4;
-    if (primes.size() < 200) n_threads = 1;
+    if (n_threads == 0)
+        n_threads = 4;
+    if (primes.size() < 200)
+        n_threads = 1;
 
     std::vector<std::vector<AlgEntry>> thread_results(n_threads);
 
@@ -419,7 +437,8 @@ void FactorBaseBuilder::find_algebraic_primes(FactorBase& fb, const PolynomialCo
         threads.reserve(n_threads);
         for (size_t t = 0; t < n_threads; ++t)
             threads.emplace_back(worker, t);
-        for (auto& t : threads) t.join();
+        for (auto& t : threads)
+            t.join();
     }
 
     // Step 3: Merge in prime order (threads process consecutive chunks, already sorted)
@@ -430,11 +449,12 @@ void FactorBaseBuilder::find_algebraic_primes(FactorBase& fb, const PolynomialCo
     }
 }
 
-std::vector<uint32_t> FactorBaseBuilder::find_roots_mod_p(const PolynomialContext& ctx, uint32_t p) {
+std::vector<uint32_t> FactorBaseBuilder::find_roots_mod_p(const PolynomialContext& ctx,
+                                                          uint32_t p) {
     // For very small primes, brute force is faster than the overhead of polynomial GCD
     if (p < 64) {
         std::vector<uint32_t> roots;
-        roots.reserve(static_cast<size_t>(ctx.degree()));  // max d roots in F_p
+        roots.reserve(static_cast<size_t>(ctx.degree())); // max d roots in F_p
         for (uint32_t r = 0; r < p; ++r) {
             if (ctx.evaluate_mod(r, p) == 0) {
                 roots.push_back(r);
@@ -456,7 +476,7 @@ std::vector<uint32_t> FactorBaseBuilder::find_roots_mod_p(const PolynomialContex
     // Step 2: Compute g = gcd(x^p - x, f) mod p
     // This gives the product of all distinct linear factors of f
     sqrt::ModularPoly x_poly;
-    x_poly.set_coeff(1, 1);  // x
+    x_poly.set_coeff(1, 1); // x
 
     // x^p mod f mod p (reuse p_int)
     auto x_to_p = sqrt::ModularPoly::power(x_poly, p_int, f_mod, p);
@@ -481,11 +501,13 @@ std::vector<uint32_t> FactorBaseBuilder::find_roots_mod_p(const PolynomialContex
 
 /// Extract roots from a polynomial that is a product of distinct linear factors mod p
 /// Uses Cantor-Zassenhaus splitting when degree > 1
-std::vector<uint32_t> FactorBaseBuilder::extract_roots_from_poly(
-        const sqrt::ModularPoly& poly, const std::vector<uint64_t>& f_mod, uint32_t p) {
+std::vector<uint32_t> FactorBaseBuilder::extract_roots_from_poly(const sqrt::ModularPoly& poly,
+                                                                 const std::vector<uint64_t>& f_mod,
+                                                                 uint32_t p) {
 
     int deg = poly.degree();
-    if (deg <= 0) return {};
+    if (deg <= 0)
+        return {};
 
     if (deg == 1) {
         // Linear: ax + b = 0 → x = -b/a mod p
@@ -498,7 +520,8 @@ std::vector<uint32_t> FactorBaseBuilder::extract_roots_from_poly(
             uint64_t base = a % p, exp = p - 2;
             uint64_t result = 1;
             while (exp > 0) {
-                if (exp & 1) result = gnfs::util::mul_mod_u64(result, base, p);
+                if (exp & 1)
+                    result = gnfs::util::mul_mod_u64(result, base, p);
                 base = gnfs::util::mul_mod_u64(base, base, p);
                 exp >>= 1;
             }
@@ -509,7 +532,7 @@ std::vector<uint32_t> FactorBaseBuilder::extract_roots_from_poly(
     }
 
     // Degree > 1: use Cantor-Zassenhaus random splitting
-    std::mt19937_64 rng(p);  // deterministic seed per prime
+    std::mt19937_64 rng(p); // deterministic seed per prime
     std::vector<uint32_t> roots;
 
     // (p-1)/2 + poly_coeffs depend only on (p, poly), not attempt — hoist
@@ -563,21 +586,21 @@ std::vector<uint32_t> FactorBaseBuilder::extract_roots_from_poly(
     for (uint32_t r = 0; r < p && static_cast<int>(roots.size()) < deg; ++r) {
         uint64_t val = 0, rp = 1;
         for (int i = 0; i <= poly.degree(); ++i) {
-            val = (val + gnfs::util::mul_mod_u64(
-                poly.coeff(static_cast<size_t>(i)), rp, p)) % p;
+            val = (val + gnfs::util::mul_mod_u64(poly.coeff(static_cast<size_t>(i)), rp, p)) % p;
             rp = gnfs::util::mul_mod_u64(rp, r, p);
         }
-        if (val == 0) roots.push_back(r);
+        if (val == 0)
+            roots.push_back(r);
     }
     return roots;
 }
 
 /// Polynomial division: compute a / b mod p (exact division)
-sqrt::ModularPoly FactorBaseBuilder::poly_div_mod(
-        const sqrt::ModularPoly& a, const sqrt::ModularPoly& b, uint32_t p) {
+sqrt::ModularPoly FactorBaseBuilder::poly_div_mod(const sqrt::ModularPoly& a,
+                                                  const sqrt::ModularPoly& b, uint32_t p) {
 
     if (b.degree() < 0 || (b.degree() == 0 && b.coeff(0) == 0)) {
-        return sqrt::ModularPoly();  // division by zero
+        return sqrt::ModularPoly(); // division by zero
     }
 
     // Copy a's coefficients
@@ -590,7 +613,8 @@ sqrt::ModularPoly FactorBaseBuilder::poly_div_mod(
     int a_deg = a.degree();
     int b_deg = b.degree();
     int q_deg = a_deg - b_deg;
-    if (q_deg < 0) return sqrt::ModularPoly();
+    if (q_deg < 0)
+        return sqrt::ModularPoly();
 
     // Inverse of leading coefficient of b
     uint64_t b_lead = b.coeff(static_cast<size_t>(b_deg));
@@ -598,7 +622,8 @@ sqrt::ModularPoly FactorBaseBuilder::poly_div_mod(
     {
         uint64_t base = b_lead % p, exp = p - 2, result = 1;
         while (exp > 0) {
-            if (exp & 1) result = gnfs::util::mul_mod_u64(result, base, p);
+            if (exp & 1)
+                result = gnfs::util::mul_mod_u64(result, base, p);
             base = gnfs::util::mul_mod_u64(base, base, p);
             exp >>= 1;
         }
@@ -608,8 +633,8 @@ sqrt::ModularPoly FactorBaseBuilder::poly_div_mod(
     std::vector<uint64_t> quotient(static_cast<size_t>(q_deg + 1), 0);
 
     for (int i = q_deg; i >= 0; --i) {
-        uint64_t coeff = gnfs::util::mul_mod_u64(
-            rem[static_cast<size_t>(i + b_deg)], b_lead_inv, p);
+        uint64_t coeff =
+            gnfs::util::mul_mod_u64(rem[static_cast<size_t>(i + b_deg)], b_lead_inv, p);
         quotient[static_cast<size_t>(i)] = coeff;
 
         for (int j = 0; j <= b_deg; ++j) {
@@ -623,8 +648,10 @@ sqrt::ModularPoly FactorBaseBuilder::poly_div_mod(
 }
 
 void FactorBaseBuilder::find_algebraic_primes_range(FactorBase& fb, const PolynomialContext& ctx,
-                                                     uint32_t min_p, uint32_t max_p, uint8_t log_scale) {
-    if (min_p > max_p || min_p < 2) return;
+                                                    uint32_t min_p, uint32_t max_p,
+                                                    uint8_t log_scale) {
+    if (min_p > max_p || min_p < 2)
+        return;
 
     // Step 1: Sieve primes in [min_p, max_p](借公共 helper,统一起 p*p 优化)
     std::vector<bool> is_prime_sieve = build_eratosthenes_sieve(max_p);
@@ -636,13 +663,15 @@ void FactorBaseBuilder::find_algebraic_primes_range(FactorBase& fb, const Polyno
     std::vector<uint32_t> primes;
     // π(max_p)/π(min_p) approximation — reserve range/log avoids realloc.
     if (max_p > min_p) {
-        primes.reserve(static_cast<size_t>(
-            (max_p - min_p) / std::max(std::log(static_cast<double>(max_p)), 1.0)));
+        primes.reserve(static_cast<size_t>((max_p - min_p) /
+                                           std::max(std::log(static_cast<double>(max_p)), 1.0)));
     }
     for (uint64_t p = min_p; p <= max_p; ++p) {
-        if (!is_prime_sieve[static_cast<size_t>(p)]) continue;
+        if (!is_prime_sieve[static_cast<size_t>(p)])
+            continue;
         uint32_t p32 = static_cast<uint32_t>(p);
-        if (mpz_divisible_ui_p(ctx.n().get_mpz(), p32)) continue;
+        if (mpz_divisible_ui_p(ctx.n().get_mpz(), p32))
+            continue;
         primes.push_back(p32);
     }
 
@@ -652,8 +681,10 @@ void FactorBaseBuilder::find_algebraic_primes_range(FactorBase& fb, const Polyno
     };
 
     size_t n_threads = std::thread::hardware_concurrency();
-    if (n_threads == 0) n_threads = 4;
-    if (primes.size() < 200) n_threads = 1;
+    if (n_threads == 0)
+        n_threads = 4;
+    if (primes.size() < 200)
+        n_threads = 1;
 
     std::vector<std::vector<AlgEntry>> thread_results(n_threads);
 
@@ -689,7 +720,8 @@ void FactorBaseBuilder::find_algebraic_primes_range(FactorBase& fb, const Polyno
         threads.reserve(n_threads);
         for (size_t t = 0; t < n_threads; ++t)
             threads.emplace_back(worker, t);
-        for (auto& t : threads) t.join();
+        for (auto& t : threads)
+            t.join();
     }
 
     // Step 3: Merge (thread chunks are consecutive, preserving prime order)
