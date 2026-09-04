@@ -28,7 +28,8 @@ struct GFPolyOps {
     using Poly = std::vector<uint64_t>;
 
     static Poly trim(Poly p) {
-        while (p.size() > 1 && p.back() == 0) p.pop_back();
+        while (p.size() > 1 && p.back() == 0)
+            p.pop_back();
         return p;
     }
 
@@ -37,16 +38,19 @@ struct GFPolyOps {
     }
 
     static uint64_t inv_mod(uint64_t a, uint64_t p) {
-        if (a == 0) return 0;
+        if (a == 0)
+            return 0;
         int64_t t = 0, nt = 1;
         int64_t r = static_cast<int64_t>(p), nr = static_cast<int64_t>(a % p);
         while (nr != 0) {
             int64_t q = r / nr;
-            t -= q * nt; std::swap(t, nt);
-            r -= q * nr; std::swap(r, nr);
+            t -= q * nt;
+            std::swap(t, nt);
+            r -= q * nr;
+            std::swap(r, nr);
         }
-        return static_cast<uint64_t>((t % static_cast<int64_t>(p) +
-                                       static_cast<int64_t>(p)) % static_cast<int64_t>(p));
+        return static_cast<uint64_t>((t % static_cast<int64_t>(p) + static_cast<int64_t>(p)) %
+                                     static_cast<int64_t>(p));
     }
 
     static Poly add(const Poly& a, const Poly& b, uint64_t p) {
@@ -70,10 +74,12 @@ struct GFPolyOps {
     }
 
     static Poly mul(const Poly& a, const Poly& b, uint64_t p) {
-        if (is_zero(a) || is_zero(b)) return {0};
+        if (is_zero(a) || is_zero(b))
+            return {0};
         Poly r(a.size() + b.size() - 1, 0);
         for (size_t i = 0; i < a.size(); ++i) {
-            if (a[i] == 0) continue;
+            if (a[i] == 0)
+                continue;
             for (size_t j = 0; j < b.size(); ++j) {
                 uint64_t prod = gnfs::util::mul_mod_u64(a[i], b[j], p);
                 r[i + j] = gnfs::util::add_mod_u64(r[i + j], prod, p);
@@ -85,12 +91,13 @@ struct GFPolyOps {
     /// Polynomial division: returns (quotient, remainder)
     static std::pair<Poly, Poly> divmod(Poly a, const Poly& b, uint64_t p) {
         a = trim(a);
-        if (is_zero(b)) return {{0}, a};
-        if (a.size() < b.size()) return {{0}, a};
+        if (is_zero(b))
+            return {{0}, a};
+        if (a.size() < b.size())
+            return {{0}, a};
         uint64_t b_inv = inv_mod(b.back(), p);
         Poly q(a.size() - b.size() + 1, 0);
-        for (int i = static_cast<int>(a.size()) - 1;
-             i >= static_cast<int>(b.size()) - 1; --i) {
+        for (int i = static_cast<int>(a.size()) - 1; i >= static_cast<int>(b.size()) - 1; --i) {
             const size_t i_idx = static_cast<size_t>(i);
             const int shift = static_cast<int>(b.size()) - 1;
             uint64_t c = gnfs::util::mul_mod_u64(a[i_idx], b_inv, p);
@@ -105,15 +112,18 @@ struct GFPolyOps {
     }
 
     static Poly gcd(Poly a, Poly b, uint64_t p) {
-        a = trim(a); b = trim(b);
+        a = trim(a);
+        b = trim(b);
         while (!is_zero(b)) {
             auto [q, r] = divmod(a, b, p);
-            a = b; b = r;
+            a = b;
+            b = r;
         }
         // Make monic
         if (!a.empty() && a.back() != 0 && a.back() != 1) {
             uint64_t inv = inv_mod(a.back(), p);
-            for (auto& c : a) c = c * inv % p;
+            for (auto& c : a)
+                c = c * inv % p;
         }
         return a;
     }
@@ -125,18 +135,24 @@ struct GFPolyOps {
         Poly old_t = {0}, t = {1};
         while (!is_zero(r)) {
             auto [q, rem] = divmod(old_r, r, p);
-            old_r = r; r = rem;
+            old_r = r;
+            r = rem;
             Poly ns = sub(old_s, mul(q, s, p), p);
-            old_s = s; s = ns;
+            old_s = s;
+            s = ns;
             Poly nt_new = sub(old_t, mul(q, t, p), p);
-            old_t = t; t = nt_new;
+            old_t = t;
+            t = nt_new;
         }
         // Make gcd monic
         if (!old_r.empty() && old_r.back() != 0 && old_r.back() != 1) {
             uint64_t inv = inv_mod(old_r.back(), p);
-            for (auto& c : old_r) c = c * inv % p;
-            for (auto& c : old_s) c = c * inv % p;
-            for (auto& c : old_t) c = c * inv % p;
+            for (auto& c : old_r)
+                c = c * inv % p;
+            for (auto& c : old_s)
+                c = c * inv % p;
+            for (auto& c : old_t)
+                c = c * inv % p;
         }
         return {old_r, old_s, old_t};
     }
@@ -218,21 +234,24 @@ struct GFPolyOps {
         // f has at most deg/2 distinct degrees in DDF output.
         result.reserve(f.size() / 2);
         f = trim(f);
-        if (f.size() <= 1) return result;
+        if (f.size() <= 1)
+            return result;
         // Make monic
         if (f.back() != 1) {
             uint64_t inv = inv_mod(f.back(), p);
-            for (auto& c : f) c = c * inv % p;
+            for (auto& c : f)
+                c = c * inv % p;
         }
 
-        Poly h = {0, 1};  // h = x
+        Poly h = {0, 1}; // h = x
         for (uint32_t d = 1; 2 * d <= static_cast<uint32_t>(f.size() - 1); ++d) {
             // h = h^p mod f (so h = x^{p^d} mod f at step d)
             h = powmod(h, p, f, p);
 
             // g_d = gcd(h - x, f)
             Poly h_minus_x = h;
-            if (h_minus_x.size() < 2) h_minus_x.resize(2, 0);
+            if (h_minus_x.size() < 2)
+                h_minus_x.resize(2, 0);
             h_minus_x[1] = (h_minus_x[1] + p - 1) % p;
             h_minus_x = trim(h_minus_x);
 
@@ -242,7 +261,8 @@ struct GFPolyOps {
                 result.push_back({d, g_d});
                 f = divmod(f, g_d, p).first;
                 f = trim(f);
-                if (f.size() <= 1) break;
+                if (f.size() <= 1)
+                    break;
                 h = divmod(h, f, p).second;
             }
         }
@@ -256,7 +276,8 @@ struct GFPolyOps {
     /// f is a product of distinct irreducible polys each of degree d
     static std::vector<Poly> edf(const Poly& f, uint32_t d, uint64_t p,
                                  uint32_t max_attempts = 200) {
-        if (f.size() <= 1) return {};
+        if (f.size() <= 1)
+            return {};
         if (static_cast<uint32_t>(f.size() - 1) == d) {
             std::vector<Poly> result = {f};
             validate_factorization(f, result, p);
@@ -269,9 +290,11 @@ struct GFPolyOps {
         std::mt19937 rng(edf_seed(f, d, p));
         for (uint32_t attempt = 0; attempt < max_attempts; ++attempt) {
             Poly t(f.size() - 1, 0);
-            for (size_t i = 0; i < t.size(); ++i) t[i] = rng() % p;
+            for (size_t i = 0; i < t.size(); ++i)
+                t[i] = rng() % p;
             t = trim(t);
-            if (is_zero(t)) continue;
+            if (is_zero(t))
+                continue;
 
             Poly g;
             if (p == 2) {
@@ -287,7 +310,8 @@ struct GFPolyOps {
             } else {
                 // g = gcd(t^{(p^d-1)/2} - 1, f)
                 uint64_t exp = 1;
-                for (uint32_t i = 0; i < d; ++i) exp *= p;
+                for (uint32_t i = 0; i < d; ++i)
+                    exp *= p;
                 exp = (exp - 1) / 2;
                 Poly tp = powmod(t, exp, f, p);
                 tp[0] = (tp[0] + p - 1) % p;
@@ -314,12 +338,14 @@ struct GFPolyOps {
     /// Returns empty if f has repeated factors and can't be squarefree-decomposed
     static std::vector<Poly> factor(Poly f, uint64_t p) {
         f = trim(f);
-        if (f.size() <= 1) return {};
+        if (f.size() <= 1)
+            return {};
 
         // Make monic
         if (f.back() != 1) {
             uint64_t inv = inv_mod(f.back(), p);
-            for (auto& c : f) c = c * inv % p;
+            for (auto& c : f)
+                c = c * inv % p;
         }
 
         // Square-free check: gcd(f, f')
@@ -332,7 +358,7 @@ struct GFPolyOps {
         Poly g = gcd(f, fp, p);
         Poly f_sqfree;
         if (g.size() <= 1) {
-            f_sqfree = f;  // already squarefree
+            f_sqfree = f; // already squarefree
         } else {
             f_sqfree = divmod(f, g, p).first;
             f_sqfree = trim(f_sqfree);
@@ -340,7 +366,7 @@ struct GFPolyOps {
 
         if (f_sqfree.size() <= 1) {
             // f is a perfect power — can't easily extract factors
-            return {};  // signal caller to use fallback
+            return {}; // signal caller to use fallback
         }
 
         // DDF + EDF on squarefree part
@@ -354,7 +380,8 @@ struct GFPolyOps {
             for (auto& part : parts) {
                 if (!part.empty() && part.back() != 1) {
                     uint64_t inv = inv_mod(part.back(), p);
-                    for (auto& c : part) c = c * inv % p;
+                    for (auto& c : part)
+                        c = c * inv % p;
                 }
                 factors.push_back(part);
             }
@@ -368,16 +395,12 @@ struct GFPolyOps {
     /// such that f ≡ g*h (mod ℓ^k)
     /// g0, h0: original mod-ℓ factors (kept for Bezout reference)
     /// t_bezout: h0^{-1} mod g0 in GF(ℓ) (from extended GCD: s*g0 + t*h0 = 1)
-    static void hensel_lift_pair(
-        const std::vector<uint64_t>& f_pk,
-        std::vector<uint64_t>& g,
-        std::vector<uint64_t>& h,
-        const Poly& g0, const Poly& h0,
-        const Poly& t_bezout,
-        uint32_t ell, uint32_t k)
-    {
+    static void hensel_lift_pair(const std::vector<uint64_t>& f_pk, std::vector<uint64_t>& g,
+                                 std::vector<uint64_t>& h, const Poly& g0, const Poly& h0,
+                                 const Poly& t_bezout, uint32_t ell, uint32_t k) {
         uint64_t target = 1;
-        for (uint32_t i = 0; i < k; ++i) target *= ell;
+        for (uint32_t i = 0; i < k; ++i)
+            target *= ell;
 
         uint64_t modulus = ell;
         for (uint32_t step = 1; step < k; ++step) {
@@ -386,8 +409,7 @@ struct GFPolyOps {
             std::vector<int64_t> prod(g_sz + h_sz - 1, 0);
             for (size_t i = 0; i < g_sz; ++i) {
                 for (size_t j = 0; j < h_sz; ++j) {
-                    int64_t p = static_cast<int64_t>(
-                        gnfs::util::mul_mod_u64(g[i], h[j], target));
+                    int64_t p = static_cast<int64_t>(gnfs::util::mul_mod_u64(g[i], h[j], target));
                     prod[i + j] = (prod[i + j] + p) % static_cast<int64_t>(target);
                 }
             }
@@ -396,15 +418,17 @@ struct GFPolyOps {
             Poly eps(f_pk.size(), 0);
             for (size_t i = 0; i < f_pk.size(); ++i) {
                 int64_t fi = static_cast<int64_t>(f_pk[i]);
-                int64_t pi = (i < prod.size()) ?
-                    ((prod[i] % static_cast<int64_t>(target)) + static_cast<int64_t>(target))
-                        % static_cast<int64_t>(target) : 0;
+                int64_t pi = (i < prod.size()) ? ((prod[i] % static_cast<int64_t>(target)) +
+                                                  static_cast<int64_t>(target)) %
+                                                     static_cast<int64_t>(target)
+                                               : 0;
                 int64_t diff = fi - pi;
-                if (diff < 0) diff += static_cast<int64_t>(target);
+                if (diff < 0)
+                    diff += static_cast<int64_t>(target);
                 // diff is divisible by modulus (by induction)
-                int64_t ei = (diff / static_cast<int64_t>(modulus))
-                             % static_cast<int64_t>(ell);
-                if (ei < 0) ei += static_cast<int64_t>(ell);
+                int64_t ei = (diff / static_cast<int64_t>(modulus)) % static_cast<int64_t>(ell);
+                if (ei < 0)
+                    ei += static_cast<int64_t>(ell);
                 eps[i] = static_cast<uint64_t>(ei);
             }
             eps = trim(eps);
@@ -433,11 +457,9 @@ struct GFPolyOps {
     }
 
     /// Recursively Hensel lift multiple coprime factors from mod ℓ to mod ℓ^k
-    static std::vector<std::vector<uint64_t>> hensel_lift_all(
-        const std::vector<uint64_t>& f_pk,
-        const std::vector<Poly>& factors,
-        uint32_t ell, uint32_t k)
-    {
+    static std::vector<std::vector<uint64_t>> hensel_lift_all(const std::vector<uint64_t>& f_pk,
+                                                              const std::vector<Poly>& factors,
+                                                              uint32_t ell, uint32_t k) {
         if (factors.size() == 1) {
             return {f_pk};
         }
@@ -483,13 +505,13 @@ struct GFPolyOps {
 
 /// Schirokauer map configuration
 struct SchirokaurConfig {
-    std::vector<uint32_t> primes = {2};  // Primes for Schirokauer maps (usually just 2)
-    uint32_t exponent_k = 8;              // Exponent k (use ℓ^k), larger = more accurate.
-                                          // (coeff-1)/ℓ mod ℓ needs k-v ≥ 2 bits of ℓ-adic
-                                          // precision after stripping v ℓ-factors.
-                                          // Inputs with strip_v ≥ k-1 (e.g. γ = a - b·r
-                                          // hitting Hensel root in split-degree-1 path)
-                                          // silently fall back to zero columns.
+    std::vector<uint32_t> primes = {2}; // Primes for Schirokauer maps (usually just 2)
+    uint32_t exponent_k = 8;            // Exponent k (use ℓ^k), larger = more accurate.
+                                        // (coeff-1)/ℓ mod ℓ needs k-v ≥ 2 bits of ℓ-adic
+                                        // precision after stripping v ℓ-factors.
+                                        // Inputs with strip_v ≥ k-1 (e.g. γ = a - b·r
+                                        // hitting Hensel root in split-degree-1 path)
+                                        // silently fall back to zero columns.
     bool verbose = false;
 };
 
@@ -524,9 +546,11 @@ public:
         result.deg = a.deg + b.deg;
 
         for (uint32_t i = 0; i <= a.deg; ++i) {
-            if (a.coeffs[i] == 0) continue;
+            if (a.coeffs[i] == 0)
+                continue;
             for (uint32_t j = 0; j <= b.deg; ++j) {
-                if (b.coeffs[j] == 0) continue;
+                if (b.coeffs[j] == 0)
+                    continue;
                 uint64_t prod = gnfs::util::mul_mod_u64(a.coeffs[i], b.coeffs[j], m);
                 result.coeffs[i + j] = gnfs::util::add_mod_u64(result.coeffs[i + j], prod, m);
             }
@@ -546,7 +570,8 @@ public:
         while (a.deg >= f_deg) {
             uint64_t lead = a.coeffs[a.deg];
             if (lead == 0) {
-                if (a.deg > 0) a.deg--;
+                if (a.deg > 0)
+                    a.deg--;
                 continue;
             }
 
@@ -561,7 +586,8 @@ public:
                 }
             }
             a.coeffs[a.deg] = 0;
-            if (a.deg > 0) a.deg--;
+            if (a.deg > 0)
+                a.deg--;
         }
 
         // Final normalize
@@ -571,17 +597,18 @@ public:
     }
 
     // Multiply and reduce: result = a * b mod (f, m)
-    [[nodiscard]] static FastPoly mul(const FastPoly& a, const FastPoly& b,
-                                       const uint64_t* f, uint32_t f_deg, uint64_t m) {
+    [[nodiscard]] static FastPoly mul(const FastPoly& a, const FastPoly& b, const uint64_t* f,
+                                      uint32_t f_deg, uint64_t m) {
         auto result = mul_raw(a, b, m);
         reduce_inplace(result, f, f_deg, m);
         return result;
     }
 
     // Power mod (f, m) using binary exponentiation with uint64_t exponent
-    [[nodiscard]] static FastPoly power(const FastPoly& base, uint64_t exp,
-                                         const uint64_t* f, uint32_t f_deg, uint64_t m) {
-        if (exp == 0) return FastPoly(1);
+    [[nodiscard]] static FastPoly power(const FastPoly& base, uint64_t exp, const uint64_t* f,
+                                        uint32_t f_deg, uint64_t m) {
+        if (exp == 0)
+            return FastPoly(1);
 
         FastPoly result(1);
         FastPoly b = base;
@@ -652,8 +679,8 @@ public:
     }
 
     /// Fast computation for a single prime using fixed-size arrays
-    [[nodiscard]] std::vector<uint32_t> compute_for_prime_fast(
-            int64_t a, uint64_t b, size_t prime_idx) const {
+    [[nodiscard]] std::vector<uint32_t> compute_for_prime_fast(int64_t a, uint64_t b,
+                                                               size_t prime_idx) const {
 
         if (prime_idx >= config_.primes.size()) {
             return std::vector<uint32_t>(degree_, 0);
@@ -695,11 +722,12 @@ public:
     /// When gcd(a, b) is divisible by ℓ we strip the ℓ-part first, matching
     /// the split-case handling in compute_split. If γ ≡ 0 mod ℓ^k entirely,
     /// the Schirokauer map is undefined and we return zero columns.
-    [[nodiscard]] std::vector<uint32_t> compute_unsplit(
-            int64_t a, uint64_t b, const PrimeInfo& info) const {
+    [[nodiscard]] std::vector<uint32_t> compute_unsplit(int64_t a, uint64_t b,
+                                                        const PrimeInfo& info) const {
 
         int64_t a_mod = a % static_cast<int64_t>(info.ell_k);
-        if (a_mod < 0) a_mod += static_cast<int64_t>(info.ell_k);
+        if (a_mod < 0)
+            a_mod += static_cast<int64_t>(info.ell_k);
         uint64_t b_mod = b % info.ell_k;
         uint64_t neg_b = (info.ell_k - b_mod) % info.ell_k;
 
@@ -709,8 +737,7 @@ public:
             return std::vector<uint32_t>(degree_, 0);
         }
         uint32_t strip_v = 0;
-        while (c0 % info.ell == 0 && c1 % info.ell == 0 &&
-               (c0 != 0 || c1 != 0)) {
+        while (c0 % info.ell == 0 && c1 % info.ell == 0 && (c0 != 0 || c1 != 0)) {
             c0 /= info.ell;
             c1 /= info.ell;
             ++strip_v;
@@ -730,7 +757,8 @@ public:
         std::vector<uint32_t> result(degree_, 0);
         for (uint32_t i = 0; i < degree_; ++i) {
             uint64_t coeff = g_pow.coeff(i);
-            if (i == 0) coeff = (coeff >= 1) ? (coeff - 1) : (info.ell_k - 1);
+            if (i == 0)
+                coeff = (coeff >= 1) ? (coeff - 1) : (info.ell_k - 1);
             result[i] = static_cast<uint32_t>((coeff / info.ell) % info.ell);
         }
         return result;
@@ -742,8 +770,8 @@ public:
     ///   If γ ≡ 0 mod (fᵢ, ℓ): strip ℓ-part to get unit before computing map
     ///   Compute unit^(ℓ^{dᵢ} - 1) mod (fᵢ, ℓ^k)
     ///   Extract (result - 1) / ℓ mod ℓ → dᵢ columns
-    [[nodiscard]] std::vector<uint32_t> compute_split(
-            int64_t a, uint64_t b, const PrimeInfo& info) const {
+    [[nodiscard]] std::vector<uint32_t> compute_split(int64_t a, uint64_t b,
+                                                      const PrimeInfo& info) const {
 
         std::vector<uint32_t> result;
         result.reserve(degree_);
@@ -751,14 +779,16 @@ public:
         for (const auto& fi : info.factors) {
             if (fi.degree == 1) {
                 // Linear factor (x - r): γ mod (x - r, ℓ^k) = a - b·r mod ℓ^k
-                uint64_t r = (info.ell_k - fi.f_mod[0]) % info.ell_k;  // root
+                uint64_t r = (info.ell_k - fi.f_mod[0]) % info.ell_k; // root
 
                 // Compute gamma = (a - b*r) mod ℓ^k using the full Hensel-lifted root
                 int64_t a_mod = a % static_cast<int64_t>(info.ell_k);
-                if (a_mod < 0) a_mod += static_cast<int64_t>(info.ell_k);
+                if (a_mod < 0)
+                    a_mod += static_cast<int64_t>(info.ell_k);
                 uint64_t b_mod = b % info.ell_k;
                 uint64_t gamma = (static_cast<uint64_t>(a_mod) + info.ell_k -
-                    gnfs::util::mul_mod_u64(b_mod, r, info.ell_k)) % info.ell_k;
+                                  gnfs::util::mul_mod_u64(b_mod, r, info.ell_k)) %
+                                 info.ell_k;
 
                 // Strip ℓ-part: the ideal valuation v_P(γ) is already captured by
                 // the factor base column. The Schirokauer map should only capture
@@ -792,7 +822,8 @@ public:
                     uint64_t exp = fi.exponent;
                     g_pow = 1;
                     while (exp > 0) {
-                        if (exp & 1) g_pow = gnfs::util::mul_mod_u64(g_pow, base, info.ell_k);
+                        if (exp & 1)
+                            g_pow = gnfs::util::mul_mod_u64(g_pow, base, info.ell_k);
                         base = gnfs::util::mul_mod_u64(base, base, info.ell_k);
                         exp >>= 1;
                     }
@@ -809,20 +840,20 @@ public:
                 // Quadratic factor: γ mod (fᵢ, ℓ^k) is a degree-1 polynomial
                 // Reduce (a - bx) mod (fᵢ, ℓ^k) — since deg(a-bx) = 1 < 2, no reduction needed
                 int64_t a_mod = a % static_cast<int64_t>(info.ell_k);
-                if (a_mod < 0) a_mod += static_cast<int64_t>(info.ell_k);
+                if (a_mod < 0)
+                    a_mod += static_cast<int64_t>(info.ell_k);
                 uint64_t b_mod = b % info.ell_k;
                 uint64_t neg_b = (info.ell_k - b_mod) % info.ell_k;
 
                 uint64_t c0 = static_cast<uint64_t>(a_mod);
                 uint64_t c1 = neg_b;
                 if (c0 == 0 && c1 == 0) {
-                    result.resize(result.size() + fi.degree);  // zero-fill
+                    result.resize(result.size() + fi.degree); // zero-fill
                     continue;
                 }
                 // Strip ℓ-part: if both coefficients are divisible by ℓ, divide out
                 uint32_t strip_v = 0;
-                while (c0 % info.ell == 0 && c1 % info.ell == 0 &&
-                       (c0 != 0 || c1 != 0)) {
+                while (c0 % info.ell == 0 && c1 % info.ell == 0 && (c0 != 0 || c1 != 0)) {
                     c0 /= info.ell;
                     c1 /= info.ell;
                     ++strip_v;
@@ -830,7 +861,7 @@ public:
                 // Need k-v ≥ 2 bits of ℓ-adic precision for (coeff-1)/ℓ mod ℓ.
                 // Below that threshold the extracted bits are below noise floor.
                 if (strip_v + 2 > config_.exponent_k) {
-                    result.resize(result.size() + fi.degree);  // zero-fill
+                    result.resize(result.size() + fi.degree); // zero-fill
                     continue;
                 }
                 // Ensure coefficients stay in [0, ell_k)
@@ -840,64 +871,69 @@ public:
                 FastPoly g(c0, c1);
 
                 // Compute g^(ℓ^2 - 1) mod (fᵢ, ℓ^k)
-                auto g_pow = FastPoly::power(g, fi.exponent, fi.f_mod.data(), fi.degree, info.ell_k);
+                auto g_pow =
+                    FastPoly::power(g, fi.exponent, fi.f_mod.data(), fi.degree, info.ell_k);
 
                 // Extract 2 values: (g_pow - 1) / ℓ mod ℓ
                 for (uint32_t i = 0; i < fi.degree; ++i) {
                     uint64_t coeff = g_pow.coeff(i);
-                    if (i == 0) coeff = (coeff >= 1) ? (coeff - 1) : (info.ell_k - 1);
+                    if (i == 0)
+                        coeff = (coeff >= 1) ? (coeff - 1) : (info.ell_k - 1);
                     result.push_back(static_cast<uint32_t>((coeff / info.ell) % info.ell));
                 }
 
             } else {
                 // Higher degree factor — general case using FastPoly
                 int64_t a_mod = a % static_cast<int64_t>(info.ell_k);
-                if (a_mod < 0) a_mod += static_cast<int64_t>(info.ell_k);
+                if (a_mod < 0)
+                    a_mod += static_cast<int64_t>(info.ell_k);
                 uint64_t b_mod = b % info.ell_k;
                 uint64_t neg_b = (info.ell_k - b_mod) % info.ell_k;
 
                 uint64_t c0 = static_cast<uint64_t>(a_mod);
                 uint64_t c1 = neg_b;
                 if (c0 == 0 && c1 == 0) {
-                    result.resize(result.size() + fi.degree);  // zero-fill
+                    result.resize(result.size() + fi.degree); // zero-fill
                     continue;
                 }
                 // Strip ℓ-part: if both coefficients are divisible by ℓ, divide out
                 uint32_t strip_v = 0;
-                while (c0 % info.ell == 0 && c1 % info.ell == 0 &&
-                       (c0 != 0 || c1 != 0)) {
+                while (c0 % info.ell == 0 && c1 % info.ell == 0 && (c0 != 0 || c1 != 0)) {
                     c0 /= info.ell;
                     c1 /= info.ell;
                     ++strip_v;
                 }
                 // Need k-v ≥ 2 bits of ℓ-adic precision for (coeff-1)/ℓ mod ℓ.
                 if (strip_v + 2 > config_.exponent_k) {
-                    result.resize(result.size() + fi.degree);  // zero-fill
+                    result.resize(result.size() + fi.degree); // zero-fill
                     continue;
                 }
                 c0 %= info.ell_k;
                 c1 %= info.ell_k;
 
                 FastPoly g(c0, c1);
-                auto g_pow = FastPoly::power(g, fi.exponent, fi.f_mod.data(), fi.degree, info.ell_k);
+                auto g_pow =
+                    FastPoly::power(g, fi.exponent, fi.f_mod.data(), fi.degree, info.ell_k);
 
                 for (uint32_t i = 0; i < fi.degree; ++i) {
                     uint64_t coeff = g_pow.coeff(i);
-                    if (i == 0) coeff = (coeff >= 1) ? (coeff - 1) : (info.ell_k - 1);
+                    if (i == 0)
+                        coeff = (coeff >= 1) ? (coeff - 1) : (info.ell_k - 1);
                     result.push_back(static_cast<uint32_t>((coeff / info.ell) % info.ell));
                 }
             }
         }
 
         // Pad to degree_ if needed (shouldn't happen if factorization is correct)
-        if (result.size() < degree_) result.resize(degree_);
+        if (result.size() < degree_)
+            result.resize(degree_);
 
         return result;
     }
 
     /// Compute Schirokauer map for a single prime (by index) - legacy interface
-    [[nodiscard]] std::vector<uint32_t> compute_for_prime(
-            int64_t a, uint64_t b, size_t prime_idx) const {
+    [[nodiscard]] std::vector<uint32_t> compute_for_prime(int64_t a, uint64_t b,
+                                                          size_t prime_idx) const {
         return compute_for_prime_fast(a, b, prime_idx);
     }
 
@@ -955,7 +991,8 @@ private:
             // f is irreducible mod ℓ — standard case
             info.is_split = false;
             uint64_t q = 1;
-            for (uint32_t i = 0; i < degree_; ++i) q *= ell;
+            for (uint32_t i = 0; i < degree_; ++i)
+                q *= ell;
             info.exponent = q - 1;
         } else {
             // f is reducible mod ℓ — proper factorization using DDF + EDF
@@ -989,9 +1026,10 @@ private:
             info.is_split = false;
             info.factors.clear();
             uint64_t q = 1;
-            for (uint32_t i = 0; i < degree_; ++i) q *= ell;
+            for (uint32_t i = 0; i < degree_; ++i)
+                q *= ell;
             info.exponent = q - 1;
-            return;  // compute_unsplit() will handle this
+            return; // compute_unsplit() will handle this
         }
 
         // Prepare f mod ℓ^k for Hensel lifting
@@ -1002,15 +1040,15 @@ private:
 
         // Case 2: f is squarefree mod ℓ (factor degrees sum to polynomial degree)
         if (deg_sum == degree_ && irred_factors.size() >= 2) {
-            auto lifted = GFPolyOps::hensel_lift_all(
-                f_pk, irred_factors, ell, config_.exponent_k);
+            auto lifted = GFPolyOps::hensel_lift_all(f_pk, irred_factors, ell, config_.exponent_k);
 
             info.factors.clear();
             for (size_t idx = 0; idx < irred_factors.size(); ++idx) {
                 FactorInfo fi;
                 fi.degree = static_cast<uint32_t>(irred_factors[idx].size()) - 1;
                 uint64_t q = 1;
-                for (uint32_t i = 0; i < fi.degree; ++i) q *= ell;
+                for (uint32_t i = 0; i < fi.degree; ++i)
+                    q *= ell;
                 fi.exponent = q - 1;
                 fi.f_mod.fill(0);
                 for (size_t i = 0; i < lifted[idx].size() && i <= FastPoly::MAX_DEGREE; ++i) {
@@ -1028,8 +1066,8 @@ private:
         // but still correct (just slightly less efficient).
         info.factors.clear();
 
-        GFPolyOps::Poly f_ell = GFPolyOps::trim(
-            GFPolyOps::Poly(f_mod_ell.begin(), f_mod_ell.end()));
+        GFPolyOps::Poly f_ell =
+            GFPolyOps::trim(GFPolyOps::Poly(f_mod_ell.begin(), f_mod_ell.end()));
 
         for (const auto& fac : irred_factors) {
             // Compute multiplicity of this factor in f mod ℓ
@@ -1045,14 +1083,16 @@ private:
                 }
             }
 
-            if (multiplicity != 1) continue;  // Can't Hensel-lift repeated factors
+            if (multiplicity != 1)
+                continue; // Can't Hensel-lift repeated factors
 
             // Cofactor = f / fac mod ℓ (coprime since multiplicity == 1)
             auto [cofactor, rem] = GFPolyOps::divmod(f_ell, fac, ell);
 
             // Verify coprimality (should hold for multiplicity-1 factors)
             auto gcd_check = GFPolyOps::gcd(fac, cofactor, ell);
-            if (gcd_check.size() > 1) continue;  // Not coprime — skip
+            if (gcd_check.size() > 1)
+                continue; // Not coprime — skip
 
             // Extended GCD for Bezout coefficients needed by Hensel lifting
             auto [gcd_val, s_bezout, t_bezout] = GFPolyOps::extended_gcd(fac, cofactor, ell);
@@ -1060,14 +1100,15 @@ private:
             // Hensel lift this factor individually against f
             std::vector<uint64_t> g_lift(fac.begin(), fac.end());
             std::vector<uint64_t> h_lift(cofactor.begin(), cofactor.end());
-            GFPolyOps::hensel_lift_pair(
-                f_pk, g_lift, h_lift, fac, cofactor, t_bezout, ell, config_.exponent_k);
+            GFPolyOps::hensel_lift_pair(f_pk, g_lift, h_lift, fac, cofactor, t_bezout, ell,
+                                        config_.exponent_k);
 
             // Store the lifted factor
             FactorInfo fi;
             fi.degree = static_cast<uint32_t>(fac.size()) - 1;
             uint64_t q = 1;
-            for (uint32_t i = 0; i < fi.degree; ++i) q *= ell;
+            for (uint32_t i = 0; i < fi.degree; ++i)
+                q *= ell;
             fi.exponent = q - 1;
             fi.f_mod.fill(0);
             for (size_t i = 0; i < g_lift.size() && i <= FastPoly::MAX_DEGREE; ++i) {
@@ -1082,18 +1123,18 @@ private:
         if (info.factors.empty()) {
             info.is_split = false;
             uint64_t q = 1;
-            for (uint32_t i = 0; i < degree_; ++i) q *= ell;
+            for (uint32_t i = 0; i < degree_; ++i)
+                q *= ell;
             info.exponent = q - 1;
-            return;  // compute_unsplit() will handle this
+            return; // compute_unsplit() will handle this
         }
         // Otherwise, compute_split() will zero-pad remaining columns up to degree_
     }
 };
 
 /// Compute the number of Schirokauer columns for given configuration
-[[nodiscard]] inline size_t schirokauer_num_columns(
-        uint32_t degree,
-        const std::vector<uint32_t>& primes) {
+[[nodiscard]] inline size_t schirokauer_num_columns(uint32_t degree,
+                                                    const std::vector<uint32_t>& primes) {
     return primes.size() * degree;
 }
 
