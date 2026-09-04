@@ -158,6 +158,10 @@ void test_direct_3lp_helper() {
         CHECK(opt->type == CofactorClass::ThreeLP, "type should be ThreeLP");
         CHECK(opt->factor1 * opt->factor2 * opt->factor3 == c, "factor product mismatch");
     }
+
+    const Integer two_lp = Integer(p) * Integer(q);
+    CHECK(!try_classify_three_lp(two_lp, B).has_value(),
+          "direct 3LP helper must reject cofactors at or below B^2");
     std::cout << "OK" << std::endl;
 }
 

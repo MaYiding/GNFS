@@ -1039,6 +1039,12 @@ classify_cofactor_impl_v1(const Integer& cofactor, uint64_t large_prime_bound, b
 /// `B` return nullopt.
 [[nodiscard]] inline std::optional<CofactorClassification>
 try_classify_three_lp(const Integer& cofactor, uint64_t large_prime_bound) {
+    const Integer bound(static_cast<unsigned long long>(large_prime_bound));
+    const Integer bound_sq = bound * bound;
+    const Integer bound_cube = bound_sq * bound;
+    if (cofactor.compare(bound_sq) <= 0 || cofactor.compare(bound_cube) > 0)
+        return std::nullopt;
+
     if (cofactor.fits_uint64())
         return try_classify_three_lp(cofactor.to_uint64(), large_prime_bound);
 
