@@ -263,10 +263,10 @@ void test_big_integer_3lp() {
           "arbitrary-precision 3LP classified as " << static_cast<int>(cls.type));
     if (cls.type == CofactorClass::ThreeLP) {
         CHECK(cls.factor1 == p && cls.factor2 == q && cls.factor3 == r,
-              "arbitrary-precision factors changed: " << cls.factor1 << " " << cls.factor2
-                                                       << " " << cls.factor3);
-        const Integer reconstructed = Integer(cls.factor1) * Integer(cls.factor2) *
-                                      Integer(cls.factor3);
+              "arbitrary-precision factors changed: " << cls.factor1 << " " << cls.factor2 << " "
+                                                      << cls.factor3);
+        const Integer reconstructed =
+            Integer(cls.factor1) * Integer(cls.factor2) * Integer(cls.factor3);
         CHECK(reconstructed == expected, "arbitrary-precision factor product mismatch");
     }
 
@@ -298,10 +298,8 @@ void test_big_integer_factor_above_bound() {
           "out-of-bound product must be at or below B^3");
 
     const auto cls = classify_cofactor(c, B, /*allow_3lp=*/true);
-    CHECK(cls.type != CofactorClass::ThreeLP,
-          "factor above B must not be accepted as ThreeLP");
-    CHECK(!try_classify_three_lp(c, B).has_value(),
-          "direct helper must reject factor above B");
+    CHECK(cls.type != CofactorClass::ThreeLP, "factor above B must not be accepted as ThreeLP");
+    CHECK(!try_classify_three_lp(c, B).has_value(), "direct helper must reject factor above B");
     std::cout << "OK (cls=" << static_cast<int>(cls.type) << ")" << std::endl;
 }
 
@@ -315,8 +313,7 @@ void test_big_integer_b3_boundary() {
     CHECK(!c.fits_uint64(), "B^3 boundary should exceed uint64_t");
 
     const auto cls = classify_cofactor(c, B, /*allow_3lp=*/true);
-    CHECK(cls.type == CofactorClass::ThreeLP,
-          "exact B^3 boundary should classify as ThreeLP");
+    CHECK(cls.type == CofactorClass::ThreeLP, "exact B^3 boundary should classify as ThreeLP");
     if (cls.type == CofactorClass::ThreeLP) {
         CHECK(cls.factor1 == B && cls.factor2 == B && cls.factor3 == B,
               "B^3 boundary factors are not the repeated bound prime");

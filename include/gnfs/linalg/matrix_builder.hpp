@@ -130,12 +130,12 @@ struct MatrixBuildResult {
 
 /// 矩阵构建配置
 struct MatrixBuilderConfig {
-    bool include_sign_column = true;  // 是否包含符号列
-    bool include_qc_columns = true;   // 是否包含二次特征列
+    bool include_sign_column = true; // 是否包含符号列
+    bool include_qc_columns = true;  // 是否包含二次特征列
     bool include_class_group = false; // 类群特征列（默认禁用：大多数 N class number=1，无需额外列）
-    bool include_schirokauer = true;  // 是否包含 Schirokauer map 列
-    size_t num_qc_primes = 10;        // 二次特征素数数量
-    uint32_t qc_prime_start = 1000;   // 二次特征素数搜索起点
+    bool include_schirokauer = true;                // 是否包含 Schirokauer map 列
+    size_t num_qc_primes = 10;                      // 二次特征素数数量
+    uint32_t qc_prime_start = 1000;                 // 二次特征素数搜索起点
     std::vector<uint32_t> schirokauer_primes = {2}; // GF(2) 矩阵只能用 ℓ=2
     bool verbose = false;                           // 详细输出
 };

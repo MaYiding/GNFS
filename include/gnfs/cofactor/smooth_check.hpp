@@ -988,14 +988,13 @@ classify_cofactor_impl_v1(const Integer& cofactor, uint64_t large_prime_bound, b
                 return result;
             }
 
-            auto find_factor = [seeded_randomness](const Integer& value)
-                -> std::optional<Integer> {
+            auto find_factor = [seeded_randomness](const Integer& value) -> std::optional<Integer> {
                 if (auto small = find_small_integer_factor_for_three_lp(value))
                     return small;
                 return quick_factor_with_seeded_randomness_v1(value, seeded_randomness);
             };
-            if (auto three = try_classify_three_lp_integer_impl(cofactor, large_prime_bound,
-                                                                 find_factor)) {
+            if (auto three =
+                    try_classify_three_lp_integer_impl(cofactor, large_prime_bound, find_factor)) {
                 return *three;
             }
             result.type = CofactorClass::Composite;
