@@ -5,12 +5,14 @@
 #include "../sqrt/modular_poly.hpp"
 #include "../util/primes.hpp"
 
-#include <vector>
-#include <cstdint>
+#include <algorithm>
 #include <array>
-#include <random>
-#include <tuple>
+#include <cstdint>
 #include <numeric>
+#include <random>
+#include <stdexcept>
+#include <tuple>
+#include <vector>
 
 namespace gnfs::linalg {
 
@@ -155,6 +157,60 @@ struct GFPolyOps {
         return result;
     }
 
+    /// Derive a stable EDF seed from the complete canonical problem instance.
+    /// Do not use std::hash here: its result is permitted to vary by process.
+    static uint32_t edf_seed(const Poly& f, uint32_t d, uint64_t p) noexcept {
+        uint64_t hash = 1469598103934665603ULL; // FNV-1a offset basis
+        const auto mix_u64 = [&hash](uint64_t value) {
+            for (unsigned shift = 0; shift < 64; shift += 8) {
+                hash ^= (value >> shift) & 0xffU;
+                hash *= 1099511628211ULL; // FNV-1a prime; unsigned overflow is defined
+            }
+        };
+
+        mix_u64(p);
+        mix_u64(d);
+        mix_u64(f.size());
+        for (uint64_t coeff : f)
+            mix_u64(coeff);
+        return static_cast<uint32_t>(hash ^ (hash >> 32));
+    }
+
+    /// Validate a purported factorization of a monic squarefree polynomial.
+    /// Returning a composite factor would silently corrupt Schirokauer columns,
+    /// so callers fail closed instead of continuing with an invalid split.
+    static void validate_factorization(const Poly& input, const std::vector<Poly>& factors,
+                                       uint64_t p) {
+        Poly product = {1};
+        for (const auto& factor : factors) {
+            if (factor.empty() || is_zero(factor) || factor.back() != 1) {
+                throw std::runtime_error("GF polynomial factorization produced a non-monic factor");
+            }
+            for (uint64_t coeff : factor) {
+                if (coeff >= p) {
+                    throw std::runtime_error(
+                        "GF polynomial factorization produced an out-of-range coefficient");
+                }
+            }
+            if (!ModularPoly::is_irreducible(factor, p)) {
+                throw std::runtime_error("GF polynomial factorization produced a reducible factor");
+            }
+            product = mul(product, factor, p);
+        }
+
+        if (trim(product) != trim(input)) {
+            throw std::runtime_error("GF polynomial factorization product does not match input");
+        }
+    }
+
+    static void sort_factors(std::vector<Poly>& factors) {
+        std::sort(factors.begin(), factors.end(), [](const Poly& lhs, const Poly& rhs) {
+            if (lhs.size() != rhs.size())
+                return lhs.size() < rhs.size();
+            return lhs < rhs;
+        });
+    }
+
     /// Distinct-degree factorization of squarefree monic f over GF(p)
     /// Returns pairs (degree, product_of_factors_of_that_degree)
     static std::vector<std::pair<uint32_t, Poly>> ddf(Poly f, uint64_t p) {
@@ -198,12 +254,20 @@ struct GFPolyOps {
 
     /// Equal-degree factorization (Cantor-Zassenhaus) over GF(p)
     /// f is a product of distinct irreducible polys each of degree d
-    static std::vector<Poly> edf(const Poly& f, uint32_t d, uint64_t p) {
-        if (static_cast<uint32_t>(f.size() - 1) == d) return {f};
+    static std::vector<Poly> edf(const Poly& f, uint32_t d, uint64_t p,
+                                 uint32_t max_attempts = 200) {
         if (f.size() <= 1) return {};
+        if (static_cast<uint32_t>(f.size() - 1) == d) {
+            std::vector<Poly> result = {f};
+            validate_factorization(f, result, p);
+            return result;
+        }
+        if (max_attempts == 0) {
+            throw std::runtime_error("Cantor-Zassenhaus EDF attempt budget exhausted");
+        }
 
-        std::mt19937 rng(std::random_device{}());
-        for (int attempt = 0; attempt < 200; ++attempt) {
+        std::mt19937 rng(edf_seed(f, d, p));
+        for (uint32_t attempt = 0; attempt < max_attempts; ++attempt) {
             Poly t(f.size() - 1, 0);
             for (size_t i = 0; i < t.size(); ++i) t[i] = rng() % p;
             t = trim(t);
@@ -232,15 +296,17 @@ struct GFPolyOps {
             }
 
             if (g.size() > 1 && g.size() < f.size()) {
-                auto left = edf(g, d, p);
+                auto left = edf(g, d, p, max_attempts);
                 auto right_poly = divmod(f, g, p).first;
-                auto right = edf(right_poly, d, p);
+                auto right = edf(right_poly, d, p, max_attempts);
                 left.reserve(left.size() + right.size());
                 left.insert(left.end(), right.begin(), right.end());
+                sort_factors(left);
+                validate_factorization(f, left, p);
                 return left;
             }
         }
-        return {f};  // failed to split
+        throw std::runtime_error("Cantor-Zassenhaus EDF failed to split polynomial");
     }
 
     /// Full factorization of squarefree part of f over GF(p)
@@ -293,6 +359,8 @@ struct GFPolyOps {
                 factors.push_back(part);
             }
         }
+        sort_factors(factors);
+        validate_factorization(f_sqfree, factors, p);
         return factors;
     }
 
