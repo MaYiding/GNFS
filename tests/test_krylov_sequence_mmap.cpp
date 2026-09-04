@@ -48,11 +48,11 @@ std::filesystem::path native_path(const std::string& path) {
 
 std::string unique_utf8_path() {
     static std::uint64_t sequence = 0;
-    const std::string filename =
-        "gnfs_test_krylov_" + std::to_string(gnfs::util::process_id()) + "_" +
-        std::to_string(++sequence) + "_utf8_\xE4\xB8\xAD\xE6\x96\x87.kry";
-    return gnfs::linalg::detail::krylov_cached_path_string(
-        gnfs::util::temp_directory_path() / native_path(filename));
+    const std::string filename = "gnfs_test_krylov_" + std::to_string(gnfs::util::process_id()) +
+                                 "_" + std::to_string(++sequence) +
+                                 "_utf8_\xE4\xB8\xAD\xE6\x96\x87.kry";
+    return gnfs::linalg::detail::krylov_cached_path_string(gnfs::util::temp_directory_path() /
+                                                           native_path(filename));
 }
 
 class PathCleanup {
@@ -284,14 +284,18 @@ void test_validate_header() {
     const auto path = unique_path("validate");
     PathCleanup cleanup(path);
 
-    { KrylovSequenceMmap sequence(path, 10, 64); }
+    {
+        KrylovSequenceMmap sequence(path, 10, 64);
+    }
     KrylovSequenceMmap::validate_header(path);
 
     overwrite_u64(path, 0, 0xDEADBEEFCAFEBABEULL);
     GNFS_TEST_CHECK(throws_with_message<std::runtime_error>(
         [&] { KrylovSequenceMmap::validate_header(path); }, "bad magic"));
 
-    { KrylovSequenceMmap sequence(path, 10, 64); }
+    {
+        KrylovSequenceMmap sequence(path, 10, 64);
+    }
     overwrite_u64(path, static_cast<std::streamoff>(sizeof(std::uint64_t)),
                   KrylovSequenceMmap::VERSION + 1);
     GNFS_TEST_CHECK(throws_with_message<std::runtime_error>(
