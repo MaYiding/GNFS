@@ -409,7 +409,7 @@ struct DescriptorIdentityProbe final {
 
 [[nodiscard]] DescriptorIdentityProbe
 probe_descriptor_identity(int descriptor, const char* expected_path) noexcept {
-    struct stat expected{};
+    struct stat expected {};
     if (!stat_path_no_intr(expected_path, expected)) {
         return {DescriptorIdentityState::error, errno};
     }
@@ -417,7 +417,7 @@ probe_descriptor_identity(int descriptor, const char* expected_path) noexcept {
         return {DescriptorIdentityState::error, EINVAL};
     }
 
-    struct stat observed{};
+    struct stat observed {};
     int status = -1;
     do {
         status = ::fstat(descriptor, &observed);

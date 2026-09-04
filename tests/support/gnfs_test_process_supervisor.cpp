@@ -375,7 +375,7 @@ class SignalCancellation final {
 public:
     [[nodiscard]] bool install() noexcept {
         requested_signal.store(0, std::memory_order_relaxed);
-        struct sigaction action{};
+        struct sigaction action {};
         action.sa_handler = cancellation_signal_handler;
         if (sigemptyset(&action.sa_mask) != 0 || sigaddset(&action.sa_mask, SIGHUP) != 0 ||
             sigaddset(&action.sa_mask, SIGINT) != 0 || sigaddset(&action.sa_mask, SIGTERM) != 0) {

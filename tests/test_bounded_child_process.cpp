@@ -348,7 +348,7 @@ private:
     }
 
     [[nodiscard]] int choose_high_floor() const {
-        struct rlimit limit{};
+        struct rlimit limit {};
         if (::getrlimit(RLIMIT_NOFILE, &limit) != 0) {
             throw std::runtime_error("unable to query descriptor limit");
         }
@@ -429,8 +429,8 @@ void check_posix_fd_sentinels_intact(const PosixFdSentinelSet& fixture) {
         } else {
             CHECK_CONTEXT(sentinel.descriptor < fixture.high_floor(), context);
         }
-        struct stat expected{};
-        struct stat observed{};
+        struct stat expected {};
+        struct stat observed {};
         const bool expected_ok = stat_path_no_intr(sentinel.path, expected);
         const bool observed_ok = fstat_no_intr(sentinel.descriptor, observed);
         CHECK_CONTEXT(expected_ok, context);
