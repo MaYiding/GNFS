@@ -10,6 +10,7 @@
 #include "survival_predictor.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -597,6 +598,127 @@ brent_split_with_seeded_randomness_v1(std::uint64_t cofactor, std::uint64_t lega
     return std::move(outcome.factors);
 }
 
+/// Find an inexpensive uint64 divisor of an arbitrary-precision cofactor.
+///
+/// The Integer 3LP path is only entered for a cofactor above B², so a short
+/// trial-division pass is cheap insurance for the common case with a small
+/// large-prime.  The caller supplies the expensive (ECM or seeded ECM) fallback.
+[[nodiscard]] inline std::optional<Integer>
+find_small_integer_factor_for_three_lp(const Integer& value) {
+    constexpr uint64_t small_primes[] = {2,  3,  5,  7,  11, 13, 17, 19, 23, 29, 31, 37, 41,
+                                         43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97};
+    for (uint64_t p : small_primes) {
+        if (mpz_divisible_ui_p(value.get_mpz(), p) != 0)
+            return Integer(p);
+    }
+    for (uint64_t p : get_mid_primes()) {
+        if (mpz_divisible_ui_p(value.get_mpz(), p) != 0)
+            return Integer(p);
+    }
+    return std::nullopt;
+}
+
+/// Classify an arbitrary-precision cofactor in the 3LP-only window.
+///
+/// `find_factor` must return a proper divisor or nullopt.  Keeping that
+/// operation injectable lets the ambient path use ECM while the seeded path
+/// retains its algorithm-bound deterministic curve schedule.
+template <typename FindFactor>
+[[nodiscard]] inline std::optional<CofactorClassification>
+try_classify_three_lp_integer_impl(const Integer& cofactor, uint64_t large_prime_bound,
+                                   FindFactor&& find_factor) {
+    if (cofactor <= Integer(static_cast<uint64_t>(1)))
+        return std::nullopt;
+
+    const Integer bound(static_cast<unsigned long long>(large_prime_bound));
+    const Integer bound_sq = bound * bound;
+    const Integer bound_cube = bound_sq * bound;
+    if (cofactor.compare(bound_sq) <= 0 || cofactor.compare(bound_cube) > 0)
+        return std::nullopt;
+
+    // A B³ boundary formed by a prime B is a valid repeated-factor 3LP.  Brent
+    // rho intentionally skips perfect powers, so recognize exact cubes first.
+    Integer cube_root;
+    if (mpz_root(cube_root.get_mpz(), cofactor.get_mpz(), 3) != 0 &&
+        cube_root.compare(Integer(static_cast<uint64_t>(1))) > 0 &&
+        cube_root.is_probable_prime() > 0 && cube_root.fits_uint64() &&
+        cube_root.compare(bound) <= 0) {
+        const uint64_t factor = cube_root.to_uint64();
+        CofactorClassification result;
+        result.type = CofactorClass::ThreeLP;
+        result.factor1 = factor;
+        result.factor2 = factor;
+        result.factor3 = factor;
+        return result;
+    }
+
+    std::vector<Integer> factors;
+    factors.reserve(3);
+    auto split = [&](auto&& self, const Integer& value) -> bool {
+        if (value.is_one())
+            return true;
+        if (value.is_probable_prime() > 0) {
+            if (factors.size() >= 3 || !value.fits_uint64())
+                return false;
+            factors.push_back(value.clone());
+            return true;
+        }
+        if (factors.size() >= 3)
+            return false;
+
+        // Handle repeated prime factors without relying on rho's perfect-power
+        // behavior.  For a 3LP candidate only an exact cube can add three roots.
+        Integer root;
+        if (mpz_root(root.get_mpz(), value.get_mpz(), 3) != 0 &&
+            root.compare(Integer(static_cast<uint64_t>(1))) > 0) {
+            const size_t before = factors.size();
+            if (self(self, root) && self(self, root) && self(self, root))
+                return true;
+            factors.resize(before);
+            return false;
+        }
+
+        auto divisor = find_factor(value);
+        if (!divisor || divisor->compare(Integer(static_cast<uint64_t>(1))) <= 0 ||
+            divisor->compare(value) >= 0)
+            return false;
+        Integer remainder;
+        if (mpz_divisible_p(value.get_mpz(), divisor->get_mpz()) == 0)
+            return false;
+        mpz_divexact(remainder.get_mpz(), value.get_mpz(), divisor->get_mpz());
+
+        const size_t before = factors.size();
+        if (!self(self, *divisor) || !self(self, remainder)) {
+            factors.resize(before);
+            return false;
+        }
+        return true;
+    };
+
+    if (!split(split, cofactor) || factors.size() != 3)
+        return std::nullopt;
+
+    std::array<uint64_t, 3> values{};
+    Integer product(static_cast<uint64_t>(1));
+    for (size_t i = 0; i < factors.size(); ++i) {
+        if (!factors[i].fits_uint64() || factors[i].compare(bound) > 0 ||
+            factors[i].is_probable_prime() <= 0)
+            return std::nullopt;
+        values[i] = factors[i].to_uint64();
+        product *= factors[i];
+    }
+    if (product.compare(cofactor) != 0)
+        return std::nullopt;
+
+    std::sort(values.begin(), values.end());
+    CofactorClassification result;
+    result.type = CofactorClass::ThreeLP;
+    result.factor1 = values[0];
+    result.factor2 = values[1];
+    result.factor3 = values[2];
+    return result;
+}
+
 /// Internal classification implementation shared by the legacy and explicit
 /// deterministic-seed entry points.
 ///
@@ -855,9 +977,30 @@ classify_cofactor_impl_v1(const Integer& cofactor, uint64_t large_prime_bound, b
     Integer lp_sq;
     mpz_mul(lp_sq.get_mpz(), lp_int.get_mpz(), lp_int.get_mpz());
     if (cofactor.compare(lp_sq) > 0) {
-        // 大数 cofactor > B² — 3LP space (此分支稀少, lpb ≤ 30 bits 时 c 通常 fits_uint64).
-        // 当前实现 3LP 只支持 uint64 cofactor (fits_uint64 path). 大数路径 fallback TooLarge.
-        // BACKLOG: 拓展 try_classify_three_lp 支持 Integer 输入 (lpb > 32 bits 才需要).
+        // Integer cofactor in the 3LP window.  Every accepted factor remains
+        // uint64 because the configured large-prime bound is uint64_t, while
+        // their product may exceed UINT64_MAX (up to B³).
+        if (allow_3lp) {
+            Integer lp_cube;
+            mpz_mul(lp_cube.get_mpz(), lp_sq.get_mpz(), lp_int.get_mpz());
+            if (cofactor.compare(lp_cube) > 0) {
+                result.type = CofactorClass::TooLarge;
+                return result;
+            }
+
+            auto find_factor = [seeded_randomness](const Integer& value)
+                -> std::optional<Integer> {
+                if (auto small = find_small_integer_factor_for_three_lp(value))
+                    return small;
+                return quick_factor_with_seeded_randomness_v1(value, seeded_randomness);
+            };
+            if (auto three = try_classify_three_lp_integer_impl(cofactor, large_prime_bound,
+                                                                 find_factor)) {
+                return *three;
+            }
+            result.type = CofactorClass::Composite;
+            return result;
+        }
         result.type = CofactorClass::TooLarge;
         return result;
     }
@@ -887,6 +1030,25 @@ classify_cofactor_impl_v1(const Integer& cofactor, uint64_t large_prime_bound, b
 }
 
 } // namespace detail
+
+/// Try to classify an arbitrary-precision cofactor as a 3LP product.
+///
+/// The result stores factors in the existing uint64_t fields because each
+/// accepted factor is bounded by `large_prime_bound`; only the product needs
+/// arbitrary precision.  Cofactors outside `(B², B³]` or with a factor above
+/// `B` return nullopt.
+[[nodiscard]] inline std::optional<CofactorClassification>
+try_classify_three_lp(const Integer& cofactor, uint64_t large_prime_bound) {
+    if (cofactor.fits_uint64())
+        return try_classify_three_lp(cofactor.to_uint64(), large_prime_bound);
+
+    auto find_factor = [](const Integer& value) -> std::optional<Integer> {
+        if (auto small = detail::find_small_integer_factor_for_three_lp(value))
+            return small;
+        return ECM::quick_factor(value);
+    };
+    return detail::try_classify_three_lp_integer_impl(cofactor, large_prime_bound, find_factor);
+}
 
 /// Classify a cofactor using the legacy ambient ECM policy.
 [[nodiscard]] inline CofactorClassification classify_cofactor(const Integer& cofactor,
