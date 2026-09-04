@@ -30,6 +30,7 @@
 #include <windows.h>
 #else
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -148,6 +149,21 @@ void check_native_handle_closed(TestNativeHandle handle) {
 #endif
 }
 
+#ifndef _WIN32
+int find_fd_for_path(const std::string& path) {
+    struct stat expected {};
+    CHECK(::stat(path.c_str(), &expected) == 0);
+    for (int descriptor = 0; descriptor < 1024; ++descriptor) {
+        struct stat observed {};
+        if (::fstat(descriptor, &observed) == 0 && observed.st_dev == expected.st_dev &&
+            observed.st_ino == expected.st_ino) {
+            return descriptor;
+        }
+    }
+    return -1;
+}
+#endif
+
 void replace_file(const std::string& source, const std::string& destination) {
 #ifdef _WIN32
     const std::filesystem::path source_path(source);
@@ -206,6 +222,17 @@ void test_empty_file() {
     assert(mf.is_open()); // fd is open
     assert(mf.size() == 0);
     assert(mf.data() == nullptr); // no mapping for empty file
+
+#ifndef _WIN32
+    const int descriptor = find_fd_for_path(path);
+    CHECK(descriptor >= 0);
+    int descriptor_flags = -1;
+    do {
+        descriptor_flags = ::fcntl(descriptor, F_GETFD);
+    } while (descriptor_flags < 0 && errno == EINTR);
+    CHECK(descriptor_flags >= 0);
+    CHECK((descriptor_flags & FD_CLOEXEC) != 0);
+#endif
 
     std::cout << "  empty file: PASS" << std::endl;
 }
