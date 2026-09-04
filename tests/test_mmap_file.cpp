@@ -78,6 +78,30 @@ struct FileGuard {
     FileGuard& operator=(const FileGuard&) = delete;
 };
 
+struct FilesystemPathGuard {
+    std::filesystem::path path;
+
+    explicit FilesystemPathGuard(std::filesystem::path value) : path(std::move(value)) {}
+
+    ~FilesystemPathGuard() {
+        std::error_code error;
+        (void)std::filesystem::remove(path, error);
+    }
+
+    FilesystemPathGuard(const FilesystemPathGuard&) = delete;
+    FilesystemPathGuard& operator=(const FilesystemPathGuard&) = delete;
+};
+
+std::string utf8_path_string(const std::filesystem::path& path) {
+    const std::u8string utf8 = path.u8string();
+    std::string result;
+    result.reserve(utf8.size());
+    for (const char8_t byte : utf8) {
+        result.push_back(static_cast<char>(byte));
+    }
+    return result;
+}
+
 using TestNativeHandle = OwnedNativeFile::NativeHandle;
 
 TestNativeHandle open_native_read_only(const std::string& path) {
@@ -615,6 +639,30 @@ void test_owned_native_file_mapping_failure_closes_temporary_handle() {
     std::cout << "  mapping failure closes temporary handle: PASS" << std::endl;
 }
 
+void test_utf8_path() {
+    std::cout << "Testing UTF-8 path mapping..." << std::endl;
+
+    const auto path = gnfs::util::temp_directory_path() /
+                      std::filesystem::path(std::u8string(u8"gnfs_test_mmap_\u6d4b\u8bd5.bin"));
+    FilesystemPathGuard guard(path);
+    const std::vector<uint8_t> payload = {0xA1, 0xB2, 0xC3, 0xD4};
+
+    {
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        CHECK(output.is_open());
+        output.write(reinterpret_cast<const char*>(payload.data()),
+                     static_cast<std::streamsize>(payload.size()));
+        CHECK(output.good());
+    }
+
+    MmapFile mapped(utf8_path_string(path));
+    CHECK(mapped.is_open());
+    CHECK(mapped.size() == payload.size());
+    CHECK(std::memcmp(mapped.data(), payload.data(), payload.size()) == 0);
+
+    std::cout << "  UTF-8 path mapping: PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== util/mmap_file.hpp tests ===" << std::endl;
 
@@ -627,7 +675,7 @@ int main() {
 
 #ifdef _WIN32
     test_default_constructed_state();
-    std::cout << "Legacy MmapFile path-backed tests skipped on Windows\n";
+    test_utf8_path();
     return 0;
 #else
     test_default_constructed_state();
@@ -640,6 +688,7 @@ int main() {
     test_move_semantics();
     test_close_idempotent();
     test_large_multi_page();
+    test_utf8_path();
 
     std::cout << "\n=== All util/mmap_file.hpp tests PASSED ===" << std::endl;
     return 0;

@@ -37,6 +37,7 @@ class MmapFile {
 public:
     MmapFile() = default;
 
+    /// Open a UTF-8 encoded path and map it read-only.
     explicit MmapFile(const std::string& path) : MmapFile(open_read_only(path), path) {}
 
     /// Consume and map an already-open file without reopening any path.
@@ -139,7 +140,7 @@ private:
     };
 
     [[nodiscard]] static OwnedNativeFile open_read_only(const std::string& path) {
-        const std::filesystem::path filesystem_path(path);
+        const std::filesystem::path filesystem_path = native_path_from_utf8(path);
         HANDLE file = ::CreateFileW(filesystem_path.c_str(), GENERIC_READ,
                                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                                     OPEN_EXISTING,
@@ -150,6 +151,18 @@ private:
                                      "': " + last_error_message(error));
         }
         return OwnedNativeFile::adopt_ownership(file);
+    }
+
+    /// Construct a native path from the public UTF-8 string representation.
+    /// The char8_t overload is required on Windows because the narrow path
+    /// constructor is locale/code-page dependent.
+    [[nodiscard]] static std::filesystem::path native_path_from_utf8(const std::string& path) {
+        std::u8string utf8;
+        utf8.reserve(path.size());
+        for (const char byte : path) {
+            utf8.push_back(static_cast<char8_t>(static_cast<unsigned char>(byte)));
+        }
+        return std::filesystem::path(utf8);
     }
 
     MmapFile(OwnedNativeFile&& file, const std::string& source) {
@@ -235,7 +248,7 @@ class MmapFile {
 public:
     MmapFile() = default;
 
-    /// Open and map a file read-only. Throws on failure.
+    /// Open a UTF-8 encoded path and map it read-only. Throws on failure.
     explicit MmapFile(const std::string& path) : MmapFile(open_read_only(path), path) {}
 
     /// Consume and map an already-open file without reopening any path.
