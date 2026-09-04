@@ -279,6 +279,176 @@ void test_save_load() {
     std::cout << "  Save/load: PASS" << std::endl;
 }
 
+static Relation make_load_test_relation(int64_t a, uint64_t b, bool partial) {
+    Relation relation(a, b);
+    relation.rational_factors.push_back(static_cast<uint32_t>(a > 0 ? a : -a));
+    if (partial)
+        relation.rational_large_prime.push_back(PrimePower{1000003, 0, 1});
+    return relation;
+}
+
+static void check_relation_ab_equal(const Relation& actual, const Relation& expected) {
+    CHECK(actual.a == expected.a);
+    CHECK(actual.b == expected.b);
+}
+
+static void test_load_replaces_state_transactionally(bool use_pool) {
+    std::cout << "Testing transactional load replacement (" << (use_pool ? "pool" : "vector")
+              << ")..." << std::endl;
+
+    const auto test_file =
+        gnfs::util::temp_path(use_pool ? "gnfs_test_collector_load_replace_pool.bin"
+                                       : "gnfs_test_collector_load_replace_vector.bin");
+    std::filesystem::remove(test_file);
+
+    CollectorConfig source_config;
+    source_config.use_pool = false;
+    RelationCollector source(source_config);
+    CHECK(source.add(make_load_test_relation(11, 12, false)));
+    CHECK(source.add(make_load_test_relation(13, 14, true)));
+    CHECK(source.save(test_file));
+
+    CollectorConfig target_config;
+    target_config.use_pool = use_pool;
+    target_config.pool_initial_bytes = 256;
+    target_config.check_duplicates = true;
+    RelationCollector target(target_config);
+    Relation old_relation = make_load_test_relation(100, 101, false);
+    CHECK(target.add(Relation(old_relation)));
+    CHECK(!target.add(Relation(old_relation)));
+    CHECK(!target.add(Relation(7, 0)));
+    CHECK(target.stats().duplicates_rejected == 1);
+    CHECK(target.stats().invalid_rejected == 1);
+
+    CHECK(target.load(test_file));
+    CHECK(target.size() == 2);
+    const auto loaded_stats = target.stats();
+    CHECK(loaded_stats.total_relations == 2);
+    CHECK(loaded_stats.full_relations == 1);
+    CHECK(loaded_stats.partial_1lp == 1);
+    CHECK(loaded_stats.partial_2lp == 0);
+    CHECK(loaded_stats.duplicates_rejected == 0);
+    CHECK(loaded_stats.invalid_rejected == 0);
+    CHECK(loaded_stats.n_divisible_rejected == 0);
+
+    const auto loaded = target.finalize_relations();
+    CHECK(loaded.size() == 2);
+    CHECK(loaded[0].a == 11);
+    CHECK(loaded[1].a == 13);
+
+    // The old key must not remain in seen_, while a loaded key still rejects a
+    // duplicate after the replacement commits.
+    CHECK(target.add(std::move(old_relation)));
+    CHECK(!target.add(make_load_test_relation(11, 12, false)));
+    CHECK(target.stats().duplicates_rejected == 1);
+
+    std::filesystem::remove(test_file);
+    std::cout << "  Transactional load replacement: PASS" << std::endl;
+}
+
+static void test_load_failure_preserves_state_transactionally(bool use_pool) {
+    std::cout << "Testing transactional load failure rollback (" << (use_pool ? "pool" : "vector")
+              << ")..." << std::endl;
+
+    const auto payload_file =
+        gnfs::util::temp_path(use_pool ? "gnfs_test_collector_load_truncated_pool.bin"
+                                       : "gnfs_test_collector_load_truncated_vector.bin");
+    const auto header_file =
+        gnfs::util::temp_path(use_pool ? "gnfs_test_collector_load_header_pool.bin"
+                                       : "gnfs_test_collector_load_header_vector.bin");
+    const auto forged_count_file =
+        gnfs::util::temp_path(use_pool ? "gnfs_test_collector_load_forged_count_pool.bin"
+                                       : "gnfs_test_collector_load_forged_count_vector.bin");
+    std::filesystem::remove(payload_file);
+    std::filesystem::remove(header_file);
+    std::filesystem::remove(forged_count_file);
+
+    CollectorConfig source_config;
+    source_config.use_pool = false;
+    RelationCollector source(source_config);
+    CHECK(source.add(make_load_test_relation(21, 22, false)));
+    CHECK(source.save(payload_file));
+    const auto payload_size = std::filesystem::file_size(payload_file);
+    CHECK(payload_size > 1);
+    std::filesystem::resize_file(payload_file, payload_size - 1);
+
+    {
+        std::ofstream header(header_file, std::ios::binary | std::ios::trunc);
+        const uint32_t partial_header = 1;
+        header.write(reinterpret_cast<const char*>(&partial_header), sizeof(partial_header));
+        CHECK(header.good());
+    }
+    {
+        std::ofstream forged_count(forged_count_file, std::ios::binary | std::ios::trunc);
+        const uint64_t forged_count_value = std::numeric_limits<uint64_t>::max();
+        forged_count.write(reinterpret_cast<const char*>(&forged_count_value),
+                           sizeof(forged_count_value));
+        CHECK(forged_count.good());
+    }
+
+    CollectorConfig target_config;
+    target_config.use_pool = use_pool;
+    target_config.pool_initial_bytes = 256;
+    target_config.check_duplicates = true;
+    RelationCollector target(target_config);
+    Relation old_relation = make_load_test_relation(200, 201, false);
+    CHECK(target.add(Relation(old_relation)));
+    CHECK(!target.add(Relation(old_relation)));
+    CHECK(!target.add(Relation(9, 0)));
+    const auto stats_before = target.stats();
+    const auto relations_before = target.finalize_relations();
+
+    for (const auto& filename : {payload_file, header_file, forged_count_file}) {
+        CHECK(!target.load(filename));
+        CHECK(target.size() == relations_before.size());
+        check_stats_equal(target.stats(), stats_before);
+        const auto relations_after = target.finalize_relations();
+        CHECK(relations_after.size() == relations_before.size());
+        check_relation_ab_equal(relations_after.front(), relations_before.front());
+    }
+
+    // Failure must also leave the duplicate index intact.
+    CHECK(!target.add(std::move(old_relation)));
+    CHECK(target.stats().duplicates_rejected == stats_before.duplicates_rejected + 1);
+
+    std::filesystem::remove(payload_file);
+    std::filesystem::remove(header_file);
+    std::filesystem::remove(forged_count_file);
+    std::cout << "  Transactional load failure rollback: PASS" << std::endl;
+}
+
+static void test_load_respects_max_relations() {
+    std::cout << "Testing transactional load max_relations guard..." << std::endl;
+
+    const auto test_file = gnfs::util::temp_path("gnfs_test_collector_load_max_relations.bin");
+    std::filesystem::remove(test_file);
+
+    CollectorConfig source_config;
+    source_config.use_pool = false;
+    RelationCollector source(source_config);
+    CHECK(source.add(make_load_test_relation(31, 32, false)));
+    CHECK(source.add(make_load_test_relation(33, 34, false)));
+    CHECK(source.save(test_file));
+
+    CollectorConfig target_config;
+    target_config.use_pool = false;
+    target_config.max_relations = 1;
+    RelationCollector target(target_config);
+    CHECK(target.add(make_load_test_relation(101, 102, false)));
+    const auto stats_before = target.stats();
+    const auto relations_before = target.finalize_relations();
+
+    CHECK(!target.load(test_file));
+    CHECK(target.size() == relations_before.size());
+    check_stats_equal(target.stats(), stats_before);
+    const auto relations_after = target.finalize_relations();
+    CHECK(relations_after.size() == relations_before.size());
+    check_relation_ab_equal(relations_after.front(), relations_before.front());
+
+    std::filesystem::remove(test_file);
+    std::cout << "  Transactional load max_relations guard: PASS" << std::endl;
+}
+
 void test_concurrent_add() {
     std::cout << "Testing concurrent add..." << std::endl;
 
@@ -2792,6 +2962,11 @@ int main() {
     test_effective_large_prime_stats();
     test_batch_add();
     test_save_load();
+    test_load_replaces_state_transactionally(false);
+    test_load_replaces_state_transactionally(true);
+    test_load_failure_preserves_state_transactionally(false);
+    test_load_failure_preserves_state_transactionally(true);
+    test_load_respects_max_relations();
     test_concurrent_add();
     test_merge();
     test_filter_duplicates();

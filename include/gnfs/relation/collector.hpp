@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <memory_resource>
 #include <mutex>
@@ -1263,6 +1264,7 @@ public:
     /// 从文件加载 (legacy 序列化协议)
     /// OOC 模式不兼容 — relation 已写盘, 重启时直接构造 OOCRelationReader 即可。
     /// Pool 模式 (W6 T4): 支持 — 加载到 pmr::vector path。
+    /// 失败返回 false 且保持原关系、seen 和统计不变；成功后替换为文件内容及其统计。
     bool load(const std::string& filename) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (config_.ooc_enabled)
@@ -1272,48 +1274,112 @@ public:
         if (!ifs)
             return false;
 
-        // 读取头部
-        uint64_t count = 0;
-        ifs.read(reinterpret_cast<char*>(&count), sizeof(count));
-
-        // 清空并预分配 — pool vs std::vector path
-        if (relations_pmr_) {
-            relations_pmr_->clear();
-            relations_pmr_->reserve(count);
-        } else {
-            relations_.clear();
-            relations_.reserve(count);
-        }
-        seen_.clear();
-
-        // 读取关系
-        for (uint64_t i = 0; i < count; ++i) {
-            auto rel = Relation::deserialize(ifs);
+        // Stage every result before touching the live state. Relation::deserialize()
+        // throws on malformed input, and reserve() can throw for an untrusted count;
+        // neither failure is allowed to discard an already collected corpus.
+        try {
+            uint64_t count = 0;
+            ifs.read(reinterpret_cast<char*>(&count), sizeof(count));
             if (!ifs)
                 return false;
 
-            int kind = validate_with_kind(rel);
-            if (kind != 0) {
-                if (kind == -2)
-                    ++stats_.n_divisible_rejected;
+            // Every serialized relation has seven uint32 fields, a/b, and a
+            // trailing checksum even when all variable-length sections are empty.
+            // Checking the available bytes prevents a tiny malformed file from
+            // requesting an unbounded reserve() based on its forged count.
+            constexpr uintmax_t min_serialized_relation_bytes =
+                sizeof(uint32_t) * 7 + sizeof(int64_t) + sizeof(uint64_t) + sizeof(uint64_t);
+            const auto payload_begin = ifs.tellg();
+            if (payload_begin == std::streampos(-1))
+                return false;
+            ifs.seekg(0, std::ios::end);
+            const auto file_end = ifs.tellg();
+            if (file_end == std::streampos(-1) || file_end < payload_begin)
+                return false;
+            const auto remaining = static_cast<uintmax_t>(file_end - payload_begin);
+            if (count > remaining / min_serialized_relation_bytes ||
+                count > static_cast<uint64_t>(std::numeric_limits<std::size_t>::max())) {
+                return false;
+            }
+            if (config_.max_relations > 0 && count > static_cast<uint64_t>(config_.max_relations)) {
+                return false;
+            }
+            ifs.seekg(payload_begin);
+            if (!ifs)
+                return false;
+
+            std::vector<Relation> staged_relations;
+            staged_relations.reserve(static_cast<std::size_t>(count));
+
+            std::unordered_set<ABPair, ABPairHash> staged_seen;
+            if (config_.check_duplicates)
+                staged_seen.reserve(static_cast<std::size_t>(count));
+
+            CollectorStats staged_stats{};
+            auto update_staged_stats = [&](const Relation& rel) {
+                ++staged_stats.total_relations;
+                const size_t lp_count = count_odd_large_prime_keys(rel);
+                if (lp_count == 0)
+                    ++staged_stats.full_relations;
+                else if (lp_count == 1)
+                    ++staged_stats.partial_1lp;
                 else
-                    ++stats_.invalid_rejected;
-                continue;
+                    ++staged_stats.partial_2lp;
+            };
+
+            for (uint64_t i = 0; i < count; ++i) {
+                auto rel = Relation::deserialize(ifs);
+                if (!ifs)
+                    return false;
+
+                const int kind = validate_with_kind(rel);
+                if (kind != 0) {
+                    if (kind == -2)
+                        ++staged_stats.n_divisible_rejected;
+                    else
+                        ++staged_stats.invalid_rejected;
+                    continue;
+                }
+
+                if (config_.check_duplicates)
+                    staged_seen.insert(rel.ab());
+
+                update_staged_stats(rel);
+                staged_relations.push_back(std::move(rel));
             }
 
-            if (config_.check_duplicates) {
-                seen_.insert(rel.ab());
-            }
-
-            update_stats(rel);
+            // Build a replacement PMR vector against a replacement resource so
+            // an allocation failure cannot invalidate the current pool/vector.
+            std::unique_ptr<util::RelationPoolResource> staged_pool;
+            std::unique_ptr<std::pmr::vector<Relation>> staged_relations_pmr;
             if (relations_pmr_) {
-                relations_pmr_->push_back(std::move(rel));
-            } else {
-                relations_.push_back(std::move(rel));
+                const size_t chunk = config_.pool_initial_bytes > 0
+                                         ? config_.pool_initial_bytes
+                                         : util::RelationPoolResource::DEFAULT_INITIAL_CHUNK_BYTES;
+                staged_pool = std::make_unique<util::RelationPoolResource>(chunk);
+                staged_relations_pmr =
+                    std::make_unique<std::pmr::vector<Relation>>(staged_pool->upstream());
+                staged_relations_pmr->reserve(staged_relations.size());
+                for (auto& rel : staged_relations)
+                    staged_relations_pmr->push_back(std::move(rel));
             }
-        }
 
-        return true;
+            if (relations_pmr_) {
+                // Declare the old pool before the old vector: destruction must
+                // release the vector while its memory resource is still alive.
+                auto old_pool = std::move(pool_);
+                auto old_relations_pmr = std::move(relations_pmr_);
+                pool_ = std::move(staged_pool);
+                relations_pmr_ = std::move(staged_relations_pmr);
+            } else {
+                relations_.swap(staged_relations);
+            }
+            seen_.swap(staged_seen);
+            stats_ = staged_stats;
+            return true;
+        } catch (...) {
+            return false;
+        }
     }
 
     /// 合并另一个收集器的关系
