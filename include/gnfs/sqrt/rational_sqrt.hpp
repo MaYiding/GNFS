@@ -5,6 +5,7 @@
 #include "../factor_base/factor_base.hpp"
 #include "../linalg/sparse_matrix.hpp"
 
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -51,12 +52,17 @@ public:
             const Integer& m) const {
 
         RationalSqrtResult result;
+        if (dependency.size() != relations.size()) {
+            result.error = "Rational sqrt: dependency length does not match relation count";
+            return result;
+        }
 
         // 收集所有参与关系的有理因子
         // 累积每个素数的指数
         // Reserve基于 dependency.popcount() * 平均 factors per row:
         // FB ~10-15 / row, LP ~1-3 / row. popcount typical 64-256.
         // 上界 fallback 为 relations.size() (但只是上界, 实际 popcount * factor 多数情况下少 1000×).
+        const auto& rational_primes = fb.rational();
         const size_t pop = dependency.popcount();
         std::unordered_map<uint32_t, uint64_t> fb_exponents;    // 因子基素数指数
         std::unordered_map<uint64_t, uint64_t> lp_exponents;    // 大素数指数
@@ -88,7 +94,12 @@ public:
 
             // 因子基素数
             for (size_t j = 0; j < rel.rational_factors.size(); ++j) {
-                fb_exponents[rel.rational_factors[j]]++;
+                const uint32_t index = rel.rational_factors[j];
+                if (index >= rational_primes.size()) {
+                    result.error = "Rational sqrt: factor-base index out of range";
+                    return result;
+                }
+                fb_exponents[index]++;
             }
 
             // 大素数
@@ -124,7 +135,7 @@ public:
         for (const auto& [idx, exp] : fb_exponents) {
             if (exp == 0) continue;
 
-            uint32_t p = fb.rational()[idx].p;
+            uint32_t p = rational_primes[idx].p;
             uint64_t half_exp = exp / 2;
 
             // p^half_exp mod n — mpz_powm_ui (exp passed as unsigned long directly)
