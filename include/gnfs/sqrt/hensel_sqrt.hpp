@@ -1,19 +1,19 @@
 #pragma once
 
-#include "number_field.hpp"
-#include "modular_poly.hpp"
-#include "hensel_parallel.hpp"
 #include "../core/integer.hpp"
 #include "../core/polynomial_context.hpp"
 #include "../util/bit_intrin.hpp"
+#include "hensel_parallel.hpp"
+#include "modular_poly.hpp"
+#include "number_field.hpp"
 
-#include <span>
-#include <vector>
-#include <optional>
+#include <chrono>
 #include <iostream>
 #include <limits>
+#include <optional>
+#include <span>
 #include <thread>
-#include <chrono>
+#include <vector>
 
 // ─── BACKLOG P3 DEBT — Hensel verbose 编译期裁剪 ──────────────────────────
 // 大部分诊断 std::cerr 路径运行时已被 config_.verbose 门控,默认 verbose=false
@@ -21,9 +21,14 @@
 // GNFS_HENSEL_NO_VERBOSE 即可在 release 构建中完全裁剪这些块。
 // 默认行为不变 (与原 if(config_.verbose) 等价)。
 #ifndef GNFS_HENSEL_NO_VERBOSE
-  #define HENSEL_VERBOSE(stmt) do { if (config_.verbose) { stmt; } } while (0)
+#define HENSEL_VERBOSE(stmt)                                                                       \
+    do {                                                                                           \
+        if (config_.verbose) {                                                                     \
+            stmt;                                                                                  \
+        }                                                                                          \
+    } while (0)
 #else
-  #define HENSEL_VERBOSE(stmt) ((void)0)
+#define HENSEL_VERBOSE(stmt) ((void)0)
 #endif
 
 namespace gnfs::sqrt {
@@ -42,8 +47,8 @@ using core::PolynomialContext;
 class HenselSqrt {
 public:
     struct Config {
-        uint64_t prime_start = 1000;   // Starting prime search
-        size_t extra_precision = 200;  // Extra bits of precision beyond estimate
+        uint64_t prime_start = 1000;     // Starting prime search
+        size_t extra_precision = 200;    // Extra bits of precision beyond estimate
         uint64_t cached_inert_prime = 0; // Pre-found inert prime (0 = auto-find)
         bool verbose = false;
     };
@@ -52,11 +57,15 @@ public:
     explicit HenselSqrt(const Config& config) : config_(config) {}
 
     /// Get the inert prime found/used during the last compute() call
-    [[nodiscard]] uint64_t last_inert_prime() const noexcept { return last_inert_prime_; }
+    [[nodiscard]] uint64_t last_inert_prime() const noexcept {
+        return last_inert_prime_;
+    }
 
     /// True if CRT searched all 2^15 sign combos without finding a match.
     /// When true, the dependency is almost certainly invalid — skip fallback methods.
-    [[nodiscard]] bool was_crt_sign_exhausted() const noexcept { return crt_sign_exhausted_; }
+    [[nodiscard]] bool was_crt_sign_exhausted() const noexcept {
+        return crt_sign_exhausted_;
+    }
 
     /// Compute algebraic square root value (mod N)
     ///
@@ -64,11 +73,12 @@ public:
     /// compute sqrt(P·f'(α)²) independently mod many small primes,
     /// then reconstruct via CRT. Falls back to Hensel lifting for small inputs
     /// or if CRT fails.
-    [[nodiscard]] std::optional<Integer> compute(
-            const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
+    [[nodiscard]] std::optional<Integer>
+    compute(const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
             const NumberField& nf) const {
 
-        if (ab_pairs.empty()) return Integer(1);
+        if (ab_pairs.empty())
+            return Integer(1);
         auto t0_compute = std::chrono::steady_clock::now();
 
         const Integer& n = nf.n();
@@ -99,12 +109,13 @@ public:
         if (ab_pairs.size() >= 100) {
             double nguyen_target = target_bits;
             for (int nguyen_attempt = 0; nguyen_attempt < 3; ++nguyen_attempt) {
-                auto result = compute_nguyen_hybrid(
-                    ab_pairs, nf, nguyen_target, product_at_m, f_prime_m, f_prime_m_inv);
+                auto result = compute_nguyen_hybrid(ab_pairs, nf, nguyen_target, product_at_m,
+                                                    f_prime_m, f_prime_m_inv);
                 if (result) {
                     if (config_.verbose) {
                         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                            std::chrono::steady_clock::now() - t0_compute).count();
+                                      std::chrono::steady_clock::now() - t0_compute)
+                                      .count();
                         std::cerr << "[Hensel] compute() total: " << ms << "ms\n";
                     }
                     return result;
@@ -116,9 +127,9 @@ public:
                     // This holds regardless of prime replacement.
                     if (config_.verbose) {
                         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                            std::chrono::steady_clock::now() - t0_compute).count();
-                        std::cerr << "[Nguyen] CRT exhausted (" << ms
-                                  << "ms) — dep invalid\n";
+                                      std::chrono::steady_clock::now() - t0_compute)
+                                      .count();
+                        std::cerr << "[Nguyen] CRT exhausted (" << ms << "ms) — dep invalid\n";
                     }
                     return std::nullopt;
                 }
@@ -137,14 +148,14 @@ public:
         }
 
         // Fallback: classic single-prime Hensel lifting (slow for large inputs)
-        return compute_hensel_lifting(
-            ab_pairs, nf, target_bits, product_at_m, f_prime_m, f_prime_m_inv);
+        return compute_hensel_lifting(ab_pairs, nf, target_bits, product_at_m, f_prime_m,
+                                      f_prime_m_inv);
     }
 
 private:
     Config config_;
     mutable uint64_t last_inert_prime_ = 0;
-    mutable bool crt_sign_exhausted_ = false;  // true if CRT searched all combos
+    mutable bool crt_sign_exhausted_ = false; // true if CRT searched all combos
 
     /// Estimate target bits for sqrt coefficient recovery.
     ///
@@ -153,9 +164,9 @@ private:
     /// where σ_k are the d complex embeddings and V is the Vandermonde matrix.
     /// The LEADING term is log_bound/2 (from the worst single embedding),
     /// with O(d·log R) correction from the Vandermonde inverse and f'(α).
-    [[nodiscard]] double estimate_target_bits(
-            const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
-            const NumberField& nf) const {
+    [[nodiscard]] double
+    estimate_target_bits(const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
+                         const NumberField& nf) const {
         uint32_t d = nf.degree();
         double max_root = std::abs(nf.m().to_double());
         {
@@ -169,13 +180,13 @@ private:
         }
         double log_bound = 0;
         for (const auto& [a, b] : ab_pairs) {
-            double val = std::abs(static_cast<double>(a)) +
-                         static_cast<double>(b) * max_root;
+            double val = std::abs(static_cast<double>(a)) + static_cast<double>(b) * max_root;
             log_bound += std::log2(std::max(val, 1.0));
         }
         // f'(α) bound: |f'(α_k)| ≤ d · R^{d-1}
         double log_f_prime_bound = std::log2(static_cast<double>(d));
-        if (d > 1) log_f_prime_bound += static_cast<double>(d) * std::log2(max_root + 1.0);
+        if (d > 1)
+            log_f_prime_bound += static_cast<double>(d) * std::log2(max_root + 1.0);
 
         // Leading term: log_bound/2 (sqrt of worst-case single embedding)
         // Correction: log_f_prime_bound (f'(α)² trick), log₂(d) (Vandermonde)
@@ -184,18 +195,16 @@ private:
         // 改为 max(extra_precision, 0.05 * log_bound) 让安全余量随关系数
         // 量级 scaling。Stage1 估算 log_bound ≈ 10000 时 safety = 500,
         // 远超原 200。小问题(<4000 bits)不受影响。
-        double adaptive_safety = std::max(
-            static_cast<double>(config_.extra_precision),
-            log_bound * 0.05);
-        return log_bound / 2.0 + log_f_prime_bound
-               + std::log2(static_cast<double>(d))
-               + adaptive_safety;
+        double adaptive_safety =
+            std::max(static_cast<double>(config_.extra_precision), log_bound * 0.05);
+        return log_bound / 2.0 + log_f_prime_bound + std::log2(static_cast<double>(d)) +
+               adaptive_safety;
     }
 
     /// Compute ∏(a_i - b_i*m) mod N
-    [[nodiscard]] static Integer compute_product_at_m(
-            const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
-            const NumberField& nf) {
+    [[nodiscard]] static Integer
+    compute_product_at_m(const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
+                         const NumberField& nf) {
         const Integer& n = nf.n();
         Integer product(1);
         // factor = a - m*b.  Use mpz_submul_ui when b fits its unsigned-long
@@ -205,14 +214,14 @@ private:
         for (const auto& [a, b] : ab_pairs) {
             factor = a;
             if (b <= std::numeric_limits<unsigned long>::max()) {
-                mpz_submul_ui(factor.get_mpz(), nf.m().get_mpz(),
-                              static_cast<unsigned long>(b));
+                mpz_submul_ui(factor.get_mpz(), nf.m().get_mpz(), static_cast<unsigned long>(b));
             } else {
                 b_value = b;
                 mpz_submul(factor.get_mpz(), nf.m().get_mpz(), b_value.get_mpz());
             }
             factor %= n;
-            if (factor.is_negative()) factor += n;
+            if (factor.is_negative())
+                factor += n;
             product *= factor;
             product %= n;
         }
@@ -220,16 +229,18 @@ private:
     }
 
     /// Verify Y and return it or -Y if verification passes
-    [[nodiscard]] static std::optional<Integer> verify_and_return(
-            const Integer& Y, const Integer& product_at_m, const Integer& n) {
+    [[nodiscard]] static std::optional<Integer>
+    verify_and_return(const Integer& Y, const Integer& product_at_m, const Integer& n) {
         // Y² mod n via mpz_powm_ui (combines mul + mod in one op)
         Integer Y2;
         mpz_powm_ui(Y2.get_mpz(), Y.get_mpz(), 2, n.get_mpz());
-        if (Y2.is_negative()) Y2 += n;
+        if (Y2.is_negative())
+            Y2 += n;
 
         Integer pm_pos;
         pm_pos = product_at_m;
-        if (pm_pos.is_negative()) pm_pos += n;
+        if (pm_pos.is_negative())
+            pm_pos += n;
 
         if (Y2.compare(pm_pos) == 0) {
             Integer ret;
@@ -245,9 +256,11 @@ private:
         neg_Y2 = neg_Y;
         neg_Y2 *= neg_Y;
         neg_Y2 %= n;
-        if (neg_Y2.is_negative()) neg_Y2 += n;
+        if (neg_Y2.is_negative())
+            neg_Y2 += n;
 
-        if (neg_Y2.compare(pm_pos) == 0) return neg_Y;
+        if (neg_Y2.compare(pm_pos) == 0)
+            return neg_Y;
 
         return std::nullopt;
     }
@@ -257,15 +270,16 @@ private:
     // ========================================================================
 
     /// Find multiple small inert primes for Nguyen hybrid
-    [[nodiscard]] std::vector<uint64_t> find_inert_primes(
-            const NumberField& nf, size_t count) const {
+    [[nodiscard]] std::vector<uint64_t> find_inert_primes(const NumberField& nf,
+                                                          size_t count) const {
         std::vector<uint64_t> primes;
         primes.reserve(count);
         uint64_t p = config_.prime_start;
         for (size_t att = 0; primes.size() < count && att < 100000; ++att) {
             p = next_prime(p);
             auto f_mod = get_f_mod_p(nf, p);
-            if (f_mod.back() == 0) continue;
+            if (f_mod.back() == 0)
+                continue;
             if (ModularPoly::is_irreducible(f_mod, p)) {
                 primes.push_back(p);
             }
@@ -276,17 +290,15 @@ private:
     /// Core Hensel lift for one prime: given sqrt mod p, lift to mod p^{2^num_lifts}
     /// Returns d Integer coefficients of the lifted sqrt, plus the final modulus.
     struct LiftResult {
-        std::vector<Integer> coeffs;  // sqrt coefficients mod modulus
-        Integer modulus;               // p^{2^num_lifts}
+        std::vector<Integer> coeffs; // sqrt coefficients mod modulus
+        Integer modulus;             // p^{2^num_lifts}
         bool ok = false;
     };
 
-    [[nodiscard]] LiftResult hensel_lift_single_prime(
-            uint64_t p,
-            const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
-            const NumberField& nf,
-            size_t num_lifts,
-            size_t max_threads = 0) const {
+    [[nodiscard]] LiftResult
+    hensel_lift_single_prime(uint64_t p, const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
+                             const NumberField& nf, size_t num_lifts,
+                             size_t max_threads = 0) const {
 
         uint32_t d = nf.degree();
         LiftResult result;
@@ -297,11 +309,11 @@ private:
         for (const auto& [a, b] : ab_pairs) {
             std::vector<uint64_t> cs(2);
             int64_t am = a % static_cast<int64_t>(p);
-            if (am < 0) am += static_cast<int64_t>(p);
+            if (am < 0)
+                am += static_cast<int64_t>(p);
             cs[0] = static_cast<uint64_t>(am);
             cs[1] = (p - (b % p)) % p;
-            product_mod_p = ModularPoly::mul(
-                product_mod_p, ModularPoly(std::move(cs)), f_mod_p, p);
+            product_mod_p = ModularPoly::mul(product_mod_p, ModularPoly(std::move(cs)), f_mod_p, p);
         }
         if (product_mod_p.is_zero()) {
             HENSEL_VERBOSE(std::cerr << "[Hensel-lift] p=" << p << " product is zero\n");
@@ -320,7 +332,8 @@ private:
         }
         auto sqrt_mp = ModularPoly::sqrt_tonelli_shanks(product_mod_p, f_mod_p, p);
         if (sqrt_mp.is_zero() && !product_mod_p.is_zero()) {
-            HENSEL_VERBOSE(std::cerr << "[Hensel-lift] p=" << p << " Tonelli-Shanks returned zero\n");
+            HENSEL_VERBOSE(std::cerr << "[Hensel-lift] p=" << p
+                                     << " Tonelli-Shanks returned zero\n");
             return result;
         }
 
@@ -333,7 +346,7 @@ private:
 
         if (num_lifts == 0) {
             result.coeffs = std::move(S);
-            result.modulus = static_cast<int64_t>(p);  // mpz_set_si direct
+            result.modulus = static_cast<int64_t>(p); // mpz_set_si direct
             result.ok = true;
             return result;
         }
@@ -341,7 +354,8 @@ private:
         // Get f polynomial
         // v22: 直接 assign (mpz_set on default-init buffer) 替代 clone() (mpz_init_set)
         std::vector<Integer> f_int(d + 1);
-        for (uint32_t i = 0; i <= d; ++i) f_int[i] = nf.coeff(i);
+        for (uint32_t i = 0; i <= d; ++i)
+            f_int[i] = nf.coeff(i);
 
         Integer modulus(static_cast<int64_t>(p));
 
@@ -356,12 +370,10 @@ private:
             Integer q_minus_2;
             mpz_ui_pow_ui(q_minus_2.get_mpz(), p, d);
             q_minus_2 -= int64_t(2);
-            auto inv_mp = ModularPoly::power(
-                ModularPoly(two_s_mod), q_minus_2, f_mod_p, p);
+            auto inv_mp = ModularPoly::power(ModularPoly(two_s_mod), q_minus_2, f_mod_p, p);
             for (uint32_t i = 0; i < d; ++i) {
-                uint64_t cv = (i <= static_cast<uint32_t>(inv_mp.degree()))
-                              ? inv_mp.coeff(i) : 0;
-                T[i] = uint64_t(cv);  // operator=(uint64_t) direct
+                uint64_t cv = (i <= static_cast<uint32_t>(inv_mp.degree())) ? inv_mp.coeff(i) : 0;
+                T[i] = uint64_t(cv); // operator=(uint64_t) direct
             }
         }
 
@@ -374,14 +386,13 @@ private:
             final_mod *= temp_buf;
         }
 
-        auto P_final = compute_product_mod_parallel(
-            ab_pairs, f_int, d, final_mod, false, max_threads);
+        auto P_final =
+            compute_product_mod_parallel(ab_pairs, f_int, d, final_mod, false, max_threads);
 
         // Multiply P by f'(x)^2
         auto f_prime_int = compute_f_derivative_int(f_int, d);
         auto fli_final = compute_f_lead_inv(f_int, d, final_mod);
-        auto f_prime_sq = poly_mul_mod(
-            f_prime_int, f_prime_int, f_int, d, final_mod, fli_final);
+        auto f_prime_sq = poly_mul_mod(f_prime_int, f_prime_int, f_int, d, final_mod, fli_final);
         P_final = poly_mul_mod(P_final, f_prime_sq, f_int, d, final_mod, fli_final);
 
         // Newton iteration: S_{k+1} = S_k + T_k · (P - S_k²), T_{k+1} = T_k · (2 - 2S_{k+1}·T_k)
@@ -407,7 +418,8 @@ private:
             for (uint32_t i = 0; i < d; ++i) {
                 S[i] += correction[i];
                 S[i] %= new_modulus;
-                if (S[i].is_negative()) S[i] += new_modulus;
+                if (S[i].is_negative())
+                    S[i] += new_modulus;
             }
 
             // Update T — mpz_mul_2exp = bit shift, fastest power-of-2 multiply
@@ -422,12 +434,14 @@ private:
             factor[0] = int64_t(2);
             factor[0] -= two_S_T[0];
             factor[0] %= new_modulus;
-            if (factor[0].is_negative()) factor[0] += new_modulus;
+            if (factor[0].is_negative())
+                factor[0] += new_modulus;
             for (uint32_t i = 1; i < d; ++i) {
                 factor[i] = two_S_T[i];
                 factor[i].negate();
                 factor[i] %= new_modulus;
-                if (factor[i].is_negative()) factor[i] += new_modulus;
+                if (factor[i].is_negative())
+                    factor[i] += new_modulus;
             }
             T = poly_mul_mod(T, factor, f_int, d, new_modulus, fli);
             modulus = std::move(new_modulus);
@@ -436,7 +450,7 @@ private:
             if (lift <= 1) {
                 auto S2_early = poly_mul_mod(S, S, f_int, d, modulus, fli);
                 bool early_ok = true;
-                Integer p_i;  // 复用 buffer (d 次 iter 节省 d-1 allocs)
+                Integer p_i; // 复用 buffer (d 次 iter 节省 d-1 allocs)
                 for (uint32_t i = 0; i < d; ++i) {
                     p_i = P_final[i];
                     p_i %= modulus;
@@ -447,8 +461,8 @@ private:
                 }
                 if (!early_ok) {
                     if (config_.verbose) {
-                        std::cerr << "[Hensel-lift] p=" << p
-                                  << " early invariant FAILED at lift " << lift << "\n";
+                        std::cerr << "[Hensel-lift] p=" << p << " early invariant FAILED at lift "
+                                  << lift << "\n";
                     }
                     result.ok = false;
                     return result;
@@ -463,13 +477,10 @@ private:
     }
 
     /// Nguyen hybrid: K small primes + Hensel lift each + CRT + 2^(K-1) sign search
-    [[nodiscard]] std::optional<Integer> compute_nguyen_hybrid(
-            const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
-            const NumberField& nf,
-            double target_bits,
-            const Integer& product_at_m,
-            const Integer& /* f_prime_m */,
-            const Integer& f_prime_m_inv) const {
+    [[nodiscard]] std::optional<Integer>
+    compute_nguyen_hybrid(const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
+                          const NumberField& nf, double target_bits, const Integer& product_at_m,
+                          const Integer& /* f_prime_m */, const Integer& f_prime_m_inv) const {
 
         uint32_t d = nf.degree();
         const Integer& n = nf.n();
@@ -508,13 +519,17 @@ private:
             double log_p = std::log2(static_cast<double>(inert_primes[i]));
             size_t num_lifts = 0;
             double cur = log_p;
-            while (cur < per_prime_bits) { cur *= 2; ++num_lifts; }
+            while (cur < per_prime_bits) {
+                cur *= 2;
+                ++num_lifts;
+            }
             lifts_per_prime[i] = num_lifts;
         }
 
         if (config_.verbose) {
             auto ms_find = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - t0).count();
+                               std::chrono::steady_clock::now() - t0)
+                               .count();
             std::cerr << "[Nguyen] " << K << " primes (";
             for (size_t i = 0; i < K; ++i)
                 std::cerr << (i ? "," : "") << inert_primes[i];
@@ -543,15 +558,13 @@ private:
         const size_t inner_threads = std::max(size_t(1), hw_safe / std::max(size_t(1), outer_eff));
 
         std::vector<LiftResult> lifted(K);
-        size_t next_spare = K;  // index into all_inert for replacement primes
+        size_t next_spare = K; // index into all_inert for replacement primes
 
         // Initial lift dispatch — env-gated dispatcher (sequential when N==1).
         gnfs::sqrt::parallel_hensel_lift<LiftResult>(
-            std::span<LiftResult>(lifted.data(), K),
-            [&](LiftResult& slot, std::size_t i) {
-                slot = hensel_lift_single_prime(
-                    inert_primes[i], ab_pairs, nf, lifts_per_prime[i],
-                    inner_threads);
+            std::span<LiftResult>(lifted.data(), K), [&](LiftResult& slot, std::size_t i) {
+                slot = hensel_lift_single_prime(inert_primes[i], ab_pairs, nf, lifts_per_prime[i],
+                                                inner_threads);
             });
 
         // Retry failed primes with replacements (sequential, one at a time)
@@ -566,34 +579,37 @@ private:
                 double log_p = std::log2(static_cast<double>(inert_primes[i]));
                 size_t nl = 0;
                 double cur = log_p;
-                while (cur < per_prime_bits) { cur *= 2; ++nl; }
+                while (cur < per_prime_bits) {
+                    cur *= 2;
+                    ++nl;
+                }
                 lifts_per_prime[i] = nl;
                 // Use all threads for single retry (no contention)
-                lifted[i] = hensel_lift_single_prime(
-                    inert_primes[i], ab_pairs, nf, lifts_per_prime[i],
-                    static_cast<size_t>(hw > 0 ? hw : 4));
+                lifted[i] =
+                    hensel_lift_single_prime(inert_primes[i], ab_pairs, nf, lifts_per_prime[i],
+                                             static_cast<size_t>(hw > 0 ? hw : 4));
             }
             if (!lifted[i].ok) {
                 if (config_.verbose)
-                    std::cerr << "[Nguyen] All replacement primes exhausted for slot "
-                              << i << "\n";
+                    std::cerr << "[Nguyen] All replacement primes exhausted for slot " << i << "\n";
                 return std::nullopt;
             }
         }
 
         if (config_.verbose) {
             auto ms_lift = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - t0).count();
-            std::cerr << "[Nguyen] All " << K << " lifts OK ("
-                      << lifted[0].modulus.bit_length() << "-"
-                      << lifted.back().modulus.bit_length() << " bit moduli) ["
-                      << ms_lift << "ms total]\n";
+                               std::chrono::steady_clock::now() - t0)
+                               .count();
+            std::cerr << "[Nguyen] All " << K << " lifts OK (" << lifted[0].modulus.bit_length()
+                      << "-" << lifted.back().modulus.bit_length() << " bit moduli) [" << ms_lift
+                      << "ms total]\n";
         }
 
         // ---- Step 2: CRT combine + sign search ----
         // M = product of all per-prime moduli
         Integer M(1);
-        for (size_t i = 0; i < K; ++i) M *= lifted[i].modulus;
+        for (size_t i = 0; i < K; ++i)
+            M *= lifted[i].modulus;
 
         // CRT basis: e_i = (M/m_i) * (M/m_i)^{-1} mod m_i
         std::vector<Integer> basis(K);
@@ -612,8 +628,7 @@ private:
         std::vector<Integer> crt_val(d);
         for (uint32_t j = 0; j < d; ++j) {
             for (size_t i = 0; i < K; ++i) {
-                mpz_addmul(crt_val[j].get_mpz(),
-                           lifted[i].coeffs[j].get_mpz(), basis[i].get_mpz());
+                mpz_addmul(crt_val[j].get_mpz(), lifted[i].coeffs[j].get_mpz(), basis[i].get_mpz());
             }
             crt_val[j] %= M;
         }
@@ -625,21 +640,22 @@ private:
         for (size_t i = 0; i < K; ++i) {
             delta[i].reserve(d);
             for (uint32_t j = 0; j < d; ++j) {
-                mpz_mul_2exp(ts.get_mpz(), lifted[i].coeffs[j].get_mpz(), 1);  // ts = 2*coeffs[j]
+                mpz_mul_2exp(ts.get_mpz(), lifted[i].coeffs[j].get_mpz(), 1); // ts = 2*coeffs[j]
                 Integer v;
-                mpz_sub(v.get_mpz(), lifted[i].modulus.get_mpz(), ts.get_mpz());  // v = m - ts
+                mpz_sub(v.get_mpz(), lifted[i].modulus.get_mpz(), ts.get_mpz()); // v = m - ts
                 v *= basis[i];
                 v %= M;
-                if (v.is_negative()) v += M;
+                if (v.is_negative())
+                    v += M;
                 delta[i].push_back(std::move(v));
             }
         }
 
         // m^j mod N (v22: mpw[j] = mpow[j-1] mpz_set)
         std::vector<Integer> mpow(d);
-        mpow[0] = int64_t(1);  // mpz_set_si on default-init slot
+        mpow[0] = int64_t(1); // mpz_set_si on default-init slot
         for (uint32_t j = 1; j < d; ++j) {
-            mpz_mul(mpow[j].get_mpz(), mpow[j-1].get_mpz(), nf.m().get_mpz());
+            mpz_mul(mpow[j].get_mpz(), mpow[j - 1].get_mpz(), nf.m().get_mpz());
             mpow[j] %= n;
         }
 
@@ -671,20 +687,24 @@ private:
         Integer val_buf;
         Integer c_buf;
         auto try_verify = [&]() -> std::optional<Integer> {
-            val_buf = int64_t(0);  // mpz_set_si direct
+            val_buf = int64_t(0); // mpz_set_si direct
             for (uint32_t j = 0; j < d; ++j) {
                 c_buf = crt_mod_N[j];
-                if (crt_val[j].compare(Mhalf) > 0) c_buf -= M_mod_N;
+                if (crt_val[j].compare(Mhalf) > 0)
+                    c_buf -= M_mod_N;
                 c_buf %= n;
-                if (c_buf.is_negative()) c_buf += n;
+                if (c_buf.is_negative())
+                    c_buf += n;
                 // val_buf += c_buf * mpow[j] via fused FMA
                 mpz_addmul(val_buf.get_mpz(), c_buf.get_mpz(), mpow[j].get_mpz());
-                val_buf %= n;  // intermediate reduction — avoid d·N² growth
+                val_buf %= n; // intermediate reduction — avoid d·N² growth
             }
-            if (val_buf.is_negative()) val_buf += n;
+            if (val_buf.is_negative())
+                val_buf += n;
             val_buf *= f_prime_m_inv;
             val_buf %= n;
-            if (val_buf.is_negative()) val_buf += n;
+            if (val_buf.is_negative())
+                val_buf += n;
             return verify_and_return(val_buf, product_at_m, n);
         };
 
@@ -706,22 +726,28 @@ private:
                 for (uint32_t j = 0; j < d; ++j) {
                     crt_val[j] += delta[flip][j];
                     bool overflow = (crt_val[j].compare(M) >= 0);
-                    if (overflow) crt_val[j] -= M;
+                    if (overflow)
+                        crt_val[j] -= M;
                     crt_mod_N[j] += delta_mod_N[flip][j];
-                    if (overflow) crt_mod_N[j] -= M_mod_N;
+                    if (overflow)
+                        crt_mod_N[j] -= M_mod_N;
                     crt_mod_N[j] %= n;
-                    if (crt_mod_N[j].is_negative()) crt_mod_N[j] += n;
+                    if (crt_mod_N[j].is_negative())
+                        crt_mod_N[j] += n;
                 }
                 sgn[flip] = false;
             } else {
                 for (uint32_t j = 0; j < d; ++j) {
                     crt_val[j] -= delta[flip][j];
                     bool underflow = crt_val[j].is_negative();
-                    if (underflow) crt_val[j] += M;
+                    if (underflow)
+                        crt_val[j] += M;
                     crt_mod_N[j] -= delta_mod_N[flip][j];
-                    if (underflow) crt_mod_N[j] += M_mod_N;
+                    if (underflow)
+                        crt_mod_N[j] += M_mod_N;
                     crt_mod_N[j] %= n;
-                    if (crt_mod_N[j].is_negative()) crt_mod_N[j] += n;
+                    if (crt_mod_N[j].is_negative())
+                        crt_mod_N[j] += n;
                 }
                 sgn[flip] = true;
             }
@@ -729,8 +755,7 @@ private:
             result = try_verify();
             if (result) {
                 if (config_.verbose) {
-                    std::cerr << "[Nguyen] Verified at combo " << step
-                              << "/" << total << "\n";
+                    std::cerr << "[Nguyen] Verified at combo " << step << "/" << total << "\n";
                 }
                 return result;
             }
@@ -743,27 +768,25 @@ private:
         return std::nullopt;
     }
 
-
     // ========================================================================
     // Classic Hensel lifting fallback
     // ========================================================================
 
     /// Classic Hensel lifting approach (fallback for small inputs or CRT failure)
-    [[nodiscard]] std::optional<Integer> compute_hensel_lifting(
-            const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
-            const NumberField& nf,
-            double target_bits,
-            const Integer& product_at_m,
-            const Integer& /* f_prime_m */,
-            const Integer& f_prime_m_inv) const {
+    [[nodiscard]] std::optional<Integer>
+    compute_hensel_lifting(const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
+                           const NumberField& nf, double target_bits, const Integer& product_at_m,
+                           const Integer& /* f_prime_m */, const Integer& f_prime_m_inv) const {
 
         uint32_t d = nf.degree();
         const Integer& n = nf.n();
 
         // Find inert prime
         uint64_t p = config_.cached_inert_prime;
-        if (p == 0) p = find_inert_prime(nf);
-        if (p == 0) return std::nullopt;
+        if (p == 0)
+            p = find_inert_prime(nf);
+        if (p == 0)
+            return std::nullopt;
         last_inert_prime_ = p;
 
         // Compute product and sqrt mod (f, p)
@@ -772,14 +795,17 @@ private:
         for (const auto& [a, b] : ab_pairs) {
             std::vector<uint64_t> cs(2);
             int64_t am = a % static_cast<int64_t>(p);
-            if (am < 0) am += static_cast<int64_t>(p);
+            if (am < 0)
+                am += static_cast<int64_t>(p);
             cs[0] = static_cast<uint64_t>(am);
             cs[1] = (p - (b % p)) % p;
             product_mod_p = ModularPoly::mul(product_mod_p, ModularPoly(std::move(cs)), f_mod_p, p);
         }
-        if (product_mod_p.is_zero()) return std::nullopt;
+        if (product_mod_p.is_zero())
+            return std::nullopt;
 
-        if (!ModularPoly::is_square(product_mod_p, f_mod_p, p)) return std::nullopt;
+        if (!ModularPoly::is_square(product_mod_p, f_mod_p, p))
+            return std::nullopt;
         auto sqrt_mod_p = ModularPoly::sqrt_tonelli_shanks(product_mod_p, f_mod_p, p);
 
         // Verify initial sqrt: sqrt^2 ≡ product mod (f, p)
@@ -790,8 +816,8 @@ private:
                 const size_t coeff_idx = static_cast<size_t>(i);
                 if (check.coeff(coeff_idx) != product_mod_p.coeff(coeff_idx)) {
                     init_ok = false;
-                    std::cerr << "[Hensel] INITIAL sqrt verification FAILED at coeff "
-                              << i << ": got " << check.coeff(coeff_idx) << " expected "
+                    std::cerr << "[Hensel] INITIAL sqrt verification FAILED at coeff " << i
+                              << ": got " << check.coeff(coeff_idx) << " expected "
                               << product_mod_p.coeff(coeff_idx) << " (p=" << p << ")\n";
                     break;
                 }
@@ -803,15 +829,17 @@ private:
 
         // Multiply by f'(α)
         auto f_prime_mod_p = compute_f_derivative_mod_p(nf, p);
-        sqrt_mod_p = ModularPoly::mul(
-            sqrt_mod_p, ModularPoly(f_prime_mod_p), f_mod_p, p);
+        sqrt_mod_p = ModularPoly::mul(sqrt_mod_p, ModularPoly(f_prime_mod_p), f_mod_p, p);
 
         // Compute lifts needed
         double log_p = std::log2(static_cast<double>(p));
         size_t base_lifts = 0;
         {
             double cur = log_p;
-            while (cur < target_bits) { cur *= 2; ++base_lifts; }
+            while (cur < target_bits) {
+                cur *= 2;
+                ++base_lifts;
+            }
         }
 
         for (int attempt = 0; attempt < 4; ++attempt) {
@@ -819,23 +847,26 @@ private:
 
             if (config_.verbose) {
                 double mod_bits = log_p;
-                for (size_t l = 0; l < num_lifts; ++l) mod_bits *= 2;
+                for (size_t l = 0; l < num_lifts; ++l)
+                    mod_bits *= 2;
                 std::cerr << "[Hensel-lift] attempt=" << attempt << " p=" << p
                           << " lifts=" << num_lifts
                           << " modulus_bits~=" << static_cast<size_t>(mod_bits) << "\n";
             }
 
-            auto result_elem = hensel_lift_and_extract(
-                sqrt_mod_p, ab_pairs, nf, p, num_lifts, d);
-            if (!result_elem) continue;
+            auto result_elem = hensel_lift_and_extract(sqrt_mod_p, ab_pairs, nf, p, num_lifts, d);
+            if (!result_elem)
+                continue;
 
             Integer Y = nf.evaluate_at_m_mod_n(*result_elem);
             Y *= f_prime_m_inv;
             Y %= n;
-            if (Y.is_negative()) Y += n;
+            if (Y.is_negative())
+                Y += n;
 
             auto verified = verify_and_return(Y, product_at_m, n);
-            if (verified) return verified;
+            if (verified)
+                return verified;
 
             if (config_.verbose) {
                 std::cerr << "[Hensel-lift] Verification FAILED (attempt " << attempt << ")\n";
@@ -846,13 +877,10 @@ private:
     }
 
     /// Core Hensel lifting: given sqrt mod p, lift to target precision and extract result
-    [[nodiscard]] std::optional<NumberFieldElement> hensel_lift_and_extract(
-            const ModularPoly& sqrt_mod_p,
-            const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
-            const NumberField& nf,
-            uint64_t p,
-            size_t num_lifts,
-            uint32_t d) const {
+    [[nodiscard]] std::optional<NumberFieldElement>
+    hensel_lift_and_extract(const ModularPoly& sqrt_mod_p,
+                            const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
+                            const NumberField& nf, uint64_t p, size_t num_lifts, uint32_t d) const {
 
         const Integer& n = nf.n();
 
@@ -886,7 +914,8 @@ private:
             for (uint32_t i = 0; i <= d; ++i) {
                 c = nf.coeff(i);
                 c %= p_int;
-                if (c.is_negative()) c += p_int;
+                if (c.is_negative())
+                    c += p_int;
                 f_mod_p_vec[i] = c.to_uint64();
             }
             // Compute p^d - 2 using mpz_ui_pow_ui (single GMP call)
@@ -895,8 +924,9 @@ private:
             q_minus_2 -= int64_t(2);
             auto inv_mp = ModularPoly::power(ModularPoly(two_s_mod), q_minus_2, f_mod_p_vec, p);
             for (uint32_t i = 0; i < d; ++i) {
-                uint64_t coeff_val = (i <= static_cast<uint32_t>(inv_mp.degree())) ? inv_mp.coeff(i) : 0;
-                T[i] = uint64_t(coeff_val);  // operator=(uint64_t) direct
+                uint64_t coeff_val =
+                    (i <= static_cast<uint32_t>(inv_mp.degree())) ? inv_mp.coeff(i) : 0;
+                T[i] = uint64_t(coeff_val); // operator=(uint64_t) direct
             }
         }
 
@@ -907,22 +937,22 @@ private:
             // hoist temp buffer — reused across num_lifts iter
             Integer fm_temp;
             for (size_t i = 0; i < num_lifts; ++i) {
-                fm_temp = final_mod;  // mpz_set into reused buffer
+                fm_temp = final_mod; // mpz_set into reused buffer
                 final_mod *= fm_temp;
             }
 
             if (config_.verbose) {
-                std::cerr << "[Hensel] Pre-computing product (" << ab_pairs.size()
-                          << " factors, " << final_mod.bit_length() << "-bit modulus)...\n";
+                std::cerr << "[Hensel] Pre-computing product (" << ab_pairs.size() << " factors, "
+                          << final_mod.bit_length() << "-bit modulus)...\n";
             }
 
-            P_final = compute_product_mod_parallel(
-                ab_pairs, f_int, d, final_mod, config_.verbose);
+            P_final = compute_product_mod_parallel(ab_pairs, f_int, d, final_mod, config_.verbose);
 
             // Multiply P by f'(x)^2 to ensure sqrt ∈ Z[α] after lifting.
             auto f_prime_int = compute_f_derivative_int(f_int, d);
             auto fli_final = compute_f_lead_inv(f_int, d, final_mod);
-            auto f_prime_sq = poly_mul_mod(f_prime_int, f_prime_int, f_int, d, final_mod, fli_final);
+            auto f_prime_sq =
+                poly_mul_mod(f_prime_int, f_prime_int, f_int, d, final_mod, fli_final);
             P_final = poly_mul_mod(P_final, f_prime_sq, f_int, d, final_mod, fli_final);
 
             if (config_.verbose) {
@@ -938,12 +968,12 @@ private:
                     // mpz_fdiv_ui: floor-div remainder ∈ [0, p-1] regardless of sign
                     uint64_t pfi_u64 = static_cast<uint64_t>(mpz_fdiv_ui(P_final[i].get_mpz(), p));
                     uint64_t s2i = (i <= static_cast<uint32_t>(S2_check_mp.degree()))
-                                   ? S2_check_mp.coeff(i) : 0;
+                                       ? S2_check_mp.coeff(i)
+                                       : 0;
                     if (pfi_u64 != s2i) {
                         product_consistent = false;
-                        std::cerr << "[Hensel] PRODUCT MISMATCH at coeff " << i
-                                  << ": P_final%" << p << "=" << pfi_u64
-                                  << " S^2%" << p << "=" << s2i << "\n";
+                        std::cerr << "[Hensel] PRODUCT MISMATCH at coeff " << i << ": P_final%" << p
+                                  << "=" << pfi_u64 << " S^2%" << p << "=" << s2i << "\n";
                         break;
                     }
                 }
@@ -963,7 +993,7 @@ private:
         Integer p_i_buf;
         for (size_t lift = 0; lift < num_lifts; ++lift) {
             new_modulus = modulus;
-            new_modulus *= modulus;  // modulus²
+            new_modulus *= modulus; // modulus²
 
             // Pre-compute f_lead_inv for this round (all 5 poly_mul_mod share it)
             auto fli = compute_f_lead_inv(f_int, d, new_modulus);
@@ -987,7 +1017,8 @@ private:
             for (uint32_t i = 0; i < d; ++i) {
                 S[i] += correction[i];
                 S[i] %= new_modulus;
-                if (S[i].is_negative()) S[i] += new_modulus;
+                if (S[i].is_negative())
+                    S[i] += new_modulus;
             }
 
             // Update T: T' = T · (2 - 2S'·T) mod (f, new_modulus)
@@ -1002,12 +1033,14 @@ private:
             factor_vec[0] = two_const;
             factor_vec[0] -= two_S_T[0];
             factor_vec[0] %= new_modulus;
-            if (factor_vec[0].is_negative()) factor_vec[0] += new_modulus;
+            if (factor_vec[0].is_negative())
+                factor_vec[0] += new_modulus;
             for (uint32_t i = 1; i < d; ++i) {
                 factor_vec[i] = two_S_T[i];
                 factor_vec[i].negate();
                 factor_vec[i] %= new_modulus;
-                if (factor_vec[i].is_negative()) factor_vec[i] += new_modulus;
+                if (factor_vec[i].is_negative())
+                    factor_vec[i] += new_modulus;
             }
 
             // T' = T · factor
@@ -1031,14 +1064,14 @@ private:
                     if (S2_early[i].compare(p_i_buf) != 0) {
                         early_ok = false;
                         if (config_.verbose) {
-                            std::cerr << "[Hensel] Early invariant FAIL at lift "
-                                      << lift << ": S^2[" << i << "] != P[" << i
-                                      << "] mod p^k\n";
+                            std::cerr << "[Hensel] Early invariant FAIL at lift " << lift
+                                      << ": S^2[" << i << "] != P[" << i << "] mod p^k\n";
                         }
                         break;
                     }
                 }
-                if (!early_ok) return std::nullopt;  // Bail immediately
+                if (!early_ok)
+                    return std::nullopt; // Bail immediately
             }
         }
 
@@ -1048,13 +1081,13 @@ private:
             bool lift_ok = true;
             for (uint32_t i = 0; i < d; ++i) {
                 Integer p_i;
-                mpz_mod(p_i.get_mpz(), P_final[i].get_mpz(), modulus.get_mpz());  // skip clone+%=
+                mpz_mod(p_i.get_mpz(), P_final[i].get_mpz(), modulus.get_mpz()); // skip clone+%=
                 if (S2_check[i].compare(p_i) != 0) {
                     lift_ok = false;
-                    std::cerr << "[Hensel] INVARIANT VIOLATION: S^2[" << i
-                              << "] != P[" << i << "] mod p^k\n";
-                    std::cerr << "  S^2[" << i << "] bits=" << S2_check[i].bit_length()
-                              << " P[" << i << "] bits=" << p_i.bit_length() << "\n";
+                    std::cerr << "[Hensel] INVARIANT VIOLATION: S^2[" << i << "] != P[" << i
+                              << "] mod p^k\n";
+                    std::cerr << "  S^2[" << i << "] bits=" << S2_check[i].bit_length() << " P["
+                              << i << "] bits=" << p_i.bit_length() << "\n";
                     break;
                 }
             }
@@ -1073,7 +1106,7 @@ private:
             bool any_centered = false;
             for (uint32_t i = 0; i < d; ++i) {
                 max_pre_center = std::max(max_pre_center, S[i].bit_length());
-                Integer centered = S[i];  // Integer copy ctor
+                Integer centered = S[i]; // Integer copy ctor
                 if (centered.compare(half_mod) > 0) {
                     centered -= modulus;
                     any_centered = true;
@@ -1087,24 +1120,26 @@ private:
             // Evaluate S(m) mod N using Hensel coefficients (before centering)
             const Integer& nn = nf.n();
             const Integer& mm = nf.m();
-            Integer s_at_m;  // default ctor = 0
+            Integer s_at_m; // default ctor = 0
             for (int i = static_cast<int>(d) - 1; i >= 0; --i) {
                 s_at_m *= mm;
                 s_at_m += S[static_cast<size_t>(i)];
                 s_at_m %= nn;
             }
-            if (s_at_m.is_negative()) s_at_m += nn;
+            if (s_at_m.is_negative())
+                s_at_m += nn;
             Integer s2_at_m;
             mpz_powm_ui(s2_at_m.get_mpz(), s_at_m.get_mpz(), 2, nn.get_mpz());
 
             // Evaluate P_final(m) mod N
-            Integer p_at_m;  // default ctor = 0
+            Integer p_at_m; // default ctor = 0
             for (int i = static_cast<int>(d) - 1; i >= 0; --i) {
                 p_at_m *= mm;
                 p_at_m += P_final[static_cast<size_t>(i)];
                 p_at_m %= nn;
             }
-            if (p_at_m.is_negative()) p_at_m += nn;
+            if (p_at_m.is_negative())
+                p_at_m += nn;
 
             std::cerr << "[Hensel] φ(S)^2 mod N == φ(P_final) mod N ? "
                       << (s2_at_m.compare(p_at_m) == 0 ? "YES" : "NO") << "\n";
@@ -1118,15 +1153,16 @@ private:
                 result_coeffs[i] -= modulus;
             }
             result_coeffs[i] %= n;
-            if (result_coeffs[i].is_negative()) result_coeffs[i] += n;
+            if (result_coeffs[i].is_negative())
+                result_coeffs[i] += n;
         }
 
         return NumberFieldElement(std::move(result_coeffs));
     }
 
     /// Compute f'(x) mod p (derivative of the defining polynomial)
-    [[nodiscard]] static std::vector<uint64_t> compute_f_derivative_mod_p(
-            const NumberField& nf, uint64_t p) {
+    [[nodiscard]] static std::vector<uint64_t> compute_f_derivative_mod_p(const NumberField& nf,
+                                                                          uint64_t p) {
         uint32_t d = nf.degree();
         std::vector<uint64_t> f_prime(d);
         // v22: c 复用 + p_int 提取
@@ -1134,22 +1170,23 @@ private:
         const Integer p_int(p);
         for (uint32_t i = 0; i < d; ++i) {
             c = nf.coeff(i + 1);
-            c *= static_cast<int64_t>(i + 1);  // mpz_mul_si direct
+            c *= static_cast<int64_t>(i + 1); // mpz_mul_si direct
             c %= p_int;
-            if (c.is_negative()) c += p_int;
+            if (c.is_negative())
+                c += p_int;
             f_prime[i] = c.to_uint64();
         }
         return f_prime;
     }
 
     /// Compute f'(x) as Integer polynomial (d coefficients, degree d-1)
-    [[nodiscard]] static std::vector<Integer> compute_f_derivative_int(
-            const std::vector<Integer>& f, uint32_t d) {
+    [[nodiscard]] static std::vector<Integer>
+    compute_f_derivative_int(const std::vector<Integer>& f, uint32_t d) {
         // v22: f_prime[i] = f[i+1] (mpz_set into default-init)
         std::vector<Integer> f_prime(d);
         for (uint32_t i = 0; i < d; ++i) {
             f_prime[i] = f[i + 1];
-            f_prime[i] *= static_cast<int64_t>(i + 1);  // mpz_mul_si direct
+            f_prime[i] *= static_cast<int64_t>(i + 1); // mpz_mul_si direct
         }
         return f_prime;
     }
@@ -1164,7 +1201,7 @@ private:
         // v22: result/term 直接 assign, 复用
         Integer result;
         result = nf.coeff(d);
-        result *= static_cast<int64_t>(d);  // mpz_mul_si direct
+        result *= static_cast<int64_t>(d); // mpz_mul_si direct
         result %= n;
 
         for (int i = static_cast<int>(d) - 1; i >= 1; --i) {
@@ -1174,7 +1211,8 @@ private:
                           static_cast<unsigned long>(i));
             result %= n;
         }
-        if (result.is_negative()) result += n;
+        if (result.is_negative())
+            result += n;
         return result;
     }
 
@@ -1187,7 +1225,8 @@ private:
 
             // Check f irreducible mod p (full Rabin test)
             auto f_mod = get_f_mod_p(nf, p);
-            if (f_mod.back() == 0) continue;
+            if (f_mod.back() == 0)
+                continue;
 
             if (ModularPoly::is_irreducible(f_mod, p)) {
                 return p;
@@ -1206,40 +1245,41 @@ private:
         for (uint32_t i = 0; i <= d; ++i) {
             c = nf.coeff(i);
             c %= p_int;
-            if (c.is_negative()) c += p_int;
+            if (c.is_negative())
+                c += p_int;
             f[i] = c.to_uint64();
         }
         return f;
     }
 
     /// Compute ∏(a_i - b_i·x) mod (f, modulus) using Integer polynomial arithmetic
-    [[nodiscard]] static std::vector<Integer> compute_product_mod(
-            const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
-            const std::vector<Integer>& f,
-            uint32_t d,
-            const Integer& modulus) {
+    [[nodiscard]] static std::vector<Integer>
+    compute_product_mod(const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
+                        const std::vector<Integer>& f, uint32_t d, const Integer& modulus) {
 
         // Pre-compute f_lead_inv once (avoid recomputing per-factor)
         auto fli = compute_f_lead_inv(f, d, modulus);
 
         // Start with 1 (other coeffs default to 0 via Integer ctor)
         std::vector<Integer> product(d);
-        product[0] = int64_t(1);  // mpz_set_si direct
+        product[0] = int64_t(1); // mpz_set_si direct
 
         // v22: factor 移到 loop 外, mpz_set 覆写 factor[0]/[1], factor[i>=2] 保持 0
         std::vector<Integer> factor(d);
 
         for (const auto& [a, b] : ab_pairs) {
             // Factor = a - b·x
-            factor[0] = a;  // mpz_set_si direct
+            factor[0] = a; // mpz_set_si direct
             factor[0] %= modulus;
-            if (factor[0].is_negative()) factor[0] += modulus;
+            if (factor[0].is_negative())
+                factor[0] += modulus;
 
             if (d > 1) {
                 factor[1] = b;
                 factor[1].negate();
                 factor[1] %= modulus;
-                if (factor[1].is_negative()) factor[1] += modulus;
+                if (factor[1].is_negative())
+                    factor[1] += modulus;
             }
             // factor[i] for i>=2 是 0 (init), poly_mul_mod 不改 input, 后续 iter 仍 0.
 
@@ -1252,29 +1292,28 @@ private:
     /// Parallel product computation: splits factors across threads
     /// then combines partial products. Falls back to sequential for small n.
     /// @param max_threads_hint: 0 = auto (hw_concurrency), >0 = limit threads
-    [[nodiscard]] static std::vector<Integer> compute_product_mod_parallel(
-            const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
-            const std::vector<Integer>& f,
-            uint32_t d,
-            const Integer& modulus,
-            bool verbose = false,
-            size_t max_threads_hint = 0) {
+    [[nodiscard]] static std::vector<Integer>
+    compute_product_mod_parallel(const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
+                                 const std::vector<Integer>& f, uint32_t d, const Integer& modulus,
+                                 bool verbose = false, size_t max_threads_hint = 0) {
 
         size_t n = ab_pairs.size();
 
         // Determine thread count (respect max_threads_hint for Nguyen shared-core)
         unsigned hw = std::thread::hardware_concurrency();
         size_t num_threads = (hw > 0) ? static_cast<size_t>(hw) : 4;
-        if (max_threads_hint > 0) num_threads = std::min(num_threads, max_threads_hint);
-        if (n < num_threads * 50) num_threads = 1;  // lower threshold for better utilization
+        if (max_threads_hint > 0)
+            num_threads = std::min(num_threads, max_threads_hint);
+        if (n < num_threads * 50)
+            num_threads = 1; // lower threshold for better utilization
 
         if (num_threads <= 1) {
             return compute_product_mod(ab_pairs, f, d, modulus);
         }
 
         if (verbose) {
-            std::cerr << "[Hensel] Parallel product: " << n << " factors, "
-                      << num_threads << " threads\n";
+            std::cerr << "[Hensel] Parallel product: " << n << " factors, " << num_threads
+                      << " threads\n";
         }
 
         size_t chunk = (n + num_threads - 1) / num_threads;
@@ -1293,7 +1332,7 @@ private:
 
             threads.emplace_back([&partials, &ab_pairs, &f, &modulus, &fli, d, t, start, end]() {
                 std::vector<Integer> product(d);
-                product[0] = int64_t(1);  // other coeffs already 0 from ctor
+                product[0] = int64_t(1); // other coeffs already 0 from ctor
 
                 // v22: factor vector 移到 loop 外, 复用 d 个 Integer.
                 // factor[0], factor[1] 每 iter 用 mpz_set 覆写, factor[i>=2] 保持 0.
@@ -1304,16 +1343,18 @@ private:
                     auto [a, b] = ab_pairs[j];
 
                     // a mod modulus (复用 factor[0] buffer via operator=(int64_t))
-                    factor[0] = a;  // mpz_set_si direct
+                    factor[0] = a; // mpz_set_si direct
                     factor[0] %= modulus;
-                    if (factor[0].is_negative()) factor[0] += modulus;
+                    if (factor[0].is_negative())
+                        factor[0] += modulus;
 
                     if (d > 1) {
                         // -b mod modulus (复用 factor[1] buffer)
                         factor[1] = b;
                         factor[1].negate();
                         factor[1] %= modulus;
-                        if (factor[1].is_negative()) factor[1] += modulus;
+                        if (factor[1].is_negative())
+                            factor[1] += modulus;
                     }
                     // factor[i] for i>=2 是 0 (初始化时), poly_mul_mod 不改 input,
                     // 后续 iter 仍是 0, 无需重置.
@@ -1325,7 +1366,8 @@ private:
             });
         }
 
-        for (auto& th : threads) th.join();
+        for (auto& th : threads)
+            th.join();
 
         // Combine partial products sequentially
         auto result = std::move(partials[0]);
@@ -1337,19 +1379,17 @@ private:
     }
 
     /// Compute f_lead_inv = f[d]^{-1} mod modulus (for poly_mul_mod)
-    [[nodiscard]] static Integer compute_f_lead_inv(
-            const std::vector<Integer>& f,
-            uint32_t d,
-            const Integer& modulus) {
+    [[nodiscard]] static Integer compute_f_lead_inv(const std::vector<Integer>& f, uint32_t d,
+                                                    const Integer& modulus) {
         // v22: f_d 直接 assign
         Integer f_lead_inv(1);
         Integer f_d;
         f_d = f[d];
         f_d %= modulus;
-        if (f_d.is_negative()) f_d += modulus;
+        if (f_d.is_negative())
+            f_d += modulus;
         if (!f_d.is_one()) {
-            int ok = mpz_invert(f_lead_inv.get_mpz(), f_d.get_mpz(),
-                                modulus.get_mpz());
+            int ok = mpz_invert(f_lead_inv.get_mpz(), f_d.get_mpz(), modulus.get_mpz());
             if (!ok) {
                 // f[d] not invertible mod modulus — can happen in verbose
                 // verification when modulus = p^k and p | f[d].
@@ -1361,25 +1401,21 @@ private:
     }
 
     /// Polynomial multiplication mod (f, modulus) — convenience overload
-    [[nodiscard]] static std::vector<Integer> poly_mul_mod(
-            const std::vector<Integer>& a,
-            const std::vector<Integer>& b,
-            const std::vector<Integer>& f,
-            uint32_t d,
-            const Integer& modulus) {
+    [[nodiscard]] static std::vector<Integer> poly_mul_mod(const std::vector<Integer>& a,
+                                                           const std::vector<Integer>& b,
+                                                           const std::vector<Integer>& f,
+                                                           uint32_t d, const Integer& modulus) {
         auto fli = compute_f_lead_inv(f, d, modulus);
         return poly_mul_mod(a, b, f, d, modulus, fli);
     }
 
     /// Polynomial multiplication mod (f, modulus) with pre-computed f_lead_inv
     /// Both inputs have degree < d, result has degree < d
-    [[nodiscard]] static std::vector<Integer> poly_mul_mod(
-            const std::vector<Integer>& a,
-            const std::vector<Integer>& b,
-            const std::vector<Integer>& f,
-            uint32_t d,
-            const Integer& modulus,
-            const Integer& f_lead_inv) {
+    [[nodiscard]] static std::vector<Integer> poly_mul_mod(const std::vector<Integer>& a,
+                                                           const std::vector<Integer>& b,
+                                                           const std::vector<Integer>& f,
+                                                           uint32_t d, const Integer& modulus,
+                                                           const Integer& f_lead_inv) {
 
         // Multiply: result has degree up to 2d-2 (Integers default-init to 0)
         std::vector<Integer> result(2 * d - 1);
@@ -1390,9 +1426,11 @@ private:
         // (d=5),新代码仅 2d-1 = 9 次 mod。Hensel lift 大循环 hot path。
         // mpz_addmul: result[i+j] += a[i] * b[j] (fused FMA, skip term temp)
         for (uint32_t i = 0; i < d; ++i) {
-            if (a[i].is_zero()) continue;
+            if (a[i].is_zero())
+                continue;
             for (uint32_t j = 0; j < d; ++j) {
-                if (b[j].is_zero()) continue;
+                if (b[j].is_zero())
+                    continue;
                 mpz_addmul(result[i + j].get_mpz(), a[i].get_mpz(), b[j].get_mpz());
             }
         }
@@ -1407,8 +1445,9 @@ private:
         for (int k = static_cast<int>(2 * d - 2); k >= static_cast<int>(d); --k) {
             const size_t k_idx = static_cast<size_t>(k);
             Integer lead = std::move(result[k_idx]);
-            result[k_idx] = int64_t(0);  // mpz_set_si direct
-            if (lead.is_zero()) continue;
+            result[k_idx] = int64_t(0); // mpz_set_si direct
+            if (lead.is_zero())
+                continue;
 
             // Scale by inverse of leading coefficient
             lead_scaled = lead;
@@ -1422,10 +1461,12 @@ private:
                 sub = lead_scaled;
                 sub *= f[i];
                 sub %= modulus;
-                const size_t result_idx = static_cast<size_t>(k - static_cast<int>(d) + static_cast<int>(i));
+                const size_t result_idx =
+                    static_cast<size_t>(k - static_cast<int>(d) + static_cast<int>(i));
                 result[result_idx] -= sub;
                 result[result_idx] %= modulus;
-                if (result[result_idx].is_negative()) result[result_idx] += modulus;
+                if (result[result_idx].is_negative())
+                    result[result_idx] += modulus;
             }
         }
 
@@ -1435,20 +1476,21 @@ private:
     }
 
     /// Polynomial subtraction mod modulus
-    [[nodiscard]] static std::vector<Integer> poly_sub_mod(
-            const std::vector<Integer>& a,
-            const std::vector<Integer>& b,
-            const Integer& modulus) {
+    [[nodiscard]] static std::vector<Integer> poly_sub_mod(const std::vector<Integer>& a,
+                                                           const std::vector<Integer>& b,
+                                                           const Integer& modulus) {
 
         size_t n = std::max(a.size(), b.size());
-        std::vector<Integer> result(n);  // default-init 0
+        std::vector<Integer> result(n); // default-init 0
         for (size_t i = 0; i < n; ++i) {
             // v22: result[i] = a[i] (mpz_set on default-init slot)
-            if (i < a.size()) result[i] = a[i];
+            if (i < a.size())
+                result[i] = a[i];
             if (i < b.size()) {
                 result[i] -= b[i];
                 result[i] %= modulus;
-                if (result[i].is_negative()) result[i] += modulus;
+                if (result[i].is_negative())
+                    result[i] += modulus;
             }
         }
         return result;
@@ -1460,20 +1502,28 @@ private:
 
     /// Find next prime (with overflow guard)
     [[nodiscard]] static uint64_t next_prime(uint64_t n) {
-        if (n >= UINT64_MAX - 2) return 0;
+        if (n >= UINT64_MAX - 2)
+            return 0;
         n++;
-        if (n <= 2) return 2;
+        if (n <= 2)
+            return 2;
         if (n % 2 == 0) {
-            if (n == UINT64_MAX) return 0;
+            if (n == UINT64_MAX)
+                return 0;
             n++;
         }
         while (true) {
             bool is_p = true;
             for (uint64_t i = 3; i * i <= n; ++i) {
-                if (n % i == 0) { is_p = false; break; }
+                if (n % i == 0) {
+                    is_p = false;
+                    break;
+                }
             }
-            if (is_p) return n;
-            if (n > UINT64_MAX - 2) return 0;
+            if (is_p)
+                return n;
+            if (n > UINT64_MAX - 2)
+                return 0;
             n += 2;
         }
     }
