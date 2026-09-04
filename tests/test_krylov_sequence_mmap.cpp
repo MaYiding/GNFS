@@ -284,18 +284,14 @@ void test_validate_header() {
     const auto path = unique_path("validate");
     PathCleanup cleanup(path);
 
-    {
-        KrylovSequenceMmap sequence(path, 10, 64);
-    }
+    { KrylovSequenceMmap sequence(path, 10, 64); }
     KrylovSequenceMmap::validate_header(path);
 
     overwrite_u64(path, 0, 0xDEADBEEFCAFEBABEULL);
     GNFS_TEST_CHECK(throws_with_message<std::runtime_error>(
         [&] { KrylovSequenceMmap::validate_header(path); }, "bad magic"));
 
-    {
-        KrylovSequenceMmap sequence(path, 10, 64);
-    }
+    { KrylovSequenceMmap sequence(path, 10, 64); }
     overwrite_u64(path, static_cast<std::streamoff>(sizeof(std::uint64_t)),
                   KrylovSequenceMmap::VERSION + 1);
     GNFS_TEST_CHECK(throws_with_message<std::runtime_error>(
