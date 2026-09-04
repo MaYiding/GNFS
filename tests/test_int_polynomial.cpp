@@ -3,6 +3,7 @@
 #include "support/test_check.hpp"
 
 #include <iostream>
+#include <limits>
 
 using namespace gnfs::polynomial;
 using gnfs::core::Integer;
@@ -363,6 +364,37 @@ void test_translate() {
     const Integer high_shifted_input(13);
     GNFS_TEST_CHECK(
         high_shifted.evaluate(high_input).compare(high_degree.evaluate(high_shifted_input)) == 0);
+
+    // The translation parameter is int64_t, while GMP's mpz_mul_si takes a
+    // platform-sized signed long. Keep the full-width value on LLP64 too.
+    auto wide_linear = make_poly({7, 1}); // f(x) = x + 7
+    const int64_t max_shift = std::numeric_limits<int64_t>::max();
+    const int64_t min_shift = std::numeric_limits<int64_t>::min();
+    const int64_t negative_32_boundary = -(int64_t{1} << 31) - 1;
+
+    auto max_shifted = wide_linear.translate(max_shift);
+    Integer max_expected(max_shift);
+    max_expected += Integer(7);
+    GNFS_TEST_CHECK(max_shifted[0].compare(max_expected) == 0);
+    GNFS_TEST_CHECK(max_shifted[1].compare(Integer(1)) == 0);
+
+    auto min_shifted = wide_linear.translate(min_shift);
+    Integer min_expected(min_shift);
+    min_expected += Integer(7);
+    GNFS_TEST_CHECK(min_shifted[0].compare(min_expected) == 0);
+    GNFS_TEST_CHECK(min_shifted[1].compare(Integer(1)) == 0);
+
+    auto negative_boundary_shifted = wide_linear.translate(negative_32_boundary);
+    Integer negative_boundary_expected(negative_32_boundary);
+    negative_boundary_expected += Integer(7);
+    GNFS_TEST_CHECK(negative_boundary_shifted[0].compare(negative_boundary_expected) == 0);
+    GNFS_TEST_CHECK(negative_boundary_shifted[1].compare(Integer(1)) == 0);
+
+    auto high_negative_shifted = high_degree.translate(-9);
+    const Integer high_negative_input(4);
+    const Integer high_negative_shifted_input(-5);
+    GNFS_TEST_CHECK(high_negative_shifted.evaluate(high_negative_input)
+                        .compare(high_degree.evaluate(high_negative_shifted_input)) == 0);
 
     std::cout << "  PASS" << std::endl;
 }
