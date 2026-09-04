@@ -334,27 +334,34 @@ public:
         : path_(path), L_(L), entry_size_(entry_size) {
         const auto file_size = detail::checked_krylov_file_size(L, entry_size);
 
-        fd_ = ::open(path.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
+        do {
+            fd_ = ::open(path.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+        } while (fd_ < 0 && errno == EINTR);
         if (fd_ < 0) {
+            const int error = errno;
             throw std::runtime_error("KrylovSequenceMmap: cannot create '" + path +
-                                     "': errno=" + std::to_string(errno));
+                                     "': errno=" + std::to_string(error));
         }
 
-        if (::ftruncate(fd_, file_size.native_size) != 0) {
-            ::close(fd_);
-            fd_ = -1;
+        int truncate_result = -1;
+        do {
+            truncate_result = ::ftruncate(fd_, file_size.native_size);
+        } while (truncate_result != 0 && errno == EINTR);
+        if (truncate_result != 0) {
+            const int error = errno;
+            close_noexcept(fd_);
             throw std::runtime_error("KrylovSequenceMmap: ftruncate failed for '" + path +
-                                     "': errno=" + std::to_string(errno));
+                                     "': errno=" + std::to_string(error));
         }
 
         data_ = static_cast<uint8_t*>(
             ::mmap(nullptr, file_size.mapped_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, 0));
         if (data_ == MAP_FAILED) {
-            ::close(fd_);
-            fd_ = -1;
+            const int error = errno;
+            close_noexcept(fd_);
             data_ = nullptr;
             throw std::runtime_error("KrylovSequenceMmap: mmap failed for '" + path +
-                                     "': errno=" + std::to_string(errno));
+                                     "': errno=" + std::to_string(error));
         }
         size_ = file_size.mapped_size;
 
@@ -408,15 +415,11 @@ public:
 
     void close() noexcept {
         if (data_ && size_ > 0) {
-            int rc = ::munmap(data_, size_);
-            (void)rc;
-            assert(rc == 0 && "KrylovSequenceMmap::close: munmap failed");
+            if (::munmap(data_, size_) != 0) {
+                std::fprintf(stderr, "[krylov_mmap] munmap failed: errno=%d\n", errno);
+            }
         }
-        if (fd_ >= 0) {
-            int rc = ::close(fd_);
-            (void)rc;
-            assert(rc == 0 && "KrylovSequenceMmap::close: close(fd) failed");
-        }
+        close_noexcept(fd_);
         data_ = nullptr;
         body_ = nullptr;
         size_ = 0;
@@ -488,14 +491,29 @@ public:
 
     /// Validate header MAGIC + VERSION match. Throws on corruption.
     static void validate_header(const std::string& path) {
-        int fd = ::open(path.c_str(), O_RDONLY);
+        int fd = -1;
+        do {
+            fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+        } while (fd < 0 && errno == EINTR);
         if (fd < 0) {
             throw std::runtime_error("KrylovSequenceMmap::validate_header: cannot open " + path);
         }
         uint64_t hdr[4];
-        ssize_t got = ::read(fd, hdr, sizeof(hdr));
-        ::close(fd);
-        if (got != static_cast<ssize_t>(sizeof(hdr))) {
+        size_t offset = 0;
+        while (offset < sizeof(hdr)) {
+            const ssize_t got =
+                ::read(fd, reinterpret_cast<char*>(hdr) + offset, sizeof(hdr) - offset);
+            if (got > 0) {
+                offset += static_cast<size_t>(got);
+                continue;
+            }
+            if (got < 0 && errno == EINTR) {
+                continue;
+            }
+            break;
+        }
+        close_noexcept(fd);
+        if (offset != sizeof(hdr)) {
             throw std::runtime_error("KrylovSequenceMmap::validate_header: short read " + path);
         }
         if (hdr[0] != MAGIC) {
@@ -508,6 +526,18 @@ public:
     }
 
 private:
+    static void close_noexcept(int& descriptor) noexcept {
+        if (descriptor < 0) {
+            return;
+        }
+        const int owned_descriptor = std::exchange(descriptor, -1);
+        // POSIX leaves the descriptor state unspecified after close() returns
+        // EINTR, so retrying could close an unrelated descriptor after reuse.
+        if (::close(owned_descriptor) != 0 && errno != EINTR) {
+            std::fprintf(stderr, "[krylov_mmap] close failed: errno=%d\n", errno);
+        }
+    }
+
     std::string path_;
     uint8_t* data_ = nullptr;
     uint8_t* body_ = nullptr;
