@@ -389,7 +389,8 @@ void test_serialization_roundtrip() {
         assert(fb2.rational()[*idx].p == rp.p);
     }
 
-    std::cout << "  Serialization roundtrip: PASS (" << fb.rational_count() << " rat, "
+    std::cout << "  Serialization roundtrip: PASS ("
+              << fb.rational_count() << " rat, "
               << fb.algebraic_count() << " alg, "
               << "sieve_alg=" << fb.sieve_algebraic_count() << ")" << std::endl;
 }
