@@ -54,9 +54,11 @@
 #include "../util/thread_pool.hpp"
 
 #include <atomic>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <future>
 #include <limits>
 #include <memory>
@@ -64,6 +66,7 @@
 #include <new>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -84,41 +87,50 @@ inline CouveignesParallelThreadsCache& couveignes_parallel_threads_cache() noexc
     return cache;
 }
 
+inline int couveignes_parallel_thread_cap() noexcept {
+    const unsigned int hw_count = std::thread::hardware_concurrency();
+    const uint64_t hw = hw_count == 0 ? 4ULL : static_cast<uint64_t>(hw_count);
+    constexpr uint64_t max_int = std::numeric_limits<int>::max();
+    const uint64_t cap = hw > max_int / 2 ? max_int : hw * 2;
+    return static_cast<int>(cap);
+}
+
 inline int parse_couveignes_parallel_threads_env() noexcept {
     const char* env = std::getenv("GNFS_COUVEIGNES_PARALLEL_THREADS");
     if (env == nullptr || env[0] == '\0') {
-        return 1;  // default sequential
+        return 1; // default sequential
     }
     // Manual numeric prefix detection — std::stoi accepts leading whitespace
     // and partial parses ("12abc" → 12), but we treat any non-numeric value
     // (including partial-numeric like "4x" or "abc") as default 1 for
     // predictability under invalid env inputs.
-    const char* p = env;
-    if (*p == '+' || *p == '-') ++p;
-    if (*p == '\0') return 1;
-    for (const char* q = p; *q != '\0'; ++q) {
-        if (*q < '0' || *q > '9') {
-            return 1;  // any non-digit (after optional sign) → invalid → 1
-        }
+    const char* first = env;
+    if (*first == '-') {
+        return 1;
     }
-    int parsed = 1;
-    try {
-        parsed = std::stoi(env);
-    } catch (...) {
-        return 1;  // out of int range or other parse failure → 1
+    if (*first == '+') {
+        ++first;
     }
-    if (parsed <= 0) {
-        return 1;  // non-positive → sequential
+    if (*first == '\0')
+        return 1;
+
+    const char* last = first + std::strlen(first);
+    uint64_t parsed = 0;
+    const auto result = std::from_chars(first, last, parsed, 10);
+    if (result.ptr != last) {
+        return 1; // any non-digit (after optional sign) → invalid → 1
     }
-    unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
-    int cap = static_cast<int>(hw) * 2;
-    if (cap < 1) cap = 16;  // unreasonable hw → 16 fallback (defensive)
-    if (parsed > cap) parsed = cap;
-    return parsed;
+    const int cap = couveignes_parallel_thread_cap();
+    if (result.ec == std::errc::result_out_of_range) {
+        return cap;
+    }
+    if (result.ec != std::errc{} || parsed == 0) {
+        return 1; // parse failure or non-positive → sequential
+    }
+    return parsed > static_cast<uint64_t>(cap) ? cap : static_cast<int>(parsed);
 }
 
-}  // namespace detail
+} // namespace detail
 
 /// Read the GNFS_COUVEIGNES_PARALLEL_THREADS env into a cached thread count.
 ///
@@ -128,9 +140,8 @@ inline int parse_couveignes_parallel_threads_env() noexcept {
 /// high values clamp to the upper cap.
 [[nodiscard]] inline int couveignes_parallel_threads() noexcept {
     auto& cache = detail::couveignes_parallel_threads_cache();
-    std::call_once(cache.once, [&cache]() {
-        cache.value = detail::parse_couveignes_parallel_threads_env();
-    });
+    std::call_once(cache.once,
+                   [&cache]() { cache.value = detail::parse_couveignes_parallel_threads_env(); });
     return cache.value;
 }
 
@@ -178,10 +189,8 @@ inline void couveignes_parallel_threads_reset_env_cache_for_testing() noexcept {
 ///                                  (avoids ThreadPool overhead for one
 ///                                  pattern).
 template <typename VerifyFn>
-[[nodiscard]] inline std::optional<uint64_t> parallel_pattern_search(
-        uint64_t start,
-        uint64_t end,
-        VerifyFn verify_fn) {
+[[nodiscard]] inline std::optional<uint64_t> parallel_pattern_search(uint64_t start, uint64_t end,
+                                                                     VerifyFn verify_fn) {
 
     if (end <= start) {
         return std::nullopt;
@@ -204,9 +213,8 @@ template <typename VerifyFn>
     // Parallel path: partition [start, end) into N contiguous chunks.
     // pool_size = min(threads, range) to avoid wasting workers on a small
     // search range.
-    const uint64_t pool_size_u64 = (static_cast<uint64_t>(threads) < range)
-                                       ? static_cast<uint64_t>(threads)
-                                       : range;
+    const uint64_t pool_size_u64 =
+        (static_cast<uint64_t>(threads) < range) ? static_cast<uint64_t>(threads) : range;
     const std::size_t pool_size = static_cast<std::size_t>(pool_size_u64);
     gnfs::util::ThreadPool pool(static_cast<uint32_t>(pool_size));
 
@@ -225,10 +233,8 @@ template <typename VerifyFn>
     auto atomic_min_update = [&first_match](uint64_t candidate) noexcept {
         uint64_t expected = first_match.load(std::memory_order_relaxed);
         while (candidate < expected) {
-            if (first_match.compare_exchange_weak(
-                    expected, candidate,
-                    std::memory_order_release,
-                    std::memory_order_relaxed)) {
+            if (first_match.compare_exchange_weak(expected, candidate, std::memory_order_release,
+                                                  std::memory_order_relaxed)) {
                 break;
             }
             // expected is now refreshed with the current value; loop retries
@@ -256,8 +262,8 @@ template <typename VerifyFn>
         const uint64_t chunk_end = cursor + chunk_len;
         cursor = chunk_end;
 
-        futures.push_back(pool.submit(
-            [chunk_start, chunk_end, &verify_fn, &found_flag, &atomic_min_update]() {
+        futures.push_back(
+            pool.submit([chunk_start, chunk_end, &verify_fn, &found_flag, &atomic_min_update]() {
                 for (uint64_t i = chunk_start; i < chunk_end; ++i) {
                     // Short-circuit early when another worker has already
                     // signaled a match.  We re-check every iteration to
@@ -287,4 +293,4 @@ template <typename VerifyFn>
     return winner;
 }
 
-}  // namespace gnfs::sqrt
+} // namespace gnfs::sqrt

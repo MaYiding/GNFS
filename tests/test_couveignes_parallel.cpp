@@ -71,9 +71,11 @@ void test_env_four_parallel() {
     // Modern hardware has hw_concurrency >= 2, so cap = 4.  If somehow we
     // are on a single-core CI (unlikely), cap = max(2 * hw_concurrency, 16).
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     int cap = static_cast<int>(hw) * 2;
-    if (cap < 1) cap = 16;
+    if (cap < 1)
+        cap = 16;
     int expected = (4 > cap) ? cap : 4;
     if (n != expected) {
         std::cerr << "  ERROR: expected " << expected << ", got " << n << std::endl;
@@ -89,14 +91,30 @@ void test_env_above_max_clamps() {
     set_env_and_reset("999");
     int n = couveignes_parallel_threads();
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     int cap = static_cast<int>(hw) * 2;
-    if (cap < 1) cap = 16;
+    if (cap < 1)
+        cap = 16;
     if (n != cap) {
         std::cerr << "  ERROR: expected clamped " << cap << ", got " << n << std::endl;
         std::abort();
     }
-    std::cout << "  '999' -> " << n << " (clamped to hw*2): PASSED" << std::endl;
+
+    // Positive values beyond int/uint64 range must clamp high rather than
+    // falling back to one worker after an exception or conversion wrap.
+    set_env_and_reset("2147483648");
+    if (couveignes_parallel_threads() != cap) {
+        std::cerr << "  ERROR: positive int-range overflow did not clamp to " << cap << std::endl;
+        std::abort();
+    }
+    set_env_and_reset("999999999999999999999999999999");
+    if (couveignes_parallel_threads() != cap) {
+        std::cerr << "  ERROR: huge positive value did not clamp to " << cap << std::endl;
+        std::abort();
+    }
+    std::cout << "  '999'/extreme positive values -> " << cap << " (clamped to hw*2): PASSED"
+              << std::endl;
 
     set_env_and_reset(nullptr);
 }
@@ -148,8 +166,8 @@ void test_sequential_no_valid() {
     // Sequential path must scan the entire range.
     assert(calls.load() == 1024);
 
-    std::cout << "  N=1 no-match scanned " << calls.load()
-              << " patterns, returned nullopt: PASSED" << std::endl;
+    std::cout << "  N=1 no-match scanned " << calls.load() << " patterns, returned nullopt: PASSED"
+              << std::endl;
 
     set_env_and_reset(nullptr);
 }
@@ -216,9 +234,7 @@ void test_parallel_multiple_valid_returns_one() {
               << std::endl;
     set_env_and_reset("4");
 
-    auto verify = [](uint64_t pattern) {
-        return pattern == 10 || pattern == 20 || pattern == 30;
-    };
+    auto verify = [](uint64_t pattern) { return pattern == 10 || pattern == 20 || pattern == 30; };
 
     auto result = parallel_pattern_search(0ULL, 1024ULL, verify);
     assert(result.has_value());
@@ -274,21 +290,18 @@ void test_parallel_atomic_min_smallest() {
     //   chunk 3: [768, 1024) no matches
     // So worker 0 finds 10 first; result MUST be 10 (only chunk seeing
     // matches reports back).
-    std::cout << "Testing parallel atomic-min reduction (3 matches all in chunk 0)..."
-              << std::endl;
+    std::cout << "Testing parallel atomic-min reduction (3 matches all in chunk 0)..." << std::endl;
     set_env_and_reset("4");
 
-    auto verify = [](uint64_t pattern) {
-        return pattern == 10 || pattern == 20 || pattern == 30;
-    };
+    auto verify = [](uint64_t pattern) { return pattern == 10 || pattern == 20 || pattern == 30; };
 
     auto result = parallel_pattern_search(0ULL, 1024ULL, verify);
     assert(result.has_value());
     // In this scenario the result MUST be 10 because worker 0 is the only
     // one seeing matches and it scans left-to-right.
     if (result.value() != 10) {
-        std::cerr << "  ERROR: expected 10 (smallest in chunk 0), got "
-                  << result.value() << std::endl;
+        std::cerr << "  ERROR: expected 10 (smallest in chunk 0), got " << result.value()
+                  << std::endl;
         std::abort();
     }
     std::cout << "  N=4 atomic-min returns 10: PASSED" << std::endl;
@@ -321,8 +334,7 @@ void test_empty_range() {
     assert(!r3.has_value());
     assert(calls.load() == 0);
 
-    std::cout << "  empty/inverted ranges -> nullopt, no verify_fn calls: PASSED"
-              << std::endl;
+    std::cout << "  empty/inverted ranges -> nullopt, no verify_fn calls: PASSED" << std::endl;
 
     set_env_and_reset(nullptr);
 }
@@ -330,7 +342,7 @@ void test_empty_range() {
 void test_single_pattern_range() {
     std::cout << "Testing single-pattern range (range == 1) -> sequential fast path..."
               << std::endl;
-    set_env_and_reset("4");  // Even with N=4 env, range=1 must take fast path.
+    set_env_and_reset("4"); // Even with N=4 env, range=1 must take fast path.
 
     std::atomic<uint64_t> calls{0};
     auto verify_hit = [&calls](uint64_t pattern) {
@@ -389,8 +401,7 @@ void test_parallel_dense_match_all_chunks() {
     //   chunk 2 [2048,3072): match at 3000
     //   chunk 3 [3072,4096): match at 3900
     // Any matching chunk may win the short-circuit race.
-    std::cout << "Testing parallel dense match across all chunks -> one valid..."
-              << std::endl;
+    std::cout << "Testing parallel dense match across all chunks -> one valid..." << std::endl;
     set_env_and_reset("4");
 
     auto verify = [](uint64_t pattern) {
@@ -403,8 +414,8 @@ void test_parallel_dense_match_all_chunks() {
         std::cerr << "  ERROR: expected one valid pattern, got " << result.value() << std::endl;
         std::abort();
     }
-    std::cout << "  N=4 dense-match returned valid pattern " << result.value()
-              << ": PASSED" << std::endl;
+    std::cout << "  N=4 dense-match returned valid pattern " << result.value() << ": PASSED"
+              << std::endl;
 
     set_env_and_reset(nullptr);
 }
@@ -424,8 +435,7 @@ void test_parallel_no_match_full_scan() {
     // All workers must scan their entire chunk because no short-circuit signal.
     assert(calls.load() == 4096);
 
-    std::cout << "  N=4 no-match scanned " << calls.load() << " patterns: PASSED"
-              << std::endl;
+    std::cout << "  N=4 no-match scanned " << calls.load() << " patterns: PASSED" << std::endl;
 
     set_env_and_reset(nullptr);
 }
@@ -461,10 +471,8 @@ void test_perf_info() {
     auto ms1 = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
     auto ms4 = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
 
-    std::cout << "  N=1: " << ms1 << " ms, found=" << (r1.has_value() ? "yes" : "no")
-              << std::endl;
-    std::cout << "  N=4: " << ms4 << " ms, found=" << (r4.has_value() ? "yes" : "no")
-              << std::endl;
+    std::cout << "  N=1: " << ms1 << " ms, found=" << (r1.has_value() ? "yes" : "no") << std::endl;
+    std::cout << "  N=4: " << ms4 << " ms, found=" << (r4.has_value() ? "yes" : "no") << std::endl;
     if (ms1 > 0 && ms4 > 0) {
         double speedup = static_cast<double>(ms1) / static_cast<double>(ms4);
         std::cout << "  speedup (informational): " << speedup << "x" << std::endl;
@@ -474,11 +482,10 @@ void test_perf_info() {
     set_env_and_reset(nullptr);
 }
 
-}  // namespace
+} // namespace
 
 int main() {
-    std::cout << "=== Couveignes Parallel Pattern Search Tests ===" << std::endl
-              << std::endl;
+    std::cout << "=== Couveignes Parallel Pattern Search Tests ===" << std::endl << std::endl;
 
     test_env_unset_default_one();
     test_env_one_explicit();
@@ -501,7 +508,6 @@ int main() {
 
     test_perf_info();
 
-    std::cout << std::endl
-              << "=== All Couveignes Parallel Tests PASSED ===" << std::endl;
+    std::cout << std::endl << "=== All Couveignes Parallel Tests PASSED ===" << std::endl;
     return 0;
 }
