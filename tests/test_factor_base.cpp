@@ -5,9 +5,11 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
 
 using namespace gnfs;
 using namespace gnfs::factor_base;
@@ -96,6 +98,30 @@ void test_cz_random_splitting() {
     assert(roots_5[1] == 3);
 
     std::cout << "  CZ random splitting: PASS (2 roots @ p=101/131; p=2/3/5 边界)" << std::endl;
+}
+
+void test_root_finder_rejects_non_prime_modulus() {
+    std::cout << "Testing root finder modulus validation..." << std::endl;
+
+    std::vector<Integer> coeffs;
+    coeffs.emplace_back(static_cast<int64_t>(21));
+    coeffs.emplace_back(static_cast<int64_t>(-10));
+    coeffs.emplace_back(static_cast<int64_t>(1));
+    PolynomialContext ctx(Integer(static_cast<int64_t>(10001)), std::move(coeffs),
+                          Integer(static_cast<int64_t>(3)));
+
+    bool caught = false;
+    try {
+        (void)FactorBaseBuilder::find_roots_mod_p(ctx, 91); // 91 = 7 * 13
+    } catch (const std::invalid_argument&) {
+        caught = true;
+    }
+    if (!caught) {
+        std::cerr << "  ERROR: composite modulus was accepted" << std::endl;
+        std::abort();
+    }
+
+    std::cout << "  Root finder modulus validation: PASS" << std::endl;
 }
 
 void test_algebraic_roots() {
@@ -551,6 +577,7 @@ int main() {
     test_prime_sieve();
     test_algebraic_roots();
     test_cz_random_splitting();
+    test_root_finder_rejects_non_prime_modulus();
     test_index_lookup();
     test_log_values();
     test_parallel_build();

@@ -411,7 +411,7 @@ void FactorBaseBuilder::find_algebraic_primes(FactorBase& fb, const PolynomialCo
 
         for (size_t i = start; i < end; ++i) {
             uint32_t p = primes[i];
-            auto roots = find_roots_mod_p(ctx, p);
+            auto roots = find_roots_mod_p_unchecked(ctx, p);
             uint32_t lp = compute_log_prime_precise(p, log_scale);
 
             for (uint32_t root : roots) {
@@ -452,6 +452,14 @@ void FactorBaseBuilder::find_algebraic_primes(FactorBase& fb, const PolynomialCo
 
 std::vector<uint32_t> FactorBaseBuilder::find_roots_mod_p(const PolynomialContext& ctx,
                                                           uint32_t p) {
+    if (p < 2 || !util::is_prime_u32(p)) {
+        throw std::invalid_argument("factor-base root finding requires a prime modulus");
+    }
+    return find_roots_mod_p_unchecked(ctx, p);
+}
+
+std::vector<uint32_t> FactorBaseBuilder::find_roots_mod_p_unchecked(const PolynomialContext& ctx,
+                                                                    uint32_t p) {
     // For very small primes, brute force is faster than the overhead of polynomial GCD
     if (p < 64) {
         std::vector<uint32_t> roots;
@@ -699,7 +707,7 @@ void FactorBaseBuilder::find_algebraic_primes_range(FactorBase& fb, const Polyno
 
         for (size_t i = start; i < end; ++i) {
             uint32_t p = primes[i];
-            auto roots = find_roots_mod_p(ctx, p);
+            auto roots = find_roots_mod_p_unchecked(ctx, p);
             uint32_t lp = compute_log_prime_precise(p, log_scale);
 
             for (uint32_t root : roots) {
