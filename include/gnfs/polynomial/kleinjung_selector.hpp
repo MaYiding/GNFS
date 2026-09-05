@@ -243,8 +243,8 @@ public:
             const double rate_pct =
                 (total > 0) ? 100.0 * static_cast<double>(hits) / static_cast<double>(total) : 0.0;
             std::cerr << "[poly_root_cache] hits=" << hits << " misses=" << misses
-                      << " hit_rate=" << rate_pct << "%"
-                      << " size=" << cache_ref.size() << "/" << cache_ref.capacity() << std::endl;
+                      << " hit_rate=" << rate_pct << "%" << " size=" << cache_ref.size() << "/"
+                      << cache_ref.capacity() << std::endl;
         }
 
         return result;
