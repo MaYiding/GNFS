@@ -158,6 +158,10 @@ void test_direct_3lp_helper() {
         CHECK(opt->type == CofactorClass::ThreeLP, "type should be ThreeLP");
         CHECK(opt->factor1 * opt->factor2 * opt->factor3 == c, "factor product mismatch");
     }
+
+    const Integer two_lp = Integer(p) * Integer(q);
+    CHECK(!try_classify_three_lp(two_lp, B).has_value(),
+          "direct 3LP helper must reject cofactors at or below B^2");
     std::cout << "OK" << std::endl;
 }
 
@@ -236,6 +240,109 @@ void test_hard_3lp_corpus() {
     std::cout << "OK" << std::endl;
 }
 
+// Test 11: arbitrary-precision product whose three bounded factors exceed 64 bits.
+void test_big_integer_3lp() {
+    std::cout << "test_big_integer_3lp... ";
+    constexpr uint64_t p = 3000017;
+    constexpr uint64_t q = 3000073;
+    constexpr uint64_t r = 3000103;
+    constexpr uint64_t B = UINT64_C(1) << 22;
+    CHECK(is_probable_prime_u64(p) && is_probable_prime_u64(q) && is_probable_prime_u64(r),
+          "big 3LP metadata must contain primes");
+
+    const Integer c = Integer(p) * Integer(q) * Integer(r);
+    const Integer expected = c.clone();
+    CHECK(!c.fits_uint64(), "big 3LP product should exceed uint64_t");
+    CHECK(c > Integer(static_cast<unsigned long long>(B)) * Integer(B),
+          "big 3LP product must be above B^2");
+    CHECK(c <= Integer(static_cast<unsigned long long>(B)) * Integer(B) * Integer(B),
+          "big 3LP product must be at or below B^3");
+
+    const auto cls = classify_cofactor(c, B, /*allow_3lp=*/true);
+    CHECK(cls.type == CofactorClass::ThreeLP,
+          "arbitrary-precision 3LP classified as " << static_cast<int>(cls.type));
+    if (cls.type == CofactorClass::ThreeLP) {
+        CHECK(cls.factor1 == p && cls.factor2 == q && cls.factor3 == r,
+              "arbitrary-precision factors changed: " << cls.factor1 << " " << cls.factor2 << " "
+                                                      << cls.factor3);
+        const Integer reconstructed =
+            Integer(cls.factor1) * Integer(cls.factor2) * Integer(cls.factor3);
+        CHECK(reconstructed == expected, "arbitrary-precision factor product mismatch");
+    }
+
+    const auto direct = try_classify_three_lp(c, B);
+    CHECK(direct.has_value() && direct->type == CofactorClass::ThreeLP,
+          "direct arbitrary-precision helper should classify 3LP");
+
+    const auto disabled = classify_cofactor(c, B, /*allow_3lp=*/false);
+    CHECK(disabled.type == CofactorClass::TooLarge,
+          "allow_3lp=false must retain TooLarge for big cofactor");
+    std::cout << "OK" << std::endl;
+}
+
+// Test 12: a product in (B^2, B^3] with one factor above B is rejected.
+void test_big_integer_factor_above_bound() {
+    std::cout << "test_big_integer_factor_above_bound... ";
+    constexpr uint64_t p = 3000017;
+    constexpr uint64_t q = 4000037;
+    constexpr uint64_t r = 5000011; // > B
+    constexpr uint64_t B = UINT64_C(1) << 22;
+    CHECK(is_probable_prime_u64(p) && is_probable_prime_u64(q) && is_probable_prime_u64(r),
+          "out-of-bound 3LP metadata must contain primes");
+
+    const Integer c = Integer(p) * Integer(q) * Integer(r);
+    CHECK(!c.fits_uint64(), "out-of-bound product should exceed uint64_t");
+    CHECK(c > Integer(static_cast<unsigned long long>(B)) * Integer(B),
+          "out-of-bound product must be above B^2");
+    CHECK(c <= Integer(static_cast<unsigned long long>(B)) * Integer(B) * Integer(B),
+          "out-of-bound product must be at or below B^3");
+
+    const auto cls = classify_cofactor(c, B, /*allow_3lp=*/true);
+    CHECK(cls.type != CofactorClass::ThreeLP, "factor above B must not be accepted as ThreeLP");
+    CHECK(!try_classify_three_lp(c, B).has_value(), "direct helper must reject factor above B");
+    std::cout << "OK (cls=" << static_cast<int>(cls.type) << ")" << std::endl;
+}
+
+// Test 13: exact B^3 boundary with a repeated prime factor is accepted.
+void test_big_integer_b3_boundary() {
+    std::cout << "test_big_integer_b3_boundary... ";
+    constexpr uint64_t B = 3000017; // prime, so B^3 is a valid repeated-factor 3LP
+    CHECK(is_probable_prime_u64(B), "B^3 boundary base must be prime");
+    const Integer bound(B);
+    const Integer c = bound * bound * bound;
+    CHECK(!c.fits_uint64(), "B^3 boundary should exceed uint64_t");
+
+    const auto cls = classify_cofactor(c, B, /*allow_3lp=*/true);
+    CHECK(cls.type == CofactorClass::ThreeLP, "exact B^3 boundary should classify as ThreeLP");
+    if (cls.type == CofactorClass::ThreeLP) {
+        CHECK(cls.factor1 == B && cls.factor2 == B && cls.factor3 == B,
+              "B^3 boundary factors are not the repeated bound prime");
+    }
+    CHECK(quick_cofactor_check(c, B, /*allow_2lp=*/true, /*allow_3lp=*/true),
+          "quick check must include exact B^3 boundary");
+    std::cout << "OK" << std::endl;
+}
+
+// Test 14: an exhausted factorization budget fails closed without accepting a 3LP.
+void test_big_integer_factorization_budget_failure() {
+    std::cout << "test_big_integer_factorization_budget_failure... ";
+    constexpr uint64_t p = 3000017;
+    constexpr uint64_t q = 3000073;
+    constexpr uint64_t r = 3000103;
+    constexpr uint64_t B = UINT64_C(1) << 22;
+    const Integer c = Integer(p) * Integer(q) * Integer(r);
+
+    // Model an ECM/Brent budget that returns no divisor. The production helper
+    // must propagate this failure as nullopt rather than guessing a classification.
+    const auto no_budget_factor = [](const Integer&) -> std::optional<Integer> {
+        return std::nullopt;
+    };
+    const auto result =
+        gnfs::cofactor::detail::try_classify_three_lp_integer_impl(c, B, no_budget_factor);
+    CHECK(!result.has_value(), "factorization budget failure must reject the candidate");
+    std::cout << "OK" << std::endl;
+}
+
 int main() {
     test_3lp_accepted();
     test_3lp_rejected_by_default();
@@ -247,6 +354,10 @@ int main() {
     test_smooth_unchanged();
     test_prime_unchanged();
     test_hard_3lp_corpus();
+    test_big_integer_3lp();
+    test_big_integer_factor_above_bound();
+    test_big_integer_b3_boundary();
+    test_big_integer_factorization_budget_failure();
 
     std::cout << "\n=============================================" << std::endl;
     std::cout << "  Results: " << g_pass << " passed, " << g_fail << " failed" << std::endl;
