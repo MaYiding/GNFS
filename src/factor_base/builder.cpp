@@ -75,6 +75,7 @@ void FactorBase::save(std::ostream& os) const {
 }
 
 FactorBase FactorBase::load(std::istream& is) {
+    constexpr uint32_t kMaxSerializedEntries = 100'000'000u;
     const auto read_bytes = [&is](void* data, std::size_t size, const char* field) {
         if (!is.read(static_cast<char*>(data), static_cast<std::streamsize>(size))) {
             throw std::runtime_error(
@@ -108,36 +109,44 @@ FactorBase FactorBase::load(std::istream& is) {
     if (sac > static_cast<uint64_t>((std::numeric_limits<size_t>::max)())) {
         throw std::overflow_error("FactorBase::load: sieve_algebraic_count exceeds size_t");
     }
-    fb.sieve_algebraic_count_ = static_cast<size_t>(sac);
+    if (sac > kMaxSerializedEntries) {
+        throw std::runtime_error(
+            "FactorBase::load: sieve_algebraic_count exceeds serialized entry limit");
+    }
 
     // Rational primes
     uint32_t rat_count = 0;
     read_bytes(&rat_count, sizeof(rat_count), "rational-prime count");
-    fb.rational_.clear();
+    if (rat_count > kMaxSerializedEntries) {
+        throw std::runtime_error(
+            "FactorBase::load: rational-prime count exceeds serialized entry limit");
+    }
+    fb.rational_.resize(rat_count);
     for (uint32_t i = 0; i < rat_count; ++i) {
-        RationalPrime rp{};
-        read_bytes(&rp.p, sizeof(rp.p), "rational-prime value");
-        read_bytes(&rp.log_p, sizeof(rp.log_p), "rational-prime log");
-        fb.rational_.push_back(rp);
+        read_bytes(&fb.rational_[i].p, sizeof(fb.rational_[i].p), "rational-prime value");
+        read_bytes(&fb.rational_[i].log_p, sizeof(fb.rational_[i].log_p), "rational-prime log");
     }
 
     // Algebraic primes
     uint32_t alg_count = 0;
     read_bytes(&alg_count, sizeof(alg_count), "algebraic-prime count");
-    fb.algebraic_.clear();
-    for (uint32_t i = 0; i < alg_count; ++i) {
-        AlgebraicPrime ap{};
-        read_bytes(&ap.p, sizeof(ap.p), "algebraic-prime value");
-        read_bytes(&ap.r, sizeof(ap.r), "algebraic-prime root");
-        read_bytes(&ap.log_p, sizeof(ap.log_p), "algebraic-prime log");
-        read_bytes(&ap.degree, sizeof(ap.degree), "algebraic-prime degree");
-        fb.algebraic_.push_back(ap);
+    if (alg_count > kMaxSerializedEntries) {
+        throw std::runtime_error(
+            "FactorBase::load: algebraic-prime count exceeds serialized entry limit");
     }
-
-    if (fb.sieve_algebraic_count_ > fb.algebraic_.size()) {
+    if (sac > alg_count) {
         throw std::runtime_error(
             "FactorBase::load: sieve_algebraic_count exceeds algebraic-prime count");
     }
+    fb.algebraic_.resize(alg_count);
+    for (uint32_t i = 0; i < alg_count; ++i) {
+        read_bytes(&fb.algebraic_[i].p, sizeof(fb.algebraic_[i].p), "algebraic-prime value");
+        read_bytes(&fb.algebraic_[i].r, sizeof(fb.algebraic_[i].r), "algebraic-prime root");
+        read_bytes(&fb.algebraic_[i].log_p, sizeof(fb.algebraic_[i].log_p), "algebraic-prime log");
+        read_bytes(&fb.algebraic_[i].degree, sizeof(fb.algebraic_[i].degree),
+                   "algebraic-prime degree");
+    }
+    fb.sieve_algebraic_count_ = static_cast<size_t>(sac);
 
     // Rebuild index tables
     fb.build_index();

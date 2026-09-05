@@ -8,6 +8,7 @@
 #include <iostream>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
 
 using namespace gnfs;
 using namespace gnfs::factor_base;
@@ -397,11 +398,7 @@ void test_serialization_roundtrip() {
 void test_serialization_invalid() {
     std::cout << "Testing serialization error handling..." << std::endl;
 
-    // Bad magic
-    {
-        std::stringstream ss;
-        uint32_t bad_magic = 0xDEADBEEF;
-        ss.write(reinterpret_cast<const char*>(&bad_magic), sizeof(bad_magic));
+    auto expect_load_failure = [](std::stringstream& ss) {
         bool caught = false;
         try {
             FactorBase::load(ss);
@@ -409,6 +406,38 @@ void test_serialization_invalid() {
             caught = true;
         }
         assert(caught);
+    };
+
+    auto write_value = [](std::stringstream& ss, const auto& value) {
+        ss.write(reinterpret_cast<const char*>(&value), sizeof(value));
+    };
+
+    auto write_valid_prefix = [&](std::stringstream& ss, uint64_t sieve_count,
+                                  uint32_t rational_count) {
+        const uint32_t magic = 0x47464246;
+        const uint32_t version = 1;
+        const uint32_t rational_bound = 100;
+        const uint32_t algebraic_bound = 100;
+        const uint64_t large_prime_bound = 10'000;
+        const uint8_t log_scale = 8;
+        write_value(ss, magic);
+        write_value(ss, version);
+        write_value(ss, rational_bound);
+        write_value(ss, algebraic_bound);
+        write_value(ss, large_prime_bound);
+        write_value(ss, log_scale);
+        write_value(ss, sieve_count);
+        write_value(ss, rational_count);
+    };
+
+    // Bad magic
+    {
+        std::stringstream ss;
+        uint32_t bad_magic = 0xDEADBEEF;
+        const uint32_t version = 1;
+        write_value(ss, bad_magic);
+        write_value(ss, version);
+        expect_load_failure(ss);
     }
 
     // Bad version
@@ -418,27 +447,15 @@ void test_serialization_invalid() {
         uint32_t bad_version = 99;
         ss.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
         ss.write(reinterpret_cast<const char*>(&bad_version), sizeof(bad_version));
-        bool caught = false;
-        try {
-            FactorBase::load(ss);
-        } catch (const std::runtime_error&) {
-            caught = true;
-        }
-        assert(caught);
+        expect_load_failure(ss);
     }
 
     // Truncated header must fail before interpreting uninitialized fields.
     {
         std::stringstream ss;
-        uint32_t magic = 0x47464246;
-        ss.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
-        bool caught = false;
-        try {
-            FactorBase::load(ss);
-        } catch (const std::runtime_error&) {
-            caught = true;
-        }
-        assert(caught);
+        const uint32_t magic = 0x47464246;
+        write_value(ss, magic);
+        expect_load_failure(ss);
     }
 
     // A corrupt count must not trigger a count-sized resize before EOF is checked.
@@ -501,6 +518,30 @@ void test_serialization_invalid() {
             caught = true;
         }
         assert(caught);
+    }
+
+    // Truncated rational record (p is present, log value is missing).
+    {
+        std::stringstream ss;
+        write_valid_prefix(ss, 1, 1);
+        const uint32_t p = 2;
+        write_value(ss, p);
+        expect_load_failure(ss);
+    }
+
+    // Truncated algebraic record (degree is missing).
+    {
+        std::stringstream ss;
+        write_valid_prefix(ss, 1, 0);
+        const uint32_t alg_count = 1;
+        const uint32_t p = 3;
+        const uint32_t root = 1;
+        const uint32_t log_p = 8;
+        write_value(ss, alg_count);
+        write_value(ss, p);
+        write_value(ss, root);
+        write_value(ss, log_p);
+        expect_load_failure(ss);
     }
 
     std::cout << "  Serialization error handling: PASS" << std::endl;
