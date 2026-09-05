@@ -5,9 +5,12 @@
 #include "../util/bit_intrin.hpp"
 
 #include <cmath>
+#include <cstddef>
 #include <iosfwd>
+#include <limits>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <unordered_map>
 #include <vector>
 
@@ -105,6 +108,10 @@ public:
 
     /// 添加有理侧素数
     void add_rational(uint32_t p, uint32_t log_p) {
+        if (rational_.size() >= max_serialized_count()) {
+            throw std::overflow_error(
+                "FactorBase::add_rational: rational-prime count exceeds uint32_t");
+        }
         uint32_t idx = static_cast<uint32_t>(rational_.size());
         rational_.push_back(RationalPrime{p, log_p});
         rat_index_[p] = idx;
@@ -112,6 +119,10 @@ public:
 
     /// 添加代数侧素理想
     void add_algebraic(uint32_t p, uint32_t r, uint32_t log_p, uint8_t degree = 1) {
+        if (algebraic_.size() >= max_serialized_count()) {
+            throw std::overflow_error(
+                "FactorBase::add_algebraic: algebraic-prime count exceeds uint32_t");
+        }
         uint32_t idx = static_cast<uint32_t>(algebraic_.size());
         algebraic_.push_back(AlgebraicPrime{p, r, log_p, degree});
         uint64_t key = (static_cast<uint64_t>(p) << 32) | r;
@@ -125,26 +136,41 @@ public:
 
     /// 预分配空间
     void reserve(size_t rational_size, size_t algebraic_size) {
+        if (rational_size > max_serialized_count()) {
+            throw std::overflow_error("FactorBase::reserve: rational-prime count exceeds uint32_t");
+        }
+        if (algebraic_size > max_serialized_count()) {
+            throw std::overflow_error(
+                "FactorBase::reserve: algebraic-prime count exceeds uint32_t");
+        }
         rational_.reserve(rational_size);
         algebraic_.reserve(algebraic_size);
     }
 
     /// 构建索引表（在所有元素添加后调用）
     void build_index() {
+        if (rational_.size() > max_serialized_count()) {
+            throw std::overflow_error(
+                "FactorBase::build_index: rational-prime count exceeds uint32_t");
+        }
+        if (algebraic_.size() > max_serialized_count()) {
+            throw std::overflow_error(
+                "FactorBase::build_index: algebraic-prime count exceeds uint32_t");
+        }
         rat_index_.clear();
         alg_index_.clear();
         // Reserve exact sizes to avoid rehashing during build.
         rat_index_.reserve(rational_.size());
         alg_index_.reserve(algebraic_.size());
 
-        for (uint32_t i = 0; i < rational_.size(); ++i) {
-            rat_index_[rational_[i].p] = i;
+        for (size_t i = 0; i < rational_.size(); ++i) {
+            rat_index_[rational_[i].p] = static_cast<uint32_t>(i);
         }
 
-        for (uint32_t i = 0; i < algebraic_.size(); ++i) {
+        for (size_t i = 0; i < algebraic_.size(); ++i) {
             const auto& ap = algebraic_[i];
             uint64_t key = (static_cast<uint64_t>(ap.p) << 32) | ap.r;
-            alg_index_[key] = i;
+            alg_index_[key] = static_cast<uint32_t>(i);
         }
     }
 
@@ -178,6 +204,10 @@ public:
     }
 
 private:
+    [[nodiscard]] static constexpr size_t max_serialized_count() noexcept {
+        return static_cast<size_t>((std::numeric_limits<uint32_t>::max)());
+    }
+
     std::vector<RationalPrime> rational_;
     std::vector<AlgebraicPrime> algebraic_;
     FactorBaseParams params_;

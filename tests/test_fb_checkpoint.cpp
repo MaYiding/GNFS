@@ -215,6 +215,34 @@ void test_empty_fb() {
     std::cout << "  Empty FB: PASS" << std::endl;
 }
 
+void test_sieve_count_invariants() {
+    std::cout << "Testing checkpoint sieve-count invariants..." << std::endl;
+
+    FbCheckpoint ck;
+    ck.ctx_n = Integer(static_cast<int64_t>(7));
+    ck.ctx_degree = 1;
+    ck.algebraic.emplace_back(3, 1, 16, 1);
+    ck.sieve_algebraic_count = 2;
+
+    bool save_threw = false;
+    try {
+        ck.save(tmp_ckpt_path("invalid_sieve_save"));
+    } catch (const std::runtime_error&) {
+        save_threw = true;
+    }
+    assert(save_threw);
+
+    bool rebuild_threw = false;
+    try {
+        (void)ck.to_factor_base();
+    } catch (const std::runtime_error&) {
+        rebuild_threw = true;
+    }
+    assert(rebuild_threw);
+
+    std::cout << "  Checkpoint sieve-count invariants: PASS" << std::endl;
+}
+
 void test_large_fb() {
     std::cout << "Testing large FB (10K primes)..." << std::endl;
     auto path = tmp_ckpt_path("large");
@@ -308,6 +336,7 @@ int main() {
     test_matches_ok();
     test_matches_mismatch();
     test_empty_fb();
+    test_sieve_count_invariants();
     test_large_fb();
     test_incomplete_magic_rejected();
     test_version_mismatch_rejected();

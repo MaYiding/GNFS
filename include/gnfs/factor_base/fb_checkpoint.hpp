@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -71,6 +72,15 @@ struct FbCheckpoint {
 
     /// Rebuild FactorBase from this checkpoint.
     [[nodiscard]] FactorBase to_factor_base() const {
+        if (sieve_algebraic_count > static_cast<uint64_t>((std::numeric_limits<size_t>::max)())) {
+            throw std::overflow_error(
+                "FbCheckpoint::to_factor_base: sieve algebraic count exceeds size_t");
+        }
+        if (sieve_algebraic_count > algebraic.size()) {
+            throw std::runtime_error(
+                "FbCheckpoint::to_factor_base: sieve algebraic count exceeds algebraic count");
+        }
+
         FactorBaseParams params;
         params.rational_bound = rational_bound;
         params.algebraic_bound = algebraic_bound;
@@ -114,6 +124,14 @@ struct FbCheckpoint {
     }
 
     void save(const std::string& path) const {
+        if (rational.size() > max_serialized_count() || algebraic.size() > max_serialized_count()) {
+            throw std::overflow_error("FbCheckpoint::save: factor-base count exceeds uint32_t");
+        }
+        if (sieve_algebraic_count > algebraic.size()) {
+            throw std::runtime_error(
+                "FbCheckpoint::save: sieve algebraic count exceeds algebraic count");
+        }
+
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         if (!out) {
             throw std::runtime_error("FbCheckpoint::save: cannot open " + path);
@@ -210,7 +228,7 @@ struct FbCheckpoint {
         }
         ck.rational.clear();
         ck.rational.reserve(rat_count);
-        for (uint32_t i = 0; i < rat_count; ++i) {
+        for (size_t i = 0; i < static_cast<size_t>(rat_count); ++i) {
             RationalPrime rp;
             in.read(reinterpret_cast<char*>(&rp.p), 4);
             in.read(reinterpret_cast<char*>(&rp.log_p), 4);
@@ -227,7 +245,7 @@ struct FbCheckpoint {
         }
         ck.algebraic.clear();
         ck.algebraic.reserve(alg_count);
-        for (uint32_t i = 0; i < alg_count; ++i) {
+        for (size_t i = 0; i < static_cast<size_t>(alg_count); ++i) {
             AlgebraicPrime ap;
             uint32_t deg_pad = 0;
             in.read(reinterpret_cast<char*>(&ap.p), 4);
@@ -286,6 +304,10 @@ struct FbCheckpoint {
     }
 
 private:
+    [[nodiscard]] static constexpr size_t max_serialized_count() noexcept {
+        return static_cast<size_t>((std::numeric_limits<uint32_t>::max)());
+    }
+
     static void write_integer(std::ofstream& out, const Integer& x) {
         const mpz_t& mz = x.get_mpz();
         int32_t sgn = mpz_sgn(mz);
@@ -301,6 +323,9 @@ private:
         std::vector<unsigned char> buf(max_bytes);
         mpz_export(buf.data(), &byte_count, /*order=*/1, /*size=*/1,
                    /*endian=*/1, /*nails=*/0, mz);
+        if (byte_count > (std::numeric_limits<uint32_t>::max)()) {
+            throw std::overflow_error("FbCheckpoint::write_integer: integer is too large");
+        }
         uint32_t bc = static_cast<uint32_t>(byte_count);
         out.write(reinterpret_cast<const char*>(&bc), 4);
         if (bc > 0) {
