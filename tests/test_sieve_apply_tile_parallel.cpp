@@ -8,7 +8,8 @@
 // (W10 T4), mpz_powm (W11 T3) and lattice basis (W11 T4) dispatchers.
 //
 // Coverage:
-//   * ENV parsing handles unset / "0" / "4" / "10000" / "12abc" with the
+//   * ENV parsing handles unset / "0" / "4" / "10000" / "12abc" and extreme
+//     positive values with the
 //     same clamping mirror as the W7/W8/W9/W10 T4/W11 T3/W11 T4 helpers
 //     (default 1, cap at hardware_concurrency * 2, leading numeric
 //     prefix accepted).
@@ -52,8 +53,7 @@
 using gnfs::sieve::parallel_apply_tiles;
 using gnfs::sieve::resolve_sieve_apply_tile_threads;
 using gnfs::sieve::sieve_apply_tile_threads;
-using gnfs::sieve::
-    sieve_apply_tile_threads_reset_env_cache_for_testing;
+using gnfs::sieve::sieve_apply_tile_threads_reset_env_cache_for_testing;
 
 namespace {
 
@@ -127,8 +127,7 @@ void test_env_unset_defaults_to_one() {
     apply_env(nullptr);
     int v = sieve_apply_tile_threads();
     if (v != 1) {
-        std::cerr << "\n  ERROR: unset env parsed to " << v
-                  << ", expected 1" << std::endl;
+        std::cerr << "\n  ERROR: unset env parsed to " << v << ", expected 1" << std::endl;
         std::abort();
     }
     std::cout << " PASS\n";
@@ -142,8 +141,7 @@ void test_env_zero_to_one() {
     apply_env("0");
     int v = sieve_apply_tile_threads();
     if (v != 1) {
-        std::cerr << "\n  ERROR: '0' parsed to " << v
-                  << ", expected 1" << std::endl;
+        std::cerr << "\n  ERROR: '0' parsed to " << v << ", expected 1" << std::endl;
         std::abort();
     }
     apply_env(nullptr);
@@ -156,15 +154,16 @@ void test_env_zero_to_one() {
 void test_env_four() {
     std::cout << "Test 3: ENV '4' -> 4..." << std::flush;
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     int cap = static_cast<int>(hw) * 2;
     int expect = (4 < cap) ? 4 : cap;
 
     apply_env("4");
     int v = sieve_apply_tile_threads();
     if (v != expect) {
-        std::cerr << "\n  ERROR: '4' parsed to " << v << ", expected "
-                  << expect << " (hw*2 cap = " << cap << ")" << std::endl;
+        std::cerr << "\n  ERROR: '4' parsed to " << v << ", expected " << expect
+                  << " (hw*2 cap = " << cap << ")" << std::endl;
         std::abort();
     }
     apply_env(nullptr);
@@ -177,16 +176,46 @@ void test_env_four() {
 void test_env_clamp_at_hw_times_two() {
     std::cout << "Test 4: ENV '10000' clamped at hw*2..." << std::flush;
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     int cap = static_cast<int>(hw) * 2;
 
     apply_env("10000");
     int v = sieve_apply_tile_threads();
     if (v != cap) {
-        std::cerr << "\n  ERROR: '10000' parsed to " << v
+        std::cerr << "\n  ERROR: '10000' parsed to " << v << ", expected cap=" << cap << std::endl;
+        std::abort();
+    }
+    apply_env(nullptr);
+    std::cout << " PASS (cap=" << cap << ")\n";
+}
+
+// -----------------------------------------------------------------------
+// Test 5: positive values beyond int/uint64 range still clamp high.
+// -----------------------------------------------------------------------
+void test_env_extreme_positive_clamps() {
+    std::cout << "Test 5: extreme positive ENV values clamp at hw*2..." << std::flush;
+    unsigned int hw = std::thread::hardware_concurrency();
+    if (hw == 0)
+        hw = 4;
+    int cap = static_cast<int>(hw) * 2;
+
+    apply_env("2147483648");
+    int v = sieve_apply_tile_threads();
+    if (v != cap) {
+        std::cerr << "\n  ERROR: positive int-range overflow parsed to " << v
                   << ", expected cap=" << cap << std::endl;
         std::abort();
     }
+
+    apply_env("999999999999999999999999999999");
+    v = sieve_apply_tile_threads();
+    if (v != cap) {
+        std::cerr << "\n  ERROR: huge positive value parsed to " << v << ", expected cap=" << cap
+                  << std::endl;
+        std::abort();
+    }
+
     apply_env(nullptr);
     std::cout << " PASS (cap=" << cap << ")\n";
 }
@@ -198,15 +227,16 @@ void test_env_clamp_at_hw_times_two() {
 void test_env_numeric_prefix() {
     std::cout << "Test 5: ENV '12abc' -> 12 (prefix parse)..." << std::flush;
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     int cap = static_cast<int>(hw) * 2;
     int expect = (12 < cap) ? 12 : cap;
 
     apply_env("12abc");
     int v = sieve_apply_tile_threads();
     if (v != expect) {
-        std::cerr << "\n  ERROR: '12abc' parsed to " << v << ", expected "
-                  << expect << " (hw*2 cap = " << cap << ")" << std::endl;
+        std::cerr << "\n  ERROR: '12abc' parsed to " << v << ", expected " << expect
+                  << " (hw*2 cap = " << cap << ")" << std::endl;
         std::abort();
     }
     apply_env(nullptr);
@@ -218,16 +248,13 @@ void test_env_numeric_prefix() {
 //          cleanly without creating a pool or invoking tile_fn.
 // ───────────────────────────────────────────────────────────────────────
 void test_empty_tile_count() {
-    std::cout << "Test 6: empty tile_count (no-op both paths)..."
-              << std::flush;
+    std::cout << "Test 6: empty tile_count (no-op both paths)..." << std::flush;
 
     // Sequential (N=1).
     apply_env("1");
     auto seq_results = parallel_apply_tiles<MockTileResult>(
-        /*tile_count=*/0,
-        [](std::size_t) -> MockTileResult {
-            std::cerr << "\n  ERROR: tile_fn invoked on empty count"
-                      << std::endl;
+        /*tile_count=*/0, [](std::size_t) -> MockTileResult {
+            std::cerr << "\n  ERROR: tile_fn invoked on empty count" << std::endl;
             std::abort();
             return MockTileResult{};
         });
@@ -236,10 +263,8 @@ void test_empty_tile_count() {
     // Parallel (N=4).
     apply_env("4");
     auto par_results = parallel_apply_tiles<MockTileResult>(
-        /*tile_count=*/0,
-        [](std::size_t) -> MockTileResult {
-            std::cerr << "\n  ERROR: tile_fn invoked on empty count"
-                      << std::endl;
+        /*tile_count=*/0, [](std::size_t) -> MockTileResult {
+            std::cerr << "\n  ERROR: tile_fn invoked on empty count" << std::endl;
             std::abort();
             return MockTileResult{};
         });
@@ -253,8 +278,7 @@ void test_empty_tile_count() {
 // Test 7: single tile, N=1 - result correct, sequential path exercised.
 // ───────────────────────────────────────────────────────────────────────
 void test_single_tile_n1() {
-    std::cout << "Test 7: single tile N=1 (result correct)..."
-              << std::flush;
+    std::cout << "Test 7: single tile N=1 (result correct)..." << std::flush;
 
     apply_env("1");
     auto results = parallel_apply_tiles<MockTileResult>(1, mock_scan);
@@ -262,8 +286,8 @@ void test_single_tile_n1() {
     assert(results.size() == 1);
     MockTileResult expect = mock_scan(0);
     if (!(results[0] == expect)) {
-        std::cerr << "\n  ERROR: got value=" << results[0].value
-                  << ", expected " << expect.value << std::endl;
+        std::cerr << "\n  ERROR: got value=" << results[0].value << ", expected " << expect.value
+                  << std::endl;
         std::abort();
     }
     apply_env(nullptr);
@@ -275,43 +299,38 @@ void test_single_tile_n1() {
 //          invocation, no stall on pool spin-up.
 // ───────────────────────────────────────────────────────────────────────
 void test_single_tile_n4_no_stall() {
-    std::cout << "Test 8: single tile N=4 (exactly-once, no stall)..."
-              << std::flush;
+    std::cout << "Test 8: single tile N=4 (exactly-once, no stall)..." << std::flush;
 
     apply_env("4");
     std::atomic<int> calls{0};
 
     auto t0 = std::chrono::steady_clock::now();
-    auto results = parallel_apply_tiles<MockTileResult>(
-        1,
-        [&calls](std::size_t i) -> MockTileResult {
+    auto results =
+        parallel_apply_tiles<MockTileResult>(1, [&calls](std::size_t i) -> MockTileResult {
             calls.fetch_add(1, std::memory_order_relaxed);
             return mock_scan(i);
         });
     auto t1 = std::chrono::steady_clock::now();
-    long long ms =
-        std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0)
-            .count();
+    long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 
     assert(results.size() == 1);
     MockTileResult expect = mock_scan(0);
     if (!(results[0] == expect)) {
-        std::cerr << "\n  ERROR: got value=" << results[0].value
-                  << ", expected " << expect.value << std::endl;
+        std::cerr << "\n  ERROR: got value=" << results[0].value << ", expected " << expect.value
+                  << std::endl;
         std::abort();
     }
     int total_calls = calls.load(std::memory_order_relaxed);
     if (total_calls != 1) {
-        std::cerr << "\n  ERROR: expected exactly 1 call, got "
-                  << total_calls << std::endl;
+        std::cerr << "\n  ERROR: expected exactly 1 call, got " << total_calls << std::endl;
         std::abort();
     }
 
     // Sanity-bound the wall-time: if the helper accidentally spawned a
     // 4-thread pool the spin-up alone would push past this.
     if (ms > 1000) {
-        std::cerr << "\n  WARN: single-tile dispatch took " << ms
-                  << " ms (expected << 1000 ms)" << std::endl;
+        std::cerr << "\n  WARN: single-tile dispatch took " << ms << " ms (expected << 1000 ms)"
+                  << std::endl;
         // No abort - sanitizers can be slow.
     }
 
@@ -325,23 +344,20 @@ void test_single_tile_n4_no_stall() {
 //          invocation per tile.
 // ───────────────────────────────────────────────────────────────────────
 void test_100_tiles_n1_baseline() {
-    std::cout << "Test 9: 100 tiles N=1 baseline (identity scan)..."
-              << std::flush;
+    std::cout << "Test 9: 100 tiles N=1 baseline (identity scan)..." << std::flush;
     apply_env("1");
 
     auto results = parallel_apply_tiles<MockTileResult>(100, mock_scan);
 
     if (results.size() != 100) {
-        std::cerr << "\n  ERROR: expected 100 results, got "
-                  << results.size() << std::endl;
+        std::cerr << "\n  ERROR: expected 100 results, got " << results.size() << std::endl;
         std::abort();
     }
     for (std::size_t i = 0; i < 100; ++i) {
         MockTileResult expect = mock_scan(i);
         if (!(results[i] == expect)) {
-            std::cerr << "\n  ERROR: idx " << i << " got "
-                      << results[i].value << " expected " << expect.value
-                      << std::endl;
+            std::cerr << "\n  ERROR: idx " << i << " got " << results[i].value << " expected "
+                      << expect.value << std::endl;
             std::abort();
         }
     }
@@ -356,8 +372,7 @@ void test_100_tiles_n1_baseline() {
 //           paths.
 // ───────────────────────────────────────────────────────────────────────
 void test_n1_vs_n4_parity_simple() {
-    std::cout << "Test 10: N=1 vs N=4 parity (simple, 100 tiles)..."
-              << std::flush;
+    std::cout << "Test 10: N=1 vs N=4 parity (simple, 100 tiles)..." << std::flush;
 
     apply_env("1");
     auto seq = parallel_apply_tiles<MockTileResult>(100, mock_scan);
@@ -368,15 +383,14 @@ void test_n1_vs_n4_parity_simple() {
     apply_env(nullptr);
 
     if (seq.size() != par.size()) {
-        std::cerr << "\n  ERROR: seq.size()=" << seq.size()
-                  << " par.size()=" << par.size() << std::endl;
+        std::cerr << "\n  ERROR: seq.size()=" << seq.size() << " par.size()=" << par.size()
+                  << std::endl;
         std::abort();
     }
     for (std::size_t i = 0; i < seq.size(); ++i) {
         if (!(seq[i] == par[i])) {
-            std::cerr << "\n  ERROR: idx " << i << " seq="
-                      << seq[i].value << " par=" << par[i].value
-                      << std::endl;
+            std::cerr << "\n  ERROR: idx " << i << " seq=" << seq[i].value
+                      << " par=" << par[i].value << std::endl;
             std::abort();
         }
     }
@@ -394,58 +408,48 @@ void test_n1_vs_n4_parity_simple() {
 //           without dropping or shredding elements.
 // ───────────────────────────────────────────────────────────────────────
 void test_n1_vs_n_hw_parity_heavy() {
-    std::cout << "Test 11: N=1 vs N=hw parity (HeavyTileResult)..."
-              << std::flush;
+    std::cout << "Test 11: N=1 vs N=hw parity (HeavyTileResult)..." << std::flush;
 
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     std::string hw_str = std::to_string(hw);
 
     constexpr std::size_t kTileCount = 100;
 
     apply_env("1");
     auto t0 = std::chrono::steady_clock::now();
-    auto seq = parallel_apply_tiles<HeavyTileResult>(kTileCount,
-                                                    heavy_scan);
+    auto seq = parallel_apply_tiles<HeavyTileResult>(kTileCount, heavy_scan);
     auto t1 = std::chrono::steady_clock::now();
-    long long us_seq =
-        std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0)
-            .count();
+    long long us_seq = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
 
     apply_env(hw_str.c_str());
     auto t2 = std::chrono::steady_clock::now();
-    auto par = parallel_apply_tiles<HeavyTileResult>(kTileCount,
-                                                    heavy_scan);
+    auto par = parallel_apply_tiles<HeavyTileResult>(kTileCount, heavy_scan);
     auto t3 = std::chrono::steady_clock::now();
-    long long us_par =
-        std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2)
-            .count();
+    long long us_par = std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2).count();
 
     apply_env(nullptr);
 
     assert(seq.size() == par.size());
     for (std::size_t i = 0; i < seq.size(); ++i) {
         if (!(seq[i] == par[i])) {
-            std::cerr << "\n  ERROR: idx " << i
-                      << " seq.summary=" << seq[i].summary
-                      << " par.summary=" << par[i].summary
-                      << " seq.size=" << seq[i].data.size()
+            std::cerr << "\n  ERROR: idx " << i << " seq.summary=" << seq[i].summary
+                      << " par.summary=" << par[i].summary << " seq.size=" << seq[i].data.size()
                       << " par.size=" << par[i].data.size() << std::endl;
             std::abort();
         }
         // And cross-check seq[i] against the freshly computed reference.
         HeavyTileResult expect = heavy_scan(i);
         if (!(seq[i] == expect)) {
-            std::cerr << "\n  ERROR: idx " << i
-                      << " seq does not match heavy_scan reference"
+            std::cerr << "\n  ERROR: idx " << i << " seq does not match heavy_scan reference"
                       << std::endl;
             std::abort();
         }
     }
 
     std::cout << " PASS (N=hw=" << hw << ", " << seq.size()
-              << " per-index identical, seq=" << us_seq << "us, par="
-              << us_par << "us)\n";
+              << " per-index identical, seq=" << us_seq << "us, par=" << us_par << "us)\n";
 }
 
 // ───────────────────────────────────────────────────────────────────────
@@ -456,8 +460,7 @@ void test_n1_vs_n_hw_parity_heavy() {
 //           double-free.
 // ───────────────────────────────────────────────────────────────────────
 void test_move_only_result_type() {
-    std::cout << "Test 12: move-only Result (unique_ptr<int>)..."
-              << std::flush;
+    std::cout << "Test 12: move-only Result (unique_ptr<int>)..." << std::flush;
 
     constexpr std::size_t kTileCount = 32;
 
@@ -467,47 +470,40 @@ void test_move_only_result_type() {
 
     // Sequential.
     apply_env("1");
-    auto seq = parallel_apply_tiles<std::unique_ptr<int>>(kTileCount,
-                                                          unique_scan);
+    auto seq = parallel_apply_tiles<std::unique_ptr<int>>(kTileCount, unique_scan);
     assert(seq.size() == kTileCount);
     for (std::size_t i = 0; i < kTileCount; ++i) {
         if (!seq[i]) {
-            std::cerr << "\n  ERROR seq: null pointer at idx " << i
-                      << std::endl;
+            std::cerr << "\n  ERROR seq: null pointer at idx " << i << std::endl;
             std::abort();
         }
         int expect = static_cast<int>(i * 13 + 5);
         if (*seq[i] != expect) {
-            std::cerr << "\n  ERROR seq: idx " << i
-                      << " got " << *seq[i]
-                      << " expected " << expect << std::endl;
+            std::cerr << "\n  ERROR seq: idx " << i << " got " << *seq[i] << " expected " << expect
+                      << std::endl;
             std::abort();
         }
     }
 
     // Parallel.
     apply_env("4");
-    auto par = parallel_apply_tiles<std::unique_ptr<int>>(kTileCount,
-                                                          unique_scan);
+    auto par = parallel_apply_tiles<std::unique_ptr<int>>(kTileCount, unique_scan);
     assert(par.size() == kTileCount);
     for (std::size_t i = 0; i < kTileCount; ++i) {
         if (!par[i]) {
-            std::cerr << "\n  ERROR par: null pointer at idx " << i
-                      << std::endl;
+            std::cerr << "\n  ERROR par: null pointer at idx " << i << std::endl;
             std::abort();
         }
         int expect = static_cast<int>(i * 13 + 5);
         if (*par[i] != expect) {
-            std::cerr << "\n  ERROR par: idx " << i
-                      << " got " << *par[i]
-                      << " expected " << expect << std::endl;
+            std::cerr << "\n  ERROR par: idx " << i << " got " << *par[i] << " expected " << expect
+                      << std::endl;
             std::abort();
         }
     }
 
     apply_env(nullptr);
-    std::cout << " PASS (" << kTileCount
-              << " unique_ptr per index, both paths)\n";
+    std::cout << " PASS (" << kTileCount << " unique_ptr per index, both paths)\n";
 }
 
 // ───────────────────────────────────────────────────────────────────────
@@ -530,15 +526,13 @@ void test_tile_fn_exception_propagates() {
     apply_env("1");
     bool seq_caught = false;
     try {
-        auto seq = parallel_apply_tiles<MockTileResult>(kTileCount,
-                                                        throw_fn);
+        auto seq = parallel_apply_tiles<MockTileResult>(kTileCount, throw_fn);
         (void)seq;
     } catch (const std::runtime_error& e) {
         seq_caught = true;
         std::string what = e.what();
         if (what.find("tile 4 sentinel") == std::string::npos) {
-            std::cerr << "\n  ERROR: seq path unexpected what(): " << what
-                      << std::endl;
+            std::cerr << "\n  ERROR: seq path unexpected what(): " << what << std::endl;
             std::abort();
         }
     }
@@ -552,15 +546,13 @@ void test_tile_fn_exception_propagates() {
     apply_env("4");
     bool par_caught = false;
     try {
-        auto par = parallel_apply_tiles<MockTileResult>(kTileCount,
-                                                        throw_fn);
+        auto par = parallel_apply_tiles<MockTileResult>(kTileCount, throw_fn);
         (void)par;
     } catch (const std::runtime_error& e) {
         par_caught = true;
         std::string what = e.what();
         if (what.find("tile 4 sentinel") == std::string::npos) {
-            std::cerr << "\n  ERROR: par path unexpected what(): " << what
-                      << std::endl;
+            std::cerr << "\n  ERROR: par path unexpected what(): " << what << std::endl;
             std::abort();
         }
     }
@@ -590,8 +582,7 @@ void test_reset_env_cache_hook() {
     setenv("GNFS_SIEVE_APPLY_TILE_THREADS", "4", /*overwrite=*/1);
     int v2 = sieve_apply_tile_threads();
     if (v2 != 1) {
-        std::cerr << "\n  ERROR: stale cache should still report 1, got "
-                  << v2 << std::endl;
+        std::cerr << "\n  ERROR: stale cache should still report 1, got " << v2 << std::endl;
         std::abort();
     }
 
@@ -599,12 +590,12 @@ void test_reset_env_cache_hook() {
     sieve_apply_tile_threads_reset_env_cache_for_testing();
     int v3 = sieve_apply_tile_threads();
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     int cap = static_cast<int>(hw) * 2;
     int expect = (4 < cap) ? 4 : cap;
     if (v3 != expect) {
-        std::cerr << "\n  ERROR: post-reset got " << v3
-                  << ", expected " << expect << std::endl;
+        std::cerr << "\n  ERROR: post-reset got " << v3 << ", expected " << expect << std::endl;
         std::abort();
     }
 
@@ -618,23 +609,20 @@ void test_reset_env_cache_hook() {
 //           tile_count.
 // ───────────────────────────────────────────────────────────────────────
 void test_resolve_helper() {
-    std::cout << "Test 15: resolve_sieve_apply_tile_threads()..."
-              << std::flush;
+    std::cout << "Test 15: resolve_sieve_apply_tile_threads()..." << std::flush;
 
     // Empty -> 0 (no work).
     apply_env("4");
     int r0 = resolve_sieve_apply_tile_threads(0);
     if (r0 != 0) {
-        std::cerr << "\n  ERROR: tile_count=0 should give 0, got " << r0
-                  << std::endl;
+        std::cerr << "\n  ERROR: tile_count=0 should give 0, got " << r0 << std::endl;
         std::abort();
     }
 
     // Single tile -> 1 (short-circuit even when env=4).
     int r1 = resolve_sieve_apply_tile_threads(1);
     if (r1 != 1) {
-        std::cerr << "\n  ERROR: tile_count=1 should give 1, got " << r1
-                  << std::endl;
+        std::cerr << "\n  ERROR: tile_count=1 should give 1, got " << r1 << std::endl;
         std::abort();
     }
 
@@ -642,8 +630,7 @@ void test_resolve_helper() {
     apply_env("1");
     int rs = resolve_sieve_apply_tile_threads(100);
     if (rs != 1) {
-        std::cerr << "\n  ERROR: env=1 / 100 tiles should give 1, got "
-                  << rs << std::endl;
+        std::cerr << "\n  ERROR: env=1 / 100 tiles should give 1, got " << rs << std::endl;
         std::abort();
     }
 
@@ -651,12 +638,13 @@ void test_resolve_helper() {
     apply_env("4");
     int rp = resolve_sieve_apply_tile_threads(100);
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     int cap = static_cast<int>(hw) * 2;
     int expect_4 = (4 < cap) ? 4 : cap;
     if (rp != expect_4) {
-        std::cerr << "\n  ERROR: env=4 / 100 tiles should give "
-                  << expect_4 << ", got " << rp << std::endl;
+        std::cerr << "\n  ERROR: env=4 / 100 tiles should give " << expect_4 << ", got " << rp
+                  << std::endl;
         std::abort();
     }
 
@@ -664,8 +652,8 @@ void test_resolve_helper() {
     int rc = resolve_sieve_apply_tile_threads(2);
     int expect_2 = std::min(expect_4, 2);
     if (rc != expect_2) {
-        std::cerr << "\n  ERROR: env=4 / 2 tiles should give " << expect_2
-                  << ", got " << rc << std::endl;
+        std::cerr << "\n  ERROR: env=4 / 2 tiles should give " << expect_2 << ", got " << rc
+                  << std::endl;
         std::abort();
     }
 
@@ -673,16 +661,16 @@ void test_resolve_helper() {
     std::cout << " PASS\n";
 }
 
-}  // namespace
+} // namespace
 
 int main() {
-    std::cout << "=== Sieve Apply-Tile Parallel Dispatch Tests ==="
-              << std::endl;
+    std::cout << "=== Sieve Apply-Tile Parallel Dispatch Tests ===" << std::endl;
 
     test_env_unset_defaults_to_one();
     test_env_zero_to_one();
     test_env_four();
     test_env_clamp_at_hw_times_two();
+    test_env_extreme_positive_clamps();
     test_env_numeric_prefix();
     test_empty_tile_count();
     test_single_tile_n1();
@@ -695,8 +683,6 @@ int main() {
     test_reset_env_cache_hook();
     test_resolve_helper();
 
-    std::cout << std::endl
-              << "=== All Sieve Apply-Tile Parallel Tests PASSED ==="
-              << std::endl;
+    std::cout << std::endl << "=== All Sieve Apply-Tile Parallel Tests PASSED ===" << std::endl;
     return 0;
 }
