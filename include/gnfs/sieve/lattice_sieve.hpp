@@ -234,7 +234,6 @@ public:
             throw std::invalid_argument(
                 "LatticeSieve region must have positive, representable dimensions");
         }
-
         // Allocate for the requested region before publishing it. A plain
         // resize() retains the previous capacity when the region shrinks; the
         // default region can be about 512 MiB while a 50-digit production
@@ -607,6 +606,21 @@ public:
     }
 
 private:
+    static void validate_sieve_region_width_(const SieveRegion& region) {
+        // Row-major stores both bucket offsets and small-prime residues in
+        // narrow fields. The latter is the tighter contract: values below
+        // the width must fit in int16_t, so width 32768 is the inclusive
+        // maximum (and also fits BucketEntry::offset's uint16_t field).
+        const int64_t width =
+            static_cast<int64_t>(region.i_max) - static_cast<int64_t>(region.i_min) + 1;
+        constexpr int64_t maximum_width =
+            static_cast<int64_t>(std::numeric_limits<int16_t>::max()) + 1;
+        if (width <= 0 || width > maximum_width) {
+            throw std::invalid_argument(
+                "LatticeSieve region width exceeds the CompactSmallPrime int16_t limit");
+        }
+    }
+
     const PolynomialContext& ctx_;
     const FactorBase& fb_;
     SieveParams params_;
@@ -1287,8 +1301,8 @@ private:
     /// 小素数 (p < width): stride loop（多次命中/行，L1 cache 热驻留）
     /// 大素数 (p ≥ width): bucket apply（预排序命中，无空循环）
     void sieve_row_major(const std::vector<PrimeEntry>& primes) {
+        validate_sieve_region_width_(region_);
         const size_t w = static_cast<size_t>(region_.i_width());
-        assert(w <= UINT16_MAX && "sieve width exceeds BucketEntry::offset uint16_t range");
         const uint32_t bucket_threshold = static_cast<uint32_t>(w);
 
         // Phase 0: 全局命中素数（u=0, v=0 → 每个位置都被整除，极罕见）
