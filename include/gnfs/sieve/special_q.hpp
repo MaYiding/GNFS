@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <stdexcept>
 #include <vector>
 
 namespace gnfs::sieve {
@@ -250,15 +251,21 @@ struct SpecialQRangeSelector {
 
     /// 选择范围
     [[nodiscard]] SpecialQRange select(const FactorBase& /* fb */) const {
+        if (algebraic_bound == 0) {
+            throw std::invalid_argument("Special-Q algebraic bound must be positive");
+        }
+        if (!std::isfinite(relations_per_sq) || relations_per_sq <= 0.0) {
+            throw std::invalid_argument("Special-Q relations per q must be finite and positive");
+        }
+
         SpecialQRange range;
 
         // 经验公式：special-q 从因子基上界附近开始
         range.min_q = algebraic_bound;
 
         // 估计需要多少 special-q
-        size_t needed_sq =
-            static_cast<size_t>(static_cast<double>(target_relations) / relations_per_sq);
-        needed_sq = std::max(needed_sq, size_t(1000));
+        const double estimated_sq = static_cast<double>(target_relations) / relations_per_sq;
+        const double needed_sq = std::max(estimated_sq, 1000.0);
 
         // 估计 max_q
         // 对于 [min_q, max_q] 区间内的素数数量，使用素数定理估计
@@ -266,11 +273,20 @@ struct SpecialQRangeSelector {
         // π(max) - π(min) ≈ needed_sq
         // 简化估计：max_q ≈ min_q + needed_sq * ln(min_q)
 
-        double ln_min = std::log(static_cast<double>(range.min_q));
-        uint64_t delta = static_cast<uint64_t>(static_cast<double>(needed_sq) * ln_min * 1.5);
+        const double ln_min = std::log(static_cast<double>(range.min_q));
+        const double delta = needed_sq * ln_min * 1.5;
+        const double max_delta = static_cast<double>(UINT32_MAX - range.min_q);
 
-        range.max_q = static_cast<uint32_t>(std::min(static_cast<uint64_t>(range.min_q) + delta,
-                                                     static_cast<uint64_t>(UINT32_MAX)));
+        // Keep the estimate in floating point until it is known to fit. This avoids
+        // undefined floating-point-to-integer conversions for very small rates or
+        // large relation targets, and the subtraction-based bound avoids uint64_t
+        // addition overflow near UINT32_MAX.
+        if (!std::isfinite(delta) || delta >= max_delta) {
+            range.max_q = UINT32_MAX;
+        } else {
+            range.max_q = static_cast<uint32_t>(static_cast<uint64_t>(range.min_q) +
+                                                static_cast<uint64_t>(delta));
+        }
 
         return range;
     }
