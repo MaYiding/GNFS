@@ -435,7 +435,8 @@ void test_numeric_boundaries_and_nonpositive_inputs() {
     const ECM::Config config = make_config(1);
 
     // B1=0/1 must produce an empty context without indexing past the sieve.
-    for (const std::uint64_t bound : {0ULL, 1ULL}) {
+    constexpr std::array<std::uint64_t, 2> degenerate_bounds{0, 1};
+    for (const std::uint64_t bound : degenerate_bounds) {
         ECM::Config degenerate = config;
         degenerate.B1 = bound;
         const ECM::BatchContext context = ECM::prepare_batch(degenerate, schedule);
@@ -444,7 +445,9 @@ void test_numeric_boundaries_and_nonpositive_inputs() {
     }
 
     // Reject pathological bounds before allocating the sieve table.
-    for (const std::uint64_t bound : {100'000'001ULL, std::numeric_limits<std::uint64_t>::max()}) {
+    constexpr std::array<std::uint64_t, 2> oversized_bounds{
+        std::uint64_t{100'000'001}, std::numeric_limits<std::uint64_t>::max()};
+    for (const std::uint64_t bound : oversized_bounds) {
         ECM::Config oversized = config;
         oversized.B1 = bound;
         expect_invalid_argument([&] { (void)ECM::prepare_batch(oversized, schedule); });
