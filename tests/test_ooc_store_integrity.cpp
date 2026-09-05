@@ -99,6 +99,12 @@ RelationSequenceReceipt standard_sequence_receipt(uint64_t count) {
     return sequence.finish();
 }
 
+RelationSequenceReceipt minimal_sequence_receipt() {
+    RelationSequenceReceiptAccumulator sequence;
+    sequence.append(Relation(1, 2));
+    return sequence.finish();
+}
+
 Relation make_large_prime_relation(size_t count) {
     Relation relation(1, 2);
     relation.rational_large_prime.reserve(count);
@@ -1273,6 +1279,101 @@ void test_finalized_reader_rejects_oversized_record_before_decode() {
     CHECK(rejected_at_size_gate);
 }
 
+void test_finalized_reader_rejects_count_larger_than_data_extent() {
+    const std::string path = make_path("finalized_count_exceeds_data_extent");
+    OOCArtifacts cleanup(path);
+    OOCSnapshotDescriptor descriptor;
+    {
+        OOCRelationWriter writer(path);
+        CHECK(writer.write(make_relation(1, 2)) == 0);
+        descriptor = writer.finalize();
+    }
+
+    const uint64_t shortened_end = OOCRelationWriter::DATA_HEADER_BYTES +
+                                   gnfs::relation::detail::MIN_COMPACT_RELATION_BYTES - 1;
+    CHECK(shortened_end < descriptor.data_end);
+    std::filesystem::resize_file(path + ".reldata", shortened_end);
+    overwrite_u64(path + ".relidx", OOCRelationWriter::INDEX_HEADER_BYTES + sizeof(uint64_t),
+                  shortened_end);
+
+    bool rejected_at_extent_gate = false;
+    try {
+        OOCRelationReader reader(path);
+        (void)reader;
+    } catch (const std::runtime_error& error) {
+        rejected_at_extent_gate =
+            std::string(error.what()).find("relation count exceeds data extent") !=
+            std::string::npos;
+    }
+    CHECK(rejected_at_extent_gate);
+}
+
+void test_minimal_compact_record_extent_is_accepted() {
+    const std::string finalized_path = make_path("finalized_minimal_compact_record");
+    OOCArtifacts finalized_cleanup(finalized_path);
+    OOCSnapshotDescriptor finalized_descriptor;
+    {
+        OOCRelationWriter writer(finalized_path);
+        CHECK(writer.write(Relation(1, 2)) == 0);
+        finalized_descriptor = writer.finalize();
+    }
+    CHECK(finalized_descriptor.data_end == OOCRelationWriter::DATA_HEADER_BYTES +
+                                               gnfs::relation::detail::MIN_COMPACT_RELATION_BYTES);
+    OOCRelationReader finalized_reader(finalized_path);
+    CHECK(finalized_reader.read(0).a == 1);
+
+    const std::string prefix_path = make_path("prefix_minimal_compact_record");
+    OOCArtifacts prefix_cleanup(prefix_path);
+    OOCRelationWriter prefix_writer(prefix_path);
+    CHECK(prefix_writer.write(Relation(1, 2)) == 0);
+    const auto prefix_descriptor = prefix_writer.checkpoint_prefix();
+    CHECK(prefix_descriptor.data_end == OOCRelationWriter::DATA_HEADER_BYTES +
+                                            gnfs::relation::detail::MIN_COMPACT_RELATION_BYTES);
+    {
+        OOCRelationPrefixReader prefix_reader(prefix_path, prefix_descriptor, prefix_writer);
+        CHECK(prefix_reader.read(0).a == 1);
+    }
+    prefix_writer.fail_suspended_snapshot();
+
+    const std::string recovery_path = make_path("recovery_minimal_compact_record");
+    OOCArtifacts recovery_cleanup(recovery_path);
+    OOCSnapshotDescriptor recovery_descriptor;
+    {
+        OOCRelationWriter writer(recovery_path);
+        CHECK(writer.write(Relation(1, 2)) == 0);
+        recovery_descriptor = writer.checkpoint_prefix();
+        writer.fail_suspended_snapshot();
+    }
+    OOCRelationWriter recovered(recovery_path, recovery_descriptor, minimal_sequence_receipt());
+    CHECK(recovered.count() == 1);
+    recovered.abort();
+}
+
+void test_recovery_rejects_count_larger_than_data_extent() {
+    const std::string path = make_path("recovery_count_exceeds_data_extent");
+    OOCArtifacts cleanup(path);
+    auto descriptor = create_recovery_store(path, 1);
+
+    const uint64_t shortened_end = OOCRelationWriter::DATA_HEADER_BYTES +
+                                   gnfs::relation::detail::MIN_COMPACT_RELATION_BYTES - 1;
+    CHECK(shortened_end < descriptor.data_end);
+    std::filesystem::resize_file(path + ".reldata", shortened_end);
+    overwrite_u64(path + ".relidx", OOCRelationWriter::INDEX_HEADER_BYTES + sizeof(uint64_t),
+                  shortened_end);
+    descriptor.data_end = shortened_end;
+
+    bool rejected_at_extent_gate = false;
+    try {
+        OOCRelationWriter writer(path, descriptor, standard_sequence_receipt(descriptor.count));
+        (void)writer;
+    } catch (const std::runtime_error& error) {
+        rejected_at_extent_gate =
+            std::string(error.what()).find("relation count exceeds data extent") !=
+            std::string::npos;
+    }
+    CHECK(rejected_at_extent_gate);
+}
+
 void test_prefix_reader_exact_extent_and_lease() {
     {
         const std::string path = make_path("prefix_trailing_index");
@@ -1605,6 +1706,9 @@ int main() {
     test_v1_v2_finalized_reader_compatibility_and_paired_rejection();
     test_empty_v1_v2_finalized_reader_compatibility();
     test_finalized_reader_rejects_oversized_record_before_decode();
+    test_finalized_reader_rejects_count_larger_than_data_extent();
+    test_minimal_compact_record_extent_is_accepted();
+    test_recovery_rejects_count_larger_than_data_extent();
     test_prefix_reader_exact_extent_and_lease();
     test_failed_snapshot_transition();
     test_fresh_writer_reserves_pair_without_clobbering();

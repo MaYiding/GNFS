@@ -316,6 +316,20 @@ inline constexpr uint64_t MAX_COMPACT_RELATION_BYTES =
     static_cast<uint64_t>(gnfs::core::Relation::MAX_SERIALIZED_EXTRA_AB_PAIRS) *
         (sizeof(int64_t) + sizeof(uint64_t));
 
+// Every compact record contains a/b and the five variable-length section
+// counts, even when all sections are empty.  This lower bound lets readers
+// reject a forged corpus count before reserving count-sized containers.
+inline constexpr uint64_t MIN_COMPACT_RELATION_BYTES =
+    sizeof(int64_t) + sizeof(uint64_t) + 5 * sizeof(uint32_t);
+
+inline void validate_compact_relation_count(uint64_t count, uint64_t data_size,
+                                            uint64_t data_header_bytes, const char* operation) {
+    if (data_size < data_header_bytes ||
+        count > (data_size - data_header_bytes) / MIN_COMPACT_RELATION_BYTES) {
+        throw std::runtime_error(std::string(operation) + ": relation count exceeds data extent");
+    }
+}
+
 /// Decode one compact OOC record with the same persistence limits used by
 /// core::Relation::serialize(). Keeping this as the single compact decoder lets
 /// both ordinary readers and resume validation prove the identical contract.
@@ -2380,6 +2394,8 @@ private:
             throw std::logic_error(
                 "OOCRelationWriter recovery: checkpoint receipt exceeds validated prefix");
         }
+        detail::validate_compact_relation_count(count, data_end, DATA_HEADER_BYTES,
+                                                "OOCRelationWriter recovery");
         OOCValidatedResumePrefix prefix;
         prefix.count = count;
         prefix.data_end = data_end;
@@ -2470,6 +2486,8 @@ private:
         if (index_size != index_size_for_count(final_count)) {
             throw std::runtime_error("OOCRelationWriter recovery: finalized index size mismatch");
         }
+        detail::validate_compact_relation_count(final_count, data_size, DATA_HEADER_BYTES,
+                                                "OOCRelationWriter recovery");
 
         std::vector<uint64_t> offsets;
         offsets.reserve(static_cast<size_t>(final_count) + 1);
@@ -2554,6 +2572,8 @@ private:
         if (data_size < descriptor.data_end) {
             throw std::runtime_error("OOCRelationWriter resume: committed data prefix truncated");
         }
+        detail::validate_compact_relation_count(count, descriptor.data_end, DATA_HEADER_BYTES,
+                                                "OOCRelationWriter resume");
 
         std::vector<uint64_t> offsets;
         offsets.reserve(static_cast<size_t>(count) + 1);
@@ -3149,6 +3169,10 @@ private:
                 "OOCRelationReader: finalized data extent does not match descriptor");
         }
 
+        detail::validate_compact_relation_count(stored_count,
+                                                static_cast<uint64_t>(data_file_.size()),
+                                                expected_first_offset, "OOCRelationReader");
+
         offsets_ = idx_file_.ptr_at<uint64_t>(index_header_bytes);
         if (offsets_[0] != expected_first_offset) {
             throw std::runtime_error("OOCRelationReader: invalid first offset");
@@ -3549,6 +3573,10 @@ public:
                 throw std::runtime_error(
                     "OOCRelationPrefixReader: data size does not match snapshot");
             }
+
+            detail::validate_compact_relation_count(descriptor.count, descriptor.data_end,
+                                                    OOCRelationWriter::DATA_HEADER_BYTES,
+                                                    "OOCRelationPrefixReader");
 
             offsets_ = idx_file_.ptr_at<uint64_t>(
                 static_cast<size_t>(OOCRelationWriter::INDEX_HEADER_BYTES));
