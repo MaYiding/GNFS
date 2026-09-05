@@ -32,11 +32,14 @@
 #include "../core/integer.hpp"
 #include "special_q.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 
 namespace gnfs::sieve {
 
@@ -475,31 +478,63 @@ struct SieveRegion {
 
     /// 区域大小
     [[nodiscard]] size_t size() const noexcept {
-        return static_cast<size_t>(i_max - i_min + 1) * static_cast<size_t>(j_max - j_min + 1);
+        const int32_t width = i_width();
+        const int32_t height = j_height();
+        if (width <= 0 || height <= 0) {
+            return 0;
+        }
+
+        const size_t width_size = static_cast<size_t>(width);
+        const size_t height_size = static_cast<size_t>(height);
+        if (height_size > std::numeric_limits<size_t>::max() / width_size) {
+            return 0;
+        }
+        return width_size * height_size;
     }
 
     /// i 方向宽度
     [[nodiscard]] int32_t i_width() const noexcept {
-        return i_max - i_min + 1;
+        const int64_t width = static_cast<int64_t>(i_max) - static_cast<int64_t>(i_min) + 1;
+        if (width <= 0 || width > std::numeric_limits<int32_t>::max()) {
+            return 0;
+        }
+        return static_cast<int32_t>(width);
     }
 
     /// j 方向高度
     [[nodiscard]] int32_t j_height() const noexcept {
-        return j_max - j_min + 1;
+        const int64_t height = static_cast<int64_t>(j_max) - static_cast<int64_t>(j_min) + 1;
+        if (height <= 0 || height > std::numeric_limits<int32_t>::max()) {
+            return 0;
+        }
+        return static_cast<int32_t>(height);
     }
 
-    /// 从线性索引转换为 (i, j)
+    /// 从线性索引转换为 (i, j)。无效区域或越界索引返回左下端点。
     [[nodiscard]] std::pair<int32_t, int32_t> index_to_ij(size_t idx) const noexcept {
         const size_t w = static_cast<size_t>(i_width());
-        int32_t j = static_cast<int32_t>(idx / w) + j_min;
-        int32_t i = static_cast<int32_t>(idx % w) + i_min;
+        if (w == 0 || idx >= size()) {
+            return {i_min, j_min};
+        }
+        const int32_t j =
+            static_cast<int32_t>(static_cast<int64_t>(j_min) + static_cast<int64_t>(idx / w));
+        const int32_t i =
+            static_cast<int32_t>(static_cast<int64_t>(i_min) + static_cast<int64_t>(idx % w));
         return {i, j};
     }
 
-    /// 从 (i, j) 转换为线性索引
+    /// 从 (i, j) 转换为线性索引。无效或越界坐标返回 size() 哨兵。
     [[nodiscard]] size_t ij_to_index(int32_t i, int32_t j) const noexcept {
-        return static_cast<size_t>(j - j_min) * static_cast<size_t>(i_width()) +
-               static_cast<size_t>(i - i_min);
+        const int32_t width = i_width();
+        const size_t area = size();
+        if (width <= 0 || area == 0 || i < i_min || i > i_max || j < j_min || j > j_max) {
+            return area;
+        }
+        const size_t row =
+            static_cast<size_t>(static_cast<int64_t>(j) - static_cast<int64_t>(j_min));
+        const size_t column =
+            static_cast<size_t>(static_cast<int64_t>(i) - static_cast<int64_t>(i_min));
+        return row * static_cast<size_t>(width) + column;
     }
 };
 
@@ -507,9 +542,15 @@ struct SieveRegion {
 [[nodiscard]] inline SieveRegion default_sieve_region(double skewness) {
     SieveRegion region;
 
+    // Invalid skewness has no meaningful orientation. Keep the historical
+    // symmetric region instead of converting NaN or infinity to int32_t.
+    if (!std::isfinite(skewness) || skewness <= 0.0) {
+        skewness = 1.0;
+    }
+
     // 根据 skewness 调整 i/j 的范围
     // skewness > 1 意味着 |a| 通常比 |b| 大
-    int32_t base_size = 16384; // 2^14
+    constexpr int32_t base_size = 16384; // 2^14
 
     double i_half, j_size;
     if (skewness > 1.0) {
@@ -522,24 +563,32 @@ struct SieveRegion {
     }
 
     // Cap total area to prevent catastrophic memory allocation
-    constexpr double MAX_SIEVE_AREA = 256.0 * 1024 * 1024;
+    constexpr size_t max_sieve_area = size_t{256} * 1024 * 1024;
+    constexpr double max_sieve_area_double = static_cast<double>(max_sieve_area);
     double area = (2.0 * i_half) * j_size;
-    if (area > MAX_SIEVE_AREA) {
-        double scale = std::sqrt(MAX_SIEVE_AREA / area);
+    if (area > max_sieve_area_double) {
+        double scale = std::sqrt(max_sieve_area_double / area);
         i_half = std::floor(i_half * scale);
         j_size = std::floor(j_size * scale);
     }
 
-    // Clamp to int32 range to prevent overflow on extreme skewness
-    constexpr double MAX_I_HALF = static_cast<double>(INT32_MAX - 1);
-    constexpr double MAX_J_SIZE = static_cast<double>(INT32_MAX - 1);
-    i_half = std::max(std::min(i_half, MAX_I_HALF), 1.0);
-    j_size = std::max(std::min(j_size, MAX_J_SIZE), 1.0);
+    // Resolve the integral height first, then derive the maximum width allowed
+    // by both the area cap and i_width()'s int32_t contract. This second cap
+    // matters after an extreme skewness collapses j_size to one.
+    constexpr size_t max_height = max_sieve_area / 2;
+    const double bounded_j_size = std::clamp(j_size, 1.0, static_cast<double>(max_height));
+    const int32_t height = static_cast<int32_t>(bounded_j_size);
+    const size_t max_width_by_area = max_sieve_area / static_cast<size_t>(height);
+    const size_t max_width =
+        std::min(max_width_by_area, static_cast<size_t>(std::numeric_limits<int32_t>::max()));
+    const size_t max_i_half = max_width / 2;
+    const double bounded_i_half = std::clamp(i_half, 1.0, static_cast<double>(max_i_half));
+    const int32_t integral_i_half = static_cast<int32_t>(bounded_i_half);
 
-    region.i_min = -static_cast<int32_t>(i_half);
-    region.i_max = static_cast<int32_t>(i_half) - 1;
+    region.i_min = -integral_i_half;
+    region.i_max = integral_i_half - 1;
     region.j_min = 1;
-    region.j_max = static_cast<int32_t>(j_size);
+    region.j_max = height;
 
     return region;
 }

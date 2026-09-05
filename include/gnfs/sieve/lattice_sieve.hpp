@@ -22,6 +22,7 @@
 #include <cstring>
 #include <exception>
 #include <functional>
+#include <limits>
 #include <numeric>
 #include <optional>
 #include <stdexcept>
@@ -225,11 +226,25 @@ public:
 
     /// 设置筛区域
     void set_region(const SieveRegion& region) {
+        const int32_t width = region.i_width();
+        const int32_t height = region.j_height();
+        const size_t area = region.size();
+        // The row kernels use inclusive int32_t loops; incrementing a row at
+        // INT32_MAX is not representable. Reject it before allocation while
+        // retaining the strong exception guarantee for the current region.
+        if (width <= 0 || height <= 0 || area == 0 ||
+            region.j_max == std::numeric_limits<int32_t>::max()) {
+            throw std::invalid_argument("LatticeSieve region has invalid dimensions or endpoint");
+        }
+        if (area > std::vector<uint16_t>{}.max_size()) {
+            throw std::length_error("LatticeSieve region exceeds vector storage limit");
+        }
+
         // Allocate for the requested region before publishing it. A plain
         // resize() retains the previous capacity when the region shrinks; the
         // default region can be about 512 MiB while a 50-digit production
         // region needs only 16 MiB.
-        std::vector<uint16_t> replacement(region.size(), 0);
+        std::vector<uint16_t> replacement(area, 0);
         region_ = region;
         sieve_array_.swap(replacement);
         last_init_val_ = 0; // 重置:不残留上次 SQ 的 estimate
@@ -618,8 +633,12 @@ private:
         // |a| ~ |i * e0 + j * e1|, |b| ~ |i * f0 + j * f1|
         // E[|i|] ≈ range/4 for symmetric distribution on [i_min, i_max]
         // E[j]   ≈ midpoint for [j_min, j_max] (j > 0)
-        double typical_i = std::max(1.0, static_cast<double>(region_.i_max - region_.i_min) / 4.0);
-        double typical_j = std::max(1.0, static_cast<double>(region_.j_max + region_.j_min) / 2.0);
+        const int64_t i_span =
+            static_cast<int64_t>(region_.i_max) - static_cast<int64_t>(region_.i_min);
+        const int64_t j_midpoint_sum =
+            static_cast<int64_t>(region_.j_max) + static_cast<int64_t>(region_.j_min);
+        double typical_i = std::max(1.0, static_cast<double>(i_span) / 4.0);
+        double typical_j = std::max(1.0, static_cast<double>(j_midpoint_sum) / 2.0);
 
         double typical_a = std::abs(typical_i * static_cast<double>(basis.e0) +
                                     typical_j * static_cast<double>(basis.e1));
@@ -1141,9 +1160,7 @@ private:
     [[nodiscard]] std::vector<std::vector<BucketEntry>>
     fill_buckets(const std::vector<PrimeEntry>& primes, uint32_t bucket_threshold) const {
 
-        const int32_t j_min = region_.j_min;
-        const int32_t j_max = region_.j_max;
-        const int32_t total_rows = j_max - j_min + 1;
+        const int32_t total_rows = region_.j_height();
         const auto w = static_cast<int32_t>(region_.i_width());
 
         std::vector<std::vector<BucketEntry>> buckets(static_cast<size_t>(total_rows));
@@ -1216,7 +1233,7 @@ private:
         // Phase 2: 多线程行处理
         const int32_t j_min = region_.j_min;
         const int32_t j_max = region_.j_max;
-        const int32_t total_rows = j_max - j_min + 1;
+        const int32_t total_rows = region_.j_height();
         const int32_t i_min = region_.i_min;
 
         size_t num_threads = resolve_internal_thread_count_();
