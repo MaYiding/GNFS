@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <vector>
 
@@ -504,6 +506,12 @@ public:
     /// total nnz under 2^32 (60d ≈ 500M nnz at most). Returned pointer
     /// stays valid for the lifetime of the CSRMatrix.
     [[nodiscard]] const uint32_t* row_offsets_u32() const {
+        // The Metal dispatcher can invoke SpMV concurrently from multiple
+        // Krylov streams. Protect the one-time vector materialisation so two
+        // streams cannot race on resize()/writes to the mutable cache.
+        if (!row_offsets_u32_mutex_)
+            row_offsets_u32_mutex_ = std::make_shared<std::mutex>();
+        std::lock_guard<std::mutex> lock(*row_offsets_u32_mutex_);
         if (row_offsets_u32_.empty() && !row_offsets_.empty()) {
             row_offsets_u32_.resize(row_offsets_.size());
             for (size_t i = 0; i < row_offsets_.size(); ++i) {
@@ -522,6 +530,7 @@ private:
     std::vector<uint32_t> col_indices_;   // All column indices, packed contiguously
     std::vector<size_t> row_offsets_;   // row_offsets_[i] = start of row i in col_indices_
     mutable std::vector<uint32_t> row_offsets_u32_;  // Lazy uint32 view for Metal
+    mutable std::shared_ptr<std::mutex> row_offsets_u32_mutex_ = std::make_shared<std::mutex>();
     size_t num_rows_ = 0;
     size_t num_cols_ = 0;
 };
