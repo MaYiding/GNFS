@@ -76,11 +76,14 @@
 
 #include "../util/thread_pool.hpp"
 
+#include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cstddef>
 #include <cstdlib>
 #include <exception>
 #include <future>
+#include <limits>
 #include <mutex>
 #include <new>
 #include <span>
@@ -122,20 +125,36 @@ inline BrentPollardRhoThreadsCache& brent_pollard_rho_threads_cache() noexcept {
 inline int parse_brent_pollard_rho_threads_env() noexcept {
     const char* env = std::getenv("GNFS_BRENT_POLLARD_RHO_THREADS");
     if (env == nullptr || env[0] == '\0') {
-        return 1;  // default sequential
+        return 1; // default sequential
     }
-    int parsed = std::atoi(env);
-    if (parsed <= 0) {
-        return 1;  // invalid / non-positive -> sequential
+
+    // `atoi` overflows for a valid positive value above INT_MAX and can turn
+    // it negative, silently selecting the sequential path. Parse the value at
+    // unsigned width so every positive input can reach the clamp below while
+    // preserving the existing leading-whitespace and numeric-prefix semantics.
+    const char* first = env;
+    while (*first != '\0' && std::isspace(static_cast<unsigned char>(*first))) {
+        ++first;
+    }
+    if (*first == '-') {
+        return 1; // negative -> sequential
+    }
+
+    char* end = nullptr;
+    const unsigned long long parsed = std::strtoull(env, &end, 10);
+    if (end == env || parsed == 0) {
+        return 1; // invalid / non-positive -> sequential
     }
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
-    int cap = static_cast<int>(hw) * 2;
-    if (parsed > cap) parsed = cap;
-    return parsed;
+    if (hw == 0)
+        hw = 4;
+    const unsigned long long cap_wide = static_cast<unsigned long long>(hw) * 2ULL;
+    const unsigned long long cap =
+        std::min(cap_wide, static_cast<unsigned long long>(std::numeric_limits<int>::max()));
+    return static_cast<int>(std::min(parsed, cap));
 }
 
-}  // namespace detail
+} // namespace detail
 
 /// Read the `GNFS_BRENT_POLLARD_RHO_THREADS` env into a cached thread count.
 ///
@@ -145,9 +164,8 @@ inline int parse_brent_pollard_rho_threads_env() noexcept {
 /// values clamp to the upper cap.
 [[nodiscard]] inline int brent_pollard_rho_threads() noexcept {
     auto& cache = detail::brent_pollard_rho_threads_cache();
-    std::call_once(cache.once, [&cache]() {
-        cache.value = detail::parse_brent_pollard_rho_threads_env();
-    });
+    std::call_once(cache.once,
+                   [&cache]() { cache.value = detail::parse_brent_pollard_rho_threads_env(); });
     return cache.value;
 }
 
@@ -158,13 +176,15 @@ inline int parse_brent_pollard_rho_threads_env() noexcept {
 /// that want to short-circuit further setup work when the dispatcher will
 /// degrade to a single-task sequential run anyway. Empty batch returns 0
 /// (no workers needed at all).
-[[nodiscard]] inline int
-resolve_brent_pollard_rho_threads(std::size_t batch_size) noexcept {
+[[nodiscard]] inline int resolve_brent_pollard_rho_threads(std::size_t batch_size) noexcept {
     int threads = brent_pollard_rho_threads();
-    if (batch_size == 0) return 0;
-    if (threads <= 1) return 1;
+    if (batch_size == 0)
+        return 0;
+    if (threads <= 1)
+        return 1;
     auto b = static_cast<std::size_t>(threads);
-    if (b > batch_size) b = batch_size;
+    if (b > batch_size)
+        b = batch_size;
     return static_cast<int>(b);
 }
 
@@ -238,18 +258,17 @@ inline void brent_pollard_rho_threads_reset_env_cache_for_testing() noexcept {
 /// parallel_mpz_gcd, parallel_mpz_mod, parallel_mpz_invert,
 /// parallel_mpz_powm, parallel_stage1_curves, parallel_stage2_curves).
 template <typename Result, typename WorkerFn>
-inline std::vector<Result>
-parallel_brent_pollard_rho(std::span<const uint64_t> cs,
-                           std::span<const uint64_t> x0s,
-                           WorkerFn worker_fn) {
+inline std::vector<Result> parallel_brent_pollard_rho(std::span<const uint64_t> cs,
+                                                      std::span<const uint64_t> x0s,
+                                                      WorkerFn worker_fn) {
     if (cs.size() != x0s.size()) {
-        throw std::invalid_argument(
-            "parallel_brent_pollard_rho: cs.size() must equal x0s.size()");
+        throw std::invalid_argument("parallel_brent_pollard_rho: cs.size() must equal x0s.size()");
     }
 
     const std::size_t n = cs.size();
     std::vector<Result> results;
-    if (n == 0) return results;
+    if (n == 0)
+        return results;
 
     results.resize(n);
 
@@ -283,9 +302,8 @@ parallel_brent_pollard_rho(std::span<const uint64_t> cs,
         // are read-only from disjoint per-index slots, satisfying the
         // GMP per-call disjoint-operand contract inside whichever GMP
         // calls `worker_fn` chooses to make.
-        futures.push_back(pool.submit([&cs, &x0s, &results, &worker_fn, i]() {
-            results[i] = worker_fn(cs[i], x0s[i]);
-        }));
+        futures.push_back(pool.submit(
+            [&cs, &x0s, &results, &worker_fn, i]() { results[i] = worker_fn(cs[i], x0s[i]); }));
     }
 
     // Drain every future even when one rethrows: we want the pool to join
@@ -312,4 +330,4 @@ parallel_brent_pollard_rho(std::span<const uint64_t> cs,
     return results;
 }
 
-}  // namespace gnfs::cofactor
+} // namespace gnfs::cofactor
