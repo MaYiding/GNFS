@@ -1,7 +1,7 @@
 #pragma once
 
-#include "../core/types.hpp"
 #include "../core/polynomial_context.hpp"
+#include "../core/types.hpp"
 #include "../util/bit_intrin.hpp"
 
 #include <cmath>
@@ -16,10 +16,10 @@
 
 namespace gnfs::factor_base {
 
-using core::RationalPrime;
 using core::AlgebraicPrime;
 using core::FactorBaseParams;
 using core::PolynomialContext;
+using core::RationalPrime;
 
 /// FactorBase - 因子基
 /// 存储有理侧和代数侧的因子基，供筛法使用
@@ -29,8 +29,7 @@ public:
     FactorBase() = default;
 
     /// 从参数构造（实际构建由 FactorBaseBuilder 完成）
-    explicit FactorBase(const FactorBaseParams& params)
-        : params_(params) {}
+    explicit FactorBase(const FactorBaseParams& params) : params_(params) {}
 
     // 移动语义
     FactorBase(FactorBase&&) = default;
@@ -194,13 +193,8 @@ public:
     };
 
     [[nodiscard]] Stats stats() const {
-        return Stats{
-            rational_.size(),
-            algebraic_.size(),
-            params_.rational_bound,
-            params_.algebraic_bound,
-            params_.large_prime_bound
-        };
+        return Stats{rational_.size(), algebraic_.size(), params_.rational_bound,
+                     params_.algebraic_bound, params_.large_prime_bound};
     }
 
 private:
@@ -216,22 +210,24 @@ private:
     size_t sieve_algebraic_count_ = 0;
 
     // 快速查找表
-    std::unordered_map<uint32_t, uint32_t> rat_index_;      // p -> index
-    std::unordered_map<uint64_t, uint32_t> alg_index_;      // (p << 32 | r) -> index
+    std::unordered_map<uint32_t, uint32_t> rat_index_; // p -> index
+    std::unordered_map<uint64_t, uint32_t> alg_index_; // (p << 32 | r) -> index
 };
 
 /// 计算对数值（用于筛法的定点数）
 [[nodiscard]] inline uint32_t compute_log_prime(uint32_t p, uint8_t scale) {
     // log_p = floor(log2(p) * scale)
     // 使用 clz (count leading zeros) 来快速计算 log2
-    if (p <= 1) return 0;
+    if (p <= 1)
+        return 0;
     uint32_t log2_p = static_cast<uint32_t>(31 - gnfs::util::clz32(p));
     return log2_p * static_cast<uint32_t>(scale);
 }
 
 /// 计算对数值（更精确版本）
 [[nodiscard]] inline uint32_t compute_log_prime_precise(uint32_t p, uint8_t scale) {
-    if (p <= 1) return 0;
+    if (p <= 1)
+        return 0;
     return static_cast<uint32_t>(std::log2(static_cast<double>(p)) * scale);
 }
 
