@@ -151,6 +151,25 @@ void test_merge_partials_materializes_two_lp_square() {
     }
 }
 
+void test_merge_partials_materializes_unresolved_two_lp_square() {
+    SIQSRelation relation;
+    relation.value = Integer(7);
+    relation.large_prime = 101 * 101;
+    relation.large_prime2 = 1;
+    relation.negative = false;
+
+    std::vector<SIQSRelation> input;
+    input.push_back(std::move(relation));
+    const auto full = merge_partials(input, 1, false);
+    CHECK(full.size() == 1);
+    if (full.size() == 1) {
+        CHECK(full.front().value == Integer(7));
+        CHECK(full.front().large_prime == 0);
+        CHECK(full.front().large_prime2 == 0);
+        CHECK(full.front().merge_lps == std::vector<uint64_t>{101});
+    }
+}
+
 void test_merge_partials_rejects_non_semiprime_splitter_output() {
     // split_cofactor_64(90) returns {2,45}; strict normalization must reject
     // the composite second side instead of admitting a malformed 2LP edge.
@@ -838,6 +857,7 @@ int main() {
     test_bounds_and_exact_product_are_required();
     test_choose_A_rejects_invalid_bounds();
     test_merge_partials_materializes_two_lp_square();
+    test_merge_partials_materializes_unresolved_two_lp_square();
     test_merge_partials_rejects_non_semiprime_splitter_output();
     test_residual_classification_is_exact_and_deterministic();
     test_nonnegative_mpz_to_uint64_checked();

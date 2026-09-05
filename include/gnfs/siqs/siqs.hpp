@@ -1234,6 +1234,18 @@ inline std::vector<SIQSRelation> merge_partials(std::vector<SIQSRelation>& relat
                 rel.large_prime2 = factors->q;
                 factored_2lp++;
                 raw_2lp++;
+
+                // The unresolved sentinel can normalize to (p,p) for a
+                // square cofactor. Treat it like a pre-split self-loop: the
+                // p^2 residual contributes one p to Y and must never enter
+                // the graph as an edge from p back to itself.
+                if (rel.large_prime == rel.large_prime2) {
+                    rel.merge_lps.push_back(rel.large_prime);
+                    rel.large_prime = 0;
+                    rel.large_prime2 = 0;
+                    full.push_back(std::move(rel));
+                    continue;
+                }
             } else {
                 failed_2lp++;
                 continue; // can't use this relation
