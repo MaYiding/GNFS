@@ -45,6 +45,8 @@
 
 #include <atomic>
 #include <cassert>
+#include <cctype>
+#include <cerrno>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -305,10 +307,26 @@ private:
     if (env == nullptr || env[0] == '\0')
         return 0;
 
-    char* end = nullptr;
-    unsigned long parsed = std::strtoul(env, &end, 10);
-    if (end == env)
+    // `strtoul` accepts a leading minus and silently saturates on overflow.
+    // Normalize surrounding whitespace, reject negative values explicitly,
+    // and require the complete input to be a valid unsigned integer.
+    const char* first = env;
+    while (*first != '\0' && std::isspace(static_cast<unsigned char>(*first)))
+        ++first;
+    if (*first == '\0' || *first == '-')
         return 0;
+
+    errno = 0;
+    char* end = nullptr;
+    unsigned long parsed = std::strtoul(first, &end, 10);
+    if (end == first || errno == ERANGE)
+        return 0;
+
+    while (*end != '\0' && std::isspace(static_cast<unsigned char>(*end)))
+        ++end;
+    if (*end != '\0')
+        return 0;
+
     if (parsed < 4)
         return 0;
     if (parsed > 1024)

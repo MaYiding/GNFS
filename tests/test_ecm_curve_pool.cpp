@@ -15,6 +15,8 @@
 #include <gnfs/cofactor/ecm_curve_pool.hpp>
 #include <gnfs/core/integer.hpp>
 
+#include "support/test_check.hpp"
+
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
@@ -128,6 +130,19 @@ void test_env_parser() {
 
     setenv("GNFS_ECM_CURVE_POOL", "abc", 1);
     assert(ecm_curve_pool_size_from_env() == 0);
+
+    // A leading minus must remain disabled. `strtoul` otherwise treats a
+    // negative value as an unsigned wraparound and the cap would enable it.
+    setenv("GNFS_ECM_CURVE_POOL", "-1", 1);
+    GNFS_TEST_CHECK(ecm_curve_pool_size_from_env() == 0);
+    setenv("GNFS_ECM_CURVE_POOL", "  -4", 1);
+    GNFS_TEST_CHECK(ecm_curve_pool_size_from_env() == 0);
+
+    // Numeric prefixes followed by junk are invalid, not opt-in values.
+    setenv("GNFS_ECM_CURVE_POOL", "4junk", 1);
+    GNFS_TEST_CHECK(ecm_curve_pool_size_from_env() == 0);
+    setenv("GNFS_ECM_CURVE_POOL", "184467440737095516160", 1);
+    GNFS_TEST_CHECK(ecm_curve_pool_size_from_env() == 0);
 
     setenv("GNFS_ECM_CURVE_POOL", "0", 1);
     assert(ecm_curve_pool_size_from_env() == 0);
@@ -282,8 +297,8 @@ void test_numeric_boundaries() {
     const Integer one(1);
     for (const Integer& modulus : {zero, negative, one}) {
         const CachedCurve c = build_suyama_curve(modulus, 6);
-        assert(!c.valid);
-        assert(!c.lucky_factor.has_value());
+        GNFS_TEST_CHECK(!c.valid);
+        GNFS_TEST_CHECK(!c.lucky_factor.has_value());
     }
 
     // This used to wrap sigma*sigma and 4*sigma before reaching GMP. Use a
@@ -292,8 +307,8 @@ void test_numeric_boundaries() {
     const Integer prime_modulus("6700417");
     const CachedCurve wide =
         build_suyama_curve(prime_modulus, std::numeric_limits<uint64_t>::max() - 1);
-    assert(wide.valid);
-    assert(!wide.lucky_factor.has_value());
+    GNFS_TEST_CHECK(wide.valid);
+    GNFS_TEST_CHECK(!wide.lucky_factor.has_value());
 
     std::cout << " PASS\n";
 }

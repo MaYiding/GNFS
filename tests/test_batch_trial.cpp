@@ -14,6 +14,8 @@
 #include <gnfs/cofactor/batch_trial.hpp>
 #include <gnfs/core/integer.hpp>
 
+#include "support/test_check.hpp"
+
 #include <algorithm>
 #include <cassert>
 #include <chrono>
@@ -362,9 +364,9 @@ void test_high_valuation() {
 
     const std::vector<Integer> in = {high_power};
     const BatchTrialResult br = batch_trial_divide(in, 2);
-    assert(br.size() == 1);
-    assert(br.is_smooth[0]);
-    assert(br.remaining[0].is_one());
+    GNFS_TEST_CHECK(br.size() == 1);
+    GNFS_TEST_CHECK(br.is_smooth[0]);
+    GNFS_TEST_CHECK(br.remaining[0].is_one());
 
     std::cout << " PASS\n";
 }
