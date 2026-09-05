@@ -21,8 +21,8 @@
 //   * Cache reset hook re-parses ENV between assertions.
 //   * Perf-info probe (informational, no assert).
 
-#include <gnfs/cofactor/brent_pollard_rho_parallel.hpp>
 #include <gnfs/cofactor/brent_pollard_rho.hpp>
+#include <gnfs/cofactor/brent_pollard_rho_parallel.hpp>
 #include <gnfs/core/integer.hpp>
 
 #include <algorithm>
@@ -41,12 +41,12 @@
 #include <utility>
 #include <vector>
 
-using gnfs::core::Integer;
-using gnfs::cofactor::BrentPollardRho;
 using gnfs::cofactor::brent_pollard_rho_threads;
 using gnfs::cofactor::brent_pollard_rho_threads_reset_env_cache_for_testing;
+using gnfs::cofactor::BrentPollardRho;
 using gnfs::cofactor::parallel_brent_pollard_rho;
 using gnfs::cofactor::resolve_brent_pollard_rho_threads;
+using gnfs::core::Integer;
 
 namespace {
 
@@ -70,8 +70,7 @@ void test_env_unset_defaults_to_one() {
     apply_env(nullptr);
     int v = brent_pollard_rho_threads();
     if (v != 1) {
-        std::cerr << "\n  ERROR: unset env parsed to " << v
-                  << ", expected 1" << std::endl;
+        std::cerr << "\n  ERROR: unset env parsed to " << v << ", expected 1" << std::endl;
         std::abort();
     }
     std::cout << " PASS\n";
@@ -98,15 +97,16 @@ void test_env_zero_and_one() {
 void test_env_four() {
     std::cout << "Test 3: ENV '4' -> 4..." << std::flush;
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     int cap = static_cast<int>(hw) * 2;
     int expect = (4 < cap) ? 4 : cap;
 
     apply_env("4");
     int v = brent_pollard_rho_threads();
     if (v != expect) {
-        std::cerr << "\n  ERROR: '4' parsed to " << v << ", expected "
-                  << expect << " (hw*2 cap = " << cap << ")" << std::endl;
+        std::cerr << "\n  ERROR: '4' parsed to " << v << ", expected " << expect
+                  << " (hw*2 cap = " << cap << ")" << std::endl;
         std::abort();
     }
     apply_env(nullptr);
@@ -143,15 +143,16 @@ void test_env_non_numeric() {
 void test_env_partial_parse() {
     std::cout << "Test 5: ENV partial-parse ('12abc' / '  4')..." << std::flush;
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     int cap = static_cast<int>(hw) * 2;
 
     apply_env("12abc");
     int v12 = brent_pollard_rho_threads();
     int expect12 = (12 < cap) ? 12 : cap;
     if (v12 != expect12) {
-        std::cerr << "\n  ERROR: '12abc' parsed to " << v12
-                  << ", expected " << expect12 << std::endl;
+        std::cerr << "\n  ERROR: '12abc' parsed to " << v12 << ", expected " << expect12
+                  << std::endl;
         std::abort();
     }
 
@@ -159,8 +160,7 @@ void test_env_partial_parse() {
     int v4 = brent_pollard_rho_threads();
     int expect4 = (4 < cap) ? 4 : cap;
     if (v4 != expect4) {
-        std::cerr << "\n  ERROR: '  4' parsed to " << v4
-                  << ", expected " << expect4 << std::endl;
+        std::cerr << "\n  ERROR: '  4' parsed to " << v4 << ", expected " << expect4 << std::endl;
         std::abort();
     }
 
@@ -174,14 +174,14 @@ void test_env_partial_parse() {
 void test_env_clamp_high() {
     std::cout << "Test 6: ENV '10000' clamp to hw*2..." << std::flush;
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     int cap = static_cast<int>(hw) * 2;
 
     apply_env("10000");
     int v = brent_pollard_rho_threads();
     if (v != cap) {
-        std::cerr << "\n  ERROR: '10000' should clamp to " << cap
-                  << " got " << v << std::endl;
+        std::cerr << "\n  ERROR: '10000' should clamp to " << cap << " got " << v << std::endl;
         std::abort();
     }
 
@@ -190,7 +190,32 @@ void test_env_clamp_high() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 7: Empty input spans return empty results, no pool created, worker
+// Test 7: Positive values above INT_MAX still clamp instead of becoming
+// negative through an overflowing atoi conversion.
+// ---------------------------------------------------------------------------
+void test_env_positive_overflow_clamps() {
+    std::cout << "Test 7: oversized positive ENV values clamp..." << std::flush;
+    unsigned int hw = std::thread::hardware_concurrency();
+    if (hw == 0)
+        hw = 4;
+    int cap = static_cast<int>(hw) * 2;
+
+    for (const char* value : {"2147483648", "999999999999999999999999999999"}) {
+        apply_env(value);
+        int parsed = brent_pollard_rho_threads();
+        if (parsed != cap) {
+            std::cerr << "\n  ERROR: '" << value << "' parsed to " << parsed
+                      << ", expected clamp=" << cap << std::endl;
+            std::abort();
+        }
+    }
+
+    apply_env(nullptr);
+    std::cout << " PASS (clamped to " << cap << ")\n";
+}
+
+// ---------------------------------------------------------------------------
+// Test 8: Empty input spans return empty results, no pool created, worker
 // never invoked.
 // ---------------------------------------------------------------------------
 void test_empty_span() {
@@ -200,11 +225,9 @@ void test_empty_span() {
 
     apply_env("1");
     auto seq = parallel_brent_pollard_rho<uint64_t>(
-        std::span<const uint64_t>(empty),
-        std::span<const uint64_t>(empty),
+        std::span<const uint64_t>(empty), std::span<const uint64_t>(empty),
         [](uint64_t, uint64_t) -> uint64_t {
-            std::cerr << "\n  ERROR: should not invoke worker on empty span"
-                      << std::endl;
+            std::cerr << "\n  ERROR: should not invoke worker on empty span" << std::endl;
             std::abort();
             return 0;
         });
@@ -212,11 +235,9 @@ void test_empty_span() {
 
     apply_env("4");
     auto par = parallel_brent_pollard_rho<uint64_t>(
-        std::span<const uint64_t>(empty),
-        std::span<const uint64_t>(empty),
+        std::span<const uint64_t>(empty), std::span<const uint64_t>(empty),
         [](uint64_t, uint64_t) -> uint64_t {
-            std::cerr << "\n  ERROR: should not invoke worker on empty span"
-                      << std::endl;
+            std::cerr << "\n  ERROR: should not invoke worker on empty span" << std::endl;
             std::abort();
             return 0;
         });
@@ -238,8 +259,7 @@ void test_single_config_n1() {
     std::atomic<int> calls{0};
 
     auto results = parallel_brent_pollard_rho<uint64_t>(
-        std::span<const uint64_t>(cs),
-        std::span<const uint64_t>(x0s),
+        std::span<const uint64_t>(cs), std::span<const uint64_t>(x0s),
         [&calls](uint64_t c, uint64_t x0) -> uint64_t {
             calls.fetch_add(1, std::memory_order_relaxed);
             return c * 1000 + x0;
@@ -258,8 +278,7 @@ void test_single_config_n1() {
 // invocation, no stall.
 // ---------------------------------------------------------------------------
 void test_single_config_n4_no_stall() {
-    std::cout << "Test 9: single config N=4 (no stall, exactly-once)..."
-              << std::flush;
+    std::cout << "Test 9: single config N=4 (no stall, exactly-once)..." << std::flush;
     apply_env("4");
 
     std::vector<uint64_t> cs = {5};
@@ -268,27 +287,24 @@ void test_single_config_n4_no_stall() {
 
     auto t0 = std::chrono::steady_clock::now();
     auto results = parallel_brent_pollard_rho<uint64_t>(
-        std::span<const uint64_t>(cs),
-        std::span<const uint64_t>(x0s),
+        std::span<const uint64_t>(cs), std::span<const uint64_t>(x0s),
         [&calls](uint64_t c, uint64_t x0) -> uint64_t {
             calls.fetch_add(1, std::memory_order_relaxed);
             return c * 100 + x0;
         });
     auto t1 = std::chrono::steady_clock::now();
-    long long ms =
-        std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+    long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 
     assert(results.size() == 1);
     assert(results[0] == 503);
     int total = calls.load(std::memory_order_relaxed);
     if (total != 1) {
-        std::cerr << "\n  ERROR: expected exactly 1 call, got " << total
-                  << std::endl;
+        std::cerr << "\n  ERROR: expected exactly 1 call, got " << total << std::endl;
         std::abort();
     }
     if (ms > 1000) {
-        std::cerr << "\n  WARN: single-config dispatch took " << ms
-                  << " ms (expected << 1000 ms)" << std::endl;
+        std::cerr << "\n  WARN: single-config dispatch took " << ms << " ms (expected << 1000 ms)"
+                  << std::endl;
         // Soft signal; sanitizers can be slow but should not exceed 1s
         // on a single-call short-circuit path.
     }
@@ -320,21 +336,19 @@ void test_n1_baseline_mock() {
         return acc;
     };
 
-    auto results = parallel_brent_pollard_rho<uint64_t>(
-        std::span<const uint64_t>(cs),
-        std::span<const uint64_t>(x0s),
-        worker);
+    auto results = parallel_brent_pollard_rho<uint64_t>(std::span<const uint64_t>(cs),
+                                                        std::span<const uint64_t>(x0s), worker);
 
     if (results.size() != cs.size()) {
-        std::cerr << "\n  ERROR: expected " << cs.size()
-                  << " results, got " << results.size() << std::endl;
+        std::cerr << "\n  ERROR: expected " << cs.size() << " results, got " << results.size()
+                  << std::endl;
         std::abort();
     }
     for (std::size_t i = 0; i < cs.size(); ++i) {
         uint64_t expect = worker(cs[i], x0s[i]);
         if (results[i] != expect) {
-            std::cerr << "\n  ERROR: idx " << i << " got " << results[i]
-                      << " expected " << expect << std::endl;
+            std::cerr << "\n  ERROR: idx " << i << " got " << results[i] << " expected " << expect
+                      << std::endl;
             std::abort();
         }
     }
@@ -347,8 +361,7 @@ void test_n1_baseline_mock() {
 // Test 11: N=1 vs N=4 mock-worker parity, 100 configs.
 // ---------------------------------------------------------------------------
 void test_n1_vs_n4_mock_parity() {
-    std::cout << "Test 11: N=1 vs N=4 mock parity (100 configs)..."
-              << std::flush;
+    std::cout << "Test 11: N=1 vs N=4 mock parity (100 configs)..." << std::flush;
 
     auto worker = [](uint64_t c, uint64_t x0) -> uint64_t {
         // Pure function: a small computation that exercises dispatcher
@@ -368,28 +381,24 @@ void test_n1_vs_n4_mock_parity() {
     }
 
     apply_env("1");
-    auto seq = parallel_brent_pollard_rho<uint64_t>(
-        std::span<const uint64_t>(cs),
-        std::span<const uint64_t>(x0s),
-        worker);
+    auto seq = parallel_brent_pollard_rho<uint64_t>(std::span<const uint64_t>(cs),
+                                                    std::span<const uint64_t>(x0s), worker);
 
     apply_env("4");
-    auto par = parallel_brent_pollard_rho<uint64_t>(
-        std::span<const uint64_t>(cs),
-        std::span<const uint64_t>(x0s),
-        worker);
+    auto par = parallel_brent_pollard_rho<uint64_t>(std::span<const uint64_t>(cs),
+                                                    std::span<const uint64_t>(x0s), worker);
 
     apply_env(nullptr);
 
     if (seq.size() != par.size()) {
-        std::cerr << "\n  ERROR: seq.size()=" << seq.size()
-                  << " par.size()=" << par.size() << std::endl;
+        std::cerr << "\n  ERROR: seq.size()=" << seq.size() << " par.size()=" << par.size()
+                  << std::endl;
         std::abort();
     }
     for (std::size_t i = 0; i < seq.size(); ++i) {
         if (seq[i] != par[i]) {
-            std::cerr << "\n  ERROR: idx " << i
-                      << " seq=" << seq[i] << " par=" << par[i] << std::endl;
+            std::cerr << "\n  ERROR: idx " << i << " seq=" << seq[i] << " par=" << par[i]
+                      << std::endl;
             std::abort();
         }
     }
@@ -401,11 +410,11 @@ void test_n1_vs_n4_mock_parity() {
 // Test 12: N=1 vs N=hw_concurrency mock-worker parity, 1000 configs.
 // ---------------------------------------------------------------------------
 void test_n1_vs_n_hw_mock_parity() {
-    std::cout << "Test 12: N=1 vs N=hw mock parity (1000 configs)..."
-              << std::flush;
+    std::cout << "Test 12: N=1 vs N=hw mock parity (1000 configs)..." << std::flush;
 
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     std::string hw_str = std::to_string(hw);
 
     auto worker = [](uint64_t c, uint64_t x0) -> uint64_t {
@@ -426,30 +435,25 @@ void test_n1_vs_n_hw_mock_parity() {
     }
 
     apply_env("1");
-    auto seq = parallel_brent_pollard_rho<uint64_t>(
-        std::span<const uint64_t>(cs),
-        std::span<const uint64_t>(x0s),
-        worker);
+    auto seq = parallel_brent_pollard_rho<uint64_t>(std::span<const uint64_t>(cs),
+                                                    std::span<const uint64_t>(x0s), worker);
 
     apply_env(hw_str.c_str());
-    auto par = parallel_brent_pollard_rho<uint64_t>(
-        std::span<const uint64_t>(cs),
-        std::span<const uint64_t>(x0s),
-        worker);
+    auto par = parallel_brent_pollard_rho<uint64_t>(std::span<const uint64_t>(cs),
+                                                    std::span<const uint64_t>(x0s), worker);
 
     apply_env(nullptr);
 
     assert(seq.size() == par.size());
     for (std::size_t i = 0; i < seq.size(); ++i) {
         if (seq[i] != par[i]) {
-            std::cerr << "\n  ERROR: idx " << i
-                      << " seq=" << seq[i] << " par=" << par[i] << std::endl;
+            std::cerr << "\n  ERROR: idx " << i << " seq=" << seq[i] << " par=" << par[i]
+                      << std::endl;
             std::abort();
         }
     }
 
-    std::cout << " PASS (N=hw=" << hw << ", " << cs.size()
-              << " per-index identical)\n";
+    std::cout << " PASS (N=hw=" << hw << ", " << cs.size() << " per-index identical)\n";
 }
 
 // ---------------------------------------------------------------------------
@@ -476,18 +480,16 @@ void test_real_brent_rho_parity() {
     // Build 50 semi-prime cofactors deterministically. We pick small primes
     // so rho is fast (each fits in uint64_t for the __uint128_t fast path).
     std::vector<uint64_t> primes_a = {
-        10007, 10009, 10037, 10039, 10061, 10067, 10069, 10079, 10091, 10093,
-        10099, 10103, 10111, 10133, 10139, 10141, 10151, 10159, 10163, 10169,
-        10177, 10181, 10193, 10211, 10223, 10243, 10247, 10253, 10259, 10267,
-        10271, 10273, 10289, 10301, 10303, 10313, 10321, 10331, 10333, 10337,
-        10343, 10357, 10369, 10391, 10399, 10427, 10429, 10433, 10453, 10457,
+        10007, 10009, 10037, 10039, 10061, 10067, 10069, 10079, 10091, 10093, 10099, 10103, 10111,
+        10133, 10139, 10141, 10151, 10159, 10163, 10169, 10177, 10181, 10193, 10211, 10223, 10243,
+        10247, 10253, 10259, 10267, 10271, 10273, 10289, 10301, 10303, 10313, 10321, 10331, 10333,
+        10337, 10343, 10357, 10369, 10391, 10399, 10427, 10429, 10433, 10453, 10457,
     };
     std::vector<uint64_t> primes_b = {
-        11003, 11027, 11047, 11057, 11059, 11069, 11071, 11083, 11087, 11093,
-        11113, 11117, 11119, 11131, 11149, 11159, 11161, 11171, 11173, 11177,
-        11197, 11213, 11239, 11243, 11251, 11257, 11261, 11273, 11279, 11287,
-        11299, 11311, 11317, 11321, 11329, 11351, 11353, 11369, 11383, 11393,
-        11399, 11411, 11423, 11437, 11443, 11447, 11467, 11471, 11483, 11489,
+        11003, 11027, 11047, 11057, 11059, 11069, 11071, 11083, 11087, 11093, 11113, 11117, 11119,
+        11131, 11149, 11159, 11161, 11171, 11173, 11177, 11197, 11213, 11239, 11243, 11251, 11257,
+        11261, 11273, 11279, 11287, 11299, 11311, 11317, 11321, 11329, 11351, 11353, 11369, 11383,
+        11393, 11399, 11411, 11423, 11437, 11443, 11447, 11467, 11471, 11483, 11489,
     };
     assert(primes_a.size() == primes_b.size());
     assert(primes_a.size() == 50);
@@ -513,7 +515,7 @@ void test_real_brent_rho_parity() {
     std::vector<uint64_t> x0s;
     for (std::size_t i = 0; i < cofactors.size(); ++i) {
         cs.push_back(static_cast<uint64_t>(i));
-        x0s.push_back(1);  // unused by this worker
+        x0s.push_back(1); // unused by this worker
     }
 
     auto worker = [&cofactors](uint64_t c_idx, uint64_t /*x0*/) -> std::optional<Integer> {
@@ -523,22 +525,19 @@ void test_real_brent_rho_parity() {
         const Integer& n = cofactors[c_idx];
         auto split = BrentPollardRho::split(n, /*max_iter=*/1ULL << 18,
                                             /*seed=*/1, /*record=*/false);
-        if (!split.has_value()) return std::nullopt;
+        if (!split.has_value())
+            return std::nullopt;
         // Return the smaller factor (split() returns (lo, hi) with lo <= hi).
         return std::optional<Integer>(split->first.clone());
     };
 
     apply_env("1");
     auto seq = parallel_brent_pollard_rho<std::optional<Integer>>(
-        std::span<const uint64_t>(cs),
-        std::span<const uint64_t>(x0s),
-        worker);
+        std::span<const uint64_t>(cs), std::span<const uint64_t>(x0s), worker);
 
     apply_env("4");
     auto par = parallel_brent_pollard_rho<std::optional<Integer>>(
-        std::span<const uint64_t>(cs),
-        std::span<const uint64_t>(x0s),
-        worker);
+        std::span<const uint64_t>(cs), std::span<const uint64_t>(x0s), worker);
 
     apply_env(nullptr);
 
@@ -548,15 +547,14 @@ void test_real_brent_rho_parity() {
         bool seq_has = seq[i].has_value();
         bool par_has = par[i].has_value();
         if (seq_has != par_has) {
-            std::cerr << "\n  ERROR: idx " << i << " seq_has=" << seq_has
-                      << " par_has=" << par_has << std::endl;
+            std::cerr << "\n  ERROR: idx " << i << " seq_has=" << seq_has << " par_has=" << par_has
+                      << std::endl;
             std::abort();
         }
         if (seq_has) {
             ++found;
             if (seq[i]->compare(*par[i]) != 0) {
-                std::cerr << "\n  ERROR: idx " << i << " mismatch: seq="
-                          << seq[i]->to_string()
+                std::cerr << "\n  ERROR: idx " << i << " mismatch: seq=" << seq[i]->to_string()
                           << " par=" << par[i]->to_string() << std::endl;
                 std::abort();
             }
@@ -564,43 +562,37 @@ void test_real_brent_rho_parity() {
             assert(!seq[i]->is_one());
             assert(seq[i]->compare(cofactors[i]) != 0);
             Integer rem;
-            mpz_mod(rem.get_mpz(),
-                    cofactors[i].get_mpz(),
-                    seq[i]->get_mpz());
+            mpz_mod(rem.get_mpz(), cofactors[i].get_mpz(), seq[i]->get_mpz());
             assert(rem.is_zero());
         }
     }
 
-    std::cout << " PASS (" << cs.size() << " cofactors, "
-              << found << " factored, per-index optional<Integer> identical)\n";
+    std::cout << " PASS (" << cs.size() << " cofactors, " << found
+              << " factored, per-index optional<Integer> identical)\n";
 }
 
 // ---------------------------------------------------------------------------
 // Test 14: Mismatched span sizes throw std::invalid_argument.
 // ---------------------------------------------------------------------------
 void test_mismatched_span_throws() {
-    std::cout << "Test 14: mismatched span size throws invalid_argument..."
-              << std::flush;
+    std::cout << "Test 14: mismatched span size throws invalid_argument..." << std::flush;
     apply_env("4");
 
     std::vector<uint64_t> cs = {1, 2, 3};
-    std::vector<uint64_t> x0s = {10, 20};  // shorter
+    std::vector<uint64_t> x0s = {10, 20}; // shorter
 
     bool threw = false;
     try {
         auto unused = parallel_brent_pollard_rho<uint64_t>(
-            std::span<const uint64_t>(cs),
-            std::span<const uint64_t>(x0s),
-            [](uint64_t a, uint64_t b) -> uint64_t {
-                return a + b;
-            });
+            std::span<const uint64_t>(cs), std::span<const uint64_t>(x0s),
+            [](uint64_t a, uint64_t b) -> uint64_t { return a + b; });
         (void)unused;
     } catch (const std::invalid_argument& e) {
         threw = true;
         std::string msg = e.what();
         if (msg.find("size") == std::string::npos) {
-            std::cerr << "\n  WARN: exception message does not mention 'size': "
-                      << msg << std::endl;
+            std::cerr << "\n  WARN: exception message does not mention 'size': " << msg
+                      << std::endl;
         }
     } catch (...) {
         std::cerr << "\n  ERROR: wrong exception type thrown" << std::endl;
@@ -624,8 +616,7 @@ void test_reset_env_cache_hook() {
     apply_env("4");
     int v4 = brent_pollard_rho_threads();
     if (v4 < 1) {
-        std::cerr << "\n  ERROR: expected >=1 after '4', got " << v4
-                  << std::endl;
+        std::cerr << "\n  ERROR: expected >=1 after '4', got " << v4 << std::endl;
         std::abort();
     }
 
@@ -633,8 +624,8 @@ void test_reset_env_cache_hook() {
     setenv("GNFS_BRENT_POLLARD_RHO_THREADS", "1", /*overwrite=*/1);
     int v4_stale = brent_pollard_rho_threads();
     if (v4_stale != v4) {
-        std::cerr << "\n  ERROR: cache did not stick: prev=" << v4
-                  << " stale=" << v4_stale << std::endl;
+        std::cerr << "\n  ERROR: cache did not stick: prev=" << v4 << " stale=" << v4_stale
+                  << std::endl;
         std::abort();
     }
 
@@ -642,8 +633,7 @@ void test_reset_env_cache_hook() {
     brent_pollard_rho_threads_reset_env_cache_for_testing();
     int v1 = brent_pollard_rho_threads();
     if (v1 != 1) {
-        std::cerr << "\n  ERROR: after reset to '1', got " << v1
-                  << std::endl;
+        std::cerr << "\n  ERROR: after reset to '1', got " << v1 << std::endl;
         std::abort();
     }
 
@@ -655,17 +645,16 @@ void test_reset_env_cache_hook() {
 // Test 16: resolve_brent_pollard_rho_threads(batch_size) edge cases.
 // ---------------------------------------------------------------------------
 void test_resolve_helper_edges() {
-    std::cout << "Test 16: resolve_brent_pollard_rho_threads edges..."
-              << std::flush;
+    std::cout << "Test 16: resolve_brent_pollard_rho_threads edges..." << std::flush;
 
     apply_env("4");
-    assert(resolve_brent_pollard_rho_threads(0) == 0);       // empty -> 0
-    assert(resolve_brent_pollard_rho_threads(1) == 1);       // single -> 1
-    assert(resolve_brent_pollard_rho_threads(10) >= 1);      // bound by 4 or hw*2 cap
+    assert(resolve_brent_pollard_rho_threads(0) == 0);  // empty -> 0
+    assert(resolve_brent_pollard_rho_threads(1) == 1);  // single -> 1
+    assert(resolve_brent_pollard_rho_threads(10) >= 1); // bound by 4 or hw*2 cap
     assert(resolve_brent_pollard_rho_threads(10) <= 4);
 
     apply_env("1");
-    assert(resolve_brent_pollard_rho_threads(100) == 1);     // N=1 -> 1
+    assert(resolve_brent_pollard_rho_threads(100) == 1); // N=1 -> 1
 
     apply_env(nullptr);
     std::cout << " PASS\n";
@@ -696,23 +685,17 @@ void test_perf_info_probe() {
 
     apply_env("1");
     auto t0 = std::chrono::steady_clock::now();
-    auto seq = parallel_brent_pollard_rho<uint64_t>(
-        std::span<const uint64_t>(cs),
-        std::span<const uint64_t>(x0s),
-        worker);
+    auto seq = parallel_brent_pollard_rho<uint64_t>(std::span<const uint64_t>(cs),
+                                                    std::span<const uint64_t>(x0s), worker);
     auto t1 = std::chrono::steady_clock::now();
-    long long ms_n1 =
-        std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+    long long ms_n1 = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 
     apply_env("4");
     auto t2 = std::chrono::steady_clock::now();
-    auto par = parallel_brent_pollard_rho<uint64_t>(
-        std::span<const uint64_t>(cs),
-        std::span<const uint64_t>(x0s),
-        worker);
+    auto par = parallel_brent_pollard_rho<uint64_t>(std::span<const uint64_t>(cs),
+                                                    std::span<const uint64_t>(x0s), worker);
     auto t3 = std::chrono::steady_clock::now();
-    long long ms_n4 =
-        std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t2).count();
+    long long ms_n4 = std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t2).count();
 
     apply_env(nullptr);
 
@@ -722,14 +705,12 @@ void test_perf_info_probe() {
         assert(seq[i] == par[i]);
     }
 
-    double speedup = (ms_n4 > 0)
-        ? (static_cast<double>(ms_n1) / static_cast<double>(ms_n4))
-        : 0.0;
-    std::cout << " PASS (N=1 " << ms_n1 << " ms, N=4 " << ms_n4
-              << " ms, " << speedup << "x speedup)\n";
+    double speedup = (ms_n4 > 0) ? (static_cast<double>(ms_n1) / static_cast<double>(ms_n4)) : 0.0;
+    std::cout << " PASS (N=1 " << ms_n1 << " ms, N=4 " << ms_n4 << " ms, " << speedup
+              << "x speedup)\n";
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     std::cout << "=== Brent-Pollard rho Parallel Dispatch Tests ===" << std::endl;
@@ -740,6 +721,7 @@ int main() {
     test_env_non_numeric();
     test_env_partial_parse();
     test_env_clamp_high();
+    test_env_positive_overflow_clamps();
     test_empty_span();
     test_single_config_n1();
     test_single_config_n4_no_stall();
@@ -752,8 +734,6 @@ int main() {
     test_resolve_helper_edges();
     test_perf_info_probe();
 
-    std::cout << std::endl
-              << "=== All Brent-Pollard rho Parallel Tests PASSED ==="
-              << std::endl;
+    std::cout << std::endl << "=== All Brent-Pollard rho Parallel Tests PASSED ===" << std::endl;
     return 0;
 }
