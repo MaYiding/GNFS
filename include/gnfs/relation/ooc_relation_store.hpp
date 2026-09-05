@@ -361,6 +361,9 @@ inline gnfs::core::Relation deserialize_compact_relation(const uint8_t* ptr, siz
 
     read_val(rel.a);
     read_val(rel.b);
+    if (rel.b == 0) {
+        throw std::runtime_error("OOCRelationReader: corrupt record (b must be nonzero)");
+    }
 
     uint32_t rational_count = 0;
     read_val(rational_count);

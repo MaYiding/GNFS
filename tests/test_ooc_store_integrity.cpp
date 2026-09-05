@@ -448,6 +448,64 @@ void test_shared_persistence_limits() {
     CHECK(reader.read(1).a == 3);
 }
 
+void test_persistence_rejects_zero_b() {
+    Relation invalid(17, 0);
+
+    std::ostringstream serialized(std::ios::binary);
+    bool stream_write_rejected = false;
+    try {
+        invalid.serialize(serialized);
+    } catch (const std::invalid_argument&) {
+        stream_write_rejected = true;
+    }
+    CHECK(stream_write_rejected);
+    CHECK(serialized.str().empty());
+
+    Relation valid(17, 19);
+    std::ostringstream valid_serialized(std::ios::binary);
+    valid.serialize(valid_serialized);
+    std::string forged = valid_serialized.str();
+    CHECK(forged.size() >=
+          sizeof(uint32_t) + sizeof(uint32_t) + sizeof(int64_t) + sizeof(uint64_t));
+    for (size_t i = 16; i < 24; ++i) {
+        forged[i] = '\0';
+    }
+    bool stream_read_rejected = false;
+    try {
+        std::istringstream input(forged, std::ios::binary);
+        (void)Relation::deserialize(input);
+    } catch (const std::runtime_error&) {
+        stream_read_rejected = true;
+    }
+    CHECK(stream_read_rejected);
+
+    const std::string path = make_path("zero_b_writer");
+    OOCArtifacts cleanup(path);
+    OOCRelationWriter writer(path);
+    bool ooc_write_rejected = false;
+    try {
+        (void)writer.write(invalid);
+    } catch (const std::invalid_argument&) {
+        ooc_write_rejected = true;
+    }
+    CHECK(ooc_write_rejected);
+    CHECK(writer.state() == OOCWriterState::Open);
+    CHECK(writer.count() == 0);
+    CHECK(writer.write(valid) == 0);
+    const auto descriptor = writer.finalize();
+
+    overwrite_u64(path + ".reldata",
+                  static_cast<std::streamoff>(OOCRelationWriter::DATA_HEADER_BYTES + 8), 0);
+    bool ooc_read_rejected = false;
+    try {
+        OOCRelationReader reader(path, descriptor);
+        (void)reader.read(0);
+    } catch (const std::runtime_error&) {
+        ooc_read_rejected = true;
+    }
+    CHECK(ooc_read_rejected);
+}
+
 void test_v3_fresh_checkpoint_prefix_resume_and_finalize_layout() {
     const std::string path = make_path("v3_fresh_lifecycle");
     OOCArtifacts cleanup(path);
@@ -598,6 +656,14 @@ void test_resume_rejects_data_corruption() {
         CHECK(rejected_at_size_gate);
         CHECK(read_file_bytes(path + ".relidx") == index_bytes);
         CHECK(read_file_bytes(path + ".reldata") == data_bytes);
+    }
+    {
+        const std::string path = make_path("zero_b_compact_record");
+        OOCArtifacts cleanup(path);
+        const auto descriptor = create_recovery_store(path, 1);
+        overwrite_u64(path + ".reldata",
+                      static_cast<std::streamoff>(OOCRelationWriter::DATA_HEADER_BYTES + 8), 0);
+        expect_resume_rejected_without_mutation(path, descriptor);
     }
 }
 
@@ -1682,6 +1748,7 @@ void test_cleanup_receipt_is_fresh_only_and_transactional() {
 int main() {
     std::cout << "=== OOC Store Integrity Tests ===\n";
     test_shared_persistence_limits();
+    test_persistence_rejects_zero_b();
     test_v3_fresh_checkpoint_prefix_resume_and_finalize_layout();
     test_validated_resume_handoff_and_append();
     test_resume_rejects_index_shape_corruption();
