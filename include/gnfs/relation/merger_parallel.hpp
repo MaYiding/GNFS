@@ -50,9 +50,12 @@
 #include "../util/thread_pool.hpp"
 
 #include <atomic>
+#include <cctype>
+#include <cerrno>
 #include <cstddef>
 #include <cstdlib>
 #include <future>
+#include <limits>
 #include <mutex>
 #include <new>
 #include <span>
@@ -95,16 +98,32 @@ inline std::size_t parse_filter_merge_threads_env() noexcept {
     if (env == nullptr || env[0] == '\0') {
         return 1;  // default sequential
     }
-    int parsed = std::atoi(env);
-    if (parsed <= 0) {
+
+    // Preserve atoi's accepted leading whitespace and numeric-prefix behavior,
+    // but avoid signed overflow when a deployment supplies a very large value.
+    const char* first = env;
+    while (*first != '\0' && std::isspace(static_cast<unsigned char>(*first)) != 0)
+        ++first;
+    if (*first == '-') {
         return 1;  // invalid / non-positive -> sequential
     }
+
+    errno = 0;
+    char* end = nullptr;
+    const unsigned long long parsed = std::strtoull(first, &end, 10);
+    if (end == first || parsed == 0)
+        return 1;  // invalid / non-positive -> sequential
+
     unsigned int hw = std::thread::hardware_concurrency();
     if (hw == 0) hw = 4;
-    std::size_t cap = static_cast<std::size_t>(hw) * 2;
-    std::size_t v = static_cast<std::size_t>(parsed);
-    if (v > cap) v = cap;
-    return v;
+    const std::size_t hw_size = static_cast<std::size_t>(hw);
+    const std::size_t cap =
+        hw_size > std::numeric_limits<std::size_t>::max() / 2
+            ? std::numeric_limits<std::size_t>::max()
+            : hw_size * 2;
+    if (errno == ERANGE || parsed > static_cast<unsigned long long>(cap))
+        return cap;
+    return static_cast<std::size_t>(parsed);
 }
 
 }  // namespace detail
