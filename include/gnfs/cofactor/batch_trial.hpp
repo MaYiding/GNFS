@@ -39,13 +39,16 @@
 #include "../core/integer.hpp"
 
 #include <cassert>
+#include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <cmath>
+#include <deque>
 #include <mutex>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -69,18 +72,34 @@ struct BatchTrialResult {
 
 namespace detail {
 
+/// Keep the eager Eratosthenes table bounded. An invalid/unbounded caller
+/// value must fail before `prime_bound + 1` can wrap or allocate excessively.
+inline constexpr size_t kMaxBatchTrialPrimeBound = 100'000'000;
+
+inline void validate_batch_trial_prime_bound(size_t prime_bound) {
+    if (prime_bound > kMaxBatchTrialPrimeBound) {
+        throw std::invalid_argument("batch trial prime bound exceeds sieve cap (100M)");
+    }
+}
+
 /// Lazy-allocated small-primes table for a given prime_bound. Built via
 /// Sieve of Eratosthenes on first request per (bound) value. Two-level cache:
-///   - The outermost `mutex` protects the vector-of-(bound, primes) entries.
+///   - The outermost `mutex` protects the deque of (bound, primes) entries.
 ///   - Each entry stores the cached primes for one bound.
 /// For the typical GNFS workload prime_bound varies across one or two values
 /// (rational vs algebraic factor base bounds), so linear scan is fine.
 [[nodiscard]] inline const std::vector<uint64_t>& small_primes_for(size_t prime_bound) {
-    struct Entry { size_t bound; std::vector<uint64_t> primes; };
+    struct Entry {
+        size_t bound;
+        std::vector<uint64_t> primes;
+    };
     static std::mutex mu;
-    static std::vector<Entry> cache;
+    // References are returned after the lock is released. deque keeps existing
+    // entries stable when another thread inserts a new bound.
+    static std::deque<Entry> cache;
 
     std::lock_guard<std::mutex> lock(mu);
+    validate_batch_trial_prime_bound(prime_bound);
     for (const auto& e : cache) {
         if (e.bound == prime_bound) return e.primes;
     }
@@ -95,7 +114,7 @@ namespace detail {
 
     std::vector<bool> is_prime(prime_bound + 1, true);
     is_prime[0] = is_prime[1] = false;
-    for (size_t i = 2; i * i <= prime_bound; ++i) {
+    for (size_t i = 2; i <= prime_bound / i; ++i) {
         if (is_prime[i]) {
             for (size_t j = i * i; j <= prime_bound; j += i) {
                 is_prime[j] = false;
@@ -103,8 +122,8 @@ namespace detail {
         }
     }
     // π(n) ≈ n / ln(n); reserve approximate count to avoid log(n) reallocs.
-    size_t approx_pi = static_cast<size_t>(
-            static_cast<double>(prime_bound) / std::max(1.0, std::log(static_cast<double>(prime_bound))));
+    size_t approx_pi = static_cast<size_t>(static_cast<double>(prime_bound) /
+                                           std::max(1.0, std::log(static_cast<double>(prime_bound))));
     entry.primes.reserve(approx_pi + 16);
     for (size_t i = 2; i <= prime_bound; ++i) {
         if (is_prime[i]) entry.primes.push_back(static_cast<uint64_t>(i));
@@ -114,26 +133,22 @@ namespace detail {
     return cache.back().primes;
 }
 
-/// Divide value by p as many times as possible (up to exp_cap iterations);
-/// the operation is performed in-place. Returns the resulting Integer value
-/// (which alias `value` after the call due to move semantics).
-inline void strip_prime_inplace(Integer& value, uint32_t p, uint32_t exp_cap = 255) {
+/// Divide value by p as many times as possible; the operation is performed
+/// in-place. This result is a smoothness pre-filter and has no uint8 exponent
+/// field, so truncating the valuation would misclassify high prime powers.
+inline void strip_prime_inplace(Integer& value, uint32_t p) {
     // Fast path: uint64 division.
     if (value.fits_uint64()) {
         uint64_t v = value.to_uint64();
-        uint32_t exp = 0;
-        while (v != 0 && (v % p) == 0 && exp < exp_cap) {
+        while (v != 0 && (v % p) == 0) {
             v /= p;
-            ++exp;
         }
         value = v;
         return;
     }
     // GMP fallback for big integers.
-    uint32_t exp = 0;
-    while (exp < exp_cap && mpz_divisible_ui_p(value.get_mpz(), p) != 0) {
+    while (mpz_divisible_ui_p(value.get_mpz(), p) != 0) {
         mpz_divexact_ui(value.get_mpz(), value.get_mpz(), p);
-        ++exp;
     }
 }
 
@@ -151,8 +166,9 @@ inline void strip_prime_inplace(Integer& value, uint32_t p, uint32_t exp_cap = 2
 ///
 /// Determinism: deterministic; identical inputs produce identical results.
 /// Thread-safety: safe to call concurrently; lazy primes table is built once.
-[[nodiscard]] inline BatchTrialResult batch_trial_divide(
-        std::span<const Integer> cofactors, size_t prime_bound) {
+[[nodiscard]] inline BatchTrialResult batch_trial_divide(std::span<const Integer> cofactors, size_t prime_bound) {
+
+    detail::validate_batch_trial_prime_bound(prime_bound);
 
     BatchTrialResult result;
     result.is_smooth.assign(cofactors.size(), false);
@@ -160,7 +176,7 @@ inline void strip_prime_inplace(Integer& value, uint32_t p, uint32_t exp_cap = 2
 
     // Copy cofactors into `remaining`, normalising sign.
     for (const auto& c : cofactors) {
-        Integer copy = c;  // copy ctor (Integer copy ctor clones mpz_t)
+        Integer copy = c; // copy ctor (Integer copy ctor clones mpz_t)
         if (copy.is_negative()) copy.negate();
         result.remaining.push_back(std::move(copy));
     }
@@ -212,14 +228,13 @@ inline void strip_prime_inplace(Integer& value, uint32_t p, uint32_t exp_cap = 2
             }
             any_remaining = true;
         }
-        if (!any_remaining) break;  // every cofactor done
+        if (!any_remaining) break; // every cofactor done
     }
 
     // Final smoothness pass — anything that reduced to 1 along the way and
     // wasn't already marked also gets marked.
     for (size_t i = 0; i < result.remaining.size(); ++i) {
-        if (!result.is_smooth[i] && result.remaining[i].fits_uint64()
-            && result.remaining[i].to_uint64() == 1) {
+        if (!result.is_smooth[i] && result.remaining[i].fits_uint64() && result.remaining[i].to_uint64() == 1) {
             result.is_smooth[i] = true;
         }
     }
@@ -230,17 +245,24 @@ inline void strip_prime_inplace(Integer& value, uint32_t p, uint32_t exp_cap = 2
 /// Parse `GNFS_COFACTOR_BATCH_SIZE` ENV. Returns 1 (disabled) on any of:
 ///   - ENV unset
 ///   - ENV not a valid positive integer
-///   - parsed value < 2
+///   - parsed value < 2 or has a negative sign
 /// Otherwise returns the parsed batch size, capped at 4096 to guard against
 /// pathological values causing excessive memory pressure.
 [[nodiscard]] inline size_t batch_trial_size_from_env() noexcept {
     const char* env = std::getenv("GNFS_COFACTOR_BATCH_SIZE");
     if (env == nullptr || env[0] == '\0') return 1;
 
-    // Manual parse to avoid exception overhead.
+    // Manual parse to avoid exception overhead. strtoul("-1", ...) returns
+    // ULONG_MAX, which would otherwise bypass the lower-bound check.
+    const char* first = env;
+    while (*first != '\0' && std::isspace(static_cast<unsigned char>(*first))) {
+        ++first;
+    }
+    if (*first == '-') return 1;
+
     char* end = nullptr;
-    unsigned long parsed = std::strtoul(env, &end, 10);
-    if (end == env) return 1;
+    unsigned long parsed = std::strtoul(first, &end, 10);
+    if (end == first) return 1;
     if (parsed < 2) return 1;
     if (parsed > 4096) parsed = 4096;
     return static_cast<size_t>(parsed);

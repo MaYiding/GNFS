@@ -20,16 +20,19 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <mutex>
+#include <optional>
 #include <set>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
-using gnfs::core::Integer;
-using gnfs::cofactor::CachedCurve;
-using gnfs::cofactor::EcmCurvePool;
 using gnfs::cofactor::build_suyama_curve;
+using gnfs::cofactor::CachedCurve;
 using gnfs::cofactor::ecm_curve_pool_size_from_env;
+using gnfs::cofactor::EcmCurvePool;
+using gnfs::core::Integer;
 
 namespace {
 
@@ -43,41 +46,67 @@ std::vector<uint64_t> make_sigmas(uint64_t start, size_t count) {
 
 // Reference Suyama setup (mirrors ECM::try_curve_with_pk) for parity check.
 // Returns (a24, x0, z0) all reduced mod n.
-struct RefCurve { Integer a24; Integer x0; Integer z0; bool valid; std::optional<Integer> lucky; };
+struct RefCurve {
+    Integer a24;
+    Integer x0;
+    Integer z0;
+    bool valid;
+    std::optional<Integer> lucky;
+};
 
 RefCurve ref_suyama(const Integer& n, uint64_t sigma) {
     RefCurve r;
     r.valid = false;
     if (sigma < 6) return r;
 
-    Integer u(static_cast<unsigned long long>(sigma * sigma - 5)); u %= n;
-    Integer v(static_cast<unsigned long long>(4 * sigma));         v %= n;
-    Integer x0; mpz_powm_ui(x0.get_mpz(), u.get_mpz(), 3, n.get_mpz());
-    Integer z0; mpz_powm_ui(z0.get_mpz(), v.get_mpz(), 3, n.get_mpz());
-    Integer diff; mpz_sub(diff.get_mpz(), v.get_mpz(), u.get_mpz());
+    Integer u(static_cast<unsigned long long>(sigma * sigma - 5));
+    u %= n;
+    Integer v(static_cast<unsigned long long>(4 * sigma));
+    v %= n;
+    Integer x0;
+    mpz_powm_ui(x0.get_mpz(), u.get_mpz(), 3, n.get_mpz());
+    Integer z0;
+    mpz_powm_ui(z0.get_mpz(), v.get_mpz(), 3, n.get_mpz());
+    Integer diff;
+    mpz_sub(diff.get_mpz(), v.get_mpz(), u.get_mpz());
     if (diff.is_negative()) diff += n;
     diff %= n;
-    Integer diff3; mpz_powm_ui(diff3.get_mpz(), diff.get_mpz(), 3, n.get_mpz());
-    Integer sum3u_v; sum3u_v = v;
+    Integer diff3;
+    mpz_powm_ui(diff3.get_mpz(), diff.get_mpz(), 3, n.get_mpz());
+    Integer sum3u_v;
+    sum3u_v = v;
     mpz_addmul_ui(sum3u_v.get_mpz(), u.get_mpz(), 3);
     sum3u_v %= n;
-    Integer num; mpz_mul(num.get_mpz(), diff3.get_mpz(), sum3u_v.get_mpz()); num %= n;
-    Integer den; mpz_mul(den.get_mpz(), x0.get_mpz(), v.get_mpz()); den %= n;
-    mpz_mul_2exp(den.get_mpz(), den.get_mpz(), 4); den %= n;
+    Integer num;
+    mpz_mul(num.get_mpz(), diff3.get_mpz(), sum3u_v.get_mpz());
+    num %= n;
+    Integer den;
+    mpz_mul(den.get_mpz(), x0.get_mpz(), v.get_mpz());
+    den %= n;
+    mpz_mul_2exp(den.get_mpz(), den.get_mpz(), 4);
+    den %= n;
 
     Integer g = gnfs::core::gcd(den, n);
     if (!g.is_one()) {
-        if (g.compare(n) == 0) { r.valid = false; return r; }
+        if (g.compare(n) == 0) {
+            r.valid = false;
+            return r;
+        }
         r.valid = true;
         r.lucky = std::move(g);
         return r;
     }
     Integer denv = gnfs::core::mod_inverse(den, n);
-    if (denv.is_zero()) { r.valid = false; return r; }
-    Integer a24; mpz_mul(a24.get_mpz(), num.get_mpz(), denv.get_mpz()); a24 %= n;
+    if (denv.is_zero()) {
+        r.valid = false;
+        return r;
+    }
+    Integer a24;
+    mpz_mul(a24.get_mpz(), num.get_mpz(), denv.get_mpz());
+    a24 %= n;
     r.a24 = std::move(a24);
-    r.x0  = std::move(x0);
-    r.z0  = std::move(z0);
+    r.x0 = std::move(x0);
+    r.z0 = std::move(z0);
     r.valid = true;
     return r;
 }
@@ -240,7 +269,32 @@ void test_sigma_below_six() {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Test 6: cached (A, x_0, z_0) match reference Suyama setup
+// Test 6: invalid moduli and wide sigma arithmetic
+// ───────────────────────────────────────────────────────────────────────────
+void test_numeric_boundaries() {
+    std::cout << "Test 6: numeric boundaries..." << std::flush;
+
+    const Integer zero(0);
+    const Integer negative(-1);
+    const Integer one(1);
+    for (const Integer& modulus : {zero, negative, one}) {
+        const CachedCurve c = build_suyama_curve(modulus, 6);
+        assert(!c.valid);
+        assert(!c.lucky_factor.has_value());
+    }
+
+    // This used to wrap sigma*sigma and 4*sigma before reaching GMP. A prime
+    // modulus keeps the setup away from the intentional lucky-factor branch.
+    const Integer prime_modulus("6700417");
+    const CachedCurve wide = build_suyama_curve(prime_modulus, std::numeric_limits<uint64_t>::max());
+    assert(wide.valid);
+    assert(!wide.lucky_factor.has_value());
+
+    std::cout << " PASS\n";
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Test 7: cached (A, x_0, z_0) match reference Suyama setup
 // ───────────────────────────────────────────────────────────────────────────
 void test_cached_matches_reference() {
     std::cout << "Test 6: cached vs reference..." << std::flush;
@@ -281,7 +335,7 @@ void test_cached_matches_reference() {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Test 7: parallel pop from many threads — no duplicates, all served
+// Test 8: parallel pop from many threads — no duplicates, all served
 // ───────────────────────────────────────────────────────────────────────────
 void test_parallel_pop() {
     std::cout << "Test 7: parallel pop..." << std::flush;
@@ -323,7 +377,7 @@ void test_parallel_pop() {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Test 8: lucky-factor capture (deterministic for a hand-picked sigma).
+// Test 9: lucky-factor capture (deterministic for a hand-picked sigma).
 //
 // We construct N divisible by den = 16 * x_0 * v for a specific sigma. Easier
 // approach: pick sigma=6 → u=31, v=24, x_0=u^3=29791. Let N share a factor
@@ -338,7 +392,7 @@ void test_lucky_factor_capture() {
     // gcd(11439744, N) — we want this to be > 1 and < N.
     // Pick N = 12 * very_large_prime so gcd(den, N) = 12.
     // very_large_prime so N is composite and not equal to gcd.
-    Integer N{uint64_t{12ULL * 9999991ULL}};  // 119999892, factor 12 known.
+    Integer N{uint64_t{12ULL * 9999991ULL}}; // 119999892, factor 12 known.
 
     CachedCurve c = build_suyama_curve(N, 6);
     assert(c.valid);
@@ -354,7 +408,7 @@ void test_lucky_factor_capture() {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Test 9: pool_size = 0, no sigmas → pop returns invalid immediately
+// Test 10: pool_size = 0, no sigmas → pop returns invalid immediately
 // ───────────────────────────────────────────────────────────────────────────
 void test_empty_sigmas() {
     std::cout << "Test 9: empty sigmas..." << std::flush;
@@ -371,7 +425,7 @@ void test_empty_sigmas() {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Test 10: large pool stress — 200 curves, all build and pop successfully
+// Test 11: large pool stress — 200 curves, all build and pop successfully
 // ───────────────────────────────────────────────────────────────────────────
 void test_large_pool_stress() {
     std::cout << "Test 10: large pool stress..." << std::flush;
@@ -403,6 +457,7 @@ int main() {
     test_pool_8_exact();
     test_pool_smaller_than_sigmas();
     test_sigma_below_six();
+    test_numeric_boundaries();
     test_cached_matches_reference();
     test_parallel_pop();
     test_lucky_factor_capture();

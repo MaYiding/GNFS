@@ -21,16 +21,18 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <numeric>
 #include <random>
 #include <span>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
-using gnfs::core::Integer;
-using gnfs::cofactor::BatchTrialResult;
 using gnfs::cofactor::batch_trial_divide;
 using gnfs::cofactor::batch_trial_size_from_env;
+using gnfs::cofactor::BatchTrialResult;
+using gnfs::core::Integer;
 
 namespace {
 
@@ -102,6 +104,13 @@ void test_env_parser() {
     setenv("GNFS_COFACTOR_BATCH_SIZE", "1", 1);
     assert(batch_trial_size_from_env() == 1);
 
+    // A leading minus must remain disabled. strtoul treats "-2" as a large
+    // unsigned value, so this guards the parser against accidental opt-in.
+    setenv("GNFS_COFACTOR_BATCH_SIZE", "-2", 1);
+    assert(batch_trial_size_from_env() == 1);
+    setenv("GNFS_COFACTOR_BATCH_SIZE", "  -2", 1);
+    assert(batch_trial_size_from_env() == 1);
+
     // Normal values
     setenv("GNFS_COFACTOR_BATCH_SIZE", "2", 1);
     assert(batch_trial_size_from_env() == 2);
@@ -124,13 +133,11 @@ void test_k1_parity_single() {
     std::cout << "Test 2: K=1 parity vs naive..." << std::flush;
 
     const size_t prime_bound = 100;
-    const std::vector<uint64_t> samples = {
-        1, 2, 3, 4, 6, 12, 30, 60, 97, 100, 101, 121, 210, 211, 999, 1000,
-        1001, 9973, 9999, 100001
-    };
+    const std::vector<uint64_t> samples = {1,   2,   3,   4,   6,   12,   30,   60,   97,   100,
+                                           101, 121, 210, 211, 999, 1000, 1001, 9973, 9999, 100001};
 
     for (uint64_t s : samples) {
-        std::vector<Integer> in = { Integer{s} };
+        std::vector<Integer> in = {Integer{s}};
         BatchTrialResult br = batch_trial_divide(in, prime_bound);
         NaiveResult nr = naive_trial_divide(Integer{s}, prime_bound);
 
@@ -204,12 +211,9 @@ void test_all_smooth() {
 
     const size_t prime_bound = 100;
     std::vector<Integer> in = {
-        Integer{uint64_t{2}},
-        Integer{uint64_t{4}},
-        Integer{uint64_t{8}},
-        Integer{uint64_t{30}},   // 2*3*5
-        Integer{uint64_t{60}},   // 2^2*3*5
-        Integer{uint64_t{2310}}, // 2*3*5*7*11
+        Integer{uint64_t{2}},    Integer{uint64_t{4}}, Integer{uint64_t{8}}, Integer{uint64_t{30}}, // 2*3*5
+        Integer{uint64_t{60}},                                                                      // 2^2*3*5
+        Integer{uint64_t{2310}},                                                                    // 2*3*5*7*11
     };
 
     BatchTrialResult br = batch_trial_divide(in, prime_bound);
@@ -319,13 +323,13 @@ void test_big_integer_path() {
     Integer smooth_big{uint64_t{1}};
     for (int i = 0; i < 70; ++i) smooth_big *= int64_t{2};
     for (int i = 0; i < 10; ++i) smooth_big *= int64_t{3};
-    for (int i = 0; i < 5; ++i)  smooth_big *= int64_t{5};
+    for (int i = 0; i < 5; ++i) smooth_big *= int64_t{5};
 
     // Construct (2^70 * 3^10 * 5^5) * 9973 — not smooth, remaining = 9973
     Integer nonsmooth_big = smooth_big;
     nonsmooth_big *= int64_t{9973};
 
-    std::vector<Integer> in = { smooth_big, nonsmooth_big };
+    std::vector<Integer> in = {smooth_big, nonsmooth_big};
     BatchTrialResult br = batch_trial_divide(in, 100);
 
     assert(br.is_smooth[0] == true);
@@ -338,7 +342,71 @@ void test_big_integer_path() {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Test 10: thread-safety — parallel calls produce identical results
+// Test 10: high prime valuation is fully stripped by the pre-filter
+// ───────────────────────────────────────────────────────────────────────────
+void test_high_valuation() {
+    std::cout << "Test 10: high prime valuation..." << std::flush;
+
+    // 2^300 takes the GMP path and exceeds the old artificial exp=255 cap.
+    Integer high_power{uint64_t{1}};
+    for (int i = 0; i < 300; ++i) high_power *= int64_t{2};
+
+    const std::vector<Integer> in = {high_power};
+    const BatchTrialResult br = batch_trial_divide(in, 2);
+    assert(br.size() == 1);
+    assert(br.is_smooth[0]);
+    assert(br.remaining[0].is_one());
+
+    std::cout << " PASS\n";
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Test 11: invalid sieve bounds fail before allocation
+// ───────────────────────────────────────────────────────────────────────────
+void test_prime_bound_guard() {
+    std::cout << "Test 11: prime bound guard..." << std::flush;
+
+    const std::vector<Integer> in = {Integer{uint64_t{1}}};
+    for (const size_t bound : {size_t{100'000'001}, std::numeric_limits<size_t>::max()}) {
+        bool rejected = false;
+        try {
+            (void)batch_trial_divide(in, bound);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        if (!rejected) {
+            throw std::runtime_error("oversized prime bound was not rejected");
+        }
+    }
+
+    std::cout << " PASS\n";
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Test 12: cached entries remain address-stable as new bounds are inserted
+// ───────────────────────────────────────────────────────────────────────────
+void test_cache_entry_stability() {
+    std::cout << "Test 12: cache entry stability..." << std::flush;
+
+    const auto& first = gnfs::cofactor::detail::small_primes_for(100);
+    const auto* first_address = &first;
+    assert(!first.empty() && first.front() == 2 && first.back() == 97);
+
+    // This forces many cache insertions. A vector-backed cache invalidates
+    // `first` during reallocation; the deque-backed cache preserves it.
+    for (size_t bound = 2; bound <= 2048; ++bound) {
+        (void)gnfs::cofactor::detail::small_primes_for(bound);
+    }
+    const auto& first_again = gnfs::cofactor::detail::small_primes_for(100);
+    if (first_address != &first_again || first_again.size() != 25 || first_again.back() != 97) {
+        throw std::runtime_error("cached prime entry was invalidated or changed");
+    }
+
+    std::cout << " PASS\n";
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Test 13: thread-safety — parallel calls produce identical results
 // ───────────────────────────────────────────────────────────────────────────
 void test_thread_safety() {
     std::cout << "Test 10: thread-safety..." << std::flush;
@@ -361,9 +429,7 @@ void test_thread_safety() {
     std::vector<std::thread> ths;
     std::vector<BatchTrialResult> results(num_threads);
     for (size_t t = 0; t < num_threads; ++t) {
-        ths.emplace_back([&, t]() {
-            results[t] = batch_trial_divide(in, prime_bound);
-        });
+        ths.emplace_back([&, t]() { results[t] = batch_trial_divide(in, prime_bound); });
     }
     for (auto& th : ths) th.join();
 
@@ -379,21 +445,20 @@ void test_thread_safety() {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Test 11: prime_bound = 0 / 1 (degenerate sieve, nothing stripped)
+// Test 14: prime_bound = 0 / 1 (degenerate sieve, nothing stripped)
 // ───────────────────────────────────────────────────────────────────────────
 void test_degenerate_bound() {
     std::cout << "Test 11: degenerate prime_bound..." << std::flush;
 
     std::vector<Integer> in = {
-        Integer{uint64_t{1}},
-        Integer{uint64_t{6}},   // 2*3, not stripped → not smooth
+        Integer{uint64_t{1}}, Integer{uint64_t{6}}, // 2*3, not stripped → not smooth
     };
 
     BatchTrialResult br0 = batch_trial_divide(in, 0);
     assert(br0.size() == 2);
-    assert(br0.is_smooth[0] == true);             // 1 trivially smooth
+    assert(br0.is_smooth[0] == true); // 1 trivially smooth
     assert(br0.remaining[0].to_uint64() == 1);
-    assert(br0.is_smooth[1] == false);            // nothing stripped
+    assert(br0.is_smooth[1] == false); // nothing stripped
     assert(br0.remaining[1].to_uint64() == 6);
 
     BatchTrialResult br1 = batch_trial_divide(in, 1);
@@ -403,7 +468,7 @@ void test_degenerate_bound() {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Test 12: negative cofactor input (absolute value used)
+// Test 15: negative cofactor input (absolute value used)
 // ───────────────────────────────────────────────────────────────────────────
 void test_negative_input() {
     std::cout << "Test 12: negative input..." << std::flush;
@@ -411,20 +476,20 @@ void test_negative_input() {
     Integer neg30{int64_t{-30}};
     Integer neg101{int64_t{-101}};
 
-    std::vector<Integer> in = { neg30, neg101 };
+    std::vector<Integer> in = {neg30, neg101};
     BatchTrialResult br = batch_trial_divide(in, 100);
 
-    assert(br.is_smooth[0] == true);   // |-30| = 30 = 2*3*5
+    assert(br.is_smooth[0] == true); // |-30| = 30 = 2*3*5
     assert(br.remaining[0].to_uint64() == 1);
 
-    assert(br.is_smooth[1] == false);  // |-101| = 101 > 100
+    assert(br.is_smooth[1] == false); // |-101| = 101 > 100
     assert(br.remaining[1].to_uint64() == 101);
 
     std::cout << " PASS\n";
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Test 13: random soak vs naive (large mixed batch)
+// Test 16: random soak vs naive (large mixed batch)
 // ───────────────────────────────────────────────────────────────────────────
 void test_random_soak() {
     std::cout << "Test 13: random soak (200 iters)..." << std::flush;
@@ -443,11 +508,9 @@ void test_random_soak() {
         BatchTrialResult br = batch_trial_divide(in, prime_bound);
         for (size_t i = 0; i < K; ++i) {
             NaiveResult nr = naive_trial_divide(in[i], prime_bound);
-            if (br.is_smooth[i] != nr.is_smooth
-                || br.remaining[i].compare(nr.remaining) != 0) {
-                std::cerr << "\nMISMATCH iter=" << iter << " i=" << i
-                          << " in=" << in[i].to_string()
-                          << " br=(" << br.is_smooth[i] << "," << br.remaining[i].to_string() << ")"
+            if (br.is_smooth[i] != nr.is_smooth || br.remaining[i].compare(nr.remaining) != 0) {
+                std::cerr << "\nMISMATCH iter=" << iter << " i=" << i << " in=" << in[i].to_string() << " br=("
+                          << br.is_smooth[i] << "," << br.remaining[i].to_string() << ")"
                           << " nr=(" << nr.is_smooth << "," << nr.remaining.to_string() << ")\n";
                 assert(false);
             }
@@ -471,6 +534,9 @@ int main() {
     test_zero_and_one();
     test_large_k128();
     test_big_integer_path();
+    test_high_valuation();
+    test_prime_bound_guard();
+    test_cache_entry_stability();
     test_thread_safety();
     test_degenerate_bound();
     test_negative_input();

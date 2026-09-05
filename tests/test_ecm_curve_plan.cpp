@@ -15,6 +15,7 @@
 #include <limits>
 #include <optional>
 #include <random>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -32,15 +33,15 @@ using gnfs::core::Integer;
 using gnfs::tests::support::ScopedEnvironmentVariable;
 
 [[noreturn]] void fail(std::string_view expression, const char* file, int line) {
-    throw std::runtime_error(std::string("CHECK failed: ") + std::string(expression) + " at " +
-                             file + ":" + std::to_string(line));
+    throw std::runtime_error(std::string("CHECK failed: ") + std::string(expression) + " at " + file + ":" +
+                             std::to_string(line));
 }
 
-#define CHECK(condition)                                                                           \
-    do {                                                                                           \
-        if (!(condition)) {                                                                        \
-            fail(#condition, __FILE__, __LINE__);                                                  \
-        }                                                                                          \
+#define CHECK(condition)                                                                                               \
+    do {                                                                                                               \
+        if (!(condition)) {                                                                                            \
+            fail(#condition, __FILE__, __LINE__);                                                                      \
+        }                                                                                                              \
     } while (false)
 
 constexpr std::uint64_t MIN_SIGMA = 6;
@@ -103,8 +104,7 @@ constexpr std::array<std::uint64_t, 8> SEED256_RANGE_SIGMA_GOLDEN{{
     46590,
 }};
 
-[[nodiscard]] ECM::Config make_config(std::uint32_t num_curves = CURVE_COUNT,
-                                      std::uint32_t brent_suyama_degree = 0) {
+[[nodiscard]] ECM::Config make_config(std::uint32_t num_curves = CURVE_COUNT, std::uint32_t brent_suyama_degree = 0) {
     ECM::Config config;
     config.num_curves = num_curves;
     config.B1 = 2000;
@@ -122,8 +122,7 @@ constexpr std::array<std::uint64_t, 8> SEED256_RANGE_SIGMA_GOLDEN{{
     return attempt;
 }
 
-[[nodiscard]] std::vector<std::uint64_t> local_schedule_oracle(std::uint32_t count,
-                                                               std::uint64_t seed) {
+[[nodiscard]] std::vector<std::uint64_t> local_schedule_oracle(std::uint32_t count, std::uint64_t seed) {
     std::mt19937_64 rng(seed);
     std::vector<std::uint64_t> sigmas;
     sigmas.reserve(count);
@@ -133,8 +132,7 @@ constexpr std::array<std::uint64_t, 8> SEED256_RANGE_SIGMA_GOLDEN{{
     return sigmas;
 }
 
-[[nodiscard]] bool same_optional_integer(const std::optional<Integer>& lhs,
-                                         const std::optional<Integer>& rhs) {
+[[nodiscard]] bool same_optional_integer(const std::optional<Integer>& lhs, const std::optional<Integer>& rhs) {
     if (lhs.has_value() != rhs.has_value()) {
         return false;
     }
@@ -170,8 +168,7 @@ template <class Function> void expect_invalid_argument(Function&& function) {
 }
 
 void test_seed_zero_exact_ordered_golden() {
-    const std::vector<std::uint64_t> expected(SEED_ZERO_SIGMA_GOLDEN.begin(),
-                                              SEED_ZERO_SIGMA_GOLDEN.end());
+    const std::vector<std::uint64_t> expected(SEED_ZERO_SIGMA_GOLDEN.begin(), SEED_ZERO_SIGMA_GOLDEN.end());
     CHECK(local_schedule_oracle(CURVE_COUNT, 0) == expected);
 
     const auto schedule = ECM::make_deterministic_curve_schedule(CURVE_COUNT, 0);
@@ -200,8 +197,7 @@ void test_seed_repetition_and_cross_thread_exactness() {
         CHECK(repeated_schedule.sigmas == expected_schedule.sigmas);
         check_context_equal(ECM::prepare_batch(config, repeated_schedule), expected_context);
 
-        std::vector<std::future<std::pair<ECM::DeterministicCurveSchedule, ECM::BatchContext>>>
-            futures;
+        std::vector<std::future<std::pair<ECM::DeterministicCurveSchedule, ECM::BatchContext>>> futures;
         futures.reserve(THREADS);
         for (std::size_t thread = 0; thread < THREADS; ++thread) {
             futures.push_back(std::async(std::launch::async, [config, seed] {
@@ -226,8 +222,8 @@ void test_seed256_full_width_goldens_and_cross_thread_exactness() {
     const CofactorSeed256 zero_seed{};
     const CofactorAttemptContext zero_attempt = make_ecm_attempt(zero_seed);
     const auto zero_schedule = ECM::make_deterministic_curve_schedule(CURVE_COUNT, zero_attempt);
-    CHECK(zero_schedule.sigmas == std::vector<std::uint64_t>(SEED256_ZERO_SIGMA_GOLDEN.begin(),
-                                                             SEED256_ZERO_SIGMA_GOLDEN.end()));
+    CHECK(zero_schedule.sigmas ==
+          std::vector<std::uint64_t>(SEED256_ZERO_SIGMA_GOLDEN.begin(), SEED256_ZERO_SIGMA_GOLDEN.end()));
 
     CofactorSeed256 range_seed{};
     for (std::size_t index = 0; index < range_seed.digest.bytes.size(); ++index) {
@@ -236,8 +232,8 @@ void test_seed256_full_width_goldens_and_cross_thread_exactness() {
     const CofactorAttemptContext range_attempt = make_ecm_attempt(range_seed);
     const auto range_schedule =
         ECM::make_deterministic_curve_schedule(SEED256_RANGE_SIGMA_GOLDEN.size(), range_attempt);
-    CHECK(range_schedule.sigmas == std::vector<std::uint64_t>(SEED256_RANGE_SIGMA_GOLDEN.begin(),
-                                                              SEED256_RANGE_SIGMA_GOLDEN.end()));
+    CHECK(range_schedule.sigmas ==
+          std::vector<std::uint64_t>(SEED256_RANGE_SIGMA_GOLDEN.begin(), SEED256_RANGE_SIGMA_GOLDEN.end()));
 
     CofactorSeed256 last_byte_flipped = range_seed;
     last_byte_flipped.digest.bytes.back() ^= std::byte{0x01};
@@ -250,8 +246,7 @@ void test_seed256_full_width_goldens_and_cross_thread_exactness() {
     std::array<std::future<ECM::DeterministicCurveSchedule>, THREADS> futures;
     for (auto& future : futures) {
         future = std::async(std::launch::async, [range_attempt] {
-            return ECM::make_deterministic_curve_schedule(SEED256_RANGE_SIGMA_GOLDEN.size(),
-                                                          range_attempt);
+            return ECM::make_deterministic_curve_schedule(SEED256_RANGE_SIGMA_GOLDEN.size(), range_attempt);
         });
     }
     for (auto& future : futures) {
@@ -259,24 +254,20 @@ void test_seed256_full_width_goldens_and_cross_thread_exactness() {
     }
 
     CHECK(ECM::make_deterministic_curve_schedule(0, range_attempt).sigmas.empty());
-    CHECK(
-        std::all_of(range_schedule.sigmas.begin(), range_schedule.sigmas.end(),
-                    [](std::uint64_t sigma) { return sigma >= MIN_SIGMA && sigma <= MAX_SIGMA; }));
+    CHECK(std::all_of(range_schedule.sigmas.begin(), range_schedule.sigmas.end(),
+                      [](std::uint64_t sigma) { return sigma >= MIN_SIGMA && sigma <= MAX_SIGMA; }));
 
     CofactorAttemptContext wrong_domain = range_attempt;
     wrong_domain.domain = CofactorRandomDomainV1::brent_pollard_rho;
-    expect_invalid_argument(
-        [&] { (void)ECM::make_deterministic_curve_schedule(CURVE_COUNT, wrong_domain); });
+    expect_invalid_argument([&] { (void)ECM::make_deterministic_curve_schedule(CURVE_COUNT, wrong_domain); });
 
     CofactorAttemptContext wrong_identity = range_attempt;
     ++wrong_identity.algorithm_identity;
-    expect_invalid_argument(
-        [&] { (void)ECM::make_deterministic_curve_schedule(CURVE_COUNT, wrong_identity); });
+    expect_invalid_argument([&] { (void)ECM::make_deterministic_curve_schedule(CURVE_COUNT, wrong_identity); });
 
     CofactorAttemptContext unbound = range_attempt;
     unbound.algorithm_identity = 0;
-    expect_invalid_argument(
-        [&] { (void)ECM::make_deterministic_curve_schedule(CURVE_COUNT, unbound); });
+    expect_invalid_argument([&] { (void)ECM::make_deterministic_curve_schedule(CURVE_COUNT, unbound); });
 }
 
 void test_legacy_nonzero_seed_matches_explicit_schedule() {
@@ -351,10 +342,9 @@ struct ExplicitRun {
     std::optional<Integer> batch_factor;
 };
 
-[[nodiscard]] ExplicitRun
-run_explicit_under_brent_ambient(const char* ambient_enable, const char* ambient_degree,
-                                 const Integer& n, const ECM::Config& config,
-                                 const ECM::DeterministicCurveSchedule& schedule) {
+[[nodiscard]] ExplicitRun run_explicit_under_brent_ambient(const char* ambient_enable, const char* ambient_degree,
+                                                           const Integer& n, const ECM::Config& config,
+                                                           const ECM::DeterministicCurveSchedule& schedule) {
     ScopedEnvironmentVariable enable("GNFS_ECM_BRENT_SUYAMA", ambient_enable);
     ScopedEnvironmentVariable degree("GNFS_ECM_BS_DEGREE", ambient_degree);
 
@@ -420,13 +410,55 @@ void test_schedule_sigma_validation() {
     const ECM::BatchContext valid_context = ECM::prepare_batch(config, valid);
     CHECK(valid_context.sigma_pool == valid.sigmas);
 
-    for (const std::uint64_t invalid_sigma :
-         std::array<std::uint64_t, 2>{MIN_SIGMA - 1, MAX_SIGMA + 1}) {
+    for (const std::uint64_t invalid_sigma : std::array<std::uint64_t, 2>{MIN_SIGMA - 1, MAX_SIGMA + 1}) {
         ECM::DeterministicCurveSchedule invalid;
         invalid.sigmas = {MIN_SIGMA, invalid_sigma, MAX_SIGMA};
         expect_invalid_argument([&] { (void)ECM::prepare_batch(config, invalid); });
         expect_invalid_argument([&] { (void)ECM::factor(composite, config, invalid); });
     }
+}
+
+void test_numeric_boundaries_and_nonpositive_inputs() {
+    const auto schedule = ECM::make_deterministic_curve_schedule(1, 0);
+    const ECM::Config config = make_config(1);
+
+    // B1=0/1 must produce an empty context without indexing past the sieve.
+    for (const std::uint64_t bound : {0ULL, 1ULL}) {
+        ECM::Config degenerate = config;
+        degenerate.B1 = bound;
+        const ECM::BatchContext context = ECM::prepare_batch(degenerate, schedule);
+        CHECK(context.primes_cache.empty());
+        CHECK(context.empty());
+    }
+
+    // Reject pathological bounds before allocating the sieve table.
+    for (const std::uint64_t bound : {100'000'001ULL, std::numeric_limits<std::uint64_t>::max()}) {
+        ECM::Config oversized = config;
+        oversized.B1 = bound;
+        expect_invalid_argument([&] { (void)ECM::prepare_batch(oversized, schedule); });
+    }
+
+    const Integer zero(0);
+    const Integer negative(-1);
+    const ECM::BatchContext context = ECM::prepare_batch(config, schedule);
+
+    CHECK(!ECM::factor(zero).has_value());
+    CHECK(!ECM::factor(negative).has_value());
+    CHECK(!ECM::factor(zero, config, schedule).has_value());
+    CHECK(!ECM::factor(negative, config, schedule).has_value());
+    CHECK(!ECM::quick_factor(zero).has_value());
+    CHECK(!ECM::quick_factor(negative).has_value());
+    CHECK(!ECM::quick_factor(zero, schedule).has_value());
+    CHECK(!ECM::quick_factor(negative, schedule).has_value());
+    CHECK(!ECM::factor_with_batch(zero, context).has_value());
+    CHECK(!ECM::factor_with_batch(negative, context).has_value());
+
+    const std::vector<Integer> invalid_inputs{zero, negative};
+    const auto batch_results =
+        ECM::factor_batch(std::span<const Integer>(invalid_inputs.data(), invalid_inputs.size()), context);
+    CHECK(batch_results.size() == invalid_inputs.size());
+    CHECK(!batch_results[0].has_value());
+    CHECK(!batch_results[1].has_value());
 }
 
 template <class Function> void run_test(std::string_view name, Function&& function) {
@@ -441,21 +473,17 @@ int main() {
     try {
         std::cout << "=== Deterministic ECM Curve Schedule Tests ===\n";
         run_test("seed zero exact ordered golden", test_seed_zero_exact_ordered_golden);
-        run_test("seed repeat and cross-thread exactness",
-                 test_seed_repetition_and_cross_thread_exactness);
+        run_test("seed repeat and cross-thread exactness", test_seed_repetition_and_cross_thread_exactness);
         run_test("Seed256 full-width goldens and cross-thread exactness",
                  test_seed256_full_width_goldens_and_cross_thread_exactness);
         run_test("legacy nonzero seed parity", test_legacy_nonzero_seed_matches_explicit_schedule);
         run_test("schedule order/count authority", test_schedule_is_order_and_count_authority);
-        run_test("explicit factor and batch parity",
-                 test_explicit_factor_matches_same_schedule_batch);
-        run_test("deterministic quick factor explicit cache",
-                 test_deterministic_quick_factor_is_explicit_and_cached);
-        run_test("explicit Brent ambient isolation",
-                 test_explicit_factor_ignores_brent_ambient_flip);
-        run_test("empty/identity/prime boundaries",
-                 test_empty_schedule_identity_and_prime_boundaries);
+        run_test("explicit factor and batch parity", test_explicit_factor_matches_same_schedule_batch);
+        run_test("deterministic quick factor explicit cache", test_deterministic_quick_factor_is_explicit_and_cached);
+        run_test("explicit Brent ambient isolation", test_explicit_factor_ignores_brent_ambient_flip);
+        run_test("empty/identity/prime boundaries", test_empty_schedule_identity_and_prime_boundaries);
         run_test("sigma validation", test_schedule_sigma_validation);
+        run_test("numeric boundaries/nonpositive inputs", test_numeric_boundaries_and_nonpositive_inputs);
         std::cout << "=== Deterministic ECM Curve Schedule Tests PASSED ===\n";
         return 0;
     } catch (const std::exception& error) {
