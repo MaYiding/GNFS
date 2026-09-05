@@ -1,7 +1,7 @@
 #pragma once
 
-#include "integer.hpp"
 #include "../util/primes.hpp"
+#include "integer.hpp"
 
 #include <array>
 #include <cassert>
@@ -26,14 +26,8 @@ public:
     /// @param f_coeffs f(x) 的系数，f_coeffs[i] 是 x^i 的系数
     /// @param m 使得 f(m) = 0 (mod n)
     /// @param skewness skewness 参数
-    PolynomialContext(Integer n,
-                      std::vector<Integer> f_coeffs,
-                      Integer m,
-                      double skewness = 1.0)
-        : n_(std::move(n))
-        , f_coeffs_(std::move(f_coeffs))
-        , m_(std::move(m))
-        , skewness_(skewness) {
+    PolynomialContext(Integer n, std::vector<Integer> f_coeffs, Integer m, double skewness = 1.0)
+        : n_(std::move(n)), f_coeffs_(std::move(f_coeffs)), m_(std::move(m)), skewness_(skewness) {
         if (f_coeffs_.empty()) {
             throw std::invalid_argument("Polynomial must have at least one coefficient");
         }
@@ -58,7 +52,7 @@ public:
         std::vector<Integer> coeffs_copy;
         coeffs_copy.reserve(f_coeffs_.size());
         for (const auto& c : f_coeffs_) {
-            coeffs_copy.emplace_back(c);  // Integer copy ctor
+            coeffs_copy.emplace_back(c); // Integer copy ctor
         }
         return PolynomialContext(n_, std::move(coeffs_copy), m_, skewness_);
     }
@@ -66,21 +60,30 @@ public:
     // ==================== 访问器 ====================
 
     /// 多项式度数
-    [[nodiscard]] uint32_t degree() const noexcept { return degree_; }
+    [[nodiscard]] uint32_t degree() const noexcept {
+        return degree_;
+    }
 
     /// 待分解的数 n
-    [[nodiscard]] const Integer& n() const noexcept { return n_; }
+    [[nodiscard]] const Integer& n() const noexcept {
+        return n_;
+    }
 
     /// m 值，f(m) = 0 (mod n)
-    [[nodiscard]] const Integer& m() const noexcept { return m_; }
+    [[nodiscard]] const Integer& m() const noexcept {
+        return m_;
+    }
 
     /// skewness 参数
-    [[nodiscard]] double skewness() const noexcept { return skewness_; }
+    [[nodiscard]] double skewness() const noexcept {
+        return skewness_;
+    }
 
     /// 获取系数 f_i（x^i 的系数）
     [[nodiscard]] const Integer& coeff(uint32_t i) const {
         static const Integer zero(static_cast<int64_t>(0));
-        if (i >= f_coeffs_.size()) return zero;
+        if (i >= f_coeffs_.size())
+            return zero;
         return f_coeffs_[i];
     }
 
@@ -98,7 +101,8 @@ public:
 
     /// 计算 f(x) 的值 (Horner 方法)
     [[nodiscard]] Integer evaluate(const Integer& x) const {
-        if (f_coeffs_.empty()) return Integer{};
+        if (f_coeffs_.empty())
+            return Integer{};
 
         // Horner 方法 (v22: result 直接 assign)
         Integer result;
@@ -114,7 +118,8 @@ public:
     [[nodiscard]] uint64_t evaluate_mod(uint64_t x, uint64_t p) const {
         // A zero modulus has no defined residue.  Match IntPolynomial and
         // the shared modular helpers by returning the neutral sentinel.
-        if (f_coeffs_.empty() || p == 0) return 0;
+        if (f_coeffs_.empty() || p == 0)
+            return 0;
 
         // mpz_fdiv_ui returns floor-div remainder ∈ [0, p-1] (zero alloc)
         auto get_coeff_mod_p = [p](const Integer& coeff) -> uint64_t {
@@ -133,7 +138,8 @@ public:
 
     /// 计算 f(x) 的 double 值（用于估算）
     [[nodiscard]] double evaluate_double(double x) const {
-        if (f_coeffs_.empty()) return 0.0;
+        if (f_coeffs_.empty())
+            return 0.0;
 
         double result = f_coeffs_[degree_].to_double();
         for (int i = static_cast<int>(degree_) - 1; i >= 0; --i) {
@@ -161,11 +167,11 @@ public:
             b_powers = ws_b_powers_heap.data();
         }
 
-        Integer result;  // return value — must be independent (thread_local can't escape)
+        Integer result; // return value — must be independent (thread_local can't escape)
         ws_a_power = int64_t(1);
         b_powers[0] = int64_t(1);
         for (uint32_t i = 1; i <= degree_; ++i) {
-            mpz_mul_ui(b_powers[i].get_mpz(), b_powers[i-1].get_mpz(), b);
+            mpz_mul_ui(b_powers[i].get_mpz(), b_powers[i - 1].get_mpz(), b);
         }
 
         // term = a^i * b^{d-i}, then result += f_i * term via mpz_addmul (fused FMA)
@@ -209,7 +215,8 @@ public:
         if (m_.fits_uint64()) {
             __int128 val = static_cast<__int128>(a) -
                            static_cast<__int128>(b) * static_cast<__int128>(m_.to_uint64());
-            if (val < 0) val = -val;
+            if (val < 0)
+                val = -val;
             if (val <= static_cast<__int128>(UINT64_MAX)) {
                 return {static_cast<uint64_t>(val), true};
             }
@@ -228,11 +235,13 @@ public:
     /// 计算代数范数 (__int128 快路径)
     /// 当所有系数 fits int64 且中间乘积 fits __int128 时使用纯原生算术
     [[nodiscard]] std::pair<__int128, bool> algebraic_norm_i128(int64_t a, uint64_t b) const {
-        if (b == 0) return {0, false};  // b^(d-i) division would be UB
+        if (b == 0)
+            return {0, false}; // b^(d-i) division would be UB
 
         // 检查所有系数是否 fits int64
         for (uint32_t i = 0; i <= degree_; ++i) {
-            if (!f_coeffs_[i].fits_int64()) return {0, false};
+            if (!f_coeffs_[i].fits_int64())
+                return {0, false};
         }
 
         // Overflow guard: intermediate term = c_i * a^i * b^(d-i).
@@ -246,32 +255,35 @@ public:
             double max_coeff_log2 = 0;
             for (uint32_t i = 0; i <= degree_; ++i) {
                 double c = std::abs(f_coeffs_[i].to_double());
-                if (c > 0) max_coeff_log2 = std::max(max_coeff_log2, std::log2(c));
+                if (c > 0)
+                    max_coeff_log2 = std::max(max_coeff_log2, std::log2(c));
             }
-            double max_term_log2 = max_coeff_log2 +
+            double max_term_log2 =
+                max_coeff_log2 +
                 static_cast<double>(degree_) * std::log2(static_cast<double>(max_val)) +
                 std::log2(static_cast<double>(degree_ + 1));
             if (max_term_log2 > 126.0) {
-                return {0, false};  // Would overflow __int128
+                return {0, false}; // Would overflow __int128
             }
         }
 
         __int128 result = 0;
-        __int128 a_power = 1;  // a^i
+        __int128 a_power = 1; // a^i
         __int128 b_val = static_cast<__int128>(b);
 
         // 计算 b^d
         __int128 b_pow_d = 1;
-        for (uint32_t i = 0; i < degree_; ++i) b_pow_d *= b_val;
+        for (uint32_t i = 0; i < degree_; ++i)
+            b_pow_d *= b_val;
 
-        __int128 b_pow = b_pow_d;  // starts at b^d, decreases
+        __int128 b_pow = b_pow_d; // starts at b^d, decreases
         for (uint32_t i = 0; i <= degree_; ++i) {
             __int128 ci = static_cast<__int128>(f_coeffs_[i].to_int64());
             __int128 term = ci * a_power * b_pow;
             result += term;
             a_power *= static_cast<__int128>(a);
             if (i < degree_ && b_val != 0) {
-                b_pow /= b_val;  // b^(d-i) → b^(d-i-1)
+                b_pow /= b_val; // b^(d-i) → b^(d-i-1)
             }
         }
         return {result, true};
@@ -294,9 +306,9 @@ public:
     }
 
 private:
-    Integer n_;                      // 待分解的数
-    std::vector<Integer> f_coeffs_;  // f(x) 的系数
-    Integer m_;                      // f(m) = 0 (mod n)
+    Integer n_;                     // 待分解的数
+    std::vector<Integer> f_coeffs_; // f(x) 的系数
+    Integer m_;                     // f(m) = 0 (mod n)
     uint32_t degree_ = 0;
     double skewness_ = 1.0;
 };

@@ -12,8 +12,7 @@ namespace gnfs::util {
 /// SmallVector - 内联小容量的向量，避免小数据的堆分配
 /// 当元素数量 <= InlineCapacity 时，数据存储在栈上
 /// 超出时自动切换到堆存储
-template <typename T, size_t InlineCapacity>
-class SmallVector {
+template <typename T, size_t InlineCapacity> class SmallVector {
     static_assert(InlineCapacity > 0, "InlineCapacity must be positive");
     // grow() 在异常路径无法回滚 move,要求 T 的 move 构造不抛。
     // 注意:noexcept 默认 move-ctor 包括基本类型、std::string、std::vector、unique_ptr 等。
@@ -102,10 +101,18 @@ public:
     SmallVector& operator=(const SmallVector&) = delete;
 
     // 容量查询
-    [[nodiscard]] size_t size() const noexcept { return size_; }
-    [[nodiscard]] size_t capacity() const noexcept { return capacity_; }
-    [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
-    [[nodiscard]] bool is_inline() const noexcept { return heap_data_ == nullptr; }
+    [[nodiscard]] size_t size() const noexcept {
+        return size_;
+    }
+    [[nodiscard]] size_t capacity() const noexcept {
+        return capacity_;
+    }
+    [[nodiscard]] bool empty() const noexcept {
+        return size_ == 0;
+    }
+    [[nodiscard]] bool is_inline() const noexcept {
+        return heap_data_ == nullptr;
+    }
 
     // 元素访问（operator[] 在 Debug 模式下做边界检查）
     [[nodiscard]] T& operator[](size_t i) noexcept {
@@ -119,11 +126,13 @@ public:
 
     // 带异常的边界检查访问
     [[nodiscard]] T& at(size_t i) {
-        if (i >= size_) throw std::out_of_range("SmallVector::at index out of bounds");
+        if (i >= size_)
+            throw std::out_of_range("SmallVector::at index out of bounds");
         return data()[i];
     }
     [[nodiscard]] const T& at(size_t i) const {
-        if (i >= size_) throw std::out_of_range("SmallVector::at index out of bounds");
+        if (i >= size_)
+            throw std::out_of_range("SmallVector::at index out of bounds");
         return data()[i];
     }
 
@@ -153,12 +162,24 @@ public:
     }
 
     // 迭代器
-    [[nodiscard]] iterator begin() noexcept { return data(); }
-    [[nodiscard]] iterator end() noexcept { return data() + size_; }
-    [[nodiscard]] const_iterator begin() const noexcept { return data(); }
-    [[nodiscard]] const_iterator end() const noexcept { return data() + size_; }
-    [[nodiscard]] const_iterator cbegin() const noexcept { return data(); }
-    [[nodiscard]] const_iterator cend() const noexcept { return data() + size_; }
+    [[nodiscard]] iterator begin() noexcept {
+        return data();
+    }
+    [[nodiscard]] iterator end() noexcept {
+        return data() + size_;
+    }
+    [[nodiscard]] const_iterator begin() const noexcept {
+        return data();
+    }
+    [[nodiscard]] const_iterator end() const noexcept {
+        return data() + size_;
+    }
+    [[nodiscard]] const_iterator cbegin() const noexcept {
+        return data();
+    }
+    [[nodiscard]] const_iterator cend() const noexcept {
+        return data() + size_;
+    }
 
     // 修改操作
     void push_back(const T& value) {
@@ -173,8 +194,7 @@ public:
         ++size_;
     }
 
-    template <typename... Args>
-    T& emplace_back(Args&&... args) {
+    template <typename... Args> T& emplace_back(Args&&... args) {
         ensure_capacity_for_one_more();
         T* ptr = new (data() + size_) T(std::forward<Args>(args)...);
         ++size_;
