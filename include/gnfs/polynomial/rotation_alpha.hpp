@@ -4,6 +4,8 @@
 #include "int_polynomial.hpp"
 
 #include <cmath>
+#include <cstdint>
+#include <stdexcept>
 #include <vector>
 
 namespace gnfs::polynomial {
@@ -97,14 +99,21 @@ private:
     std::vector<uint32_t> small_primes_;
 
     void init_small_primes() {
-        std::vector<bool> sieve(small_prime_bound_ + 1, true);
-        if (small_prime_bound_ >= 1) sieve[0] = false;
-        if (small_prime_bound_ >= 2) sieve[1] = false;
+        // Bound the caller-controlled sieve and avoid `bound + 1` wrapping at
+        // UINT32_MAX before it is converted to size_t.
+        constexpr uint32_t MAX_SMALL_PRIME_BOUND = 1'000'000;
+        if (small_prime_bound_ > MAX_SMALL_PRIME_BOUND) {
+            throw std::invalid_argument("RotationAlphaTracker small-prime bound is too large");
+        }
+        const size_t sieve_size = static_cast<size_t>(small_prime_bound_) + 1;
+        std::vector<bool> sieve(sieve_size, true);
+        if (small_prime_bound_ >= 1)
+            sieve[0] = false;
+        if (small_prime_bound_ >= 2)
+            sieve[1] = false;
         for (uint32_t i = 2; static_cast<uint64_t>(i) * i <= small_prime_bound_; ++i) {
             if (sieve[i]) {
-                for (uint64_t j = static_cast<uint64_t>(i) * i;
-                     j <= small_prime_bound_;
-                     j += i) {
+                for (uint64_t j = static_cast<uint64_t>(i) * i; j <= small_prime_bound_; j += i) {
                     sieve[j] = false;
                 }
             }
@@ -112,7 +121,8 @@ private:
         small_primes_.clear();
         small_primes_.reserve(small_prime_bound_ / 4 + 4);
         for (uint32_t i = 2; i <= small_prime_bound_; ++i) {
-            if (sieve[i]) small_primes_.push_back(i);
+            if (sieve[i])
+                small_primes_.push_back(i);
         }
     }
 };

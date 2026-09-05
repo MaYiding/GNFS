@@ -103,9 +103,9 @@ public:
             return Integer{};
 
         Integer result = coeffs_.back(); // copy ctor (Integer)
-        for (int i = static_cast<int>(coeffs_.size()) - 2; i >= 0; --i) {
+        for (size_t i = coeffs_.size(); i-- > 1;) {
             result *= x;
-            result += coeffs_[static_cast<size_t>(i)];
+            result += coeffs_[i - 1];
         }
         return result;
     }
@@ -116,8 +116,8 @@ public:
             return 0.0;
 
         double result = coeffs_.back().to_double();
-        for (int i = static_cast<int>(coeffs_.size()) - 2; i >= 0; --i) {
-            result = result * x + coeffs_[static_cast<size_t>(i)].to_double();
+        for (size_t i = coeffs_.size(); i-- > 1;) {
+            result = result * x + coeffs_[i - 1].to_double();
         }
         return result;
     }
@@ -126,13 +126,13 @@ public:
 
     /// 计算 f(x) mod p 的值
     [[nodiscard]] uint64_t evaluate_mod(uint64_t x, uint64_t p) const {
-        if (coeffs_.empty())
+        if (coeffs_.empty() || p == 0)
             return 0;
 
         uint64_t result = coeff_mod(coeffs_.size() - 1, p);
-        for (int i = static_cast<int>(coeffs_.size()) - 2; i >= 0; --i) {
+        for (size_t i = coeffs_.size(); i-- > 1;) {
             result = mul_mod(result, x, p);
-            result = add_mod(result, coeff_mod(static_cast<size_t>(i), p), p);
+            result = add_mod(result, coeff_mod(i - 1, p), p);
         }
         return result;
     }
@@ -211,13 +211,14 @@ public:
         uint32_t d2 = other.degree();
         // std::vector<Integer>(N) default-inits Integers to 0 (via Integer default ctor).
         // No need to re-init in loop.
-        std::vector<Integer> result_coeffs(d1 + d2 + 1);
+        const size_t result_size = static_cast<size_t>(d1) + static_cast<size_t>(d2) + 1;
+        std::vector<Integer> result_coeffs(result_size);
 
         // 卷积 — mpz_addmul: result_coeffs[i+j] += coeffs[i] * other[j] (fused FMA)
         for (uint32_t i = 0; i <= d1; ++i) {
             for (uint32_t j = 0; j <= d2; ++j) {
-                mpz_addmul(result_coeffs[i + j].get_mpz(), coeffs_[i].get_mpz(),
-                           other.coeffs_[j].get_mpz());
+                mpz_addmul(result_coeffs[static_cast<size_t>(i) + static_cast<size_t>(j)].get_mpz(),
+                           coeffs_[i].get_mpz(), other.coeffs_[j].get_mpz());
             }
         }
 
@@ -239,7 +240,7 @@ public:
         }
 
         std::vector<Integer> new_coeffs;
-        new_coeffs.reserve(d);
+        new_coeffs.reserve(static_cast<size_t>(d));
 
         for (uint32_t i = 1; i <= d; ++i) {
             Integer c;
@@ -259,10 +260,10 @@ public:
 
         uint32_t d = degree();
         // std::vector<Integer>(d+1) default-inits Integer to 0 — no explicit zero loop needed.
-        std::vector<Integer> new_coeffs(d + 1);
+        std::vector<Integer> new_coeffs(static_cast<size_t>(d) + 1);
 
         // 预计算 t 的幂次 — mpz_mul_si into default-init slot (skips set step)
-        std::vector<Integer> t_powers(d + 1);
+        std::vector<Integer> t_powers(static_cast<size_t>(d) + 1);
         t_powers[0] = int64_t(1); // mpz_set_si on default-init slot
         for (uint32_t i = 1; i <= d; ++i) {
             mpz_mul_si(t_powers[i].get_mpz(), t_powers[i - 1].get_mpz(), t);
@@ -343,7 +344,7 @@ private:
 
     // 模加法
     [[nodiscard]] static uint64_t add_mod(uint64_t a, uint64_t b, uint64_t p) {
-        return (a + b) % p;
+        return gnfs::util::add_mod_u64(a, b, p);
     }
 
     // 模乘法
@@ -373,7 +374,7 @@ private:
 
         // 获取 f(x) mod p
         uint32_t d = degree();
-        std::vector<uint64_t> f_mod(d + 1);
+        std::vector<uint64_t> f_mod(static_cast<size_t>(d) + 1);
         for (uint32_t i = 0; i <= d; ++i) {
             f_mod[i] = coeff_mod(i, p);
         }
@@ -428,7 +429,7 @@ private:
         seed ^= static_cast<uint64_t>(deg) + 0x9E3779B97F4A7C15ULL + (seed << 6) + (seed >> 2);
         std::mt19937_64 rng(seed);
         std::vector<uint64_t> poly_coeffs;
-        poly_coeffs.reserve(static_cast<size_t>(deg + 1));
+        poly_coeffs.reserve(static_cast<size_t>(deg) + 1);
         for (int i = 0; i <= deg; ++i)
             poly_coeffs.push_back(poly.coeff(static_cast<size_t>(i)));
 
@@ -467,7 +468,7 @@ private:
         // 极少数情况回退暴力
         std::vector<uint32_t> roots;
         roots.reserve(static_cast<size_t>(deg)); // bounded by f degree
-        for (uint32_t r = 0; r < p && static_cast<int>(roots.size()) < deg; ++r) {
+        for (uint32_t r = 0; r < p && roots.size() < static_cast<size_t>(deg); ++r) {
             uint64_t val = 0, rp = 1;
             for (int i = 0; i <= deg; ++i) {
                 val =

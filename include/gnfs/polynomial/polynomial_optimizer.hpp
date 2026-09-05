@@ -4,6 +4,7 @@
 #include "int_polynomial.hpp"
 
 #include <cmath>
+#include <limits>
 #include <optional>
 #include <vector>
 
@@ -82,9 +83,20 @@ public:
             // 视为相对变化 ≤ 2^-k,默认 tolerance=1e-6 → 约 20 位。
             const size_t m_bits = m.bit_length();
             const size_t diff_bits = diff.bit_length();
-            const double raw_tol_bits = std::ceil(-std::log2(tolerance));
-            const size_t tol_bits = raw_tol_bits > 0.0 ? static_cast<size_t>(raw_tol_bits) : 0;
-            if (diff.is_zero() || (m_bits > 0 && diff_bits + tol_bits <= m_bits)) {
+            size_t tol_bits = 0;
+            if (std::isfinite(tolerance) && tolerance > 0.0) {
+                const double raw_tol_bits = std::ceil(-std::log2(tolerance));
+                if (raw_tol_bits > 0.0 &&
+                    raw_tol_bits < static_cast<double>((std::numeric_limits<size_t>::max)())) {
+                    tol_bits = static_cast<size_t>(raw_tol_bits);
+                } else if (raw_tol_bits >=
+                           static_cast<double>((std::numeric_limits<size_t>::max)())) {
+                    tol_bits = (std::numeric_limits<size_t>::max)();
+                }
+            }
+            const bool relative_change_small =
+                m_bits > 0 && diff_bits <= m_bits && tol_bits <= m_bits - diff_bits;
+            if (diff.is_zero() || relative_change_small) {
                 break;
             }
         }
