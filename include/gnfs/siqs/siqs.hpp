@@ -24,6 +24,7 @@
 #include <gnfs/util/primes.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -582,6 +583,18 @@ inline void init_poly(const Integer& /*N*/, const std::vector<FBPrime>& fb, uint
     }
     const mpz_srcptr B_for_mod = B_is_neg ? abs_B_hoisted.get_mpz() : poly.B.get_mpz();
 
+    // Reuse this workspace across factor-base primes.  Keep the common
+    // configuration on the stack, while larger valid A-factor lists use a
+    // checked dynamic fallback instead of overflowing that stack buffer.
+    constexpr size_t INLINE_A_FACTORS = 16;
+    std::array<uint32_t, INLINE_A_FACTORS> qi_mod_p_inline{};
+    std::vector<uint32_t> qi_mod_p_dynamic;
+    uint32_t* qi_mod_p = qi_mod_p_inline.data();
+    if (s > INLINE_A_FACTORS) {
+        qi_mod_p_dynamic.resize(s);
+        qi_mod_p = qi_mod_p_dynamic.data();
+    }
+
     for (size_t j = 1; j < fb.size(); j++) {
         uint32_t p = fb[j].p;
 
@@ -603,12 +616,7 @@ inline void init_poly(const Integer& /*N*/, const std::vector<FBPrime>& fb, uint
         poly.a_inv_mod_p[j] = mod_inv32(a_mod_p, p);
 
         // Compute (A/q_i) mod p using prefix/suffix product trick (no inversions)
-        // A/q_i mod p = ∏_{k≠i} (q_k mod p) mod p
-        // 100-digit config uses num_a_factors=12,刚好顶到旧上限。
-        // 升到 16 留余量,assert 防越界。
-        constexpr size_t MAX_A_FACTORS = 16;
-        assert(s <= MAX_A_FACTORS && "SIQS num_a_factors > MAX_A_FACTORS");
-        uint32_t qi_mod_p[MAX_A_FACTORS];
+        // A/q_i mod p = ∏_{k≠i} (q_k mod p) mod p.
         for (size_t k = 0; k < s; k++)
             qi_mod_p[k] = fb[poly.a_indices[k]].p % p;
 
