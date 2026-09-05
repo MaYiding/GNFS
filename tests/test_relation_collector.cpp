@@ -704,6 +704,24 @@ void test_n_divisibility_rejection() {
         assert(st.n_divisible_rejected == 2);
     }
 
+    // Full-width uint64_t b must survive the a - b*m validation path on
+    // Windows LLP64, where unsigned long is only 32 bits.  Here b % N is
+    // 179,869,065, so a - b*m = -17*N and the relation must be rejected.
+    {
+        const Integer wide_n("1000000007");
+        const Integer wide_m("1");
+        RelationCollector collector(config);
+        collector.set_polynomial_context(wide_n, wide_m);
+
+        const uint64_t b = uint64_t{1} << 34;
+        Relation wide_b_rel(179869065, b);
+        const bool added = collector.add(std::move(wide_b_rel));
+        assert(!added);
+        const auto st = collector.stats();
+        assert(st.total_relations == 0);
+        assert(st.n_divisible_rejected == 1);
+    }
+
     std::cout << "  N-divisibility rejection: PASS" << std::endl;
 }
 
