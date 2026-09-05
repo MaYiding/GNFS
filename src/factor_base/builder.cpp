@@ -75,6 +75,7 @@ void FactorBase::save(std::ostream& os) const {
 }
 
 FactorBase FactorBase::load(std::istream& is) {
+    constexpr uint32_t kMaxSerializedEntries = 100'000'000u;
     const auto read_bytes = [&is](void* data, std::size_t size, const char* field) {
         if (!is.read(static_cast<char*>(data), static_cast<std::streamsize>(size))) {
             throw std::runtime_error(
@@ -108,11 +109,18 @@ FactorBase FactorBase::load(std::istream& is) {
     if (sac > static_cast<uint64_t>((std::numeric_limits<size_t>::max)())) {
         throw std::overflow_error("FactorBase::load: sieve_algebraic_count exceeds size_t");
     }
+    if (sac > kMaxSerializedEntries) {
+        throw std::runtime_error(
+            "FactorBase::load: sieve_algebraic_count exceeds serialized entry limit");
+    }
     fb.sieve_algebraic_count_ = static_cast<size_t>(sac);
 
     // Rational primes
     uint32_t rat_count = 0;
     read_bytes(&rat_count, sizeof(rat_count), "rational-prime count");
+    if (rat_count > kMaxSerializedEntries) {
+        throw std::runtime_error("FactorBase::load: rational-prime count exceeds serialized entry limit");
+    }
     fb.rational_.clear();
     for (uint32_t i = 0; i < rat_count; ++i) {
         RationalPrime rp{};
@@ -124,6 +132,9 @@ FactorBase FactorBase::load(std::istream& is) {
     // Algebraic primes
     uint32_t alg_count = 0;
     read_bytes(&alg_count, sizeof(alg_count), "algebraic-prime count");
+    if (alg_count > kMaxSerializedEntries) {
+        throw std::runtime_error("FactorBase::load: algebraic-prime count exceeds serialized entry limit");
+    }
     fb.algebraic_.clear();
     for (uint32_t i = 0; i < alg_count; ++i) {
         AlgebraicPrime ap{};

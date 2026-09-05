@@ -8,6 +8,7 @@
 #include <iostream>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
 
 using namespace gnfs;
 using namespace gnfs::factor_base;
@@ -506,6 +507,63 @@ void test_serialization_invalid() {
     std::cout << "  Serialization error handling: PASS" << std::endl;
 }
 
+void test_serialization_truncated_records() {
+    std::cout << "Testing truncated factor-base records..." << std::endl;
+
+    auto write_value = [](std::stringstream& ss, const auto& value) {
+        ss.write(reinterpret_cast<const char*>(&value), sizeof(value));
+    };
+    auto write_prefix = [&](std::stringstream& ss, uint64_t sieve_count,
+                            uint32_t rational_count) {
+        const uint32_t magic = 0x47464246;
+        const uint32_t version = 1;
+        const uint32_t rational_bound = 100;
+        const uint32_t algebraic_bound = 100;
+        const uint64_t large_prime_bound = 10'000;
+        const uint8_t log_scale = 8;
+        write_value(ss, magic);
+        write_value(ss, version);
+        write_value(ss, rational_bound);
+        write_value(ss, algebraic_bound);
+        write_value(ss, large_prime_bound);
+        write_value(ss, log_scale);
+        write_value(ss, sieve_count);
+        write_value(ss, rational_count);
+    };
+    auto expect_failure = [](std::stringstream& ss) {
+        bool caught = false;
+        try {
+            (void)FactorBase::load(ss);
+        } catch (const std::runtime_error&) {
+            caught = true;
+        }
+        assert(caught);
+    };
+
+    {
+        std::stringstream ss;
+        write_prefix(ss, 1, 1);
+        const uint32_t p = 2;
+        write_value(ss, p);
+        expect_failure(ss);
+    }
+    {
+        std::stringstream ss;
+        write_prefix(ss, 1, 0);
+        const uint32_t alg_count = 1;
+        const uint32_t p = 3;
+        const uint32_t root = 1;
+        const uint32_t log_p = 8;
+        write_value(ss, alg_count);
+        write_value(ss, p);
+        write_value(ss, root);
+        write_value(ss, log_p);
+        expect_failure(ss);
+    }
+
+    std::cout << "  Truncated factor-base records: PASS" << std::endl;
+}
+
 /// 验证分段并行筛 (bound ≥ PARALLEL_THRESHOLD=5M) 与简单筛输出按位等价。
 /// 边界值: 4_999_999 (走简单), 5_000_001 (走分段)。
 void test_segmented_parallel_sieve() {
@@ -559,6 +617,7 @@ int main() {
     test_base_m_irreducibility();
     test_serialization_roundtrip();
     test_serialization_invalid();
+    test_serialization_truncated_records();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;
