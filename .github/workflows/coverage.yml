@@ -70,6 +70,7 @@ jobs:
             --object-directory build-coverage \
             --gcov-ignore-parse-errors all \
             --gcov-ignore-errors=no_working_dir_found \
+            --merge-mode-functions=merge-use-line-min \
             --filter 'src/.*' \
             --filter 'include/gnfs/.*' \
             --exclude 'tests/.*' \
