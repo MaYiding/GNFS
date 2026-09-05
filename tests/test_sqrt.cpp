@@ -335,6 +335,25 @@ void test_rational_sqrt_simple() {
     std::cout << "  RationalSqrt (simple): PASSED" << std::endl;
 }
 
+// Regression for RationalSqrt::compute_from_exponents on Windows LLP64.
+// mpz_powm_ui accepts unsigned long (32 bits there), while the public API
+// accepts uint64_t exponents.  Use a value whose half exponent exceeds 32 bits
+// and compare against the arbitrary-precision powmod implementation.
+void test_rational_sqrt_large_exponent_portability() {
+    std::cout << "Testing RationalSqrt large exponent portability..." << std::endl;
+
+    const Integer n(1000000007);
+    const uint64_t exponent = std::numeric_limits<uint64_t>::max() - 1;
+    const std::vector<uint64_t> exponents = {exponent};
+    const std::vector<uint32_t> primes = {2};
+
+    const Integer actual = RationalSqrt::compute_from_exponents(exponents, primes, n);
+    const Integer expected = powmod(Integer(2), Integer(exponent / 2), n);
+    GNFS_TEST_CHECK(actual == expected);
+
+    std::cout << "  RationalSqrt preserved uint64_t exponent width: PASSED" << std::endl;
+}
+
 void test_sqrt_dependency_dimension_guard() {
     std::cout << "Testing sqrt dependency dimension guard..." << std::endl;
 
@@ -948,6 +967,7 @@ int main() {
     test_rational_sqrt_uint64_b_portability();
     test_evaluate_at_m();
     test_rational_sqrt_simple();
+    test_rational_sqrt_large_exponent_portability();
     test_sqrt_dependency_dimension_guard();
     test_factor_extraction();
     test_norm_linear();
