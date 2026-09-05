@@ -696,6 +696,7 @@ void test_wait_status_requires_terminal_child() {
 void test_env_parsing() {
     std::cout << "[test_env_parsing] ... " << std::flush;
 
+    using gnfs::sieve::parse_distributed_sieve_worker_timeout_env;
     using gnfs::sieve::parse_distributed_sieve_workers_env;
 
     auto with_env = [](const char* val, auto fn) {
@@ -719,6 +720,27 @@ void test_env_parsing() {
     with_env("garbage", []() { CHECK(parse_distributed_sieve_workers_env() == 0); });
     // Mixed numeric+garbage: strtol parses leading digits
     with_env("2abc", []() { CHECK(parse_distributed_sieve_workers_env() == 2); });
+
+    auto with_timeout_env = [](const char* val, auto fn) {
+        if (val == nullptr) {
+            ::unsetenv("GNFS_DISTRIBUTED_SIEVE_WORKER_TIMEOUT_MS");
+        } else {
+            ::setenv("GNFS_DISTRIBUTED_SIEVE_WORKER_TIMEOUT_MS", val, 1);
+        }
+        fn();
+        ::unsetenv("GNFS_DISTRIBUTED_SIEVE_WORKER_TIMEOUT_MS");
+    };
+
+    with_timeout_env(nullptr, []() { CHECK(parse_distributed_sieve_worker_timeout_env() == 0); });
+    with_timeout_env("", []() { CHECK(parse_distributed_sieve_worker_timeout_env() == 0); });
+    with_timeout_env("0", []() { CHECK(parse_distributed_sieve_worker_timeout_env() == 0); });
+    with_timeout_env("1", []() { CHECK(parse_distributed_sieve_worker_timeout_env() == 1); });
+    with_timeout_env("2500", []() { CHECK(parse_distributed_sieve_worker_timeout_env() == 2500); });
+    with_timeout_env("-1", []() { CHECK(parse_distributed_sieve_worker_timeout_env() == 0); });
+    with_timeout_env("garbage", []() { CHECK(parse_distributed_sieve_worker_timeout_env() == 0); });
+    with_timeout_env("18446744073709551616",
+                     []() { CHECK(parse_distributed_sieve_worker_timeout_env() == 0); });
+    with_timeout_env("2abc", []() { CHECK(parse_distributed_sieve_worker_timeout_env() == 2); });
 
     std::cout << "PASS\n";
 }
@@ -1153,6 +1175,40 @@ void test_worker_retry_exhaustion() {
     std::cout << "PASS\n";
 }
 
+// ── Test 13b: hung worker is terminated, reaped, and retried ───────────
+void test_worker_timeout_kills_and_reaps() {
+    std::cout << "[test_worker_timeout_kills_and_reaps] ... " << std::flush;
+
+    const auto& f = shared_fixture();
+    for (const auto& [mode, expected_signal] :
+         std::array<std::pair<const char*, int>, 2>{{{"all", SIGTERM}, {"kill", SIGKILL}}}) {
+        ScopedEnvironment hang_all("GNFS_DISTRIBUTED_SIEVE_HANG_ATTEMPT_0", mode);
+        DistributedSieveConfig cfg;
+        cfg.num_workers = 1;
+        cfg.worker_timeout_ms = 50;
+        cfg.base_path = make_tmp_base(std::string("timeout_") + mode);
+
+        const auto started = std::chrono::steady_clock::now();
+        std::vector<DistributedSieveWorkerResult> stats;
+        const auto relations = run_distributed_sieve(cfg, f.ctx, f.fb, f.sieve_params(),
+                                                     f.sieve_region(), f.cofac_config(), f.ctx.n(),
+                                                     f.ctx.m(), f.sq_range(1000, 1100), &stats);
+        const auto elapsed = std::chrono::steady_clock::now() - started;
+
+        CHECK(relations.empty());
+        CHECK(stats.size() == 1);
+        CHECK(!stats[0].success);
+        CHECK(stats[0].attempt_count == 2);
+        CHECK(stats[0].reap_confirmed);
+        CHECK(stats[0].exit_status == -1);
+        CHECK(stats[0].signal == expected_signal);
+        CHECK(elapsed < std::chrono::seconds(3));
+        check_worker_leases_removed(cfg.base_path, cfg.num_workers);
+        cleanup_worker_test_artifacts(cfg.base_path, cfg.num_workers);
+    }
+    std::cout << "PASS\n";
+}
+
 // ── Test 13: raw legacy leaves are foreign to the private worker lease ─
 void test_legacy_worker_leaves_are_preserved() {
     std::cout << "[test_legacy_worker_leaves_are_preserved] ... " << std::flush;
@@ -1450,10 +1506,12 @@ void test_env_config_e2e() {
     const std::string base = make_tmp_base("envconfig");
     ::setenv("GNFS_DISTRIBUTED_SIEVE_WORKERS", "3", 1);
     ::setenv("GNFS_DISTRIBUTED_SIEVE_BASE_PATH", base.c_str(), 1);
+    ::setenv("GNFS_DISTRIBUTED_SIEVE_WORKER_TIMEOUT_MS", "2500", 1);
 
     auto cfg = gnfs::sieve::parse_distributed_sieve_env();
     CHECK(cfg.num_workers == 3);
     CHECK(cfg.base_path == base);
+    CHECK(cfg.worker_timeout_ms == 2500);
 
     auto rels = run_distributed_sieve(cfg, f.ctx, f.fb, f.sieve_params(), f.sieve_region(),
                                       f.cofac_config(), f.ctx.n(), f.ctx.m(), range);
@@ -1461,6 +1519,7 @@ void test_env_config_e2e() {
 
     ::unsetenv("GNFS_DISTRIBUTED_SIEVE_WORKERS");
     ::unsetenv("GNFS_DISTRIBUTED_SIEVE_BASE_PATH");
+    ::unsetenv("GNFS_DISTRIBUTED_SIEVE_WORKER_TIMEOUT_MS");
     check_worker_leases_removed(cfg.base_path, cfg.num_workers);
     cleanup_worker_test_artifacts(cfg.base_path, cfg.num_workers);
 
@@ -1488,6 +1547,7 @@ int main() {
     test_corrupt_completion_report_with_retry();
     test_corrupt_sequence_receipt_with_retry();
     test_worker_retry_exhaustion();
+    test_worker_timeout_kills_and_reaps();
     test_legacy_worker_leaves_are_preserved();
     test_seeded_candidate_coordinates_are_semantic();
     test_seeded_worker_topology_invariance();

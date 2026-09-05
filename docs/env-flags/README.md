@@ -12,7 +12,7 @@
 | linalg | 15 | [linalg.md](linalg.md) | BW Krylov、SpMV/GF(2) SIMD、SGE、转置、进度遥测 |
 | cofactor | 10 | [cofactor.md](cofactor.md) | ECM stage 并行/cache、survival predictor、Brent rho |
 | polynomial | 9 | [polynomial.md](polynomial.md) | Karatsuba / NTT / HGCD / squaring / mod-p SIMD |
-| sieve | 9 | [sieve.md](sieve.md) | checkpoint、cache tile、prefetch、lattice SIMD |
+| sieve | 10 | [sieve.md](sieve.md) | checkpoint、cache tile、prefetch、lattice SIMD、distributed worker watchdog |
 | siqs | 1 | [siqs.md](siqs.md) | default-off shadow proof observe / explicit prefer |
 | util | 6 | [util.md](util.md) | Integer scratch pool、批量 GMP `mpz_*` 并行 |
 | sqrt | 2 | [sqrt.md](sqrt.md) | Hensel lift 并行、Couveignes pattern search 并行 |
