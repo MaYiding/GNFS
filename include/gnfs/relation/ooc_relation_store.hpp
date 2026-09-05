@@ -206,7 +206,7 @@ inline void sync_parent_directory_after_metadata_change(const std::filesystem::p
 #else
     int directory = -1;
     do {
-        directory = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+        directory = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
     } while (directory < 0 && errno == EINTR);
     if (directory < 0) {
         throw std::runtime_error("OOC directory sync cannot open " + parent.string() + ": " +
@@ -246,7 +246,11 @@ inline void sync_directory_descriptor_after_metadata_change(int descriptor,
                                     label);
     }
     struct stat metadata {};
-    if (::fstat(descriptor, &metadata) != 0 || !S_ISDIR(metadata.st_mode)) {
+    int inspected = -1;
+    do {
+        inspected = ::fstat(descriptor, &metadata);
+    } while (inspected != 0 && errno == EINTR);
+    if (inspected != 0 || !S_ISDIR(metadata.st_mode)) {
         const int saved_errno = errno == 0 ? ENOTDIR : errno;
         throw std::system_error(saved_errno, std::generic_category(),
                                 "OOC directory descriptor sync rejected " + label);
@@ -1773,10 +1777,22 @@ private:
                                    ": invalid exact private-directory binding");
         }
 
-        const int root_descriptor_flags = ::fcntl(exact.root_descriptor, F_GETFD);
-        const int directory_descriptor_flags = ::fcntl(exact.directory_descriptor, F_GETFD);
-        const int root_status_flags = ::fcntl(exact.root_descriptor, F_GETFL);
-        const int directory_status_flags = ::fcntl(exact.directory_descriptor, F_GETFL);
+        int root_descriptor_flags = -1;
+        do {
+            root_descriptor_flags = ::fcntl(exact.root_descriptor, F_GETFD);
+        } while (root_descriptor_flags < 0 && errno == EINTR);
+        int directory_descriptor_flags = -1;
+        do {
+            directory_descriptor_flags = ::fcntl(exact.directory_descriptor, F_GETFD);
+        } while (directory_descriptor_flags < 0 && errno == EINTR);
+        int root_status_flags = -1;
+        do {
+            root_status_flags = ::fcntl(exact.root_descriptor, F_GETFL);
+        } while (root_status_flags < 0 && errno == EINTR);
+        int directory_status_flags = -1;
+        do {
+            directory_status_flags = ::fcntl(exact.directory_descriptor, F_GETFL);
+        } while (directory_status_flags < 0 && errno == EINTR);
         if (root_descriptor_flags < 0 || directory_descriptor_flags < 0 || root_status_flags < 0 ||
             directory_status_flags < 0 || (root_descriptor_flags & FD_CLOEXEC) == 0 ||
             (directory_descriptor_flags & FD_CLOEXEC) == 0 ||
@@ -1788,12 +1804,22 @@ private:
         }
 
         struct stat root {};
+        int root_result = -1;
+        do {
+            root_result = ::fstat(exact.root_descriptor, &root);
+        } while (root_result != 0 && errno == EINTR);
         struct stat held_directory {};
+        int held_directory_result = -1;
+        do {
+            held_directory_result = ::fstat(exact.directory_descriptor, &held_directory);
+        } while (held_directory_result != 0 && errno == EINTR);
         struct stat named_directory {};
-        if (::fstat(exact.root_descriptor, &root) != 0 ||
-            ::fstat(exact.directory_descriptor, &held_directory) != 0 ||
-            ::fstatat(exact.root_descriptor, exact.directory_leaf.c_str(), &named_directory,
-                      AT_SYMLINK_NOFOLLOW) != 0) {
+        int named_directory_result = -1;
+        do {
+            named_directory_result = ::fstatat(exact.root_descriptor, exact.directory_leaf.c_str(),
+                                               &named_directory, AT_SYMLINK_NOFOLLOW);
+        } while (named_directory_result != 0 && errno == EINTR);
+        if (root_result != 0 || held_directory_result != 0 || named_directory_result != 0) {
             throw std::system_error(errno, std::generic_category(),
                                     std::string("OOCRelationWriter::") + operation +
                                         ": cannot inspect exact private directory");
@@ -1896,14 +1922,20 @@ private:
             return FreshArtifactReservation({identity->first, identity->second, identity->third},
                                             handle);
 #else
-            const int descriptor =
-                ::open(path.c_str(), O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC, 0600);
+            int descriptor = -1;
+            do {
+                descriptor = ::open(path.c_str(), O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC, 0600);
+            } while (descriptor < 0 && errno == EINTR);
             if (descriptor < 0) {
                 throw std::system_error(errno, std::generic_category(),
                                         "OOCRelationWriter: cannot reserve fresh artifact " + path);
             }
             struct stat information {};
-            if (::fstat(descriptor, &information) != 0) {
+            int inspected = -1;
+            do {
+                inspected = ::fstat(descriptor, &information);
+            } while (inspected != 0 && errno == EINTR);
+            if (inspected != 0) {
                 const int error = errno;
                 (void)::close(descriptor);
                 throw std::system_error(error, std::generic_category(),
@@ -2036,10 +2068,17 @@ private:
             }
             struct stat held {};
             struct stat named {};
-            if (::fstat(descriptor_, &held) != 0 ||
-                ::lstat(std::filesystem::path(path).c_str(), &named) != 0 ||
-                !S_ISREG(held.st_mode) || !S_ISREG(named.st_mode) || held.st_nlink != 1 ||
-                named.st_nlink != 1 || held.st_dev != named.st_dev || held.st_ino != named.st_ino ||
+            int held_result = -1;
+            do {
+                held_result = ::fstat(descriptor_, &held);
+            } while (held_result != 0 && errno == EINTR);
+            int named_result = -1;
+            do {
+                named_result = ::lstat(std::filesystem::path(path).c_str(), &named);
+            } while (named_result != 0 && errno == EINTR);
+            if (held_result != 0 || named_result != 0 || !S_ISREG(held.st_mode) ||
+                !S_ISREG(named.st_mode) || held.st_nlink != 1 || named.st_nlink != 1 ||
+                held.st_dev != named.st_dev || held.st_ino != named.st_ino ||
                 identity_ != std::array<std::uint64_t, 3>{
                                  static_cast<std::uint64_t>(held.st_dev),
                                  static_cast<std::uint64_t>(held.st_ino),
@@ -2067,10 +2106,18 @@ private:
             }
             struct stat held {};
             struct stat named {};
-            if (::fstat(descriptor_, &held) != 0 ||
-                ::fstatat(parent_descriptor, leaf.c_str(), &named, AT_SYMLINK_NOFOLLOW) != 0 ||
-                !S_ISREG(held.st_mode) || !S_ISREG(named.st_mode) || held.st_nlink != 1 ||
-                named.st_nlink != 1 || (held.st_mode & static_cast<mode_t>(07777)) != 0600 ||
+            int held_result = -1;
+            do {
+                held_result = ::fstat(descriptor_, &held);
+            } while (held_result != 0 && errno == EINTR);
+            int named_result = -1;
+            do {
+                named_result =
+                    ::fstatat(parent_descriptor, leaf.c_str(), &named, AT_SYMLINK_NOFOLLOW);
+            } while (named_result != 0 && errno == EINTR);
+            if (held_result != 0 || named_result != 0 || !S_ISREG(held.st_mode) ||
+                !S_ISREG(named.st_mode) || held.st_nlink != 1 || named.st_nlink != 1 ||
+                (held.st_mode & static_cast<mode_t>(07777)) != 0600 ||
                 (named.st_mode & static_cast<mode_t>(07777)) != 0600 ||
                 held.st_uid != ::geteuid() || named.st_uid != ::geteuid() ||
                 held.st_dev != named.st_dev || held.st_ino != named.st_ino ||
