@@ -85,6 +85,7 @@ DISTRIBUTED_FLAGS = (
     "GNFS_DISTRIBUTED_SIEVE_WORKERS",
     "GNFS_DISTRIBUTED_SIEVE_BASE_PATH",
     "GNFS_DISTRIBUTED_SIEVE_SQ_PER_WORKER",
+    "GNFS_DISTRIBUTED_SIEVE_WORKER_TIMEOUT_MS",
     "GNFS_DISTRIBUTED_SIEVE_ASSERT_REPORT_CLOEXEC",
 )
 
@@ -10137,6 +10138,14 @@ LEGACY_TEST_ONLY_READS = (
             "+std::to_string(chunk_id)).c_str()"
         ),
         display_name="GNFS_DISTRIBUTED_SIEVE_CORRUPT_RECEIPT_ATTEMPT_<chunk_id>",
+    ),
+    LegacyDynamicRead(
+        relative="src/sieve/distributed_sieve.cpp",
+        normalized_argument=(
+            '("GNFS_DISTRIBUTED_SIEVE_HANG_ATTEMPT_"'
+            "+std::to_string(chunk_id)).c_str()"
+        ),
+        display_name="GNFS_DISTRIBUTED_SIEVE_HANG_ATTEMPT_<chunk_id>",
     ),
 )
 
