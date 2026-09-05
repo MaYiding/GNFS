@@ -5,6 +5,7 @@
 #include "../factor_base/factor_base.hpp"
 #include "../linalg/sparse_matrix.hpp"
 
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -17,14 +18,14 @@ using linalg::BitVector;
 
 /// 有理平方根计算结果
 struct RationalSqrtResult {
-    Integer value;           // 平方根值（模 N）
-    bool success = false;    // 是否成功
-    std::string error;       // 错误信息
+    Integer value;        // 平方根值（模 N）
+    bool success = false; // 是否成功
+    std::string error;    // 错误信息
 };
 
 /// 有理平方根配置
 struct RationalSqrtConfig {
-    bool verify = true;      // 是否验证结果
+    bool verify = true; // 是否验证结果
 };
 
 /// RationalSqrt - 计算有理侧的平方根
@@ -33,8 +34,7 @@ class RationalSqrt {
 public:
     using Config = RationalSqrtConfig;
 
-    explicit RationalSqrt(const Config& config = Config{})
-        : config_(config) {}
+    explicit RationalSqrt(const Config& config = Config{}) : config_(config) {}
 
     /// 从依赖和关系计算有理平方根
     /// @param dependency 依赖向量（指示哪些关系参与）
@@ -43,29 +43,34 @@ public:
     /// @param n 模数
     /// @param m 多项式根（用于计算 a - b*m 的符号，GNFS a - b·α 约定）
     /// @return 平方根结果（模 n）
-    [[nodiscard]] RationalSqrtResult compute(
-            const BitVector& dependency,
-            const std::vector<Relation>& relations,
-            const FactorBase& fb,
-            const Integer& n,
-            const Integer& m) const {
+    [[nodiscard]] RationalSqrtResult compute(const BitVector& dependency,
+                                             const std::vector<Relation>& relations,
+                                             const FactorBase& fb, const Integer& n,
+                                             const Integer& m) const {
 
         RationalSqrtResult result;
+        if (dependency.size() != relations.size()) {
+            result.error = "Rational sqrt: dependency length does not match relation count";
+            return result;
+        }
 
         // 收集所有参与关系的有理因子
         // 累积每个素数的指数
         // Reserve基于 dependency.popcount() * 平均 factors per row:
         // FB ~10-15 / row, LP ~1-3 / row. popcount typical 64-256.
-        // 上界 fallback 为 relations.size() (但只是上界, 实际 popcount * factor 多数情况下少 1000×).
+        // 上界 fallback 为 relations.size() (但只是上界, 实际 popcount * factor 多数情况下少
+        // 1000×).
+        const auto& rational_primes = fb.rational();
         const size_t pop = dependency.popcount();
-        std::unordered_map<uint32_t, uint64_t> fb_exponents;    // 因子基素数指数
-        std::unordered_map<uint64_t, uint64_t> lp_exponents;    // 大素数指数
+        std::unordered_map<uint32_t, uint64_t> fb_exponents; // 因子基素数指数
+        std::unordered_map<uint64_t, uint64_t> lp_exponents; // 大素数指数
         fb_exponents.reserve(std::min(pop * 15, relations.size()));
         lp_exponents.reserve(std::min(pop * 3, relations.size()));
-        bool has_negative = false;  // 是否有负数的 (a - b*m) 值
+        bool has_negative = false; // 是否有负数的 (a - b*m) 值
 
         for (size_t i = 0; i < relations.size(); ++i) {
-            if (!dependency.test(i)) continue;
+            if (!dependency.test(i))
+                continue;
 
             const auto& rel = relations[i];
 
@@ -74,9 +79,8 @@ public:
             // a_minus_bm = a - m*b via mpz_submul_ui (fused FMS, drops bm)
             Integer a_minus_bm;
             auto check_sign = [&](int64_t a_val, uint64_t b_val) {
-                a_minus_bm = a_val;  // mpz_set_si direct
-                mpz_submul_ui(a_minus_bm.get_mpz(), m.get_mpz(),
-                              static_cast<unsigned long>(b_val));
+                a_minus_bm = a_val; // mpz_set_si direct
+                mpz_submul_ui(a_minus_bm.get_mpz(), m.get_mpz(), static_cast<unsigned long>(b_val));
                 if (a_minus_bm.is_negative()) {
                     has_negative = !has_negative;
                 }
@@ -88,7 +92,12 @@ public:
 
             // 因子基素数
             for (size_t j = 0; j < rel.rational_factors.size(); ++j) {
-                fb_exponents[rel.rational_factors[j]]++;
+                const uint32_t index = rel.rational_factors[j];
+                if (index >= rational_primes.size()) {
+                    result.error = "Rational sqrt: factor-base index out of range";
+                    return result;
+                }
+                fb_exponents[index]++;
             }
 
             // 大素数
@@ -122,9 +131,10 @@ public:
 
         // 因子基素数贡献
         for (const auto& [idx, exp] : fb_exponents) {
-            if (exp == 0) continue;
+            if (exp == 0)
+                continue;
 
-            uint32_t p = fb.rational()[idx].p;
+            uint32_t p = rational_primes[idx].p;
             uint64_t half_exp = exp / 2;
 
             // p^half_exp mod n — mpz_powm_ui (exp passed as unsigned long directly)
@@ -137,7 +147,8 @@ public:
 
         // 大素数贡献
         for (const auto& [p, exp] : lp_exponents) {
-            if (exp == 0) continue;
+            if (exp == 0)
+                continue;
 
             uint64_t half_exp = exp / 2;
 
@@ -169,17 +180,18 @@ public:
             Integer product(1);
             Integer val;
             auto multiply_ab = [&](int64_t a_val, uint64_t b_val) {
-                val = a_val;  // mpz_set_si direct
+                val = a_val; // mpz_set_si direct
                 // val -= m * b_val (fused FMS, b_val is unsigned)
-                mpz_submul_ui(val.get_mpz(), m.get_mpz(),
-                              static_cast<unsigned long>(b_val));
+                mpz_submul_ui(val.get_mpz(), m.get_mpz(), static_cast<unsigned long>(b_val));
                 val %= n;
-                if (val.is_negative()) val += n;
+                if (val.is_negative())
+                    val += n;
                 product *= val;
                 product %= n;
             };
             for (size_t i = 0; i < relations.size(); ++i) {
-                if (!dependency.test(i)) continue;
+                if (!dependency.test(i))
+                    continue;
                 const auto& rel = relations[i];
                 multiply_ab(rel.a, rel.b);
                 for (const auto& [ea, eb] : rel.extra_ab_pairs) {
@@ -222,17 +234,17 @@ public:
     /// @param exponents 每个素数的指数（应该都是偶数）
     /// @param primes 对应的素数
     /// @param n 模数
-    [[nodiscard]] static Integer compute_from_exponents(
-            const std::vector<uint64_t>& exponents,
-            const std::vector<uint32_t>& primes,
-            const Integer& n) {
+    [[nodiscard]] static Integer compute_from_exponents(const std::vector<uint64_t>& exponents,
+                                                        const std::vector<uint32_t>& primes,
+                                                        const Integer& n) {
 
         Integer result(1);
         // hoist p + contribution; mpz_powm_ui accepts ul exp directly (no e Integer)
         Integer p, contribution;
 
         for (size_t i = 0; i < exponents.size() && i < primes.size(); ++i) {
-            if (exponents[i] == 0) continue;
+            if (exponents[i] == 0)
+                continue;
 
             // 指数应该是偶数
             uint64_t half_exp = exponents[i] / 2;
@@ -252,12 +264,9 @@ private:
 };
 
 /// 便捷函数：计算有理平方根
-[[nodiscard]] inline RationalSqrtResult compute_rational_sqrt(
-        const BitVector& dependency,
-        const std::vector<Relation>& relations,
-        const FactorBase& fb,
-        const Integer& n,
-        const Integer& m) {
+[[nodiscard]] inline RationalSqrtResult
+compute_rational_sqrt(const BitVector& dependency, const std::vector<Relation>& relations,
+                      const FactorBase& fb, const Integer& n, const Integer& m) {
 
     RationalSqrt calculator;
     return calculator.compute(dependency, relations, fb, n, m);
