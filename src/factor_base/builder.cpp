@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cmath>
 #include <istream>
+#include <limits>
 #include <ostream>
 #include <random>
 #include <stdexcept>
@@ -55,10 +56,20 @@ void FactorBase::save(std::ostream& os) const {
 }
 
 FactorBase FactorBase::load(std::istream& is) {
+    constexpr uint32_t kMaxSerializedEntries = 100'000'000u;
+    auto read_exact = [&is](auto& value, const char* field) {
+        is.read(reinterpret_cast<char*>(&value), sizeof(value));
+        if (!is) {
+            throw std::runtime_error(
+                std::string("FactorBase::load: truncated ") + field);
+        }
+    };
+
     // Magic + version
-    uint32_t magic, version;
-    is.read(reinterpret_cast<char*>(&magic), sizeof(magic));
-    is.read(reinterpret_cast<char*>(&version), sizeof(version));
+    uint32_t magic = 0;
+    uint32_t version = 0;
+    read_exact(magic, "header");
+    read_exact(version, "header");
     if (magic != 0x47464246)
         throw std::runtime_error("FactorBase::load: invalid magic number");
     if (version != 1)
@@ -66,43 +77,60 @@ FactorBase FactorBase::load(std::istream& is) {
 
     // Params
     FactorBaseParams params;
-    is.read(reinterpret_cast<char*>(&params.rational_bound), sizeof(params.rational_bound));
-    is.read(reinterpret_cast<char*>(&params.algebraic_bound), sizeof(params.algebraic_bound));
-    is.read(reinterpret_cast<char*>(&params.large_prime_bound), sizeof(params.large_prime_bound));
-    is.read(reinterpret_cast<char*>(&params.log_scale), sizeof(params.log_scale));
+    read_exact(params.rational_bound, "rational bound");
+    read_exact(params.algebraic_bound, "algebraic bound");
+    read_exact(params.large_prime_bound, "large-prime bound");
+    read_exact(params.log_scale, "log scale");
 
     FactorBase fb(params);
 
     // Sieve algebraic count
-    uint64_t sac;
-    is.read(reinterpret_cast<char*>(&sac), sizeof(sac));
-    fb.sieve_algebraic_count_ = static_cast<size_t>(sac);
+    uint64_t sac = 0;
+    read_exact(sac, "sieve algebraic count");
+    if (sac > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+        throw std::runtime_error(
+            "FactorBase::load: sieve algebraic count exceeds size_t range");
+    }
+    if (sac > kMaxSerializedEntries) {
+        throw std::runtime_error(
+            "FactorBase::load: sieve algebraic count exceeds serialized entry limit");
+    }
 
     // Rational primes
-    uint32_t rat_count;
-    is.read(reinterpret_cast<char*>(&rat_count), sizeof(rat_count));
+    uint32_t rat_count = 0;
+    read_exact(rat_count, "rational count");
+    if (rat_count > kMaxSerializedEntries) {
+        throw std::runtime_error(
+            "FactorBase::load: rational count exceeds serialized entry limit");
+    }
     fb.rational_.resize(rat_count);
     for (uint32_t i = 0; i < rat_count; ++i) {
-        is.read(reinterpret_cast<char*>(&fb.rational_[i].p), sizeof(uint32_t));
-        is.read(reinterpret_cast<char*>(&fb.rational_[i].log_p), sizeof(uint32_t));
+        read_exact(fb.rational_[i].p, "rational prime");
+        read_exact(fb.rational_[i].log_p, "rational log value");
     }
 
     // Algebraic primes
-    uint32_t alg_count;
-    is.read(reinterpret_cast<char*>(&alg_count), sizeof(alg_count));
+    uint32_t alg_count = 0;
+    read_exact(alg_count, "algebraic count");
+    if (alg_count > kMaxSerializedEntries) {
+        throw std::runtime_error(
+            "FactorBase::load: algebraic count exceeds serialized entry limit");
+    }
+    if (sac > alg_count) {
+        throw std::runtime_error(
+            "FactorBase::load: sieve algebraic count exceeds algebraic count");
+    }
     fb.algebraic_.resize(alg_count);
     for (uint32_t i = 0; i < alg_count; ++i) {
-        is.read(reinterpret_cast<char*>(&fb.algebraic_[i].p), sizeof(uint32_t));
-        is.read(reinterpret_cast<char*>(&fb.algebraic_[i].r), sizeof(uint32_t));
-        is.read(reinterpret_cast<char*>(&fb.algebraic_[i].log_p), sizeof(uint32_t));
-        is.read(reinterpret_cast<char*>(&fb.algebraic_[i].degree), sizeof(uint8_t));
+        read_exact(fb.algebraic_[i].p, "algebraic prime");
+        read_exact(fb.algebraic_[i].r, "algebraic root");
+        read_exact(fb.algebraic_[i].log_p, "algebraic log value");
+        read_exact(fb.algebraic_[i].degree, "algebraic degree");
     }
+    fb.sieve_algebraic_count_ = static_cast<size_t>(sac);
 
     // Rebuild index tables
     fb.build_index();
-
-    if (!is)
-        throw std::runtime_error("FactorBase::load: unexpected end of stream");
 
     return fb;
 }
