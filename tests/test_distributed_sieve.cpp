@@ -76,6 +76,7 @@ using gnfs::polynomial::BaseMSelector;
 using gnfs::sieve::DistributedSieveConfig;
 using gnfs::sieve::DistributedSieveSeedProviderError;
 using gnfs::sieve::DistributedSieveWorkerResult;
+using gnfs::sieve::kMaxDistributedSieveWorkers;
 using gnfs::sieve::LatticeSieve;
 using gnfs::sieve::run_distributed_sieve;
 using gnfs::sieve::SieveParams;
@@ -633,6 +634,10 @@ void test_split_sq_range() {
             split_sq_range(0, 1, static_cast<size_t>(std::numeric_limits<uint32_t>::max()) + 1U);
         CHECK(c.empty());
     }
+    {
+        const auto c = split_sq_range(0, 1, kMaxDistributedSieveWorkers + 1);
+        CHECK(c.empty());
+    }
 
     std::cout << "PASS\n";
 }
@@ -757,6 +762,14 @@ void test_invalid_config() {
         }
         CHECK(threw_oversized);
     }
+
+    bool threw_over_cap = false;
+    try {
+        run(kMaxDistributedSieveWorkers + 1, gnfs::util::temp_path("over-cap"));
+    } catch (const std::invalid_argument&) {
+        threw_over_cap = true;
+    }
+    CHECK(threw_over_cap);
 
     std::cout << "PASS\n";
 }

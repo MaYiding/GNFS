@@ -32,7 +32,6 @@
 #include <cstring>
 #include <exception>
 #include <filesystem>
-#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -53,8 +52,7 @@ std::vector<std::pair<uint32_t, uint32_t>> split_sq_range(uint32_t range_begin, 
     // size_t count that would narrow to zero (or otherwise wrap) before the
     // division below; this helper has no error channel, so an oversized
     // request is represented by an empty result just like an empty range.
-    if (range_end <= range_begin || num_chunks == 0 ||
-        num_chunks > static_cast<size_t>(std::numeric_limits<uint32_t>::max()))
+    if (range_end <= range_begin || num_chunks == 0 || num_chunks > kMaxDistributedSieveWorkers)
         return chunks;
 
     try {
@@ -109,9 +107,8 @@ run_distributed_sieve(const DistributedSieveConfig& cfg, const gnfs::core::Polyn
     if (cfg.num_workers == 0) {
         throw std::invalid_argument("run_distributed_sieve: num_workers must be > 0");
     }
-    if (cfg.num_workers > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
-        throw std::invalid_argument(
-            "run_distributed_sieve: num_workers exceeds the uint32 SQ-index domain");
+    if (cfg.num_workers > kMaxDistributedSieveWorkers) {
+        throw std::invalid_argument("run_distributed_sieve: num_workers exceeds the worker limit");
     }
     throw std::runtime_error(
         "run_distributed_sieve: POSIX fork workers are not available on Windows");
@@ -638,8 +635,7 @@ std::vector<std::pair<uint32_t, uint32_t>> split_sq_range(uint32_t range_begin, 
     // size_t count that would narrow to zero (or otherwise wrap) before the
     // division below; this helper has no error channel, so an oversized
     // request is represented by an empty result just like an empty range.
-    if (num_chunks == 0 || range_end <= range_begin ||
-        num_chunks > static_cast<size_t>(std::numeric_limits<uint32_t>::max()))
+    if (num_chunks == 0 || range_end <= range_begin || num_chunks > kMaxDistributedSieveWorkers)
         return chunks;
 
     try {
@@ -696,9 +692,8 @@ std::vector<Relation> run_distributed_sieve_impl(
     if (cfg.num_workers == 0) {
         throw std::invalid_argument("run_distributed_sieve: num_workers must be > 0");
     }
-    if (cfg.num_workers > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
-        throw std::invalid_argument(
-            "run_distributed_sieve: num_workers exceeds the uint32 SQ-index domain");
+    if (cfg.num_workers > kMaxDistributedSieveWorkers) {
+        throw std::invalid_argument("run_distributed_sieve: num_workers exceeds the worker limit");
     }
     if (cfg.base_path.empty()) {
         throw std::invalid_argument("run_distributed_sieve: base_path must be non-empty");
