@@ -487,6 +487,48 @@ void test_matrix_builder_rejects_non_gf2_schirokauer_prime() {
     std::cout << "  Non-GF(2) Schirokauer prime rejected: PASSED" << std::endl;
 }
 
+// Regression: an algebraic factor-base bound at the uint32_t ceiling must not
+// wrap `alg_bound + 1` back to a low QC-prime search start. There is no
+// representable uint32_t QC prime above that bound, so both matrix paths must
+// fail explicitly instead of silently building corrupted Legendre columns or
+// looping forever near UINT32_MAX.
+void test_matrix_builder_rejects_unrepresentable_qc_start() {
+    std::cout << "Testing MatrixBuilder rejects unrepresentable QC start..." << std::endl;
+
+    using core::FactorBaseParams;
+    using core::Integer;
+    using core::PolynomialContext;
+
+    std::vector<Integer> coeffs = {Integer(-2), Integer(0), Integer(1)};
+    PolynomialContext ctx(Integer(15), std::move(coeffs), Integer(4), 1.0);
+
+    MatrixBuilderConfig config;
+    config.include_class_group = false;
+    config.include_schirokauer = false;
+    config.num_qc_primes = 1;
+    MatrixBuilder builder(config);
+    const std::vector<core::Relation> empty_relations;
+
+    const auto expect_rejected = [&](uint32_t algebraic_bound, const char* context) {
+        factor_base::FactorBase fb(FactorBaseParams{0, algebraic_bound, 0});
+        require_throws<std::out_of_range>(
+            [&] { (void)builder.build_with_qc(empty_relations, fb, ctx); }, context);
+        require_throws<std::out_of_range>(
+            [&] {
+                (void)builder.build_with_qc_streaming(VectorRelationSource(empty_relations), fb,
+                                                      ctx);
+            },
+            context);
+    };
+
+    expect_rejected(std::numeric_limits<uint32_t>::max(),
+                    "MatrixBuilder must reject a QC start above uint32_t");
+    expect_rejected(std::numeric_limits<uint32_t>::max() - 2,
+                    "MatrixBuilder must reject a QC search exhausted at uint32_t limit");
+
+    std::cout << "  Unrepresentable QC start rejected: PASSED" << std::endl;
+}
+
 // Test matrix stats
 // Thin matrix test (m < n) — BACKLOG #80 step 7 — confirm BW/BL can find
 // left-kernel of M when rows < cols. Synthetic: 3 rows × 4 cols, all rows
@@ -1441,6 +1483,7 @@ int main() {
     test_matrix_builder();
     test_default_schirokauer_primes();
     test_matrix_builder_rejects_non_gf2_schirokauer_prime();
+    test_matrix_builder_rejects_unrepresentable_qc_start();
     test_find_dependencies();
     test_thin_matrix_dependencies();
     test_verify_dependency();
