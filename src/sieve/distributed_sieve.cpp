@@ -656,12 +656,21 @@ WorkerWaitResult wait_and_decode(pid_t pid, std::uint64_t timeout_ms) noexcept {
     int wait_status = 0;
 
     while (true) {
-        const pid_t observed = waitpid_retry(pid, &wait_status, WNOHANG);
+        // Do not hide EINTR inside an unbounded retry loop: a signal storm
+        // must not postpone the configured watchdog deadline.
+        const pid_t observed = ::waitpid(pid, &wait_status, WNOHANG);
 
         if (observed == pid) {
             return decode_worker_result(wait_status, timed_out);
         }
         if (observed == -1) {
+            if (errno == EINTR) {
+                if (Clock::now() - started >= bounded_timeout) {
+                    timed_out = true;
+                    break;
+                }
+                continue;
+            }
             return WorkerWaitResult{
                 .reaped = false,
                 .success = false,
@@ -702,11 +711,14 @@ WorkerWaitResult wait_and_decode(pid_t pid, std::uint64_t timeout_ms) noexcept {
     (void)::kill(pid, SIGTERM);
     const auto grace_deadline = Clock::now() + WORKER_TERMINATION_GRACE;
     while (Clock::now() < grace_deadline) {
-        const pid_t observed = waitpid_retry(pid, &wait_status, WNOHANG);
+        const pid_t observed = ::waitpid(pid, &wait_status, WNOHANG);
         if (observed == pid) {
             return decode_worker_result(wait_status, timed_out);
         }
         if (observed == -1) {
+            if (errno == EINTR) {
+                continue;
+            }
             return WorkerWaitResult{
                 .reaped = false,
                 .success = false,
