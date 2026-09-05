@@ -11,6 +11,7 @@
 #include <gnfs/linalg/sparse_matrix.hpp>
 
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -760,6 +761,96 @@ void test_gf_poly_factorization_determinism() {
     std::cout << "  Deterministic EDF and fail-closed validation: PASSED" << std::endl;
 }
 
+// Release-active validation for Schirokauer parameters and integer powers.
+void test_schirokauer_overflow_guards() {
+    std::cout << "Testing Schirokauer overflow and parameter guards..." << std::endl;
+
+    using core::Integer;
+    using core::PolynomialContext;
+
+    std::vector<Integer> coeffs = {Integer(1), Integer(0), Integer(1)};
+    PolynomialContext ctx(Integer(1), std::move(coeffs), Integer(0), 1.0);
+
+    {
+        SchirokaurConfig config;
+        config.primes = {0};
+        GNFS_TEST_CHECK(
+            throws_expected<std::invalid_argument>([&] { (void)SchirokaurMap(ctx, config); }));
+    }
+    {
+        SchirokaurConfig config;
+        config.primes = {1};
+        GNFS_TEST_CHECK(
+            throws_expected<std::invalid_argument>([&] { (void)SchirokaurMap(ctx, config); }));
+    }
+    {
+        SchirokaurConfig config;
+        config.primes = {2};
+        config.exponent_k = 0;
+        GNFS_TEST_CHECK(
+            throws_expected<std::invalid_argument>([&] { (void)SchirokaurMap(ctx, config); }));
+    }
+    {
+        SchirokaurConfig config;
+        config.primes = {2};
+        config.exponent_k = 64;
+        GNFS_TEST_CHECK(
+            throws_expected<std::overflow_error>([&] { (void)SchirokaurMap(ctx, config); }));
+    }
+    {
+        SchirokaurConfig config;
+        config.primes = {3};
+        config.exponent_k = 40;
+        GNFS_TEST_CHECK(
+            throws_expected<std::overflow_error>([&] { (void)SchirokaurMap(ctx, config); }));
+    }
+
+    // A degree-8 perfect power reaches the unsplit exponent path. With a
+    // large (but valid) prime, ell^degree exceeds uint64_t and must fail
+    // before the old unsigned multiplication could wrap.
+    std::vector<Integer> degree8_coeffs(9, Integer(0));
+    degree8_coeffs[8] = Integer(1);
+    PolynomialContext degree8_ctx(Integer(1), std::move(degree8_coeffs), Integer(0), 1.0);
+    {
+        SchirokaurConfig config;
+        config.primes = {65537};
+        config.exponent_k = 1;
+        GNFS_TEST_CHECK(throws_expected<std::overflow_error>(
+            [&] { (void)SchirokaurMap(degree8_ctx, config); }));
+    }
+
+    // Normal values remain supported and produce one degree-sized map.
+    {
+        SchirokaurConfig config;
+        config.primes = {7};
+        config.exponent_k = 5;
+        SchirokaurMap smap(ctx, config);
+        GNFS_TEST_CHECK(smap.num_columns() == ctx.degree());
+        GNFS_TEST_CHECK(smap.prime_info_.size() == 1);
+        GNFS_TEST_CHECK(smap.prime_info_[0].ell_k == 16807);
+        const auto maps = smap.compute(11, 3);
+        GNFS_TEST_CHECK(maps.size() == 1);
+        GNFS_TEST_CHECK(maps[0].size() == ctx.degree());
+        for (uint32_t value : maps[0]) {
+            GNFS_TEST_CHECK(value < 7);
+        }
+    }
+
+    // Integer::mod uses truncating division in this project, so normalize
+    // negative coefficients back to the non-negative fdiv_ui residue range.
+    {
+        std::vector<Integer> signed_coeffs = {Integer(-1), Integer(0), Integer(1)};
+        PolynomialContext signed_ctx(Integer(1), std::move(signed_coeffs), Integer(0), 1.0);
+        SchirokaurConfig config;
+        config.primes = {7};
+        config.exponent_k = 5;
+        SchirokaurMap smap(signed_ctx, config);
+        GNFS_TEST_CHECK(smap.prime_info_[0].f_mod[0] == 16806);
+    }
+
+    std::cout << "  Schirokauer overflow and parameter guards: PASSED" << std::endl;
+}
+
 // Regression test: parallel Block Lanczos produces same results as Gaussian
 // for a medium-sized matrix (verifies parallelization correctness)
 void test_parallel_block_lanczos_correctness() {
@@ -1323,6 +1414,7 @@ int main() {
     test_schirokauer_perfect_power();
     test_schirokauer_squarefree_reducible();
     test_gf_poly_factorization_determinism();
+    test_schirokauer_overflow_guards();
     test_parallel_block_lanczos_correctness();
     test_ensure_all_sorted();
     test_sge_weight1();

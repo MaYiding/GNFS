@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <numeric>
 #include <random>
 #include <stdexcept>
@@ -26,6 +27,21 @@ using sqrt::ModularPoly;
 // ============================================================================
 struct GFPolyOps {
     using Poly = std::vector<uint64_t>;
+
+    /// Compute base^exponent without allowing unsigned wraparound.
+    [[nodiscard]] static uint64_t checked_power_u64(uint64_t base, uint32_t exponent) {
+        if (base == 0 && exponent != 0) {
+            throw std::invalid_argument("Schirokauer power base must be positive");
+        }
+        uint64_t value = 1;
+        for (uint32_t i = 0; i < exponent; ++i) {
+            if (value > std::numeric_limits<uint64_t>::max() / base) {
+                throw std::overflow_error("Schirokauer power overflows uint64_t");
+            }
+            value *= base;
+        }
+        return value;
+    }
 
     static Poly trim(Poly p) {
         while (p.size() > 1 && p.back() == 0)
@@ -323,9 +339,7 @@ struct GFPolyOps {
                 g = gcd(trace, f, p);
             } else {
                 // g = gcd(t^{(p^d-1)/2} - 1, f)
-                uint64_t exp = 1;
-                for (uint32_t i = 0; i < d; ++i)
-                    exp *= p;
+                uint64_t exp = checked_power_u64(p, d);
                 exp = (exp - 1) / 2;
                 Poly tp = powmod(t, exp, f, p);
                 tp[0] = (tp[0] + p - 1) % p;
@@ -412,9 +426,10 @@ struct GFPolyOps {
     static void hensel_lift_pair(const std::vector<uint64_t>& f_pk, std::vector<uint64_t>& g,
                                  std::vector<uint64_t>& h, const Poly& g0, const Poly& h0,
                                  const Poly& t_bezout, uint32_t ell, uint32_t k) {
-        uint64_t target = 1;
-        for (uint32_t i = 0; i < k; ++i)
-            target *= ell;
+        uint64_t target = checked_power_u64(ell, k);
+        if (target > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+            throw std::overflow_error("Schirokauer lift modulus exceeds int64_t range");
+        }
 
         uint64_t modulus = ell;
         for (uint32_t step = 1; step < k; ++step) {
@@ -457,6 +472,9 @@ struct GFPolyOps {
             auto delta_h = divmod(num, g0, ell).first;
 
             // Update g and h
+            if (modulus > std::numeric_limits<uint64_t>::max() / ell) {
+                throw std::overflow_error("Schirokauer lift modulus overflows uint64_t");
+            }
             uint64_t new_mod = modulus * ell;
             for (size_t i = 0; i < g.size(); ++i) {
                 uint64_t dg = i < delta_g.size() ? delta_g[i] : 0;
@@ -976,21 +994,36 @@ private:
     void precompute_for_prime(uint32_t ell) {
         uint32_t k = config_.exponent_k;
 
+        if (ell < 2) {
+            throw std::invalid_argument("Schirokauer prime must be at least 2");
+        }
+        if (k == 0) {
+            throw std::invalid_argument("Schirokauer exponent_k must be positive");
+        }
+
         PrimeInfo info;
         info.ell = ell;
 
         // Compute ℓ^k (with overflow check)
-        info.ell_k = 1;
-        for (uint32_t i = 0; i < k; ++i) {
-            assert(info.ell_k <= UINT64_MAX / ell && "ell^k overflow");
-            info.ell_k *= ell;
+        info.ell_k = GFPolyOps::checked_power_u64(ell, k);
+        // The hot paths reduce signed a values using ell_k as an int64_t.
+        // Reject values that cannot be represented there instead of relying
+        // on an implementation-defined narrowing cast.
+        if (info.ell_k > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+            throw std::overflow_error("Schirokauer modulus exceeds int64_t range");
         }
         info.ell_k_minus_1 = info.ell_k / ell;
 
-        // Compute f(x) mod ℓ^k — mpz_fdiv_ui returns [0, ell_k - 1] directly
+        // Compute f(x) mod ℓ^k. Integer::mod is portable on LLP64 where the
+        // unsigned-long modulus accepted by mpz_fdiv_ui is only 32 bits.
+        const Integer modulus(info.ell_k);
         info.f_mod.fill(0);
         for (uint32_t i = 0; i <= degree_; ++i) {
-            info.f_mod[i] = static_cast<uint64_t>(mpz_fdiv_ui(ctx_.coeff(i).get_mpz(), info.ell_k));
+            Integer remainder;
+            Integer::mod(remainder, ctx_.coeff(i), modulus);
+            if (remainder.is_negative())
+                remainder += modulus;
+            info.f_mod[i] = remainder.to_uint64();
         }
 
         // Full Rabin irreducibility test (not just "no roots")
@@ -1004,10 +1037,7 @@ private:
         if (is_irred) {
             // f is irreducible mod ℓ — standard case
             info.is_split = false;
-            uint64_t q = 1;
-            for (uint32_t i = 0; i < degree_; ++i)
-                q *= ell;
-            info.exponent = q - 1;
+            info.exponent = GFPolyOps::checked_power_u64(ell, degree_) - 1;
         } else {
             // f is reducible mod ℓ — proper factorization using DDF + EDF
             info.is_split = true;
@@ -1039,10 +1069,7 @@ private:
         if (irred_factors.empty()) {
             info.is_split = false;
             info.factors.clear();
-            uint64_t q = 1;
-            for (uint32_t i = 0; i < degree_; ++i)
-                q *= ell;
-            info.exponent = q - 1;
+            info.exponent = GFPolyOps::checked_power_u64(ell, degree_) - 1;
             return; // compute_unsplit() will handle this
         }
 
@@ -1060,10 +1087,7 @@ private:
             for (size_t idx = 0; idx < irred_factors.size(); ++idx) {
                 FactorInfo fi;
                 fi.degree = static_cast<uint32_t>(irred_factors[idx].size()) - 1;
-                uint64_t q = 1;
-                for (uint32_t i = 0; i < fi.degree; ++i)
-                    q *= ell;
-                fi.exponent = q - 1;
+                fi.exponent = GFPolyOps::checked_power_u64(ell, fi.degree) - 1;
                 fi.f_mod.fill(0);
                 for (size_t i = 0; i < lifted[idx].size() && i <= FastPoly::MAX_DEGREE; ++i) {
                     fi.f_mod[i] = lifted[idx][i];
@@ -1120,10 +1144,7 @@ private:
             // Store the lifted factor
             FactorInfo fi;
             fi.degree = static_cast<uint32_t>(fac.size()) - 1;
-            uint64_t q = 1;
-            for (uint32_t i = 0; i < fi.degree; ++i)
-                q *= ell;
-            fi.exponent = q - 1;
+            fi.exponent = GFPolyOps::checked_power_u64(ell, fi.degree) - 1;
             fi.f_mod.fill(0);
             for (size_t i = 0; i < g_lift.size() && i <= FastPoly::MAX_DEGREE; ++i) {
                 fi.f_mod[i] = g_lift[i];
@@ -1136,10 +1157,7 @@ private:
         // which makes ALL dependencies trivial (same failure as Case 1).
         if (info.factors.empty()) {
             info.is_split = false;
-            uint64_t q = 1;
-            for (uint32_t i = 0; i < degree_; ++i)
-                q *= ell;
-            info.exponent = q - 1;
+            info.exponent = GFPolyOps::checked_power_u64(ell, degree_) - 1;
             return; // compute_unsplit() will handle this
         }
         // Otherwise, compute_split() will zero-pad remaining columns up to degree_
