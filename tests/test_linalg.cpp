@@ -31,6 +31,17 @@ void require_throws(Callable&& callable, const char* context) {
     throw std::runtime_error(std::string(context) + ": expected exception was not thrown");
 }
 
+template <typename Exception, typename Callable> bool throws_expected(Callable&& callable) {
+    try {
+        callable();
+    } catch (const Exception&) {
+        return true;
+    } catch (...) {
+        return false;
+    }
+    return false;
+}
+
 // Test SparseRow operations
 void test_sparse_row() {
     std::cout << "Testing SparseRow..." << std::endl;
