@@ -107,13 +107,13 @@ private:
         }
         const size_t sieve_size = static_cast<size_t>(small_prime_bound_) + 1;
         std::vector<bool> sieve(sieve_size, true);
-        if (small_prime_bound_ >= 1) sieve[0] = false;
-        if (small_prime_bound_ >= 2) sieve[1] = false;
+        if (small_prime_bound_ >= 1)
+            sieve[0] = false;
+        if (small_prime_bound_ >= 2)
+            sieve[1] = false;
         for (uint32_t i = 2; static_cast<uint64_t>(i) * i <= small_prime_bound_; ++i) {
             if (sieve[i]) {
-                for (uint64_t j = static_cast<uint64_t>(i) * i;
-                     j <= small_prime_bound_;
-                     j += i) {
+                for (uint64_t j = static_cast<uint64_t>(i) * i; j <= small_prime_bound_; j += i) {
                     sieve[j] = false;
                 }
             }
@@ -121,7 +121,8 @@ private:
         small_primes_.clear();
         small_primes_.reserve(small_prime_bound_ / 4 + 4);
         for (uint32_t i = 2; i <= small_prime_bound_; ++i) {
-            if (sieve[i]) small_primes_.push_back(i);
+            if (sieve[i])
+                small_primes_.push_back(i);
         }
     }
 };

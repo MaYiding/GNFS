@@ -1,6 +1,6 @@
 // Unit tests for base-m polynomial selection (BaseMSelector)
-#include "gnfs/polynomial/base_m.hpp"
 #include "gnfs/core/polynomial_context.hpp"
+#include "gnfs/polynomial/base_m.hpp"
 
 #include <cassert>
 #include <iostream>
@@ -11,7 +11,9 @@ using namespace gnfs::core;
 
 // ─── helpers ───────────────────────────────────────────────
 
-static Integer make_int(long long v) { return Integer(static_cast<int64_t>(v)); }
+static Integer make_int(long long v) {
+    return Integer(static_cast<int64_t>(v));
+}
 
 // ─── tests ───────────────────────────────────────────────────
 
@@ -29,10 +31,10 @@ void test_select_stability() {
         auto next = BaseMSelector::select(n, 3);
         assert(next.success);
         assert(next.degree == first.degree);
-        assert(next.m == first.m);   // 同一 m
+        assert(next.m == first.m); // 同一 m
         assert(next.f.degree() == first.f.degree());
         for (uint32_t i = 0; i <= first.f.degree(); ++i) {
-            assert(next.f[i] == first.f[i]);   // 同一系数
+            assert(next.f[i] == first.f[i]); // 同一系数
         }
     }
 
