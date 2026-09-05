@@ -10,7 +10,9 @@
 #include <gnfs/linalg/sge.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
 
+#include <cstdint>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -137,6 +139,29 @@ void test_sparse_matrix() {
     GNFS_TEST_CHECK(mat.test(1, 2));
 
     std::cout << "  SparseMatrix: PASSED" << std::endl;
+}
+
+void test_sparse_matrix_bounds() {
+    std::cout << "Testing SparseMatrix bounds..." << std::endl;
+
+    SparseMatrix matrix(1, 1);
+    require_throws<std::out_of_range>([&] { matrix.set(1, 0); }, "row set bounds");
+    require_throws<std::out_of_range>([&] { matrix.set(0, 1); }, "column set bounds");
+    require_throws<std::out_of_range>([&] { matrix.clear(1, 0); }, "row clear bounds");
+    require_throws<std::out_of_range>([&] { matrix.clear(0, 1); }, "column clear bounds");
+    require_throws<std::out_of_range>([&] { (void)matrix.test(1, 0); }, "row test bounds");
+    require_throws<std::out_of_range>([&] { (void)matrix.test(0, 1); }, "column test bounds");
+
+    if constexpr (sizeof(size_t) > sizeof(uint32_t)) {
+        const size_t too_many_columns =
+            static_cast<size_t>(std::numeric_limits<uint32_t>::max()) + size_t{1};
+        require_throws<std::invalid_argument>([&] { (void)SparseMatrix(0, too_many_columns); },
+                                              "constructor column narrowing");
+        require_throws<std::invalid_argument>([&] { matrix.set_num_cols(too_many_columns); },
+                                              "column count narrowing");
+    }
+
+    std::cout << "  SparseMatrix bounds: PASSED" << std::endl;
 }
 
 // Test SparseMatrix transpose
@@ -1408,6 +1433,7 @@ int main() {
     test_sparse_row();
     test_sparse_row_xor();
     test_sparse_matrix();
+    test_sparse_matrix_bounds();
     test_sparse_matrix_transpose();
     test_bitvector();
     test_gaussian_simple();
