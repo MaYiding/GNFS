@@ -83,6 +83,9 @@ struct Relation {
     static constexpr uint32_t MAX_SERIALIZED_EXTRA_AB_PAIRS = 1u << 16;
 
     void validate_persistence_limits() const {
+        if (b == 0) {
+            throw std::invalid_argument("Relation: b must be nonzero");
+        }
         if (rational_factors.size() > MAX_SERIALIZED_FACTORS) {
             throw std::length_error("Relation: rational factor count exceeds persistence limit");
         }
@@ -99,6 +102,11 @@ struct Relation {
         }
         if (extra_ab_pairs.size() > MAX_SERIALIZED_EXTRA_AB_PAIRS) {
             throw std::length_error("Relation: extra (a,b) count exceeds persistence limit");
+        }
+        for (const auto& pair : extra_ab_pairs) {
+            if (pair.second == 0) {
+                throw std::invalid_argument("Relation: extra (a,b) pair b must be nonzero");
+            }
         }
     }
 
@@ -190,6 +198,9 @@ struct Relation {
         // Core fields
         read_and_xor(&rel.a, sizeof(rel.a));
         read_and_xor(&rel.b, sizeof(rel.b));
+        if (rel.b == 0) {
+            throw std::runtime_error("Relation::deserialize: b must be nonzero");
+        }
 
         // Rational factors
         uint32_t rat_count;
@@ -248,6 +259,10 @@ struct Relation {
             uint64_t eb;
             read_and_xor(&ea, sizeof(ea));
             read_and_xor(&eb, sizeof(eb));
+            if (eb == 0) {
+                throw std::runtime_error(
+                    "Relation::deserialize: extra (a,b) pair b must be nonzero");
+            }
             rel.extra_ab_pairs.emplace_back(ea, eb);
         }
 

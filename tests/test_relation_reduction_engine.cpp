@@ -1146,7 +1146,7 @@ void test_structured_ooc_failure_preserves_authoritative_input() {
 void test_structured_ooc_post_prepare_failure_preserves_authoritative_input() {
     constexpr uint64_t generation = 712;
     auto input = make_shared_primary_corpus();
-    input[2].b = 0;
+    input[2].rational_large_prime = {{1, 0, 1}};
 
     OOCArtifacts input_artifacts(unique_ooc_base("post_prepare_failure_source"));
     OOCArtifacts working_artifacts(unique_ooc_base("post_prepare_failure_work"));
