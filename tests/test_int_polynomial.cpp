@@ -348,6 +348,22 @@ void test_translate() {
     Integer shifted_at_2 = shifted.evaluate(Integer(2));
     GNFS_TEST_CHECK(p_at_7.compare(shifted_at_2) == 0);
 
+    // IntPolynomial accepts arbitrary degrees. The translate implementation
+    // keeps its cached low-degree path while using GMP binomial coefficients
+    // above the cache boundary, where Release builds must remain safe too.
+    std::vector<Integer> high_degree_coeffs(18);
+    high_degree_coeffs[0] = Integer(5);
+    high_degree_coeffs[1] = Integer(-3);
+    high_degree_coeffs[7] = Integer(2);
+    high_degree_coeffs[17] = Integer(1);
+    IntPolynomial high_degree(std::move(high_degree_coeffs));
+    auto high_shifted = high_degree.translate(9);
+    GNFS_TEST_CHECK(high_shifted.degree() == 17);
+    const Integer high_input(4);
+    const Integer high_shifted_input(13);
+    GNFS_TEST_CHECK(
+        high_shifted.evaluate(high_input).compare(high_degree.evaluate(high_shifted_input)) == 0);
+
     std::cout << "  PASS" << std::endl;
 }
 
