@@ -213,7 +213,6 @@ private:
         bool distributed_size_gate_ok = false;
         bool distributed_force_small = false;
         bool distributed_route_selected = false;
-        std::uint64_t distributed_worker_timeout_ms = 0;
         bool stage_telemetry_enabled = false;
     };
 

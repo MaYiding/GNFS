@@ -143,29 +143,6 @@ RSS 采样策略为 `first_max_candidates`。Pipeline 只在当前批次候选�
 `after_generation` 在 Stage A workers 和 worker-local `LatticeSieve` 析构后采样，
 但仍保留全部 `SieveResult`。`after_cofactor` 在 candidate workers、chunk scratch
 和 worker-local `Cofactorizer` 析构后采样，此时输入与归并前输出仍在内存。
-
-## Distributed worker watchdog (`GNFS_DISTRIBUTED_SIEVE_WORKER_TIMEOUT_MS`)
-
-`DistributedSieveConfig::worker_timeout_ms` 和
-`GNFS_DISTRIBUTED_SIEVE_WORKER_TIMEOUT_MS=N` 为每个 distributed worker attempt
-提供可选的 wall-clock 上限，单位为毫秒。默认值为 `0`，表示不改变既有的无界等待
-语义；设置为正整数后，master 使用 `waitpid(..., WNOHANG)` 轮询，并在 deadline 到达
-时向仍存活的 direct child 发送 `SIGTERM`。经过 100ms 的宽限仍未退出时发送
-`SIGKILL`，随后始终执行 blocking `waitpid` 完成 reap。
-
-只有完成 terminal reap 的超时 attempt 才会进入现有的 retry/lease-cleanup 路径；超时
-本身归类为 retryable，不会被误判为 seed-provider fatal。若 waitpid 或最终 reap 失败，
-lease 继续保留且 retry 被抑制，沿用原有的 uncertain-lifecycle 保护。`0` 仍适用于
-调用方已经在更高层提供 deadline 的长任务；需要防止异常 cofactor 工作永久占用进程时，
-应显式配置一个足够宽裕的值，例如：
-
-```ini
-GNFS_DISTRIBUTED_SIEVE_WORKER_TIMEOUT_MS=3600000
-```
-
-非法、负数、溢出或空值解析为 `0`。Windows 继续返回 distributed route 不可用，字段
-仅为跨平台配置兼容而保留。超时只影响进程生命周期和重试，不改变成功 attempt 的
-relation 内容、顺序或 seeded 坐标。
 `after_release` 在输出移入 collector，并析构批次输入与输出 storage 后采样。
 它表示进程 current RSS，不表示这些对象独占的 bytes，也不保证小于前两个样本。
 
