@@ -234,6 +234,9 @@ public:
             throw std::invalid_argument(
                 "LatticeSieve region must have positive, representable dimensions");
         }
+        if (area > std::vector<uint16_t>{}.max_size()) {
+            throw std::length_error("LatticeSieve region exceeds vector storage limit");
+        }
         // Allocate for the requested region before publishing it. A plain
         // resize() retains the previous capacity when the region shrinks; the
         // default region can be about 512 MiB while a 50-digit production

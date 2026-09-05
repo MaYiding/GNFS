@@ -117,6 +117,48 @@ void test_sieve_region() {
     std::cout << "  Sieve region: PASS" << std::endl;
 }
 
+void test_sieve_region_extreme_bounds() {
+    std::cout << "Testing sieve region extreme bounds..." << std::endl;
+
+    const auto reversed_i = SieveRegion{10, 9, 1, 1};
+    const std::pair<int32_t, int32_t> reversed_sentinel{10, 1};
+    GNFS_TEST_CHECK(reversed_i.i_width() == 0);
+    GNFS_TEST_CHECK(reversed_i.size() == 0);
+    GNFS_TEST_CHECK(reversed_i.index_to_ij(0) == reversed_sentinel);
+    GNFS_TEST_CHECK(reversed_i.ij_to_index(10, 1) == 0);
+
+    const auto full_i =
+        SieveRegion{std::numeric_limits<int32_t>::min(), std::numeric_limits<int32_t>::max(), 1, 1};
+    GNFS_TEST_CHECK(full_i.i_width() == 0);
+    GNFS_TEST_CHECK(full_i.size() == 0);
+
+    const auto full_j =
+        SieveRegion{0, 0, std::numeric_limits<int32_t>::min(), std::numeric_limits<int32_t>::max()};
+    GNFS_TEST_CHECK(full_j.j_height() == 0);
+    GNFS_TEST_CHECK(full_j.size() == 0);
+
+    const auto ordinary = SieveRegion{-2, 1, -3, -2};
+    const std::pair<int32_t, int32_t> ordinary_sentinel{ordinary.i_min, ordinary.j_min};
+    GNFS_TEST_CHECK(ordinary.size() == 8);
+    GNFS_TEST_CHECK(ordinary.index_to_ij(ordinary.size()) == ordinary_sentinel);
+    GNFS_TEST_CHECK(ordinary.ij_to_index(ordinary.i_min - 1, ordinary.j_min) == ordinary.size());
+    GNFS_TEST_CHECK(ordinary.ij_to_index(ordinary.i_min, ordinary.j_max + 1) == ordinary.size());
+
+    const auto extreme_skew = default_sieve_region(std::numeric_limits<double>::max());
+    GNFS_TEST_CHECK(extreme_skew.i_width() > 0);
+    GNFS_TEST_CHECK(extreme_skew.j_height() > 0);
+    GNFS_TEST_CHECK(extreme_skew.size() <= size_t{256} * 1024 * 1024);
+
+    const auto invalid_skew = default_sieve_region(std::numeric_limits<double>::quiet_NaN());
+    const auto unit_skew = default_sieve_region(1.0);
+    GNFS_TEST_CHECK(invalid_skew.i_min == unit_skew.i_min);
+    GNFS_TEST_CHECK(invalid_skew.i_max == unit_skew.i_max);
+    GNFS_TEST_CHECK(invalid_skew.j_min == unit_skew.j_min);
+    GNFS_TEST_CHECK(invalid_skew.j_max == unit_skew.j_max);
+
+    std::cout << "  Sieve region extreme bounds: PASS" << std::endl;
+}
+
 void test_lattice_sieve_basic() {
     std::cout << "Testing basic lattice sieve..." << std::endl;
 
@@ -313,8 +355,9 @@ void test_lattice_sieve_storage_contract() {
         GNFS_TEST_CHECK(rejected);
         GNFS_TEST_CHECK(sieve.allocated_sieve_bytes() == allocation_before);
     };
+    expect_invalid_region(SieveRegion{10, 9, 1, 1});
     expect_invalid_region(SieveRegion{1, 0, 1, 1});
-    expect_invalid_region(SieveRegion{0, 0, 2, 1});
+    expect_invalid_region(SieveRegion{0, 0, 1, 0});
     expect_invalid_region(SieveRegion{
         std::numeric_limits<int32_t>::min(),
         std::numeric_limits<int32_t>::max(),
@@ -1292,6 +1335,7 @@ int main() {
 
     test_lattice_basis();
     test_sieve_region();
+    test_sieve_region_extreme_bounds();
     test_mod_inverse();
     test_default_region();
     test_lattice_sieve_storage_contract();
