@@ -310,6 +310,52 @@ void test_lattice_sieve_storage_contract() {
               << " bytes, small=" << small_allocated << " bytes)" << std::endl;
 }
 
+void test_lattice_sieve_compact_width_contract() {
+    std::cout << "Testing compact row-major width contract..." << std::endl;
+
+    Integer n(test_n);
+    auto selection = BaseMSelector::select(n, 3);
+    if (!selection.success) {
+        throw std::runtime_error("compact width fixture polynomial selection failed");
+    }
+    auto ctx = BaseMSelector::create_context(n, selection);
+
+    FactorBaseBuilder::Options fb_opts;
+    fb_opts.rational_bound = 500;
+    fb_opts.algebraic_bound = 500;
+    fb_opts.parallel = false;
+    auto fb = FactorBaseBuilder::build(ctx, fb_opts);
+
+    LatticeSieve sieve(ctx, fb);
+    SieveRegion accepted;
+    accepted.i_min = -16'384;
+    accepted.i_max = 16'383;
+    accepted.j_min = 1;
+    accepted.j_max = 1;
+    sieve.set_region(accepted);
+    if (accepted.i_width() != 32'768 ||
+        sieve.allocated_sieve_bytes() != accepted.size() * sizeof(uint16_t)) {
+        throw std::runtime_error("compact width boundary was not accepted exactly");
+    }
+
+    SieveRegion rejected = accepted;
+    ++rejected.i_max;
+    bool rejected_width = false;
+    try {
+        sieve.set_region(rejected);
+    } catch (const std::invalid_argument&) {
+        rejected_width = true;
+    }
+    if (!rejected_width) {
+        throw std::runtime_error("compact width above int16_t boundary was not rejected");
+    }
+    if (sieve.allocated_sieve_bytes() != accepted.size() * sizeof(uint16_t)) {
+        throw std::runtime_error("rejected compact width changed sieve storage");
+    }
+
+    std::cout << "  Compact width contract: PASS (32768 accepted, 32769 rejected)" << std::endl;
+}
+
 void test_lattice_sieve_special_q_entry_contract() {
     std::cout << "Testing lattice sieve special-q entry contract..." << std::endl;
 
@@ -441,6 +487,7 @@ int main() {
     test_mod_inverse();
     test_default_region();
     test_lattice_sieve_storage_contract();
+    test_lattice_sieve_compact_width_contract();
     test_lattice_sieve_special_q_entry_contract();
     test_lattice_sieve_basic();
     test_candidate_properties();
