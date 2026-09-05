@@ -6,6 +6,11 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#else
+#include <cerrno>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 #include "gnfs/linalg/krylov_sequence_mmap.hpp"
@@ -96,6 +101,35 @@ std::uintmax_t checked_file_size(const std::string& path) {
     GNFS_TEST_CHECK(!error);
     return size;
 }
+
+#ifndef _WIN32
+int find_fd_for_path(const std::string& path) {
+    struct stat expected {};
+    if (::stat(path.c_str(), &expected) != 0) {
+        return -1;
+    }
+    for (int descriptor = 0; descriptor < 1024; ++descriptor) {
+        struct stat observed {};
+        int result = -1;
+        do {
+            result = ::fstat(descriptor, &observed);
+        } while (result != 0 && errno == EINTR);
+        if (result == 0 && observed.st_dev == expected.st_dev &&
+            observed.st_ino == expected.st_ino) {
+            return descriptor;
+        }
+    }
+    return -1;
+}
+
+bool descriptor_has_cloexec(int descriptor) {
+    int flags = -1;
+    do {
+        flags = ::fcntl(descriptor, F_GETFD);
+    } while (flags < 0 && errno == EINTR);
+    return flags >= 0 && (flags & FD_CLOEXEC) != 0;
+}
+#endif
 
 void remove_existing_file(const std::string& path) {
     std::error_code error;
@@ -547,6 +581,35 @@ void test_remove_file() {
     std::cout << "  Path removal and idempotent retry: PASS\n";
 }
 
+void test_posix_descriptor_hygiene() {
+#ifdef _WIN32
+    std::cout << "  POSIX descriptor hygiene: SKIP on Windows\n";
+#else
+    std::cout << "Testing POSIX descriptor hygiene...\n";
+
+    const auto path = unique_path("descriptor_hygiene");
+    PathCleanup cleanup(path);
+    int descriptor = -1;
+    {
+        KrylovSequenceMmap sequence(path, 4, 64);
+        descriptor = find_fd_for_path(path);
+        GNFS_TEST_CHECK(descriptor >= 0);
+        GNFS_TEST_CHECK(descriptor_has_cloexec(descriptor));
+    }
+
+    errno = 0;
+    GNFS_TEST_CHECK(::fcntl(descriptor, F_GETFD) == -1 && errno == EBADF);
+    GNFS_TEST_CHECK(find_fd_for_path(path) < 0);
+
+    const std::string device_path = "/dev/null";
+    const int device_descriptor_before = find_fd_for_path(device_path);
+    GNFS_TEST_CHECK(
+        throws_as<std::runtime_error>([&] { (void)KrylovSequenceMmap(device_path, 1, 64); }));
+    GNFS_TEST_CHECK(find_fd_for_path(device_path) == device_descriptor_before);
+    std::cout << "  O_CLOEXEC and close release: PASS\n";
+#endif
+}
+
 } // namespace
 
 int main() {
@@ -562,6 +625,7 @@ int main() {
         test_invalid_args();
         test_move_semantics();
         test_remove_file();
+        test_posix_descriptor_hygiene();
 
         std::cout << "===== All KrylovSequenceMmap tests PASSED =====\n";
         return 0;
