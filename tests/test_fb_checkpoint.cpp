@@ -1,5 +1,5 @@
-#include "gnfs/factor_base/fb_checkpoint.hpp"
 #include "gnfs/core/polynomial_context.hpp"
+#include "gnfs/factor_base/fb_checkpoint.hpp"
 #include "gnfs/util/process.hpp"
 #include "gnfs/util/temp_path.hpp"
 
@@ -10,22 +10,25 @@
 #include <string>
 
 using namespace gnfs::factor_base;
+using gnfs::core::AlgebraicPrime;
 using gnfs::core::Integer;
 using gnfs::core::PolynomialContext;
 using gnfs::core::RationalPrime;
-using gnfs::core::AlgebraicPrime;
 
 static std::string tmp_ckpt_path(const char* label) {
     static int seq = 0;
     char buf[256];
-    std::snprintf(buf, sizeof(buf), "gnfs_test_fb_ckpt_%d_%d_%s",
-                  gnfs::util::process_id(), ++seq, label);
+    std::snprintf(buf, sizeof(buf), "gnfs_test_fb_ckpt_%d_%d_%s", gnfs::util::process_id(), ++seq,
+                  label);
     return gnfs::util::temp_path(buf);
 }
 
 struct CkptCleanup {
     std::string path;
-    ~CkptCleanup() { if (!path.empty()) std::remove(path.c_str()); }
+    ~CkptCleanup() {
+        if (!path.empty())
+            std::remove(path.c_str());
+    }
 };
 
 static PolynomialContext make_ctx() {
@@ -33,10 +36,7 @@ static PolynomialContext make_ctx() {
     coeffs.emplace_back(Integer(static_cast<int64_t>(-5)));
     coeffs.emplace_back(Integer(static_cast<int64_t>(3)));
     coeffs.emplace_back(Integer(static_cast<int64_t>(1)));
-    return PolynomialContext(Integer("123456789012345"),
-                             std::move(coeffs),
-                             Integer("9999"),
-                             1.0);
+    return PolynomialContext(Integer("123456789012345"), std::move(coeffs), Integer("9999"), 1.0);
 }
 
 void test_roundtrip_small_fb() {
@@ -54,11 +54,8 @@ void test_roundtrip_small_fb() {
     orig.ctx_n = Integer("314159265358979323846");
 
     orig.rational = {
-        RationalPrime(2, 16),
-        RationalPrime(3, 25),
-        RationalPrime(5, 37),
-        RationalPrime(7, 45),
-        RationalPrime(11, 55),
+        RationalPrime(2, 16), RationalPrime(3, 25),  RationalPrime(5, 37),
+        RationalPrime(7, 45), RationalPrime(11, 55),
     };
     orig.algebraic = {
         AlgebraicPrime(2, 1, 16, 1),
@@ -66,7 +63,7 @@ void test_roundtrip_small_fb() {
         AlgebraicPrime(5, AlgebraicPrime::PROJECTIVE_ROOT, 37, 2),
         AlgebraicPrime(7, 4, 45, 1),
     };
-    orig.sieve_algebraic_count = 3;  // First 3 are sieve range
+    orig.sieve_algebraic_count = 3; // First 3 are sieve range
 
     orig.save(path);
     auto loaded = FbCheckpoint::load(path);
@@ -148,8 +145,10 @@ void test_matches_ok() {
     std::cout << "Testing matches() Ok..." << std::endl;
     PolynomialContext ctx = make_ctx();
     FbCheckpoint ck;
-    ck.rational_bound = 100; ck.algebraic_bound = 100;
-    ck.special_q_bound = 200; ck.large_prime_bound = 10000;
+    ck.rational_bound = 100;
+    ck.algebraic_bound = 100;
+    ck.special_q_bound = 200;
+    ck.large_prime_bound = 10000;
     ck.log_scale = 16;
     ck.ctx_n = ctx.n();
     ck.ctx_degree = ctx.degree();
@@ -162,8 +161,10 @@ void test_matches_mismatch() {
     std::cout << "Testing matches() mismatches..." << std::endl;
     PolynomialContext ctx = make_ctx();
     FbCheckpoint ck;
-    ck.rational_bound = 100; ck.algebraic_bound = 100;
-    ck.special_q_bound = 200; ck.large_prime_bound = 10000;
+    ck.rational_bound = 100;
+    ck.algebraic_bound = 100;
+    ck.special_q_bound = 200;
+    ck.large_prime_bound = 10000;
     ck.log_scale = 16;
     ck.ctx_n = ctx.n();
     ck.ctx_degree = ctx.degree();
@@ -172,29 +173,26 @@ void test_matches_mismatch() {
     std::vector<Integer> ccs;
     ccs.emplace_back(Integer(static_cast<int64_t>(0)));
     ccs.emplace_back(Integer(static_cast<int64_t>(1)));
-    PolynomialContext other_n(Integer("99991"), std::move(ccs), Integer(static_cast<int64_t>(0)), 1.0);
-    assert(ck.matches(other_n, 100, 100, 200, 10000, 16) ==
-           FbCheckpoint::MatchStatus::NMismatch);
+    PolynomialContext other_n(Integer("99991"), std::move(ccs), Integer(static_cast<int64_t>(0)),
+                              1.0);
+    assert(ck.matches(other_n, 100, 100, 200, 10000, 16) == FbCheckpoint::MatchStatus::NMismatch);
 
     // Degree mismatch (synthesize new ctx with same N but degree 1)
     std::vector<Integer> ccs2;
     ccs2.emplace_back(Integer(static_cast<int64_t>(0)));
     ccs2.emplace_back(Integer(static_cast<int64_t>(1)));
-    PolynomialContext other_deg(Integer(ctx.n()), std::move(ccs2),
-                                Integer(ctx.m()), ctx.skewness());
+    PolynomialContext other_deg(Integer(ctx.n()), std::move(ccs2), Integer(ctx.m()),
+                                ctx.skewness());
     assert(other_deg.degree() == 1);
     assert(ck.matches(other_deg, 100, 100, 200, 10000, 16) ==
            FbCheckpoint::MatchStatus::DegreeMismatch);
 
     // Params mismatch: change rational_bound
-    assert(ck.matches(ctx, 101, 100, 200, 10000, 16) ==
-           FbCheckpoint::MatchStatus::ParamsMismatch);
+    assert(ck.matches(ctx, 101, 100, 200, 10000, 16) == FbCheckpoint::MatchStatus::ParamsMismatch);
     // Params mismatch: change log_scale
-    assert(ck.matches(ctx, 100, 100, 200, 10000, 8) ==
-           FbCheckpoint::MatchStatus::ParamsMismatch);
+    assert(ck.matches(ctx, 100, 100, 200, 10000, 8) == FbCheckpoint::MatchStatus::ParamsMismatch);
     // Params mismatch: change large_prime_bound
-    assert(ck.matches(ctx, 100, 100, 200, 99999, 16) ==
-           FbCheckpoint::MatchStatus::ParamsMismatch);
+    assert(ck.matches(ctx, 100, 100, 200, 99999, 16) == FbCheckpoint::MatchStatus::ParamsMismatch);
     std::cout << "  matches() mismatches: PASS" << std::endl;
 }
 
@@ -213,6 +211,34 @@ void test_empty_fb() {
     assert(loaded.algebraic.empty());
     assert(loaded.sieve_algebraic_count == 0);
     std::cout << "  Empty FB: PASS" << std::endl;
+}
+
+void test_sieve_count_invariants() {
+    std::cout << "Testing checkpoint sieve-count invariants..." << std::endl;
+
+    FbCheckpoint ck;
+    ck.ctx_n = Integer(static_cast<int64_t>(7));
+    ck.ctx_degree = 1;
+    ck.algebraic.emplace_back(3, 1, 16, 1);
+    ck.sieve_algebraic_count = 2;
+
+    bool save_threw = false;
+    try {
+        ck.save(tmp_ckpt_path("invalid_sieve_save"));
+    } catch (const std::runtime_error&) {
+        save_threw = true;
+    }
+    assert(save_threw);
+
+    bool rebuild_threw = false;
+    try {
+        (void)ck.to_factor_base();
+    } catch (const std::runtime_error&) {
+        rebuild_threw = true;
+    }
+    assert(rebuild_threw);
+
+    std::cout << "  Checkpoint sieve-count invariants: PASS" << std::endl;
 }
 
 void test_large_fb() {
@@ -260,8 +286,11 @@ void test_incomplete_magic_rejected() {
     }
     assert(!FbCheckpoint::exists_and_valid(path));
     bool threw = false;
-    try { (void) FbCheckpoint::load(path); }
-    catch (const std::runtime_error&) { threw = true; }
+    try {
+        (void)FbCheckpoint::load(path);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
     assert(threw);
     std::cout << "  INCOMPLETE rejected: PASS" << std::endl;
 }
@@ -278,8 +307,11 @@ void test_version_mismatch_rejected() {
         out.write(reinterpret_cast<const char*>(&version), 8);
     }
     bool threw = false;
-    try { (void) FbCheckpoint::load(path); }
-    catch (const std::runtime_error&) { threw = true; }
+    try {
+        (void)FbCheckpoint::load(path);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
     assert(threw);
     std::cout << "  Version mismatch: PASS" << std::endl;
 }
@@ -295,8 +327,11 @@ void test_remove_and_nonexistent() {
     assert(!FbCheckpoint::exists_and_valid(path));
 
     bool threw = false;
-    try { (void) FbCheckpoint::load(gnfs::util::temp_path("nonexistent_fbck_xx_99999")); }
-    catch (const std::runtime_error&) { threw = true; }
+    try {
+        (void)FbCheckpoint::load(gnfs::util::temp_path("nonexistent_fbck_xx_99999"));
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
     assert(threw);
     std::cout << "  Remove + nonexistent: PASS" << std::endl;
 }
@@ -308,6 +343,7 @@ int main() {
     test_matches_ok();
     test_matches_mismatch();
     test_empty_fb();
+    test_sieve_count_invariants();
     test_large_fb();
     test_incomplete_magic_rejected();
     test_version_mismatch_rejected();
