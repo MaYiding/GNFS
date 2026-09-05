@@ -44,7 +44,8 @@ struct NaiveResult {
 };
 
 NaiveResult naive_trial_divide(Integer value, size_t prime_bound) {
-    if (value.is_negative()) value.negate();
+    if (value.is_negative())
+        value.negate();
     if (value.fits_uint64() && value.to_uint64() == 0) {
         return {true, Integer{uint64_t{1}}};
     }
@@ -63,11 +64,14 @@ NaiveResult naive_trial_divide(Integer value, size_t prime_bound) {
     }
 
     for (size_t p = 2; p <= prime_bound; ++p) {
-        if (!is_prime[p]) continue;
+        if (!is_prime[p])
+            continue;
         if (value.fits_uint64()) {
             uint64_t v = value.to_uint64();
-            if (v == 1) break;
-            while (v != 0 && (v % p) == 0) v /= p;
+            if (v == 1)
+                break;
+            while (v != 0 && (v % p) == 0)
+                v /= p;
             value = v;
         } else {
             while (mpz_divisible_ui_p(value.get_mpz(), p) != 0) {
@@ -211,9 +215,10 @@ void test_all_smooth() {
 
     const size_t prime_bound = 100;
     std::vector<Integer> in = {
-        Integer{uint64_t{2}},    Integer{uint64_t{4}}, Integer{uint64_t{8}}, Integer{uint64_t{30}}, // 2*3*5
-        Integer{uint64_t{60}},                                                                      // 2^2*3*5
-        Integer{uint64_t{2310}},                                                                    // 2*3*5*7*11
+        Integer{uint64_t{2}},    Integer{uint64_t{4}},
+        Integer{uint64_t{8}},    Integer{uint64_t{30}}, // 2*3*5
+        Integer{uint64_t{60}},                          // 2^2*3*5
+        Integer{uint64_t{2310}},                        // 2*3*5*7*11
     };
 
     BatchTrialResult br = batch_trial_divide(in, prime_bound);
@@ -321,9 +326,12 @@ void test_big_integer_path() {
 
     // Construct 2^70 * 3^10 * 5^5 — smooth wrt B=100
     Integer smooth_big{uint64_t{1}};
-    for (int i = 0; i < 70; ++i) smooth_big *= int64_t{2};
-    for (int i = 0; i < 10; ++i) smooth_big *= int64_t{3};
-    for (int i = 0; i < 5; ++i) smooth_big *= int64_t{5};
+    for (int i = 0; i < 70; ++i)
+        smooth_big *= int64_t{2};
+    for (int i = 0; i < 10; ++i)
+        smooth_big *= int64_t{3};
+    for (int i = 0; i < 5; ++i)
+        smooth_big *= int64_t{5};
 
     // Construct (2^70 * 3^10 * 5^5) * 9973 — not smooth, remaining = 9973
     Integer nonsmooth_big = smooth_big;
@@ -349,7 +357,8 @@ void test_high_valuation() {
 
     // 2^300 takes the GMP path and exceeds the old artificial exp=255 cap.
     Integer high_power{uint64_t{1}};
-    for (int i = 0; i < 300; ++i) high_power *= int64_t{2};
+    for (int i = 0; i < 300; ++i)
+        high_power *= int64_t{2};
 
     const std::vector<Integer> in = {high_power};
     const BatchTrialResult br = batch_trial_divide(in, 2);
@@ -431,7 +440,8 @@ void test_thread_safety() {
     for (size_t t = 0; t < num_threads; ++t) {
         ths.emplace_back([&, t]() { results[t] = batch_trial_divide(in, prime_bound); });
     }
-    for (auto& th : ths) th.join();
+    for (auto& th : ths)
+        th.join();
 
     for (size_t t = 0; t < num_threads; ++t) {
         assert(results[t].size() == gold.size());
@@ -509,8 +519,8 @@ void test_random_soak() {
         for (size_t i = 0; i < K; ++i) {
             NaiveResult nr = naive_trial_divide(in[i], prime_bound);
             if (br.is_smooth[i] != nr.is_smooth || br.remaining[i].compare(nr.remaining) != 0) {
-                std::cerr << "\nMISMATCH iter=" << iter << " i=" << i << " in=" << in[i].to_string() << " br=("
-                          << br.is_smooth[i] << "," << br.remaining[i].to_string() << ")"
+                std::cerr << "\nMISMATCH iter=" << iter << " i=" << i << " in=" << in[i].to_string()
+                          << " br=(" << br.is_smooth[i] << "," << br.remaining[i].to_string() << ")"
                           << " nr=(" << nr.is_smooth << "," << nr.remaining.to_string() << ")\n";
                 assert(false);
             }

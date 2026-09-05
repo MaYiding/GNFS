@@ -39,7 +39,8 @@ public:
         /// May be overridden by ENV `GNFS_ECM_BRENT_SUYAMA` + `GNFS_ECM_BS_DEGREE`.
         uint32_t brent_suyama_degree;
 
-        Config() : num_curves(25), B1(10000), B2(1000000), auto_params(true), brent_suyama_degree(0) {}
+        Config()
+            : num_curves(25), B1(10000), B2(1000000), auto_params(true), brent_suyama_degree(0) {}
     };
 
     /// Explicit deterministic curve schedule. The stored order and count are
@@ -50,8 +51,8 @@ public:
 
     /// Build the exact deterministic sigma sequence for a seed.
     /// Every uint64_t seed is valid, including zero.
-    [[nodiscard]] static DeterministicCurveSchedule make_deterministic_curve_schedule(uint32_t num_curves,
-                                                                                      uint64_t seed) {
+    [[nodiscard]] static DeterministicCurveSchedule
+    make_deterministic_curve_schedule(uint32_t num_curves, uint64_t seed) {
         DeterministicCurveSchedule schedule;
         schedule.sigmas.reserve(num_curves);
 
@@ -168,7 +169,8 @@ public:
         // 走 batch path: 共享 primes_cache + prime_powers
         for (uint64_t sigma : cached_ctx.sigma_pool) {
             auto result = try_curve_with_pk(n, sigma, cached_ctx);
-            if (result) return result;
+            if (result)
+                return result;
         }
         return std::nullopt;
     }
@@ -179,12 +181,15 @@ public:
     /// overload reads neither ENV nor random_device, while retaining the
     /// thread-local B1 prime/power cache used by the ambient quick path.
     [[nodiscard]] static std::optional<Integer>
-    quick_factor(const Integer& n, const DeterministicCurveSchedule& schedule, uint32_t brent_suyama_degree = 0) {
+    quick_factor(const Integer& n, const DeterministicCurveSchedule& schedule,
+                 uint32_t brent_suyama_degree = 0) {
         validate_deterministic_curve_schedule(schedule);
         if (brent_suyama_degree != 0 && !brent_suyama::is_supported_degree(brent_suyama_degree)) {
-            throw std::invalid_argument("ECM deterministic quick Brent-Suyama degree is unsupported");
+            throw std::invalid_argument(
+                "ECM deterministic quick Brent-Suyama degree is unsupported");
         }
-        if (schedule.sigmas.empty() || !n.is_positive() || n.is_one() || n.is_probable_prime() > 0) {
+        if (schedule.sigmas.empty() || !n.is_positive() || n.is_one() ||
+            n.is_probable_prime() > 0) {
             return std::nullopt;
         }
 
@@ -224,13 +229,18 @@ public:
         /// Valid: 0, 1, 2, 6, 12, 30. See `brent_suyama::is_supported_degree`.
         uint32_t brent_suyama_degree = 0;
 
-        [[nodiscard]] bool empty() const noexcept { return primes_cache.empty(); }
-        [[nodiscard]] size_t num_curves() const noexcept { return sigma_pool.size(); }
+        [[nodiscard]] bool empty() const noexcept {
+            return primes_cache.empty();
+        }
+        [[nodiscard]] size_t num_curves() const noexcept {
+            return sigma_pool.size();
+        }
     };
 
     /// 构造 deterministic BatchContext (N-independent 共享数据).
     /// schedule 的顺序和数量是权威值，不读取 Config::num_curves.
-    [[nodiscard]] static BatchContext prepare_batch(const Config& config, const DeterministicCurveSchedule& schedule) {
+    [[nodiscard]] static BatchContext prepare_batch(const Config& config,
+                                                    const DeterministicCurveSchedule& schedule) {
         validate_deterministic_curve_schedule(schedule);
 
         BatchContext ctx;
@@ -247,7 +257,8 @@ public:
         ctx.prime_powers.reserve(ctx.primes_cache.size());
         for (uint64_t p : ctx.primes_cache) {
             uint64_t pk = p;
-            while (pk <= config.B1 / p) pk *= p; // 避免溢出
+            while (pk <= config.B1 / p)
+                pk *= p; // 避免溢出
             ctx.prime_powers.push_back(pk);
         }
 
@@ -271,8 +282,8 @@ public:
     /// Batch ECM: 对一批 cofactor 应用 ECM, 共享 N-independent 数据
     /// 返回 vector<optional<Integer>>, 与输入 ns 一一对应
     /// 单 cofactor 行为等价于 factor_with_batch(n, ctx)
-    [[nodiscard]] static std::vector<std::optional<Integer>> factor_batch(std::span<const Integer> ns,
-                                                                          const BatchContext& ctx) {
+    [[nodiscard]] static std::vector<std::optional<Integer>>
+    factor_batch(std::span<const Integer> ns, const BatchContext& ctx) {
         std::vector<std::optional<Integer>> results;
         results.reserve(ns.size());
         for (const Integer& n : ns) {
@@ -283,7 +294,8 @@ public:
 
     /// 单 cofactor 使用 BatchContext 共享数据
     /// 等价于 ECM::factor() 但跳过 primes_cache + prime_powers 重建
-    [[nodiscard]] static std::optional<Integer> factor_with_batch(const Integer& n, const BatchContext& ctx) {
+    [[nodiscard]] static std::optional<Integer> factor_with_batch(const Integer& n,
+                                                                  const BatchContext& ctx) {
         if (!n.is_positive() || n.is_one() || n.is_probable_prime() > 0) {
             return std::nullopt;
         }
@@ -301,8 +313,8 @@ public:
     }
 
 private:
-    [[nodiscard]] static DeterministicCurveSchedule make_seed256_curve_schedule(uint32_t num_curves,
-                                                                                const CofactorSeed256& seed) {
+    [[nodiscard]] static DeterministicCurveSchedule
+    make_seed256_curve_schedule(uint32_t num_curves, const CofactorSeed256& seed) {
         DeterministicCurveSchedule schedule;
         schedule.sigmas.reserve(num_curves);
 
@@ -315,7 +327,8 @@ private:
     static void validate_deterministic_curve_schedule(const DeterministicCurveSchedule& schedule) {
         for (uint64_t sigma : schedule.sigmas) {
             if (sigma < 6 || sigma > 1'000'005) {
-                throw std::invalid_argument("ECM deterministic curve sigma must be in [6, 1000005]");
+                throw std::invalid_argument(
+                    "ECM deterministic curve sigma must be in [6, 1000005]");
             }
         }
     }
@@ -380,7 +393,8 @@ private:
 
         // v = (x - z) mod n; v2 = v^2 mod n
         mpz_sub(v.get_mpz(), P.x.get_mpz(), P.z.get_mpz());
-        if (v.is_negative()) v += n;
+        if (v.is_negative())
+            v += n;
         v %= n;
         mpz_mul(v2.get_mpz(), v.get_mpz(), v.get_mpz());
         v2 %= n;
@@ -391,7 +405,8 @@ private:
 
         // w = (u^2 - v^2) mod n
         mpz_sub(w.get_mpz(), u2.get_mpz(), v2.get_mpz());
-        if (w.is_negative()) w += n;
+        if (w.is_negative())
+            w += n;
         w %= n;
 
         // z2 = w * (v^2 + a24 * w) mod n
@@ -414,7 +429,8 @@ private:
 
         // u = (Px - Pz) * (Qx + Qz) mod n — direct GMP ops
         mpz_sub(u.get_mpz(), P.x.get_mpz(), P.z.get_mpz());
-        if (u.is_negative()) u += n;
+        if (u.is_negative())
+            u += n;
         u %= n;
         mpz_add(t1.get_mpz(), Q.x.get_mpz(), Q.z.get_mpz());
         t1 %= n;
@@ -425,7 +441,8 @@ private:
         mpz_add(v.get_mpz(), P.x.get_mpz(), P.z.get_mpz());
         v %= n;
         mpz_sub(t2.get_mpz(), Q.x.get_mpz(), Q.z.get_mpz());
-        if (t2.is_negative()) t2 += n;
+        if (t2.is_negative())
+            t2 += n;
         t2 %= n;
         v *= t2;
         v %= n;
@@ -440,7 +457,8 @@ private:
 
         // zr = diff.x * (u - v)^2 mod n
         mpz_sub(dif.get_mpz(), u.get_mpz(), v.get_mpz());
-        if (dif.is_negative()) dif += n;
+        if (dif.is_negative())
+            dif += n;
         dif %= n;
         mpz_mul(dif2.get_mpz(), dif.get_mpz(), dif.get_mpz());
         dif2 %= n;
@@ -453,8 +471,10 @@ private:
     /// 蒙哥马利标量乘法: k * P
     /// 使用 double-and-add (Montgomery ladder)
     static Point mont_mul(const Point& P, uint64_t k, const Integer& a24, const Integer& n) {
-        if (k == 0) return Point(); // default ctor: (0, 1)
-        if (k == 1) return P;       // implicit copy ctor (Integer copy ctor)
+        if (k == 0)
+            return Point(); // default ctor: (0, 1)
+        if (k == 1)
+            return P; // implicit copy ctor (Integer copy ctor)
 
         Point R0 = P;
         Point R1 = mont_double(P, a24, n);
@@ -475,10 +495,13 @@ private:
     }
 
     /// 蒙哥马利标量乘法: k * P (Integer 版本)
-    static Point mont_mul_big(const Point& P, const Integer& k, const Integer& a24, const Integer& n) {
+    static Point mont_mul_big(const Point& P, const Integer& k, const Integer& a24,
+                              const Integer& n) {
         size_t bits = k.bit_length();
-        if (bits == 0) return Point(); // default ctor: (0, 1)
-        if (bits == 1) return P;       // implicit copy ctor
+        if (bits == 0)
+            return Point(); // default ctor: (0, 1)
+        if (bits == 1)
+            return P; // implicit copy ctor
 
         Point R0 = P;
         Point R1 = mont_double(P, a24, n);
@@ -498,7 +521,8 @@ private:
 
     /// 简单素数筛 (用于 Stage 1，bound 较小)
     static std::vector<uint64_t> sieve_primes(uint64_t bound) {
-        if (bound < 2) return {};
+        if (bound < 2)
+            return {};
         constexpr uint64_t kMaxSieveBound = 100'000'000;
         if (bound > kMaxSieveBound) {
             throw std::invalid_argument("ECM sieve prime bound exceeds sieve cap (100M)");
@@ -515,10 +539,11 @@ private:
         }
         std::vector<uint64_t> primes;
         // π(bound) ≈ bound / ln(bound) — reserve to avoid log(n) reallocs.
-        primes.reserve(
-            static_cast<size_t>(static_cast<double>(bound) / std::max(std::log(static_cast<double>(bound)), 1.0)));
+        primes.reserve(static_cast<size_t>(static_cast<double>(bound) /
+                                           std::max(std::log(static_cast<double>(bound)), 1.0)));
         for (uint64_t i = 2; i <= bound; ++i) {
-            if (is_prime[i]) primes.push_back(i);
+            if (is_prime[i])
+                primes.push_back(i);
         }
         return primes;
     }
@@ -526,8 +551,10 @@ private:
     /// 分段筛法: 对 (low, high] 中的每个素数调用 callback
     /// callback 返回 false 表示提前终止
     /// 内存: O(√high + SEGMENT_SIZE) 而非 O(high)
-    template <typename Callback> static void for_each_prime_in_range(uint64_t low, uint64_t high, Callback&& callback) {
-        if (high <= low) return;
+    template <typename Callback>
+    static void for_each_prime_in_range(uint64_t low, uint64_t high, Callback&& callback) {
+        if (high <= low)
+            return;
 
         // 筛出 ≤ √high 的小素数
         uint64_t sqrt_high = static_cast<uint64_t>(std::sqrt(static_cast<double>(high))) + 1;
@@ -544,11 +571,13 @@ private:
 
             // 用小素数标记合数
             for (uint64_t p : small_primes) {
-                if (p * p > seg_hi) break;
+                if (p * p > seg_hi)
+                    break;
 
                 // 段内第一个 p 的倍数
                 uint64_t start = ((seg_lo + p - 1) / p) * p;
-                if (start == p) start += p; // 不标记 p 本身
+                if (start == p)
+                    start += p; // 不标记 p 本身
 
                 for (uint64_t j = start; j <= seg_hi; j += p) {
                     is_prime_seg[j - seg_lo] = false;
@@ -565,7 +594,8 @@ private:
             // 回调每个素数，返回 false 则提前终止
             for (uint64_t i = 0; i < seg_len; ++i) {
                 if (is_prime_seg[i]) {
-                    if (!callback(seg_lo + i)) return;
+                    if (!callback(seg_lo + i))
+                        return;
                 }
             }
         }
@@ -608,7 +638,8 @@ private:
 
         Integer diff;
         mpz_sub(diff.get_mpz(), v.get_mpz(), u.get_mpz());
-        if (diff.is_negative()) diff += n;
+        if (diff.is_negative())
+            diff += n;
         diff %= n;
 
         Integer diff3;
@@ -631,7 +662,8 @@ private:
 
         Integer g = core::gcd(denom, n);
         if (!g.is_one()) {
-            if (g.compare(n) == 0) return std::nullopt;
+            if (g.compare(n) == 0)
+                return std::nullopt;
             return g;
         }
 
@@ -657,7 +689,8 @@ private:
             if (p % 100 == 97) {
                 Integer g2 = core::gcd(Q.z, n);
                 if (!g2.is_one()) {
-                    if (g2.compare(n) == 0) return std::nullopt;
+                    if (g2.compare(n) == 0)
+                        return std::nullopt;
                     return g2;
                 }
             }
@@ -665,7 +698,8 @@ private:
 
         Integer g_final = core::gcd(Q.z, n);
         if (!g_final.is_one()) {
-            if (g_final.compare(n) == 0) return std::nullopt;
+            if (g_final.compare(n) == 0)
+                return std::nullopt;
             return g_final;
         }
 
@@ -673,8 +707,10 @@ private:
         // Stage 3 (Brent-Suyama) opt-in via ctx.brent_suyama_degree > 0
         if (ctx.B2 > ctx.B1) {
             std::optional<Integer> stage2_result;
-            if (ctx.brent_suyama_degree > 0 && brent_suyama::is_supported_degree(ctx.brent_suyama_degree)) {
-                stage2_result = stage2_brent_suyama(Q, n, a24, ctx.B1, ctx.B2, ctx.brent_suyama_degree);
+            if (ctx.brent_suyama_degree > 0 &&
+                brent_suyama::is_supported_degree(ctx.brent_suyama_degree)) {
+                stage2_result =
+                    stage2_brent_suyama(Q, n, a24, ctx.B1, ctx.B2, ctx.brent_suyama_degree);
             } else {
                 stage2_result = stage2(Q, n, a24, ctx.B1, ctx.B2);
             }
@@ -687,8 +723,9 @@ private:
     }
 
     /// 尝试一条曲线
-    [[nodiscard]] static std::optional<Integer> try_curve(const Integer& n, uint64_t sigma, uint64_t B1, uint64_t B2,
-                                                          const std::vector<uint64_t>& primes_cache = {}) {
+    [[nodiscard]] static std::optional<Integer>
+    try_curve(const Integer& n, uint64_t sigma, uint64_t B1, uint64_t B2,
+              const std::vector<uint64_t>& primes_cache = {}) {
 
         // Suyama's parametrization 要求 sigma >= 6,否则 sigma²-5 在 uint64
         // 下下溢成巨大值,数学上得不到有效曲线。
@@ -716,7 +753,8 @@ private:
         // 如果逆元不存在，我们就找到了因子!
         Integer diff;
         mpz_sub(diff.get_mpz(), v.get_mpz(), u.get_mpz()); // diff = v - u (skip clone+sub)
-        if (diff.is_negative()) diff += n;
+        if (diff.is_negative())
+            diff += n;
         diff %= n;
 
         // diff^3 mod n via mpz_powm_ui (combines mul + mod)
@@ -745,7 +783,8 @@ private:
         Integer g = core::gcd(denom, n);
         if (!g.is_one()) {
             // g > 1 → g == n (退化) 或 1 < g < n (lucky factor)
-            if (g.compare(n) == 0) return std::nullopt;
+            if (g.compare(n) == 0)
+                return std::nullopt;
             return g;
         }
 
@@ -777,7 +816,8 @@ private:
         for (uint64_t p : primes) {
             // 计算 p^e <= B1 的最大 e
             uint64_t pk = p;
-            while (pk <= B1 / p) pk *= p; // 避免溢出
+            while (pk <= B1 / p)
+                pk *= p; // 避免溢出
 
             Q = mont_mul(Q, pk, a24, n);
 
@@ -785,7 +825,8 @@ private:
             if (p % 100 == 97) { // 每 ~100 个素数检查一次
                 Integer g2 = core::gcd(Q.z, n);
                 if (!g2.is_one()) {
-                    if (g2.compare(n) == 0) return std::nullopt; // 太多因子被消除
+                    if (g2.compare(n) == 0)
+                        return std::nullopt; // 太多因子被消除
                     return g2;
                 }
             }
@@ -794,7 +835,8 @@ private:
         // Stage 1 最终检查 (v22: gcd 无需 clone; 单次 compare(n) 缓存)
         Integer g_final = core::gcd(Q.z, n);
         if (!g_final.is_one()) {
-            if (g_final.compare(n) == 0) return std::nullopt;
+            if (g_final.compare(n) == 0)
+                return std::nullopt;
             return g_final;
         }
 
@@ -817,8 +859,8 @@ private:
     /// 检测: 若 p*Q = O (mod factor)，则 j·D*Q 和 d*Q 同 x 坐标，
     ///        cross product X_j·Z_d - X_d·Z_j ≡ 0 (mod factor)
     /// 复杂度: O(D) baby + O((B2-B1)/D) giant 曲线运算 + O(φ(D)·(B2-B1)/D) 模乘
-    [[nodiscard]] static std::optional<Integer> stage2(const Point& Q0, const Integer& n, const Integer& a24,
-                                                       uint64_t B1, uint64_t B2) {
+    [[nodiscard]] static std::optional<Integer>
+    stage2(const Point& Q0, const Integer& n, const Integer& a24, uint64_t B1, uint64_t B2) {
 
         constexpr uint64_t D = 2310; // 2·3·5·7·11, φ(D)=480
 
@@ -861,9 +903,11 @@ private:
         // 把 baby step 的随机数据当成 cross product 累入,污染 GCD。
         // 后面 G_curr 用 (j_lo+1)*D 也会跳过 [B1, D] 区间的素数。
         // 修复:把 j_lo 上调到 1,保证 j_lo*D ≥ D > B1 时仍覆盖 D 以下素数已在 Stage1 处理。
-        if (j_lo == 0) j_lo = 1;
+        if (j_lo == 0)
+            j_lo = 1;
         uint64_t j_hi = (B2 + D - 1) / D; // 最大 j 使得 (j-1)*D < B2
-        if (j_lo > j_hi) return std::nullopt;
+        if (j_lo > j_hi)
+            return std::nullopt;
 
         // 两次 mont_mul 初始化差分链
         Point G_prev = mont_mul(Q0, j_lo * D, a24, n);
@@ -890,7 +934,8 @@ private:
                 t *= G.z;
                 t %= n;
                 c -= t;
-                if (c.is_negative()) c += n;
+                if (c.is_negative())
+                    c += n;
                 if (c.is_zero()) {
                     // c=0 means G and baby represent same point — factor may be in Z coordinate
                     Integer g = gcd(G.z, n);
@@ -915,14 +960,17 @@ private:
                 return std::nullopt;
             }
             Integer g = core::gcd(accum, n);
-            if (!g.is_one() && g.compare(n) != 0) return g;
+            if (!g.is_one() && g.compare(n) != 0)
+                return g;
             if (g.compare(n) == 0) {
                 // gcd == n: 回退到朴素实现
                 uint64_t lo = (batch_start_j > 0 ? batch_start_j - 1 : 0) * D;
-                if (lo < B1) lo = B1;
+                if (lo < B1)
+                    lo = B1;
                 uint64_t hi = std::min((j_current + 1) * D, B2);
                 auto fb = stage2_naive(Q0, n, a24, lo, hi);
-                if (fb) return fb;
+                if (fb)
+                    return fb;
             }
             accum = int64_t(1); // mpz_set_si direct
             batch_start_j = j_current + 1;
@@ -931,21 +979,24 @@ private:
         };
 
         // 处理 j = j_lo
-        if (auto f = accumulate_step(G_prev)) return f;
+        if (auto f = accumulate_step(G_prev))
+            return f;
 
         if (j_lo == j_hi) {
             return check_batch(j_lo);
         }
 
         // 处理 j = j_lo + 1
-        if (auto f = accumulate_step(G_curr)) return f;
+        if (auto f = accumulate_step(G_curr))
+            return f;
 
         // 差分链: j = j_lo + 2, j_lo + 3, ...
         for (uint64_t j = j_lo + 2; j <= j_hi; ++j) {
             // 定期 gcd 检查
             if (steps_in_batch >= BATCH_SIZE) {
                 auto r = check_batch(j - 1);
-                if (r) return r;
+                if (r)
+                    return r;
             }
 
             // 推进链: G_next = G_curr + Q_D, diff = G_prev
@@ -953,7 +1004,8 @@ private:
             G_prev = std::move(G_curr);
             G_curr = std::move(G_next);
 
-            if (auto f = accumulate_step(G_curr)) return f;
+            if (auto f = accumulate_step(G_curr))
+                return f;
         }
 
         // 最终检查
@@ -972,11 +1024,13 @@ private:
     ///   (1986), Australian Computer Science Communications, §4.2.
     ///   Suyama, "Informal preliminary report (8)" (1985), unpublished
     ///   manuscript on ECM Stage 2 polynomial extensions.
-    [[nodiscard]] static std::optional<Integer> stage2_brent_suyama(const Point& Q0, const Integer& n,
-                                                                    const Integer& a24, uint64_t B1, uint64_t B2,
-                                                                    uint32_t degree) {
+    [[nodiscard]] static std::optional<Integer> stage2_brent_suyama(const Point& Q0,
+                                                                    const Integer& n,
+                                                                    const Integer& a24, uint64_t B1,
+                                                                    uint64_t B2, uint32_t degree) {
 
-        assert(brent_suyama::is_supported_degree(degree) && "stage2_brent_suyama: degree must be 1, 2, 6, 12, or 30");
+        assert(brent_suyama::is_supported_degree(degree) &&
+               "stage2_brent_suyama: degree must be 1, 2, 6, 12, or 30");
 
         constexpr uint64_t D = 2310; // 2·3·5·7·11, φ(D)=480
 
@@ -1010,9 +1064,11 @@ private:
 
         // === Phase 2: Giant steps ===
         uint64_t j_lo = B1 / D;
-        if (j_lo == 0) j_lo = 1; // Same fix as stage2(): avoid j_lo=0 garbage
+        if (j_lo == 0)
+            j_lo = 1; // Same fix as stage2(): avoid j_lo=0 garbage
         uint64_t j_hi = (B2 + D - 1) / D;
-        if (j_lo > j_hi) return std::nullopt;
+        if (j_lo > j_hi)
+            return std::nullopt;
 
         Point G_prev = mont_mul(Q0, j_lo * D, a24, n);
         Point G_curr = (j_lo < j_hi) ? mont_mul(Q0, (j_lo + 1) * D, a24, n) : Point();
@@ -1033,8 +1089,8 @@ private:
             brent_suyama::evaluate_polynomial(F_giant_z_pow, G.z, degree, n);
 
             for (const auto& b : baby) {
-                bool coincide =
-                    brent_suyama::accumulate_cross_product(accum, b, F_giant_x_pow, F_giant_z_pow, n, tmp1, tmp2);
+                bool coincide = brent_suyama::accumulate_cross_product(
+                    accum, b, F_giant_x_pow, F_giant_z_pow, n, tmp1, tmp2);
                 if (coincide) {
                     // F(G) and F(b) coincide mod factor -- gcd(F_giant_z_pow, n)
                     // or gcd(G.z, n) may extract it. F_giant_z_pow == G.z^degree
@@ -1058,14 +1114,17 @@ private:
                 return std::nullopt;
             }
             Integer g = core::gcd(accum, n);
-            if (!g.is_one() && g.compare(n) != 0) return g;
+            if (!g.is_one() && g.compare(n) != 0)
+                return g;
             if (g.compare(n) == 0) {
                 // gcd == n: fall back to naive on the suspect range
                 uint64_t lo = (batch_start_j > 0 ? batch_start_j - 1 : 0) * D;
-                if (lo < B1) lo = B1;
+                if (lo < B1)
+                    lo = B1;
                 uint64_t hi = std::min((j_current + 1) * D, B2);
                 auto fb = stage2_naive(Q0, n, a24, lo, hi);
-                if (fb) return fb;
+                if (fb)
+                    return fb;
             }
             accum = int64_t(1);
             batch_start_j = j_current + 1;
@@ -1073,25 +1132,29 @@ private:
             return std::nullopt;
         };
 
-        if (auto f = accumulate_step(G_prev)) return f;
+        if (auto f = accumulate_step(G_prev))
+            return f;
 
         if (j_lo == j_hi) {
             return check_batch(j_lo);
         }
 
-        if (auto f = accumulate_step(G_curr)) return f;
+        if (auto f = accumulate_step(G_curr))
+            return f;
 
         for (uint64_t j = j_lo + 2; j <= j_hi; ++j) {
             if (steps_in_batch >= BATCH_SIZE) {
                 auto r = check_batch(j - 1);
-                if (r) return r;
+                if (r)
+                    return r;
             }
 
             Point G_next = mont_add(G_curr, Q_D, G_prev, n);
             G_prev = std::move(G_curr);
             G_curr = std::move(G_next);
 
-            if (auto f = accumulate_step(G_curr)) return f;
+            if (auto f = accumulate_step(G_curr))
+                return f;
         }
 
         return check_batch(j_hi);
@@ -1107,8 +1170,10 @@ private:
     /// untouched (caller-supplied or default 0 = OFF).
     static void apply_brent_suyama_env(Config& config) {
         const char* enable = std::getenv("GNFS_ECM_BRENT_SUYAMA");
-        if (enable == nullptr) return;
-        if (std::strcmp(enable, "1") != 0) return;
+        if (enable == nullptr)
+            return;
+        if (std::strcmp(enable, "1") != 0)
+            return;
 
         uint32_t deg = brent_suyama::DEFAULT_DEGREE;
         const char* deg_env = std::getenv("GNFS_ECM_BS_DEGREE");
@@ -1124,8 +1189,8 @@ private:
     }
 
     /// Stage 2 朴素实现: 逐素数 mont_mul (用于 BSGS 回退或小范围)
-    [[nodiscard]] static std::optional<Integer> stage2_naive(const Point& Q0, const Integer& n, const Integer& a24,
-                                                             uint64_t B1, uint64_t B2) {
+    [[nodiscard]] static std::optional<Integer>
+    stage2_naive(const Point& Q0, const Integer& n, const Integer& a24, uint64_t B1, uint64_t B2) {
 
         Integer accum(1);
         Point Qcurr = Q0; // copy ctor (Integer fields auto-clone)
@@ -1169,17 +1234,20 @@ private:
             return true;
         });
 
-        if (found) return found;
+        if (found)
+            return found;
 
         // v22: gcd 无需 clone
         Integer g = core::gcd(accum, n);
-        if (!g.is_one() && g.compare(n) != 0) return g;
+        if (!g.is_one() && g.compare(n) != 0)
+            return g;
         if (g.compare(n) == 0 && !batch_primes.empty()) {
             Point Q_retry = checkpoint; // Point copy ctor (Integer x/z have copy ctor)
             for (uint64_t bp : batch_primes) {
                 Q_retry = mont_mul(Q_retry, bp, a24, n);
                 Integer gi = core::gcd(Q_retry.z, n); // v22
-                if (!gi.is_one() && gi.compare(n) != 0) return gi;
+                if (!gi.is_one() && gi.compare(n) != 0)
+                    return gi;
             }
         }
         return std::nullopt;

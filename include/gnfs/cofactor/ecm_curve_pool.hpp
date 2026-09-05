@@ -107,7 +107,8 @@ struct CachedCurve {
     // diff = v - u mod n.
     Integer diff;
     mpz_sub(diff.get_mpz(), v.get_mpz(), u.get_mpz());
-    if (diff.is_negative()) diff += n;
+    if (diff.is_negative())
+        diff += n;
     diff %= n;
 
     Integer diff3;
@@ -186,13 +187,16 @@ public:
     ///
     /// `parallel_threads = 0` selects a sensible default
     /// (`std::thread::hardware_concurrency()` capped at 8).
-    explicit EcmCurvePool(size_t pool_size, const Integer& n, std::vector<uint64_t> sigmas, size_t parallel_threads = 0)
+    explicit EcmCurvePool(size_t pool_size, const Integer& n, std::vector<uint64_t> sigmas,
+                          size_t parallel_threads = 0)
         : n_(n), sigmas_(std::move(sigmas)), next_sigma_idx_(0) {
-        if (pool_size == 0) return;
+        if (pool_size == 0)
+            return;
 
         // Clamp to available sigmas.
         size_t to_build = std::min(pool_size, sigmas_.size());
-        if (to_build == 0) return;
+        if (to_build == 0)
+            return;
 
         pool_.reserve(to_build);
 
@@ -202,10 +206,13 @@ public:
             uint32_t nthreads = static_cast<uint32_t>(parallel_threads);
             if (nthreads == 0) {
                 nthreads = std::thread::hardware_concurrency();
-                if (nthreads == 0) nthreads = 4;
-                if (nthreads > 8) nthreads = 8;
+                if (nthreads == 0)
+                    nthreads = 4;
+                if (nthreads > 8)
+                    nthreads = 8;
             }
-            if (nthreads > to_build) nthreads = static_cast<uint32_t>(to_build);
+            if (nthreads > to_build)
+                nthreads = static_cast<uint32_t>(to_build);
 
             util::ThreadPool tp(nthreads);
             std::vector<std::future<CachedCurve>> futures;
@@ -271,10 +278,14 @@ public:
 
     /// Sigma index that the next synchronous-fallback `pop_curve` would use.
     /// Exposed for tests / diagnostics.
-    [[nodiscard]] size_t next_sigma_index() const noexcept { return next_sigma_idx_.load(std::memory_order_relaxed); }
+    [[nodiscard]] size_t next_sigma_index() const noexcept {
+        return next_sigma_idx_.load(std::memory_order_relaxed);
+    }
 
     /// Total sigmas remembered (pool capacity hint + fallback reserve).
-    [[nodiscard]] size_t total_sigmas() const noexcept { return sigmas_.size(); }
+    [[nodiscard]] size_t total_sigmas() const noexcept {
+        return sigmas_.size();
+    }
 
 private:
     Integer n_;
@@ -291,13 +302,17 @@ private:
 /// Otherwise returns the parsed pool size, capped at 1024.
 [[nodiscard]] inline size_t ecm_curve_pool_size_from_env() noexcept {
     const char* env = std::getenv("GNFS_ECM_CURVE_POOL");
-    if (env == nullptr || env[0] == '\0') return 0;
+    if (env == nullptr || env[0] == '\0')
+        return 0;
 
     char* end = nullptr;
     unsigned long parsed = std::strtoul(env, &end, 10);
-    if (end == env) return 0;
-    if (parsed < 4) return 0;
-    if (parsed > 1024) parsed = 1024;
+    if (end == env)
+        return 0;
+    if (parsed < 4)
+        return 0;
+    if (parsed > 1024)
+        parsed = 1024;
     return static_cast<size_t>(parsed);
 }
 

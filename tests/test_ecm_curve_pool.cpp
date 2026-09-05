@@ -40,7 +40,8 @@ namespace {
 std::vector<uint64_t> make_sigmas(uint64_t start, size_t count) {
     std::vector<uint64_t> sg;
     sg.reserve(count);
-    for (size_t i = 0; i < count; ++i) sg.push_back(start + i);
+    for (size_t i = 0; i < count; ++i)
+        sg.push_back(start + i);
     return sg;
 }
 
@@ -57,7 +58,8 @@ struct RefCurve {
 RefCurve ref_suyama(const Integer& n, uint64_t sigma) {
     RefCurve r;
     r.valid = false;
-    if (sigma < 6) return r;
+    if (sigma < 6)
+        return r;
 
     Integer u(static_cast<unsigned long long>(sigma * sigma - 5));
     u %= n;
@@ -69,7 +71,8 @@ RefCurve ref_suyama(const Integer& n, uint64_t sigma) {
     mpz_powm_ui(z0.get_mpz(), v.get_mpz(), 3, n.get_mpz());
     Integer diff;
     mpz_sub(diff.get_mpz(), v.get_mpz(), u.get_mpz());
-    if (diff.is_negative()) diff += n;
+    if (diff.is_negative())
+        diff += n;
     diff %= n;
     Integer diff3;
     mpz_powm_ui(diff3.get_mpz(), diff.get_mpz(), 3, n.get_mpz());
@@ -286,7 +289,8 @@ void test_numeric_boundaries() {
     // This used to wrap sigma*sigma and 4*sigma before reaching GMP. A prime
     // modulus keeps the setup away from the intentional lucky-factor branch.
     const Integer prime_modulus("6700417");
-    const CachedCurve wide = build_suyama_curve(prime_modulus, std::numeric_limits<uint64_t>::max());
+    const CachedCurve wide =
+        build_suyama_curve(prime_modulus, std::numeric_limits<uint64_t>::max());
     assert(wide.valid);
     assert(!wide.lucky_factor.has_value());
 
@@ -355,7 +359,8 @@ void test_parallel_pop() {
         ths.emplace_back([&]() {
             for (size_t i = 0; i < PER_THREAD; ++i) {
                 CachedCurve c = pool.pop_curve();
-                if (!c.valid) continue;
+                if (!c.valid)
+                    continue;
                 {
                     std::lock_guard<std::mutex> lock(seen_mu);
                     // Sigma must be unique across threads.
@@ -366,7 +371,8 @@ void test_parallel_pop() {
             }
         });
     }
-    for (auto& th : ths) th.join();
+    for (auto& th : ths)
+        th.join();
 
     // All POOL curves should have been dispensed exactly once.
     assert(ok_count.load() == POOL);

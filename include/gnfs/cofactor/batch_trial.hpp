@@ -66,8 +66,12 @@ struct BatchTrialResult {
     std::vector<bool> is_smooth;
     std::vector<Integer> remaining;
 
-    [[nodiscard]] size_t size() const noexcept { return is_smooth.size(); }
-    [[nodiscard]] bool empty() const noexcept { return is_smooth.empty(); }
+    [[nodiscard]] size_t size() const noexcept {
+        return is_smooth.size();
+    }
+    [[nodiscard]] bool empty() const noexcept {
+        return is_smooth.empty();
+    }
 };
 
 namespace detail {
@@ -101,7 +105,8 @@ inline void validate_batch_trial_prime_bound(size_t prime_bound) {
     std::lock_guard<std::mutex> lock(mu);
     validate_batch_trial_prime_bound(prime_bound);
     for (const auto& e : cache) {
-        if (e.bound == prime_bound) return e.primes;
+        if (e.bound == prime_bound)
+            return e.primes;
     }
 
     // Eratosthenes sieve to prime_bound (inclusive).
@@ -122,11 +127,13 @@ inline void validate_batch_trial_prime_bound(size_t prime_bound) {
         }
     }
     // π(n) ≈ n / ln(n); reserve approximate count to avoid log(n) reallocs.
-    size_t approx_pi = static_cast<size_t>(static_cast<double>(prime_bound) /
-                                           std::max(1.0, std::log(static_cast<double>(prime_bound))));
+    size_t approx_pi =
+        static_cast<size_t>(static_cast<double>(prime_bound) /
+                            std::max(1.0, std::log(static_cast<double>(prime_bound))));
     entry.primes.reserve(approx_pi + 16);
     for (size_t i = 2; i <= prime_bound; ++i) {
-        if (is_prime[i]) entry.primes.push_back(static_cast<uint64_t>(i));
+        if (is_prime[i])
+            entry.primes.push_back(static_cast<uint64_t>(i));
     }
 
     cache.push_back(std::move(entry));
@@ -166,7 +173,8 @@ inline void strip_prime_inplace(Integer& value, uint32_t p) {
 ///
 /// Determinism: deterministic; identical inputs produce identical results.
 /// Thread-safety: safe to call concurrently; lazy primes table is built once.
-[[nodiscard]] inline BatchTrialResult batch_trial_divide(std::span<const Integer> cofactors, size_t prime_bound) {
+[[nodiscard]] inline BatchTrialResult batch_trial_divide(std::span<const Integer> cofactors,
+                                                         size_t prime_bound) {
 
     detail::validate_batch_trial_prime_bound(prime_bound);
 
@@ -177,7 +185,8 @@ inline void strip_prime_inplace(Integer& value, uint32_t p) {
     // Copy cofactors into `remaining`, normalising sign.
     for (const auto& c : cofactors) {
         Integer copy = c; // copy ctor (Integer copy ctor clones mpz_t)
-        if (copy.is_negative()) copy.negate();
+        if (copy.is_negative())
+            copy.negate();
         result.remaining.push_back(std::move(copy));
     }
 
@@ -188,7 +197,8 @@ inline void strip_prime_inplace(Integer& value, uint32_t p) {
             uint64_t v = result.remaining[i].to_uint64();
             if (v == 0 || v == 1) {
                 result.is_smooth[i] = true;
-                if (v == 0) result.remaining[i] = uint64_t{1};
+                if (v == 0)
+                    result.remaining[i] = uint64_t{1};
             } else {
                 all_done = false;
             }
@@ -196,7 +206,8 @@ inline void strip_prime_inplace(Integer& value, uint32_t p) {
             all_done = false;
         }
     }
-    if (all_done) return result;
+    if (all_done)
+        return result;
 
     const auto& primes = detail::small_primes_for(prime_bound);
 
@@ -204,7 +215,8 @@ inline void strip_prime_inplace(Integer& value, uint32_t p) {
     for (uint64_t p : primes) {
         bool any_remaining = false;
         for (size_t i = 0; i < result.remaining.size(); ++i) {
-            if (result.is_smooth[i]) continue;
+            if (result.is_smooth[i])
+                continue;
             Integer& v = result.remaining[i];
 
             // Fast skip: divisibility test before strip.
@@ -228,13 +240,15 @@ inline void strip_prime_inplace(Integer& value, uint32_t p) {
             }
             any_remaining = true;
         }
-        if (!any_remaining) break; // every cofactor done
+        if (!any_remaining)
+            break; // every cofactor done
     }
 
     // Final smoothness pass — anything that reduced to 1 along the way and
     // wasn't already marked also gets marked.
     for (size_t i = 0; i < result.remaining.size(); ++i) {
-        if (!result.is_smooth[i] && result.remaining[i].fits_uint64() && result.remaining[i].to_uint64() == 1) {
+        if (!result.is_smooth[i] && result.remaining[i].fits_uint64() &&
+            result.remaining[i].to_uint64() == 1) {
             result.is_smooth[i] = true;
         }
     }
@@ -250,7 +264,8 @@ inline void strip_prime_inplace(Integer& value, uint32_t p) {
 /// pathological values causing excessive memory pressure.
 [[nodiscard]] inline size_t batch_trial_size_from_env() noexcept {
     const char* env = std::getenv("GNFS_COFACTOR_BATCH_SIZE");
-    if (env == nullptr || env[0] == '\0') return 1;
+    if (env == nullptr || env[0] == '\0')
+        return 1;
 
     // Manual parse to avoid exception overhead. strtoul("-1", ...) returns
     // ULONG_MAX, which would otherwise bypass the lower-bound check.
@@ -258,13 +273,17 @@ inline void strip_prime_inplace(Integer& value, uint32_t p) {
     while (*first != '\0' && std::isspace(static_cast<unsigned char>(*first))) {
         ++first;
     }
-    if (*first == '-') return 1;
+    if (*first == '-')
+        return 1;
 
     char* end = nullptr;
     unsigned long parsed = std::strtoul(first, &end, 10);
-    if (end == first) return 1;
-    if (parsed < 2) return 1;
-    if (parsed > 4096) parsed = 4096;
+    if (end == first)
+        return 1;
+    if (parsed < 2)
+        return 1;
+    if (parsed > 4096)
+        parsed = 4096;
     return static_cast<size_t>(parsed);
 }
 
