@@ -286,11 +286,12 @@ void test_numeric_boundaries() {
         assert(!c.lucky_factor.has_value());
     }
 
-    // This used to wrap sigma*sigma and 4*sigma before reaching GMP. A prime
-    // modulus keeps the setup away from the intentional lucky-factor branch.
+    // This used to wrap sigma*sigma and 4*sigma before reaching GMP. Use a
+    // near-maximum sigma whose residue is nonzero for this prime modulus, so
+    // the setup exercises wide arithmetic without an intentional g=n hit.
     const Integer prime_modulus("6700417");
     const CachedCurve wide =
-        build_suyama_curve(prime_modulus, std::numeric_limits<uint64_t>::max());
+        build_suyama_curve(prime_modulus, std::numeric_limits<uint64_t>::max() - 1);
     assert(wide.valid);
     assert(!wide.lucky_factor.has_value());
 
