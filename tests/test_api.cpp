@@ -447,6 +447,28 @@ bool test_config_from_file() {
     return true;
 }
 
+bool test_config_from_file_integer_boundaries() {
+    const std::string path = gnfs::util::temp_path("gnfs_test_config_boundaries.cfg");
+    {
+        std::ofstream ofs(path);
+        ofs << "degree = 4294967295\n";
+        ofs << "rational_bound = 4294967295\n";
+        ofs << "algebraic_bound = 4294967295\n";
+        ofs << "large_prime_bound = 18446744073709551615\n";
+        ofs << "sieve_width = -2147483648\n";
+        ofs << "sieve_height = 2147483647\n";
+    }
+
+    const auto cfg = Config::from_file(path);
+    std::remove(path.c_str());
+    return cfg.degree == std::numeric_limits<uint32_t>::max() &&
+           cfg.rational_bound == std::numeric_limits<uint32_t>::max() &&
+           cfg.algebraic_bound == std::numeric_limits<uint32_t>::max() &&
+           cfg.large_prime_bound == std::numeric_limits<uint64_t>::max() &&
+           cfg.sieve_width == std::numeric_limits<int32_t>::min() &&
+           cfg.sieve_height == std::numeric_limits<int32_t>::max();
+}
+
 // Config::from_file 在非法输入下应该 throw,而不是静默接受错误值或返回空 Config。
 // 此测试锁住几条解析错误路径:
 //   1. 缺 '=' (line missing equals)
@@ -478,6 +500,15 @@ bool test_config_from_file_invalid() {
     write_and_expect_throw("bogus_key = 42\n", "unknown key");
     write_and_expect_throw("degree = 999999999999999999999999\n", "out-of-range integer");
     write_and_expect_throw("degree = not-an-integer\n", "invalid integer");
+    write_and_expect_throw("degree = 4294967296\n", "uint32 degree overflow");
+    write_and_expect_throw("degree = 4junk\n", "trailing degree characters");
+    write_and_expect_throw("rational_bound = -1\n", "negative rational bound");
+    write_and_expect_throw("algebraic_bound = 4junk\n", "trailing algebraic bound characters");
+    write_and_expect_throw("large_prime_bound = 8junk\n", "trailing large-prime characters");
+    write_and_expect_throw("large_prime_bound = 18446744073709551616\n",
+                           "uint64 large-prime overflow");
+    write_and_expect_throw("sieve_width = 2147483648\n", "int32 sieve width overflow");
+    write_and_expect_throw("sieve_height = -2147483649\n", "int32 sieve height overflow");
     write_and_expect_throw("max_special_q = 0\n", "zero max_special_q");
     write_and_expect_throw("max_special_q = 4294967296\n", "overflow max_special_q");
     write_and_expect_throw("max_special_q = 4junk\n", "trailing max_special_q characters");
@@ -3747,6 +3778,7 @@ int main() {
     TEST(config_merge);
     TEST(config_apply_to);
     TEST(config_from_file);
+    TEST(config_from_file_integer_boundaries);
     TEST(config_from_file_invalid);
     TEST(config_to_string);
 
