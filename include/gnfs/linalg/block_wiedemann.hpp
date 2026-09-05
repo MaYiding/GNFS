@@ -6,8 +6,11 @@
 #include "gnfs/util/bit_intrin.hpp"
 #include <array>
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -121,13 +124,20 @@ struct LingenResult {
 //   rank_est ≪ m → matrix is pathologically rank-deficient (sieve gap).
 // Only valid columns (bit set in `valid_mask`) contribute.
 inline int compute_rank_est(const LingenResult& lingen) noexcept {
-    int rank_est = 0;
+    size_t rank_est = 0;
+    constexpr size_t max_rank_est = static_cast<size_t>(std::numeric_limits<int>::max());
     for (size_t j = 0; j < lingen.degrees.size(); ++j) {
         if ((lingen.valid_mask >> j) & 1ULL) {
-            rank_est += lingen.degrees[j];
+            const int degree = lingen.degrees[j];
+            if (degree > 0) {
+                const size_t positive_degree = static_cast<size_t>(degree);
+                if (rank_est > max_rank_est - positive_degree)
+                    return std::numeric_limits<int>::max();
+                rank_est += positive_degree;
+            }
         }
     }
-    return rank_est;
+    return static_cast<int>(rank_est);
 }
 
 // ============================================================================
@@ -143,9 +153,12 @@ inline int compute_rank_est(const LingenResult& lingen) noexcept {
 //
 // This mirrors DenseGF2_64x64::multiply but with the left operand a BlockVector
 // of arbitrary length (m), not a 64×64 matrix.
-inline void mksol_accumulate(const BlockVector& V_k,
-                              const DenseGF2_64x64& F_k,
-                              BlockVector& accumulator) noexcept {
+inline void mksol_accumulate(const BlockVector& V_k, const DenseGF2_64x64& F_k,
+                             BlockVector& accumulator) {
+    if (V_k.length != accumulator.length || V_k.data.size() < V_k.length ||
+        accumulator.data.size() < accumulator.length) {
+        throw std::invalid_argument("mksol_accumulate: incompatible block vector lengths");
+    }
     assert(V_k.length == accumulator.length);
     const size_t m = V_k.length;
     for (size_t r = 0; r < m; ++r) {

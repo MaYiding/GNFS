@@ -3,12 +3,13 @@
 // Verifies that Block Wiedemann produces valid GF(2) null space vectors
 // by cross-validating against Block Lanczos on the same matrices.
 
-#include <gnfs/linalg/block_wiedemann.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
+#include <gnfs/linalg/block_wiedemann.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
 #include <gnfs/util/bit_intrin.hpp>
 #include <iostream>
 #include <random>
+#include <stdexcept>
 
 using gnfs::linalg::SparseMatrix;
 using gnfs::linalg::BlockLanczos;
@@ -265,6 +266,26 @@ void test_mksol_accumulate_against_naive() {
         TEST_ASSERT(acc.data[r] == expected, "matches naive XOR computation");
     }
     TEST_PASS("mksol_accumulate matches naive entry-by-entry");
+}
+
+void test_mksol_accumulate_bounds() {
+    using gnfs::linalg::BlockVector;
+    using gnfs::linalg::DenseGF2_64x64;
+    using gnfs::linalg::mksol_accumulate;
+
+    BlockVector input(2);
+    BlockVector accumulator(1);
+    DenseGF2_64x64 identity;
+    identity.set_identity();
+
+    bool threw = false;
+    try {
+        mksol_accumulate(input, identity, accumulator);
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    TEST_ASSERT(threw, "mksol_accumulate rejects incompatible lengths");
+    TEST_PASS("mksol_accumulate bounds");
 }
 
 void test_dense_64x128_extract_halves() {
@@ -848,6 +869,7 @@ int main() {
     test_mksol_accumulate_zero();
     test_mksol_accumulate_xor_accumulation();
     test_mksol_accumulate_against_naive();
+    test_mksol_accumulate_bounds();
 
     // P2 Stage B — Coppersmith matrix BM
     test_matrix_bm_empty_sequence();

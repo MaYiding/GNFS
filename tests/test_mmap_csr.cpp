@@ -3,13 +3,16 @@
 // Verifies that save→load round-trip produces identical SpMV results
 // as the in-memory CSRMatrix.
 
+#include <cstdio>
+#include <fstream>
+#include <gnfs/linalg/block_lanczos.hpp>
 #include <gnfs/linalg/mmap_csr_matrix.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
-#include <gnfs/linalg/block_lanczos.hpp>
 #include <gnfs/util/temp_path.hpp>
 #include <iostream>
+#include <limits>
 #include <random>
-#include <cstdio>
+#include <vector>
 
 using gnfs::linalg::SparseMatrix;
 using gnfs::linalg::CSRMatrix;
@@ -203,6 +206,57 @@ void test_single_row() {
     TEST_PASS("single row matrix [3, 7]");
 }
 
+static void write_raw_csr(const std::string& path, uint64_t rows, uint64_t cols, uint64_t nnz,
+                          const std::vector<uint64_t>& offsets,
+                          const std::vector<uint32_t>& indices) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    uint64_t header[] = {MmapCSRMatrix::MAGIC_V2, rows, cols, nnz};
+    out.write(reinterpret_cast<const char*>(header), sizeof(header));
+    out.write(reinterpret_cast<const char*>(offsets.data()),
+              static_cast<std::streamsize>(offsets.size() * sizeof(uint64_t)));
+    out.write(reinterpret_cast<const char*>(indices.data()),
+              static_cast<std::streamsize>(indices.size() * sizeof(uint32_t)));
+    out.flush();
+}
+
+void test_rejects_malformed_files() {
+    TempFile tmp(gnfs::util::temp_path("gnfs_test_csr_malformed.csrmat"));
+
+    // The old parser wrapped `num_rows + 1` and accepted this 32-byte file,
+    // leaving row pointers that referenced outside the mapping.
+    write_raw_csr(tmp.path, std::numeric_limits<uint64_t>::max(), 0, 0, {}, {});
+    bool overflow_thrown = false;
+    try {
+        MmapCSRMatrix malformed(tmp.path);
+    } catch (const std::overflow_error&) {
+        overflow_thrown = true;
+    }
+    TEST_ASSERT(overflow_thrown, "header arithmetic overflow is rejected");
+
+    // Row offsets must be monotone, bounded by nnz, and terminate at nnz.
+    write_raw_csr(tmp.path, 1, 4, 1, {0, 2}, {0});
+    bool offsets_thrown = false;
+    try {
+        MmapCSRMatrix malformed(tmp.path);
+    } catch (const std::runtime_error&) {
+        offsets_thrown = true;
+    }
+    TEST_ASSERT(offsets_thrown, "row offset beyond nnz is rejected");
+
+    // SpMV omits per-entry bounds checks, so reject invalid column indices at
+    // load time rather than allowing a later dense-vector OOB access.
+    write_raw_csr(tmp.path, 1, 4, 1, {0, 1}, {4});
+    bool column_thrown = false;
+    try {
+        MmapCSRMatrix malformed(tmp.path);
+    } catch (const std::out_of_range&) {
+        column_thrown = true;
+    }
+    TEST_ASSERT(column_thrown, "column index beyond num_cols is rejected");
+
+    TEST_PASS("malformed mmap-CSR headers and indices are rejected");
+}
+
 int main() {
     std::cout << "═══════════════════════════════════════════\n";
     std::cout << "  Mmap CSR Matrix Unit Tests\n";
@@ -213,6 +267,7 @@ int main() {
     test_large_matrix();
     test_empty_matrix();
     test_single_row();
+    test_rejects_malformed_files();
 
     std::cout << "\n═══════════════════════════════════════════\n";
     std::cout << "  Results: " << tests_passed << " passed, " << tests_failed << " failed\n";
