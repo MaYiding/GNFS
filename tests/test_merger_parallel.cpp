@@ -28,6 +28,7 @@
 #include <cstdlib>
 #include <exception>
 #include <iostream>
+#include <limits>
 #include <numeric>
 #include <span>
 #include <stdexcept>
@@ -148,6 +149,27 @@ void test_env_clamp_at_hw_times_two() {
     std::size_t v = filter_merge_threads();
     if (v != cap) {
         std::cerr << "\n  ERROR: '9999' parsed to " << v
+                  << ", expected cap=" << cap << std::endl;
+        std::abort();
+    }
+    apply_env(nullptr);
+    std::cout << " PASS (cap=" << cap << ")\n";
+}
+
+void test_env_huge_positive_clamps_without_signed_overflow() {
+    std::cout << "Test 6: huge positive ENV clamps without overflow..." << std::flush;
+    unsigned int hw = std::thread::hardware_concurrency();
+    if (hw == 0) hw = 4;
+    const std::size_t hw_size = static_cast<std::size_t>(hw);
+    const std::size_t cap =
+        hw_size > std::numeric_limits<std::size_t>::max() / 2
+            ? std::numeric_limits<std::size_t>::max()
+            : hw_size * 2;
+
+    apply_env("999999999999999999999999999999999999999999999999999999");
+    const std::size_t parsed = filter_merge_threads();
+    if (parsed != cap) {
+        std::cerr << "\n  ERROR: huge positive env parsed to " << parsed
                   << ", expected cap=" << cap << std::endl;
         std::abort();
     }
@@ -536,6 +558,7 @@ int main() {
     test_env_four();
     test_env_non_numeric_to_one();
     test_env_clamp_at_hw_times_two();
+    test_env_huge_positive_clamps_without_signed_overflow();
     test_n1_sequential_baseline();
     test_n1_vs_n4_parity();
     test_n1_vs_n_hw_parity();
