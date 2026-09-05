@@ -53,6 +53,10 @@ void test_prime_sieve() {
 
 void test_zero_bounds() {
     std::cout << "Testing zero factor-base bounds..." << std::endl;
+    const auto require = [](bool condition, const char* message) {
+        if (!condition)
+            throw std::runtime_error(message);
+    };
 
     Integer n(test_n);
     auto result = BaseMSelector::select(n, 3);
@@ -81,16 +85,20 @@ void test_zero_bounds() {
     PolynomialContext root_ctx(Integer(static_cast<int64_t>(101)), std::move(root_coeffs),
                                Integer(static_cast<int64_t>(2)));
     auto special_q_only = FactorBaseBuilder::build(root_ctx, opts);
-    assert(special_q_only.algebraic_count() > 0);
-    assert(special_q_only.sieve_algebraic_count() == 0);
+    require(special_q_only.algebraic_count() > 0,
+            "special-Q-only factor base unexpectedly has no algebraic entries");
+    require(special_q_only.sieve_algebraic_count() == 0,
+            "special-Q-only factor base exposed SQ entries as sieve entries");
 
     // The explicit-zero state must survive the stream serialization format.
     std::stringstream serialized;
     special_q_only.save(serialized);
     serialized.seekg(0);
     auto restored = FactorBase::load(serialized);
-    assert(restored.algebraic_count() == special_q_only.algebraic_count());
-    assert(restored.sieve_algebraic_count() == 0);
+    require(restored.algebraic_count() == special_q_only.algebraic_count(),
+            "FactorBase serialization changed algebraic entry count");
+    require(restored.sieve_algebraic_count() == 0,
+            "FactorBase serialization lost explicit empty sieve prefix");
 
     std::cout << "  Zero factor-base bounds: PASS" << std::endl;
 }
