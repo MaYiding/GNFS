@@ -1164,7 +1164,7 @@ void Pipeline::emit_progress(Phase phase, const std::string& msg, double phase_p
     info.matrix_rows = stats_.matrix_rows;
     info.matrix_cols = stats_.matrix_cols;
     info.dependency_index = stats_.dependencies_tried;
-    info.dependencies_total = static_cast<int>(stats_.dependencies_found);
+    info.dependencies_total = stats_.dependencies_found;
     progress_cb_(info);
 }
 
@@ -3331,7 +3331,7 @@ FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase&
     // Try each dependency
     for (size_t dep_idx = 0; dep_idx < mr.dependencies.size() && !result.success; ++dep_idx) {
         const auto& dep = mr.dependencies[dep_idx];
-        stats_.dependencies_tried = static_cast<int>(dep_idx + 1);
+        stats_.dependencies_tried = dep_idx + 1;
 
         emit_progress(Phase::SquareRoot,
                       "Trying dependency " + std::to_string(dep_idx + 1) + "/" +

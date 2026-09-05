@@ -404,9 +404,11 @@ static ProgressCallback make_terminal_progress() {
             state->last_bar_len = 100;
         }
         // Sqrt dep counter
-        else if (info.phase == Phase::SquareRoot && info.dependency_index > 0) {
+        else if (info.phase == Phase::SquareRoot &&
+                 info.dependency_index != std::numeric_limits<size_t>::max() &&
+                 info.dependency_index > 0) {
             char buf[64];
-            std::snprintf(buf, sizeof(buf), "\r   %s\u25B6%s dep %d/%d", C(CYAN), C(RESET),
+            std::snprintf(buf, sizeof(buf), "\r   %s\u25B6%s dep %zu/%zu", C(CYAN), C(RESET),
                           info.dependency_index, info.dependencies_total);
             std::cerr << buf << std::flush;
             state->last_bar_len = 30;

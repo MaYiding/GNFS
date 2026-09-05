@@ -1,6 +1,7 @@
 #include <gnfs/api/event_stream.hpp>
 
 #include <iostream>
+#include <limits>
 #include <string>
 
 using namespace gnfs::api;
@@ -67,6 +68,23 @@ void test_progress_and_log_events() {
               std::string::npos,
           "indeterminate progress is null");
 
+    progress.dependency_index = std::numeric_limits<size_t>::max();
+    progress.dependencies_total = std::numeric_limits<size_t>::max();
+    const auto sentinel_json = event_stream::progress_event(progress);
+    check(sentinel_json.find("\"dependency_index\":-1") != std::string::npos,
+          "unset dependency index keeps schema-1 sentinel");
+    check(sentinel_json.find("\"dependencies_total\":" +
+                              std::to_string(std::numeric_limits<size_t>::max())) !=
+              std::string::npos,
+          "dependency total keeps native size width");
+
+    progress.dependency_index = std::numeric_limits<size_t>::max() - 1;
+    const auto wide_index_json = event_stream::progress_event(progress);
+    check(wide_index_json.find("\"dependency_index\":" +
+                                  std::to_string(std::numeric_limits<size_t>::max() - 1)) !=
+              std::string::npos,
+          "dependency index keeps native size width");
+
     LogEntry entry{LogLevel::Warn, Phase::Filtering, 4.25, "retry \"thin\" matrix"};
     const auto log_json = event_stream::log_event(entry);
     check(log_json.find("\"level\":\"WARN\"") != std::string::npos, "log level");
@@ -83,11 +101,16 @@ void test_result_and_error_events() {
     result.stats.method_used = FactorizationMethod::TrialDivision;
     result.stats.n_bits = 17;
     result.stats.n_digits = 6;
+    result.stats.dependencies_tried = std::numeric_limits<size_t>::max();
 
     const auto result_json = event_stream::result_event(result);
     check(result_json.find("\"type\":\"result\"") != std::string::npos, "result event type");
     check(result_json.find("\"factors\":[\"307\",\"313\"]") != std::string::npos,
           "result event factors");
+    check(result_json.find("\"dependencies_tried\":" +
+                          std::to_string(std::numeric_limits<size_t>::max())) !=
+              std::string::npos,
+          "result dependency count keeps native size width");
     check(result_json.find("\"factorization_complete\":true") != std::string::npos,
           "result event completeness");
     check(result_json.find("\"factors_prime\":true") != std::string::npos,

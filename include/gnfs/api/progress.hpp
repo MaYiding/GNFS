@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <limits>
 #include <string>
 
 namespace gnfs::api {
@@ -112,8 +113,11 @@ struct ProgressInfo {
     size_t special_q_done = 0;     // sieving: SQs processed
     size_t matrix_rows = 0;        // linalg: matrix dimensions
     size_t matrix_cols = 0;
-    int dependency_index = -1;     // sqrt: which dep being tried
-    int dependencies_total = 0;
+    // sqrt: which dependency is being tried. The max value is the
+    // not-started sentinel; event-stream serialization preserves the
+    // historical -1 wire representation for that sentinel.
+    size_t dependency_index = std::numeric_limits<size_t>::max();
+    size_t dependencies_total = 0;
 };
 
 /// Callback type for progress reporting
