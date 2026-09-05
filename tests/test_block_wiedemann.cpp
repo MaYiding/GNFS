@@ -11,49 +11,55 @@
 #include <random>
 #include <stdexcept>
 
-using gnfs::linalg::SparseMatrix;
 using gnfs::linalg::BlockLanczos;
 using gnfs::linalg::BlockWiedemann;
+using gnfs::linalg::SparseMatrix;
 
 static int tests_passed = 0;
 static int tests_failed = 0;
 
-#define TEST_ASSERT(cond, msg) do { \
-    if (!(cond)) { \
-        std::cerr << "FAIL: " << msg << " (line " << __LINE__ << ")\n"; \
-        tests_failed++; \
-        return; \
-    } \
-} while(0)
+#define TEST_ASSERT(cond, msg)                                                                     \
+    do {                                                                                           \
+        if (!(cond)) {                                                                             \
+            std::cerr << "FAIL: " << msg << " (line " << __LINE__ << ")\n";                        \
+            tests_failed++;                                                                        \
+            return;                                                                                \
+        }                                                                                          \
+    } while (0)
 
-#define TEST_PASS(name) do { \
-    std::cout << "  PASS: " << name << "\n"; \
-    tests_passed++; \
-} while(0)
+#define TEST_PASS(name)                                                                            \
+    do {                                                                                           \
+        std::cout << "  PASS: " << name << "\n";                                                   \
+        tests_passed++;                                                                            \
+    } while (0)
 
 /// Verify that v^T · M = 0 over GF(2)
 static bool verify_dependency(const SparseMatrix& M, const std::vector<bool>& v) {
-    if (v.size() != M.num_rows()) return false;
+    if (v.size() != M.num_rows())
+        return false;
 
     size_t ncols = M.num_cols();
     std::vector<uint8_t> col_sum(ncols, 0);
 
     for (size_t r = 0; r < M.num_rows(); ++r) {
-        if (!v[r]) continue;
+        if (!v[r])
+            continue;
         for (uint32_t c : M.row(r).indices()) {
-            if (c < ncols) col_sum[c] ^= 1;
+            if (c < ncols)
+                col_sum[c] ^= 1;
         }
     }
 
     for (size_t c = 0; c < ncols; ++c) {
-        if (col_sum[c]) return false;
+        if (col_sum[c])
+            return false;
     }
     return true;
 }
 
 /// Build a matrix with guaranteed null space by making some rows linear combinations
-static SparseMatrix build_matrix_with_nullspace(size_t rows, size_t cols,
-                                                 size_t extra_rows, uint32_t seed) {
+static SparseMatrix build_matrix_with_nullspace(size_t rows, size_t cols, size_t extra_rows,
+                                                uint32_t seed) {
     // Build (rows + extra_rows) × cols matrix where extra rows
     // are XOR of random subsets of original rows
     SparseMatrix M(rows + extra_rows, cols);
@@ -86,7 +92,8 @@ void test_dense_64x128_clear_and_identity() {
     using gnfs::linalg::DenseGF2_64x128;
     DenseGF2_64x128 m;
     m.clear();
-    for (int j = 0; j < 128; ++j) TEST_ASSERT(m.get_col(j) == 0, "clear: all cols zero");
+    for (int j = 0; j < 128; ++j)
+        TEST_ASSERT(m.get_col(j) == 0, "clear: all cols zero");
 
     m.set_left_identity();
     for (int j = 0; j < 64; ++j)
@@ -174,7 +181,8 @@ void test_mksol_accumulate_identity() {
     const size_t m = 100;
     BlockVector V(m), acc(m);
     std::mt19937_64 rng(0x1234);
-    for (size_t r = 0; r < m; ++r) V.data[r] = rng();
+    for (size_t r = 0; r < m; ++r)
+        V.data[r] = rng();
 
     DenseGF2_64x64 I;
     I.set_identity();
@@ -195,7 +203,7 @@ void test_mksol_accumulate_zero() {
     std::mt19937_64 rng(0xABCD);
     for (size_t r = 0; r < m; ++r) {
         V.data[r] = rng();
-        acc.data[r] = rng();  // non-zero starting accumulator
+        acc.data[r] = rng(); // non-zero starting accumulator
     }
     BlockVector acc_before = acc;
 
@@ -217,7 +225,8 @@ void test_mksol_accumulate_xor_accumulation() {
     const size_t m = 30;
     BlockVector V(m), acc1(m), acc2(m);
     std::mt19937_64 rng(0xDEED);
-    for (size_t r = 0; r < m; ++r) V.data[r] = rng();
+    for (size_t r = 0; r < m; ++r)
+        V.data[r] = rng();
 
     DenseGF2_64x64 F1, F2, F_xor;
     for (int i = 0; i < 64; ++i) {
@@ -245,10 +254,12 @@ void test_mksol_accumulate_against_naive() {
     const size_t m = 17;
     BlockVector V(m), acc(m);
     std::mt19937_64 rng(0x42424242);
-    for (size_t r = 0; r < m; ++r) V.data[r] = rng();
+    for (size_t r = 0; r < m; ++r)
+        V.data[r] = rng();
 
     DenseGF2_64x64 F;
-    for (int i = 0; i < 64; ++i) F.rows[i] = rng();
+    for (int i = 0; i < 64; ++i)
+        F.rows[i] = rng();
 
     mksol_accumulate(V, F, acc);
 
@@ -261,7 +272,8 @@ void test_mksol_accumulate_against_naive() {
                 if (((V.data[r] >> i) & 1) && ((F.rows[i] >> j) & 1))
                     bit_j ^= 1;
             }
-            if (bit_j) expected |= (1ULL << j);
+            if (bit_j)
+                expected |= (1ULL << j);
         }
         TEST_ASSERT(acc.data[r] == expected, "matches naive XOR computation");
     }
@@ -294,8 +306,10 @@ void test_dense_64x128_extract_halves() {
     DenseGF2_64x128 m;
     // Build a known pattern: col j (left) = j, col j+64 (right) = j+1
     // i.e., cols[j] is the bit pattern of integer j (treating j as a 64-bit number)
-    for (int j = 0; j < 64; ++j) m.set_col(j, static_cast<uint64_t>(j));
-    for (int j = 0; j < 64; ++j) m.set_col(64 + j, static_cast<uint64_t>(j + 1));
+    for (int j = 0; j < 64; ++j)
+        m.set_col(j, static_cast<uint64_t>(j));
+    for (int j = 0; j < 64; ++j)
+        m.set_col(64 + j, static_cast<uint64_t>(j + 1));
 
     DenseGF2_64x64 left = m.extract_left();
     DenseGF2_64x64 right = m.extract_right();
@@ -305,12 +319,14 @@ void test_dense_64x128_extract_halves() {
     for (int i = 0; i < 64; ++i) {
         uint64_t expected_left = 0;
         for (int j = 0; j < 64; ++j) {
-            if ((static_cast<uint64_t>(j) >> i) & 1) expected_left |= (1ULL << j);
+            if ((static_cast<uint64_t>(j) >> i) & 1)
+                expected_left |= (1ULL << j);
         }
         TEST_ASSERT(left.rows[i] == expected_left, "extract_left row");
         uint64_t expected_right = 0;
         for (int j = 0; j < 64; ++j) {
-            if ((static_cast<uint64_t>(j + 1) >> i) & 1) expected_right |= (1ULL << j);
+            if ((static_cast<uint64_t>(j + 1) >> i) & 1)
+                expected_right |= (1ULL << j);
         }
         TEST_ASSERT(right.rows[i] == expected_right, "extract_right row");
     }
@@ -324,11 +340,11 @@ void test_dense_64x128_extract_halves() {
 // Helper: compute (A · F)_t [:, j] = sum_{k=0}^{dj} A_{t-k} · F_k[:, j]
 // where F_k[:, j] is the j-th column of F_k (64-bit value).
 static uint64_t compute_AF_col(const std::vector<gnfs::linalg::DenseGF2_64x64>& A,
-                                const gnfs::linalg::LingenResult& F,
-                                int j, size_t t, int dj) {
+                               const gnfs::linalg::LingenResult& F, int j, size_t t, int dj) {
     uint64_t acc = 0;
     for (int k = 0; k <= dj; ++k) {
-        if (t < static_cast<size_t>(k)) break;
+        if (t < static_cast<size_t>(k))
+            break;
         // F_k[:, j] as a 64-bit column: bit i = F.poly[k].rows[i] bit j
         uint64_t Fk_col_j = 0;
         if (static_cast<size_t>(k) < F.poly.size()) {
@@ -338,11 +354,13 @@ static uint64_t compute_AF_col(const std::vector<gnfs::linalg::DenseGF2_64x64>& 
                 }
             }
         }
-        if (Fk_col_j == 0) continue;
+        if (Fk_col_j == 0)
+            continue;
         const gnfs::linalg::DenseGF2_64x64& Am = A[t - static_cast<size_t>(k)];
         uint64_t mv = 0;
         for (int r = 0; r < 64; ++r) {
-            if ((gnfs::util::popcount64(Am.rows[r] & Fk_col_j) & 1) != 0) mv |= (1ULL << r);
+            if ((gnfs::util::popcount64(Am.rows[r] & Fk_col_j) & 1) != 0)
+                mv |= (1ULL << r);
         }
         acc ^= mv;
     }
@@ -360,7 +378,8 @@ void test_matrix_bm_empty_sequence() {
 void test_matrix_bm_zero_sequence() {
     // All-zero sequence: any F annihilates trivially. BM should not crash.
     std::vector<gnfs::linalg::DenseGF2_64x64> A(20);
-    for (auto& m : A) m.clear();
+    for (auto& m : A)
+        m.clear();
     auto F = gnfs::linalg::BlockWiedemann::matrix_berlekamp_massey(A, 64);
     // Result may be empty or trivial; just check it doesn't crash.
     TEST_PASS("matrix BM on all-zero sequence (no crash)");
@@ -369,17 +388,19 @@ void test_matrix_bm_zero_sequence() {
 void test_matrix_bm_powers_of_random_B() {
     // Generate random B ∈ GF(2)^{64×64}. Sequence A_k = B^k for k=0..L-1.
     // BM should find F such that (A·F)_t = 0 for t in [deg(F), L-1].
-    using gnfs::linalg::DenseGF2_64x64;
     using gnfs::linalg::BlockWiedemann;
+    using gnfs::linalg::DenseGF2_64x64;
 
-    const size_t L = 64;  // single-word capacity; works for our PoC L≤64
+    const size_t L = 64; // single-word capacity; works for our PoC L≤64
     DenseGF2_64x64 B;
     std::mt19937_64 rng(0xBEEF1234);
-    for (int r = 0; r < 64; ++r) B.rows[r] = rng();
+    for (int r = 0; r < 64; ++r)
+        B.rows[r] = rng();
 
     std::vector<DenseGF2_64x64> A(L);
     A[0].set_identity();
-    for (size_t k = 1; k < L; ++k) A[k] = A[k-1].multiply(B);
+    for (size_t k = 1; k < L; ++k)
+        A[k] = A[k - 1].multiply(B);
 
     auto F = BlockWiedemann::matrix_berlekamp_massey(A, 64);
     TEST_ASSERT(F.valid_mask != 0, "BM should find at least one valid column");
@@ -387,7 +408,8 @@ void test_matrix_bm_powers_of_random_B() {
     int annihilating_cols = 0;
     int checked_cols = 0;
     for (int j = 0; j < 64; ++j) {
-        if (!((F.valid_mask >> j) & 1)) continue;
+        if (!((F.valid_mask >> j) & 1))
+            continue;
         checked_cols++;
         int dj = F.degrees[static_cast<size_t>(j)];
         bool annihilates = true;
@@ -398,42 +420,47 @@ void test_matrix_bm_powers_of_random_B() {
                 break;
             }
         }
-        if (annihilates) annihilating_cols++;
+        if (annihilates)
+            annihilating_cols++;
     }
 
-    std::cout << "  (checked " << checked_cols << " valid cols, "
-              << annihilating_cols << " annihilate)" << std::endl;
-    TEST_ASSERT(annihilating_cols > 0,
-                "at least one column of F should annihilate A in tail");
+    std::cout << "  (checked " << checked_cols << " valid cols, " << annihilating_cols
+              << " annihilate)" << std::endl;
+    TEST_ASSERT(annihilating_cols > 0, "at least one column of F should annihilate A in tail");
     TEST_PASS("matrix BM on A_k = B^k (annihilation verified)");
 }
 
 void test_matrix_bm_multiword_L128() {
     // L > 64 — exercises multi-word polynomial path (W = 3 for L=128+10).
-    using gnfs::linalg::DenseGF2_64x64;
     using gnfs::linalg::BlockWiedemann;
+    using gnfs::linalg::DenseGF2_64x64;
 
     const size_t L = 128;
     DenseGF2_64x64 B;
     std::mt19937_64 rng(0xC0DECAFE);
-    for (int r = 0; r < 64; ++r) B.rows[r] = rng();
+    for (int r = 0; r < 64; ++r)
+        B.rows[r] = rng();
 
     std::vector<DenseGF2_64x64> A(L);
     A[0].set_identity();
-    for (size_t k = 1; k < L; ++k) A[k] = A[k-1].multiply(B);
+    for (size_t k = 1; k < L; ++k)
+        A[k] = A[k - 1].multiply(B);
 
     auto F = BlockWiedemann::matrix_berlekamp_massey(A, 64);
     TEST_ASSERT(F.valid_mask != 0, "BM should find valid cols (L=128 multi-word)");
 
     int annihilating = 0;
     for (int j = 0; j < 64; ++j) {
-        if (!((F.valid_mask >> j) & 1)) continue;
+        if (!((F.valid_mask >> j) & 1))
+            continue;
         int dj = F.degrees[static_cast<size_t>(j)];
         bool ok = true;
         for (size_t t = static_cast<size_t>(dj); t < L && ok; ++t) {
-            if (compute_AF_col(A, F, j, t, dj) != 0) ok = false;
+            if (compute_AF_col(A, F, j, t, dj) != 0)
+                ok = false;
         }
-        if (ok) annihilating++;
+        if (ok)
+            annihilating++;
     }
     std::cout << "  (L=128 annihilating cols: " << annihilating << "/64)" << std::endl;
     TEST_ASSERT(annihilating > 0, "L=128 multi-word should yield annihilators");
@@ -443,25 +470,29 @@ void test_matrix_bm_multiword_L128() {
 void test_matrix_bm_constant_sequence() {
     // A_k = I for all k. minpoly is (z - 1) = z + 1 over GF(2).
     // F should find a generator with this minpoly (or a multiple).
-    using gnfs::linalg::DenseGF2_64x64;
     using gnfs::linalg::BlockWiedemann;
+    using gnfs::linalg::DenseGF2_64x64;
 
     const size_t L = 20;
     std::vector<DenseGF2_64x64> A(L);
-    for (auto& m : A) m.set_identity();
+    for (auto& m : A)
+        m.set_identity();
 
     auto F = BlockWiedemann::matrix_berlekamp_massey(A, 64);
     TEST_ASSERT(F.valid_mask != 0, "constant sequence should give valid F");
 
     int annihilating = 0;
     for (int j = 0; j < 64; ++j) {
-        if (!((F.valid_mask >> j) & 1)) continue;
+        if (!((F.valid_mask >> j) & 1))
+            continue;
         int dj = F.degrees[static_cast<size_t>(j)];
         bool ok = true;
         for (size_t t = static_cast<size_t>(dj); t < L && ok; ++t) {
-            if (compute_AF_col(A, F, j, t, dj) != 0) ok = false;
+            if (compute_AF_col(A, F, j, t, dj) != 0)
+                ok = false;
         }
-        if (ok) annihilating++;
+        if (ok)
+            annihilating++;
     }
     std::cout << "  (annihilating cols: " << annihilating << "/64)" << std::endl;
     TEST_ASSERT(annihilating > 0, "constant sequence should yield annihilators");
@@ -527,7 +558,8 @@ void test_overdetermined_matrix() {
 
     size_t valid_count = 0;
     for (const auto& dep : deps) {
-        if (verify_dependency(M, dep)) valid_count++;
+        if (verify_dependency(M, dep))
+            valid_count++;
     }
     TEST_ASSERT(valid_count > 0, "at least one dependency should be valid");
 
@@ -645,7 +677,9 @@ void test_block_vs_scalar_cross_validate() {
     BlockWiedemann bw_block;
     auto deps_block = bw_block.find_dependencies(M, 10);
     size_t valid_block = 0;
-    for (const auto& d : deps_block) if (verify_dependency(M, d)) valid_block++;
+    for (const auto& d : deps_block)
+        if (verify_dependency(M, d))
+            valid_block++;
 
     // Scalar path (env-forced)
     setenv("GNFS_BW_ALGORITHM", "scalar", 1);
@@ -653,11 +687,13 @@ void test_block_vs_scalar_cross_validate() {
     auto deps_scalar = bw_scalar.find_dependencies(M, 10);
     unsetenv("GNFS_BW_ALGORITHM");
     size_t valid_scalar = 0;
-    for (const auto& d : deps_scalar) if (verify_dependency(M, d)) valid_scalar++;
+    for (const auto& d : deps_scalar)
+        if (verify_dependency(M, d))
+            valid_scalar++;
 
     std::cout << "  block: " << valid_block << "/" << deps_block.size()
-              << " valid; scalar: " << valid_scalar << "/" << deps_scalar.size()
-              << " valid" << std::endl;
+              << " valid; scalar: " << valid_scalar << "/" << deps_scalar.size() << " valid"
+              << std::endl;
     TEST_ASSERT(valid_block > 0, "block BW should produce valid deps");
     TEST_ASSERT(valid_scalar > 0, "scalar BW should produce valid deps");
     TEST_PASS("block vs scalar cross-validate (both produce valid deps)");
@@ -669,9 +705,10 @@ void test_large_matrix_bw_path() {
     // quickly. L = 2·200 + 100 = 500 (not 8000).
     size_t base_rows = 200;
     size_t cols = 200;
-    size_t extra = 5200;  // 5400 total rows >> 5000 threshold, rank ≤ 200
+    size_t extra = 5200; // 5400 total rows >> 5000 threshold, rank ≤ 200
 
-    std::cout << "  Building large matrix (" << base_rows + extra << "×" << cols << ")..." << std::flush;
+    std::cout << "  Building large matrix (" << base_rows + extra << "×" << cols << ")..."
+              << std::flush;
     SparseMatrix M(base_rows + extra, cols);
     std::mt19937 rng(314159);
 
@@ -699,7 +736,8 @@ void test_large_matrix_bw_path() {
 
     size_t valid = 0;
     for (const auto& dep : deps) {
-        if (verify_dependency(M, dep)) valid++;
+        if (verify_dependency(M, dep))
+            valid++;
     }
     TEST_ASSERT(valid > 0, "large matrix BW deps should be valid");
 
@@ -721,13 +759,12 @@ void test_thin_matrix_bw_solve() {
     // last 100 are XOR combos → left null space dim ≈ 100. This is the
     // realistic GNFS profile where left deps come from filtering merges.
     const size_t base_rows = 5100;
-    const size_t extra     = 100;
-    const size_t rows      = base_rows + extra;  // 5200
-    const size_t cols      = 6000;
+    const size_t extra = 100;
+    const size_t rows = base_rows + extra; // 5200
+    const size_t cols = 6000;
 
-    std::cout << "  Building thin matrix (" << rows << "×" << cols
-              << ", rank≈" << base_rows << ", deps≈" << extra
-              << ")..." << std::flush;
+    std::cout << "  Building thin matrix (" << rows << "×" << cols << ", rank≈" << base_rows
+              << ", deps≈" << extra << ")..." << std::flush;
     SparseMatrix M(rows, cols);
     std::mt19937 rng(271828);
 
@@ -755,7 +792,8 @@ void test_thin_matrix_bw_solve() {
 
     size_t valid = 0;
     for (const auto& dep : deps) {
-        if (verify_dependency(M, dep)) valid++;
+        if (verify_dependency(M, dep))
+            valid++;
     }
     TEST_ASSERT(valid > 0, "BW thin path deps should verify M^T·u=0");
 
@@ -774,13 +812,12 @@ void test_thin_matrix_bw_extreme_rank_deficiency() {
     // tested the rank ≈ m profile (small dep count, large rank), this tests
     // the rank ≪ m profile (large dep count, small rank).
     const size_t base_rows = 100;
-    const size_t extra     = 5100;
-    const size_t rows      = base_rows + extra;
-    const size_t cols      = 6000;
+    const size_t extra = 5100;
+    const size_t rows = base_rows + extra;
+    const size_t cols = 6000;
 
-    std::cout << "  Building rank-deficient thin matrix (" << rows << "×" << cols
-              << ", rank≈" << base_rows << ", deps≈" << extra
-              << ")..." << std::flush;
+    std::cout << "  Building rank-deficient thin matrix (" << rows << "×" << cols << ", rank≈"
+              << base_rows << ", deps≈" << extra << ")..." << std::flush;
     SparseMatrix M(rows, cols);
     std::mt19937 rng(31337);
 
@@ -805,13 +842,13 @@ void test_thin_matrix_bw_extreme_rank_deficiency() {
     // checks M^T·u=0 internally so this validates the verification step).
     size_t valid = 0;
     for (const auto& dep : deps) {
-        if (verify_dependency(M, dep)) valid++;
+        if (verify_dependency(M, dep))
+            valid++;
     }
     TEST_ASSERT(valid == deps.size(), "any returned dep must be valid (no false-positive)");
     TEST_ASSERT(deps.size() > 0, "BW thin variant should recover deps even with rank ≪ m");
 
-    std::cout << "  (returned " << deps.size() << " deps, " << valid
-              << " verified)" << std::endl;
+    std::cout << "  (returned " << deps.size() << " deps, " << valid << " verified)" << std::endl;
     TEST_PASS("thin matrix BW extreme rank deficiency (rank ≪ m, 5100 deps recoverable)");
 }
 
@@ -827,8 +864,8 @@ void test_bw_empty_matrix_fall_through() {
     const size_t rows = 5200;
     const size_t cols = 6000;
 
-    std::cout << "  Building zero matrix (" << rows << "×" << cols
-              << ", all rows empty)..." << std::flush;
+    std::cout << "  Building zero matrix (" << rows << "×" << cols << ", all rows empty)..."
+              << std::flush;
     SparseMatrix M(rows, cols);
     // All rows are intentionally empty — no .set() calls.
     std::cout << " done" << std::endl;
@@ -841,7 +878,8 @@ void test_bw_empty_matrix_fall_through() {
     // 0 deps depending on whether Phase 3 finds nonzero accumulator.
     size_t valid = 0;
     for (const auto& dep : deps) {
-        if (verify_dependency(M, dep)) valid++;
+        if (verify_dependency(M, dep))
+            valid++;
     }
     TEST_ASSERT(valid == deps.size(), "any returned dep must verify");
 

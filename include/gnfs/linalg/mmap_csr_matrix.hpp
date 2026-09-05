@@ -37,14 +37,15 @@ namespace gnfs::linalg {
 
 class MmapCSRMatrix {
 public:
-    static constexpr uint64_t MAGIC_V2 = 0x324E465343535200ULL;  // "GNFSCSR2"
+    static constexpr uint64_t MAGIC_V2 = 0x324E465343535200ULL; // "GNFSCSR2"
 
     MmapCSRMatrix() = default;
 
     /// Save a CSRMatrix to disk in the v2 mmap-friendly format.
     static void save(const CSRMatrix& csr, const std::string& path) {
         std::ofstream out(path, std::ios::binary);
-        if (!out) throw std::runtime_error("MmapCSRMatrix::save: cannot open " + path);
+        if (!out)
+            throw std::runtime_error("MmapCSRMatrix::save: cannot open " + path);
 
         const auto write_bytes = [&out](const void* source, uint64_t bytes) {
             const char* cursor = static_cast<const char*>(source);
@@ -189,9 +190,15 @@ public:
 
     // Same interface as CSRMatrix for drop-in replacement in SpMV
 
-    [[nodiscard]] size_t num_rows() const noexcept { return num_rows_; }
-    [[nodiscard]] size_t num_cols() const noexcept { return num_cols_; }
-    [[nodiscard]] size_t nnz() const noexcept { return nnz_; }
+    [[nodiscard]] size_t num_rows() const noexcept {
+        return num_rows_;
+    }
+    [[nodiscard]] size_t num_cols() const noexcept {
+        return num_cols_;
+    }
+    [[nodiscard]] size_t nnz() const noexcept {
+        return nnz_;
+    }
 
     [[nodiscard]] const uint32_t* row_begin(size_t i) const noexcept {
         return col_indices_ + row_offsets_[i];
@@ -223,8 +230,7 @@ private:
 /// extra RAM during the round-trip is `nnz * 4 bytes` (the CSRMatrix
 /// staging copy) and only briefly. After return the only resident bytes
 /// are the kernel mmap pagecache, which the OS can evict.
-inline MmapCSRMatrix save_sparse_as_mmap(const SparseMatrix& mat,
-                                         const std::string& path) {
+inline MmapCSRMatrix save_sparse_as_mmap(const SparseMatrix& mat, const std::string& path) {
     {
         CSRMatrix csr(mat);
         MmapCSRMatrix::save(csr, path);

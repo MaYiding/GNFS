@@ -21,13 +21,15 @@ public:
 
     /// Find dependencies (left null space vectors) in the matrix
     /// Returns vectors v such that v^T * M = 0 over GF(2)
-    std::vector<std::vector<bool>> find_dependencies(const SparseMatrix& matrix, size_t max_deps = 64);
+    std::vector<std::vector<bool>> find_dependencies(const SparseMatrix& matrix,
+                                                     size_t max_deps = 64);
 
 private:
     // Gaussian elimination with packed GF(2) matrix for small matrices.
     // (Montgomery Block Lanczos was removed — had a 50% per-dep error rate and
     // was never reachable from find_dependencies. See git history.)
-    std::vector<std::vector<bool>> find_dependencies_sparse(const SparseMatrix& matrix, size_t max_deps);
+    std::vector<std::vector<bool>> find_dependencies_sparse(const SparseMatrix& matrix,
+                                                            size_t max_deps);
 };
 
 // ============================================================================
@@ -40,7 +42,9 @@ struct BlockVector {
     BlockVector() = default;
     explicit BlockVector(size_t n) : data(n, 0), length(n) {}
 
-    void clear() { std::fill(data.begin(), data.end(), 0); }
+    void clear() {
+        std::fill(data.begin(), data.end(), 0);
+    }
 
     void xor_with(const BlockVector& other) {
         if (other.length < length || data.size() < length || other.data.size() < length) {
@@ -53,7 +57,8 @@ struct BlockVector {
 
     [[nodiscard]] bool is_zero() const {
         for (size_t i = 0; i < length; ++i)
-            if (data[i] != 0) return false;
+            if (data[i] != 0)
+                return false;
         return true;
     }
 
@@ -78,7 +83,9 @@ struct BlockVector {
 struct DenseGF2_64x64 {
     uint64_t rows[64] = {};
 
-    void clear() { std::memset(rows, 0, sizeof(rows)); }
+    void clear() {
+        std::memset(rows, 0, sizeof(rows));
+    }
 
     void set_identity() {
         clear();
@@ -127,9 +134,13 @@ struct DenseGF2_64x64 {
             // Find pivot
             int pivot = -1;
             for (int row = col; row < 64; ++row) {
-                if (left[row] & col_bit) { pivot = row; break; }
+                if (left[row] & col_bit) {
+                    pivot = row;
+                    break;
+                }
             }
-            if (pivot < 0) continue;
+            if (pivot < 0)
+                continue;
 
             // Swap
             if (pivot != col) {

@@ -14,35 +14,40 @@
 #include <random>
 #include <vector>
 
-using gnfs::linalg::SparseMatrix;
+using gnfs::linalg::BlockVector;
 using gnfs::linalg::CSRMatrix;
 using gnfs::linalg::MmapCSRMatrix;
-using gnfs::linalg::BlockVector;
+using gnfs::linalg::SparseMatrix;
 
 static int tests_passed = 0;
 static int tests_failed = 0;
 
-#define TEST_ASSERT(cond, msg) do { \
-    if (!(cond)) { \
-        std::cerr << "FAIL: " << msg << " (line " << __LINE__ << ")\n"; \
-        tests_failed++; \
-        return; \
-    } \
-} while(0)
+#define TEST_ASSERT(cond, msg)                                                                     \
+    do {                                                                                           \
+        if (!(cond)) {                                                                             \
+            std::cerr << "FAIL: " << msg << " (line " << __LINE__ << ")\n";                        \
+            tests_failed++;                                                                        \
+            return;                                                                                \
+        }                                                                                          \
+    } while (0)
 
-#define TEST_PASS(name) do { \
-    std::cout << "  PASS: " << name << "\n"; \
-    tests_passed++; \
-} while(0)
+#define TEST_PASS(name)                                                                            \
+    do {                                                                                           \
+        std::cout << "  PASS: " << name << "\n";                                                   \
+        tests_passed++;                                                                            \
+    } while (0)
 
 struct TempFile {
     std::string path;
     TempFile(const std::string& p) : path(p) {}
-    ~TempFile() { std::remove(path.c_str()); }
+    ~TempFile() {
+        std::remove(path.c_str());
+    }
 };
 
 /// Build a random sparse matrix
-static SparseMatrix make_random_matrix(size_t rows, size_t cols, uint32_t seed, size_t nnz_per_row = 5) {
+static SparseMatrix make_random_matrix(size_t rows, size_t cols, uint32_t seed,
+                                       size_t nnz_per_row = 5) {
     SparseMatrix M(rows, cols);
     std::mt19937 rng(seed);
     for (size_t i = 0; i < rows; ++i) {
@@ -59,7 +64,8 @@ static void spmv_forward(const CSR& M, const BlockVector& x, BlockVector& y) {
     for (size_t i = 0; i < M.num_rows(); ++i) {
         uint64_t acc = 0;
         for (const uint32_t* p = M.row_begin(i); p != M.row_end(i); ++p) {
-            if (*p < x.length) acc ^= x.data[*p];
+            if (*p < x.length)
+                acc ^= x.data[*p];
         }
         y.data[i] = acc;
     }
@@ -109,7 +115,8 @@ void test_spmv_identical() {
     // Random input vector
     BlockVector x(300);
     std::mt19937_64 rng(99999);
-    for (size_t i = 0; i < 300; ++i) x.data[i] = rng();
+    for (size_t i = 0; i < 300; ++i)
+        x.data[i] = rng();
 
     // SpMV with both
     BlockVector y_csr(500), y_mmap(500);
@@ -118,8 +125,7 @@ void test_spmv_identical() {
 
     // Compare
     for (size_t i = 0; i < 500; ++i) {
-        TEST_ASSERT(y_csr.data[i] == y_mmap.data[i],
-                    "SpMV row " + std::to_string(i) + " differs");
+        TEST_ASSERT(y_csr.data[i] == y_mmap.data[i], "SpMV row " + std::to_string(i) + " differs");
     }
 
     TEST_PASS("SpMV CSR vs mmap-CSR identical (500×300)");
@@ -141,8 +147,7 @@ void test_large_matrix() {
     std::mt19937 rng(777);
     for (int trial = 0; trial < 100; ++trial) {
         size_t row = rng() % 10000;
-        TEST_ASSERT(mmap.row_nnz(row) == csr.row_nnz(row),
-                    "row " + std::to_string(row) + " nnz");
+        TEST_ASSERT(mmap.row_nnz(row) == csr.row_nnz(row), "row " + std::to_string(row) + " nnz");
         const uint32_t* a = csr.row_begin(row);
         const uint32_t* b = mmap.row_begin(row);
         for (size_t j = 0; j < csr.row_nnz(row); ++j) {
@@ -153,7 +158,8 @@ void test_large_matrix() {
     // SpMV cross-check
     BlockVector x(8000);
     std::mt19937_64 rng2(555);
-    for (size_t i = 0; i < 8000; ++i) x.data[i] = rng2();
+    for (size_t i = 0; i < 8000; ++i)
+        x.data[i] = rng2();
 
     BlockVector y_csr(10000), y_mmap(10000);
     spmv_forward(csr, x, y_csr);
@@ -161,7 +167,10 @@ void test_large_matrix() {
 
     bool all_match = true;
     for (size_t i = 0; i < 10000; ++i) {
-        if (y_csr.data[i] != y_mmap.data[i]) { all_match = false; break; }
+        if (y_csr.data[i] != y_mmap.data[i]) {
+            all_match = false;
+            break;
+        }
     }
     TEST_ASSERT(all_match, "SpMV large matrix results identical");
 
