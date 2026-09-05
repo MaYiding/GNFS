@@ -10,6 +10,7 @@
 #include <mutex>
 #include <new>
 #include <optional>
+#include <random>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -18,8 +19,10 @@
 namespace {
 
 using gnfs::core::Integer;
+using gnfs::siqs::choose_A;
 using gnfs::siqs::classify_siqs_residual;
 using gnfs::siqs::FBPrime;
+using gnfs::siqs::merge_partials;
 using gnfs::siqs::nonnegative_mpz_to_uint64_checked;
 using gnfs::siqs::normalize_two_large_prime;
 using gnfs::siqs::sieve_polynomial;
@@ -103,6 +106,63 @@ void test_bounds_and_exact_product_are_required() {
     // A forged pair whose multiplication would wrap must still fail closed.
     CHECK(!normalize_two_large_prime(15, std::numeric_limits<uint64_t>::max(),
                                      {std::numeric_limits<uint64_t>::max(), 15}));
+}
+
+void test_choose_A_rejects_invalid_bounds() {
+    const Integer modulus("1000000007");
+    const auto factor_base = gnfs::siqs::build_factor_base(modulus, 32);
+    std::mt19937 rng(7);
+    std::vector<uint32_t> a_indices;
+    Integer A;
+
+    bool zero_sieve_half_rejected = false;
+    try {
+        choose_A(modulus, 0, 2, factor_base, rng, a_indices, A);
+    } catch (const std::invalid_argument&) {
+        zero_sieve_half_rejected = true;
+    }
+    CHECK(zero_sieve_half_rejected);
+
+    bool zero_factor_count_rejected = false;
+    try {
+        choose_A(modulus, 128, 0, factor_base, rng, a_indices, A);
+    } catch (const std::invalid_argument&) {
+        zero_factor_count_rejected = true;
+    }
+    CHECK(zero_factor_count_rejected);
+}
+
+void test_merge_partials_materializes_two_lp_square() {
+    SIQSRelation relation;
+    relation.value = Integer(7);
+    relation.large_prime = 101;
+    relation.large_prime2 = 101;
+    relation.negative = false;
+
+    std::vector<SIQSRelation> input;
+    input.push_back(std::move(relation));
+    const auto full = merge_partials(input, 1, false);
+    CHECK(full.size() == 1);
+    if (full.size() == 1) {
+        CHECK(full.front().value == Integer(7));
+        CHECK(full.front().large_prime == 0);
+        CHECK(full.front().large_prime2 == 0);
+        CHECK(full.front().merge_lps == std::vector<uint64_t>{101});
+    }
+}
+
+void test_merge_partials_rejects_non_semiprime_splitter_output() {
+    // split_cofactor_64(90) returns {2,45}; strict normalization must reject
+    // the composite second side instead of admitting a malformed 2LP edge.
+    SIQSRelation relation;
+    relation.value = Integer(7);
+    relation.large_prime = 90;
+    relation.large_prime2 = 1;
+    relation.negative = false;
+
+    std::vector<SIQSRelation> input;
+    input.push_back(std::move(relation));
+    CHECK(merge_partials(input, 1, false).empty());
 }
 
 void test_residual_classification_is_exact_and_deterministic() {
@@ -776,6 +836,9 @@ int main() {
     test_candidate_order_is_canonicalized();
     test_non_semiprimes_are_rejected();
     test_bounds_and_exact_product_are_required();
+    test_choose_A_rejects_invalid_bounds();
+    test_merge_partials_materializes_two_lp_square();
+    test_merge_partials_rejects_non_semiprime_splitter_output();
     test_residual_classification_is_exact_and_deterministic();
     test_nonnegative_mpz_to_uint64_checked();
     test_shadow_sink_factory_exceptions_roll_back_for_retry();
