@@ -541,13 +541,13 @@ static void run_repl() {
                 if (key == "method")
                     repl_config.method = parse_method(val);
                 else if (key == "degree")
-                    repl_config.degree = static_cast<uint32_t>(std::stoul(val));
+                    repl_config.degree = Config::parse_uint32(val, key);
                 else if (key == "rational_bound" || key == "fb_rational")
-                    repl_config.rational_bound = static_cast<uint32_t>(std::stoul(val));
+                    repl_config.rational_bound = Config::parse_uint32(val, key);
                 else if (key == "algebraic_bound" || key == "fb_algebraic")
-                    repl_config.algebraic_bound = static_cast<uint32_t>(std::stoul(val));
+                    repl_config.algebraic_bound = Config::parse_uint32(val, key);
                 else if (key == "large_prime_bound" || key == "lp_bound")
-                    repl_config.large_prime_bound = std::stoull(val);
+                    repl_config.large_prime_bound = Config::parse_uint64(val, key);
                 else {
                     std::cout << TR(S::REPL_UNKNOWN_KEY) << " " << key << "\n";
                     continue;
@@ -710,17 +710,17 @@ int main(int argc, char* argv[]) {
             } else if ((arg == "-c" || arg == "--config") && i + 1 < argc) {
                 config_file = argv[++i];
             } else if (arg == "--degree" && i + 1 < argc) {
-                cli_config.degree = static_cast<uint32_t>(std::stoul(argv[++i]));
+                cli_config.degree = Config::parse_uint32(argv[++i], "degree");
             } else if (arg == "--fb-rational" && i + 1 < argc) {
-                cli_config.rational_bound = static_cast<uint32_t>(std::stoul(argv[++i]));
+                cli_config.rational_bound = Config::parse_uint32(argv[++i], "rational_bound");
             } else if (arg == "--fb-algebraic" && i + 1 < argc) {
-                cli_config.algebraic_bound = static_cast<uint32_t>(std::stoul(argv[++i]));
+                cli_config.algebraic_bound = Config::parse_uint32(argv[++i], "algebraic_bound");
             } else if (arg == "--lp-bound" && i + 1 < argc) {
-                cli_config.large_prime_bound = std::stoull(argv[++i]);
+                cli_config.large_prime_bound = Config::parse_uint64(argv[++i], "large_prime_bound");
             } else if (arg == "--sieve-width" && i + 1 < argc) {
-                cli_config.sieve_width = std::stoi(argv[++i]);
+                cli_config.sieve_width = Config::parse_int32(argv[++i], "sieve_width");
             } else if (arg == "--sieve-height" && i + 1 < argc) {
-                cli_config.sieve_height = std::stoi(argv[++i]);
+                cli_config.sieve_height = Config::parse_int32(argv[++i], "sieve_height");
             } else if (arg == "--threads" && i + 1 < argc) {
                 const std::string value_text = argv[++i];
                 try {
