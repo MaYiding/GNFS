@@ -354,7 +354,7 @@ class BitVector {
 public:
     BitVector() = default;
 
-    explicit BitVector(size_t size) : bits_((size + 63) / 64, 0), size_(size) {}
+    explicit BitVector(size_t size) : bits_(word_count_for_size(size), 0), size_(size) {}
 
     /// 设置位
     void set(size_t idx) {
@@ -434,6 +434,17 @@ public:
     }
 
 private:
+    [[nodiscard]] static size_t word_count_for_size(size_t size) {
+        // Keep the addition below in range. Without this guard, a size near
+        // SIZE_MAX wraps to a tiny allocation while size_ still reports the
+        // original value, making later bit access out-of-bounds.
+        constexpr size_t padding = 63;
+        if (size > (std::numeric_limits<size_t>::max)() - padding) {
+            throw std::length_error("BitVector size is too large");
+        }
+        return (size + padding) / 64;
+    }
+
     std::vector<uint64_t> bits_;
     size_t size_ = 0;
 };
