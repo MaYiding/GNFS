@@ -3,11 +3,13 @@
 #include "gnfs/core/integer.hpp"
 #include "gnfs/core/polynomial_context.hpp"
 #include "gnfs/factor_base/factor_base.hpp"
-#include <vector>
 #include <cstdint>
+#include <vector>
 
 // Forward declaration for ModularPoly
-namespace gnfs::sqrt { class ModularPoly; }
+namespace gnfs::sqrt {
+class ModularPoly;
+}
 
 namespace gnfs::factor_base {
 
@@ -22,7 +24,7 @@ public:
         uint32_t algebraic_bound = 1000;
         uint32_t special_q_bound = 0;   // Special-Q 素数上界（0 = 同 algebraic_bound）
         uint64_t large_prime_bound = 0; // 大素数界（0 = rational_bound × 100 默认值）
-        uint8_t log_scale = core::SIEVE_LOG_SCALE;  // Scale factor for log values
+        uint8_t log_scale = core::SIEVE_LOG_SCALE; // Scale factor for log values
         bool parallel = true;
 
         Options() = default;
@@ -36,7 +38,8 @@ public:
     FactorBase build(uint32_t rational_bound, uint32_t algebraic_bound);
 
 public:
-    // Find roots of f(x) ≡ 0 mod p using Cantor-Zassenhaus algorithm
+    // Find roots of f(x) ≡ 0 mod p using Cantor-Zassenhaus algorithm.
+    // Throws std::invalid_argument when p is not prime.
     // (公开为静态工具,主要给测试用 — p<64 走 brute-force,p≥64 走 CZ
     // 含 random splitting 多根分离)。
     static std::vector<uint32_t> find_roots_mod_p(const PolynomialContext& ctx, uint32_t p);
@@ -50,22 +53,27 @@ public:
 private:
     PolynomialContext ctx_;
 
-    static void find_rational_primes(FactorBase& fb, const PolynomialContext& ctx,
-                                      uint32_t bound, uint8_t log_scale,
+    static void find_rational_primes(FactorBase& fb, const PolynomialContext& ctx, uint32_t bound,
+                                     uint8_t log_scale,
+                                     const std::vector<bool>* shared_sieve = nullptr);
+    static void find_algebraic_primes(FactorBase& fb, const PolynomialContext& ctx, uint32_t bound,
+                                      uint8_t log_scale,
                                       const std::vector<bool>* shared_sieve = nullptr);
-    static void find_algebraic_primes(FactorBase& fb, const PolynomialContext& ctx,
-                                       uint32_t bound, uint8_t log_scale,
-                                       const std::vector<bool>* shared_sieve = nullptr);
     static void find_algebraic_primes_range(FactorBase& fb, const PolynomialContext& ctx,
-                                             uint32_t min_p, uint32_t max_p, uint8_t log_scale);
+                                            uint32_t min_p, uint32_t max_p, uint8_t log_scale);
 
     /// Extract roots from a polynomial known to be a product of distinct linear factors
-    static std::vector<uint32_t> extract_roots_from_poly(
-        const sqrt::ModularPoly& poly, const std::vector<uint64_t>& f_mod, uint32_t p);
+    static std::vector<uint32_t> extract_roots_from_poly(const sqrt::ModularPoly& poly,
+                                                         const std::vector<uint64_t>& f_mod,
+                                                         uint32_t p);
+
+    /// Root finder implementation for callers that already validated p as prime.
+    static std::vector<uint32_t> find_roots_mod_p_unchecked(const PolynomialContext& ctx,
+                                                            uint32_t p);
 
     /// Exact polynomial division: a / b mod p
-    static sqrt::ModularPoly poly_div_mod(
-        const sqrt::ModularPoly& a, const sqrt::ModularPoly& b, uint32_t p);
+    static sqrt::ModularPoly poly_div_mod(const sqrt::ModularPoly& a, const sqrt::ModularPoly& b,
+                                          uint32_t p);
 };
 
 } // namespace gnfs::factor_base
