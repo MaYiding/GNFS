@@ -513,8 +513,7 @@ void test_serialization_truncated_records() {
     auto write_value = [](std::stringstream& ss, const auto& value) {
         ss.write(reinterpret_cast<const char*>(&value), sizeof(value));
     };
-    auto write_prefix = [&](std::stringstream& ss, uint64_t sieve_count,
-                            uint32_t rational_count) {
+    auto write_prefix = [&](std::stringstream& ss, uint64_t sieve_count, uint32_t rational_count) {
         const uint32_t magic = 0x47464246;
         const uint32_t version = 1;
         const uint32_t rational_bound = 100;
