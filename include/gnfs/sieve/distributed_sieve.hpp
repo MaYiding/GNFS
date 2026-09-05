@@ -207,6 +207,7 @@ private:
 ///
 /// Behavior:
 ///   - num_workers == 0  → throws std::invalid_argument (caller must filter).
+///   - num_workers > UINT32_MAX → throws std::invalid_argument (SQ indices are uint32_t).
 ///   - base_path empty   → throws std::invalid_argument.
 ///   - Worker failure    → master retries once. Persistent failure → that chunk
 ///     contributes zero relations; an informational stderr line is emitted.
@@ -269,7 +270,8 @@ DistributedSieveConfig parse_distributed_sieve_env() noexcept;
 
 /// Split [range_begin, range_end) into num_chunks contiguous chunks.
 /// Returns a vector of size num_chunks of [chunk_begin, chunk_end) pairs.
-/// Empty input returns empty vector. Zero chunks → empty vector.
+/// Empty input returns empty vector. Zero chunks or a count outside the uint32
+/// SQ-index domain returns an empty vector.
 [[nodiscard]] std::vector<std::pair<uint32_t, uint32_t>>
 split_sq_range(uint32_t range_begin, uint32_t range_end, size_t num_chunks) noexcept;
 

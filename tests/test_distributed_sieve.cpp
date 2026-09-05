@@ -45,6 +45,7 @@ int main() {
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -625,6 +626,13 @@ void test_split_sq_range() {
             CHECK(c[i - 1].second == c[i].first);
         }
     }
+    // A size_t count outside the uint32 SQ-index domain must not wrap to zero
+    // and trigger division-by-zero in the helper's noexcept boundary.
+    {
+        const auto c =
+            split_sq_range(0, 1, static_cast<size_t>(std::numeric_limits<uint32_t>::max()) + 1U);
+        CHECK(c.empty());
+    }
 
     std::cout << "PASS\n";
 }
@@ -738,6 +746,17 @@ void test_invalid_config() {
         threw_path = true;
     }
     CHECK(threw_path);
+
+    if constexpr (std::numeric_limits<size_t>::max() > std::numeric_limits<uint32_t>::max()) {
+        bool threw_oversized = false;
+        try {
+            run(static_cast<size_t>(std::numeric_limits<uint32_t>::max()) + 1U,
+                gnfs::util::temp_path("oversized"));
+        } catch (const std::invalid_argument&) {
+            threw_oversized = true;
+        }
+        CHECK(threw_oversized);
+    }
 
     std::cout << "PASS\n";
 }

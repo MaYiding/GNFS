@@ -32,6 +32,7 @@
 #include <cstring>
 #include <exception>
 #include <filesystem>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -48,20 +49,29 @@ namespace gnfs::sieve {
 std::vector<std::pair<uint32_t, uint32_t>> split_sq_range(uint32_t range_begin, uint32_t range_end,
                                                           size_t num_chunks) noexcept {
     std::vector<std::pair<uint32_t, uint32_t>> chunks;
-    if (range_end <= range_begin || num_chunks == 0)
+    // Chunk arithmetic is performed in the uint32 SQ-index domain. Reject a
+    // size_t count that would narrow to zero (or otherwise wrap) before the
+    // division below; this helper has no error channel, so an oversized
+    // request is represented by an empty result just like an empty range.
+    if (range_end <= range_begin || num_chunks == 0 ||
+        num_chunks > static_cast<size_t>(std::numeric_limits<uint32_t>::max()))
         return chunks;
 
-    const uint32_t total = range_end - range_begin;
-    const uint32_t base_size = total / static_cast<uint32_t>(num_chunks);
-    const uint32_t remainder = total % static_cast<uint32_t>(num_chunks);
-    chunks.reserve(num_chunks);
+    try {
+        const uint32_t total = range_end - range_begin;
+        const uint32_t base_size = total / static_cast<uint32_t>(num_chunks);
+        const uint32_t remainder = total % static_cast<uint32_t>(num_chunks);
+        chunks.reserve(num_chunks);
 
-    uint32_t cursor = range_begin;
-    for (size_t i = 0; i < num_chunks; ++i) {
-        const uint32_t chunk_len = base_size + (i < remainder ? 1U : 0U);
-        const uint32_t chunk_end = cursor + chunk_len;
-        chunks.emplace_back(cursor, chunk_end);
-        cursor = chunk_end;
+        uint32_t cursor = range_begin;
+        for (size_t i = 0; i < num_chunks; ++i) {
+            const uint32_t chunk_len = base_size + (i < remainder ? 1U : 0U);
+            const uint32_t chunk_end = cursor + chunk_len;
+            chunks.emplace_back(cursor, chunk_end);
+            cursor = chunk_end;
+        }
+    } catch (...) {
+        chunks.clear();
     }
     return chunks;
 }
@@ -98,6 +108,10 @@ run_distributed_sieve(const DistributedSieveConfig& cfg, const gnfs::core::Polyn
                       std::vector<DistributedSieveWorkerResult>*) {
     if (cfg.num_workers == 0) {
         throw std::invalid_argument("run_distributed_sieve: num_workers must be > 0");
+    }
+    if (cfg.num_workers > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
+        throw std::invalid_argument(
+            "run_distributed_sieve: num_workers exceeds the uint32 SQ-index domain");
     }
     throw std::runtime_error(
         "run_distributed_sieve: POSIX fork workers are not available on Windows");
@@ -620,20 +634,29 @@ WorkerWaitResult wait_and_decode(pid_t pid) noexcept {
 std::vector<std::pair<uint32_t, uint32_t>> split_sq_range(uint32_t range_begin, uint32_t range_end,
                                                           size_t num_chunks) noexcept {
     std::vector<std::pair<uint32_t, uint32_t>> chunks;
-    if (num_chunks == 0 || range_end <= range_begin)
+    // Chunk arithmetic is performed in the uint32 SQ-index domain. Reject a
+    // size_t count that would narrow to zero (or otherwise wrap) before the
+    // division below; this helper has no error channel, so an oversized
+    // request is represented by an empty result just like an empty range.
+    if (num_chunks == 0 || range_end <= range_begin ||
+        num_chunks > static_cast<size_t>(std::numeric_limits<uint32_t>::max()))
         return chunks;
 
-    const uint32_t total = range_end - range_begin;
-    const uint32_t base_size = total / static_cast<uint32_t>(num_chunks);
-    const uint32_t remainder = total % static_cast<uint32_t>(num_chunks);
+    try {
+        const uint32_t total = range_end - range_begin;
+        const uint32_t base_size = total / static_cast<uint32_t>(num_chunks);
+        const uint32_t remainder = total % static_cast<uint32_t>(num_chunks);
 
-    chunks.reserve(num_chunks);
-    uint32_t cursor = range_begin;
-    for (size_t i = 0; i < num_chunks; ++i) {
-        const uint32_t chunk_len = base_size + (i < remainder ? 1U : 0U);
-        const uint32_t chunk_end = cursor + chunk_len;
-        chunks.emplace_back(cursor, chunk_end);
-        cursor = chunk_end;
+        chunks.reserve(num_chunks);
+        uint32_t cursor = range_begin;
+        for (size_t i = 0; i < num_chunks; ++i) {
+            const uint32_t chunk_len = base_size + (i < remainder ? 1U : 0U);
+            const uint32_t chunk_end = cursor + chunk_len;
+            chunks.emplace_back(cursor, chunk_end);
+            cursor = chunk_end;
+        }
+    } catch (...) {
+        chunks.clear();
     }
     return chunks;
 }
@@ -672,6 +695,10 @@ std::vector<Relation> run_distributed_sieve_impl(
     bool require_all_workers_success, std::vector<DistributedSieveWorkerResult>* out_worker_stats) {
     if (cfg.num_workers == 0) {
         throw std::invalid_argument("run_distributed_sieve: num_workers must be > 0");
+    }
+    if (cfg.num_workers > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
+        throw std::invalid_argument(
+            "run_distributed_sieve: num_workers exceeds the uint32 SQ-index domain");
     }
     if (cfg.base_path.empty()) {
         throw std::invalid_argument("run_distributed_sieve: base_path must be non-empty");
@@ -719,6 +746,13 @@ std::vector<Relation> run_distributed_sieve_impl(
 
     // Split range into chunks (one per worker).
     auto chunks = split_sq_range(range_begin, range_end, cfg.num_workers);
+    if (chunks.empty()) {
+        // A non-empty effective range cannot produce an empty chunk plan. The
+        // split helper reports allocation/representability failures through
+        // that empty result because it is noexcept; surface the failure here
+        // instead of silently returning a partial (empty) relation set.
+        throw std::runtime_error("run_distributed_sieve: unable to allocate chunk plan");
+    }
 
     std::fprintf(stderr, "[dist_sieve.master] pid=%d workers=%zu sq_range=[%u,%u) base=%s\n",
                  gnfs::util::process_id(), cfg.num_workers, range_begin, range_end,
