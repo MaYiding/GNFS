@@ -16,6 +16,34 @@
 
 namespace gnfs::factor_base {
 
+namespace {
+
+[[nodiscard]] size_t sieve_element_count(uint32_t bound) {
+    const uint64_t count = static_cast<uint64_t>(bound) + 1;
+    if (count > static_cast<uint64_t>((std::numeric_limits<size_t>::max)())) {
+        throw std::overflow_error("FactorBaseBuilder: sieve size exceeds size_t");
+    }
+    return static_cast<size_t>(count);
+}
+
+[[nodiscard]] size_t estimated_prime_count(uint32_t bound, double multiplier) {
+    if (bound < 2)
+        return 0;
+
+    const double estimate = static_cast<double>(bound) /
+                            std::log(static_cast<double>(static_cast<uint64_t>(bound) + 1)) *
+                            multiplier;
+    if (!std::isfinite(estimate) || estimate <= 0) {
+        return 0;
+    }
+    if (estimate > static_cast<double>((std::numeric_limits<size_t>::max)())) {
+        throw std::overflow_error("FactorBaseBuilder: prime-count estimate exceeds size_t");
+    }
+    return static_cast<size_t>(estimate);
+}
+
+} // namespace
+
 // ============================================================
 // FactorBase methods (save/load - inline methods are in header)
 // ============================================================
@@ -114,7 +142,7 @@ FactorBase FactorBase::load(std::istream& is) {
     uint32_t rat_count = 0;
     read_bytes(&rat_count, sizeof(rat_count), "rational-prime count");
     fb.rational_.clear();
-    for (uint32_t i = 0; i < rat_count; ++i) {
+    for (size_t i = 0; i < static_cast<size_t>(rat_count); ++i) {
         RationalPrime rp{};
         read_bytes(&rp.p, sizeof(rp.p), "rational-prime value");
         read_bytes(&rp.log_p, sizeof(rp.log_p), "rational-prime log");
@@ -125,7 +153,7 @@ FactorBase FactorBase::load(std::istream& is) {
     uint32_t alg_count = 0;
     read_bytes(&alg_count, sizeof(alg_count), "algebraic-prime count");
     fb.algebraic_.clear();
-    for (uint32_t i = 0; i < alg_count; ++i) {
+    for (size_t i = 0; i < static_cast<size_t>(alg_count); ++i) {
         AlgebraicPrime ap{};
         read_bytes(&ap.p, sizeof(ap.p), "algebraic-prime value");
         read_bytes(&ap.r, sizeof(ap.r), "algebraic-prime root");
@@ -177,14 +205,13 @@ FactorBase FactorBaseBuilder::build(const PolynomialContext& ctx, const Options&
     // Estimate sizes for preallocation
     // Prime counting function: π(n) ≈ n / ln(n)
     // `+1` widened to uint64_t so UINT32_MAX doesn't wrap to 0 (log(0)=-inf → 0 estimate).
-    size_t estimated_rational = static_cast<size_t>(
-        opts.rational_bound /
-        std::log(static_cast<double>(static_cast<uint64_t>(opts.rational_bound) + 1)) * 1.2);
-    size_t estimated_algebraic =
-        static_cast<size_t>(
-            effective_alg_bound /
-            std::log(static_cast<double>(static_cast<uint64_t>(effective_alg_bound) + 1)) * 1.2) *
-        ctx.degree();
+    size_t estimated_rational = estimated_prime_count(opts.rational_bound, 1.2);
+    size_t estimated_algebraic = estimated_prime_count(effective_alg_bound, 1.2);
+    const size_t degree = static_cast<size_t>(ctx.degree());
+    if (degree != 0 && estimated_algebraic > (std::numeric_limits<size_t>::max)() / degree) {
+        throw std::overflow_error("FactorBaseBuilder: algebraic reserve estimate exceeds size_t");
+    }
+    estimated_algebraic *= degree;
     fb.reserve(estimated_rational, estimated_algebraic);
 
     // 构建共享的 Eratosthenes 筛,bound = max(rational, algebraic),
@@ -228,7 +255,8 @@ std::vector<bool> FactorBaseBuilder::build_eratosthenes_sieve(uint32_t bound) {
     constexpr uint32_t PARALLEL_THRESHOLD = 5'000'000;
 
     if (bound < PARALLEL_THRESHOLD) {
-        std::vector<bool> is_prime(static_cast<size_t>(bound) + 1, true);
+        const size_t element_count = sieve_element_count(bound);
+        std::vector<bool> is_prime(element_count, true);
         if (bound >= 1)
             is_prime[0] = false;
         if (bound >= 1)
@@ -265,14 +293,18 @@ std::vector<bool> FactorBaseBuilder::build_eratosthenes_sieve(uint32_t bound) {
 
     // Step 2: 用 uint8_t (而非 vector<bool> 位包装) 以保证 byte 粒度
     // thread-safe writes — 不同 thread 写不同 segment 时不会 byte-share。
-    std::vector<uint8_t> is_prime_u8(static_cast<size_t>(bound) + 1, 1);
+    const size_t element_count = sieve_element_count(bound);
+    std::vector<uint8_t> is_prime_u8(element_count, 1);
     is_prime_u8[0] = is_prime_u8[1] = 0;
 
     // Step 3: 段并行
     // SEGMENT_SIZE 选 L2 cache (~256KB on modern CPU) 友好的大小,
     // 内层 small primes 的 inner loop 全在 cache 内。
     constexpr uint32_t SEGMENT_SIZE = 256 * 1024;
-    uint32_t num_segments = (bound + SEGMENT_SIZE) / SEGMENT_SIZE;
+    // Compute ceil((bound + 1) / SEGMENT_SIZE) without overflowing a
+    // 32-bit bound near UINT32_MAX.
+    const size_t num_segments =
+        element_count / SEGMENT_SIZE + (element_count % SEGMENT_SIZE != 0 ? 1 : 0);
 
     size_t n_threads = std::thread::hardware_concurrency();
     if (n_threads == 0)
@@ -280,10 +312,10 @@ std::vector<bool> FactorBaseBuilder::build_eratosthenes_sieve(uint32_t bound) {
     if (n_threads > num_segments)
         n_threads = num_segments;
 
-    std::atomic<uint32_t> next_seg{0};
+    std::atomic<size_t> next_seg{0};
     auto worker = [&]() {
         while (true) {
-            uint32_t s = next_seg.fetch_add(1, std::memory_order_relaxed);
+            size_t s = next_seg.fetch_add(1, std::memory_order_relaxed);
             if (s >= num_segments)
                 break;
             uint64_t seg_lo = static_cast<uint64_t>(s) * SEGMENT_SIZE;
@@ -316,8 +348,8 @@ std::vector<bool> FactorBaseBuilder::build_eratosthenes_sieve(uint32_t bound) {
         t.join();
 
     // 转 std::vector<bool> 返回 (保持接口兼容)
-    std::vector<bool> result(static_cast<size_t>(bound) + 1);
-    for (size_t i = 0; i <= bound; ++i) {
+    std::vector<bool> result(element_count);
+    for (size_t i = 0; i < element_count; ++i) {
         result[i] = (is_prime_u8[i] != 0);
     }
     return result;
@@ -338,26 +370,25 @@ void FactorBaseBuilder::find_rational_primes(FactorBase& fb, const PolynomialCon
     }
     const auto& is_prime = *sieve_ptr;
 
-    for (uint32_t p = 2; p <= bound; ++p) {
-        if (!is_prime[p])
-            continue;
-
-        // Skip primes that divide N — use mpz_divisible_ui_p (zero GMP alloc)
-        if (mpz_divisible_ui_p(ctx.n().get_mpz(), p)) {
-            continue;
+    if (bound < 2)
+        return;
+    for (uint32_t p = 2;; ++p) {
+        if (is_prime[p] && !mpz_divisible_ui_p(ctx.n().get_mpz(), p)) {
+            // Compute log value and add to factor base.
+            uint32_t log_p = compute_log_prime_precise(p, log_scale);
+            fb.add_rational(p, log_p);
         }
-
-        // Compute log value
-        uint32_t log_p = compute_log_prime_precise(p, log_scale);
-
-        // Add to factor base
-        fb.add_rational(p, log_p);
+        if (p == bound)
+            break;
     }
 }
 
 void FactorBaseBuilder::find_algebraic_primes(FactorBase& fb, const PolynomialContext& ctx,
                                               uint32_t bound, uint8_t log_scale,
                                               const std::vector<bool>* shared_sieve) {
+    if (bound < 2)
+        return;
+
     // Step 1: 复用 build() 提供的筛或自建
     std::vector<bool> local_sieve;
     const std::vector<bool>* sieve_ptr;
@@ -377,14 +408,14 @@ void FactorBaseBuilder::find_algebraic_primes(FactorBase& fb, const PolynomialCo
         fd_u64 = ctx.leading_coeff().to_uint64();
 
     std::vector<uint32_t> primes;
-    primes.reserve(static_cast<size_t>(bound / std::log(static_cast<double>(bound + 1)) * 1.1));
+    primes.reserve(estimated_prime_count(bound, 1.1));
 
-    for (uint32_t p = 2; p <= bound; ++p) {
-        if (!is_prime_sieve[p])
-            continue;
-        if (mpz_divisible_ui_p(ctx.n().get_mpz(), p))
-            continue;
-        primes.push_back(p);
+    for (uint32_t p = 2;; ++p) {
+        if (is_prime_sieve[p] && !mpz_divisible_ui_p(ctx.n().get_mpz(), p)) {
+            primes.push_back(p);
+        }
+        if (p == bound)
+            break;
     }
 
     // Step 2: Parallel root finding

@@ -9,17 +9,18 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace gnfs::factor_base {
 
+using core::AlgebraicPrime;
+using core::FactorBaseParams;
 using core::Integer;
 using core::PolynomialContext;
 using core::RationalPrime;
-using core::AlgebraicPrime;
-using core::FactorBaseParams;
 
 /// Phase 2 (Factor Base) checkpoint.
 ///
@@ -49,8 +50,8 @@ using core::FactorBaseParams;
 ///   ── Sieve algebraic split ──
 ///   u64 sieve_algebraic_count
 struct FbCheckpoint {
-    static constexpr uint64_t MAGIC = 0x474E465346434B50ULL;             // 'GNFSFCKP'
-    static constexpr uint64_t MAGIC_INCOMPLETE = 0x474E465346434B4EULL;  // 'GNFSFCKN'
+    static constexpr uint64_t MAGIC = 0x474E465346434B50ULL;            // 'GNFSFCKP'
+    static constexpr uint64_t MAGIC_INCOMPLETE = 0x474E465346434B4EULL; // 'GNFSFCKN'
     static constexpr uint64_t VERSION = 1;
 
     // Build params
@@ -58,19 +59,28 @@ struct FbCheckpoint {
     uint32_t algebraic_bound = 0;
     uint32_t special_q_bound = 0;
     uint64_t large_prime_bound = 0;
-    uint8_t  log_scale = core::SIEVE_LOG_SCALE;
+    uint8_t log_scale = core::SIEVE_LOG_SCALE;
 
     // Context fingerprint (cheap hash to detect "wrong N / wrong poly" mistakes)
     uint32_t ctx_degree = 0;
-    Integer  ctx_n;  // full N stored for strict equality check
+    Integer ctx_n; // full N stored for strict equality check
 
     // FB content
-    std::vector<RationalPrime>  rational;
+    std::vector<RationalPrime> rational;
     std::vector<AlgebraicPrime> algebraic;
     uint64_t sieve_algebraic_count = 0;
 
     /// Rebuild FactorBase from this checkpoint.
     [[nodiscard]] FactorBase to_factor_base() const {
+        if (sieve_algebraic_count > static_cast<uint64_t>((std::numeric_limits<size_t>::max)())) {
+            throw std::overflow_error(
+                "FbCheckpoint::to_factor_base: sieve algebraic count exceeds size_t");
+        }
+        if (sieve_algebraic_count > algebraic.size()) {
+            throw std::runtime_error(
+                "FbCheckpoint::to_factor_base: sieve algebraic count exceeds algebraic count");
+        }
+
         FactorBaseParams params;
         params.rational_bound = rational_bound;
         params.algebraic_bound = algebraic_bound;
@@ -91,8 +101,7 @@ struct FbCheckpoint {
     }
 
     /// Capture FB + params + ctx into a checkpoint.
-    static FbCheckpoint from_factor_base(const FactorBase& fb,
-                                         const PolynomialContext& ctx,
+    static FbCheckpoint from_factor_base(const FactorBase& fb, const PolynomialContext& ctx,
                                          uint32_t special_q_bound_for_save) {
         FbCheckpoint ck;
         const auto& p = fb.params();
@@ -114,6 +123,14 @@ struct FbCheckpoint {
     }
 
     void save(const std::string& path) const {
+        if (rational.size() > max_serialized_count() || algebraic.size() > max_serialized_count()) {
+            throw std::overflow_error("FbCheckpoint::save: factor-base count exceeds uint32_t");
+        }
+        if (sieve_algebraic_count > algebraic.size()) {
+            throw std::runtime_error(
+                "FbCheckpoint::save: sieve algebraic count exceeds algebraic count");
+        }
+
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         if (!out) {
             throw std::runtime_error("FbCheckpoint::save: cannot open " + path);
@@ -128,7 +145,7 @@ struct FbCheckpoint {
         out.write(reinterpret_cast<const char*>(&algebraic_bound), 4);
         out.write(reinterpret_cast<const char*>(&special_q_bound), 4);
         out.write(reinterpret_cast<const char*>(&large_prime_bound), 8);
-        uint32_t scale_pad = static_cast<uint32_t>(log_scale);  // pad to 4 bytes
+        uint32_t scale_pad = static_cast<uint32_t>(log_scale); // pad to 4 bytes
         out.write(reinterpret_cast<const char*>(&scale_pad), 4);
 
         out.write(reinterpret_cast<const char*>(&ctx_degree), 4);
@@ -166,8 +183,7 @@ struct FbCheckpoint {
         out.close();
     }
 
-    static FbCheckpoint load(const std::string& path,
-                             bool allow_incomplete = false) {
+    static FbCheckpoint load(const std::string& path, bool allow_incomplete = false) {
         std::ifstream in(path, std::ios::binary);
         if (!in) {
             throw std::runtime_error("FbCheckpoint::load: cannot open " + path);
@@ -210,7 +226,7 @@ struct FbCheckpoint {
         }
         ck.rational.clear();
         ck.rational.reserve(rat_count);
-        for (uint32_t i = 0; i < rat_count; ++i) {
+        for (size_t i = 0; i < static_cast<size_t>(rat_count); ++i) {
             RationalPrime rp;
             in.read(reinterpret_cast<char*>(&rp.p), 4);
             in.read(reinterpret_cast<char*>(&rp.log_p), 4);
@@ -227,7 +243,7 @@ struct FbCheckpoint {
         }
         ck.algebraic.clear();
         ck.algebraic.reserve(alg_count);
-        for (uint32_t i = 0; i < alg_count; ++i) {
+        for (size_t i = 0; i < static_cast<size_t>(alg_count); ++i) {
             AlgebraicPrime ap;
             uint32_t deg_pad = 0;
             in.read(reinterpret_cast<char*>(&ap.p), 4);
@@ -252,7 +268,8 @@ struct FbCheckpoint {
 
     static bool exists_and_valid(const std::string& path) noexcept {
         std::ifstream in(path, std::ios::binary);
-        if (!in) return false;
+        if (!in)
+            return false;
         uint64_t magic = 0;
         in.read(reinterpret_cast<char*>(&magic), 8);
         return in.gcount() == 8 && magic == MAGIC;
@@ -267,25 +284,27 @@ struct FbCheckpoint {
     };
 
     /// Cheap compatibility check (does not throw).
-    [[nodiscard]] MatchStatus matches(const PolynomialContext& ctx,
-                                      uint32_t want_rational_bound,
-                                      uint32_t want_algebraic_bound,
-                                      uint32_t want_special_q_bound,
+    [[nodiscard]] MatchStatus matches(const PolynomialContext& ctx, uint32_t want_rational_bound,
+                                      uint32_t want_algebraic_bound, uint32_t want_special_q_bound,
                                       uint64_t want_large_prime_bound,
-                                      uint8_t  want_log_scale) const {
-        if (ctx_n != ctx.n()) return MatchStatus::NMismatch;
-        if (ctx_degree != ctx.degree()) return MatchStatus::DegreeMismatch;
-        if (rational_bound != want_rational_bound ||
-            algebraic_bound != want_algebraic_bound ||
+                                      uint8_t want_log_scale) const {
+        if (ctx_n != ctx.n())
+            return MatchStatus::NMismatch;
+        if (ctx_degree != ctx.degree())
+            return MatchStatus::DegreeMismatch;
+        if (rational_bound != want_rational_bound || algebraic_bound != want_algebraic_bound ||
             special_q_bound != want_special_q_bound ||
-            large_prime_bound != want_large_prime_bound ||
-            log_scale != want_log_scale) {
+            large_prime_bound != want_large_prime_bound || log_scale != want_log_scale) {
             return MatchStatus::ParamsMismatch;
         }
         return MatchStatus::Ok;
     }
 
 private:
+    [[nodiscard]] static constexpr size_t max_serialized_count() noexcept {
+        return static_cast<size_t>((std::numeric_limits<uint32_t>::max)());
+    }
+
     static void write_integer(std::ofstream& out, const Integer& x) {
         const mpz_t& mz = x.get_mpz();
         int32_t sgn = mpz_sgn(mz);
@@ -301,11 +320,13 @@ private:
         std::vector<unsigned char> buf(max_bytes);
         mpz_export(buf.data(), &byte_count, /*order=*/1, /*size=*/1,
                    /*endian=*/1, /*nails=*/0, mz);
+        if (byte_count > (std::numeric_limits<uint32_t>::max)()) {
+            throw std::overflow_error("FbCheckpoint::write_integer: integer is too large");
+        }
         uint32_t bc = static_cast<uint32_t>(byte_count);
         out.write(reinterpret_cast<const char*>(&bc), 4);
         if (bc > 0) {
-            out.write(reinterpret_cast<const char*>(buf.data()),
-                      static_cast<std::streamsize>(bc));
+            out.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(bc));
         }
     }
 
@@ -326,8 +347,7 @@ private:
         }
         std::vector<unsigned char> buf(byte_count);
         if (byte_count > 0) {
-            in.read(reinterpret_cast<char*>(buf.data()),
-                    static_cast<std::streamsize>(byte_count));
+            in.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(byte_count));
             if (in.gcount() != static_cast<std::streamsize>(byte_count)) {
                 throw std::runtime_error("FbCheckpoint::read_integer: truncated body");
             }

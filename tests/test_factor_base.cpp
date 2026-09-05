@@ -51,6 +51,27 @@ void test_prime_sieve() {
     std::cout << "  Prime sieve: PASS" << std::endl;
 }
 
+void test_zero_bounds() {
+    std::cout << "Testing zero factor-base bounds..." << std::endl;
+
+    Integer n(test_n);
+    auto result = BaseMSelector::select(n, 3);
+    assert(result.success);
+    auto ctx = BaseMSelector::create_context(n, result);
+
+    FactorBaseBuilder::Options opts;
+    opts.rational_bound = 0;
+    opts.algebraic_bound = 0;
+    opts.special_q_bound = 0;
+
+    auto fb = FactorBaseBuilder::build(ctx, opts);
+    assert(fb.rational_count() == 0);
+    assert(fb.algebraic_count() == 0);
+    assert(fb.sieve_algebraic_count() == 0);
+
+    std::cout << "  Zero factor-base bounds: PASS" << std::endl;
+}
+
 // CZ random splitting 仅当 deg(gcd(x^p-x, f)) > 1 时触发(多个根 mod p)。
 // test_algebraic_roots 走的是 ≤50 brute-force 路径,covers p<64 but不
 // 覆盖 CZ random splitting。这里专门构造 f(x)=(x-3)(x-7) mod p,p>=64
@@ -532,6 +553,44 @@ void test_serialization_invalid() {
     std::cout << "  Serialization error handling: PASS" << std::endl;
 }
 
+void test_count_width_guards() {
+    std::cout << "Testing factor-base count width guards..." << std::endl;
+
+    // The serialized/index representation stores counts and indices as u32.
+    // On 64-bit hosts, requests beyond that representable range must fail
+    // before vector::reserve attempts a multi-gigabyte allocation.
+    if constexpr (sizeof(size_t) > sizeof(uint32_t)) {
+        FactorBase fb;
+        const size_t too_many = static_cast<size_t>((std::numeric_limits<uint32_t>::max)()) + 1;
+
+        bool rational_threw = false;
+        try {
+            fb.reserve(too_many, 0);
+        } catch (const std::overflow_error&) {
+            rational_threw = true;
+        }
+        assert(rational_threw);
+
+        bool algebraic_threw = false;
+        try {
+            fb.reserve(0, too_many);
+        } catch (const std::overflow_error&) {
+            algebraic_threw = true;
+        }
+        assert(algebraic_threw);
+    }
+
+    // A zero/one-element base still exercises the size_t index rebuild path.
+    FactorBase small;
+    small.add_rational(2, 16);
+    small.add_algebraic(3, 1, 25);
+    small.build_index();
+    assert(small.find_rational(2).has_value());
+    assert(small.find_algebraic(3, 1).has_value());
+
+    std::cout << "  Factor-base count width guards: PASS" << std::endl;
+}
+
 /// 验证分段并行筛 (bound ≥ PARALLEL_THRESHOLD=5M) 与简单筛输出按位等价。
 /// 边界值: 4_999_999 (走简单), 5_000_001 (走分段)。
 void test_segmented_parallel_sieve() {
@@ -575,6 +634,7 @@ int main() {
     std::cout << "=== Factor Base Tests ===" << std::endl;
 
     test_prime_sieve();
+    test_zero_bounds();
     test_algebraic_roots();
     test_cz_random_splitting();
     test_root_finder_rejects_non_prime_modulus();
@@ -586,6 +646,7 @@ int main() {
     test_base_m_irreducibility();
     test_serialization_roundtrip();
     test_serialization_invalid();
+    test_count_width_guards();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;
