@@ -1590,9 +1590,17 @@ private:
         // 否则关系是退化的 (∏(a-bm) ≡ 0 mod N → X=0 → trivial gcd)。
         // thread_local: 每秒 100K+ relations 走此 path; 复用 buffer 省 2 alloc/relation
         if (n_for_validation_ && m_for_validation_) {
-            thread_local Integer val, g;
+            thread_local Integer val, g, b_value;
             val = rel.a; // mpz_set_si direct
-            mpz_submul_ui(val.get_mpz(), m_for_validation_->get_mpz(), rel.b);
+            // mpz_submul_ui takes unsigned long, which is only 32 bits on
+            // Windows LLP64. Preserve the complete uint64_t relation b.
+            if (rel.b <= std::numeric_limits<unsigned long>::max()) {
+                mpz_submul_ui(val.get_mpz(), m_for_validation_->get_mpz(),
+                              static_cast<unsigned long>(rel.b));
+            } else {
+                b_value = rel.b;
+                mpz_submul(val.get_mpz(), m_for_validation_->get_mpz(), b_value.get_mpz());
+            }
             mpz_gcd(g.get_mpz(), val.get_mpz(), n_for_validation_->get_mpz());
             if (mpz_cmp_ui(g.get_mpz(), 1) > 0)
                 return -2;

@@ -5,6 +5,7 @@
 #include "../factor_base/factor_base.hpp"
 #include "../linalg/sparse_matrix.hpp"
 
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -15,6 +16,21 @@ using core::Integer;
 using core::Relation;
 using factor_base::FactorBase;
 using linalg::BitVector;
+
+namespace detail {
+
+/// Subtract m*b without narrowing a full-width relation parameter on LLP64.
+inline void subtract_m_times_b(Integer& value, const Integer& m, uint64_t b) {
+    if (b <= std::numeric_limits<unsigned long>::max()) {
+        mpz_submul_ui(value.get_mpz(), m.get_mpz(), static_cast<unsigned long>(b));
+        return;
+    }
+
+    const Integer b_value(b);
+    mpz_submul(value.get_mpz(), m.get_mpz(), b_value.get_mpz());
+}
+
+} // namespace detail
 
 /// 有理平方根计算结果
 struct RationalSqrtResult {
@@ -80,7 +96,7 @@ public:
             Integer a_minus_bm;
             auto check_sign = [&](int64_t a_val, uint64_t b_val) {
                 a_minus_bm = a_val; // mpz_set_si direct
-                mpz_submul_ui(a_minus_bm.get_mpz(), m.get_mpz(), static_cast<unsigned long>(b_val));
+                detail::subtract_m_times_b(a_minus_bm, m, b_val);
                 if (a_minus_bm.is_negative()) {
                     has_negative = !has_negative;
                 }
@@ -182,7 +198,7 @@ public:
             auto multiply_ab = [&](int64_t a_val, uint64_t b_val) {
                 val = a_val; // mpz_set_si direct
                 // val -= m * b_val (fused FMS, b_val is unsigned)
-                mpz_submul_ui(val.get_mpz(), m.get_mpz(), static_cast<unsigned long>(b_val));
+                detail::subtract_m_times_b(val, m, b_val);
                 val %= n;
                 if (val.is_negative())
                     val += n;
