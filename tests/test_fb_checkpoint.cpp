@@ -141,6 +141,30 @@ void test_to_from_factor_base() {
     std::cout << "  FactorBase roundtrip: PASS" << std::endl;
 }
 
+void test_explicit_zero_sieve_count() {
+    std::cout << "Testing explicit zero sieve count roundtrip..." << std::endl;
+    auto path = tmp_ckpt_path("explicit_zero");
+    CkptCleanup c{path};
+
+    FactorBase fb;
+    fb.add_algebraic(3, 0, 25, 1);
+    fb.set_sieve_algebraic_count_explicit(0);
+    assert(fb.sieve_algebraic_count() == 0);
+
+    PolynomialContext ctx = make_ctx();
+    auto ck = FbCheckpoint::from_factor_base(fb, ctx, /*special_q=*/100);
+    assert(ck.sieve_algebraic_count == 0);
+    assert(ck.sieve_algebraic_count_explicit);
+    ck.save(path);
+
+    auto loaded = FbCheckpoint::load(path);
+    FactorBase restored = loaded.to_factor_base();
+    assert(restored.algebraic_count() == 1);
+    assert(restored.sieve_algebraic_count() == 0);
+
+    std::cout << "  Explicit zero sieve count: PASS" << std::endl;
+}
+
 void test_matches_ok() {
     std::cout << "Testing matches() Ok..." << std::endl;
     PolynomialContext ctx = make_ctx();
@@ -340,6 +364,7 @@ int main() {
     std::cout << "===== FbCheckpoint Tests =====" << std::endl;
     test_roundtrip_small_fb();
     test_to_from_factor_base();
+    test_explicit_zero_sieve_count();
     test_matches_ok();
     test_matches_mismatch();
     test_empty_fb();
