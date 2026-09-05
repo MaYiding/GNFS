@@ -6,8 +6,8 @@
 
 #include <cmath>
 #include <cstddef>
-#include <locale>
 #include <limits>
+#include <locale>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -59,8 +59,7 @@ inline constexpr int schema_version = 1;
        << ",\"relations_found\":" << info.relations_found
        << ",\"relations_target\":" << info.relations_target
        << ",\"special_q_done\":" << info.special_q_done << ",\"matrix_rows\":" << info.matrix_rows
-       << ",\"matrix_cols\":" << info.matrix_cols
-       << ",\"dependency_index\":";
+       << ",\"matrix_cols\":" << info.matrix_cols << ",\"dependency_index\":";
     if (info.dependency_index == std::numeric_limits<size_t>::max()) {
         // Keep the schema-1 sentinel stable while the C++ API uses a
         // size_t-valued index that cannot truncate on large matrices.

@@ -74,14 +74,14 @@ void test_progress_and_log_events() {
     check(sentinel_json.find("\"dependency_index\":-1") != std::string::npos,
           "unset dependency index keeps schema-1 sentinel");
     check(sentinel_json.find("\"dependencies_total\":" +
-                              std::to_string(std::numeric_limits<size_t>::max())) !=
+                             std::to_string(std::numeric_limits<size_t>::max())) !=
               std::string::npos,
           "dependency total keeps native size width");
 
     progress.dependency_index = std::numeric_limits<size_t>::max() - 1;
     const auto wide_index_json = event_stream::progress_event(progress);
     check(wide_index_json.find("\"dependency_index\":" +
-                                  std::to_string(std::numeric_limits<size_t>::max() - 1)) !=
+                               std::to_string(std::numeric_limits<size_t>::max() - 1)) !=
               std::string::npos,
           "dependency index keeps native size width");
 
@@ -108,8 +108,7 @@ void test_result_and_error_events() {
     check(result_json.find("\"factors\":[\"307\",\"313\"]") != std::string::npos,
           "result event factors");
     check(result_json.find("\"dependencies_tried\":" +
-                          std::to_string(std::numeric_limits<size_t>::max())) !=
-              std::string::npos,
+                           std::to_string(std::numeric_limits<size_t>::max())) != std::string::npos,
           "result dependency count keeps native size width");
     check(result_json.find("\"factorization_complete\":true") != std::string::npos,
           "result event completeness");
