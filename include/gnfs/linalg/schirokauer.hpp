@@ -8,11 +8,11 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <numeric>
 #include <random>
 #include <stdexcept>
 #include <tuple>
-#include <limits>
 #include <vector>
 
 namespace gnfs::linalg {
@@ -29,8 +29,7 @@ struct GFPolyOps {
     using Poly = std::vector<uint64_t>;
 
     /// Compute base^exponent without allowing unsigned wraparound.
-    [[nodiscard]] static uint64_t checked_power_u64(uint64_t base,
-                                                     uint32_t exponent) {
+    [[nodiscard]] static uint64_t checked_power_u64(uint64_t base, uint32_t exponent) {
         if (base == 0 && exponent != 0) {
             throw std::invalid_argument("Schirokauer power base must be positive");
         }
@@ -1023,6 +1022,8 @@ private:
         for (uint32_t i = 0; i <= degree_; ++i) {
             Integer remainder;
             Integer::mod(remainder, ctx_.coeff(i), modulus);
+            if (remainder.is_negative())
+                remainder += modulus;
             info.f_mod[i] = remainder.to_uint64();
         }
 
@@ -1070,7 +1071,7 @@ private:
             info.is_split = false;
             info.factors.clear();
             info.exponent = GFPolyOps::checked_power_u64(ell, degree_) - 1;
-            return;  // compute_unsplit() will handle this
+            return; // compute_unsplit() will handle this
         }
 
         // Prepare f mod ℓ^k for Hensel lifting
@@ -1158,7 +1159,7 @@ private:
         if (info.factors.empty()) {
             info.is_split = false;
             info.exponent = GFPolyOps::checked_power_u64(ell, degree_) - 1;
-            return;  // compute_unsplit() will handle this
+            return; // compute_unsplit() will handle this
         }
         // Otherwise, compute_split() will zero-pad remaining columns up to degree_
     }
