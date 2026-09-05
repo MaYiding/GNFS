@@ -482,6 +482,14 @@ void test_llp64_gmp_fallback_classification() {
     }
 }
 
+void test_gmp_exponent_overflow_rejects_relation() {
+    // The helper shifts this cofactor by 100 bits, making Q(x)=2^256. That
+    // exponent cannot fit in the uint8_t relation vector and must be rejected
+    // instead of wrapping 256 to zero.
+    constexpr const char* cofactor_two_to_156 = "91343852333181432387730302044767688728495783936";
+    CHECK(collect_gmp_fallback_relations(cofactor_two_to_156).empty());
+}
+
 void test_gmp_capture_is_bounded_before_dense_relation_allocation() {
     constexpr const char* composite = "4294967299";
     const auto baseline = collect_gmp_fallback_relations(composite);
@@ -783,6 +791,7 @@ int main() {
     test_shadow_sink_validates_config_before_reserving();
     test_shadow_sink_exact_caps_are_terminal_only_for_the_sink();
     test_llp64_gmp_fallback_classification();
+    test_gmp_exponent_overflow_rejects_relation();
     test_gmp_capture_is_bounded_before_dense_relation_allocation();
     test_capture_observation_preserves_one_lp_only_output();
     test_native_capture_matches_null_path_and_cleans_reusable_exponents();
