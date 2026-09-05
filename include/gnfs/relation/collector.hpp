@@ -1341,8 +1341,12 @@ public:
                     continue;
                 }
 
-                if (config_.check_duplicates)
-                    staged_seen.insert(rel.ab());
+                if (config_.check_duplicates) {
+                    if (!staged_seen.insert(rel.ab()).second) {
+                        ++staged_stats.duplicates_rejected;
+                        continue;
+                    }
+                }
 
                 update_staged_stats(rel);
                 staged_relations.push_back(std::move(rel));

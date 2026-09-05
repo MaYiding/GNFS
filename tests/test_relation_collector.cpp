@@ -346,6 +346,41 @@ static void test_load_replaces_state_transactionally(bool use_pool) {
     std::cout << "  Transactional load replacement: PASS" << std::endl;
 }
 
+static void test_load_rejects_duplicate_ab_pairs(bool use_pool) {
+    std::cout << "Testing load duplicate rejection (" << (use_pool ? "pool" : "vector") << ")..."
+              << std::endl;
+
+    const auto test_file =
+        gnfs::util::temp_path(use_pool ? "gnfs_test_collector_load_duplicate_pool.bin"
+                                       : "gnfs_test_collector_load_duplicate_vector.bin");
+    std::filesystem::remove(test_file);
+
+    CollectorConfig source_config;
+    source_config.use_pool = false;
+    source_config.check_duplicates = false;
+    RelationCollector source(source_config);
+    const Relation duplicate = make_load_test_relation(17, 18, false);
+    CHECK(source.add(Relation(duplicate)));
+    CHECK(source.add(Relation(duplicate)));
+    CHECK(source.size() == 2);
+    CHECK(source.save(test_file));
+
+    CollectorConfig target_config;
+    target_config.use_pool = use_pool;
+    target_config.pool_initial_bytes = 256;
+    target_config.check_duplicates = true;
+    RelationCollector target(target_config);
+    CHECK(target.load(test_file));
+    CHECK(target.size() == 1);
+    const auto stats = target.stats();
+    CHECK(stats.total_relations == 1);
+    CHECK(stats.duplicates_rejected == 1);
+    CHECK(target.finalize_relations().front().ab() == duplicate.ab());
+
+    std::filesystem::remove(test_file);
+    std::cout << "  Load duplicate rejection: PASS" << std::endl;
+}
+
 static void test_load_failure_preserves_state_transactionally(bool use_pool) {
     std::cout << "Testing transactional load failure rollback (" << (use_pool ? "pool" : "vector")
               << ")..." << std::endl;
@@ -2990,6 +3025,8 @@ int main() {
     test_save_load();
     test_load_replaces_state_transactionally(false);
     test_load_replaces_state_transactionally(true);
+    test_load_rejects_duplicate_ab_pairs(false);
+    test_load_rejects_duplicate_ab_pairs(true);
     test_load_failure_preserves_state_transactionally(false);
     test_load_failure_preserves_state_transactionally(true);
     test_load_respects_max_relations();
