@@ -10,11 +10,13 @@
 #include <gnfs/linalg/sge.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
 
+#include <atomic>
 #include <cstdint>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace gnfs;
@@ -162,6 +164,41 @@ void test_sparse_matrix_bounds() {
     }
 
     std::cout << "  SparseMatrix bounds: PASSED" << std::endl;
+}
+
+void test_csr_row_offsets_thread_safe() {
+    std::cout << "Testing concurrent CSR row-offset materialization..." << std::endl;
+
+    constexpr size_t rows = 1U << 16;
+    constexpr size_t threads = 16;
+    SparseMatrix matrix(rows, 1);
+    for (size_t row = 0; row < rows; ++row)
+        matrix.set(row, 0);
+    CSRMatrix csr(matrix);
+
+    std::atomic<size_t> ready{0};
+    std::atomic<bool> start{false};
+    std::atomic<bool> valid{true};
+    std::vector<std::thread> workers;
+    workers.reserve(threads);
+    for (size_t index = 0; index < threads; ++index) {
+        workers.emplace_back([&] {
+            ready.fetch_add(1, std::memory_order_release);
+            while (!start.load(std::memory_order_acquire))
+                std::this_thread::yield();
+            const uint32_t* offsets = csr.row_offsets_u32();
+            if (offsets == nullptr || offsets[0] != 0 || offsets[rows] != rows)
+                valid.store(false, std::memory_order_release);
+        });
+    }
+    while (ready.load(std::memory_order_acquire) != threads)
+        std::this_thread::yield();
+    start.store(true, std::memory_order_release);
+    for (auto& worker : workers)
+        worker.join();
+
+    GNFS_TEST_CHECK(valid.load(std::memory_order_acquire));
+    std::cout << "  Concurrent CSR row-offset materialization: PASSED" << std::endl;
 }
 
 void test_block_vector_bounds() {
@@ -1453,6 +1490,7 @@ int main() {
     test_sparse_row_xor();
     test_sparse_matrix();
     test_sparse_matrix_bounds();
+    test_csr_row_offsets_thread_safe();
     test_block_vector_bounds();
     test_sparse_matrix_transpose();
     test_bitvector();

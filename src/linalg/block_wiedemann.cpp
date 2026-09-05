@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <iostream>
 #include <limits>
@@ -1332,19 +1333,31 @@ static std::vector<std::vector<bool>> find_dependencies_view_impl(const MV& matr
         std::vector<std::vector<std::vector<bool>>> per_stream(num_streams);
         std::vector<std::thread> workers;
         workers.reserve(num_streams);
+        std::exception_ptr first_exception;
+        std::mutex exception_mutex;
 
         for (uint32_t s = 0; s < num_streams; ++s) {
             const uint64_t seed = bw_stream_seed(base_seed, s);
             workers.emplace_back([&, s, seed]() {
-                if (is_thin) {
-                    per_stream[s] = thin_solve_view_impl(matrix, max_deps, seed, pool_size, s + 1);
-                } else {
-                    per_stream[s] = block_solve_view_impl(matrix, max_deps, seed, pool_size, s + 1);
+                try {
+                    if (is_thin) {
+                        per_stream[s] =
+                            thin_solve_view_impl(matrix, max_deps, seed, pool_size, s + 1);
+                    } else {
+                        per_stream[s] =
+                            block_solve_view_impl(matrix, max_deps, seed, pool_size, s + 1);
+                    }
+                } catch (...) {
+                    std::lock_guard<std::mutex> lock(exception_mutex);
+                    if (!first_exception)
+                        first_exception = std::current_exception();
                 }
             });
         }
         for (auto& t : workers)
             t.join();
+        if (first_exception)
+            std::rethrow_exception(first_exception);
 
         // Merge + dedupe across streams.
         std::vector<std::vector<bool>> merged;
