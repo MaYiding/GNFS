@@ -201,6 +201,21 @@ void test_degree4_selection() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_invalid_selection_parameters() {
+    std::cout << "Testing invalid base-m selection parameters..." << std::endl;
+
+    const auto zero_n = BaseMSelector::select(Integer(static_cast<int64_t>(0)), 3);
+    assert(!zero_n.success);
+
+    const auto one_n = BaseMSelector::select(Integer(static_cast<int64_t>(1)), 3);
+    assert(!one_n.success);
+
+    const auto zero_degree = BaseMSelector::select(Integer(static_cast<int64_t>(143)), 0);
+    assert(!zero_degree.success);
+
+    std::cout << "  PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== BaseMSelector Unit Tests ===" << std::endl;
 
@@ -217,6 +232,7 @@ int main() {
     test_leading_coeff_positive();
     test_context_coefficients_match_polynomial();
     test_degree4_selection();
+    test_invalid_selection_parameters();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;

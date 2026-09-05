@@ -15,6 +15,10 @@ namespace {
 /// Guarantees f(m) = n for any m > 1.
 /// Returns polynomial with degree <= `degree` (may be less if m is too large).
 IntPolynomial construct_base_m_poly(const Integer& n, const Integer& m, uint32_t degree) {
+    if (mpz_cmp_ui(m.get_mpz(), 1) <= 0) {
+        throw std::invalid_argument("base-m polynomial requires m > 1");
+    }
+
     IntPolynomial f(0);
     Integer temp = n;   // Integer copy ctor
 
@@ -86,7 +90,7 @@ bool check_irreducible_over_Q(const IntPolynomial& f) {
     };
 
     for (uint64_t p : test_primes) {
-        std::vector<uint64_t> f_mod_p(d + 1);
+        std::vector<uint64_t> f_mod_p(static_cast<size_t>(d) + 1);
         // mpz_fdiv_ui returns floor-div remainder ∈ [0, p-1] (zero-alloc)
         for (uint32_t i = 0; i <= d; ++i) {
             f_mod_p[i] = static_cast<uint64_t>(mpz_fdiv_ui(f[i].get_mpz(), p));
@@ -106,9 +110,17 @@ bool check_irreducible_over_Q(const IntPolynomial& f) {
 BaseMSelector::BaseMSelector(const Integer& n) : n_(n) {}  // Integer copy ctor
 
 PolynomialSelectionResult BaseMSelector::select(const Integer& n, uint32_t degree) {
+    PolynomialSelectionResult invalid_result;
+    if (degree == 0 || mpz_cmp_ui(n.get_mpz(), 1) <= 0) {
+        return invalid_result;
+    }
+
     // Compute m_base ≈ n^(1/degree)
     Integer m_base;
     mpz_root(m_base.get_mpz(), n.get_mpz(), degree);
+    if (mpz_cmp_ui(m_base.get_mpz(), 1) <= 0) {
+        return invalid_result;
+    }
 
     // Search window scales with N's size:
     //   ≤45 bit: ±5 (11 candidates, old behavior — covers L1-L5 tests)
@@ -219,7 +231,7 @@ PolynomialContext BaseMSelector::create_context(const Integer& n, const Polynomi
 
     // Extract coefficients from IntPolynomial
     std::vector<Integer> f_coeffs;
-    f_coeffs.reserve(result.f.degree() + 1);
+    f_coeffs.reserve(static_cast<size_t>(result.f.degree()) + 1);
     for (size_t i = 0; i <= result.f.degree(); ++i) {
         f_coeffs.emplace_back(result.f[i]);  // Integer copy ctor into vec slot
     }
@@ -236,6 +248,10 @@ PolynomialContext BaseMSelector::select_poly(uint32_t degree) {
 }
 
 Integer BaseMSelector::find_m(uint32_t degree) {
+    if (degree == 0 || n_.is_zero() || n_.is_negative()) {
+        throw std::invalid_argument("find_m requires a positive N and non-zero degree");
+    }
+
     // m ≈ n^(1/degree)
     Integer m_lower;
     mpz_root(m_lower.get_mpz(), n_.get_mpz(), degree);
@@ -243,6 +259,9 @@ Integer BaseMSelector::find_m(uint32_t degree) {
 }
 
 IntPolynomial BaseMSelector::construct_algebraic_poly(const Integer& m, uint32_t degree) {
+    if (degree == 0) {
+        throw std::invalid_argument("base-m polynomial requires non-zero degree");
+    }
     return construct_base_m_poly(n_, m, degree);
 }
 

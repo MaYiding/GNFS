@@ -229,6 +229,15 @@ void test_negative_n_returns_failure() {
     std::cout << "  PASSED" << std::endl;
 }
 
+void test_zero_degree_returns_failure() {
+    std::cout << "Testing select with zero degree returns failure..." << std::endl;
+    auto params = make_fast_params(0);
+    BaiBrentSelector sel(params);
+    auto res = sel.select(make_test_n_40bit());
+    assert(!res.success);
+    std::cout << "  PASSED" << std::endl;
+}
+
 void test_baseline_comparison_vs_basem() {
     std::cout << "Testing Murphy E vs BaseM baseline on 30-bit N..." << std::endl;
     Integer n = make_test_n_30bit();
@@ -337,6 +346,7 @@ int main() {
     test_cancel_safe();
     test_zero_n_returns_failure();
     test_negative_n_returns_failure();
+    test_zero_degree_returns_failure();
     test_baseline_comparison_vs_basem();
     test_dispatch_env_off_uses_kleinjung();
     test_dispatch_env_on_uses_bai_brent();

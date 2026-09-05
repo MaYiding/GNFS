@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <utility>
@@ -147,7 +148,7 @@ public:
         BaiBrentResult result;
         result.success = false;
 
-        if (n.is_zero() || n.is_negative()) {
+        if (n.is_zero() || n.is_negative() || params_.degree == 0) {
             return result;
         }
 
@@ -236,7 +237,12 @@ private:
     [[nodiscard]] std::vector<std::pair<Integer, Integer>>
     stage1_leading_coeff_search(const Integer& n) {
         std::vector<std::pair<Integer, Integer>> candidates;
-        candidates.reserve(params_.num_candidates * 2);
+        const size_t requested_limit = static_cast<size_t>(params_.num_candidates);
+        const size_t stage1_limit =
+            requested_limit > (std::numeric_limits<size_t>::max)() / 2
+                ? (std::numeric_limits<size_t>::max)()
+                : requested_limit * 2;
+        candidates.reserve(stage1_limit);
 
         uint32_t d = params_.degree;
 
@@ -257,9 +263,8 @@ private:
 
             Integer m;
             Integer remainder;
-            for (int32_t delta = -static_cast<int32_t>(params_.search_radius);
-                 delta <= static_cast<int32_t>(params_.search_radius);
-                 ++delta) {
+            const int64_t radius = static_cast<int64_t>(params_.search_radius);
+            for (int64_t delta = -radius; delta <= radius; ++delta) {
 
                 m = m_est;
                 if (delta >= 0) {
@@ -290,11 +295,11 @@ private:
 
                 if (ad1_val <= m_val * 1.0) {
                     candidates.emplace_back(ad, m);
-                    if (candidates.size() >= params_.num_candidates * 2) break;
+                    if (candidates.size() >= stage1_limit) break;
                 }
             }
 
-            if (candidates.size() >= params_.num_candidates * 2) break;
+            if (candidates.size() >= stage1_limit) break;
         }
 
         // 按 |a_d| 排序 (小优先 — coefficient quality 经验观察)
@@ -316,10 +321,13 @@ private:
             uint64_t lo, uint64_t hi) const {
 
         std::vector<Integer> result;
-        const uint64_t cap = std::min<uint64_t>(hi - lo + 1, 100000);
-        result.reserve(cap);
-
         if (lo == 0) lo = 1;
+        if (lo > hi) return result;
+
+        const uint64_t span = hi - lo;
+        const uint64_t count = span == UINT64_MAX ? UINT64_MAX : span + 1;
+        const size_t cap = static_cast<size_t>(std::min<uint64_t>(count, 100000));
+        result.reserve(cap);
 
         if (params_.smooth_preference) {
             // Step 1: smooth a_d 优先
@@ -342,15 +350,16 @@ private:
             smooth.erase(std::unique(smooth.begin(), smooth.end()), smooth.end());
 
             for (uint64_t s : smooth) {
-                if (s >= lo) result.emplace_back(static_cast<int64_t>(s));
+                if (s >= lo) result.emplace_back(s);
                 if (result.size() >= cap) return result;
             }
         }
 
         // Step 2: 顺序枚举 [lo, hi] 补齐 (Bai-Brent 关键 — 任意 a_d)
-        for (uint64_t v = lo; v <= hi; ++v) {
-            result.emplace_back(static_cast<int64_t>(v));
+        for (uint64_t v = lo;; ++v) {
+            result.emplace_back(v);
             if (result.size() >= cap) break;
+            if (v == hi) break;
         }
 
         // 去重 (smooth 已经在前面, 后续 enum 会有重复, 先稳定排序再 unique)
@@ -432,12 +441,20 @@ private:
                 if (denom < 1.0) break;
 
                 double k_d = (m_d * a0 - s_sq * a1) / denom;
-                int64_t k = static_cast<int64_t>(std::round(k_d));
-                if (k == 0) break;
+                const double rounded_k = std::round(k_d);
+                if (!std::isfinite(rounded_k)) break;
 
                 constexpr int64_t K_MAX = 10000;
-                if (k > K_MAX) k = K_MAX;
-                if (k < -K_MAX) k = -K_MAX;
+                constexpr double K_MAX_D = static_cast<double>(K_MAX);
+                int64_t k;
+                if (rounded_k >= K_MAX_D) {
+                    k = K_MAX;
+                } else if (rounded_k <= -K_MAX_D) {
+                    k = -K_MAX;
+                } else {
+                    k = static_cast<int64_t>(rounded_k);
+                }
+                if (k == 0) break;
 
                 f_t = PolynomialOptimizer::rotate_linear(f_t, m_t, k);
             }
@@ -529,7 +546,7 @@ private:
             uint32_t d,
             const Integer& ad) {
 
-        std::vector<Integer> coeffs(d + 1);
+        std::vector<Integer> coeffs(static_cast<size_t>(d) + 1);
 
         Integer m_pow_d = core::pow(m, d);
         Integer n_prime = n;

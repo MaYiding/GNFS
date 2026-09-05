@@ -1,12 +1,14 @@
 // Unit tests for PolynomialOptimizer — derivative, translate, rotate, skewness, etc.
 #include "gnfs/core/polynomial.hpp"
 #include "gnfs/polynomial/polynomial_optimizer.hpp"
+#include "gnfs/polynomial/rotation_alpha.hpp"
 
 #include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
 #include <limits>
+#include <stdexcept>
 #include <vector>
 
 using namespace gnfs::polynomial;
@@ -320,6 +322,30 @@ void test_newton_root_already_at_root() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_newton_root_zero_tolerance_is_bounded() {
+    std::cout << "Testing newton_root with zero tolerance..." << std::endl;
+    // tolerance=0 previously produced +inf from -log2(0), followed by an
+    // out-of-range floating-to-size_t conversion in the convergence check.
+    auto f = make_poly({-11, 1});
+    auto result = PolynomialOptimizer::newton_root(f, I(15), Integer(143), 8, 0.0);
+    assert(result.has_value());
+    assert(*result == I(11));
+    std::cout << "  PASS" << std::endl;
+}
+
+void test_rotation_alpha_bound_rejects_wrap() {
+    std::cout << "Testing RotationAlphaTracker rejects wrapping bound..." << std::endl;
+    bool threw = false;
+    try {
+        RotationAlphaTracker tracker((std::numeric_limits<uint32_t>::max)());
+        (void)tracker;
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    assert(threw);
+    std::cout << "  PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== PolynomialOptimizer Unit Tests ===" << std::endl;
 
@@ -347,6 +373,8 @@ int main() {
     test_generate_smooth_max_count_respected();
     test_newton_root_known_root();
     test_newton_root_already_at_root();
+    test_newton_root_zero_tolerance_is_bounded();
+    test_rotation_alpha_bound_rejects_wrap();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;

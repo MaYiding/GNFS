@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <vector>
@@ -169,7 +170,7 @@ public:
         result.success = false;
 
         // 验证输入
-        if (n.is_zero() || n.is_negative()) {
+        if (n.is_zero() || n.is_negative() || params_.degree == 0) {
             return result;
         }
 
@@ -280,9 +281,14 @@ private:
     /// 生成光滑的 a_d 和对应的初始 m 值
     [[nodiscard]] std::vector<std::pair<Integer, Integer>>
     stage1_leading_coeff_search(const Integer& n) {
-        // Reserve: loop caps at num_candidates * 2 (line 329), reserve up to that.
+        // Reserve up to the checked two-times candidate limit used by Stage 1.
         std::vector<std::pair<Integer, Integer>> candidates;
-        candidates.reserve(params_.num_candidates * 2);
+        const size_t requested_limit = static_cast<size_t>(params_.num_candidates);
+        const size_t stage1_limit =
+            requested_limit > (std::numeric_limits<size_t>::max)() / 2
+                ? (std::numeric_limits<size_t>::max)()
+                : requested_limit * 2;
+        candidates.reserve(stage1_limit);
 
         uint32_t d = params_.degree;
 
@@ -312,9 +318,8 @@ private:
             // m/remainder buffer 复用; ad_md dropped (submul fuses)
             Integer m;
             Integer remainder;
-            for (int32_t delta = -static_cast<int32_t>(params_.search_radius);
-                 delta <= static_cast<int32_t>(params_.search_radius);
-                 ++delta) {
+            const int64_t radius = static_cast<int64_t>(params_.search_radius);
+            for (int64_t delta = -radius; delta <= radius; ++delta) {
 
                 m = m_est;
                 if (delta >= 0) {
@@ -350,13 +355,13 @@ private:
                     candidates.emplace_back(ad, m);  // Integer copy ctors
 
                     // 限制候选数量
-                    if (candidates.size() >= params_.num_candidates * 2) {
+                    if (candidates.size() >= stage1_limit) {
                         break;
                     }
                 }
             }
 
-            if (candidates.size() >= params_.num_candidates * 2) {
+            if (candidates.size() >= stage1_limit) {
                 break;
             }
         }
@@ -462,14 +467,22 @@ private:
                 if (denom < 1.0) break;
 
                 double k_d = (m_d * a0 - s_sq * a1) / denom;
-                int64_t k = static_cast<int64_t>(std::round(k_d));
+                const double rounded_k = std::round(k_d);
+                if (!std::isfinite(rounded_k)) break;
+
+                constexpr int64_t K_MAX = 10000;
+                constexpr double K_MAX_D = static_cast<double>(K_MAX);
+                int64_t k;
+                if (rounded_k >= K_MAX_D) {
+                    k = K_MAX;
+                } else if (rounded_k <= -K_MAX_D) {
+                    k = -K_MAX;
+                } else {
+                    k = static_cast<int64_t>(rounded_k);
+                }
                 if (k == 0) break;  // 已在最优点
 
                 // 限制 k 的幅度防止极端旋转
-                constexpr int64_t K_MAX = 10000;
-                if (k > K_MAX) k = K_MAX;
-                if (k < -K_MAX) k = -K_MAX;
-
                 f_t = PolynomialOptimizer::rotate_linear(f_t, m_t, k);
             }
 
@@ -576,7 +589,7 @@ private:
             uint32_t d,
             const Integer& ad) {
 
-        std::vector<Integer> coeffs(d + 1);
+        std::vector<Integer> coeffs(static_cast<size_t>(d) + 1);
 
         // 计算 n' = n - a_d * m^d via mpz_submul (fused FMS, drops ad_md)
         Integer m_pow_d = core::pow(m, d);
