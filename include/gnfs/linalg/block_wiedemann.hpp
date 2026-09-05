@@ -1,6 +1,6 @@
 #pragma once
 
-#include "gnfs/linalg/block_lanczos.hpp"  // BlockVector, DenseGF2_64x64, CSRMatrix, etc.
+#include "gnfs/linalg/block_lanczos.hpp" // BlockVector, DenseGF2_64x64, CSRMatrix, etc.
 #include "gnfs/linalg/mmap_csr_matrix.hpp"
 #include "gnfs/linalg/sparse_matrix.hpp"
 #include "gnfs/util/bit_intrin.hpp"
@@ -32,12 +32,15 @@ namespace gnfs::linalg {
 struct DenseGF2_64x128 {
     uint64_t cols[128] = {};
 
-    void clear() noexcept { std::memset(cols, 0, sizeof(cols)); }
+    void clear() noexcept {
+        std::memset(cols, 0, sizeof(cols));
+    }
 
     // Initialize as [I_64 | 0_64]: left half identity, right half zero.
     void set_left_identity() noexcept {
         clear();
-        for (int i = 0; i < 64; ++i) cols[i] = 1ULL << i;
+        for (int i = 0; i < 64; ++i)
+            cols[i] = 1ULL << i;
     }
 
     [[nodiscard]] uint64_t get_col(int j) const noexcept {
@@ -57,18 +60,21 @@ struct DenseGF2_64x128 {
 
     void swap_cols(int a, int b) noexcept {
         assert(a >= 0 && a < 128 && b >= 0 && b < 128);
-        if (a == b) return;
+        if (a == b)
+            return;
         std::swap(cols[a], cols[b]);
     }
 
     // Full matrix XOR (used to combine polynomial coefficients).
     void xor_with(const DenseGF2_64x128& other) noexcept {
-        for (int j = 0; j < 128; ++j) cols[j] ^= other.cols[j];
+        for (int j = 0; j < 128; ++j)
+            cols[j] ^= other.cols[j];
     }
 
     [[nodiscard]] bool is_zero() const noexcept {
         for (int j = 0; j < 128; ++j)
-            if (cols[j] != 0) return false;
+            if (cols[j] != 0)
+                return false;
         return true;
     }
 
@@ -79,7 +85,8 @@ struct DenseGF2_64x128 {
         for (int i = 0; i < 64; ++i) {
             uint64_t r = 0;
             for (int j = 0; j < 64; ++j) {
-                if ((cols[j] >> i) & 1ULL) r |= (1ULL << j);
+                if ((cols[j] >> i) & 1ULL)
+                    r |= (1ULL << j);
             }
             m.rows[i] = r;
         }
@@ -92,7 +99,8 @@ struct DenseGF2_64x128 {
         for (int i = 0; i < 64; ++i) {
             uint64_t r = 0;
             for (int j = 0; j < 64; ++j) {
-                if ((cols[64 + j] >> i) & 1ULL) r |= (1ULL << j);
+                if ((cols[64 + j] >> i) & 1ULL)
+                    r |= (1ULL << j);
             }
             m.rows[i] = r;
         }
@@ -210,8 +218,8 @@ public:
     /// (3 seeds) handles Phase 1 Krylov projection edge cases. Result
     /// quality enforced by Phase 4 verification (M^T·u=0) — never returns
     /// invalid deps even on extreme rank deficiency.
-    std::vector<std::vector<bool>> find_dependencies(
-        const SparseMatrix& matrix, size_t max_deps = 64);
+    std::vector<std::vector<bool>> find_dependencies(const SparseMatrix& matrix,
+                                                     size_t max_deps = 64);
 
     /// View-based dispatch (Phase 5 OOC plumbing). Accepts an already-built
     /// CSR-style matrix view and routes to the block / thin solver based on
@@ -223,10 +231,10 @@ public:
     /// in-memory CSRMatrix (default) and mmap-backed MmapCSRMatrix
     /// (selected by ENV GNFS_LINALG_MMAP). Both delegate to the same
     /// templated impl (in block_wiedemann.cpp) parameterised on MatrixView.
-    std::vector<std::vector<bool>> find_dependencies_view(
-        const CSRMatrix& matrix, size_t max_deps = 64);
-    std::vector<std::vector<bool>> find_dependencies_view(
-        const MmapCSRMatrix& matrix, size_t max_deps = 64);
+    std::vector<std::vector<bool>> find_dependencies_view(const CSRMatrix& matrix,
+                                                          size_t max_deps = 64);
+    std::vector<std::vector<bool>> find_dependencies_view(const MmapCSRMatrix& matrix,
+                                                          size_t max_deps = 64);
 
     /// Coppersmith's Block Berlekamp-Massey algorithm (public for unit testing).
     /// Input: sequence of L matrices A_0, A_1, ..., A_{L-1} (each 64×64 over GF(2))
@@ -246,22 +254,22 @@ public:
     /// For L = 2n/b (matrix dim n, block size b=64): O(n³/b · W) ≈ O(n³/64²).
     /// Suitable for n ≤ ~300K. For larger matrices, Thomé's subquadratic
     /// lingen would be needed (P2 follow-up).
-    static LingenResult matrix_berlekamp_massey(
-        const std::vector<DenseGF2_64x64>& sequence, size_t N);
+    static LingenResult matrix_berlekamp_massey(const std::vector<DenseGF2_64x64>& sequence,
+                                                size_t N);
 
 private:
     /// Scalar-BM fallback path (legacy, O(n) SpMV count).
     /// Used when env GNFS_BW_ALGORITHM=scalar, or as automatic fallback if
     /// block_solve returns empty.
-    std::vector<std::vector<bool>> block_wiedemann_scalar_solve(
-        const SparseMatrix& matrix, size_t max_deps, uint64_t seed = 42);
+    std::vector<std::vector<bool>>
+    block_wiedemann_scalar_solve(const SparseMatrix& matrix, size_t max_deps, uint64_t seed = 42);
 
     /// True block Wiedemann with Coppersmith matrix BM (O(n/64) SpMV count).
     /// Phase 1 collects matrix sequence A_k = X^T · V_k (L = 2⌈n/64⌉+32 iters);
     /// Phase 2 runs matrix_berlekamp_massey; Phase 3 recomputes Krylov and
     /// accumulates W = sum_k V_k · F_k (block-mksol).
-    std::vector<std::vector<bool>> block_wiedemann_block_solve(
-        const SparseMatrix& matrix, size_t max_deps, uint64_t seed = 42);
+    std::vector<std::vector<bool>> block_wiedemann_block_solve(const SparseMatrix& matrix,
+                                                               size_t max_deps, uint64_t seed = 42);
 
     /// Thin matrix BW variant (BACKLOG #80 step 7): operates on
     /// B'=M^T·M (n×n) instead of B=M·M^T (m×m). Works in R^n. Krylov,
@@ -269,8 +277,8 @@ private:
     /// (1 SpMV) gives left null space vector u∈R^m since M^T·u =
     /// (M^T·M)·w = 0 strict over GF(2). Used when m ≤ n (thin matrix).
     /// L = 2·⌈m/64⌉ + 32 (rank ≤ m).
-    std::vector<std::vector<bool>> block_wiedemann_thin_solve(
-        const SparseMatrix& matrix, size_t max_deps, uint64_t seed = 42);
+    std::vector<std::vector<bool>> block_wiedemann_thin_solve(const SparseMatrix& matrix,
+                                                              size_t max_deps, uint64_t seed = 42);
 
     // --- BW Phase 1: Krylov sequence generation ---
 
@@ -281,9 +289,9 @@ private:
     /// but we compute M·M^T·v as M·(M^T·v) using both SpMV and SpMV^T).
     ///
     /// Returns the sequence of 64×64 matrices.
-    static std::vector<DenseGF2_64x64> compute_krylov_sequence(
-        const CSRMatrix& csr, size_t N, size_t L,
-        const BlockVector& X, BlockVector& Y);
+    static std::vector<DenseGF2_64x64> compute_krylov_sequence(const CSRMatrix& csr, size_t N,
+                                                               size_t L, const BlockVector& X,
+                                                               BlockVector& Y);
 
     // --- BW Phase 2: Matrix Berlekamp-Massey (lingen) ---
     // (matrix_berlekamp_massey is public, declared above. Types MatrixPoly /
@@ -296,11 +304,10 @@ private:
     ///
     /// For each valid column j of F, computes the candidate null vector.
     /// Then verifies M^T · w_j = 0 and returns valid dependencies.
-    static std::vector<std::vector<bool>> extract_solutions(
-        const CSRMatrix& csr, size_t N,
-        const LingenResult& lingen,
-        const BlockVector& Y_initial,
-        size_t max_deps);
+    static std::vector<std::vector<bool>> extract_solutions(const CSRMatrix& csr, size_t N,
+                                                            const LingenResult& lingen,
+                                                            const BlockVector& Y_initial,
+                                                            size_t max_deps);
 };
 
 } // namespace gnfs::linalg
