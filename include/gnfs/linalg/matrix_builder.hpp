@@ -222,8 +222,9 @@ public:
         std::vector<std::pair<uint32_t, uint32_t>> qc_prime_roots;
         if (config_.include_qc_columns) {
             // QC primes must be above algebraic FB bound to avoid Legendre=0 corruption
-            uint32_t alg_bound = fb.params().algebraic_bound;
-            qc_prime_roots = select_qc_prime_roots(ctx, effective_qc_count, alg_bound + 1);
+            const uint32_t alg_bound = fb.params().algebraic_bound;
+            qc_prime_roots = select_qc_prime_roots(ctx, effective_qc_count,
+                                                   static_cast<uint64_t>(alg_bound) + 1U);
         }
 
         // 第三步：计算类群（如果启用）
@@ -425,8 +426,9 @@ public:
         }
         std::vector<std::pair<uint32_t, uint32_t>> qc_prime_roots;
         if (config_.include_qc_columns) {
-            uint32_t alg_bound = fb.params().algebraic_bound;
-            qc_prime_roots = select_qc_prime_roots(ctx, effective_qc_count, alg_bound + 1);
+            const uint32_t alg_bound = fb.params().algebraic_bound;
+            qc_prime_roots = select_qc_prime_roots(ctx, effective_qc_count,
+                                                   static_cast<uint64_t>(alg_bound) + 1U);
         }
 
         // 第三步：类群
@@ -633,7 +635,7 @@ private:
     /// This gives d independent bits per fully-split prime (vs 1 bit for norm-based QC).
     [[nodiscard]] std::vector<std::pair<uint32_t, uint32_t>>
     select_qc_prime_roots(const PolynomialContext& ctx, size_t num_columns,
-                          uint32_t min_prime = 0) const {
+                          uint64_t min_prime = 0) const {
 
         std::vector<std::pair<uint32_t, uint32_t>> qc_pairs;
         qc_pairs.reserve(num_columns);
@@ -644,7 +646,11 @@ private:
         // QC primes MUST be above the factor base algebraic bound.
         // If primes are inside FB, many relations have (a-b*r) ≡ 0 (mod q),
         // giving Legendre symbol = 0 (undefined), corrupting the GF(2) constraints.
-        uint32_t p = std::max(config_.qc_prime_start, min_prime);
+        const uint64_t start = std::max<uint64_t>(config_.qc_prime_start, min_prime);
+        if (start > std::numeric_limits<uint32_t>::max()) {
+            throw std::out_of_range("MatrixBuilder: algebraic bound leaves no uint32 QC prime");
+        }
+        uint32_t p = static_cast<uint32_t>(start);
 
         // Build IntPolynomial from ctx for efficient Cantor-Zassenhaus root finding
         std::vector<Integer> f_coeffs;
@@ -1076,16 +1082,20 @@ private:
 
     /// 找下一个素数
     [[nodiscard]] static uint32_t next_prime(uint32_t n) {
-        n++;
-        if (n <= 2)
+        uint64_t candidate = static_cast<uint64_t>(n) + 1U;
+        if (candidate <= 2U)
             return 2;
-        if (n % 2 == 0)
-            n++;
+        if ((candidate & 1U) == 0U)
+            ++candidate;
 
-        while (!is_prime(n)) {
-            n += 2;
+        while (candidate <= std::numeric_limits<uint32_t>::max()) {
+            const auto candidate_u32 = static_cast<uint32_t>(candidate);
+            if (is_prime(candidate_u32)) {
+                return candidate_u32;
+            }
+            candidate += 2U;
         }
-        return n;
+        throw std::out_of_range("MatrixBuilder: no uint32 QC prime above search start");
     }
 
     /// 简单素性测试。整数 sqrt 避免 std::sqrt(double) 在接近 2^32 边界的精度问题。
