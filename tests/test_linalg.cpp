@@ -720,6 +720,46 @@ void test_schirokauer_squarefree_reducible() {
     std::cout << "  Squarefree reducible ((x+1)(x^2+x+1) mod 2): PASSED" << std::endl;
 }
 
+// Regression test: EDF must be reproducible and must never return a composite
+// factor when its bounded Cantor-Zassenhaus search cannot split the input.
+void test_gf_poly_factorization_determinism() {
+    std::cout << "Testing deterministic GF polynomial factorization..." << std::endl;
+
+    // f = (x^2+x+1)(x^3+x^2+1)(x^3+x+1) over GF(2), represented low-to-high.
+    const GFPolyOps::Poly input = {1, 0, 1, 1, 1, 1, 1, 0, 1};
+    const std::vector<GFPolyOps::Poly> expected = {
+        {1, 1, 1},
+        {1, 0, 1, 1},
+        {1, 1, 0, 1},
+    };
+
+    const auto baseline = GFPolyOps::factor(input, 2);
+    GNFS_TEST_CHECK(baseline == expected &&
+                    "GF factorization must use canonical degree/coefficient ordering");
+    for (int iteration = 0; iteration < 8; ++iteration) {
+        GNFS_TEST_CHECK(GFPolyOps::factor(input, 2) == baseline &&
+                        "GF factorization must be deterministic across calls");
+    }
+
+    auto product = GFPolyOps::Poly{1};
+    for (const auto& factor : baseline) {
+        GNFS_TEST_CHECK(factor.back() == 1);
+        GNFS_TEST_CHECK(gnfs::sqrt::ModularPoly::is_irreducible(factor, 2));
+        product = GFPolyOps::mul(product, factor, 2);
+    }
+    GNFS_TEST_CHECK(product == input && "GF factorization factors must multiply back to the input");
+
+    const GFPolyOps::Poly two_linear_factors = {0, 1, 1}; // x(x+1)
+    require_throws<std::runtime_error>([&] { (void)GFPolyOps::edf(two_linear_factors, 1, 2, 0); },
+                                       "EDF must fail closed when its attempt budget is exhausted");
+
+    const GFPolyOps::Poly repeated_linear_factor = {1, 0, 1}; // (x+1)^2
+    require_throws<std::runtime_error>([&] { (void)GFPolyOps::edf(repeated_linear_factor, 1, 2); },
+                                       "EDF must reject repeated-factor input");
+
+    std::cout << "  Deterministic EDF and fail-closed validation: PASSED" << std::endl;
+}
+
 // Regression test: parallel Block Lanczos produces same results as Gaussian
 // for a medium-sized matrix (verifies parallelization correctness)
 void test_parallel_block_lanczos_correctness() {
@@ -1282,6 +1322,7 @@ int main() {
     test_schirokauer_repeated_roots();
     test_schirokauer_perfect_power();
     test_schirokauer_squarefree_reducible();
+    test_gf_poly_factorization_determinism();
     test_parallel_block_lanczos_correctness();
     test_ensure_all_sorted();
     test_sge_weight1();
