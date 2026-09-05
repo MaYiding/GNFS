@@ -131,8 +131,9 @@ struct FactorStats {
     int64_t matrix_excess = 0;
     size_t dependencies_found = 0;
 
-    // Square root
-    int dependencies_tried = 0;
+    // Square root. Dependency counts originate from vector sizes and must
+    // remain wide on LP64 and LLP64 hosts alike.
+    size_t dependencies_tried = 0;
 
     // Timings
     PhaseTimings timings;
