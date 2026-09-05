@@ -12,6 +12,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <limits>
 #include <optional>
 
 namespace gnfs::cofactor {
@@ -388,7 +389,10 @@ private:
         }
 
         // 添加有理侧大素数
-        add_large_primes(rel.rational_large_prime, rat_class);
+        if (!add_large_primes(rel.rational_large_prime, rat_class)) {
+            stats_.rational_rejects.fetch_add(1, std::memory_order_relaxed);
+            return std::nullopt;
+        }
 
         // 添加代数侧因子
         // IMPORTANT: Factor base indices >= sieve_algebraic_count() are in the
@@ -422,8 +426,14 @@ private:
                 PrimePower{sq_q, static_cast<uint64_t>(sq_r), sq_exp});
         }
 
-        // 添加代数侧大素数（含正确的根 r = a·b⁻¹ mod p）
-        add_algebraic_large_primes(rel.algebraic_large_prime, alg_class, a, b);
+        // 添加代数侧大素数（含正确的根 r = a·b⁻¹ mod p）。
+        // Invalid classifications (for example, an arbitrary-precision
+        // semiprime whose factors cannot be represented in the uint64 fields)
+        // must not leak a zero prime or an invalid root into a relation.
+        if (!add_algebraic_large_primes(rel.algebraic_large_prime, alg_class, a, b)) {
+            stats_.algebraic_rejects.fetch_add(1, std::memory_order_relaxed);
+            return std::nullopt;
+        }
 
         // 更新统计
         update_stats(rel);
@@ -432,6 +442,11 @@ private:
     }
 
 public:
+    /// Sentinel returned when the inputs do not identify a finite algebraic
+    /// root. This is distinct from PROJECTIVE_ROOT because every valid prime
+    /// modulus is below UINT64_MAX and a finite root is strictly less than p.
+    static constexpr uint64_t INVALID_ROOT = std::numeric_limits<uint64_t>::max();
+
     /// 批量验证
     /// @param candidates 候选列表
     /// @return 成功验证的关系列表
@@ -500,30 +515,31 @@ private:
     }
 
     /// 添加大素数到关系（有理侧，无需根）
-    void add_large_primes(Relation::LargePrimeList& list, const CofactorClassification& cls) const {
+    [[nodiscard]] bool add_large_primes(Relation::LargePrimeList& list,
+                                        const CofactorClassification& cls) const {
+        const auto append = [&](uint64_t p, uint64_t exponent) {
+            if (p < 2 || exponent > std::numeric_limits<uint8_t>::max()) {
+                return false;
+            }
+            list.push_back(PrimePower{p, static_cast<uint8_t>(exponent)});
+            return true;
+        };
 
         switch (cls.type) {
         case CofactorClass::Prime:
-            list.push_back(PrimePower{cls.factor1, static_cast<uint8_t>(1)});
-            break;
+            return append(cls.factor1, 1);
 
         case CofactorClass::PrimePower:
-            list.push_back(PrimePower{cls.factor1, cls.power});
-            break;
+            return append(cls.factor1, cls.power);
 
         case CofactorClass::Semiprime:
-            list.push_back(PrimePower{cls.factor1, static_cast<uint8_t>(1)});
-            list.push_back(PrimePower{cls.factor2, static_cast<uint8_t>(1)});
-            break;
+            return append(cls.factor1, 1) && append(cls.factor2, 1);
 
         case CofactorClass::ThreeLP:
-            list.push_back(PrimePower{cls.factor1, static_cast<uint8_t>(1)});
-            list.push_back(PrimePower{cls.factor2, static_cast<uint8_t>(1)});
-            list.push_back(PrimePower{cls.factor3, static_cast<uint8_t>(1)});
-            break;
+            return append(cls.factor1, 1) && append(cls.factor2, 1) && append(cls.factor3, 1);
 
         default:
-            break;
+            return true;
         }
     }
 
@@ -562,62 +578,105 @@ public:
     /// 若 p | b,投影根 — 返回 AlgebraicPrime::PROJECTIVE_ROOT (UINT32_MAX,
     /// 与 FB 投影根列的 PrimeIdealKey 一致),让 matrix_builder 把这种 LP
     /// 与投影根理想合并到同一列。
+    /// 对无效模数、不可逆 b 或无法用现有投影根哨兵表示的有限根，返回 INVALID_ROOT。
     /// 纯 static 工具,无实例状态依赖 → 对外暴露便于单元测试和外部调用。
     [[nodiscard]] static uint64_t compute_alg_lp_root(int64_t a, uint64_t b, uint64_t p) {
+        if (p < 2) {
+            return INVALID_ROOT;
+        }
         if (b % p == 0) {
             return static_cast<uint64_t>(core::AlgebraicPrime::PROJECTIVE_ROOT);
         }
-        uint64_t a_mod = static_cast<uint64_t>(
-            ((a % static_cast<int64_t>(p)) + static_cast<int64_t>(p)) % static_cast<int64_t>(p));
-        // b^{-1} mod p via extended GCD
-        uint64_t b_mod = b % p;
-        int64_t t = 0, nt = 1;
-        int64_t r = static_cast<int64_t>(p), nr = static_cast<int64_t>(b_mod);
-        while (nr != 0) {
-            int64_t q = r / nr;
-            t -= q * nt;
-            std::swap(t, nt);
-            r -= q * nr;
-            std::swap(r, nr);
+        const auto encode_finite_root = [](uint64_t root) {
+            // A finite root equal to PROJECTIVE_ROOT cannot be represented in
+            // the existing PrimePower contract without being misclassified.
+            return root == static_cast<uint64_t>(core::AlgebraicPrime::PROJECTIVE_ROOT)
+                       ? INVALID_ROOT
+                       : root;
+        };
+        if (p <= static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+            const int64_t p_signed = static_cast<int64_t>(p);
+            const int64_t a_mod_signed = a % p_signed;
+            const uint64_t a_mod =
+                static_cast<uint64_t>(a_mod_signed < 0 ? a_mod_signed + p_signed : a_mod_signed);
+
+            // b^{-1} mod p via extended GCD. All signed intermediates are
+            // bounded by p, which is explicitly kept within int64_t here.
+            const uint64_t b_mod = b % p;
+            int64_t t = 0;
+            int64_t nt = 1;
+            int64_t r = p_signed;
+            int64_t nr = static_cast<int64_t>(b_mod);
+            while (nr != 0) {
+                const int64_t quotient = r / nr;
+                const int64_t next_t = t - quotient * nt;
+                t = nt;
+                nt = next_t;
+                const int64_t next_r = r - quotient * nr;
+                r = nr;
+                nr = next_r;
+            }
+            if (r != 1) {
+                return INVALID_ROOT;
+            }
+            const int64_t inverse_signed = t % p_signed;
+            const uint64_t b_inv = static_cast<uint64_t>(
+                inverse_signed < 0 ? inverse_signed + p_signed : inverse_signed);
+            return encode_finite_root(gnfs::util::mul_mod_u64(a_mod, b_inv, p));
         }
-        uint64_t b_inv = static_cast<uint64_t>(
-            (t % static_cast<int64_t>(p) + static_cast<int64_t>(p)) % static_cast<int64_t>(p));
-        return gnfs::util::mul_mod_u64(a_mod, b_inv, p);
+
+        // Do not narrow p to int64_t. GMP handles the full uint64_t modulus
+        // on LLP64 platforms as well as LP64, and gives us an explicit
+        // no-inverse result for malformed/composite inputs.
+        const Integer modulus(p);
+        const Integer b_integer(b);
+        Integer b_mod;
+        Integer::mod(b_mod, b_integer, modulus);
+        const Integer inverse = core::mod_inverse(b_mod, modulus);
+        if (inverse.is_zero()) {
+            return INVALID_ROOT;
+        }
+
+        const Integer a_integer(a);
+        Integer a_mod;
+        Integer::mod(a_mod, a_integer, modulus);
+        if (a_mod.is_negative()) {
+            a_mod += modulus;
+        }
+        Integer product = a_mod * inverse;
+        Integer root;
+        Integer::mod(root, product, modulus);
+        return encode_finite_root(root.to_uint64());
     }
 
     /// 添加代数侧大素数（带正确的素理想根 r）
-    void add_algebraic_large_primes(Relation::LargePrimeList& list,
-                                    const CofactorClassification& cls, int64_t a,
-                                    uint64_t b) const {
+    [[nodiscard]] bool add_algebraic_large_primes(Relation::LargePrimeList& list,
+                                                  const CofactorClassification& cls, int64_t a,
+                                                  uint64_t b) const {
+        const auto append = [&](uint64_t p, uint64_t exponent) {
+            const uint64_t root = compute_alg_lp_root(a, b, p);
+            if (root == INVALID_ROOT || exponent > std::numeric_limits<uint8_t>::max()) {
+                return false;
+            }
+            list.push_back(PrimePower{p, root, static_cast<uint8_t>(exponent)});
+            return true;
+        };
+
         switch (cls.type) {
         case CofactorClass::Prime: {
-            uint64_t r = compute_alg_lp_root(a, b, cls.factor1);
-            list.push_back(PrimePower{cls.factor1, r, static_cast<uint8_t>(1)});
-            break;
+            return append(cls.factor1, 1);
         }
         case CofactorClass::PrimePower: {
-            uint64_t r = compute_alg_lp_root(a, b, cls.factor1);
-            list.push_back(PrimePower{cls.factor1, r, cls.power});
-            break;
+            return append(cls.factor1, cls.power);
         }
         case CofactorClass::Semiprime: {
-            uint64_t r1 = compute_alg_lp_root(a, b, cls.factor1);
-            uint64_t r2 = compute_alg_lp_root(a, b, cls.factor2);
-            list.push_back(PrimePower{cls.factor1, r1, static_cast<uint8_t>(1)});
-            list.push_back(PrimePower{cls.factor2, r2, static_cast<uint8_t>(1)});
-            break;
+            return append(cls.factor1, 1) && append(cls.factor2, 1);
         }
         case CofactorClass::ThreeLP: {
-            uint64_t r1 = compute_alg_lp_root(a, b, cls.factor1);
-            uint64_t r2 = compute_alg_lp_root(a, b, cls.factor2);
-            uint64_t r3 = compute_alg_lp_root(a, b, cls.factor3);
-            list.push_back(PrimePower{cls.factor1, r1, static_cast<uint8_t>(1)});
-            list.push_back(PrimePower{cls.factor2, r2, static_cast<uint8_t>(1)});
-            list.push_back(PrimePower{cls.factor3, r3, static_cast<uint8_t>(1)});
-            break;
+            return append(cls.factor1, 1) && append(cls.factor2, 1) && append(cls.factor3, 1);
         }
         default:
-            break;
+            return true;
         }
     }
 
