@@ -5,6 +5,7 @@
 #include "../factor_base/factor_base.hpp"
 #include "../linalg/sparse_matrix.hpp"
 
+#include <cstdint>
 #include <limits>
 #include <string>
 #include <unordered_map>
