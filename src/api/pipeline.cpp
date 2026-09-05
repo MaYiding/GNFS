@@ -1130,6 +1130,7 @@ Pipeline::StructuredRouteSnapshot Pipeline::capture_structured_route_snapshot() 
         distributed_size_gate_ok,
         distributed_force_small,
         distributed_route_selected,
+        distributed_config.worker_timeout_ms,
         stage_telemetry_enabled,
     };
 }
@@ -1829,6 +1830,7 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
                 .num_workers = distributed_workers,
                 .base_path = structured_preflight.distributed_base_path,
                 .sq_per_worker = structured_preflight.distributed_sq_per_worker,
+                .worker_timeout_ms = structured_preflight.distributed_worker_timeout_ms,
             };
             // Cap each worker at ~max_special_q / num_workers SQs to avoid
             // runaway sieve when the caller-specified sq_range covers vastly

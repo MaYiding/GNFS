@@ -9,8 +9,10 @@
 //   [start, end) SQ-index range, writes relations inside that lease, finalizes
 //   the V3 pair, and durably publishes cleanup ownership before _exit().
 //
-//   Master waitpid()s for all workers. Any worker that exits non-zero or with a
-//   signal, or whose finalized store cannot be read, triggers a single retry.
+//   Master waitpid()s for all workers. An optional per-attempt watchdog can
+//   terminate a hung child (TERM/KILL) before that wait completes. Any worker
+//   that exits non-zero or with a signal, or whose finalized store cannot be read,
+//   triggers a single retry.
 //   The parent converges the prior exact lease before reserving a fresh
 //   generation for that range. In the legacy overload, an unrecoverable
 //   failure leaves the SQ range's relations missing from the merged output
@@ -44,9 +46,11 @@
 #include <sys/types.h>
 #endif
 
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <memory>
 #include <span>
 #include <stdexcept>
@@ -91,6 +95,13 @@ struct DistributedSieveConfig {
     /// matches Pipeline::sieve_and_collect's batch_target so a worker can stop
     /// early if a chunk produces an unexpectedly large number of relations.
     size_t worker_collector_cap = 0;
+
+    /// Maximum wall-clock time for one worker attempt, in milliseconds. 0
+    /// preserves the historical unbounded wait behavior. When non-zero, the
+    /// POSIX master polls the child, then sends SIGTERM followed by SIGKILL
+    /// after a short grace period and always reaps the child before cleanup or
+    /// retry. Windows rejects the distributed route as before.
+    std::uint64_t worker_timeout_ms = 0;
 };
 
 /// Outcome metadata for a single worker process.
@@ -271,7 +282,24 @@ inline size_t parse_distributed_sieve_workers_env() noexcept {
 ///   GNFS_DISTRIBUTED_SIEVE_WORKERS=N   (required, 0 = disabled)
 ///   GNFS_DISTRIBUTED_SIEVE_BASE_PATH=  (optional, default temp-dir gnfs_distributed_<pid>)
 ///   GNFS_DISTRIBUTED_SIEVE_SQ_PER_WORKER=N  (optional, default 0 = no cap)
+///   GNFS_DISTRIBUTED_SIEVE_WORKER_TIMEOUT_MS=N (optional, default 0 = no deadline)
 DistributedSieveConfig parse_distributed_sieve_env() noexcept;
+
+/// Parse `GNFS_DISTRIBUTED_SIEVE_WORKER_TIMEOUT_MS` (range [0, UINT64_MAX]).
+/// Invalid, negative, or unset values return 0 (no deadline).
+inline std::uint64_t parse_distributed_sieve_worker_timeout_env() noexcept {
+    const char* env = std::getenv("GNFS_DISTRIBUTED_SIEVE_WORKER_TIMEOUT_MS");
+    if (env == nullptr || env[0] == '\0' || env[0] == '-')
+        return 0;
+    char* end = nullptr;
+    errno = 0;
+    const unsigned long long value = std::strtoull(env, &end, 10);
+    if (end == env || errno == ERANGE || value == 0 ||
+        value > static_cast<unsigned long long>(std::numeric_limits<std::uint64_t>::max())) {
+        return 0;
+    }
+    return static_cast<std::uint64_t>(value);
+}
 
 /// Split [range_begin, range_end) into num_chunks contiguous chunks.
 /// Returns a vector of size num_chunks of [chunk_begin, chunk_end) pairs.
