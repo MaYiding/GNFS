@@ -309,7 +309,7 @@ void test_random_access() {
     {
         OOCRelationWriter writer(tmp.base);
         for (int i = 0; i < 500; ++i) {
-            auto rel = make_relation(i, static_cast<uint64_t>(i * 7), 4, 3, 1, 1);
+            auto rel = make_relation(i, static_cast<uint64_t>((i + 1) * 7), 4, 3, 1, 1);
             originals.push_back(rel);
             writer.write(rel);
         }
@@ -337,7 +337,7 @@ void test_read_all() {
     {
         OOCRelationWriter writer(tmp.base);
         for (int i = 0; i < 100; ++i) {
-            auto rel = make_relation(i, static_cast<uint64_t>(i), 3, 2);
+            auto rel = make_relation(i, static_cast<uint64_t>(i + 1), 3, 2);
             originals.push_back(rel);
             writer.write(rel);
         }
@@ -362,7 +362,7 @@ void test_read_range() {
     {
         OOCRelationWriter writer(tmp.base);
         for (int i = 0; i < 50; ++i) {
-            writer.write(make_relation(i, static_cast<uint64_t>(i), 2, 2));
+            writer.write(make_relation(i, static_cast<uint64_t>(i + 1), 2, 2));
         }
         writer.close();
     }
