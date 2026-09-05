@@ -1182,6 +1182,55 @@ bool test_pipeline_relation_generations() {
     return first.empty() && second.empty();
 }
 
+bool test_pipeline_rejects_foreign_context() {
+    Config cfg;
+    cfg.verbose = false;
+    Pipeline owner(Integer(143), cfg);
+    Pipeline foreign(Integer(221), cfg);
+    auto foreign_ctx = foreign.select_polynomial();
+    gnfs::factor_base::FactorBase empty_factor_base;
+
+    size_t callbacks = 0;
+    owner.set_progress_callback([&](const ProgressInfo&) { ++callbacks; });
+
+    bool build_rejected = false;
+    try {
+        (void)owner.build_factor_base(foreign_ctx);
+    } catch (const std::invalid_argument& error) {
+        build_rejected =
+            std::string_view(error.what()).find("different N") != std::string_view::npos;
+    }
+
+    bool sieve_rejected = false;
+    try {
+        (void)owner.sieve_and_collect(foreign_ctx, empty_factor_base);
+    } catch (const std::invalid_argument& error) {
+        sieve_rejected =
+            std::string_view(error.what()).find("different N") != std::string_view::npos;
+    }
+
+    bool matrix_rejected = false;
+    try {
+        RelationReductionResult reduction(1, {}, {});
+        (void)owner.build_matrix(std::move(reduction), empty_factor_base, foreign_ctx);
+    } catch (const std::invalid_argument& error) {
+        matrix_rejected =
+            std::string_view(error.what()).find("different N") != std::string_view::npos;
+    }
+
+    bool extract_rejected = false;
+    try {
+        Pipeline::MatrixResult matrix_result;
+        (void)owner.extract_factors(matrix_result, empty_factor_base, foreign_ctx);
+    } catch (const std::invalid_argument& error) {
+        extract_rejected =
+            std::string_view(error.what()).find("different N") != std::string_view::npos;
+    }
+
+    return build_rejected && sieve_rejected && matrix_rejected && extract_rejected &&
+           callbacks == 0;
+}
+
 bool test_v3_cascade_pipeline_integration() {
     // Verify GNFS_CASCADE_V3 ENV actually fires V3 cascade in Pipeline path.
     // Uses 12-digit N (~40-bit, lp_bits=17 → LP enabled) so V3 cascade branch
@@ -3808,6 +3857,7 @@ int main() {
     TEST(structured_xor_pair_fallback);
     TEST(pipeline_stats);
     TEST(pipeline_relation_generations);
+    TEST(pipeline_rejects_foreign_context);
     TEST(pipeline_progress_callback);
     TEST(structured_filter_stage_telemetry_parser);
     TEST(structured_ooc_path_namespace_contract);
