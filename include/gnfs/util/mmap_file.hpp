@@ -339,7 +339,10 @@ public:
 
 private:
     [[nodiscard]] static OwnedNativeFile open_read_only(const std::string& path) {
-        const int descriptor = ::open(path.c_str(), O_RDONLY);
+        int descriptor = -1;
+        do {
+            descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+        } while (descriptor < 0 && errno == EINTR);
         if (descriptor < 0) {
             throw std::runtime_error("MmapFile: cannot open '" + path + "'");
         }
@@ -352,7 +355,11 @@ private:
         }
 
         struct stat metadata {};
-        if (::fstat(file.handle_, &metadata) < 0) {
+        int stat_result = -1;
+        do {
+            stat_result = ::fstat(file.handle_, &metadata);
+        } while (stat_result < 0 && errno == EINTR);
+        if (stat_result < 0) {
             throw std::runtime_error("MmapFile: fstat failed for '" + source + "'");
         }
         if (metadata.st_size < 0 ||
