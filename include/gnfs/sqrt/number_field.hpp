@@ -6,7 +6,9 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace gnfs::sqrt {
@@ -22,14 +24,13 @@ public:
     NumberFieldElement() = default;
 
     /// 从系数构造（coeffs[i] 是 α^i 的系数）
-    explicit NumberFieldElement(std::vector<Integer> coeffs)
-        : coeffs_(std::move(coeffs)) {
+    explicit NumberFieldElement(std::vector<Integer> coeffs) : coeffs_(std::move(coeffs)) {
         normalize();
     }
 
     /// 从单个整数构造（常数元素）
     explicit NumberFieldElement(const Integer& value) {
-        coeffs_.emplace_back(value);  // Integer copy ctor
+        coeffs_.emplace_back(value); // Integer copy ctor
     }
 
     explicit NumberFieldElement(int64_t value) {
@@ -49,21 +50,23 @@ public:
         std::vector<Integer> new_coeffs;
         new_coeffs.reserve(coeffs_.size());
         for (const auto& c : coeffs_) {
-            new_coeffs.emplace_back(c);  // Integer copy ctor
+            new_coeffs.emplace_back(c); // Integer copy ctor
         }
         return NumberFieldElement(std::move(new_coeffs));
     }
 
     /// 获取度数（最高非零项的次数）
     [[nodiscard]] size_t degree() const noexcept {
-        if (coeffs_.empty()) return 0;
+        if (coeffs_.empty())
+            return 0;
         return coeffs_.size() - 1;
     }
 
     /// 获取系数
     [[nodiscard]] const Integer& coeff(size_t i) const {
         static const Integer zero(static_cast<int64_t>(0));
-        if (i >= coeffs_.size()) return zero;
+        if (i >= coeffs_.size())
+            return zero;
         return coeffs_[i];
     }
 
@@ -75,17 +78,20 @@ public:
     /// 是否为零
     [[nodiscard]] bool is_zero() const noexcept {
         for (const auto& c : coeffs_) {
-            if (!c.is_zero()) return false;
+            if (!c.is_zero())
+                return false;
         }
         return true;
     }
 
     /// 是否为单位元（常数1）
     [[nodiscard]] bool is_one() const noexcept {
-        if (coeffs_.empty()) return false;
+        if (coeffs_.empty())
+            return false;
         if (coeffs_.size() > 1) {
             for (size_t i = 1; i < coeffs_.size(); ++i) {
-                if (!coeffs_[i].is_zero()) return false;
+                if (!coeffs_[i].is_zero())
+                    return false;
             }
         }
         return coeffs_[0].fits_uint64() && coeffs_[0].to_uint64() == 1;
@@ -95,7 +101,7 @@ public:
     void add(const NumberFieldElement& other) {
         size_t max_deg = std::max(coeffs_.size(), other.coeffs_.size());
         if (coeffs_.size() < max_deg) {
-            coeffs_.resize(max_deg);  // default Integer ctor → 0, no fill ctor needed
+            coeffs_.resize(max_deg); // default Integer ctor → 0, no fill ctor needed
         }
 
         for (size_t i = 0; i < other.coeffs_.size(); ++i) {
@@ -109,7 +115,7 @@ public:
     void subtract(const NumberFieldElement& other) {
         size_t max_deg = std::max(coeffs_.size(), other.coeffs_.size());
         if (coeffs_.size() < max_deg) {
-            coeffs_.resize(max_deg);  // default Integer ctor → 0
+            coeffs_.resize(max_deg); // default Integer ctor → 0
         }
 
         for (size_t i = 0; i < other.coeffs_.size(); ++i) {
@@ -147,7 +153,7 @@ public:
     }
 
 private:
-    std::vector<Integer> coeffs_;  // coeffs_[i] 是 α^i 的系数
+    std::vector<Integer> coeffs_; // coeffs_[i] 是 α^i 的系数
 
     /// 移除高次零系数
     void normalize() {
@@ -162,8 +168,7 @@ private:
 class NumberField {
 public:
     /// 从多项式上下文构造
-    explicit NumberField(const PolynomialContext& ctx)
-        : degree_(ctx.degree()) {
+    explicit NumberField(const PolynomialContext& ctx) : degree_(ctx.degree()) {
 
         // 复制多项式系数 (Integer copy ctor)
         f_coeffs_.reserve(ctx.degree() + 1);
@@ -194,7 +199,8 @@ public:
     /// 获取多项式系数 f_i
     [[nodiscard]] const Integer& coeff(uint32_t i) const {
         static const Integer zero(static_cast<int64_t>(0));
-        if (i >= f_coeffs_.size()) return zero;
+        if (i >= f_coeffs_.size())
+            return zero;
         return f_coeffs_[i];
     }
 
@@ -228,15 +234,19 @@ public:
         coeffs.emplace_back(a);
         if (b != 0) {
             // Note: coefficient of α is -b (negative)
-            coeffs.emplace_back(-static_cast<long long>(b));
+            // Keep the full uint64_t value on LLP64 platforms.  Converting b
+            // to long long first truncates or becomes implementation-defined
+            // once b exceeds INT64_MAX.
+            Integer neg_b(b);
+            neg_b.negate();
+            coeffs.emplace_back(std::move(neg_b));
         }
         return NumberFieldElement(std::move(coeffs));
     }
 
     /// 数域乘法（模 f(α)）
-    [[nodiscard]] NumberFieldElement multiply(
-            const NumberFieldElement& x,
-            const NumberFieldElement& y) const {
+    [[nodiscard]] NumberFieldElement multiply(const NumberFieldElement& x,
+                                              const NumberFieldElement& y) const {
 
         if (x.is_zero() || y.is_zero()) {
             return zero();
@@ -248,8 +258,7 @@ public:
 
         for (size_t i = 0; i <= x.degree(); ++i) {
             for (size_t j = 0; j <= y.degree(); ++j) {
-                mpz_addmul(result[i + j].get_mpz(),
-                           x.coeff(i).get_mpz(), y.coeff(j).get_mpz());
+                mpz_addmul(result[i + j].get_mpz(), x.coeff(i).get_mpz(), y.coeff(j).get_mpz());
             }
         }
 
@@ -261,9 +270,8 @@ public:
 
     /// 数域乘法（模 f(α) 和模 n）
     /// 支持非 monic 多项式 f（通过 f_d 的模逆来约化）
-    [[nodiscard]] NumberFieldElement multiply_mod_n(
-            const NumberFieldElement& x,
-            const NumberFieldElement& y) const {
+    [[nodiscard]] NumberFieldElement multiply_mod_n(const NumberFieldElement& x,
+                                                    const NumberFieldElement& y) const {
 
         if (x.is_zero() || y.is_zero()) {
             return zero();
@@ -275,8 +283,7 @@ public:
 
         for (size_t i = 0; i <= x.degree(); ++i) {
             for (size_t j = 0; j <= y.degree(); ++j) {
-                mpz_addmul(result[i + j].get_mpz(),
-                           x.coeff(i).get_mpz(), y.coeff(j).get_mpz());
+                mpz_addmul(result[i + j].get_mpz(), x.coeff(i).get_mpz(), y.coeff(j).get_mpz());
             }
         }
 
@@ -287,9 +294,8 @@ public:
     }
 
     /// 数域幂运算
-    [[nodiscard]] NumberFieldElement power(
-            const NumberFieldElement& base,
-            const Integer& exp) const {
+    [[nodiscard]] NumberFieldElement power(const NumberFieldElement& base,
+                                           const Integer& exp) const {
 
         if (exp.is_zero()) {
             return one();
@@ -297,7 +303,7 @@ public:
 
         NumberFieldElement result = one();
         NumberFieldElement b = base.clone();
-        Integer e = exp;  // copy ctor
+        Integer e = exp; // copy ctor
 
         while (!e.is_zero()) {
             if (e.is_odd()) {
@@ -312,9 +318,8 @@ public:
     }
 
     /// 数域幂运算（模 n）
-    [[nodiscard]] NumberFieldElement power_mod_n(
-            const NumberFieldElement& base,
-            const Integer& exp) const {
+    [[nodiscard]] NumberFieldElement power_mod_n(const NumberFieldElement& base,
+                                                 const Integer& exp) const {
 
         if (exp.is_zero()) {
             return one();
@@ -323,7 +328,7 @@ public:
         NumberFieldElement result = one();
         NumberFieldElement b = base.clone();
         b.mod(n_);
-        Integer e = exp;  // copy ctor
+        Integer e = exp; // copy ctor
 
         while (!e.is_zero()) {
             if (e.is_odd()) {
@@ -339,7 +344,7 @@ public:
 
     /// 计算元素在 x = m 处的值（映射到 Z）
     [[nodiscard]] Integer evaluate_at_m(const NumberFieldElement& elem) const {
-        Integer result;  // default ctor = 0
+        Integer result; // default ctor = 0
         Integer m_power(1);
 
         // mpz_addmul: result += elem.coeff(i) * m_power (fused FMA, skip term temp)
@@ -356,7 +361,7 @@ public:
 
     /// 计算元素在 x = m 处的值（模 n）
     [[nodiscard]] Integer evaluate_at_m_mod_n(const NumberFieldElement& elem) const {
-        Integer result;  // default ctor = 0
+        Integer result; // default ctor = 0
         Integer m_power(1);
 
         // mpz_mul writes elem.coeff(i)*m_power directly into term (skip set step)
@@ -403,8 +408,18 @@ public:
         Integer result;
         ws_a_power = int64_t(1);
         b_powers[0] = int64_t(1);
+        Integer b_value;
+        b_value = b;
         for (uint32_t i = 1; i <= degree_; ++i) {
-            mpz_mul_ui(b_powers[i].get_mpz(), b_powers[i-1].get_mpz(), b);
+            // mpz_mul_ui takes unsigned long, which is only 32 bits on
+            // Windows LLP64.  Retain its fast path for representable b and
+            // use an arbitrary-precision operand for larger values.
+            if (b <= std::numeric_limits<unsigned long>::max()) {
+                mpz_mul_ui(b_powers[i].get_mpz(), b_powers[i - 1].get_mpz(),
+                           static_cast<unsigned long>(b));
+            } else {
+                mpz_mul(b_powers[i].get_mpz(), b_powers[i - 1].get_mpz(), b_value.get_mpz());
+            }
         }
 
         // term = a^i * b^{d-i}, then result += f_i * term via mpz_addmul (fused FMA)
@@ -426,7 +441,7 @@ public:
 
 private:
     uint32_t degree_;
-    std::vector<Integer> f_coeffs_;  // f(x) 的系数
+    std::vector<Integer> f_coeffs_; // f(x) 的系数
     Integer n_;
     Integer m_;
 
@@ -453,8 +468,8 @@ private:
             }
 
             for (uint32_t i = 0; i < degree_; ++i) {
-                mpz_submul(coeffs[shift + i].get_mpz(),
-                           high_coeff.get_mpz(), f_coeffs_[i].get_mpz());
+                mpz_submul(coeffs[shift + i].get_mpz(), high_coeff.get_mpz(),
+                           f_coeffs_[i].get_mpz());
             }
         }
 
@@ -474,17 +489,16 @@ private:
             Integer f_d;
             f_d = f_coeffs_[degree_];
             f_d %= modulus;
-            if (f_d.is_negative()) f_d += modulus;
+            if (f_d.is_negative())
+                f_d += modulus;
             if (!f_d.is_one()) {
-                int ok = mpz_invert(f_d_inv.get_mpz(), f_d.get_mpz(),
-                                    modulus.get_mpz());
+                int ok = mpz_invert(f_d_inv.get_mpz(), f_d.get_mpz(), modulus.get_mpz());
                 if (!ok) {
                     // f_d 不可逆 — gcd(f_d, modulus) > 1
                     // 在 GNFS 中 modulus = N，这意味着找到了非平凡因子！
                     // 抛出异常让调用者处理（或捕获因子）
-                    throw std::runtime_error(
-                        "reduce_mod: f_d not invertible mod N — "
-                        "gcd(f_d, N) > 1, nontrivial factor found");
+                    throw std::runtime_error("reduce_mod: f_d not invertible mod N — "
+                                             "gcd(f_d, N) > 1, nontrivial factor found");
                 }
             }
         }
@@ -519,8 +533,7 @@ private:
             for (uint32_t i = 0; i < degree_; ++i) {
                 // coeffs[shift+i] -= scaled * f_coeffs[i] via mpz_submul (fused FMS)
                 // Final mod handled in the per-coeff loop below; drops term temp + 1 mod op.
-                mpz_submul(coeffs[shift + i].get_mpz(),
-                           scaled.get_mpz(), f_coeffs_[i].get_mpz());
+                mpz_submul(coeffs[shift + i].get_mpz(), scaled.get_mpz(), f_coeffs_[i].get_mpz());
                 coeffs[shift + i] %= modulus;
                 if (coeffs[shift + i].is_negative()) {
                     coeffs[shift + i] += modulus;
@@ -531,7 +544,8 @@ private:
         // 最终 mod 归约 + 移除零高次项
         for (auto& c : coeffs) {
             c %= modulus;
-            if (c.is_negative()) c += modulus;
+            if (c.is_negative())
+                c += modulus;
         }
         while (!coeffs.empty() && coeffs.back().is_zero()) {
             coeffs.pop_back();
