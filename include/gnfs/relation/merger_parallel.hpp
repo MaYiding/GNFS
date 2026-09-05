@@ -96,7 +96,7 @@ inline FilterMergeThreadsCache& filter_merge_threads_cache() noexcept {
 inline std::size_t parse_filter_merge_threads_env() noexcept {
     const char* env = std::getenv("GNFS_FILTER_MERGE_THREADS");
     if (env == nullptr || env[0] == '\0') {
-        return 1;  // default sequential
+        return 1; // default sequential
     }
 
     // Preserve atoi's accepted leading whitespace and numeric-prefix behavior,
@@ -105,28 +105,28 @@ inline std::size_t parse_filter_merge_threads_env() noexcept {
     while (*first != '\0' && std::isspace(static_cast<unsigned char>(*first)) != 0)
         ++first;
     if (*first == '-') {
-        return 1;  // invalid / non-positive -> sequential
+        return 1; // invalid / non-positive -> sequential
     }
 
     errno = 0;
     char* end = nullptr;
     const unsigned long long parsed = std::strtoull(first, &end, 10);
     if (end == first || parsed == 0)
-        return 1;  // invalid / non-positive -> sequential
+        return 1; // invalid / non-positive -> sequential
 
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     const std::size_t hw_size = static_cast<std::size_t>(hw);
-    const std::size_t cap =
-        hw_size > std::numeric_limits<std::size_t>::max() / 2
-            ? std::numeric_limits<std::size_t>::max()
-            : hw_size * 2;
+    const std::size_t cap = hw_size > std::numeric_limits<std::size_t>::max() / 2
+                                ? std::numeric_limits<std::size_t>::max()
+                                : hw_size * 2;
     if (errno == ERANGE || parsed > static_cast<unsigned long long>(cap))
         return cap;
     return static_cast<std::size_t>(parsed);
 }
 
-}  // namespace detail
+} // namespace detail
 
 /// Read the `GNFS_FILTER_MERGE_THREADS` env into a cached thread count.
 ///
@@ -136,9 +136,8 @@ inline std::size_t parse_filter_merge_threads_env() noexcept {
 /// values clamp to the upper cap.
 [[nodiscard]] inline std::size_t filter_merge_threads() noexcept {
     auto& cache = detail::filter_merge_threads_cache();
-    std::call_once(cache.once, [&cache]() {
-        cache.value = detail::parse_filter_merge_threads_env();
-    });
+    std::call_once(cache.once,
+                   [&cache]() { cache.value = detail::parse_filter_merge_threads_env(); });
     return cache.value;
 }
 
@@ -196,11 +195,12 @@ inline void filter_merge_threads_reset_env_cache_for_testing() noexcept {
 /// exception reached by the synchronous `future.get()` loop is observed;
 /// remaining futures are still waited on so the ThreadPool can join cleanly.
 template <typename Result, typename Bucket, typename MergeFn>
-inline std::vector<Result>
-parallel_merge_partials(std::span<const Bucket> buckets, MergeFn&& merge_fn) {
+inline std::vector<Result> parallel_merge_partials(std::span<const Bucket> buckets,
+                                                   MergeFn&& merge_fn) {
     const std::size_t n = buckets.size();
     std::vector<Result> results;
-    if (n == 0) return results;
+    if (n == 0)
+        return results;
 
     results.resize(n);
 
@@ -230,9 +230,8 @@ parallel_merge_partials(std::span<const Bucket> buckets, MergeFn&& merge_fn) {
         // the output vector, and the user merge functor. Per-bucket output
         // slots are disjoint, so concurrent writes to results[i] are
         // race-free even though `results` itself is shared.
-        futures.push_back(pool.submit([&buckets, &results, &merge_fn, i]() {
-            results[i] = merge_fn(buckets[i]);
-        }));
+        futures.push_back(pool.submit(
+            [&buckets, &results, &merge_fn, i]() { results[i] = merge_fn(buckets[i]); }));
     }
 
     // Drain every future even when one rethrows: we want the pool to join
@@ -258,4 +257,4 @@ parallel_merge_partials(std::span<const Bucket> buckets, MergeFn&& merge_fn) {
     return results;
 }
 
-}  // namespace gnfs::relation
+} // namespace gnfs::relation
