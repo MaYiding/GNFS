@@ -22,10 +22,10 @@
 // Concept: any type satisfying `MatrixView` works. CSRMatrix and
 // MmapCSRMatrix already satisfy the concept (see matrix_view.hpp).
 
-#include "gnfs/linalg/matrix_view.hpp"
-#include "gnfs/linalg/block_lanczos.hpp"   // BlockVector
-#include "gnfs/linalg/metal_spmv.hpp"
+#include "gnfs/linalg/block_lanczos.hpp" // BlockVector
 #include "gnfs/linalg/detail/spmv_simd.hpp"
+#include "gnfs/linalg/matrix_view.hpp"
+#include "gnfs/linalg/metal_spmv.hpp"
 #include "gnfs/util/cpu_intrin.hpp"
 #include "gnfs/util/thread_pool.hpp"
 #include <algorithm>
@@ -33,6 +33,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <future>
+#include <limits>
+#include <stdexcept>
+#include <string>
 #include <type_traits>
 #include <vector>
 
@@ -40,11 +43,20 @@ namespace gnfs::linalg::detail {
 
 constexpr std::ptrdiff_t SPMV_PREFETCH_AHEAD = 8;
 
+inline void validate_block_vector_shape(const BlockVector& vector, std::size_t expected,
+                                        const char* operation) {
+    if (vector.length != expected || vector.data.size() < expected) {
+        throw std::invalid_argument(std::string(operation) + ": incompatible block vector length");
+    }
+}
+
 template <MatrixView M>
 inline void spmv_forward(const M& matrix,
                          const BlockVector& x,
                          BlockVector& y,
                          gnfs::util::ThreadPool& pool) {
+    validate_block_vector_shape(x, matrix.num_cols(), "spmv_forward input");
+    validate_block_vector_shape(y, matrix.num_rows(), "spmv_forward output");
     // x.length == matrix.num_cols() by contract — CSRMatrix ctor and the
     // MmapCSRMatrix v2 file layout both validate col < num_cols at build
     // time, so the inner loop can skip per-element bounds checks.
@@ -57,7 +69,8 @@ inline void spmv_forward(const M& matrix,
     // through to the CPU kernel on any failure so correctness never
     // depends on the GPU path succeeding.
     if constexpr (std::is_same_v<M, CSRMatrix>) {
-        if (metal::should_use(matrix.num_rows(), matrix.num_cols())) {
+        if (metal::should_use(matrix.num_rows(), matrix.num_cols()) &&
+            matrix.nnz() <= static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
             bool ok = metal::spmv_forward(
                 matrix.num_rows(), matrix.num_cols(),
                 matrix.row_offsets_u32(), matrix.col_indices().data(),
@@ -123,6 +136,8 @@ inline void spmv_transpose(const M& matrix,
                            gnfs::util::ThreadPool& pool) {
     const std::size_t m = matrix.num_rows();
     const std::size_t n = y.length;
+    validate_block_vector_shape(x, m, "spmv_transpose input");
+    validate_block_vector_shape(y, matrix.num_cols(), "spmv_transpose output");
     assert(n == matrix.num_cols());
     assert(x.length == m);
 
@@ -130,7 +145,8 @@ inline void spmv_transpose(const M& matrix,
     // spmv_forward: only CSRMatrix, only above threshold, only when
     // GNFS_METAL_SPMV is set, transparent CPU fallback on failure.
     if constexpr (std::is_same_v<M, CSRMatrix>) {
-        if (metal::should_use(matrix.num_rows(), matrix.num_cols())) {
+        if (metal::should_use(matrix.num_rows(), matrix.num_cols()) &&
+            matrix.nnz() <= static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
             bool ok = metal::spmv_transpose(
                 matrix.num_rows(), matrix.num_cols(),
                 matrix.row_offsets_u32(), matrix.col_indices().data(),

@@ -164,6 +164,25 @@ void test_sparse_matrix_bounds() {
     std::cout << "  SparseMatrix bounds: PASSED" << std::endl;
 }
 
+void test_block_vector_bounds() {
+    std::cout << "Testing BlockVector bounds..." << std::endl;
+
+    BlockVector vector(2);
+    require_throws<std::out_of_range>([&] { (void)vector.extract_column(64); },
+                                      "block column index");
+
+    BlockVector shorter(1);
+    require_throws<std::invalid_argument>([&] { vector.xor_with(shorter); },
+                                          "block vector xor length");
+
+    BlockVector malformed;
+    malformed.length = 1;
+    require_throws<std::invalid_argument>([&] { (void)malformed.extract_column(0); },
+                                          "block vector storage length");
+
+    std::cout << "  BlockVector bounds: PASSED" << std::endl;
+}
+
 // Test SparseMatrix transpose
 void test_sparse_matrix_transpose() {
     std::cout << "Testing SparseMatrix transpose..." << std::endl;
@@ -1434,6 +1453,7 @@ int main() {
     test_sparse_row_xor();
     test_sparse_matrix();
     test_sparse_matrix_bounds();
+    test_block_vector_bounds();
     test_sparse_matrix_transpose();
     test_bitvector();
     test_gaussian_simple();
