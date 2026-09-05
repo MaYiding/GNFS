@@ -51,6 +51,7 @@ namespace gnfs::util {
 
 /// Modular exponentiation
 [[nodiscard]] inline uint64_t pow_mod_u64(uint64_t base, uint64_t exp, uint64_t mod) {
+    if (mod == 0) return 0;
     uint64_t result = 1;
     base %= mod;
     while (exp > 0) {

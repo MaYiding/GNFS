@@ -3,6 +3,8 @@
 
 #include <cstddef>
 #include <iostream>
+#include <limits>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -128,6 +130,23 @@ void test_clear_and_resize() {
     std::cout << "  Clear and resize: PASS" << std::endl;
 }
 
+void test_capacity_overflow_is_rejected() {
+    std::cout << "Testing capacity overflow checks..." << std::endl;
+
+    SmallVector<int, 2> vec;
+    bool threw = false;
+    try {
+        vec.reserve(std::numeric_limits<std::size_t>::max());
+    } catch (const std::length_error&) {
+        threw = true;
+    }
+    GNFS_TEST_CHECK(threw);
+    GNFS_TEST_CHECK(vec.empty());
+    GNFS_TEST_CHECK(vec.is_inline());
+
+    std::cout << "  Capacity overflow checks: PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== SmallVector Tests ===" << std::endl;
 
@@ -137,6 +156,7 @@ int main() {
     test_iteration();
     test_emplace_back();
     test_clear_and_resize();
+    test_capacity_overflow_is_rejected();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;

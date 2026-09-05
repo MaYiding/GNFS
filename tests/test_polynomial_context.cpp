@@ -1,5 +1,6 @@
 // Unit tests for PolynomialContext — evaluate, norms, verify, edge cases
 #include "gnfs/core/polynomial_context.hpp"
+#include "support/test_check.hpp"
 
 #include <cassert>
 #include <iostream>
@@ -83,6 +84,9 @@ void test_evaluate_mod() {
     auto ctx2 = make_cubic_24();
     // f(3) = 24 ≡ 0 mod 24
     assert(ctx2.evaluate_mod(3, 24) == 0);
+    // A zero modulus has no residue; the API uses the same sentinel as
+    // IntPolynomial::evaluate_mod instead of evaluating a division by zero.
+    GNFS_TEST_CHECK(ctx.evaluate_mod(5, 0) == 0);
     std::cout << "  PASS" << std::endl;
 }
 
