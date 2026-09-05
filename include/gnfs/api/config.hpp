@@ -12,6 +12,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace gnfs::api {
 
@@ -52,6 +53,42 @@ struct Config {
     // Output
     std::optional<std::string> output_file;
     std::optional<std::string> output_format; // "text", "json", "csv", "report"
+
+    /// Parse a complete unsigned 32-bit value without platform-dependent
+    /// narrowing from unsigned long.
+    static uint32_t parse_uint32(std::string_view value, std::string_view key) {
+        size_t consumed = 0;
+        const uint64_t parsed = std::stoull(std::string(value), &consumed, 10);
+        if (consumed != value.size() || parsed > std::numeric_limits<uint32_t>::max()) {
+            throw std::out_of_range("Config: " + std::string(key) +
+                                    " must be a complete uint32 value");
+        }
+        return static_cast<uint32_t>(parsed);
+    }
+
+    /// Parse a complete unsigned 64-bit value rather than accepting a numeric
+    /// prefix followed by arbitrary text.
+    static uint64_t parse_uint64(std::string_view value, std::string_view key) {
+        size_t consumed = 0;
+        const uint64_t parsed = std::stoull(std::string(value), &consumed, 10);
+        if (consumed != value.size()) {
+            throw std::invalid_argument("Config: " + std::string(key) +
+                                        " must be a complete uint64 value");
+        }
+        return parsed;
+    }
+
+    /// Parse a complete signed 32-bit value with an explicit range check.
+    static int32_t parse_int32(std::string_view value, std::string_view key) {
+        size_t consumed = 0;
+        const int64_t parsed = std::stoll(std::string(value), &consumed, 10);
+        if (consumed != value.size() || parsed < std::numeric_limits<int32_t>::min() ||
+            parsed > std::numeric_limits<int32_t>::max()) {
+            throw std::out_of_range("Config: " + std::string(key) +
+                                    " must be a complete int32 value");
+        }
+        return static_cast<int32_t>(parsed);
+    }
 
     /// Pure auto-detection — all fields empty, everything computed from N
     static Config auto_detect() {
@@ -111,38 +148,33 @@ struct Config {
             if (key == "method")
                 cfg.method = parse_method(val);
             else if (key == "degree")
-                cfg.degree = static_cast<uint32_t>(std::stoul(val));
+                cfg.degree = parse_uint32(val, key);
             else if (key == "rational_bound")
-                cfg.rational_bound = static_cast<uint32_t>(std::stoul(val));
+                cfg.rational_bound = parse_uint32(val, key);
             else if (key == "algebraic_bound")
-                cfg.algebraic_bound = static_cast<uint32_t>(std::stoul(val));
+                cfg.algebraic_bound = parse_uint32(val, key);
             else if (key == "large_prime_bound")
-                cfg.large_prime_bound = std::stoull(val);
+                cfg.large_prime_bound = parse_uint64(val, key);
             else if (key == "sieve_width")
-                cfg.sieve_width = std::stoi(val);
+                cfg.sieve_width = parse_int32(val, key);
             else if (key == "sieve_height")
-                cfg.sieve_height = std::stoi(val);
+                cfg.sieve_height = parse_int32(val, key);
             else if (key == "max_special_q") {
-                size_t consumed = 0;
-                const uint64_t parsed = std::stoull(val, &consumed);
-                if (consumed != val.size() || parsed == 0 ||
-                    parsed > std::numeric_limits<uint32_t>::max()) {
+                const uint64_t parsed = parse_uint64(val, key);
+                if (parsed == 0 || parsed > std::numeric_limits<uint32_t>::max()) {
                     throw std::out_of_range("Config: max_special_q must be in [1, UINT32_MAX]");
                 }
                 cfg.max_special_q = static_cast<size_t>(parsed);
             } else if (key == "max_special_q_batch_workers") {
-                size_t consumed = 0;
-                const uint64_t parsed = std::stoull(val, &consumed);
-                if (consumed != val.size() || parsed < 1 || parsed > 4) {
+                const uint64_t parsed = parse_uint64(val, key);
+                if (parsed < 1 || parsed > 4) {
                     throw std::out_of_range(
                         "Config: max_special_q_batch_workers must be in [1, 4]");
                 }
                 cfg.max_special_q_batch_workers = static_cast<uint32_t>(parsed);
             } else if (key == "max_local_sieve_threads") {
-                size_t consumed = 0;
-                const uint64_t parsed = std::stoull(val, &consumed);
-                if (consumed != val.size() || parsed == 0 ||
-                    parsed > std::numeric_limits<uint32_t>::max()) {
+                const uint64_t parsed = parse_uint64(val, key);
+                if (parsed == 0 || parsed > std::numeric_limits<uint32_t>::max()) {
                     throw std::out_of_range(
                         "Config: max_local_sieve_threads must be in [1, UINT32_MAX]");
                 }
