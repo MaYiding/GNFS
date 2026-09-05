@@ -161,6 +161,36 @@ void test_uint64_b_portability_boundaries() {
     std::cout << "  uint64_t b preserved through from_ab/norm_linear: PASSED" << std::endl;
 }
 
+// Regression for RationalSqrt's a - b*m paths on Windows LLP64.  GMP's
+// mpz_submul_ui takes unsigned long (32 bits on Windows), so b must not be
+// narrowed before sign detection or verification-product reconstruction.
+void test_rational_sqrt_uint64_b_portability() {
+    std::cout << "Testing RationalSqrt uint64_t b portability..." << std::endl;
+
+    FactorBase fb;
+    fb.add_rational(2, 1);
+
+    const Integer n(1000000007);
+    const Integer m(1);
+    const uint64_t b = uint64_t{1} << 34;
+
+    // |a - b*m| = 2^34 = 2^17 squared, with an even rational factor
+    // exponent so this is a valid one-row square-root dependency.
+    Relation relation(0, b);
+    relation.rational_factors.assign(34, 0);
+    std::vector<Relation> relations = {relation};
+    BitVector dependency(1);
+    dependency.set(0);
+
+    const auto result = RationalSqrt{}.compute(dependency, relations, fb, n, m);
+    GNFS_TEST_CHECK(result.success);
+
+    Integer expected = n - Integer(uint64_t{1} << 17);
+    GNFS_TEST_CHECK(result.value == expected);
+
+    std::cout << "  RationalSqrt preserved full-width b in sign/verify paths: PASSED" << std::endl;
+}
+
 // Test NumberField multiplication
 void test_number_field_multiply() {
     std::cout << "Testing NumberField multiplication..." << std::endl;
@@ -915,6 +945,7 @@ int main() {
     test_number_field_multiply();
     test_number_field_power();
     test_uint64_b_portability_boundaries();
+    test_rational_sqrt_uint64_b_portability();
     test_evaluate_at_m();
     test_rational_sqrt_simple();
     test_sqrt_dependency_dimension_guard();
