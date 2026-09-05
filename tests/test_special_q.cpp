@@ -4,6 +4,7 @@
 #include "gnfs/sieve/special_q.hpp"
 
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -397,6 +398,58 @@ void test_range_selector() {
               << std::endl;
 }
 
+void test_range_selector_parameter_guards() {
+    std::cout << "Testing SpecialQRangeSelector parameter guards..." << std::endl;
+
+    FactorBase fb;
+    auto expect_invalid = [&](uint32_t algebraic_bound, double relations_per_sq) {
+        SpecialQRangeSelector selector;
+        selector.algebraic_bound = algebraic_bound;
+        selector.target_relations = 1;
+        selector.relations_per_sq = relations_per_sq;
+
+        bool threw = false;
+        try {
+            (void)selector.select(fb);
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        CHECK(threw);
+    };
+
+    expect_invalid(0, 1.0);
+    expect_invalid(1, 0.0);
+    expect_invalid(1, -1.0);
+    expect_invalid(1, std::numeric_limits<double>::quiet_NaN());
+    expect_invalid(1, std::numeric_limits<double>::infinity());
+
+    SpecialQRangeSelector large_target;
+    large_target.algebraic_bound = UINT32_MAX - 1;
+    large_target.target_relations = std::numeric_limits<size_t>::max();
+    large_target.relations_per_sq = 1.0;
+    const auto saturated = large_target.select(fb);
+    CHECK(saturated.min_q == UINT32_MAX - 1);
+    CHECK(saturated.max_q == UINT32_MAX);
+
+    SpecialQRangeSelector tiny_rate;
+    tiny_rate.algebraic_bound = 1000;
+    tiny_rate.target_relations = 1;
+    tiny_rate.relations_per_sq = std::numeric_limits<double>::denorm_min();
+    const auto tiny_rate_range = tiny_rate.select(fb);
+    CHECK(tiny_rate_range.min_q == 1000);
+    CHECK(tiny_rate_range.max_q == UINT32_MAX);
+
+    SpecialQRangeSelector max_bound;
+    max_bound.algebraic_bound = UINT32_MAX;
+    max_bound.target_relations = 1000;
+    max_bound.relations_per_sq = 1.0;
+    const auto max_bound_range = max_bound.select(fb);
+    CHECK(max_bound_range.min_q == UINT32_MAX);
+    CHECK(max_bound_range.max_q == UINT32_MAX);
+
+    std::cout << "  RangeSelector parameter guards: PASS" << std::endl;
+}
+
 void test_empty_range() {
     std::cout << "Testing empty range..." << std::endl;
 
@@ -514,6 +567,7 @@ int main() {
     test_fail_closed_special_q_reset_and_ranges();
     test_fail_closed_special_q_count();
     test_range_selector();
+    test_range_selector_parameter_guards();
     test_empty_range();
     test_special_q_above_fb_bound();
 
