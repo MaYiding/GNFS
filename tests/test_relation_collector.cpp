@@ -686,6 +686,31 @@ static std::string make_tmp_ooc_path(const std::string& label) {
                                  std::to_string(++seq) + "_" + label);
 }
 
+void test_output_file_open_failure() {
+    std::cout << "Testing output file open failure..." << std::endl;
+
+    const auto root = std::filesystem::path(gnfs::util::temp_path(
+        "gnfs_test_collector_output_failure_" + std::to_string(gnfs::util::process_id())));
+    const auto output_path = root / "missing" / "relations.bin";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+
+    CollectorConfig config;
+    config.output_file = output_path.string();
+
+    bool threw = false;
+    try {
+        RelationCollector collector(config);
+    } catch (const std::runtime_error& error) {
+        threw = true;
+        CHECK(std::string(error.what()).find(output_path.string()) != std::string::npos);
+    }
+
+    CHECK(threw);
+    CHECK(!std::filesystem::exists(root));
+    std::cout << "  Output file open failure: PASS" << std::endl;
+}
+
 /// RAII OOC artifact cleanup
 struct OOCArtifacts {
     std::string base;
@@ -2961,6 +2986,7 @@ int main() {
     test_partial_relations();
     test_effective_large_prime_stats();
     test_batch_add();
+    test_output_file_open_failure();
     test_save_load();
     test_load_replaces_state_transactionally(false);
     test_load_replaces_state_transactionally(true);

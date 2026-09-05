@@ -1626,6 +1626,10 @@ private:
     /// 打开输出文件
     void open_output_file() {
         output_stream_.open(config_.output_file, std::ios::binary | std::ios::app);
+        if (!output_stream_) {
+            throw std::runtime_error("RelationCollector: cannot open output file '" +
+                                     config_.output_file + "'");
+        }
     }
 
     /// 关闭输出文件
