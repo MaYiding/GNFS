@@ -112,7 +112,9 @@ public:
 
     /// 计算 f(x) mod p 的值 (always returns non-negative result in [0, p))
     [[nodiscard]] uint64_t evaluate_mod(uint64_t x, uint64_t p) const {
-        if (f_coeffs_.empty()) return 0;
+        // A zero modulus has no defined residue.  Match IntPolynomial and
+        // the shared modular helpers by returning the neutral sentinel.
+        if (f_coeffs_.empty() || p == 0) return 0;
 
         // mpz_fdiv_ui returns floor-div remainder ∈ [0, p-1] (zero alloc)
         auto get_coeff_mod_p = [p](const Integer& coeff) -> uint64_t {

@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -161,20 +162,20 @@ public:
 
     // 修改操作
     void push_back(const T& value) {
-        ensure_capacity(size_ + 1);
+        ensure_capacity_for_one_more();
         new (data() + size_) T(value);
         ++size_;
     }
 
     void push_back(T&& value) {
-        ensure_capacity(size_ + 1);
+        ensure_capacity_for_one_more();
         new (data() + size_) T(std::move(value));
         ++size_;
     }
 
     template <typename... Args>
     T& emplace_back(Args&&... args) {
-        ensure_capacity(size_ + 1);
+        ensure_capacity_for_one_more();
         T* ptr = new (data() + size_) T(std::forward<Args>(args)...);
         ++size_;
         return *ptr;
@@ -245,7 +246,9 @@ private:
     void ensure_capacity(size_t required) {
         if (required > capacity_) {
             // 至少翻倍增长
-            size_t new_cap = capacity_ * 2;
+            size_t new_cap = capacity_ > std::numeric_limits<size_t>::max() / 2
+                                 ? std::numeric_limits<size_t>::max()
+                                 : capacity_ * 2;
             if (new_cap < required) {
                 new_cap = required;
             }
@@ -253,7 +256,17 @@ private:
         }
     }
 
+    void ensure_capacity_for_one_more() {
+        if (size_ == std::numeric_limits<size_t>::max()) {
+            throw std::length_error("SmallVector size overflow");
+        }
+        ensure_capacity(size_ + 1);
+    }
+
     void grow(size_t new_cap) {
+        if (new_cap > std::numeric_limits<size_t>::max() / sizeof(T)) {
+            throw std::length_error("SmallVector capacity exceeds allocation limit");
+        }
         T* new_data = static_cast<T*>(::operator new(sizeof(T) * new_cap));
 
         // 移动旧元素
