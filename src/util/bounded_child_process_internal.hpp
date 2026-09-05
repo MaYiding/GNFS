@@ -128,13 +128,30 @@ run_authenticated_bounded_child_process(AuthenticatedExecutableImage&& image,
 namespace detail {
 
 /// POSIX source-private path transport with an explicit logical argv[0].
-/// `spec.executable` remains the path passed to posix_spawn, but is not exposed
-/// to the child through argv[0].
+/// `spec.executable` remains the exact path executed by the platform launcher,
+/// but is not exposed to the child through argv[0].
 [[nodiscard]] BoundedChildProcessResult
 run_bounded_child_process_with_argv0(const BoundedChildProcessSpec& spec,
                                      std::string_view argv0) noexcept;
 
 #if defined(__linux__)
+namespace trusted_test {
+
+enum class LinuxPathFdClosureTestMode : std::uint8_t {
+    force_proc_scan,
+    force_unavailable,
+};
+
+/// Test-only strictness seam. `force_proc_scan` bypasses close_range but still
+/// requires a complete child-side `/proc/self/fd` scan. `force_unavailable`
+/// starts no executable image and proves that an unavailable close-all path
+/// fails closed. Neither mode can weaken the production launch contract.
+[[nodiscard]] BoundedChildProcessResult
+run_bounded_child_process_with_fd_closure_test_mode(const BoundedChildProcessSpec& spec,
+                                                    LinuxPathFdClosureTestMode mode) noexcept;
+
+} // namespace trusted_test
+
 /// Linux-only source-private transport entry point. On a compile-capable
 /// modern-glibc target, `executable_fd` must name an executable object held by
 /// the caller for the duration of the call. The child executes that descriptor

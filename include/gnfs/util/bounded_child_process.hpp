@@ -26,6 +26,7 @@ enum class BoundedChildProcessError : std::uint8_t {
     read_failed,
     overflow,
     timeout,
+    cancelled,
     descendant_writer_leak,
     wait_failed,
     cleanup_failed,
@@ -54,6 +55,8 @@ bounded_child_process_error_name(BoundedChildProcessError error) noexcept {
         return "overflow";
     case BoundedChildProcessError::timeout:
         return "timeout";
+    case BoundedChildProcessError::cancelled:
+        return "cancelled";
     case BoundedChildProcessError::descendant_writer_leak:
         return "descendant_writer_leak";
     case BoundedChildProcessError::wait_failed:
@@ -84,8 +87,26 @@ struct BoundedChildTermination final {
     int signal = 0;
 };
 
+using BoundedChildCancellationProbe = bool (*)(void* context) noexcept;
+
 /// Arguments exclude argv[0]; the transport inserts the absolute executable
-/// path. `environment` is the complete child environment, not a delta.
+/// path. Argument and environment strings are strict UTF-8 on Windows and raw
+/// non-NUL bytes on POSIX. `environment` is the complete child environment, not
+/// a delta; on Windows it may include drive-current-directory entries such as
+/// `=C:=C:\work`. Set `inherit_parent_environment` only when the ambient parent
+/// environment is intentionally part of the launch contract; it is mutually
+/// exclusive with a non-empty `environment`. When `merge_stderr_into_stdout` is
+/// set, both child streams share the stdout capture in kernel write order,
+/// `stderr_limit` must be zero, and a completed result has empty `stderr_bytes`
+/// with `stderr_eof` set. The optional cancellation probe may be called
+/// repeatedly from the launching thread and must remain valid until this
+/// function returns. Already-observable capture faults take precedence over a
+/// concurrent cancellation, which in turn takes precedence over the deadline.
+/// The child receives only the configured standard streams; nonstandard parent
+/// descriptors or handles are not inherited, and their parent-side flags and
+/// identities remain unchanged.
+/// A containment failure is always reported through `cleanup_error` and
+/// `cleanup_complete` without replacing an earlier primary `error`.
 struct BoundedChildProcessSpec final {
     std::filesystem::path executable;
     std::vector<std::string> arguments;
@@ -93,6 +114,10 @@ struct BoundedChildProcessSpec final {
     std::chrono::steady_clock::time_point deadline;
     std::size_t stdout_limit = 0;
     std::size_t stderr_limit = 0;
+    bool inherit_parent_environment = false;
+    bool merge_stderr_into_stdout = false;
+    BoundedChildCancellationProbe cancellation_probe = nullptr;
+    void* cancellation_context = nullptr;
 };
 
 struct BoundedChildProcessResult final {

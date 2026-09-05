@@ -164,6 +164,33 @@ hosts, so `CreateProcess`, runtime DLL lookup, complete child-environment
 replacement, and executable-path handling remain covered. The test is also in
 the project smoke set because each invocation uses a deterministic small input.
 
+`ProcessSupervisor` is the cross-platform `instant` contract for the compiled
+test-runner supervisor. It freezes ambient-environment and Unicode argument
+forwarding, exact nonzero and POSIX signal exit propagation, output-file
+initialization failure, separate output files, spawn-time combined-stream
+ordering, and timeout cleanup of a finite self-exec descendant. The fixture
+publishes a ready marker before the deadline and would publish a second delayed
+marker if cleanup left it alive. `test_bounded_child_process` also holds a
+killed POSIX descendant as an unreaped group member for 350 milliseconds, so a
+successful cleanup must prove group disappearance rather than only signal
+delivery. On every POSIX row, the same binary holds low and high regular-file
+sentinels with both inheritable and close-on-exec flags, then identifies actual
+leaks by file identity rather than descriptor number. The parent identities and
+flags must remain unchanged, and a registered `pthread_atfork` prepare hook must
+not run during the launch. Linux deterministically forces the `/proc/self/fd`
+fallback and separately proves that an unavailable close-all mechanism fails
+closed before exec. Windows 10 / Server 2016 and newer use the atomic Job-list
+creation attribute; unsupported systems fail before starting a child. Required
+Windows MSVC runs the `instant` contract, and release readiness separately
+builds and runs it with the pinned MSYS2 UCRT64 MinGW toolchain. The `fast`
+`HarnessProcessTreeTimeout` contract adds the POSIX zsh integration witness for
+both generic wrapper modes and for HUP, INT, and TERM cancellation after
+descendant readiness. Both contracts use
+bounded, self-expiring fixtures, so a failed assertion cannot create a permanent
+orphan. Generic runner capture is limited to 16 MiB per stream; overflow is a
+Harness failure rather than a truncated test result. The manual 50-digit
+campaign retains its separately validated process-group and signal protocol.
+
 ## Nightly and Release Qualification
 
 The scheduled nightly workflow and the verify-only release phase call the same
@@ -206,7 +233,13 @@ Ubuntu Toolchain PPA's full fingerprint and Deb822 `Signed-By` boundary, and
 checks amd64, glibc 2.31, and GCC/G++ major version 12. The job then installs
 the exact CMake 3.31.6 wheel through pip hash-checking mode, binds GCC 12's
 matching `gcc-ar`, `gcc-nm`, and `gcc-ranlib` wrappers, and performs the same
-Release/LTO project build used by Linux packaging. Its Windows 2022 job
+Release/LTO project build used by Linux packaging. That packaging-equivalent
+tree keeps `GNFS_BUILD_TESTS=OFF`. The same container and pinned toolchain also
+configure an independent `build-bcp` tree with tests enabled, fuzzers disabled,
+and native-architecture tuning disabled; that tree builds only
+`test_bounded_child_process` and runs the exact `BoundedChildProcess` CTest.
+This separately proves the ordinary child transport on the published glibc
+2.31 floor without changing the release artifact closure. Its Windows 2022 job
 installs the digest-pinned UCRT64
 compiler and runtime packages, configures the build with
 `GNFS_ENABLE_NTL=OFF`, derives the four-DLL closure with `ldd`, launches the
@@ -402,7 +435,9 @@ cross-process contender reports `Busy`, and that the same base is reusable
 without replacing that lock after a completed lease removal. It also replaces
 an owned empty lease with a different live directory and verifies that the old
 identity-bound receipt rejects the ABA target. The no-argument binary runs all
-suites, so its `scripts/test.sh` tier and timeout are `fast` and 120 seconds.
+suites. On macOS that serial aggregate includes all eight logical suites, so
+`scripts/test.sh` catalogs the physical binary as `slow` with a five-minute
+timeout. CTest retains the narrower per-suite tiers and timeouts above.
 `OOCCleanupAuthorityUnion` is an `instant` pure-policy suite from the same
 binary. It exhaustively reduces all 60,025 combinations of four cleanup-marker
 leaf states and two generic-handoff leaf states, plus namespace-foreign

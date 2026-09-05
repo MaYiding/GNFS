@@ -28,6 +28,13 @@ constexpr auto POST_EXIT_WRITER_GRACE = 200ms;
 constexpr auto TERMINATION_CLEANUP_GRACE = 2s;
 constexpr auto IO_POLL_QUANTUM = 10ms;
 constexpr std::size_t STREAM_DRAIN_BUDGET = 64 * 1024;
+#if defined(PROC_THREAD_ATTRIBUTE_JOB_LIST)
+constexpr DWORD_PTR JOB_LIST_ATTRIBUTE = PROC_THREAD_ATTRIBUTE_JOB_LIST;
+#else
+// Win10's input-only ProcThreadAttributeValue(13, false, true, false).
+// Some supported MinGW-w64 SDK revisions omit the symbolic constant.
+constexpr DWORD_PTR JOB_LIST_ATTRIBUTE = 0x0002000D;
+#endif
 
 class UniqueHandle final {
 public:
@@ -80,15 +87,15 @@ public:
     AttributeList(const AttributeList&) = delete;
     AttributeList& operator=(const AttributeList&) = delete;
 
-    [[nodiscard]] bool initialize() {
+    [[nodiscard]] bool initialize(DWORD attribute_count) {
         SIZE_T bytes = 0;
-        (void)::InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
+        (void)::InitializeProcThreadAttributeList(nullptr, attribute_count, 0, &bytes);
         if (bytes == 0 || ::GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
             return false;
         }
         storage_.resize(bytes);
         list_ = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(storage_.data());
-        if (::InitializeProcThreadAttributeList(list_, 1, 0, &bytes) == 0) {
+        if (::InitializeProcThreadAttributeList(list_, attribute_count, 0, &bytes) == 0) {
             list_ = nullptr;
             return false;
         }
@@ -150,17 +157,27 @@ struct StreamState final {
                                   static_cast<int>(right.size()), TRUE) == CSTR_EQUAL;
 }
 
+[[nodiscard]] std::size_t environment_name_end(std::wstring_view entry) noexcept {
+    if (entry.starts_with(L'=')) {
+        const bool drive_letter = entry.size() >= 4 && ((entry[1] >= L'A' && entry[1] <= L'Z') ||
+                                                        (entry[1] >= L'a' && entry[1] <= L'z'));
+        return drive_letter && entry[2] == L':' && entry[3] == L'=' ? 3 : std::wstring_view::npos;
+    }
+    const std::size_t separator = entry.find(L'=');
+    return separator == 0 ? std::wstring_view::npos : separator;
+}
+
 [[nodiscard]] bool validate_and_convert_environment(const std::vector<std::string>& input,
                                                     std::vector<std::wstring>& output) {
     output.clear();
     output.reserve(input.size());
     for (const auto& entry : input) {
-        const std::size_t separator = entry.find('=');
-        if (has_embedded_nul(entry) || separator == std::string::npos || separator == 0) {
+        if (has_embedded_nul(entry)) {
             return false;
         }
         std::wstring converted;
-        if (!utf8_to_wide(entry, converted)) {
+        if (!utf8_to_wide(entry, converted) ||
+            environment_name_end(converted) == std::wstring_view::npos) {
             return false;
         }
         output.push_back(std::move(converted));
@@ -168,7 +185,7 @@ struct StreamState final {
     std::vector<std::wstring_view> names;
     names.reserve(output.size());
     for (const auto& entry : output) {
-        const std::size_t separator = entry.find(L'=');
+        const std::size_t separator = environment_name_end(entry);
         names.emplace_back(entry.data(), separator);
     }
     for (std::size_t index = 0; index < names.size(); ++index) {
@@ -186,7 +203,9 @@ struct StreamState final {
                                           std::vector<std::wstring>& arguments,
                                           std::vector<std::wstring>& environment) {
     if (spec.executable.empty() || !spec.executable.is_absolute() ||
-        spec.deadline <= Clock::now()) {
+        spec.deadline <= Clock::now() ||
+        (spec.inherit_parent_environment && !spec.environment.empty()) ||
+        (spec.merge_stderr_into_stdout && spec.stderr_limit != 0)) {
         return false;
     }
     executable = spec.executable.native();
@@ -206,7 +225,15 @@ struct StreamState final {
         }
         arguments.push_back(std::move(converted));
     }
+    if (spec.inherit_parent_environment) {
+        environment.clear();
+        return true;
+    }
     return validate_and_convert_environment(spec.environment, environment);
+}
+
+[[nodiscard]] bool cancellation_requested(const BoundedChildProcessSpec& spec) noexcept {
+    return spec.cancellation_probe != nullptr && spec.cancellation_probe(spec.cancellation_context);
 }
 
 void append_quoted_argument(std::wstring_view argument, std::wstring& command_line) {
@@ -247,8 +274,8 @@ void append_quoted_argument(std::wstring_view argument, std::wstring& command_li
 [[nodiscard]] std::vector<wchar_t> make_environment_block(std::vector<std::wstring> environment) {
     std::sort(environment.begin(), environment.end(),
               [](const std::wstring& left, const std::wstring& right) {
-                  const std::size_t left_separator = left.find(L'=');
-                  const std::size_t right_separator = right.find(L'=');
+                  const std::size_t left_separator = environment_name_end(left);
+                  const std::size_t right_separator = environment_name_end(right);
                   return ::CompareStringOrdinal(left.data(), static_cast<int>(left_separator),
                                                 right.data(), static_cast<int>(right_separator),
                                                 TRUE) == CSTR_LESS_THAN;
@@ -423,6 +450,17 @@ void terminate_direct_process(HANDLE process, BoundedChildProcessResult& result)
     }
 }
 
+[[nodiscard]] bool query_job_empty(HANDLE job, bool& empty, DWORD& native_error) noexcept {
+    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting{};
+    if (::QueryInformationJobObject(job, JobObjectBasicAccountingInformation, &accounting,
+                                    sizeof(accounting), nullptr) == 0) {
+        native_error = ::GetLastError();
+        return false;
+    }
+    empty = accounting.ActiveProcesses == 0;
+    return true;
+}
+
 void apply_stream_error(const StreamState& stdout_state, const StreamState& stderr_state,
                         BoundedChildProcessResult& result) noexcept {
     if (result.stdout_overflow || result.stderr_overflow) {
@@ -449,20 +487,31 @@ BoundedChildProcessResult run_bounded_child_process(const BoundedChildProcessSpe
             result.cleanup_complete = true;
             return result;
         }
+        if (cancellation_requested(spec)) {
+            result.error = BoundedChildProcessError::cancelled;
+            result.cleanup_complete = true;
+            return result;
+        }
         result.stdout_bytes.reserve(spec.stdout_limit);
         result.stderr_bytes.reserve(spec.stderr_limit);
         auto command_line = make_command_line(arguments);
-        auto environment_block = make_environment_block(std::move(environment));
+        std::vector<wchar_t> environment_block;
+        void* child_environment = nullptr;
+        if (!spec.inherit_parent_environment) {
+            environment_block = make_environment_block(std::move(environment));
+            child_environment = environment_block.data();
+        }
 
         CapturePipe stdout_pipe;
         CapturePipe stderr_pipe;
         DWORD native_error = ERROR_SUCCESS;
         if (!make_capture_pipe(stdout_pipe, native_error) ||
-            !make_capture_pipe(stderr_pipe, native_error)) {
+            (!spec.merge_stderr_into_stdout && !make_capture_pipe(stderr_pipe, native_error))) {
             set_primary_error(result, BoundedChildProcessError::pipe_failed, native_error);
             result.cleanup_complete = true;
             return result;
         }
+        result.stderr_eof = spec.merge_stderr_into_stdout;
 
         SECURITY_ATTRIBUTES security{};
         security.nLength = sizeof(security);
@@ -472,24 +521,6 @@ BoundedChildProcessResult run_bounded_child_process(const BoundedChildProcessSpe
                                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
         if (!null_input) {
             set_primary_error(result, BoundedChildProcessError::pipe_failed, ::GetLastError());
-            result.cleanup_complete = true;
-            return result;
-        }
-
-        AttributeList attributes;
-        if (!attributes.initialize()) {
-            const DWORD error = ::GetLastError();
-            set_primary_error(result, BoundedChildProcessError::spawn_failed, error);
-            result.cleanup_complete = true;
-            return result;
-        }
-        std::array<HANDLE, 3> inherited_handles{null_input.get(), stdout_pipe.write_end.get(),
-                                                stderr_pipe.write_end.get()};
-        if (::UpdateProcThreadAttribute(
-                attributes.get(), 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited_handles.data(),
-                inherited_handles.size() * sizeof(HANDLE), nullptr, nullptr) == 0) {
-            const DWORD error = ::GetLastError();
-            set_primary_error(result, BoundedChildProcessError::spawn_failed, error);
             result.cleanup_complete = true;
             return result;
         }
@@ -505,20 +536,67 @@ BoundedChildProcessResult run_bounded_child_process(const BoundedChildProcessSpe
             return result;
         }
 
+        std::array<HANDLE, 3> inherited_handles{null_input.get(), stdout_pipe.write_end.get(),
+                                                stderr_pipe.write_end.get()};
+        const std::size_t inherited_handle_count = spec.merge_stderr_into_stdout ? 2 : 3;
+        std::array<HANDLE, 1> child_jobs{job.get()};
+        // Both attribute value arrays must outlive the attribute list.
+        AttributeList attributes;
+        if (!attributes.initialize(2)) {
+            const DWORD error = ::GetLastError();
+            set_primary_error(result, BoundedChildProcessError::spawn_failed, error);
+            result.cleanup_complete = true;
+            return result;
+        }
+        if (::UpdateProcThreadAttribute(
+                attributes.get(), 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited_handles.data(),
+                inherited_handle_count * sizeof(HANDLE), nullptr, nullptr) == 0) {
+            const DWORD error = ::GetLastError();
+            set_primary_error(result, BoundedChildProcessError::spawn_failed, error);
+            result.cleanup_complete = true;
+            return result;
+        }
+        if (::UpdateProcThreadAttribute(attributes.get(), 0, JOB_LIST_ATTRIBUTE, child_jobs.data(),
+                                        child_jobs.size() * sizeof(HANDLE), nullptr,
+                                        nullptr) == 0) {
+            const DWORD error = ::GetLastError();
+            set_primary_error(result,
+                              error == ERROR_NOT_SUPPORTED || error == ERROR_INVALID_PARAMETER
+                                  ? BoundedChildProcessError::platform_unavailable
+                                  : BoundedChildProcessError::spawn_failed,
+                              error);
+            result.cleanup_complete = true;
+            return result;
+        }
+
         STARTUPINFOEXW startup{};
         startup.StartupInfo.cb = sizeof(startup);
         startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
         startup.StartupInfo.hStdInput = null_input.get();
         startup.StartupInfo.hStdOutput = stdout_pipe.write_end.get();
-        startup.StartupInfo.hStdError = stderr_pipe.write_end.get();
+        startup.StartupInfo.hStdError = spec.merge_stderr_into_stdout ? stdout_pipe.write_end.get()
+                                                                      : stderr_pipe.write_end.get();
         startup.lpAttributeList = attributes.get();
 
+        if (cancellation_requested(spec)) {
+            result.error = BoundedChildProcessError::cancelled;
+            result.cleanup_complete = true;
+            return result;
+        }
+        if (Clock::now() >= spec.deadline) {
+            result.error = BoundedChildProcessError::timeout;
+            result.cleanup_complete = true;
+            return result;
+        }
+
         PROCESS_INFORMATION process_information{};
-        constexpr DWORD creation_flags = CREATE_SUSPENDED | CREATE_NO_WINDOW |
-                                         CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT;
+        DWORD creation_flags = CREATE_SUSPENDED | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT;
+        if (!spec.inherit_parent_environment) {
+            creation_flags |= CREATE_UNICODE_ENVIRONMENT;
+        }
         if (::CreateProcessW(executable.c_str(), command_line.data(), nullptr, nullptr, TRUE,
-                             creation_flags, environment_block.data(), nullptr,
-                             &startup.StartupInfo, &process_information) == 0) {
+                             creation_flags, child_environment, nullptr, &startup.StartupInfo,
+                             &process_information) == 0) {
             const DWORD error = ::GetLastError();
             set_primary_error(result, BoundedChildProcessError::spawn_failed, error);
             result.cleanup_complete = true;
@@ -528,11 +606,17 @@ BoundedChildProcessResult run_bounded_child_process(const BoundedChildProcessSpe
         UniqueHandle process(process_information.hProcess);
         UniqueHandle primary_thread(process_information.hThread);
 
-        bool process_in_job = false;
-        if (::AssignProcessToJobObject(job.get(), process.get()) != 0) {
-            process_in_job = true;
-        } else {
-            set_primary_error(result, BoundedChildProcessError::spawn_failed, ::GetLastError());
+        // PROC_THREAD_ATTRIBUTE_JOB_LIST makes containment atomic with process
+        // creation. There is no post-CreateProcess crash window in which the
+        // suspended child exists outside the kill-on-close Job.
+        constexpr bool process_in_job = true;
+
+        if (process_in_job && result.error == BoundedChildProcessError::none &&
+            cancellation_requested(spec)) {
+            set_primary_error(result, BoundedChildProcessError::cancelled);
+        } else if (process_in_job && result.error == BoundedChildProcessError::none &&
+                   Clock::now() >= spec.deadline) {
+            set_primary_error(result, BoundedChildProcessError::timeout);
         }
 
         stdout_pipe.write_end.reset();
@@ -553,6 +637,7 @@ BoundedChildProcessResult run_bounded_child_process(const BoundedChildProcessSpe
                                  &result.stderr_overflow, &result.stderr_read_failed};
 
         bool process_finished = false;
+        bool job_empty = !process_in_job;
         bool termination_requested = result.error != BoundedChildProcessError::none;
         bool termination_sent = false;
         Clock::time_point cleanup_deadline{};
@@ -605,6 +690,26 @@ BoundedChildProcessResult run_bounded_child_process(const BoundedChildProcessSpe
                 }
             }
 
+            if (process_finished && !stdout_pipe.read_end && !stderr_pipe.read_end &&
+                !termination_requested) {
+                // Sweep descendants that closed both streams before the
+                // direct child exited, then prove the Job is empty.
+                request_termination(BoundedChildProcessError::none);
+            }
+            if (!termination_requested && cancellation_requested(spec)) {
+                request_termination(BoundedChildProcessError::cancelled);
+            }
+
+            if (termination_requested && process_in_job) {
+                DWORD job_query_error = ERROR_SUCCESS;
+                if (!query_job_empty(job.get(), job_empty, job_query_error)) {
+                    set_cleanup_error(result, job_query_error);
+                }
+            }
+            if (process_finished && !stdout_pipe.read_end && !stderr_pipe.read_end && job_empty) {
+                break;
+            }
+
             const auto now = Clock::now();
             if (!process_finished && !termination_requested && now >= spec.deadline) {
                 request_termination(BoundedChildProcessError::timeout);
@@ -618,9 +723,6 @@ BoundedChildProcessResult run_bounded_child_process(const BoundedChildProcessSpe
                 }
             }
 
-            if (process_finished && !stdout_pipe.read_end && !stderr_pipe.read_end) {
-                break;
-            }
             if (termination_requested && cleanup_deadline != Clock::time_point{} &&
                 now >= cleanup_deadline) {
                 if (stdout_pipe.read_end || stderr_pipe.read_end) {
@@ -629,6 +731,9 @@ BoundedChildProcessResult run_bounded_child_process(const BoundedChildProcessSpe
                     stderr_pipe.read_end.reset();
                 }
                 if (!process_finished) {
+                    set_cleanup_error(result, ERROR_TIMEOUT);
+                }
+                if (process_in_job && !job_empty) {
                     set_cleanup_error(result, ERROR_TIMEOUT);
                 }
                 break;
@@ -682,8 +787,8 @@ BoundedChildProcessResult run_bounded_child_process(const BoundedChildProcessSpe
             }
         }
 
-        result.cleanup_complete =
-            process_finished && result.stdout_eof && result.stderr_eof && !result.cleanup_error;
+        result.cleanup_complete = process_finished && result.stdout_eof && result.stderr_eof &&
+                                  (!process_in_job || job_empty) && !result.cleanup_error;
         if (!result.cleanup_complete && result.error == BoundedChildProcessError::none) {
             result.error = BoundedChildProcessError::cleanup_failed;
         }

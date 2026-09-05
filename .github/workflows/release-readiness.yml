@@ -18,7 +18,9 @@ jobs:
   linux-cmake-closure:
     name: Linux pinned CMake wheel closure
     runs-on: ubuntu-24.04
-    container: ubuntu:20.04@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214
+    container:
+      image: ubuntu:20.04@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214
+      options: --init
     timeout-minutes: 30
     defaults:
       run:
@@ -73,6 +75,21 @@ jobs:
           cmake --build build-release-readiness --parallel
           [[ "$(build-release-readiness/gnfs --version)" == 'GNFS v0.1.0' ]]
 
+      - name: Verify glibc 2.31 bounded-child transport
+        run: |
+          cmake -B build-bcp -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE=scripts/linux-release-gcc12-toolchain.cmake \
+            -DGNFS_BUILD_TESTS=ON \
+            -DGNFS_BUILD_FUZZERS=OFF \
+            -DGNFS_ENABLE_NATIVE_ARCH=OFF
+          cmake --build build-bcp --parallel \
+            --target test_bounded_child_process
+          ctest --test-dir build-bcp \
+            --output-on-failure \
+            --no-tests=error \
+            -R '^BoundedChildProcess$'
+
   windows-runtime-closure:
     name: Windows pinned runtime and source closure
     runs-on: windows-2022
@@ -112,6 +129,22 @@ jobs:
           python scripts/windows_release_runtime.py install-pinned \
             --download-directory pinned-windows-packages \
             --evidence-output pinned-windows-packages.json
+
+      - name: Verify MinGW process-tree supervisor
+        shell: msys2 {0}
+        run: |
+          cmake -B build-process-supervisor -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGNFS_BUILD_TESTS=ON \
+            -DGNFS_ENABLE_NTL=OFF \
+            -DGNFS_ENABLE_NATIVE_ARCH=OFF
+          cmake --build build-process-supervisor --parallel \
+            --target gnfs_test_process_supervisor
+          ctest --test-dir build-process-supervisor \
+            --output-on-failure \
+            --no-tests=error \
+            -C Release \
+            -R '^ProcessSupervisor$'
 
       - name: Build and install Windows release tree
         shell: msys2 {0}

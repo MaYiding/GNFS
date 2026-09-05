@@ -30,6 +30,8 @@ These boundaries follow Claude Code's official separation between [project memor
 | `.claude/agents/` | Read-only GNFS reviewer and debugger | Explicit or task-driven delegation |
 | `.claude/hooks/project-guard.py` | Claude lifecycle guard | `PreToolUse` and `Stop` events |
 | `scripts/check_harness.py` | Cross-tool deterministic self-check | Hook, CI, or manual validation |
+| `scripts/lib/process_tree_timeout.zsh` | Test-runner timeout routing | Every bounded test process |
+| `gnfs_test_process_supervisor` | Cross-platform process containment | Built test execution only |
 | `tests/test_harness_hooks.sh` | Hook behavior regression tests | CTest and script CI |
 
 Do not add a second settings file, duplicate skill procedure, or another unconditional instruction file for the same concern.
@@ -72,10 +74,39 @@ The checker must remain fast and offline. Adding compilation, CTest, network acc
 - specialist agents have required frontmatter and no edit tools;
 - personal settings are ignored and untracked;
 - build ignore patterns do not hide `build-test` skills;
+- generic timeout wrappers remain routed through the compiled process-tree supervisor;
 - active Harness files contain no machine-specific absolute paths or stale configuration markers;
 - removed legacy Hook and TODO-gate artifacts do not reappear.
 
 The checker tests structural contracts, not prose quality or algorithm correctness. Keep subjective review out of it.
+
+## Test Process Containment
+
+The test runner does not supervise raw child PIDs. Both its combined-output and
+strict dual-stream timeout paths call `gnfs_test_process_supervisor`, a test-only
+executable backed by `run_bounded_child_process()`. POSIX launches receive a
+verified process group. Windows 10 / Server 2016 and newer launches are created
+atomically inside a kill-on-close Job Object, while their primary thread is
+suspended; an unavailable Job-list creation attribute fails closed before a
+child exists. The POSIX ownership boundary is that launch group, not arbitrary
+ancestry: a test must not detach itself with `setsid()` or move to another
+process group. POSIX cleanup waits for the signalled group ID to disappear after
+reaping the reserved leader, and Windows cleanup waits until the Job reports
+zero active processes. The direct child is reaped and captured streams reach
+EOF before cleanup is accepted.
+
+The zsh wrapper installs scoped HUP, INT, and TERM traps before launch, forwards
+the first signal to the supervisor, waits for containment cleanup, restores the
+caller's traps, and then re-delivers the signal. A supervisor cleanup failure
+remains exit 125 and is never hidden by the shell signal status. On Windows,
+Ctrl-C and Ctrl-Break are cooperative cancellation events; console close,
+logoff, and shutdown rely on kill-on-close Job containment.
+
+Combined output shares one pipe at spawn time, preserving `2>&1` write order.
+Strict dual-stream modes retain independent byte streams. Each stream has an
+explicit 16 MiB capture ceiling; exceeding it is a Harness failure. The 50-digit
+campaign keeps its separate, evidence-bound process-group protocol rather than
+routing through this generic wrapper.
 
 ## Validation
 
@@ -84,8 +115,8 @@ Run the complete Harness validation from the repository root:
 ```bash
 python3 scripts/check_harness.py
 bash tests/test_harness_hooks.sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
-ctest --test-dir build -R '^HarnessHooks$' --output-on-failure
+./scripts/test.sh build
+./scripts/test.sh module util
 claude doctor
 git diff --check
 ```

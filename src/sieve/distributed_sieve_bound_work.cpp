@@ -35,38 +35,36 @@ lattice_sieve_region_is_runtime_safe(const SieveRegionWorkIdentityV1& region) no
     const auto width = static_cast<WideUnsigned>(region.i_max - region.i_min) + WideUnsigned{1};
     const auto height = static_cast<WideUnsigned>(region.j_max - region.j_min) + WideUnsigned{1};
 
-    // Row-major CompactSmallPrime stores values in [0, p) as int16_t for
-    // every p < width. Width 32768 is therefore the exact inclusive boundary:
-    // the largest possible stored value is still INT16_MAX.
-    constexpr WideUnsigned maximum_compact_width =
-        static_cast<WideUnsigned>(std::numeric_limits<std::int16_t>::max()) + WideUnsigned{1};
-    if (width == 0 || width > maximum_compact_width || height == 0 ||
-        height > static_cast<WideUnsigned>(std::numeric_limits<std::int32_t>::max())) {
+    // SieveRegion exposes both dimensions as positive int32_t values. Wider
+    // rows no longer inherit CompactSmallPrime's int16_t limit: LatticeSieve
+    // routes their complete prime set through the fixed-size region buckets.
+    constexpr WideUnsigned maximum_dimension =
+        static_cast<WideUnsigned>(std::numeric_limits<std::int32_t>::max());
+    if (width == 0 || width > maximum_dimension || height == 0 || height > maximum_dimension) {
         return false;
     }
 
-    // LatticeSieve uses inclusive int32_t row loops and computes
-    // j_min + height - 1. The final increment and that intermediate both need
-    // one representable value above j_max.
-    if (region.j_max == std::numeric_limits<std::int32_t>::max()) {
-        return false;
-    }
-
-    // estimate_initial_log() currently forms this midpoint sum in int32_t.
-    const std::int64_t j_midpoint_sum = region.j_min + region.j_max;
-    if (j_midpoint_sum < std::numeric_limits<std::int32_t>::min() ||
-        j_midpoint_sum > std::numeric_limits<std::int32_t>::max()) {
-        return false;
-    }
-
-    // Width and height are now tightly bounded, so their product fits
-    // uintmax_t. Check both the platform index type and the exact container
-    // used by LatticeSieve::set_region() before SieveRegion::size() is called.
+    // Width and height are tightly bounded, so their product fits uintmax_t.
+    // Check the platform index type before projecting to SieveRegion.
     const WideUnsigned area = width * height;
     if (area > static_cast<WideUnsigned>(std::numeric_limits<std::size_t>::max())) {
         return false;
     }
-    return static_cast<std::size_t>(area) <= std::vector<std::uint16_t>{}.max_size();
+
+    const SieveRegion projected{
+        .i_min = static_cast<std::int32_t>(region.i_min),
+        .i_max = static_cast<std::int32_t>(region.i_max),
+        .j_min = static_cast<std::int32_t>(region.j_min),
+        .j_max = static_cast<std::int32_t>(region.j_max),
+    };
+    if (projected.i_width() != static_cast<std::int32_t>(width) ||
+        projected.j_height() != static_cast<std::int32_t>(height) ||
+        projected.size() != static_cast<std::size_t>(area)) {
+        return false;
+    }
+
+    // Match the exact allocation container used by LatticeSieve::set_region().
+    return projected.size() <= std::vector<std::uint16_t>{}.max_size();
 }
 
 [[nodiscard]] bool same_canonical_policy(const DistributedSieveExecutionPolicyV1& left,

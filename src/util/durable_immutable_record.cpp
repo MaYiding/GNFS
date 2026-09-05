@@ -566,10 +566,19 @@ inspect_failure(const InspectResult& inspection, RecordPublishStatus rejected_st
     return static_cast<int>(handle);
 }
 
+[[nodiscard]] constexpr bool has_exact_private_file_mode(mode_t mode) noexcept {
+    return (mode & static_cast<mode_t>(07777)) == static_cast<mode_t>(0600);
+}
+
+static_assert(has_exact_private_file_mode(0600));
+static_assert(!has_exact_private_file_mode(04600));
+static_assert(!has_exact_private_file_mode(02600));
+static_assert(!has_exact_private_file_mode(01600));
+
 [[nodiscard]] bool metadata_has_file_policy(const struct stat& metadata) noexcept {
     if (!S_ISREG(metadata.st_mode) || metadata.st_nlink != 1 || metadata.st_size < 0 ||
         static_cast<std::uint64_t>(metadata.st_uid) != static_cast<std::uint64_t>(::geteuid()) ||
-        (metadata.st_mode & static_cast<mode_t>(07777)) != static_cast<mode_t>(0600)) {
+        !has_exact_private_file_mode(metadata.st_mode)) {
         return false;
     }
     return true;

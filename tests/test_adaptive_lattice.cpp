@@ -43,42 +43,43 @@
 #include <vector>
 
 using namespace gnfs::sieve;
-#if defined(__SIZEOF_INT128__)
-using wide_int = __int128_t;
-#else
-using wide_int = long double;
-#endif
 
 namespace {
 
 // ── helpers (mirror of test_lll_lattice.cpp) ────────────────────────────
 
-[[nodiscard]] wide_int norm_sq_i128(int64_t a, int64_t b) noexcept {
-    wide_int a128 = static_cast<wide_int>(a);
-    wide_int b128 = static_cast<wide_int>(b);
-    return a128 * a128 + b128 * b128;
+using gnfs::core::Integer;
+
+[[nodiscard]] Integer exact_norm_sq(int64_t a, int64_t b) {
+    const Integer exact_a(a);
+    const Integer exact_b(b);
+    return exact_a * exact_a + exact_b * exact_b;
 }
 
-[[nodiscard]] wide_int dot_i128(int64_t a0, int64_t b0, int64_t a1, int64_t b1) noexcept {
-    return static_cast<wide_int>(a0) * static_cast<wide_int>(a1) +
-           static_cast<wide_int>(b0) * static_cast<wide_int>(b1);
+[[nodiscard]] Integer exact_dot(int64_t a0, int64_t b0, int64_t a1, int64_t b1) {
+    return Integer(a0) * Integer(a1) + Integer(b0) * Integer(b1);
 }
 
-[[nodiscard]] wide_int abs_i128(wide_int x) noexcept {
-    return x < 0 ? -x : x;
+[[nodiscard]] Integer exact_from_u128(detail::LbU128 value) {
+    Integer result(value.hi);
+    result *= Integer("18446744073709551616"); // 2^64
+    result += Integer(value.lo);
+    return result;
 }
 
 [[nodiscard]] bool is_size_reduced(const LatticeBasis& basis) {
-    wide_int n0 = norm_sq_i128(basis.e0, basis.f0);
+    const Integer n0 = exact_norm_sq(basis.e0, basis.f0);
     if (n0 == 0)
         return true;
-    wide_int d = dot_i128(basis.e0, basis.f0, basis.e1, basis.f1);
-    return abs_i128(2 * d) <= n0;
+    Integer d = exact_dot(basis.e0, basis.f0, basis.e1, basis.f1);
+    d.abs();
+    d *= 2;
+    return d <= n0;
 }
 
 [[nodiscard]] bool satisfies_lovasz(const LatticeBasis& basis) {
-    wide_int n0 = norm_sq_i128(basis.e0, basis.f0);
-    wide_int n1 = norm_sq_i128(basis.e1, basis.f1);
+    const Integer n0 = exact_norm_sq(basis.e0, basis.f0);
+    const Integer n1 = exact_norm_sq(basis.e1, basis.f1);
     return n1 >= n0;
 }
 
@@ -284,6 +285,68 @@ void test_density_estimation() {
     assert(detail::compute_density(50, 100) == 0.5);
     assert(detail::compute_density(100, 100) == 1.0);
     assert(detail::compute_density(300, 100) == 3.0);
+    std::cout << "PASS\n";
+}
+
+void test_exact_adaptive_norm_ordering() {
+    std::cout << "test_exact_adaptive_norm_ordering ... ";
+
+    // Loose upper envelope after 16 k=±2 perturbations:
+    // 3^16 * (2^32 - 1). Its one-coordinate norm needs 115 bits, and adding one to the
+    // second coordinate is invisible to the old MSVC long-double/double path.
+    constexpr int64_t max_perturbed_coordinate = 184'884'258'851'989'695LL;
+    const auto norm0 = detail::lb_norm_sq(max_perturbed_coordinate, 0);
+    const auto norm1 = detail::lb_norm_sq(max_perturbed_coordinate, 1);
+    const Integer oracle0 = exact_norm_sq(max_perturbed_coordinate, 0);
+    const Integer oracle1 = exact_norm_sq(max_perturbed_coordinate, 1);
+
+    check(norm0.hi != 0, "adaptive norm fixture did not exercise the high limb");
+    check(exact_from_u128(norm0) == oracle0, "adaptive high-limb norm disagreed with GMP oracle");
+    check(exact_from_u128(norm1) == oracle1,
+          "adaptive high-limb incremented norm disagreed with GMP oracle");
+    check(norm0 < norm1, "adaptive norm comparison lost a one-unit exact difference");
+    check(oracle0.to_double() == oracle1.to_double(),
+          "adaptive norm fixture no longer exposes floating-point collapse");
+
+    std::cout << "PASS\n";
+}
+
+void test_exact_adaptive_perturbation_ordering() {
+    std::cout << "test_exact_adaptive_perturbation_ordering ... ";
+
+    constexpr int64_t y = 184'884'258'851'989'695LL;
+    const LatticeBasis current{
+        .e0 = 2,
+        .f0 = y,
+        .e1 = -4,
+        .f1 = 1 - 2 * y,
+        .q = 2,
+        .r = 0,
+    };
+    check(basis_is_valid(current), "adaptive exact-order fixture was not a valid L_2 basis");
+
+    // k=1 produces (-2, 1-y). It is shorter than (2, y) by exactly
+    // 2*y-1, but converting the two norms to double erases that difference.
+    const Integer original_norm = exact_norm_sq(current.e0, current.f0);
+    const Integer skewed_norm = exact_norm_sq(-2, 1 - y);
+    check(original_norm - skewed_norm == Integer(2 * y - 1),
+          "adaptive exact-order fixture had the wrong GMP norm difference");
+    check(original_norm.to_double() == skewed_norm.to_double(),
+          "adaptive exact-order fixture no longer exposes floating-point collapse");
+
+    const LatticeBasis actual = detail::skew_perturb_basis(current, 1);
+    const LatticeBasis expected{
+        .e0 = -2,
+        .f0 = 1 - y,
+        .e1 = 2,
+        .f1 = y,
+        .q = 2,
+        .r = 0,
+    };
+    check(basis_equal(actual, expected),
+          "adaptive perturbation kept the floating-point-tied longer vector first");
+    check(basis_is_valid(actual), "adaptive exact-order result was not a valid L_2 basis");
+
     std::cout << "PASS\n";
 }
 
@@ -1011,6 +1074,32 @@ void test_explicit_sieve_parallel_preserves_execution_config() {
         }
         check(caught_launch_failure, "parallel launch failure must join started workers before "
                                      "rethrowing");
+        const auto launch_failure_stats =
+            launch_failure_sieve.adaptive_manager().stats().snapshot();
+        check(launch_failure_stats.special_qs_processed == 0,
+              "parallel launch failure must release zero special-Q workers");
+        check(launch_failure_stats.retries_attempted == 0,
+              "parallel launch failure must not publish adaptive retries");
+        check(launch_failure_stats.total_cells == 0,
+              "parallel launch failure must not publish sieve-cell telemetry");
+    }
+
+    {
+        LatticeSieve clamped_sieve(ctx, fb, sieve_params, explicit_config);
+        clamped_sieve.set_region(region);
+        clamped_sieve.set_sieve_parallel_launch_failure_after_for_testing(1);
+
+        const std::vector<SpecialQ> one_special_q{special_qs.front()};
+        const auto one_result = clamped_sieve.sieve_parallel(one_special_q, 4);
+        check(one_result.size() == 1,
+              "parallel special-Q workers must clamp to the available work");
+        check(one_result.size() == 1 &&
+                  sieve_result_equal(one_result.front(), sequential_results.front()),
+              "clamped parallel special-Q result differs from sequential");
+
+        clamped_sieve.set_sieve_parallel_launch_failure_after_for_testing(0);
+        const auto empty_result = clamped_sieve.sieve_parallel({}, 4);
+        check(empty_result.empty(), "empty parallel special-Q input must launch zero workers");
     }
 
     // Flip every ambient runtime gate and select the opposite explicit values.
@@ -1068,6 +1157,8 @@ int main() {
     test_config_custom_threshold();
     test_config_custom_retries_and_seed();
     test_density_estimation();
+    test_exact_adaptive_norm_ordering();
+    test_exact_adaptive_perturbation_ordering();
     test_perturbation_valid_lattice();
     test_no_perturb_when_dense();
     test_perturb_when_low_density();
