@@ -3,6 +3,7 @@
 
 #include <cassert>
 #include <iostream>
+#include <limits>
 
 using namespace gnfs::core;
 
@@ -39,10 +40,10 @@ void test_degree_selection() {
     assert(GNFSParams::compute(250).degree == 4);
     assert(GNFSParams::compute(350).degree == 4);
     // 401+ bits: formula-based, clamped to [5, 6]
-    assert(GNFSParams::compute(500).degree == 6);   // d_opt ≈ 5.62
-    assert(GNFSParams::compute(700).degree == 6);   // d_opt ≈ 6.17
-    assert(GNFSParams::compute(1000).degree == 6);  // d_opt ≈ 6.82, clamped to 6
-    assert(GNFSParams::compute(2000).degree == 6);  // d_opt ≈ 8.07, clamped to 6
+    assert(GNFSParams::compute(500).degree == 6);  // d_opt ≈ 5.62
+    assert(GNFSParams::compute(700).degree == 6);  // d_opt ≈ 6.17
+    assert(GNFSParams::compute(1000).degree == 6); // d_opt ≈ 6.82, clamped to 6
+    assert(GNFSParams::compute(2000).degree == 6); // d_opt ≈ 8.07, clamped to 6
 
     std::cout << "  PASS" << std::endl;
 }
@@ -51,16 +52,16 @@ void test_factor_base_bounds() {
     std::cout << "Testing factor base bounds..." << std::endl;
 
     // Small N: empirical values (reduced per CADO-NFS calibration)
-    auto p6 = GNFSParams::compute(17);  // ~6 digits
+    auto p6 = GNFSParams::compute(17); // ~6 digits
     assert(p6.rational_bound >= 200 && p6.rational_bound <= 2000);
 
-    auto p15 = GNFSParams::compute(48);  // ~15 digits
+    auto p15 = GNFSParams::compute(48); // ~15 digits
     assert(p15.rational_bound >= 1000 && p15.rational_bound <= 10000);
 
-    auto p20 = GNFSParams::compute(65);  // ~20 digits
+    auto p20 = GNFSParams::compute(65); // ~20 digits
     assert(p20.rational_bound >= 2000 && p20.rational_bound <= 20000);
 
-    auto p30 = GNFSParams::compute(98);  // ~30 digits
+    auto p30 = GNFSParams::compute(98); // ~30 digits
     assert(p30.rational_bound >= 10000 && p30.rational_bound <= 100000);
 
     // Bounds should increase with N size
@@ -95,9 +96,8 @@ void test_special_q_above_fb_bound() {
 
     // Verify 10× multiplier
     auto p = GNFSParams::compute(80);
-    uint64_t expected_max = std::min(
-        static_cast<uint64_t>(p.algebraic_bound) * 10,
-        static_cast<uint64_t>(UINT32_MAX));
+    uint64_t expected_max =
+        std::min(static_cast<uint64_t>(p.algebraic_bound) * 10, static_cast<uint64_t>(UINT32_MAX));
     assert(p.special_q_max == static_cast<uint32_t>(expected_max));
 
     std::cout << "  PASS" << std::endl;
@@ -209,7 +209,7 @@ void test_threshold_values() {
         assert(p.algebraic_threshold <= UINT16_MAX);
         // For LP-enabled N, thresholds should be larger to allow LP cofactors
         if (p.large_prime_bits > 0) {
-            assert(p.rational_threshold > 56);  // must exceed no-LP baseline
+            assert(p.rational_threshold > 56); // must exceed no-LP baseline
         }
     }
 
@@ -219,16 +219,16 @@ void test_threshold_values() {
 void test_max_special_q() {
     std::cout << "Testing max_special_q scaling..." << std::endl;
 
-    auto small = GNFSParams::compute(30);  // ~10 digits
+    auto small = GNFSParams::compute(30); // ~10 digits
     assert(small.max_special_q >= 2000);  // 下限保证
 
-    auto medium = GNFSParams::compute(80);  // ~25 digits
-    assert(medium.max_special_q >= 20000);  // 基于 est_rels 动态计算
+    auto medium = GNFSParams::compute(80); // ~25 digits
+    assert(medium.max_special_q >= 20000); // 基于 est_rels 动态计算
 
-    auto large = GNFSParams::compute(140);  // ~42 digits
+    auto large = GNFSParams::compute(140); // ~42 digits
     assert(large.max_special_q >= 100000);
 
-    auto huge = GNFSParams::compute(200);  // ~60 digits
+    auto huge = GNFSParams::compute(200); // ~60 digits
     assert(huge.max_special_q >= 1000000);
 
     // 单调性：更大的 N 需要更多 SQs
@@ -287,6 +287,18 @@ void test_polynomial_params() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_extreme_bit_length_scaling() {
+    std::cout << "Testing extreme bit-length scaling..." << std::endl;
+
+    // The derived counters are uint32_t, so a huge bit length must saturate
+    // instead of wrapping the intermediate size_t multiplication.
+    const auto p = GNFSParams::compute((std::numeric_limits<size_t>::max)());
+    assert(p.num_candidates == (std::numeric_limits<uint32_t>::max)());
+    assert(p.skewness_steps == (std::numeric_limits<uint32_t>::max)() - 1);
+
+    std::cout << "  PASS" << std::endl;
+}
+
 void test_qc_and_excess() {
     std::cout << "Testing QC primes and target excess..." << std::endl;
 
@@ -336,6 +348,7 @@ int main() {
     test_estimated_relations();
     test_sieve_memory();
     test_polynomial_params();
+    test_extreme_bit_length_scaling();
     test_qc_and_excess();
     test_monotonicity();
 
