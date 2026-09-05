@@ -277,7 +277,8 @@ private:
         const size_t stage1_limit = requested_limit > (std::numeric_limits<size_t>::max)() / 2
                                         ? (std::numeric_limits<size_t>::max)()
                                         : requested_limit * 2;
-        candidates.reserve(stage1_limit);
+        constexpr size_t STAGE1_RESERVE_CAP = 100000;
+        candidates.reserve(std::min(stage1_limit, STAGE1_RESERVE_CAP));
 
         uint32_t d = params_.degree;
 
