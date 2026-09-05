@@ -91,6 +91,12 @@ Relation make_relation(int64_t a, uint64_t b) {
     return relation;
 }
 
+Relation make_relation_with_extra(int64_t a, uint64_t b, int64_t extra_a, uint64_t extra_b) {
+    Relation relation(a, b);
+    relation.extra_ab_pairs.emplace_back(extra_a, extra_b);
+    return relation;
+}
+
 RelationSequenceReceipt standard_sequence_receipt(uint64_t count) {
     RelationSequenceReceiptAccumulator sequence;
     for (uint64_t ordinal = 0; ordinal < count; ++ordinal) {
@@ -479,6 +485,37 @@ void test_persistence_rejects_zero_b() {
     }
     CHECK(stream_read_rejected);
 
+    Relation invalid_extra = make_relation_with_extra(17, 19, -5, 0);
+    std::ostringstream rejected_extra_stream(std::ios::binary);
+    bool extra_stream_write_rejected = false;
+    try {
+        invalid_extra.serialize(rejected_extra_stream);
+    } catch (const std::invalid_argument&) {
+        extra_stream_write_rejected = true;
+    }
+    CHECK(extra_stream_write_rejected);
+    CHECK(rejected_extra_stream.str().empty());
+
+    Relation valid_extra = make_relation_with_extra(17, 19, -5, 7);
+    std::ostringstream valid_extra_serialized(std::ios::binary);
+    valid_extra.serialize(valid_extra_serialized);
+    std::string forged_extra = valid_extra_serialized.str();
+    constexpr size_t stream_extra_b_offset = 2 * sizeof(uint32_t) + sizeof(int64_t) +
+                                             sizeof(uint64_t) + 5 * sizeof(uint32_t) +
+                                             sizeof(int64_t);
+    CHECK(forged_extra.size() >= stream_extra_b_offset + sizeof(uint64_t));
+    for (size_t i = stream_extra_b_offset; i < stream_extra_b_offset + sizeof(uint64_t); ++i) {
+        forged_extra[i] = '\0';
+    }
+    bool extra_stream_read_rejected = false;
+    try {
+        std::istringstream input(forged_extra, std::ios::binary);
+        (void)Relation::deserialize(input);
+    } catch (const std::runtime_error&) {
+        extra_stream_read_rejected = true;
+    }
+    CHECK(extra_stream_read_rejected);
+
     const std::string path = make_path("zero_b_writer");
     OOCArtifacts cleanup(path);
     OOCRelationWriter writer(path);
@@ -489,6 +526,15 @@ void test_persistence_rejects_zero_b() {
         ooc_write_rejected = true;
     }
     CHECK(ooc_write_rejected);
+    CHECK(writer.state() == OOCWriterState::Open);
+    CHECK(writer.count() == 0);
+    bool extra_ooc_write_rejected = false;
+    try {
+        (void)writer.write(invalid_extra);
+    } catch (const std::invalid_argument&) {
+        extra_ooc_write_rejected = true;
+    }
+    CHECK(extra_ooc_write_rejected);
     CHECK(writer.state() == OOCWriterState::Open);
     CHECK(writer.count() == 0);
     CHECK(writer.write(valid) == 0);
@@ -504,6 +550,26 @@ void test_persistence_rejects_zero_b() {
         ooc_read_rejected = true;
     }
     CHECK(ooc_read_rejected);
+
+    const std::string extra_path = make_path("zero_extra_b_reader");
+    OOCArtifacts extra_cleanup(extra_path);
+    OOCRelationWriter extra_writer(extra_path);
+    CHECK(extra_writer.write(valid_extra) == 0);
+    const auto extra_descriptor = extra_writer.finalize();
+    constexpr size_t compact_extra_b_offset =
+        sizeof(int64_t) + sizeof(uint64_t) + 5 * sizeof(uint32_t) + sizeof(int64_t);
+    overwrite_u64(
+        extra_path + ".reldata",
+        static_cast<std::streamoff>(OOCRelationWriter::DATA_HEADER_BYTES + compact_extra_b_offset),
+        0);
+    bool extra_ooc_read_rejected = false;
+    try {
+        OOCRelationReader reader(extra_path, extra_descriptor);
+        (void)reader.read(0);
+    } catch (const std::runtime_error&) {
+        extra_ooc_read_rejected = true;
+    }
+    CHECK(extra_ooc_read_rejected);
 }
 
 void test_v3_fresh_checkpoint_prefix_resume_and_finalize_layout() {
@@ -663,6 +729,25 @@ void test_resume_rejects_data_corruption() {
         const auto descriptor = create_recovery_store(path, 1);
         overwrite_u64(path + ".reldata",
                       static_cast<std::streamoff>(OOCRelationWriter::DATA_HEADER_BYTES + 8), 0);
+        expect_resume_rejected_without_mutation(path, descriptor);
+    }
+    {
+        const std::string path = make_path("zero_extra_b_compact_record");
+        OOCArtifacts cleanup(path);
+        const Relation relation = make_relation_with_extra(17, 19, -5, 7);
+        OOCSnapshotDescriptor descriptor;
+        {
+            OOCRelationWriter writer(path);
+            CHECK(writer.write(relation) == 0);
+            descriptor = writer.checkpoint_prefix();
+            writer.fail_suspended_snapshot();
+        }
+        constexpr size_t compact_extra_b_offset =
+            sizeof(int64_t) + sizeof(uint64_t) + 5 * sizeof(uint32_t) + sizeof(int64_t);
+        overwrite_u64(path + ".reldata",
+                      static_cast<std::streamoff>(OOCRelationWriter::DATA_HEADER_BYTES +
+                                                  compact_extra_b_offset),
+                      0);
         expect_resume_rejected_without_mutation(path, descriptor);
     }
 }

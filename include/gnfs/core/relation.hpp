@@ -103,6 +103,11 @@ struct Relation {
         if (extra_ab_pairs.size() > MAX_SERIALIZED_EXTRA_AB_PAIRS) {
             throw std::length_error("Relation: extra (a,b) count exceeds persistence limit");
         }
+        for (const auto& pair : extra_ab_pairs) {
+            if (pair.second == 0) {
+                throw std::invalid_argument("Relation: extra (a,b) pair b must be nonzero");
+            }
+        }
     }
 
     // Serialize to output stream (v2: magic + version + extra_ab_pairs + checksum)
@@ -254,6 +259,10 @@ struct Relation {
             uint64_t eb;
             read_and_xor(&ea, sizeof(ea));
             read_and_xor(&eb, sizeof(eb));
+            if (eb == 0) {
+                throw std::runtime_error(
+                    "Relation::deserialize: extra (a,b) pair b must be nonzero");
+            }
             rel.extra_ab_pairs.emplace_back(ea, eb);
         }
 
