@@ -69,12 +69,26 @@ public:
     /// 用于筛选的代数素数数量（≤ algebraic_bound 的部分）
     /// special-Q 范围的素数（> algebraic_bound）不参与筛选
     [[nodiscard]] size_t sieve_algebraic_count() const noexcept {
-        return sieve_algebraic_count_ > 0 ? sieve_algebraic_count_ : algebraic_.size();
+        return sieve_algebraic_count_set_ ? sieve_algebraic_count_ : algebraic_.size();
     }
 
-    /// 设置筛选代数素数计数（由 builder 调用）
+    /// Whether the sieve count was explicitly set (including an explicit zero).
+    [[nodiscard]] bool has_explicit_sieve_algebraic_count() const noexcept {
+        return sieve_algebraic_count_set_;
+    }
+
+    /// 设置筛选代数素数计数（由 builder 调用）。
+    /// 保留历史兼容语义：count == 0 表示未设置，筛选全部代数条目。
     void set_sieve_algebraic_count(size_t count) noexcept {
         sieve_algebraic_count_ = count;
+        sieve_algebraic_count_set_ = count != 0;
+    }
+
+    /// Set an exact sieve prefix, including an explicit zero-length prefix.
+    /// This is used when a factor base contains only special-Q entries.
+    void set_sieve_algebraic_count_explicit(size_t count) noexcept {
+        sieve_algebraic_count_ = count;
+        sieve_algebraic_count_set_ = true;
     }
 
     // ==================== 查找 ====================
@@ -205,9 +219,11 @@ private:
     std::vector<RationalPrime> rational_;
     std::vector<AlgebraicPrime> algebraic_;
     FactorBaseParams params_;
-    // 筛选用的代数素数数量（0 = 全部）
-    // IMPORTANT: 实现 save()/load() 时必须序列化此字段
+    // 筛选用的代数素数数量。未显式设置时使用 algebraic_.size()；显式 0
+    // 表示没有代数素数参与筛选（例如只有 special-Q 条目）。
+    // IMPORTANT: 实现 save()/load() 时必须序列化这两个字段
     size_t sieve_algebraic_count_ = 0;
+    bool sieve_algebraic_count_set_ = false;
 
     // 快速查找表
     std::unordered_map<uint32_t, uint32_t> rat_index_; // p -> index

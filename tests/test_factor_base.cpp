@@ -69,6 +69,29 @@ void test_zero_bounds() {
     assert(fb.algebraic_count() == 0);
     assert(fb.sieve_algebraic_count() == 0);
 
+    // An explicit zero sieve prefix must remain zero when the factor base
+    // contains only special-Q algebraic entries. This used to be confused
+    // with the default "all entries" sentinel.
+    opts.special_q_bound = 100;
+    // Use f(x)=x so every prime in the special-Q range has a known root;
+    // this keeps the regression independent of the selected test polynomial.
+    std::vector<Integer> root_coeffs;
+    root_coeffs.emplace_back(static_cast<int64_t>(0));
+    root_coeffs.emplace_back(static_cast<int64_t>(1));
+    PolynomialContext root_ctx(Integer(static_cast<int64_t>(101)), std::move(root_coeffs),
+                               Integer(static_cast<int64_t>(2)));
+    auto special_q_only = FactorBaseBuilder::build(root_ctx, opts);
+    assert(special_q_only.algebraic_count() > 0);
+    assert(special_q_only.sieve_algebraic_count() == 0);
+
+    // The explicit-zero state must survive the stream serialization format.
+    std::stringstream serialized;
+    special_q_only.save(serialized);
+    serialized.seekg(0);
+    auto restored = FactorBase::load(serialized);
+    assert(restored.algebraic_count() == special_q_only.algebraic_count());
+    assert(restored.sieve_algebraic_count() == 0);
+
     std::cout << "  Zero factor-base bounds: PASS" << std::endl;
 }
 

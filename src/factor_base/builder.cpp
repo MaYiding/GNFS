@@ -18,6 +18,11 @@ namespace gnfs::factor_base {
 
 namespace {
 
+// The on-disk count is bounded to uint32_t, so the high bit is available as a
+// compatibility marker for an explicitly configured zero. Legacy version-1
+// files wrote zero for an unset count (meaning all algebraic entries).
+constexpr uint64_t EXPLICIT_ZERO_SIEVE_COUNT = UINT64_C(1) << 63;
+
 [[nodiscard]] size_t sieve_element_count(uint32_t bound) {
     const uint64_t count = static_cast<uint64_t>(bound) + 1;
     if (count > static_cast<uint64_t>((std::numeric_limits<size_t>::max)())) {
@@ -49,7 +54,8 @@ namespace {
 // ============================================================
 
 void FactorBase::save(std::ostream& os) const {
-    if (sieve_algebraic_count_ > algebraic_.size()) {
+    const size_t sieve_count = sieve_algebraic_count();
+    if (sieve_count > algebraic_.size()) {
         throw std::runtime_error(
             "FactorBase::save: sieve_algebraic_count exceeds algebraic-prime count");
     }
@@ -79,8 +85,11 @@ void FactorBase::save(std::ostream& os) const {
     write_bytes(&params_.large_prime_bound, sizeof(params_.large_prime_bound), "large_prime_bound");
     write_bytes(&params_.log_scale, sizeof(params_.log_scale), "log_scale");
 
-    // Sieve algebraic count
-    uint64_t sac = static_cast<uint64_t>(sieve_algebraic_count_);
+    // Sieve algebraic count (high bit marks an explicit zero; legacy zero is unset).
+    uint64_t sac = static_cast<uint64_t>(sieve_count);
+    if (has_explicit_sieve_algebraic_count() && sieve_count == 0) {
+        sac = EXPLICIT_ZERO_SIEVE_COUNT;
+    }
     write_bytes(&sac, sizeof(sac), "sieve_algebraic_count");
 
     // Rational primes
@@ -131,12 +140,19 @@ FactorBase FactorBase::load(std::istream& is) {
     FactorBase fb(params);
 
     // Sieve algebraic count
-    uint64_t sac = 0;
-    read_bytes(&sac, sizeof(sac), "sieve_algebraic_count");
+    uint64_t encoded_sac = 0;
+    read_bytes(&encoded_sac, sizeof(encoded_sac), "sieve_algebraic_count");
+    const bool explicit_zero = (encoded_sac & EXPLICIT_ZERO_SIEVE_COUNT) != 0;
+    const uint64_t sac = encoded_sac & ~EXPLICIT_ZERO_SIEVE_COUNT;
+    if (explicit_zero && sac != 0) {
+        throw std::runtime_error("FactorBase::load: invalid explicit-zero sieve count marker");
+    }
     if (sac > static_cast<uint64_t>((std::numeric_limits<size_t>::max)())) {
         throw std::overflow_error("FactorBase::load: sieve_algebraic_count exceeds size_t");
     }
-    fb.sieve_algebraic_count_ = static_cast<size_t>(sac);
+    if (explicit_zero || sac != 0) {
+        fb.set_sieve_algebraic_count_explicit(static_cast<size_t>(sac));
+    }
 
     // Rational primes
     uint32_t rat_count = 0;
@@ -223,15 +239,15 @@ FactorBase FactorBaseBuilder::build(const PolynomialContext& ctx, const Options&
     find_algebraic_primes(fb, ctx, opts.algebraic_bound, opts.log_scale, &shared_sieve);
 
     // 记录筛选用的代数素数数量（≤ algebraic_bound 的部分）
-    fb.set_sieve_algebraic_count(fb.algebraic_count());
+    fb.set_sieve_algebraic_count_explicit(fb.algebraic_count());
 
     // 如果 special_q_bound > algebraic_bound，继续构建 SQ 范围的代数素数。
-    // 注意: 必须显式过滤 algebraic_bound==UINT32_MAX 否则 +1 wrap=0 让 find_…_range
-    // 收到 (min_p=0, max_p>0),min_p<2 早 return 会救住但语义不对。params.hpp 实际
-    // 把 B 限到 1e9,这层是 future-proof 防御。
+    // 注意: 必须显式过滤 algebraic_bound==UINT32_MAX 否则 +1 wrap=0。对
+    // algebraic_bound==0 将范围起点钳制到 2，避免把有效的素数范围当作空范围。
+    // params.hpp 实际把 B 限到 1e9，这层是 future-proof 防御。
     if (opts.special_q_bound > opts.algebraic_bound && opts.algebraic_bound < UINT32_MAX) {
-        find_algebraic_primes_range(fb, ctx, opts.algebraic_bound + 1, opts.special_q_bound,
-                                    opts.log_scale);
+        const uint32_t special_q_min = std::max<uint32_t>(opts.algebraic_bound + 1, 2);
+        find_algebraic_primes_range(fb, ctx, special_q_min, opts.special_q_bound, opts.log_scale);
     }
 
     fb.build_index();
