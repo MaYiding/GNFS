@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <istream>
 #include <limits>
 #include <ostream>
