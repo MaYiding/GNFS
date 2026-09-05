@@ -30,8 +30,7 @@ void require_throws(Callable&& callable, const char* context) {
     throw std::runtime_error(std::string(context) + ": expected exception was not thrown");
 }
 
-template <typename Exception, typename Callable>
-bool throws_expected(Callable&& callable) {
+template <typename Exception, typename Callable> bool throws_expected(Callable&& callable) {
     try {
         callable();
     } catch (const Exception&) {
@@ -716,35 +715,35 @@ void test_schirokauer_overflow_guards() {
     {
         SchirokaurConfig config;
         config.primes = {0};
-        GNFS_TEST_CHECK(throws_expected<std::invalid_argument>(
-            [&] { (void)SchirokaurMap(ctx, config); }));
+        GNFS_TEST_CHECK(
+            throws_expected<std::invalid_argument>([&] { (void)SchirokaurMap(ctx, config); }));
     }
     {
         SchirokaurConfig config;
         config.primes = {1};
-        GNFS_TEST_CHECK(throws_expected<std::invalid_argument>(
-            [&] { (void)SchirokaurMap(ctx, config); }));
+        GNFS_TEST_CHECK(
+            throws_expected<std::invalid_argument>([&] { (void)SchirokaurMap(ctx, config); }));
     }
     {
         SchirokaurConfig config;
         config.primes = {2};
         config.exponent_k = 0;
-        GNFS_TEST_CHECK(throws_expected<std::invalid_argument>(
-            [&] { (void)SchirokaurMap(ctx, config); }));
+        GNFS_TEST_CHECK(
+            throws_expected<std::invalid_argument>([&] { (void)SchirokaurMap(ctx, config); }));
     }
     {
         SchirokaurConfig config;
         config.primes = {2};
         config.exponent_k = 64;
-        GNFS_TEST_CHECK(throws_expected<std::overflow_error>(
-            [&] { (void)SchirokaurMap(ctx, config); }));
+        GNFS_TEST_CHECK(
+            throws_expected<std::overflow_error>([&] { (void)SchirokaurMap(ctx, config); }));
     }
     {
         SchirokaurConfig config;
         config.primes = {3};
         config.exponent_k = 40;
-        GNFS_TEST_CHECK(throws_expected<std::overflow_error>(
-            [&] { (void)SchirokaurMap(ctx, config); }));
+        GNFS_TEST_CHECK(
+            throws_expected<std::overflow_error>([&] { (void)SchirokaurMap(ctx, config); }));
     }
 
     // A degree-8 perfect power reaches the unsplit exponent path. With a
@@ -776,6 +775,18 @@ void test_schirokauer_overflow_guards() {
         for (uint32_t value : maps[0]) {
             GNFS_TEST_CHECK(value < 7);
         }
+    }
+
+    // Integer::mod uses truncating division in this project, so normalize
+    // negative coefficients back to the non-negative fdiv_ui residue range.
+    {
+        std::vector<Integer> signed_coeffs = {Integer(-1), Integer(0), Integer(1)};
+        PolynomialContext signed_ctx(Integer(1), std::move(signed_coeffs), Integer(0), 1.0);
+        SchirokaurConfig config;
+        config.primes = {7};
+        config.exponent_k = 5;
+        SchirokaurMap smap(signed_ctx, config);
+        GNFS_TEST_CHECK(smap.prime_info_[0].f_mod[0] == 16806);
     }
 
     std::cout << "  Schirokauer overflow and parameter guards: PASSED" << std::endl;
