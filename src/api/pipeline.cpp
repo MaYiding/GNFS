@@ -126,6 +126,14 @@ private:
     int uncaught_at_entry_;
 };
 
+void require_pipeline_context(const Integer& pipeline_n, const PolynomialContext& ctx,
+                              const char* phase) {
+    if (ctx.n().compare(pipeline_n) != 0) {
+        throw std::invalid_argument("Pipeline::" + std::string(phase) +
+                                    " received a polynomial context for a different N");
+    }
+}
+
 } // namespace
 
 void Pipeline::refresh_relation_corpus_checked(relation::RelationCorpus& corpus,
@@ -1249,6 +1257,7 @@ PolynomialContext Pipeline::select_polynomial_impl(const std::string& resume_bas
 // ============================================================
 
 FactorBase Pipeline::build_factor_base(const PolynomialContext& ctx) {
+    require_pipeline_context(n_, ctx, "build_factor_base");
     return build_factor_base_impl(ctx, pipeline_resume_base_path());
 }
 
@@ -1348,6 +1357,7 @@ FactorBase Pipeline::build_factor_base_impl(const PolynomialContext& ctx,
 relation::RelationReductionResult Pipeline::sieve_and_collect(const PolynomialContext& ctx,
                                                               const FactorBase& fb,
                                                               SieveCollectionOptions options) {
+    require_pipeline_context(n_, ctx, "sieve_and_collect");
     if (options.adaptive_round_limit == 0 ||
         options.adaptive_round_limit > DEFAULT_ADAPTIVE_SIEVE_ROUND_LIMIT) {
         throw std::out_of_range("adaptive_round_limit must be in [1, 10]");
@@ -2720,6 +2730,7 @@ Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult&
 Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult& reduction,
                                               const FactorBase& fb, const PolynomialContext& ctx,
                                               bool solve_dependencies) {
+    require_pipeline_context(n_, ctx, solve_dependencies ? "solve_matrix" : "build_matrix");
     if (reduction.generation == 0 || !reduction.corpus.valid()) {
         throw std::invalid_argument("matrix phase requires a valid reduction owner");
     }
@@ -3199,6 +3210,7 @@ static bool verify_dependency(const SparseMatrix& mat, const std::vector<bool>& 
 
 FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase& fb,
                                        const PolynomialContext& ctx) {
+    require_pipeline_context(n_, ctx, "extract_factors");
     emit_progress(Phase::SquareRoot, "Starting factor extraction");
 
     auto t0_sqrt = std::chrono::high_resolution_clock::now();
