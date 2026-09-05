@@ -803,6 +803,28 @@ void test_worker_completion_report_tracks_actual_caps() {
     std::cout << "PASS\n";
 }
 
+void test_worker_report_pipe_is_cloexec() {
+    std::cout << "[test_worker_report_pipe_is_cloexec] ... " << std::flush;
+
+    const auto& f = shared_fixture();
+    ScopedEnvironment assert_cloexec("GNFS_DISTRIBUTED_SIEVE_ASSERT_REPORT_CLOEXEC", "1");
+    DistributedSieveConfig cfg;
+    cfg.num_workers = 1;
+    cfg.base_path = make_tmp_base("report-cloexec");
+    std::vector<DistributedSieveWorkerResult> stats;
+    const auto relations = run_distributed_sieve(cfg, f.ctx, f.fb, f.sieve_params(),
+                                                 f.sieve_region(), f.cofac_config(), f.ctx.n(),
+                                                 f.ctx.m(), f.sq_range(1000, 1150), &stats);
+
+    CHECK(!relations.empty());
+    CHECK(stats.size() == 1);
+    CHECK(stats[0].success);
+    CHECK(stats[0].attempt_count == 1);
+    check_worker_leases_removed(cfg.base_path, cfg.num_workers);
+    cleanup_worker_test_artifacts(cfg.base_path, cfg.num_workers);
+    std::cout << "PASS\n";
+}
+
 // ── Test 5: 2- and 4-worker runs produce same relation set as baseline ─
 void test_multi_worker_same_set() {
     std::cout << "[test_multi_worker_same_set] ... " << std::flush;
@@ -1425,6 +1447,7 @@ int main() {
     test_invalid_config();
     test_single_worker_matches_in_process();
     test_worker_completion_report_tracks_actual_caps();
+    test_worker_report_pipe_is_cloexec();
     test_multi_worker_same_set();
     test_empty_range();
     test_more_workers_than_sqs();
