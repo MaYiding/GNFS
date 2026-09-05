@@ -575,11 +575,12 @@ struct WorkerWaitResult final {
 inline constexpr auto WORKER_WAIT_POLL_INTERVAL = std::chrono::milliseconds(10);
 inline constexpr auto WORKER_TERMINATION_GRACE = std::chrono::milliseconds(100);
 
-[[nodiscard]] pid_t waitpid_retry(pid_t pid, int* wait_status, int options) noexcept {
+[[nodiscard]] pid_t waitpid_retry(pid_t pid, int* wait_status, int options,
+                                  bool retry_eintr = true) noexcept {
     pid_t result;
     do {
         result = ::waitpid(pid, wait_status, options);
-    } while (result == -1 && errno == EINTR);
+    } while (retry_eintr && result == -1 && errno == EINTR);
     return result;
 }
 
@@ -658,7 +659,7 @@ WorkerWaitResult wait_and_decode(pid_t pid, std::uint64_t timeout_ms) noexcept {
     while (true) {
         // Do not hide EINTR inside an unbounded retry loop: a signal storm
         // must not postpone the configured watchdog deadline.
-        const pid_t observed = ::waitpid(pid, &wait_status, WNOHANG);
+        const pid_t observed = waitpid_retry(pid, &wait_status, WNOHANG, false);
 
         if (observed == pid) {
             return decode_worker_result(wait_status, timed_out);
@@ -711,7 +712,7 @@ WorkerWaitResult wait_and_decode(pid_t pid, std::uint64_t timeout_ms) noexcept {
     (void)::kill(pid, SIGTERM);
     const auto grace_deadline = Clock::now() + WORKER_TERMINATION_GRACE;
     while (Clock::now() < grace_deadline) {
-        const pid_t observed = ::waitpid(pid, &wait_status, WNOHANG);
+        const pid_t observed = waitpid_retry(pid, &wait_status, WNOHANG, false);
         if (observed == pid) {
             return decode_worker_result(wait_status, timed_out);
         }
