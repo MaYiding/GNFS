@@ -782,6 +782,35 @@ void test_compute_alg_lp_root_projective() {
     std::cout << "  compute_alg_lp_root projective: PASSED" << std::endl;
 }
 
+// Invalid moduli must be rejected without evaluating b % p, and a valid
+// uint64_t prime above INT64_MAX must not be narrowed before inversion.
+void test_compute_alg_lp_root_input_guards() {
+    std::cout << "Testing compute_alg_lp_root input guards..." << std::endl;
+
+    CHECK(Cofactorizer::compute_alg_lp_root(1, 3, 0) == Cofactorizer::INVALID_ROOT);
+    CHECK(Cofactorizer::compute_alg_lp_root(1, 3, 1) == Cofactorizer::INVALID_ROOT);
+
+    constexpr uint64_t LARGE_PRIME = 18446744073709551557ULL;
+    // 3^-1 * 10 mod LARGE_PRIME. This path must not cast the modulus to
+    // int64_t (which would make it negative on LP64 and LLP64 alike).
+    CHECK(Cofactorizer::compute_alg_lp_root(10, 3, LARGE_PRIME) == UINT64_C(6148914691236517189));
+    CHECK(Cofactorizer::compute_alg_lp_root(-5, 11, LARGE_PRIME) == UINT64_C(8384883669867977980));
+
+    // UINT32_MAX is reserved for projective roots. A finite root with that
+    // value under a larger modulus is therefore rejected instead of being
+    // silently interpreted as projective by matrix construction.
+    constexpr uint64_t ROOT_SENTINEL_COLLISION_PRIME = 4294967311ULL;
+    CHECK(Cofactorizer::compute_alg_lp_root(
+              static_cast<int64_t>(core::AlgebraicPrime::PROJECTIVE_ROOT), 1,
+              ROOT_SENTINEL_COLLISION_PRIME) == Cofactorizer::INVALID_ROOT);
+
+    // A non-invertible denominator is a malformed finite-root request, not a
+    // projective root: b is not divisible by p here, but gcd(b, p) != 1.
+    CHECK(Cofactorizer::compute_alg_lp_root(1, 2, 6) == Cofactorizer::INVALID_ROOT);
+
+    std::cout << "  compute_alg_lp_root input guards: PASSED" << std::endl;
+}
+
 int main() {
     std::cout << "=== Cofactorization Tests ===" << std::endl;
     std::cout << std::endl;
@@ -803,6 +832,7 @@ int main() {
     test_cofactorizer_large_prime_storage();
     test_special_q_root_identity_validation();
     test_compute_alg_lp_root_projective();
+    test_compute_alg_lp_root_input_guards();
 
     std::cout << std::endl;
     std::cout << "=== All Cofactorization Tests PASSED ===" << std::endl;
