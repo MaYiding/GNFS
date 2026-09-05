@@ -27,10 +27,14 @@
 #include "../util/thread_pool.hpp"
 
 #include <atomic>
+#include <cctype>
+#include <cerrno>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <future>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -53,24 +57,52 @@ inline SqrtHenselThreadsCache& sqrt_hensel_threads_cache() noexcept {
     return cache;
 }
 
+inline std::size_t sqrt_hensel_thread_cap() noexcept {
+    const unsigned int hw_count = std::thread::hardware_concurrency();
+    const uint64_t hw = hw_count == 0 ? 4ULL : static_cast<uint64_t>(hw_count);
+    constexpr uint64_t max_pool_size = std::numeric_limits<uint32_t>::max();
+    const uint64_t cap = hw > max_pool_size / 2 ? max_pool_size : hw * 2;
+    return static_cast<std::size_t>(cap);
+}
+
 inline std::size_t parse_sqrt_hensel_threads_env() noexcept {
     const char* env = std::getenv("GNFS_SQRT_HENSEL_THREADS");
     if (env == nullptr || env[0] == '\0') {
-        return 1;  // default sequential
+        return 1; // default sequential
     }
-    int parsed = std::atoi(env);
-    if (parsed <= 0) {
-        return 1;  // invalid / non-positive → sequential
+
+    // Match atoi's accepted decimal-prefix syntax without converting through
+    // int first.  The latter can wrap for a positive value above INT_MAX and
+    // incorrectly select the sequential path instead of the high-value cap.
+    const char* first = env;
+    while (*first != '\0' && std::isspace(static_cast<unsigned char>(*first))) {
+        ++first;
     }
-    unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
-    std::size_t cap = static_cast<std::size_t>(hw) * 2;
-    std::size_t v = static_cast<std::size_t>(parsed);
-    if (v > cap) v = cap;
-    return v;
+    if (*first == '-') {
+        return 1; // invalid / non-positive → sequential
+    }
+    if (*first == '+') {
+        ++first;
+    }
+    if (*first < '0' || *first > '9') {
+        return 1;
+    }
+
+    errno = 0;
+    char* end = nullptr;
+    const unsigned long long parsed = std::strtoull(first, &end, 10);
+    if (end == first || parsed == 0) {
+        return 1; // invalid / non-positive → sequential
+    }
+
+    const std::size_t cap = sqrt_hensel_thread_cap();
+    if (errno == ERANGE || parsed > static_cast<unsigned long long>(cap)) {
+        return cap;
+    }
+    return static_cast<std::size_t>(parsed);
 }
 
-}  // namespace detail
+} // namespace detail
 
 /// Read the GNFS_SQRT_HENSEL_THREADS env into a cached thread count.
 ///
@@ -80,9 +112,8 @@ inline std::size_t parse_sqrt_hensel_threads_env() noexcept {
 /// values clamp to the upper cap.
 [[nodiscard]] inline std::size_t sqrt_hensel_threads() noexcept {
     auto& cache = detail::sqrt_hensel_threads_cache();
-    std::call_once(cache.once, [&cache]() {
-        cache.value = detail::parse_sqrt_hensel_threads_env();
-    });
+    std::call_once(cache.once,
+                   [&cache]() { cache.value = detail::parse_sqrt_hensel_threads_env(); });
     return cache.value;
 }
 
@@ -116,7 +147,8 @@ inline void reset_sqrt_hensel_threads_cache() noexcept {
 template <typename Slot, typename Func>
 inline void parallel_hensel_lift(std::span<Slot> slots, Func&& lift_one) {
     const std::size_t n = slots.size();
-    if (n == 0) return;
+    if (n == 0)
+        return;
 
     const std::size_t threads = sqrt_hensel_threads();
 
@@ -140,9 +172,7 @@ inline void parallel_hensel_lift(std::span<Slot> slots, Func&& lift_one) {
         // The slot pointer is stable because std::span aliases the caller's
         // contiguous buffer; the caller guarantees slots[] is not resized
         // during the parallel section.
-        futures.push_back(pool.submit([&slots, &lift_one, i]() {
-            lift_one(slots[i], i);
-        }));
+        futures.push_back(pool.submit([&slots, &lift_one, i]() { lift_one(slots[i], i); }));
     }
 
     // Propagate any task exception to the caller via future::get().
@@ -151,4 +181,4 @@ inline void parallel_hensel_lift(std::span<Slot> slots, Func&& lift_one) {
     }
 }
 
-}  // namespace gnfs::sqrt
+} // namespace gnfs::sqrt

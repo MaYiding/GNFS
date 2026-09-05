@@ -15,11 +15,11 @@
 // that the product polynomial is a perfect square in Z[alpha]/(f), giving
 // the Hensel lift a well-defined answer to converge on.
 
+#include <gnfs/core/integer.hpp>
+#include <gnfs/polynomial/base_m.hpp>
 #include <gnfs/sqrt/hensel_parallel.hpp>
 #include <gnfs/sqrt/hensel_sqrt.hpp>
 #include <gnfs/sqrt/number_field.hpp>
-#include <gnfs/polynomial/base_m.hpp>
-#include <gnfs/core/integer.hpp>
 
 #include <cassert>
 #include <chrono>
@@ -62,8 +62,10 @@ std::vector<std::pair<int64_t, uint64_t>> build_squared_ab_pairs() {
     }
     std::vector<std::pair<int64_t, uint64_t>> pairs;
     pairs.reserve(120);
-    for (const auto& p : base) pairs.push_back(p);
-    for (const auto& p : base) pairs.push_back(p);  // duplicate -> product is a square
+    for (const auto& p : base)
+        pairs.push_back(p);
+    for (const auto& p : base)
+        pairs.push_back(p); // duplicate -> product is a square
     return pairs;
 }
 
@@ -74,10 +76,8 @@ struct HenselRun {
     long long ms;
 };
 
-HenselRun run_hensel_with_threads(
-        const std::vector<std::pair<int64_t, uint64_t>>& pairs,
-        const NumberField& nf,
-        const char* env_value) {
+HenselRun run_hensel_with_threads(const std::vector<std::pair<int64_t, uint64_t>>& pairs,
+                                  const NumberField& nf, const char* env_value) {
     if (env_value == nullptr) {
         unsetenv("GNFS_SQRT_HENSEL_THREADS");
     } else {
@@ -117,8 +117,8 @@ void test_correctness_seq_vs_parallel_1_vs_4() {
     assert(seq.result.has_value() == par.result.has_value());
     if (seq.result && par.result) {
         assert(seq.result->compare(*par.result) == 0);
-        std::cout << "  seq vs N=4 result match: PASSED (" << seq.ms << "ms vs "
-                  << par.ms << "ms)" << std::endl;
+        std::cout << "  seq vs N=4 result match: PASSED (" << seq.ms << "ms vs " << par.ms << "ms)"
+                  << std::endl;
     } else {
         std::cout << "  Both paths failed/returned nullopt consistently (expected when "
                   << "no square root exists for the small test field): PASSED" << std::endl;
@@ -136,8 +136,8 @@ void test_correctness_seq_vs_parallel_1_vs_2() {
     assert(seq.result.has_value() == par.result.has_value());
     if (seq.result && par.result) {
         assert(seq.result->compare(*par.result) == 0);
-        std::cout << "  seq vs N=2 result match: PASSED (" << seq.ms << "ms vs "
-                  << par.ms << "ms)" << std::endl;
+        std::cout << "  seq vs N=2 result match: PASSED (" << seq.ms << "ms vs " << par.ms << "ms)"
+                  << std::endl;
     } else {
         std::cout << "  Both paths consistent (nullopt): PASSED" << std::endl;
     }
@@ -148,14 +148,14 @@ void test_correctness_default_vs_parallel() {
     NumberField nf = build_test_number_field();
     auto pairs = build_squared_ab_pairs();
 
-    auto def = run_hensel_with_threads(pairs, nf, nullptr);  // env unset -> N=1 default
+    auto def = run_hensel_with_threads(pairs, nf, nullptr); // env unset -> N=1 default
     auto par = run_hensel_with_threads(pairs, nf, "4");
 
     assert(def.result.has_value() == par.result.has_value());
     if (def.result && par.result) {
         assert(def.result->compare(*par.result) == 0);
-        std::cout << "  default vs N=4 match: PASSED (" << def.ms << "ms vs "
-                  << par.ms << "ms)" << std::endl;
+        std::cout << "  default vs N=4 match: PASSED (" << def.ms << "ms vs " << par.ms << "ms)"
+                  << std::endl;
     } else {
         std::cout << "  Both paths consistent (nullopt): PASSED" << std::endl;
     }
@@ -167,9 +167,7 @@ void test_correctness_small_ab_pairs() {
     // ignored: both N=1 and N=8 must give identical results.
     std::cout << "Testing Hensel parallel correctness on small ab_pairs (< 100)..." << std::endl;
     NumberField nf = build_test_number_field();
-    std::vector<std::pair<int64_t, uint64_t>> pairs = {
-        {3, 1}, {3, 1}, {5, 1}, {5, 1}
-    };
+    std::vector<std::pair<int64_t, uint64_t>> pairs = {{3, 1}, {3, 1}, {5, 1}, {5, 1}};
 
     auto seq = run_hensel_with_threads(pairs, nf, "1");
     auto par = run_hensel_with_threads(pairs, nf, "8");
@@ -226,14 +224,31 @@ void test_env_parsing_values() {
     setenv("GNFS_SQRT_HENSEL_THREADS", "999", /*overwrite=*/1);
     reset_sqrt_hensel_threads_cache();
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     std::size_t cap = static_cast<std::size_t>(hw) * 2;
     std::size_t v = sqrt_hensel_threads();
     if (v != cap) {
         std::cerr << "  ERROR: expected clamped value " << cap << ", got " << v << std::endl;
         std::abort();
     }
-    std::cout << "  parsing 0/-3/1/4/999 (clamped to " << cap << "): PASSED" << std::endl;
+
+    // Values above INT_MAX must still clamp high; converting through int first
+    // would wrap and incorrectly select the sequential path.
+    setenv("GNFS_SQRT_HENSEL_THREADS", "2147483648", /*overwrite=*/1);
+    reset_sqrt_hensel_threads_cache();
+    if (sqrt_hensel_threads() != cap) {
+        std::cerr << "  ERROR: positive int-range overflow did not clamp to " << cap << std::endl;
+        std::abort();
+    }
+    setenv("GNFS_SQRT_HENSEL_THREADS", "999999999999999999999999999999", /*overwrite=*/1);
+    reset_sqrt_hensel_threads_cache();
+    if (sqrt_hensel_threads() != cap) {
+        std::cerr << "  ERROR: huge positive value did not clamp to " << cap << std::endl;
+        std::abort();
+    }
+    std::cout << "  parsing 0/-3/1/4/999/extreme positive values (clamped to " << cap << "): PASSED"
+              << std::endl;
 
     unsetenv("GNFS_SQRT_HENSEL_THREADS");
     reset_sqrt_hensel_threads_cache();
@@ -270,17 +285,18 @@ void test_edge_case_single_slot() {
     setenv("GNFS_SQRT_HENSEL_THREADS", "8", /*overwrite=*/1);
     reset_sqrt_hensel_threads_cache();
 
-    struct DummySlot { int x = 0; };
+    struct DummySlot {
+        int x = 0;
+    };
     DummySlot one[1] = {{42}};
     bool called = false;
     std::size_t seen_index = static_cast<std::size_t>(-1);
-    parallel_hensel_lift<DummySlot>(
-        std::span<DummySlot>(one, 1),
-        [&called, &seen_index](DummySlot& s, std::size_t i) {
-            seen_index = i;
-            s.x = 1234;
-            called = true;
-        });
+    parallel_hensel_lift<DummySlot>(std::span<DummySlot>(one, 1),
+                                    [&called, &seen_index](DummySlot& s, std::size_t i) {
+                                        seen_index = i;
+                                        s.x = 1234;
+                                        called = true;
+                                    });
     if (!called || seen_index != 0 || one[0].x != 1234) {
         std::cerr << "ERROR: single-slot dispatch failed: called=" << called
                   << " index=" << seen_index << " x=" << one[0].x << std::endl;
@@ -289,19 +305,17 @@ void test_edge_case_single_slot() {
 
     // Also verify zero-slot span is a no-op.
     DummySlot* empty = nullptr;
-    parallel_hensel_lift<DummySlot>(
-        std::span<DummySlot>(empty, 0),
-        [](DummySlot&, std::size_t) {
-            std::cerr << "ERROR: empty span should not invoke lift_one" << std::endl;
-            std::abort();
-        });
+    parallel_hensel_lift<DummySlot>(std::span<DummySlot>(empty, 0), [](DummySlot&, std::size_t) {
+        std::cerr << "ERROR: empty span should not invoke lift_one" << std::endl;
+        std::abort();
+    });
 
     unsetenv("GNFS_SQRT_HENSEL_THREADS");
     reset_sqrt_hensel_threads_cache();
     std::cout << "  Single-slot + empty-span dispatch: PASSED" << std::endl;
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     std::cout << "=== Hensel Parallel Dispatch Tests ===" << std::endl << std::endl;
@@ -317,7 +331,6 @@ int main() {
     test_perf_info_4_vs_1();
     test_edge_case_single_slot();
 
-    std::cout << std::endl
-              << "=== All Hensel Parallel Tests PASSED ===" << std::endl;
+    std::cout << std::endl << "=== All Hensel Parallel Tests PASSED ===" << std::endl;
     return 0;
 }
