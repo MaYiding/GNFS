@@ -7,12 +7,114 @@
 #include <cstddef>
 #include <future>
 #include <iostream>
+#include <iterator>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using namespace gnfs::util;
+
+// Adversarial legacy random-access iterator used to exercise a distance that
+// reaches SIZE_MAX without materializing the corresponding range.
+struct HugeRangeIterator {
+    using iterator_category = std::random_access_iterator_tag;
+    using value_type = size_t;
+    using difference_type = size_t;
+    using pointer = const size_t*;
+    using reference = size_t;
+
+    size_t position = 0;
+
+    size_t operator*() const noexcept {
+        return position;
+    }
+
+    HugeRangeIterator& operator++() noexcept {
+        ++position;
+        return *this;
+    }
+
+    HugeRangeIterator operator++(int) noexcept {
+        HugeRangeIterator copy = *this;
+        ++*this;
+        return copy;
+    }
+
+    HugeRangeIterator& operator--() noexcept {
+        --position;
+        return *this;
+    }
+
+    HugeRangeIterator operator--(int) noexcept {
+        HugeRangeIterator copy = *this;
+        --*this;
+        return copy;
+    }
+
+    HugeRangeIterator& operator+=(difference_type offset) noexcept {
+        position += offset;
+        return *this;
+    }
+
+    HugeRangeIterator& operator-=(difference_type offset) noexcept {
+        position -= offset;
+        return *this;
+    }
+
+    friend HugeRangeIterator operator+(HugeRangeIterator iterator,
+                                       difference_type offset) noexcept {
+        iterator += offset;
+        return iterator;
+    }
+
+    friend HugeRangeIterator operator+(difference_type offset,
+                                       HugeRangeIterator iterator) noexcept {
+        iterator += offset;
+        return iterator;
+    }
+
+    friend HugeRangeIterator operator-(HugeRangeIterator iterator,
+                                       difference_type offset) noexcept {
+        iterator -= offset;
+        return iterator;
+    }
+
+    size_t operator[](difference_type offset) const noexcept {
+        return position + offset;
+    }
+
+    friend difference_type operator-(const HugeRangeIterator& lhs,
+                                     const HugeRangeIterator& rhs) noexcept {
+        return lhs.position - rhs.position;
+    }
+
+    friend bool operator==(const HugeRangeIterator& lhs, const HugeRangeIterator& rhs) noexcept {
+        return lhs.position == rhs.position;
+    }
+
+    friend bool operator!=(const HugeRangeIterator& lhs, const HugeRangeIterator& rhs) noexcept {
+        return !(lhs == rhs);
+    }
+
+    friend bool operator<(const HugeRangeIterator& lhs, const HugeRangeIterator& rhs) noexcept {
+        return lhs.position < rhs.position;
+    }
+
+    friend bool operator>(const HugeRangeIterator& lhs, const HugeRangeIterator& rhs) noexcept {
+        return rhs < lhs;
+    }
+
+    friend bool operator<=(const HugeRangeIterator& lhs, const HugeRangeIterator& rhs) noexcept {
+        return !(rhs < lhs);
+    }
+
+    friend bool operator>=(const HugeRangeIterator& lhs, const HugeRangeIterator& rhs) noexcept {
+        return !(lhs < rhs);
+    }
+};
 
 void test_basic_submit() {
     std::cout << "Testing basic submit..." << std::endl;
@@ -204,6 +306,103 @@ void test_concurrent_submit_wait() {
     std::cout << "  Concurrent submit + wait_all (" << rounds << " rounds): PASS" << std::endl;
 }
 
+void test_parallel_for_index_size_max_range() {
+    std::cout << "Testing parallel_for_index SIZE_MAX range..." << std::endl;
+
+    ThreadPool pool(4);
+    bool caught = false;
+    try {
+        pool.parallel_for_index(0, std::numeric_limits<size_t>::max(), [](size_t) {
+            throw std::runtime_error("parallel_for_index callback");
+        });
+    } catch (const std::runtime_error& error) {
+        caught = std::string(error.what()) == "parallel_for_index callback";
+    }
+
+    GNFS_TEST_CHECK(caught);
+
+    std::cout << "  parallel_for_index SIZE_MAX range: PASS" << std::endl;
+}
+
+void test_parallel_for_size_max_range() {
+    std::cout << "Testing parallel_for SIZE_MAX iterator range..." << std::endl;
+
+    ThreadPool pool(4);
+    bool caught = false;
+    try {
+        pool.parallel_for(HugeRangeIterator{0},
+                          HugeRangeIterator{std::numeric_limits<size_t>::max()},
+                          [](size_t) { throw std::runtime_error("parallel_for callback"); });
+    } catch (const std::runtime_error& error) {
+        caught = std::string(error.what()) == "parallel_for callback";
+    }
+
+    GNFS_TEST_CHECK(caught);
+
+    std::cout << "  parallel_for SIZE_MAX iterator range: PASS" << std::endl;
+}
+
+template <typename Run> void run_parallel_exception_wait_probe(Run&& run) {
+    std::atomic<bool> throw_started{false};
+    std::atomic<bool> release_slow_task{false};
+    std::atomic<bool> slow_task_done{false};
+
+    std::thread releaser([&]() {
+        while (!throw_started.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        release_slow_task.store(true, std::memory_order_release);
+    });
+
+    auto callback = [&](size_t marker) {
+        if (marker == 0) {
+            throw_started.store(true, std::memory_order_release);
+            throw std::runtime_error("parallel callback");
+        }
+        while (!release_slow_task.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+        slow_task_done.store(true, std::memory_order_release);
+    };
+
+    bool caught = false;
+    try {
+        run(callback);
+    } catch (const std::runtime_error& error) {
+        caught = std::string(error.what()) == "parallel callback";
+    }
+
+    const bool slow_task_finished_before_return = slow_task_done.load(std::memory_order_acquire);
+    releaser.join();
+
+    GNFS_TEST_CHECK(caught);
+    GNFS_TEST_CHECK(slow_task_finished_before_return);
+}
+
+void test_parallel_for_exception_waits_for_all_tasks() {
+    std::cout << "Testing parallel_for exception waits for all tasks..." << std::endl;
+
+    ThreadPool pool(2);
+    std::vector<int> data{0, 1};
+    run_parallel_exception_wait_probe([&](auto&& callback) {
+        pool.parallel_for(data.begin(), data.end(), std::forward<decltype(callback)>(callback));
+    });
+
+    std::cout << "  parallel_for exception wait: PASS" << std::endl;
+}
+
+void test_parallel_for_index_exception_waits_for_all_tasks() {
+    std::cout << "Testing parallel_for_index exception waits for all tasks..." << std::endl;
+
+    ThreadPool pool(2);
+    run_parallel_exception_wait_probe([&](auto&& callback) {
+        pool.parallel_for_index(0, 2, std::forward<decltype(callback)>(callback));
+    });
+
+    std::cout << "  parallel_for_index exception wait: PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== ThreadPool Tests ===" << std::endl;
 
@@ -216,6 +415,10 @@ int main() {
     test_exception_handling();
     test_wait_all_race_stress();
     test_concurrent_submit_wait();
+    test_parallel_for_index_size_max_range();
+    test_parallel_for_size_max_range();
+    test_parallel_for_exception_waits_for_all_tasks();
+    test_parallel_for_index_exception_waits_for_all_tasks();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;
