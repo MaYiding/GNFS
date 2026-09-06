@@ -54,36 +54,41 @@ void set_env_and_reload(const char* value) {
 // algebraic_factors[0]: full Relation equality is overkill since the
 // radix sort never touches the inner fields.
 bool relations_equal(const Relation& l, const Relation& r) {
-    if (l.a != r.a || l.b != r.b) return false;
-    if (l.rational_factors.size() != r.rational_factors.size()) return false;
-    if (l.algebraic_factors.size() != r.algebraic_factors.size()) return false;
+    if (l.a != r.a || l.b != r.b)
+        return false;
+    if (l.rational_factors.size() != r.rational_factors.size())
+        return false;
+    if (l.algebraic_factors.size() != r.algebraic_factors.size())
+        return false;
     for (size_t i = 0; i < l.rational_factors.size(); ++i) {
-        if (l.rational_factors[i] != r.rational_factors[i]) return false;
+        if (l.rational_factors[i] != r.rational_factors[i])
+            return false;
     }
     for (size_t i = 0; i < l.algebraic_factors.size(); ++i) {
-        if (l.algebraic_factors[i] != r.algebraic_factors[i]) return false;
+        if (l.algebraic_factors[i] != r.algebraic_factors[i])
+            return false;
     }
     return true;
 }
 
-bool vectors_equal(const std::vector<Relation>& lhs,
-                   const std::vector<Relation>& rhs) {
-    if (lhs.size() != rhs.size()) return false;
+bool vectors_equal(const std::vector<Relation>& lhs, const std::vector<Relation>& rhs) {
+    if (lhs.size() != rhs.size())
+        return false;
     for (size_t i = 0; i < lhs.size(); ++i) {
-        if (!relations_equal(lhs[i], rhs[i])) return false;
+        if (!relations_equal(lhs[i], rhs[i]))
+            return false;
     }
     return true;
 }
 
 // Run `seed_relations` once with std::sort path and once with radix path,
 // then assert that the sorted-then-deduplicated results match.
-void run_parity(const std::vector<Relation>& seed_relations,
-                const char* label) {
+void run_parity(const std::vector<Relation>& seed_relations, const char* label) {
     auto clone = [&]() {
         std::vector<Relation> out;
         out.reserve(seed_relations.size());
         for (const auto& r : seed_relations) {
-            Relation copy = r;  // PrimePower / vector deep copy
+            Relation copy = r; // PrimePower / vector deep copy
             out.push_back(std::move(copy));
         }
         return out;
@@ -105,20 +110,18 @@ void run_parity(const std::vector<Relation>& seed_relations,
     set_env_and_reload(nullptr);
 
     if (!vectors_equal(std_dedup, radix_dedup)) {
-        std::cerr << "[FAIL] " << label
-                  << " — std vs radix dedup result differs.\n"
-                  << "  std size=" << std_dedup.size()
-                  << ", radix size=" << radix_dedup.size() << std::endl;
+        std::cerr << "[FAIL] " << label << " — std vs radix dedup result differs.\n"
+                  << "  std size=" << std_dedup.size() << ", radix size=" << radix_dedup.size()
+                  << std::endl;
         for (size_t i = 0; i < std::min(std_dedup.size(), radix_dedup.size()); ++i) {
-            std::cerr << "    [" << i << "] std=("
-                      << std_dedup[i].a << "," << std_dedup[i].b << ")"
+            std::cerr << "    [" << i << "] std=(" << std_dedup[i].a << "," << std_dedup[i].b << ")"
                       << " radix=(" << radix_dedup[i].a << "," << radix_dedup[i].b << ")\n";
         }
     }
     assert(vectors_equal(std_dedup, radix_dedup));
 }
 
-}  // namespace
+} // namespace
 
 void test_empty_input() {
     std::cout << "Testing empty input..." << std::endl;
@@ -141,7 +144,7 @@ void test_already_sorted() {
     // sort key is (b, a) lex — generate in (b ascending, a ascending) order.
     uint32_t tag = 0;
     for (uint64_t b = 1; b <= 5; ++b) {
-        for (int64_t a = -2; a <= -1; ++a) {  // two per b
+        for (int64_t a = -2; a <= -1; ++a) { // two per b
             rels.push_back(make_relation(a, b, tag++));
         }
     }
@@ -184,9 +187,8 @@ void test_random_10000() {
     std::cout << "Testing random input (10000 relations, fixed seed)..." << std::endl;
     std::mt19937_64 rng(0xDEADBEEFCAFEBABEULL);
     // Wider ranges to cross multiple byte boundaries in both keys.
-    std::uniform_int_distribution<int64_t> a_dist(
-        std::numeric_limits<int32_t>::min(),
-        std::numeric_limits<int32_t>::max());
+    std::uniform_int_distribution<int64_t> a_dist(std::numeric_limits<int32_t>::min(),
+                                                  std::numeric_limits<int32_t>::max());
     std::uniform_int_distribution<uint64_t> b_dist(1, 1ULL << 40);
 
     std::vector<Relation> rels;
