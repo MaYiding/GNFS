@@ -399,9 +399,31 @@ public:
         if (bytes == 0) {
             return;
         }
-        const std::size_t read = ::fread(destination, 1, bytes, file_);
-        if (read != bytes) {
+        if (destination == nullptr) {
+            throw std::invalid_argument(message(operation, "destination is null"));
+        }
+        auto* cursor = static_cast<unsigned char*>(destination);
+        std::size_t remaining = bytes;
+        while (remaining != 0) {
+            errno = 0;
+            const std::size_t read = ::fread(cursor, 1, remaining, file_);
+            if (read != 0) {
+                if (::ferror(file_) != 0) {
+                    if (errno == EINTR) {
+                        ::clearerr(file_);
+                    } else {
+                        throw_errno(operation);
+                    }
+                }
+                cursor += read;
+                remaining -= read;
+                continue;
+            }
             if (::ferror(file_) != 0) {
+                if (errno == EINTR) {
+                    ::clearerr(file_);
+                    continue;
+                }
                 throw_errno(operation);
             }
             throw std::runtime_error(message(operation, "short read"));
@@ -413,15 +435,30 @@ public:
         if (bytes == 0) {
             return;
         }
+        if (source == nullptr) {
+            throw std::invalid_argument(message(operation, "source is null"));
+        }
         const auto* cursor = static_cast<const unsigned char*>(source);
         std::size_t remaining = bytes;
         while (remaining != 0) {
+            errno = 0;
             const std::size_t written = ::fwrite(cursor, 1, remaining, file_);
             if (written == 0) {
                 if (::ferror(file_) != 0) {
+                    if (errno == EINTR) {
+                        ::clearerr(file_);
+                        continue;
+                    }
                     throw_errno(operation);
                 }
                 throw std::runtime_error(message(operation, "zero-progress write"));
+            }
+            if (::ferror(file_) != 0) {
+                if (errno == EINTR) {
+                    ::clearerr(file_);
+                } else {
+                    throw_errno(operation);
+                }
             }
             cursor += written;
             remaining -= written;

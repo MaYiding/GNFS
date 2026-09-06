@@ -5,6 +5,7 @@
 
 #include <gnfs/core/relation.hpp>
 #include <gnfs/relation/ooc_relation_store.hpp>
+#include <gnfs/util/native_binary_update_file.hpp>
 #include <gnfs/util/temp_path.hpp>
 
 #include <cerrno>
@@ -32,6 +33,7 @@ using gnfs::core::Relation;
 using gnfs::relation::OOCRelationReader;
 using gnfs::relation::OOCRelationWriter;
 using gnfs::relation::OOCSnapshotDescriptor;
+using gnfs::util::NativeBinaryUpdateFile;
 using gnfs::util::OwnedNativeFile;
 
 static int tests_passed = 0;
@@ -989,6 +991,37 @@ void test_writer_descriptors_use_cloexec() {
 #endif
 }
 
+void test_native_binary_update_file_rejects_null_buffers() {
+    const std::string path = gnfs::util::temp_path("gnfs_test_native_binary_update_null");
+    {
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        TEST_ASSERT(output.is_open(), "native update fixture should open");
+        output.put('\x01');
+        TEST_ASSERT(output.good(), "native update fixture should write");
+    }
+
+    auto file = NativeBinaryUpdateFile::open_existing(path);
+    bool read_threw = false;
+    try {
+        file.read_exact(nullptr, 1, "null read");
+    } catch (const std::invalid_argument&) {
+        read_threw = true;
+    }
+    TEST_ASSERT(read_threw, "read_exact should reject a null destination");
+
+    bool write_threw = false;
+    try {
+        file.write_exact(nullptr, 1, "null write");
+    } catch (const std::invalid_argument&) {
+        write_threw = true;
+    }
+    TEST_ASSERT(write_threw, "write_exact should reject a null source");
+
+    file.close_checked("null-buffer test close");
+    TEST_ASSERT(std::remove(path.c_str()) == 0, "native update fixture should be removed");
+    TEST_PASS("NativeBinaryUpdateFile rejects null buffers");
+}
+
 int main() {
     std::cout << "═══════════════════════════════════════════\n";
     std::cout << "  Out-of-core Relations Unit Tests\n";
@@ -1010,6 +1043,7 @@ int main() {
     test_writer_exception_path();
     test_large_prime_semantic_contract();
     test_writer_descriptors_use_cloexec();
+    test_native_binary_update_file_rejects_null_buffers();
 
     std::cout << "\n═══════════════════════════════════════════\n";
     std::cout << "  Results: " << tests_passed << " passed, " << tests_failed << " failed\n";
