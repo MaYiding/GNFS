@@ -1,7 +1,7 @@
 #pragma once
 
-#include <gmp.h>
 #include <cstdint>
+#include <gmp.h>
 #include <iosfwd>
 #include <string>
 #include <type_traits>
@@ -24,12 +24,11 @@ public:
     // dedicated overloads for each distinct native type; the
     // requires-clauses disable them when the types alias on another ABI.
     template <typename T>
-        requires (std::is_same_v<T, unsigned long long>
-                  && !std::is_same_v<unsigned long long, uint64_t>)
+        requires(std::is_same_v<T, unsigned long long> &&
+                 !std::is_same_v<unsigned long long, uint64_t>)
     explicit Integer(T value) : Integer(static_cast<uint64_t>(value)) {}
     template <typename T>
-        requires (std::is_same_v<T, long long>
-                  && !std::is_same_v<long long, int64_t>)
+        requires(std::is_same_v<T, long long> && !std::is_same_v<long long, int64_t>)
     explicit Integer(T value) : Integer(static_cast<int64_t>(value)) {}
     template <typename T>
         requires(std::is_same_v<T, unsigned long> && !std::is_same_v<unsigned long, uint64_t>)
@@ -86,7 +85,7 @@ public:
     std::string to_string(int base = 10) const;
     size_t bit_length() const;
     size_t num_digits(int base = 10) const;
-    
+
     // Fit checks
     bool fits_uint64() const;
     bool fits_int64() const;
@@ -111,7 +110,7 @@ public:
     Integer operator/(const Integer& other) const;
     Integer operator%(const Integer& other) const;
 
-    Integer operator-() const;  // unary minus
+    Integer operator-() const; // unary minus
 
     // Comparison
     bool operator==(const Integer& other) const;
@@ -123,7 +122,9 @@ public:
 
     // 与 int64_t/uint64_t 直接比较,避免临时 Integer 分配 (走 mpz_cmp_si/ui)
     bool operator==(int64_t rhs) const;
-    bool operator!=(int64_t rhs) const { return !(*this == rhs); }
+    bool operator!=(int64_t rhs) const {
+        return !(*this == rhs);
+    }
 
     int compare(const Integer& other) const;
 
@@ -156,10 +157,18 @@ public:
     static void divmod(Integer& quot, Integer& rem, const Integer& a, const Integer& b);
 
     // Access to underlying GMP type
-    mpz_t& get_mpz() { return value_; }
-    const mpz_t& get_mpz() const { return value_; }
-    mpz_t* get() { return &value_; }
-    const mpz_t* get() const { return &value_; }
+    mpz_t& get_mpz() {
+        return value_;
+    }
+    const mpz_t& get_mpz() const {
+        return value_;
+    }
+    mpz_t* get() {
+        return &value_;
+    }
+    const mpz_t* get() const {
+        return &value_;
+    }
 
 private:
     mpz_t value_;
@@ -177,7 +186,8 @@ Integer sqrt(const Integer& n);
 inline Integer mod_inverse(const Integer& a, const Integer& m) {
     Integer result;
     int ok = mpz_invert(result.get_mpz(), a.get_mpz(), m.get_mpz());
-    if (!ok) return Integer{};
+    if (!ok)
+        return Integer{};
     return result;
 }
 
