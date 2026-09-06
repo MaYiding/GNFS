@@ -1000,6 +1000,52 @@ void test_output_file_open_failure() {
     std::cout << "  Output file open failure: PASS" << std::endl;
 }
 
+#if defined(__linux__)
+void test_output_file_flush_failure_rejects_add() {
+    std::cout << "Testing auxiliary output flush failure rollback..." << std::endl;
+
+    CollectorConfig config;
+    config.output_file = "/dev/full";
+    config.flush_on_add = true;
+    RelationCollector collector(config);
+
+    bool threw = false;
+    try {
+        (void)collector.add(Relation(17, 19));
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+    CHECK(collector.empty());
+    CHECK(collector.size() == 0);
+    CHECK(collector.stats().total_relations == 0);
+
+    const auto ooc_path = make_tmp_ooc_path("output_flush_failure_ooc");
+    CollectorConfig ooc_config = config;
+    ooc_config.ooc_enabled = true;
+    ooc_config.ooc_base_path = ooc_path;
+    {
+        RelationCollector ooc_collector(ooc_config);
+        bool ooc_threw = false;
+        try {
+            (void)ooc_collector.add(Relation(23, 29));
+        } catch (const std::runtime_error&) {
+            ooc_threw = true;
+        }
+        CHECK(ooc_threw);
+        CHECK(ooc_collector.empty());
+        CHECK(ooc_collector.size() == 0);
+        CHECK(ooc_collector.stats().total_relations == 0);
+    }
+    std::error_code ignored;
+    std::filesystem::remove(ooc_path + ".relidx", ignored);
+    ignored.clear();
+    std::filesystem::remove(ooc_path + ".reldata", ignored);
+
+    std::cout << "  Auxiliary output flush failure rollback: PASS" << std::endl;
+}
+#endif
+
 /// RAII OOC artifact cleanup
 struct OOCArtifacts {
     std::string base;
@@ -3276,6 +3322,9 @@ int main() {
     test_effective_large_prime_stats();
     test_batch_add();
     test_output_file_open_failure();
+#if defined(__linux__)
+    test_output_file_flush_failure_rejects_add();
+#endif
     test_save_load();
     test_save_rejects_oversized_relation_without_clobbering_target();
     test_legacy_serialization_lp_contract();

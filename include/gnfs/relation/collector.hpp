@@ -547,8 +547,18 @@ public:
                 // Preserve the historical auxiliary-output-before-storage order.
                 if (output_stream_.is_open()) {
                     rel.serialize(output_stream_);
+                    if (!output_stream_) {
+                        throw std::runtime_error(
+                            "RelationCollector::add: auxiliary output write failed for '" +
+                            config_.output_file + "'");
+                    }
                     if (config_.flush_on_add) {
                         output_stream_.flush();
+                        if (!output_stream_) {
+                            throw std::runtime_error(
+                                "RelationCollector::add: auxiliary output flush failed for '" +
+                                config_.output_file + "'");
+                        }
                     }
                 }
 
@@ -1228,6 +1238,11 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         if (output_stream_.is_open()) {
             output_stream_.flush();
+            if (!output_stream_) {
+                throw std::runtime_error(
+                    "RelationCollector::flush: auxiliary output flush failed for '" +
+                    config_.output_file + "'");
+            }
         }
     }
 
