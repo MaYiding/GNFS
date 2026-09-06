@@ -103,16 +103,39 @@ inline void apply_log_p_stride(uint16_t* arr, size_t start, size_t end, size_t s
         return;
 
     if (!enable_tiny_simd) {
-        for (size_t idx = start; idx < end; idx += stride) {
+        size_t idx = start;
+        while (true) {
             arr[idx] += lp;
+            // A guarded increment prevents wraparound when the helper is
+            // called with an end point near SIZE_MAX.
+            if (stride >= end - idx)
+                break;
+            idx += stride;
+        }
+        return;
+    }
+
+    // The 4x body below intentionally multiplies stride.  Route only the
+    // otherwise-unrepresentable multiplication range through the guarded
+    // scalar loop; normal sieve primes stay on the original fast path.
+    if (stride > std::numeric_limits<size_t>::max() / 4) {
+        size_t idx = start;
+        while (true) {
+            arr[idx] = static_cast<uint16_t>(arr[idx] + lp);
+            if (stride >= end - idx)
+                break;
+            idx += stride;
         }
         return;
     }
 
     size_t idx = start;
     const size_t step4 = stride * 4;
+    const size_t step3 = stride * 3;
     // Stay 3 strides shy of the end so the unrolled body never overshoots.
-    while (idx + 3 * stride < end) {
+    // Use subtraction rather than `idx + step3` to keep the comparison
+    // defined when end itself is SIZE_MAX.
+    while (end - idx > step3) {
         // 4 independent dependency chains — the OoO pipeline overlaps them.
         const size_t i0 = idx;
         const size_t i1 = idx + stride;
@@ -122,11 +145,21 @@ inline void apply_log_p_stride(uint16_t* arr, size_t start, size_t end, size_t s
         arr[i1] = static_cast<uint16_t>(arr[i1] + lp);
         arr[i2] = static_cast<uint16_t>(arr[i2] + lp);
         arr[i3] = static_cast<uint16_t>(arr[i3] + lp);
+        // If fewer than five writes remain, the unrolled body just completed
+        // the range. Otherwise this update is proven to stay below `end`.
+        if (end - idx <= step4)
+            return;
         idx += step4;
     }
-    // Tail (0-3 remaining writes).
-    for (; idx < end; idx += stride) {
+
+    // Tail (0-3 remaining writes), with the same guarded increment as the
+    // scalar path.  The condition is checked after each write so no final
+    // one-past value needs to be representable.
+    while (true) {
         arr[idx] = static_cast<uint16_t>(arr[idx] + lp);
+        if (stride >= end - idx)
+            break;
+        idx += stride;
     }
 }
 
@@ -141,8 +174,15 @@ inline void apply_log_p_stride_scalar(uint16_t* arr, size_t start, size_t end, s
                                       uint16_t lp) noexcept {
     if (stride == 0)
         return;
-    for (size_t idx = start; idx < end; idx += stride) {
+    if (start >= end)
+        return;
+
+    size_t idx = start;
+    while (true) {
         arr[idx] = static_cast<uint16_t>(arr[idx] + lp);
+        if (stride >= end - idx)
+            break;
+        idx += stride;
     }
 }
 
