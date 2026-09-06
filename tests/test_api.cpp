@@ -3928,6 +3928,14 @@ bool test_pipeline_progress_callback() {
     Config cfg;
     cfg.verbose = false;
 
+    if (!test_pipeline_filter_freezes_strategy_before_callbacks() ||
+        !test_pipeline_filter_callback_failure_restores_stats() ||
+        !test_pipeline_phase_callback_failure_restores_stats() ||
+        !test_pipeline_extract_callback_failure_restores_stats() ||
+        !test_pipeline_run_callback_failure_restores_stats()) {
+        return false;
+    }
+
     Pipeline pipeline(n, cfg);
 
     std::vector<Phase> phases_seen;
@@ -3947,18 +3955,8 @@ bool test_pipeline_progress_callback() {
 
     // After driving three GNFS phases, the callback should have observed
     // at least PolynomialSelection, FactorBase, and Sieving.
-    if (phases_seen.size() < 3) {
-        std::cout << "(Pipeline progress callback should fire on each phase transition) ";
-        return false;
-    }
-
-    if (!test_pipeline_filter_freezes_strategy_before_callbacks() ||
-        !test_pipeline_filter_callback_failure_restores_stats() ||
-        !test_pipeline_phase_callback_failure_restores_stats() ||
-        !test_pipeline_extract_callback_failure_restores_stats() ||
-        !test_pipeline_run_callback_failure_restores_stats()) {
-        return false;
-    }
+    assert(phases_seen.size() >= 3 &&
+           "Pipeline progress callback should fire on each phase transition");
     return true;
 }
 
