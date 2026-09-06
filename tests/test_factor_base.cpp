@@ -182,6 +182,39 @@ void test_log_values() {
     std::cout << "  Log values: PASS" << std::endl;
 }
 
+void test_zero_and_one_bounds() {
+    std::cout << "Testing zero and one factor-base bounds..." << std::endl;
+    const auto require = [](bool condition, const char* message) {
+        if (!condition)
+            throw std::runtime_error(message);
+    };
+
+    Integer n(test_n);
+    auto result = BaseMSelector::select(n, 3);
+    require(result.success, "base-m selection failed for zero/one bound test");
+    auto ctx = BaseMSelector::create_context(n, result);
+
+    for (uint32_t bound : {0u, 1u}) {
+        FactorBaseBuilder::Options opts;
+        opts.rational_bound = bound;
+        opts.algebraic_bound = bound;
+        opts.parallel = false;
+
+        auto fb = FactorBaseBuilder::build(ctx, opts);
+        require(fb.rational_count() == 0, "zero/one bound produced rational entries");
+        require(fb.algebraic_count() == 0, "zero/one bound produced algebraic entries");
+        require(fb.sieve_algebraic_count() == 0, "zero/one bound produced sieve algebraic entries");
+
+        auto sieve = FactorBaseBuilder::build_eratosthenes_sieve(bound);
+        require(sieve.size() == static_cast<size_t>(bound) + 1, "zero/one sieve size mismatch");
+        require(!sieve[0], "sieve marked zero as prime");
+        if (bound == 1)
+            require(!sieve[1], "sieve marked one as prime");
+    }
+
+    std::cout << "  Zero and one bounds: PASS" << std::endl;
+}
+
 void test_parallel_build() {
     std::cout << "Testing parallel build..." << std::endl;
 
@@ -610,6 +643,7 @@ int main() {
     test_cz_random_splitting();
     test_index_lookup();
     test_log_values();
+    test_zero_and_one_bounds();
     test_parallel_build();
     test_larger_bound();
     test_segmented_parallel_sieve();
