@@ -83,6 +83,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -399,8 +400,16 @@ private:
         if (negative) {
             v = -v;
         }
-        // Round half to even is overkill; round half up via +0.5 trick.
-        const long long scaled = static_cast<long long>(v * scale + 0.5);
+        // Round half to even is overkill; round half up via +0.5 trick. Check
+        // the rounded value before narrowing: a finite progress rate can still
+        // exceed LLONG_MAX once scaled, and floating-to-integer conversion
+        // outside the destination range is undefined behavior.
+        const double rounded = v * scale + 0.5;
+        const long long scaled =
+            !std::isfinite(rounded) ||
+                    rounded >= static_cast<double>(std::numeric_limits<long long>::max())
+                ? std::numeric_limits<long long>::max()
+                : static_cast<long long>(rounded);
         const long long integer_part = scaled / static_cast<long long>(scale);
         const long long fractional_part = scaled - integer_part * static_cast<long long>(scale);
         std::string out;

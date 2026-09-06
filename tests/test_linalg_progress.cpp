@@ -368,6 +368,30 @@ static void test_zero_rate_prints_question() {
     std::cout << "  rate underflow: PASS (rate=? not NaN/inf)" << std::endl;
 }
 
+static void test_extreme_rate_saturates_before_formatting() {
+    std::cout << "Testing extreme rate formatting saturates without integer UB..." << std::endl;
+    set_env_interval("1");
+    StderrCapture cap;
+    {
+        IterationProgressLogger lg("ExtremeRate", INT64_MAX);
+        // Ensure elapsed_s is positive while keeping the rate far above the
+        // formatter's long-long-scaled range.
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        lg.tick(INT64_MAX);
+        lg.finish();
+    }
+    set_env_interval(nullptr);
+
+    const std::string out = cap.str();
+    assert(out.find("rate=922337203685477580.7/s") != std::string::npos);
+    assert(out.find("avg_rate=922337203685477580.7/s") != std::string::npos);
+    assert(out.find("nan") == std::string::npos);
+    assert(out.find("NaN") == std::string::npos);
+    assert(out.find("inf") == std::string::npos);
+    assert(out.find("Inf") == std::string::npos);
+    std::cout << "  extreme rate: PASS (finite saturated output)" << std::endl;
+}
+
 // ────────────────────────────────────────────────────────────────────
 // Move semantics
 // ────────────────────────────────────────────────────────────────────
@@ -466,6 +490,7 @@ int main() {
     test_iter_above_total_clamped();
     test_negative_iter_clamped();
     test_zero_rate_prints_question();
+    test_extreme_rate_saturates_before_formatting();
 
     std::cout << "\n--- Move semantics ---" << std::endl;
     test_move_construct_no_double_emit();
