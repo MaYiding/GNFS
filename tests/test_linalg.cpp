@@ -237,6 +237,19 @@ void test_bitvector() {
     std::cout << "  BitVector: PASSED" << std::endl;
 }
 
+void test_bitvector_size_overflow() {
+    std::cout << "Testing BitVector size overflow guard..." << std::endl;
+
+    require_throws<std::length_error>(
+        [] { BitVector oversized(std::numeric_limits<size_t>::max()); },
+        "BitVector must reject a size whose word-count padding overflows");
+    require_throws<std::length_error>(
+        [] { BitVector oversized(std::numeric_limits<size_t>::max() - 1); },
+        "BitVector must reject a near-maximum size whose word-count padding overflows");
+
+    std::cout << "  BitVector size overflow guard: PASSED" << std::endl;
+}
+
 // Test Gaussian elimination on a simple matrix
 void test_gaussian_simple() {
     std::cout << "Testing Gaussian elimination (simple)..." << std::endl;
@@ -1436,6 +1449,7 @@ int main() {
     test_sparse_matrix_bounds();
     test_sparse_matrix_transpose();
     test_bitvector();
+    test_bitvector_size_overflow();
     test_gaussian_simple();
     test_gaussian_larger();
     test_matrix_builder();
