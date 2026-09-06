@@ -1,19 +1,27 @@
 // test_joining_thread.cpp - portable joining-thread ownership contracts
 
+#include <gnfs/util/joined_worker_group.hpp>
 #include <gnfs/util/joining_thread.hpp>
 
+#include <array>
 #include <atomic>
+#include <cstddef>
+#include <exception>
 #include <future>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <type_traits>
 #include <utility>
 
 namespace {
 
 using gnfs::util::JoiningThread;
+using gnfs::util::run_joined_worker_group;
+using std::size_t;
 
 int checks_passed = 0;
 int checks_failed = 0;
@@ -51,6 +59,23 @@ public:
 
 private:
     std::atomic_bool* invoked_;
+};
+
+class ActiveGuard final {
+public:
+    explicit ActiveGuard(std::atomic_size_t& active) noexcept : active_(&active) {
+        active_->fetch_add(1, std::memory_order_relaxed);
+    }
+
+    ActiveGuard(const ActiveGuard&) = delete;
+    ActiveGuard& operator=(const ActiveGuard&) = delete;
+
+    ~ActiveGuard() {
+        active_->fetch_sub(1, std::memory_order_relaxed);
+    }
+
+private:
+    std::atomic_size_t* active_;
 };
 
 void test_default_state_and_explicit_join() {
@@ -242,6 +267,131 @@ void test_join_and_constructor_exceptions_propagate() {
     CHECK(!invoked.load(std::memory_order_relaxed));
 }
 
+void test_joined_worker_group_zero_is_noop() {
+    std::atomic_size_t calls{0};
+    run_joined_worker_group(
+        0, [&](size_t) noexcept { calls.fetch_add(1, std::memory_order_relaxed); });
+    CHECK(calls.load(std::memory_order_relaxed) == 0);
+}
+
+void test_joined_worker_group_releases_only_after_full_launch() {
+    constexpr size_t worker_count = 4;
+    std::atomic_size_t launch_attempts{0};
+    std::array<std::atomic_uint, worker_count> calls{};
+    std::atomic_bool body_started_before_full_launch{false};
+
+    gnfs::util::joined_worker_group_detail::run_joined_worker_group_with_launcher(
+        worker_count,
+        [&](size_t worker_ordinal) {
+            if (launch_attempts.load(std::memory_order_acquire) != worker_count) {
+                body_started_before_full_launch.store(true, std::memory_order_relaxed);
+            }
+            calls[worker_ordinal].fetch_add(1, std::memory_order_relaxed);
+        },
+        [&](size_t worker_ordinal, auto&& task) {
+            CHECK(worker_ordinal == launch_attempts.load(std::memory_order_relaxed));
+            launch_attempts.fetch_add(1, std::memory_order_release);
+            return JoiningThread(std::forward<decltype(task)>(task));
+        });
+
+    CHECK(launch_attempts.load(std::memory_order_relaxed) == worker_count);
+    CHECK(!body_started_before_full_launch.load(std::memory_order_relaxed));
+    for (const auto& call_count : calls) {
+        CHECK(call_count.load(std::memory_order_relaxed) == 1);
+    }
+}
+
+void test_joined_worker_group_partial_launch_failure_starts_no_bodies() {
+    constexpr size_t worker_count = 5;
+    constexpr size_t failing_ordinal = 2;
+    const std::error_code expected_code =
+        std::make_error_code(std::errc::resource_unavailable_try_again);
+    std::atomic_size_t launched_threads{0};
+    std::atomic_size_t exited_threads{0};
+    std::atomic_size_t live_threads{0};
+    std::atomic_size_t body_calls{0};
+    size_t launch_attempts = 0;
+    size_t live_at_catch = std::numeric_limits<size_t>::max();
+    bool caught = false;
+
+    try {
+        gnfs::util::joined_worker_group_detail::run_joined_worker_group_with_launcher(
+            worker_count,
+            [&](size_t) noexcept { body_calls.fetch_add(1, std::memory_order_relaxed); },
+            [&](size_t worker_ordinal, auto&& task) -> JoiningThread {
+                ++launch_attempts;
+                if (worker_ordinal == failing_ordinal) {
+                    throw std::system_error(expected_code, "injected indexed launch failure");
+                }
+                return JoiningThread([owned_task = std::forward<decltype(task)>(task),
+                                      &launched_threads, &exited_threads,
+                                      &live_threads]() mutable noexcept {
+                    launched_threads.fetch_add(1, std::memory_order_relaxed);
+                    ActiveGuard guard(live_threads);
+                    owned_task();
+                    exited_threads.fetch_add(1, std::memory_order_relaxed);
+                });
+            });
+    } catch (const std::system_error& error) {
+        caught = true;
+        live_at_catch = live_threads.load(std::memory_order_relaxed);
+        CHECK(error.code() == expected_code);
+        CHECK(std::string_view(error.what()).find("injected indexed launch failure") !=
+              std::string_view::npos);
+    } catch (...) {
+        CHECK(false);
+    }
+
+    CHECK(caught);
+    CHECK(launch_attempts == failing_ordinal + 1);
+    CHECK(body_calls.load(std::memory_order_relaxed) == 0);
+    CHECK(launched_threads.load(std::memory_order_relaxed) == failing_ordinal);
+    CHECK(exited_threads.load(std::memory_order_relaxed) == failing_ordinal);
+    CHECK(live_at_catch == 0);
+    CHECK(live_threads.load(std::memory_order_relaxed) == 0);
+}
+
+void test_joined_worker_group_joins_all_and_rethrows_lowest_ordinal() {
+    constexpr size_t worker_count = 4;
+    std::array<std::atomic_uint, worker_count> calls{};
+    std::atomic_size_t active_workers{0};
+    std::promise<void> higher_failure_ready_promise;
+    std::shared_future<void> higher_failure_ready =
+        higher_failure_ready_promise.get_future().share();
+    size_t active_at_catch = std::numeric_limits<size_t>::max();
+    bool caught = false;
+
+    try {
+        run_joined_worker_group(worker_count, [&](size_t worker_ordinal) {
+            ActiveGuard guard(active_workers);
+            calls[worker_ordinal].fetch_add(1, std::memory_order_relaxed);
+            if (worker_ordinal == 2) {
+                higher_failure_ready_promise.set_value();
+                throw std::runtime_error("worker failure at ordinal 2");
+            }
+            if (worker_ordinal == 0) {
+                higher_failure_ready.wait();
+                throw std::runtime_error("worker failure at ordinal 0");
+            }
+            higher_failure_ready.wait();
+            std::this_thread::yield();
+        });
+    } catch (const std::runtime_error& error) {
+        caught = true;
+        active_at_catch = active_workers.load(std::memory_order_relaxed);
+        CHECK(std::string_view(error.what()) == "worker failure at ordinal 0");
+    } catch (...) {
+        CHECK(false);
+    }
+
+    CHECK(caught);
+    CHECK(active_at_catch == 0);
+    CHECK(active_workers.load(std::memory_order_relaxed) == 0);
+    for (const auto& call_count : calls) {
+        CHECK(call_count.load(std::memory_order_relaxed) == 1);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -252,6 +402,10 @@ int main() {
     test_empty_and_self_move_assignment();
     test_stack_unwind_joins();
     test_join_and_constructor_exceptions_propagate();
+    test_joined_worker_group_zero_is_noop();
+    test_joined_worker_group_releases_only_after_full_launch();
+    test_joined_worker_group_partial_launch_failure_starts_no_bodies();
+    test_joined_worker_group_joins_all_and_rethrows_lowest_ordinal();
 
     std::cout << "JoiningThread: " << checks_passed << " checks passed, " << checks_failed
               << " failed\n";

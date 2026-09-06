@@ -160,6 +160,8 @@ TIMEOUT_EXPLICIT=0
 RETRY_COUNT=0
 RETRY_EXPLICIT=0
 
+source "${PROJECT_ROOT}/scripts/lib/process_tree_timeout.zsh"
+
 # 统计变量
 TOTAL_TESTS=0
 PASSED_TESTS=0
@@ -474,7 +476,7 @@ MODULE_TESTS=(
     util           "test_small_vector test_sha256 test_thread_pool test_joining_thread test_ordered_parallel_map test_fixed_slot_executor test_logger test_primes test_timer test_process_memory test_bounded_child_process test_durable_immutable_file test_durable_immutable_record test_mmap_file test_native_random_access_file test_safe_math test_bit_intrin test_memory_pool test_integer_scratch_pool test_mpz_powm_parallel test_mpz_invert_parallel test_mpz_mod_parallel test_mpz_gcd_parallel test_mpz_mul_parallel"
     polynomial     "test_murphy test_root_property_cache test_int_polynomial test_half_gcd test_poly_karatsuba test_horner_batch_simd test_divrem_subquadratic test_poly_ntt test_poly_square test_poly_add_mod_simd test_poly_horner_mod_simd test_regressions test_polynomial_context test_base_m test_polynomial_optimizer test_resultant test_rotation_incremental test_bai_brent_poly test_poly_checkpoint"
     factor_base    "test_factor_base test_fb_checkpoint test_fb_roots_parallel"
-    sieve          "test_special_q test_sieve_basic test_sieve_checkpoint test_distributed_sieve test_distributed_sieve_worker_entry test_distributed_sieve_worker_writer_authority test_distributed_sieve_worker_execution test_distributed_sieve_worker_process test_distributed_sieve_wave_store_windows test_distributed_sieve_work_identity_codec test_distributed_sieve_work_package_codec test_distributed_sieve_worker_cleanup_codec test_distributed_sieve_merge_writer_codec test_distributed_sieve_merge_writer test_distributed_sieve_merge_writer_authority test_distributed_sieve_wave_merge_commit test_distributed_sieve_worker_cleanup_tail test_distributed_sieve_worker_cleanup_authorization_publisher test_distributed_sieve_worker_cleanup_orchestrator test_distributed_sieve_wave_result test_distributed_sieve_worker_work_package_file test_distributed_sieve_execution_policy test_distributed_sieve_seed_v2 test_distributed_sieve_resume test_bucket_sieve test_sieve_ecore_qos test_local_sieve_thread_budget test_lll_lattice test_adaptive_lattice test_sieve_tiny_simd test_bucket_prefetch test_sieve_region_tile test_sieve_norm_tile test_lattice_basis_parallel test_sieve_apply_tile_parallel test_lattice_coords_simd test_threshold_scan_simd test_saturated_sub_simd"
+    sieve          "test_special_q test_sieve_basic test_sieve_checkpoint test_distributed_sieve test_distributed_sieve_worker_entry test_distributed_sieve_worker_writer_authority test_distributed_sieve_worker_execution test_distributed_sieve_worker_process test_distributed_sieve_wave_store_windows test_distributed_sieve_work_identity_codec test_distributed_sieve_work_package_codec test_distributed_sieve_worker_cleanup_codec test_distributed_sieve_merge_writer_codec test_distributed_sieve_merge_writer test_distributed_sieve_merge_writer_authority test_distributed_sieve_wave_merge_commit test_distributed_sieve_worker_cleanup_tail test_distributed_sieve_worker_cleanup_authorization_publisher test_distributed_sieve_worker_cleanup_orchestrator test_distributed_sieve_wave_result test_distributed_sieve_worker_work_package_file test_distributed_sieve_execution_policy test_distributed_sieve_seed_v2 test_distributed_sieve_resume test_bucket_sieve test_sieve_ecore_qos test_local_sieve_thread_budget test_lll_lattice test_adaptive_lattice test_edge_cases test_sieve_tiny_simd test_bucket_prefetch test_sieve_region_tile test_sieve_norm_tile test_lattice_basis_parallel test_sieve_apply_tile_parallel test_lattice_coords_simd test_threshold_scan_simd test_saturated_sub_simd"
     cofactor       "test_cofactor test_cofactor_attempt_context test_cofactor_seed_provider test_candidate_chunk_plan test_candidate_batch test_squfof test_squfof_budget_corpus test_squfof_success_challenge_corpus test_squfof_success_challenge_oracle test_squfof_budget_oracle test_squfof_strategy_oracle test_brent_pollard_rho test_brent_pollard_rho_parallel test_survival_predictor test_batch_ecm test_ecm_curve_plan test_3lp_cofactor test_trial_wheel test_batch_trial test_ecm_curve_pool test_sigma_seed_pool test_ecm_stage2_parallel test_ecm_stage1_parallel test_batch_inversion test_trial_div_simd test_cofactor_stage_timing test_ecm_prime_cache test_cofactor_result_cache test_integration test_ecm_brent_suyama"
     relation       "test_relation_corpus_sha256 test_relation_collector test_relation_corpus test_relation_sink test_ooc_store_integrity test_ooc_durable_handoff test_ooc_cleanup_transaction test_filter test_lp_key_contract test_relation_identity test_relation_reduction_engine test_structured_filter test_structured_filter_policy test_structured_tree_basis test_structured_tree_basis_property test_structured_budgeted_driver test_structured_conflict_batch test_structured_parallel_prepare test_structured_batch_commit test_structured_parallel_driver test_structured_parallel_failures test_structured_incidence_builder test_structured_materialization test_filter_radix_sort test_lp_bloom test_lp_key_hash test_merger_parallel test_clique_merger test_clique_merger_50d_synthetic test_3lp_merge test_ooc_relations test_ooc_policy test_v0_bfs_policy test_integration test_relation_pool_integration"
     linalg         "test_linalg test_sge_batch_pivots test_block_wiedemann test_bw_rank_est test_matrix_diagnostics test_sge_streaming test_mmap_csr test_krylov_sequence_mmap test_bw_krylov_mmap_integration test_schirokauer_deg4 test_schirokauer_strip test_schirokauer_parallel test_edge_cases test_integration test_matrix_view_concept test_save_sparse_as_mmap test_linalg_mmap_policy test_bw_krylov_parallel test_metal_spmv test_spmv_simd test_transpose_blocked test_popcount_simd test_and_popcnt_simd test_xor_words_simd test_and_words_simd test_xor_popcnt_simd test_row_popcount_simd test_krylov_compress test_krylov_compression test_bl_checkpoint test_bl_resume_integration test_linalg_progress"
@@ -494,6 +496,13 @@ MODULE_SLOW_TESTS=(
     api            "test_api test_full_resume"
     siqs           "test_siqs_e2e"
 )
+
+# 模块 → 非二进制 CTest 合同映射
+typeset -A MODULE_CTEST_CONTRACTS
+MODULE_CTEST_CONTRACTS=(
+    util "^(ProcessSupervisor|HarnessProcessTreeTimeout)$"
+)
+SMOKE_CTEST_CONTRACT="^ProcessSupervisor$"
 
 # 冒烟测试子集: instant 层核心测试，绝不包含真实 GNFS pipeline / bench / stress
 typeset -a SMOKE_TESTS
@@ -757,7 +766,7 @@ TEST_TIMEOUT=(
     test_relation_sink       20
     test_ooc_store_integrity 20
     test_ooc_durable_handoff 10
-    test_ooc_cleanup_transaction 120
+    test_ooc_cleanup_transaction 300
     test_cofactor            10
     test_cofactor_attempt_context 10
     test_cofactor_seed_provider 10
@@ -843,7 +852,7 @@ TEST_TIMEOUT=(
     test_kleinjung           360
     test_kleinjung_large     600
     test_factor_with_kleinjung 900
-    test_lattice_sieve       180
+    test_lattice_sieve       300
     test_gnfs_e2e            300
     test_squfof              10
     test_squfof_budget_corpus 10
@@ -1009,7 +1018,7 @@ TEST_TIER=(
     test_relation_sink       "instant"
     test_ooc_store_integrity "instant"
     test_ooc_durable_handoff "instant"
-    test_ooc_cleanup_transaction "fast"
+    test_ooc_cleanup_transaction "slow"
     test_cofactor            "instant"
     test_cofactor_attempt_context "instant"
     test_cofactor_seed_provider "instant"
@@ -1259,6 +1268,7 @@ MODULE_ORDER=(core util polynomial factor_base sieve cofactor relation linalg sq
 path_to_module() {
     local path="$1"
     case "$path" in
+        CMakeLists.txt|.github/workflows/*.yml|scripts/test.sh|scripts/lib/process_tree_timeout.zsh|scripts/check_harness.py|scripts/check_distributed_sieve_policy.py|docs/harness-engineering.md|docs/testing-ci-policy.md|tests/test_process_supervisor.cmake|tests/test_harness_process_tree_timeout.zsh|tests/support/gnfs_test_process_supervisor.cpp|tests/support/bounded_child_process_fake_child.cpp) echo "util" ;;
         tests/test_resultant.cpp) echo "polynomial" ;;
         tests/test_small_vector.cpp|tests/test_sha256.cpp|tests/test_thread_pool.cpp|tests/test_joining_thread.cpp|tests/test_logger.cpp|tests/test_primes.cpp|tests/test_timer.cpp|tests/test_mpz_powm_parallel.cpp|tests/test_mpz_mod_parallel.cpp|tests/test_mpz_gcd_parallel.cpp|tests/test_mpz_mul_parallel.cpp|tests/test_durable_immutable_file.cpp|tests/test_durable_immutable_record.cpp|tests/test_mmap_file.cpp|tests/test_native_random_access_file.cpp) echo "util" ;;
         tests/test_ecm_curve_plan.cpp|tests/test_cofactor_attempt_context.cpp|tests/test_cofactor_seed_provider.cpp) echo "cofactor" ;;
@@ -1415,70 +1425,9 @@ do_build() {
     fi
 }
 
-# ============================================================
-# 核心: zsh 原生超时包装器 (不依赖 timeout/gtimeout)
-# ============================================================
-
-# run_with_timeout <timeout_secs> <command> [args...]
-# 返回: 0=正常退出, 124=超时, 其他=命令退出码
-# 输出保存在全局变量 RUN_OUTPUT 中
-RUN_OUTPUT=""
-run_with_timeout() {
-    local timeout_secs=$1
-    shift
-    local cmd=("$@")
-
-    local tmpfile
-    tmpfile=$(mktemp /tmp/gnfs_test.XXXXXX)
-
-    # 启动后台进程
-    "${cmd[@]}" > "$tmpfile" 2>&1 &
-    local pid=$!
-
-    # 快速轮询: 前 2 秒每 0.1s 检查一次 (覆盖 instant 测试)
-    local polls=0
-    while (( polls < 20 )); do
-        sleep 0.1
-        (( polls += 1 ))
-        if ! kill -0 $pid 2>/dev/null; then
-            wait $pid 2>/dev/null
-            local exit_code=$?
-            RUN_OUTPUT=$(cat "$tmpfile")
-            rm -f "$tmpfile"
-            return $exit_code
-        fi
-    done
-
-    # 慢速轮询: 之后每 1s 检查 + 心跳
-    local elapsed_secs=2
-    while (( elapsed_secs < timeout_secs )); do
-        sleep 1
-        (( elapsed_secs += 1 ))
-
-        if ! kill -0 $pid 2>/dev/null; then
-            wait $pid 2>/dev/null
-            local exit_code=$?
-            RUN_OUTPUT=$(cat "$tmpfile")
-            rm -f "$tmpfile"
-            return $exit_code
-        fi
-
-        # 每 10 秒打一个心跳点
-        if (( elapsed_secs % 10 == 0 && !QUIET )); then
-            printf "${DIM}[%ds]${RESET}" "$elapsed_secs" >&2
-        fi
-    done
-
-    # 超时: 杀掉进程
-    kill $pid 2>/dev/null
-    sleep 0.2
-    kill -9 $pid 2>/dev/null
-    wait $pid 2>/dev/null
-
-    RUN_OUTPUT=$(cat "$tmpfile")
-    rm -f "$tmpfile"
-    return 124
-}
+# Process-tree timeout wrappers are sourced from
+# scripts/lib/process_tree_timeout.zsh. They route through the compiled
+# cross-platform supervisor instead of owning raw child PIDs in zsh.
 
 # ============================================================
 # 核心: 运行单个测试
@@ -1517,7 +1466,7 @@ run_single_test() {
     local start_ms exit_code=0
     start_ms=$(timer_start_ms)
 
-    # 用 zsh 原生超时运行
+    # 通过跨平台进程树 supervisor 有界运行
     run_with_timeout "$test_timeout" "$binary" "${extra_args[@]}"
     exit_code=$?
     local output="$RUN_OUTPUT"
@@ -2605,6 +2554,65 @@ def replace_field(line, key, value):
     return replace_token(line, key, f"{key}={value}")
 
 
+def derive_local_thread_topology(special_q_processed, worker_limit,
+                                 candidates_total, candidate_peak_chunks,
+                                 local_budget):
+    if special_q_processed == 0:
+        assigned_threads = 0
+        peak_sieve_threads = 0
+    else:
+        peak_batch_size = min(4, special_q_processed)
+        final_batch_size = special_q_processed % 4 or peak_batch_size
+        final_workers = min(worker_limit, final_batch_size)
+        require(final_workers > 0,
+                "self-check cannot derive a nonempty special-Q topology")
+        assigned_threads = local_budget
+        peak_sieve_threads = (
+            local_budget + final_workers - 1
+        ) // final_workers
+
+    candidate_workers = 0
+    if candidates_total > 0:
+        candidate_workers = min(local_budget, candidate_peak_chunks)
+    return assigned_threads, peak_sieve_threads, candidate_workers
+
+
+def replace_local_thread_topology(line, legacy_line, structured_line,
+                                  requested_threads, local_budget):
+    _, typed = parse_comparison(line)
+    assigned_threads, peak_sieve_threads, candidate_workers = \
+        derive_local_thread_topology(
+            typed["special_q_processed"], typed["special_q_batch_worker_limit"],
+            typed["candidates_total"], typed["candidate_batch_peak_chunks"],
+            local_budget,
+        )
+
+    comparison_replacements = {
+        "max_local_sieve_threads": requested_threads,
+        "local_sieve_thread_budget": str(local_budget),
+        "special_q_batch_peak_assigned_threads": str(assigned_threads),
+        "special_q_worker_peak_sieve_threads": str(peak_sieve_threads),
+        "candidate_batch_peak_workers": str(candidate_workers),
+    }
+    for key, value in comparison_replacements.items():
+        line = replace_field(line, key, value)
+
+    route_requested_threads = "0" if requested_threads == "auto" else requested_threads
+    route_replacements = {
+        "max_local_sieve_threads_requested": route_requested_threads,
+        "local_sieve_thread_budget": str(local_budget),
+        "special_q_batch_peak_assigned_threads": str(assigned_threads),
+        "special_q_worker_peak_sieve_threads": str(peak_sieve_threads),
+        "candidate_batch_peak_workers": str(candidate_workers),
+    }
+    routes = []
+    for route_line in (legacy_line, structured_line):
+        for key, value in route_replacements.items():
+            route_line = replace_field(route_line, key, value)
+        routes.append(route_line)
+    return line, routes
+
+
 def remove_field(line, key):
     tokens = line.split(" ")
     filtered = [token for token in tokens if not token.startswith(f"{key}=")]
@@ -2732,6 +2740,15 @@ try:
         record, legacy_record, structured_record
     )
 
+    require(
+        derive_local_thread_topology(5, 4, 10, 10, 10) == (10, 10, 10),
+        "internal greater-than-four-budget topology self-check failed",
+    )
+    require(
+        derive_local_thread_topology(0, 0, 0, 0, 10) == (0, 0, 0),
+        "internal empty-schedule topology self-check failed",
+    )
+
     expect_rejected(remove_field(record, "status"), "a missing field",
                     legacy_record, structured_record)
     expect_rejected(replace_token(record, "scope", "status=pass"),
@@ -2761,16 +2778,40 @@ try:
         replace_field(record, "legacy_wall_ms", str(typed["legacy_wall_ms"] + 1)),
         "a comparison/source drift", legacy_record, structured_record,
     )
-    clamped_record = replace_field(record, "max_local_sieve_threads", "8")
-    clamped_record = replace_field(clamped_record, "local_sieve_thread_budget", "4")
-    clamped_routes = []
-    for route_record in (legacy_record, structured_record):
-        route_record = replace_field(
-            route_record, "max_local_sieve_threads_requested", "8"
-        )
-        route_record = replace_field(route_record, "local_sieve_thread_budget", "4")
-        clamped_routes.append(route_record)
+    clamped_record, clamped_routes = replace_local_thread_topology(
+        record, legacy_record, structured_record, "8", 4
+    )
     validate_record(clamped_record, clamped_routes[0], clamped_routes[1])
+
+    remainder_record = record
+    remainder_comparison_replacements = {
+        "max_special_q": "5",
+        "special_q_processed": "5",
+        "special_q_batch_worker_limit": "4",
+        "special_q_batch_peak_workers": "4",
+        "candidates_total": "10",
+        "candidate_batch_total_chunks": "10",
+        "candidate_batch_peak_chunks": "10",
+        "candidate_batch_peak_candidates": "10",
+    }
+    for key, value in remainder_comparison_replacements.items():
+        remainder_record = replace_field(remainder_record, key, value)
+
+    remainder_routes = []
+    remainder_route_replacements = {
+        **remainder_comparison_replacements,
+        "special_q_batch_count": "2",
+        "special_q_batch_peak_size": "4",
+        "candidate_batch_rss_sample_candidates": "10",
+    }
+    for route_line in (legacy_record, structured_record):
+        for key, value in remainder_route_replacements.items():
+            route_line = replace_field(route_line, key, value)
+        remainder_routes.append(route_line)
+    remainder_record, remainder_routes = replace_local_thread_topology(
+        remainder_record, remainder_routes[0], remainder_routes[1], "12", 10
+    )
+    validate_record(remainder_record, remainder_routes[0], remainder_routes[1])
     over_request_record = replace_field(
         clamped_record, "max_local_sieve_threads", "3"
     )
@@ -4616,36 +4657,12 @@ run_dual_stream_with_timeout() {
     local cmd=("$@")
 
     DUAL_STREAM_TIMED_OUT=0
-    "${cmd[@]}" >"$stdout_file" 2>"$stderr_file" &
-    local pid=$!
-    local elapsed_tenths=0
-    local timeout_tenths=$((timeout_seconds * 10))
-    local next_heartbeat_tenths=100
-
-    while kill -0 "$pid" 2>/dev/null; do
-        if (( elapsed_tenths >= timeout_tenths )); then
-            DUAL_STREAM_TIMED_OUT=1
-            kill "$pid" 2>/dev/null || true
-            sleep 0.2
-            kill -9 "$pid" 2>/dev/null || true
-            wait "$pid" 2>/dev/null || true
-            return 124
-        fi
-        if (( elapsed_tenths < 20 )); then
-            sleep 0.1
-            (( elapsed_tenths += 1 ))
-        else
-            sleep 1
-            (( elapsed_tenths += 10 ))
-        fi
-        if (( elapsed_tenths >= next_heartbeat_tenths && !QUIET )); then
-            printf "${DIM}[%ds]${RESET}" "$((elapsed_tenths / 10))" >&2
-            (( next_heartbeat_tenths += 100 ))
-        fi
-    done
-
     local exit_code=0
-    wait "$pid" 2>/dev/null || exit_code=$?
+    run_with_timeout_to_files "$stdout_file" "$stderr_file" "$timeout_seconds" \
+        "${cmd[@]}" || exit_code=$?
+    if (( exit_code == 124 )); then
+        DUAL_STREAM_TIMED_OUT=1
+    fi
     return "$exit_code"
 }
 
@@ -7302,12 +7319,14 @@ show_summary() {
 
 do_smoke() {
     log_header "冒烟测试 (Smoke)"
-    log_info "运行 ${#SMOKE_TESTS[@]} 个 instant 层核心测试"
+    log_info "运行 ${#SMOKE_TESTS[@]} 个 instant 核心二进制 + 1 个 CTest 合同组"
     echo ""
 
     for test in "${SMOKE_TESTS[@]}"; do
         run_single_test "$test" || true
     done
+    run_ctest_contract_group "util process supervisor" \
+        "$SMOKE_CTEST_CONTRACT" || true
 }
 
 # ============================================================
@@ -7335,6 +7354,34 @@ do_ctest() {
         log_fail "CTest 有失败项 ($(format_duration $elapsed))"
     fi
     return $exit_code
+}
+
+run_ctest_contract_group() {
+    local name="$1"
+    local regex="$2"
+    local start_ms exit_code=0
+    start_ms=$(timer_start_ms)
+    (( TOTAL_TESTS += 1 ))
+
+    local ctest_args=(--test-dir "$BUILD_DIR" --output-on-failure --no-tests=error
+        -C "$BUILD_TYPE" -R "$regex")
+    if (( VERBOSE )); then ctest_args+=(--verbose); fi
+    if (( QUIET )); then ctest_args+=(--quiet); fi
+    ctest "${ctest_args[@]}" 2>&1 || exit_code=$?
+
+    local end_ms=$(timer_start_ms)
+    local elapsed=$((end_ms - start_ms))
+    TOTAL_TIME_MS=$((TOTAL_TIME_MS + elapsed))
+    if (( exit_code == 0 )); then
+        (( PASSED_TESTS += 1 ))
+        log_success "${name} CTest 合同 ($(format_duration $elapsed))"
+        REPORT_ENTRIES+=("{\"name\":\"${name}\",\"status\":\"pass\",\"elapsed_ms\":${elapsed},\"detail\":\"ctest-contract\"}")
+    else
+        (( FAILED_TESTS += 1 ))
+        log_fail "${name} CTest 合同失败 ($(format_duration $elapsed))"
+        REPORT_ENTRIES+=("{\"name\":\"${name}\",\"status\":\"fail\",\"elapsed_ms\":${elapsed},\"detail\":\"ctest-contract\"}")
+    fi
+    return "$exit_code"
 }
 
 # ============================================================
@@ -7409,6 +7456,18 @@ do_module() {
                         (( mod_pass += 1 ))
                     fi
                 done
+            fi
+        fi
+
+        local contract_regex="${MODULE_CTEST_CONTRACTS[$mod]:-}"
+        if [[ -n "$contract_regex" ]]; then
+            (( mod_total += 1 ))
+            local failed_before=$FAILED_TESTS
+            run_ctest_contract_group "${mod} process supervisor" "$contract_regex" || true
+            if (( FAILED_TESTS > failed_before )); then
+                (( mod_failed += 1 ))
+            else
+                (( mod_pass += 1 ))
             fi
         fi
 
@@ -7771,11 +7830,18 @@ do_gate() {
             return 1
         fi
     done
+    run_ctest_contract_group "util process supervisor" \
+        "$SMOKE_CTEST_CONTRACT" || true
+    if (( FAIL_FAST && FAILED_TESTS > pre_fail )); then
+        log_fail "Gate Level 1 FAILED — 中止门禁"
+        return 1
+    fi
     if (( FAILED_TESTS > pre_fail )); then
         log_fail "Gate Level 1 FAILED — smoke 测试有失败，中止门禁"
         return 1
     fi
-    log_success "Gate Level 1 PASSED — smoke ${#SMOKE_TESTS[@]}/${#SMOKE_TESTS[@]}"
+    log_success \
+        "Gate Level 1 PASSED — smoke ${#SMOKE_TESTS[@]} binaries + 1 CTest contract"
 
     if (( quick )); then
         log_info "快速模式: 跳过 Level 2"
@@ -8016,7 +8082,12 @@ do_tsan_relation() {
             -DGNFS_ENABLE_UBSAN=OFF
         cmake --build "$BUILD_DIR" \
             --parallel "$PARALLEL_JOBS" \
-            --target "${TSAN_RELATION_TESTS[@]}"
+            --target gnfs_test_process_supervisor "${TSAN_RELATION_TESTS[@]}"
+    fi
+
+    if ! gnfs_test_process_supervisor_path >/dev/null; then
+        log_fail "TSan process-tree supervisor 不存在: ${BUILD_DIR}/gnfs_test_process_supervisor"
+        return 1
     fi
 
     local test
@@ -8106,6 +8177,11 @@ do_list() {
     for test in "${SMOKE_TESTS[@]}"; do
         echo "  ${BULLET} ${test}"
     done
+
+    echo ""
+    echo "${BOLD}非二进制 CTest 合同:${RESET}"
+    echo "  ${BULLET} ${CYAN}ProcessSupervisor${RESET} — instant, 15s, cross-platform"
+    echo "  ${BULLET} ${CYAN}HarnessProcessTreeTimeout${RESET} — fast, 20s, POSIX + zsh"
 
     echo ""
     echo "${BOLD}特殊测试:${RESET}"

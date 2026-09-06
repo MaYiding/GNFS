@@ -94,16 +94,7 @@ void accumulate_stats(FactorStats& total, const FactorStats& part, bool first_at
         total.matrix_excess = std::max(total.matrix_excess, part.matrix_excess);
     }
     total.dependencies_found = add(total.dependencies_found, part.dependencies_found);
-    if (part.dependencies_tried > 0 &&
-        total.dependencies_tried > (std::numeric_limits<int>::max)() - part.dependencies_tried) {
-        total.dependencies_tried = (std::numeric_limits<int>::max)();
-    } else if (part.dependencies_tried < 0 &&
-               total.dependencies_tried <
-                   (std::numeric_limits<int>::min)() - part.dependencies_tried) {
-        total.dependencies_tried = (std::numeric_limits<int>::min)();
-    } else {
-        total.dependencies_tried += part.dependencies_tried;
-    }
+    total.dependencies_tried = add(total.dependencies_tried, part.dependencies_tried);
     accumulate_timings(total.timings, part.timings);
 }
 

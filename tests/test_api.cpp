@@ -447,6 +447,28 @@ bool test_config_from_file() {
     return true;
 }
 
+bool test_config_from_file_integer_boundaries() {
+    const std::string path = gnfs::util::temp_path("gnfs_test_config_boundaries.cfg");
+    {
+        std::ofstream ofs(path);
+        ofs << "degree = 4294967295\n";
+        ofs << "rational_bound = 4294967295\n";
+        ofs << "algebraic_bound = 4294967295\n";
+        ofs << "large_prime_bound = 18446744073709551615\n";
+        ofs << "sieve_width = -2147483648\n";
+        ofs << "sieve_height = 2147483647\n";
+    }
+
+    const auto cfg = Config::from_file(path);
+    std::remove(path.c_str());
+    return cfg.degree == std::numeric_limits<uint32_t>::max() &&
+           cfg.rational_bound == std::numeric_limits<uint32_t>::max() &&
+           cfg.algebraic_bound == std::numeric_limits<uint32_t>::max() &&
+           cfg.large_prime_bound == std::numeric_limits<uint64_t>::max() &&
+           cfg.sieve_width == std::numeric_limits<int32_t>::min() &&
+           cfg.sieve_height == std::numeric_limits<int32_t>::max();
+}
+
 // Config::from_file 在非法输入下应该 throw,而不是静默接受错误值或返回空 Config。
 // 此测试锁住几条解析错误路径:
 //   1. 缺 '=' (line missing equals)
@@ -478,6 +500,15 @@ bool test_config_from_file_invalid() {
     write_and_expect_throw("bogus_key = 42\n", "unknown key");
     write_and_expect_throw("degree = 999999999999999999999999\n", "out-of-range integer");
     write_and_expect_throw("degree = not-an-integer\n", "invalid integer");
+    write_and_expect_throw("degree = 4294967296\n", "uint32 degree overflow");
+    write_and_expect_throw("degree = 4junk\n", "trailing degree characters");
+    write_and_expect_throw("rational_bound = -1\n", "negative rational bound");
+    write_and_expect_throw("algebraic_bound = 4junk\n", "trailing algebraic bound characters");
+    write_and_expect_throw("large_prime_bound = 8junk\n", "trailing large-prime characters");
+    write_and_expect_throw("large_prime_bound = 18446744073709551616\n",
+                           "uint64 large-prime overflow");
+    write_and_expect_throw("sieve_width = 2147483648\n", "int32 sieve width overflow");
+    write_and_expect_throw("sieve_height = -2147483649\n", "int32 sieve height overflow");
     write_and_expect_throw("max_special_q = 0\n", "zero max_special_q");
     write_and_expect_throw("max_special_q = 4294967296\n", "overflow max_special_q");
     write_and_expect_throw("max_special_q = 4junk\n", "trailing max_special_q characters");
@@ -1149,6 +1180,55 @@ bool test_pipeline_relation_generations() {
         return false;
     }
     return first.empty() && second.empty();
+}
+
+bool test_pipeline_rejects_foreign_context() {
+    Config cfg;
+    cfg.verbose = false;
+    Pipeline owner(Integer(143), cfg);
+    Pipeline foreign(Integer(221), cfg);
+    auto foreign_ctx = foreign.select_polynomial();
+    gnfs::factor_base::FactorBase empty_factor_base;
+
+    size_t callbacks = 0;
+    owner.set_progress_callback([&](const ProgressInfo&) { ++callbacks; });
+
+    bool build_rejected = false;
+    try {
+        (void)owner.build_factor_base(foreign_ctx);
+    } catch (const std::invalid_argument& error) {
+        build_rejected =
+            std::string_view(error.what()).find("different N") != std::string_view::npos;
+    }
+
+    bool sieve_rejected = false;
+    try {
+        (void)owner.sieve_and_collect(foreign_ctx, empty_factor_base);
+    } catch (const std::invalid_argument& error) {
+        sieve_rejected =
+            std::string_view(error.what()).find("different N") != std::string_view::npos;
+    }
+
+    bool matrix_rejected = false;
+    try {
+        RelationReductionResult reduction(1, {}, {});
+        (void)owner.build_matrix(std::move(reduction), empty_factor_base, foreign_ctx);
+    } catch (const std::invalid_argument& error) {
+        matrix_rejected =
+            std::string_view(error.what()).find("different N") != std::string_view::npos;
+    }
+
+    bool extract_rejected = false;
+    try {
+        Pipeline::MatrixResult matrix_result;
+        (void)owner.extract_factors(matrix_result, empty_factor_base, foreign_ctx);
+    } catch (const std::invalid_argument& error) {
+        extract_rejected =
+            std::string_view(error.what()).find("different N") != std::string_view::npos;
+    }
+
+    return build_rejected && sieve_rejected && matrix_rejected && extract_rejected &&
+           callbacks == 0;
 }
 
 bool test_v3_cascade_pipeline_integration() {
@@ -3747,6 +3827,7 @@ int main() {
     TEST(config_merge);
     TEST(config_apply_to);
     TEST(config_from_file);
+    TEST(config_from_file_integer_boundaries);
     TEST(config_from_file_invalid);
     TEST(config_to_string);
 
@@ -3776,6 +3857,7 @@ int main() {
     TEST(structured_xor_pair_fallback);
     TEST(pipeline_stats);
     TEST(pipeline_relation_generations);
+    TEST(pipeline_rejects_foreign_context);
     TEST(pipeline_progress_callback);
     TEST(structured_filter_stage_telemetry_parser);
     TEST(structured_ooc_path_namespace_contract);

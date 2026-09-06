@@ -85,6 +85,7 @@ DISTRIBUTED_FLAGS = (
     "GNFS_DISTRIBUTED_SIEVE_WORKERS",
     "GNFS_DISTRIBUTED_SIEVE_BASE_PATH",
     "GNFS_DISTRIBUTED_SIEVE_SQ_PER_WORKER",
+    "GNFS_DISTRIBUTED_SIEVE_ASSERT_REPORT_CLOEXEC",
 )
 
 CATEGORY_FLAGS = {
@@ -5539,7 +5540,7 @@ WORKER_CLEANUP_RECEIPT_RELEASE_MEMBER_BODY = (
 )
 WORKER_CLEANUP_RECEIPT_CMAKE_FILE = "CMakeLists.txt"
 WORKER_CLEANUP_RECEIPT_CMAKE_COMMENT_MASKED_SHA256 = (
-    "476a8045fbfeaa9b3a5cef58fde9fbbdca11923e650025e21fd0928d402ab478"
+    "a627dbd87dc8210de07ea928203996ef2d0b5745b2bc25dd9d150ed7aad7a3c4"
 )
 WORKER_CLEANUP_RECEIPT_RELEASE_TOOLCHAIN_FILE = (
     "scripts/linux-release-gcc12-toolchain.cmake"
@@ -5555,6 +5556,7 @@ WORKER_CLEANUP_RECEIPT_REPO_BUILD_FILES = frozenset(
     {
         WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
         WORKER_CLEANUP_RECEIPT_RELEASE_TOOLCHAIN_FILE,
+        "tests/test_process_supervisor.cmake",
     }
 )
 WORKER_CLEANUP_RECEIPT_CONTROL_PLANE_POLICY_FILE = (
@@ -5679,8 +5681,8 @@ WORKER_CLEANUP_RECEIPT_PASTE_MACRO_CODE_USE_CONTEXTS = {
         "470d0973f63d32e9af3a85a485ba14b2c2eba9e516190d32a86a0ca37aa57a26",
     ),
     ("tests/test_api.cpp", "TEST"): (
-        60,
-        "f74527ca825b4a19ad394f2ac92c8ae71005751d7ccba50c651a7316d3f935a7",
+        62,
+        "9e8b310feac62ab5ddd92c49ba6b654369e96bc5aff57e64d873cf371c67bbcb",
     ),
     ("tests/test_full_resume.cpp", "RUN_TEST"): (
         6,
@@ -33134,6 +33136,7 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
             "include/dup",
             "scripts",
             "src",
+            "tests",
             "vendor/dup",
         ):
             (fixture_root / directory).mkdir(parents=True, exist_ok=True)
@@ -33145,6 +33148,7 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
             ),
             ".hidden/receipt.custom": "#define private public\n",
             "cmake/extra.cmake": "# injected build surface\n",
+            "tests/test_process_supervisor.cmake": "# supervisor test fixture\n",
             "src/entry.cpp": '#include "payload.tokens"\n',
             "src/payload.tokens": "inline int custom_extension_payload = 1;\n",
             "src/angle.cpp": "#include <dup/receipt.tokens>\n",

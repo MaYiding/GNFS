@@ -15,6 +15,7 @@
 #include "gnfs/util/temp_path.hpp"
 
 #ifndef _WIN32
+#include <fcntl.h>
 #include <limits.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -35,7 +36,6 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <type_traits>
 #include <unordered_set>
 #include <utility>
@@ -155,6 +155,38 @@ using gnfs::factor_base::FactorBase;
 
 inline constexpr int WORKER_EXIT_FAILURE = 1;
 inline constexpr int WORKER_EXIT_SEED_PROVIDER_FATAL = 2;
+
+[[nodiscard]] bool set_close_on_exec(int descriptor) noexcept {
+    int flags = -1;
+    do {
+        flags = ::fcntl(descriptor, F_GETFD);
+    } while (flags < 0 && errno == EINTR);
+    if (flags < 0) {
+        return false;
+    }
+
+    int result = -1;
+    do {
+        result = ::fcntl(descriptor, F_SETFD, flags | FD_CLOEXEC);
+    } while (result < 0 && errno == EINTR);
+    return result == 0;
+}
+
+[[nodiscard]] bool make_cloexec_pipe(int (&descriptors)[2]) noexcept {
+    if (::pipe(descriptors) != 0) {
+        return false;
+    }
+    if (!set_close_on_exec(descriptors[0]) || !set_close_on_exec(descriptors[1])) {
+        const int saved_errno = errno;
+        (void)::close(descriptors[0]);
+        (void)::close(descriptors[1]);
+        descriptors[0] = -1;
+        descriptors[1] = -1;
+        errno = saved_errno;
+        return false;
+    }
+    return true;
+}
 
 class ChildSeedProviderBoundary final : public gnfs::cofactor::CofactorSeedProvider {
 public:
@@ -305,6 +337,16 @@ static_assert(sizeof(WorkerCompletionReport) <= PIPE_BUF);
     const SieveRegion& sieve_region, const gnfs::cofactor::CofactorizerConfig& cofac_config,
     const gnfs::cofactor::CofactorSeedProvider* seed_provider, const Integer& n, const Integer& m) {
     try {
+        if (std::getenv("GNFS_DISTRIBUTED_SIEVE_ASSERT_REPORT_CLOEXEC") != nullptr) {
+            int flags = -1;
+            do {
+                flags = ::fcntl(report_descriptor, F_GETFD);
+            } while (flags < 0 && errno == EINTR);
+            if (flags < 0 || (flags & FD_CLOEXEC) == 0) {
+                ::_exit(WORKER_EXIT_FAILURE);
+            }
+        }
+
         // ── Test/debug crash injection ────────────────────────────────
         // ENV `GNFS_DISTRIBUTED_SIEVE_FAIL_ATTEMPT_<chunk_id>=N` makes only
         // parent-numbered attempt N fail. Retry state never enters the worker
@@ -463,7 +505,7 @@ SpawnedWorker spawn_worker(size_t chunk_id, uint32_t sq_begin, uint32_t sq_end,
                            const gnfs::cofactor::CofactorSeedProvider* seed_provider,
                            const Integer& n, const Integer& m) {
     int report_pipe[2]{-1, -1};
-    if (::pipe(report_pipe) != 0) {
+    if (!make_cloexec_pipe(report_pipe)) {
         throw std::runtime_error(std::string("distributed_sieve: pipe() failed: ") +
                                  std::strerror(errno));
     }

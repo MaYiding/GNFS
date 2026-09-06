@@ -36,10 +36,9 @@
 //     supplied `reduce_fn(basis_inputs[i])` must read only its own argument
 //     and may capture read-only shared state (skew constant, NumberField,
 //     params) by reference; it must not write to any shared mutable state.
-//   * GMP `mpz_*` operations are thread-safe when operands are disjoint per
-//     call. Each basis task owns its own `Integer` / `Result` buffers
-//     constructed inside the lambda, satisfying GMP's per-call disjoint-
-//     operands requirement.
+//   * The dispatcher itself does not call GMP. If a caller-supplied reduction
+//     uses `Integer` / `mpz_*`, each task must own disjoint operands and
+//     scratch storage.
 //   * The dispatcher returns a `std::vector<Result>` of per-basis outcomes
 //     in input order. `Result[i] == reduce_fn(basis_inputs[i])` regardless
 //     of `threads`, so callers see bit-for-bit identical output between the

@@ -228,6 +228,37 @@ void test_factor_base() {
     printf("  factor_base: PASS (%zu primes)\n", fb.size());
 }
 
+void test_init_poly_handles_large_a_factor_count() {
+    // The production table currently uses at most 12 A factors, but this is
+    // a valid runtime shape for the public helper.  It also covers the former
+    // 16-element stack workspace, which was only protected by assert().
+    const Integer N("1000000007");
+    const auto fb = build_factor_base(N, 64);
+    require_test(fb.size() >= 19, "factor base too small for A-factor boundary test");
+
+    SIQSPoly poly;
+    poly.a_indices.reserve(17);
+    for (uint32_t index = 2; index < 19; ++index) {
+        poly.a_indices.push_back(index);
+    }
+    poly.A = Integer(1);
+    for (const uint32_t index : poly.a_indices) {
+        poly.A *= static_cast<int64_t>(fb[index].p);
+    }
+
+    init_poly(N, fb, 128, poly);
+    require_test(poly.B_parts.size() == poly.a_indices.size(),
+                 "large A-factor initialization lost CRT parts");
+    require_test(poly.coeffs.size() == poly.a_indices.size(),
+                 "large A-factor initialization lost coefficients");
+    require_test(poly.solns.size() == fb.size() && poly.a_inv_mod_p.size() == fb.size(),
+                 "large A-factor initialization produced incomplete sieve state");
+    require_test(poly.bp_mod_p.size() == poly.a_indices.size() * fb.size(),
+                 "large A-factor initialization produced incomplete B residues");
+
+    std::printf("  init_poly large A-factor boundary (17 factors): PASS\n");
+}
+
 void test_siqs_small() {
     std::string default_stderr;
     const auto default_result = factor_143_with_shadow_mode(nullptr, default_stderr);
@@ -488,6 +519,7 @@ int main() {
     test_one_large_prime_rejects_strong_pseudoprimes();
     test_tonelli_shanks();
     test_factor_base();
+    test_init_poly_handles_large_a_factor_count();
     test_split_cofactor_edge();
 
     printf("\n--- Factorization tests ---\n");

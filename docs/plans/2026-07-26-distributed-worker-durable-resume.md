@@ -2783,14 +2783,24 @@ so hostile same-user path replacement remains outside the claim. Linux fails
 before sieve or corpus mutation because typed terminal handoff publication
 remains unsupported there.
 
-Worker binding rejects regions that the current lattice implementation cannot
-represent safely. Widened checks cover inclusive width and height, row-loop
-endpoints, midpoint arithmetic, compact `int16_t` state, and the
-`vector<uint16_t>` area limit. A width of 32768 is the exact accepted compact
-boundary; 32769 is rejected. The explicit parallel lattice API also joins
-every started thread before propagating a worker or thread-construction
-exception, so neither path can terminate the process through a joinable thread
-destructor.
+Worker binding rejects region dimensions and areas that the current lattice
+implementation cannot represent safely. Widened checks cover positive inclusive
+width and height, row-loop endpoints, midpoint arithmetic, and the
+`vector<uint16_t>` area. Chunk preparation then enumerates every initial and
+possibly reachable adaptive basis, subject to the exact special-Q cap, and
+checks the four affine projection corners that bound every `(a,b)` candidate.
+This completes before writer authority is adopted. A width of 32768 is the exact
+compact row-state boundary. Wider valid regions, including 32769, route the
+complete factor-base prime set through the region-bucket path; they are not
+rejected merely for exceeding the compact path. Factor-base primes admitted to
+fixed-width sieve state are restricted to `[2, INT32_MAX]`, with
+`log_p <= UINT16_MAX`; distributed identity validation enforces the same
+active-entry limits before rehydration. The explicit parallel lattice API also
+joins every started thread before
+propagating a worker or thread-construction exception, so neither path can
+terminate the process through a joinable thread destructor. The complete
+numeric contract is documented in
+[Lattice Sieve Numeric Contract](../algorithms/lattice-sieve-numeric-contract.md).
 
 WaveStore inventory now recognizes one exact successful worker terminal shape:
 canonical `OWNED`, revoked `RESERVED`, the finalized index/data pair, and the

@@ -2,6 +2,7 @@
 #include "gnfs/polynomial/int_polynomial.hpp"
 #include "support/test_check.hpp"
 
+#include <cstdint>
 #include <iostream>
 #include <limits>
 
@@ -151,6 +152,18 @@ void test_evaluate_mod() {
     GNFS_TEST_CHECK(g.evaluate_mod(0, 11) == 2);
     GNFS_TEST_CHECK(g.evaluate_mod(1, 11) == 0);
     GNFS_TEST_CHECK(g.evaluate_mod(2, 11) == 0);
+
+    // The modular add step must remain correct when two residues near a
+    // UINT64 modulus would overflow their native sum.
+    const uint64_t p = (std::numeric_limits<uint64_t>::max)() - 1;
+    const uint64_t x = p - 1;
+    std::vector<Integer> wide_coeffs;
+    wide_coeffs.emplace_back(p - 1);       // c_0
+    wide_coeffs.emplace_back(p - 1);       // c_1
+    wide_coeffs.emplace_back(uint64_t{1}); // c_2
+    IntPolynomial wide(std::move(wide_coeffs));
+    GNFS_TEST_CHECK(wide.evaluate_mod(x, p) == 1);
+    GNFS_TEST_CHECK(wide.evaluate_mod(x, 0) == 0);
 
     std::cout << "  PASS" << std::endl;
 }

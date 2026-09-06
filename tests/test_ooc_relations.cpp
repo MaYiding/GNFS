@@ -23,6 +23,7 @@
 #include <windows.h>
 #else
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -181,6 +182,35 @@ static bool native_handle_is_closed(TestNativeHandle handle) {
 #endif
 }
 
+#ifndef _WIN32
+static int find_fd_for_path(const std::string& path) {
+    struct stat expected {};
+    if (::stat(path.c_str(), &expected) != 0) {
+        return -1;
+    }
+    for (int descriptor = 0; descriptor < 1024; ++descriptor) {
+        struct stat observed {};
+        int result = -1;
+        do {
+            result = ::fstat(descriptor, &observed);
+        } while (result != 0 && errno == EINTR);
+        if (result == 0 && observed.st_dev == expected.st_dev &&
+            observed.st_ino == expected.st_ino) {
+            return descriptor;
+        }
+    }
+    return -1;
+}
+
+static bool descriptor_has_cloexec(int descriptor) {
+    int flags = -1;
+    do {
+        flags = ::fcntl(descriptor, F_GETFD);
+    } while (flags < 0 && errno == EINTR);
+    return flags >= 0 && (flags & FD_CLOEXEC) != 0;
+}
+#endif
+
 static void resize_file(const std::string& path, std::uintmax_t size) {
     std::error_code error;
     std::filesystem::resize_file(path, size, error);
@@ -279,7 +309,7 @@ void test_random_access() {
     {
         OOCRelationWriter writer(tmp.base);
         for (int i = 0; i < 500; ++i) {
-            auto rel = make_relation(i, static_cast<uint64_t>(i * 7), 4, 3, 1, 1);
+            auto rel = make_relation(i, static_cast<uint64_t>((i + 1) * 7), 4, 3, 1, 1);
             originals.push_back(rel);
             writer.write(rel);
         }
@@ -307,7 +337,7 @@ void test_read_all() {
     {
         OOCRelationWriter writer(tmp.base);
         for (int i = 0; i < 100; ++i) {
-            auto rel = make_relation(i, static_cast<uint64_t>(i), 3, 2);
+            auto rel = make_relation(i, static_cast<uint64_t>(i + 1), 3, 2);
             originals.push_back(rel);
             writer.write(rel);
         }
@@ -332,7 +362,7 @@ void test_read_range() {
     {
         OOCRelationWriter writer(tmp.base);
         for (int i = 0; i < 50; ++i) {
-            writer.write(make_relation(i, static_cast<uint64_t>(i), 2, 2));
+            writer.write(make_relation(i, static_cast<uint64_t>(i + 1), 2, 2));
         }
         writer.close();
     }
@@ -877,6 +907,26 @@ void test_writer_exception_path() {
     TEST_PASS("writer exception path → reader rejects incomplete file");
 }
 
+void test_writer_descriptors_use_cloexec() {
+#ifdef _WIN32
+    TEST_PASS("writer descriptors use close-on-exec (Windows handles are non-inheritable)");
+#else
+    TempFiles tmp(gnfs::util::temp_path("gnfs_test_ooc_cloexec"));
+    {
+        OOCRelationWriter writer(tmp.base);
+        const int data_descriptor = find_fd_for_path(tmp.base + ".reldata");
+        const int index_descriptor = find_fd_for_path(tmp.base + ".relidx");
+        TEST_ASSERT(data_descriptor >= 0 && index_descriptor >= 0,
+                    "writer should retain both relation file descriptors");
+        TEST_ASSERT(descriptor_has_cloexec(data_descriptor),
+                    "relation data descriptor should be close-on-exec");
+        TEST_ASSERT(descriptor_has_cloexec(index_descriptor),
+                    "relation index descriptor should be close-on-exec");
+    }
+    TEST_PASS("writer descriptors use close-on-exec");
+#endif
+}
+
 int main() {
     std::cout << "═══════════════════════════════════════════\n";
     std::cout << "  Out-of-core Relations Unit Tests\n";
@@ -896,6 +946,7 @@ int main() {
     test_owned_pair_reader_rejects_wrong_descriptors();
     test_owned_pair_reader_rejects_invalid_handles_safely();
     test_writer_exception_path();
+    test_writer_descriptors_use_cloexec();
 
     std::cout << "\n═══════════════════════════════════════════\n";
     std::cout << "  Results: " << tests_passed << " passed, " << tests_failed << " failed\n";

@@ -4,6 +4,7 @@
 #include "int_polynomial.hpp"
 
 #include <cmath>
+#include <limits>
 #include <optional>
 #include <vector>
 
@@ -24,13 +25,9 @@ public:
     /// @param max_iterations 最大迭代次数
     /// @param tolerance 收敛容差（相对误差）
     /// @return 优化后的根，如果失败则返回 nullopt
-    [[nodiscard]] static std::optional<Integer> newton_root(
-            const IntPolynomial& f,
-            const IntPolynomial& df,
-            const Integer& initial,
-            const Integer& n,
-            uint32_t max_iterations = 256,
-            double tolerance = 1e-6) {
+    [[nodiscard]] static std::optional<Integer>
+    newton_root(const IntPolynomial& f, const IntPolynomial& df, const Integer& initial,
+                const Integer& n, uint32_t max_iterations = 256, double tolerance = 1e-6) {
 
         if (f.is_zero()) {
             return std::nullopt;
@@ -43,12 +40,12 @@ public:
             Integer q_init, r_init;
             Integer::divmod(q_init, r_init, fm_init, n);
             if (r_init.is_zero()) {
-                return initial;  // Integer copy ctor (implicit conversion to optional)
+                return initial; // Integer copy ctor (implicit conversion to optional)
             }
         }
 
-        Integer m = initial;      // Integer copy ctor
-        Integer prev_m = m;       // copy ctor
+        Integer m = initial; // Integer copy ctor
+        Integer prev_m = m;  // copy ctor
 
         // v22: diff buffer 复用 across Newton iterations
         Integer diff;
@@ -69,7 +66,7 @@ public:
             Integer delta, rem;
             Integer::divmod(delta, rem, fm, dfm);
 
-            prev_m = m;  // mpz_set (复用 prev_m buffer)
+            prev_m = m; // mpz_set (复用 prev_m buffer)
             m -= delta;
 
             // 检查收敛
@@ -86,12 +83,20 @@ public:
             // 视为相对变化 ≤ 2^-k,默认 tolerance=1e-6 → 约 20 位。
             const size_t m_bits = m.bit_length();
             const size_t diff_bits = diff.bit_length();
-            const double raw_tol_bits = std::ceil(-std::log2(tolerance));
-            const size_t tol_bits = raw_tol_bits > 0.0
-                ? static_cast<size_t>(raw_tol_bits)
-                : 0;
-            if (diff.is_zero() ||
-                (m_bits > 0 && diff_bits + tol_bits <= m_bits)) {
+            size_t tol_bits = 0;
+            if (std::isfinite(tolerance) && tolerance > 0.0) {
+                const double raw_tol_bits = std::ceil(-std::log2(tolerance));
+                if (raw_tol_bits > 0.0 &&
+                    raw_tol_bits < static_cast<double>((std::numeric_limits<size_t>::max)())) {
+                    tol_bits = static_cast<size_t>(raw_tol_bits);
+                } else if (raw_tol_bits >=
+                           static_cast<double>((std::numeric_limits<size_t>::max)())) {
+                    tol_bits = (std::numeric_limits<size_t>::max)();
+                }
+            }
+            const bool relative_change_small =
+                m_bits > 0 && diff_bits <= m_bits && tol_bits <= m_bits - diff_bits;
+            if (diff.is_zero() || relative_change_small) {
                 break;
             }
         }
@@ -110,12 +115,9 @@ public:
     }
 
     /// 简化版牛顿法（自动计算导数）
-    [[nodiscard]] static std::optional<Integer> newton_root(
-            const IntPolynomial& f,
-            const Integer& initial,
-            const Integer& n,
-            uint32_t max_iterations = 256,
-            double tolerance = 1e-6) {
+    [[nodiscard]] static std::optional<Integer>
+    newton_root(const IntPolynomial& f, const Integer& initial, const Integer& n,
+                uint32_t max_iterations = 256, double tolerance = 1e-6) {
 
         IntPolynomial df = derivative(f);
         return newton_root(f, df, initial, n, max_iterations, tolerance);
@@ -133,29 +135,21 @@ public:
 
     /// 多项式旋转: 计算 g(x) = f(x) + k * h(x)
     /// 常用于 h(x) = x - m，保持 f(m) = g(m)
-    [[nodiscard]] static IntPolynomial rotate(
-            const IntPolynomial& f,
-            const IntPolynomial& h,
-            int64_t k) {
+    [[nodiscard]] static IntPolynomial rotate(const IntPolynomial& f, const IntPolynomial& h,
+                                              int64_t k) {
         if (k == 0) {
             return f.clone();
         }
 
         IntPolynomial g = f.clone();
 
-        // g = f + k * h — mpz_addmul_ui (k>0) / mpz_submul_ui (k<0) fused FMA/FMS
+        // Keep the full signed 64-bit rotation coefficient in an Integer.  The
+        // *_ui variants would truncate on LLP64 platforms and negating
+        // INT64_MIN to obtain an unsigned magnitude is undefined.
+        const Integer k_integer(k);
         uint32_t max_deg = std::max(f.degree(), h.degree());
-        if (k > 0) {
-            unsigned long uk = static_cast<unsigned long>(k);
-            for (uint32_t i = 0; i <= max_deg; ++i) {
-                mpz_addmul_ui(g[i].get_mpz(), h[i].get_mpz(), uk);
-            }
-        } else {
-            // k < 0: g += k*h ≡ g -= (-k)*h
-            unsigned long uk = static_cast<unsigned long>(-k);
-            for (uint32_t i = 0; i <= max_deg; ++i) {
-                mpz_submul_ui(g[i].get_mpz(), h[i].get_mpz(), uk);
-            }
+        for (uint32_t i = 0; i <= max_deg; ++i) {
+            mpz_addmul(g[i].get_mpz(), h[i].get_mpz(), k_integer.get_mpz());
         }
 
         g.normalize();
@@ -163,22 +157,18 @@ public:
     }
 
     /// 简化的旋转: f(x) + k * (x - m)
-    [[nodiscard]] static IntPolynomial rotate_linear(
-            const IntPolynomial& f,
-            const Integer& m,
-            int64_t k) {
+    [[nodiscard]] static IntPolynomial rotate_linear(const IntPolynomial& f, const Integer& m,
+                                                     int64_t k) {
         if (k == 0) {
             return f.clone();
         }
 
         IntPolynomial g = f.clone();
 
-        // g[0] -= k*m via fused FMS (drops km temp); g[1] += k via direct add
-        if (k > 0) {
-            mpz_submul_ui(g[0].get_mpz(), m.get_mpz(), static_cast<unsigned long>(k));
-        } else {
-            mpz_addmul_ui(g[0].get_mpz(), m.get_mpz(), static_cast<unsigned long>(-k));
-        }
+        // g[0] -= k*m via fused FMS (drops km temp); g[1] += k via direct add.
+        // Use the signed GMP operand directly so INT64_MIN remains representable.
+        const Integer k_integer(k);
+        mpz_submul(g[0].get_mpz(), m.get_mpz(), k_integer.get_mpz());
         g[1] += k;
 
         g.normalize();
@@ -192,12 +182,9 @@ public:
     /// @param scorer 评分函数 (skewness) -> score（越小越好）
     /// @param tolerance 收敛容差
     /// @return 最优 skewness
-    template<typename Scorer>
-    [[nodiscard]] static double golden_section_skewness(
-            double min_skew,
-            double max_skew,
-            Scorer scorer,
-            double tolerance = 1e-4) {
+    template <typename Scorer>
+    [[nodiscard]] static double golden_section_skewness(double min_skew, double max_skew,
+                                                        Scorer scorer, double tolerance = 1e-4) {
 
         const double phi = (1.0 + std::sqrt(5.0)) / 2.0;
         const double resphi = 2.0 - phi;
@@ -234,7 +221,8 @@ public:
     /// 基于系数大小: skewness ~ (c_0 / c_d)^{1/d}
     [[nodiscard]] static double estimate_skewness(const IntPolynomial& f) {
         uint32_t d = f.degree();
-        if (d == 0) return 1.0;
+        if (d == 0)
+            return 1.0;
 
         double c0 = std::abs(f[0].to_double());
         double cd = std::abs(f[d].to_double());
@@ -279,22 +267,21 @@ public:
     /// @param bound 上界
     /// @param small_primes 小素数列表
     /// @param max_count 最大生成数量
-    [[nodiscard]] static std::vector<Integer> generate_smooth_numbers(
-            uint64_t bound,
-            const std::vector<uint32_t>& small_primes,
-            size_t max_count = 10000) {
+    [[nodiscard]] static std::vector<Integer>
+    generate_smooth_numbers(uint64_t bound, const std::vector<uint32_t>& small_primes,
+                            size_t max_count = 10000) {
 
         std::vector<Integer> result;
-        result.reserve(max_count);  // exit cap
+        result.reserve(max_count); // exit cap
         result.emplace_back(1);
 
         for (uint32_t p : small_primes) {
             size_t current_size = result.size();
             for (size_t i = 0; i < current_size && result.size() < max_count; ++i) {
-                Integer val = result[i];  // copy ctor
+                Integer val = result[i]; // copy ctor
                 val *= p;
                 while (val.fits_uint64() && val.to_uint64() <= bound) {
-                    result.emplace_back(val);  // Integer copy ctor
+                    result.emplace_back(val); // Integer copy ctor
                     val *= p;
                 }
             }
@@ -302,13 +289,10 @@ public:
 
         // 排序并去重
         std::sort(result.begin(), result.end(),
-            [](const Integer& a, const Integer& b) {
-                return a < b;
-            });
-        result.erase(
-            std::unique(result.begin(), result.end(),
-                [](const Integer& a, const Integer& b) { return a == b; }),
-            result.end());
+                  [](const Integer& a, const Integer& b) { return a < b; });
+        result.erase(std::unique(result.begin(), result.end(),
+                                 [](const Integer& a, const Integer& b) { return a == b; }),
+                     result.end());
 
         // 限制数量
         if (result.size() > max_count) {

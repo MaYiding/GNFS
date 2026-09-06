@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -29,6 +30,23 @@ OBSOLETE_HARNESS_FILES = (
     "tests/test_stop_todo_hook.sh",
     "TODO.md.example",
 )
+SHELL_FUNCTION_SHA256 = {
+    ("scripts/test.sh", "run_single_test"): (
+        "55c3e738e04fa08c35c3743d434390f1e23b7988dd7b5eab25d66278c5435920"
+    ),
+    ("scripts/test.sh", "run_dual_stream_with_timeout"): (
+        "4597d13f41083f419ba7d8b436e3cf592de6fcf86ec0acf339d4cbdfeac1719b"
+    ),
+    ("scripts/lib/process_tree_timeout.zsh", "gnfs_run_process_supervisor"): (
+        "1b2095568ca914b93a46d54d4fc4c1b448fc151a201744fbe109ce8c82eac339"
+    ),
+    ("scripts/lib/process_tree_timeout.zsh", "run_with_timeout"): (
+        "d5e06613c0728fe7a3d8a55b53ffa544d8e5d25438f352169a41c991ae550837"
+    ),
+    ("scripts/lib/process_tree_timeout.zsh", "run_with_timeout_to_files"): (
+        "6d720cd026803abd8d22b5f6aede197e696756fce955f384d3ec08c999736fc3"
+    ),
+}
 
 
 class Checks:
@@ -46,6 +64,21 @@ class Checks:
         except OSError as exc:
             self.fail(f"{relative}: cannot read file: {exc}")
             return ""
+
+    def shell_function_body(self, relative: str, text: str, name: str) -> str:
+        match = re.search(rf"(?ms)^{re.escape(name)}\(\)\s*\{{\n(.*?)^\}}", text)
+        if match is None:
+            self.fail(f"{relative}: missing shell function {name}")
+            return ""
+        return match.group(1)
+
+    def check_shell_function_digest(self, relative: str, text: str, name: str) -> str:
+        body = self.shell_function_body(relative, text, name)
+        expected = SHELL_FUNCTION_SHA256[(relative, name)]
+        actual = hashlib.sha256(body.encode("utf-8")).hexdigest()
+        if actual != expected:
+            self.fail(f"{relative}: supervised execution route {name} changed")
+        return body
 
     def git(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -175,8 +208,98 @@ class Checks:
             or "scripts/check_distributed_sieve_policy.py" not in cmake
         ):
             self.fail("CMakeLists.txt: register the distributed-sieve policy inventory CTest")
+        for marker in (
+            "add_executable(gnfs_test_process_supervisor",
+            "add_test(NAME ProcessSupervisor",
+            "add_test(NAME HarnessProcessTreeTimeout",
+        ):
+            if marker not in cmake:
+                self.fail(f"CMakeLists.txt: missing process-tree supervisor integration {marker!r}")
+
+        test_runner = self.read("scripts/test.sh")
+        timeout_library = self.read("scripts/lib/process_tree_timeout.zsh")
+        if 'source "${PROJECT_ROOT}/scripts/lib/process_tree_timeout.zsh"' not in test_runner:
+            self.fail("scripts/test.sh: source the shared process-tree timeout wrapper")
+        for marker in (
+            "gnfs_test_process_supervisor_path",
+            "gnfs_run_process_supervisor",
+            "setopt localtraps trapsasync",
+            "unsetopt bgnice",
+            "--combined-output",
+            "--stdout-file",
+            "--stderr-file",
+        ):
+            if marker not in timeout_library:
+                self.fail(
+                    f"scripts/lib/process_tree_timeout.zsh: missing supervisor route {marker!r}"
+                )
+        expected_kill_lines = (
+            'kill -"$signal_name" "$gnfs_active_supervisor_pid" 2>/dev/null || true',
+            'kill -"$gnfs_forwarded_signal_name" "$gnfs_active_supervisor_pid" '
+            "2>/dev/null || true",
+            'kill -"$signal_name" "$shell_pid" 2>/dev/null || return 125',
+        )
+        observed_kill_lines: list[str] = []
+        for line_number, line in enumerate(timeout_library.splitlines(), start=1):
+            stripped = line.strip()
+            if stripped.startswith("#") or not re.search(r"\bkill\b", stripped):
+                continue
+            observed_kill_lines.append(stripped)
+            if stripped not in expected_kill_lines:
+                self.fail(
+                    "scripts/lib/process_tree_timeout.zsh:"
+                    f"{line_number}: unexpected supervisor signal command"
+                )
+        if sorted(observed_kill_lines) != sorted(expected_kill_lines):
+            self.fail(
+                "scripts/lib/process_tree_timeout.zsh: supervisor signal commands must be exact"
+            )
+        for wrapper in ("run_with_timeout", "run_with_timeout_to_files"):
+            definition = rf"(?m)^{wrapper}\(\)\s*\{{"
+            if len(re.findall(definition, timeout_library)) != 1 or re.search(
+                definition, test_runner
+            ):
+                self.fail(f"{wrapper} must have one canonical library definition")
+            wrapper_body = self.check_shell_function_digest(
+                "scripts/lib/process_tree_timeout.zsh", timeout_library, wrapper
+            )
+            if wrapper_body.count("gnfs_run_process_supervisor ") != 1:
+                self.fail(f"scripts/lib/process_tree_timeout.zsh: {wrapper} must use supervisor")
+        self.check_shell_function_digest(
+            "scripts/lib/process_tree_timeout.zsh",
+            timeout_library,
+            "gnfs_run_process_supervisor",
+        )
+
+        single_test = self.check_shell_function_digest(
+            "scripts/test.sh", test_runner, "run_single_test"
+        )
+        single_route = 'run_with_timeout "$test_timeout" "$binary" "${extra_args[@]}"'
+        if single_test.count(single_route) != 2:
+            self.fail("scripts/test.sh: run_single_test and its retry must use run_with_timeout")
+        if "$!" in single_test or re.search(r"(?m)^\s*(?:kill|wait)\b", single_test):
+            self.fail("scripts/test.sh: run_single_test must not supervise raw child PIDs")
+        dual_test = self.check_shell_function_digest(
+            "scripts/test.sh", test_runner, "run_dual_stream_with_timeout"
+        )
+        if 'run_with_timeout_to_files "$stdout_file" "$stderr_file" "$timeout_seconds"' not in dual_test:
+            self.fail(
+                "scripts/test.sh: dual-stream consumer must use run_with_timeout_to_files"
+            )
+        if "$!" in dual_test or re.search(r"(?m)^\s*(?:kill|wait)\b", dual_test):
+            self.fail("scripts/test.sh: dual-stream consumer must not supervise raw child PIDs")
+        for mode in ("do_smoke", "do_gate"):
+            body = self.shell_function_body("scripts/test.sh", test_runner, mode)
+            if '"$SMOKE_CTEST_CONTRACT"' not in body:
+                self.fail(f"scripts/test.sh: {mode} must run the smoke CTest contract")
+        for legacy_marker in ('child_pid=$!', 'wait "$child_pid"', 'kill "$child_pid"'):
+            if legacy_marker in test_runner:
+                self.fail(f"scripts/test.sh: legacy raw-PID timeout marker {legacy_marker!r}")
 
         workflow = self.read(".github/workflows/scripts.yml")
+        for marker in ("tests/*.zsh", "scripts/lib/*.zsh", "NO_BG_NICE"):
+            if marker not in workflow:
+                self.fail(f".github/workflows/scripts.yml: missing zsh coverage {marker!r}")
         for command in (
             "python3 scripts/check_distributed_sieve_policy.py --self-test",
             "python3 scripts/check_harness.py",
@@ -184,6 +307,19 @@ class Checks:
         ):
             if command not in workflow:
                 self.fail(f".github/workflows/scripts.yml: missing CI command {command!r}")
+
+        release_readiness = self.read(".github/workflows/release-readiness.yml")
+        for marker in (
+            "Verify MinGW process-tree supervisor",
+            "-DGNFS_BUILD_TESTS=ON",
+            "--target gnfs_test_process_supervisor",
+            "-R '^ProcessSupervisor$'",
+        ):
+            if marker not in release_readiness:
+                self.fail(
+                    ".github/workflows/release-readiness.yml: "
+                    f"missing MinGW supervisor coverage {marker!r}"
+                )
 
     @staticmethod
     def frontmatter(text: str) -> dict[str, str]:
@@ -226,7 +362,7 @@ class Checks:
     def check_portability(self) -> None:
         tracked_result = self.git("ls-files")
         tracked = tracked_result.stdout.splitlines() if tracked_result.returncode == 0 else []
-        text_suffixes = {".cmake", ".cpp", ".hpp", ".json", ".md", ".py", ".sh", ".txt", ".yaml", ".yml"}
+        text_suffixes = {".cmake", ".cpp", ".hpp", ".json", ".md", ".py", ".sh", ".txt", ".yaml", ".yml", ".zsh"}
         candidates = [
             path
             for path in tracked

@@ -6,6 +6,11 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#else
+#include <cerrno>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 #include "gnfs/linalg/krylov_sequence_mmap.hpp"
@@ -42,6 +47,19 @@ std::string unique_path(std::string_view label) {
                                  ".kry");
 }
 
+std::filesystem::path native_path(const std::string& path) {
+    return gnfs::linalg::detail::krylov_native_path_from_string(path);
+}
+
+std::string unique_utf8_path() {
+    static std::uint64_t sequence = 0;
+    const std::string filename = "gnfs_test_krylov_" + std::to_string(gnfs::util::process_id()) +
+                                 "_" + std::to_string(++sequence) +
+                                 "_utf8_\xE4\xB8\xAD\xE6\x96\x87.kry";
+    return gnfs::linalg::detail::krylov_cached_path_string(gnfs::util::temp_directory_path() /
+                                                           native_path(filename));
+}
+
 class PathCleanup {
 public:
     explicit PathCleanup(std::string path) : path_(std::move(path)) {}
@@ -49,7 +67,7 @@ public:
     ~PathCleanup() {
         if (!path_.empty()) {
             std::error_code error;
-            std::filesystem::remove(std::filesystem::path(path_), error);
+            std::filesystem::remove(native_path(path_), error);
         }
     }
 
@@ -72,21 +90,50 @@ static_assert(std::is_trivially_copyable_v<DenseGF2_64x64_Mock>);
 
 bool path_exists(const std::string& path) {
     std::error_code error;
-    const bool exists = std::filesystem::exists(std::filesystem::path(path), error);
+    const bool exists = std::filesystem::exists(native_path(path), error);
     GNFS_TEST_CHECK(!error);
     return exists;
 }
 
 std::uintmax_t checked_file_size(const std::string& path) {
     std::error_code error;
-    const auto size = std::filesystem::file_size(std::filesystem::path(path), error);
+    const auto size = std::filesystem::file_size(native_path(path), error);
     GNFS_TEST_CHECK(!error);
     return size;
 }
 
+#ifndef _WIN32
+int find_fd_for_path(const std::string& path) {
+    struct stat expected {};
+    if (::stat(path.c_str(), &expected) != 0) {
+        return -1;
+    }
+    for (int descriptor = 0; descriptor < 1024; ++descriptor) {
+        struct stat observed {};
+        int result = -1;
+        do {
+            result = ::fstat(descriptor, &observed);
+        } while (result != 0 && errno == EINTR);
+        if (result == 0 && observed.st_dev == expected.st_dev &&
+            observed.st_ino == expected.st_ino) {
+            return descriptor;
+        }
+    }
+    return -1;
+}
+
+bool descriptor_has_cloexec(int descriptor) {
+    int flags = -1;
+    do {
+        flags = ::fcntl(descriptor, F_GETFD);
+    } while (flags < 0 && errno == EINTR);
+    return flags >= 0 && (flags & FD_CLOEXEC) != 0;
+}
+#endif
+
 void remove_existing_file(const std::string& path) {
     std::error_code error;
-    const bool removed = std::filesystem::remove(std::filesystem::path(path), error);
+    const bool removed = std::filesystem::remove(native_path(path), error);
     GNFS_TEST_CHECK(!error);
     GNFS_TEST_CHECK(removed);
 }
@@ -109,8 +156,7 @@ template <typename T> T read_trivial_at(std::ifstream& input, std::uint64_t offs
 }
 
 void overwrite_u64(const std::string& path, std::streamoff offset, std::uint64_t value) {
-    std::fstream output(std::filesystem::path(path),
-                        std::ios::binary | std::ios::in | std::ios::out);
+    std::fstream output(native_path(path), std::ios::binary | std::ios::in | std::ios::out);
     GNFS_TEST_CHECK(output.is_open());
     output.seekp(offset, std::ios::beg);
     GNFS_TEST_CHECK(output.good());
@@ -174,8 +220,8 @@ struct ExclusiveOpenResult {
 };
 
 ExclusiveOpenResult try_exclusive_open(const std::string& path) {
-    const std::filesystem::path native_path(path);
-    const HANDLE handle = ::CreateFileW(native_path.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
+    const auto filesystem_path = native_path(path);
+    const HANDLE handle = ::CreateFileW(filesystem_path.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
                                         nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (handle == INVALID_HANDLE_VALUE) {
         const DWORD error = ::GetLastError();
@@ -250,7 +296,7 @@ void test_persistent_roundtrip() {
 
     GNFS_TEST_CHECK(checked_file_size(path) == static_cast<std::uintmax_t>(expected_file_size));
 
-    std::ifstream input(std::filesystem::path(path), std::ios::binary);
+    std::ifstream input(native_path(path), std::ios::binary);
     GNFS_TEST_CHECK(input.is_open());
     const auto header = read_trivial<std::array<std::uint64_t, 4>>(input);
     GNFS_TEST_CHECK(header[0] == KrylovSequenceMmap::MAGIC);
@@ -286,7 +332,7 @@ void test_validate_header() {
         [&] { KrylovSequenceMmap::validate_header(path); }, "version mismatch"));
 
     {
-        std::ofstream output(std::filesystem::path(path), std::ios::binary | std::ios::trunc);
+        std::ofstream output(native_path(path), std::ios::binary | std::ios::trunc);
         GNFS_TEST_CHECK(output.is_open());
         const std::uint64_t magic = KrylovSequenceMmap::MAGIC;
         output.write(reinterpret_cast<const char*>(&magic),
@@ -327,6 +373,25 @@ void test_raw_byte_access() {
     std::cout << "  Mutable/const raw byte access: PASS\n";
 }
 
+void test_utf8_path() {
+    std::cout << "Testing UTF-8 path handling...\n";
+
+    const auto path = unique_utf8_path();
+    PathCleanup cleanup(path);
+    KrylovSequenceMmap sequence(path, 4, sizeof(std::uint64_t));
+    GNFS_TEST_CHECK(sequence.is_open());
+    GNFS_TEST_CHECK(sequence.path() == path);
+    GNFS_TEST_CHECK(path_exists(path));
+
+    sequence.raw_at(0)[0] = 0xA5U;
+    sequence.msync();
+    KrylovSequenceMmap::validate_header(path);
+    sequence.remove_file();
+    GNFS_TEST_CHECK(!path_exists(path));
+
+    std::cout << "  UTF-8 create/validate/remove roundtrip: PASS\n";
+}
+
 void test_large_sequence() {
     std::cout << "Testing large sequence (2 MiB)...\n";
 
@@ -352,7 +417,7 @@ void test_large_sequence() {
     }
 
     GNFS_TEST_CHECK(checked_file_size(path) == static_cast<std::uintmax_t>(expected_file_size));
-    std::ifstream input(std::filesystem::path(path), std::ios::binary);
+    std::ifstream input(native_path(path), std::ios::binary);
     GNFS_TEST_CHECK(input.is_open());
 
     for (const auto k : sample_positions) {
@@ -420,8 +485,7 @@ void test_invalid_args() {
     PathCleanup truncation_cleanup(truncation_path);
     constexpr std::string_view sentinel = "GNFS Krylov size preflight";
     {
-        std::ofstream output(std::filesystem::path(truncation_path),
-                             std::ios::binary | std::ios::trunc);
+        std::ofstream output(native_path(truncation_path), std::ios::binary | std::ios::trunc);
         GNFS_TEST_CHECK(output.is_open());
         output.write(sentinel.data(), static_cast<std::streamsize>(sentinel.size()));
         GNFS_TEST_CHECK(output.good());
@@ -433,7 +497,7 @@ void test_invalid_args() {
     GNFS_TEST_CHECK(truncation_guard_threw);
     GNFS_TEST_CHECK(path_exists(truncation_path));
     GNFS_TEST_CHECK(checked_file_size(truncation_path) == sentinel.size());
-    std::ifstream preserved_input(std::filesystem::path(truncation_path), std::ios::binary);
+    std::ifstream preserved_input(native_path(truncation_path), std::ios::binary);
     GNFS_TEST_CHECK(preserved_input.is_open());
     std::string preserved(sentinel.size(), '\0');
     preserved_input.read(preserved.data(), static_cast<std::streamsize>(preserved.size()));
@@ -517,6 +581,35 @@ void test_remove_file() {
     std::cout << "  Path removal and idempotent retry: PASS\n";
 }
 
+void test_posix_descriptor_hygiene() {
+#ifdef _WIN32
+    std::cout << "  POSIX descriptor hygiene: SKIP on Windows\n";
+#else
+    std::cout << "Testing POSIX descriptor hygiene...\n";
+
+    const auto path = unique_path("descriptor_hygiene");
+    PathCleanup cleanup(path);
+    int descriptor = -1;
+    {
+        KrylovSequenceMmap sequence(path, 4, 64);
+        descriptor = find_fd_for_path(path);
+        GNFS_TEST_CHECK(descriptor >= 0);
+        GNFS_TEST_CHECK(descriptor_has_cloexec(descriptor));
+    }
+
+    errno = 0;
+    GNFS_TEST_CHECK(::fcntl(descriptor, F_GETFD) == -1 && errno == EBADF);
+    GNFS_TEST_CHECK(find_fd_for_path(path) < 0);
+
+    const std::string device_path = "/dev/null";
+    const int device_descriptor_before = find_fd_for_path(device_path);
+    GNFS_TEST_CHECK(
+        throws_as<std::runtime_error>([&] { (void)KrylovSequenceMmap(device_path, 1, 64); }));
+    GNFS_TEST_CHECK(find_fd_for_path(device_path) == device_descriptor_before);
+    std::cout << "  O_CLOEXEC and close release: PASS\n";
+#endif
+}
+
 } // namespace
 
 int main() {
@@ -527,10 +620,12 @@ int main() {
         test_persistent_roundtrip();
         test_validate_header();
         test_raw_byte_access();
+        test_utf8_path();
         test_large_sequence();
         test_invalid_args();
         test_move_semantics();
         test_remove_file();
+        test_posix_descriptor_hygiene();
 
         std::cout << "===== All KrylovSequenceMmap tests PASSED =====\n";
         return 0;

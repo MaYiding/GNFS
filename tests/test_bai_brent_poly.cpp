@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <string>
 
 using namespace gnfs::polynomial;
@@ -229,6 +230,15 @@ void test_negative_n_returns_failure() {
     std::cout << "  PASSED" << std::endl;
 }
 
+void test_zero_degree_returns_failure() {
+    std::cout << "Testing select with zero degree returns failure..." << std::endl;
+    auto params = make_fast_params(0);
+    BaiBrentSelector sel(params);
+    auto res = sel.select(make_test_n_40bit());
+    assert(!res.success);
+    std::cout << "  PASSED" << std::endl;
+}
+
 void test_baseline_comparison_vs_basem() {
     std::cout << "Testing Murphy E vs BaseM baseline on 30-bit N..." << std::endl;
     Integer n = make_test_n_30bit();
@@ -321,6 +331,21 @@ void test_ad_candidate_generation_dedup() {
     std::cout << "  PASSED" << std::endl;
 }
 
+void test_extreme_candidate_limit_does_not_reserve_unbounded_memory() {
+    std::cout << "Testing extreme candidate limit avoids unbounded reserve..." << std::endl;
+    auto params = make_fast_params(4);
+    params.ad_max = 1;
+    params.search_radius = 0;
+    params.num_candidates = (std::numeric_limits<uint32_t>::max)();
+    params.root_opt_iterations = 1;
+    params.murphy_params.sample_points = 8;
+
+    BaiBrentSelector sel(params);
+    auto res = sel.select(make_test_n_40bit());
+    assert(res.success);
+    std::cout << "  PASSED" << std::endl;
+}
+
 int main() {
     std::cout << "==========================================" << std::endl;
     std::cout << "BaiBrent Non-Monic Polynomial Selection" << std::endl;
@@ -337,10 +362,12 @@ int main() {
     test_cancel_safe();
     test_zero_n_returns_failure();
     test_negative_n_returns_failure();
+    test_zero_degree_returns_failure();
     test_baseline_comparison_vs_basem();
     test_dispatch_env_off_uses_kleinjung();
     test_dispatch_env_on_uses_bai_brent();
     test_ad_candidate_generation_dedup();
+    test_extreme_candidate_limit_does_not_reserve_unbounded_memory();
 
     std::cout << "==========================================" << std::endl;
     std::cout << "All BaiBrent tests PASSED" << std::endl;

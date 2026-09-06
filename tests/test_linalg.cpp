@@ -10,7 +10,9 @@
 #include <gnfs/linalg/sge.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
 
+#include <cstdint>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -28,6 +30,17 @@ void require_throws(Callable&& callable, const char* context) {
         throw std::runtime_error(std::string(context) + ": wrong exception type");
     }
     throw std::runtime_error(std::string(context) + ": expected exception was not thrown");
+}
+
+template <typename Exception, typename Callable> bool throws_expected(Callable&& callable) {
+    try {
+        callable();
+    } catch (const Exception&) {
+        return true;
+    } catch (...) {
+        return false;
+    }
+    return false;
 }
 
 // Test SparseRow operations
@@ -126,6 +139,29 @@ void test_sparse_matrix() {
     GNFS_TEST_CHECK(mat.test(1, 2));
 
     std::cout << "  SparseMatrix: PASSED" << std::endl;
+}
+
+void test_sparse_matrix_bounds() {
+    std::cout << "Testing SparseMatrix bounds..." << std::endl;
+
+    SparseMatrix matrix(1, 1);
+    require_throws<std::out_of_range>([&] { matrix.set(1, 0); }, "row set bounds");
+    require_throws<std::out_of_range>([&] { matrix.set(0, 1); }, "column set bounds");
+    require_throws<std::out_of_range>([&] { matrix.clear(1, 0); }, "row clear bounds");
+    require_throws<std::out_of_range>([&] { matrix.clear(0, 1); }, "column clear bounds");
+    require_throws<std::out_of_range>([&] { (void)matrix.test(1, 0); }, "row test bounds");
+    require_throws<std::out_of_range>([&] { (void)matrix.test(0, 1); }, "column test bounds");
+
+    if constexpr (sizeof(size_t) > sizeof(uint32_t)) {
+        const size_t too_many_columns =
+            static_cast<size_t>(std::numeric_limits<uint32_t>::max()) + size_t{1};
+        require_throws<std::invalid_argument>([&] { (void)SparseMatrix(0, too_many_columns); },
+                                              "constructor column narrowing");
+        require_throws<std::invalid_argument>([&] { matrix.set_num_cols(too_many_columns); },
+                                              "column count narrowing");
+    }
+
+    std::cout << "  SparseMatrix bounds: PASSED" << std::endl;
 }
 
 // Test SparseMatrix transpose
@@ -422,6 +458,35 @@ void test_default_schirokauer_primes() {
     std::cout << "  Default schirokauer_primes: PASSED" << std::endl;
 }
 
+// Regression: MatrixBuilder must not project an ell>2 Schirokauer map into
+// GF(2).  Such a map needs matrix arithmetic modulo ell and is invalid here.
+void test_matrix_builder_rejects_non_gf2_schirokauer_prime() {
+    std::cout << "Testing MatrixBuilder rejects non-GF(2) Schirokauer primes..." << std::endl;
+
+    using core::Integer;
+    using core::PolynomialContext;
+
+    std::vector<Integer> coeffs = {Integer(-2), Integer(0), Integer(1)};
+    PolynomialContext ctx(Integer(15), std::move(coeffs), Integer(4), 1.0);
+
+    MatrixBuilderConfig config;
+    config.include_qc_columns = false;
+    config.schirokauer_primes = {3};
+    MatrixBuilder builder(config);
+    factor_base::FactorBase fb;
+    const std::vector<core::Relation> empty_relations;
+
+    require_throws<std::invalid_argument>([&] { (void)builder.build_with_qc({}, fb, ctx); },
+                                          "MatrixBuilder must reject Schirokauer ell>2");
+    require_throws<std::invalid_argument>(
+        [&] {
+            (void)builder.build_with_qc_streaming(VectorRelationSource(empty_relations), fb, ctx);
+        },
+        "Streaming MatrixBuilder must reject Schirokauer ell>2");
+
+    std::cout << "  Non-GF(2) Schirokauer prime rejected: PASSED" << std::endl;
+}
+
 // Test matrix stats
 // Thin matrix test (m < n) — BACKLOG #80 step 7 — confirm BW/BL can find
 // left-kernel of M when rows < cols. Synthetic: 3 rows × 4 cols, all rows
@@ -689,6 +754,136 @@ void test_schirokauer_squarefree_reducible() {
     }
 
     std::cout << "  Squarefree reducible ((x+1)(x^2+x+1) mod 2): PASSED" << std::endl;
+}
+
+// Regression test: EDF must be reproducible and must never return a composite
+// factor when its bounded Cantor-Zassenhaus search cannot split the input.
+void test_gf_poly_factorization_determinism() {
+    std::cout << "Testing deterministic GF polynomial factorization..." << std::endl;
+
+    // f = (x^2+x+1)(x^3+x^2+1)(x^3+x+1) over GF(2), represented low-to-high.
+    const GFPolyOps::Poly input = {1, 0, 1, 1, 1, 1, 1, 0, 1};
+    const std::vector<GFPolyOps::Poly> expected = {
+        {1, 1, 1},
+        {1, 0, 1, 1},
+        {1, 1, 0, 1},
+    };
+
+    const auto baseline = GFPolyOps::factor(input, 2);
+    GNFS_TEST_CHECK(baseline == expected &&
+                    "GF factorization must use canonical degree/coefficient ordering");
+    for (int iteration = 0; iteration < 8; ++iteration) {
+        GNFS_TEST_CHECK(GFPolyOps::factor(input, 2) == baseline &&
+                        "GF factorization must be deterministic across calls");
+    }
+
+    auto product = GFPolyOps::Poly{1};
+    for (const auto& factor : baseline) {
+        GNFS_TEST_CHECK(factor.back() == 1);
+        GNFS_TEST_CHECK(gnfs::sqrt::ModularPoly::is_irreducible(factor, 2));
+        product = GFPolyOps::mul(product, factor, 2);
+    }
+    GNFS_TEST_CHECK(product == input && "GF factorization factors must multiply back to the input");
+
+    const GFPolyOps::Poly two_linear_factors = {0, 1, 1}; // x(x+1)
+    require_throws<std::runtime_error>([&] { (void)GFPolyOps::edf(two_linear_factors, 1, 2, 0); },
+                                       "EDF must fail closed when its attempt budget is exhausted");
+
+    const GFPolyOps::Poly repeated_linear_factor = {1, 0, 1}; // (x+1)^2
+    require_throws<std::runtime_error>([&] { (void)GFPolyOps::edf(repeated_linear_factor, 1, 2); },
+                                       "EDF must reject repeated-factor input");
+
+    std::cout << "  Deterministic EDF and fail-closed validation: PASSED" << std::endl;
+}
+
+// Release-active validation for Schirokauer parameters and integer powers.
+void test_schirokauer_overflow_guards() {
+    std::cout << "Testing Schirokauer overflow and parameter guards..." << std::endl;
+
+    using core::Integer;
+    using core::PolynomialContext;
+
+    std::vector<Integer> coeffs = {Integer(1), Integer(0), Integer(1)};
+    PolynomialContext ctx(Integer(1), std::move(coeffs), Integer(0), 1.0);
+
+    {
+        SchirokaurConfig config;
+        config.primes = {0};
+        GNFS_TEST_CHECK(
+            throws_expected<std::invalid_argument>([&] { (void)SchirokaurMap(ctx, config); }));
+    }
+    {
+        SchirokaurConfig config;
+        config.primes = {1};
+        GNFS_TEST_CHECK(
+            throws_expected<std::invalid_argument>([&] { (void)SchirokaurMap(ctx, config); }));
+    }
+    {
+        SchirokaurConfig config;
+        config.primes = {2};
+        config.exponent_k = 0;
+        GNFS_TEST_CHECK(
+            throws_expected<std::invalid_argument>([&] { (void)SchirokaurMap(ctx, config); }));
+    }
+    {
+        SchirokaurConfig config;
+        config.primes = {2};
+        config.exponent_k = 64;
+        GNFS_TEST_CHECK(
+            throws_expected<std::overflow_error>([&] { (void)SchirokaurMap(ctx, config); }));
+    }
+    {
+        SchirokaurConfig config;
+        config.primes = {3};
+        config.exponent_k = 40;
+        GNFS_TEST_CHECK(
+            throws_expected<std::overflow_error>([&] { (void)SchirokaurMap(ctx, config); }));
+    }
+
+    // A degree-8 perfect power reaches the unsplit exponent path. With a
+    // large (but valid) prime, ell^degree exceeds uint64_t and must fail
+    // before the old unsigned multiplication could wrap.
+    std::vector<Integer> degree8_coeffs(9, Integer(0));
+    degree8_coeffs[8] = Integer(1);
+    PolynomialContext degree8_ctx(Integer(1), std::move(degree8_coeffs), Integer(0), 1.0);
+    {
+        SchirokaurConfig config;
+        config.primes = {65537};
+        config.exponent_k = 1;
+        GNFS_TEST_CHECK(throws_expected<std::overflow_error>(
+            [&] { (void)SchirokaurMap(degree8_ctx, config); }));
+    }
+
+    // Normal values remain supported and produce one degree-sized map.
+    {
+        SchirokaurConfig config;
+        config.primes = {7};
+        config.exponent_k = 5;
+        SchirokaurMap smap(ctx, config);
+        GNFS_TEST_CHECK(smap.num_columns() == ctx.degree());
+        GNFS_TEST_CHECK(smap.prime_info_.size() == 1);
+        GNFS_TEST_CHECK(smap.prime_info_[0].ell_k == 16807);
+        const auto maps = smap.compute(11, 3);
+        GNFS_TEST_CHECK(maps.size() == 1);
+        GNFS_TEST_CHECK(maps[0].size() == ctx.degree());
+        for (uint32_t value : maps[0]) {
+            GNFS_TEST_CHECK(value < 7);
+        }
+    }
+
+    // Integer::mod uses truncating division in this project, so normalize
+    // negative coefficients back to the non-negative fdiv_ui residue range.
+    {
+        std::vector<Integer> signed_coeffs = {Integer(-1), Integer(0), Integer(1)};
+        PolynomialContext signed_ctx(Integer(1), std::move(signed_coeffs), Integer(0), 1.0);
+        SchirokaurConfig config;
+        config.primes = {7};
+        config.exponent_k = 5;
+        SchirokaurMap smap(signed_ctx, config);
+        GNFS_TEST_CHECK(smap.prime_info_[0].f_mod[0] == 16806);
+    }
+
+    std::cout << "  Schirokauer overflow and parameter guards: PASSED" << std::endl;
 }
 
 // Regression test: parallel Block Lanczos produces same results as Gaussian
@@ -1238,12 +1433,14 @@ int main() {
     test_sparse_row();
     test_sparse_row_xor();
     test_sparse_matrix();
+    test_sparse_matrix_bounds();
     test_sparse_matrix_transpose();
     test_bitvector();
     test_gaussian_simple();
     test_gaussian_larger();
     test_matrix_builder();
     test_default_schirokauer_primes();
+    test_matrix_builder_rejects_non_gf2_schirokauer_prime();
     test_find_dependencies();
     test_thin_matrix_dependencies();
     test_verify_dependency();
@@ -1252,6 +1449,8 @@ int main() {
     test_schirokauer_repeated_roots();
     test_schirokauer_perfect_power();
     test_schirokauer_squarefree_reducible();
+    test_gf_poly_factorization_determinism();
+    test_schirokauer_overflow_guards();
     test_parallel_block_lanczos_correctness();
     test_ensure_all_sorted();
     test_sge_weight1();

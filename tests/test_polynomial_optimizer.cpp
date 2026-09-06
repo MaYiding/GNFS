@@ -1,23 +1,31 @@
 // Unit tests for PolynomialOptimizer — derivative, translate, rotate, skewness, etc.
-#include "gnfs/polynomial/polynomial_optimizer.hpp"
 #include "gnfs/core/polynomial.hpp"
+#include "gnfs/polynomial/polynomial_optimizer.hpp"
+#include "gnfs/polynomial/rotation_alpha.hpp"
 
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <limits>
+#include <stdexcept>
+#include <vector>
 
 using namespace gnfs::polynomial;
 using namespace gnfs::core;
 
 // ─── helpers ───────────────────────────────────────────────
 
-static Integer I(long long v) { return Integer(static_cast<int64_t>(v)); }
+static Integer I(long long v) {
+    return Integer(static_cast<int64_t>(v));
+}
 
 // Build IntPolynomial from initializer list {c0, c1, ..., cd}
 static IntPolynomial make_poly(std::initializer_list<long long> coeffs) {
     std::vector<Integer> c;
     c.reserve(coeffs.size());
-    for (long long v : coeffs) c.push_back(I(v));
+    for (long long v : coeffs)
+        c.push_back(I(v));
     return IntPolynomial(std::move(c));
 }
 
@@ -48,8 +56,8 @@ void test_derivative_quadratic() {
     auto f = make_poly({1, 3, 5});
     auto df = PolynomialOptimizer::derivative(f);
     assert(df.degree() == 1);
-    assert(df[0] == I(3));   // constant term
-    assert(df[1] == I(10));  // x coefficient
+    assert(df[0] == I(3));  // constant term
+    assert(df[1] == I(10)); // x coefficient
     std::cout << "  PASS" << std::endl;
 }
 
@@ -59,9 +67,9 @@ void test_derivative_cubic() {
     auto f = make_poly({1, 1, 0, 1});
     auto df = PolynomialOptimizer::derivative(f);
     assert(df.degree() == 2);
-    assert(df[0] == I(1));   // constant
-    assert(df[1] == I(0));   // x
-    assert(df[2] == I(3));   // x^2
+    assert(df[0] == I(1)); // constant
+    assert(df[1] == I(0)); // x
+    assert(df[2] == I(3)); // x^2
     std::cout << "  PASS" << std::endl;
 }
 
@@ -69,7 +77,7 @@ void test_derivative_cubic() {
 
 void test_translate_by_zero() {
     std::cout << "Testing translate by 0 is identity..." << std::endl;
-    auto f = make_poly({1, 2, 3});  // 3x^2 + 2x + 1
+    auto f = make_poly({1, 2, 3}); // 3x^2 + 2x + 1
     auto g = PolynomialOptimizer::translate(f, 0);
     assert(g.degree() == f.degree());
     for (uint32_t i = 0; i <= f.degree(); ++i) {
@@ -95,9 +103,9 @@ void test_translate_quadratic_by_1() {
     auto f = make_poly({0, 0, 1});
     auto g = PolynomialOptimizer::translate(f, 1);
     assert(g.degree() == 2);
-    assert(g[0] == I(1));   // constant
-    assert(g[1] == I(2));   // x
-    assert(g[2] == I(1));   // x^2
+    assert(g[0] == I(1)); // constant
+    assert(g[1] == I(2)); // x
+    assert(g[2] == I(1)); // x^2
     std::cout << "  PASS" << std::endl;
 }
 
@@ -119,9 +127,10 @@ void test_translate_evaluate_consistency() {
 void test_rotate_by_zero() {
     std::cout << "Testing rotate by k=0 is identity..." << std::endl;
     auto f = make_poly({1, 2, 3});
-    auto h = make_poly({-5, 1});  // h(x) = x - 5
+    auto h = make_poly({-5, 1}); // h(x) = x - 5
     auto g = PolynomialOptimizer::rotate(f, h, 0);
-    for (uint32_t i = 0; i <= 2; ++i) assert(g[i] == f[i]);
+    for (uint32_t i = 0; i <= 2; ++i)
+        assert(g[i] == f[i]);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -147,10 +156,43 @@ void test_rotate_changes_coefficients() {
     // g(x) = f(x) + 2*(x - 5) = x^3 + 3x - 9
     auto f = make_poly({1, 1, 0, 1});
     auto g = PolynomialOptimizer::rotate_linear(f, I(5), 2);
-    assert(g[0] == I(1 - 10));   // 1 + 2*(-5) = -9
-    assert(g[1] == I(1 + 2));    // 1 + 2 = 3
+    assert(g[0] == I(1 - 10)); // 1 + 2*(-5) = -9
+    assert(g[1] == I(1 + 2));  // 1 + 2 = 3
     assert(g[2] == I(0));
     assert(g[3] == I(1));
+    std::cout << "  PASS" << std::endl;
+}
+
+void test_rotate_preserves_full_int64_coefficient() {
+    std::cout << "Testing rotate with full int64 coefficients..." << std::endl;
+    auto f = make_poly({7, -3, 2});
+    auto h = make_poly({-11, 5, 1});
+
+    for (const int64_t k :
+         {std::numeric_limits<int64_t>::max(), std::numeric_limits<int64_t>::min()}) {
+        auto g = PolynomialOptimizer::rotate(f, h, k);
+        const Integer multiplier(k);
+        for (uint32_t i = 0; i <= 2; ++i) {
+            Integer expected = f[i] + h[i] * multiplier;
+            assert(g[i] == expected);
+        }
+    }
+    std::cout << "  PASS" << std::endl;
+}
+
+void test_rotate_linear_preserves_full_int64_coefficient() {
+    std::cout << "Testing rotate_linear with full int64 coefficients..." << std::endl;
+    auto f = make_poly({7, -3, 2});
+    const Integer m(13);
+
+    for (const int64_t k :
+         {std::numeric_limits<int64_t>::max(), std::numeric_limits<int64_t>::min()}) {
+        auto g = PolynomialOptimizer::rotate_linear(f, m, k);
+        const Integer multiplier(k);
+        assert(g[0] == f[0] - m * multiplier);
+        assert(g[1] == f[1] + multiplier);
+        assert(g[2] == f[2]);
+    }
     std::cout << "  PASS" << std::endl;
 }
 
@@ -198,9 +240,9 @@ void test_golden_section_finds_minimum() {
 void test_golden_section_monotone() {
     std::cout << "Testing golden_section on monotone function (min at boundary)..." << std::endl;
     // Monotone decreasing: min at right boundary (b = 5.0)
-    auto scorer = [](double x) { return -x; };  // minimum at right end
+    auto scorer = [](double x) { return -x; }; // minimum at right end
     double opt = PolynomialOptimizer::golden_section_skewness(1.0, 5.0, scorer);
-    assert(opt > 4.0);  // Should be near 5.0
+    assert(opt > 4.0); // Should be near 5.0
     std::cout << "  PASS" << std::endl;
 }
 
@@ -211,7 +253,7 @@ void test_generate_smooth_1_always_included() {
     std::vector<uint32_t> primes = {2, 3, 5};
     auto smooth = PolynomialOptimizer::generate_smooth_numbers(100, primes, 1000);
     assert(!smooth.empty());
-    assert(smooth[0] == I(1));  // 1 is always first
+    assert(smooth[0] == I(1)); // 1 is always first
     std::cout << "  PASS" << std::endl;
 }
 
@@ -235,7 +277,7 @@ void test_generate_smooth_sorted() {
     std::vector<uint32_t> primes = {2, 3};
     auto smooth = PolynomialOptimizer::generate_smooth_numbers(100, primes, 1000);
     for (size_t i = 1; i < smooth.size(); ++i) {
-        assert(smooth[i-1] < smooth[i]);
+        assert(smooth[i - 1] < smooth[i]);
     }
     std::cout << "  PASS" << std::endl;
 }
@@ -257,7 +299,7 @@ void test_newton_root_known_root() {
     // Use f(x) = x^2 - 4, root = 2.  f(2) = 0, n = any.
     // Actually newton_root checks f(m) ≡ 0 mod n, so:
     // f(x) = x^2 + 3x - 10, f(2) = 4+6-10 = 0. n = 100, initial = 2.
-    auto f = make_poly({-10, 3, 1});  // x^2 + 3x - 10
+    auto f = make_poly({-10, 3, 1}); // x^2 + 3x - 10
     Integer n(100LL);
     auto result = PolynomialOptimizer::newton_root(f, I(2), n);
     assert(result.has_value());
@@ -280,6 +322,30 @@ void test_newton_root_already_at_root() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_newton_root_zero_tolerance_is_bounded() {
+    std::cout << "Testing newton_root with zero tolerance..." << std::endl;
+    // tolerance=0 previously produced +inf from -log2(0), followed by an
+    // out-of-range floating-to-size_t conversion in the convergence check.
+    auto f = make_poly({-11, 1});
+    auto result = PolynomialOptimizer::newton_root(f, I(15), Integer(143), 8, 0.0);
+    assert(result.has_value());
+    assert(*result == I(11));
+    std::cout << "  PASS" << std::endl;
+}
+
+void test_rotation_alpha_bound_rejects_wrap() {
+    std::cout << "Testing RotationAlphaTracker rejects wrapping bound..." << std::endl;
+    bool threw = false;
+    try {
+        RotationAlphaTracker tracker((std::numeric_limits<uint32_t>::max)());
+        (void)tracker;
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    assert(threw);
+    std::cout << "  PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== PolynomialOptimizer Unit Tests ===" << std::endl;
 
@@ -294,6 +360,8 @@ int main() {
     test_rotate_by_zero();
     test_rotate_linear_preserves_root();
     test_rotate_changes_coefficients();
+    test_rotate_preserves_full_int64_coefficient();
+    test_rotate_linear_preserves_full_int64_coefficient();
     test_estimate_skewness_basic();
     test_estimate_skewness_monic_balanced();
     test_compute_size_at_skew_1();
@@ -305,6 +373,8 @@ int main() {
     test_generate_smooth_max_count_respected();
     test_newton_root_known_root();
     test_newton_root_already_at_root();
+    test_newton_root_zero_tolerance_is_bounded();
+    test_rotation_alpha_bound_rejects_wrap();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;

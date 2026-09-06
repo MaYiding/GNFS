@@ -1,15 +1,16 @@
 #pragma once
 
-#include "number_field.hpp"
-#include "modular_poly.hpp"
 #include "../core/integer.hpp"
 #include "../core/polynomial_context.hpp"
 #include "../util/bit_intrin.hpp"
 #include "../util/primes.hpp"
+#include "modular_poly.hpp"
+#include "number_field.hpp"
 
-#include <vector>
-#include <optional>
 #include <iostream>
+#include <limits>
+#include <optional>
+#include <vector>
 
 namespace gnfs::sqrt {
 
@@ -20,10 +21,10 @@ using core::PolynomialContext;
 struct CouveignesSqrtConfig {
     // Sign determination searches 2^num_primes patterns (up to 2^20 ≈ 1M)
     // More primes = larger CRT modulus = handles larger sqrt coefficients
-    size_t num_primes = 16;        // Number of primes for CRT
-    uint64_t prime_start = 1000;   // Starting point for prime search (larger = better)
-    size_t max_attempts = 100;     // Max attempts for sign resolution
-    size_t max_prime_checks = 100000;  // Max prime candidates to check (prevents infinite loop)
+    size_t num_primes = 16;           // Number of primes for CRT
+    uint64_t prime_start = 1000;      // Starting point for prime search (larger = better)
+    size_t max_attempts = 100;        // Max attempts for sign resolution
+    size_t max_prime_checks = 100000; // Max prime candidates to check (prevents infinite loop)
 
     // ── Large class group support (2026-05-21) ──
     // Number of extra quadratic characters to verify each candidate sign pattern.
@@ -32,9 +33,9 @@ struct CouveignesSqrtConfig {
     // (cheap O(d) per character) before the expensive Y² ≡ X² check. This
     // catches false sign patterns that arise from nontrivial class group
     // 2-torsion (the source of "large class group failure" in legacy code).
-    size_t num_characters = 0;     // 0 = disabled (legacy); 8 = balanced; 16 = strict
-    uint64_t character_prime_start = 10007;  // Distinct from CRT prime_start
-    size_t max_character_prime_checks = 50000;  // Bound character prime search
+    size_t num_characters = 0;                 // 0 = disabled (legacy); 8 = balanced; 16 = strict
+    uint64_t character_prime_start = 10007;    // Distinct from CRT prime_start
+    size_t max_character_prime_checks = 50000; // Bound character prime search
 
     // Extra sign bits beyond 2^num_primes Gray code. Multiplies the pattern
     // space by 2^extra_sign_bits. Currently informational only — extension
@@ -58,20 +59,22 @@ struct CouveignesMetrics {
     size_t primes_skipped_reducible = 0;
     size_t primes_skipped_zero_product = 0;
     size_t primes_skipped_no_sqrt = 0;
-    size_t primes_skipped_ramified = 0;  // disc(f) ≡ 0 mod p — added 2026-05-21
+    size_t primes_skipped_ramified = 0; // disc(f) ≡ 0 mod p — added 2026-05-21
 
     // Sign-pattern search counters
-    size_t sign_patterns_tried = 0;          // Gray code iterations
-    size_t character_filter_rejects = 0;     // Patterns rejected by cheap char check
-    size_t full_verifications = 0;           // Y² ≡ X² evaluations
+    size_t sign_patterns_tried = 0;      // Gray code iterations
+    size_t character_filter_rejects = 0; // Patterns rejected by cheap char check
+    size_t full_verifications = 0;       // Y² ≡ X² evaluations
     bool found_sqrt = false;
 
     // Character verification telemetry
-    size_t character_primes_used = 0;        // K from config
-    size_t character_primes_checked = 0;     // Search overhead
+    size_t character_primes_used = 0;    // K from config
+    size_t character_primes_checked = 0; // Search overhead
 
     // Reset all fields to default (used by compute() at entry)
-    void reset() noexcept { *this = CouveignesMetrics{}; }
+    void reset() noexcept {
+        *this = CouveignesMetrics{};
+    }
 };
 
 /// CouveignesSqrt - Compute algebraic square root using Couveignes method
@@ -87,12 +90,13 @@ public:
 
     CouveignesSqrt() : config_() {}
 
-    explicit CouveignesSqrt(const Config& config)
-        : config_(config) {}
+    explicit CouveignesSqrt(const Config& config) : config_(config) {}
 
     /// Telemetry from the most recent compute() / compute_from_element() call.
     /// Populated whether the call succeeded or returned nullopt.
-    [[nodiscard]] const Metrics& last_metrics() const noexcept { return metrics_; }
+    [[nodiscard]] const Metrics& last_metrics() const noexcept {
+        return metrics_;
+    }
 
     /// Compute square root of product of (a_i - b_i * alpha) elements.
     /// Note: GNFS convention is `a - b*α` (see CLAUDE.md "元素表示"),
@@ -108,9 +112,8 @@ public:
     ///   Returns nullopt for empty input — the linear-algebra layer should
     ///   never produce an empty dependency, and silently returning 1 would
     ///   mask a downstream bug (caller would compute trivial gcd(±1, N)).
-    [[nodiscard]] std::optional<NumberFieldElement> compute(
-            const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
-            const NumberField& nf,
+    [[nodiscard]] std::optional<NumberFieldElement>
+    compute(const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs, const NumberField& nf,
             bool apply_f_prime_correction = true) const {
 
         metrics_.reset();
@@ -140,8 +143,8 @@ public:
             const Integer p_int(p);
             Integer coeff_buf;
             for (uint32_t i = 1; i <= d; ++i) {
-                coeff_buf = nf.coeff(i);  // mpz_set into reused buffer
-                coeff_buf *= static_cast<int64_t>(i);  // mpz_mul_si direct
+                coeff_buf = nf.coeff(i);              // mpz_set into reused buffer
+                coeff_buf *= static_cast<int64_t>(i); // mpz_mul_si direct
                 coeff_buf %= p_int;
                 if (coeff_buf.is_negative()) {
                     coeff_buf += p_int;
@@ -149,14 +152,15 @@ public:
                 fp[i - 1] = coeff_buf.to_uint64();
             }
             // 去除前导 0
-            while (fp.size() > 1 && fp.back() == 0) fp.pop_back();
+            while (fp.size() > 1 && fp.back() == 0)
+                fp.pop_back();
             return fp;
         };
 
         // Collect suitable primes. Reserve config_.num_primes (the exit criterion).
         std::vector<uint64_t> primes;
         primes.reserve(config_.num_primes);
-        std::vector<std::vector<uint64_t>> sqrt_coeffs;  // sqrt coeffs mod each prime
+        std::vector<std::vector<uint64_t>> sqrt_coeffs; // sqrt coeffs mod each prime
         sqrt_coeffs.reserve(config_.num_primes);
 
         // Debug counters
@@ -246,7 +250,8 @@ public:
             auto sqrt_squared_p = ModularPoly::mul(sqrt_p, sqrt_p, f_mod_p, p);
             bool sqrt_valid = true;
             for (size_t i = 0; i <= std::max(static_cast<size_t>(sqrt_squared_p.degree()),
-                                             static_cast<size_t>(product.degree())); ++i) {
+                                             static_cast<size_t>(product.degree()));
+                 ++i) {
                 if (sqrt_squared_p.coeff(i) != product.coeff(i)) {
                     sqrt_valid = false;
                     break;
@@ -272,17 +277,15 @@ public:
         }
 
         if (primes.size() < 2) {
-            return std::nullopt;  // Not enough primes found
+            return std::nullopt; // Not enough primes found
         }
 
-        // Debug can be enabled via COUVEIGNES_DEBUG
-        #ifdef COUVEIGNES_DEBUG
-        std::cerr << "[Couveignes] primes=" << primes.size()
-                  << " checked=" << primes_checked
-                  << " reducible=" << primes_reducible
-                  << " no_sqrt=" << primes_no_sqrt
+// Debug can be enabled via COUVEIGNES_DEBUG
+#ifdef COUVEIGNES_DEBUG
+        std::cerr << "[Couveignes] primes=" << primes.size() << " checked=" << primes_checked
+                  << " reducible=" << primes_reducible << " no_sqrt=" << primes_no_sqrt
                   << " zero_prod=" << primes_zero_product << "\n";
-        #endif
+#endif
 
         // Sign determination using subset enumeration
         // Enumerate all 2^k sign combinations for first k primes
@@ -290,7 +293,7 @@ public:
         // Compute CRT modulus for all primes (Couveignes primes ≤ uint32 max)
         Integer M(1);
         for (uint64_t prime : primes) {
-            M *= static_cast<int64_t>(prime);  // mpz_mul_si direct
+            M *= static_cast<int64_t>(prime); // mpz_mul_si direct
         }
 
         // Publish into metrics. Local counters retained for cheap increment
@@ -339,7 +342,7 @@ public:
 
         // v22: M_j / M_j_mod_pj 复用 across j iter + w hoist + int64_t direct
         Integer M_j, M_j_mod_pj;
-        Integer w;  // hoist per (j, i) iter
+        Integer w; // hoist per (j, i) iter
         for (size_t j = 0; j < primes.size(); ++j) {
             uint64_t p_j = primes[j];
             M_j = M;
@@ -350,18 +353,18 @@ public:
 
             weights[j].resize(d);
             for (uint32_t i = 0; i < d; ++i) {
-                w = uint64_t(sqrt_coeffs[j][i]);  // mpz_set_ui (no init)
+                w = uint64_t(sqrt_coeffs[j][i]); // mpz_set_ui (no init)
                 w *= M_j;
                 w *= static_cast<int64_t>(M_j_inv);
                 w %= M;
-                weights[j][i] = w;  // mpz_set into resized slot (skip tmp clone)
+                weights[j][i] = w; // mpz_set into resized slot (skip tmp clone)
             }
         }
 
         // --- Step 2: Compute base CRT (all signs = +) ---
         std::vector<Integer> base_coeffs(d);
         for (uint32_t i = 0; i < d; ++i) {
-            Integer coeff_i;  // default ctor = 0
+            Integer coeff_i; // default ctor = 0
             for (size_t j = 0; j < primes.size(); ++j) {
                 coeff_i += weights[j][i];
             }
@@ -374,7 +377,8 @@ public:
         half_M = M;
         mpz_tdiv_q_2exp(half_M.get_mpz(), half_M.get_mpz(), 1);
         for (auto& c : base_coeffs) {
-            if (c.compare(half_M) > 0) c -= M;
+            if (c.compare(half_M) > 0)
+                c -= M;
         }
 
         // Precompute 2 * weight[j][i] for incremental updates
@@ -405,15 +409,23 @@ public:
         // f'(m)² · expected_X2,否则全 search space 都对不上。
         //
         // 注意: 直接对 expected_X2 取 sqrt 等价于因子化 N,因此我们验证 Y² 而非 Y。
-        // hot loop (10K+ iters per dep): term_buf = a - m*b via mpz_submul_ui
+        // hot loop (10K+ iters per dep): term_buf = a - m*b.  Use an
+        // arbitrary-precision operand for b because unsigned long is only
+        // 32 bits on Windows LLP64.
         Integer expected_X2(1);
         Integer term_buf;
+        Integer b_value;
         for (const auto& [a, b] : ab_pairs) {
-            term_buf = a;  // mpz_set_si direct
-            mpz_submul_ui(term_buf.get_mpz(), nf.m().get_mpz(),
-                          static_cast<unsigned long>(b));
+            term_buf = a; // mpz_set_si direct
+            if (b <= std::numeric_limits<unsigned long>::max()) {
+                mpz_submul_ui(term_buf.get_mpz(), nf.m().get_mpz(), static_cast<unsigned long>(b));
+            } else {
+                b_value = b;
+                mpz_submul(term_buf.get_mpz(), nf.m().get_mpz(), b_value.get_mpz());
+            }
             term_buf %= n;
-            if (term_buf.is_negative()) term_buf += n;
+            if (term_buf.is_negative())
+                term_buf += n;
             expected_X2 *= term_buf;
             expected_X2 %= n;
         }
@@ -422,15 +434,15 @@ public:
             // f'(m) = Σ_{i=1}^d i · f[i] · m^(i-1)
             // mpz_addmul_ui: f_prime_m += nf.coeff(i)*i (fused FMA, i ≥ 1)
             const Integer& m_val = nf.m();
-            Integer f_prime_m;  // default ctor = 0
+            Integer f_prime_m; // default ctor = 0
             for (int i = static_cast<int>(d); i >= 1; --i) {
                 f_prime_m *= m_val;
-                mpz_addmul_ui(f_prime_m.get_mpz(),
-                              nf.coeff(static_cast<uint32_t>(i)).get_mpz(),
+                mpz_addmul_ui(f_prime_m.get_mpz(), nf.coeff(static_cast<uint32_t>(i)).get_mpz(),
                               static_cast<unsigned long>(i));
                 f_prime_m %= n;
             }
-            if (f_prime_m.is_negative()) f_prime_m += n;
+            if (f_prime_m.is_negative())
+                f_prime_m += n;
             // f_prime_m_sq = f_prime_m^2 mod n via mpz_powm_ui
             Integer f_prime_m_sq;
             mpz_powm_ui(f_prime_m_sq.get_mpz(), f_prime_m.get_mpz(), 2, n.get_mpz());
@@ -441,9 +453,9 @@ public:
         // m^j mod N 缓存,Gray code 内每次 verify 不再重算
         // mpz_mul writes mpow[j-1]*m directly into mpow[j] (skip set)
         std::vector<Integer> mpow(d);
-        mpow[0] = int64_t(1);  // mpz_set_si direct
+        mpow[0] = int64_t(1); // mpz_set_si direct
         for (uint32_t j = 1; j < d; ++j) {
-            mpz_mul(mpow[j].get_mpz(), mpow[j-1].get_mpz(), nf.m().get_mpz());
+            mpz_mul(mpow[j].get_mpz(), mpow[j - 1].get_mpz(), nf.m().get_mpz());
             mpow[j] %= n;
         }
 
@@ -489,7 +501,7 @@ public:
         size_t char_primes_checked = 0;
         if (config_.num_characters > 0) {
             uint64_t q_cand = config_.character_prime_start;
-            std::vector<uint64_t> crt_prime_set = primes;  // copy for overlap search
+            std::vector<uint64_t> crt_prime_set = primes; // copy for overlap search
 
             while (char_primes.size() < config_.num_characters &&
                    char_primes_checked < config_.max_character_prime_checks) {
@@ -497,22 +509,27 @@ public:
                 ++char_primes_checked;
 
                 // Skip primes that divide N
-                if (mpz_divisible_ui_p(n.get_mpz(), q_cand)) continue;
+                if (mpz_divisible_ui_p(n.get_mpz(), q_cand))
+                    continue;
 
                 // Skip primes already used in CRT (would correlate sign info)
                 bool overlap = false;
                 for (uint64_t p_crt : crt_prime_set) {
-                    if (p_crt == q_cand) { overlap = true; break; }
+                    if (p_crt == q_cand) {
+                        overlap = true;
+                        break;
+                    }
                 }
-                if (overlap) continue;
+                if (overlap)
+                    continue;
 
                 // Build f mod q (full polynomial, used for poly reduction)
                 std::vector<uint64_t> f_q(d + 1);
                 for (uint32_t i = 0; i <= d; ++i) {
-                    f_q[i] = static_cast<uint64_t>(
-                        mpz_fdiv_ui(nf.coeff(i).get_mpz(), q_cand));
+                    f_q[i] = static_cast<uint64_t>(mpz_fdiv_ui(nf.coeff(i).get_mpz(), q_cand));
                 }
-                if (f_q.back() == 0) continue;
+                if (f_q.back() == 0)
+                    continue;
 
                 // Quick irreducibility filter — skip primes where f mod q
                 // factors. This is desirable because the character check is
@@ -530,10 +547,11 @@ public:
                 for (const auto& [a, b] : ab_pairs) {
                     std::vector<uint64_t> factor_coeffs(2);
                     int64_t a_mod_s = a % static_cast<int64_t>(q_cand);
-                    if (a_mod_s < 0) a_mod_s += static_cast<int64_t>(q_cand);
+                    if (a_mod_s < 0)
+                        a_mod_s += static_cast<int64_t>(q_cand);
                     factor_coeffs[0] = static_cast<uint64_t>(a_mod_s);
                     uint64_t b_mod = b % q_cand;
-                    factor_coeffs[1] = (q_cand - b_mod) % q_cand;  // -b mod q
+                    factor_coeffs[1] = (q_cand - b_mod) % q_cand; // -b mod q
                     ModularPoly factor(std::move(factor_coeffs));
                     target_mp = ModularPoly::mul(target_mp, factor, f_q, q_cand);
                 }
@@ -541,15 +559,18 @@ public:
                     // S(α) ≡ 0 mod (f_q, q) — character undefined; skip
                     degenerate = true;
                 }
-                if (degenerate) continue;
+                if (degenerate)
+                    continue;
 
                 // Apply f'(α)² correction if active (matches compute_product_mod_p
                 // post-processing in the main path)
                 if (apply_f_prime_correction) {
                     auto fp_q_coeffs = get_f_prime_mod_p(q_cand);
-                    if (fp_q_coeffs.empty()) continue;
+                    if (fp_q_coeffs.empty())
+                        continue;
                     ModularPoly fp_mp(std::move(fp_q_coeffs));
-                    if (fp_mp.is_zero()) continue;  // f' ≡ 0 mod q — ramified
+                    if (fp_mp.is_zero())
+                        continue; // f' ≡ 0 mod q — ramified
                     ModularPoly fp_sq = ModularPoly::mul(fp_mp, fp_mp, f_q, q_cand);
                     target_mp = ModularPoly::mul(target_mp, fp_sq, f_q, q_cand);
                 }
@@ -587,17 +608,20 @@ public:
         auto verify_current = [&]() -> bool {
             // 不变量: current_coeffs[i] ∈ [0, M-1]。
             // 仅需 center 到 [-M/2, M/2] 再 mod N。
-            Y_buf = int64_t(0);  // mpz_set_si 复用 buffer
+            Y_buf = int64_t(0); // mpz_set_si 复用 buffer
             for (uint32_t i = 0; i < d; ++i) {
-                c_buf = current_coeffs[i];  // mpz_set 复用 buffer
-                if (c_buf.compare(half_M) > 0) c_buf -= M;
+                c_buf = current_coeffs[i]; // mpz_set 复用 buffer
+                if (c_buf.compare(half_M) > 0)
+                    c_buf -= M;
                 c_buf %= n;
-                if (c_buf.is_negative()) c_buf += n;
+                if (c_buf.is_negative())
+                    c_buf += n;
                 // Y_buf += c_buf * mpow[i] via fused FMA (drops the in-place mul step)
                 mpz_addmul(Y_buf.get_mpz(), c_buf.get_mpz(), mpow[i].get_mpz());
                 Y_buf %= n;
             }
-            if (Y_buf.is_negative()) Y_buf += n;
+            if (Y_buf.is_negative())
+                Y_buf += n;
 
             // Y2_buf = Y_buf² mod n — mpz_powm_ui combines mul + mod in one op
             mpz_powm_ui(Y2_buf.get_mpz(), Y_buf.get_mpz(), 2, n.get_mpz());
@@ -641,17 +665,23 @@ public:
                 bool nonzero = false;
                 for (uint32_t i = 0; i < d; ++i) {
                     c_buf_chr = current_coeffs[i];
-                    if (c_buf_chr.compare(half_M) > 0) c_buf_chr -= M;
-                    Y_q_coeffs_buf[i] = static_cast<uint64_t>(
-                        mpz_fdiv_ui(c_buf_chr.get_mpz(), cp.q));
-                    if (Y_q_coeffs_buf[i] != 0) nonzero = true;
+                    if (c_buf_chr.compare(half_M) > 0)
+                        c_buf_chr -= M;
+                    Y_q_coeffs_buf[i] =
+                        static_cast<uint64_t>(mpz_fdiv_ui(c_buf_chr.get_mpz(), cp.q));
+                    if (Y_q_coeffs_buf[i] != 0)
+                        nonzero = true;
                 }
                 if (!nonzero) {
                     bool target_zero = true;
                     for (uint64_t c : cp.target_q) {
-                        if (c != 0) { target_zero = false; break; }
+                        if (c != 0) {
+                            target_zero = false;
+                            break;
+                        }
                     }
-                    if (!target_zero) return false;
+                    if (!target_zero)
+                        return false;
                     continue;
                 }
 
@@ -661,7 +691,8 @@ public:
                 ModularPoly Y_q_sq = ModularPoly::mul(Y_q_mp, Y_q_mp, cp.f_q, cp.q);
 
                 for (size_t i = 0; i < d; ++i) {
-                    uint64_t got = (i <= static_cast<size_t>(Y_q_sq.degree())) ? Y_q_sq.coeff(i) : 0;
+                    uint64_t got =
+                        (i <= static_cast<size_t>(Y_q_sq.degree())) ? Y_q_sq.coeff(i) : 0;
                     if (got != cp.target_q[i]) {
                         return false;
                     }
@@ -676,9 +707,11 @@ public:
             std::vector<Integer> r(d);
             for (uint32_t i = 0; i < d; ++i) {
                 r[i] = current_coeffs[i];
-                if (r[i].compare(half_M) > 0) r[i] -= M;
+                if (r[i].compare(half_M) > 0)
+                    r[i] -= M;
                 r[i] %= n;
-                if (r[i].is_negative()) r[i] += n;
+                if (r[i].is_negative())
+                    r[i] += n;
             }
             return r;
         };
@@ -687,7 +720,8 @@ public:
         // 但 center 步骤可能让它 ∈ [-M/2, M/2-1]); v20 需保持 [0, M-1]
         // 不变量,这里 undo center,让其重回 [0, M-1]。
         for (uint32_t i = 0; i < d; ++i) {
-            if (current_coeffs[i].is_negative()) current_coeffs[i] += M;
+            if (current_coeffs[i].is_negative())
+                current_coeffs[i] += M;
         }
 
         // Check pattern 0 (all positive)
@@ -709,7 +743,7 @@ public:
             uint64_t gray = i ^ (i >> 1);
             uint64_t changed_bit = prev_gray ^ gray;
             size_t bit_pos = static_cast<size_t>(gnfs::util::ctz64(changed_bit));
-            bool new_sign = (gray >> bit_pos) & 1;  // 1 = negative
+            bool new_sign = (gray >> bit_pos) & 1; // 1 = negative
 
             // Incremental CRT update + 立即归约到 [0, M-1]
             // two_weights[k][i] ∈ [0, 2M-2], current ∈ [0, M-1]
@@ -720,13 +754,15 @@ public:
                     current_coeffs[ci] -= two_weights[bit_pos][ci];
                     if (current_coeffs[ci].is_negative()) {
                         current_coeffs[ci] += M;
-                        if (current_coeffs[ci].is_negative()) current_coeffs[ci] += M;
+                        if (current_coeffs[ci].is_negative())
+                            current_coeffs[ci] += M;
                     }
                 } else {
                     current_coeffs[ci] += two_weights[bit_pos][ci];
                     if (current_coeffs[ci].compare(M) >= 0) {
                         current_coeffs[ci] -= M;
-                        if (current_coeffs[ci].compare(M) >= 0) current_coeffs[ci] -= M;
+                        if (current_coeffs[ci].compare(M) >= 0)
+                            current_coeffs[ci] -= M;
                     }
                 }
             }
@@ -748,16 +784,15 @@ public:
             }
         }
 
-        return std::nullopt;  // No valid sign pattern found
+        return std::nullopt; // No valid sign pattern found
     }
 
     /// Compute square root directly from NumberFieldElement
     /// Uses Gray code sign enumeration (same as compute()) instead of
     /// the broken eval-at-1 heuristic which used different thresholds p/2
     /// per prime, producing inconsistent signs → CRT reconstruction garbage.
-    [[nodiscard]] std::optional<NumberFieldElement> compute_from_element(
-            const NumberFieldElement& elem,
-            const NumberField& nf) const {
+    [[nodiscard]] std::optional<NumberFieldElement>
+    compute_from_element(const NumberFieldElement& elem, const NumberField& nf) const {
 
         metrics_.reset();
         uint32_t d = nf.degree();
@@ -794,29 +829,40 @@ public:
             primes_checked++;
 
             // Skip primes that divide N — direct GMP divisibility (zero alloc)
-            if (mpz_divisible_ui_p(n.get_mpz(), p)) continue;
+            if (mpz_divisible_ui_p(n.get_mpz(), p))
+                continue;
 
             auto f_mod_p = get_f_mod_p(p);
-            if (f_mod_p.back() == 0) continue;
+            if (f_mod_p.back() == 0)
+                continue;
 
-            if (!ModularPoly::is_irreducible(f_mod_p, p)) continue;
+            if (!ModularPoly::is_irreducible(f_mod_p, p))
+                continue;
 
             auto elem_mod_p = elem_to_mod_p(p);
-            if (elem_mod_p.is_zero()) continue;
+            if (elem_mod_p.is_zero())
+                continue;
 
-            if (!ModularPoly::is_square(elem_mod_p, f_mod_p, p)) continue;
+            if (!ModularPoly::is_square(elem_mod_p, f_mod_p, p))
+                continue;
 
             auto sqrt_p = ModularPoly::sqrt_tonelli_shanks(elem_mod_p, f_mod_p, p);
-            if (sqrt_p.is_zero() && !elem_mod_p.is_zero()) continue;
+            if (sqrt_p.is_zero() && !elem_mod_p.is_zero())
+                continue;
 
             // Verify: sqrt^2 == elem mod p
             auto sq = ModularPoly::mul(sqrt_p, sqrt_p, f_mod_p, p);
             bool valid = true;
             for (size_t i = 0; i <= std::max(static_cast<size_t>(sq.degree()),
-                                              static_cast<size_t>(elem_mod_p.degree())); ++i) {
-                if (sq.coeff(i) != elem_mod_p.coeff(i)) { valid = false; break; }
+                                             static_cast<size_t>(elem_mod_p.degree()));
+                 ++i) {
+                if (sq.coeff(i) != elem_mod_p.coeff(i)) {
+                    valid = false;
+                    break;
+                }
             }
-            if (!valid) continue;
+            if (!valid)
+                continue;
 
             // Store raw coefficients — sign resolved via Gray code below
             primes.push_back(p);
@@ -827,17 +873,19 @@ public:
             sqrt_coeffs.push_back(std::move(coeffs));
         }
 
-        if (primes.size() < 2) return std::nullopt;
+        if (primes.size() < 2)
+            return std::nullopt;
 
         // CRT modulus (Couveignes primes ≤ uint32 max)
         Integer M(1);
-        for (uint64_t prime : primes) M *= static_cast<int64_t>(prime);  // mpz_mul_si direct
+        for (uint64_t prime : primes)
+            M *= static_cast<int64_t>(prime); // mpz_mul_si direct
 
         // Precompute CRT weights: weight[j][i] = c_ij * M_j * M_j_inv mod M
         // v22: M_j / M_j_mod_pj 复用 + p_j 用 int64_t 直接 (primes ≤ uint32 max)
         std::vector<std::vector<Integer>> weights(primes.size());
         Integer M_j_b, M_j_mod_pj_b;
-        Integer w;  // hoist — reused per (j, i) iter
+        Integer w; // hoist — reused per (j, i) iter
         for (size_t j = 0; j < primes.size(); ++j) {
             uint64_t p_j = primes[j];
             M_j_b = M;
@@ -848,18 +896,18 @@ public:
 
             weights[j].resize(d);
             for (uint32_t i = 0; i < d; ++i) {
-                w = uint64_t(sqrt_coeffs[j][i]);  // mpz_set_ui (no init)
+                w = uint64_t(sqrt_coeffs[j][i]); // mpz_set_ui (no init)
                 w *= M_j_b;
                 w *= static_cast<int64_t>(M_j_inv);
                 w %= M;
-                weights[j][i] = w;  // mpz_set into resized slot (skip tmp clone)
+                weights[j][i] = w; // mpz_set into resized slot (skip tmp clone)
             }
         }
 
         // Base CRT (all signs = +)
         std::vector<Integer> base_coeffs(d);
         for (uint32_t i = 0; i < d; ++i) {
-            Integer coeff_i;  // default ctor = 0
+            Integer coeff_i; // default ctor = 0
             for (size_t j = 0; j < primes.size(); ++j) {
                 coeff_i += weights[j][i];
             }
@@ -874,7 +922,8 @@ public:
 
         // Center around 0
         for (auto& c : base_coeffs) {
-            if (c.compare(half_M) > 0) c -= M;
+            if (c.compare(half_M) > 0)
+                c -= M;
         }
 
         // Precompute 2 * weight for incremental Gray code updates
@@ -896,14 +945,15 @@ public:
         for (uint32_t i = 0; i < d; ++i) {
             current_coeffs[i] = base_coeffs[i];
             // v21: 保 [0, M-1] 不变量(同 compute() 路径,见 v20 注释)
-            if (current_coeffs[i].is_negative()) current_coeffs[i] += M;
+            if (current_coeffs[i].is_negative())
+                current_coeffs[i] += M;
         }
 
         // Same cap as compute() — see comment there. Throw rather than silently
         // truncate the search.
         if (primes.size() > 16) {
-            throw std::logic_error(
-                "Couveignes::compute_from_element: >16 primes not supported in 65536-pattern search");
+            throw std::logic_error("Couveignes::compute_from_element: >16 primes not supported in "
+                                   "65536-pattern search");
         }
         size_t num_to_search = primes.size();
         uint64_t max_patterns = 1ULL << num_to_search;
@@ -914,9 +964,9 @@ public:
         // 内联 Horner + mpow 缓存,省 NumberFieldElement 构造,~5μs/iter。
         // v22: mpow[j] = mpow[j-1] (mpz_set)
         std::vector<Integer> mpow(d);
-        mpow[0] = int64_t(1);  // mpz_set_si direct
+        mpow[0] = int64_t(1); // mpz_set_si direct
         for (uint32_t j = 1; j < d; ++j) {
-            mpow[j] = mpow[j-1];
+            mpow[j] = mpow[j - 1];
             mpow[j] *= nf.m();
             mpow[j] %= n;
         }
@@ -928,17 +978,20 @@ public:
         Integer Y2_buf;
         auto verify_current = [&]() -> bool {
             // 不变量: current_coeffs[i] ∈ [0, M-1]
-            Y_buf = int64_t(0);  // mpz_set_si direct
+            Y_buf = int64_t(0); // mpz_set_si direct
             for (uint32_t i = 0; i < d; ++i) {
-                c_buf = current_coeffs[i];  // mpz_set 复用 buffer
-                if (c_buf.compare(half_M) > 0) c_buf -= M;
+                c_buf = current_coeffs[i]; // mpz_set 复用 buffer
+                if (c_buf.compare(half_M) > 0)
+                    c_buf -= M;
                 c_buf %= n;
-                if (c_buf.is_negative()) c_buf += n;
+                if (c_buf.is_negative())
+                    c_buf += n;
                 // Y_buf += c_buf * mpow[i] via fused FMA
                 mpz_addmul(Y_buf.get_mpz(), c_buf.get_mpz(), mpow[i].get_mpz());
                 Y_buf %= n;
             }
-            if (Y_buf.is_negative()) Y_buf += n;
+            if (Y_buf.is_negative())
+                Y_buf += n;
 
             // Y2_buf = Y_buf² mod n — mpz_powm_ui combines mul + mod in one op
             mpz_powm_ui(Y2_buf.get_mpz(), Y_buf.get_mpz(), 2, n.get_mpz());
@@ -950,9 +1003,11 @@ public:
             std::vector<Integer> r(d);
             for (uint32_t i = 0; i < d; ++i) {
                 r[i] = current_coeffs[i];
-                if (r[i].compare(half_M) > 0) r[i] -= M;
+                if (r[i].compare(half_M) > 0)
+                    r[i] -= M;
                 r[i] %= n;
-                if (r[i].is_negative()) r[i] += n;
+                if (r[i].is_negative())
+                    r[i] += n;
             }
             return r;
         };
@@ -983,13 +1038,15 @@ public:
                     current_coeffs[ci] -= two_weights[bit_pos][ci];
                     if (current_coeffs[ci].is_negative()) {
                         current_coeffs[ci] += M;
-                        if (current_coeffs[ci].is_negative()) current_coeffs[ci] += M;
+                        if (current_coeffs[ci].is_negative())
+                            current_coeffs[ci] += M;
                     }
                 } else {
                     current_coeffs[ci] += two_weights[bit_pos][ci];
                     if (current_coeffs[ci].compare(M) >= 0) {
                         current_coeffs[ci] -= M;
-                        if (current_coeffs[ci].compare(M) >= 0) current_coeffs[ci] -= M;
+                        if (current_coeffs[ci].compare(M) >= 0)
+                            current_coeffs[ci] -= M;
                     }
                 }
             }
@@ -1008,7 +1065,7 @@ public:
 
 private:
     Config config_;
-    mutable Metrics metrics_;  // Updated by compute() / compute_from_element()
+    mutable Metrics metrics_; // Updated by compute() / compute_from_element()
 
     /// Compute product of (a_i - b_i * x) mod f(x) mod p (GNFS a - b·α convention)
     ///
@@ -1025,10 +1082,9 @@ private:
     ///
     /// compute_product_mod_p 自身只算原始 ∏(a-bα) mod p,不含 f'(α)² 修正。
     /// ─────────────────────────────────────────────────────────────────────────
-    [[nodiscard]] ModularPoly compute_product_mod_p(
-            const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
-            const std::vector<uint64_t>& f,
-            uint64_t p) const {
+    [[nodiscard]] ModularPoly
+    compute_product_mod_p(const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
+                          const std::vector<uint64_t>& f, uint64_t p) const {
 
         ModularPoly product(1);
 
@@ -1037,7 +1093,8 @@ private:
             std::vector<uint64_t> coeffs(2);
 
             int64_t a_mod = a % static_cast<int64_t>(p);
-            if (a_mod < 0) a_mod += static_cast<int64_t>(p);
+            if (a_mod < 0)
+                a_mod += static_cast<int64_t>(p);
             coeffs[0] = static_cast<uint64_t>(a_mod);
 
             // Coefficient of x is -b mod p
@@ -1072,13 +1129,17 @@ private:
     /// criterion when q is small enough for direct pow_mod. For p < 2^32,
     /// pow_mod is two 64-bit multiplications per bit of (p-1)/2.
     [[nodiscard]] static int legendre_symbol(uint64_t a, uint64_t p) {
-        if (p == 2) return (a & 1) ? 1 : 0;
+        if (p == 2)
+            return (a & 1) ? 1 : 0;
         uint64_t a_mod = a % p;
-        if (a_mod == 0) return 0;
+        if (a_mod == 0)
+            return 0;
         // Euler's criterion: a^((p-1)/2) mod p
         uint64_t r = pow_mod_u64(a_mod, (p - 1) / 2, p);
-        if (r == 1) return 1;
-        if (r == p - 1) return -1;
+        if (r == 1)
+            return 1;
+        if (r == p - 1)
+            return -1;
         // Should not happen for prime p
         return 0;
     }
@@ -1088,11 +1149,10 @@ private:
     /// reducing the character check to a single Legendre symbol of an integer.
     /// coeffs are uint64 (already reduced mod q).
     /// Cost: O(deg) modular multiplications.
-    [[nodiscard]] static uint64_t eval_poly_at_root_mod_q(
-            const std::vector<uint64_t>& coeffs,
-            uint64_t r,
-            uint64_t q) {
-        if (coeffs.empty()) return 0;
+    [[nodiscard]] static uint64_t eval_poly_at_root_mod_q(const std::vector<uint64_t>& coeffs,
+                                                          uint64_t r, uint64_t q) {
+        if (coeffs.empty())
+            return 0;
         // Horner from highest-degree coefficient down
         uint64_t acc = 0;
         for (size_t i = coeffs.size(); i > 0; --i) {
@@ -1108,9 +1168,8 @@ private:
     /// Used to select character primes (we need at least one degree-1 prime
     /// ideal above q for the character to be evaluable).
     /// For small q (< 100k), brute-force search is faster than Cantor-Zassenhaus.
-    [[nodiscard]] static uint64_t find_root_mod_q(
-            const std::vector<uint64_t>& f_mod_q,
-            uint64_t q) {
+    [[nodiscard]] static uint64_t find_root_mod_q(const std::vector<uint64_t>& f_mod_q,
+                                                  uint64_t q) {
         // Build f mod q, evaluate at every x ∈ [0, q-1]
         for (uint64_t x = 0; x < q; ++x) {
             uint64_t val = 0;
@@ -1119,9 +1178,10 @@ private:
                 val = (val + mul_mod_u64(f_mod_q[i], x_power, q)) % q;
                 x_power = mul_mod_u64(x_power, x, q);
             }
-            if (val == 0) return x;
+            if (val == 0)
+                return x;
         }
-        return ~uint64_t(0);  // No root
+        return ~uint64_t(0); // No root
     }
 
     /// Modular inverse

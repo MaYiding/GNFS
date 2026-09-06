@@ -10,6 +10,8 @@
 
 #include <chrono>
 #include <iostream>
+#include <limits>
+#include <string>
 #include <vector>
 
 using namespace gnfs;
@@ -133,6 +135,60 @@ void test_number_field() {
     GNFS_TEST_CHECK(ab_elem.coeff(1).to_int64() == -2); // -b in GNFS convention
 
     std::cout << "  NumberField: PASSED" << std::endl;
+}
+
+// Regression for uint64_t b values on Windows LLP64.  GMP's *_ui APIs take
+// unsigned long (32 bits on Windows), and converting b to long long first is
+// implementation-defined above INT64_MAX.  The number-field helpers must keep
+// the complete b value in both element construction and norm evaluation.
+void test_uint64_b_portability_boundaries() {
+    std::cout << "Testing uint64_t b portability boundaries..." << std::endl;
+
+    // f(x) = x^2 - 1 and m = 2 give n = f(m) = 3.
+    std::vector<Integer> coeffs = {Integer(-1), Integer(0), Integer(1)};
+    NumberField nf(PolynomialContext(Integer(3), std::move(coeffs), Integer(2)));
+
+    const uint64_t b = std::numeric_limits<uint64_t>::max();
+    auto element = nf.from_ab(0, b);
+    Integer expected_coeff(b);
+    expected_coeff.negate();
+    GNFS_TEST_CHECK(element.coeff(1) == expected_coeff);
+
+    // N(0 - b*alpha) = -b^2 for this polynomial; norm_linear returns |N|.
+    Integer expected_norm = Integer(b) * Integer(b);
+    GNFS_TEST_CHECK(nf.norm_linear(0, b) == expected_norm);
+
+    std::cout << "  uint64_t b preserved through from_ab/norm_linear: PASSED" << std::endl;
+}
+
+// Regression for RationalSqrt's a - b*m paths on Windows LLP64.  GMP's
+// mpz_submul_ui takes unsigned long (32 bits on Windows), so b must not be
+// narrowed before sign detection or verification-product reconstruction.
+void test_rational_sqrt_uint64_b_portability() {
+    std::cout << "Testing RationalSqrt uint64_t b portability..." << std::endl;
+
+    FactorBase fb;
+    fb.add_rational(2, 1);
+
+    const Integer n(1000000007);
+    const Integer m(1);
+    const uint64_t b = uint64_t{1} << 34;
+
+    // |a - b*m| = 2^34 = 2^17 squared, with an even rational factor
+    // exponent so this is a valid one-row square-root dependency.
+    Relation relation(0, b);
+    relation.rational_factors.assign(34, 0);
+    std::vector<Relation> relations = {relation};
+    BitVector dependency(1);
+    dependency.set(0);
+
+    const auto result = RationalSqrt{}.compute(dependency, relations, fb, n, m);
+    GNFS_TEST_CHECK(result.success);
+
+    Integer expected = n - Integer(uint64_t{1} << 17);
+    GNFS_TEST_CHECK(result.value == expected);
+
+    std::cout << "  RationalSqrt preserved full-width b in sign/verify paths: PASSED" << std::endl;
 }
 
 // Test NumberField multiplication
@@ -277,6 +333,51 @@ void test_rational_sqrt_simple() {
     GNFS_TEST_CHECK(result2.to_int64() == 200);
 
     std::cout << "  RationalSqrt (simple): PASSED" << std::endl;
+}
+
+void test_sqrt_dependency_dimension_guard() {
+    std::cout << "Testing sqrt dependency dimension guard..." << std::endl;
+
+    std::vector<Relation> relations;
+    relations.emplace_back(1, 1);
+
+    FactorBase fb;
+    Integer n(15);
+    Integer m(1);
+    RationalSqrt rational_sqrt;
+
+    const BitVector short_dependency(0);
+    const BitVector long_dependency(2);
+    const auto short_rational = rational_sqrt.compute(short_dependency, relations, fb, n, m);
+    const auto long_rational = rational_sqrt.compute(long_dependency, relations, fb, n, m);
+    GNFS_TEST_CHECK(!short_rational.success);
+    GNFS_TEST_CHECK(!long_rational.success);
+    GNFS_TEST_CHECK(short_rational.error.find("dependency length") != std::string::npos);
+    GNFS_TEST_CHECK(long_rational.error.find("dependency length") != std::string::npos);
+
+    Relation malformed_relation(1, 1);
+    malformed_relation.rational_factors.push_back(0);
+    std::vector<Relation> malformed_relations = {malformed_relation};
+    BitVector valid_dependency(1);
+    valid_dependency.set(0);
+    const auto malformed_rational =
+        rational_sqrt.compute(valid_dependency, malformed_relations, fb, n, m);
+    GNFS_TEST_CHECK(!malformed_rational.success);
+    GNFS_TEST_CHECK(malformed_rational.error.find("factor-base index") != std::string::npos);
+
+    std::vector<Integer> coefficients = {Integer(-2), Integer(0), Integer(1)};
+    PolynomialContext ctx(Integer(15), std::move(coefficients), Integer(4));
+    AlgebraicSqrt algebraic_sqrt;
+    const auto short_algebraic = algebraic_sqrt.compute(short_dependency, relations, ctx);
+    const auto long_algebraic = algebraic_sqrt.compute(long_dependency, relations, ctx);
+    GNFS_TEST_CHECK(!short_algebraic.success);
+    GNFS_TEST_CHECK(!long_algebraic.success);
+    GNFS_TEST_CHECK(short_algebraic.error.find("dependency length") != std::string::npos);
+    GNFS_TEST_CHECK(long_algebraic.error.find("dependency length") != std::string::npos);
+    GNFS_TEST_CHECK(!verify_algebraic_ideal_powers(short_dependency, relations));
+    GNFS_TEST_CHECK(!verify_algebraic_ideal_powers(long_dependency, relations));
+
+    std::cout << "  Sqrt dependency dimension guard: PASSED" << std::endl;
 }
 
 // Test factor extraction
@@ -843,8 +944,11 @@ int main() {
     test_number_field();
     test_number_field_multiply();
     test_number_field_power();
+    test_uint64_b_portability_boundaries();
+    test_rational_sqrt_uint64_b_portability();
     test_evaluate_at_m();
     test_rational_sqrt_simple();
+    test_sqrt_dependency_dimension_guard();
     test_factor_extraction();
     test_norm_linear();
     test_is_irreducible();

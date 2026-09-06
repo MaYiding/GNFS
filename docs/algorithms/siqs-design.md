@@ -312,9 +312,14 @@ therefore delay terminal taint; a separately supervised authenticator remains
 required for a clock-bounded authentication phase.
 
 The ordinary POSIX path transport remains libc-portable and is required to
-build and pass its focused transport test on Alpine Linux with musl. The
-authenticated descriptor launch is intentionally narrower: it is available
-only with modern glibc and the complete required syscall and macro surface.
+build and pass its focused transport test on Alpine Linux with musl. On Linux,
+its child-side close sweep uses `close_range(..., CLOSE_RANGE_CLOEXEC)` when
+available and a strict `/proc/self/fd` scan otherwise; if neither mechanism is
+available, the child reports `spawn_failed` before `execve`. The path launcher
+also bypasses libc `fork()` so registered `pthread_atfork` callbacks cannot
+consume the launch deadline. The authenticated descriptor launch is
+intentionally narrower: it is available only with modern glibc and the
+complete required syscall and macro surface.
 Unsupported libcs, including musl, return `platform_unavailable` before any
 campaign journal is opened or any executable-path or permission access occurs.
 A runtime capability rejection classified as unavailable on a supported glibc

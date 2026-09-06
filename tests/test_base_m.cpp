@@ -1,6 +1,6 @@
 // Unit tests for base-m polynomial selection (BaseMSelector)
-#include "gnfs/polynomial/base_m.hpp"
 #include "gnfs/core/polynomial_context.hpp"
+#include "gnfs/polynomial/base_m.hpp"
 
 #include <cassert>
 #include <iostream>
@@ -11,7 +11,9 @@ using namespace gnfs::core;
 
 // ─── helpers ───────────────────────────────────────────────
 
-static Integer make_int(long long v) { return Integer(static_cast<int64_t>(v)); }
+static Integer make_int(long long v) {
+    return Integer(static_cast<int64_t>(v));
+}
 
 // ─── tests ───────────────────────────────────────────────────
 
@@ -29,10 +31,10 @@ void test_select_stability() {
         auto next = BaseMSelector::select(n, 3);
         assert(next.success);
         assert(next.degree == first.degree);
-        assert(next.m == first.m);   // 同一 m
+        assert(next.m == first.m); // 同一 m
         assert(next.f.degree() == first.f.degree());
         for (uint32_t i = 0; i <= first.f.degree(); ++i) {
-            assert(next.f[i] == first.f[i]);   // 同一系数
+            assert(next.f[i] == first.f[i]); // 同一系数
         }
     }
 
@@ -201,6 +203,21 @@ void test_degree4_selection() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_invalid_selection_parameters() {
+    std::cout << "Testing invalid base-m selection parameters..." << std::endl;
+
+    const auto zero_n = BaseMSelector::select(Integer(static_cast<int64_t>(0)), 3);
+    assert(!zero_n.success);
+
+    const auto one_n = BaseMSelector::select(Integer(static_cast<int64_t>(1)), 3);
+    assert(!one_n.success);
+
+    const auto zero_degree = BaseMSelector::select(Integer(static_cast<int64_t>(143)), 0);
+    assert(!zero_degree.success);
+
+    std::cout << "  PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== BaseMSelector Unit Tests ===" << std::endl;
 
@@ -217,6 +234,7 @@ int main() {
     test_leading_coeff_positive();
     test_context_coefficients_match_polynomial();
     test_degree4_selection();
+    test_invalid_selection_parameters();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -201,8 +202,9 @@ public:
     SparseMatrix() = default;
 
     /// 构造指定大小的矩阵
-    SparseMatrix(size_t num_rows, size_t num_cols)
-        : rows_(num_rows), num_cols_(num_cols) {}
+    SparseMatrix(size_t num_rows, size_t num_cols) : rows_(num_rows) {
+        set_num_cols(num_cols);
+    }
 
     /// 获取行数
     [[nodiscard]] size_t num_rows() const noexcept {
@@ -225,16 +227,19 @@ public:
 
     /// 设置元素
     void set(size_t row_idx, size_t col_idx) {
+        check_position(row_idx, col_idx);
         rows_[row_idx].set(static_cast<uint32_t>(col_idx));
     }
 
     /// 清除元素
     void clear(size_t row_idx, size_t col_idx) {
+        check_position(row_idx, col_idx);
         rows_[row_idx].clear(static_cast<uint32_t>(col_idx));
     }
 
     /// 测试元素
     [[nodiscard]] bool test(size_t row_idx, size_t col_idx) const {
+        check_position(row_idx, col_idx);
         return rows_[row_idx].test(static_cast<uint32_t>(col_idx));
     }
 
@@ -260,6 +265,9 @@ public:
 
     /// 设置列数
     void set_num_cols(size_t cols) {
+        if (cols > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
+            throw std::invalid_argument("SparseMatrix column count exceeds uint32_t storage");
+        }
         num_cols_ = cols;
     }
 
@@ -328,6 +336,15 @@ public:
     }
 
 private:
+    void check_position(size_t row_idx, size_t col_idx) const {
+        if (row_idx >= rows_.size()) {
+            throw std::out_of_range("SparseMatrix row index out of range");
+        }
+        if (col_idx >= num_cols_) {
+            throw std::out_of_range("SparseMatrix column index out of range");
+        }
+    }
+
     std::vector<SparseRow> rows_;
     size_t num_cols_ = 0;
 };

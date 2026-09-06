@@ -32,15 +32,34 @@
 #include "../core/integer.hpp"
 #include "special_q.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
+#include <optional>
+#include <stdexcept>
+#include <utility>
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_ARM64))
+#include <intrin.h>
+#endif
 
 namespace gnfs::sieve {
 
 using core::Integer;
+
+namespace detail {
+
+[[nodiscard]] inline bool lb_try_linear_combination(int64_t lhs_multiplier, int64_t lhs_value,
+                                                    int64_t rhs_multiplier, int64_t rhs_value,
+                                                    int64_t& result) noexcept;
+[[nodiscard]] inline bool lb_try_determinant(int64_t e0, int64_t f0, int64_t e1, int64_t f1,
+                                             int64_t& result) noexcept;
+
+} // namespace detail
 
 /// LatticeReductionMethod - 格基规约方法
 /// Gauss: 经典 Gaussian (Lagrange) reduction (legacy default).
@@ -83,25 +102,58 @@ struct LatticeBasis {
     /// 从格坐标 (i, j) 转换为原始坐标 (a, b)
     /// a = i * e0 + j * e1
     /// b = i * f0 + j * f1
-    [[nodiscard]] std::pair<int64_t, int64_t> to_ab(int32_t i, int32_t j) const noexcept {
-        int64_t a = static_cast<int64_t>(i) * e0 + static_cast<int64_t>(j) * e1;
-        int64_t b = static_cast<int64_t>(i) * f0 + static_cast<int64_t>(j) * f1;
-        return {a, b};
+    [[nodiscard]] std::optional<std::pair<int64_t, int64_t>> try_to_ab(int32_t i,
+                                                                       int32_t j) const noexcept {
+        int64_t a = 0;
+        int64_t b = 0;
+        if (!detail::lb_try_linear_combination(i, e0, j, e1, a) ||
+            !detail::lb_try_linear_combination(i, f0, j, f1, b)) {
+            return std::nullopt;
+        }
+        return std::pair<int64_t, int64_t>{a, b};
+    }
+
+    /// Throw instead of invoking signed-overflow UB when a public coordinate
+    /// pair cannot be represented by the fixed-width candidate format.
+    [[nodiscard]] std::pair<int64_t, int64_t> to_ab(int32_t i, int32_t j) const {
+        if (auto projected = try_to_ab(i, j)) {
+            return *projected;
+        }
+        throw std::overflow_error("lattice coordinate projection does not fit in int64_t");
     }
 
     /// 检查 (a, b) 是否满足 a - b*r ≡ 0 (mod q) (GNFS convention)
     [[nodiscard]] bool verify_ab(int64_t a, int64_t b) const noexcept {
-        // (a - b*r) mod q should be 0
-        int64_t val = a - static_cast<int64_t>(b) * r;
-        int64_t mod = val % static_cast<int64_t>(q);
-        if (mod < 0)
-            mod += q;
-        return mod == 0;
+        if (q == 0) {
+            return false;
+        }
+        const int64_t modulus = static_cast<int64_t>(q);
+        auto positive_residue = [modulus](int64_t value) noexcept {
+            int64_t residue = value % modulus;
+            if (residue < 0) {
+                residue += modulus;
+            }
+            return static_cast<uint64_t>(residue);
+        };
+        const uint64_t a_residue = positive_residue(a);
+        const uint64_t b_residue = positive_residue(b);
+        return a_residue == (b_residue * static_cast<uint64_t>(r)) % q;
     }
 
     /// 格的行列式（应该等于 q）
-    [[nodiscard]] int64_t determinant() const noexcept {
-        return e0 * f1 - e1 * f0;
+    [[nodiscard]] std::optional<int64_t> try_determinant() const noexcept {
+        int64_t result = 0;
+        if (!detail::lb_try_determinant(e0, f0, e1, f1, result)) {
+            return std::nullopt;
+        }
+        return result;
+    }
+
+    [[nodiscard]] int64_t determinant() const {
+        if (auto result = try_determinant()) {
+            return *result;
+        }
+        throw std::overflow_error("lattice determinant does not fit in int64_t");
     }
 };
 
@@ -109,32 +161,334 @@ struct LatticeBasis {
 
 namespace detail {
 
-/// Wide norm² (native int128 where available, long double fallback on MSVC).
-#if defined(__SIZEOF_INT128__)
-using lb_wide_int = __int128_t;
-#else
-using lb_wide_int = long double;
-#endif
+/// Exact unsigned 128-bit value represented as two 64-bit limbs.
+///
+/// The unskewed lattice reducers must make the same rounding decisions on
+/// Windows, where MSVC has no `__int128`, as on GCC/Clang. Keeping the value
+/// in a platform-independent limb form also lets adaptive-lattice norm
+/// comparisons remain exact when perturbed coordinates exceed 53 bits.
+struct LbU128 {
+    uint64_t hi = 0;
+    uint64_t lo = 0;
+};
 
-[[nodiscard]] inline lb_wide_int lb_norm_sq(int64_t a, int64_t b) noexcept {
-    lb_wide_int a128 = static_cast<lb_wide_int>(a);
-    lb_wide_int b128 = static_cast<lb_wide_int>(b);
-    return a128 * a128 + b128 * b128;
+/// Signed 128-bit value. Lattice dot-product magnitudes are at most 2^127,
+/// so a normalized sign + magnitude representation is enough.
+struct LbI128 {
+    LbU128 magnitude{};
+    bool negative = false;
+};
+
+[[nodiscard]] constexpr bool operator==(LbU128 lhs, LbU128 rhs) noexcept {
+    return lhs.hi == rhs.hi && lhs.lo == rhs.lo;
 }
 
-/// 精确整数 round-half-to-even-like: round(a/b) for b > 0.
-/// 用 (2a + b)/(2b) for a≥0, (2a - b)/(2b) for a<0 (round-half-away-from-zero).
-[[nodiscard]] inline int64_t lb_int_round_div(lb_wide_int a, lb_wide_int b) noexcept {
-    if (b <= 0)
-        return 0; // safety
+[[nodiscard]] constexpr bool operator<(LbU128 lhs, LbU128 rhs) noexcept {
+    return lhs.hi < rhs.hi || (lhs.hi == rhs.hi && lhs.lo < rhs.lo);
+}
+
+[[nodiscard]] constexpr bool operator>(LbU128 lhs, LbU128 rhs) noexcept {
+    return rhs < lhs;
+}
+
+[[nodiscard]] constexpr bool operator<=(LbU128 lhs, LbU128 rhs) noexcept {
+    return !(rhs < lhs);
+}
+
+[[nodiscard]] constexpr bool operator>=(LbU128 lhs, LbU128 rhs) noexcept {
+    return !(lhs < rhs);
+}
+
+[[nodiscard]] constexpr bool lb_is_zero(LbU128 value) noexcept {
+    return value.hi == 0 && value.lo == 0;
+}
+
+[[nodiscard]] constexpr uint64_t lb_abs_i64(int64_t value) noexcept {
+    const uint64_t bits = static_cast<uint64_t>(value);
+    return value < 0 ? uint64_t{0} - bits : bits;
+}
+
+[[nodiscard]] constexpr LbU128 lb_add_u128(LbU128 lhs, LbU128 rhs) noexcept {
+    const uint64_t lo = lhs.lo + rhs.lo;
+    const uint64_t carry = lo < lhs.lo ? 1 : 0;
+    return {lhs.hi + rhs.hi + carry, lo};
+}
+
+/// Subtract modulo 2^128. Callers use it only when lhs >= rhs, except for
+/// the intentional wrapped subtraction in the long-division overflow step.
+[[nodiscard]] constexpr LbU128 lb_sub_u128(LbU128 lhs, LbU128 rhs) noexcept {
+    const uint64_t borrow = lhs.lo < rhs.lo ? 1 : 0;
+    return {lhs.hi - rhs.hi - borrow, lhs.lo - rhs.lo};
+}
+
+[[nodiscard]] constexpr LbU128 lb_shift_right_one(LbU128 value) noexcept {
+    return {value.hi >> 1, (value.lo >> 1) | (value.hi << 63)};
+}
+
+/// Portable 64x64 -> 128 multiplication using four 32-bit partial products.
+/// This remains separately callable so every platform can test the fallback
+/// retained for targets without native or MSVC wide-multiply intrinsics.
+[[nodiscard]] constexpr LbU128 lb_mul_u64_portable(uint64_t lhs, uint64_t rhs) noexcept {
+    // Standard special-q reduction keeps both coordinates below 2^32. This
+    // exact fast path avoids four partial products on targets without a native
+    // 64x64 -> 128 multiply while preserving the general fallback below.
+    if ((lhs | rhs) <= 0xFFFF'FFFFULL)
+        return {0, lhs * rhs};
+
+    const uint64_t lhs_lo = static_cast<uint32_t>(lhs);
+    const uint64_t lhs_hi = lhs >> 32;
+    const uint64_t rhs_lo = static_cast<uint32_t>(rhs);
+    const uint64_t rhs_hi = rhs >> 32;
+
+    const uint64_t p00 = lhs_lo * rhs_lo;
+    const uint64_t p01 = lhs_lo * rhs_hi;
+    const uint64_t p10 = lhs_hi * rhs_lo;
+    const uint64_t p11 = lhs_hi * rhs_hi;
+    const uint64_t middle = (p00 >> 32) + static_cast<uint32_t>(p01) + static_cast<uint32_t>(p10);
+
+    return {p11 + (p01 >> 32) + (p10 >> 32) + (middle >> 32),
+            (middle << 32) | static_cast<uint32_t>(p00)};
+}
+
+[[nodiscard]] inline LbU128 lb_mul_u64(uint64_t lhs, uint64_t rhs) noexcept {
 #if defined(__SIZEOF_INT128__)
-    if (a >= 0) {
-        return static_cast<int64_t>((2 * a + b) / (2 * b));
-    }
-    return static_cast<int64_t>((2 * a - b) / (2 * b));
+    const __uint128_t product = static_cast<__uint128_t>(lhs) * rhs;
+    return {static_cast<uint64_t>(product >> 64), static_cast<uint64_t>(product)};
+#elif defined(_MSC_VER) && defined(_M_X64)
+    unsigned __int64 hi = 0;
+    const unsigned __int64 lo =
+        _umul128(static_cast<unsigned __int64>(lhs), static_cast<unsigned __int64>(rhs), &hi);
+    return {static_cast<uint64_t>(hi), static_cast<uint64_t>(lo)};
+#elif defined(_MSC_VER) && defined(_M_ARM64)
+    const auto lhs64 = static_cast<unsigned __int64>(lhs);
+    const auto rhs64 = static_cast<unsigned __int64>(rhs);
+    return {static_cast<uint64_t>(__umulh(lhs64, rhs64)), lhs * rhs};
 #else
-    return static_cast<int64_t>(std::round(a / b));
+    return lb_mul_u64_portable(lhs, rhs);
 #endif
+}
+
+[[nodiscard]] inline LbU128 lb_norm_sq(int64_t a, int64_t b) noexcept {
+    const uint64_t abs_a = lb_abs_i64(a);
+    const uint64_t abs_b = lb_abs_i64(b);
+#if defined(__SIZEOF_INT128__)
+    const __uint128_t exact_a = abs_a;
+    const __uint128_t exact_b = abs_b;
+    const __uint128_t norm = exact_a * exact_a + exact_b * exact_b;
+    return {static_cast<uint64_t>(norm >> 64), static_cast<uint64_t>(norm)};
+#else
+#if !(defined(_MSC_VER) && (defined(_M_X64) || defined(_M_ARM64)))
+    if ((abs_a | abs_b) <= 0xFFFF'FFFFULL) {
+        const uint64_t square_a = abs_a * abs_a;
+        const uint64_t square_b = abs_b * abs_b;
+        const uint64_t lo = square_a + square_b;
+        return {lo < square_a ? 1U : 0U, lo};
+    }
+#endif
+    return lb_add_u128(lb_mul_u64(abs_a, abs_a), lb_mul_u64(abs_b, abs_b));
+#endif
+}
+
+[[nodiscard]] inline LbI128 lb_signed_product(int64_t lhs, int64_t rhs) noexcept {
+    const LbU128 magnitude = lb_mul_u64(lb_abs_i64(lhs), lb_abs_i64(rhs));
+    return {magnitude, !lb_is_zero(magnitude) && ((lhs < 0) != (rhs < 0))};
+}
+
+[[nodiscard]] constexpr LbI128 lb_add_i128(LbI128 lhs, LbI128 rhs) noexcept {
+    if (lhs.negative == rhs.negative) {
+        const LbU128 magnitude = lb_add_u128(lhs.magnitude, rhs.magnitude);
+        return {magnitude, !lb_is_zero(magnitude) && lhs.negative};
+    }
+    if (lhs.magnitude < rhs.magnitude) {
+        const LbU128 magnitude = lb_sub_u128(rhs.magnitude, lhs.magnitude);
+        return {magnitude, !lb_is_zero(magnitude) && rhs.negative};
+    }
+    const LbU128 magnitude = lb_sub_u128(lhs.magnitude, rhs.magnitude);
+    return {magnitude, !lb_is_zero(magnitude) && lhs.negative};
+}
+
+[[nodiscard]] constexpr bool lb_try_i128_to_i64(LbI128 value, int64_t& result) noexcept {
+    if (value.magnitude.hi != 0) {
+        return false;
+    }
+
+    constexpr uint64_t int64_sign_bit = uint64_t{1} << 63;
+    if (!value.negative) {
+        if (value.magnitude.lo >= int64_sign_bit) {
+            return false;
+        }
+        result = static_cast<int64_t>(value.magnitude.lo);
+        return true;
+    }
+
+    if (value.magnitude.lo > int64_sign_bit) {
+        return false;
+    }
+    if (value.magnitude.lo == int64_sign_bit) {
+        result = std::numeric_limits<int64_t>::min();
+        return true;
+    }
+    result = -static_cast<int64_t>(value.magnitude.lo);
+    return true;
+}
+
+[[nodiscard]] inline bool lb_try_linear_combination(int64_t lhs_multiplier, int64_t lhs_value,
+                                                    int64_t rhs_multiplier, int64_t rhs_value,
+                                                    int64_t& result) noexcept {
+    return lb_try_i128_to_i64(lb_add_i128(lb_signed_product(lhs_multiplier, lhs_value),
+                                          lb_signed_product(rhs_multiplier, rhs_value)),
+                              result);
+}
+
+[[nodiscard]] inline bool lb_try_multiply_subtract(int64_t value, int64_t multiplier,
+                                                   int64_t multiplicand, int64_t& result) noexcept {
+    LbI128 product = lb_signed_product(multiplier, multiplicand);
+    if (!lb_is_zero(product.magnitude)) {
+        product.negative = !product.negative;
+    }
+    return lb_try_i128_to_i64(lb_add_i128(lb_signed_product(1, value), product), result);
+}
+
+inline void lb_reduce_vector_checked(int64_t& target_a, int64_t& target_b, int64_t multiplier,
+                                     int64_t source_a, int64_t source_b) {
+    int64_t next_a = 0;
+    int64_t next_b = 0;
+    if (!lb_try_multiply_subtract(target_a, multiplier, source_a, next_a) ||
+        !lb_try_multiply_subtract(target_b, multiplier, source_b, next_b)) {
+        throw std::overflow_error("lattice basis update does not fit in int64_t");
+    }
+    target_a = next_a;
+    target_b = next_b;
+}
+
+[[nodiscard]] inline bool lb_try_determinant(int64_t e0, int64_t f0, int64_t e1, int64_t f1,
+                                             int64_t& result) noexcept {
+    const LbI128 left = lb_signed_product(e0, f1);
+    LbI128 right = lb_signed_product(e1, f0);
+    if (!lb_is_zero(right.magnitude)) {
+        right.negative = !right.negative;
+    }
+    return lb_try_i128_to_i64(lb_add_i128(left, right), result);
+}
+
+[[nodiscard]] inline LbI128 lb_dot(int64_t a0, int64_t b0, int64_t a1, int64_t b1) noexcept {
+#if !defined(__SIZEOF_INT128__) && !(defined(_MSC_VER) && (defined(_M_X64) || defined(_M_ARM64)))
+    const uint64_t abs_a0 = lb_abs_i64(a0);
+    const uint64_t abs_b0 = lb_abs_i64(b0);
+    const uint64_t abs_a1 = lb_abs_i64(a1);
+    const uint64_t abs_b1 = lb_abs_i64(b1);
+    if ((abs_a0 | abs_b0 | abs_a1 | abs_b1) <= 0xFFFF'FFFFULL) {
+        const LbU128 magnitude_a{0, abs_a0 * abs_a1};
+        const LbU128 magnitude_b{0, abs_b0 * abs_b1};
+        return lb_add_i128({magnitude_a, !lb_is_zero(magnitude_a) && ((a0 < 0) != (a1 < 0))},
+                           {magnitude_b, !lb_is_zero(magnitude_b) && ((b0 < 0) != (b1 < 0))});
+    }
+#endif
+    return lb_add_i128(lb_signed_product(a0, a1), lb_signed_product(b0, b1));
+}
+
+struct LbU128DivResult {
+    LbU128 quotient{};
+    LbU128 remainder{};
+};
+
+[[nodiscard]] constexpr bool lb_test_bit(LbU128 value, unsigned bit) noexcept {
+    return bit < 64 ? ((value.lo >> bit) & 1U) != 0 : ((value.hi >> (bit - 64)) & 1U) != 0;
+}
+
+constexpr void lb_set_bit(LbU128& value, unsigned bit) noexcept {
+    if (bit < 64) {
+        value.lo |= uint64_t{1} << bit;
+    } else {
+        value.hi |= uint64_t{1} << (bit - 64);
+    }
+}
+
+/// Exact unsigned 128-bit division. The common lattice path stays in the
+/// single-limb fast path; the bounded long-division fallback makes the helper
+/// total for adaptive-lattice-sized values and direct arithmetic tests.
+[[nodiscard]] constexpr LbU128DivResult lb_divmod_u128(LbU128 numerator,
+                                                       LbU128 denominator) noexcept {
+    if (lb_is_zero(denominator))
+        return {};
+    if (numerator < denominator)
+        return {{}, numerator};
+    if (numerator.hi == 0 && denominator.hi == 0) {
+        return {{0, numerator.lo / denominator.lo}, {0, numerator.lo % denominator.lo}};
+    }
+
+    LbU128DivResult result;
+    for (int bit = 127; bit >= 0; --bit) {
+        const bool overflow = (result.remainder.hi >> 63) != 0;
+        result.remainder.hi = (result.remainder.hi << 1) | (result.remainder.lo >> 63);
+        result.remainder.lo = (result.remainder.lo << 1) |
+                              (lb_test_bit(numerator, static_cast<unsigned>(bit)) ? 1 : 0);
+        if (overflow || result.remainder >= denominator) {
+            result.remainder = lb_sub_u128(result.remainder, denominator);
+            lb_set_bit(result.quotient, static_cast<unsigned>(bit));
+        }
+    }
+    return result;
+}
+
+[[nodiscard]] constexpr LbU128 lb_increment_u128(LbU128 value) noexcept {
+    if (value.lo == std::numeric_limits<uint64_t>::max()) {
+        if (value.hi != std::numeric_limits<uint64_t>::max()) {
+            ++value.hi;
+            value.lo = 0;
+        }
+        return value;
+    }
+    ++value.lo;
+    return value;
+}
+
+/// Exact round(a / b) for b > 0, with halfway cases rounded away from zero.
+/// Quotient saturation is a defensive totality guard; valid lattice inputs
+/// have |quotient| below 2^32.
+[[nodiscard]] constexpr int64_t lb_int_round_div(LbI128 a, LbU128 b) noexcept {
+    if (lb_is_zero(b) || lb_is_zero(a.magnitude))
+        return 0;
+
+#if !defined(__SIZEOF_INT128__) && !(defined(_MSC_VER) && (defined(_M_X64) || defined(_M_ARM64)))
+    if (a.magnitude.hi == 0 && b.hi == 0) {
+        uint64_t quotient = a.magnitude.lo / b.lo;
+        const uint64_t remainder = a.magnitude.lo % b.lo;
+        const uint64_t half = b.lo >> 1;
+        const bool round_up = remainder > half || (((b.lo & 1U) == 0) && remainder == half);
+        if (round_up && quotient != std::numeric_limits<uint64_t>::max())
+            ++quotient;
+
+        constexpr uint64_t INT64_SIGN_BIT = uint64_t{1} << 63;
+        if (a.negative) {
+            if (quotient >= INT64_SIGN_BIT)
+                return std::numeric_limits<int64_t>::min();
+            return -static_cast<int64_t>(quotient);
+        }
+        if (quotient >= INT64_SIGN_BIT)
+            return std::numeric_limits<int64_t>::max();
+        return static_cast<int64_t>(quotient);
+    }
+#endif
+
+    auto division = lb_divmod_u128(a.magnitude, b);
+    const LbU128 half = lb_shift_right_one(b);
+    const bool round_up =
+        division.remainder > half || (((b.lo & 1U) == 0) && division.remainder == half);
+    if (round_up)
+        division.quotient = lb_increment_u128(division.quotient);
+
+    constexpr uint64_t INT64_SIGN_BIT = uint64_t{1} << 63;
+    if (a.negative) {
+        if (division.quotient.hi != 0 || division.quotient.lo >= INT64_SIGN_BIT) {
+            return std::numeric_limits<int64_t>::min();
+        }
+        return -static_cast<int64_t>(division.quotient.lo);
+    }
+    if (division.quotient.hi != 0 || division.quotient.lo >= INT64_SIGN_BIT) {
+        return std::numeric_limits<int64_t>::max();
+    }
+    return static_cast<int64_t>(division.quotient.lo);
 }
 
 /// 读 ENV `GNFS_LATTICE_LLL` 解析 reduction method 默认值.
@@ -201,14 +555,12 @@ inline void lb_reduce_gauss(int64_t& v0_a, int64_t& v0_b, int64_t& v1_a, int64_t
         }
 
         // v0 = v0 - round(v0·v1 / v1·v1) * v1
-        lb_wide_int dot =
-            static_cast<lb_wide_int>(v0_a) * v1_a + static_cast<lb_wide_int>(v0_b) * v1_b;
-        lb_wide_int n1 = lb_norm_sq(v1_a, v1_b);
-        if (n1 > 0) {
+        const LbI128 dot = lb_dot(v0_a, v0_b, v1_a, v1_b);
+        const LbU128 n1 = lb_norm_sq(v1_a, v1_b);
+        if (!lb_is_zero(n1)) {
             int64_t mu = lb_int_round_div(dot, n1);
             if (mu != 0) {
-                v0_a -= mu * v1_a;
-                v0_b -= mu * v1_b;
+                lb_reduce_vector_checked(v0_a, v0_b, mu, v1_a, v1_b);
                 changed = true;
             }
         }
@@ -254,20 +606,18 @@ inline void lb_reduce_lll_fk2005(int64_t& v0_a, int64_t& v0_b, int64_t& v1_a, in
         ++iters;
 
         // Size-reduction: v1 ← v1 - round(v0·v1 / |v0|²) · v0
-        lb_wide_int n0 = lb_norm_sq(v0_a, v0_b);
-        if (n0 == 0)
+        const LbU128 n0 = lb_norm_sq(v0_a, v0_b);
+        if (lb_is_zero(n0))
             break; // degenerate: v0 = (0,0), 不动
 
-        lb_wide_int dot =
-            static_cast<lb_wide_int>(v0_a) * v1_a + static_cast<lb_wide_int>(v0_b) * v1_b;
+        const LbI128 dot = lb_dot(v0_a, v0_b, v1_a, v1_b);
         int64_t mu = lb_int_round_div(dot, n0);
         if (mu != 0) {
-            v1_a -= mu * v0_a;
-            v1_b -= mu * v0_b;
+            lb_reduce_vector_checked(v1_a, v1_b, mu, v0_a, v0_b);
         }
 
         // Lovász 检查: 现在 |v1| 应 ≥ |v0|, 否则 swap 继续
-        lb_wide_int n1 = lb_norm_sq(v1_a, v1_b);
+        const LbU128 n1 = lb_norm_sq(v1_a, v1_b);
         if (n1 >= n0) {
             // Lovász 满足 + size-reduced → 终止
             break;
@@ -320,6 +670,22 @@ inline void lb_reduce_lll_fk2005(int64_t& v0_a, int64_t& v0_b, int64_t& v1_a, in
     return da0 * da1 + s2 * db0 * db1;
 }
 
+/// Round a finite SkewLLL quotient without invoking an out-of-range integer
+/// conversion. The hexadecimal bounds are exact binary64 powers and do not
+/// depend on the active floating-point rounding mode.
+[[nodiscard]] inline int64_t lb_checked_round_to_i64(double quotient) {
+    if (!std::isfinite(quotient)) {
+        throw std::overflow_error("SkewLLL quotient is not representable as double");
+    }
+    const double rounded = std::round(quotient);
+    constexpr double int64_lower_inclusive = -0x1p63;
+    constexpr double int64_upper_exclusive = 0x1p63;
+    if (rounded < int64_lower_inclusive || rounded >= int64_upper_exclusive) {
+        throw std::overflow_error("SkewLLL quotient does not fit in int64_t");
+    }
+    return static_cast<int64_t>(rounded);
+}
+
 /// Skew-aware LLL (F-K 2005 + CADO-NFS skew_gauss style).
 /// 算法与 lb_reduce_lll_fk2005 相同, 但 norm² 和 dot 用 skew-quadratic form q(v) = a² + s²·b².
 ///
@@ -335,10 +701,31 @@ inline void lb_reduce_lll_fk2005(int64_t& v0_a, int64_t& v0_b, int64_t& v1_a, in
 inline void lb_reduce_skew_lll(int64_t& v0_a, int64_t& v0_b, int64_t& v1_a, int64_t& v1_b,
                                double skewness) {
     constexpr int MAX_LLL_ITERS = 128;
+    if (!std::isfinite(skewness) || skewness <= 0.0) {
+        throw std::invalid_argument("SkewLLL skewness must be positive and finite");
+    }
     const double s2 = skewness * skewness;
+    if (!std::isfinite(s2) || s2 <= 0.0) {
+        throw std::invalid_argument("SkewLLL squared skewness must be positive and finite");
+    }
+
+    const auto checked_norm = [s2](int64_t a, int64_t b) {
+        const double norm = lb_skew_norm_sq_d(a, b, s2);
+        if (!std::isfinite(norm)) {
+            throw std::overflow_error("SkewLLL norm is not representable as double");
+        }
+        return norm;
+    };
+    const auto checked_dot = [s2](int64_t a0, int64_t b0, int64_t a1, int64_t b1) {
+        const double dot = lb_skew_dot_d(a0, b0, a1, b1, s2);
+        if (!std::isfinite(dot)) {
+            throw std::overflow_error("SkewLLL dot product is not representable as double");
+        }
+        return dot;
+    };
 
     // 保证初始 v0 = skew-shorter
-    if (lb_skew_norm_sq_d(v0_a, v0_b, s2) > lb_skew_norm_sq_d(v1_a, v1_b, s2)) {
+    if (checked_norm(v0_a, v0_b) > checked_norm(v1_a, v1_b)) {
         std::swap(v0_a, v1_a);
         std::swap(v0_b, v1_b);
     }
@@ -347,26 +734,19 @@ inline void lb_reduce_skew_lll(int64_t& v0_a, int64_t& v0_b, int64_t& v1_a, int6
     while (iters < MAX_LLL_ITERS) {
         ++iters;
 
-        double n0 = lb_skew_norm_sq_d(v0_a, v0_b, s2);
+        const double n0 = checked_norm(v0_a, v0_b);
         if (n0 == 0.0)
             break; // degenerate
 
-        double dot = lb_skew_dot_d(v0_a, v0_b, v1_a, v1_b, s2);
-        double mu_d = std::round(dot / n0);
-        // mu 范围 saturation: |mu| ≤ max(|v0|, |v1|) ≤ 2^32. 64-bit int 安全.
-        // 极端 case (sieve 中实际见不到) 用 clamp 防 cast UB.
-        if (mu_d > 1e18)
-            mu_d = 1e18;
-        if (mu_d < -1e18)
-            mu_d = -1e18;
-        int64_t mu = static_cast<int64_t>(mu_d);
+        const double dot = checked_dot(v0_a, v0_b, v1_a, v1_b);
+        const double quotient = dot / n0;
+        const int64_t mu = lb_checked_round_to_i64(quotient);
         if (mu != 0) {
-            v1_a -= mu * v0_a;
-            v1_b -= mu * v0_b;
+            lb_reduce_vector_checked(v1_a, v1_b, mu, v0_a, v0_b);
         }
 
         // Lovász (skew): |v1|²_skew ≥ |v0|²_skew?
-        double n1 = lb_skew_norm_sq_d(v1_a, v1_b, s2);
+        const double n1 = checked_norm(v1_a, v1_b);
         if (n1 >= n0) {
             break;
         }
@@ -375,7 +755,7 @@ inline void lb_reduce_skew_lll(int64_t& v0_a, int64_t& v0_b, int64_t& v1_a, int6
     }
 
     // 后置 swap: v1 = skew-shorter (一致约定)
-    if (lb_skew_norm_sq_d(v0_a, v0_b, s2) < lb_skew_norm_sq_d(v1_a, v1_b, s2)) {
+    if (checked_norm(v0_a, v0_b) < checked_norm(v1_a, v1_b)) {
         std::swap(v0_a, v1_a);
         std::swap(v0_b, v1_b);
     }
@@ -407,6 +787,9 @@ compute_lattice_basis(const SpecialQ& sq, LatticeReductionMethod method, double 
         detail::lb_reduce_lll_fk2005(v0_a, v0_b, v1_a, v1_b);
         break;
     case LatticeReductionMethod::SkewLLL: {
+        if (!std::isfinite(skewness) || skewness <= 0.0) {
+            throw std::invalid_argument("SkewLLL skewness must be positive and finite");
+        }
         // Skewness=1.0 退化为 unskewed LLL (bit-exact path).
         if (std::abs(skewness - 1.0) < 1e-9) {
             detail::lb_reduce_lll_fk2005(v0_a, v0_b, v1_a, v1_b);
@@ -439,9 +822,14 @@ compute_lattice_basis(const SpecialQ& sq, LatticeReductionMethod method, double 
 compute_lattice_basis_with_skewness(const SpecialQ& sq, double skewness,
                                     const LatticeBasisReductionConfig& config) {
     auto method = config.base_method;
-    if (method == LatticeReductionMethod::LLL && config.skew_enabled &&
-        std::abs(skewness - 1.0) > 1e-6) {
-        method = LatticeReductionMethod::SkewLLL;
+    if (method == LatticeReductionMethod::LLL && config.skew_enabled) {
+        if (!std::isfinite(skewness) || skewness <= 0.0) {
+            throw std::invalid_argument(
+                "skew-aware lattice reduction requires positive finite skewness");
+        }
+        if (std::abs(skewness - 1.0) > 1e-6) {
+            method = LatticeReductionMethod::SkewLLL;
+        }
     }
     return compute_lattice_basis(sq, method, skewness);
 }
@@ -475,41 +863,95 @@ struct SieveRegion {
 
     /// 区域大小
     [[nodiscard]] size_t size() const noexcept {
-        return static_cast<size_t>(i_max - i_min + 1) * static_cast<size_t>(j_max - j_min + 1);
+        const int32_t width = i_width();
+        const int32_t height = j_height();
+        if (width <= 0 || height <= 0) {
+            return 0;
+        }
+
+        const size_t width_size = static_cast<size_t>(width);
+        const size_t height_size = static_cast<size_t>(height);
+        if (height_size > std::numeric_limits<size_t>::max() / width_size) {
+            return 0;
+        }
+        return width_size * height_size;
     }
 
     /// i 方向宽度
     [[nodiscard]] int32_t i_width() const noexcept {
-        return i_max - i_min + 1;
+        const int64_t width = static_cast<int64_t>(i_max) - static_cast<int64_t>(i_min) + 1;
+        if (width <= 0 || width > std::numeric_limits<int32_t>::max()) {
+            return 0;
+        }
+        return static_cast<int32_t>(width);
     }
 
     /// j 方向高度
     [[nodiscard]] int32_t j_height() const noexcept {
-        return j_max - j_min + 1;
+        const int64_t height = static_cast<int64_t>(j_max) - static_cast<int64_t>(j_min) + 1;
+        if (height <= 0 || height > std::numeric_limits<int32_t>::max()) {
+            return 0;
+        }
+        return static_cast<int32_t>(height);
     }
 
-    /// 从线性索引转换为 (i, j)
+    /// 从线性索引转换为 (i, j)。无效区域或越界索引返回左下端点；
+    /// noexcept API 以该哨兵避免除零和越界整数转换。
     [[nodiscard]] std::pair<int32_t, int32_t> index_to_ij(size_t idx) const noexcept {
         const size_t w = static_cast<size_t>(i_width());
-        int32_t j = static_cast<int32_t>(idx / w) + j_min;
-        int32_t i = static_cast<int32_t>(idx % w) + i_min;
+        if (w == 0 || idx >= size()) {
+            return {i_min, j_min};
+        }
+        const int32_t j =
+            static_cast<int32_t>(static_cast<int64_t>(j_min) + static_cast<int64_t>(idx / w));
+        const int32_t i =
+            static_cast<int32_t>(static_cast<int64_t>(i_min) + static_cast<int64_t>(idx % w));
         return {i, j};
     }
 
-    /// 从 (i, j) 转换为线性索引
+    /// 从 (i, j) 转换为线性索引。无效或越界坐标返回 size() 哨兵。
     [[nodiscard]] size_t ij_to_index(int32_t i, int32_t j) const noexcept {
-        return static_cast<size_t>(j - j_min) * static_cast<size_t>(i_width()) +
-               static_cast<size_t>(i - i_min);
+        const int32_t width = i_width();
+        const size_t area = size();
+        if (width <= 0 || area == 0 || i < i_min || i > i_max || j < j_min || j > j_max) {
+            return area;
+        }
+        const size_t row =
+            static_cast<size_t>(static_cast<int64_t>(j) - static_cast<int64_t>(j_min));
+        const size_t column =
+            static_cast<size_t>(static_cast<int64_t>(i) - static_cast<int64_t>(i_min));
+        return row * static_cast<size_t>(width) + column;
     }
 };
+
+/// Return whether every lattice point in the inclusive rectangular region can
+/// be projected into the fixed-width candidate representation. Each output is
+/// affine in (i,j), so checking all four corners is necessary and sufficient.
+[[nodiscard]] inline bool lattice_projection_fits_int64(const LatticeBasis& basis,
+                                                        const SieveRegion& region) noexcept {
+    if (region.i_width() <= 0 || region.j_height() <= 0 || region.size() == 0) {
+        return false;
+    }
+    return basis.try_to_ab(region.i_min, region.j_min).has_value() &&
+           basis.try_to_ab(region.i_min, region.j_max).has_value() &&
+           basis.try_to_ab(region.i_max, region.j_min).has_value() &&
+           basis.try_to_ab(region.i_max, region.j_max).has_value();
+}
 
 /// 默认筛区域（基于 skewness 调整）
 [[nodiscard]] inline SieveRegion default_sieve_region(double skewness) {
     SieveRegion region;
 
+    // Invalid geometry has no meaningful orientation. Fall back to the
+    // historical symmetric region instead of allowing a non-finite value to
+    // reach a floating-point-to-integer conversion.
+    if (!std::isfinite(skewness) || skewness <= 0.0) {
+        skewness = 1.0;
+    }
+
     // 根据 skewness 调整 i/j 的范围
     // skewness > 1 意味着 |a| 通常比 |b| 大
-    int32_t base_size = 16384; // 2^14
+    constexpr int32_t base_size = 16384; // 2^14
 
     double i_half, j_size;
     if (skewness > 1.0) {
@@ -521,25 +963,38 @@ struct SieveRegion {
         j_size = base_size;
     }
 
-    // Cap total area to prevent catastrophic memory allocation
-    constexpr double MAX_SIEVE_AREA = 256.0 * 1024 * 1024;
+    // Cap total area to prevent catastrophic memory allocation. The product
+    // is finite for every finite positive skewness accepted above, including
+    // max double: sqrt(max) * base_size remains representable and is paired
+    // with its reciprocal here.
+    constexpr size_t max_sieve_area = size_t{256} * 1024 * 1024;
+    constexpr double max_sieve_area_double = static_cast<double>(max_sieve_area);
     double area = (2.0 * i_half) * j_size;
-    if (area > MAX_SIEVE_AREA) {
-        double scale = std::sqrt(MAX_SIEVE_AREA / area);
+    if (area > max_sieve_area_double) {
+        double scale = std::sqrt(max_sieve_area_double / area);
         i_half = std::floor(i_half * scale);
         j_size = std::floor(j_size * scale);
     }
 
-    // Clamp to int32 range to prevent overflow on extreme skewness
-    constexpr double MAX_I_HALF = static_cast<double>(INT32_MAX - 1);
-    constexpr double MAX_J_SIZE = static_cast<double>(INT32_MAX - 1);
-    i_half = std::max(std::min(i_half, MAX_I_HALF), 1.0);
-    j_size = std::max(std::min(j_size, MAX_J_SIZE), 1.0);
+    // Re-clamping a collapsed j_size to one changes the area calculation.
+    // Resolve the positive integral height first, then derive the maximum
+    // even width allowed by both the area cap and i_width()'s int32 contract.
+    // Reserve at least two cells for the symmetric i interval.
+    constexpr size_t max_height = max_sieve_area / 2;
+    const double bounded_j_size = std::clamp(j_size, 1.0, static_cast<double>(max_height));
+    const int32_t height = static_cast<int32_t>(bounded_j_size);
 
-    region.i_min = -static_cast<int32_t>(i_half);
-    region.i_max = static_cast<int32_t>(i_half) - 1;
+    const size_t max_width_by_area = max_sieve_area / static_cast<size_t>(height);
+    const size_t max_width =
+        std::min(max_width_by_area, static_cast<size_t>(std::numeric_limits<int32_t>::max()));
+    const size_t max_i_half = max_width / 2;
+    const double bounded_i_half = std::clamp(i_half, 1.0, static_cast<double>(max_i_half));
+    const int32_t integral_i_half = static_cast<int32_t>(bounded_i_half);
+
+    region.i_min = -integral_i_half;
+    region.i_max = integral_i_half - 1;
     region.j_min = 1;
-    region.j_max = static_cast<int32_t>(j_size);
+    region.j_max = height;
 
     return region;
 }

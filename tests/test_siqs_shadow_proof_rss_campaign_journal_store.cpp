@@ -34,6 +34,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <ios>
 #include <iostream>
 #include <iterator>
 #include <optional>
@@ -2142,10 +2143,34 @@ void expect_private_regular_leaf(const std::filesystem::path& path, std::size_t 
     CHECK(::lstat(path.c_str(), &metadata) == 0);
     CHECK(S_ISREG(metadata.st_mode));
     CHECK(static_cast<uint64_t>(metadata.st_uid) == static_cast<uint64_t>(::geteuid()));
-    CHECK((metadata.st_mode & (S_IWGRP | S_IWOTH)) == 0);
+    CHECK((metadata.st_mode & 07777) == 0600);
     CHECK(metadata.st_nlink == 1);
     CHECK(metadata.st_size >= 0);
     CHECK(static_cast<std::size_t>(metadata.st_size) == expected_size);
+}
+
+[[nodiscard]] bool set_special_fixture_mode_or_skip(const std::filesystem::path& path,
+                                                    mode_t requested_mode) {
+    CHECK(::chmod(path.c_str(), requested_mode) == 0);
+    struct stat metadata {};
+    CHECK(::lstat(path.c_str(), &metadata) == 0);
+    const mode_t observed_mode = metadata.st_mode & 07777;
+    if (observed_mode == requested_mode) {
+        return true;
+    }
+
+    const bool requested_private_mode_with_special_bits =
+        (requested_mode & static_cast<mode_t>(07000)) != 0 &&
+        (requested_mode & static_cast<mode_t>(0777)) == static_cast<mode_t>(0600);
+    if (requested_private_mode_with_special_bits && observed_mode == static_cast<mode_t>(0600)) {
+        std::cout << "  [SKIP] filesystem normalized special-bit fixture mode 0" << std::oct
+                  << static_cast<unsigned>(requested_mode) << " to 0"
+                  << static_cast<unsigned>(observed_mode) << std::dec << '\n';
+        return false;
+    }
+
+    CHECK(observed_mode == requested_mode);
+    return false;
 }
 
 void expect_begin_error(SIQSShadowProofRssCampaignJournalBeginSlotResult result, StoreError error,
@@ -5760,9 +5785,10 @@ void test_artifact_leaf_trust_and_shape_fail_closed() {
         const auto header = write_canonical_header(fixture);
         write_record(fixture, 1, canonical_start(header));
         write_artifact(fixture, 1, SIQSShadowProofRssArtifactKind::probe_stdout, stdout_bytes);
-        CHECK(::chmod(fixture.artifact_leaf(stdout_leaf.view()).c_str(), 04600) == 0);
-        expect_open_error(open_fixture(fixture), StoreError::entry_trust_invalid,
-                          StoreObject::artifact);
+        if (set_special_fixture_mode_or_skip(fixture.artifact_leaf(stdout_leaf.view()), 04600)) {
+            expect_open_error(open_fixture(fixture), StoreError::entry_trust_invalid,
+                              StoreObject::artifact);
+        }
     }
     {
         TempStore fixture;

@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib> // getenv, atoi for GNFS_OVERRIDE_LP_BITS
+#include <limits>
 
 namespace gnfs::core {
 
@@ -340,9 +341,21 @@ struct GNFSParams {
         sr_double = std::min(sr_double, 1.0e8);
         p.search_radius = static_cast<uint64_t>(sr_double);
 
-        // 候选数量
-        p.num_candidates = std::max(1000u, static_cast<uint32_t>(p.digits * 100));
-        p.skewness_steps = std::max(100u, static_cast<uint32_t>(p.digits * 5));
+        // 候选数量。先检查乘法是否能在 size_t 中表示，再窄化到 uint32_t;
+        // 对极端 bit length，直接计算 digits * factor 会先回绕，产生一个
+        // 看似合法但与输入规模无关的较小搜索预算。
+        const auto scaled_u32 = [](size_t value, size_t factor, uint32_t minimum,
+                                   uint32_t maximum) {
+            if (value > maximum / factor) {
+                return maximum;
+            }
+            return std::max(minimum, static_cast<uint32_t>(value * factor));
+        };
+        constexpr uint32_t max_u32 = (std::numeric_limits<uint32_t>::max)();
+        p.num_candidates = scaled_u32(p.digits, 100, 1000, max_u32);
+        // MurphyEvaluator iterates inclusively (i <= skewness_steps), so
+        // UINT32_MAX would wrap the loop counter after the final sample.
+        p.skewness_steps = scaled_u32(p.digits, 5, 100, max_u32 - 1);
 
         // === 线性代数 ===
         // QC primes ensure deps are squares in Z[α]. Need ≥ degree-1 columns.

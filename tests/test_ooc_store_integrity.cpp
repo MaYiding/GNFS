@@ -91,11 +91,23 @@ Relation make_relation(int64_t a, uint64_t b) {
     return relation;
 }
 
+Relation make_relation_with_extra(int64_t a, uint64_t b, int64_t extra_a, uint64_t extra_b) {
+    Relation relation(a, b);
+    relation.extra_ab_pairs.emplace_back(extra_a, extra_b);
+    return relation;
+}
+
 RelationSequenceReceipt standard_sequence_receipt(uint64_t count) {
     RelationSequenceReceiptAccumulator sequence;
     for (uint64_t ordinal = 0; ordinal < count; ++ordinal) {
         sequence.append(make_relation(static_cast<int64_t>(2 * ordinal + 1), 2 * ordinal + 2));
     }
+    return sequence.finish();
+}
+
+RelationSequenceReceipt minimal_sequence_receipt() {
+    RelationSequenceReceiptAccumulator sequence;
+    sequence.append(Relation(1, 2));
     return sequence.finish();
 }
 
@@ -442,6 +454,124 @@ void test_shared_persistence_limits() {
     CHECK(reader.read(1).a == 3);
 }
 
+void test_persistence_rejects_zero_b() {
+    Relation invalid(17, 0);
+
+    std::ostringstream serialized(std::ios::binary);
+    bool stream_write_rejected = false;
+    try {
+        invalid.serialize(serialized);
+    } catch (const std::invalid_argument&) {
+        stream_write_rejected = true;
+    }
+    CHECK(stream_write_rejected);
+    CHECK(serialized.str().empty());
+
+    Relation valid(17, 19);
+    std::ostringstream valid_serialized(std::ios::binary);
+    valid.serialize(valid_serialized);
+    std::string forged = valid_serialized.str();
+    CHECK(forged.size() >=
+          sizeof(uint32_t) + sizeof(uint32_t) + sizeof(int64_t) + sizeof(uint64_t));
+    for (size_t i = 16; i < 24; ++i) {
+        forged[i] = '\0';
+    }
+    bool stream_read_rejected = false;
+    try {
+        std::istringstream input(forged, std::ios::binary);
+        (void)Relation::deserialize(input);
+    } catch (const std::runtime_error&) {
+        stream_read_rejected = true;
+    }
+    CHECK(stream_read_rejected);
+
+    Relation invalid_extra = make_relation_with_extra(17, 19, -5, 0);
+    std::ostringstream rejected_extra_stream(std::ios::binary);
+    bool extra_stream_write_rejected = false;
+    try {
+        invalid_extra.serialize(rejected_extra_stream);
+    } catch (const std::invalid_argument&) {
+        extra_stream_write_rejected = true;
+    }
+    CHECK(extra_stream_write_rejected);
+    CHECK(rejected_extra_stream.str().empty());
+
+    Relation valid_extra = make_relation_with_extra(17, 19, -5, 7);
+    std::ostringstream valid_extra_serialized(std::ios::binary);
+    valid_extra.serialize(valid_extra_serialized);
+    std::string forged_extra = valid_extra_serialized.str();
+    constexpr size_t stream_extra_b_offset = 2 * sizeof(uint32_t) + sizeof(int64_t) +
+                                             sizeof(uint64_t) + 5 * sizeof(uint32_t) +
+                                             sizeof(int64_t);
+    CHECK(forged_extra.size() >= stream_extra_b_offset + sizeof(uint64_t));
+    for (size_t i = stream_extra_b_offset; i < stream_extra_b_offset + sizeof(uint64_t); ++i) {
+        forged_extra[i] = '\0';
+    }
+    bool extra_stream_read_rejected = false;
+    try {
+        std::istringstream input(forged_extra, std::ios::binary);
+        (void)Relation::deserialize(input);
+    } catch (const std::runtime_error&) {
+        extra_stream_read_rejected = true;
+    }
+    CHECK(extra_stream_read_rejected);
+
+    const std::string path = make_path("zero_b_writer");
+    OOCArtifacts cleanup(path);
+    OOCRelationWriter writer(path);
+    bool ooc_write_rejected = false;
+    try {
+        (void)writer.write(invalid);
+    } catch (const std::invalid_argument&) {
+        ooc_write_rejected = true;
+    }
+    CHECK(ooc_write_rejected);
+    CHECK(writer.state() == OOCWriterState::Open);
+    CHECK(writer.count() == 0);
+    bool extra_ooc_write_rejected = false;
+    try {
+        (void)writer.write(invalid_extra);
+    } catch (const std::invalid_argument&) {
+        extra_ooc_write_rejected = true;
+    }
+    CHECK(extra_ooc_write_rejected);
+    CHECK(writer.state() == OOCWriterState::Open);
+    CHECK(writer.count() == 0);
+    CHECK(writer.write(valid) == 0);
+    const auto descriptor = writer.finalize();
+
+    overwrite_u64(path + ".reldata",
+                  static_cast<std::streamoff>(OOCRelationWriter::DATA_HEADER_BYTES + 8), 0);
+    bool ooc_read_rejected = false;
+    try {
+        OOCRelationReader reader(path, descriptor);
+        (void)reader.read(0);
+    } catch (const std::runtime_error&) {
+        ooc_read_rejected = true;
+    }
+    CHECK(ooc_read_rejected);
+
+    const std::string extra_path = make_path("zero_extra_b_reader");
+    OOCArtifacts extra_cleanup(extra_path);
+    OOCRelationWriter extra_writer(extra_path);
+    CHECK(extra_writer.write(valid_extra) == 0);
+    const auto extra_descriptor = extra_writer.finalize();
+    constexpr size_t compact_extra_b_offset =
+        sizeof(int64_t) + sizeof(uint64_t) + 5 * sizeof(uint32_t) + sizeof(int64_t);
+    overwrite_u64(
+        extra_path + ".reldata",
+        static_cast<std::streamoff>(OOCRelationWriter::DATA_HEADER_BYTES + compact_extra_b_offset),
+        0);
+    bool extra_ooc_read_rejected = false;
+    try {
+        OOCRelationReader reader(extra_path, extra_descriptor);
+        (void)reader.read(0);
+    } catch (const std::runtime_error&) {
+        extra_ooc_read_rejected = true;
+    }
+    CHECK(extra_ooc_read_rejected);
+}
+
 void test_v3_fresh_checkpoint_prefix_resume_and_finalize_layout() {
     const std::string path = make_path("v3_fresh_lifecycle");
     OOCArtifacts cleanup(path);
@@ -592,6 +722,33 @@ void test_resume_rejects_data_corruption() {
         CHECK(rejected_at_size_gate);
         CHECK(read_file_bytes(path + ".relidx") == index_bytes);
         CHECK(read_file_bytes(path + ".reldata") == data_bytes);
+    }
+    {
+        const std::string path = make_path("zero_b_compact_record");
+        OOCArtifacts cleanup(path);
+        const auto descriptor = create_recovery_store(path, 1);
+        overwrite_u64(path + ".reldata",
+                      static_cast<std::streamoff>(OOCRelationWriter::DATA_HEADER_BYTES + 8), 0);
+        expect_resume_rejected_without_mutation(path, descriptor);
+    }
+    {
+        const std::string path = make_path("zero_extra_b_compact_record");
+        OOCArtifacts cleanup(path);
+        const Relation relation = make_relation_with_extra(17, 19, -5, 7);
+        OOCSnapshotDescriptor descriptor;
+        {
+            OOCRelationWriter writer(path);
+            CHECK(writer.write(relation) == 0);
+            descriptor = writer.checkpoint_prefix();
+            writer.fail_suspended_snapshot();
+        }
+        constexpr size_t compact_extra_b_offset =
+            sizeof(int64_t) + sizeof(uint64_t) + 5 * sizeof(uint32_t) + sizeof(int64_t);
+        overwrite_u64(path + ".reldata",
+                      static_cast<std::streamoff>(OOCRelationWriter::DATA_HEADER_BYTES +
+                                                  compact_extra_b_offset),
+                      0);
+        expect_resume_rejected_without_mutation(path, descriptor);
     }
 }
 
@@ -1273,6 +1430,101 @@ void test_finalized_reader_rejects_oversized_record_before_decode() {
     CHECK(rejected_at_size_gate);
 }
 
+void test_finalized_reader_rejects_count_larger_than_data_extent() {
+    const std::string path = make_path("finalized_count_exceeds_data_extent");
+    OOCArtifacts cleanup(path);
+    OOCSnapshotDescriptor descriptor;
+    {
+        OOCRelationWriter writer(path);
+        CHECK(writer.write(make_relation(1, 2)) == 0);
+        descriptor = writer.finalize();
+    }
+
+    const uint64_t shortened_end = OOCRelationWriter::DATA_HEADER_BYTES +
+                                   gnfs::relation::detail::MIN_COMPACT_RELATION_BYTES - 1;
+    CHECK(shortened_end < descriptor.data_end);
+    std::filesystem::resize_file(path + ".reldata", shortened_end);
+    overwrite_u64(path + ".relidx", OOCRelationWriter::INDEX_HEADER_BYTES + sizeof(uint64_t),
+                  shortened_end);
+
+    bool rejected_at_extent_gate = false;
+    try {
+        OOCRelationReader reader(path);
+        (void)reader;
+    } catch (const std::runtime_error& error) {
+        rejected_at_extent_gate =
+            std::string(error.what()).find("relation count exceeds data extent") !=
+            std::string::npos;
+    }
+    CHECK(rejected_at_extent_gate);
+}
+
+void test_minimal_compact_record_extent_is_accepted() {
+    const std::string finalized_path = make_path("finalized_minimal_compact_record");
+    OOCArtifacts finalized_cleanup(finalized_path);
+    OOCSnapshotDescriptor finalized_descriptor;
+    {
+        OOCRelationWriter writer(finalized_path);
+        CHECK(writer.write(Relation(1, 2)) == 0);
+        finalized_descriptor = writer.finalize();
+    }
+    CHECK(finalized_descriptor.data_end == OOCRelationWriter::DATA_HEADER_BYTES +
+                                               gnfs::relation::detail::MIN_COMPACT_RELATION_BYTES);
+    OOCRelationReader finalized_reader(finalized_path);
+    CHECK(finalized_reader.read(0).a == 1);
+
+    const std::string prefix_path = make_path("prefix_minimal_compact_record");
+    OOCArtifacts prefix_cleanup(prefix_path);
+    OOCRelationWriter prefix_writer(prefix_path);
+    CHECK(prefix_writer.write(Relation(1, 2)) == 0);
+    const auto prefix_descriptor = prefix_writer.checkpoint_prefix();
+    CHECK(prefix_descriptor.data_end == OOCRelationWriter::DATA_HEADER_BYTES +
+                                            gnfs::relation::detail::MIN_COMPACT_RELATION_BYTES);
+    {
+        OOCRelationPrefixReader prefix_reader(prefix_path, prefix_descriptor, prefix_writer);
+        CHECK(prefix_reader.read(0).a == 1);
+    }
+    prefix_writer.fail_suspended_snapshot();
+
+    const std::string recovery_path = make_path("recovery_minimal_compact_record");
+    OOCArtifacts recovery_cleanup(recovery_path);
+    OOCSnapshotDescriptor recovery_descriptor;
+    {
+        OOCRelationWriter writer(recovery_path);
+        CHECK(writer.write(Relation(1, 2)) == 0);
+        recovery_descriptor = writer.checkpoint_prefix();
+        writer.fail_suspended_snapshot();
+    }
+    OOCRelationWriter recovered(recovery_path, recovery_descriptor, minimal_sequence_receipt());
+    CHECK(recovered.count() == 1);
+    recovered.abort();
+}
+
+void test_recovery_rejects_count_larger_than_data_extent() {
+    const std::string path = make_path("recovery_count_exceeds_data_extent");
+    OOCArtifacts cleanup(path);
+    auto descriptor = create_recovery_store(path, 1);
+
+    const uint64_t shortened_end = OOCRelationWriter::DATA_HEADER_BYTES +
+                                   gnfs::relation::detail::MIN_COMPACT_RELATION_BYTES - 1;
+    CHECK(shortened_end < descriptor.data_end);
+    std::filesystem::resize_file(path + ".reldata", shortened_end);
+    overwrite_u64(path + ".relidx", OOCRelationWriter::INDEX_HEADER_BYTES + sizeof(uint64_t),
+                  shortened_end);
+    descriptor.data_end = shortened_end;
+
+    bool rejected_at_extent_gate = false;
+    try {
+        OOCRelationWriter writer(path, descriptor, standard_sequence_receipt(descriptor.count));
+        (void)writer;
+    } catch (const std::runtime_error& error) {
+        rejected_at_extent_gate =
+            std::string(error.what()).find("relation count exceeds data extent") !=
+            std::string::npos;
+    }
+    CHECK(rejected_at_extent_gate);
+}
+
 void test_prefix_reader_exact_extent_and_lease() {
     {
         const std::string path = make_path("prefix_trailing_index");
@@ -1581,6 +1833,7 @@ void test_cleanup_receipt_is_fresh_only_and_transactional() {
 int main() {
     std::cout << "=== OOC Store Integrity Tests ===\n";
     test_shared_persistence_limits();
+    test_persistence_rejects_zero_b();
     test_v3_fresh_checkpoint_prefix_resume_and_finalize_layout();
     test_validated_resume_handoff_and_append();
     test_resume_rejects_index_shape_corruption();
@@ -1605,6 +1858,9 @@ int main() {
     test_v1_v2_finalized_reader_compatibility_and_paired_rejection();
     test_empty_v1_v2_finalized_reader_compatibility();
     test_finalized_reader_rejects_oversized_record_before_decode();
+    test_finalized_reader_rejects_count_larger_than_data_extent();
+    test_minimal_compact_record_extent_is_accepted();
+    test_recovery_rejects_count_larger_than_data_extent();
     test_prefix_reader_exact_extent_and_lease();
     test_failed_snapshot_transition();
     test_fresh_writer_reserves_pair_without_clobbering();

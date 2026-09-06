@@ -10,6 +10,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <ios>
 #include <iostream>
 #include <limits>
 #include <optional>
@@ -689,6 +690,28 @@ void write_leaf(int parent_fd, std::string_view leaf, std::span<const std::byte>
     return status.st_mode & 07777;
 }
 
+[[nodiscard]] bool fixture_preserves_requested_mode_or_skip(int parent_fd, std::string_view leaf,
+                                                            mode_t requested_mode) {
+    const mode_t observed_mode = leaf_mode(parent_fd, leaf);
+    if (observed_mode == requested_mode) {
+        return true;
+    }
+
+    const bool requested_private_mode_with_special_bits =
+        (requested_mode & static_cast<mode_t>(07000)) != 0 &&
+        (requested_mode & static_cast<mode_t>(0777)) == static_cast<mode_t>(0600);
+    if (requested_private_mode_with_special_bits && observed_mode == static_cast<mode_t>(0600)) {
+        std::cout << "  [SKIP] filesystem normalized special-bit fixture mode 0" << std::oct
+                  << static_cast<unsigned>(requested_mode) << " to 0"
+                  << static_cast<unsigned>(observed_mode) << std::dec << '\n';
+        return false;
+    }
+
+    fail("observed_mode == requested_mode", __LINE__,
+         "requested=" + std::to_string(static_cast<unsigned>(requested_mode)) +
+             ", observed=" + std::to_string(static_cast<unsigned>(observed_mode)));
+}
+
 [[nodiscard]] struct stat leaf_stat(int parent_fd, std::string_view leaf) {
     const std::string name{leaf};
     struct stat status {};
@@ -1006,9 +1029,13 @@ void test_owned_file_open_rejects_policy_and_binding_mismatch() {
         TempDirectory directory;
         ParentDirectory parent(directory.path());
         write_leaf(parent.fd(), "record.bin", PAYLOAD, mode);
+        if (!fixture_preserves_requested_mode_or_skip(parent.fd(), "record.bin", mode)) {
+            continue;
+        }
         check_owned_open_rejected(durable_record::open_owned_exact_at(
             parent.native_handle(), "record.bin", leaf_snapshot(parent.fd(), "record.bin")));
         require_preserved(parent.fd(), "record.bin", PAYLOAD);
+        CHECK(leaf_mode(parent.fd(), "record.bin") == mode);
     }
     {
         TempDirectory directory;
@@ -1177,7 +1204,9 @@ void test_bounded_read_rejects_malformed_leaves_without_blocking() {
         TempDirectory directory;
         ParentDirectory parent(directory.path());
         write_leaf(parent.fd(), "record.bin", PAYLOAD, mode);
-        CHECK(leaf_mode(parent.fd(), "record.bin") == mode);
+        if (!fixture_preserves_requested_mode_or_skip(parent.fd(), "record.bin", mode)) {
+            continue;
+        }
 
         check_bounded_rejected(durable_record::read_bounded_at(parent.native_handle(), "record.bin",
                                                                0, PAYLOAD.size()));
@@ -1492,7 +1521,9 @@ void test_wrong_bytes_sizes_and_modes_are_preserved() {
             TempDirectory directory;
             ParentDirectory parent(directory.path());
             write_leaf(parent.fd(), role_leaf(role), PAYLOAD, mode);
-            CHECK(leaf_mode(parent.fd(), role_leaf(role)) == mode);
+            if (!fixture_preserves_requested_mode_or_skip(parent.fd(), role_leaf(role), mode)) {
+                continue;
+            }
 
             const auto result = durable_record::publish_at(parent.native_handle(), "record.pending",
                                                            "record.bin", PAYLOAD);

@@ -1,54 +1,58 @@
 // test_edge_cases.cpp — 边界/极端情况覆盖
 // 覆盖 BACKLOG [TEST] 边界/极端情况覆盖率
 // 涵盖：Integer 溢出/边界、负 mod、空矩阵、cofactor 边界、relation 边界、sieve 参数
+#include "gnfs/cofactor/ecm.hpp"
+#include "gnfs/cofactor/smooth_check.hpp"
+#include "gnfs/cofactor/trial_division.hpp"
 #include "gnfs/core/integer.hpp"
 #include "gnfs/core/relation.hpp"
-#include "gnfs/linalg/sparse_matrix.hpp"
-#include "gnfs/linalg/gauss.hpp"
+#include "gnfs/factor_base/builder.hpp"
 #include "gnfs/linalg/block_lanczos.hpp"
-#include "gnfs/cofactor/smooth_check.hpp"
-#include "gnfs/cofactor/ecm.hpp"
-#include "gnfs/cofactor/trial_division.hpp"
+#include "gnfs/linalg/gauss.hpp"
+#include "gnfs/linalg/matrix_builder.hpp"
+#include "gnfs/linalg/schirokauer.hpp"
+#include "gnfs/linalg/sparse_matrix.hpp"
+#include "gnfs/polynomial/base_m.hpp"
 #include "gnfs/relation/collector.hpp"
 #include "gnfs/relation/filter.hpp"
-#include "gnfs/sieve/special_q.hpp"
-#include "gnfs/sieve/lattice_sieve.hpp"
-#include "gnfs/factor_base/builder.hpp"
-#include "gnfs/polynomial/base_m.hpp"
-#include "gnfs/sqrt/hensel_sqrt.hpp"
-#include "gnfs/sqrt/number_field.hpp"
-#include "gnfs/linalg/schirokauer.hpp"
-#include "gnfs/linalg/matrix_builder.hpp"
-#include "gnfs/sqrt/rational_sqrt.hpp"
-#include "gnfs/sqrt/algebraic_sqrt.hpp"
-#include "gnfs/sqrt/couveignes.hpp"
-#include "gnfs/sqrt/modular_poly.hpp"
-#include "gnfs/sqrt/class_group.hpp"
 #include "gnfs/sieve/lattice_basis.hpp"
+#include "gnfs/sieve/lattice_sieve.hpp"
+#include "gnfs/sieve/special_q.hpp"
+#include "gnfs/sqrt/algebraic_sqrt.hpp"
+#include "gnfs/sqrt/class_group.hpp"
+#include "gnfs/sqrt/couveignes.hpp"
+#include "gnfs/sqrt/hensel_sqrt.hpp"
+#include "gnfs/sqrt/modular_poly.hpp"
+#include "gnfs/sqrt/number_field.hpp"
+#include "gnfs/sqrt/rational_sqrt.hpp"
+#include "support/test_check.hpp"
 
+#include <array>
 #include <cassert>
-#include <climits>   // INT64_MAX, INT64_MIN, UINT32_MAX
+#include <climits> // INT64_MAX, INT64_MIN, UINT32_MAX
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
+#include <utility>
 
 using namespace gnfs::core;
 using namespace gnfs::linalg;
 using namespace gnfs::cofactor;
 using namespace gnfs::relation;
 using namespace gnfs::sieve;
-using gnfs::polynomial::BaseMSelector;
-using gnfs::sqrt::HenselSqrt;
-using gnfs::sqrt::NumberField;
-using gnfs::sqrt::RationalSqrt;
-using gnfs::sqrt::AlgebraicSqrt;
-using gnfs::sqrt::CouveignesSqrt;
 using gnfs::factor_base::FactorBase;
-using gnfs::sqrt::ModularPoly;
+using gnfs::polynomial::BaseMSelector;
+using gnfs::sqrt::AlgebraicSqrt;
 using gnfs::sqrt::ClassGroup;
-using gnfs::sqrt::PrimeIdeal;
+using gnfs::sqrt::CouveignesSqrt;
+using gnfs::sqrt::HenselSqrt;
 using gnfs::sqrt::IdealClass;
+using gnfs::sqrt::ModularPoly;
+using gnfs::sqrt::NumberField;
+using gnfs::sqrt::PrimeIdeal;
+using gnfs::sqrt::RationalSqrt;
 
 // ─── Integer 负 mod ────────────────────────────────────────────────────
 
@@ -88,7 +92,7 @@ void test_integer_negative_mod_truncated() {
     // operator%= in-place
     Integer x(int64_t(-17));
     x %= Integer(int64_t(5));
-    assert(x.to_int64() == -2);  // -17 = (-3)*5 + (-2)
+    assert(x.to_int64() == -2); // -17 = (-3)*5 + (-2)
 
     std::cout << "  PASS" << std::endl;
 }
@@ -125,10 +129,10 @@ void test_integer_gcd_with_zero() {
     assert(g5.to_int64() == 7);
 
     // gcd with large numbers
-    Integer a("36893488147419103232");  // 2^65
+    Integer a("36893488147419103232"); // 2^65
     Integer b("18446744073709551616"); // 2^64
     Integer g6 = gcd(a, b);
-    assert(g6 == b);  // gcd(2^65, 2^64) = 2^64
+    assert(g6 == b); // gcd(2^65, 2^64) = 2^64
 
     std::cout << "  PASS" << std::endl;
 }
@@ -281,8 +285,8 @@ void test_sparse_row_empty() {
     // This is the correct GF(2) "set bit to 1" semantic. Use flip() for toggle.
     {
         SparseRow row;
-        row.set(5);   // bit 5 = 1
-        row.set(5);   // idempotent: bit 5 still = 1
+        row.set(5); // bit 5 = 1
+        row.set(5); // idempotent: bit 5 still = 1
         assert(row.weight() == 1);
         assert(row.test(5));
     }
@@ -290,8 +294,8 @@ void test_sparse_row_empty() {
     // flip() provides GF(2) toggle: double flip cancels
     {
         SparseRow row;
-        row.flip(5);  // bit 5 = 1
-        row.flip(5);  // bit 5 = 0
+        row.flip(5); // bit 5 = 1
+        row.flip(5); // bit 5 = 0
         assert(row.weight() == 0);
         assert(!row.test(5));
     }
@@ -425,8 +429,8 @@ void test_bitvector_word_boundaries() {
     {
         BitVector bv(64);
         assert(bv.size() == 64);
-        bv.set(0);    // first bit of first word
-        bv.set(63);   // last bit of first word
+        bv.set(0);  // first bit of first word
+        bv.set(63); // last bit of first word
         assert(bv.test(0));
         assert(bv.test(63));
         assert(!bv.test(1));
@@ -437,9 +441,9 @@ void test_bitvector_word_boundaries() {
     {
         BitVector bv(65);
         assert(bv.size() == 65);
-        bv.set(64);  // first bit of second word
+        bv.set(64); // first bit of second word
         assert(bv.test(64));
-        assert(!bv.test(63));  // last bit of first word should be 0
+        assert(!bv.test(63)); // last bit of first word should be 0
         assert(bv.popcount() == 1);
     }
 
@@ -459,7 +463,7 @@ void test_bitvector_word_boundaries() {
     {
         BitVector bv(63);
         assert(bv.size() == 63);
-        bv.set(62);  // last valid bit
+        bv.set(62); // last valid bit
         assert(bv.test(62));
         assert(bv.popcount() == 1);
     }
@@ -476,8 +480,8 @@ void test_bitvector_xor_boundary() {
     a.set(64);
 
     BitVector b(128);
-    b.set(63);  // cancel bit 63
-    b.set(65);  // add bit 65
+    b.set(63); // cancel bit 63
+    b.set(65); // add bit 65
 
     a.xor_with(b);
     // After XOR: bit 64 set, bit 65 set, bit 63 cleared
@@ -832,11 +836,14 @@ void test_relation_serialization_edge_cases() {
         // Flip a byte in the middle of the stream
         std::string data = ss.str();
         assert(data.size() > 16);
-        data[12] ^= 0xFF;  // corrupt a data byte
+        data[12] ^= 0xFF; // corrupt a data byte
         std::stringstream ss2(data);
         bool caught = false;
-        try { Relation::deserialize(ss2); }
-        catch (const std::runtime_error&) { caught = true; }
+        try {
+            Relation::deserialize(ss2);
+        } catch (const std::runtime_error&) {
+            caught = true;
+        }
         assert(caught);
     }
 
@@ -846,8 +853,11 @@ void test_relation_serialization_edge_cases() {
         uint32_t bad_magic = 0xDEADBEEF;
         ss.write(reinterpret_cast<const char*>(&bad_magic), sizeof(bad_magic));
         bool caught = false;
-        try { Relation::deserialize(ss); }
-        catch (const std::runtime_error&) { caught = true; }
+        try {
+            Relation::deserialize(ss);
+        } catch (const std::runtime_error&) {
+            caught = true;
+        }
         assert(caught);
     }
 
@@ -1080,7 +1090,7 @@ void test_hensel_sqrt_edge_cases() {
 
     // Test 2: Default config construction
     {
-        HenselSqrt hs;  // default
+        HenselSqrt hs; // default
         (void)hs;
     }
 
@@ -1091,7 +1101,7 @@ void test_hensel_sqrt_edge_cases() {
         HenselSqrt hs(cfg);
         std::vector<std::pair<int64_t, uint64_t>> pairs = {{5, 1}};
         auto r = hs.compute(pairs, nf);
-        (void)r;  // may be nullopt, just verify no crash
+        (void)r; // may be nullopt, just verify no crash
     }
 
     // Test 4: Config with very high extra_precision — shouldn't crash
@@ -1117,19 +1127,15 @@ void test_hensel_sqrt_edge_cases() {
     // Test 6: Multiple different pairs — product may or may not be a square
     {
         HenselSqrt hs;
-        std::vector<std::pair<int64_t, uint64_t>> pairs = {
-            {1, 1}, {2, 1}, {3, 1}, {4, 1}
-        };
+        std::vector<std::pair<int64_t, uint64_t>> pairs = {{1, 1}, {2, 1}, {3, 1}, {4, 1}};
         auto r = hs.compute(pairs, nf);
-        (void)r;  // just crash safety
+        (void)r; // just crash safety
     }
 
     // Test 7: Large a, b values — boundary test
     {
         HenselSqrt hs;
-        std::vector<std::pair<int64_t, uint64_t>> pairs = {
-            {1000000, 1}, {1000000, 1}
-        };
+        std::vector<std::pair<int64_t, uint64_t>> pairs = {{1000000, 1}, {1000000, 1}};
         auto r = hs.compute(pairs, nf);
         (void)r;
     }
@@ -1137,9 +1143,7 @@ void test_hensel_sqrt_edge_cases() {
     // Test 8: Negative a values
     {
         HenselSqrt hs;
-        std::vector<std::pair<int64_t, uint64_t>> pairs = {
-            {-7, 2}, {-7, 2}
-        };
+        std::vector<std::pair<int64_t, uint64_t>> pairs = {{-7, 2}, {-7, 2}};
         auto r = hs.compute(pairs, nf);
         (void)r;
     }
@@ -1157,7 +1161,7 @@ void test_hensel_sqrt_edge_cases() {
         // 100 个 (a, b) 对,且乘积 ∏(a - b*α) 在 Z[α] 中明显不是平方
         // (奇数个不同的 prime 元素相乘,product 必含 squarefree 部分)。
         for (int64_t i = 1; i <= 100; ++i) {
-            pairs.push_back({2 * i + 1, 1});  // 奇数 a,产品含 odd primes
+            pairs.push_back({2 * i + 1, 1}); // 奇数 a,产品含 odd primes
         }
         auto r = hs.compute(pairs, nf);
         // 不强制 r=nullopt(可能巧合是平方),但若 r=nullopt 应有 sign-exhausted
@@ -1167,7 +1171,7 @@ void test_hensel_sqrt_edge_cases() {
             std::cout << "    [info] crt_sign_exhausted="
                       << (hs.was_crt_sign_exhausted() ? "true" : "false") << "\n";
         }
-        (void)r;  // 不强制断言结果,仅锁住 API 不崩
+        (void)r; // 不强制断言结果,仅锁住 API 不崩
     }
 
     std::cout << "  PASS (9 sub-tests)" << std::endl;
@@ -1199,7 +1203,8 @@ void test_schirokauer_large_ell_edge_cases() {
                 auto maps = sm.compute(a, b);
                 assert(maps.size() == 1);
                 assert(maps[0].size() == degree);
-                for (uint32_t v : maps[0]) assert(v < 3);
+                for (uint32_t v : maps[0])
+                    assert(v < 3);
             }
         }
     }
@@ -1212,7 +1217,8 @@ void test_schirokauer_large_ell_edge_cases() {
         auto maps = sm.compute(7, 2);
         assert(maps.size() == 1);
         assert(maps[0].size() == degree);
-        for (uint32_t v : maps[0]) assert(v < 5);
+        for (uint32_t v : maps[0])
+            assert(v < 5);
     }
 
     // Test 3: Multiple primes [2, 3] → num_columns = 2 * degree
@@ -1224,8 +1230,10 @@ void test_schirokauer_large_ell_edge_cases() {
 
         auto maps = sm.compute(5, 1);
         assert(maps.size() == 2);
-        for (uint32_t v : maps[0]) assert(v < 2);
-        for (uint32_t v : maps[1]) assert(v < 3);
+        for (uint32_t v : maps[0])
+            assert(v < 2);
+        for (uint32_t v : maps[1])
+            assert(v < 3);
     }
 
     // Test 4: Empty primes → num_columns = 0
@@ -1247,7 +1255,8 @@ void test_schirokauer_large_ell_edge_cases() {
         auto maps = sm.compute(11, 3);
         assert(maps.size() == 1);
         assert(maps[0].size() == degree);
-        for (uint32_t v : maps[0]) assert(v < 7);
+        for (uint32_t v : maps[0])
+            assert(v < 7);
     }
 
     // Test 6: Determinism — same (a,b) always gives same result for ℓ=3
@@ -1275,33 +1284,29 @@ void test_schirokauer_degree3_split_degree2() {
 
     // f(x) = x³ + x + 1, N = 任意合数(不必能整除验证 f(m)=0 mod N,
     // 这里只用 ctx 提供 f mod ℓ 的信息)
-    Integer n("10403");  // 任意 N(degree-3 ctx 需要 f(m) ≡ 0 mod N)
+    Integer n("10403"); // 任意 N(degree-3 ctx 需要 f(m) ≡ 0 mod N)
     // 找 m 使 f(m) ≡ 0 mod 10403:f(0)=1, f(1)=3, ...,直接构造
     // 简单做法:N=f(m) 自身 — N=f(10)=1011, m=10
     Integer N_construct(static_cast<int64_t>(1011));
     std::vector<Integer> coeffs;
-    coeffs.emplace_back(Integer(int64_t(1)));   // x^0
-    coeffs.emplace_back(Integer(int64_t(1)));   // x^1
-    coeffs.emplace_back(Integer(int64_t(0)));   // x^2
-    coeffs.emplace_back(Integer(int64_t(1)));   // x^3
-    PolynomialContext ctx(N_construct.clone(),
-                          std::move(coeffs),
-                          Integer(int64_t(10)));
+    coeffs.emplace_back(Integer(int64_t(1))); // x^0
+    coeffs.emplace_back(Integer(int64_t(1))); // x^1
+    coeffs.emplace_back(Integer(int64_t(0))); // x^2
+    coeffs.emplace_back(Integer(int64_t(1))); // x^3
+    PolynomialContext ctx(N_construct.clone(), std::move(coeffs), Integer(int64_t(10)));
 
     // 用 ℓ=3 (CLAUDE.md: GF(2) 矩阵不能直接用 ℓ>2 的 map,但 SchirokaurMap
     // 本身支持任意 ℓ — 这里仅作 API 单元测试)
     SchirokaurConfig cfg;
     cfg.primes = {3};
-    cfg.exponent_k = 4;  // ℓ^k = 81
+    cfg.exponent_k = 4; // ℓ^k = 81
     SchirokaurMap sm(ctx, cfg);
 
     // num_columns 应 = degree = 3(每根 1 列)
     assert(sm.num_columns() == 3);
 
     // 取若干 (a, b) 对计算 lambda 值,断言 ∈ [0, ℓ)
-    std::vector<std::pair<int64_t, uint64_t>> pairs = {
-        {1, 1}, {2, 1}, {5, 2}, {-3, 1}, {7, 3}
-    };
+    std::vector<std::pair<int64_t, uint64_t>> pairs = {{1, 1}, {2, 1}, {5, 2}, {-3, 1}, {7, 3}};
     for (auto [a, b] : pairs) {
         auto maps = sm.compute(a, b);
         assert(maps.size() == 1);
@@ -1646,7 +1651,7 @@ void test_couveignes_edge_cases() {
     // Test 3: Config with very few max_prime_checks → fail gracefully (returns nullopt)
     {
         CouveignesSqrt::Config cfg;
-        cfg.max_prime_checks = 3;  // Too few to find suitable primes
+        cfg.max_prime_checks = 3; // Too few to find suitable primes
         cfg.num_primes = 2;
         CouveignesSqrt cs(cfg);
         std::vector<std::pair<int64_t, uint64_t>> pairs = {{3, 1}};
@@ -1680,11 +1685,8 @@ void test_polynomial_context_edge_cases() {
     {
         bool threw = false;
         try {
-            PolynomialContext ctx(
-                Integer(int64_t(100)),
-                {},  // empty
-                Integer(int64_t(10))
-            );
+            PolynomialContext ctx(Integer(int64_t(100)), {}, // empty
+                                  Integer(int64_t(10)));
         } catch (const std::invalid_argument&) {
             threw = true;
         }
@@ -1704,10 +1706,10 @@ void test_polynomial_context_edge_cases() {
     // Test 3: Trailing zeros stripped → effective degree reduced
     {
         std::vector<Integer> coeffs;
-        coeffs.push_back(Integer(int64_t(3)));   // x^0
-        coeffs.push_back(Integer(int64_t(2)));   // x^1
-        coeffs.push_back(Integer(int64_t(0)));   // x^2 = 0 → stripped
-        coeffs.push_back(Integer(int64_t(0)));   // x^3 = 0 → stripped
+        coeffs.push_back(Integer(int64_t(3))); // x^0
+        coeffs.push_back(Integer(int64_t(2))); // x^1
+        coeffs.push_back(Integer(int64_t(0))); // x^2 = 0 → stripped
+        coeffs.push_back(Integer(int64_t(0))); // x^3 = 0 → stripped
         PolynomialContext ctx(Integer(int64_t(100)), std::move(coeffs), Integer(int64_t(0)));
         assert(ctx.degree() == 1);
         assert(ctx.leading_coeff() == Integer(int64_t(2)));
@@ -1724,7 +1726,7 @@ void test_polynomial_context_edge_cases() {
     // Test 5: evaluate(0) = f_0
     {
         std::vector<Integer> coeffs;
-        coeffs.push_back(Integer(int64_t(91)));  // f(x) = 91 + x + x²
+        coeffs.push_back(Integer(int64_t(91))); // f(x) = 91 + x + x²
         coeffs.push_back(Integer(int64_t(1)));
         coeffs.push_back(Integer(int64_t(1)));
         PolynomialContext ctx(Integer(int64_t(9991)), std::move(coeffs), Integer(int64_t(99)));
@@ -1871,7 +1873,7 @@ void test_factor_base_edge_cases() {
         FactorBase fb;
         fb.add_algebraic(2, 1, 1);
         fb.add_algebraic(3, 2, 2);
-        fb.add_algebraic(5, 3, 3);  // SQ range prime
+        fb.add_algebraic(5, 3, 3);       // SQ range prime
         fb.set_sieve_algebraic_count(2); // only first 2 are sieve primes
         assert(fb.sieve_algebraic_count() == 2);
         assert(fb.algebraic_count() == 3);
@@ -2009,8 +2011,8 @@ void test_modular_poly_edge_cases() {
 
     // Test 10: divmod when a.degree < b.degree → quotient=0, remainder=a
     {
-        ModularPoly a(std::vector<uint64_t>{3});       // degree 0
-        ModularPoly b(std::vector<uint64_t>{1, 1});    // degree 1
+        ModularPoly a(std::vector<uint64_t>{3});    // degree 0
+        ModularPoly b(std::vector<uint64_t>{1, 1}); // degree 1
         auto [q, r] = ModularPoly::divmod(a, b, p);
         assert(q.is_zero());
         assert(r.coeff(0) == 3);
@@ -2037,7 +2039,7 @@ void test_modular_poly_edge_cases() {
 
     // Test 13: reduce when polynomial already smaller than f → unchanged
     {
-        std::vector<uint64_t> f = {1, 0, 0, 1}; // x^3 + 1
+        std::vector<uint64_t> f = {1, 0, 0, 1};         // x^3 + 1
         ModularPoly small(std::vector<uint64_t>{2, 3}); // 3x + 2 (degree 1 < 3)
         auto reduced = ModularPoly::reduce(small, f, p);
         assert(reduced.coeff(0) == 2);
@@ -2140,25 +2142,147 @@ void test_lattice_basis_edge_cases() {
 
     // Test 6: default_sieve_region with various skewness values
     {
+        constexpr size_t max_sieve_area = size_t{256} * 1024 * 1024;
+
+        const auto check_region_contract = [](const SieveRegion& region) {
+            GNFS_TEST_CHECK(region.i_width() > 0);
+            GNFS_TEST_CHECK(region.j_height() > 0);
+            GNFS_TEST_CHECK(region.size() > 0);
+            GNFS_TEST_CHECK(region.size() <= size_t{256} * 1024 * 1024);
+            GNFS_TEST_CHECK(region.size() == static_cast<size_t>(region.i_width()) *
+                                                 static_cast<size_t>(region.j_height()));
+
+            const std::array<std::pair<int32_t, int32_t>, 4> endpoints{{
+                {region.i_min, region.j_min},
+                {region.i_max, region.j_min},
+                {region.i_min, region.j_max},
+                {region.i_max, region.j_max},
+            }};
+            for (const auto& [i, j] : endpoints) {
+                const size_t index = region.ij_to_index(i, j);
+                GNFS_TEST_CHECK(index < region.size());
+                const auto coordinate = region.index_to_ij(index);
+                GNFS_TEST_CHECK(coordinate.first == i);
+                GNFS_TEST_CHECK(coordinate.second == j);
+            }
+
+            const size_t width = static_cast<size_t>(region.i_width());
+            const std::array<size_t, 5> indices{{
+                0,
+                width - 1,
+                region.size() / 2,
+                region.size() - width,
+                region.size() - 1,
+            }};
+            for (const size_t index : indices) {
+                const auto [i, j] = region.index_to_ij(index);
+                GNFS_TEST_CHECK(region.ij_to_index(i, j) == index);
+            }
+
+            const auto index_sentinel = region.index_to_ij(region.size());
+            GNFS_TEST_CHECK(index_sentinel.first == region.i_min);
+            GNFS_TEST_CHECK(index_sentinel.second == region.j_min);
+            GNFS_TEST_CHECK(region.ij_to_index(region.i_min - 1, region.j_min) == region.size());
+            GNFS_TEST_CHECK(region.ij_to_index(region.i_min, region.j_min - 1) == region.size());
+        };
+
+        const auto same_region = [](const SieveRegion& lhs, const SieveRegion& rhs) {
+            return lhs.i_min == rhs.i_min && lhs.i_max == rhs.i_max && lhs.j_min == rhs.j_min &&
+                   lhs.j_max == rhs.j_max;
+        };
+
         // skewness = 1.0 → symmetric region
         auto r1 = default_sieve_region(1.0);
-        assert(r1.i_min < 0 && r1.i_max > 0);
-        assert(r1.j_min >= 1 && r1.j_max > 0);
+        GNFS_TEST_CHECK(r1.i_width() == 23170);
+        GNFS_TEST_CHECK(r1.j_height() == 11585);
+        check_region_contract(r1);
 
         // skewness = 100.0 → wider i, shorter j
         auto r2 = default_sieve_region(100.0);
-        assert(r2.i_width() >= r1.i_width()); // wider or equal
-        assert(r2.j_height() <= r1.j_height()); // shorter or equal
+        GNFS_TEST_CHECK(r2.i_width() >= r1.i_width());   // wider or equal
+        GNFS_TEST_CHECK(r2.j_height() <= r1.j_height()); // shorter or equal
+        check_region_contract(r2);
 
-        // skewness = 0.5 → should not crash, treated as < 1
+        // skewness = 0.5 retains the historical symmetric fallback.
         auto r3 = default_sieve_region(0.5);
-        assert(r3.size() > 0);
+        GNFS_TEST_CHECK(same_region(r3, r1));
+        check_region_contract(r3);
 
-        // Very large skewness → j_size collapses to 0 (known P2 bug)
-        // For extreme skewness, j_size = base/sqrt(skew) → 0 before area cap fires
-        auto r4 = default_sieve_region(1e10);
-        // Don't assert size > 0 — this is a documented limitation (BACKLOG P2)
-        (void)r4;
+        // Finite extreme skew saturates to a one-row region without exceeding
+        // the old area cap or overflowing the int32 width contract.
+        for (const double skewness :
+             std::array<double, 2>{1e10, std::numeric_limits<double>::max()}) {
+            const auto extreme = default_sieve_region(skewness);
+            GNFS_TEST_CHECK(extreme.i_width() == static_cast<int32_t>(max_sieve_area));
+            GNFS_TEST_CHECK(extreme.j_height() == 1);
+            GNFS_TEST_CHECK(extreme.size() == max_sieve_area);
+            check_region_contract(extreme);
+        }
+
+        // Invalid/non-positive inputs choose the deterministic skew=1 fallback.
+        for (const double invalid : std::array<double, 6>{
+                 std::numeric_limits<double>::quiet_NaN(),
+                 std::numeric_limits<double>::infinity(),
+                 -std::numeric_limits<double>::infinity(),
+                 -1.0,
+                 -std::numeric_limits<double>::max(),
+                 0.0,
+             }) {
+            const auto fallback = default_sieve_region(invalid);
+            GNFS_TEST_CHECK(same_region(fallback, r1));
+            check_region_contract(fallback);
+        }
+
+        // Arbitrary public endpoints must fail closed instead of overflowing
+        // the int32 return type used by i_width().
+        const SieveRegion unrepresentable{
+            std::numeric_limits<int32_t>::min(),
+            std::numeric_limits<int32_t>::max(),
+            1,
+            1,
+        };
+        GNFS_TEST_CHECK(unrepresentable.i_width() == 0);
+        GNFS_TEST_CHECK(unrepresentable.size() == 0);
+
+        const SieveRegion unrepresentable_height{
+            0,
+            0,
+            std::numeric_limits<int32_t>::min(),
+            std::numeric_limits<int32_t>::max(),
+        };
+        GNFS_TEST_CHECK(unrepresentable_height.i_width() == 1);
+        GNFS_TEST_CHECK(unrepresentable_height.j_height() == 0);
+        GNFS_TEST_CHECK(unrepresentable_height.size() == 0);
+        GNFS_TEST_CHECK(unrepresentable_height.ij_to_index(0, 0) == unrepresentable_height.size());
+        const auto height_sentinel = unrepresentable_height.index_to_ij(0);
+        GNFS_TEST_CHECK(height_sentinel.first == unrepresentable_height.i_min);
+        GNFS_TEST_CHECK(height_sentinel.second == unrepresentable_height.j_min);
+
+        // Small valid regions adjacent to both j endpoints retain exact
+        // row-major index roundtrips without needing a representable
+        // coordinate one-past j_max.
+        const std::array<SieveRegion, 2> endpoint_regions{{
+            {-2, 2, std::numeric_limits<int32_t>::max() - 1, std::numeric_limits<int32_t>::max()},
+            {-2, 2, std::numeric_limits<int32_t>::min(), std::numeric_limits<int32_t>::min() + 1},
+        }};
+        for (const auto& endpoint_region : endpoint_regions) {
+            GNFS_TEST_CHECK(endpoint_region.i_width() == 5);
+            GNFS_TEST_CHECK(endpoint_region.j_height() == 2);
+            GNFS_TEST_CHECK(endpoint_region.size() == 10);
+            for (size_t index = 0; index < endpoint_region.size(); ++index) {
+                const auto [i, j] = endpoint_region.index_to_ij(index);
+                GNFS_TEST_CHECK(endpoint_region.ij_to_index(i, j) == index);
+            }
+            const auto final_coordinate = endpoint_region.index_to_ij(endpoint_region.size() - 1);
+            GNFS_TEST_CHECK(final_coordinate.first == endpoint_region.i_max);
+            GNFS_TEST_CHECK(final_coordinate.second == endpoint_region.j_max);
+            GNFS_TEST_CHECK(
+                endpoint_region.ij_to_index(endpoint_region.i_max + 1, endpoint_region.j_min) ==
+                endpoint_region.size());
+            const auto index_sentinel = endpoint_region.index_to_ij(endpoint_region.size());
+            GNFS_TEST_CHECK(index_sentinel.first == endpoint_region.i_min);
+            GNFS_TEST_CHECK(index_sentinel.second == endpoint_region.j_min);
+        }
     }
 
     // Test 7: Large prime q — determinant still ±q
@@ -2200,7 +2324,7 @@ void test_lattice_basis_edge_cases() {
         assert(det == 97 || det == -97);
         // Don't assert verify_ab — partial reduction may produce non-canonical
         // basis but should still describe the lattice (det invariant holds).
-        (void) basis;
+        (void)basis;
     }
 
     std::cout << "  PASS (9 sub-tests, BACKLOG P2 oscillation fixed)" << std::endl;
@@ -2216,7 +2340,7 @@ void test_class_group_struct_edge_cases() {
         IdealClass cls;
         PrimeIdeal pi{5, 2, 1};
         cls.add_prime(pi, 7);
-        cls.reduce_mod(0); // order=0 → no reduction
+        cls.reduce_mod(0);                 // order=0 → no reduction
         assert(cls.prime_powers[pi] == 7); // unchanged
     }
 
@@ -2260,7 +2384,8 @@ void test_class_group_struct_edge_cases() {
     // Test 6: ClassGroup with degree-2 polynomial (non-cubic) — general discriminant path
     {
         // f(x) = x^2 + 1, m = 12, N = 145 = 5×29, f(12) = 145
-        std::vector<Integer> coeffs = {Integer(int64_t(1)), Integer(int64_t(0)), Integer(int64_t(1))};
+        std::vector<Integer> coeffs = {Integer(int64_t(1)), Integer(int64_t(0)),
+                                       Integer(int64_t(1))};
         PolynomialContext ctx(Integer("145"), std::move(coeffs), Integer(int64_t(12)));
         ClassGroup cg(ctx);
         // Should not crash; class_number >= 1
@@ -2271,7 +2396,8 @@ void test_class_group_struct_edge_cases() {
     // Test 7: ClassGroup with very small discriminant → trivial
     {
         // f(x) = x^3 + x + 1, m=5, N=131: Δ=-31, MB≈1.57 < 2 → trivial
-        std::vector<Integer> c = {Integer(int64_t(1)), Integer(int64_t(1)), Integer(int64_t(0)), Integer(int64_t(1))};
+        std::vector<Integer> c = {Integer(int64_t(1)), Integer(int64_t(1)), Integer(int64_t(0)),
+                                  Integer(int64_t(1))};
         PolynomialContext ctx(Integer("131"), std::move(c), Integer(int64_t(5)));
         ClassGroup cg(ctx);
         assert(cg.class_number() == 1);
@@ -2288,7 +2414,8 @@ void test_class_group_struct_edge_cases() {
         cfg.max_generators = 2;
         cfg.verbose = false;
 
-        std::vector<Integer> c = {Integer(int64_t(1)), Integer(int64_t(5)), Integer(int64_t(0)), Integer(int64_t(1))};
+        std::vector<Integer> c = {Integer(int64_t(1)), Integer(int64_t(5)), Integer(int64_t(0)),
+                                  Integer(int64_t(1))};
         PolynomialContext ctx(Integer("19"), std::move(c), Integer(int64_t(2)));
         ClassGroup cg(ctx, cfg);
         assert(cg.class_number() >= 1);

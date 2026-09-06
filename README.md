@@ -40,7 +40,7 @@ GNFS（General Number Field Sieve）是目前已知最强的经典大整数分�
 | 验证规模上限 | 65 位十进制（213 bit）平衡半素数，SIQS 路径 24 秒 |
 | 并行模型 | 多线程格筛、`ThreadPool` 驱动的 Block Lanczos / Cantor-Zassenhaus |
 | 内存扩展 | mmap 后端的 CSR 矩阵、关系存储、BW Krylov 序列；筛中检查点 |
-| 发布平台 | macOS 13+ CLI、macOS 26+ Workbench、Linux glibc 2.31+、Windows UCRT64 |
+| 发布平台 | macOS 13+ CLI、macOS 26+ Workbench、Linux glibc 2.31+、Windows 10+ / Server 2016+ UCRT64 |
 
 ### 设计目标
 

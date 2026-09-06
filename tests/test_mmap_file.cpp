@@ -30,6 +30,7 @@
 #include <windows.h>
 #else
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -77,6 +78,30 @@ struct FileGuard {
     FileGuard(const FileGuard&) = delete;
     FileGuard& operator=(const FileGuard&) = delete;
 };
+
+struct FilesystemPathGuard {
+    std::filesystem::path path;
+
+    explicit FilesystemPathGuard(std::filesystem::path value) : path(std::move(value)) {}
+
+    ~FilesystemPathGuard() {
+        std::error_code error;
+        (void)std::filesystem::remove(path, error);
+    }
+
+    FilesystemPathGuard(const FilesystemPathGuard&) = delete;
+    FilesystemPathGuard& operator=(const FilesystemPathGuard&) = delete;
+};
+
+std::string utf8_path_string(const std::filesystem::path& path) {
+    const std::u8string utf8 = path.u8string();
+    std::string result;
+    result.reserve(utf8.size());
+    for (const char8_t byte : utf8) {
+        result.push_back(static_cast<char>(byte));
+    }
+    return result;
+}
 
 using TestNativeHandle = OwnedNativeFile::NativeHandle;
 
@@ -148,6 +173,21 @@ void check_native_handle_closed(TestNativeHandle handle) {
 #endif
 }
 
+#ifndef _WIN32
+int find_fd_for_path(const std::string& path) {
+    struct stat expected {};
+    CHECK(::stat(path.c_str(), &expected) == 0);
+    for (int descriptor = 0; descriptor < 1024; ++descriptor) {
+        struct stat observed {};
+        if (::fstat(descriptor, &observed) == 0 && observed.st_dev == expected.st_dev &&
+            observed.st_ino == expected.st_ino) {
+            return descriptor;
+        }
+    }
+    return -1;
+}
+#endif
+
 void replace_file(const std::string& source, const std::string& destination) {
 #ifdef _WIN32
     const std::filesystem::path source_path(source);
@@ -206,6 +246,17 @@ void test_empty_file() {
     assert(mf.is_open()); // fd is open
     assert(mf.size() == 0);
     assert(mf.data() == nullptr); // no mapping for empty file
+
+#ifndef _WIN32
+    const int descriptor = find_fd_for_path(path);
+    CHECK(descriptor >= 0);
+    int descriptor_flags = -1;
+    do {
+        descriptor_flags = ::fcntl(descriptor, F_GETFD);
+    } while (descriptor_flags < 0 && errno == EINTR);
+    CHECK(descriptor_flags >= 0);
+    CHECK((descriptor_flags & FD_CLOEXEC) != 0);
+#endif
 
     std::cout << "  empty file: PASS" << std::endl;
 }
@@ -615,6 +666,30 @@ void test_owned_native_file_mapping_failure_closes_temporary_handle() {
     std::cout << "  mapping failure closes temporary handle: PASS" << std::endl;
 }
 
+void test_utf8_path() {
+    std::cout << "Testing UTF-8 path mapping..." << std::endl;
+
+    const auto path = gnfs::util::temp_directory_path() /
+                      std::filesystem::path(std::u8string(u8"gnfs_test_mmap_\u6d4b\u8bd5.bin"));
+    FilesystemPathGuard guard(path);
+    const std::vector<uint8_t> payload = {0xA1, 0xB2, 0xC3, 0xD4};
+
+    {
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        CHECK(output.is_open());
+        output.write(reinterpret_cast<const char*>(payload.data()),
+                     static_cast<std::streamsize>(payload.size()));
+        CHECK(output.good());
+    }
+
+    MmapFile mapped(utf8_path_string(path));
+    CHECK(mapped.is_open());
+    CHECK(mapped.size() == payload.size());
+    CHECK(std::memcmp(mapped.data(), payload.data(), payload.size()) == 0);
+
+    std::cout << "  UTF-8 path mapping: PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== util/mmap_file.hpp tests ===" << std::endl;
 
@@ -627,7 +702,7 @@ int main() {
 
 #ifdef _WIN32
     test_default_constructed_state();
-    std::cout << "Legacy MmapFile path-backed tests skipped on Windows\n";
+    test_utf8_path();
     return 0;
 #else
     test_default_constructed_state();
@@ -640,6 +715,7 @@ int main() {
     test_move_semantics();
     test_close_idempotent();
     test_large_multi_page();
+    test_utf8_path();
 
     std::cout << "\n=== All util/mmap_file.hpp tests PASSED ===" << std::endl;
     return 0;

@@ -4,8 +4,12 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <sstream>
+#include <stdexcept>
 
 using namespace gnfs;
 using namespace gnfs::factor_base;
@@ -47,6 +51,27 @@ void test_prime_sieve() {
     std::cout << "  Prime sieve: PASS" << std::endl;
 }
 
+void test_zero_bounds() {
+    std::cout << "Testing zero factor-base bounds..." << std::endl;
+
+    Integer n(test_n);
+    auto result = BaseMSelector::select(n, 3);
+    assert(result.success);
+    auto ctx = BaseMSelector::create_context(n, result);
+
+    FactorBaseBuilder::Options opts;
+    opts.rational_bound = 0;
+    opts.algebraic_bound = 0;
+    opts.special_q_bound = 0;
+
+    auto fb = FactorBaseBuilder::build(ctx, opts);
+    assert(fb.rational_count() == 0);
+    assert(fb.algebraic_count() == 0);
+    assert(fb.sieve_algebraic_count() == 0);
+
+    std::cout << "  Zero factor-base bounds: PASS" << std::endl;
+}
+
 // CZ random splitting 仅当 deg(gcd(x^p-x, f)) > 1 时触发(多个根 mod p)。
 // test_algebraic_roots 走的是 ≤50 brute-force 路径,covers p<64 but不
 // 覆盖 CZ random splitting。这里专门构造 f(x)=(x-3)(x-7) mod p,p>=64
@@ -56,11 +81,10 @@ void test_cz_random_splitting() {
 
     // f(x) = (x-3)(x-7) = x² - 10x + 21
     std::vector<Integer> coeffs;
-    coeffs.emplace_back(static_cast<int64_t>(21));   // x^0
-    coeffs.emplace_back(static_cast<int64_t>(-10));  // x^1
-    coeffs.emplace_back(static_cast<int64_t>(1));    // x^2
-    PolynomialContext ctx(Integer(static_cast<int64_t>(10001)),
-                          std::move(coeffs),
+    coeffs.emplace_back(static_cast<int64_t>(21));  // x^0
+    coeffs.emplace_back(static_cast<int64_t>(-10)); // x^1
+    coeffs.emplace_back(static_cast<int64_t>(1));   // x^2
+    PolynomialContext ctx(Integer(static_cast<int64_t>(10001)), std::move(coeffs),
                           Integer(static_cast<int64_t>(3)));
 
     // p=101: 3, 7 都是根。p<64 走 brute-force,但 101 ≥ 64 走 CZ。
@@ -97,6 +121,30 @@ void test_cz_random_splitting() {
     std::cout << "  CZ random splitting: PASS (2 roots @ p=101/131; p=2/3/5 边界)" << std::endl;
 }
 
+void test_root_finder_rejects_non_prime_modulus() {
+    std::cout << "Testing root finder modulus validation..." << std::endl;
+
+    std::vector<Integer> coeffs;
+    coeffs.emplace_back(static_cast<int64_t>(21));
+    coeffs.emplace_back(static_cast<int64_t>(-10));
+    coeffs.emplace_back(static_cast<int64_t>(1));
+    PolynomialContext ctx(Integer(static_cast<int64_t>(10001)), std::move(coeffs),
+                          Integer(static_cast<int64_t>(3)));
+
+    bool caught = false;
+    try {
+        (void)FactorBaseBuilder::find_roots_mod_p(ctx, 91); // 91 = 7 * 13
+    } catch (const std::invalid_argument&) {
+        caught = true;
+    }
+    if (!caught) {
+        std::cerr << "  ERROR: composite modulus was accepted" << std::endl;
+        std::abort();
+    }
+
+    std::cout << "  Root finder modulus validation: PASS" << std::endl;
+}
+
 void test_algebraic_roots() {
     std::cout << "Testing algebraic roots..." << std::endl;
 
@@ -120,7 +168,7 @@ void test_algebraic_roots() {
     auto algebraics = fb.algebraic();
     for (const auto& ap : algebraics) {
         uint64_t fr = ctx.evaluate_mod(ap.r, ap.p);
-        assert(fr == 0);  // f(r) mod p should be 0
+        assert(fr == 0); // f(r) mod p should be 0
     }
 
     std::cout << "  Algebraic roots: PASS (" << fb.algebraic_count() << " primes)" << std::endl;
@@ -275,21 +323,23 @@ void test_base_m_irreducibility() {
         // Check small integer roots: ±1, ±2, ±3, ±6 (divisors up to |c0|)
         for (int r : {1, -1, 2, -2, 3, -3, 6, -6}) {
             Integer val = result.f.evaluate(Integer(r));
-            assert(!val.is_zero());  // no rational roots allowed
+            assert(!val.is_zero()); // no rational roots allowed
         }
 
         // Verify irreducibility via mod-p test for at least one prime
         bool found_irred = false;
         uint32_t d = result.f.degree();
-        for (uint64_t p : {uint64_t(2), uint64_t(3), uint64_t(5), uint64_t(7),
-                           uint64_t(11), uint64_t(13)}) {
+        for (uint64_t p :
+             {uint64_t(2), uint64_t(3), uint64_t(5), uint64_t(7), uint64_t(11), uint64_t(13)}) {
             std::vector<uint64_t> f_mod(d + 1);
             for (uint32_t i = 0; i <= d; ++i) {
                 Integer c = result.f[i] % Integer(p);
-                if (c.is_negative()) c += Integer(p);
+                if (c.is_negative())
+                    c += Integer(p);
                 f_mod[i] = c.to_uint64();
             }
-            if (f_mod[d] == 0) continue;
+            if (f_mod[d] == 0)
+                continue;
             if (gnfs::sqrt::ModularPoly::is_irreducible(f_mod, p)) {
                 found_irred = true;
                 break;
@@ -297,12 +347,13 @@ void test_base_m_irreducibility() {
         }
         assert(found_irred);
 
-        std::cout << "  N=1320 reducible case: PASS (m=" << result.m.to_string() << ")" << std::endl;
+        std::cout << "  N=1320 reducible case: PASS (m=" << result.m.to_string() << ")"
+                  << std::endl;
     }
 
     // --- Case 2: standard semiprimes still work ---
     {
-        Integer n("10403");  // 101 × 103
+        Integer n("10403"); // 101 × 103
         auto result = BaseMSelector::select(n, 3);
         assert(result.success);
         assert(result.f.degree() == 3);
@@ -313,7 +364,7 @@ void test_base_m_irreducibility() {
 
     // --- Case 3: larger N ---
     {
-        Integer n(test_n);  // 1000036000099 = 1000003 × 1000033
+        Integer n(test_n); // 1000036000099 = 1000003 × 1000033
         auto result = BaseMSelector::select(n, 3);
         assert(result.success);
         assert(result.f.degree() == 3);
@@ -385,10 +436,9 @@ void test_serialization_roundtrip() {
         assert(fb2.rational()[*idx].p == rp.p);
     }
 
-    std::cout << "  Serialization roundtrip: PASS ("
-              << fb.rational_count() << " rat, "
-              << fb.algebraic_count() << " alg, "
-              << "sieve_alg=" << fb.sieve_algebraic_count() << ")" << std::endl;
+    std::cout << "  Serialization roundtrip: PASS (" << fb.rational_count() << " rat, "
+              << fb.algebraic_count() << " alg, " << "sieve_alg=" << fb.sieve_algebraic_count()
+              << ")" << std::endl;
 }
 
 void test_serialization_invalid() {
@@ -400,8 +450,11 @@ void test_serialization_invalid() {
         uint32_t bad_magic = 0xDEADBEEF;
         ss.write(reinterpret_cast<const char*>(&bad_magic), sizeof(bad_magic));
         bool caught = false;
-        try { FactorBase::load(ss); }
-        catch (const std::runtime_error&) { caught = true; }
+        try {
+            FactorBase::load(ss);
+        } catch (const std::runtime_error&) {
+            caught = true;
+        }
         assert(caught);
     }
 
@@ -413,12 +466,129 @@ void test_serialization_invalid() {
         ss.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
         ss.write(reinterpret_cast<const char*>(&bad_version), sizeof(bad_version));
         bool caught = false;
-        try { FactorBase::load(ss); }
-        catch (const std::runtime_error&) { caught = true; }
+        try {
+            FactorBase::load(ss);
+        } catch (const std::runtime_error&) {
+            caught = true;
+        }
+        assert(caught);
+    }
+
+    // Truncated header must fail before interpreting uninitialized fields.
+    {
+        std::stringstream ss;
+        uint32_t magic = 0x47464246;
+        ss.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
+        bool caught = false;
+        try {
+            FactorBase::load(ss);
+        } catch (const std::runtime_error&) {
+            caught = true;
+        }
+        assert(caught);
+    }
+
+    // A corrupt count must not trigger a count-sized resize before EOF is checked.
+    {
+        std::stringstream ss;
+        const uint32_t magic = 0x47464246;
+        const uint32_t version = 1;
+        const uint32_t rational_bound = 100;
+        const uint32_t algebraic_bound = 100;
+        const uint64_t large_prime_bound = 10'000;
+        const uint8_t log_scale = 16;
+        const uint64_t sieve_algebraic_count = 0;
+        const uint32_t rational_count = (std::numeric_limits<uint32_t>::max)();
+        ss.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
+        ss.write(reinterpret_cast<const char*>(&version), sizeof(version));
+        ss.write(reinterpret_cast<const char*>(&rational_bound), sizeof(rational_bound));
+        ss.write(reinterpret_cast<const char*>(&algebraic_bound), sizeof(algebraic_bound));
+        ss.write(reinterpret_cast<const char*>(&large_prime_bound), sizeof(large_prime_bound));
+        ss.write(reinterpret_cast<const char*>(&log_scale), sizeof(log_scale));
+        ss.write(reinterpret_cast<const char*>(&sieve_algebraic_count),
+                 sizeof(sieve_algebraic_count));
+        ss.write(reinterpret_cast<const char*>(&rational_count), sizeof(rational_count));
+
+        bool caught = false;
+        try {
+            FactorBase::load(ss);
+        } catch (const std::runtime_error&) {
+            caught = true;
+        }
+        assert(caught);
+    }
+
+    // The sieve count is a bounded view into the algebraic-prime array.
+    {
+        std::stringstream ss;
+        const uint32_t magic = 0x47464246;
+        const uint32_t version = 1;
+        const uint32_t rational_bound = 100;
+        const uint32_t algebraic_bound = 100;
+        const uint64_t large_prime_bound = 10'000;
+        const uint8_t log_scale = 16;
+        const uint64_t sieve_algebraic_count = 1;
+        const uint32_t rational_count = 0;
+        const uint32_t algebraic_count = 0;
+        ss.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
+        ss.write(reinterpret_cast<const char*>(&version), sizeof(version));
+        ss.write(reinterpret_cast<const char*>(&rational_bound), sizeof(rational_bound));
+        ss.write(reinterpret_cast<const char*>(&algebraic_bound), sizeof(algebraic_bound));
+        ss.write(reinterpret_cast<const char*>(&large_prime_bound), sizeof(large_prime_bound));
+        ss.write(reinterpret_cast<const char*>(&log_scale), sizeof(log_scale));
+        ss.write(reinterpret_cast<const char*>(&sieve_algebraic_count),
+                 sizeof(sieve_algebraic_count));
+        ss.write(reinterpret_cast<const char*>(&rational_count), sizeof(rational_count));
+        ss.write(reinterpret_cast<const char*>(&algebraic_count), sizeof(algebraic_count));
+
+        bool caught = false;
+        try {
+            FactorBase::load(ss);
+        } catch (const std::runtime_error&) {
+            caught = true;
+        }
         assert(caught);
     }
 
     std::cout << "  Serialization error handling: PASS" << std::endl;
+}
+
+void test_count_width_guards() {
+    std::cout << "Testing factor-base count width guards..." << std::endl;
+
+    // The serialized/index representation stores counts and indices as u32.
+    // On 64-bit hosts, requests beyond that representable range must fail
+    // before vector::reserve attempts a multi-gigabyte allocation.
+    if constexpr (sizeof(size_t) > sizeof(uint32_t)) {
+        FactorBase fb;
+        const size_t too_many = static_cast<size_t>((std::numeric_limits<uint32_t>::max)()) + 1;
+
+        bool rational_threw = false;
+        try {
+            fb.reserve(too_many, 0);
+        } catch (const std::overflow_error&) {
+            rational_threw = true;
+        }
+        assert(rational_threw);
+
+        bool algebraic_threw = false;
+        try {
+            fb.reserve(0, too_many);
+        } catch (const std::overflow_error&) {
+            algebraic_threw = true;
+        }
+        assert(algebraic_threw);
+    }
+
+    // A zero/one-element base still exercises the size_t index rebuild path.
+    FactorBase small;
+    small.add_rational(2, 16);
+    small.add_algebraic(3, 1, 25);
+    small.build_index();
+    assert(small.find_rational(2).has_value());
+    assert(small.find_algebraic(3, 1).has_value());
+
+    std::cout << "  Factor-base count width guards: PASS" << std::endl;
 }
 
 /// 验证分段并行筛 (bound ≥ PARALLEL_THRESHOLD=5M) 与简单筛输出按位等价。
@@ -431,7 +601,8 @@ void test_segmented_parallel_sieve() {
         std::vector<bool> is_prime(static_cast<size_t>(bound) + 1, true);
         is_prime[0] = is_prime[1] = false;
         for (uint64_t p = 2; p * p <= bound; ++p) {
-            if (!is_prime[static_cast<size_t>(p)]) continue;
+            if (!is_prime[static_cast<size_t>(p)])
+                continue;
             for (uint64_t k = p * p; k <= bound; k += p) {
                 is_prime[static_cast<size_t>(k)] = false;
             }
@@ -463,8 +634,10 @@ int main() {
     std::cout << "=== Factor Base Tests ===" << std::endl;
 
     test_prime_sieve();
+    test_zero_bounds();
     test_algebraic_roots();
     test_cz_random_splitting();
+    test_root_finder_rejects_non_prime_modulus();
     test_index_lookup();
     test_log_values();
     test_parallel_build();
@@ -473,6 +646,7 @@ int main() {
     test_base_m_irreducibility();
     test_serialization_roundtrip();
     test_serialization_invalid();
+    test_count_width_guards();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;

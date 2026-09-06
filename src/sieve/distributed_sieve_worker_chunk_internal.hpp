@@ -1,9 +1,10 @@
 #pragma once
 
 // Source-private, path-free execution of one exact distributed-sieve chunk.
-// Preparation constructs every allocation-heavy sieve/cofactor object before
-// a caller transfers writer authority. Execution emits accepted relations only
-// through the narrow callback below.
+// Preparation constructs every allocation-heavy sieve/cofactor object and
+// preflights every reachable lattice projection before a caller transfers
+// writer authority. Execution emits accepted relations only through the narrow
+// callback below.
 
 #include "distributed_sieve_bound_work_internal.hpp"
 
