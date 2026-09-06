@@ -290,6 +290,8 @@ verbose           = true
 ```
 </details>
 
+`verbose` 接受 `true`、`false`、`1` 和 `0`；其他值会使配置文件解析失败。
+
 `max_local_sieve_threads` 未配置时使用硬件并发数；显式值会钳制到该上限。Pipeline
 在 special-Q 外层 workers 之间均衡分配这些计算通道。详细边界见
 [sieve 配置契约](docs/env-flags/sieve.md#special-q-local-compute-budget-config)。
