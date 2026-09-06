@@ -497,9 +497,11 @@ private:
     /// 蒙哥马利标量乘法: k * P (Integer 版本)
     static Point mont_mul_big(const Point& P, const Integer& k, const Integer& a24,
                               const Integer& n) {
-        size_t bits = k.bit_length();
-        if (bits == 0)
+        // Keep the zero scalar contract explicit even if the underlying
+        // Integer bit-length implementation changes.
+        if (k.is_zero())
             return Point(); // default ctor: (0, 1)
+        size_t bits = k.bit_length();
         if (bits == 1)
             return P; // implicit copy ctor
 
