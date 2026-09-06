@@ -42,6 +42,7 @@
 
 #include "../core/integer.hpp"
 #include "../util/thread_pool.hpp"
+#include "suyama.hpp"
 
 #include <atomic>
 #include <cassert>
@@ -89,11 +90,11 @@ struct CachedCurve {
         return out;
     }
 
-    // u = sigma^2 - 5 mod n; v = 4*sigma mod n.
-    Integer u(static_cast<unsigned long long>(sigma * sigma - 5));
-    u %= n;
-    Integer v(static_cast<unsigned long long>(4 * sigma));
-    v %= n;
+    // Compute sigma products in GMP: direct uint64_t multiplication would
+    // wrap for an untrusted full-width sigma before reduction modulo n.
+    Integer u;
+    Integer v;
+    detail::compute_suyama_uv(u, v, sigma, n);
 
     // x_0 = u^3 mod n; z_0 = v^3 mod n.
     Integer x0;

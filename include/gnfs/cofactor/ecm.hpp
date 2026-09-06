@@ -4,7 +4,9 @@
 #include "../util/bit_intrin.hpp"
 #include "attempt_context.hpp"
 #include "ecm_brent_suyama.hpp"
+#include "suyama.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -28,7 +30,11 @@ public:
     /// ECM 配置
     struct Config {
         uint32_t num_curves;
+        /// Stage 1 bound. Values above 100,000,000 are rejected before sieve
+        /// allocation to keep malformed configurations fail-closed.
         uint64_t B1;
+        /// Stage 2 bound. Values above 5,000,000,000 are rejected before any
+        /// giant-step work; this is the largest automatic parameter today.
         uint64_t B2;
         bool auto_params;
 
@@ -95,6 +101,7 @@ public:
 
         // ENV opt-in: Brent-Suyama (Stage 3) override
         apply_brent_suyama_env(config);
+        validate_config_bounds(config);
 
         // Use n's low bits + random_device to avoid repeating the same curves
         std::random_device rd;
@@ -122,6 +129,7 @@ public:
             auto_tune(n.bit_length(), config);
             config.num_curves = explicit_curve_count;
         }
+        validate_config_bounds(config);
         auto ctx = prepare_batch(config, schedule);
         return factor_with_batch(n, ctx);
     }
@@ -241,6 +249,7 @@ public:
     [[nodiscard]] static BatchContext prepare_batch(const Config& config,
                                                     const DeterministicCurveSchedule& schedule) {
         validate_deterministic_curve_schedule(schedule);
+        validate_config_bounds(config);
 
         BatchContext ctx;
         ctx.B1 = config.B1;
@@ -295,6 +304,7 @@ public:
     /// 等价于 ECM::factor() 但跳过 primes_cache + prime_powers 重建
     [[nodiscard]] static std::optional<Integer> factor_with_batch(const Integer& n,
                                                                   const BatchContext& ctx) {
+        validate_config_bounds(ctx.B1, ctx.B2);
         if (n.is_one() || n.is_probable_prime() > 0) {
             return std::nullopt;
         }
@@ -312,6 +322,27 @@ public:
     }
 
 private:
+    // Stage 1 allocates one sieve bit per integer up to B1. Stage 2 performs
+    // roughly (B2 / 2310) giant steps per curve, so these hard limits prevent
+    // accidental multi-gigabyte allocations and unbounded dispatch from a
+    // malformed or untrusted configuration. The Stage 2 limit matches the
+    // largest automatic parameter selected by auto_tune().
+    static constexpr uint64_t kMaxSieveBound = 100'000'000ULL;
+    static constexpr uint64_t kMaxStage2Bound = 5'000'000'000ULL;
+
+    static void validate_config_bounds(const Config& config) {
+        validate_config_bounds(config.B1, config.B2);
+    }
+
+    static void validate_config_bounds(uint64_t B1, uint64_t B2) {
+        if (B1 > kMaxSieveBound) {
+            throw std::invalid_argument("ECM B1 exceeds the 100M sieve bound");
+        }
+        if (B2 > kMaxStage2Bound) {
+            throw std::invalid_argument("ECM B2 exceeds the 5e9 Stage 2 bound");
+        }
+    }
+
     [[nodiscard]] static DeterministicCurveSchedule
     make_seed256_curve_schedule(uint32_t num_curves, const CofactorSeed256& seed) {
         DeterministicCurveSchedule schedule;
@@ -520,12 +551,21 @@ private:
 
     /// 简单素数筛 (用于 Stage 1，bound 较小)
     static std::vector<uint64_t> sieve_primes(uint64_t bound) {
+        if (bound < 2)
+            return {};
+        if (bound > kMaxSieveBound)
+            throw std::invalid_argument("ECM prime sieve bound exceeds 100M");
+
         std::vector<bool> is_prime(bound + 1, true);
         is_prime[0] = is_prime[1] = false;
-        for (uint64_t i = 2; i * i <= bound; ++i) {
+        for (uint64_t i = 2; i <= bound / i; ++i) {
             if (is_prime[i]) {
-                for (uint64_t j = i * i; j <= bound; j += i) {
+                uint64_t j = i * i;
+                for (;;) {
                     is_prime[j] = false;
+                    if (j > bound - i)
+                        break;
+                    j += i;
                 }
             }
         }
@@ -545,34 +585,50 @@ private:
     /// 内存: O(√high + SEGMENT_SIZE) 而非 O(high)
     template <typename Callback>
     static void for_each_prime_in_range(uint64_t low, uint64_t high, Callback&& callback) {
-        if (high <= low)
+        if (high <= low || low == UINT64_MAX)
             return;
 
         // 筛出 ≤ √high 的小素数
-        uint64_t sqrt_high = static_cast<uint64_t>(std::sqrt(static_cast<double>(high))) + 1;
+        uint64_t sqrt_high = static_cast<uint64_t>(std::sqrt(static_cast<double>(high)));
+        if (sqrt_high < UINT64_MAX)
+            ++sqrt_high;
         auto small_primes = sieve_primes(sqrt_high);
 
         // 分段处理，每段 ~1M entries = 128KB for vector<bool>
         constexpr uint64_t SEGMENT_SIZE = 1ULL << 20;
 
-        for (uint64_t seg_lo = low + 1; seg_lo <= high; seg_lo += SEGMENT_SIZE) {
-            uint64_t seg_hi = std::min(seg_lo + SEGMENT_SIZE - 1, high);
-            uint64_t seg_len = seg_hi - seg_lo + 1;
+        uint64_t seg_lo = low + 1;
+        for (;;) {
+            const uint64_t remaining = high - seg_lo;
+            const uint64_t seg_len = std::min<uint64_t>(SEGMENT_SIZE, remaining + 1);
+            const uint64_t seg_hi = seg_lo + seg_len - 1;
 
             std::vector<bool> is_prime_seg(seg_len, true);
 
             // 用小素数标记合数
             for (uint64_t p : small_primes) {
-                if (p * p > seg_hi)
+                if (p > seg_hi / p)
                     break;
 
-                // 段内第一个 p 的倍数
-                uint64_t start = ((seg_lo + p - 1) / p) * p;
-                if (start == p)
+                // Compute ceil(seg_lo / p) without seg_lo + p - 1
+                // overflow, then multiply only after checking the quotient.
+                uint64_t quotient = seg_lo / p;
+                if (seg_lo % p != 0)
+                    ++quotient;
+                if (quotient > seg_hi / p)
+                    continue;
+                uint64_t start = quotient * p;
+                if (start == p) {
+                    if (p > seg_hi - start)
+                        continue;
                     start += p; // 不标记 p 本身
+                }
 
-                for (uint64_t j = start; j <= seg_hi; j += p) {
+                for (uint64_t j = start;;) {
                     is_prime_seg[j - seg_lo] = false;
+                    if (j > seg_hi - p)
+                        break;
+                    j += p;
                 }
             }
 
@@ -590,6 +646,10 @@ private:
                         return;
                 }
             }
+
+            if (seg_hi == high)
+                break;
+            seg_lo = seg_hi + 1;
         }
     }
 
@@ -603,6 +663,17 @@ private:
         return a;
     }
 
+    static constexpr uint64_t ceil_div_u64(uint64_t value, uint64_t divisor) noexcept {
+        return value / divisor + static_cast<uint64_t>(value % divisor != 0);
+    }
+
+    static constexpr uint64_t stride_product(uint64_t value) noexcept {
+        constexpr uint64_t D = 2310;
+        if (value > UINT64_MAX / D)
+            return UINT64_MAX;
+        return value * D;
+    }
+
     /// 尝试一条曲线 — 使用 BatchContext 预计算的 prime_powers (Stage 1 标量)
     /// 与 try_curve 等价但跳过 inline `while pk ≤ B1/p` 循环, 复用 ctx.prime_powers
     [[nodiscard]] static std::optional<Integer> try_curve_with_pk(const Integer& n, uint64_t sigma,
@@ -612,12 +683,11 @@ private:
         assert(ctx.prime_powers.size() == ctx.primes_cache.size() &&
                "BatchContext: primes_cache and prime_powers must be parallel");
 
-        // Suyama 参数 (与 try_curve 一致)
-        Integer u(static_cast<unsigned long long>(sigma * sigma - 5));
-        u %= n;
-
-        Integer v(static_cast<unsigned long long>(4 * sigma));
-        v %= n;
+        // Suyama parameters. Compute sigma products in GMP so full-width
+        // uint64_t sigmas cannot wrap before reduction.
+        Integer u;
+        Integer v;
+        detail::compute_suyama_uv(u, v, sigma, n);
 
         Integer x0;
         mpz_powm_ui(x0.get_mpz(), u.get_mpz(), 3, n.get_mpz());
@@ -720,12 +790,11 @@ private:
         // 下下溢成巨大值,数学上得不到有效曲线。
         assert(sigma >= 6 && "ECM Suyama: sigma must be >= 6");
 
-        // Integer(unsigned long long) 总是非负,is_negative() 永不为 true。
-        Integer u(static_cast<unsigned long long>(sigma * sigma - 5));
-        u %= n;
-
-        Integer v(static_cast<unsigned long long>(4 * sigma));
-        v %= n;
+        // Compute sigma products in GMP: direct uint64_t multiplication would
+        // wrap for an untrusted full-width sigma before reduction modulo n.
+        Integer u;
+        Integer v;
+        detail::compute_suyama_uv(u, v, sigma, n);
 
         // 起始点 u^3, v^3 — mpz_powm_ui combines mul + mod
         Integer x0;
@@ -850,6 +919,12 @@ private:
 
         constexpr uint64_t D = 2310; // 2·3·5·7·11, φ(D)=480
 
+        // Keep the range check inside the helper as well as at its callers:
+        // this prevents B2 - B1 from wrapping if a future path invokes the
+        // private stage routine directly with reversed bounds.
+        if (B2 <= B1)
+            return std::nullopt;
+
         // 小范围不值得 BSGS 开销，回退朴素实现
         if (B2 - B1 < D * 3) {
             return stage2_naive(Q0, n, a24, B1, B2);
@@ -891,13 +966,13 @@ private:
         // 修复:把 j_lo 上调到 1,保证 j_lo*D ≥ D > B1 时仍覆盖 D 以下素数已在 Stage1 处理。
         if (j_lo == 0)
             j_lo = 1;
-        uint64_t j_hi = (B2 + D - 1) / D; // 最大 j 使得 (j-1)*D < B2
+        uint64_t j_hi = ceil_div_u64(B2, D); // 最大 j 使得 (j-1)*D < B2
         if (j_lo > j_hi)
             return std::nullopt;
 
         // 两次 mont_mul 初始化差分链
-        Point G_prev = mont_mul(Q0, j_lo * D, a24, n);
-        Point G_curr = (j_lo < j_hi) ? mont_mul(Q0, (j_lo + 1) * D, a24, n) : Point();
+        Point G_prev = mont_mul(Q0, stride_product(j_lo), a24, n);
+        Point G_curr = (j_lo < j_hi) ? mont_mul(Q0, stride_product(j_lo + 1), a24, n) : Point();
 
         // 累积 cross products
         Integer accum(1);
@@ -950,10 +1025,10 @@ private:
                 return g;
             if (g.compare(n) == 0) {
                 // gcd == n: 回退到朴素实现
-                uint64_t lo = (batch_start_j > 0 ? batch_start_j - 1 : 0) * D;
+                uint64_t lo = stride_product(batch_start_j > 0 ? batch_start_j - 1 : 0);
                 if (lo < B1)
                     lo = B1;
-                uint64_t hi = std::min((j_current + 1) * D, B2);
+                uint64_t hi = std::min(stride_product(j_current + 1), B2);
                 auto fb = stage2_naive(Q0, n, a24, lo, hi);
                 if (fb)
                     return fb;
@@ -1020,6 +1095,9 @@ private:
 
         constexpr uint64_t D = 2310; // 2·3·5·7·11, φ(D)=480
 
+        if (B2 <= B1)
+            return std::nullopt;
+
         // Small range -- BSGS overhead not worth it, fall back to naive.
         // (Naive does not benefit from Brent-Suyama -- it does per-prime
         // mont_mul and stage-1-style gcd, no baby-giant comparison.)
@@ -1052,12 +1130,12 @@ private:
         uint64_t j_lo = B1 / D;
         if (j_lo == 0)
             j_lo = 1; // Same fix as stage2(): avoid j_lo=0 garbage
-        uint64_t j_hi = (B2 + D - 1) / D;
+        uint64_t j_hi = ceil_div_u64(B2, D);
         if (j_lo > j_hi)
             return std::nullopt;
 
-        Point G_prev = mont_mul(Q0, j_lo * D, a24, n);
-        Point G_curr = (j_lo < j_hi) ? mont_mul(Q0, (j_lo + 1) * D, a24, n) : Point();
+        Point G_prev = mont_mul(Q0, stride_product(j_lo), a24, n);
+        Point G_curr = (j_lo < j_hi) ? mont_mul(Q0, stride_product(j_lo + 1), a24, n) : Point();
 
         Integer accum(1);
         uint64_t batch_start_j = j_lo;
@@ -1104,10 +1182,10 @@ private:
                 return g;
             if (g.compare(n) == 0) {
                 // gcd == n: fall back to naive on the suspect range
-                uint64_t lo = (batch_start_j > 0 ? batch_start_j - 1 : 0) * D;
+                uint64_t lo = stride_product(batch_start_j > 0 ? batch_start_j - 1 : 0);
                 if (lo < B1)
                     lo = B1;
-                uint64_t hi = std::min((j_current + 1) * D, B2);
+                uint64_t hi = std::min(stride_product(j_current + 1), B2);
                 auto fb = stage2_naive(Q0, n, a24, lo, hi);
                 if (fb)
                     return fb;

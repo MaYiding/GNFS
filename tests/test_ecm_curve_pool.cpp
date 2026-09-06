@@ -22,6 +22,7 @@
 #include <iostream>
 #include <mutex>
 #include <set>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -50,8 +51,16 @@ RefCurve ref_suyama(const Integer& n, uint64_t sigma) {
     r.valid = false;
     if (sigma < 6) return r;
 
-    Integer u(static_cast<unsigned long long>(sigma * sigma - 5)); u %= n;
-    Integer v(static_cast<unsigned long long>(4 * sigma));         v %= n;
+    // Keep this oracle independent from build_suyama_curve and use GMP for
+    // the products so it remains valid for full-width uint64_t sigmas.
+    Integer sigma_value(sigma);
+    Integer u;
+    mpz_mul(u.get_mpz(), sigma_value.get_mpz(), sigma_value.get_mpz());
+    mpz_sub_ui(u.get_mpz(), u.get_mpz(), 5);
+    u %= n;
+    Integer v;
+    mpz_mul_2exp(v.get_mpz(), sigma_value.get_mpz(), 2);
+    v %= n;
     Integer x0; mpz_powm_ui(x0.get_mpz(), u.get_mpz(), 3, n.get_mpz());
     Integer z0; mpz_powm_ui(z0.get_mpz(), v.get_mpz(), 3, n.get_mpz());
     Integer diff; mpz_sub(diff.get_mpz(), v.get_mpz(), u.get_mpz());
@@ -239,6 +248,42 @@ void test_sigma_below_six() {
     std::cout << " PASS\n";
 }
 
+// Full-width sigma values must not be narrowed or multiplied in uint64_t
+// before reduction. This is an API boundary for callers that provide their
+// own deterministic curve schedules.
+void test_full_width_sigma_matches_gmp_oracle() {
+    std::cout << "Test 5b: full-width sigma arithmetic..." << std::flush;
+
+    const auto check = [](bool condition, const char* message) {
+        if (!condition)
+            throw std::runtime_error(message);
+    };
+    const Integer n{uint64_t{1000000007}};
+    for (const uint64_t sigma : {UINT64_MAX, UINT64_MAX - 1, UINT64_C(1) << 63}) {
+        const RefCurve expected = ref_suyama(n, sigma);
+        const CachedCurve actual = build_suyama_curve(n, sigma);
+        check(actual.valid == expected.valid, "full-width sigma valid state mismatch");
+        check(actual.sigma == sigma, "full-width sigma trace value mismatch");
+        if (!expected.valid) {
+            check(!actual.lucky_factor.has_value(),
+                  "invalid full-width curve unexpectedly carries a factor");
+            continue;
+        }
+        if (expected.lucky) {
+            check(actual.lucky_factor.has_value(), "full-width lucky factor was dropped");
+            check(actual.lucky_factor->compare(*expected.lucky) == 0,
+                  "full-width lucky factor mismatch");
+        } else {
+            check(!actual.lucky_factor.has_value(), "unexpected lucky factor for full-width curve");
+            check(actual.A.compare(expected.a24) == 0, "full-width A mismatch");
+            check(actual.x_0.compare(expected.x0) == 0, "full-width x0 mismatch");
+            check(actual.z_0.compare(expected.z0) == 0, "full-width z0 mismatch");
+        }
+    }
+
+    std::cout << " PASS\n";
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // Test 6: cached (A, x_0, z_0) match reference Suyama setup
 // ───────────────────────────────────────────────────────────────────────────
@@ -403,6 +448,7 @@ int main() {
     test_pool_8_exact();
     test_pool_smaller_than_sigmas();
     test_sigma_below_six();
+    test_full_width_sigma_matches_gmp_oracle();
     test_cached_matches_reference();
     test_parallel_pop();
     test_lucky_factor_capture();
