@@ -106,6 +106,9 @@ void test_bit_operations() {
     Integer big("123456789012345678901234567890");
     GNFS_TEST_CHECK(big.bit_length() > 90);
 
+    // GMP's mpz_sizeinbase(0, 2) is 1, but zero has no significant bits.
+    GNFS_TEST_CHECK(Integer(0).bit_length() == 0);
+
     std::cout << "  Bit operations: PASS" << std::endl;
 }
 
