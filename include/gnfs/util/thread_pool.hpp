@@ -241,13 +241,27 @@ public:
         for (size_t t = 0; t < num_threads; ++t) {
             futures.push_back(submit([&next_idx, end, grain, &func]() {
                 while (true) {
-                    size_t chunk_start = next_idx.fetch_add(grain, std::memory_order_relaxed);
-                    if (chunk_start >= end)
-                        break;
-                    size_t chunk_end = std::min(chunk_start + grain, end);
-                    for (size_t i = chunk_start; i < chunk_end; ++i) {
-                        func(i);
+                    size_t chunk_start = next_idx.load(std::memory_order_relaxed);
+                    bool claimed = false;
+                    while (chunk_start < end) {
+                        // Claim no more than the remaining range. Besides
+                        // avoiding an extra partial chunk, this keeps the
+                        // cursor from wrapping when end == SIZE_MAX.
+                        const size_t remaining = end - chunk_start;
+                        const size_t chunk_len = std::min(grain, remaining);
+                        if (next_idx.compare_exchange_weak(chunk_start, chunk_start + chunk_len,
+                                                           std::memory_order_relaxed,
+                                                           std::memory_order_relaxed)) {
+                            const size_t chunk_end = chunk_start + chunk_len;
+                            for (size_t i = chunk_start; i < chunk_end; ++i) {
+                                func(i);
+                            }
+                            claimed = true;
+                            break;
+                        }
                     }
+                    if (!claimed)
+                        break;
                 }
             }));
         }
