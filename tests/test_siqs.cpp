@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -226,6 +227,16 @@ void test_factor_base() {
     }
 
     printf("  factor_base: PASS (%zu primes)\n", fb.size());
+}
+
+void test_factor_base_rejects_unrepresentable_count() {
+    bool overflow_seen = false;
+    try {
+        (void)build_factor_base(Integer("1000000007"), std::numeric_limits<size_t>::max());
+    } catch (const std::overflow_error&) {
+        overflow_seen = true;
+    }
+    require_test(overflow_seen, "factor-base count overflow was not rejected");
 }
 
 void test_init_poly_handles_large_a_factor_count() {
@@ -519,6 +530,7 @@ int main() {
     test_one_large_prime_rejects_strong_pseudoprimes();
     test_tonelli_shanks();
     test_factor_base();
+    test_factor_base_rejects_unrepresentable_count();
     test_init_poly_handles_large_a_factor_count();
     test_split_cofactor_edge();
 

@@ -37,6 +37,7 @@
 #include <optional>
 #include <random>
 #include <span>
+#include <stdexcept>
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
@@ -368,6 +369,14 @@ inline uint32_t select_multiplier(const Integer& N) {
 
 /// Build factor base: primes p where Legendre(N, p) = 1
 inline std::vector<FBPrime> build_factor_base(const Integer& N, size_t count) {
+    // FB entries use uint32_t prime values.  There are at most one sentinel,
+    // p=2, and one entry for each odd uint32_t candidate.
+    constexpr size_t max_factor_base_entries =
+        static_cast<size_t>(std::numeric_limits<uint32_t>::max() / 2u) + 2;
+    if (count >= max_factor_base_entries) {
+        throw std::overflow_error("SIQS factor-base count exceeds uint32_t prime domain");
+    }
+
     std::vector<FBPrime> fb;
     fb.reserve(count + 1);
 
@@ -384,7 +393,7 @@ inline std::vector<FBPrime> build_factor_base(const Integer& N, size_t count) {
             return true;
         if (n % 2 == 0 || n % 3 == 0)
             return false;
-        for (uint32_t i = 5; i * i <= n; i += 6)
+        for (uint32_t i = 5; i <= n / i; i += 6)
             if (n % i == 0 || n % (i + 2) == 0)
                 return false;
         return true;
@@ -398,7 +407,11 @@ inline std::vector<FBPrime> build_factor_base(const Integer& N, size_t count) {
         }
     }
 
-    for (uint32_t p = 3; fb.size() <= count; p += 2) {
+    for (uint64_t candidate = 3; fb.size() <= count; candidate += 2) {
+        if (candidate > std::numeric_limits<uint32_t>::max()) {
+            throw std::overflow_error("SIQS factor-base prime candidate exceeds uint32_t");
+        }
+        const uint32_t p = static_cast<uint32_t>(candidate);
         if (!is_prime(p))
             continue;
 
@@ -949,6 +962,16 @@ inline void sieve_polynomial(const SIQSPoly& poly, const Integer& N, const std::
         uint64_t large_prime2 = 0;
         std::optional<SIQSLiveSieveRelationKind> relation_kind;
         bool residual_unrepresentable = false;
+        bool exponent_overflow = false;
+
+        const auto increment_exponent = [&](size_t index) {
+            if (exp[index] == std::numeric_limits<uint8_t>::max()) {
+                exponent_overflow = true;
+                return false;
+            }
+            ++exp[index];
+            return true;
+        };
 
         const auto capture_shadow_two_lp = [&](uint64_t residual) {
             const auto shadow_admission =
@@ -989,27 +1012,33 @@ inline void sieve_polynomial(const SIQSPoly& poly, const Integer& N, const std::
             for (uint32_t ai : poly.a_indices) {
                 uint32_t p = fb[ai].p;
                 while (q128 % p == 0) {
-                    q128 /= p;
                     if (exp[ai] == 0)
                         record_touched(ai);
-                    exp[ai]++;
+                    if (!increment_exponent(ai))
+                        break;
+                    q128 /= p;
                 }
+                if (exponent_overflow)
+                    break;
             }
 
             // Trial divide by all FB primes (early exit when fully smooth)
-            for (size_t i = 1; i < fb.size() && q128 > 1; i++) {
+            for (size_t i = 1; i < fb.size() && q128 > 1 && !exponent_overflow; i++) {
                 uint32_t p = fb[i].p;
                 if (q128 % p == 0) {
                     record_touched(static_cast<uint32_t>(i));
                     do {
+                        if (!increment_exponent(i))
+                            break;
                         q128 /= p;
-                        exp[i]++;
-                    } while (q128 % p == 0);
+                    } while (q128 % p == 0 && !exponent_overflow);
                 }
             }
 
             // Check cofactor
-            if (q128 == 1) {
+            if (exponent_overflow) {
+                // The dense relation format cannot represent this exponent safely.
+            } else if (q128 == 1) {
                 accept = true;
                 relation_kind = SIQSLiveSieveRelationKind::full;
             } else if (q128 <= UINT64_MAX) {
@@ -1040,23 +1069,30 @@ inline void sieve_polynomial(const SIQSPoly& poly, const Integer& N, const std::
                     if (exp[ai] == 0)
                         record_touched(ai);
                     do {
+                        if (!increment_exponent(ai))
+                            break;
                         mpz_divexact_ui(q_mpz, q_mpz, p);
-                        exp[ai]++;
-                    } while (mpz_divisible_ui_p(q_mpz, p));
+                    } while (mpz_divisible_ui_p(q_mpz, p) && !exponent_overflow);
                 }
+                if (exponent_overflow)
+                    break;
             }
-            for (size_t i = 1; i < fb.size() && mpz_cmp_ui(q_mpz, 1) > 0; i++) {
+            for (size_t i = 1; i < fb.size() && mpz_cmp_ui(q_mpz, 1) > 0 && !exponent_overflow;
+                 i++) {
                 uint32_t p = fb[i].p;
                 if (mpz_divisible_ui_p(q_mpz, p)) {
                     record_touched(static_cast<uint32_t>(i));
                     do {
+                        if (!increment_exponent(i))
+                            break;
                         mpz_divexact_ui(q_mpz, q_mpz, p);
-                        exp[i]++;
-                    } while (mpz_divisible_ui_p(q_mpz, p));
+                    } while (mpz_divisible_ui_p(q_mpz, p) && !exponent_overflow);
                 }
             }
 
-            if (mpz_cmp_ui(q_mpz, 1) == 0) {
+            if (exponent_overflow) {
+                // The dense relation format cannot represent this exponent safely.
+            } else if (mpz_cmp_ui(q_mpz, 1) == 0) {
                 accept = true;
                 relation_kind = SIQSLiveSieveRelationKind::full;
             } else if (auto cofactor = nonnegative_mpz_to_uint64_checked(q_mpz)) {
