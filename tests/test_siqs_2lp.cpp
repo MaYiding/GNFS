@@ -769,6 +769,70 @@ void test_shadow_limit_does_not_stop_same_polynomial_legacy_relation() {
     CHECK(exponent_buffer == std::vector<uint8_t>({0, 0}));
 }
 
+void test_sieve_score_saturates_without_losing_smooth_relation() {
+    constexpr uint32_t sieve_half = 1;
+    constexpr uint8_t threshold = 100;
+    const std::vector<uint32_t> primes = {
+        2,   3,   5,   7,   11,  13,  17,  19,  23,  29,  31,  37,  41,  43,  47,  53,  59,
+        61,  67,  71,  73,  79,  83,  89,  97,  101, 103, 107, 109, 113, 127, 131, 137, 139,
+        149, 151, 157, 163, 167, 173, 179, 181, 191, 193, 197, 199, 211, 223, 227, 229, 233,
+        239, 241, 251, 257, 263, 269, 271, 277, 281, 283, 293, 307, 311, 313, 317, 331, 337,
+        347, 349, 353, 359, 367, 373, 379, 383, 389, 397, 401, 409, 419};
+
+    Integer base;
+    mpz_ui_pow_ui(base.get_mpz(), 10, 100);
+    Integer factor_base_product(1);
+    for (uint32_t prime : primes) {
+        factor_base_product *= static_cast<int64_t>(prime);
+    }
+    const Integer modulus = base * base - factor_base_product;
+
+    SIQSPoly poly;
+    poly.A = Integer(1);
+    poly.B = base;
+    poly.solns.assign(primes.size() + 1, {sieve_half, sieve_half});
+
+    std::vector<FBPrime> factor_base;
+    factor_base.reserve(primes.size() + 1);
+    factor_base.push_back({0, 0, 0});
+    for (uint32_t prime : primes) {
+        uint8_t logp = 0;
+        for (uint32_t value = prime; value > 1; value >>= 1) {
+            ++logp;
+        }
+        factor_base.push_back(
+            {prime, static_cast<uint32_t>(mpz_fdiv_ui(base.get_mpz(), prime)), logp});
+    }
+
+    std::vector<SIQSRelation> relations;
+    std::mutex relations_mutex;
+    std::vector<uint8_t> sieve_buffer;
+    std::vector<uint8_t> exponent_buffer(factor_base.size());
+    sieve_polynomial(poly, modulus, factor_base, sieve_half, threshold, 0,
+                     std::numeric_limits<uint64_t>::max(), 0, relations, relations_mutex,
+                     sieve_buffer, exponent_buffer);
+
+    uint32_t expected_score = 0;
+    for (size_t index = 1; index < factor_base.size(); ++index) {
+        expected_score += factor_base[index].logp;
+    }
+
+    CHECK(expected_score > std::numeric_limits<uint8_t>::max());
+    CHECK(sieve_buffer[sieve_half] == std::numeric_limits<uint8_t>::max());
+    CHECK(relations.size() == 1);
+    if (relations.size() == 1) {
+        CHECK(relations.front().value == base);
+        CHECK(relations.front().large_prime == 0);
+        CHECK(relations.front().large_prime2 == 0);
+        CHECK(relations.front().exponents.size() == factor_base.size());
+        if (relations.front().exponents.size() == factor_base.size()) {
+            for (size_t index = 1; index < factor_base.size(); ++index) {
+                CHECK(relations.front().exponents[index] == 1);
+            }
+        }
+    }
+}
+
 } // namespace
 
 int main() {
@@ -793,6 +857,7 @@ int main() {
     test_native_shadow_capture_cleans_reusable_exponents();
     test_native_shadow_capture_honors_exact_cofactor_bound();
     test_shadow_limit_does_not_stop_same_polynomial_legacy_relation();
+    test_sieve_score_saturates_without_losing_smooth_relation();
 
     std::cout << checks_passed << " checks passed, " << checks_failed << " checks failed\n";
     return checks_failed == 0 ? 0 : 1;

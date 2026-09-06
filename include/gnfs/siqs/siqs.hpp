@@ -787,6 +787,15 @@ nonnegative_mpz_to_uint64_checked(mpz_srcptr value) noexcept {
 // Sieve kernel
 // ================================================================
 
+/// Add one factor-base logarithm without allowing the byte sieve score to
+/// wrap.  A wrapped score can hide an otherwise valid smooth candidate once
+/// the accumulated log exceeds 255; saturation preserves the threshold
+/// predicate while keeping the compact byte storage.
+inline void saturating_sieve_add(uint8_t& score, uint8_t logp) noexcept {
+    const uint16_t sum = static_cast<uint16_t>(score) + static_cast<uint16_t>(logp);
+    score = static_cast<uint8_t>(sum > UINT8_MAX ? UINT8_MAX : sum);
+}
+
 /// Sieve one polynomial and collect smooth relations.
 /// sieve_buf: caller-owned buffer (avoids reallocation per polynomial)
 /// @param lp_bound_sq  Upper bound for 2LP cofactors (set to 0 to disable 2LP)
@@ -831,19 +840,19 @@ inline void sieve_polynomial(const SIQSPoly& poly, const Integer& N, const std::
             uint8_t logp = fb[i].logp;
             if (s1 == s2) {
                 for (uint32_t pos = s1; pos < sieve_size; pos += p)
-                    sieve[pos] += logp;
+                    saturating_sieve_add(sieve[pos], logp);
             } else {
                 uint32_t pos1 = s1, pos2 = s2;
                 if (pos1 > pos2)
                     std::swap(pos1, pos2);
                 while (pos2 < sieve_size) {
-                    sieve[pos1] += logp;
-                    sieve[pos2] += logp;
+                    saturating_sieve_add(sieve[pos1], logp);
+                    saturating_sieve_add(sieve[pos2], logp);
                     pos1 += p;
                     pos2 += p;
                 }
                 if (pos1 < sieve_size)
-                    sieve[pos1] += logp;
+                    saturating_sieve_add(sieve[pos1], logp);
             }
         }
     } else {
@@ -861,19 +870,19 @@ inline void sieve_polynomial(const SIQSPoly& poly, const Integer& N, const std::
             uint8_t logp = fb[i].logp;
             if (s1 == s2) {
                 for (uint32_t pos = s1; pos < sieve_size; pos += p)
-                    sieve[pos] += logp;
+                    saturating_sieve_add(sieve[pos], logp);
             } else {
                 uint32_t pos1 = s1, pos2 = s2;
                 if (pos1 > pos2)
                     std::swap(pos1, pos2);
                 while (pos2 < sieve_size) {
-                    sieve[pos1] += logp;
-                    sieve[pos2] += logp;
+                    saturating_sieve_add(sieve[pos1], logp);
+                    saturating_sieve_add(sieve[pos2], logp);
                     pos1 += p;
                     pos2 += p;
                 }
                 if (pos1 < sieve_size)
-                    sieve[pos1] += logp;
+                    saturating_sieve_add(sieve[pos1], logp);
             }
         }
     }
