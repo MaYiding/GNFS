@@ -1141,7 +1141,7 @@ inline void sieve_polynomial(const SIQSPoly& poly, const Integer& N, const std::
 // Large prime merging
 // ================================================================
 
-/// Merge two relations: combine their values and exponents
+/// Return whether two relation exponent vectors can be combined losslessly.
 inline bool can_merge_exponents(const SIQSRelation& a, const SIQSRelation& b,
                                 size_t fb_size) noexcept {
     constexpr uint16_t max_exponent = std::numeric_limits<uint8_t>::max();
@@ -1155,6 +1155,9 @@ inline bool can_merge_exponents(const SIQSRelation& a, const SIQSRelation& b,
     return true;
 }
 
+/// Merge two relations: combine their values and exponents.
+/// @throws std::overflow_error when the compact exponent representation cannot
+///         hold one of the resulting exponents.
 inline SIQSRelation merge_two(const SIQSRelation& a, const SIQSRelation& b, size_t fb_size) {
     if (!can_merge_exponents(a, b, fb_size)) {
         throw std::overflow_error("SIQS relation exponent overflow during partial merge");
