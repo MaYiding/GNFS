@@ -45,6 +45,8 @@
 
 #include <atomic>
 #include <cassert>
+#include <cctype>
+#include <cerrno>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -66,13 +68,13 @@ using core::Integer;
 ///   3. !valid: setup failed in a way that's neither recoverable nor lucky
 ///      (e.g. den was 0 mod n or sigma < 6). Callers should pop the next.
 struct CachedCurve {
-    Integer A;             // a24 = (A+2)/4, ready for mont_double
-    Integer x_0;           // starting point X (Z=1 implicit by Suyama math)
-    Integer z_0;           // starting point Z
-    uint64_t sigma = 0;    // for traceability / determinism
+    Integer A;          // a24 = (A+2)/4, ready for mont_double
+    Integer x_0;        // starting point X (Z=1 implicit by Suyama math)
+    Integer z_0;        // starting point Z
+    uint64_t sigma = 0; // for traceability / determinism
 
-    bool valid = false;                          // whether (A, x_0, z_0) are usable
-    std::optional<Integer> lucky_factor;         // non-empty iff den-gcd hit a factor
+    bool valid = false;                  // whether (A, x_0, z_0) are usable
+    std::optional<Integer> lucky_factor; // non-empty iff den-gcd hit a factor
 };
 
 /// Build one Suyama-parametrised curve given (n, sigma).
@@ -84,15 +86,18 @@ struct CachedCurve {
     CachedCurve out;
     out.sigma = sigma;
 
-    if (sigma < 6) {
+    if (!n.is_positive() || n.is_one() || sigma < 6) {
         out.valid = false;
         return out;
     }
 
     // u = sigma^2 - 5 mod n; v = 4*sigma mod n.
-    Integer u(static_cast<unsigned long long>(sigma * sigma - 5));
+    Integer sigma_value{sigma};
+    Integer u = sigma_value * sigma_value;
+    u -= int64_t{5};
     u %= n;
-    Integer v(static_cast<unsigned long long>(4 * sigma));
+    Integer v = sigma_value;
+    v *= int64_t{4};
     v %= n;
 
     // x_0 = u^3 mod n; z_0 = v^3 mod n.
@@ -104,7 +109,8 @@ struct CachedCurve {
     // diff = v - u mod n.
     Integer diff;
     mpz_sub(diff.get_mpz(), v.get_mpz(), u.get_mpz());
-    if (diff.is_negative()) diff += n;
+    if (diff.is_negative())
+        diff += n;
     diff %= n;
 
     Integer diff3;
@@ -183,16 +189,16 @@ public:
     ///
     /// `parallel_threads = 0` selects a sensible default
     /// (`std::thread::hardware_concurrency()` capped at 8).
-    explicit EcmCurvePool(size_t pool_size,
-                          const Integer& n,
-                          std::vector<uint64_t> sigmas,
+    explicit EcmCurvePool(size_t pool_size, const Integer& n, std::vector<uint64_t> sigmas,
                           size_t parallel_threads = 0)
         : n_(n), sigmas_(std::move(sigmas)), next_sigma_idx_(0) {
-        if (pool_size == 0) return;
+        if (pool_size == 0)
+            return;
 
         // Clamp to available sigmas.
         size_t to_build = std::min(pool_size, sigmas_.size());
-        if (to_build == 0) return;
+        if (to_build == 0)
+            return;
 
         pool_.reserve(to_build);
 
@@ -202,19 +208,20 @@ public:
             uint32_t nthreads = static_cast<uint32_t>(parallel_threads);
             if (nthreads == 0) {
                 nthreads = std::thread::hardware_concurrency();
-                if (nthreads == 0) nthreads = 4;
-                if (nthreads > 8) nthreads = 8;
+                if (nthreads == 0)
+                    nthreads = 4;
+                if (nthreads > 8)
+                    nthreads = 8;
             }
-            if (nthreads > to_build) nthreads = static_cast<uint32_t>(to_build);
+            if (nthreads > to_build)
+                nthreads = static_cast<uint32_t>(to_build);
 
             util::ThreadPool tp(nthreads);
             std::vector<std::future<CachedCurve>> futures;
             futures.reserve(to_build);
             for (size_t i = 0; i < to_build; ++i) {
                 uint64_t sg = sigmas_[i];
-                futures.push_back(tp.submit([this, sg]() {
-                    return build_suyama_curve(n_, sg);
-                }));
+                futures.push_back(tp.submit([this, sg]() { return build_suyama_curve(n_, sg); }));
             }
             for (auto& f : futures) {
                 pool_.push_back(f.get());
@@ -278,7 +285,9 @@ public:
     }
 
     /// Total sigmas remembered (pool capacity hint + fallback reserve).
-    [[nodiscard]] size_t total_sigmas() const noexcept { return sigmas_.size(); }
+    [[nodiscard]] size_t total_sigmas() const noexcept {
+        return sigmas_.size();
+    }
 
 private:
     Integer n_;
@@ -295,13 +304,33 @@ private:
 /// Otherwise returns the parsed pool size, capped at 1024.
 [[nodiscard]] inline size_t ecm_curve_pool_size_from_env() noexcept {
     const char* env = std::getenv("GNFS_ECM_CURVE_POOL");
-    if (env == nullptr || env[0] == '\0') return 0;
+    if (env == nullptr || env[0] == '\0')
+        return 0;
 
+    // `strtoul` accepts a leading minus and silently saturates on overflow.
+    // Normalize surrounding whitespace, reject negative values explicitly,
+    // and require the complete input to be a valid unsigned integer.
+    const char* first = env;
+    while (*first != '\0' && std::isspace(static_cast<unsigned char>(*first)))
+        ++first;
+    if (*first == '\0' || *first == '-')
+        return 0;
+
+    errno = 0;
     char* end = nullptr;
-    unsigned long parsed = std::strtoul(env, &end, 10);
-    if (end == env) return 0;
-    if (parsed < 4) return 0;
-    if (parsed > 1024) parsed = 1024;
+    unsigned long parsed = std::strtoul(first, &end, 10);
+    if (end == first || errno == ERANGE)
+        return 0;
+
+    while (*end != '\0' && std::isspace(static_cast<unsigned char>(*end)))
+        ++end;
+    if (*end != '\0')
+        return 0;
+
+    if (parsed < 4)
+        return 0;
+    if (parsed > 1024)
+        parsed = 1024;
     return static_cast<size_t>(parsed);
 }
 
