@@ -1699,11 +1699,19 @@ inline void sort_relations(std::vector<Relation>& relations) {
         radix_sort_relations(relations);
         return;
     }
-    std::sort(relations.begin(), relations.end(), [](const Relation& r1, const Relation& r2) {
-        if (r1.b != r2.b)
-            return r1.b < r2.b;
-        return r1.a < r2.a;
-    });
+    // `filter_duplicates` keeps the first row for each (a, b) key.  Equal
+    // keys can still carry different factor payloads (for example when two
+    // cofactorization attempts reached the same candidate), so an unstable
+    // sort would make the retained representative depend on the library's
+    // implementation details and input size.  Keep insertion order for
+    // equivalent keys to match the stable radix path and preserve
+    // reproducible relation payloads.
+    std::stable_sort(relations.begin(), relations.end(),
+                     [](const Relation& r1, const Relation& r2) {
+                         if (r1.b != r2.b)
+                             return r1.b < r2.b;
+                         return r1.a < r2.a;
+                     });
 }
 
 } // namespace gnfs::relation

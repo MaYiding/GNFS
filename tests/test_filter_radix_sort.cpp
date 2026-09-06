@@ -249,6 +249,31 @@ void test_duplicates_dedup_stable() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_default_sort_preserves_first_duplicate_payload() {
+    std::cout << "Testing default sort keeps first duplicate payload..." << std::endl;
+
+    std::vector<Relation> relations;
+    relations.push_back(make_relation(7, 11, 101));
+    relations.push_back(make_relation(7, 11, 202));
+    relations.push_back(make_relation(3, 5, 303));
+
+    set_env_and_reload(nullptr);
+    assert(!filter_radix_sort_enabled());
+    sort_relations(relations);
+    auto deduplicated = filter_duplicates(std::move(relations));
+
+    bool found_first_payload = false;
+    for (const auto& relation : deduplicated) {
+        if (relation.a == 7 && relation.b == 11) {
+            assert(relation.rational_factors.size() == 1);
+            assert(relation.rational_factors.front() == 101);
+            found_first_payload = true;
+        }
+    }
+    assert(found_first_payload);
+    std::cout << "  PASS" << std::endl;
+}
+
 void test_env_parsing() {
     std::cout << "Testing ENV parsing matrix..." << std::endl;
 
@@ -291,6 +316,7 @@ int main() {
     test_random_100();
     test_random_10000();
     test_duplicates_dedup_stable();
+    test_default_sort_preserves_first_duplicate_payload();
     test_env_parsing();
 
     std::cout << "\nAll tests passed!" << std::endl;
