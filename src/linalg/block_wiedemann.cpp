@@ -14,8 +14,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <random>
@@ -171,15 +173,45 @@ struct LFSRPolynomial {
     size_t degree = 0;
 };
 
+// Krylov lengths are derived from matrix dimensions, which are untrusted at
+// file/API boundaries. Keep the arithmetic checked before it reaches a vector
+// allocation; this also avoids wraparound on 32-bit targets.
+static size_t checked_krylov_length(size_t rank_bound) {
+    const size_t max_size = std::numeric_limits<size_t>::max();
+    const size_t blocks = rank_bound / 64 + (rank_bound % 64 != 0 ? 1 : 0);
+    if (blocks > (max_size - 32) / 2) {
+        throw std::length_error("Block Wiedemann Krylov length overflows size_t");
+    }
+    return blocks * 2 + 32;
+}
+
+static size_t checked_double_plus(size_t value, size_t addend) {
+    const size_t max_size = std::numeric_limits<size_t>::max();
+    if (value > (max_size - addend) / 2) {
+        throw std::length_error("Block Wiedemann sequence length overflows size_t");
+    }
+    return value * 2 + addend;
+}
+
 // Bit-packed GF(2) vector for fast BM
 struct BitPoly {
     std::vector<uint64_t> words; // packed bits, word[i] bit j = coefficient i*64+j
     size_t len = 0;              // number of coefficients
 
     BitPoly() = default;
-    explicit BitPoly(size_t n) : words((n + 63) / 64, 0), len(n) {}
+    explicit BitPoly(size_t n) : words(checked_word_count(n), 0), len(n) {}
+
+    static size_t checked_word_count(size_t n) {
+        if (n > std::numeric_limits<size_t>::max() - 63) {
+            throw std::length_error("BitPoly coefficient count overflows size_t");
+        }
+        return (n + 63) / 64;
+    }
 
     void set(size_t i) {
+        if (i == std::numeric_limits<size_t>::max()) {
+            throw std::length_error("BitPoly coefficient index overflows size_t");
+        }
         if (i >= len)
             resize(i + 1);
         words[i / 64] |= (1ULL << (i % 64));
@@ -190,16 +222,23 @@ struct BitPoly {
         return (words[i / 64] >> (i % 64)) & 1;
     }
     void flip(size_t i) {
+        if (i == std::numeric_limits<size_t>::max()) {
+            throw std::length_error("BitPoly coefficient index overflows size_t");
+        }
         if (i >= len)
             resize(i + 1);
         words[i / 64] ^= (1ULL << (i % 64));
     }
     void resize(size_t n) {
+        const size_t word_count = checked_word_count(n);
         len = n;
-        words.resize((n + 63) / 64, 0);
+        words.resize(word_count, 0);
     }
     void xor_shifted(const BitPoly& other, size_t shift) {
         // this ^= other << shift (in coefficient space)
+        if (shift > std::numeric_limits<size_t>::max() - other.len) {
+            throw std::length_error("BitPoly shifted coefficient count overflows size_t");
+        }
         size_t needed = other.len + shift;
         if (needed > len)
             resize(needed);
@@ -306,7 +345,7 @@ LFSRPolynomial scalar_berlekamp_massey(const std::vector<uint8_t>& s) {
             // C = C + B * x^m
             C.xor_shifted(B, m);
 
-            if (2 * L <= n) {
+            if (L <= n / 2) {
                 L = n + 1 - L;
                 B = std::move(T);
                 m = 1;
@@ -457,8 +496,11 @@ BlockWiedemann::block_wiedemann_scalar_solve(const SparseMatrix& matrix, size_t 
     // Krylov sequence length for SCALAR Berlekamp-Massey:
     // Need seq_len ≥ 2 * deg(minpoly(B)) where minpoly degree ≤ rank(B) ≤ min(m,n).
     // Scalar path is wide-only — thin matrices route to block_wiedemann_thin_solve.
+    if (n > std::numeric_limits<size_t>::max() - 50) {
+        throw std::length_error("Block Wiedemann scalar Krylov length overflows size_t");
+    }
     const size_t L = n + 50;
-    const size_t seq_len = 2 * L + 10;
+    const size_t seq_len = checked_double_plus(L, 10);
 
     gnfs::util::ThreadPool pool(0);
 
@@ -770,7 +812,7 @@ block_solve_view_impl(const MV& csr, size_t max_deps, uint64_t seed, uint32_t po
     // Krylov sequence length for matrix BM: L = 2·⌈n/64⌉ + 32 (buffer).
     // Compared to scalar BM's 2n+110, this is ~64× fewer SpMV calls.
     // Block path handles square/wide (m≥n); thin (m<n) routes elsewhere.
-    const size_t L = 2 * ((n + 63) / 64) + 32;
+    const size_t L = checked_krylov_length(n);
 
     gnfs::util::ThreadPool pool(pool_threads);
 
@@ -1052,7 +1094,7 @@ static std::vector<std::vector<bool>> thin_solve_view_impl(const MV& csr, size_t
 
     // For B' = M^T·M (n×n), rank ≤ m, so minpoly degree ≤ m.
     // Block Krylov length: L = 2·⌈m/64⌉ + 32.
-    const size_t L = 2 * ((m + 63) / 64) + 32;
+    const size_t L = checked_krylov_length(m);
 
     gnfs::util::ThreadPool pool(pool_threads);
 
@@ -1291,19 +1333,31 @@ static std::vector<std::vector<bool>> find_dependencies_view_impl(const MV& matr
         std::vector<std::vector<std::vector<bool>>> per_stream(num_streams);
         std::vector<std::thread> workers;
         workers.reserve(num_streams);
+        std::exception_ptr first_exception;
+        std::mutex exception_mutex;
 
         for (uint32_t s = 0; s < num_streams; ++s) {
             const uint64_t seed = bw_stream_seed(base_seed, s);
             workers.emplace_back([&, s, seed]() {
-                if (is_thin) {
-                    per_stream[s] = thin_solve_view_impl(matrix, max_deps, seed, pool_size, s + 1);
-                } else {
-                    per_stream[s] = block_solve_view_impl(matrix, max_deps, seed, pool_size, s + 1);
+                try {
+                    if (is_thin) {
+                        per_stream[s] =
+                            thin_solve_view_impl(matrix, max_deps, seed, pool_size, s + 1);
+                    } else {
+                        per_stream[s] =
+                            block_solve_view_impl(matrix, max_deps, seed, pool_size, s + 1);
+                    }
+                } catch (...) {
+                    std::lock_guard<std::mutex> lock(exception_mutex);
+                    if (!first_exception)
+                        first_exception = std::current_exception();
                 }
             });
         }
         for (auto& t : workers)
             t.join();
+        if (first_exception)
+            std::rethrow_exception(first_exception);
 
         // Merge + dedupe across streams.
         std::vector<std::vector<bool>> merged;
@@ -1393,6 +1447,12 @@ LingenResult BlockWiedemann::matrix_berlekamp_massey(const std::vector<DenseGF2_
     constexpr int m = 64;
     constexpr int n = 64;
     constexpr int b = m + n; // 128
+    // The implementation stores degrees and word counts in `int`; reject an
+    // oversized sequence before narrowing or adding the polynomial headroom.
+    constexpr size_t kMax_sequence_size = static_cast<size_t>(INT_MAX) - static_cast<size_t>(73);
+    if (A.size() > kMax_sequence_size) {
+        throw std::length_error("Block Wiedemann sequence exceeds int degree limit");
+    }
     const int L = static_cast<int>(A.size());
 
     if (L == 0)

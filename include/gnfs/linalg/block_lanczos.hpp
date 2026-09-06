@@ -4,8 +4,10 @@
 #include "gnfs/util/bit_intrin.hpp"
 #include <algorithm>
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <stdexcept>
 #include <vector>
 
 namespace gnfs::linalg {
@@ -19,13 +21,15 @@ public:
 
     /// Find dependencies (left null space vectors) in the matrix
     /// Returns vectors v such that v^T * M = 0 over GF(2)
-    std::vector<std::vector<bool>> find_dependencies(const SparseMatrix& matrix, size_t max_deps = 64);
+    std::vector<std::vector<bool>> find_dependencies(const SparseMatrix& matrix,
+                                                     size_t max_deps = 64);
 
 private:
     // Gaussian elimination with packed GF(2) matrix for small matrices.
     // (Montgomery Block Lanczos was removed — had a 50% per-dep error rate and
     // was never reachable from find_dependencies. See git history.)
-    std::vector<std::vector<bool>> find_dependencies_sparse(const SparseMatrix& matrix, size_t max_deps);
+    std::vector<std::vector<bool>> find_dependencies_sparse(const SparseMatrix& matrix,
+                                                            size_t max_deps);
 };
 
 // ============================================================================
@@ -38,9 +42,14 @@ struct BlockVector {
     BlockVector() = default;
     explicit BlockVector(size_t n) : data(n, 0), length(n) {}
 
-    void clear() { std::fill(data.begin(), data.end(), 0); }
+    void clear() {
+        std::fill(data.begin(), data.end(), 0);
+    }
 
     void xor_with(const BlockVector& other) {
+        if (other.length < length || data.size() < length || other.data.size() < length) {
+            throw std::invalid_argument("BlockVector::xor_with: incompatible lengths");
+        }
         assert(other.length >= length);
         for (size_t i = 0; i < length; ++i)
             data[i] ^= other.data[i];
@@ -48,11 +57,18 @@ struct BlockVector {
 
     [[nodiscard]] bool is_zero() const {
         for (size_t i = 0; i < length; ++i)
-            if (data[i] != 0) return false;
+            if (data[i] != 0)
+                return false;
         return true;
     }
 
     [[nodiscard]] std::vector<bool> extract_column(size_t j) const {
+        if (j >= 64) {
+            throw std::out_of_range("BlockVector::extract_column: column must be < 64");
+        }
+        if (data.size() < length) {
+            throw std::invalid_argument("BlockVector::extract_column: invalid storage length");
+        }
         std::vector<bool> col(length, false);
         uint64_t mask = 1ULL << j;
         for (size_t i = 0; i < length; ++i)
@@ -67,7 +83,9 @@ struct BlockVector {
 struct DenseGF2_64x64 {
     uint64_t rows[64] = {};
 
-    void clear() { std::memset(rows, 0, sizeof(rows)); }
+    void clear() {
+        std::memset(rows, 0, sizeof(rows));
+    }
 
     void set_identity() {
         clear();
@@ -116,9 +134,13 @@ struct DenseGF2_64x64 {
             // Find pivot
             int pivot = -1;
             for (int row = col; row < 64; ++row) {
-                if (left[row] & col_bit) { pivot = row; break; }
+                if (left[row] & col_bit) {
+                    pivot = row;
+                    break;
+                }
             }
-            if (pivot < 0) continue;
+            if (pivot < 0)
+                continue;
 
             // Swap
             if (pivot != col) {
@@ -153,6 +175,9 @@ struct DenseGF2_64x64 {
 /// Compute inner product C = A^T * B where A, B are block vectors
 /// C is a 64x64 GF(2) matrix: C[j] = XOR of B[i] for all i where bit j of A[i] is set
 inline DenseGF2_64x64 inner_product_64x64(const BlockVector& A, const BlockVector& B) {
+    if (A.length != B.length || A.data.size() < A.length || B.data.size() < B.length) {
+        throw std::invalid_argument("inner_product_64x64: incompatible block vector lengths");
+    }
     DenseGF2_64x64 C;
     for (size_t i = 0; i < A.length; ++i) {
         uint64_t ai = A.data[i];
