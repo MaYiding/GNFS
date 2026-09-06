@@ -4,7 +4,6 @@
 #include "../core/polynomial_context.hpp"
 
 #include <algorithm>
-#include <cassert>
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
@@ -248,6 +247,8 @@ public:
     [[nodiscard]] NumberFieldElement multiply(const NumberFieldElement& x,
                                               const NumberFieldElement& y) const {
 
+        require_monic();
+
         if (x.is_zero() || y.is_zero()) {
             return zero();
         }
@@ -445,11 +446,20 @@ private:
     Integer n_;
     Integer m_;
 
+    /// 检查纯整数数域运算的首一多项式前提。
+    /// 非首一多项式必须使用 multiply_mod_n()/power_mod_n()，其中首项
+    /// 系数可在模 n 下通过模逆处理。
+    void require_monic() const {
+        if (!f_coeffs_[degree_].is_one()) {
+            throw std::logic_error("NumberField::multiply requires a monic polynomial; "
+                                   "use multiply_mod_n() for non-monic f");
+        }
+    }
+
     /// 模 f(x) 归约（纯整数，要求 f 是 monic）
     /// α^d = -(f_0 + f_1*α + ... + f_{d-1}*α^{d-1})
     void reduce(std::vector<Integer>& coeffs) const {
-        assert(f_coeffs_[degree_].is_one() &&
-               "reduce() requires monic f; use reduce_mod() for non-monic");
+        require_monic();
         // 从最高次项开始归约 — mpz_submul fused FMS
         while (coeffs.size() > degree_) {
             size_t high_deg = coeffs.size() - 1;
