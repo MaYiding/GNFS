@@ -534,6 +534,26 @@ void test_configured_output(const std::filesystem::path& executable,
         CHECK_CONTEXT(contents.find("\"n\": \"360\"") != std::string::npos, context);
         CHECK_CONTEXT(contents.find("\"success\": true") != std::string::npos, context);
     }
+
+    const std::filesystem::path text_config_path = temporary_root / "text-output.conf";
+    const std::filesystem::path text_output_path = temporary_root / "configured.txt";
+    {
+        std::ofstream config(text_config_path);
+        config << "output_file = " << text_output_path.string() << "\n";
+        CHECK_CONTEXT(static_cast<bool>(config), "write text output config");
+    }
+    const auto text_run =
+        run_cli(executable, {"--complete", "--config", text_config_path.string(), "360"});
+    const std::string text_context = "configured text output: " + describe(text_run);
+    CHECK_CONTEXT(text_run.termination.kind == BoundedChildTerminationKind::exited, text_context);
+    CHECK_CONTEXT(text_run.termination.exit_code == 0, text_context);
+    CHECK_CONTEXT(std::filesystem::is_regular_file(text_output_path), text_context);
+    if (std::filesystem::is_regular_file(text_output_path)) {
+        std::ifstream output(text_output_path);
+        const std::string contents((std::istreambuf_iterator<char>(output)),
+                                   std::istreambuf_iterator<char>());
+        CHECK_CONTEXT(contents.find("360 =") != std::string::npos, text_context);
+    }
 }
 
 void test_input_errors(const std::filesystem::path& executable) {
