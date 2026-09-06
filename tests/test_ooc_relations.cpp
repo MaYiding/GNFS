@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <random>
 #include <stdexcept>
@@ -907,6 +908,67 @@ void test_writer_exception_path() {
     TEST_PASS("writer exception path → reader rejects incomplete file");
 }
 
+void test_large_prime_semantic_contract() {
+    TempFiles tmp(gnfs::util::temp_path("gnfs_test_ooc_lp_contract"));
+
+    Relation valid = make_relation(701, 31, 1, 1, 1, 1);
+    OOCRelationWriter writer(tmp.base);
+    writer.write(valid);
+
+    const auto expect_rejected_without_poisoning = [&](Relation invalid, const char* description) {
+        bool rejected = false;
+        try {
+            writer.write(invalid);
+        } catch (const std::runtime_error&) {
+            rejected = true;
+        }
+        TEST_ASSERT(rejected, description);
+        TEST_ASSERT(writer.state() == gnfs::relation::OOCWriterState::Open,
+                    "semantic rejection should keep OOC writer appendable");
+        TEST_ASSERT(writer.count() == 1,
+                    "semantic rejection should not append an index or data record");
+    };
+
+    Relation bad_rational_prime = valid;
+    bad_rational_prime.rational_large_prime[0].p = 1;
+    expect_rejected_without_poisoning(std::move(bad_rational_prime),
+                                      "rational p < 2 should be rejected");
+
+    Relation bad_root = valid;
+    bad_root.algebraic_large_prime[0].r = bad_root.algebraic_large_prime[0].p;
+    expect_rejected_without_poisoning(std::move(bad_root),
+                                      "algebraic root >= p should be rejected");
+
+    writer.write(valid);
+    const auto descriptor = writer.finalize();
+    TEST_ASSERT(descriptor.count == 2, "valid records should remain writable after rejection");
+    TEST_PASS("compact large-prime semantic contract rejects invalid writes");
+
+    // Mutate the persisted p field of the first record. Reader construction
+    // validates the exact committed records, so malformed bytes cannot enter
+    // recovery or ordinary random-access consumers.
+    {
+        std::fstream data(tmp.base + ".reldata", std::ios::binary | std::ios::in | std::ios::out);
+        TEST_ASSERT(data.good(), "semantic contract test should reopen data file");
+        constexpr std::streamoff rational_prime_offset =
+            static_cast<std::streamoff>(OOCRelationWriter::DATA_HEADER_BYTES) +
+            static_cast<std::streamoff>(sizeof(int64_t) + sizeof(uint64_t) + 3 * sizeof(uint32_t));
+        const uint64_t invalid_prime = 1;
+        data.seekp(rational_prime_offset);
+        data.write(reinterpret_cast<const char*>(&invalid_prime), sizeof(invalid_prime));
+        TEST_ASSERT(data.good(), "semantic contract test should corrupt p field");
+    }
+    bool reader_rejected = false;
+    try {
+        OOCRelationReader reader(tmp.base);
+        (void)reader.read(0);
+    } catch (const std::runtime_error&) {
+        reader_rejected = true;
+    }
+    TEST_ASSERT(reader_rejected, "reader should reject persisted invalid large-prime values");
+    TEST_PASS("compact reader rejects malformed large-prime values");
+}
+
 void test_writer_descriptors_use_cloexec() {
 #ifdef _WIN32
     TEST_PASS("writer descriptors use close-on-exec (Windows handles are non-inheritable)");
@@ -946,6 +1008,7 @@ int main() {
     test_owned_pair_reader_rejects_wrong_descriptors();
     test_owned_pair_reader_rejects_invalid_handles_safely();
     test_writer_exception_path();
+    test_large_prime_semantic_contract();
     test_writer_descriptors_use_cloexec();
 
     std::cout << "\n═══════════════════════════════════════════\n";

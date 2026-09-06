@@ -455,22 +455,24 @@ void test_matrix_builder_uses_canonical_support() {
 
 void test_ooc_relation_source_preserves_canonical_contract() {
     constexpr uint64_t max = std::numeric_limits<uint64_t>::max();
+    constexpr uint64_t projective = gnfs::core::AlgebraicPrime::PROJECTIVE_ROOT;
 
     // Deliberately keep the raw LP entries unsorted and mix full-width values,
     // zero exponents, and totals of 256. The effective global keys are:
-    // rational {3, 5, UINT64_MAX}, algebraic {(5,0), (5,MAX), (MAX,MAX)}.
+    // rational {3, 5, UINT64_MAX}, algebraic {(5,0), (5,MAX),
+    // (MAX,MAX-1)}.
     Relation first = make_relation(50);
     first.rational_large_prime.push_back({max, 0, 1});
     first.rational_large_prime.push_back({7, 0, 0});
     first.rational_large_prime.push_back({5, 0, 1});
-    first.algebraic_large_prime.push_back({max, max, 1});
+    first.algebraic_large_prime.push_back({max, max - 1, 1});
     first.algebraic_large_prime.push_back({5, 0, 1});
 
     Relation second = make_relation(51);
     second.rational_large_prime.push_back({11, 0, 255});
     second.rational_large_prime.push_back({3, 0, 1});
     second.rational_large_prime.push_back({11, 0, 1});
-    second.algebraic_large_prime.push_back({5, max, 1});
+    second.algebraic_large_prime.push_back({5, projective, 1});
 
     Relation third = make_relation(52);
     third.rational_large_prime.push_back({max, 0, 1});
@@ -517,8 +519,8 @@ void test_ooc_relation_source_preserves_canonical_contract() {
     CHECK(mapping.rat_lp_to_col.at(5) == 1);
     CHECK(mapping.rat_lp_to_col.at(max) == 2);
     CHECK(mapping.alg_lp_to_col.at(PrimeIdealKey{5, 0}) == 3);
-    CHECK(mapping.alg_lp_to_col.at(PrimeIdealKey{5, max}) == 4);
-    CHECK(mapping.alg_lp_to_col.at(PrimeIdealKey{max, max}) == 5);
+    CHECK(mapping.alg_lp_to_col.at(PrimeIdealKey{5, projective}) == 4);
+    CHECK(mapping.alg_lp_to_col.at(PrimeIdealKey{max, max - 1}) == 5);
 
     const std::vector<std::vector<uint32_t>> expected_rows{
         {1, 2, 3, 5},
