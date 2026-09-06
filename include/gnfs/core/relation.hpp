@@ -6,8 +6,10 @@
 #include <cassert>
 #include <cstdint>
 #include <istream>
+#include <limits>
 #include <ostream>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace gnfs::core {
@@ -110,9 +112,34 @@ struct Relation {
         }
     }
 
+    /// Validate large-prime fields before crossing the legacy serialization
+    /// boundary. Zero-exponent entries are retained in raw merged payloads,
+    /// so only entries that contribute to the persisted factorization require
+    /// a prime/root domain check.
+    void validate_serialization_contract() const {
+        validate_persistence_limits();
+        for (const auto& lp : rational_large_prime) {
+            if (lp.e != 0 && lp.p < 2) {
+                throw std::invalid_argument("Relation: rational large-prime p must be >= 2");
+            }
+        }
+        constexpr uint64_t projective_root = std::numeric_limits<uint32_t>::max();
+        for (const auto& lp : algebraic_large_prime) {
+            if (lp.e != 0) {
+                if (lp.p < 2) {
+                    throw std::invalid_argument("Relation: algebraic large-prime p must be >= 2");
+                }
+                if (lp.r != projective_root && lp.r >= lp.p) {
+                    throw std::invalid_argument(
+                        "Relation: algebraic large-prime root must be < p or projective");
+                }
+            }
+        }
+    }
+
     // Serialize to output stream (v2: magic + version + extra_ab_pairs + checksum)
     void serialize(std::ostream& os) const {
-        validate_persistence_limits();
+        validate_serialization_contract();
 
         uint64_t checksum = 0;
         auto write_and_xor = [&](const void* ptr, size_t n) {
@@ -273,6 +300,12 @@ struct Relation {
             throw std::runtime_error("Relation::deserialize: stream read error at checksum");
         if (checksum != stored_checksum)
             throw std::runtime_error("Relation::deserialize: checksum mismatch");
+
+        try {
+            rel.validate_serialization_contract();
+        } catch (const std::invalid_argument& error) {
+            throw std::runtime_error(std::string("Relation::deserialize: ") + error.what());
+        }
 
         return rel;
     }
