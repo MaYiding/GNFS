@@ -971,21 +971,19 @@ bool test_dependency_xor_pair_guard() {
         std::cout << "(malformed XOR dependency pair was accepted) ";
         return false;
     }
-    return true;
-}
 
-bool test_pipeline_rejects_out_of_range_matrix_columns() {
     Pipeline pipeline(Integer(143));
     auto ctx = pipeline.select_polynomial();
-
-    Pipeline::MatrixResult malformed;
-    malformed.matrix = gnfs::linalg::SparseMatrix(1, 0);
-    malformed.matrix.row(0).append_unchecked(0);
-    malformed.dependencies = {{true}};
-
+    Pipeline::MatrixResult malformed_matrix;
+    malformed_matrix.matrix = gnfs::linalg::SparseMatrix(1, 0);
+    malformed_matrix.matrix.row(0).append_unchecked(0);
+    malformed_matrix.dependencies = {{true}};
     gnfs::factor_base::FactorBase empty_factor_base;
-    const auto result = pipeline.extract_factors(malformed, empty_factor_base, ctx);
-    return !result.success;
+    if (pipeline.extract_factors(malformed_matrix, empty_factor_base, ctx).success) {
+        std::cout << "(out-of-range sparse matrix column was accepted) ";
+        return false;
+    }
+    return true;
 }
 
 bool test_pipeline_step_by_step() {
@@ -3867,7 +3865,6 @@ int main() {
     std::cout << "\nPipeline tests:\n";
     TEST(solver_dependency_shape_guard);
     TEST(dependency_xor_pair_guard);
-    TEST(pipeline_rejects_out_of_range_matrix_columns);
     TEST(pipeline_step_by_step);
     TEST(structured_xor_pair_fallback);
     TEST(pipeline_stats);
