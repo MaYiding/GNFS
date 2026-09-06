@@ -25,11 +25,11 @@ using core::Integer;
 
 /// Murphy E-score 的各个组成部分
 struct MurphyScore {
-    double e_score = 0.0;       // 综合 Murphy E 值（线性尺度，可能为0）
+    double e_score = 0.0;        // 综合 Murphy E 值（线性尺度，可能为0）
     double log_e_score = -1e100; // log(E-score)，用于大数比较（越大越好）
-    double alpha_f = 0.0;       // f 的 alpha 值（越负越好）
-    double alpha_g = 0.0;       // g 的 alpha 值（越负越好）
-    double skewness = 1.0;      // 使用的 skewness
+    double alpha_f = 0.0;        // f 的 alpha 值（越负越好）
+    double alpha_g = 0.0;        // g 的 alpha 值（越负越好）
+    double skewness = 1.0;       // 使用的 skewness
 
     /// 比较运算符（用于排序多项式）
     /// 使用 log_e_score 比较以处理大数
@@ -44,12 +44,12 @@ struct MurphyScore {
 
 /// Murphy 评估参数
 struct MurphyParams {
-    uint32_t sample_points = 2000;          // 积分采样点数
-    double alpha_bound = 1e6;               // alpha 计算的素数上界 (was 1e7; 10× smaller sieve)
-    uint64_t smoothness_bound = 1000000;    // 光滑性界
-    double skewness_min = 1e2;              // skewness 搜索下界
-    double skewness_max = 1e10;             // skewness 搜索上界
-    uint32_t skewness_steps = 100;          // skewness 网格搜索步数
+    uint32_t sample_points = 2000; // 积分采样点数
+    double alpha_bound = 1e6;      // alpha 计算的素数上界 (was 1e7; 10× smaller sieve)
+    uint64_t smoothness_bound = 1000000; // 光滑性界
+    double skewness_min = 1e2;           // skewness 搜索下界
+    double skewness_max = 1e10;          // skewness 搜索上界
+    uint32_t skewness_steps = 100;       // skewness 网格搜索步数
 };
 
 /// MurphyEvaluator - Murphy E-score 评估器
@@ -68,19 +68,16 @@ public:
     /// 构造评估器
     explicit MurphyEvaluator(const MurphyParams& params = MurphyParams{})
         : params_(params),
-          root_cache_(std::make_unique<RootPropertyCache>(
-              RootPropertyCache::env_capacity())) {
+          root_cache_(std::make_unique<RootPropertyCache>(RootPropertyCache::env_capacity())) {
         init_primes();
         init_dickman_table();
     }
 
     /// Move-only 语义. once_flag members are deliberately reinitialized.
     MurphyEvaluator(MurphyEvaluator&& other) noexcept
-        : params_(std::move(other.params_)),
-          small_primes_(std::move(other.small_primes_)),
+        : params_(std::move(other.params_)), small_primes_(std::move(other.small_primes_)),
           dickman_table_(std::move(other.dickman_table_)),
-          root_cache_(std::move(other.root_cache_)),
-          alpha_pool_(std::move(other.alpha_pool_)),
+          root_cache_(std::move(other.root_cache_)), alpha_pool_(std::move(other.alpha_pool_)),
           linear_alpha_prefix_(std::move(other.linear_alpha_prefix_)) {}
     MurphyEvaluator& operator=(MurphyEvaluator&&) = delete;
     MurphyEvaluator(const MurphyEvaluator&) = delete;
@@ -93,10 +90,8 @@ public:
     /// @param g 有理侧多项式 (通常是 g(x) = x - m)
     /// @param n 待分解的数（保留参数兼容性，不再内部使用）
     /// @return Murphy 评分结构
-    [[nodiscard]] MurphyScore compute(
-            const IntPolynomial& f,
-            const IntPolynomial& g,
-            const Integer& n) const {
+    [[nodiscard]] MurphyScore compute(const IntPolynomial& f, const IntPolynomial& g,
+                                      const Integer& n) const {
 
         (void)n;
 
@@ -111,25 +106,18 @@ public:
     }
 
     /// 计算 Murphy E-score（指定 skewness,内部入口,重算 alpha)
-    [[nodiscard]] MurphyScore compute(
-            const IntPolynomial& f,
-            const IntPolynomial& g,
-            const Integer& n,
-            double skewness) const {
+    [[nodiscard]] MurphyScore compute(const IntPolynomial& f, const IntPolynomial& g,
+                                      const Integer& n, double skewness) const {
 
         (void)n;
-        return compute_with_alphas(f, g, skewness,
-                                    compute_alpha(f), compute_alpha(g));
+        return compute_with_alphas(f, g, skewness, compute_alpha(f), compute_alpha(g));
     }
 
 private:
     /// 内部:已知 alpha 的 score 构造,避免重复计算。
-    [[nodiscard]] MurphyScore compute_with_alphas(
-            const IntPolynomial& f,
-            const IntPolynomial& g,
-            double skewness,
-            double alpha_f,
-            double alpha_g) const {
+    [[nodiscard]] MurphyScore compute_with_alphas(const IntPolynomial& f, const IntPolynomial& g,
+                                                  double skewness, double alpha_f,
+                                                  double alpha_g) const {
 
         MurphyScore score;
         score.skewness = skewness;
@@ -137,8 +125,7 @@ private:
         score.alpha_g = alpha_g;
 
         // 角度积分计算 E-score，alpha 已集成到 Dickman rho 参数中
-        auto [log_e, linear_e] = compute_e_score_log(
-            f, g, skewness, alpha_f, alpha_g);
+        auto [log_e, linear_e] = compute_e_score_log(f, g, skewness, alpha_f, alpha_g);
 
         score.log_e_score = log_e;
         score.e_score = linear_e;
@@ -173,7 +160,8 @@ public:
                 break;
             }
         }
-        if (prime_end == 0) return 0.0;
+        if (prime_end == 0)
+            return 0.0;
 
         // Linear-polynomial short-circuit (CADO-NFS get_alpha line:
         //   if (f->deg == 1) return 0.569959993064325;).
@@ -223,7 +211,8 @@ public:
         });
 
         double alpha = 0.0;
-        for (double p : partials) alpha += p;
+        for (double p : partials)
+            alpha += p;
         return alpha;
     }
 
@@ -242,10 +231,8 @@ private:
     /// When the root-property cache is enabled (env GNFS_POLY_ROOT_CACHE_SIZE),
     /// looks up (p, hash(f mod p)) before falling back to the uncached path.
     /// On a miss, computes the value and inserts it.
-    [[nodiscard]] double alpha_contribution(
-            const IntPolynomial& f,
-            const IntPolynomial& df,
-            uint32_t p) const {
+    [[nodiscard]] double alpha_contribution(const IntPolynomial& f, const IntPolynomial& df,
+                                            uint32_t p) const {
         if (root_cache_->enabled()) {
             const uint64_t coeffs_hash = RootPropertyCache::hash_coeffs_mod_p(f, p);
             if (auto cached = root_cache_->lookup(p, coeffs_hash); cached.has_value()) {
@@ -261,18 +248,15 @@ private:
     /// Cache-free per-prime alpha contribution. Pure function of (f, df, p).
     /// Extracted from alpha_contribution() so the cache wrapper can call it
     /// on a miss without recursion.
-    [[nodiscard]] double alpha_contribution_uncached(
-            const IntPolynomial& f,
-            const IntPolynomial& df,
-            uint32_t p) const {
+    [[nodiscard]] double alpha_contribution_uncached(const IntPolynomial& f,
+                                                     const IntPolynomial& df, uint32_t p) const {
 
         // 计算 f mod p 的根（不含重数）
         auto roots = f.roots_mod_p(p);
         uint32_t r = static_cast<uint32_t>(roots.size());
 
         double log_p = std::log(static_cast<double>(p));
-        double contribution = (static_cast<double>(r) / p
-                             - 1.0 / (p - 1)) * log_p;
+        double contribution = (static_cast<double>(r) / p - 1.0 / (p - 1)) * log_p;
 
         // 双根额外贡献 (p | disc(f))
         for (uint32_t root : roots) {
@@ -325,11 +309,13 @@ private:
             const char* env = std::getenv("GNFS_MURPHY_ALPHA_THREADS");
             if (env && env[0] != '\0') {
                 int val = std::atoi(env);
-                if (val < 0) val = 0;
+                if (val < 0)
+                    val = 0;
                 requested = static_cast<uint32_t>(val);
             } else {
                 requested = std::thread::hardware_concurrency();
-                if (requested == 0) requested = 4;
+                if (requested == 0)
+                    requested = 4;
             }
             if (requested == 0) {
                 alpha_pool_ = nullptr;
@@ -341,25 +327,19 @@ private:
     }
 
 public:
-
     /// 优化 skewness
     /// 在给定范围内搜索最优 skewness
-    [[nodiscard]] double optimize_skewness(
-            const IntPolynomial& f,
-            const IntPolynomial& g,
-            const Integer& n) const {
+    [[nodiscard]] double optimize_skewness(const IntPolynomial& f, const IntPolynomial& g,
+                                           const Integer& n) const {
 
         (void)n;
-        return optimize_skewness_with_alphas(
-            f, g, compute_alpha(f), compute_alpha(g));
+        return optimize_skewness_with_alphas(f, g, compute_alpha(f), compute_alpha(g));
     }
 
     /// 已知 alpha 的 skewness 优化(避免外部已算 alpha 后再次重算)
-    [[nodiscard]] double optimize_skewness_with_alphas(
-            const IntPolynomial& f,
-            const IntPolynomial& g,
-            double alpha_f,
-            double alpha_g) const {
+    [[nodiscard]] double optimize_skewness_with_alphas(const IntPolynomial& f,
+                                                       const IntPolynomial& g, double alpha_f,
+                                                       double alpha_g) const {
 
         // 首先估计初始 skewness
         double init_skew = estimate_initial_skewness(f);
@@ -378,8 +358,7 @@ public:
 
         for (uint32_t i = 0; i <= params_.skewness_steps; ++i) {
             double s = std::exp(log_min + i * step);
-            auto [log_score, linear_score] = compute_e_score_log(
-                f, g, s, alpha_f, alpha_g);
+            auto [log_score, linear_score] = compute_e_score_log(f, g, s, alpha_f, alpha_g);
             (void)linear_score;
 
             if (log_score > best_log_score) {
@@ -399,7 +378,7 @@ public:
 private:
     MurphyParams params_;
     std::vector<uint32_t> small_primes_;
-    std::vector<double> dickman_table_;  // Dickman rho 查找表 (u=0,0.1,...,20.0)
+    std::vector<double> dickman_table_; // Dickman rho 查找表 (u=0,0.1,...,20.0)
 
     // Root-property cache. Always non-null (unique_ptr); disabled iff
     // capacity()==0 (ENV GNFS_POLY_ROOT_CACHE_SIZE unset or 0). Mutable so
@@ -424,8 +403,9 @@ private:
         // 巨大值导致 bitset 试图分配 EB 级内存。clamp 到 1e7(~620k primes,
         // ~10MB sieve)足以满足 Murphy alpha 精度需求。
         constexpr double ALPHA_BOUND_MAX = 1e7;
-        double bound_d = std::min(params_.alpha_bound, ALPHA_BOUND_MAX);
-        if (bound_d < 2.0) bound_d = 2.0;
+        const double bound_d = std::isnan(params_.alpha_bound)
+                                   ? 2.0
+                                   : std::clamp(params_.alpha_bound, 2.0, ALPHA_BOUND_MAX);
         uint64_t bound = static_cast<uint64_t>(bound_d);
         std::vector<bool> is_prime(bound + 1, true);
         is_prime[0] = is_prime[1] = false;
@@ -453,8 +433,8 @@ private:
     /// 使用 u·ρ(u) = ∫_{u-1}^{u} ρ(t) dt, h=0.001, 相对误差 < 5e-6
     void init_dickman_table() {
         constexpr double h = 0.001;
-        constexpr int N_fine = 20001;   // u ∈ [0, 20.0]
-        constexpr int lag = 1000;       // 1.0 / h
+        constexpr int N_fine = 20001; // u ∈ [0, 20.0]
+        constexpr int lag = 1000;     // 1.0 / h
 
         std::vector<double> rho(N_fine, 0.0);
 
@@ -481,18 +461,17 @@ private:
         }
 
         for (int k = start; k < N_fine; ++k) {
-            rho[static_cast<size_t>(k)] =
-                (rho[static_cast<size_t>(k - lag)] * 0.5 + interior_sum) /
-                (static_cast<double>(k) - 0.5);
+            rho[static_cast<size_t>(k)] = (rho[static_cast<size_t>(k - lag)] * 0.5 + interior_sum) /
+                                          (static_cast<double>(k) - 0.5);
             // Update running sum for next step
-            interior_sum = interior_sum - rho[static_cast<size_t>(k - lag + 1)] +
-                           rho[static_cast<size_t>(k)];
+            interior_sum =
+                interior_sum - rho[static_cast<size_t>(k - lag + 1)] + rho[static_cast<size_t>(k)];
         }
 
         // Downsample to 0.1 resolution for lookup table
         dickman_table_.clear();
         dickman_table_.reserve(201);
-        constexpr int ratio = 100;  // 0.1 / 0.001
+        constexpr int ratio = 100; // 0.1 / 0.001
         for (int i = 0; i <= 200; ++i) {
             int fine_idx = std::min(i * ratio, N_fine - 1);
             dickman_table_.push_back(rho[static_cast<size_t>(fine_idx)]);
@@ -501,16 +480,15 @@ private:
 
     /// 从查找表获取 Dickman rho（带线性插值）
     [[nodiscard]] double dickman_rho(double u) const {
-        if (u <= 0.0) return 1.0;
+        if (u <= 0.0)
+            return 1.0;
 
         if (u >= 20.0) {
             // Hildebrand 渐近: ρ(u) ≈ exp(-u·ξ)
             double log_u = std::log(u);
             double log_log_u = std::log(log_u);
-            double xi = log_u + log_log_u - 1.0
-                      + (log_log_u - 2.0) / log_u
-                      - (log_log_u * log_log_u - 6.0 * log_log_u + 11.0)
-                        / (2.0 * log_u * log_u);
+            double xi = log_u + log_log_u - 1.0 + (log_log_u - 2.0) / log_u -
+                        (log_log_u * log_log_u - 6.0 * log_log_u + 11.0) / (2.0 * log_u * log_u);
             return std::exp(-u * xi);
         }
 
@@ -528,23 +506,24 @@ private:
 
     /// 计算 log(ρ(u))（使用表避免下溢）
     [[nodiscard]] double log_dickman_rho(double u) const {
-        if (u <= 0.0) return 0.0;
-        if (u <= 1.0) return 0.0;
+        if (u <= 0.0)
+            return 0.0;
+        if (u <= 1.0)
+            return 0.0;
 
         if (u >= 20.0) {
             // Hildebrand 渐近: log ρ(u) ≈ -u·ξ
             double log_u = std::log(u);
             double log_log_u = std::log(log_u);
-            double xi = log_u + log_log_u - 1.0
-                      + (log_log_u - 2.0) / log_u
-                      - (log_log_u * log_log_u - 6.0 * log_log_u + 11.0)
-                        / (2.0 * log_u * log_u);
+            double xi = log_u + log_log_u - 1.0 + (log_log_u - 2.0) / log_u -
+                        (log_log_u * log_log_u - 6.0 * log_log_u + 11.0) / (2.0 * log_u * log_u);
             return -u * xi;
         }
 
         // 从 ODE 表获取并取对数
         double val = dickman_rho(u);
-        if (val <= 0.0) return -1e100;
+        if (val <= 0.0)
+            return -1e100;
         return std::log(val);
     }
 
@@ -553,18 +532,17 @@ private:
     /// 其中 u_f = (log|F_s(cosθ, sinθ)| - α_f) / log(B)
     ///
     /// F_s(x,y) = Σ f_i · s^i · x^i · y^(d-i)  是 skewed 齐次多项式
-    [[nodiscard]] std::pair<double, double> compute_e_score_log(
-            const IntPolynomial& f,
-            const IntPolynomial& g,
-            double skewness,
-            double alpha_f,
-            double alpha_g) const {
+    [[nodiscard]] std::pair<double, double> compute_e_score_log(const IntPolynomial& f,
+                                                                const IntPolynomial& g,
+                                                                double skewness, double alpha_f,
+                                                                double alpha_g) const {
 
         uint32_t d_f = f.degree();
         uint32_t d_g = g.degree();
         double log_bound = std::log(static_cast<double>(params_.smoothness_bound));
 
-        if (log_bound <= 0) return {-1e100, 0.0};
+        if (log_bound <= 0)
+            return {-1e100, 0.0};
 
         const uint32_t num_points = params_.sample_points;
 
@@ -578,7 +556,7 @@ private:
 
         // Precompute skewness powers (was: 3 × std::pow per (i,j) pair)
         uint32_t max_deg = std::max(d_f, d_g);
-        constexpr uint32_t MAX_DEG_STACK = 16;  // GNFS degree ≤ 6,余量到 16
+        constexpr uint32_t MAX_DEG_STACK = 16; // GNFS degree ≤ 6,余量到 16
         assert(max_deg <= MAX_DEG_STACK && "Murphy compute_e_score_log: degree too high");
         std::array<double, MAX_DEG_STACK + 1> skew_pow{};
         skew_pow[0] = 1.0;
@@ -616,7 +594,8 @@ private:
             }
             G_val = std::abs(G_val);
 
-            if (F_val < 1e-300 || G_val < 1e-300) continue;
+            if (F_val < 1e-300 || G_val < 1e-300)
+                continue;
 
             double log_F = std::log(F_val);
             double log_G = std::log(G_val);
@@ -661,7 +640,8 @@ private:
     /// 估计初始 skewness
     [[nodiscard]] double estimate_initial_skewness(const IntPolynomial& f) const {
         uint32_t d = f.degree();
-        if (d == 0) return 1.0;
+        if (d == 0)
+            return 1.0;
 
         double c0 = std::abs(f[0].to_double());
         double cd = std::abs(f[d].to_double());
@@ -676,9 +656,8 @@ private:
 
 /// 快速多项式比较（不进行完整的 Murphy 计算）
 /// 用于初步筛选候选多项式
-[[nodiscard]] inline bool quick_polynomial_compare(
-        const IntPolynomial& f1, double skew1,
-        const IntPolynomial& f2, double skew2) {
+[[nodiscard]] inline bool quick_polynomial_compare(const IntPolynomial& f1, double skew1,
+                                                   const IntPolynomial& f2, double skew2) {
 
     // 启发式：系数较小的通常更好
     uint32_t d = f1.degree();
@@ -693,7 +672,7 @@ private:
         score2 += std::log(c2 / expected_power2 + 1.0);
     }
 
-    return score1 < score2;  // 较小的得分更好
+    return score1 < score2; // 较小的得分更好
 }
 
 } // namespace gnfs::polynomial
