@@ -147,6 +147,36 @@ void test_capacity_overflow_is_rejected() {
     std::cout << "  Capacity overflow checks: PASS" << std::endl;
 }
 
+void test_capacity_overflow_guards() {
+    std::cout << "Testing capacity overflow guards..." << std::endl;
+
+    using Vector = SmallVector<int, 4>;
+    constexpr std::size_t expected_max = std::numeric_limits<std::size_t>::max() / sizeof(int);
+    static_assert(Vector::max_size() == expected_max);
+
+    Vector vec;
+    bool reserve_threw = false;
+    try {
+        vec.reserve(Vector::max_size() + 1);
+    } catch (const std::length_error&) {
+        reserve_threw = true;
+    }
+    GNFS_TEST_CHECK(reserve_threw);
+    GNFS_TEST_CHECK(vec.empty());
+    GNFS_TEST_CHECK(vec.capacity() == 4);
+
+    bool resize_threw = false;
+    try {
+        vec.resize(Vector::max_size() + 1);
+    } catch (const std::length_error&) {
+        resize_threw = true;
+    }
+    GNFS_TEST_CHECK(resize_threw);
+    GNFS_TEST_CHECK(vec.empty());
+
+    std::cout << "  Capacity overflow guards: PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== SmallVector Tests ===" << std::endl;
 
@@ -157,6 +187,7 @@ int main() {
     test_emplace_back();
     test_clear_and_resize();
     test_capacity_overflow_is_rejected();
+    test_capacity_overflow_guards();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;
