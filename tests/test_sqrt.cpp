@@ -11,6 +11,7 @@
 #include <chrono>
 #include <iostream>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -615,6 +616,37 @@ void test_non_monic_number_field() {
     std::cout << "  ALL non-monic NumberField tests PASSED" << std::endl;
 }
 
+/// Test that NumberField::multiply rejects non-monic f in all build modes.
+/// The integer reduction formula divides by the leading coefficient, so a
+/// non-monic polynomial must use multiply_mod_n() instead of silently taking
+/// the monic shortcut when assertions are disabled.
+void test_non_monic_number_field_multiply_contract() {
+    std::cout << "Testing non-monic NumberField multiply contract..." << std::endl;
+
+    // f(x) = 2x^3 - 3x^2 + x - 6.  Its leading coefficient is not a unit in Z,
+    // so alpha^3 cannot be represented by the integer-only reduction path.
+    std::vector<Integer> coeffs = {Integer(-6), Integer(1), Integer(-3), Integer(2)};
+    PolynomialContext ctx(Integer(3), std::move(coeffs), Integer(2));
+    NumberField nf(ctx);
+
+    std::vector<Integer> alpha_squared_coeffs = {Integer(0), Integer(0), Integer(1)};
+    NumberFieldElement alpha_squared(std::move(alpha_squared_coeffs));
+    bool rejected = false;
+    try {
+        (void)nf.multiply(nf.alpha(), alpha_squared);
+    } catch (const std::logic_error&) {
+        rejected = true;
+    }
+    GNFS_TEST_CHECK(rejected);
+
+    // The modular path deliberately supports the same non-monic polynomial.
+    auto alpha_cubed_mod_n = nf.multiply_mod_n(nf.alpha(), nf.power_mod_n(nf.alpha(), Integer(2)));
+    GNFS_TEST_CHECK(alpha_cubed_mod_n.degree() < nf.degree());
+
+    std::cout << "  non-monic multiply rejected; multiply_mod_n remains available: PASSED"
+              << std::endl;
+}
+
 /// Test is_square() and sqrt_tonelli_shanks() for p=2 (characteristic 2).
 ///
 /// In F_{2^d}, the Frobenius x → x² is a bijection (mult group order = 2^d-1 is odd),
@@ -954,6 +986,7 @@ int main() {
     test_is_irreducible();
     test_non_monic_modular_poly();
     test_non_monic_number_field();
+    test_non_monic_number_field_multiply_contract();
     test_characteristic_2_sqrt();
     test_sqrt_even_degree_extension();
     test_couveignes_compute_from_element_terminates();
