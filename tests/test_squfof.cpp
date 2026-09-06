@@ -528,6 +528,26 @@ void test_iteration_budget_contract() {
     TEST_PASS("iteration-budget failure and preprocessing contract");
 }
 
+void test_checked_recurrence_update_boundaries() {
+    uint64_t q_new = 0;
+
+    // P_new > P_prev makes the delta negative. The old unsigned recurrence
+    // wrapped to a huge denominator instead of rejecting an invalid state.
+    TEST_ASSERT(!SQUFOF::checked_recurrence_update(3, 5, 1, 2, q_new),
+                "negative denominator result must be rejected");
+
+    // Positive deltas still need an overflow check on q_prev + b*delta.
+    TEST_ASSERT(!SQUFOF::checked_recurrence_update(UINT64_MAX, 1, 1, 0, q_new),
+                "denominator addition overflow must be rejected");
+
+    TEST_ASSERT(SQUFOF::checked_recurrence_update(10, 2, 3, 4, q_new) && q_new == 8,
+                "representable negative delta must be evaluated exactly");
+    TEST_ASSERT(SQUFOF::checked_recurrence_update(10, 2, 4, 3, q_new) && q_new == 12,
+                "representable positive delta must be evaluated exactly");
+
+    TEST_PASS("checked continued-fraction recurrence boundaries");
+}
+
 } // namespace
 
 int main() {
@@ -546,6 +566,7 @@ int main() {
     test_prime_corpus();
     test_perfect_squares_and_powers();
     test_iteration_budget_contract();
+    test_checked_recurrence_update_boundaries();
 
     std::cout << "\n═══════════════════════════════════════════\n";
     std::cout << "  Results: " << tests_passed << " passed, " << tests_failed << " failed\n";

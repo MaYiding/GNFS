@@ -476,6 +476,29 @@ void test_numeric_boundaries_and_nonpositive_inputs() {
     CHECK(!batch_results[1].has_value());
 }
 
+void test_config_resource_boundaries() {
+    const Integer composite("2261419229");
+    const auto schedule = ECM::make_deterministic_curve_schedule(1, 0);
+
+    ECM::Config oversized_b1 = make_config(1);
+    oversized_b1.B1 = 100'000'001ULL;
+    expect_invalid_argument([&] { (void)ECM::prepare_batch(oversized_b1, schedule); });
+    expect_invalid_argument([&] { (void)ECM::factor(composite, oversized_b1, schedule); });
+
+    ECM::Config oversized_b2 = make_config(1);
+    oversized_b2.B2 = 5'000'000'001ULL;
+    expect_invalid_argument([&] { (void)ECM::prepare_batch(oversized_b2, schedule); });
+    expect_invalid_argument([&] { (void)ECM::factor(composite, oversized_b2, schedule); });
+
+    ECM::BatchContext malformed_context;
+    malformed_context.B1 = 2000;
+    malformed_context.B2 = 5'000'000'001ULL;
+    malformed_context.primes_cache = {2};
+    malformed_context.prime_powers = {2};
+    malformed_context.sigma_pool = {6};
+    expect_invalid_argument([&] { (void)ECM::factor_with_batch(composite, malformed_context); });
+}
+
 template <class Function> void run_test(std::string_view name, Function&& function) {
     std::cout << "  " << name << "... " << std::flush;
     std::forward<Function>(function)();
@@ -505,6 +528,7 @@ int main() {
         run_test("sigma validation", test_schedule_sigma_validation);
         run_test("numeric boundaries/nonpositive inputs",
                  test_numeric_boundaries_and_nonpositive_inputs);
+        run_test("configuration resource boundaries", test_config_resource_boundaries);
         std::cout << "=== Deterministic ECM Curve Schedule Tests PASSED ===\n";
         return 0;
     } catch (const std::exception& error) {
