@@ -476,6 +476,7 @@ bool test_config_from_file_integer_boundaries() {
 //   3. 整数越界 (std::stoul throws out_of_range)
 //   4. 整数非法字符 (std::stoul throws invalid_argument)
 bool test_config_from_file_invalid() {
+    bool invalid_cases_passed = true;
     auto write_and_expect_throw = [](const std::string& content, const std::string& label) {
         std::string path = gnfs::util::temp_path("gnfs_test_config_invalid.cfg");
         {
@@ -492,35 +493,55 @@ bool test_config_from_file_invalid() {
         std::remove(path.c_str());
         if (!threw) {
             std::cerr << "  Expected throw for " << label << "\n";
-            assert(false);
+            return false;
         }
+        return true;
     };
 
-    write_and_expect_throw("degree 5\n", "missing '='");
-    write_and_expect_throw("bogus_key = 42\n", "unknown key");
-    write_and_expect_throw("degree = 999999999999999999999999\n", "out-of-range integer");
-    write_and_expect_throw("degree = not-an-integer\n", "invalid integer");
-    write_and_expect_throw("degree = 4294967296\n", "uint32 degree overflow");
-    write_and_expect_throw("degree = 4junk\n", "trailing degree characters");
-    write_and_expect_throw("rational_bound = -1\n", "negative rational bound");
-    write_and_expect_throw("algebraic_bound = 4junk\n", "trailing algebraic bound characters");
-    write_and_expect_throw("large_prime_bound = 8junk\n", "trailing large-prime characters");
-    write_and_expect_throw("large_prime_bound = 18446744073709551616\n",
-                           "uint64 large-prime overflow");
-    write_and_expect_throw("sieve_width = 2147483648\n", "int32 sieve width overflow");
-    write_and_expect_throw("sieve_height = -2147483649\n", "int32 sieve height overflow");
-    write_and_expect_throw("max_special_q = 0\n", "zero max_special_q");
-    write_and_expect_throw("max_special_q = 4294967296\n", "overflow max_special_q");
-    write_and_expect_throw("max_special_q = 4junk\n", "trailing max_special_q characters");
-    write_and_expect_throw("max_special_q_batch_workers = 0\n", "zero batch workers");
-    write_and_expect_throw("max_special_q_batch_workers = 5\n", "excess batch workers");
-    write_and_expect_throw("max_special_q_batch_workers = 2junk\n",
-                           "trailing batch worker characters");
-    write_and_expect_throw("max_local_sieve_threads = 0\n", "zero local sieve threads");
-    write_and_expect_throw("max_local_sieve_threads = 4294967296\n",
-                           "overflow local sieve threads");
-    write_and_expect_throw("max_local_sieve_threads = 2junk\n",
-                           "trailing local sieve thread characters");
+    invalid_cases_passed &= write_and_expect_throw("degree 5\n", "missing '='");
+    invalid_cases_passed &= write_and_expect_throw("bogus_key = 42\n", "unknown key");
+    invalid_cases_passed &=
+        write_and_expect_throw("degree = 999999999999999999999999\n", "out-of-range integer");
+    invalid_cases_passed &= write_and_expect_throw("degree = not-an-integer\n", "invalid integer");
+    invalid_cases_passed &=
+        write_and_expect_throw("degree = 4294967296\n", "uint32 degree overflow");
+    invalid_cases_passed &=
+        write_and_expect_throw("degree = 4junk\n", "trailing degree characters");
+    invalid_cases_passed &=
+        write_and_expect_throw("rational_bound = -1\n", "negative rational bound");
+    invalid_cases_passed &=
+        write_and_expect_throw("algebraic_bound = 4junk\n", "trailing algebraic bound characters");
+    invalid_cases_passed &=
+        write_and_expect_throw("large_prime_bound = 8junk\n", "trailing large-prime characters");
+    invalid_cases_passed &= write_and_expect_throw("large_prime_bound = 18446744073709551616\n",
+                                                   "uint64 large-prime overflow");
+    invalid_cases_passed &=
+        write_and_expect_throw("sieve_width = 2147483648\n", "int32 sieve width overflow");
+    invalid_cases_passed &=
+        write_and_expect_throw("sieve_height = -2147483649\n", "int32 sieve height overflow");
+    invalid_cases_passed &= write_and_expect_throw("max_special_q = 0\n", "zero max_special_q");
+    invalid_cases_passed &=
+        write_and_expect_throw("max_special_q = 4294967296\n", "overflow max_special_q");
+    invalid_cases_passed &=
+        write_and_expect_throw("max_special_q = 4junk\n", "trailing max_special_q characters");
+    invalid_cases_passed &=
+        write_and_expect_throw("max_special_q_batch_workers = 0\n", "zero batch workers");
+    invalid_cases_passed &=
+        write_and_expect_throw("max_special_q_batch_workers = 5\n", "excess batch workers");
+    invalid_cases_passed &= write_and_expect_throw("max_special_q_batch_workers = 2junk\n",
+                                                   "trailing batch worker characters");
+    invalid_cases_passed &=
+        write_and_expect_throw("max_local_sieve_threads = 0\n", "zero local sieve threads");
+    invalid_cases_passed &= write_and_expect_throw("max_local_sieve_threads = 4294967296\n",
+                                                   "overflow local sieve threads");
+    invalid_cases_passed &= write_and_expect_throw("max_local_sieve_threads = 2junk\n",
+                                                   "trailing local sieve thread characters");
+    invalid_cases_passed &= write_and_expect_throw("verbose = maybe\n", "invalid verbose boolean");
+    invalid_cases_passed &=
+        write_and_expect_throw("verbose = TRUE\n", "non-canonical verbose boolean");
+    if (!invalid_cases_passed) {
+        return false;
+    }
 
     // Valid: empty + comment + blank lines should not throw
     {
@@ -538,6 +559,31 @@ bool test_config_from_file_invalid() {
             assert(false);
         }
         std::remove(path.c_str());
+    }
+
+    // All documented boolean spellings must preserve their value.
+    bool boolean_literals_passed = true;
+    for (const auto& [literal, expected] : std::array<std::pair<std::string_view, bool>, 3>{
+             {{"false", false}, {"0", false}, {"1", true}}}) {
+        const std::string path = gnfs::util::temp_path("gnfs_test_config_verbose.cfg");
+        {
+            std::ofstream ofs(path);
+            ofs << "verbose = " << literal << "\n";
+        }
+        try {
+            const auto cfg = Config::from_file(path);
+            if (!cfg.verbose.has_value() || *cfg.verbose != expected) {
+                std::cerr << "  Unexpected verbose value for " << literal << "\n";
+                boolean_literals_passed = false;
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "  Unexpected throw for verbose = " << literal << ": " << e.what() << "\n";
+            boolean_literals_passed = false;
+        }
+        std::remove(path.c_str());
+    }
+    if (!boolean_literals_passed) {
+        return false;
     }
 
     return true;

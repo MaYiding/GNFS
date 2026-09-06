@@ -90,6 +90,16 @@ struct Config {
         return static_cast<int32_t>(parsed);
     }
 
+    /// Parse the complete set of supported boolean literals.
+    static bool parse_bool(std::string_view value, std::string_view key) {
+        if (value == "true" || value == "1")
+            return true;
+        if (value == "false" || value == "0")
+            return false;
+        throw std::invalid_argument("Config: " + std::string(key) +
+                                    " must be true, false, 1, or 0");
+    }
+
     /// Pure auto-detection — all fields empty, everything computed from N
     static Config auto_detect() {
         return {};
@@ -180,7 +190,7 @@ struct Config {
                 }
                 cfg.max_local_sieve_threads = static_cast<uint32_t>(parsed);
             } else if (key == "verbose")
-                cfg.verbose = (val == "true" || val == "1");
+                cfg.verbose = parse_bool(val, key);
             else if (key == "output_file")
                 cfg.output_file = val;
             else if (key == "output_format")
