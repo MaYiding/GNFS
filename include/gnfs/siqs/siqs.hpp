@@ -32,11 +32,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <numeric>
 #include <optional>
 #include <random>
 #include <span>
+#include <stdexcept>
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
@@ -1139,8 +1141,28 @@ inline void sieve_polynomial(const SIQSPoly& poly, const Integer& N, const std::
 // Large prime merging
 // ================================================================
 
-/// Merge two relations: combine their values and exponents
+/// Return whether two relation exponent vectors can be combined losslessly.
+inline bool can_merge_exponents(const SIQSRelation& a, const SIQSRelation& b,
+                                size_t fb_size) noexcept {
+    constexpr uint16_t max_exponent = std::numeric_limits<uint8_t>::max();
+    for (size_t i = 0; i < fb_size; ++i) {
+        const uint8_t ea = (i < a.exponents.size()) ? a.exponents[i] : 0;
+        const uint8_t eb = (i < b.exponents.size()) ? b.exponents[i] : 0;
+        if (static_cast<uint16_t>(ea) + static_cast<uint16_t>(eb) > max_exponent) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// Merge two relations: combine their values and exponents.
+/// @throws std::overflow_error when the compact exponent representation cannot
+///         hold one of the resulting exponents.
 inline SIQSRelation merge_two(const SIQSRelation& a, const SIQSRelation& b, size_t fb_size) {
+    if (!can_merge_exponents(a, b, fb_size)) {
+        throw std::overflow_error("SIQS relation exponent overflow during partial merge");
+    }
+
     SIQSRelation merged;
     merged.value = a.value * b.value;
     merged.negative = (a.negative != b.negative);
@@ -1260,11 +1282,18 @@ inline std::vector<SIQSRelation> merge_partials(std::vector<SIQSRelation>& relat
                 if (bi == SIZE_MAX)
                     break;
 
-                consumed[ai] = consumed[bi] = true;
-                any_merge = true;
-
                 auto& a = pool[ai];
                 auto& b = pool[bi];
+
+                // Keep both relations available for another LP edge when
+                // their compact exponent vectors cannot represent the sum.
+                // Silently wrapping here would corrupt the square root.
+                if (!can_merge_exponents(a, b, fb_size)) {
+                    continue;
+                }
+
+                consumed[ai] = consumed[bi] = true;
+                any_merge = true;
 
                 // Determine other LPs after eliminating 'lp'
                 uint64_t other_a = (a.large_prime == lp) ? a.large_prime2 : a.large_prime;
