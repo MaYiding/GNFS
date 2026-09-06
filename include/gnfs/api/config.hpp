@@ -106,6 +106,8 @@ struct Config {
             return false;
         throw std::invalid_argument("Config: " + std::string(key) +
                                     " must be true, false, 1, or 0");
+    }
+
     /// Parse the finite set of output formats understood by the CLI. Keeping
     /// this at the configuration boundary prevents a typo from becoming a
     /// silent request for no output.
