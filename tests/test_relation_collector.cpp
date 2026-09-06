@@ -307,10 +307,12 @@ static void test_save_rejects_oversized_relation_without_clobbering_target() {
     }
     CHECK(rejected);
 
-    std::ifstream saved(target_file, std::ios::binary);
-    const std::string bytes((std::istreambuf_iterator<char>(saved)),
-                            std::istreambuf_iterator<char>());
-    CHECK(bytes == "existing-save-payload");
+    {
+        std::ifstream saved(target_file, std::ios::binary);
+        const std::string bytes((std::istreambuf_iterator<char>(saved)),
+                                std::istreambuf_iterator<char>());
+        CHECK(bytes == "existing-save-payload");
+    }
 
     const auto missing_file =
         gnfs::util::temp_path("gnfs_test_collector_save_oversized_missing.bin");
