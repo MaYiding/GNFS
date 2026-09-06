@@ -310,8 +310,8 @@ private:
         const double eta_s = compute_eta(clamped_iter, total_, rate);
         std::cerr << "[linalg_progress] phase=" << phase_ << " iter=" << clamped_iter << '/'
                   << total_ << " elapsed=" << format_seconds(elapsed_s) << "s"
-                  << " rate=" << format_rate(rate) << "/s"
-                  << " eta=" << format_eta(eta_s) << "s" << '\n'
+                  << " rate=" << format_rate(rate) << "/s" << " eta=" << format_eta(eta_s) << "s"
+                  << '\n'
                   << std::flush;
     }
 
