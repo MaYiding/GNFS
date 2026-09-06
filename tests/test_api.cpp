@@ -971,6 +971,18 @@ bool test_dependency_xor_pair_guard() {
         std::cout << "(malformed XOR dependency pair was accepted) ";
         return false;
     }
+
+    Pipeline pipeline(Integer(143));
+    auto ctx = pipeline.select_polynomial();
+    Pipeline::MatrixResult malformed_matrix;
+    malformed_matrix.matrix = gnfs::linalg::SparseMatrix(1, 0);
+    malformed_matrix.matrix.row(0).append_unchecked(0);
+    malformed_matrix.dependencies = {{true}};
+    gnfs::factor_base::FactorBase empty_factor_base;
+    if (pipeline.extract_factors(malformed_matrix, empty_factor_base, ctx).success) {
+        std::cout << "(out-of-range sparse matrix column was accepted) ";
+        return false;
+    }
     return true;
 }
 

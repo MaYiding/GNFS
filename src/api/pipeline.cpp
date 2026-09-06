@@ -3197,6 +3197,9 @@ static bool verify_dependency(const SparseMatrix& mat, const std::vector<bool>& 
     for (size_t row = 0; row < mat.num_rows(); ++row) {
         if (row < dep.size() && dep[row]) {
             for (uint32_t col : mat.row(row).indices()) {
+                if (static_cast<size_t>(col) >= mat.num_cols()) {
+                    return false;
+                }
                 col_parity[col] ^= 1; // XOR in GF(2)
             }
         }
