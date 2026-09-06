@@ -19,11 +19,10 @@ public:
     explicit Integer(uint64_t value);
     // On platforms where uint64_t/int64_t are `unsigned long`/`long`
     // (Linux LP64), `unsigned long long`/`long long` are distinct
-    // 64-bit integer types and constructor overload resolution
-    // becomes ambiguous between Integer(int), Integer(int64_t),
-    // Integer(uint64_t) etc. Add dedicated overloads there; on
-    // platforms where they alias (macOS), the requires-clauses
-    // disable them to avoid redefinition.
+    // 64-bit integer types and overload resolution becomes ambiguous
+    // between the fixed-width overloads and native-width values. Add
+    // dedicated overloads for each distinct native type; the
+    // requires-clauses disable them when the types alias on another ABI.
     template <typename T>
         requires (std::is_same_v<T, unsigned long long>
                   && !std::is_same_v<unsigned long long, uint64_t>)
@@ -31,6 +30,12 @@ public:
     template <typename T>
         requires (std::is_same_v<T, long long>
                   && !std::is_same_v<long long, int64_t>)
+    explicit Integer(T value) : Integer(static_cast<int64_t>(value)) {}
+    template <typename T>
+        requires(std::is_same_v<T, unsigned long> && !std::is_same_v<unsigned long, uint64_t>)
+    explicit Integer(T value) : Integer(static_cast<uint64_t>(value)) {}
+    template <typename T>
+        requires(std::is_same_v<T, long> && !std::is_same_v<long, int64_t>)
     explicit Integer(T value) : Integer(static_cast<int64_t>(value)) {}
     Integer(const char* str, int base = 10);
     Integer(const std::string& str, int base = 10);
@@ -41,8 +46,35 @@ public:
     // Assignment
     Integer& operator=(const Integer& other);
     Integer& operator=(Integer&& other) noexcept;
+    Integer& operator=(int value) {
+        return *this = static_cast<int64_t>(value);
+    }
     Integer& operator=(int64_t value);
+    Integer& operator=(unsigned int value) {
+        return *this = static_cast<uint64_t>(value);
+    }
     Integer& operator=(uint64_t value);
+    template <typename T>
+        requires(std::is_same_v<T, unsigned long> && !std::is_same_v<unsigned long, uint64_t>)
+    Integer& operator=(T value) {
+        return *this = static_cast<uint64_t>(value);
+    }
+    template <typename T>
+        requires(std::is_same_v<T, long> && !std::is_same_v<long, int64_t>)
+    Integer& operator=(T value) {
+        return *this = static_cast<int64_t>(value);
+    }
+    template <typename T>
+        requires(std::is_same_v<T, unsigned long long> &&
+                 !std::is_same_v<unsigned long long, uint64_t>)
+    Integer& operator=(T value) {
+        return *this = static_cast<uint64_t>(value);
+    }
+    template <typename T>
+        requires(std::is_same_v<T, long long> && !std::is_same_v<long long, int64_t>)
+    Integer& operator=(T value) {
+        return *this = static_cast<int64_t>(value);
+    }
 
     // Cloning
     Integer clone() const;
