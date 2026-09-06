@@ -122,6 +122,18 @@ public:
         return probe;
     }
 
+    /// Checked denominator update used by the continued-fraction recurrence.
+    ///
+    /// Exposed as a small arithmetic primitive so boundary tests and
+    /// diagnostics can verify the same overflow contract as the production
+    /// core. Returns false when the mathematically expected positive result
+    /// cannot be represented by uint64_t.
+    [[nodiscard]] static bool checked_recurrence_update(uint64_t q_prev, uint64_t b,
+                                                        uint64_t p_prev, uint64_t p_new,
+                                                        uint64_t& q_new) noexcept {
+        return update_q(q_prev, b, p_prev, p_new, q_new);
+    }
+
     /// Factor n using SQUFOF. Returns a non-trivial factor, or 1 on failure.
     /// n must be > 1 and composite. Works for n up to ~2^62.
     [[nodiscard]] static uint64_t factor(uint64_t n, uint32_t max_iterations = 0) {
@@ -266,6 +278,32 @@ private:
         return x;
     }
 
+    /// Update a continued-fraction denominator without relying on unsigned
+    /// subtraction wrapping. The recurrence is
+    ///
+    ///     Q_new = Q_prev + b * (P_prev - P_new).
+    ///
+    /// P_new may be greater than P_prev, in which case the second term is
+    /// negative. Native uint64_t subtraction would wrap and silently corrupt
+    /// the continued-fraction state. Return false if the mathematically
+    /// expected positive value cannot be represented.
+    [[nodiscard]] static bool update_q(uint64_t q_prev, uint64_t b, uint64_t p_prev, uint64_t p_new,
+                                       uint64_t& q_new) noexcept {
+        if (p_prev >= p_new) {
+            const uint64_t delta = p_prev - p_new;
+            if (b != 0 && delta > (UINT64_MAX - q_prev) / b)
+                return false;
+            q_new = q_prev + b * delta;
+            return true;
+        }
+
+        const uint64_t delta = p_new - p_prev;
+        if (b != 0 && delta > q_prev / b)
+            return false;
+        q_new = q_prev - b * delta;
+        return true;
+    }
+
     /// Core SQUFOF: factor D using continued fraction of √D.
     /// Returns a non-trivial factor of D, or 1 on failure.
     ///
@@ -307,7 +345,9 @@ private:
             }
             uint64_t b = (sqrtD + Pprev) / Qcurr;
             uint64_t Pnew = b * Qcurr - Pprev;
-            uint64_t Qnew = Qprev + b * (Pprev - Pnew);
+            uint64_t Qnew = 0;
+            if (!update_q(Qprev, b, Pprev, Pnew, Qnew))
+                return 1;
 
             // Check for perfect square Q at even iteration (i odd = step i+1 even since i starts 0)
             // Gower-Wagstaff: check Q_{i+1} at odd i (0-indexed), i.e., even steps
@@ -355,7 +395,9 @@ private:
                 return gcd(D, P);
             }
 
-            uint64_t Qnew = Qprev + b * (P - Pnew);
+            uint64_t Qnew = 0;
+            if (!update_q(Qprev, b, P, Pnew, Qnew))
+                return 1;
             Qprev = Qcurr;
             P = Pnew;
             Qcurr = Qnew;
