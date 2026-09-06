@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <exception>
 #include <functional>
 #include <future>
 #include <memory>
@@ -158,7 +159,9 @@ public:
 
         size_t num_threads = workers_.size();
         size_t total = static_cast<size_t>(distance);
-        size_t chunk_size = (total + num_threads - 1) / num_threads;
+        // Avoid `total + num_threads - 1`: a valid index range can end at
+        // SIZE_MAX, making the conventional ceil-division expression wrap.
+        size_t chunk_size = total / num_threads + (total % num_threads != 0 ? 1 : 0);
 
         std::vector<std::future<void>> futures;
         futures.reserve(num_threads);
@@ -178,10 +181,7 @@ public:
             chunk_begin = chunk_end;
         }
 
-        // 等待所有块完成
-        for (auto& future : futures) {
-            future.get();
-        }
+        wait_for_futures(futures);
     }
 
     /// 并行 for 循环（带索引版本）
@@ -194,28 +194,28 @@ public:
 
         size_t distance = end - start;
         size_t num_threads = workers_.size();
-        size_t chunk_size = (distance + num_threads - 1) / num_threads;
+        // Avoid wrapping when `distance` is close to SIZE_MAX.
+        size_t chunk_size = distance / num_threads + (distance % num_threads != 0 ? 1 : 0);
 
         std::vector<std::future<void>> futures;
         futures.reserve(num_threads);
 
-        for (size_t i = 0; i < num_threads; ++i) {
-            size_t chunk_start = start + i * chunk_size;
-            size_t chunk_end = std::min(chunk_start + chunk_size, end);
-
-            if (chunk_start >= end)
-                break;
+        size_t chunk_start = start;
+        for (size_t i = 0; i < num_threads && chunk_start < end; ++i) {
+            const size_t remaining = end - chunk_start;
+            const size_t chunk_length = std::min(chunk_size, remaining);
+            const size_t chunk_end = chunk_start + chunk_length;
 
             futures.push_back(submit([chunk_start, chunk_end, &func]() {
                 for (size_t j = chunk_start; j < chunk_end; ++j) {
                     func(j);
                 }
             }));
+
+            chunk_start = chunk_end;
         }
 
-        for (auto& future : futures) {
-            future.get();
-        }
+        wait_for_futures(futures);
     }
 
     /// Work-stealing parallel for: dynamic task assignment via atomic counter.
@@ -275,6 +275,24 @@ public:
     }
 
 private:
+    // Drain every task before rethrowing so a callback cannot outlive this
+    // call when one of the parallel chunks fails.
+    static void wait_for_futures(std::vector<std::future<void>>& futures) {
+        std::exception_ptr first_exception;
+        for (auto& future : futures) {
+            try {
+                future.get();
+            } catch (...) {
+                if (!first_exception) {
+                    first_exception = std::current_exception();
+                }
+            }
+        }
+        if (first_exception) {
+            std::rethrow_exception(first_exception);
+        }
+    }
+
     /// Hint to the CPU we are in a spin loop — on ARM `yield` lowers SMT priority
     /// (M5 P-core has no SMT but the instruction still puts the pipeline in a
     /// low-power hint state). On x86 emit `pause`. Delegates to the
