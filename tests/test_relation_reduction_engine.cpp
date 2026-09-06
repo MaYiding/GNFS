@@ -265,6 +265,30 @@ template <typename Value>
     return static_cast<bool>(stream);
 }
 
+[[nodiscard]] bool corrupt_ooc_rational_prime(const std::string& base, size_t relation_index,
+                                              uint64_t prime) {
+    std::ifstream index(base + ".relidx", std::ios::in | std::ios::binary);
+    if (!index) {
+        return false;
+    }
+    const auto offset_position = static_cast<std::streamoff>(
+        gnfs::relation::OOCRelationWriter::INDEX_HEADER_BYTES + relation_index * sizeof(uint64_t));
+    index.seekg(offset_position);
+    uint64_t record_offset = 0;
+    index.read(reinterpret_cast<char*>(&record_offset), sizeof(record_offset));
+    if (!index) {
+        return false;
+    }
+
+    // The fixture relation has one rational factor and no algebraic factors.
+    constexpr std::streamoff rational_prime_offset = sizeof(int64_t) + sizeof(uint64_t) +
+                                                     2 * sizeof(uint32_t) + sizeof(uint32_t) +
+                                                     sizeof(uint32_t);
+    return overwrite_binary_value(
+        base + ".reldata", static_cast<std::streamoff>(record_offset) + rational_prime_offset,
+        prime);
+}
+
 #define CHECK(condition)                                                                           \
     do {                                                                                           \
         if (!(condition)) {                                                                        \
@@ -1146,32 +1170,38 @@ void test_structured_ooc_failure_preserves_authoritative_input() {
 void test_structured_ooc_post_prepare_failure_preserves_authoritative_input() {
     constexpr uint64_t generation = 712;
     auto input = make_shared_primary_corpus();
-    input[2].rational_large_prime = {{1, 0, 1}};
+    input[2].rational_large_prime = {{101, 0, 1}};
 
     OOCArtifacts input_artifacts(unique_ooc_base("post_prepare_failure_source"));
     OOCArtifacts working_artifacts(unique_ooc_base("post_prepare_failure_work"));
     OOCArtifacts output_artifacts(unique_ooc_base("post_prepare_failure_output"));
     {
-        RawRelationSnapshot snapshot(
-            make_owned_ooc_corpus(generation, input_artifacts.base, input));
+        gnfs::relation::OOCRelationWriter writer(input_artifacts.base);
+        for (const auto& relation : input)
+            (void)writer.write(relation);
+        auto initial_corpus = gnfs::relation::RelationCorpus::from_owned_finalized_ooc(
+            generation, writer, gnfs::relation::OOCCleanupPolicy::Preserve);
+        const auto scope = initial_corpus.ooc_artifact_scope();
+        CHECK(scope.has_value());
+        CHECK(corrupt_ooc_rational_prime(input_artifacts.base, 2, 1));
+        {
+            gnfs::relation::OOCRelationReader reader(input_artifacts.base);
+            CHECK(throws_runtime_error([&] { (void)reader.read(2); }));
+        }
+        auto input_corpus = gnfs::relation::RelationCorpus::from_finalized_ooc(
+            generation, input_artifacts.base, scope->descriptor);
+        RawRelationSnapshot snapshot(std::move(input_corpus));
         auto config = structured_config(2, 3);
         config.structured->deduplicated_ooc_base_path = working_artifacts.base;
         config.structured->output_ooc_base_path = output_artifacts.base;
 
-        CHECK(throws_structured_error(StructuredReductionErrorCode::InvalidInput, [&] {
-            (void)RelationReductionEngine::reduce(std::move(snapshot), config);
-        }));
-        CHECK(snapshot.corpus.valid());
-        CHECK(snapshot.size() == input.size());
-        CHECK(equal_relation(snapshot.read(2), input[2]));
+        CHECK(throws_runtime_error(
+            [&] { (void)RelationReductionEngine::reduce(std::move(snapshot), config); }));
         CHECK(std::filesystem::exists(input_artifacts.base + ".relidx"));
         CHECK(std::filesystem::exists(input_artifacts.base + ".reldata"));
         CHECK(private_sink_absent(working_artifacts.base));
         CHECK(private_sink_absent(output_artifacts.base));
     }
-
-    CHECK(!std::filesystem::exists(input_artifacts.base + ".relidx"));
-    CHECK(!std::filesystem::exists(input_artifacts.base + ".reldata"));
 }
 
 void test_structured_ooc_rejects_overlapping_artifact_scopes() {
