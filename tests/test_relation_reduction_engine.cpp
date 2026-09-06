@@ -705,6 +705,41 @@ void test_merged_input_fails_before_dedup() {
     }));
 }
 
+void test_legacy_source_contract_rejects_invalid_rows() {
+    const auto rejects = [](Relation relation) {
+        std::vector<Relation> input;
+        input.push_back(std::move(relation));
+        return throws_invalid_argument([&] {
+            (void)RelationReductionEngine::reduce(RawRelationSnapshot(504, std::move(input)),
+                                                  RelationReductionConfig{});
+        });
+    };
+
+    CHECK(rejects(Relation(41, 0)));
+
+    Relation zero_extra(43, 1);
+    zero_extra.extra_ab_pairs.emplace_back(47, 0);
+    CHECK(rejects(std::move(zero_extra)));
+
+    Relation invalid_rational_lp(53, 1);
+    invalid_rational_lp.rational_large_prime.emplace_back(1, uint8_t{1});
+    CHECK(rejects(std::move(invalid_rational_lp)));
+
+    Relation invalid_algebraic_root(59, 1);
+    invalid_algebraic_root.algebraic_large_prime.emplace_back(101, 101, uint8_t{1});
+    CHECK(rejects(std::move(invalid_algebraic_root)));
+
+    // Zero-exponent payloads have no effective LP domain and remain valid raw
+    // storage for lossless relation data.
+    Relation inactive_lp(61, 1);
+    inactive_lp.rational_large_prime.emplace_back(1, uint8_t{0});
+    auto result = RelationReductionEngine::reduce(
+        RawRelationSnapshot(505, std::vector<Relation>{std::move(inactive_lp)}),
+        RelationReductionConfig{});
+    CHECK(result.size() == 1);
+    CHECK(result.read(0).rational_large_prime.front().e == 0);
+}
+
 void test_digest_covers_every_field_and_order() {
     const auto baseline = make_rich_digest_corpus();
     const CorpusDigest expected = corpus_digest(baseline);
@@ -2178,6 +2213,7 @@ int main() {
     test_exact_abpair_dedup_preserves_old_collision();
     test_exact_abpair_dedup_keeps_first_occurrence();
     test_merged_input_fails_before_dedup();
+    test_legacy_source_contract_rejects_invalid_rows();
     test_digest_covers_every_field_and_order();
     test_filter_only_preserves_filtered_partials();
     test_fixed_digest_golden();

@@ -529,7 +529,15 @@ public:
             return result;
         }
 
-        validate_raw_relations(snapshot.corpus);
+        // Structured reduction owns a richer source-validation contract and
+        // reports invalid rows as StructuredReductionError. Legacy routes
+        // must fail closed before digesting/filtering rows, while preserving
+        // that structured error boundary.
+        if (config.strategy == ReductionStrategy::Structured) {
+            validate_raw_relations(snapshot.corpus);
+        } else {
+            validate_legacy_raw_relations(snapshot.corpus);
+        }
         stats.raw_input_digest = corpus_digest(snapshot.corpus);
 
         auto raw_relations = deduplicate_raw_relations(std::move(snapshot).take_relations(),
@@ -1276,6 +1284,40 @@ private:
         }
     }
 
+    static void validate_legacy_relation(const core::Relation& relation) {
+        // Keep the Relation persistence contract at the raw-source boundary:
+        // it rejects b == 0, malformed extra pairs, and oversized vectors
+        // before legacy filtering can materialize or merge the row.
+        relation.validate_persistence_limits();
+
+        const auto validate_live_large_prime = [](const core::PrimePower& prime_power,
+                                                  bool algebraic) {
+            // Zero-exponent entries can remain in raw merged payloads for
+            // lossless square-root data. They have no effective LP domain, so
+            // only live entries require p/root validation here.
+            if (prime_power.e == 0)
+                return;
+            if (prime_power.p < 2) {
+                throw std::invalid_argument(
+                    "relation reduction snapshot contains a large-prime p < 2");
+            }
+            constexpr uint64_t projective_root = std::numeric_limits<uint32_t>::max();
+            if (algebraic && prime_power.r != projective_root && prime_power.r >= prime_power.p) {
+                throw std::invalid_argument(
+                    "relation reduction snapshot contains an algebraic root outside p");
+            }
+        };
+
+        for (const auto& prime_power : relation.rational_large_prime) {
+            validate_live_large_prime(prime_power, false);
+        }
+        for (const auto& prime_power : relation.algebraic_large_prime) {
+            validate_live_large_prime(prime_power, true);
+        }
+
+        validate_raw_relation(relation);
+    }
+
     static void validate_direct_structured_source_relation(const core::Relation& relation) {
         validate_raw_relation(relation);
         if (relation.b == 0) {
@@ -1318,6 +1360,11 @@ private:
     static void validate_raw_relations(const RelationCorpus& corpus) {
         corpus.for_each(
             [](const core::Relation& relation, size_t) { validate_raw_relation(relation); });
+    }
+
+    static void validate_legacy_raw_relations(const RelationCorpus& corpus) {
+        corpus.for_each(
+            [](const core::Relation& relation, size_t) { validate_legacy_relation(relation); });
     }
 
     [[nodiscard]] static std::vector<core::Relation>
