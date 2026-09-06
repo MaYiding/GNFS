@@ -1216,11 +1216,16 @@ inline std::vector<SIQSRelation> merge_partials(std::vector<SIQSRelation>& relat
                 full.size(), raw_1lp, raw_2lp, factored_2lp, failed_2lp);
     }
 
-    // Iterative greedy merge (up to 10 rounds for convergence)
+    // Iterative greedy merge. Each successful merge consumes two active pool
+    // entries and appends at most one replacement, so the active pool loses
+    // at least one entry per round. A bound based on the initial pool size
+    // therefore preserves termination while allowing arbitrarily deep but
+    // finite LP chains to converge.
+    const size_t max_merge_rounds = pool.size();
     std::vector<bool> consumed(pool.size(), false);
     size_t merged_1lp_pairs = 0, merged_2lp_cycles = 0;
 
-    for (int round = 0; round < 10; round++) {
+    for (size_t round = 0; round < max_merge_rounds; round++) {
         // Build LP → relation index mapping
         std::unordered_map<uint64_t, std::vector<size_t>> lp_index;
         lp_index.reserve(pool.size() * 2); // each rel contributes 1-2 LP keys
