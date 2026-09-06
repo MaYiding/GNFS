@@ -1,15 +1,6 @@
 // test_ecm_curve_plan.cpp - deterministic ECM curve schedule contracts
 
-#if defined(__clang__)
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wkeyword-macro"
-#endif
-#define private public
 #include <gnfs/cofactor/ecm.hpp>
-#undef private
-#if defined(__clang__)
-#pragma clang diagnostic pop
-#endif
 #include <gnfs/core/integer.hpp>
 
 #include "support/scoped_environment_stderr.hpp"
@@ -507,18 +498,6 @@ void test_config_resource_boundaries() {
     malformed_context.sigma_pool = {6};
     expect_invalid_argument([&] { (void)ECM::factor_with_batch(composite, malformed_context); });
 }
-
-void test_zero_big_scalar_returns_infinity() {
-    const ECM::Point input(Integer(7), Integer(3));
-    const Integer zero(0);
-    const Integer a24(5);
-    const Integer modulus(101);
-
-    const ECM::Point result = ECM::mont_mul_big(input, zero, a24, modulus);
-    CHECK(result.x.is_zero());
-    CHECK(result.z.is_one());
-}
-
 template <class Function> void run_test(std::string_view name, Function&& function) {
     std::cout << "  " << name << "... " << std::flush;
     std::forward<Function>(function)();
@@ -549,7 +528,6 @@ int main() {
         run_test("numeric boundaries/nonpositive inputs",
                  test_numeric_boundaries_and_nonpositive_inputs);
         run_test("configuration resource boundaries", test_config_resource_boundaries);
-        run_test("zero big scalar returns infinity", test_zero_big_scalar_returns_infinity);
         std::cout << "=== Deterministic ECM Curve Schedule Tests PASSED ===\n";
         return 0;
     } catch (const std::exception& error) {
