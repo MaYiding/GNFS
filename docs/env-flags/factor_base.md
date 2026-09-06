@@ -58,13 +58,22 @@ across N=1 / N=4 / N=hardware_concurrency 严格 per-index 比较.
   完全等价, 零行为变化
 - Default OFF (N=0): 任何调用方未设 ENV 均走 fall-back path, 零回归风险
 
+### `FactorBaseBuilder::Options::parallel`
+
+`FactorBaseBuilder::Options::parallel` 是 C++ 调用方的显式并行开关，默认值为
+`true`。设置为 `false` 时，构建过程会同时关闭大范围分段筛和代数素数的跨素数根查找线程；
+根查找仍按与并行路径相同的素数顺序合并，输出保持 bit-for-bit 一致。该选项适用于调试、
+sanitizer 运行，以及调用方已经管理外层并发的场景。`GNFS_FB_ROOTS_THREADS` 只控制独立的
+helper，不会覆盖 `Options::parallel = false` 的单线程契约。
+
 **集成点** (2026-05-22):
 - `include/gnfs/factor_base/fb_roots_parallel.hpp` — `fb_roots_threads()` env
   reader with `std::once_flag` cache + `resolve_fb_roots_threads(n)` helper +
   `parallel_fb_roots<Result>(primes, worker_fn)` template dispatcher +
   `fb_roots_threads_reset_env_cache_for_testing()` test hook
-- `src/factor_base/builder.cpp` — **未改动** (主路径继续走原 `std::thread` +
-  `hardware_concurrency()`). helper 是 future-infra, 等真有 wire-in 需求时用
+- `src/factor_base/builder.cpp` — 主路径消费 `Options::parallel`：默认值保持原有
+  `std::thread` + `hardware_concurrency()` 行为，显式 `false` 时不创建并行工作线程。
+  `GNFS_FB_ROOTS_THREADS` helper 仍是独立的 future-infra，不改变 `Options` 的契约
 - `tests/test_fb_roots_parallel.cpp` — 12 个测试 (6 ENV 解析 + 5 dispatcher
   parity + 1 partial-parse 行为文档化)
 - `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60 s timeout,

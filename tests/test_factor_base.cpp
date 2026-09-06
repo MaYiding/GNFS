@@ -252,15 +252,32 @@ void test_parallel_build() {
     auto fb_par = FactorBaseBuilder::build(ctx, opts_par);
 
     // 两者应该有相同数量的元素
-    assert(fb_seq.rational_count() == fb_par.rational_count());
-    assert(fb_seq.algebraic_count() == fb_par.algebraic_count());
+    if (fb_seq.rational_count() != fb_par.rational_count() ||
+        fb_seq.algebraic_count() != fb_par.algebraic_count()) {
+        throw std::runtime_error("sequential and parallel factor-base counts differ");
+    }
 
     // 验证内容一致性
     auto rat_seq = fb_seq.rational();
     auto rat_par = fb_par.rational();
     for (size_t i = 0; i < rat_seq.size(); ++i) {
-        assert(rat_seq[i].p == rat_par[i].p);
-        assert(rat_seq[i].log_p == rat_par[i].log_p);
+        if (rat_seq[i].p != rat_par[i].p || rat_seq[i].log_p != rat_par[i].log_p) {
+            throw std::runtime_error("sequential and parallel rational entries differ");
+        }
+    }
+
+    // The explicit sequential option must produce the same algebraic entries
+    // as the parallel path, including root ordering and projective roots.
+    auto alg_seq = fb_seq.algebraic();
+    auto alg_par = fb_par.algebraic();
+    if (alg_seq.size() != alg_par.size()) {
+        throw std::runtime_error("sequential and parallel algebraic counts differ");
+    }
+    for (size_t i = 0; i < alg_seq.size(); ++i) {
+        if (alg_seq[i].p != alg_par[i].p || alg_seq[i].r != alg_par[i].r ||
+            alg_seq[i].log_p != alg_par[i].log_p || alg_seq[i].degree != alg_par[i].degree) {
+            throw std::runtime_error("sequential and parallel algebraic entries differ");
+        }
     }
 
     std::cout << "  Parallel build: PASS (seq=" << fb_seq.rational_count()
@@ -612,9 +629,15 @@ void test_segmented_parallel_sieve() {
 
     // 临界 + 大 bound (10M, 跨越多个 256K segment 边界)
     for (uint32_t bound : {4'999'999u, 5'000'001u, 10'000'000u}) {
-        auto got = FactorBaseBuilder::build_eratosthenes_sieve(bound);
+        auto got = FactorBaseBuilder::build_eratosthenes_sieve(bound, true);
+        auto got_serial = FactorBaseBuilder::build_eratosthenes_sieve(bound, false);
         auto expect = reference_sieve(bound);
-        assert(got.size() == expect.size());
+        if (got.size() != expect.size()) {
+            throw std::runtime_error("factor-base sieve returned an unexpected size");
+        }
+        if (got_serial != got) {
+            throw std::runtime_error("sequential and parallel sieve results differ");
+        }
         size_t mismatches = 0;
         for (uint32_t i = 0; i <= bound; ++i) {
             if (got[i] != expect[i]) {
