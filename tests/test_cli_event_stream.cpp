@@ -506,6 +506,36 @@ void test_verbose_cases(const std::filesystem::path& executable,
         EventKind::result, true, "config verbose");
 }
 
+void test_configured_output(const std::filesystem::path& executable,
+                            const std::filesystem::path& temporary_root) {
+    const std::filesystem::path config_path = temporary_root / "output.conf";
+    const std::filesystem::path output_path = temporary_root / "configured.json";
+    {
+        std::ofstream config(config_path);
+        config << "output_format = json\n";
+        config << "output_file = " << output_path.string() << "\n";
+        CHECK_CONTEXT(static_cast<bool>(config), "write output config");
+    }
+
+    const auto run = run_cli(executable, {"--complete", "--config", config_path.string(), "360"});
+    const std::string context = "configured output: " + describe(run);
+    CHECK_CONTEXT(run.child_started, context);
+    CHECK_CONTEXT(run.stdout_eof, context);
+    CHECK_CONTEXT(run.stderr_eof, context);
+    CHECK_CONTEXT(run.cleanup_complete, context);
+    CHECK_CONTEXT(run.termination.kind == BoundedChildTerminationKind::exited, context);
+    CHECK_CONTEXT(run.termination.exit_code == 0, context);
+    CHECK_CONTEXT(run.stdout_bytes.empty(), context);
+    CHECK_CONTEXT(std::filesystem::is_regular_file(output_path), context);
+    if (std::filesystem::is_regular_file(output_path)) {
+        std::ifstream output(output_path);
+        const std::string contents((std::istreambuf_iterator<char>(output)),
+                                   std::istreambuf_iterator<char>());
+        CHECK_CONTEXT(contents.find("\"n\": \"360\"") != std::string::npos, context);
+        CHECK_CONTEXT(contents.find("\"success\": true") != std::string::npos, context);
+    }
+}
+
 void test_input_errors(const std::filesystem::path& executable) {
     const auto invalid = validate_protocol(executable, {"--event-stream", "not-a-number"}, 1,
                                            EventKind::error, false, "invalid input");
@@ -546,6 +576,19 @@ void test_incompatible_options(const std::filesystem::path& executable,
         CHECK_CONTEXT(run.lines.size() == 1, "incompatible " + name);
     }
     CHECK_CONTEXT(!std::filesystem::exists(output_path), "incompatible output has no side effect");
+
+    const std::filesystem::path config_path = temporary_root / "event-output.conf";
+    {
+        std::ofstream config(config_path);
+        config << "output_format = json\n";
+        config << "output_file = " << (temporary_root / "event-output.json") << "\n";
+        CHECK_CONTEXT(static_cast<bool>(config), "write event-stream output config");
+    }
+    const auto config_run =
+        validate_protocol(executable, {"--event-stream", "--config", config_path.string(), "360"},
+                          1, EventKind::error, false, "incompatible config output");
+    check_terminal_contains(config_run, "\"code\":\"incompatible_options\"",
+                            "incompatible config output");
 }
 
 } // namespace
@@ -567,6 +610,7 @@ int main(int argc, char* argv[]) {
         TempDirectory temporary;
         test_success_cases(executable);
         test_verbose_cases(executable, temporary.path());
+        test_configured_output(executable, temporary.path());
         test_input_errors(executable);
         test_event_stream_token_used_as_value(executable);
         test_incompatible_options(executable, temporary.path());

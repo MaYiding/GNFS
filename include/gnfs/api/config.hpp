@@ -90,6 +90,18 @@ struct Config {
         return static_cast<int32_t>(parsed);
     }
 
+    /// Parse the finite set of output formats understood by the CLI. Keeping
+    /// this at the configuration boundary prevents a typo from becoming a
+    /// silent request for no output.
+    static std::string parse_output_format(std::string_view value,
+                                           std::string_view key = "output_format") {
+        if (value == "text" || value == "json" || value == "csv" || value == "report") {
+            return std::string(value);
+        }
+        throw std::invalid_argument("Config: " + std::string(key) +
+                                    " must be one of text, json, csv, report");
+    }
+
     /// Pure auto-detection — all fields empty, everything computed from N
     static Config auto_detect() {
         return {};
@@ -181,10 +193,13 @@ struct Config {
                 cfg.max_local_sieve_threads = static_cast<uint32_t>(parsed);
             } else if (key == "verbose")
                 cfg.verbose = (val == "true" || val == "1");
-            else if (key == "output_file")
+            else if (key == "output_file") {
+                if (val.empty()) {
+                    throw std::invalid_argument("Config: output_file must not be empty");
+                }
                 cfg.output_file = val;
-            else if (key == "output_format")
-                cfg.output_format = val;
+            } else if (key == "output_format")
+                cfg.output_format = parse_output_format(val, key);
             else {
                 throw std::runtime_error("Config: unknown key '" + key + "' at line " +
                                          std::to_string(lineno));
@@ -248,11 +263,14 @@ struct Config {
         return *this;
     }
     Config& set_output_file(const std::string& f) {
+        if (f.empty()) {
+            throw std::invalid_argument("Config: output_file must not be empty");
+        }
         output_file = f;
         return *this;
     }
     Config& set_output_format(const std::string& f) {
-        output_format = f;
+        output_format = parse_output_format(f);
         return *this;
     }
 

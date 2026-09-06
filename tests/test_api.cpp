@@ -521,6 +521,8 @@ bool test_config_from_file_invalid() {
                            "overflow local sieve threads");
     write_and_expect_throw("max_local_sieve_threads = 2junk\n",
                            "trailing local sieve thread characters");
+    write_and_expect_throw("output_file =\n", "empty output file");
+    write_and_expect_throw("output_format = yaml\n", "unknown output format");
 
     // Valid: empty + comment + blank lines should not throw
     {
@@ -541,6 +543,33 @@ bool test_config_from_file_invalid() {
     }
 
     return true;
+}
+
+bool test_config_output_contract() {
+    Config cfg;
+    cfg.set_output_file("result.json").set_output_format("json");
+    if (!cfg.output_file || *cfg.output_file != "result.json" || !cfg.output_format ||
+        *cfg.output_format != "json") {
+        return false;
+    }
+
+    bool empty_file_rejected = false;
+    try {
+        (void)cfg.set_output_file("");
+    } catch (const std::invalid_argument&) {
+        empty_file_rejected = true;
+    }
+    if (!empty_file_rejected) {
+        return false;
+    }
+
+    bool invalid_format_rejected = false;
+    try {
+        (void)cfg.set_output_format("yaml");
+    } catch (const std::invalid_argument&) {
+        invalid_format_rejected = true;
+    }
+    return invalid_format_rejected;
 }
 
 bool test_config_to_string() {
@@ -3780,6 +3809,7 @@ int main() {
     TEST(config_from_file);
     TEST(config_from_file_integer_boundaries);
     TEST(config_from_file_invalid);
+    TEST(config_output_contract);
     TEST(config_to_string);
 
     std::cout << "\nProgress tests:\n";
