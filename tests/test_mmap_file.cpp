@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -328,6 +329,43 @@ void test_read_at_typed_values() {
     assert(c == 300);
 
     std::cout << "  read_at typed values: PASS" << std::endl;
+}
+
+void test_read_and_ptr_at_reject_out_of_bounds_offsets() {
+    std::cout << "Testing MmapFile bounds checks avoid offset wraparound..." << std::endl;
+
+    std::string path = make_temp_path("bounds");
+    FileGuard guard(path);
+    write_bytes(path, {0x11, 0x22, 0x33, 0x44});
+
+    MmapFile mf(path);
+    const size_t max_offset = (std::numeric_limits<size_t>::max)();
+
+    bool read_threw = false;
+    try {
+        (void)mf.read_at<uint32_t>(max_offset);
+    } catch (const std::out_of_range&) {
+        read_threw = true;
+    }
+    CHECK(read_threw);
+
+    bool short_read_threw = false;
+    try {
+        (void)mf.read_at<uint32_t>(1);
+    } catch (const std::out_of_range&) {
+        short_read_threw = true;
+    }
+    CHECK(short_read_threw);
+
+    bool ptr_threw = false;
+    try {
+        (void)mf.ptr_at<uint8_t>(max_offset);
+    } catch (const std::out_of_range&) {
+        ptr_threw = true;
+    }
+    CHECK(ptr_threw);
+
+    std::cout << "  out-of-bounds read/ptr offsets: PASS" << std::endl;
 }
 
 void test_ptr_at() {
@@ -699,6 +737,7 @@ int main() {
     test_owned_native_file_move_and_close();
     test_invalid_owned_native_file_rejected();
     test_owned_native_file_mapping_failure_closes_temporary_handle();
+    test_read_and_ptr_at_reject_out_of_bounds_offsets();
 
 #ifdef _WIN32
     test_default_constructed_state();
