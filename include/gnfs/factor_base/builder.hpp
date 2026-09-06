@@ -25,7 +25,7 @@ public:
         uint32_t special_q_bound = 0;   // Special-Q 素数上界（0 = 同 algebraic_bound）
         uint64_t large_prime_bound = 0; // 大素数界（0 = rational_bound × 100 默认值）
         uint8_t log_scale = core::SIEVE_LOG_SCALE; // Scale factor for log values
-        bool parallel = true;
+        bool parallel = true; // Enable parallel sieve and algebraic root finding.
 
         Options() = default;
     };
@@ -47,8 +47,9 @@ public:
     /// 构建 Eratosthenes 筛(从 p*p 起标),返回 is_prime[0..bound]。
     /// 拆出避免 find_rational + find_algebraic 在同 bound 下重复构建(1e8 ≈ 12.5 MB)。
     /// bound ≥ 5e6 走分段并行筛,小 bound 走简单单线程。
+    /// parallel=false 强制使用简单单线程筛,不受 bound 阈值影响。
     /// 公开以便测试覆盖分段路径正确性。
-    static std::vector<bool> build_eratosthenes_sieve(uint32_t bound);
+    static std::vector<bool> build_eratosthenes_sieve(uint32_t bound, bool parallel = true);
 
 private:
     PolynomialContext ctx_;
@@ -57,10 +58,11 @@ private:
                                      uint8_t log_scale,
                                      const std::vector<bool>* shared_sieve = nullptr);
     static void find_algebraic_primes(FactorBase& fb, const PolynomialContext& ctx, uint32_t bound,
-                                      uint8_t log_scale,
+                                      uint8_t log_scale, bool parallel,
                                       const std::vector<bool>* shared_sieve = nullptr);
     static void find_algebraic_primes_range(FactorBase& fb, const PolynomialContext& ctx,
-                                            uint32_t min_p, uint32_t max_p, uint8_t log_scale);
+                                            uint32_t min_p, uint32_t max_p, uint8_t log_scale,
+                                            bool parallel);
 
     /// Extract roots from a polynomial known to be a product of distinct linear factors
     static std::vector<uint32_t> extract_roots_from_poly(const sqrt::ModularPoly& poly,
