@@ -8,8 +8,8 @@
 #include <istream>
 #include <limits>
 #include <ostream>
-#include <string>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace gnfs::core {
