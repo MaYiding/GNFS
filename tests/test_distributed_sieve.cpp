@@ -948,6 +948,38 @@ void test_more_workers_than_sqs() {
     std::cout << "PASS\n";
 }
 
+// A worker slot can become empty when a later run uses fewer SQs with the
+// same base path. Empty slots still need to reconcile any lease left by a
+// prior interrupted wave; otherwise that private namespace is leaked forever.
+void test_empty_chunk_recovers_stale_lease() {
+    std::cout << "[test_empty_chunk_recovers_stale_lease] ... " << std::flush;
+
+    const auto& f = shared_fixture();
+    DistributedSieveConfig cfg;
+    cfg.num_workers = 4;
+    cfg.base_path = make_tmp_base("empty-stale");
+
+    const auto stale_base = worker_cleanup_paths(cfg.base_path, 3).base_path;
+    auto reservation = gnfs::relation::OOCCleanupTransaction::reserve_private_lease(stale_base);
+    CHECK(reservation.completed());
+    // Drop the capability without removing the lease, matching a parent
+    // crash before the next wave starts.
+    reservation.ownership.reset();
+    CHECK(std::filesystem::exists(worker_lease_root(cfg.base_path, 3)));
+
+    const auto range = f.sq_range(1000, 1012);
+    std::vector<DistributedSieveWorkerResult> stats;
+    (void)run_distributed_sieve(cfg, f.ctx, f.fb, f.sieve_params(), f.sieve_region(),
+                                f.cofac_config(), f.ctx.n(), f.ctx.m(), range, &stats);
+
+    CHECK(stats.size() == cfg.num_workers);
+    CHECK(stats[3].success);
+    CHECK(!std::filesystem::exists(worker_lease_root(cfg.base_path, 3)));
+    check_worker_leases_removed(cfg.base_path, cfg.num_workers);
+    cleanup_worker_test_artifacts(cfg.base_path, cfg.num_workers);
+    std::cout << "PASS\n";
+}
+
 // ── Test 8: Worker crash simulation + master retry ─────────────────────
 // Forces chunk_id=0 to exit(1) on its first attempt via the crash-injection
 // ENV `GNFS_DISTRIBUTED_SIEVE_FAIL_ATTEMPT_0=1`. Master must:
@@ -1451,6 +1483,7 @@ int main() {
     test_multi_worker_same_set();
     test_empty_range();
     test_more_workers_than_sqs();
+    test_empty_chunk_recovers_stale_lease();
     test_worker_crash_with_retry();
     test_handoff_pending_crash_with_retry();
     test_corrupt_completion_report_with_retry();

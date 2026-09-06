@@ -770,6 +770,36 @@ std::vector<Relation> run_distributed_sieve_impl(
         return true;
     };
 
+    // Empty chunks do not launch a child, but their stable worker namespace
+    // may still contain a lease left by an earlier interrupted wave. Reserve
+    // and immediately remove one exact lease so recovery runs under the same
+    // lock/identity checks as a normal attempt.
+    const auto reconcile_empty_slot = [&](WorkerSlot& slot) noexcept {
+        auto reservation =
+            gnfs::relation::OOCCleanupTransaction::reserve_private_lease(slot.worker_base);
+        if (!reservation.completed()) {
+            std::fprintf(stderr,
+                         "[dist_sieve.master] empty chunk lease reconciliation failed "
+                         "chunk=%zu status=%u stage=%u\n",
+                         slot.chunk_id, static_cast<unsigned>(reservation.result.status),
+                         static_cast<unsigned>(reservation.result.stage));
+            slot.finished = true;
+            slot.success = false;
+            slot.failure_kind = WorkerAttemptFailureKind::retryable;
+            return false;
+        }
+        slot.private_lease.emplace(std::move(*reservation.ownership));
+        slot.finished = true;
+        slot.reap_confirmed = true;
+        slot.exit_status = 0;
+        slot.failure_kind = WorkerAttemptFailureKind::none;
+        slot.success = cleanup_attempt(slot);
+        if (!slot.success) {
+            slot.failure_kind = WorkerAttemptFailureKind::retryable;
+        }
+        return slot.success;
+    };
+
     const auto start_attempt = [&](WorkerSlot& slot) {
         slot.relations.clear();
         slot.success = false;
@@ -903,10 +933,8 @@ std::vector<Relation> run_distributed_sieve_impl(
         slot.worker_base = worker_ooc_base(slot.artifact_root);
         if (c_begin >= c_end) {
             // Empty chunk (degenerate when num_workers > available SQs).
-            // Skip without forking.
-            slot.finished = true;
-            slot.success = true;
-            slot.exit_status = 0;
+            // Reconcile any stale private lease without forking.
+            (void)reconcile_empty_slot(slot);
         }
         slots.push_back(std::move(slot));
     }
@@ -1001,9 +1029,8 @@ std::vector<Relation> run_distributed_sieve_impl(
     const WorkerSlot* fatal_seed_provider_slot = seed_provider_failure();
     const WorkerSlot* failed_seeded_slot = nullptr;
     if (require_all_workers_success) {
-        const auto failed = std::find_if(slots.begin(), slots.end(), [](const WorkerSlot& slot) {
-            return slot.sq_begin < slot.sq_end && !slot.success;
-        });
+        const auto failed = std::find_if(slots.begin(), slots.end(),
+                                         [](const WorkerSlot& slot) { return !slot.success; });
         if (failed != slots.end()) {
             failed_seeded_slot = &*failed;
         }
