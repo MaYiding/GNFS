@@ -83,7 +83,7 @@ public:
     /// @param config ECM 配置
     /// @return 找到的因子，如果失败返回 nullopt
     [[nodiscard]] static std::optional<Integer> factor(const Integer& n, Config config = Config()) {
-        if (n.is_one() || n.is_probable_prime() > 0) {
+        if (!n.is_positive() || n.is_one() || n.is_probable_prime() > 0) {
             return std::nullopt;
         }
 
@@ -114,7 +114,7 @@ public:
         if (schedule.sigmas.empty()) {
             return std::nullopt;
         }
-        if (n.is_one() || n.is_probable_prime() > 0) {
+        if (!n.is_positive() || n.is_one() || n.is_probable_prime() > 0) {
             return std::nullopt;
         }
         if (config.auto_params) {
@@ -135,7 +135,7 @@ public:
     /// (primes_cache + prime_powers), 避免每次 alloc B1=2000 → ~300 primes
     /// + inline pk 计算。sigma 仍 per-call randomized (与 N 关联) 保留原行为。
     [[nodiscard]] static std::optional<Integer> quick_factor(const Integer& n) {
-        if (n.is_one() || n.is_probable_prime() > 0) {
+        if (!n.is_positive() || n.is_one() || n.is_probable_prime() > 0) {
             return std::nullopt;
         }
 
@@ -188,7 +188,8 @@ public:
             throw std::invalid_argument(
                 "ECM deterministic quick Brent-Suyama degree is unsupported");
         }
-        if (schedule.sigmas.empty() || n.is_one() || n.is_probable_prime() > 0) {
+        if (schedule.sigmas.empty() || !n.is_positive() || n.is_one() ||
+            n.is_probable_prime() > 0) {
             return std::nullopt;
         }
 
@@ -295,7 +296,7 @@ public:
     /// 等价于 ECM::factor() 但跳过 primes_cache + prime_powers 重建
     [[nodiscard]] static std::optional<Integer> factor_with_batch(const Integer& n,
                                                                   const BatchContext& ctx) {
-        if (n.is_one() || n.is_probable_prime() > 0) {
+        if (!n.is_positive() || n.is_one() || n.is_probable_prime() > 0) {
             return std::nullopt;
         }
         if (ctx.empty()) {
@@ -520,9 +521,16 @@ private:
 
     /// 简单素数筛 (用于 Stage 1，bound 较小)
     static std::vector<uint64_t> sieve_primes(uint64_t bound) {
+        if (bound < 2)
+            return {};
+        constexpr uint64_t kMaxSieveBound = 100'000'000;
+        if (bound > kMaxSieveBound) {
+            throw std::invalid_argument("ECM sieve prime bound exceeds sieve cap (100M)");
+        }
+
         std::vector<bool> is_prime(bound + 1, true);
         is_prime[0] = is_prime[1] = false;
-        for (uint64_t i = 2; i * i <= bound; ++i) {
+        for (uint64_t i = 2; i <= bound / i; ++i) {
             if (is_prime[i]) {
                 for (uint64_t j = i * i; j <= bound; j += i) {
                     is_prime[j] = false;
@@ -613,10 +621,13 @@ private:
                "BatchContext: primes_cache and prime_powers must be parallel");
 
         // Suyama 参数 (与 try_curve 一致)
-        Integer u(static_cast<unsigned long long>(sigma * sigma - 5));
+        Integer sigma_value{sigma};
+        Integer u = sigma_value * sigma_value;
+        u -= int64_t{5};
         u %= n;
 
-        Integer v(static_cast<unsigned long long>(4 * sigma));
+        Integer v = sigma_value;
+        v *= int64_t{4};
         v %= n;
 
         Integer x0;
@@ -721,10 +732,13 @@ private:
         assert(sigma >= 6 && "ECM Suyama: sigma must be >= 6");
 
         // Integer(unsigned long long) 总是非负,is_negative() 永不为 true。
-        Integer u(static_cast<unsigned long long>(sigma * sigma - 5));
+        Integer sigma_value{sigma};
+        Integer u = sigma_value * sigma_value;
+        u -= int64_t{5};
         u %= n;
 
-        Integer v(static_cast<unsigned long long>(4 * sigma));
+        Integer v = sigma_value;
+        v *= int64_t{4};
         v %= n;
 
         // 起始点 u^3, v^3 — mpz_powm_ui combines mul + mod

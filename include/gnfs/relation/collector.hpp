@@ -1352,6 +1352,13 @@ public:
                 staged_relations.push_back(std::move(rel));
             }
 
+            // The count header defines the complete legacy payload.  Reject
+            // files with an unconsumed suffix instead of silently accepting a
+            // valid prefix followed by stale or corrupted bytes.
+            const auto payload_end = ifs.tellg();
+            if (payload_end == std::streampos(-1) || payload_end != file_end)
+                return false;
+
             // Build a replacement PMR vector against a replacement resource so
             // an allocation failure cannot invalidate the current pool/vector.
             std::unique_ptr<util::RelationPoolResource> staged_pool;
