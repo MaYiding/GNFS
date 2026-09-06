@@ -15,6 +15,7 @@
 #include <limits>
 #include <optional>
 #include <random>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -429,6 +430,52 @@ void test_schedule_sigma_validation() {
     }
 }
 
+void test_numeric_boundaries_and_nonpositive_inputs() {
+    const auto schedule = ECM::make_deterministic_curve_schedule(1, 0);
+    const ECM::Config config = make_config(1);
+
+    // B1=0/1 must produce an empty context without indexing past the sieve.
+    constexpr std::array<std::uint64_t, 2> degenerate_bounds{0, 1};
+    for (const std::uint64_t bound : degenerate_bounds) {
+        ECM::Config degenerate = config;
+        degenerate.B1 = bound;
+        const ECM::BatchContext context = ECM::prepare_batch(degenerate, schedule);
+        CHECK(context.primes_cache.empty());
+        CHECK(context.empty());
+    }
+
+    // Reject pathological bounds before allocating the sieve table.
+    constexpr std::array<std::uint64_t, 2> oversized_bounds{
+        std::uint64_t{100'000'001}, std::numeric_limits<std::uint64_t>::max()};
+    for (const std::uint64_t bound : oversized_bounds) {
+        ECM::Config oversized = config;
+        oversized.B1 = bound;
+        expect_invalid_argument([&] { (void)ECM::prepare_batch(oversized, schedule); });
+    }
+
+    const Integer zero(0);
+    const Integer negative(-1);
+    const ECM::BatchContext context = ECM::prepare_batch(config, schedule);
+
+    CHECK(!ECM::factor(zero).has_value());
+    CHECK(!ECM::factor(negative).has_value());
+    CHECK(!ECM::factor(zero, config, schedule).has_value());
+    CHECK(!ECM::factor(negative, config, schedule).has_value());
+    CHECK(!ECM::quick_factor(zero).has_value());
+    CHECK(!ECM::quick_factor(negative).has_value());
+    CHECK(!ECM::quick_factor(zero, schedule).has_value());
+    CHECK(!ECM::quick_factor(negative, schedule).has_value());
+    CHECK(!ECM::factor_with_batch(zero, context).has_value());
+    CHECK(!ECM::factor_with_batch(negative, context).has_value());
+
+    const std::vector<Integer> invalid_inputs{zero, negative};
+    const auto batch_results = ECM::factor_batch(
+        std::span<const Integer>(invalid_inputs.data(), invalid_inputs.size()), context);
+    CHECK(batch_results.size() == invalid_inputs.size());
+    CHECK(!batch_results[0].has_value());
+    CHECK(!batch_results[1].has_value());
+}
+
 template <class Function> void run_test(std::string_view name, Function&& function) {
     std::cout << "  " << name << "... " << std::flush;
     std::forward<Function>(function)();
@@ -456,6 +503,8 @@ int main() {
         run_test("empty/identity/prime boundaries",
                  test_empty_schedule_identity_and_prime_boundaries);
         run_test("sigma validation", test_schedule_sigma_validation);
+        run_test("numeric boundaries/nonpositive inputs",
+                 test_numeric_boundaries_and_nonpositive_inputs);
         std::cout << "=== Deterministic ECM Curve Schedule Tests PASSED ===\n";
         return 0;
     } catch (const std::exception& error) {

@@ -394,15 +394,26 @@ static void test_load_failure_preserves_state_transactionally(bool use_pool) {
     const auto forged_count_file =
         gnfs::util::temp_path(use_pool ? "gnfs_test_collector_load_forged_count_pool.bin"
                                        : "gnfs_test_collector_load_forged_count_vector.bin");
+    const auto trailing_file =
+        gnfs::util::temp_path(use_pool ? "gnfs_test_collector_load_trailing_pool.bin"
+                                       : "gnfs_test_collector_load_trailing_vector.bin");
     std::filesystem::remove(payload_file);
     std::filesystem::remove(header_file);
     std::filesystem::remove(forged_count_file);
+    std::filesystem::remove(trailing_file);
 
     CollectorConfig source_config;
     source_config.use_pool = false;
     RelationCollector source(source_config);
     CHECK(source.add(make_load_test_relation(21, 22, false)));
     CHECK(source.save(payload_file));
+    CHECK(source.save(trailing_file));
+    {
+        std::ofstream trailing(trailing_file, std::ios::binary | std::ios::app);
+        const char trailing_byte = static_cast<char>(0xA5);
+        trailing.write(&trailing_byte, sizeof(trailing_byte));
+        CHECK(trailing.good());
+    }
     const auto payload_size = std::filesystem::file_size(payload_file);
     CHECK(payload_size > 1);
     std::filesystem::resize_file(payload_file, payload_size - 1);
@@ -433,7 +444,7 @@ static void test_load_failure_preserves_state_transactionally(bool use_pool) {
     const auto stats_before = target.stats();
     const auto relations_before = target.finalize_relations();
 
-    for (const auto& filename : {payload_file, header_file, forged_count_file}) {
+    for (const auto& filename : {payload_file, header_file, forged_count_file, trailing_file}) {
         CHECK(!target.load(filename));
         CHECK(target.size() == relations_before.size());
         check_stats_equal(target.stats(), stats_before);
@@ -449,6 +460,7 @@ static void test_load_failure_preserves_state_transactionally(bool use_pool) {
     std::filesystem::remove(payload_file);
     std::filesystem::remove(header_file);
     std::filesystem::remove(forged_count_file);
+    std::filesystem::remove(trailing_file);
     std::cout << "  Transactional load failure rollback: PASS" << std::endl;
 }
 
