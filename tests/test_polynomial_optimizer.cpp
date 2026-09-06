@@ -1,4 +1,5 @@
 // Unit tests for PolynomialOptimizer — derivative, translate, rotate, skewness, etc.
+#include "support/test_check.hpp"
 #include "gnfs/core/polynomial.hpp"
 #include "gnfs/polynomial/polynomial_optimizer.hpp"
 #include "gnfs/polynomial/rotation_alpha.hpp"
@@ -296,16 +297,16 @@ void test_generate_smooth_rejects_invalid_inputs() {
     // Invalid factors must be ignored rather than making val *= p loop forever.
     const std::vector<uint32_t> primes = {0, 1, 2};
     const auto smooth = PolynomialOptimizer::generate_smooth_numbers(8, primes, 100);
-    assert(smooth.size() == 4);
-    assert(smooth[0] == I(1));
-    assert(smooth[1] == I(2));
-    assert(smooth[2] == I(4));
-    assert(smooth[3] == I(8));
+    GNFS_TEST_CHECK(smooth.size() == 4);
+    GNFS_TEST_CHECK(smooth[0] == I(1));
+    GNFS_TEST_CHECK(smooth[1] == I(2));
+    GNFS_TEST_CHECK(smooth[2] == I(4));
+    GNFS_TEST_CHECK(smooth[3] == I(8));
 
     // max_count is an upper bound, including the implicit value 1.
-    assert(PolynomialOptimizer::generate_smooth_numbers(8, primes, 0).empty());
-    assert(PolynomialOptimizer::generate_smooth_numbers(0, primes, 100).empty());
-    assert(PolynomialOptimizer::generate_smooth_numbers(1, primes, 100).empty());
+    GNFS_TEST_CHECK(PolynomialOptimizer::generate_smooth_numbers(8, primes, 0).empty());
+    GNFS_TEST_CHECK(PolynomialOptimizer::generate_smooth_numbers(0, primes, 100).empty());
+    GNFS_TEST_CHECK(PolynomialOptimizer::generate_smooth_numbers(1, primes, 100).empty());
 
     std::cout << "  PASS" << std::endl;
 }
