@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <future>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -204,6 +205,34 @@ void test_concurrent_submit_wait() {
     std::cout << "  Concurrent submit + wait_all (" << rounds << " rounds): PASS" << std::endl;
 }
 
+/// Boundary regression probe: a coarse stealing grain must not wrap the
+/// atomic cursor when the valid range ends at SIZE_MAX.
+void test_parallel_for_stealing_size_max_tail() {
+    std::cout << "Testing parallel_for_stealing SIZE_MAX tail..." << std::endl;
+
+    ThreadPool pool(2);
+    const size_t end = std::numeric_limits<size_t>::max();
+    const size_t start = end - 2;
+    std::atomic<size_t> expected{0};
+    std::atomic<size_t> unexpected{0};
+
+    pool.parallel_for_stealing(
+        start, end,
+        [&](size_t index) {
+            if (index >= start && index < end) {
+                expected.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                unexpected.fetch_add(1, std::memory_order_relaxed);
+            }
+        },
+        4);
+
+    GNFS_TEST_CHECK(expected.load(std::memory_order_relaxed) == 2);
+    GNFS_TEST_CHECK(unexpected.load(std::memory_order_relaxed) == 0);
+
+    std::cout << "  parallel_for_stealing SIZE_MAX tail: PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== ThreadPool Tests ===" << std::endl;
 
@@ -216,6 +245,7 @@ int main() {
     test_exception_handling();
     test_wait_all_race_stress();
     test_concurrent_submit_wait();
+    test_parallel_for_stealing_size_max_tail();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;
