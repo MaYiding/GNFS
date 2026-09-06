@@ -554,7 +554,11 @@ struct SchirokaurConfig {
 class FastPoly {
 public:
     static constexpr size_t MAX_DEGREE = 8;
-    std::array<uint64_t, MAX_DEGREE + 1> coeffs{};
+    // Keep the full convolution before reduce_inplace() folds high terms
+    // through the defining polynomial. A product of two degree-MAX_DEGREE
+    // operands can reach degree 2*MAX_DEGREE.
+    static constexpr size_t MAX_PRODUCT_DEGREE = 2 * MAX_DEGREE;
+    std::array<uint64_t, MAX_PRODUCT_DEGREE + 1> coeffs{};
     uint32_t deg = 0;
 
     FastPoly() = default;
