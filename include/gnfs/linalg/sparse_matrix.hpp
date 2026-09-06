@@ -458,6 +458,7 @@ private:
             throw std::length_error("BitVector size is too large");
         }
         return (size + padding) / 64;
+    }
 
     void check_index(size_t idx, const char* operation) const {
         if (idx >= size_) {
