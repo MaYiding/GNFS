@@ -1,8 +1,8 @@
 // Unit tests for PolynomialOptimizer — derivative, translate, rotate, skewness, etc.
-#include "support/test_check.hpp"
 #include "gnfs/core/polynomial.hpp"
 #include "gnfs/polynomial/polynomial_optimizer.hpp"
 #include "gnfs/polynomial/rotation_alpha.hpp"
+#include "support/test_check.hpp"
 
 #include <cassert>
 #include <cmath>
