@@ -48,11 +48,14 @@ using core::RationalPrime;
 ///   ── Algebraic FB ──
 ///   u32 algebraic_count + [u32 p, u32 r, u32 log_p, u8 degree, u8 pad×3] × n
 ///   ── Sieve algebraic split ──
-///   u64 sieve_algebraic_count
+///   u64 sieve_algebraic_count (high bit marks an explicit zero)
 struct FbCheckpoint {
     static constexpr uint64_t MAGIC = 0x474E465346434B50ULL;            // 'GNFSFCKP'
     static constexpr uint64_t MAGIC_INCOMPLETE = 0x474E465346434B4EULL; // 'GNFSFCKN'
     static constexpr uint64_t VERSION = 1;
+    // Counts are bounded to uint32_t, so reserve the high bit to distinguish
+    // an explicit zero (no sieve entries) from the legacy unset-zero value.
+    static constexpr uint64_t EXPLICIT_ZERO_SIEVE_COUNT = UINT64_C(1) << 63;
 
     // Build params
     uint32_t rational_bound = 0;
@@ -69,14 +72,21 @@ struct FbCheckpoint {
     std::vector<RationalPrime> rational;
     std::vector<AlgebraicPrime> algebraic;
     uint64_t sieve_algebraic_count = 0;
+    bool sieve_algebraic_count_explicit = false;
 
     /// Rebuild FactorBase from this checkpoint.
     [[nodiscard]] FactorBase to_factor_base() const {
-        if (sieve_algebraic_count > static_cast<uint64_t>((std::numeric_limits<size_t>::max)())) {
+        const bool marker_explicit_zero = (sieve_algebraic_count & EXPLICIT_ZERO_SIEVE_COUNT) != 0;
+        const uint64_t count = sieve_algebraic_count & ~EXPLICIT_ZERO_SIEVE_COUNT;
+        if (marker_explicit_zero && count != 0) {
+            throw std::runtime_error(
+                "FbCheckpoint::to_factor_base: invalid explicit-zero sieve count marker");
+        }
+        if (count > static_cast<uint64_t>((std::numeric_limits<size_t>::max)())) {
             throw std::overflow_error(
                 "FbCheckpoint::to_factor_base: sieve algebraic count exceeds size_t");
         }
-        if (sieve_algebraic_count > algebraic.size()) {
+        if (count > algebraic.size()) {
             throw std::runtime_error(
                 "FbCheckpoint::to_factor_base: sieve algebraic count exceeds algebraic count");
         }
@@ -95,7 +105,11 @@ struct FbCheckpoint {
         for (const auto& ap : algebraic) {
             fb.add_algebraic(ap.p, ap.r, ap.log_p, ap.degree);
         }
-        fb.set_sieve_algebraic_count(static_cast<size_t>(sieve_algebraic_count));
+        // Preserve legacy zero-as-unset checkpoints while carrying explicit
+        // zero through the reserved marker used by from_factor_base().
+        if (sieve_algebraic_count_explicit || marker_explicit_zero || count != 0) {
+            fb.set_sieve_algebraic_count_explicit(static_cast<size_t>(count));
+        }
         fb.build_index();
         return fb;
     }
@@ -119,6 +133,7 @@ struct FbCheckpoint {
         auto alg = fb.algebraic();
         ck.algebraic.assign(alg.begin(), alg.end());
         ck.sieve_algebraic_count = static_cast<uint64_t>(fb.sieve_algebraic_count());
+        ck.sieve_algebraic_count_explicit = fb.has_explicit_sieve_algebraic_count();
         return ck;
     }
 
@@ -126,7 +141,13 @@ struct FbCheckpoint {
         if (rational.size() > max_serialized_count() || algebraic.size() > max_serialized_count()) {
             throw std::overflow_error("FbCheckpoint::save: factor-base count exceeds uint32_t");
         }
-        if (sieve_algebraic_count > algebraic.size()) {
+        const bool marker_explicit_zero = (sieve_algebraic_count & EXPLICIT_ZERO_SIEVE_COUNT) != 0;
+        const uint64_t count = sieve_algebraic_count & ~EXPLICIT_ZERO_SIEVE_COUNT;
+        if (marker_explicit_zero && count != 0) {
+            throw std::runtime_error(
+                "FbCheckpoint::save: invalid explicit-zero sieve count marker");
+        }
+        if (count > algebraic.size()) {
             throw std::runtime_error(
                 "FbCheckpoint::save: sieve algebraic count exceeds algebraic count");
         }
@@ -169,7 +190,11 @@ struct FbCheckpoint {
             out.write(reinterpret_cast<const char*>(&deg_pad), 4);
         }
 
-        out.write(reinterpret_cast<const char*>(&sieve_algebraic_count), 8);
+        uint64_t encoded_sieve_count = count;
+        if ((sieve_algebraic_count_explicit || marker_explicit_zero) && count == 0) {
+            encoded_sieve_count = EXPLICIT_ZERO_SIEVE_COUNT;
+        }
+        out.write(reinterpret_cast<const char*>(&encoded_sieve_count), 8);
 
         out.flush();
         if (!out) {
@@ -254,10 +279,19 @@ struct FbCheckpoint {
             ck.algebraic.push_back(ap);
         }
 
-        in.read(reinterpret_cast<char*>(&ck.sieve_algebraic_count), 8);
+        uint64_t encoded_sieve_count = 0;
+        in.read(reinterpret_cast<char*>(&encoded_sieve_count), 8);
         if (in.gcount() != 8) {
             throw std::runtime_error("FbCheckpoint::load: truncated sieve count");
         }
+        const bool marker_explicit_zero = (encoded_sieve_count & EXPLICIT_ZERO_SIEVE_COUNT) != 0;
+        const uint64_t count = encoded_sieve_count & ~EXPLICIT_ZERO_SIEVE_COUNT;
+        if (marker_explicit_zero && count != 0) {
+            throw std::runtime_error(
+                "FbCheckpoint::load: invalid explicit-zero sieve count marker");
+        }
+        ck.sieve_algebraic_count = count;
+        ck.sieve_algebraic_count_explicit = marker_explicit_zero;
 
         return ck;
     }

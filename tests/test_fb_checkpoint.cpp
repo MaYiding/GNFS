@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <fstream>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 
 using namespace gnfs::factor_base;
@@ -139,6 +140,36 @@ void test_to_from_factor_base() {
     assert(fb2.algebraic_count() == 1);
 
     std::cout << "  FactorBase roundtrip: PASS" << std::endl;
+}
+
+void test_explicit_zero_sieve_count() {
+    std::cout << "Testing explicit zero sieve count roundtrip..." << std::endl;
+    const auto require = [](bool condition, const char* message) {
+        if (!condition)
+            throw std::runtime_error(message);
+    };
+    auto path = tmp_ckpt_path("explicit_zero");
+    CkptCleanup c{path};
+
+    FactorBase fb;
+    fb.add_algebraic(3, 0, 25, 1);
+    fb.set_sieve_algebraic_count_explicit(0);
+    assert(fb.sieve_algebraic_count() == 0);
+
+    PolynomialContext ctx = make_ctx();
+    auto ck = FbCheckpoint::from_factor_base(fb, ctx, /*special_q=*/100);
+    require(ck.sieve_algebraic_count == 0, "checkpoint changed the explicit zero count");
+    require(ck.sieve_algebraic_count_explicit,
+            "checkpoint lost the explicit zero state before serialization");
+    ck.save(path);
+
+    auto loaded = FbCheckpoint::load(path);
+    FactorBase restored = loaded.to_factor_base();
+    require(restored.algebraic_count() == 1, "checkpoint roundtrip changed algebraic entry count");
+    require(restored.sieve_algebraic_count() == 0,
+            "checkpoint roundtrip lost explicit empty sieve prefix");
+
+    std::cout << "  Explicit zero sieve count: PASS" << std::endl;
 }
 
 void test_matches_ok() {
@@ -340,6 +371,7 @@ int main() {
     std::cout << "===== FbCheckpoint Tests =====" << std::endl;
     test_roundtrip_small_fb();
     test_to_from_factor_base();
+    test_explicit_zero_sieve_count();
     test_matches_ok();
     test_matches_mismatch();
     test_empty_fb();
