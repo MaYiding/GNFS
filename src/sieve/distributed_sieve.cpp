@@ -17,6 +17,7 @@
 #ifndef _WIN32
 #include <fcntl.h>
 #include <limits.h>
+#include <signal.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -32,10 +33,12 @@
 #include <cstring>
 #include <exception>
 #include <filesystem>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <type_traits>
 #include <unordered_set>
 #include <utility>
@@ -86,6 +89,8 @@ DistributedSieveConfig parse_distributed_sieve_env() noexcept {
             cfg.sq_per_worker = static_cast<size_t>(v);
         }
     }
+
+    cfg.worker_timeout_ms = parse_distributed_sieve_worker_timeout_env();
 
     return cfg;
 }
@@ -362,6 +367,25 @@ static_assert(sizeof(WorkerCompletionReport) <= PIPE_BUF);
             }
         }
 
+        // Test-only hang injection. The parent watchdog must terminate and
+        // reap this child before it is allowed to converge the exact lease.
+        if (const char* hang_env = std::getenv(
+                ("GNFS_DISTRIBUTED_SIEVE_HANG_ATTEMPT_" + std::to_string(chunk_id)).c_str())) {
+            const long hang_on = std::strtol(hang_env, nullptr, 10);
+            const std::string_view hang_mode(hang_env);
+            if (hang_mode == "all" || hang_mode == "kill" ||
+                (hang_on > 0 && static_cast<size_t>(hang_on) == attempt_number)) {
+                std::fprintf(stderr, "[dist_sieve.worker] chunk=%zu INJECTED HANG on attempt %zu\n",
+                             chunk_id, attempt_number);
+                if (hang_mode == "kill") {
+                    (void)::signal(SIGTERM, SIG_IGN);
+                }
+                while (true) {
+                    (void)::pause();
+                }
+            }
+        }
+
         // Per-worker collector configured to stream to the worker OOC store.
         gnfs::relation::CollectorConfig coll_cfg;
         coll_cfg.check_duplicates = true;
@@ -548,42 +572,175 @@ struct WorkerWaitResult final {
     WorkerAttemptFailureKind failure_kind = WorkerAttemptFailureKind::unreaped;
 };
 
-/// Wait for a single PID and decode the exit status. An uncertain waitpid
-/// failure is distinct from a confirmed child failure: without a reap
-/// boundary the parent must neither delete that lease nor reuse its path.
-WorkerWaitResult wait_and_decode(pid_t pid) noexcept {
-    int wstatus = 0;
-    pid_t r;
-    do {
-        r = ::waitpid(pid, &wstatus, 0);
-    } while (r == -1 && errno == EINTR);
+inline constexpr auto WORKER_WAIT_POLL_INTERVAL = std::chrono::milliseconds(10);
+inline constexpr auto WORKER_TERMINATION_GRACE = std::chrono::milliseconds(100);
 
-    if (r == -1) {
-        return WorkerWaitResult{
-            .reaped = false,
-            .success = false,
-            .exit_status = -1,
-            .signal = 0,
-            .native_error = errno,
-            .failure_kind = WorkerAttemptFailureKind::unreaped,
-        };
-    }
-    const auto decoded = distributed_sieve_detail::decode_worker_wait_status(wstatus);
-    const auto failure_kind =
+[[nodiscard]] pid_t waitpid_retry(pid_t pid, int* wait_status, int options,
+                                  bool retry_eintr = true) noexcept {
+    pid_t result;
+    do {
+        result = ::waitpid(pid, wait_status, options);
+    } while (retry_eintr && result == -1 && errno == EINTR);
+    return result;
+}
+
+[[nodiscard]] WorkerWaitResult decode_worker_result(int wait_status,
+                                                    bool timed_out = false) noexcept {
+    const auto decoded = distributed_sieve_detail::decode_worker_wait_status(wait_status);
+    auto failure_kind =
         !decoded.terminal
             ? WorkerAttemptFailureKind::unreaped
-            : (decoded.success ? WorkerAttemptFailureKind::none
-                               : (decoded.exit_status == WORKER_EXIT_SEED_PROVIDER_FATAL
-                                      ? WorkerAttemptFailureKind::seed_provider_fatal
-                                      : WorkerAttemptFailureKind::retryable));
+            : (decoded.success && !timed_out
+                   ? WorkerAttemptFailureKind::none
+                   : (timed_out ? WorkerAttemptFailureKind::retryable
+                                : (decoded.exit_status == WORKER_EXIT_SEED_PROVIDER_FATAL
+                                       ? WorkerAttemptFailureKind::seed_provider_fatal
+                                       : WorkerAttemptFailureKind::retryable)));
     return WorkerWaitResult{
         .reaped = decoded.terminal,
-        .success = decoded.success,
+        .success = decoded.success && !timed_out,
         .exit_status = decoded.exit_status,
         .signal = decoded.signal,
         .native_error = 0,
         .failure_kind = failure_kind,
     };
+}
+
+/// Wait for a single PID and decode the exit status. An uncertain waitpid
+/// failure is distinct from a confirmed child failure: without a reap
+/// boundary the parent must neither delete that lease nor reuse its path.
+///
+/// With a non-zero timeout, polling remains in the parent and a timed-out
+/// child is terminated (TERM, then KILL) before the final blocking reap. This
+/// preserves the cleanup authority invariant: timeout is retryable only after
+/// the exact child has crossed a terminal wait boundary.
+WorkerWaitResult wait_and_decode(pid_t pid, std::uint64_t timeout_ms) noexcept {
+    const auto wait_blocking = [&]() noexcept {
+        int wstatus = 0;
+        const pid_t r = waitpid_retry(pid, &wstatus, 0);
+
+        if (r == -1) {
+            return WorkerWaitResult{
+                .reaped = false,
+                .success = false,
+                .exit_status = -1,
+                .signal = 0,
+                .native_error = errno,
+                .failure_kind = WorkerAttemptFailureKind::unreaped,
+            };
+        }
+        if (r != pid) {
+            return WorkerWaitResult{
+                .reaped = false,
+                .success = false,
+                .exit_status = -1,
+                .signal = 0,
+                .native_error = ECHILD,
+                .failure_kind = WorkerAttemptFailureKind::unreaped,
+            };
+        }
+        return decode_worker_result(wstatus);
+    };
+
+    if (timeout_ms == 0) {
+        return wait_blocking();
+    }
+
+    using Clock = std::chrono::steady_clock;
+    using Milliseconds = std::chrono::milliseconds;
+    const auto max_duration =
+        static_cast<std::uint64_t>(std::numeric_limits<Milliseconds::rep>::max());
+    const auto bounded_timeout =
+        Milliseconds(static_cast<Milliseconds::rep>(std::min(timeout_ms, max_duration)));
+    const auto started = Clock::now();
+    bool timed_out = false;
+    int wait_status = 0;
+
+    while (true) {
+        // Do not hide EINTR inside an unbounded retry loop: a signal storm
+        // must not postpone the configured watchdog deadline.
+        const pid_t observed = waitpid_retry(pid, &wait_status, WNOHANG, false);
+
+        if (observed == pid) {
+            return decode_worker_result(wait_status, timed_out);
+        }
+        if (observed == -1) {
+            if (errno == EINTR) {
+                if (Clock::now() - started >= bounded_timeout) {
+                    timed_out = true;
+                    break;
+                }
+                continue;
+            }
+            return WorkerWaitResult{
+                .reaped = false,
+                .success = false,
+                .exit_status = -1,
+                .signal = 0,
+                .native_error = errno,
+                .failure_kind = WorkerAttemptFailureKind::unreaped,
+            };
+        }
+        if (observed != 0) {
+            return WorkerWaitResult{
+                .reaped = false,
+                .success = false,
+                .exit_status = -1,
+                .signal = 0,
+                .native_error = ECHILD,
+                .failure_kind = WorkerAttemptFailureKind::unreaped,
+            };
+        }
+
+        const auto now = Clock::now();
+        if (now - started >= bounded_timeout) {
+            timed_out = true;
+            break;
+        }
+        const auto remaining = bounded_timeout - (now - started);
+        auto remaining_ms = std::chrono::duration_cast<Milliseconds>(remaining);
+        if (remaining_ms <= Milliseconds::zero()) {
+            remaining_ms = Milliseconds(1);
+        }
+        std::this_thread::sleep_for(std::min(WORKER_WAIT_POLL_INTERVAL, remaining_ms));
+    }
+
+    // The PID remains reserved until waitpid reaps it, so signalling this
+    // direct child cannot target an unrelated process. A short TERM grace
+    // keeps cooperative workers diagnosable; KILL guarantees progress for a
+    // hung worker that ignores TERM.
+    (void)::kill(pid, SIGTERM);
+    const auto grace_deadline = Clock::now() + WORKER_TERMINATION_GRACE;
+    while (Clock::now() < grace_deadline) {
+        const pid_t observed = waitpid_retry(pid, &wait_status, WNOHANG, false);
+        if (observed == pid) {
+            return decode_worker_result(wait_status, timed_out);
+        }
+        if (observed == -1) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return WorkerWaitResult{
+                .reaped = false,
+                .success = false,
+                .exit_status = -1,
+                .signal = 0,
+                .native_error = errno,
+                .failure_kind = WorkerAttemptFailureKind::unreaped,
+            };
+        }
+        std::this_thread::sleep_for(WORKER_WAIT_POLL_INTERVAL);
+    }
+
+    (void)::kill(pid, SIGKILL);
+    const auto reaped = wait_blocking();
+    if (!reaped.reaped) {
+        return reaped;
+    }
+    auto timed_out_result = reaped;
+    timed_out_result.success = false;
+    timed_out_result.failure_kind = WorkerAttemptFailureKind::retryable;
+    return timed_out_result;
 }
 
 /// Read one complete worker store into an isolated buffer. A read error never
@@ -658,6 +815,8 @@ DistributedSieveConfig parse_distributed_sieve_env() noexcept {
             cfg.sq_per_worker = static_cast<size_t>(v);
         }
     }
+
+    cfg.worker_timeout_ms = parse_distributed_sieve_worker_timeout_env();
 
     return cfg;
 }
@@ -825,7 +984,7 @@ std::vector<Relation> run_distributed_sieve_impl(
     };
 
     const auto finish_attempt = [&](WorkerSlot& slot) {
-        const auto waited = wait_and_decode(slot.pid);
+        const auto waited = wait_and_decode(slot.pid, cfg.worker_timeout_ms);
         slot.finished = true;
         slot.reap_confirmed = waited.reaped;
         slot.exit_status = waited.exit_status;
