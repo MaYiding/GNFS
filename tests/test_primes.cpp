@@ -81,6 +81,10 @@ void test_pow_mod_u64() {
     // Edge: exp == 0 with non-trivial base
     GNFS_TEST_CHECK(pow_mod_u64(5, 0, 13) == 1);
 
+    // A zero modulus has no residue; return the documented sentinel instead
+    // of evaluating base %= 0.
+    GNFS_TEST_CHECK(pow_mod_u64(5, 10, 0) == 0);
+
     // Carmichael: 561 = 3 * 11 * 17; 2^560 ≡ 1 (mod 561) but 561 composite.
     // We can still compute and verify.
     GNFS_TEST_CHECK(pow_mod_u64(2, 560, 561) == 1);
