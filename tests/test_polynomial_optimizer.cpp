@@ -290,6 +290,26 @@ void test_generate_smooth_max_count_respected() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_generate_smooth_rejects_invalid_inputs() {
+    std::cout << "Testing generate_smooth_numbers handles invalid inputs..." << std::endl;
+
+    // Invalid factors must be ignored rather than making val *= p loop forever.
+    const std::vector<uint32_t> primes = {0, 1, 2};
+    const auto smooth = PolynomialOptimizer::generate_smooth_numbers(8, primes, 100);
+    assert(smooth.size() == 4);
+    assert(smooth[0] == I(1));
+    assert(smooth[1] == I(2));
+    assert(smooth[2] == I(4));
+    assert(smooth[3] == I(8));
+
+    // max_count is an upper bound, including the implicit value 1.
+    assert(PolynomialOptimizer::generate_smooth_numbers(8, primes, 0).empty());
+    assert(PolynomialOptimizer::generate_smooth_numbers(0, primes, 100).empty());
+    assert(PolynomialOptimizer::generate_smooth_numbers(1, primes, 100).empty());
+
+    std::cout << "  PASS" << std::endl;
+}
+
 // ─── newton_root ─────────────────────────────────────────────────
 
 void test_newton_root_known_root() {
@@ -371,6 +391,7 @@ int main() {
     test_generate_smooth_powers_of_2();
     test_generate_smooth_sorted();
     test_generate_smooth_max_count_respected();
+    test_generate_smooth_rejects_invalid_inputs();
     test_newton_root_known_root();
     test_newton_root_already_at_root();
     test_newton_root_zero_tolerance_is_bounded();
