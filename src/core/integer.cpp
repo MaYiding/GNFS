@@ -48,13 +48,15 @@ uint64_t abs_mpz_to_uint64(const mpz_t value) {
 
 void* gmp_alloc(size_t n) {
     void* p = std::malloc(n);
-    if (!p) throw std::bad_alloc{};
+    if (!p)
+        throw std::bad_alloc{};
     return p;
 }
 
 void* gmp_realloc(void* old_ptr, size_t /*old_size*/, size_t new_size) {
     void* p = std::realloc(old_ptr, new_size);
-    if (!p) throw std::bad_alloc{};
+    if (!p)
+        throw std::bad_alloc{};
     return p;
 }
 
@@ -74,7 +76,7 @@ struct GMPMemorySetup {
 };
 static GMPMemorySetup gmp_memory_setup;
 
-#endif  // !GNFS_GMP_NO_THROW_OOM
+#endif // !GNFS_GMP_NO_THROW_OOM
 
 } // anonymous namespace
 
@@ -190,6 +192,11 @@ std::string Integer::to_string(int base) const {
 }
 
 size_t Integer::bit_length() const {
+    // GMP reports one digit for zero in every base. A bit length is the
+    // number of significant bits, so zero has no set bits and must report 0.
+    if (mpz_sgn(value_) == 0) {
+        return 0;
+    }
     return mpz_sizeinbase(value_, 2);
 }
 
@@ -438,7 +445,6 @@ std::ostream& operator<<(std::ostream& os, const Integer& n) {
     return os << n.to_string();
 }
 
-
 uint64_t Integer::to_uint64() const {
     if (!fits_uint64()) {
         throw std::overflow_error("Integer does not fit in uint64_t");
@@ -455,7 +461,8 @@ size_t Integer::num_digits(int base) const {
 }
 
 bool Integer::fits_uint64() const {
-    if (mpz_sgn(value_) < 0) return false;
+    if (mpz_sgn(value_) < 0)
+        return false;
     mpz_t max;
     mpz_init(max);
     set_mpz_from_uint64(max, std::numeric_limits<uint64_t>::max());
