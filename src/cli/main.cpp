@@ -915,6 +915,8 @@ int main(int argc, char* argv[]) {
             output = result.to_csv_line(true);
         else if (output_format == "report")
             output = result.to_report();
+        else if (!output_file.empty())
+            output = result.to_text();
         else if (quiet)
             output = result.to_text();
 
