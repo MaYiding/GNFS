@@ -15,6 +15,7 @@
 
 #include <array>
 #include <cassert>
+#include <cstring>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
@@ -24,6 +25,7 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <sstream>
 #include <system_error>
 #include <thread>
 #include <type_traits>
@@ -290,6 +292,180 @@ static Relation make_load_test_relation(int64_t a, uint64_t b, bool partial) {
 static void check_relation_ab_equal(const Relation& actual, const Relation& expected) {
     CHECK(actual.a == expected.a);
     CHECK(actual.b == expected.b);
+}
+
+static uint64_t checksum_for_single_relation_payload(const std::string& bytes) {
+    CHECK(bytes.size() >= sizeof(uint64_t));
+
+    uint64_t checksum = 0;
+    size_t offset = 0;
+    const auto xor_field = [&](size_t size) {
+        CHECK(offset + size <= bytes.size() - sizeof(uint64_t));
+        const auto* field = reinterpret_cast<const uint8_t*>(bytes.data() + offset);
+        for (size_t i = 0; i < size; ++i)
+            checksum ^= static_cast<uint64_t>(field[i]) << ((i & 7) * 8);
+        offset += size;
+    };
+
+    // This payload has no factor entries, one rational LP, no algebraic LP,
+    // and no extra (a,b) pairs. Keep the field boundaries aligned with
+    // Relation::serialize(), whose checksum position resets for each field.
+    xor_field(sizeof(uint32_t)); // magic
+    xor_field(sizeof(uint32_t)); // version
+    xor_field(sizeof(int64_t));  // a
+    xor_field(sizeof(uint64_t)); // b
+    xor_field(sizeof(uint32_t)); // rational factor count
+    xor_field(sizeof(uint32_t)); // algebraic factor count
+    xor_field(sizeof(uint32_t)); // rational LP count
+    xor_field(sizeof(uint64_t)); // rational LP p
+    xor_field(sizeof(uint64_t)); // rational LP r
+    xor_field(sizeof(uint8_t));  // rational LP e
+    xor_field(sizeof(uint32_t)); // algebraic LP count
+    xor_field(sizeof(uint32_t)); // extra pair count
+    CHECK(offset == bytes.size() - sizeof(uint64_t));
+    return checksum;
+}
+
+static std::string make_forged_invalid_rational_lp_payload() {
+    Relation valid(23, 24);
+    valid.rational_large_prime.push_back(PrimePower{1000003, 0, 1});
+
+    std::ostringstream serialized(std::ios::binary);
+    valid.serialize(serialized);
+    std::string forged = serialized.str();
+
+    constexpr size_t rational_lp_p_offset = sizeof(uint32_t) + sizeof(uint32_t) + sizeof(int64_t) +
+                                            sizeof(uint64_t) + 3 * sizeof(uint32_t);
+    CHECK(forged.size() >= rational_lp_p_offset + sizeof(uint64_t) + sizeof(uint64_t));
+    const uint64_t malformed_prime = 1;
+    std::memcpy(forged.data() + rational_lp_p_offset, &malformed_prime, sizeof(malformed_prime));
+    const uint64_t checksum = checksum_for_single_relation_payload(forged);
+    std::memcpy(forged.data() + forged.size() - sizeof(checksum), &checksum, sizeof(checksum));
+    return forged;
+}
+
+void test_legacy_serialization_lp_contract() {
+    std::cout << "Testing legacy serialization large-prime contract..." << std::endl;
+
+    Relation invalid_rational(17, 19);
+    invalid_rational.rational_large_prime.push_back(PrimePower{1, 0, 1});
+    std::ostringstream rejected_rational(std::ios::binary);
+    bool rational_rejected = false;
+    try {
+        invalid_rational.serialize(rejected_rational);
+    } catch (const std::invalid_argument&) {
+        rational_rejected = true;
+    }
+    CHECK(rational_rejected);
+    CHECK(rejected_rational.str().empty());
+
+    Relation invalid_algebraic(17, 19);
+    invalid_algebraic.algebraic_large_prime.push_back(PrimePower{101, 101, 1});
+    std::ostringstream rejected_algebraic(std::ios::binary);
+    bool algebraic_rejected = false;
+    try {
+        invalid_algebraic.serialize(rejected_algebraic);
+    } catch (const std::invalid_argument&) {
+        algebraic_rejected = true;
+    }
+    CHECK(algebraic_rejected);
+    CHECK(rejected_algebraic.str().empty());
+
+    Relation zero_exponent(17, 19);
+    zero_exponent.rational_large_prime.push_back(PrimePower{1, 0, 0});
+    zero_exponent.algebraic_large_prime.push_back(PrimePower{1, 101, 0});
+    std::ostringstream zero_serialized(std::ios::binary);
+    zero_exponent.serialize(zero_serialized);
+    std::istringstream zero_input(zero_serialized.str(), std::ios::binary);
+    const Relation zero_roundtrip = Relation::deserialize(zero_input);
+    CHECK(zero_roundtrip.rational_large_prime == zero_exponent.rational_large_prime);
+    CHECK(zero_roundtrip.algebraic_large_prime == zero_exponent.algebraic_large_prime);
+
+    std::cout << "  Legacy serialization large-prime contract: PASS" << std::endl;
+}
+
+void test_legacy_save_preflight_preserves_destination() {
+    std::cout << "Testing legacy save LP preflight..." << std::endl;
+
+    const auto existing_path = gnfs::util::temp_path("gnfs_test_legacy_save_lp_existing.bin");
+    const auto missing_path = gnfs::util::temp_path("gnfs_test_legacy_save_lp_missing.bin");
+    std::filesystem::remove(existing_path);
+    std::filesystem::remove(missing_path);
+
+    {
+        std::ofstream existing(existing_path, std::ios::binary);
+        existing << "preserve-me";
+    }
+
+    RelationCollector collector;
+    Relation malformed(17, 19);
+    malformed.rational_large_prime.push_back(PrimePower{1, 0, 1});
+    CHECK(collector.add(std::move(malformed)));
+
+    bool existing_rejected = false;
+    try {
+        (void)collector.save(existing_path);
+    } catch (const std::invalid_argument&) {
+        existing_rejected = true;
+    }
+    CHECK(existing_rejected);
+    {
+        std::ifstream existing(existing_path, std::ios::binary);
+        const std::string contents((std::istreambuf_iterator<char>(existing)), {});
+        CHECK(contents == "preserve-me");
+    }
+
+    bool missing_rejected = false;
+    try {
+        (void)collector.save(missing_path);
+    } catch (const std::invalid_argument&) {
+        missing_rejected = true;
+    }
+    CHECK(missing_rejected);
+    CHECK(!std::filesystem::exists(missing_path));
+
+    std::filesystem::remove(existing_path);
+    std::filesystem::remove(missing_path);
+    std::cout << "  Legacy save LP preflight: PASS" << std::endl;
+}
+
+void test_legacy_load_rejects_forged_lp_transactionally() {
+    std::cout << "Testing legacy load forged LP rollback..." << std::endl;
+
+    const auto path = gnfs::util::temp_path("gnfs_test_legacy_load_forged_lp.bin");
+    std::filesystem::remove(path);
+    const std::string forged = make_forged_invalid_rational_lp_payload();
+    {
+        std::ofstream output(path, std::ios::binary);
+        const uint64_t count = 1;
+        output.write(reinterpret_cast<const char*>(&count), sizeof(count));
+        output.write(forged.data(), static_cast<std::streamsize>(forged.size()));
+        CHECK(output.good());
+    }
+
+    bool direct_rejected = false;
+    try {
+        std::istringstream input(forged, std::ios::binary);
+        (void)Relation::deserialize(input);
+    } catch (const std::runtime_error&) {
+        direct_rejected = true;
+    }
+    CHECK(direct_rejected);
+
+    RelationCollector target;
+    const Relation old_relation(31, 32);
+    CHECK(target.add(Relation(old_relation)));
+    const auto stats_before = target.stats();
+    const auto relations_before = target.finalize_relations();
+    CHECK(!target.load(path));
+    CHECK(target.size() == relations_before.size());
+    check_stats_equal(target.stats(), stats_before);
+    const auto relations_after = target.finalize_relations();
+    CHECK(relations_after.size() == relations_before.size());
+    check_relation_ab_equal(relations_after.front(), relations_before.front());
+
+    std::filesystem::remove(path);
+    std::cout << "  Legacy load forged LP rollback: PASS" << std::endl;
 }
 
 static void test_load_replaces_state_transactionally(bool use_pool) {
@@ -3053,6 +3229,9 @@ int main() {
     test_batch_add();
     test_output_file_open_failure();
     test_save_load();
+    test_legacy_serialization_lp_contract();
+    test_legacy_save_preflight_preserves_destination();
+    test_legacy_load_rejects_forged_lp_transactionally();
     test_load_replaces_state_transactionally(false);
     test_load_replaces_state_transactionally(true);
     test_load_rejects_duplicate_ab_pairs(false);

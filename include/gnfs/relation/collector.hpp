@@ -1239,6 +1239,17 @@ public:
         if (config_.ooc_enabled)
             return false; // OOC mode: legacy save disabled
 
+        // Validate every relation before opening the destination with truncation.
+        // Relation::serialize() repeats the check defensively, but preflighting
+        // keeps a malformed LP from clobbering an existing save.
+        if (relations_pmr_) {
+            for (const auto& rel : *relations_pmr_)
+                rel.validate_serialization_contract();
+        } else {
+            for (const auto& rel : relations_)
+                rel.validate_serialization_contract();
+        }
+
         std::ofstream ofs(filename, std::ios::binary);
         if (!ofs)
             return false;
