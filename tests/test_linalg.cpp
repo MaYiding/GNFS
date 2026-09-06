@@ -306,6 +306,30 @@ void test_bitvector_size_overflow() {
     std::cout << "  BitVector size overflow guard: PASSED" << std::endl;
 }
 
+void test_bitvector_contract() {
+    std::cout << "Testing BitVector index and XOR contracts..." << std::endl;
+
+    BitVector empty(0);
+    require_throws<std::out_of_range>([&] { empty.set(0); }, "set on empty BitVector");
+    require_throws<std::out_of_range>([&] { empty.clear(0); }, "clear on empty BitVector");
+    require_throws<std::out_of_range>([&] { empty.flip(0); }, "flip on empty BitVector");
+    require_throws<std::out_of_range>([&] { (void)empty.test(0); }, "test on empty BitVector");
+
+    BitVector vector(65);
+    vector.set(64);
+    GNFS_TEST_CHECK(vector.test(64));
+    require_throws<std::out_of_range>([&] { vector.set(65); }, "set past logical end");
+    require_throws<std::out_of_range>([&] { vector.clear(65); }, "clear past logical end");
+    require_throws<std::out_of_range>([&] { vector.flip(65); }, "flip past logical end");
+    require_throws<std::out_of_range>([&] { (void)vector.test(65); }, "test past logical end");
+
+    BitVector shorter(64);
+    require_throws<std::invalid_argument>([&] { vector.xor_with(shorter); },
+                                          "XOR with mismatched logical size");
+
+    std::cout << "  BitVector index and XOR contracts: PASSED" << std::endl;
+}
+
 // Test Gaussian elimination on a simple matrix
 void test_gaussian_simple() {
     std::cout << "Testing Gaussian elimination (simple)..." << std::endl;
@@ -1550,6 +1574,7 @@ int main() {
     test_sparse_matrix_transpose();
     test_bitvector();
     test_bitvector_size_overflow();
+    test_bitvector_contract();
     test_gaussian_simple();
     test_gaussian_larger();
     test_matrix_builder();
