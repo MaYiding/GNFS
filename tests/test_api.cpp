@@ -505,6 +505,7 @@ bool test_config_from_file_invalid() {
     invalid_cases_passed &= write_and_expect_throw("degree = not-an-integer\n", "invalid integer");
     invalid_cases_passed &=
         write_and_expect_throw("degree = 4294967296\n", "uint32 degree overflow");
+    invalid_cases_passed &= write_and_expect_throw("degree = -0\n", "signed zero degree");
     invalid_cases_passed &=
         write_and_expect_throw("degree = 4junk\n", "trailing degree characters");
     invalid_cases_passed &=
@@ -513,6 +514,10 @@ bool test_config_from_file_invalid() {
         write_and_expect_throw("algebraic_bound = 4junk\n", "trailing algebraic bound characters");
     invalid_cases_passed &=
         write_and_expect_throw("large_prime_bound = 8junk\n", "trailing large-prime characters");
+    invalid_cases_passed &=
+        write_and_expect_throw("large_prime_bound = -1\n", "negative large-prime bound");
+    invalid_cases_passed &=
+        write_and_expect_throw("large_prime_bound = -0\n", "signed zero large-prime bound");
     invalid_cases_passed &= write_and_expect_throw("large_prime_bound = 18446744073709551616\n",
                                                    "uint64 large-prime overflow");
     invalid_cases_passed &=
@@ -584,6 +589,28 @@ bool test_config_from_file_invalid() {
     }
     if (!boolean_literals_passed) {
         return false;
+    }
+
+    // Preserve stoull's established explicit-plus compatibility for unsigned values.
+    {
+        const std::string path = gnfs::util::temp_path("gnfs_test_config_unsigned_plus.cfg");
+        {
+            std::ofstream ofs(path);
+            ofs << "large_prime_bound = +1\n";
+        }
+        try {
+            const auto cfg = Config::from_file(path);
+            if (!cfg.large_prime_bound.has_value() || *cfg.large_prime_bound != 1) {
+                std::cerr << "  Unexpected large-prime value for explicit plus\n";
+                std::remove(path.c_str());
+                return false;
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "  Unexpected throw for large_prime_bound = +1: " << e.what() << "\n";
+            std::remove(path.c_str());
+            return false;
+        }
+        std::remove(path.c_str());
     }
 
     return true;

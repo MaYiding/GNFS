@@ -55,8 +55,12 @@ struct Config {
     std::optional<std::string> output_format; // "text", "json", "csv", "report"
 
     /// Parse a complete unsigned 32-bit value without platform-dependent
-    /// narrowing from unsigned long.
+    /// narrowing from unsigned long. Explicit negative signs are rejected.
     static uint32_t parse_uint32(std::string_view value, std::string_view key) {
+        if (value.empty() || value.front() == '-') {
+            throw std::invalid_argument("Config: " + std::string(key) +
+                                        " must be an unsigned uint32 value");
+        }
         size_t consumed = 0;
         const uint64_t parsed = std::stoull(std::string(value), &consumed, 10);
         if (consumed != value.size() || parsed > std::numeric_limits<uint32_t>::max()) {
@@ -67,8 +71,12 @@ struct Config {
     }
 
     /// Parse a complete unsigned 64-bit value rather than accepting a numeric
-    /// prefix followed by arbitrary text.
+    /// prefix followed by arbitrary text. Explicit negative signs are rejected.
     static uint64_t parse_uint64(std::string_view value, std::string_view key) {
+        if (value.empty() || value.front() == '-') {
+            throw std::invalid_argument("Config: " + std::string(key) +
+                                        " must be an unsigned uint64 value");
+        }
         size_t consumed = 0;
         const uint64_t parsed = std::stoull(std::string(value), &consumed, 10);
         if (consumed != value.size()) {
