@@ -138,15 +138,14 @@ inline int resolve_progress_interval_from_env() noexcept {
     return static_cast<int>(parsed);
 }
 
-}  // namespace detail
+} // namespace detail
 
 /// Returns the cached interval value parsed from
 /// `GNFS_LINALG_PROGRESS_INTERVAL`. Zero means disabled (no telemetry).
 [[nodiscard]] inline int linalg_progress_interval() noexcept {
     std::call_once(detail::cached_progress_flag(), []() noexcept {
-        detail::cached_progress_interval().store(
-            detail::resolve_progress_interval_from_env(),
-            std::memory_order_relaxed);
+        detail::cached_progress_interval().store(detail::resolve_progress_interval_from_env(),
+                                                 std::memory_order_relaxed);
     });
     return detail::cached_progress_interval().load(std::memory_order_relaxed);
 }
@@ -160,9 +159,8 @@ inline int resolve_progress_interval_from_env() noexcept {
 /// single-threaded test setup. Mirrors the pattern from W8 T5
 /// `integer_scratch_pool_reset_env_cache_for_testing()`.
 inline void linalg_progress_reset_env_cache_for_testing() noexcept {
-    detail::cached_progress_interval().store(
-        detail::resolve_progress_interval_from_env(),
-        std::memory_order_relaxed);
+    detail::cached_progress_interval().store(detail::resolve_progress_interval_from_env(),
+                                             std::memory_order_relaxed);
     // Mark the once_flag as already-executed so a subsequent
     // `linalg_progress_interval()` call does not overwrite our value
     // with a (potentially stale) re-parse.
@@ -201,12 +199,9 @@ public:
     /// only). Total may be 0 (no projection possible) or negative
     /// (clamped to 0).
     IterationProgressLogger(std::string_view phase_label, std::int64_t total_iters)
-        : phase_(phase_label),
-          total_(total_iters < 0 ? 0 : total_iters),
-          interval_(linalg_progress_interval()),
-          last_logged_iter_(-1),
-          start_(std::chrono::steady_clock::now()),
-          finished_(false) {
+        : phase_(phase_label), total_(total_iters < 0 ? 0 : total_iters),
+          interval_(linalg_progress_interval()), last_logged_iter_(-1),
+          start_(std::chrono::steady_clock::now()), finished_(false) {
         // Nothing else to do; if disabled, all subsequent calls are no-ops.
     }
 
@@ -229,14 +224,11 @@ public:
     // Movable. Moved-from logger is marked finished so its dtor skips the
     // DONE line (transferred to the move target).
     IterationProgressLogger(IterationProgressLogger&& other) noexcept
-        : phase_(std::move(other.phase_)),
-          total_(other.total_),
-          interval_(other.interval_),
-          last_logged_iter_(other.last_logged_iter_),
-          start_(other.start_),
+        : phase_(std::move(other.phase_)), total_(other.total_), interval_(other.interval_),
+          last_logged_iter_(other.last_logged_iter_), start_(other.start_),
           finished_(other.finished_) {
-        other.finished_ = true;  // Prevent moved-from dtor from emitting.
-        other.interval_ = 0;     // Belt-and-suspenders: disable tick too.
+        other.finished_ = true; // Prevent moved-from dtor from emitting.
+        other.interval_ = 0;    // Belt-and-suspenders: disable tick too.
     }
 
     IterationProgressLogger& operator=(IterationProgressLogger&& other) noexcept {
@@ -304,11 +296,9 @@ private:
         const auto now = std::chrono::steady_clock::now();
         const double elapsed_s = elapsed_seconds(now);
         const double avg_rate = compute_rate(total_, elapsed_s);
-        std::cerr << "[linalg_progress] phase=" << phase_
-                  << " DONE iter=" << total_ << '/' << total_
-                  << " elapsed=" << format_seconds(elapsed_s) << "s"
-                  << " avg_rate=" << format_rate(avg_rate) << "/s"
-                  << '\n'
+        std::cerr << "[linalg_progress] phase=" << phase_ << " DONE iter=" << total_ << '/'
+                  << total_ << " elapsed=" << format_seconds(elapsed_s) << "s"
+                  << " avg_rate=" << format_rate(avg_rate) << "/s" << '\n'
                   << std::flush;
         finished_ = true;
     }
@@ -318,17 +308,14 @@ private:
         const double elapsed_s = elapsed_seconds(now);
         const double rate = compute_rate(clamped_iter, elapsed_s);
         const double eta_s = compute_eta(clamped_iter, total_, rate);
-        std::cerr << "[linalg_progress] phase=" << phase_
-                  << " iter=" << clamped_iter << '/' << total_
-                  << " elapsed=" << format_seconds(elapsed_s) << "s"
+        std::cerr << "[linalg_progress] phase=" << phase_ << " iter=" << clamped_iter << '/'
+                  << total_ << " elapsed=" << format_seconds(elapsed_s) << "s"
                   << " rate=" << format_rate(rate) << "/s"
-                  << " eta=" << format_eta(eta_s) << "s"
-                  << '\n'
+                  << " eta=" << format_eta(eta_s) << "s" << '\n'
                   << std::flush;
     }
 
-    [[nodiscard]] double elapsed_seconds(
-            std::chrono::steady_clock::time_point now) const noexcept {
+    [[nodiscard]] double elapsed_seconds(std::chrono::steady_clock::time_point now) const noexcept {
         using namespace std::chrono;
         const auto delta = now - start_;
         const auto ns = duration_cast<nanoseconds>(delta).count();
@@ -338,8 +325,7 @@ private:
     /// Iterations per second. Returns 0.0 when elapsed is non-positive
     /// (avoid div-by-zero and avoid spurious huge rates from sub-microsecond
     /// elapsed). 0.0 is rendered as "?" by `format_rate`.
-    [[nodiscard]] static double compute_rate(std::int64_t iter,
-                                             double elapsed_s) noexcept {
+    [[nodiscard]] static double compute_rate(std::int64_t iter, double elapsed_s) noexcept {
         if (elapsed_s <= 0.0 || iter <= 0) {
             return 0.0;
         }
@@ -349,8 +335,7 @@ private:
     /// Estimated time remaining in seconds. Returns -1.0 as a sentinel for
     /// "unknown" (total unknown, rate zero, or already past total).
     /// Rendered as "?" by `format_eta`.
-    [[nodiscard]] static double compute_eta(std::int64_t iter,
-                                            std::int64_t total,
+    [[nodiscard]] static double compute_eta(std::int64_t iter, std::int64_t total,
                                             double rate) noexcept {
         if (total <= 0 || rate <= 0.0 || iter >= total) {
             return -1.0;
@@ -438,4 +423,4 @@ private:
     bool finished_;
 };
 
-}  // namespace gnfs::linalg
+} // namespace gnfs::linalg
