@@ -1239,6 +1239,20 @@ public:
         if (config_.ooc_enabled)
             return false; // OOC mode: legacy save disabled
 
+        // Validate every relation before opening the destination with truncation.
+        // A collector can accept rows that are valid for the in-memory pipeline
+        // but exceed the persistence contract (for example, a merged row with
+        // too many large-prime entries).  Relation::serialize() rejects those
+        // rows; preflighting keeps that exception from destroying an existing
+        // save or leaving a newly-created count-only file behind.
+        if (relations_pmr_) {
+            for (const auto& rel : *relations_pmr_)
+                rel.validate_persistence_limits();
+        } else {
+            for (const auto& rel : relations_)
+                rel.validate_persistence_limits();
+        }
+
         std::ofstream ofs(filename, std::ios::binary);
         if (!ofs)
             return false;
