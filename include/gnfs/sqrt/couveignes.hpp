@@ -175,6 +175,8 @@ public:
         uint64_t p = config_.prime_start;
         while (primes.size() < config_.num_primes && primes_checked < config_.max_prime_checks) {
             p = next_prime(p);
+            if (p == 0 || p > std::numeric_limits<uint32_t>::max())
+                break;
             primes_checked++;
 
             // Skip primes that divide N — direct GMP divisibility (zero alloc)
@@ -506,6 +508,8 @@ public:
             while (char_primes.size() < config_.num_characters &&
                    char_primes_checked < config_.max_character_prime_checks) {
                 q_cand = next_prime(q_cand);
+                if (q_cand == 0 || q_cand > std::numeric_limits<uint32_t>::max())
+                    break;
                 ++char_primes_checked;
 
                 // Skip primes that divide N
@@ -826,6 +830,8 @@ public:
         size_t primes_checked = 0;
         while (primes.size() < config_.num_primes && primes_checked < config_.max_prime_checks) {
             p = next_prime(p);
+            if (p == 0 || p > std::numeric_limits<uint32_t>::max())
+                break;
             primes_checked++;
 
             // Skip primes that divide N — direct GMP divisibility (zero alloc)

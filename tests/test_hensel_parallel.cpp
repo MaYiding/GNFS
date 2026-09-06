@@ -17,6 +17,7 @@
 
 #include <gnfs/core/integer.hpp>
 #include <gnfs/polynomial/base_m.hpp>
+#include <gnfs/sqrt/couveignes.hpp>
 #include <gnfs/sqrt/hensel_parallel.hpp>
 #include <gnfs/sqrt/hensel_sqrt.hpp>
 #include <gnfs/sqrt/number_field.hpp>
@@ -25,6 +26,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -315,6 +317,36 @@ void test_edge_case_single_slot() {
     std::cout << "  Single-slot + empty-span dispatch: PASSED" << std::endl;
 }
 
+void test_prime_search_exhaustion() {
+    std::cout << "Testing algebraic sqrt prime-search exhaustion..." << std::endl;
+    NumberField nf = build_test_number_field();
+
+    CouveignesSqrt::Config couveignes_config;
+    couveignes_config.num_primes = 2;
+    couveignes_config.prime_start = std::numeric_limits<uint64_t>::max();
+    couveignes_config.max_prime_checks = 1;
+    CouveignesSqrt couveignes(couveignes_config);
+    if (couveignes.compute_from_element(NumberFieldElement(Integer(1)), nf).has_value()) {
+        std::cerr << "ERROR: exhausted Couveignes prime search returned a value" << std::endl;
+        std::abort();
+    }
+
+    HenselSqrt::Config hensel_config;
+    // The next candidate is the largest uint64_t prime. The old trial-division
+    // helper attempted about sqrt(p) divisions here and its i*i loop bound
+    // wrapped near UINT64_MAX. Hensel primes are limited to uint32_t because
+    // GMP's *_ui operands are only 32 bits on Windows LLP64.
+    hensel_config.prime_start = std::numeric_limits<uint64_t>::max() - 60;
+    HenselSqrt hensel(hensel_config);
+    const std::vector<std::pair<int64_t, uint64_t>> pairs = {{1, 1}, {1, 1}};
+    if (hensel.compute(pairs, nf).has_value()) {
+        std::cerr << "ERROR: unsupported Hensel prime range returned a value" << std::endl;
+        std::abort();
+    }
+
+    std::cout << "  Prime-search exhaustion: PASSED" << std::endl;
+}
+
 } // namespace
 
 int main() {
@@ -330,6 +362,7 @@ int main() {
 
     test_perf_info_4_vs_1();
     test_edge_case_single_slot();
+    test_prime_search_exhaustion();
 
     std::cout << std::endl << "=== All Hensel Parallel Tests PASSED ===" << std::endl;
     return 0;

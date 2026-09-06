@@ -3,6 +3,7 @@
 #include "../core/integer.hpp"
 #include "../core/polynomial_context.hpp"
 #include "../util/bit_intrin.hpp"
+#include "../util/primes.hpp"
 #include "hensel_parallel.hpp"
 #include "modular_poly.hpp"
 #include "number_field.hpp"
@@ -277,6 +278,8 @@ private:
         uint64_t p = config_.prime_start;
         for (size_t att = 0; primes.size() < count && att < 100000; ++att) {
             p = next_prime(p);
+            if (p == 0 || p > std::numeric_limits<uint32_t>::max())
+                break;
             auto f_mod = get_f_mod_p(nf, p);
             if (f_mod.back() == 0)
                 continue;
@@ -783,6 +786,8 @@ private:
 
         // Find inert prime
         uint64_t p = config_.cached_inert_prime;
+        if (p > std::numeric_limits<uint32_t>::max())
+            return std::nullopt;
         if (p == 0)
             p = find_inert_prime(nf);
         if (p == 0)
@@ -1222,6 +1227,8 @@ private:
 
         for (size_t attempts = 0; attempts < 100000; ++attempts) {
             p = next_prime(p);
+            if (p == 0 || p > std::numeric_limits<uint32_t>::max())
+                break;
 
             // Check f irreducible mod p (full Rabin test)
             auto f_mod = get_f_mod_p(nf, p);
@@ -1502,30 +1509,7 @@ private:
 
     /// Find next prime (with overflow guard)
     [[nodiscard]] static uint64_t next_prime(uint64_t n) {
-        if (n >= UINT64_MAX - 2)
-            return 0;
-        n++;
-        if (n <= 2)
-            return 2;
-        if (n % 2 == 0) {
-            if (n == UINT64_MAX)
-                return 0;
-            n++;
-        }
-        while (true) {
-            bool is_p = true;
-            for (uint64_t i = 3; i * i <= n; ++i) {
-                if (n % i == 0) {
-                    is_p = false;
-                    break;
-                }
-            }
-            if (is_p)
-                return n;
-            if (n > UINT64_MAX - 2)
-                return 0;
-            n += 2;
-        }
+        return gnfs::util::next_prime_u64(n);
     }
 };
 
