@@ -251,8 +251,8 @@ struct SpecialQRangeSelector {
 
     /// 选择范围
     [[nodiscard]] SpecialQRange select(const FactorBase& /* fb */) const {
-        if (algebraic_bound == 0) {
-            throw std::invalid_argument("Special-Q algebraic bound must be positive");
+        if (algebraic_bound < 2) {
+            throw std::invalid_argument("Special-Q algebraic bound must be at least 2");
         }
         if (!std::isfinite(relations_per_sq) || relations_per_sq <= 0.0) {
             throw std::invalid_argument("Special-Q relations per q must be finite and positive");

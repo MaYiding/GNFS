@@ -418,6 +418,7 @@ void test_range_selector_parameter_guards() {
     };
 
     expect_invalid(0, 1.0);
+    expect_invalid(1, 1.0);
     expect_invalid(1, 0.0);
     expect_invalid(1, -1.0);
     expect_invalid(1, std::numeric_limits<double>::quiet_NaN());
