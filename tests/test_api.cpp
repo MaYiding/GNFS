@@ -1571,6 +1571,146 @@ std::vector<gnfs::core::Relation> make_structured_route_corpus() {
     };
 }
 
+bool test_pipeline_filter_freezes_strategy_before_callbacks() {
+    // The public filter entry must snapshot every environment-controlled
+    // strategy before its first progress callback. Otherwise a callback can
+    // silently switch StandardV0 to CliqueV0 for the same input.
+    ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "0");
+    ScopedEnvironmentVariable v0_bfs("GNFS_V0_BFS", "0");
+    ScopedEnvironmentVariable cascade("GNFS_CASCADE_V3", "0");
+    ScopedEnvironmentVariable three_lp("GNFS_3LP", "0");
+
+    Config cfg;
+    cfg.rational_bound = 5;
+    cfg.algebraic_bound = 5;
+    cfg.large_prime_bound = UINT64_C(1) << 22U;
+    cfg.verbose = false;
+    Pipeline pipeline(Integer(143), cfg);
+
+    bool drift_injected = false;
+    pipeline.set_progress_callback([&](const ProgressInfo& info) {
+        if (info.phase == Phase::Filtering && !drift_injected) {
+            drift_injected = true;
+            if (setenv("GNFS_V0_BFS", "1", 1) != 0 || setenv("GNFS_CASCADE_V3", "1", 1) != 0 ||
+                setenv("GNFS_3LP", "1", 1) != 0) {
+                throw std::runtime_error("failed to inject filter strategy drift");
+            }
+        }
+    });
+
+    const auto reduction = pipeline.filter(make_structured_route_corpus());
+    return drift_injected &&
+           reduction.stats.strategy == gnfs::relation::ReductionStrategy::StandardV0;
+}
+
+bool test_pipeline_filter_callback_failure_restores_stats() {
+    ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "0");
+    ScopedEnvironmentVariable v0_bfs("GNFS_V0_BFS", "0");
+    ScopedEnvironmentVariable cascade("GNFS_CASCADE_V3", "0");
+    ScopedEnvironmentVariable three_lp("GNFS_3LP", "0");
+
+    Config cfg;
+    cfg.rational_bound = 5;
+    cfg.algebraic_bound = 5;
+    cfg.large_prime_bound = UINT64_C(1) << 22U;
+    cfg.verbose = false;
+    Pipeline pipeline(Integer(143), cfg);
+    const auto before = pipeline.stats();
+
+    pipeline.set_log_callback([](const LogEntry& entry) {
+        if (entry.message.starts_with("after filter:")) {
+            throw std::runtime_error("injected filter callback failure");
+        }
+    });
+
+    bool threw = false;
+    try {
+        (void)pipeline.filter({});
+    } catch (const std::runtime_error& error) {
+        threw = std::string_view(error.what()) == "injected filter callback failure";
+    }
+    const auto& after = pipeline.stats();
+    if (!threw || after.timings.filter_s != before.timings.filter_s ||
+        after.relations_after_filter != before.relations_after_filter ||
+        after.singletons_removed != before.singletons_removed ||
+        after.merged_relations != before.merged_relations) {
+        std::cout << "(filter callback failure published partial stats) ";
+        return false;
+    }
+
+    pipeline.set_log_callback({});
+    const auto retry = pipeline.filter({});
+    return retry.generation > 1;
+}
+
+bool test_pipeline_phase_callback_failure_restores_stats() {
+    Pipeline pipeline(Integer(143));
+    const auto before = pipeline.stats();
+    pipeline.set_progress_callback([](const ProgressInfo& info) {
+        if (info.message == "Polynomial selected") {
+            throw std::runtime_error("injected polynomial callback failure");
+        }
+    });
+
+    bool threw = false;
+    try {
+        (void)pipeline.select_polynomial();
+    } catch (const std::runtime_error& error) {
+        threw = std::string_view(error.what()) == "injected polynomial callback failure";
+    }
+    const auto& after = pipeline.stats();
+    return threw && after.timings.poly_s == before.timings.poly_s;
+}
+
+bool test_pipeline_extract_callback_failure_restores_stats() {
+    Pipeline pipeline(Integer(143));
+    auto ctx = pipeline.select_polynomial();
+
+    Pipeline::MatrixResult matrix_result;
+    matrix_result.matrix = gnfs::linalg::SparseMatrix(1, 0);
+    matrix_result.dependencies = {{false}};
+    matrix_result.relations.emplace_back(1, 1);
+
+    const auto before = pipeline.stats();
+    pipeline.set_progress_callback([](const ProgressInfo& info) {
+        if (info.message.starts_with("Trying dependency")) {
+            throw std::runtime_error("injected extraction callback failure");
+        }
+    });
+
+    bool threw = false;
+    try {
+        gnfs::factor_base::FactorBase empty_factor_base;
+        (void)pipeline.extract_factors(matrix_result, empty_factor_base, ctx);
+    } catch (const std::runtime_error& error) {
+        threw = std::string_view(error.what()) == "injected extraction callback failure";
+    }
+    const auto& after = pipeline.stats();
+    return threw && after.dependencies_tried == before.dependencies_tried &&
+           after.timings.sqrt_s == before.timings.sqrt_s;
+}
+
+bool test_pipeline_run_callback_failure_restores_stats() {
+    Pipeline pipeline(Integer(143));
+    const auto before = pipeline.stats();
+    pipeline.set_log_callback([](const LogEntry& entry) {
+        if (entry.message.starts_with("Method:")) {
+            throw std::runtime_error("injected run callback failure");
+        }
+    });
+
+    bool threw = false;
+    try {
+        (void)pipeline.run();
+    } catch (const std::runtime_error& error) {
+        threw = std::string_view(error.what()) == "injected run callback failure";
+    }
+    const auto& after = pipeline.stats();
+    return threw && after.method_used == before.method_used &&
+           after.method_reason == before.method_reason &&
+           after.timings.total_s == before.timings.total_s;
+}
+
 bool test_structured_ooc_path_namespace_contract() {
     const std::filesystem::path relative_base =
         std::filesystem::path("structured-ooc-path-fixture") / "parent" / ".." / "raw";
@@ -3807,8 +3947,18 @@ bool test_pipeline_progress_callback() {
 
     // After driving three GNFS phases, the callback should have observed
     // at least PolynomialSelection, FactorBase, and Sieving.
-    assert(phases_seen.size() >= 3 &&
-           "Pipeline progress callback should fire on each phase transition");
+    if (phases_seen.size() < 3) {
+        std::cout << "(Pipeline progress callback should fire on each phase transition) ";
+        return false;
+    }
+
+    if (!test_pipeline_filter_freezes_strategy_before_callbacks() ||
+        !test_pipeline_filter_callback_failure_restores_stats() ||
+        !test_pipeline_phase_callback_failure_restores_stats() ||
+        !test_pipeline_extract_callback_failure_restores_stats() ||
+        !test_pipeline_run_callback_failure_restores_stats()) {
+        return false;
+    }
     return true;
 }
 
