@@ -100,6 +100,31 @@ private:
     FactorStats snapshot_;
 };
 
+/// Restore public phase statistics when a callback or another operation
+/// unwinds the phase. Handled internal fallbacks remain committed; only an
+/// exception escaping the public entry point rolls back the snapshot.
+class FactorStatsExceptionRollback final {
+public:
+    explicit FactorStatsExceptionRollback(FactorStats& target)
+        : target_(&target), snapshot_(target), uncaught_at_entry_(std::uncaught_exceptions()) {
+        static_assert(std::is_nothrow_move_assignable_v<FactorStats>);
+    }
+
+    FactorStatsExceptionRollback(const FactorStatsExceptionRollback&) = delete;
+    FactorStatsExceptionRollback& operator=(const FactorStatsExceptionRollback&) = delete;
+
+    ~FactorStatsExceptionRollback() noexcept {
+        if (target_ != nullptr && std::uncaught_exceptions() > uncaught_at_entry_) {
+            *target_ = std::move(snapshot_);
+        }
+    }
+
+private:
+    FactorStats* target_;
+    FactorStats snapshot_;
+    int uncaught_at_entry_;
+};
+
 class FreshOOCExceptionCleanup final {
 public:
     explicit FreshOOCExceptionCleanup(relation::RelationCollector& collector,
@@ -455,10 +480,6 @@ inline bool cascade_v3_enabled_for_round(V3Mode mode, int round_index) {
         return true;
     // Auto: Round 2+ only (round_index >= 1)
     return round_index >= 1;
-}
-
-inline bool cascade_v3_enabled() {
-    return cascade_v3_mode() != V3Mode::Off;
 }
 
 std::string_view structured_stop_reason_name(relation::StructuredReductionStopReason reason) {
@@ -1188,6 +1209,7 @@ PolynomialContext Pipeline::select_polynomial() {
 }
 
 PolynomialContext Pipeline::select_polynomial_impl(const std::string& resume_base) {
+    FactorStatsExceptionRollback stats_exception_rollback(stats_);
     emit_progress(Phase::PolynomialSelection, "Starting polynomial selection");
     emit_log(LogLevel::Info, Phase::PolynomialSelection,
              "N=" + n_.to_string() + " bits=" + std::to_string(stats_.n_bits) +
@@ -1263,6 +1285,7 @@ FactorBase Pipeline::build_factor_base(const PolynomialContext& ctx) {
 
 FactorBase Pipeline::build_factor_base_impl(const PolynomialContext& ctx,
                                             const std::string& resume_base) {
+    FactorStatsExceptionRollback stats_exception_rollback(stats_);
     emit_progress(Phase::FactorBase, "Building factor base");
 
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -2547,6 +2570,7 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
 // ============================================================
 
 relation::RelationReductionResult Pipeline::filter(std::vector<Relation> relations) {
+    FactorStatsExceptionRollback stats_exception_rollback(stats_);
     // Validate this independent process gate before callbacks or relation
     // generation allocation, even though owned snapshots never publish the
     // direct-OOC stage record.
@@ -2559,18 +2583,23 @@ relation::RelationReductionResult Pipeline::filter(std::vector<Relation> relatio
         structured_mode,
         relation::structured_filter_route_supported({.large_primes_enabled = lp_enabled}), false);
 
+    // Freeze every strategy input before the first user callback. A callback
+    // may mutate process ENV, but that must not change this reduction's
+    // algorithm or merge policy halfway through the public phase.
+    const std::optional<relation::V0BfsPolicy> frozen_v0_bfs_policy =
+        lp_enabled ? std::optional<relation::V0BfsPolicy>(relation::decide_v0_bfs_policy(
+                         std::getenv("GNFS_V0_BFS"), params_.large_prime_bound))
+                   : std::nullopt;
+    const V3Mode frozen_cascade_v3_mode = cascade_v3_mode();
+    const relation::RelationMergePolicy frozen_merge_policy =
+        relation::relation_merge_policy_from_environment();
+
     emit_progress(Phase::Filtering, "Filtering relations");
 
     auto t0 = std::chrono::high_resolution_clock::now();
 
-    std::optional<relation::V0BfsPolicy> v0_bfs_policy;
-    if (lp_enabled) {
-        v0_bfs_policy =
-            relation::decide_v0_bfs_policy(std::getenv("GNFS_V0_BFS"), params_.large_prime_bound);
-    }
-
-    const bool v0_bfs_mode = v0_bfs_policy.has_value() && v0_bfs_policy->enabled;
-    const bool use_v3 = lp_enabled && !v0_bfs_mode && cascade_v3_enabled();
+    const bool v0_bfs_mode = frozen_v0_bfs_policy.has_value() && frozen_v0_bfs_policy->enabled;
+    const bool use_v3 = lp_enabled && !v0_bfs_mode && frozen_cascade_v3_mode != V3Mode::Off;
     const auto legacy_strategy =
         !lp_enabled ? relation::ReductionStrategy::NoLargePrimes
                     : (v0_bfs_mode ? relation::ReductionStrategy::CliqueV0
@@ -2581,6 +2610,7 @@ relation::RelationReductionResult Pipeline::filter(std::vector<Relation> relatio
     reduction_config.filter.max_passes = 10;
     reduction_config.large_primes_enabled = lp_enabled;
     reduction_config.merge_rounds = 10;
+    reduction_config.merge_policy = frozen_merge_policy;
     reduction_config.strategy =
         relation::select_reduction_strategy(structured_policy, legacy_strategy);
     if (reduction_config.strategy == relation::ReductionStrategy::Structured) {
@@ -2647,21 +2677,23 @@ relation::RelationReductionResult Pipeline::filter(std::vector<Relation> relatio
         //   lp_bits <  22 (25d/81-bit): default OFF (BFS breaks small LP space)
         //   GNFS_V0_BFS=0 explicit opt-out (any size)
         //   GNFS_V0_BFS=1 explicit force-on (still falls back if lp_bits<22)
-        if (v0_bfs_policy->env_force_failed) {
-            std::fprintf(stderr, "[v0_bfs] %.*s\n", static_cast<int>(v0_bfs_policy->reason.size()),
-                         v0_bfs_policy->reason.data());
+        if (frozen_v0_bfs_policy->env_force_failed) {
+            std::fprintf(stderr, "[v0_bfs] %.*s\n",
+                         static_cast<int>(frozen_v0_bfs_policy->reason.size()),
+                         frozen_v0_bfs_policy->reason.data());
         }
 
         if (v0_bfs_mode) {
             emit_log(LogLevel::Info, Phase::Filtering,
-                     "v0_bfs (" + std::string(v0_bfs_policy->reason) +
+                     "v0_bfs (" + std::string(frozen_v0_bfs_policy->reason) +
                          "): full=" + std::to_string(reduction_stats.separated_full_relations) +
                          " " + reduction_stats.clique_v0.to_string() +
                          " merged=" + std::to_string(reduction_stats.merged_relations));
-            std::fprintf(
-                stderr, "[v0_bfs] reason=%.*s %s merged=%zu (V3 cascade skipped)\n",
-                static_cast<int>(v0_bfs_policy->reason.size()), v0_bfs_policy->reason.data(),
-                reduction_stats.clique_v0.to_string().c_str(), reduction_stats.merged_relations);
+            std::fprintf(stderr, "[v0_bfs] reason=%.*s %s merged=%zu (V3 cascade skipped)\n",
+                         static_cast<int>(frozen_v0_bfs_policy->reason.size()),
+                         frozen_v0_bfs_policy->reason.data(),
+                         reduction_stats.clique_v0.to_string().c_str(),
+                         reduction_stats.merged_relations);
 
             // V3 cascade skipped — V0 BFS already covered weight≥3 chains.
             // Fall through to final stats/return.
@@ -3210,6 +3242,7 @@ static bool verify_dependency(const SparseMatrix& mat, const std::vector<bool>& 
 
 FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase& fb,
                                        const PolynomialContext& ctx) {
+    FactorStatsExceptionRollback stats_exception_rollback(stats_);
     require_pipeline_context(n_, ctx, "extract_factors");
     emit_progress(Phase::SquareRoot, "Starting factor extraction");
 
@@ -3393,6 +3426,7 @@ FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase&
 // ============================================================
 
 FactorResult Pipeline::run() {
+    FactorStatsExceptionRollback stats_exception_rollback(stats_);
     // Validate the relation-filter route before any progress/log callback,
     // checkpoint read/write, fast-method probe, or generation allocation. The
     // strict flag is a process configuration error even when a fast factor
