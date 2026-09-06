@@ -143,6 +143,18 @@ void test_pollard_rho() {
     f = pollard_rho(1018081); // 1009^2 (中等大小,需 Brent batch GCD 顺利)
     assert(f == 1009);
 
+    // The iteration limit is a hard total across all polynomial retries and
+    // includes the individual backtracking evaluations. Four evaluations do
+    // not let 35 reach the second c retry, while six do find factor 5.
+    CHECK(pollard_rho(35, 4) == 1);
+    CHECK(pollard_rho(35, 6) == 5);
+
+    // A batch GCD can report n at the budget boundary. Backtracking must not
+    // overrun that boundary: six evaluations are insufficient for 49, while
+    // a larger shared budget still finds factor 7.
+    CHECK(pollard_rho(49, 6) == 1);
+    CHECK(pollard_rho(49, 10) == 7);
+
     std::cout << "  Pollard's rho: PASSED" << std::endl;
 }
 

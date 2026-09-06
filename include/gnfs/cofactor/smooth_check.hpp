@@ -298,7 +298,23 @@ struct CofactorClassification {
 
     constexpr size_t BATCH_SIZE = 128;
 
+    // `max_iterations` is a total budget across every polynomial retry. Keep
+    // this counter outside the retry loop so a caller cannot accidentally
+    // multiply its requested work by the number of c values.
+    size_t total_evals = 0;
     for (uint64_t c = 1; c <= 19; c += 2) {
+        if (total_evals >= max_iterations)
+            break;
+
+        // Let the current polynomial use at most half of the remaining work,
+        // reserving the other half for later retries. The final retry naturally
+        // receives all remaining evaluations, and the function-level counter
+        // remains the hard ceiling for every f(x) call.
+        const size_t remaining_budget = max_iterations - total_evals;
+        const size_t attempt_budget =
+            remaining_budget / 2 + static_cast<size_t>(remaining_budget % 2 != 0);
+        const size_t attempt_limit = total_evals + attempt_budget;
+
         auto f = [n, c](uint64_t x) -> uint64_t {
             return gnfs::util::add_mod_u64(gnfs::util::mul_mod_u64(x, x, n), c, n);
         };
@@ -308,12 +324,10 @@ struct CofactorClassification {
         uint64_t r = 1;  // Brent step size (doubles each phase)
         uint64_t q = 1;  // accumulated product for batch GCD
         uint64_t ys = 0; // save point for backtracking
-        size_t total_evals = 0;
-
         do {
             x = y;
             // Brent phase advance: create initial distance
-            for (uint64_t i = 0; i < r && total_evals < max_iterations; ++i, ++total_evals) {
+            for (uint64_t i = 0; i < r && total_evals < attempt_limit; ++i, ++total_evals) {
                 y = f(y);
             }
 
@@ -322,8 +336,7 @@ struct CofactorClassification {
             do {
                 ys = y;
                 uint64_t batch = std::min(static_cast<uint64_t>(BATCH_SIZE), r - k);
-                for (uint64_t i = 0; i < batch && total_evals < max_iterations;
-                     ++i, ++total_evals) {
+                for (uint64_t i = 0; i < batch && total_evals < attempt_limit; ++i, ++total_evals) {
                     y = f(y);
                     uint64_t diff = (x > y) ? x - y : y - x;
                     if (diff == 0) {
@@ -341,15 +354,16 @@ struct CofactorClassification {
             } while (k < r && d == 1);
 
             r *= 2;
-        } while (d == 1 && total_evals < max_iterations);
+        } while (d == 1 && total_evals < attempt_limit);
 
         // Backtrack: batch product was divisible by n, check individual steps
         if (d == n) {
             d = 1;
             size_t backtrack_steps = 0;
             constexpr size_t MAX_BACKTRACK = BATCH_SIZE * 2;
-            while (d == 1 && backtrack_steps < MAX_BACKTRACK) {
+            while (d == 1 && backtrack_steps < MAX_BACKTRACK && total_evals < attempt_limit) {
                 ys = f(ys);
+                ++total_evals;
                 uint64_t diff = (x > ys) ? x - ys : ys - x;
                 if (diff == 0)
                     break;
