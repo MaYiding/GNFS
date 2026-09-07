@@ -114,6 +114,9 @@ Integer::Integer(const char* str, int base) {
     if (str == nullptr) {
         throw std::invalid_argument("Integer string cannot be null");
     }
+    if (!is_valid_string_base(base)) {
+        throw std::invalid_argument("Integer string conversion base must be in [2,62]");
+    }
     if (mpz_init_set_str(value_, str, base) != 0) {
         mpz_clear(value_);
         throw std::invalid_argument("Invalid string for Integer construction");

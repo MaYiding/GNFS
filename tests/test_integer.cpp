@@ -209,6 +209,14 @@ void test_string_conversion_base_boundaries() {
     GNFS_TEST_CHECK(value.num_digits(62) == 2);
 
     for (const int base : {0, 1, 63, -1, -37}) {
+        bool constructor_threw = false;
+        try {
+            Integer invalid("255", base);
+        } catch (const std::invalid_argument&) {
+            constructor_threw = true;
+        }
+        GNFS_TEST_CHECK(constructor_threw);
+
         bool string_threw = false;
         try {
             (void)value.to_string(base);
