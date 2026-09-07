@@ -217,6 +217,8 @@ assert_unknown_module_rejected() {
     cp "${PROJECT_ROOT}/scripts/test.sh" "${runner_root}/scripts/test.sh"
     cp "${PROJECT_ROOT}/scripts/lib/process_tree_timeout.zsh" \
         "${runner_root}/scripts/lib/process_tree_timeout.zsh"
+    cp "${PROJECT_ROOT}/scripts/lib/changed_files.zsh" \
+        "${runner_root}/scripts/lib/changed_files.zsh"
 
     set +e
     zsh "${runner_root}/scripts/test.sh" --no-build --no-color module \

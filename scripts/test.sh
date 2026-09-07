@@ -167,6 +167,7 @@ RETRY_COUNT=0
 RETRY_EXPLICIT=0
 
 source "${PROJECT_ROOT}/scripts/lib/process_tree_timeout.zsh"
+source "${PROJECT_ROOT}/scripts/lib/changed_files.zsh"
 
 # 统计变量
 TOTAL_TESTS=0
@@ -7646,13 +7647,18 @@ do_changed() {
 
     cd "$PROJECT_ROOT"
 
-    # 收集所有变更文件
+    # Include committed changes since the selected base as well as local
+    # unstaged, staged, and untracked paths. This matters on clean feature
+    # branches where `git diff HEAD` alone is empty.
+    local changed_base=""
+    if changed_base=$(resolve_changed_base "$PROJECT_ROOT"); then
+        log_info "变更基线: ${changed_base}"
+    else
+        log_warn "无法解析变更基线；仅检查当前工作树、暂存区和未跟踪文件"
+    fi
+
     local changed_files=""
-    changed_files+=$(git diff --name-only HEAD 2>/dev/null || true)
-    changed_files+=$'\n'
-    changed_files+=$(git diff --name-only --cached 2>/dev/null || true)
-    changed_files+=$'\n'
-    changed_files+=$(git ls-files --others --exclude-standard 2>/dev/null || true)
+    changed_files=$(collect_changed_files "$PROJECT_ROOT" "$changed_base" 2>/dev/null || true)
 
     # sed keeps a successful exit status for an empty stream. grep -v '^$'
     # returns 1 when the worktree is clean and would terminate this function
