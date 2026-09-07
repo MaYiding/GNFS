@@ -2363,8 +2363,8 @@ void write_mixed_wire_pair(const std::filesystem::path& base, std::uint64_t logi
 
     const std::uint64_t index_magic = index_v4 ? OOCRelationStoreFormat::MAGIC_V4_INCOMPLETE
                                                : OOCRelationStoreFormat::MAGIC_V3_INCOMPLETE;
-    const std::uint64_t data_magic = index_v4 ? OOCRelationStoreFormat::MAGIC_V3_DATA
-                                              : OOCRelationStoreFormat::MAGIC_V4_DATA;
+    const std::uint64_t data_magic =
+        index_v4 ? OOCRelationStoreFormat::MAGIC_V3_DATA : OOCRelationStoreFormat::MAGIC_V4_DATA;
     const std::uint64_t version = index_v4 ? OOCRelationStoreFormat::FORMAT_VERSION_V4
                                            : OOCRelationStoreFormat::FORMAT_VERSION_V3;
     const auto write_index_u64 = index_v4 ? write_little_u64 : write_u64;
@@ -2387,8 +2387,8 @@ void write_mixed_wire_pair(const std::filesystem::path& base, std::uint64_t logi
         }
         write_data_u64(output, data_magic);
         write_data_u64(output, version == OOCRelationStoreFormat::FORMAT_VERSION_V4
-                                  ? OOCRelationStoreFormat::FORMAT_VERSION_V3
-                                  : OOCRelationStoreFormat::FORMAT_VERSION_V4);
+                                   ? OOCRelationStoreFormat::FORMAT_VERSION_V3
+                                   : OOCRelationStoreFormat::FORMAT_VERSION_V4);
         write_data_u64(output, actual_store_id);
         pad_to(output, OOCRelationStoreFormat::DATA_HEADER_BYTES + 16);
     }
