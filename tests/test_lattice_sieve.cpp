@@ -262,7 +262,6 @@ void test_mod_inverse() {
     std::cout << "  Mod inverse: PASS" << std::endl;
 }
 
-<<<<<<< HEAD
 void test_stride_size_t_boundary() {
     std::cout << "Testing sieve stride SIZE_MAX boundary..." << std::endl;
 
