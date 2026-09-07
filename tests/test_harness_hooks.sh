@@ -125,6 +125,85 @@ assert_runner_argument_error() {
     pass "${name}"
 }
 
+assert_runner_report_cleanup() {
+    local name="$1"
+    local mode="$2"
+    local runner_build_dir="${TEST_TMPDIR}/${name// /_}/build"
+    local output="${TEST_TMPDIR}/${name// /_}.runner.out"
+    mkdir -p "${runner_build_dir}"
+
+    if ! GNFS_BUILD_DIR="${runner_build_dir}" \
+        "${PROJECT_ROOT}/scripts/test.sh" --no-build --no-color "${mode}" \
+        >"${output}" 2>&1; then
+        fail "${name}: runner should finish its report path for a missing binary"
+    fi
+    if ! grep -q '总计: 1' "${output}" || ! grep -q '跳过: 1' "${output}"; then
+        fail "${name}: summary did not include the skipped test: $(<"${output}")"
+    fi
+    "${PYTHON}" - "${runner_build_dir}/test_report.json" "${name}" <<'PY'
+import json
+import pathlib
+import sys
+
+report_path = pathlib.Path(sys.argv[1])
+name = sys.argv[2]
+try:
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError) as exc:
+    raise SystemExit(f"{name}: missing or invalid test report: {exc}")
+if report.get("total") != 1 or report.get("passed") != 0 or \
+        report.get("failed") != 0 or report.get("skipped") != 1:
+    raise SystemExit(f"{name}: unexpected report counters: {report!r}")
+tests = report.get("tests")
+if not isinstance(tests, list) or len(tests) != 1 or \
+        tests[0].get("status") != "skip":
+    raise SystemExit(f"{name}: unexpected report entries: {report!r}")
+PY
+    pass "${name}"
+}
+
+assert_runner_failure_report() {
+    local name="$1"
+    local mode="$2"
+    local runner_build_dir="${TEST_TMPDIR}/${name// /_}/build"
+    local output="${TEST_TMPDIR}/${name// /_}.runner.out"
+    local false_binary
+    false_binary=$(type -P false) || fail "${name}: false executable is unavailable"
+    mkdir -p "${runner_build_dir}"
+    ln -s "${false_binary}" "${runner_build_dir}/test_stress"
+
+    local runner_exit=0
+    GNFS_BUILD_DIR="${runner_build_dir}" \
+        "${PROJECT_ROOT}/scripts/test.sh" --no-build --no-color "${mode}" \
+        >"${output}" 2>&1 || runner_exit=$?
+    if [[ "${runner_exit}" == 0 ]]; then
+        fail "${name}: runner must preserve a real test failure"
+    fi
+    if ! grep -q '总计: 1' "${output}" || ! grep -q '失败: 1' "${output}"; then
+        fail "${name}: failure summary was lost: $(<"${output}")"
+    fi
+    "${PYTHON}" - "${runner_build_dir}/test_report.json" "${name}" <<'PY'
+import json
+import pathlib
+import sys
+
+report_path = pathlib.Path(sys.argv[1])
+name = sys.argv[2]
+try:
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError) as exc:
+    raise SystemExit(f"{name}: missing or invalid test report: {exc}")
+if report.get("total") != 1 or report.get("passed") != 0 or \
+        report.get("failed") != 1 or report.get("skipped") != 0:
+    raise SystemExit(f"{name}: unexpected report counters: {report!r}")
+tests = report.get("tests")
+if not isinstance(tests, list) or len(tests) != 1 or \
+        tests[0].get("status") != "fail":
+    raise SystemExit(f"{name}: unexpected report entries: {report!r}")
+PY
+    pass "${name}"
+}
+
 "${PYTHON}" "${CHECKER}" >/dev/null
 pass "repository Harness checker passes"
 
@@ -176,5 +255,9 @@ assert_empty \
     "active Stop hook prevents loops" \
     "${TEST_TMPDIR}/failing" \
     '{"hook_event_name":"Stop","stop_hook_active":true}'
+
+assert_runner_report_cleanup "perf missing binary report" perf
+assert_runner_report_cleanup "stress missing binary report" stress
+assert_runner_failure_report "stress real failure report" stress
 
 echo "GNFS Harness Hook tests passed."
