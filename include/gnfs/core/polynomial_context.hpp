@@ -121,9 +121,22 @@ public:
         if (f_coeffs_.empty() || p == 0)
             return 0;
 
-        // mpz_fdiv_ui returns floor-div remainder ∈ [0, p-1] (zero alloc)
-        auto get_coeff_mod_p = [p](const Integer& coeff) -> uint64_t {
-            return static_cast<uint64_t>(mpz_fdiv_ui(coeff.get_mpz(), p));
+        // mpz_fdiv_ui accepts unsigned long, which is only 32 bits on
+        // Windows LLP64. Keep the allocation-free fast path for ordinary
+        // factor-base primes, but use a GMP Integer modulus when p is wider.
+        const bool p_fits_ulong = p <= (std::numeric_limits<unsigned long>::max)();
+        const unsigned long p_ulong = static_cast<unsigned long>(p);
+        Integer p_value;
+        Integer coeff_remainder;
+        if (!p_fits_ulong) {
+            p_value = p;
+        }
+        auto get_coeff_mod_p = [&](const Integer& coeff) -> uint64_t {
+            if (p_fits_ulong) {
+                return static_cast<uint64_t>(mpz_fdiv_ui(coeff.get_mpz(), p_ulong));
+            }
+            mpz_fdiv_r(coeff_remainder.get_mpz(), coeff.get_mpz(), p_value.get_mpz());
+            return coeff_remainder.to_uint64();
         };
 
         uint64_t result = get_coeff_mod_p(f_coeffs_[degree_]);
