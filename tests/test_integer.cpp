@@ -4,9 +4,11 @@
 #include "support/test_check.hpp"
 
 #include <climits>
+#include <initializer_list>
 #include <iostream>
 #include <numeric>
 #include <sstream>
+#include <stdexcept>
 
 using namespace gnfs::core;
 
@@ -201,21 +203,36 @@ void test_string_conversion_base_boundaries() {
     std::cout << "Testing string conversion base boundaries..." << std::endl;
 
     Integer value(255);
-    GNFS_TEST_CHECK(value.to_string(0) == "255"); // GMP's decimal shorthand
     GNFS_TEST_CHECK(value.to_string(2) == "11111111");
     GNFS_TEST_CHECK(value.to_string(62) == "47");
-    GNFS_TEST_CHECK(value.to_string(-2) == "11111111");
-    GNFS_TEST_CHECK(value.to_string(-36) == "73");
+    GNFS_TEST_CHECK(value.num_digits(2) == 8);
+    GNFS_TEST_CHECK(value.num_digits(62) == 2);
 
-    for (const int base : {1, 63, -1, -37}) {
-        bool threw = false;
+    for (const int base : {0, 1, 63, -1, -37}) {
+        bool string_threw = false;
         try {
             (void)value.to_string(base);
         } catch (const std::invalid_argument&) {
-            threw = true;
+            string_threw = true;
         }
-        GNFS_TEST_CHECK(threw);
+        GNFS_TEST_CHECK(string_threw);
+
+        bool digits_threw = false;
+        try {
+            (void)value.num_digits(base);
+        } catch (const std::invalid_argument&) {
+            digits_threw = true;
+        }
+        GNFS_TEST_CHECK(digits_threw);
     }
+
+    bool null_threw = false;
+    try {
+        Integer invalid(static_cast<const char*>(nullptr));
+    } catch (const std::invalid_argument&) {
+        null_threw = true;
+    }
+    GNFS_TEST_CHECK(null_threw);
 
     std::cout << "  String conversion bases: PASS" << std::endl;
 }

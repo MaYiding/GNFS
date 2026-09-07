@@ -13,7 +13,7 @@ namespace gnfs::core {
 namespace {
 
 bool is_valid_string_base(int base) {
-    return (base >= 2 && base <= 62) || (base <= -2 && base >= -36);
+    return base >= 2 && base <= 62;
 }
 
 void set_mpz_from_uint64(mpz_t dest, uint64_t value) {
@@ -111,6 +111,9 @@ Integer::Integer(uint64_t value) {
 }
 
 Integer::Integer(const char* str, int base) {
+    if (str == nullptr) {
+        throw std::invalid_argument("Integer string cannot be null");
+    }
     if (mpz_init_set_str(value_, str, base) != 0) {
         mpz_clear(value_);
         throw std::invalid_argument("Invalid string for Integer construction");
@@ -191,11 +194,8 @@ int64_t Integer::to_int64() const {
 std::string Integer::to_string(int base) const {
     // GMP returns a null pointer for unsupported bases. Validate before the
     // call so malformed formatting requests become catchable API errors.
-    if (base == 0) {
-        base = 10;
-    }
     if (!is_valid_string_base(base)) {
-        throw std::invalid_argument("Integer string conversion base must be in [2,62] or [-36,-2]");
+        throw std::invalid_argument("Integer string conversion base must be in [2,62]");
     }
     char* str = mpz_get_str(nullptr, base, value_);
     if (str == nullptr) {
@@ -472,6 +472,9 @@ double Integer::to_double() const {
 }
 
 size_t Integer::num_digits(int base) const {
+    if (!is_valid_string_base(base)) {
+        throw std::invalid_argument("Integer digit-count base must be in [2,62]");
+    }
     return mpz_sizeinbase(value_, base);
 }
 
