@@ -309,8 +309,8 @@ public:
         if (!n.is_positive() || n.is_one() || n.is_probable_prime() > 0) {
             return std::nullopt;
         }
-        if (ctx.empty()) {
-            return std::nullopt; // 防御性: 空 context 不工作
+        if (ctx.empty() || ctx.prime_powers.size() != ctx.primes_cache.size()) {
+            return std::nullopt; // 防御性: context 数据必须成对存在
         }
 
         for (uint64_t sigma : ctx.sigma_pool) {

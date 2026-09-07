@@ -4,6 +4,8 @@
 #include <gnfs/cofactor/ecm.hpp>
 #include <gnfs/core/integer.hpp>
 
+#include "support/test_check.hpp"
+
 #include <cassert>
 #include <chrono>
 #include <cstdint>
@@ -290,7 +292,33 @@ void test_empty_batch_context() {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Test 7: primes 1, prime, and small inputs are no-ops (skip cofactors)
+// Test 7: a non-empty context with mismatched Stage 1 arrays is rejected
+// before the Stage 1 loop can index prime_powers out of bounds.
+// ───────────────────────────────────────────────────────────────────────────
+void test_malformed_batch_context() {
+    std::cout << "Testing malformed BatchContext defensive behavior..." << std::endl;
+
+    auto malformed_ctx = make_quick_batch(/*sigma_seed=*/1234);
+    GNFS_TEST_CHECK(!malformed_ctx.primes_cache.empty());
+    GNFS_TEST_CHECK(!malformed_ctx.prime_powers.empty());
+    malformed_ctx.prime_powers.pop_back();
+    GNFS_TEST_CHECK(malformed_ctx.prime_powers.size() != malformed_ctx.primes_cache.size());
+
+    Integer n("15347");
+    GNFS_TEST_CHECK(!ECM::factor_with_batch(n, malformed_ctx).has_value());
+
+    std::vector<Integer> ns = {Integer("15347"), Integer("100895598169")};
+    auto rs = ECM::factor_batch(ns, malformed_ctx);
+    GNFS_TEST_CHECK(rs.size() == ns.size());
+    for (const auto& result : rs) {
+        GNFS_TEST_CHECK(!result.has_value());
+    }
+
+    std::cout << "  malformed BatchContext defensive: PASSED" << std::endl;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Test 8: primes 1, prime, and small inputs are no-ops (skip cofactors)
 // ───────────────────────────────────────────────────────────────────────────
 void test_skip_invalid_inputs() {
     std::cout << "Testing skip n=1 and primes..." << std::endl;
@@ -323,7 +351,7 @@ void test_skip_invalid_inputs() {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Test 8: Compare batch path vs ECM::factor (best-effort: ensures batch is
+// Test 9: Compare batch path vs ECM::factor (best-effort: ensures batch is
 // not strictly worse than per-call factor in success rate for matching curves)
 // ───────────────────────────────────────────────────────────────────────────
 void test_batch_vs_factor_success_parity() {
@@ -372,6 +400,7 @@ int main() {
     test_prepare_batch_basic();
     test_prepare_batch_determinism();
     test_empty_batch_context();
+    test_malformed_batch_context();
     test_skip_invalid_inputs();
     test_factor_with_batch_self_consistency();
     test_factor_batch_equivalence_single();
