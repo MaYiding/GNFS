@@ -319,6 +319,8 @@ void test_required_relations() {
                  "saturating column addition must preserve the maximal target");
     require_test(required_relations(max_size / 2, max_size / 2 + 10, 1.0) == max_size,
                  "overflowing column addition must saturate before scaling");
+    require_test(!has_enough_relations(1, max_size, 0, 1.0),
+                 "saturated targets must not accept a tiny relation count");
     require_test(required_relations(1000, 500, std::numeric_limits<double>::infinity()) == max_size,
                  "infinite estimates must saturate instead of invoking an invalid cast");
     require_test(required_relations(1000, 500, std::numeric_limits<double>::quiet_NaN()) == 1,
