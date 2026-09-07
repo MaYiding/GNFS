@@ -129,6 +129,8 @@ void test_pollard_rho() {
     assert(f == 101 || f == 103);
 
     // Edge cases
+    CHECK(pollard_rho(0) == 1);                         // no factor for zero
+    CHECK(pollard_rho(1) == 1);                         // no factor for one
     assert(pollard_rho(4) == 2);                        // 2^2
     assert(pollard_rho(6) == 2 || pollard_rho(6) == 3); // 2 * 3
 
