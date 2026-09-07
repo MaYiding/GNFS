@@ -374,6 +374,21 @@ void test_merger_count() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_saturating_pair_count() {
+    std::cout << "Testing saturating pair-count arithmetic..." << std::endl;
+
+    constexpr size_t max_size = std::numeric_limits<size_t>::max();
+    require_test(PartialRelationMerger::saturating_pair_count(0) == 0,
+                 "zero relations have no merge pairs");
+    require_test(PartialRelationMerger::saturating_pair_count(1) == 0,
+                 "one relation has no merge pairs");
+    require_test(PartialRelationMerger::saturating_pair_count(4) == 6, "small pair count is exact");
+    require_test(PartialRelationMerger::saturating_pair_count(max_size) == max_size,
+                 "extreme pair count saturates instead of wrapping");
+
+    std::cout << "  PASS" << std::endl;
+}
+
 void test_merger_merge() {
     std::cout << "Testing PartialRelationMerger::merge..." << std::endl;
 
@@ -921,6 +936,7 @@ int main() {
     test_required_relations_extreme_inputs();
     test_effective_column_excess_boundaries();
     test_merger_count();
+    test_saturating_pair_count();
     test_merger_merge();
     test_merger_algebraic_lp();
     test_merger_no_2lp();

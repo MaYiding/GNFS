@@ -2,11 +2,19 @@
 #include "gnfs/relation/clique_merger.hpp"
 
 #include <cassert>
+#include <cstdlib>
 #include <iostream>
 
 using namespace gnfs::relation;
 using gnfs::core::PrimePower;
 using gnfs::core::Relation;
+
+static void require_clique_test(bool condition, const char* message) {
+    if (!condition) {
+        std::cerr << "  FAIL: " << message << '\n';
+        std::exit(EXIT_FAILURE);
+    }
+}
 
 // Helper: 1LP relation (rational)
 static Relation make_1rat(int64_t a, int64_t b, uint64_t lp) {
@@ -125,13 +133,17 @@ void test_component_output_order_is_deterministic() {
     auto first_out = CliqueRelationMerger::merge_cliques(std::move(first));
     auto second_out = CliqueRelationMerger::merge_cliques(std::move(second));
 
-    assert(first_out.size() == 3);
-    assert(second_out.size() == first_out.size());
+    require_clique_test(first_out.size() == 3, "expected one full relation per component");
+    require_clique_test(second_out.size() == first_out.size(), "repeated run changed output count");
     for (size_t i = 0; i < first_out.size(); ++i) {
-        assert(first_out[i].a == static_cast<int64_t>(1 + 2 * i));
-        assert(first_out[i].extra_ab_pairs.size() == 1);
-        assert(second_out[i].a == first_out[i].a);
-        assert(second_out[i].extra_ab_pairs == first_out[i].extra_ab_pairs);
+        require_clique_test(first_out[i].a == static_cast<int64_t>(1 + 2 * i),
+                            "component output order is not input-ordinal order");
+        require_clique_test(first_out[i].extra_ab_pairs.size() == 1,
+                            "component merge did not retain its second source");
+        require_clique_test(second_out[i].a == first_out[i].a,
+                            "repeated run changed component output order");
+        require_clique_test(second_out[i].extra_ab_pairs == first_out[i].extra_ab_pairs,
+                            "repeated run changed component source payload");
     }
 
     std::cout << "  PASS" << std::endl;
