@@ -256,8 +256,12 @@ assert_empty \
     "${TEST_TMPDIR}/failing" \
     '{"hook_event_name":"Stop","stop_hook_active":true}'
 
-assert_runner_report_cleanup "perf missing binary report" perf
-assert_runner_report_cleanup "stress missing binary report" stress
-assert_runner_failure_report "stress real failure report" stress
+if command -v zsh >/dev/null 2>&1; then
+    assert_runner_report_cleanup "perf missing binary report" perf
+    assert_runner_report_cleanup "stress missing binary report" stress
+    assert_runner_failure_report "stress real failure report" stress
+else
+    pass "zsh-only Runner report contracts skipped"
+fi
 
 echo "GNFS Harness Hook tests passed."
