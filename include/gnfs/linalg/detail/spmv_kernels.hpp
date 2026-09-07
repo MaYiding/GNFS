@@ -32,6 +32,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <future>
 #include <limits>
 #include <stdexcept>
@@ -210,8 +211,21 @@ inline void spmv_transpose(const M& matrix, const BlockVector& x, BlockVector& y
             }
         }));
     }
-    for (auto& f : futures)
-        f.get();
+    // Drain every submitted task before propagating a worker failure. A
+    // MatrixView accessor may throw from a worker; returning immediately on
+    // the first future would leave later tasks using the caller's references
+    // after this function unwinds.
+    std::exception_ptr first_exception;
+    for (auto& f : futures) {
+        try {
+            f.get();
+        } catch (...) {
+            if (!first_exception)
+                first_exception = std::current_exception();
+        }
+    }
+    if (first_exception)
+        std::rethrow_exception(first_exception);
 
     pool.parallel_for_index(0, n, [&y, scratch, T_used](std::size_t j) {
         std::uint64_t val = 0;
