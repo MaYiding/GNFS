@@ -752,6 +752,38 @@ void test_fake_happy_path_seals_unlinks_and_closes_reader() {
                       [](std::size_t size) { return size <= 64U * 1024U; }));
 }
 
+void test_fake_unlink_eintr_is_single_shot_and_reconciled() {
+    {
+        ScriptedFileOps ops;
+        ops.unlink_then_interrupt = true;
+        const auto result =
+            package_file::create_distributed_sieve_worker_work_package_file_v1_with_ops(
+                fake_request(ops), make_identity(), ops);
+        CHECK(result);
+        CHECK(result.witness.has_value());
+        CHECK(ops.unlink_calls == 1);
+        CHECK(!ops.named_exists);
+        CHECK(ops.file_link_count == 0);
+    }
+
+    {
+        ScriptedFileOps ops;
+        ops.unlink_script.push_back(interrupted());
+        const auto result =
+            package_file::create_distributed_sieve_worker_work_package_file_v1_with_ops(
+                fake_request(ops), make_identity(), ops);
+        CHECK(!result);
+        CHECK(!result.witness.has_value());
+        CHECK(result.diagnostic.status ==
+              package_file::DistributedSieveWorkerWorkPackageFileStatus::interrupted);
+        CHECK(result.diagnostic.native_error == EINTR);
+        CHECK(result.diagnostic.named_may_remain);
+        CHECK(ops.unlink_calls == 1);
+        CHECK(ops.named_exists);
+        CHECK(ops.file_link_count == 1);
+    }
+}
+
 void test_fake_critical_event_order_is_frozen() {
     ScriptedFileOps ops;
     const auto result = package_file::create_distributed_sieve_worker_work_package_file_v1_with_ops(
@@ -2672,6 +2704,7 @@ int main() {
     try {
         test_authority_boundary_and_fixed_contract();
         test_fake_happy_path_seals_unlinks_and_closes_reader();
+        test_fake_unlink_eintr_is_single_shot_and_reconciled();
         test_fake_critical_event_order_is_frozen();
         test_fake_recreated_name_preserves_named_may_remain_or_semantics();
         test_fake_reader_policy_rejects_writable_or_inheritable_descriptors();

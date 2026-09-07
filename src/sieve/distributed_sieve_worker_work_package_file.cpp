@@ -1784,13 +1784,25 @@ run_file_creation(const DistributedSieveWorkerWorkPackageFileRequestV1& request,
         return execution.fail(binding);
     }
 
-    const auto unlinked = retry_interrupted_operation(
-        [&]() noexcept { return ops.unlink_at(request.borrowed_attempt_directory_handle); });
+    // unlinkat is destructive and therefore strictly single-shot. An EINTR
+    // result may hide a completed unlink; retrying could delete a successor
+    // installed at the same fixed name. Prove the name is absent before
+    // treating an interrupted call as completed.
+    const auto unlinked = ops.unlink_at(request.borrowed_attempt_directory_handle);
     if (!valid_success(unlinked)) {
-        return execution.fail(operation_diagnostic(unlinked, FileStatus::publication_failed, true));
-    }
-    if (auto absent = verify_name_missing(request.borrowed_attempt_directory_handle, ops);
-        !absent) {
+        if (unlinked.state != OperationState::interrupted) {
+            return execution.fail(
+                operation_diagnostic(unlinked, FileStatus::publication_failed, true));
+        }
+        const auto interrupted =
+            make_diagnostic(FileStatus::interrupted,
+                            unlinked.native_error != 0 ? unlinked.native_error : EINTR, {}, true);
+        if (auto absent = verify_name_missing(request.borrowed_attempt_directory_handle, ops);
+            !absent) {
+            return execution.fail(interrupted);
+        }
+    } else if (auto absent = verify_name_missing(request.borrowed_attempt_directory_handle, ops);
+               !absent) {
         return execution.fail(absent);
     }
     execution.prove_name_absent();
