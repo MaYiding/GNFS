@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <string_view>
 
 namespace gnfs::linalg {
@@ -40,9 +41,19 @@ inline std::uint64_t linalg_mmap_threshold_bytes() noexcept {
     constexpr std::uint64_t DEFAULT_THRESHOLD = 2ULL * 1024ULL * 1024ULL * 1024ULL;
     const char* env = std::getenv("GNFS_LINALG_MMAP_THRESHOLD_BYTES");
     if (env == nullptr || *env == '\0') return DEFAULT_THRESHOLD;
-    // strtoull returns 0 on parse failure; treat that as "use default".
-    const std::uint64_t v = std::strtoull(env, nullptr, 10);
-    return v == 0 ? DEFAULT_THRESHOLD : v;
+
+    // Accept only a non-zero decimal byte count.  Do not let strtoull's
+    // permissive prefix/sign handling turn a malformed operator setting into
+    // a different threshold, and reject values that overflow uint64_t.
+    const auto max_value = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t value = 0;
+    for (const char* p = env; *p != '\0'; ++p) {
+        if (*p < '0' || *p > '9') return DEFAULT_THRESHOLD;
+        const std::uint64_t digit = static_cast<std::uint64_t>(*p - '0');
+        if (value > (max_value - digit) / 10) return DEFAULT_THRESHOLD;
+        value = value * 10 + digit;
+    }
+    return value == 0 ? DEFAULT_THRESHOLD : value;
 }
 
 /// Returns true iff Phase 5 should flip the matrix to disk-resident.
@@ -55,7 +66,12 @@ inline bool should_use_mmap(MmapPolicy policy, std::uint64_t csr_nnz) noexcept {
         case MmapPolicy::Auto: {
             // col_indices alone = nnz * 4 bytes; add row_offsets (≈ rows * 8)
             // is negligible compared to col_indices once nnz > ~few-M.
-            const std::uint64_t projected_bytes = csr_nnz * sizeof(std::uint32_t);
+            constexpr std::uint64_t bytes_per_nnz = sizeof(std::uint32_t);
+            constexpr std::uint64_t max_value = std::numeric_limits<std::uint64_t>::max();
+            // An overflowing projection is larger than every representable
+            // threshold, so it must select mmap rather than wrap around.
+            if (csr_nnz > max_value / bytes_per_nnz) return true;
+            const std::uint64_t projected_bytes = csr_nnz * bytes_per_nnz;
             return projected_bytes >= linalg_mmap_threshold_bytes();
         }
     }

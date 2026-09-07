@@ -5,8 +5,11 @@
 #include <gnfs/linalg/linalg_mmap_policy.hpp>
 #include <cstdio>
 #include <cstdlib>
+#include <cstdint>
+#include <limits>
 
 using gnfs::linalg::MmapPolicy;
+using gnfs::linalg::linalg_mmap_threshold_bytes;
 using gnfs::linalg::parse_mmap_policy;
 using gnfs::linalg::should_use_mmap;
 
@@ -102,6 +105,36 @@ void test_threshold_env_override() {
     TEST_PASS("GNFS_LINALG_MMAP_THRESHOLD_BYTES override works");
 }
 
+void test_threshold_rejects_malformed_values() {
+    constexpr std::uint64_t default_threshold = 2ULL * 1024ULL * 1024ULL * 1024ULL;
+    const char* malformed[] = {
+        "1024junk",
+        "-1",
+        "+1024",
+        " 1024",
+        "18446744073709551616", // UINT64_MAX + 1
+    };
+    for (const char* value : malformed) {
+        setenv("GNFS_LINALG_MMAP_THRESHOLD_BYTES", value, 1);
+        TEST_ASSERT(linalg_mmap_threshold_bytes() == default_threshold,
+                    "malformed threshold must use the default");
+    }
+    unsetenv("GNFS_LINALG_MMAP_THRESHOLD_BYTES");
+    TEST_PASS("malformed and overflowing threshold values use the default");
+}
+
+void test_auto_projection_saturates_on_overflow() {
+    // Keep the threshold at the largest representable value so a wrapped
+    // multiplication would incorrectly select the in-memory path.
+    setenv("GNFS_LINALG_MMAP_THRESHOLD_BYTES", "18446744073709551615", 1);
+    TEST_ASSERT(linalg_mmap_threshold_bytes() == std::numeric_limits<std::uint64_t>::max(),
+                "UINT64_MAX is a valid threshold");
+    TEST_ASSERT(should_use_mmap(MmapPolicy::Auto, std::numeric_limits<std::uint64_t>::max()),
+                "overflowing byte projection must select mmap");
+    unsetenv("GNFS_LINALG_MMAP_THRESHOLD_BYTES");
+    TEST_PASS("Auto projection remains monotonic when nnz * 4 overflows");
+}
+
 int main() {
     std::printf("== GNFS_LINALG_MMAP policy tests ==\n");
     test_parse_null_is_off();
@@ -114,6 +147,8 @@ int main() {
     test_should_use_mmap_on();
     test_should_use_mmap_auto();
     test_threshold_env_override();
+    test_threshold_rejects_malformed_values();
+    test_auto_projection_saturates_on_overflow();
     std::printf("\nResults: %d passed, %d failed\n", tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;
 }
