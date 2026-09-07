@@ -70,6 +70,7 @@
 #include <gmp.h>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
