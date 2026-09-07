@@ -125,7 +125,7 @@ inline std::size_t parse_ecm_stage1_parallel_env() noexcept {
     return static_cast<std::size_t>(parsed);
 }
 
-}  // namespace detail
+} // namespace detail
 
 /// Read the `GNFS_ECM_STAGE1_PARALLEL_THREADS` env into a cached thread
 /// count.
@@ -136,9 +136,8 @@ inline std::size_t parse_ecm_stage1_parallel_env() noexcept {
 /// values clamp to the upper cap.
 [[nodiscard]] inline std::size_t ecm_stage1_parallel_threads() noexcept {
     auto& cache = detail::ecm_stage1_parallel_cache();
-    std::call_once(cache.once, [&cache]() {
-        cache.value = detail::parse_ecm_stage1_parallel_env();
-    });
+    std::call_once(cache.once,
+                   [&cache]() { cache.value = detail::parse_ecm_stage1_parallel_env(); });
     return cache.value;
 }
 
@@ -185,11 +184,12 @@ inline void ecm_stage1_parallel_reset_env_cache_for_testing() noexcept {
 /// `Result` must be default-constructible and assignable; per-slot writes
 /// are race-free because each task owns exactly one disjoint output index.
 template <typename Result, typename Curve, typename Func>
-inline std::vector<Result>
-parallel_stage1_curves(std::span<const Curve> curves, Func&& run_stage1) {
+inline std::vector<Result> parallel_stage1_curves(std::span<const Curve> curves,
+                                                  Func&& run_stage1) {
     const std::size_t n = curves.size();
     std::vector<Result> results;
-    if (n == 0) return results;
+    if (n == 0)
+        return results;
 
     results.resize(n);
 
@@ -215,9 +215,8 @@ parallel_stage1_curves(std::span<const Curve> curves, Func&& run_stage1) {
         // Each task captures curve index + reference to the curves span
         // and the results vector. Per-curve slots in `results` are
         // disjoint, so concurrent writes to results[i] are race-free.
-        futures.push_back(pool.submit([&curves, &results, &run_stage1, i]() {
-            results[i] = run_stage1(curves[i]);
-        }));
+        futures.push_back(pool.submit(
+            [&curves, &results, &run_stage1, i]() { results[i] = run_stage1(curves[i]); }));
     }
 
     // Propagate any task exception to the caller via future::get().
@@ -228,4 +227,4 @@ parallel_stage1_curves(std::span<const Curve> curves, Func&& run_stage1) {
     return results;
 }
 
-}  // namespace gnfs::cofactor
+} // namespace gnfs::cofactor

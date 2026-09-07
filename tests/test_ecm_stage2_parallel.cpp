@@ -12,8 +12,8 @@
 //   * Single-curve dispatch does not crash or stall under N >= 2.
 //   * Empty curve list returns empty vector cleanly.
 
-#include <gnfs/cofactor/ecm_stage2_parallel.hpp>
 #include <gnfs/cofactor/ecm.hpp>
+#include <gnfs/cofactor/ecm_stage2_parallel.hpp>
 #include <gnfs/core/integer.hpp>
 
 #include <algorithm>
@@ -31,11 +31,11 @@
 #include <utility>
 #include <vector>
 
-using gnfs::core::Integer;
 using gnfs::cofactor::ECM;
-using gnfs::cofactor::ecm_stage2_parallel_threads;
 using gnfs::cofactor::ecm_stage2_parallel_reset_env_cache_for_testing;
+using gnfs::cofactor::ecm_stage2_parallel_threads;
 using gnfs::cofactor::parallel_stage2_curves;
+using gnfs::core::Integer;
 
 namespace {
 
@@ -54,7 +54,8 @@ void apply_env(const char* value) {
 std::vector<uint64_t> make_sigmas(uint64_t start, std::size_t count) {
     std::vector<uint64_t> sg;
     sg.reserve(count);
-    for (std::size_t i = 0; i < count; ++i) sg.push_back(start + i);
+    for (std::size_t i = 0; i < count; ++i)
+        sg.push_back(start + i);
     return sg;
 }
 
@@ -68,11 +69,11 @@ std::vector<uint64_t> make_sigmas(uint64_t start, std::size_t count) {
 // these reliably without depending on Brent-Suyama opt-in.
 ECM::BatchContext make_single_curve_ctx(uint64_t sigma) {
     ECM::Config cfg;
-    cfg.num_curves = 0;     // sigma_pool set explicitly below
+    cfg.num_curves = 0; // sigma_pool set explicitly below
     cfg.B1 = 2000;
     cfg.B2 = 50000;
     cfg.auto_params = false;
-    cfg.brent_suyama_degree = 0;  // classical BSGS path
+    cfg.brent_suyama_degree = 0; // classical BSGS path
     ECM::BatchContext ctx = ECM::prepare_batch(cfg, /*sigma_seed=*/0);
     ctx.sigma_pool.clear();
     ctx.sigma_pool.push_back(sigma);
@@ -82,10 +83,9 @@ ECM::BatchContext make_single_curve_ctx(uint64_t sigma) {
 // Helper: run the dispatcher with the given env value and sigma list. Each
 // "curve" task invokes factor_with_batch on a single-sigma context against N.
 // Returns the per-curve outcomes in input order.
-std::vector<std::optional<Integer>>
-run_dispatch_with_threads(const Integer& N,
-                          const std::vector<uint64_t>& sigmas,
-                          const char* env_value) {
+std::vector<std::optional<Integer>> run_dispatch_with_threads(const Integer& N,
+                                                              const std::vector<uint64_t>& sigmas,
+                                                              const char* env_value) {
     apply_env(env_value);
 
     // We materialize a vector of `uint64_t` to take as a span. The lambda
@@ -108,8 +108,7 @@ run_dispatch_with_threads(const Integer& N,
 // Helper: collapse a per-curve result vector to a sorted set of distinct
 // non-trivial factor strings, for comparison between sequential and
 // parallel paths.
-std::set<std::string>
-factor_set(const std::vector<std::optional<Integer>>& results) {
+std::set<std::string> factor_set(const std::vector<std::optional<Integer>>& results) {
     std::set<std::string> out;
     for (const auto& r : results) {
         if (r) {
@@ -120,15 +119,18 @@ factor_set(const std::vector<std::optional<Integer>>& results) {
 }
 
 // Helper: every non-null factor in `results` must divide N and be non-trivial.
-bool all_factors_valid(const Integer& N,
-                       const std::vector<std::optional<Integer>>& results) {
+bool all_factors_valid(const Integer& N, const std::vector<std::optional<Integer>>& results) {
     for (const auto& r : results) {
-        if (!r) continue;
-        if (r->is_one()) return false;
-        if (r->compare(N) == 0) return false;
+        if (!r)
+            continue;
+        if (r->is_one())
+            return false;
+        if (r->compare(N) == 0)
+            return false;
         Integer rem;
         mpz_mod(rem.get_mpz(), N.get_mpz(), r->get_mpz());
-        if (!rem.is_zero()) return false;
+        if (!rem.is_zero())
+            return false;
     }
     return true;
 }
@@ -145,13 +147,14 @@ void test_baseline_seq_finds_factor() {
     auto sigmas = make_sigmas(100, 16);
 
     auto results = run_dispatch_with_threads(N, sigmas, "1");
-    assert(results.size() == sigmas.size());
-    assert(all_factors_valid(N, results));
+    if (results.size() != sigmas.size() || !all_factors_valid(N, results)) {
+        std::cerr << "\n  ERROR: sequential dispatch returned invalid results" << std::endl;
+        std::abort();
+    }
 
     auto factors = factor_set(results);
     if (factors.empty()) {
-        std::cerr << "\n  ERROR: no factor found in 16-curve sequential run"
-                  << std::endl;
+        std::cerr << "\n  ERROR: no factor found in 16-curve sequential run" << std::endl;
         std::abort();
     }
 
@@ -171,9 +174,11 @@ void test_parity_seq_vs_n4() {
     auto seq_results = run_dispatch_with_threads(N, sigmas, "1");
     auto par_results = run_dispatch_with_threads(N, sigmas, "4");
 
-    assert(seq_results.size() == par_results.size());
-    assert(all_factors_valid(N, seq_results));
-    assert(all_factors_valid(N, par_results));
+    if (seq_results.size() != par_results.size() || !all_factors_valid(N, seq_results) ||
+        !all_factors_valid(N, par_results)) {
+        std::cerr << "\n  ERROR: parallel dispatch returned invalid results" << std::endl;
+        std::abort();
+    }
 
     // The set of discovered factors must be identical between sequential
     // and parallel paths (pure-function-over-sigma invariant). We compare
@@ -188,10 +193,9 @@ void test_parity_seq_vs_n4() {
         }
         if (seq_has) {
             if (seq_results[i]->compare(*par_results[i]) != 0) {
-                std::cerr << "\n  ERROR: index " << i << " mismatch: seq="
-                          << seq_results[i]->to_string()
-                          << " par=" << par_results[i]->to_string()
-                          << std::endl;
+                std::cerr << "\n  ERROR: index " << i
+                          << " mismatch: seq=" << seq_results[i]->to_string()
+                          << " par=" << par_results[i]->to_string() << std::endl;
                 std::abort();
             }
         }
@@ -199,10 +203,13 @@ void test_parity_seq_vs_n4() {
 
     // Sanity: at least one curve must have produced a factor.
     auto seq_factors = factor_set(seq_results);
-    assert(!seq_factors.empty());
+    if (seq_factors.empty()) {
+        std::cerr << "\n  ERROR: no factor found in the sequential dispatch" << std::endl;
+        std::abort();
+    }
 
-    std::cout << " PASS (per-index bit-identical, "
-              << seq_factors.size() << " distinct factor(s))\n";
+    std::cout << " PASS (per-index bit-identical, " << seq_factors.size()
+              << " distinct factor(s))\n";
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -215,22 +222,32 @@ void test_parity_seq_vs_hw() {
     auto sigmas = make_sigmas(200, 16);
 
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     std::string hw_str = std::to_string(hw);
 
     auto seq_results = run_dispatch_with_threads(N, sigmas, "1");
     auto par_results = run_dispatch_with_threads(N, sigmas, hw_str.c_str());
 
-    assert(seq_results.size() == par_results.size());
-    assert(all_factors_valid(N, seq_results));
-    assert(all_factors_valid(N, par_results));
+    if (seq_results.size() != par_results.size() || !all_factors_valid(N, seq_results) ||
+        !all_factors_valid(N, par_results)) {
+        std::cerr << "\n  ERROR: hardware-concurrency dispatch returned invalid results"
+                  << std::endl;
+        std::abort();
+    }
 
     for (std::size_t i = 0; i < seq_results.size(); ++i) {
         bool seq_has = seq_results[i].has_value();
         bool par_has = par_results[i].has_value();
-        assert(seq_has == par_has);
+        if (seq_has != par_has) {
+            std::cerr << "\n  ERROR: index " << i << " has mismatched factor presence" << std::endl;
+            std::abort();
+        }
         if (seq_has) {
-            assert(seq_results[i]->compare(*par_results[i]) == 0);
+            if (seq_results[i]->compare(*par_results[i]) != 0) {
+                std::cerr << "\n  ERROR: index " << i << " produced different factors" << std::endl;
+                std::abort();
+            }
         }
     }
 
@@ -244,7 +261,8 @@ void test_env_parsing() {
     std::cout << "Test 4: ENV parsing..." << std::flush;
 
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     std::size_t cap = static_cast<std::size_t>(hw) * 2;
 
     // Unset -> 1 (default sequential).
@@ -273,8 +291,8 @@ void test_env_parsing() {
     // If hw*2 < 8 we expect clamp; otherwise exact 8.
     std::size_t expect8 = (8 < cap) ? 8 : cap;
     if (v8 != expect8) {
-        std::cerr << "\n  ERROR: '8' parsed to " << v8 << ", expected "
-                  << expect8 << " (hw*2 cap = " << cap << ")" << std::endl;
+        std::cerr << "\n  ERROR: '8' parsed to " << v8 << ", expected " << expect8
+                  << " (hw*2 cap = " << cap << ")" << std::endl;
         std::abort();
     }
 
@@ -286,8 +304,8 @@ void test_env_parsing() {
     apply_env("9999");
     std::size_t v9999 = ecm_stage2_parallel_threads();
     if (v9999 != cap) {
-        std::cerr << "\n  ERROR: '9999' parsed to " << v9999
-                  << ", expected clamped value " << cap << std::endl;
+        std::cerr << "\n  ERROR: '9999' parsed to " << v9999 << ", expected clamped value " << cap
+                  << std::endl;
         std::abort();
     }
 
@@ -318,10 +336,8 @@ void test_empty_curve_list() {
     apply_env("1");
     std::vector<int> empty_in;
     auto seq_results = parallel_stage2_curves<Integer, int>(
-        std::span<int>(empty_in),
-        [](int, std::size_t) -> std::optional<Integer> {
-            std::cerr << "\n  ERROR: should not invoke run_stage2 on empty span"
-                      << std::endl;
+        std::span<int>(empty_in), [](int, std::size_t) -> std::optional<Integer> {
+            std::cerr << "\n  ERROR: should not invoke run_stage2 on empty span" << std::endl;
             std::abort();
             return std::nullopt;
         });
@@ -331,10 +347,8 @@ void test_empty_curve_list() {
     // creating ThreadPool because n == 0.
     apply_env("4");
     auto par_results = parallel_stage2_curves<Integer, int>(
-        std::span<int>(empty_in),
-        [](int, std::size_t) -> std::optional<Integer> {
-            std::cerr << "\n  ERROR: should not invoke run_stage2 on empty span"
-                      << std::endl;
+        std::span<int>(empty_in), [](int, std::size_t) -> std::optional<Integer> {
+            std::cerr << "\n  ERROR: should not invoke run_stage2 on empty span" << std::endl;
             std::abort();
             return std::nullopt;
         });
@@ -348,8 +362,7 @@ void test_empty_curve_list() {
 // Test 6: Single curve — N=4 still runs once with no stall, no double-call
 // ───────────────────────────────────────────────────────────────────────────
 void test_single_curve_no_stall() {
-    std::cout << "Test 6: single-curve N=4 (no stall, called exactly once)..."
-              << std::flush;
+    std::cout << "Test 6: single-curve N=4 (no stall, called exactly once)..." << std::flush;
 
     // Use atomic counter to verify exact-once invocation under N=4.
     apply_env("4");
@@ -360,24 +373,21 @@ void test_single_curve_no_stall() {
     auto t0 = std::chrono::steady_clock::now();
     auto results = parallel_stage2_curves<Integer, uint64_t>(
         std::span<uint64_t>(single),
-        [&calls, &seen_index](uint64_t sigma,
-                              std::size_t idx) -> std::optional<Integer> {
+        [&calls, &seen_index](uint64_t sigma, std::size_t idx) -> std::optional<Integer> {
             calls.fetch_add(1, std::memory_order_relaxed);
             seen_index = idx;
             // Return a stub value (sigma itself); we only check call shape.
             return std::optional<Integer>{Integer{sigma}};
         });
     auto t1 = std::chrono::steady_clock::now();
-    long long ms =
-        std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+    long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 
     assert(results.size() == 1);
     assert(results[0].has_value());
     assert(results[0]->to_string() == "42");
     int total_calls = calls.load(std::memory_order_relaxed);
     if (total_calls != 1) {
-        std::cerr << "\n  ERROR: expected exactly 1 call, got " << total_calls
-                  << std::endl;
+        std::cerr << "\n  ERROR: expected exactly 1 call, got " << total_calls << std::endl;
         std::abort();
     }
     assert(seen_index == 0);
@@ -388,8 +398,8 @@ void test_single_curve_no_stall() {
     // would push past this. (Generous bound to keep CI sanitizer runs
     // happy.)
     if (ms > 1000) {
-        std::cerr << "\n  WARN: single-curve dispatch took " << ms
-                  << " ms (expected << 1000 ms)" << std::endl;
+        std::cerr << "\n  WARN: single-curve dispatch took " << ms << " ms (expected << 1000 ms)"
+                  << std::endl;
         // No abort -- this is a soft signal, sanitizers can be slow.
     }
 
@@ -397,7 +407,7 @@ void test_single_curve_no_stall() {
     std::cout << " PASS (" << ms << " ms)\n";
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     std::cout << "=== ECM Stage 2 Parallel Dispatch Tests ===" << std::endl;
@@ -409,7 +419,6 @@ int main() {
     test_empty_curve_list();
     test_single_curve_no_stall();
 
-    std::cout << std::endl
-              << "=== All ECM Stage 2 Parallel Tests PASSED ===" << std::endl;
+    std::cout << std::endl << "=== All ECM Stage 2 Parallel Tests PASSED ===" << std::endl;
     return 0;
 }
