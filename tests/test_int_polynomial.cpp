@@ -164,6 +164,14 @@ void test_evaluate_mod() {
     GNFS_TEST_CHECK(g.evaluate_mod(1, 11) == 0);
     GNFS_TEST_CHECK(g.evaluate_mod(2, 11) == 0);
 
+    // A uint64_t modulus wider than unsigned long must not be truncated on
+    // Windows LLP64 when reducing a GMP coefficient.
+    const uint64_t wide_modulus = (std::numeric_limits<uint64_t>::max)() - 1;
+    std::vector<Integer> wide_constant_coeffs;
+    wide_constant_coeffs.emplace_back(wide_modulus - 1);
+    IntPolynomial wide_constant(std::move(wide_constant_coeffs));
+    GNFS_TEST_CHECK(wide_constant.evaluate_mod(0, wide_modulus) == wide_modulus - 1);
+
     // The modular add step must remain correct when two residues near a
     // UINT64 modulus would overflow their native sum.
     const uint64_t p = (std::numeric_limits<uint64_t>::max)() - 1;
