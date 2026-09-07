@@ -51,7 +51,8 @@ namespace gnfs::linalg {
 ///   ceil(n / 128) bytes of headers, i.e. < 0.8% over n bytes.
 class KrylovCompressor {
 public:
-    static constexpr uint32_t MAGIC = 0x5A59524BU;  // "KRYZ" little-endian: 'K'(0x4B) 'R'(0x52) 'Y'(0x59) 'Z'(0x5A)
+    static constexpr uint32_t MAGIC =
+        0x5A59524BU; // "KRYZ" little-endian: 'K'(0x4B) 'R'(0x52) 'Y'(0x59) 'Z'(0x5A)
     static constexpr uint8_t VERSION = 1;
     static constexpr uint8_t FLAG_DELTA = 0x01;
     static constexpr size_t HEADER_BYTES = 16;
@@ -63,9 +64,8 @@ public:
     /// If `apply_delta` is true, the input is XOR-delta'd in `block_stride`
     /// blocks first (caller must guarantee in_size % block_stride == 0).
     /// Setting block_stride = 0 disables delta (raw byte RLE only).
-    static std::vector<uint8_t> compress_chunk(
-        const uint8_t* in, size_t in_size,
-        size_t block_stride = 0) {
+    static std::vector<uint8_t> compress_chunk(const uint8_t* in, size_t in_size,
+                                               size_t block_stride = 0) {
 
         if (in == nullptr && in_size != 0) {
             throw std::invalid_argument(
@@ -112,16 +112,15 @@ public:
             // Probe for a run of repeated bytes
             const uint8_t cur = payload[i];
             size_t run_len = 1;
-            while (i + run_len < in_size &&
-                   payload[i + run_len] == cur &&
+            while (i + run_len < in_size && payload[i + run_len] == cur &&
                    run_len < MAX_REPEAT_RUN) {
                 ++run_len;
             }
 
             if (run_len >= MIN_REPEAT_RUN) {
                 // Emit repeat token
-                out.push_back(static_cast<uint8_t>(
-                    0x80 | static_cast<uint8_t>(run_len - MIN_REPEAT_RUN)));
+                out.push_back(
+                    static_cast<uint8_t>(0x80 | static_cast<uint8_t>(run_len - MIN_REPEAT_RUN)));
                 out.push_back(cur);
                 i += run_len;
             } else {
@@ -136,7 +135,7 @@ public:
                     if (i + MIN_REPEAT_RUN <= in_size) {
                         const uint8_t v = payload[i];
                         if (payload[i + 1] == v && payload[i + 2] == v) {
-                            break;  // bail; let next outer loop emit a repeat
+                            break; // bail; let next outer loop emit a repeat
                         }
                     }
                     ++i;
@@ -160,10 +159,8 @@ public:
     /// Returns false on any format error (bad magic, version, size mismatch,
     /// truncated payload). The output buffer must be exactly the right size —
     /// caller knows uncompressed_size from chunk index.
-    [[nodiscard]] static bool decompress_chunk(
-        const uint8_t* in, size_t in_size,
-        uint8_t* out, size_t out_size,
-        size_t block_stride = 0) noexcept {
+    [[nodiscard]] static bool decompress_chunk(const uint8_t* in, size_t in_size, uint8_t* out,
+                                               size_t out_size, size_t block_stride = 0) noexcept {
 
         if (in == nullptr || in_size < HEADER_BYTES || (out == nullptr && out_size != 0)) {
             return false;
@@ -171,10 +168,12 @@ public:
 
         // Parse header
         const uint32_t magic = load_u32_le(in);
-        if (magic != MAGIC) return false;
+        if (magic != MAGIC)
+            return false;
 
         const uint8_t version = in[4];
-        if (version != VERSION) return false;
+        if (version != VERSION)
+            return false;
 
         const uint8_t flags = in[5];
         const bool delta_flag = (flags & FLAG_DELTA) != 0;
@@ -182,7 +181,8 @@ public:
         // PADDING bytes 6,7 are reserved; do not validate (forward compat)
 
         const uint64_t uncompressed_size = load_u64_le(in + 8);
-        if (uncompressed_size != out_size) return false;
+        if (uncompressed_size != out_size)
+            return false;
 
         if (delta_flag && block_stride == 0) {
             // Caller expected no delta but chunk says delta — mismatch
@@ -192,7 +192,8 @@ public:
             // Caller expected delta but chunk says raw — mismatch
             return false;
         }
-        if (delta_flag && (out_size % block_stride != 0)) return false;
+        if (delta_flag && (out_size % block_stride != 0))
+            return false;
 
         // Decode RLE into out buffer (or scratch if delta-encoded)
         // First pass writes raw bytes (post-RLE); delta inverse fixes up later.
@@ -204,32 +205,37 @@ public:
             if ((header & 0x80) == 0) {
                 // Literal run
                 const size_t lit_len = static_cast<size_t>(header) + 1;
-                if (lit_len > in_size - in_pos) return false;
-                if (lit_len > out_size - out_pos) return false;
+                if (lit_len > in_size - in_pos)
+                    return false;
+                if (lit_len > out_size - out_pos)
+                    return false;
                 std::memcpy(out + out_pos, in + in_pos, lit_len);
                 in_pos += lit_len;
                 out_pos += lit_len;
             } else {
                 // Repeat run
                 const size_t rep_len = static_cast<size_t>(header & 0x7F) + MIN_REPEAT_RUN;
-                if (in_pos >= in_size) return false;
+                if (in_pos >= in_size)
+                    return false;
                 const uint8_t v = in[in_pos++];
-                if (rep_len > out_size - out_pos) return false;
+                if (rep_len > out_size - out_pos)
+                    return false;
                 std::memset(out + out_pos, v, rep_len);
                 out_pos += rep_len;
             }
         }
 
-        if (out_pos != out_size) return false;
-        if (in_pos != in_size) return false;
+        if (out_pos != out_size)
+            return false;
+        if (in_pos != in_size)
+            return false;
 
         // Step 3 (optional): undo XOR-delta in-place. block_k = delta_k XOR block_{k-1}
         // for k > 0; block_0 already verbatim.
         if (delta_flag) {
             for (size_t off = block_stride; off < out_size; off += block_stride) {
                 for (size_t b = 0; b < block_stride; ++b) {
-                    out[off + b] =
-                        static_cast<uint8_t>(out[off + b] ^ out[off - block_stride + b]);
+                    out[off + b] = static_cast<uint8_t>(out[off + b] ^ out[off - block_stride + b]);
                 }
             }
         }
@@ -239,13 +245,16 @@ public:
 
     /// Inspect chunk header without full decode. Useful for cache routing.
     /// Returns 0 if header invalid; otherwise uncompressed payload size.
-    [[nodiscard]] static uint64_t peek_uncompressed_size(
-        const uint8_t* in, size_t in_size) noexcept {
+    [[nodiscard]] static uint64_t peek_uncompressed_size(const uint8_t* in,
+                                                         size_t in_size) noexcept {
 
-        if (in == nullptr || in_size < HEADER_BYTES) return 0;
+        if (in == nullptr || in_size < HEADER_BYTES)
+            return 0;
         const uint32_t magic = load_u32_le(in);
-        if (magic != MAGIC) return 0;
-        if (in[4] != VERSION) return 0;
+        if (magic != MAGIC)
+            return 0;
+        if (in[4] != VERSION)
+            return 0;
         return load_u64_le(in + 8);
     }
 
@@ -276,8 +285,7 @@ private:
         }
     }
 
-    static void write_header(std::vector<uint8_t>& out, uint64_t uncompressed_size,
-                             bool delta) {
+    static void write_header(std::vector<uint8_t>& out, uint64_t uncompressed_size, bool delta) {
         const size_t start = out.size();
         out.resize(start + HEADER_BYTES);
         store_u32_le(out.data() + start, MAGIC);
@@ -289,4 +297,4 @@ private:
     }
 };
 
-}  // namespace gnfs::linalg
+} // namespace gnfs::linalg
