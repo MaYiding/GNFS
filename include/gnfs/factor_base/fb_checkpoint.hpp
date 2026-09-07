@@ -5,6 +5,7 @@
 #include "../core/types.hpp"
 #include "factor_base.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -31,7 +32,7 @@ using core::RationalPrime;
 ///   - 加载时校验 build params (bounds 必须一致) 和 ctx fingerprint
 ///     (degree + leading_coeff + N 哈希) 防止用错 FB。
 ///
-/// Binary layout:
+/// Binary layout (all fixed-width scalar fields are little-endian):
 ///   u64 magic
 ///   u64 version
 ///   ── Build params ──
@@ -159,42 +160,42 @@ struct FbCheckpoint {
 
         uint64_t magic = MAGIC_INCOMPLETE;
         uint64_t version = VERSION;
-        out.write(reinterpret_cast<const char*>(&magic), 8);
-        out.write(reinterpret_cast<const char*>(&version), 8);
+        write_u64(out, magic);
+        write_u64(out, version);
 
-        out.write(reinterpret_cast<const char*>(&rational_bound), 4);
-        out.write(reinterpret_cast<const char*>(&algebraic_bound), 4);
-        out.write(reinterpret_cast<const char*>(&special_q_bound), 4);
-        out.write(reinterpret_cast<const char*>(&large_prime_bound), 8);
+        write_u32(out, rational_bound);
+        write_u32(out, algebraic_bound);
+        write_u32(out, special_q_bound);
+        write_u64(out, large_prime_bound);
         uint32_t scale_pad = static_cast<uint32_t>(log_scale); // pad to 4 bytes
-        out.write(reinterpret_cast<const char*>(&scale_pad), 4);
+        write_u32(out, scale_pad);
 
-        out.write(reinterpret_cast<const char*>(&ctx_degree), 4);
+        write_u32(out, ctx_degree);
         write_integer(out, ctx_n);
 
         uint32_t rat_count = static_cast<uint32_t>(rational.size());
-        out.write(reinterpret_cast<const char*>(&rat_count), 4);
+        write_u32(out, rat_count);
         for (const auto& rp : rational) {
-            out.write(reinterpret_cast<const char*>(&rp.p), 4);
-            out.write(reinterpret_cast<const char*>(&rp.log_p), 4);
+            write_u32(out, rp.p);
+            write_u32(out, rp.log_p);
         }
 
         uint32_t alg_count = static_cast<uint32_t>(algebraic.size());
-        out.write(reinterpret_cast<const char*>(&alg_count), 4);
+        write_u32(out, alg_count);
         for (const auto& ap : algebraic) {
-            out.write(reinterpret_cast<const char*>(&ap.p), 4);
-            out.write(reinterpret_cast<const char*>(&ap.r), 4);
-            out.write(reinterpret_cast<const char*>(&ap.log_p), 4);
+            write_u32(out, ap.p);
+            write_u32(out, ap.r);
+            write_u32(out, ap.log_p);
             // degree is u8; pad to 4 bytes for alignment / future fields
             uint32_t deg_pad = static_cast<uint32_t>(ap.degree);
-            out.write(reinterpret_cast<const char*>(&deg_pad), 4);
+            write_u32(out, deg_pad);
         }
 
         uint64_t encoded_sieve_count = count;
         if ((sieve_algebraic_count_explicit || marker_explicit_zero) && count == 0) {
             encoded_sieve_count = EXPLICIT_ZERO_SIEVE_COUNT;
         }
-        out.write(reinterpret_cast<const char*>(&encoded_sieve_count), 8);
+        write_u64(out, encoded_sieve_count);
 
         out.flush();
         if (!out) {
@@ -203,7 +204,7 @@ struct FbCheckpoint {
 
         out.seekp(0);
         magic = MAGIC;
-        out.write(reinterpret_cast<const char*>(&magic), 8);
+        write_u64(out, magic);
         out.flush();
         out.close();
     }
@@ -214,12 +215,8 @@ struct FbCheckpoint {
             throw std::runtime_error("FbCheckpoint::load: cannot open " + path);
         }
 
-        uint64_t magic = 0, version = 0;
-        in.read(reinterpret_cast<char*>(&magic), 8);
-        in.read(reinterpret_cast<char*>(&version), 8);
-        if (in.gcount() != 8) {
-            throw std::runtime_error("FbCheckpoint::load: file too small");
-        }
+        const uint64_t magic = read_u64(in, "magic");
+        const uint64_t version = read_u64(in, "version");
         if (magic != MAGIC && !(allow_incomplete && magic == MAGIC_INCOMPLETE)) {
             throw std::runtime_error("FbCheckpoint::load: invalid magic in " + path);
         }
@@ -230,22 +227,17 @@ struct FbCheckpoint {
         }
 
         FbCheckpoint ck;
-        in.read(reinterpret_cast<char*>(&ck.rational_bound), 4);
-        in.read(reinterpret_cast<char*>(&ck.algebraic_bound), 4);
-        in.read(reinterpret_cast<char*>(&ck.special_q_bound), 4);
-        in.read(reinterpret_cast<char*>(&ck.large_prime_bound), 8);
-        uint32_t scale_pad = 0;
-        in.read(reinterpret_cast<char*>(&scale_pad), 4);
+        ck.rational_bound = read_u32(in, "rational bound");
+        ck.algebraic_bound = read_u32(in, "algebraic bound");
+        ck.special_q_bound = read_u32(in, "special-q bound");
+        ck.large_prime_bound = read_u64(in, "large-prime bound");
+        const uint32_t scale_pad = read_u32(in, "log scale");
         ck.log_scale = static_cast<uint8_t>(scale_pad);
 
-        in.read(reinterpret_cast<char*>(&ck.ctx_degree), 4);
+        ck.ctx_degree = read_u32(in, "context degree");
         read_integer(in, ck.ctx_n);
 
-        uint32_t rat_count = 0;
-        in.read(reinterpret_cast<char*>(&rat_count), 4);
-        if (in.gcount() != 4) {
-            throw std::runtime_error("FbCheckpoint::load: truncated rational header");
-        }
+        const uint32_t rat_count = read_u32(in, "rational count");
         if (rat_count > 100'000'000u) {
             throw std::runtime_error("FbCheckpoint::load: rat_count corrupt");
         }
@@ -253,16 +245,12 @@ struct FbCheckpoint {
         ck.rational.reserve(rat_count);
         for (size_t i = 0; i < static_cast<size_t>(rat_count); ++i) {
             RationalPrime rp;
-            in.read(reinterpret_cast<char*>(&rp.p), 4);
-            in.read(reinterpret_cast<char*>(&rp.log_p), 4);
+            rp.p = read_u32(in, "rational prime");
+            rp.log_p = read_u32(in, "rational log");
             ck.rational.push_back(rp);
         }
 
-        uint32_t alg_count = 0;
-        in.read(reinterpret_cast<char*>(&alg_count), 4);
-        if (in.gcount() != 4) {
-            throw std::runtime_error("FbCheckpoint::load: truncated algebraic header");
-        }
+        const uint32_t alg_count = read_u32(in, "algebraic count");
         if (alg_count > 100'000'000u) {
             throw std::runtime_error("FbCheckpoint::load: alg_count corrupt");
         }
@@ -271,19 +259,16 @@ struct FbCheckpoint {
         for (size_t i = 0; i < static_cast<size_t>(alg_count); ++i) {
             AlgebraicPrime ap;
             uint32_t deg_pad = 0;
-            in.read(reinterpret_cast<char*>(&ap.p), 4);
-            in.read(reinterpret_cast<char*>(&ap.r), 4);
-            in.read(reinterpret_cast<char*>(&ap.log_p), 4);
-            in.read(reinterpret_cast<char*>(&deg_pad), 4);
+            ap.p = read_u32(in, "algebraic prime");
+            ap.r = read_u32(in, "algebraic root");
+            ap.log_p = read_u32(in, "algebraic log");
+            deg_pad = read_u32(in, "algebraic degree");
             ap.degree = static_cast<uint8_t>(deg_pad);
             ck.algebraic.push_back(ap);
         }
 
         uint64_t encoded_sieve_count = 0;
-        in.read(reinterpret_cast<char*>(&encoded_sieve_count), 8);
-        if (in.gcount() != 8) {
-            throw std::runtime_error("FbCheckpoint::load: truncated sieve count");
-        }
+        encoded_sieve_count = read_u64(in, "sieve algebraic count");
         const bool marker_explicit_zero = (encoded_sieve_count & EXPLICIT_ZERO_SIEVE_COUNT) != 0;
         const uint64_t count = encoded_sieve_count & ~EXPLICIT_ZERO_SIEVE_COUNT;
         if (marker_explicit_zero && count != 0) {
@@ -304,9 +289,10 @@ struct FbCheckpoint {
         std::ifstream in(path, std::ios::binary);
         if (!in)
             return false;
-        uint64_t magic = 0;
-        in.read(reinterpret_cast<char*>(&magic), 8);
-        return in.gcount() == 8 && magic == MAGIC;
+        unsigned char bytes[sizeof(uint64_t)]{};
+        in.read(reinterpret_cast<char*>(bytes), sizeof(bytes));
+        return in.gcount() == static_cast<std::streamsize>(sizeof(bytes)) &&
+               decode_u64(bytes) == MAGIC;
     }
 
     /// Reasons a checkpoint may be unsuitable for the current run.
@@ -335,6 +321,60 @@ struct FbCheckpoint {
     }
 
 private:
+    static void write_u32(std::ofstream& out, uint32_t value) {
+        const unsigned char bytes[4] = {
+            static_cast<unsigned char>(value & 0xffU),
+            static_cast<unsigned char>((value >> 8U) & 0xffU),
+            static_cast<unsigned char>((value >> 16U) & 0xffU),
+            static_cast<unsigned char>((value >> 24U) & 0xffU),
+        };
+        out.write(reinterpret_cast<const char*>(bytes), sizeof(bytes));
+    }
+
+    static void write_u64(std::ofstream& out, uint64_t value) {
+        const unsigned char bytes[8] = {
+            static_cast<unsigned char>(value & 0xffULL),
+            static_cast<unsigned char>((value >> 8U) & 0xffULL),
+            static_cast<unsigned char>((value >> 16U) & 0xffULL),
+            static_cast<unsigned char>((value >> 24U) & 0xffULL),
+            static_cast<unsigned char>((value >> 32U) & 0xffULL),
+            static_cast<unsigned char>((value >> 40U) & 0xffULL),
+            static_cast<unsigned char>((value >> 48U) & 0xffULL),
+            static_cast<unsigned char>((value >> 56U) & 0xffULL),
+        };
+        out.write(reinterpret_cast<const char*>(bytes), sizeof(bytes));
+    }
+
+    static uint32_t decode_u32(const unsigned char* bytes) noexcept {
+        return static_cast<uint32_t>(bytes[0]) | (static_cast<uint32_t>(bytes[1]) << 8U) |
+               (static_cast<uint32_t>(bytes[2]) << 16U) | (static_cast<uint32_t>(bytes[3]) << 24U);
+    }
+
+    static uint64_t decode_u64(const unsigned char* bytes) noexcept {
+        return static_cast<uint64_t>(bytes[0]) | (static_cast<uint64_t>(bytes[1]) << 8U) |
+               (static_cast<uint64_t>(bytes[2]) << 16U) | (static_cast<uint64_t>(bytes[3]) << 24U) |
+               (static_cast<uint64_t>(bytes[4]) << 32U) | (static_cast<uint64_t>(bytes[5]) << 40U) |
+               (static_cast<uint64_t>(bytes[6]) << 48U) | (static_cast<uint64_t>(bytes[7]) << 56U);
+    }
+
+    static uint32_t read_u32(std::ifstream& in, const char* field) {
+        unsigned char bytes[4]{};
+        in.read(reinterpret_cast<char*>(bytes), sizeof(bytes));
+        if (in.gcount() != static_cast<std::streamsize>(sizeof(bytes))) {
+            throw std::runtime_error(std::string("FbCheckpoint::load: truncated ") + field);
+        }
+        return decode_u32(bytes);
+    }
+
+    static uint64_t read_u64(std::ifstream& in, const char* field) {
+        unsigned char bytes[8]{};
+        in.read(reinterpret_cast<char*>(bytes), sizeof(bytes));
+        if (in.gcount() != static_cast<std::streamsize>(sizeof(bytes))) {
+            throw std::runtime_error(std::string("FbCheckpoint::load: truncated ") + field);
+        }
+        return decode_u64(bytes);
+    }
+
     [[nodiscard]] static constexpr size_t max_serialized_count() noexcept {
         return static_cast<size_t>((std::numeric_limits<uint32_t>::max)());
     }
@@ -342,10 +382,10 @@ private:
     static void write_integer(std::ofstream& out, const Integer& x) {
         const mpz_t& mz = x.get_mpz();
         int32_t sgn = mpz_sgn(mz);
-        out.write(reinterpret_cast<const char*>(&sgn), 4);
+        write_u32(out, static_cast<uint32_t>(sgn));
         if (sgn == 0) {
             uint32_t zero = 0;
-            out.write(reinterpret_cast<const char*>(&zero), 4);
+            write_u32(out, zero);
             return;
         }
         size_t byte_count = 0;
@@ -358,20 +398,23 @@ private:
             throw std::overflow_error("FbCheckpoint::write_integer: integer is too large");
         }
         uint32_t bc = static_cast<uint32_t>(byte_count);
-        out.write(reinterpret_cast<const char*>(&bc), 4);
+        write_u32(out, bc);
         if (bc > 0) {
             out.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(bc));
         }
     }
 
     static void read_integer(std::ifstream& in, Integer& x) {
+        const uint32_t sign_bits = read_u32(in, "integer sign");
         int32_t sgn = 0;
-        uint32_t byte_count = 0;
-        in.read(reinterpret_cast<char*>(&sgn), 4);
-        in.read(reinterpret_cast<char*>(&byte_count), 4);
-        if (in.gcount() != 4) {
-            throw std::runtime_error("FbCheckpoint::read_integer: truncated header");
+        if (sign_bits == 1U) {
+            sgn = 1;
+        } else if (sign_bits == 0xffffffffU) {
+            sgn = -1;
+        } else if (sign_bits != 0U) {
+            throw std::runtime_error("FbCheckpoint::read_integer: invalid sign");
         }
+        const uint32_t byte_count = read_u32(in, "integer byte count");
         if (byte_count > (1u << 30)) {
             throw std::runtime_error("FbCheckpoint::read_integer: byte_count too large");
         }
