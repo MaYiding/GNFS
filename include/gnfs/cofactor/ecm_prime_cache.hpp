@@ -54,7 +54,7 @@
 //     - N > 32          clamps to 32 (the hard cap; B1 working sets are small)
 //     - N == 0 / unset  → cache disabled (default, zero overhead)
 //     - Negative / non-numeric / leading whitespace → 0 (disabled)
-//     - Partial-parse: "12abc" → 12 (std::stoi accepts numeric prefix).
+//     - Partial-parse: "12abc" → 12 (strtoull accepts numeric prefix).
 //       Documented; users should pass clean integer values.
 //
 // Process-singleton storage strategy:
@@ -90,6 +90,7 @@
 //     identical content.
 
 #include <atomic>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -110,15 +111,18 @@ namespace detail {
 /// We restrict B1 to fit in uint64_t and primes p to <= B1, so the result
 /// `p^e` always fits in uint64_t because `p^e <= B1 <= UINT64_MAX`.
 [[nodiscard]] inline uint64_t prime_power_at_most(uint64_t p, uint64_t B1) noexcept {
-    if (p == 0 || p > B1) return 0;
+    if (p == 0 || p > B1)
+        return 0;
     uint64_t acc = p;
     while (true) {
         // Test acc * p <= B1 without overflow.
         // Since acc <= B1 and p <= B1, the product could overflow uint64_t.
         // Use safe-multiply check: acc * p overflows if acc > B1 / p.
-        if (p != 0 && acc > B1 / p) break;
+        if (p != 0 && acc > B1 / p)
+            break;
         uint64_t next = acc * p;
-        if (next > B1) break;
+        if (next > B1)
+            break;
         acc = next;
     }
     return acc;
@@ -136,12 +140,12 @@ namespace detail {
 /// For the realistic ECM B1 range [1e3, 1e7], sieve allocation is at most
 /// ~12 MB, which is reasonable.
 [[nodiscard]] inline std::vector<uint64_t> sieve_primes_up_to(uint64_t B1) {
-    if (B1 < 2) return {};
+    if (B1 < 2)
+        return {};
     // Hard cap to prevent runaway allocations.
     constexpr uint64_t kMaxSieveB1 = 100'000'000ULL;
     if (B1 > kMaxSieveB1) {
-        throw std::invalid_argument(
-            "ecm_prime_cache: B1 exceeds sieve cap (100M)");
+        throw std::invalid_argument("ecm_prime_cache: B1 exceeds sieve cap (100M)");
     }
     const std::size_t n = static_cast<std::size_t>(B1) + 1;
     // is_composite[i] == true if i is composite.
@@ -171,7 +175,7 @@ namespace detail {
 /// Cached parse result for GNFS_ECM_B1_CACHE_SIZE.
 struct B1CacheSizeEnvCache {
     std::once_flag once;
-    int value = 0;  // 0 = disabled (default)
+    int value = 0; // 0 = disabled (default)
 };
 
 inline B1CacheSizeEnvCache& b1_cache_size_env_cache() noexcept {
@@ -186,7 +190,7 @@ inline B1CacheSizeEnvCache& b1_cache_size_env_cache() noexcept {
 ///     whitespace → 0
 ///   * N in [1, 32]  → N
 ///   * N > 32        → 32 (clamped)
-///   * Partial-parse: "12abc" → 12 (std::stoi accepts numeric prefix).
+///   * Partial-parse: "12abc" → 12 (strtoull accepts numeric prefix).
 ///     Documented behavior; users should pass clean values.
 [[nodiscard]] inline int parse_b1_cache_size_env() noexcept {
     const char* env = std::getenv("GNFS_ECM_B1_CACHE_SIZE");
@@ -195,23 +199,36 @@ inline B1CacheSizeEnvCache& b1_cache_size_env_cache() noexcept {
     }
     // Reject leading whitespace explicitly (matches W12 T1
     // linalg_progress_interval convention: clean parsing only).
-    // std::stoi otherwise silently skips leading whitespace via std::strtol.
+    // strtoull otherwise silently skips leading whitespace.
     if (env[0] == ' ' || env[0] == '\t' || env[0] == '\n' || env[0] == '\r') {
         return 0;
     }
-    int parsed = 0;
-    try {
-        parsed = std::stoi(env);
-    } catch (...) {
-        return 0;  // out of int range or no leading digits
+    // Reject a leading minus explicitly: strtoull accepts it and would
+    // otherwise turn a negative value into a large unsigned result.
+    if (env[0] == '-') {
+        return 0;
     }
-    if (parsed <= 0) return 0;
+
+    errno = 0;
+    char* end = nullptr;
+    const unsigned long long parsed = std::strtoull(env, &end, 10);
+    if (end == env) {
+        return 0; // no leading digits
+    }
+
     constexpr int kMaxCacheCapacity = 32;
-    if (parsed > kMaxCacheCapacity) parsed = kMaxCacheCapacity;
-    return parsed;
+    // A numeric value beyond the conversion type's range is still above our
+    // much smaller cache cap, so saturate instead of disabling the cache.
+    if (errno == ERANGE || parsed > static_cast<unsigned long long>(kMaxCacheCapacity)) {
+        return kMaxCacheCapacity;
+    }
+    if (parsed == 0) {
+        return 0;
+    }
+    return static_cast<int>(parsed);
 }
 
-}  // namespace detail
+} // namespace detail
 
 /// Compute the ECM Stage 1 prime-power sequence for `B1`.
 ///
@@ -233,7 +250,8 @@ inline B1CacheSizeEnvCache& b1_cache_size_env_cache() noexcept {
 /// Throws std::invalid_argument if B1 exceeds 100_000_000 (sieve memory
 /// cap). For realistic ECM workloads (B1 up to ~1e7), no exception fires.
 [[nodiscard]] inline std::vector<uint64_t> compute_b1_prime_powers(uint64_t B1) {
-    if (B1 < 2) return {};
+    if (B1 < 2)
+        return {};
     auto primes = detail::sieve_primes_up_to(B1);
     std::vector<uint64_t> result;
     result.reserve(primes.size());
@@ -318,8 +336,7 @@ public:
             return *it->second;
         }
         // Cache miss.
-        auto computed = std::make_unique<std::vector<uint64_t>>(
-            compute_b1_prime_powers(B1));
+        auto computed = std::make_unique<std::vector<uint64_t>>(compute_b1_prime_powers(B1));
         if (entries_.size() < capacity_) {
             // Insert into the cache.
             auto [ins_it, inserted] = entries_.emplace(B1, std::move(computed));
@@ -367,9 +384,7 @@ private:
 /// an atomic load (no getenv on hot path).
 [[nodiscard]] inline std::size_t ecm_b1_cache_size() noexcept {
     auto& cache = detail::b1_cache_size_env_cache();
-    std::call_once(cache.once, [&cache]() {
-        cache.value = detail::parse_b1_cache_size_env();
-    });
+    std::call_once(cache.once, [&cache]() { cache.value = detail::parse_b1_cache_size_env(); });
     return static_cast<std::size_t>(cache.value);
 }
 
@@ -406,4 +421,4 @@ inline EcmB1PrimeCache& shared_ecm_b1_cache() {
     return cache;
 }
 
-}  // namespace gnfs::cofactor
+} // namespace gnfs::cofactor
