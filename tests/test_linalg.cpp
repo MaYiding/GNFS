@@ -154,6 +154,13 @@ void test_sparse_matrix_bounds() {
     require_throws<std::out_of_range>([&] { (void)matrix.test(1, 0); }, "row test bounds");
     require_throws<std::out_of_range>([&] { (void)matrix.test(0, 1); }, "column test bounds");
 
+    SparseMatrix populated(1, 2);
+    populated.set(0, 1);
+    require_throws<std::invalid_argument>([&] { populated.set_num_cols(1); },
+                                          "column count excludes populated column");
+    GNFS_TEST_CHECK(populated.num_cols() == 2);
+    GNFS_TEST_CHECK(populated.test(0, 1));
+
     if constexpr (sizeof(size_t) > sizeof(uint32_t)) {
         const size_t too_many_columns =
             static_cast<size_t>(std::numeric_limits<uint32_t>::max()) + size_t{1};

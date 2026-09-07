@@ -275,6 +275,13 @@ public:
         if (cols > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
             throw std::invalid_argument("SparseMatrix column count exceeds uint32_t storage");
         }
+        for (const auto& row : rows_) {
+            const auto& indices = row.indices();
+            if (!indices.empty() && indices.back() >= cols) {
+                throw std::invalid_argument(
+                    "SparseMatrix column count would exclude populated columns");
+            }
+        }
         num_cols_ = cols;
     }
 
