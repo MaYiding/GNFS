@@ -144,6 +144,7 @@ PROJECT_ROOT="${0:A:h:h}"
 BUILD_DIR="${PROJECT_ROOT}/build"
 BENCH_DIR="${PROJECT_ROOT}/benchmarks"
 REPORT_FILE="${BUILD_DIR}/test_report.json"
+TEST_RUNNER_COMMAND="$0"
 GNFS_TEST_PYTHON="${GNFS_PYTHON_EXECUTABLE:-python3}"
 NCPU=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
 
@@ -8304,6 +8305,50 @@ do_matrix() {
 # 参数解析
 # ============================================================
 
+usage_error() {
+    log_fail "参数错误: $*"
+    echo "运行 '${TEST_RUNNER_COMMAND} --help' 查看完整用法"
+    exit 2
+}
+
+require_option_value() {
+    local option="$1"
+    if (( $# < 2 )) || [[ -z "$2" || "$2" == -* ]]; then
+        usage_error "${option} 需要一个值"
+    fi
+}
+
+require_unsigned_option() {
+    local option="$1"
+    local value="$2"
+    local allow_zero="$3"
+    if [[ ! "$value" =~ '^[0-9]+$' ]] ||
+       { [[ "$allow_zero" == 0 ]] && [[ "$value" =~ '^0+$' ]]; }; then
+        usage_error "${option} 必须是$([[ $allow_zero -eq 1 ]] && echo '非负' || echo '正')整数"
+    fi
+}
+
+require_bounded_unsigned_option() {
+    local option="$1"
+    local value="$2"
+    local allow_zero="$3"
+    local maximum="$4"
+    require_unsigned_option "$option" "$value" "$allow_zero"
+
+    # Compare decimal strings after removing leading zeroes. This avoids
+    # converting untrusted option text through zsh's bounded integer parser.
+    local normalized="$value"
+    while [[ "${#normalized}" -gt 1 && "${normalized#0}" != "$normalized" ]]; do
+        normalized="${normalized#0}"
+    done
+    if (( ${#normalized} > ${#maximum} )) ||
+       { (( ${#normalized} == ${#maximum} )) && [[ "$normalized" > "$maximum" ]]; }; then
+        local minimum=1
+        [[ "$allow_zero" == 1 ]] && minimum=0
+        usage_error "${option} 超出支持范围 [${minimum},${maximum}]"
+    fi
+}
+
 MODE=""
 typeset -a MODE_ARGS
 MODE_ARGS=()
@@ -8312,15 +8357,37 @@ BENCH_EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        -j)          PARALLEL_JOBS="$2"; shift 2 ;;
-        -t)          BUILD_TYPE="$2"; BUILD_TYPE_EXPLICIT=1; shift 2 ;;
+        -j)
+            require_option_value "$@"
+            require_bounded_unsigned_option "$1" "$2" 0 9223372036854775807
+            PARALLEL_JOBS="$2"
+            shift 2
+            ;;
+        -t)
+            require_option_value "$@"
+            BUILD_TYPE="$2"
+            BUILD_TYPE_EXPLICIT=1
+            shift 2
+            ;;
         -v)          VERBOSE=1; shift ;;
         -q)          QUIET=1; shift ;;
         --no-build)  SKIP_BUILD=1; shift ;;
         --no-color)  USE_COLOR=0; setup_colors; shift ;;
         --fail-fast) FAIL_FAST=1; shift ;;
-        --timeout)   TIMEOUT="$2"; TIMEOUT_EXPLICIT=1; shift 2 ;;
-        --retry)     RETRY_COUNT="$2"; RETRY_EXPLICIT=1; shift 2 ;;
+        --timeout)
+            require_option_value "$@"
+            require_bounded_unsigned_option "$1" "$2" 0 9223372036854
+            TIMEOUT="$2"
+            TIMEOUT_EXPLICIT=1
+            shift 2
+            ;;
+        --retry)
+            require_option_value "$@"
+            require_bounded_unsigned_option "$1" "$2" 1 9223372036854775807
+            RETRY_COUNT="$2"
+            RETRY_EXPLICIT=1
+            shift 2
+            ;;
         --save)      BENCH_EXTRA_ARGS+=(--save); shift ;;
         --compare)   BENCH_EXTRA_ARGS+=(--compare); shift ;;
         --deep)      MODE_ARGS+=(--deep); shift ;;

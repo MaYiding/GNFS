@@ -98,6 +98,26 @@ PY
     pass "${name}"
 }
 
+assert_runner_argument_error() {
+    local name="$1"
+    local option="$2"
+    shift 2
+    local output runner_status
+
+    set +e
+    output=$("${PROJECT_ROOT}/scripts/test.sh" --no-build "$@" 2>&1)
+    runner_status=$?
+    set -e
+    if [[ "${runner_status}" -ne 2 || "${output}" != *"参数错误"* ||
+          "${output}" != *"${option}"* ]]; then
+        fail "${name}: expected parser status 2 for ${option}, got status=${runner_status}: ${output}"
+    fi
+    if [[ "${output}" == *"冒烟测试"* || "${output}" == *"编译"* ]]; then
+        fail "${name}: parser error reached a build/test mode"
+    fi
+    pass "${name}"
+}
+
 "${PYTHON}" "${CHECKER}" >/dev/null
 pass "repository Harness checker passes"
 
@@ -116,6 +136,16 @@ assert_empty \
     "${PROJECT_ROOT}" \
     "{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"${PROJECT_ROOT}/scripts/test.sh\"}}"
 assert_empty "malformed input fails open" "${PROJECT_ROOT}" 'not-json'
+
+assert_runner_argument_error "missing timeout value is rejected" "--timeout" --timeout
+assert_runner_argument_error "invalid timeout value is rejected" "--timeout" --timeout 0
+assert_runner_argument_error "oversized timeout value is rejected" "--timeout" --timeout 9223372036855
+assert_runner_argument_error "invalid parallelism value is rejected" "-j" -j 0
+assert_runner_argument_error "oversized parallelism value is rejected" "-j" -j 9223372036854775808
+assert_runner_argument_error "missing parallelism value is rejected" "-j" -j
+assert_runner_argument_error "missing build type is rejected" "-t" -t
+assert_runner_argument_error "missing retry value is rejected" "--retry" --retry
+assert_runner_argument_error "invalid retry value is rejected" "--retry" --retry nope
 
 mkdir -p "${TEST_TMPDIR}/passing/scripts" "${TEST_TMPDIR}/failing/scripts" "${TEST_TMPDIR}/missing"
 printf '%s\n' 'raise SystemExit(0)' > "${TEST_TMPDIR}/passing/scripts/check_harness.py"
