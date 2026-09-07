@@ -67,7 +67,11 @@ public:
         const uint8_t* in, size_t in_size,
         size_t block_stride = 0) {
 
-        if (in == nullptr || in_size == 0) {
+        if (in == nullptr && in_size != 0) {
+            throw std::invalid_argument(
+                "KrylovCompressor::compress_chunk: input must not be null for non-empty data");
+        }
+        if (in_size == 0) {
             // Empty input: emit header with size=0, no payload.
             std::vector<uint8_t> out;
             out.reserve(HEADER_BYTES);
@@ -161,11 +165,12 @@ public:
         uint8_t* out, size_t out_size,
         size_t block_stride = 0) noexcept {
 
-        if (in == nullptr || in_size < HEADER_BYTES) return false;
+        if (in == nullptr || in_size < HEADER_BYTES || (out == nullptr && out_size != 0)) {
+            return false;
+        }
 
         // Parse header
-        uint32_t magic;
-        std::memcpy(&magic, in, 4);
+        const uint32_t magic = load_u32_le(in);
         if (magic != MAGIC) return false;
 
         const uint8_t version = in[4];
@@ -176,8 +181,7 @@ public:
 
         // PADDING bytes 6,7 are reserved; do not validate (forward compat)
 
-        uint64_t uncompressed_size;
-        std::memcpy(&uncompressed_size, in + 8, 8);
+        const uint64_t uncompressed_size = load_u64_le(in + 8);
         if (uncompressed_size != out_size) return false;
 
         if (delta_flag && block_stride == 0) {
@@ -200,17 +204,17 @@ public:
             if ((header & 0x80) == 0) {
                 // Literal run
                 const size_t lit_len = static_cast<size_t>(header) + 1;
-                if (in_pos + lit_len > in_size) return false;
-                if (out_pos + lit_len > out_size) return false;
+                if (lit_len > in_size - in_pos) return false;
+                if (lit_len > out_size - out_pos) return false;
                 std::memcpy(out + out_pos, in + in_pos, lit_len);
                 in_pos += lit_len;
                 out_pos += lit_len;
             } else {
                 // Repeat run
                 const size_t rep_len = static_cast<size_t>(header & 0x7F) + MIN_REPEAT_RUN;
-                if (in_pos + 1 > in_size) return false;
+                if (in_pos >= in_size) return false;
                 const uint8_t v = in[in_pos++];
-                if (out_pos + rep_len > out_size) return false;
+                if (rep_len > out_size - out_pos) return false;
                 std::memset(out + out_pos, v, rep_len);
                 out_pos += rep_len;
             }
@@ -239,26 +243,49 @@ public:
         const uint8_t* in, size_t in_size) noexcept {
 
         if (in == nullptr || in_size < HEADER_BYTES) return 0;
-        uint32_t magic;
-        std::memcpy(&magic, in, 4);
+        const uint32_t magic = load_u32_le(in);
         if (magic != MAGIC) return 0;
         if (in[4] != VERSION) return 0;
-        uint64_t sz;
-        std::memcpy(&sz, in + 8, 8);
-        return sz;
+        return load_u64_le(in + 8);
     }
 
 private:
+    static uint32_t load_u32_le(const uint8_t* source) noexcept {
+        return static_cast<uint32_t>(source[0]) | (static_cast<uint32_t>(source[1]) << 8U) |
+               (static_cast<uint32_t>(source[2]) << 16U) |
+               (static_cast<uint32_t>(source[3]) << 24U);
+    }
+
+    static uint64_t load_u64_le(const uint8_t* source) noexcept {
+        uint64_t value = 0;
+        for (unsigned byte = 0; byte < 8; ++byte) {
+            value |= static_cast<uint64_t>(source[byte]) << (byte * 8U);
+        }
+        return value;
+    }
+
+    static void store_u32_le(uint8_t* destination, uint32_t value) noexcept {
+        for (unsigned byte = 0; byte < 4; ++byte) {
+            destination[byte] = static_cast<uint8_t>(value >> (byte * 8U));
+        }
+    }
+
+    static void store_u64_le(uint8_t* destination, uint64_t value) noexcept {
+        for (unsigned byte = 0; byte < 8; ++byte) {
+            destination[byte] = static_cast<uint8_t>(value >> (byte * 8U));
+        }
+    }
+
     static void write_header(std::vector<uint8_t>& out, uint64_t uncompressed_size,
                              bool delta) {
         const size_t start = out.size();
         out.resize(start + HEADER_BYTES);
-        std::memcpy(out.data() + start, &MAGIC, 4);
+        store_u32_le(out.data() + start, MAGIC);
         out[start + 4] = VERSION;
         out[start + 5] = delta ? FLAG_DELTA : 0;
         out[start + 6] = 0;
         out[start + 7] = 0;
-        std::memcpy(out.data() + start + 8, &uncompressed_size, 8);
+        store_u64_le(out.data() + start + 8, uncompressed_size);
     }
 };
 
