@@ -6,6 +6,13 @@ PROJECT_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
 HOOK="${PROJECT_ROOT}/.claude/hooks/project-guard.py"
 CHECKER="${PROJECT_ROOT}/scripts/check_harness.py"
 PYTHON=${PYTHON:-python3}
+ZSH_EXECUTABLE="${GNFS_ZSH_EXECUTABLE:-}"
+if [[ -z "${ZSH_EXECUTABLE}" ]]; then
+    ZSH_EXECUTABLE="$(command -v zsh || true)"
+fi
+if [[ -n "${ZSH_EXECUTABLE}" && ! -x "${ZSH_EXECUTABLE}" ]]; then
+    ZSH_EXECUTABLE=""
+fi
 
 TEST_TMPDIR=$(mktemp -d)
 cleanup() {
@@ -105,7 +112,7 @@ assert_runner_argument_error() {
     local output runner_status
 
     set +e
-    output=$("${PROJECT_ROOT}/scripts/test.sh" --no-build "$@" 2>&1)
+    output=$("${ZSH_EXECUTABLE}" "${PROJECT_ROOT}/scripts/test.sh" --no-build "$@" 2>&1)
     runner_status=$?
     set -e
     if [[ "${runner_status}" -ne 2 || "${output}" != *"参数错误"* ||
@@ -137,18 +144,22 @@ assert_empty \
     "{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"${PROJECT_ROOT}/scripts/test.sh\"}}"
 assert_empty "malformed input fails open" "${PROJECT_ROOT}" 'not-json'
 
-assert_runner_argument_error "missing timeout value is rejected" "--timeout" --timeout
-assert_runner_argument_error "negative timeout value is rejected" "--timeout" --timeout -1
-assert_runner_argument_error "invalid timeout value is rejected" "--timeout" --timeout 0
-assert_runner_argument_error "oversized timeout value is rejected" "--timeout" --timeout 9223372036855
-assert_runner_argument_error "invalid parallelism value is rejected" "-j" -j 0
-assert_runner_argument_error "negative parallelism value is rejected" "-j" -j -1
-assert_runner_argument_error "oversized parallelism value is rejected" "-j" -j 9223372036854775808
-assert_runner_argument_error "missing parallelism value is rejected" "-j" -j
-assert_runner_argument_error "missing build type is rejected" "-t" -t
-assert_runner_argument_error "missing retry value is rejected" "--retry" --retry
-assert_runner_argument_error "negative retry value is rejected" "--retry" --retry -1
-assert_runner_argument_error "invalid retry value is rejected" "--retry" --retry nope
+if [[ -n "${ZSH_EXECUTABLE}" ]]; then
+    assert_runner_argument_error "missing timeout value is rejected" "--timeout" --timeout
+    assert_runner_argument_error "negative timeout value is rejected" "--timeout" --timeout -1
+    assert_runner_argument_error "invalid timeout value is rejected" "--timeout" --timeout 0
+    assert_runner_argument_error "oversized timeout value is rejected" "--timeout" --timeout 9223372036855
+    assert_runner_argument_error "invalid parallelism value is rejected" "-j" -j 0
+    assert_runner_argument_error "negative parallelism value is rejected" "-j" -j -1
+    assert_runner_argument_error "oversized parallelism value is rejected" "-j" -j 9223372036854775808
+    assert_runner_argument_error "missing parallelism value is rejected" "-j" -j
+    assert_runner_argument_error "missing build type is rejected" "-t" -t
+    assert_runner_argument_error "missing retry value is rejected" "--retry" --retry
+    assert_runner_argument_error "negative retry value is rejected" "--retry" --retry -1
+    assert_runner_argument_error "invalid retry value is rejected" "--retry" --retry nope
+else
+    echo "[SKIP] zsh-specific runner argument contracts (zsh is unavailable)"
+fi
 
 mkdir -p "${TEST_TMPDIR}/passing/scripts" "${TEST_TMPDIR}/failing/scripts" "${TEST_TMPDIR}/missing"
 printf '%s\n' 'raise SystemExit(0)' > "${TEST_TMPDIR}/passing/scripts/check_harness.py"
