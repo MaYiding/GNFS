@@ -39,6 +39,14 @@ namespace gnfs::sieve {
 
 namespace detail {
 
+/// Add a sieve contribution without allowing the uint16 accumulator to wrap.
+/// Once a cell has reached the maximum score, further prime hits cannot make
+/// it less likely to be selected as a candidate.
+inline void saturating_add_u16(uint16_t& value, uint16_t add) noexcept {
+    const uint32_t sum = static_cast<uint32_t>(value) + static_cast<uint32_t>(add);
+    value = static_cast<uint16_t>(sum > static_cast<uint32_t>(UINT16_MAX) ? UINT16_MAX : sum);
+}
+
 /// Apply constant log_p to a contiguous uint16_t range: arr[i] += lp for all i.
 /// Used by Phase 0 global hits + v-prime full-row sieve. NEON 8-lane on arm64,
 /// scalar elsewhere.
@@ -56,14 +64,14 @@ inline void apply_log_p_range(uint16_t* arr, size_t len, uint16_t lp) {
     const size_t vec_end = len & ~size_t(7);
     for (; i < vec_end; i += 8) {
         uint16x8_t v = vld1q_u16(arr + i);
-        v = vaddq_u16(v, lp_vec);
+        v = vqaddq_u16(v, lp_vec);
         vst1q_u16(arr + i, v);
     }
     for (; i < len; ++i)
-        arr[i] += lp;
+        saturating_add_u16(arr[i], lp);
 #else
     for (size_t i = 0; i < len; ++i)
-        arr[i] += lp;
+        saturating_add_u16(arr[i], lp);
 #endif
 }
 
@@ -105,7 +113,7 @@ inline void apply_log_p_stride(uint16_t* arr, size_t start, size_t end, size_t s
     if (!enable_tiny_simd) {
         size_t idx = start;
         while (true) {
-            arr[idx] += lp;
+            saturating_add_u16(arr[idx], lp);
             // A guarded increment prevents wraparound when the helper is
             // called with an end point near SIZE_MAX.
             if (stride >= end - idx)
@@ -121,7 +129,7 @@ inline void apply_log_p_stride(uint16_t* arr, size_t start, size_t end, size_t s
     if (stride > std::numeric_limits<size_t>::max() / 4) {
         size_t idx = start;
         while (true) {
-            arr[idx] = static_cast<uint16_t>(arr[idx] + lp);
+            saturating_add_u16(arr[idx], lp);
             if (stride >= end - idx)
                 break;
             idx += stride;
@@ -141,10 +149,10 @@ inline void apply_log_p_stride(uint16_t* arr, size_t start, size_t end, size_t s
         const size_t i1 = idx + stride;
         const size_t i2 = idx + 2 * stride;
         const size_t i3 = idx + 3 * stride;
-        arr[i0] = static_cast<uint16_t>(arr[i0] + lp);
-        arr[i1] = static_cast<uint16_t>(arr[i1] + lp);
-        arr[i2] = static_cast<uint16_t>(arr[i2] + lp);
-        arr[i3] = static_cast<uint16_t>(arr[i3] + lp);
+        saturating_add_u16(arr[i0], lp);
+        saturating_add_u16(arr[i1], lp);
+        saturating_add_u16(arr[i2], lp);
+        saturating_add_u16(arr[i3], lp);
         // If fewer than five writes remain, the unrolled body just completed
         // the range. Otherwise this update is proven to stay below `end`.
         if (end - idx <= step4)
@@ -156,7 +164,7 @@ inline void apply_log_p_stride(uint16_t* arr, size_t start, size_t end, size_t s
     // scalar path.  The condition is checked after each write so no final
     // one-past value needs to be representable.
     while (true) {
-        arr[idx] = static_cast<uint16_t>(arr[idx] + lp);
+        saturating_add_u16(arr[idx], lp);
         if (stride >= end - idx)
             break;
         idx += stride;
@@ -179,10 +187,11 @@ inline void apply_log_p_stride_scalar(uint16_t* arr, size_t start, size_t end, s
 
     size_t idx = start;
     while (true) {
-        arr[idx] = static_cast<uint16_t>(arr[idx] + lp);
+        saturating_add_u16(arr[idx], lp);
         if (stride >= end - idx)
             break;
         idx += stride;
+        
     }
 }
 
@@ -540,7 +549,7 @@ private:
                 // Global hits: apply directly
                 uint16_t lp = pe.log_p;
                 for (size_t idx = 0; idx < sieve_array_.size(); ++idx)
-                    sieve_array_[idx] += lp;
+                    detail::saturating_add_u16(sieve_array_[idx], lp);
             } else if (pe.flags == 1 || pe.p < split_bound) {
                 small_primes.push_back(pe);
             } else {
@@ -1161,7 +1170,7 @@ private:
                     const auto& entry = vec[ei];
                     size_t pos = region_start + entry.offset;
                     if (pos < total_area) {
-                        sieve_array_[pos] += entry.log_p;
+                        detail::saturating_add_u16(sieve_array_[pos], entry.log_p);
                     }
                 }
             }
@@ -1336,7 +1345,7 @@ private:
             if (pe.flags == 2) {
                 uint16_t lp = pe.log_p;
                 for (size_t idx = 0; idx < sieve_array_.size(); ++idx)
-                    sieve_array_[idx] += lp;
+                    detail::saturating_add_u16(sieve_array_[idx], lp);
             }
         }
 
@@ -1582,7 +1591,7 @@ private:
                     }
                 }
                 const auto& entry = bucket[ei];
-                sieve_array_[row_base + entry.offset] += entry.log_p;
+                detail::saturating_add_u16(sieve_array_[row_base + entry.offset], entry.log_p);
             }
         }
     }

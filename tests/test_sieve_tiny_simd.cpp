@@ -53,9 +53,8 @@ constexpr uint32_t kTinyPrimes[] = {
     179, 181, 191, 193, 197, 199, 211, 223, 227, 229,
     233, 239, 241, 251};
 
-// Reference scalar implementation — identical to the original lattice_sieve
-// stride loop before the helper was introduced.  We do not rely on
-// `apply_log_p_stride_scalar` here so we can cross-check the helper itself.
+// Reference scalar implementation. Keep this independent from the production
+// helpers so the SIMD/unrolled path is checked against the score contract.
 void reference_stride(std::vector<uint16_t>& arr,
                       size_t start,
                       size_t end,
@@ -63,7 +62,8 @@ void reference_stride(std::vector<uint16_t>& arr,
                       uint16_t lp) {
     if (stride == 0 || start >= end) return;
     for (size_t idx = start; idx < end; idx += stride) {
-        arr[idx] = static_cast<uint16_t>(arr[idx] + lp);
+        const uint32_t sum = static_cast<uint32_t>(arr[idx]) + static_cast<uint32_t>(lp);
+        arr[idx] = static_cast<uint16_t>(sum > UINT16_MAX ? UINT16_MAX : sum);
     }
 }
 
@@ -103,8 +103,8 @@ void test_parity_basic_strides() {
 }
 
 void test_parity_random_lp() {
-    // Random log_p values + region sizes, ensure accumulating writes survive
-    // overflow (uint16_t wraps cleanly with `+=`).
+    // Random log_p values + region sizes, including contributions that reach
+    // the uint16_t saturation boundary.
     constexpr size_t TRIALS = 64;
     std::mt19937 rng(0xABCD1234u);
 
@@ -146,7 +146,7 @@ void test_parity_with_accumulated_array() {
         TEST_ASSERT(a == b,
                     "overflow-prone parity p=" + std::to_string(p));
     }
-    TEST_PASS("apply_log_p_stride parity under wraparound (uint16_t overflow)");
+    TEST_PASS("apply_log_p_stride parity under uint16_t saturation");
 }
 
 void test_edge_cases() {
@@ -203,7 +203,10 @@ void test_apply_log_p_range_parity() {
         auto b = a;
 
         const uint16_t lp = 0x1234;
-        for (size_t i = 0; i < len; ++i) a[i] = static_cast<uint16_t>(a[i] + lp);
+        for (size_t i = 0; i < len; ++i) {
+            const uint32_t sum = static_cast<uint32_t>(a[i]) + static_cast<uint32_t>(lp);
+            a[i] = static_cast<uint16_t>(sum > UINT16_MAX ? UINT16_MAX : sum);
+        }
         apply_log_p_range(b.data(), len, lp);
 
         TEST_ASSERT(a == b,

@@ -262,6 +262,7 @@ void test_mod_inverse() {
     std::cout << "  Mod inverse: PASS" << std::endl;
 }
 
+<<<<<<< HEAD
 void test_stride_size_t_boundary() {
     std::cout << "Testing sieve stride SIZE_MAX boundary..." << std::endl;
 
@@ -308,6 +309,99 @@ void test_stride_size_t_boundary() {
     GNFS_TEST_CHECK(normal == expected_normal);
 
     std::cout << "  Sieve stride SIZE_MAX boundary: PASS" << std::endl;
+}
+
+void test_saturating_lattice_score_updates() {
+    std::cout << "Testing saturating lattice score updates..." << std::endl;
+
+    uint16_t value = std::numeric_limits<uint16_t>::max() - 1;
+    detail::saturating_add_u16(value, 10);
+    GNFS_TEST_CHECK(value == std::numeric_limits<uint16_t>::max());
+
+    std::array<uint16_t, 11> range{};
+    range.fill(std::numeric_limits<uint16_t>::max() - 1);
+    detail::apply_log_p_range(range.data(), range.size(), 10);
+    for (const uint16_t item : range) {
+        GNFS_TEST_CHECK(item == std::numeric_limits<uint16_t>::max());
+    }
+
+    constexpr size_t stride_size = 24;
+    constexpr size_t stride_start = 1;
+    constexpr size_t stride_end = 23;
+    constexpr size_t stride = 3;
+    std::array<uint16_t, stride_size> expected{};
+    expected.fill(1234);
+    for (size_t index = stride_start; index < stride_end; index += stride) {
+        expected[index] = std::numeric_limits<uint16_t>::max();
+    }
+
+    for (const bool enable_tiny_simd : {false, true}) {
+        std::array<uint16_t, stride_size> actual{};
+        actual.fill(1234);
+        for (size_t index = stride_start; index < stride_end; index += stride) {
+            actual[index] = std::numeric_limits<uint16_t>::max() - 1;
+        }
+        detail::apply_log_p_stride(actual.data(), stride_start, stride_end, stride, 10,
+                                   enable_tiny_simd);
+        GNFS_TEST_CHECK(actual == expected);
+    }
+
+    std::array<uint16_t, stride_size> scalar{};
+    scalar.fill(1234);
+    for (size_t index = stride_start; index < stride_end; index += stride) {
+        scalar[index] = std::numeric_limits<uint16_t>::max() - 1;
+    }
+    detail::apply_log_p_stride_scalar(scalar.data(), stride_start, stride_end, stride, 10);
+    GNFS_TEST_CHECK(scalar == expected);
+
+    std::cout << "  Saturating score helpers: PASS" << std::endl;
+}
+
+void test_lattice_sieve_score_overflow_regression() {
+    std::cout << "Testing lattice score overflow regression..." << std::endl;
+
+    std::vector<Integer> coefficients;
+    coefficients.emplace_back(int64_t{812});
+    coefficients.emplace_back(int64_t{0});
+    coefficients.emplace_back(int64_t{0});
+    coefficients.emplace_back(int64_t{1});
+    PolynomialContext ctx(Integer(int64_t{77}), std::move(coefficients), Integer(int64_t{7}), 1.0);
+    const SpecialQ sq{5, 2, 0};
+
+    FactorBaseParams fb_params;
+    fb_params.rational_bound = 500;
+    fb_params.algebraic_bound = 500;
+    fb_params.log_scale = 16;
+    FactorBase fb(fb_params);
+    constexpr uint16_t high_log = uint16_t{1} << 15;
+    // Both entries are global hits for m=77 and p=5. Their combined score is
+    // exactly 2^16, which used to wrap to zero in the uint16 accumulator.
+    fb.add_rational(5, high_log);
+    fb.add_rational(5, high_log);
+
+    SieveParams params;
+    params.log_scale = 16;
+    params.rational_threshold = 0;
+    params.algebraic_threshold = 0;
+
+    LatticeSieveExecutionConfig config{};
+    config.fallback_thread_count = 1;
+    config.enable_tiny_simd = false;
+    config.enable_bucket_prefetch = false;
+
+    LatticeSieve sieve(ctx, fb, params, config);
+    sieve.set_region({0, 0, 1, 1});
+    const auto result = sieve.sieve_special_q(sq);
+
+    GNFS_TEST_CHECK(result.sieved_positions == 1);
+    GNFS_TEST_CHECK(result.candidates.size() == 1);
+    GNFS_TEST_CHECK(result.candidates[0].i == 0);
+    GNFS_TEST_CHECK(result.candidates[0].j == 1);
+    GNFS_TEST_CHECK(result.candidates[0].a == 2);
+    GNFS_TEST_CHECK(result.candidates[0].b == 1);
+    GNFS_TEST_CHECK(result.candidates[0].residual == 0);
+
+    std::cout << "  Saturating score overflow regression: PASS" << std::endl;
 }
 
 void test_default_region() {
@@ -1301,6 +1395,8 @@ int main() {
     test_sieve_region();
     test_mod_inverse();
     test_stride_size_t_boundary();
+    test_saturating_lattice_score_updates();
+    test_lattice_sieve_score_overflow_regression();
     test_default_region();
     test_lattice_sieve_storage_contract();
     test_lattice_sieve_special_q_entry_contract();
