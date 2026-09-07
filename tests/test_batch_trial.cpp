@@ -474,7 +474,8 @@ void test_degenerate_bound() {
     std::cout << "Test 11: degenerate prime_bound..." << std::flush;
 
     std::vector<Integer> in = {
-        Integer{uint64_t{1}}, Integer{uint64_t{6}}, // 2*3, not stripped → not smooth
+        Integer{uint64_t{1}},
+        Integer{uint64_t{6}}, // 2*3, not stripped → not smooth
     };
 
     BatchTrialResult br0 = batch_trial_divide(in, 0);
