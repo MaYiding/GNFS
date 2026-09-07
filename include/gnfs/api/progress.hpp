@@ -18,6 +18,21 @@ enum class FactorizationMethod {
     GNFS,          // General Number Field Sieve (101+ digits, with SIQS probe ≤100d)
 };
 
+/// Return whether a value is one of the public factorization method tags.
+/// C++ callers can still manufacture an out-of-range enum value with a cast;
+/// API consumers must reject that value before routing or serialization.
+[[nodiscard]] constexpr bool is_valid_factorization_method(FactorizationMethod method) noexcept {
+    switch (method) {
+    case FactorizationMethod::Auto:
+    case FactorizationMethod::TrialDivision:
+    case FactorizationMethod::PollardRho:
+    case FactorizationMethod::SIQS:
+    case FactorizationMethod::GNFS:
+        return true;
+    }
+    return false;
+}
+
 /// Human-readable method name
 inline const char* method_name(FactorizationMethod m) {
     switch (m) {
@@ -84,6 +99,22 @@ enum class Phase {
     FactorExtraction,
     Done
 };
+
+/// Return whether a value is one of the public pipeline phase tags.
+[[nodiscard]] constexpr bool is_valid_phase(Phase phase) noexcept {
+    switch (phase) {
+    case Phase::PolynomialSelection:
+    case Phase::FactorBase:
+    case Phase::Sieving:
+    case Phase::Filtering:
+    case Phase::LinearAlgebra:
+    case Phase::SquareRoot:
+    case Phase::FactorExtraction:
+    case Phase::Done:
+        return true;
+    }
+    return false;
+}
 
 /// Human-readable phase name (bilingual via i18n)
 inline const char* phase_name(Phase p) {
@@ -163,6 +194,19 @@ enum class LogLevel {
     Warn,  // non-fatal issues
     Error  // failures
 };
+
+/// Return whether a value is one of the public structured log levels.
+[[nodiscard]] constexpr bool is_valid_log_level(LogLevel level) noexcept {
+    switch (level) {
+    case LogLevel::Trace:
+    case LogLevel::Debug:
+    case LogLevel::Info:
+    case LogLevel::Warn:
+    case LogLevel::Error:
+        return true;
+    }
+    return false;
+}
 
 inline const char* log_level_name(LogLevel l) {
     switch (l) {
