@@ -143,6 +143,13 @@ void test_pollard_rho() {
     f = pollard_rho(1018081); // 1009^2 (中等大小,需 Brent batch GCD 顺利)
     assert(f == 1009);
 
+    // Backtracking must not exceed the caller's total evaluation budget. For
+    // 5561 = 67 * 83, the c=9 attempt reaches gcd(n) on the sixth
+    // evaluation and the factor is only exposed by a seventh backtrack step;
+    // a six-evaluation budget must therefore report failure instead of
+    // overrunning the contract.
+    CHECK(pollard_rho(5561, 6) == 1);
+
     std::cout << "  Pollard's rho: PASSED" << std::endl;
 }
 

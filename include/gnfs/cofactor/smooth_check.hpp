@@ -348,7 +348,7 @@ struct CofactorClassification {
             d = 1;
             size_t backtrack_steps = 0;
             constexpr size_t MAX_BACKTRACK = BATCH_SIZE * 2;
-            while (d == 1 && backtrack_steps < MAX_BACKTRACK) {
+            while (d == 1 && backtrack_steps < MAX_BACKTRACK && total_evals < max_iterations) {
                 ys = f(ys);
                 uint64_t diff = (x > ys) ? x - ys : ys - x;
                 if (diff == 0)
