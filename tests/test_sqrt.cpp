@@ -599,6 +599,26 @@ void test_non_monic_modular_poly() {
     std::cout << "  ALL non-monic ModularPoly tests PASSED" << std::endl;
 }
 
+// Regression for ModularPoly::mul_raw accumulation at the uint64_t boundary.
+// Each individual product is reduced modulo p, but adding two residues can
+// overflow before the modulo operation when p is close to UINT64_MAX.
+void test_modular_poly_u64_accumulation() {
+    std::cout << "Testing ModularPoly uint64_t accumulation boundaries..." << std::endl;
+    using MP = ModularPoly;
+
+    constexpr uint64_t p = std::numeric_limits<uint64_t>::max() - 58;
+    MP a(std::vector<uint64_t>{p - 1, p - 1});
+    MP b(std::vector<uint64_t>{1, 1});
+    auto product = MP::mul_raw(a, b, p);
+
+    // The x coefficient is (p - 1) + (p - 1) = p - 2 (mod p).
+    GNFS_TEST_CHECK(product.coeff(0) == p - 1);
+    GNFS_TEST_CHECK(product.coeff(1) == p - 2);
+    GNFS_TEST_CHECK(product.coeff(2) == p - 1);
+
+    std::cout << "  mul_raw near UINT64_MAX: PASSED" << std::endl;
+}
+
 /// Test NumberField::multiply_mod_n with non-monic f(x)
 void test_non_monic_number_field() {
     std::cout << "Testing non-monic NumberField multiply_mod_n..." << std::endl;
@@ -1035,6 +1055,7 @@ int main() {
     test_norm_linear();
     test_is_irreducible();
     test_non_monic_modular_poly();
+    test_modular_poly_u64_accumulation();
     test_non_monic_number_field();
     test_non_monic_number_field_multiply_contract();
     test_characteristic_2_sqrt();
