@@ -97,11 +97,12 @@ inline EcmBatchInvCache& ecm_batch_inv_cache() noexcept {
 /// the project's other strict-"1" gates such as `GNFS_FILTER_RADIX_SORT`.
 inline bool parse_ecm_batch_inv_env() noexcept {
     const char* env = std::getenv("GNFS_ECM_BATCH_INV");
-    if (env == nullptr) return false;
+    if (env == nullptr)
+        return false;
     return std::strcmp(env, "1") == 0;
 }
 
-}  // namespace detail
+} // namespace detail
 
 /// Read the `GNFS_ECM_BATCH_INV` env into a cached boolean. First call
 /// parses the env once (via `std::once_flag`); subsequent calls return the
@@ -110,8 +111,7 @@ inline bool parse_ecm_batch_inv_env() noexcept {
 [[nodiscard]] inline bool ecm_batch_inv_enabled() noexcept {
     auto& cache = detail::ecm_batch_inv_cache();
     std::call_once(cache.once, [&cache]() {
-        cache.value.store(detail::parse_ecm_batch_inv_env(),
-                          std::memory_order_relaxed);
+        cache.value.store(detail::parse_ecm_batch_inv_env(), std::memory_order_relaxed);
     });
     return cache.value.load(std::memory_order_relaxed);
 }
@@ -165,18 +165,19 @@ find_first_nontrivial_gcd(const std::vector<gnfs::core::Integer>& values,
     return std::nullopt;
 }
 
-}  // namespace detail
+} // namespace detail
 
 /// Compute `values[i]^{-1} mod n` for every i using one modular inverse
 /// plus `3*(k-1)` modular multiplications (Montgomery's trick).
 ///
 /// Preconditions:
-///   * `n > 0` (caller's responsibility; behaviour undefined otherwise)
+///   * `n > 0`; a zero or negative modulus throws `std::invalid_argument`
 ///   * Each `values[i]` is reduced mod `n` (the helper still works on
 ///     unreduced inputs; the resulting inverse is then `(v_i mod n)^{-1}
 ///     mod n`, which matches per-element `mpz_invert` semantics)
 ///
-/// Returns a `BatchInvResult`:
+/// Returns a `BatchInvResult` (or throws `std::invalid_argument` for a
+/// non-positive modulus):
 ///   * On full success: `inverses` is the k-element inverse list; `found_factor`
 ///     is empty
 ///   * On invert failure: `inverses` is empty; `found_factor` holds the
@@ -188,9 +189,12 @@ find_first_nontrivial_gcd(const std::vector<gnfs::core::Integer>& values,
 ///   * `n == 1` -> `mpz_invert` returns 0, falls through to gcd sweep;
 ///     every gcd equals 1, so `found_factor` stays empty (mirrors per-
 ///     element behaviour on n=1)
-inline BatchInvResult
-batch_mod_inverse(const std::vector<gnfs::core::Integer>& values,
-                  const gnfs::core::Integer& n) {
+inline BatchInvResult batch_mod_inverse(const std::vector<gnfs::core::Integer>& values,
+                                        const gnfs::core::Integer& n) {
+    if (!n.is_positive()) {
+        throw std::invalid_argument("batch modular inversion requires a positive modulus");
+    }
+
     BatchInvResult result;
     const std::size_t k = values.size();
 
@@ -200,9 +204,7 @@ batch_mod_inverse(const std::vector<gnfs::core::Integer>& values,
 
     if (k == 1) {
         gnfs::core::Integer inv;
-        int ok = mpz_invert(inv.get_mpz(),
-                            values[0].get_mpz(),
-                            n.get_mpz());
+        int ok = mpz_invert(inv.get_mpz(), values[0].get_mpz(), n.get_mpz());
         if (ok == 0) {
             result.found_factor = detail::find_first_nontrivial_gcd(values, n);
             return result;
@@ -224,9 +226,7 @@ batch_mod_inverse(const std::vector<gnfs::core::Integer>& values,
     }
     for (std::size_t i = 1; i < k; ++i) {
         gnfs::core::Integer pi;
-        mpz_mul(pi.get_mpz(),
-                prefix[i - 1].get_mpz(),
-                values[i].get_mpz());
+        mpz_mul(pi.get_mpz(), prefix[i - 1].get_mpz(), values[i].get_mpz());
         mpz_mod(pi.get_mpz(), pi.get_mpz(), n.get_mpz());
         prefix.push_back(std::move(pi));
     }
@@ -235,9 +235,7 @@ batch_mod_inverse(const std::vector<gnfs::core::Integer>& values,
     // non-trivial divisor of n and bail out.
     gnfs::core::Integer q;
     {
-        int ok = mpz_invert(q.get_mpz(),
-                            prefix[k - 1].get_mpz(),
-                            n.get_mpz());
+        int ok = mpz_invert(q.get_mpz(), prefix[k - 1].get_mpz(), n.get_mpz());
         if (ok == 0) {
             result.found_factor = detail::find_first_nontrivial_gcd(values, n);
             return result;
@@ -249,9 +247,7 @@ batch_mod_inverse(const std::vector<gnfs::core::Integer>& values,
     std::vector<gnfs::core::Integer> inverses(k);
     for (std::size_t i = k - 1; i >= 1; --i) {
         gnfs::core::Integer inv_i;
-        mpz_mul(inv_i.get_mpz(),
-                q.get_mpz(),
-                prefix[i - 1].get_mpz());
+        mpz_mul(inv_i.get_mpz(), q.get_mpz(), prefix[i - 1].get_mpz());
         mpz_mod(inv_i.get_mpz(), inv_i.get_mpz(), n.get_mpz());
         inverses[i] = std::move(inv_i);
 
@@ -271,15 +267,19 @@ batch_mod_inverse(const std::vector<gnfs::core::Integer>& values,
 /// assert bit-for-bit parity with `batch_mod_inverse`. May also be useful
 /// for callers that want an unambiguous "no batched trick" baseline path.
 ///
-/// Returns the same `BatchInvResult` shape as `batch_mod_inverse`:
+/// Returns the same `BatchInvResult` shape as `batch_mod_inverse` (and throws
+/// `std::invalid_argument` for a non-positive modulus):
 ///   * On success: `inverses` is the k-element inverse list (per-element)
 ///   * On failure (some `mpz_invert` returns 0): `inverses` is empty;
 ///     `found_factor` is the first non-trivial `gcd(values[i], n)` (same
 ///     sweep as `batch_mod_inverse`, so both paths report the same culprit
 ///     for the same input)
-inline BatchInvResult
-naive_mod_inverse(const std::vector<gnfs::core::Integer>& values,
-                  const gnfs::core::Integer& n) {
+inline BatchInvResult naive_mod_inverse(const std::vector<gnfs::core::Integer>& values,
+                                        const gnfs::core::Integer& n) {
+    if (!n.is_positive()) {
+        throw std::invalid_argument("naive modular inversion requires a positive modulus");
+    }
+
     BatchInvResult result;
     const std::size_t k = values.size();
 
@@ -292,9 +292,7 @@ naive_mod_inverse(const std::vector<gnfs::core::Integer>& values,
 
     for (std::size_t i = 0; i < k; ++i) {
         gnfs::core::Integer inv;
-        int ok = mpz_invert(inv.get_mpz(),
-                            values[i].get_mpz(),
-                            n.get_mpz());
+        int ok = mpz_invert(inv.get_mpz(), values[i].get_mpz(), n.get_mpz());
         if (ok == 0) {
             // Failure: sweep input span for first non-trivial gcd and
             // return without partial inverses (matches batch path
@@ -309,4 +307,4 @@ naive_mod_inverse(const std::vector<gnfs::core::Integer>& values,
     return result;
 }
 
-}  // namespace gnfs::cofactor
+} // namespace gnfs::cofactor
