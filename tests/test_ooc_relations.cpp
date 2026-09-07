@@ -397,6 +397,10 @@ void test_v4_little_endian_wire_and_v3_recovery() {
                     gnfs::relation::OOCRecoveryOutcome::AppendablePrefix,
                 "V3 fixture should recover as an appendable prefix");
     TEST_ASSERT(recovered.count() == 1, "V3 fixture recovery should retain one relation");
+    const OOCSnapshotDescriptor recovered_prefix = recovered.checkpoint_prefix();
+    TEST_ASSERT(recovered_prefix.format_version == OOCRelationWriter::FORMAT_VERSION_V3,
+                "V3 recovery checkpoint should preserve the legacy wire version");
+    recovered.resume_append(recovered_prefix);
     const OOCSnapshotDescriptor recovered_descriptor = recovered.finalize();
     TEST_ASSERT(recovered_descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V3,
                 "V3 recovery should preserve the legacy wire version");

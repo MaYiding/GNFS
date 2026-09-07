@@ -1330,7 +1330,7 @@ public:
             sync_store_files_and_directory();
 
             OOCSnapshotDescriptor descriptor;
-            descriptor.format_version = FORMAT_VERSION;
+            descriptor.format_version = format_version_value();
             descriptor.store_id = store_id_;
             descriptor.generation = ++generation_;
             descriptor.count = static_cast<uint64_t>(count_);
