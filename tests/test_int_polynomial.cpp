@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <iostream>
 #include <limits>
+#include <stdexcept>
 
 using namespace gnfs::polynomial;
 using gnfs::core::Integer;
@@ -67,6 +68,16 @@ void test_access() {
     GNFS_TEST_CHECK(p.leading_coeff().to_int64() == 7);
 
     // coefficients() accessor
+    GNFS_TEST_CHECK(p.coefficients().size() == 3);
+
+    // A maximum index must not wrap i + 1 and return an invalid reference.
+    bool threw = false;
+    try {
+        p[std::numeric_limits<size_t>::max()] = Integer(1);
+    } catch (const std::length_error&) {
+        threw = true;
+    }
+    GNFS_TEST_CHECK(threw);
     GNFS_TEST_CHECK(p.coefficients().size() == 3);
 
     std::cout << "  PASS" << std::endl;

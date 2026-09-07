@@ -9,6 +9,7 @@
 #include <array>
 #include <cassert>
 #include <cstdint>
+#include <limits>
 #include <random>
 #include <stdexcept>
 #include <vector>
@@ -80,6 +81,9 @@ public:
     /// 获取系数（可修改）
     [[nodiscard]] Integer& operator[](size_t i) {
         if (i >= coeffs_.size()) {
+            if (i == std::numeric_limits<size_t>::max()) {
+                throw std::length_error("IntPolynomial coefficient index is too large");
+            }
             coeffs_.resize(i + 1);
         }
         return coeffs_[i];
