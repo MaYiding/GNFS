@@ -69,6 +69,14 @@ struct Config {
     /// Parse a complete unsigned 64-bit value rather than accepting a numeric
     /// prefix followed by arbitrary text.
     static uint64_t parse_uint64(std::string_view value, std::string_view key) {
+        // std::stoull delegates to strtoull, which accepts a leading minus
+        // sign and then wraps the magnitude in the unsigned result. Reject it
+        // before conversion so a config value such as "-1" cannot become
+        // UINT64_MAX.
+        if (!value.empty() && value.front() == '-') {
+            throw std::out_of_range("Config: " + std::string(key) +
+                                    " must be a complete uint64 value");
+        }
         size_t consumed = 0;
         const uint64_t parsed = std::stoull(std::string(value), &consumed, 10);
         if (consumed != value.size()) {

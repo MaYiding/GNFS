@@ -505,6 +505,7 @@ bool test_config_from_file_invalid() {
     write_and_expect_throw("rational_bound = -1\n", "negative rational bound");
     write_and_expect_throw("algebraic_bound = 4junk\n", "trailing algebraic bound characters");
     write_and_expect_throw("large_prime_bound = 8junk\n", "trailing large-prime characters");
+    write_and_expect_throw("large_prime_bound = -1\n", "negative large-prime bound");
     write_and_expect_throw("large_prime_bound = 18446744073709551616\n",
                            "uint64 large-prime overflow");
     write_and_expect_throw("sieve_width = 2147483648\n", "int32 sieve width overflow");
