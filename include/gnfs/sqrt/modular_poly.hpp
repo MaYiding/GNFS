@@ -136,11 +136,8 @@ public:
                 if (b.coeffs_[j] == 0)
                     continue;
                 uint64_t prod = mul_mod(a.coeffs_[i], b.coeffs_[j], p);
-<<<<<<< HEAD
-=======
                 // Both operands are reduced modulo p, but their sum can
                 // still overflow uint64_t when p is close to UINT64_MAX.
->>>>>>> 272d5460 (fix(sqrt): prevent modular polynomial accumulation overflow)
                 result[i + j] = gnfs::util::add_mod_u64(result[i + j], prod, p);
             }
         }
@@ -323,7 +320,6 @@ public:
     /// Compute Frobenius map: a(x) -> a(x^p) mod f(x) mod p
     [[nodiscard]] static ModularPoly frobenius(const ModularPoly& a, const std::vector<uint64_t>& f,
                                                uint64_t p) {
-
         validate_modulus(p);
         if (f.empty()) {
             throw std::invalid_argument("ModularPoly::frobenius requires a modulus polynomial");
