@@ -22,13 +22,18 @@ namespace gnfs::linalg {
 enum class MmapPolicy : std::uint8_t { Off, On, Auto };
 
 inline MmapPolicy parse_mmap_policy(const char* env_value) noexcept {
-    if (env_value == nullptr) return MmapPolicy::Off;
+    if (env_value == nullptr)
+        return MmapPolicy::Off;
     const std::string_view s = env_value;
-    if (s.empty()) return MmapPolicy::Off;
-    if (s == "0" || s == "off" || s == "false") return MmapPolicy::Off;
-    if (s == "1" || s == "on" || s == "true")   return MmapPolicy::On;
-    if (s == "auto" || s == "AUTO" || s == "Auto") return MmapPolicy::Auto;
-    return MmapPolicy::Off;  // unknown → safe default
+    if (s.empty())
+        return MmapPolicy::Off;
+    if (s == "0" || s == "off" || s == "false")
+        return MmapPolicy::Off;
+    if (s == "1" || s == "on" || s == "true")
+        return MmapPolicy::On;
+    if (s == "auto" || s == "AUTO" || s == "Auto")
+        return MmapPolicy::Auto;
+    return MmapPolicy::Off; // unknown → safe default
 }
 
 inline MmapPolicy linalg_mmap_policy_from_env() noexcept {
@@ -40,7 +45,8 @@ inline MmapPolicy linalg_mmap_policy_from_env() noexcept {
 inline std::uint64_t linalg_mmap_threshold_bytes() noexcept {
     constexpr std::uint64_t DEFAULT_THRESHOLD = 2ULL * 1024ULL * 1024ULL * 1024ULL;
     const char* env = std::getenv("GNFS_LINALG_MMAP_THRESHOLD_BYTES");
-    if (env == nullptr || *env == '\0') return DEFAULT_THRESHOLD;
+    if (env == nullptr || *env == '\0')
+        return DEFAULT_THRESHOLD;
 
     // Accept only a non-zero decimal byte count.  Do not let strtoull's
     // permissive prefix/sign handling turn a malformed operator setting into
@@ -48,9 +54,11 @@ inline std::uint64_t linalg_mmap_threshold_bytes() noexcept {
     const auto max_value = std::numeric_limits<std::uint64_t>::max();
     std::uint64_t value = 0;
     for (const char* p = env; *p != '\0'; ++p) {
-        if (*p < '0' || *p > '9') return DEFAULT_THRESHOLD;
+        if (*p < '0' || *p > '9')
+            return DEFAULT_THRESHOLD;
         const std::uint64_t digit = static_cast<std::uint64_t>(*p - '0');
-        if (value > (max_value - digit) / 10) return DEFAULT_THRESHOLD;
+        if (value > (max_value - digit) / 10)
+            return DEFAULT_THRESHOLD;
         value = value * 10 + digit;
     }
     return value == 0 ? DEFAULT_THRESHOLD : value;
@@ -61,19 +69,22 @@ inline std::uint64_t linalg_mmap_threshold_bytes() noexcept {
 /// the pipeline is about to hand to BW).
 inline bool should_use_mmap(MmapPolicy policy, std::uint64_t csr_nnz) noexcept {
     switch (policy) {
-        case MmapPolicy::Off:  return false;
-        case MmapPolicy::On:   return true;
-        case MmapPolicy::Auto: {
-            // col_indices alone = nnz * 4 bytes; add row_offsets (≈ rows * 8)
-            // is negligible compared to col_indices once nnz > ~few-M.
-            constexpr std::uint64_t bytes_per_nnz = sizeof(std::uint32_t);
-            constexpr std::uint64_t max_value = std::numeric_limits<std::uint64_t>::max();
-            // An overflowing projection is larger than every representable
-            // threshold, so it must select mmap rather than wrap around.
-            if (csr_nnz > max_value / bytes_per_nnz) return true;
-            const std::uint64_t projected_bytes = csr_nnz * bytes_per_nnz;
-            return projected_bytes >= linalg_mmap_threshold_bytes();
-        }
+    case MmapPolicy::Off:
+        return false;
+    case MmapPolicy::On:
+        return true;
+    case MmapPolicy::Auto: {
+        // col_indices alone = nnz * 4 bytes; add row_offsets (≈ rows * 8)
+        // is negligible compared to col_indices once nnz > ~few-M.
+        constexpr std::uint64_t bytes_per_nnz = sizeof(std::uint32_t);
+        constexpr std::uint64_t max_value = std::numeric_limits<std::uint64_t>::max();
+        // An overflowing projection is larger than every representable
+        // threshold, so it must select mmap rather than wrap around.
+        if (csr_nnz > max_value / bytes_per_nnz)
+            return true;
+        const std::uint64_t projected_bytes = csr_nnz * bytes_per_nnz;
+        return projected_bytes >= linalg_mmap_threshold_bytes();
+    }
     }
     return false;
 }

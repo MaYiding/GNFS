@@ -2,32 +2,34 @@
 // GNFS_LINALG_MMAP policy parser used by Pipeline::solve_matrix to
 // decide between in-memory CSR and out-of-core MmapCSRMatrix.
 
-#include <gnfs/linalg/linalg_mmap_policy.hpp>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstdint>
+#include <gnfs/linalg/linalg_mmap_policy.hpp>
 #include <limits>
 
-using gnfs::linalg::MmapPolicy;
 using gnfs::linalg::linalg_mmap_threshold_bytes;
+using gnfs::linalg::MmapPolicy;
 using gnfs::linalg::parse_mmap_policy;
 using gnfs::linalg::should_use_mmap;
 
 static int tests_passed = 0;
 static int tests_failed = 0;
 
-#define TEST_ASSERT(cond, msg) do { \
-    if (!(cond)) { \
-        std::fprintf(stderr, "FAIL line %d: %s\n", __LINE__, msg); \
-        tests_failed++; \
-        return; \
-    } \
-} while (0)
+#define TEST_ASSERT(cond, msg)                                                                     \
+    do {                                                                                           \
+        if (!(cond)) {                                                                             \
+            std::fprintf(stderr, "FAIL line %d: %s\n", __LINE__, msg);                             \
+            tests_failed++;                                                                        \
+            return;                                                                                \
+        }                                                                                          \
+    } while (0)
 
-#define TEST_PASS(name) do { \
-    std::printf("  PASS: %s\n", name); \
-    tests_passed++; \
-} while (0)
+#define TEST_PASS(name)                                                                            \
+    do {                                                                                           \
+        std::printf("  PASS: %s\n", name);                                                         \
+        tests_passed++;                                                                            \
+    } while (0)
 
 void test_parse_null_is_off() {
     TEST_ASSERT(parse_mmap_policy(nullptr) == MmapPolicy::Off, "nullptr → Off");
@@ -86,8 +88,7 @@ void test_should_use_mmap_auto() {
     TEST_ASSERT(!should_use_mmap(MmapPolicy::Auto, 0), "Auto + 0 → in-mem");
     TEST_ASSERT(!should_use_mmap(MmapPolicy::Auto, threshold_nnz - 1),
                 "Auto + just below threshold → in-mem");
-    TEST_ASSERT(should_use_mmap(MmapPolicy::Auto, threshold_nnz),
-                "Auto + at threshold → mmap");
+    TEST_ASSERT(should_use_mmap(MmapPolicy::Auto, threshold_nnz), "Auto + at threshold → mmap");
     TEST_ASSERT(should_use_mmap(MmapPolicy::Auto, threshold_nnz * 2),
                 "Auto + above threshold → mmap");
     TEST_PASS("Auto uses 2 GiB nnz·uint32 threshold");
@@ -97,7 +98,7 @@ void test_threshold_env_override() {
     // Override threshold to 1 KiB (very low) and verify a small matrix triggers
     // mmap; then unset and verify default returns.
     setenv("GNFS_LINALG_MMAP_THRESHOLD_BYTES", "1024", 1);
-    TEST_ASSERT(should_use_mmap(MmapPolicy::Auto, 300),  // 300*4=1200 > 1024
+    TEST_ASSERT(should_use_mmap(MmapPolicy::Auto, 300), // 300*4=1200 > 1024
                 "low threshold triggers mmap on tiny matrix");
     unsetenv("GNFS_LINALG_MMAP_THRESHOLD_BYTES");
     TEST_ASSERT(!should_use_mmap(MmapPolicy::Auto, 300),
