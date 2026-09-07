@@ -40,6 +40,7 @@
 
 #include <cassert>
 #include <cctype>
+#include <cerrno>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -276,10 +277,21 @@ inline void strip_prime_inplace(Integer& value, uint32_t p) {
     if (*first == '-')
         return 1;
 
+    errno = 0;
     char* end = nullptr;
     unsigned long parsed = std::strtoul(first, &end, 10);
-    if (end == first)
+    if (end == first || errno == ERANGE)
         return 1;
+
+    // `strtoul` accepts a numeric prefix and silently leaves trailing junk.
+    // Treat the complete value as the contract so a typo cannot enable the
+    // batch path unexpectedly. Surrounding ASCII whitespace remains allowed,
+    // matching the existing leading-whitespace behavior.
+    while (*end != '\0' && std::isspace(static_cast<unsigned char>(*end)))
+        ++end;
+    if (*end != '\0')
+        return 1;
+
     if (parsed < 2)
         return 1;
     if (parsed > 4096)
