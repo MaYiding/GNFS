@@ -2108,12 +2108,12 @@ void test_modular_poly_edge_cases() {
         ModularPoly a(std::vector<uint64_t>{wide_p + 1, 1, 1});
         ModularPoly b(std::vector<uint64_t>{wide_p + 2, wide_p - 1, wide_p - 1});
         const auto sum = ModularPoly::add(a, b, wide_p);
-        assert(sum.coeff(0) == 3);
+        GNFS_TEST_CHECK(sum.coeff(0) == 3);
 
         const auto product = ModularPoly::mul_raw(
             ModularPoly(std::vector<uint64_t>{1, 1, 1}),
             ModularPoly(std::vector<uint64_t>{wide_p - 1, wide_p - 1, wide_p - 1}), wide_p);
-        assert(product.coeff(1) == wide_p - 2);
+        GNFS_TEST_CHECK(product.coeff(1) == wide_p - 2);
     }
 
     // Test 16: invalid moduli and modulus polynomials fail closed
@@ -2124,7 +2124,7 @@ void test_modular_poly_edge_cases() {
         } catch (const std::invalid_argument&) {
             caught = true;
         }
-        assert(caught);
+        GNFS_TEST_CHECK(caught);
 
         caught = false;
         try {
@@ -2132,7 +2132,7 @@ void test_modular_poly_edge_cases() {
         } catch (const std::invalid_argument&) {
             caught = true;
         }
-        assert(caught);
+        GNFS_TEST_CHECK(caught);
     }
 
     // Test 17: negative powers are rejected instead of being shifted toward zero
@@ -2143,7 +2143,7 @@ void test_modular_poly_edge_cases() {
         } catch (const std::invalid_argument&) {
             caught = true;
         }
-        assert(caught);
+        GNFS_TEST_CHECK(caught);
     }
 
     // Test 18: a size_t wraparound cannot trigger an unbounded resize
@@ -2155,7 +2155,7 @@ void test_modular_poly_edge_cases() {
         } catch (const std::length_error&) {
             caught = true;
         }
-        assert(caught);
+        GNFS_TEST_CHECK(caught);
     }
 
     std::cout << "  PASS (18 sub-tests)" << std::endl;
