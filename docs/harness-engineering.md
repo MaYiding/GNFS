@@ -122,6 +122,13 @@ explicit 16 MiB capture ceiling; exceeding it is a Harness failure. The 50-digit
 campaign keeps its separate, evidence-bound process-group protocol rather than
 routing through this generic wrapper.
 
+### Test Selection Contract
+
+`scripts/test.sh module <name>` treats an unknown module as a failed selection.
+The runner records that invalid request in `test_report.json` and exits non-zero;
+it never reports an empty module selection as successful. This keeps typos in
+local commands and CI jobs from silently skipping the intended test set.
+
 ## Validation
 
 Run the complete Harness validation from the repository root:
