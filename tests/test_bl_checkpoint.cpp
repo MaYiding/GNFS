@@ -2,6 +2,7 @@
 #include "gnfs/util/process.hpp"
 #include "gnfs/util/temp_path.hpp"
 
+#include <array>
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
@@ -18,25 +19,56 @@ using gnfs::linalg::BlockLanczosCheckpoint;
 static std::string tmp_ckpt_path(const char* label) {
     static int seq = 0;
     char buf[256];
-    std::snprintf(buf, sizeof(buf), "gnfs_test_bl_ckpt_%d_%d_%s",
-                  gnfs::util::process_id(), ++seq, label);
+    std::snprintf(buf, sizeof(buf), "gnfs_test_bl_ckpt_%d_%d_%s", gnfs::util::process_id(), ++seq,
+                  label);
     return gnfs::util::temp_path(buf);
 }
 
 struct CkptCleanup {
     std::string path;
     ~CkptCleanup() {
-        if (!path.empty()) std::remove(path.c_str());
+        if (!path.empty())
+            std::remove(path.c_str());
     }
 };
 
-static void require_save(const BlockLanczosCheckpoint& ck,
-                         const std::string& path) {
+static void require_save(const BlockLanczosCheckpoint& ck, const std::string& path) {
     if (!ck.save(path)) {
-        std::cerr << "ERROR: failed to save checkpoint to " << path
-                  << std::endl;
+        std::cerr << "ERROR: failed to save checkpoint to " << path << std::endl;
         std::abort();
     }
+}
+
+static void append_u64_le(std::vector<uint8_t>& bytes, uint64_t value) {
+    for (size_t i = 0; i < sizeof(uint64_t); ++i) {
+        bytes.push_back(static_cast<uint8_t>(value >> (i * 8)));
+    }
+}
+
+static std::vector<uint8_t> read_file_bytes(const std::string& path) {
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
+    assert(in);
+    const auto end = in.tellg();
+    assert(end != std::ifstream::pos_type(-1));
+    std::vector<uint8_t> bytes(static_cast<size_t>(end));
+    in.seekg(0);
+    if (!bytes.empty()) {
+        in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        assert(in.gcount() == static_cast<std::streamsize>(bytes.size()));
+    }
+    return bytes;
+}
+
+static void write_native_u64(std::ofstream& out, uint64_t value) {
+    out.write(reinterpret_cast<const char*>(&value), sizeof(value));
+}
+
+static void write_le_u64(std::ofstream& out, uint64_t value) {
+    std::array<uint8_t, sizeof(uint64_t)> bytes{};
+    for (size_t i = 0; i < bytes.size(); ++i)
+        bytes[i] = static_cast<uint8_t>(value >> (i * 8));
+    out.write(reinterpret_cast<const char*>(bytes.data()),
+              static_cast<std::streamsize>(bytes.size()));
 }
 
 // Helper: rebuild a small deterministic aug payload for round-trip checks.
@@ -44,7 +76,7 @@ static BlockLanczosCheckpoint make_small_state() {
     BlockLanczosCheckpoint ck;
     ck.rows = 8;
     ck.cols = 16;
-    ck.aug_words_per_row = 1;  // 8+16 = 24 cols → 1 word per row
+    ck.aug_words_per_row = 1; // 8+16 = 24 cols → 1 word per row
     ck.pivot_row = 3;
     ck.cur_col = 11;
     ck.iteration = 5;
@@ -79,6 +111,116 @@ void test_roundtrip_small() {
     std::cout << "  small roundtrip: PASS" << std::endl;
 }
 
+void test_v2_little_endian_fixture() {
+    std::cout << "Testing V2 little-endian byte fixture..." << std::endl;
+    auto path = tmp_ckpt_path("v2_le_fixture");
+    CkptCleanup cleanup{path};
+
+    constexpr uint64_t rows = 1;
+    constexpr uint64_t cols = 2;
+    constexpr uint64_t wpr = 1;
+    constexpr uint64_t pivot_row = 0;
+    constexpr uint64_t cur_col = 1;
+    constexpr uint64_t iteration = 7;
+    constexpr uint64_t payload = 0x0123'4567'89AB'CDEFULL;
+    constexpr uint64_t header_checksum =
+        BlockLanczosCheckpoint::VERSION_V2 ^ rows ^ cols ^ wpr ^ pivot_row ^ cur_col ^ iteration;
+
+    BlockLanczosCheckpoint original;
+    original.rows = rows;
+    original.cols = cols;
+    original.aug_words_per_row = wpr;
+    original.pivot_row = pivot_row;
+    original.cur_col = cur_col;
+    original.iteration = iteration;
+    original.aug = {payload};
+    require_save(original, path);
+
+    std::vector<uint8_t> expected;
+    expected.reserve(12 * sizeof(uint64_t));
+    append_u64_le(expected, BlockLanczosCheckpoint::MAGIC);
+    append_u64_le(expected, BlockLanczosCheckpoint::VERSION_V2);
+    append_u64_le(expected, rows);
+    append_u64_le(expected, cols);
+    append_u64_le(expected, wpr);
+    append_u64_le(expected, pivot_row);
+    append_u64_le(expected, cur_col);
+    append_u64_le(expected, iteration);
+    append_u64_le(expected, header_checksum);
+    append_u64_le(expected, 1);
+    append_u64_le(expected, payload);
+    append_u64_le(expected, payload);
+    assert(read_file_bytes(path) == expected);
+
+    // Decode the independent fixture, not just bytes emitted by save().
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        assert(out);
+        out.write(reinterpret_cast<const char*>(expected.data()),
+                  static_cast<std::streamsize>(expected.size()));
+    }
+    const auto loaded = BlockLanczosCheckpoint::load(path);
+    assert(loaded.has_value());
+    assert(loaded->rows == rows);
+    assert(loaded->cols == cols);
+    assert(loaded->aug_words_per_row == wpr);
+    assert(loaded->pivot_row == pivot_row);
+    assert(loaded->cur_col == cur_col);
+    assert(loaded->iteration == iteration);
+    assert(loaded->aug == std::vector<uint64_t>{payload});
+
+    std::cout << "  V2 LE byte fixture + decode: PASS" << std::endl;
+}
+
+void test_v1_native_compatibility() {
+    std::cout << "Testing V1 native-endian compatibility..." << std::endl;
+    auto path = tmp_ckpt_path("v1_native");
+    CkptCleanup cleanup{path};
+
+    constexpr uint64_t rows = 2;
+    constexpr uint64_t cols = 3;
+    constexpr uint64_t wpr = 1;
+    constexpr uint64_t pivot_row = 1;
+    constexpr uint64_t cur_col = 4;
+    constexpr uint64_t iteration = 9;
+    constexpr uint64_t first_word = 0xAABB'CCDDEE11'2233ULL;
+    constexpr uint64_t second_word = 0x4455'66778899'0001ULL;
+    const uint64_t header_checksum =
+        BlockLanczosCheckpoint::VERSION_V1 ^ rows ^ cols ^ wpr ^ pivot_row ^ cur_col ^ iteration;
+    const uint64_t body_checksum = first_word ^ second_word;
+
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    assert(out);
+    write_native_u64(out, BlockLanczosCheckpoint::MAGIC);
+    write_native_u64(out, BlockLanczosCheckpoint::VERSION_V1);
+    write_native_u64(out, rows);
+    write_native_u64(out, cols);
+    write_native_u64(out, wpr);
+    write_native_u64(out, pivot_row);
+    write_native_u64(out, cur_col);
+    write_native_u64(out, iteration);
+    write_native_u64(out, header_checksum);
+    write_native_u64(out, 2);
+    write_native_u64(out, first_word);
+    write_native_u64(out, second_word);
+    write_native_u64(out, body_checksum);
+    out.close();
+
+    assert(BlockLanczosCheckpoint::exists_and_valid(path));
+    const auto loaded = BlockLanczosCheckpoint::load(path);
+    assert(loaded.has_value());
+    assert(loaded->rows == rows);
+    assert(loaded->cols == cols);
+    assert(loaded->aug_words_per_row == wpr);
+    assert(loaded->pivot_row == pivot_row);
+    assert(loaded->cur_col == cur_col);
+    assert(loaded->iteration == iteration);
+    const std::vector<uint64_t> expected_aug{first_word, second_word};
+    assert(loaded->aug == expected_aug);
+
+    std::cout << "  V1 native compatibility: PASS" << std::endl;
+}
+
 void test_roundtrip_large() {
     std::cout << "Testing roundtrip (large 1 MB payload)..." << std::endl;
     auto path = tmp_ckpt_path("large");
@@ -87,14 +229,15 @@ void test_roundtrip_large() {
     BlockLanczosCheckpoint orig;
     orig.rows = 4096;
     orig.cols = 4096;
-    orig.aug_words_per_row = 128;  // 4096+4096 = 8192 bits / 64 = 128 words
+    orig.aug_words_per_row = 128; // 4096+4096 = 8192 bits / 64 = 128 words
     orig.pivot_row = 2000;
     orig.cur_col = 4096 + 1500;
     orig.iteration = 1234;
     orig.aug.resize(orig.rows * orig.aug_words_per_row);
 
     std::mt19937_64 rng(42);
-    for (auto& w : orig.aug) w = rng();
+    for (auto& w : orig.aug)
+        w = rng();
 
     require_save(orig, path);
     auto loaded_opt = BlockLanczosCheckpoint::load(path);
@@ -111,7 +254,7 @@ void test_empty_matrix() {
     auto path = tmp_ckpt_path("empty");
     CkptCleanup cleanup{path};
 
-    BlockLanczosCheckpoint orig;  // all zero
+    BlockLanczosCheckpoint orig; // all zero
     require_save(orig, path);
     auto loaded_opt = BlockLanczosCheckpoint::load(path);
     assert(loaded_opt.has_value());
@@ -132,8 +275,8 @@ void test_incomplete_magic_rejected() {
         std::ofstream out(path, std::ios::binary);
         uint64_t magic = BlockLanczosCheckpoint::MAGIC_INCOMPLETE;
         uint64_t version = BlockLanczosCheckpoint::VERSION;
-        out.write(reinterpret_cast<const char*>(&magic), 8);
-        out.write(reinterpret_cast<const char*>(&version), 8);
+        write_le_u64(out, magic);
+        write_le_u64(out, version);
         // Pad rest with zeros to keep readers from underflowing
         char zero[8 * 8] = {};
         out.write(zero, sizeof(zero));
@@ -209,8 +352,8 @@ void test_version_mismatch_rejected() {
         std::ofstream out(path, std::ios::binary);
         uint64_t magic = BlockLanczosCheckpoint::MAGIC;
         uint64_t version = 99999;
-        out.write(reinterpret_cast<const char*>(&magic), 8);
-        out.write(reinterpret_cast<const char*>(&version), 8);
+        write_le_u64(out, magic);
+        write_le_u64(out, version);
     }
 
     auto loaded = BlockLanczosCheckpoint::load(path);
@@ -231,14 +374,12 @@ void test_truncated_file_rejected() {
     {
         std::ifstream src(path, std::ios::binary | std::ios::ate);
         if (!src) {
-            std::cerr << "ERROR: failed to open checkpoint for truncation"
-                      << std::endl;
+            std::cerr << "ERROR: failed to open checkpoint for truncation" << std::endl;
             std::abort();
         }
         auto pos = src.tellg();
         if (pos == std::ifstream::pos_type(-1)) {
-            std::cerr << "ERROR: failed to determine checkpoint size"
-                      << std::endl;
+            std::cerr << "ERROR: failed to determine checkpoint size" << std::endl;
             std::abort();
         }
         auto sz = static_cast<size_t>(pos);
@@ -271,7 +412,7 @@ void test_exists_and_valid_semantics() {
     auto path = tmp_ckpt_path("exists");
     CkptCleanup cleanup{path};
 
-    assert(!BlockLanczosCheckpoint::exists_and_valid(path));  // doesn't exist
+    assert(!BlockLanczosCheckpoint::exists_and_valid(path)); // doesn't exist
     auto orig = make_small_state();
     require_save(orig, path);
     assert(BlockLanczosCheckpoint::exists_and_valid(path));
@@ -304,10 +445,10 @@ void test_interval_env_parser() {
     assert(gnfs::linalg::bl_checkpoint_interval() == 10);
 
     ::setenv("GNFS_BL_CHECKPOINT_INTERVAL", "0", 1);
-    assert(gnfs::linalg::bl_checkpoint_interval() == 50);  // 0 → default
+    assert(gnfs::linalg::bl_checkpoint_interval() == 50); // 0 → default
 
     ::setenv("GNFS_BL_CHECKPOINT_INTERVAL", "9999999999", 1);
-    assert(gnfs::linalg::bl_checkpoint_interval() == 1'000'000);  // clamped
+    assert(gnfs::linalg::bl_checkpoint_interval() == 1'000'000); // clamped
 
     ::setenv("GNFS_BL_CHECKPOINT_INTERVAL", "notanumber", 1);
     assert(gnfs::linalg::bl_checkpoint_interval() == 50);
@@ -327,8 +468,7 @@ void test_base_path_env_parser() {
 
     ::setenv("GNFS_BL_CHECKPOINT", "/tmp/foo_session", 1);
     assert(gnfs::linalg::bl_checkpoint_base_path() == "/tmp/foo_session");
-    assert(gnfs::linalg::bl_checkpoint_full_path()
-           == "/tmp/foo_session.bl_ckpt");
+    assert(gnfs::linalg::bl_checkpoint_full_path() == "/tmp/foo_session.bl_ckpt");
 
     ::unsetenv("GNFS_BL_CHECKPOINT");
     std::cout << "  base path parser: PASS" << std::endl;
@@ -369,23 +509,23 @@ void test_wpr_mismatch_rejected() {
         uint64_t version = BlockLanczosCheckpoint::VERSION;
         uint64_t rows = 4, cols = 100, wpr = 2, pivot_row = 0;
         uint64_t cur_col = 100, iteration = 0;
-        uint64_t header_csum = version ^ rows ^ cols ^ wpr ^ pivot_row
-                              ^ cur_col ^ iteration;
-        uint64_t aug_word_count = 7;  // mismatch: rows*wpr = 8
-        out.write(reinterpret_cast<const char*>(&magic), 8);
-        out.write(reinterpret_cast<const char*>(&version), 8);
-        out.write(reinterpret_cast<const char*>(&rows), 8);
-        out.write(reinterpret_cast<const char*>(&cols), 8);
-        out.write(reinterpret_cast<const char*>(&wpr), 8);
-        out.write(reinterpret_cast<const char*>(&pivot_row), 8);
-        out.write(reinterpret_cast<const char*>(&cur_col), 8);
-        out.write(reinterpret_cast<const char*>(&iteration), 8);
-        out.write(reinterpret_cast<const char*>(&header_csum), 8);
-        out.write(reinterpret_cast<const char*>(&aug_word_count), 8);
+        uint64_t header_csum = version ^ rows ^ cols ^ wpr ^ pivot_row ^ cur_col ^ iteration;
+        uint64_t aug_word_count = 7; // mismatch: rows*wpr = 8
+        write_le_u64(out, magic);
+        write_le_u64(out, version);
+        write_le_u64(out, rows);
+        write_le_u64(out, cols);
+        write_le_u64(out, wpr);
+        write_le_u64(out, pivot_row);
+        write_le_u64(out, cur_col);
+        write_le_u64(out, iteration);
+        write_le_u64(out, header_csum);
+        write_le_u64(out, aug_word_count);
         uint64_t dummy[7] = {};
-        out.write(reinterpret_cast<const char*>(dummy), 8 * 7);
+        for (uint64_t word : dummy)
+            write_le_u64(out, word);
         uint64_t bcsum = 0;
-        out.write(reinterpret_cast<const char*>(&bcsum), 8);
+        write_le_u64(out, bcsum);
     }
 
     auto loaded = BlockLanczosCheckpoint::load(path);
@@ -398,6 +538,8 @@ int main() {
     std::cout << "===== BlockLanczosCheckpoint Tests =====" << std::endl;
 
     test_roundtrip_small();
+    test_v2_little_endian_fixture();
+    test_v1_native_compatibility();
     test_roundtrip_large();
     test_empty_matrix();
     test_incomplete_magic_rejected();
@@ -413,7 +555,6 @@ int main() {
     test_overwrite_existing();
     test_wpr_mismatch_rejected();
 
-    std::cout << "\n===== All BlockLanczosCheckpoint tests PASSED ====="
-              << std::endl;
+    std::cout << "\n===== All BlockLanczosCheckpoint tests PASSED =====" << std::endl;
     return 0;
 }
