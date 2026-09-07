@@ -111,6 +111,34 @@ void test_no_overlap() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_component_output_order_is_deterministic() {
+    std::cout << "Testing deterministic clique component output order..." << std::endl;
+
+    std::vector<Relation> input;
+    input.push_back(make_1rat(1, 1, 101));
+    input.push_back(make_1rat(2, 1, 101));
+    input.push_back(make_1rat(3, 1, 103));
+    input.push_back(make_1rat(4, 1, 103));
+    input.push_back(make_1rat(5, 1, 107));
+    input.push_back(make_1rat(6, 1, 107));
+
+    auto first = input;
+    auto second = input;
+    auto first_out = CliqueRelationMerger::merge_cliques(std::move(first));
+    auto second_out = CliqueRelationMerger::merge_cliques(std::move(second));
+
+    assert(first_out.size() == 3);
+    assert(second_out.size() == first_out.size());
+    for (size_t i = 0; i < first_out.size(); ++i) {
+        assert(first_out[i].a == static_cast<int64_t>(1 + 2 * i));
+        assert(first_out[i].extra_ab_pairs.size() == 1);
+        assert(second_out[i].a == first_out[i].a);
+        assert(second_out[i].extra_ab_pairs == first_out[i].extra_ab_pairs);
+    }
+
+    std::cout << "  PASS" << std::endl;
+}
+
 void test_3lp_filtered() {
     // 3LP+ relation should be discarded pre-emptively
     std::cout << "Testing CliqueRelationMerger 3LP+ filter..." << std::endl;
@@ -201,6 +229,7 @@ int main() {
     test_1lp_4clique();
     test_2lp_triangle();
     test_no_overlap();
+    test_component_output_order_is_deterministic();
     test_3lp_filtered();
     test_all_3lp_filtered();
     test_stats_to_string();

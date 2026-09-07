@@ -149,13 +149,27 @@ public:
         }
         stats.components_found = components.size();
 
+        // `components` is an unordered map keyed by the Union-Find root. The
+        // root is an implementation detail: union-by-rank ties and hash-table
+        // traversal can differ across standard-library implementations. Keep
+        // the merge output reproducible by ordering components by their first
+        // input ordinal (members are populated in ascending ordinal order).
+        std::vector<const std::vector<size_t>*> ordered_components;
+        ordered_components.reserve(components.size());
+        for (const auto& [_, members] : components) {
+            ordered_components.push_back(&members);
+        }
+        std::sort(ordered_components.begin(), ordered_components.end(),
+                  [](const auto* lhs, const auto* rhs) { return lhs->front() < rhs->front(); });
+
         // ── Per-component BFS spanning tree merge ──
         std::vector<bool> used(pool.size(), false);
-        for (auto& [root, members] : components) {
-            if (members.size() < 2)
+        for (const auto* members : ordered_components) {
+            const auto& component_members = *members;
+            if (component_members.size() < 2)
                 continue;
             ++stats.components_with_excess;
-            merge_component(pool, pool_lp_keys, members, lp_index, used, results, stats,
+            merge_component(pool, pool_lp_keys, component_members, lp_index, used, results, stats,
                             policy.drop_residual);
         }
 
