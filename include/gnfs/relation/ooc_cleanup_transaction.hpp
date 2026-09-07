@@ -1327,6 +1327,12 @@ windows_regular_single_link(const BY_HANDLE_FILE_INFORMATION& info) noexcept {
                : OOCRelationStoreFormat::FORMAT_VERSION_V3;
 }
 
+[[nodiscard]] inline bool index_data_magic_pair_matches(std::uint64_t index_magic,
+                                                        std::uint64_t data_magic) noexcept {
+    return is_index_magic(index_magic) && is_data_magic(data_magic) &&
+           expected_header_version(index_magic) == expected_header_version(data_magic);
+}
+
 struct ArtifactFingerprint final {
     FileIdentity identity;
     std::uint64_t header_magic = 0;
@@ -1659,7 +1665,7 @@ inline void append_fingerprint(std::vector<std::byte>& bytes,
         intent.data.header_store_id != intent.store_id ||
         intent.index.header_version != expected_header_version(intent.index.header_magic) ||
         intent.data.header_version != expected_header_version(intent.data.header_magic) ||
-        !is_index_magic(intent.index.header_magic) || !is_data_magic(intent.data.header_magic) ||
+        !index_data_magic_pair_matches(intent.index.header_magic, intent.data.header_magic) ||
         intent.data.header_count != 0 ||
         intent.index.identity.size < OOCRelationStoreFormat::INDEX_HEADER_BYTES ||
         intent.data.identity.size < OOCRelationStoreFormat::DATA_HEADER_BYTES ||
@@ -2898,6 +2904,9 @@ inline void quarantine_one(const std::filesystem::path& live,
     const auto index_fingerprint = artifact_fingerprint(index, ArtifactKind::Index, store_id);
     const auto data_fingerprint = artifact_fingerprint(data, ArtifactKind::Data, store_id);
     if (!index_fingerprint || !data_fingerprint ||
+        !index_data_magic_pair_matches(index_fingerprint->header_magic,
+                                       data_fingerprint->header_magic) ||
+        index_fingerprint->header_version != data_fingerprint->header_version ||
         index_fingerprint->identity == data_fingerprint->identity) {
         fail(OOCCleanupStatus::SourcePairInvalid, OOCCleanupStage::None, protocol_error());
     }

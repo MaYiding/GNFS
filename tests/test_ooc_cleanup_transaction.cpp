@@ -2272,6 +2272,15 @@ void write_u64(std::ofstream& output, std::uint64_t value) {
     }
 }
 
+void write_little_u64(std::ofstream& output, std::uint64_t value) {
+    for (std::size_t index = 0; index < sizeof(value); ++index) {
+        output.put(static_cast<char>(value >> (index * 8U)));
+    }
+    if (!output) {
+        throw std::runtime_error("could not write test little-endian u64");
+    }
+}
+
 void pad_to(std::ofstream& output, std::uint64_t size) {
     const auto position = output.tellp();
     if (position == std::streampos(-1) || static_cast<std::uint64_t>(position) > size) {
@@ -2343,6 +2352,47 @@ void register_cleanup_ownership(const std::filesystem::path& base, std::uint64_t
                               .actual_store_id = actual_store_id,
                               .ownership = std::move(ownership),
                           });
+}
+
+void write_mixed_wire_pair(const std::filesystem::path& base, std::uint64_t logical_store_id,
+                           bool index_v4) {
+    OOCRelationWriter writer(base.string());
+    const std::uint64_t actual_store_id = writer.store_id();
+    writer.abort();
+    auto ownership = writer.take_cleanup_ownership_receipt();
+
+    const std::uint64_t index_magic = index_v4 ? OOCRelationStoreFormat::MAGIC_V4_INCOMPLETE
+                                               : OOCRelationStoreFormat::MAGIC_V3_INCOMPLETE;
+    const std::uint64_t data_magic = index_v4 ? OOCRelationStoreFormat::MAGIC_V3_DATA
+                                              : OOCRelationStoreFormat::MAGIC_V4_DATA;
+    const std::uint64_t version = index_v4 ? OOCRelationStoreFormat::FORMAT_VERSION_V4
+                                           : OOCRelationStoreFormat::FORMAT_VERSION_V3;
+    const auto write_index_u64 = index_v4 ? write_little_u64 : write_u64;
+    const auto write_data_u64 = index_v4 ? write_u64 : write_little_u64;
+
+    {
+        std::ofstream output(base.string() + ".relidx", std::ios::binary | std::ios::trunc);
+        if (!output) {
+            throw std::runtime_error("could not create mixed-wire test index");
+        }
+        write_index_u64(output, index_magic);
+        write_index_u64(output, version);
+        write_index_u64(output, actual_store_id);
+        write_index_u64(output, 0);
+    }
+    {
+        std::ofstream output(base.string() + ".reldata", std::ios::binary | std::ios::trunc);
+        if (!output) {
+            throw std::runtime_error("could not create mixed-wire test data");
+        }
+        write_data_u64(output, data_magic);
+        write_data_u64(output, version == OOCRelationStoreFormat::FORMAT_VERSION_V4
+                                  ? OOCRelationStoreFormat::FORMAT_VERSION_V3
+                                  : OOCRelationStoreFormat::FORMAT_VERSION_V4);
+        write_data_u64(output, actual_store_id);
+        pad_to(output, OOCRelationStoreFormat::DATA_HEADER_BYTES + 16);
+    }
+    register_cleanup_ownership(base, logical_store_id, actual_store_id, std::move(ownership));
 }
 
 [[nodiscard]] Relation make_real_relation(std::int64_t a, std::uint64_t b) {
@@ -3252,6 +3302,24 @@ void test_exact_finalized_expectation() {
         };
         CHECK(begin_cleanup(request).completed());
         check_cleanup_complete(OOCCleanupTransaction::paths_for(base));
+    }
+}
+
+void test_cleanup_rejects_mixed_wire_pair() {
+    TempDirectory temp;
+    constexpr std::uint64_t store_id = 0xabc0'1234'5678'9101ULL;
+
+    for (const bool index_v4 : {false, true}) {
+        const auto base = temp.path() / (index_v4 ? "mixed-v4-index" : "mixed-v3-index");
+        write_mixed_wire_pair(base, store_id + static_cast<std::uint64_t>(index_v4), index_v4);
+
+        const auto result = begin_cleanup(base, store_id + static_cast<std::uint64_t>(index_v4));
+        CHECK(result.status == OOCCleanupStatus::SourcePairInvalid);
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        CHECK(exists(paths.index_path));
+        CHECK(exists(paths.data_path));
+        CHECK(!exists(paths.intent_path));
+        CHECK(!exists(paths.intent_pending_path));
     }
 }
 
@@ -16402,6 +16470,7 @@ void run_core_suite(const std::string& executable) {
     test_fresh_writer_rejects_nonempty_cleanup_namespace();
     test_windows_sharing_violation_is_retryable();
     test_exact_finalized_expectation();
+    test_cleanup_rejects_mixed_wire_pair();
     test_real_finalized_store_cleanup();
     test_marker_corruption_is_fail_closed();
     test_authorized_v2_markers_are_not_legacy_cleanup_authority();
