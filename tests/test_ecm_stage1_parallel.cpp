@@ -108,13 +108,28 @@ void test_env_non_numeric_to_one() {
     apply_env("-5");
     assert(ecm_stage1_parallel_threads() == 1);
 
-    // "garbage" -> 1 (atoi returns 0).
+    // "garbage" -> 1 (no numeric prefix).
     apply_env("garbage");
     assert(ecm_stage1_parallel_threads() == 1);
 
-    // " " (whitespace only) -> 1 (atoi returns 0).
+    // " " (whitespace only) -> 1 (no numeric prefix).
     apply_env("   ");
     assert(ecm_stage1_parallel_threads() == 1);
+
+    unsigned int hw = std::thread::hardware_concurrency();
+    if (hw == 0)
+        hw = 4;
+    const std::size_t cap = static_cast<std::size_t>(hw) * 2;
+
+    // Overflowing values must take the documented high-value clamp path,
+    // without relying on std::atoi's unrepresentable-result behavior.
+    apply_env("184467440737095516160");
+    const std::size_t overflow_value = ecm_stage1_parallel_threads();
+    if (overflow_value != cap) {
+        std::cerr << "\n  ERROR: overflowing value parsed to " << overflow_value
+                  << ", expected clamped value " << cap << std::endl;
+        std::abort();
+    }
 
     apply_env(nullptr);
     std::cout << " PASS\n";

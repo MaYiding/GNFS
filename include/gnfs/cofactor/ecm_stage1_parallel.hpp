@@ -54,11 +54,13 @@
 #include "../util/thread_pool.hpp"
 
 #include <atomic>
+#include <cctype>
+#include <cerrno>
 #include <cstddef>
 #include <cstdlib>
 #include <future>
-#include <new>
 #include <mutex>
+#include <new>
 #include <span>
 #include <thread>
 #include <type_traits>
@@ -88,25 +90,39 @@ inline EcmStage1ParallelCache& ecm_stage1_parallel_cache() noexcept {
 /// hardware_concurrency() reports 0 -> hw=4).
 ///
 /// Parser semantics mirror `parse_ecm_stage2_parallel_env()` exactly to keep
-/// W8 T1 / W9 T1 ENV behaviour consistent: uses `std::atoi` so a non-numeric
-/// prefix returns 0 (-> 1), but a partial parse like "12abc" returns 12
-/// (atoi accepts a leading numeric prefix). Empty / unset / "0" / negative
-/// all collapse to the sequential default.
+/// W8 T1 / W9 T1 ENV behaviour consistent. A non-numeric prefix returns 1,
+/// while a partial parse like "12abc" returns 12. Empty / unset / "0" /
+/// negative all collapse to the sequential default. Values outside the
+/// unsigned parser range are treated as too large and clamp to the cap.
 inline std::size_t parse_ecm_stage1_parallel_env() noexcept {
     const char* env = std::getenv("GNFS_ECM_STAGE1_PARALLEL_THREADS");
     if (env == nullptr || env[0] == '\0') {
-        return 1;  // default sequential
+        return 1; // default sequential
     }
-    int parsed = std::atoi(env);
-    if (parsed <= 0) {
-        return 1;  // invalid / non-positive -> sequential
+
+    const char* first = env;
+    while (*first != '\0' && std::isspace(static_cast<unsigned char>(*first))) {
+        ++first;
     }
+    if (*first == '-') {
+        return 1; // invalid / non-positive -> sequential
+    }
+
+    errno = 0;
+    char* end = nullptr;
+    const unsigned long long parsed = std::strtoull(first, &end, 10);
+    if (end == first || parsed == 0) {
+        return 1; // invalid / non-positive -> sequential
+    }
+
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
-    std::size_t cap = static_cast<std::size_t>(hw) * 2;
-    std::size_t v = static_cast<std::size_t>(parsed);
-    if (v > cap) v = cap;
-    return v;
+    if (hw == 0)
+        hw = 4;
+    const std::size_t cap = static_cast<std::size_t>(hw) * 2;
+    if (errno == ERANGE || parsed > static_cast<unsigned long long>(cap)) {
+        return cap;
+    }
+    return static_cast<std::size_t>(parsed);
 }
 
 }  // namespace detail

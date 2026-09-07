@@ -47,11 +47,13 @@
 #include "../util/thread_pool.hpp"
 
 #include <atomic>
+#include <cctype>
+#include <cerrno>
 #include <cstddef>
 #include <cstdlib>
 #include <future>
-#include <new>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <span>
 #include <thread>
@@ -82,18 +84,32 @@ inline EcmStage2ParallelCache& ecm_stage2_parallel_cache() noexcept {
 inline std::size_t parse_ecm_stage2_parallel_env() noexcept {
     const char* env = std::getenv("GNFS_ECM_STAGE2_PARALLEL");
     if (env == nullptr || env[0] == '\0') {
-        return 1;  // default sequential
+        return 1; // default sequential
     }
-    int parsed = std::atoi(env);
-    if (parsed <= 0) {
-        return 1;  // invalid / non-positive -> sequential
+
+    const char* first = env;
+    while (*first != '\0' && std::isspace(static_cast<unsigned char>(*first))) {
+        ++first;
     }
+    if (*first == '-') {
+        return 1; // invalid / non-positive -> sequential
+    }
+
+    errno = 0;
+    char* end = nullptr;
+    const unsigned long long parsed = std::strtoull(first, &end, 10);
+    if (end == first || parsed == 0) {
+        return 1; // invalid / non-positive -> sequential
+    }
+
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
-    std::size_t cap = static_cast<std::size_t>(hw) * 2;
-    std::size_t v = static_cast<std::size_t>(parsed);
-    if (v > cap) v = cap;
-    return v;
+    if (hw == 0)
+        hw = 4;
+    const std::size_t cap = static_cast<std::size_t>(hw) * 2;
+    if (errno == ERANGE || parsed > static_cast<unsigned long long>(cap)) {
+        return cap;
+    }
+    return static_cast<std::size_t>(parsed);
 }
 
 }  // namespace detail

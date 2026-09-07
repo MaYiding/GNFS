@@ -278,7 +278,7 @@ void test_env_parsing() {
         std::abort();
     }
 
-    // "garbage" -> 1 (atoi returns 0).
+    // "garbage" -> 1 (no numeric prefix).
     apply_env("garbage");
     assert(ecm_stage2_parallel_threads() == 1);
 
@@ -287,6 +287,16 @@ void test_env_parsing() {
     std::size_t v9999 = ecm_stage2_parallel_threads();
     if (v9999 != cap) {
         std::cerr << "\n  ERROR: '9999' parsed to " << v9999
+                  << ", expected clamped value " << cap << std::endl;
+        std::abort();
+    }
+
+    // A value beyond unsigned long long is still an out-of-range high value
+    // and must clamp without depending on std::atoi behavior.
+    apply_env("184467440737095516160");
+    const std::size_t overflow_value = ecm_stage2_parallel_threads();
+    if (overflow_value != cap) {
+        std::cerr << "\n  ERROR: overflowing value parsed to " << overflow_value
                   << ", expected clamped value " << cap << std::endl;
         std::abort();
     }
