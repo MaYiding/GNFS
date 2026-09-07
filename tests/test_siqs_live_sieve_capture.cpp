@@ -1,6 +1,8 @@
 // test_siqs_live_sieve_capture.cpp - bounded live-sieve capture contracts
 
+#include <gnfs/core/integer.hpp>
 #include <gnfs/siqs/live_sieve_capture.hpp>
+#include <gnfs/siqs/shadow_two_large_prime_capture.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -18,6 +20,9 @@ using gnfs::siqs::SIQSLiveSieveCaptureSnapshot;
 using gnfs::siqs::SIQSLiveSieveCaptureStopReason;
 using gnfs::siqs::SIQSLiveSieveRelationKind;
 using gnfs::siqs::SIQSLiveSieveRelationPayloadShape;
+using gnfs::siqs::SIQSRelation;
+using gnfs::siqs::SIQSShadowTwoLargePrimeCaptureConfig;
+using gnfs::siqs::SIQSShadowTwoLargePrimeCaptureSink;
 using std::size_t;
 
 int checks_passed = 0;
@@ -279,6 +284,32 @@ void test_post_stop_is_fully_idempotent() {
     }
 }
 
+void test_shadow_sink_post_stop_rejects_stale_cofactor_without_throwing() {
+    SIQSShadowTwoLargePrimeCaptureSink sink(
+        SIQSShadowTwoLargePrimeCaptureConfig{91, {1, std::numeric_limits<size_t>::max()}});
+    const SIQSLiveSieveRelationPayloadShape payload{1, 0, 0, 0};
+    const auto make_relation = [] {
+        SIQSRelation relation;
+        relation.value = gnfs::core::Integer(1);
+        relation.large_prime = 91;
+        relation.large_prime2 = 1;
+        return relation;
+    };
+
+    CHECK(sink.try_capture(91, payload, make_relation));
+    CHECK(sink.stop_reason() == SIQSLiveSieveCaptureStopReason::relation_limit);
+
+    bool threw = false;
+    try {
+        CHECK(!sink.try_capture(0, payload, [] { return SIQSRelation{}; }));
+    } catch (...) {
+        threw = true;
+    }
+    CHECK(!threw);
+    CHECK(sink.relations().size() == 1);
+    CHECK(sink.snapshot().captured_relations == 1);
+}
+
 } // namespace
 
 int main() {
@@ -294,6 +325,7 @@ int main() {
     test_invalid_kind_and_transaction_state_fail_closed();
     test_cumulative_payload_overflow_fails_closed();
     test_post_stop_is_fully_idempotent();
+    test_shadow_sink_post_stop_rejects_stale_cofactor_without_throwing();
 
     std::cout << checks_passed << " checks passed, " << checks_failed << " checks failed\n";
     return checks_failed == 0 ? 0 : 1;
